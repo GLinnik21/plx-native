@@ -485,6 +485,7 @@ impl<'a> OnboardView<'a> {
                 scales: [self.screen.pop.scale(0), 1.0],
                 palette: palette(),
                 danger: None,
+                note: None,
             })
     }
 }
@@ -755,7 +756,10 @@ impl<H: DirectoryLike> Screen<H> for OnboardScreen {
     }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, H>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
-        let p = f.painter;
+        // the header is the narrative column and the table's placeholder is the list: under a Settings
+        // push the first holds still and cross-fades, the second travels
+        let narrative = f.narrative_painter();
+        let p = f.list_painter();
         if !self.settings {
             // a first-run route is not a sheet, but it belongs to the same visual family
             self.ground.draw_home(Painter::root());
@@ -769,7 +773,7 @@ impl<H: DirectoryLike> Screen<H> for OnboardScreen {
             if self.settings { plx_platform::i18n::msg::settings_libraries_title() } else { plx_platform::i18n::msg::settings_onboard_title() },
             &body,
         )
-        .paint(p, f.measure);
+        .paint(narrative, f.measure);
         let labels = self.labels(directory);
         let pal = if self.settings { palette() } else { self.ground.palette() };
         let mut band = BandPart {
@@ -781,6 +785,7 @@ impl<H: DirectoryLike> Screen<H> for OnboardScreen {
             scales: [self.pop.scale(0), 1.0],
             palette: pal,
             danger: None,
+            note: None,
         };
         Part::<H>::draw(&mut band, f, layout.action);
         let lf = layout.sectioned_table();

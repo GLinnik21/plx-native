@@ -14,14 +14,15 @@ Media Server (PMS) entirely in-app.
 
 **Almost everything is Rust** in `rust-modules/` (UI, event loop, input, player orchestration,
 the streaming/demux pipeline, and the Plex data layer), compiled to a static lib and linked in
-(see the Makefile). Native startup and playback ABI shims stay C: `src/main.c` — a small **boot shim** (the event-log
+(see the Makefile). What stays C is `src/main.c` — a small **boot shim** (the event-log
 handle, stderr capture, process bring-up) that then calls the Rust `plex_run()` — and
-`src/starfish.c`, the **buffer-feed StarfishMediaAPIs C++ seam**, and `src/video_plane.c`,
-the shared **ACB/exported-window display binding**. Two more `.c` files sit beside them:
-`src/svg.c` (the nanosvg rasterizer) and, since 2026-08-29, `src/crashtrace.c` — the async-signal-
-safe **crash tracer**, lifted out of `main.c` into its own translation unit for one reason, that
-`ci/crashtrace-test.c` links it ALONE and can therefore fault a process on purpose and check how it
-died. Doing that immediately found a seven-week-old bug no log could have shown (below).
+`src/starfish.c`, the **buffer-feed StarfishMediaAPIs C++ seam**, and `src/video_plane.c`, the shared
+**ACB/exported-window display binding**, beside `src/svg.c` (the nanosvg rasterizer),
+`src/sentry_context.c`, `src/exit.c` (the key-files list below says what each does) and, since
+2026-08-29, `src/crashtrace.c` — the async-signal-safe **crash tracer**, lifted out of `main.c` into
+its own translation unit for one reason, that `ci/crashtrace-test.c` links it ALONE and can therefore
+fault a process on purpose and check how it died. Doing that immediately found a seven-week-old bug no
+log could have shown (below).
 
 Target device: LG 49SM9000PLA, webOS 4.5, rooted, reached as `root` over ssh. **Its address is NOT
 in the repo** — it comes from one line (an IP or hostname) in a gitignored file, found by ONE shared
@@ -1204,7 +1205,12 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   processes on purpose and checks the record AND the exit status, and probes another with the freeze
   signal (`SIGUSR2`) to check it records and survives. `src/starfish.c` — the
   buffer-feed StarfishMediaAPIs C++ seam. `src/video_plane.c` — shared ACB/exported-window binding. `src/svg.c` — nanosvg rasterizer. `src/sentry_context.c` — the
-  narrow C wrapper that keeps Sentry's opaque by-value object ABI out of Rust. These six are the
+  narrow C wrapper that keeps Sentry's opaque by-value object ABI out of Rust. `src/exit.c` — libc
+  `exit` defined in the executable (and exported by the link), so a shared library's `exit()` ends the
+  process through `plx_exit_record` in `src/crashtrace.c` (an async-signal-safe record, in the event
+  log and the crash log, naming the thread and the calling library, then the `exit_group` syscall,
+  or a park while a fatal signal's handler is running, which lets that crash end the process; not
+  through Rust's `exit_now`, which flushes under locks); `ci/exit-interpose-test.c` grades it on Linux. These seven are the
   entire normal C side (`gpdebug.c` is an opt-in allocator instrument). Reach for
   `/tmp/plxnative-crashtest=<segv|abrt|bus|ill|trap|panic|unwind>` to fault the app deliberately
   ON the television — `segv` is a real null write, `abrt`/`bus`/`ill`/`trap` are `raise`, `panic`
@@ -1219,6 +1225,12 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   (`telemetry::crashreport`). The app is never stopped. A default (`threadcheck`) build aborts the
   stalled main thread at 2 s, before the 5 s probe, unless `/tmp/plxnative-guard` contains `log`:
   write `log` there before launching, or no freeze report is produced.
+  An `exit()` made by a firmware library (`src/exit.c`) writes a `*** EXIT status=<n> caller=0x…`
+  record to the event log and the crash log, and the next launch reports it as an `error` event
+  that is not a crash (`telemetry::crashreport`). An exit made in the foreground leaves its session
+  `abnormal`, like a freeze's; one made after backgrounding (the PLX-NATIVE-1P shape) finds no open
+  session, because backgrounding already ended it `exited` (`telemetry::session`), so only the
+  `error` event exists.
 - `rust-modules/src/` — the app core (Rust): `app/` (`mod.rs` the `run_application` shim + `struct App`, `boot.rs` the bring-up, `run.rs` the frame loop and its phase functions, `events.rs`/`input.rs` the input decode and key ladders, `lifecycle.rs`, `playback.rs`, `content.rs`, `bridge.rs` the seam onto the container and the ONE navigation vocabulary, `words.rs` the heartbeat's `route=`/`overlay=` alphabet — `nav.rs` is gone with `enum Route` since restructure phase 12), `system.rs` (wayland),
   and, in the media layer (`rust-modules/media/`, crate `plx_media`, which the application links),
   `player/` (buffer-feed engine + worker threads — **`rust-modules/media/src/player/CLAUDE.md` is the

@@ -426,6 +426,52 @@ fn belarusian_long_month_day_captions_take_the_genitive() {
 }
 
 #[test]
+fn catalan_month_day_captions_use_format_and_standalone_month_names() {
+    let cx = LocaleContext::resolve(Preference::Ca, None, None, None, None);
+
+    let medium = [
+        "12 de gen.",
+        "12 de febr.",
+        "12 de març",
+        "12 d’abr.",
+        "12 de maig",
+        "12 de juny",
+        "12 de jul.",
+        "12 d’ag.",
+        "12 de set.",
+        "12 d’oct.",
+        "12 de nov.",
+        "12 de des.",
+    ];
+
+    let long = [
+        "12 de gener",
+        "12 de febrer",
+        "12 de març",
+        "12 d’abril",
+        "12 de maig",
+        "12 de juny",
+        "12 de juliol",
+        "12 d’agost",
+        "12 de setembre",
+        "12 d’octubre",
+        "12 de novembre",
+        "12 de desembre",
+    ];
+
+    for month in 1..=12 {
+        let i = usize::from(month - 1);
+        assert_eq!(cx.month_day(month, 12, MonthWidth::Medium).as_deref(), Some(medium[i]));
+        assert_eq!(cx.month_day(month, 12, MonthWidth::Long).as_deref(), Some(long[i]));
+    }
+
+    // Independent month names must not include the preposition.
+    assert_eq!(cx.month_short(1).as_deref(), Some("gen."));
+    assert_eq!(cx.month_short(4).as_deref(), Some("abr."));
+    assert_eq!(cx.month_year(2024, 1).as_deref(), Some("gen. de 2024"));
+}
+
+#[test]
 fn pseudo_locale_month_day_captions_follow_english() {
     let pseudo = LocaleContext::pseudo_for_test();
     assert_eq!(pseudo.month_day(3, 12, MonthWidth::Medium).as_deref(), Some("12 Mar"));

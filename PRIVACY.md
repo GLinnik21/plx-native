@@ -115,6 +115,8 @@ the Crash report ID below. It carries none of the library details above.
 
 A main-thread freeze (the app not responding for five seconds or more while it is open on screen) is reported like a crash, under the same choice: code addresses and register values, one of three duration ranges (5 to 10 s, 10 to 30 s, 30 s or more) or "unrecovered", and the details above, without stopping the app.
 
+When another part of the television's software ends PlxNative by calling `exit()` (for example the system closing it), the app records the call and reports it like a crash, under the same choice: the exit status (a number), which thread made the call (its number, whether it was the main thread, and its own name, a technical label set by PlxNative or a library), the library the call came from (its file name, never the folder, with its build identifier, load address and size, as for a crash report above) and the code address of the call, the time of the call to the second, and the details above.
+
 Every crash and error report carries a **Crash report ID**: a random identifier created on this
 television when you turn crash reports on, sent as the report's `user.id`. It exists so that
 repeated crashes under one Crash report ID are counted once rather than once each — Sentry's

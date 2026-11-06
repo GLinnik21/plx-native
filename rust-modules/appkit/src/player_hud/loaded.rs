@@ -78,7 +78,7 @@ pub fn answers_every_frame(compiled: &Compiled) -> bool {
 
 /// `builtin:classic`, the embedded package ([`crate::hud_format::CLASSIC_PACKAGE`]), compiled. It does not
 /// return a `Result`: the bytes are `include_bytes!`'d and `classic_loads_with_no_findings_in_every_shipped_language`
-/// parses and compiles them in all eleven languages, so a failure here is a build that no test passed.
+/// parses and compiles them in all twelve languages, so a failure here is a build that no test passed.
 pub fn load_classic(app_version: &str, cx: &LocaleContext, measure: &dyn Measure) -> LoadedHud {
     load(crate::hud_format::CLASSIC_PACKAGE, app_version, cx, measure).expect("the embedded builtin:classic parses")
 }
@@ -226,7 +226,7 @@ mod tests {
     /// pill's width, so the claim is per language.
     #[test]
     fn classic_loads_with_no_findings_in_every_shipped_language() {
-        assert_eq!(SHIPPED.len(), 11, "the claim is about the eleven shipped languages");
+        assert_eq!(SHIPPED.len(), 12, "the claim covers all twelve shipped languages");
         for language in SHIPPED {
             let cx = LocaleContext::resolve(language, None, None, None, None);
             let hud = load_classic("0.0.0-test", &cx, &ShippedMeasure);

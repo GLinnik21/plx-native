@@ -1274,6 +1274,24 @@ impl UnderPostersDetails {
     pub fn index(self) -> u8 {
         Self::LADDER.iter().position(|&m| m == self).unwrap_or(0) as u8
     }
+
+    /// The options a TV show's details picker lists, in the picker's order: the whole ladder less
+    /// [`Video`](Self::Video), because a show has no single video quality (Settings v2, board 3.3).
+    pub const SHOW_LADDER: [UnderPostersDetails; 4] = [
+        UnderPostersDetails::YearLength,
+        UnderPostersDetails::Genre,
+        UnderPostersDetails::AgeRatingScore,
+        UnderPostersDetails::None,
+    ];
+
+    /// **The TV show details a movie details value stands for**: the value itself, except that
+    /// Video quality (a movie-only line) reads as Year and Seasons. This is both the migration of
+    /// the single `details` setting that served both kinds before Settings v2 (a profile that never
+    /// chose a show line reads its old one through it, [`UnderPosters::show_details`]) and the
+    /// guard that a show can never hold a movie-only value.
+    pub fn for_shows(self) -> UnderPostersDetails {
+        if self == UnderPostersDetails::Video { UnderPostersDetails::YearLength } else { self }
+    }
 }
 
 /// **What sits under the focused poster** — one setting for every poster grid and row (Library,
@@ -1287,16 +1305,48 @@ impl UnderPostersDetails {
 /// absent while it is On), so a profile that never chose it, and one that persisted the retired
 /// `show_sort_info` key of the earlier sort-information switch (ignored, never written), reads On.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
-#[serde(default)]
+#[serde(from = "UnderPostersWire")]
 pub struct UnderPosters {
-    #[serde(deserialize_with = "de_soft_under_posters_title")]
     pub title: bool,
-    #[serde(deserialize_with = "de_soft_under_posters_details")]
+    /// The details line under a MOVIE (and under a season or an episode, which have always followed
+    /// it). Settings v2 splits what was one setting into this and [`show_details`](Self::show_details);
+    /// this keeps the old key, so an older build reads the movie value as the one it knows.
     pub details: UnderPostersDetails,
+    /// The details line under a TV SHOW: never [`UnderPostersDetails::Video`]. Written as its own
+    /// key. A profile whose stored setting has none (every one saved before the split) reads its
+    /// `details` through [`UnderPostersDetails::for_shows`] until it chooses.
+    pub show_details: UnderPostersDetails,
     /// A library grid sorted by something other than Title or Random shows the sort's value under
     /// every card (the Movies, TV Shows, Seasons and Episodes grids; the Library's `registry::sort_info`). On by default.
-    #[serde(rename = "sort_value_off", with = "sort_value_off", skip_serializing_if = "sort_value_off::is_on")]
+    #[serde(rename = "sort_value_off", serialize_with = "sort_value_off::serialize", skip_serializing_if = "sort_value_off::is_on")]
     pub sort_value: bool,
+}
+
+/// What [`UnderPosters`] is read from: each field soft-parsed on its own, and `show_details` kept
+/// optional so its absence (a setting saved before the split) can be told from a choice.
+#[derive(Deserialize)]
+#[serde(default)]
+struct UnderPostersWire {
+    #[serde(deserialize_with = "de_soft_under_posters_title")]
+    title: bool,
+    #[serde(deserialize_with = "de_soft_under_posters_details")]
+    details: UnderPostersDetails,
+    #[serde(deserialize_with = "de_soft_show_details")]
+    show_details: Option<UnderPostersDetails>,
+    #[serde(rename = "sort_value_off", with = "sort_value_off")]
+    sort_value: bool,
+}
+
+impl Default for UnderPostersWire {
+    fn default() -> Self {
+        Self { title: false, details: UnderPostersDetails::default(), show_details: None, sort_value: true }
+    }
+}
+
+impl From<UnderPostersWire> for UnderPosters {
+    fn from(w: UnderPostersWire) -> Self {
+        UnderPosters { title: w.title, details: w.details, show_details: w.show_details.unwrap_or_else(|| w.details.for_shows()), sort_value: w.sort_value }
+    }
 }
 
 impl Default for UnderPosters {
@@ -1328,19 +1378,32 @@ fn de_soft_under_posters_details<'de, D: Deserializer<'de>>(d: D) -> Result<Unde
     Ok(serde_json::from_value::<UnderPostersDetails>(v).unwrap_or_default())
 }
 
+/// `show_details`: a spelling this build knows is a choice (a movie-only one is held to what a show
+/// can have), anything else reads as absent, so the movie value seeds it.
+fn de_soft_show_details<'de, D: Deserializer<'de>>(d: D) -> Result<Option<UnderPostersDetails>, D::Error> {
+    let Ok(v) = Value::deserialize(d) else { return Ok(None) };
+    Ok(serde_json::from_value::<UnderPostersDetails>(v).ok().map(UnderPostersDetails::for_shows))
+}
+
 impl UnderPosters {
     /// The defaults, as a `const` for callers that compare against them.
-    pub const DEFAULT: UnderPosters = UnderPosters { title: false, details: UnderPostersDetails::YearLength, sort_value: true };
+    pub const DEFAULT: UnderPosters = UnderPosters { title: false, details: UnderPostersDetails::YearLength, show_details: UnderPostersDetails::YearLength, sort_value: true };
 
-    /// One byte for the live cell: title in bit 0, details in bits 1-3, "sort value Off" in bit 4
-    /// (so a zero byte is the default's On).
+    /// One byte for the live cell: title in bit 0, movie details in bits 1-3, "sort value Off" in
+    /// bit 4 (so a zero byte is the default's On), TV show details in bits 5-7.
     pub fn pack(self) -> u8 {
-        u8::from(self.title) | (self.details.index() << 1) | (u8::from(!self.sort_value) << 4)
+        u8::from(self.title) | (self.details.index() << 1) | (u8::from(!self.sort_value) << 4) | (self.show_details.index() << 5)
     }
 
-    /// The inverse of [`UnderPosters::pack`]; an out-of-range details index is the default.
+    /// The inverse of [`UnderPosters::pack`]; an out-of-range details index is the default, and a
+    /// show value a show cannot have is held to one it can ([`UnderPostersDetails::for_shows`]).
     pub fn unpack(b: u8) -> UnderPosters {
-        UnderPosters { title: b & 1 != 0, details: UnderPostersDetails::from_index((b >> 1) & 0b111), sort_value: b & 16 == 0 }
+        UnderPosters {
+            title: b & 1 != 0,
+            details: UnderPostersDetails::from_index((b >> 1) & 0b111),
+            show_details: UnderPostersDetails::from_index((b >> 5) & 0b111).for_shows(),
+            sort_value: b & 16 == 0,
+        }
     }
 }
 

@@ -311,8 +311,9 @@ fn the_local_subtitle_pickers_never_touch_the_plex_account() {
         assert!(page.state.io.status.is_empty(), "{field:?}: no loading status");
         assert!(page.form.index_of_key(RowKey(RETRY_KEY)).is_none(), "{field:?}: no Retry row");
         assert!(!page.copy.contains(plx_platform::i18n::msg::settings_audio_account_note()), "{field:?}: no account note");
-        assert_eq!(field.kind(), Some(Kind::Playback), "{field:?} belongs to the Video & playback page");
-        assert_eq!(field.parent_title(), plx_platform::i18n::msg::settings_playback_title(), "{field:?}: the crumb names the page it opened from");
+        assert_eq!(field.kind(), Some(Kind::AudioSubtitles), "{field:?} is a Look row of the Audio & subtitles page");
+        assert!(!field.is_account(), "{field:?} is this app's own, not a Plex account preference");
+        assert_eq!(field.parent_title(), plx_platform::i18n::msg::settings_audio_title(), "{field:?}: the crumb names the page it opened from");
     }
 }
 

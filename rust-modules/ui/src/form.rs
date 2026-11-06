@@ -22,7 +22,7 @@
 //! Three more things a declared row carries for pages that drill in: a [`RowKind::Nav`] row gets the drill-in chevron when it is
 //! built; a [`RowKind::Choice`] row declared with [`FormSection::choice`] derives its checkmark from
 //! a current-value predicate instead of a hand-set flag; and an item can be
-//! [`FormSection::disabled`] — drawn dim, still focusable (the viewer can land on it and read why),
+//! [`FormSection::disabled`] — the shared DISABLED state ([`Row::disabled`]: soft, a ghost focus pill), still focusable (the viewer can land on it and read why),
 //! and never activated by [`FormTable::activate`], so OK and RIGHT cannot act on it and no caller
 //! carries its own guard. A table is (re)installed by one of FOUR operations — [`FormTable::set`]
 //! (Settings' snap), [`FormTable::open`], [`FormTable::refresh`], [`FormTable::restore`] — because
@@ -150,16 +150,18 @@ impl<Id, A, Dest> FormSection<Id, A, Dest> {
         ));
         self
     }
-    /// Mark the item just declared DISABLED when `cond` holds: drawn dim ([`Row::dim`]), still
-    /// focusable, and never activated ([`FormTable::activate`] answers `None` for OK and RIGHT
-    /// alike). A no-op when the last slot is not an item, and when the last declaration was an
-    /// [`Self::item_if`] / [`Self::item_keyed_if`] that was skipped: `.item_if(false, …)
-    /// .disabled(true)` ("dim it during this state") must not dim the row BEFORE the one that was
-    /// never declared.
+    /// Mark the item just declared DISABLED when `cond` holds: the shared DISABLED control state
+    /// ([`Row::disabled`]). It is drawn soft (dim off the pill, the ghost pill under focus, its
+    /// reason, when it has one, as the row's value), still focusable so the viewer can land on it and
+    /// read why, and never activated: [`FormTable::activate`] answers `None` for OK, RIGHT and a click
+    /// alike (a pointer click reaches it as an `Activate` of the row's key), so no caller carries its own guard. A no-op when the last slot is not an
+    /// item, and when the last declaration was an [`Self::item_if`] / [`Self::item_keyed_if`] that
+    /// was skipped: `.item_if(false, …).disabled(true)` ("dim it during this state") must not
+    /// disable the row BEFORE the one that was never declared.
     pub fn disabled(mut self, cond: bool) -> Self {
         if let Some(Slot::Item(b, row)) = self.slots.last_mut().filter(|_| cond && !self.skipped) {
             b.disabled = true;
-            row.dim = true;
+            row.disabled = true;
         }
         self
     }

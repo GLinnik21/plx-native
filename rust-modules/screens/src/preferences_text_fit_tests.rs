@@ -31,6 +31,7 @@ fn audio(prefs: Option<&AudioPreferences>) -> FieldListInputs<'_> {
 fn table_of(section: Section) -> TableView {
     let mut table = TableView::new();
     table.compact = false;
+    table.board_metrics(true); // the Settings pages' table, as `preferences.rs` draws it
     table.set_sections(vec![section], 0, false);
     table
 }
@@ -41,6 +42,7 @@ fn table_of(section: Section) -> TableView {
 fn check_field_section(tag: &str, inputs: &FieldListInputs<'_>, out: &mut Vec<String>) {
     let mut form: FormTable<RowId, Action, SettingsPage> = FormTable::new(BAND);
     form.table.compact = false;
+    form.table.board_metrics(true); // as `preferences.rs` draws it
     form.set(field_form(inputs), None);
     let ui_language = tag.split_whitespace().next().unwrap_or(tag);
     for e in form.table.app_fit_failures(frame_w(), tag) {
@@ -63,19 +65,19 @@ fn every_field_readout_and_detail_fits_its_column_in_every_language() {
         for &quality in available_quality_ladder() {
             check_field_section(&format!("{tag} quality={quality:?}"), &playback(quality, DirectPlayMode::Auto), &mut out);
         }
-        // Forced adds the "overridden" detail line to the Quality row.
+        // Forced reads the Quality row's value as "Overridden".
         check_field_section(&format!("{tag} quality overridden detail"), &playback(Quality::Original, DirectPlayMode::Forced), &mut out);
         for direct_play in [DirectPlayMode::Auto, DirectPlayMode::Forced, DirectPlayMode::Disabled] {
             check_field_section(&format!("{tag} direct_play={direct_play:?}"), &playback(Quality::Original, direct_play), &mut out);
         }
         for size in plx_media::route::SubtitleSize::LADDER {
             plx_media::route::restore_subtitle_size(size);
-            check_field_section(&format!("{tag} subtitle_size={size:?}"), &playback(Quality::Original, DirectPlayMode::Auto), &mut out);
+            check_field_section(&format!("{tag} subtitle_size={size:?}"), &audio(Some(&AudioPreferences::default())), &mut out);
         }
         plx_media::route::restore_subtitle_size(plx_media::route::SubtitleSize::Medium);
         for position in plx_media::route::SubtitlePosition::LADDER {
             plx_media::route::restore_subtitle_position(position);
-            check_field_section(&format!("{tag} subtitle_position={position:?}"), &playback(Quality::Original, DirectPlayMode::Auto), &mut out);
+            check_field_section(&format!("{tag} subtitle_position={position:?}"), &audio(Some(&AudioPreferences::default())), &mut out);
         }
         plx_media::route::restore_subtitle_position(plx_media::route::SubtitlePosition::Low);
         for mode in plx_media::route::NextEpisodeMode::LADDER {
@@ -108,6 +110,7 @@ fn every_field_readout_and_detail_fits_its_column_in_every_language() {
         check_field_section(&format!("{tag} read-only"), &FieldListInputs { read_only: true, ..playback(Quality::Original, DirectPlayMode::Auto) }, &mut out);
         check_field_section(&format!("{tag} read-only forced"), &FieldListInputs { read_only: true, ..playback(Quality::Original, DirectPlayMode::Forced) }, &mut out);
 
+        check_field_section(&format!("{tag} read-only look"), &FieldListInputs { read_only: true, ..audio(Some(&AudioPreferences::default())) }, &mut out);
         check_field_section(&format!("{tag} retry row"), &FieldListInputs { show_retry: true, ..audio(None) }, &mut out);
 
         // Every catalog language as the Audio/Subtitle Language read-out (app data, so judged).
@@ -216,6 +219,7 @@ fn the_subtitle_mode_readouts_are_pinned_in_every_language() {
         ("be", "Калі гук не на мове субцітраў"),
         ("ru", "Если аудио не на языке субтитров"),
         ("nl", "Audio niet in ondertiteltaal"),
+        ("ca", "Àudio en un altre idioma"),
     ];
     for (tag, _) in WANT {
         assert!(SHIPPED.iter().any(|p| p.tag() == *tag), "{tag} is pinned but no longer shipped");
@@ -258,7 +262,7 @@ fn long_profile() -> Whose {
 fn every_explanation_under_a_title_fits_the_column_in_every_language() {
     const MAX_COPY_LINES: usize = 5;
     let _serial = plx_base::testlock::serial();
-    let layout = RouteLayout::screen();
+    let layout = RouteLayout::settings_page();
     let all_fields = [PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition,
         PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval, PickerKind::InstantDpadSeeking, PickerKind::DolbyVision, PickerKind::IntroSkip, PickerKind::CreditsSkip, PickerKind::UiResolution, PickerKind::AudioLanguage, PickerKind::SubtitleMode,
         PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles];

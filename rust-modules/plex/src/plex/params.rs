@@ -319,6 +319,11 @@ pub struct SubtitleSearch {
 /// `*_stream_id` 0 = omit. PMS exposes timeline playback and encoder ownership independently,
 /// but active HLS playback reports the current encoder's coupled wire identity so they remain
 /// correlated.
+///
+/// `continuing` is `continuing=1` on the wire, sent only when true: a `Stopped` that says the
+/// playback goes on under another session id. Plex's own TV client sends it before it restarts a
+/// stream for a quality change, and it is what takes the retired id's row off the server's
+/// dashboard at once instead of minutes later (issue #1236).
 pub struct TimelineReport<'a> {
     pub rating_key: &'a str,
     pub state: TimelineState,
@@ -329,6 +334,7 @@ pub struct TimelineReport<'a> {
     pub play_queue_item_id: &'a str,
     pub audio_stream_id: i64,
     pub subtitle_stream_id: i64,
+    pub continuing: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

@@ -5,6 +5,7 @@
 use std::ops::Range;
 
 use super::{Arc, GenreEntry, SecFetch, SecItems, ServerId, SortEntry};
+use crate::pms::PmsMovie;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ListingId {
@@ -465,12 +466,90 @@ pub struct DirectorySnapshot {
     /// The current library's listing as it stands (an O(1) handle on its immutable pages), for a
     /// page that illustrates the library without being on it ([`DirectoryView::sample`]).
     items: super::SecItems,
+    /// The first poster of each kind (movie, show) anywhere the Browse store holds rows, for a page
+    /// that illustrates a kind without being on a library of it ([`DirectoryView::kind_poster`]).
+    kind_posters: [Option<PosterAt>; 2],
     source: Option<usize>,
     source_fetch: SecFetch,
     discovery: SecFetch,
     refreshing: bool,
     sections_gen: u32,
     tabs_gen: u32,
+}
+
+/// Where a retained poster sits: an O(1) handle on the immutable rows that hold it, and its place
+/// in them, so the snapshot keeps no copy of the row and reads it where it lies.
+#[derive(Clone)]
+enum PosterAt {
+    /// Row `.1` of a section's listing.
+    Listing(SecItems, usize),
+    /// Card `.2` of shelf `.1` of a section's committed shelves.
+    Shelf(Arc<Vec<super::section_hubs::Shelf>>, usize, usize),
+}
+
+impl PosterAt {
+    fn get(&self) -> Option<&PmsMovie> {
+        match self {
+            Self::Listing(items, i) => items.get(*i),
+            Self::Shelf(shelves, shelf, i) => shelves.get(*shelf)?.items.get(*i),
+        }
+    }
+}
+
+/// The index of `kind` in [`DirectorySnapshot::kind_posters`], for a kind a poster tile names.
+fn kind_slot(kind: std::os::raw::c_int) -> Option<usize> {
+    match kind {
+        crate::pms::KIND_MOVIE => Some(0),
+        crate::pms::KIND_SHOW => Some(1),
+        _ => None,
+    }
+}
+
+/// The first movie and the first show with a poster path of their own, in the widest cache the
+/// Browse store has: the current library first (its listing, then its shelves), then every other
+/// section's (a library the user left keeps its recent window and its shelves). A title with no
+/// poster path has no art to show, so it is not a candidate.
+fn scan_kind_posters(state: &super::BrowseState) -> [Option<PosterAt>; 2] {
+    let mut found: [Option<PosterAt>; 2] = [None, None];
+    let cur = state.cur();
+    let states = state.states();
+    for section in std::iter::once(cur).chain((0..states.len()).filter(|i| *i != cur)) {
+        let Some(st) = states.get(section) else { continue };
+        // A library lists titles of its own type, so its rows can only be a poster of that kind.
+        if let Some(sec) = state.sections().get(section) {
+            scan_listing(&st.items, if sec.kind == super::SecKind::Show { 1 } else { 0 }, &mut found);
+        }
+        let shelves = &st.hubs.committed;
+        for (s, shelf) in shelves.iter().enumerate() {
+            for (i, m) in shelf.items.iter().enumerate() {
+                note_poster(&mut found, m, || PosterAt::Shelf(Arc::clone(shelves), s, i));
+            }
+        }
+        if found.iter().all(Option::is_some) {
+            break;
+        }
+    }
+    found
+}
+
+/// A listing's rows are candidates for `slot` (its library's own kind) until one is found; a kind
+/// already found costs nothing, so the scan stops at the first row with a poster path.
+fn scan_listing(items: &SecItems, slot: usize, found: &mut [Option<PosterAt>; 2]) {
+    for i in 0..items.len {
+        if found[slot].is_some() {
+            return;
+        }
+        if let Some(m) = items.get(i) {
+            note_poster(found, m, || PosterAt::Listing(items.clone(), i));
+        }
+    }
+}
+
+/// `m` is the poster of its kind if none is yet and it has a poster path of its own.
+fn note_poster(found: &mut [Option<PosterAt>; 2], m: &PmsMovie, at: impl FnOnce() -> PosterAt) {
+    if let Some(slot) = kind_slot(m.kind).filter(|slot| found[*slot].is_none() && !m.thumb.is_empty()) {
+        found[slot] = Some(at());
+    }
 }
 
 impl Default for DirectorySnapshot {
@@ -481,6 +560,7 @@ impl Default for DirectorySnapshot {
             stamp: None,
             data: Arc::default(),
             items: super::SecItems::default(),
+            kind_posters: [None, None],
             source: None,
             source_fetch: SecFetch::Loading,
             discovery: SecFetch::Loading,
@@ -513,6 +593,7 @@ impl DirectorySnapshot {
             self.stamp = Some(stamp);
         }
         self.items = state.states().get(state.cur()).map(|section| section.items.clone()).unwrap_or_default();
+        self.kind_posters = scan_kind_posters(state);
         self.source = state.cur_source_idx();
         self.source_fetch = state.cur_source_state();
         self.discovery = state.discovery_state();
@@ -542,6 +623,7 @@ impl DirectorySnapshot {
                 favorites: Vec::new(),
             }),
             items: super::SecItems::default(),
+            kind_posters: [None, None],
             source: Some(0),
             source_fetch: fetch,
             discovery: fetch,
@@ -555,6 +637,22 @@ impl DirectorySnapshot {
     #[cfg(any(test, feature = "test-support"))]
     pub fn with_sample(mut self, items: Vec<crate::pms::PmsMovie>) -> Self {
         self.items = super::SecItems::from_vec(items.into_iter().map(Some).collect());
+        for (i, m) in (0..self.items.len).filter_map(|i| self.items.get(i).map(|m| (i, m))) {
+            note_poster(&mut self.kind_posters, m, || PosterAt::Listing(self.items.clone(), i));
+        }
+        self
+    }
+
+    /// This directory with `cards` as the first shelf a library OTHER than the current one has
+    /// committed (what [`DirectoryView::kind_poster`] reads after the current listing).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_shelf_sample(mut self, cards: Vec<crate::pms::PmsMovie>) -> Self {
+        let shelves = Arc::new(vec![super::section_hubs::Shelf { items: cards, ..Default::default() }]);
+        for (s, shelf) in shelves.iter().enumerate() {
+            for (i, m) in shelf.items.iter().enumerate() {
+                note_poster(&mut self.kind_posters, m, || PosterAt::Shelf(Arc::clone(&shelves), s, i));
+            }
+        }
         self
     }
 
@@ -598,6 +696,7 @@ impl DirectorySnapshot {
                 favorites,
             }),
             items: super::SecItems::default(),
+            kind_posters: [None, None],
             source: None,
             source_fetch: SecFetch::Ready,
             discovery: SecFetch::Ready,
@@ -630,11 +729,21 @@ impl<'a> DirectoryView<'a> {
     #[allow(dead_code)] // Wave 0 publication contract; consumer lanes take these accessors.
     pub fn section_count(self) -> usize { self.sections().len() }
     /// The first `n` rows of the current library's listing that are loaded: the cached items a page
-    /// outside the Library shows as that library's posters (Settings > Under posters). Fewer than
+    /// outside the Library shows as that library's posters (Settings > Favorite libraries). Fewer than
     /// `n` while the listing is short or its first page has not landed; none before a library is
     /// chosen. Reads what the Library already holds and starts no fetch.
     pub fn sample(self, n: usize) -> impl Iterator<Item = &'a crate::pms::PmsMovie> {
         (0..n).filter_map(move |i| self.0.items.get(i))
+    }
+    /// **The first poster of `kind`** (`pms::KIND_MOVIE` or `KIND_SHOW`, with a poster path of its
+    /// own) in the widest cache the Browse store holds: the current library's listing and shelves,
+    /// then those of every other library it still holds rows of. A page that illustrates a kind
+    /// without being on a library of it (Settings > Under posters) reads this, so a user whose last
+    /// opened library lists only Movies still sees a real show. `None` only when nothing the store
+    /// holds is a poster of that kind (a new install, offline, a server with one kind of library).
+    /// Reads what the store already holds and starts no fetch.
+    pub fn kind_poster(self, kind: std::os::raw::c_int) -> Option<&'a PmsMovie> {
+        self.0.kind_posters.get(kind_slot(kind)?)?.as_ref()?.get()
     }
     #[allow(dead_code)]
     pub fn source_list_gen(self) -> u32 { self.0.stamp.map_or(0, |stamp| stamp.1) }
@@ -745,6 +854,39 @@ impl<'a> DirectoryView<'a> {
 
 #[cfg(test)]
 mod tests {
+    /// **A page that illustrates a kind reads the widest cache**: the current library lists only
+    /// movies, and the first show with a poster is a card of ANOTHER library's retained listing.
+    #[test]
+    fn kind_poster_reads_the_current_library_first_then_every_other_one() {
+        let _g = plx_base::testlock::serial();
+        let mut state = super::super::BrowseState::default();
+        super::super::seed_two_source_table_for_owner_test(&mut state);
+        let titled = |title: &str, kind, thumb: &str| crate::pms::PmsMovie {
+            title: title.into(), kind, thumb: thumb.into(), ..Default::default()
+        };
+        let put = |state: &mut super::super::BrowseState, sec: usize, rows: Vec<crate::pms::PmsMovie>| {
+            state.state_mut(sec).expect("seeded section").items = SecItems::from_vec(rows.into_iter().map(Some).collect());
+        };
+        let cur = state.cur();
+        let other = (0..state.sections().len()).find(|i| *i != cur).unwrap();
+        put(&mut state, cur, vec![
+            titled("No art", crate::pms::KIND_MOVIE, ""),
+            titled("Alpha", crate::pms::KIND_MOVIE, "/a"),
+            titled("Episode", crate::pms::KIND_EPISODE, "/e"),
+        ]);
+        let mut snapshot = DirectorySnapshot::default();
+        snapshot.capture_from(&mut state);
+        let title = |kind| snapshot.view().kind_poster(kind).map(|m| m.title.clone());
+        assert_eq!(title(crate::pms::KIND_MOVIE).as_deref(), Some("Alpha"), "the first movie WITH a poster path");
+        assert_eq!(title(crate::pms::KIND_SHOW), None, "nothing cached is a show: no art anywhere");
+        assert_eq!(title(crate::pms::KIND_EPISODE), None, "only the two kinds a poster tile names");
+        put(&mut state, other, vec![titled("Other film", crate::pms::KIND_MOVIE, "/o"), titled("Sitcom", crate::pms::KIND_SHOW, "/s")]);
+        snapshot.capture_from(&mut state);
+        let title = |kind| snapshot.view().kind_poster(kind).map(|m| m.title.clone());
+        assert_eq!(title(crate::pms::KIND_MOVIE).as_deref(), Some("Alpha"), "the current library still wins its kind");
+        assert_eq!(title(crate::pms::KIND_SHOW).as_deref(), Some("Sitcom"), "the show comes from the other library's rows");
+    }
+
     use super::*;
 
     #[test]

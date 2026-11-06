@@ -1637,9 +1637,7 @@ where
                     // the outgoing page while its destination only records text. The walk
                     // measures ahead of any frame that draws the page, so it is speculative to
                     // the recorder (`rec::speculative`).
-                    plx_base::diag::spans::span("warm", || plx_gfx::gfx::without_frame_clear(|| {
-                        super::rec::speculative(|| super::record_walk(|| inst.screen.draw(&mut f)))
-                    }));
+                    plx_base::diag::spans::span("warm", || warm_walk(|| inst.screen.draw(&mut f)));
                 }
             }
         }
@@ -1808,23 +1806,33 @@ where
                 let painter = if held { Painter::recording() } else { Painter::root() };
                 let mut f = DrawFrame::with_navigation(&surface_cx, painter, navigation);
                 f.page_alpha = s.motion.appear;
+                f.entry_floor = s.motion.floor();
                 f.underlay = Some(field);
                 if held {
                     // Recorded on the capture frame, drained only on the held frames after it.
                     drain_surface_text |= !s.motion.capture_frame();
                     capture_surface |= s.motion.capture_frame();
-                    backdrop::draw_span("surf", || plx_gfx::gfx::without_frame_clear(|| {
-                        super::rec::speculative(|| super::record_walk(|| inst.screen.draw(&mut f)))
-                    }));
+                    backdrop::draw_span("surf", || warm_walk(|| inst.screen.draw(&mut f)));
                     // …and what it already shows (its opener, which the page has left out) live.
                     let mut face = DrawFrame::with_navigation(&surface_cx, Painter::root(), navigation);
                     face.page_alpha = s.motion.appear;
+                    face.entry_floor = s.motion.floor();
                     face.underlay = Some(field);
                     backdrop::draw_span("surf", || inst.screen.draw_held(&mut face));
                 } else {
                     backdrop::draw_span("surf", || {
                         crate::popover_glass::drawing_surface(index, || inst.screen.draw(&mut f));
                     });
+                    // **A visible surface may hold content back until its text is resident** (a
+                    // Settings push waiting at its start, `Screen::warms_text`): that content is
+                    // walked through the recorder now and drained below with the page's budget, so
+                    // the frame that first shows it finds its strings cached.
+                    if !source_pass && inst.screen.warms_text() {
+                        let mut warm = DrawFrame::with_navigation(&surface_cx, Painter::recording(), navigation);
+                        warm.page_alpha = s.motion.appear;
+                        backdrop::draw_span("surf", || warm_walk(|| inst.screen.draw_warm(&mut warm)));
+                        drain_surface_text = true;
+                    }
                 }
                 report.drawn.push(inst.id);
                 stops.extend(f.into_stops());
@@ -3575,6 +3583,14 @@ mod edge_back_tests {
         assert_eq!(rig.roots, 1, "…and the application heard it once");
         assert_eq!(d.nav.tabs.stack.depth(), 1, "the stack never moved");
     }
+}
+
+/// **An off-screen text walk**: `f` draws what is about to be shown through the recorder, which
+/// queues its strings (`plx_gfx::text::queue_prewarm`) and paints nothing. A raw screen clear
+/// bypasses `Painter::recording`, so none may reach the framebuffer, and the walk is speculative to
+/// the recorder (`rec::speculative`): a replay must not refuse on what it only warms.
+fn warm_walk<R>(f: impl FnOnce() -> R) -> R {
+    plx_gfx::gfx::without_frame_clear(|| super::rec::speculative(|| super::record_walk(f)))
 }
 
 /// Text preparation belongs to the visible frame, not each rendering of its blur source.

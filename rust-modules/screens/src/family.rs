@@ -18,6 +18,14 @@ use plx_ui::widgets::ControlPalette;
 
 use super::registry::{AppFx, AppMsg, DirectoryLike};
 
+/// Which kind of title an Under posters details picker words (Settings v2 split the one Details
+/// setting in two: a TV show has no single video quality).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PosterKind {
+    Movie,
+    Show,
+}
+
 /// A page of the surface's own stack (§6.2: root → Privacy | Legal | Favourites → Document).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SettingsPage {
@@ -27,8 +35,9 @@ pub enum SettingsPage {
     Language,
     /// Settings > Libraries > Under posters: what the focused poster's caption band shows.
     UnderPosters,
-    /// Settings > Libraries > Under posters > Details: the picker of the one details line.
-    UnderPostersDetails,
+    /// Settings > Libraries > Under posters > Movie details / TV show details: the picker of the
+    /// details line under one kind of poster.
+    UnderPostersDetails(PosterKind),
     /// Translation contribution guide with an offline QR link.
     Contribute,
     /// Playback settings: each profile's own picks (a profile that has not chosen reads the install's older value). The page names the seated profile; while nobody is seated its rows are read-only.
@@ -53,6 +62,9 @@ pub enum SettingsPage {
     ConsentStage(u8),
     /// One playback / account preference's choice list, pushed from Playback or Audio & Subtitles.
     Picker(PickerKind),
+    /// Diagnostics (Settings v2): the playback-trace switch, the saved-log button and Delete, one level
+    /// below the root's single Diagnostics row.
+    Diagnostics,
     /// The Player HUD page: the installed packages, the drop folder and the chosen HUD (`hud_settings`).
     PlayerHud,
     HudGallery,
@@ -90,6 +102,48 @@ pub enum PickerKind {
 }
 
 impl SettingsPage {
+    /// **Does this page hold its narrative column under a push?** (Settings v2, brief
+    /// `settings-v2-motion`.) When BOTH pages of a push do, the surface draws them at the plain
+    /// entrance with a [`plx_ui::route_screen::PushFrame`]: the title area, sentence, picture slot and
+    /// action band stay where they are and cross-fade their content, and only the table travels
+    /// (`DrawFrame::narrative_painter` / `list_painter`, which `table_screen`'s parts read). Any
+    /// other pair is drawn whole through the painter's translate, exactly as before.
+    ///
+    /// A page may answer `true` only if everything it draws is the narrative column
+    /// (`Header`/`BandPart`) or the list (`TablePart`, `DocumentPart`) of a `TableScreen` /
+    /// `DocumentScreen`, or is painted through `DrawFrame::narrative_painter` / `list_painter`
+    /// itself, because a page that paints anything else with `f.painter` would not travel with the
+    /// push. Every Settings page does except two: the Player HUD's full-screen preview
+    /// ([`SettingsPage::HudPreview`]) is no two-column page (its scene fills the screen and its own
+    /// controls are drawn over it), and the first-run consent stage is not a Settings page at all
+    /// (its own family never pushes a [`PushFrame`](plx_ui::route_screen::PushFrame)).
+    pub fn holds_narrative(self) -> bool {
+        // exhaustive on purpose: a new page must choose
+        match self {
+            SettingsPage::Root
+            | SettingsPage::Language
+            | SettingsPage::UnderPosters
+            | SettingsPage::UnderPostersDetails(_)
+            | SettingsPage::Contribute
+            | SettingsPage::Playback
+            | SettingsPage::AudioSubtitles
+            | SettingsPage::Favourites
+            | SettingsPage::LibraryFavourites
+            | SettingsPage::Privacy
+            | SettingsPage::Legal
+            | SettingsPage::About
+            | SettingsPage::Document(_)
+            | SettingsPage::Preview(_)
+            | SettingsPage::Picker(_)
+            | SettingsPage::Diagnostics
+            | SettingsPage::PlayerHud
+            | SettingsPage::HudGallery
+            | SettingsPage::HudDetail(_)
+            | SettingsPage::HudAbout(_) => true,
+            SettingsPage::HudPreview(_) | SettingsPage::ConsentStage(_) => false,
+        }
+    }
+
     /// The pages a boot target asks the surface to stand on, root first: `plxnative-settings=picker-…` and
     /// `player-hud` name root → Playback → the page (root → the picker for a root row's), the stack an interactive visit
     /// builds. `RouteSurface::new` issues one request per page and the inner stack keeps only the newest request, so
@@ -109,8 +163,8 @@ impl PickerKind {
     /// The page that lists this field (its picker is pushed from there and returns there).
     pub fn parent(self) -> SettingsPage {
         match self {
-            PickerKind::Quality | PickerKind::DirectPlay | PickerKind::SubtitleSize | PickerKind::SubtitlePosition | PickerKind::HdrOverlay | PickerKind::NextEpisode | PickerKind::DeckPress | PickerKind::SkipInterval | PickerKind::InstantDpadSeeking | PickerKind::DolbyVision | PickerKind::IntroSkip | PickerKind::CreditsSkip => SettingsPage::Playback,
-            PickerKind::AudioLanguage | PickerKind::SubtitleMode | PickerKind::SubtitleLanguage | PickerKind::ForcedSubtitles => SettingsPage::AudioSubtitles,
+            PickerKind::Quality | PickerKind::DirectPlay | PickerKind::HdrOverlay | PickerKind::NextEpisode | PickerKind::DeckPress | PickerKind::SkipInterval | PickerKind::InstantDpadSeeking | PickerKind::DolbyVision | PickerKind::IntroSkip | PickerKind::CreditsSkip => SettingsPage::Playback,
+            PickerKind::AudioLanguage | PickerKind::SubtitleMode | PickerKind::SubtitleLanguage | PickerKind::ForcedSubtitles | PickerKind::SubtitleSize | PickerKind::SubtitlePosition => SettingsPage::AudioSubtitles,
             PickerKind::UiResolution => SettingsPage::Root,
         }
     }
@@ -128,7 +182,7 @@ impl ScreenArg for SettingsPage {
             SettingsPage::Language => 110,
             SettingsPage::Contribute => 111,
             SettingsPage::UnderPosters => 113,
-            SettingsPage::UnderPostersDetails => 114,
+            SettingsPage::UnderPostersDetails(_) => 114,
             SettingsPage::Favourites => 101,
             SettingsPage::LibraryFavourites => 116,
             SettingsPage::Privacy => 102,
@@ -143,6 +197,7 @@ impl ScreenArg for SettingsPage {
             SettingsPage::HudDetail(..) => 118,
             SettingsPage::HudAbout(..) => 119,
             SettingsPage::HudPreview(..) => 120,
+            SettingsPage::Diagnostics => 121,
         })
     }
     fn title(&self) -> Option<&str> {
@@ -178,7 +233,6 @@ impl LogicalState for SettingsPage {
             SettingsPage::Root
             | SettingsPage::Language
             | SettingsPage::UnderPosters
-            | SettingsPage::UnderPostersDetails
             | SettingsPage::Contribute
             | SettingsPage::Playback
             | SettingsPage::AudioSubtitles
@@ -188,9 +242,11 @@ impl LogicalState for SettingsPage {
             | SettingsPage::Legal
             | SettingsPage::PlayerHud
             | SettingsPage::HudGallery
+            | SettingsPage::Diagnostics
             | SettingsPage::About => 0,
             SettingsPage::Document(i) | SettingsPage::Preview(i) | SettingsPage::ConsentStage(i) => *i,
             SettingsPage::Picker(kind) => *kind as u8,
+            SettingsPage::UnderPostersDetails(kind) => *kind as u8,
             SettingsPage::HudDetail(..) | SettingsPage::HudAbout(..) | SettingsPage::HudPreview(..) => unreachable!("written above"),
         });
     }
@@ -200,7 +256,7 @@ impl LogicalState for SettingsPage {
             SettingsPage::Language => "language",
             SettingsPage::Contribute => "contribute",
             SettingsPage::UnderPosters => "under-posters",
-            SettingsPage::UnderPostersDetails => "under-posters-details",
+            SettingsPage::UnderPostersDetails(_) => "under-posters-details",
             SettingsPage::Playback => "playback",
             SettingsPage::AudioSubtitles => "audio-subtitles",
             SettingsPage::Favourites => "favourites",
@@ -217,11 +273,15 @@ impl LogicalState for SettingsPage {
             SettingsPage::HudDetail(..) => "hud-detail",
             SettingsPage::HudAbout(..) => "hud-about",
             SettingsPage::HudPreview(..) => "hud-preview",
+            SettingsPage::Diagnostics => "diagnostics",
         });
         if let SettingsPage::Document(i) | SettingsPage::Preview(i) | SettingsPage::ConsentStage(i) = self {
             out.push_str(&format!("[{i}]"));
         }
         if let SettingsPage::Picker(kind) = self {
+            out.push_str(&format!("[{}]", *kind as u8));
+        }
+        if let SettingsPage::UnderPostersDetails(kind) = self {
             out.push_str(&format!("[{}]", *kind as u8));
         }
     }
@@ -376,7 +436,7 @@ mod tests {
             SettingsPage::Root,
             SettingsPage::Language,
             SettingsPage::UnderPosters,
-            SettingsPage::UnderPostersDetails,
+            SettingsPage::UnderPostersDetails(PosterKind::Movie),
             SettingsPage::Contribute,
             SettingsPage::Playback,
             SettingsPage::AudioSubtitles,
@@ -390,6 +450,7 @@ mod tests {
             SettingsPage::ConsentStage(0),
             SettingsPage::Picker(PickerKind::Quality),
             SettingsPage::PlayerHud,
+            SettingsPage::Diagnostics,
             SettingsPage::HudGallery,
             SettingsPage::HudDetail(plx_data::hudpacks::Sha::of(b"test")),
             SettingsPage::HudAbout(plx_data::hudpacks::Sha::of(b"test")),
