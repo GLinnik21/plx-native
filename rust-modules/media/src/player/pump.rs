@@ -2126,7 +2126,7 @@ mod flight_tests {
             super::super::claim_hold::clear();
             super::super::ffi_host::reset_native_lifecycle_for_test();
             super::super::ffi_host::force_clocksink_for_test(true);
-            let mut pa = super::super::adapter::PlayerAdapter::new(unsafe { MainThread::assume() });
+            let mut pa = super::super::adapter::PlayerAdapter::new_probed(unsafe { MainThread::assume() });
             let epoch = FEED_SHARED.begin_native_session().expect("native session");
             // The installed Engine represents a completed Load. Give the host sink that same
             // object and callback epoch so a later rollback must prove its real Unload/D1.
@@ -2381,7 +2381,7 @@ mod flight_tests {
         super::super::claim_hold::clear();
         super::super::ffi_host::reset_native_lifecycle_for_test();
         super::super::ffi_host::force_clocksink_for_test(true);
-        let mut pa = super::super::adapter::PlayerAdapter::new(unsafe { MainThread::assume() });
+        let mut pa = super::super::adapter::PlayerAdapter::new_probed(unsafe { MainThread::assume() });
         let epoch = FEED_SHARED.begin_native_session().expect("native session");
         assert_eq!(unsafe { super::super::sink().load(c"{}".as_ptr(), epoch) }, 1);
         assert!(FEED_SHARED.mark_native_load_returned(epoch, None).is_some());
@@ -2599,7 +2599,7 @@ mod flight_tests {
         super::super::claim_hold::clear();
         super::super::ffi_host::reset_native_lifecycle_for_test();
         super::super::ffi_host::force_clocksink_for_test(true);
-        let mut pa = super::super::adapter::PlayerAdapter::new(unsafe { MainThread::assume() });
+        let mut pa = super::super::adapter::PlayerAdapter::new_probed(unsafe { MainThread::assume() });
         let epoch = FEED_SHARED.begin_native_session().expect("native session");
         assert_eq!(unsafe { super::super::sink().load(c"{}".as_ptr(), epoch) }, 1);
         assert!(FEED_SHARED.mark_native_load_returned(epoch, None).is_some());
@@ -3412,15 +3412,18 @@ mod flight_tests {
         // lane DROPS an AU more than `AUDIO_STALE_AHEAD_NS` (5 s) past the fed video instead of
         // holding it, so its later AUs sit under that bound yet past its own feed-ahead budget
         // (`MAX_FEED_AHEAD_NS` + `AUDIO_SLACK_NS`, 3.6 s).
-        let eng = rig.pa.engine().expect("the rig's Engine");
-        eng.stage = Stage::Loading;
-        for (queue, es, later) in [
-            (eng.aq_video.as_mut(), 1, [6_000_000_000, 6_100_000_000]),
-            (eng.aq_audio.as_mut(), 0, [5_000_000_000, 5_100_000_000]),
-        ] {
-            let q = &mut **queue.expect("the Engine's AU queues") as *mut crate::aq::AuQueue;
-            for pts in [1_000_000_000, later[0], later[1]] {
-                assert_eq!(crate::aq::aq_push(q, [0u8; 64].as_ptr(), 64, pts, 1, es), 0);
+        {
+            let mut guard = rig.pa.engine().expect("the rig's Engine");
+            let eng = &mut *guard;
+            eng.stage = Stage::Loading;
+            for (queue, es, later) in [
+                (eng.aq_video.as_mut(), 1, [6_000_000_000, 6_100_000_000]),
+                (eng.aq_audio.as_mut(), 0, [5_000_000_000, 5_100_000_000]),
+            ] {
+                let q = &mut **queue.expect("the Engine's AU queues") as *mut crate::aq::AuQueue;
+                for pts in [1_000_000_000, later[0], later[1]] {
+                    assert_eq!(crate::aq::aq_push(q, [0u8; 64].as_ptr(), 64, pts, 1, es), 0);
+                }
             }
         }
         let log = plx_base::eventlog::with_private_log(|| {
@@ -4623,7 +4626,7 @@ mod native_seek_pump_tests {
             super::super::engine::RELOAD_AT_LOG.lock().unwrap_or_else(|e| e.into_inner()).clear();
             super::super::engine::RELOAD_PREROLL_LOG.lock().unwrap_or_else(|e| e.into_inner()).clear();
             plx_play_feed::seek::set_native_seek_refused(false);
-            let mut pa = super::super::adapter::PlayerAdapter::new(unsafe { MainThread::assume() });
+            let mut pa = super::super::adapter::PlayerAdapter::new_probed(unsafe { MainThread::assume() });
             let epoch = FEED_SHARED.begin_native_session().expect("native session");
             let mut eng = super::super::engine::streaming_engine_for_test(epoch);
             eng.stage = Stage::Playing;
@@ -4648,7 +4651,7 @@ mod native_seek_pump_tests {
             crate::player::assert_transport_copies_agree(&self.ps);
         }
 
-        fn eng(&mut self) -> &mut Engine {
+        fn eng(&mut self) -> std::cell::RefMut<'_, Engine> {
             self.pa.engine().expect("engine")
         }
 
@@ -4754,7 +4757,7 @@ mod native_seek_pump_tests {
         for _ in 0..3 {
             rig.eng(); // the real reload replaced the engine; here it is the same, still flushed
             let mt = unsafe { MainThread::assume() };
-            super::super::engine::feed_both_lanes(&mt, rig.eng());
+            super::super::engine::feed_both_lanes(&mt, &mut rig.eng());
         }
         assert_eq!(ffi_host::segment_calls_for_test(), 0, "no setTimeToDecode/setContentInfo/sendSegment, ever");
         assert_eq!(ffi_host::flush_calls_for_test(), 0);
@@ -5551,7 +5554,7 @@ mod native_seek_pump_tests {
             // `Rig::new` reset the session, which cleared what the pipeline's callbacks captured.
             *FEED_SHARED.media_id.lock().unwrap() = Some(std::ffi::CString::new("_media_id_").unwrap());
             *FEED_SHARED.source_info.lock().unwrap() = Some(b"{\"context\":\"x\",\"video\":{}}\0".to_vec());
-            let e = self.eng();
+            let mut e = self.eng();
             e.video_info_sent = false;
             e.prime_play = true;
             e.bound_at_frames = None;
@@ -5693,7 +5696,7 @@ mod end_of_film_tests {
             super::super::claim_hold::clear();
             ffi_host::reset_native_lifecycle_for_test();
             ffi_host::force_clocksink_for_test(true);
-            let mut pa = super::super::adapter::PlayerAdapter::new(unsafe { MainThread::assume() });
+            let mut pa = super::super::adapter::PlayerAdapter::new_probed(unsafe { MainThread::assume() });
             let epoch = FEED_SHARED.begin_native_session().expect("native session");
             assert_eq!(
                 unsafe { crate::player::sink().load(c"{}".as_ptr(), epoch) },
@@ -5722,13 +5725,14 @@ mod end_of_film_tests {
             Rig { ps, pa, now: 1_000 }
         }
 
-        fn eng(&mut self) -> &mut Engine {
+        fn eng(&mut self) -> std::cell::RefMut<'_, Engine> {
             self.pa.engine().expect("engine")
         }
 
         /// The demuxer reached the end of the file: both lanes are complete.
         fn producer_done(&mut self) {
-            let eng = self.eng();
+            let mut guard = self.eng();
+            let eng = &mut *guard;
             for q in [eng.aq_video.as_mut().unwrap(), eng.aq_audio.as_mut().unwrap()] {
                 crate::aq::aq_set_eof(&mut **q as *mut crate::aq::AuQueue);
             }
