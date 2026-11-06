@@ -271,6 +271,11 @@ CONF
         make install_sw DESTDIR="$stage"
     )
     mv "$stage$fake" "$prefix"; rm -rf "$stage"
+    # `install_sw` installs the static archives too, and OpenSSL's Configure has no switch to skip
+    # them. Nothing links them (ngtcp2 is handed the shared files by name, curl's `-lssl -lcrypto`
+    # resolve through the `.so` links below), and left in place they would be 11 MB of the CI
+    # cache entry and a static link waiting for the first build that drops a shared name.
+    rm -f "$prefix/lib/libcrypto.a" "$prefix/lib/libssl.a"
     sed -i.bak "s|^prefix=.*|prefix=$prefix|; s|^libdir=.*|libdir=$prefix/lib|; s|^includedir=.*|includedir=$prefix/include|" \
         "$prefix"/lib/pkgconfig/*.pc && rm -f "$prefix"/lib/pkgconfig/*.pc.bak
     ( cd "$prefix/lib"

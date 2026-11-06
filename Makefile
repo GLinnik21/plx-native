@@ -911,7 +911,7 @@ FFMPEG_STAGED = $(addprefix pkg/,$(FFMPEG_SONAMES))
 # libcrypto and libssl, nghttp2, nghttp3, ngtcp2 and its OpenSSL crypto glue), built by
 # `ci/build-curlstack.sh` through `ci/arm-cc.py` (so each carries link evidence, like FFmpeg),
 # shipped beside the binary, plus the `http3-curlstack` cargo feature that loads them
-# (`plx_net::net::load_bundled`, which falls back to the television's own libcurl 7.53.1 the moment
+# (`plx_net::net::load_bundled`, which falls back to the television's own libcurl the moment
 # any one of them is missing). The flag and the feature move together: `+curlstack` in the build
 # stamp (RUST_CFG) and its own target dir, for the same reasons LAB has them. OpenSSL 3.5 for its
 # AArch32 Crypto Extension paths; `ci/build-curlstack.sh`'s header has how it coexists with the
@@ -1362,7 +1362,7 @@ deploy: pkg/plxnative pkg/plxnative-storage $(FFMPEG_STAGED) $(CURLSTACK_STAGED)
 	# a CHANGED library must be able to reach the TV.
 	$(SCP) $(FFMPEG_STAGED) tv:$(APPDIR)/
 	# The bundled curl stack under CURLSTACK=1, same reasoning: net.rs dlopens it by absolute path
-	# and falls back to the television's own libcurl 7.53.1 the moment one is missing.
+	# and falls back to the television's own libcurl the moment one is missing.
 	$(if $(CURLSTACK),$(SCP) $(CURLSTACK_STAGED) tv:$(APPDIR)/)
 	# The native crash daemon is a separate process so it can read the dying process's stack while
 	# the signal handler keeps that process parked. It has no network transport of its own. Stage

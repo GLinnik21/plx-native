@@ -685,9 +685,9 @@ jobs:
     needs: changes
     if: needs.changes.outputs.gated == 'true'
     runs-on: ubuntu-24.04-arm
-    # Not yet measured on a runner. A warm run is the job above plus a ~4 MB cache restore (the zstd
-    # tarball of the script's tree, measured locally); a cold stack build (eight configure+make
-    # passes; ~6 min on an 8-core Apple M1) on top of a cold Rust build is the worst case, with margin.
+    # Not yet measured on a runner. A warm run is the job above plus a ~5 MB cache restore (the zstd
+    # tarball of the script's tree, measured locally); a cold stack build (five builds, OpenSSL the
+    # longest; 168 s on an 8-core Apple M1) on top of a cold Rust build is the worst case, with margin.
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
