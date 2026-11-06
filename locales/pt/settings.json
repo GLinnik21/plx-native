@@ -3,7 +3,6 @@
   "settings.libraries.section": "Bibliotecas",
   "settings.libraries.title": "Bibliotecas favoritas",
   "settings.libraries.detail": "As bibliotecas que este televisor mostra.",
-  "settings.privacy.section": "Privacidade",
   "settings.privacy.title": "Privacidade e dados",
   "settings.privacy.detail": "Relatórios opcionais, informação de privacidade e dados locais.",
   "settings.legal.title": "Avisos legais",
@@ -17,7 +16,6 @@
   "settings.resolution.detail": "Mais baixa, mais fluida. Aplica-se após reiniciar.",
   "settings.resolution.auto": "Automática",
   "settings.about.title": "Acerca do PlxNative",
-  "settings.about.section": "Acerca de",
   "settings.about.detail": "Versão, direitos de autor e informação do projeto.",
   "settings.root.copy": "Gira este televisor e o seu perfil Plex. As preferências de idioma de áudio e legendas são sincronizadas com a sua conta Plex; as definições de reprodução pertencem a cada perfil e o idioma da app aplica-se a este televisor.",
   "settings.libraries.count": {
@@ -377,5 +375,8 @@
   "settings.playback.marker.manual": "Manual",
   "settings.playback.marker.automatic": "Automático",
   "settings.playback.intro_skip.copy": "Desativado oculta o botão. Manual oferece a opção de pular a introdução. Automático pula após cinco segundos, a menos que você escolha assistir à introdução. A configuração é salva para este perfil.",
-  "settings.playback.credits_skip.copy": "Desativado oculta Pular créditos. Manual mantém os controles atuais. Automático pula após cinco segundos, a menos que você escolha assistir aos créditos. O próximo episódio e sua contagem regressiva são configurados separadamente."
+  "settings.playback.credits_skip.copy": "Desativado oculta Pular créditos. Manual mantém os controles atuais. Automático pula após cinco segundos, a menos que você escolha assistir aos créditos. O próximo episódio e sua contagem regressiva são configurados separadamente.",
+  "settings.support.section": "Suporte",
+  "settings.diagnostics.detail": "Gravar diagnósticos de reprodução e guardar um registo para o suporte.",
+  "settings.libraries.more": "As bibliotecas que deixar de fora continuam no seu servidor Plex e nos seus outros dispositivos."
 }

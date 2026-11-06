@@ -3,7 +3,6 @@
   "settings.libraries.section": "Mediatheken",
   "settings.libraries.title": "Lieblingsmediatheken",
   "settings.libraries.detail": "Welche Mediatheken dieser Fernseher zeigt.",
-  "settings.privacy.section": "Datenschutz",
   "settings.privacy.title": "Datenschutz & Daten",
   "settings.privacy.detail": "Optionale Berichte, Datenschutzinfos und lokale Daten.",
   "settings.legal.title": "Rechtliche Hinweise",
@@ -17,7 +16,6 @@
   "settings.resolution.detail": "Niedriger läuft flüssiger. Gilt nach dem Neustart.",
   "settings.resolution.auto": "Automatisch",
   "settings.about.title": "Über PlxNative",
-  "settings.about.section": "Info",
   "settings.about.detail": "Version, Urheberrecht und Projektinformationen.",
   "settings.root.copy": "Verwalte diesen Fernseher und dein Plex-Profil. Audio- und Untertitelsprache werden mit deinem Plex-Konto synchronisiert; Wiedergabeeinstellungen gehören zum jeweiligen Profil, und die App-Sprache gilt für diesen Fernseher.",
   "settings.libraries.count": {
@@ -223,7 +221,7 @@
   "settings.audio.no_preference": "Keine Präferenz",
   "settings.audio.not_set": "Nicht festgelegt",
   "settings.playback.overridden": "Direktwiedergabe erzwungen: Originalqualität.",
-  "settings.audio.selection_off": "Automatische Auswahl ist aus. Eine Sprachwahl aktiviert sie.",
+  "settings.audio.selection_off": "Automatische Auswahl ist aus. Sprachwahl aktiviert sie.",
   "settings.audio.retry": "Erneut versuchen",
   "settings.audio.retry_detail": "Die Kontoanfrage erneut senden.",
   "settings.audio.sign_in_again": "Melde dich erneut bei diesem Plex-Profil an, um seine Kontoeinstellungen zu bearbeiten.",
@@ -374,5 +372,8 @@
   "settings.playback.marker.manual": "Manuell",
   "settings.playback.marker.automatic": "Automatisch",
   "settings.playback.intro_skip.copy": "Deaktiviert blendet die Schaltfläche aus. Manuell bietet das Überspringen an. Automatisch überspringt nach fünf Sekunden, sofern du nicht „Vorspann ansehen“ wählst. Wird für dieses Profil gespeichert.",
-  "settings.playback.credits_skip.copy": "Deaktiviert blendet „Abspann überspringen“ aus. Manuell behält die bisherigen Steuerelemente bei. Automatisch überspringt nach fünf Sekunden, sofern du nicht „Abspann ansehen“ wählst. Die nächste Folge und ihr Countdown werden separat eingestellt."
+  "settings.playback.credits_skip.copy": "Deaktiviert blendet „Abspann überspringen“ aus. Manuell behält die bisherigen Steuerelemente bei. Automatisch überspringt nach fünf Sekunden, sofern du nicht „Abspann ansehen“ wählst. Die nächste Folge und ihr Countdown werden separat eingestellt.",
+  "settings.support.section": "Support",
+  "settings.diagnostics.detail": "Wiedergabe-Diagnose aufzeichnen und ein Protokoll für den Support speichern.",
+  "settings.libraries.more": "Mediatheken, die du weglässt, bleiben auf deinem Plex-Server und auf deinen anderen Geräten."
 }

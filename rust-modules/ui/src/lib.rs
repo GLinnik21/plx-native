@@ -105,6 +105,7 @@ pub mod text_lift; // the animated focus treatment (lift + plate + shadow) for a
 pub mod theme;
 pub mod underlay; // the shared UNDERLAY FIELD: a coarse, spatially faithful colour field of what is drawn beneath an overlay
 pub mod widgets;
+pub mod follow_copy; // the route narrative's sentence that follows focus (+ its display-only picture slot)
 pub mod xfade; // content cross-fade: fade out → swap the data at the floor → fade in
 
 /// The focus fill — a near-white with near-black ink/icons over it, and the only fill a control
@@ -1995,7 +1996,8 @@ impl Painter {
         plx_gfx::text::draw_text(s, x + self.dx, y + self.dy, sz, c.as_ptr(), align, bold, self.screen_zoom())
     }
     /// [`text`](Self::text) with `letter_spacing` px of tracking between glyphs (DS8; negative
-    /// tightens, `plx_gfx::text::TRACKING_TITLE_TIGHT` is the DS8 title tracking, unused since the Watchlist took the Library's header row). At `0.0` this IS
+    /// tightens, `plx_gfx::text::TRACKING_TITLE_TIGHT` is the DS8 title tracking; Settings tracks through `Label` /
+    /// `TextView`, which call this). At `0.0` this IS
     /// `text`. The discovery pass sees the string's untracked declaration (the tracked draw only moves
     /// glyph gaps inside it); the recording pass prewarms the per-cluster strings the live draw uses.
     #[allow(clippy::too_many_arguments)]

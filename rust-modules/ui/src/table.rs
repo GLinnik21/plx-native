@@ -369,6 +369,16 @@ const GROUP_DIM_A: f32 = 0.52;
 const NOTE_LEADING: f32 = 32.0;
 const NOTE_PAD: f32 = 14.0;
 const DIV_H: f32 = 24.0; // gap + hairline between sections
+/// [`DIV_H`] of a [`TableView::board_metrics`] table: the design system's section break is a 2px
+/// hairline with 12px of margin above AND below it (`TableView.jsx`: `height: 2, margin: "12px
+/// 32px"`), 26 in all.
+const BOARD_DIV_H: f32 = 26.0;
+/// The gap between the runs of a [`TableView::board_metrics`] row's trailing stack (read-out, badge
+/// run, icon BOX): the design system's cell is a flex row with `gap: var(--space-sm)`.
+const BOARD_TRAIL_GAP: f32 = theme::space::SM;
+/// A section header's caps tracking in em (`--track-caps`, `.06em`), set on a
+/// [`TableView::board_metrics`] table only.
+const BOARD_CAPS_TRACK_EM: f32 = 0.06;
 /// Extra air between a page title band and the hairline under it (owner, 2026-10-01: "a bigger gap
 /// under the title"): the title sits on its own, then the divider, then the rows.
 const TITLE_GAP: f32 = 12.0;
@@ -501,23 +511,28 @@ fn ticon_slot_w(icon: crate::icons::Icon) -> f32 {
 /// without one. The width the label may not use ([`trailing_reserved`]), where each run stands
 /// ([`trailing_stack`] at `text_right`) and the tests' read-out edge all read these items, so
 /// they cannot disagree.
-fn trailing_items(row: &Row, value_w: Option<f32>, measure: &dyn plx_machine::machine::Measure) -> [Item; 3] {
+///
+/// A `board` table ([`TableView::board_metrics`]) stands the icon's BOX instead, the way the design
+/// system's flex row does, and [`trailing_stack`] spaces the runs by [`BOARD_TRAIL_GAP`].
+fn trailing_items(row: &Row, value_w: Option<f32>, measure: &dyn plx_machine::machine::Measure, board: bool) -> [Item; 3] {
     [
         value_w.map_or(Item::absent(), Item::new),
         if row.badges.is_empty() { Item::absent() } else { Item::new(badge_run_w(&row.badges, measure)) },
-        row.ticon.map_or(Item::absent(), |icon| Item::glyph(icon, ACCESSORY_ICON_W)),
+        row.ticon.map_or(Item::absent(), |icon| {
+            if board { Item::new(ACCESSORY_ICON_W) } else { Item::glyph(icon, ACCESSORY_ICON_W) }
+        }),
     ]
 }
 
 /// [`trailing_items`] anchored with its trailing edge at `right` (the content edge).
-fn trailing_stack(items: &[Item; 3], right: f32) -> HStack<'_> {
-    HStack::new(items, ACCESSORY_GAP, Align::Trailing(right))
+fn trailing_stack(items: &[Item; 3], right: f32, board: bool) -> HStack<'_> {
+    HStack::new(items, if board { BOARD_TRAIL_GAP } else { ACCESSORY_GAP }, Align::Trailing(right))
 }
 
 /// What a row reserves for its trailing run: the stack's width plus the [`ACCESSORY_GAP`] between
 /// the run and the label before it (0 for a row with no trailing run at all).
-fn trailing_reserved(items: &[Item; 3]) -> f32 {
-    let width = trailing_stack(items, 0.0).width();
+fn trailing_reserved(items: &[Item; 3], board: bool) -> f32 {
+    let width = trailing_stack(items, 0.0, board).width();
     if items.iter().any(|item| *item != Item::absent()) { width + ACCESSORY_GAP } else { 0.0 }
 }
 
@@ -597,6 +612,8 @@ pub struct TableView {
     pub compact: bool,
     /// see [`TableView::tall_rows`]
     tall: bool,
+    /// see [`TableView::board_metrics`]. Layout configuration like `min_panel_w`, not motion.
+    board: bool,
     /// Semantic ink for section labels. Ambient routes can raise this role for contrast without
     /// replacing the shared table header renderer or changing row/detail hierarchy.
     pub header_ink: [f32; 4],
@@ -632,7 +649,7 @@ impl TableView {
     /// The owner records its row data separately. These fields determine layout, the selected
     /// face and subsequent motion; no text/texture cache or renderer pointer is traversed.
     pub fn write_motion(&self, c: &mut plx_machine::machine::Canon) {
-        let Self { sections: _, sel, list_focused, compact, tall, header_ink, hl_top, hl_bot, scroll, title: _, min_panel_w: _, rev: _, empty_text: _ } = self;
+        let Self { sections: _, sel, list_focused, compact, tall, board: _, header_ink, hl_top, hl_bot, scroll, title: _, min_panel_w: _, rev: _, empty_text: _ } = self;
         c.u32(*sel as u32).bool(*list_focused).bool(*compact).bool(*tall);
         for component in header_ink { c.f32(*component); }
         for spring in [hl_top, hl_bot, scroll] { c.f32(spring.pos).f32(spring.vel); }
@@ -646,6 +663,42 @@ impl TableView {
     /// what every other table here has always drawn.
     pub fn tall_rows(&mut self, v: bool) {
         self.tall = v;
+    }
+    /// **The Settings family's table, set to the design system's `TableView` to the pixel.**
+    /// Opt-in per table (the Settings screens set it where they set `compact`), because the same
+    /// widget is every popover menu, picker and track menu, which keep the measures they have
+    /// always drawn. A board table differs in four things, all read off `TableView.jsx`:
+    ///
+    /// * the break between sections is [`BOARD_DIV_H`] (12px margin, 2px hairline, 12px margin)
+    ///   and the hairline stands in the middle of it;
+    /// * a section header's caps are set where a 24px, `line-height: 1` CSS line centred in the
+    ///   [`HDR_H`] band puts them ([`Self::header_cap_inset`]), tracked `--track-caps` (.06em);
+    /// * the trailing run is a flex row `gap: --space-sm` of boxes: the icon's 26px BOX, not its
+    ///   ink, ends on the content edge ([`trailing_items`]).
+    pub fn board_metrics(&mut self, v: bool) {
+        self.board = v;
+    }
+    /// The gap between two sections: [`DIV_H`], or the board's.
+    fn div_h(&self) -> f32 {
+        if self.board { BOARD_DIV_H } else { DIV_H }
+    }
+    /// Where the hairline between sections stands, as an offset from the next section's top
+    /// (negative): centred in the gap, its thickness (2) included.
+    fn divider_dy(&self) -> f32 {
+        -self.div_h() * 0.5 - if self.board { 1.0 } else { 0.0 }
+    }
+    /// Distance from a section header band's top to its caps' top: [`HEADER_CAP_INSET`], or on a
+    /// board table where a `line-height: 1` CSS line centred in the band sets the caps.
+    fn header_cap_inset(&self, measure: &dyn plx_machine::machine::Measure) -> f32 {
+        if !self.board {
+            return HEADER_CAP_INSET;
+        }
+        let sz = theme::size::CAPTION;
+        (HDR_H - sz as f32) * 0.5 + plx_gfx::text::css_cap_drop(sz, sz as f32, measure.cap_h(sz))
+    }
+    /// A header's letter-spacing in px: none, or the board's `--track-caps`.
+    fn header_tracking(&self) -> f32 {
+        if self.board { BOARD_CAPS_TRACK_EM * theme::size::CAPTION as f32 } else { 0.0 }
     }
     fn tall_row_h(&self) -> f32 {
         if self.tall {
@@ -662,6 +715,7 @@ impl TableView {
             list_focused: true,
             compact: false,
             tall: false,
+            board: false,
             header_ink: theme::TEXT_TERTIARY,
             min_panel_w: MENU_MIN_W,
             hl_top: Spring::at(0.0),
@@ -692,6 +746,7 @@ impl TableView {
         t.list_focused = self.list_focused;
         t.compact = self.compact;
         t.tall = self.tall;
+        t.board = self.board;
         t.header_ink = self.header_ink;
         t.min_panel_w = self.min_panel_w;
         t.empty_text = self.empty_text.clone();
@@ -958,7 +1013,7 @@ impl TableView {
                     Some(value) => primary + ROW_VALUE_GAP + value / h,
                     None => primary,
                 };
-                let fixed = trailing_reserved(&trailing_items(row, None, measure));
+                let fixed = trailing_reserved(&trailing_items(row, None, measure, self.board), self.board);
                 width = width.max(2.0 * CONTENT_X + LABEL_INSET + fixed + text);
             }
         }
@@ -1030,7 +1085,9 @@ impl TableView {
         for section in &self.sections {
             if !section.header.is_empty() {
                 let header_text = section.header.to_uppercase();
-                let header_nat = measure.width_str(&header_text, theme::size::CAPTION, false);
+                // As the draw elides it: a board table tracks its caps, and the tracking is width too.
+                let header_nat = measure.width_str(&header_text, theme::size::CAPTION, false)
+                    + plx_gfx::text::tracking_extra(&header_text, self.header_tracking());
                 let (header_w, accessory_w) = Self::header_columns(section, frame_w, measure, headroom);
                 if header_w + FIT_EPS < header_nat / headroom {
                     out.push(FitIssue { role: FitRole::Header, origin: section.header_origin, text: header_text, natural: header_nat, budget: header_w });
@@ -1110,8 +1167,8 @@ impl TableView {
     /// the panel's left, the same [`trailing_stack`] edge the draw uses.
     #[cfg(any(test, feature = "test-support"))]
     fn value_right_edge(&self, row: &Row, frame_w: f32) -> f32 {
-        let items = trailing_items(row, None, &plx_base::fontcov::advances::ShippedMeasure);
-        frame_w - SIDE - CONTENT_PAD - trailing_reserved(&items)
+        let items = trailing_items(row, None, &plx_base::fontcov::advances::ShippedMeasure, self.board);
+        frame_w - SIDE - CONTENT_PAD - trailing_reserved(&items, self.board)
     }
 
     /// The text column a [`Row::note`] wraps in: the ROW-LABEL column (past the check column), so
@@ -1158,7 +1215,7 @@ impl TableView {
     /// [`Self::fit_report`] passes the device's headroom to model glyphs wider than the measure.
     /// The label is hugged with [`fit::HUG_MARGIN`] before dividing.
     fn row_columns_under(&self, row: &Row, frame_w: f32, measure: &dyn plx_machine::machine::Measure, headroom: f32) -> RowColumns {
-        let fixed = trailing_reserved(&trailing_items(row, None, measure));
+        let fixed = trailing_reserved(&trailing_items(row, None, measure, self.board), self.board);
         let span = (frame_w - 2.0 * CONTENT_X - LABEL_INSET - fixed).max(0.0);
         let (label, value) = self.row_runs(row, measure);
         let Some(value) = value else {
@@ -1332,14 +1389,14 @@ impl TableView {
         let mut gi = 0i32;
         if self.title.is_some() {
             f(y, WALK_TITLE, 0);
-            y += HDR_H + TITLE_GAP + DIV_H;
+            y += HDR_H + TITLE_GAP + self.div_h();
             f(y, WALK_DIVIDER, 0);
         }
         for (si, sec) in self.sections.iter().enumerate() {
             // an EMPTY section (a `Form` whose items all fell through) has nothing to divide from
             // the one above: no hairline, no gap, and it must not lengthen the content
             if si > 0 && !sec.rows.is_empty() {
-                y += DIV_H;
+                y += self.div_h();
                 f(y, WALK_DIVIDER, si);
             }
             if !sec.header.is_empty() {
@@ -1523,7 +1580,7 @@ impl TableView {
             if gi == WALK_DIVIDER {
                 // the hairline between this section and the one above, headed or not, centred in
                 // the `DIV_H` gap; it fades with the group like everything else in it
-                let y = sy - DIV_H * 0.5;
+                let y = sy + self.divider_dy();
                 if y + 2.0 > vis_top && y < vis_bot {
                     // dissolves with the section it heads, a hair before its caps
                     p.alpha(Self::top_edge_alpha(sy, vis_top)).rect(
@@ -1562,9 +1619,11 @@ impl TableView {
                 if sy + HDR_H > vis_top && sy < vis_bot {
                     // dissolves under the top edge, and a panel's fades out at the bottom edge before
                     // its caps are cut (`bottom_edge_alpha`)
+                    let cap_inset = self.header_cap_inset(measure);
+                    let ink_pad = HDR_H - cap_inset - theme::size::CAPTION as f32;
                     let p = p.alpha(
-                        bottom_alpha(sy + HDR_H - HDR_INK_PAD, HDR_INK_PAD)
-                            * Self::top_edge_alpha(sy + HEADER_CAP_INSET, vis_top),
+                        bottom_alpha(sy + HDR_H - ink_pad, ink_pad)
+                            * Self::top_edge_alpha(sy + cap_inset, vis_top),
                     );
                     let sec = &self.sections[si];
                     // **CAPS at CAPTION, one size in BOTH size classes.** The caps are what make a
@@ -1577,7 +1636,8 @@ impl TableView {
                     // `to_uppercase`, not `to_ascii_uppercase`: a header is a machine name or a
                     // library name and can be any script — the share measured here is Cyrillic.
                     let hsz = theme::size::CAPTION;
-                    let cap_y = sy + HEADER_CAP_INSET;
+                    let cap_y = sy + cap_inset;
+                    let tracking = self.header_tracking();
                     let (cap_top, baseline) = plx_gfx::text::text_cap_band(hsz, 0);
                     let header_band = Rect::new(
                         content_x,
@@ -1587,10 +1647,11 @@ impl TableView {
                     );
                     let (header_w, accessory_w) = Self::header_columns(sec, frame.w, measure, 1.0);
                     let header_text = plx_gfx::text::elide_by(&sec.header.to_uppercase(), header_w, false, |t| {
-                        measure.width_str(t, hsz, false)
+                        measure.width_str(t, hsz, false) + plx_gfx::text::tracking_extra(t, tracking)
                     });
                     if let Ok(cs) = CString::new(header_text) {
                         Label::new(cs.as_ptr(), hsz, self.header_ink)
+                            .tracking(tracking)
                             .v(VAlign::CapTop)
                             .draw(p, header_band);
                     }
@@ -1698,8 +1759,8 @@ impl TableView {
             // anchored by the icon's ink at `text_right`; each part below is drawn where it stands.
             // The read-out is flush right at its item's trailing edge (below), so its width moves
             // nothing the draw reads: a zero-wide item places the same edge, and costs no measure.
-            let trailing_run = trailing_items(row, row.readout().map(|_| 0.0), measure);
-            let trailing_at = |i: usize| trailing_stack(&trailing_run, text_right).placed().find(|s| s.i == i);
+            let trailing_run = trailing_items(row, row.readout().map(|_| 0.0), measure, self.board);
+            let trailing_at = |i: usize| trailing_stack(&trailing_run, text_right, self.board).placed().find(|s| s.i == i);
             // trailing accessory (SVG), its BOX at the stack's `box_x` so its ink ends on the edge
             if let (Some(ti), Some(at)) = (row.ticon, trailing_at(2)) {
                 let cs = ACCESSORY_ICON_W;
@@ -2270,6 +2331,30 @@ mod tests {
         assert!(cols.value_w > 0.0, "a value keeps a visible slot");
     }
 
+    /// `fit_report` grades a board table's section header at its tracked width, the width the
+    /// draw elides against.
+    #[test]
+    fn fit_report_measures_a_board_header_tracked_as_the_draw_elides_it() {
+        use plx_base::fontcov::advances::ShippedMeasure as M;
+        use plx_machine::machine::Measure;
+        let header = "Video and playback settings";
+        let upper = header.to_uppercase();
+        let plain = M.width_str(&upper, theme::size::CAPTION, false);
+        let extra = plx_gfx::text::tracking_extra(&upper, BOARD_CAPS_TRACK_EM * theme::size::CAPTION as f32);
+        assert!(extra > 4.0, "the board tracks its caps ({extra}px for this header)");
+        // a frame whose column holds the header untracked, and not tracked
+        let frame_w = 2.0 * CONTENT_X + plain + extra * 0.5;
+        let flagged = |board: bool| {
+            let mut table = TableView::new();
+            table.compact = false;
+            table.board_metrics(board);
+            table.set_sections(vec![Section::new(header).row(Row::new("Row"))], 0, false);
+            table.fit_report(frame_w, &M, 1.0).iter().any(|i| i.role == FitRole::Header)
+        };
+        assert!(flagged(true), "a board header that only fits untracked would end in an ellipsis on the television");
+        assert!(!flagged(false), "a plain table's header is untracked and fits");
+    }
+
     /// `fit_report` does not flag a short value that fits, and still flags one that does not.
     #[test]
     fn fit_report_does_not_flag_a_short_value_that_fits() {
@@ -2787,5 +2872,82 @@ mod tests {
         let value = runs.iter().find(|r| r.text == "All" && r.bold).expect("read-out painted");
         assert_eq!(value.align, 2, "the read-out is right-aligned at its anchor");
         assert!((value.at.x + ACCESSORY_GAP - first.0).abs() < 0.5, "read-out ends a gap before the first chip {first:?}: {value:?}");
+    }
+
+    fn three_sections(board: bool) -> TableView {
+        let mut t = TableView::new();
+        t.board_metrics(board);
+        t.set_sections(
+            vec![
+                Section::new("One").row(Row::new("a")).row(Row::new("b")),
+                Section::new("Two").row(Row::new("c")),
+                Section::new("Three").row(Row::new("d")),
+            ],
+            0,
+            false,
+        );
+        t
+    }
+
+    /// **A board table's section break is the design system's 26** (12 margin + 2 hairline + 12
+    /// margin), the hairline 14 above the next header; every other table keeps its 24 and the
+    /// hairline 12 above. Nothing else in the walk moves.
+    #[test]
+    fn a_board_table_breaks_sections_by_26_and_every_other_table_by_24() {
+        let walk = |t: &TableView| {
+            let (mut headers, mut dividers) = (Vec::new(), Vec::new());
+            t.walk(|y, gi, _| match gi {
+                -1 => headers.push(y),
+                WALK_DIVIDER => dividers.push(y),
+                _ => {}
+            });
+            (headers, dividers)
+        };
+        let (plain, plain_div) = (three_sections(false), three_sections(false));
+        let (h, d) = walk(&plain);
+        assert_eq!(h, vec![0.0, 2.0 * ROW_H + HDR_H + 24.0, 3.0 * ROW_H + 2.0 * HDR_H + 48.0]);
+        assert_eq!(d.len(), 2);
+        assert_eq!(plain_div.divider_dy(), -12.0);
+        let board = three_sections(true);
+        let (h, d) = walk(&board);
+        assert_eq!(h, vec![0.0, 2.0 * ROW_H + HDR_H + 26.0, 3.0 * ROW_H + 2.0 * HDR_H + 52.0]);
+        assert_eq!(d.len(), 2);
+        assert_eq!(board.divider_dy(), -14.0, "12 of margin above the 2px hairline, 12 below");
+        assert_eq!(board.measured_height(), plain.measured_height() + 4.0, "two breaks, 2px each");
+    }
+
+    /// **A board header's caps stand where a 24px `line-height: 1` CSS line centred in the 40px
+    /// band puts them (about 11 under the band top, not 8) and are tracked `.06em`.** A default
+    /// table keeps `HEADER_CAP_INSET` and no tracking.
+    #[test]
+    fn a_board_header_is_set_in_its_css_line_and_tracked_caps() {
+        let m = &plx_base::fontcov::advances::ShippedMeasure;
+        let (plain, board) = (three_sections(false), three_sections(true));
+        assert_eq!(plain.header_cap_inset(m), HEADER_CAP_INSET);
+        assert_eq!(plain.header_tracking(), 0.0);
+        let inset = board.header_cap_inset(m);
+        assert!((10.0..12.0).contains(&inset), "cap top {inset} under the header band");
+        assert!((board.header_tracking() - 1.44).abs() < 1e-4);
+    }
+
+    /// **A board row's trailing run is a flex row of boxes `--space-sm` apart: the chevron's 26px
+    /// BOX ends on the content edge and the read-out ends 16 before it.** A default table's read-out
+    /// still ends `ACCESSORY_GAP` before the chevron's INK (the test above).
+    #[test]
+    fn a_board_rows_chevron_box_ends_on_the_content_edge_and_the_readout_a_space_sm_before_it() {
+        let _serial = plx_base::testlock::serial();
+        let m = &plx_base::fontcov::advances::ShippedMeasure;
+        let frame = Rect::new(0.0, 0.0, 900.0, 300.0);
+        let text_right = frame.x + frame.w - SIDE - CONTENT_PAD;
+        let readout_edge = |board: bool| {
+            let mut t = TableView::new();
+            t.board_metrics(board);
+            t.set_sections(vec![Section::new("S").row(Row::new("a").value("All").chevron(true))], 0, false);
+            let runs = crate::draw_census::capture_runs(|| t.draw(crate::Painter::recording(), frame, m));
+            runs.iter().find(|r| r.text == "All" && r.bold).expect("read-out painted").at.x
+        };
+        assert!((readout_edge(true) - (text_right - ACCESSORY_ICON_W - theme::space::SM)).abs() < 0.5);
+        let (l, r) = crate::icons::ink_x(crate::icons::Icon::Chevron);
+        assert!((readout_edge(false) - (text_right - (r - l) * ACCESSORY_ICON_W - ACCESSORY_GAP)).abs() < 0.5);
     }
 }

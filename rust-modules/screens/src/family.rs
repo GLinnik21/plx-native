@@ -53,6 +53,9 @@ pub enum SettingsPage {
     ConsentStage(u8),
     /// One playback / account preference's choice list, pushed from Playback or Audio & Subtitles.
     Picker(PickerKind),
+    /// Diagnostics (Settings v2): the playback-trace switch, the saved-log button and Delete, one level
+    /// below the root's single Diagnostics row.
+    Diagnostics,
     /// The Player HUD page: the installed packages, the drop folder and the chosen HUD (`hud_settings`).
     PlayerHud,
     HudGallery,
@@ -143,6 +146,7 @@ impl ScreenArg for SettingsPage {
             SettingsPage::HudDetail(..) => 118,
             SettingsPage::HudAbout(..) => 119,
             SettingsPage::HudPreview(..) => 120,
+            SettingsPage::Diagnostics => 121,
         })
     }
     fn title(&self) -> Option<&str> {
@@ -188,6 +192,7 @@ impl LogicalState for SettingsPage {
             | SettingsPage::Legal
             | SettingsPage::PlayerHud
             | SettingsPage::HudGallery
+            | SettingsPage::Diagnostics
             | SettingsPage::About => 0,
             SettingsPage::Document(i) | SettingsPage::Preview(i) | SettingsPage::ConsentStage(i) => *i,
             SettingsPage::Picker(kind) => *kind as u8,
@@ -217,6 +222,7 @@ impl LogicalState for SettingsPage {
             SettingsPage::HudDetail(..) => "hud-detail",
             SettingsPage::HudAbout(..) => "hud-about",
             SettingsPage::HudPreview(..) => "hud-preview",
+            SettingsPage::Diagnostics => "diagnostics",
         });
         if let SettingsPage::Document(i) | SettingsPage::Preview(i) | SettingsPage::ConsentStage(i) = self {
             out.push_str(&format!("[{i}]"));
@@ -390,6 +396,7 @@ mod tests {
             SettingsPage::ConsentStage(0),
             SettingsPage::Picker(PickerKind::Quality),
             SettingsPage::PlayerHud,
+            SettingsPage::Diagnostics,
             SettingsPage::HudGallery,
             SettingsPage::HudDetail(plx_data::hudpacks::Sha::of(b"test")),
             SettingsPage::HudAbout(plx_data::hudpacks::Sha::of(b"test")),

@@ -3,7 +3,6 @@
   "settings.libraries.section": "Bibliothèques",
   "settings.libraries.title": "Bibliothèques favorites",
   "settings.libraries.detail": "Les bibliothèques affichées sur ce téléviseur.",
-  "settings.privacy.section": "Confidentialité",
   "settings.privacy.title": "Confidentialité et données",
   "settings.privacy.detail": "Rapports facultatifs, confidentialité et données locales.",
   "settings.legal.title": "Mentions légales",
@@ -17,7 +16,6 @@
   "settings.resolution.detail": "Plus basse, plus fluide. Après redémarrage.",
   "settings.resolution.auto": "Automatique",
   "settings.about.title": "À propos de PlxNative",
-  "settings.about.section": "À propos",
   "settings.about.detail": "Version, copyright et informations sur le projet.",
   "settings.root.copy": "Gérez ce téléviseur et votre profil Plex. Les préférences de langue audio et de sous-titres se synchronisent avec votre compte Plex ; les réglages de lecture sont propres à chaque profil et la langue de l’application s’applique à ce téléviseur.",
   "settings.libraries.count": {
@@ -377,5 +375,8 @@
   "settings.playback.marker.manual": "Manuel",
   "settings.playback.marker.automatic": "Automatique",
   "settings.playback.intro_skip.copy": "Désactivé masque le bouton. Manuel propose de passer le générique. Automatique le passe après cinq secondes, sauf si vous choisissez de le regarder. Ce réglage est enregistré pour ce profil.",
-  "settings.playback.credits_skip.copy": "Désactivé masque le bouton de saut. Manuel conserve les commandes actuelles. Automatique passe après cinq secondes, sauf si vous choisissez de regarder le générique. L’épisode suivant et son compte à rebours se règlent séparément."
+  "settings.playback.credits_skip.copy": "Désactivé masque le bouton de saut. Manuel conserve les commandes actuelles. Automatique passe après cinq secondes, sauf si vous choisissez de regarder le générique. L’épisode suivant et son compte à rebours se règlent séparément.",
+  "settings.support.section": "Assistance",
+  "settings.diagnostics.detail": "Enregistrer des diagnostics de lecture et sauvegarder un journal pour l'assistance.",
+  "settings.libraries.more": "Les bibliothèques que vous retirez restent sur votre serveur Plex et sur vos autres appareils."
 }

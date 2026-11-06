@@ -3,7 +3,6 @@
   "settings.libraries.section": "Bibliotheken",
   "settings.libraries.title": "Favoriete bibliotheken",
   "settings.libraries.detail": "Welke bibliotheken deze tv toont.",
-  "settings.privacy.section": "Privacy",
   "settings.privacy.title": "Privacy & gegevens",
   "settings.privacy.detail": "Optionele rapporten, privacy-info en lokale gegevens.",
   "settings.legal.title": "Juridische informatie",
@@ -17,7 +16,6 @@
   "settings.resolution.detail": "Lager is vloeiender. Herstart om toe te passen.",
   "settings.resolution.auto": "Automatisch",
   "settings.about.title": "Over PlxNative",
-  "settings.about.section": "Over",
   "settings.about.detail": "Versie, copyright en projectinformatie.",
   "settings.root.copy": "Beheer deze tv en je Plex-profiel. Voorkeuren voor audio- en ondertiteltaal worden gesynchroniseerd met je Plex-account; afspeelinstellingen horen bij elk profiel en de app-taal geldt voor deze tv.",
   "settings.libraries.count": {
@@ -374,5 +372,8 @@
   "settings.playback.marker.manual": "Handmatig",
   "settings.playback.marker.automatic": "Automatisch",
   "settings.playback.intro_skip.copy": "Uitgeschakeld verbergt de knop. Handmatig biedt aan de intro over te slaan. Automatisch slaat na vijf seconden over, tenzij je Intro bekijken kiest. Wordt voor dit profiel opgeslagen.",
-  "settings.playback.credits_skip.copy": "Uitgeschakeld verbergt Aftiteling overslaan. Handmatig behoudt de huidige knoppen. Automatisch slaat na vijf seconden over, tenzij je Aftiteling bekijken kiest. De volgende aflevering en de aftelling worden apart ingesteld."
+  "settings.playback.credits_skip.copy": "Uitgeschakeld verbergt Aftiteling overslaan. Handmatig behoudt de huidige knoppen. Automatisch slaat na vijf seconden over, tenzij je Aftiteling bekijken kiest. De volgende aflevering en de aftelling worden apart ingesteld.",
+  "settings.support.section": "Ondersteuning",
+  "settings.diagnostics.detail": "Neem afspeeldiagnostiek op en bewaar een logboek voor ondersteuning.",
+  "settings.libraries.more": "Bibliotheken die je weglaat, blijven op je Plex-server en op je andere apparaten."
 }

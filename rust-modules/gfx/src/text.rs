@@ -2048,6 +2048,32 @@ pub fn text_width_tracked(s: *const c_char, sz: c_int, bold: c_int, letter_spaci
     effective_tracking(&text, letter_spacing) * cluster_starts(&text).len().saturating_sub(1) as f32 + w
 }
 
+/// The px a `letter_spacing` tracking adds to (or, negative, takes from) `s`'s untracked width:
+/// the same gap count and the same right-to-left refusal [`text_width_tracked`] applies, for a
+/// caller whose widths come from somewhere else (a replayed `Measure`).
+pub fn tracking_extra(s: &str, letter_spacing: f32) -> f32 {
+    effective_tracking(s, letter_spacing) * cluster_starts(s).len().saturating_sub(1) as f32
+}
+
+/// Inter's ascent and descent in em (hhea 1984 / 494 of 2048): the font box a CSS line box is
+/// built around. SDL_ttf puts the baseline `ascent` rows under the surface top, so the same
+/// numbers locate where a design board's `line-height` puts the glyphs.
+pub const FONT_ASCENT_EM: f32 = 0.96875;
+pub const FONT_DESCENT_EM: f32 = 0.2412;
+
+/// **How far a CSS line box of height `leading` sets the cap top below the box top** for text of
+/// `sz` whose cap height is `cap_h`: the baseline stands `half-leading + ascent` under the box top,
+/// the cap top a cap height above it. Done the way Blink does it, which is what a board rendered
+/// in Chrome shows: ascent and descent each round to whole px, and the half-leading
+/// `(leading - (ascent + descent)) / 2` floors (negative when the line is tighter than the font
+/// box). `TextView` and `Label` anchor the CAP TOP on the y they are given, so a block a board
+/// specifies as a CSS box (`top`, `line-height`) draws at `box top + css_cap_drop(..)`.
+pub fn css_cap_drop(sz: c_int, leading: f32, cap_h: f32) -> f32 {
+    let sz = sz as f32;
+    let (ascent, descent) = ((FONT_ASCENT_EM * sz).round(), (FONT_DESCENT_EM * sz).round());
+    ((leading - (ascent + descent)) * 0.5).floor() + ascent - cap_h
+}
+
 /// `s`'s tracking as [`effective_tracking`] decides it, for the draw entry points that hold a
 /// raw string.
 fn tracking_of(s: *const c_char, letter_spacing: f32) -> f32 {
@@ -3085,6 +3111,34 @@ mod tests {
             text_width_tracked(s.as_ptr(), 20, 0, 0.0).to_bits(),
             text_width(s.as_ptr(), 20, 0).to_bits()
         );
+    }
+
+    /// `tracking_extra` is exactly what `text_width_tracked` adds: the one rule a replayed
+    /// `Measure`'s caller and the live width share, and RTL text takes none.
+    #[test]
+    fn tracking_extra_is_what_the_tracked_width_adds() {
+        let s = std::ffi::CString::new("Settings").unwrap();
+        assert_eq!(
+            text_width_tracked(s.as_ptr(), 48, 1, -0.96),
+            text_width(s.as_ptr(), 48, 1) + tracking_extra("Settings", -0.96)
+        );
+        assert_eq!(tracking_extra("Settings", -0.96), -0.96 * 7.0);
+        assert_eq!(tracking_extra("e\u{301}x", 2.0), 2.0);
+        assert_eq!(tracking_extra("\u{627}\u{644}\u{639}", -1.0), 0.0, "right-to-left is never tracked");
+        assert_eq!(tracking_extra("anything", 0.0), 0.0);
+    }
+
+    /// The CSS line box, Blink's way: a line as tall as the (rounded) font box has no half-leading,
+    /// tightening it lifts the glyphs by the floored half of the difference. At the board's
+    /// 48 px / 1.05 the baseline is 42 px under the box top (47 ascent, 59 box, 50.4 line: floor of
+    /// -4.3 is -5), which a Chrome render of `Sv2s-R1` confirms (title box top 142, baseline 184).
+    #[test]
+    fn css_cap_drop_is_the_floored_half_leading_plus_the_ascent_above_the_cap() {
+        assert_eq!(css_cap_drop(48, 59.0, 35.0), 47.0 - 35.0, "no half-leading on the font box");
+        assert_eq!(css_cap_drop(48, 57.0, 35.0), 47.0 - 1.0 - 35.0);
+        assert_eq!(css_cap_drop(48, 48.0 * 1.05, 35.0), 42.0 - 35.0);
+        // the 26/34 sentence: ascent 25, box 31, half-leading floor(1.5) = 1, baseline 26 under it
+        assert_eq!(css_cap_drop(26, 34.0, 19.0), 26.0 - 19.0);
     }
 
     #[test]

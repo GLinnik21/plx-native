@@ -31,6 +31,7 @@ fn audio(prefs: Option<&AudioPreferences>) -> FieldListInputs<'_> {
 fn table_of(section: Section) -> TableView {
     let mut table = TableView::new();
     table.compact = false;
+    table.board_metrics(true); // the Settings pages' table, as `preferences.rs` draws it
     table.set_sections(vec![section], 0, false);
     table
 }
@@ -41,6 +42,7 @@ fn table_of(section: Section) -> TableView {
 fn check_field_section(tag: &str, inputs: &FieldListInputs<'_>, out: &mut Vec<String>) {
     let mut form: FormTable<RowId, Action, SettingsPage> = FormTable::new(BAND);
     form.table.compact = false;
+    form.table.board_metrics(true); // as `preferences.rs` draws it
     form.set(field_form(inputs), None);
     let ui_language = tag.split_whitespace().next().unwrap_or(tag);
     for e in form.table.app_fit_failures(frame_w(), tag) {
@@ -259,7 +261,7 @@ fn long_profile() -> Whose {
 fn every_explanation_under_a_title_fits_the_column_in_every_language() {
     const MAX_COPY_LINES: usize = 5;
     let _serial = plx_base::testlock::serial();
-    let layout = RouteLayout::screen();
+    let layout = RouteLayout::settings_page();
     let all_fields = [PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition,
         PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval, PickerKind::InstantDpadSeeking, PickerKind::DolbyVision, PickerKind::IntroSkip, PickerKind::CreditsSkip, PickerKind::UiResolution, PickerKind::AudioLanguage, PickerKind::SubtitleMode,
         PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles];

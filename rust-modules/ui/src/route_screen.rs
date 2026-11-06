@@ -193,6 +193,61 @@ pub struct RouteGround {
 /// pitch between the two lines, and the same argument applies there: display type sets tight.
 const TITLE_LEADING: f32 = theme::size::HERO as f32 * 1.05;
 
+/// The picture slot's top (the board: y 440): a one-line title, [`crate::follow_copy::FOLLOW_LINES`]
+/// lines of sentence under it, and the air a picture wants.
+pub const PICTURE_TOP: f32 = 440.0;
+
+/// **The Settings page title rung** (Settings v2, `Sv2-6-Spec`: "48 bold on every Settings page"):
+/// the design system's `--size-display`. Read by [`TitleStyle::Page`] only, which the pages moved
+/// to the v2 board so far use ([`RouteLayout::settings_page`]); every other route, Legal included,
+/// keeps [`TitleStyle::Hero`] until its stage.
+pub const PAGE_TITLE_SIZE: std::os::raw::c_int = theme::size::DISPLAY;
+const PAGE_TITLE_LEADING: f32 = PAGE_TITLE_SIZE as f32 * 1.05;
+/// The Page title's letter-spacing, the board's `-.02em`.
+const PAGE_TITLE_TRACKING_EM: f32 = -0.02;
+
+/// **How a route's narrative title sets**, chosen once on the [`RouteLayout`] so tabs, rows,
+/// focus and paint all read the same flow.
+///
+/// * [`Hero`](Self::Hero) is every route's own title: `--size-hero` (72), with a crumb PUSHING
+///   the title down by its band (first-run consent, sign-in, filmography, Legal, the library
+///   editors).
+/// * [`Page`](Self::Page) is the Settings pages moved to the v2 board so far (see
+///   [`RouteLayout::settings_page`]): `--size-display` (48), the title on the column's guide with
+///   the crumb hanging ABOVE it, so a nested page's title is at the root's y.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum TitleStyle {
+    #[default]
+    Hero,
+    Page,
+}
+
+impl TitleStyle {
+    /// The title's rung.
+    pub const fn size(self) -> std::os::raw::c_int {
+        match self {
+            Self::Hero => theme::size::HERO,
+            Self::Page => PAGE_TITLE_SIZE,
+        }
+    }
+
+    /// The title's line pitch: 1.05 of its rung, the design system's number for display type.
+    pub const fn leading(self) -> f32 {
+        match self {
+            Self::Hero => TITLE_LEADING,
+            Self::Page => PAGE_TITLE_LEADING,
+        }
+    }
+
+    /// The title's letter-spacing in px: the Page title's board tracking (`-.02em`), none for Hero.
+    pub const fn tracking(self) -> f32 {
+        match self {
+            Self::Hero => 0.0,
+            Self::Page => PAGE_TITLE_TRACKING_EM * PAGE_TITLE_SIZE as f32,
+        }
+    }
+}
+
 impl RouteGround {
     pub const fn new() -> Self {
         Self {
@@ -771,6 +826,9 @@ pub struct RouteLayout {
     pub narrative: Rect,
     pub content: Rect,
     pub action: Rect,
+    /// How the narrative title sets ([`TitleStyle`]); [`Self::screen`] and its siblings return
+    /// [`TitleStyle::Hero`], [`Self::settings_page`] / [`Self::page_titled`] opt in to the Page.
+    pub title_style: TitleStyle,
 }
 
 impl RouteLayout {
@@ -802,7 +860,23 @@ impl RouteLayout {
             narrative,
             content,
             action,
+            title_style: TitleStyle::Hero,
         }
+    }
+
+    /// The same columns with the narrative title set as a Settings page's ([`TitleStyle::Page`]):
+    /// 48 bold on the guide, a crumb hanging above it. The one switch; a Settings-family route
+    /// builds its layout with [`Self::settings_page`].
+    pub fn page_titled(self) -> Self {
+        Self { title_style: TitleStyle::Page, ..self }
+    }
+
+    /// The layout of the Settings pages moved to the v2 board so far: [`Self::screen`] with
+    /// [`TitleStyle::Page`] (the root, Language, the preferences and pickers, Under posters,
+    /// Diagnostics, HUD settings). Legal, Privacy & data, About, the Favorite libraries
+    /// onboarding and first-run consent still use [`Self::screen`] (Hero) until their stage.
+    pub fn settings_page() -> Self {
+        Self::screen().page_titled()
     }
 
     /// Allocate enough narrative width for an unbreakable title word at HERO size, while
@@ -881,7 +955,8 @@ impl RouteLayout {
     ///
     /// `has_crumb` for the same reason [`Self::narrative_top`] takes it: the title anchor moves by
     /// exactly the crumb's band, and a document on a crumbless route must follow it up rather than
-    /// leaving a gap nothing explains.
+    /// leaving a gap nothing explains. On a [`TitleStyle::Page`] layout the crumb hangs ABOVE the
+    /// title, so the two anchors are one y and `has_crumb` changes nothing.
     pub fn document(self, has_crumb: bool) -> Rect {
         let top = self.narrative_top(has_crumb);
         Rect::new(
@@ -965,7 +1040,22 @@ impl RouteLayout {
     /// [`CRUMB_RISE`] below the column's top), and the copy [`theme::space::MD`] under the title.
     /// `title_h` is the title's measured height (the title's own top does not depend on it).
     /// [`Self::draw_narrative`] and [`Self::narrative_copy_frame`] both read these spans.
+    ///
+    /// A [`TitleStyle::Page`] layout stands the title on the column's guide whether or not a crumb
+    /// precedes it and hangs the crumb ABOVE the guide ([`CRUMB_RISE`] over it), so a nested
+    /// Settings page's title is at the root's y.
     fn narrative_flow(self, has_crumb: bool, title_h: f32) -> NarrativeFlow {
+        if self.title_style == TitleStyle::Page {
+            let items = [HItem::new(title_h), HItem::new(0.0)];
+            let stack = VStack::new(&items, theme::space::MD, Anchor::Top(self.narrative.y));
+            let mut spans = stack.placed();
+            let (Some(title), Some(copy)) = (spans.next(), spans.next()) else {
+                unreachable!("the title and the copy anchor are always present")
+            };
+            let crumb_y = self.narrative.y - CRUMB_RISE;
+            let crumb = has_crumb.then_some(VSpan { i: 0, y: crumb_y, h: CRUMB_BAND, box_y: crumb_y });
+            return NarrativeFlow { crumb, title, copy_top: copy.y };
+        }
         let items = [
             if has_crumb { HItem::new(CRUMB_BAND) } else { HItem::absent() },
             HItem::new(title_h).before(theme::space::SM),
@@ -984,18 +1074,28 @@ impl RouteLayout {
     /// A scrolling disclosure uses exactly the same title flow as an ordinary route header.
     pub fn narrative_copy_frame(self, has_crumb: bool, title: &str,
         actions_top: f32, measure: &dyn Measure) -> Rect {
-        let title_h = Self::narrative_title(title).with_measure(measure).measure_h(self.narrative.w);
+        let title_h = self.title_view(title).with_measure(measure).measure_h(self.narrative.w);
         let top = self.narrative_flow(has_crumb, title_h).copy_top;
         Rect::new(self.narrative.x, top, self.narrative.w,
             (actions_top - theme::space::MD - top).max(0.0))
+    }
+
+    /// **The picture slot** (Settings v2): the narrative column's display-only picture, 660 wide
+    /// at [`PICTURE_TOP`] and as tall as the safe area leaves (the board's 586). It does not move
+    /// with the title or the sentence: a followed sentence takes at most
+    /// [`crate::follow_copy::FOLLOW_LINES`] lines and ends above it.
+    pub fn picture_slot(self) -> Rect {
+        let top = PICTURE_TOP.max(self.narrative.y);
+        Rect::new(self.narrative.x, top, self.narrative.w, (self.narrative.y + self.narrative.h - top).max(0.0))
     }
 
     fn draw_crumb(self, p: Painter, top: f32, back_to: &str, measure: &dyn Measure) {
         draw_back_crumb(p, Rect::new(self.narrative.x, top, self.narrative.w, CRUMB_BAND), back_to, measure);
     }
 
-    /// **The narrative title, as the view [`draw_narrative`] actually draws** — its rung, its
-    /// weight, its wrap and its [`TITLE_LEADING`] line pitch, in one place a host test can call.
+    /// **The HERO narrative title** — its rung, its weight, its wrap and its [`TITLE_LEADING`]
+    /// line pitch, in one place a host test can call. It is the layout-free view first-run consent
+    /// grades; a LAYOUT draws [`Self::title_view`], which follows its [`TitleStyle`].
     ///
     /// It is split out for exactly that reason and the reason is a lesson: the first test for the
     /// leading correction asserted `TITLE_LEADING == HERO * 1.05` and nothing else, so deleting
@@ -1004,10 +1104,43 @@ impl RouteLayout {
     /// constant grades the constant. Building the view here lets it grade the thing that is drawn.
     /// App-owned titles and questions wrap completely; following content uses their measured height.
     pub fn narrative_title(title: &str) -> TextView<'_> {
-        TextView::new(title, theme::size::HERO, theme::TEXT_HEADING)
+        Self::styled_title(title, TitleStyle::Hero)
+    }
+
+    /// [`Self::narrative_title`] for THIS layout's [`TitleStyle`]: what [`Self::draw_narrative`]
+    /// and [`Self::narrative_copy_frame`] draw and measure.
+    pub fn title_view(self, title: &str) -> TextView<'_> {
+        Self::styled_title(title, self.title_style)
+    }
+
+    fn styled_title(title: &str, style: TitleStyle) -> TextView<'_> {
+        TextView::new(title, style.size(), theme::TEXT_HEADING)
             .bold()
             .break_long_words()
-            .leading(TITLE_LEADING)
+            .leading(style.leading())
+            .tracking(style.tracking())
+    }
+
+    /// **Where a Page layout sets its title's glyphs inside the title's box.** `TextView` anchors
+    /// the CAP TOP on the y it is given; a Settings board specifies the title as a CSS box (`top`
+    /// 142, `line-height` 1.05), which sets the cap top the half-leading plus the ascent above it
+    /// below the box top ([`plx_gfx::text::css_cap_drop`], 7 px at 48/1.05). Hero titles are
+    /// cap-anchored, as they always were: no drop.
+    pub fn title_cap_drop(self, measure: &dyn Measure) -> f32 {
+        self.cap_drop(self.title_style.size(), self.title_style.leading(), measure)
+    }
+
+    /// The same for the copy under the title (`size`, [`theme::space::XS`] over it as the pitch,
+    /// the board's `26/34`): a Page layout's sentence sits where the board's CSS box puts it.
+    pub fn copy_cap_drop(self, size: std::os::raw::c_int, measure: &dyn Measure) -> f32 {
+        self.cap_drop(size, size as f32 + theme::space::XS, measure)
+    }
+
+    fn cap_drop(self, size: std::os::raw::c_int, leading: f32, measure: &dyn Measure) -> f32 {
+        match self.title_style {
+            TitleStyle::Hero => 0.0,
+            TitleStyle::Page => plx_gfx::text::css_cap_drop(size, leading, measure.cap_h(size)),
+        }
     }
 
     /// Draw a measured crumb→title→copy flow.  Each block begins after the previous one's actual
@@ -1037,15 +1170,15 @@ impl RouteLayout {
     #[allow(clippy::too_many_arguments)]
     pub fn draw_narrative_pending(self, p: Painter, back_to: Option<&str>, title: &str, copy: &str,
         copy_size: std::os::raw::c_int, measure: &dyn Measure, pending: Option<&str>) -> f32 {
-        let title = Self::narrative_title(title);
+        let title = self.title_view(title);
         let title_h = title.measure_h(self.narrative.w);
         let flow = self.narrative_flow(back_to.is_some(), title_h);
         if let (Some(back_to), Some(crumb)) = (back_to, flow.crumb) {
             self.draw_crumb(p, crumb.y, back_to, measure);
         }
-        title.draw(p, Rect::new(self.narrative.x, flow.title.y, self.narrative.w, flow.title.h));
+        title.draw(p, Rect::new(self.narrative.x, flow.title.y + self.title_cap_drop(measure), self.narrative.w, flow.title.h));
 
-        let copy_top = flow.copy_top;
+        let copy_top = flow.copy_top + self.copy_cap_drop(copy_size, measure);
         let copy_bottom = self.action.y - theme::space::XL;
         let (copy_p, copy_ink) = pending.map_or((p, theme::TEXT_READING), |key|
             crate::placeholder::ink(p, crate::placeholder::Reason::WorkingReadout, key, theme::TEXT_READING));
@@ -1857,5 +1990,77 @@ mod tests {
         assert!(bare.crumb.is_none());
         assert!((bare.title.y - l.narrative.y).abs() < 0.01);
         assert!((bare.copy_top - (l.narrative.y + 90.0 + theme::space::MD)).abs() < 0.01);
+    }
+    /// The Hero title (every route that is not a Settings page) keeps its 72 px rung and its
+    /// crumb pushing the title down; the Page title (a Settings page) is 48 on the guide with the
+    /// crumb above it. One switch, [`RouteLayout::page_titled`]; `screen()` never sets it.
+    #[test]
+    fn a_route_sets_the_hero_title_and_a_settings_page_sets_the_page_title() {
+        let hero = RouteLayout::screen();
+        let page = RouteLayout::settings_page();
+        assert_eq!(hero.title_style, TitleStyle::Hero);
+        assert_eq!(page.title_style, TitleStyle::Page);
+        assert_eq!((hero.narrative, hero.content, hero.action), (page.narrative, page.content, page.action));
+        assert_eq!(TitleStyle::Hero.size(), theme::size::HERO);
+        assert_eq!(TitleStyle::Page.size(), theme::size::DISPLAY);
+        assert_eq!(TitleStyle::Page.size(), 48);
+        assert!((hero.title_view("Settings").line_h() - theme::size::HERO as f32 * 1.05).abs() < 0.01);
+        assert!((page.title_view("Settings").line_h() - theme::size::DISPLAY as f32 * 1.05).abs() < 0.01);
+        // `narrative_title` (the layout-free view consent grades) stays the Hero one
+        assert_eq!(RouteLayout::narrative_title("Settings").line_h(), hero.title_view("Settings").line_h());
+    }
+
+    /// Hero: a crumb pushes the title down by its band plus one rung. Page: the crumb hangs above
+    /// the guide, the title stays at the root's y, and the copy moves with neither.
+    #[test]
+    fn a_crumb_pushes_a_hero_title_and_hangs_above_a_page_title() {
+        let hero = RouteLayout::screen();
+        assert_eq!(hero.narrative_top(true) - hero.narrative_top(false), CRUMB_RISE);
+        let crumb = hero.narrative_flow(true, 90.0).crumb.expect("crumb");
+        assert_eq!(crumb.y, hero.narrative.y);
+
+        let page = RouteLayout::settings_page();
+        assert_eq!(page.narrative_top(false), page.narrative.y);
+        assert_eq!(page.narrative_top(true), page.narrative_top(false), "a crumb costs a Page title no room");
+        let crumb = page.narrative_flow(true, 50.0).crumb.expect("crumb");
+        assert_eq!(crumb.y + CRUMB_RISE, page.narrative.y, "the band and one rung of air end on the guide");
+        assert!(crumb.y >= SAFE.y, "…and the band stays inside the safe area");
+        assert_eq!(page.narrative_flow(true, 50.0).copy_top, page.narrative_flow(false, 50.0).copy_top);
+        assert!((page.narrative_flow(false, 50.0).copy_top - (page.narrative.y + 50.0 + theme::space::MD)).abs() < 0.01);
+        assert!(page.document(true).y >= page.narrative.y);
+    }
+
+    /// A Page title is the board's CSS box: tracked `-.02em` and set its half-leading plus ascent
+    /// under the box top; a Hero title is tracked by nothing and cap-anchored on the box top.
+    #[test]
+    fn a_page_title_is_tracked_and_dropped_into_its_css_box_and_a_hero_title_is_neither() {
+        struct M;
+        impl Measure for M {
+            fn width(&self, text: &std::ffi::CStr, size: i32, _bold: bool) -> f32 {
+                text.to_string_lossy().chars().count() as f32 * size as f32 * 0.6
+            }
+            fn cap_h(&self, size: i32) -> f32 { size as f32 * 0.727 }
+            fn line_h(&self, size: i32) -> f32 { size as f32 * 1.2 }
+        }
+        assert_eq!(TitleStyle::Hero.tracking(), 0.0);
+        assert!((TitleStyle::Page.tracking() - (-0.96)).abs() < 1e-4);
+        let (hero, page) = (RouteLayout::screen(), RouteLayout::settings_page());
+        assert_eq!(hero.title_cap_drop(&M), 0.0);
+        assert_eq!(hero.copy_cap_drop(theme::size::LABEL, &M), 0.0);
+        assert!((page.title_cap_drop(&M) - 7.1).abs() < 0.2, "{}", page.title_cap_drop(&M));
+        assert!((page.copy_cap_drop(theme::size::LABEL, &M) - 7.1).abs() < 0.2, "{}", page.copy_cap_drop(theme::size::LABEL, &M));
+    }
+
+    /// The picture slot is the board's: 660 wide at y 440, ending on the safe area's floor, under
+    /// the five lines a followed sentence may take below a one-line Page title.
+    #[test]
+    fn the_picture_slot_clears_five_sentence_lines_under_a_one_line_page_title() {
+        let l = RouteLayout::settings_page();
+        let slot = l.picture_slot();
+        assert_eq!((slot.x, slot.y, slot.w), (l.narrative.x, 440.0, 660.0));
+        assert!(slot.h <= 586.0 + 0.5 && (slot.y + slot.h - (SAFE.y + SAFE.h)).abs() < 0.01);
+        let title_h = l.title_view("Settings").line_h();
+        let lines = crate::follow_copy::FOLLOW_LINES as f32 * (theme::size::LABEL as f32 + theme::space::XS);
+        assert!(l.narrative_flow(false, title_h).copy_top + lines <= slot.y, "five lines end above the slot");
     }
 }

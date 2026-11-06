@@ -64,10 +64,13 @@ arguments, and its time is the `dt` it is handed.
    paint): use `ui::label::Label` (single run) or `ui::text_view::TextView` (multi-line, pixel-
    wrapped), or if you must call `Painter::text` directly, derive the y from `text::text_vcenter_y` /
    `text::text_cap_band`. See `label.rs`'s module docs for the rule.
-   Tracking (DS8): a string that needs letter-spacing goes through `Painter::text_tracked` with a
-   named constant (`theme::TRACKING_TITLE_TIGHT`, -0.5 px, the DS8 title tracking the Watchlist header wore before it took the Library's header row); at `0.0` it is
-   exactly `text`. The gaps are n-1 between characters (CSS adds one after the last too, a
-   sub-pixel difference shipped code keeps), and no screen adopts it yet.
+   Tracking (DS8): a string that needs letter-spacing goes through `Label::tracking` /
+   `TextView::tracking` (they wrap and measure by the tracked width and reach `Painter::text_tracked`),
+   never a hand-spaced draw. Screens use it today: the Settings page title (`TitleStyle::Page`,
+   -.02em) and the board section headers (`TableView::board_metrics`, .06em). A fixed pixel
+   tracking has a named constant (`theme::TRACKING_TITLE_TIGHT`, -0.5 px, the DS8 title case); at
+   `0.0` it is exactly `text`. The gaps are n-1 between characters (CSS adds one after the last
+   too, a sub-pixel difference shipped code keeps).
 
 4. **Improve a component before forking one, and never write an ad-hoc mechanism.** If a shared
    widget almost does what you need, add a builder method / style variant to it (e.g.

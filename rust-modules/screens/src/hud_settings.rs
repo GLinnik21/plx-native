@@ -521,7 +521,7 @@ impl HudPage {
     }
 
     fn view(&self) -> TableScreen<'_> {
-        let mut header = Header::new(RouteLayout::screen(), Some(&self.parent), &self.title, &self.copy);
+        let mut header = Header::new(RouteLayout::settings_page(), Some(&self.parent), &self.title, &self.copy);
         if matches!(self.page, SettingsPage::HudGallery) && self.list.catalog.fetching && self.form.table.n_rows() == 0 {
             header = header.with_pending_copy("hud-gallery");
         }
@@ -555,6 +555,7 @@ impl HudPage {
         self.title = title;
         self.parent = parent;
         self.form.table.compact = false;
+        self.form.table.board_metrics(true);
         self.form.table.header_ink = theme::TEXT_READING;
         self.form.table.list_focused = true;
         self.form.set(form, keep.as_ref());
@@ -854,7 +855,7 @@ impl Machine<InnerHost> for HudPage {
                 cycle.set_frames(&self.preview_frames());
                 cycle.tick(*t, self.preview_active(), &mut fx.present());
                 self.preview_cycle = cycle;
-                self.form.table.update(t.dt(), RouteLayout::screen().sectioned_table().h);
+                self.form.table.update(t.dt(), RouteLayout::settings_page().sectioned_table().h);
                 Handled::Yes
             }
             ScreenEvent::Input(InputEvent { kind, .. }) if self.state.editing || matches!(kind, InputKind::SystemKeyboard(_)) => self.typing(kind, cx, fx),

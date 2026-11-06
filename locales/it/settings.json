@@ -3,7 +3,6 @@
   "settings.libraries.section": "Librerie",
   "settings.libraries.title": "Librerie preferite",
   "settings.libraries.detail": "Le librerie da mostrare su questa TV.",
-  "settings.privacy.section": "Privacy",
   "settings.privacy.title": "Privacy e dati",
   "settings.privacy.detail": "Segnalazioni facoltative, privacy e dati locali.",
   "settings.legal.title": "Note legali",
@@ -17,7 +16,6 @@
   "settings.resolution.detail": "Più bassa, più fluida. Si applica al riavvio.",
   "settings.resolution.auto": "Automatica",
   "settings.about.title": "Informazioni su PlxNative",
-  "settings.about.section": "Informazioni",
   "settings.about.detail": "Versione, copyright e informazioni sul progetto.",
   "settings.root.copy": "Gestisci questa TV e il tuo profilo Plex. Le preferenze linguistiche di audio e sottotitoli si sincronizzano con l'account Plex; le impostazioni di riproduzione sono per profilo, mentre la lingua dell'app vale per questa TV.",
   "settings.libraries.count": {
@@ -226,7 +224,7 @@
   "settings.audio.no_preference": "Nessuna preferenza",
   "settings.audio.not_set": "Non impostato",
   "settings.playback.overridden": "Direct Play forzato: qualità Originale.",
-  "settings.audio.selection_off": "Scelta automatica disattivata. Scegli una lingua per attivarla.",
+  "settings.audio.selection_off": "Scelta automatica spenta. Scegli una lingua per attivarla.",
   "settings.audio.retry": "Riprova",
   "settings.audio.retry_detail": "Ripeti la richiesta all'account.",
   "settings.audio.sign_in_again": "Accedi nuovamente a questo profilo Plex per modificarne le preferenze dell'account.",
@@ -377,5 +375,8 @@
   "settings.playback.marker.manual": "Manuale",
   "settings.playback.marker.automatic": "Automatico",
   "settings.playback.intro_skip.copy": "Disattivato nasconde il pulsante. Manuale propone di saltare l’introduzione. Automatico la salta dopo cinque secondi, salvo che tu scelga di guardarla. Il valore viene salvato per questo profilo.",
-  "settings.playback.credits_skip.copy": "Disattivato nasconde Salta titoli di coda. Manuale mantiene i controlli attuali. Automatico salta dopo cinque secondi, salvo che tu scelga di guardare i titoli. L’episodio successivo e il suo conto alla rovescia si impostano separatamente."
+  "settings.playback.credits_skip.copy": "Disattivato nasconde Salta titoli di coda. Manuale mantiene i controlli attuali. Automatico salta dopo cinque secondi, salvo che tu scelga di guardare i titoli. L’episodio successivo e il suo conto alla rovescia si impostano separatamente.",
+  "settings.support.section": "Assistenza",
+  "settings.diagnostics.detail": "Registra la diagnostica della riproduzione e salva un registro per l'assistenza.",
+  "settings.libraries.more": "Le librerie che escludi restano sul tuo server Plex e sugli altri dispositivi."
 }

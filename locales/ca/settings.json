@@ -3,7 +3,6 @@
   "settings.libraries.section": "Biblioteques",
   "settings.libraries.title": "Biblioteques preferides",
   "settings.libraries.detail": "Les biblioteques que mostra aquest televisor.",
-  "settings.privacy.section": "Privadesa",
   "settings.privacy.title": "Privadesa i dades",
   "settings.privacy.detail": "Informes opcionals, privadesa i dades locals.",
   "settings.legal.title": "Avisos legals",
@@ -17,7 +16,6 @@
   "settings.resolution.detail": "Més baixa, més fluida. S'aplica en reiniciar.",
   "settings.resolution.auto": "Automàtica",
   "settings.about.title": "Quant a PlxNative",
-  "settings.about.section": "Quant a",
   "settings.about.detail": "Versió, drets d'autor i informació del projecte.",
   "settings.root.copy": "Gestiona aquest televisor i el teu perfil de Plex. Els idiomes d'àudio i dels subtítols se sincronitzen amb el teu compte de Plex; els ajustos de reproducció són propis de cada perfil i l'idioma de l'aplicació s'aplica a aquest televisor.",
   "settings.libraries.count": {
@@ -377,5 +375,8 @@
   "settings.hud.up_next": "A continuació",
   "settings.hud.unavailable": "Aquest HUD ja no està disponible al catàleg.",
   "settings.hud.catalog_cached": "No s'han pogut actualitzar els HUD. Es mostra el catàleg desat.",
-  "settings.hud.catalog_unavailable": "No s'han pogut carregar els HUD. Torna-ho a provar més tard."
+  "settings.hud.catalog_unavailable": "No s'han pogut carregar els HUD. Torna-ho a provar més tard.",
+  "settings.support.section": "Assistència",
+  "settings.diagnostics.detail": "Enregistra diagnòstics de reproducció i desa un registre per a l'assistència.",
+  "settings.libraries.more": "Les biblioteques que deixes fora es queden al teu servidor Plex i als teus altres dispositius."
 }
