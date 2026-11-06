@@ -112,7 +112,7 @@ pub(super) fn start(ps: &mut PlaybackSession, pa: &mut super::adapter::PlayerAda
     let input = ProbeOpen {
         attempt, url,
         transport: plx_platform::tv::uri::installed(),
-        display: super::sink(),
+        display: pa.display_sink(),
         plane: super::plane(),
         log: super::log,
         app_id: plx_base::paths::app_id().to_owned(),

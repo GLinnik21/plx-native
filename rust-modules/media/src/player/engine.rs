@@ -3519,7 +3519,7 @@ mod load_in_flight_tests {
         let live = crate::player::diag_sample_tests::scripted();
         crate::player::diag_sample_tests::store_mailboxes(&live);
         pa.publish_feed_attempt_view(ps);
-        assert_eq!(crate::player::diag_sample_tests::rows(&crate::player::diag(ps)), live,
+        assert_eq!(crate::player::diag_sample_tests::rows(&crate::player::test_physical::diag(ps)), live,
             "PRECONDITION FAILED: the live session's rows must be on the read-out before the teardown");
     }
 
@@ -3541,7 +3541,7 @@ mod load_in_flight_tests {
         });
         show_live_rows(&mut ps, &mut pa);
         stop_bufferfeed(&mut ps, &mut pa);
-        let d = crate::player::diag(&ps);
+        let d = crate::player::test_physical::diag(&ps);
         assert_eq!(crate::player::diag_sample_tests::rows(&d), plx_playback_contract::feed::FeedDiag::IDLE,
             "after a stop the rows are the reset mailboxes' values");
         assert_eq!(d.place_rv, i32::MIN);
@@ -3566,7 +3566,7 @@ mod load_in_flight_tests {
         show_live_rows(&mut ps, &mut pa);
         let outcome = reload_transcode(&mut ps, &mut pa, 0);
         let _ = crate::player::pump::settle_reload(outcome, "test reload", &mut ps);
-        let d = crate::player::diag(&ps);
+        let d = crate::player::test_physical::diag(&ps);
         assert_eq!(crate::player::diag_sample_tests::rows(&d), plx_playback_contract::feed::FeedDiag::IDLE,
             "after a reload the rows are the reset mailboxes' values");
         crate::player::ffi_host::release_load_for_test();
@@ -3601,7 +3601,7 @@ mod load_in_flight_tests {
         show_original_failure(&mut ps, &mut pa);
         stop_bufferfeed(&mut ps, &mut pa);
         assert_eq!(ps.readout().original_failure(), None);
-        let d = crate::player::diag(&ps);
+        let d = crate::player::test_physical::diag(&ps);
         assert_eq!((d.abr_failure_kind, d.abr_failure_status), (0, 0));
         crate::player::ffi_host::release_load_for_test();
     }
@@ -3625,7 +3625,7 @@ mod load_in_flight_tests {
         let outcome = reload_transcode(&mut ps, &mut pa, 0);
         let _ = crate::player::pump::settle_reload(outcome, "test rollback reload", &mut ps);
         assert_eq!(ps.readout().original_failure(), Some((crate::player::ABR_FAILURE_ORIGINAL_HTTP, 503)));
-        let d = crate::player::diag(&ps);
+        let d = crate::player::test_physical::diag(&ps);
         assert_eq!((d.abr_failure_kind, d.abr_failure_status), (crate::player::ABR_FAILURE_ORIGINAL_HTTP, 503));
         crate::player::ffi_host::release_load_for_test();
     }
@@ -3761,7 +3761,7 @@ mod load_in_flight_tests {
         );
         assert_eq!(ps.native_start_refused, Some(crate::route::StartRefusal::LoadTimeout));
         assert!(
-            crate::player::diag(&ps).load_failed,
+            crate::player::test_physical::diag(&ps).load_failed,
             "the diagnostics Load row (and the lab snapshot) must read the refused reload as refused"
         );
     }
@@ -3808,7 +3808,7 @@ mod load_in_flight_tests {
             "the read-out must offer Try Again: {actions:?}"
         );
         assert!(
-            crate::player::diag(&ps).load_failed,
+            crate::player::test_physical::diag(&ps).load_failed,
             "the diagnostics Load row (and the lab snapshot) must read the refused start as refused"
         );
 

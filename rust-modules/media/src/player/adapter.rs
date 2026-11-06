@@ -35,6 +35,7 @@ use plx_playback_contract::feed::{PhysicalSet, UriOnlySet};
 #[cfg(all(test, feature = "play-feed", feature = "hostsim"))]
 use super::threads;
 use plx_base::task::MainThread;
+use plx_platform::tv::sink::{NoSink, VideoSink};
 use std::collections::VecDeque;
 
 const MAX_METRIC_NOTICES: usize = 32;
@@ -301,6 +302,15 @@ struct BoundFeed {
     foreground_follows_load: bool,
 }
 
+/// The seam's sink, asked afresh at every use. A provider and not a stored reference because the
+/// Feed's composition hands a fence in front of the real sink, and which of the two answers
+/// changes while an off-frame `Unload` owns the native object.
+pub type SinkProvider = fn() -> &'static dyn VideoSink;
+
+/// What an adapter reaches the seam through until the composition installs a sink: every verb
+/// refused ([`NoSink`]).
+fn inert_sink() -> &'static dyn VideoSink { &NoSink }
+
 /// Common coordinator and main-thread proof, as one owned value (`App.adapters.player`).
 pub struct PlayerAdapter {
     /// Proof, held rather than passed: see the module doc. It is a ZST, so this costs nothing and
@@ -312,6 +322,10 @@ pub struct PlayerAdapter {
     /// no Feed, the set is the contract's [`UriOnlySet`]. The adapter reaches it only through
     /// [`PhysicalSet`].
     pub(super) physical: Box<dyn PhysicalSet>,
+    /// The sink the seam is reached through, composed beside the set ([`Self::install_physical`],
+    /// [`Self::install_display_sink`]) and read through [`Self::display_sink`]. Until the
+    /// composition installs one it refuses every verb ([`inert_sink`]).
+    sink: SinkProvider,
     /// The test fixtures' handle on the Feed set boxed behind `physical`
     /// ([`Self::new_probed`]); `None` on an adapter built by [`Self::new`].
     #[cfg(all(test, feature = "play-feed"))]
@@ -407,6 +421,7 @@ impl PlayerAdapter {
         Self {
             mt,
             physical: Box::new(UriOnlySet::new()),
+            sink: inert_sink,
             #[cfg(all(test, feature = "play-feed"))]
             probe: None,
             backend: backend::BackendRunner::new(),
@@ -453,6 +468,7 @@ impl PlayerAdapter {
         let (probe, physical) = plx_play_feed::physical::probe::Probe::new(
             super::test_physical::feed_set());
         adapter.physical = physical;
+        adapter.sink = super::test_physical::sink;
         adapter.probe = Some(probe);
         adapter
     }
@@ -964,18 +980,33 @@ impl PlayerAdapter {
     }
 
     /// Install the physical set the application composed (the Feed backend and the URI driver's
-    /// seat), replacing the [`UriOnlySet`] the adapter starts with. It is the composition's one
-    /// call, made before the first Start; a set that would lose something is handed back
-    /// untouched: the current set seats a URI driver, a Feed is already installed, or a native
-    /// attempt is still being released.
-    pub fn install_physical(&mut self, set: Box<dyn PhysicalSet>) -> Result<(), Box<dyn PhysicalSet>> {
+    /// seat) with the sink its verbs go through, replacing the [`UriOnlySet`] and the inert sink
+    /// the adapter starts with. It is the composition's one call, made before the first Start; a
+    /// set that would lose something is handed back untouched: the current set seats a URI
+    /// driver, a Feed is already installed, or a native attempt is still being released.
+    pub fn install_physical(&mut self, set: Box<dyn PhysicalSet>, display_sink: SinkProvider)
+        -> Result<(), Box<dyn PhysicalSet>> {
         if self.physical.uri().is_some() || self.physical.feed().is_some()
             || self.backend_exit_disposition() != ExitDisposition::Clean {
             return Err(set);
         }
         self.physical = set;
+        self.sink = display_sink;
         Ok(())
     }
+
+    /// Install the sink of a composition with no Feed set (the URI-only build hands the platform
+    /// sink). False, and nothing changes, while a native attempt is still being released.
+    pub fn install_display_sink(&mut self, display_sink: SinkProvider) -> bool {
+        if self.backend_exit_disposition() != ExitDisposition::Clean { return false; }
+        self.sink = display_sink;
+        true
+    }
+
+    /// The composed sink, right now: the Feed's fence answers in its place while an off-frame
+    /// `Unload` owns the native object, so a main-thread verb cannot reach what the worker is
+    /// inside (PLX-NATIVE-1Q). Every media-side verb that is not a hook goes through here.
+    pub fn display_sink(&self) -> &'static dyn VideoSink { (self.sink)() }
 
     /// Escrow an exact resolved URL and its source-specific native track map. The route owner
     /// still has to supply a qualified offer and send an addressed Start through the runner.
@@ -2096,8 +2127,8 @@ impl PlayerAdapter {
     /// module doc for why that surface keeps its own argument.
     ///
     /// Does not wait for a pending off-frame release: a caller holding the token may call any verb,
-    /// and while the object is `Releasing` `player::sink()` answers a sink on which every verb is
-    /// a no-op, so none of them reaches the object the worker is inside.
+    /// and while the object is `Releasing` [`Self::display_sink`] answers a sink on which every verb
+    /// is a no-op, so none of them reaches the object the worker is inside.
     #[inline]
     pub fn mt(&self) -> &MainThread {
         &self.mt

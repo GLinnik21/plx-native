@@ -23,7 +23,7 @@
 #![allow(non_upper_case_globals)]
 pub mod adapter;
 #[cfg(test)]
-mod test_physical; // the tests' composition of the physical set (the application's own is `app::adapters::backends`)
+pub(crate) mod test_physical; // the tests' composition of the physical set (the application's own is `app::adapters::backends`)
 pub mod attempt_view;
 pub mod readout; // the player's own readout (pure machine): the members only the player writes, and the feed's last raw facts
 #[cfg(feature = "play-feed")]
@@ -519,7 +519,7 @@ pub(crate) fn mute_for_preroll(mt: &plx_base::task::MainThread) {
 #[cfg(feature = "play-feed")]
 pub(crate) fn restore_preroll_volume(pa: &mut adapter::PlayerAdapter) {
     let Some(volume) = pa.feed_take_preroll_volume() else { return };
-    unsafe { sink().set_volume(pa.mt(), volume) };
+    unsafe { pa.display_sink().set_volume(pa.mt(), volume) };
     log(&format!("preroll: volume set {volume} (restored; no readback)"));
 }
 
@@ -684,7 +684,7 @@ pub fn acb_mirror_playstate(ps: &crate::route::PlaybackSession, pa: &mut adapter
     let Some(stage) = ps.readout().raw().load.stage else {
         return;
     };
-    acb_mirror_playstate_at(pa.mt(), stage, playing);
+    acb_mirror_playstate_on(pa.display_sink(), pa.mt(), stage, playing);
 }
 
 /// [`acb_mirror_playstate`] for a caller that already holds the session's `&mut Engine` and so
@@ -694,6 +694,13 @@ pub fn acb_mirror_playstate(ps: &crate::route::PlaybackSession, pa: &mut adapter
 /// could only assert was safe.
 #[cfg(feature = "play-feed")]
 pub fn acb_mirror_playstate_at(mt: &MainThread, stage: shared::Stage, playing: bool) {
+    acb_mirror_playstate_on(sink(), mt, stage, playing);
+}
+
+/// The mirror itself, over the sink the caller reaches the seam through.
+#[cfg(feature = "play-feed")]
+fn acb_mirror_playstate_on(sink: &dyn plx_platform::tv::sink::VideoSink, mt: &MainThread,
+    stage: shared::Stage, playing: bool) {
     if !plane().handle() {
         return;
     }
@@ -702,9 +709,9 @@ pub fn acb_mirror_playstate_at(mt: &MainThread, stage: shared::Stage, playing: b
     }
     unsafe {
         if playing {
-            sink().plane_resume(mt);
+            sink.plane_resume(mt);
         } else {
-            sink().plane_pause(mt);
+            sink.plane_pause(mt);
         }
     }
 }
@@ -1840,14 +1847,23 @@ impl Diag {
     }
 }
 
-pub fn diag(ps: &crate::route::PlaybackSession) -> Diag {
+pub fn diag(ps: &crate::route::PlaybackSession, pa: &adapter::PlayerAdapter) -> Diag {
+    diag_on(ps, pa.display_sink())
+}
+
+/// [`diag`] over the sink the caller reaches the seam through (the window facts are its two
+/// queries).
+pub(crate) fn diag_on(ps: &crate::route::PlaybackSession, display: &dyn plx_platform::tv::sink::VideoSink) -> Diag {
     let view = ps.attempt_view();
     let backend = view.backend();
     let observed = *view.facts();
     let common = Diag { backend, observed,
         source_kbps: crate::route::transport_kbps(ps), ..Default::default() };
     #[cfg(not(feature = "play-feed"))]
-    { common }
+    {
+        let _ = display;
+        common
+    }
     #[cfg(feature = "play-feed")]
     {
     if backend != Some(attempt_view::Backend::Feed) {
@@ -1858,7 +1874,7 @@ pub fn diag(ps: &crate::route::PlaybackSession) -> Diag {
     let (fed_v, fed_a) = engine::fed_totals();
     // The sink hands back the seam's own static buffer — never NULL, "" when no window was
     // created — so this is a copy of a bounded char[64], not a borrow with a lifetime to reason about.
-    let window_id = sink().window_id().to_string_lossy().into_owned();
+    let window_id = display.window_id().to_string_lossy().into_owned();
     // The feed-written rows are the readout's last sample of the Feed (`FeedRaw::diag`): the pump
     // samples at its start and end of every frame, and a teardown's `SessionReset` returns them to
     // the idle set the mailboxes were just reset to.
@@ -1868,7 +1884,7 @@ pub fn diag(ps: &crate::route::PlaybackSession) -> Diag {
     Diag {
         backend,
         observed,
-        vp_mode: sink().window_mode(),
+        vp_mode: display.window_mode(),
         window_id,
         acb_ok: plane().handle(),
         place_rv: fd.place_rv,

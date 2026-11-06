@@ -107,6 +107,12 @@ pub(crate) fn compose_backends(adapter: &mut PlayerAdapter, session: &mut Playba
     if !adapter.composed_backends().feed && !install_feed(adapter) {
         log("feed: physical set installation refused");
     }
+    // A build with no Feed reaches the seam through the platform's own sink, unfenced: there is no
+    // off-frame `Unload` to fence it from.
+    #[cfg(not(feature = "play-feed"))]
+    if !adapter.install_display_sink(sink::installed) {
+        log("player: display sink installation refused");
+    }
     #[cfg(feature = "play-uri")]
     if !controlled && !install_uri_product(adapter, session) {
         log("uri: product driver installation refused");
@@ -128,7 +134,9 @@ pub(crate) fn compose_backends(adapter: &mut PlayerAdapter, session: &mut Playba
 pub(crate) fn install_feed(adapter: &mut PlayerAdapter) -> bool {
     let feed = FeedBackend::new(FeedResources::new(&FEED_SHARED,
         plx_media::player::engine::native_hooks()));
-    adapter.install_physical(Box::new(FeedSet::new(feed))).is_ok()
+    let set = FeedSet::new(feed);
+    let display_sink = set.display_sink();
+    adapter.install_physical(Box::new(set), display_sink).is_ok()
 }
 
 /// An adapter with the Feed composed in, as the boot composes it: what an app test builds when

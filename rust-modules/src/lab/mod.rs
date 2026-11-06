@@ -114,11 +114,12 @@ pub(crate) fn command_done(_id: u32, _ok: bool) {
 /// It sits at the TOP of the chain, above every modal, on purpose — the screen a tester most
 /// wants a snapshot of is the playback failure read-out, whose own arm `continue`s on every key.
 #[inline]
-pub(crate) fn key_press(_sym: u32, _wcode: u32, _ps: &plx_media::route::PlaybackSession) -> bool {
+pub(crate) fn key_press(_sym: u32, _wcode: u32, _ps: &plx_media::route::PlaybackSession,
+    _pa: &plx_media::player::adapter::PlayerAdapter) -> bool {
     #[cfg(feature = "lab-diagnostics")]
     {
         if plx_platform::labcfg::is_trigger_key(_sym, _wcode) {
-            request_upload("key", _ps);
+            request_upload("key", _ps, _pa);
             return true;
         }
     }
@@ -133,10 +134,12 @@ pub(crate) fn key_press(_sym: u32, _wcode: u32, _ps: &plx_media::route::Playback
 /// a worker.
 ///
 /// The session is a PARAMETER for the reason every other `player::diag` caller's is (phase 9):
-/// there is no `route::decision::SESSION` global left to read it out of, and the loop owns it.
-pub(crate) fn request_upload(_reason: &str, _ps: &plx_media::route::PlaybackSession) {
+/// there is no `route::decision::SESSION` global left to read it out of, and the loop owns it. So
+/// is the player adapter, whose display sink answers `diag`'s window facts.
+pub(crate) fn request_upload(_reason: &str, _ps: &plx_media::route::PlaybackSession,
+    _pa: &plx_media::player::adapter::PlayerAdapter) {
     #[cfg(feature = "lab-diagnostics")]
-    upload::request(_reason, _ps);
+    upload::request(_reason, _ps, _pa);
 }
 
 /// The app's current route, by the name the heartbeat uses. Stored for the next snapshot's

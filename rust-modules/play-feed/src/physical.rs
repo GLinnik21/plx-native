@@ -13,6 +13,7 @@
 
 use crate::control::FeedBackend;
 use plx_base::task::MainThread;
+use plx_platform::tv::sink::VideoSink;
 use plx_playback_contract::feed::{FeedControl, PhysicalSet, UriOnlySet};
 use plx_playback_contract::{
     AttemptId, BackendEvent, BackendKind, Capabilities, CommandId, DispatchResult, DriverSet,
@@ -34,6 +35,15 @@ impl FeedSet {
     /// A set over `feed` with no URI driver yet.
     pub fn new(feed: FeedBackend) -> Self {
         Self { feed, seat: UriOnlySet::new() }
+    }
+
+    /// The sink the Feed's own verbs go through: the composition's hook, which answers the fence
+    /// in place of the real sink while an off-frame `Unload` owns the native object. The
+    /// composition hands it to the player's adapter beside this set, so the media-side verbs
+    /// that are not hooks (the preroll volume, the ACB mirror, the diagnostics' window facts)
+    /// reach the seam through the same one.
+    pub fn display_sink(&self) -> fn() -> &'static dyn VideoSink {
+        self.feed.resources().hooks().feed.sink
     }
 }
 

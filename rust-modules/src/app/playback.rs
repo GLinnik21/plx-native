@@ -144,7 +144,7 @@ pub(crate) fn apply_more_action(ps: &mut plx_media::route::PlaybackSession, pa: 
         }
         // Lab builds only. Nothing about playback changes: the snapshot is taken and the toast
         // reports, over whatever the player is doing.
-        plx_appkit::more_menu::Action::SendDiagnostics => crate::lab::request_upload("menu", ps),
+        plx_appkit::more_menu::Action::SendDiagnostics => crate::lab::request_upload("menu", ps, pa),
         // A folded row is a HUD command, and the overlay asks for it as `PlayerReq::Command` (the one performer,
         // `perform_hud_command`), never as `PlayerReq::More`.
         plx_appkit::more_menu::Action::Hud(_) | plx_appkit::more_menu::Action::None => {}

@@ -27,8 +27,17 @@ impl PlayerAdapter {
     pub fn new_fed(mt: MainThread) -> Self {
         let mut adapter = Self::new(mt);
         #[cfg(feature = "play-feed")]
-        assert!(adapter.install_physical(Box::new(feed_set())).is_ok(),
+        assert!(adapter.install_physical(Box::new(feed_set()), sink).is_ok(),
             "a fresh adapter takes its physical set");
         adapter
     }
 }
+
+/// The sink the fixtures reach the seam through: what the application's composition hands the
+/// adapter beside the set.
+#[cfg(feature = "play-feed")]
+pub(crate) fn sink() -> &'static dyn plx_platform::tv::sink::VideoSink { super::sink() }
+
+/// [`super::diag`] over the fixtures' sink, for a test that holds no adapter.
+#[cfg(all(feature = "play-feed", feature = "hostsim"))]
+pub(crate) fn diag(ps: &crate::route::PlaybackSession) -> super::Diag { super::diag_on(ps, sink()) }
