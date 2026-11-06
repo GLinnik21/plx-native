@@ -76,6 +76,11 @@ pub trait UriProbe {
     /// The launch a `plxnative-uriprobe` trigger text names; `None` when it names no variant, which
     /// leaves the probe unarmed and the play normal.
     fn armed(&self, text: &str) -> Option<Box<dyn ProbeLaunch>>;
+
+    /// Whether the native object is free of an earlier session. The probe's window verbs reach the
+    /// same seam an Engine does, so a start refuses, as an Engine's does, while an earlier session
+    /// (a parked timed-out Load) still owns it: the tester plays again.
+    fn native_slot_available(&self) -> bool;
 }
 
 /// The route reducer's side of the attempt: the driver's report mapped onto [`RouteStartResult`].
@@ -219,6 +224,7 @@ mod port_tests {
         fn armed(&self, text: &str) -> Option<Box<dyn ProbeLaunch>> {
             text.starts_with("fake").then(|| Box::new(FakeLaunch { script: self.script.clone() }) as Box<dyn ProbeLaunch>)
         }
+        fn native_slot_available(&self) -> bool { true }
     }
 
     const URL: &str = "https://example.invalid/library/parts/1/file.mkv?X-Plex-Token=SECRET";

@@ -12,6 +12,7 @@ pub mod subtitle;
 pub mod readout;
 pub mod tracks;
 pub mod uri;
+pub mod playurl;
 pub use uri::UriDriver;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;

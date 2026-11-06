@@ -114,6 +114,19 @@ mod composed_backends_tests {
         assert_eq!(adapter.composed_backends(), FEED_ONLY);
     }
 
+    /// The start path's hooks arrive with the physical set: an adapter with none composed captures
+    /// no demux session and reads no `playurl` declaration, one with the Feed's captures a session
+    /// for the attempt it is asked about.
+    #[test]
+    fn the_start_hooks_arrive_with_the_physical_set() {
+        let bare = PlayerAdapter::new(unsafe { MainThread::assume() });
+        assert!(bare.capture_demux_session(AttemptId::new(1, 1), 1).is_none());
+        assert!(bare.play_url().is_none());
+        let fed = PlayerAdapter::new_fed(unsafe { MainThread::assume() });
+        let session = fed.capture_demux_session(AttemptId::new(1, 1), 1).expect("the Feed's composition captures one");
+        assert_eq!(session.observer().attempt(), AttemptId::new(1, 1));
+    }
+
     /// The sink a composition installs is asked afresh at every use (the Feed's fence changes its
     /// answer while an off-frame `Unload` owns the object), and until one is installed the adapter
     /// reaches the seam through a sink that refuses every verb.
@@ -146,7 +159,7 @@ mod composed_backends_tests {
             &NoSink
         }
         let mut adapter = PlayerAdapter::new_fed(unsafe { MainThread::assume() });
-        assert!(adapter.install_physical(Box::new(UriOnlySet::new()), counted).is_err(),
+        assert!(adapter.install_physical(Box::new(UriOnlySet::new()), counted, crate::player::test_physical::start_hooks()).is_err(),
             "a Feed is already installed");
         let _ = adapter.display_sink();
         assert_eq!(ASKED.load(SeqCst), 0, "the refused set's sink was not installed");
@@ -344,6 +357,22 @@ struct BoundFeed {
 /// changes while an off-frame `Unload` owns the native object.
 pub type SinkProvider = fn() -> &'static dyn VideoSink;
 
+/// Captures the session one demux attempt is handed: the Feed's clock, adaptive actuator, callback
+/// observer and effect sink over the composition's caption half and media hooks
+/// ([`super::demux_session`]). Built by the application, which names the Feed; media asks for it
+/// at a start.
+pub type DemuxSessionProvider = fn(AttemptId, u32) -> Box<dyn plx_playback_contract::demux::DemuxSession>;
+
+/// What the application composes beside the physical set for the start path to call: the demux
+/// session of an attempt and the dev `playurl` trigger's reader. Media cannot name the Feed that
+/// supplies them, so they arrive as plain function pointers.
+#[derive(Clone, Copy)]
+pub struct StartHooks {
+    pub demux_session: DemuxSessionProvider,
+    /// The reader of the `plxnative-playurl` dev trigger (`None` in a build without `devtriggers`).
+    pub play_url: plx_playback_contract::playurl::PlayUrlSource,
+}
+
 /// What an adapter reaches the seam through until the composition installs a sink: every verb
 /// refused ([`NoSink`]).
 fn inert_sink() -> &'static dyn VideoSink { &NoSink }
@@ -363,6 +392,9 @@ pub struct PlayerAdapter {
     /// [`Self::install_display_sink`]) and read through [`Self::display_sink`]. Until the
     /// composition installs one it refuses every verb ([`inert_sink`]).
     sink: SinkProvider,
+    /// The start path's hooks, composed beside the set ([`Self::install_physical`]); `None` until
+    /// then, so a start over the URI-only set that reaches for one is refused.
+    start_hooks: Option<StartHooks>,
     /// The test fixtures' handle on the Feed set boxed behind `physical`
     /// ([`Self::new_probed`]); `None` on an adapter built by [`Self::new`].
     #[cfg(all(test, feature = "play-feed"))]
@@ -456,6 +488,7 @@ impl PlayerAdapter {
             mt,
             physical: Box::new(UriOnlySet::new()),
             sink: inert_sink,
+            start_hooks: None,
             #[cfg(all(test, feature = "play-feed"))]
             probe: None,
             backend: backend::BackendRunner::new(),
@@ -504,6 +537,7 @@ impl PlayerAdapter {
         super::test_physical::install_sf_event_hooks();
         adapter.physical = physical;
         adapter.sink = super::test_physical::sink;
+        adapter.start_hooks = Some(super::test_physical::start_hooks());
         adapter.probe = Some(probe);
         adapter
     }
@@ -1015,19 +1049,34 @@ impl PlayerAdapter {
     }
 
     /// Install the physical set the application composed (the Feed backend and the URI driver's
-    /// seat) with the sink its verbs go through, replacing the [`UriOnlySet`] and the inert sink
-    /// the adapter starts with. It is the composition's one call, made before the first Start; a
-    /// set that would lose something is handed back untouched: the current set seats a URI
-    /// driver, a Feed is already installed, or a native attempt is still being released.
-    pub fn install_physical(&mut self, set: Box<dyn PhysicalSet>, display_sink: SinkProvider)
-        -> Result<(), Box<dyn PhysicalSet>> {
+    /// seat) with the sink its verbs go through and the hooks its start path calls, replacing the
+    /// [`UriOnlySet`] and the inert sink the adapter starts with. It is the composition's one call,
+    /// made before the first Start; a set that would lose something is handed back untouched: the
+    /// current set seats a URI driver, a Feed is already installed, or a native attempt is still
+    /// being released.
+    pub fn install_physical(&mut self, set: Box<dyn PhysicalSet>, display_sink: SinkProvider,
+        start_hooks: StartHooks) -> Result<(), Box<dyn PhysicalSet>> {
         if self.physical.uri().is_some() || self.physical.feed().is_some()
             || self.backend_exit_disposition() != ExitDisposition::Clean {
             return Err(set);
         }
         self.physical = set;
         self.sink = display_sink;
+        self.start_hooks = Some(start_hooks);
         Ok(())
+    }
+
+    /// The session one demux attempt is handed, captured by the composition's provider; `None`
+    /// when no Feed composition is installed.
+    pub(super) fn capture_demux_session(&self, attempt: AttemptId, native_epoch: u32)
+        -> Option<Box<dyn plx_playback_contract::demux::DemuxSession>> {
+        self.start_hooks.map(|hooks| (hooks.demux_session)(attempt, native_epoch))
+    }
+
+    /// This boot's `plxnative-playurl` declaration, if one was armed (see
+    /// [`plx_playback_contract::playurl`]); `None` with no Feed composition installed.
+    pub(super) fn play_url(&self) -> Option<Result<plx_playback_contract::playurl::PlayUrl, String>> {
+        self.start_hooks.and_then(|hooks| (hooks.play_url)())
     }
 
     /// Install the sink of a composition with no Feed set (the URI-only build hands the platform
@@ -2122,6 +2171,13 @@ impl PlayerAdapter {
     #[cfg(feature = "devtriggers")]
     pub fn uri_probe_installed(&self) -> bool {
         self.uri_probe.is_some()
+    }
+
+    /// Whether the installed probe finds the native object free of an earlier session (see
+    /// [`UriProbe::native_slot_available`](super::uriprobe_drive::UriProbe::native_slot_available)).
+    #[cfg(feature = "devtriggers")]
+    pub(super) fn uri_probe_native_slot_available(&self) -> bool {
+        self.uri_probe.as_ref().is_some_and(|probe| probe.native_slot_available())
     }
 
     /// The launch the installed probe arms for a `plxnative-uriprobe` trigger text; `None` when it

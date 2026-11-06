@@ -58,13 +58,13 @@ impl<S: DemuxSubtitle + Send + 'static> FeedDemuxSession<S> {
         attempt: AttemptId,
         native_epoch: u32,
         hooks: DemuxMediaHooks,
-        subtitle: impl FnOnce(Arc<FeedDemuxObserver>) -> S,
+        subtitle: impl FnOnce(Arc<dyn DemuxObserver>) -> S,
     ) -> Box<dyn DemuxSession> {
         let observer = Arc::new(FeedDemuxObserver { attempt, native_epoch });
         Box::new(Self {
             clock: FeedDemuxClock { observer: observer.clone(), hls_pause: None, original_pause: None },
             media: FeedDemuxMedia { native_epoch, hooks },
-            subtitle: subtitle(observer.clone()),
+            subtitle: subtitle(observer.clone() as Arc<dyn DemuxObserver>),
             observer,
         })
     }

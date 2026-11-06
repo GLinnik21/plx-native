@@ -389,7 +389,7 @@ fn start_bufferfeed_prepared(
     // The source first: a route plan qualified its recipe already, and a source no plan resolved (a
     // dev trigger's) is qualified by being resolved. Nothing native is touched until the
     // offer check below has passed.
-    let resolved = super::feed_open::resolve_source(ps)?;
+    let resolved = super::feed_open::resolve_source(ps, pa)?;
     if !cfg!(feature = "play-feed") || !ps.backend_planned_feed_allowed() {
         log("start_bufferfeed: no qualified feed offer for this resolved route");
         return Err(crate::route::RouteStartResult::StartFailed);
@@ -437,7 +437,7 @@ fn start_bufferfeed_prepared(
                     // The probe takes no native session of its own, but its window verbs reach the
                     // same seam, so it refuses like an Engine does while an earlier session still
                     // owns the object (a parked timed-out Load): the tester plays again.
-                    if engine::native_slot_available().is_none() {
+                    if !pa.uri_probe_native_slot_available() {
                         log("uriprobe: the native object is still owned by an earlier session: probe NOT started");
                         return Err(crate::route::RouteStartResult::StartFailed);
                     }
@@ -493,7 +493,11 @@ fn start_bufferfeed_prepared(
     let attempt = route_attempt.contract_id();
     let (video_fidelity, audio_fidelity) = ps.planned_feed_fidelity()
         .expect("qualified feed has fidelity requirements");
-    let session = super::demux_session::capture(attempt, native_epoch);
+    let Some(session) = pa.capture_demux_session(attempt, native_epoch) else {
+        // No Feed composition (the open above was refused on one already): nothing to stage.
+        pa.open_abort();
+        return Err(crate::route::RouteStartResult::StartFailed);
+    };
     ps.begin_attempt_view(route_attempt, super::attempt_view::Backend::Feed);
     let source = pa.next_source_key();
     if pa.open_stage(attempt, source, session).is_err() {

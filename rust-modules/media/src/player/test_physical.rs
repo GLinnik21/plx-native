@@ -152,6 +152,15 @@ pub(super) fn feed_set() -> FeedSet {
     FeedSet::new(FeedBackend::new(FeedResources::new(&FEED_SHARED, &TEST_HOOKS)))
 }
 
+/// The start path's hooks over the real Feed, as the application composes them (`app::adapters::backends`).
+#[cfg(feature = "play-feed")]
+pub(super) fn start_hooks() -> super::adapter::StartHooks {
+    super::adapter::StartHooks {
+        demux_session: super::demux_session::capture,
+        play_url: plx_play_feed::playurl::playurl,
+    }
+}
+
 impl PlayerAdapter {
     /// [`Self::new`] with the Feed set installed (a build with no Feed has none to install).
     pub fn new_fed(mt: MainThread) -> Self {
@@ -159,7 +168,7 @@ impl PlayerAdapter {
         #[cfg(feature = "play-feed")]
         {
             install_sf_event_hooks();
-            assert!(adapter.install_physical(Box::new(feed_set()), sink).is_ok(),
+            assert!(adapter.install_physical(Box::new(feed_set()), sink, start_hooks()).is_ok(),
                 "a fresh adapter takes its physical set");
         }
         adapter

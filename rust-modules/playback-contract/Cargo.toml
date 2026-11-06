@@ -22,6 +22,9 @@ test-support = []
 [dependencies]
 # The worker-only adaptive session carries the existing off-frame proof across its port.
 plx_base = { path = "../base" }
+# `playurl::PlayUrl` is the dev trigger's JSON value. The same spec as plx_play_feed's, so the
+# lockfile gains no crate.
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 
 [lints]
 workspace = true

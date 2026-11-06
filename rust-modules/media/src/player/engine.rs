@@ -124,9 +124,6 @@ use plx_play_feed::feed_state::engines_dropped_for_test;
 // four `static mut` accessors used to carry here, and says what the owned slot proves that the
 // `&MainThread` argument could only assert.
 
-#[cfg(feature = "devtriggers")]
-use plx_play_feed::native_executor::NativeSessionStartGuard;
-
 /// A native `Load` that teardown could not wait for.
 ///
 /// The D.1.4 budget turns a `Load` that never returns into a failure read-out, but the object that
@@ -384,11 +381,6 @@ pub use super::route_start::{start_bufferfeed, start_bufferfeed_tracked, Bufferf
 
 #[cfg(test)]
 use plx_play_feed::native_executor::stream_open_log_line;
-
-#[cfg(feature = "devtriggers")]
-pub(super) fn native_slot_available() -> Option<()> {
-    NativeSessionStartGuard::arm(&plx_play_feed::shared::FEED_SHARED).map(|guard| { drop(guard); })
-}
 
 /// Set where the pump ends an Engine for good under the failure read-out; spent by
 /// [`super::route_start::release_failed_engine`] or by any teardown.
@@ -856,12 +848,12 @@ mod payload_tests {
     #[test]
     fn refused_synthetic_p5_start_cannot_be_retried_past_validation() {
         let mut ps = crate::route::PlaybackSession::IDLE;
-        let play = plx_play_feed::playurl::PlayUrl {
+        let play = plx_playback_contract::playurl::PlayUrl {
             url: "http://192.0.2.1/refused-p5.mkv".into(),
             vcodec: "hevc".into(),
             acodec: "eac3".into(),
             fps: 23.976,
-            dovi: plx_play_feed::playurl::PlayDovi {
+            dovi: plx_playback_contract::playurl::PlayDovi {
                 profile: 5,
                 bl_compat: 0,
                 el_present: false,
