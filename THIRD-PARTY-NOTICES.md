@@ -536,6 +536,57 @@ host, a request to that host starts there instead of repeating the handshake the
 redirect is a request of its own, verified against the television's own store, and is offered this
 file only if its target is itself a `*.plex.direct` name that fails the same way.
 
+### 2.8 Vendored HTTP/3-capable curl
+
+PlxNative **ships its own build of curl**, alongside the television's own libcurl 7.53.1
+(`net.rs`/`curlio.rs` fall back to the television's copy by SONAME, unchanged, the moment any
+file below is missing or fails to load — see `bundled()`'s doc in `net.rs`). The television's own
+copy predates QUIC entirely; this one adds it, matching the HTTP/3 entrypoint the user's own edge
+proxy advertises.
+
+The TLS backend is **GnuTLS**, not OpenSSL, and that is a correctness fact, not a preference: an
+earlier build of this bundle used OpenSSL 3.5.9, and on-device testing (webOS 5.6.2) found that
+loading a second, different-major OpenSSL into a process that already has the television's own
+`/usr/lib/libcrypto.so.1.0.2` crashes deterministically — a known class of OpenSSL-vs-OpenSSL
+coexistence bug, not a bug in this app's own dlopen scoping (`RTLD_LOCAL` was tried and did not
+help; see `BUNDLED_CURL_DEPS`'s doc in `net.rs`). GnuTLS and its stack share no code, symbol names
+or process-global init assumptions with OpenSSL, so nothing is left to collide with.
+
+| Shipped file | Upstream | Version | Licence |
+|---|---|---|---|
+| `libcurl-plx.so.4` | curl | **8.23.0** | **curl** (`licenses/curl.txt`) |
+| `libgnutls-plx.so.30` | GnuTLS | **3.8.13** | **LGPL-2.1-or-later** (`licenses/LGPL-2.1.txt`) |
+| `libnettle-plx.so.8`, `libhogweed-plx.so.6` | Nettle | **3.10.2** | **LGPL-3.0-or-later** (`licenses/LGPL-3.0.txt`), the LGPL arm of Nettle's LGPL-3.0-or-later/GPL-2.0-or-later dual licence |
+| `libtasn1-plx.so.6` | libtasn1 | **4.21.0** | **LGPL-2.1-or-later** (`licenses/LGPL-2.1.txt`) |
+| `libgmp-plx.so.10` | GMP | **6.3.0** | **LGPL-3.0-or-later** (`licenses/LGPL-3.0.txt`), the LGPL arm of GMP's LGPL-3.0-or-later/GPL-2.0-or-later dual licence |
+| `libnghttp2-plx.so.14` | nghttp2 | **1.71.0** | **MIT** (`licenses/MIT.txt`) |
+| `libnghttp3-plx.so.9` | nghttp3 | **1.19.0** | **MIT** (`licenses/MIT.txt`) |
+| `libngtcp2-plx.so.16`, `libngtcp2_crypto_gnutls-plx.so.8` | ngtcp2 | **1.26.0** | **MIT** (`licenses/MIT.txt`) |
+
+**Complete corresponding source.** Each upstream tarball these were built from, with its sha256,
+is pinned in `ci/dependencies.json` (`gmp`, `nettle`, `libtasn1`, `gnutls`, `nghttp2`, `nghttp3`,
+`ngtcp2`, `curl` entries) and attached to the release alongside the `.ipk`, same as FFmpeg's
+(§1.1). The sources are **unmodified**: no patches are applied to any of the eight. The complete
+build recipe — cross-compile flags, the `-plx` SONAME rename of each output, and curl's own
+enabled-feature list — is `ci/build-curlstack.sh` in the PlxNative repository, attached to each
+release.
+
+**Configuration.** curl is built with only `file ftp ftps http https ipfs ipns ws wss` enabled
+(`ldap`, `rtsp`, `telnet`, `dict`, `gopher`, `smtp`, `pop3`, `imap`, `tftp`, `mqtt` and the
+`libssh2`/`librtmp`/`libidn2`/`libpsl`/`brotli`/`zstd`/`gssapi` dependencies they would otherwise
+pull in are all disabled — this app only ever does HTTPS GET and byte-range requests). GMP is
+built shared, under this project's own `-plx` SONAME, specifically because the webOS NDK's own
+sysroot already ships an unrelated `libgmp.so.10` (a dependency of the NDK's own cross GCC) that
+a static-only GMP would have silently let the linker substitute. GnuTLS is built without
+PKCS#11 (`--without-p11-kit`), DANE/DNSSEC (`--disable-libdane`), its command-line tools, tests,
+Guile bindings, NLS and IDN support (`--disable-tools --disable-tests --disable-guile
+--disable-nls --without-idn`) and TPM2 support (`--without-tpm2`) — none of which this app has
+ever had a reason to use.
+
+*Why it ships:* the television's bundled libcurl is pinned at 7.53.1 for exactly the reason
+FFmpeg is bundled (§1.1) — a system library this old can be worked around, never grown a
+protocol. HTTP/3 needs a modern TLS stack curl's existing floor cannot supply.
+
 ---
 
 ## 3. Dynamically linked, not redistributed
@@ -600,9 +651,11 @@ runtime notices listed below:
 
 | File | Required by |
 |---|---|
-| `licenses/LGPL-2.1.txt` | FFmpeg, FriBidi, GLib, GNU C Library (§1) — GNU Lesser General Public License, version 2.1 |
-| `licenses/MIT.txt` | Feather Icons, Heroicons, the MIT-elected Rust packages, Sentry Native and libunwind (§2.2, §2.4, §2.6). One copy of the MIT text; the copyright holders it refers to are the ones named in this file |
+| `licenses/LGPL-2.1.txt` | FFmpeg, FriBidi, GLib, GNU C Library (§1), GnuTLS, libtasn1 (§2.8) — GNU Lesser General Public License, version 2.1 |
+| `licenses/LGPL-3.0.txt` | GMP, Nettle (§2.8) — the LGPL arm of each project's LGPL-3.0-or-later/GPL-2.0-or-later dual licence |
+| `licenses/MIT.txt` | Feather Icons, Heroicons, the MIT-elected Rust packages, Sentry Native and libunwind, nghttp2, nghttp3, ngtcp2 (§2.2, §2.4, §2.6, §2.8). One copy of the MIT text; the copyright holders it refers to are the ones named in this file |
 | `licenses/Apache-2.0.txt` | Google Material Design Icons; calendrical_calculations; moxcms; pxfm; compiler_builtins (§2.2, §2.4) |
+| `licenses/curl.txt` | the vendored curl itself (§2.8) — its own permissive licence, textually close to MIT but not identical, kept separate |
 | `licenses/LLVM-exception.txt` | compiler_builtins (§2.4) |
 | `licenses/Unicode-3.0.txt` | Unicode Character Database tables in Rust `core` (§2.4) — UNICODE LICENSE V3, "Copyright © 1991-2024 Unicode, Inc." |
 | `licenses/ICU4X.txt` | ICU4X runtime code and compiled locale data, including its Unicode and IBM notices (§2.4) |

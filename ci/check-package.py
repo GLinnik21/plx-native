@@ -1250,7 +1250,11 @@ DEV_ONLY_SONAMES = {"libswscale-plx.so.10"}   # the dev capture stream's scaler;
 shipped = {p.name for p in (ROOT / "pkg").glob("*.so.*")
            if p.is_file() and p.read_bytes()[:4] == b"\x7fELF"}
 if shipped:
-    named = set(re.findall(r"`(lib[a-z]+-plx\.so\.\d+)`", (ROOT / "THIRD-PARTY-NOTICES.md").read_text()))
+    # `[a-z0-9_]+`, not `[a-z]+`: the vendored curl stack's own upstream basenames carry digits
+    # (nghttp2, nghttp3, ngtcp2) and an underscore (`libngtcp2_crypto_ossl`, ngtcp2's own QUIC
+    # crypto glue) — every SONAME here until now happened to be letters-only (avutil, avcodec,
+    # avformat, swscale, ass, and now crypto/ssl/curl).
+    named = set(re.findall(r"`(lib[a-z0-9_]+-plx\.so\.\d+)`", (ROOT / "THIRD-PARTY-NOTICES.md").read_text()))
     distributed = shipped - DEV_ONLY_SONAMES
     check(distributed == named,
           "THIRD-PARTY-NOTICES names exactly the distributed libraries"
@@ -1677,9 +1681,11 @@ check('license = "GPL-3.0-or-later"' in (ROOT / "rust-modules/Cargo.toml").read_
       "Cargo elects GPL-3.0-or-later")
 check((ROOT / "LICENSING.md").exists(), "LICENSING.md present")
 NEEDED_LICENCES = {
-    "LGPL-2.1.txt": "FFmpeg, GLib, glibc — dynamically linked, §6 notice duty",
-    "MIT.txt": "Feather/Heroicons and the MIT-elected Rust crates",
+    "LGPL-2.1.txt": "FFmpeg, GLib, glibc — dynamically linked, §6 notice duty; also GnuTLS, libtasn1",
+    "LGPL-3.0.txt": "GMP, Nettle — the LGPL arm of each project's dual licence",
+    "MIT.txt": "Feather/Heroicons, the MIT-elected Rust crates, nghttp2, nghttp3, ngtcp2",
     "Apache-2.0.txt": "Material Icons, moxcms, pxfm, compiler_builtins",
+    "curl.txt": "the vendored curl itself — its own permissive licence, not MIT verbatim",
     "LLVM-exception.txt": "compiler_builtins",
     "Unicode-3.0.txt": "the Unicode tables inside Rust core",
     "Zlib.txt": "nanosvg — fetched at a pinned commit and compiled into the binary",

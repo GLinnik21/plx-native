@@ -85,8 +85,16 @@ pub struct CurlVersionInfo {
 // It is LAST deliberately — a television never reaches it, so this costs the device nothing but
 // one extra failed `dlopen` in the already-fatal no-curl case, and the candidate list stays
 // ordered by "what the fleet actually answers to" first.
+// `libcurl-plx.so.4` is FIRST: our own vendored curl 8.23 (OpenSSL 3.5.9 + nghttp2 + nghttp3 +
+// ngtcp2, built `-plx`-suffixed beside the binary by `ci/build-curlstack.sh`), for HTTP/3 —
+// the same bundle-beside-the-binary pattern the FFmpeg libraries already use (`ff.rs`'s doc).
+// `libcurl.so.4`/`.so.5`/`.dylib` stay as the fallback, UNCHANGED, for a device where the bundle
+// did not deploy. Picking between them happens exactly ONCE, here, in `global_init_once` — and
+// `curlio.rs`'s separate multi table MUST mirror this module's choice via [`bundled`] rather than
+// deciding independently: an easy handle from one libcurl handed to another's
+// `curl_multi_add_handle` is an ABI violation, not a compatibility question.
 plx_base::dynlib! {
-    pub curl: ["libcurl.so.4", "libcurl.so.5", "libcurl.4.dylib"] {
+    pub curl: ["libcurl-plx.so.4", "libcurl.so.4", "libcurl.so.5", "libcurl.4.dylib"] {
     fn curl_global_init(flags: c_long) -> c_int;
     fn curl_version() -> *const c_char;
     fn curl_version_info(age: c_int) -> *const CurlVersionInfo;
@@ -128,6 +136,46 @@ const CURLOPT_FOLLOWLOCATION: c_int = 52;
 const CURLOPT_MAXREDIRS: c_int = 68;
 const CURLOPT_SSL_VERIFYPEER: c_int = 64;
 const CURLOPT_SSL_VERIFYHOST: c_int = 81;
+/// `CURLOPT_SSL_OPTIONS` (VALUES + 216) and its `CURLSSLOPT_NATIVE_CA` bit (`1 << 4`). Set only
+/// in [`TlsCfg::Ca`]'s arm, and only when [`bundled`] — the bundled curl's GnuTLS backend does NOT
+/// fall back to its own build-time default trust store on its own: `gtls_populate_creds` in
+/// curl's `vtls/gtls.c` only calls `gnutls_certificate_set_x509_system_trust` when this bit is
+/// set, so without it every bundled-curl handle carries ZERO trust anchors regardless of how
+/// GnuTLS itself was built (confirmed on-device — every request failed
+/// `GNUTLS_CERT_SIGNER_NOT_FOUND` even after GnuTLS was built with a correct
+/// `--with-default-trust-store-dir`). The firmware's system curl (7.53.1, OpenSSL) predates this
+/// option's `CURLSSLOPT_NATIVE_CA` meaning and has its own default CAPATH regardless, so this is
+/// never sent on that path. Present in libcurl since 7.25.0 (the option id) / 7.71.0 (this bit);
+/// the bundled curl is 8.23.0, so it is always recognised when sent.
+const CURLOPT_SSL_OPTIONS: c_int = 216;
+const CURLSSLOPT_NATIVE_CA: c_long = 1 << 4;
+/// `CURLOPT_ALTSVC_CTRL` (VALUES + 286) and `CURLOPT_ALTSVC` (OBJECTPOINT + 287) — opportunistic
+/// HTTP/3: a strict request is still plain HTTP/2 over TLS the FIRST time it reaches a host (QUIC
+/// does not negotiate over the same TCP/TLS handshake HTTP/1.1 and 2 share, so there is no ALPN
+/// moment to upgrade from), but a reverse proxy that advertises HTTP/3 (e.g. Traefik) sends an
+/// `Alt-Svc: h3=":443"` header in its response, and libcurl
+/// — told to care about one, via `CURLALTSVC_H3` on `_CTRL`, and given a file to remember
+/// it in — uses QUIC on every later request to that host for as long as the entry stays fresh.
+/// Only `CURLALTSVC_H3` is set: H1/H2 upgrades offer nothing new, since ALPN already picks the
+/// best of those on every handshake. Both options present since libcurl 7.64.1; the bundled curl
+/// is 8.23.0. Set only in [`TlsCfg::Ca`]'s arm, alongside `CURLSSLOPT_NATIVE_CA`: roots and key
+/// mode are deliberately narrower trust decisions already paying for an extra round trip, and are
+/// not where a transport upgrade should be learned or spent.
+const CURLOPT_ALTSVC_CTRL: c_int = 286;
+const CURLOPT_ALTSVC: c_int = 10287;
+const CURLALTSVC_H3: c_long = 1 << 5;
+/// Where libcurl remembers which hosts offered HTTP/3, across easy handles and across this
+/// process's requests (though not across TV restarts — `in_runtime_dir` is `/tmp`, wiped on
+/// reboot; a cold cache just costs one ordinary HTTP/2 request before the next upgrade). Must be
+/// writable: libcurl reads it at `CURLOPT_ALTSVC` and writes it back on cleanup. `app_dir` (where
+/// `le-roots.pem` lives) is root-owned and read-only on the television, so it cannot hold this.
+pub fn altsvc_cache_path() -> &'static CString {
+    static PATH: OnceLock<CString> = OnceLock::new();
+    PATH.get_or_init(|| {
+        let p = plx_base::paths::in_runtime_dir("plxnative-altsvc.cache");
+        CString::new(p.to_string_lossy().into_owned()).unwrap_or_else(|_| CString::new("/tmp/plxnative-altsvc.cache").unwrap())
+    })
+}
 const CURLOPT_NOSIGNAL: c_int = 99;
 /// `CURLOPT_FRESH_CONNECT` (LONG + 74) and `CURLOPT_FORBID_REUSE` (LONG + 75): never take a cached
 /// connection for this handle, and never leave this handle's connection in the cache. Read off
@@ -230,6 +278,167 @@ pub fn curl_version_num() -> u32 {
 }
 /// Only used on the abnormal old-OpenSSL/no-callback fallback. Normal devices never take it.
 static CURL_FALLBACK_SERIAL: Mutex<()> = Mutex::new(());
+
+/// Did [`global_init_once`] bind `libcurl-plx.so.4` (our vendored curl) rather than a system
+/// candidate? `curlio.rs`'s multi table reads this through [`bundled`] to pick the SAME `dir` for
+/// its own `curlmulti::load(...)` call — never decided independently, see the `dynlib!` table's
+/// doc above.
+static CURL_BUNDLED: AtomicBool = AtomicBool::new(false);
+
+/// Is the bound libcurl our vendored `libcurl-plx.so.4`? Only meaningful after [`global_init`].
+pub fn bundled() -> bool {
+    CURL_BUNDLED.load(Ordering::Acquire)
+}
+
+/// The nine libraries `libcurl-plx.so.4` itself was linked against, in NEEDED order, none of
+/// which carry an rpath (same reason FFmpeg's bundled libraries do not: see
+/// `ci/build-ffmpeg.sh`). Opened first, by absolute path, so the loader finds each one already
+/// mapped under its SONAME when the next names it — exactly `ff.rs::load_libraries`'s pattern,
+/// not a new one. None of these export a symbol this app calls directly; curl's own C code is
+/// the only caller, so a bare `Handle::open_in_deepbind` (no `dynlib!` table, nothing to bind)
+/// is enough — see [`load_curl_deepbind`]'s doc for why `RTLD_DEEPBIND`, not plain `RTLD_LOCAL`.
+///
+/// TLS BACKEND IS GnuTLS, NOT OpenSSL — deliberately, and not a style choice. The first build of
+/// this bundle used OpenSSL 3.5.9, and on-device testing (webOS 5.6.2) found it fatal: loading a
+/// SECOND OpenSSL major version into a process that already has the television's own
+/// `/usr/lib/libcrypto.so.1.0.2` crashes, deterministically — a known, OpenSSL-specific class of
+/// bug (two major versions fighting over process-global state: RNG seeding, `atfork` handlers,
+/// provider/engine tables), not the symbol-interposition problem [`load_curl_deepbind`]'s doc
+/// describes and fixes. GnuTLS and its stack (nettle/hogweed, libtasn1, gmp) share no code, no
+/// symbol names and no init-time assumptions with OpenSSL, so there is nothing left for THAT
+/// specific hazard to collide with. `ci/build-curlstack.sh` has the full build.
+const BUNDLED_CURL_DEPS: &[&str] = &[
+    "libgmp-plx.so.10",
+    "libtasn1-plx.so.6",
+    "libnettle-plx.so.8",
+    "libhogweed-plx.so.6",
+    "libgnutls-plx.so.30",
+    "libnghttp2-plx.so.14",
+    "libnghttp3-plx.so.9",
+    "libngtcp2-plx.so.16",
+    "libngtcp2_crypto_gnutls-plx.so.8",
+];
+
+/// Load `libcurl-plx.so.4` itself with `RTLD_DEEPBIND`, bypassing `curl::load()`'s normal
+/// `RTLD_GLOBAL`-only path (that macro-generated function is shared by every `dynlib!` table in
+/// this crate, so it is not touched — this is a one-off, local to this one library).
+///
+/// WHY: our own `dlsym`-resolved pointers for `curl_easy_init`/`curl_easy_perform`/etc. already
+/// resolve correctly to this library — confirmed on-device, their logged values sit squarely
+/// inside this library's own mapped range. The problem is what happens ONE LEVEL DEEPER: bundled
+/// curl's OWN internal calls between its OWN functions (`curl_easy_perform` driving its own
+/// private multi machinery, which shares symbol names with the public API) go through the
+/// ordinary PLT / global-symbol-scope mechanism, exactly like a call from outside the library
+/// would. The television's SYSTEM `libcurl.so.4.5.0` is unconditionally in that global scope
+/// before this app's own `main` ever runs — `libplayerAPIs.so.1` (the Starfish media framework,
+/// linked by every build of this app, stable included) carries a real `NEEDED` entry on
+/// `libcurl.so.4` for its own internal use, confirmed via `readelf -d`. Loaded first, its
+/// same-named exported symbols win ordinary global-scope resolution, so bundled curl's own
+/// self-calls were jumping into the SYSTEM library's different, ABI-incompatible internals —
+/// confirmed on-device: a `SIGSEGV` inside `libcurl.so.4.5.0`, at a byte-for-byte reproducible
+/// file offset, on literally the first HTTPS request any thread made, every single launch.
+/// `RTLD_DEEPBIND` is glibc's purpose-built answer to exactly this shape of problem: a library
+/// prefers its OWN dependency chain over the process's global scope when resolving its OWN
+/// undefined references, so its self-calls can no longer be shadowed by an earlier-loaded,
+/// same-named, unrelated copy. `libc::RTLD_DEEPBIND` exists for this exact 32-bit ARM target.
+///
+/// Symbols are resolved into locals first and published only if every one of them succeeded —
+/// the same "never observe a partial table" invariant `load_into`'s own doc states, reimplemented
+/// here by hand because `curl::load()`'s version of that logic cannot take an already-chosen
+/// `dlopen` mode as a parameter without changing the shared macro every other table also uses.
+fn load_curl_deepbind(dir: &std::path::Path) -> Option<&'static str> {
+    const NAME: &str = "libcurl-plx.so.4";
+    let path = dir.join(NAME);
+    let path = path.to_str()?;
+    let cpath = CString::new(path).ok()?;
+    let handle = unsafe {
+        libc::dlopen(
+            cpath.as_ptr(),
+            libc::RTLD_NOW | libc::RTLD_GLOBAL | libc::RTLD_DEEPBIND,
+        )
+    };
+    if handle.is_null() {
+        return None;
+    }
+    let sym = |name: &str| -> Option<*mut c_void> {
+        let c = CString::new(name).ok()?;
+        let p = unsafe { libc::dlsym(handle, c.as_ptr()) };
+        (!p.is_null()).then_some(p)
+    };
+    let resolved = [
+        (&curl::curl_global_init, sym("curl_global_init")?),
+        (&curl::curl_version, sym("curl_version")?),
+        (&curl::curl_version_info, sym("curl_version_info")?),
+        (&curl::curl_easy_init, sym("curl_easy_init")?),
+        (&curl::curl_easy_perform, sym("curl_easy_perform")?),
+        (&curl::curl_easy_cleanup, sym("curl_easy_cleanup")?),
+        (&curl::curl_slist_append, sym("curl_slist_append")?),
+        (&curl::curl_slist_free_all, sym("curl_slist_free_all")?),
+        (&curl::curl_easy_setopt_ptr, sym("curl_easy_setopt")?),
+        (&curl::curl_easy_setopt_long, sym("curl_easy_setopt")?),
+        (&curl::curl_easy_getinfo_long, sym("curl_easy_getinfo")?),
+        (&curl::curl_easy_getinfo_ptr, sym("curl_easy_getinfo")?),
+    ];
+    for (cell, ptr) in resolved {
+        cell.store(ptr, Ordering::Release);
+    }
+    Some(NAME)
+}
+
+/// Best-effort preload of [`BUNDLED_CURL_DEPS`]. A failure here is not fatal and not even logged
+/// as an error: it just means the FOLLOWING `load_curl_deepbind` attempt for
+/// `libcurl-plx.so.4` will itself fail closed (its NEEDED entries cannot be resolved, so `dlopen`
+/// under `RTLD_NOW` refuses it outright) and `global_init_once` falls back to the system
+/// candidates — the safe direction on any partial deploy.
+fn preload_bundled_curl_deps(dir: &std::path::Path) {
+    // `open_in_deepbind`, not `open_in`/`open_in_local`: the SYSTEM's own curl build (pulled in
+    // unconditionally by `libplayerAPIs.so.1`) advertises `nghttp2/1.26.0` in its own version
+    // string, so a same-named nghttp2 is ALREADY in the process's global scope before any of
+    // this runs — the exact shape of hazard `load_curl_deepbind`'s doc describes for curl
+    // itself applies here too, for any of these nine that makes an internal self-call through
+    // the ordinary PLT. `RTLD_LOCAL` alone would not fix it (it governs whether OUR symbols are
+    // visible to others, never whether we see an existing global scope); `RTLD_DEEPBIND` does.
+    let mut gnutls_handle = None;
+    for &name in BUNDLED_CURL_DEPS {
+        match plx_base::dynlib::Handle::open_in_deepbind(Some(dir), &[name]) {
+            Some((handle, _)) if name == "libgnutls-plx.so.30" => gnutls_handle = Some(handle),
+            Some(_) => {}
+            None => {
+                plx_base::eventlog::log(&format!(
+                    "net: bundled curl dependency {name} did not load — vendored libcurl-plx.so.4 \
+                     will fail closed and this device falls back to its own system libcurl"
+                ));
+            }
+        }
+    }
+    // Force `gnutls_global_init()` here, synchronously, on the main thread, before any worker
+    // thread exists to race on it. `curl_global_init(CURL_GLOBAL_SSL)` is *documented* to do
+    // this eagerly on our behalf (`global_init_once` already passes that flag) — but the first
+    // on-device test crashed two worker threads at the IDENTICAL instruction address
+    // (`roster-srv` and `account-audio`, both racing their first-ever HTTPS request moments
+    // after a restored session fires both warm fetches concurrently), which is the textbook
+    // signature of a non-atomic lazy TLS-backend init, not two independent bugs. Calling it
+    // directly removes the question of whether our particular minimal GnuTLS build's curl
+    // integration actually takes the eager path.
+    if let Some(handle) = gnutls_handle {
+        match handle.sym("gnutls_global_init") {
+            Some(init) => {
+                let init: unsafe extern "C" fn() -> std::os::raw::c_int =
+                    unsafe { std::mem::transmute(init) };
+                let rc = unsafe { init() };
+                if rc != 0 {
+                    plx_base::eventlog::log(&format!(
+                        "net: gnutls_global_init returned {rc} — bundled curl may still be unsafe \
+                         under concurrent use"
+                    ));
+                }
+            }
+            None => plx_base::eventlog::log(
+                "net: libgnutls-plx.so.30 loaded but exports no gnutls_global_init — unexpected",
+            ),
+        }
+    }
+}
 
 // OpenSSL before 1.1 delegates its process-global locks to the application. These symbols remain
 // optional instead of joining curl's all-or-nothing table: modern and non-OpenSSL backends do not
@@ -519,7 +728,18 @@ pub fn global_init() -> bool {
 }
 
 fn global_init_once() -> bool {
-    match curl::load(None) {
+    // Try our vendored curl first, by absolute path beside the binary (bare SONAME search would
+    // never find it — see `ff.rs::load_libraries`'s identical reasoning for the bundled FFmpeg).
+    // `load()` is all-or-nothing and NEVER partially publishes (see `load_into`'s doc), so a
+    // failed first attempt here leaves every cell untouched for the second, real attempt to fill.
+    let app_dir = plx_base::paths::app_dir();
+    preload_bundled_curl_deps(app_dir);
+    let (verdict, bundled) = match load_curl_deepbind(app_dir) {
+        Some(soname) => (plx_base::dynlib::Loaded::Ok(soname), true),
+        None => (curl::load(None), false),
+    };
+    CURL_BUNDLED.store(bundled, Ordering::Release);
+    match verdict {
         plx_base::dynlib::Loaded::Ok(soname) => {
             unsafe { curl_global_init(CURL_GLOBAL_ALL) };
             // The version string carries the TLS backend and its version, which is the fact worth
@@ -2321,7 +2541,26 @@ fn request_tls_sink(
                 // "CA-verified and unpinned" being the DEFAULT is the fact a plan written against this
                 // module got wrong — it called for a new request mode to obtain what `request` had
                 // been doing since it was written.
-                TlsCfg::Ca => {}
+                TlsCfg::Ca => {
+                    if bundled() {
+                        require_setopt!(
+                            curl_easy_setopt_long(easy.0, CURLOPT_SSL_OPTIONS, CURLSSLOPT_NATIVE_CA),
+                            "CURLOPT_SSL_OPTIONS"
+                        );
+                        require_setopt!(
+                            curl_easy_setopt_long(easy.0, CURLOPT_ALTSVC_CTRL, CURLALTSVC_H3),
+                            "CURLOPT_ALTSVC_CTRL"
+                        );
+                        require_setopt!(
+                            curl_easy_setopt_ptr(
+                                easy.0,
+                                CURLOPT_ALTSVC,
+                                altsvc_cache_path().as_ptr() as *const c_void,
+                            ),
+                            "CURLOPT_ALTSVC"
+                        );
+                    }
+                }
                 // A bundle we ship. The return code is checked for the same reason the pin's is, but
                 // the failure it guards is milder and worth stating so nobody "simplifies" the pinned
                 // check to match: a REJECTED `CURLOPT_CAINFO` leaves the device's own store in force,
@@ -3144,6 +3383,19 @@ pub mod keypin {
     const X509_NO_ISSUER: c_long = 2;
     const X509_NO_LOCAL_ISSUER: c_long = 20;
     const X509_NO_LEAF_SIGNATURE_KEY: c_long = 21;
+    /// GnuTLS's own `gnutls_certificate_status_t` (confirmed against the vendored `gnutls.h`) —
+    /// a BITMASK of independent reasons, unlike OpenSSL's single-value `X509_V_ERR_*` enum above.
+    /// `CURLINFO_SSL_VERIFYRESULT` reports whichever scheme the ACTIVE backend used: the bundled
+    /// curl links GnuTLS, the firmware's system curl (used only if the bundled stack failed to
+    /// `dlopen`, see [`super::bundled`]) is OpenSSL 1.0.2p. Every predicate below checks
+    /// [`super::bundled`] first and decodes the number by the matching scheme. GnuTLS has no bit
+    /// for "self-signed leaf" distinct from "issuer not found" — both set only
+    /// `GNUTLS_CERT_SIGNER_NOT_FOUND` — so under GnuTLS that one bit stands in for the whole
+    /// OpenSSL 2/18/19/20/21 group; a self-signed server still fails a roots-mode retry on its own,
+    /// since the bundle holds public CAs, not the server's own key.
+    const GNUTLS_CERT_SIGNER_NOT_FOUND: c_long = 1 << 6;
+    const GNUTLS_CERT_NOT_ACTIVATED: c_long = 1 << 9;
+    const GNUTLS_CERT_EXPIRED: c_long = 1 << 10;
     /// The shipped bundle's file name, beside the binary (`pkg/le-roots.pem`). NOT `roots.pem`:
     /// that name belongs to [`super::post_ca`]'s telemetry bundle, which is a different trust
     /// decision for a different set of hosts.
@@ -3153,17 +3405,34 @@ pub mod keypin {
 
     /// libcurl 60 with a date verify result: the one failure a wrong clock explains.
     fn is_date_failure(rc: c_int, verify: Option<c_long>) -> bool {
-        rc == TLS_VERIFY_FAILED && matches!(verify, Some(X509_NOT_YET_VALID | X509_EXPIRED))
+        if rc != TLS_VERIFY_FAILED {
+            return false;
+        }
+        let Some(v) = verify else { return false };
+        if super::bundled() {
+            v & (GNUTLS_CERT_NOT_ACTIVATED | GNUTLS_CERT_EXPIRED) != 0
+        } else {
+            matches!(v, X509_NOT_YET_VALID | X509_EXPIRED)
+        }
     }
 
     /// libcurl 60 with an issuer-not-found verify result: the one failure an out-of-date CA store
-    /// explains. **Disjoint from [`is_date_failure`] by construction** (the verify results 9/10 and
-    /// 2/20/21 share nothing), which is what lets key mode and roots mode coexist without a
-    /// precedence rule: a failure is one or the other, and a failure that is neither (a name
-    /// mismatch, a self-signed leaf, a refused connection) gets neither.
+    /// explains. **Disjoint from [`is_date_failure`] by construction**: under OpenSSL the verify
+    /// results 9/10 and 2/20/21 share nothing; under GnuTLS this checks `SIGNER_NOT_FOUND` only
+    /// when neither date bit is also set, which is what lets key mode and roots mode coexist
+    /// without a precedence rule — a failure is one or the other, and a failure that is neither (a
+    /// name mismatch, a self-signed leaf under OpenSSL, a refused connection) gets neither.
     fn is_untrusted_issuer(rc: c_int, verify: Option<c_long>) -> bool {
-        rc == TLS_VERIFY_FAILED
-            && matches!(verify, Some(X509_NO_ISSUER | X509_NO_LOCAL_ISSUER | X509_NO_LEAF_SIGNATURE_KEY))
+        if rc != TLS_VERIFY_FAILED {
+            return false;
+        }
+        let Some(v) = verify else { return false };
+        if super::bundled() {
+            v & GNUTLS_CERT_SIGNER_NOT_FOUND != 0
+                && v & (GNUTLS_CERT_NOT_ACTIVATED | GNUTLS_CERT_EXPIRED) == 0
+        } else {
+            matches!(v, X509_NO_ISSUER | X509_NO_LOCAL_ISSUER | X509_NO_LEAF_SIGNATURE_KEY)
+        }
     }
 
     /// OpenSSL `X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT` (18) and `…_SELF_SIGNED_CERT_IN_CHAIN` (19):
@@ -3174,14 +3443,16 @@ pub mod keypin {
     const X509_SELF_SIGNED_LEAF: c_long = 18;
     const X509_SELF_SIGNED_IN_CHAIN: c_long = 19;
 
-    /// **The closed answer to "did the television's trust store fail this server?"** — libcurl 60 with
-    /// an OpenSSL verify result of 2, 18, 19, 20 or 21 (a missing issuer, or a chain that ends at a
-    /// root nobody here holds), as that number, and `None` for everything else. Never 9 or 10: those
-    /// are the date, which a wrong television clock explains and which key mode, [`Blocked::NoKey`] and
-    /// `app::clock_notice` already own. Never a different `rc` (a refused connection, a timeout, a
-    /// handshake the firmware cannot speak, 51's name check), and never a `60` whose verify result
-    /// was not reported or names a signature, a name or a purpose. The set is a superset of
-    /// [`is_untrusted_issuer`]'s and disjoint from [`is_date_failure`]'s by construction.
+    /// **The closed answer to "did the television's trust store fail this server?"** — libcurl 60
+    /// with, under OpenSSL, a verify result of 2, 18, 19, 20 or 21 (a missing issuer, or a chain
+    /// that ends at a root nobody here holds), or under GnuTLS a verify result with
+    /// `SIGNER_NOT_FOUND` set (GnuTLS has no separate bit for a self-signed leaf; that bit is the
+    /// whole group) — as that number, and `None` for everything else. Never a date bit: that is the
+    /// clock, which key mode, [`Blocked::NoKey`] and `app::clock_notice` already own. Never a
+    /// different `rc` (a refused connection, a timeout, a handshake the firmware cannot speak, 51's
+    /// name check), and never a `60` whose verify result was not reported or names a signature, a
+    /// name or a purpose. The set is a superset of [`is_untrusted_issuer`]'s and disjoint from
+    /// [`is_date_failure`]'s by construction.
     ///
     /// What the answer is evidence of is the server's certificate and this device's trust, not the
     /// network: it is what a failed identity probe is graded by (`plex::probe::Cause`), so a failure
@@ -3190,10 +3461,16 @@ pub mod keypin {
         if rc != TLS_VERIFY_FAILED {
             return None;
         }
-        match verify? {
-            v @ (X509_NO_ISSUER | X509_SELF_SIGNED_LEAF | X509_SELF_SIGNED_IN_CHAIN
-                | X509_NO_LOCAL_ISSUER | X509_NO_LEAF_SIGNATURE_KEY) => u8::try_from(v).ok(),
-            _ => None,
+        let v = verify?;
+        if super::bundled() {
+            let date = v & (GNUTLS_CERT_NOT_ACTIVATED | GNUTLS_CERT_EXPIRED) != 0;
+            (!date && v & GNUTLS_CERT_SIGNER_NOT_FOUND != 0).then(|| u8::try_from(v).ok()).flatten()
+        } else {
+            match v {
+                v @ (X509_NO_ISSUER | X509_SELF_SIGNED_LEAF | X509_SELF_SIGNED_IN_CHAIN
+                    | X509_NO_LOCAL_ISSUER | X509_NO_LEAF_SIGNATURE_KEY) => u8::try_from(v).ok(),
+                _ => None,
+            }
         }
     }
 

@@ -904,6 +904,20 @@ FFMPEG_SONAMES = libavutil-plx.so.61 libavcodec-plx.so.63 libavformat-plx.so.63 
                  $(if $(RELEASE),,libswscale-plx.so.10)
 FFMPEG_STAGED = $(addprefix pkg/,$(FFMPEG_SONAMES))
 
+# Vendored HTTP/3-capable curl + its nine dependencies (GMP, Nettle, Hogweed, libtasn1, GnuTLS,
+# nghttp2, nghttp3, ngtcp2 and its GnuTLS crypto glue), same bundle-beside-the-binary pattern as
+# FFmpeg above, built through `ci/arm-cc.py` the same way (`ci/build-curlstack.sh`), so each
+# carries real link evidence too. GnuTLS, not OpenSSL: see `ci/build-curlstack.sh`'s own doc for
+# the on-device crash that OpenSSL's TLS backend caused (two incompatible OpenSSL majors in one
+# process) and why GnuTLS's separate symbol/process-state namespace avoids it entirely.
+# `net.rs`/`curlio.rs` dlopen these by absolute path and fall back to the television's own libcurl
+# 7.53.1 the moment any one of them is missing — see their `bundled()` doc.
+CURLSTACK_PREFIXES = gmp nettle libtasn1 gnutls nghttp2 nghttp3 ngtcp2 curl
+CURLSTACK_SONAMES = libgmp-plx.so.10 libnettle-plx.so.8 libhogweed-plx.so.6 libtasn1-plx.so.6 \
+                     libgnutls-plx.so.30 libnghttp2-plx.so.14 libnghttp3-plx.so.9 \
+                     libngtcp2-plx.so.16 libngtcp2_crypto_gnutls-plx.so.8 libcurl-plx.so.4
+CURLSTACK_STAGED = $(addprefix pkg/,$(CURLSTACK_SONAMES))
+
 # nanosvg is not in the repository. It is fetched at the commit pinned in ci/dependencies.json
 # (two header files, one sha256 each) into the gitignored vendor/nanosvg, which CFLAGS puts on the
 # include path. The host build does the same from rust-modules/build_support/host_link.rs.
@@ -958,6 +972,28 @@ $(FFMPEG_STAGED): pkg/%: $(FFMPEG_INC)/libavformat/avformat.h
 	@mkdir -p pkg
 	cp -L $(FFMPEG_PREFIX)/lib/$* $@
 	python3 ci/stage-link-evidence.py $(FFMPEG_PREFIX)/lib/$* $@
+
+CURLSTACK_STAMP = vendor/curlstack-built
+$(CURLSTACK_STAMP): ci/build-curlstack.sh ci/deps.py ci/dependencies.json
+	WEBOS_SDK=$(WEBOS_SDK) ./ci/build-curlstack.sh
+	@mkdir -p vendor
+	@touch $@
+
+# Each SONAME lives under a different vendor/<name>-prefix/lib (openssl/nghttp2/nghttp3/ngtcp2/
+# curl built separately, unlike FFmpeg's single shared prefix) — search them rather than hardcode
+# which prefix owns which file.
+$(CURLSTACK_STAGED): pkg/%: $(CURLSTACK_STAMP)
+	@mkdir -p pkg
+	@for p in $(CURLSTACK_PREFIXES); do \
+	  for libdir in lib lib64; do \
+	    if [ -f vendor/$$p-prefix/$$libdir/$* ]; then \
+	      cp -L vendor/$$p-prefix/$$libdir/$* $@; \
+	      python3 ci/stage-link-evidence.py vendor/$$p-prefix/$$libdir/$* $@; \
+	      exit 0; \
+	    fi; \
+	  done; \
+	done; \
+	echo "$* not found in any vendor/*-prefix/{lib,lib64} — ci/build-curlstack.sh did not stage it" >&2; exit 1
 
 # The FFmpeg ABI gate. ff.rs reads FFmpeg structs at hardcoded offsets; ci/ffabi-assert.c
 # re-derives every one with offsetof against THE HEADERS THE SHIPPED LIBRARIES WERE BUILT FROM, so
@@ -1070,7 +1106,7 @@ GC_SECTIONS_LDFLAG = -Wl,--gc-sections
 # call to __aeabi_fadd). With libm.so first, those names are already defined when the archive is
 # scanned and the members are never extracted, so every call (Rust's and svg.c's) binds to glibc's
 # VFP libm. `ci/check-elf.sh` fails if a local definition of one of them comes back.
-pkg/plxnative: $(OBJS) $(RUST_LIB) $(FFMPEG_STAGED) $(LIBASS_STAGED) $(SENTRY_NATIVE_STAMP) Makefile ci/arm-cc.py ci/check-link-evidence.py
+pkg/plxnative: $(OBJS) $(RUST_LIB) $(FFMPEG_STAGED) $(LIBASS_STAGED) $(CURLSTACK_STAGED) $(SENTRY_NATIVE_STAMP) Makefile ci/arm-cc.py ci/check-link-evidence.py
 	$(CC) $(CFLAGS) -Wl,--build-id=sha1 $(GC_SECTIONS_LDFLAG) $(SMP_INTERPOSER_LDFLAG) \
 	  $(OBJS) -lm $(RUST_LIB) $(SENTRY_NATIVE_LIB) \
 	  $(SENTRY_UNWIND_LIB) $(LIBS_REAL) -ldl -lrt -lpthread -lm -o $@
@@ -1187,7 +1223,7 @@ APP_FILES = pkg/plxnative $(SENTRY_HANDLER) $(APPINFO) $(ICONS) pkg/splash.png \
             pkg/le-roots.pem \
             THIRD-PARTY-NOTICES.md LICENSING.md \
             $(LAB_FILES) \
-            $(FFMPEG_STAGED) $(LIBASS_STAGED)
+            $(FFMPEG_STAGED) $(LIBASS_STAGED) $(CURLSTACK_STAGED)
 
 # Everything `deploy` scp's as a PLAIN file, in one connection — the SAME set `ipk` stages via
 # `cp $(APP_FILES) $(STAGE)/`, minus the three entries that need their own handling for a reason
@@ -1201,7 +1237,7 @@ APP_FILES = pkg/plxnative $(SENTRY_HANDLER) $(APPINFO) $(ICONS) pkg/splash.png \
 # `THIRD-PARTY-NOTICES.md` were in every `.ipk` and in NO deployed app directory, silently, for as
 # long as nobody compared the two by hand. `ci/test_deploy_manifest.py` pins the relationship
 # itself (via `print-app-files`/`print-deploy-files`), not just today's four names.
-DEPLOY_FILES = $(filter-out pkg/plxnative $(SENTRY_HANDLER) $(FFMPEG_STAGED) $(LAB_FILES),$(APP_FILES))
+DEPLOY_FILES = $(filter-out pkg/plxnative $(SENTRY_HANDLER) $(FFMPEG_STAGED) $(CURLSTACK_STAGED) $(LAB_FILES),$(APP_FILES))
 
 # The subtitle faces (tools/cut-noto-subs.py): Noto Sans <script> Bold, one file per script, plus the
 # manifest that names them in add order. They are NOT in `APP_FILES`, because that list is staged
@@ -1268,7 +1304,7 @@ pkg/.flavor/$(FLAVOR)/appinfo.json: pkg/appinfo.json ci/flavor.py ci/install-ide
 # prerequisites run left to right, and a cold `make deploy` spends ~2 minutes building FFmpeg
 # before it touches the television. Taking the lock first would hold the set through a build that
 # needs no television — and, on the short implicit lease, could even let it expire before the scp.
-deploy: pkg/plxnative pkg/plxnative-storage $(FFMPEG_STAGED) $(SENTRY_NATIVE_STAMP) $(APPINFO) release-guard tv-lock-require
+deploy: pkg/plxnative pkg/plxnative-storage $(FFMPEG_STAGED) $(CURLSTACK_STAGED) $(SENTRY_NATIVE_STAMP) $(APPINFO) release-guard tv-lock-require
 	@echo "deploying $(if $(RELEASE),RELEASE,dev) build ($(RUST_CFG)) to $(APPID) [$(FLAVOR)]"
 	@$(SSH) 'test -d $(APPDIR)' || { \
 	  echo "$(APPDIR) does not exist on the TV — the $(FLAVOR) flavour is not installed."; \
@@ -1293,6 +1329,9 @@ deploy: pkg/plxnative pkg/plxnative-storage $(FFMPEG_STAGED) $(SENTRY_NATIVE_STA
 	# that is not fast, and this is ~2.1 MB on every deploy. Unconditional, like the fonts —
 	# a CHANGED library must be able to reach the TV.
 	$(SCP) $(FFMPEG_STAGED) tv:$(APPDIR)/
+	# The vendored curl stack, same reasoning: net.rs/curlio.rs dlopen these by absolute path and
+	# fall back to the television's own libcurl 7.53.1 the moment one is missing.
+	$(SCP) $(CURLSTACK_STAGED) tv:$(APPDIR)/
 	# The native crash daemon is a separate process so it can read the dying process's stack while
 	# the signal handler keeps that process parked. It has no network transport of its own. Stage
 	# then rename: an already-running app keeps the old daemon executable open, and scp directly to
@@ -1316,6 +1355,8 @@ deploy: pkg/plxnative pkg/plxnative-storage $(FFMPEG_STAGED) $(SENTRY_NATIVE_STA
 	# the .ipk only ever contains the current set. Removal comes AFTER the copy so there is never
 	# a moment with no FFmpeg on the device.
 	$(SSH) 'cd $(APPDIR) && for f in libav*-plx.so.* libswscale-plx.so.*; do case " $(FFMPEG_SONAMES) " in *" $$f "*) ;; *) rm -f "$$f";; esac; done'
+	# ...and any curl stack from a previous version, same reasoning.
+	$(SSH) 'cd $(APPDIR) && for f in libgmp-plx.so.* libnettle-plx.so.* libhogweed-plx.so.* libtasn1-plx.so.* libgnutls-plx.so.* libcrypto-plx.so.* libssl-plx.so.* libnghttp2-plx.so.* libnghttp3-plx.so.* libngtcp2-plx.so.* libngtcp2_crypto_ossl-plx.so.* libngtcp2_crypto_gnutls-plx.so.* libcurl-plx.so.*; do case " $(CURLSTACK_SONAMES) " in *" $$f "*) ;; *) rm -f "$$f";; esac; done'
 
 	$(SCP) pkg/plxnative tv:$(APPDIR)/plxnative.new
 	@# The lab session file, under LAB=1 only. Shipped by deploy as well as by the .ipk so the
@@ -2082,7 +2123,7 @@ sentry-symbols: symbols symbols-libs $(filter $(SENTRY_CLI_LOCAL),$(SENTRY_CLI))
 	  $(SENTRY_CLI) debug-files upload $(SO_SYMBOLS)
 
 ipk: pkg/plxnative pkg/plxnative-storage $(APPINFO) release-guard
-	python3 ci/check-link-evidence.py pkg/plxnative pkg/plxnative-storage $(SENTRY_HANDLER) $(FFMPEG_STAGED) $(LIBASS_STAGED)
+	python3 ci/check-link-evidence.py pkg/plxnative pkg/plxnative-storage $(SENTRY_HANDLER) $(FFMPEG_STAGED) $(LIBASS_STAGED) $(CURLSTACK_STAGED)
 	@echo "packaging $(if $(RELEASE),RELEASE,dev) build ($(RUST_CFG)) as $(APPID) [$(FLAVOR)]"
 	rm -rf ipkroot/data/usr && mkdir -p $(STAGE)/licenses
 	cp $(APP_FILES) $(STAGE)/
@@ -2096,7 +2137,7 @@ ipk: pkg/plxnative pkg/plxnative-storage $(APPINFO) release-guard
 	@# release crash report. Deploy ships the unstripped one by design; only the ipk is stripped.
 	$(TOOLPREFIX)strip --strip-unneeded $(STAGE)/plxnative
 	rm -rf pkg/link-evidence/$(FLAVOR)
-	@for source in pkg/plxnative $(SENTRY_HANDLER) $(FFMPEG_STAGED) $(LIBASS_STAGED); do \
+	@for source in pkg/plxnative $(SENTRY_HANDLER) $(FFMPEG_STAGED) $(LIBASS_STAGED) $(CURLSTACK_STAGED); do \
 	  python3 ci/stage-link-evidence.py "$$source" "$(STAGE)/$$(basename "$$source")" --stripped \
 	    --evidence-base "pkg/link-evidence/$(FLAVOR)/$$(basename "$$source")" || exit $$?; \
 	done

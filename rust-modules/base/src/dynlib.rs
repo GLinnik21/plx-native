@@ -37,7 +37,7 @@
 //! the two, on a device where diagnosis means reading a log over ssh.
 #![allow(dead_code)]
 
-use libc::{dlerror, dlopen, dlsym, RTLD_GLOBAL, RTLD_NOW};
+use libc::{dlerror, dlopen, dlsym, RTLD_DEEPBIND, RTLD_GLOBAL, RTLD_NOW};
 use std::ffi::CString;
 use std::os::raw::c_void;
 use std::path::Path;
@@ -86,6 +86,58 @@ impl Handle {
         }
     }
 
+    /// As [`dlopen_str`], but `RTLD_LOCAL` (glibc's default — passed explicitly rather than
+    /// omitted, so the intent reads at the call site): the opened library's exported symbols are
+    /// NOT added to the process's global scope.
+    ///
+    /// Used for `net.rs`'s bundled curl-stack preload (GMP, nettle/hogweed, libtasn1, GnuTLS,
+    /// nghttp2, nghttp3, ngtcp2 + its GnuTLS crypto glue): nothing outside curl's own C code
+    /// calls into these by name, so there is no reason to publish their symbols for anyone else
+    /// to find. **This alone is not a fix for symbol collision** — see [`dlopen_str_deepbind`]'s
+    /// doc for the mechanism that actually was, and why `RTLD_LOCAL` could not be: it only
+    /// controls whether THIS library's symbols are visible to OTHERS, never whether this
+    /// library, when resolving its OWN undefined references, sees an EXISTING global scope that
+    /// some unrelated, earlier-loaded library already populated.
+    fn dlopen_str_local(path: &str) -> *mut c_void {
+        match CString::new(path) {
+            Ok(c) => unsafe { dlopen(c.as_ptr(), RTLD_NOW) },
+            Err(_) => null_mut(),
+        }
+    }
+
+    /// `RTLD_LOCAL` (as [`dlopen_str_local`]) plus `RTLD_DEEPBIND`: the opened library resolves
+    /// ITS OWN undefined references against its own dependency chain FIRST, before falling back
+    /// to the process's global scope — the one glibc flag that actually matters for a vendored
+    /// library sharing a process with same-named copies it does not control.
+    ///
+    /// The full story, because the first attempt at this used plain `RTLD_LOCAL` and it was not
+    /// enough: the television's `libplayerAPIs.so.1` (Starfish's media framework, linked by
+    /// EVERY build of this app, stable included — nothing here can avoid it) carries a real
+    /// `NEEDED` entry on the system's own `libcurl.so.4` (confirmed via `readelf -d`), for
+    /// Starfish's own internal use, loaded unconditionally at process startup, in the GLOBAL
+    /// scope, before this app's own `main` runs. Our bundled curl's OWN `dlsym`-resolved function
+    /// pointers (what WE call) land correctly inside OUR library regardless — confirmed
+    /// on-device, their logged addresses sit inside its own mapped range. The crash was one
+    /// level deeper: bundled curl's OWN INTERNAL calls between its OWN functions (its public API
+    /// calling its own private machinery, sharing symbol names with that public API) go through
+    /// the ordinary PLT / global-scope mechanism, exactly like an external call would — and the
+    /// SYSTEM copy, loaded first, same names, wins that resolution. The result was bundled
+    /// curl's own self-calls jumping into the system library's different, ABI-incompatible
+    /// internals: `SIGSEGV`, inside `/usr/lib/libcurl.so.4.5.0`, at a byte-for-byte reproducible
+    /// file offset, on the first HTTPS request any thread made, every single launch. `RTLD_LOCAL`
+    /// alone cannot fix this (it governs the opposite direction: whether OUR symbols are visible
+    /// to others, not whether we see theirs) — `RTLD_DEEPBIND` is glibc's purpose-built answer to
+    /// this exact shape of problem, and it is confirmed present for this 32-bit ARM target.
+    /// `curl_easy_init` and friends used `net.rs`'s own hand-rolled `dlopen`/`dlsym` for this,
+    /// because the shared `dynlib!` macro every table here uses has no parameter for the `dlopen`
+    /// mode — this method exists so the dependency preload does not need the same duplication.
+    fn dlopen_str_deepbind(path: &str) -> *mut c_void {
+        match CString::new(path) {
+            Ok(c) => unsafe { dlopen(c.as_ptr(), RTLD_NOW | RTLD_DEEPBIND) },
+            Err(_) => null_mut(),
+        }
+    }
+
     /// As [`open`], but resolving names inside `dir` when one is given.
     ///
     /// `dir` is how the BUNDLED FFmpeg is found: those libraries live beside the binary, which is
@@ -106,6 +158,44 @@ impl Handle {
                     None => continue,
                 },
                 None => Self::dlopen_str(name),
+            };
+            if !h.is_null() {
+                return Some((Handle(h), name));
+            }
+        }
+        None
+    }
+
+    /// As [`open_in`], but via [`dlopen_str_local`] — see its doc for why. Still resolves this
+    /// library's OWN `DT_NEEDED` entries normally (SONAME-based dependency resolution is a
+    /// property of the loaded-object list, not the symbol scope a caller requested); what it
+    /// does NOT do is add its exported symbols to the scope an UNRELATED library's lazy PLT
+    /// binding could land in.
+    pub fn open_in_local<'a>(dir: Option<&Path>, candidates: &[&'a str]) -> Option<(Handle, &'a str)> {
+        for name in candidates {
+            let h = match dir {
+                Some(d) => match d.join(name).to_str() {
+                    Some(p) => Self::dlopen_str_local(p),
+                    None => continue,
+                },
+                None => Self::dlopen_str_local(name),
+            };
+            if !h.is_null() {
+                return Some((Handle(h), name));
+            }
+        }
+        None
+    }
+
+    /// As [`open_in_local`], but via [`dlopen_str_deepbind`] — see its doc for why.
+    pub fn open_in_deepbind<'a>(dir: Option<&Path>, candidates: &[&'a str]) -> Option<(Handle, &'a str)> {
+        for name in candidates {
+            let h = match dir {
+                Some(d) => match d.join(name).to_str() {
+                    Some(p) => Self::dlopen_str_deepbind(p),
+                    None => continue,
+                },
+                None => Self::dlopen_str_deepbind(name),
             };
             if !h.is_null() {
                 return Some((Handle(h), name));

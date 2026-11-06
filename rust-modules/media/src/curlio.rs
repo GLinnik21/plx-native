@@ -155,11 +155,22 @@ pub type CURLM = c_void;
 // tables against the same library. The macOS name is last for the same reason it is there: the
 // host simulator and `PlxNative.app` run this code, and the host suite below drives real libcurl
 // over plain loopback HTTP.
+//
+// `libcurl-plx.so.4` (our vendored, HTTP/3-capable curl) is first, matching `net.rs`'s table —
+// but WHICH of these binds is never decided here. `ensure_loaded` resolves it by reading
+// `plx_net::net::bundled()`, set once by `net::global_init_once`, and passes the matching `dir`
+// to `load()` below. Two tables independently probing "is the bundle here" could disagree (a
+// transient filesystem hiccup on one call and not the other) and that disagreement is exactly
+// what must never happen: an easy handle `net.rs` created against one libcurl, handed to THIS
+// table's `curl_multi_add_handle` from a different one, is an ABI violation, not a compatibility
+// question. One decision, read twice, is the only safe shape.
 plx_base::dynlib! {
-    /// The seven multi-interface symbols, frozen to webOS's oldest libcurl (7.53.1). See this
-    /// module's doc before adding an eighth — `curl_multi_poll`/`curl_multi_wakeup` are absent on
-    /// the dev television and present on the Mac.
-    curlmulti: ["libcurl.so.4", "libcurl.so.5", "libcurl.4.dylib"] {
+    /// The seven multi-interface symbols. Frozen to webOS's oldest SYSTEM libcurl (7.53.1) when
+    /// that is what binds — see this module's doc before adding an eighth —
+    /// `curl_multi_poll`/`curl_multi_wakeup` are absent there and present both on the Mac and on
+    /// our own vendored curl 8.23, which is exactly why they stay unused: the table must still
+    /// work when the system candidate is the one that answers.
+    curlmulti: ["libcurl-plx.so.4", "libcurl.so.4", "libcurl.so.5", "libcurl.4.dylib"] {
     fn curl_multi_init() -> *mut CURLM;
     fn curl_multi_add_handle(multi: *mut CURLM, easy: *mut CURL) -> c_int;
     fn curl_multi_perform(multi: *mut CURLM, running: *mut c_int) -> c_int;
@@ -217,6 +228,20 @@ const CURLOPT_HEADERFUNCTION: c_int = 20079;
 const CURLOPT_SSL_VERIFYHOST: c_int = 81;
 const CURLOPT_BUFFERSIZE: c_int = 98;
 const CURLOPT_NOSIGNAL: c_int = 99;
+/// `CURLOPT_SSL_OPTIONS` (VALUES + 216) / `CURLSSLOPT_NATIVE_CA` (`1 << 4`) — see `net.rs`'s own
+/// doc on the same pair for why this is needed at all (the bundled curl's GnuTLS backend loads
+/// no trust anchors on its own without it). Set only for a strict attempt, never key or roots
+/// mode: roots mode deliberately narrows trust to the shipped bundle, and key mode may already
+/// have `VERIFYPEER` off, so widening the trust store there would be pointless or wrong.
+const CURLOPT_SSL_OPTIONS: c_int = 216;
+const CURLSSLOPT_NATIVE_CA: c_long = 1 << 4;
+/// `CURLOPT_ALTSVC_CTRL` / `CURLOPT_ALTSVC` — see `net.rs`'s own doc on the same pair. The cache
+/// file is [`plx_net::net::altsvc_cache_path`], the SAME one the control plane uses, so an h3
+/// upgrade either plane learns benefits both — a stream open is exactly the kind of request that
+/// profits from QUIC's per-stream flow control on a long byte-range GET.
+const CURLOPT_ALTSVC_CTRL: c_int = 286;
+const CURLOPT_ALTSVC: c_int = 10287;
+const CURLALTSVC_H3: c_long = 1 << 5;
 const CURLOPT_TCP_NODELAY: c_int = 121;
 /// Millisecond total-request deadline. Present since curl 7.16.2, well below the 7.53.1 webOS
 /// floor. Ordinary movie transfers deliberately do not set it; the short Auto preflight does.
@@ -444,7 +469,11 @@ static LOAD_ONCE: Once = Once::new();
 /// normally happens so the `dlopen` and its log line land on the main thread at start-up.
 fn ensure_loaded() {
     LOAD_ONCE.call_once(|| {
-        match curlmulti::load(None) {
+        // Mirror `net.rs`'s choice, never re-decide it — see the table's doc above. `net::bundled`
+        // is only meaningful after `net::global_init`, which `ff::boot` already guarantees ran
+        // first (this function is called from `curlio::boot`, which `ff::boot` calls second).
+        let dir = plx_net::net::bundled().then(plx_base::paths::app_dir);
+        match curlmulti::load(dir) {
             plx_base::dynlib::Loaded::Ok(soname) => {
                 plx_base::eventlog::log(&format!("curlio: bound {soname} curl_multi_* (7 symbols)"));
                 MULTI_OK.store(true, Ordering::Release);
@@ -1117,6 +1146,24 @@ impl CurlSource {
                 plx_net::net::curl_easy_setopt_long(easy, CURLOPT_SSL_VERIFYHOST, 2),
                 "CURLOPT_SSL_VERIFYHOST"
             );
+            if matches!(mode, keypin::Mode::Strict) && plx_net::net::bundled() {
+                require_setopt!(
+                    plx_net::net::curl_easy_setopt_long(easy, CURLOPT_SSL_OPTIONS, CURLSSLOPT_NATIVE_CA),
+                    "CURLOPT_SSL_OPTIONS"
+                );
+                require_setopt!(
+                    plx_net::net::curl_easy_setopt_long(easy, CURLOPT_ALTSVC_CTRL, CURLALTSVC_H3),
+                    "CURLOPT_ALTSVC_CTRL"
+                );
+                require_setopt!(
+                    plx_net::net::curl_easy_setopt_ptr(
+                        easy,
+                        CURLOPT_ALTSVC,
+                        plx_net::net::altsvc_cache_path().as_ptr() as *const c_void,
+                    ),
+                    "CURLOPT_ALTSVC"
+                );
+            }
             // The host suite's CA override, the twin of `net::request_result_evidence`'s: a test
             // that serves a certificate through a loopback TLS double must be able to make libcurl
             // trust the test CA. Compiled out of every non-test build.
