@@ -88,6 +88,7 @@
   "settings.consent.share_reports": "Delen",
   "settings.consent.do_not_share": "Niet delen",
   "settings.consent.delete_question": "Alle lokale gegevens wissen?",
+  "settings.consent.discard_note": "Terug verwerpt je wijzigingen.",
   "settings.cancel": "Annuleren",
   "settings.delete": "Wissen",
   "settings.legal.privacy.title": "Privacybeleid",

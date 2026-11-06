@@ -92,6 +92,7 @@
   "settings.consent.share_reports": "Udostępniaj",
   "settings.consent.do_not_share": "Nie udostępniaj",
   "settings.consent.delete_question": "Usunąć wszystkie dane lokalne?",
+  "settings.consent.discard_note": "Wstecz odrzuca zmiany.",
   "settings.cancel": "Anuluj",
   "settings.delete": "Usuń",
   "settings.legal.privacy.title": "Polityka prywatności",

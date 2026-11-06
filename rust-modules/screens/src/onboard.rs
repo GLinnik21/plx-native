@@ -485,6 +485,7 @@ impl<'a> OnboardView<'a> {
                 scales: [self.screen.pop.scale(0), 1.0],
                 palette: palette(),
                 danger: None,
+                note: None,
             })
     }
 }
@@ -781,6 +782,7 @@ impl<H: DirectoryLike> Screen<H> for OnboardScreen {
             scales: [self.pop.scale(0), 1.0],
             palette: pal,
             danger: None,
+            note: None,
         };
         Part::<H>::draw(&mut band, f, layout.action);
         let lf = layout.sectioned_table();

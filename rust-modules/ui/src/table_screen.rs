@@ -396,7 +396,15 @@ pub struct BandPart<'a> {
     pub palette: ControlPalette,
     /// The one control drawn in the danger face (an alert's destructive answer), if any.
     pub danger: Option<usize>,
+    /// ONE line of words beside a LONE control, in the action slot ("Back discards your changes."
+    /// beside Settings' Done): [`Self::note_rect`] places it, so it is never part of the focus
+    /// geometry. Ignored beside a pair (first run's two answers stand alone).
+    pub note: Option<&'a CStr>,
 }
+
+/// The gap between a lone control and the [`BandPart::note`] beside it: a control gap, the way
+/// two peers of the action slot are spaced ([`super::widgets::CONTROL_GAP`]).
+pub const NOTE_GAP: f32 = super::widgets::CONTROL_GAP;
 
 /// `Button::pill_w`'s formula over a `Measure`: label width plus the pill's air.
 pub fn pill_w(m: &dyn Measure, label: &CStr, sz: std::os::raw::c_int) -> f32 {
@@ -420,6 +428,17 @@ impl BandPart<'_> {
                 vec![lr, tr]
             }
         }
+    }
+
+    /// Where the [`Self::note`] is set: one line beside the lone control, as wide as the slot
+    /// leaves; `None` without a note or beside a pair. A note that is wider than that is a copy
+    /// bug the screen's fit test catches, never a clip.
+    pub fn note_rect(&self, m: &dyn Measure) -> Option<Rect> {
+        let (&[_], Some(_)) = (self.labels, self.note) else { return None };
+        let pill = *self.rects(m).first()?;
+        let x = pill.x + pill.w + NOTE_GAP;
+        let a = self.layout.action;
+        Some(Rect::new(x, pill.y, (a.x + a.w - x).max(0.0), pill.h))
     }
 
     /// The band's actual occupied region, including a second row when labels reflow.
@@ -542,6 +561,9 @@ where
                     activate: Activate::Press,
                 },
             );
+        }
+        if let (Some(note), Some(frame)) = (self.note, self.note_rect(f.measure)) {
+            super::label::Label::new(note.as_ptr(), theme::size::CAPTION, theme::TEXT_SECONDARY).draw(p, frame);
         }
     }
 }
@@ -1072,7 +1094,7 @@ mod tests {
         let labels = [c"Адпраўляць справаздачы", c"Не адпраўляць"];
         let layout = RouteLayout::screen();
         let band = BandPart { layout, labels: &labels, group: G, entry: E,
-            uncommitted: false, scales: [1.0; 2], palette: ControlPalette::default(), danger: None };
+            uncommitted: false, scales: [1.0; 2], palette: ControlPalette::default(), danger: None, note: None };
         let (measure, view) = (CyrillicMeasure, FixtureView::default());
         let cx = cx(&measure, &view);
         let rects = band.rects(&measure);

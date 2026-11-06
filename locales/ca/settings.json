@@ -90,6 +90,7 @@
   "settings.consent.share_reports": "Comparteix",
   "settings.consent.do_not_share": "No comparteixis",
   "settings.consent.delete_question": "Vols esborrar totes les dades locals?",
+  "settings.consent.discard_note": "Enrere descarta els teus canvis.",
   "settings.cancel": "Cancel·la",
   "settings.delete": "Esborra",
   "settings.legal.privacy.title": "Política de privadesa",

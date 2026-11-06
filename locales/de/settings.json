@@ -88,6 +88,7 @@
   "settings.consent.share_reports": "Teilen",
   "settings.consent.do_not_share": "Nicht teilen",
   "settings.consent.delete_question": "Alle lokalen Daten löschen?",
+  "settings.consent.discard_note": "Zurück verwirft deine Änderungen.",
   "settings.cancel": "Abbrechen",
   "settings.delete": "Löschen",
   "settings.legal.privacy.title": "Datenschutzerklärung",

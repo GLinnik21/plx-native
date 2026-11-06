@@ -88,6 +88,7 @@
   "settings.consent.share_reports": "Megosztás",
   "settings.consent.do_not_share": "Nem osztom meg",
   "settings.consent.delete_question": "Törli az összes helyi adatot?",
+  "settings.consent.discard_note": "A Vissza elveti a módosításokat.",
   "settings.cancel": "Mégse",
   "settings.delete": "Törlés",
   "settings.legal.privacy.title": "Adatvédelmi irányelvek",
