@@ -773,7 +773,8 @@ class RequiredChecksReportOnEveryPr(unittest.TestCase):
     ci.yml starts on every PR; a `changes` job decides whether the heavy jobs run, and each required
     name is an always-running aggregator that is green when they were skipped for a reason."""
 
-    HEAVY = ("host-lint", "host-unit-default", "host-unit-hostsim", "host-python", "host-python-harness", "cross-build")
+    HEAVY = ("host-lint", "host-unit-default", "host-unit-hostsim", "host-python", "host-python-harness", "cross-build",
+             "cross-build-curlstack")
     REQUIRED = {"host-checks": "host checks (NOT a device gate)",
                 "cross-build-required": "cross-build (armv7) + artifact assertions"}
 
@@ -821,6 +822,50 @@ class RequiredChecksReportOnEveryPr(unittest.TestCase):
         self.assertIn('[ "$GATED" = false ]', host)
         self.assertIn("=skipped$", host)
         self.assertIn("=success$", host)
+
+
+class CurlstackCrossBuild(unittest.TestCase):
+    """The opt-in bundled curl stack (`make CURLSTACK=1`) is built and graded in a job of its own, and
+    stays out of everything else. Each hole here stays green: a job that builds without the flag on
+    one of its two make lines grades a default package twice; a required check waiting on it puts an
+    opt-in build on every merge's critical path; the shared download cache fetching the stack's eight
+    tarballs adds eight hosts that can fail every job; a cache of `vendor/*-prefix` restores and
+    rebuilds anyway (`HostLibraryCaches`)."""
+
+    def test_both_make_lines_carry_the_flag_and_the_default_job_neither(self):
+        body = job_body("ci.yml", "cross-build-curlstack")
+        self.assertIn("run: make CURLSTACK=1 ", body)
+        self.assertIn("run: make ipk CURLSTACK=1 FLAVOR=debug ", body)
+        self.assertNotIn("CURLSTACK", job_body("ci.yml", "cross-build"))
+
+    def test_it_runs_every_artifact_gate_the_default_job_runs(self):
+        steps = lambda job: re.findall(r"(?m)^      - name: (.+)$", job_body("ci.yml", job))
+        default = set(steps("cross-build"))
+        self.assertTrue(default <= set(steps("cross-build-curlstack")), default - set(steps("cross-build-curlstack")))
+
+    def test_no_required_check_waits_for_it(self):
+        self.assertNotIn("cross-build-curlstack", job_body("ci.yml", "cross-build-required"))
+        self.assertNotIn("cross-build-curlstack", job_body("ci.yml", "host-checks"))
+
+    def test_it_caches_the_scripts_output_tree_not_a_prefix(self):
+        sh = (ROOT / "ci/build-curlstack.sh").read_text()
+        self.assertIn("CACHE_ROOT=${PLX_BUILD_CACHE-$HOME/.cache/plxnative}", sh)
+        self.assertIn('WORK="$CACHE_ROOT/curlstack/arm-$KEY"', sh)
+        body = job_body("ci.yml", "cross-build-curlstack")
+        self.assertIn("path: ~/.cache/plxnative/curlstack", body)
+        self.assertNotIn("-prefix", "".join(re.findall(r"(?m)^          path: .*$", body)))
+        key = re.search(r"key: (curlstack-.*)", body).group(1)
+        self.assertIn("steps.curlstack-pins.outputs.id", key)
+        self.assertIn("'ci/build-curlstack.sh'", key)
+
+    def test_the_shared_download_cache_skips_the_stack(self):
+        action = (ROOT / ".github/actions/deps-cache/action.yml").read_text()
+        self.assertIn("fetch-all --exclude webos-ndk --exclude-group curlstack", action)
+        pins = json.loads((ROOT / "ci/dependencies.json").read_text())
+        stack = [d for d in pins if d.get("group") == "curlstack"]
+        self.assertEqual(len(stack), 8)
+        # Not `bundled`: no release ships the stack, so the release source bundle does not carry it.
+        self.assertFalse(any(d.get("bundled") for d in stack))
 
 
 class SiteVideoRelease(unittest.TestCase):

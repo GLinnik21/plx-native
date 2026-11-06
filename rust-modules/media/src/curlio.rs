@@ -156,21 +156,18 @@ pub type CURLM = c_void;
 // host simulator and `PlxNative.app` run this code, and the host suite below drives real libcurl
 // over plain loopback HTTP.
 //
-// `libcurl-plx.so.4` (our vendored, HTTP/3-capable curl) is first, matching `net.rs`'s table —
-// but WHICH of these binds is never decided here. `ensure_loaded` resolves it by reading
-// `plx_net::net::bundled()`, set once by `net::global_init_once`, and passes the matching `dir`
-// to `load()` below. Two tables independently probing "is the bundle here" could disagree (a
-// transient filesystem hiccup on one call and not the other) and that disagreement is exactly
-// what must never happen: an easy handle `net.rs` created against one libcurl, handed to THIS
-// table's `curl_multi_add_handle` from a different one, is an ABI violation, not a compatibility
-// question. One decision, read twice, is the only safe shape.
+// An `http3-curlstack` build may bind the bundled `libcurl-plx.so.4` instead, but WHICH library
+// binds is never decided here: `ensure_loaded` reads `plx_net::net::bundled_curl()`, the handle
+// `net::global_init` chose, and binds THIS table from that same handle (`load_from`). Two tables
+// probing "is the bundle here" independently could disagree, and an easy handle `net.rs` created
+// against one libcurl, handed to this table's `curl_multi_add_handle` from another, is an ABI
+// violation, not a compatibility question.
 plx_base::dynlib! {
-    /// The seven multi-interface symbols. Frozen to webOS's oldest SYSTEM libcurl (7.53.1) when
-    /// that is what binds — see this module's doc before adding an eighth —
-    /// `curl_multi_poll`/`curl_multi_wakeup` are absent there and present both on the Mac and on
-    /// our own vendored curl 8.23, which is exactly why they stay unused: the table must still
-    /// work when the system candidate is the one that answers.
-    curlmulti: ["libcurl-plx.so.4", "libcurl.so.4", "libcurl.so.5", "libcurl.4.dylib"] {
+    /// The seven multi-interface symbols, frozen to webOS's oldest libcurl (7.53.1). See this
+    /// module's doc before adding an eighth — `curl_multi_poll`/`curl_multi_wakeup` are absent on
+    /// the dev television and present on the Mac (and in the opt-in bundled curl 8.23, which does
+    /// not change the rule: the table must work when the system library is the one that binds).
+    curlmulti: ["libcurl.so.4", "libcurl.so.5", "libcurl.4.dylib"] {
     fn curl_multi_init() -> *mut CURLM;
     fn curl_multi_add_handle(multi: *mut CURLM, easy: *mut CURL) -> c_int;
     fn curl_multi_perform(multi: *mut CURLM, running: *mut c_int) -> c_int;
@@ -469,11 +466,14 @@ static LOAD_ONCE: Once = Once::new();
 /// normally happens so the `dlopen` and its log line land on the main thread at start-up.
 fn ensure_loaded() {
     LOAD_ONCE.call_once(|| {
-        // Mirror `net.rs`'s choice, never re-decide it — see the table's doc above. `net::bundled`
-        // is only meaningful after `net::global_init`, which `ff::boot` already guarantees ran
-        // first (this function is called from `curlio::boot`, which `ff::boot` calls second).
-        let dir = plx_net::net::bundled().then(plx_base::paths::app_dir);
-        match curlmulti::load(dir) {
+        // Mirror `net.rs`'s choice, never re-decide it — see the table's doc above.
+        // `net::bundled_curl` is only meaningful after `net::global_init`, which `ff::boot`
+        // already guarantees ran first (it calls this module's `boot` second).
+        let verdict = match plx_net::net::bundled_curl() {
+            Some(handle) => curlmulti::load_from(handle, plx_net::net::BUNDLED_CURL_SONAME),
+            None => curlmulti::load(None),
+        };
+        match verdict {
             plx_base::dynlib::Loaded::Ok(soname) => {
                 plx_base::eventlog::log(&format!("curlio: bound {soname} curl_multi_* (7 symbols)"));
                 MULTI_OK.store(true, Ordering::Release);

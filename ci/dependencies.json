@@ -37,7 +37,7 @@
   {
     "id": "gmp",
     "group": "curlstack",
-    "bundled": true,
+    "bundled": false,
     "version": "6.3.0",
     "license": "LGPL-3.0-or-later OR GPL-2.0-or-later",
     "archive": "gmp-6.3.0.tar.xz",
@@ -53,7 +53,7 @@
   {
     "id": "nettle",
     "group": "curlstack",
-    "bundled": true,
+    "bundled": false,
     "version": "3.10.2",
     "license": "LGPL-3.0-or-later OR GPL-2.0-or-later",
     "archive": "nettle-3.10.2.tar.gz",
@@ -69,7 +69,7 @@
   {
     "id": "libtasn1",
     "group": "curlstack",
-    "bundled": true,
+    "bundled": false,
     "version": "4.21.0",
     "license": "LGPL-2.1-or-later",
     "archive": "libtasn1-4.21.0.tar.gz",
@@ -85,7 +85,7 @@
   {
     "id": "gnutls",
     "group": "curlstack",
-    "bundled": true,
+    "bundled": false,
     "version": "3.8.13",
     "license": "LGPL-2.1-or-later",
     "archive": "gnutls-3.8.13.tar.xz",
@@ -101,7 +101,7 @@
   {
     "id": "nghttp2",
     "group": "curlstack",
-    "bundled": true,
+    "bundled": false,
     "version": "1.71.0",
     "license": "MIT",
     "archive": "nghttp2-1.71.0.tar.gz",
@@ -117,7 +117,7 @@
   {
     "id": "ngtcp2",
     "group": "curlstack",
-    "bundled": true,
+    "bundled": false,
     "version": "1.26.0",
     "license": "MIT",
     "archive": "ngtcp2-1.26.0.tar.gz",
@@ -133,7 +133,7 @@
   {
     "id": "nghttp3",
     "group": "curlstack",
-    "bundled": true,
+    "bundled": false,
     "version": "1.19.0",
     "license": "MIT",
     "archive": "nghttp3-1.19.0.tar.gz",
@@ -149,7 +149,7 @@
   {
     "id": "curl",
     "group": "curlstack",
-    "bundled": true,
+    "bundled": false,
     "version": "8.23.0",
     "license": "curl",
     "archive": "curl-8.23.0.tar.xz",

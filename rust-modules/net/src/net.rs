@@ -85,16 +85,11 @@ pub struct CurlVersionInfo {
 // It is LAST deliberately — a television never reaches it, so this costs the device nothing but
 // one extra failed `dlopen` in the already-fatal no-curl case, and the candidate list stays
 // ordered by "what the fleet actually answers to" first.
-// `libcurl-plx.so.4` is FIRST: our own vendored curl 8.23 (OpenSSL 3.5.9 + nghttp2 + nghttp3 +
-// ngtcp2, built `-plx`-suffixed beside the binary by `ci/build-curlstack.sh`), for HTTP/3 —
-// the same bundle-beside-the-binary pattern the FFmpeg libraries already use (`ff.rs`'s doc).
-// `libcurl.so.4`/`.so.5`/`.dylib` stay as the fallback, UNCHANGED, for a device where the bundle
-// did not deploy. Picking between them happens exactly ONCE, here, in `global_init_once` — and
-// `curlio.rs`'s separate multi table MUST mirror this module's choice via [`bundled`] rather than
-// deciding independently: an easy handle from one libcurl handed to another's
-// `curl_multi_add_handle` is an ABI violation, not a compatibility question.
+//
+// The opt-in bundled curl (`BUNDLED_CURL_SONAME`) is deliberately NOT a candidate here: it is
+// opened by absolute path with `RTLD_DEEPBIND` and bound with `curl::load_from` (`load_bundled`).
 plx_base::dynlib! {
-    pub curl: ["libcurl-plx.so.4", "libcurl.so.4", "libcurl.so.5", "libcurl.4.dylib"] {
+    pub curl: ["libcurl.so.4", "libcurl.so.5", "libcurl.4.dylib"] {
     fn curl_global_init(flags: c_long) -> c_int;
     fn curl_version() -> *const c_char;
     fn curl_version_info(age: c_int) -> *const CurlVersionInfo;
@@ -279,166 +274,74 @@ pub fn curl_version_num() -> u32 {
 /// Only used on the abnormal old-OpenSSL/no-callback fallback. Normal devices never take it.
 static CURL_FALLBACK_SERIAL: Mutex<()> = Mutex::new(());
 
-/// Did [`global_init_once`] bind `libcurl-plx.so.4` (our vendored curl) rather than a system
-/// candidate? `curlio.rs`'s multi table reads this through [`bundled`] to pick the SAME `dir` for
-/// its own `curlmulti::load(...)` call — never decided independently, see the `dynlib!` table's
-/// doc above.
-static CURL_BUNDLED: AtomicBool = AtomicBool::new(false);
+/// The SONAME of the opt-in bundled curl (`make CURLSTACK=1`, cargo feature `http3-curlstack`):
+/// curl 8.23 over GnuTLS with nghttp2/nghttp3/ngtcp2, built `-plx`-suffixed beside the binary by
+/// `ci/build-curlstack.sh`. It is NOT in the `curl` table's candidate list above: it is opened only
+/// by absolute path, `RTLD_DEEPBIND`, by `curlstack::open` (see that module's doc), and the table is
+/// then filled from that handle with `curl::load_from`.
+pub const BUNDLED_CURL_SONAME: &str = "libcurl-plx.so.4";
 
-/// Is the bound libcurl our vendored `libcurl-plx.so.4`? Only meaningful after [`global_init`].
+/// The bundled curl's handle, set once by [`global_init_once`] when it bound that library rather
+/// than a system candidate.
+#[cfg(feature = "http3-curlstack")]
+static BUNDLED_CURL: OnceLock<plx_base::dynlib::Handle> = OnceLock::new();
+
+/// The bundled curl, if [`global_init`] bound it; `None` when it bound the system libcurl, before
+/// [`global_init`], and always in a build without the `http3-curlstack` feature.
+///
+/// `curlio.rs`'s multi table binds THIS handle (`curlmulti::load_from`) when it is `Some`, and the
+/// system candidates otherwise: the choice is made exactly once, here, and only read there. An easy
+/// handle from one libcurl handed to another's `curl_multi_add_handle` is an ABI violation, so two
+/// tables deciding independently (a transient filesystem error on one probe and not the other) is
+/// the one outcome that must be impossible.
+pub fn bundled_curl() -> Option<plx_base::dynlib::Handle> {
+    #[cfg(feature = "http3-curlstack")]
+    {
+        BUNDLED_CURL.get().copied()
+    }
+    #[cfg(not(feature = "http3-curlstack"))]
+    {
+        None
+    }
+}
+
+/// Is the bound libcurl the bundled `libcurl-plx.so.4` (TLS backend GnuTLS) rather than the
+/// television's own (OpenSSL)? Always false without the `http3-curlstack` feature, which makes every
+/// `if bundled()` branch below dead code the compiler drops. Only meaningful after [`global_init`].
 pub fn bundled() -> bool {
-    CURL_BUNDLED.load(Ordering::Acquire)
+    bundled_curl().is_some()
 }
 
-/// The nine libraries `libcurl-plx.so.4` itself was linked against, in NEEDED order, none of
-/// which carry an rpath (same reason FFmpeg's bundled libraries do not: see
-/// `ci/build-ffmpeg.sh`). Opened first, by absolute path, so the loader finds each one already
-/// mapped under its SONAME when the next names it — exactly `ff.rs::load_libraries`'s pattern,
-/// not a new one. None of these export a symbol this app calls directly; curl's own C code is
-/// the only caller, so a bare `Handle::open_in_deepbind` (no `dynlib!` table, nothing to bind)
-/// is enough — see [`load_curl_deepbind`]'s doc for why `RTLD_DEEPBIND`, not plain `RTLD_LOCAL`.
-///
-/// TLS BACKEND IS GnuTLS, NOT OpenSSL — deliberately, and not a style choice. The first build of
-/// this bundle used OpenSSL 3.5.9, and on-device testing (webOS 5.6.2) found it fatal: loading a
-/// SECOND OpenSSL major version into a process that already has the television's own
-/// `/usr/lib/libcrypto.so.1.0.2` crashes, deterministically — a known, OpenSSL-specific class of
-/// bug (two major versions fighting over process-global state: RNG seeding, `atfork` handlers,
-/// provider/engine tables), not the symbol-interposition problem [`load_curl_deepbind`]'s doc
-/// describes and fixes. GnuTLS and its stack (nettle/hogweed, libtasn1, gmp) share no code, no
-/// symbol names and no init-time assumptions with OpenSSL, so there is nothing left for THAT
-/// specific hazard to collide with. `ci/build-curlstack.sh` has the full build.
-const BUNDLED_CURL_DEPS: &[&str] = &[
-    "libgmp-plx.so.10",
-    "libtasn1-plx.so.6",
-    "libnettle-plx.so.8",
-    "libhogweed-plx.so.6",
-    "libgnutls-plx.so.30",
-    "libnghttp2-plx.so.14",
-    "libnghttp3-plx.so.9",
-    "libngtcp2-plx.so.16",
-    "libngtcp2_crypto_gnutls-plx.so.8",
-];
-
-/// Load `libcurl-plx.so.4` itself with `RTLD_DEEPBIND`, bypassing `curl::load()`'s normal
-/// `RTLD_GLOBAL`-only path (that macro-generated function is shared by every `dynlib!` table in
-/// this crate, so it is not touched — this is a one-off, local to this one library).
-///
-/// WHY: our own `dlsym`-resolved pointers for `curl_easy_init`/`curl_easy_perform`/etc. already
-/// resolve correctly to this library — confirmed on-device, their logged values sit squarely
-/// inside this library's own mapped range. The problem is what happens ONE LEVEL DEEPER: bundled
-/// curl's OWN internal calls between its OWN functions (`curl_easy_perform` driving its own
-/// private multi machinery, which shares symbol names with the public API) go through the
-/// ordinary PLT / global-symbol-scope mechanism, exactly like a call from outside the library
-/// would. The television's SYSTEM `libcurl.so.4.5.0` is unconditionally in that global scope
-/// before this app's own `main` ever runs — `libplayerAPIs.so.1` (the Starfish media framework,
-/// linked by every build of this app, stable included) carries a real `NEEDED` entry on
-/// `libcurl.so.4` for its own internal use, confirmed via `readelf -d`. Loaded first, its
-/// same-named exported symbols win ordinary global-scope resolution, so bundled curl's own
-/// self-calls were jumping into the SYSTEM library's different, ABI-incompatible internals —
-/// confirmed on-device: a `SIGSEGV` inside `libcurl.so.4.5.0`, at a byte-for-byte reproducible
-/// file offset, on literally the first HTTPS request any thread made, every single launch.
-/// `RTLD_DEEPBIND` is glibc's purpose-built answer to exactly this shape of problem: a library
-/// prefers its OWN dependency chain over the process's global scope when resolving its OWN
-/// undefined references, so its self-calls can no longer be shadowed by an earlier-loaded,
-/// same-named, unrelated copy. `libc::RTLD_DEEPBIND` exists for this exact 32-bit ARM target.
-///
-/// Symbols are resolved into locals first and published only if every one of them succeeded —
-/// the same "never observe a partial table" invariant `load_into`'s own doc states, reimplemented
-/// here by hand because `curl::load()`'s version of that logic cannot take an already-chosen
-/// `dlopen` mode as a parameter without changing the shared macro every other table also uses.
-fn load_curl_deepbind(dir: &std::path::Path) -> Option<&'static str> {
-    const NAME: &str = "libcurl-plx.so.4";
-    let path = dir.join(NAME);
-    let path = path.to_str()?;
-    let cpath = CString::new(path).ok()?;
-    let handle = unsafe {
-        libc::dlopen(
-            cpath.as_ptr(),
-            libc::RTLD_NOW | libc::RTLD_GLOBAL | libc::RTLD_DEEPBIND,
-        )
-    };
-    if handle.is_null() {
-        return None;
-    }
-    let sym = |name: &str| -> Option<*mut c_void> {
-        let c = CString::new(name).ok()?;
-        let p = unsafe { libc::dlsym(handle, c.as_ptr()) };
-        (!p.is_null()).then_some(p)
-    };
-    let resolved = [
-        (&curl::curl_global_init, sym("curl_global_init")?),
-        (&curl::curl_version, sym("curl_version")?),
-        (&curl::curl_version_info, sym("curl_version_info")?),
-        (&curl::curl_easy_init, sym("curl_easy_init")?),
-        (&curl::curl_easy_perform, sym("curl_easy_perform")?),
-        (&curl::curl_easy_cleanup, sym("curl_easy_cleanup")?),
-        (&curl::curl_slist_append, sym("curl_slist_append")?),
-        (&curl::curl_slist_free_all, sym("curl_slist_free_all")?),
-        (&curl::curl_easy_setopt_ptr, sym("curl_easy_setopt")?),
-        (&curl::curl_easy_setopt_long, sym("curl_easy_setopt")?),
-        (&curl::curl_easy_getinfo_long, sym("curl_easy_getinfo")?),
-        (&curl::curl_easy_getinfo_ptr, sym("curl_easy_getinfo")?),
-    ];
-    for (cell, ptr) in resolved {
-        cell.store(ptr, Ordering::Release);
-    }
-    Some(NAME)
-}
-
-/// Best-effort preload of [`BUNDLED_CURL_DEPS`]. A failure here is not fatal and not even logged
-/// as an error: it just means the FOLLOWING `load_curl_deepbind` attempt for
-/// `libcurl-plx.so.4` will itself fail closed (its NEEDED entries cannot be resolved, so `dlopen`
-/// under `RTLD_NOW` refuses it outright) and `global_init_once` falls back to the system
-/// candidates — the safe direction on any partial deploy.
-fn preload_bundled_curl_deps(dir: &std::path::Path) {
-    // `open_in_deepbind`, not `open_in`/`open_in_local`: the SYSTEM's own curl build (pulled in
-    // unconditionally by `libplayerAPIs.so.1`) advertises `nghttp2/1.26.0` in its own version
-    // string, so a same-named nghttp2 is ALREADY in the process's global scope before any of
-    // this runs — the exact shape of hazard `load_curl_deepbind`'s doc describes for curl
-    // itself applies here too, for any of these nine that makes an internal self-call through
-    // the ordinary PLT. `RTLD_LOCAL` alone would not fix it (it governs whether OUR symbols are
-    // visible to others, never whether we see an existing global scope); `RTLD_DEEPBIND` does.
-    let mut gnutls_handle = None;
-    for &name in BUNDLED_CURL_DEPS {
-        match plx_base::dynlib::Handle::open_in_deepbind(Some(dir), &[name]) {
-            Some((handle, _)) if name == "libgnutls-plx.so.30" => gnutls_handle = Some(handle),
-            Some(_) => {}
-            None => {
-                plx_base::eventlog::log(&format!(
-                    "net: bundled curl dependency {name} did not load — vendored libcurl-plx.so.4 \
-                     will fail closed and this device falls back to its own system libcurl"
-                ));
-            }
+/// Bind the bundled curl into the `curl` table, or `None` to fall back to the system candidates.
+/// `None` also when the bundle is absent or any one of its libraries fails to open or resolve:
+/// `load_from` is all-or-nothing and never publishes a partial table, so the fallback's
+/// `curl::load(None)` starts from empty cells.
+#[cfg(all(feature = "http3-curlstack", target_os = "linux"))]
+fn load_bundled() -> Option<plx_base::dynlib::Loaded> {
+    let handle = curlstack::open(plx_base::paths::app_dir())?;
+    match curl::load_from(handle, BUNDLED_CURL_SONAME) {
+        ok @ plx_base::dynlib::Loaded::Ok(_) => {
+            let _ = BUNDLED_CURL.set(handle);
+            Some(ok)
         }
-    }
-    // Force `gnutls_global_init()` here, synchronously, on the main thread, before any worker
-    // thread exists to race on it. `curl_global_init(CURL_GLOBAL_SSL)` is *documented* to do
-    // this eagerly on our behalf (`global_init_once` already passes that flag) — but the first
-    // on-device test crashed two worker threads at the IDENTICAL instruction address
-    // (`roster-srv` and `account-audio`, both racing their first-ever HTTPS request moments
-    // after a restored session fires both warm fetches concurrently), which is the textbook
-    // signature of a non-atomic lazy TLS-backend init, not two independent bugs. Calling it
-    // directly removes the question of whether our particular minimal GnuTLS build's curl
-    // integration actually takes the eager path.
-    if let Some(handle) = gnutls_handle {
-        match handle.sym("gnutls_global_init") {
-            Some(init) => {
-                let init: unsafe extern "C" fn() -> std::os::raw::c_int =
-                    unsafe { std::mem::transmute(init) };
-                let rc = unsafe { init() };
-                if rc != 0 {
-                    plx_base::eventlog::log(&format!(
-                        "net: gnutls_global_init returned {rc} — bundled curl may still be unsafe \
-                         under concurrent use"
-                    ));
-                }
-            }
-            None => plx_base::eventlog::log(
-                "net: libgnutls-plx.so.30 loaded but exports no gnutls_global_init — unexpected",
-            ),
+        _ => {
+            plx_base::eventlog::log(&format!(
+                "net: {BUNDLED_CURL_SONAME} opened but is missing curl_easy_* symbols —                  falling back to the system libcurl"
+            ));
+            None
         }
     }
 }
+
+/// No bundled loader: the feature is off, or the target has no `RTLD_DEEPBIND` (the host
+/// simulator on macOS), so the system candidates are the only ones.
+#[cfg(not(all(feature = "http3-curlstack", target_os = "linux")))]
+fn load_bundled() -> Option<plx_base::dynlib::Loaded> {
+    None
+}
+
+#[cfg(all(feature = "http3-curlstack", target_os = "linux"))]
+mod curlstack;
 
 // OpenSSL before 1.1 delegates its process-global locks to the application. These symbols remain
 // optional instead of joining curl's all-or-nothing table: modern and non-OpenSSL backends do not
@@ -728,17 +631,12 @@ pub fn global_init() -> bool {
 }
 
 fn global_init_once() -> bool {
-    // Try our vendored curl first, by absolute path beside the binary (bare SONAME search would
-    // never find it — see `ff.rs::load_libraries`'s identical reasoning for the bundled FFmpeg).
-    // `load()` is all-or-nothing and NEVER partially publishes (see `load_into`'s doc), so a
-    // failed first attempt here leaves every cell untouched for the second, real attempt to fill.
-    let app_dir = plx_base::paths::app_dir();
-    preload_bundled_curl_deps(app_dir);
-    let (verdict, bundled) = match load_curl_deepbind(app_dir) {
-        Some(soname) => (plx_base::dynlib::Loaded::Ok(soname), true),
-        None => (curl::load(None), false),
+    // The bundled curl first (only in an `http3-curlstack` build, see `load_bundled`), by absolute
+    // path beside the binary, then the system candidates.
+    let verdict = match load_bundled() {
+        Some(bundled) => bundled,
+        None => curl::load(None),
     };
-    CURL_BUNDLED.store(bundled, Ordering::Release);
     match verdict {
         plx_base::dynlib::Loaded::Ok(soname) => {
             unsafe { curl_global_init(CURL_GLOBAL_ALL) };
@@ -3383,19 +3281,47 @@ pub mod keypin {
     const X509_NO_ISSUER: c_long = 2;
     const X509_NO_LOCAL_ISSUER: c_long = 20;
     const X509_NO_LEAF_SIGNATURE_KEY: c_long = 21;
-    /// GnuTLS's own `gnutls_certificate_status_t` (confirmed against the vendored `gnutls.h`) —
-    /// a BITMASK of independent reasons, unlike OpenSSL's single-value `X509_V_ERR_*` enum above.
-    /// `CURLINFO_SSL_VERIFYRESULT` reports whichever scheme the ACTIVE backend used: the bundled
-    /// curl links GnuTLS, the firmware's system curl (used only if the bundled stack failed to
-    /// `dlopen`, see [`super::bundled`]) is OpenSSL 1.0.2p. Every predicate below checks
-    /// [`super::bundled`] first and decodes the number by the matching scheme. GnuTLS has no bit
-    /// for "self-signed leaf" distinct from "issuer not found" — both set only
+    /// GnuTLS's own `gnutls_certificate_status_t` bits (`gnutls/gnutls.h`): a BITMASK of
+    /// independent reasons, unlike OpenSSL's single-value `X509_V_ERR_*` enum above. Only the
+    /// bundled curl (`make CURLSTACK=1`) links GnuTLS; see [`VerifyScheme`]. GnuTLS has no bit for
+    /// "self-signed leaf" distinct from "issuer not found" — both set only
     /// `GNUTLS_CERT_SIGNER_NOT_FOUND` — so under GnuTLS that one bit stands in for the whole
     /// OpenSSL 2/18/19/20/21 group; a self-signed server still fails a roots-mode retry on its own,
     /// since the bundle holds public CAs, not the server's own key.
     const GNUTLS_CERT_SIGNER_NOT_FOUND: c_long = 1 << 6;
     const GNUTLS_CERT_NOT_ACTIVATED: c_long = 1 << 9;
     const GNUTLS_CERT_EXPIRED: c_long = 1 << 10;
+    const GNUTLS_DATE_BITS: c_long = GNUTLS_CERT_NOT_ACTIVATED | GNUTLS_CERT_EXPIRED;
+
+    /// GnuTLS's "this device's trust cannot vouch for the chain": `SIGNER_NOT_FOUND`, with nothing
+    /// at bit 8 or above, where every bit that names a date, an algorithm, a signature, the name or
+    /// the purpose sits. The one GnuTLS reading of both [`is_untrusted_issuer`] and
+    /// [`untrusted_chain_verify`] (GnuTLS cannot tell their two OpenSSL groups apart), which keeps
+    /// the second a superset of the first and both disjoint from [`is_date_failure`].
+    fn gnutls_untrusted(v: c_long) -> bool {
+        v & GNUTLS_CERT_SIGNER_NOT_FOUND != 0 && (0..=0xff).contains(&v)
+    }
+
+    /// Which numbering `CURLINFO_SSL_VERIFYRESULT` is in: it reports whatever the BOUND libcurl's
+    /// TLS backend uses. The television's system curl (7.53.1) is OpenSSL 1.0.2p; the opt-in
+    /// bundled curl ([`super::bundled`]) is GnuTLS. Reading a GnuTLS bitmask as an `X509_V_ERR_*`
+    /// number silently misreads every real verification failure (64, "signer not found", is no
+    /// OpenSSL code this module knows), so each predicate below decodes by the active scheme.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum VerifyScheme {
+        OpenSsl,
+        GnuTls,
+    }
+
+    /// The scheme of the libcurl [`super::global_init`] bound. Always [`VerifyScheme::OpenSsl`]
+    /// without the `http3-curlstack` feature, where [`super::bundled`] is constant `false`.
+    fn active_scheme() -> VerifyScheme {
+        if super::bundled() {
+            VerifyScheme::GnuTls
+        } else {
+            VerifyScheme::OpenSsl
+        }
+    }
     /// The shipped bundle's file name, beside the binary (`pkg/le-roots.pem`). NOT `roots.pem`:
     /// that name belongs to [`super::post_ca`]'s telemetry bundle, which is a different trust
     /// decision for a different set of hosts.
@@ -3405,33 +3331,40 @@ pub mod keypin {
 
     /// libcurl 60 with a date verify result: the one failure a wrong clock explains.
     fn is_date_failure(rc: c_int, verify: Option<c_long>) -> bool {
+        is_date_failure_in(active_scheme(), rc, verify)
+    }
+
+    fn is_date_failure_in(scheme: VerifyScheme, rc: c_int, verify: Option<c_long>) -> bool {
         if rc != TLS_VERIFY_FAILED {
             return false;
         }
         let Some(v) = verify else { return false };
-        if super::bundled() {
-            v & (GNUTLS_CERT_NOT_ACTIVATED | GNUTLS_CERT_EXPIRED) != 0
-        } else {
-            matches!(v, X509_NOT_YET_VALID | X509_EXPIRED)
+        match scheme {
+            VerifyScheme::OpenSsl => matches!(v, X509_NOT_YET_VALID | X509_EXPIRED),
+            VerifyScheme::GnuTls => v & GNUTLS_DATE_BITS != 0,
         }
     }
 
     /// libcurl 60 with an issuer-not-found verify result: the one failure an out-of-date CA store
     /// explains. **Disjoint from [`is_date_failure`] by construction**: under OpenSSL the verify
-    /// results 9/10 and 2/20/21 share nothing; under GnuTLS this checks `SIGNER_NOT_FOUND` only
-    /// when neither date bit is also set, which is what lets key mode and roots mode coexist
+    /// results 9/10 and 2/20/21 share nothing; under GnuTLS this is `gnutls_untrusted`, which
+    /// admits no date bit, and that is what lets key mode and roots mode coexist
     /// without a precedence rule — a failure is one or the other, and a failure that is neither (a
     /// name mismatch, a self-signed leaf under OpenSSL, a refused connection) gets neither.
     fn is_untrusted_issuer(rc: c_int, verify: Option<c_long>) -> bool {
+        is_untrusted_issuer_in(active_scheme(), rc, verify)
+    }
+
+    fn is_untrusted_issuer_in(scheme: VerifyScheme, rc: c_int, verify: Option<c_long>) -> bool {
         if rc != TLS_VERIFY_FAILED {
             return false;
         }
         let Some(v) = verify else { return false };
-        if super::bundled() {
-            v & GNUTLS_CERT_SIGNER_NOT_FOUND != 0
-                && v & (GNUTLS_CERT_NOT_ACTIVATED | GNUTLS_CERT_EXPIRED) == 0
-        } else {
-            matches!(v, X509_NO_ISSUER | X509_NO_LOCAL_ISSUER | X509_NO_LEAF_SIGNATURE_KEY)
+        match scheme {
+            VerifyScheme::OpenSsl => {
+                matches!(v, X509_NO_ISSUER | X509_NO_LOCAL_ISSUER | X509_NO_LEAF_SIGNATURE_KEY)
+            }
+            VerifyScheme::GnuTls => gnutls_untrusted(v),
         }
     }
 
@@ -3458,18 +3391,119 @@ pub mod keypin {
     /// network: it is what a failed identity probe is graded by (`plex::probe::Cause`), so a failure
     /// that is only this no longer reads as "unreachable" or, worse, "no access".
     pub fn untrusted_chain_verify(rc: c_int, verify: Option<c_long>) -> Option<u8> {
+        untrusted_chain_verify_in(active_scheme(), rc, verify)
+    }
+
+    fn untrusted_chain_verify_in(scheme: VerifyScheme, rc: c_int, verify: Option<c_long>) -> Option<u8> {
         if rc != TLS_VERIFY_FAILED {
             return None;
         }
         let v = verify?;
-        if super::bundled() {
-            let date = v & (GNUTLS_CERT_NOT_ACTIVATED | GNUTLS_CERT_EXPIRED) != 0;
-            (!date && v & GNUTLS_CERT_SIGNER_NOT_FOUND != 0).then(|| u8::try_from(v).ok()).flatten()
-        } else {
-            match v {
+        match scheme {
+            VerifyScheme::OpenSsl => match v {
                 v @ (X509_NO_ISSUER | X509_SELF_SIGNED_LEAF | X509_SELF_SIGNED_IN_CHAIN
                     | X509_NO_LOCAL_ISSUER | X509_NO_LEAF_SIGNATURE_KEY) => u8::try_from(v).ok(),
                 _ => None,
+            },
+            // The whole bitmask is the evidence, so it is reported as is; `gnutls_untrusted`
+            // admits only masks that fit a `u8`.
+            VerifyScheme::GnuTls => gnutls_untrusted(v).then(|| u8::try_from(v).ok()).flatten(),
+        }
+    }
+
+    #[cfg(test)]
+    mod verify_scheme_tests {
+        use super::*;
+
+        const SCHEMES: [VerifyScheme; 2] = [VerifyScheme::OpenSsl, VerifyScheme::GnuTls];
+        const GNUTLS_CERT_INVALID: c_long = 1 << 1;
+        const GNUTLS_CERT_SIGNATURE_FAILURE: c_long = 1 << 11;
+        const GNUTLS_CERT_MISMATCH: c_long = 1 << 17;
+
+        /// Without the `http3-curlstack` feature the bound libcurl is always the system one, so
+        /// every predicate decodes OpenSSL's numbering, exactly as before the GnuTLS arm existed.
+        #[cfg(not(feature = "http3-curlstack"))]
+        #[test]
+        fn without_the_feature_the_scheme_is_always_openssl() {
+            assert_eq!(active_scheme(), VerifyScheme::OpenSsl);
+        }
+
+        #[test]
+        fn openssl_numbers_decode_as_before() {
+            let s = VerifyScheme::OpenSsl;
+            for v in [9, 10] {
+                assert!(is_date_failure_in(s, TLS_VERIFY_FAILED, Some(v)));
+                assert!(!is_untrusted_issuer_in(s, TLS_VERIFY_FAILED, Some(v)));
+                assert_eq!(untrusted_chain_verify_in(s, TLS_VERIFY_FAILED, Some(v)), None);
+            }
+            for v in [2, 20, 21] {
+                assert!(!is_date_failure_in(s, TLS_VERIFY_FAILED, Some(v)));
+                assert!(is_untrusted_issuer_in(s, TLS_VERIFY_FAILED, Some(v)));
+                assert_eq!(untrusted_chain_verify_in(s, TLS_VERIFY_FAILED, Some(v)), Some(v as u8));
+            }
+            for v in [18, 19] {
+                assert!(!is_untrusted_issuer_in(s, TLS_VERIFY_FAILED, Some(v)));
+                assert_eq!(untrusted_chain_verify_in(s, TLS_VERIFY_FAILED, Some(v)), Some(v as u8));
+            }
+            // GnuTLS's "signer not found | invalid" is no OpenSSL code this module knows.
+            assert!(!is_untrusted_issuer_in(s, TLS_VERIFY_FAILED, Some(66)));
+        }
+
+        #[test]
+        fn gnutls_bitmasks_decode_by_bit() {
+            let s = VerifyScheme::GnuTls;
+            let untrusted = GNUTLS_CERT_SIGNER_NOT_FOUND | GNUTLS_CERT_INVALID;
+            assert!(is_untrusted_issuer_in(s, TLS_VERIFY_FAILED, Some(untrusted)));
+            assert_eq!(untrusted_chain_verify_in(s, TLS_VERIFY_FAILED, Some(untrusted)), Some(66));
+            assert!(!is_date_failure_in(s, TLS_VERIFY_FAILED, Some(untrusted)));
+            for date in [GNUTLS_CERT_EXPIRED, GNUTLS_CERT_NOT_ACTIVATED] {
+                let v = date | GNUTLS_CERT_INVALID;
+                assert!(is_date_failure_in(s, TLS_VERIFY_FAILED, Some(v)));
+                assert!(!is_untrusted_issuer_in(s, TLS_VERIFY_FAILED, Some(v)));
+                // A date bit wins over a missing signer: the clock is key mode's to answer.
+                let both = v | GNUTLS_CERT_SIGNER_NOT_FOUND;
+                assert!(is_date_failure_in(s, TLS_VERIFY_FAILED, Some(both)));
+                assert!(!is_untrusted_issuer_in(s, TLS_VERIFY_FAILED, Some(both)));
+                assert_eq!(untrusted_chain_verify_in(s, TLS_VERIFY_FAILED, Some(both)), None);
+            }
+            // A signature or name failure alongside the missing signer is not a trust-store gap.
+            for other in [GNUTLS_CERT_SIGNATURE_FAILURE, GNUTLS_CERT_MISMATCH] {
+                let v = untrusted | other;
+                assert!(!is_untrusted_issuer_in(s, TLS_VERIFY_FAILED, Some(v)));
+                assert_eq!(untrusted_chain_verify_in(s, TLS_VERIFY_FAILED, Some(v)), None);
+            }
+            // OpenSSL's issuer codes mean nothing as GnuTLS bits (20 = bits 2 and 4).
+            assert!(!is_untrusted_issuer_in(s, TLS_VERIFY_FAILED, Some(20)));
+        }
+
+        #[test]
+        fn every_scheme_needs_rc_60_and_a_reported_result() {
+            for s in SCHEMES {
+                for v in [Some(9), Some(20), Some(66), Some(GNUTLS_CERT_EXPIRED)] {
+                    assert!(!is_date_failure_in(s, PIN_MISMATCH, v));
+                    assert!(!is_untrusted_issuer_in(s, PIN_MISMATCH, v));
+                    assert_eq!(untrusted_chain_verify_in(s, PIN_MISMATCH, v), None);
+                }
+                assert!(!is_date_failure_in(s, TLS_VERIFY_FAILED, None));
+                assert!(!is_untrusted_issuer_in(s, TLS_VERIFY_FAILED, None));
+                assert_eq!(untrusted_chain_verify_in(s, TLS_VERIFY_FAILED, None), None);
+            }
+        }
+
+        /// The two invariants the predicates' docs state, over every small verify result in both
+        /// numberings: issuer-not-found and the date never overlap, and the chain answer covers
+        /// every issuer-not-found.
+        #[test]
+        fn date_and_issuer_are_disjoint_and_chain_covers_issuer() {
+            for s in SCHEMES {
+                for v in 0..(1 << 12) {
+                    let date = is_date_failure_in(s, TLS_VERIFY_FAILED, Some(v));
+                    let issuer = is_untrusted_issuer_in(s, TLS_VERIFY_FAILED, Some(v));
+                    let chain = untrusted_chain_verify_in(s, TLS_VERIFY_FAILED, Some(v));
+                    assert!(!(date && issuer), "{s:?} {v}: date and issuer overlap");
+                    assert!(!(date && chain.is_some()), "{s:?} {v}: date and chain overlap");
+                    assert!(!issuer || chain.is_some(), "{s:?} {v}: issuer without chain");
+                }
             }
         }
     }

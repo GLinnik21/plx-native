@@ -3,15 +3,27 @@
 # Hogweed), libtasn1, GnuTLS (TLS 1.3 + QUIC), nghttp2, ngtcp2 (+ its GnuTLS crypto glue),
 # nghttp3, then curl itself, linked against all nine.
 #
-# WHY WE VENDOR THIS ONE TOO. The television's own libcurl is pinned at 7.53.1 (`curlio.rs`'s
-# module doc) — HTTP/1.1 and HTTP/2 only, no QUIC. A reverse proxy
-# (e.g. Traefik) in front of a server may advertise `http3` on its entrypoint; the television never
-# could speak it. Same reasoning as
+# OPT-IN: only `make CURLSTACK=1` runs this (the Makefile's CURLSTACK block), and only that build
+# ships the result and compiles the loader for it (cargo feature `http3-curlstack`). A default
+# build never reaches this script.
+#
+# WHY BUNDLE THIS ONE TOO. The television's own libcurl is pinned at 7.53.1 (`curlio.rs`'s module
+# doc) — HTTP/1.1 and HTTP/2 only, no QUIC. A reverse proxy (e.g. Traefik) in front of a server may
+# advertise `http3` on its entrypoint; the television never could speak it. Same reasoning as
 # `ci/build-ffmpeg.sh`'s FFmpeg bundle: a system library this old cannot be grown a protocol, only
-# replaced, and dlopen-by-SONAME is what lets a replacement coexist with every webOS release this
-# app still supports (`net.rs`/`curlio.rs` fall back to the television's own libcurl the moment
-# this bundle is absent or any one of its NEEDED libraries fails to open — see their doc comments
-# on `bundled()`/`ensure_loaded`).
+# replaced, and dlopen-by-absolute-path is what lets a replacement coexist with every webOS release
+# this app still supports (`net::load_bundled` falls back to the television's own libcurl the
+# moment this bundle is absent or any one of its NEEDED libraries fails to open; `net::curlstack`
+# has the loader's side of the story).
+#
+# THE OUTPUT IS CACHED, keyed like `ci/build-ffmpeg.sh`'s build tree: under
+# $PLX_BUILD_CACHE/curlstack/<key> (default ~/.cache/plxnative), where the key covers every input
+# that changes a shipped byte (this script, the eight pins, the toolchain's fingerprint, arm-cc.py
+# and the link-evidence checker it runs, inherited build variables, and the checkout path the
+# build trees and `.pc` files name). A hit re-installs the eight `vendor/*-prefix` trees and
+# builds nothing, which is what lets a manifest edit that does not touch the stack (an FFmpeg bump)
+# re-run this script for free, and what CI's `curlstack` cross-build entry caches. A miss builds
+# everything, then publishes it; set PLX_BUILD_CACHE= (empty) to skip the cache entirely.
 #
 # WHY GNUTLS, NOT OPENSSL. An earlier version of this script built the TLS backend on OpenSSL
 # 3.5.9. It built, packaged and installed cleanly — and then crashed the app on every single
@@ -24,14 +36,14 @@
 # each other's global init state (`atfork`/signal-handler/RNG bookkeeping), independent of
 # `dlopen` scoping. GnuTLS and its dependencies (Nettle, GMP, libtasn1) live in a completely
 # separate symbol and process-state namespace from OpenSSL — there is nothing for them to
-# collide with, so this class of bug cannot recur. See `rust-modules/net/src/net.rs`'s own doc
-# on `bundled()` for the device-side half of this story.
+# collide with, so this class of bug cannot recur. See `rust-modules/net/src/net/curlstack.rs`'s
+# module doc for the device-side half of this story.
 #
 # THE SONAME-RENAME CONVENTION is the same `-plx` infix FFmpeg uses (`libavformat-plx.so.63`,
 # ...): `libgmp-plx.so.10`, `libnettle-plx.so.8`, `libhogweed-plx.so.6`, `libtasn1-plx.so.6`,
 # `libgnutls-plx.so.30`, `libnghttp2-plx.so.14`, `libnghttp3-plx.so.9`, `libngtcp2-plx.so.16`,
 # `libngtcp2_crypto_gnutls-plx.so.8`, `libcurl-plx.so.4`. A renamed SONAME is not cosmetic:
-# `net.rs`/`curlio.rs` dlopen these by ABSOLUTE PATH beside the binary (no rpath survives
+# `net::curlstack` dlopens these by ABSOLUTE PATH beside the binary (no rpath survives
 # FFmpeg's own configure-eval problem, and these build systems have the identical issue), so the
 # bare name must never collide with anything the device itself might already carry.
 #
@@ -576,6 +588,38 @@ build_curl() {
     )
 }
 
+# ---- the keyed output cache (see the header) -----------------------------------------------------
+PREFIXES="gmp nettle libtasn1 gnutls nghttp2 nghttp3 ngtcp2 curl"
+CACHE_ROOT=${PLX_BUILD_CACHE-$HOME/.cache/plxnative}
+if [ -n "$CACHE_ROOT" ]; then
+    mkdir -p "$CACHE_ROOT"
+    CACHE_ROOT=$(cd "$CACHE_ROOT" && pwd)
+    PINS=""
+    for id in $PREFIXES; do
+        PINS="$PINS|$id:$(python3 "$DEPS" get "$id" version):$(python3 "$DEPS" get "$id" sha256)"
+    done
+    # The same toolchain fingerprint `ci/build-ffmpeg.sh` takes, for the same reasons (its comment
+    # has them): what the compiler emits, its banner, binutils', and the size-and-mtime of the
+    # files behind the NDK's one shared wrapper, which a reinstall at the same path changes.
+    CROSS="$WEBOS_SDK/bin/arm-webos-linux-gnueabi-"
+    TOOLCHAIN="$("${CROSS}gcc" -dumpmachine 2>/dev/null)|$("${CROSS}gcc" --version 2>/dev/null | head -1)|$("${CROSS}ld" --version 2>/dev/null | head -1)|$(ls -lnL "${CROSS}gcc.br_real" "${CROSS}ld" "$SYSROOT/lib/libc.so.6" 2>/dev/null | awk '{print $5,$6,$7,$8}' | tr '\n' ' ')"
+    SCRIPTS="$(shasum -a 256 "$0" "$ROOT/ci/arm-cc.py" "$ROOT/ci/check-link-evidence.py" | cut -d' ' -f1 | tr '\n' ' ')"
+    INHERITED="${CFLAGS-}|${CPPFLAGS-}|${LDFLAGS-}|${CXXFLAGS-}|${PKG_CONFIG_PATH-}|$("$PATCHELF" --version 2>/dev/null)|$("$CMAKE" --version 2>/dev/null | head -1)"
+    KEY=$(printf '%s|%s|%s|%s|%s|%s' "$ROOT" "$PINS" "$SYSROOT" "$TOOLCHAIN" "$SCRIPTS" "$INHERITED" \
+          | shasum -a 256 | cut -c1-16)
+    WORK="$CACHE_ROOT/curlstack/arm-$KEY"
+    if [ -f "$WORK/.complete" ]; then
+        echo "build-curlstack: cache hit ($WORK) — re-installing the prefixes"
+        for p in $PREFIXES; do
+            rm -rf "$ROOT/vendor/$p-prefix"
+            cp -R "$WORK/$p-prefix" "$ROOT/vendor/$p-prefix"
+        done
+        : > "$WORK/.last-used"
+        echo "build-curlstack: done (cached) — see vendor/{$(echo "$PREFIXES" | tr ' ' ',')}-prefix/lib"
+        exit 0
+    fi
+fi
+
 build_gmp
 build_nettle
 build_libtasn1
@@ -584,5 +628,24 @@ build_nghttp2
 build_nghttp3
 build_ngtcp2
 build_curl
+
+# Publish whole or not at all: copied to a pid-unique staging directory, marked complete, then
+# renamed into place, so a reader never sees a half-written tree. Two builds racing to the same key
+# both build; the loser's rename fails and it discards its copy, which is identical by construction.
+if [ -n "$CACHE_ROOT" ]; then
+    stage="$WORK.stage.$$"
+    rm -rf "$stage"
+    mkdir -p "$stage"
+    for p in $PREFIXES; do
+        cp -R "$ROOT/vendor/$p-prefix" "$stage/$p-prefix"
+    done
+    : > "$stage/.complete"
+    : > "$stage/.last-used"
+    if [ ! -e "$WORK" ] && mv "$stage" "$WORK" 2>/dev/null; then
+        echo "build-curlstack: cached as $WORK"
+    else
+        rm -rf "$stage"
+    fi
+fi
 
 echo "build-curlstack: done — see vendor/{gmp,nettle,libtasn1,gnutls,nghttp2,nghttp3,ngtcp2,curl}-prefix/lib"

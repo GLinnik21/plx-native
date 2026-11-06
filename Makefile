@@ -183,7 +183,7 @@ APPPORT      = $(if $(filter stable,$(FLAVOR)),8910,$(if $(filter nightly,$(FLAV
 .DEFAULT_GOAL := all
 
 QUERY_GOALS = print-flavor print-appid print-appdir print-rundir print-eventlog print-appport print-tv \
-              print-simbin print-app-files print-deploy-files print-sentry-handler print-ffmpeg-staged \
+              print-simbin print-app-files print-deploy-files print-sentry-handler print-ffmpeg-staged print-curlstack-staged \
               print-sentry-project print-bench-config print-disk-entries \
               print-subs-font-files print-rust-toolchain print-rust-codegen print-cargo-env
 print-flavor:   ; @echo '$(FLAVOR)'
@@ -208,6 +208,7 @@ print-deploy-files:   ; @echo '$(DEPLOY_FILES)'
 print-subs-font-files: ; @echo '$(SUBS_FONT_FILES)'
 print-sentry-handler: ; @echo '$(SENTRY_HANDLER)'
 print-ffmpeg-staged:  ; @echo '$(FFMPEG_STAGED)'
+print-curlstack-staged: ; @echo '$(CURLSTACK_STAGED)'
 print-sentry-project: ; @echo '$(SENTRY_PROJECT)'
 print-rust-toolchain: ; @echo '$(RUST_TOOLCHAIN)'
 print-rust-codegen: ; @echo '$(RUST_CODEGEN)'
@@ -558,7 +559,7 @@ endif
 HOST_ENV = $(if $(filter-out 0 1,$(HOST_THREADS)),CARGO_BUILD_RUSTFLAGS='-Zthreads=$(HOST_THREADS)')
 
 RUST_FEATFLAGS = $(if $(RELEASE),--no-default-features,)$(if $(LAB), --features lab-diagnostics,)
-RUST_TDIR      = target$(if $(RELEASE),-release,)$(if $(LAB),-lab,)$(if $(SYMBOLS),-sym,)
+RUST_TDIR      = target$(if $(RELEASE),-release,)$(if $(LAB),-lab,)$(if $(SYMBOLS),-sym,)$(if $(CURLSTACK),-curlstack,)
 # OVERRIDING RUST_FEATFLAGS BY HAND? PASS RUST_TDIR TOO. This dir is keyed on RELEASE, not on the
 # flag set, so `make RUST_FEATFLAGS=...` alone lands in the SAME target/ as an ordinary build:
 # cargo's staticlib looks up to date, the stamp below deletes pkg/plxnative, and make relinks the
@@ -750,7 +751,7 @@ TELEMETRY_CFG  = $(shell printf '%s|%s|%s|%s' '$(PLX_SENTRY_DSN)' '$(PLX_POSTHOG
 # byte-for-byte what it always was. `+rc:<n>` is the same argument for a release candidate: the
 # number is what `ci/check-package.py` grades the binary's `X.Y.Z-rc.<n>` against, and an rc.1 and
 # an rc.2 of one tree must not share a link.
-RUST_CFG       = features:$(RUST_FEATFLAGS)$(if $(filter-out release,$(ARM_PROFILE)),+profile:$(ARM_PROFILE),)$(if $(SYMBOLS),+symbols,)$(if $(filter nightly,$(FLAVOR)),+nightly:$(PLX_NIGHTLY_DATE),)$(if $(PLX_RC),+rc:$(PLX_RC),)+tel:$(TELEMETRY_CFG)
+RUST_CFG       = features:$(RUST_FEATFLAGS)$(if $(filter-out release,$(ARM_PROFILE)),+profile:$(ARM_PROFILE),)$(if $(SYMBOLS),+symbols,)$(if $(CURLSTACK),+curlstack,)$(if $(filter nightly,$(FLAVOR)),+nightly:$(PLX_NIGHTLY_DATE),)$(if $(PLX_RC),+rc:$(PLX_RC),)+tel:$(TELEMETRY_CFG)
 # Handled by $(shell) during PARSING, and by DELETING the output rather than by timestamps.
 # Both choices are load-bearing, and both were arrived at by measuring the failures:
 #   * A rule cannot do it. macOS ships GNU make 3.81, which decides whether a target is up to date
@@ -904,19 +905,32 @@ FFMPEG_SONAMES = libavutil-plx.so.61 libavcodec-plx.so.63 libavformat-plx.so.63 
                  $(if $(RELEASE),,libswscale-plx.so.10)
 FFMPEG_STAGED = $(addprefix pkg/,$(FFMPEG_SONAMES))
 
-# Vendored HTTP/3-capable curl + its nine dependencies (GMP, Nettle, Hogweed, libtasn1, GnuTLS,
-# nghttp2, nghttp3, ngtcp2 and its GnuTLS crypto glue), same bundle-beside-the-binary pattern as
-# FFmpeg above, built through `ci/arm-cc.py` the same way (`ci/build-curlstack.sh`), so each
-# carries real link evidence too. GnuTLS, not OpenSSL: see `ci/build-curlstack.sh`'s own doc for
-# the on-device crash that OpenSSL's TLS backend caused (two incompatible OpenSSL majors in one
-# process) and why GnuTLS's separate symbol/process-state namespace avoids it entirely.
-# `net.rs`/`curlio.rs` dlopen these by absolute path and fall back to the television's own libcurl
-# 7.53.1 the moment any one of them is missing — see their `bundled()` doc.
+# **CURLSTACK=1: the opt-in bundled HTTP/3 curl.** OFF by default, and every variable below is
+# empty without it, so a plain `make`, `make ipk` or CI's cross-build builds, links and packages
+# exactly what it did before the stack existed. With it: curl 8.23 + its nine dependencies (GMP,
+# Nettle, Hogweed, libtasn1, GnuTLS, nghttp2, nghttp3, ngtcp2 and its GnuTLS crypto glue), built by
+# `ci/build-curlstack.sh` through `ci/arm-cc.py` (so each carries link evidence, like FFmpeg),
+# shipped beside the binary, plus the `http3-curlstack` cargo feature that loads them
+# (`plx_net::net::load_bundled`, which falls back to the television's own libcurl 7.53.1 the moment
+# any one of them is missing). The flag and the feature move together: `+curlstack` in the build
+# stamp (RUST_CFG) and its own target dir, for the same reasons LAB has them. GnuTLS, not OpenSSL:
+# `ci/build-curlstack.sh`'s header has the on-device crash a second OpenSSL caused.
+# Like RELEASE and LAB, any non-empty value turns it on; only `1` is accepted, so `CURLSTACK=0`
+# fails here instead of meaning "on".
+ifneq ($(filter-out 1,$(CURLSTACK)),)
+$(error CURLSTACK=$(CURLSTACK): use CURLSTACK=1 to build the bundled curl stack, or leave it unset)
+endif
+CURLSTACK_FEATFLAG = $(if $(CURLSTACK), --features http3-curlstack,)
 CURLSTACK_PREFIXES = gmp nettle libtasn1 gnutls nghttp2 nghttp3 ngtcp2 curl
-CURLSTACK_SONAMES = libgmp-plx.so.10 libnettle-plx.so.8 libhogweed-plx.so.6 libtasn1-plx.so.6 \
+CURLSTACK_ALL_SONAMES = libgmp-plx.so.10 libnettle-plx.so.8 libhogweed-plx.so.6 libtasn1-plx.so.6 \
                      libgnutls-plx.so.30 libnghttp2-plx.so.14 libnghttp3-plx.so.9 \
                      libngtcp2-plx.so.16 libngtcp2_crypto_gnutls-plx.so.8 libcurl-plx.so.4
+CURLSTACK_SONAMES = $(if $(CURLSTACK),$(CURLSTACK_ALL_SONAMES),)
 CURLSTACK_STAGED = $(addprefix pkg/,$(CURLSTACK_SONAMES))
+# The two licence texts only the stack needs (GMP/Nettle's LGPL-3.0 arm, curl's own licence). In
+# `licenses/curlstack/`, outside `LICENSE_FILES`' `licenses/*.txt` glob, so a default package
+# carries the same licence set it always did; `ipk` copies them in beside the others under the flag.
+CURLSTACK_LICENSE_FILES = $(if $(CURLSTACK),$(wildcard licenses/curlstack/*.txt),)
 
 # nanosvg is not in the repository. It is fetched at the commit pinned in ci/dependencies.json
 # (two header files, one sha256 each) into the gitignored vendor/nanosvg, which CFLAGS puts on the
@@ -973,15 +987,18 @@ $(FFMPEG_STAGED): pkg/%: $(FFMPEG_INC)/libavformat/avformat.h
 	cp -L $(FFMPEG_PREFIX)/lib/$* $@
 	python3 ci/stage-link-evidence.py $(FFMPEG_PREFIX)/lib/$* $@
 
+# The stamp's prerequisites are the script's inputs; a rebuild after a change to any of them that
+# does not alter the stack (an FFmpeg bump in the manifest) is a copy out of the script's own keyed
+# cache under $(PLX_BUILD_CACHE) (default ~/.cache/plxnative/curlstack), not a recompile.
 CURLSTACK_STAMP = vendor/curlstack-built
-$(CURLSTACK_STAMP): ci/build-curlstack.sh ci/deps.py ci/dependencies.json
+$(CURLSTACK_STAMP): ci/build-curlstack.sh ci/deps.py ci/dependencies.json ci/arm-cc.py ci/check-link-evidence.py
 	WEBOS_SDK=$(WEBOS_SDK) ./ci/build-curlstack.sh
 	@mkdir -p vendor
 	@touch $@
 
-# Each SONAME lives under a different vendor/<name>-prefix/lib (openssl/nghttp2/nghttp3/ngtcp2/
-# curl built separately, unlike FFmpeg's single shared prefix) — search them rather than hardcode
-# which prefix owns which file.
+# Each SONAME lives under a different vendor/<name>-prefix/lib (each project is built separately,
+# unlike FFmpeg's single shared prefix) — search them rather than hardcode which prefix owns which
+# file.
 $(CURLSTACK_STAGED): pkg/%: $(CURLSTACK_STAMP)
 	@mkdir -p pkg
 	@for p in $(CURLSTACK_PREFIXES); do \
@@ -1019,7 +1036,7 @@ $(RUST_LIB): LICENSE $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.l
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" $(RUST_ENV) \
 	  $(TELEMETRY_ENV) \
 	  cargo +$(RUST_TOOLCHAIN) rustc $(ARM_PROFILE_FLAG) --target $(RUST_TARGET) \
-	    --lib --crate-type staticlib --target-dir $(RUST_TDIR) $(RUST_FEATFLAGS) \
+	    --lib --crate-type staticlib --target-dir $(RUST_TDIR) $(RUST_FEATFLAGS)$(CURLSTACK_FEATFLAG) \
 	    --message-format=json-render-diagnostics > $(RUST_TDIR)/.lib-artifacts.json
 	@# The crate declares `crate-type = ["rlib"]`, so this `.a` exists only because the line above
 	@# asked for it. Checked AFTER cargo returns (never as a prerequisite, which would make a no-op
@@ -1269,7 +1286,7 @@ SUBS_FONT_FILES = $(sort $(wildcard pkg/fonts/subs/*.ttf)) pkg/fonts/subs/manife
 # matches LICENSE against known texts by SIMILARITY, and the appended thirty lines pushed the file
 # under the threshold — so the repository advertised "Other" rather than MIT, misrepresenting the
 # terms in the one place most people look. Splitting the file must not un-ship the reservation.
-LICENSE_FILES = LICENSE LICENSING.md TRADEMARKS.md $(wildcard licenses/*.txt)
+LICENSE_FILES = LICENSE LICENSING.md TRADEMARKS.md $(wildcard licenses/*.txt) $(CURLSTACK_LICENSE_FILES)
 
 # The derived descriptor for a flavoured install, written by the SAME transform that packages it
 # (ci/flavor.py, through ci/mkipk.py) so `make deploy`'s scp'd appinfo and the .ipk's staged one
@@ -1329,9 +1346,9 @@ deploy: pkg/plxnative pkg/plxnative-storage $(FFMPEG_STAGED) $(CURLSTACK_STAGED)
 	# that is not fast, and this is ~2.1 MB on every deploy. Unconditional, like the fonts —
 	# a CHANGED library must be able to reach the TV.
 	$(SCP) $(FFMPEG_STAGED) tv:$(APPDIR)/
-	# The vendored curl stack, same reasoning: net.rs/curlio.rs dlopen these by absolute path and
-	# fall back to the television's own libcurl 7.53.1 the moment one is missing.
-	$(SCP) $(CURLSTACK_STAGED) tv:$(APPDIR)/
+	# The bundled curl stack under CURLSTACK=1, same reasoning: net.rs dlopens it by absolute path
+	# and falls back to the television's own libcurl 7.53.1 the moment one is missing.
+	$(if $(CURLSTACK),$(SCP) $(CURLSTACK_STAGED) tv:$(APPDIR)/)
 	# The native crash daemon is a separate process so it can read the dying process's stack while
 	# the signal handler keeps that process parked. It has no network transport of its own. Stage
 	# then rename: an already-running app keeps the old daemon executable open, and scp directly to
@@ -1355,8 +1372,11 @@ deploy: pkg/plxnative pkg/plxnative-storage $(FFMPEG_STAGED) $(CURLSTACK_STAGED)
 	# the .ipk only ever contains the current set. Removal comes AFTER the copy so there is never
 	# a moment with no FFmpeg on the device.
 	$(SSH) 'cd $(APPDIR) && for f in libav*-plx.so.* libswscale-plx.so.*; do case " $(FFMPEG_SONAMES) " in *" $$f "*) ;; *) rm -f "$$f";; esac; done'
-	# ...and any curl stack from a previous version, same reasoning.
-	$(SSH) 'cd $(APPDIR) && for f in libgmp-plx.so.* libnettle-plx.so.* libhogweed-plx.so.* libtasn1-plx.so.* libgnutls-plx.so.* libcrypto-plx.so.* libssl-plx.so.* libnghttp2-plx.so.* libnghttp3-plx.so.* libngtcp2-plx.so.* libngtcp2_crypto_ossl-plx.so.* libngtcp2_crypto_gnutls-plx.so.* libcurl-plx.so.*; do case " $(CURLSTACK_SONAMES) " in *" $$f "*) ;; *) rm -f "$$f";; esac; done'
+	# ...and, under CURLSTACK=1, any curl-stack library this build no longer carries. A default
+	# deploy leaves a stack an earlier CURLSTACK=1 deploy put there alone: its binary has no loader
+	# for it (the `http3-curlstack` feature is off), so the files are inert, and a default deploy
+	# keeps the ssh round trips it always had.
+	$(if $(CURLSTACK),$(SSH) 'cd $(APPDIR) && for f in libgmp-plx.so.* libnettle-plx.so.* libhogweed-plx.so.* libtasn1-plx.so.* libgnutls-plx.so.* libnghttp2-plx.so.* libnghttp3-plx.so.* libngtcp2-plx.so.* libngtcp2_crypto_gnutls-plx.so.* libcurl-plx.so.*; do case " $(CURLSTACK_SONAMES) " in *" $$f "*) ;; *) rm -f "$$f";; esac; done')
 
 	$(SCP) pkg/plxnative tv:$(APPDIR)/plxnative.new
 	@# The lab session file, under LAB=1 only. Shipped by deploy as well as by the .ipk so the
