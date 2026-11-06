@@ -2160,12 +2160,13 @@ gap — `devcaps` reads the table's `maxFrameRate` only into the per-codec rows 
 envelope clamps against (since 2026-09-03), so the profile sent to PMS still bounds no frame rate
 at all. Three things about it
 are worth knowing before reading a result. **(1)** The declaration is the interesting half and the
-main false-PASS risk: `engine`'s `_ =>` arm maps an unrecognised AUDIO codec to `"AC3"`, but the video side no longer
-defaults: `LoadVideo::of_stream` is case-insensitive, `""` and `h264` are the only H264, `hevc`/`h265`, `av1` and `vp9` get their own
+main false-PASS risk: an unrecognised AUDIO codec (`""` included) no longer defaults to `"AC3"`
+(`plx_play_feed::audio_payload_codec`'s `_ => None` arm gives it no payload name, and the Load is refused with an
+`unsupported audio codec` log line), and the video side no longer defaults either: `LoadVideo::of_stream` is case-insensitive, `""` and `h264` are the only H264, `hevc`/`h265`, `av1` and `vp9` get their own
 payloads (`av1` and `vp9` only where the device's codec table lists the row, otherwise the Load is refused), and any other `vcodec` in a
-`playurl` declaration refuses the Load with a log line naming it. So a trigger that was never read (`""`) still produces exactly the right
-payload for the AC-3 baseline case — which is why the matrix carries cases expecting
-`"AC3 PLUS"` and `"AAC"`, and why the engine now logs one `load: v=… a=… fps=… dv=… atmos=…` line
+`playurl` declaration refuses the Load with a log line naming it. So a trigger that was never read (`""`) declares H264 and is refused
+at the audio step, and the matrix carries cases expecting
+`"AC3 PLUS"` and `"AAC"` because the declaration decides those names; the engine now logs one `load: v=… a=… fps=… dv=… atmos=…` line
 per streamed playback (the only place an event log says what the app told the television the stream
 WAS, as opposed to what the demuxer found in it). **(2)** `python3 -m http.server` is DISQUALIFIED
 and the failure is silent: the AVIO seeks by reopening with `Range: bytes=N-`, `stream.rs` accepts

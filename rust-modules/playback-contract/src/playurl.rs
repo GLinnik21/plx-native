@@ -17,8 +17,9 @@
 /// / `stream_acodec`, and its Dolby nodes from `stream_dovi` / `stream_immersive`, all five of
 /// which are normally installed together by `route::apply_plan` from a PMS decision and replaced
 /// together by later route transitions. So a URL-fed 4K HEVC file was declared to the television
-/// as whatever the route happened to hold — in a fresh boot, the empty string, which falls through
-/// media's `engine` `_ =>` arm to `"AC3"` (and `LoadVideo::of_stream` deliberately maps it to H264). The declaration is
+/// as whatever the route happened to hold — in a fresh boot, the empty string, which
+/// `plx_play_feed::audio_payload_codec`'s `_ => None` arm refuses as an unsupported audio codec (it
+/// once fell through to `"AC3"`; `LoadVideo::of_stream` deliberately maps it to H264). The declaration is
 /// precisely what governs HEVC-vs-H264 payload selection, the `"AC3 PLUS"` naming trap, and both
 /// Dolby nodes, so a tier that cannot set it cannot test them.
 ///
