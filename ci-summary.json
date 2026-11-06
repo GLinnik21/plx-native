@@ -57,22 +57,22 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-06T15:31:38Z",
+ "generated": "2026-11-06T15:40:42Z",
  "metrics": [
   {
-   "change30_pct": 7.0,
-   "change7_pct": 29.8,
-   "d30": 279,
-   "delta30": 19.5,
-   "delta7": 68.5,
+   "change30_pct": 7.2,
+   "change7_pct": 29.5,
+   "d30": 278.5,
+   "delta30": 20.0,
+   "delta7": 68.0,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
    "kind": "job",
    "label": "CI: host python/shell/C gates",
    "n_now": 62,
-   "n_prev": 95,
+   "n_prev": 94,
    "now": 298.5,
-   "prev7": 230,
+   "prev7": 230.5,
    "shown": true,
    "state": "worse",
    "state30": "flat",
@@ -104,17 +104,17 @@
   {
    "change30_pct": 60.8,
    "change7_pct": 21.7,
-   "d30": 237,
-   "delta30": 144,
-   "delta7": 68,
+   "d30": 237.0,
+   "delta30": 144.0,
+   "delta7": 68.0,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
    "n_now": 61,
-   "n_prev": 95,
+   "n_prev": 94,
    "now": 381,
-   "prev7": 313,
+   "prev7": 313.0,
    "shown": true,
    "state": "worse",
    "state30": "worse",
@@ -123,19 +123,40 @@
    "unit": "s"
   },
   {
-   "change30_pct": -47.5,
+   "change30_pct": 16.1,
    "change7_pct": 20.3,
-   "d30": 847.5,
-   "delta30": -402.5,
-   "delta7": 75,
+   "d30": 173.5,
+   "delta30": 28.0,
+   "delta7": 34.0,
+   "group": "ci",
+   "id": "ci|host lint + type-checks",
+   "kind": "job",
+   "label": "CI: host lint + type-checks",
+   "n_now": 62,
+   "n_prev": 94,
+   "now": 201.5,
+   "prev7": 167.5,
+   "shown": true,
+   "state": "worse",
+   "state30": "flat",
+   "threshold_abs": 20.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": -47.6,
+   "change7_pct": 19.4,
+   "d30": 847,
+   "delta30": -403.0,
+   "delta7": 72.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 61,
-   "n_prev": 95,
-   "now": 445,
-   "prev7": 370,
+   "n_now": 62,
+   "n_prev": 94,
+   "now": 444.0,
+   "prev7": 372.0,
    "shown": true,
    "state": "worse",
    "state30": "better",
@@ -144,10 +165,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -52.0,
+   "change30_pct": -51.9,
    "change7_pct": 20.4,
-   "d30": 947,
-   "delta30": -492,
+   "d30": 946.5,
+   "delta30": -491.5,
    "delta7": 77.0,
    "group": "ci",
    "id": "pr_wait",
@@ -282,10 +303,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 10.0,
+   "change30_pct": 10.1,
    "change7_pct": 12.4,
-   "d30": 2431.5,
-   "delta30": 242.0,
+   "d30": 2429,
+   "delta30": 244.5,
    "delta7": 295.5,
    "group": "ci",
    "id": "minutes",
@@ -324,19 +345,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 42.8,
-   "change7_pct": 18.9,
-   "d30": 304,
-   "delta30": 130,
-   "delta7": 69,
+   "change30_pct": 43.2,
+   "change7_pct": 18.6,
+   "d30": 303.0,
+   "delta30": 131.0,
+   "delta7": 68.0,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
    "n_now": 61,
-   "n_prev": 95,
+   "n_prev": 94,
    "now": 434,
-   "prev7": 365,
+   "prev7": 366.0,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -347,7 +368,7 @@
   {
    "change30_pct": 178.8,
    "change7_pct": 19.9,
-   "d30": 132,
+   "d30": 132.0,
    "delta30": 236.0,
    "delta7": 61.0,
    "group": "ci",
@@ -355,9 +376,9 @@
    "kind": "job",
    "label": "CI: host harness tests",
    "n_now": 62,
-   "n_prev": 95,
+   "n_prev": 94,
    "now": 368.0,
-   "prev7": 307,
+   "prev7": 307.0,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -367,18 +388,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 9.9,
+   "change7_pct": 9.8,
    "d30": null,
    "delta30": null,
-   "delta7": 32.5,
+   "delta7": 32.0,
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "kind": "job",
    "label": "CI: armv7 cross-build and artifact assertions",
    "n_now": 62,
-   "n_prev": 95,
+   "n_prev": 94,
    "now": 359.5,
-   "prev7": 327,
+   "prev7": 327.5,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -387,18 +408,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 15.8,
-   "change7_pct": 12.5,
-   "d30": 260.0,
-   "delta30": 41.0,
-   "delta7": 33.5,
+   "change30_pct": 16.9,
+   "change7_pct": 12.7,
+   "d30": 258,
+   "delta30": 43.5,
+   "delta7": 34.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 57,
+   "n_now": 58,
    "n_prev": 82,
-   "now": 301,
+   "now": 301.5,
    "prev7": 267.5,
    "shown": true,
    "state": "flat",
@@ -408,18 +429,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -75.1,
-   "change7_pct": -0.2,
-   "d30": 851.0,
-   "delta30": -639.0,
-   "delta7": -0.5,
+   "change30_pct": -74.9,
+   "change7_pct": 0.5,
+   "d30": 851,
+   "delta30": -637.5,
+   "delta7": 1.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 57,
+   "n_now": 58,
    "n_prev": 82,
-   "now": 212,
+   "now": 213.5,
    "prev7": 212.5,
    "shown": true,
    "state": "flat",
@@ -429,44 +450,23 @@
    "unit": "s"
   },
   {
-   "change30_pct": -37.5,
-   "change7_pct": 12.5,
-   "d30": 331.0,
-   "delta30": -124.0,
-   "delta7": 23.0,
+   "change30_pct": -37.3,
+   "change7_pct": 11.7,
+   "d30": 328,
+   "delta30": -122.5,
+   "delta7": 21.5,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 57,
+   "n_now": 58,
    "n_prev": 82,
-   "now": 207,
+   "now": 205.5,
    "prev7": 184.0,
    "shown": true,
    "state": "flat",
    "state30": "better",
    "threshold_abs": 30.0,
-   "threshold_pct": 20.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": 16.5,
-   "change7_pct": 19.9,
-   "d30": 173,
-   "delta30": 28.5,
-   "delta7": 33.5,
-   "group": "ci",
-   "id": "ci|host lint + type-checks",
-   "kind": "job",
-   "label": "CI: host lint + type-checks",
-   "n_now": 62,
-   "n_prev": 95,
-   "now": 201.5,
-   "prev7": 168,
-   "shown": true,
-   "state": "flat",
-   "state30": "flat",
-   "threshold_abs": 20.0,
    "threshold_pct": 20.0,
    "unit": "s"
   },
@@ -557,18 +557,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 15.2,
+   "change30_pct": 11.8,
    "change7_pct": 5.6,
-   "d30": 16.5,
-   "delta30": 2.5,
+   "d30": 17,
+   "delta30": 2.0,
    "delta7": 1.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 57,
+   "n_now": 58,
    "n_prev": 82,
-   "now": 19,
+   "now": 19.0,
    "prev7": 18.0,
    "shown": false,
    "state": "flat",
@@ -588,9 +588,9 @@
    "kind": "job",
    "label": "CI: which gates apply",
    "n_now": 62,
-   "n_prev": 95,
+   "n_prev": 94,
    "now": 5.0,
-   "prev7": 5,
+   "prev7": 5.0,
    "shown": false,
    "state": "flat",
    "state30": "new",
@@ -601,17 +601,17 @@
   {
    "change30_pct": 0.0,
    "change7_pct": 33.3,
-   "d30": 4,
-   "delta30": 0,
-   "delta7": 1,
+   "d30": 4.0,
+   "delta30": 0.0,
+   "delta7": 1.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
    "n_now": 61,
-   "n_prev": 95,
+   "n_prev": 94,
    "now": 4,
-   "prev7": 3,
+   "prev7": 3.0,
    "shown": false,
    "state": "flat",
    "state30": "flat",
@@ -622,17 +622,17 @@
   {
    "change30_pct": -98.9,
    "change7_pct": 0.0,
-   "d30": 261,
-   "delta30": -258.0,
+   "d30": 261.5,
+   "delta30": -258.5,
    "delta7": 0.0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
    "n_now": 62,
-   "n_prev": 95,
+   "n_prev": 94,
    "now": 3.0,
-   "prev7": 3,
+   "prev7": 3.0,
    "shown": false,
    "state": "flat",
    "state30": "better",
@@ -664,13 +664,8 @@
  ],
  "regressions": [
   {
-   "change_pct": 29.8,
+   "change_pct": 29.5,
    "commits": [
-    {
-     "pr": 1241,
-     "sha": "951db621f",
-     "title": "HUD plugins: tools/hud-dev, and Play re-fetches a development-source HUD on the TV"
-    },
     {
      "pr": 1230,
      "sha": "e1ea6e2ec",
@@ -715,9 +710,14 @@
      "pr": 1256,
      "sha": "ece36ea6d",
      "title": "Settings: v2 anatomy and root (follow-focus sentence, 48 title, groups, Diagnostics page)"
+    },
+    {
+     "pr": null,
+     "sha": "a67e3c95f",
+     "title": "Settings v2: the remaining pages, the push motion and the Under posters split"
     }
    ],
-   "from": 230,
+   "from": 230.5,
    "id": "ci|host python/shell/C gates",
    "label": "CI: host python/shell/C gates",
    "since": "2026-11-06",
@@ -728,11 +728,6 @@
    "change_pct": 25.2,
    "commits": [
     {
-     "pr": 1241,
-     "sha": "951db621f",
-     "title": "HUD plugins: tools/hud-dev, and Play re-fetches a development-source HUD on the TV"
-    },
-    {
      "pr": 1230,
      "sha": "e1ea6e2ec",
      "title": "Add Catalan localization"
@@ -776,6 +771,11 @@
      "pr": 1256,
      "sha": "ece36ea6d",
      "title": "Settings: v2 anatomy and root (follow-focus sentence, 48 title, groups, Diagnostics page)"
+    },
+    {
+     "pr": null,
+     "sha": "a67e3c95f",
+     "title": "Settings v2: the remaining pages, the push motion and the Under posters split"
     }
    ],
    "from": 74.8,
@@ -789,11 +789,6 @@
    "change_pct": 21.7,
    "commits": [
     {
-     "pr": 1241,
-     "sha": "951db621f",
-     "title": "HUD plugins: tools/hud-dev, and Play re-fetches a development-source HUD on the TV"
-    },
-    {
      "pr": 1230,
      "sha": "e1ea6e2ec",
      "title": "Add Catalan localization"
@@ -837,9 +832,14 @@
      "pr": 1256,
      "sha": "ece36ea6d",
      "title": "Settings: v2 anatomy and root (follow-focus sentence, 48 title, groups, Diagnostics page)"
+    },
+    {
+     "pr": null,
+     "sha": "a67e3c95f",
+     "title": "Settings v2: the remaining pages, the push motion and the Under posters split"
     }
    ],
-   "from": 313,
+   "from": 313.0,
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
    "since": "2026-11-05",
@@ -850,10 +850,66 @@
    "change_pct": 20.3,
    "commits": [
     {
-     "pr": 1241,
-     "sha": "951db621f",
-     "title": "HUD plugins: tools/hud-dev, and Play re-fetches a development-source HUD on the TV"
+     "pr": 1230,
+     "sha": "e1ea6e2ec",
+     "title": "Add Catalan localization"
     },
+    {
+     "pr": 1243,
+     "sha": "8c6904d1b",
+     "title": "HUD registry: serve from huds.plxnative.com"
+    },
+    {
+     "pr": 1244,
+     "sha": "6d5089359",
+     "title": "Tests: the lint, screenshot and replay runs delete their temp trees"
+    },
+    {
+     "pr": 1247,
+     "sha": "43cdc8deb",
+     "title": "Settings: the built-in HUD is named Built-in"
+    },
+    {
+     "pr": 1252,
+     "sha": "02be3ead1",
+     "title": "Site: add three outlets to Featured in"
+    },
+    {
+     "pr": 1253,
+     "sha": "c01b5136a",
+     "title": "HUD previews: the long-title corpus covers Catalan"
+    },
+    {
+     "pr": 1254,
+     "sha": "e5f19d679",
+     "title": "Playback: a retired PMS session gets its stopped timeline"
+    },
+    {
+     "pr": 1250,
+     "sha": "9cc53ed28",
+     "title": "Deps: Bump encoding_rs from 0.8.42 to 0.8.44 in /rust-modules in the rust-minor-patch group"
+    },
+    {
+     "pr": 1256,
+     "sha": "ece36ea6d",
+     "title": "Settings: v2 anatomy and root (follow-focus sentence, 48 title, groups, Diagnostics page)"
+    },
+    {
+     "pr": null,
+     "sha": "a67e3c95f",
+     "title": "Settings v2: the remaining pages, the push motion and the Under posters split"
+    }
+   ],
+   "from": 167.5,
+   "id": "ci|host lint + type-checks",
+   "label": "CI: host lint + type-checks",
+   "since": "2026-11-06",
+   "threshold_pct": 20.0,
+   "to": 201.5
+  },
+  {
+   "change_pct": 19.4,
+   "commits": [
     {
      "pr": 1230,
      "sha": "e1ea6e2ec",
@@ -898,14 +954,19 @@
      "pr": 1256,
      "sha": "ece36ea6d",
      "title": "Settings: v2 anatomy and root (follow-focus sentence, 48 title, groups, Diagnostics page)"
+    },
+    {
+     "pr": null,
+     "sha": "a67e3c95f",
+     "title": "Settings v2: the remaining pages, the push motion and the Under posters split"
     }
    ],
-   "from": 370,
+   "from": 372.0,
    "id": "push_wait",
    "label": "Wait after merge",
    "since": "2026-11-06",
    "threshold_pct": 15.0,
-   "to": 445
+   "to": 444.0
   }
  ],
  "schema": 2,
