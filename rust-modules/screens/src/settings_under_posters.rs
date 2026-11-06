@@ -183,6 +183,7 @@ impl UnderPostersPage {
     fn rebuild(&mut self) {
         let keep = self.form.selected_id().cloned().unwrap_or(UpId::Title);
         self.form.table.compact = false;
+        self.form.table.board_metrics(true);
         self.form.set(under_posters_form(self.state.value), Some(&keep));
         self.form.table.list_focused = true;
     }
@@ -582,6 +583,7 @@ impl DetailsPage {
     fn rebuild(&mut self) {
         let keep = self.form.selected_id().cloned().unwrap_or(DetailsId(self.state.value.details));
         self.form.table.compact = false;
+        self.form.table.board_metrics(true);
         self.form.set(details_form(self.state.value.details, &self.facts), Some(&keep));
         self.form.table.list_focused = true;
     }

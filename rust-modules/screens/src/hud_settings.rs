@@ -555,6 +555,7 @@ impl HudPage {
         self.title = title;
         self.parent = parent;
         self.form.table.compact = false;
+        self.form.table.board_metrics(true);
         self.form.table.header_ink = theme::TEXT_READING;
         self.form.table.list_focused = true;
         self.form.set(form, keep.as_ref());

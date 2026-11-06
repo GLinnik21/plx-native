@@ -145,7 +145,7 @@ impl PickerPage {
         let keep = if seat_current { OptionId::Choice(current.clone()) } else {
             self.form.selected_id().cloned().unwrap_or_else(|| OptionId::Choice(current.clone())) };
         let show_retry = self.account() && !self.state.io.busy && !self.state.io.status.is_empty();
-        self.form.table.compact = false; self.form.table.header_ink = theme::TEXT_READING; self.form.table.list_focused = true;
+        self.form.table.compact = false; self.form.table.board_metrics(true); self.form.table.header_ink = theme::TEXT_READING; self.form.table.list_focused = true;
         self.form.set(option_form(options, &current, self.state.io.busy, show_retry), Some(&keep));
         self.state.selected = self.form.key_at(self.form.table.sel.max(0) as usize).map_or(0, |k| k.0);
     }

@@ -1371,6 +1371,7 @@ impl RootPage {
         });
         let keep = self.form.selected_id().cloned();
         self.form.table.compact = false;
+        self.form.table.board_metrics(true);
         self.form.table.header_ink = theme::TEXT_READING;
         self.form.set(form, keep.as_ref());
         self.form.table.list_focused = true;
@@ -1870,6 +1871,7 @@ impl LanguagePage {
     fn rebuild(&mut self) {
         let keep = self.form.selected_id().cloned().unwrap_or(LangId::Choice(self.state.selected));
         self.form.table.compact = false;
+        self.form.table.board_metrics(true);
         self.form.set(language_form(self.state.selected, self.state.busy), Some(&keep));
         self.form.table.list_focused = true;
     }
