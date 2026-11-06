@@ -366,6 +366,7 @@
   "settings.hud.expanded": "Hoofdstukken en info",
   "settings.hud.up_next": "Volgende aflevering",
   "settings.hud.unavailable": "Deze HUD is niet meer beschikbaar in de catalogus.",
+  "settings.hud.unavailable_value": "Niet beschikbaar",
   "settings.hud.catalog_cached": "HUD’s konden niet worden vernieuwd. De opgeslagen catalogus wordt getoond.",
   "settings.hud.catalog_unavailable": "HUD’s konden niet worden geladen. Probeer het later opnieuw.",
   "settings.hud.remove_named": "{name} verwijderen",

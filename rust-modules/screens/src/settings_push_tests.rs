@@ -230,6 +230,19 @@ fn the_narrative_frame_is_constant_and_the_list_travels_on_every_held_page() {
                 PushRole::Parent => (1.0 - fade, 1.0 - list, -0.35 * w * list),
                 PushRole::Child => (fade, list, 0.22 * w * (1.0 - list)),
             };
+            // the page's title is the largest run standing in the narrative column at rest (the header's heading,
+            // over its crumb and copy): that column holds it still under either role, at the narrative's alpha
+            let column = plx_ui::route_screen::RouteLayout::settings_page().narrative;
+            let in_column = |r: &plx_ui::draw_census::Run| r.at.x >= column.x - 0.5 && r.at.x < column.x + column.w;
+            let (title_at, title) = rest.iter().enumerate().filter(|(_, r)| in_column(r))
+                .fold(None, |best: Option<(usize, &plx_ui::draw_census::Run)>, (i, r)| match best { Some(b) if b.1.size >= r.size => Some(b), _ => Some((i, r)) })
+                .unwrap_or_else(|| panic!("{page:?}: no run in the narrative column at rest"));
+            let held_title = &under[title_at];
+            assert!(
+                (held_title.at.x - title.at.x).abs() < 0.01 && (held_title.at.y - title.at.y).abs() < 0.01
+                    && (held_title.ink[3] - title.ink[3] * narrative_alpha).abs() < 0.01,
+                "{page:?} {role:?}: the title {:?} is not held with the narrative column ({:?} -> {:?})", title.text, title.at, held_title.at
+            );
             let (mut held, mut travelled) = (0, 0);
             for (at_rest, now) in rest.iter().zip(&under) {
                 assert_eq!(at_rest.text, now.text, "{page:?} {role:?}");

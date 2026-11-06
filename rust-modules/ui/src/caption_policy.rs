@@ -85,9 +85,18 @@ impl CaptionPolicy {
         if is_show { self.show_details } else { self.details }
     }
 
+    /// The policy of a surface that lists ONE kind of tile (a Movies or Shows grid, Seasons,
+    /// Collections): both lines are that kind's own, so the band opens for what the kind shows and
+    /// not for the other kind's line ([`Self::max_lines`] holds the room for either kind, which only a
+    /// mixed shelf needs).
+    pub fn only(&self, is_show: bool) -> CaptionPolicy {
+        CaptionPolicy::same(self.title, self.details_for(is_show))
+    }
+
     /// How many lines this policy can show at most (a tile with no name, or no fact and no identity,
     /// may leave fewer). The band is the shelf's, never a tile's, so it opens for either kind's
-    /// line: a shelf mixing movies and shows holds the room for whichever has one.
+    /// line: a shelf mixing movies and shows holds the room for whichever has one. A surface that
+    /// lists one kind narrows first ([`Self::only`]).
     pub fn max_lines(&self) -> usize {
         usize::from(self.title) + usize::from(self.details != DetailsKind::None || self.show_details != DetailsKind::None)
     }
@@ -342,6 +351,21 @@ mod tests {
         assert!(!p.title);
         assert_eq!(p.details, DetailsKind::YearLength);
         assert_eq!(band_h(&p), 80.0);
+    }
+
+    /// A single-kind surface sizes its band by that kind's line alone; a mixed shelf keeps the room
+    /// for either.
+    #[test]
+    fn a_single_kind_surface_is_sized_by_its_own_line_and_a_mixed_one_by_either() {
+        let movies_nothing = CaptionPolicy { title: false, details: DetailsKind::None, show_details: DetailsKind::YearLength };
+        assert_eq!(band_h(&movies_nothing), BAND_ONE_LINE, "a mixed shelf holds the room for the show line");
+        assert_eq!(band_h(&movies_nothing.only(false)), BAND_NONE, "a Movies grid with Movie details Nothing opens nothing");
+        assert_eq!(band_h(&movies_nothing.only(true)), BAND_ONE_LINE, "a Shows grid still has its line");
+        let titled = CaptionPolicy { title: true, ..movies_nothing };
+        assert_eq!(band_h(&titled), BAND_TWO_LINES);
+        assert_eq!(band_h(&titled.only(false)), BAND_ONE_LINE, "the title alone is one line, not two");
+        assert_eq!(band_h(&titled.only(true)), BAND_TWO_LINES);
+        assert_eq!(titled.only(true), CaptionPolicy::same(true, DetailsKind::YearLength));
     }
 
     #[test]

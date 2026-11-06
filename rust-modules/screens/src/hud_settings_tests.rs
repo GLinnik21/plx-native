@@ -404,27 +404,16 @@ fn every_row_fits_its_column_in_every_language() {
 /// never taller than the room between the title and the action band, and short enough to read as a note.
 #[test]
 fn the_line_under_the_title_fits_the_column_in_every_language() {
+    use plx_platform::i18n::msg;
     const MAX_COPY_LINES: usize = 5;
     let layout = RouteLayout::settings_page();
     let mut out = Vec::new();
     for language in SHIPPED {
         let _guard = language_on_this_thread_for_test(language);
         let tag = language.tag();
-        let mut l = list();
-        let notices = std::iter::once(("no notice".to_owned(), None))
-            .chain(every_refusal().into_iter().map(|reason| (format!("refused {reason:?}"), Some(Notice::Refused { sha: Sha::of(&[9]), reason }))))
-            .chain(std::iter::once(("not written".to_owned(), Some(Notice::NotWritten { sha: Some(Sha::of(&[9])) }))))
-            .chain(
-                [FetchError::NotFound, FetchError::TooLarge, FetchError::Unreachable, FetchError::Certificate]
-                    .into_iter()
-                    .map(|reason| (format!("fetch {reason:?}"), Some(Notice::FetchFailed { reason }))),
-            );
-        let refused = [None, Some(AddressError::Form), Some(AddressError::HttpNotPrivate)];
-        for (name, notice, refused) in notices.flat_map(|(n, notice)| refused.map(move |r| (format!("{n} / {r:?}"), notice.clone(), r))) {
-            l.notice = notice;
-            let copy = copy_of(&l, refused);
+        let check = |name: &str, copy: &str, out: &mut Vec<String>| {
             let size = theme::size::LABEL;
-            let view = plx_ui::text_view::TextView::new(&copy, size, theme::TEXT_READING)
+            let view = plx_ui::text_view::TextView::new(copy, size, theme::TEXT_READING)
                 .leading(size as f32 + theme::space::XS)
                 .max_lines(12)
                 .with_measure(&ShippedMeasure);
@@ -440,6 +429,28 @@ fn the_line_under_the_title_fits_the_column_in_every_language() {
             if lines > MAX_COPY_LINES {
                 out.push(format!("{tag} {name}: {lines} lines, more than {MAX_COPY_LINES}"));
             }
+        };
+        let mut l = list();
+        let notices = std::iter::once(("no notice".to_owned(), None))
+            .chain(every_refusal().into_iter().map(|reason| (format!("refused {reason:?}"), Some(Notice::Refused { sha: Sha::of(&[9]), reason }))))
+            .chain(std::iter::once(("not written".to_owned(), Some(Notice::NotWritten { sha: Some(Sha::of(&[9])) }))))
+            .chain(
+                [FetchError::NotFound, FetchError::TooLarge, FetchError::Unreachable, FetchError::Certificate]
+                    .into_iter()
+                    .map(|reason| (format!("fetch {reason:?}"), Some(Notice::FetchFailed { reason }))),
+            );
+        let refused = [None, Some(AddressError::Form), Some(AddressError::HttpNotPrivate)];
+        for (name, notice, refused) in notices.flat_map(|(n, notice)| refused.map(move |r| (format!("{n} / {r:?}"), notice.clone(), r))) {
+            l.notice = notice;
+            check(&name, &copy_of(&l, refused), &mut out);
+        }
+        // the package page's own state sentences (a delisted package, a withdrawal, a catalog that could not refresh)
+        for (name, copy) in [
+            ("delisted", msg::settings_hud_unavailable().to_owned()),
+            ("withdrawn", format!("{} {}", msg::settings_hud_revoked(), "Withdrawn for a reason of the catalog's own, one short sentence long.")),
+            ("catalog cached", msg::settings_hud_catalog_cached().to_owned()),
+        ] {
+            check(name, &copy, &mut out);
         }
     }
     assert!(out.is_empty(), "{}", out.join("\n"));
@@ -833,6 +844,18 @@ fn gallery_forms_and_preview_controls_fit_every_shipped_language() {
             let page=gallery_page(dest);
             failures.extend(page.form.table.app_fit_failures(RouteLayout::settings_page().sectioned_table().w,language.tag()));
         }
+        // a delisted package and one already installed: their disabled Install rows' values fit the column
+        let mut delisted=gallery_page(SettingsPage::HudDetail(sha));
+        delisted.list.catalog.previous=delisted.list.catalog.index.clone();
+        delisted.list.catalog.index=None;delisted.rebuild(None);
+        let mut same=gallery_page(SettingsPage::HudDetail(sha));
+        let package=same.list.catalog.package(sha).unwrap().clone();
+        let mut installed=pack(&package.id,&package.name,9,false);
+        installed.meta.as_mut().unwrap().version=package.version.clone();
+        same.list.entries.push(installed);same.rebuild(None);
+        for page in [&delisted,&same] {
+            failures.extend(page.form.table.app_fit_failures(RouteLayout::settings_page().sectioned_table().w,language.tag()));
+        }
         let page=gallery_page(SettingsPage::HudPreview(sha));
         let controls=plx_ui::preview_controls::PreviewControls::new(page.scenes().iter().map(|(label,_)|(*label).into()),&ShippedMeasure);
         for elem in 0..controls.len() as u32 {
@@ -1102,7 +1125,8 @@ fn the_package_pages_sentence_follows_update_and_the_rows() {
 }
 
 /// A withdrawn package in the catalog, or one that does not fit the language, cannot be installed: Install is a ghost
-/// row with the reason as its value, and its sentence says what to do (the catalog's own reason follows a withdrawal).
+/// row with the reason as its value; a withdrawal's sentence is the page's own state (the withdrawal and the catalog's reason), a
+/// language's says what to do.
 #[test]
 fn an_uninstallable_package_page_row_is_a_ghost_with_its_reason() {
     use plx_platform::i18n::msg;
@@ -1114,7 +1138,7 @@ fn an_uninstallable_package_page_row_is_a_ghost_with_its_reason() {
     assert!(row_of(&page, &install).disabled);
     assert_eq!(row_of(&page, &install).value.as_deref(), Some(msg::settings_hud_revoked()));
     focus_on(&mut page, &install);
-    assert_eq!(page.sentence(), format!("{} Unsafe.", msg::settings_hud_withdrawn_detail()));
+    assert_eq!(page.sentence(), format!("{} Unsafe.", msg::settings_hud_revoked()), "the page's state (the withdrawal and the catalog's reason) outranks the row's sentence");
     let mut page = gallery_page(SettingsPage::HudDetail(sha));
     page.list.unfit = vec![sha];
     page.list.language = "Deutsch".into();
@@ -1122,6 +1146,61 @@ fn an_uninstallable_package_page_row_is_a_ghost_with_its_reason() {
     assert_eq!(row_of(&page, &install).value.as_deref(), Some(msg::settings_hud_unfit_language("Deutsch").as_str()));
     focus_on(&mut page, &install);
     assert_eq!(page.sentence(), msg::settings_hud_unfit_detail("Deutsch"));
+}
+
+/// **A package page opens on its state, and a disabled Install always says why.** The page's state (a delisted package,
+/// a withdrawal with the catalog's reason) is the sentence whichever row has focus, as a notice is on the Player HUD page;
+/// a package an equal or newer version of which is installed (the same version under another hash) says so as the value.
+#[test]
+fn a_package_pages_state_outranks_its_rows_and_a_disabled_install_says_why() {
+    use plx_platform::i18n::msg;
+    let list = gallery_list();
+    let package = list.catalog.index.as_ref().unwrap().entries.iter().find(|p| p.name == "Reference").unwrap().clone();
+    let sha = package.sha();
+    let install = HudId::InstallRegistry(sha);
+    let every_row = [HudId::Preview, install.clone(), HudId::About];
+
+    // withdrawn: opens on the withdrawal and the catalog's reason, on every row
+    let mut withdrawn = gallery_page(SettingsPage::HudDetail(sha));
+    with_index(&mut withdrawn, |index| index.revoked.push(plx_data::hudpacks::catalog::Revocation { sha256: sha.hex(), reason: "Unsafe.".into() }));
+    assert_eq!(withdrawn.sentence(), format!("{} Unsafe.", msg::settings_hud_revoked()), "the page opens on the reason");
+    for id in &every_row {
+        focus_on(&mut withdrawn, id);
+        assert_eq!(withdrawn.sentence(), format!("{} Unsafe.", msg::settings_hud_revoked()), "{id:?}");
+    }
+    assert!(row_of(&withdrawn, &install).disabled);
+    assert_eq!(row_of(&withdrawn, &install).value.as_deref(), Some(msg::settings_hud_revoked()));
+
+    // delisted (a refresh removed it; the previous index still describes it): the unavailable sentence, and the value
+    let mut delisted = gallery_page(SettingsPage::HudDetail(sha));
+    let old = delisted.list.catalog.index.clone();
+    with_index(&mut delisted, |index| index.entries.retain(|p| p.sha() != sha));
+    delisted.list.catalog.previous = old;
+    delisted.rebuild(None);
+    assert!(delisted.package().is_some(), "the premise: the page still describes it from the previous index");
+    assert!(row_of(&delisted, &install).disabled);
+    assert_eq!(row_of(&delisted, &install).value.as_deref(), Some(msg::settings_hud_unavailable_value()));
+    for id in &every_row {
+        focus_on(&mut delisted, id);
+        assert_eq!(delisted.sentence(), msg::settings_hud_unavailable(), "{id:?}");
+    }
+
+    // the same version installed under another hash: not newer, so Install is disabled and says "Already installed"
+    let mut same = gallery_page(SettingsPage::HudDetail(sha));
+    let mut installed = pack(&package.id, &package.name, 9, false);
+    installed.meta.as_mut().unwrap().version = package.version.clone();
+    assert_ne!(installed.sha, Some(sha), "the premise: another hash");
+    same.list.entries.push(installed);
+    same.rebuild(None);
+    assert!(row_of(&same, &install).disabled);
+    assert_eq!(row_of(&same, &install).value.as_deref(), Some(msg::settings_hud_already()));
+    focus_on(&mut same, &install);
+    assert_eq!(same.sentence(), msg::settings_hud_copy(), "no page state: the page's own sentence, the value says why");
+    // and a plain installable package keeps its Install sentence with no reason
+    let mut fresh = gallery_page(SettingsPage::HudDetail(sha));
+    focus_on(&mut fresh, &install);
+    assert!(!row_of(&fresh, &install).disabled && row_of(&fresh, &install).value.is_none());
+    assert_eq!(fresh.sentence(), msg::settings_hud_install_detail());
 }
 
 /// **The picture follows the focused HUD** (board 4.1): the gallery's picture slot holds the preview of the HUD under

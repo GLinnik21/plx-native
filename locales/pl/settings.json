@@ -372,6 +372,7 @@
   "settings.hud.expanded": "Rozdziały i informacje",
   "settings.hud.up_next": "Następny odcinek",
   "settings.hud.unavailable": "Ten HUD nie jest już dostępny w katalogu.",
+  "settings.hud.unavailable_value": "Niedostępne",
   "settings.hud.catalog_cached": "Nie można odświeżyć HUD-ów. Wyświetlany jest zapisany katalog.",
   "settings.hud.catalog_unavailable": "Nie można wczytać HUD-ów. Spróbuj ponownie później.",
   "settings.hud.remove_named": "Usuń {name}",

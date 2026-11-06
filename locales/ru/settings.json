@@ -372,6 +372,7 @@
   "settings.hud.expanded": "Главы и сведения",
   "settings.hud.up_next": "Следующая серия",
   "settings.hud.unavailable": "Этот HUD больше не доступен в каталоге.",
+  "settings.hud.unavailable_value": "Недоступно",
   "settings.hud.catalog_cached": "Не удалось обновить HUD. Показан сохранённый каталог.",
   "settings.hud.catalog_unavailable": "Не удалось загрузить HUD. Повторите попытку позже.",
   "settings.hud.remove_named": "Удалить {name}",

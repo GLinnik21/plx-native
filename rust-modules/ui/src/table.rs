@@ -1798,7 +1798,7 @@ impl TableView {
             } else {
                 on_pill(if row.dim { dimc } else { white }, ink)
             };
-            let row_bg = on_pill(PANEL_BG, crate::ACCENT);
+            let (chip_border, row_bg) = chip_ground(row, cover, ink);
             let cyc = sy + h * 0.5; // row vertical center
 
             // Leading column (SVG): the PICKER's tick, or an ACTION's glyph — one or the other, and
@@ -1849,7 +1849,7 @@ impl TableView {
                     // knocked out of the interior
                     let sty = crate::widgets::BadgeStyle::Outlined {
                         col: base,
-                        border: on_pill(theme::OVERLAY_BORDER, ink),
+                        border: chip_border,
                         bg: row_bg,
                     };
                     crate::widgets::badge(p, start + span.x, cyc, b.text(), None, sty, measure);
@@ -2047,16 +2047,32 @@ impl TableView {
     }
 }
 
+/// A row's badge chip ground as `(ring, interior)`, at the pill's `cover` of the row's ink band
+/// (0 off the pill, 1 under it) and the pill's `ink`: over the SOLID pill the ring is that near-black
+/// ink and the interior the accent; a disabled row's pill is the faint ghost, which is no ground to
+/// knock a chip out of, so its chip keeps its rest colours (like its label and sub-line do).
+fn chip_ground(row: &Row, cover: f32, ink: [f32; 4]) -> ([f32; 4], [f32; 4]) {
+    if row.disabled {
+        return (theme::OVERLAY_BORDER, PANEL_BG);
+    }
+    let mix = |rest: [f32; 4], over: [f32; 4]| match cover {
+        c if c <= 0.0 => rest,
+        c if c >= 1.0 => over,
+        c => theme::cross(rest, over, c),
+    };
+    (mix(theme::OVERLAY_BORDER, ink), mix(PANEL_BG, crate::ACCENT))
+}
+
 /// The ink of a row's trailing read-out ([`Row::readout`]): one step behind the row's label, so it
 /// follows the row's [`Row::dim`] as well as its own [`Row::value_dim`]. A dim row's label is
 /// already [`theme::TEXT_TERTIARY`], so its read-out takes [`theme::ROW_VALUE_INK_DIM`] below
 /// that; drawn at the live row's ink, a step that cannot be taken (the Timing section's Earlier at
 /// its floor) still announced itself at the trailing edge. Over the focused pill a dim row's
-/// read-out takes the quiet rung.
+/// read-out takes the quiet rung. A disabled row's reason is the dim row's off the pill and
+/// [`theme::TEXT_TERTIARY`] under the ghost ([`Row::disabled`]).
 fn row_value_ink(row: &Row, focused: bool) -> [f32; 4] {
-    // a disabled row's reason reads the same under the ghost pill as off it ([`Row::disabled`])
     if row.disabled {
-        return theme::TEXT_TERTIARY;
+        return if focused { theme::TEXT_TERTIARY } else { theme::ROW_VALUE_INK_DIM };
     }
     match (focused, row.dim, row.value_dim) {
         (true, false, false) => theme::ROW_VALUE_INK_ON,
@@ -2827,7 +2843,7 @@ mod tests {
     /// Rows `Live` and `Gone` (disabled, its reason as the value) with focus on row `sel`.
     fn ghost_rows(sel: i32, disabled: bool) -> TableView {
         let mut t = TableView::new();
-        let gone = Row::new("Gone").value("Withdrawn").disabled(disabled);
+        let gone = Row::new("Gone").value("Withdrawn").badge(Badge::Sdh).disabled(disabled);
         t.set_sections(vec![Section::new("S").row(Row::new("Live").value("On")).row(gone)], sel, false);
         t
     }
@@ -2842,7 +2858,7 @@ mod tests {
         assert_eq!(solid_pill, Some(crate::ACCENT[3]), "a usable row is under the solid pill");
         assert_eq!(ink_of(&solid, "Live"), crate::ACCENT_INK, "and its label is the pill's near-black ink");
         assert_eq!(ink_of(&solid, "Gone"), theme::TEXT_TERTIARY, "the disabled row off the pill is the dim row");
-        assert_eq!(ink_of(&solid, "Withdrawn"), theme::TEXT_TERTIARY);
+        assert_eq!(ink_of(&solid, "Withdrawn"), theme::ROW_VALUE_INK_DIM, "and its reason is the dim row's, as the doc says");
 
         let (ghost_pill, ghost) = ghost_frame(&ghost_rows(1, true));
         // the ghost alpha is a lerp that lands within an ulp of the constant, not on it
@@ -2850,6 +2866,14 @@ mod tests {
         assert!(ghost_pill < solid_pill);
         assert_eq!(ink_of(&ghost, "Gone"), theme::TEXT_SECONDARY, "its label stays light on the ghost pill");
         assert_eq!(ink_of(&ghost, "Withdrawn"), theme::TEXT_TERTIARY, "and its reason stays quiet");
+        assert_eq!(ink_of(&ghost, Badge::Sdh.text()), theme::TEXT_SECONDARY, "and so does its chip's label");
+        // the chip keeps its rest ground and keyline under the ghost; a usable row's chip over the solid pill takes the pill's
+        let ink = crate::ACCENT_INK;
+        assert_eq!(chip_ground(&Row::new("x").disabled(true), 1.0, ink), (theme::OVERLAY_BORDER, PANEL_BG));
+        assert_ne!(chip_ground(&Row::new("x").disabled(true), 1.0, ink).1, crate::ACCENT, "not the solid pill's fill");
+        assert_ne!(chip_ground(&Row::new("x").disabled(true), 1.0, ink).0, ink, "nor its near-black ring");
+        assert_eq!(chip_ground(&Row::new("x"), 1.0, ink), (ink, crate::ACCENT), "a usable row's chip is unchanged");
+        assert_eq!(chip_ground(&Row::new("x"), 0.0, ink), (theme::OVERLAY_BORDER, PANEL_BG));
         assert_ne!(ink_of(&ghost, "Gone"), crate::ACCENT_INK, "not the solid pill's near-black, which reads as pressable");
 
         // the same row, not disabled (a plain dim one), is under the solid pill with the near-black ink

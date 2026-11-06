@@ -27,7 +27,7 @@
 //! and no string is added.
 //!
 //! **What a row says** (Settings v2). A row is its label and, when it cannot be used, the reason as its value
-//! ([`Row::disabled`]: the ghost focus pill, `docs/agent-reference.md`): the package's `name` (the author's text: a
+//! ([`Row::disabled`]: the ghost focus pill, `rust-modules/ui/src/CLAUDE.md` rule 5, the disabled paragraph): the package's `name` (the author's text: a
 //! server-style label, never measured by the fit report; the app's own HUD is named *Built-in*, which is also its
 //! tier, so its row says no tier under it), *Unreviewed* under it for a sideload (a status, so it keeps its sub-line),
 //! and, for a package that cannot run, why as the value: a format the app does not read, an app range it is outside
@@ -483,6 +483,9 @@ impl HudPage {
         use plx_platform::i18n::msg;
         let mut rows = FormSection::new("");
         let mut says = Says::new();
+        // the page's STATE (a delisted or withdrawn package, a catalog that could not refresh) is the
+        // sentence beside the table whatever row has focus, as a refusal notice is on the Player HUD page
+        let mut stateful = false;
         let (title, parent, mut copy) = match self.page {
             SettingsPage::PlayerHud => {
                 let (form, says) = hud_form(&self.list, self.state.editing.then_some(&self.draft));
@@ -530,16 +533,22 @@ impl HudPage {
                         else if !package.compatible(&self.list.app_version, &self.list.language_tag, plx_appkit::hud_format::bundle::MAX_ARTIFACT_BYTES) { Some(Why::Format(Unloadable::AppRange)) }
                         else { None };
                     let can = listed && newer && !self.list.package_busy && why.is_none();
+                    // a disabled Install always says why: the format, language or app range, else the catalog no
+                    // longer lists the package, else an equal or newer version is installed (busy has its own label)
+                    let reason = why.map(|why| why_value(why, &self.list)).or_else(|| if !listed { Some(msg::settings_hud_unavailable_value().to_owned()) }
+                        else if !newer { Some(msg::settings_hud_already().to_owned()) } else { None });
                     let updating = installed.is_some() && newer;
                     let label = if self.list.fetching { msg::settings_hud_fetching() }
                         else if updating { msg::settings_hud_update() } else { msg::settings_hud_install() };
-                    let row = with_why(Row::new(label), why, &self.list);
+                    let row = reason.iter().fold(Row::new(label), |row, reason| row.value(reason));
                     rows = rows.item_keyed(HudId::InstallRegistry(sha), RowKey(1), RowKind::Button, HudAction::FetchRegistry(sha), row).disabled(!can);
-                    says.push((HudId::InstallRegistry(sha), match why {
-                        Some(why) => why_sentence(why, &self.list, Some(sha)),
-                        None if updating => msg::settings_hud_update_detail().to_owned(),
-                        None => msg::settings_hud_install_detail().to_owned(),
-                    }));
+                    // no sentence of its own when its value already says why (delisted, or not newer): the page's
+                    says.extend(match why {
+                        Some(why) => Some(why_sentence(why, &self.list, Some(sha))),
+                        None if reason.is_some() => None,
+                        None if updating => Some(msg::settings_hud_update_detail().to_owned()),
+                        None => Some(msg::settings_hud_install_detail().to_owned()),
+                    }.map(|says| (HudId::InstallRegistry(sha), says)));
                 }
                 rows = rows.item_keyed(HudId::About, RowKey(2), RowKind::Nav(SettingsPage::HudAbout(sha)),
                     HudAction::Inert, Row::new(msg::settings_hud_about()));
@@ -549,6 +558,7 @@ impl HudPage {
                     else if let Some(why) = self.list.catalog.revoked(sha) { format!("{} {why}", msg::settings_hud_revoked()) }
                     else if self.list.catalog.refresh_failed && installed.is_none() { msg::settings_hud_catalog_cached().into() }
                     else { msg::settings_hud_copy().into() };
+                stateful = copy != msg::settings_hud_copy();
                 (package.name.clone(), msg::settings_hud_gallery().into(), copy)
             }
             SettingsPage::HudAbout(_) => {
@@ -577,6 +587,7 @@ impl HudPage {
         if self.state.registry_request && matches!(self.list.notice, Some(Notice::FetchFailed {..} | Notice::Refused {..} | Notice::NotWritten {..})) {
             copy = copy_of(&self.list, None);
         }
+        if stateful { says.clear(); }
         Built { form: Form::new().section(rows), says, title, parent, copy }
     }
 

@@ -366,6 +366,7 @@
   "settings.hud.expanded": "Fejezetek és információk",
   "settings.hud.up_next": "Következő epizód",
   "settings.hud.unavailable": "Ez a HUD már nem érhető el a katalógusban.",
+  "settings.hud.unavailable_value": "Nem érhető el",
   "settings.hud.catalog_cached": "A HUD-ok nem frissíthetők. A mentett katalógus látható.",
   "settings.hud.catalog_unavailable": "A HUD-ok nem tölthetők be. Próbálja újra később.",
   "settings.hud.remove_named": "{name} eltávolítása",

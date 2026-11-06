@@ -369,6 +369,7 @@
   "settings.hud.expanded": "Capítulos e informação",
   "settings.hud.up_next": "Próximo episódio",
   "settings.hud.unavailable": "Este HUD já não está disponível no catálogo.",
+  "settings.hud.unavailable_value": "Indisponível",
   "settings.hud.catalog_cached": "Não foi possível atualizar os HUDs. É mostrado o catálogo guardado.",
   "settings.hud.catalog_unavailable": "Não foi possível carregar os HUDs. Tente novamente mais tarde.",
   "settings.hud.remove_named": "Remover {name}",

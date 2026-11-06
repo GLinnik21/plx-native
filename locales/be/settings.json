@@ -372,6 +372,7 @@
   "settings.hud.expanded": "Раздзелы і звесткі",
   "settings.hud.up_next": "Наступная серыя",
   "settings.hud.unavailable": "Гэты HUD больш не даступны ў каталогу.",
+  "settings.hud.unavailable_value": "Недаступна",
   "settings.hud.catalog_cached": "Не ўдалося абнавіць HUD. Паказаны захаваны каталог.",
   "settings.hud.catalog_unavailable": "Не ўдалося загрузіць HUD. Паспрабуйце пазней.",
   "settings.hud.remove_named": "Выдаліць {name}",
