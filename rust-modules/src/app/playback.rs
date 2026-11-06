@@ -175,7 +175,9 @@ pub(crate) fn retry_failed_playback(
     let resume_ns = intended_pos(ps)
         .max(plx_media::route::unpresented_resume_ns(ps))
         .max(0);
-    plx_media::player::stop_bufferfeed(ps, pa);
+    if !plx_media::player::engine::stop_for_replacement(ps, pa) {
+        return false;
+    }
     if plx_media::route::retry_current_play(ps, meta, resume_ns, direct_play, origin) {
         plx_machine::idle::invalidate();
         true
@@ -938,6 +940,9 @@ pub(crate) fn finish_playback(
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
 ) -> bool {
+    if plx_media::player::server_stop_applies(&player.session) {
+        return false;
+    }
     if plx_media::route::next_episode_mode() != plx_media::route::NextEpisodeMode::Off
         && play_up_next(&mut player.session, pa, HUD_LINGER_MS, pages, bridge)
     {
@@ -1010,6 +1015,9 @@ pub(crate) fn play_up_next(
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
 ) -> bool {
+    if plx_media::player::server_stop_applies(ps) {
+        return false;
+    }
     // clone off the `&'static` store BEFORE anything can replace it (see `Countdown::take`)
     let Some(u) = super::bridge::player_mut(pages).and_then(|player| player.up_next.take(ps)) else {
         return false;
@@ -2002,6 +2010,9 @@ fn perform_skip_prompt(player: &mut plx_media::player::machine::Player,
     pr: plx_appkit::skip_pill::Prompt, refresh_hubs: &mut bool,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>, bridge: &mut super::bridge::Bridge) -> bool {
     use plx_appkit::skip_pill::SkipAction;
+    if plx_media::player::server_stop_applies(&player.session) {
+        return false;
+    }
     bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::MarkSkipped(pr.marker));
             plx_telemetry::diag::event(plx_telemetry::diag::schema::DiagEvent::FeatureUsed {
                 feature: match pr.kind {

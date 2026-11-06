@@ -1486,6 +1486,9 @@ fn accept_server_stop(ps: &mut crate::route::PlaybackSession) -> bool {
         crate::route::discard_stale_flight_landing();
         return true;
     }
+    if !crate::route::has_url(ps) {
+        return false;
+    }
     let Some((wire_session, position_ms)) = with_server_stop(
         crate::route::playback_session_id(ps),
         |note| (note.wire_session.clone(), note.position_ms),
@@ -1494,6 +1497,7 @@ fn accept_server_stop(ps: &mut crate::route::PlaybackSession) -> bool {
     };
     crate::route::fail_current_engine();
     abandon_seek();
+    ps.finished = false;
     crate::route::note_engine_failure(ps, RuntimeFailure::ServerStopped, position_ms.saturating_mul(1_000_000));
     crate::route::retire_server_stopped_resources(ps, &wire_session);
     crate::route::discard_stale_flight_landing();

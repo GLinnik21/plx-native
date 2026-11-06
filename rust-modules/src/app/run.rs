@@ -6844,6 +6844,30 @@ mod lifecycle_regression_tests {
     }
 
     #[test]
+    fn server_stop_blocks_an_up_next_action_sampled_before_the_reply() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving_with(|request| {
+            if request.contains("/:/timeline?") && request.contains("state=playing") {
+                return r#"{"MediaContainer":{"terminationCode":2006,"terminationText":"stopped by the admin"}}"#.into();
+            }
+            queue_body(request, true).to_owned()
+        }) else {
+            eprintln!("SKIPPED server stop: lifecycle fixture worker could not be spawned");
+            return;
+        };
+        let mut fr = rig.due_up_next();
+        let lease = plx_media::route::begin_timeline_reporting(&rig.app.player.session).unwrap();
+        assert!(!plx_media::route::report_timeline(&lease, plx_plex::plex::TimelineState::Playing, 12_000, 60_000));
+
+        unsafe { playback_tick(&mut rig.app, &mut fr); }
+
+        assert!(!plx_media::route::play_pending());
+        assert!(!rig.app.player.session.finished);
+        assert_eq!(plx_media::player::error_now(&rig.app.player.session).kind, plx_media::player::FailureKind::ServerStopped);
+        assert_eq!(plx_media::route::up_next(&rig.app.player.session).unwrap().rk, "2");
+    }
+
+    #[test]
     fn an_expired_up_next_does_not_preempt_current_automatic_credits() {
         let _serial = plx_base::testlock::serial();
         let Some(mut rig) = Rig::new() else {

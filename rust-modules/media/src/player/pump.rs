@@ -3019,6 +3019,9 @@ mod flight_tests {
             if self.pa.is_live() {
                 suspend_bufferfeed(&mut self.ps, &mut self.pa);
             }
+            if self.pa.has_pending_release() {
+                super::super::engine::finish_release_for_test(&mut self.pa);
+            }
             super::super::claim_hold::clear();
             super::super::ffi_host::reset_native_lifecycle_for_test();
             super::super::ffi_host::force_clocksink_for_test(false);
@@ -3518,6 +3521,21 @@ mod flight_tests {
         assert!(!rig.pa.is_live(), "the stopped replacement still owns its engine");
         assert_eq!(crate::route::unpresented_resume_ns(&rig.ps), 10_000_000_000);
         assert_eq!(crate::player::error_now(&rig.ps).kind, crate::player::FailureKind::ServerStopped);
+    }
+
+    #[test]
+    fn server_stop_cannot_return_to_the_readout_after_back() {
+        let mut rig = Rig::new(40);
+        let playback = crate::route::sess(&rig.ps);
+        crate::player::note_server_stop(&playback, "rig-1", "stopped by the admin", 10_000);
+        crate::player::stop_bufferfeed(&mut rig.ps, &mut rig.pa);
+        assert_eq!(crate::player::state(&rig.ps), crate::player::PlaybackState::Idle);
+
+        // A reporter detached by a reload can still return after Back.
+        crate::player::note_server_stop(&playback, "rig-1", "another late reply", 10_000);
+        rig.frame();
+        assert_eq!(crate::player::state(&rig.ps), crate::player::PlaybackState::Idle);
+        crate::route::drain_scrobble();
     }
 
     #[test]

@@ -869,6 +869,16 @@ pub fn set_url(ps: &mut PlaybackSession, s: &str) {
 pub fn clear_url(ps: &mut PlaybackSession) {
     ps.url.clear()
 }
+/// A full stop retires the logical playback after capturing its final report. A late timeline
+/// reply can still name that old playback, but can no longer match the foreground session.
+pub(crate) fn retire_stopped_playback(ps: &mut PlaybackSession) {
+    clear_url(ps);
+    ps.sess.clear();
+    if ps.engine_failure == Some(crate::player::RuntimeFailure::ServerStopped) {
+        ps.engine_failure = None;
+    }
+}
+
 pub fn transcode_session(ps: &PlaybackSession) -> String {
     ps.tsession.clone()
 }

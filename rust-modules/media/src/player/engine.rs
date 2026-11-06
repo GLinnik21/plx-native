@@ -418,7 +418,7 @@ pub fn reap_abandoned_load(pa: &mut super::adapter::PlayerAdapter) -> bool {
     true
 }
 
-/// **A real stop's native object, handed to an off-frame `Unload`.** `StarfishMediaAPIs::Unload`
+/// **A terminal playback's native object, handed to an off-frame `Unload`.** `StarfishMediaAPIs::Unload`
 /// blocks for 110-150 ms on the dev set (webOS 4.5, release build, measured 2026-10-15 with
 /// `teardown spans:`; the kernel sched trace of the same returns shows the main thread ~31-36 ms in
 /// D state inside a driver `ioctl` and then ~72-74 ms in a futex until the pipeline thread woke it),
@@ -2728,6 +2728,16 @@ pub fn stop_bufferfeed(ps: &mut crate::route::PlaybackSession, pa: &mut super::a
     teardown(ps, pa, false);
 }
 
+/// A retry or queue handoff may replace the outgoing playback only while it owns that decision.
+pub fn stop_for_replacement(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) -> bool {
+    if super::accept_server_stop(ps) {
+        release_server_stopped_engine(ps, pa);
+        return false;
+    }
+    teardown(ps, pa, false);
+    true
+}
+
 /// Suspend for an app-switch: tear the pipeline down (webOS reclaims the video plane while we're
 /// backgrounded) but PRESERVE the playback session — keep the URL + transcode session, and
 /// don't scrobble "stopped". This makes the foreground restore a clean same-item reload
@@ -2792,7 +2802,7 @@ pub(super) fn release_server_stopped_engine(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut super::adapter::PlayerAdapter,
 ) {
-    if pa.is_live() {
+    if pa.is_live() || SHARED.start_queued.load(Ordering::Relaxed) {
         teardown(ps, pa, true);
     }
 }
@@ -2874,7 +2884,7 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
             crate::route::scrobble_stop(ps, final_report, None);
             crate::route::begin_engine_teardown(false);
             crate::route::drop_original_recovery(ps);
-            crate::route::clear_url(ps);
+            crate::route::retire_stopped_playback(ps);
             SHARED.reset_session();
             TX.reset();
             super::claim_hold::clear();
@@ -2903,6 +2913,7 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     // mutation of the route the next Load is about to own.
     let mut sp = TeardownSpans::new();
     let mut unload_th = None;
+    let server_stopped = super::server_stop_applies(ps);
     crate::route::begin_engine_teardown(for_reload);
     SHARED.stop_hls_clock();
     let mut eng = pa.take().expect("main-thread live check and take are one transaction");
@@ -2987,8 +2998,7 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     // one that has returned joins at once, and one that is merely slow is still joined.
     let abandoned_load = match eng.load_th.take() {
         Some(t) if !t.is_finished()
-            && (SHARED.load_timed_out.load(Ordering::Acquire)
-                || super::server_stop_applies(ps)) => Some(t),
+            && (SHARED.load_timed_out.load(Ordering::Acquire) || server_stopped) => Some(t),
         Some(t) => {
             plx_base::task::join("media", t);
             None
@@ -3045,7 +3055,7 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
             _payload: std::mem::take(&mut eng.payload),
             abandoned_at: std::time::Instant::now(),
         });
-    } else if !for_reload {
+    } else if !for_reload || server_stopped {
         unload_th = release_off_frame(pa.mt(), eng.native_epoch, &mut sp);
     } else {
         release_native_object_timed(pa.mt(), eng.native_epoch, &mut sp);
@@ -3093,7 +3103,7 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         // encoder it was holding is still running on the server, which is why this RETIRES rather
         // than forgets — see `route::drop_original_recovery`.
         crate::route::drop_original_recovery(ps);
-        crate::route::clear_url(ps); // the transcode stop rode out with `scrobble_stop` above
+        crate::route::retire_stopped_playback(ps); // the transcode stop rode out with `scrobble_stop` above
     } else if let Some(t) = eng.report_th.take() {
         // A reload posts no `stopped`, so there is nothing to order against: detach. Its own
         // ReportStop is already set, so it exits after its current POST and cannot be revived by
@@ -6418,6 +6428,24 @@ mod off_frame_release_tests {
         crate::player::ffi_host::reset_native_lifecycle_for_test();
         crate::player::ffi_host::force_clocksink_for_test(true);
         crate::player::adapter::PlayerAdapter::new(unsafe { MainThread::assume() })
+    }
+
+    #[test]
+    fn server_stop_releases_a_loaded_engine_off_the_frame() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        let mut pa = arm(&ps);
+        let _cleanup = Cleanup;
+        playing_engine(&mut pa);
+        crate::route::note_engine_failure(&mut ps, super::super::RuntimeFailure::ServerStopped, 0);
+        crate::player::ffi_host::delay_unload_for_test(UNLOAD_MS);
+
+        release_server_stopped_engine(&mut ps, &mut pa);
+
+        assert!(!pa.is_live());
+        assert!(pa.has_pending_release(), "the Unload must run off the frame thread");
+        finish_release_for_test(&mut pa);
+        assert_eq!(crate::player::error_now(&ps).kind, crate::player::FailureKind::ServerStopped);
     }
 
     #[test]
