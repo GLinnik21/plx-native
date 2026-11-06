@@ -175,6 +175,45 @@ fn switching_profile_leaves_the_container_holding_nothing_of_the_previous_profil
     );
 }
 
+/// **Each `settings-*` fps scene's boot target stands on the page whose heartbeat word the scene selects on.**
+/// `tests/manifest.json` names a `plxnative-settings=<target>` trigger and an `overlay` word; the harness grades
+/// the frames that print the word, so a target that opened another page (or the root, as an unknown one does)
+/// would leave the scene with no samples or, worse, another page's. The words here are the manifest's; the
+/// Under posters details pickers share one (`DetailsPage` serves both kinds) and About answers the Legal
+/// index's, which is why it has a boot target and no scene.
+#[test]
+fn each_settings_fps_scene_boot_target_prints_the_overlay_word_the_scene_selects_on() {
+    let _g = plx_base::testlock::serial();
+    for (target, word) in [
+        ("root", "settings"),
+        ("language", "language"),
+        ("audio", "audio"),
+        ("playback", "playback"),
+        ("picker-quality", "picker"),
+        ("privacy", "privacy"),
+        ("legal", "legal"),
+        ("under-posters", "under-posters"),
+        ("under-posters-movie", "under-posters-details"),
+        ("under-posters-show", "under-posters-details"),
+        ("player-hud", "player-hud"),
+        ("diagnostics", "diagnostics"),
+        ("about", "legal"),
+    ] {
+        let page = crate::dev::scenarios::settings_boot_page(target)
+            .unwrap_or_else(|| panic!("{target}: no such boot target"));
+        let mut d = Dispatcher::<AppHost>::new();
+        let mut rig = Bridge::for_test(|| 0);
+        frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
+        open_settings_at(&mut d, page);
+        for ms in 1..=40 {
+            frame(&mut d, &mut rig, AppArg::Home, tick(ms * 16), vec![]);
+        }
+        assert!(settings_up(&d), "{target}: the Settings surface is up");
+        assert_eq!(overlay_word(&d), Some(word), "{target}: the heartbeat word of the booted page");
+    }
+    assert!(crate::dev::scenarios::settings_boot_page("no-such-page").is_none());
+}
+
 /// **A profile switch dismisses an open Settings surface, at once.** The Playback page names the
 /// seated profile and lists that profile's own picks, so it must not survive the switch to the next
 /// one: it would say "for Maya" over Noah's values for as long as it stayed up. The surfaces go
