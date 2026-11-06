@@ -57,21 +57,21 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-06T23:33:14Z",
+ "generated": "2026-11-06T23:35:04Z",
  "metrics": [
   {
    "change30_pct": 28.2,
    "change7_pct": 30.2,
    "d30": 234,
-   "delta30": 66.0,
+   "delta30": 66,
    "delta7": 69.5,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
    "kind": "job",
    "label": "CI: host python/shell/C gates",
-   "n_now": 64,
+   "n_now": 65,
    "n_prev": 92,
-   "now": 300.0,
+   "now": 300,
    "prev7": 230.5,
    "shown": true,
    "state": "worse",
@@ -102,40 +102,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 65.7,
-   "change7_pct": 23.5,
+   "change30_pct": 65.9,
+   "change7_pct": 23.7,
    "d30": 233,
-   "delta30": 153,
-   "delta7": 73.5,
+   "delta30": 153.5,
+   "delta7": 74.0,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
-   "n_now": 63,
-   "n_prev": 92,
-   "now": 386,
-   "prev7": 312.5,
-   "shown": true,
-   "state": "worse",
-   "state30": "worse",
-   "threshold_abs": 20.0,
-   "threshold_pct": 20.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": 167.0,
-   "change7_pct": 20.0,
-   "d30": 138,
-   "delta30": 230.5,
-   "delta7": 61.5,
-   "group": "ci",
-   "id": "ci|host harness tests",
-   "kind": "job",
-   "label": "CI: host harness tests",
    "n_now": 64,
    "n_prev": 92,
-   "now": 368.5,
-   "prev7": 307.0,
+   "now": 386.5,
+   "prev7": 312.5,
    "shown": true,
    "state": "worse",
    "state30": "worse",
@@ -303,18 +282,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 13.4,
-   "change7_pct": 13.2,
+   "change30_pct": 13.6,
+   "change7_pct": 13.3,
    "d30": 2381,
-   "delta30": 319.5,
-   "delta7": 314.5,
+   "delta30": 323,
+   "delta7": 318,
    "group": "ci",
    "id": "minutes",
    "kind": "cost",
    "label": "Runner time per push",
-   "n_now": 56,
+   "n_now": 57,
    "n_prev": 77,
-   "now": 2700.5,
+   "now": 2704,
    "prev7": 2386,
    "shown": true,
    "state": "flat",
@@ -345,18 +324,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 56.2,
-   "change7_pct": 19.6,
+   "change30_pct": 55.3,
+   "change7_pct": 18.9,
    "d30": 281,
-   "delta30": 158,
-   "delta7": 72.0,
+   "delta30": 155.5,
+   "delta7": 69.5,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
-   "n_now": 63,
+   "n_now": 64,
    "n_prev": 92,
-   "now": 439,
+   "now": 436.5,
    "prev7": 367.0,
    "shown": true,
    "state": "flat",
@@ -366,18 +345,39 @@
    "unit": "s"
   },
   {
+   "change30_pct": 166.7,
+   "change7_pct": 19.9,
+   "d30": 138,
+   "delta30": 230,
+   "delta7": 61.0,
+   "group": "ci",
+   "id": "ci|host harness tests",
+   "kind": "job",
+   "label": "CI: host harness tests",
+   "n_now": 65,
+   "n_prev": 92,
+   "now": 368,
+   "prev7": 307.0,
+   "shown": true,
+   "state": "flat",
+   "state30": "worse",
+   "threshold_abs": 20.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
    "change30_pct": null,
-   "change7_pct": 9.4,
+   "change7_pct": 9.3,
    "d30": null,
    "delta30": null,
-   "delta7": 31.0,
+   "delta7": 30.5,
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "kind": "job",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "n_now": 64,
+   "n_now": 65,
    "n_prev": 92,
-   "now": 359.5,
+   "now": 359,
    "prev7": 328.5,
    "shown": true,
    "state": "flat",
@@ -450,18 +450,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 15.1,
-   "change7_pct": 18.2,
+   "change30_pct": 14.0,
+   "change7_pct": 17.0,
    "d30": 172,
-   "delta30": 26.0,
-   "delta7": 30.5,
+   "delta30": 24,
+   "delta7": 28.5,
    "group": "ci",
    "id": "ci|host lint + type-checks",
    "kind": "job",
    "label": "CI: host lint + type-checks",
-   "n_now": 64,
+   "n_now": 65,
    "n_prev": 92,
-   "now": 198.0,
+   "now": 196,
    "prev7": 167.5,
    "shown": true,
    "state": "flat",
@@ -587,9 +587,9 @@
    "id": "ci|which gates apply",
    "kind": "job",
    "label": "CI: which gates apply",
-   "n_now": 64,
+   "n_now": 65,
    "n_prev": 92,
-   "now": 5.0,
+   "now": 5,
    "prev7": 5.0,
    "shown": false,
    "state": "flat",
@@ -602,15 +602,15 @@
    "change30_pct": 0.0,
    "change7_pct": 33.3,
    "d30": 4,
-   "delta30": 0,
+   "delta30": 0.0,
    "delta7": 1.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 63,
+   "n_now": 64,
    "n_prev": 92,
-   "now": 4,
+   "now": 4.0,
    "prev7": 3.0,
    "shown": false,
    "state": "flat",
@@ -623,15 +623,15 @@
    "change30_pct": -98.9,
    "change7_pct": 0.0,
    "d30": 272,
-   "delta30": -269.0,
+   "delta30": -269,
    "delta7": 0.0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 64,
+   "n_now": 65,
    "n_prev": 92,
-   "now": 3.0,
+   "now": 3,
    "prev7": 3.0,
    "shown": false,
    "state": "flat",
@@ -722,7 +722,7 @@
    "label": "CI: host python/shell/C gates",
    "since": "2026-11-06",
    "threshold_pct": 20.0,
-   "to": 300.0
+   "to": 300
   },
   {
    "change_pct": 25.2,
@@ -786,7 +786,7 @@
    "to": 93.7
   },
   {
-   "change_pct": 23.5,
+   "change_pct": 23.7,
    "commits": [
     {
      "pr": 1252,
@@ -844,68 +844,7 @@
    "label": "CI: host unit tests (hostsim)",
    "since": "2026-11-06",
    "threshold_pct": 20.0,
-   "to": 386
-  },
-  {
-   "change_pct": 20.0,
-   "commits": [
-    {
-     "pr": 1252,
-     "sha": "02be3ead1",
-     "title": "Site: add three outlets to Featured in"
-    },
-    {
-     "pr": 1253,
-     "sha": "c01b5136a",
-     "title": "HUD previews: the long-title corpus covers Catalan"
-    },
-    {
-     "pr": 1254,
-     "sha": "e5f19d679",
-     "title": "Playback: a retired PMS session gets its stopped timeline"
-    },
-    {
-     "pr": 1250,
-     "sha": "9cc53ed28",
-     "title": "Deps: Bump encoding_rs from 0.8.42 to 0.8.44 in /rust-modules in the rust-minor-patch group"
-    },
-    {
-     "pr": 1256,
-     "sha": "ece36ea6d",
-     "title": "Settings: v2 anatomy and root (follow-focus sentence, 48 title, groups, Diagnostics page)"
-    },
-    {
-     "pr": null,
-     "sha": "a67e3c95f",
-     "title": "Settings v2: the remaining pages, the push motion and the Under posters split"
-    },
-    {
-     "pr": null,
-     "sha": "5b9ff4a0a",
-     "title": "Settings: a pushed page's text is made resident before it moves"
-    },
-    {
-     "pr": null,
-     "sha": "4bf133d57",
-     "title": "Settings: fps scenes for the pages Settings v2 added"
-    },
-    {
-     "pr": 1263,
-     "sha": "2f5e79630",
-     "title": "Playback: a Dolby Vision resume or seek that lands on a CRA plays the HDR10 base layer"
-    },
-    {
-     "pr": 1265,
-     "sha": "96be5e274",
-     "title": "Playback: honor Plex server stops"
-    }
-   ],
-   "from": 307.0,
-   "id": "ci|host harness tests",
-   "label": "CI: host harness tests",
-   "since": "2026-11-06",
-   "threshold_pct": 20.0,
-   "to": 368.5
+   "to": 386.5
   },
   {
    "change_pct": 18.6,
@@ -981,25 +920,25 @@
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
-   "now": 439
+   "now": 436.5
   },
   {
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
-   "now": 386
+   "now": 386.5
   },
   {
    "group": "ci",
    "id": "ci|host harness tests",
    "label": "CI: host harness tests",
-   "now": 368.5
+   "now": 368
   },
   {
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "now": 359.5
+   "now": 359
   }
  ],
  "slowest_local": [
