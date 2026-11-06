@@ -791,7 +791,13 @@ pub fn state(ps: &crate::route::PlaybackSession) -> shared::PlaybackState {
     // the Resolving spinner until it lands. So does every recovery no Engine waits on (the
     // foreground restore's resume, a rollback after a Load that failed before its Engine
     // existed): `route::engineless_flight_outstanding`.
-    if crate::route::play_pending() || crate::route::engineless_flight_outstanding() || SHARED.start_queued.load(Relaxed) {
+    if crate::route::play_pending() {
+        return shared::PlaybackState::Resolving;
+    }
+    if server_stop_applies(ps) {
+        return shared::PlaybackState::Error;
+    }
+    if crate::route::engineless_flight_outstanding() || SHARED.start_queued.load(Relaxed) {
         return shared::PlaybackState::Resolving;
     }
     // …and so is the PRE-FLIGHT refusal, for exactly the same reason: `/decision` answers before a
@@ -1163,9 +1169,6 @@ fn runtime_failure(
 /// The cause the worker signals publish right now: what [`error_now`] reads while an Engine is up,
 /// and what a failed Engine freezes into the session as it is released.
 fn live_runtime_failure(ps: &crate::route::PlaybackSession) -> RuntimeFailure {
-    if server_stop_applies(ps) {
-        return RuntimeFailure::ServerStopped;
-    }
     if ps.native_start_refused == Some(crate::route::StartRefusal::ReleaseTimeout) {
         return RuntimeFailure::ReleaseTimeout;
     }
@@ -1280,14 +1283,7 @@ fn error_shape(
             detail: std::borrow::Cow::Borrowed(""),
             no_pass: false,
         },
-        RuntimeFailure::ServerStopped => ErrorShape {
-            kind: FailureKind::ServerStopped,
-            caption: plx_platform::i18n::msg::widgets_failure_stopped_c(),
-            panel: plx_platform::i18n::msg::widgets_panel_stopped(),
-            readout: plx_platform::i18n::msg::widgets_reason_stopped(),
-            detail: std::borrow::Cow::Owned(server_stop_reason()),
-            no_pass: false,
-        },
+        RuntimeFailure::ServerStopped => server_stop_shape(String::new()),
         RuntimeFailure::TvPipeline => ErrorShape {
             kind: FailureKind::TvPipeline,
             caption: plx_platform::i18n::msg::widgets_failure_tv_rejected_c(),
@@ -1409,6 +1405,9 @@ pub fn error_now(ps: &crate::route::PlaybackSession) -> ErrorShape {
     if crate::route::play_refused_as_preview(ps) {
         return preview_not_direct_shape();
     }
+    if let Some(reason) = with_server_stop(crate::route::playback_session_id(ps), |note| note.reason.clone()) {
+        return server_stop_shape(reason);
+    }
     let shape = error_shape(
         SHARED.demux_no_video.load(Relaxed),
         crate::route::is_transcoding(ps),
@@ -1423,27 +1422,82 @@ pub fn error_now(ps: &crate::route::PlaybackSession) -> ErrorShape {
     with_forced_playback_context(shape, crate::route::forced_direct_play(ps))
 }
 
+fn server_stop_shape(reason: String) -> ErrorShape {
+    ErrorShape {
+        kind: FailureKind::ServerStopped,
+        caption: plx_platform::i18n::msg::widgets_failure_stopped_c(),
+        panel: plx_platform::i18n::msg::widgets_panel_stopped(),
+        readout: plx_platform::i18n::msg::widgets_reason_stopped(),
+        detail: std::borrow::Cow::Owned(reason),
+        no_pass: false,
+    }
+}
+
 pub struct ServerStopNote {
-    pub playback: String,
-    pub reason: String,
+    playback: String,
+    wire_session: String,
+    reason: String,
+    position_ms: i64,
 }
 
-pub(crate) fn note_server_stop(playback: &str, reason: &str) {
-    *SHARED.server_stop.lock().unwrap_or_else(|e| e.into_inner()) =
-        ServerStopNote { playback: playback.to_owned(), reason: reason.to_owned() };
-    SHARED.server_stopped.store(true, std::sync::atomic::Ordering::Release);
+impl ServerStopNote {
+    const EMPTY: Self = Self {
+        playback: String::new(),
+        wire_session: String::new(),
+        reason: String::new(),
+        position_ms: 0,
+    };
 }
 
-pub(crate) fn server_stop_applies(ps: &crate::route::PlaybackSession) -> bool {
-    if !SHARED.server_stopped.load(std::sync::atomic::Ordering::Acquire) {
-        return false;
+pub(crate) fn note_server_stop(playback: &str, wire_session: &str, reason: &str, position_ms: i64) {
+    {
+        let mut note = SHARED.server_stop.lock().unwrap_or_else(|e| e.into_inner());
+        *note = ServerStopNote {
+            playback: playback.to_owned(),
+            wire_session: wire_session.to_owned(),
+            reason: reason.to_owned(),
+            position_ms,
+        };
+        SHARED.server_stopped.store(true, std::sync::atomic::Ordering::Release);
+    }
+    plx_machine::idle::invalidate();
+}
+
+fn with_server_stop<T>(playback: &str, read: impl FnOnce(&ServerStopNote) -> T) -> Option<T> {
+    if playback.is_empty() || !SHARED.server_stopped.load(std::sync::atomic::Ordering::Acquire) {
+        return None;
     }
     let note = SHARED.server_stop.lock().unwrap_or_else(|e| e.into_inner());
-    !note.playback.is_empty() && note.playback == crate::route::sess(ps)
+    (note.playback == playback).then(|| read(&note))
 }
 
-fn server_stop_reason() -> String {
-    SHARED.server_stop.lock().unwrap_or_else(|e| e.into_inner()).reason.clone()
+pub(crate) fn server_stop_for(playback: &str) -> bool {
+    with_server_stop(playback, |_| ()).is_some()
+}
+
+pub fn server_stop_applies(ps: &crate::route::PlaybackSession) -> bool {
+    crate::route::engine_failure(ps) == Some(RuntimeFailure::ServerStopped)
+        || server_stop_for(crate::route::playback_session_id(ps))
+}
+
+/// Retire the logical playback even if its Engine has already been parked or released.
+fn accept_server_stop(ps: &mut crate::route::PlaybackSession) -> bool {
+    if crate::route::engine_failure(ps) == Some(RuntimeFailure::ServerStopped) {
+        crate::route::discard_stale_flight_landing();
+        return true;
+    }
+    let Some((wire_session, position_ms)) = with_server_stop(
+        crate::route::playback_session_id(ps),
+        |note| (note.wire_session.clone(), note.position_ms),
+    ) else {
+        return false;
+    };
+    crate::route::fail_current_engine();
+    abandon_seek();
+    crate::route::note_engine_failure(ps, RuntimeFailure::ServerStopped, position_ms.saturating_mul(1_000_000));
+    crate::route::retire_server_stopped_resources(ps, &wire_session);
+    crate::route::discard_stale_flight_landing();
+    true
 }
 
 /// A sample PMS refusal, for the `verdict` variant of the dev trigger below. Real wording: this is

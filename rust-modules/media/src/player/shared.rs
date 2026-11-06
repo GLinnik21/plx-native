@@ -1134,7 +1134,7 @@ impl Shared {
             demux_failed: AtomicBool::new(false),
             demux_io_failed: AtomicBool::new(false),
             server_stopped: AtomicBool::new(false),
-            server_stop: Mutex::new(super::ServerStopNote { playback: String::new(), reason: String::new() }),
+            server_stop: Mutex::new(super::ServerStopNote::EMPTY),
             demux_no_video: AtomicBool::new(false),
             load_failed: AtomicBool::new(false),
             load_timed_out: AtomicBool::new(false),
@@ -1864,6 +1864,8 @@ impl Shared {
         self.demux_failed.store(false, Ordering::Relaxed);
         self.demux_io_failed.store(false, Ordering::Relaxed);
         if !for_reload {
+            let mut note = self.server_stop.lock().unwrap_or_else(|e| e.into_inner());
+            *note = super::ServerStopNote::EMPTY;
             self.server_stopped.store(false, Ordering::Relaxed);
         }
         self.demux_no_video.store(false, Ordering::Relaxed);

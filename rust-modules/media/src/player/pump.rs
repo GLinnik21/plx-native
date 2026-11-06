@@ -517,6 +517,9 @@ pub enum RollbackLanding {
 /// [`crate::route::engineless_flight_outstanding`]: reload onto the restored HLS route at the
 /// recovery position, or — the rebase was refused — fail the start. Reaps a stale flight's late landing first, since no pump will.
 pub fn land_engineless_rollback(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) -> RollbackLanding {
+    if super::accept_server_stop(ps) {
+        return RollbackLanding::Landed(ForegroundOriginalRecovery::Terminal);
+    }
     crate::route::discard_stale_flight_landing();
     if !crate::route::engineless_flight_outstanding() {
         return RollbackLanding::Stale;
@@ -1608,6 +1611,10 @@ fn inject_refuse601(ps: &crate::route::PlaybackSession, eng: &Engine) {
 
 pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, now: u32) {
     use super::shared::PlaybackState;
+    if super::accept_server_stop(ps) {
+        super::engine::release_server_stopped_engine(ps, pa);
+        return;
+    }
     // A preroll closed by a path with no adapter in hand (`abandon_seek`) leaves its mute behind;
     // the one place every closer funnels through is the next tick.
     if !TX.seek_preroll_active() {
@@ -1649,11 +1656,6 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     // result here, after installation and before any worker publication can be accepted.
     crate::route::drain_route_start_results(ps);
     inject_refuse601(ps, eng);
-    if super::server_stop_applies(ps) {
-        fail_engine_for_good();
-        crate::route::discard_stale_flight_landing();
-        return;
-    }
     // A failed open's recovery flight (the Original rollback's rebase, the unopened source's HLS
     // fallback, the refused native audio's conversion): land it, or wait for it. Ahead of every
     // failure branch below, whose flags stay up
@@ -3490,7 +3492,7 @@ mod flight_tests {
     fn a_stop_from_the_server_ends_the_playback_with_its_reason_and_only_back() {
         let mut rig = Rig::new(120);
         SHARED.frames.store(10, Relaxed);
-        crate::player::note_server_stop(&crate::route::sess(&rig.ps), "stopped by the admin");
+        crate::player::note_server_stop(&crate::route::sess(&rig.ps), "rig-1", "stopped by the admin", 10_000);
         rig.frame();
         assert_eq!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error);
         rig.frame();
@@ -3505,6 +3507,36 @@ mod flight_tests {
     }
 
     #[test]
+    fn server_stop_releases_a_replacement_engine_before_its_first_picture() {
+        let mut rig = failed_original_trial_rig(40);
+        assert_eq!(SHARED.frames.load(Relaxed), 0);
+        crate::player::request_seek(SEEK_TARGET_NS);
+        crate::player::note_server_stop(&crate::route::sess(&rig.ps), "rig-1", "stopped on reload", 10_000);
+        rig.frame();
+        assert_eq!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error);
+        rig.frame();
+        assert!(!rig.pa.is_live(), "the stopped replacement still owns its engine");
+        assert_eq!(crate::route::unpresented_resume_ns(&rig.ps), 10_000_000_000);
+        assert_eq!(crate::player::error_now(&rig.ps).kind, crate::player::FailureKind::ServerStopped);
+    }
+
+    #[test]
+    fn server_stop_replaces_the_retry_after_the_engine_is_already_released() {
+        let mut rig = Rig::new(120);
+        SHARED.frames.store(10, Relaxed);
+        SHARED.demux_io_failed.store(true, Release);
+        rig.frame();
+        rig.frame();
+        assert!(!rig.pa.is_live(), "premise: the interrupted engine was released");
+        assert_eq!(crate::player::error_now(&rig.ps).kind, crate::player::FailureKind::PlaybackInterrupted);
+
+        crate::player::note_server_stop(&crate::route::sess(&rig.ps), "rig-1", "late termination", 10_000);
+        let shape = crate::player::error_now(&rig.ps);
+        assert_eq!(shape.kind, crate::player::FailureKind::ServerStopped);
+        assert_eq!(shape.detail, "late termination");
+    }
+
+    #[test]
     fn a_stop_from_the_server_during_a_recovery_flight_ends_it_and_reloads_nothing() {
         let mut rig = failed_original_trial_rig(40);
         let epoch = engine_epoch(&mut rig);
@@ -3514,7 +3546,7 @@ mod flight_tests {
         assert!(crate::route::flight_outstanding(), "sanity: the rollback flies");
         let stops = replacement_stops(&rig.flight);
 
-        crate::player::note_server_stop(&crate::route::sess(&rig.ps), "stopped by the admin");
+        crate::player::note_server_stop(&crate::route::sess(&rig.ps), "rig-1", "stopped by the admin", 10_000);
         rig.frame();
         assert_eq!(
             crate::player::state(&rig.ps),
@@ -3534,7 +3566,7 @@ mod flight_tests {
     fn a_stop_the_server_sent_for_another_playback_leaves_this_one_playing() {
         let mut rig = Rig::new(120);
         SHARED.frames.store(10, Relaxed);
-        crate::player::note_server_stop("an-earlier-playback", "stopped by the admin");
+        crate::player::note_server_stop("an-earlier-playback", "rig-1", "stopped by the admin", 10_000);
         rig.frame();
         rig.frame();
         assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error);

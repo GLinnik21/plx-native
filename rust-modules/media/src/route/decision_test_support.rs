@@ -560,6 +560,18 @@ pub(super) fn held_pms(
     std::sync::mpsc::Sender<()>,
     std::thread::JoinHandle<()>,
 ) {
+    held_pms_answering(hold, "")
+}
+
+pub(super) fn held_pms_answering(
+    hold: usize,
+    first_body: &'static str,
+) -> (
+    i32,
+    std::sync::mpsc::Receiver<String>,
+    std::sync::mpsc::Sender<()>,
+    std::thread::JoinHandle<()>,
+) {
     use std::io::{BufRead, BufReader, Write};
     let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     l.set_nonblocking(true).expect("nonblocking listener");
@@ -580,9 +592,12 @@ pub(super) fn held_pms(
                     if served == hold {
                         let _ = released.recv();
                     }
-                    let _ = s.write_all(
-                        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    let body = if served == 1 { first_body } else { "" };
+                    let answer = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
                     );
+                    let _ = s.write_all(answer.as_bytes());
                     idle = std::time::Instant::now();
                 }
                 Err(_) => std::thread::sleep(std::time::Duration::from_millis(5)),

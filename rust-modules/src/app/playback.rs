@@ -111,6 +111,9 @@ pub(crate) fn apply_more_action(ps: &mut plx_media::route::PlaybackSession, pa: 
         // running stream. Not deferred either: `route::set_quality` re-asks the routing question
         // for the playback on screen and reloads only when the answer changed.
         plx_appkit::more_menu::Action::SetQuality(q) => {
+            if plx_media::player::server_stop_applies(ps) {
+                return;
+            }
             // A terminal Engine never reaches pump's pending-retranscode arm, and a `/decision`
             // refusal has no Engine at all.  Persist the pick first, then make a fresh playback
             // request at the same user-visible position.  Selecting the already-active rung is
@@ -158,6 +161,9 @@ pub(crate) fn retry_failed_playback(
     // URL/dev-trigger playback has no Plex descriptor.  Check BEFORE teardown: extinguishing its
     // Error Engine and only then discovering it cannot be rebuilt would replace an actionable
     // read-out with an idle black frame.
+    if plx_media::player::server_stop_applies(ps) {
+        return false;
+    }
     if !plx_media::route::can_retry_current_play(ps) {
         log("playback retry: current source has no reusable Plex request");
         return false;
@@ -196,6 +202,9 @@ pub(crate) fn play_automatically(
     meta: &mut plx_data::stores::metadata::MetadataStore,
 ) -> bool {
     use plx_plex::plex::session::{DirectPlayMode, DirectPlayModePref};
+    if plx_media::player::server_stop_applies(ps) {
+        return false;
+    }
     plx_media::route::choose::<DirectPlayModePref>(DirectPlayMode::Auto, plx_media::route::How::Optimistic(None));
     retry_failed_playback(ps, pa, meta, Some(DirectPlayMode::Auto), AttemptOrigin::UserRetry)
 }
