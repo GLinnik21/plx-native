@@ -1,4 +1,4 @@
-{"updated":"2026-11-06T18:06:38Z",
+{"updated":"2026-11-06T18:19:26Z",
 "ci":[
 {"id":31319241597,"at":"2026-08-09T14:44:31Z","sha":"6c3858f9e","title":"docs: webOS 5+ is known broken, not untested \u2014 restore the 4.x bound","jobs":{"cross-build (armv7) + artifact assertions":89,"host checks (NOT a device gate)":80},"pr":null,"conclusion":"success","attempt":1},
 {"id":31321824174,"at":"2026-08-09T15:42:19Z","sha":"afedac6b2","title":"webos5: it runs on 6 and 10 \u2014 only playback is unfinished, so the ceiling comes off","jobs":{"cross-build (armv7) + artifact assertions":83,"host checks (NOT a device gate)":70},"pr":null,"conclusion":"success","attempt":1},
@@ -4701,7 +4701,8 @@
 {"id":42262630247,"at":"2026-11-06T17:32:52Z","sha":"78f9fdcda","title":"fps: scenes for the Settings v2 pages (Language, Audio, Under posters, Player HUD, Diagnostics)","pr":1264,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":151,"Linux simulator build + launch":379,"macOS simulator build + launch":231,"Windows launcher syntax":25}},
 {"id":42264227875,"at":"2026-11-06T17:43:25Z","sha":"ae13d3981","title":"ci snapshot of integ/uri-first e391d89bf","pr":1231,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":17,"Linux simulator build + launch":311,"macOS simulator build + launch":267,"macOS tests against bundled FFmpeg and ASS":211}},
 {"id":42264899152,"at":"2026-11-06T17:47:53Z","sha":"68cbf7fa5","title":"fps: settings scenes join the heartbeat word table; one word per Under posters kind","pr":1264,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":248,"macOS simulator build + launch":253,"Windows launcher syntax":16,"Linux simulator build + launch":332}},
-{"id":42266550083,"at":"2026-11-06T17:59:01Z","sha":"4bf133d57","title":"Settings: fps scenes for the pages Settings v2 added","pr":null,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":235,"Windows launcher syntax":21,"macOS simulator build + launch":255,"Linux simulator build + launch":313}}
+{"id":42266550083,"at":"2026-11-06T17:59:01Z","sha":"4bf133d57","title":"Settings: fps scenes for the pages Settings v2 added","pr":null,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":235,"Windows launcher syntax":21,"macOS simulator build + launch":255,"Linux simulator build + launch":313}},
+{"id":42268461977,"at":"2026-11-06T18:11:44Z","sha":"77775f092","title":"ci snapshot of integ/uri-first ee6a6b75b","pr":1231,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":177,"macOS tests against bundled FFmpeg and ASS":263,"Linux simulator build + launch":443,"Windows launcher syntax":19}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
