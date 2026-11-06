@@ -55,6 +55,7 @@ pub mod native_stall;
 pub mod native_executor;
 pub mod native_release;
 pub mod open;
+pub mod physical;
 pub mod seek;
 pub mod sf_event;
 pub mod playurl;
