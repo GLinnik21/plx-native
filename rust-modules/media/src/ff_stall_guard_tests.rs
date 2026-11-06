@@ -196,7 +196,7 @@ fn the_lookahead_policy_must_abort_under_a_terminal_hold_like_the_ordinary_polic
             ),
             0,
         );
-        let mut aq = crate::aq::aq_new(1 << 20);
+        let mut aq = plx_play_feed::aq::aq_new(1 << 20);
         let mut state = avio_state_for(
             Src::Socket {
                 hs: &mut *hs,
@@ -228,7 +228,7 @@ fn the_lookahead_policy_must_abort_under_a_terminal_hold_like_the_ordinary_polic
             .hls_rebuffering
             .store(false, std::sync::atomic::Ordering::Release);
         plx_net::stream::http_close(&mut *hs);
-        crate::aq::aq_destroy(&mut *aq);
+        plx_play_feed::aq::aq_destroy(&mut *aq);
         server.join().expect("loopback server");
         aborted
     }
@@ -344,11 +344,11 @@ fn the_lookahead_wiring_aborts_through_the_shared_reducer_when_the_guard_is_arme
          the clock instead of aborting the fetch"
     );
 
-    let master = crate::hls::Resource {
+    let master = plx_play_feed::hls::Resource {
         origin: plx_plex::plex::Origin::http("127.0.0.1", 32400),
         path: "/master.m3u8?X-Plex-Token=test-token".to_string(),
     };
-    let auth = crate::hls::InheritedAuth::capture(&master).expect("fixture token pair");
+    let auth = plx_play_feed::hls::InheritedAuth::capture(&master).expect("fixture token pair");
     let mut cursor = HlsCursor {
         publishes_duration: true,
         declared_bps: 0,
@@ -360,7 +360,7 @@ fn the_lookahead_wiring_aborts_through_the_shared_reducer_when_the_guard_is_arme
         target_duration_secs: 6,
         start_applied: true,
     };
-    let n1 = crate::hls::Segment {
+    let n1 = plx_play_feed::hls::Segment {
         sequence: 11,
         duration: std::time::Duration::from_secs(6),
         resource: cursor.media.clone(),
@@ -370,8 +370,8 @@ fn the_lookahead_wiring_aborts_through_the_shared_reducer_when_the_guard_is_arme
     let result = hls_prefetch_same_encoder_with(
         &mut cursor,
         n1.clone(),
-        crate::hls::SegmentTimeline::default(),
-        crate::hls::SegmentTimeline::default()
+        plx_play_feed::hls::SegmentTimeline::default(),
+        plx_play_feed::hls::SegmentTimeline::default()
             .begin(std::time::Duration::from_secs(0))
             .expect("fixture clock"),
         Some(controller.current().at_floor()),
@@ -666,18 +666,18 @@ const PROMPT: std::time::Duration = std::time::Duration::from_millis(1_500);
 /// A leg deadline shorter than `CHECK_SLICE`: the transport ends on it without asking again.
 const SHORT_DEADLINE: std::time::Duration = std::time::Duration::from_millis(60);
 
-fn segment_on(port: u16) -> (crate::hls::Segment, crate::hls::InheritedAuth) {
+fn segment_on(port: u16) -> (plx_play_feed::hls::Segment, plx_play_feed::hls::InheritedAuth) {
     let origin = plx_plex::plex::Origin::http("127.0.0.1", i32::from(port));
-    let master = crate::hls::Resource {
+    let master = plx_play_feed::hls::Resource {
         origin: origin.clone(),
         path: "/video/:/transcode/universal/session/t/base/index.m3u8?X-Plex-Token=test-token"
             .to_string(),
     };
-    let auth = crate::hls::InheritedAuth::capture(&master).expect("fixture token pair");
-    let segment = crate::hls::Segment {
+    let auth = plx_play_feed::hls::InheritedAuth::capture(&master).expect("fixture token pair");
+    let segment = plx_play_feed::hls::Segment {
         sequence: 7,
         duration: std::time::Duration::from_secs(2),
-        resource: crate::hls::Resource {
+        resource: plx_play_feed::hls::Resource {
             origin,
             path: "/video/:/transcode/universal/session/t/base/00007.ts".to_string(),
         },
@@ -751,7 +751,7 @@ fn demux_against_when(
     acquisition::observe::watch_this_thread(answers_tx);
     let (segment, auth) = segment_on(pms.port);
     let mut hs = plx_net::stream::http_stream_boxed();
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let (hs_addr, aq_addr) = (
         &mut *hs as *mut HttpStream as usize,
         &mut *aq as *mut AuQueue as usize,
@@ -785,12 +785,12 @@ fn demux_against_when(
         let fired_at = *fired.lock().unwrap();
         let torn_down = done_rx.recv_timeout(TEARDOWN_AFTER).is_err();
         if torn_down {
-            crate::aq::aq_abort(aq_addr as *mut AuQueue);
+            plx_play_feed::aq::aq_abort(aq_addr as *mut AuQueue);
             plx_net::stream::http_shutdown(hs_addr as *mut HttpStream);
         }
         (fired_at, torn_down, seen)
     });
-    let mut clock = crate::hls::SegmentTimeline::default()
+    let mut clock = plx_play_feed::hls::SegmentTimeline::default()
         .begin(segment.duration)
         .expect("fixture clock");
     let mut net = HlsNet {
@@ -817,7 +817,7 @@ fn demux_against_when(
     acquisition::observe::unwatch();
     pms.seen = Some(seen);
     plx_net::stream::http_close(&mut *hs);
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
     DemuxRun {
         result,
         after_trigger: fired_at.map(|at| returned_at.saturating_duration_since(at)),
@@ -963,7 +963,7 @@ fn blocked_body_read_stalled(
         ),
         0,
     );
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let (hs_addr, aq_addr) = (
         &mut *hs as *mut HttpStream as usize,
         &mut *aq as *mut AuQueue as usize,
@@ -1003,7 +1003,7 @@ fn blocked_body_read_stalled(
         }
         let torn_down = done_rx.recv_timeout(TEARDOWN_AFTER).is_err();
         if torn_down {
-            crate::aq::aq_abort(aq_addr as *mut AuQueue);
+            plx_play_feed::aq::aq_abort(aq_addr as *mut AuQueue);
             plx_net::stream::http_shutdown(hs_addr as *mut HttpStream);
         }
         assert!(
@@ -1020,7 +1020,7 @@ fn blocked_body_read_stalled(
     let latched = avio_stall_aborted(&state);
     drop(state);
     plx_net::stream::http_close(&mut *hs);
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
     let accepts = pms.accepts();
     drop(pms);
     BlockedRead {
@@ -1278,14 +1278,14 @@ fn a_zero_byte_abort_reaches_the_controller_as_an_abandoned_sample() {
         total_us: 1,
         audio_expected: true,
     };
-    let master = crate::hls::Resource {
+    let master = plx_play_feed::hls::Resource {
         origin: plx_plex::plex::Origin::http("127.0.0.1", 32400),
         path: "/master.m3u8?X-Plex-Token=test-token".to_string(),
     };
     let cursor_at = |pending| HlsCursor {
         publishes_duration: true,
         declared_bps: 0,
-        auth: crate::hls::InheritedAuth::capture(&master).expect("fixture token pair"),
+        auth: plx_play_feed::hls::InheritedAuth::capture(&master).expect("fixture token pair"),
         media: master.clone(),
         tracker: Default::default(),
         pending,
@@ -1293,13 +1293,13 @@ fn a_zero_byte_abort_reaches_the_controller_as_an_abandoned_sample() {
         target_duration_secs: 6,
         start_applied: true,
     };
-    let segment = crate::hls::Segment {
+    let segment = plx_play_feed::hls::Segment {
         sequence: 11,
         duration: std::time::Duration::from_secs(6),
         resource: master.clone(),
     };
     let clock = || {
-        crate::hls::SegmentTimeline::default()
+        plx_play_feed::hls::SegmentTimeline::default()
             .begin(std::time::Duration::from_secs(0))
             .expect("fixture clock")
     };
@@ -1315,7 +1315,7 @@ fn a_zero_byte_abort_reaches_the_controller_as_an_abandoned_sample() {
     let lookahead_round = hls_prefetch_same_encoder_with(
         &mut lookahead,
         segment.clone(),
-        crate::hls::SegmentTimeline::default(),
+        plx_play_feed::hls::SegmentTimeline::default(),
         clock(),
         Some(controller.current().at_floor()),
         super::test_support::demux_observer(),
@@ -1366,7 +1366,7 @@ fn at_the_floor_the_open_asks_for_the_hold_once_and_keeps_its_connection() {
     let (segment, auth) = segment_on(pms.port);
     let path = auth.request_path(&segment.resource).expect("fixture path");
     let mut hs = plx_net::stream::http_stream_boxed();
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let (hs_addr, aq_addr) = (
         &mut *hs as *mut HttpStream as usize,
         &mut *aq as *mut AuQueue as usize,
@@ -1388,7 +1388,7 @@ fn at_the_floor_the_open_asks_for_the_hold_once_and_keeps_its_connection() {
         }
         let torn_down = done_rx.recv_timeout(TEARDOWN_AFTER).is_err();
         if torn_down {
-            crate::aq::aq_abort(aq_addr as *mut AuQueue);
+            plx_play_feed::aq::aq_abort(aq_addr as *mut AuQueue);
             plx_net::stream::http_shutdown(hs_addr as *mut HttpStream);
         }
         torn_down
@@ -1421,7 +1421,7 @@ fn at_the_floor_the_open_asks_for_the_hold_once_and_keeps_its_connection() {
         .map_err(|e| format!("{e:?}"));
     drop(opened);
     plx_net::stream::http_close(&mut *hs);
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
 
     assert!(
         !torn_down,
@@ -1441,7 +1441,7 @@ fn at_the_floor_the_open_asks_for_the_hold_once_and_keeps_its_connection() {
 fn a_floor_runtime_requests_the_hold_once_then_disarms() {
     let _serial = plx_base::testlock::serial();
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let mut runtime = runtime_for(
         SegmentAcquisition::for_test(Some(6_000), true, false, super::test_support::demux_observer()),
         &mut aq,
@@ -1461,7 +1461,7 @@ fn a_floor_runtime_requests_the_hold_once_then_disarms() {
         !FEED_SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
         "and never asks twice"
     );
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
 }
 
 /// Candidates and already-held fetches carry no guard, so neither a hold nor a spent playhead can
@@ -1470,7 +1470,7 @@ fn a_floor_runtime_requests_the_hold_once_then_disarms() {
 fn unarmed_runtimes_never_stop_and_armed_ones_recheck_within_a_slice() {
     let _serial = plx_base::testlock::serial();
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let mut armed = runtime_for(
         SegmentAcquisition::for_test(Some(60_000), false, false, super::test_support::demux_observer()),
         &mut aq,
@@ -1506,7 +1506,7 @@ fn unarmed_runtimes_never_stop_and_armed_ones_recheck_within_a_slice() {
             "{role}: never stops, never polls"
         );
     }
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
 }
 
 /// A hold accepted AND released between two checks still moved the epoch: it is seen.
@@ -1514,7 +1514,7 @@ fn unarmed_runtimes_never_stop_and_armed_ones_recheck_within_a_slice() {
 fn a_hold_that_came_and_went_between_checks_is_still_seen() {
     let _serial = plx_base::testlock::serial();
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let mut runtime = runtime_for(
         SegmentAcquisition::for_test(Some(6_000), false, false, super::test_support::demux_observer()),
         &mut aq,
@@ -1525,7 +1525,7 @@ fn a_hold_that_came_and_went_between_checks_is_still_seen() {
     assert!(stops(&mut runtime), "the epoch moved since arming");
     assert!(runtime.stall_aborted());
     assert!(stops(&mut runtime), "and the stop is latched");
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
 }
 
 /// A sized body whose every byte arrived is credited, whatever arrives after; an unsized body is
@@ -1534,7 +1534,7 @@ fn a_hold_that_came_and_went_between_checks_is_still_seen() {
 fn a_completed_body_outranks_a_later_hold_and_an_unsized_one_needs_its_end() {
     let _serial = plx_base::testlock::serial();
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let armed = || SegmentAcquisition::for_test(Some(6_000), false, false, super::test_support::demux_observer());
     let mut sized = runtime_for(armed(), &mut aq);
     let mut unsized_open = runtime_for(armed(), &mut aq);
@@ -1552,7 +1552,7 @@ fn a_completed_body_outranks_a_later_hold_and_an_unsized_one_needs_its_end() {
         stops(&mut unsized_open),
         "an unsized body without its end is not complete"
     );
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
 }
 
 /// Teardown outranks a simultaneous hold: the fetch ends as `Aborted`, never as recovery evidence.
@@ -1560,17 +1560,17 @@ fn a_completed_body_outranks_a_later_hold_and_an_unsized_one_needs_its_end() {
 fn teardown_outranks_a_simultaneous_hold() {
     let _serial = plx_base::testlock::serial();
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let mut runtime = runtime_for(
         SegmentAcquisition::for_test(Some(6_000), false, false, super::test_support::demux_observer()),
         &mut aq,
     );
     publish_accepted_hold();
-    crate::aq::aq_abort(&mut *aq);
+    plx_play_feed::aq::aq_abort(&mut *aq);
     assert!(stops(&mut runtime));
     assert!(!runtime.stall_aborted(), "teardown latched first");
     assert!(matches!(runtime.stopped_exit(true), Some(HlsExit::Aborted)));
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
 }
 
 /// The retry wait keeps its original end across rechecks, and a stop ends it at once.
@@ -1583,7 +1583,7 @@ fn teardown_outranks_a_simultaneous_hold() {
 /// exactly four times, three that continue and the stop.
 #[test]
 fn the_retry_wait_keeps_its_end_across_rechecks_and_ends_on_a_stop() {
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let wait = std::time::Duration::from_millis(120);
     let mut rechecking =
         plx_base::checkpoint::TestCheckpoint::every(std::time::Duration::from_millis(10));
@@ -1610,7 +1610,7 @@ fn the_retry_wait_keeps_its_end_across_rechecks_and_ends_on_a_stop() {
         4,
         "the wait re-asked as its checks fell due: three that continued, then the stop"
     );
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
 }
 
 // -- a body the transport already HOLDS is complete, whatever FFmpeg has read ----------------
@@ -1701,7 +1701,7 @@ fn read_across_a_hold_with_the_body(
         }
     });
 
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let mut hs = plx_net::stream::http_stream_boxed();
     let src = match transport {
         HeldTransport::Socket => {
@@ -1756,7 +1756,7 @@ fn read_across_a_hold_with_the_body(
     drop(state);
     let _ = finish.send(());
     plx_net::stream::http_close(&mut *hs);
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
     server.join().expect("loopback server");
     Some(HeldBodyRead {
         second,
@@ -1881,7 +1881,7 @@ fn transfer_work_a_receipt_takes_is_counted_in_body_time() {
     // completion query is the one that steps curl's `perform` (`stepped == true`) rather than
     // finding bytes already waiting in the transfer buffer.
     std::thread::sleep(std::time::Duration::from_millis(100));
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let mut state = avio_state_for(
         Src::Curl(cs),
         &mut *aq,
@@ -1901,7 +1901,7 @@ fn transfer_work_a_receipt_takes_is_counted_in_body_time() {
          whole of body_active_us, exactly",
     );
     drop(state);
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
     server.join().expect("loopback server");
 }
 
@@ -1934,7 +1934,7 @@ fn a_non_stepping_receipt_contributes_nothing_only_the_read_does() {
         socket.flush().expect("flush");
         std::thread::sleep(std::time::Duration::from_millis(200));
     });
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let mut hs = plx_net::stream::http_stream_boxed();
     let host = CString::new("127.0.0.1").unwrap();
     let path = CString::new("/segment.ts").unwrap();
@@ -1972,7 +1972,7 @@ fn a_non_stepping_receipt_contributes_nothing_only_the_read_does() {
     );
     drop(state);
     plx_net::stream::http_close(&mut *hs);
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
     server.join().expect("loopback server");
 }
 
@@ -1995,7 +1995,7 @@ fn a_failed_read_credits_nothing_and_its_settlement_receipt_is_credited_once() {
     let pms = ScriptedPms::start(|_| REPLY.lock().unwrap().expect("scripted reply"));
     let cs = crate::curlio::CurlSource::open(&format!("http://127.0.0.1:{}/segment.ts", pms.port), 0)
         .expect("fixture: the open must succeed");
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let mut state = avio_state_for(
         Src::Curl(cs),
         &mut *aq,
@@ -2032,7 +2032,7 @@ fn a_failed_read_credits_nothing_and_its_settlement_receipt_is_credited_once() {
          the failed read itself must credit nothing beyond them",
     );
     drop(state);
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
     drop(pms);
 }
 

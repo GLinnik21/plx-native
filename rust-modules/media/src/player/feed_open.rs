@@ -4,8 +4,7 @@
 
 use crate::route;
 use plx_base::eventlog::log;
-use plx_play_feed::bf_split;
-use plx_play_feed::feed_state::SampleBuf;
+use plx_playback_contract::feed::{bf_split, SampleBuf};
 
 pub(super) struct FeedOpenRequest {
     /// The stream's address as the network layer spells it, for the credential policy; `stream`
@@ -202,7 +201,7 @@ mod tests {
     /// `present` is DERIVED, so it cannot disagree with the profile in either direction.
     #[test]
     fn dovi_presence_follows_the_profile() {
-        use plx_play_feed::playurl::PlayDovi;
+        use plx_playback_contract::playurl::PlayDovi;
         let none = play_dovi(PlayDovi { profile: 0, bl_compat: 1, el_present: true });
         assert!(!none.present, "profile 0 is not Dolby Vision whatever else is set");
         let p7 = play_dovi(PlayDovi { profile: 7, bl_compat: 6, el_present: true });
@@ -239,6 +238,7 @@ pub(super) struct ResolvedSource {
 /// transaction once the offer check has passed.
 pub(super) fn resolve_source(
     ps: &mut route::PlaybackSession,
+    pa: &super::adapter::PlayerAdapter,
 ) -> Result<ResolvedSource, route::RouteStartResult> {
     // resolve the URL, in precedence order: route (a selected movie) wins, then
     // /tmp/plxnative-playurl (a URL + its declaration), then /tmp/plxnative-url (a URL
@@ -258,7 +258,7 @@ pub(super) fn resolve_source(
         // through this same function and must re-apply it.
         //
         // `route::url()` still wins: a real selection is never overridden by a stale trigger.
-        match plx_play_feed::playurl::playurl() {
+        match pa.play_url() {
             Some(Ok(p)) => {
                 url = install_synthetic_playurl(ps, &p)?;
                 if let Some([w, h]) = p.source_raster {
@@ -341,7 +341,7 @@ pub(super) fn resolve_source(
 /// DERIVED from a non-zero profile rather than carried separately: two fields that can disagree is a
 /// way to declare "Dolby Vision, profile 0", which is not a thing, and the harness would have to
 /// keep them in step by hand in every case.
-fn play_dovi(d: plx_play_feed::playurl::PlayDovi) -> plx_data::metadata::Dovi {
+fn play_dovi(d: plx_playback_contract::playurl::PlayDovi) -> plx_data::metadata::Dovi {
     plx_data::metadata::Dovi {
         present: d.profile > 0,
         profile: d.profile,
@@ -353,7 +353,7 @@ fn play_dovi(d: plx_play_feed::playurl::PlayDovi) -> plx_data::metadata::Dovi {
 
 pub(super) fn install_synthetic_playurl(
     ps: &mut crate::route::PlaybackSession,
-    play: &plx_play_feed::playurl::PlayUrl,
+    play: &plx_playback_contract::playurl::PlayUrl,
 ) -> Result<String, crate::route::RouteStartResult> {
     if !crate::route::set_stream_declaration(
         ps,

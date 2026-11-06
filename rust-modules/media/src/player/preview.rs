@@ -760,7 +760,7 @@ pub fn after_pump(
     if preview && live && occupies() {
         if seen_frame {
             note_picture(now_ms);
-        } else if ps.readout().raw().load.stage.is_some_and(|stage| stage >= super::shared::Stage::Playing) {
+        } else if ps.readout().raw().load.stage.is_some_and(|stage| stage >= plx_playback_contract::feed::Stage::Playing) {
             transition("bound", Machine::bound);
         }
     }
@@ -1315,8 +1315,8 @@ mod tests {
 #[cfg(all(test, feature = "hostsim", feature = "play-feed"))]
 mod abandoned_load_tests {
     use super::*;
-    use crate::player::shared::Stage;
-    use crate::player::FEED_SHARED;
+    use plx_playback_contract::feed::Stage;
+    use plx_play_feed::shared::FEED_SHARED;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
@@ -1324,8 +1324,8 @@ mod abandoned_load_tests {
     impl Drop for Cleanup {
         fn drop(&mut self) {
             reset_for_test();
-            crate::player::ffi_host::reset_native_lifecycle_for_test();
-            crate::player::ffi_host::force_clocksink_for_test(false);
+            plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+            plx_play_feed::ffi_host::force_clocksink_for_test(false);
             FEED_SHARED.test_force_native_idle();
             crate::player::reset_session_for_test();
             crate::route::reset_player_control_for_test(crate::route::idle_session_for_test());
@@ -1338,8 +1338,8 @@ mod abandoned_load_tests {
         release: &Arc<AtomicBool>) -> crate::player::adapter::PlayerAdapter {
         crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(ps);
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
-        crate::player::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
         let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe { plx_base::task::MainThread::assume() });
         let epoch = FEED_SHARED.begin_native_session().expect("native session");
         assert_eq!(unsafe { crate::player::test_physical::sink().load(c"{}".as_ptr(), epoch) }, 1);
@@ -1448,7 +1448,7 @@ mod abandoned_load_tests {
         stop_bufferfeed(&mut ps, &mut pa);
         assert!(pa.is_live() && pa.engine().unwrap().preview_abandon,
             "PRECONDITION: the stop deferred and left the Engine installed");
-        let unloads = crate::player::ffi_host::unload_calls_for_test();
+        let unloads = plx_play_feed::ffi_host::unload_calls_for_test();
         // Each idle step is where the Load stand-in returns, as the real one does between polls.
         let exit = exit_native_with(&mut ps, &mut pa, std::time::Instant::now, || {
             release.store(true, Ordering::SeqCst);
@@ -1456,7 +1456,7 @@ mod abandoned_load_tests {
         });
         assert_eq!(exit, NativeExit::Clean);
         assert!(!pa.is_live(), "the deferred stop ran: the Engine left the adapter");
-        assert_eq!(crate::player::ffi_host::unload_calls_for_test(), unloads + 1,
+        assert_eq!(plx_play_feed::ffi_host::unload_calls_for_test(), unloads + 1,
             "the native object was Unloaded before the display was called clean");
         assert!(!pa.has_pending_release() && !pa.release_busy());
     }
@@ -1476,7 +1476,7 @@ mod abandoned_load_tests {
         stop_bufferfeed(&mut ps, &mut pa);
         assert!(pa.is_live() && pa.engine().unwrap().preview_abandon,
             "PRECONDITION: the stop deferred and left the Engine installed");
-        let unloads = crate::player::ffi_host::unload_calls_for_test();
+        let unloads = plx_play_feed::ffi_host::unload_calls_for_test();
         let dropped = plx_play_feed::feed_state::engines_dropped_for_test();
         let t0 = std::time::Instant::now();
         let mut ticks = 0u64;
@@ -1486,7 +1486,7 @@ mod abandoned_load_tests {
         assert!(!pa.is_live() && pa.engine().is_none(), "the Engine left the adapter");
         assert_eq!(plx_play_feed::feed_state::engines_dropped_for_test(), dropped,
             "leaked, not dropped under the thread that reads its payload");
-        assert_eq!(crate::player::ffi_host::unload_calls_for_test(), unloads,
+        assert_eq!(plx_play_feed::ffi_host::unload_calls_for_test(), unloads,
             "no Unload is issued over a Load still inside the call");
     }
 }

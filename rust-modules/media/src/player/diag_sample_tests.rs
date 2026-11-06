@@ -22,6 +22,7 @@ pub(super) fn scripted() -> FeedDiag {
         aq_video: 9_000_001, aq_audio: 9_000_002, fed_v_pts: 10_400_000_000,
         fed_a_pts: 10_300_000_000, load_v: 2, load_a: 5, feed_state: 4, cb_err: 18, cb_err_at: 7,
         net_rx: 13_000_000, load_at: 4_200, frame_at: 5_300, video_fps_milli: 23_976,
+        fed_v: 5_000, fed_a: 4_800, pushed_any: true,
     }
 }
 
@@ -45,6 +46,7 @@ pub(super) fn store_mailboxes(diag: &FeedDiag) {
     FEED_SHARED.dg_load_at.store(diag.load_at, Relaxed);
     FEED_SHARED.dg_frame_at.store(diag.frame_at, Relaxed);
     FEED_SHARED.video_fps_milli.store(diag.video_fps_milli, Relaxed);
+    plx_play_feed::ff_test_support::store_diag_counters(diag.fed_v, diag.fed_a, diag.pushed_any);
 }
 
 /// The read-out's feed-written rows, as the panel and the lab snapshot read them.
@@ -55,7 +57,7 @@ pub(super) fn rows(d: &Diag) -> FeedDiag {
         aq_audio: d.aq_audio, fed_v_pts: d.fed_v_pts, fed_a_pts: d.fed_a_pts, load_v: d.load_v,
         load_a: d.load_a, feed_state: d.feed_state, cb_err: d.cb_err, cb_err_at: d.cb_err_at,
         net_rx: d.net_rx, load_at: d.load_at, frame_at: d.frame_at,
-        video_fps_milli: d.video_fps_milli,
+        video_fps_milli: d.video_fps_milli, fed_v: d.fed_v, fed_a: d.fed_a, pushed_any: d.pushed_any,
     }
 }
 
@@ -121,6 +123,7 @@ fn the_real_sample_reads_back_as_the_mailboxes_held() {
     assert_eq!(d.net_rx, s.net_rx, "net_rx");
     assert_eq!((d.load_at, d.frame_at), (s.load_at, s.frame_at), "load_at / frame_at");
     assert_eq!(d.video_fps_milli, s.video_fps_milli, "video_fps_milli");
+    assert_eq!((d.fed_v, d.fed_a, d.pushed_any), (s.fed_v, s.fed_a, s.pushed_any), "fed counters");
     // The text rows the panel words from the codes.
     assert_eq!(d.load_a_str(), "PCM (decoded in the app)");
     assert_eq!(d.feed_state_str(), "holding ~1.6 s ahead");

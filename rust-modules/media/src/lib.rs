@@ -1,6 +1,6 @@
 //! plx_media: the media layer of the PlxNative application core.
 //!
-//! The `ff` compatibility facade over `plx_play_feed`'s demux, the media credential facade (`curlio` over
+//! The media credential facade (`curlio` over
 //! `plx_net::range_io`), the adaptive-bitrate controller (`abr`), the buffer-feed engine (`player`)
 //! and route selection (`route`). The HLS parser and access-unit queues live in `plx_play_feed`.
 //! It is the `media` layer of `ci/module-layers.ini`: it
@@ -21,18 +21,12 @@
 pub mod abr; // client-managed fixed-session HLS controller: estimate, propose, prime, then commit
 #[cfg(feature = "play-feed")]
 pub(crate) mod adaptive; // common adaptive policy and route transition; feed supplies physical media
-#[cfg(feature = "play-feed")]
-pub mod aq;
 pub mod curlio; // the HTTPS media plane: a remote file pulled by byte range over libcurl-multi (stream.rs is the plaintext-socket twin)
-#[cfg(feature = "play-feed")]
-pub mod ff_pcm; // compatibility facade for the physical PCM decoder in play-feed
 #[cfg(feature = "play-feed")]
 pub mod ff; // compatibility facade for the physical FFmpeg demuxer in play-feed
 #[cfg(feature = "play-feed")]
 #[path = "ff_subside.rs"]
 pub(crate) mod subtitle_job; // optional subtitle transport and common presentation runner over a codec job
-#[cfg(feature = "play-feed")]
-pub mod hls; // compatibility facade for the strict parser/auth/timeline in play-feed
 pub mod player; // buffer-feed video engine (was playback.c) -- step 5
 pub mod speed_audio; // compatibility facade for the independent codec DSP
 pub mod route; // play_movie route selection (direct-play vs transcode) -- step 3

@@ -818,6 +818,8 @@ pub(crate) mod tests {
         use std::sync::atomic::Ordering::Relaxed;
         let _serial = plx_base::testlock::serial();
         FEED_SHARED.reset_session();
+        crate::native_executor::reset_fed_counters();
+        crate::ff::store_pushed_any(false);
         assert_eq!(mailboxes().raw.diag, FeedDiag::IDLE, "a fresh session reads the idle set");
 
         FEED_SHARED.dg_place_rv.store(-3, Relaxed);
@@ -838,15 +840,34 @@ pub(crate) mod tests {
         FEED_SHARED.dg_load_at.store(4_200, Relaxed);
         FEED_SHARED.dg_frame_at.store(5_300, Relaxed);
         FEED_SHARED.video_fps_milli.store(23_976, Relaxed);
+        crate::native_executor::store_fed_totals(5_000, 4_800);
+        crate::ff::store_pushed_any(true);
         assert_eq!(mailboxes().raw.diag, FeedDiag {
             place_rv: -3, placed_w: 3840, placed_h: 2160, load_completed: true, cb_count: 41,
             aq_video: 9_000_001, aq_audio: 9_000_002, fed_v_pts: 10_400_000_000,
             fed_a_pts: 10_300_000_000, load_v: 2, load_a: 5, feed_state: 4, cb_err: 18, cb_err_at: 7,
             net_rx: 13_000_000, load_at: 4_200, frame_at: 5_300, video_fps_milli: 23_976,
+            fed_v: 5_000, fed_a: 4_800, pushed_any: true,
         });
 
         FEED_SHARED.reset_session();
+        crate::native_executor::reset_fed_counters();
+        crate::ff::store_pushed_any(false);
         assert_eq!(mailboxes().raw.diag, FeedDiag::IDLE, "a stop or a reload returns the whole set");
+    }
+
+    /// The audio the demuxer feeds natively rides the sample (the player reads it from there, not
+    /// from the demuxer's cell), and a new session forgets it.
+    #[test]
+    fn the_sample_carries_the_audio_the_demuxer_feeds_natively() {
+        use plx_playback_contract::feed::NativeAudio;
+        let _serial = plx_base::testlock::serial();
+        crate::native_audio::reset();
+        assert_eq!(mailboxes().raw.native_audio, None, "nothing fed natively yet");
+        crate::native_audio::publish_fed(crate::native_audio::Kind::Opus, 6);
+        assert_eq!(mailboxes().raw.native_audio, Some(NativeAudio { codec: "opus", channels: 6 }));
+        crate::native_audio::reset();
+        assert_eq!(mailboxes().raw.native_audio, None, "a new session forgets it");
     }
 
     /// The side reader's caption runner for tests that never start a reader.

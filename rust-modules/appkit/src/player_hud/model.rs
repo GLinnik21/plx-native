@@ -26,7 +26,7 @@ pub type BitmapLookup = fn(i64) -> Option<(i32, i32, Vec<plx_media::player::SubR
 /// `src/app/run.rs`.
 #[derive(Clone, Copy, Debug)]
 pub struct HudModel {
-    /// `plx_media::player::FEED_TX.paused.load(Relaxed)`: the viewer is logically paused. Drives the
+    /// `plx_play_feed::shared::FEED_TX.paused.load(Relaxed)`: the viewer is logically paused. Drives the
     /// title's reveal and the playbar's state mark.
     pub paused: bool,
     pub marker_prefs: crate::skip_policy::MarkerPrefsView,

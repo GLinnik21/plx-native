@@ -298,7 +298,7 @@ fn seek_to_the_end_is_a_position(server: &StrictServer, st: &mut AvioState, body
 fn a_socket_seek_to_the_end_answers_the_size_without_a_request() {
     let body = pattern();
     let server = StrictServer::start(Virtual::flat(body.clone()));
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let mut hs = plx_net::stream::http_stream_boxed();
     let origin = plx_plex::plex::Origin::http("127.0.0.1", i32::from(server.port));
     let (src, size) =
@@ -313,7 +313,7 @@ fn a_socket_seek_to_the_end_answers_the_size_without_a_request() {
     seek_to_the_end_is_a_position(&server, &mut st, &body);
     drop(st);
     plx_net::stream::http_close(&mut *hs);
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
 }
 
 /// The same on the https arm's source. `curlio` already calls the 416 "the correct response to a
@@ -329,7 +329,7 @@ fn a_curl_seek_to_the_end_answers_the_size_without_a_request() {
     }
     let body = pattern();
     let server = StrictServer::start(Virtual::flat(body.clone()));
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let url = format!("http://127.0.0.1:{}/library/parts/1/file.mp4", server.port);
     let cs = crate::curlio::CurlSource::open(&url, 0)
         .unwrap_or_else(|e| panic!("fixture: the curl open failed: {e:?}"));
@@ -342,7 +342,7 @@ fn a_curl_seek_to_the_end_answers_the_size_without_a_request() {
     let mut st = avio_over(Src::Curl(cs), size, &mut *aq);
     seek_to_the_end_is_a_position(&server, &mut st, &body);
     drop(st);
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
 }
 
 /// The non-regression half of the invariant above: a seek that lands INSIDE the file, however
@@ -433,7 +433,7 @@ fn a_seek_inside_the_file_still_reopens_with_a_range(
 fn a_socket_seek_inside_the_file_still_reopens_with_a_range() {
     let body = pattern();
     let server = StrictServer::start(Virtual::flat(body.clone()));
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let mut hs = plx_net::stream::http_stream_boxed();
     let origin = plx_plex::plex::Origin::http("127.0.0.1", i32::from(server.port));
     let (src, size) =
@@ -448,7 +448,7 @@ fn a_socket_seek_inside_the_file_still_reopens_with_a_range() {
     a_seek_inside_the_file_still_reopens_with_a_range(&server, &mut st, &body);
     drop(st);
     plx_net::stream::http_close(&mut *hs);
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
 }
 
 /// The same on the https arm's source.
@@ -461,7 +461,7 @@ fn a_curl_seek_inside_the_file_still_reopens_with_a_range() {
     }
     let body = pattern();
     let server = StrictServer::start(Virtual::flat(body.clone()));
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let url = format!("http://127.0.0.1:{}/library/parts/1/file.mp4", server.port);
     let cs = crate::curlio::CurlSource::open(&url, 0)
         .unwrap_or_else(|e| panic!("fixture: the curl open failed: {e:?}"));
@@ -474,7 +474,7 @@ fn a_curl_seek_inside_the_file_still_reopens_with_a_range() {
     let mut st = avio_over(Src::Curl(cs), size, &mut *aq);
     a_seek_inside_the_file_still_reopens_with_a_range(&server, &mut st, &body);
     drop(st);
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
 }
 
 /// An unsized source has no end to compare with: a seek there still goes to the transport, as it
@@ -483,7 +483,7 @@ fn a_curl_seek_inside_the_file_still_reopens_with_a_range() {
 fn an_unsized_source_still_asks_the_transport() {
     let body = pattern();
     let server = StrictServer::start(Virtual::flat(body.clone()));
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let mut hs = plx_net::stream::http_stream_boxed();
     let origin = plx_plex::plex::Origin::http("127.0.0.1", i32::from(server.port));
     let (src, _) = open_plain_progressive(&mut *hs, &origin, "/library/parts/1/file.mp4", &mut *aq, &DemuxTransport::new(crate::curlio::range_factory(), crate::curlio::CREDENTIAL_GATE), super::test_support::demux_observer().as_ref())
@@ -498,7 +498,7 @@ fn an_unsized_source_still_asks_the_transport() {
     assert_eq!(server.refused(), vec![Some(64)], "{:?}", server.served());
     drop(st);
     plx_net::stream::http_close(&mut *hs);
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
 }
 
 // -- the whole open, with the bundled FFmpeg ------------------------------------------------------
@@ -674,8 +674,8 @@ fn demux_video_aus(file: Virtual, want: usize) -> (usize, Vec<(Option<u64>, u16)
     FEED_AUDIO.store(true, Ordering::Relaxed);
     let server = StrictServer::start(file);
     let (video_cap, audio_cap) = crate::player::engine::aq_caps();
-    let mut video = crate::aq::aq_new(video_cap as c_long);
-    let mut audio = crate::aq::aq_new(audio_cap as c_long);
+    let mut video = plx_play_feed::aq::aq_new(video_cap as c_long);
+    let mut audio = plx_play_feed::aq::aq_new(audio_cap as c_long);
     let mut hs = plx_net::stream::http_stream_boxed();
     let (vp, ap, hp) = (
         SendPtr(&mut *video as *mut AuQueue),
@@ -703,14 +703,14 @@ fn demux_video_aus(file: Virtual, want: usize) -> (usize, Vec<(Option<u64>, u16)
     let until = Instant::now() + Duration::from_secs(10);
     let mut aus = 0;
     while aus < want && Instant::now() < until {
-        let node = crate::aq::aq_pop(&mut *video, std::ptr::null_mut());
+        let node = plx_play_feed::aq::aq_pop(&mut *video, std::ptr::null_mut());
         if !node.is_null() {
             unsafe { libc::free(node as *mut c_void) };
             aus += 1;
             continue;
         }
         // Keep the audio lane moving too; nothing here grades it.
-        let a = crate::aq::aq_pop(&mut *audio, std::ptr::null_mut());
+        let a = plx_play_feed::aq::aq_pop(&mut *audio, std::ptr::null_mut());
         if !a.is_null() {
             unsafe { libc::free(a as *mut c_void) };
             continue;
@@ -720,8 +720,8 @@ fn demux_video_aus(file: Virtual, want: usize) -> (usize, Vec<(Option<u64>, u16)
         }
         std::thread::sleep(Duration::from_millis(5));
     }
-    crate::aq::aq_abort(&mut *video);
-    crate::aq::aq_abort(&mut *audio);
+    plx_play_feed::aq::aq_abort(&mut *video);
+    plx_play_feed::aq::aq_abort(&mut *audio);
     plx_net::stream::http_shutdown(&mut *hs);
     let stop_by = Instant::now() + Duration::from_secs(10);
     while !thread.is_finished() && Instant::now() < stop_by {
@@ -734,8 +734,8 @@ fn demux_video_aus(file: Virtual, want: usize) -> (usize, Vec<(Option<u64>, u16)
     let _ = thread.join();
     let served = server.served();
     plx_net::stream::http_close(&mut *hs);
-    crate::aq::aq_destroy(&mut *video);
-    crate::aq::aq_destroy(&mut *audio);
+    plx_play_feed::aq::aq_destroy(&mut *video);
+    plx_play_feed::aq::aq_destroy(&mut *audio);
     (aus, served)
 }
 

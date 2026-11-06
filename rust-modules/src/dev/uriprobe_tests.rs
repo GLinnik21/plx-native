@@ -563,7 +563,7 @@ fn uriprobe_driver_delayed_initial_play_reply_cannot_grade_resume() {
 mod hostsim {
     use super::*;
     #[cfg(feature = "play-feed")]
-    use plx_media::player::FEED_SHARED;
+    use plx_play_feed::shared::FEED_SHARED;
     use std::time::Instant;
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
@@ -576,15 +576,15 @@ mod hostsim {
 
     impl ExportedHost {
         fn arm() -> ExportedHost {
-            plx_media::player::ffi_host::reset_native_lifecycle_for_test();
-            plx_media::player::ffi_host::force_clocksink_for_test(true);
+            plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+            plx_play_feed::ffi_host::force_clocksink_for_test(true);
             ExportedHost
         }
     }
 
     impl Drop for ExportedHost {
         fn drop(&mut self) {
-            plx_media::player::ffi_host::force_clocksink_for_test(false);
+            plx_play_feed::ffi_host::force_clocksink_for_test(false);
         }
     }
 

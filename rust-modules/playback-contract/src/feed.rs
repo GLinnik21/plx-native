@@ -147,6 +147,26 @@ impl SampleBuf {
     }
 }
 
+/// split Annex-B into AUs on the 5-byte AUD prefix 00 00 00 01 <aud5>
+/// (H264 AUD = 0x09; HEVC AUD is NAL type 35 → first header byte 0x46).
+pub fn bf_split(data: &[u8], aud5: u8) -> Vec<usize> {
+    let mut au = Vec::new();
+    let mut i = 0usize;
+    while i + 4 < data.len() {
+        if data[i] == 0
+            && data[i + 1] == 0
+            && data[i + 2] == 0
+            && data[i + 3] == 1
+            && data[i + 4] == aud5
+        {
+            au.push(i);
+            i += 4;
+        }
+        i += 1;
+    }
+    au
+}
+
 /// What the route decided about the side subtitle reader for one open: whether a reader is
 /// admitted for it, whether it runs clock-only (a sidecar the app draws itself), and the
 /// [`Spec`] it starts with (`None` when the target's server is gone). Plain data: the Feed
@@ -453,9 +473,21 @@ pub struct FeedRaw {
     /// The clock delta the reader matched byte for byte for this engine run (Part time minus the
     /// playhead, ns); `None` while none has been measured.
     pub side_exact_delta_ns: Option<i64>,
+    /// The audio the demuxer feeds the pipeline natively (the TV decodes the codec itself), once it
+    /// has said so; `None` before that and for any track the TV decodes by name alone or the app
+    /// decodes. The player reads it to tell a native audio refusal from any other.
+    pub native_audio: Option<NativeAudio>,
     /// This session's direct-play seek mode (`Segment` before a Load selects one); the feed
     /// downgrades it to `Reload` when the pipeline refuses a native `Seek`.
     pub seek_mode: SeekMode,
+}
+
+/// The audio a session feeds the pipeline natively: the codec's FFmpeg name and the track's channel
+/// count ([`FeedRaw::native_audio`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NativeAudio {
+    pub codec: &'static str,
+    pub channels: u32,
 }
 
 /// The Auto-quality facts the demux publishes about the open it runs: which controller started, the
@@ -552,6 +584,14 @@ pub struct FeedDiag {
     pub frame_at: u32,
     /// The pipeline's reported frame rate in thousandths of a frame per second; 0 = not reported.
     pub video_fps_milli: i64,
+    /// Video and audio access units the feed has handed the pipeline this session (accepted, not
+    /// attempted: a refused push is not counted).
+    pub fed_v: i64,
+    pub fed_a: i64,
+    /// The session's demuxer has handed over at least one video access unit. Tells "the demuxer
+    /// produced nothing" from "it produced access units that never reached the decoder": two stalls
+    /// that present identically as a spinner.
+    pub pushed_any: bool,
 }
 
 impl FeedDiag {
@@ -560,6 +600,7 @@ impl FeedDiag {
         place_rv: i32::MIN, placed_w: 0, placed_h: 0, load_completed: false, cb_count: 0,
         aq_video: 0, aq_audio: 0, fed_v_pts: 0, fed_a_pts: 0, load_v: 0, load_a: 0, feed_state: 0,
         cb_err: 0, cb_err_at: 0, net_rx: 0, load_at: 0, frame_at: 0, video_fps_milli: 0,
+        fed_v: 0, fed_a: 0, pushed_any: false,
     };
 }
 
@@ -601,7 +642,7 @@ impl FeedRaw {
         diag: FeedDiag::IDLE,
         vpres_gap_sum_ms: 0, vpres_gap_count: 0, disp_base: 0, load: LoadRaw::IDLE,
         abr: DemuxAbr::IDLE,
-        side_reader_active: false, side_failures: 0, side_exact_delta_ns: None,
+        side_reader_active: false, side_failures: 0, side_exact_delta_ns: None, native_audio: None,
         seek_mode: SeekMode::Segment,
     };
 }
@@ -1165,5 +1206,17 @@ mod tests {
         assert!(set.uri().is_none() && set.uri_mut().is_none() && set.take_uri().is_none());
         assert!(set.install_uri(Box::new(driver)).is_err(), "nowhere to seat it");
         assert!(set.uri().is_none());
+    }
+
+    /// A local validation sample is cut at each 5-byte access-unit delimiter of its codec: H.264's
+    /// AUD (`09`) and HEVC's (`46`) are different delimiters, so one sample is never split by the
+    /// other codec's, and bytes before the first delimiter belong to no unit.
+    #[test]
+    fn an_annex_b_sample_splits_at_its_codecs_access_unit_delimiter() {
+        let h264 = [0xAA, 0, 0, 0, 1, 0x09, 1, 2, 0, 0, 0, 1, 0x09, 3, 0, 0, 0, 1, 0x46, 4];
+        assert_eq!(bf_split(&h264, 0x09), vec![1, 8]);
+        assert_eq!(bf_split(&h264, 0x46), vec![14]);
+        assert!(bf_split(&[0, 0, 0, 1], 0x09).is_empty(), "a bare start code has no delimiter byte");
+        assert!(bf_split(&[], 0x09).is_empty());
     }
 }

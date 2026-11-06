@@ -301,6 +301,12 @@ pub fn pushed_any() -> bool {
     PUSHED_ANY.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// A test's stand-in for a demuxer that has (or has not) handed over a video access unit.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn store_pushed_any(pushed: bool) {
+    PUSHED_ANY.store(pushed, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Boot smoke test + optional ABI probe. Called once at startup.
 pub fn boot() {
     // The https media transport's own table, resolved here so the `dlopen` and its log line land

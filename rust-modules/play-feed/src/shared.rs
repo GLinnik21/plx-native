@@ -1919,27 +1919,8 @@ pub use plx_playback_contract::feed::{UserPauseCursor, UserPauseSnapshot};
 /// executor handle in reach.
 pub static FEED_TX: Transport = Transport::new();
 
-/// Monotonic milliseconds, from an origin fixed at the first call.
-///
-/// Not SDL ticks: this is read on the pipeline's own callback thread, and the value is only ever
-/// differenced, so a private origin is enough and owes SDL nothing. Every reader (the callback's
-/// presentation stamp, the pump's silence watchdog, the player's audio-pick window) reads this one
-/// clock, so a stamp one of them stores is comparable by any other.
-pub fn vclock_ms() -> u32 {
-    clock_origin().elapsed().as_millis() as u32
-}
-
-/// [`vclock_ms`] in microseconds, on the same origin: the Feed executor's slice clock
-/// (`FeedHooks::feed_clock_us`), only ever differenced.
-pub fn vclock_us() -> u64 {
-    clock_origin().elapsed().as_micros() as u64
-}
-
-fn clock_origin() -> &'static Instant {
-    use std::sync::OnceLock;
-    static T0: OnceLock<Instant> = OnceLock::new();
-    T0.get_or_init(Instant::now)
-}
+/// Monotonic milliseconds and microseconds, on the one process clock the player shares (`plx_base::clock`).
+pub use plx_base::clock::{vclock_ms, vclock_us};
 
 /// **Film time to the pipeline's timeline.** At speed `r` the pipeline still plays at its own 1x,
 /// so every timestamp the app hands it — a fed AU, a seek or decode position — is divided by `r`;

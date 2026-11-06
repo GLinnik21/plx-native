@@ -33,6 +33,19 @@ impl UriProbe for Probe {
         let trigger = Trigger::from_trigger(text)?;
         Some(Box::new(Launch { variant: trigger.variant, bps: trigger.bps }))
     }
+
+    /// The Feed's native object is free of an earlier session when its start guard can be armed
+    /// (a parked timed-out Load still owns it otherwise). A build with no Feed has no session to wait on.
+    fn native_slot_available(&self) -> bool {
+        #[cfg(feature = "play-feed")]
+        {
+            plx_play_feed::native_executor::NativeSessionStartGuard::arm(&plx_play_feed::shared::FEED_SHARED).is_some()
+        }
+        #[cfg(not(feature = "play-feed"))]
+        {
+            true
+        }
+    }
 }
 
 /// An armed trigger, waiting for the route start media claims.

@@ -1,35 +1,38 @@
-//! The caption half of the physical demux worker's session, and the composition that hands the
-//! worker its whole session. The clock, the adaptive actuator, the callback observer and the effect
-//! sink are the Feed's own (`plx_play_feed::demux_clock`); what stays here is what touches media's
-//! common stores: the cue and ASS inventory behind `DemuxSubtitle` and, as two fn pointers on the
-//! session's [`DemuxMediaHooks`], the telemetry class a demux fault is latched as and the common
-//! `SHARED.track_names` write.
+//! The caption half of the physical demux worker's session. The clock, the adaptive actuator, the
+//! callback observer and the effect sink are the Feed's own (`plx_play_feed::demux_clock`); what
+//! stays here is what touches media's common stores: the cue and ASS inventory behind
+//! `DemuxSubtitle` ([`PlayerDemuxSubtitle`]) and the two functions the Feed's session takes as its
+//! media hooks, the telemetry class a demux fault is latched as ([`demux_exit_latch`]) and the
+//! common `SHARED.track_names` write ([`replace_track_names`]). The application composes them into
+//! the session the adapter captures per attempt ([`super::adapter::DemuxSessionProvider`]).
 //! Construction captures no globals.
 
-use plx_play_feed::demux_clock::{DemuxMediaHooks, FeedDemuxObserver, FeedDemuxSession};
 use super::SHARED;
-use plx_playback_contract::demux::{DemuxFault, DemuxObserver, DemuxSession, DemuxSubtitle};
-use plx_playback_contract::AttemptId;
+use plx_playback_contract::demux::{DemuxFault, DemuxObserver, DemuxSubtitle};
 use plx_playback_contract::subtitle::{DecodeKind, Manifest, RawCue, TrackInfo};
 use plx_playback_contract::tracks::TrackNames;
 use plx_telemetry::telemetry::classes::DemuxExitClass;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-/// What the Feed's effect sink asks the common player for.
-const DEMUX_MEDIA_HOOKS: DemuxMediaHooks = DemuxMediaHooks {
-    exit_latch: demux_exit_latch,
-    replace_track_names,
-};
-
-/// Capture the session of one demux attempt. Safe on the main thread: pause cursors and the native
-/// clock are sampled only after the worker explicitly begins a lane.
-pub fn capture(attempt: AttemptId, native_epoch: u32) -> Box<dyn DemuxSession> {
-    FeedDemuxSession::capture(attempt, native_epoch, DEMUX_MEDIA_HOOKS, PlayerDemuxSubtitle::new)
+/// The session of one demux attempt over the real Feed, as the host tests capture it: what the
+/// application composes (`plx_media::player::adapter::DemuxSessionProvider`), with this module's
+/// own hooks. Safe on the main thread: pause cursors and the native clock are sampled only after the
+/// worker explicitly begins a lane.
+#[cfg(test)]
+pub fn capture(attempt: plx_playback_contract::AttemptId, native_epoch: u32)
+    -> Box<dyn plx_playback_contract::demux::DemuxSession> {
+    use plx_play_feed::demux_clock::{DemuxMediaHooks, FeedDemuxSession};
+    FeedDemuxSession::capture(
+        attempt, native_epoch,
+        DemuxMediaHooks { exit_latch: demux_exit_latch, replace_track_names },
+        PlayerDemuxSubtitle::new)
 }
 
-struct PlayerDemuxSubtitle {
-    observer: Arc<FeedDemuxObserver>,
+/// The caption half of a demux attempt's session: the cue and ASS inventory the demuxer's subtitle
+/// tracks feed, addressed through the session's observer.
+pub struct PlayerDemuxSubtitle {
+    observer: Arc<dyn DemuxObserver>,
     subtitle_tracks: Option<super::subtitle_cue::SideTracks>,
     subtitle_indices: Vec<i32>,
     bitmap_generation: Option<u64>,
@@ -37,7 +40,7 @@ struct PlayerDemuxSubtitle {
 }
 
 impl PlayerDemuxSubtitle {
-    fn new(observer: Arc<FeedDemuxObserver>) -> Self {
+    pub fn new(observer: Arc<dyn DemuxObserver>) -> Self {
         Self {
             observer,
             subtitle_tracks: None, subtitle_indices: Vec::new(),
@@ -124,14 +127,15 @@ impl DemuxSubtitle for PlayerDemuxSubtitle {
 /// Publish container-reported track names into the common store and hand back what it held (the
 /// caller drops it after the native barrier and this lock are released: old container strings may
 /// own large allocations). The one common write a demux effect makes.
-fn replace_track_names(names: TrackNames) -> TrackNames {
+pub fn replace_track_names(names: TrackNames) -> TrackNames {
     let mut slot = SHARED.track_names.lock().unwrap();
     let previous = std::mem::replace(&mut *slot, names);
     SHARED.track_names_stamp.fetch_add(1, Ordering::Release);
     previous
 }
 
-fn demux_exit_latch(fault: DemuxFault) -> u8 { demux_exit_class(fault).latch() }
+/// The byte the demuxer's exit latch stores for a fault.
+pub fn demux_exit_latch(fault: DemuxFault) -> u8 { demux_exit_class(fault).latch() }
 
 fn demux_exit_class(fault: DemuxFault) -> DemuxExitClass {
     match fault {
@@ -158,6 +162,7 @@ fn demux_exit_class(fault: DemuxFault) -> DemuxExitClass {
 mod tests {
     use super::*;
     use plx_play_feed::shared::FEED_SHARED;
+    use plx_playback_contract::AttemptId;
     use plx_playback_contract::subtitle::{BitmapDisplay, IndexedRect};
 
     struct ResetSession;

@@ -151,8 +151,8 @@ fn slot_of(occupant: Occupant) -> ControlSlot {
 /// mismatching table row that looks like a behaviour change.
 fn assert_idle_playhead() {
     use std::sync::atomic::Ordering::Relaxed;
-    assert_eq!(plx_media::player::FEED_SHARED.duration_ns.load(Relaxed), 0, "a leaked duration");
-    assert!(!plx_media::player::FEED_TX.paused.load(Relaxed), "a leaked pause");
+    assert_eq!(plx_play_feed::shared::FEED_SHARED.duration_ns.load(Relaxed), 0, "a leaked duration");
+    assert!(!plx_play_feed::shared::FEED_TX.paused.load(Relaxed), "a leaked pause");
     let ps = plx_media::route::idle_session_for_test();
     assert!(!plx_media::player::loading(ps), "a busy pipeline");
     assert_ne!(

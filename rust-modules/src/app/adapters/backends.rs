@@ -14,6 +14,8 @@
 use plx_base::eventlog::log;
 use plx_base::task::MainThread;
 use plx_media::player::adapter::PlayerAdapter;
+#[cfg(feature = "play-feed")]
+use plx_media::player::adapter::StartHooks;
 use plx_media::route::PlaybackSession;
 use plx_platform::tv::plane::{self, PlaneFacts, PlaneOwner, DEFAULT_PLAYER_TYPE};
 use plx_platform::tv::sink::{self, DisplaySink, VP_EXPORTED, VP_NONE};
@@ -191,6 +193,27 @@ macro_rules! native_hooks_over {
     }};
 }
 
+/// The session one demux attempt is handed: the Feed's clock, adaptive actuator, observer and effect
+/// sink over media's caption half and its two common-store hooks. The player asks for it at a start
+/// ([`plx_media::player::adapter::StartHooks`]); it names the Feed, which media may not.
+#[cfg(feature = "play-feed")]
+fn demux_session(attempt: plx_playback_contract::AttemptId, native_epoch: u32)
+    -> Box<dyn plx_playback_contract::demux::DemuxSession> {
+    use plx_media::player::demux_session::{demux_exit_latch, replace_track_names, PlayerDemuxSubtitle};
+    plx_play_feed::demux_clock::FeedDemuxSession::capture(
+        attempt, native_epoch,
+        plx_play_feed::demux_clock::DemuxMediaHooks { exit_latch: demux_exit_latch, replace_track_names },
+        PlayerDemuxSubtitle::new)
+}
+
+/// What the player's start path calls of the Feed: the demux session of an attempt and the
+/// `plxnative-playurl` dev trigger's reader (`None` in a build without `devtriggers`).
+#[cfg(feature = "play-feed")]
+const START_HOOKS: StartHooks = StartHooks {
+    demux_session,
+    play_url: plx_play_feed::playurl::playurl,
+};
+
 /// The television's (and the simulator's, whose port table holds the host sink) hooks: the
 /// installed port's sink and the Feed's own monotonic clock.
 #[cfg(feature = "play-feed")]
@@ -248,7 +271,7 @@ fn test_clock_us() -> u64 { 0 }
 pub(crate) fn install_feed(adapter: &mut PlayerAdapter, hooks: &'static NativeHooks) -> bool {
     let set = FeedSet::new(FeedBackend::new(FeedResources::new(&FEED_SHARED, hooks)));
     let display_sink = set.display_sink();
-    if adapter.install_physical(Box::new(set), display_sink).is_err() {
+    if adapter.install_physical(Box::new(set), display_sink, START_HOOKS).is_err() {
         return false;
     }
     let _ = plx_play_feed::sf_event::install(

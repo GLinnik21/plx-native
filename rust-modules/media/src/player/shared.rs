@@ -1,8 +1,5 @@
-//! Compatibility exports for the physical feed mailbox. Common subtitle resources live in
-//! `shared_resources`; native callback and clock state live in `plx_play_feed::shared`, whose
-//! process-lifetime owners (`FEED_SHARED`, `FEED_TX`) media code imports from there by name.
-
-pub use plx_play_feed::shared::*;
+//! The one test that watches the Feed's diagnostics mirror, kept in media because its writers are
+//! media's files too. The Feed's own mailbox and transport are `plx_play_feed::shared`.
 
 #[cfg(test)]
 mod tests {
