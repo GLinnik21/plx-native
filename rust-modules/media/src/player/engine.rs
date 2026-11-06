@@ -3673,6 +3673,18 @@ mod load_in_flight_tests {
         renewed.failure(FailureEdit::Cleared);
         pa.drain_abr(&mut ps);
         assert_eq!(ps.readout().original_failure(), None, "the new open's own clear does");
+
+        // Two edits between drains end as the later one, in either order: every edit replaces the
+        // whole pair, so the drain's coalescing loses nothing.
+        renewed.failure(FailureEdit::Noted { kind: crate::player::ABR_FAILURE_ORIGINAL_HTTP, status: 503 });
+        renewed.failure(FailureEdit::Cleared);
+        pa.drain_abr(&mut ps);
+        assert_eq!(ps.readout().original_failure(), None, "a note and the clear after it, one drain");
+        renewed.failure(FailureEdit::Cleared);
+        renewed.failure(FailureEdit::Noted { kind: crate::player::ABR_FAILURE_ORIGINAL_OPEN, status: 0 });
+        pa.drain_abr(&mut ps);
+        assert_eq!(ps.readout().original_failure(), Some((crate::player::ABR_FAILURE_ORIGINAL_OPEN, 0)),
+            "a clear and the note after it, one drain");
         crate::player::ffi_host::release_load_for_test();
     }
 

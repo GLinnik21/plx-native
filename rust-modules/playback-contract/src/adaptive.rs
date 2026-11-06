@@ -268,9 +268,11 @@ pub trait AdaptiveEffects: Send {
     /// crosses each time, so a sink that drops one loses nothing the next does not carry.
     fn readout(&mut self, readout: AbrReadout);
     /// The worker's Original probe noted or cleared the reason an Original attempt failed. Unlike
-    /// [`Self::readout`] these are not cumulative: the sink delivers each edit as a sequenced one
-    /// the player applies once, in order, so a later shipment that only carries other members
-    /// never replays it.
+    /// [`Self::readout`] these are not a photograph to replace: the sink numbers each edit, and the
+    /// player applies the newest one it has not applied yet, so a later shipment that only carries
+    /// other members never replays it. A run of edits between two drains collapses to its last one,
+    /// which loses nothing because every edit replaces the whole pair; a consumer that needs to see
+    /// each note would be written against a promise this does not keep.
     fn failure(&mut self, edit: FailureEdit);
 }
 

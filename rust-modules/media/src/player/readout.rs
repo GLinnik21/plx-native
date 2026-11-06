@@ -237,8 +237,8 @@ pub enum ReadoutEvent {
     Abr(AbrReadout),
     /// The worker's carried link estimate, observed at the frame-tick stamp `observed_at_ms`
     /// (`None`: the worker published none, or the playback is over and the estimate goes with it).
-    /// Unlike every other fact here it survives [`ReadoutEvent::SessionReset`]: a reload keeps the
-    /// link it measured.
+    /// Unlike the feed's facts it survives [`ReadoutEvent::SessionReset`]: a reload keeps the link
+    /// it measured (as it keeps the Original failure, the transport pause and the audio pick).
     AbrSeed(Option<(SeedReadout, u32)>),
     /// The Original failure was noted or cleared (see [`PlayerReadout::original_failure`]). Like
     /// [`ReadoutEvent::AbrSeed`] it survives [`ReadoutEvent::SessionReset`], so a reload keeps it;

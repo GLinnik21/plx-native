@@ -1317,7 +1317,8 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAd
     let mut report_th = stop_feed_timeline(pa, route_attempt);
     native.unblock_join_close();
     // The adaptive worker is joined: take its last report in (the carried link estimate a reload
-    // hands on, and the two members the terminal facts carry), then close its channel.
+    // hands on, the Original failure its probe noted, and the two members the terminal facts
+    // carry), then close its channel. The reset below keeps the failure; a real stop clears it last.
     pa.drain_abr(ps);
     pa.close_abr_inbox();
     let mut terminal_facts = plx_play_feed::feed_pump::native_attempt_facts();

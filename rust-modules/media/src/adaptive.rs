@@ -72,9 +72,9 @@ pub(crate) fn readout_channel() -> (SyncSender<AbrShipment>, AbrInbox) {
 /// these callbacks; the physical feed does not choose when a seed or committed
 /// route becomes visible.
 ///
-/// The seed and the readout cross to the player on the open's channel, by `try_send`: the worker
-/// never blocks on a main thread that may be joining it (the teardown joins the worker while the
-/// receiver is undrained). `latest` is the whole state the worker has handed the sink, and every send
+/// The seed, the readout and the Original failure edits cross to the player on the open's channel,
+/// by `try_send`: the worker never blocks on a main thread that may be joining it (the teardown
+/// joins the worker while the receiver is undrained). `latest` is the whole state the worker has handed the sink, and every send
 /// carries all of it. A full channel refuses the NEW shipment (`std`'s sender cannot evict the queued
 /// ones) and the sink keeps `latest`, so the next call, whichever member it changes, carries
 /// everything the refused one did. The player therefore ends on the state as of the worker's next
