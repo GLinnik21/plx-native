@@ -250,5 +250,6 @@
   "widgets.region.nl": "Niederlande",
   "widgets.region.latin_america": "Lateinamerika",
   "widgets.failure.play_auto": "Auf „Automatisch“ stellen und abspielen",
-  "widgets.failure.change_quality": "Qualität ändern"
+  "widgets.failure.change_quality": "Qualität ändern",
+  "widgets.watch.intro": "Vorspann ansehen"
 }

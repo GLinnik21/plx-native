@@ -631,3 +631,42 @@ enum, and every attempt to place them while it existed was going to fail the sam
 `ci/check-deps.sh`'s `testmod` gate counts `#[cfg(test)] mod` blocks in `app/mod.rs` and requires 0.
 It was red at 4 for two phases and is green now. The gate is the thing to trust rather than this
 table: a count in prose is a measurement nothing re-takes.
+
+### Hero proposal alignment (2026-11-02)
+
+The supplied five-page PDF defines a shared 943 px reading column for Home and Detail. Both use
+`landing_hero::hero_rows`: title → SM → identity → optional XS + ratings → LG → synopsis → MD →
+facts → MD → actions. Home pins actions at y=716; Detail pins the title foot at y=566. Identity
+and ratings reserve their full 34 px and 30 px bands. Facts reserve a CAPTION line box. People
+stack upward with their last cap band centred on the facts' cap band, above the action row.
+Home's poster tops rest at y=817.
+
+`widgets::hero_identity` draws edition, kind, genres and rating at regular CAPTION/24 through
+`theme::hero::IDENTITY_SIZE`; outlined resolution and accessibility chips use the same size.
+The earlier BODY/28 metadata was larger than the latest PDF and was corrected after font-metric comparison. `widgets::hero_facts` draws the year (movies) or named-month aired date (episodes), then
+runtime or remaining time; source attribution follows within the width bound. Direct Play and
+Direct Stream are implicit; conversion and subscription warnings remain visible. Provider scores
+and captions use regular weight. `HeroLogo` targets a shared 60,000 px² bounding-box area, contained within 640 × 240 px and the
+reading column. There is no painted-height floor: wide marks can be shorter than the fixed
+120 px title band, and tall marks can spill upward. Aspect and the bottom anchor are preserved.
+Compact limits interpolate with the hero limits, preserving the existing 54 px compact band. It falls
+back to at most two bold DISPLAY/48 lines; Compact remains one TITLE/40 line. Synopsis stays
+LABEL/26 with 36 px leading and a three-line cap.
+
+Play/Resume has a 224 px minimum and grows for translations. Both action rows use
+`appkit::hero_layout::row_rect`, reserving the capsules' horizontal focus expansion so it does
+not consume their 20 px inter-control air. Plain discs retain the ordinary gap; the first
+control's base stays on the page margin. Home places PageDots 40 px beyond Info, beside its
+controls. A show's started on-deck hero names and marks that episode, using its rating key and
+Leaf scope. The optimistic metadata edit updates the on-deck copy even outside the loaded season. More opens that episode's existing item menu; its play request uses the addressed
+fetch path, independent of the season loaded below. Unstarted or finished shows retain whole-show
+watched actions.
+
+Both heroes share the atmospheric stops: zero at 34% of the frame, .55 at 62% of the remaining
+height, and .86 at the foot. The corner treatment adapts the proposal to the contrast floors:
+the left wedge spans the frame, peaks at .84, and reaches full strength at 32% height; the right
+peaks at .78 and feathers from 28% height. The earlier, narrower treatment failed at the wider
+Home title's upper-right edge (2.34:1 against a 3:1 bright-art floor) and at the raised four-line
+People block (2.18:1 against 3:1). Contrast tests include the shortest synopsis and longest credits.
+
+The route family uses `theme::layout::ROUTE_COPY_W` (660 px), independently of the 943 px full-bleed hero reading column. Widening title artwork or hero copy must not reduce the adjacent Settings, consent or legal content column.

@@ -191,7 +191,7 @@ jobs:
     name: host lint + type-checks
     needs: changes
     if: needs.changes.outputs.gated == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Measured max 3.8 min over the last 40 successful runs; limit ~2x, rounded up to 5 (unset = 360).
     timeout-minutes: 10
     steps:
@@ -262,7 +262,7 @@ jobs:
     name: host unit tests (default features)
     needs: changes
     if: needs.changes.outputs.gated == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Measured max 10.6 min over the last 40 successful runs; limit ~2x, rounded up to 5 (unset = 360).
     timeout-minutes: 25
     outputs:
@@ -344,7 +344,7 @@ jobs:
     name: host unit tests (hostsim)
     needs: changes
     if: needs.changes.outputs.gated == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Measured max 12.6 min over the last 40 successful runs; limit ~2x, rounded up to 5 (unset = 360).
     timeout-minutes: 30
     outputs:
@@ -401,7 +401,7 @@ jobs:
     name: host python/shell/C gates
     needs: changes
     if: needs.changes.outputs.gated == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Measured max 4.6 min over the last 40 successful runs of the old serial recipe (it runs its steps
     # concurrently now, so it is much shorter); limit ~2x, rounded up to 5 (unset = 360).
     timeout-minutes: 10
@@ -432,7 +432,7 @@ jobs:
     name: host harness tests
     needs: changes
     if: needs.changes.outputs.gated == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -452,7 +452,7 @@ jobs:
   # passes, on purpose and only then (a skip with `gated` true is red).
   host-checks:
     name: host checks (NOT a device gate)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Measured max under 1 (the 31.6 in the raw data predates the job split, when this name was the whole suite) min over the last 40 successful runs; limit ~2x, rounded up to 5 (unset = 360).
     timeout-minutes: 10
     needs: [changes, host-lint, host-unit-default, host-unit-hostsim, host-python, host-python-harness]
@@ -681,7 +681,7 @@ jobs:
   # anything else, including a cancelled or skipped heavy job on a gated run.
   cross-build-required:
     name: cross-build (armv7) + artifact assertions
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     needs: [changes, cross-build]
     if: always()

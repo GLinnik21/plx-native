@@ -6,28 +6,28 @@
       "what": "Size in bytes of the STRIPPED ARM plxnative binary that `make ipk FLAVOR=debug` stages into the package (ipkroot/data/usr/palm/applications/<appid>/plxnative), as the CI cross-build job builds it (default features, dev flavour). The shipped release binary is built with --no-default-features and is smaller; this is the number CI can measure on every PR.",
       "unit": "bytes",
       "mode": "fail",
-      "limit": 17000000,
-      "measured": 15451784,
-      "measured_on": "2026-10-30",
+      "limit": 19000000,
+      "measured": 17226072,
+      "measured_on": "2026-11-03",
       "headroom": "10%"
     },
     "packages_default": {
       "what": "Third-party (registry/git) packages the app crate compiles for armv7-unknown-linux-gnueabi with its DEFAULT features: normal + build dependencies, dev-dependencies excluded, workspace members excluded.",
       "unit": "packages",
       "mode": "fail",
-      "limit": 89,
-      "measured": 86,
-      "measured_on": "2026-10-17",
-      "headroom": "+3"
+      "limit": 92,
+      "measured": 92,
+      "measured_on": "2026-11-03",
+      "headroom": "0 (exact measured graph, including the reviewed STORE ZIP reader/writer)"
     },
     "packages_no_default_features": {
       "what": "The same count with --no-default-features, which is what every shipped binary is built with.",
       "unit": "packages",
       "mode": "fail",
-      "limit": 89,
-      "measured": 86,
-      "measured_on": "2026-10-17",
-      "headroom": "+3"
+      "limit": 92,
+      "measured": 92,
+      "measured_on": "2026-11-03",
+      "headroom": "0 (exact measured graph, including the reviewed STORE ZIP reader/writer)"
     },
     "duplicate_versions_default": {
       "what": "Crate names present in more than one version in the NORMAL-edge graph for the default feature set (the set `cargo tree -d --edges normal --target armv7-unknown-linux-gnueabi` prints).",

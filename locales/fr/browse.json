@@ -281,5 +281,8 @@
   "browse.clock.notice_year": "L’horloge de la TV semble incorrecte ({year}). Connecté grâce à la clé mémorisée.",
   "browse.clock.notice": "L’horloge de la TV semble incorrecte. Connecté grâce à la clé mémorisée.",
   "browse.clock.no_key": "L’horloge de cette TV semble incorrecte. Connectez la TV à internet une fois, puis réessayez.",
-  "browse.clock.key_changed": "La clé de votre serveur a changé. Connectez la TV à internet une fois pour que l’application puisse la vérifier de nouveau."
+  "browse.clock.key_changed": "La clé de votre serveur a changé. Connectez la TV à internet une fois pour que l’application puisse la vérifier de nouveau.",
+  "browse.detail.mark_episode_watched": "Marquer l’épisode comme vu",
+  "browse.detail.mark_episode_unwatched": "Marquer l’épisode comme non vu",
+  "browse.detail.minutes_left": "{minutes} min restantes"
 }

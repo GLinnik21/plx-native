@@ -74,7 +74,7 @@ fn a_tucked_page_draws_the_72px_top_fade_over_the_grid_and_under_the_capsule_and
     assert_eq!(strips[0][1], 0.0, "from the very top edge");
     assert!(strips.windows(2).all(|w| w[1][1] == w[0][1] + w[0][3]), "abutting");
     assert_eq!(strips.last().map(|r| r[1] + r[3]), Some(scroll_capsule::FADE_H));
-    assert!(tucked.iter().all(|p| p.kind() != "glass"), "a one-library page has no header names, so no capsule: only the fade stays");
+    assert!(tucked.iter().any(|p| p.kind() == "glass"), "a singleton keeps its library identity in the capsule");
     assert!(tucked[..at].iter().any(|p| p.placed()[1] > 0.0 && p.placed()[3] > 0.0),
         "and over the grid: the page's own paints come before it");
 }

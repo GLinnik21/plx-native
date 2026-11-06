@@ -371,7 +371,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
     counted the layer crates' `test-support` optional dependencies (rcgen, rustls, ...) that only a
     `[dev-dependencies]` entry switches on. A fourth, the line count of `rust-modules/src` and every
     layer crate's `src`, only warns. Each entry records the value it was set
-    from and the date (10% headroom on sizes, +3 on counts). **To raise a budget deliberately, edit
+    from, the date and its declared headroom. **To raise a budget deliberately, edit
     the json in the same PR, update `measured`/`measured_on`, and justify the growth in the PR body**;
     the failing message says the same. Run it locally with
     `python3 ci/check-build-budgets.py --graph --src rust-modules/src` plus one `--src` per layer crate,
@@ -645,7 +645,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   popover or modal, any title flagged `not_in_video` opened (`gates` checks the mock's request log,
   and that no stream, transcode, timeline, scrobble or play-queue request was made), and the
   hold-hint capsule: the film is shot with the hint taught. The capsule is a one-time teaching
-  overlay (it stands after 1.5 s of rest on a card, once per install across every card screen, Home included, and once more on the Detail season pill after a shorter rest, and for the length of an `ok` held on a card), and a film has no
+  overlay (it stands after 1.5 s of rest on a card, once per install across every card screen, Home included, and once more on the Detail season pill after a shorter rest). A hidden hint also appears after 200 ms of an `ok` hold, with a fill in its cap; a short click leaves it hidden. A film has no
   viewer to teach, so `render --storyboard` writes the `plxnative-hintoff` trigger
   (`HINT_OFF` in `site_video.py`; the app reads it once at boot, in `devtriggers` builds only, and
   calls `hold_hint::teach_all_for_dev`, which marks the hint learned and both of its showings spent for the run) and `render.json` records `hold_hint: suppressed`. The hint's own timing is unchanged,
@@ -2513,8 +2513,7 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   within seconds — and two comparisons were silently mis-paired that way before it did.
   And the Library browse set: `/tmp/plxnative-library[=N]` (boot straight into the
   library on section N), **`/tmp/plxnative-libosc`** (a perpetual focus sweep of that library's
-  whole DOCUMENT — the library pill strip at the head where there is one (two or more eligible
-  libraries; a lone favourite draws no selector at all), each published shelf, the grid's control
+  whole DOCUMENT — the favorite library strip and persistent Library options at the head, each published shelf, the grid's control
   row, then the poster grid — reversing at the document's own ENDS rather than on a clock, which is
   the one
   oscillator here that does. The owned Library handles `LibraryCmd::Sweep`; the rule dates to

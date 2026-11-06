@@ -97,6 +97,7 @@ fn refresh_chrome(
 
 #[derive(Clone, Copy)]
 pub(crate) struct AppViews<'a> {
+    pub(crate) marker_prefs: plx_appkit::skip_policy::MarkerPrefsView,
     pub(crate) auth: plx_session::auth::SessionRead<'a>,
     pub(crate) hubs: plx_data::pms::HubsView<'a>,
     pub(crate) listing: plx_data::stores::browse::ListingView<'a>,
@@ -139,7 +140,7 @@ impl Bridge {
     /// [`Self::views`] reading `session` as the playback publication — what a test rig with no
     /// player of its own passes.
     pub(crate) fn views_with<'a>(&'a self, session: &'a plx_media::route::PlaybackSession) -> AppViews<'a> {
-        AppViews { auth: self.session.read(), hubs: self.hubs.view(), listing: self.listing.view(),
+        AppViews { marker_prefs: self.marker_prefs, auth: self.session.read(), hubs: self.hubs.view(), listing: self.listing.view(),
             directory: self.directory.view(), section_hubs: self.section_hubs.view(),
             search: self.search.view(), metadata: self.stores.metadata_view(),
             person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session, today: self.today, beneath: None }
@@ -249,6 +250,7 @@ impl plx_screens::registry::SearchLike for AppHost {
 }
 
 impl plx_screens::registry::LibraryLike for AppHost {
+    fn marker_prefs(cx: &Cx<'_, Self>) -> plx_appkit::skip_policy::MarkerPrefsView { cx.views.marker_prefs }
     fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a> { cx.views.listing }
     fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a> { cx.views.directory }
     fn section_hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::HubsView<'a> { cx.views.section_hubs }
@@ -376,6 +378,9 @@ impl SeatWatch {
 
 /// What the bridge lends the dispatcher, and what it collects for the loop.
 pub(crate) struct Bridge {
+    marker_access: super::preferences::MarkerAccessRunner,
+    marker_prefs: plx_appkit::skip_policy::MarkerPrefsView,
+    marker_now: u32,
     /// Endpoint refreshes a store step had no room to emit (`EndpointRefreshSet::emit`).
     endpoint_carry: plx_data::stores::EndpointRefreshSet,
     session_cache_generation: u64,
@@ -396,10 +401,10 @@ pub(crate) struct Bridge {
     /// The player-HUD package store, its runner and the compile of the selection ([`super::adapters::huds`]). Off until boot starts it.
     huds: super::adapters::huds::HudDriver,
     /// The open Player HUD page's channel and what it was last sent ([`Bridge::huds_publish`]).
-    huds_page: Option<(std::sync::mpsc::Sender<plx_screens::hud_settings::HudList>, u64)>,
+    huds_pages: Vec<(std::sync::mpsc::Sender<plx_screens::hud_settings::HudList>, u64)>,
     /// What the last install or removal said, for the page, until it is opened again.
     huds_notice: Option<plx_data::hudpacks::Notice>,
-    trace_save: Option<(MachineId, plx_base::storage_worker::TypedTicket<plx_platform::playback_trace::Status>)>,
+    trace_save: Option<(MachineId, u64, plx_base::storage_worker::TypedTicket<plx_platform::playback_trace::Status>)>,
     consent_adapter: super::adapters::consent::ConsentAdapter,
     /// Starts the jobs the stores emit (`adapters::stores`). Chosen when the Bridge is built: `Live`
     /// in production, the `Held` runner in a host test.
@@ -662,6 +667,7 @@ impl Bridge {
         Self {
             session_cache_generation: plx_plex::plex::session::visible_generation(),
             cache_refresh_begun: None,
+            marker_access: Default::default(), marker_prefs: Default::default(), marker_now: 0,
             endpoint_carry: Default::default(),
             home_io: None,
             recorded_clients: std::collections::BTreeMap::new(),
@@ -671,7 +677,7 @@ impl Bridge {
             session_ready: None,
             seat_watch: SeatWatch::new(),
             huds: super::adapters::huds::HudDriver::off(),
-            huds_page: None,
+            huds_pages: Vec::new(),
             huds_notice: None,
             trace_save: None,
             consent_adapter,
@@ -899,14 +905,15 @@ impl Bridge {
     /// the dip brings up an empty page and the grid appears in one frame when the image is
     /// replaced. The target is the page's own (`DirectoryView::kind_address`, which its first tick
     /// sends too, so the second select is the same command on a store already there). A store
-    /// already on a library of this kind stays on it (the reader's last pick), as
-    /// `LibraryScreen::sync` keeps it. Not for a Library already on top: its `LibraryCmd::Enter` saves the outgoing
+    /// already on the preferred library stays there; a departed non-favorite visit is restored to
+    /// the last-used favorite. Not for a Library already on top: its `LibraryCmd::Enter` saves the outgoing
     /// section's cursor from the listing it is still showing, before it switches.
     pub(crate) fn aim_library(&mut self, kind: plx_data::browse::SecKind) {
         let target = {
             let directory = self.directory.view();
-            let current = directory.current().map(|i| directory.sections()[i].kind);
-            directory.kind_address(kind).filter(|_| current != Some(kind))
+            let current = directory.current().and_then(|index| directory.sections().get(index))
+                .and_then(|section| section.sid.map(|sid| (sid, section.key)));
+            directory.kind_address(kind).filter(|target| Some((target.sid, target.section)) != current)
         };
         if let Some(target) = target {
             self.browse_run(plx_data::stores::browse::BrowseCmd::Addressed { target,
@@ -994,8 +1001,17 @@ impl Bridge {
         match command {
             HudCmd::Open(page) => {
                 self.huds_notice = None;
-                self.huds_page = Some((page, u64::MAX));
+                self.huds_watch(page);
                 self.huds_refresh();
+                if !self.playback_live && (plx_base::paths::ENV_STEERABLE || plx_base::paths::flavour().is_some()) {
+                    self.huds.open_catalog(plx_telemetry::telemetry::crashreport::now_secs());
+                }
+            }
+            HudCmd::Watch(page) => self.huds_watch(page),
+            HudCmd::CancelRegistry(sha) => self.huds.cancel_registry(sha),
+            HudCmd::FetchRegistry(sha) => {
+                self.huds_notice = None;
+                self.huds.fetch_registry(sha, plx_plex::plex::identity::version(), plx_platform::i18n::current().language().tag());
             }
             HudCmd::Select(id) => self.huds.select(id),
             HudCmd::Remove(id) => {
@@ -1017,6 +1033,12 @@ impl Bridge {
             HudCmd::DeclineOffer(sha) => self.huds.decline_offer(sha),
         }
         self.huds_settle();
+    }
+
+    fn huds_watch(&mut self, page: std::sync::mpsc::Sender<plx_screens::hud_settings::HudList>) {
+        // Re-probe older subscribers when a page opens so dead receivers do not accumulate at an idle revision.
+        for (_, sent) in &mut self.huds_pages { *sent = u64::MAX; }
+        self.huds_pages.push((page, u64::MAX));
     }
 
     /// Persist the picks the store made and log what the driver reports: the two things the driver
@@ -1049,14 +1071,21 @@ impl Bridge {
     /// Send the open page the store's listing when anything it draws changed since the last send; a page that
     /// closed (its end of the channel dropped) is forgotten.
     fn huds_publish(&mut self) {
-        let Some((_, sent)) = &self.huds_page else { return };
+        if self.huds_pages.is_empty() { return }
         let (revision, notice) = (self.huds.revision(), self.huds_notice.as_ref().map_or(0, |_| 1));
         let stamp = revision * 2 + notice;
-        if *sent == stamp {
+        if self.huds_pages.iter().all(|(_, sent)| *sent == stamp) {
             return;
         }
         let tag = plx_platform::i18n::current().language().tag();
         let list = plx_screens::hud_settings::HudList {
+            catalog: self.huds.store().catalog().clone(),
+            catalog_date: self.huds.store().catalog().checked_at.and_then(|s| i64::try_from(s).ok())
+                .and_then(plx_platform::i18n::local_calendar_date)
+                .and_then(|[y,m,d]| plx_platform::i18n::current().date_medium(y, m as u8, d as u8)).unwrap_or_default(),
+            gallery_enabled: plx_base::paths::ENV_STEERABLE || plx_base::paths::flavour().is_some(),
+            app_version: plx_plex::plex::identity::version().into(),
+            language_tag: tag.into(),
             entries: self.huds.store().entries(),
             drops: self.huds.store().drops(),
             unfit: self.huds.unfit_shas(tag),
@@ -1067,16 +1096,17 @@ impl Bridge {
             notice: self.huds_notice.clone(),
             offer: self.huds.store().offer(),
             fetching: self.huds.store().fetching(),
+            package_busy: self.huds.store().busy(),
         };
-        let delivered = self.huds_page.as_mut().is_some_and(|(page, sent)| {
+        let mut delivered = false;
+        self.huds_pages.retain_mut(|(page, sent)| {
+            if *sent == stamp { return true }
             *sent = stamp;
-            page.send(list).is_ok()
+            let sent = page.send(list.clone()).is_ok();
+            delivered |= sent;
+            sent
         });
-        if delivered {
-            plx_machine::idle::invalidate();
-        } else {
-            self.huds_page = None;
-        }
+        if delivered { plx_machine::idle::invalidate(); }
     }
 
     /// The rect the next player menu hangs from — see [`AppMounter::player_menu_anchor`]. `None` clears it,
@@ -1297,6 +1327,15 @@ impl Bridge {
             let sid = match &e.arg { AppArg::Content(ContentArg::Detail { sid, .. }) => *sid, _ => return None };
             let rect = page.focused_rect::<AppHost>(ret.focus, &cx, At::Drawn);
             let meta = <AppHost as plx_screens::registry::MetadataLike>::metadata(&cx);
+            if let Some((ep, mark)) = page.hero_menu_episode(ret.focus, meta) {
+                let mut arg = strip_menu_arg(sid, &ep.rk,
+                    ItemMenuKind::Episode { mark, versions: ep.versions.clone() }, entry, ret.focus, rect);
+                // The on-deck episode need not be in the loaded season window. The ordinary
+                // addressed item path fetches it, rather than the filmstrip's loaded-only path.
+                arg.loaded_episode = false;
+                arg.watchlist = self.watchlist_face(page.watchlist_hex(), plx_data::watchlist::model::Kind::Show, true);
+                return Some(arg);
+            }
             if let Some((rk, show_rk, index, mark)) = page.focused_season(ret.focus, meta) {
                 // the season's address rides on the menu: the strip's item is no catalog row, so
                 // the write's scope cannot be read off one (`apply_item_action`)
@@ -2157,6 +2196,19 @@ impl Bridge {
         }
     }
 
+    pub(crate) fn marker_preferences(&self) -> plx_appkit::skip_policy::MarkerPrefsView { self.marker_prefs }
+    /// Runner boundary: capture the seated profile and live choices once, then publish values.
+    pub(crate) fn publish_marker_preferences(&mut self, now: u32) {
+        self.marker_now = now;
+        if self.home_io.is_some() {
+            self.marker_prefs = Default::default(); return;
+        }
+        let view = self.marker_access.poll(&Self::seated_profile(), now,
+            plx_media::route::intro_skip(), plx_media::route::credits_skip());
+        if view != self.marker_prefs { plx_machine::idle::invalidate(); }
+        self.marker_prefs = view;
+    }
+
     /// **Publish this frame's calendar date** — see `AppViews::today`. Called once per iteration by
     /// the loop, beside [`Self::publish_playback`] and before the dispatcher frame and the draw, with
     /// `clock::today()` (the loop is that door's one caller). Time arrives as an input: a screen
@@ -2218,7 +2270,7 @@ impl Bridge {
             // The owner reads its retained publication, not a borrow through its own mutable
             // field. Every other view still comes from this same Bridge frame boundary.
             let publication = self.session.publication();
-            let cx = parts.cx::<AppHost>(AppViews { auth: publication.read(),
+            let cx = parts.cx::<AppHost>(AppViews { marker_prefs: self.marker_prefs, auth: publication.read(),
                 hubs: self.hubs.view(), listing: self.listing.view(), directory: self.directory.view(),
                 section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session: &self.playback, today: self.today, beneath: None,
             }, &self.measure);
@@ -2414,7 +2466,7 @@ impl Rig<AppHost> for Bridge {
     fn split(&mut self) -> Split<'_, AppHost> {
         Split {
             mounter: &mut self.mounter,
-            views: AppViews { auth: self.session.read(),
+            views: AppViews { marker_prefs: self.marker_prefs, auth: self.session.read(),
                 hubs: self.hubs.view(),
                 listing: self.listing.view(),
                 directory: self.directory.view(),
@@ -2501,20 +2553,29 @@ impl Bridge {
         if command != Command::Export { return trace::execute(command); }
         let generation = trace::prepare_export();
         match plx_base::storage_worker::submit(move || trace::save_export(generation)) {
-            Ok(ticket) => { self.trace_save = Some((from, ticket)); Status::Saving }
-            Err(_) => { trace::execute(Command::Stop); Status::Failed }
+            Ok(ticket) => { self.trace_save = Some((from, generation, ticket)); Status::Saving }
+            Err(error) => {
+                use plx_base::storage_worker::SubmitError;
+                use trace::SaveWorkerFailure as Failure;
+                trace::fail_export(generation, match error {
+                    SubmitError::Full => Failure::QueueFull,
+                    SubmitError::Stopped => Failure::QueueStopped,
+                    SubmitError::StartFailed => Failure::StartFailed,
+                })
+            }
         }
     }
 
     pub(crate) fn playback_trace_poll(&mut self) -> Option<(MachineId, plx_platform::playback_trace::Status)> {
         use std::sync::mpsc::TryRecvError;
-        let (_, ticket) = self.trace_save.as_ref()?;
+        let (_, generation, ticket) = self.trace_save.as_ref()?;
         let status = match ticket.try_recv() {
             Ok(status) => status,
             Err(TryRecvError::Empty) => return None,
-            Err(TryRecvError::Disconnected) => plx_platform::playback_trace::Status::Failed,
+            Err(TryRecvError::Disconnected) => plx_platform::playback_trace::fail_export(
+                *generation, plx_platform::playback_trace::SaveWorkerFailure::Disconnected),
         };
-        let (to, _) = self.trace_save.take()?;
+        let (to, _, _) = self.trace_save.take()?;
         Some((to, status))
     }
 
@@ -2537,7 +2598,15 @@ impl Bridge {
             AppFx::Session(command) => out.push(Fx::Deliver(MachineId::Session,
                 Delivery::Machine(AppMsg::Session(plx_session::auth::owner::SessionEvent::Command(command))))),
             AppFx::SessionEffect(effect) => self.session_effect(effect, out),
-            AppFx::Preferences(command) => super::preferences::execute(command),
+            AppFx::Preferences(command) => {
+                let profile = Self::seated_profile();
+                self.publish_marker_preferences(self.marker_now);
+                match command {
+                    plx_screens::registry::PreferenceCmd::EnsureMarkerAccess => self.marker_access.ensure(&profile, self.marker_now),
+                    command @ plx_screens::registry::PreferenceCmd::ChooseMarker { .. } => super::preferences::execute_marker(command, self.marker_prefs),
+                    other => super::preferences::execute(other),
+                }
+            },
             AppFx::PlaybackTrace(command) => {
                 let status = self.playback_trace_command(from, command);
                 out.push(Fx::Deliver(from, Delivery::Screen(ScreenEvent::App(AppMsg::PlaybackTrace(status)))));
@@ -3636,6 +3705,16 @@ pub(crate) fn top_settled_on(d: &Dispatcher<AppHost>, arg: &AppArg) -> bool {
     d.nav.tabs.stack.root_settled(arg)
 }
 
+/// **Is the player the page the stack is about to land on?** A play start parks its push and the
+/// dip-out then runs for a few frames during which `top_arg()` still names the page it was pressed
+/// on. Two callers must not treat that page as unchanged: [`enter_player`](super::playback::enter_player)
+/// (a second start in the dip must not mint a second player and lose the first one's origin seed)
+/// and [`follow_auth_landing`] (a push over the sign-in or picker page is not "not settled" to
+/// undo). One answer for both, so they cannot drift apart.
+pub(crate) fn player_arriving(d: &Dispatcher<AppHost>) -> bool {
+    matches!(d.nav.tabs.stack.pending_dest(), Some(AppArg::Player))
+}
+
 /// **`nav_root`, made edge-triggered** — a no-op while `arg` is already the settled top.
 ///
 /// `NavStack::request`'s dedup already drops the redundant request before it touches `pending` or
@@ -3667,7 +3746,17 @@ pub(crate) fn nav_root_if_unsettled(d: &mut Dispatcher<AppHost>, arg: AppArg) {
 /// guard is one `matches!` either way, and keeping it at the call site is what let the two tests
 /// below read `d.top_arg()` themselves before deciding whether to call this at all — asserting
 /// "outside the phase this asks nothing" needs no help from the function it is testing.
+///
+/// **It stands aside while the player is arriving** ([`player_arriving`]). The `playurl` dev trigger
+/// starts a playback from a boot with no session, so the player is pushed over this very page, and
+/// until the dip-out commits `top_arg()` still reads Login: the per-frame follower would see a
+/// pending op, call the page "not settled" and park a `Root` that replaced the push, so the player
+/// never mounted. Standing aside withholds nothing: the handoff stays in the bridge until the
+/// follower runs again, and once the player is the top it is not asked at all.
 pub(crate) fn follow_auth_landing(pages: &mut Dispatcher<AppHost>, bridge: &mut Bridge) {
+    if player_arriving(pages) {
+        return;
+    }
     if let Some(c) = bridge.take_session_ready() {
         // A sign-out followed by a fresh sign-in can replace the session without restarting the
         // process. Re-read only at this one credentials handoff so the old account's in-memory

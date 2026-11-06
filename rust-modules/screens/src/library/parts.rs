@@ -247,7 +247,12 @@ impl GridPart {
         // The re-list's landing started on this tick or has ended: once it is no longer playing
         // the play is let go, and the ghosts with it.
         if self.relist == Relist::Swapped && !self.grid.landing_pending() && !self.grid.has_ghosts() {
-            self.end_relist();
+            if H::listing(cx).relisting() {
+                self.relist = Relist::Armed;
+                self.ghosts.clear();
+            } else {
+                self.end_relist();
+            }
         }
         self.grid.landed_shift()
     }
@@ -335,6 +340,8 @@ impl GridPart {
         ranges: Vec<Range<usize>>) {
         let view = H::listing(cx);
         let ranges = merged_ranges(ranges, view.total().max(0) as usize);
+        let same_listing = self.snapshot.as_ref().is_some_and(|old| old.view().id() == view.id());
+        if !same_listing { self.end_relist(); }
         if view.relisting() && self.relist == Relist::Idle {
             self.relist = Relist::Armed;
             self.grid.set_animate_landings(true);
@@ -344,7 +351,10 @@ impl GridPart {
         }
         self.captions.borrow_mut().labels.clear();
         // The re-list's rows: what leaves is kept for the landing's ghosts.
-        let swap = self.relist == Relist::Armed && !view.relisting();
+        // A completed window can land while another re-list is already owed. Its removed cards
+        // still belong to THIS landing, even though `relisting` remains true.
+        let swap = same_listing && self.relist != Relist::Idle
+            && self.snapshot.as_ref().is_some_and(|old| !view.same_items(old.view()));
         let old = if swap { self.snapshot.take() } else { None };
         let was: Vec<(u32, usize)> = if swap {
             self.windows.iter().flat_map(|w| w.elems.iter().enumerate().map(move |(n, e)| (*e, w.first + n))).collect()
@@ -361,13 +371,11 @@ impl GridPart {
     /// (an unloaded cell of the new listing says nothing about what left).
     fn keep_ghosts(&mut self, view: plx_data::stores::browse::ListingView<'_>,
         old: plx_data::stores::browse::ListingView<'_>, was: &[(u32, usize)]) {
-        let loaded: Vec<usize> = self.windows.iter()
-            .flat_map(|w| w.first..w.first + w.elems.len())
-            .filter(|&i| view.item(i).is_some())
-            .collect();
-        let (Some(&lo), Some(&hi)) = (loaded.first(), loaded.last()) else { return };
         for &(elem, index) in was {
-            if self.indexes.index_of(elem).is_some() || !(lo..=hi).contains(&index) { continue; }
+            if self.indexes.index_of(elem).is_some() { continue; }
+            // The new end proves a tail card left, including when the whole listing is empty.
+            // An unloaded cell inside the listing cannot prove that its old occupant left.
+            if index < view.total().max(0) as usize && view.item(index).is_none() { continue; }
             if let Some(item) = old.item(index) {
                 self.ghosts.insert(ui_cards::elem_key(&elem), item.clone());
             }
@@ -580,8 +588,8 @@ thread_local! {
     pub(super) static OVERLAID: std::cell::RefCell<Vec<(usize, f32)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// The key of the sort the listing is in ("" when it names none): what the sort value line
-/// shows, for the cards and for a re-list's ghosts alike.
+/// The key of the sort the listing is in ("" when it names none): what the sort value lines
+/// show, for the cards and for a re-list's ghosts alike.
 fn sort_key<'a>(view: &'a plx_data::stores::browse::ListingView<'_>) -> &'a str {
     view.sorts().get(view.sort_index()).map_or("", |sort| sort.key.as_str())
 }
@@ -777,8 +785,7 @@ impl<H: LibraryLike> Part<H> for GridPart {
             // Under the cards that slide over their cells.
             let view = H::listing(f.cx);
             let sort = self.layout.value_line().then(|| sort_key(&view));
-            let ghosts = GhostSrc { items: self.grid.ghost_keys().map(|key| self.ghosts.get(&key)).collect(), policy: caption_policy(), sort,
-                today: H::today(f.cx) };
+            let ghosts = GhostSrc { items: self.grid.ghost_keys().map(|key| self.ghosts.get(&key)).collect(), policy: caption_policy(), sort, today: H::today(f.cx) };
             self.grid.paint_ghosts(f, p, &ghosts);
         }
         let src = self.source(f.cx);
@@ -831,17 +838,17 @@ mod caption_cache_review_tests {
         assert_eq!(cache.borrow().today, Some([2026, 10, 31]));
     }
 
-    /// A re-list's ghost under the sort value line keeps the value every card wears, not the
-    /// focused band's caption.
+    /// A re-list's ghost under sort value lines keeps the value line every card wears,
+    /// not the focused band's.
     #[test]
-    fn a_ghost_under_the_value_line_keeps_its_sort_value() {
+    fn a_ghost_under_value_lines_keeps_its_value_line() {
         let _guard = plx_base::testlock::serial();
         let _locale = language_on_this_thread_for_test(Preference::En);
         let item = PmsMovie { title: "Gone".into(), year: 1997, rating: "PG-13".into(), ..Default::default() };
         let label = |sort| GhostSrc { items: vec![Some(&item)], policy: CaptionPolicy::default(), sort, today: None }.ghost_label(0);
-        let value = |l: ui_cards::TileLabel| l.value.map(|v| v.text);
-        assert_eq!(value(label(Some("contentRating"))).as_deref(), Some("PG-13"), "the value every card wears");
-        assert_eq!(value(label(None)), None, "without the value line, the focused band's label");
+        let sort_info = |l: ui_cards::TileLabel| l.value.map(|v| v.text);
+        assert_eq!(sort_info(label(Some("contentRating"))).as_deref(), Some("PG-13"), "the value line every card wears");
+        assert_eq!(sort_info(label(None)), None, "without value lines, the focused band's label");
     }
 }
 
@@ -850,10 +857,9 @@ mod caption_cache_review_tests {
 struct GhostSrc<'a> {
     items: Vec<Option<&'a plx_data::pms::PmsMovie>>,
     policy: CaptionPolicy,
-    /// The listing's sort key while the grid shows its sort value line: every ghost then keeps its
-    /// own value, as every card does.
+    /// The listing's sort key while the grid shows value lines: every ghost then keeps
+    /// its own line, as every card does.
     sort: Option<&'a str>,
-    /// The calendar date the value line is worded against (`LibraryLike::today`).
     today: Option<[i32; 3]>,
 }
 
@@ -876,8 +882,8 @@ impl<H: Host<Elem = u32>> CardSource<H> for GhostSrc<'_> {
     fn art(&self, i: usize) -> Art<'_> {
         self.item(i).map_or(Art::Poster(None), grid_art)
     }
-    /// The focused card's ghost keeps its caption until the landing steps; with the sort value line
-    /// every ghost keeps its own value.
+    /// The focused card's ghost keeps its caption until the landing steps; with value lines
+    /// every ghost keeps its own.
     fn label(&self, i: usize) -> ui_cards::TileLabel { self.ghost_label(i) }
     fn progress(&self, i: usize) -> Option<f32> {
         self.item(i).filter(|item| item.kind != 3).and_then(|item| item.resume_frac())

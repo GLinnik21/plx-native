@@ -20,8 +20,8 @@
 //! Three routes qualify today and a hard count here would be the fourth transcription of a number
 //! this project keeps letting rot — take the census by CALL SITE: a screen composed through
 //! `table_screen.rs` names its crumb in `Header::new(layout, None, …)` and the literal
-//! `draw_narrative` call sits once, generically, inside `Header::paint`, so
-//! `git grep -nE 'draw_narrative\(|Header::new\(' -- 'rust-modules/ui/src/*.rs' 'rust-modules/screens/src/*.rs'`
+//! `Header::paint` calls `draw_narrative_pending`; `draw_narrative` wraps it for callers without loading copy, so
+//! `git grep -nE 'draw_narrative(_pending)?\(|Header::new\(' -- 'rust-modules/ui/src/*.rs' 'rust-modules/screens/src/*.rs'`
 //! with the `None` crumbs read off each site is the census — a call-site grep rather than a
 //! transcribed count exactly so a file move cannot make it stale silently, which already happened
 //! once: phase 5b moved every real screen of this family out of `ui/` and into `screens/`, and a
@@ -93,9 +93,8 @@ use crate::underlay::{FrameLatch, Grade, Role, UnderlayField};
 use crate::widgets::ControlPalette;
 use crate::{theme, Painter, Rect, Spring};
 
-/// The left column is the same editorial measure as the Home hero.  Reusing that named measure is
-/// what makes first-run routes and Settings feel like one family instead of two similar layouts.
-const NARRATIVE_W: f32 = crate::landing_hero::COL_W;
+/// The route family shares a reading column independent of full-bleed hero artwork.
+const NARRATIVE_W: f32 = theme::layout::ROUTE_COPY_W;
 /// Two visually separate columns need a region gap, not a row gap.  Expressed entirely on the
 /// spacing ladder so a retune of that ladder moves every route together.
 const COLUMN_GAP: f32 = theme::space::XL * 2.0 + theme::space::LG + theme::space::SM;
@@ -263,7 +262,8 @@ impl RouteGround {
 
     pub fn draw_host(&mut self, p: Painter) {
         // `ModalStack::draw_scrims_on`'s rule, for its reason — see [`ground_reads_host`].
-        if ground_reads_host(p.opacity(), plx_gfx::gfx::snapshot_captured_this_frame()) {
+        // Recording a layout must neither sample the framebuffer nor change its host latch.
+        if !p.is_recording() && ground_reads_host(p.opacity(), plx_gfx::gfx::snapshot_captured_this_frame()) {
             self.latch_host();
         }
         self.field.draw(p, Rect::FULL, Role::Ground, 1.0);
@@ -781,7 +781,7 @@ impl RouteLayout {
     /// The same two columns with the narrative one at a **stated measure** — `--route-copy-w`, the
     /// one number in this layout the design system lets a route retune.
     ///
-    /// The default is the Home hero's editorial measure (660), which is right for a screen whose
+    /// The default is the route family's editorial measure (660), which is right for a screen whose
     /// COPY is the screen: Settings' narrative column carries the sentence that explains the list
     /// beside it. A route whose LIST is the screen can prefer a narrower measure: Filmography
     /// starts at 480, then `screen_for_title` accommodates its translated title, reclaiming space (`Person Screen.dc.html`, 2026-09-06:
@@ -1030,6 +1030,13 @@ impl RouteLayout {
         copy_size: std::os::raw::c_int,
         measure: &dyn Measure,
     ) -> f32 {
+        self.draw_narrative_pending(p, back_to, title, copy, copy_size, measure, None)
+    }
+
+    /// The same narrative with a loading copy, counted and sentinel-painted separately from its title.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_narrative_pending(self, p: Painter, back_to: Option<&str>, title: &str, copy: &str,
+        copy_size: std::os::raw::c_int, measure: &dyn Measure, pending: Option<&str>) -> f32 {
         let title = Self::narrative_title(title);
         let title_h = title.measure_h(self.narrative.w);
         let flow = self.narrative_flow(back_to.is_some(), title_h);
@@ -1040,11 +1047,13 @@ impl RouteLayout {
 
         let copy_top = flow.copy_top;
         let copy_bottom = self.action.y - theme::space::XL;
-        let copy_h = TextView::new(copy, copy_size, theme::TEXT_READING)
+        let (copy_p, copy_ink) = pending.map_or((p, theme::TEXT_READING), |key|
+            crate::placeholder::ink(p, crate::placeholder::Reason::WorkingReadout, key, theme::TEXT_READING));
+        let copy_h = TextView::new(copy, copy_size, copy_ink)
             .leading(copy_size as f32 + theme::space::XS)
             .max_lines(12)
             .draw(
-                p,
+                copy_p,
                 Rect::new(
                     self.narrative.x,
                     copy_top,
@@ -1074,6 +1083,15 @@ fn ground_reads_host(opacity: f32, captured: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_recorded_host_ground_neither_captures_nor_latches() {
+        let mut ground = super::RouteGround::new();
+        ground.draw_host(crate::Painter::recording());
+        assert!(!ground.is_latched());
+        crate::record_walk(|| ground.draw_host(crate::Painter::root()));
+        assert!(!ground.is_latched(), "nested root painters obey the recording walk too");
+    }
+
     /// `ModalStack::draw_scrims_on`'s rule, for a route ground: the host is read on the frame that
     /// captured it (whose GPU work is waited out before anything presents) or once the ground is
     /// seen — never on a held, invisible frame that captured nothing.
@@ -1654,7 +1672,7 @@ mod tests {
     /// from under the content moving over it.
     ///
     /// Exercises `latch_default` rather than `draw_default` itself — see [`RouteGround::latch_host`]'s
-    /// doc for why a host test cannot call through to `field.draw`.
+    /// doc for why these latch assertions avoid a visible GL draw.
     #[test]
     fn a_latched_route_ground_does_not_re_latch() {
         let mut ground = RouteGround::new();
@@ -1680,7 +1698,7 @@ mod tests {
     /// a live GL context this binary never creates.
     ///
     /// Exercises `latch_host` rather than `draw_host` itself — see [`RouteGround::latch_host`]'s doc
-    /// for why a host test cannot call through to `field.draw`.
+    /// for why these latch assertions avoid a visible GL draw.
     #[test]
     fn a_route_ground_whose_frame_latch_fails_falls_back_to_corners() {
         // A refusal is not a pending read, and the deferred read must not turn one into a frame of

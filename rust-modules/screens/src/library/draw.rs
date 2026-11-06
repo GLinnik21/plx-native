@@ -120,13 +120,25 @@ impl LibraryScreen {
         // here (`Capsule::new`): the fade reads its rectangle and the capsule draws from the same
         // measured runs.
         let name = (capsule > 0.0 && self.capsule_wanted())
-            .then(|| self.view_section(f.cx).map(|index| self.library_name(index, f.cx)))
+            .then(|| self.view_section(f.cx).map(|index| {
+                let (title, owner) = self.library_name(index, f.cx);
+                let directory = H::directory(f.cx);
+                let server = if self.libraries.iter().any(|(_, section)| *section == index) { "" } else {
+                    directory.sections().get(index).and_then(|section| section.sid)
+                        .and_then(|sid| directory.sources().iter().find(|(candidate, _)| *candidate == sid))
+                        .map_or("", |(_, group)| group.name.as_str())
+                };
+                (title, owner, server)
+            }))
             .flatten();
         let sort = name.map(|_| self.sort_value(f.cx));
         let total = H::listing(f.cx).total();
         // The name is made of the two borrowed pieces and keyed on them: no string is put together
         // on a frame that changes none of them.
-        let strings = name.map(|(title, owner)| self.capsule_text.get_keyed(&[title, owner], || super::toolbar::joined_name(title, owner), total, sort));
+        let strings = name.map(|(title, owner, server)| self.capsule_text.get_keyed(&[title, owner, server], || {
+            let name = super::toolbar::joined_name(title, owner);
+            if server.is_empty() { name } else { format!("{name} · {server}") }
+        }, total, sort));
         let worn = strings.map(|(name, count, criterion)| plx_ui::scroll_capsule::Capsule::new(name, count, criterion, f.measure));
         if tuck > 0.0 {
             let ground = self.ground.sample(Rect::FULL, SCR_W * 0.5, 0.0);

@@ -36,8 +36,8 @@ D="$OUT/root"; mkdir -p "$D"
 python3 "$ROOT/tests/serve_fixtures.py" --root "$(dirname "$CLIP")" --port "$MEDIA_PORT" \
   > "$OUT/media.log" 2>&1 &
 MEDIA_PID=$!
-# …and a synthetic PMS, only so the boot lands on HOME. The autoplay arm that reads `playurl` is
-# skipped on `Route::Login`, so a boot with no session never reaches the player at all.
+# …and a synthetic PMS, so the boot has a session and lands on HOME, as a viewer's does. (A boot
+# with no session reaches the player too: `playurl` also fires from the sign-in page.)
 python3 "$ROOT/tests/mock_pms.py" --port "$PMS_PORT" --seed 1 > "$OUT/pms.log" 2>&1 &
 PMS_PID=$!
 cleanup() {

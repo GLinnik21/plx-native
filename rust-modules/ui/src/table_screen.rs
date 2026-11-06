@@ -63,6 +63,10 @@ pub struct Header<'a> {
     /// [BACK] to close PlxNative"). Never elided: a screen that sets one owns a fit test for it
     /// against [`RouteLayout`]'s narrative width.
     pub hint: Option<KeyHint<'a>>,
+    /// Display-only landscape artwork after the narrative. It contributes no focus or hit stop.
+    pub preview: Option<super::widgets::Art<'a>>,
+    /// A loading read-out in the copy: accounted and sentinel-painted at the actual draw.
+    pub pending_copy: Option<&'a str>,
 }
 
 impl<'a> Header<'a> {
@@ -74,7 +78,19 @@ impl<'a> Header<'a> {
             copy,
             copy_size: theme::size::LABEL,
             hint: None,
+            preview: None,
+            pending_copy: None,
         }
+    }
+
+    pub fn with_pending_copy(mut self, key: &'a str) -> Self {
+        self.pending_copy = Some(key);
+        self
+    }
+
+    pub fn with_preview(mut self, art: super::widgets::Art<'a>) -> Self {
+        self.preview = Some(art);
+        self
     }
 
     pub fn with_hint(mut self, hint: KeyHint<'a>) -> Self {
@@ -89,7 +105,8 @@ impl<'a> Header<'a> {
 
     /// The one drawing routine, for both loops.
     pub fn paint(&self, p: Painter, measure: &dyn Measure) {
-        let copy_end = self.layout.draw_narrative(p, self.crumb, self.title, self.copy, self.copy_size, measure);
+        let copy_end = self.layout.draw_narrative_pending(p, self.crumb, self.title, self.copy, self.copy_size, measure, self.pending_copy);
+        let mut extra_end = copy_end;
         if let Some(hint) = &self.hint {
             // The copy's end, then the hint one MD under it: a two-item run from `copy_end`.
             let run = [Item::new(0.0), Item::new(KeyHint::height())];
@@ -99,6 +116,16 @@ impl<'a> Header<'a> {
             // The copy already stops short of the action band; the hint keeps the same margin.
             if top + KeyHint::height() <= self.layout.action.y - theme::space::XL {
                 hint.draw(p, self.layout.narrative.x, top + KeyHint::height() * 0.5, measure);
+                extra_end = top + KeyHint::height();
+            }
+        }
+        if let Some(art) = self.preview {
+            let top = extra_end + theme::space::XL;
+            let width = self.layout.narrative.w;
+            let height = (width * 9.0 / 16.0).min((self.layout.action.y - top).max(0.0));
+            if height > 0.0 {
+                super::widgets::card(p, Rect::new(self.layout.narrative.x, top, height * 16.0 / 9.0, height), art,
+                    theme::CARD_RING_RAD, false, 1.0, 0.0);
             }
         }
     }

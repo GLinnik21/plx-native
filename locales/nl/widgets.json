@@ -250,5 +250,6 @@
   "widgets.region.nl": "Nederland",
   "widgets.region.latin_america": "Latijns-Amerika",
   "widgets.failure.play_auto": "Op Auto zetten en afspelen",
-  "widgets.failure.change_quality": "Kwaliteit wijzigen"
+  "widgets.failure.change_quality": "Kwaliteit wijzigen",
+  "widgets.watch.intro": "Intro bekijken"
 }

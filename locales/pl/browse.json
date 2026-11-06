@@ -293,5 +293,8 @@
   "browse.clock.notice_year": "Zegar TV jest chyba błędny ({year}). Połączono zapamiętanym kluczem.",
   "browse.clock.notice": "Zegar TV jest chyba błędny. Połączono zapamiętanym kluczem.",
   "browse.clock.no_key": "Zegar TV jest chyba błędny. Połącz raz TV z internetem i spróbuj ponownie.",
-  "browse.clock.key_changed": "Klucz Twojego serwera się zmienił. Połącz raz TV z internetem, aby aplikacja mogła go ponownie sprawdzić."
+  "browse.clock.key_changed": "Klucz Twojego serwera się zmienił. Połącz raz TV z internetem, aby aplikacja mogła go ponownie sprawdzić.",
+  "browse.detail.mark_episode_watched": "Oznacz odcinek jako obejrzany",
+  "browse.detail.mark_episode_unwatched": "Oznacz odcinek jako nieobejrzany",
+  "browse.detail.minutes_left": "Pozostało: {minutes} min"
 }

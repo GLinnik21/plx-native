@@ -528,7 +528,7 @@ class HeroGeometry(unittest.TestCase):
         self.assertIn("overlap:home shelf row", v["reasons"])
 
     def test_a_subject_in_the_starring_column_fails(self):
-        v = self.verdict(3840, 2160, [3000, 1420, 3400, 1540])  # frame (1500,710)-(1700,770)
+        v = self.verdict(3840, 2160, [3000, 1420, 3400, 1500])  # frame (1500,710)-(1700,770)
         self.assertEqual(v["reasons"], ["overlap:detail starring column"])  # y 770 is above the shelf row
 
     def test_a_subject_over_the_detail_synopsis_or_facts_fails(self):
@@ -658,12 +658,12 @@ class HeroGeometry(unittest.TestCase):
                          ["home text column", "home shelf row", "detail text column",
                           "detail facts row", "detail starring column"])
         by = {z["name"]: z["rect"] for z in zones}
-        self.assertEqual(by["home text column"], [96, 260, 756, 776])
-        self.assertEqual(by["home shelf row"], [0, 777, 1920, 1080])
-        self.assertEqual(by["detail text column"], [96, 298, 1039, 1080])
-        self.assertEqual(by["detail facts row"], [1039, 702, 1264, 830])
+        self.assertEqual(by["home text column"], [96, 206, 1039, 776])
+        self.assertEqual(by["home shelf row"], [0, 757, 1920, 1080])
+        self.assertEqual(by["detail text column"], [96, 326, 1039, 1080])
+        self.assertEqual(by["detail facts row"], [1039, 714, 1264, 842])
         self.assertEqual(by["detail starring column"], [1264, 702, 1824, 1080])
-        self.assertEqual(by["hero scrim"], [0, 162, 1536, 1080])
+        self.assertEqual(by["hero scrim"], [0, 162, 1920, 1080])
         used = {n for z in zones for n in z["uses"]}
         self.assertEqual(used, set(tool.HERO_PINS) - {n for n, p in tool.HERO_PINS.items() if p[1] == "text"})
 
@@ -688,7 +688,7 @@ class HeroGeometry(unittest.TestCase):
                     shutil.copy(ROOT / pin[0], dst)
             tool.check_hero_pins(root=root)  # the copy is faithful
             f = root / "rust-modules" / "ui" / "src" / "landing_hero.rs"
-            f.write_text(f.read_text().replace("pub const COL_W: f32 = 660.0;", "pub const COL_W: f32 = 700.0;"))
+            f.write_text(f.read_text().replace("pub const COL_W: f32 = theme::hero::TEXT_W;", "pub const COL_W: f32 = 700.0;"))
             with self.assertRaises(AssertionError) as e:
                 tool.check_hero_pins(root=root)
             self.assertIn("COL_W", str(e.exception))

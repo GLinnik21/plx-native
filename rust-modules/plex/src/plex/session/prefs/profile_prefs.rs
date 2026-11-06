@@ -34,11 +34,11 @@
 //! * **No `extensions`**: a field a later build adds is not carried by this one.
 use super::{
     Fallback, Parse, ProfileKeyed, ProfileRecords, Preferences, Row, Scope, Setting, SettingsWrite,
-    DolbyVisionModePref, AudioConversionPref, InstantDpadSeekingPref, AudioEnhancementsPref, DeckPressPref, DirectPlayModePref, HdrOverlayBrightnessPref, NextEpisodeModePref, QualityPref, SkipIntervalPref,
+    IntroSkipPref, CreditsSkipPref, DolbyVisionModePref, AudioConversionPref, InstantDpadSeekingPref, AudioEnhancementsPref, DeckPressPref, DirectPlayModePref, HdrOverlayBrightnessPref, NextEpisodeModePref, QualityPref, SkipIntervalPref,
     HudSelectionPref, SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref, TrailerAutoplayPref, UnderPostersPref,
 };
 use crate::plex::session::{
-    DolbyVisionMode, AudioConversion, InstantDpadSeeking, DeckPress, DirectPlayMode, HdrOverlayBrightness, NextEpisodeMode, PlaybackQuality, Seat, Session, SkipInterval, SubtitlePosition,
+    MarkerSkipMode, DolbyVisionMode, AudioConversion, InstantDpadSeeking, DeckPress, DirectPlayMode, HdrOverlayBrightness, NextEpisodeMode, PlaybackQuality, Seat, Session, SkipInterval, SubtitlePosition,
     SubtitleSize, SubtitleTone, UnderPosters,
 };
 use crate::plex::AudioEnhancements;
@@ -70,6 +70,10 @@ pub struct ProfilePrefs {
     pub instant_dpad_seeking: Option<InstantDpadSeeking>,
     #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "super::de_soft_opt")]
     pub dolby_vision_mode: Option<DolbyVisionMode>,
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "super::de_soft_opt")]
+    pub intro_skip: Option<MarkerSkipMode>,
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "super::de_soft_opt")]
+    pub credits_skip: Option<MarkerSkipMode>,
     #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "super::de_soft_opt")]
     pub deck_press: Option<DeckPress>,
     #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "super::de_soft_opt")]
@@ -166,6 +170,8 @@ profile_setting!(
     SkipIntervalPref = skip_interval,
     InstantDpadSeekingPref = instant_dpad_seeking,
     DolbyVisionModePref = dolby_vision_mode,
+    IntroSkipPref = intro_skip,
+    CreditsSkipPref = credits_skip,
     DeckPressPref = deck_press,
     UnderPostersPref = under_posters,
     AudioEnhancementsPref = audio_enhancements,

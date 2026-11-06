@@ -19,6 +19,8 @@ import subprocess
 import tarfile
 import tempfile
 
+from hud_package import native_json
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -56,6 +58,95 @@ def tracked():
     return subprocess.check_output(["git", "ls-files", "-z"], cwd=ROOT).decode().split("\0")[:-1]
 
 
+
+def prepare_authoring(stage, inputs, binary, env, info):
+    """Bind both native schemas and a document-aware source/archive fixture corpus."""
+    if (info.get("protocol") != 1 or not info.get("supported_formats")
+        or set(info.get("schemas", {})) != {"manifest", "hud"} or not info.get("limits")):
+        raise ValueError("native SDK must report bundle formats, schemas and profile limits")
+    for kind, versions in info["schemas"].items():
+        for version, identity in versions.items():
+            schema = native_json(binary, "--hud-schema", kind, "--version", version, env=env)
+            mirror = ROOT / "site/hud/schema" / kind / (version + ".json")
+            if schema.get("$id") != identity or json.loads(mirror.read_text()) != schema:
+                raise ValueError("native " + kind + " schema differs from its committed mirror/identity")
+            output = stage / "schema" / kind / (version + ".json")
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(json.dumps(schema, ensure_ascii=False, indent=2) + "\n")
+    prefixes = {
+        "rust-modules/appkit/src/hud_format/fixtures/": "valid",
+        "site/hud/examples/invalid/": "invalid",
+    }
+    selected = {}
+    for name in inputs:
+        for prefix, category in prefixes.items():
+            if not name.startswith(prefix):
+                continue
+            relative = Path(name.removeprefix(prefix))
+            if len(relative.parts) < 2 or relative.parts[0].startswith("."):
+                continue
+            key = category, relative.parts[0]
+            selected.setdefault(key, []).append((name, relative))
+    cases = []
+    for (category, name), files in sorted(selected.items()):
+        if not any(relative.name == "manifest.json" and len(relative.parts) == 2 for _, relative in files):
+            continue
+        destination = stage / "corpus" / category
+        for original, relative in files:
+            target = destination / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / original, target)
+        source = destination / name
+        metadata = json.loads((source / "manifest.json").read_text())
+        entry = metadata.get("hud", {}).get("entry", "hud.json")
+        # Corpus members are trusted, committed app fixtures; keep the index relative and portable.
+        if Path(entry).is_absolute() or ".." in Path(entry).parts:
+            raise ValueError("invalid app corpus document path")
+        relative_source = category + "/" + name
+        documents = [{"kind": "manifest", "version": "1.0", "file": "manifest.json",
+                      "path": relative_source + "/manifest.json"},
+                     {"kind": "hud", "version": "1.0", "file": entry,
+                      "path": relative_source + "/" + entry}]
+        cases.append({"input": relative_source, "documents": documents, "invalid": category == "invalid"})
+    valid = [case for case in cases if not case["invalid"]]
+    if not valid or not any(case["invalid"] for case in cases):
+        raise ValueError("app corpus must include valid sources and invalid document fixtures")
+    source = stage / "corpus" / next((case["input"] for case in valid if case["input"].endswith("/minimal")), valid[0]["input"])
+    canonical = stage / "corpus" / "canonical.plxhud"
+    report = native_json(binary, "--hud-pack", source, "--out", canonical, "--format", "json", env=env)
+    content = canonical.read_bytes()
+    if (report.get("protocol") != 1 or report.get("findings") or report.get("bytes") != len(content)
+        or report.get("package_sha256") != hashlib.sha256(content).hexdigest()):
+        raise ValueError("corpus packer did not identify its exact canonical archive")
+    cases.append({"input": "canonical.plxhud", "documents": [], "invalid": False})
+    # The valid archive uses the same JSON documents as its canonical source. This also lets stock
+    # schema agreement distinguish malformed containers (which intentionally have no documents).
+    cases[-1]["documents"] = next(case["documents"] for case in valid if stage / "corpus" / case["input"] == source)
+    malformed = {"trailing": content + b"x", "truncated": content[:-1]}
+    if len(content) > 30:
+        import struct
+        changed = bytearray(content)
+        length = struct.unpack_from("<H", content, 26)[0]
+        changed[30 + length] ^= 1
+        malformed["crc"] = bytes(changed)
+        changed = bytearray(content)
+        struct.pack_into("<H", changed, len(changed)-12, 65535)
+        malformed["entry-count"] = bytes(changed)
+    for name, content in malformed.items():
+        relative = "archives/" + name + ".plxhud"
+        target = stage / "corpus" / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+        cases.append({"input": relative, "documents": [], "invalid": True})
+    (stage / "corpus/manifest.json").write_text(json.dumps({"protocol": 1, "cases": cases}, indent=2) + "\n")
+
+
+def pin_contract(manifest):
+    """Carry the native SDK contract unchanged into the external artifact pin."""
+    return {key: manifest[key] for key in ("protocol", "app_version", "source_sha",
+            "supported_formats", "schemas", "limits", "development")}
+
+
 def pack(binary: Path, destination: Path):
     if subprocess.check_output(["git", "diff", "HEAD", "--name-only"], cwd=ROOT):
         raise ValueError("commit the app tree before producing a pinned simulator")
@@ -78,18 +169,10 @@ def pack(binary: Path, destination: Path):
         inputs = tracked()
         for name in inputs:
             if (name in {"LICENSE", "LICENSING.md", "THIRD-PARTY-NOTICES.md", "docs/screenshots/CREDITS.md", "tools/screenshots.py", "tools/demo_library.py",
-                         "tools/hud_preview.py", "tests/mock_pms.py", "tests/link_conditioner.py"}
+                         "tools/hud_preview.py", "tools/hud_package.py", "tests/mock_pms.py", "tests/link_conditioner.py"}
                 or name.startswith(("tests/demo_library/", "licenses/"))
                 or name.startswith("pkg/") and (name.endswith(".ttf") or name in {"pkg/OFL.txt", "pkg/le-roots.pem", "pkg/fonts/subs/manifest.json"})):
                 copy(ROOT / name, stage / name)
-            prefix = "rust-modules/appkit/src/hud_format/fixtures/"
-            if name.startswith(prefix) and (name.endswith(".plxhud.json") or name.endswith(".json") and "/invalid/" in name):
-                copy(ROOT / name, stage / "corpus" / name.removeprefix(prefix))
-        for name in inputs:
-            prefix = "site/hud/examples/invalid/"
-            if name.startswith(prefix) and name.endswith(".json"):
-                copy(ROOT / name, stage / "corpus/invalid" / name.removeprefix(prefix))
-        copy(ROOT / "site/hud/schema/1.0.json", stage / "schema/1.0.json")
         ffmpeg = list((ROOT / "vendor/ffmpeg-prefix-host/lib").glob("lib*-plx.so.[0-9]*"))
         ffmpeg = {p.name: p for p in ffmpeg if re.fullmatch(r"lib.+-plx\.so\.\d+", p.name)}
         if len(ffmpeg) < 4:
@@ -130,6 +213,7 @@ def pack(binary: Path, destination: Path):
             relative = "$ORIGIN/../lib" if path.parent.name in {"bin", "pkg"} else "$ORIGIN"
             subprocess.run(["patchelf", "--set-rpath", relative, str(path)], check=True)
         env = {k: v for k, v in os.environ.items() if not k.startswith("PLXNATIVE_")}
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
         info = json.loads(subprocess.check_output([str(wrapper), "--hud-info"], env=env, text=True))
         if not info["source_sha"] or not source.startswith(info["source_sha"]):
             raise ValueError("binary does not report the source being packaged")
@@ -137,11 +221,13 @@ def pack(binary: Path, destination: Path):
         # relocated tree can load its exports instead of trusting ldd's view of the executable.
         subprocess.run(["python3", "-c", "import ctypes,sys; lib=ctypes.CDLL(sys.argv[1]); assert lib.plx_ass_abi_version() == 4; assert lib.plx_ass_create; assert lib.plx_ass_text_measure", str(stage / "pkg" / native_text.name)],
                        env={**env,"LD_LIBRARY_PATH":str(stage / "lib")},check=True)
+        prepare_authoring(stage, inputs, wrapper, env, info)
         metrics = subprocess.check_output([str(wrapper), "--hud-text-metrics"], env=env)
         (stage / "text-metrics.json").write_bytes(metrics)
         version = info["app_version"]
         manifest = {"protocol": 1, "app_version": version.removesuffix("-dev"), "reported_version": version,
-                    "development": version.endswith("-dev"), "source_sha": source, "formats": info["formats"],
+                    "development": version.endswith("-dev"), "source_sha": source, "supported_formats": info["supported_formats"],
+                    "schemas": info["schemas"], "limits": info["limits"],
                     "languages": info["languages"], "font_hashes": json.loads(metrics)["font_hashes"],
                     "platform": "linux-x86_64-ubuntu24.04", "files": {}}
         manifest["files"] = {str(p.relative_to(stage)): sha(p) for p in sorted(stage.rglob("*")) if p.is_file()}
@@ -156,7 +242,7 @@ def pack(binary: Path, destination: Path):
                     member.uid = member.gid = 0; member.uname = member.gname = ""; member.mtime = epoch
                     with path.open("rb") as content:
                         archive.addfile(member, content)
-        pin = {k: manifest[k] for k in ("app_version", "source_sha", "formats", "development")}
+        pin = pin_contract(manifest)
         pin.update(sha256=sha(destination), bytes=destination.stat().st_size, manifest_sha256=sha(stage / "bundle.json"))
         destination.with_suffix(".pin.json").write_text(json.dumps(pin, sort_keys=True, indent=2) + "\n")
         destination.with_suffix(".text-metrics.json").write_bytes(metrics)

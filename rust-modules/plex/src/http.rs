@@ -829,17 +829,7 @@ fn tls(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn cross(deadline: std::time::Instant) {
-        let left = deadline.saturating_duration_since(std::time::Instant::now());
-        if !left.is_zero() {
-            std::thread::sleep(left + std::time::Duration::from_millis(10));
-        }
-        assert!(
-            std::time::Instant::now() >= deadline,
-            "the fixture did not cross its deadline"
-        );
-    }
+    use plx_base::testnet::{self, CLIENT_WAIT, LOOPBACK_DEADLINE};
 
     /// What a frame-thread PMS request panics with (host tests), run inside a `FrameScope`.
     fn refused_message(call: impl FnOnce() + std::panic::UnwindSafe) -> String {
@@ -899,7 +889,10 @@ mod tests {
         let stop = std::sync::atomic::AtomicBool::new(false);
         std::thread::scope(|sc| {
             sc.spawn(|| {
-                while !stop.load(std::sync::atomic::Ordering::Acquire) {
+                // Bounded: an assertion that fails before `stop` is set must not leave this scope
+                // joining a poller that never ends.
+                let until = std::time::Instant::now() + CLIENT_WAIT;
+                while !stop.load(std::sync::atomic::Ordering::Acquire) && std::time::Instant::now() < until {
                     match srv.accept() {
                         Ok(_) => {
                             accepts.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
@@ -945,7 +938,10 @@ mod tests {
         let stop = std::sync::atomic::AtomicBool::new(false);
         std::thread::scope(|sc| {
             sc.spawn(|| {
-                while !stop.load(std::sync::atomic::Ordering::Acquire) {
+                // Bounded: an assertion that fails before `stop` is set must not leave this scope
+                // joining a poller that never ends.
+                let until = std::time::Instant::now() + CLIENT_WAIT;
+                while !stop.load(std::sync::atomic::Ordering::Acquire) && std::time::Instant::now() < until {
                     match srv.accept() {
                         Ok(_) => {
                             accepts.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
@@ -1045,13 +1041,11 @@ mod tests {
         use std::io::{Read, Write};
         let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = srv.local_addr().expect("address").port();
-        let h = std::thread::spawn(move || {
-            if let Ok((mut s, _)) = srv.accept() {
-                // Drain the request so the client's send() completes; it arrives in one write.
-                let mut req = [0u8; 2048];
-                let _ = s.read(&mut req);
-                let _ = s.write_all(resp);
-            }
+        let h = testnet::serve_once(srv, CLIENT_WAIT, move |mut s| {
+            // Drain the request so the client's send() completes; it arrives in one write.
+            let mut req = [0u8; 2048];
+            let _ = s.read(&mut req);
+            let _ = s.write_all(resp);
         });
         (port, h)
     }
@@ -1066,15 +1060,13 @@ mod tests {
         let capture = |headers: &'static [&'static str]| -> String {
             let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
             let port = srv.local_addr().expect("address").port();
-            let h = std::thread::spawn(move || {
+            let h = testnet::serve_once(srv, CLIENT_WAIT, move |mut s| {
                 let mut req = Vec::new();
-                if let Ok((mut s, _)) = srv.accept() {
-                    let mut buf = [0u8; 2048];
-                    if let Ok(n) = s.read(&mut buf) {
-                        req.extend_from_slice(&buf[..n]);
-                    }
-                    let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+                let mut buf = [0u8; 2048];
+                if let Ok(n) = s.read(&mut buf) {
+                    req.extend_from_slice(&buf[..n]);
                 }
+                let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
                 String::from_utf8_lossy(&req).into_owned()
             });
             let got = request(&Origin::http("127.0.0.1", port as i32), "/x", Method::Get, headers, None);
@@ -1232,8 +1224,7 @@ mod tests {
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().expect("address").port();
-        let server = std::thread::spawn(move || {
-            let (mut socket, _) = listener.accept().expect("accept");
+        let server = testnet::serve_once(listener, CLIENT_WAIT, move |mut socket| {
             let mut request = [0u8; 1024];
             let n = socket.read(&mut request).expect("request");
             assert!(
@@ -1259,8 +1250,7 @@ mod tests {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().unwrap().port();
-        let server = std::thread::spawn(move || {
-            let (mut socket, _) = listener.accept().expect("accept");
+        let server = testnet::serve_once(listener, CLIENT_WAIT, move |mut socket| {
             let mut request = [0u8; 2048];
             let _ = socket.read(&mut request).expect("request");
             socket
@@ -1270,11 +1260,11 @@ mod tests {
                 .expect("response");
         });
         let origin = Origin::http("127.0.0.1", port as i32);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+        let deadline = std::time::Instant::now() + LOOPBACK_DEADLINE;
 
         let outcome = request_until_outcome(&origin, "/decision", Method::Get, &[], deadline, None);
         server.join().unwrap();
-        cross(deadline);
+        testnet::cross(deadline);
 
         assert!(matches!(
             outcome,
@@ -1288,8 +1278,7 @@ mod tests {
         use std::os::fd::AsRawFd;
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().unwrap().port();
-        let server = std::thread::spawn(move || {
-            let (mut socket, _) = listener.accept().expect("accept");
+        let server = testnet::serve_once(listener, CLIENT_WAIT, move |mut socket| {
             let mut request = [0u8; 2048];
             let _ = socket.read(&mut request).expect("request");
             let reset = libc::linger {
@@ -1308,11 +1297,11 @@ mod tests {
             assert_eq!(rc, 0, "arm reset-on-close");
         });
         let origin = Origin::http("127.0.0.1", port as i32);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+        let deadline = std::time::Instant::now() + LOOPBACK_DEADLINE;
 
         let outcome = request_until_outcome(&origin, "/decision", Method::Get, &[], deadline, None);
         server.join().unwrap();
-        cross(deadline);
+        testnet::cross(deadline);
 
         assert!(matches!(outcome, RequestOutcome::Transport(_)));
     }
@@ -1322,18 +1311,38 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().unwrap().port();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
-        let server = std::thread::spawn(move || {
-            let (_silent_peer, _) = listener.accept().expect("accept");
+        let server = testnet::serve_once(listener, CLIENT_WAIT, move |_silent_peer| {
             let _ = release_rx.recv();
         });
         let origin = Origin::http("127.0.0.1", port as i32);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(80);
+        let deadline = std::time::Instant::now() + LOOPBACK_DEADLINE;
 
         let outcome = request_until_outcome(&origin, "/decision", Method::Get, &[], deadline, None);
         let _ = release_tx.send(());
         server.join().unwrap();
 
         assert!(matches!(outcome, RequestOutcome::Deadline));
+    }
+
+    /// A caller deadline that has already passed is a `Deadline` WITHOUT a dial: `request_with`
+    /// checks the clock before it opens a socket. A test server blocked in `accept()` for such a
+    /// client waits for ever, which hung the whole `make check` twice (a loaded host carried a
+    /// 250 ms deadline past before the client's `connect`), so every server fixture in this crate
+    /// accepts through `plx_base::testnet`'s bounded calls (and the two pin tests' pollers stop at
+    /// `CLIENT_WAIT`); this pins both halves.
+    #[test]
+    fn an_expired_caller_deadline_is_a_deadline_without_dialing_and_a_bounded_accept_says_so() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let origin = Origin::http("127.0.0.1", port as i32);
+
+        let outcome = request_until_outcome(&origin, "/decision", Method::Get, &[], std::time::Instant::now(), None);
+
+        assert!(matches!(outcome, RequestOutcome::Deadline), "{outcome:?}");
+        let err = testnet::accept_within(&listener, std::time::Duration::from_millis(50))
+            .expect_err("an expired deadline never dials");
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut, "{err}");
     }
 
     /// One beat of a scripted plaintext stream peer.
@@ -1347,8 +1356,7 @@ mod tests {
     /// the request head it saw.
     fn serve_stream(listener: std::net::TcpListener, script: Vec<Beat>) -> std::thread::JoinHandle<String> {
         use std::io::{Read, Write};
-        std::thread::spawn(move || {
-            let (mut sock, _) = plx_base::testnet::accept(&listener).expect("accept");
+        testnet::serve_once(listener, CLIENT_WAIT, move |mut sock| {
             let _ = sock.set_read_timeout(Some(std::time::Duration::from_secs(10)));
             let mut head = Vec::new();
             let mut b = [0u8; 1024];
@@ -1493,8 +1501,7 @@ mod tests {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().unwrap().port();
-        let server = std::thread::spawn(move || {
-            let (mut sock, _) = plx_base::testnet::accept(&listener).expect("accept");
+        let server = testnet::serve_once(listener, CLIENT_WAIT, move |mut sock| {
             let mut b = [0u8; 1024];
             let _ = sock.read(&mut b);
             let _ = sock.write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 4\r\nConnection: close\r\n\r\nnope");

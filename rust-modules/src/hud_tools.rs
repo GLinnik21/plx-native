@@ -35,8 +35,15 @@ pub(crate) fn font_hashes() -> Result<BTreeMap<String, String>, String> {
 
 #[cfg(any(test, feature = "hostsim"))]
 pub(crate) fn info() -> Value {
+    use plx_appkit::hud_format::{bundle, schema_emit, svg_subset};
     json!({"protocol":1,"app_version":env!("PLX_VERSION"),"source_sha":env!("PLX_BUILD_SHA"),
-        "formats":[format!("{}.{}",schema::CURRENT.0,schema::CURRENT.1)],
+        "supported_formats":[{"package":format!("{}.{}",bundle::CURRENT.0,bundle::CURRENT.1),"hud":format!("{}.{}",schema::CURRENT.0,schema::CURRENT.1)}],
+        "schemas":{"manifest":{"1.0":schema_emit::manifest_schema_id(bundle::CURRENT)},"hud":{"1.0":schema_emit::schema_id(schema::CURRENT)}},
+        "limits":{"package":{"1.0":{"artifact_bytes":bundle::MAX_ARTIFACT_BYTES,"member_bytes":bundle::MAX_MEMBER_BYTES,
+            "manifest_bytes":bundle::MAX_MANIFEST_BYTES,"central_directory_bytes":bundle::MAX_DIRECTORY_BYTES,
+            "entries":bundle::MAX_ENTRIES,"path_bytes":bundle::MAX_PATH_BYTES,"path_depth":bundle::MAX_PATH_DEPTH}},
+            "hud":{"1.0":{"json_bytes":plx_appkit::hud_format::parse::MAX_HUD_JSON_BYTES,"json_decode_bytes":bundle::JSON_DECODE_BYTES,
+                "svg_bytes":svg_subset::MAX_ASSET_BYTES,"svg_paths":svg_subset::MAX_PATHS_PER_ASSET}}},
         "languages":LintLang::shipped().iter().map(|l| l.tag).collect::<Vec<_>>(),
         "rungs":schema::SIZE_RUNGS.iter().map(|(name,size)| (*name,*size)).collect::<BTreeMap<_,_>>()})
 }
@@ -44,23 +51,18 @@ pub(crate) fn info() -> Value {
 /// Preview automation reads the compiler's actual controls instead of reproducing HUD layout.
 #[cfg(any(test, feature = "hostsim"))]
 pub(crate) fn inspect(
-    text: &str,
+    package: &plx_appkit::hud_format::bundle::VerifiedPackage,
     measure: &dyn Measure,
     langs: &[LintLang],
-) -> Result<Value, String> {
+) -> Value {
     use plx_appkit::hud_format::{
         compile::{compile, CompileCtx},
         lint::{slot_name, state_name},
-        parse,
     };
-    let parsed = parse::parse(text.as_bytes());
-    let package = parsed
-        .package
-        .ok_or("cannot inspect a package that does not parse")?;
     let mut languages = Vec::new();
     for lang in langs {
         let compiled = compile(
-            &package,
+            package.hud(),
             measure,
             CompileCtx {
                 labels: lang.labels.clone(),
@@ -116,7 +118,8 @@ pub(crate) fn inspect(
         }).collect();
         languages.push(json!({"lang":lang.tag,"states":states}));
     }
-    Ok(json!({"protocol":1,"languages":languages}))
+    json!({"protocol":1,"package_sha256":plx_appkit::hud_format::report::digest_hex(package.sha256()),
+        "manifest":package.manifest().json(),"findings":[],"languages":languages})
 }
 
 /// Identical corpus and protocol on the simulator and TV; the supplied measurer is their actual one.

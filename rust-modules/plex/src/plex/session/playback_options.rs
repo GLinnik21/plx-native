@@ -130,3 +130,50 @@ mod tests {
         }
     }
 }
+
+/// How a detected intro or credits segment is offered. Each kind has its own profile setting.
+#[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MarkerSkipMode {
+    Disabled,
+    #[default]
+    Manual,
+    Automatic,
+}
+impl MarkerSkipMode {
+    pub const LADDER: [Self; 3] = [Self::Disabled, Self::Manual, Self::Automatic];
+    pub fn from_index(i: u8) -> Self { Self::LADDER.get(i as usize).copied().unwrap_or_default() }
+    pub fn index(self) -> u8 { Self::LADDER.iter().position(|&m| m == self).unwrap_or(1) as u8 }
+    pub fn is_default(&self) -> bool { *self == Self::Manual }
+}
+
+#[cfg(test)]
+mod marker_skip_tests {
+    use super::MarkerSkipMode::*;
+    use crate::plex::session::{effective, own_prefs, put_own, CreditsSkipPref, IntroSkipPref, Preferences};
+
+    #[test]
+    fn marker_skip_defaults_soft_parse_and_profile_isolation() {
+        for value in [serde_json::json!({}), serde_json::json!({"intro_skip":null,"credits_skip":"future"})] {
+            let prefs: Preferences = serde_json::from_value(value).unwrap();
+            assert_eq!((prefs.intro_skip, prefs.credits_skip), (Manual, Manual));
+            let encoded = serde_json::to_value(prefs).unwrap();
+            assert!(encoded.get("intro_skip").is_none() && encoded.get("credits_skip").is_none());
+        }
+        let prefs = Preferences::default();
+        let mut records = Vec::new();
+        assert!(put_own::<IntroSkipPref>(&mut records, "alice", "account", Automatic));
+        assert!(put_own::<CreditsSkipPref>(&mut records, "alice", "account", Disabled));
+        let own = own_prefs(&records, "alice", "account");
+        assert_eq!(effective::<IntroSkipPref>(&prefs, own), Automatic);
+        assert_eq!(effective::<CreditsSkipPref>(&prefs, own), Disabled);
+        for (user, account) in [("bob", "account"), ("alice", "other")] {
+            let own = own_prefs(&records, user, account);
+            assert_eq!(effective::<IntroSkipPref>(&prefs, own), Manual);
+            assert_eq!(effective::<CreditsSkipPref>(&prefs, own), Manual);
+        }
+        let round = serde_json::to_value(&records).unwrap();
+        assert_eq!(round[0]["prefs"]["intro_skip"], "automatic");
+        assert_eq!(round[0]["prefs"]["credits_skip"], "disabled");
+    }
+}

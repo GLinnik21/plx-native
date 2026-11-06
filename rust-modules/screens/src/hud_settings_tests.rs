@@ -11,7 +11,7 @@ use plx_ui::fixture::FixtureMeasure;
 fn context(focus: u32) -> Cx<'static, InnerHost> {
     static MEASURE: FixtureMeasure = FixtureMeasure;
     Cx {
-        views: plx_data::stores::browse::DirectoryView::empty_for_test(),
+        views: plx_data::stores::browse::DirectoryView::empty_for_test().into(),
         tick: Tick::default(),
         measure: &MEASURE,
         press: PressRead::default(),
@@ -36,7 +36,7 @@ fn huds(emitted: &[Stamped<InnerHost>]) -> Vec<&HudCmd> {
 }
 
 fn meta(id: &str, name: &str) -> Meta {
-    Meta { id: id.into(), name: name.into(), version: "1.0.0".into(), format: "1.0".into() }
+    Meta { id: id.into(), name: name.into(), version: "1.0.0".into(), package_format: "1.0".into(), hud_format: "1.0".into() }
 }
 
 fn builtin(selected: bool) -> Entry {
@@ -84,12 +84,13 @@ fn shown(page: &HudPage) -> Vec<(HudId, String, String, bool)> {
 fn list() -> HudList {
     HudList {
         entries: vec![builtin(false), pack("com.example.a", "Alpha", 1, true)],
-        drops: vec![drop_file("dropped.plxhud.json", 9, Ok(()))],
+        drops: vec![drop_file("dropped.plxhud", 9, Ok(()))],
         unfit: vec![],
         language: "English".into(),
         notice: None,
         offer: None,
         fetching: false,
+        ..HudList::default()
     }
 }
 
@@ -201,7 +202,7 @@ fn a_drop_file_installs_only_after_the_prompt_is_confirmed() {
 #[test]
 fn a_file_that_cannot_be_installed_is_listed_and_inert() {
     let mut l = list();
-    l.drops = vec![drop_file("imposter.plxhud.json", 3, Err(Refusal::BuiltinId))];
+    l.drops = vec![drop_file("imposter.plxhud", 3, Err(Refusal::BuiltinId))];
     let (mut page, _tx) = page_with(l);
     let key = key_of(&page, &HudId::Drop(Sha::of(&[3])));
     let emitted = drive(&mut page, ScreenEvent::Activate(key), key);
@@ -241,10 +242,10 @@ fn exactly_the_selected_package_is_checked() {
 #[test]
 fn a_too_large_drop_is_listed_with_its_reason_and_cannot_be_installed() {
     let mut l = list();
-    l.drops = vec![too_large_drop("huge.plxhud.json")];
+    l.drops = vec![too_large_drop("huge.plxhud")];
     let (mut page, _tx) = page_with(l);
     let rows = shown(&page);
-    let huge = rows.iter().find(|r| r.1 == "huge.plxhud.json").expect("the file is on the page");
+    let huge = rows.iter().find(|r| r.1 == "huge.plxhud").expect("the file is on the page");
     assert_eq!(huge.2, plx_platform::i18n::msg::settings_hud_too_large());
     let key = page.form.key_at(page.form.index_of(&huge.0).unwrap()).unwrap().0;
     let emitted = drive(&mut page, ScreenEvent::Activate(key), key);
@@ -277,12 +278,12 @@ fn the_notice_replaces_the_line_under_the_title_only_while_there_is_one() {
 
 /// Every refusal the store can give a file, for the tests that must cover each: the match has no wildcard, so a
 /// refusal added to the store does not compile here until it is listed (and so is measured).
-fn every_refusal() -> [Refusal; 9] {
+fn every_refusal() -> [Refusal; 10] {
     fn listed(refusal: Refusal) -> bool {
         match refusal {
             Refusal::BuiltinId
             | Refusal::Invalid
-            | Refusal::Unloadable(Unloadable::NewerFormat | Unloadable::OlderFormat | Unloadable::AppRange)
+            | Refusal::Unloadable(Unloadable::NewerFormat | Unloadable::OlderFormat | Unloadable::AppRange | Unloadable::Revoked)
             | Refusal::AlreadyInstalled
             | Refusal::NotNewer
             | Refusal::TooLarge
@@ -291,6 +292,7 @@ fn every_refusal() -> [Refusal; 9] {
     }
     let all = [
         Refusal::BuiltinId,
+        Refusal::Unloadable(Unloadable::Revoked),
         Refusal::Invalid,
         Refusal::Unloadable(Unloadable::NewerFormat),
         Refusal::Unloadable(Unloadable::OlderFormat),
@@ -322,23 +324,23 @@ fn every_row_fits_its_column_in_every_language() {
         every.entries.extend([volatile, unfit, newer]);
         every.unfit = vec![Sha::of(&[3])];
         every.language = SHIPPED.iter().map(|l| plx_platform::i18n::Preference::SHIPPED.into_iter().find(|p| p.tag() == l.tag()).map_or("", |p| p.native_name())).max_by_key(|n| n.chars().count()).unwrap_or("").to_owned();
-        every.drops = every_refusal().iter().enumerate().map(|(i, r)| drop_file(&format!("f{i}.plxhud.json"), 20 + i as u8, Err(*r))).collect();
-        every.drops.push(drop_file("ok.plxhud.json", 40, Ok(())));
+        every.drops = every_refusal().iter().enumerate().map(|(i, r)| drop_file(&format!("f{i}.plxhud"), 20 + i as u8, Err(*r))).collect();
+        every.drops.push(drop_file("ok.plxhud", 40, Ok(())));
         let mut form: FormTable<HudId, HudAction, SettingsPage> = FormTable::new(BAND);
         form.table.compact = false;
-        form.set(hud_form(&every, None), None);
+        form.set(hud_form(&every, None, None), None);
         for e in form.table.app_fit_failures(RouteLayout::screen().sectioned_table().w, language.tag()) {
             out.push(e);
         }
         // The address row in each state it has: waiting, with a long address typed (the author's text, and the
         // detail is cut to fit the column), and downloading.
-        for (fetching, draft) in [(false, None), (false, Some("https://example.com/a/very/long/path/hud.plxhud.json")), (true, None)] {
+        for (fetching, draft) in [(false, None), (false, Some("https://example.com/a/very/long/path/hud.plxhud")), (true, None)] {
             let mut busy = list();
             busy.fetching = fetching;
             let mut form: FormTable<HudId, HudAction, SettingsPage> = FormTable::new(BAND);
             form.table.compact = false;
             let draft = draft.map(|text| TextBuffer::new(text.to_owned(), text.len()));
-            form.set(hud_form(&busy, draft.as_ref()), None);
+            form.set(hud_form(&busy, draft.as_ref(), None), None);
             out.extend(form.table.app_fit_failures(RouteLayout::screen().sectioned_table().w, language.tag()));
         }
     }
@@ -438,7 +440,7 @@ fn the_address_row_types_into_its_detail_line_and_ok_sends_the_parsed_address() 
     let emitted = drive(&mut page, press(Key::Ok), key);
     assert_eq!(keyboards(&emitted), [false], "OK on the keyboard lowers it");
     match huds(&emitted).as_slice() {
-        [HudCmd::Fetch(address)] => assert_eq!(address.url(), "https://github.com/owner/repo/releases/download/v1.2/hud.plxhud.json"),
+        [HudCmd::Fetch(address)] => assert_eq!(address.url(), "https://github.com/owner/repo/releases/download/v1.2/hud.plxhud"),
         other => panic!("one fetch, got {}", other.len()),
     }
     assert!(!page.state.editing);
@@ -492,7 +494,7 @@ fn offered() -> OfferView {
         sha: Sha::of(&[7]),
         meta: meta("com.example.fetched", "Fetched"),
         source: Source::Address,
-        from: Some(address::parse("http://192.168.1.20:8080/hud.plxhud.json").unwrap()),
+        from: Some(address::parse("http://192.168.1.20:8080/hud.plxhud").unwrap()),
     }
 }
 
@@ -555,5 +557,179 @@ fn the_address_caret_follows_an_interior_correction() {
     drive(&mut page, typed("p"), key);
     assert_eq!(address_row(&page).1, "gh:owner/rep|o");
     let emitted = drive(&mut page, press(Key::Ok), key);
-    assert!(matches!(huds(&emitted).as_slice(), [HudCmd::Fetch(address)] if address.url() == "https://github.com/owner/repo/releases/latest/download/hud.plxhud.json"));
+    assert!(matches!(huds(&emitted).as_slice(), [HudCmd::Fetch(address)] if address.url() == "https://github.com/owner/repo/releases/latest/download/hud.plxhud"));
+}
+
+fn gallery_list() -> HudList {
+    let index=plx_data::hudpacks::catalog::parse(include_bytes!("../../../tests/fixtures/hud-gallery/index.json")).unwrap();
+    HudList {catalog:plx_data::hudpacks::catalog::Snapshot {index:Some(std::sync::Arc::new(index)),checked_at:Some(10),..Default::default()},
+        gallery_enabled:true,app_version:"0.10.0".into(),language_tag:"en".into(),entries:vec![builtin(true)],..HudList::default()}
+}
+
+fn gallery_page(page: SettingsPage) -> HudPage {
+    let mut out=HudPage::at(EntryId(0),page);out.list=gallery_list();out.rebuild(None);out
+}
+
+#[test]
+fn gallery_is_shared_navigation_and_hides_incompatible_or_unfit_packages() {
+    let mut root=gallery_page(SettingsPage::PlayerHud);
+    let browse=root.form.key_at(root.form.index_of(&HudId::Browse).unwrap()).unwrap().0;
+    let fx=drive(&mut root,ScreenEvent::Activate(browse),browse);
+    assert!(fx.iter().any(|e| matches!(e.fx,Fx::Nav(NavOp::Push(SettingsPage::HudGallery)))));
+    let mut page=gallery_page(SettingsPage::HudGallery);
+    assert_eq!(page.form.table.n_rows(),2);
+    let mut index=page.list.catalog.index.as_deref().unwrap().clone();
+    index.entries[0].package_format="2.0".into();
+    index.entries[1].unfit=vec![plx_data::hudpacks::catalog::FitChange {from:"0.9.0".into(),langs:vec!["en".into()]}];
+    page.list.catalog.index=Some(std::sync::Arc::new(index));page.rebuild(None);
+    assert_eq!(page.form.table.n_rows(),0);
+    assert_eq!(page.copy,plx_platform::i18n::msg::settings_hud_empty());
+}
+
+#[test]
+fn gallery_install_and_use_are_separate_and_about_owns_package_metadata() {
+    let list=gallery_list();let package=&list.catalog.index.as_ref().unwrap().entries[0];let sha=package.sha();
+    let mut page=gallery_page(SettingsPage::HudDetail(sha));
+    drive(&mut page,ScreenEvent::Enter(Enter::Fresh {focus:FocusTarget::FirstInGroup(GroupId(0))}),0);
+    let fx=drive(&mut page,ScreenEvent::Activate(1),1);
+    assert!(matches!(huds(&fx).as_slice(),[HudCmd::FetchRegistry(s)] if *s == sha));
+    assert!(page.form.index_of(&HudId::Use).is_none());
+    let mut entry=pack(&package.id,&package.name,1,false);entry.sha=Some(sha);
+    page.list.entries.push(entry);page.list.notice=Some(Notice::Installed {id:package.id.clone(),version:package.version.clone(),sha,until_restart:false});
+    page.rebuild(Some(HudId::Use));
+    assert_eq!(page.copy, plx_platform::i18n::msg::settings_hud_copy(), "Use changes the choice; only installation preserves it");
+    let fx=drive(&mut page,ScreenEvent::Activate(1),1);
+    assert!(matches!(huds(&fx).as_slice(),[HudCmd::Select(id)] if *id == package.id));
+    assert!(fx.iter().any(|e|matches!(e.fx,Fx::Nav(NavOp::PopToArg(SettingsPage::PlayerHud)))));
+    let about=gallery_page(SettingsPage::HudAbout(sha));
+    assert!(about.form.index_of(&HudId::Fact(0)).is_some());
+    assert!(page.form.index_of(&HudId::Fact(0)).is_none(),"metadata is secondary");
+}
+
+#[test]
+fn preview_focus_and_back_never_choose_a_different_scene() {
+    let list=gallery_list();let package=list.catalog.index.as_ref().unwrap().entries.iter().find(|p|p.name=="Reference").unwrap();
+    let mut page=gallery_page(SettingsPage::HudPreview(package.sha()));
+    drive(&mut page,tick(),1);assert_eq!(page.scenes().len(),3);
+    drive(&mut page,ScreenEvent::Activate(2),2);assert_eq!(page.state.scene,1);
+    let controls=page.controls.as_ref().unwrap();
+    assert!(matches!(controls.neighbour(FocusKey{entry:EntryId(0),elem:0},Dir::Left),Step::Edge));
+    assert!(matches!(controls.neighbour(FocusKey{entry:EntryId(0),elem:0},Dir::Right),Step::Move(FocusKey{elem:1,..})));
+    assert_eq!(page.state.scene,1,"moving focus from Back does not select Compact");
+    let fx=drive(&mut page,ScreenEvent::Activate(0),0);
+    assert!(fx.iter().any(|e|matches!(e.fx,Fx::Nav(NavOp::Pop))));
+    assert_eq!(page.state.scene,1);
+}
+
+#[test]
+fn preview_press_commits_choose_scenes_and_activate_back() {
+    let list = gallery_list();
+    let package = list.catalog.index.as_ref().unwrap().entries.iter()
+        .find(|package| package.name == "Reference").unwrap();
+    let mut page = gallery_page(SettingsPage::HudPreview(package.sha()));
+    drive(&mut page, tick(), 0);
+
+    // Control groups and pointer stops use the shared press protocol: OK-up and
+    // pointer release deliver PressCommit rather than the direct Activate shortcut.
+    drive(&mut page, ScreenEvent::PressCommit(PressId(1)), 2);
+    assert_eq!(page.state.scene, 1, "committing Chapters & info selects its preview");
+    drive(&mut page, ScreenEvent::PressCommit(PressId(2)), 3);
+    assert_eq!(page.state.scene, 2, "committing Up Next selects its preview");
+    for current in [None, Some(FocusKey { entry: EntryId(44), elem: 2 })] {
+        let mut cx = context(2);
+        cx.focus.current = current;
+        let mut effects = Vec::new();
+        let mut present = Present::new();
+        let handled = page.step(&ScreenEvent::PressCommit(PressId(9)), &cx,
+            &mut Effects::new(&mut effects, MachineId::Instance(InstanceId(0)), &mut present));
+        assert!(matches!(handled, Handled::No));
+        assert!(effects.is_empty(), "a commit without this page's focus cannot act");
+        assert_eq!(page.state.scene, 2);
+    }
+    let effects = drive(&mut page, ScreenEvent::PressCommit(PressId(3)), 0);
+    assert!(effects.iter().any(|effect| matches!(effect.fx, Fx::Nav(NavOp::Pop))));
+    assert_eq!(page.state.scene, 2, "Back does not change the chosen scene");
+}
+
+#[test]
+fn gallery_forms_and_preview_controls_fit_every_shipped_language() {
+    let mut failures=Vec::new();
+    for language in SHIPPED {
+        let _guard=language_on_this_thread_for_test(language);
+        let list=gallery_list();let sha=list.catalog.index.as_ref().unwrap().entries[1].sha();
+        for dest in [SettingsPage::PlayerHud,SettingsPage::HudGallery,SettingsPage::HudDetail(sha),SettingsPage::HudAbout(sha)] {
+            let page=gallery_page(dest);
+            failures.extend(page.form.table.app_fit_failures(RouteLayout::screen().sectioned_table().w,language.tag()));
+        }
+        let page=gallery_page(SettingsPage::HudPreview(sha));
+        let controls=plx_ui::preview_controls::PreviewControls::new(page.scenes().iter().map(|(label,_)|(*label).into()),&ShippedMeasure);
+        for elem in 0..controls.len() as u32 {
+            let r=controls.place(elem).unwrap().rect;
+            assert!(plx_ui::consts::inside_safe(r),"{} preview control {elem}: {r:?}",language.tag());
+        }
+    }
+    plx_ui::table::assert_no_fit_failures(&failures);
+}
+
+#[test]
+fn gallery_preview_never_uses_a_plex_server_slot() {
+    let page=gallery_page(SettingsPage::HudGallery);
+    match page.view().header.preview.expect("the first catalog appearance has a preview") {
+        plx_ui::widgets::Art::Thumb {sid,..} => assert_eq!(sid,plx_plex::plex::ServerId::UNSET.raw()),
+        _ => panic!("the native preview must use the public image source"),
+    }
+}
+
+#[test]
+fn a_failed_index_refresh_does_not_disable_an_explicit_cached_package_download() {
+    let list=gallery_list();let sha=list.catalog.index.as_ref().unwrap().entries[0].sha();
+    let mut page=gallery_page(SettingsPage::HudDetail(sha));
+    page.list.catalog.refresh_failed=true;page.rebuild(None);
+    let fx=drive(&mut page,ScreenEvent::Activate(1),1);
+    assert!(matches!(huds(&fx).as_slice(),[HudCmd::FetchRegistry(s)] if *s==sha));
+    for notice in [Notice::Refused {sha,reason:Refusal::Changed},Notice::NotWritten {sha:Some(sha)}] {
+        page.list.notice=Some(notice);page.rebuild(None);
+        assert_eq!(page.copy,copy_of(&page.list,None),"the initiating detail page must explain the failure");
+    }
+    let mut fresh=gallery_page(SettingsPage::HudDetail(sha));
+    fresh.list.notice=page.list.notice.clone();fresh.rebuild(None);
+    assert_ne!(fresh.copy,page.copy,"another view does not inherit an unrelated install failure");
+}
+
+#[test]
+fn the_first_hud_listing_seats_the_current_choice_until_the_reader_moves() {
+    let (page,_)=page_with(list());
+    assert_eq!(page.form.selected_id(),Some(&HudId::Pack("com.example.a".into())));
+    let mut page=HudPage::new(EntryId(0));
+    let emitted=drive(&mut page,ScreenEvent::Enter(Enter::Fresh{focus:FocusTarget::FirstInGroup(GroupId(0))}),ADDRESS_KEY);
+    let tx=match huds(&emitted).as_slice(){[HudCmd::Open(tx)]=>tx.clone(),_=>panic!("open")};
+    drive(&mut page,ScreenEvent::FocusMoved {from:None,to:FocusKey{entry:EntryId(0),elem:ADDRESS_KEY},by:plx_machine::machine::By::Dir},ADDRESS_KEY);
+    tx.send(list()).unwrap();drive(&mut page,tick(),ADDRESS_KEY);
+    assert_eq!(page.form.selected_id(),Some(&HudId::Address),"an intentional cursor is preserved across the listing");
+}
+
+#[test]
+fn gallery_keeps_packages_visible_on_development_app_releases() {
+    let mut page = gallery_page(SettingsPage::HudGallery);
+    page.list.app_version = "0.10.0-dev".into();
+    page.rebuild(None);
+    assert_eq!(page.form.table.n_rows(), 2);
+}
+
+#[test]
+fn about_cannot_remove_an_installed_hud_while_its_update_is_pending() {
+    let list = gallery_list();
+    let package = list.catalog.index.as_ref().unwrap().entries[0].clone();
+    let mut page = gallery_page(SettingsPage::HudAbout(package.sha()));
+    page.list.entries.push(pack(&package.id, &package.name, 1, false));
+    for fetching in [true, false] {
+        // Fetching and held-offer/confirmed-write phases share the complete operation flag.
+        page.list.fetching = fetching;
+        page.list.package_busy = true;
+        page.rebuild(None);
+        let key = key_of(&page, &HudId::Remove(package.id.clone()));
+        let emitted = drive(&mut page, ScreenEvent::Activate(key), key);
+        assert!(huds(&emitted).is_empty(), "a busy store cannot accept a removal");
+        assert!(!emitted.iter().any(|e| matches!(e.fx, Fx::Nav(_))));
+    }
 }

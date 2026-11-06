@@ -509,6 +509,11 @@ pub fn pretty_date_medium(iso: &str, year: i64) -> String {
     pretty_date_with(iso, year, true)
 }
 
+/// Hero facts share the localized abbreviated-month formatter, including regional date order.
+pub fn hero_date(iso: &str, year: i64) -> String {
+    pretty_date_medium(iso, year)
+}
+
 fn pretty_date_with(iso: &str, year: i64, named_month: bool) -> String {
     let parts: Vec<&str> = iso.split('-').collect();
     if parts.len() == 3 {

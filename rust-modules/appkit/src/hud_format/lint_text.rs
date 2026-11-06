@@ -120,10 +120,10 @@ pub fn metrics(measure: &dyn Measure, langs: &[super::lint::LintLang]) -> Vec<Me
     for lang in langs {
         // Exhaustive destructuring makes a new compiler label require a corpus decision.
         let AppLabels { tab_info, tab_chapters, next_episode, next_seconds, watch_credits,
-            skip_intro, skip_credits, from_beginning, go_to_show, go_to_movie, commands } = &lang.labels;
+            skip_intro, watch_intro, skip_credits, from_beginning, go_to_show, go_to_movie, commands } = &lang.labels;
         let mut strings: Vec<(String, String)> = [
             ("label.info", tab_info), ("label.chapters", tab_chapters), ("next", next_episode),
-            ("credits", watch_credits), ("skip.intro", skip_intro), ("skip.credits", skip_credits),
+            ("credits", watch_credits), ("skip.intro", skip_intro), ("watch.intro", watch_intro), ("skip.credits", skip_credits),
             ("from_beginning", from_beginning), ("go_to_show", go_to_show), ("go_to_movie", go_to_movie),
         ].into_iter().map(|(role, text)| (role.to_owned(), text.clone())).collect();
         strings.extend(commands.iter().map(|(role, text)| (format!("command.{role}"), text.clone())));
@@ -172,9 +172,8 @@ pub(super) fn check(cx: &LangCtx<'_>, out: &mut Vec<Finding>) {
             texts: &texts,
         };
         let mut found = Vec::new();
-        scan.layout(state.state, SkipKind::Intro, &mut found);
-        if let Some(credits) = state.state.skip_alt.as_deref() {
-            scan.layout(credits, SkipKind::Credits, &mut found);
+        for (kind, layout) in state.state.skip_variants() {
+            scan.layout(layout, kind, &mut found);
         }
         out.extend(found);
     }
@@ -559,7 +558,7 @@ struct Scan<'a, 'b> {
 }
 
 impl Scan<'_, '_> {
-    /// Judge every app text of `layout` (the state, or its credits layout) and push the findings `found` does
+    /// Judge every app text of `layout` (one marker-face layout) and push the findings `found` does
     /// not hold yet.
     fn layout(&self, layout: &CompiledState, skip: SkipKind, found: &mut Vec<Finding>) {
         let obstacles = obstacles(layout, skip);
@@ -667,10 +666,11 @@ impl Scan<'_, '_> {
             measured,
             room,
         });
-        let own = if skip == SkipKind::Credits {
-            format!("{} (credits layout)", control.id)
-        } else {
-            control.id.clone()
+        let own = match skip {
+            SkipKind::Intro => control.id.clone(),
+            SkipKind::Credits => format!("{} (credits layout)", control.id),
+            SkipKind::WatchIntro => format!("{} (watch intro layout)", control.id),
+            SkipKind::WatchCredits => format!("{} (watch credits layout)", control.id),
         };
         ctx.rects.push(named(&own, control.rect));
         ctx.rects.push(named(
@@ -832,10 +832,11 @@ impl Scan<'_, '_> {
             measured,
             room: tightest,
         });
-        let own = if skip == SkipKind::Credits {
-            "text (credits layout)"
-        } else {
-            "text"
+        let own = match skip {
+            SkipKind::Intro => "text",
+            SkipKind::Credits => "text (credits layout)",
+            SkipKind::WatchIntro => "text (watch intro layout)",
+            SkipKind::WatchCredits => "text (watch credits layout)",
         };
         ctx.rects.push(named(own, op.rect));
         // the limits the text reaches, nearest first; for a margin, the one it is close to
@@ -1009,16 +1010,16 @@ mod tests {
     use super::super::compile::{compile, CompileCtx};
     use super::super::lint::testing::{apply, assert_case, Base};
     use super::super::lint::{lint, lint_with, LintLang, LintOptions};
-    use super::super::parse::parse;
+    use super::super::fixtures::parse;
     use super::super::schema::size_rung;
-    use super::super::BUILTIN_CLASSIC;
+    use super::super::CLASSIC_HUD;
     use super::*;
 
-    const REFERENCE: &str = include_str!("fixtures/reference.plxhud.json");
-    const MINIMAL: &str = include_str!("fixtures/minimal.plxhud.json");
-    const HERO: &str = include_str!("fixtures/hero-center.plxhud.json");
-    const TABS: &str = include_str!("fixtures/tabs.plxhud.json");
-    const PALETTE: &str = include_str!("fixtures/palette.plxhud.json");
+    const REFERENCE: &str = include_str!("fixtures/reference/hud.json");
+    const MINIMAL: &str = include_str!("fixtures/minimal/hud.json");
+    const HERO: &str = include_str!("fixtures/hero-center/hud.json");
+    const TABS: &str = include_str!("fixtures/tabs/hud.json");
+    const PALETTE: &str = include_str!("fixtures/palette/hud.json");
 
     const KICKER: &str = "/layout/block/0/cells/0/vstack/cells/0/text";
     const INFO_KICKER: &str = "/layout/block/6/cells/1/vstack/cells/0/text";
@@ -1145,7 +1146,7 @@ mod tests {
         let langs = LintLang::shipped();
         assert_eq!(langs.len(), 11);
         for (name, text) in [
-            ("classic", BUILTIN_CLASSIC),
+            ("classic", CLASSIC_HUD),
             ("reference", REFERENCE),
             ("minimal", MINIMAL),
             ("hero-center", HERO),
@@ -1468,7 +1469,7 @@ mod tests {
     fn the_widest_weight_a_text_can_draw_is_the_one_measured() {
         // The classic's kicker is bold in an episode state and plain otherwise: the prefix is only checked
         // in the episode states, and the width reported is the bold one.
-        let found = in_en(BUILTIN_CLASSIC, 1e9);
+        let found = in_en(CLASSIC_HUD, 1e9);
         let fact = found
             .iter()
             .find(|f| f.pointer == KICKER)
@@ -1491,7 +1492,7 @@ mod tests {
     fn the_credits_layout_of_a_skip_state_is_checked_too() {
         // Narrow the band until the kicker's room is between the two Skip pills: the intro pill leaves it
         // enough, the credits pill (wider, in German) does not.
-        let tight = BUILTIN_CLASSIC.replace("\"x_inset\": 0", "\"x_inset\": 590");
+        let tight = CLASSIC_HUD.replace("\"x_inset\": 0", "\"x_inset\": 590");
         let de = LintLang::for_tag("de").unwrap();
         let found = check_in(&tight, &de, &ShippedMeasure, 0.0);
         let skip: Vec<_> = found

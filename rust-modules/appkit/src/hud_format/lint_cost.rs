@@ -30,7 +30,7 @@
 //! aim) at the 99th percentile of -4.0 to -9.8 ms (`docs/hud-plugins.md`, "The ceilings (PR19)", has them). What makes the
 //! compositor late is not determined; it is not specific to a HUD state. Every constant says which state and language it came from, and
 //! `the_ceilings_are_the_maximum_over_every_state_of_classic_and_the_reference_in_every_language` recomputes
-//! all twelve from `classic.plxhud.json` and `reference.plxhud.json` over all eleven languages, every state and
+//! all twelve from `classic.plxhud` and `reference.plxhud` over all eleven languages, every state and
 //! slot (330 rows), and asserts each is attained by the pair the constant names, so a layout change that moves
 //! one fails until someone re-measures.
 //!
@@ -84,7 +84,9 @@
 //! Pure: no IO, no global. [`over`] and [`state_cost`] take plain values, so the television can ask the same
 //! question of a compiled state at selection (never in a frame) and the lint asks it of every state.
 
-use super::compile::{Compiled, CompiledState, Cost, SkipKind};
+use super::compile::{Compiled, CompiledState, Cost};
+#[cfg(test)]
+use super::compile::SkipKind;
 use super::lint::{ctx_in, slot_name, state_name, states_of, LintLang};
 use super::{codes, Finding};
 
@@ -242,18 +244,13 @@ pub fn over(ceiling: Ceiling, cost: &Cost) -> Vec<Over> {
     terms.into_iter().filter(|&(_, value, ceiling)| value > ceiling).map(|(term, value, ceiling)| Over { term, value, ceiling }).collect()
 }
 
-/// **What a state costs for the ceiling's purpose**: its own [`Cost`], or, for a Skip state whose credits pill
-/// lays out differently ([`CompiledState::skip_variant`]), the larger of the two layouts term by term, so a
-/// ceiling holds whichever label the viewer's marker draws.
+/// The termwise maximum across every distinct Skip/Watch layout, so the ceiling holds for every face.
 pub fn state_cost(state: &CompiledState) -> Cost {
-    let credits = state.skip_variant(SkipKind::Credits);
-    let (a, b) = (&state.cost, &credits.cost);
-    Cost {
-        draw_ops: a.draw_ops.max(b.draw_ops),
-        glyph_runs: a.glyph_runs.max(b.glyph_runs),
-        texture_bytes: a.texture_bytes.max(b.texture_bytes),
-        blended_px: a.blended_px.max(b.blended_px),
-    }
+    state.skip_variants().fold(Cost::default(), |a, (_, variant)| {
+        let b = &variant.cost;
+        Cost { draw_ops: a.draw_ops.max(b.draw_ops), glyph_runs: a.glyph_runs.max(b.glyph_runs),
+            texture_bytes: a.texture_bytes.max(b.texture_bytes), blended_px: a.blended_px.max(b.blended_px) }
+    })
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -273,8 +270,8 @@ pub(super) fn check(lang: &LintLang, compiled: &Compiled, out: &mut Vec<Finding>
         if over.is_empty() {
             continue;
         }
-        let credits = s.state.skip_variant(SkipKind::Credits);
-        let heaviest = if credits.cost.blended_px > s.state.cost.blended_px { credits } else { s.state };
+        let heaviest = s.state.skip_variants().map(|(_, state)| state)
+            .max_by_key(|state| state.cost.blended_px).unwrap_or(s.state);
         let terms = over.iter().map(|o| format!("{} {} > {}", o.term.name(), o.value, o.ceiling)).collect::<Vec<_>>().join(", ");
         let tops = heaviest
             .top_contributors()
@@ -405,15 +402,15 @@ mod tests {
     use super::*;
     use crate::hud_format::compile::{compile, CompileCtx, Compiled, DrawOp, OPEN_CHAPTERS, OPEN_INFO};
     use crate::hud_format::lint::LintLang;
-    use crate::hud_format::{parse, Finding};
+    use crate::hud_format::Finding;
     use crate::hud_format::reach::Slot;
 
-    const CLASSIC: &str = include_str!("fixtures/classic.plxhud.json");
-    const REFERENCE: &str = include_str!("fixtures/reference.plxhud.json");
+    const CLASSIC: &str = include_str!("fixtures/classic/hud.json");
+    const REFERENCE: &str = include_str!("fixtures/reference/hud.json");
 
     /// `text` compiled the way the television compiles it in the language `lang`: the television's advances.
     fn compile_in(text: &str, lang: &LintLang) -> Compiled {
-        let package = parse::parse(text.as_bytes()).package.expect("a package");
+        let package = crate::hud_format::fixtures::parse(text.as_bytes()).package.expect("a package");
         compile(&package, &ShippedMeasure, CompileCtx { labels: lang.labels.clone() })
     }
 
@@ -682,21 +679,25 @@ mod tests {
         // and smaller in a third: the cost is the termwise maximum, not either layout
         let mut state = skip.clone();
         let mut credits = skip.clone();
-        credits.skip_alt = None;
+        credits.skip_alt.clear();
         credits.cost = Cost {
             draw_ops: skip.cost.draw_ops + 2,
             glyph_runs: skip.cost.glyph_runs.saturating_sub(1),
             texture_bytes: skip.cost.texture_bytes,
             blended_px: skip.cost.blended_px + 1_000,
         };
-        state.skip_alt = Some(Box::new(credits));
+        state.skip_alt = vec![(SkipKind::Credits, credits)];
         let c = state_cost(&state);
         assert_eq!(
             (c.draw_ops, c.glyph_runs, c.texture_bytes, c.blended_px),
             (skip.cost.draw_ops + 2, skip.cost.glyph_runs, skip.cost.texture_bytes, skip.cost.blended_px + 1_000)
         );
-        // as compiled, English's credits layout is not larger, so the cost is the state's own
-        assert_eq!(state_cost(skip), skip.cost);
+        // The compiled price covers every real face, including Watch's wider labels.
+        let price = state_cost(skip);
+        for (_, variant) in skip.skip_variants() {
+            assert!(variant.cost.draw_ops <= price.draw_ops && variant.cost.glyph_runs <= price.glyph_runs
+                && variant.cost.texture_bytes <= price.texture_bytes && variant.cost.blended_px <= price.blended_px);
+        }
         // a state with no credits layout of its own costs exactly itself
         let discs = compiled.lookup(0, Slot::Discs, true, false, false).expect("a compact state");
         assert_eq!(state_cost(discs), discs.cost);
@@ -821,11 +822,11 @@ mod tests {
     #[test]
     fn the_fixtures_every_state_of_which_fits_its_class_have_no_finding() {
         for (name, text) in [
-            ("minimal", include_str!("fixtures/minimal.plxhud.json")),
-            ("hero-center", include_str!("fixtures/hero-center.plxhud.json")),
-            ("palette", include_str!("fixtures/palette.plxhud.json")),
-            ("tabs", include_str!("fixtures/tabs.plxhud.json")),
-            ("rising-tabs", include_str!("fixtures/rising-tabs.plxhud.json")),
+            ("minimal", include_str!("fixtures/minimal/hud.json")),
+            ("hero-center", include_str!("fixtures/hero-center/hud.json")),
+            ("palette", include_str!("fixtures/palette/hud.json")),
+            ("tabs", include_str!("fixtures/tabs/hud.json")),
+            ("rising-tabs", include_str!("fixtures/rising-tabs/hud.json")),
         ] {
             let found = e1401(text, &[]);
             assert!(found.is_empty(), "{name}: {:?}", found.iter().map(|f| &f.message).collect::<Vec<_>>());

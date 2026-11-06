@@ -5,6 +5,7 @@
 
 use super::*;
 use plx_base::checkpoint::TestCheckpoint;
+use plx_base::testnet::{accept_client, CLIENT_WAIT, LOOPBACK_DEADLINE};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -42,9 +43,10 @@ impl Scripted {
         let (go, go_rx) = mpsc::channel::<()>();
         let (written_tx, written) = mpsc::channel();
         let done = std::thread::spawn(move || {
-            let Ok((mut s, _)) = srv.accept() else {
-                return false;
-            };
+            // Bounded: a client that never dials (its deadline passed first) fails `finish`'s join
+            // after `CLIENT_WAIT` instead of leaving it, and `Drop`, blocked in `accept` for ever.
+            let (mut s, _) = accept_client(&srv, CLIENT_WAIT);
+            let _ = s.set_read_timeout(Some(BOUND));
             let mut head = Vec::new();
             let mut tmp = [0u8; 1024];
             while !head.windows(4).any(|w| w == b"\r\n\r\n") {
@@ -152,6 +154,10 @@ fn a_checkpoint_stop_ends_a_withheld_header_wait_long_before_its_deadline() {
     assert!(!server.finish(), "a controlled stop must not redial");
 }
 
+/// The deadline is [`LOOPBACK_DEADLINE`], not 300 ms: an open whose deadline has passed returns
+/// `Deadline` without dialing, which is not the header wait this test grades (no slices, nothing for
+/// the server to accept), and a loaded host can carry 300 ms past before the first `connect`. The
+/// slice count is graded against the span that was waited, so it scales with the deadline.
 #[test]
 fn continue_slices_neither_end_an_open_early_nor_spin() {
     let server = Scripted::start(vec![]);
@@ -161,7 +167,7 @@ fn continue_slices_neither_end_an_open_early_nor_spin() {
     let result = open_with(
         &mut *hs,
         server.port,
-        started + Duration::from_millis(300),
+        started + LOOPBACK_DEADLINE,
         &mut cp,
     );
     let took = started.elapsed();
@@ -169,13 +175,14 @@ fn continue_slices_neither_end_an_open_early_nor_spin() {
     // The deadline, not a slice, ended it — and it is still reported as the deadline.
     assert_eq!(result, Err(HttpOpenError::Deadline));
     assert!(
-        took >= Duration::from_millis(290),
+        took >= LOOPBACK_DEADLINE - Duration::from_millis(10),
         "a slice ended the open early: {took:?}"
     );
     let calls = cp.calls();
+    let slices = (LOOPBACK_DEADLINE.as_millis() / SLICE.as_millis()) as usize;
     assert!(
-        (5..=40).contains(&calls),
-        "~15 checks expected over 300 ms at a 20 ms slice, saw {calls}"
+        (5..=2 * slices).contains(&calls),
+        "~{slices} checks expected over {LOOPBACK_DEADLINE:?} at a {SLICE:?} slice, saw {calls}"
     );
     assert!(!server.finish());
 }

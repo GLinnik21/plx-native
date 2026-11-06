@@ -4879,6 +4879,54 @@ class LateAudioFixture(unittest.TestCase):
         self.assertFalse(run.a_audio_feed_ready(["feed v#1 sz=9 fed=0 reply=O qbytes=1"])[0])
 
 
+class DoviRandomAccessFixture(unittest.TestCase):
+    @staticmethod
+    def packet(pts, kind, rpu=True):
+        nals = [kind, 62] if rpu else [kind]
+        data = b"".join(b"\x00\x00\x00\x02" + bytes([n << 1, 1]) for n in nals)
+        return {"pts_time": str(pts), "flags": "K_", "data": "00000000: " + data.hex() + "  .."}
+
+    def test_dovi_builder_preserves_the_requested_gop_mode(self):
+        key = "pipe_hevc_eac3_4k_dovi_p8"
+        original = fixturegen.PIPE_SHAPES[key]
+        spec = dict(original, video=dict(original["video"], x265_extra="open-gop=0"))
+        captured = {}
+
+        def capture(_ctx, _key, shape, *_args, **_kwargs):
+            captured.update(shape["video"])
+            raise RuntimeError("stop before fixture IO")
+
+        with mock.patch.object(fixturegen, "build_generic", side_effect=capture):
+            with self.assertRaisesRegex(RuntimeError, "stop before fixture IO"):
+                fixturegen.build_dovi(mock.Mock(), key, spec, 60, None,
+                                      fixturegen.Path("out.mkv"), fixturegen.Path("work"))
+        self.assertIn("open-gop=0", captured["x265_extra"])
+        self.assertIn("aud=1", captured["x265_extra"])
+
+    def test_the_pair_is_distinguished_by_read_back_nals_not_container_key_flags(self):
+        cra = fixturegen.hevc_random_access_packets([self.packet(0, 20), self.packet(2, 21)])
+        idr = fixturegen.hevc_random_access_packets([self.packet(0, 20), self.packet(2, 20)])
+        self.assertEqual(fixturegen.random_access_problems(cra, "cra", 60), [])
+        self.assertEqual(fixturegen.random_access_problems(idr, "idr", 60), [])
+        self.assertTrue(fixturegen.random_access_problems(idr, "cra", 60))
+        self.assertTrue(fixturegen.random_access_problems(cra, "idr", 60))
+        false_key = fixturegen.hevc_random_access_packets([self.packet(0, 1)])
+        self.assertTrue(fixturegen.random_access_problems(false_key, "cra", 60))
+
+    def test_a_missing_later_key_or_rpu_is_not_a_verified_fixture(self):
+        initial = fixturegen.hevc_random_access_packets([self.packet(0, 20)])
+        self.assertTrue(fixturegen.random_access_problems(initial, "cra", 60))
+        self.assertEqual(fixturegen.random_access_problems(initial, "cra", 1), [])
+        no_rpu = fixturegen.hevc_random_access_packets([self.packet(0, 20), self.packet(2, 21, rpu=False)])
+        self.assertTrue(fixturegen.random_access_problems(no_rpu, "cra", 60))
+        self.assertEqual(fixturegen.hevc_random_access_packets([self.packet("nan", 20)]), [])
+
+    def test_shared_packet_reader_retains_h264_and_accepts_hevc_annexb(self):
+        self.assertEqual(fixturegen.h264_nal_types(b"\x00\x00\x00\x01\x65\x80"), [5])
+        self.assertEqual(fixturegen._packet_nal_types(b"\x00\x00\x01\x2a\x01", True), [21])
+        self.assertEqual(fixturegen._packet_nal_types(b"\x00\x00\x00\x01\x2a", True), [])
+
+
 class AudioTailFixture(unittest.TestCase):
     """The clip whose audio outlasts its picture and its case (#865): 20 s of video, 23 s of audio.
 

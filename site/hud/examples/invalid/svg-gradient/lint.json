@@ -1,0 +1,18 @@
+{
+  "costs": [],
+  "file": "examples/invalid/svg-gradient",
+  "findings": [
+    {
+      "code": "HUD-E0701",
+      "file": "assets/mark.svg",
+      "hint": "HUD assets are alpha masks tinted by the app; a gradient would be discarded, so draw the mark in one colour",
+      "message": "element <linearGradient> is not part of the mask subset (byte 25)",
+      "nearest": [],
+      "path": "",
+      "rule": "svg-element",
+      "severity": "error"
+    }
+  ],
+  "package_sha256": "c6a6d99ff152423cbabaef5ddfcfc77aa89ae03d4621c42bf35928a66ac778ef",
+  "protocol": 1
+}
