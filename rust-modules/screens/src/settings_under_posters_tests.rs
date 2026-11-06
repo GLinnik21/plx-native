@@ -778,10 +778,10 @@ fn a_line_the_setting_turns_on_is_never_drawn_empty_and_a_blank_setting_draws_no
             plx_gfx::gfx::without_frame_clear(|| plx_ui::follow_copy::PictureSlot::draw(&picture, plx_ui::Painter::recording(), RouteLayout::settings_page().picture_slot(), &ShippedMeasure));
         }).into_iter().map(|(t, _)| t).collect()
     };
-    assert!(words(off, &[]).is_empty(), "with no caption chosen the picture is faces only");
+    assert_eq!(words(off, &[]), ["MOVIES", "SHOWS"], "with no caption chosen the picture is faces under their kinds, and no line");
     let bare = PmsMovie { title: "Bare".into(), ..Default::default() };
     let genre = UnderPosters { details: UnderPostersDetails::Genre, show_details: UnderPostersDetails::Genre, ..off };
-    assert_eq!(words(genre, &[&bare]).len(), 2, "a movie with no genre still words a line, and so does the sample show");
+    assert_eq!(words(genre, &[&bare]).len(), 2 + 2, "a movie with no genre still words a line, and so does the sample show (and each wears its kind)");
 }
 
 #[test]
@@ -856,16 +856,16 @@ fn the_sort_value_picture_words_the_year_of_every_kind_of_item() {
     };
     let movie = poster("A", 1999, "Noir");
     let tv = PmsMovie { kind: KIND_SHOW, ..poster("B", 2004, "Noir") };
-    assert_eq!(drawn(&[&movie, &tv]), ["1999", "2004"]);
+    assert_eq!(drawn(&[&movie, &tv]), ["MOVIES", "1999", "SHOWS", "2004"]);
     // a kind with no poster wears the sample's year
-    assert_eq!(drawn(&[&movie]), ["1999", SAMPLE_YEAR.to_string().as_str()]);
+    assert_eq!(drawn(&[&movie]), ["MOVIES", "1999", "SHOWS", SAMPLE_YEAR.to_string().as_str()]);
     let nameless = PmsMovie { year: 0, ..poster("N", 0, "Noir") };
     assert!(drawn(&[&nameless]).iter().any(|t| t == "\u{2013}"), "a missing year is the en dash");
 }
 
 /// **The Under posters picture paints into the slot it is handed** (board `Sv2-2`): a movie and a
-/// show, 240 px apart from the slot's left edge, each with its details line centred under it in the
-/// slot's own box. Handed a different slot, the same picture moves with it.
+/// show, 240 px apart from the slot's left edge, each with its kind over it and its details line
+/// centred under it in the slot's own box. Handed a different slot, the same picture moves with it.
 #[test]
 fn the_picture_paints_into_the_slot_it_is_handed() {
     use plx_ui::follow_copy::PictureSlot;
@@ -881,22 +881,91 @@ fn the_picture_paints_into_the_slot_it_is_handed() {
     let slot = RouteLayout::settings_page().picture_slot();
     let runs = at(slot);
     let words: Vec<&str> = runs.iter().map(|(s, _)| s.as_str()).collect();
-    assert_eq!(words, ["2024 · 1h 52m", "2019 · 6 seasons"], "the movie's and the show's details lines, and no label or title");
-    for (i, (word, rect)) in runs.iter().enumerate() {
-        let tile_cx = slot.x + PICTURE_TILE_STEP * i as f32 + PICTURE_TILE_W * 0.5;
+    assert_eq!(words, ["MOVIES", "2024 · 1h 52m", "SHOWS", "2019 · 6 seasons"], "each kind over its tile, then its details line under it");
+    let tile_top = slot.y + plx_ui::table::caps_band_h() + PICTURE_KIND_GAP;
+    for (i, (kind, line)) in [(&runs[0], &runs[1]), (&runs[2], &runs[3])].into_iter().enumerate() {
+        let tile_x = slot.x + PICTURE_TILE_STEP * i as f32;
+        let tile_cx = tile_x + PICTURE_TILE_W * 0.5;
         // a recorded run's rect is its ANCHOR (the centre, for a centred run) and measured width
-        assert!((rect.x - tile_cx).abs() <= 1.0, "{word:?} is centred under its tile: anchor {} vs {tile_cx}", rect.x);
-        assert!(rect.y >= slot.y + PICTURE_TILE_H && rect.y <= slot.y + PICTURE_LINE_TOP + PICTURE_LINE_H,
-            "{word:?} stands in the line box under the tile: {rect:?}");
+        assert!((line.1.x - tile_cx).abs() <= 1.0, "{:?} is centred under its tile: anchor {} vs {tile_cx}", line.0, line.1.x);
+        assert!(line.1.y >= tile_top + PICTURE_TILE_H && line.1.y <= tile_top + PICTURE_LINE_TOP + PICTURE_LINE_H,
+            "{:?} stands in the line box under the tile: {:?}", line.0, line.1);
+        // the kind is the section-header caps, left on the tile's edge, over the tile and clear of it
+        assert!((kind.1.x - tile_x).abs() <= 1.0, "{:?} starts on its tile's left edge: {:?}", kind.0, kind.1);
+        // (a run's y is its text box's top, a little above its cap top)
+        assert!(kind.1.y >= slot.y - theme::size::CAPTION as f32 && kind.1.y + plx_ui::table::caps_band_h() <= tile_top,
+            "{:?} is over the tile: {:?} (tile top {tile_top})", kind.0, kind.1);
     }
     let moved = Rect::new(slot.x + 123.0, slot.y + 45.0, slot.w, slot.h);
     for ((_, a), (_, b)) in runs.iter().zip(at(moved).iter()) {
         assert!((b.x - a.x - 123.0).abs() < 0.01 && (b.y - a.y - 45.0).abs() < 0.01, "the picture follows its slot: {a:?} -> {b:?}");
     }
-    // one kind, one tile: a picker draws only its own
-    let one = RootPicture { kinds: &[PosterKind::Show], ..picture };
-    let shows: Vec<String> = plx_ui::draw_census::capture_text(|| {
-        plx_gfx::gfx::without_frame_clear(|| one.draw(plx_ui::Painter::recording(), slot, &ShippedMeasure));
-    }).into_iter().map(|(t, _)| t).collect();
-    assert_eq!(shows, ["2019 · 6 seasons"]);
+    // one kind, one tile: a picker draws only its own, under its own kind
+    for (kind, caption, line) in [(PosterKind::Movie, "MOVIES", "2024 · 1h 52m"), (PosterKind::Show, "SHOWS", "2019 · 6 seasons")] {
+        let one = RootPicture { kinds: &[kind], ..picture };
+        let drawn: Vec<String> = plx_ui::draw_census::capture_text(|| {
+            plx_gfx::gfx::without_frame_clear(|| one.draw(plx_ui::Painter::recording(), slot, &ShippedMeasure));
+        }).into_iter().map(|(t, _)| t).collect();
+        assert_eq!(drawn, [caption, line]);
+    }
+}
+
+/// **The kind captions are the section headers' own caps**: the table's header ink and size, tracked,
+/// upper-cased from the catalog's `Movies` / `Shows` (the Library's kind words), whatever the poster
+/// art, the setting or the Sort value preview.
+#[test]
+fn the_kind_captions_wear_the_section_header_look_under_every_setting() {
+    let _guard = plx_base::testlock::serial();
+    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let (movie, tv) = (poster("Alpha", 1999, "Noir"), show("Sitcom", 2011, "Comedy"));
+    let slot = RouteLayout::settings_page().picture_slot();
+    for value in every_value() {
+        for (sorted, posters) in [(false, vec![]), (false, vec![&movie, &tv]), (true, vec![&movie, &tv])] {
+            let picture = RootPicture { value, posters: &posters, kinds: &[PosterKind::Movie, PosterKind::Show], sorted };
+            let runs = plx_ui::draw_census::capture_runs(|| {
+                plx_gfx::gfx::without_frame_clear(|| plx_ui::follow_copy::PictureSlot::draw(&picture, plx_ui::Painter::recording(), slot, &ShippedMeasure));
+            });
+            let kinds: Vec<_> = runs.iter().filter(|r| r.text == "MOVIES" || r.text == "SHOWS").collect();
+            assert_eq!(kinds.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(), ["MOVIES", "SHOWS"], "{value:?} sorted={sorted}");
+            for r in kinds {
+                assert_eq!((r.size, r.bold, r.ink), (theme::size::CAPTION, false, theme::TEXT_READING), "{r:?}");
+            }
+        }
+    }
+}
+
+/// **The kind captions fit their tile in every shipped language, and the picture stays inside the
+/// slot**: the upper-cased, tracked word is no wider than the 200 px tile it stands over (so never
+/// elided, never into the neighbour 240 px along), and a tile pushed down by its caption still ends,
+/// with its two caption lines, above the slot's floor, so the narrative column's own layout is
+/// untouched (the slot is the same rect).
+#[test]
+fn the_kind_captions_fit_every_language_and_the_picture_stays_in_its_slot() {
+    use plx_ui::follow_copy::PictureSlot;
+    let _guard = plx_base::testlock::serial();
+    let slot = RouteLayout::settings_page().picture_slot();
+    assert_eq!((slot.y, slot.h), (440.0, 586.0), "the slot the picture draws into is the board's");
+    let floor = slot.y + plx_ui::table::caps_band_h() + PICTURE_KIND_GAP + PICTURE_LINE_TOP + PICTURE_LINE_STEP + PICTURE_LINE_H;
+    assert!(floor <= slot.y + slot.h, "tiles, captions and both lines end at {floor}, the slot's floor is {}", slot.y + slot.h);
+    let mut out = Vec::new();
+    for language in SHIPPED {
+        let _lang = language_on_this_thread_for_test(language);
+        let tag = language.tag();
+        for kind in [PosterKind::Movie, PosterKind::Show] {
+            let upper = kind_caption(kind).to_uppercase();
+            let natural = plx_machine::machine::Measure::width_str(&ShippedMeasure, &upper, theme::size::CAPTION, false)
+                + plx_gfx::text::tracking_extra(&upper, plx_ui::table::BOARD_CAPS_TRACK_PX);
+            if natural > PICTURE_TILE_W {
+                out.push(format!("{tag} {kind:?} {upper:?}: {natural}px over a {PICTURE_TILE_W}px tile"));
+            }
+            let picture = RootPicture { value: UnderPosters::DEFAULT, posters: &[], kinds: &[kind], sorted: false };
+            let drawn = plx_ui::draw_census::capture_text(|| {
+                plx_gfx::gfx::without_frame_clear(|| picture.draw(plx_ui::Painter::recording(), slot, &ShippedMeasure));
+            });
+            if drawn.first().map(|(t, _)| t.as_str()) != Some(upper.as_str()) {
+                out.push(format!("{tag} {kind:?}: drawn {:?}, wanted {upper:?} (elided?)", drawn.first()));
+            }
+        }
+    }
+    plx_ui::table::assert_no_fit_failures(&out);
 }
