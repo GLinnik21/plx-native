@@ -61,7 +61,7 @@ fn the_record_has_one_field_for_each_setting_with_a_legacy_fallback() {
         intro_skip: Some(crate::plex::session::MarkerSkipMode::Automatic),
         credits_skip: Some(crate::plex::session::MarkerSkipMode::Disabled),
         deck_press: Some(DeckPress::Play),
-        under_posters: Some(UnderPosters { title: true, details: UnderPostersDetails::Video, sort_value: false }),
+        under_posters: Some(UnderPosters { title: true, details: UnderPostersDetails::Video, show_details: UnderPostersDetails::Video.for_shows(), sort_value: false }),
         audio_enhancements: Some(AudioEnhancements { boost_dialog: true, normalize_loudness: true }),
         trailer_autoplay: Some(false),
         hud_selection: Some("com.example.hud".into()),

@@ -4519,8 +4519,8 @@ mod enhancement_menu_tests {
         let timing_i = menu.form.index_of(&TrackRow::Timing).expect("Timing row present");
         let style_i = menu.form.index_of(&TrackRow::Style).expect("Style row present");
         let rows = flat_rows(&menu);
-        assert!(rows[timing_i].dim, "Timing is dim under a live burn");
-        assert!(rows[style_i].dim, "Style is dim under a live burn");
+        assert!(rows[timing_i].disabled, "Timing is disabled under a live burn");
+        assert!(rows[style_i].disabled, "Style is disabled under a live burn");
 
         let note_i = style_i + 1;
         assert_eq!(menu.form.id_at(note_i), None, "a note is an inert slot with no id");
@@ -4529,9 +4529,9 @@ mod enhancement_menu_tests {
 
         // The track rows themselves stay live: Off, and the embedded subtitle, neither dim.
         let off_i = menu.form.index_of(&TrackRow::SubOff).expect("Off row present");
-        assert!(!rows[off_i].dim);
+        assert!(!rows[off_i].disabled);
         let sub_i = menu.form.index_of(&TrackRow::Sub(0)).expect("Sub(0) row present");
-        assert!(!rows[sub_i].dim);
+        assert!(!rows[sub_i].disabled);
 
         teardown(&ps);
     }
@@ -4552,7 +4552,7 @@ mod enhancement_menu_tests {
         });
         assert!(!menu.server_burn_built());
         let timing_i = menu.form.index_of(&TrackRow::Timing).expect("Timing row present");
-        assert!(!flat_rows(&menu)[timing_i].dim);
+        assert!(!flat_rows(&menu)[timing_i].disabled);
         assert!(!menu.form.table.sections.iter().flat_map(|s| s.rows.iter()).any(|r| r.is_note()));
         teardown(&ps);
     }
@@ -4582,7 +4582,7 @@ mod enhancement_menu_tests {
             let timing_i = menu.form.index_of(&TrackRow::Timing).expect("Timing stays in the menu");
             let style_i = menu.form.index_of(&TrackRow::Style).expect("Style stays in the menu");
             let rows = flat_rows(&menu);
-            assert!(rows[timing_i].dim && rows[style_i].dim, "both dim");
+            assert!(rows[timing_i].disabled && rows[style_i].disabled, "both disabled");
             assert_eq!(menu.form.id_at(style_i + 1), None, "the reason is an inert slot");
             assert_eq!(rows[style_i + 1].label, reason);
             let store = super::tests::store_with(vec![super::tests::stream(999, 0, "English", "eng", "")]);
@@ -4613,7 +4613,7 @@ mod enhancement_menu_tests {
         let timing_i = menu.form.index_of(&TrackRow::Timing).expect("Timing row present");
         let style_i = menu.form.index_of(&TrackRow::Style).expect("Style row present");
         let rows = flat_rows(&menu);
-        assert!(!rows[timing_i].dim && !rows[style_i].dim, "both live");
+        assert!(!rows[timing_i].disabled && !rows[style_i].disabled, "both live");
         assert!(!menu.form.table.sections.iter().flat_map(|s| s.rows.iter()).any(|r| r.is_note()), "no reason line");
         teardown(&ps);
     }
@@ -4637,7 +4637,7 @@ mod enhancement_menu_tests {
         let timing_i = menu.form.index_of(&TrackRow::Timing).expect("Timing row present");
         let style_i = menu.form.index_of(&TrackRow::Style).expect("Style row present");
         let rows = flat_rows(&menu);
-        assert!(!rows[timing_i].dim && !rows[style_i].dim, "both live");
+        assert!(!rows[timing_i].disabled && !rows[style_i].disabled, "both live");
         assert!(!rows.iter().any(|r| r.is_note()), "no reason line");
         teardown(&ps);
     }
@@ -4654,7 +4654,7 @@ mod enhancement_menu_tests {
         let timing_i = menu.form.index_of(&TrackRow::Timing).expect("Timing");
         let style_i = menu.form.index_of(&TrackRow::Style).expect("Style");
         let rows = flat_rows(&menu);
-        assert!(!rows[timing_i].dim && !rows[style_i].dim);
+        assert!(!rows[timing_i].disabled && !rows[style_i].disabled);
         assert!(!rows.iter().any(|r| r.is_note()));
         teardown(&ps);
     }
@@ -4750,7 +4750,7 @@ mod enhancement_menu_tests {
         assert_eq!(menu.active_sub, 0, "the embedded track must read checked once the route shows it");
         assert!(menu.server_burn_built(), "Color/Timing must lock once the live route is really a Burn");
         let style_i = menu.form.index_of(&TrackRow::Style).expect("Style row present");
-        assert!(flat_rows(&menu)[style_i].dim, "Style must actually redraw dim, not just flag it internally");
+        assert!(flat_rows(&menu)[style_i].disabled, "Style must actually redraw disabled, not just flag it internally");
         let off_i = menu.form.index_of(&TrackRow::SubOff).expect("Off row present");
         assert!(!flat_rows(&menu)[off_i].checked, "Off must no longer read checked");
         let sub_i = menu.form.index_of(&TrackRow::Sub(0)).expect("Sub(0) row present");
@@ -5997,9 +5997,9 @@ mod style_page_tests {
             assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated, "{codec}: Style itself is live");
             let locked = renderer != SubRenderer::Text;
             for field in [StyleField::Size, StyleField::Position] {
-                assert_eq!(row_of(&menu, TrackRow::OpenField(field)).dim, locked, "{codec} {field:?}");
+                assert_eq!(row_of(&menu, TrackRow::OpenField(field)).disabled, locked, "{codec} {field:?}");
             }
-            assert!(!row_of(&menu, TrackRow::OpenField(StyleField::Color)).dim, "{codec}: Color stays live");
+            assert!(!row_of(&menu, TrackRow::OpenField(StyleField::Color)).disabled, "{codec}: Color stays live");
             let notes: Vec<_> = menu
                 .form
                 .table
@@ -6037,7 +6037,7 @@ mod style_page_tests {
         // direct play: both, live
         let (menu, ps, _store) = open_text();
         assert!(has(&menu, TrackRow::Timing) && has(&menu, TrackRow::Style));
-        assert!(!row_of(&menu, TrackRow::Style).dim);
+        assert!(!row_of(&menu, TrackRow::Style).disabled);
         teardown(&ps);
     }
 

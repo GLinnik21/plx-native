@@ -64,16 +64,41 @@ pub enum DetailsKind {
 pub struct CaptionPolicy {
     /// Show the title above the details.
     pub title: bool,
+    /// The details line under a movie (and under every tile that is not a TV show: a season, an
+    /// episode, a collection).
     pub details: DetailsKind,
+    /// The details line under a TV show ([`CaptionFacts::is_show`]). Settings v2 split Details in
+    /// two because a show has no single video quality.
+    pub show_details: DetailsKind,
 }
 
 impl CaptionPolicy {
-    pub const DEFAULT: CaptionPolicy = CaptionPolicy { title: false, details: DetailsKind::YearLength };
+    pub const DEFAULT: CaptionPolicy = CaptionPolicy { title: false, details: DetailsKind::YearLength, show_details: DetailsKind::YearLength };
+
+    /// The same details line under every kind of tile.
+    pub const fn same(title: bool, details: DetailsKind) -> CaptionPolicy {
+        CaptionPolicy { title, details, show_details: details }
+    }
+
+    /// The details kind a tile is worded by: the show line for a TV show, the movie line for the rest.
+    pub fn details_for(&self, is_show: bool) -> DetailsKind {
+        if is_show { self.show_details } else { self.details }
+    }
+
+    /// The policy of a surface that lists ONE kind of tile (a Movies or Shows grid, Seasons,
+    /// Collections): both lines are that kind's own, so the band opens for what the kind shows and
+    /// not for the other kind's line ([`Self::max_lines`] holds the room for either kind, which only a
+    /// mixed shelf needs).
+    pub fn only(&self, is_show: bool) -> CaptionPolicy {
+        CaptionPolicy::same(self.title, self.details_for(is_show))
+    }
 
     /// How many lines this policy can show at most (a tile with no name, or no fact and no identity,
-    /// may leave fewer).
+    /// may leave fewer). The band is the shelf's, never a tile's, so it opens for either kind's
+    /// line: a shelf mixing movies and shows holds the room for whichever has one. A surface that
+    /// lists one kind narrows first ([`Self::only`]).
     pub fn max_lines(&self) -> usize {
-        usize::from(self.title) + usize::from(self.details != DetailsKind::None)
+        usize::from(self.title) + usize::from(self.details != DetailsKind::None || self.show_details != DetailsKind::None)
     }
 }
 
@@ -153,7 +178,8 @@ pub struct CaptionFacts {
 /// technical marks `HDR`, `4K`, `1080p` and the middle dot.
 pub fn caption_lines(policy: &CaptionPolicy, facts: &CaptionFacts, locale: &LocaleContext) -> [Option<String>; 2] {
     let title = policy.title.then(|| facts.title.clone()).flatten().filter(|t| !t.is_empty());
-    if policy.details == DetailsKind::None {
+    let kind = policy.details_for(facts.is_show);
+    if kind == DetailsKind::None {
         return [title, None];
     }
     // A COLLECTION has one fact worth a line, its size, under every details kind (it has no genre,
@@ -164,7 +190,7 @@ pub fn caption_lines(policy: &CaptionPolicy, facts: &CaptionFacts, locale: &Loca
         let name = facts.title.clone().filter(|name| facts.name_cut && title.is_none() && !name.is_empty());
         return [title, join(name.into_iter().chain(size).chain(facts.source.clone().filter(|s| !s.is_empty())).collect())];
     }
-    let picked = match policy.details {
+    let picked = match kind {
         DetailsKind::None => unreachable!("returned above"),
         DetailsKind::YearLength => year_length(facts, locale),
         DetailsKind::Genre => facts.genre.clone().filter(|g| !g.is_empty()),
@@ -327,11 +353,26 @@ mod tests {
         assert_eq!(band_h(&p), 80.0);
     }
 
+    /// A single-kind surface sizes its band by that kind's line alone; a mixed shelf keeps the room
+    /// for either.
+    #[test]
+    fn a_single_kind_surface_is_sized_by_its_own_line_and_a_mixed_one_by_either() {
+        let movies_nothing = CaptionPolicy { title: false, details: DetailsKind::None, show_details: DetailsKind::YearLength };
+        assert_eq!(band_h(&movies_nothing), BAND_ONE_LINE, "a mixed shelf holds the room for the show line");
+        assert_eq!(band_h(&movies_nothing.only(false)), BAND_NONE, "a Movies grid with Movie details Nothing opens nothing");
+        assert_eq!(band_h(&movies_nothing.only(true)), BAND_ONE_LINE, "a Shows grid still has its line");
+        let titled = CaptionPolicy { title: true, ..movies_nothing };
+        assert_eq!(band_h(&titled), BAND_TWO_LINES);
+        assert_eq!(band_h(&titled.only(false)), BAND_ONE_LINE, "the title alone is one line, not two");
+        assert_eq!(band_h(&titled.only(true)), BAND_TWO_LINES);
+        assert_eq!(titled.only(true), CaptionPolicy::same(true, DetailsKind::YearLength));
+    }
+
     #[test]
     fn band_height_is_zero_for_nothing_80_for_one_line_112_for_two() {
-        let none = CaptionPolicy { title: false, details: DetailsKind::None };
-        let title_only = CaptionPolicy { title: true, details: DetailsKind::None };
-        let both = CaptionPolicy { title: true, details: DetailsKind::Genre };
+        let none = CaptionPolicy::same(false, DetailsKind::None);
+        let title_only = CaptionPolicy::same(true, DetailsKind::None);
+        let both = CaptionPolicy::same(true, DetailsKind::Genre);
         assert_eq!([band_h(&none), band_h(&title_only), band_h(&both)], [0.0, 80.0, 112.0]);
     }
 
@@ -339,16 +380,16 @@ mod tests {
     fn lines_follow_the_policy_and_fall_back_to_identity_for_missing_facts() {
         let facts = CaptionFacts { title: Some("Heat".into()), year: Some(1995), genre: Some("Crime".into()), ..Default::default() };
         let l = plx_platform::i18n::current();
-        let p = CaptionPolicy { title: true, details: DetailsKind::Genre };
+        let p = CaptionPolicy::same(true, DetailsKind::Genre);
         assert_eq!(caption_lines(&p, &facts, l), [Some("Heat".into()), Some("Crime".into())]);
         // no stream facts: the line is the item's identity (its year), never an open band over nothing
-        let p = CaptionPolicy { title: false, details: DetailsKind::Video };
+        let p = CaptionPolicy::same(false, DetailsKind::Video);
         assert_eq!(caption_lines(&p, &facts, l), [None, Some("1995".into())]);
-        let p = CaptionPolicy { title: false, details: DetailsKind::YearLength };
+        let p = CaptionPolicy::same(false, DetailsKind::YearLength);
         assert_eq!(caption_lines(&p, &facts, l), [None, Some("1995".into())]);
-        let p = CaptionPolicy { title: true, details: DetailsKind::None };
+        let p = CaptionPolicy::same(true, DetailsKind::None);
         assert_eq!(caption_lines(&p, &facts, l), [Some("Heat".into()), None], "Nothing has no fallback");
-        assert_eq!(caption_lines(&CaptionPolicy { title: false, details: DetailsKind::Genre }, &CaptionFacts::default(), l), [None, None],
+        assert_eq!(caption_lines(&CaptionPolicy::same(false, DetailsKind::Genre), &CaptionFacts::default(), l), [None, None],
             "an item with no name and no facts has nothing to say");
     }
 }

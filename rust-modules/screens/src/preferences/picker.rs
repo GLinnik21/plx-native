@@ -122,7 +122,7 @@ impl PickerPage {
                 FocusTarget::Elem(FocusKey { entry: self.entry, elem: self.state.selected })
             } else { FocusTarget::ContainerGroup(group) } }))));
     }
-    fn account(&self) -> bool { self.state.field.kind() == Some(Kind::AudioSubtitles) }
+    fn account(&self) -> bool { self.state.field.is_account() }
     fn start_initial_load(&mut self, fx: &mut Effects<'_, InnerHost>) -> bool {
         if self.account() && self.txn.request.is_none() && self.txn.snapshot.is_none()
             && self.txn.pending.is_none() && self.state.io.status.is_empty() {

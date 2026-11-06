@@ -127,8 +127,14 @@ impl<'a> PosterFan<'a> {
     /// The art the shared tile is handed for card `i`: a poster's facts with no watch state, so
     /// `widgets::poster_mark` is `None` and the tile draws no tick. Other variants carry no state.
     pub fn art(&self, i: usize) -> crate::widgets::Art<'a> {
+        Self::stateless(self.arts[i])
+    }
+
+    /// `art` with no watch state: the rule [`PosterFan::art`] applies, for a picture that draws
+    /// its tiles itself (the Under posters picture, whose tile of a kind with no poster is not art).
+    pub fn stateless(art: crate::widgets::Art<'a>) -> crate::widgets::Art<'a> {
         use crate::widgets::Art;
-        match self.arts[i] {
+        match art {
             Art::Poster(Some(f)) => Art::Poster(Some(crate::tile::TileFacts { watched: false, resume: None, ..f })),
             other => other,
         }
@@ -152,6 +158,39 @@ impl PictureSlot for PosterFan<'_> {
             // cards behind sit on the front card's floor
             let y = slot.y + front_w * 1.5 - h;
             crate::widgets::card(p.alpha(1.0 - FAN_FADE * i as f32), Rect::new(x, y, w, h), self.art(i), theme::CARD_RING_RAD, false, 1.0, 0.0);
+        }
+    }
+}
+
+/// A landscape (16:9) picture filling the slot's width: the HUD gallery's and a HUD package's
+/// preview. Still art, or the shared [`crate::widgets::ArtCycle`] when the owner has several
+/// frames of one scene. No frame, ring or label: it is a picture, not a control.
+///
+/// This replaced the header's older landscape slot after the narrative (`Header::preview`, its
+/// own frame and height rule), which only the HUD pages used.
+pub struct LandscapePicture<'a> {
+    pub art: Option<crate::widgets::Art<'a>>,
+    pub cycle: Option<&'a crate::widgets::ArtCycle>,
+}
+
+impl LandscapePicture<'_> {
+    /// The picture's rect in `slot`: its full width, 16:9, as tall as the slot leaves.
+    pub fn rect(slot: Rect) -> Rect {
+        Rect::new(slot.x, slot.y, slot.w, (slot.w * 9.0 / 16.0).min(slot.h).max(0.0))
+    }
+}
+
+impl PictureSlot for LandscapePicture<'_> {
+    fn draw(&self, p: Painter, slot: Rect, _measure: &dyn Measure) {
+        let rect = Self::rect(slot);
+        // a slot too short for any picture draws nothing, as the old landscape slot did
+        if rect.h <= 0.0 {
+            return;
+        }
+        if let Some(cycle) = self.cycle.filter(|c| !c.is_empty()) {
+            cycle.draw(p, rect, theme::CARD_RING_RAD);
+        } else if let Some(art) = self.art {
+            crate::widgets::card(p, rect, art, theme::CARD_RING_RAD, false, 1.0, 0.0);
         }
     }
 }
@@ -258,5 +297,20 @@ mod tests {
         assert_eq!(c.text(), "d");
         assert!(c.left == "a" || c.left == "b" || c.left == "c");
         assert_eq!(c.arrival(), 0.0);
+    }
+
+    /// **The landscape picture is 16:9 at the slot's width**, the board's 660 x 371 at the picture slot, and draws
+    /// nothing (rather than a sliver) when the slot is too short for a picture.
+    #[test]
+    fn a_landscape_picture_is_sixteen_by_nine_at_the_slots_width() {
+        use crate::route_screen::RouteLayout;
+        let slot = RouteLayout::settings_page().picture_slot();
+        let r = LandscapePicture::rect(slot);
+        assert_eq!((r.x, r.y, r.w), (slot.x, slot.y, slot.w));
+        assert!((r.w - 660.0).abs() < 0.5, "the board's width: {r:?}");
+        assert!((r.h - r.w * 9.0 / 16.0).abs() < 0.01, "16:9: {r:?}");
+        assert!(r.y + r.h <= slot.y + slot.h, "inside the slot");
+        let short = LandscapePicture::rect(Rect::new(0.0, 0.0, 660.0, 100.0));
+        assert_eq!(short.h, 100.0, "never taller than the slot leaves");
     }
 }

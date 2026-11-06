@@ -194,6 +194,13 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     fn scrim(&self) -> Scrim {
         Scrim::NONE
     }
+    /// **How this SURFACE arrives** ([`crate::containers::modal::EntryMotion`]): the shared appear
+    /// spring by default, or the route dip (70 ms out, 140 ms in) for a surface with an opaque
+    /// ground of its own that does not translate. Asked of the mounted body while the surface is
+    /// opening; a page never answers.
+    fn entry_motion(&self) -> crate::containers::modal::EntryMotion {
+        crate::containers::modal::EntryMotion::Spring
+    }
     /// An `Opaque` surface's ground has drawn at full strength: the fold may REPLACE the host
     /// from here (§6.2 `Surface::ground_ready`). The dispatcher copies it onto the surface after
     /// every draw; a page never answers.
@@ -881,6 +888,16 @@ pub struct DrawFrame<'a, 'views, H: Host> {
     /// `paint_ghosts` paints that ghost alone on such a frame (and the page pass, whose `lifted`
     /// names it, leaves it out). `None` on every other frame.
     pub lifting: Option<FocusKey<H::Elem>>,
+    /// **The push this frame is drawn under, for a page that holds its narrative column**
+    /// ([`crate::route_screen::PushFrame`]). `None` everywhere else: a page the surface draws whole
+    /// carries its push in `painter` already, and a page drawn at rest has none. Set by the
+    /// Settings surface, read through [`Self::narrative_painter`] / [`Self::list_painter`] by the
+    /// parts that draw a route's two columns (`table_screen`).
+    pub push: Option<crate::route_screen::PushFrame>,
+    /// **How far a surface's entry dip has taken the page beneath it to the app ground**, `0..=1`
+    /// (`containers::modal::PopoverMotion::floor`). `0` on every frame but the opening of a surface
+    /// that opts into the dip ([`Screen::entry_motion`]). Set by the dispatcher's surface pass.
+    pub entry_floor: f32,
     stops: Vec<Stop<H::Elem>>,
 }
 
@@ -933,8 +950,22 @@ impl<'a, 'views, H: Host> DrawFrame<'a, 'views, H> {
             underlay: None,
             lifted: None,
             lifting: None,
+            push: None,
+            entry_floor: 0.0,
             stops: Vec::new(),
         }
+    }
+
+    /// The painter for a route's NARRATIVE column: the frame's own at rest, and under a push that
+    /// holds the column ([`Self::push`]) the same position with the push's cross-fade alpha.
+    pub fn narrative_painter(&self) -> Painter {
+        self.push.map_or(self.painter, |push| push.narrative(self.painter))
+    }
+
+    /// The painter for a route's CONTENT column (its table): the frame's own at rest, and under a
+    /// push that holds the narrative column ([`Self::push`]) the list's lead-in or exit.
+    pub fn list_painter(&self) -> Painter {
+        self.push.map_or(self.painter, |push| push.list(self.painter))
     }
 
     /// **Does the page pass leave `elem` of `entry` out, because a surface lifts it?** The ONE

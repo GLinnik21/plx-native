@@ -634,3 +634,14 @@ Diagnostics sits between them. The anchor was recorded afresh on the unchanged s
 (`tests/focusfp.sh --rec --only 6`, old fixture removed, `tools/plxnative-rec import`, `anchor: true`
 restored) and replayed SAME in Targets and Resolve on three consecutive runs. The closed alphabet
 adds `Settings` and `SUPPORT` (`_sources.settings_v2`).
+
+Settings v2 stages 2-4 (the Privacy & data page and the Legal index, document and About restyled with
+the follow-focus left column and 48 title, the disabled-state ghost pill, the entry dip and held-
+narrative push motion) again changed recorded behaviour without moving the shape (`state_fp`
+2626795085001354380): the committed `6-settings-family` was observed being refused in both modes
+(`replay: REFUSED — replay measurement table miss`). The flow's keys still reach Privacy and Legal
+(overlay sequence settings, privacy, settings, legal, settings), so the script is unchanged. The
+anchor was recorded afresh (`tests/focusfp.sh --rec --only 6`, old fixture removed, `plxnative-rec
+import`, `anchor: true` restored, manifest byte-identical) and replayed SAME in Targets and Resolve
+on three consecutive runs. The closed alphabet adds `Legal`, `Privacy` and `Privacy &` (the page
+titles, measured word by word; `_sources.settings_v2`).

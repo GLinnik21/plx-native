@@ -1,8 +1,10 @@
 //! **Privacy & data, and the first-run consent question, as pages of the surface** (restructure
 //! phase 5b; the words and the two-document preview design are `ui/consent.rs`'s, moved). One
 //! type, two modes (§6.2 "mounts twice"): [`ConsentPage::settings`] is the Privacy & data page
-//! under the Settings root — two toggles, five documents, Delete all local data, and a Done that
-//! appears only once the draft differs from the stored answer; [`ConsentPage::first_run`] is one
+//! under the Settings root (Settings v2 anatomy: rows without sub-lines, the focused row's sentence
+//! in the left column) — two toggles, five documents, Delete all local data, and a Done that
+//! appears only once the draft differs from the stored answer, with one line beside it saying
+//! what BACK does; [`ConsentPage::first_run`] is one
 //! STAGE of the sign-in's question — a full disclosure, the reading list and two equal answers
 //! in one row. Exceptional overflow scrolls at BODY size while the selected answer retains focus;
 //! the second
@@ -19,6 +21,7 @@ use std::borrow::Cow;
 use plx_telemetry::telemetry::consent::{self, Consent};
 use plx_ui::decision_alert::{Choice as AlertChoice, DecisionAlert};
 use plx_ui::document_reader::DocumentReader;
+use plx_ui::follow_copy::FollowCopy;
 use plx_ui::form::{Form, FormId, FormSection, FormTable, RowKey, RowKeys, RowKind};
 use plx_ui::frame::Budget;
 use plx_machine::machine::{
@@ -140,6 +143,9 @@ pub struct ConsentPage {
     disclosure: DocumentReader,
     /// Measured at mount through Cx, so focus and draw use identical, replayable columns.
     layout: RouteLayout,
+    /// Privacy & data's sentence beside the table: the focused row's own, else the page's
+    /// ([`settings_sentence`], a pure function of the focused row). Unused by first run.
+    follow: FollowCopy,
     state: ConsentState,
 }
 
@@ -158,6 +164,25 @@ impl LogicalState for ConsentState {
     }
     fn probe(&self, out: &mut String) {
         out.push_str(&format!("consent mode={} draft={:?} alert={} disclosure_pos={} alert_scroll={}", self.mode, self.draft, self.alert, self.disclosure_pos, self.alert_scroll));
+    }
+}
+
+/// **The sentence Privacy & data states for the focused row** (Settings v2: the rows carry no
+/// sub-line, the sentence is said in the left column while the row has focus). A pure function of
+/// the focused row; a page with no focused row says its own. Every row has one of its own today -
+/// the words are the old sub-lines.
+fn settings_sentence(id: Option<RowId>) -> &'static str {
+    use plx_platform::i18n::msg;
+    match id {
+        Some(RowId::Errors) => msg::settings_consent_crash_detail(),
+        Some(RowId::Usage) => msg::settings_consent_usage_detail(),
+        Some(RowId::PreviewCrash) => msg::settings_consent_preview_crash(),
+        Some(RowId::PreviewUsage) => msg::settings_consent_preview_usage(),
+        Some(RowId::Policy) => msg::settings_consent_preview_policy(),
+        Some(RowId::ErrorsId) => msg::settings_consent_preview_errors_id(),
+        Some(RowId::AnalyticsId) => msg::settings_consent_preview_analytics_id(),
+        Some(RowId::Delete) => msg::settings_consent_delete_detail(),
+        None => msg::settings_consent_settings_copy(),
     }
 }
 
@@ -196,27 +221,27 @@ fn consent_form(mode: Mode, draft: (bool, bool)) -> Form<RowId, Act, SettingsPag
                 .section(
                     FormSection::new(plx_platform::i18n::msg::settings_consent_reporting())
                         .item(RowId::Errors, RowKind::Toggle, Act::FlipErrors,
-                            Row::new(plx_platform::i18n::msg::settings_consent_crash_row()).detail(plx_platform::i18n::msg::settings_consent_crash_detail()).toggle(errors))
+                            Row::new(plx_platform::i18n::msg::settings_consent_crash_row()).toggle(errors))
                         .item(RowId::Usage, RowKind::Toggle, Act::FlipUsage,
-                            Row::new(plx_platform::i18n::msg::settings_consent_usage_row()).detail(plx_platform::i18n::msg::settings_consent_usage_detail()).toggle(usage)),
+                            Row::new(plx_platform::i18n::msg::settings_consent_usage_row()).toggle(usage)),
                 )
                 .section(
                     FormSection::new(plx_platform::i18n::msg::settings_consent_information())
                         .item(RowId::PreviewCrash, preview(PreviewKind::Crash), Act::Open,
-                            Row::new(plx_platform::i18n::msg::settings_consent_crash_document()).detail(plx_platform::i18n::msg::settings_consent_preview_crash()).chevron(true))
+                            Row::new(plx_platform::i18n::msg::settings_consent_crash_document()).chevron(true))
                         .item(RowId::PreviewUsage, preview(PreviewKind::Usage), Act::Open,
-                            Row::new(plx_platform::i18n::msg::settings_consent_usage_document()).detail(plx_platform::i18n::msg::settings_consent_preview_usage()).chevron(true))
+                            Row::new(plx_platform::i18n::msg::settings_consent_usage_document()).chevron(true))
                         .item(RowId::Policy, preview(PreviewKind::Policy), Act::Open,
-                            Row::new(plx_platform::i18n::msg::settings_consent_policy()).detail(plx_platform::i18n::msg::settings_consent_preview_policy()).chevron(true))
+                            Row::new(plx_platform::i18n::msg::settings_consent_policy()).chevron(true))
                         .item(RowId::ErrorsId, preview(PreviewKind::ErrorsId), Act::Open,
-                            Row::new(plx_platform::i18n::msg::settings_consent_crash_id()).detail(plx_platform::i18n::msg::settings_consent_preview_errors_id()).chevron(true))
+                            Row::new(plx_platform::i18n::msg::settings_consent_crash_id()).chevron(true))
                         .item(RowId::AnalyticsId, preview(PreviewKind::AnalyticsId), Act::Open,
-                            Row::new(plx_platform::i18n::msg::settings_consent_analytics_id()).detail(plx_platform::i18n::msg::settings_consent_preview_analytics_id()).chevron(true)),
+                            Row::new(plx_platform::i18n::msg::settings_consent_analytics_id()).chevron(true)),
                 )
                 .section(
                     FormSection::new(plx_platform::i18n::msg::settings_consent_on_tv()).item(
                         RowId::Delete, RowKind::Button, Act::Delete,
-                        Row::new(plx_platform::i18n::msg::settings_consent_delete()).detail(plx_platform::i18n::msg::settings_consent_delete_detail()).chevron(true),
+                        Row::new(plx_platform::i18n::msg::settings_consent_delete()).chevron(true),
                     ),
                 )
         }
@@ -230,6 +255,8 @@ impl ConsentPage {
         let mut s = Self::bare(entry, Mode::Settings, (prev.errors, prev.usage));
         s.rebuild(None);
         s.form.table.list_focused = true;
+        // opens on the first row's sentence at once, nothing fading
+        s.follow = FollowCopy::new(settings_sentence(s.form.selected_id().copied()));
         s
     }
 
@@ -285,7 +312,13 @@ impl ConsentPage {
             alert_frames: std::cell::Cell::new(None),
             pop: CtlPop::new(),
             disclosure: DocumentReader::new().with_size(theme::size::BODY),
-            layout: RouteLayout::screen(),
+            layout: match mode {
+                // Privacy & data wears the Settings page anatomy; the first-run question keeps
+                // the hero title (the board does not move it)
+                Mode::Settings => RouteLayout::settings_page(),
+                Mode::FirstRun { .. } => RouteLayout::screen(),
+            },
+            follow: FollowCopy::new(""),
             state: ConsentState {
                 mode: match mode {
                     Mode::Settings => 0,
@@ -305,12 +338,25 @@ impl ConsentPage {
     /// opens afresh on the first row.
     fn rebuild(&mut self, keep: Option<RowId>) {
         self.form.table.header_ink = theme::TEXT_READING;
+        if matches!(self.mode, Mode::Settings) {
+            self.form.table.compact = false;
+            self.form.table.board_metrics(true);
+        }
         let form = consent_form(self.mode, self.draft);
         match keep {
             Some(id) if self.form.table.n_rows() > 0 => self.form.set_sliding(form, Some(&id)),
             _ => self.form.set(form, None),
         }
         self.state.draft = self.draft;
+        self.follow_focus();
+    }
+
+    /// Say the sentence of the row the table has selected (Settings mode only; first run shows the
+    /// stage's disclosure instead). A sentence already shown changes nothing.
+    fn follow_focus(&mut self) {
+        if matches!(self.mode, Mode::Settings) {
+            self.follow.follow(settings_sentence(self.form.selected_id().copied()));
+        }
     }
 
     fn title(&self) -> &'static str {
@@ -362,6 +408,12 @@ impl ConsentPage {
         }
     }
 
+    /// The line beside Done while a draft is pending: what BACK does with it (proposed copy).
+    /// Only Settings has a draft, and the band holds Done only then.
+    fn band_note(&self) -> Option<&'static std::ffi::CStr> {
+        (self.uncommitted()).then(plx_platform::i18n::msg::settings_consent_discard_note_c)
+    }
+
     fn first_run_layout(title: &str, body: &str, has_crumb: bool, table: &TableView,
         labels: &[&std::ffi::CStr], measure: &dyn plx_machine::machine::Measure) -> RouteLayout {
         let pill = |label: &std::ffi::CStr| plx_ui::table_screen::pill_w(measure, label, theme::size::BODY);
@@ -403,6 +455,7 @@ impl ConsentPage {
             alert_frames: self.alert_frames.get(),
             alert_choice: self.alert.choice(),
             uncommitted: self.uncommitted(),
+            note: self.band_note(),
         }
     }
 
@@ -537,6 +590,8 @@ struct ConsentView<'a> {
     /// than to a hardcoded default — see that method's doc for the bug this closes.
     alert_choice: AlertChoice,
     uncommitted: bool,
+    /// Beside Done ([`ConsentPage::band_note`]); no part of the focus geometry.
+    note: Option<&'static std::ffi::CStr>,
 }
 
 impl<'a> ConsentView<'a> {
@@ -558,6 +613,7 @@ impl<'a> ConsentView<'a> {
             scales: self.scales,
             palette: palette(),
             danger: None,
+            note: self.note,
         })
     }
     fn disclosure_frame(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
@@ -681,6 +737,7 @@ impl Machine<InnerHost> for ConsentPage {
                 self.form.table.update(dt, self.list_frame().h);
                 self.alert.update(dt);
                 self.disclosure.update(dt);
+                self.follow.update(dt);
                 let band = cx.focus.current.and_then(|k| band_index(k.elem));
                 self.pop.step(band, dt);
                 Handled::Yes
@@ -690,6 +747,7 @@ impl Machine<InnerHost> for ConsentPage {
                     self.alert.set_choice(if i == 1 { AlertChoice::Destructive } else { AlertChoice::Cancel });
                 } else {
                     form_focus(&mut self.form, to.elem);
+                    self.follow_focus();
                 }
                 Handled::Yes
             }
@@ -887,7 +945,9 @@ impl Screen<InnerHost> for ConsentPage {
     }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
-        let p = f.painter;
+        // the header (and the first-run disclosure) is the narrative column: it holds still under a
+        // Settings push and cross-fades; at rest, and in first run, this is the frame's own painter
+        let p = f.narrative_painter();
         let layout = self.layout;
         if matches!(self.mode, Mode::FirstRun { .. }) {
             Header::new(layout, self.crumb(), self.title(), "").paint(p, f.measure);
@@ -896,7 +956,9 @@ impl Screen<InnerHost> for ConsentPage {
             self.disclosure.draw(p, frame, None, body);
         } else {
             Header::new(layout, self.crumb(), self.title(), self.body())
-                .with_copy_size(self.copy_size()).paint(p, f.measure);
+                .with_copy_size(self.copy_size())
+                .with_follow(&self.follow)
+                .paint(p, f.measure);
         }
         let labels = self.band_labels();
         let alert_open = self.alert.is_open();
@@ -921,6 +983,7 @@ impl Screen<InnerHost> for ConsentPage {
                     scales: [self.pop.scale(0), self.pop.scale(1)],
                     palette: palette(),
                     danger: None,
+                    note: self.band_note(),
                 });
             // the table and the band; the header was painted above with the page's own words
             Part::<InnerHost>::draw(&mut ts.table, f, self.list_frame());
@@ -1496,3 +1559,7 @@ mod delete_alert_tests;
 #[cfg(test)]
 #[path = "consent_text_fit_tests.rs"]
 mod text_fit_tests;
+
+#[cfg(test)]
+#[path = "consent_v2_tests.rs"]
+mod v2_tests;

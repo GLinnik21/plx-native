@@ -75,7 +75,7 @@ fn nested_draw_preserves_navigation_at_rest_and_through_push_and_pop() {
             entry: EntryId(0), id: InstanceId(0), kind: Family::Settings,
             inner, ids: Minter::default(),
             push: Push { route: plx_ui::route_screen::RoutePush::at(pos), open: target == 1.0,
-                leaving: popping.then(|| instance(3)) },
+                leaving: popping.then(|| instance(3)), leaving_page: popping.then_some(SettingsPage::Root) },
             ground: RouteGround::new(), ground_ready: false, remembered: Vec::new(),
         };
         let outer = cx(None);
