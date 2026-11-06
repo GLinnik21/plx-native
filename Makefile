@@ -1925,14 +1925,17 @@ check-python-harness:
 #    this app did for seven weeks, because the signal is MASKED inside its own handler, so
 #    `raise()` returned and the `_exit(128+sig)` beneath it ran every time.
 # 3. The shim's private log files (ci/private-log-test.c).
-# 4. The libc `exit` interposer (src/exit.c), LINUX ONLY. A forked child `dlopen`s a library by path
-#    (ci/exit-interpose-lib.c: it registers a finalizer that would `_exit(42)`, then calls `exit(7)`)
-#    and calls it from a second thread, the shape of PLX-NATIVE-1P's SDLTimer thread. The executable
-#    is built twice. With src/exit.c linked and the link's own EXIT_INTERPOSER_LDFLAG, the child must
-#    end with 7: the real status survived, the finalizer never ran, and the return address handed to
-#    plx_exit_intercepted (for the event-log line that names the caller of exit) lies in the library
-#    that called exit; a stub checks that with dladdr and ends with 96 when it names another object.
-#    Without src/exit.c it must end with 42, which is what proves the test can fail. (The flag is not the variable between the two:
+# 4. The libc `exit` interposer (src/exit.c), LINUX ONLY. Two temporary files stand in for the event log
+#    and the crash log; a forked child installs the real crash tracer (src/crashtrace.c, linked with
+#    the test; no Rust) onto them, `dlopen`s a library by path (ci/exit-interpose-lib.c: it registers
+#    a finalizer that would `_exit(42)`, then calls `exit(7)`) and calls it from a second thread named
+#    `exit-caller`, the shape of PLX-NATIVE-1P's SDLTimer thread. The executable is built twice. With
+#    src/exit.c linked and the link's own EXIT_INTERPOSER_LDFLAG, the child must end with 7: the real
+#    status survived, the finalizer never ran, the event log holds the `*** EXIT status=7 caller=0x`
+#    record (plx_exit_record) with a `thread:` line naming `exit-caller` and an `at:` line naming
+#    libexitcaller.so, and the crash log is EMPTY (an exit is not a crash; the next launch's importer
+#    reads that file). Without src/exit.c (crashtrace.c still linked) it must end with 42, which is
+#    what proves the test can fail. (The flag is not the variable between the two:
 #    ld exports an executable's `exit` anyway, because libc.so defines it too, measured with the
 #    NDK's ld; what ships is asserted on the artifact by ci/check-elf.sh.) The library is opened by
 #    path, never linked: a shared object on the link line can change what the linker exports. Darwin's
@@ -1946,10 +1949,10 @@ check-c-unit:
 	cc -O1 -Wall -Wextra -Werror -Isrc -o "$$d/private-log" ci/private-log-test.c && "$$d/private-log"; \
 	if [ "$$(uname -s)" = Linux ]; then \
 	  cc -O1 -Wall -Wextra -Werror -shared -fPIC -o "$$d/libexitcaller.so" ci/exit-interpose-lib.c; \
-	  cc -O1 -Wall -Wextra -Werror -o "$$d/exit-interposed" ci/exit-interpose-test.c src/exit.c $(EXIT_INTERPOSER_LDFLAG) -ldl -lpthread; \
-	  "$$d/exit-interposed" "$$d/libexitcaller.so" 7; \
-	  cc -O1 -Wall -Wextra -Werror -o "$$d/exit-control" ci/exit-interpose-test.c -ldl -lpthread; \
-	  "$$d/exit-control" "$$d/libexitcaller.so" 42; \
+	  cc -O1 -Wall -Wextra -Werror -Isrc -o "$$d/exit-interposed" ci/exit-interpose-test.c src/crashtrace.c src/exit.c $(EXIT_INTERPOSER_LDFLAG) -ldl -lpthread; \
+	  "$$d/exit-interposed" "$$d/libexitcaller.so" interposed; \
+	  cc -O1 -Wall -Wextra -Werror -Isrc -o "$$d/exit-control" ci/exit-interpose-test.c src/crashtrace.c -ldl -lpthread; \
+	  "$$d/exit-control" "$$d/libexitcaller.so" control; \
 	else \
 	  echo "check-c-unit: exit-interpose test skipped on $$(uname -s): only Linux binds a shared object's exit() to the executable's (CI runs it)"; \
 	fi

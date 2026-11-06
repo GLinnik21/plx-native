@@ -1,7 +1,8 @@
 /* PlxNative — an unofficial native Plex client for LG webOS.
  * Copyright © 2026 Gleb Linnik. Licensed under GPL-3.0-or-later; see LICENSE at the repository root.
  *
- * crashtrace.h — install the fatal-signal tracer. One entry point, called once from `main`.
+ * crashtrace.h — the fatal-signal tracer: `plx_crash_install`, called once from `main`, and
+ * `plx_exit_record`, called by the executable's `exit` (`src/exit.c`).
  */
 #ifndef PLX_CRASHTRACE_H
 #define PLX_CRASHTRACE_H
@@ -39,6 +40,33 @@ void plx_crash_install(int event_fd, int crash_fd);
  * final line with no newline, a line longer than the buffer) and the only way to exercise ANY of
  * it on a host with no `/proc`. Async-signal-safe, like everything it calls. */
 void plx_crash_scan_maps_file(const char *path, unsigned long pc, unsigned long lr);
+
+/* The record of a libc `exit()` made inside the process, and then the process's end: `src/exit.c`
+ * (the executable's own definition of `exit`, so that an `exit` made by a shared library lands
+ * here) calls this with the status and its own return address (`caller`, the RAW address of the
+ * `exit` call), and it never returns.
+ *
+ * It writes one record to the EVENT log only, never the crash log (the next launch's crash importer
+ * reads that one, and an exit is not a crash): a `*** EXIT status=<n> caller=0x<hex>` header, the
+ * `time:` and `thread:` lines of a fault record, and the `/proc/self/maps` line (`at:`) of the
+ * mapping that contains the call, which is how a stripped firmware library that called `exit` gets
+ * named. Then `_exit(status)`. It also stores the "exiting" phase in `plx_crash_phase`, so a fault
+ * in these last instructions says so.
+ *
+ * **Async-signal-safe, all of it,** because `exit` can be called from a signal handler: lock-free
+ * `__atomic` operations, `gettid`/`prctl` syscalls, `time`, `getpid`, `open`/`read`/`write`/`close`,
+ * `_exit` and static buffers, and nothing that takes a lock or allocates. Only the first caller
+ * writes a record. A second one (another thread's exit, or this one re-entered from a signal
+ * handler) calls `_exit(status)` at once and never waits.
+ *
+ * **What it does not do is flush.** `exit` would flush the C stdio streams, and the Rust-side
+ * `exit_now` flushes Rust's stdout and stderr as well; both take locks that the interrupted code
+ * may hold, so this does neither. That drops at most a partial line still buffered in Rust's stdout
+ * or in a C stdio stream. The event and crash logs are raw descriptor writes with no buffer, and
+ * lose nothing.
+ *
+ * Before [`plx_crash_install`] has run there is no sink and it simply `_exit`s. */
+void plx_exit_record(int status, unsigned long caller) __attribute__((noreturn));
 
 /* The freeze probe's number, OWNED BY THE RUST WATCHDOG (`plx_base::task::watchdog`, which defines
  * the symbol): it stores the number right before it signals the main thread and the handler takes

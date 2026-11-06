@@ -2,7 +2,7 @@
  * Copyright © 2026 Gleb Linnik. Licensed under GPL-3.0-or-later; see LICENSE at the repository root.
  *
  * exit.c — the executable's own definition of libc `exit`, so that an `exit()` made by a shared
- * library ends the process the way the app's own exits do.
+ * library ends the process without running any exit handler, as the app's own exits do.
  *
  * # What it is for
  *
@@ -21,10 +21,24 @@
  * Makefile's `EXIT_INTERPOSER_LDFLAG`), so the `R_ARM_JUMP_SLOT` of every shared object's `exit`
  * binds to this definition instead of libc's. The same mechanism carries the Starfish
  * `callbackFunctionHook` interposer in `src/starfish.c`. It hands the status and its own return
- * address to `plx_exit_intercepted` (`rust-modules/base/src/process.rs`), which logs the calling
- * thread and the shared object and offset the return address falls in, then ends the process with
- * `exit_now`. The return address is there because the PLX-NATIVE-1P event shows no frame above
- * `__run_exit_handlers`, so which library called `exit` is otherwise unknown.
+ * address to `plx_exit_record` (`src/crashtrace.c`), which writes one record to the event log (the
+ * thread, and the mapping the return address falls in: the shared object that called `exit`) and
+ * ends the process with `_exit`. The return address is there because the PLX-NATIVE-1P event shows
+ * no frame above `__run_exit_handlers`, so which library called `exit` is otherwise unknown.
+ *
+ * **The interposer must be async-signal-safe, because `exit` can be reached from a signal
+ * handler** (a library's own, on any thread), where a lock the interrupted code holds is a
+ * self-deadlock. So the whole path is the crash tracer's own: the compiler intrinsic
+ * `__builtin_return_address`, lock-free `__atomic` operations (the guard that lets only the first
+ * exit write a record; a second one calls `_exit` at once), the `gettid` and `prctl` syscalls, `time` and
+ * `getpid`, `open`/`read`/`write`/`close` over static buffers, and `_exit`. It allocates nothing, takes no
+ * lock and calls neither `dladdr` (which takes the loader's lock) nor Rust (`format!`, the event
+ * log's lock, `exit_now`'s stdout and stderr locks).
+ *
+ * **It does not flush.** `exit` flushes the C stdio streams and `exit_now` Rust's stdout and stderr,
+ * and each takes a lock the interrupted code may hold. What that drops is at most a partial line
+ * still buffered in Rust's stdout or a C stream; the event and crash logs are raw descriptor writes
+ * and lose nothing.
  *
  * This is an interposer and not an `atexit` handler because it does not depend on the order the
  * finalizers were registered in (a handler registered once at boot is run AFTER everything
@@ -35,6 +49,14 @@
  * images (webOS 4.x W19P/W19R, 6.x W21O, 9.2 W24G, 11.2 W23O), so an `exit` SDL makes binds to this
  * definition. Whether PLX-NATIVE-1P's call came through a PLT at all is not determined: the event
  * has no frame above `__run_exit_handlers`.
+ *
+ * LG's SDL does call `exit` on a thread of its own: every `libsdl2-webos` build in the firmware
+ * images, 2.0.0 (W16) to 2.0.14 (W25), carries a "forcetoEXIT" force-quit thread. In 2.0.5-83 (W19P)
+ * a callback that also sends `SDL_WINDOWEVENT_CLOSE` starts it; it runs `SDL_Delay(60000)` and then
+ * `exit(1)`, and its creation-failure path calls `exit(1)` at once. Those are that build's only two
+ * `exit` calls, and neither is in a signal handler. The field crash was on a thread named `SDLTimer`
+ * 1.4 s after backgrounding, which matches neither that thread's name nor its delay; the crashing k5lp
+ * build is not in the image set, so whether it is the same mechanism is not determined.
  *
  * The Makefile exports the symbol explicitly so the export does not rest on an implicit rule (the
  * NDK's ld exports the executable's `exit` even without the flag, because libc.so, always on the
@@ -53,10 +75,10 @@
  * `src/main.c` returns 0 from `main` only on the Sentry-spool re-entry
  * (`plx_sentry_spool_external`), which runs libc's own `exit` as before.
  */
+#include "crashtrace.h"
+
 #include <stdlib.h>
 
-extern void plx_exit_intercepted(int status, void *caller) __attribute__((noreturn));
-
 __attribute__((noreturn)) void exit(int status) {
-    plx_exit_intercepted(status, __builtin_return_address(0));
+    plx_exit_record(status, (unsigned long)__builtin_return_address(0));
 }

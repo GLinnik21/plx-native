@@ -397,4 +397,36 @@ static inline size_t plx_fmt_frames(char *out, size_t cap, const unsigned long *
     return i - from;
 }
 
+/* ---------------------------------------------------------------------------------------------
+ * The EXIT record: a libc `exit()` made inside the process, written by `plx_exit_record`
+ * (`src/crashtrace.c`) before it ends the process with `_exit`.
+ *
+ * Not a fault and not a freeze, so it has its own header (`*** EXIT`, never `*** SIGNAL` or
+ * `*** FREEZE`) and every tool that scans a log for faults keeps skipping it. Unlike those two it
+ * is written to the EVENT log only, never the crash log, so the next launch's crash importer never
+ * sees it. Its lines are the fault record's own (`time:`, `thread:`, `at:`), under this header.
+ * ------------------------------------------------------------------------------------------- */
+
+/* The exit record's FIRST line:
+ *
+ *     *** EXIT status=7 caller=0x76e2a1c4
+ *
+ * `status` is what `exit` was given, as a signed decimal (a caller may pass -1), and `caller` is the
+ * RAW return address of the `exit` call, Thumb bit and all: the address to subtract the `at:` line's
+ * mapping base from, then back up into the call instruction. Which mapping the `at:` line names is
+ * `plx_exit_record`'s lookup (one byte below this address, see there). Like `plx_fmt_signal`, it
+ * opens with a blank line that separates the record from the log line before it, and repeats
+ * `caller=` on no later line. */
+static inline size_t plx_fmt_exit(char *out, size_t cap, int status, unsigned long caller) {
+    struct plx_sbuf b = { out, 0, cap };
+    plx_s_str(&b, "\n*** EXIT status=");
+    if (status < 0) plx_s_ch(&b, '-');
+    /* The magnitude as unsigned arithmetic, so INT_MIN needs no negation that overflows. */
+    plx_s_dec(&b, status < 0 ? 0UL - (unsigned long)(long)status : (unsigned long)status);
+    plx_s_str(&b, " caller=");
+    plx_s_hex(&b, caller);
+    plx_s_ch(&b, '\n');
+    return b.n;
+}
+
 #endif /* PLX_CRASHFMT_H */

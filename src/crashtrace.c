@@ -123,10 +123,11 @@ static void s_write(int fd, const char *p, size_t n) {
 /* Static, because signal context has no business allocating and the stack is the one resource a
  * SIGSEGV may have just exhausted.
  *
- * **Two sets, one per handler.** The fatal handler and the freeze probe's handler can both be in
+ * **Three sets, one per writer.** The fatal handler and the freeze probe's handler can both be in
  * flight at once: a freeze record is being written on the main thread while another thread
  * crashes. Sharing one set would let the crash's lines interleave with, or be clobbered by, the
- * freeze's, and the crash is the record that must be whole. */
+ * freeze's, and the crash is the record that must be whole. The third set is the exit record's
+ * (`plx_exit_record`), for the same reason. */
 struct bufs {
     char chunk[4096];
     char line[512];
@@ -134,6 +135,8 @@ struct bufs {
 };
 static struct bufs crash_bufs;
 static struct bufs freeze_bufs;
+/* `plx_exit_record`'s set. Its lines go to the event log ONLY (see `emit`). */
+static struct bufs exit_bufs;
 
 /* Set on entry to the fatal handler and never cleared: the process is dying. The freeze probe
  * checks it before every line it writes, because a probe interrupting a thread while ANOTHER
@@ -142,10 +145,13 @@ static volatile sig_atomic_t crashing;
 
 /* Both sinks get every line, so the two logs tell the same story: the event log is where the rest
  * of the session is, and the crash log is the half that survives the relaunch. A freeze line
- * (written from the freeze buffers) is dropped once a crash has begun. */
+ * (written from the freeze buffers) is dropped once a crash has begun. The exit record (written
+ * from `exit_bufs`) goes to the event log alone: the crash log is what the next launch's crash
+ * importer turns into reports, and an exit is not a crash. */
 static void emit(const struct plx_sbuf *b) {
     if (crashing && b->p == freeze_bufs.rec) return;
     s_write((int)event_fd, b->p, b->n);
+    if (b->p == exit_bufs.rec) return;
     s_write((int)crash_fd, b->p, b->n);
 }
 
@@ -154,6 +160,9 @@ static void emit(const struct plx_sbuf *b) {
 static void emit_map_line(struct bufs *B, const char *line, size_t n,
                           const unsigned long *addrs, size_t n_addrs) {
     int kind = plx_map_line_kind_n(line, n, addrs, n_addrs);
+    /* The exit record names the caller's mapping and has no use for the load base of the
+     * executable (an `ET_EXEC`, see the note at the top): no `bin:` line for it. */
+    if (B == &exit_bufs) kind &= PLX_MAP_AT;
     struct plx_sbuf b = { B->rec, 0, sizeof B->rec };
     if (kind & PLX_MAP_AT) {
         plx_s_str(&b, "at: ");
@@ -511,6 +520,63 @@ static void freeze_handler(int sig, siginfo_t *si, void *uc) {
     }
     errno = saved_errno;
     __sync_lock_release(&freeze_busy);
+}
+
+/* The process-wide "an exit is already under way" flag; see `plx_exit_record`. */
+static volatile int exiting;
+
+void plx_exit_record(int status, unsigned long caller) {
+    /* The first caller owns the record and the static buffers. Any other, a second thread's exit
+     * or this thread's own exit re-entered from a signal handler that interrupted the record, ends
+     * at once: it never waits (waiting on the first would deadlock the re-entered case), and the
+     * first thread is on its way to `_exit` anyway. */
+    if (__atomic_exchange_n(&exiting, 1, __ATOMIC_SEQ_CST)) _exit(status);
+    /* Rust's `exit_now` does the same before it flushes, so a fault in these last instructions
+     * is labelled the way the other ways out of the process label it (`CrashPhase::Exiting`). */
+    __atomic_store_n(&plx_crash_phase, PLX_PHASE_EXITING, __ATOMIC_RELAXED);
+
+    /* Before `plx_crash_install` there is no sink (both descriptors are -1, so `s_write` would be a
+     * no-op) and so no record: skip the formatting and the maps scan and just end. */
+    if (event_fd >= 0) {
+        struct bufs *B = &exit_bufs;
+        struct plx_sbuf b = { B->rec, 0, sizeof B->rec };
+        b.n = plx_fmt_exit(B->rec, sizeof B->rec, status, caller);
+        emit(&b);
+        time_t now = time(NULL);
+        if (now > 0) {
+            b.n = plx_fmt_time(B->rec, sizeof B->rec, (unsigned long)now);
+            emit(&b);
+        }
+        {
+            unsigned long tid = (unsigned long)getpid();
+            char tname[16] = {0};
+#if defined(__linux__)
+            tid = (unsigned long)syscall(SYS_gettid);
+            prctl(PR_GET_NAME, (unsigned long)tname, 0, 0, 0);
+#endif
+            b.n = plx_fmt_thread(B->rec, sizeof B->rec, tid, tid == (unsigned long)getpid(), tname);
+            emit(&b);
+        }
+        /* The mapping the `exit` call is in. `caller` is a RETURN address: on ARM it carries the
+         * Thumb bit when the call was made from Thumb code, and since `exit` never returns, the
+         * call can be the last instruction of its function, which leaves the return address one
+         * past that function's end, in whatever mapping follows. The byte before it is inside the
+         * call instruction. (A caller of 0, or of just the Thumb bit, names no mapping.) */
+        unsigned long at = caller;
+#if defined(__arm__)
+        at &= ~1UL;
+#endif
+        if (at) {
+            at -= 1;
+            scan_maps(B, "/proc/self/maps", &at, 1);
+        }
+    }
+    /* `plx_crash_install` binds ahead of time the libc entries the record writes with (`time`,
+     * `getpid`, `syscall`, `prctl`, `open`, `read`, `close`, `write`), so none of them goes through
+     * the dynamic linker's lazy resolver here. `_exit` cannot be: calling it is the exit, so its
+     * first call is resolved lazily, as the fatal handler's own `raise` is. The record is complete
+     * before that point. */
+    _exit(status);
 }
 
 void plx_crash_install(int ev_fd, int cr_fd) {
