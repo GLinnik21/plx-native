@@ -1676,12 +1676,15 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             // loaded detail can be a different item (show page / straight-from-Home play)
             // detail already had this item's streams — no GET
             let (playing, played) = match env.version {
-                None => (
-                    env.cached_item
-                        .clone()
-                        .or_else(|| plx_data::metadata::fetch_playing_item(client, env.sid, rk, None).map(|(item, _)| item)),
-                    None,
-                ),
+                None => match env.cached_item.clone() {
+                    Some(item) => (Some(item), None),
+                    None => match plx_data::metadata::fetch_playing_item_choosing(client, env.sid, rk, |it| {
+                        decodable_version(&plx_data::pms::versions_of(it), &env.caps).map(|v| v.id)
+                    }) {
+                        Some((item, played)) => (Some(item), played),
+                        None => (None, None),
+                    },
+                },
                 Some(want) => match plx_data::metadata::fetch_playing_item(client, env.sid, rk, Some(want)) {
                     Some((item, played)) => (Some(item), played),
                     None => (None, None),
@@ -1689,6 +1692,12 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             };
             if let (Some(want), None) = (env.version, played.as_ref()) {
                 crate::player::log(&format!("route: version {} is gone from the item; playing the default", want.0));
+            }
+            if let (None, Some(v)) = (env.version, played.as_ref()) {
+                crate::player::log(&format!(
+                    "route: the first version cannot play directly; version {} (mediaIndex {}) can",
+                    v.id.0, v.index
+                ));
             }
             // The picked version's part, codecs and `mediaIndex` replace the caller's (the default's)
             // together, so nothing below can pair one version's part with another's streams.
@@ -3753,6 +3762,66 @@ pub(super) fn video_direct_plays(
     codec_ok && src_w <= bw as i64 && src_h <= bh as i64 && dv.refusal().is_none()
 }
 
+pub(super) fn decodable_version<'a>(
+    versions: &'a [plx_data::pms::MediaVersion],
+    caps: &plx_platform::devcaps::Caps,
+) -> Option<&'a plx_data::pms::MediaVersion> {
+    let direct = |v: &plx_data::pms::MediaVersion| {
+        video_direct_plays(
+            &v.vcodec,
+            v.width,
+            v.height,
+            plx_data::metadata::DvPresentation::NotDv,
+            caps,
+        )
+    };
+    let first = versions.first()?;
+    if direct(first) {
+        return None;
+    }
+    let classed = || {
+        versions
+            .iter()
+            .enumerate()
+            .filter_map(|(index, v)| Some((index, v, resolution_class(v)?)))
+    };
+    let target = classed()
+        .filter(|&(_, v, _)| direct(v))
+        .map(|(_, _, class)| class)
+        .max()
+        .or_else(|| classed().map(|(_, _, class)| class).min())?;
+    let (_, chosen, _) = classed()
+        .filter(|&(_, _, class)| class == target)
+        .max_by_key(|&(index, v, _)| (direct(v), std::cmp::Reverse(index)))?;
+    (chosen.id != first.id).then_some(chosen)
+}
+
+fn resolution_class(version: &plx_data::pms::MediaVersion) -> Option<u32> {
+    match version.resolution.trim().to_ascii_lowercase().as_str() {
+        "sd" => Some(480),
+        "4k" => Some(2160),
+        "8k" => Some(4320),
+        named => named
+            .parse()
+            .ok()
+            .filter(|&class: &u32| class > 0)
+            .or_else(|| frame_class(version.width, version.height)),
+    }
+}
+
+fn frame_class(width: i64, height: i64) -> Option<u32> {
+    let width = if width > 0 { width } else { height.saturating_mul(16) / 9 };
+    match width {
+        w if w <= 0 => None,
+        w if w >= 3000 => Some(2160),
+        w if w >= 2400 => Some(1440),
+        w if w >= 1700 => Some(1080),
+        w if w >= 1100 => Some(720),
+        w if w >= 900 => Some(576),
+        _ => Some(480),
+    }
+}
+
 
 /// The detail page's "how this plays" answer, BEFORE anything is played — the same FOUR gates
 /// `build_stream` will apply (codec+resolution via [`video_direct_plays`], container via
@@ -3993,6 +4062,10 @@ mod track_memory_tests;
 #[cfg(test)]
 #[path = "plan_dolby_vision_tests.rs"]
 mod dolby_vision_tests;
+
+#[cfg(test)]
+#[path = "plan_default_version_tests.rs"]
+mod default_version_tests;
 
 #[cfg(test)]
 #[path = "plan_mde_decision_tests.rs"]
