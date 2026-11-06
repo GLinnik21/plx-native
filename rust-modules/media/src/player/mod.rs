@@ -50,6 +50,7 @@ pub mod uriprobe_drive; // runs the probe: the transport, the window verbs and t
 pub mod ffi;
 #[cfg(feature = "hostsim")]
 pub mod ffi_host;
+mod dv_start; // the Dolby Vision landing guard: takes the node out of a play whose first picture the firmware's splitter skips (pure state, #1166)
 mod era_callbacks; // the one diagnostic line for an era-chosen sink counter that never arrives (pure state)
 mod native_stall; // the surround native-audio stall watchdog (pure state) and the AU size evidence line
 mod pump;

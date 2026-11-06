@@ -156,6 +156,20 @@ pub enum AppLossy {
     All,
 }
 
+/// Which first picture a set's Dolby Vision splitter (`libgstdvsplitter.so`, built only when a Load
+/// carries a `DolbyHdrInfo` node) takes after its init or a flush. Read by the player at a landing
+/// (`route::dv_first_picture`, through the attempt's caps), never by the planner or a PMS profile.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DvFirstPicture {
+    /// Any HEVC random access point, a CRA or a BLA included: the default, what [`Caps::assumed`] and a
+    /// table read promise. A row only takes this away ([`Limit::DvFirstPictureIdr`]).
+    #[default]
+    AnyIrap,
+    /// Only an IDR (NAL type 19 or 20): every other picture is skipped until one arrives, so a
+    /// landing on a CRA after a seek or on a fresh pipeline never produces a picture.
+    IdrOnly,
+}
+
 /// Whether `policy` admits `row`: the ONE answer to "may the app decode this lossy row".
 pub(crate) fn lossy_row_enabled(row: &AppDecoded, policy: AppLossy) -> bool {
     row.lossy
@@ -280,21 +294,33 @@ pub fn app_decode_mixes_down(channels: i64) -> bool {
 
 const CAPS_TABLE: &str = "/etc/umediaserver/device_codec_capability_config.json";
 
-/// One native-audio combination that is **measured broken** on a firmware family, and so is not
-/// announced for it although the family's own codec table lists it. An excluded track is
-/// converted exactly as one the set never listed: by the server.
+/// What a firmware row takes away from a set's table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Limit {
+    /// `max_channels` native channels of `codec`; `0` means the codec is not announced at all.
+    Audio { codec: &'static str, max_channels: u32 },
+    /// The set's Dolby Vision splitter takes only an HEVC IDR as the first picture after its init or a
+    /// flush ([`DvFirstPicture::IdrOnly`]). Not an audio row, so the `nativeaudiowide` debug flag does
+    /// not skip it.
+    DvFirstPictureIdr,
+}
+
+/// One combination that is **measured broken** on a firmware family, and so is not announced for it
+/// although the family's own codec table lists it: a native-audio combination ([`Limit::Audio`]), which
+/// is converted exactly as a track the set never listed, by the server; or a Dolby Vision splitter that
+/// takes only an IDR first ([`Limit::DvFirstPictureIdr`]), which the player answers by withdrawing the
+/// declaration at a landing the splitter would skip.
 ///
 /// The key is the firmware codename (`tv::device::Info::codename`, nyx's `webos_release_codename`),
 /// the one identity the app reads reliably on every set: it groups the sets that run the same
 /// build of the media stack, which is what decides the decoder's behaviour, where the retail model
 /// name (`product_id`, absent on some firmware) and the SoC class would split one stack or merge two.
-/// A row says `max_channels` native channels of `codec`, `0` meaning the codec is not announced at
-/// all. A set no row names announces what its table lists; a row only takes away, so an unmeasured
+/// An audio row says `max_channels` native channels of `codec`, `0` meaning the codec is not announced
+/// at all. A set no row names announces what its table lists; a row only takes away, so an unmeasured
 /// family is never promised less than the firmware says.
 pub struct Exclusion {
     pub codename: &'static str,
-    pub codec: &'static str,
-    pub max_channels: u32,
+    pub limit: Limit,
     pub evidence: &'static str,
 }
 
@@ -302,8 +328,7 @@ pub const EXCLUSIONS: &[Exclusion] = &[
     // LG C1 (OLED55C14LB), webOS 6.5.3, measured 2026-10-21 and 2026-10-23.
     Exclusion {
         codename: "kisscurl-koli",
-        codec: "opus",
-        max_channels: 2,
+        limit: Limit::Audio { codec: "opus", max_channels: 2 },
         evidence: "6-channel Opus stalls the pipeline (Load returns, nothing is accepted, no picture) once \
                    packets pass 1500 bytes: CBR files with 1500 B packets play, 1536 B CBR and VBR noise \
                    (2264-3411 B) stall after ~190 AUs; stereo Opus (<=635 B) is clean. Emby topic 132334 \
@@ -311,8 +336,7 @@ pub const EXCLUSIONS: &[Exclusion] = &[
     },
     Exclusion {
         codename: "kisscurl-koli",
-        codec: "vorbis",
-        max_channels: 0,
+        limit: Limit::Audio { codec: "vorbis", max_channels: 0 },
         evidence: "the pipeline refuses the first buffers with type=18 num=200 'Audio Codec Not \
                    Supported' (stereo 44.1/48 kHz and 5.1, with the three header packets fed in-band); \
                    libpf's payload has no key for Vorbis headers.",
@@ -339,17 +363,25 @@ fn limit_codec(caps: &mut Caps, codec: &str, max: u32) -> Option<String> {
     Some(format!("{codec}<={limit}"))
 }
 
-/// Take the exclusions for `codename` off `caps`, returning what was applied as `codec<=N` or
-/// `codec=none`. `ignore` (the debug flag `/tmp/plxnative-nativeaudiowide`) applies none, so a
-/// combination the table keeps off the pipeline can be tried on a set.
+/// Take the exclusions for `codename` off `caps`, returning what was applied as `codec<=N`,
+/// `codec=none` or `dv-first-picture=idr`. `ignore` (the debug flag `/tmp/plxnative-nativeaudiowide`)
+/// skips the AUDIO rows, so a combination the table keeps off the pipeline can be tried on a set; a
+/// Dolby Vision row is not an audio row and stays applied.
 pub fn apply_exclusions(caps: &mut Caps, codename: &str, ignore: bool, table: &[Exclusion]) -> Vec<String> {
-    if ignore || codename.is_empty() {
+    if codename.is_empty() {
         return Vec::new();
     }
     table
         .iter()
         .filter(|e| e.codename.eq_ignore_ascii_case(codename))
-        .filter_map(|e| limit_codec(caps, e.codec, e.max_channels))
+        .filter_map(|e| match e.limit {
+            Limit::Audio { .. } if ignore => None,
+            Limit::Audio { codec, max_channels } => limit_codec(caps, codec, max_channels),
+            Limit::DvFirstPictureIdr => {
+                caps.dv_first_picture = DvFirstPicture::IdrOnly;
+                Some("dv-first-picture=idr".to_string())
+            }
+        })
         .collect()
 }
 
@@ -551,6 +583,11 @@ pub struct Caps {
     /// decoder says: set by the recovery rung for the one codec a Load refused
     /// ([`Caps::with_app_lossy_for`]), or for every lossy row by the debug trigger. Empty at boot.
     pub app_lossy_in_force: std::collections::BTreeSet<String>,
+    /// Which first picture this set's Dolby Vision splitter takes ([`DvFirstPicture`]):
+    /// [`DvFirstPicture::AnyIrap`] in [`Caps::assumed`] and in a table read; [`DvFirstPicture::IdrOnly`]
+    /// where an [`EXCLUSIONS`] row says so ([`Limit::DvFirstPictureIdr`]) or the `dvfirstpicture` dev
+    /// trigger asks. Carried by the attempt's caps; it never reaches the PMS profile.
+    pub dv_first_picture: DvFirstPicture,
 }
 
 impl Caps {
@@ -575,6 +612,7 @@ impl Caps {
             video_ceiling: Default::default(),
             app_lossy: AppLossy::Off,
             app_lossy_in_force: Default::default(),
+            dv_first_picture: DvFirstPicture::AnyIrap,
         }
     }
 
@@ -1167,6 +1205,7 @@ fn parse(s: &str) -> Option<Caps> {
         video_ceiling: Default::default(),
         app_lossy: AppLossy::Measured,
         app_lossy_in_force: Default::default(),
+        dv_first_picture: DvFirstPicture::AnyIrap,
     })
 }
 
@@ -1780,13 +1819,57 @@ mod tests {
         assert_eq!(c, native_set());
     }
 
+    // -- the Dolby Vision first-picture row (#1166) ---------------------------------------------------
+
+    #[test]
+    fn dv_first_picture_cx_family_takes_only_an_idr() {
+        let mut c = native_set();
+        assert_eq!(c.dv_first_picture, DvFirstPicture::AnyIrap, "a table read promises any IRAP");
+        let applied = apply_exclusions(&mut c, "jhericurl-jervisbay", false, EXCLUSIONS);
+        assert_eq!(c.dv_first_picture, DvFirstPicture::IdrOnly);
+        assert!(applied.iter().any(|a| a == "dv-first-picture=idr"), "{applied:?}");
+        // The codename compares without regard to case, like the audio rows.
+        let mut d = native_set();
+        apply_exclusions(&mut d, "Jhericurl-Jervisbay", false, EXCLUSIONS);
+        assert_eq!(d.dv_first_picture, DvFirstPicture::IdrOnly);
+        // The row takes away nothing else: the audio table is what the set listed.
+        let mut plain = native_set();
+        plain.dv_first_picture = DvFirstPicture::IdrOnly;
+        assert_eq!(c, plain);
+    }
+
+    #[test]
+    fn dv_first_picture_5_6_2_and_unknown_families_take_any_irap() {
+        // 5.6.2-21 (`jhericurl-jimna`) admits CRA; the rest are unmeasured and never promised less.
+        for codename in ["jhericurl-jimna", "goldilocks2-grampians", ""] {
+            let mut c = native_set();
+            let applied = apply_exclusions(&mut c, codename, false, EXCLUSIONS);
+            assert_eq!(c.dv_first_picture, DvFirstPicture::AnyIrap, "{codename:?}");
+            assert!(applied.iter().all(|a| !a.starts_with("dv-first-picture")), "{codename:?}: {applied:?}");
+        }
+        assert_eq!(Caps::assumed().dv_first_picture, DvFirstPicture::AnyIrap);
+    }
+
+    #[test]
+    fn dv_first_picture_survives_nativeaudiowide() {
+        // `nativeaudiowide` is the audio rows' debug flag; the Dolby Vision row is not an audio row.
+        let mut c = native_set();
+        let applied = apply_exclusions(&mut c, "jhericurl-jervisbay", true, EXCLUSIONS);
+        assert_eq!(c.dv_first_picture, DvFirstPicture::IdrOnly);
+        assert_eq!(applied, ["dv-first-picture=idr"]);
+        // ... while the audio rows stay skipped by it.
+        let mut k = native_set();
+        assert!(apply_exclusions(&mut k, "kisscurl-koli", true, EXCLUSIONS).is_empty());
+        assert_eq!(k, native_set());
+    }
+
     #[test]
     fn an_exclusion_only_takes_away() {
         // A table row of two channels is not raised to the exclusion's four; a codec the table
         // never listed is not added.
         let table = [
-            Exclusion { codename: "x", codec: "opus", max_channels: 4, evidence: "" },
-            Exclusion { codename: "x", codec: "truehd", max_channels: 2, evidence: "" },
+            Exclusion { codename: "x", limit: Limit::Audio { codec: "opus", max_channels: 4 }, evidence: "" },
+            Exclusion { codename: "x", limit: Limit::Audio { codec: "truehd", max_channels: 2 }, evidence: "" },
         ];
         let mut c = parse(&REAL.replace(
             "\"name\" : \"FLAC\"",

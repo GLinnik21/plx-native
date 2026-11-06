@@ -260,6 +260,9 @@ pub struct Engine {
     pub foreground_follows_load: bool,
     /// Whether this session's era-chosen sink counter has shown up ([`super::era_callbacks`]).
     pub(super) era_watch: super::era_callbacks::Watch,
+    /// The Dolby Vision landing guard ([`super::dv_start`]): built by [`dv_start_for`], re-armed at
+    /// every landing.
+    pub(super) dv_start: super::dv_start::Guard,
 }
 
 impl Engine {
@@ -2347,6 +2350,10 @@ fn start_bufferfeed_inner(
         preview_abandon: false,
         foreground_follows_load: false,
         era_watch: super::era_callbacks::Watch::new(),
+        dv_start: dv_start_for(ps, {
+            let armed = SHARED.seek_to_ns.load(Ordering::Relaxed);
+            (armed >= 0).then_some(armed)
+        }),
     };
     // Select this session's direct-play seek mode (`SeekMode`, mod.rs, whose SCOPE note argues why
     // it is per session). `feed_stream` can downgrade it to `Reload` mid-session (the pipeline was
@@ -3107,12 +3114,21 @@ fn drain_one(q: Option<&mut Box<AuQueue>>) {
     }
 }
 
+/// The Dolby Vision landing guard ([`super::dv_start`]) for the Engine `ps`'s route is about to start,
+/// armed with `armed_target` (the seek armed for this first open, if any). **The only constructor**
+/// production and the pump tests use, so no test plants a rule production does not run. It reads the
+/// firmware row from the ATTEMPT's caps (`route::dv_first_picture`), never from the process-wide
+/// `devcaps::caps()`.
+pub(super) fn dv_start_for(_ps: &crate::route::PlaybackSession, _armed_target: Option<i64>) -> super::dv_start::Guard {
+    super::dv_start::Guard::inert()
+}
+
 /// feed streamed AUs from the demux queue; hold the current AU across ticks on
 /// BufferFull (backpressure); zero-base the fed timeline on the first post-seek
 /// keyframe; drop stale AUs past the B-frame reorder distance.
 /// prime-then-play buffer depth: how much of the post-seek stream to buffer (paused) before
 /// starting the clock. Enough to cover the pipeline's decode latency so the first frame is ready.
-const PRIME_NS: i64 = 700_000_000;
+pub(super) const PRIME_NS: i64 = 700_000_000;
 // Prime the AUDIO lane too before starting the (audioSync master) clock — else a rapid-seek drain
 // can start Play on an empty audio queue and leave audio silent until the next seek. Fallback:
 // start anyway once video buffers PRIME_VIDEO_MAX_NS without audio (audioless / briefly starved),
@@ -4907,6 +4923,27 @@ mod payload_tests {
         assert!(!payload.contains("DolbyHdrInfo"), "{payload}");
     }
 
+    /// A declared Profile 8.1 direct play whose declaration the route withdrew (#1166) sends the Load
+    /// with no `DolbyHdrInfo` node, so no Dolby Vision splitter is built and the base layer plays.
+    #[test]
+    fn dv_withdraw_payload_has_no_dolby_hdr_info() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        assert!(crate::route::set_stream_declaration_for_test(
+            &mut ps,
+            "hevc",
+            "eac3",
+            23.976,
+            p8(),
+            false,
+            plx_platform::devcaps::dv::DvCapability::Supported,
+        ));
+        let env = SinkEnvelope { w: 3840, h: 2160, fps: 60 };
+        assert!(build_av_payload(&ps, "H265", "AC3 PLUS", env).contains("DolbyHdrInfo"));
+        assert!(crate::route::withdraw_dv_presentation(&mut ps, "test"));
+        let payload = build_av_payload(&ps, "H265", "AC3 PLUS", env);
+        assert!(!payload.contains("DolbyHdrInfo"), "{payload}");
+    }
+
     /// An AV1 Profile 10.1 direct play (HDR10-compatible base) on a set with confirmed Dolby Vision
     /// support carries the node like an HEVC Profile 8 does, with the codec string left at `"AV1"`.
     /// VP9 never does: no Dolby Vision profile rides on it.
@@ -5394,6 +5431,7 @@ mod prime_livelock_tests {
             preview_abandon: false,
             foreground_follows_load: false,
             era_watch: crate::player::era_callbacks::Watch::new(),
+            dv_start: crate::player::dv_start::Guard::inert(),
         }
     }
 
