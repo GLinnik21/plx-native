@@ -29,7 +29,7 @@ impl Rig {
         claim_hold::clear();
         let ticket = crate::route::begin_route_start().expect("a landing's start transaction");
         assert!(crate::route::prepare_route_start(ticket));
-        let pa = adapter::PlayerAdapter::new(unsafe { MainThread::assume() });
+        let pa = adapter::PlayerAdapter::new_fed(unsafe { MainThread::assume() });
         Rig { ps, pa, flight }
     }
 

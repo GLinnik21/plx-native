@@ -18,6 +18,9 @@ use plx_media::route::PlaybackSession;
 use plx_platform::tv::plane::{self, PlaneFacts, PlaneOwner, DEFAULT_PLAYER_TYPE};
 use plx_platform::tv::sink::{self, DisplaySink, VP_EXPORTED, VP_NONE};
 use std::os::raw::c_int;
+#[cfg(feature = "play-feed")]
+use plx_play_feed::{control::FeedBackend, feed_resources::FeedResources, physical::FeedSet,
+    shared::FEED_SHARED};
 #[cfg(feature = "play-uri")]
 use plx_media::route::uri_preflight::{OriginalQualifier, ProductEvidence, ProductQualifier, ResolvePort};
 #[cfg(feature = "play-uri")]
@@ -100,6 +103,10 @@ fn acb_init_acb(mt: &MainThread, display: &dyn DisplaySink) -> PlaneFacts {
 /// form.
 pub(crate) fn compose_backends(adapter: &mut PlayerAdapter, session: &mut PlaybackSession,
     controlled: bool) {
+    #[cfg(feature = "play-feed")]
+    if !adapter.composed_backends().feed && !install_feed(adapter) {
+        log("feed: physical set installation refused");
+    }
     #[cfg(feature = "play-uri")]
     if !controlled && !install_uri_product(adapter, session) {
         log("uri: product driver installation refused");
@@ -111,6 +118,28 @@ pub(crate) fn compose_backends(adapter: &mut PlayerAdapter, session: &mut Playba
     #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
     crate::dev::uriprobe::install(adapter);
     session.install_backends(adapter.composed_backends());
+}
+
+/// Compose the buffer-feed backend into the player's physical set: the Feed backend over the
+/// process's shared feed state and the player's native hooks, with the URI driver's seat beside
+/// it. The adapter starts with the contract's URI-only set, so this runs before the URI driver is
+/// installed and before the session is told the set. False when the adapter refused the set.
+#[cfg(feature = "play-feed")]
+pub(crate) fn install_feed(adapter: &mut PlayerAdapter) -> bool {
+    let feed = FeedBackend::new(FeedResources::new(&FEED_SHARED,
+        plx_media::player::engine::native_hooks()));
+    adapter.install_physical(Box::new(FeedSet::new(feed))).is_ok()
+}
+
+/// An adapter with the Feed composed in, as the boot composes it: what an app test builds when
+/// the player's own physical set is part of what it drives.
+#[cfg(test)]
+pub(crate) fn test_adapter() -> PlayerAdapter {
+    #[cfg_attr(not(feature = "play-feed"), allow(unused_mut))]
+    let mut adapter = PlayerAdapter::new(unsafe { MainThread::assume() });
+    #[cfg(feature = "play-feed")]
+    assert!(install_feed(&mut adapter), "a fresh adapter takes the composed Feed set");
+    adapter
 }
 
 /// Explicit product URI settings captured with the resolve port's certification evidence.

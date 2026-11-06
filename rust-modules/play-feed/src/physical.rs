@@ -19,6 +19,10 @@ use plx_playback_contract::{
     ExitDisposition, Operation, SourceKey, UriDriver,
 };
 
+/// Test support: a handle on the [`FeedSet`] an adapter boxes as its `dyn PhysicalSet`.
+#[cfg(any(test, feature = "test-support"))]
+pub mod probe;
+
 /// The buffer-feed backend plus the URI driver's seat. The seat is the contract's
 /// [`UriOnlySet`]: the URI half of every answer is the seat's own.
 pub struct FeedSet {

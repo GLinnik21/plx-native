@@ -425,6 +425,9 @@ pub(super) const NATIVE_HOOKS: NativeHooks = NativeHooks {
     },
 };
 
+/// The hooks the application's composition builds the Feed backend over until they move there.
+pub fn native_hooks() -> &'static NativeHooks { &NATIVE_HOOKS }
+
 pub use super::route_start::{reload_at, reload_transcode, reload_transcode_tracked,
     stop_bufferfeed, suspend_bufferfeed, switch_audio_native, ReloadOutcome};
 #[cfg(all(test, feature = "hostsim"))]
@@ -2121,7 +2124,7 @@ mod lifecycle_clock_tests {
     fn stop_without_an_engine_cannot_poison_the_next_initial_hold() {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let _serial = plx_base::testlock::serial();
-        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+        let mut pa = crate::player::adapter::PlayerAdapter::new_fed(unsafe {
             plx_base::task::MainThread::assume()
         });
         assert!(
@@ -2163,7 +2166,7 @@ mod replay_after_stop_tests {
     fn a_completed_stop_grants_the_next_start_a_route_owner() {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let _serial = plx_base::testlock::serial();
-        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+        let mut pa = crate::player::adapter::PlayerAdapter::new_fed(unsafe {
             plx_base::task::MainThread::assume()
         });
         crate::route::reset_player_control_for_test(&ps);

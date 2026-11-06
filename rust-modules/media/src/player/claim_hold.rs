@@ -163,7 +163,7 @@ mod tests {
             Rig {
                 _serial: serial,
                 clock,
-                pa: super::super::adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() }),
+                pa: super::super::adapter::PlayerAdapter::new_fed(unsafe { plx_base::task::MainThread::assume() }),
                 ps: crate::route::PlaybackSession::IDLE,
             }
         }

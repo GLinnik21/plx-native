@@ -2000,7 +2000,7 @@ mod tests {
         FEED_TX.reset();
         crate::route::reject_user_seek();
         let mut ps = crate::route::PlaybackSession::IDLE;
-        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+        let mut pa = crate::player::adapter::PlayerAdapter::new_fed(unsafe {
             plx_base::task::MainThread::assume()
         });
         if let Some(target) = pressed {
@@ -4793,7 +4793,7 @@ mod native_seek_pump_tests {
         assert_eq!(ffi_host::segment_calls_for_test(), 0);
 
         // A fresh play is a new playback and gets to try the native Seek again.
-        let _ = crate::player::start_bufferfeed_tracked(&mut rig.ps, &mut super::super::adapter::PlayerAdapter::new(unsafe { MainThread::assume() }));
+        let _ = crate::player::start_bufferfeed_tracked(&mut rig.ps, &mut super::super::adapter::PlayerAdapter::new_fed(unsafe { MainThread::assume() }));
         assert!(!plx_play_feed::seek::native_seek_refused(), "a fresh play clears the latch");
     }
 

@@ -1683,7 +1683,7 @@ mod feed_start_controls_tests {
             fn drop(&mut self) { FEED_TX.commit_paused(self.0); }
         }
         let _restore = Restore(FEED_TX.paused.load(Ordering::Acquire));
-        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+        let mut pa = crate::player::adapter::PlayerAdapter::new_fed(unsafe {
             plx_base::task::MainThread::assume()
         });
         FEED_TX.commit_paused(false);

@@ -3939,9 +3939,7 @@ mod lifecycle_regression_tests {
             diagnostics: Default::default(),
             player: plx_media::player::machine::Player::new(),
             adapters: Adapters {
-                player: plx_media::player::adapter::PlayerAdapter::new(unsafe {
-                    plx_base::task::MainThread::assume()
-                }),
+                player: crate::app::adapters::backends::test_adapter(),
             },
             repause_at: -1,
             decoder_parked: false,

@@ -22,7 +22,8 @@
 //! and `sink()` answers a no-op sink to every other main-thread verb until it is done.
 #![allow(non_upper_case_globals)]
 pub mod adapter;
-mod physical; // the adapter's physical drivers as one `PhysicalSet` (the Feed backend and the URI driver)
+#[cfg(test)]
+mod test_physical; // the tests' composition of the physical set (the application's own is `app::adapters::backends`)
 pub mod attempt_view;
 pub mod readout; // the player's own readout (pure machine): the members only the player writes, and the feed's last raw facts
 #[cfg(feature = "play-feed")]
@@ -2975,7 +2976,7 @@ mod tests {
         }
         let _restore = Restore;
         let mut ps = crate::route::PlaybackSession::IDLE;
-        let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        let mut pa = adapter::PlayerAdapter::new_fed(unsafe { plx_base::task::MainThread::assume() });
         crate::player::reset_session_for_test();
         FEED_SHARED.reset_session();
         FEED_TX.reset();
@@ -3042,7 +3043,7 @@ mod tests {
         }
         let _restore = Restore;
         let mut ps = crate::route::PlaybackSession::IDLE;
-        let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        let mut pa = adapter::PlayerAdapter::new_fed(unsafe { plx_base::task::MainThread::assume() });
         crate::player::reset_session_for_test();
         FEED_TX.reset();
         crate::ff::force_speed_decoder_for_test(true);
@@ -3084,7 +3085,7 @@ mod tests {
         crate::player::reset_session_for_test();
         FEED_TX.reset();
         let mut ps = crate::route::PlaybackSession::IDLE;
-        let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        let mut pa = adapter::PlayerAdapter::new_fed(unsafe { plx_base::task::MainThread::assume() });
 
         request_seek(&mut ps, &mut pa, 42_000_000_000);
         request_seek(&mut ps, &mut pa, 50_000_000_000);
@@ -3128,7 +3129,7 @@ mod tests {
         let _restore = Restore;
         crate::player::reset_session_for_test();
         FEED_TX.reset();
-        let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        let mut pa = adapter::PlayerAdapter::new_fed(unsafe { plx_base::task::MainThread::assume() });
 
         FEED_SHARED.disp_base.store(77, Relaxed);
         arm_open(&mut pa, 90_000_000_000);
@@ -3152,7 +3153,7 @@ mod tests {
     fn forced_original_never_offers_or_retains_a_pcm_speed() {
         let _serial = plx_base::testlock::serial();
         let mut ps = crate::route::PlaybackSession::IDLE;
-        let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        let mut pa = adapter::PlayerAdapter::new_fed(unsafe { plx_base::task::MainThread::assume() });
         crate::route::set_direct_play_mode_for_test(&mut ps, crate::route::DirectPlayMode::Forced);
         assert!(speed_offer(&ps).is_empty());
         assert!(!set_play_rate(&mut ps, &mut pa, 1250));
@@ -3449,7 +3450,7 @@ mod tests {
         sf_on_event(epoch, 28, 1, c"true".as_ptr());
         assert!(FEED_SHARED.pipeline_eos.load(Relaxed), "the pipeline said it reached the end");
         let mut ps = crate::route::PlaybackSession::IDLE;
-        let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        let mut pa = adapter::PlayerAdapter::new_fed(unsafe { plx_base::task::MainThread::assume() });
         request_seek(&mut ps, &mut pa, 1_000_000_000);
         assert!(!FEED_SHARED.pipeline_eos.load(Relaxed), "a seek back from the end un-ends it");
         FEED_SHARED.retire_native_session(epoch);
@@ -3866,7 +3867,7 @@ mod tests {
         }
         let _restore = Restore(old_paused);
         let before = ffi_host::play_calls_for_test();
-        let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        let mut pa = adapter::PlayerAdapter::new_fed(unsafe { plx_base::task::MainThread::assume() });
         let mut ps = crate::route::PlaybackSession::IDLE;
         commit_paused(&mut ps, &mut pa, true);
 
@@ -3889,7 +3890,7 @@ mod tests {
         let _guard = plx_base::testlock::serial();
         FEED_TX.reset();
         let mut ps = crate::route::PlaybackSession::IDLE;
-        let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        let mut pa = adapter::PlayerAdapter::new_fed(unsafe { plx_base::task::MainThread::assume() });
         commit_paused(&mut ps, &mut pa, true);
         arm_resume_pend(&mut ps);
         begin_paused_seek(&mut ps, &mut pa);
@@ -3929,7 +3930,7 @@ mod tests {
         let was_display = FEED_SHARED.seek_display_ns.load(Relaxed);
 
         let mut ps = crate::route::PlaybackSession::IDLE;
-        let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        let mut pa = adapter::PlayerAdapter::new_fed(unsafe { plx_base::task::MainThread::assume() });
         request_seek(&mut ps, &mut pa, 40_000_000_000);
         assert!(ps.readout().seeking(), "the requester arms the spinner");
         assert!(
@@ -4769,7 +4770,7 @@ mod native_failure_regressions {
         let mut ps = crate::route::PlaybackSession::IDLE;
         crate::route::reset_player_control_for_test(&ps);
         crate::player::reset_session_for_test();
-        let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        let mut pa = adapter::PlayerAdapter::new_fed(unsafe { plx_base::task::MainThread::assume() });
         plx_platform::tv::sandbox::FORCE_BLOCKED.store(true, Relaxed);
         assert!(start_bufferfeed(&mut ps, &mut pa));
         assert!(!pa.is_live());
@@ -4835,7 +4836,7 @@ mod seek_hud_regressions {
         assert_eq!(state(&ps), PlaybackState::Playing);
         // the REAL press path — and deliberately so: `tests/test_harness.py` holds that exactly
         // one place in the tree arms this flag, which a test arming it by hand would break
-        let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        let mut pa = adapter::PlayerAdapter::new_fed(unsafe { plx_base::task::MainThread::assume() });
         request_seek(&mut ps, &mut pa, 90_000_000_000);
         assert_eq!(state(&ps), PlaybackState::Seeking, "the pump has not run yet");
         assert!(state(&ps).is_busy(), "busy is what freezes the HUD's playhead on the target");

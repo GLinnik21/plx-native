@@ -233,7 +233,7 @@ mod port_tests {
         fn new() -> Rig {
             let ps = PlaybackSession::IDLE;
             crate::route::reset_player_control_for_test(&ps);
-            let mut pa = super::super::adapter::PlayerAdapter::new(unsafe { MainThread::assume() });
+            let mut pa = super::super::adapter::PlayerAdapter::new_fed(unsafe { MainThread::assume() });
             let script = Arc::new(Mutex::new(Script::default()));
             pa.install_uri_probe(Box::new(FakeProbe { script: script.clone() }));
             Rig { ps, pa, script }

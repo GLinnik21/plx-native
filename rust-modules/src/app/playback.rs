@@ -1634,9 +1634,7 @@ mod paused_seek_tests {
         let (was_seek, was_seeking) = (plx_media::player::FEED_TX.seek_to_ns.load(Relaxed), plx_media::player::FEED_SHARED.seeking.load(Relaxed));
         for paused in [true, false] {
             let mut ps = plx_media::route::PlaybackSession::IDLE;
-            let mut pa = plx_media::player::adapter::PlayerAdapter::new(unsafe {
-                plx_base::task::MainThread::assume()
-            });
+            let mut pa = crate::app::adapters::backends::test_adapter();
             plx_media::player::commit_paused(&mut ps, &mut pa, paused);
             commit_seek(&mut ps, &mut pa, 42_000_000_000);
             assert_eq!(plx_media::player::FEED_TX.seek_to_ns.load(Relaxed), 42_000_000_000,
@@ -1650,9 +1648,7 @@ mod paused_seek_tests {
         // The commit published the Pause to the Feed's global: put it back, and the seek the commit
         // left in flight, which reads as `Seeking` to every later test of this binary.
         let mut ps = plx_media::route::PlaybackSession::IDLE;
-        let mut pa = plx_media::player::adapter::PlayerAdapter::new(unsafe {
-            plx_base::task::MainThread::assume()
-        });
+        let mut pa = crate::app::adapters::backends::test_adapter();
         plx_media::player::commit_paused(&mut ps, &mut pa, was_paused);
         plx_media::player::FEED_TX.seek_to_ns.store(was_seek, Relaxed);
         plx_media::player::FEED_SHARED.seeking.store(was_seeking, Relaxed);
