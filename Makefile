@@ -2219,6 +2219,12 @@ release-guard:
 	  echo "  developer install:  make $(firstword $(MAKECMDGOALS))          (FLAVOR=$(FLAVOR) is not the default)"; \
 	  echo "  really meant it:    make FLAVOR=stable ALLOW_DEV_ON_STABLE=1 $(firstword $(MAKECMDGOALS))"; \
 	  exit 1; fi
+	@# CURLSTACK=1 is a developer build: no release ships the stack, so the release source bundle
+	@# does not carry its corresponding source (THIRD-PARTY-NOTICES, the CURLSTACK=1 section).
+	@if [ -n "$(CURLSTACK)" ] && [ "$(FLAVOR)" = stable ] && [ -z "$(ALLOW_DEV_ON_STABLE)" ]; then \
+	  echo "refusing to put a CURLSTACK=1 build on $(APPID_STABLE) — no release ships the bundled curl stack."; \
+	  echo "  developer install:  make CURLSTACK=1 $(firstword $(MAKECMDGOALS))          (FLAVOR=$(FLAVOR) is not the default)"; \
+	  exit 1; fi
 	@# Nightly has no dev-triggers arm at all — unlike the stable guard above, there is no
 	@# ALLOW_DEV_ON_STABLE-shaped hatch here on purpose. A dev build under this id would ship the
 	@# whole `/tmp` trigger surface and the remote FIFO on an install nobody is meant to treat as

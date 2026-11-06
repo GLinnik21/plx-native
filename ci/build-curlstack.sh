@@ -610,6 +610,7 @@ if [ -n "$CACHE_ROOT" ]; then
     WORK="$CACHE_ROOT/curlstack/arm-$KEY"
     if [ -f "$WORK/.complete" ]; then
         echo "build-curlstack: cache hit ($WORK) — re-installing the prefixes"
+        mkdir -p "$ROOT/vendor"
         for p in $PREFIXES; do
             rm -rf "$ROOT/vendor/$p-prefix"
             cp -R "$WORK/$p-prefix" "$ROOT/vendor/$p-prefix"
