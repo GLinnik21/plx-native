@@ -58,7 +58,7 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   `ci/module-layers.ini` declares the crates `rust-modules/src` is being split into, and
   `ci/check-module-layers.py` (in `make check`) fails on a reference that names a layer its own
   layer may not use, on a module placed in no layer, and on a reference from outside
-  `[port webos]` to `webos`, `keymanager`, `system`, `player::ffi` or `port`. Fix the reference
+  `[port webos]` to `webos`, `keymanager`, `system` or `port`. Fix the reference
   (`docs/module-layers.md` says where code belongs and how to cut an upward name) instead of
   adding a (file, member) pair to `ci/allow/layers.txt`, which is empty and only shrinks.
 - **Logic never performs IO.** A machine (a screen, a `data/` store, the session owner, the player's
