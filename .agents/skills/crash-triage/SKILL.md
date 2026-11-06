@@ -52,8 +52,9 @@ the repo did that arithmetic until `tools/crash-report.sh`.
 
 **A `*** EXIT status=<n> caller=0x…` record in the crash log (with `time:`, `thread:` and `at:`
 lines, and no `bin:`) is not a crash.** It is a foreign `exit()` (a firmware library on a thread of
-its own, say) that the executable's interposer (`src/exit.c`) ended cleanly with `_exit(<n>)`:
-the status is what the caller passed and the `at:` mapping is the library that called it. The
+its own, say) that the executable's interposer (`src/exit.c`, `plx_exit_record` in
+`src/crashtrace.c`) ended cleanly with exit status `<n>` and no exit handler (the `exit_group`
+syscall): the status is what the caller passed and the `at:` mapping is the library that called it. The
 next launch reports it as an `error` event (`exit`), not a crash.
 
 **Call the local C record a FAULT EVENT, not a backtrace, when you write it up.** Two frames and the

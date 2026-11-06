@@ -3,8 +3,8 @@
 //! Reads the append-only crash log the C tracer writes (`src/crashtrace.c`), turns each fault
 //! record, each `*** FREEZE` record (a main-thread stall the process survived: addresses and a
 //! fixed duration bucket, never raw milliseconds) and each `*** EXIT` record (an `exit()` that
-//! another part of the television's software made inside the app, which the tracer ended with
-//! `_exit`: the status, the caller's address and the library it sits in) into a Sentry event, and
+//! another part of the television's software made inside the app, which the tracer ended without
+//! running an exit handler: the status, the caller's address and the library it sits in) into a Sentry event, and
 //! reports it on the next launch — because the process that wrote it no longer exists, which is
 //! the whole reason the log is on disk and not in memory. A fault and a panic are crashes; a
 //! freeze and an exit are `error` events that are not counted as crashes ([`crashes_found`]).
@@ -490,8 +490,8 @@ pub struct Freeze {
 
 /// A foreign `exit()`: another part of the television's software (a firmware library on a thread of
 /// its own, say) called libc's `exit` inside the app, and the executable's own `exit`
-/// (`src/exit.c`) ended the process with `_exit` after `plx_exit_record` (`src/crashtrace.c`)
-/// wrote this record. **Numbers only, like [`Fault`]**: the status, the caller's address, the second
+/// (`src/exit.c`) ended the process, with no exit handler, after `plx_exit_record`
+/// (`src/crashtrace.c`) wrote this record. **Numbers only, like [`Fault`]**: the status, the caller's address, the second
 /// the record was written, and the thread (held to the tracer's alphabet by [`parse_thread`]). The
 /// one other thing it holds is the validated `at:` mapping of the caller, of which only the file's
 /// basename is ever sent. It is not a crash and is not counted as one.
@@ -1957,8 +1957,9 @@ fn reconcile(reports: &[Report], natives: &[Option<super::native::CrashKey>], cu
             Report::Fault(f) => (&f.image, f.signal),
             Report::Panic(p) => (&p.image, SIGABRT),
             // A freeze is not a death: the native daemon wrote nothing for it and there is no
-            // envelope to prefer or to drop. An exit ends the process with `_exit`, so no signal
-            // was raised and no envelope exists for it: it never takes one.
+            // envelope to prefer or to drop. An exit ends the process with no signal (the
+            // `exit_group` syscall, never a handler or a re-raise), so no signal was raised and no
+            // envelope exists for it: it never takes one.
             Report::Freeze(_) | Report::Exit(_) => continue,
         };
         let build_id = image.as_ref().map(|x| x.build_id.as_str()).unwrap_or(current_build_id);

@@ -530,12 +530,40 @@ static void freeze_handler(int sig, siginfo_t *si, void *uc) {
 /* The process-wide "an exit is already under way" flag; see `plx_exit_record`. */
 static volatile int exiting;
 
+/* How `plx_exit_record` ends the process, at every one of its ending points.
+ *
+ * While a fatal signal's handler is running (`crashing`: set on its entry and never cleared, the
+ * process is dying) it parks instead: ending the process here would cut that crash record short
+ * before its `at:`/`bin:` lines and before the handler's re-raise, and SAM would then see exit
+ * status `status` instead of the signal. The re-raise ends the process. `pause` is
+ * async-signal-safe. (It is the one entry here not bound at install, since calling it blocks; a
+ * thread that stops in the resolver on a lock the crashing thread holds is parked just the same.)
+ *
+ * Otherwise it leaves with the `exit_group` syscall itself. `_exit` is a libc entry that
+ * `plx_crash_install` cannot bind ahead of time (calling it IS the exit), so its first call would
+ * run the dynamic linker's lazy resolver on the way out, in whatever state the caller left the
+ * process in; `syscall` is bound at install. glibc's `_exit` is this same syscall, so nothing else
+ * differs. `_exit` stays as the fallback that makes the function `noreturn` without a warning
+ * (the syscall does not return) and as the way out off Linux, where the host build of the tests
+ * has no `exit_group`. */
+static void end_process(int status) __attribute__((noreturn));
+static void end_process(int status) {
+    if (crashing)
+        for (;;) pause();
+#if defined(__linux__)
+    (void)syscall(SYS_exit_group, status);
+    for (;;) _exit(status);
+#else
+    _exit(status);
+#endif
+}
+
 void plx_exit_record(int status, unsigned long caller) {
     /* The first caller owns the record and the static buffers. Any other, a second thread's exit
      * or this thread's own exit re-entered from a signal handler that interrupted the record, ends
      * at once: it never waits (waiting on the first would deadlock the re-entered case), and the
-     * first thread is on its way to `_exit` anyway. */
-    if (__atomic_exchange_n(&exiting, 1, __ATOMIC_SEQ_CST)) _exit(status);
+     * first thread is on its way out anyway. */
+    if (__atomic_exchange_n(&exiting, 1, __ATOMIC_SEQ_CST)) end_process(status);
     /* Rust's `exit_now` does the same before it flushes, so a fault in these last instructions
      * is labelled the way the other ways out of the process label it (`CrashPhase::Exiting`). */
     __atomic_store_n(&plx_crash_phase, PLX_PHASE_EXITING, __ATOMIC_RELAXED);
@@ -577,12 +605,11 @@ void plx_exit_record(int status, unsigned long caller) {
             scan_maps(B, "/proc/self/maps", &at, 1);
         }
     }
-    /* `plx_crash_install` binds ahead of time the libc entries the record writes with (`time`,
-     * `getpid`, `syscall`, `prctl`, `open`, `read`, `close`, `write`), so none of them goes through
-     * the dynamic linker's lazy resolver here. `_exit` cannot be: calling it is the exit, so its
-     * first call is resolved lazily, as the fatal handler's own `raise` is. The record is complete
-     * before that point. */
-    _exit(status);
+    /* `plx_crash_install` binds ahead of time the libc entries the record writes with and ends
+     * with (`time`, `getpid`, `syscall`, `prctl`, `open`, `read`, `close`, `write`), so none of
+     * them goes through the dynamic linker's lazy resolver here, the exit included: it is the
+     * `exit_group` syscall, not `_exit` (see `end_process`). */
+    end_process(status);
 }
 
 void plx_crash_install(int ev_fd, int cr_fd) {

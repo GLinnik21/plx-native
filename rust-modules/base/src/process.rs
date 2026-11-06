@@ -8,8 +8,8 @@
 //! under a worker still inside them. `_exit` ends every thread at once and runs none of it.
 //!
 //! In the TV executable libc's `exit` itself is interposed (`src/exit.c`), so an `exit` made by a
-//! firmware or system library on a thread of its own ends the process the same way: with `_exit`
-//! and no handler. That path is `plx_exit_record` in `src/crashtrace.c`, not [`exit_now`], because
+//! firmware or system library on a thread of its own ends the process the same way: with no
+//! handler (the `exit_group` syscall). That path is `plx_exit_record` in `src/crashtrace.c`, not [`exit_now`], because
 //! `exit` can be reached from a signal handler and everything it does must be async-signal-safe,
 //! and [`exit_now`] takes Rust's stdout and stderr locks and calls `fflush(NULL)`, which are not.
 

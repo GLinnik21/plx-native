@@ -51,15 +51,23 @@ void plx_crash_scan_maps_file(const char *path, unsigned long pc, unsigned long 
  * not a crash, so it is not counted as one). The record is a `*** EXIT status=<n> caller=0x<hex>`
  * header, the `time:` and `thread:` lines of a fault record, and the `/proc/self/maps` line (`at:`)
  * of the mapping that contains the call, which is how a stripped firmware library that called
- * `exit` gets named. Then `_exit(status)`. Its lines are dropped once a fatal signal's handler has
- * begun, so they never land in the middle of a crash record. It also stores the "exiting" phase in `plx_crash_phase`, so a fault
- * in these last instructions says so.
+ * `exit` gets named. Then it ends the process with `status`. Its lines are dropped once a fatal
+ * signal's handler has begun, so they never land in the middle of a crash record. It also stores
+ * the "exiting" phase in `plx_crash_phase`, so a fault in these last instructions says so.
  *
  * **Async-signal-safe, all of it,** because `exit` can be called from a signal handler: lock-free
- * `__atomic` operations, `gettid`/`prctl` syscalls, `time`, `getpid`, `open`/`read`/`write`/`close`,
- * `_exit` and static buffers, and nothing that takes a lock or allocates. Only the first caller
- * writes a record. A second one (another thread's exit, or this one re-entered from a signal
- * handler) calls `_exit(status)` at once and never waits.
+ * `__atomic` operations, `syscall(SYS_gettid)` and `prctl`, `time`, `getpid`,
+ * `open`/`read`/`write`/`close`, `errno` (read only after a failed `read` or `write`, to retry an
+ * interrupted one), `pause`, `syscall(SYS_exit_group)` (`_exit` itself is only the unreachable
+ * fallback behind it, and the way out off Linux) and static buffers, and nothing that takes a lock
+ * or allocates. Every one of them but `pause` and that `errno` read is bound by
+ * `plx_crash_install` ahead of time, so the exit itself runs no lazy PLT resolution. Only the
+ * first caller writes a record. A second one (another thread's exit, or this one re-entered from a
+ * signal handler) ends the process at once and never waits.
+ *
+ * **While a fatal signal's handler is running, none of this ends the process:** the caller parks
+ * in `pause` and the handler's re-raise ends it, so the crash record is not cut short and SAM sees
+ * the signal and not exit status `status`.
  *
  * **What it does not do is flush.** `exit` would flush the C stdio streams, and the Rust-side
  * `exit_now` flushes Rust's stdout and stderr as well; both take locks that the interrupted code
@@ -67,7 +75,8 @@ void plx_crash_scan_maps_file(const char *path, unsigned long pc, unsigned long 
  * or in a C stdio stream. The event and crash logs are raw descriptor writes with no buffer, and
  * lose nothing.
  *
- * Before [`plx_crash_install`] has run there is no sink and it simply `_exit`s. */
+ * Before [`plx_crash_install`] has run there is no sink and it simply ends the process (nothing is
+ * bound ahead of time then, so that exit resolves `syscall` lazily). */
 void plx_exit_record(int status, unsigned long caller) __attribute__((noreturn));
 
 /* The freeze probe's number, OWNED BY THE RUST WATCHDOG (`plx_base::task::watchdog`, which defines

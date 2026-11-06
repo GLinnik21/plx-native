@@ -67,9 +67,9 @@ ok "exact hook exported GLOBAL/DEFAULT; Load-with-context has no loader dependen
 
 echo "== libc exit interposer =="
 # src/exit.c defines libc's `exit` in the executable so that an `exit()` made by a shared library
-# (SDL's SDLTimer thread made one in PLX-NATIVE-1P) ends the process through plx_base::process::
-# exit_now instead of running the exit handlers. It only binds when the executable's .dynsym defines
-# it: exactly one `exit` row, defined here as FUNC GLOBAL DEFAULT. readelf prints a definition bare
+# (SDL's SDLTimer thread made one in PLX-NATIVE-1P) ends the process through plx_exit_record
+# (src/crashtrace.c), which ends it without running the exit handlers. It only binds when the
+# executable's .dynsym defines it: exactly one `exit` row, defined here as FUNC GLOBAL DEFAULT. readelf prints a definition bare
 # and an import with its version (`exit@GLIBC_2.4 (2)`), so an `exit@...` row, or an UND one, means
 # some object still calls libc's own `exit` and src/exit.c did not take over.
 EXIT_ROWS=$(awk '$8 == "exit" || index($8, "exit@") == 1 { n++ } END { print n + 0 }' <<<"$DYN_SYMS")

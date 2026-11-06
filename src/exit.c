@@ -23,7 +23,8 @@
  * `callbackFunctionHook` interposer in `src/starfish.c`. It hands the status and its own return
  * address to `plx_exit_record` (`src/crashtrace.c`), which writes one record to the event log and
  * to the append-only crash log (the thread, and the mapping the return address falls in: the
- * shared object that called `exit`) and ends the process with `_exit`. The next launch reports the
+ * shared object that called `exit`) and ends the process without running an exit handler, with
+ * the `exit_group` syscall (see below). The next launch reports the
  * crash log's copy as an error event under the crash-report consent (`crashreport::parse`). The
  * return address is there because the PLX-NATIVE-1P event shows no frame above
  * `__run_exit_handlers`, so which library called `exit` is otherwise unknown.
@@ -32,10 +33,15 @@
  * handler** (a library's own, on any thread), where a lock the interrupted code holds is a
  * self-deadlock. So the whole path is the crash tracer's own: the compiler intrinsic
  * `__builtin_return_address`, lock-free `__atomic` operations (the guard that lets only the first
- * exit write a record; a second one calls `_exit` at once), the `gettid` and `prctl` syscalls, `time` and
- * `getpid`, `open`/`read`/`write`/`close` over static buffers, and `_exit`. It allocates nothing, takes no
- * lock and calls neither `dladdr` (which takes the loader's lock) nor Rust (`format!`, the event
- * log's lock, `exit_now`'s stdout and stderr locks).
+ * exit write a record; a second one ends the process at once), the `gettid` syscall and `prctl`,
+ * `time` and `getpid`, `open`/`read`/`write`/`close` over static buffers, `pause` and the
+ * `exit_group` syscall (reached as `syscall(SYS_exit_group)`, a libc entry `plx_crash_install` has
+ * already bound, so the exit runs no lazy PLT resolution; `_exit` is only the unreachable fallback
+ * behind it and the way out off Linux). It allocates nothing, takes no lock and calls neither
+ * `dladdr` (which takes the loader's lock) nor Rust (`format!`, the event log's lock, `exit_now`'s
+ * stdout and stderr locks). While a fatal signal's handler is running it ends nothing: it parks in
+ * `pause`, so a crash record in flight is not cut short and the handler's re-raise ends the
+ * process with the signal.
  *
  * **It does not flush.** `exit` flushes the C stdio streams and `exit_now` Rust's stdout and stderr,
  * and each takes a lock the interrupted code may hold. What that drops is at most a partial line

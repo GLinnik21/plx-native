@@ -1049,10 +1049,11 @@ SMP_CALLBACK_HOOK = _ZN17StarfishMediaAPIs20callbackFunctionHookEixPKc
 SMP_INTERPOSER_LDFLAG = -Wl,--export-dynamic-symbol=$(SMP_CALLBACK_HOOK)
 # The second symbol the executable exports: src/exit.c defines libc's `exit`, and this export makes
 # the `exit` of every shared library bind to it (PLX-NATIVE-1P shows one made on SDL's SDLTimer
-# thread), so the process ends through plx_base::process::exit_now with the caller's status and no
-# exit handler runs. Measured with the NDK's ld on a one-file executable: it exports `exit` even
-# without this flag, because libc.so (always on the link line) defines it too; the flag keeps the
-# export from depending on that implicit rule, and `ci/check-elf.sh` asserts it on the shipped binary.
+# thread), so the process ends through plx_exit_record (src/crashtrace.c), which ends it with the
+# caller's status without running the exit handlers. Measured with the NDK's ld on a one-file
+# executable: it exports `exit` even without this flag, because libc.so (always on the link line)
+# defines it too; the flag keeps the export from depending on that implicit rule, and
+# `ci/check-elf.sh` asserts it on the shipped binary.
 # `check-c-unit` links its host copy of the interposer with this same variable.
 EXIT_INTERPOSER_LDFLAG = -Wl,--export-dynamic-symbol=exit
 # --gc-sections: this link is gcc's, not rustc's. rustc passes --gc-sections itself when IT links an

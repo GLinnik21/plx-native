@@ -1192,8 +1192,9 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   narrow C wrapper that keeps Sentry's opaque by-value object ABI out of Rust. `src/exit.c` — libc
   `exit` defined in the executable (and exported by the link), so a shared library's `exit()` ends the
   process through `plx_exit_record` in `src/crashtrace.c` (an async-signal-safe record, in the event
-  log and the crash log, naming the thread and the calling library, then `_exit`; not through Rust's `exit_now`, which
-  flushes under locks); `ci/exit-interpose-test.c` grades it on Linux. These six are the
+  log and the crash log, naming the thread and the calling library, then the `exit_group` syscall,
+  or a park while a fatal signal's handler is running, which lets that crash end the process; not
+  through Rust's `exit_now`, which flushes under locks); `ci/exit-interpose-test.c` grades it on Linux. These six are the
   entire normal C side (`gpdebug.c` is an opt-in allocator instrument). Reach for
   `/tmp/plxnative-crashtest=<segv|abrt|bus|ill|trap|panic|unwind>` to fault the app deliberately
   ON the television — `segv` is a real null write, `abrt`/`bus`/`ill`/`trap` are `raise`, `panic`
