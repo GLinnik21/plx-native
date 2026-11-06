@@ -1,4 +1,6 @@
-//! How the app process ends: [`exit_now`], the one `-> !` every production exit goes through.
+//! How the app process ends: [`exit_now`], the one `-> !` every production exit of the app's own
+//! code goes through. (A library's `exit()` ends the process through `src/exit.c` and
+//! `plx_exit_record`, below.)
 //!
 //! libc's `exit` (which `std::process::exit` calls, as does returning from `main`) runs the
 //! `atexit` handlers, among them OpenSSL's `OPENSSL_cleanup`. That frees and NULLs libcrypto's
@@ -6,6 +8,12 @@
 //! probes) are still running; their next `CRYPTO_THREAD_*_lock` is `pthread_rwlock_*lock(NULL)`, a
 //! SIGSEGV at 0x1c on a clean exit (#1115). It also runs the firmware libraries' C++ finalizers
 //! under a worker still inside them. `_exit` ends every thread at once and runs none of it.
+//!
+//! In the TV executable libc's `exit` itself is interposed (`src/exit.c`), so an `exit` made by a
+//! firmware or system library on a thread of its own ends the process the same way: with no
+//! handler (the `exit_group` syscall). That path is `plx_exit_record` in `src/crashtrace.c`, not [`exit_now`], because
+//! `exit` can be reached from a signal handler and everything it does must be async-signal-safe,
+//! and [`exit_now`] takes Rust's stdout and stderr locks and calls `fflush(NULL)`, which are not.
 
 use crate::task::watchdog::CrashPhase;
 use std::os::raw::c_int;

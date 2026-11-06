@@ -1,9 +1,13 @@
 //! **The crash channel, and the guarantee that it carries no text.**
 //!
 //! Reads the append-only crash log the C tracer writes (`src/crashtrace.c`), turns each fault
-//! record, and each `*** FREEZE` record (a main-thread stall the process survived: addresses and a
-//! fixed duration bucket, never raw milliseconds), into a Sentry event, and reports it on the next launch — because the process that wrote
-//! it no longer exists, which is the whole reason the log is on disk and not in memory.
+//! record, each `*** FREEZE` record (a main-thread stall the process survived: addresses and a
+//! fixed duration bucket, never raw milliseconds) and each `*** EXIT` record (an `exit()` that
+//! another part of the television's software made inside the app, which the tracer ended without
+//! running an exit handler: the status, the caller's address and the library it sits in) into a Sentry event, and
+//! reports it on the next launch — because the process that wrote it no longer exists, which is
+//! the whole reason the log is on disk and not in memory. A fault and a panic are crashes; a
+//! freeze and an exit are `error` events that are not counted as crashes ([`crashes_found`]).
 //!
 //! # NOTHING FROM THE LOG'S TEXT REACHES THE WIRE
 //!
@@ -12,15 +16,16 @@
 //! string lifted out of a file.
 //!
 //! It is enforced structurally rather than by care. [`parse`] reads **numbers only** — the signal
-//! number, `addr`, `pc`, `lr`, the registers and the crash's wall-clock second (`time:`, digits
-//! only, sent as the event's `timestamp` only inside [`crash_timestamp`]'s window) — and the signal's NAME is then derived from
+//! number, `addr`, `pc`, `lr`, the registers, an exit's `status` and `caller`, and the crash's
+//! wall-clock second (`time:`, digits only, sent as the event's `timestamp` only inside
+//! [`crash_timestamp`]'s window) — and the signal's NAME is then derived from
 //! [`signal_name`], a fixed table in this file. So even the one human-readable token in the record
 //! (`SIGSEGV`) reaches Sentry as a `&'static str` this crate owns, not as bytes that happened to be
 //! in a file. A tracer that one day wrote something unexpected there could not smuggle it out.
 //!
 //! **One exception, narrowed to the point of being a number's label:** the `at:` lines name the
-//! library holding `pc` or `lr`, and its file name (never its folder) is sent so an unsymbolicated
-//! crash in `libwayland-client.so.0` says so. [`parse_module`] lets a line through only if its
+//! library holding `pc` or `lr` (or an exit's caller), and its file name (never its folder) is sent
+//! so an unsymbolicated crash in `libwayland-client.so.0` says so. [`parse_module`] lets a line through only if its
 //! path is absolute, uses `[A-Za-z0-9._+-]` and no `..`, and its mapping holds the fault's own
 //! `pc` or `lr` and is executable; the path is otherwise used only to open the file for its build
 //! id, and only if it is still the file (device and inode) that was mapped when the process died.
@@ -111,7 +116,8 @@ pub struct CrashThread {
 }
 
 /// The process phase at the fault (`plx_crash_phase`, `src/crashfmt.h`'s `PLX_PHASE_*`): a crash
-/// during `Exiting` is the last flushes before `_exit` (the teardown is over), not the running app.
+/// during `Exiting` is in the last instructions of an exit that was already under way (`exit_now`'s
+/// flushes, or `plx_exit_record`'s record for a library's `exit()`), not the running app.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CrashPhase {
     Running,
@@ -483,6 +489,43 @@ pub struct Freeze {
     pub bucket: FreezeBucket,
 }
 
+/// A foreign `exit()`: another part of the television's software (a firmware library on a thread of
+/// its own, say) called libc's `exit` inside the app, and the executable's own `exit`
+/// (`src/exit.c`) ended the process, with no exit handler, after `plx_exit_record`
+/// (`src/crashtrace.c`) wrote this record. **Numbers only, like [`Fault`]**: the status, the caller's address, the second
+/// the record was written, and the thread (held to the tracer's alphabet by [`parse_thread`]). The
+/// one other thing it holds is the validated `at:` mapping of the caller, of which only the file's
+/// basename is ever sent. It is not a crash and is not counted as one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExitReport {
+    /// What `exit` was given. A signed decimal in the record: a caller may pass -1.
+    pub status: i32,
+    /// The RAW return address of the `exit` call, Thumb bit included. The address the log vouches
+    /// for is [`ExitReport::lookup_addr`].
+    pub caller: u64,
+    pub image: Option<ImageIdentity>,
+    /// The `at:` mapping that holds [`ExitReport::lookup_addr`], when the log kept one.
+    pub module: Option<ModuleMapping>,
+    pub crash_time: Option<u64>,
+    pub thread: Option<CrashThread>,
+}
+
+impl ExitReport {
+    /// The address inside the `exit` call instruction, which is the one the record's `at:` line was
+    /// looked up with (`plx_exit_record`) and the one that names the caller.
+    ///
+    /// `caller` is a RETURN address. `exit` never returns, so the call can be the last instruction
+    /// of its function and the return address one past that function's end, in whatever mapping
+    /// follows; the byte before it is inside the call. On ARM it also carries the Thumb bit when the
+    /// call was made from Thumb code, which is cleared first. The tracer clears it only under
+    /// `__arm__`; the importer runs on the television, where every record it reads came from an
+    /// ARM build, so clearing it here is the same arithmetic. A caller of 0, or of the Thumb bit
+    /// alone, names no address (`None`), as it names no mapping in the tracer.
+    pub fn lookup_addr(&self) -> Option<u64> {
+        (self.caller & !1).checked_sub(1)
+    }
+}
+
 /// The most walked frames read from one record, matching the tracer's own cap
 /// (`PLX_MAX_FREEZE_FRAMES`); a longer line is a corrupted one and its tail is dropped.
 const MAX_FREEZE_FRAMES: usize = 24;
@@ -544,6 +587,8 @@ pub enum Report {
     Fault(Fault),
     Panic(PanicReport),
     Freeze(Freeze),
+    /// A foreign `exit()`. Not a crash: see [`crashes_found`].
+    Exit(ExitReport),
 }
 
 /// SIGABRT. Named because the coalescing rule below turns on it and a bare `6` would not say why.
@@ -597,7 +642,17 @@ fn parse_seeded(log: &str, mut image: Option<ImageIdentity>) -> Vec<Report> {
     // The report whose own `reg:` line has not been read yet. A `reg:` belongs to the header it
     // directly follows, so any other header (a skipped one included) closes the slot.
     let mut awaiting_regs: Option<usize> = None;
+    // Set by an `*** EXIT` header that is not a record. Its `time:`, `thread:` and `at:` lines then
+    // belong to nothing, and without this they would attach to the report above it (`out.last_mut()`),
+    // so a malformed exit could put its thread on a fault that has none. Cleared by the next header.
+    let mut detached = false;
     for l in log.lines() {
+        if l.starts_with("img: ") || l.starts_with("*** ") {
+            detached = false;
+        } else if detached && !l.starts_with("freeze-end: ") {
+            // `freeze-end:` names a probe number of its own and is not a line of any record.
+            continue;
+        }
         if l.starts_with("img: ") {
             awaiting_regs = None;
             process_starts.push(out.len());
@@ -610,6 +665,12 @@ fn parse_seeded(log: &str, mut image: Option<ImageIdentity>) -> Vec<Report> {
             if let Some(f) = parse_freeze(rest, l, image.clone()) {
                 out.push(Report::Freeze(f));
                 awaiting_regs = Some(out.len() - 1);
+            }
+        } else if let Some(rest) = l.strip_prefix("*** EXIT ") {
+            awaiting_regs = None;
+            match parse_exit(rest, image.clone()) {
+                Some(e) => out.push(Report::Exit(e)),
+                None => detached = true,
             }
         } else if let Some(rest) = l.strip_prefix("frames:") {
             if let Some(Report::Freeze(f)) = out.last_mut() {
@@ -658,6 +719,15 @@ fn parse_seeded(log: &str, mut image: Option<ImageIdentity>) -> Vec<Report> {
                         f.modules.push(m);
                     }
                 }
+                // The one mapping that holds the call, never the raw return address, which can sit
+                // one byte past the end of the mapping it was made from.
+                (Some(Report::Exit(e)), Some(m)) => {
+                    if e.module.is_none()
+                        && e.lookup_addr().is_some_and(|a| (m.lo..m.hi).contains(&a))
+                    {
+                        e.module = Some(m);
+                    }
+                }
                 _ => {}
             }
         } else if l.starts_with("reg: ") {
@@ -671,8 +741,16 @@ fn parse_seeded(log: &str, mut image: Option<ImageIdentity>) -> Vec<Report> {
                 _ => {}
             }
         } else if let Some(rest) = l.strip_prefix("thread: ") {
-            if let (Some(Report::Fault(f)), Some(t)) = (out.last_mut(), parse_thread(rest)) {
-                f.thread.get_or_insert(t);
+            if let Some(t) = parse_thread(rest) {
+                match out.last_mut() {
+                    Some(Report::Fault(f)) => {
+                        f.thread.get_or_insert(t);
+                    }
+                    Some(Report::Exit(e)) => {
+                        e.thread.get_or_insert(t);
+                    }
+                    _ => {}
+                }
             }
         } else if let Some(rest) = l.strip_prefix("phase: ") {
             if let (Some(Report::Fault(f)), Some((p, up))) = (out.last_mut(), parse_phase(rest)) {
@@ -695,6 +773,9 @@ fn parse_seeded(log: &str, mut image: Option<ImageIdentity>) -> Vec<Report> {
                     }
                     Some(Report::Freeze(f)) => {
                         f.crash_time.get_or_insert(t);
+                    }
+                    Some(Report::Exit(e)) => {
+                        e.crash_time.get_or_insert(t);
                     }
                     None => {}
                 }
@@ -720,6 +801,11 @@ fn parse_seeded(log: &str, mut image: Option<ImageIdentity>) -> Vec<Report> {
 /// is the report that says where and why. Reported too it would be two events for one death (and a
 /// freeze probe that overlapped a crash on another thread would be a bogus one). A freeze from an
 /// earlier process, or one that recovered, is kept.
+///
+/// **An `*** EXIT` of the same process is not a crash, so it does not drop the freeze.** The
+/// platform ending a stuck app with `exit()` is worth both reports: the freeze says where the main
+/// thread was parked, the exit says who ended the process. Only a fault or a panic marks a process
+/// as crashed here.
 fn drop_freezes_that_ended_in_a_crash(out: Vec<Report>, process_starts: &[usize]) -> Vec<Report> {
     let process_of = |i: usize| process_starts.iter().rposition(|&start| start <= i).unwrap_or(0);
     let mut crashed = vec![false; process_starts.len()];
@@ -817,6 +903,34 @@ fn parse_freeze(rest: &str, whole: &str, image: Option<ImageIdentity>) -> Option
         modules: Vec::new(),
         crash_time: None,
         bucket: FreezeBucket::Unrecovered,
+    })
+}
+
+/// `*** EXIT status=<n> caller=0x…`, the line `plx_fmt_exit` (`src/crashfmt.h`) writes (`rest` is
+/// the text after `*** EXIT `). `status` is an optional `-` and 1 to 10 digits that fit an `i32`;
+/// `caller` is `0x` and 1 to 8 hex digits (the address space is 32-bit). Anything else is no record,
+/// and anything after the two fields is ignored, never read.
+fn parse_exit(rest: &str, image: Option<ImageIdentity>) -> Option<ExitReport> {
+    let mut fields = rest.split_whitespace();
+    let status = fields.next()?.strip_prefix("status=")?;
+    let caller = fields.next()?.strip_prefix("caller=0x")?;
+    let magnitude = status.strip_prefix('-').unwrap_or(status);
+    if magnitude.is_empty()
+        || magnitude.len() > 10
+        || !magnitude.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    if caller.is_empty() || caller.len() > 8 || !caller.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(ExitReport {
+        status: status.parse().ok()?,
+        caller: u64::from_str_radix(caller, 16).ok()?,
+        image,
+        module: None,
+        crash_time: None,
+        thread: None,
     })
 }
 
@@ -1401,6 +1515,109 @@ pub fn freeze_sentry_body(
     serde_json::to_vec(&body).unwrap_or_default()
 }
 
+/// Where an exit's caller sits, as `(file, offset in the file, is_app)`: the file name a mapping of
+/// this crate's or [`CODE_FILE`], never a string out of the log. `None` when the record has no
+/// usable caller or no mapping or image vouches for the address.
+fn exit_site(e: &ExitReport) -> Option<(String, u64, bool)> {
+    locate_in(e.image.as_ref(), e.module.as_slice(), e.lookup_addr()?)
+}
+
+/// The Sentry event body for one foreign `exit()`.
+///
+/// Level `error`: the app was ended by a call it did not make, which is not the fault of the app's
+/// own code and not a crash, so `mechanism.handled` is `true` and the session it ended is
+/// `abnormal` ([`crashes_found`]). **The fingerprint is explicit**, `["exit", site]`, where `site`
+/// is `<file>+0x<offset>` of the caller (the library that called `exit`, and where in it) or
+/// `unknown` when the record named no mapping. It carries neither the status nor the thread: the
+/// same library calling `exit` with another status is one cause, one issue; the status is a tag.
+///
+/// **The exception `type` and `value` are built from this crate's own strings, the parsed status
+/// and the validated mapping's file name**, never from the record's text, like [`sentry_body`]'s.
+///
+/// The single stacktrace frame is the [`ExitReport::lookup_addr`], the address inside the call
+/// instruction, with `trust: "context"`: Sentry then looks it up as it is and does not back it up
+/// once more, as it would a return address, and what it symbolicates is the address the fingerprint
+/// and the `at:` line were derived from. The thread is carried exactly as [`sentry_body`] carries a
+/// fault's.
+pub fn exit_sentry_body(
+    e: &ExitReport,
+    event_id: &str,
+    build_id: &str,
+    debug_id: Option<&str>,
+    errors_id: Option<&str>,
+    modules: &[ModuleImage],
+) -> Vec<u8> {
+    let effective_build_id = e
+        .image
+        .as_ref()
+        .map(|i| i.build_id.as_str())
+        .unwrap_or(build_id);
+    let site = exit_site(e);
+    let value = match &site {
+        Some((file, _, _)) => format!("exit({}) from {file}", e.status),
+        None => format!("exit({}) from an unmapped address", e.status),
+    };
+    let fingerprint_site = match &site {
+        Some((file, off, _)) => format!("{file}+0x{off:x}"),
+        None => "unknown".to_string(),
+    };
+    let mut tags = serde_json::Map::new();
+    tags.insert("exit_status".into(), e.status.to_string().into());
+    tags.insert(
+        "exit_module".into(),
+        site.as_ref()
+            .map_or("unknown", |(file, _, _)| file.as_str())
+            .into(),
+    );
+    if let Some(t) = &e.thread {
+        tags.insert("crash.thread".into(), t.name.clone().into());
+        tags.insert(
+            "crash.main_thread".into(),
+            (if t.main { "yes" } else { "no" }).into(),
+        );
+    }
+    let mut body = serde_json::json!({
+        "event_id": event_id,
+        "platform": "native",
+        "level": "error",
+        "release": super::release(),
+        "environment": super::sender::ENVIRONMENT,
+        "dist": effective_build_id,
+        "sdk": {"name": "plxnative-fallback", "version": super::app_version()},
+        "tags": tags,
+        "exception": {"values": [{
+            "type": "Exit",
+            "value": value,
+            "mechanism": {"type": "exit", "handled": true},
+        }]},
+        "fingerprint": ["exit", fingerprint_site],
+    });
+    if let Some(a) = e.lookup_addr() {
+        body["exception"]["values"][0]["stacktrace"] = serde_json::json!({"frames": [{
+            "instruction_addr": format!("0x{a:x}"),
+            "platform": "native",
+            "trust": "context",
+        }]});
+    }
+    if let Some(t) = crash_timestamp(e.crash_time, now_secs()) {
+        body["timestamp"] = serde_json::json!(t);
+    }
+    let images = debug_images(e.image.as_ref(), effective_build_id, debug_id, modules);
+    if !images.is_empty() {
+        body["debug_meta"] = serde_json::json!({ "images": images });
+    }
+    if let Some(t) = &e.thread {
+        body["exception"]["values"][0]["thread_id"] = t.tid.into();
+        body["threads"] = serde_json::json!({"values": [{
+            "id": t.tid, "name": t.name, "crashed": true, "current": true, "main": t.main,
+        }]});
+    }
+    super::sentry::attach_os_context(&mut body);
+    super::sentry::attach_hardware_context(&mut body);
+    super::sentry::attach_user(&mut body, errors_id);
+    serde_json::to_vec(&body).unwrap_or_default()
+}
+
 /// The fallback sample's `hardware.probe`: the four words the real field draws from, per nyx file.
 /// The consent screen lists the same string among its translated placeholders.
 const FALLBACK_PROBE_PLACEHOLDER: &str = "<ok / no_keys / unreadable / unprobed per nyx file>";
@@ -1578,6 +1795,7 @@ pub fn event_id_for(build_id: &str, seq: usize, r: &Report) -> String {
         // Not the bucket: it is read from a later line, and an id must not depend on whether that
         // line had been written when a retry read the log.
         Report::Freeze(f) => format!("{build_id}|{seq}|freeze|{}|{:x}|{:x}", f.seq, f.pc, f.lr),
+        Report::Exit(e) => format!("{build_id}|{seq}|exit|{}|{:x}", e.status, e.caller),
     };
     let a = message_hash(&key);
     let b = message_hash(&format!("{key}|2"));
@@ -1740,8 +1958,10 @@ fn reconcile(reports: &[Report], natives: &[Option<super::native::CrashKey>], cu
             Report::Fault(f) => (&f.image, f.signal),
             Report::Panic(p) => (&p.image, SIGABRT),
             // A freeze is not a death: the native daemon wrote nothing for it and there is no
-            // envelope to prefer or to drop.
-            Report::Freeze(_) => continue,
+            // envelope to prefer or to drop. An exit ends the process with no signal (the
+            // `exit_group` syscall, never a handler or a re-raise), so no signal was raised and no
+            // envelope exists for it: it never takes one.
+            Report::Freeze(_) | Report::Exit(_) => continue,
         };
         let build_id = image.as_ref().map(|x| x.build_id.as_str()).unwrap_or(current_build_id);
         let Some(n) = natives.iter().enumerate().position(|(n, key)| {
@@ -1754,7 +1974,7 @@ fn reconcile(reports: &[Report], natives: &[Option<super::native::CrashKey>], cu
         match r {
             Report::Fault(_) => plan.report_native[i] = Some(n),
             Report::Panic(_) => plan.native_panic[n] = Some(i),
-            Report::Freeze(_) => {}
+            Report::Freeze(_) | Report::Exit(_) => {}
         }
     }
     plan
@@ -1849,7 +2069,7 @@ fn execute(plan: &Plan, fresh: bool, fx: &mut impl Recovery) {
 /// with no build id: [`module_images`] lists it by name with a nil `debug_id` and no `code_id`,
 /// because attributing a crash to a library is worth more than the silent `missing_symbol`.
 ///
-/// **Returns how many crash records this pass FOUND** (local log reports, freezes excluded, plus native envelopes, a
+/// **Returns how many crash records this pass FOUND** (local log reports, freezes and exits excluded, plus native envelopes, a
 /// crash that left both counts twice): `telemetry::session` reads "more than none" as "the previous
 /// process died of a crash", which is what separates a `crashed` release-health session from an
 /// `abnormal` one. `0` also when nothing may be read (no consent, no destination).
@@ -1928,6 +2148,7 @@ fn recover_pending_at(path: &std::path::Path) -> usize {
                 Report::Fault(f) => f.image.as_ref(),
                 Report::Panic(p) => p.image.as_ref(),
                 Report::Freeze(f) => f.image.as_ref(),
+                Report::Exit(e) => e.image.as_ref(),
             }
             .map(|x| x.build_id.as_str())
             .unwrap_or(self.current_build_id);
@@ -1949,6 +2170,14 @@ fn recover_pending_at(path: &std::path::Path) -> usize {
                     did.as_deref(),
                     self.errors_id.as_deref(),
                     &images_of_mappings(&f.modules, read_module_head),
+                ),
+                Report::Exit(e) => exit_sentry_body(
+                    e,
+                    &event_id,
+                    bid,
+                    did.as_deref(),
+                    self.errors_id.as_deref(),
+                    &images_of_mappings(e.module.as_slice(), read_module_head),
                 ),
             };
             let ok = super::spool::append(&super::queue::Record {
@@ -1994,6 +2223,7 @@ fn recover_pending_at(path: &std::path::Path) -> usize {
                 Report::Fault(f) => f.image.as_ref().is_some_and(|i| super::sentry::debug_id(&i.build_id).is_some()),
                 Report::Panic(_) => true,
                 Report::Freeze(f) => f.image.as_ref().is_some_and(|i| super::sentry::debug_id(&i.build_id).is_some()),
+                Report::Exit(e) => e.image.as_ref().is_some_and(|i| super::sentry::debug_id(&i.build_id).is_some()),
             }) { "yes" } else { "partial/no" }
         ));
     }
@@ -2002,9 +2232,16 @@ fn recover_pending_at(path: &std::path::Path) -> usize {
 
 /// What `recover_pending` returns and `session::classify_unfinished` reads: how many crash records
 /// this pass found. A freeze is a report but not a crash (the process lived on, or was killed by
-/// something else), so it does not count.
+/// something else), so it does not count; neither does an exit (the process was ended by an
+/// `exit()` call, not by a fault). A session that was open when either happened is `abnormal`, not
+/// `crashed`; an exit made after backgrounding finds none, since backgrounding already ended the
+/// session `exited` (`session::Event::Background`).
 fn crashes_found(reports: &[Report], natives: usize) -> usize {
-    reports.iter().filter(|r| !matches!(r, Report::Freeze(_))).count() + natives
+    reports
+        .iter()
+        .filter(|r| !matches!(r, Report::Freeze(_) | Report::Exit(_)))
+        .count()
+        + natives
 }
 
 /// Make crash consent prospective. When error reporting is switched on, faults already present in
@@ -3727,5 +3964,592 @@ mod tests {
         assert_eq!(crashes_found(&crash, 0), 1);
         assert_eq!(crashes_found(&[], 1), 1, "a native envelope alone is a crash");
         assert_eq!(crashes_found(&parse(FRZ), 1), 1);
+    }
+
+    // ---- foreign `exit()` records ----
+
+    /// The startup marker that begins the process an exit record belongs to.
+    const EXIT_IMG: &str = "\nimg: build_id=11223344556677889900aabbccddeeff00112233 image_addr=0x10000 image_size=0x5f0000\n";
+
+    /// The four lines `plx_exit_record` writes, byte for byte as `plx_fmt_exit`, `plx_fmt_time`,
+    /// `plx_fmt_thread` (`src/crashfmt.h`, graded by `ci/crashfmt-test.c`) and the tracer's `at: `
+    /// plus the kernel's maps line produce them. The caller is a Thumb return address, one past
+    /// the call instruction at `0xb6f10123`, in a mapping whose load base is `0xb6ef0000`.
+    const EXIT_BLOCK: &str = "\n*** EXIT status=7 caller=0xb6f10125\n\
+                              time: 1750000000\n\
+                              thread: tid=4242 main=0 name=SDLTimer\n\
+                              at: b6f00000-b6f21000 r-xp 00010000 fe:01 1234 /usr/lib/libSDL2-2.0.so.0\n";
+
+    fn exit_log() -> String {
+        format!("{EXIT_IMG}{EXIT_BLOCK}")
+    }
+
+    fn only_exit(log: &str) -> ExitReport {
+        match parse(log).into_iter().next().expect("a report") {
+            Report::Exit(e) => e,
+            other => panic!("expected an exit, got {other:?}"),
+        }
+    }
+
+    /// The body with the mappings' images as `queue_report` builds them, minus the file reads.
+    fn exit_json(e: &ExitReport) -> serde_json::Value {
+        let modules = images_of_mappings(e.module.as_slice(), |_| None);
+        serde_json::from_slice(&exit_sentry_body(
+            e,
+            "e",
+            BUILD,
+            Some("did"),
+            None,
+            &modules,
+        ))
+        .unwrap()
+    }
+
+    fn exit_fingerprint(log: &str) -> serde_json::Value {
+        exit_json(&only_exit(log))["fingerprint"].clone()
+    }
+
+    #[test]
+    fn an_exit_record_is_parsed_with_its_status_caller_time_thread_and_mapping() {
+        let log = exit_log();
+        let e = only_exit(&log);
+        assert_eq!((e.status, e.caller), (7, 0xb6f1_0125));
+        assert_eq!(
+            e.lookup_addr(),
+            Some(0xb6f1_0123),
+            "the Thumb bit cleared, then one byte back into the call"
+        );
+        assert_eq!(e.crash_time, Some(1_750_000_000));
+        assert_eq!(
+            e.thread,
+            Some(CrashThread {
+                tid: 4242,
+                main: false,
+                name: "SDLTimer".into()
+            })
+        );
+        assert_eq!(e.image.as_ref().map(|i| i.image_addr), Some(0x10000));
+        let m = e.module.as_ref().expect("the mapping holding the call");
+        assert_eq!(m.file_name(), "libSDL2-2.0.so.0");
+        assert_eq!((m.lo, m.hi, m.offset), (0xb6f0_0000, 0xb6f2_1000, 0x1_0000));
+        assert_eq!(
+            parse(&log).len(),
+            1,
+            "an exit is one report, and its lines are not other reports"
+        );
+
+        // A negative status, and the extremes the formatter writes.
+        for (text, want) in [
+            ("-1", -1),
+            ("0", 0),
+            ("-2147483648", i32::MIN),
+            ("2147483647", i32::MAX),
+            ("255", 255),
+        ] {
+            let log = log.replace("status=7", &format!("status={text}"));
+            assert_eq!(only_exit(&log).status, want, "{text}");
+        }
+    }
+
+    #[test]
+    fn an_exit_body_has_the_agreed_shape() {
+        let e = only_exit(&exit_log());
+        let body = exit_json(&e);
+        assert_eq!(body["level"], "error");
+        assert_eq!(body["platform"], "native");
+        assert_eq!(body["dist"], "11223344556677889900aabbccddeeff00112233");
+        let ex = &body["exception"]["values"][0];
+        assert_eq!(ex["type"], "Exit");
+        assert_eq!(
+            ex["value"], "exit(7) from libSDL2-2.0.so.0",
+            "built from the status and the mapping's file name"
+        );
+        assert_eq!(ex["mechanism"]["type"], "exit");
+        assert_eq!(
+            body["fingerprint"],
+            serde_json::json!(["exit", "libSDL2-2.0.so.0+0x20123"])
+        );
+        assert_eq!(body["tags"]["exit_status"], "7");
+        assert_eq!(body["tags"]["exit_module"], "libSDL2-2.0.so.0");
+        assert_eq!(body["tags"]["crash.thread"], "SDLTimer");
+        assert_eq!(body["tags"]["crash.main_thread"], "no");
+
+        // One frame, at the call and not at the return address, looked up as it is.
+        let frames = ex["stacktrace"]["frames"].as_array().unwrap();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0]["instruction_addr"], "0xb6f10123");
+        assert_eq!(frames[0]["trust"], "context");
+
+        // The thread is carried as a fault's is.
+        assert_eq!(ex["thread_id"], 4242);
+        assert_eq!(
+            body["threads"]["values"][0],
+            serde_json::json!({"id": 4242, "name": "SDLTimer", "crashed": true, "current": true, "main": false})
+        );
+
+        // The app's image and the calling library, as the fault and freeze bodies list them.
+        let images = body["debug_meta"]["images"].as_array().unwrap();
+        let files: Vec<_> = images
+            .iter()
+            .map(|i| i["code_file"].as_str().unwrap())
+            .collect();
+        assert_eq!(files, ["plxnative", "libSDL2-2.0.so.0"]);
+        assert_eq!(images[1]["image_addr"], "0xb6ef0000");
+        // The event's time is the record's own second, inside `crash_timestamp`'s window.
+        let recent = now_secs().saturating_sub(60);
+        let timed = only_exit(&exit_log().replace("time: 1750000000", &format!("time: {recent}")));
+        assert_eq!(
+            exit_json(&timed)
+                .get("timestamp")
+                .and_then(serde_json::Value::as_u64),
+            crash_timestamp(Some(recent), now_secs())
+        );
+        assert!(
+            body.get("timestamp").is_none(),
+            "a year-old time is outside the window"
+        );
+
+        // Nothing about the executable's own mapping: the tracer writes no `bin:` line for an exit,
+        // and one that appears is not read.
+        let with_bin = format!(
+            "{}bin: 00010000-00600000 r-xp 00000000 fe:01 99 /media/developer/x/plxnative\n",
+            exit_log()
+        );
+        assert_eq!(only_exit(&with_bin), e);
+        let text = serde_json::to_string(&body).unwrap();
+        assert!(
+            !text.contains("bin:") && !text.contains("/usr/lib") && !text.contains("/media"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn an_exit_fingerprints_on_module_and_offset_and_ignores_the_status() {
+        let want = serde_json::json!(["exit", "libSDL2-2.0.so.0+0x20123"]);
+        assert_eq!(exit_fingerprint(&exit_log()), want);
+        // The same call with any other status is the same issue: the status is a tag, not a key.
+        for status in ["0", "1", "-1", "255", "2147483647"] {
+            let log = exit_log().replace("status=7", &format!("status={status}"));
+            assert_eq!(exit_fingerprint(&log), want, "status {status}");
+            assert_eq!(exit_json(&only_exit(&log))["tags"]["exit_status"], status);
+        }
+        // The Thumb bit does not move the lookup; the call's own byte does.
+        assert_eq!(
+            exit_fingerprint(&exit_log().replace("0xb6f10125", "0xb6f10124")),
+            want
+        );
+        assert_eq!(
+            exit_fingerprint(&exit_log().replace("0xb6f10125", "0xb6f10135")),
+            serde_json::json!(["exit", "libSDL2-2.0.so.0+0x20133"])
+        );
+        // Another boot, another load address: the same offset in the file.
+        let moved = exit_log()
+            .replace("b6f00000-b6f21000", "b6a00000-b6a21000")
+            .replace("0xb6f10125", "0xb6a10125");
+        assert_eq!(exit_fingerprint(&moved), want);
+        // Another library is another issue.
+        let other = exit_log().replace("libSDL2-2.0.so.0", "libglib-2.0.so.0");
+        assert_eq!(
+            exit_fingerprint(&other),
+            serde_json::json!(["exit", "libglib-2.0.so.0+0x20123"])
+        );
+    }
+
+    #[test]
+    fn an_exit_at_the_end_of_its_mapping_selects_that_mapping_and_not_the_next() {
+        // `exit` never returns, so the call can be the last instruction of its function: the return
+        // address is exactly the mapping's end, and the call is the byte before it.
+        let at_end = exit_log().replace("0xb6f10125", "0xb6f21000");
+        let e = only_exit(&at_end);
+        assert_eq!(e.lookup_addr(), Some(0xb6f2_0fff));
+        assert_eq!(
+            e.module.as_ref().map(ModuleMapping::file_name),
+            Some("libSDL2-2.0.so.0")
+        );
+        assert_eq!(
+            exit_fingerprint(&at_end),
+            serde_json::json!(["exit", "libSDL2-2.0.so.0+0x30fff"])
+        );
+        // Thumb: the same address with the bit set.
+        assert_eq!(
+            exit_fingerprint(&at_end.replace("0xb6f21000", "0xb6f21001")),
+            exit_fingerprint(&at_end)
+        );
+        // A return address at the mapping's START is in the previous mapping, which is not this one.
+        let at_start = exit_log().replace("0xb6f10125", "0xb6f00000");
+        let e = only_exit(&at_start);
+        assert_eq!(e.lookup_addr(), Some(0xb6ef_ffff));
+        assert!(
+            e.module.is_none(),
+            "the line holds the return address but not the call"
+        );
+        assert_eq!(
+            exit_fingerprint(&at_start),
+            serde_json::json!(["exit", "unknown"])
+        );
+    }
+
+    #[test]
+    fn an_exit_with_no_mapping_gets_the_unknown_fingerprint() {
+        let no_at = format!(
+            "{EXIT_IMG}{}",
+            EXIT_BLOCK.lines().take(4).collect::<Vec<_>>().join("\n") + "\n"
+        );
+        let e = only_exit(&no_at);
+        assert!(e.module.is_none());
+        let body = exit_json(&e);
+        assert_eq!(body["fingerprint"], serde_json::json!(["exit", "unknown"]));
+        assert_eq!(
+            body["exception"]["values"][0]["value"],
+            "exit(7) from an unmapped address"
+        );
+        assert_eq!(body["tags"]["exit_module"], "unknown");
+        assert_eq!(body["tags"]["exit_status"], "7");
+
+        // A mapping that does not hold the call is not this exit's (a stray `at:` line).
+        let stray = exit_log().replace("b6f00000-b6f21000", "b6000000-b6001000");
+        assert_eq!(
+            exit_fingerprint(&stray),
+            serde_json::json!(["exit", "unknown"])
+        );
+        // A caller of 0 or of the Thumb bit alone names no address, so no frame either.
+        for caller in ["0x0", "0x1"] {
+            let none = exit_log().replace("0xb6f10125", caller);
+            let e = only_exit(&none);
+            assert_eq!(e.lookup_addr(), None);
+            let body = exit_json(&e);
+            assert_eq!(body["fingerprint"], serde_json::json!(["exit", "unknown"]));
+            assert!(
+                body["exception"]["values"][0].get("stacktrace").is_none(),
+                "{caller}"
+            );
+        }
+        // No image identity either: the body still stands, with no app image listed.
+        let no_img = only_exit(EXIT_BLOCK);
+        assert!(no_img.image.is_none());
+        assert_eq!(exit_json(&no_img)["dist"], BUILD);
+    }
+
+    #[test]
+    fn an_exit_from_the_apps_own_code_is_named_by_the_app_image() {
+        // 0x4bccd1 is a Thumb return address 0x4bcccf into the app's image (base 0x10000).
+        let own = exit_log().replace("0xb6f10125", "0x4bccd1");
+        let body = exit_json(&only_exit(&own));
+        assert_eq!(
+            body["fingerprint"],
+            serde_json::json!(["exit", "plxnative+0x4acccf"])
+        );
+        assert_eq!(
+            body["exception"]["values"][0]["value"],
+            "exit(7) from plxnative"
+        );
+        assert_eq!(body["tags"]["exit_module"], "plxnative");
+    }
+
+    #[test]
+    fn an_exit_header_is_read_under_bounds() {
+        // Each of these is not an exit record, and its lines attach to nothing.
+        for bad in [
+            "*** EXIT status=7\n",
+            "*** EXIT caller=0x10\n",
+            "*** EXIT caller=0x10 status=7\n",
+            "*** EXIT status= caller=0x10\n",
+            "*** EXIT status=- caller=0x10\n",
+            "*** EXIT status=+7 caller=0x10\n",
+            "*** EXIT status=7x caller=0x10\n",
+            "*** EXIT status=0x7 caller=0x10\n",
+            "*** EXIT status=--1 caller=0x10\n",
+            "*** EXIT status=12345678901 caller=0x10\n",
+            "*** EXIT status=2147483648 caller=0x10\n",
+            "*** EXIT status=-2147483649 caller=0x10\n",
+            "*** EXIT status=7 caller=\n",
+            "*** EXIT status=7 caller=0x\n",
+            "*** EXIT status=7 caller=10\n",
+            "*** EXIT status=7 caller=0xzz\n",
+            "*** EXIT status=7 caller=0x123456789\n",
+            "*** EXIT status=7 caller=0x1 0x2\n x\n",
+        ] {
+            let reports = parse(&format!(
+                "{EXIT_IMG}\n{bad}time: 1750000000\nthread: tid=1 main=1 name=x\n"
+            ));
+            // Anything after the two fields is never read, so the last variant IS a record; the
+            // others are not.
+            if bad.contains("0x1 0x2") {
+                assert_eq!(reports.len(), 1, "{bad:?}");
+            } else {
+                assert!(reports.is_empty(), "{bad:?} gave {reports:?}");
+            }
+        }
+        // The widest legal caller, and an upper-case digit, are records.
+        for ok in [
+            "*** EXIT status=7 caller=0xffffffff\n",
+            "*** EXIT status=7 caller=0xB6F10125\n",
+        ] {
+            assert_eq!(parse(&format!("\n{ok}")).len(), 1, "{ok:?}");
+        }
+    }
+
+    #[test]
+    fn no_text_from_an_exit_record_reaches_the_wire() {
+        // Free text on the header, the time line and the thread line, a hostile path suffix and a
+        // path outside the allowlist: none of it survives, and none of it is sent.
+        let hostile = exit_log()
+            .replace("caller=0xb6f10125", "caller=0xb6f10125 TITLE=SecretMovie")
+            .replace("time: 1750000000", "time: 1750000000 SecretMovie")
+            .replace("name=SDLTimer", "name=Secret Movie")
+            .replace(
+                "/usr/lib/libSDL2-2.0.so.0",
+                "/usr/lib/libSDL2-2.0.so.0 (SecretMovie deleted)",
+            );
+        let e = only_exit(&hostile);
+        assert_eq!(e.crash_time, None, "a time line with text is no time");
+        assert_eq!(
+            e.thread, None,
+            "a thread name outside the tracer's alphabet is no thread"
+        );
+        assert!(e.module.is_none(), "a path with a space is no mapping");
+        let text =
+            String::from_utf8(exit_sentry_body(&e, "e", BUILD, Some("did"), None, &[])).unwrap();
+        assert!(!text.contains("SecretMovie"), "{text}");
+
+        // Hostile paths and names the allowlists refuse, each on a record that is otherwise good.
+        for (from, to) in [
+            ("/usr/lib/libSDL2-2.0.so.0", "/usr/lib/../SecretMovie.so"),
+            ("/usr/lib/libSDL2-2.0.so.0", "usr/lib/SecretMovie.so"),
+            ("/usr/lib/libSDL2-2.0.so.0", "/usr/lib/SecretMovie\u{e9}.so"),
+            (
+                "/usr/lib/libSDL2-2.0.so.0",
+                &format!("/usr/lib/{}.so", "SecretMovie".repeat(8)),
+            ),
+            ("name=SDLTimer", "name=0123456789abcdefg"),
+            ("name=SDLTimer", "name=SDL<Secret>"),
+        ] {
+            let e = only_exit(&exit_log().replace(from, to));
+            let text = String::from_utf8(exit_sentry_body(&e, "e", BUILD, Some("did"), None, &[]))
+                .unwrap();
+            assert!(!text.contains("Secret"), "{to}: {text}");
+        }
+
+        // The thread name is bounded the way the fault path bounds it: the tracer's alphabet, 15 bytes.
+        let e = only_exit(&exit_log().replace("name=SDLTimer", "name=a_b.c-d?e"));
+        assert_eq!(e.thread.map(|t| t.name), Some("a_b.c-d?e".to_string()));
+
+        // Only a library's basename may travel.
+        let body = String::from_utf8(exit_sentry_body(
+            &only_exit(&exit_log()),
+            "e",
+            BUILD,
+            Some("did"),
+            None,
+            &[],
+        ))
+        .unwrap();
+        assert!(
+            body.contains("libSDL2-2.0.so.0") && !body.contains("/usr/lib"),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn an_exit_event_id_is_stable_across_retries() {
+        let r = Report::Exit(only_exit(&exit_log()));
+        let id = event_id_for(BUILD, 7, &r);
+        assert_eq!(id, event_id_for(BUILD, 7, &r));
+        assert_eq!(id.len(), 32);
+        assert_ne!(
+            id,
+            event_id_for(BUILD, 8, &r),
+            "its position in the log is part of the key"
+        );
+        // Re-reading the same bytes after a power cut gives the same report and so the same id.
+        assert_eq!(
+            id,
+            event_id_for(BUILD, 7, &Report::Exit(only_exit(&exit_log())))
+        );
+        // Another exit at the same position is another report, and a freeze is not an exit.
+        let other = Report::Exit(only_exit(&exit_log().replace("status=7", "status=1")));
+        assert_ne!(id, event_id_for(BUILD, 7, &other));
+        assert_ne!(
+            id,
+            event_id_for(BUILD, 7, &Report::Freeze(only_freeze(FRZ)))
+        );
+        // What it does not depend on: the thread, the time or the mapping, which can be absent from
+        // a record a retry reads while the first read had them.
+        let bare = Report::Exit(only_exit(&format!(
+            "{EXIT_IMG}\n*** EXIT status=7 caller=0xb6f10125\n"
+        )));
+        assert_eq!(id, event_id_for(BUILD, 7, &bare));
+    }
+
+    /// An exit ends the process but is not a crash: it must not make the previous release-health
+    /// session `crashed`.
+    #[test]
+    fn an_exit_only_log_finds_no_crash_so_its_session_is_abnormal() {
+        use super::super::session::{classify_unfinished, Status, Stored};
+        let reports = parse(&exit_log());
+        assert!(
+            matches!(reports.as_slice(), [Report::Exit(_)]),
+            "{reports:?}"
+        );
+        let found = crashes_found(&reports, 0);
+        assert_eq!(found, 0, "an exit is not a crash");
+        let stored = Stored {
+            sid: "11111111-1111-4111-8111-111111111111".into(),
+            did: "d".into(),
+            release: "plxnative@1.2.3".into(),
+            environment: "production".into(),
+            started: 1_800_000_000,
+            last_active: 1_800_000_100,
+        };
+        let f = classify_unfinished(stored, found, 1_800_100_000, "d").expect("reported");
+        assert_eq!(f.status, Status::Abnormal);
+        // A crash beside it is still counted, once, and so is a native envelope alone.
+        let both = parse(&format!(
+            "{}\n*** SIGNAL 11 (SIGSEGV) addr=0x0 pc=0x88ef8 lr=0x4bccd0\n",
+            exit_log()
+        ));
+        assert_eq!(both.len(), 2);
+        assert_eq!(crashes_found(&both, 0), 1);
+        assert_eq!(crashes_found(&reports, 1), 1);
+        assert_eq!(crashes_found(&parse(&format!("{FRZ}{EXIT_BLOCK}")), 0), 0);
+    }
+
+    #[test]
+    fn an_exit_after_an_unrecovered_freeze_keeps_the_freeze() {
+        // The platform ended a stuck app by calling `exit`: the freeze says where the main thread
+        // was parked and the exit says who ended the process. Neither is a crash, both are kept.
+        let unrecovered = FRZ.replace("freeze-end: seq=1 bucket=10-30s\n", "");
+        let reports = parse(&format!("{unrecovered}{EXIT_BLOCK}"));
+        assert_eq!(reports.len(), 2, "{reports:?}");
+        assert!(matches!(&reports[0], Report::Freeze(f) if f.bucket == FreezeBucket::Unrecovered));
+        assert!(matches!(&reports[1], Report::Exit(e) if e.status == 7));
+        assert_eq!(crashes_found(&reports, 0), 0);
+        // A real crash of the same process still drops the stuck freeze, and keeps the exit.
+        let crash = "\n*** SIGNAL 11 (SIGSEGV) addr=0x0 pc=0x88ef8 lr=0x4bccd0\n";
+        let reports = parse(&format!("{unrecovered}{EXIT_BLOCK}{crash}"));
+        assert!(
+            matches!(reports.as_slice(), [Report::Exit(_), Report::Fault(_)]),
+            "{reports:?}"
+        );
+    }
+
+    #[test]
+    fn an_exit_record_between_other_records_does_not_swallow_or_corrupt_its_neighbours() {
+        // The first fault has no `time:` or `thread:` line of its own, and its `lr` is inside the
+        // mapping the exit's `at:` line names: all three would be its if the dispatcher gave the
+        // exit's lines to the report above.
+        let before = format!("{EXIT_IMG}\n*** SIGNAL 11 (SIGSEGV) addr=0x0 pc=0x88ef8 lr=0xb6f10100\nreg: sp=0x1 r1=0x2a\n");
+        let after =
+            "\n*** SIGNAL 11 (SIGSEGV) addr=0x0 pc=0x88ef8 lr=0x4bccd0\nreg: sp=0x1 r1=0x2a\n";
+        let reports = parse(&format!("{before}{EXIT_BLOCK}{after}"));
+        assert_eq!(reports.len(), 3, "{reports:?}");
+        let (Report::Fault(first), Report::Exit(exit), Report::Fault(last)) =
+            (&reports[0], &reports[1], &reports[2])
+        else {
+            panic!("fault, exit, fault: {reports:?}")
+        };
+        assert_eq!((first.thread.as_ref(), first.crash_time), (None, None));
+        assert!(
+            first.modules.is_empty(),
+            "the exit's mapping is not the fault's: {:?}",
+            first.modules
+        );
+        assert_eq!(first.registers.r1, Some(0x2a));
+        assert_eq!((exit.status, exit.crash_time), (7, Some(1_750_000_000)));
+        assert_eq!(exit.thread.as_ref().map(|t| t.tid), Some(4242));
+        assert_eq!(
+            exit.module.as_ref().map(ModuleMapping::file_name),
+            Some("libSDL2-2.0.so.0")
+        );
+        assert_eq!(
+            (last.pc, last.registers.r1),
+            (0x88ef8, Some(0x2a)),
+            "the `reg:` line is the last fault's own"
+        );
+        assert_eq!((last.thread.as_ref(), last.crash_time), (None, None));
+
+        // The same with a panic above and a freeze around it: each keeps its own time.
+        let panic = "\n*** RUST PANIC [t] at src/a.rs:1: boom\n";
+        let reports = parse(&format!("{FRZ}{panic}{EXIT_BLOCK}"));
+        assert!(
+            matches!(
+                reports.as_slice(),
+                [Report::Freeze(_), Report::Panic(_), Report::Exit(_)]
+            ),
+            "{reports:?}"
+        );
+        let Report::Panic(p) = &reports[1] else {
+            unreachable!()
+        };
+        assert_eq!(p.crash_time, None, "the exit's time is not the panic's");
+        let Report::Freeze(f) = &reports[0] else {
+            unreachable!()
+        };
+        assert_eq!(f.crash_time, Some(1_750_000_000));
+        // And an exit before a freeze: the freeze's walk and registers stay its own.
+        let reports = parse(&format!("{EXIT_IMG}{EXIT_BLOCK}{FRZ}"));
+        assert!(
+            matches!(reports.as_slice(), [Report::Exit(_), Report::Freeze(_)]),
+            "{reports:?}"
+        );
+        let Report::Freeze(f) = &reports[1] else {
+            unreachable!()
+        };
+        assert_eq!(
+            (f.frames.len(), f.registers.r1, f.bucket),
+            (3, Some(0x2a), FreezeBucket::Medium)
+        );
+    }
+
+    #[test]
+    fn a_malformed_exit_header_leaves_its_lines_attached_to_nothing() {
+        // REC's fault has no thread or time. A malformed exit header after it must not give it the
+        // exit's lines; the next header ends the detachment.
+        let bad = EXIT_BLOCK.replace("status=7", "status=oops");
+        let reports = parse(&format!("{REC}{bad}"));
+        let [Report::Fault(f)] = reports.as_slice() else {
+            panic!("{reports:?}")
+        };
+        assert_eq!((f.thread.as_ref(), f.crash_time), (None, None));
+        // A fault that follows it is read whole, and so is an exit.
+        let after = "\n*** SIGNAL 11 (SIGSEGV) addr=0x0 pc=0x88ef8 lr=0x4bccd0\nthread: tid=9 main=1 name=main\n";
+        let reports = parse(&format!("{REC}{bad}{after}{EXIT_BLOCK}"));
+        assert!(
+            matches!(
+                reports.as_slice(),
+                [Report::Fault(_), Report::Fault(_), Report::Exit(_)]
+            ),
+            "{reports:?}"
+        );
+        let Report::Fault(second) = &reports[1] else {
+            unreachable!()
+        };
+        assert_eq!(second.thread.as_ref().map(|t| t.tid), Some(9));
+        // A recovery line is not a line of the exit: it still closes its freeze.
+        let unrecovered = FRZ.replace("freeze-end: seq=1 bucket=10-30s\n", "");
+        let reports = parse(&format!(
+            "{unrecovered}{bad}freeze-end: seq=1 bucket=10-30s\n"
+        ));
+        assert!(
+            matches!(&reports[..], [Report::Freeze(f)] if f.bucket == FreezeBucket::Medium),
+            "{reports:?}"
+        );
+    }
+
+    #[test]
+    fn an_exit_record_never_takes_or_consumes_a_native_envelope() {
+        let exit = Report::Exit(only_exit(&exit_log()));
+        // No signal was raised for an exit, so an envelope of the same build and any signal is
+        // another death's, and is left for it.
+        for signal in [6, 11] {
+            let plan = reconcile(&[exit.clone()], &[key(signal)], BUILD);
+            assert_eq!(plan.report_native, vec![None], "signal {signal}");
+            assert_eq!(plan.native_panic, vec![None], "signal {signal}");
+            assert_eq!(plan.report_path, vec![None], "signal {signal}");
+        }
+        // The fault after it still takes the envelope; the exit before it did not.
+        let fault = parse(REC).remove(0);
+        let plan = reconcile(&[exit, fault], &[key(11)], BUILD);
+        assert_eq!(plan.report_native, vec![None, Some(0)]);
     }
 }

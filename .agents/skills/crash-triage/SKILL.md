@@ -41,7 +41,7 @@ written and the report chain never starts). Per crash it emits:
 *** SIGNAL 11 (SIGSEGV) addr=0x6bcf pc=0xf5a4dd08 lr=0x0
 time: 1750000000                                       -- wall-clock unix second of the crash (newer builds only)
 thread: tid=4242 main=0 name=tokio-rt.worker           -- which thread faulted; main=1 is the main thread (newer builds only)
-phase: running uptime=57                               -- running | shutdown | exiting (libc atexit/destructors), seconds since install
+phase: running uptime=57                               -- running | shutdown | exiting (an exit was under way: `exit_now`, or a library's `exit()`; grep the log for `*** EXIT`), seconds since install
 reg: sp=0x… fp=0x… ip=0x… cpsr=0x… r0=0x… r1=0x… … r10=0x…
 at:  <the /proc/self/maps line containing pc or lr>    -- which library faulted
 bin: <the maps line for our own executable>            -- our load base, for addr2line
@@ -49,6 +49,13 @@ bin: <the maps line for our own executable>            -- our load base, for add
 
 Turning `pc` into a source location needs `pc - load_base` fed to `addr2line`. Nothing in
 the repo did that arithmetic until `tools/crash-report.sh`.
+
+**A `*** EXIT status=<n> caller=0x…` record in the crash log (with `time:`, `thread:` and `at:`
+lines, and no `bin:`) is not a crash.** It is a foreign `exit()` (a firmware library on a thread of
+its own, say) that the executable's interposer (`src/exit.c`, `plx_exit_record` in
+`src/crashtrace.c`) ended cleanly with exit status `<n>` and no exit handler (the `exit_group`
+syscall): the status is what the caller passed and the `at:` mapping is the library that called it. The
+next launch reports it as an `error` event (`exit`), not a crash.
 
 **Call the local C record a FAULT EVENT, not a backtrace, when you write it up.** Two frames and the
 registers are what an async-signal-safe handler can honestly produce: `backtrace()` is not on the safe list, ARM

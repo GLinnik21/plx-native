@@ -44,7 +44,7 @@ ok "ELF32 / ARM / soft-float / ARMv7"
 echo "== Starfish callback interposer =="
 # libplayerAPIs' fixed libpf thunk calls this exact C++ symbol through an R_ARM_JUMP_SLOT. A normal
 # executable-private definition is absent from .dynsym and therefore cannot preempt that slot; the
-# link must export exactly this one symbol. Conversely, Load-with-context is resolved and owner-
+# link must export this symbol. Conversely, Load-with-context is resolved and owner-
 # checked with dlsym so a firmware which lacks the overload refuses playback instead of killing the
 # app in the dynamic loader before main.
 SMP_HOOK='_ZN17StarfishMediaAPIs20callbackFunctionHookEixPKc'
@@ -64,6 +64,20 @@ if grep -q "$SMP_LOAD_CTX" <<<"$RELOCS"; then
   fail "Load-with-context has a dynamic relocation; missing firmware would fail before main"
 fi
 ok "exact hook exported GLOBAL/DEFAULT; Load-with-context has no loader dependency"
+
+echo "== libc exit interposer =="
+# src/exit.c defines libc's `exit` in the executable so that an `exit()` made by a shared library
+# (SDL's SDLTimer thread made one in PLX-NATIVE-1P) ends the process through plx_exit_record
+# (src/crashtrace.c), which ends it without running the exit handlers. It only binds when the
+# executable's .dynsym defines it: exactly one `exit` row, defined here as FUNC GLOBAL DEFAULT. readelf prints a definition bare
+# and an import with its version (`exit@GLIBC_2.4 (2)`), so an `exit@...` row, or an UND one, means
+# some object still calls libc's own `exit` and src/exit.c did not take over.
+EXIT_ROWS=$(awk '$8 == "exit" || index($8, "exit@") == 1 { n++ } END { print n + 0 }' <<<"$DYN_SYMS")
+EXIT_DEFINED=$(awk '$8 == "exit" && $4 == "FUNC" && $5 == "GLOBAL" && $6 == "DEFAULT" && $7 != "UND" { n++ } \
+                    END { print n + 0 }' <<<"$DYN_SYMS")
+[ "$EXIT_ROWS" -eq 1 ] && [ "$EXIT_DEFINED" -eq 1 ] \
+  || fail "libc exit interposer: .dynsym must define exit exactly once (FUNC GLOBAL DEFAULT) and import no exit@... (src/exit.c, EXIT_INTERPOSER_LDFLAG)"
+ok "exit exported GLOBAL/DEFAULT and not imported"
 
 echo "== crash-report identity =="
 # Two facts a Sentry crash report is built out of, and BOTH fail silently when wrong: a frame comes
