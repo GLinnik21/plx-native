@@ -10,8 +10,9 @@
 //! independent UI and data-layer work proceed in parallel.
 //!
 //! **What it is NOT.** There is no video. The 29-symbol media seam does not exist off-device, and
-//! `player::ffi_host`'s `HostSink` reports the same "no video path" failure a television with no
-//! usable ACB binding reports, so Play lands on the app's real failure read-out. Nor is it a substitute
+//! `plx_play_feed::ffi_host`'s `HostSink` (or `NoSink`, when the simulator is built without
+//! `play-feed`) reports the same "no video path" failure a television with no usable ACB binding
+//! reports, so Play lands on the app's real failure read-out. Nor is it a substitute
 //! for the device on anything the GPU decides: the `--fps` gates are calibrated to the SM9000's
 //! Mali, and text rasterization here goes through a different FreeType. A green run on this binary
 //! is evidence about a Mac. Layout, focus, navigation, and every byte of the Plex data layer are

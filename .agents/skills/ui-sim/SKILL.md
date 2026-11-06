@@ -362,9 +362,11 @@ Report these ONLY from the device, via the **`tv-session`** skill (and `wake-tv`
   render-set ceiling in a debug build refuses by panicking).
 - **Anything about LG's DECODER** — resource-allocation refusals, the Load payload's Dolby
   declaration, `SOUND_ERROR_019`, frame pacing, which codecs the panel takes. The 29-symbol
-  Starfish/ACB seam does not exist off-device, so by default `player::ffi`'s host arm reports the
-  seam's own "no video path" failure and pressing Play lands on the app's real failure read-out —
-  correct behaviour, not a bug, and a convenient way to look at that screen.
+  Starfish/ACB seam does not exist off-device, so by default the simulator's stand-in
+  (`plx_play_feed::ffi_host::HostSink`; a simulator built without `play-feed` installs `NoSink`,
+  see `ci/test_sim_backend.py`) reports the seam's own "no video path" failure and pressing Play
+  lands on the app's real failure read-out — correct behaviour, not a bug, and a convenient way to
+  look at that screen.
 - ~~**Anything about video.**~~ **Narrowed twice, and the second time is recent.** Arm
   **`plxnative-clocksink`** in the instance root and the seam becomes a plant: access units are
   accepted and discarded and a presentation clock advances at real time, clamped to the last fed

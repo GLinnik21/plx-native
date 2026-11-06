@@ -65,8 +65,8 @@
 //! `app::adapters::hostsim`, with the simulator's picture) and returned directly by the media
 //! tests' composition (`player::test_physical`) and the application's (`app::adapters::backends`)
 //! in the hostsim tests. The `*_for_test` hooks stay here, next to the statics
-//! they touch, and the tests reach them as `player::ffi_host::<hook>` (media re-exports this module
-//! under that name).
+//! they touch, and the tests reach them as `plx_play_feed::ffi_host::<hook>` (media does not re-export
+//! this module).
 //!
 //! # What it is handed, and why
 //!
