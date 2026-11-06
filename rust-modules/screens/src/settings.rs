@@ -1793,6 +1793,10 @@ mod test_support;
 mod push_tests;
 
 #[cfg(test)]
+#[path = "settings_warm_tests.rs"]
+mod warm_tests;
+
+#[cfg(test)]
 #[path = "settings_draw_and_lifecycle_tests.rs"]
 mod draw_and_lifecycle_tests;
 
