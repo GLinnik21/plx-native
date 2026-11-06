@@ -1873,7 +1873,7 @@ mod tests {
         // The sanity half: without the flag the same rows do take Opus away, so the skip is real.
         let mut applied = native_set();
         apply_exclusions(&mut applied, "kisscurl-koli", false, EXCLUSIONS);
-        assert_ne!(applied.audio_channels, c.audio_channels);
+        assert!(!applied.forced_feeds_audio_track("opus", 6));
         // A family with audio rows only (a test-local table) is untouched by the flag altogether.
         let table = [Exclusion { codename: "x", limit: Limit::Audio { codec: "opus", max_channels: 2 }, evidence: "" }];
         let mut d = native_set();
