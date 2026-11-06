@@ -11,7 +11,6 @@ use crate::route::{PlaybackSession, SideReaderTarget};
 
 /// Drop the claim hold: the playback it belonged to is gone.
 pub fn clear_claim_hold() {
-    #[cfg(feature = "play-feed")]
     super::claim_hold::clear();
 }
 

@@ -9,7 +9,6 @@
 //! even read.
 
 use crate::route::{PlaybackSession, RouteStartAttempt, RouteStartResult};
-#[cfg(feature = "play-feed")]
 use crate::route::RouteStartTransaction;
 use plx_base::task::MainThread;
 
@@ -104,7 +103,6 @@ pub fn ingest_position(ps: &mut PlaybackSession, attempt: RouteStartAttempt, pos
 /// Claim and install the route start before any probe reply can settle it. Only the Feed start path
 /// arms the probe (`route_start::start_bufferfeed_inner`), so a build without Feed has no way to
 /// open one.
-#[cfg(feature = "play-feed")]
 pub(super) fn start(ps: &mut PlaybackSession, pa: &mut super::adapter::PlayerAdapter,
     route_start: RouteStartTransaction, url: &str, launch: Box<dyn ProbeLaunch>)
     -> Result<RouteStartAttempt, RouteStartResult> {

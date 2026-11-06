@@ -13,7 +13,6 @@
 // transport state — was the C playback globals; now the session's readout (the feed keeps its own
 // copy to gate feeding, written by the matching commands)
 #[inline]
-#[cfg(feature = "play-feed")]
 pub fn paused(ps: &crate::route::PlaybackSession) -> bool {
     ps.readout().paused()
 }
@@ -25,7 +24,6 @@ pub fn paused(ps: &crate::route::PlaybackSession) -> bool {
 /// half of [`set_transport_paused`] alone; the new Load's own first Play is the native half. The
 /// caller guarantees there is no Engine (`PlayerForegroundActuator::before_load` checks
 /// `is_live`): over a live one this would leave its pause standing while the transport reads Playing.
-#[cfg(feature = "play-feed")]
 pub fn commit_viewer_resume_for_load(ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter) {
     crate::player::claim_hold::note_user_transport();
@@ -53,7 +51,6 @@ pub fn transport_target(play: Option<bool>, paused: bool) -> bool {
 /// hold's loan, not the viewer's: while it stands the viewer sees a spinner over a playing intent,
 /// so the toggle means Pause (their intent, which the hold's restore then honours) and a seek's
 /// resume leaves the stream held until the landing.
-#[cfg(feature = "play-feed")]
 pub fn viewer_paused(ps: &crate::route::PlaybackSession) -> bool {
     paused(ps) && !crate::player::claim_hold::owns_pause()
 }

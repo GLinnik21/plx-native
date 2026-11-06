@@ -705,7 +705,6 @@ const REPORT_PREVIEW_FAILURES: bool = true;
 ///   ([`super::preview::picture_shown`]). The trace cannot say: it never sees a preview's
 ///   `Presented`, so it would claim "no picture" for a trailer that played and then lost its
 ///   connection.
-#[cfg(feature = "play-feed")]
 fn as_preview(mut context: PlaybackErrorContext) -> PlaybackErrorContext {
     let shown = super::preview::picture_shown();
     context.started = shown;
@@ -1004,7 +1003,6 @@ fn tick_with(ps: &crate::route::PlaybackSession, report_preview_failures: bool,
     source: Option<super::backend::TerminalFailureSource>) {
     let now = super::state(ps);
     let prev = super::attempt_view::PlaybackState::from_u8(LAST.swap(now as u8, Relaxed));
-    #[cfg(feature = "play-feed")]
     if crate::route::preview_request(ps) {
         tick_preview(ps, prev, now, report_preview_failures);
         return;
@@ -1086,7 +1084,6 @@ fn tick_with(ps: &crate::route::PlaybackSession, report_preview_failures: bool,
 /// told, once per preview request ([`PREVIEW_SAW_FAIL`]): the trace is sealed whatever
 /// `report_failure` says (so withdrawal's eraser covers it), and `report_failure` alone decides
 /// whether the handled error is queued.
-#[cfg(feature = "play-feed")]
 fn tick_preview(
     ps: &crate::route::PlaybackSession,
     prev: super::attempt_view::PlaybackState,

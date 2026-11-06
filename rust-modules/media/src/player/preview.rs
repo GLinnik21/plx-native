@@ -723,7 +723,6 @@ pub fn settle(f: PumpFacts) -> Settle {
 ///
 /// **It only ever stops a PREVIEW engine.** A machine that is out of step with the installed
 /// session ([`Settle::Stale`]) is reset without touching the engine: that engine is a film's.
-#[cfg(feature = "play-feed")]
 pub fn after_pump(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut super::adapter::PlayerAdapter,
@@ -804,7 +803,6 @@ pub fn after_pump(
 /// Is the live preview's transport paused? The engine is shared, so this is the same transport
 /// Pause the session's readout holds for the player HUD, qualified by a preview actually being what
 /// occupies it — with no session there is nothing paused, whatever the readout last said.
-#[cfg(feature = "play-feed")]
 pub fn paused(ps: &crate::route::PlaybackSession) -> bool {
     occupies() && super::transport::paused(ps)
 }
@@ -822,7 +820,6 @@ pub fn paused(ps: &crate::route::PlaybackSession) -> bool {
 /// including Fetching/Loading/Abandoning/Stopping, and a press landing in any of those IS the
 /// race this doc says must be refused — there is no bound engine yet (or no longer) for a
 /// pause/resume to reach.
-#[cfg(feature = "play-feed")]
 pub fn transport(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut super::adapter::PlayerAdapter,
@@ -863,7 +860,6 @@ pub enum SeekOutcome {
 /// ([`Machine::admit_seek`]); a synchronous start failure is [`refuse_admission`], not
 /// [`fail_admitted`] — the native call never ran, so it is not itself evidence the trailer can't
 /// play.
-#[cfg(feature = "play-feed")]
 pub fn seek(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut super::adapter::PlayerAdapter,
@@ -895,7 +891,6 @@ pub fn seek(
 /// machine still `Fetching` is released so its landing is discarded ([`expects_landing`]), and
 /// any other non-Idle phase is stale; neither is a reason to tear down whatever engine the
 /// session does hold — that one belongs to a film.
-#[cfg(feature = "play-feed")]
 pub fn halt(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) {
     if !crate::route::is_preview(ps) {
         if occupies() {
@@ -915,7 +910,6 @@ pub fn halt(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
 /// the machine `Abandoning` until [`after_pump`] finishes it: clearing the flag under a live
 /// engine is how a failed trailer open was once rescued onto an HLS transcode that reported a
 /// timeline to the viewer's account.
-#[cfg(feature = "play-feed")]
 pub fn retire(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut super::adapter::PlayerAdapter,

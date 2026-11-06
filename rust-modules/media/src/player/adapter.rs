@@ -30,7 +30,6 @@
 use plx_play_feed::feed_state::Engine;
 use super::timeline;
 use super::backend;
-#[cfg(feature = "play-feed")]
 use plx_playback_contract::feed::{FeedTransportAction, OpenRequest};
 use plx_playback_contract::feed::{PhysicalSet, UriOnlySet};
 use plx_base::task::MainThread;
@@ -44,7 +43,6 @@ use plx_playback_contract::{AttemptId, BackendKind, CommandId,
     ExitDisposition, Failure, Intent, Operation, SourceKey, UriDriver};
 use plx_playback_contract::uri::UriSource;
 use plx_playback_contract::ReleaseStatus;
-#[cfg(feature = "play-feed")]
 use plx_playback_contract::Playback;
 
 struct PendingUriAudio {
@@ -339,7 +337,6 @@ fn uri_offer_executable(ps: &crate::route::PlaybackSession, offer: &QualifiedUri
 }
 
 /// The record of the physical attempt the adapter has bound ([`PlayerAdapter::bind_feed_attempt`]).
-#[cfg(feature = "play-feed")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct BoundFeed {
     attempt: crate::route::RouteStartAttempt,
@@ -421,12 +418,10 @@ pub struct PlayerAdapter {
     /// The feed itself receives only the canonical contract ID and native epoch. Bound right after
     /// the Engine is installed, dropped by [`Self::stop_begin`]: an Engine is installed
     /// exactly while this is `Some`, which is what [`Self::is_live`] answers.
-    #[cfg(feature = "play-feed")]
     feed_attempt: Option<BoundFeed>,
     /// The adaptive worker's channel of the open claimed under that attempt: the worker is a thread
     /// of the Engine, so the receiver stays on the main thread beside the attempt and the pump
     /// drains it into the session's readout ([`Self::drain_abr`]). Closed once the workers are joined.
-    #[cfg(feature = "play-feed")]
     abr_inbox: Option<(crate::route::RouteStartAttempt, crate::adaptive::AbrInbox)>,
     /// Backend-independent periodic reporting resource for the current physical attempt.
     timeline: Option<timeline::TimelineRunner>,
@@ -441,7 +436,6 @@ pub struct PlayerAdapter {
     /// A hero PREVIEW's start was queued behind Feed release: whether its slot counts as admitted
     /// once the Load actually launches (`None`: no preview start is queued). Admission is taken
     /// when the queued start runs, never when it is merely queued.
-    #[cfg(feature = "play-feed")]
     preview_admission: Option<bool>,
     /// The URI-mode probe's session (issue #1064, dev trigger `plxnative-uriprobe`): the probe plays
     /// through `com.webos.media` instead of an [`Engine`], so it lives BESIDE the engine slot and
@@ -506,16 +500,13 @@ impl PlayerAdapter {
             pending_uri_subtitle: None,
             refused_uri_audio: None,
             refused_uri_subtitle: None,
-            #[cfg(feature = "play-feed")]
             feed_attempt: None,
-            #[cfg(feature = "play-feed")]
             abr_inbox: None,
             timeline: None,
             repair: None,
             release: super::release::NativeRelease::new(),
             release_fx: Vec::new(),
             queued_watch: QueuedWatch::Unwatched,
-            #[cfg(feature = "play-feed")]
             preview_admission: None,
             #[cfg(feature = "devtriggers")]
             uri: None,
@@ -668,7 +659,6 @@ impl PlayerAdapter {
     /// A mounted page is not the owner of a physical attempt. A URI EOS may have already
     /// released its native session while its final Plex stop still belongs to the route.
     pub fn playback_needs_teardown(&self, ps: &crate::route::PlaybackSession) -> bool {
-        #[cfg(feature = "play-feed")]
         if self.is_live() { return true; }
         if self.uri_route_attempt.is_some()
             || (!self.uri_finalized
@@ -1539,20 +1529,17 @@ impl PlayerAdapter {
     }
 
     /// Begin a native open: `false` while an abandoned Load still owns the native object.
-    #[cfg(feature = "play-feed")]
     pub(super) fn open_begin(&mut self) -> bool {
         self.physical.feed().is_some_and(|feed| feed.open_begin(&self.mt))
     }
 
     /// Prepare the native open and answer its native epoch; the feed parks the prepared open
     /// until [`Self::open_stage`] or [`Self::open_abort`].
-    #[cfg(feature = "play-feed")]
     pub(super) fn open_prepare(&mut self, request: OpenRequest) -> Result<u32, Failure> {
         let feed = self.physical.feed().ok_or(Failure::Unavailable)?;
         feed.open_prepare(&self.mt, request)
     }
 
-    #[cfg(feature = "play-feed")]
     pub(super) fn open_stage(&mut self, attempt: AttemptId, key: SourceKey,
         session: Box<dyn plx_playback_contract::demux::DemuxSession>) -> Result<(), Failure> {
         let feed = self.physical.feed().ok_or(Failure::Unavailable)?;
@@ -1560,7 +1547,6 @@ impl PlayerAdapter {
     }
 
     /// Drop the parked open of a start that was lost before it was staged.
-    #[cfg(feature = "play-feed")]
     pub(super) fn open_abort(&mut self) {
         if let Some(feed) = self.physical.feed() { feed.open_abort(); }
     }
@@ -1601,7 +1587,6 @@ impl PlayerAdapter {
     }
 
     /// The preview's start was just deferred: it is admitted (`admit`) or refused when it runs.
-    #[cfg(feature = "play-feed")]
     pub fn admit_preview_at_launch(&mut self, admit: bool) {
         self.preview_admission = Some(admit);
     }
@@ -1609,7 +1594,6 @@ impl PlayerAdapter {
     /// The queued start ended; settle the preview's admission with how it ended. `launched` false
     /// (refused at the deadline, failed) counts as a refused admission; a cancelled start
     /// (`settle = false`) leaves the preview machine to the stop that cancelled it.
-    #[cfg(feature = "play-feed")]
     pub(super) fn settle_preview_admission(&mut self, launched: bool, settle: bool) {
         if let Some(admit) = self.preview_admission.take() {
             if settle {
@@ -1658,20 +1642,17 @@ impl PlayerAdapter {
 
     /// The epoch of the parked release whose `Unload` worker has returned and been joined (so
     /// joining it cannot block the frame): the release machine's `UnloadReturned`.
-    #[cfg(feature = "play-feed")]
     pub(super) fn take_returned_release(&mut self) -> Option<u32> {
         self.physical.feed().and_then(|feed| feed.take_returned_release())
     }
 
     /// The main-thread tail of the release [`Self::take_returned_release`] reported for `epoch`.
-    #[cfg(feature = "play-feed")]
     pub(super) fn run_release_tail(&mut self, epoch: u32) -> bool {
         let mt = &self.mt;
         self.physical.feed().is_some_and(|feed| feed.run_release_tail(mt, epoch))
     }
 
     /// The exit leaks what a worker still in firmware reads (`route_start::exit_native_with`).
-    #[cfg(feature = "play-feed")]
     pub(super) fn leak_for_exit(&mut self) {
         if let Some(feed) = self.physical.feed() { feed.leak_for_exit(); }
         self.clear_feed_attempt();
@@ -1711,14 +1692,12 @@ impl PlayerAdapter {
     }
 
     /// Route identity of the active physical feed, without lending Engine state to admission.
-    #[cfg(feature = "play-feed")]
     pub(super) fn active_feed_attempt(&self) -> Option<crate::route::RouteStartAttempt> {
         self.feed_attempt.map(|bound| bound.attempt)
     }
 
     /// Record the attempt the Engine just installed belongs to. Called by the one start that
     /// installs, right after the install.
-    #[cfg(feature = "play-feed")]
     pub(super) fn bind_feed_attempt(&mut self, attempt: crate::route::RouteStartAttempt,
         trace_generation: u32) {
         debug_assert!(self.physical.feed().is_some_and(|feed| feed.sample().is_some()),
@@ -1727,7 +1706,6 @@ impl PlayerAdapter {
             foreground_follows_load: false });
     }
 
-    #[cfg(feature = "play-feed")]
     pub(super) fn clear_feed_attempt(&mut self) {
         self.feed_attempt = None;
     }
@@ -1735,7 +1713,6 @@ impl PlayerAdapter {
     /// Begin the native stop: the Feed stops its HLS clock, samples the outgoing attempt's last
     /// facts while it is still the addressed one (published into `ps` here) and takes its Engine
     /// out; the bound attempt is dropped with it.
-    #[cfg(feature = "play-feed")]
     pub(super) fn stop_begin(&mut self, ps: &mut crate::route::PlaybackSession) {
         let attempt = self.active_feed_attempt();
         let last = self.physical.feed().and_then(|feed| feed.stop_begin());
@@ -1745,23 +1722,19 @@ impl PlayerAdapter {
         self.clear_feed_attempt();
     }
 
-    #[cfg(feature = "play-feed")]
     pub(super) fn stop_side_reader(&mut self, for_reload: bool) {
         if let Some(feed) = self.physical.feed() { feed.stop_side_reader(for_reload); }
     }
 
-    #[cfg(feature = "play-feed")]
     pub(super) fn stop_unblock(&mut self) -> plx_playback_contract::feed::UnblockFacts {
         self.physical.feed().map(|feed| feed.stop_unblock())
             .expect("a stop in progress has a feed")
     }
 
-    #[cfg(feature = "play-feed")]
     pub(super) fn stop_report_dispatched(&mut self) {
         if let Some(feed) = self.physical.feed() { feed.stop_report_dispatched(); }
     }
 
-    #[cfg(feature = "play-feed")]
     pub(super) fn stop_release(&mut self, for_reload: bool) {
         let mt = &self.mt;
         if let Some(feed) = self.physical.feed() { feed.stop_release(mt, for_reload); }
@@ -1769,7 +1742,6 @@ impl PlayerAdapter {
 
     /// End the native stop. A release the Feed handed off to its off-frame worker is the release
     /// machine's admission fence for the next start, so the machine hears of it here.
-    #[cfg(feature = "play-feed")]
     pub(super) fn stop_finish(&mut self, ps: &mut crate::route::PlaybackSession, for_reload: bool) {
         let handoff = self.physical.feed().and_then(|feed| feed.stop_finish(for_reload));
         if let Some(plx_playback_contract::feed::ReleaseHandoff { epoch, at }) = handoff {
@@ -1781,7 +1753,6 @@ impl PlayerAdapter {
     /// Reset the Feed's session mirrors, and `common` (the player's own session stores) with
     /// them inside the Feed's callback/reset barrier. A composition with no feed has only
     /// `common`.
-    #[cfg(feature = "play-feed")]
     pub(super) fn reset_session(&mut self, scope: plx_playback_contract::feed::ResetScope,
         common: &mut dyn FnMut()) {
         match self.physical.feed() {
@@ -1792,13 +1763,11 @@ impl PlayerAdapter {
 
     /// One sample of the live feed, `None` with no session: an idle feed's mailboxes are not an
     /// observation of any attempt.
-    #[cfg(feature = "play-feed")]
     pub(super) fn sample_feed(&mut self) -> Option<plx_playback_contract::feed::FeedFacts> {
         self.physical.feed().and_then(|feed| feed.sample())
     }
 
     /// Address the physical callback snapshot to the current route-owned attempt.
-    #[cfg(feature = "play-feed")]
     pub(super) fn publish_feed_attempt_view(&mut self, ps: &mut crate::route::PlaybackSession) {
         let Some(attempt) = self.active_feed_attempt() else { return; };
         let Some(facts) = self.sample_feed() else { return; };
@@ -1806,7 +1775,6 @@ impl PlayerAdapter {
     }
 
     /// Hold the inbox of the adaptive worker of the open just claimed under `attempt`.
-    #[cfg(feature = "play-feed")]
     pub(super) fn bind_abr_inbox(
         &mut self, attempt: crate::route::RouteStartAttempt, inbox: crate::adaptive::AbrInbox,
     ) {
@@ -1817,7 +1785,6 @@ impl PlayerAdapter {
     /// (its photograph, the carried link estimate and the Original failure edit it has not handed
     /// out yet), addressed to the attempt its open was claimed under (a late report of a retired open
     /// changes nothing). Never blocks. The age of the carried estimate is read here, where the clock is.
-    #[cfg(feature = "play-feed")]
     pub(super) fn drain_abr(&mut self, ps: &mut crate::route::PlaybackSession) {
         let Some((attempt, inbox)) = self.abr_inbox.as_ref() else { return; };
         let Some(shipment) = inbox.newest() else { return; };
@@ -1831,46 +1798,38 @@ impl PlayerAdapter {
     }
 
     /// The worker is joined: nothing more can be reported, and the receiver goes.
-    #[cfg(feature = "play-feed")]
     pub(super) fn close_abr_inbox(&mut self) { self.abr_inbox = None; }
 
     /// Hand the feed one player intent. A composition with no feed drops it, as it does every
     /// other feed verb.
-    #[cfg(feature = "play-feed")]
     pub(super) fn feed_command(&mut self, command: plx_playback_contract::feed::FeedCommand) {
         if let Some(feed) = self.physical.feed() { feed.command(command); }
     }
     /// The viewer's Pause, carried out by the feed (clock transition, native Pause, transport
     /// commit). A composition with no feed has nothing to pause: the Pause is deferred.
-    #[cfg(feature = "play-feed")]
     pub(super) fn feed_user_pause(&mut self) -> plx_playback_contract::feed::UserPauseOutcome {
         self.physical.feed().map_or(plx_playback_contract::feed::UserPauseOutcome::Deferred,
             |feed| feed.user_pause(&self.mt))
     }
     /// The viewer's Resume, carried out by the feed. A composition with no feed holds nothing.
-    #[cfg(feature = "play-feed")]
     pub(super) fn feed_user_resume(&mut self) -> plx_playback_contract::feed::UserResumeOutcome {
         self.physical.feed().map_or(plx_playback_contract::feed::UserResumeOutcome::NoHold,
             |feed| feed.user_resume(&self.mt))
     }
     /// The volume a paused preroll's mute saved, taken from the feed; `None` when nothing is muted.
-    #[cfg(feature = "play-feed")]
     pub(super) fn feed_take_preroll_volume(&mut self) -> Option<i32> {
         self.physical.feed().and_then(|feed| feed.take_preroll_volume())
     }
     /// Retiring a preview: the feed defers the join of a Load that has not returned and marks the
     /// preview abandoned (see [`FeedLoad::defer_preview_join`]); `true` when it deferred.
-    #[cfg(feature = "play-feed")]
     pub(super) fn defer_preview_join(&mut self) -> bool {
         self.physical.feed().is_some_and(|feed| feed.defer_preview_join())
     }
     /// Whether the foreground lifecycle follows the bound attempt's Load.
-    #[cfg(feature = "play-feed")]
     pub(super) fn foreground_follows_feed_load(&self) -> bool {
         self.feed_attempt.is_some_and(|bound| bound.foreground_follows_load)
     }
     /// Mark the foreground as following `attempt`'s Load: true only for the bound attempt.
-    #[cfg(feature = "play-feed")]
     pub(super) fn mark_foreground_follows_feed_load(&mut self,
         attempt: crate::route::RouteStartAttempt) -> bool {
         let Some(bound) = self.feed_attempt.as_mut().filter(|bound| bound.attempt == attempt)
@@ -1881,7 +1840,6 @@ impl PlayerAdapter {
 
     /// One physical seek-preroll tick. The common pump supplies route-flight facts and applies
     /// the returned finish request after this borrow of feed resources ends.
-    #[cfg(feature = "play-feed")]
     pub(super) fn paused_seek_step(&mut self, now: u32, route_flight: bool,
         claim_owns_pause: bool) -> plx_playback_contract::feed::PausedSeekStep {
         self.physical.feed().map_or_else(plx_playback_contract::feed::PausedSeekStep::default,
@@ -1889,7 +1847,6 @@ impl PlayerAdapter {
     }
 
     /// Publish native queue and frame diagnostics without exposing Engine to the common prelude.
-    #[cfg(feature = "play-feed")]
     pub(super) fn publish_feed_diag(&mut self, now: u32,
         last_frames: &std::sync::atomic::AtomicI32) {
         let diag_readout_on = super::DIAG_READOUT_ON.load(std::sync::atomic::Ordering::Relaxed);
@@ -1900,7 +1857,6 @@ impl PlayerAdapter {
 
     /// Feed the dev firmware-refusal probe with route facts, before any route landing can replace
     /// this physical Engine in the same frame.
-    #[cfg(feature = "play-feed")]
     pub(super) fn inject_refuse601(&mut self, generation: u32, preview: bool,
         refused_for: &std::sync::atomic::AtomicU32) {
         if let Some(feed) = self.physical.feed() {
@@ -1909,13 +1865,11 @@ impl PlayerAdapter {
     }
 
     /// Probe the native audio feed's own stall evidence after common Load-refusal handling.
-    #[cfg(feature = "play-feed")]
     pub(super) fn native_audio_stall_fired(&mut self, now: u32) -> bool {
         self.physical.feed().is_some_and(|feed| feed.native_audio_stall_fired(now))
     }
 
     /// Gate the active physical tick on native constructor readiness.
-    #[cfg(feature = "play-feed")]
     pub(super) fn feed_ctor_gate(&mut self) -> plx_playback_contract::feed::CtorGate {
         let mt = &self.mt;
         self.physical.feed().map_or(
@@ -1924,42 +1878,35 @@ impl PlayerAdapter {
     }
 
     /// Emit the physical callback-cadence diagnostic after first-picture route settlement.
-    #[cfg(feature = "play-feed")]
     pub(super) fn note_missing_era_callback(&mut self) {
         if let Some(feed) = self.physical.feed() { feed.note_missing_era_callback(); }
     }
 
-    #[cfg(feature = "play-feed")]
     pub(super) fn stuck_seek_due(&mut self, now: u32, feed_allowed: bool,
         route_flight: bool, budget_ms: u32) -> bool {
         self.physical.feed().is_some_and(|feed|
             feed.stuck_seek_due(now, feed_allowed, route_flight, budget_ms))
     }
 
-    #[cfg(feature = "play-feed")]
     pub(super) fn retry_stuck_seek(&mut self, now: u32, target_ns: i64,
         can_retry: bool) -> plx_playback_contract::feed::StuckSeekAction {
         self.physical.feed().map_or(plx_playback_contract::feed::StuckSeekAction::Reload,
             |feed| feed.retry_stuck_seek(now, target_ns, can_retry))
     }
 
-    #[cfg(feature = "play-feed")]
     pub(super) fn pending_seek_ready(&mut self, seek_reloads: bool) -> bool {
         self.physical.feed().is_some_and(|feed| feed.pending_seek_ready(seek_reloads))
     }
     /// One native Pause transition before an in-place seek. A composition with no feed has no
     /// native session to pause: `Busy`, so the seek waits and applies nothing.
-    #[cfg(feature = "play-feed")]
     pub(super) fn prepare_seek_pause(&mut self) -> plx_playback_contract::feed::SeekPause {
         let mt = &self.mt;
         self.physical.feed().map_or(plx_playback_contract::feed::SeekPause::Busy,
             |feed| feed.prepare_seek_pause(mt))
     }
-    #[cfg(feature = "play-feed")]
     pub(super) fn begin_seek_discontinuity(&mut self) -> bool {
         self.physical.feed().is_some_and(|feed| feed.begin_seek_discontinuity())
     }
-    #[cfg(feature = "play-feed")]
     pub(super) fn apply_inplace_seek_pre(&mut self, target_ns: i64,
         mode: plx_playback_contract::feed::SeekMode, coalesced: u32) {
         let mt = &self.mt;
@@ -1967,12 +1914,10 @@ impl PlayerAdapter {
             feed.apply_inplace_seek_pre(mt, target_ns, mode, coalesced);
         }
     }
-    #[cfg(feature = "play-feed")]
     pub(super) fn apply_inplace_seek_post(&mut self, target_ns: i64, now: u32) {
         if let Some(feed) = self.physical.feed() { feed.apply_inplace_seek_post(target_ns, now); }
     }
 
-    #[cfg(feature = "play-feed")]
     pub(super) fn tick_feed_load(&mut self, now: u32, segmented_hls: bool,
         speed_deadline_ms: u32) -> plx_playback_contract::feed::LoadTick {
         let mt = &self.mt;
@@ -1981,7 +1926,6 @@ impl PlayerAdapter {
                 super::no_audio_armed()))
     }
 
-    #[cfg(feature = "play-feed")]
     pub(super) fn tick_feed_presentation(&mut self, segmented_hls: bool,
         immersive: bool) -> plx_playback_contract::feed::PresentationTick {
         let mt = &self.mt;
@@ -1997,7 +1941,6 @@ impl PlayerAdapter {
     /// drops in the call that takes it out; `start_bufferfeed`'s double-start guard only needs to
     /// ask.
     #[inline]
-    #[cfg(feature = "play-feed")]
     pub fn is_live(&self) -> bool {
         self.feed_attempt.is_some()
     }
@@ -2018,7 +1961,6 @@ impl PlayerAdapter {
 
     /// The main-thread coordinator's only Load-result landing. Late outcomes from an abandoned
     /// or replaced Engine cannot settle a successor's route, even if a worker returns afterward.
-    #[cfg(feature = "play-feed")]
     pub(super) fn drain_load_outcomes(&mut self, ps: &mut crate::route::PlaybackSession) {
         // Construction may still be installing the Engine when the synchronous Load returns.
         // Leave the inbox intact until its owner can validate the native epoch and attempt.
@@ -2122,7 +2064,6 @@ impl PlayerAdapter {
     /// Install the probe's session. `uriprobe_drive::start` guards on [`uri_live`](Self::uri_live)
     /// first: overwriting a live slot would drop a session without ending it.
     #[cfg(feature = "devtriggers")]
-    #[cfg(feature = "play-feed")]
     pub(super) fn install_uri(&mut self, session: Box<dyn super::uriprobe_drive::UriProbeSession>) {
         debug_assert!(self.uri.is_none(), "a second URI-mode session cannot start under a live one");
         self.uri = Some(session);
@@ -2179,12 +2120,10 @@ impl PlayerAdapter {
 
     /// Is a native object still parked behind a Load that has not been released? (At most one can
     /// exist: the C seam owns one object at a time and every start is refused while it does.)
-    #[cfg(feature = "play-feed")]
     pub fn has_abandoned_load(&mut self) -> bool {
         self.physical.feed().is_some_and(|feed| feed.has_abandoned_load())
     }
 
-    #[cfg(feature = "play-feed")]
     pub fn reap_abandoned_load(&mut self) -> bool {
         self.physical.feed().is_some_and(|feed| feed.reap_abandoned_load(&self.mt))
     }
