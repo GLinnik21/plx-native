@@ -6,9 +6,9 @@
 //! both, and lends the feed half to the pump as a [`FeedControl`]. It replaces the temporary
 //! per-call borrow the adapter used to build from its fields.
 //!
-//! Every production path reaches the feed through [`PhysicalSet::feed`]. Only the test fixtures
-//! that install, take and inspect an Engine still reach the concrete backend, through
-//! [`Physical::feed_backend`] / [`Physical::feed_backend_mut`].
+//! The adapter holds the set as a `Box<dyn PhysicalSet>` and reaches the feed only through
+//! [`PhysicalSet::feed`]. The test fixtures that install, take and inspect an Engine hold a
+//! `probe::Probe` on the boxed value instead (`PlayerAdapter::new_probed`).
 
 use plx_base::task::MainThread;
 use plx_playback_contract::feed::{FeedControl, PhysicalSet};
@@ -40,14 +40,6 @@ impl Physical {
             uri: None,
         }
     }
-
-    /// The concrete feed backend, for the test fixtures that install, take and inspect an Engine
-    /// and so cannot go through [`PhysicalSet::feed`].
-    #[cfg(all(test, feature = "play-feed"))]
-    pub(super) fn feed_backend(&self) -> &FeedBackend { &self.feed }
-
-    #[cfg(all(test, feature = "play-feed"))]
-    pub(super) fn feed_backend_mut(&mut self) -> &mut FeedBackend { &mut self.feed }
 }
 
 impl DriverSet for Physical {
@@ -205,17 +197,16 @@ mod tests {
             if cfg!(feature = "play-feed") { BackendSet::FEED } else { BackendSet::NONE });
     }
 
-    /// The feed the set lends the pump is the very backend the open, stop and release paths still
-    /// reach through the concrete accessor: one native session slot, not two.
+    /// The feed the set lends the pump is the set's own backend: one native session slot, not two.
     #[cfg(feature = "play-feed")]
     #[test]
     fn the_lent_feed_is_the_concrete_backend() {
         let mut set = Physical::new();
-        let concrete = set.feed_backend_mut() as *mut FeedBackend as *const ();
+        let concrete = &set.feed as *const FeedBackend as *const ();
         let lent = set.feed().expect("a feed build installs the feed") as *mut dyn FeedControl
             as *const ();
         assert_eq!(lent, concrete);
-        assert!(!set.feed_backend().resources().is_live());
+        assert!(!set.feed.resources().is_live());
         assert!(set.feed().unwrap().sample().is_none());
     }
 }
