@@ -125,9 +125,9 @@ fn a_pop_between_held_pages_puts_the_retired_page_in_the_child_role() {
 fn a_pair_with_a_page_that_does_not_hold_is_drawn_whole_as_before() {
     let w = Rect::FULL.w;
     for (stack, leaving) in [
-        (vec![SettingsPage::Root, SettingsPage::Privacy], None),
-        (vec![SettingsPage::Favourites, SettingsPage::Playback], None),
-        (vec![SettingsPage::Root], Some(SettingsPage::Privacy)),
+        (vec![SettingsPage::Root, SettingsPage::ConsentStage(0)], None),
+        (vec![SettingsPage::Playback, SettingsPage::HudPreview(plx_data::hudpacks::Sha::of(b"push-test"))], None),
+        (vec![SettingsPage::Root], Some(SettingsPage::ConsentStage(0))),
     ] {
         let popping = leaving.is_some();
         let (mut s, seen) = surface(&stack, 0.5, !popping, leaving);
@@ -153,15 +153,104 @@ fn a_settled_surface_draws_its_top_page_with_no_frame() {
     assert_eq!((seen[0].0, seen[0].1, seen[0].2, seen[0].3), (2, None, 0.0, 1.0));
 }
 
-/// The pages the surface hands a frame to are exactly the ones whose draw is the shared parts.
-#[test]
-fn only_the_pages_drawn_by_the_shared_table_parts_hold_their_column() {
+/// Every Settings page the surface hands a `PushFrame` to: its draw is the narrative parts and the
+/// list part of the shared screens (`Header`/`BandPart` and `TablePart`/`DocumentPart`), or goes
+/// through `DrawFrame::narrative_painter` / `list_painter` itself.
+fn held_pages() -> Vec<SettingsPage> {
     use SettingsPage::*;
-    for page in [Root, Language, Playback, AudioSubtitles, Legal, Diagnostics] {
+    let sha = plx_data::hudpacks::Sha::of(b"push-test");
+    let mut pages = vec![
+        Root, Language, UnderPosters, UnderPostersDetails(PosterKind::Movie), UnderPostersDetails(PosterKind::Show), Contribute,
+        Playback, AudioSubtitles, Favourites, LibraryFavourites, Privacy, Legal, About, Document(0), Preview(0), Diagnostics,
+        PlayerHud, HudGallery, HudDetail(sha), HudAbout(sha),
+    ];
+    pages.extend(PICKERS.iter().map(|k| Picker(*k)));
+    pages
+}
+
+/// The pages drawn WHOLE through the push's translate, and the precise reason each one is.
+fn not_held() -> [(SettingsPage, &'static str); 2] {
+    [
+        (SettingsPage::HudPreview(plx_data::hudpacks::Sha::of(b"push-test")), "a full-screen scene with its own controls drawn over it: there is no narrative column to hold"),
+        (SettingsPage::ConsentStage(0), "the first-run question: its own family never pushes a PushFrame, and its card is one piece"),
+    ]
+}
+
+const PICKERS: [PickerKind; 17] = [
+    PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition, PickerKind::HdrOverlay,
+    PickerKind::NextEpisode, PickerKind::SkipInterval, PickerKind::DeckPress, PickerKind::AudioLanguage, PickerKind::SubtitleMode,
+    PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles, PickerKind::UiResolution, PickerKind::InstantDpadSeeking,
+    PickerKind::DolbyVision, PickerKind::IntroSkip, PickerKind::CreditsSkip,
+];
+
+/// The pages the surface hands a frame to are exactly the ones whose draw is the shared parts, and
+/// the ones it does not are listed here with the reason.
+#[test]
+fn only_the_pages_drawn_by_the_shared_parts_hold_their_column() {
+    for page in held_pages() {
         assert!(page.holds_narrative(), "{page:?}");
     }
-    for page in [Privacy, Favourites, LibraryFavourites, UnderPosters, UnderPostersDetails, About, Document(0), Preview(0), ConsentStage(0), PlayerHud, HudGallery] {
-        assert!(!page.holds_narrative(), "{page:?} draws something the parts do not carry");
+    for (page, why) in not_held() {
+        assert!(!page.holds_narrative(), "{page:?}: {why}");
+    }
+}
+
+/// What a recording draw of `page` put on screen as text runs, at rest (`push: None`) or under `push`.
+fn page_runs(page: SettingsPage, push: Option<PushFrame>) -> Vec<plx_ui::draw_census::Run> {
+    let outer = cx(None);
+    let c = inner_cx(&outer);
+    let mut out = Vec::new();
+    let mut present = plx_machine::present::Present::new();
+    let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(0)), &mut present);
+    let mut screen = mount_page(EntryId(1), page, &c, &mut fx);
+    let mut f = DrawFrame::new(&c, Painter::recording());
+    f.push = push;
+    plx_ui::draw_census::capture_runs(|| screen.draw(&mut f))
+}
+
+/// **Under a push the narrative column's frame is constant and only the list travels**, for every
+/// page that holds. A page is drawn at rest and under each role of a push (`list` and `fade` set
+/// apart so the two columns cannot be mistaken for each other): every text run is either in the
+/// narrative column - the SAME position, its ink scaled by the cross-fade - or in the list, moved
+/// by the push spring's offset and scaled by its alpha; and a page's title is always the former.
+#[test]
+fn the_narrative_frame_is_constant_and_the_list_travels_on_every_held_page() {
+    let _serial = plx_base::testlock::serial();
+    let _en = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let w = Rect::FULL.w;
+    let (list, fade) = (0.25_f32, 0.75_f32);
+    for page in held_pages() {
+        let rest = page_runs(page, None);
+        assert!(!rest.is_empty(), "{page:?} drew no text at rest");
+        for role in [PushRole::Parent, PushRole::Child] {
+            let frame = PushFrame { role, list, fade };
+            let under = page_runs(page, Some(frame));
+            assert_eq!(under.len(), rest.len(), "{page:?} {role:?}: a push changes no run, only where and how strongly it draws");
+            let (narrative_alpha, list_alpha, list_dx) = match role {
+                PushRole::Parent => (1.0 - fade, 1.0 - list, -0.35 * w * list),
+                PushRole::Child => (fade, list, 0.22 * w * (1.0 - list)),
+            };
+            let (mut held, mut travelled) = (0, 0);
+            for (at_rest, now) in rest.iter().zip(&under) {
+                assert_eq!(at_rest.text, now.text, "{page:?} {role:?}");
+                let near = |a: f32, b: f32| (a - b).abs() < 0.01;
+                let alpha_of = |r: &plx_ui::draw_census::Run| r.ink[3];
+                let still = near(now.at.x, at_rest.at.x) && near(now.at.y, at_rest.at.y);
+                let moved = near(now.at.x, at_rest.at.x + list_dx) && near(now.at.y, at_rest.at.y);
+                if still {
+                    held += 1;
+                    assert!(near(alpha_of(now), alpha_of(at_rest) * narrative_alpha), "{page:?} {role:?} {:?}: narrative alpha", now.text);
+                } else {
+                    travelled += 1;
+                    assert!(moved, "{page:?} {role:?} {:?} moved from {:?} to {:?}, not by the list's {list_dx}", now.text, at_rest.at, now.at);
+                    assert!(near(alpha_of(now), alpha_of(at_rest) * list_alpha), "{page:?} {role:?} {:?}: list alpha", now.text);
+                }
+            }
+            assert!(held > 0, "{page:?} {role:?}: no text held still, so the page has no narrative column");
+            // the sources editor has no rows until a directory lands, so its list is the spinner, not text
+            let listless = matches!(page, SettingsPage::Favourites | SettingsPage::LibraryFavourites);
+            assert!(travelled > 0 || listless, "{page:?} {role:?}: nothing travelled, so the list was drawn with the narrative painter");
+        }
     }
 }
 

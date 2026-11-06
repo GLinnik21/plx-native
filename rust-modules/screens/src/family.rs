@@ -110,21 +110,38 @@ impl SettingsPage {
     /// other pair is drawn whole through the painter's translate, exactly as before.
     ///
     /// A page may answer `true` only if everything it draws is the narrative column
-    /// (`Header`/`BandPart`) or the list (`TablePart`) of a `TableScreen`, because a page that
-    /// paints anything else with `f.painter` would not travel with the push. The pages that
-    /// still draw their header or extras by hand (Privacy & data, Favorite libraries, Under
-    /// posters, the documents, the pickers, the HUD pages) answer `false` until their stage
-    /// moves them onto the shared parts; flipping one is this line and nothing else.
+    /// (`Header`/`BandPart`) or the list (`TablePart`, `DocumentPart`) of a `TableScreen` /
+    /// `DocumentScreen`, or is painted through `DrawFrame::narrative_painter` / `list_painter`
+    /// itself, because a page that paints anything else with `f.painter` would not travel with the
+    /// push. Every Settings page does except two: the Player HUD's full-screen preview
+    /// ([`SettingsPage::HudPreview`]) is no two-column page (its scene fills the screen and its own
+    /// controls are drawn over it), and the first-run consent stage is not a Settings page at all
+    /// (its own family never pushes a [`PushFrame`](plx_ui::route_screen::PushFrame)).
     pub fn holds_narrative(self) -> bool {
-        matches!(
-            self,
+        // exhaustive on purpose: a new page must choose
+        match self {
             SettingsPage::Root
-                | SettingsPage::Language
-                | SettingsPage::Playback
-                | SettingsPage::AudioSubtitles
-                | SettingsPage::Legal
-                | SettingsPage::Diagnostics
-        )
+            | SettingsPage::Language
+            | SettingsPage::UnderPosters
+            | SettingsPage::UnderPostersDetails(_)
+            | SettingsPage::Contribute
+            | SettingsPage::Playback
+            | SettingsPage::AudioSubtitles
+            | SettingsPage::Favourites
+            | SettingsPage::LibraryFavourites
+            | SettingsPage::Privacy
+            | SettingsPage::Legal
+            | SettingsPage::About
+            | SettingsPage::Document(_)
+            | SettingsPage::Preview(_)
+            | SettingsPage::Picker(_)
+            | SettingsPage::Diagnostics
+            | SettingsPage::PlayerHud
+            | SettingsPage::HudGallery
+            | SettingsPage::HudDetail(_)
+            | SettingsPage::HudAbout(_) => true,
+            SettingsPage::HudPreview(_) | SettingsPage::ConsentStage(_) => false,
+        }
     }
 
     /// The pages a boot target asks the surface to stand on, root first: `plxnative-settings=picker-…` and

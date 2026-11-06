@@ -764,7 +764,8 @@ where
 {
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, H>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>, rect: Rect) {
-        let p = f.painter;
+        // the document is the route's content column: it travels under a push that holds the narrative column
+        let p = f.list_painter();
         self.frame = rect;
         self.paint(p);
         f.stop(

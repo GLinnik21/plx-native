@@ -945,7 +945,9 @@ impl Screen<InnerHost> for ConsentPage {
     }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
-        let p = f.painter;
+        // the header (and the first-run disclosure) is the narrative column: it holds still under a
+        // Settings push and cross-fades; at rest, and in first run, this is the frame's own painter
+        let p = f.narrative_painter();
         let layout = self.layout;
         if matches!(self.mode, Mode::FirstRun { .. }) {
             Header::new(layout, self.crumb(), self.title(), "").paint(p, f.measure);

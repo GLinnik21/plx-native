@@ -519,10 +519,11 @@ impl Screen<InnerHost> for DocumentPage {
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
         let document_frame = self.document_frame();
         if let Some(guide) = self.guide() {
-            let layout = guide.draw(f.painter, document_frame, f.measure);
-            if let Some(qr) = &self.qr { qr.draw(f.painter, layout.code); }
+            // the guide and its code are the content column (they travel under a push), the header the narrative one
+            let layout = guide.draw(f.list_painter(), document_frame, f.measure);
+            if let Some(qr) = &self.qr { qr.draw(f.list_painter(), layout.code); }
             Header::new(self.layout, Some(self.crumb), self.title, self.subtitle)
-                .paint(f.painter, f.measure);
+                .paint(f.narrative_painter(), f.measure);
             return;
         }
         let Self { reader, crumb, title, subtitle, body, entry, layout, .. } = self;
