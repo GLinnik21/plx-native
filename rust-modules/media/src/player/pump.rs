@@ -1055,6 +1055,16 @@ pub(super) fn deliver_container_names(ps: &mut crate::route::PlaybackSession) {
     }
 }
 
+/// Hand `send` the side reader the route wants, once: the readout holds the newest wish (`None` is a
+/// wish to stop) until this takes it, so a frame with no new wish sends nothing.
+fn hand_over_side_reader_want(ps: &mut crate::route::PlaybackSession,
+    send: impl FnOnce(plx_playback_contract::feed::FeedCommand)) {
+    if let Some(want) = ps.readout().side_reader_want().cloned() {
+        ps.step_readout(super::readout::ReadoutEvent::SideReaderWantTaken);
+        send(plx_playback_contract::feed::FeedCommand::SyncSideReader(want));
+    }
+}
+
 fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, now: u32) {
     use plx_playback_contract::readout::PlaybackState;
     // A preroll closed by a path with no adapter in hand (`abandon_seek`) leaves its mute behind;
@@ -1083,10 +1093,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
     }
     // The route's wish for the side reader (a pick on a live remux) is handed to the feed here, the
     // frame after the route stated it.
-    if let Some(want) = ps.readout().side_reader_want().cloned() {
-        ps.step_readout(super::readout::ReadoutEvent::SideReaderWantTaken);
-        pa.feed_command(plx_playback_contract::feed::FeedCommand::SyncSideReader(want));
-    }
+    hand_over_side_reader_want(ps, |command| pa.feed_command(command));
     // The native Load may return before its Engine is installed. Only this main-thread landing
     // maps its worker token to the current attempt and settles the route, after installation.
     pa.drain_load_outcomes(ps);
@@ -1653,6 +1660,41 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
 #[cfg(test)]
 mod tests {
     use plx_play_feed::shared::{FEED_SHARED, FEED_TX};
+
+    /// **The side reader the route wants reaches the feed once.** The route states a wish
+    /// (`ReadoutEvent::SideReaderWanted`), the pump's next frame hands it over as one
+    /// `FeedCommand::SyncSideReader` and the readout forgets it, so a frame with no new wish sends
+    /// nothing; two wishes before a frame are one command carrying the newest; a stop is a command
+    /// too (`SyncSideReader(None)`).
+    #[test]
+    fn a_wanted_side_reader_is_handed_to_the_feed_once_and_a_stop_is_a_command_too() {
+        use plx_playback_contract::feed::FeedCommand;
+        use plx_playback_contract::subtitle::Spec;
+        use crate::player::readout::ReadoutEvent::SideReaderWanted;
+        let spec = |ordinal| std::sync::Arc::new(Spec {
+            url: String::new(), offset_ns: 0, part_kbps: 0, ordinal, from_playhead: false, delta: None,
+        });
+        let frame = |ps: &mut crate::route::PlaybackSession| {
+            let mut sent = Vec::new();
+            super::hand_over_side_reader_want(ps, |command| sent.push(command));
+            sent
+        };
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        assert!(frame(&mut ps).is_empty(), "no wish, no command");
+
+        ps.step_readout(SideReaderWanted(Some(spec(2))));
+        ps.step_readout(SideReaderWanted(Some(spec(5))));
+        let sent = frame(&mut ps);
+        assert!(matches!(sent.as_slice(), [FeedCommand::SyncSideReader(Some(s))] if s.ordinal == 5),
+            "the newest wish is the one command: {sent:?}");
+        assert_eq!(ps.readout().side_reader_want(), None, "handing it over took it");
+        assert!(frame(&mut ps).is_empty(), "an unchanged next frame sends nothing");
+
+        ps.step_readout(SideReaderWanted(None));
+        let sent = frame(&mut ps);
+        assert!(matches!(sent.as_slice(), [FeedCommand::SyncSideReader(None)]), "the stop: {sent:?}");
+        assert!(frame(&mut ps).is_empty(), "the stop is sent once");
+    }
 
     /// **Who settles a failed Load: the Load call's own synchronous result is the foreground
     /// lifecycle's, anything the pump sees after the call returned is the ladder's.** The pump

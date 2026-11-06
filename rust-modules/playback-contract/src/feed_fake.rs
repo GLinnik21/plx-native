@@ -1,12 +1,11 @@
-//! Test doubles for the buffer-feed seam: [`FakeFeed`], a scriptable [`FeedControl`], and
-//! [`FakePhysical`], the [`PhysicalSet`] that lends it. Compiled only for this crate's own tests and
-//! for dependents that name the `test-support` feature from their `[dev-dependencies]`.
+//! Test double for the buffer-feed seam: [`FakeFeed`], a scriptable [`FeedControl`]. Compiled only
+//! for this crate's own tests and for dependents that name the `test-support` feature from their
+//! `[dev-dependencies]`.
 //!
-//! The adapter boxes the set, so a test keeps the paired [`FakeFeedHandle`]: it scripts what each
-//! verb answers, reads the log of the verbs the player forwarded, queues the events the runner's
-//! next poll delivers, and inspects what the runner dispatched. No handle method writes player
-//! readout state: a test that needs the readout to change delivers an event through the real
-//! ingestion, never a setter (D2 v2, 3.6).
+//! A test keeps the paired [`FakeFeedHandle`]: it scripts what each verb answers and reads the log
+//! of the verbs the player forwarded. No handle method writes player readout state: a test that
+//! needs the readout to change delivers an event through the real ingestion, never a setter
+//! (D2 v2, 3.6).
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicI32, AtomicU32};
@@ -20,21 +19,10 @@ use crate::feed::{
     defer_media_join, AcceptedLoadOutcome, CtorGate, FeedCommand, FeedControl, FeedFacts, FeedLoad, FeedOpen,
     FeedSeek, FeedStop, FeedTransportAction, OpenRequest, ReleaseHandoff, ResetScope, UnblockFacts,
     LoadTick, PausedSeekStep,
-    PhysicalSet, PresentationTick, SeekMode, SeekPause, Stage, StuckSeekAction, UserPauseOutcome,
+    PresentationTick, SeekMode, SeekPause, Stage, StuckSeekAction, UserPauseOutcome,
     UserResumeOutcome,
 };
-use crate::{
-    AttemptId, BackendEvent, BackendKind, Capabilities, CommandId, DispatchResult, DriverSet,
-    ExitDisposition, Failure, Operation, SourceKey,
-};
-
-/// What the packet-feed backend advertises: pause, and nothing the common player drives through
-/// `DriverSet` for seek or tracks (those reach the feed through its own verbs).
-const FEED_CAPABILITIES: Capabilities = Capabilities {
-    progressive_uri: false, hls_uri: false, packet_feed: true,
-    pause: true, seek: false, audio_track: false, subtitle_track: false,
-    audio_off: false, subtitle_off: false,
-};
+use crate::{AttemptId, Failure, SourceKey};
 
 /// One verb the player forwarded to the fake feed, with the arguments it was given. The atomic
 /// out-parameters of `inject_refuse601` and `publish_diag` are not logged: the fake does not
@@ -167,15 +155,11 @@ impl Default for FeedScript {
 struct Shared {
     script: FeedScript,
     calls: Vec<FeedCall>,
-    dispatched: Vec<(AttemptId, CommandId, Operation)>,
-    events: VecDeque<BackendEvent>,
-    exit_preserved: bool,
     /// Whether `defer_preview_join` marked the preview abandoned.
     preview_abandoned: bool,
 }
 
-/// The test's side of a [`FakeFeed`] or [`FakePhysical`]: what it was asked, and what it should
-/// say next.
+/// The test's side of a [`FakeFeed`]: what it was asked, and what it should say next.
 #[derive(Clone)]
 pub struct FakeFeedHandle(Arc<Mutex<Shared>>);
 
@@ -188,20 +172,8 @@ impl FakeFeedHandle {
     pub fn calls(&self) -> Vec<FeedCall> { self.0.lock().unwrap().calls.clone() }
     /// Forget the log, so a test asserts only what happens after a point.
     pub fn clear_calls(&self) { self.0.lock().unwrap().calls.clear(); }
-    /// Every command the runner dispatched to the feed backend.
-    pub fn dispatched(&self) -> Vec<(AttemptId, CommandId, Operation)> {
-        self.0.lock().unwrap().dispatched.clone()
-    }
-    /// Events the next poll returns, in order.
-    pub fn queue(&self, events: impl IntoIterator<Item = BackendEvent>) {
-        self.0.lock().unwrap().events.extend(events);
-    }
     /// Whether `defer_preview_join` deferred and marked the preview abandoned.
     pub fn preview_abandoned(&self) -> bool { self.0.lock().unwrap().preview_abandoned }
-    /// Whether native ownership is still held at exit.
-    pub fn set_exit_preserved(&self, preserved: bool) {
-        self.0.lock().unwrap().exit_preserved = preserved;
-    }
 }
 
 /// A scriptable [`FeedControl`]. Every verb is logged, and a verb answers what the script says.
@@ -376,66 +348,6 @@ impl FeedControl for FakeFeed {
     }
 }
 
-/// A scriptable [`PhysicalSet`]: the runner's [`DriverSet`] for the packet-feed backend it holds,
-/// and the lender of its [`FakeFeed`]. A set built without a feed is a composition with no feed
-/// installed: it advertises nothing, refuses every dispatch and lends `None`.
-pub struct FakePhysical {
-    feed: Option<FakeFeed>,
-    shared: Arc<Mutex<Shared>>,
-}
-
-impl FakePhysical {
-    /// A set holding a feed, and the handle that scripts and inspects it.
-    pub fn new() -> (Self, FakeFeedHandle) {
-        let (feed, handle) = FakeFeed::new();
-        let shared = Arc::clone(&handle.0);
-        (Self { feed: Some(feed), shared }, handle)
-    }
-
-    /// A set with no feed; the handle still reads the (empty) log and queues nothing deliverable.
-    pub fn without_feed() -> (Self, FakeFeedHandle) {
-        let shared = Arc::new(Mutex::new(Shared::default()));
-        (Self { feed: None, shared: Arc::clone(&shared) }, FakeFeedHandle(shared))
-    }
-}
-
-impl DriverSet for FakePhysical {
-    type Context = MainThread;
-
-    fn capabilities(&self, backend: BackendKind) -> Option<Capabilities> {
-        (backend == BackendKind::Feed && self.feed.is_some()).then_some(FEED_CAPABILITIES)
-    }
-
-    fn dispatch(&mut self, backend: BackendKind, _ctx: &MainThread, attempt: AttemptId,
-        command: CommandId, operation: Operation) -> DispatchResult {
-        if backend != BackendKind::Feed || self.feed.is_none() {
-            return DispatchResult::Refused(Failure::Unavailable);
-        }
-        self.shared.lock().unwrap().dispatched.push((attempt, command, operation));
-        DispatchResult::Queued
-    }
-
-    fn poll(&mut self, _ctx: &MainThread) -> Vec<BackendEvent> {
-        self.shared.lock().unwrap().events.drain(..).collect()
-    }
-
-    fn discard_staged(&mut self, _backend: BackendKind, _attempt: AttemptId, _key: SourceKey) {}
-
-    fn exit_disposition(&self) -> ExitDisposition {
-        if self.shared.lock().unwrap().exit_preserved {
-            ExitDisposition::PreserveNativeOwnership
-        } else {
-            ExitDisposition::Clean
-        }
-    }
-}
-
-impl PhysicalSet for FakePhysical {
-    fn feed(&mut self) -> Option<&mut dyn FeedControl> {
-        self.feed.as_mut().map(|feed| feed as &mut dyn FeedControl)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -445,13 +357,10 @@ mod tests {
         unsafe { MainThread::assume() }
     }
 
-    /// A composition hands the adapter a boxed `PhysicalSet`; a fake drives that exact object, and
-    /// the feed it lends records each verb the pump forwarded, with the arguments it was given.
+    /// The fake records each verb the pump forwarded, with the arguments it was given.
     #[test]
-    fn a_fake_physical_set_lends_a_feed_that_logs_the_forwarded_verbs() {
-        let (fake, handle) = FakePhysical::new();
-        let mut set: Box<dyn PhysicalSet<Context = MainThread>> = Box::new(fake);
-        let feed = set.feed().expect("the fake installs a feed");
+    fn a_fake_feed_logs_the_forwarded_verbs() {
+        let (mut feed, handle) = FakeFeed::new();
         assert_eq!(feed.ctor_gate(&mt()), CtorGate::Ready);
         assert!(!feed.stuck_seek_due(10, true, false, 1200));
         feed.apply_inplace_seek_pre(&mt(), 5_000_000_000, SeekMode::Segment, 2);
@@ -468,7 +377,7 @@ mod tests {
     /// say, and a consumed answer (the Load verdicts) is consumed.
     #[test]
     fn scripted_answers_come_back_and_load_verdicts_are_consumed_once() {
-        let (fake, handle) = FakePhysical::new();
+        let (mut feed, handle) = FakeFeed::new();
         let outcome = AcceptedLoadOutcome { attempt: AttemptId::new(1, 3), ok: true,
             elapsed_ms: Some(40) };
         handle.script(|script| {
@@ -478,8 +387,6 @@ mod tests {
             script.seek_pause = SeekPause::Busy;
             script.load_outcomes = vec![outcome];
         });
-        let mut set: Box<dyn PhysicalSet<Context = MainThread>> = Box::new(fake);
-        let feed = set.feed().unwrap();
         assert_eq!(feed.sample().map(|facts| facts.raw.load.stage), Some(Some(Stage::Streaming)));
         assert_eq!(feed.paused_seek_step(1, false, false),
             PausedSeekStep { finish: true, mid_seek_claimed: false, preroll_opened: false });
@@ -494,9 +401,7 @@ mod tests {
     /// defer.
     #[test]
     fn an_unscripted_fake_is_an_idle_feed() {
-        let (fake, handle) = FakePhysical::new();
-        let mut set = fake;
-        let feed = PhysicalSet::feed(&mut set).unwrap();
+        let (mut feed, handle) = FakeFeed::new();
         assert!(feed.sample().is_none(), "a feed with no session is not an observation");
         assert!(!feed.defer_preview_join());
         assert!(!handle.preview_abandoned());
@@ -516,56 +421,20 @@ mod tests {
             (load(Some(Stage::Streaming), true), false),
             (crate::feed::LoadRaw::IDLE, false),
         ] {
-            let (fake, handle) = FakePhysical::new();
+            let (mut feed, handle) = FakeFeed::new();
             handle.script(|script| script.facts.raw.load = raw);
-            let mut set: Box<dyn PhysicalSet<Context = MainThread>> = Box::new(fake);
-            let feed = set.feed().unwrap();
             assert_eq!(feed.defer_preview_join(), defers, "{raw:?}");
             assert_eq!(handle.preview_abandoned(), defers, "{raw:?}: the mark follows the answer");
             assert_eq!(handle.calls(), [FeedCall::DeferPreviewJoin]);
         }
     }
 
-    /// A composition with no feed answers `None`, as the default set does.
-    #[test]
-    fn a_fake_set_without_a_feed_lends_none() {
-        let (fake, handle) = FakePhysical::without_feed();
-        let mut set: Box<dyn PhysicalSet<Context = MainThread>> = Box::new(fake);
-        assert!(set.feed().is_none());
-        assert_eq!(crate::BackendSet::from_capabilities(&*set), crate::BackendSet::NONE);
-        assert!(handle.calls().is_empty());
-    }
-
-    /// The fake is also the runner's `DriverSet`: it answers for the feed it holds, records what
-    /// was dispatched, and delivers the events a test queued once.
-    #[test]
-    fn the_fake_set_is_a_driver_set_that_records_dispatch_and_delivers_queued_events() {
-        let (mut fake, handle) = FakePhysical::new();
-        assert_eq!(crate::BackendSet::from_capabilities(&fake), crate::BackendSet::FEED);
-        assert!(matches!(
-            fake.dispatch(BackendKind::Uri, &mt(), AttemptId::new(1, 1), CommandId(1),
-                Operation::Pause),
-            DispatchResult::Refused(Failure::Unavailable)));
-        assert_eq!(fake.dispatch(BackendKind::Feed, &mt(), AttemptId::new(1, 1), CommandId(2),
-            Operation::Pause), DispatchResult::Queued);
-        assert_eq!(handle.dispatched(), [(AttemptId::new(1, 1), CommandId(2), Operation::Pause)]);
-        let event = crate::BackendEvent { backend: BackendKind::Feed,
-            event: crate::DriverEvent::Release { attempt: AttemptId::new(1, 1),
-                status: crate::ReleaseStatus::Released } };
-        handle.queue([event]);
-        assert_eq!(fake.poll(&mt()), [event]);
-        assert!(fake.poll(&mt()).is_empty(), "events are delivered once");
-        assert_eq!(fake.exit_disposition(), ExitDisposition::Clean);
-        handle.set_exit_preserved(true);
-        assert_eq!(fake.exit_disposition(), ExitDisposition::PreserveNativeOwnership);
-    }
-
-    /// The stop is driven phase by phase through the one object the adapter holds: the fake logs
-    /// each phase with its arguments, the handoff and the returned release are delivered once, and
-    /// `reset` runs the player's own stores exactly once, as the real feed does inside its barrier.
+    /// The stop is driven phase by phase: the fake logs each phase with its arguments, the handoff
+    /// and the returned release are delivered once, and `reset` runs the player's own stores
+    /// exactly once, as the real feed does inside its barrier.
     #[test]
     fn the_stop_phases_are_logged_in_the_order_they_are_driven() {
-        let (fake, handle) = FakePhysical::new();
+        let (mut feed, handle) = FakeFeed::new();
         let handoff = ReleaseHandoff { epoch: 3, at: std::time::Instant::now() };
         handle.script(|script| {
             script.facts.raw.load.stage = Some(Stage::Streaming);
@@ -574,8 +443,6 @@ mod tests {
             script.release_tail_runs = true;
             script.unblock.load_abandoned = true;
         });
-        let mut set: Box<dyn PhysicalSet<Context = MainThread>> = Box::new(fake);
-        let feed = set.feed().unwrap();
         let mut common = 0;
         assert!(feed.stop_begin().is_some(), "a live session has a last sample");
         feed.stop_side_reader(true);
