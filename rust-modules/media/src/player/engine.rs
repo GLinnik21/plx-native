@@ -2250,7 +2250,7 @@ mod off_frame_release_tests {
         crate::route::reset_player_control_for_test(ps);
         crate::player::ffi_host::reset_native_lifecycle_for_test();
         crate::player::ffi_host::force_clocksink_for_test(true);
-        crate::player::adapter::PlayerAdapter::new(unsafe { MainThread::assume() })
+        crate::player::adapter::PlayerAdapter::new_probed(unsafe { MainThread::assume() })
     }
 
     #[test]
@@ -2421,7 +2421,7 @@ mod off_frame_release_tests {
         let _cleanup = Cleanup;
         playing_engine(&mut pa);
         crate::player::ffi_host::delay_unload_for_test(150);
-        pa.physical.feed_backend_mut().resources_mut().set_unload_spawner(Some(|_| None));
+        pa.probe().resources(|resources| resources.set_unload_spawner(Some(|_| None)));
         let started = std::time::Instant::now();
         stop_bufferfeed(&mut ps, &mut pa);
         assert!(
@@ -2855,7 +2855,7 @@ mod load_in_flight_tests {
         crate::player::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
 
-        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+        let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe {
             plx_base::task::MainThread::assume()
         });
         let epoch = FEED_SHARED.begin_native_session().expect("native session");
@@ -2871,7 +2871,7 @@ mod load_in_flight_tests {
             const A_STEP_NS: i64 = 21_333_333; // 1024 samples at 48 kHz
             const VIDEO_AUS: i64 = 30; // ~1.25s > PRIME_NS (700ms)
             const AUDIO_AUS: i64 = 20; // ~427ms > PRIME_AUDIO_NS (300ms)
-            let eng = pa.engine().expect("engine installed above");
+            let mut eng = pa.engine().expect("engine installed above");
             let au = [0u8; 32];
             let qv = &mut **eng.aq_video.as_mut().unwrap() as *mut crate::aq::AuQueue;
             for i in 0..VIDEO_AUS {
@@ -2969,7 +2969,7 @@ mod load_in_flight_tests {
         crate::player::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
 
-        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+        let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe {
             plx_base::task::MainThread::assume()
         });
         let epoch = FEED_SHARED.begin_native_session().expect("native session");
@@ -3042,7 +3042,7 @@ mod load_in_flight_tests {
         crate::player::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
 
-        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+        let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe {
             plx_base::task::MainThread::assume()
         });
         let epoch = FEED_SHARED.begin_native_session().expect("native session");
@@ -3111,7 +3111,7 @@ mod load_in_flight_tests {
         crate::player::ffi_host::force_object_ready_for_test(true);
         let _cleanup = Cleanup;
 
-        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+        let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe {
             plx_base::task::MainThread::assume()
         });
         let epoch = FEED_SHARED.begin_native_session().expect("native session");
@@ -3189,7 +3189,7 @@ mod load_in_flight_tests {
         crate::player::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
 
-        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+        let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe {
             plx_base::task::MainThread::assume()
         });
         let epoch = FEED_SHARED.begin_native_session().expect("native session");
@@ -3253,7 +3253,7 @@ mod load_in_flight_tests {
         crate::player::ffi_host::reset_native_lifecycle_for_test();
         crate::player::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
-        let mut pa = super::super::adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        let mut pa = super::super::adapter::PlayerAdapter::new_probed(unsafe { plx_base::task::MainThread::assume() });
         let mut ps = crate::route::PlaybackSession::IDLE;
         let epoch = FEED_SHARED.begin_native_session().unwrap();
         pa.install(engine_loading(epoch));
@@ -3292,7 +3292,7 @@ mod load_in_flight_tests {
         crate::player::ffi_host::force_clocksink_for_test(true);
         crate::player::ffi_host::force_object_ready_for_test(true);
         let _cleanup = Cleanup;
-        let mut pa = super::super::adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        let mut pa = super::super::adapter::PlayerAdapter::new_probed(unsafe { plx_base::task::MainThread::assume() });
         let mut ps = crate::route::PlaybackSession::IDLE;
         // The readout the pump derives the state into is addressed by the attempt the view began for.
         ps.begin_attempt_view(crate::route::RouteStartAttempt::fixture(), crate::player::attempt_view::Backend::Feed);
@@ -3323,7 +3323,7 @@ mod load_in_flight_tests {
         crate::player::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
 
-        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+        let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe {
             plx_base::task::MainThread::assume()
         });
         let epoch = FEED_SHARED.begin_native_session().expect("native session");
@@ -3489,7 +3489,7 @@ mod load_in_flight_tests {
         crate::player::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
         let _release = ReleaseLoadOnDrop;
-        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+        let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe {
             plx_base::task::MainThread::assume()
         });
         install_engine_with_timed_out_load(&mut ps, &mut pa);
@@ -3533,7 +3533,7 @@ mod load_in_flight_tests {
         crate::player::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
         let _release = ReleaseLoadOnDrop;
-        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+        let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe {
             plx_base::task::MainThread::assume()
         });
         show_live_rows(&mut ps, &mut pa);
@@ -3557,7 +3557,7 @@ mod load_in_flight_tests {
         crate::player::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
         let _release = ReleaseLoadOnDrop;
-        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+        let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe {
             plx_base::task::MainThread::assume()
         });
         show_live_rows(&mut ps, &mut pa);
@@ -3592,7 +3592,7 @@ mod load_in_flight_tests {
         crate::player::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
         let _release = ReleaseLoadOnDrop;
-        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+        let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe {
             plx_base::task::MainThread::assume()
         });
         show_original_failure(&mut ps, &mut pa);
@@ -3615,7 +3615,7 @@ mod load_in_flight_tests {
         crate::player::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
         let _release = ReleaseLoadOnDrop;
-        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+        let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe {
             plx_base::task::MainThread::assume()
         });
         show_original_failure(&mut ps, &mut pa);
@@ -3643,7 +3643,7 @@ mod load_in_flight_tests {
         crate::player::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
         let _release = ReleaseLoadOnDrop;
-        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+        let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe {
             plx_base::task::MainThread::assume()
         });
         show_live_rows(&mut ps, &mut pa);
@@ -3699,7 +3699,7 @@ mod load_in_flight_tests {
         crate::player::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
         let _release = ReleaseLoadOnDrop;
-        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+        let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe {
             plx_base::task::MainThread::assume()
         });
         show_live_rows(&mut ps, &mut pa);
@@ -3726,7 +3726,7 @@ mod load_in_flight_tests {
         crate::player::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
         let _release = ReleaseLoadOnDrop;
-        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+        let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe {
             plx_base::task::MainThread::assume()
         });
         crate::route::set_url(&mut ps, "http://127.0.0.1:1/hls/start.m3u8");
@@ -3777,7 +3777,7 @@ mod load_in_flight_tests {
         crate::player::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
         let _release = ReleaseLoadOnDrop;
-        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+        let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe {
             plx_base::task::MainThread::assume()
         });
         install_engine_with_timed_out_load(&mut ps, &mut pa);
@@ -3841,7 +3841,7 @@ mod load_in_flight_tests {
         crate::player::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
         let _release = ReleaseLoadOnDrop;
-        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+        let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe {
             plx_base::task::MainThread::assume()
         });
         install_engine_with_timed_out_load(&mut ps, &mut pa);
@@ -4620,7 +4620,7 @@ mod load_refusal_tests {
         crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
         let _cleanup = Cleanup;
-        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+        let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe {
             plx_base::task::MainThread::assume()
         });
         let epoch = FEED_SHARED.begin_native_session().expect("native session");
@@ -5299,7 +5299,7 @@ mod pcm_stack_wiring_tests {
         crate::player::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
         let _stack = audio_stack_on_this_thread_for_test(stack);
-        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe { plx_base::task::MainThread::assume() });
         crate::route::set_url(&mut ps, "http://127.0.0.1:1/track.flac");
         assert!(ps.qualify_resolved_feed_offer(crate::route::backend_policy::OfferId::FEED_ORIGINAL,
             crate::route::CandidatePurpose::NewCandidate));
@@ -5317,7 +5317,7 @@ mod pcm_stack_wiring_tests {
             matches!(started, BufferfeedStartOutcome::Launched(_)),
             "PRECONDITION FAILED: the FLAC start must launch ({started:?})"
         );
-        let eng = pa.engine().expect("a launched start installs its Engine");
+        let mut eng = pa.engine().expect("a launched start installs its Engine");
         assert!(
             eng.payload.to_string_lossy().contains("PCM"),
             "PRECONDITION FAILED: a FLAC Load must declare PCM: {:?}",
@@ -5329,13 +5329,14 @@ mod pcm_stack_wiring_tests {
             assert!(std::time::Instant::now() < deadline, "the Load never returned");
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        assert!(settle_pcm_lead(eng), "a returned Load has settled its lead");
+        assert!(settle_pcm_lead(&mut eng), "a returned Load has settled its lead");
         let lead = eng.pcm_sink_lead_ns;
         std::thread::sleep(std::time::Duration::from_millis(linger_ms));
         assert!(
             FEED_SHARED.native_load_returned(eng.native_epoch),
             "a Load that returned stays returned until its stop: another session's Unload reached this one"
         );
+        drop(eng);
         crate::player::ffi_host::delay_unload_for_test(unload_ms);
         stop_bufferfeed(&mut ps, &mut pa);
         finish_release_for_test(&mut pa);
@@ -5372,7 +5373,7 @@ mod pcm_stack_wiring_tests {
         crate::player::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
         let _stack = audio_stack_on_this_thread_for_test(AudioStack::Liblxa);
-        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe { plx_base::task::MainThread::assume() });
         flac_route(&mut ps);
         assert_eq!(ps.readout().raw().playpos_ns, 0, "no attempt has sampled the feed yet");
 
@@ -5401,7 +5402,7 @@ mod pcm_stack_wiring_tests {
         crate::player::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
         let _stack = audio_stack_on_this_thread_for_test(AudioStack::Liblxa);
-        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe { plx_base::task::MainThread::assume() });
         flac_route(&mut ps);
         FEED_SHARED.desired_audio_idx.store(-1, Ordering::Relaxed);
 
@@ -5724,7 +5725,7 @@ mod explicit_source_start_tests {
         crate::player::ffi_host::reset_native_lifecycle_for_test();
         crate::player::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
-        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe { plx_base::task::MainThread::assume() });
         plx_base::devtrig::with_private_triggers(|| {
             std::fs::write(plx_base::devtrig::path("playurl"), PLAYURL).unwrap();
             body(&mut ps, &mut pa);

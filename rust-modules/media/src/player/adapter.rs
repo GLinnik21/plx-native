@@ -42,8 +42,7 @@ const MAX_METRIC_NOTICES: usize = 32;
 #[cfg(test)]
 use plx_playback_contract::Capabilities;
 use plx_playback_contract::{AttemptId, BackendKind, CommandId,
-    DriverSet, ExitDisposition, Failure, Intent, Operation,
-    SourceKey, UriDriver};
+    ExitDisposition, Failure, Intent, Operation, SourceKey, UriDriver};
 use plx_playback_contract::uri::UriSource;
 use plx_playback_contract::ReleaseStatus;
 #[cfg(feature = "play-feed")]
@@ -310,7 +309,12 @@ pub struct PlayerAdapter {
     mt: MainThread,
     /// The persistent physical executors: the native feed (its slot, Load and release workers
     /// and driver) and the optional URI driver, as the one set the runner and the pump drive.
-    pub(super) physical: Physical,
+    /// Production boxes [`Physical`]; the adapter reaches it only through [`PhysicalSet`].
+    pub(super) physical: Box<dyn PhysicalSet>,
+    /// The test fixtures' handle on the [`Physical`] boxed behind `physical`
+    /// ([`Self::new_probed`]); `None` on an adapter built by [`Self::new`].
+    #[cfg(all(test, feature = "play-feed"))]
+    probe: Option<super::physical::probe::Probe>,
     /// The one neutral attempt owner, over the physical executors above.
     backend: backend::BackendRunner,
     /// Recent typed measurements for local diagnostics. Older notices are evicted; the
@@ -401,7 +405,9 @@ impl PlayerAdapter {
         super::install_sf_event_hooks();
         Self {
             mt,
-            physical: Physical::new(),
+            physical: Box::new(Physical::new()),
+            #[cfg(all(test, feature = "play-feed"))]
+            probe: None,
             backend: backend::BackendRunner::new(),
             metric_notices: VecDeque::new(),
             next_source_key: 0,
@@ -433,6 +439,26 @@ impl PlayerAdapter {
             #[cfg(feature = "devtriggers")]
             uri_probe: None,
         }
+    }
+
+    /// [`Self::new`] over a set that forwards to the [`Physical`] the Engine fixtures keep a
+    /// handle on ([`Self::engine`], [`Self::install`], [`Self::take`], [`Self::split`],
+    /// [`Self::has_pending_release`]): the adapter drives the same [`Physical`] through the same
+    /// `dyn PhysicalSet`, and only the fixtures reach it through the probe. A test that calls one
+    /// of those fixtures builds its adapter with this; one that does not uses [`Self::new`].
+    #[cfg(all(test, feature = "play-feed"))]
+    pub fn new_probed(mt: MainThread) -> Self {
+        let mut adapter = Self::new(mt);
+        let (probe, physical) = super::physical::probe::Probe::new();
+        adapter.physical = physical;
+        adapter.probe = Some(probe);
+        adapter
+    }
+
+    /// The fixtures' handle on the boxed [`Physical`].
+    #[cfg(all(test, feature = "play-feed"))]
+    pub(super) fn probe(&self) -> &super::physical::probe::Probe {
+        self.probe.as_ref().expect("this fixture needs an adapter built by PlayerAdapter::new_probed")
     }
 
     /// The adapter reads monotonic time; the pure backend and metrics reducers receive a value.
@@ -806,7 +832,7 @@ impl PlayerAdapter {
     pub fn backend_send_at(&mut self, ps: &mut crate::route::PlaybackSession, intent: Intent,
         origin: super::attempt_metrics::Origin, at: super::attempt_metrics::Tick)
         -> backend::RunResult {
-        let result = self.backend.send_at(&mut self.physical, &self.mt, intent, origin, at);
+        let result = self.backend.send_at(&mut *self.physical, &self.mt, intent, origin, at);
         let result = self.finish_backend_actions(ps, result, at);
         {
             if let Intent::Stop { backend: BackendKind::Uri, attempt, .. } = intent {
@@ -837,7 +863,7 @@ impl PlayerAdapter {
     /// and a same-poll release retain their order in the returned addressed results.
     pub fn backend_poll_at(&mut self, ps: &mut crate::route::PlaybackSession,
         at: super::attempt_metrics::Tick) -> backend::RunResult {
-        let result = self.backend.poll_at(&mut self.physical, &self.mt, at);
+        let result = self.backend.poll_at(&mut *self.physical, &self.mt, at);
         let result = self.finish_backend_actions(ps, result, at);
         self.capture_uri_release(ps, &result.playback);
         self.record_backend_metrics(&result.metrics);
@@ -866,7 +892,7 @@ impl PlayerAdapter {
 
     pub fn backend_set_foreground_at(&mut self, ps: &mut crate::route::PlaybackSession,
         foreground: bool, at: super::attempt_metrics::Tick) -> backend::RunResult {
-        let result = self.backend.set_foreground_at(&mut self.physical, &self.mt, foreground, at);
+        let result = self.backend.set_foreground_at(&mut *self.physical, &self.mt, foreground, at);
         let result = self.finish_backend_actions(ps, result, at);
         self.record_backend_metrics(&result.metrics);
         result
@@ -897,7 +923,7 @@ impl PlayerAdapter {
                 feed.note_transport_result(&self.mt, action, transport.accepted,
                     transport.native_acknowledged);
             }
-            let next = self.backend.poll_at(&mut self.physical, &self.mt, at);
+            let next = self.backend.poll_at(&mut *self.physical, &self.mt, at);
             result.playback.extend(next.playback);
             result.metrics.extend(next.metrics);
             result.controls.extend(next.controls);
@@ -908,11 +934,11 @@ impl PlayerAdapter {
     }
 
     /// The playback backends this adapter's installed drivers form: a backend is in the set when
-    /// its driver answers [`DriverSet::capabilities`]. Boot hands it to
+    /// its driver answers [`plx_playback_contract::DriverSet::capabilities`]. Boot hands it to
     /// `PlaybackSession::install_backends`, so route policy offers what is physically installed
     /// (a URI driver the product install refused is not offered) and never reads a Cargo feature.
     pub fn composed_backends(&self) -> plx_playback_contract::BackendSet {
-        plx_playback_contract::BackendSet::from_capabilities(&self.physical)
+        plx_playback_contract::BackendSet::from_capabilities(&*self.physical)
     }
 
     pub fn backend_exit_disposition(&self) -> ExitDisposition {
@@ -1499,7 +1525,7 @@ impl PlayerAdapter {
     /// production readers are the release machine and the Feed's own exit disposition.
     #[cfg(all(test, feature = "play-feed"))]
     pub fn has_pending_release(&self) -> bool {
-        self.physical.feed_backend().resources().has_pending_release()
+        self.probe().resources(|resources| resources.has_pending_release())
     }
 
     /// The release machine's verdict on one event; the effects are the caller's to run. The
@@ -1574,8 +1600,8 @@ impl PlayerAdapter {
     /// Test-only access to the physical session for the existing hostsim rigs.
     #[cfg(all(test, feature = "play-feed"))]
     #[inline]
-    pub fn engine(&mut self) -> Option<&mut Engine> {
-        self.physical.feed_backend_mut().resources_mut().engine()
+    pub fn engine(&mut self) -> Option<std::cell::RefMut<'_, Engine>> {
+        self.probe().engine()
     }
 
     /// Route identity of the active physical feed, without lending Engine state to admission.
@@ -1874,14 +1900,14 @@ impl PlayerAdapter {
     #[cfg(all(test, feature = "play-feed", feature = "hostsim"))]
     pub(super) fn load_receipt(&mut self, attempt: crate::route::RouteStartAttempt, native_epoch: u32,
         _trace_generation: u32) -> threads::LoadReceipt {
-        self.physical.feed_backend_mut().resources_mut()
-            .load_receipt(attempt.contract_id(), native_epoch)
+        self.probe().resources(|resources|
+            resources.load_receipt(attempt.contract_id(), native_epoch))
     }
 
     /// A refused thread spawn cannot return a receipt; retire its mapping immediately.
     #[cfg(all(test, feature = "play-feed", feature = "hostsim"))]
     pub(super) fn cancel_load_receipt(&mut self, token: u64) {
-        self.physical.feed_backend_mut().resources_mut().cancel_load_receipt(token);
+        self.probe().resources(|resources| resources.cancel_load_receipt(token));
     }
 
     /// The main-thread coordinator's only Load-result landing. Late outcomes from an abandoned
@@ -1941,7 +1967,7 @@ impl PlayerAdapter {
     pub fn install(&mut self, e: Engine) {
         self.feed_attempt = Some(BoundFeed { attempt: crate::route::RouteStartAttempt::fixture(),
             trace_generation: 0, foreground_follows_load: false });
-        self.physical.feed_backend_mut().resources_mut().install(e);
+        self.probe().resources(|resources| resources.install(e));
     }
 
     /// Take the session out of the slot; the caller then joins its workers and drops it.
@@ -1949,7 +1975,7 @@ impl PlayerAdapter {
     #[cfg(all(test, feature = "play-feed"))]
     pub fn take(&mut self) -> Option<Engine> {
         self.feed_attempt = None;
-        self.physical.feed_backend_mut().resources_mut().take()
+        self.probe().resources(|resources| resources.take())
     }
 
     /// Is a URI-mode probe session running? `start_bufferfeed`'s double-start guard asks this beside
@@ -2065,8 +2091,8 @@ impl PlayerAdapter {
     /// code uses the feed's typed actions and does not borrow the Engine.
     #[inline]
     #[cfg(all(test, feature = "play-feed"))]
-    pub fn split(&mut self) -> (Option<&mut Engine>, &MainThread) {
-        (self.physical.feed_backend_mut().resources_mut().engine(), &self.mt)
+    pub fn split(&mut self) -> (Option<std::cell::RefMut<'_, Engine>>, &MainThread) {
+        (self.probe().engine(), &self.mt)
     }
 }
 
@@ -2232,7 +2258,7 @@ mod load_outcome_tests {
         let transaction = crate::route::begin_route_start().expect("start transaction");
         assert!(crate::route::prepare_route_start(transaction));
         let attempt = crate::route::claim_route_start_attempt(transaction).expect("physical attempt");
-        let mut pa = PlayerAdapter::new(unsafe { MainThread::assume() });
+        let mut pa = PlayerAdapter::new_probed(unsafe { MainThread::assume() });
 
         // A worker may answer before construction finishes, but its route cannot become Stable
         // without an installed Engine. This was the original Load-return race.
@@ -2271,7 +2297,7 @@ mod load_outcome_tests {
         let _serial = plx_base::testlock::serial();
         let attempt = crate::route::RouteStartAttempt::fixture();
         let mut ps = crate::route::PlaybackSession::IDLE;
-        let mut pa = PlayerAdapter::new(unsafe { MainThread::assume() });
+        let mut pa = PlayerAdapter::new_probed(unsafe { MainThread::assume() });
         assert!(!pa.is_live() && pa.active_feed_attempt().is_none());
         let mut eng = crate::player::engine::streaming_engine_for_test(8);
         eng.attempt = attempt.contract_id();
@@ -2295,7 +2321,7 @@ mod load_outcome_tests {
         let _serial = plx_base::testlock::serial();
         let bound = crate::route::RouteStartAttempt::fixture();
         let other = crate::route::RouteStartAttempt::fixture_n(2);
-        let mut pa = PlayerAdapter::new(unsafe { MainThread::assume() });
+        let mut pa = PlayerAdapter::new_probed(unsafe { MainThread::assume() });
         assert!(!pa.mark_foreground_follows_feed_load(bound), "nothing is bound");
         assert!(!pa.foreground_follows_feed_load());
 
@@ -2325,7 +2351,7 @@ mod load_outcome_tests {
     fn elapsed_fact_keeps_its_captured_trace_after_engine_installation() {
         let _serial = plx_base::testlock::serial();
         let attempt = crate::route::RouteStartAttempt::fixture();
-        let mut pa = PlayerAdapter::new(unsafe { MainThread::assume() });
+        let mut pa = PlayerAdapter::new_probed(unsafe { MainThread::assume() });
         let mut ps = crate::route::PlaybackSession::IDLE;
 
         // The worker can return before the Engine is installed. Polling cannot discard that
@@ -2345,8 +2371,8 @@ mod load_outcome_tests {
         let wrong_attempt = plx_playback_contract::AttemptId::new(
             attempt.contract_id().owner(), attempt.contract_id().generation() + 1,
         );
-        let wrong_owner = pa.physical.feed_backend_mut().resources_mut()
-            .load_receipt(wrong_attempt, 8);
+        let wrong_owner = pa.probe().resources(|resources|
+            resources.load_receipt(wrong_attempt, 8));
         wrong_owner.deliver(8, false, Some(790));
         let cancelled = pa.load_receipt(attempt, 8, 44);
         let cancelled_token = cancelled.token();

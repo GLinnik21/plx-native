@@ -1340,7 +1340,7 @@ mod abandoned_load_tests {
         crate::route::reset_player_control_for_test(ps);
         crate::player::ffi_host::reset_native_lifecycle_for_test();
         crate::player::ffi_host::force_clocksink_for_test(true);
-        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe { plx_base::task::MainThread::assume() });
         let epoch = FEED_SHARED.begin_native_session().expect("native session");
         assert_eq!(unsafe { crate::player::sink().load(c"{}".as_ptr(), epoch) }, 1);
         assert!(FEED_SHARED.mark_native_load_returned(epoch, None).is_some());
@@ -1362,7 +1362,7 @@ mod abandoned_load_tests {
     /// Wait (bounded) until the Engine's Load thread has returned.
     fn await_load_return(pa: &mut crate::player::adapter::PlayerAdapter) {
         let give_up = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while !pa.engine().and_then(|eng| eng.load_th.as_ref()).is_none_or(|th| th.is_finished()) {
+        while !pa.engine().is_none_or(|eng| eng.load_th.as_ref().is_none_or(|th| th.is_finished())) {
             assert!(std::time::Instant::now() < give_up, "the Load thread never returned");
             std::thread::sleep(std::time::Duration::from_millis(1));
         }

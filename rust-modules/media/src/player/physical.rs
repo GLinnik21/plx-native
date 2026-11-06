@@ -19,6 +19,9 @@ use plx_playback_contract::{
 #[cfg(feature = "play-feed")]
 use plx_play_feed::control::FeedBackend;
 
+#[cfg(all(test, feature = "play-feed"))]
+pub(super) mod probe;
+
 /// The adapter's persistent physical executors.
 pub(super) struct Physical {
     #[cfg(feature = "play-feed")]
@@ -208,7 +211,7 @@ mod tests {
     #[test]
     fn the_lent_feed_is_the_concrete_backend() {
         let mut set = Physical::new();
-        let concrete = set.feed_backend() as *const FeedBackend as *const ();
+        let concrete = set.feed_backend_mut() as *mut FeedBackend as *const ();
         let lent = set.feed().expect("a feed build installs the feed") as *mut dyn FeedControl
             as *const ();
         assert_eq!(lent, concrete);
