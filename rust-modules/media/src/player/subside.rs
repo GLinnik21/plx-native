@@ -10,8 +10,7 @@
 //! See `plx_play_feed::side_reader` for what the reader does, when it starts and stops, and how a
 //! SIDECAR gets it clock-only (`plx_playback_contract::subtitle::SIDE_READER_CLOCK_ONLY`).
 
-use plx_play_feed::side_reader::{ReadCfg, RunEnd, SideReaderJobPort, SideStop, Spec};
-use plx_playback_contract::subtitle::{Anchor, CaptionRetention};
+use plx_playback_contract::subtitle::{Anchor, CaptionRetention, ReadCfg, RunEnd, SideReaderJobPort, SideStop, Spec};
 use std::sync::Arc;
 
 /// The common caption runner the reader thread calls back into.

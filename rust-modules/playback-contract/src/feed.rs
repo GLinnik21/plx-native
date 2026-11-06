@@ -942,6 +942,83 @@ impl PhysicalSet for UriOnlySet {
     fn take_uri(&mut self) -> Option<Box<dyn UriDriver<Context = MainThread>>> { self.uri.take() }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Vocabulary the player and the feed backend both name: plain data and constants, so the player
+// reads them without naming the crate that runs the feed.
+// ---------------------------------------------------------------------------------------------
+
+/// "No presentation position yet" in the feed's `pres_fed` mailbox.
+pub const PRES_NONE: i64 = i64::MIN;
+/// Maximum video lead beyond the presented position in the native feed.
+pub const MAX_FEED_AHEAD_NS: i64 = 1_600_000_000;
+/// How much further ahead than [`MAX_FEED_AHEAD_NS`] the audio lane may ride: audio is cheap and
+/// the master clock, so its bound is looser.
+pub const AUDIO_SLACK_NS: i64 = 2_000_000_000;
+/// Byte caps of the native video and audio access-unit queues.
+pub const AQ_VIDEO_BYTES: std::os::raw::c_long = 10 * 1024 * 1024;
+pub const AQ_AUDIO_BYTES: std::os::raw::c_long = 1024 * 1024;
+
+/// The AU queues' two base byte caps, video then audio: the denominators the read-out shows its
+/// `dg_aq_*` against.
+pub const fn aq_caps() -> (i64, i64) {
+    (AQ_VIDEO_BYTES as i64, AQ_AUDIO_BYTES as i64)
+}
+
+/// Why an HLS clock fence was refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HlsClockFenceError {
+    Stopping,
+    Overlap,
+    Exhausted,
+    Superseded,
+}
+
+/// Which automatic quality transition owns the HLS clock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HlsAutomaticTransition {
+    QualityUp,
+    QualityDown,
+    Original,
+}
+
+/// The accepted-transport state a worker samples: the monotone sequence of Pause/Resume pairs and
+/// the cumulative time spent paused.
+#[derive(Clone, Copy, Debug)]
+pub struct UserPauseSnapshot {
+    pub now: std::time::Instant,
+    pub elapsed: Duration,
+    pub paused: bool,
+    pub sequence: u64,
+}
+
+/// Per-worker cursor over accepted transport events. A complete Pause→Resume may happen while a
+/// worker is blocked in native queue/network I/O; consuming the monotone sequence plus cumulative
+/// duration makes that interval observable even when both surrounding boolean samples are false.
+#[derive(Clone, Copy, Debug)]
+pub struct UserPauseCursor {
+    sequence: u64,
+    elapsed: Duration,
+}
+
+impl UserPauseCursor {
+    pub fn new(snapshot: UserPauseSnapshot) -> Self {
+        Self {
+            sequence: snapshot.sequence,
+            elapsed: snapshot.elapsed,
+        }
+    }
+
+    pub fn consume_completed(&mut self, snapshot: UserPauseSnapshot) -> Option<Duration> {
+        if snapshot.paused || snapshot.sequence == self.sequence {
+            return None;
+        }
+        let elapsed = snapshot.elapsed.saturating_sub(self.elapsed);
+        self.sequence = snapshot.sequence;
+        self.elapsed = snapshot.elapsed;
+        (!elapsed.is_zero()).then_some(elapsed)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

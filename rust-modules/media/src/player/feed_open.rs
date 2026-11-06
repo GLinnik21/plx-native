@@ -32,7 +32,7 @@ pub(super) fn original_dv(dv: plx_data::metadata::Dovi) -> plx_playback_contract
 pub(super) struct SideReaderOpen {
     selected: bool,
     clock_only: bool,
-    spec: Option<plx_play_feed::side_reader::Spec>,
+    spec: Option<plx_playback_contract::subtitle::Spec>,
 }
 
 impl SideReaderOpen {
@@ -199,7 +199,7 @@ pub(super) fn payload_options(facts: &plx_playback_contract::feed::PayloadFacts)
 /// Apply the current route's selected codec and Force policy to the native speed ceiling.
 pub(crate) fn speed_fps_ceiling_now(ps: &route::PlaybackSession) -> f64 {
     super::engine::speed_fps_ceiling(
-        plx_play_feed::LoadVideo::of_stream(&route::stream_vcodec(ps)),
+        plx_platform::devcaps::LoadVideo::of_stream(&route::stream_vcodec(ps)),
         &plx_platform::devcaps::caps(),
         plx_platform::devcaps::measured() && !route::forced_direct_play(ps),
     )

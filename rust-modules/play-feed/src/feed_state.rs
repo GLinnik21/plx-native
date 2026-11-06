@@ -8,21 +8,16 @@ use std::os::raw::{c_int, c_void};
 #[cfg(any(test, feature = "test-support"))]
 use std::sync::atomic::Ordering;
 
-pub const PRES_NONE: i64 = i64::MIN;
+// The queue caps and the feed-ahead leads are contract vocabulary (the player's ABR plant and
+// read-out name them without naming this crate); the old paths stay for this crate's own code.
+pub use plx_playback_contract::feed::{
+    aq_caps, AQ_AUDIO_BYTES, AQ_VIDEO_BYTES, MAX_FEED_AHEAD_NS, PRES_NONE,
+};
 
 /// Post-seek video depth allowed before an absent audio lane stops blocking Play.
 pub const PRIME_VIDEO_MAX_NS: i64 = 2_500_000_000;
-/// Maximum video lead beyond the presented position in the native feed.
-pub const MAX_FEED_AHEAD_NS: i64 = 1_600_000_000;
 /// Audio lead-in read and feed window when a track begins late.
 pub const AUDIO_LEAD_IN_NS: i64 = 2_000_000_000;
-/// Byte caps of the native video and audio access-unit queues.
-pub const AQ_VIDEO_BYTES: std::os::raw::c_long = 10 * 1024 * 1024;
-pub const AQ_AUDIO_BYTES: std::os::raw::c_long = 1024 * 1024;
-
-pub const fn aq_caps() -> (i64, i64) {
-    (AQ_VIDEO_BYTES as i64, AQ_AUDIO_BYTES as i64)
-}
 
 /// The longest the throttle's reference runs on past the last position report, in ms. The
 /// pipeline reports every ~201 ms, so against this cap the run-on bridges a report up to ~49 ms

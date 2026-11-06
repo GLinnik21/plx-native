@@ -19,7 +19,6 @@ use super::route_start::{exit_native, exit_native_with, finish_release_for_test,
 use super::feed_open::PayloadFacts;
 #[cfg(test)]
 use super::feed_open::install_synthetic_playurl;
-use plx_play_feed::decoder_row;
 #[cfg(test)]
 use plx_play_feed::{
     renamed_static_payload, static_envelope, with_opus_info, SinkEnvelope, PAYLOAD_H265, PAYLOAD_V,
@@ -36,7 +35,7 @@ use plx_play_feed::pcm_lead::{pcm_output_lead, PCM_LEAD_BY_OUTPUT, PCM_SINK_LEAD
 use plx_play_feed::{
     fed_fps_rational, opus_head, pcm_rate_khz, ENVELOPE_FHD60, ENVELOPE_UHD60, PAYLOAD_AV,
 };
-pub(crate) use plx_play_feed::LoadVideo;
+pub(crate) use plx_platform::devcaps::LoadVideo;
 #[cfg(test)]
 pub(crate) use plx_play_feed::load_video_refused;
 #[cfg(all(test, feature = "hostsim"))]
@@ -74,7 +73,7 @@ pub use plx_play_feed::native_executor::fed_totals;
 /// this ahead of its video (issue #600) runs the lane up to `ff::AUDIO_AHEAD_HEADROOM` (16 MiB)
 /// beyond it for as long as the video lane holds less than `MAX_FEED_AHEAD_NS` of media.
 pub const fn aq_caps() -> (i64, i64) {
-    plx_play_feed::feed_state::aq_caps()
+    plx_playback_contract::feed::aq_caps()
 }
 
 /// **The feed-ahead throttle's two leads, milliseconds** — video, then audio.
@@ -199,7 +198,7 @@ pub(crate) fn speed_fps_ceiling(
     measured: bool,
 ) -> f64 {
     let row_fps = match video {
-        Some(video) if measured => decoder_row(video, caps).2,
+        Some(video) if measured => video.decoder_row(caps).2,
         _ => 0,
     };
     if row_fps == 0 {
@@ -420,11 +419,11 @@ pub(super) fn clear_failed_engine_release_arm() {
 pub use plx_play_feed::native_executor::drain_aq;
 
 
-pub(crate) use plx_play_feed::feed_state::MAX_FEED_AHEAD_NS;
+pub(crate) use plx_playback_contract::feed::MAX_FEED_AHEAD_NS;
 #[cfg(test)]
 pub(crate) use plx_play_feed::feed_state::{AUDIO_LEAD_IN_NS, PRIME_VIDEO_MAX_NS};
-pub use plx_play_feed::feed_state::PRES_NONE;
-pub(crate) use plx_play_feed::native_executor::AUDIO_SLACK_NS;
+pub use plx_playback_contract::feed::PRES_NONE;
+pub(crate) use plx_playback_contract::feed::AUDIO_SLACK_NS;
 #[cfg(all(test, feature = "hostsim"))]
 use plx_play_feed::native_executor::{
     AUDIO_STALE_AHEAD_NS, FEED_LANE_SLICE_US, FEED_LOW_WATER_NS, PRIME_AUDIO_NS, PRIME_NS,

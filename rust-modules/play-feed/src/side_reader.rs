@@ -32,126 +32,17 @@
 //! the URL, host, token or session identifier.
 
 use crate::shared::FEED_SHARED;
-use plx_net::stream::HttpStream;
-use plx_playback_contract::subtitle::{Anchor, CaptionRetention, SIDE_READER_CLOCK_ONLY};
+use plx_playback_contract::subtitle::{Anchor, SIDE_READER_CLOCK_ONLY};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub use plx_playback_contract::feed::SideReaderPort;
 
-/// What the reader thread asks of the common caption runner. Unlike [`SideReaderPort`], which one
-/// Engine owns and drives from the main thread, this is shared with the reader thread and with
-/// `sync`'s worker, neither of which has an Engine, so it is a `'static` value handed to
-/// [`start`] and [`sync`] and kept by the reader for its `stop`.
-pub trait SideReaderJobPort: Sync {
-    /// One pass of the transport and presentation loop over a codec-owned extraction job.
-    #[allow(clippy::too_many_arguments)]
-    fn read_once(
-        &self,
-        cfg: &ReadCfg,
-        stop: &Arc<SideStop>,
-        anchor: &Anchor,
-        delta: &mut Option<i64>,
-        resume_part_ns: &dyn Fn(i64) -> i64,
-        playpos: &dyn Fn() -> i64,
-        clock: &dyn Fn() -> (i64, i64),
-        retention: &dyn Fn() -> CaptionRetention,
-        on_exact_delta: &dyn Fn(i64),
-    ) -> RunEnd;
-    /// The viewer's subtitle selection (`-1` = off).
-    fn desired_sub_idx(&self) -> i32;
-    /// Select a subtitle track (the reader's own pick, or giving the viewer's back).
-    fn request_subtitle(&self, ordinal: i32);
-    /// Clear the bitmap cue store the reader filled.
-    fn clear_bitmaps(&self);
-}
-
-/// The half-width of the keyframe scan around the start offset, both directions.
-pub const SCAN_NS: i64 = 15_000_000_000;
-
-/// What the controlling thread uses to make a reader that is blocked in IO return: a flag every
-/// callback checks, plus the two ways a read can block. Shared (`Arc`) between `SideIo` (media's `subtitle_job`), which
-/// registers its transport here, and the reader thread (`stop`), which fires it.
-pub struct SideStop {
-    flag: AtomicBool,
-    /// The socket's `HttpStream` address, or 0. Written under the lock and read under it by
-    /// [`SideStop::trigger`], and `SideIo` (media's `subtitle_job`)'s drop clears it under the same lock BEFORE the stream
-    /// is freed, so `trigger` can never shut down a stream that is gone.
-    sock: Mutex<usize>,
-    /// The private curl transfer's abort handle.
-    curl: Mutex<Option<Arc<plx_net::range_io::Abort>>>,
-}
-
-impl SideStop {
-    pub fn new() -> Arc<SideStop> {
-        Arc::new(SideStop { flag: AtomicBool::new(false), sock: Mutex::new(0), curl: Mutex::new(None) })
-    }
-
-    pub fn is_set(&self) -> bool {
-        self.flag.load(Ordering::Acquire)
-    }
-
-    /// Set the flag, then wake whatever is blocked. Idempotent; callable from any thread.
-    pub fn trigger(&self) {
-        self.flag.store(true, Ordering::Release);
-        let sock = self.sock.lock().unwrap_or_else(|e| e.into_inner());
-        if *sock != 0 {
-            plx_net::stream::http_shutdown(*sock as *mut HttpStream);
-        }
-        drop(sock);
-        if let Some(a) = self.curl.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
-            a.signal();
-        }
-    }
-
-    pub fn publish_curl(&self, abort: &Arc<plx_net::range_io::Abort>) {
-        *self.curl.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(abort));
-        if self.is_set() {
-            abort.signal(); // fired before the handle existed
-        }
-    }
-
-    pub fn publish_sock(&self, hs: *mut HttpStream) {
-        *self.sock.lock().unwrap_or_else(|e| e.into_inner()) = hs as usize;
-        if self.is_set() {
-            plx_net::stream::http_shutdown(hs);
-        }
-    }
-
-    pub fn clear_sock(&self) {
-        *self.sock.lock().unwrap_or_else(|e| e.into_inner()) = 0;
-    }
-}
-
-/// What one pass of the reader needs. The URL carries the token and is never logged.
-pub struct ReadCfg<'a> {
-    pub url: &'a str,
-    /// Where the remux was started in the film, nanoseconds.
-    pub offset_ns: i64,
-    /// The 0-based position of the drawn track among the Part's subtitle streams.
-    pub ordinal: usize,
-    /// The Part's whole-file bitrate, for the log line.
-    pub kbps: u32,
-    /// Measure the clock mapping only: open the Part, scan for the anchor's keyframe and return
-    /// ([`RunEnd::Measured`]). No subtitle track is opened, enumerated or read (`ordinal` is unused),
-    /// no render store is touched, and the Part's connection is closed on return. For a SIDECAR the
-    /// app fetches itself, drawn over a remux.
-    pub clock_only: bool,
-}
-
-/// How a pass of the reader ended.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RunEnd {
-    /// The stop was set (or the Part ended and the reader idled until it was).
-    Stopped,
-    /// A transport or demux error: worth reopening.
-    Failed,
-    /// Retrying cannot help: the Part has no such track, no video stream, or the open was refused.
-    Unusable,
-    /// A [`ReadCfg::clock_only`] pass finished its scan (matched or not): nothing is left to read.
-    Measured,
-}
+// The job seam's types are contract vocabulary (`plx_playback_contract::subtitle`), where the
+// common caption runner names them without naming this crate; the old paths stay for this crate's
+// own code.
+pub use plx_playback_contract::subtitle::{ReadCfg, RunEnd, SideReaderJobPort, SideStop, SCAN_NS, Spec};
 
 // ---- the reader thread and its state ----------------------------------------------------------
 
@@ -162,30 +53,6 @@ const POLL: Duration = Duration::from_millis(50);
 const BACKOFF: Duration = Duration::from_millis(500);
 /// How far before the playhead a reopen starts reading, so a cue already on screen comes back.
 const REOPEN_LEAD_NS: i64 = 15_000_000_000;
-
-/// [`Spec::ordinal`] of a CLOCK-ONLY run: no track is read (a sidecar is drawn), only the clock is
-/// measured. Negative, so it is never a track position and two runs of different roles never
-/// compare equal in `apply`.
-
-/// Everything one run of the reader is started with. `url` carries the token: held, never logged.
-#[derive(Clone)]
-pub struct Spec {
-    /// The fresh-session URL of the original Part (`direct_play_url(part, "<live>-subs")`).
-    pub url: String,
-    /// Where the remux was started in the film, nanoseconds.
-    pub offset_ns: i64,
-    /// The Part's whole-file bitrate, for the log line only.
-    pub part_kbps: u32,
-    /// The 0-based position of the drawn track among the Part's subtitle streams, or
-    /// [`SIDE_READER_CLOCK_ONLY`].
-    pub ordinal: i32,
-    /// Start reading at the playhead instead of the run's start offset: the reader begins mid-play
-    /// (a pick on a live remux), not with the engine run.
-    pub from_playhead: bool,
-    /// The Part-to-playhead clock delta a reader of this same run already measured, so a reader
-    /// that replaces it (a track switch) does not scan for the anchor again.
-    pub delta: Option<i64>,
-}
 
 struct Running {
     stop: Arc<SideStop>,
@@ -530,6 +397,7 @@ fn run(spec: Spec, stop: Arc<SideStop>, job: &dyn SideReaderJobPort) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use plx_playback_contract::subtitle::CaptionRetention;
     use std::sync::atomic::AtomicI32;
 
     /// The common caption runner, stood in for: `read_once` parks until the stop is set (a reader
