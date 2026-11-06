@@ -24,6 +24,7 @@ LONG_TITLES = {
     "en": "The extraordinarily long chapter in which the last dragon returns across the frozen mountains",
     "es": "El extraordinario capítulo en el que el último dragón regresa a través de las montañas heladas",
     "be": "Надзвычай доўгі раздзел, у якім апошні цмок вяртаецца праз заснежаныя горы",
+    "ca": "El capítol extraordinàriament llarg en què l’últim drac torna a través de les muntanyes gelades",
     "fr": "Le chapitre extraordinairement long où le dernier dragon revient à travers les montagnes glacées",
     "it": "Il capitolo straordinariamente lungo in cui l’ultimo drago ritorna attraverso le montagne ghiacciate",
     "pt": "O capítulo extraordinariamente longo em que o último dragão regressa pelas montanhas geladas",
