@@ -130,7 +130,12 @@ something.
   probe's own capability (for read-outs) + that gated presentation decision, and every
   Load/reload/recovery consumes the
   stored presentation rather than re-reading the later cache; `dvnonode` is the logged diagnostic
-  exception. Atmos routing and ACB forwarding are independent and unchanged. The payload evidence,
+  exception, and `player/dv_start.rs` is the one mid-play change (#1166): at a landing the firmware's
+  Dolby Vision splitter would skip, or after 4 s with no position update, it takes the declaration
+  out of the route for the rest of that play request (`route::withdraw_dv_presentation`: what DV Off
+  would have planned, the probed capability kept, on the installed route, the file's own declaration
+  and the stored Auto Original candidate, so a trip to HLS and back to Original stays base-layer)
+  and reloads once. Atmos routing and ACB forwarding are independent and unchanged. The payload evidence,
   Profile 5 one-tick fix and instrument traps live in that document.
 - **The Load's `adaptiveStreaming` ceiling is derived per session (`engine::sink_envelope`), and
   it was a 4K60 constant for EVERY codec until 2026-09-03 — which on webOS 10 refused every H.264
@@ -352,7 +357,10 @@ something.
   `devcaps.rs`). What a set announces is layered, in this order and logged at boot as `devcaps: ...
   audio layers:`: the codec table, minus the codecs `/etc/gst/gstcool.conf` shows nothing can decode
   (`apply_gst_decoders`), minus `devcaps::EXCLUSIONS` (rows per firmware codename, each carrying its
-  evidence: the C1's `kisscurl-koli` limits Opus to stereo, and records that Vorbis is refused),
+  evidence: the C1's `kisscurl-koli` limits Opus to stereo, and records that Vorbis is refused; a row
+  may also declare the Dolby Vision splitter IDR-first (`jhericurl-jervisbay`, webOS 5.5.0-19, and
+  the C1's `kisscurl-koli`, webOS 6.5.3-47, whose row is read from the image and not observed), which
+  takes no audio away and is not skipped by `nativeaudiowide`),
   minus the refusals this install learned. Auto's own stereo ceiling for Opus
   (`OPUS_AUTO_MAX_CHANNELS`) stays as it is; the rows add a ceiling Force Direct Play also holds
   (`Caps::forced_feeds_audio_track`). FLAC, ALAC and LPCM are not native: the app decodes them and feeds PCM
@@ -842,13 +850,26 @@ something.
   pump. `route::transcode_seek` is a test-only composition. The
   rebase machinery
   (`pts_shift`/`rebase_pending` in `shared.rs`) keeps Starfish from ever seeing a PTS jump.
+  **One landing is not anchored at all (#1166), and a second trigger follows one that was:** a
+  landing keyframe that is a non-IDR HEVC IRAP (`aq::hevc_irap_not_idr`, read on the demux thread) on
+  a firmware whose Dolby Vision splitter takes only an IDR first (`Caps::dv_first_picture`, the
+  ROW) is not fed and gets no native `Seek`: `dv_start::Guard::land` answers `Step::Withdraw`, the
+  keyframe stays `pending` (`landing_held()`, which both feeders and the stuck-watchdog yield to),
+  and the pump's driver withdraws the route's declaration and calls `reload_at` once, at the newest
+  tap else the seek's target. The other trigger, the 4 s WATCH (a declared direct play with no
+  position update 4 s after a landing, for a build nobody has read), fires AFTER the landing was fed
+  and anchored (its clock needs `landed = !eng.rebase_pending`, `prime_released` and 700 ms of video
+  accepted), so nothing is held and the reload is simply handed over. The reloaded Load carries no
+  `DolbyHdrInfo` node, so every later seek of the play is in place as above.
 - **`frames` is SEEK-scoped, `seen_frame` is SESSION-scoped.** `pump` zeroes `SHARED.frames` as
   *part of applying* an in-place seek (it counts only post-seek frames, for the rebind + resume
   re-pause gate), so `frames == 0` does **not** mean "we have never shown a picture" — it is true
   for the whole of every seek. `SHARED.seen_frame` is the bit that answers that question: set beside
   `frames` in the presented callback, cleared **only** in `reset_session`. The HUD divides its two
   busy indicators on it (`appkit::player_hud::busy_surface`); anything else asking "has this session put
-  a picture on the panel" wants `player::seen_frame()`, not `frames() > 0`.
+  a picture on the panel" wants `player::seen_frame()`, not `frames() > 0`. `frames` counts libpf's
+  5 Hz POSITION updates, not presented pictures, and the Dolby Vision guard's watch
+  (`dv_start::Guard::step`) reads it as exactly that: no position update since the landing.
 - **A remembered track choice is written back to PMS on the first decoded frame, never at the
   landing.** `route::apply_plan` only PARKS it (`PlaybackSession.write_back`: installing a URL is not
   evidence the television accepted it, and a refused direct play's rescue PUTs its own selection);
