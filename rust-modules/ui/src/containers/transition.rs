@@ -138,6 +138,13 @@ pub const DIP_IN_MS: f32 = 140.0;
 /// Maximum rasterise+upload time borrowed from one cheap dip-out frame.
 pub const TEXT_PREWARM_BUDGET_US: u64 = 6_000;
 
+/// **The dip's curve**: smoothstep of a linear `0..=1` ramp (clamped). The route dip's alpha and a
+/// surface's entry dip ([`super::modal::EntryMotion::Dip`]) both read it, so they cannot disagree.
+pub fn dip_eased(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum DipPhase {
     Idle,
@@ -182,8 +189,7 @@ impl PageDip {
     }
 
     fn eased(&self) -> f32 {
-        let t = self.t.clamp(0.0, 1.0);
-        t * t * (3.0 - 2.0 * t)
+        dip_eased(self.t)
     }
 }
 

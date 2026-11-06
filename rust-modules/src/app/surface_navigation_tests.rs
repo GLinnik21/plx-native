@@ -1466,7 +1466,15 @@ fn dismiss_surfaces_now_settles_the_surface_in_the_same_call_unlike_the_ordinary
     // …and a THIRD: the first tick after `present` holds the spring at 0 for the frame that
     // renders the host into its snapshot (`PopoverMotion::hold`), so the ramp starts one later.
     frame(&mut d, &mut rig, AppArg::Home, tick(3), vec![]);
-    // Now one tick HAS run over it: the appear spring is climbing toward its open target and
+    // …and Settings opens on the route dip (`EntryMotion::Dip`, 70 ms with the surface still at
+    // appear 0 while the host dips, then 140 ms up), so the climb starts a few frames later still.
+    for i in 4..40 {
+        if d.nav.modals.top().expect("just presented").motion.appear > 0.0 {
+            break;
+        }
+        frame(&mut d, &mut rig, AppArg::Home, tick(i), vec![]);
+    }
+    // Now one tick HAS run over it: the appear curve is climbing toward its open target and
     // the phase has not yet been promoted past `Opening` (`ModalStack::tick` only promotes it
     // to `Open` once `motion.settled()`) — i.e. deliberately mid-open, nowhere near the
     // "already at the closed end" state `dismiss_surfaces_now` must reach in the SAME call.
