@@ -53,8 +53,8 @@
        "address": "127.0.0.1",
        "machine_id": "",
        "name": "",
-       "origin": "http://127.0.0.1:49923",
-       "port": 49923,
+       "origin": "http://127.0.0.1:32498",
+       "port": 32498,
        "tier": "local",
        "token": "s00000002"
       }
@@ -169,7 +169,7 @@
    ],
    "version": 1
   },
-  "hash": 17939387259492685319,
+  "hash": 16176457039972570882,
   "probe": "controlled=home version=1"
  },
  "schema": 3,
