@@ -230,7 +230,8 @@ static inline size_t plx_fmt_thread(char *out, size_t cap, unsigned long tid, in
 /* The process phase values Rust stores in `plx_crash_phase` (`plx_base::task::watchdog`). */
 #define PLX_PHASE_RUNNING  0u   /* the main loop, or before it */
 #define PLX_PHASE_SHUTDOWN 1u   /* the loop has ended and the teardown is running */
-#define PLX_PHASE_EXITING  2u   /* the teardown is over; the process is ending (exit_now) */
+#define PLX_PHASE_EXITING  2u   /* an exit is under way: `exit_now` after the teardown, or `plx_exit_record`
+                                 * (src/crashtrace.c) for a library's `exit()`, mid-session with no teardown */
 
 /* The record's phase line: how far the process had got, and how long it had lived.
  *
@@ -399,7 +400,8 @@ static inline size_t plx_fmt_frames(char *out, size_t cap, const unsigned long *
 
 /* ---------------------------------------------------------------------------------------------
  * The EXIT record: a libc `exit()` made inside the process, written by `plx_exit_record`
- * (`src/crashtrace.c`) before it ends the process with `_exit`.
+ * (`src/crashtrace.c`) before it ends the process with the `exit_group` syscall (or parks, if a
+ * fatal signal's handler is already running).
  *
  * Not a fault and not a freeze, so it has its own header (`*** EXIT`, never `*** SIGNAL` or
  * `*** FREEZE`) and every tool that scans a log for faults keeps skipping it. Like those two it is

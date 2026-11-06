@@ -1,4 +1,6 @@
-//! How the app process ends: [`exit_now`], the one `-> !` every production exit goes through.
+//! How the app process ends: [`exit_now`], the one `-> !` every production exit of the app's own
+//! code goes through. (A library's `exit()` ends the process through `src/exit.c` and
+//! `plx_exit_record`, below.)
 //!
 //! libc's `exit` (which `std::process::exit` calls, as does returning from `main`) runs the
 //! `atexit` handlers, among them OpenSSL's `OPENSSL_cleanup`. That frees and NULLs libcrypto's

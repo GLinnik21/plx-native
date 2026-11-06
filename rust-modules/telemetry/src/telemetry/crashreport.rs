@@ -116,7 +116,8 @@ pub struct CrashThread {
 }
 
 /// The process phase at the fault (`plx_crash_phase`, `src/crashfmt.h`'s `PLX_PHASE_*`): a crash
-/// during `Exiting` is the last flushes before `_exit` (the teardown is over), not the running app.
+/// during `Exiting` is in the last instructions of an exit that was already under way (`exit_now`'s
+/// flushes, or `plx_exit_record`'s record for a library's `exit()`), not the running app.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CrashPhase {
     Running,
@@ -2068,7 +2069,7 @@ fn execute(plan: &Plan, fresh: bool, fx: &mut impl Recovery) {
 /// with no build id: [`module_images`] lists it by name with a nil `debug_id` and no `code_id`,
 /// because attributing a crash to a library is worth more than the silent `missing_symbol`.
 ///
-/// **Returns how many crash records this pass FOUND** (local log reports, freezes excluded, plus native envelopes, a
+/// **Returns how many crash records this pass FOUND** (local log reports, freezes and exits excluded, plus native envelopes, a
 /// crash that left both counts twice): `telemetry::session` reads "more than none" as "the previous
 /// process died of a crash", which is what separates a `crashed` release-health session from an
 /// `abnormal` one. `0` also when nothing may be read (no consent, no destination).
@@ -2232,7 +2233,9 @@ fn recover_pending_at(path: &std::path::Path) -> usize {
 /// What `recover_pending` returns and `session::classify_unfinished` reads: how many crash records
 /// this pass found. A freeze is a report but not a crash (the process lived on, or was killed by
 /// something else), so it does not count; neither does an exit (the process was ended by an
-/// `exit()` call, not by a fault). A session that ended in either is `abnormal`, not `crashed`.
+/// `exit()` call, not by a fault). A session that was open when either happened is `abnormal`, not
+/// `crashed`; an exit made after backgrounding finds none, since backgrounding already ended the
+/// session `exited` (`session::Event::Background`).
 fn crashes_found(reports: &[Report], natives: usize) -> usize {
     reports
         .iter()
