@@ -56,6 +56,13 @@ fn the_signed_out_root_drops_every_signed_in_row() {
     assert!(!ids(&inputs(true)).contains(&RootId::AutoSignIn), "one profile skips the picker already");
 }
 
+/// How far the longest root scrolls to seat About, MEASURED on the table the root draws (board row
+/// metrics, in the Settings layout's own table frame), and how far it may drift before this test
+/// says the row heights or the section break moved. It is a pin of our geometry, not a number
+/// read off the board.
+const ALL_ROWS_SCROLL: f32 = 244.0;
+const ALL_ROWS_SCROLL_TOLERANCE: f32 = 6.0;
+
 /// Sv2s-R2: every conditional row at once is the board's longest root, and it scrolls.
 #[test]
 fn the_root_with_every_conditional_row_scrolls_with_focus() {
@@ -67,15 +74,17 @@ fn the_root_with_every_conditional_row_scrolls_with_focus() {
     let scroll_to_last = |inputs: &RootInputs| {
         let mut form = FormTable::<RootId, Action, SettingsPage>::new(super::super::registry::BAND);
         form.table.compact = false;
+        form.table.board_metrics(true); // the table the root draws, in the root's own layout
         form.set(root_form(inputs), Some(&RootId::About));
         for _ in 0..600 {
-            form.table.update(1.0 / 60.0, RouteLayout::screen().sectioned_table().h);
+            form.table.update(1.0 / 60.0, RouteLayout::settings_page().sectioned_table().h);
         }
         form.table.scroll_pos()
     };
     let full = scroll_to_last(&all);
     let short = scroll_to_last(&inputs(false));
-    assert!(full > 100.0, "the longest root scrolls to reach About: {full}");
+    assert!((full - ALL_ROWS_SCROLL).abs() < ALL_ROWS_SCROLL_TOLERANCE,
+        "the longest root scrolls {ALL_ROWS_SCROLL}px (+-{ALL_ROWS_SCROLL_TOLERANCE}) to reach About: {full}");
     assert_eq!(short, 0.0, "the signed-out root fits without scrolling");
     assert!(full > scroll_to_last(&RootInputs { multi_user: true, ..inputs(true) }), "more rows, more scroll");
 }
@@ -128,6 +137,8 @@ fn every_followed_sentence_fits_five_lines_in_every_language() {
         let _guard = language_on_this_thread_for_test(language);
         let tag = language.tag();
         let frame = layout.narrative_copy_frame(false, msg::settings_title(), layout.action.y, &ShippedMeasure);
+        // `Header::paint` hangs the sentence its CSS box's cap drop (~7px) below the frame's top
+        let drop = layout.copy_cap_drop(theme::size::LABEL, &ShippedMeasure);
         let mut all: Vec<RootId> = vec![RootId::Favourites, RootId::UnderPosters, RootId::Playback, RootId::AudioSubtitles,
             RootId::Language, RootId::AutoSignIn, RootId::TrailerAutoplay, RootId::Resolution, RootId::Privacy,
             RootId::Diagnostics, RootId::Legal, RootId::About];
@@ -142,7 +153,7 @@ fn every_followed_sentence_fits_five_lines_in_every_language() {
             if lines > plx_ui::follow_copy::FOLLOW_LINES {
                 out.push(format!("{tag} {id:?}: {lines} lines"));
             }
-            if frame.y + lines as f32 * (theme::size::LABEL as f32 + theme::space::XS) > layout.picture_slot().y {
+            if frame.y + drop + lines as f32 * (theme::size::LABEL as f32 + theme::space::XS) > layout.picture_slot().y {
                 out.push(format!("{tag} {id:?}: runs into the picture slot"));
             }
         }
@@ -166,6 +177,13 @@ fn the_diagnostics_buttons_are_effects_and_the_answered_status_drives_the_switch
     let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(0)), &mut present);
     page.step(&ScreenEvent::Activate(diag_key(DiagIdProbe::Trace)), &cx(None), &mut fx);
     assert!(out.iter().any(|s| matches!(s.fx, Fx::App(AppFx::PlaybackTrace(Command::Start)))));
+    // a press must not claim a recording before the runner answers: pressed again, it still starts
+    out.clear();
+    let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(0)), &mut present);
+    page.step(&ScreenEvent::Activate(diag_key(DiagIdProbe::Trace)), &cx(None), &mut fx);
+    assert!(out.iter().any(|s| matches!(s.fx, Fx::App(AppFx::PlaybackTrace(Command::Start)))));
+    assert!(!out.iter().any(|s| matches!(s.fx, Fx::App(AppFx::PlaybackTrace(Command::Stop)))),
+        "a press must not claim a recording before the runner answers");
     out.clear();
     let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(0)), &mut present);
     page.step(&ScreenEvent::App(super::super::registry::AppMsg::PlaybackTrace(Status::Recording)), &cx(None), &mut fx);
@@ -191,5 +209,7 @@ fn diagnostics_keeps_the_consequence_sub_line_and_delete_last() {
     assert!(rows[1].detail.is_empty(), "the sentence under the title took Save diagnostic log's");
     assert!(rows[2].detail.is_empty());
     assert_eq!(table.table.n_rows(), 3);
+    assert_eq!(table.table.sections.len(), 2, "Delete stands in a section of its own");
+    assert_eq!(table.table.sections[1].rows.len(), 1);
     assert_eq!(table.id_at(2).map(|id| id.key().0), Some(3), "Delete is the last row");
 }

@@ -3,7 +3,6 @@
   "settings.libraries.section": "Бібліятэкі",
   "settings.libraries.title": "Абраныя бібліятэкі",
   "settings.libraries.detail": "Якія бібліятэкі паказвае гэты тэлевізар.",
-  "settings.privacy.section": "Прыватнасць",
   "settings.privacy.title": "Прыватнасць і даныя",
   "settings.privacy.detail": "Неабавязковыя справаздачы, прыватнасць і даныя.",
   "settings.legal.title": "Прававыя звесткі",
@@ -17,7 +16,6 @@
   "settings.resolution.detail": "Меншая — плаўней. Пасля перазапуску.",
   "settings.resolution.auto": "Аўтаматычна",
   "settings.about.title": "Пра PlxNative",
-  "settings.about.section": "Пра праграму",
   "settings.about.detail": "Версія, аўтарскія правы і звесткі пра праект.",
   "settings.root.copy": "Кіруйце наладамі гэтага тэлевізара і свайго профілю Plex. Мовы гуку і субцітраў сінхранізуюцца з уліковым запісам Plex; налады прайгравання належаць кожнаму профілю, а мова праграмы дзейнічае на гэтым тэлевізары.",
   "settings.libraries.count": {

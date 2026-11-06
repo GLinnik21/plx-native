@@ -3,7 +3,6 @@
   "settings.libraries.section": "Librerie",
   "settings.libraries.title": "Librerie preferite",
   "settings.libraries.detail": "Le librerie da mostrare su questa TV.",
-  "settings.privacy.section": "Privacy",
   "settings.privacy.title": "Privacy e dati",
   "settings.privacy.detail": "Segnalazioni facoltative, privacy e dati locali.",
   "settings.legal.title": "Note legali",
@@ -17,7 +16,6 @@
   "settings.resolution.detail": "Più bassa, più fluida. Si applica al riavvio.",
   "settings.resolution.auto": "Automatica",
   "settings.about.title": "Informazioni su PlxNative",
-  "settings.about.section": "Informazioni",
   "settings.about.detail": "Versione, copyright e informazioni sul progetto.",
   "settings.root.copy": "Gestisci questa TV e il tuo profilo Plex. Le preferenze linguistiche di audio e sottotitoli si sincronizzano con l'account Plex; le impostazioni di riproduzione sono per profilo, mentre la lingua dell'app vale per questa TV.",
   "settings.libraries.count": {

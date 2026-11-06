@@ -15,10 +15,6 @@
     "value": "Which libraries this television shows.",
     "description": "Settings, account, onboarding or privacy UI: settings.libraries.detail"
   },
-  "settings.privacy.section": {
-    "value": "Privacy",
-    "description": "Settings, account, onboarding or privacy UI: settings.privacy.section"
-  },
   "settings.privacy.title": {
     "value": "Privacy & data",
     "description": "Settings, account, onboarding or privacy UI: settings.privacy.title"
@@ -70,10 +66,6 @@
   "settings.about.title": {
     "value": "About PlxNative",
     "description": "Settings, account, onboarding or privacy UI: settings.about.title"
-  },
-  "settings.about.section": {
-    "value": "About",
-    "description": "Settings, account, onboarding or privacy UI: settings.about.section"
   },
   "settings.about.detail": {
     "value": "Version, copyright and project information.",

@@ -3,7 +3,6 @@
   "settings.libraries.section": "Mediatheken",
   "settings.libraries.title": "Lieblingsmediatheken",
   "settings.libraries.detail": "Welche Mediatheken dieser Fernseher zeigt.",
-  "settings.privacy.section": "Datenschutz",
   "settings.privacy.title": "Datenschutz & Daten",
   "settings.privacy.detail": "Optionale Berichte, Datenschutzinfos und lokale Daten.",
   "settings.legal.title": "Rechtliche Hinweise",
@@ -17,7 +16,6 @@
   "settings.resolution.detail": "Niedriger läuft flüssiger. Gilt nach dem Neustart.",
   "settings.resolution.auto": "Automatisch",
   "settings.about.title": "Über PlxNative",
-  "settings.about.section": "Info",
   "settings.about.detail": "Version, Urheberrecht und Projektinformationen.",
   "settings.root.copy": "Verwalte diesen Fernseher und dein Plex-Profil. Audio- und Untertitelsprache werden mit deinem Plex-Konto synchronisiert; Wiedergabeeinstellungen gehören zum jeweiligen Profil, und die App-Sprache gilt für diesen Fernseher.",
   "settings.libraries.count": {

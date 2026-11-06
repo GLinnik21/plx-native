@@ -3,7 +3,6 @@
   "settings.libraries.section": "Bibliotecas",
   "settings.libraries.title": "Bibliotecas favoritas",
   "settings.libraries.detail": "Las bibliotecas que muestra este televisor.",
-  "settings.privacy.section": "Privacidad",
   "settings.privacy.title": "Privacidad y datos",
   "settings.privacy.detail": "Informes opcionales, privacidad y datos locales.",
   "settings.legal.title": "Avisos legales",
@@ -17,7 +16,6 @@
   "settings.resolution.detail": "Más baja, más fluida. Se aplica al reiniciar.",
   "settings.resolution.auto": "Automática",
   "settings.about.title": "Acerca de PlxNative",
-  "settings.about.section": "Acerca de",
   "settings.about.detail": "Versión, derechos de autor e información del proyecto.",
   "settings.root.copy": "Gestiona este televisor y tu perfil de Plex. Los idiomas de audio y subtítulos se sincronizan con tu cuenta de Plex; los ajustes de reproducción son de cada perfil y el idioma de la app se aplica a este televisor.",
   "settings.libraries.count": {

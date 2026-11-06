@@ -3,7 +3,6 @@
   "settings.libraries.section": "Könyvtárak",
   "settings.libraries.title": "Kedvenc könyvtárak",
   "settings.libraries.detail": "A TV-n megjelenő könyvtárak.",
-  "settings.privacy.section": "Adatvédelem",
   "settings.privacy.title": "Adatvédelem és adatok",
   "settings.privacy.detail": "Választható jelentések, adatvédelmi tudnivalók és helyi adatok.",
   "settings.legal.title": "Jogi nyilatkozatok",
@@ -17,7 +16,6 @@
   "settings.resolution.detail": "Kisebb felbontás simább. Újraindítás után él.",
   "settings.resolution.auto": "Automatikus",
   "settings.about.title": "A PlxNative névjegye",
-  "settings.about.section": "Névjegy",
   "settings.about.detail": "Verzió, szerzői jog és projektinformációk.",
   "settings.root.copy": "Itt kezelheti ezt a TV-t és a Plex-profilját. A hang- és feliratnyelvi beállítások szinkronizálódnak a Plex-fiókjával; a lejátszási beállítások profilonként külön tárolódnak, az alkalmazás nyelve pedig erre a TV-re vonatkozik.",
   "settings.libraries.count": {

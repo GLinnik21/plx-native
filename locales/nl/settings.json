@@ -3,7 +3,6 @@
   "settings.libraries.section": "Bibliotheken",
   "settings.libraries.title": "Favoriete bibliotheken",
   "settings.libraries.detail": "Welke bibliotheken deze tv toont.",
-  "settings.privacy.section": "Privacy",
   "settings.privacy.title": "Privacy & gegevens",
   "settings.privacy.detail": "Optionele rapporten, privacy-info en lokale gegevens.",
   "settings.legal.title": "Juridische informatie",
@@ -17,7 +16,6 @@
   "settings.resolution.detail": "Lager is vloeiender. Herstart om toe te passen.",
   "settings.resolution.auto": "Automatisch",
   "settings.about.title": "Over PlxNative",
-  "settings.about.section": "Over",
   "settings.about.detail": "Versie, copyright en projectinformatie.",
   "settings.root.copy": "Beheer deze tv en je Plex-profiel. Voorkeuren voor audio- en ondertiteltaal worden gesynchroniseerd met je Plex-account; afspeelinstellingen horen bij elk profiel en de app-taal geldt voor deze tv.",
   "settings.libraries.count": {
