@@ -4,7 +4,8 @@
 
 PlxNative is a production-quality native Plex client for rooted LG webOS 4.5 TVs. Most of the
 application is Rust under `rust-modules/` (the application in `src/`, the layers in their own crates); `src/main.c` is the boot/crash shim,
-`src/starfish.c` is the StarfishMediaAPIs/ACB seam, and `src/svg.c` rasterizes SVGs. Keep changes
+`src/starfish.c` is the Feed-only StarfishMediaAPIs seam (compiled only with `PLAYBACK_HAS_FEED`),
+`src/video_plane.c` is the ACB / exported-window display binding both backends share, and `src/svg.c` rasterizes SVGs. Keep changes
 properly factored and finished; "only a demo" is never a reason to leave a shortcut behind.
 
 The target is a cross-compiled 32-bit ARM application with a hardware video plane. Host tests and

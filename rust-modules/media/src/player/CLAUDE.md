@@ -2,9 +2,10 @@
 
 This is the in-process **buffer-feed** playback engine (was `src/playback.c`): it pulls the part
 stream, demuxes it to access units, and `Feed()`s them to LG's StarfishMediaAPIs while `libAcbAPI`
-binds the decoded sink to the hardware video plane. The Starfish/ACB calls cross into C at the seam
-`src/starfish.c` (outside this dir — edits there almost always pair with edits here); the **ABI and
-bind-order gotchas for that seam live in THIS file**, below. `docs/agent-reference.md` carries only the
+binds the decoded sink to the hardware video plane. The Starfish calls cross into C at the seam
+`src/starfish.c` and the ACB / exported-window display binding is `src/video_plane.c` (both outside
+this dir — edits there almost always pair with edits here); the **ABI and bind-order gotchas for
+those seams live in THIS file**, below. `docs/agent-reference.md` carries only the
 one-paragraph playback summary.
 
 ## Sans-IO
@@ -421,7 +422,7 @@ something.
   right after `acb_bind`, which is exactly where LG's own client fires it. Device-measured
   2026-08-21: `rv=1`, audio untouched (1600 AUs, `reply=O`, no error), and the set's own
   "Dolby Vision / Dolby Atmos" read-out captured on screen. Details and addresses:
-  `acb_send_atmos` in `src/starfish.c`. `AcbAPI_setMediaVideoData`/`setState`/
+  `acb_send_atmos` in `src/video_plane.c`. `AcbAPI_setMediaVideoData`/`setState`/
   `setDisplayWindow` take a `long *taskId` out-param as their last arg — the 3-arg ABI is required
   (2-arg calls corrupt memory / segfault). The developer-only `acb-control`/`acb-dass` URI
   experiment separately permits a reconstructed descriptor for its known SDR720p24 fixture;

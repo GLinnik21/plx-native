@@ -7,7 +7,7 @@ use std::os::raw::{c_char, c_int, c_long, c_uint};
 pub use super::plane::PlaneCompletion;
 
 /// Which video-plane binding this television has. See `src/starfish.h`'s `VP_*` and the long
-/// comment at the top of `src/starfish.c`.
+/// comment at the top of `src/video_plane.c`.
 pub const VP_NONE: c_int = 0;
 /// The legacy ACB plane; controlled URI experiments require this mode and a boot-created handle.
 pub const VP_ACB: c_int = 1;

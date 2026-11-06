@@ -1024,7 +1024,7 @@ pub fn tick_presentation(feed: &mut FeedResources, mt: &MainThread,
             // **This looks like it breaks the "never feed audio to ACB" rule and it does not** —
             // the rule is about the audio ELEMENTARY STREAM, which the pipeline owns and which we
             // still never hand ACB. This is a two-key metadata descriptor, and the distinction is
-            // now readable rather than remembered (see `acb_send_atmos` in `src/starfish.c` for
+            // now readable rather than remembered (see `acb_send_atmos` in `src/video_plane.c` for
             // the addresses). The rule's stated consequence, `SOUND_ERROR_019`, is a literal that
             // exists in NO library on this device.
             //
