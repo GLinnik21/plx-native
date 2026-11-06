@@ -65,6 +65,9 @@ fuzz/coverage/
 # the reason every other feature set does (cargo does not hash its output; see the Makefile).
 rust-modules/target-lab/
 rust-modules/target-sim-lab/
+# `make CURLSTACK=1` — the opt-in bundled curl stack's feature set (`http3-curlstack`), its own tree
+# for the same reason (RUST_TDIR's `-curlstack` suffix, after any `-release`/`-lab`/`-sym`).
+rust-modules/target*-curlstack/
 # `make screenshots-sim` — the documentation-screenshot simulator (hostsim + devtriggers).
 rust-modules/target-sim-shots/
 rust-modules/target-sim-video/
