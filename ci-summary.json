@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-06T00:06:35Z",
+ "generated": "2026-11-06T00:38:41Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -165,19 +165,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": -54.7,
+   "change30_pct": -54.4,
    "change7_pct": 19.7,
-   "d30": 993,
-   "delta30": -543.0,
+   "d30": 987,
+   "delta30": -537,
    "delta7": 74.0,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 182,
-   "n_prev": 233,
-   "now": 450.0,
-   "prev7": 376,
+   "n_now": 181,
+   "n_prev": 234,
+   "now": 450,
+   "prev7": 376.0,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -326,7 +326,7 @@
   {
    "change30_pct": 48.3,
    "change7_pct": 13.3,
-   "d30": 759,
+   "d30": 759.0,
    "delta30": 366.5,
    "delta7": 132.5,
    "group": "ci",
@@ -517,7 +517,7 @@
   {
    "change30_pct": 27.8,
    "change7_pct": 0.0,
-   "d30": 18,
+   "d30": 18.0,
    "delta30": 5.0,
    "delta7": 0.0,
    "group": "ci",
@@ -538,7 +538,7 @@
   {
    "change30_pct": 42.9,
    "change7_pct": 21.2,
-   "d30": 14,
+   "d30": 14.0,
    "delta30": 6.0,
    "delta7": 3.5,
    "group": "ci",
