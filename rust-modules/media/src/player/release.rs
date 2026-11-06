@@ -1,6 +1,6 @@
 //! **The shared native release/start queue** — a pure machine (`ci/check-deps.sh` `MACHINES`).
 //!
-//! A real stop hands the constructed native object to an off-frame `Unload` (`engine::PendingRelease`).
+//! A real stop hands the constructed native object to an off-frame `Unload` (`plx_play_feed::feed_state::PendingRelease`).
 //! `StarfishMediaAPIs::Unload` takes 110-150 ms on the dev set, and on a set where it never returns
 //! (PLX-NATIVE-1Q, webOS 4.9.6) the UI thread used to block in the `JoinHandle::join` of the next
 //! start, the token accessors and the exit, without a bound. This machine owns what those callers

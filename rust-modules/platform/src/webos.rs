@@ -3,7 +3,7 @@
 //!
 //! # Why the app needs to know, when it never did before
 //!
-//! Until now the only thing it asked was "does `libAcbAPI` exist" (`starfish.c`'s `vp_mode`), which
+//! Until now the only thing it asked was "does `libAcbAPI` exist" (`video_plane.c`'s `vp_mode`), which
 //! splits the world at exactly webOS 5.0 and nowhere else. That was enough while 4.x was the only
 //! target. It is not enough now: Kodi — which plays video on 5, 6 and 10 — carries gates at
 //! `>= 6` (audio re-setup) and `< 11` / `>= 11` (a seek fallback, a changed signature), and with a
@@ -461,7 +461,7 @@ pub fn system_locale() -> crate::tv::LocaleReply {
 
 /// What the settings service says about the active sound output; `tv::sound` owns the parse and the
 /// log line. The caller is the player's Load thread (never the frame thread), once per PCM Load, only on
-/// a stack whose lead follows the output (`liblxa`, `audiosink_new`; see `player::engine::pcm_lead_plan`);
+/// a stack whose lead follows the output (`liblxa`, `audiosink_new`; see `plx_play_feed::pcm_lead::pcm_lead_plan`);
 /// other stacks never ask. The Load waits for it.
 ///
 /// **What 300 ms bounds, and what it does not.** It bounds the call: a healthy round trip is tens of

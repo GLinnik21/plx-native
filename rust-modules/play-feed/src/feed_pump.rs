@@ -53,7 +53,7 @@ pub enum LoadGateVerdict {
 /// becomes a failure read-out instead of a permanent Connecting spinner.
 ///
 /// Its clock is the wall clock from `begin_native_session`, so it counts the Load thread's
-/// sound-output read in front of `Load`; the Load-timing log and telemetry do not (`threads::load_alone`).
+/// sound-output read in front of `Load`; the Load-timing log and telemetry do not (`native_load::load_alone`).
 /// The feed owns it: the player is told only that it ran out ([`LoadTimeout`]).
 pub const NATIVE_LOAD_BUDGET: Duration = Duration::from_secs(20);
 
@@ -1024,7 +1024,7 @@ pub fn tick_presentation(feed: &mut FeedResources, mt: &MainThread,
             // **This looks like it breaks the "never feed audio to ACB" rule and it does not** —
             // the rule is about the audio ELEMENTARY STREAM, which the pipeline owns and which we
             // still never hand ACB. This is a two-key metadata descriptor, and the distinction is
-            // now readable rather than remembered (see `acb_send_atmos` in `src/starfish.c` for
+            // now readable rather than remembered (see `acb_send_atmos` in `src/video_plane.c` for
             // the addresses). The rule's stated consequence, `SOUND_ERROR_019`, is a literal that
             // exists in NO library on this device.
             //

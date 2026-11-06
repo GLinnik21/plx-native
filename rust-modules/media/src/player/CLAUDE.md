@@ -2,9 +2,10 @@
 
 This is the in-process **buffer-feed** playback engine (was `src/playback.c`): it pulls the part
 stream, demuxes it to access units, and `Feed()`s them to LG's StarfishMediaAPIs while `libAcbAPI`
-binds the decoded sink to the hardware video plane. The Starfish/ACB calls cross into C at the seam
-`src/starfish.c` (outside this dir — edits there almost always pair with edits here); the **ABI and
-bind-order gotchas for that seam live in THIS file**, below. `docs/agent-reference.md` carries only the
+binds the decoded sink to the hardware video plane. The Starfish calls cross into C at the seam
+`src/starfish.c` and the ACB / exported-window display binding is `src/video_plane.c` (both outside
+this dir — edits there almost always pair with edits here); the **ABI and bind-order gotchas for
+those seams live in THIS file**, below. `docs/agent-reference.md` carries only the
 one-paragraph playback summary.
 
 ## Sans-IO
@@ -421,7 +422,7 @@ something.
   right after `acb_bind`, which is exactly where LG's own client fires it. Device-measured
   2026-08-21: `rv=1`, audio untouched (1600 AUs, `reply=O`, no error), and the set's own
   "Dolby Vision / Dolby Atmos" read-out captured on screen. Details and addresses:
-  `acb_send_atmos` in `src/starfish.c`. `AcbAPI_setMediaVideoData`/`setState`/
+  `acb_send_atmos` in `src/video_plane.c`. `AcbAPI_setMediaVideoData`/`setState`/
   `setDisplayWindow` take a `long *taskId` out-param as their last arg — the 3-arg ABI is required
   (2-arg calls corrupt memory / segfault). The developer-only `acb-control`/`acb-dass` URI
   experiment separately permits a reconstructed descriptor for its known SDR720p24 fixture;
@@ -723,7 +724,7 @@ something.
   seek is reset to 1x by the buffer-feed source's next SEGMENT, a mid-play call freezes the pipeline,
   and libpf mutes audio off 1x), so a speed session declares PCM audio, `ff::SpeedDecoder` decodes and
   `speed_audio` time-stretches the sound, and every timestamp to the pipeline is divided by the speed
-  (`player::to_sink_ns`, inverted on the presented-frame callback by `from_sink_ns`; an audio AU's
+  (`plx_play_feed::shared::to_sink_ns`, inverted on the presented-frame callback by `from_sink_ns`; an audio AU's
   sink pts also carries the PCM lead of the next bullet, added after the division).
   A speed change is a seek to the viewer's own position marked with the readout's `rate_reload`, and while the speed is not
   1x every direct-play seek reloads in every mode (`pump::seek_must_reload`). The readout's `play_rate_permille` is
@@ -853,7 +854,7 @@ something.
   that registers and then stays silent costs the 300 ms and keeps 400. The answer moves the lead by at
   most 150 ms (400 to 250), which is why the call's budget is short. *Timing figures:* `native: Load
   returned after Nms`, `LoadElapsedClass` telemetry and `native_load_elapsed_ms` measure Starfish `Load`
-  alone (`threads::load_alone` takes the Load thread's read out of them); `NATIVE_LOAD_BUDGET` still runs
+  alone (`plx_play_feed::native_load::load_alone` takes the Load thread's read out of them); `NATIVE_LOAD_BUDGET` still runs
   on the wall clock from `begin_native_session`, so it counts the read, on purpose (a wedged registration
   must fail, not park Connecting).
   *Seek (firmware, not filmed):* LG's audio sink hands each buffer's pts to the driver unchanged and
