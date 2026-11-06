@@ -3,8 +3,8 @@
 //! the buffer-feed pump orchestration, and the dev triggers. The C boot shim
 //! (main.c) sets up the log and fallback crash tracer, calls the Rust image-marker and native-spool
 //! entries when required, then calls `plex_run` (port.rs), which hands over to `run_application`.
-//! The only application subsystem left in C is the starfish.c C++/ACB seam (the engine itself is
-//! Rust: plx_media::player).
+//! The only application subsystems left in C are the starfish.c C++ Feed seam and the video_plane.c
+//! ACB / exported-window display binding (the engine itself is Rust: plx_media::player).
 #![allow(non_upper_case_globals)]
 pub(crate) mod hud_source;
 use std::os::raw::{c_char, c_int, c_uint, c_void};

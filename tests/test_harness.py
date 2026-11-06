@@ -9297,10 +9297,11 @@ impl PersonOwnerGateFixture {
                          "`it.revision()` is not a registry read\n" + out)
 
     def test_globals_ledger_sees_the_player_transport_readers_in_a_machine(self):
-        """RED: `transport::paused`, `transport::viewer_paused` and `preview::paused` took the Pause from
-        `FEED_TX.paused` behind a function (Sans-IO lifecycle PR B) and now read the session's readout, but the
-        rule still names their spellings, so a machine that calls one is a site, as a `client_for` call is. Qualified, bare-after-an-import (singly, in a group, through a glob) and the
-        rename that would hide the calls are all caught; the writers (`set_paused`, `set_transport_paused`)
+        """RED: `transport::viewer_paused` (the pause-hold claim) and `preview::paused` (the preview machine's
+        process-global phase) still read process-wide state, so a machine that calls one is a site, as a
+        `client_for` call is. `transport::paused` reads the session's readout and is NOT a site any more.
+        Qualified, bare-after-an-import (singly, in a group) and the rename that would hide the calls are all
+        caught; the writers (`set_paused`, `set_transport_paused`)
         and a file that merely has a local named `paused` are not registry reads. An import that only
         ENDS in one of the module names (`plx_appkit::scrub_preview::*`, `plx_ui::hud_transport::{..}`) is not
         an import of `preview` / `transport`, so a `paused` local beside it is no site either."""
@@ -9336,13 +9337,18 @@ impl PersonOwnerGateFixture {
         self.assertNotEqual(r.returncode, 0, out)
         self.assertIn("globals:", out)
         base = f"rust-modules/{crate}/src/_check_deps_selftest_"
-        for spelling in ("transport::paused", "transport::viewer_paused", "preview::paused"):
+        for spelling in ("transport::viewer_paused", "preview::paused"):
             with self.subTest(qualified=spelling):
                 self.assertIn(f"{base}qualified.rs::qualified::{spelling}  (ledger: ", out)
+        self.assertNotIn(f"{base}qualified.rs::qualified::transport::paused  (ledger: ", out,
+                         "`transport::paused` reads the session readout, not a registry\n" + out)
+        # The alias rule keys on the getter's bare name, and `paused` is still `preview::paused`'s, so renaming
+        # `transport::paused` stays refused too (conservative: an alias the ledger cannot count).
         for line in (1, 2, 3):
             with self.subTest(rename_line=line):
                 self.assertIn(f"{base}renamed.rs:{line}\n", out + "\n")
-        for fn, spelling in (("bare", "viewer_paused"), ("bare", "paused"), ("globbed", "paused")):
+        self.assertNotIn(f"{base}globbed.rs", out, "a glob of `transport` reaching `paused()` is no registry read\n" + out)
+        for fn, spelling in (("bare", "viewer_paused"), ("bare", "paused")):
             with self.subTest(fn=fn, spelling=spelling):
                 self.assertIn(f"{base}{fn}.rs::{fn}::{spelling}  (ledger: ", out)
         self.assertEqual(out.count(f"{base}bare.rs::bare::paused  (ledger: "), 1,

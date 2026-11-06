@@ -2038,7 +2038,7 @@ pub fn prepare_native_open(
     let mut video_declared: &str = "-";
     // Playback speed for THIS Load (`player::session_rate_for`), published before the demuxer is
     // spawned: it reads it to decide whether to decode the audio, and every timestamp crossing to
-    // the pipeline is scaled by it (`player::to_sink_ns`). After any `reset_session`, which puts
+    // the pipeline is scaled by it (`shared::to_sink_ns`). After any `reset_session`, which puts
     // it back to 1x.
     shared.applied_rate_permille.store(session_rate, Ordering::Relaxed);
     if session_rate != crate::shared::RATE_NORMAL {

@@ -6,7 +6,7 @@
 //!
 //! libpf has no FLAC or ALAC input — its Load vocabulary is AAC / AC3 / AC3 PLUS / DTS / MP3 / MPEG
 //! / OPUS / VORBIS / WMA / PCM (read from `libpf-1.0` on a webOS 4.4.3 OLED55B8) — but it does take
-//! raw PCM through `contents.pcmInfo` (`player::engine::with_pcm_info`). At a rate of the input's table
+//! raw PCM through `contents.pcmInfo` (`plx_play_feed::with_pcm_info`). At a rate of the input's table
 //! (8 to 48 kHz) the PCM decoded from these is bit-exact: at 16 bits as S16, and at 24 bits too, carried
 //! left-justified in S32 exactly as FFmpeg's decoders produce it; a decode that would need narrowing is
 //! refused, never truncated. A track above the table (88.2, 96, 176.4, 192 kHz and up) is resampled by the
@@ -146,7 +146,7 @@ impl PcmDecoder {
     /// or TrueHD frame is the same. Vorbis' decoder delay is NOT: the first packet yields nothing and the rest
     /// come out about half a block, tens of milliseconds, after their packet's pts, until a 20 ms drift re-anchors
     /// the clock; whether that matters for sync is not determined. The pts is content time and stays so: the set renders a PCM Load
-    /// through a mixer channel that lacks the lip sync its own decoder gets (`player::engine::pcm_output_lead` is the
+    /// through a mixer channel that lacks the lip sync its own decoder gets (`pcm_lead::pcm_output_lead` is the
     /// table: on LG's `liblxa` stack 400 ms, less the output's own delay on a wireless one, the one
     /// stack that was filmed; 2018's `audiosink_new` the same figures and `lgaudiosink` 400 ms on every
     /// output, both read from the firmware; none on 2016/2017's `adecsink`, Realtek and MStar), and

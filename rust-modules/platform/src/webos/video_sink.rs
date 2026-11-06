@@ -1,15 +1,15 @@
 // Copyright (c) 2026 Gleb Linnik
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Own Rust mirror of src/starfish.h, written from the public ABI contract.
-//! webos::video_sink — the starfish.c seam (sf_* / acb_* verbs). These stay C (the mangled-C++ + ACB
-//! ABI). The library thread calls back into the Feed backend's `sf_on_event` (`plx_play_feed`'s
+//! webos::video_sink — the starfish.c and video_plane.c seams (sf_* / acb_* / vp_* verbs). These stay
+//! C (the mangled-C++ + ACB ABI). The library thread calls back into the Feed backend's `sf_on_event` (`plx_play_feed`'s
 //! `sf_event.rs`) and into this module's own `acb_on_event`, which only records the completion in
 //! the plane mailbox that `tv::plane::PlaneOwner` drains.
 //! Signatures mirror `src/starfish.h` exactly; `long` is 32-bit on the arm target -> c_long.
 //!
 //! **Everything here but `load` and `unload` takes a [`MainThread`]** (`unload` takes an
 //! `UnloadTicket`, which only a `&MainThread` can issue, so a real stop's Unload can run on the
-//! `sf-unload` worker — `engine::PendingRelease`), because the seam has no locking of
+//! `sf-unload` worker — `plx_play_feed::feed_state::PendingRelease`), because the seam has no locking of
 //! its own: the ACB bind order is a bare call sequence, and `sf_feed` races the pump's own
 //! bookkeeping. The raw declarations live in a private `sys` module so the token is the only way
 //! to reach them — a `use crate::webos::video_sink::sys` from elsewhere does not compile, which is

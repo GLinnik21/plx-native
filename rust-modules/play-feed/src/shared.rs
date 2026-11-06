@@ -316,7 +316,7 @@ pub struct Shared {
     pub desired_audio_idx: AtomicI32,
     // The speed THIS session's Load plays at (`player::session_rate_for`, published by
     // `start_bufferfeed` before the demuxer spawns): what the timeline conversion
-    // (`player::to_sink_ns`) and the demuxer's audio decode read. Per session: reset_session puts
+    // (`to_sink_ns`) and the demuxer's audio decode read. Per session: reset_session puts
     // it back to 1x.
     pub applied_rate_permille: AtomicI32,
     // What the pipeline reported setting up for THIS speed session's audio

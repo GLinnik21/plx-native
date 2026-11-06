@@ -3,11 +3,11 @@
 //! The Starfish pipeline names `OPUS` beside AC3, E-AC3, AAC and DTS: libpf's
 //! `CustomPipeline::parseOptionStringSpi` reads the audio name, and `getAudioCaps` builds
 //! `audio/x-opus` from `contents.opusInfo` (`channels`, `sampleRate`, `streamHeader`;
-//! `player::engine::with_opus_info` builds it). Read from libpf on a C1, webOS 6.5.3, 2026-10-21.
+//! `plx_play_feed::with_opus_info` builds it). Read from libpf on a C1, webOS 6.5.3, 2026-10-21.
 //!
 //! The demuxer records what it is feeding natively ([`publish_fed`]) so the player can tell a native
 //! audio refusal from any other failure ([`fed`]): that is what the learned-refusal path and the
-//! surround stall watchdog (`player::native_stall`) hang on.
+//! surround stall watchdog (`plx_play_feed::native_stall`) hang on.
 use std::sync::Mutex;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

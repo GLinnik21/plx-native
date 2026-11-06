@@ -13,7 +13,7 @@ disposable worktrees were cut from it, one local commit each, never pushed and n
 | `nouri` | `rust-modules/play-uri/` | Feed (`plx_play_feed`) | `d17fe5b9d` (amended once, see check-deps below) |
 
 The two commits are unreferenced objects that `git gc` will reclaim; the edit lists below are
-their record. Toolchain: the pinned `1.99.1` (`make -s print-rust-toolchain`), every `make` line
+their record. Toolchain: the pinned one (`make -s print-rust-toolchain`), every `make` line
 prefixed `PATH="$HOME/.cargo/bin:$PATH"`. No private file was copied into either worktree and no
 build asked for `src/config.local.h`. Shipped builds used `FLAVOR=debug`, the tracked default.
 Both worktrees were clean on their commits, were removed with a plain `git worktree remove`, and

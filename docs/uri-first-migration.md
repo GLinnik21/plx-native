@@ -30,10 +30,16 @@ the common route and telemetry bridge to that executor. Source IO and demux obse
 through injected ports.
 Caption stores receive explicit playhead and seek-target facts rather than reading feed clocks.
 Both playback drivers are optional Cargo dependencies, and the URI-only normal dependency graph
-excludes `plx_play_feed`. URI-only and Feed-only host source checks have passed checkpoints, but
-the current combined tree still needs its full feature matrix and ARM package checks. Source
-compilation alone does not prove physical removability. `plx_media_codecs` remains required for
-independent codec consumers. The production package and deletion matrices below remain work.
+excludes `plx_play_feed`. URI-only and Feed-only host source checks have passed checkpoints. The
+delete-and-restore drill of 2026-11-06 (`docs/measurements/backend-removal-drill-2026-11-06.md`)
+deleted each driver crate in a disposable checkout and built, tested and packaged the survivor; both
+survivors passed every check in its sequence, the URI-only and Feed-only ARM packages included. What
+remains is that record's "What failed or was left over" list (the `cfg` sites that stop a feature name
+leaving the application manifest, the eight Python CI pins on the backend lists, the stale prose and
+the untested Feed integration tests of the `nofeed` checkout) and a re-run of the drill on the
+promoted tree, with the combined tree's full feature matrix, since the drill ran on an earlier base
+and ran no `make check`. Source compilation alone does not prove
+physical removability. `plx_media_codecs` remains required for independent codec consumers.
 
 ## Ordered checkpoints
 
@@ -145,14 +151,17 @@ documentation claims before publishing changes.
 
 Build both backends, URI-only and feed-only independently; host tests also support neither.
 The Makefile now refuses `PLAYBACK_BACKENDS=none` for the television package. Audit production
-features separately from test feature unification. The URI ELF import gate is present, but the
-ARM artifact and package matrix still need verification. Inspect native objects, loader tables
-and packaged files: FFmpeg is loaded dynamically, so ELF imports alone cannot prove exclusion.
+features separately from test feature unification. The URI ELF import gate is present, and the
+drill record holds the URI-only and Feed-only package inspections at its base; the same matrix on
+the promoted tree is what remains. Inspect native objects, loader tables and packaged files: FFmpeg
+is loaded dynamically, so ELF imports alone cannot prove exclusion.
 
 In disposable verification checkouts, delete each backend directory plus only its workspace,
 composition, native-build and package registrations. The other backend, shared orchestration,
 UI and contract must still build without source changes. Restore using Git and repeat for the
-other backend. A feature-off build alone does not prove physical removability.
+other backend. A feature-off build alone does not prove physical removability. The drill record
+above is this procedure run once; its "What failed or was left over" list is what a real deletion
+still owes.
 
 The [W19H subtitle handler inspection](measurements/uri-subtitle-handler-2026-11-03.md)
 records the native setter/response ordering and its limits. It does not establish a public-service

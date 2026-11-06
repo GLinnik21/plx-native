@@ -20,8 +20,8 @@ loop, its adapters, every dev and diagnostic surface, and the application's side
 (`port`, `system`, and the other `[port webos]` members that are not in a layer crate). They are
 the one `staticlib` the Makefile links and the one place that may name every other layer, so there
 is nothing below it to split off. **Decision: the `[port webos]` members stay where they are**
-(`webos`, `keymanager` and `system` are modules of `plx_platform`, `player::ffi` of `plx_media`, and
-`port` of the top crate) **until a second TV OS exists.** A port crate now would have one
+(`webos`, `keymanager` and `system` are modules of `plx_platform` (the Starfish sink is
+`webos::video_sink`), and `port` of the top crate) **until a second TV OS exists.** A port crate now would have one
 customer and a boundary drawn from guesses about the second; the fence in `ci/check-module-layers.py`
 (a reference from outside `[port webos]` to a member of it fails) already holds the line a crate
 would, and L15b is where the port's OS-neutral shape is worked out.
@@ -165,8 +165,8 @@ Four choices that were not obvious:
   flags (`plx_play_feed::shared::FEED_TX`), which `plx_media` stopped re-exporting when it stopped depending
   on a backend (W3h): a dev-dependency edge, so `[screens] uses` lists `play_feed` and no production code of
   `screens` may name it.
-- **The webOS port is a fence, not a layer.** `[port webos]` lists `webos`, `keymanager`,
-  `system`, `player::ffi` and `port`, which stay in `platform`, `app` and `media` above, and
+- **The webOS port is a fence, not a layer.** `[port webos]` lists `webos` (which holds
+  `webos::video_sink`), `keymanager`, `system` and `port`, which stay in `platform` and `app` above, and
   nothing outside the port may name them. A layer on top would say the same thing, but then the
   modules in `platform`, `plex` and `telemetry` that named webOS before L15 would have held up
   those layers' extraction until it was finished, video sink and all. As a fence it held the line
@@ -265,7 +265,7 @@ proves the references are gone and nothing more; L15b is open.
 | **L12** media owns its lifecycle seams — **done** | 7 / 28 | The foreground-resume machine is `player::lifecycle`, its drivers `player::foreground` and the transport-pause contract `player::transport` (`app::lifecycle` re-exports them), the stats switch is `player::DIAG_READOUT_ON`, `Venc::open` takes the capture socket writer as an argument, and `route` takes the HUD context line as a parameter, with the up-next still prefetch a hook the app installs. |
 | **L13** tests move up to the layer that owns their parts — **done** | 41 / 96 | Part a moved the auth, plex, i18n, task and fontcov tests that named upper layers to `app/` (`session_*_tests.rs`), `screens/login_text_fit_tests.rs`, `plex`, `auth::owner` and `storage::client`, and moved `fontcov`'s `Measure` impl beside the trait, with `ui::machine`'s new `BareArg`/`BareMeasure` fixtures for the rest; part b moved the data, media and ui ones to `app/` (`dispatch_return_tests.rs`, `overscan_audit_tests.rs`) and `screens/` (`plaintext_question`, `library/labels_tests.rs`, `search/tests.rs`, `player`), and rewrote two against their own layer. |
 | **L14** session-layer presentation to screens — **done** | 2 / 4 | `auth::signed_in_reason` is a private fn of `screens::login`, its only caller, with its two tests; `auth` already handed over the plain account name. |
-| **L15** the webOS port — **gate-complete** | 44 / 205 | Everything outside `[port webos]` reaches the television through the `tv` interfaces in `platform` that the port fills at boot: `tv::{device, sandbox, secure, home, toast, window}`, `devcaps::dv`, and `tv::sink::VideoSink`, a Starfish-shaped verb trait that `player::ffi::StarfishSink` and `plx_play_feed::ffi_host::HostSink` implement. `plex_run` is `port::plex_run`. The allowlist is empty. Not "done": the sink is not OS-neutral and the simulator is not its own port (L15b). |
+| **L15** the webOS port — **gate-complete** | 44 / 205 | Everything outside `[port webos]` reaches the television through the `tv` interfaces in `platform` that the port fills at boot: `tv::{device, sandbox, secure, home, toast, window}`, `devcaps::dv`, and `tv::sink::VideoSink`, a Starfish-shaped verb trait that `plx_platform::webos::video_sink::StarfishSink` and `plx_play_feed::ffi_host::HostSink` implement. `plex_run` is `port::plex_run`. The allowlist is empty. Not "done": the sink is not OS-neutral and the simulator is not its own port (L15b). |
 | **L15b** the OS-neutral port — **open** | — | An OS-neutral video sink with the ACB bind sequence behind it, the simulator as its own port, and the webOS facts the gate cannot see. See below. |
 
 ### L15: the webOS port
@@ -284,8 +284,9 @@ statement of `port::plex_run`, before anything that reads it. With no port insta
 tests, where nothing calls `plex_run`) `tv::ABSENT` answers what the host arms answered before; a
 shipping build that reaches it logs `tv: port not installed - using the no-port defaults` once.
 Only `tv`'s own modules read the table. Two things leave it: the sink, through
-`tv::sink::installed()` (rule `sink` of `ci/check-deps.sh` fences it to `player/`, `tv/`, `tv.rs`
-and `port.rs`), and, in a `devtriggers` build only, the developer URI-mode probe's
+`tv::sink::installed()` (rule `sink` of `ci/check-deps.sh` fences naming `VideoSink` or `installed` to `media`'s
+`player/`, `play-uri/`, `platform`'s `tv/`, `tv.rs` and `webos/`, `port.rs` and
+`app/adapters/backends.rs`; `play-feed/` may name the trait but never resolves `installed`), and, in a `devtriggers` build only, the developer URI-mode probe's
 `tv::uri::installed()`, read by the media wrapper `player::uriprobe_drive`. The independent
 `play-uri` driver receives that transport and a shared `DisplaySink` as injected ports; it
 does not read the webOS port registry or the feed-only `VideoSink` itself.
@@ -298,7 +299,7 @@ published values rather than hooks: the webOS code writes them into `tv::device`
 | device identity | `tv::device::{info, device, Info, Hardware}`, published by `webos::probe` | `telemetry`, `diag::schema`, `plex::identity`, `plex::session`'s tests, `screens::login`, `lab::snapshot`, `app`, `player` |
 | playback capability | `devcaps::dv::{capability, probe, DvCapability}`, published by `webos::caps`; `tv::start_capability_probe` starts the probe | `metadata`, `route`, `player::engine`, `app` |
 | native-video availability and repair | `tv::sandbox::{blocks_native_video, context, repair, Verdict, State, Failure, FORCE_BLOCKED}`; the verdict is published by `webos::probe` and the repair is a port hook | `player`, `route`, `appkit::player_hud`, `screens::player`, `app::playback` |
-| video sink | `tv::sink::VideoSink`, implemented by `player::ffi::StarfishSink` and `HostSink` (`plx_play_feed::ffi_host`), installed in `Port.sink` and read through `tv::sink::installed` | `player::{engine, pump, threads}`, `player::claim_hold`'s tests |
+| video sink | `tv::sink::VideoSink`, implemented by `plx_platform::webos::video_sink::StarfishSink` and `HostSink` (`plx_play_feed::ffi_host`), installed in `Port.sink` and read through `tv::sink::installed` | `player::{adapter, test_physical}`, `plx_play_feed::{native_executor, native_load, physical, seek}` (which receive it injected), `app::adapters::backends` (which resolves `installed` and `display_installed`) |
 | secure store | `tv::secure::{seal, open, remove, Sealed, Backend}` | `plex::session` |
 | storage backend | `storage::client::install_activator`, which the port calls with `webos::activate_storage_helper` | `port::plex_run` |
 | locale | `tv::system_locale` and `tv::LocaleReply`; `i18n` still owns the parse and the log lines | `i18n` |
@@ -317,11 +318,12 @@ The video sink landed as a verb-level cut. `tv::sink::VideoSink` has one method 
 Starfish seam, 29 of them, with the C return values and the `&MainThread` token on every method but
 `load`, `window_mode` and `window_id` (since 2026-10-15 `unload` takes an `UnloadTicket` instead, so
 a real stop's Unload can run on a worker; the trait's own doc is the current list). It is **Starfish-shaped**: a load payload, `feed`, and the
-ACB bind verbs that `pump` walks. Another TV OS cannot implement it as it stands. `player::ffi`
-keeps its `extern "C"` block unchanged and implements the trait as `StarfishSink`; `engine`, `pump`
-and the Load worker call it through the sink the composition hands the adapter (`PlayerAdapter::display_sink`). `player/ffi_host.rs` is no longer swapped in under
-`player::ffi`. It is `ffi_host`, the simulator's own `VideoSink` (`HostSink`), outside the
-fence. It is the Feed backend's stand-in, so it lives in `plx_play_feed` behind that crate's
+ACB bind verbs that the Feed pump walks. Another TV OS cannot implement it as it stands.
+`plx_platform::webos::video_sink` keeps its `extern "C"` block unchanged and implements the trait as
+`StarfishSink`; the player adapter and the Feed backend's pump, executor and Load worker call it
+through the sink the composition hands them (`PlayerAdapter::display_sink`; `app/adapters/backends.rs`).
+`ffi_host` is no longer swapped in under `webos::video_sink`. It is the simulator's own `VideoSink`
+(`HostSink`), outside the fence. It is the Feed backend's stand-in, so it lives in `plx_play_feed` behind that crate's
 `hostsim` feature and names only the layers below it; what its sink is built with arrives as
 `ffi_host::Hooks`: the pipeline-event entry and the inverse of its position rebase, both that
 crate's own (`Hooks::over`), and a `ffi_host::FrameSink` that the application's
@@ -1558,8 +1560,8 @@ rebuilds the application only. The no-op build is 0.1 s in both.
 This section records the original media extraction. In the current layout,
 `plx_play_feed` owns the physical FFmpeg demuxer, HLS parser and access-unit
 queues; `plx_media_codecs` owns the FFmpeg binding and encoder. `plx_media::ff`
-is a compatibility facade for the feed's application entry points and media
-integration fixtures.
+re-exports `plx_media_codecs`' FFmpeg bindings and holds the integration fixtures;
+the feed's application entry points are `plx_play_feed`'s (`plx_play_feed::demux`).
 
 `media` was extracted eleventh: `rust-modules/media/` is the workspace member `plx_media` (an `rlib`,
 `uses = base machine platform gfx net plex telemetry data`; the manifest names those eight, with

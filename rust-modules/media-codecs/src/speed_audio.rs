@@ -3,7 +3,7 @@
 //! LG's own rate control cannot be used on this pipeline (`docs/parity-gaps.md`, Playback Speed):
 //! `SetPlayRate` is a flushing rate seek that the buffer-feed source's next SEGMENT resets to 1x,
 //! and libpf mutes the audio sink at any rate but 1x by design. So speed is done the way a browser
-//! does it. The engine feeds every timestamp divided by the speed (`player::to_sink_ns`), the
+//! does it. The engine feeds every timestamp divided by the speed (`plx_play_feed::shared::to_sink_ns`), the
 //! pipeline plays that at its own 1x, and the sound — which normally reaches the TV still
 //! compressed — is decoded in the app, time-stretched here, and fed as PCM (`"audio":"PCM"` +
 //! `contents.pcmInfo` in the Load payload, proven on a 3.9.3 set 2026-10-15).
