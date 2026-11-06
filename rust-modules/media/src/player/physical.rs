@@ -6,9 +6,9 @@
 //! both, and lends the feed half to the pump as a [`FeedControl`]. It replaces the temporary
 //! per-call borrow the adapter used to build from its fields.
 //!
-//! Until the open, stop and release paths move behind the feed's traits, they still reach the
-//! concrete backend through [`Physical::feed_backend`] / [`Physical::feed_backend_mut`]; each such
-//! reach is a call this set does not yet serve through [`PhysicalSet::feed`].
+//! Every production path reaches the feed through [`PhysicalSet::feed`]. Only the test fixtures
+//! that install, take and inspect an Engine still reach the concrete backend, through
+//! [`Physical::feed_backend`] / [`Physical::feed_backend_mut`].
 
 use plx_base::task::MainThread;
 use plx_playback_contract::feed::{FeedControl, PhysicalSet};
@@ -38,11 +38,12 @@ impl Physical {
         }
     }
 
-    /// The concrete feed backend, for the paths that do not go through [`PhysicalSet::feed`] yet.
-    #[cfg(feature = "play-feed")]
+    /// The concrete feed backend, for the test fixtures that install, take and inspect an Engine
+    /// and so cannot go through [`PhysicalSet::feed`].
+    #[cfg(all(test, feature = "play-feed"))]
     pub(super) fn feed_backend(&self) -> &FeedBackend { &self.feed }
 
-    #[cfg(feature = "play-feed")]
+    #[cfg(all(test, feature = "play-feed"))]
     pub(super) fn feed_backend_mut(&mut self) -> &mut FeedBackend { &mut self.feed }
 
     /// The installed URI driver, if the composition built one.

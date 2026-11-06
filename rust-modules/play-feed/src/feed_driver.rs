@@ -9,18 +9,12 @@ use plx_base::task::MainThread;
 use plx_playback_contract::{
     AttemptId, BackendEvent, BackendKind, Capabilities, CommandId, ContentTime, DispatchResult,
     DriverEvent, EvidenceSource, ExitDisposition, Failure, Observation, Observed, Operation,
-    Playback, ReleaseStatus, SourceKey, StopReason,
+    Playback, ReleaseStatus, SourceKey,
 };
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::Ordering::Acquire;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FeedTransportAction {
-    /// Release the captured viewer hold before the initial physical prime may Play.
-    ResumeInitial { attempt: AttemptId, command: CommandId },
-    Play { attempt: AttemptId, command: CommandId },
-    Pause { attempt: AttemptId, command: CommandId },
-}
+pub use plx_playback_contract::feed::FeedTransportAction;
 
 pub struct FeedDriver {
     staged: HashMap<(AttemptId, SourceKey), NativePrepared>,
@@ -32,7 +26,6 @@ pub struct FeedDriver {
     startup_play_command: Option<CommandId>,
     deferred_transport_play: Option<(AttemptId, CommandId)>,
     last_position_tick: u32,
-    stop_requested: Option<(AttemptId, StopReason)>,
     transport_actions: VecDeque<FeedTransportAction>,
     events: VecDeque<BackendEvent>,
 }
@@ -44,7 +37,7 @@ impl FeedDriver {
             presented_emitted: false,
             startup_acceptance_emitted: false, startup_play_command: None,
             deferred_transport_play: None,
-            last_position_tick: 0, stop_requested: None,
+            last_position_tick: 0,
             transport_actions: VecDeque::new(), events: VecDeque::new(),
         }
     }
@@ -118,11 +111,10 @@ impl FeedDriver {
                 self.transport_actions.push_back(FeedTransportAction::Pause { attempt, command });
                 DispatchResult::Queued
             }
-            Operation::Stop(reason) if self.active == Some(attempt) => {
+            Operation::Stop(_) if self.active == Some(attempt) => {
                 // A transport request queued earlier on this frame must not run after Stop.
                 self.transport_actions.clear();
                 self.deferred_transport_play = None;
-                self.stop_requested = Some((attempt, reason));
                 DispatchResult::Queued
             }
             Operation::Seek(_) | Operation::SelectTrack { .. } =>
@@ -240,10 +232,6 @@ impl FeedDriver {
         self.events.drain(..).collect()
     }
 
-    pub fn take_stop_request(&mut self) -> Option<(AttemptId, StopReason)> {
-        self.stop_requested.take()
-    }
-
     pub fn take_transport_action(&mut self) -> Option<FeedTransportAction> {
         self.transport_actions.pop_front()
     }
@@ -305,7 +293,6 @@ impl FeedDriver {
         self.deferred_transport_play = None;
         if status == ReleaseStatus::Released {
             self.active = None;
-            self.stop_requested = None;
             self.startup_play_command = None;
         }
     }
@@ -315,7 +302,7 @@ impl FeedDriver {
     }
 
     pub fn exit_disposition(&self, feed: &FeedResources) -> ExitDisposition {
-        if self.active.is_none() && self.staged.is_empty() && self.stop_requested.is_none()
+        if self.active.is_none() && self.staged.is_empty()
             && !feed.is_live() && !feed.has_pending_release() && !feed.has_abandoned_load()
             && !feed.has_reaped_release() {
             ExitDisposition::Clean

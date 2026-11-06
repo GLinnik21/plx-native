@@ -15,10 +15,11 @@ use std::time::Duration;
 
 use plx_base::task::MainThread;
 
+use crate::demux::DemuxSession;
 use crate::readout::AttemptFacts;
 use crate::feed::{
-    defer_media_join, AcceptedLoadOutcome, CtorGate, FeedCommand, FeedControl, FeedFacts, FeedLoad, FeedSeek,
-    FeedStop, ReleaseHandoff, ResetScope, UnblockFacts,
+    defer_media_join, AcceptedLoadOutcome, CtorGate, FeedCommand, FeedControl, FeedFacts, FeedLoad, FeedOpen,
+    FeedSeek, FeedStop, FeedTransportAction, OpenRequest, ReleaseHandoff, ResetScope, UnblockFacts,
     LoadTick, PausedSeekStep,
     PhysicalSet, PresentationTick, SeekMode, SeekPause, Stage, StuckSeekAction, UserPauseOutcome,
     UserResumeOutcome,
@@ -64,6 +65,15 @@ pub enum FeedCall {
     UserPause,
     UserResume,
     TakePrerollVolume,
+    TakeTransportAction,
+    NoteTransportResult { action: FeedTransportAction, accepted: bool, native_acknowledged: bool },
+    HasAbandonedLoad,
+    ReapAbandonedLoad,
+    OpenBegin,
+    /// The request itself is not logged (it owns ports); its pause goal is the one scalar a test reads.
+    OpenPrepare { start_paused: bool },
+    OpenStage { attempt: AttemptId, key: SourceKey },
+    OpenAbort,
     StopBegin,
     StopSideReader { for_reload: bool },
     StopUnblock,
@@ -71,7 +81,6 @@ pub enum FeedCall {
     StopRelease { for_reload: bool },
     StopFinish { for_reload: bool },
     Reset { scope: ResetScope },
-    HasPendingRelease,
     TakeReturnedRelease,
     RunReleaseTail { epoch: u32 },
     LeakForExit,
@@ -105,8 +114,18 @@ pub struct FeedScript {
     pub unblock: UnblockFacts,
     /// Delivered once by the next `stop_finish`.
     pub handoff: Option<ReleaseHandoff>,
-    /// What `has_pending_release` answers.
-    pub pending_release: bool,
+    /// Delivered in order by `take_transport_action`.
+    pub transport_actions: VecDeque<FeedTransportAction>,
+    /// What `has_abandoned_load` answers.
+    pub abandoned_load: bool,
+    /// What `reap_abandoned_load` answers.
+    pub reap_abandoned_load: bool,
+    /// What `open_begin` answers.
+    pub open_begin: bool,
+    /// What `open_prepare` answers.
+    pub open_prepare: Result<u32, Failure>,
+    /// What `open_stage` answers.
+    pub open_stage: Result<(), Failure>,
     /// Delivered once by the next `take_returned_release`.
     pub returned_release: Option<u32>,
     /// Whether `run_release_tail` finds a returned release to run.
@@ -133,7 +152,12 @@ impl Default for FeedScript {
             preroll_volume: None,
             unblock: UnblockFacts { attempt: AttemptFacts::default(), load_abandoned: false },
             handoff: None,
-            pending_release: false,
+            transport_actions: VecDeque::new(),
+            abandoned_load: false,
+            reap_abandoned_load: false,
+            open_begin: true,
+            open_prepare: Ok(1),
+            open_stage: Ok(()),
             returned_release: None,
             release_tail_runs: false,
         }
@@ -273,6 +297,28 @@ impl FeedLoad for FakeFeed {
     fn sample(&self) -> Option<FeedFacts> {
         self.answer(FeedCall::Sample, |s| s.facts.raw.load.stage.is_some().then_some(s.facts))
     }
+    fn has_abandoned_load(&self) -> bool {
+        self.answer(FeedCall::HasAbandonedLoad, |s| s.abandoned_load)
+    }
+    fn reap_abandoned_load(&mut self, _mt: &MainThread) -> bool {
+        self.answer(FeedCall::ReapAbandonedLoad, |s| s.reap_abandoned_load)
+    }
+}
+
+impl FeedOpen for FakeFeed {
+    fn open_begin(&mut self, _mt: &MainThread) -> bool {
+        self.answer(FeedCall::OpenBegin, |s| s.open_begin)
+    }
+    fn open_prepare(&mut self, _mt: &MainThread, request: OpenRequest) -> Result<u32, Failure> {
+        self.answer(FeedCall::OpenPrepare { start_paused: request.start_paused }, |s| s.open_prepare)
+    }
+    fn open_stage(&mut self, attempt: AttemptId, key: SourceKey, _session: Box<dyn DemuxSession>)
+        -> Result<(), Failure> {
+        self.answer(FeedCall::OpenStage { attempt, key }, |s| s.open_stage)
+    }
+    fn open_abort(&mut self) {
+        self.answer(FeedCall::OpenAbort, |_| ());
+    }
 }
 
 impl FeedStop for FakeFeed {
@@ -298,9 +344,6 @@ impl FeedStop for FakeFeed {
         self.answer(FeedCall::Reset { scope }, |_| ());
         common();
     }
-    fn has_pending_release(&self) -> bool {
-        self.answer(FeedCall::HasPendingRelease, |s| s.pending_release)
-    }
     fn take_returned_release(&mut self) -> Option<u32> {
         self.answer(FeedCall::TakeReturnedRelease, |s| s.returned_release.take())
     }
@@ -324,6 +367,13 @@ impl FeedControl for FakeFeed {
     }
     fn take_preroll_volume(&mut self) -> Option<i32> {
         self.answer(FeedCall::TakePrerollVolume, |s| s.preroll_volume.take())
+    }
+    fn take_transport_action(&mut self) -> Option<FeedTransportAction> {
+        self.answer(FeedCall::TakeTransportAction, |s| s.transport_actions.pop_front())
+    }
+    fn note_transport_result(&mut self, _mt: &MainThread, action: FeedTransportAction,
+        accepted: bool, native_acknowledged: bool) {
+        self.answer(FeedCall::NoteTransportResult { action, accepted, native_acknowledged }, |_| ());
     }
 }
 
@@ -521,7 +571,6 @@ mod tests {
         handle.script(|script| {
             script.facts.raw.load.stage = Some(Stage::Streaming);
             script.handoff = Some(handoff);
-            script.pending_release = true;
             script.returned_release = Some(3);
             script.release_tail_runs = true;
             script.unblock.load_abandoned = true;
@@ -537,7 +586,6 @@ mod tests {
         feed.reset(ResetScope::Reload, &mut || common += 1);
         assert_eq!(feed.stop_finish(true), Some(handoff));
         assert_eq!(feed.stop_finish(true), None, "a handoff is delivered once");
-        assert!(feed.has_pending_release());
         assert_eq!(feed.take_returned_release(), Some(3));
         assert_eq!(feed.take_returned_release(), None, "a returned release is delivered once");
         assert!(feed.run_release_tail(&mt(), 3));
@@ -547,7 +595,7 @@ mod tests {
             FeedCall::StopBegin, FeedCall::StopSideReader { for_reload: true }, FeedCall::StopUnblock,
             FeedCall::StopReportDispatched, FeedCall::StopRelease { for_reload: true },
             FeedCall::Reset { scope: ResetScope::Reload }, FeedCall::StopFinish { for_reload: true },
-            FeedCall::StopFinish { for_reload: true }, FeedCall::HasPendingRelease,
+            FeedCall::StopFinish { for_reload: true },
             FeedCall::TakeReturnedRelease, FeedCall::TakeReturnedRelease,
             FeedCall::RunReleaseTail { epoch: 3 }, FeedCall::LeakForExit,
         ]);

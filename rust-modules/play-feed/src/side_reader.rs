@@ -38,14 +38,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-pub trait SideReaderPort: Send {
-    /// The demuxer must leave embedded subtitles to this reader from its first instruction.
-    fn embedded_owner(&self) -> bool;
-    /// Start only after both demux and native Load workers have spawned.
-    fn start_after_load_spawn(&mut self);
-    /// Stop and join before the paired demux worker is joined, including a failed Load spawn.
-    fn stop_before_demux_join(&mut self, reason: &str);
-}
+pub use plx_playback_contract::feed::SideReaderPort;
 
 /// What the reader thread asks of the common caption runner. Unlike [`SideReaderPort`], which one
 /// Engine owns and drives from the main thread, this is shared with the reader thread and with
@@ -455,6 +448,17 @@ pub fn failed_reading(clock_only: bool, embedded_label: &'static str) {
     } else {
         plx_base::eventlog::log(embedded_label);
         FAILED.store(true, Ordering::Release);
+    }
+}
+
+/// Start the reader of an engine run once both workers have spawned, or give up: with no `spec`
+/// to start, or a thread the system refused, the run is [`failed_reading`], and a track reader
+/// (not a clock-only one) hands the demuxer its embedded subtitles back.
+pub fn start_run(spec: Option<Spec>, clock_only: bool, job: &'static dyn SideReaderJobPort) {
+    if spec.is_some_and(|spec| start(spec, job)) { return; }
+    failed_reading(clock_only, "subside: could not start the reader thread");
+    if !clock_only {
+        FEED_SHARED.side_subs_owner.store(false, Ordering::Release);
     }
 }
 

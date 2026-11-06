@@ -51,6 +51,11 @@ pub trait DemuxObserver: Send + Sync {
     fn remaining_playback_ms(&self) -> Option<i64>;
     fn user_sequence(&self) -> Option<u64>;
     fn publish(&self, effect: DemuxCallbackEffect) -> bool;
+    /// Run `f` while this observer's native epoch is the live one, under the barrier that retires
+    /// it, so what `f` reads or commits cannot land in the next session. `false` (and `f` not
+    /// run) once the epoch has retired. `f` runs no native call and takes no lock the retirement
+    /// waits on.
+    fn with_active(&self, f: &mut dyn FnMut()) -> bool;
 }
 
 /// A late read bound to the worker's captured native epoch. `None` retires the read.

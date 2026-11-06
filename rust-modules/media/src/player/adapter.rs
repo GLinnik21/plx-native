@@ -31,7 +31,7 @@ use super::physical::Physical;
 use super::timeline;
 use super::backend;
 #[cfg(feature = "play-feed")]
-use plx_play_feed::feed_driver::FeedTransportAction;
+use plx_playback_contract::feed::{FeedTransportAction, OpenRequest};
 #[cfg(feature = "play-feed")]
 use plx_playback_contract::feed::PhysicalSet;
 #[cfg(all(test, feature = "play-feed", feature = "hostsim"))]
@@ -48,7 +48,6 @@ use plx_playback_contract::{AttemptId, BackendKind, CommandId,
 use plx_playback_contract::uri::UriSource;
 use plx_playback_contract::ReleaseStatus;
 #[cfg(feature = "play-feed")]
-use plx_playback_contract::StopReason;
 use plx_playback_contract::Playback;
 
 struct PendingUriAudio {
@@ -887,14 +886,18 @@ impl PlayerAdapter {
         #[cfg(feature = "play-feed")]
         let mut result = result;
         #[cfg(feature = "play-feed")]
-        while let Some(action) = self.physical.feed_backend_mut().take_transport_action() {
+        loop {
+            let next = self.physical.feed().and_then(|feed| feed.take_transport_action());
+            let Some(action) = next else { break };
             let transport = match action {
                 FeedTransportAction::Play { .. } | FeedTransportAction::ResumeInitial { .. } =>
                     super::resume_result(ps, self),
                 FeedTransportAction::Pause { .. } => super::pause_result(ps, self),
             };
-            self.physical.feed_backend_mut().note_transport_result(&self.mt, action,
-                transport.accepted, transport.native_acknowledged);
+            if let Some(feed) = self.physical.feed() {
+                feed.note_transport_result(&self.mt, action, transport.accepted,
+                    transport.native_acknowledged);
+            }
             let next = self.backend.poll_at(&mut self.physical, &self.mt, at);
             result.playback.extend(next.playback);
             result.metrics.extend(next.metrics);
@@ -1405,15 +1408,31 @@ impl PlayerAdapter {
         SourceKey::new(self.next_source_key)
     }
 
+    /// Begin a native open: `false` while an abandoned Load still owns the native object.
     #[cfg(feature = "play-feed")]
-    pub(super) fn stage_native_feed(&mut self, attempt: AttemptId, key: SourceKey,
-        prepared: plx_play_feed::native_executor::NativePrepared) -> Result<(), Failure> {
-        self.physical.feed_backend_mut().stage_prepared(attempt, key, prepared)
+    pub(super) fn open_begin(&mut self) -> bool {
+        self.physical.feed().is_some_and(|feed| feed.open_begin(&self.mt))
+    }
+
+    /// Prepare the native open and answer its native epoch; the feed parks the prepared open
+    /// until [`Self::open_stage`] or [`Self::open_abort`].
+    #[cfg(feature = "play-feed")]
+    pub(super) fn open_prepare(&mut self, request: OpenRequest) -> Result<u32, Failure> {
+        let feed = self.physical.feed().ok_or(Failure::Unavailable)?;
+        feed.open_prepare(&self.mt, request)
     }
 
     #[cfg(feature = "play-feed")]
-    pub(super) fn take_backend_feed_stop(&mut self) -> Option<(AttemptId, StopReason)> {
-        self.physical.feed_backend_mut().take_stop_request()
+    pub(super) fn open_stage(&mut self, attempt: AttemptId, key: SourceKey,
+        session: Box<dyn plx_playback_contract::demux::DemuxSession>) -> Result<(), Failure> {
+        let feed = self.physical.feed().ok_or(Failure::Unavailable)?;
+        feed.open_stage(attempt, key, session)
+    }
+
+    /// Drop the parked open of a start that was lost before it was staged.
+    #[cfg(feature = "play-feed")]
+    pub(super) fn open_abort(&mut self) {
+        if let Some(feed) = self.physical.feed() { feed.open_abort(); }
     }
 
     /// The foreground restore's start was just deferred: follow it.
@@ -1478,10 +1497,11 @@ impl PlayerAdapter {
         self.release.has_queued()
     }
 
-    /// Is a stopped native object's `Unload` still owed its main-thread tail?
-    #[cfg(feature = "play-feed")]
-    pub fn has_pending_release(&mut self) -> bool {
-        self.physical.feed().is_some_and(|feed| feed.has_pending_release())
+    /// Is a stopped native object's `Unload` still owed its main-thread tail? Tests only: the
+    /// production readers are the release machine and the Feed's own exit disposition.
+    #[cfg(all(test, feature = "play-feed"))]
+    pub fn has_pending_release(&self) -> bool {
+        self.physical.feed_backend().resources().has_pending_release()
     }
 
     /// The release machine's verdict on one event; the effects are the caller's to run. The
@@ -1887,7 +1907,6 @@ impl PlayerAdapter {
             let result = if outcome.ok { crate::route::RouteStartResult::Started }
                 else { crate::route::RouteStartResult::StartFailed };
             let _ = crate::route::settle_route_start(ps, attempt, result);
-            self.physical.feed_backend_mut().note_load_outcome(outcome.attempt, outcome.ok);
         }
     }
 
@@ -2021,31 +2040,16 @@ impl PlayerAdapter {
         (self.uri.as_mut(), &self.mt)
     }
 
-    /// Park a still-in-flight Load for a later main-thread release. At most one can exist: the
-    /// C seam owns one object at a time and every start is refused while this slot is full.
+    /// Is a native object still parked behind a Load that has not been released? (At most one can
+    /// exist: the C seam owns one object at a time and every start is refused while it does.)
     #[cfg(feature = "play-feed")]
-    pub fn park_abandoned_load(&mut self, load: super::engine::AbandonedLoad) {
-        self.physical.feed_backend_mut().resources_mut().park_abandoned_load(load);
-    }
-
-    /// Is a native object still parked behind a Load that has not been released?
-    #[cfg(feature = "play-feed")]
-    pub fn has_abandoned_load(&self) -> bool {
-        self.physical.feed_backend().resources().has_abandoned_load()
-    }
-
-    #[cfg(feature = "play-feed")]
-    pub(super) fn begin_native_open(&mut self) -> bool {
-        plx_play_feed::native_executor::begin_native_open(
-            self.physical.feed_backend_mut().resources_mut(), &self.mt)
+    pub fn has_abandoned_load(&mut self) -> bool {
+        self.physical.feed().is_some_and(|feed| feed.has_abandoned_load())
     }
 
     #[cfg(feature = "play-feed")]
     pub fn reap_abandoned_load(&mut self) -> bool {
-        let feed = self.physical.feed_backend_mut().resources_mut();
-        let hooks = feed.hooks();
-        plx_play_feed::native_executor::reap_abandoned_load_resource(
-            feed, &self.mt, &hooks.release)
+        self.physical.feed().is_some_and(|feed| feed.reap_abandoned_load(&self.mt))
     }
 
     /// The token, for the ACB/Starfish seam. `tv::sink::VideoSink`'s methods still take one — see the

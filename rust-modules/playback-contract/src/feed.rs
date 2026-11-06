@@ -48,6 +48,8 @@ use std::time::Duration;
 
 use plx_base::task::MainThread;
 
+use crate::adaptive::{AdaptiveSession, OriginalSession};
+use crate::demux::DemuxSession;
 use crate::readout::AttemptFacts;
 use crate::{
     AttemptId, BackendEvent, BackendKind, Capabilities, CommandId, DispatchResult, DriverSet,
@@ -98,6 +100,86 @@ pub struct OriginalDvFacts {
     pub profile: i64,
     pub bl_compat: i64,
     pub el_present: bool,
+}
+
+// ---------------------------------------------------------------------------------------------
+// The native open: what the route freezes for one Load, handed to the feed in one request.
+// ---------------------------------------------------------------------------------------------
+
+/// A server's address as the feed dials it: the transport's scheme, the unbracketed host and the
+/// port. Exactly the fields of the network layer's origin, without naming that crate.
+#[derive(Clone, PartialEq, Eq)]
+pub struct OpenOrigin {
+    pub tls: bool,
+    pub host: String,
+    pub port: i32,
+}
+
+/// The resolved facts of one streamed open. Route selection and credential authorization finished
+/// before this was built. URLs have no Debug surface; the demux session is bound later, by
+/// [`FeedOpen::open_stage`], because the route attempt and the native epoch do not exist yet.
+pub struct OpenStream {
+    pub origin: OpenOrigin,
+    pub path: String,
+    pub video_codec: String,
+    pub audio_codec: String,
+    pub pcm_is_lossy: bool,
+    pub audio_channels: i64,
+    pub feed_payload: PayloadFacts,
+    pub payload_options: PayloadOptions,
+    pub original_dv: OriginalDvFacts,
+    pub hls_abr: Option<Box<dyn AdaptiveSession>>,
+    pub auto_original: Option<Box<dyn OriginalSession>>,
+}
+
+/// A local validation sample the feed loops over instead of a stream.
+pub struct SampleBuf {
+    pub data: Vec<u8>,
+    pub au: Vec<usize>, // AU start offsets
+    pub next: usize,
+    pub loops: i64,
+}
+
+impl SampleBuf {
+    /// The local validation sample, positioned at its first AU.
+    pub fn new(data: Vec<u8>, au: Vec<usize>) -> Self {
+        Self { data, au, next: 0, loops: 0 }
+    }
+}
+
+/// The player's side-subtitle reader as one Engine owns it and drives it from the main thread.
+pub trait SideReaderPort: Send {
+    /// The demuxer must leave embedded subtitles to this reader from its first instruction.
+    fn embedded_owner(&self) -> bool;
+    /// Start only after both demux and native Load workers have spawned.
+    fn start_after_load_spawn(&mut self);
+    /// Stop and join before the paired demux worker is joined, including a failed Load spawn.
+    fn stop_before_demux_join(&mut self, reason: &str);
+}
+
+/// Everything [`FeedOpen::open_prepare`] consumes. `stream` is `Some` for a stream and `sample`
+/// for a local sample; never both.
+pub struct OpenRequest {
+    /// The goal pause the Load starts under.
+    pub start_paused: bool,
+    pub seek_preroll: bool,
+    pub stream: Option<OpenStream>,
+    pub sample: Option<Box<SampleBuf>>,
+    pub is_h265: bool,
+    pub session_rate: i32,
+    /// The viewer's requested playback rate, in permille.
+    pub requested_rate: i32,
+    pub no_audio: bool,
+    pub side_reader: Box<dyn SideReaderPort>,
+}
+
+/// A native transport action the feed's driver queued for the player's transport door.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FeedTransportAction {
+    /// Release the captured viewer hold before the initial physical prime may Play.
+    ResumeInitial { attempt: AttemptId, command: CommandId },
+    Play { attempt: AttemptId, command: CommandId },
+    Pause { attempt: AttemptId, command: CommandId },
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -632,6 +714,31 @@ pub trait FeedLoad {
     /// ones a decision reads and the Engine's Load-side ones ([`FeedRaw::load`]). `None` with no
     /// session: an idle feed's mailboxes are not an observation of any attempt.
     fn sample(&self) -> Option<FeedFacts>;
+    /// Is a native object still parked behind a Load that has not been released?
+    fn has_abandoned_load(&self) -> bool;
+    /// Release the abandoned Load if its worker has returned (the ordinary Unload, gate, retire
+    /// and D1 release); `true` when one was released.
+    fn reap_abandoned_load(&mut self, mt: &MainThread) -> bool;
+}
+
+/// The native open, in the phases the route's start drives. The prepared open stays inside the
+/// feed between [`Self::open_prepare`] and [`Self::open_stage`]; the route reducer mints the
+/// attempt between the two.
+pub trait FeedOpen {
+    /// Begin an open: reap an abandoned Load that has returned, refuse (`false`) while one has not
+    /// (it still owns the one native object the C seam holds) and zero the per-session fed
+    /// counters and the stall watchdog.
+    fn open_begin(&mut self, mt: &MainThread) -> bool;
+    /// Resolve the Load payload and arm the retractable clock and native epochs, parking the
+    /// prepared open. Answers its native epoch. A refusal parks nothing.
+    fn open_prepare(&mut self, mt: &MainThread, request: OpenRequest) -> Result<u32, Failure>;
+    /// Bind the addressed demux session to the parked open and escrow it for the Start the runner
+    /// will address to `attempt`. A refusal drops the parked open.
+    fn open_stage(&mut self, attempt: AttemptId, key: SourceKey, session: Box<dyn DemuxSession>)
+        -> Result<(), Failure>;
+    /// Drop the parked open after a start that was lost between `open_prepare` and `open_stage`,
+    /// releasing its clock and epoch guards. A no-op with nothing parked.
+    fn open_abort(&mut self);
 }
 
 /// Which end of a Feed session a [`FeedStop::reset`] serves.
@@ -689,8 +796,6 @@ pub trait FeedStop {
     /// the callback/reset barrier, so a native callback cannot validate one session and then write
     /// into the next one's reset storage.
     fn reset(&mut self, scope: ResetScope, common: &mut dyn FnMut());
-    /// Is a stopped native object's `Unload` still owed its main-thread tail?
-    fn has_pending_release(&self) -> bool;
     /// The epoch of a parked release whose `Unload` worker has returned. The worker is joined, so
     /// the epoch can be fed to the release machine, and the release waits for its main-thread tail.
     fn take_returned_release(&mut self) -> Option<u32>;
@@ -703,9 +808,9 @@ pub trait FeedStop {
     fn leak_for_exit(&mut self);
 }
 
-/// One buffer-feed backend as the player drives it: the seek, Load and stop halves, and the one
-/// verb every intent goes through. Later steps of the seam add the open verbs here.
-pub trait FeedControl: FeedSeek + FeedLoad + FeedStop {
+/// One buffer-feed backend as the player drives it: the seek, Load, open and stop halves, and the
+/// one verb every intent goes through.
+pub trait FeedControl: FeedSeek + FeedLoad + FeedOpen + FeedStop {
     /// Carry out one player intent (see [`FeedCommand`]).
     fn command(&mut self, command: FeedCommand);
     /// The viewer's Pause: prepare the clock transition, issue the native Pause through the
@@ -717,6 +822,14 @@ pub trait FeedControl: FeedSeek + FeedLoad + FeedStop {
     /// Take the sink volume a paused preroll's Play window muted, clearing the mute: `None` when
     /// nothing is muted. The caller sets the volume back, so the answer is a value, not an intent.
     fn take_preroll_volume(&mut self) -> Option<i32>;
+    /// The next native transport action the driver queued for the player's transport door. The
+    /// player runs it (the sink, the readout) and answers with [`Self::note_transport_result`]
+    /// before taking another; nothing in the runner's event stream carries it, because the
+    /// player's own state is read between the two.
+    fn take_transport_action(&mut self) -> Option<FeedTransportAction>;
+    /// What the transport door did with `action`, so the driver can answer the runner.
+    fn note_transport_result(&mut self, mt: &MainThread, action: FeedTransportAction,
+        accepted: bool, native_acknowledged: bool);
 }
 
 /// The physical drivers one composition supplies, behind one object. It is the runner's

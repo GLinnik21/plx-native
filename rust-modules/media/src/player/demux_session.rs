@@ -7,7 +7,6 @@
 //! Construction captures no globals.
 
 use plx_play_feed::demux_clock::{DemuxMediaHooks, FeedDemuxObserver, FeedDemuxSession};
-use plx_play_feed::shared::FEED_SHARED;
 use super::SHARED;
 use plx_playback_contract::demux::{DemuxFault, DemuxObserver, DemuxSession, DemuxSubtitle};
 use plx_playback_contract::AttemptId;
@@ -54,8 +53,9 @@ impl DemuxSubtitle for PlayerDemuxSubtitle {
         let plan = presentation.decode_plan();
         self.subtitle_indices = tracks.iter().map(|track| track.stream_index).collect();
         self.subtitle_tracks = Some(presentation);
-        self.bitmap_generation = FEED_SHARED.with_active_demux_epoch(self.observer.native_epoch(), ||
-            SHARED.bitmap_generation.load(Ordering::Acquire));
+        let mut generation = None;
+        self.observer.with_active(&mut || generation = Some(SHARED.bitmap_generation.load(Ordering::Acquire)));
+        self.bitmap_generation = generation;
         self.font_budget = super::ass::FontBudget::default();
         plan
     }
@@ -68,9 +68,15 @@ impl DemuxSubtitle for PlayerDemuxSubtitle {
         let tracks = self.subtitle_tracks.as_ref()?;
         let inventory = super::subtitle_cue::source_inventory(media_key, tracks.kinds(), manifest);
         loop {
-            let prepared = super::ass_source::prepare_begin(&inventory);
-            match FEED_SHARED.with_active_demux_epoch(self.observer.native_epoch(), ||
-                super::ass_source::commit_prepared(prepared)) {
+            let mut prepared = Some(super::ass_source::prepare_begin(&inventory));
+            let mut committed = None;
+            // `commit_prepared` consumes the candidate, so the `FnMut` closure takes it out once.
+            if !self.observer.with_active(&mut || {
+                committed = prepared.take().map(super::ass_source::commit_prepared);
+            }) {
+                return None;
+            }
+            match committed {
                 Some(Ok((generation, old))) => {
                     drop(old); // retired fonts and event maps are released outside NativeGate
                     return Some(generation);
@@ -151,6 +157,7 @@ fn demux_exit_class(fault: DemuxFault) -> DemuxExitClass {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use plx_play_feed::shared::FEED_SHARED;
     use plx_playback_contract::subtitle::{BitmapDisplay, IndexedRect};
 
     struct ResetSession;
