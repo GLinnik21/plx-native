@@ -643,7 +643,6 @@ pub fn force_playing_for_test() {
 /// `Machine`.
 #[cfg(any(test, feature = "test-support"))]
 pub fn reset_for_test() {
-    #[cfg(feature = "play-feed")]
     hold_load_for_test(false);
     with_mut(|m| *m = Machine::default());
 }
@@ -1089,7 +1088,7 @@ mod tests {
     /// (`ffi_host::HostSink`) to hold a native session, which the default build's `NoSink` does
     /// not — `make check` runs the full suite a second time with it on for exactly this class of test.
     #[test]
-    #[cfg(all(feature = "hostsim", feature = "play-feed"))]
+    #[cfg(feature = "hostsim")]
     fn seek_refuses_and_touches_no_user_seek_bookkeeping_with_no_live_preview() {
         let _serial = plx_base::testlock::serial();
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -1306,7 +1305,7 @@ mod tests {
 
 /// The retire path of a preview whose Load has not returned, against a real Engine and the real
 /// Feed: the join is deferred while the Load thread runs, and the abandoned-Load poll finishes it.
-#[cfg(all(test, feature = "hostsim", feature = "play-feed"))]
+#[cfg(all(test, feature = "hostsim"))]
 mod abandoned_load_tests {
     use super::*;
     use plx_playback_contract::feed::Stage;

@@ -252,7 +252,6 @@ mod port_tests {
         }
     }
 
-    #[cfg(feature = "play-feed")]
     #[test]
     fn a_probe_installed_through_the_port_is_opened_driven_settled_and_released_by_the_route_half() {
         let _serial = plx_base::testlock::serial();
@@ -294,7 +293,6 @@ mod port_tests {
         assert_eq!(rig.script.lock().unwrap().advances, 3, "an empty slot is not driven");
     }
 
-    #[cfg(feature = "play-feed")]
     #[test]
     fn a_failed_settle_fails_the_route_start() {
         let _serial = plx_base::testlock::serial();
@@ -311,7 +309,6 @@ mod port_tests {
         assert_eq!(crate::route::route_start_status(attempt), crate::route::RouteStartStatus::Failed);
     }
 
-    #[cfg(feature = "play-feed")]
     #[test]
     fn a_second_start_under_a_live_session_is_refused_and_opens_nothing() {
         let _serial = plx_base::testlock::serial();

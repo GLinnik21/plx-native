@@ -112,7 +112,7 @@ pub fn resume_if_paused(ps: &mut crate::route::PlaybackSession,
     }
 }
 
-#[cfg(all(test, feature = "play-feed"))]
+#[cfg(test)]
 mod transport_target_tests {
     /// The three keys, both ways round. A PLAY key on an already-playing transport is a no-op
     /// rather than a pause, and a PAUSE key on an already-paused one likewise — the property a
@@ -131,7 +131,6 @@ mod transport_target_tests {
 
 #[cfg(test)]
 mod viewer_resume_for_load_tests {
-    #[cfg(feature = "play-feed")]
     use plx_play_feed::shared::FEED_TX;
     use std::sync::atomic::Ordering;
 
@@ -165,7 +164,6 @@ mod viewer_resume_for_load_tests {
 
 #[cfg(all(test, feature = "hostsim"))]
 mod transport_pause_contract_tests {
-    #[cfg(feature = "play-feed")]
     use plx_play_feed::shared::{FEED_SHARED, FEED_TX};
     use super::{paused, set_transport_paused};
     use crate::player::foreground::{

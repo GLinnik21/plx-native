@@ -26,7 +26,7 @@
 //! DIFFERENT thing — the ACB/Starfish seam (`tv::sink::VideoSink`'s methods, whose bind order is a
 //! sequence of calls with no locking behind it) — and that surface is not this module's.
 
-#[cfg(all(test, feature = "play-feed"))]
+#[cfg(test)]
 use plx_play_feed::feed_state::Engine;
 use super::timeline;
 use super::backend;
@@ -104,7 +104,7 @@ mod composed_backends_tests {
 
     /// The Feed driver is part of every adapter a Feed build constructs; nothing else is until a
     /// composition installs it.
-    const FEED_ONLY: BackendSet = BackendSet { uri: false, feed: cfg!(feature = "play-feed") };
+    const FEED_ONLY: BackendSet = BackendSet { uri: false, feed: true };
 
     #[test]
     fn a_fresh_adapter_forms_exactly_the_set_its_constructor_installs() {
@@ -146,7 +146,6 @@ mod composed_backends_tests {
     }
 
     /// A set the adapter refuses brings its sink with it: the adapter keeps the one it had.
-    #[cfg(feature = "play-feed")]
     #[test]
     fn a_refused_physical_set_leaves_the_adapters_sink_alone() {
         use plx_platform::tv::sink::{NoSink, VideoSink};
@@ -173,13 +172,13 @@ mod composed_backends_tests {
         let (first, _) = FakeUriDriver::new(caps);
         assert!(adapter.install_uri_driver(Box::new(first)).is_ok());
         assert_eq!(adapter.composed_backends(),
-            BackendSet { uri: true, feed: cfg!(feature = "play-feed") });
+            BackendSet { uri: true, feed: true });
         let (second, handle) = FakeUriDriver::new(caps);
         assert!(adapter.install_uri_driver(Box::new(second)).is_err(),
             "one URI driver per adapter: the second is handed back, not installed");
         assert!(handle.staged().is_empty());
         assert_eq!(adapter.composed_backends(),
-            BackendSet { uri: true, feed: cfg!(feature = "play-feed") });
+            BackendSet { uri: true, feed: true });
     }
 }
 
@@ -202,14 +201,12 @@ mod qualified_uri_offer_tests {
         crate::route::reset_player_control_for_test(&session);
         crate::route::set_url(&mut session, "https://example.invalid/original.mkv");
         let ticket = crate::route::begin_route_start().expect("route transaction");
-        if cfg!(feature = "play-feed") {
-            assert!(session.qualify_resolved_feed_offer(
-                crate::route::backend_policy::OfferId::FEED_ORIGINAL,
-                crate::route::CandidatePurpose::NewCandidate));
-            assert!(matches!(session.backend_offer(),
-                crate::route::backend_policy::Selection::Open(offer)
-                    if offer.backend == BackendKind::Feed));
-        }
+        assert!(session.qualify_resolved_feed_offer(
+            crate::route::backend_policy::OfferId::FEED_ORIGINAL,
+            crate::route::CandidatePurpose::NewCandidate));
+        assert!(matches!(session.backend_offer(),
+            crate::route::backend_policy::Selection::Open(offer)
+                if offer.backend == BackendKind::Feed));
         let mut adapter = PlayerAdapter::new_fed(unsafe { MainThread::assume() });
         // The driver queues a Start, and its open is refused afterwards, as a transport that
         // cannot open does.
@@ -230,7 +227,6 @@ mod qualified_uri_offer_tests {
             requirements(TrackChoice::Unspecified), initial, 60_000, deadline).expect("typed offer");
         assert!(matches!(adapter.offer_qualified_uri(&mut session, stale_offer), Err(Failure::Stale)));
 
-        #[cfg(feature = "play-feed")]
         {
         session.accept_requested_rate(1500);
         let wrong_speed = QualifiedUriOffer::new(
@@ -270,14 +266,10 @@ mod qualified_uri_offer_tests {
             plx_playback_contract::readout::PlaybackState::Error,
             "a native Open refusal cannot leave a URI-only session spinning forever");
         assert!(adapter.take_qualified_uri(&mut session, ticket).is_none(), "the URL is owned once");
-        if cfg!(feature = "play-feed") {
-            assert!(matches!(session.backend_offer(),
-                crate::route::backend_policy::Selection::Open(offer)
-                    if offer.backend == BackendKind::Feed),
-                "URI refusal retains the qualified Feed choice");
-        } else {
-            assert_eq!(session.backend_offer(), crate::route::backend_policy::Selection::Unqualified);
-        }
+        assert!(matches!(session.backend_offer(),
+            crate::route::backend_policy::Selection::Open(offer)
+                if offer.backend == BackendKind::Feed),
+            "URI refusal retains the qualified Feed choice");
         crate::route::reset_player_control_for_test(&session);
     }
 
@@ -394,7 +386,7 @@ pub struct PlayerAdapter {
     start_hooks: Option<StartHooks>,
     /// The test fixtures' handle on the Feed set boxed behind `physical`
     /// ([`Self::new_probed`]); `None` on an adapter built by [`Self::new`].
-    #[cfg(all(test, feature = "play-feed"))]
+    #[cfg(test)]
     probe: Option<plx_play_feed::physical::probe::Probe>,
     /// The one neutral attempt owner, over the physical executors above.
     backend: backend::BackendRunner,
@@ -483,7 +475,7 @@ impl PlayerAdapter {
             physical: Box::new(UriOnlySet::new()),
             sink: inert_sink,
             start_hooks: None,
-            #[cfg(all(test, feature = "play-feed"))]
+            #[cfg(test)]
             probe: None,
             backend: backend::BackendRunner::new(),
             metric_notices: VecDeque::new(),
@@ -520,7 +512,7 @@ impl PlayerAdapter {
     /// [`Self::has_pending_release`]): the adapter drives the same set through the same
     /// `dyn PhysicalSet`, and only the fixtures reach it through the probe. A test that calls one
     /// of those fixtures builds its adapter with this; one that does not uses [`Self::new_fed`].
-    #[cfg(all(test, feature = "play-feed"))]
+    #[cfg(test)]
     pub fn new_probed(mt: MainThread) -> Self {
         let mut adapter = Self::new(mt);
         let (probe, physical) = plx_play_feed::physical::probe::Probe::new(
@@ -534,7 +526,7 @@ impl PlayerAdapter {
     }
 
     /// The fixtures' handle on the boxed Feed set.
-    #[cfg(all(test, feature = "play-feed"))]
+    #[cfg(test)]
     pub(super) fn probe(&self) -> &plx_play_feed::physical::probe::Probe {
         self.probe.as_ref().expect("this fixture needs an adapter built by PlayerAdapter::new_probed")
     }
@@ -1613,7 +1605,7 @@ impl PlayerAdapter {
 
     /// Is a stopped native object's `Unload` still owed its main-thread tail? Tests only: the
     /// production readers are the release machine and the Feed's own exit disposition.
-    #[cfg(all(test, feature = "play-feed"))]
+    #[cfg(test)]
     pub fn has_pending_release(&self) -> bool {
         self.probe().resources(|resources| resources.has_pending_release())
     }
@@ -1685,7 +1677,7 @@ impl PlayerAdapter {
     }
 
     /// Test-only access to the physical session for the existing hostsim rigs.
-    #[cfg(all(test, feature = "play-feed"))]
+    #[cfg(test)]
     #[inline]
     pub fn engine(&mut self) -> Option<std::cell::RefMut<'_, Engine>> {
         self.probe().engine()
@@ -1946,7 +1938,7 @@ impl PlayerAdapter {
     }
 
     /// Address one Load verdict without handing route state to the native worker.
-    #[cfg(all(test, feature = "play-feed", feature = "hostsim"))]
+    #[cfg(all(test, feature = "hostsim"))]
     pub(super) fn load_receipt(&mut self, attempt: crate::route::RouteStartAttempt, native_epoch: u32,
         _trace_generation: u32) -> plx_play_feed::feed_resources::LoadReceipt {
         self.probe().resources(|resources|
@@ -1954,7 +1946,7 @@ impl PlayerAdapter {
     }
 
     /// A refused thread spawn cannot return a receipt; retire its mapping immediately.
-    #[cfg(all(test, feature = "play-feed", feature = "hostsim"))]
+    #[cfg(all(test, feature = "hostsim"))]
     pub(super) fn cancel_load_receipt(&mut self, token: u64) {
         self.probe().resources(|resources| resources.cancel_load_receipt(token));
     }
@@ -2011,7 +2003,7 @@ impl PlayerAdapter {
     /// workers hold raw pointers into the boxes it owns; `start_bufferfeed` guards on
     /// [`is_live`](Self::is_live) first.
     #[inline]
-    #[cfg(all(test, feature = "play-feed"))]
+    #[cfg(test)]
     pub fn install(&mut self, e: Engine) {
         self.feed_attempt = Some(BoundFeed { attempt: crate::route::RouteStartAttempt::fixture(),
             trace_generation: 0, foreground_follows_load: false });
@@ -2020,7 +2012,7 @@ impl PlayerAdapter {
 
     /// Take the session out of the slot; the caller then joins its workers and drops it.
     #[inline]
-    #[cfg(all(test, feature = "play-feed"))]
+    #[cfg(test)]
     pub fn take(&mut self) -> Option<Engine> {
         self.feed_attempt = None;
         self.probe().resources(|resources| resources.take())
@@ -2142,7 +2134,7 @@ impl PlayerAdapter {
     /// Hostsim fixture access to the session and main-thread token together. Production common
     /// code uses the feed's typed actions and does not borrow the Engine.
     #[inline]
-    #[cfg(all(test, feature = "play-feed"))]
+    #[cfg(test)]
     pub fn split(&mut self) -> (Option<std::cell::RefMut<'_, Engine>>, &MainThread) {
         (self.probe().engine(), &self.mt)
     }
@@ -2298,7 +2290,6 @@ mod uri_stop_refusal_tests {
 
 #[cfg(all(test, feature = "hostsim"))]
 mod load_outcome_tests {
-    #[cfg(feature = "play-feed")]
     use plx_play_feed::shared::FEED_TX;
     use super::*;
 

@@ -719,7 +719,6 @@ impl Clock {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "play-feed")]
     use plx_play_feed::shared::FEED_SHARED;
     use super::*;
 
@@ -727,7 +726,6 @@ mod tests {
         plx_playback_contract::subtitle::CaptionRetention { playhead_ns: None, seek_target_ns: None }
     }
 
-    #[cfg(feature = "play-feed")]
     #[test]
     fn prepared_reopen_rebases_after_a_concurrent_cue() {
         let _serial = plx_base::testlock::serial();

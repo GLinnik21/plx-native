@@ -41,9 +41,9 @@ pub mod foreground;
 pub mod lifecycle;
 pub mod machine;
 pub mod preview;
-#[cfg(all(test, feature = "play-feed"))]
+#[cfg(test)]
 mod abr_plant_tests; // pins the ABR plant's constants to the Feed pipeline's
-#[cfg(all(test, feature = "play-feed"))]
+#[cfg(test)]
 mod readout_obs_tests; // the readers that ask the session's readout, not the feed's mailbox
 pub mod route_fx; // what route policy asks of the player: the audio and speed picks step the readout in every build; the Feed's own effects are no-ops without it
 pub mod recovery; // the failed-open ladder (pure machine); `pump` drives it
@@ -56,13 +56,13 @@ mod pump; // gated: the per-frame tick reads and drives `FEED_SHARED`/`FEED_TX` 
 pub mod report;
 #[cfg(test)]
 mod no_feed_tests; // the doors a session with no Feed composed answers as a URI-only build always did
-#[cfg(all(test, feature = "hostsim", feature = "play-feed"))]
+#[cfg(all(test, feature = "hostsim"))]
 mod diag_sample_tests; // the Stats-for-nerds rows the Feed writes are the readout's last sample of it
-#[cfg(all(test, feature = "hostsim", feature = "play-feed"))]
+#[cfg(all(test, feature = "hostsim"))]
 mod foreground_flight_tests;
-#[cfg(all(test, feature = "hostsim", feature = "play-feed"))]
+#[cfg(all(test, feature = "hostsim"))]
 mod resume_tests;
-#[cfg(all(test, feature = "play-feed"))]
+#[cfg(test)]
 mod shared;
 mod shared_resources;
 mod subtitle_bitmap;
@@ -80,9 +80,9 @@ pub mod video_geometry;
 use plx_base::task::MainThread;
 #[cfg(test)]
 use plx_play_feed::shared::FEED_SHARED;
-#[cfg(all(test, feature = "play-feed"))]
+#[cfg(test)]
 use plx_play_feed::shared::FEED_TX;
-#[cfg(all(test, feature = "play-feed"))]
+#[cfg(test)]
 pub(crate) use plx_play_feed::shared::pinned_pause_clock;
 pub use plx_playback_contract::feed::HlsAutomaticTransition;
 pub use plx_playback_contract::feed::HlsClockFenceError;
@@ -529,7 +529,7 @@ pub fn finish_seek_preroll(ps: &mut crate::route::PlaybackSession, pa: &mut adap
 
 /// Test-only: the feed's gate copy and the session's readout copy of the transport say the same
 /// (both are stepped at every writer, so a drift is a missed site).
-#[cfg(all(test, feature = "play-feed"))]
+#[cfg(test)]
 pub(crate) fn assert_transport_copies_agree(ps: &crate::route::PlaybackSession) {
     assert_eq!(FEED_TX.paused.load(Relaxed), ps.readout().paused(),
         "the feed's Pause and the readout's disagree");
@@ -2675,7 +2675,7 @@ pub fn every_failure_row() -> Vec<(FailureKind, FailureContext, Vec<FailureActio
     out
 }
 
-#[cfg(all(test, feature = "play-feed"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use plx_play_feed::sf_event::{sf_on_event, sf_on_event_inner};
@@ -2717,7 +2717,6 @@ mod tests {
 
     /// The speeds a source can be offered: everything up to 2x for film, nothing above 1x for 60p
     /// (it would ask the decoder for more than 60 fps), and a Load plays only an offered speed.
-    #[cfg(feature = "play-feed")]
     #[test]
     fn a_session_plays_only_an_offered_speed() {
         assert_eq!(speeds_within(23.976, SPEED_MAX_FPS), PLAY_RATES.to_vec());
@@ -2801,7 +2800,6 @@ mod tests {
     /// real change on the ladder is one: the speed already set, or a value Plex Web does not offer,
     /// asks for nothing. With nothing on screen the speed is only remembered for the next Load.
     /// The choice, its one-shot reload and the latch are the SESSION's readout, not a mailbox.
-    #[cfg(feature = "play-feed")]
     #[test]
     fn a_speed_change_requests_a_reload_at_the_viewers_position() {
         let _serial = plx_base::testlock::serial();
@@ -2869,7 +2867,6 @@ mod tests {
     /// The safety net is ONE decision: the latch, the viewer back at 1x and the armed reload
     /// together, with the reload's seek posted at the viewer's own position. The readout holds all
     /// three, and the speed menu reads the latch from the session.
-    #[cfg(feature = "play-feed")]
     #[test]
     fn a_refused_speed_session_latches_the_set_and_arms_the_reload_in_the_readout() {
         let _serial = plx_base::testlock::serial();
@@ -2910,7 +2907,6 @@ mod tests {
     /// copy would leave the AU gate shut through the whole flight. The take reports what the player
     /// held, how many requests it folded, and clears the feed's copy even when the player held
     /// nothing (a copy it no longer owns must never outlive it).
-    #[cfg(feature = "play-feed")]
     #[test]
     fn a_take_clears_the_feeds_gate_with_the_players_target_in_one_call() {
         let _serial = plx_base::testlock::serial();
@@ -2955,7 +2951,6 @@ mod tests {
 
     /// `arm_open` is the old `arm_seek` through the feed's command: the demuxer's open target, a
     /// display base of 0 and the HUD's position, with the start as the floor of a negative target.
-    #[cfg(feature = "play-feed")]
     #[test]
     fn arm_open_arms_the_next_open_with_the_start_as_the_floor() {
         let _serial = plx_base::testlock::serial();
@@ -2988,7 +2983,6 @@ mod tests {
     // `native_failure_regressions::jail_refusal_enters_error_without_engine_and_retires_on_exit`
     // below, against the real `ps.jail_load_blocked`-based gate in `engine.rs` — see that test.
 
-    #[cfg(feature = "play-feed")]
     #[test]
     fn forced_original_never_offers_or_retains_a_pcm_speed() {
         let _serial = plx_base::testlock::serial();
@@ -4596,7 +4590,7 @@ mod tests {
     }
 }
 
-#[cfg(all(test, feature = "hostsim", feature = "play-feed"))]
+#[cfg(all(test, feature = "hostsim"))]
 mod native_failure_regressions {
     use super::*;
     struct JailGuard;
@@ -4639,7 +4633,7 @@ mod native_failure_regressions {
 /// before #568 every seek was a reload. The guard still applies to every reload-based seek: `Reload`
 /// mode (a refused native `Seek`, `sendSegment=0`, an untested old-ABI release), a stuck in-place
 /// seek's reload, and every seek at a speed other than 1x.
-#[cfg(all(test, feature = "play-feed"))]
+#[cfg(test)]
 mod seek_hud_regressions {
     use super::*;
 
@@ -4713,7 +4707,6 @@ mod audio_switch_tests {
         assert_eq!(busy_caption_with(S::Resolving, true), state_caption(S::Resolving));
     }
 
-    #[cfg(feature = "play-feed")]
     #[test]
     fn a_pick_names_the_rebuild_through_the_reload_until_the_first_frame() {
         let _g = plx_base::testlock::serial();

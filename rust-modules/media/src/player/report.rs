@@ -1317,7 +1317,7 @@ pub fn watched_class(position_ns: i64, duration_ns: i64) -> &'static str {
     }
 }
 
-#[cfg(all(test, feature = "play-feed"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use plx_play_feed::shared::FEED_SHARED;
