@@ -769,6 +769,12 @@ fn playing_on_recording_pms(
     reset_player_control_for_test(ps);
     // `max` is a ceiling (the stub gives up after ten idle seconds), not an expectation.
     let (port, rx, _server) = recording_pms(8);
+    (rx, playing_on_port(ps, first, port))
+}
+
+/// The item `playing_on_recording_pms` plays, on the PMS at `port`: registered, planned, `first`
+/// installed as the live HLS encoder, and a reporter lease taken.
+fn playing_on_port(ps: &mut crate::route::PlaybackSession, first: &str, port: i32) -> TimelineLease {
     let sid = plx_plex::plex::register_for_test(
         "timeline-retired",
         "127.0.0.1",
@@ -789,8 +795,12 @@ fn playing_on_recording_pms(
         "rk-1236",
     );
     install_active_hls(first, "http://fixture.invalid/first.m3u8", crate::abr::Rung::P720);
-    let lease = begin_timeline_reporting(ps).expect("timeline lease");
-    (rx, lease)
+    begin_timeline_reporting(ps).expect("timeline lease")
+}
+
+/// What the stop worker leaves in `PlayerControl` once it is done: the last reported id.
+fn reported_timeline_left_behind() -> Option<ReportedTimeline> {
+    PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()).reported_timeline.clone()
 }
 
 /// Test-only: commit `id` as the live HLS encoder through the door an automatic quality switch
@@ -939,8 +949,9 @@ fn an_encoder_that_never_reported_is_never_stopped() {
 }
 
 /// A quality change or a transcode seek reloads the Engine, which starts a NEW reporter for the
-/// same playback. The id the old reporter last reported under is the one the reload retired, so
-/// the new reporter's first report must still stop it; a different item starts from nothing.
+/// same playback, after `begin_engine_teardown(true)` has retired the old one's lease. The id the
+/// old reporter last reported under is the one the reload retired, so the new reporter's first
+/// report must still stop it.
 #[test]
 fn a_reloaded_engine_still_retires_the_id_its_predecessor_reported() {
     let mut ps = crate::route::PlaybackSession::IDLE;
@@ -949,6 +960,11 @@ fn a_reloaded_engine_still_retires_the_id_its_predecessor_reported() {
     assert!(report_timeline(&old_lease, plx_plex::plex::TimelineState::Playing, 10_000, 60_000));
 
     commit_hls_encoder("logical-1236-abr-2");
+    begin_engine_teardown(true);
+    assert!(
+        !report_timeline(&old_lease, plx_plex::plex::TimelineState::Playing, 15_000, 60_000),
+        "premise: the reload retired the old Engine's lease"
+    );
     let new_lease = begin_timeline_reporting(&ps).expect("the reload's lease");
     assert!(report_timeline(&new_lease, plx_plex::plex::TimelineState::Playing, 20_000, 60_000));
 
@@ -1085,9 +1101,10 @@ fn the_final_stop_retires_the_last_reported_id_after_the_engine_teardown_ran_fir
     );
 }
 
-/// A failed start, a failed Original trial and a failed Engine clear the timeline projection, and
-/// the rebuilt Engine's reporter (the rollback's rebase installed a new encoder) starts from a
-/// fresh one. The id the playback had been reporting under must survive that.
+/// A failed Engine (like a failed start or a failed Original trial) clears the timeline
+/// projection, and the Engine that follows it (Try Again, or a rollback's rebase onto a new
+/// encoder) reports from a fresh one. The id the playback had been reporting under must survive
+/// that. `fail_current_engine` is the real edge; the same item is then played again.
 #[test]
 fn a_cleared_projection_does_not_forget_the_id_the_playback_reported_under() {
     let mut ps = crate::route::PlaybackSession::IDLE;
@@ -1095,9 +1112,25 @@ fn a_cleared_projection_does_not_forget_the_id_the_playback_reported_under() {
     let (rx, lease) = playing_on_recording_pms(&mut ps, "logical-1236-abr-1");
     assert!(report_timeline(&lease, plx_plex::plex::TimelineState::Playing, 10_000, 60_000));
 
-    // What `fail_current_engine` and a failed trial's settlement do to the projection.
-    PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()).timeline = None;
-    commit_hls_encoder("logical-1236-abr-2");
+    fail_current_engine();
+    assert!(
+        PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()).timeline.is_none(),
+        "premise: the failure cleared the projection"
+    );
+    let sid = cur_sid(&ps);
+    apply_plan(
+        &mut ps,
+        Plan {
+            sid,
+            url: "https://example.invalid/auto.m3u8".into(),
+            sess: "logical-1236".into(),
+            pq_id: "pq-1236".into(),
+            pq_item_id: "pqi-1236".into(),
+            ..Default::default()
+        },
+        "rk-1236",
+    );
+    install_active_hls("logical-1236-abr-2", "http://fixture.invalid/second.m3u8", crate::abr::Rung::P1080);
     let rebuilt = begin_timeline_reporting(&ps).expect("the rebuilt Engine's lease");
     assert!(report_timeline(&rebuilt, plx_plex::plex::TimelineState::Playing, 20_000, 60_000));
 
@@ -1111,4 +1144,122 @@ fn a_cleared_projection_does_not_forget_the_id_the_playback_reported_under() {
         "the rebuilt reporter retires the id the cleared projection had reported: {}",
         lines[1]
     );
+}
+
+/// **The stop worker takes the reported id AFTER the reporter's last POST, not before.** On a real
+/// stop `begin_engine_teardown` bumps the epoch, `engine::teardown` only signals the reporter and
+/// hands its handle to `scrobble_stop` unjoined, and the worker joins it. A tick already past its
+/// epoch check is not stopped by the bump: it finishes its POSTs and records its id. The encoder
+/// moved A to B and the viewer pressed BACK while tick N was sending `stopped(A)` + `playing(B)`:
+/// a take on the main thread, before that join, saw A and sent `stopped(A)` a second time, then
+/// left B behind for the next playback of the item to retire.
+#[test]
+fn a_tick_in_flight_at_the_stop_is_not_retired_twice_and_leaves_no_record() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    drain_scrobble();
+    reset_session(&mut ps);
+    reset_player_control_for_test(&ps);
+    // Request 1 is `playing(A)`; request 2 is the tick's `stopped(A)`, which the stub parks.
+    let (port, rx, release, _server) = held_pms(2);
+    let lease = playing_on_port(&mut ps, "logical-1236-abr-1", port);
+    assert!(report_timeline(&lease, plx_plex::plex::TimelineState::Playing, 10_000, 60_000));
+    commit_hls_encoder("logical-1236-abr-2");
+
+    let reporter = std::thread::spawn(move || {
+        assert!(report_timeline(&lease, plx_plex::plex::TimelineState::Playing, 20_000, 60_000));
+    });
+    let first = rx.recv_timeout(std::time::Duration::from_secs(5)).expect("playing(A)");
+    let parked = rx.recv_timeout(std::time::Duration::from_secs(5)).expect("the tick's stopped(A)");
+    assert!(first.contains("state=playing"), "{first}");
+    assert!(
+        parked.contains("state=stopped") && parked.contains("logical-1236-abr-1"),
+        "premise: the tick is parked mid-POST, holding the effect lane: {parked}"
+    );
+
+    // The stop, in the order `engine::teardown` runs it, with the tick's thread as the reporter.
+    begin_engine_teardown(false);
+    scrobble_stop(&mut ps, Some(("rk-1236".into(), 30_000, 60_000)), Some(reporter));
+    release.send(()).unwrap();
+    drain_scrobble();
+
+    let mut lines = vec![first, parked];
+    lines.extend(requests_until_quiet(&rx));
+    let left = reported_timeline_left_behind();
+    leave_recording_pms_case(&mut ps);
+    let retired_a = lines
+        .iter()
+        .filter(|l| l.contains("state=stopped") && l.contains("continuing=1"))
+        .count();
+    assert_eq!(
+        retired_a, 1,
+        "A is retired exactly once, by the tick that moved off it: {lines:#?}"
+    );
+    assert_eq!(
+        lines.len(),
+        5,
+        "playing(A), stopped(A), playing(B), the final stopped(B), the encoder stop: {lines:#?}"
+    );
+    assert!(
+        lines[3].contains("state=stopped")
+            && !lines[3].contains("continuing")
+            && lines[3].contains("X-Plex-Session-Identifier=logical-1236-abr-2"),
+        "the final stopped goes out under B: {}",
+        lines[3]
+    );
+    assert_eq!(left, None, "the stop worker consumed the record the late tick wrote");
+}
+
+/// A reporter cut loose by a reload (its handle dropped) can still have a tick in flight when the
+/// Engine-less stop runs with nothing to post. That stop has no worker to take the record, so it
+/// must not leave one behind, and must not wait on the tick either: it hands the take to a worker.
+#[test]
+fn a_stop_with_nothing_to_post_still_leaves_no_record_behind_a_tick_in_flight() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    drain_scrobble();
+    reset_session(&mut ps);
+    reset_player_control_for_test(&ps);
+    let (port, rx, release, _server) = held_pms(2);
+    let lease = playing_on_port(&mut ps, "logical-1236-abr-1", port);
+    assert!(report_timeline(&lease, plx_plex::plex::TimelineState::Playing, 10_000, 60_000));
+    commit_hls_encoder("logical-1236-abr-2");
+
+    let tick = std::thread::spawn(move || {
+        report_timeline(&lease, plx_plex::plex::TimelineState::Playing, 20_000, 60_000)
+    });
+    rx.recv_timeout(std::time::Duration::from_secs(5)).expect("playing(A)");
+    rx.recv_timeout(std::time::Duration::from_secs(5)).expect("the tick's stopped(A), parked");
+
+    // The reload cut the reporter loose; the new start failed and Back is pressed with no encoder.
+    begin_engine_teardown(true);
+    install_active_encoder("");
+    scrobble_stop(&mut ps, None, None);
+    release.send(()).unwrap();
+    assert!(tick.join().expect("the tick returns"), "the tick completed its POSTs");
+    drain_scrobble();
+
+    let left = reported_timeline_left_behind();
+    leave_recording_pms_case(&mut ps);
+    assert_eq!(left, None, "no worker, or a worker that ran before the tick's note, leaves it");
+}
+
+/// With no reporter alive the stop has nothing to wait for and spawns no worker, but the record a
+/// reporter left must still go with the playback it belonged to.
+#[test]
+fn a_stop_that_spawns_no_worker_still_consumes_the_record() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let (_rx, lease) = playing_on_recording_pms(&mut ps, "logical-1236-abr-1");
+    assert!(report_timeline(&lease, plx_plex::plex::TimelineState::Playing, 10_000, 60_000));
+    assert!(reported_timeline_left_behind().is_some(), "premise: the report was recorded");
+
+    install_active_encoder("");
+    begin_engine_teardown(false);
+    scrobble_stop(&mut ps, None, None);
+    drain_scrobble();
+
+    let left = reported_timeline_left_behind();
+    leave_recording_pms_case(&mut ps);
+    assert_eq!(left, None);
 }

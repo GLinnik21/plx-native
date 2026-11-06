@@ -534,6 +534,51 @@ pub(super) fn recording_pms(
     (port, rx, h)
 }
 
+/// [`recording_pms`] with one request held open: the server reads that request's line, hands it
+/// down the channel, and answers nothing until `release` is sent (or dropped, which a failing test
+/// does on its way out). A report whose POST is parked there is a tick IN FLIGHT: it has passed its
+/// epoch check, holds the timeline effect lane, and will record its session id when it returns.
+/// `hold` is the 1-based index of the request to hold. Gives up after ten idle seconds.
+pub(super) fn held_pms(
+    hold: usize,
+) -> (
+    i32,
+    std::sync::mpsc::Receiver<String>,
+    std::sync::mpsc::Sender<()>,
+    std::thread::JoinHandle<()>,
+) {
+    use std::io::{BufRead, BufReader, Write};
+    let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    l.set_nonblocking(true).expect("nonblocking listener");
+    let port = l.local_addr().unwrap().port() as i32;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let h = std::thread::spawn(move || {
+        let mut idle = std::time::Instant::now();
+        let mut served = 0;
+        while idle.elapsed() < std::time::Duration::from_secs(10) {
+            match l.accept() {
+                Ok((mut s, _)) => {
+                    let _ = s.set_nonblocking(false);
+                    let mut line = String::new();
+                    let _ = BufReader::new(&s).read_line(&mut line);
+                    served += 1;
+                    let _ = tx.send(line);
+                    if served == hold {
+                        let _ = released.recv();
+                    }
+                    let _ = s.write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    );
+                    idle = std::time::Instant::now();
+                }
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(5)),
+            }
+        }
+    });
+    (port, rx, release, h)
+}
+
 pub(super) fn ordered_stub_pms(
     label: &'static str,
     tx: std::sync::mpsc::Sender<(&'static str, String)>,
