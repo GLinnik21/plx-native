@@ -1398,6 +1398,111 @@
       "comment": "The Legal index route opened through Settings. Focus alternates in the real document list while continuous invalidation exposes the cost of the shared route composition and frozen ambient underlay; actual fps=, not merely loop=, is required to remain at least 50/s."
     },
     {
+      "name": "settings-language",
+      "tier": "ui",
+      "route": "home",
+      "overlay": "language",
+      "loop_floor": 50,
+      "fps_floor": 50,
+      "run_secs": 18,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-settings": "language",
+        "plxnative-settingsosc": true
+      },
+      "comment": "The Language page (a Settings v2 root row), booted as the surface's root. settingsosc alternates the page's real rows while the present gate stays awake. The heartbeat word is the page's own (`language`), so a boot target that stayed on the Settings root (`settings`) cannot satisfy it."
+    },
+    {
+      "name": "settings-audio",
+      "tier": "ui",
+      "route": "home",
+      "overlay": "audio",
+      "loop_floor": 50,
+      "fps_floor": 50,
+      "run_secs": 18,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-settings": "audio",
+        "plxnative-settingsosc": true
+      },
+      "comment": "The Audio & subtitles page opened through Settings (`SettingsPage::AudioSubtitles`): a form of Nav rows onto the account preference pickers. settingsosc alternates its first two rows. The heartbeat word is the page's own (`audio`), distinct from Playback's (`playback`) and the root's (`settings`)."
+    },
+    {
+      "name": "settings-under-posters",
+      "tier": "ui",
+      "route": "home",
+      "overlay": "under-posters",
+      "loop_floor": 50,
+      "fps_floor": 50,
+      "run_secs": 18,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-settings": "under-posters",
+        "plxnative-settingsosc": true
+      },
+      "comment": "The Under posters page (Settings v2: Title, Movie details, TV show details, Sort value, Reset) with the shared picture slot of two poster tiles. settingsosc alternates its first two rows. The heartbeat word is the page's own (`under-posters`), which only this page prints. The hyphen matters: tests/run.py's overlay capture group is `[\\w-]+` for exactly this reason."
+    },
+    {
+      "name": "settings-under-posters-movie",
+      "tier": "ui",
+      "route": "home",
+      "overlay": "under-posters-movie",
+      "loop_floor": 50,
+      "fps_floor": 50,
+      "run_secs": 18,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-settings": "under-posters-movie",
+        "plxnative-settingsosc": true
+      },
+      "comment": "The Movie details picker, booted over Under posters over the Settings root (`SettingsPage::boot_trail`). settingsosc sweeps UP/DOWN through its options (Nothing first, a sample on each row). The heartbeat word is the page's own PER KIND (`DetailsPage::name`), so neither the TV show picker (`under-posters-show`), the parent page (`under-posters`) nor the root (`settings`) can satisfy it."
+    },
+    {
+      "name": "settings-under-posters-show",
+      "tier": "ui",
+      "route": "home",
+      "overlay": "under-posters-show",
+      "loop_floor": 50,
+      "fps_floor": 50,
+      "run_secs": 18,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-settings": "under-posters-show",
+        "plxnative-settingsosc": true
+      },
+      "comment": "The TV show details picker: the same `DetailsPage` as settings-under-posters-movie with PosterKind::Show (its list never offers Video quality, so it has one row fewer). Its heartbeat word is its own (`under-posters-show`), distinct from the Movie picker's (`under-posters-movie`), so a boot target that opened the wrong kind cannot satisfy either scene."
+    },
+    {
+      "name": "settings-player-hud",
+      "tier": "ui",
+      "route": "home",
+      "overlay": "player-hud",
+      "loop_floor": 50,
+      "fps_floor": 50,
+      "run_secs": 18,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-settings": "player-hud",
+        "plxnative-settingsosc": true
+      },
+      "comment": "The Player HUD page (installed packages, drop folder, chosen HUD) booted over Playback over the root (`SettingsPage::boot_trail`). settingsosc alternates its first two rows. Opening this page asks the HUD registry for its catalog (`HudCmd::Open` -> `open_catalog`, https://huds.plxnative.com), so a run with no route to it measures the page in its catalog-unavailable state; the frame rate is the page's either way. Not covered: the HUD gallery, detail, about and preview pages (`hud-gallery`, `hud-detail`, `hud-about`, `hud-preview`): the gallery is populated only by that live registry and the other three are addressed by a package sha, which no boot target names."
+    },
+    {
+      "name": "settings-diagnostics",
+      "tier": "ui",
+      "route": "home",
+      "overlay": "diagnostics",
+      "loop_floor": 50,
+      "fps_floor": 50,
+      "run_secs": 18,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-settings": "diagnostics",
+        "plxnative-settingsosc": true
+      },
+      "comment": "The Diagnostics page (Settings v2: the playback-trace switch, the saved-log button and Delete), one level below the root's single Diagnostics row. settingsosc alternates its first two rows. The heartbeat word is the page's own (`diagnostics`). There is no About scene: the About page is a `DocumentPage` that answers the Legal index's word (`legal`), so a scene on it could be satisfied by settings-legal's screen."
+    },
+    {
       "name": "settings-idle",
       "tier": "ui",
       "route": "home",

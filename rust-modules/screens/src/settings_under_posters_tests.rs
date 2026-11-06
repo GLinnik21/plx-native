@@ -813,7 +813,8 @@ fn the_page_has_its_own_screen_name_and_probe() {
     assert_eq!(arg, "under-posters");
     for kind in [PosterKind::Movie, PosterKind::Show] {
         let details = DetailsPage::new(EntryId(0), kind);
-        assert_eq!(<DetailsPage as Screen<InnerHost>>::name(&details), "under-posters-details");
+        let word = match kind { PosterKind::Movie => "under-posters-movie", PosterKind::Show => "under-posters-show" };
+        assert_eq!(<DetailsPage as Screen<InnerHost>>::name(&details), word);
         let mut arg = String::new();
         SettingsPage::UnderPostersDetails(kind).probe(&mut arg);
         assert_eq!(arg, format!("under-posters-details[{}]", kind as u8));

@@ -145,7 +145,8 @@ impl SettingsPage {
     }
 
     /// The pages a boot target asks the surface to stand on, root first: `plxnative-settings=picker-…` and
-    /// `player-hud` name root → Playback → the page (root → the picker for a root row's), the stack an interactive visit
+    /// `player-hud` name root → Playback → the page (root → the picker for a root row's; root → Under posters → a
+    /// `under-posters-movie` / `-show` details picker), the stack an interactive visit
     /// builds. `RouteSurface::new` issues one request per page and the inner stack keeps only the newest request, so
     /// what stands is the LAST page alone and BACK from it dismisses the surface instead of popping to its parent
     /// (seen for the Player HUD page and two pickers). Every other page is booted as the surface's root.
@@ -154,6 +155,7 @@ impl SettingsPage {
             SettingsPage::Picker(kind) if kind.parent() == SettingsPage::Root => vec![SettingsPage::Root, self],
             SettingsPage::Picker(kind) => vec![SettingsPage::Root, kind.parent(), self],
             SettingsPage::PlayerHud => vec![SettingsPage::Root, SettingsPage::Playback, self],
+            SettingsPage::UnderPostersDetails(_) => vec![SettingsPage::Root, SettingsPage::UnderPosters, self],
             page => vec![page],
         }
     }
@@ -460,6 +462,17 @@ mod tests {
         ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), pages.len(), "two SettingsPage variants must not share a ScreenId");
+    }
+
+    /// A boot target for an Under posters details picker stands on root → Under posters → the picker, the
+    /// stack an interactive visit builds, exactly as a Playback picker's trail does through its parent.
+    #[test]
+    fn an_under_posters_details_boot_trail_runs_through_its_parent() {
+        for kind in [PosterKind::Movie, PosterKind::Show] {
+            let page = SettingsPage::UnderPostersDetails(kind);
+            assert_eq!(page.boot_trail(), [SettingsPage::Root, SettingsPage::UnderPosters, page]);
+        }
+        assert_eq!(SettingsPage::UnderPosters.boot_trail(), [SettingsPage::UnderPosters]);
     }
 
     /// `Document`/`Preview`/`ConsentStage` carry an index that does not change WHICH kind of page

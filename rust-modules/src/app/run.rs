@@ -3562,7 +3562,7 @@ pub(crate) unsafe fn heartbeat(app: &mut App, fr: &mut Frame) {
                 super::adapters::poster::log_cache_stats();
             }
             // once/sec render heartbeat — greppable without reading the on-screen counter.
-            // The harness parses `loop=(\d+) route=(\w+)(?: overlay=(\w+))?` (tests/run.py), so
+            // The harness parses `loop=(\d+) route=(\w+)(?: overlay=([\w-]+))?` (tests/run.py), so
             // the player's overlay tag stays right after route= and worstframe= stays LAST.
             //
             // RENAMED 2026-08-01, and the old name was REUSED, so a log predating this reads
