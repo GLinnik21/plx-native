@@ -157,7 +157,7 @@ class TestFastRuns(unittest.TestCase):
             self.assertEqual(call["runtime_dir_set"], "yes")
             self.assertRegex(call["args"], r"^\+\S+ test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_appkit -p plx_screens --no-run --message-format=json-render-diagnostics$")
             # The filter goes to each test binary (the runner builds first, then runs), not to cargo.
-            self.assertEqual(len(fake.bin_calls()), 15)
+            self.assertEqual(len(fake.bin_calls()), call["args"].split().count("-p"))
             self.assertTrue(all(line.endswith("args=route::") for line in fake.bin_calls()), fake.bin_calls())
 
     def test_no_filter_runs_the_whole_default_feature_suite(self):
@@ -166,7 +166,7 @@ class TestFastRuns(unittest.TestCase):
             (call,) = fake.calls()
             self.assertRegex(call["args"], r"^\+\S+ test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_appkit -p plx_screens --no-run --message-format=json-render-diagnostics$")
             self.assertNotIn("--features", call["args"])
-            self.assertEqual(len(fake.bin_calls()), 15)
+            self.assertEqual(len(fake.bin_calls()), call["args"].split().count("-p"))
             self.assertTrue(all(line.endswith("args=") for line in fake.bin_calls()), fake.bin_calls())
 
     def test_own_dir_is_neither_of_the_dirs_other_builds_use(self):

@@ -975,7 +975,7 @@ $(FFABI_STAMP): ci/ffabi-assert.c $(FFMPEG_INC)/libavformat/avformat.h Makefile
 # rule would leave every later `make` linking a library built by the OLD one. Cargo's own
 # `rerun-if-changed` cannot save that — it is only consulted when make decides to invoke cargo at
 # all, and this target is an ordinary timestamp comparison.
-RUST_INPUTS := $(shell find rust-modules/src rust-modules/base rust-modules/machine rust-modules/net rust-modules/platform rust-modules/gfx rust-modules/ui rust-modules/plex rust-modules/telemetry rust-modules/data rust-modules/session rust-modules/media rust-modules/appkit rust-modules/screens rust-modules/build_support locales assets -type f 2>/dev/null)
+RUST_INPUTS := $(shell find rust-modules/src rust-modules/base rust-modules/machine rust-modules/net rust-modules/platform rust-modules/gfx rust-modules/ui rust-modules/plex rust-modules/telemetry rust-modules/data rust-modules/session rust-modules/media rust-modules/playback-contract rust-modules/appkit rust-modules/screens rust-modules/build_support locales assets -type f 2>/dev/null)
 $(RUST_LIB): LICENSE $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock rust-modules/build.rs ci/install-identities.json rust-modules/.cargo/config.toml Makefile ci/check-staticlib-artifact.py $(FFABI_STAMP)
 	@# BEFORE the mkdir: the seed is only ever cloned into a target dir that does not exist yet.
 	$(CARGO_SEED) restore $(RUST_TDIR) rust-modules/$(RUST_TDIR)

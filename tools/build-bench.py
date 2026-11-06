@@ -161,7 +161,7 @@ SCREENS_PACKAGE = "plx_screens"
 # The cargo subcommand skeletons the Makefile's recipes use. Everything else (toolchain, dirs,
 # feature flags, RUSTFLAGS) comes from `make -s print-bench-config`. ci/test_build_bench.py compares
 # these to the recipes in the Makefile.
-HOST_TEST_ARGS = ("test", "--lib", "-p", "plxnative-modules", "-p", "plx_base", "-p", "plx_machine", "-p", "plx_platform", "-p", "plx_gfx", "-p", "plx_net", "-p", "plx_ui", "-p", "plx_plex", "-p", "plx_telemetry", "-p", "plx_data", "-p", "plx_session", "-p", "plx_media", "-p", "plx_appkit", "-p", "plx_screens")
+HOST_TEST_ARGS = ("test", "--lib", "-p", "plxnative-modules", "-p", "plx_base", "-p", "plx_machine", "-p", "plx_platform", "-p", "plx_gfx", "-p", "plx_net", "-p", "plx_ui", "-p", "plx_plex", "-p", "plx_telemetry", "-p", "plx_data", "-p", "plx_session", "-p", "plx_media", "-p", "plx_playback_contract", "-p", "plx_appkit", "-p", "plx_screens")
 HOST_TEST_BUILD_ARGS = HOST_TEST_ARGS + ("--no-run", "--message-format=json")
 ARM_ARGS_HEAD = ("rustc",)  # then the Makefile's ARM_PROFILE_FLAG (`--release` / `--profile tvdev`)
 ARM_ARGS_TARGET = ("--target",)  # then the target triple
