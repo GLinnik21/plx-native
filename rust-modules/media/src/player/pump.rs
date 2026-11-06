@@ -1582,6 +1582,11 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     // result here, after installation and before any worker publication can be accepted.
     crate::route::drain_route_start_results(ps);
     inject_refuse601(ps, eng);
+    if super::server_stop_applies(ps) {
+        fail_engine_for_good();
+        crate::route::discard_stale_flight_landing();
+        return;
+    }
     // A failed open's recovery flight (the Original rollback's rebase, the unopened source's HLS
     // fallback, the refused native audio's conversion): land it, or wait for it. Ahead of every
     // failure branch below, whose flags stay up
@@ -1683,11 +1688,6 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     }
     if !eng.preview_abandon {
         note_missing_era_callback(eng);
-    }
-
-    if SHARED.server_stopped.load(Acquire) {
-        fail_engine_for_good();
-        return;
     }
 
     // The producer died before publishing a duration: the EOS path is gated on `duration_ns > 0`
@@ -3404,7 +3404,7 @@ mod flight_tests {
     fn a_stop_from_the_server_ends_the_playback_with_its_reason_and_only_back() {
         let mut rig = Rig::new(120);
         SHARED.frames.store(10, Relaxed);
-        crate::player::note_server_stop("stopped by the admin");
+        crate::player::note_server_stop(&crate::route::sess(&rig.ps), "stopped by the admin");
         rig.frame();
         assert_eq!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error);
         rig.frame();
@@ -3416,6 +3416,43 @@ mod flight_tests {
             crate::player::failure_actions(shape.kind, crate::player::failure_context(&rig.ps)),
             vec![crate::player::FailureAction::Back]
         );
+    }
+
+    #[test]
+    fn a_stop_from_the_server_during_a_recovery_flight_ends_it_and_reloads_nothing() {
+        let mut rig = failed_original_trial_rig(40);
+        let epoch = engine_epoch(&mut rig);
+        rig.flight.hold_answers();
+        SHARED.load_failed.store(true, Release);
+        rig.frame();
+        assert!(crate::route::flight_outstanding(), "sanity: the rollback flies");
+        let stops = replacement_stops(&rig.flight);
+
+        crate::player::note_server_stop(&crate::route::sess(&rig.ps), "stopped by the admin");
+        rig.frame();
+        assert_eq!(
+            crate::player::state(&rig.ps),
+            crate::player::PlaybackState::Error,
+            "the stop does not wait for the rollback"
+        );
+        assert!(!crate::route::flight_outstanding(), "the stop ends the rollback's flight");
+        rig.flight.release_answers();
+
+        rig.frames_until("the discarded replacement's stop", |r| replacement_stops(&r.flight) > stops);
+        let now = engine_epoch(&mut rig);
+        assert!(now.is_none() || now == epoch, "the rollback's landing reloads nothing");
+        assert_eq!(crate::player::error_now(&rig.ps).kind, crate::player::FailureKind::ServerStopped);
+    }
+
+    #[test]
+    fn a_stop_the_server_sent_for_another_playback_leaves_this_one_playing() {
+        let mut rig = Rig::new(120);
+        SHARED.frames.store(10, Relaxed);
+        crate::player::note_server_stop("an-earlier-playback", "stopped by the admin");
+        rig.frame();
+        rig.frame();
+        assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error);
+        assert!(rig.pa.is_live());
     }
 
     /// **A terminal playback error lets go of the pipeline.** The read-out stands, but the loaded

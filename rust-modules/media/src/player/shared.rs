@@ -664,7 +664,7 @@ pub struct Shared {
     /// is an error rather than a successful early EOF.
     pub demux_io_failed: AtomicBool,
     pub server_stopped: AtomicBool,
-    pub server_stop_reason: Mutex<String>,
+    pub server_stop: Mutex<super::ServerStopNote>,
     /// WHY the demuxer found nothing to feed, when the answer is "the stream itself": the server
     /// delivered audio streams and no video stream. Issue #22's whole shape — a transcode target
     /// the server cannot honour makes PMS drop the video track, and `ff: no video stream` alone
@@ -1134,7 +1134,7 @@ impl Shared {
             demux_failed: AtomicBool::new(false),
             demux_io_failed: AtomicBool::new(false),
             server_stopped: AtomicBool::new(false),
-            server_stop_reason: Mutex::new(String::new()),
+            server_stop: Mutex::new(super::ServerStopNote { playback: String::new(), reason: String::new() }),
             demux_no_video: AtomicBool::new(false),
             load_failed: AtomicBool::new(false),
             load_timed_out: AtomicBool::new(false),
@@ -1863,7 +1863,9 @@ impl Shared {
             .store(PlaybackState::Idle as u8, Ordering::Relaxed);
         self.demux_failed.store(false, Ordering::Relaxed);
         self.demux_io_failed.store(false, Ordering::Relaxed);
-        self.server_stopped.store(false, Ordering::Relaxed);
+        if !for_reload {
+            self.server_stopped.store(false, Ordering::Relaxed);
+        }
         self.demux_no_video.store(false, Ordering::Relaxed);
         self.load_failed.store(false, Ordering::Relaxed);
         self.load_timed_out.store(false, Ordering::Relaxed);
@@ -3748,6 +3750,16 @@ mod tests {
         s.clear_abr_failure();
         assert_eq!(s.abr_failure_kind.load(Ordering::Relaxed), 0);
         assert_eq!(s.abr_failure_status.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn a_reload_keeps_the_server_s_stop_and_the_next_session_drops_it() {
+        let s = Shared::new();
+        s.server_stopped.store(true, Ordering::Relaxed);
+        s.reset_session_for_reload();
+        assert!(s.server_stopped.load(Ordering::Relaxed), "a reload is the same playback the server ended");
+        s.reset_session();
+        assert!(!s.server_stopped.load(Ordering::Relaxed));
     }
 
     /// The one invariant that cannot be recovered from if it breaks, and breaks SILENTLY: a session

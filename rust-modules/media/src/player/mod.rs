@@ -1162,7 +1162,7 @@ fn runtime_failure(
 /// The cause the worker signals publish right now: what [`error_now`] reads while an Engine is up,
 /// and what a failed Engine freezes into the session as it is released.
 fn live_runtime_failure(ps: &crate::route::PlaybackSession) -> RuntimeFailure {
-    if SHARED.server_stopped.load(std::sync::atomic::Ordering::Acquire) {
+    if server_stop_applies(ps) {
         return RuntimeFailure::ServerStopped;
     }
     if ps.native_start_refused == Some(crate::route::StartRefusal::ReleaseTimeout) {
@@ -1422,13 +1422,27 @@ pub fn error_now(ps: &crate::route::PlaybackSession) -> ErrorShape {
     with_forced_playback_context(shape, crate::route::forced_direct_play(ps))
 }
 
-pub(crate) fn note_server_stop(reason: &str) {
-    *SHARED.server_stop_reason.lock().unwrap_or_else(|e| e.into_inner()) = reason.to_owned();
+pub struct ServerStopNote {
+    pub playback: String,
+    pub reason: String,
+}
+
+pub(crate) fn note_server_stop(playback: &str, reason: &str) {
+    *SHARED.server_stop.lock().unwrap_or_else(|e| e.into_inner()) =
+        ServerStopNote { playback: playback.to_owned(), reason: reason.to_owned() };
     SHARED.server_stopped.store(true, std::sync::atomic::Ordering::Release);
 }
 
+pub(crate) fn server_stop_applies(ps: &crate::route::PlaybackSession) -> bool {
+    if !SHARED.server_stopped.load(std::sync::atomic::Ordering::Acquire) {
+        return false;
+    }
+    let note = SHARED.server_stop.lock().unwrap_or_else(|e| e.into_inner());
+    !note.playback.is_empty() && note.playback == crate::route::sess(ps)
+}
+
 fn server_stop_reason() -> String {
-    SHARED.server_stop_reason.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    SHARED.server_stop.lock().unwrap_or_else(|e| e.into_inner()).reason.clone()
 }
 
 /// A sample PMS refusal, for the `verdict` variant of the dev trigger below. Real wording: this is

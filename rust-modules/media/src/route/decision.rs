@@ -1263,6 +1263,7 @@ struct TimelineSnapshot {
     time_ms: i64,
     duration_ms: i64,
     session: String,
+    playback: String,
     play_queue_id: String,
     play_queue_item_id: String,
     audio_stream_id: i64,
@@ -11734,6 +11735,7 @@ fn timeline_snapshot(
         time_ms,
         duration_ms,
         session,
+        playback: projection.logical_session.clone(),
         play_queue_id: projection.play_queue_id.clone(),
         play_queue_item_id: projection.play_queue_item_id.clone(),
         audio_stream_id: projection.audio_stream_id,
@@ -11828,7 +11830,7 @@ pub fn report_timeline(
             report.rating_key, stop.code,
         ));
         c.timeline(&report.wire(&report.session, plx_plex::plex::TimelineState::Stopped, true));
-        crate::player::note_server_stop(&stop.reason);
+        crate::player::note_server_stop(&report.playback, &stop.reason);
         return false;
     }
     // FAILURES ONLY. The reporter thread logs `timeline <state> t=…s/…s` for every tick whichever
