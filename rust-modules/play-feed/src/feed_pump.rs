@@ -124,7 +124,7 @@ pub fn pending_seek_ready(feed: &FeedResources, seek_reloads: bool) -> bool {
 
 /// One native Pause transition before an in-place seek. The common route owner chooses any
 /// fallback reload from this typed verdict.
-pub fn prepare_seek_pause(feed: &FeedResources, mt: &MainThread) -> SeekPause {
+pub fn prepare_seek_pause(feed: &mut FeedResources, mt: &MainThread) -> SeekPause {
     let hooks = feed.hooks();
     match FEED_SHARED.prepare_seek_pause() {
         Some(HlsSeekPause::AlreadyHeld) => SeekPause::Ready,
@@ -140,7 +140,7 @@ pub fn prepare_seek_pause(feed: &FeedResources, mt: &MainThread) -> SeekPause {
     }
 }
 
-pub fn begin_seek_discontinuity(feed: &FeedResources) -> bool {
+pub fn begin_seek_discontinuity(feed: &mut FeedResources) -> bool {
     feed.begin_seek_discontinuity()
 }
 

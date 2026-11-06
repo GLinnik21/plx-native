@@ -120,12 +120,12 @@ impl FeedSeek for FeedBackend {
         feed_pump::pending_seek_ready(&self.resources, seek_reloads)
     }
 
-    fn prepare_seek_pause(&self, mt: &MainThread) -> SeekPause {
-        feed_pump::prepare_seek_pause(&self.resources, mt)
+    fn prepare_seek_pause(&mut self, mt: &MainThread) -> SeekPause {
+        feed_pump::prepare_seek_pause(&mut self.resources, mt)
     }
 
-    fn begin_seek_discontinuity(&self) -> bool {
-        feed_pump::begin_seek_discontinuity(&self.resources)
+    fn begin_seek_discontinuity(&mut self) -> bool {
+        feed_pump::begin_seek_discontinuity(&mut self.resources)
     }
 
     fn apply_inplace_seek_pre(&mut self, mt: &MainThread, target_ns: i64, mode: SeekMode,

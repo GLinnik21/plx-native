@@ -594,9 +594,11 @@ pub trait FeedSeek {
     fn retry_stuck_seek(&mut self, now: u32, target_ns: i64, can_retry: bool) -> StuckSeekAction;
     /// Eligibility for applying a pending direct-play or transcode seek on this feed.
     fn pending_seek_ready(&self, seek_reloads: bool) -> bool;
-    /// One native Pause transition before an in-place seek.
-    fn prepare_seek_pause(&self, mt: &MainThread) -> SeekPause;
-    fn begin_seek_discontinuity(&self) -> bool;
+    /// One native Pause transition before an in-place seek. An action, not a query: it moves the
+    /// transport's clock hold and issues the sink's Pause.
+    fn prepare_seek_pause(&mut self, mt: &MainThread) -> SeekPause;
+    /// Open the native media discontinuity an in-place seek crosses; an action, so `&mut self`.
+    fn begin_seek_discontinuity(&mut self) -> bool;
     fn apply_inplace_seek_pre(&mut self, mt: &MainThread, target_ns: i64, mode: SeekMode,
         coalesced: u32);
     fn apply_inplace_seek_post(&mut self, target_ns: i64, now: u32);

@@ -190,10 +190,10 @@ impl FeedSeek for FakeFeed {
     fn pending_seek_ready(&self, seek_reloads: bool) -> bool {
         self.answer(FeedCall::PendingSeekReady { seek_reloads }, |s| s.pending_seek_ready)
     }
-    fn prepare_seek_pause(&self, _mt: &MainThread) -> SeekPause {
+    fn prepare_seek_pause(&mut self, _mt: &MainThread) -> SeekPause {
         self.answer(FeedCall::PrepareSeekPause, |s| s.seek_pause)
     }
-    fn begin_seek_discontinuity(&self) -> bool {
+    fn begin_seek_discontinuity(&mut self) -> bool {
         self.answer(FeedCall::BeginSeekDiscontinuity, |s| s.begin_seek_discontinuity)
     }
     fn apply_inplace_seek_pre(&mut self, _mt: &MainThread, target_ns: i64, mode: SeekMode,
