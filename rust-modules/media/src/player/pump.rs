@@ -3,9 +3,9 @@
 #[cfg(all(test, feature = "hostsim"))]
 use plx_play_feed::shared::FEED_SHARED;
 #[cfg(all(test, feature = "hostsim"))]
-use super::engine::Engine;
+use plx_play_feed::feed_state::Engine;
 #[cfg(all(test, feature = "hostsim"))]
-use super::shared::Stage;
+use plx_playback_contract::feed::Stage;
 use super::SHARED;
 use plx_playback_contract::feed::SeekMode;
 #[cfg(all(test, feature = "hostsim"))]
@@ -35,7 +35,7 @@ fn seek_mode(ps: &crate::route::PlaybackSession) -> SeekMode { ps.readout().raw(
 /// pump's event for the states it settles outside the per-frame ladder (the ladder itself is the
 /// readout's `Presented` derivation). It runs on every path out of `pump` (including the early
 /// returns) so the state can never go stale behind a spinner that never resolves.
-fn set_state(ps: &mut crate::route::PlaybackSession, s: super::shared::PlaybackState) {
+fn set_state(ps: &mut crate::route::PlaybackSession, s: plx_playback_contract::readout::PlaybackState) {
     ps.step_readout(super::readout::ReadoutEvent::StateDerived(s));
 }
 
@@ -153,7 +153,7 @@ fn begin_engineless_rollback(ps: &mut crate::route::PlaybackSession, status: i32
         crate::route::RecoveryDispatch::Flying { .. } => ForegroundOriginalRecovery::Pending,
         crate::route::RecoveryDispatch::Refused => {
             super::log(crate::route::ROLLBACK_REBASE_REFUSED);
-            set_state(ps, super::shared::PlaybackState::Error);
+            set_state(ps, plx_playback_contract::readout::PlaybackState::Error);
             ForegroundOriginalRecovery::Terminal
         }
     }
@@ -198,13 +198,13 @@ pub fn land_engineless_rollback(ps: &mut crate::route::PlaybackSession, pa: &mut
                 ForegroundOriginalRecovery::RetryPrepared
             }
             super::engine::BufferfeedStartOutcome::AlreadyRunning => {
-                set_state(ps, super::shared::PlaybackState::Error);
+                set_state(ps, plx_playback_contract::readout::PlaybackState::Error);
                 ForegroundOriginalRecovery::Terminal
             }
         },
         // `install_recovery_landing` already said `ROLLBACK_REBASE_REFUSED`.
         crate::route::RecoveryVerdict::Refused => {
-            set_state(ps, super::shared::PlaybackState::Error);
+            set_state(ps, plx_playback_contract::readout::PlaybackState::Error);
             ForegroundOriginalRecovery::Terminal
         }
     })
@@ -216,7 +216,7 @@ pub fn land_engineless_rollback(ps: &mut crate::route::PlaybackSession, pa: &mut
 pub fn drain_engineless_rollback(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) {
     if let RollbackLanding::Landed(ForegroundOriginalRecovery::RetryPrepared) = land_engineless_rollback(ps, pa) {
         super::log("abr: HLS rollback could not start (StartFailed)");
-        set_state(ps, super::shared::PlaybackState::Error);
+        set_state(ps, plx_playback_contract::readout::PlaybackState::Error);
     }
 }
 
@@ -534,7 +534,7 @@ fn confirm_refusal(
 /// pipeline is released next frame ([`super::route_start::release_failed_engine`]).
 fn fail_engine_for_good(ps: &mut crate::route::PlaybackSession) {
     crate::route::fail_current_engine();
-    set_state(ps, super::shared::PlaybackState::Error);
+    set_state(ps, plx_playback_contract::readout::PlaybackState::Error);
     super::engine::arm_failed_engine_release();
 }
 
@@ -543,9 +543,9 @@ fn fail_engine_for_good(ps: &mut crate::route::PlaybackSession) {
 /// stream that has decoded nothing.
 fn hold_connecting_state(ps: &mut crate::route::PlaybackSession, loading: bool) {
     set_state(ps, if loading {
-        super::shared::PlaybackState::Connecting
+        plx_playback_contract::readout::PlaybackState::Connecting
     } else {
-        super::shared::PlaybackState::Buffering
+        plx_playback_contract::readout::PlaybackState::Buffering
     });
 }
 
@@ -605,7 +605,7 @@ pub(super) fn settle_reload(
     {
         ps.native_start_refused = Some(crate::route::StartRefusal::LoadTimeout);
     }
-    set_state(ps, super::shared::PlaybackState::Error);
+    set_state(ps, plx_playback_contract::readout::PlaybackState::Error);
     false
 }
 
@@ -638,7 +638,7 @@ fn start_original_trial_reload(
         begin_engineless_rollback(ps, status),
         ForegroundOriginalRecovery::NotOriginal | ForegroundOriginalRecovery::Terminal
     ) {
-        set_state(ps, super::shared::PlaybackState::Error);
+        set_state(ps, plx_playback_contract::readout::PlaybackState::Error);
     }
 }
 
@@ -1058,7 +1058,7 @@ pub(super) fn deliver_container_names(ps: &mut crate::route::PlaybackSession) {
 }
 
 fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, now: u32) {
-    use super::shared::PlaybackState;
+    use plx_playback_contract::readout::PlaybackState;
     // A preroll closed by a path with no adapter in hand (`abandon_seek`) leaves its mute behind;
     // the one place every closer funnels through is the next tick.
     if !ps.readout().seek_preroll() {
@@ -2108,8 +2108,8 @@ mod flight_tests {
             crate::player::reset_session_for_test();
             FEED_TX.reset();
             super::super::claim_hold::clear();
-            super::super::ffi_host::reset_native_lifecycle_for_test();
-            super::super::ffi_host::force_clocksink_for_test(true);
+            plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+            plx_play_feed::ffi_host::force_clocksink_for_test(true);
             let mut pa = super::super::adapter::PlayerAdapter::new_probed(unsafe { MainThread::assume() });
             let epoch = FEED_SHARED.begin_native_session().expect("native session");
             // The installed Engine represents a completed Load. Give the host sink that same
@@ -2181,13 +2181,13 @@ mod flight_tests {
                 suspend_bufferfeed(&mut self.ps, &mut self.pa);
             }
             super::super::claim_hold::clear();
-            super::super::ffi_host::reset_native_lifecycle_for_test();
-            super::super::ffi_host::force_clocksink_for_test(false);
-            super::super::ffi_host::force_object_ready_for_test(false);
+            plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+            plx_play_feed::ffi_host::force_clocksink_for_test(false);
+            plx_play_feed::ffi_host::force_object_ready_for_test(false);
             FEED_SHARED.test_force_native_idle();
             crate::player::reset_session_for_test();
             FEED_TX.reset();
-            crate::ff::native_audio::reset();
+            plx_play_feed::native_audio::reset();
             crate::route::reset_player_control_for_test(crate::route::idle_session_for_test());
         }
     }
@@ -2363,8 +2363,8 @@ mod flight_tests {
         crate::player::reset_session_for_test();
         FEED_TX.reset();
         super::super::claim_hold::clear();
-        super::super::ffi_host::reset_native_lifecycle_for_test();
-        super::super::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
         let mut pa = super::super::adapter::PlayerAdapter::new_probed(unsafe { MainThread::assume() });
         let epoch = FEED_SHARED.begin_native_session().expect("native session");
         assert_eq!(unsafe { crate::player::test_physical::sink().load(c"{}".as_ptr(), epoch) }, 1);
@@ -2581,8 +2581,8 @@ mod flight_tests {
         crate::player::reset_session_for_test();
         FEED_TX.reset();
         super::super::claim_hold::clear();
-        super::super::ffi_host::reset_native_lifecycle_for_test();
-        super::super::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
         let mut pa = super::super::adapter::PlayerAdapter::new_probed(unsafe { MainThread::assume() });
         let epoch = FEED_SHARED.begin_native_session().expect("native session");
         assert_eq!(unsafe { crate::player::test_physical::sink().load(c"{}".as_ptr(), epoch) }, 1);
@@ -3233,7 +3233,7 @@ mod flight_tests {
         let opus_channels = || plx_platform::devcaps::caps().audio_channels.get("opus").copied();
         assert_eq!(opus_channels(), None, "the set announces Opus at any channel count until it is refused");
 
-        crate::ff::native_audio::publish_fed(crate::ff::native_audio::Kind::Opus, 6);
+        plx_play_feed::native_audio::publish_fed(plx_play_feed::native_audio::Kind::Opus, 6);
         rig.flight.hold_answers();
         FEED_SHARED.raise_native_audio_refused();
         FEED_SHARED.load_failed.store(true, Release);
@@ -3308,7 +3308,7 @@ mod flight_tests {
         let decisions = rig.flight.decisions();
         let epoch = engine_epoch(&mut rig);
 
-        crate::ff::native_audio::publish_fed(crate::ff::native_audio::Kind::Opus, 6);
+        plx_play_feed::native_audio::publish_fed(plx_play_feed::native_audio::Kind::Opus, 6);
         rig.flight.hold_answers();
         FEED_SHARED.raise_native_audio_refused();
         FEED_SHARED.load_failed.store(true, Release);
@@ -3345,7 +3345,7 @@ mod flight_tests {
         rig.frame();
         let epoch = engine_epoch(&mut rig);
 
-        crate::ff::native_audio::publish_fed(crate::ff::native_audio::Kind::Opus, 6);
+        plx_play_feed::native_audio::publish_fed(plx_play_feed::native_audio::Kind::Opus, 6);
         FEED_SHARED.raise_native_audio_refused();
         FEED_SHARED.load_failed.store(true, Release);
         rig.frame();
@@ -3386,7 +3386,7 @@ mod flight_tests {
         plx_plex::plex::session::save(&plx_plex::plex::session::peek().with_native_audio_refusal(&known).expect("news"));
         FlightRig::plan_on(&mut rig.ps, plx_platform::devcaps::start_caps(&plx_plex::plex::session::peek().applied_refusals()));
         assert!(!crate::route::audio_track_direct_plays(&rig.ps, "opus", 6, 48_000), "sanity: the attempt lacks the stored refusal");
-        crate::ff::native_audio::publish_fed(crate::ff::native_audio::Kind::Opus, 6);
+        plx_play_feed::native_audio::publish_fed(plx_play_feed::native_audio::Kind::Opus, 6);
         let epoch = engine_epoch(&mut rig).expect("the rig's Engine");
         assert!(FEED_SHARED.mark_native_load_returned(epoch, None).is_some(), "the Load returned: the watchdog's precondition");
         // The pipeline takes one AU per lane, then presents nothing. Keep later AUs beyond the
@@ -3404,9 +3404,9 @@ mod flight_tests {
                 (eng.aq_video.as_mut(), 1, [6_000_000_000, 6_100_000_000]),
                 (eng.aq_audio.as_mut(), 0, [5_000_000_000, 5_100_000_000]),
             ] {
-                let q = &mut **queue.expect("the Engine's AU queues") as *mut crate::aq::AuQueue;
+                let q = &mut **queue.expect("the Engine's AU queues") as *mut plx_play_feed::aq::AuQueue;
                 for pts in [1_000_000_000, later[0], later[1]] {
-                    assert_eq!(crate::aq::aq_push(q, [0u8; 64].as_ptr(), 64, pts, 1, es), 0);
+                    assert_eq!(plx_play_feed::aq::aq_push(q, [0u8; 64].as_ptr(), 64, pts, 1, es), 0);
                 }
             }
         }
@@ -3846,8 +3846,8 @@ mod flight_tests {
     /// took it ([`pipeline_takes_the_load`]).
     fn first_picture(rig: &mut Rig) {
         pipeline_takes_the_load(rig);
-        super::super::ffi_host::force_clocksink_for_test(true);
-        super::super::ffi_host::force_object_ready_for_test(true);
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::force_object_ready_for_test(true);
         FEED_SHARED.frames.store(1, Relaxed);
         rig.frame();
     }
@@ -3995,7 +3995,7 @@ mod flight_tests {
         FlightRig::declare_audio(&mut rig.ps, "opus", 6);
         rig.frame();
         let epoch = engine_epoch(&mut rig).expect("the rig's Engine");
-        crate::ff::native_audio::publish_fed(crate::ff::native_audio::Kind::Opus, 6);
+        plx_play_feed::native_audio::publish_fed(plx_play_feed::native_audio::Kind::Opus, 6);
         rig.flight.hold_answers();
         plx_play_feed::sf_event::sf_on_event(epoch, 18, 200, std::ptr::null());
         rig.frame();
@@ -4061,7 +4061,7 @@ mod flight_tests {
         assert_eq!(FEED_SHARED.frames.load(Relaxed), 0, "sanity: the new Engine has shown no picture");
         let epoch = engine_epoch(&mut rig).expect("the reloaded Engine");
 
-        crate::ff::native_audio::publish_fed(crate::ff::native_audio::Kind::Opus, 6);
+        plx_play_feed::native_audio::publish_fed(plx_play_feed::native_audio::Kind::Opus, 6);
         rig.flight.hold_answers();
         plx_play_feed::sf_event::sf_on_event(epoch, 18, 200, std::ptr::null());
         rig.frame();
@@ -4584,7 +4584,7 @@ mod native_seek_pump_tests {
     use std::sync::atomic::Ordering::Relaxed;
     use super::*;
     use plx_play_feed::shared::FEED_TX;
-    use crate::player::ffi_host;
+    use plx_play_feed::ffi_host;
     use plx_playback_contract::feed::SeekMode;
     use std::os::raw::c_int;
 
@@ -4650,9 +4650,9 @@ mod native_seek_pump_tests {
             // The demux thread took the av_seek mailbox before it produced the keyframe.
             FEED_SHARED.seek_to_ns.store(-1, Release);
             let au = [0u8; 64];
-            let qv = &mut **self.eng().aq_video.as_mut().unwrap() as *mut crate::aq::AuQueue;
+            let qv = &mut **self.eng().aq_video.as_mut().unwrap() as *mut plx_play_feed::aq::AuQueue;
             for i in 0..n {
-                crate::aq::aq_push(qv, au.as_ptr(), au.len() as c_int, ns + i * V_STEP_NS, c_int::from(i == 0), 1);
+                plx_play_feed::aq::aq_push(qv, au.as_ptr(), au.len() as c_int, ns + i * V_STEP_NS, c_int::from(i == 0), 1);
             }
         }
 
@@ -5652,7 +5652,7 @@ mod end_of_film_tests {
     use std::sync::atomic::Ordering::Relaxed;
     use super::*;
     use plx_play_feed::shared::FEED_TX;
-    use crate::player::ffi_host;
+    use plx_play_feed::ffi_host;
     use crate::player::readout::EOS_TAIL_NS;
     use std::os::raw::c_int;
 
@@ -5694,13 +5694,13 @@ mod end_of_film_tests {
             eng.load_th = None;
             assert!(eng.stage >= Stage::Playing, "PRECONDITION FAILED, not the defect: the engine is not past its Load");
             let au = [0u8; 64];
-            let qv = &mut **eng.aq_video.as_mut().unwrap() as *mut crate::aq::AuQueue;
+            let qv = &mut **eng.aq_video.as_mut().unwrap() as *mut plx_play_feed::aq::AuQueue;
             for i in 0..VIDEO_END_NS / V_STEP_NS {
-                crate::aq::aq_push(qv, au.as_ptr(), au.len() as c_int, i * V_STEP_NS, c_int::from(i == 0), 1);
+                plx_play_feed::aq::aq_push(qv, au.as_ptr(), au.len() as c_int, i * V_STEP_NS, c_int::from(i == 0), 1);
             }
-            let qa = &mut **eng.aq_audio.as_mut().unwrap() as *mut crate::aq::AuQueue;
+            let qa = &mut **eng.aq_audio.as_mut().unwrap() as *mut plx_play_feed::aq::AuQueue;
             for i in 0..AUDIO_END_NS / A_STEP_NS {
-                crate::aq::aq_push(qa, au.as_ptr(), au.len() as c_int, i * A_STEP_NS, 1, 2);
+                plx_play_feed::aq::aq_push(qa, au.as_ptr(), au.len() as c_int, i * A_STEP_NS, 1, 2);
             }
             pa.install(eng);
             FEED_SHARED.duration_ns.store(AUDIO_END_NS, Relaxed);
@@ -5720,7 +5720,7 @@ mod end_of_film_tests {
             let mut guard = self.eng();
             let eng = &mut *guard;
             for q in [eng.aq_video.as_mut().unwrap(), eng.aq_audio.as_mut().unwrap()] {
-                crate::aq::aq_set_eof(&mut **q as *mut crate::aq::AuQueue);
+                plx_play_feed::aq::aq_set_eof(&mut **q as *mut plx_play_feed::aq::AuQueue);
             }
         }
 

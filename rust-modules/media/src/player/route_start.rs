@@ -1219,7 +1219,7 @@ pub fn release_failed_engine(ps: &mut crate::route::PlaybackSession, pa: &mut su
     // a picture up (a Load that failed, an open that never produced a frame) and so holds nothing
     // the television mistakes for playback.
     if crate::route::is_preview(ps)
-        || ps.readout().state() != super::shared::PlaybackState::Error
+        || ps.readout().state() != plx_playback_contract::readout::PlaybackState::Error
         || ps.readout().raw().frames == 0
         || crate::route::recovery_flight_outstanding()
         || crate::route::engineless_flight_outstanding()

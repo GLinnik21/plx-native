@@ -4118,7 +4118,7 @@ mod scrub_ownership_tests {
             use std::sync::atomic::Ordering::Relaxed;
             Self {
                 session: super::overlay_tests::playback_session(0, DUR),
-                saved_pause: plx_media::player::FEED_TX.paused.swap(paused, Relaxed),
+                saved_pause: plx_play_feed::shared::FEED_TX.paused.swap(paused, Relaxed),
             }
         }
 
@@ -4131,7 +4131,7 @@ mod scrub_ownership_tests {
     impl Drop for Fixture {
         fn drop(&mut self) {
             use std::sync::atomic::Ordering::Relaxed;
-            plx_media::player::FEED_TX.paused.store(self.saved_pause, Relaxed);
+            plx_play_feed::shared::FEED_TX.paused.store(self.saved_pause, Relaxed);
         }
     }
 
@@ -5187,10 +5187,10 @@ mod scrub_ownership_tests {
         key(&f.session, &mut page, SDLK_RIGHT, Edge::Up, 1_020);
         tick(&f.session, &mut page, 2_000);
         assert_eq!(page.scrub.ns, 60 * S);
-        plx_media::player::FEED_TX.paused.store(false, Relaxed);
+        plx_play_feed::shared::FEED_TX.paused.store(false, Relaxed);
         tick(&f.session, &mut page, 2_100);
         assert_eq!(page.scrub.ns, 60 * S, "resumed: the target stays");
-        plx_media::player::FEED_TX.paused.store(true, Relaxed);
+        plx_play_feed::shared::FEED_TX.paused.store(true, Relaxed);
         tick(&f.session, &mut page, 2_200);
         assert_eq!(page.scrub.ns, 60 * S, "paused again: the target stays");
         let (_, reqs) = key(&f.session, &mut page, SDLK_RETURN, Edge::Down, 2_300);

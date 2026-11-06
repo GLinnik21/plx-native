@@ -1,9 +1,11 @@
-//! Compatibility facade for the bundled FFmpeg physical feed owned by `plx_play_feed`.
-pub use plx_play_feed::{boot, demux, native_audio, pushed_any, set_feed_audio, set_pcm_out, DemuxTransport};
+//! The codecs' FFmpeg bindings media's own code reaches (`plx_media_codecs`), and the integration
+//! fixtures that drive the physical Feed (`plx_play_feed`) through the player session.
 pub use plx_media_codecs::ffi::*;
 pub use plx_media_codecs::{SpeedDecoder, Venc};
 #[cfg(test)]
 use plx_play_feed::ff_test_support::*;
+#[cfg(test)]
+use plx_play_feed::{demux, DemuxTransport};
 #[cfg(test)]
 use plx_media_codecs::subtitle_extract::pts_ns;
 #[cfg(test)]
@@ -13,7 +15,7 @@ pub(crate) use crate::subtitle_job as subside;
 // session and route adapter. Their physical vocabulary is imported from the
 // lower contracts and the same standard types the former local module used.
 #[cfg(test)]
-use crate::aq::AuQueue;
+use plx_play_feed::aq::AuQueue;
 #[cfg(test)]
 use plx_playback_contract::adaptive::TrialClock;
 #[cfg(test)]

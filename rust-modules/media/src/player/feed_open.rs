@@ -4,8 +4,7 @@
 
 use crate::route;
 use plx_base::eventlog::log;
-use plx_play_feed::bf_split;
-use plx_play_feed::feed_state::SampleBuf;
+use plx_playback_contract::feed::{bf_split, SampleBuf};
 
 pub(super) struct FeedOpenRequest {
     /// The stream's address as the network layer spells it, for the credential policy; `stream`

@@ -55,14 +55,6 @@ pub mod release; // the native object's off-frame release lifecycle (pure machin
 mod route_start; // common transaction admission and release-queued start policy
 #[cfg(feature = "devtriggers")]
 pub mod uriprobe_drive; // the URI-mode probe's route half and its port (issue #1064, dev trigger `plxnative-uriprobe`): the route-start settle and the adapter slot; the probe itself is the application's (`dev::uriprobe`), over the play-uri crate's `uriprobe`
-/// The Feed backend's process-lifetime native mailbox and transport (`plx_play_feed::shared`),
-/// re-exported for the crates that may not name `plx_play_feed`: `screens` (its tests drive them)
-/// and the application loop (its manifest depends on `plx_media` alone). Media's own code spells
-/// the `plx_play_feed::shared` path.
-#[cfg(feature = "play-feed")]
-pub use plx_play_feed::shared::{FEED_SHARED, FEED_TX};
-#[cfg(all(feature = "hostsim", feature = "play-feed"))]
-pub use plx_play_feed::ffi_host; // the simulator's Starfish/ACB stand-in: the Feed backend's, so it lives in `plx_play_feed`
 pub mod attempt_metrics; // pure logical-request and physical-attempt measurement reducer
 #[cfg(feature = "play-feed")]
 mod pump; // gated: the per-frame tick reads and drives `FEED_SHARED`/`FEED_TX` and `plx_play_feed::feed_pump`
@@ -73,7 +65,7 @@ mod diag_sample_tests; // the Stats-for-nerds rows the Feed writes are the reado
 mod foreground_flight_tests;
 #[cfg(all(test, feature = "hostsim", feature = "play-feed"))]
 mod resume_tests;
-#[cfg(feature = "play-feed")]
+#[cfg(all(test, feature = "play-feed"))]
 mod shared;
 mod shared_resources;
 mod subtitle_bitmap;
@@ -92,8 +84,12 @@ pub mod video_geometry;
 
 #[cfg(feature = "play-feed")]
 use plx_base::task::MainThread;
+#[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
+use plx_play_feed::shared::FEED_SHARED;
 #[cfg(all(test, feature = "play-feed"))]
-pub(crate) use shared::pinned_pause_clock;
+use plx_play_feed::shared::FEED_TX;
+#[cfg(all(test, feature = "play-feed"))]
+pub(crate) use plx_play_feed::shared::pinned_pause_clock;
 #[cfg(feature = "play-feed")]
 pub use plx_playback_contract::feed::HlsAutomaticTransition;
 #[cfg(feature = "play-feed")]
@@ -105,7 +101,7 @@ pub use plx_data::metadata::track_names::TrackNames;
 #[cfg(feature = "play-feed")]
 pub use plx_playback_contract::feed::UserPauseCursor;
 #[cfg(feature = "play-feed")]
-use shared::HlsPauseCompletion;
+use plx_playback_contract::feed::HlsPauseCompletion;
 #[cfg(feature = "play-feed")]
 use plx_playback_contract::feed::{UserPauseOutcome, UserResumeOutcome};
 
@@ -123,7 +119,7 @@ pub(crate) fn plane() -> &'static plx_platform::tv::plane::PlaneOwner {
 /// identical: the data comes from a source no automated or host run can reach, so without a seed
 /// every headless look at the screen shows the degenerate state. Here the source is the DEMUXER —
 /// `ff::track_names` publishes these when it opens a part — and the desktop simulator has no
-/// demuxer at all (the bundled FFmpeg is ARM, and `player::ffi_host` has no video path), so
+/// demuxer at all (the bundled FFmpeg is ARM, and `plx_play_feed::ffi_host` has no video path), so
 /// the picker there can only ever draw what PMS sent. Which, for the MP4 this exists to fix, is a
 /// column of identical language names.
 ///
@@ -621,12 +617,12 @@ pub fn finish_paused_seek(ps: &mut crate::route::PlaybackSession, pa: &mut adapt
 
 #[cfg(all(feature = "play-feed", any(test, feature = "test-support"), feature = "hostsim"))]
 pub fn force_pause_result_for_test(result: Option<c_int>) {
-    ffi_host::force_pause_result_for_test(result);
+    plx_play_feed::ffi_host::force_pause_result_for_test(result);
 }
 
 #[cfg(all(feature = "play-feed", any(test, feature = "test-support"), feature = "hostsim"))]
 pub fn force_play_result_for_test(result: Option<c_int>) {
-    ffi_host::force_play_result_for_test(result);
+    plx_play_feed::ffi_host::force_play_result_for_test(result);
 }
 
 /// Kodi parity: mirror the ACB PLAYSTATE on transport pause/resume (the pipeline Pause/Play alone
@@ -650,7 +646,7 @@ pub fn acb_mirror_playstate(ps: &crate::route::PlaybackSession, pa: &mut adapter
 /// only assert was safe.
 #[cfg(feature = "play-feed")]
 pub fn acb_mirror_playstate_on(sink: &dyn plx_platform::tv::sink::VideoSink, mt: &MainThread,
-    stage: shared::Stage, playing: bool) {
+    stage: plx_playback_contract::feed::Stage, playing: bool) {
     if !plane().handle() {
         return;
     }
@@ -667,8 +663,8 @@ pub fn acb_mirror_playstate_on(sink: &dyn plx_platform::tv::sink::VideoSink, mt:
 }
 
 #[cfg(feature = "play-feed")]
-fn acb_playstate_ready(stage: shared::Stage) -> bool {
-    stage >= shared::Stage::Streaming
+fn acb_playstate_ready(stage: plx_playback_contract::feed::Stage) -> bool {
+    stage >= plx_playback_contract::feed::Stage::Streaming
 }
 
 /// **Answer the Player machine's video-plane question from the seam** (spec §9), once per frame,
@@ -746,7 +742,7 @@ pub fn frames(ps: &crate::route::PlaybackSession) -> Option<i32> {
 /// True once this SESSION has presented at least one frame. Deliberately NOT `frames() > 0`: the
 /// pump zeroes `frames` as part of applying a seek (`pump.rs`), so that expression reads "no
 /// picture" for the whole of every seek. Cleared only by `reset_session` — i.e. by a real stop or
-/// a reload, both of which do blank the video plane. See [`shared::Shared::seen_frame`].
+/// a reload, both of which do blank the video plane. See [`plx_play_feed::shared::Shared::seen_frame`].
 pub fn seen_frame(ps: &crate::route::PlaybackSession) -> Option<bool> {
     ps.attempt_view().facts().seen_frame
 }
@@ -1599,14 +1595,14 @@ pub fn error_reason(ps: &crate::route::PlaybackSession) -> &'static str {
 /// made the `…` disc unreachable while stalled — delivers that event here rather than widening a
 /// module for a test. It writes nothing but the readout it is given.
 #[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
-pub fn swap_state_for_test(ps: &mut crate::route::PlaybackSession, s: shared::PlaybackState) -> u8 {
+pub fn swap_state_for_test(ps: &mut crate::route::PlaybackSession, s: plx_playback_contract::readout::PlaybackState) -> u8 {
     let prev = ps.readout().state() as u8;
     ps.step_readout(readout::ReadoutEvent::StateDerived(s));
     prev
 }
 #[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
 pub fn restore_state_for_test(ps: &mut crate::route::PlaybackSession, raw: u8) {
-    ps.step_readout(readout::ReadoutEvent::StateDerived(shared::PlaybackState::from_u8(raw)));
+    ps.step_readout(readout::ReadoutEvent::StateDerived(plx_playback_contract::readout::PlaybackState::from_u8(raw)));
 }
 /// Test-only: the native audio-track index the Feed's demuxer reads (what `SelectAudio` stores;
 /// -1 feeds the file's own default). Media's own choice is the session readout's
@@ -3250,9 +3246,9 @@ mod tests {
 
     #[test]
     fn acb_pause_resume_cannot_overtake_the_bind_transaction() {
-        assert!(!acb_playstate_ready(shared::Stage::Playing));
-        assert!(!acb_playstate_ready(shared::Stage::Bound));
-        assert!(acb_playstate_ready(shared::Stage::Streaming));
+        assert!(!acb_playstate_ready(plx_playback_contract::feed::Stage::Playing));
+        assert!(!acb_playstate_ready(plx_playback_contract::feed::Stage::Bound));
+        assert!(acb_playstate_ready(plx_playback_contract::feed::Stage::Streaming));
     }
 
     #[test]
@@ -3336,8 +3332,8 @@ mod tests {
         use std::sync::atomic::Ordering::Acquire;
         let _guard = plx_base::testlock::serial();
         let native = || {
-            crate::ff::native_audio::reset();
-            crate::ff::native_audio::publish_fed(crate::ff::native_audio::Kind::Opus, 2);
+            plx_play_feed::native_audio::reset();
+            plx_play_feed::native_audio::publish_fed(plx_play_feed::native_audio::Kind::Opus, 2);
         };
         let flagged = || FEED_SHARED.native_audio_refusals.load(Acquire) != 0;
         let refuse = |epoch: u32, num: i64| sf_on_event(epoch, 18, num, c"Audio Codec Not Supported".as_ptr());
@@ -3358,7 +3354,7 @@ mod tests {
         assert!(!flagged() && FEED_SHARED.load_failed.load(Acquire));
         FEED_SHARED.retire_native_session(epoch);
         crate::player::reset_session_for_test();
-        crate::ff::native_audio::reset();
+        plx_play_feed::native_audio::reset();
         let epoch = FEED_SHARED.begin_native_session().expect("session");
         refuse(epoch, 200);
         assert!(!flagged(), "the audio was not fed natively");
@@ -3373,7 +3369,7 @@ mod tests {
         assert!(!flagged());
         FEED_SHARED.retire_native_session(epoch);
         crate::player::reset_session_for_test();
-        crate::ff::native_audio::reset();
+        plx_play_feed::native_audio::reset();
     }
 
     /// **The pipeline's end-of-stream is reported once there is a picture.** C1 event log,
@@ -3656,7 +3652,7 @@ mod tests {
         let (entered_tx, entered_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         let callback = plx_base::task::spawn("native callback race", move || {
-            FEED_SHARED.with_native_session(epoch, shared::NativeEventClass::Other, 0, || {
+            FEED_SHARED.with_native_session(epoch, plx_play_feed::shared::NativeEventClass::Other, 0, || {
                 entered_tx.send(()).unwrap();
                 release_rx.recv().unwrap();
             });
@@ -3765,7 +3761,7 @@ mod tests {
         sf_on_event(epoch, 0, 8_000_000_000, std::ptr::null());
         assert_eq!(FEED_SHARED.frames.load(std::sync::atomic::Ordering::Acquire), 0);
         assert!(FEED_SHARED.commit_native_presentation_probe(epoch, |num| {
-            sf_on_event_inner(0, num, std::ptr::null(), shared::EventScope::Live)
+            sf_on_event_inner(0, num, std::ptr::null(), plx_play_feed::shared::EventScope::Live)
         }));
         assert_eq!(FEED_SHARED.frames.load(std::sync::atomic::Ordering::Acquire), 1);
         assert_eq!(
@@ -3797,7 +3793,7 @@ mod tests {
         );
         assert_eq!(
             FEED_SHARED.prepare_hls_user_pause(),
-            Some(shared::HlsUserPause::AlreadyHeld)
+            Some(plx_playback_contract::feed::HlsUserPause::AlreadyHeld)
         );
         struct Restore(bool);
         impl Drop for Restore {
@@ -3807,7 +3803,7 @@ mod tests {
             }
         }
         let _restore = Restore(old_paused);
-        let before = ffi_host::play_calls_for_test();
+        let before = plx_play_feed::ffi_host::play_calls_for_test();
         let mut pa = adapter::PlayerAdapter::new_fed(unsafe { plx_base::task::MainThread::assume() });
         let mut ps = crate::route::PlaybackSession::IDLE;
         commit_paused(&mut ps, &mut pa, true);
@@ -3816,7 +3812,7 @@ mod tests {
         assert!(!ps.readout().paused(), "the readout's copy follows the feed's commit");
 
         assert_eq!(
-            ffi_host::play_calls_for_test(),
+            plx_play_feed::ffi_host::play_calls_for_test(),
             before,
             "ordinary Resume called Starfish while the measured-runway gate still owned the clock",
         );

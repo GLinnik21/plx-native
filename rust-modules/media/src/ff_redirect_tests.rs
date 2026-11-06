@@ -108,8 +108,8 @@ fn request_line(head: &str) -> &str {
     head.split("\r\n").next().unwrap_or("")
 }
 
-fn hls_resource(port: u16) -> crate::hls::Resource {
-    crate::hls::Resource {
+fn hls_resource(port: u16) -> plx_play_feed::hls::Resource {
+    plx_play_feed::hls::Resource {
         origin: plx_plex::plex::Origin::http("127.0.0.1", port as i32),
         path: "/unused".into(),
     }
@@ -120,7 +120,7 @@ fn hls_open_plain(
     request_path: &str,
 ) -> (Result<(String, i64), String>, Box<HttpStream>) {
     let mut hs = plx_net::stream::http_stream_boxed();
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let mut net = HlsNet {
         hs: &mut *hs,
         curl: None,
@@ -145,14 +145,14 @@ fn hls_open_plain(
         Err(e) => Err(format!("{e:?}")),
     };
     plx_net::stream::http_close(&mut *hs);
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
     (outcome, hs)
 }
 
 /// A progressive open through the production helper, reduced to where it landed.
 fn progressive_open(port: u16, path: &str) -> Result<(String, i64), String> {
     let mut hs = plx_net::stream::http_stream_boxed();
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let origin = plx_plex::plex::Origin::http("127.0.0.1", port as i32);
     let opened = open_plain_progressive(&mut *hs, &origin, path, &mut *aq, &DemuxTransport::new(crate::curlio::range_factory(), crate::curlio::CREDENTIAL_GATE), super::test_support::demux_observer().as_ref());
     let outcome = match opened {
@@ -162,7 +162,7 @@ fn progressive_open(port: u16, path: &str) -> Result<(String, i64), String> {
         Err(e) => Err(format!("{e:?}")),
     };
     plx_net::stream::http_close(&mut *hs);
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
     outcome
 }
 
@@ -172,14 +172,14 @@ fn progressive_open_uses_the_injected_credential_gate_before_connect() {
     let _serial = plx_base::testlock::serial();
     let pms = Scripted::start(|_, _| ok_body("unreachable"));
     let mut hs = plx_net::stream::http_stream_boxed();
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let origin = Origin::http("127.0.0.1", pms.port as i32);
     let transport = DemuxTransport::new(crate::curlio::range_factory(), refuse);
     let opened = open_plain_progressive(&mut *hs, &origin, "/movie?X-Plex-Token=private", &mut *aq, &transport, super::test_support::demux_observer().as_ref());
     assert!(matches!(opened, Err(MediaOpenFail::Failed)));
     assert!(pms.requests().is_empty(), "refused URL must never reach the listener");
     plx_net::stream::http_close(&mut *hs);
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
 }
 
 #[test]
@@ -223,7 +223,7 @@ fn a_seek_reopen_follows_a_relative_302_and_keeps_its_range() {
         }
     });
     let mut hs = plx_net::stream::http_stream_boxed();
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let mut state = AvioState {
         observer: super::test_support::demux_observer(),
         src: Src::Socket {
@@ -256,7 +256,7 @@ fn a_seek_reopen_follows_a_relative_302_and_keeps_its_range() {
         _ => "<not a socket>".into(),
     };
     plx_net::stream::http_close(&mut *hs);
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
     assert_eq!(
         at, 2,
         "the seek must follow the 307 and land at the requested byte"
@@ -325,7 +325,7 @@ fn a_progressive_open_follows_a_302() {
         }
     });
     let mut hs = plx_net::stream::http_stream_boxed();
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let origin = plx_plex::plex::Origin::http("127.0.0.1", pms.port as i32);
     let opened = open_plain_progressive(
         &mut *hs,
@@ -340,7 +340,7 @@ fn a_progressive_open_follows_a_302() {
         _ => None,
     };
     plx_net::stream::http_close(&mut *hs);
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
     assert_eq!(
         outcome,
         Some((
@@ -397,7 +397,7 @@ fn a_redirected_master_playlist_resolves_its_children_against_the_redirect_targe
         }
     });
     let mut hs = plx_net::stream::http_stream_boxed();
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let mut net = HlsNet {
         hs: &mut *hs,
         curl: None,
@@ -419,7 +419,7 @@ fn a_redirected_master_playlist_resolves_its_children_against_the_redirect_targe
         .map(|c| c.media.path.clone())
         .map_err(|e| format!("{e:?}"));
     plx_net::stream::http_close(&mut *hs);
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
     assert_eq!(media, Ok("/new/variant.m3u8".to_string()));
 }
 

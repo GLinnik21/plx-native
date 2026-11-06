@@ -154,7 +154,7 @@ fn with_source<R>(port: u16, f: impl FnOnce(*mut c_void) -> R) -> R {
 /// [`with_source`] for a body of `size` bytes (-1: no length, as a transcode).
 fn with_sized_source<R>(port: u16, size: i64, f: impl FnOnce(*mut c_void) -> R) -> R {
     let mut hs = plx_net::stream::http_stream_boxed();
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let mut state = AvioState {
         observer: super::test_support::demux_observer(),
         src: Src::Socket {
@@ -185,7 +185,7 @@ fn with_sized_source<R>(port: u16, size: i64, f: impl FnOnce(*mut c_void) -> R) 
     assert_eq!(seek_cb(op, 0, SEEK_SET), 0, "the first open");
     let out = f(op);
     plx_net::stream::http_close(&mut *hs);
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
     out
 }
 

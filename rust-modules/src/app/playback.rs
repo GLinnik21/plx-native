@@ -1630,14 +1630,14 @@ mod paused_seek_tests {
     #[test]
     fn a_scrub_commit_is_a_bare_seek_whether_or_not_the_film_is_paused() {
         let _g = plx_base::testlock::serial();
-        let was_paused = plx_media::player::FEED_TX.paused.load(Relaxed);
-        let (was_seek, was_seeking) = (plx_media::player::FEED_TX.seek_to_ns.load(Relaxed), plx_media::player::FEED_SHARED.seeking.load(Relaxed));
+        let was_paused = plx_play_feed::shared::FEED_TX.paused.load(Relaxed);
+        let (was_seek, was_seeking) = (plx_play_feed::shared::FEED_TX.seek_to_ns.load(Relaxed), plx_play_feed::shared::FEED_SHARED.seeking.load(Relaxed));
         for paused in [true, false] {
             let mut ps = plx_media::route::PlaybackSession::IDLE;
             let mut pa = crate::app::adapters::backends::test_adapter();
             plx_media::player::commit_paused(&mut ps, &mut pa, paused);
             commit_seek(&mut ps, &mut pa, 42_000_000_000);
-            assert_eq!(plx_media::player::FEED_TX.seek_to_ns.load(Relaxed), 42_000_000_000,
+            assert_eq!(plx_play_feed::shared::FEED_TX.seek_to_ns.load(Relaxed), 42_000_000_000,
                 "the command itself must carry the target");
             assert!(!resume_pend(&ps));
             assert!(
@@ -1650,8 +1650,8 @@ mod paused_seek_tests {
         let mut ps = plx_media::route::PlaybackSession::IDLE;
         let mut pa = crate::app::adapters::backends::test_adapter();
         plx_media::player::commit_paused(&mut ps, &mut pa, was_paused);
-        plx_media::player::FEED_TX.seek_to_ns.store(was_seek, Relaxed);
-        plx_media::player::FEED_SHARED.seeking.store(was_seeking, Relaxed);
+        plx_play_feed::shared::FEED_TX.seek_to_ns.store(was_seek, Relaxed);
+        plx_play_feed::shared::FEED_SHARED.seeking.store(was_seeking, Relaxed);
     }
 }
 

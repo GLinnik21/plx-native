@@ -125,26 +125,6 @@ pub const PAYLOAD_AV: &str = r#"{"args":[{"mediaTransportType":"BUFFERSTREAM","o
 /// run: libpf logs a pmlog error naming the property if it does not.
 pub const PAYLOAD_H265: &str = r#"{"args":[{"mediaTransportType":"BUFFERSTREAM","option":{"appId":"@APPID@","externalStreamingInfo":{"contents":{"codec":{"video":"H265"},"esInfo":{"pauseAtDecodeTime":false,"ptsToDecode":0,"seperatedPTS":true},"format":"RAW","provider":"plxnative"},"streamQualityInfo":true,"streamQualityInfoNonFlushable":true,"audioSync":true,"restartStreaming":false,"bufferingCtrInfo":{"bufferMaxLevel":0,"bufferMinLevel":0,"preBufferByte":0,"qBufferLevelAudio":0,"qBufferLevelVideo":0,"srcBufferLevelAudio":{"minimum":1,"maximum":32768},"srcBufferLevelVideo":{"minimum":1,"maximum":8388608}}},"needAudio":false,"queryPosition":false,"lowDelayMode":true,"transmission":{"contentsType":"LIVE"},"adaptiveStreaming":{"audioOnly":false,"maxWidth":3840,"maxHeight":2160,"maxFrameRate":60}}}]}"#;
 
-/// split Annex-B into AUs on the 5-byte AUD prefix 00 00 00 01 <aud5>
-/// (H264 AUD = 0x09; HEVC AUD is NAL type 35 → first header byte 0x46).
-pub fn bf_split(data: &[u8], aud5: u8) -> Vec<usize> {
-    let mut au = Vec::new();
-    let mut i = 0usize;
-    while i + 4 < data.len() {
-        if data[i] == 0
-            && data[i + 1] == 0
-            && data[i + 2] == 0
-            && data[i + 3] == 1
-            && data[i + 4] == aud5
-        {
-            au.push(i);
-            i += 4;
-        }
-        i += 1;
-    }
-    au
-}
-
 /// Build the streamed BUFFERSTREAM Load payload from PAYLOAD_AV, substituting the item's real
 /// video/audio codecs + a sink envelope. video = "H264"|"H265", audio = "AC3"|"AC3 PLUS"|"AAC"|"DTS"|"OPUS"|"PCM".
 /// What the Load's `adaptiveStreaming` block declares: the sink the pipeline ALLOCATES for, on the

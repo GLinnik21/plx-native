@@ -39,7 +39,7 @@ pub(crate) use plx_platform::devcaps::LoadVideo;
 #[cfg(test)]
 pub(crate) use plx_play_feed::load_video_refused;
 #[cfg(all(test, feature = "hostsim"))]
-use super::shared::Stage;
+use plx_playback_contract::feed::Stage;
 #[cfg(all(test, feature = "hostsim"))]
 use plx_play_feed::seek::{inplace_layout_known, old_abi_seek_tested, select_seek_mode};
 #[cfg(all(test, feature = "hostsim"))]
@@ -115,7 +115,8 @@ pub const fn feed_leads_ms() -> (i64, i64) {
 #[cfg(all(test, feature = "hostsim"))]
 use plx_play_feed::feed_state::{AQ_VIDEO_BYTES, AQ_AUDIO_BYTES};
 
-pub use plx_play_feed::feed_state::{AuBox, Engine, FeedPace, SampleBuf, Source};
+#[cfg(all(test, feature = "hostsim"))]
+use plx_play_feed::feed_state::{Engine, FeedPace, Source};
 #[cfg(all(test, feature = "hostsim"))]
 use plx_play_feed::feed_state::engines_dropped_for_test;
 
@@ -123,22 +124,6 @@ use plx_play_feed::feed_state::engines_dropped_for_test;
 // `pa: &mut PlayerAdapter` from the loop. `player::adapter` carries the confinement argument the
 // four `static mut` accessors used to carry here, and says what the owned slot proves that the
 // `&MainThread` argument could only assert.
-
-/// A native `Load` that teardown could not wait for.
-///
-/// The D.1.4 budget turns a `Load` that never returns into a failure read-out, but the object that
-/// `Load` is running on cannot be touched until the call comes back — `Unload`/`Destroy` on it
-/// while the load thread is still inside is the issue #74 race — and joining the media thread on
-/// the SDL main thread froze the whole app on exactly the set where the Load was hung. So teardown
-/// parks the thread, the payload it reads and the epoch here instead, and
-/// [`plx_play_feed::native_executor::reap_abandoned_load_resource`] runs the ordinary native release (`Unload` → callback gate → epoch
-/// retirement → D1 or quarantine) on the main thread once the thread has finished. Until then every
-/// start is refused rather than handed the same object; if the `Load` never returns the object is
-/// leaked for the life of the process, which is what the C seam would have to do anyway.
-pub use plx_play_feed::feed_state::AbandonedLoad;
-
-/// A real stop hands its native object to off-frame Unload and retains its Engine until the tail.
-pub use plx_play_feed::feed_state::PendingRelease;
 
 /// The `on_release_step` hook: the release's breadcrumbs belong to the common telemetry owner.
 pub fn release_step(step: plx_playback_contract::feed::ReleaseStep) {
@@ -400,9 +385,6 @@ pub(super) fn clear_failed_engine_release_arm() {
     FAILED_ENGINE_RELEASE_ARMED.store(false, Ordering::Release);
 }
 
-pub use plx_play_feed::native_executor::drain_aq;
-
-
 pub(crate) use plx_playback_contract::feed::MAX_FEED_AHEAD_NS;
 #[cfg(test)]
 pub(crate) use plx_play_feed::feed_state::{AUDIO_LEAD_IN_NS, PRIME_VIDEO_MAX_NS};
@@ -424,7 +406,8 @@ fn audio_sink_pts(fp: i64, pcm_lead_ns: i64) -> i64 {
 #[cfg(all(test, feature = "hostsim"))]
 use plx_play_feed::native_executor::{settle_pcm_lead, hls_candidate_snapshot_stable};
 
-pub use plx_play_feed::native_executor::arm_live_clock_prime;
+#[cfg(all(test, feature = "hostsim"))]
+use plx_play_feed::native_executor::arm_live_clock_prime;
 
 
 #[cfg(all(test, feature = "hostsim"))]
@@ -448,8 +431,8 @@ mod native_lifecycle_host_seam_tests {
 
     impl Drop for FreshProcess {
         fn drop(&mut self) {
-            crate::player::ffi_host::reset_native_lifecycle_for_test();
-            crate::player::ffi_host::force_clocksink_for_test(false);
+            plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+            plx_play_feed::ffi_host::force_clocksink_for_test(false);
             crate::player::reset_session_for_test();
         }
     }
@@ -502,8 +485,8 @@ mod native_lifecycle_host_seam_tests {
     #[test]
     fn a_proven_release_leaves_unload_destroyed_and_window_destroy_in_order() {
         let _serial = plx_base::testlock::serial();
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
-        crate::player::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
         crate::player::reset_session_for_test();
         let _fresh_process = FreshProcess;
         let consent = Consented::grant_in_cycle();
@@ -521,15 +504,15 @@ mod native_lifecycle_host_seam_tests {
     #[test]
     fn an_unproven_release_records_quarantine_not_destroyed() {
         let _serial = plx_base::testlock::serial();
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
-        crate::player::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
         crate::player::reset_session_for_test();
         let _fresh_process = FreshProcess;
         let consent = Consented::grant_in_cycle();
         let mt = unsafe { MainThread::assume() };
         let epoch = loaded_epoch(&mt);
         // No callback ever crossed the gate: the evidence is incomplete and the object is kept.
-        crate::player::ffi_host::force_callback_intercepts_for_test(0);
+        plx_play_feed::ffi_host::force_callback_intercepts_for_test(0);
         assert_eq!(release_native_object_timed(&mt, epoch, &mut TeardownSpans::new()),
             plx_playback_contract::ReleaseStatus::Quarantined);
         assert_eq!(
@@ -542,8 +525,8 @@ mod native_lifecycle_host_seam_tests {
     #[test]
     fn a_seam_rejected_destroy_is_recorded_as_quarantine() {
         let _serial = plx_base::testlock::serial();
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
-        crate::player::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
         crate::player::reset_session_for_test();
         let _fresh_process = FreshProcess;
         let consent = Consented::grant_in_cycle();
@@ -551,7 +534,7 @@ mod native_lifecycle_host_seam_tests {
         let epoch = loaded_epoch(&mt);
         // Rust's three proofs hold, but the C seam's own evidence does not: `destroy` answers 0,
         // and the crumb must say so rather than "destroyed".
-        crate::player::ffi_host::force_destroy_refusal_for_test(true);
+        plx_play_feed::ffi_host::force_destroy_refusal_for_test(true);
         assert_eq!(release_native_object_timed(&mt, epoch, &mut TeardownSpans::new()),
             plx_playback_contract::ReleaseStatus::Quarantined);
         let recorded = plx_telemetry::telemetry::window::take_recorded_for_test();
@@ -563,8 +546,8 @@ mod native_lifecycle_host_seam_tests {
     #[test]
     fn the_acb_plane_unload_is_a_step_only_when_acb_is_the_plane() {
         let _serial = plx_base::testlock::serial();
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
-        crate::player::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
         crate::player::reset_session_for_test();
         let _fresh_process = FreshProcess;
         let consent = Consented::grant_in_cycle();
@@ -586,8 +569,8 @@ mod native_lifecycle_host_seam_tests {
     #[test]
     fn without_a_dispatchable_object_or_an_exported_window_nothing_is_recorded() {
         let _serial = plx_base::testlock::serial();
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
-        crate::player::ffi_host::force_clocksink_for_test(false);
+        plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+        plx_play_feed::ffi_host::force_clocksink_for_test(false);
         crate::player::reset_session_for_test();
         let _fresh_process = FreshProcess;
         let consent = Consented::grant_in_cycle();
@@ -604,15 +587,15 @@ mod native_lifecycle_host_seam_tests {
     #[test]
     fn creating_the_exported_window_is_a_step_only_in_that_mode() {
         let _serial = plx_base::testlock::serial();
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
+        plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
         crate::player::reset_session_for_test();
         let _fresh_process = FreshProcess;
         let consent = Consented::grant_in_cycle();
         let mt = unsafe { MainThread::assume() };
-        crate::player::ffi_host::force_clocksink_for_test(false);
+        plx_play_feed::ffi_host::force_clocksink_for_test(false);
         let _ = with_window_id(&mt, "{}");
         assert!(plx_telemetry::telemetry::window::take_recorded_for_test().is_empty());
-        crate::player::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
         let _ = with_window_id(&mt, "{}");
         assert_eq!(
             plx_telemetry::telemetry::window::take_recorded_for_test(),
@@ -639,8 +622,8 @@ mod native_lifecycle_host_seam_tests {
     fn trailer_starts_and_reloads_add_no_window_crumbs_and_a_whole_cycle_fits_the_ring() {
         use plx_telemetry::telemetry::window::{self, Observation, Stage};
         let _serial = plx_base::testlock::serial();
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
-        crate::player::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
         crate::player::reset_session_for_test();
         let _fresh_process = FreshProcess;
         let consent = Consented::grant();
@@ -1241,8 +1224,8 @@ mod prime_livelock_tests {
             startup_first_play_done: false,
             startup_play_refused: false,
             startup_immediate_play: false,
-            aq_video: Some(crate::aq::aq_new(AQ_VIDEO_BYTES)),
-            aq_audio: Some(crate::aq::aq_new(AQ_AUDIO_BYTES)),
+            aq_video: Some(plx_play_feed::aq::aq_new(AQ_VIDEO_BYTES)),
+            aq_audio: Some(plx_play_feed::aq::aq_new(AQ_AUDIO_BYTES)),
             hs: plx_net::stream::http_stream_boxed(),
             pending_video: None,
             pending_audio: None,
@@ -1265,9 +1248,9 @@ mod prime_livelock_tests {
 
     fn push_segment_at(eng: &mut Engine, base_ns: i64) {
         let au = [0u8; 64];
-        let qv = &mut **eng.aq_video.as_mut().unwrap() as *mut crate::aq::AuQueue;
+        let qv = &mut **eng.aq_video.as_mut().unwrap() as *mut plx_play_feed::aq::AuQueue;
         for i in 0..VIDEO_AUS {
-            crate::aq::aq_push(
+            plx_play_feed::aq::aq_push(
                 qv,
                 au.as_ptr(),
                 au.len() as c_int,
@@ -1276,9 +1259,9 @@ mod prime_livelock_tests {
                 1,
             );
         }
-        let qa = &mut **eng.aq_audio.as_mut().unwrap() as *mut crate::aq::AuQueue;
+        let qa = &mut **eng.aq_audio.as_mut().unwrap() as *mut plx_play_feed::aq::AuQueue;
         for i in 0..AUDIO_AUS {
-            crate::aq::aq_push(
+            plx_play_feed::aq::aq_push(
                 qa,
                 au.as_ptr(),
                 au.len() as c_int,
@@ -1310,10 +1293,10 @@ mod prime_livelock_tests {
         struct DisarmSink;
         impl Drop for DisarmSink {
             fn drop(&mut self) {
-                crate::player::ffi_host::force_clocksink_for_test(false);
+                plx_play_feed::ffi_host::force_clocksink_for_test(false);
             }
         }
-        crate::player::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
         let _disarm = DisarmSink;
 
         let mt = unsafe { plx_base::task::MainThread::assume() };
@@ -1368,7 +1351,7 @@ mod prime_livelock_tests {
     struct SlowFeed;
     impl SlowFeed {
         fn arm(step_us: u64) -> Self {
-            crate::player::ffi_host::force_clocksink_for_test(true);
+            plx_play_feed::ffi_host::force_clocksink_for_test(true);
             crate::player::test_physical::FEED_TEST_CLOCK_STEP_US.with(|s| s.set(step_us));
             SlowFeed
         }
@@ -1376,7 +1359,7 @@ mod prime_livelock_tests {
     impl Drop for SlowFeed {
         fn drop(&mut self) {
             crate::player::test_physical::FEED_TEST_CLOCK_STEP_US.with(|s| s.set(0));
-            crate::player::ffi_host::force_clocksink_for_test(false);
+            plx_play_feed::ffi_host::force_clocksink_for_test(false);
         }
     }
 
@@ -1519,10 +1502,10 @@ mod prime_livelock_tests {
                 FEED_SHARED
                     .hls_prime_runway_ms
                     .store(self.runway, Ordering::Relaxed);
-                crate::player::ffi_host::force_clocksink_for_test(false);
+                plx_play_feed::ffi_host::force_clocksink_for_test(false);
             }
         }
-        crate::player::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
         let old = FEED_SHARED.hls_prime_runway_ms.swap(3_000, Ordering::Relaxed);
         let _restore = Restore { runway: old };
         FEED_SHARED.pres_fed.store(PRES_NONE, Ordering::Relaxed);
@@ -1565,10 +1548,10 @@ mod prime_livelock_tests {
                     .hls_rebuffering
                     .store(self.rebuffering, Ordering::Relaxed);
                 FEED_SHARED.finish_hls_recovery();
-                crate::player::ffi_host::force_clocksink_for_test(false);
+                plx_play_feed::ffi_host::force_clocksink_for_test(false);
             }
         }
-        crate::player::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
         let restore = Restore {
             runway: FEED_SHARED.hls_prime_runway_ms.swap(500, Ordering::Relaxed),
             rebuffering: FEED_SHARED.hls_rebuffering.swap(false, Ordering::Relaxed),
@@ -1624,11 +1607,11 @@ mod prime_livelock_tests {
                 FEED_SHARED
                     .hls_trial_reserve_ms
                     .store(self.trial_reserve, Ordering::Relaxed);
-                crate::player::ffi_host::force_clocksink_for_test(false);
+                plx_play_feed::ffi_host::force_clocksink_for_test(false);
             }
         }
 
-        crate::player::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
         let _restore = Restore {
             runway: FEED_SHARED.hls_prime_runway_ms.swap(500, Ordering::Relaxed),
             trial_reserve: FEED_SHARED.hls_trial_reserve_ms.swap(500, Ordering::Relaxed),
@@ -1708,11 +1691,11 @@ mod prime_livelock_tests {
                 FEED_SHARED.pts_shift.store(self.pts_shift, Ordering::Relaxed);
                 FEED_TX.commit_paused(self.paused);
                 FEED_SHARED.finish_hls_recovery();
-                crate::player::ffi_host::force_clocksink_for_test(false);
+                plx_play_feed::ffi_host::force_clocksink_for_test(false);
             }
         }
 
-        crate::player::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
         let old_paused = FEED_TX.paused.load(Ordering::Acquire);
         FEED_TX.commit_paused(false);
         let stable_generation = FEED_SHARED.hls_candidate_generation.load(Ordering::Acquire);
@@ -1821,10 +1804,10 @@ mod prime_livelock_tests {
                 FEED_SHARED.seeking.store(self.seeking, Ordering::Relaxed);
                 FEED_TX.paused.store(self.paused, Ordering::Relaxed);
                 FEED_SHARED.finish_hls_recovery();
-                crate::player::ffi_host::force_clocksink_for_test(false);
+                plx_play_feed::ffi_host::force_clocksink_for_test(false);
             }
         }
-        crate::player::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
         let _restore = Restore {
             runway: FEED_SHARED.hls_prime_runway_ms.swap(3_000, Ordering::Relaxed),
             rebuffering: FEED_SHARED.hls_rebuffering.swap(true, Ordering::Relaxed),
@@ -1899,11 +1882,11 @@ mod prime_livelock_tests {
                 FEED_SHARED.pres_fed.store(self.presented, Ordering::Relaxed);
                 FEED_TX.commit_paused(self.paused);
                 FEED_SHARED.reset_hls_clock_for_test();
-                crate::player::ffi_host::force_clocksink_for_test(false);
+                plx_play_feed::ffi_host::force_clocksink_for_test(false);
             }
         }
 
-        crate::player::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
         FEED_SHARED.reset_hls_clock_for_test();
         let base = 10_000_000_000;
         let _restore = Restore {
@@ -1921,16 +1904,16 @@ mod prime_livelock_tests {
         };
         let pause = FEED_SHARED.prepare_hls_user_pause().expect("reserve user Pause");
         let pause = match pause {
-            super::super::shared::HlsUserPause::Issue(token) => token,
+            plx_playback_contract::feed::HlsUserPause::Issue(token) => token,
             other => panic!("unexpected Pause reservation: {other:?}"),
         };
         assert_eq!(
             FEED_SHARED.complete_hls_user_pause(pause, true),
-            super::super::shared::HlsPauseCompletion::Accepted
+            plx_playback_contract::feed::HlsPauseCompletion::Accepted
         );
         assert_eq!(
             FEED_SHARED.prepare_hls_user_resume(true),
-            Some(super::super::shared::HlsUserResume::Prime)
+            Some(plx_playback_contract::feed::HlsUserResume::Prime)
         );
 
         let mt = unsafe { plx_base::task::MainThread::assume() };
@@ -1939,10 +1922,10 @@ mod prime_livelock_tests {
         arm_live_clock_prime(&mut eng);
         assert_eq!(eng.seek_base_pts, base);
         push_segment_at(&mut eng, base);
-        let before = crate::player::ffi_host::play_calls_for_test();
+        let before = plx_play_feed::ffi_host::play_calls_for_test();
         try_prime(&mt, &mut eng);
         assert_eq!(
-            crate::player::ffi_host::play_calls_for_test(),
+            plx_play_feed::ffi_host::play_calls_for_test(),
             before,
             "Resume intent itself issued Play before feeding reopened",
         );
@@ -1952,7 +1935,7 @@ mod prime_livelock_tests {
         eng.max_fed_video_pts = base + PRIME_NS;
         eng.max_fed_audio_pts = base;
         try_prime(&mt, &mut eng);
-        assert_eq!(crate::player::ffi_host::play_calls_for_test(), before);
+        assert_eq!(plx_play_feed::ffi_host::play_calls_for_test(), before);
         for _ in 0..600 {
             tick(&mt, &mut eng);
         }
@@ -1964,7 +1947,7 @@ mod prime_livelock_tests {
             accepted_video < runway_ms * 1_000_000 && accepted_audio < runway_ms * 1_000_000,
             "the fixture must leave part of the measured runway in the application queues",
         );
-        assert_eq!(crate::player::ffi_host::play_calls_for_test(), before + 1);
+        assert_eq!(plx_play_feed::ffi_host::play_calls_for_test(), before + 1);
         assert!(
             !eng.prime_play,
             "viewer Resume stayed fenced after a balanced decoder prime",
@@ -1990,13 +1973,13 @@ mod prime_livelock_tests {
                     .hls_rebuffering
                     .store(self.rebuffering, Ordering::Relaxed);
                 FEED_SHARED.finish_hls_recovery();
-                crate::player::ffi_host::force_play_result_for_test(None);
-                crate::player::ffi_host::force_clocksink_for_test(false);
+                plx_play_feed::ffi_host::force_play_result_for_test(None);
+                plx_play_feed::ffi_host::force_clocksink_for_test(false);
             }
         }
 
-        crate::player::ffi_host::force_clocksink_for_test(true);
-        crate::player::ffi_host::force_play_result_for_test(Some(0));
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::force_play_result_for_test(Some(0));
         let _restore = Restore {
             runway: FEED_SHARED.hls_prime_runway_ms.swap(500, Ordering::Relaxed),
             rebuffering: FEED_SHARED.hls_rebuffering.swap(true, Ordering::Relaxed),
@@ -2126,8 +2109,8 @@ mod off_frame_release_tests {
     struct Cleanup;
     impl Drop for Cleanup {
         fn drop(&mut self) {
-            crate::player::ffi_host::reset_native_lifecycle_for_test();
-            crate::player::ffi_host::force_clocksink_for_test(false);
+            plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+            plx_play_feed::ffi_host::force_clocksink_for_test(false);
             FEED_SHARED.test_force_native_idle();
             crate::player::reset_session_for_test();
             crate::route::reset_player_control_for_test(crate::route::idle_session_for_test());
@@ -2157,8 +2140,8 @@ mod off_frame_release_tests {
     fn arm(ps: &crate::route::PlaybackSession) -> crate::player::adapter::PlayerAdapter {
         crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(ps);
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
-        crate::player::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
         crate::player::adapter::PlayerAdapter::new_probed(unsafe { MainThread::assume() })
     }
 
@@ -2169,7 +2152,7 @@ mod off_frame_release_tests {
         let mut pa = arm(&ps);
         let _cleanup = Cleanup;
         let epoch = playing_engine(&mut pa);
-        crate::player::ffi_host::delay_unload_for_test(UNLOAD_MS);
+        plx_play_feed::ffi_host::delay_unload_for_test(UNLOAD_MS);
 
         let started = std::time::Instant::now();
         stop_bufferfeed(&mut ps, &mut pa);
@@ -2221,7 +2204,7 @@ mod off_frame_release_tests {
         assert!(!pa.has_pending_release(), "the tail must leave no release pending");
         assert_eq!(ready_now(), 0, "the released object must be destroyed before a new one may load");
         assert!(
-            !crate::player::ffi_host::lifecycle_blocked_for_test(),
+            !plx_play_feed::ffi_host::lifecycle_blocked_for_test(),
             "the off-frame release must end in a D1 with complete evidence, not a quarantine"
         );
         let next = FEED_SHARED.begin_native_session().expect("native sessions resume after the release");
@@ -2238,7 +2221,7 @@ mod off_frame_release_tests {
         // The ordinary return: the Unload comes back while Home draws; a later frame's poll runs
         // the tail.
         playing_engine(&mut pa);
-        crate::player::ffi_host::delay_unload_for_test(50);
+        plx_play_feed::ffi_host::delay_unload_for_test(50);
         stop_bufferfeed(&mut ps, &mut pa);
         assert!(pa.has_pending_release());
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -2248,18 +2231,18 @@ mod off_frame_release_tests {
         }
         assert!(!pa.has_pending_release());
         assert_eq!(ready_now(), 0);
-        assert!(!crate::player::ffi_host::lifecycle_blocked_for_test(), "the poll's tail must D1");
+        assert!(!plx_play_feed::ffi_host::lifecycle_blocked_for_test(), "the poll's tail must D1");
 
         // The exit (`app::run::shutdown`): a release still running is waited for, not abandoned.
         crate::route::reset_player_control_for_test(&ps);
         playing_engine(&mut pa);
-        crate::player::ffi_host::delay_unload_for_test(UNLOAD_MS);
+        plx_play_feed::ffi_host::delay_unload_for_test(UNLOAD_MS);
         stop_bufferfeed(&mut ps, &mut pa);
         assert!(pa.has_pending_release());
         finish_release_for_test(&mut pa);
         assert!(!pa.has_pending_release(), "finish_release must not return with the Unload running");
         assert_eq!(ready_now(), 0);
-        assert!(!crate::player::ffi_host::lifecycle_blocked_for_test());
+        assert!(!plx_play_feed::ffi_host::lifecycle_blocked_for_test());
     }
 
     #[test]
@@ -2269,11 +2252,11 @@ mod off_frame_release_tests {
         let mut pa = arm(&ps);
         let _cleanup = Cleanup;
         playing_engine(&mut pa);
-        crate::player::ffi_host::delay_unload_for_test(50);
+        plx_play_feed::ffi_host::delay_unload_for_test(50);
         stop_bufferfeed(&mut ps, &mut pa);
         assert!(pa.has_pending_release());
         finish_release_for_test(&mut pa);
-        assert!(!crate::player::ffi_host::lifecycle_blocked_for_test(), "the release must still D1");
+        assert!(!plx_play_feed::ffi_host::lifecycle_blocked_for_test(), "the release must still D1");
         assert_eq!(
             FEED_SHARED.dg_cb_count.load(Ordering::Relaxed),
             0,
@@ -2290,7 +2273,7 @@ mod off_frame_release_tests {
             let mut pa = arm(&ps);
             let _cleanup = Cleanup;
             playing_engine(&mut pa);
-            crate::player::ffi_host::delay_unload_for_test(UNLOAD_MS);
+            plx_play_feed::ffi_host::delay_unload_for_test(UNLOAD_MS);
             let started = std::time::Instant::now();
             stop_bufferfeed(&mut ps, &mut pa);
             assert!(pa.has_pending_release());
@@ -2319,7 +2302,7 @@ mod off_frame_release_tests {
                 "the release finished before the Unload returned"
             );
             assert_eq!(ready_now(), 0);
-            assert!(!crate::player::ffi_host::lifecycle_blocked_for_test());
+            assert!(!plx_play_feed::ffi_host::lifecycle_blocked_for_test());
         }
     }
 
@@ -2330,7 +2313,7 @@ mod off_frame_release_tests {
         let mut pa = arm(&ps);
         let _cleanup = Cleanup;
         playing_engine(&mut pa);
-        crate::player::ffi_host::delay_unload_for_test(150);
+        plx_play_feed::ffi_host::delay_unload_for_test(150);
         pa.probe().resources(|resources| resources.set_unload_spawner(Some(|_| None)));
         let started = std::time::Instant::now();
         stop_bufferfeed(&mut ps, &mut pa);
@@ -2340,7 +2323,7 @@ mod off_frame_release_tests {
         );
         assert!(!pa.has_pending_release(), "no worker exists, so nothing may be parked");
         assert_eq!(ready_now(), 0, "the object must be destroyed");
-        assert!(!crate::player::ffi_host::lifecycle_blocked_for_test(), "the fallback must end in a D1");
+        assert!(!plx_play_feed::ffi_host::lifecycle_blocked_for_test(), "the fallback must end in a D1");
     }
 
     /// Lets the held host `Unload` go when a test unwinds, so a failed assertion cannot leave
@@ -2348,7 +2331,7 @@ mod off_frame_release_tests {
     struct ReleaseUnloadOnDrop;
     impl Drop for ReleaseUnloadOnDrop {
         fn drop(&mut self) {
-            crate::player::ffi_host::release_unload_for_test();
+            plx_play_feed::ffi_host::release_unload_for_test();
         }
     }
 
@@ -2362,7 +2345,7 @@ mod off_frame_release_tests {
         let _cleanup = Cleanup;
         let _release = ReleaseUnloadOnDrop;
         playing_engine(&mut pa);
-        crate::player::ffi_host::hold_unload_for_test();
+        plx_play_feed::ffi_host::hold_unload_for_test();
         let t_stop = std::time::Instant::now();
         stop_bufferfeed(&mut ps, &mut pa);
         assert!(pa.has_pending_release());
@@ -2371,7 +2354,7 @@ mod off_frame_release_tests {
             .name("test-unload-release".into())
             .spawn(|| {
                 std::thread::sleep(std::time::Duration::from_secs(3));
-                crate::player::ffi_host::release_unload_for_test();
+                plx_play_feed::ffi_host::release_unload_for_test();
             })
             .expect("spawn helper");
 
@@ -2432,7 +2415,7 @@ mod off_frame_release_tests {
         }
         assert!(!pa.has_pending_release());
         assert_eq!(ready_now(), 0);
-        assert!(!crate::player::ffi_host::lifecycle_blocked_for_test(), "the late tail must D1");
+        assert!(!plx_play_feed::ffi_host::lifecycle_blocked_for_test(), "the late tail must D1");
         assert_ne!(
             start_bufferfeed_tracked(&mut ps, &mut pa),
             BufferfeedStartOutcome::Deferred,
@@ -2449,7 +2432,7 @@ mod off_frame_release_tests {
         let mut pa = arm(&ps);
         let _cleanup = Cleanup;
         playing_engine(&mut pa);
-        crate::player::ffi_host::delay_unload_for_test(50);
+        plx_play_feed::ffi_host::delay_unload_for_test(50);
         stop_bufferfeed(&mut ps, &mut pa);
         assert!(!ps.readout().start_queued());
         assert_eq!(start_bufferfeed_tracked(&mut ps, &mut pa), BufferfeedStartOutcome::Deferred);
@@ -2478,7 +2461,7 @@ mod off_frame_release_tests {
         let mut pa = arm(&ps);
         let _cleanup = Cleanup;
         playing_engine(&mut pa);
-        crate::player::ffi_host::delay_unload_for_test(50);
+        plx_play_feed::ffi_host::delay_unload_for_test(50);
         stop_bufferfeed(&mut ps, &mut pa);
         assert_eq!(start_bufferfeed_tracked(&mut ps, &mut pa), BufferfeedStartOutcome::Deferred);
         assert_eq!(crate::player::state(&ps), crate::player::PlaybackState::Resolving, "derived from the machine");
@@ -2513,7 +2496,7 @@ mod off_frame_release_tests {
         let _cleanup = Cleanup;
         let _release = ReleaseUnloadOnDrop;
         playing_engine(&mut pa);
-        crate::player::ffi_host::hold_unload_for_test();
+        plx_play_feed::ffi_host::hold_unload_for_test();
         stop_bufferfeed(&mut ps, &mut pa);
         let t = std::time::Instant::now();
         assert_eq!(start_bufferfeed_tracked(&mut ps, &mut pa), BufferfeedStartOutcome::Deferred);
@@ -2523,7 +2506,7 @@ mod off_frame_release_tests {
         poll_release(&mut ps, &mut pa, std::time::Instant::now());
         assert!(t.elapsed() < std::time::Duration::from_millis(50), "the restore blocked the frame");
         assert_eq!(pa.take_queued_landing(), crate::player::adapter::QueuedLanding::Waiting);
-        crate::player::ffi_host::release_unload_for_test();
+        plx_play_feed::ffi_host::release_unload_for_test();
         let give_up = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let landing = loop {
             poll_release(&mut ps, &mut pa, std::time::Instant::now());
@@ -2556,7 +2539,7 @@ mod off_frame_release_tests {
             let _release = ReleaseUnloadOnDrop;
             reset_for_test();
             playing_engine(&mut pa);
-            crate::player::ffi_host::hold_unload_for_test();
+            plx_play_feed::ffi_host::hold_unload_for_test();
             stop_bufferfeed(&mut ps, &mut pa);
             set_phase_for_test(Phase::Fetching);
             assert_eq!(start_bufferfeed_tracked(&mut ps, &mut pa), BufferfeedStartOutcome::Deferred);
@@ -2567,7 +2550,7 @@ mod off_frame_release_tests {
                 poll_release(&mut ps, &mut pa, later);
                 assert_eq!(phase_for_test(), Phase::Idle, "a refused start gives the slot back");
             } else {
-                crate::player::ffi_host::release_unload_for_test();
+                plx_play_feed::ffi_host::release_unload_for_test();
                 let give_up = std::time::Instant::now() + std::time::Duration::from_secs(5);
                 while phase_for_test() == Phase::Fetching {
                     assert!(std::time::Instant::now() < give_up, "the queued start never launched");
@@ -2591,7 +2574,7 @@ mod off_frame_release_tests {
         let _cleanup = Cleanup;
         let _release = ReleaseUnloadOnDrop;
         playing_engine(&mut pa);
-        crate::player::ffi_host::hold_unload_for_test();
+        plx_play_feed::ffi_host::hold_unload_for_test();
         stop_bufferfeed(&mut ps, &mut pa);
         assert_eq!(start_bufferfeed_tracked(&mut ps, &mut pa), BufferfeedStartOutcome::Deferred);
         pa.watch_queued_start();
@@ -2611,7 +2594,7 @@ mod off_frame_release_tests {
         let _cleanup = Cleanup;
         let _release = ReleaseUnloadOnDrop;
         playing_engine(&mut pa);
-        crate::player::ffi_host::hold_unload_for_test();
+        plx_play_feed::ffi_host::hold_unload_for_test();
         stop_bufferfeed(&mut ps, &mut pa);
         assert!(pa.has_pending_release());
         // An injected clock that jumps a second per look: no real sleep, the deadline in ~11 reads.
@@ -2634,7 +2617,7 @@ mod off_frame_release_tests {
         let dropped = engines_dropped_for_test();
         drop(pa);
         assert_eq!(engines_dropped_for_test(), dropped, "dropping the adapter freed the Engine");
-        crate::player::ffi_host::release_unload_for_test();
+        plx_play_feed::ffi_host::release_unload_for_test();
     }
 
     /// The flake behind `exit_after_a_load_timeout_never_quits_the_display_under_a_hung_load`: a
@@ -2650,16 +2633,16 @@ mod off_frame_release_tests {
         let _cleanup = Cleanup;
         let _release = ReleaseUnloadOnDrop;
         playing_engine(&mut pa);
-        crate::player::ffi_host::hold_unload_for_test();
+        plx_play_feed::ffi_host::hold_unload_for_test();
         stop_bufferfeed(&mut ps, &mut pa);
         assert_eq!(
-            crate::player::ffi_host::unload_workers_for_test(),
+            plx_play_feed::ffi_host::unload_workers_for_test(),
             1,
             "PRECONDITION FAILED: the stop must have a worker inside the held Unload"
         );
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
+        plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
         assert_eq!(
-            crate::player::ffi_host::unload_workers_for_test(),
+            plx_play_feed::ffi_host::unload_workers_for_test(),
             0,
             "the reset returned with an sf-unload worker still alive: it could fire into the next test"
         );
@@ -2672,7 +2655,7 @@ mod off_frame_release_tests {
         let mut pa = arm(&ps);
         let _cleanup = Cleanup;
         let epoch = playing_engine(&mut pa);
-        crate::player::ffi_host::delay_unload_for_test(UNLOAD_MS);
+        plx_play_feed::ffi_host::delay_unload_for_test(UNLOAD_MS);
         stop_bufferfeed(&mut ps, &mut pa);
         assert!(pa.has_pending_release());
         let before = FEED_SHARED.dg_cb_count.load(Ordering::Relaxed);
@@ -2684,7 +2667,7 @@ mod off_frame_release_tests {
             "a wrong-epoch UNLOADCOMPLETED counted as the release's D1 evidence"
         );
         finish_release_for_test(&mut pa);
-        assert!(!crate::player::ffi_host::lifecycle_blocked_for_test());
+        assert!(!plx_play_feed::ffi_host::lifecycle_blocked_for_test());
     }
 }
 
@@ -2705,9 +2688,9 @@ mod load_in_flight_tests {
     struct Cleanup;
     impl Drop for Cleanup {
         fn drop(&mut self) {
-            crate::player::ffi_host::reset_native_lifecycle_for_test();
-            crate::player::ffi_host::force_clocksink_for_test(false);
-            crate::player::ffi_host::set_load_in_flight_for_test(false);
+            plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+            plx_play_feed::ffi_host::force_clocksink_for_test(false);
+            plx_play_feed::ffi_host::set_load_in_flight_for_test(false);
             FEED_SHARED.test_force_native_idle();
             crate::player::reset_session_for_test();
             crate::route::reset_player_control_for_test(crate::route::idle_session_for_test());
@@ -2741,7 +2724,7 @@ mod load_in_flight_tests {
     /// separate from the real assertion below.
     fn wait_for_load_in_flight() {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while !crate::player::ffi_host::load_in_flight_for_test() {
+        while !plx_play_feed::ffi_host::load_in_flight_for_test() {
             assert!(
                 std::time::Instant::now() < deadline,
                 "PRECONDITION FAILED: sf_load never entered its in-flight window (loadCompleted \
@@ -2761,8 +2744,8 @@ mod load_in_flight_tests {
         let _serial = plx_base::testlock::serial();
         crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
-        crate::player::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
 
         let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe {
@@ -2783,9 +2766,9 @@ mod load_in_flight_tests {
             const AUDIO_AUS: i64 = 20; // ~427ms > PRIME_AUDIO_NS (300ms)
             let mut eng = pa.engine().expect("engine installed above");
             let au = [0u8; 32];
-            let qv = &mut **eng.aq_video.as_mut().unwrap() as *mut crate::aq::AuQueue;
+            let qv = &mut **eng.aq_video.as_mut().unwrap() as *mut plx_play_feed::aq::AuQueue;
             for i in 0..VIDEO_AUS {
-                crate::aq::aq_push(
+                plx_play_feed::aq::aq_push(
                     qv,
                     au.as_ptr(),
                     au.len() as c_int,
@@ -2794,13 +2777,13 @@ mod load_in_flight_tests {
                     1,
                 );
             }
-            let qa = &mut **eng.aq_audio.as_mut().unwrap() as *mut crate::aq::AuQueue;
+            let qa = &mut **eng.aq_audio.as_mut().unwrap() as *mut plx_play_feed::aq::AuQueue;
             for i in 0..AUDIO_AUS {
-                crate::aq::aq_push(qa, au.as_ptr(), au.len() as c_int, i * A_STEP_NS, 1, 2);
+                plx_play_feed::aq::aq_push(qa, au.as_ptr(), au.len() as c_int, i * A_STEP_NS, 1, 2);
             }
         }
 
-        crate::player::ffi_host::hold_load_for_test();
+        plx_play_feed::ffi_host::hold_load_for_test();
         let payload = std::ffi::CString::new("{}").unwrap();
         let payload_ptr = plx_play_feed::SendPtr(payload.as_ptr() as *mut c_char);
         let load_thread = std::thread::Builder::new()
@@ -2815,13 +2798,13 @@ mod load_in_flight_tests {
             crate::player::pump::pump(&mut ps, &mut pa, 1_000);
         }
         assert_eq!(
-            crate::player::ffi_host::in_flight_calls_for_test(), 0,
+            plx_play_feed::ffi_host::in_flight_calls_for_test(), 0,
             "the pump reached the Starfish/ACB seam ({:?}) while StarfishMediaAPIs::Load was \
              still executing on the load thread. In issue #74 that window is where the app died: \
              a SIGSEGV in libc with a null first argument on the priming path, and a \
              Play-vs-LoadCommon deadlock ending in an OMX_VideoComp abort on the immediate-Play \
              path.",
-            crate::player::ffi_host::in_flight_verb_for_test()
+            plx_play_feed::ffi_host::in_flight_verb_for_test()
         );
         assert!(
             !FEED_SHARED.native_load_returned(epoch),
@@ -2833,7 +2816,7 @@ mod load_in_flight_tests {
         );
 
         // Release the held Load and let it actually return.
-        crate::player::ffi_host::release_load_for_test();
+        plx_play_feed::ffi_host::release_load_for_test();
         load_thread.join().expect("load_thread joins");
 
         // The positive half: the gate isn't just permanently closed. A few more ticks must now
@@ -2855,7 +2838,7 @@ mod load_in_flight_tests {
             "the gate opening must let the pump leave Stage::Loading"
         );
         assert!(
-            crate::player::ffi_host::play_calls_for_test() > 0,
+            plx_play_feed::ffi_host::play_calls_for_test() > 0,
             "once Load has genuinely returned, Play must eventually be reached — the gate must \
              not simply stay closed forever"
         );
@@ -2875,8 +2858,8 @@ mod load_in_flight_tests {
         let _serial = plx_base::testlock::serial();
         crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
-        crate::player::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
 
         let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe {
@@ -2889,7 +2872,7 @@ mod load_in_flight_tests {
         // is even reached — pump.rs's own `sf_ready == 0 => Connecting` early return sits ahead
         // of it — so this needs the same real held-Load rig as
         // `nothing_reaches_the_seam_while_load_is_still_in_flight`, not a bare phase flip.
-        crate::player::ffi_host::hold_load_for_test();
+        plx_play_feed::ffi_host::hold_load_for_test();
         let payload = std::ffi::CString::new("{}").unwrap();
         let payload_ptr = plx_play_feed::SendPtr(payload.as_ptr() as *mut c_char);
         let load_thread = std::thread::Builder::new()
@@ -2909,7 +2892,7 @@ mod load_in_flight_tests {
         // `Returned`.
         FEED_SHARED.with_native_session(
             epoch,
-            crate::player::shared::NativeEventClass::UnloadCompleted,
+            plx_play_feed::shared::NativeEventClass::UnloadCompleted,
             23,
             || {},
         );
@@ -2929,7 +2912,7 @@ mod load_in_flight_tests {
         );
 
         // Unblock and join the held load thread so the process doesn't leak it into later tests.
-        crate::player::ffi_host::release_load_for_test();
+        plx_play_feed::ffi_host::release_load_for_test();
         load_thread.join().expect("load_thread joins");
     }
 
@@ -2948,8 +2931,8 @@ mod load_in_flight_tests {
         let _serial = plx_base::testlock::serial();
         crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
-        crate::player::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
 
         let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe {
@@ -2958,7 +2941,7 @@ mod load_in_flight_tests {
         let epoch = FEED_SHARED.begin_native_session().expect("native session");
         pa.install(engine_loading(epoch));
 
-        crate::player::ffi_host::hold_load_for_test();
+        plx_play_feed::ffi_host::hold_load_for_test();
         let payload = std::ffi::CString::new("{}").unwrap();
         let payload_ptr = plx_play_feed::SendPtr(payload.as_ptr() as *mut c_char);
         let load_thread = std::thread::Builder::new()
@@ -2994,7 +2977,7 @@ mod load_in_flight_tests {
         );
 
         // Unblock and join the held load thread so the process doesn't leak it into later tests.
-        crate::player::ffi_host::release_load_for_test();
+        plx_play_feed::ffi_host::release_load_for_test();
         load_thread.join().expect("load_thread joins");
     }
 
@@ -3016,9 +2999,9 @@ mod load_in_flight_tests {
         let _serial = plx_base::testlock::serial();
         crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
-        crate::player::ffi_host::force_clocksink_for_test(true);
-        crate::player::ffi_host::force_object_ready_for_test(true);
+        plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::force_object_ready_for_test(true);
         let _cleanup = Cleanup;
 
         let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe {
@@ -3095,8 +3078,8 @@ mod load_in_flight_tests {
         let _serial = plx_base::testlock::serial();
         crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
-        crate::player::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
 
         let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe {
@@ -3111,15 +3094,15 @@ mod load_in_flight_tests {
         assert_eq!(unsafe { crate::player::test_physical::sink().load(payload.as_ptr(), epoch) }, 1);
         // Hand-set the in-flight window and publish loadCompleted via the existing sf_on_event
         // path — simulating "Load has not returned" without a real second thread.
-        crate::player::ffi_host::set_load_in_flight_for_test(true);
+        plx_play_feed::ffi_host::set_load_in_flight_for_test(true);
         plx_play_feed::sf_event::sf_on_event(epoch, 2, 0, c"{\"loadCompleted\":true}".as_ptr());
 
         crate::player::pump::pump(&mut ps, &mut pa, 1_000);
         assert_eq!(
-            crate::player::ffi_host::in_flight_calls_for_test(), 0,
+            plx_play_feed::ffi_host::in_flight_calls_for_test(), 0,
             "loadCompleted alone, with the Rust-side gate not yet marked Returned for this \
              epoch, must not let any seam verb dispatch ({:?})",
-            crate::player::ffi_host::in_flight_verb_for_test()
+            plx_play_feed::ffi_host::in_flight_verb_for_test()
         );
         assert!(
             pa.engine().is_some_and(|e| e.stage == Stage::Loading),
@@ -3143,16 +3126,16 @@ mod load_in_flight_tests {
 
         crate::player::pump::pump(&mut ps, &mut pa, 1_000);
         assert_eq!(
-            crate::player::ffi_host::in_flight_calls_for_test(), 0,
+            plx_play_feed::ffi_host::in_flight_calls_for_test(), 0,
             "the pump must still defer after a differently-epoched mark ({:?})",
-            crate::player::ffi_host::in_flight_verb_for_test()
+            plx_play_feed::ffi_host::in_flight_verb_for_test()
         );
         assert!(
             pa.engine().is_some_and(|e| e.stage == Stage::Loading),
             "marking an epoch other than the pump's own must never open ITS gate"
         );
 
-        crate::player::ffi_host::set_load_in_flight_for_test(false);
+        plx_play_feed::ffi_host::set_load_in_flight_for_test(false);
     }
 
     #[test]
@@ -3160,8 +3143,8 @@ mod load_in_flight_tests {
         let _serial = plx_base::testlock::serial();
         crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&crate::route::PlaybackSession::IDLE);
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
-        crate::player::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
         let mut pa = super::super::adapter::PlayerAdapter::new_probed(unsafe { plx_base::task::MainThread::assume() });
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -3178,8 +3161,8 @@ mod load_in_flight_tests {
     fn native_source_correction_stale_load_refusal_cannot_fail_new_epoch() {
         let _serial = plx_base::testlock::serial();
         crate::player::reset_session_for_test();
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
-        crate::player::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
         let mt = unsafe { plx_base::task::MainThread::assume() };
         unsafe { crate::player::test_physical::sink().quarantine(&mt); }
@@ -3198,9 +3181,9 @@ mod load_in_flight_tests {
         let _serial = plx_base::testlock::serial();
         crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&crate::route::PlaybackSession::IDLE);
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
-        crate::player::ffi_host::force_clocksink_for_test(true);
-        crate::player::ffi_host::force_object_ready_for_test(true);
+        plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::force_object_ready_for_test(true);
         let _cleanup = Cleanup;
         let mut pa = super::super::adapter::PlayerAdapter::new_probed(unsafe { plx_base::task::MainThread::assume() });
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -3229,8 +3212,8 @@ mod load_in_flight_tests {
         let _serial = plx_base::testlock::serial();
         crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
-        crate::player::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
 
         let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe {
@@ -3238,7 +3221,7 @@ mod load_in_flight_tests {
         });
         let epoch = FEED_SHARED.begin_native_session().expect("native session");
         let mut eng = engine_loading(epoch);
-        crate::player::ffi_host::hold_load_for_test();
+        plx_play_feed::ffi_host::hold_load_for_test();
         let payload_ptr = plx_play_feed::SendPtr(eng.payload.as_ptr() as *mut c_char);
         eng.load_th = Some(
             std::thread::Builder::new()
@@ -3272,7 +3255,7 @@ mod load_in_flight_tests {
                     std::thread::sleep(std::time::Duration::from_millis(10));
                 }
                 fired.store(true, Ordering::Release);
-                crate::player::ffi_host::release_load_for_test();
+                plx_play_feed::ffi_host::release_load_for_test();
             }).expect("spawn watchdog")
         };
 
@@ -3289,10 +3272,10 @@ mod load_in_flight_tests {
             fired.load(Ordering::Acquire)
         );
         assert_eq!(
-            crate::player::ffi_host::in_flight_calls_for_test(),
+            plx_play_feed::ffi_host::in_flight_calls_for_test(),
             0,
             "teardown reached the Starfish seam ({:?}) while Load was still in flight — the #74 race",
-            crate::player::ffi_host::in_flight_verb_for_test()
+            plx_play_feed::ffi_host::in_flight_verb_for_test()
         );
         assert!(!pa.is_live(), "the stop must still complete from the route's point of view");
         assert!(pa.has_abandoned_load(), "the in-flight Load must be parked, not dropped");
@@ -3324,11 +3307,11 @@ mod load_in_flight_tests {
             "a later playback must not be handed the object an abandoned Load still owns"
         );
         let _ = crate::route::abort_route_start(start, crate::route::RouteStartResult::StartFailed);
-        assert_eq!(crate::player::ffi_host::in_flight_calls_for_test(), 0, "{:?}", crate::player::ffi_host::in_flight_verb_for_test());
+        assert_eq!(plx_play_feed::ffi_host::in_flight_calls_for_test(), 0, "{:?}", plx_play_feed::ffi_host::in_flight_verb_for_test());
 
         // Now the Load returns. The next reap releases the object with full evidence (D1, not a
         // quarantine), and native sessions are available again.
-        crate::player::ffi_host::release_load_for_test();
+        plx_play_feed::ffi_host::release_load_for_test();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while !reap_abandoned_load(&mut pa) {
             assert!(std::time::Instant::now() < deadline, "the returned Load was never released");
@@ -3337,7 +3320,7 @@ mod load_in_flight_tests {
         assert!(!pa.has_abandoned_load());
         assert_eq!(unsafe { crate::player::test_physical::sink().ready(pa.mt()) }, 0, "the released object must be gone");
         assert!(
-            !crate::player::ffi_host::lifecycle_blocked_for_test(),
+            !plx_play_feed::ffi_host::lifecycle_blocked_for_test(),
             "the release must be a D1 with complete evidence, not a process-long quarantine"
         );
         let next = FEED_SHARED.begin_native_session().expect("native sessions resume after the release");
@@ -3349,7 +3332,7 @@ mod load_in_flight_tests {
     struct ReleaseLoadOnDrop;
     impl Drop for ReleaseLoadOnDrop {
         fn drop(&mut self) {
-            crate::player::ffi_host::release_load_for_test();
+            plx_play_feed::ffi_host::release_load_for_test();
         }
     }
 
@@ -3365,7 +3348,7 @@ mod load_in_flight_tests {
         // pump samples into it and before the teardown records its terminal facts.
         ps.begin_attempt_view(crate::route::RouteStartAttempt::fixture(), crate::player::attempt_view::Backend::Feed);
         let mut eng = engine_loading(epoch);
-        crate::player::ffi_host::hold_load_for_test();
+        plx_play_feed::ffi_host::hold_load_for_test();
         let payload_ptr = plx_play_feed::SendPtr(eng.payload.as_ptr() as *mut c_char);
         eng.load_th = Some(
             std::thread::Builder::new()
@@ -3395,8 +3378,8 @@ mod load_in_flight_tests {
         let _serial = plx_base::testlock::serial();
         crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
-        crate::player::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
         let _release = ReleaseLoadOnDrop;
         let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe {
@@ -3406,13 +3389,13 @@ mod load_in_flight_tests {
         stop_bufferfeed(&mut ps, &mut pa);
         let exit = exit_native(&mut ps, &mut pa);
         assert!(
-            exit == NativeExit::WorkerInFirmware || !crate::player::ffi_host::load_in_flight_for_test(),
+            exit == NativeExit::WorkerInFirmware || !plx_play_feed::ffi_host::load_in_flight_for_test(),
             "the exit's native half returned with a Load still inside firmware: SDL_Quit would run under it"
         );
         assert_eq!(exit, NativeExit::WorkerInFirmware);
         // The payload the `media` thread reads is leaked, not owned by the adapter that is dropped next.
         assert!(!pa.has_abandoned_load(), "the parked Load must leave the adapter, leaked");
-        crate::player::ffi_host::release_load_for_test();
+        plx_play_feed::ffi_host::release_load_for_test();
     }
 
     /// A live session's Stats-for-nerds rows: an Engine installed, the mailboxes holding a
@@ -3439,8 +3422,8 @@ mod load_in_flight_tests {
         let _serial = plx_base::testlock::serial();
         crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
-        crate::player::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
         let _release = ReleaseLoadOnDrop;
         let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe {
@@ -3452,7 +3435,7 @@ mod load_in_flight_tests {
         assert_eq!(crate::player::diag_sample_tests::rows(&d), plx_playback_contract::feed::FeedDiag::IDLE,
             "after a stop the rows are the reset mailboxes' values");
         assert_eq!(d.place_rv, i32::MIN);
-        crate::player::ffi_host::release_load_for_test();
+        plx_play_feed::ffi_host::release_load_for_test();
     }
 
     /// **The line printed right after a real reload** reads the idle rows too: a reload resets the
@@ -3463,8 +3446,8 @@ mod load_in_flight_tests {
         let _serial = plx_base::testlock::serial();
         crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
-        crate::player::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
         let _release = ReleaseLoadOnDrop;
         let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe {
@@ -3476,7 +3459,7 @@ mod load_in_flight_tests {
         let d = crate::player::test_physical::diag(&ps);
         assert_eq!(crate::player::diag_sample_tests::rows(&d), plx_playback_contract::feed::FeedDiag::IDLE,
             "after a reload the rows are the reset mailboxes' values");
-        crate::player::ffi_host::release_load_for_test();
+        plx_play_feed::ffi_host::release_load_for_test();
     }
 
     /// The Original failure pair is the playback's: the stop that ends the playback clears it, the
@@ -3498,8 +3481,8 @@ mod load_in_flight_tests {
         let _serial = plx_base::testlock::serial();
         crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
-        crate::player::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
         let _release = ReleaseLoadOnDrop;
         let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe {
@@ -3510,7 +3493,7 @@ mod load_in_flight_tests {
         assert_eq!(ps.readout().original_failure(), None);
         let d = crate::player::test_physical::diag(&ps);
         assert_eq!((d.abr_failure_kind, d.abr_failure_status), (0, 0));
-        crate::player::ffi_host::release_load_for_test();
+        plx_play_feed::ffi_host::release_load_for_test();
     }
 
     /// **A rollback reload keeps the Original failure**: restoring HLS tears the Engine down and
@@ -3521,8 +3504,8 @@ mod load_in_flight_tests {
         let _serial = plx_base::testlock::serial();
         crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
-        crate::player::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
         let _release = ReleaseLoadOnDrop;
         let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe {
@@ -3534,7 +3517,7 @@ mod load_in_flight_tests {
         assert_eq!(ps.readout().original_failure(), Some((crate::player::ABR_FAILURE_ORIGINAL_HTTP, 503)));
         let d = crate::player::test_physical::diag(&ps);
         assert_eq!((d.abr_failure_kind, d.abr_failure_status), (crate::player::ABR_FAILURE_ORIGINAL_HTTP, 503));
-        crate::player::ffi_host::release_load_for_test();
+        plx_play_feed::ffi_host::release_load_for_test();
     }
 
     /// The channel half: an edit the worker sent that the pump has not drained when the Engine is
@@ -3549,8 +3532,8 @@ mod load_in_flight_tests {
         let _serial = plx_base::testlock::serial();
         crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
-        crate::player::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
         let _release = ReleaseLoadOnDrop;
         let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe {
@@ -3593,7 +3576,7 @@ mod load_in_flight_tests {
         pa.drain_abr(&mut ps);
         assert_eq!(ps.readout().original_failure(), Some((crate::player::ABR_FAILURE_ORIGINAL_OPEN, 0)),
             "a clear and the note after it, one drain");
-        crate::player::ffi_host::release_load_for_test();
+        plx_play_feed::ffi_host::release_load_for_test();
     }
 
     /// A note the worker sent just before a REAL stop is taken in by the teardown's drain and then
@@ -3605,8 +3588,8 @@ mod load_in_flight_tests {
         let _serial = plx_base::testlock::serial();
         crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
-        crate::player::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
         let _release = ReleaseLoadOnDrop;
         let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe {
@@ -3619,7 +3602,7 @@ mod load_in_flight_tests {
         worker.failure(FailureEdit::Noted { kind: crate::player::ABR_FAILURE_ORIGINAL_TRANSPORT, status: 0 });
         stop_bufferfeed(&mut ps, &mut pa);
         assert_eq!(ps.readout().original_failure(), None);
-        crate::player::ffi_host::release_load_for_test();
+        plx_play_feed::ffi_host::release_load_for_test();
     }
 
     /// PLX-NATIVE-15: the Auto Original's Load passes its budget, the HLS recovery reloads while
@@ -3632,8 +3615,8 @@ mod load_in_flight_tests {
         let _serial = plx_base::testlock::serial();
         crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
-        crate::player::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
         let _release = ReleaseLoadOnDrop;
         let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe {
@@ -3683,8 +3666,8 @@ mod load_in_flight_tests {
         let _serial = plx_base::testlock::serial();
         crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
-        crate::player::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
         let _release = ReleaseLoadOnDrop;
         let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe {
@@ -3721,7 +3704,7 @@ mod load_in_flight_tests {
 
         // The Load returns and is reaped: the next start is no longer refused for it, and the
         // refusal's read-out does not outlive the refusal.
-        crate::player::ffi_host::release_load_for_test();
+        plx_play_feed::ffi_host::release_load_for_test();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while !reap_abandoned_load(&mut pa) {
             assert!(std::time::Instant::now() < deadline, "the returned Load was never released");
@@ -3747,8 +3730,8 @@ mod load_in_flight_tests {
         let _serial = plx_base::testlock::serial();
         crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
-        crate::player::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
         let _release = ReleaseLoadOnDrop;
         let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe {
@@ -3771,7 +3754,7 @@ mod load_in_flight_tests {
         assert!(ps.native_start_refused.is_some(), "PRECONDITION FAILED: the refusal must be recorded");
 
         // The parked Load returns and is reaped; the rollback's reload then starts.
-        crate::player::ffi_host::release_load_for_test();
+        plx_play_feed::ffi_host::release_load_for_test();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while !reap_abandoned_load(&mut pa) {
             assert!(std::time::Instant::now() < deadline, "the returned Load was never released");
@@ -4603,7 +4586,7 @@ mod late_audio_start_tests {
     struct Restore;
     impl Drop for Restore {
         fn drop(&mut self) {
-            crate::player::ffi_host::force_clocksink_for_test(false);
+            plx_play_feed::ffi_host::force_clocksink_for_test(false);
             FEED_SHARED.first_audio_pts.store(i64::MIN, Ordering::Relaxed);
             FEED_SHARED.pres_fed.store(0, Ordering::Relaxed);
         }
@@ -4615,13 +4598,13 @@ mod late_audio_start_tests {
         let mut eng = super::prime_livelock_tests::engine_after_reload();
         eng.prime_play = false;
         let au = [0u8; 64];
-        let qv = &mut **eng.aq_video.as_mut().unwrap() as *mut crate::aq::AuQueue;
+        let qv = &mut **eng.aq_video.as_mut().unwrap() as *mut plx_play_feed::aq::AuQueue;
         for i in 0..(12_000_000_000 / V_STEP_NS) {
-            crate::aq::aq_push(qv, au.as_ptr(), au.len() as c_int, i * V_STEP_NS, c_int::from(i == 0), 1);
+            plx_play_feed::aq::aq_push(qv, au.as_ptr(), au.len() as c_int, i * V_STEP_NS, c_int::from(i == 0), 1);
         }
-        let qa = &mut **eng.aq_audio.as_mut().unwrap() as *mut crate::aq::AuQueue;
+        let qa = &mut **eng.aq_audio.as_mut().unwrap() as *mut plx_play_feed::aq::AuQueue;
         for i in 0..200 {
-            crate::aq::aq_push(qa, au.as_ptr(), au.len() as c_int, AUDIO_DELAY_NS + i * A_STEP_NS, 1, 2);
+            plx_play_feed::aq::aq_push(qa, au.as_ptr(), au.len() as c_int, AUDIO_DELAY_NS + i * A_STEP_NS, 1, 2);
         }
         FEED_SHARED.first_audio_pts.store(first_audio, Ordering::Relaxed);
         eng
@@ -4635,7 +4618,7 @@ mod late_audio_start_tests {
     }
 
     fn arm() -> Restore {
-        crate::player::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
         FEED_SHARED.pres_fed.store(0, Ordering::Relaxed);
         FEED_SHARED.seek_to_ns.store(-1, Ordering::Relaxed);
         Restore
@@ -4662,7 +4645,7 @@ mod late_audio_start_tests {
             eng.max_fed_audio_pts
         );
         // Past the lead-in the throttle holds the audio — held, not dropped as stale.
-        let next = eng.pending_audio.as_ref().map(|n| unsafe { crate::aq::au_fields(n.0) }.2);
+        let next = eng.pending_audio.as_ref().map(|n| unsafe { plx_play_feed::aq::au_fields(n.0) }.2);
         assert_eq!(next, Some(eng.max_fed_audio_pts + A_STEP_NS), "the next AU waits for the clock");
     }
 
@@ -4692,7 +4675,7 @@ mod late_audio_start_tests {
 mod native_seek_tests {
     use plx_play_feed::shared::{FEED_SHARED, FEED_TX};
     use super::*;
-    use crate::player::ffi_host;
+    use plx_play_feed::ffi_host;
 
     const V_STEP_NS: i64 = 41_708_333;
     const TARGET_NS: i64 = 905_000_000_000;
@@ -4727,9 +4710,9 @@ mod native_seek_tests {
         eng.rebase_pending = true;
         FEED_SHARED.seek_target_ns.store(TARGET_NS, Ordering::Relaxed);
         let au = [0u8; 64];
-        let qv = &mut **eng.aq_video.as_mut().unwrap() as *mut crate::aq::AuQueue;
+        let qv = &mut **eng.aq_video.as_mut().unwrap() as *mut plx_play_feed::aq::AuQueue;
         for i in 0..60 {
-            crate::aq::aq_push(qv, au.as_ptr(), au.len() as c_int, TARGET_NS + i * V_STEP_NS, c_int::from(i == 0), 1);
+            plx_play_feed::aq::aq_push(qv, au.as_ptr(), au.len() as c_int, TARGET_NS + i * V_STEP_NS, c_int::from(i == 0), 1);
         }
         eng
     }
@@ -4809,8 +4792,8 @@ mod native_seek_tests {
         eng.rebase_pending = true;
         FEED_SHARED.seek_target_ns.store(0, Ordering::Relaxed);
         let au = [0u8; 64];
-        let qv = &mut **eng.aq_video.as_mut().unwrap() as *mut crate::aq::AuQueue;
-        crate::aq::aq_push(qv, au.as_ptr(), au.len() as c_int, -80_000_000, 1, 1);
+        let qv = &mut **eng.aq_video.as_mut().unwrap() as *mut plx_play_feed::aq::AuQueue;
+        plx_play_feed::aq::aq_push(qv, au.as_ptr(), au.len() as c_int, -80_000_000, 1, 1);
         tick(&mut eng);
         assert_eq!(ffi_host::seek_log_for_test(), vec![0], "Seek refuses a negative millis");
     }
@@ -5187,8 +5170,8 @@ mod pcm_stack_wiring_tests {
     struct Cleanup;
     impl Drop for Cleanup {
         fn drop(&mut self) {
-            crate::player::ffi_host::reset_native_lifecycle_for_test();
-            crate::player::ffi_host::force_clocksink_for_test(false);
+            plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+            plx_play_feed::ffi_host::force_clocksink_for_test(false);
             FEED_SHARED.test_force_native_idle();
             crate::player::reset_session_for_test();
             crate::route::reset_player_control_for_test(crate::route::idle_session_for_test());
@@ -5205,8 +5188,8 @@ mod pcm_stack_wiring_tests {
         let _serial = plx_base::testlock::serial();
         crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
-        crate::player::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
         let _stack = audio_stack_on_this_thread_for_test(stack);
         let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe { plx_base::task::MainThread::assume() });
@@ -5247,7 +5230,7 @@ mod pcm_stack_wiring_tests {
             "a Load that returned stays returned until its stop: another session's Unload reached this one"
         );
         drop(eng);
-        crate::player::ffi_host::delay_unload_for_test(unload_ms);
+        plx_play_feed::ffi_host::delay_unload_for_test(unload_ms);
         stop_bufferfeed(&mut ps, &mut pa);
         finish_release_for_test(&mut pa);
         (pending, lead)
@@ -5279,8 +5262,8 @@ mod pcm_stack_wiring_tests {
         let _serial = plx_base::testlock::serial();
         crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
-        crate::player::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
         let _stack = audio_stack_on_this_thread_for_test(AudioStack::Liblxa);
         let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe { plx_base::task::MainThread::assume() });
@@ -5293,7 +5276,7 @@ mod pcm_stack_wiring_tests {
         assert_eq!(ps.readout().raw().disp_base, OFFSET_NS, "and the display base is the offset");
         assert_eq!(crate::player::subside::capture_offset_ns(&ps), OFFSET_NS);
 
-        crate::player::ffi_host::delay_unload_for_test(0);
+        plx_play_feed::ffi_host::delay_unload_for_test(0);
         stop_bufferfeed(&mut ps, &mut pa);
         finish_release_for_test(&mut pa);
         assert_eq!(ps.readout().open_disp_base_ns(), 0, "a stop retires the commanded base with the session");
@@ -5308,8 +5291,8 @@ mod pcm_stack_wiring_tests {
         let _serial = plx_base::testlock::serial();
         crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
-        crate::player::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
         let _stack = audio_stack_on_this_thread_for_test(AudioStack::Liblxa);
         let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe { plx_base::task::MainThread::assume() });
@@ -5325,7 +5308,7 @@ mod pcm_stack_wiring_tests {
         assert_eq!(crate::player::feed_audio_idx_for_test(), 4, "the start sent the choice before the demuxer spawned");
 
         // A reload tears the session down and starts again: the choice is on both sides throughout.
-        crate::player::ffi_host::delay_unload_for_test(0);
+        plx_play_feed::ffi_host::delay_unload_for_test(0);
         suspend_bufferfeed(&mut ps, &mut pa);
         finish_release_for_test(&mut pa);
         assert_eq!(ps.readout().audio_choice(), 4, "a session reset keeps the pick");
@@ -5363,7 +5346,7 @@ mod pcm_stack_wiring_tests {
 #[cfg(all(test, feature = "hostsim"))]
 mod pcm_sink_lead_tests {
     use super::*;
-    use crate::player::ffi_host;
+    use plx_play_feed::ffi_host;
 
     const V_STEP_NS: i64 = 41_708_333; // 23.976 fps
     const A_STEP_NS: i64 = 32_000_000;
@@ -5404,13 +5387,13 @@ mod pcm_sink_lead_tests {
         eng.prime_play = false;
         eng.pcm_sink_lead_ns = lead;
         let au = [0u8; 64];
-        let qv = &mut **eng.aq_video.as_mut().unwrap() as *mut crate::aq::AuQueue;
+        let qv = &mut **eng.aq_video.as_mut().unwrap() as *mut plx_play_feed::aq::AuQueue;
         for i in 0..VIDEO_AUS {
-            crate::aq::aq_push(qv, au.as_ptr(), au.len() as c_int, at_ns + i * V_STEP_NS, c_int::from(i == 0), 1);
+            plx_play_feed::aq::aq_push(qv, au.as_ptr(), au.len() as c_int, at_ns + i * V_STEP_NS, c_int::from(i == 0), 1);
         }
-        let qa = &mut **eng.aq_audio.as_mut().unwrap() as *mut crate::aq::AuQueue;
+        let qa = &mut **eng.aq_audio.as_mut().unwrap() as *mut plx_play_feed::aq::AuQueue;
         for i in 0..AUDIO_AUS {
-            crate::aq::aq_push(qa, au.as_ptr(), au.len() as c_int, at_ns + i * A_STEP_NS, 1, 2);
+            plx_play_feed::aq::aq_push(qa, au.as_ptr(), au.len() as c_int, at_ns + i * A_STEP_NS, 1, 2);
         }
         eng
     }
@@ -5605,8 +5588,8 @@ mod explicit_source_start_tests {
     struct Cleanup;
     impl Drop for Cleanup {
         fn drop(&mut self) {
-            crate::player::ffi_host::reset_native_lifecycle_for_test();
-            crate::player::ffi_host::force_clocksink_for_test(false);
+            plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+            plx_play_feed::ffi_host::force_clocksink_for_test(false);
             FEED_SHARED.test_force_native_idle();
             crate::player::reset_session_for_test();
             crate::route::reset_player_control_for_test(crate::route::idle_session_for_test());
@@ -5632,8 +5615,8 @@ mod explicit_source_start_tests {
         let _serial = plx_base::testlock::serial();
         crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
-        crate::player::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
         let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe { plx_base::task::MainThread::assume() });
         plx_base::devtrig::with_private_triggers(|| {
@@ -5720,7 +5703,7 @@ mod explicit_source_start_tests {
         with_playurl_armed(|ps, pa| {
             let first = start_playurl(ps, pa);
             assert!(matches!(first, BufferfeedStartOutcome::Launched(_)), "first start {first:?}");
-            crate::player::ffi_host::delay_unload_for_test(50);
+            plx_play_feed::ffi_host::delay_unload_for_test(50);
             stop_bufferfeed(ps, pa);
             assert!(pa.has_pending_release(), "the stop must leave its Unload running");
             let second = start_playurl(ps, pa);
@@ -5758,7 +5741,7 @@ mod explicit_source_start_tests {
             // The pump's end of stream: the readout the app's end-of-film rule polls.
             ps.step_readout(crate::player::readout::ReadoutEvent::StreamEnded);
             assert_eq!(crate::player::ended(ps), Some(true), "PRECONDITION FAILED: the film has ended");
-            crate::player::ffi_host::delay_unload_for_test(50);
+            plx_play_feed::ffi_host::delay_unload_for_test(50);
             stop_bufferfeed(ps, pa);
             assert!(pa.has_pending_release(), "the stop must leave its Unload running");
             let second = start_playurl(ps, pa);

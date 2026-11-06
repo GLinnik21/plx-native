@@ -147,6 +147,26 @@ impl SampleBuf {
     }
 }
 
+/// split Annex-B into AUs on the 5-byte AUD prefix 00 00 00 01 <aud5>
+/// (H264 AUD = 0x09; HEVC AUD is NAL type 35 → first header byte 0x46).
+pub fn bf_split(data: &[u8], aud5: u8) -> Vec<usize> {
+    let mut au = Vec::new();
+    let mut i = 0usize;
+    while i + 4 < data.len() {
+        if data[i] == 0
+            && data[i + 1] == 0
+            && data[i + 2] == 0
+            && data[i + 3] == 1
+            && data[i + 4] == aud5
+        {
+            au.push(i);
+            i += 4;
+        }
+        i += 1;
+    }
+    au
+}
+
 /// What the route decided about the side subtitle reader for one open: whether a reader is
 /// admitted for it, whether it runs clock-only (a sidecar the app draws itself), and the
 /// [`Spec`] it starts with (`None` when the target's server is gone). Plain data: the Feed
@@ -1186,5 +1206,17 @@ mod tests {
         assert!(set.uri().is_none() && set.uri_mut().is_none() && set.take_uri().is_none());
         assert!(set.install_uri(Box::new(driver)).is_err(), "nowhere to seat it");
         assert!(set.uri().is_none());
+    }
+
+    /// A local validation sample is cut at each 5-byte access-unit delimiter of its codec: H.264's
+    /// AUD (`09`) and HEVC's (`46`) are different delimiters, so one sample is never split by the
+    /// other codec's, and bytes before the first delimiter belong to no unit.
+    #[test]
+    fn an_annex_b_sample_splits_at_its_codecs_access_unit_delimiter() {
+        let h264 = [0xAA, 0, 0, 0, 1, 0x09, 1, 2, 0, 0, 0, 1, 0x09, 3, 0, 0, 0, 1, 0x46, 4];
+        assert_eq!(bf_split(&h264, 0x09), vec![1, 8]);
+        assert_eq!(bf_split(&h264, 0x46), vec![14]);
+        assert!(bf_split(&[0, 0, 0, 1], 0x09).is_empty(), "a bare start code has no delimiter byte");
+        assert!(bf_split(&[], 0x09).is_empty());
     }
 }

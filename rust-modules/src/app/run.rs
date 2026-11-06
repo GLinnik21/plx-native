@@ -3889,7 +3889,7 @@ mod lifecycle_regression_tests {
 
     /// The Feed's own Pause: `FEED_TX.paused` is a process-global that outlives the rig's session.
     fn feed_paused() -> bool {
-        plx_media::player::FEED_TX.paused.load(std::sync::atomic::Ordering::Relaxed)
+        plx_play_feed::shared::FEED_TX.paused.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// `FEED_TX.paused` is a process-global and these lifecycle tests are serialized, so restore the
@@ -3905,13 +3905,13 @@ mod lifecycle_regression_tests {
         }
         fn set(value: bool) -> Self {
             let previous = feed_paused();
-            plx_media::player::FEED_TX.commit_paused(value);
+            plx_play_feed::shared::FEED_TX.commit_paused(value);
             Self(previous)
         }
     }
     impl Drop for TransportPaused {
         fn drop(&mut self) {
-            plx_media::player::FEED_TX.commit_paused(self.0);
+            plx_play_feed::shared::FEED_TX.commit_paused(self.0);
         }
     }
 
@@ -5041,7 +5041,7 @@ mod lifecycle_regression_tests {
                 facts.position_ns = Some(playpos_ns);
                 facts.duration_ns = Some(duration_ns);
             });
-            let (shared, feed, tx) = (&plx_media::player::FEED_SHARED, &plx_media::player::FEED_TX, &plx_media::player::TX);
+            let (shared, feed, tx) = (&plx_play_feed::shared::FEED_SHARED, &plx_play_feed::shared::FEED_TX, &plx_media::player::TX);
             let saved = [
                 shared.seek_display_ns.swap(-1, Relaxed),
                 feed.seek_to_ns.swap(-1, Relaxed),
@@ -5050,13 +5050,13 @@ mod lifecycle_regression_tests {
             Self { saved }
         }
         fn seek_to(&self) -> i64 {
-            plx_media::player::FEED_TX.seek_to_ns.load(std::sync::atomic::Ordering::Relaxed)
+            plx_play_feed::shared::FEED_TX.seek_to_ns.load(std::sync::atomic::Ordering::Relaxed)
         }
     }
     impl Drop for SeekGlobals {
         fn drop(&mut self) {
             use std::sync::atomic::Ordering::Relaxed;
-            let (shared, feed, tx) = (&plx_media::player::FEED_SHARED, &plx_media::player::FEED_TX, &plx_media::player::TX);
+            let (shared, feed, tx) = (&plx_play_feed::shared::FEED_SHARED, &plx_play_feed::shared::FEED_TX, &plx_media::player::TX);
             shared.seek_display_ns.store(self.saved[0], Relaxed);
             feed.seek_to_ns.store(self.saved[1], Relaxed);
             tx.scrub_ns.store(self.saved[2], Relaxed);
@@ -7154,7 +7154,7 @@ mod lifecycle_regression_tests {
             plx_media::route::RouteStartResult::Started,
         ));
         // `type=18` after the Load call returned, before any picture.
-        plx_media::player::FEED_SHARED.load_failed.store(true, std::sync::atomic::Ordering::Release);
+        plx_play_feed::shared::FEED_SHARED.load_failed.store(true, std::sync::atomic::Ordering::Release);
 
         let (state_after_pump, life_after_pump) = pump_then_poll(&mut rig, 48);
         assert_eq!(
@@ -7224,7 +7224,7 @@ mod lifecycle_regression_tests {
             attempt,
             plx_media::route::RouteStartResult::StartFailed,
         ));
-        plx_media::player::FEED_SHARED.load_failed.store(true, std::sync::atomic::Ordering::Release);
+        plx_play_feed::shared::FEED_SHARED.load_failed.store(true, std::sync::atomic::Ordering::Release);
 
         let (state_after_pump, life_after_pump) = pump_then_poll(&mut rig, 48);
         assert_ne!(
@@ -9355,8 +9355,8 @@ mod lifecycle_regression_tests {
     fn playing_live_at(rig: &mut Rig, pos_ms: i64) {
         start_film(rig);
         assert!(rig.app.adapters.player.is_live(), "fixture must create the actual Engine");
-        plx_media::player::FEED_SHARED.duration_ns.store(60_000_000_000, Ordering::Relaxed);
-        plx_media::player::FEED_SHARED.playpos_ns.store(pos_ms * 1_000_000, Ordering::Relaxed);
+        plx_play_feed::shared::FEED_SHARED.duration_ns.store(60_000_000_000, Ordering::Relaxed);
+        plx_play_feed::shared::FEED_SHARED.playpos_ns.store(pos_ms * 1_000_000, Ordering::Relaxed);
         publish_feed_fixture_facts(&mut rig.app.player.session, |facts| {
             facts.duration_ns = Some(60_000_000_000);
             facts.position_ns = Some(pos_ms * 1_000_000);

@@ -27,7 +27,7 @@
 //! sequence of calls with no locking behind it) — and that surface is not this module's.
 
 #[cfg(all(test, feature = "play-feed"))]
-use super::engine::Engine;
+use plx_play_feed::feed_state::Engine;
 use super::timeline;
 use super::backend;
 #[cfg(feature = "play-feed")]
@@ -2012,7 +2012,7 @@ impl PlayerAdapter {
         let mt = &self.mt;
         self.physical.feed().map_or(
             plx_playback_contract::feed::PresentationTick {
-                stage: super::shared::Stage::Loading, eos_pushed: false,
+                stage: plx_playback_contract::feed::Stage::Loading, eos_pushed: false,
             },
             |feed| feed.tick_presentation(mt, segmented_hls, immersive))
     }

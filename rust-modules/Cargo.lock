@@ -938,6 +938,7 @@ dependencies = [
  "plx_media",
  "plx_net",
  "plx_platform",
+ "plx_play_feed",
  "plx_plex",
  "plx_screens",
  "plx_session",

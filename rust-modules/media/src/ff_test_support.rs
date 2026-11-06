@@ -207,8 +207,8 @@ pub(super) fn opened_stream_with_aborted_lane(
         "GET",
     );
     assert_eq!(rv, 0, "fixture: the first open must succeed");
-    let mut aq = crate::aq::aq_new(1 << 20);
-    crate::aq::aq_abort(&mut *aq);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
+    plx_play_feed::aq::aq_abort(&mut *aq);
     (hs, aq, ip, path)
 }
 
@@ -239,7 +239,7 @@ pub(super) fn curl_gate() -> Option<plx_base::testlock::Serial> {
 pub(super) fn opened_curl_with_aborted_lane(port: u16) -> (Box<crate::curlio::CurlSource>, Box<AuQueue>) {
     let cs = crate::curlio::CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0)
         .expect("fixture: the first open must succeed");
-    let mut aq = crate::aq::aq_new(1 << 20);
-    crate::aq::aq_abort(&mut *aq);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
+    plx_play_feed::aq::aq_abort(&mut *aq);
     (cs, aq)
 }

@@ -515,7 +515,7 @@ impl HudMotion {
         self.pop.scale(i.max(0) as usize)
     }
 
-    /// Stamp the resume edge directly. `note_transport` derives it from `player::FEED_TX`, which is
+    /// Stamp the resume edge directly. `note_transport` derives it from `plx_play_feed::shared::FEED_TX`, which is
     /// process-wide and moved by every playback test in the crate; a test about THIS clock must
     /// not be able to fail because another one flipped `started` between two of its lines.
     #[cfg(any(test, feature = "test-support"))]

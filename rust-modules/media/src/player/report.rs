@@ -2188,7 +2188,7 @@ mod tests {
             let (_, events) = plx_telemetry::diag::test_events::capture(|| observe(&mut ps, S::Error));
             FEED_SHARED.retire_native_session(epoch);
             crate::player::reset_session_for_test();
-            assert_eq!(FEED_SHARED.refusal_path(), super::super::shared::RefusalPath::None, "reset_session clears it");
+            assert_eq!(FEED_SHARED.refusal_path(), plx_playback_contract::readout::RefusalPath::None, "reset_session clears it");
             match events.as_slice() {
                 [DiagEvent::PlaybackFailed { video, audio, pipeline_error, refusal, .. }] => {
                     assert_eq!((*video, *audio), ("hevc", "ac3"));

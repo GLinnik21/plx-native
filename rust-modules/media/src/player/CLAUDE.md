@@ -73,7 +73,7 @@ The stream side: `PMS HTTP GET` → demux → per-lane access-unit
 queues with byte-cap backpressure (`play-feed/src/aq.rs`) → the pump `Feed()`s each AU to the Starfish pipeline.
 The demuxer is **`play-feed/src/ff.rs` — the libavformat the app BUNDLES (not the TV's), over a custom AVIO on
 one of TWO transports** (design record: `docs/ffmpeg-demuxer-plan.md`; the hand-rolled `mkv.rs`
-fallback is retired/deleted). `media/src/ff.rs` reexports its application entry points. **Which transport is decided in `ff::demux` from the part URL's
+fallback is retired/deleted). The demuxer's application entry points are `plx_play_feed`'s (`plx_play_feed::{demux, DemuxTransport}`); `media/src/ff.rs` keeps `plx_media_codecs`' bindings and the integration fixtures. **Which transport is decided in `ff::demux` from the part URL's
 scheme, or by a plaintext open's redirect to https (`stream::redirect` hands that hop to curl)** —
 `AvioState` holds a source enum and `read_cb`/`seek_cb` dispatch: `http` → `stream.rs`'s raw socket, `https` → media's `curlio` credential facade over `plx_net::range_io`. That matters *here* because teardown is a
 different mechanism per arm: `route_start::teardown` (through `FeedStop::stop_unblock`) fires `stream::http_shutdown` at the socket **and**
@@ -135,10 +135,9 @@ and the native feed refuses a source shape it cannot represent.
   pending seek). They are statics because
   `sf_on_event` is a firmware callback with no user-data pointer and the demux, Load and subtitle
   workers reach them off-thread; the executor types (`native_executor` and the Feed backend the
-  application composes) are handed `&'static` references instead of naming them. Media's `player::shared` re-exports the module,
-  and media code that still names the owners spells `FEED_SHARED` / `FEED_TX` (so `grep` finds every
-  user; `plx_media::player::{FEED_SHARED, FEED_TX}` re-exports them for `screens` and the
-  application loop). `SHARED` and `TX` in `shared_resources.rs` hold only what is common to a
+  application composes) are handed `&'static` references instead of naming them. Media's `player::shared` re-exports nothing any more,
+  and media code that still names the owners spells `plx_play_feed::shared::{FEED_SHARED, FEED_TX}` (so `grep` finds every
+  user; the application and `screens`' tests name them the same way). `SHARED` and `TX` in `shared_resources.rs` hold only what is common to a
   backend (captions, container track names, the audio-pick reason, `hud_until`, `scrub_ns`), and
   `FeedStop::reset` runs `SHARED.reset_session` inside the feed's reset barrier. Route ownership
   and route-changing intents are the separate process-wide authority in `route::PLAYER_CONTROL`.
@@ -173,7 +172,7 @@ and the native feed refuses a source shape it cannot represent.
 **The main-thread rule is compiler-enforced.** The seam is the `VideoSink` trait in `plx_platform::tv::sink` (`rust-modules/platform/src/tv/sink.rs`)
 (Starfish-shaped: one method per verb, reached through `PlayerAdapter::display_sink`). `platform/src/webos/video_sink.rs`'s `extern "C"`
 declarations are private to that module and only `StarfishSink` there implements the trait on the
-television; `HostSink` (`play-feed/src/ffi_host.rs`, re-exported as `player::ffi_host`) is the simulator's. Every verb but `load` and `unload`
+television; `HostSink` (`play-feed/src/ffi_host.rs`, `plx_play_feed::ffi_host`) is the simulator's. Every verb but `load` and `unload`
 takes a `task::MainThread` (the constant queries `feed_abi_is_cow`, `window_mode` and `window_id`
 take nothing); `unload` takes an `UnloadTicket`, which only a `&MainThread` can issue and which is
 `Send`, so the main thread decides when an Unload happens and a worker may carry it out.

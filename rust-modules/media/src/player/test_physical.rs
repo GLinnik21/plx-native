@@ -34,8 +34,8 @@ use std::os::raw::c_char;
 /// The host sink these fixtures run over: the Feed backend's stand-in with no picture to draw.
 /// (The simulator's own, with its decoded picture, is the application's: `app::adapters::hostsim`.)
 #[cfg(all(feature = "hostsim", feature = "play-feed"))]
-static HOST_SINK: super::ffi_host::HostSink =
-    super::ffi_host::HostSink::new(super::ffi_host::Hooks::over(&super::ffi_host::NoFrames));
+static HOST_SINK: plx_play_feed::ffi_host::HostSink =
+    plx_play_feed::ffi_host::HostSink::new(plx_play_feed::ffi_host::Hooks::over(&plx_play_feed::ffi_host::NoFrames));
 
 /// The seam itself, unfenced: the host sink in a hostsim run, the installed port's otherwise.
 #[cfg(feature = "play-feed")]
@@ -82,7 +82,7 @@ fn feed_clock_us() -> u64 {
 }
 
 #[cfg(feature = "play-feed")]
-fn mirror_playstate(mt: &MainThread, stage: super::shared::Stage, playing: bool) {
+fn mirror_playstate(mt: &MainThread, stage: plx_playback_contract::feed::Stage, playing: bool) {
     super::acb_mirror_playstate_on(sink(), mt, stage, playing);
 }
 
@@ -99,7 +99,7 @@ pub(crate) fn load_thread(payload: plx_play_feed::SendPtr<c_char>, native_epoch:
 #[cfg(feature = "play-feed")]
 fn spawn_unload(ticket: UnloadTicket) -> Option<std::thread::JoinHandle<()>> {
     #[cfg(feature = "hostsim")]
-    let worker = super::ffi_host::UnloadWorker::enter();
+    let worker = plx_play_feed::ffi_host::UnloadWorker::enter();
     plx_base::task::spawn("sf-unload", move || {
         #[cfg(feature = "hostsim")]
         let _worker = worker;

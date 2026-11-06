@@ -26,7 +26,7 @@ play-feed = ["dep:plx_play_feed", "plx_platform/feed-sink"]
 # read their files through `plx_base::devtrig`, which is compile-time `None` without it, and
 # 130-odd `cfg`s select the dev surface.
 devtriggers = ["plx_play_feed?/devtriggers", "plx_media_codecs/devtriggers", "plx_base/devtriggers", "plx_machine/devtriggers", "plx_net/devtriggers", "plx_platform/devtriggers", "plx_plex/devtriggers", "plx_telemetry/devtriggers", "plx_data/devtriggers"]
-# `player::ffi_host` (the simulator's `VideoSink`, which lives in `plx_play_feed` and is re-exported here)
+# `plx_play_feed::ffi_host` (the simulator's `VideoSink`, which lives in `plx_play_feed`)
 # replaces the platform webOS port's native sink (Starfish/ACB) under it. It exists only with `play-feed`:
 # the stand-in is the Feed backend's, so a simulator build names `play-feed` too (ci/test_sim_backend.py).
 # The simulator's decoded picture (its frame sink, the one thing that draws) is the application's.

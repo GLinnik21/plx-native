@@ -90,8 +90,8 @@ fn a_quality_trial_never_extends_an_active_rebuffer_hold() {
 
 #[test]
 fn an_abort_at_the_exact_wait_boundary_wins_over_reserve_expiry() {
-    let mut aq = crate::aq::aq_new(1 << 20);
-    crate::aq::aq_abort(&mut *aq);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
+    plx_play_feed::aq::aq_abort(&mut *aq);
     let result = hls_wait(
         &mut *aq,
         std::time::Duration::ZERO,
@@ -99,7 +99,7 @@ fn an_abort_at_the_exact_wait_boundary_wins_over_reserve_expiry() {
         &mut plx_base::checkpoint::NoCheckpoint,
     );
     assert!(matches!(result, Err(HlsExit::Aborted)));
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
 }
 
 #[test]
