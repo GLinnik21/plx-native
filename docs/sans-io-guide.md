@@ -58,9 +58,10 @@ it. The ledgers freeze the sites that were found; they are not the definition.
   (re-exports in `plex/src/plex/mod.rs`), `session::peek_settled()` and `session::current_gen()`
   (both in `plex/src/plex/session.rs`) and `tape::active()` (`data/src/stores/tape.rs`). A new use of
   any of these fails `make check` unless a ledger line names it, and is as wrong as a new `client_for`.
-  (`transport::paused`, `transport::viewer_paused` and `preview::paused` are not registry reads any
-  more: each takes the session and reads its `PlayerReadout`, a `ps`-addressed readout read. The rule
-  still matches those spellings, so a machine that calls one is a site until the rule is narrowed.)
+  (`transport::paused` is not a registry read any more: it takes the session and reads its
+  `PlayerReadout`, a `ps`-addressed readout read, and the rule no longer matches it. `transport::viewer_paused`
+  and `preview::paused` take the session too but still read process-global state behind it, the claim hold's
+  slot and the preview machine's phase, so a machine that calls either is a site.)
 - Reads one the rule does not name. The rule matches a closed list of names, so a registry read it
   does not spell passes CI with no ledger line and is IO all the same. Two are left out on purpose,
   and the principle above still covers them: `i18n::current` (a display read) and the

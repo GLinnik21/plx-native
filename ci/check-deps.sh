@@ -63,9 +63,10 @@
 #              `.submit_ticket`. A machine's work leaves as a typed effect the app runs.
 #   globals  — a production read of a process-global registry in a machine: `client_for`,
 #              `current_server`, `current_snapshot`, `keypin::revision`, `keypin::blocked_for`,
-#              `session::peek`, `grant::offers`, the player's transport-pause readers
-#              (`transport::paused`, `transport::viewer_paused`, `preview::paused`: each takes the
-#              session and reads its `PlayerReadout`; the spellings stay guarded), and `player::TX`
+#              `session::peek`, `grant::offers`, the player's pause readers
+#              `transport::viewer_paused` and `preview::paused` (each takes the session and still
+#              reads process-global state; `transport::paused` reads only the session's
+#              `PlayerReadout` and is no longer a spelling), and `player::TX`
 #              or the Feed owners `FEED_TX` / `FEED_SHARED` in the player's lifecycle (at zero: the
 #              machine takes the pause as a value on its event). The value arrives in an event or an
 #              argument instead.
@@ -1244,7 +1245,7 @@ fork_scope_re=$(scope_re "${FORK_SCOPE[@]}")
 # has a line that could hold a site of that rule, and ci/ledger.awk then decides what is really one; a
 # file the pattern misses cannot hold one. W and G read the machines, F the fork scope.
 workers_pat='spawn_small|spawn_off_frame|submit_retained|submit_ticket|task::(spawn|\{|\*)|storage_worker::(submit|\{|\*)|(task|storage_worker)[[:space:]]+as[[:space:]]'
-globals_pat='client_for|current_server|current_snapshot|keypin::(revision|blocked_for|\{|\*)|session::(peek|current_gen|\{|\*)|grant::(offers|\{|\*)|(^|[^A-Za-z0-9_])transport::(paused|viewer_paused|\{|\*)|(^|[^A-Za-z0-9_])preview::(paused|\{|\*)|player::TX|devcaps::(caps|\{|\*)|is_dp_audio|(^|[^A-Za-z0-9_])tape::(active|\{|\*)|server_ids|server_roster_gen|server_facts_gen|server_probe_result|peek_settled|(session|keypin|grant|player|transport|preview|devcaps|tape|caps|is_dp_audio|is_dp_audio_track|peek|peek_settled|current_gen|revision|blocked_for|offers|paused|viewer_paused|TX|server_ids|server_roster_gen|server_facts_gen|server_probe_result)[[:space:]]+as[[:space:]]'
+globals_pat='client_for|current_server|current_snapshot|keypin::(revision|blocked_for|\{|\*)|session::(peek|current_gen|\{|\*)|grant::(offers|\{|\*)|(^|[^A-Za-z0-9_])transport::(viewer_paused|\{|\*)|(^|[^A-Za-z0-9_])preview::(paused|\{|\*)|player::TX|devcaps::(caps|\{|\*)|is_dp_audio|(^|[^A-Za-z0-9_])tape::(active|\{|\*)|server_ids|server_roster_gen|server_facts_gen|server_probe_result|peek_settled|(session|keypin|grant|player|transport|preview|devcaps|tape|caps|is_dp_audio|is_dp_audio_track|peek|peek_settled|current_gen|revision|blocked_for|offers|paused|viewer_paused|TX|server_ids|server_roster_gen|server_facts_gen|server_probe_result)[[:space:]]+as[[:space:]]'
 # a cfg line: one with `test` on it, or an attribute / `cfg!` that opens on one line and closes on a later
 # one, where `test` may sit on the second. A line that is a test-only attribute outright — `#[cfg(test)]`,
 # `#[cfg(any(test, feature = "test-support"))]`, or an `all(<either>, <flat atoms>)` of them — is no
@@ -1301,11 +1302,13 @@ LG_LEDGERS="$(echo ci/allow/workers/*.txt)" LG_AREA_CHECK=1 \
 
 # globals: a production read of a process-global registry in a MACHINE — `client_for(`, `current_server(`,
 # `current_snapshot(`, `keypin::revision(`, `keypin::blocked_for(`, `session::peek(`, `grant::offers(`, the
-# player's transport-pause readers `transport::paused(`, `transport::viewer_paused(` and `preview::paused(`
-# (each takes the session and reads its `PlayerReadout`, a `ps`-addressed readout read; they read `FEED_TX.paused`
-# until W3e L3b-2c moved the Pause into the readout, and the spellings stay guarded; the lifecycle PR B move put
-# them in player/transport.rs and widened this rule to them, seeding the machines' existing reads as a coverage
-# expansion), and `player::TX`
+# player's pause readers `transport::viewer_paused(` and `preview::paused(`. Both take the session,
+# yet neither is a pure readout read: `viewer_paused` also reads the claim hold's process-global slot and serial
+# (`claim_hold::owns_pause`), and `preview::paused` the preview machine's process-global phase
+# (`preview::occupies`). `transport::paused(ps)` is no longer a spelling: since W3e L3b-2c moved the Pause into
+# the readout it reads `ps.readout().paused()` and nothing process-wide (it read `FEED_TX.paused` before); the
+# lifecycle PR B move had put all three in player/transport.rs and widened this rule to them, seeding the
+# machines' existing reads as a coverage expansion. The rule also guards `player::TX`
 # in the player's lifecycle (the machine, at zero: it takes the pause as a value on its event, and the
 # spelling stays pinned there as a guard; the HUD's direct reads are not machines). The pause moved with the
 # Feed backend's state to `plx_play_feed::shared::FEED_TX` (and the callback mailbox to `FEED_SHARED`), so the
@@ -1340,10 +1343,10 @@ globals_sites=$(
   { ledger_candidates G
     printf '%s\n' rust-modules/plex/src/plex/session.rs "$SRC_MEDIA/player/lifecycle.rs"; } \
     | LG_MODE=call LG_KEYSPELL=1 LG_USE_OK=1 LG_REF_USE_ONLY=1 \
-      LG_SITE='(^|[^A-Za-z0-9_.])(client_for|current_server|current_snapshot|keypin::revision|keypin::blocked_for|session::peek|session::peek_settled|session::current_gen|grant::offers|transport::paused|transport::viewer_paused|preview::paused|devcaps::caps|is_dp_audio_track|is_dp_audio|tape::active|server_ids|server_roster_gen|server_facts_gen|server_probe_result|peek_settled)([^A-Za-z0-9_]|$)' \
+      LG_SITE='(^|[^A-Za-z0-9_.])(client_for|current_server|current_snapshot|keypin::revision|keypin::blocked_for|session::peek|session::peek_settled|session::current_gen|grant::offers|transport::viewer_paused|preview::paused|devcaps::caps|is_dp_audio_track|is_dp_audio|tape::active|server_ids|server_roster_gen|server_facts_gen|server_probe_result|peek_settled)([^A-Za-z0-9_]|$)' \
       LG_DEF='fn[[:space:]]+(client_for|current_server|current_snapshot|peek|peek_settled|current_gen|revision|blocked_for|offers|paused|viewer_paused|caps|is_dp_audio|is_dp_audio_track|active|server_ids|server_roster_gen|server_facts_gen|server_probe_result)[[:space:]]*[(<]' \
       LG_REF='(^|[^A-Za-z0-9_])(client_for|current_server|current_snapshot|peek|peek_settled|current_gen|revision|blocked_for|offers|paused|viewer_paused|caps|is_dp_audio|is_dp_audio_track|server_ids|server_roster_gen|server_facts_gen|server_probe_result|tape::active|TX|session|keypin|grant|player|transport|preview|devcaps|tape)[[:space:]]+as[[:space:]]|(^|[^A-Za-z0-9_])tape::\{([^}]*[^A-Za-z0-9_])?active[[:space:]]+as[[:space:]]' \
-      LG_BARE='session::(peek([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?peek([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])peek([^A-Za-z0-9_]|$);;keypin::(revision([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?revision([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])revision([^A-Za-z0-9_]|$);;keypin::(blocked_for([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?blocked_for([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])blocked_for([^A-Za-z0-9_]|$);;grant::(offers([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?offers([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])offers([^A-Za-z0-9_]|$);;(^|[^A-Za-z0-9_])transport::(paused([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?paused([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])paused([^A-Za-z0-9_]|$);;(^|[^A-Za-z0-9_])transport::(viewer_paused([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?viewer_paused([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])viewer_paused([^A-Za-z0-9_]|$);;(^|[^A-Za-z0-9_])preview::(paused([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?paused([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])paused([^A-Za-z0-9_]|$);;(^|[^A-Za-z0-9_])devcaps::(caps([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?caps([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])caps[[:space:]]*\(;;(^|[^A-Za-z0-9_])(plex|transcoder)::(is_dp_audio([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?is_dp_audio([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])is_dp_audio([^A-Za-z0-9_]|$);;(^|[^A-Za-z0-9_])(plex|transcoder)::(is_dp_audio_track([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?is_dp_audio_track([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])is_dp_audio_track([^A-Za-z0-9_]|$);;(^|[^A-Za-z0-9_])session::(current_gen([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?current_gen([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])current_gen[[:space:]]*\(;;(^|[^A-Za-z0-9_])tape::(active([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?active([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])active[[:space:]]*\(' \
+      LG_BARE='session::(peek([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?peek([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])peek([^A-Za-z0-9_]|$);;keypin::(revision([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?revision([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])revision([^A-Za-z0-9_]|$);;keypin::(blocked_for([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?blocked_for([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])blocked_for([^A-Za-z0-9_]|$);;grant::(offers([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?offers([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])offers([^A-Za-z0-9_]|$);;(^|[^A-Za-z0-9_])transport::(viewer_paused([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?viewer_paused([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])viewer_paused([^A-Za-z0-9_]|$);;(^|[^A-Za-z0-9_])preview::(paused([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?paused([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])paused([^A-Za-z0-9_]|$);;(^|[^A-Za-z0-9_])devcaps::(caps([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?caps([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])caps[[:space:]]*\(;;(^|[^A-Za-z0-9_])(plex|transcoder)::(is_dp_audio([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?is_dp_audio([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])is_dp_audio([^A-Za-z0-9_]|$);;(^|[^A-Za-z0-9_])(plex|transcoder)::(is_dp_audio_track([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?is_dp_audio_track([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])is_dp_audio_track([^A-Za-z0-9_]|$);;(^|[^A-Za-z0-9_])session::(current_gen([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?current_gen([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])current_gen[[:space:]]*\(;;(^|[^A-Za-z0-9_])tape::(active([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?active([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])active[[:space:]]*\(' \
       LG_FILE_SITE='rust-modules/plex/src/plex/session.rs@@(^|[^A-Za-z0-9_.:])peek([^A-Za-z0-9_]|$);;rust-modules/plex/src/plex/session.rs@@(^|[^A-Za-z0-9_.:])current_gen[[:space:]]*\(;;rust-modules/media/src/player/lifecycle.rs@@(^|[^A-Za-z0-9_.])(player::TX|super::TX|shared::FEED_TX|shared::FEED_SHARED)([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_.:])(TX|FEED_TX|FEED_SHARED)([^A-Za-z0-9_]|$)' \
       ledger_scan | sort
 )
