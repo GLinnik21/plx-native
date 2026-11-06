@@ -598,12 +598,6 @@ pub struct Shared {
     /// The current HLS master declaration, an observation of what PMS actually emitted;
     /// `dg_abr_kbps` is the requested ceiling and must never be presented as this.
     pub dg_abr_declared_kbps: AtomicI64,
-    /// Last Original source failure, as `player::ABR_FAILURE_*` plus its HTTP status when one was
-    /// observed. These are playback-scoped rather than engine-scoped: HLS→Original failure tears
-    /// the Engine down while restoring HLS, and clearing them in `reset_session` would make the
-    /// successful rollback erase its own cause before the diagnostics panel could photograph it.
-    pub abr_failure_kind: AtomicU8,
-    pub abr_failure_status: AtomicI32,
     /// `vp_place` return, and the size it was called with. `i32::MIN` = never called.
     pub dg_place_rv: AtomicI32,
     pub dg_placed_w: AtomicI32,
@@ -681,8 +675,6 @@ impl Shared {
             dg_abr_mode: AtomicU8::new(0),
             dg_abr_kbps: AtomicI64::new(0),
             dg_abr_declared_kbps: AtomicI64::new(-1),
-            abr_failure_kind: AtomicU8::new(0),
-            abr_failure_status: AtomicI32::new(0),
             dg_place_rv: AtomicI32::new(i32::MIN),
             dg_placed_w: AtomicI32::new(0),
             dg_placed_h: AtomicI32::new(0),
@@ -912,13 +904,6 @@ impl Shared {
         self.sink_displayed_live.load(Ordering::Relaxed)
     }
 
-    /// Clear a playback's sticky Original failure. Kept separate from [`Shared::reset_session`]
-    /// for the same lifetime reason as the ABR seed: an engine reload is not a new playback.
-    pub fn clear_abr_failure(&self) {
-        self.abr_failure_kind.store(0, Ordering::Relaxed);
-        self.abr_failure_status.store(0, Ordering::Relaxed);
-    }
-
     pub fn publish_video_raster(&self, width: i32, height: i32) {
         let packed = (u64::from(width as u32) << 32) | u64::from(height as u32);
         self.video_w.store(width, Ordering::Relaxed);
@@ -983,8 +968,8 @@ impl Shared {
         self.duration_ns.store(duration_ns, Ordering::Relaxed);
     }
 
-    /// **NB: this does NOT clear the Original failure** — see [`Shared::clear_abr_failure`].
-    /// Everything else here describes one engine's session and must not outlive it.
+    /// Everything here describes one engine's session and must not outlive it. (The Original
+    /// failure, which outlives an engine reload, is the player's readout, not a mailbox.)
     pub fn reset_session(&self) {
         self.reset_session_inner();
     }
@@ -2865,27 +2850,6 @@ mod tests {
             s.complete_hls_prime_play(play, true),
             HlsPlayCompletion::Accepted { resume_acb: true }
         );
-    }
-
-    /// A failed HLS→Original transaction immediately tears down the failed Engine and reloads
-    /// the retained HLS one. The HTTP cause must survive that reset, then die with the playback.
-    #[test]
-    fn original_failure_survives_rollback_reload_and_not_the_playback() {
-        let s = Shared::new();
-        s.abr_failure_kind
-            .store(1, Ordering::Relaxed);
-        s.abr_failure_status.store(503, Ordering::Relaxed);
-
-        s.reset_session();
-        assert_eq!(
-            s.abr_failure_kind.load(Ordering::Relaxed),
-            1
-        );
-        assert_eq!(s.abr_failure_status.load(Ordering::Relaxed), 503);
-
-        s.clear_abr_failure();
-        assert_eq!(s.abr_failure_kind.load(Ordering::Relaxed), 0);
-        assert_eq!(s.abr_failure_status.load(Ordering::Relaxed), 0);
     }
 
     /// The one invariant that cannot be recovered from if it breaks, and breaks SILENTLY: a session

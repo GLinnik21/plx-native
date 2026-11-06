@@ -1539,8 +1539,11 @@ pub(super) fn finish_feed_teardown(
         // skip re-ramp the ladder for ten to twenty seconds.
         ps.step_readout(super::readout::ReadoutEvent::AbrSeed(None));
         // The failure is retained across the rollback reload only; a new playback must not carry
-        // another item's PMS response into its diagnostics.
-        FEED_SHARED.clear_abr_failure();
+        // another item's PMS response into its diagnostics. Its own event, not the session's reset,
+        // which a reload steps too.
+        ps.step_readout(super::readout::ReadoutEvent::OriginalFailure(
+            plx_playback_contract::adaptive::FailureEdit::Cleared,
+        ));
         // A deferred Original recovery outlives nothing: the playback it belonged to is over, so
         // there is no frame left that could confirm it and no route left to roll back to. The
         // encoder it was holding is still running on the server, which is why this RETIRES rather

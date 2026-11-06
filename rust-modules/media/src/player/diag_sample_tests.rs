@@ -142,3 +142,31 @@ fn a_uri_attempt_shows_no_feed_rows() {
     assert_eq!(rows(&d), rows(&Diag::default()), "the early return reads nothing of the feed");
     SHARED.reset_session();
 }
+
+/// **The failure rows are the readout's pair.** What the Original probe's worker noted (its edit,
+/// taken in through the session's addressed ingestion) and what the pump noted read back as the
+/// kind and status the panel words, a session reset (the rollback reload) leaves them, and a clear
+/// drops them: the same values the shared pair held.
+#[test]
+fn the_failure_rows_are_the_readouts_pair_the_workers_edit_included() {
+    use plx_playback_contract::adaptive::FailureEdit;
+    let _serial = plx_base::testlock::serial();
+    SHARED.reset_session();
+    let a = RouteStartAttempt::fixture();
+    let mut ps = PlaybackSession::IDLE;
+    ps.begin_attempt_view(a, Backend::Feed);
+    let failure = |ps: &PlaybackSession| {
+        let d = diag(ps);
+        (d.abr_failure_kind, d.abr_failure_status)
+    };
+    assert_eq!(failure(&ps), (0, 0), "nothing failed");
+    assert!(ps.ingest_original_failure(a, FailureEdit::Noted { kind: super::ABR_FAILURE_ORIGINAL_HTTP, status: 503 }));
+    assert_eq!(failure(&ps), (super::ABR_FAILURE_ORIGINAL_HTTP, 503), "the worker's note");
+    ps.step_readout(super::readout::ReadoutEvent::SessionReset);
+    assert_eq!(failure(&ps), (super::ABR_FAILURE_ORIGINAL_HTTP, 503), "a reset leaves it");
+    super::note_original_failure(&mut ps, super::ABR_FAILURE_ORIGINAL_OPEN, 0);
+    assert_eq!(failure(&ps), (super::ABR_FAILURE_ORIGINAL_OPEN, 0), "the pump's note replaces it");
+    assert!(ps.ingest_original_failure(a, FailureEdit::Cleared));
+    assert_eq!(failure(&ps), (0, 0), "the worker's clear");
+    SHARED.reset_session();
+}

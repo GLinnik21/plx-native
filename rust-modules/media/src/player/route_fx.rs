@@ -1,11 +1,11 @@
 //! What route policy asks of the player. Route decides (it names no backend and carries no backend
 //! `cfg`); this module executes. The audio and speed picks step the session's readout, which is
-//! backend-neutral, so those run in every build. The rest still write the Feed executor's process
-//! state (the claim hold, the Original failure mark, the side reader), which only a composed Feed
-//! reads: each is a no-op when the build composes no Feed driver, and each waits for its route
-//! caller to hold the adapter (route effects as typed effects a runner executes, L4). Which
-//! backends a session may offer is not decided here: the application's boot installs the set its
-//! drivers form (`PlayerAdapter::composed_backends`).
+//! backend-neutral, so those run in every build, as does the Original failure mark (the readout's).
+//! The rest still write the Feed executor's process state (the claim hold, the side reader), which
+//! only a composed Feed reads: each is a no-op when the build composes no Feed driver, and each
+//! waits for its route caller to hold the adapter (route effects as typed effects a runner
+//! executes, L4). Which backends a session may offer is not decided here: the application's boot
+//! installs the set its drivers form (`PlayerAdapter::composed_backends`).
 
 use crate::route::{PlaybackSession, SideReaderTarget};
 
@@ -16,9 +16,10 @@ pub fn clear_claim_hold() {
 }
 
 /// Forget the typed failure of the Original probe a replacement source is leaving.
-pub fn clear_original_failure() {
-    #[cfg(feature = "play-feed")]
-    super::clear_original_failure();
+pub fn clear_original_failure(ps: &mut PlaybackSession) {
+    ps.step_readout(super::readout::ReadoutEvent::OriginalFailure(
+        plx_playback_contract::adaptive::FailureEdit::Cleared,
+    ));
 }
 
 /// Select the audio stream index the demuxer feeds at the first Load (`-1`: the default).
@@ -71,4 +72,24 @@ pub fn sync_side_reader(ps: &PlaybackSession, target: Option<SideReaderTarget>) 
     super::subside::sync(target.and_then(|t| super::subside::spec_for(&t, ps.readout().raw().disp_base)));
     #[cfg(not(feature = "play-feed"))]
     let _ = (ps, target);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::player::readout::ReadoutEvent;
+    use plx_playback_contract::adaptive::FailureEdit;
+
+    /// A replacement source leaving a failed Original probe forgets the reason, in the session's
+    /// readout, in every build: it names no backend and holds no Feed state.
+    #[test]
+    fn a_replacement_source_clears_the_original_failure_in_the_readout() {
+        let mut ps = PlaybackSession::IDLE;
+        ps.step_readout(ReadoutEvent::OriginalFailure(FailureEdit::Noted {
+            kind: crate::player::ABR_FAILURE_ORIGINAL_HTTP, status: 503,
+        }));
+        assert!(ps.readout().original_failure().is_some(), "PRECONDITION FAILED: the failure is noted");
+        clear_original_failure(&mut ps);
+        assert_eq!(ps.readout().original_failure(), None);
+    }
 }

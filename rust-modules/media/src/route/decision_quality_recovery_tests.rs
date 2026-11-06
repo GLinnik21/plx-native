@@ -2278,7 +2278,7 @@ fn manually_picking_original_restores_native_dolby_vision_instead_of_retranscodi
         "rk-auto",
     );
 
-    crate::player::note_original_failure(crate::player::ABR_FAILURE_ORIGINAL_HTTP, 503);
+    crate::player::note_original_failure(&mut ps, crate::player::ABR_FAILURE_ORIGINAL_HTTP, 503);
 
     set_quality(&mut ps, Quality::Original);
     assert_eq!(quality(), Quality::Original);
@@ -2302,8 +2302,8 @@ fn manually_picking_original_restores_native_dolby_vision_instead_of_retranscodi
         "the native Load must regain its Dolby Vision declaration"
     );
     assert_eq!(
-        crate::player::abr_failure_kind_for_test(),
-        0,
+        ps.readout().original_failure(),
+        None,
         "the new Original attempt supersedes the old probe's failure",
     );
     assert!(!is_transcoding(&ps));

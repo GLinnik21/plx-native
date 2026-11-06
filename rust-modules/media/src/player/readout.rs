@@ -25,7 +25,7 @@
 //! carries a speed change (read it, then step `RateReloadTaken`). `start_queued` is the release
 //! machine's answer, stepped by `PlayerAdapter::release_step` after every step of the machine.
 
-use plx_playback_contract::adaptive::{AbrReadout, CarriedSeed, SeedReadout};
+use plx_playback_contract::adaptive::{AbrReadout, CarriedSeed, FailureEdit, SeedReadout};
 use plx_playback_contract::feed::{FeedRaw, PresentationTick, Stage};
 use plx_playback_contract::RATE_NORMAL;
 
@@ -100,6 +100,14 @@ pub struct PlayerReadout {
     /// ([`ReadoutEvent::AbrSeed`]). It outlives a session reset (a reload is the same item on the
     /// same link) and dies with the playback (`AbrSeed(None)`).
     abr_seed: Option<(SeedReadout, u32)>,
+    /// Why the last Original source experiment or open failed: a `player::ABR_FAILURE_ORIGINAL_*`
+    /// code and the HTTP status when one was observed ([`ReadoutEvent::OriginalFailure`]). The
+    /// playback's, not the engine's: it outlives a session reset, because the rollback reload that
+    /// restores HLS must not erase the only fact explaining why Original is no longer attempted,
+    /// and it dies with the playback (a real stop clears it) or when a new source attempt or probe
+    /// supersedes it. Three writers, one owner: the player's pump and route (events stepped here)
+    /// and the adaptive worker (its edits ride the open's channel and are stepped on the drain).
+    original_failure: Option<(u8, i32)>,
 }
 
 /// A one-shot fact the feed counts and the player takes: the feed keeps a monotonic count of the
@@ -232,6 +240,10 @@ pub enum ReadoutEvent {
     /// Unlike every other fact here it survives [`ReadoutEvent::SessionReset`]: a reload keeps the
     /// link it measured.
     AbrSeed(Option<(SeedReadout, u32)>),
+    /// The Original failure was noted or cleared (see [`PlayerReadout::original_failure`]). Like
+    /// [`ReadoutEvent::AbrSeed`] it survives [`ReadoutEvent::SessionReset`], so a reload keeps it;
+    /// a REAL stop steps `Cleared` itself, at the end of the teardown.
+    OriginalFailure(FailureEdit),
 }
 
 impl PlayerReadout {
@@ -258,6 +270,7 @@ impl PlayerReadout {
         open_disp_base_ns: 0,
         abr: AbrReadout::IDLE,
         abr_seed: None,
+        original_failure: None,
     };
 
     pub fn state(&self) -> PlaybackState { self.state }
@@ -280,6 +293,10 @@ impl PlayerReadout {
     pub fn abr_seed(&self, now_ms: u32) -> Option<CarriedSeed> {
         self.abr_seed.map(|(seed, observed_at_ms)| (seed, u64::from(now_ms.wrapping_sub(observed_at_ms))))
     }
+    /// Why the last Original source experiment or open failed: the `player::ABR_FAILURE_ORIGINAL_*`
+    /// code and the HTTP status (`0` when none was observed), `None` when nothing failed or the
+    /// failure was cleared.
+    pub fn original_failure(&self) -> Option<(u8, i32)> { self.original_failure }
     /// The audio stream the demuxer is to feed (`-1`: the file's own default).
     pub fn audio_choice(&self) -> i32 { self.audio_choice }
     /// The display base the player last commanded the feed to open with (0 after any session reset).
@@ -365,6 +382,10 @@ impl PlayerReadout {
             }
             ReadoutEvent::Abr(abr) => self.abr = abr,
             ReadoutEvent::AbrSeed(seed) => self.abr_seed = seed,
+            ReadoutEvent::OriginalFailure(FailureEdit::Noted { kind, status }) => {
+                self.original_failure = Some((kind, status.max(0)));
+            }
+            ReadoutEvent::OriginalFailure(FailureEdit::Cleared) => self.original_failure = None,
             ReadoutEvent::NewItem => {
                 self.play_rate_permille = RATE_NORMAL;
                 self.rate_reload = false;
@@ -1118,6 +1139,57 @@ mod tests {
         let stopped = stepped(&[ReadoutEvent::AbrSeed(Some((seed(19), 10_000))),
             ReadoutEvent::SessionReset, ReadoutEvent::AbrSeed(None)]);
         assert_eq!(stopped.abr_seed(10_000), None, "a real stop clears it");
+    }
+
+    const HTTP_503: FailureEdit = FailureEdit::Noted { kind: crate::player::ABR_FAILURE_ORIGINAL_HTTP, status: 503 };
+
+    /// The Original failure is the playback's: a note sets the pair (a negative status reads as
+    /// none), a clear drops it, and neither a session reset (the rollback reload that restores HLS
+    /// is one) nor anything else but a clear touches it.
+    #[test]
+    fn the_original_failure_is_noted_cleared_and_survives_a_session_reset() {
+        assert_eq!(PlayerReadout::IDLE.original_failure(), None);
+        let noted = stepped(&[ReadoutEvent::OriginalFailure(HTTP_503)]);
+        assert_eq!(noted.original_failure(), Some((crate::player::ABR_FAILURE_ORIGINAL_HTTP, 503)));
+        let reloaded = stepped(&[ReadoutEvent::OriginalFailure(HTTP_503), ReadoutEvent::SessionReset,
+            ReadoutEvent::SessionReset]);
+        assert_eq!(reloaded.original_failure(), Some((crate::player::ABR_FAILURE_ORIGINAL_HTTP, 503)),
+            "the rollback's reload keeps the cause it is explaining");
+        let cleared = stepped(&[ReadoutEvent::OriginalFailure(HTTP_503), ReadoutEvent::SessionReset,
+            ReadoutEvent::OriginalFailure(FailureEdit::Cleared)]);
+        assert_eq!(cleared.original_failure(), None, "a real stop's own event clears it");
+        let renoted = stepped(&[ReadoutEvent::OriginalFailure(HTTP_503), ReadoutEvent::OriginalFailure(
+            FailureEdit::Noted { kind: crate::player::ABR_FAILURE_ORIGINAL_OPEN, status: -1 })]);
+        assert_eq!(renoted.original_failure(), Some((crate::player::ABR_FAILURE_ORIGINAL_OPEN, 0)),
+            "a later note replaces the pair, and a negative status is no status");
+    }
+
+    /// The pump's own note (a refused Original open, on the main thread) is the same event the worker's
+    /// edit is: the pair is the readout's whichever thread noticed.
+    #[test]
+    fn the_players_note_of_a_refused_original_is_a_readout_event() {
+        let mut ps = PlaybackSession::IDLE;
+        crate::player::note_original_failure(&mut ps, crate::player::ABR_FAILURE_ORIGINAL_HTTP, 404);
+        assert_eq!(ps.readout().original_failure(), Some((crate::player::ABR_FAILURE_ORIGINAL_HTTP, 404)));
+        crate::player::note_original_failure(&mut ps, crate::player::ABR_FAILURE_ORIGINAL_OPEN, 0);
+        assert_eq!(ps.readout().original_failure(), Some((crate::player::ABR_FAILURE_ORIGINAL_OPEN, 0)));
+    }
+
+    /// The failure edit is addressed like the photograph: a late worker of a previous attempt changes
+    /// nothing.
+    #[test]
+    fn the_workers_failure_edit_is_addressed_by_its_attempt_and_backend() {
+        let _serial = plx_base::testlock::serial();
+        let (a, b, c) = (RouteStartAttempt::fixture(), RouteStartAttempt::fixture_n(2), RouteStartAttempt::fixture_n(3));
+        let mut ps = PlaybackSession::IDLE;
+        ps.begin_attempt_view(a, Backend::Feed);
+        assert!(ps.ingest_original_failure(a, HTTP_503));
+        assert_eq!(ps.readout().original_failure().map(|(_, status)| status), Some(503));
+        ps.begin_attempt_view(b, Backend::Feed);
+        assert!(!ps.ingest_original_failure(a, FailureEdit::Cleared), "a stale attempt is refused");
+        assert_eq!(ps.readout().original_failure().map(|(_, status)| status), Some(503), "its clear did not land");
+        ps.begin_attempt_view(c, Backend::Uri);
+        assert!(!ps.ingest_original_failure(c, FailureEdit::Cleared), "the worker is the Feed's");
     }
 
     /// The two members of the photograph an attempt's facts carry follow the sparse form: `None`

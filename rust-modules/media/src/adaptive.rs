@@ -5,7 +5,7 @@
 use crate::{abr, route};
 use plx_playback_contract::adaptive::PublicationGate;
 use plx_playback_contract::adaptive::{
-    AbrReadout, ActionReadout, AdaptiveDirection, AdaptiveEffects, AdaptivePhysicalPort, AdaptiveProgress, AdaptiveSession, Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, ActiveQuantum, AdaptiveRoundPort, AutomaticTransition, BufferFact, CandidateFencePort, CandidateMediaPort, CommitReadout, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, TrialClock,
+    AbrReadout, ActionReadout, AdaptiveDirection, AdaptiveEffects, AdaptivePhysicalPort, AdaptiveProgress, AdaptiveSession, Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, ActiveQuantum, AdaptiveRoundPort, AutomaticTransition, BufferFact, CandidateFencePort, CandidateMediaPort, CommitReadout, FailureEdit, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, TrialClock,
     OriginalProgress, OriginalQuantum, OriginalSession, RoundId, SeedReadout, TrialObservation, TrialPhase, TrialProtocol, TrialProtocolError,
 };
 use plx_playback_contract::SourceKey;
@@ -23,28 +23,49 @@ const READOUT_QUEUE_DEPTH: usize = 16;
 /// Everything the adaptive worker has told its sink so far, as the player takes it in: the
 /// accumulated [`AbrReadout`] and the carried link estimate with the instant the worker observed it.
 /// A shipment is cumulative, so the newest one stands for all of them.
+///
+/// The Original failure edits are not state but a sequence, and a sequence survives that rule
+/// because every edit replaces the whole pair: `failure` is the worker's newest edit with its
+/// number (this open's edits count from 1), so "noted, then cleared" between two drains reaches the
+/// player as the clear, and a coalesced run ends where applying each would have. The number is what
+/// lets the player apply an edit once ([`AbrInbox::newest`]) although every later shipment carries
+/// it again, and a new open's shipments start with none, so they never touch a reason the readout
+/// kept from the open before. The numbering is one sink's: the HLS worker's Original probe is the
+/// only writer of edits, and an open carries one worker (an HLS worker or the Original watchdog,
+/// which edits nothing), so the inbox's single counter cannot mix two sequences.
 #[derive(Clone, Copy)]
 pub(crate) struct AbrShipment {
     pub(crate) readout: AbrReadout,
     pub(crate) seed: Option<(SeedReadout, Instant)>,
+    pub(crate) failure: Option<(u64, FailureEdit)>,
 }
 
 /// The player's end of one open's channel from its adaptive worker. It lives with the claimed open
 /// on the main thread, beside the attempt the open was claimed under; the pump drains it into the
 /// session's readout. Dropping it is the normal stop: the worker's next send finds no receiver and
 /// carries on.
-pub(crate) struct AbrInbox(Receiver<AbrShipment>);
+pub(crate) struct AbrInbox {
+    receiver: Receiver<AbrShipment>,
+    /// The number of the last failure edit handed out: the next call hands out only a later one.
+    taken_failure: Cell<u64>,
+}
 
 impl AbrInbox {
-    /// The newest shipment sent since the last call, if any. Never blocks.
-    pub(crate) fn newest(&self) -> Option<AbrShipment> { self.0.try_iter().last() }
+    /// The newest shipment sent since the last call, if any. Never blocks. Its `failure` is the
+    /// worker's newest edit when that is one this inbox has not handed out yet, else `None`.
+    pub(crate) fn newest(&self) -> Option<AbrShipment> {
+        let mut shipment = self.receiver.try_iter().last()?;
+        shipment.failure = shipment.failure.filter(|&(number, _)| number > self.taken_failure.get());
+        if let Some((number, _)) = shipment.failure { self.taken_failure.set(number); }
+        Some(shipment)
+    }
 }
 
 /// One open's channel: the worker's sender (clone it into each adaptive session the open carries)
 /// and the player's inbox.
 pub(crate) fn readout_channel() -> (SyncSender<AbrShipment>, AbrInbox) {
     let (tx, rx) = sync_channel(READOUT_QUEUE_DEPTH);
-    (tx, AbrInbox(rx))
+    (tx, AbrInbox { receiver: rx, taken_failure: Cell::new(0) })
 }
 
 /// The player sink for common adaptive effects. Only the common worker invokes
@@ -65,7 +86,7 @@ pub struct PlayerAdaptiveEffects {
 
 impl PlayerAdaptiveEffects {
     pub(crate) fn new(tx: SyncSender<AbrShipment>) -> Self {
-        Self { tx, latest: AbrShipment { readout: AbrReadout::IDLE, seed: None } }
+        Self { tx, latest: AbrShipment { readout: AbrReadout::IDLE, seed: None, failure: None } }
     }
 
     fn ship(&self) {
@@ -84,6 +105,12 @@ impl AdaptiveEffects for PlayerAdaptiveEffects {
 
     fn readout(&mut self, readout: AbrReadout) {
         self.latest.readout = readout;
+        self.ship();
+    }
+
+    fn failure(&mut self, edit: FailureEdit) {
+        let number = self.latest.failure.map_or(0, |(number, _)| number).saturating_add(1);
+        self.latest.failure = Some((number, edit));
         self.ship();
     }
 
@@ -124,6 +151,14 @@ impl AbrPublisher {
     }
 
     pub(crate) fn seed(&self, seed: SeedReadout) { self.effects.borrow_mut().seed(seed); }
+
+    /// The Original probe's typed failure, for the player's readout to keep (see [`FailureEdit`]).
+    fn note_failure(&self, kind: u8, status: i32) {
+        self.effects.borrow_mut().failure(FailureEdit::Noted { kind, status });
+    }
+
+    /// A new probe supersedes the reason an earlier one failed.
+    fn clear_failure(&self) { self.effects.borrow_mut().failure(FailureEdit::Cleared); }
 
     pub(crate) fn committed(&self, readout: CommitReadout) {
         self.effects.borrow_mut().committed(readout);
@@ -287,7 +322,7 @@ impl OriginalProbeDiagnostics for PlayerOriginalProbeDiagnostics<'_> {
         match action {
             ProbeTraceAction::Start => {
                 self.publisher.set_action(code::ABR_ACTION_PROBE_ORIGINAL, Some(i64::from(target_kbps)));
-                crate::player::clear_original_failure();
+                self.publisher.clear_failure();
             }
             ProbeTraceAction::Failed =>
                 self.publisher.set_action(code::ABR_ACTION_ORIGINAL_PROBE_FAILED, Some(0)),
@@ -305,7 +340,7 @@ impl OriginalProbeDiagnostics for PlayerOriginalProbeDiagnostics<'_> {
             F::NoBody => (crate::player::ABR_FAILURE_ORIGINAL_NO_BODY, 0),
             F::Other => (crate::player::ABR_FAILURE_ORIGINAL_OPEN, 0),
         };
-        crate::player::note_original_failure(kind, status);
+        self.publisher.note_failure(kind, status);
     }
 
     fn record(&mut self, line: &str) { crate::player::log(line); }
@@ -4067,6 +4102,118 @@ mod abr_readout_tests {
         assert_eq!(inbox.newest().expect("clearing shipment").seed.map(|(s, _)| s.samples), None);
     }
 
+    fn http(status: i32) -> FailureEdit {
+        FailureEdit::Noted { kind: crate::player::ABR_FAILURE_ORIGINAL_HTTP, status }
+    }
+
+    /// An edit crosses once. Every shipment carries the worker's newest edit (the sink is
+    /// cumulative), so a later shipment about another member must not hand it out again: the player
+    /// may have cleared the reason since, and a replay would bring it back.
+    #[test]
+    fn a_failure_edit_crosses_once_though_every_later_shipment_carries_it() {
+        let (tx, inbox) = readout_channel();
+        let mut sink = PlayerAdaptiveEffects::new(tx);
+        sink.failure(http(503));
+        assert_eq!(inbox.newest().expect("the edit's shipment").failure, Some((1, http(503))));
+        sink.readout(net(7));
+        let later = inbox.newest().expect("a shipment about another member");
+        assert_eq!(later.readout.net_kbps, 7, "the shipment itself is not lost");
+        assert_eq!(later.failure, None, "the edit was handed out already");
+        sink.seed(seed(5));
+        assert_eq!(inbox.newest().expect("a seed shipment").failure, None);
+        sink.failure(FailureEdit::Cleared);
+        assert_eq!(inbox.newest().expect("the next edit").failure, Some((2, FailureEdit::Cleared)),
+            "a new edit is a new number");
+    }
+
+    /// Latest wins within the worker's own sequence because every edit replaces the whole pair: a
+    /// note and the clear after it, between two drains, end cleared, and a clear and the note after
+    /// it end noted. Nothing is lost to the coalescing of the drain.
+    #[test]
+    fn a_note_and_a_clear_between_two_drains_end_as_the_later_one() {
+        let (tx, inbox) = readout_channel();
+        let mut sink = PlayerAdaptiveEffects::new(tx);
+        sink.failure(http(503));
+        sink.failure(FailureEdit::Cleared);
+        assert_eq!(inbox.newest().expect("both edits").failure, Some((2, FailureEdit::Cleared)));
+        sink.failure(FailureEdit::Cleared);
+        sink.failure(http(404));
+        sink.readout(net(1));
+        assert_eq!(inbox.newest().expect("the three").failure, Some((4, http(404))),
+            "the clear and the note after it end noted, the shipment about another member included");
+    }
+
+    /// A full channel refuses the new shipment; the sink keeps the edit, and the next call, whichever
+    /// member it changes, carries it.
+    #[test]
+    fn a_refused_failure_edit_rides_the_next_shipment() {
+        let (tx, inbox) = readout_channel();
+        let mut sink = PlayerAdaptiveEffects::new(tx);
+        for i in 1..=READOUT_QUEUE_DEPTH as i64 { sink.readout(net(i)); }
+        sink.failure(http(500));
+        let filled = inbox.newest().expect("the filled queue");
+        assert_eq!(filled.failure, None, "the edit's own shipment was refused");
+        sink.readout(net(99));
+        let next = inbox.newest().expect("room after the drain");
+        assert_eq!(next.readout.net_kbps, 99);
+        assert_eq!(next.failure, Some((1, http(500))), "the refused edit rode the next shipment");
+    }
+
+    /// A new open's channel starts empty: its first shipments carry no edit, so applying them
+    /// cannot touch a reason the readout kept from the open before (a reload makes a new open).
+    #[test]
+    fn a_new_opens_first_shipments_carry_no_failure_edit() {
+        let (old_tx, old_inbox) = readout_channel();
+        let mut old = PlayerAdaptiveEffects::new(old_tx);
+        old.failure(http(503));
+        assert!(old_inbox.newest().expect("the old open's edit").failure.is_some());
+        let (tx, inbox) = readout_channel();
+        let mut sink = PlayerAdaptiveEffects::new(tx);
+        sink.readout(AbrReadout::IDLE);
+        sink.seed(seed(0));
+        assert_eq!(inbox.newest().expect("the idle shipment").failure, None);
+        sink.failure(http(404));
+        assert_eq!(inbox.newest().expect("the new open's own edit").failure, Some((1, http(404))),
+            "its numbering is its own");
+    }
+
+    /// A recording sink: every failure edit the publisher hands its sink.
+    struct EditRecorder(Arc<Mutex<Vec<FailureEdit>>>);
+    impl AdaptiveEffects for EditRecorder {
+        fn seed(&mut self, _: SeedReadout) {}
+        fn committed(&mut self, _: CommitReadout) {}
+        fn readout(&mut self, _: AbrReadout) {}
+        fn failure(&mut self, edit: FailureEdit) { self.0.lock().expect("recorder").push(edit); }
+    }
+
+    /// The probe's two writes of the failure pair, as the worker makes them: a probe's start clears
+    /// the reason an earlier one failed (and says it is probing), and each kind of failure notes its
+    /// typed reason with the HTTP status only for a status.
+    #[test]
+    fn the_probe_clears_at_its_start_and_notes_each_kind_of_failure() {
+        let edits = Arc::new(Mutex::new(Vec::new()));
+        let publisher = AbrPublisher::new(Box::new(EditRecorder(Arc::clone(&edits))));
+        let mut probe = PlayerOriginalProbeDiagnostics { publisher: &publisher };
+        probe.action(ProbeTraceAction::Start, 8_000);
+        probe.failure(ProbeFailure::HttpStatus(503));
+        probe.failure(ProbeFailure::Deadline);
+        probe.failure(ProbeFailure::Transport);
+        probe.failure(ProbeFailure::NoBody);
+        probe.failure(ProbeFailure::Other);
+        probe.action(ProbeTraceAction::Failed, 0);
+        probe.action(ProbeTraceAction::Steady, 0);
+        use crate::player::{ABR_FAILURE_ORIGINAL_DEADLINE as DEADLINE, ABR_FAILURE_ORIGINAL_NO_BODY as NO_BODY,
+            ABR_FAILURE_ORIGINAL_OPEN as OPEN, ABR_FAILURE_ORIGINAL_TRANSPORT as TRANSPORT};
+        assert_eq!(*edits.lock().expect("recorder"), [
+            FailureEdit::Cleared,
+            http(503),
+            FailureEdit::Noted { kind: DEADLINE, status: 0 },
+            FailureEdit::Noted { kind: TRANSPORT, status: 0 },
+            FailureEdit::Noted { kind: NO_BODY, status: 0 },
+            FailureEdit::Noted { kind: OPEN, status: 0 },
+        ], "only the start clears and only a failure notes");
+    }
+
     /// A recording sink: every cumulative readout the publisher hands its sink.
     struct Recorder(Arc<Mutex<Vec<AbrReadout>>>);
     impl AdaptiveEffects for Recorder {
@@ -4075,6 +4222,7 @@ mod abr_readout_tests {
         fn readout(&mut self, readout: AbrReadout) {
             self.0.lock().expect("recorder").push(readout);
         }
+        fn failure(&mut self, _: FailureEdit) {}
     }
 
     fn publisher() -> (AbrPublisher, Arc<Mutex<Vec<AbrReadout>>>) {

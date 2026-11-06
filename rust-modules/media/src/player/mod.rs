@@ -236,24 +236,23 @@ pub static TX: Transport = Transport::new();
 /// Off at boot, and never persisted.
 pub static DIAG_READOUT_ON: AtomicBool = AtomicBool::new(false);
 
-/// Typed, playback-scoped reason the last Original source experiment/open failed. It deliberately
-/// survives the engine reload that restores HLS, otherwise the successful rollback erases the
-/// only fact explaining why Original is no longer being attempted.
+/// Typed, playback-scoped reason the last Original source experiment/open failed
+/// ([`readout::PlayerReadout::original_failure`]). It deliberately survives the engine reload that
+/// restores HLS, otherwise the successful rollback erases the only fact explaining why Original is
+/// no longer being attempted.
 pub const ABR_FAILURE_ORIGINAL_HTTP: u8 = 1;
 pub const ABR_FAILURE_ORIGINAL_DEADLINE: u8 = 2;
 pub const ABR_FAILURE_ORIGINAL_TRANSPORT: u8 = 3;
 pub const ABR_FAILURE_ORIGINAL_NO_BODY: u8 = 4;
 pub const ABR_FAILURE_ORIGINAL_OPEN: u8 = 5;
 
-#[cfg(feature = "play-feed")]
-pub fn note_original_failure(kind: u8, http_status: i32) {
-    FEED_SHARED.abr_failure_status.store(http_status.max(0), Relaxed);
-    FEED_SHARED.abr_failure_kind.store(kind, Relaxed);
-}
-
-#[cfg(feature = "play-feed")]
-pub fn clear_original_failure() {
-    FEED_SHARED.clear_abr_failure();
+/// The player noticed an Original source refuse to open: record why, in the session's readout.
+/// (The adaptive worker's probe notes its own failures on the open's channel, and the pump applies
+/// them to the same readout.)
+pub fn note_original_failure(ps: &mut crate::route::PlaybackSession, kind: u8, http_status: i32) {
+    ps.step_readout(readout::ReadoutEvent::OriginalFailure(
+        plx_playback_contract::adaptive::FailureEdit::Noted { kind, status: http_status },
+    ));
 }
 /// Why the controller last moved (or declined to) — `crate::abr::HlsReason` as a code, so the
 /// read-out can name the CONSTRAINT that bound rather than only the action it produced. `0` is
@@ -1631,11 +1630,6 @@ pub fn restore_state_for_test(ps: &mut crate::route::PlaybackSession, raw: u8) {
 pub fn feed_audio_idx_for_test() -> i32 {
     FEED_SHARED.desired_audio_idx.load(Relaxed)
 }
-/// Test-only: the kind of the last Original open failure the Feed carried (0 = none).
-#[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
-pub fn abr_failure_kind_for_test() -> u8 {
-    FEED_SHARED.abr_failure_kind.load(Relaxed)
-}
 /// Test-only: put the Feed's playhead clock where a remux run leaves it (`playpos_ns` is
 /// `fed - pts_shift + disp_base`). `pts_shift` is left alone when `None`.
 #[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
@@ -1896,8 +1890,8 @@ pub fn diag(ps: &crate::route::PlaybackSession) -> Diag {
         abr_ratio_pm: ps.readout().abr().ratio_pm,
         abr_action: ps.readout().abr().action_beside(ps.readout().raw().abr),
         abr_target_kbps: ps.readout().abr().target_kbps,
-        abr_failure_kind: FEED_SHARED.abr_failure_kind.load(Relaxed),
-        abr_failure_status: FEED_SHARED.abr_failure_status.load(Relaxed),
+        abr_failure_kind: ps.readout().original_failure().map_or(0, |(kind, _)| kind),
+        abr_failure_status: ps.readout().original_failure().map_or(0, |(_, status)| status),
         abr_unsafe_deficit_ms: ps.readout().abr().unsafe_deficit_ms,
         abr_safe_kbps: ps.readout().abr().safe_kbps,
         abr_optimal_kbps: ps.readout().abr().optimal_kbps,

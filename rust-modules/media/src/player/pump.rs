@@ -130,10 +130,10 @@ static LAST_FRAMES: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32:
 fn take_failed_original_rollback(ps: &mut crate::route::PlaybackSession, status: i32) -> Option<crate::route::OriginalRollback> {
     let rollback = crate::route::rollback_original_recovery(ps)?;
     if status >= 400 {
-        super::note_original_failure(super::ABR_FAILURE_ORIGINAL_HTTP, status);
+        super::note_original_failure(ps, super::ABR_FAILURE_ORIGINAL_HTTP, status);
     } else {
         // HTTP 200 followed by demux/Load failure is meaningfully different from no response.
-        super::note_original_failure(super::ABR_FAILURE_ORIGINAL_OPEN, status);
+        super::note_original_failure(ps, super::ABR_FAILURE_ORIGINAL_OPEN, status);
     }
     Some(rollback)
 }
@@ -413,9 +413,9 @@ fn drive_open_recovery(ps: &mut crate::route::PlaybackSession, first: super::rec
                 RecoveryEffect::StartAutoHls => {
                     let status = ps.readout().raw().http_status;
                     if status >= 400 {
-                        super::note_original_failure(super::ABR_FAILURE_ORIGINAL_HTTP, status);
+                        super::note_original_failure(ps, super::ABR_FAILURE_ORIGINAL_HTTP, status);
                     } else {
-                        super::note_original_failure(super::ABR_FAILURE_ORIGINAL_OPEN, status);
+                        super::note_original_failure(ps, super::ABR_FAILURE_ORIGINAL_OPEN, status);
                     }
                     let secs = (ps.readout().raw().playpos_ns / 1_000_000_000).max(0);
                     crate::route::dispatch_unopened_auto_hls(ps, secs)
@@ -2945,6 +2945,10 @@ mod flight_tests {
         assert_ne!(engine_epoch(&mut rig), epoch, "the landing reloaded onto the restored HLS");
         assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error,
             "{}\nlanding log:\n{}", rig.recovery_diag(), landing_log);
+        // The rollback noted why the Original was refused (no HTTP status: the open failed after a
+        // 200), and the reload that restored HLS kept it: the panel still explains the fallback.
+        assert_eq!(rig.ps.readout().original_failure(), Some((crate::player::ABR_FAILURE_ORIGINAL_OPEN, 0)),
+            "the rollback's reload must keep the cause it is explaining");
         rig.flight.wait_for("the restored HLS's retirement", |f| f.stopped().iter().any(|s| s == "rig-1"));
     }
 
@@ -3060,6 +3064,8 @@ mod flight_tests {
         assert_ne!(engine_epoch(&mut rig), epoch, "the landing reloaded onto the restored HLS");
         assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error,
             "{}", rig.recovery_diag());
+        assert_eq!(rig.ps.readout().original_failure(), Some((crate::player::ABR_FAILURE_ORIGINAL_OPEN, 0)),
+            "the Engine-less rollback noted the refusal, and the reload onto HLS kept it");
     }
 
     /// A refused rebase of that rollback ends in the failure read-out, nothing reloaded, the refused replacement stopped and the route's encoder alone.
@@ -3793,7 +3799,7 @@ mod flight_tests {
             replacement.contains("protocol=http") && replacement.contains("directStream=1"),
             "the Original's remux is not kept (the video copy is withdrawn): {replacement}"
         );
-        assert_eq!(FEED_SHARED.abr_failure_kind.load(Relaxed), 0, "the Original did not fail, so no failure is noted");
+        assert_eq!(rig.ps.readout().original_failure(), None, "the Original did not fail, so no failure is noted");
         assert_ne!(engine_epoch(&mut rig), epoch, "the landing reloaded onto the converted route");
         assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error);
     }

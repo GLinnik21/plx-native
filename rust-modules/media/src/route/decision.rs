@@ -1512,6 +1512,21 @@ impl PlaybackSession {
         true
     }
 
+    /// The adaptive worker's newest Original failure edit for `attempt`, applied once by the player
+    /// adapter when it drains the open's channel. Refused, changing nothing, for any other attempt
+    /// or backend, like [`Self::ingest_abr`].
+    pub fn ingest_original_failure(
+        &mut self,
+        attempt: RouteStartAttempt,
+        edit: plx_playback_contract::adaptive::FailureEdit,
+    ) -> bool {
+        if !self.attempt_view.addresses(attempt, crate::player::attempt_view::Backend::Feed) {
+            return false;
+        }
+        self.readout.step(crate::player::readout::ReadoutEvent::OriginalFailure(edit));
+        true
+    }
+
     /// Hand the route the link estimate the readout holds ([`Self::observe_link_seed`], again every
     /// frame, as the route's only input of it).
     pub fn carry_readout_seed(&mut self) {
@@ -6005,7 +6020,7 @@ pub(super) fn install_original_recovery(
         CandidatePurpose::NewCandidate);
     rollback.replacement_encoder = prepared.replacement;
     set_pending_original(ps, rollback, automatic);
-    crate::player::route_fx::clear_original_failure();
+    crate::player::route_fx::clear_original_failure(ps);
     crate::player::log(match plan.cause {
         RecoveryCause::Automatic => "auto: recovered Original remux; HLS encoder held pending frames",
         RecoveryCause::ManualOriginal => {
@@ -6194,7 +6209,7 @@ fn recover_original_direct(
     // This is a new source attempt. A prior probe's typed failure explains the HLS route we
     // are leaving, not the replacement now being opened; a failure of this open republishes
     // its own exact status from the pump.
-    crate::player::route_fx::clear_original_failure();
+    crate::player::route_fx::clear_original_failure(ps);
     crate::player::log(match cause {
         RecoveryCause::Automatic => {
             "auto: recovered Original direct play; HLS encoder held pending frames"
