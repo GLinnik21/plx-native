@@ -1096,6 +1096,18 @@ order (`OriginalRequest::audio_ordinal`, mapped by `dev::uri_product::DevQualifi
 `carrier_audio`, the first stream is the pick, and `{"path": "already", "index": 0}` wants that
 already-selected line and no sent line.
 
+The mock route. `pipe_side_reader_srt` (`"pms_route": "mock"`) is the one synthetic case that plays an item of the
+harness's mock PMS on the ordinary Feed route, to start the subtitle side reader (`player::subside`) with no real
+account behind it. Same preconditions and order as the product route (debug install, `--guest --mock`, the mock on the
+`src/config.local.h` address, a log that does not show the synthetic version is not graded), but no `plxnative-uridev`
+and no fixture-server stream: `carrier` (`pipe_side_reader_srt.mkv`, one embedded SubRip track) is the mock's only item,
+`carrier_subtitle: 1` makes that track the SERVER-selected one (`mock_pms.py --extra-media-subtitle 1`, so no selection
+is ever written to a server), `audio_enhancements_boot: loudness` makes the cold start the enhanced remux, and `fixture`
+(`pipe_side_reader_remux.mkv`, the same picture without the subtitle) is what the mock serves for it
+(`--transcode-fixture`). It grades the app's log: `op_audio_enhancement_subtitle` (`server-selected subtitle`,
+`subside: open` on that ordinal, no `subside: failed`, a `sub cue .. len=N>0`) plus a `subside: anchor` line after the open.
+Run it with `./tests/run.py --filter pipe_side_reader_srt` (take the TV lock first).
+
 ### URI mode — how a URI case is graded
 
 A case whose own `triggers` include `uriprobe` (the probe route), or that says `"uri_route": "product"`

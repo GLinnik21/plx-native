@@ -2231,6 +2231,154 @@ def _resolve_uri_product(cases, root, flavour=None, config=None):
             c["carrier_path"] = path
 
 
+MOCK_ROUTE = "mock"
+# What a mock-route case must never inherit: `playurl`/`uriprobe`/`uridev` would divert the route under test and
+# `pms-origin` would move the app's primary off the address the mock listens on; the runner writes the rest.
+MOCK_ROUTE_RESERVED = URI_PRODUCT_RESERVED + ("plxnative-audioenh", "plxnative-trackmemory")
+
+
+def mock_route(case):
+    """Whether the case plays an item of the harness's MOCK PMS on the ordinary (Feed) route
+    (`"pms_route": "mock"`): the carrier is the item, `fixture` the file the mock serves as the server's
+    transcode (the enhanced remux), and the app's own log is the evidence. Never a real server."""
+    return case.get("pms_route") == MOCK_ROUTE
+
+
+def mock_route_files(case, extra=()):
+    """The trigger files of a mock-route case: the integration tier's routing pins (`play=<carrier rk>`,
+    `quality=original`, the case's `audio_enhancements_boot`, track memory cleared) and nothing that arms
+    another route. `--extra-trigger` of a name the route pins is refused, as on the product route."""
+    for name in (f"plxnative-{k}" for k in (case.get("triggers") or {})):
+        if name in MOCK_ROUTE_RESERVED:
+            raise UriProductRefused(f"a mock-route case must not set {name} itself")
+    for name, _ in extra:
+        if name in MOCK_ROUTE_RESERVED:
+            raise UriProductRefused(f"--extra-trigger {name} would replace what the mock route pins")
+    files = triggers_for_case(dict(case, rk=str(mock_fps.CARRIER_RK)))
+    files.extend(extra)
+    names = [n for n, _ in files]
+    dup = sorted({n for n in names if names.count(n) > 1})
+    if dup:
+        raise UriProductRefused(f"trigger(s) written twice: {', '.join(dup)}")
+    return files
+
+
+def _resolve_mock_route(cases, root, flavour=None, config=None):
+    """The skip channel for mock-route cases: the dev-token boot (`--guest --mock`) is the debug install's, the
+    mock listens at the address `src/config.local.h` names, and the carrier and the remux (`fixture`, already
+    resolved by `_resolve_fixtures`) must be in the pack, with no sidecar beside the carrier. Sets
+    `carrier_path` and `transcode_path`."""
+    flavour = FLAVOUR if flavour is None else flavour
+    config = CONFIG_LOCAL_H if config is None else config
+    for c in cases:
+        if not mock_route(c) or c.get("skip"):
+            continue
+        carrier = c.get("carrier") or ""
+        path = os.path.join(root, carrier)
+        if flavour != "debug":
+            c["skip"] = f"a mock-route case drives the debug install only (this run resolved FLAVOR={flavour})"
+        elif not re.fullmatch(r"[\w.-]+\.\w+", carrier):
+            c["skip"] = f"carrier {carrier!r} must be a plain file name inside the pack"
+        elif not os.path.isfile(config):
+            c["skip"] = f"needs {config} for PMS_HOST and PMS_PORT: the mock listens at the configured address"
+        elif not os.path.isfile(path):
+            c["skip"] = f"no carrier clip {carrier!r} in {root} -- run `make fixtures-pipeline`"
+        elif any(os.path.isfile(os.path.splitext(path)[0] + ext) for ext in (".srt", ".ass", ".ssa", ".vtt")):
+            c["skip"] = f"a sidecar subtitle sits beside {carrier}: the mock would serve it as a subtitle stream"
+        else:
+            c["carrier_path"] = path
+            c["transcode_path"] = os.path.join(root, c["fixture"])
+
+
+RE_SUBSIDE_ANCHOR = re.compile(r"subside: anchor match=(exact|assumed) ")
+
+
+def a_side_reader_anchor(lines):
+    """The side reader found where the remux's picture sits in the Part's file time: a `subside: anchor` line
+    AFTER the `subside: open` one (`exact` when the Part's own keyframe matched the remux's first, `assumed`
+    when the scan found none: either way the reader placed its cues)."""
+    opened = next((i for i, ln in enumerate(lines) if RE_SUBSIDE_OPEN.search(ln)), None)
+    if opened is None:
+        return False, "the side reader never opened (`subside: open` absent), so there is nothing to anchor"
+    anchor = next((ln for ln in lines[opened + 1:] if RE_SUBSIDE_ANCHOR.search(ln)), None)
+    if anchor is None:
+        return False, f"the side reader opened but never anchored :: {lines[opened].strip()}"
+    return True, anchor.strip()
+
+
+def evaluate_mock_route(case, lines, srv_delta):
+    """A mock-route case (`pms_route: "mock"`) on the log alone: the picture bound and the clock climbed, no
+    playing error, and the side reader's whole chain: the server-selected subtitle, the enhanced remux the app
+    draws it over, `subside: open` on that track, `subside: anchor`, and a cue the app drew
+    (`op_audio_enhancement_subtitle`, the grade `audio_enhancement_draws_server_selected_subtitle` takes)."""
+    exp = case["expect"]
+    results = []
+    if exp.get("require_video_bound", True):
+        results.append(("video_bound", *a_video_bound(lines)))
+    results.append(("pos_climb", *a_timeline_climb(lines, exp.get("min_pos_climb_s", 8), dense_only=True)))
+    if exp.get("no_playing_error", True):
+        results.append(("no_error", *a_no_error(lines)))
+    for op in case.get("operations", []):
+        if op["op"] == "audio_enhancement_subtitle":
+            results.append(("side_reader", *op_audio_enhancement_subtitle(lines, op["presenter"], False)))
+            results.append(("side_reader_anchor", *a_side_reader_anchor(lines)))
+    return all(ok for _, ok, _ in results), results
+
+
+def run_mock_route_case(case, cfg, srv, url_base, verbose):
+    """One mock-route case: the app (`--guest --mock` dev token) plays the carrier of the harness's own mock PMS,
+    which answers the enhancement decision like PMS and serves `fixture` as the remux. Order as on the product
+    route and for the same reason (`run_uri_product_case`): refuse -> close the previous app -> mock up ->
+    fabricated guest token -> triggers -> stream, and the log must prove the synthetic mock before anything is
+    graded. No fixture server is involved, and no real server can be: the mock listens on the configured
+    address, the token is the mock's own, and a log that does not show the synthetic version is not graded."""
+    name = case["name"]
+    tv = cfg["tv"]
+    run_secs = case.get("run_secs", 30)
+    print(f"\n=== {name}  ({case['fixture']}, {case.get('title', '')}) ===")
+    print(f"    covers: {', '.join(case.get('covers', []))}")
+    require_tv(tv, name)
+    with contextlib.ExitStack() as stack:
+        try:
+            if not case.get("carrier_path"):
+                raise UriProductRefused("no carrier clip resolved (see _resolve_mock_route)")
+            host, port = mock_fps.configured_endpoint(CONFIG_LOCAL_H)
+            if port == REAL_PMS_PORT:
+                raise UriProductRefused(f"PMS_PORT {REAL_PMS_PORT} is a real PMS's port: the mock must listen elsewhere")
+            files = mock_route_files(case, list(cfg.get("extra_triggers") or ()))
+            log = os.path.join(tempfile.gettempdir(), f"plx-mock-pms-{os.getpid()}-{name}.log")
+            try:
+                args = mock_fps.carrier_server_args(case["carrier_path"], case.get("carrier_audio"),
+                                                    case.get("carrier_subtitle"), case.get("transcode_path"))
+            except ValueError as why:
+                raise UriProductRefused(str(why))
+            make(["kill", f"TV={tv}"], timeout=40)   # BEFORE the mock is up: see run_uri_product_case
+            print(f"    mock: tests/mock_pms.py {' '.join(args)}")
+            stack.enter_context(mock_fps.MockPms(host, port, args, log_path=log))
+            token = mock_fps.resolve_mock_token(CONFIG_LOCAL_H)
+        except (SystemExit, UriProductRefused) as why:
+            print(f"    [FAIL] {why}")
+            return False, [("mock_route", False, str(why))], []
+        apply_triggers(tv, files, extra=[f"printf '%s' '{token}' > {RUNDIR}/plxnative-token"])
+        print("    triggers: " + ", ".join(n + ("=" + c if c is not None else "") for n, c in files))
+        print("    plxnative-token: <synthetic guest, redacted>")
+        early, why = early_exit_allowed(case, cfg)
+        print(f"    run-stream (cap {run_secs}s{'' if early else ', early exit off'}) ...")
+        lines, elapsed, stopped_early, settled = stream_case(
+            case, cfg, run_secs, early=early, evaluator=lambda c, ls: evaluate_mock_route(c, ls, ()))
+        ok_id, why_id = mock_fps.check_synthetic_identity(lines)
+        if not ok_id:
+            msg = f"refusing to grade: {why_id}"
+            print(f"    [FAIL] {msg}")
+            passed, results = False, [("synthetic_identity", False, msg)]
+        else:
+            print(f"    identity: {why_id}")
+            passed, results = evaluate_mock_route(case, lines, ())
+            passed, results = crash_gate(cfg, case, name, lines, passed, results)
+        report_and_record(cfg, name, passed, results, lines, elapsed, run_secs, stopped_early, settled, verbose)
+        return passed, results, lines
+
+
 def a_resolve_pin(lines, want="any"):
     """The registry dialled the primary's `plex.direct` name at the address plex.tv advertised
     beside it, with no resolver: `plex: server slot N registered at … (pinned: v4 name resolved
@@ -6038,6 +6186,8 @@ def evaluate_pipeline(case, lines, srv_delta, gst_lines=None):
     """
     if uri_mode(case):
         return evaluate_uri(case, lines, srv_delta)
+    if mock_route(case):
+        return evaluate_mock_route(case, lines, srv_delta)
     exp = case["expect"]
     results = [("stream_path", *a_stream_path(
         lines, case["fixture"],
@@ -6262,6 +6412,8 @@ def run_pipeline_case(case, cfg, srv, url_base, verbose):
     """
     if uri_route(case) == URI_PRODUCT:
         return run_uri_product_case(case, cfg, srv, url_base, verbose)
+    if mock_route(case):
+        return run_mock_route_case(case, cfg, srv, url_base, verbose)
     name = case["name"]
     tv = cfg["tv"]
     run_secs = case.get("run_secs", 30)
@@ -8139,6 +8291,7 @@ def main():
         root, pcases = fixtures_root, pipeline_cases
         _resolve_fixtures(pcases, root)
         _resolve_uri_product(pcases, root)
+        _resolve_mock_route(pcases, root)
         for c in pcases:
             d = c.get("declare", {})
             decl = f"{d.get('vcodec','?')}/{d.get('acodec','?')}"
@@ -8230,6 +8383,7 @@ def main():
             pcases = [c for c in pcases if args.filter in c["name"]]
         _resolve_fixtures(pcases, root)
         _resolve_uri_product(pcases, root)
+        _resolve_mock_route(pcases, root)
         pcases, pskipped = partition_skips(pcases)
         # Bail BEFORE the server is started and before arm_teardown: arming commits to driving the
         # television, and its cleanup closes the app on EVERY exit path including this one. A run
