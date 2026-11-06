@@ -1478,6 +1478,41 @@ fn a_held_surface_warms_its_text_instead_of_rasterising_it() {
     plx_gfx::text::reset_prewarm_for_test();
 }
 
+/// **A VISIBLE surface can hold content back and have its text warmed by the shared pass.** A
+/// Settings push commits at once, so the page it brings in was first rasterised in the push's
+/// first drawn frame (`textx33:18.2` on the television). While a surface answers
+/// `Screen::warms_text` the dispatcher walks `draw_warm` through the recorder, after the surface's
+/// own draw, and drains the queue under the page's prewarm budget in the same frame — and a
+/// surface that holds nothing back is not walked at all.
+#[test]
+fn a_visible_surface_has_the_content_it_holds_back_warmed_by_the_shared_pass() {
+    let _g = plx_base::testlock::serial();
+    let (mut d, mut rig, _) = booted();
+    open_modal(&mut d, &mut rig, Style::Compact, 16);
+    for i in 0..30u32 {
+        d.frame(&mut rig, tick(32 + i * 16), vec![], vec![], &mut NoTap);
+    }
+    assert!(!d.nav.modals.top().unwrap().motion.held(), "premise: the surface is up and visible");
+    let walks = |d: &Dispatcher<FixtureHost>| {
+        d.nav.modals.top().unwrap().entry.inst.as_ref().unwrap().screen.as_any().unwrap()
+            .downcast_ref::<crate::fixture::FixtureModal>().unwrap().warm_walks.clone()
+    };
+    plx_gfx::text::reset_prewarm_for_test();
+    d.frame(&mut rig, tick(700), vec![], vec![], &mut NoTap);
+    assert!(walks(&d).is_empty(), "a surface that holds nothing back is not walked");
+
+    crate::fixture::modal_warms_text(true);
+    d.frame(&mut rig, tick(716), vec![], vec![], &mut NoTap);
+    crate::fixture::modal_warms_text(false);
+    assert_eq!(walks(&d), vec![true], "walked once, through a recording painter");
+    assert!(
+        plx_gfx::text::prewarm_resident_for_test(b"held back text", 24, 0),
+        "…and drained in the same frame, before anything draws it"
+    );
+    assert!(!plx_gfx::text::prewarm_pending());
+    plx_gfx::text::reset_prewarm_for_test();
+}
+
 /// **A held surface's clock does not run, and its opener face is still drawn live.** A surface is
 /// HELD (`PopoverMotion::held`) for its capture frame and while its text warms — up to
 /// `SURFACE_TEXT_HOLD_MAX_MS`, six frames — at appear 0, walked through the text recorder. Two
