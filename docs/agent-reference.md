@@ -46,7 +46,7 @@ install, `com.beb.plxnative.debug`, can sit beside it on the same set (`FLAVOR`,
 ## Non-Rust dependencies (`ci/dependencies.json`)
 
 Every non-Rust input (FFmpeg, Sentry Native, the libass font stack, nanosvg, jsmpeg, the webOS NDK,
-the webosbrew toolbox) is declared once in `ci/dependencies.json`: version, URLs (plus transport-only
+the webosbrew toolbox, and the `curlstack` group only `make CURLSTACK=1` builds) is declared once in `ci/dependencies.json`: version, URLs (plus transport-only
 mirrors), sha256, pinned patches, licence, and an `update` object saying where its releases come from
 (`github-release`, `github-tags`, `github-commit`, `listing`, `manual`; an optional `hold` string freezes
 the entry and is the reason). `ci/deps.py` reads and fetches it; nothing else writes a version or digest.
