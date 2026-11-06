@@ -1,24 +1,26 @@
 //! The buffer-feed backend behind the contract's [`FeedControl`] and [`DriverSet`]: the player's
-//! seek and Load verbs reach the physical feed through this one owner of its native session and
-//! its driver, and every method is the body of the function the player's adapter called directly
-//! before the seam existed. A forwarding layer, except `sample`, which answers only for a live
-//! session and adds the Engine's Load-side half (`FeedRaw::load`) to the mailbox sample; the verbs,
-//! their borrows and their answers are otherwise unchanged.
+//! seek, Load and stop verbs reach the physical feed through this one owner of its native session
+//! and its driver, and every method is the body of the function the player's adapter called
+//! directly before the seam existed. A forwarding layer, except `sample`, which answers only for a
+//! live session and adds the Engine's Load-side half (`FeedRaw::load`) to the mailbox sample, and
+//! the stop, which keeps the [`NativeStop`] in progress between its phases; the verbs, their
+//! borrows and their answers are otherwise unchanged.
 
 use crate::feed_driver::{FeedDriver, FeedTransportAction};
 use crate::feed_pump;
 use crate::feed_resources::FeedResources;
-use crate::native_executor::NativePrepared;
+use crate::feed_state::PendingRelease;
+use crate::native_executor::{NativePrepared, NativeStop};
 use crate::shared::FEED_TX;
 use plx_base::task::MainThread;
 use plx_playback_contract::feed::{
     AcceptedLoadOutcome, CtorGate, FeedCommand, FeedControl, FeedFacts, FeedLoad, FeedSeek,
-    LoadTick, PausedSeekStep, PresentationTick, SeekMode, SeekPause, StuckSeekAction,
-    UserPauseOutcome, UserResumeOutcome,
+    FeedStop, LoadTick, PausedSeekStep, PresentationTick, ReleaseHandoff, ResetScope, SeekMode,
+    SeekPause, StuckSeekAction, UnblockFacts, UserPauseOutcome, UserResumeOutcome,
 };
 use plx_playback_contract::{
     AttemptId, BackendEvent, BackendKind, Capabilities, CommandId, DispatchResult, DriverSet,
-    ExitDisposition, Failure, Operation, ReleaseStatus, SourceKey, StopReason,
+    ExitDisposition, Failure, Operation, SourceKey, StopReason,
 };
 use std::sync::atomic::{AtomicI32, AtomicU32};
 use std::time::Duration;
@@ -28,12 +30,20 @@ use std::time::Duration;
 pub struct FeedBackend {
     resources: FeedResources,
     driver: FeedDriver,
+    /// The stop in progress ([`FeedStop`]): the Engine taken out of the resources, owned through
+    /// the phases. At most one exists.
+    stop: Option<NativeStop>,
+    /// A parked release whose `Unload` worker returned and was joined, waiting for its
+    /// main-thread tail ([`FeedStop::run_release_tail`]).
+    returned_release: Option<PendingRelease>,
 }
 
 impl FeedBackend {
-    pub fn new(resources: FeedResources) -> Self { Self { resources, driver: FeedDriver::new() } }
+    pub fn new(resources: FeedResources) -> Self {
+        Self { resources, driver: FeedDriver::new(), stop: None, returned_release: None }
+    }
 
-    /// The session resources, for the open, stop and release paths that do not yet go through
+    /// The session resources, for the open and abandoned-Load paths that do not yet go through
     /// the trait.
     pub fn resources(&self) -> &FeedResources { &self.resources }
 
@@ -60,11 +70,6 @@ impl FeedBackend {
         accepted: bool, native_acknowledged: bool) {
         self.driver.note_transport_result(&mut self.resources, mt, action, accepted,
             native_acknowledged);
-    }
-
-    /// The native release of `attempt` progressed to `status`.
-    pub fn note_release(&mut self, attempt: AttemptId, status: ReleaseStatus) {
-        self.driver.note_release(attempt, status);
     }
 
     /// The Load for `attempt` settled.
@@ -120,12 +125,12 @@ impl FeedSeek for FeedBackend {
         feed_pump::pending_seek_ready(&self.resources, seek_reloads)
     }
 
-    fn prepare_seek_pause(&self, mt: &MainThread) -> SeekPause {
-        feed_pump::prepare_seek_pause(&self.resources, mt)
+    fn prepare_seek_pause(&mut self, mt: &MainThread) -> SeekPause {
+        feed_pump::prepare_seek_pause(&mut self.resources, mt)
     }
 
-    fn begin_seek_discontinuity(&self) -> bool {
-        feed_pump::begin_seek_discontinuity(&self.resources)
+    fn begin_seek_discontinuity(&mut self) -> bool {
+        feed_pump::begin_seek_discontinuity(&mut self.resources)
     }
 
     fn apply_inplace_seek_pre(&mut self, mt: &MainThread, target_ns: i64, mode: SeekMode,
@@ -182,6 +187,85 @@ impl FeedLoad for FeedBackend {
             facts.raw.load = self.resources.load_raw();
             facts
         })
+    }
+}
+
+impl FeedBackend {
+    fn stop_mut(&mut self) -> &mut NativeStop {
+        self.stop.as_mut().expect("stop_begin ran before this phase of the stop")
+    }
+}
+
+impl FeedStop for FeedBackend {
+    fn stop_begin(&mut self) -> Option<FeedFacts> {
+        self.resources.shared().stop_hls_clock();
+        let last = self.sample();
+        self.stop = Some(NativeStop::take(&mut self.resources));
+        last
+    }
+
+    fn stop_side_reader(&mut self, for_reload: bool) {
+        self.stop_mut().stop_side_reader(for_reload);
+    }
+
+    fn stop_unblock(&mut self) -> UnblockFacts {
+        let stop = self.stop_mut();
+        stop.unblock_join_close();
+        let load_abandoned = stop.load_abandoned();
+        UnblockFacts { attempt: feed_pump::native_attempt_facts(), load_abandoned }
+    }
+
+    fn stop_report_dispatched(&mut self) { self.stop_mut().report_dispatched(); }
+
+    fn stop_release(&mut self, mt: &MainThread, for_reload: bool) {
+        let hooks = self.resources.hooks();
+        let stop = self.stop.as_mut().expect("stop_begin ran before this phase of the stop");
+        stop.release_and_drain(mt, &mut self.resources, for_reload, &hooks.release);
+    }
+
+    fn stop_finish(&mut self, for_reload: bool) -> Option<ReleaseHandoff> {
+        let stop = self.stop.take().expect("stop_begin ran before this phase of the stop");
+        let (attempt, status) = (stop.attempt(), stop.release_status());
+        let handoff = stop.finish(for_reload).map(|release| {
+            let handoff = ReleaseHandoff { epoch: release.epoch(), at: release.handed_off_at() };
+            self.resources.park_release(release);
+            handoff
+        });
+        self.driver.note_release(attempt, status);
+        handoff
+    }
+
+    fn reset(&mut self, scope: ResetScope, common: &mut dyn FnMut()) {
+        self.resources.shared().reset_scoped(scope, common);
+    }
+
+    fn has_pending_release(&self) -> bool { self.resources.has_pending_release() }
+
+    fn take_returned_release(&mut self) -> Option<u32> {
+        let mut release = self.resources.take_finished_release()?;
+        release.join_returned_worker();
+        let epoch = release.epoch();
+        // A release the machine did not ask the tail of is dropped here, with its Engine, by the
+        // next one or by the exit's leak.
+        self.returned_release = Some(release);
+        Some(epoch)
+    }
+
+    fn run_release_tail(&mut self, mt: &MainThread, epoch: u32) -> bool {
+        let Some(release) = self.returned_release.take() else { return false; };
+        debug_assert_eq!(release.epoch(), epoch);
+        let attempt = release.attempt();
+        let status = crate::native_executor::run_release_tail(
+            mt, release, self.resources.shared(), &self.resources.hooks().release);
+        self.driver.note_release(attempt, status);
+        true
+    }
+
+    fn leak_for_exit(&mut self) {
+        if let Some(engine) = self.resources.take() { std::mem::forget(engine); }
+        if let Some(release) = self.returned_release.take() { std::mem::forget(release); }
+        if let Some(release) = self.resources.take_pending_release_any() { std::mem::forget(release); }
+        if let Some(load) = self.resources.take_abandoned_load() { std::mem::forget(load); }
     }
 }
 
@@ -291,6 +375,29 @@ mod tests {
         assert!(!control.defer_preview_join());
         assert!(!control.pending_seek_ready(false));
         assert!(!control.begin_seek_discontinuity());
+    }
+
+    /// **The reset is one barrier around the Feed's mirrors and the player's own stores.** The
+    /// mirrors are clear when `common` runs, and `common` runs once; a reload keeps the duration
+    /// the demuxer published, a stop does not.
+    #[test]
+    fn reset_runs_the_common_stores_after_the_mirrors_and_a_reload_keeps_the_duration() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let _serial = plx_base::testlock::serial();
+        let mut backend = backend();
+        let control: &mut dyn FeedControl = &mut backend;
+        for (scope, duration_after) in [(ResetScope::Reload, 90_000_000_000), (ResetScope::Stop, 0)] {
+            FEED_SHARED.duration_ns.store(90_000_000_000, Relaxed);
+            FEED_SHARED.seeking.store(true, Relaxed);
+            let mut ran = 0;
+            control.reset(scope, &mut || {
+                ran += 1;
+                assert!(!FEED_SHARED.seeking.load(Relaxed), "the mirrors are clear when common runs");
+            });
+            assert_eq!(ran, 1, "{scope:?}: common runs once");
+            assert_eq!(FEED_SHARED.duration_ns.load(Relaxed), duration_after, "{scope:?}");
+        }
+        FEED_SHARED.reset_session();
     }
 
     /// `command(Seek)` makes the stores the player's `request_seek` made itself, and the sample

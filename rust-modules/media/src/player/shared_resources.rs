@@ -69,29 +69,18 @@ impl Shared {
         self.track_names.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Reset the common stores for a real stop or a new item. Under the Feed backend the caller
+    /// runs this inside the Feed's callback/reset barrier (`FeedStop::reset`, through the
+    /// adapter), so a late native callback cannot interleave with it; the Feed's own mirrors are
+    /// that verb's, not this store's.
     pub fn reset_session(&self) {
-        self.reset(false);
+        self.reset_captions(false);
     }
 
+    /// [`Self::reset_session`] for a reload of the same item: an audio pick keeps its meaning and
+    /// the bounded, already-read ASS sources survive.
     pub fn reset_session_for_reload(&self) {
-        self.reset(true);
-    }
-
-    /// Reset the common resources. Under the Feed backend the caption reset runs inside the
-    /// feed's own callback/reset barrier (`FEED_SHARED.reset_session_with`), so a late native
-    /// callback cannot interleave with it. A reload keeps the duration the demuxer published: it
-    /// re-publishes a few hundred ms after it reopens, and a zero until then is a playbar drawn at
-    /// position / 0.
-    fn reset(&self, for_reload: bool) {
-        #[cfg(feature = "play-feed")]
-        {
-            use plx_play_feed::shared::FEED_SHARED;
-            let duration = FEED_SHARED.duration_ns.load(Ordering::Relaxed);
-            FEED_SHARED.reset_session_with(|| self.reset_captions(for_reload));
-            if for_reload { FEED_SHARED.duration_ns.store(duration, Ordering::Relaxed); }
-        }
-        #[cfg(not(feature = "play-feed"))]
-        self.reset_captions(for_reload);
+        self.reset_captions(true);
     }
 
     fn reset_captions(&self, for_reload: bool) {

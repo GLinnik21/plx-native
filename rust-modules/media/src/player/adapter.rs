@@ -27,8 +27,6 @@
 
 #[cfg(all(test, feature = "play-feed"))]
 use super::engine::Engine;
-#[cfg(feature = "play-feed")]
-use plx_play_feed::native_executor::NativeStop;
 use super::physical::Physical;
 use super::timeline;
 use super::backend;
@@ -335,7 +333,7 @@ pub struct PlayerAdapter {
     refused_uri_subtitle: Option<PendingUriSubtitle>,
     /// The bound physical attempt: its route identity, product trace and foreground follow mark.
     /// The feed itself receives only the canonical contract ID and native epoch. Bound right after
-    /// the Engine is installed, dropped by [`Self::take_native_stop`]: an Engine is installed
+    /// the Engine is installed, dropped by [`Self::stop_begin`]: an Engine is installed
     /// exactly while this is `Some`, which is what [`Self::is_live`] answers.
     #[cfg(feature = "play-feed")]
     feed_attempt: Option<BoundFeed>,
@@ -1418,11 +1416,6 @@ impl PlayerAdapter {
         self.physical.feed_backend_mut().take_stop_request()
     }
 
-    #[cfg(feature = "play-feed")]
-    pub(super) fn note_backend_feed_release(&mut self, attempt: AttemptId, status: ReleaseStatus) {
-        self.physical.feed_backend_mut().note_release(attempt, status);
-    }
-
     /// The foreground restore's start was just deferred: follow it.
     pub fn watch_queued_start(&mut self) {
         self.queued_watch = QueuedWatch::Watching;
@@ -1485,19 +1478,10 @@ impl PlayerAdapter {
         self.release.has_queued()
     }
 
-    /// Park a real stop's off-frame release. At most one exists: a start over it is deferred.
-    #[cfg(feature = "play-feed")]
-    pub fn park_release(&mut self, ps: &mut crate::route::PlaybackSession,
-        release: super::engine::PendingRelease) {
-        let (epoch, at) = (release.epoch(), release.handed_off_at());
-        self.physical.feed_backend_mut().resources_mut().park_release(release);
-        self.release_step(ps, &super::release::ReleaseEvent::UnloadHandedOff { epoch, at }, &mut Vec::new());
-    }
-
     /// Is a stopped native object's `Unload` still owed its main-thread tail?
     #[cfg(feature = "play-feed")]
-    pub fn has_pending_release(&self) -> bool {
-        self.physical.feed_backend().resources().has_pending_release()
+    pub fn has_pending_release(&mut self) -> bool {
+        self.physical.feed().is_some_and(|feed| feed.has_pending_release())
     }
 
     /// The release machine's verdict on one event; the effects are the caller's to run. The
@@ -1522,17 +1506,25 @@ impl PlayerAdapter {
         self.release.is_overdue()
     }
 
-    /// The parked release, taken only once its worker has returned (so joining it cannot block).
+    /// The epoch of the parked release whose `Unload` worker has returned and been joined (so
+    /// joining it cannot block the frame): the release machine's `UnloadReturned`.
     #[cfg(feature = "play-feed")]
-    pub(super) fn take_finished_release(&self) -> Option<super::engine::PendingRelease> {
-        self.physical.feed_backend().resources().take_finished_release()
+    pub(super) fn take_returned_release(&mut self) -> Option<u32> {
+        self.physical.feed().and_then(|feed| feed.take_returned_release())
     }
 
-    /// The parked release whether or not its worker returned: only the exit, which leaks it
-    /// (`engine::leak_parked_for_exit`), takes it that way.
+    /// The main-thread tail of the release [`Self::take_returned_release`] reported for `epoch`.
     #[cfg(feature = "play-feed")]
-    pub(super) fn take_pending_release_any(&self) -> Option<super::engine::PendingRelease> {
-        self.physical.feed_backend().resources().take_pending_release_any()
+    pub(super) fn run_release_tail(&mut self, epoch: u32) -> bool {
+        let mt = &self.mt;
+        self.physical.feed().is_some_and(|feed| feed.run_release_tail(mt, epoch))
+    }
+
+    /// The exit leaks what a worker still in firmware reads (`route_start::exit_native_with`).
+    #[cfg(feature = "play-feed")]
+    pub(super) fn leak_for_exit(&mut self) {
+        if let Some(feed) = self.physical.feed() { feed.leak_for_exit(); }
+        self.clear_feed_attempt();
     }
 
     /// UI-thread resource effect. The owner spends the attempt before the worker can run.
@@ -1590,26 +1582,61 @@ impl PlayerAdapter {
         self.feed_attempt = None;
     }
 
+    /// Begin the native stop: the Feed stops its HLS clock, samples the outgoing attempt's last
+    /// facts while it is still the addressed one (published into `ps` here) and takes its Engine
+    /// out; the bound attempt is dropped with it.
     #[cfg(feature = "play-feed")]
-    pub(super) fn take_native_stop(&mut self) -> NativeStop {
-        let stop = NativeStop::take(self.physical.feed_backend_mut().resources_mut());
+    pub(super) fn stop_begin(&mut self, ps: &mut crate::route::PlaybackSession) {
+        let attempt = self.active_feed_attempt();
+        let last = self.physical.feed().and_then(|feed| feed.stop_begin());
+        if let (Some(attempt), Some(facts)) = (attempt, last) {
+            let _ = ps.ingest_feed_facts(attempt, facts);
+        }
         self.clear_feed_attempt();
-        stop
     }
 
     #[cfg(feature = "play-feed")]
-    pub(super) fn release_native_stop(&mut self, stop: &mut NativeStop, for_reload: bool) {
-        let feed = self.physical.feed_backend_mut().resources_mut();
-        let hooks = feed.hooks();
-        stop.release_and_drain(&self.mt, feed, for_reload, &hooks.release);
+    pub(super) fn stop_side_reader(&mut self, for_reload: bool) {
+        if let Some(feed) = self.physical.feed() { feed.stop_side_reader(for_reload); }
     }
 
     #[cfg(feature = "play-feed")]
-    pub(super) fn finish_native_stop(&mut self, ps: &mut crate::route::PlaybackSession,
-        stop: NativeStop, for_reload: bool) {
-        if let Some(release) = stop.finish(for_reload) {
-            // This event is the release machine's admission fence for the next start.
-            self.park_release(ps, release);
+    pub(super) fn stop_unblock(&mut self) -> plx_playback_contract::feed::UnblockFacts {
+        self.physical.feed().map(|feed| feed.stop_unblock())
+            .expect("a stop in progress has a feed")
+    }
+
+    #[cfg(feature = "play-feed")]
+    pub(super) fn stop_report_dispatched(&mut self) {
+        if let Some(feed) = self.physical.feed() { feed.stop_report_dispatched(); }
+    }
+
+    #[cfg(feature = "play-feed")]
+    pub(super) fn stop_release(&mut self, for_reload: bool) {
+        let mt = &self.mt;
+        if let Some(feed) = self.physical.feed() { feed.stop_release(mt, for_reload); }
+    }
+
+    /// End the native stop. A release the Feed handed off to its off-frame worker is the release
+    /// machine's admission fence for the next start, so the machine hears of it here.
+    #[cfg(feature = "play-feed")]
+    pub(super) fn stop_finish(&mut self, ps: &mut crate::route::PlaybackSession, for_reload: bool) {
+        let handoff = self.physical.feed().and_then(|feed| feed.stop_finish(for_reload));
+        if let Some(plx_playback_contract::feed::ReleaseHandoff { epoch, at }) = handoff {
+            self.release_step(ps, &super::release::ReleaseEvent::UnloadHandedOff { epoch, at },
+                &mut Vec::new());
+        }
+    }
+
+    /// Reset the Feed's session mirrors, and `common` (the player's own session stores) with
+    /// them inside the Feed's callback/reset barrier. A composition with no feed has only
+    /// `common`.
+    #[cfg(feature = "play-feed")]
+    pub(super) fn reset_session(&mut self, scope: plx_playback_contract::feed::ResetScope,
+        common: &mut dyn FnMut()) {
+        match self.physical.feed() {
+            Some(feed) => feed.reset(scope, common),
+            None => common(),
         }
     }
 
@@ -1816,7 +1843,7 @@ impl PlayerAdapter {
     }
 
     /// Is a session live? Answered from the bound attempt, which the one start that installs the
-    /// Engine binds right after the install and [`take_native_stop`](Self::take_native_stop)
+    /// Engine binds right after the install and [`stop_begin`](Self::stop_begin)
     /// drops in the call that takes it out; `start_bufferfeed`'s double-start guard only needs to
     /// ask.
     #[inline]
@@ -2019,12 +2046,6 @@ impl PlayerAdapter {
         let hooks = feed.hooks();
         plx_play_feed::native_executor::reap_abandoned_load_resource(
             feed, &self.mt, &hooks.release)
-    }
-
-    /// The parked Load, borrowed mutably (its once-only log latch), or taken once it returned.
-    #[cfg(feature = "play-feed")]
-    pub fn take_abandoned_load(&mut self) -> Option<super::engine::AbandonedLoad> {
-        self.physical.feed_backend_mut().resources_mut().take_abandoned_load()
     }
 
     /// The token, for the ACB/Starfish seam. `tv::sink::VideoSink`'s methods still take one — see the
@@ -2236,7 +2257,7 @@ mod load_outcome_tests {
         assert_eq!(crate::route::route_start_status(attempt), crate::route::RouteStartStatus::Started,
             "one Load result settles at most once");
         drop(pa.take());
-        crate::player::SHARED.reset_session();
+        crate::player::reset_session_for_test();
         FEED_TX.reset();
         crate::route::reset_player_control_for_test(&ps);
     }
@@ -2247,6 +2268,7 @@ mod load_outcome_tests {
     fn a_session_is_live_exactly_while_an_attempt_is_bound() {
         let _serial = plx_base::testlock::serial();
         let attempt = crate::route::RouteStartAttempt::fixture();
+        let mut ps = crate::route::PlaybackSession::IDLE;
         let mut pa = PlayerAdapter::new(unsafe { MainThread::assume() });
         assert!(!pa.is_live() && pa.active_feed_attempt().is_none());
         let mut eng = crate::player::engine::streaming_engine_for_test(8);
@@ -2256,10 +2278,11 @@ mod load_outcome_tests {
         assert!(pa.is_live());
         assert_eq!(pa.active_feed_attempt(), Some(attempt));
         assert!(pa.sample_feed().is_some(), "the Feed has the Engine the binding names");
-        drop(pa.take_native_stop());
+        pa.stop_begin(&mut ps);
+        pa.stop_finish(&mut ps, false);
         assert!(!pa.is_live() && pa.active_feed_attempt().is_none(), "the stop drops the binding");
         assert!(pa.sample_feed().is_none(), "and the Feed has no session to sample");
-        crate::player::SHARED.reset_session();
+        crate::player::reset_session_for_test();
         FEED_TX.reset();
     }
 
@@ -2287,10 +2310,12 @@ mod load_outcome_tests {
         pa.bind_feed_attempt(bound, 0);
         assert!(!pa.foreground_follows_feed_load(), "a rebind resets the mark");
         assert!(pa.mark_foreground_follows_feed_load(bound));
-        drop(pa.take_native_stop());
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        pa.stop_begin(&mut ps);
+        pa.stop_finish(&mut ps, false);
         assert!(!pa.foreground_follows_feed_load(), "the stop drops the mark with the binding");
         assert!(!pa.mark_foreground_follows_feed_load(bound), "and nothing is bound to mark");
-        crate::player::SHARED.reset_session();
+        crate::player::reset_session_for_test();
         FEED_TX.reset();
     }
 
@@ -2336,7 +2361,7 @@ mod load_outcome_tests {
         assert!(pa.physical.feed().expect("the feed is installed").take_load_outcomes().is_empty(),
             "each receipt is consumed once");
         drop(pa.take());
-        crate::player::SHARED.reset_session();
+        crate::player::reset_session_for_test();
         FEED_TX.reset();
     }
 }

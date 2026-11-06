@@ -1316,7 +1316,7 @@ mod tests {
 mod abandoned_load_tests {
     use super::*;
     use crate::player::shared::Stage;
-    use crate::player::{FEED_SHARED, SHARED};
+    use crate::player::FEED_SHARED;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
@@ -1327,7 +1327,7 @@ mod abandoned_load_tests {
             crate::player::ffi_host::reset_native_lifecycle_for_test();
             crate::player::ffi_host::force_clocksink_for_test(false);
             FEED_SHARED.test_force_native_idle();
-            SHARED.reset_session();
+            crate::player::reset_session_for_test();
             crate::route::reset_player_control_for_test(crate::route::idle_session_for_test());
         }
     }
@@ -1336,7 +1336,7 @@ mod abandoned_load_tests {
     /// until `release` is set. Bound to the fixture attempt, addressed in `ps`.
     fn loading_preview(ps: &mut crate::route::PlaybackSession,
         release: &Arc<AtomicBool>) -> crate::player::adapter::PlayerAdapter {
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(ps);
         crate::player::ffi_host::reset_native_lifecycle_for_test();
         crate::player::ffi_host::force_clocksink_for_test(true);
@@ -1423,5 +1423,70 @@ mod abandoned_load_tests {
         assert!(!pa.is_live(), "the abandoning arm retires the preview in the frame the Load returned");
         assert!(!abandoning());
         crate::player::route_start::finish_release_for_test(&mut pa);
+    }
+
+    /// Lets the Load stand-in return when a test ends, whichever way it ends.
+    struct LetLoadReturn(Arc<AtomicBool>);
+    impl Drop for LetLoadReturn {
+        fn drop(&mut self) { self.0.store(true, Ordering::SeqCst); }
+    }
+
+    /// **The exit waits for a deferred preview's Load.** `app::run::shutdown` stops the playback and
+    /// then asks `exit_native`; a preview whose Load has not returned is left installed by that stop
+    /// (`defer_preview_join`), so the release machine owes nothing and the exit used to answer `Clean`
+    /// over a Load still inside firmware, with no Unload ever issued. A Load that returns inside the
+    /// exit's deadline gets the deferred stop and its Unload, and only then is the display clean.
+    #[test]
+    fn exit_over_a_deferred_preview_waits_for_its_load_and_releases() {
+        use crate::player::route_start::{exit_native_with, stop_bufferfeed, NativeExit};
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        let _cleanup = Cleanup;
+        let release = Arc::new(AtomicBool::new(false));
+        let _let_return = LetLoadReturn(Arc::clone(&release));
+        let mut pa = loading_preview(&mut ps, &release);
+        stop_bufferfeed(&mut ps, &mut pa);
+        assert!(pa.is_live() && pa.engine().unwrap().preview_abandon,
+            "PRECONDITION: the stop deferred and left the Engine installed");
+        let unloads = crate::player::ffi_host::unload_calls_for_test();
+        // Each idle step is where the Load stand-in returns, as the real one does between polls.
+        let exit = exit_native_with(&mut ps, &mut pa, std::time::Instant::now, || {
+            release.store(true, Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        });
+        assert_eq!(exit, NativeExit::Clean);
+        assert!(!pa.is_live(), "the deferred stop ran: the Engine left the adapter");
+        assert_eq!(crate::player::ffi_host::unload_calls_for_test(), unloads + 1,
+            "the native object was Unloaded before the display was called clean");
+        assert!(!pa.has_pending_release() && !pa.release_busy());
+    }
+
+    /// **A Load that never returns is leaked, never dropped under its thread.** At the exit's
+    /// deadline the installed Engine (the Load payload the thread reads) is taken and forgotten,
+    /// and the display is left to the OS.
+    #[test]
+    fn exit_over_a_deferred_preview_whose_load_never_returns_leaks_the_engine() {
+        use crate::player::route_start::{exit_native_with, stop_bufferfeed, NativeExit};
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        let _cleanup = Cleanup;
+        let release = Arc::new(AtomicBool::new(false));
+        let _let_return = LetLoadReturn(Arc::clone(&release));
+        let mut pa = loading_preview(&mut ps, &release);
+        stop_bufferfeed(&mut ps, &mut pa);
+        assert!(pa.is_live() && pa.engine().unwrap().preview_abandon,
+            "PRECONDITION: the stop deferred and left the Engine installed");
+        let unloads = crate::player::ffi_host::unload_calls_for_test();
+        let dropped = plx_play_feed::feed_state::engines_dropped_for_test();
+        let t0 = std::time::Instant::now();
+        let mut ticks = 0u64;
+        let exit = exit_native_with(&mut ps, &mut pa,
+            || { ticks += 1; t0 + std::time::Duration::from_secs(5 * ticks) }, || {});
+        assert_eq!(exit, NativeExit::WorkerInFirmware);
+        assert!(!pa.is_live() && pa.engine().is_none(), "the Engine left the adapter");
+        assert_eq!(plx_play_feed::feed_state::engines_dropped_for_test(), dropped,
+            "leaked, not dropped under the thread that reads its payload");
+        assert_eq!(crate::player::ffi_host::unload_calls_for_test(), unloads,
+            "no Unload is issued over a Load still inside the call");
     }
 }

@@ -10,7 +10,7 @@ use plx_playback_contract::feed::{FeedDiag, FeedFacts};
 use std::sync::atomic::Ordering::Relaxed;
 
 use super::attempt_view::Backend;
-use super::{diag, Diag, SHARED};
+use super::{diag, Diag};
 use crate::route::{PlaybackSession, RouteStartAttempt};
 
 /// Every field a different, non-idle value, so a swapped pair or a field read from the wrong place
@@ -71,7 +71,7 @@ fn sample(diag: FeedDiag) -> FeedFacts {
 #[test]
 fn the_rows_are_the_ingested_samples_for_the_addressed_attempt() {
     let _serial = plx_base::testlock::serial();
-    SHARED.reset_session();
+    crate::player::reset_session_for_test();
     let (a, b) = (RouteStartAttempt::fixture(), RouteStartAttempt::fixture_n(2));
     let mut ps = PlaybackSession::IDLE;
     ps.begin_attempt_view(a, Backend::Feed);
@@ -91,7 +91,7 @@ fn the_rows_are_the_ingested_samples_for_the_addressed_attempt() {
     ps.begin_attempt_view(b, Backend::Feed);
     assert!(!ps.ingest_feed_facts(a, sample(scripted())), "a replaced attempt's sample is refused");
     assert_eq!(rows(&diag(&ps)), later, "so it cannot move the rows");
-    SHARED.reset_session();
+    crate::player::reset_session_for_test();
 }
 
 /// **The sample is the mailboxes, field for field.** A live session's mailboxes, sampled by the
@@ -100,7 +100,7 @@ fn the_rows_are_the_ingested_samples_for_the_addressed_attempt() {
 #[test]
 fn the_real_sample_reads_back_as_the_mailboxes_held() {
     let _serial = plx_base::testlock::serial();
-    SHARED.reset_session();
+    crate::player::reset_session_for_test();
     let a = RouteStartAttempt::fixture();
     let mut ps = PlaybackSession::IDLE;
     ps.begin_attempt_view(a, Backend::Feed);
@@ -123,7 +123,7 @@ fn the_real_sample_reads_back_as_the_mailboxes_held() {
     // The text rows the panel words from the codes.
     assert_eq!(d.load_a_str(), "PCM (decoded in the app)");
     assert_eq!(d.feed_state_str(), "holding ~1.6 s ahead");
-    SHARED.reset_session();
+    crate::player::reset_session_for_test();
 }
 
 /// **A URI attempt never shows Feed rows**, whatever the readout still holds of an earlier Feed
@@ -131,7 +131,7 @@ fn the_real_sample_reads_back_as_the_mailboxes_held() {
 #[test]
 fn a_uri_attempt_shows_no_feed_rows() {
     let _serial = plx_base::testlock::serial();
-    SHARED.reset_session();
+    crate::player::reset_session_for_test();
     let (a, b) = (RouteStartAttempt::fixture(), RouteStartAttempt::fixture_n(2));
     let mut ps = PlaybackSession::IDLE;
     ps.begin_attempt_view(a, Backend::Feed);
@@ -140,7 +140,7 @@ fn a_uri_attempt_shows_no_feed_rows() {
     let d = diag(&ps);
     assert_eq!(d.backend, Some(Backend::Uri));
     assert_eq!(rows(&d), rows(&Diag::default()), "the early return reads nothing of the feed");
-    SHARED.reset_session();
+    crate::player::reset_session_for_test();
 }
 
 /// **The failure rows are the readout's pair.** What the Original probe's worker noted (its edit,
@@ -151,7 +151,7 @@ fn a_uri_attempt_shows_no_feed_rows() {
 fn the_failure_rows_are_the_readouts_pair_the_workers_edit_included() {
     use plx_playback_contract::adaptive::FailureEdit;
     let _serial = plx_base::testlock::serial();
-    SHARED.reset_session();
+    crate::player::reset_session_for_test();
     let a = RouteStartAttempt::fixture();
     let mut ps = PlaybackSession::IDLE;
     ps.begin_attempt_view(a, Backend::Feed);
@@ -168,5 +168,5 @@ fn the_failure_rows_are_the_readouts_pair_the_workers_edit_included() {
     assert_eq!(failure(&ps), (super::ABR_FAILURE_ORIGINAL_OPEN, 0), "the pump's note replaces it");
     assert!(ps.ingest_original_failure(a, FailureEdit::Cleared));
     assert_eq!(failure(&ps), (0, 0), "the worker's clear");
-    SHARED.reset_session();
+    crate::player::reset_session_for_test();
 }

@@ -1695,7 +1695,7 @@ mod tests {
     fn a_refusals_code_is_read_with_its_flag_from_one_sample() {
         use std::sync::atomic::Ordering::{Relaxed, Release};
         let _guard = plx_base::testlock::serial();
-        super::SHARED.reset_session();
+        crate::player::reset_session_for_test();
         let attempt = crate::route::RouteStartAttempt::fixture();
         let mut ps = crate::route::PlaybackSession::IDLE;
         ps.begin_attempt_view(attempt, super::super::attempt_view::Backend::Feed);
@@ -1714,7 +1714,7 @@ mod tests {
         assert!(ps.ingest_feed_facts(attempt, plx_play_feed::feed_pump::native_feed_facts()));
         FEED_SHARED.frames.store(0, Relaxed);
         assert!(!super::open_facts(&ps, None).no_frames);
-        super::SHARED.reset_session();
+        crate::player::reset_session_for_test();
     }
 
     /// **The learner is reached through its injected recorder and nowhere else.** A named write is
@@ -1752,7 +1752,7 @@ mod tests {
         };
 
         // Named, with no flag raised: nothing to write.
-        super::SHARED.reset_session();
+        crate::player::reset_session_for_test();
         ingest(&mut ps);
         assert!(!super::confirm_refusal(&mut ps, &opus6, Evidence::Named, "test", recorder));
         assert!(recorded.borrow().is_empty());
@@ -1771,7 +1771,7 @@ mod tests {
         assert!(super::confirm_refusal(&mut ps, &dts6, Evidence::Proof, "test", recorder));
         assert_eq!(*recorded.borrow(), [opus6.clone(), dts6]);
         assert!(ps.readout().native_audio_refused(), "a proof touches no flag");
-        super::SHARED.reset_session();
+        crate::player::reset_session_for_test();
         ps.step_readout(super::super::readout::ReadoutEvent::SessionReset);
 
         // The injected recorder was the only writer: the install's record holds nothing yet.
@@ -1793,7 +1793,7 @@ mod tests {
         let start = plx_platform::devcaps::start_caps(&plx_plex::plex::session::peek().applied_refusals());
         assert!(!start.audio_supports("opus", 6), "the start value lacks the named row's Opus 5.1");
         assert!(start.audio_supports("opus", 2), "a surround refusal keeps the codec to stereo");
-        super::SHARED.reset_session();
+        crate::player::reset_session_for_test();
     }
     use crate::player::readout::stream_ended;
     use super::{
@@ -2121,7 +2121,7 @@ mod flight_tests {
 
         fn on_with_load_return(mut ps: crate::route::PlaybackSession, flight: FlightRig,
             load_returned: bool) -> Rig {
-            SHARED.reset_session();
+            crate::player::reset_session_for_test();
             FEED_TX.reset();
             super::super::claim_hold::clear();
             super::super::ffi_host::reset_native_lifecycle_for_test();
@@ -2201,7 +2201,7 @@ mod flight_tests {
             super::super::ffi_host::force_clocksink_for_test(false);
             super::super::ffi_host::force_object_ready_for_test(false);
             FEED_SHARED.test_force_native_idle();
-            SHARED.reset_session();
+            crate::player::reset_session_for_test();
             FEED_TX.reset();
             crate::ff::native_audio::reset();
             crate::route::reset_player_control_for_test(crate::route::idle_session_for_test());
@@ -2376,7 +2376,7 @@ mod flight_tests {
     fn hls_rig(delay_ms: u64) -> Rig {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let flight = FlightRig::start_hls(&mut ps, Duration::from_millis(delay_ms));
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         FEED_TX.reset();
         super::super::claim_hold::clear();
         super::super::ffi_host::reset_native_lifecycle_for_test();
@@ -2594,7 +2594,7 @@ mod flight_tests {
     fn auto_original_rig(delay_ms: u64) -> Rig {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let flight = FlightRig::start_auto_original(&mut ps, Duration::from_millis(delay_ms));
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         FEED_TX.reset();
         super::super::claim_hold::clear();
         super::super::ffi_host::reset_native_lifecycle_for_test();
@@ -4613,7 +4613,7 @@ mod native_seek_pump_tests {
 
     impl Rig {
         fn new(force_seek: Option<c_int>) -> Rig {
-            SHARED.reset_session();
+            crate::player::reset_session_for_test();
             FEED_TX.reset();
             super::super::claim_hold::clear();
             ffi_host::reset_native_lifecycle_for_test();
@@ -4691,7 +4691,7 @@ mod native_seek_pump_tests {
             ffi_host::force_clocksink_for_test(false);
             ffi_host::force_object_ready_for_test(false);
             FEED_SHARED.test_force_native_idle();
-            SHARED.reset_session();
+            crate::player::reset_session_for_test();
             FEED_TX.reset();
             crate::route::reset_player_control_for_test(crate::route::idle_session_for_test());
         }
@@ -5023,7 +5023,7 @@ mod native_seek_pump_tests {
         /// session waits for its first keyframe at `target`.
         fn complete_reload(&mut self, target: i64) {
             FEED_TX.reset_for_reload();
-            SHARED.reset_session_for_reload();
+            crate::player::reset_session_for_reload_for_test();
             self.ps.step_readout(crate::player::readout::ReadoutEvent::SessionReset);
             FEED_SHARED.reset_hls_clock_for_test();
             assert!(FEED_SHARED.arm_initial_clock_hold(FEED_TX.paused.load(Acquire), FEED_TX.seek_preroll_active()));
@@ -5154,7 +5154,7 @@ mod native_seek_pump_tests {
         /// armed and no preroll is opened by the caller.
         fn complete_plain_reload(&mut self) {
             FEED_TX.reset_for_reload();
-            SHARED.reset_session_for_reload();
+            crate::player::reset_session_for_reload_for_test();
             FEED_SHARED.reset_hls_clock_for_test();
             assert!(FEED_SHARED.arm_initial_clock_hold(FEED_TX.paused.load(Acquire), FEED_TX.seek_preroll_active()));
             let epoch = FEED_SHARED.begin_native_session().unwrap_or(0);
@@ -5688,7 +5688,7 @@ mod end_of_film_tests {
         /// callback gate is open: otherwise the sink reports nothing and a red run would be a dead
         /// instrument, not the defect), holding 20 s of video and 23 s of audio, primed to play.
         fn new() -> Rig {
-            SHARED.reset_session();
+            crate::player::reset_session_for_test();
             FEED_TX.reset();
             super::super::claim_hold::clear();
             ffi_host::reset_native_lifecycle_for_test();
@@ -5782,7 +5782,7 @@ mod end_of_film_tests {
             ffi_host::reset_native_lifecycle_for_test();
             ffi_host::force_clocksink_for_test(false);
             FEED_SHARED.test_force_native_idle();
-            SHARED.reset_session();
+            crate::player::reset_session_for_test();
             FEED_TX.reset();
             crate::route::reset_player_control_for_test(crate::route::idle_session_for_test());
         }

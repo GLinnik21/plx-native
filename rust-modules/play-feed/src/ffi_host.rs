@@ -328,6 +328,14 @@ impl Drop for UnloadWorker {
 pub fn unload_workers_for_test() -> usize {
     UNLOAD_WORKERS.load(Relaxed)
 }
+/// How many host `sf_unload` calls have started since the process began: a test reads it before
+/// and after to prove an `Unload` ran (or did not) in between.
+#[cfg(any(test, feature = "test-support"))]
+static UNLOAD_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(any(test, feature = "test-support"))]
+pub fn unload_calls_for_test() -> usize {
+    UNLOAD_CALLS.load(Relaxed)
+}
 /// Let a held `Unload` go and wait until every `sf-unload` worker has ended, so none can deliver
 /// into a later test's session. Bounded: a worker still alive after 10 s fails loudly.
 #[cfg(any(test, feature = "test-support"))]
@@ -1066,6 +1074,8 @@ unsafe fn sf_feed(p: *const u8, size: c_uint, pts: i64, es_data: c_int) -> c_cha
 unsafe fn sf_unload() {
     #[cfg(any(test, feature = "test-support"))]
     note_dispatch("sf_unload");
+    #[cfg(any(test, feature = "test-support"))]
+    UNLOAD_CALLS.fetch_add(1, Relaxed);
     #[cfg(any(test, feature = "test-support"))]
     {
         let ms = UNLOAD_DELAY_MS.load(Relaxed);

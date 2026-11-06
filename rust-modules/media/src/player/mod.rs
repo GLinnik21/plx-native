@@ -229,6 +229,33 @@ use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 pub static SHARED: Shared = Shared::new();
 pub static TX: Transport = Transport::new();
 
+/// **The one test-support reset of a whole session**: what a real stop does (`FeedStop::reset`
+/// with [`ResetScope::Stop`]), the Feed's mirrors and the common stores together inside the
+/// callback/reset barrier. `SHARED.reset_session` alone resets only the common stores.
+#[cfg(any(test, feature = "test-support"))]
+pub fn reset_session_for_test() {
+    reset_scoped_for_test(plx_playback_contract::feed::ResetScope::Stop);
+}
+
+/// [`reset_session_for_test`] for a reload of the same item (`ResetScope::Reload`).
+#[cfg(any(test, feature = "test-support"))]
+pub fn reset_session_for_reload_for_test() {
+    reset_scoped_for_test(plx_playback_contract::feed::ResetScope::Reload);
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn reset_scoped_for_test(scope: plx_playback_contract::feed::ResetScope) {
+    use plx_playback_contract::feed::ResetScope;
+    let common = &mut || match scope {
+        ResetScope::Stop => SHARED.reset_session(),
+        ResetScope::Reload => SHARED.reset_session_for_reload(),
+    };
+    #[cfg(feature = "play-feed")]
+    FEED_SHARED.reset_scoped(scope, common);
+    #[cfg(not(feature = "play-feed"))]
+    common();
+}
+
 /// **Is the Stats-for-nerds read-out on screen?** The bit `pump::publish_diag` asks before it
 /// samples the queues (`aq_bytes` takes each queue's pthread mutex, so nobody pays for a panel
 /// nobody is looking at). It is the player's because the pump reads it and `player` may not name
@@ -2827,7 +2854,7 @@ mod tests {
     #[test]
     fn uri_failure_does_not_inherit_retired_feed_worker_flags() {
         let _serial = plx_base::testlock::serial();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         let mut ps = crate::route::PlaybackSession::default();
         ps.begin_attempt_view(crate::route::RouteStartAttempt::fixture(), attempt_view::Backend::Uri);
         FEED_SHARED.load_failed.store(true, Relaxed);
@@ -2840,7 +2867,7 @@ mod tests {
         let shape = error_now(&ps).kind;
         let status = state(&ps);
         let readout = (playpos_ns(&ps), duration_ns(&ps), seen_frame(&ps));
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         assert_eq!(cause, RuntimeFailure::Unknown, "a URI attempt has no feed failure evidence");
         assert_eq!(shape, FailureKind::Unspecified, "retired demux flags cannot diagnose URI media");
         assert_eq!(status, PlaybackState::Connecting, "retired feed status cannot describe a new URI attempt");
@@ -2940,7 +2967,7 @@ mod tests {
         struct Restore;
         impl Drop for Restore {
             fn drop(&mut self) {
-                SHARED.reset_session();
+                crate::player::reset_session_for_test();
                 FEED_SHARED.reset_session();
                 FEED_TX.reset();
                 crate::ff::force_speed_decoder_for_test(false);
@@ -2949,7 +2976,7 @@ mod tests {
         let _restore = Restore;
         let mut ps = crate::route::PlaybackSession::IDLE;
         let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         FEED_SHARED.reset_session();
         FEED_TX.reset();
         crate::ff::force_speed_decoder_for_test(true);
@@ -3008,7 +3035,7 @@ mod tests {
         struct Restore;
         impl Drop for Restore {
             fn drop(&mut self) {
-                SHARED.reset_session();
+                crate::player::reset_session_for_test();
                 FEED_TX.reset();
                 crate::ff::force_speed_decoder_for_test(false);
             }
@@ -3016,7 +3043,7 @@ mod tests {
         let _restore = Restore;
         let mut ps = crate::route::PlaybackSession::IDLE;
         let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         FEED_TX.reset();
         crate::ff::force_speed_decoder_for_test(true);
         let attempt = crate::route::RouteStartAttempt::fixture();
@@ -3049,12 +3076,12 @@ mod tests {
         struct Restore;
         impl Drop for Restore {
             fn drop(&mut self) {
-                SHARED.reset_session();
+                crate::player::reset_session_for_test();
                 FEED_TX.reset();
             }
         }
         let _restore = Restore;
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         FEED_TX.reset();
         let mut ps = crate::route::PlaybackSession::IDLE;
         let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
@@ -3094,12 +3121,12 @@ mod tests {
         struct Restore;
         impl Drop for Restore {
             fn drop(&mut self) {
-                SHARED.reset_session();
+                crate::player::reset_session_for_test();
                 FEED_TX.reset();
             }
         }
         let _restore = Restore;
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         FEED_TX.reset();
         let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
 
@@ -3289,7 +3316,7 @@ mod tests {
     #[test]
     fn callback_after_native_session_retirement_cannot_mutate_the_idle_session() {
         let _guard = plx_base::testlock::serial();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
 
         sf_on_event(1, 0, 7_000_000_000, std::ptr::null());
         let mutated = FEED_SHARED.seen_frame.load(std::sync::atomic::Ordering::Acquire)
@@ -3297,7 +3324,7 @@ mod tests {
             || FEED_SHARED.pres_fed.load(std::sync::atomic::Ordering::Acquire) != 0
             || FEED_SHARED.playpos_ns.load(std::sync::atomic::Ordering::Acquire) != 0;
 
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         assert!(
             !mutated,
             "a callback with no live native-session owner must be discarded"
@@ -3316,14 +3343,14 @@ mod tests {
         let failed = || FEED_SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire);
 
         // 1. before loadCompleted
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         let epoch = FEED_SHARED.begin_native_session().expect("session");
         refuse(epoch);
         assert!(failed(), "a refusal before loadCompleted is a verdict");
         FEED_SHARED.retire_native_session(epoch);
 
         // 2. after loadCompleted, still no picture
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         let epoch = FEED_SHARED.begin_native_session().expect("session");
         sf_on_event(epoch, 2, 0, c"{\"loadCompleted\":true}".as_ptr());
         assert!(FEED_SHARED.load_completed.load(std::sync::atomic::Ordering::Acquire));
@@ -3335,7 +3362,7 @@ mod tests {
         FEED_SHARED.retire_native_session(epoch);
 
         // 3. after a picture: diagnostic only
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         let epoch = FEED_SHARED.begin_native_session().expect("session");
         sf_on_event(epoch, 0, 7_000_000_000, std::ptr::null());
         assert!(FEED_SHARED.seen_frame.load(std::sync::atomic::Ordering::Acquire));
@@ -3355,7 +3382,7 @@ mod tests {
             "a seek zeroes `frames`; the refusal predicate must read `seen_frame`, not that"
         );
         FEED_SHARED.retire_native_session(epoch);
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
     }
 
     /// **`type=18 num=200` is a native AUDIO refusal only when the session fed audio natively.**
@@ -3374,7 +3401,7 @@ mod tests {
         let refuse = |epoch: u32, num: i64| sf_on_event(epoch, 18, num, c"Audio Codec Not Supported".as_ptr());
 
         // Native audio fed, num 200, no picture: flagged (and the Load is failed as ever).
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         native();
         let epoch = FEED_SHARED.begin_native_session().expect("session");
         refuse(epoch, 200);
@@ -3382,13 +3409,13 @@ mod tests {
         FEED_SHARED.retire_native_session(epoch);
 
         // Another number, or no native audio: not flagged.
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         native();
         let epoch = FEED_SHARED.begin_native_session().expect("session");
         refuse(epoch, 601);
         assert!(!flagged() && FEED_SHARED.load_failed.load(Acquire));
         FEED_SHARED.retire_native_session(epoch);
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         crate::ff::native_audio::reset();
         let epoch = FEED_SHARED.begin_native_session().expect("session");
         refuse(epoch, 200);
@@ -3396,14 +3423,14 @@ mod tests {
         FEED_SHARED.retire_native_session(epoch);
 
         // After a picture: a statistic, not a verdict.
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         native();
         let epoch = FEED_SHARED.begin_native_session().expect("session");
         sf_on_event(epoch, 0, 7_000_000_000, std::ptr::null());
         refuse(epoch, 200);
         assert!(!flagged());
         FEED_SHARED.retire_native_session(epoch);
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         crate::ff::native_audio::reset();
     }
 
@@ -3414,7 +3441,7 @@ mod tests {
     #[test]
     fn the_pipelines_end_of_stream_is_noted_after_a_picture() {
         let _guard = plx_base::testlock::serial();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         let epoch = FEED_SHARED.begin_native_session().expect("session");
         sf_on_event(epoch, 28, 1, c"true".as_ptr());
         assert!(!FEED_SHARED.pipeline_eos.load(Relaxed), "not before a picture");
@@ -3426,7 +3453,7 @@ mod tests {
         request_seek(&mut ps, &mut pa, 1_000_000_000);
         assert!(!FEED_SHARED.pipeline_eos.load(Relaxed), "a seek back from the end un-ends it");
         FEED_SHARED.retire_native_session(epoch);
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         assert!(!FEED_SHARED.pipeline_eos.load(Relaxed));
     }
 
@@ -3451,7 +3478,7 @@ mod tests {
             take_decoder_revoked(ps)
         };
 
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         ps.step_readout(readout::ReadoutEvent::SessionReset);
         let _ = take(&mut ps);
         let epoch = FEED_SHARED.begin_native_session().expect("session");
@@ -3466,7 +3493,7 @@ mod tests {
         assert!(take(&mut ps), "a second release is a new edge");
         sf_on_event(epoch, 18, 600, released);
         FEED_SHARED.retire_native_session(epoch);
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         ps.step_readout(readout::ReadoutEvent::SessionReset);
         assert!(!take(&mut ps), "a reset session forgets an unread release");
 
@@ -3475,7 +3502,7 @@ mod tests {
         assert!(failed(), "before any picture it is still the Load refusal it always was");
         assert!(!take(&mut ps), "a Load refusal is not a revocation");
         FEED_SHARED.retire_native_session(epoch);
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
     }
 
     /// One heartbeat's sample of the Feed's presentation counters, as the readout holds it.
@@ -3537,7 +3564,7 @@ mod tests {
     #[test]
     fn the_feed_counts_a_gap_only_between_two_stamped_callbacks() {
         let _guard = plx_base::testlock::serial();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         let attempt = crate::route::RouteStartAttempt::fixture();
         let mut ps = crate::route::PlaybackSession::IDLE;
         ps.begin_attempt_view(attempt, attempt_view::Backend::Feed);
@@ -3556,7 +3583,7 @@ mod tests {
         sf_on_event(epoch, 0, 7_000_000_000, std::ptr::null()); // after a hold: the stamp survived it
         assert_eq!(ingest(&mut ps), (4, 2));
         FEED_SHARED.retire_native_session(epoch);
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         assert_eq!(ingest(&mut ps), (0, 0), "a session reset zeroes the counters");
         assert_eq!(FEED_SHARED.dg_vpres_gap_sum.load(Relaxed), 0);
     }
@@ -3569,7 +3596,7 @@ mod tests {
     fn the_first_type_18_latches_its_number_and_nothing_later_erases_or_replaces_it() {
         let _guard = plx_base::testlock::serial();
         let num = || FEED_SHARED.dg_cb_err_num.load(std::sync::atomic::Ordering::Acquire);
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         let epoch = FEED_SHARED.begin_native_session().expect("session");
         assert_eq!(num(), 0, "nothing recorded yet");
         sf_on_event(epoch, 2, 0, c"{\"loadCompleted\":true}".as_ptr());
@@ -3583,7 +3610,7 @@ mod tests {
         assert_eq!(num(), 601, "the FIRST error is the one that explains the session");
         assert_eq!(FEED_SHARED.dg_cb_err.load(std::sync::atomic::Ordering::Acquire), 18);
         FEED_SHARED.retire_native_session(epoch);
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         assert_eq!(num(), 0, "cleared where `dg_cb_err` is cleared");
     }
 
@@ -3599,13 +3626,13 @@ mod tests {
             (i64::MIN, i32::MIN),
             (-5, -5),
         ] {
-            SHARED.reset_session();
+            crate::player::reset_session_for_test();
             let epoch = FEED_SHARED.begin_native_session().expect("session");
             sf_on_event(epoch, 18, given, std::ptr::null());
             assert_eq!(num(), want, "num {given}");
             FEED_SHARED.retire_native_session(epoch);
         }
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
     }
 
     /// A SYNCHRONOUS Load refusal (`sf_load` returning 0) has no firmware number: Starfish's `Load`
@@ -3615,13 +3642,13 @@ mod tests {
     #[test]
     fn a_synchronous_load_refusal_publishes_no_firmware_number() {
         let _guard = plx_base::testlock::serial();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         let epoch = FEED_SHARED.begin_native_session().expect("session");
         assert!(FEED_SHARED.publish_native_load_failure(epoch));
         assert!(FEED_SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire));
         assert_eq!(FEED_SHARED.dg_cb_err_num.load(std::sync::atomic::Ordering::Acquire), 0);
         FEED_SHARED.retire_native_session(epoch);
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
     }
 
     #[test]
@@ -3659,7 +3686,7 @@ mod tests {
     #[test]
     fn late_native_callback_cannot_cross_into_the_next_session() {
         let _guard = plx_base::testlock::serial();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         let retired = FEED_SHARED.begin_native_session().expect("session A");
         assert!(FEED_SHARED.retire_native_session(retired));
         let current = FEED_SHARED.begin_native_session().expect("session B");
@@ -3674,7 +3701,7 @@ mod tests {
             && FEED_SHARED.pres_fed.load(std::sync::atomic::Ordering::Acquire) == 8_000_000_000;
 
         FEED_SHARED.retire_native_session(current);
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         assert!(!stale_mutated, "session A must not mutate session B");
         assert!(current_landed, "session B's own callback must still land");
     }
@@ -3682,7 +3709,7 @@ mod tests {
     #[test]
     fn native_epoch_retirement_drains_a_callback_already_inside_the_reducer() {
         let _guard = plx_base::testlock::serial();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         let epoch = FEED_SHARED.begin_native_session().expect("native session");
         let (entered_tx, entered_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
@@ -3714,13 +3741,13 @@ mod tests {
             .expect("retirement completes after the callback leaves"),);
         callback.join().unwrap();
         retire.join().unwrap();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
     }
 
     #[test]
     fn unload_completed_is_an_explicit_terminal_native_session_transition() {
         let _guard = plx_base::testlock::serial();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         let epoch = FEED_SHARED.begin_native_session().expect("native session");
 
         sf_on_event(epoch, 23, 0, std::ptr::null());
@@ -3741,13 +3768,13 @@ mod tests {
             "overlapping native Load was admitted",
         );
         assert!(FEED_SHARED.retire_native_session(next_epoch));
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
     }
 
     #[test]
     fn pre_seek_presentation_cannot_certify_the_post_seek_timeline() {
         let _guard = plx_base::testlock::serial();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         let epoch = FEED_SHARED.begin_native_session().expect("native session");
         assert!(FEED_SHARED.begin_native_media_discontinuity(epoch));
 
@@ -3771,13 +3798,13 @@ mod tests {
         );
 
         FEED_SHARED.retire_native_session(epoch);
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
     }
 
     #[test]
     fn post_seek_feed_commits_or_discards_callbacks_that_race_its_reply() {
         let _guard = plx_base::testlock::serial();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         let epoch = FEED_SHARED.begin_native_session().expect("native session");
         assert!(FEED_SHARED.begin_native_media_discontinuity(epoch));
 
@@ -3807,7 +3834,7 @@ mod tests {
         assert_eq!(FEED_SHARED.frames.load(std::sync::atomic::Ordering::Acquire), 2);
 
         assert!(FEED_SHARED.retire_native_session(epoch));
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
     }
 
     /// User Play releases the transport pause, but an internal runway hold owns the media clock.
@@ -4741,7 +4768,7 @@ mod native_failure_regressions {
         let _guard = JailGuard;
         let mut ps = crate::route::PlaybackSession::IDLE;
         crate::route::reset_player_control_for_test(&ps);
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
         plx_platform::tv::sandbox::FORCE_BLOCKED.store(true, Relaxed);
         assert!(start_bufferfeed(&mut ps, &mut pa));
@@ -4762,7 +4789,7 @@ mod native_failure_regressions {
         assert_eq!(runtime_failure(true, true, true, true), RuntimeFailure::LoadTimeout);
         assert_eq!(runtime_failure(false, false, true, false), RuntimeFailure::TvPipeline);
         FEED_SHARED.load_timed_out.store(true, Relaxed);
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         assert!(!FEED_SHARED.load_timed_out.load(Relaxed));
     }
 }
@@ -4783,13 +4810,13 @@ mod seek_hud_regressions {
     #[test]
     fn a_reload_keeps_the_files_duration_and_a_stop_does_not() {
         let _serial = plx_base::testlock::serial();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         FEED_SHARED.duration_ns.store(5_400_000_000_000, Relaxed);
         FEED_SHARED.playpos_ns.store(1_200_000_000_000, Relaxed);
-        SHARED.reset_session_for_reload();
+        crate::player::reset_session_for_reload_for_test();
         assert_eq!(FEED_SHARED.duration_ns.load(Relaxed), 5_400_000_000_000, "the same file is about to be reopened");
         assert_eq!(FEED_SHARED.playpos_ns.load(Relaxed), 0, "…and everything that IS the session's was still cleared");
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         assert_eq!(FEED_SHARED.duration_ns.load(Relaxed), 0, "a real stop: the next item is a new file");
     }
 
@@ -4802,7 +4829,7 @@ mod seek_hud_regressions {
         let _serial = plx_base::testlock::serial();
         let mut ps = crate::route::PlaybackSession::IDLE;
         crate::route::reset_player_control_for_test(&ps);
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         FEED_TX.reset();
         ps.step_readout(readout::ReadoutEvent::StateDerived(PlaybackState::Playing));
         assert_eq!(state(&ps), PlaybackState::Playing);
@@ -4813,7 +4840,7 @@ mod seek_hud_regressions {
         assert_eq!(state(&ps), PlaybackState::Seeking, "the pump has not run yet");
         assert!(state(&ps).is_busy(), "busy is what freezes the HUD's playhead on the target");
         assert_eq!(FEED_SHARED.seek_display_ns.load(Relaxed), 90_000_000_000, "…and this is the target it freezes on");
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         FEED_TX.reset();
         crate::route::reset_player_control_for_test(&ps);
     }
@@ -4830,7 +4857,7 @@ mod audio_switch_tests {
 
     fn reset() {
         install_sf_event_hooks();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         SHARED.audio_switch.store(AudioSwitch::None as u8, Relaxed);
     }
 
@@ -4853,13 +4880,13 @@ mod audio_switch_tests {
         assert!(!audio_switching(), "no pick, no switch: a seek's reload is Buffering");
         note_audio_pick();
         assert!(audio_switching(), "the pick's rebuild is flying");
-        SHARED.reset_session_for_reload();
+        crate::player::reset_session_for_reload_for_test();
         assert!(audio_switching(), "the reload keeps the pick's meaning");
         let epoch = FEED_SHARED.begin_native_session().expect("session");
         sf_on_event(epoch, 0, 7_000_000_000, std::ptr::null());
         assert!(!audio_switching(), "the first picture ends the switch");
         // a later seek-style reload is no longer a switch
-        SHARED.reset_session_for_reload();
+        crate::player::reset_session_for_reload_for_test();
         assert!(!audio_switching());
         FEED_SHARED.retire_native_session(epoch);
         reset();
@@ -4874,7 +4901,7 @@ mod audio_switch_tests {
         assert!(!audio_switching(), "a refused rebuild must not name a later one");
         note_audio_pick();
         assert!(audio_switching());
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         assert!(!audio_switching(), "a full reset (new item, teardown) ends it");
         reset();
     }

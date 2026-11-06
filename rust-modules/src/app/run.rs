@@ -3917,7 +3917,7 @@ mod lifecycle_regression_tests {
 
     // No boot, renderer or device: the real App/event/frame phases with Bridge's host rig.
     fn app() -> App {
-        plx_media::player::SHARED.reset_session();
+        plx_media::player::reset_session_for_test();
         let mut app = App {
             last_input: Default::default(),
             loop_t: Default::default(),
@@ -5839,7 +5839,7 @@ mod lifecycle_regression_tests {
             if let Some(h) = self.worker.take() {
                 plx_base::task::join("lifecycle-fixture", h);
             }
-            plx_media::player::SHARED.reset_session();
+            plx_media::player::reset_session_for_test();
             plx_media::route::reset_player_control_for_test(&self.app.player.session);
             plx_plex::plex::reset_servers_for_test();
         }

@@ -155,14 +155,14 @@ mod tests {
 
     struct ResetSession;
     impl Drop for ResetSession {
-        fn drop(&mut self) { SHARED.reset_session(); }
+        fn drop(&mut self) { crate::player::reset_session_for_test(); }
     }
 
     #[test]
     fn late_bitmap_cue_cannot_populate_successor_store() {
         let _serial = plx_base::testlock::serial();
         let _reset = ResetSession;
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         let first_epoch = FEED_SHARED.begin_native_session().expect("first native epoch");
         let mut first = capture(AttemptId::new(7, 1), first_epoch);
         let track = || TrackInfo {
@@ -172,7 +172,7 @@ mod tests {
         let first_generation = first.subtitle().begin_sources("first", Manifest {
             headers: vec![None], fonts: Vec::new(), font_bytes: 0,
         }).expect("first subtitle source");
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         let next_epoch = FEED_SHARED.begin_native_session().expect("successor native epoch");
         let mut next = capture(AttemptId::new(7, 2), next_epoch);
         next.subtitle().plan(&[track()]);

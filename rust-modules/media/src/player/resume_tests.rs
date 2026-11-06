@@ -24,7 +24,7 @@ impl Rig {
     fn new(delay_ms: u64) -> Rig {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let flight = FlightRig::start(&mut ps, Duration::from_millis(delay_ms));
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         FEED_TX.reset();
         claim_hold::clear();
         let ticket = crate::route::begin_route_start().expect("a landing's start transaction");
@@ -82,7 +82,7 @@ impl Rig {
 impl Drop for Rig {
     fn drop(&mut self) {
         claim_hold::clear();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         FEED_TX.reset();
         crate::route::reset_player_control_for_test(crate::route::idle_session_for_test());
     }

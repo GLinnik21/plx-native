@@ -105,7 +105,7 @@ impl FeedResources {
                 && !(eng.flushed && eng.rebase_pending && !seek_reloads)
         })
     }
-    pub fn begin_seek_discontinuity(&self) -> bool {
+    pub fn begin_seek_discontinuity(&mut self) -> bool {
         self.engine.as_ref().is_some_and(|eng| self.shared.begin_native_media_discontinuity(eng.native_epoch))
     }
     pub fn is_live(&self) -> bool { self.engine.is_some() }
