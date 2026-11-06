@@ -2981,6 +2981,52 @@ mod load_in_flight_tests {
         load_thread.join().expect("load_thread joins");
     }
 
+    /// The budget verdict is the Feed's, read through the constructor gate: a constructor still in
+    /// flight (the sink not ready, its Load live) reports `Awaiting { timeout: None }` while the
+    /// Feed's clock, which starts at `begin_native_session`, is inside `NATIVE_LOAD_BUDGET`, and
+    /// `Awaiting { timeout: Some(Elapsed(..)) }` (with the elapsed time, past the budget) once it
+    /// has passed it. `native_load_budget_expiry_fires_load_failed` above pins the other site (the
+    /// sink ready, the Load tick's verdict); this pins the gate's own, and that the clock decides it.
+    #[test]
+    fn the_constructor_gate_reports_the_load_timeout_once_the_feeds_clock_passes_the_budget() {
+        use plx_playback_contract::feed::{CtorGate, LoadTimeout};
+        let budget = plx_play_feed::feed_pump::NATIVE_LOAD_BUDGET;
+        let ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        crate::player::reset_session_for_test();
+        crate::route::reset_player_control_for_test(&ps);
+        plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+        let _cleanup = Cleanup;
+
+        let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe {
+            plx_base::task::MainThread::assume()
+        });
+        let epoch = FEED_SHARED.begin_native_session().expect("native session");
+        pa.install(engine_loading(epoch));
+
+        assert_eq!(pa.feed_ctor_gate(), CtorGate::Awaiting { timeout: None },
+            "a Load that has only just been issued is inside its budget");
+        // The Feed's clock a second short of the budget: still inside it.
+        let second = std::time::Duration::from_secs(1);
+        assert!(FEED_SHARED.test_backdate_native_load_issued(epoch, budget - second),
+            "PRECONDITION FAILED: the epoch must still own the Active phase to backdate its clock");
+        assert!(FEED_SHARED.native_load_elapsed(epoch).is_some_and(|e| e < budget),
+            "PRECONDITION FAILED: the backdated clock must still read inside the budget");
+        assert_eq!(pa.feed_ctor_gate(), CtorGate::Awaiting { timeout: None },
+            "a second short of the budget reports no timeout");
+        assert!(!FEED_SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire),
+            "the gate publishes no failure inside the budget");
+        // Two seconds on: past it.
+        assert!(FEED_SHARED.test_backdate_native_load_issued(epoch, second * 2));
+        assert!(FEED_SHARED.native_load_elapsed(epoch).is_some_and(|e| e >= budget),
+            "PRECONDITION FAILED: the backdated clock must now read past the budget");
+        let verdict = pa.feed_ctor_gate();
+        assert!(matches!(verdict, CtorGate::Awaiting { timeout: Some(LoadTimeout::Elapsed(e)) } if e >= budget),
+            "past the budget the verdict is the elapsed time: {verdict:?}");
+        assert!(FEED_SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire),
+            "the verdict is published with the failure latch");
+    }
+
     /// `load-returned-log-is-conditional-on-loadcompleted-and-unbounded-after`: the OTHER half of
     /// D.1.4's budget. `native_load_budget_expiry_fires_load_failed` above pins "Load never
     /// returns"; this pins "Load returns, but `loadCompleted` never arrives" — a wait that was
