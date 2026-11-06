@@ -443,9 +443,13 @@ fn kind_caption(kind: PosterKind) -> &'static str {
     }
 }
 
-/// How far under the slot's top a tile's top stands: the kind caption's ink and the air under it.
-fn picture_tile_dy() -> f32 {
-    plx_ui::table::caps_band_h() + PICTURE_KIND_GAP
+/// The slot's top-down stack: the kind caption's band, then the tile with the gap that belongs to it.
+/// Returns the tile's top edge.
+fn picture_tile_top(slot_y: f32) -> f32 {
+    use plx_ui::hstack::Item;
+    use plx_ui::vstack::{Anchor, VStack};
+    let items = [Item::new(plx_ui::table::caps_band_h()), Item::new(PICTURE_TILE_H).before(PICTURE_KIND_GAP)];
+    VStack::new(&items, 0.0, Anchor::Top(slot_y)).span(1).map_or(slot_y, |(y, _)| y)
 }
 
 impl plx_ui::follow_copy::PictureSlot for RootPicture<'_> {
@@ -467,7 +471,7 @@ impl plx_ui::follow_copy::PictureSlot for RootPicture<'_> {
                 p, plx_ui::table::caps_band(x, slot.y, PICTURE_TILE_W), kind_caption(*kind), PICTURE_TILE_W,
                 theme::TEXT_READING, plx_ui::table::BOARD_CAPS_TRACK_PX, measure,
             );
-            let tile = Rect::new(x, slot.y + picture_tile_dy(), PICTURE_TILE_W, PICTURE_TILE_H);
+            let tile = Rect::new(x, picture_tile_top(slot.y), PICTURE_TILE_W, PICTURE_TILE_H);
             match arts[i] {
                 Some(art) => plx_ui::widgets::card(p, tile, plx_ui::follow_copy::PosterFan::stateless(art), theme::CARD_RING_RAD, false, 1.0, 0.0),
                 None => plx_ui::widgets::absent_card(p, tile, theme::CARD_RING_RAD),
