@@ -226,8 +226,9 @@ const CURLOPT_SSL_VERIFYHOST: c_int = 81;
 const CURLOPT_BUFFERSIZE: c_int = 98;
 const CURLOPT_NOSIGNAL: c_int = 99;
 /// `CURLOPT_SSL_OPTIONS` (VALUES + 216) / `CURLSSLOPT_NATIVE_CA` (`1 << 4`) — see `net.rs`'s own
-/// doc on the same pair for why this is needed at all (the bundled curl's GnuTLS backend loads
-/// no trust anchors on its own without it). Set only for a strict attempt, never key or roots
+/// doc on the same pair for why it is sent (a GnuTLS build of the bundled curl loads no trust
+/// anchors without it; the current OpenSSL build ignores it on Linux and uses its compiled-in CA
+/// path). Set only for a strict attempt, never key or roots
 /// mode: roots mode deliberately narrows trust to the shipped bundle, and key mode may already
 /// have `VERIFYPEER` off, so widening the trust store there would be pointless or wrong.
 const CURLOPT_SSL_OPTIONS: c_int = 216;

@@ -36,7 +36,7 @@ use std::ffi::CString;
 use std::mem::MaybeUninit;
 use std::os::raw::{c_char, c_int, c_long, c_uint, c_void};
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 /// `Origin`, `Scheme`, `ResolvePin`, `url_host`: the address types the transport reads, which the
@@ -51,7 +51,9 @@ pub type curl_slist = c_void;
 
 /// The stable head of `curl_version_info_data`. Passing `CURLVERSION_FIRST` promises to inspect
 /// only these original fields; libcurl extends the struct at the tail for later ages, so this
-/// prefix has the same offsets on the television's 7.53.1 and current macOS.
+/// prefix has the same offsets on the television's 7.53.1 and current macOS. `ssl_version` is one
+/// of them (age 0, like the four before it): the TLS backend's name and version, e.g.
+/// `OpenSSL/3.5.9` or `GnuTLS/3.8.13`, or NULL for a curl without TLS.
 #[repr(C)]
 pub struct CurlVersionInfo {
     age: c_int,
@@ -59,6 +61,7 @@ pub struct CurlVersionInfo {
     version_num: c_uint,
     host: *const c_char,
     features: c_int,
+    ssl_version: *const c_char,
 }
 
 // ---- libcurl, bound at RUNTIME by SONAME candidate list ----
@@ -132,7 +135,11 @@ const CURLOPT_MAXREDIRS: c_int = 68;
 const CURLOPT_SSL_VERIFYPEER: c_int = 64;
 const CURLOPT_SSL_VERIFYHOST: c_int = 81;
 /// `CURLOPT_SSL_OPTIONS` (VALUES + 216) and its `CURLSSLOPT_NATIVE_CA` bit (`1 << 4`). Set only
-/// in [`TlsCfg::Ca`]'s arm, and only when [`bundled`] — the bundled curl's GnuTLS backend does NOT
+/// in [`TlsCfg::Ca`]'s arm, and only when [`bundled`]. Under the bundled curl's current OpenSSL
+/// backend it is inert on Linux (curl's `vtls/openssl.c` reads it only for the Windows and Apple
+/// stores); that build's trust comes from its compiled-in CA path, the television's hashed
+/// `/etc/ssl/certs` (`ci/build-curlstack.sh`, `build_curl`). It is kept because a GnuTLS build of
+/// the same bundle needs it: curl's GnuTLS backend does NOT
 /// fall back to its own build-time default trust store on its own: `gtls_populate_creds` in
 /// curl's `vtls/gtls.c` only calls `gnutls_certificate_set_x509_system_trust` when this bit is
 /// set, so without it every bundled-curl handle carries ZERO trust anchors regardless of how
@@ -276,11 +283,68 @@ static CURL_VERSION_NUM: AtomicU32 = AtomicU32::new(0);
 pub fn curl_version_num() -> u32 {
     CURL_VERSION_NUM.load(Ordering::Acquire)
 }
+
+/// The TLS library behind the bound libcurl, read once by [`global_init`] from
+/// `curl_version_info().ssl_version`. It decides how `CURLINFO_SSL_VERIFYRESULT` is numbered
+/// (`keypin`'s `VerifyScheme`): OpenSSL reports one `X509_V_ERR_*` code, GnuTLS a bitmask. Which
+/// curl was bound (bundled or system) does not decide it — the bundled stack has been built over
+/// either library — so the answer comes from the library itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TlsBackend {
+    /// Before [`global_init`], or a curl that reported no TLS library.
+    Unknown,
+    /// OpenSSL, or a fork that keeps its verify-result numbering (LibreSSL, BoringSSL, quictls).
+    OpenSsl,
+    GnuTls,
+    /// Anything else (Secure Transport, Schannel, mbedTLS, wolfSSL, rustls...).
+    Other,
+}
+
+impl TlsBackend {
+    /// Classify `ssl_version` (`OpenSSL/3.5.9`, `GnuTLS/3.8.13`, `(OpenSSL/3.0.13)` for a
+    /// MultiSSL build's inactive backend). Only the leading name counts.
+    pub fn from_ssl_version(v: &str) -> TlsBackend {
+        let name = v.trim_start_matches('(');
+        let name = name.split('/').next().unwrap_or("");
+        match name {
+            "" => TlsBackend::Unknown,
+            "OpenSSL" | "LibreSSL" | "BoringSSL" | "quictls" | "AWS-LC" => TlsBackend::OpenSsl,
+            "GnuTLS" => TlsBackend::GnuTls,
+            _ => TlsBackend::Other,
+        }
+    }
+
+    fn to_u8(self) -> u8 {
+        match self {
+            TlsBackend::Unknown => 0,
+            TlsBackend::OpenSsl => 1,
+            TlsBackend::GnuTls => 2,
+            TlsBackend::Other => 3,
+        }
+    }
+
+    fn from_u8(v: u8) -> TlsBackend {
+        match v {
+            1 => TlsBackend::OpenSsl,
+            2 => TlsBackend::GnuTls,
+            3 => TlsBackend::Other,
+            _ => TlsBackend::Unknown,
+        }
+    }
+}
+
+/// [`TlsBackend`] as stored by [`global_init`]; `0` ([`TlsBackend::Unknown`]) until then.
+static TLS_BACKEND: AtomicU8 = AtomicU8::new(0);
+
+/// The bound libcurl's TLS library, or [`TlsBackend::Unknown`] before [`global_init`].
+pub fn tls_backend() -> TlsBackend {
+    TlsBackend::from_u8(TLS_BACKEND.load(Ordering::Acquire))
+}
 /// Only used on the abnormal old-OpenSSL/no-callback fallback. Normal devices never take it.
 static CURL_FALLBACK_SERIAL: Mutex<()> = Mutex::new(());
 
 /// The SONAME of the opt-in bundled curl (`make CURLSTACK=1`, cargo feature `http3-curlstack`):
-/// curl 8.23 over GnuTLS with nghttp2/nghttp3/ngtcp2, built `-plx`-suffixed beside the binary by
+/// curl 8.23 over OpenSSL 3.5 with nghttp2/nghttp3/ngtcp2, built `-plx`-suffixed beside the binary by
 /// `ci/build-curlstack.sh`. It is NOT in the `curl` table's candidate list above: it is opened only
 /// by absolute path, `RTLD_DEEPBIND`, by `curlstack::open` (see that module's doc), and the table is
 /// then filled from that handle with `curl::load_from`.
@@ -310,8 +374,8 @@ pub fn bundled_curl() -> Option<plx_base::dynlib::Handle> {
     }
 }
 
-/// Is the bound libcurl the bundled `libcurl-plx.so.4` (TLS backend GnuTLS) rather than the
-/// television's own (OpenSSL)? Always false without the `http3-curlstack` feature, which makes every
+/// Is the bound libcurl the bundled `libcurl-plx.so.4` rather than the television's own? (Which TLS
+/// library either one uses is [`tls_backend`]'s question, not this one's.) Always false without the `http3-curlstack` feature, which makes every
 /// `if bundled()` branch below dead code the compiler drops. Only meaningful after [`global_init`].
 pub fn bundled() -> bool {
     bundled_curl().is_some()
@@ -671,6 +735,15 @@ fn global_init_once() -> bool {
             let vi = unsafe { curl_version_info(CURLVERSION_FIRST) };
             if !vi.is_null() {
                 CURL_VERSION_NUM.store(unsafe { (*vi).version_num } as u32, Ordering::Release);
+                let ssl = unsafe { (*vi).ssl_version };
+                let backend = if ssl.is_null() {
+                    TlsBackend::Unknown
+                } else {
+                    TlsBackend::from_ssl_version(
+                        &unsafe { std::ffi::CStr::from_ptr(ssl) }.to_string_lossy(),
+                    )
+                };
+                TLS_BACKEND.store(backend.to_u8(), Ordering::Release);
             }
             let async_dns = if vi.is_null() {
                 "unknown"
@@ -3288,8 +3361,8 @@ pub mod keypin {
     const X509_NO_LOCAL_ISSUER: c_long = 20;
     const X509_NO_LEAF_SIGNATURE_KEY: c_long = 21;
     /// GnuTLS's own `gnutls_certificate_status_t` bits (`gnutls/gnutls.h`): a BITMASK of
-    /// independent reasons, unlike OpenSSL's single-value `X509_V_ERR_*` enum above. Only the
-    /// bundled curl (`make CURLSTACK=1`) links GnuTLS; see [`VerifyScheme`]. GnuTLS has no bit for
+    /// independent reasons, unlike OpenSSL's single-value `X509_V_ERR_*` enum above. Read only when
+    /// the bound curl reports GnuTLS ([`super::tls_backend`]); see [`VerifyScheme`]. GnuTLS has no bit for
     /// "self-signed leaf" distinct from "issuer not found" — both set only
     /// `GNUTLS_CERT_SIGNER_NOT_FOUND` — so under GnuTLS that one bit stands in for the whole
     /// OpenSSL 2/18/19/20/21 group; a self-signed server still fails a roots-mode retry on its own,
@@ -3309,8 +3382,9 @@ pub mod keypin {
     }
 
     /// Which numbering `CURLINFO_SSL_VERIFYRESULT` is in: it reports whatever the BOUND libcurl's
-    /// TLS backend uses. The television's system curl (7.53.1) is OpenSSL 1.0.2p; the opt-in
-    /// bundled curl ([`super::bundled`]) is GnuTLS. Reading a GnuTLS bitmask as an `X509_V_ERR_*`
+    /// TLS backend uses. The television's system curl is OpenSSL (1.0.2p to 3.0.x by firmware), and
+    /// so is the opt-in bundled curl as currently built; a GnuTLS build of either reports a
+    /// bitmask instead. Reading a GnuTLS bitmask as an `X509_V_ERR_*`
     /// number silently misreads every real verification failure (64, "signer not found", is no
     /// OpenSSL code this module knows), so each predicate below decodes by the active scheme.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3319,13 +3393,17 @@ pub mod keypin {
         GnuTls,
     }
 
-    /// The scheme of the libcurl [`super::global_init`] bound. Always [`VerifyScheme::OpenSsl`]
-    /// without the `http3-curlstack` feature, where [`super::bundled`] is constant `false`.
+    /// The scheme of the libcurl [`super::global_init`] bound, from the TLS library it reports
+    /// ([`super::tls_backend`]). GnuTLS is the one bitmask; every other answer, including
+    /// "not bound yet", reads OpenSSL's numbering, which is what this module always assumed.
     fn active_scheme() -> VerifyScheme {
-        if super::bundled() {
-            VerifyScheme::GnuTls
-        } else {
-            VerifyScheme::OpenSsl
+        scheme_for(super::tls_backend())
+    }
+
+    fn scheme_for(backend: super::TlsBackend) -> VerifyScheme {
+        match backend {
+            super::TlsBackend::GnuTls => VerifyScheme::GnuTls,
+            _ => VerifyScheme::OpenSsl,
         }
     }
     /// The shipped bundle's file name, beside the binary (`pkg/le-roots.pem`). NOT `roots.pem`:
@@ -3426,12 +3504,26 @@ pub mod keypin {
         const GNUTLS_CERT_SIGNATURE_FAILURE: c_long = 1 << 11;
         const GNUTLS_CERT_MISMATCH: c_long = 1 << 17;
 
-        /// Without the `http3-curlstack` feature the bound libcurl is always the system one, so
-        /// every predicate decodes OpenSSL's numbering, exactly as before the GnuTLS arm existed.
-        #[cfg(not(feature = "http3-curlstack"))]
+        /// The scheme follows the TLS library curl reports, not which curl was bound.
         #[test]
-        fn without_the_feature_the_scheme_is_always_openssl() {
-            assert_eq!(active_scheme(), VerifyScheme::OpenSsl);
+        fn the_scheme_follows_the_reported_tls_library() {
+            use super::super::TlsBackend as B;
+            for (v, want) in [
+                ("OpenSSL/3.5.9", B::OpenSsl),
+                ("OpenSSL/1.0.2p", B::OpenSsl),
+                ("(OpenSSL/3.0.13)", B::OpenSsl),
+                ("LibreSSL/3.3.6", B::OpenSsl),
+                ("GnuTLS/3.8.13", B::GnuTls),
+                ("SecureTransport", B::Other),
+                ("", B::Unknown),
+            ] {
+                assert_eq!(B::from_ssl_version(v), want, "{v}");
+                assert_eq!(B::from_u8(want.to_u8()), want);
+            }
+            assert_eq!(scheme_for(B::GnuTls), VerifyScheme::GnuTls);
+            for b in [B::OpenSsl, B::Unknown, B::Other] {
+                assert_eq!(scheme_for(b), VerifyScheme::OpenSsl);
+            }
         }
 
         #[test]

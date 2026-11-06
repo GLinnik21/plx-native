@@ -907,14 +907,14 @@ FFMPEG_STAGED = $(addprefix pkg/,$(FFMPEG_SONAMES))
 
 # **CURLSTACK=1: the opt-in bundled HTTP/3 curl.** OFF by default, and every variable below is
 # empty without it, so a plain `make`, `make ipk` or CI's cross-build builds, links and packages
-# exactly what it did before the stack existed. With it: curl 8.23 + its nine dependencies (GMP,
-# Nettle, Hogweed, libtasn1, GnuTLS, nghttp2, nghttp3, ngtcp2 and its GnuTLS crypto glue), built by
+# exactly what it did before the stack existed. With it: curl 8.23 + its six dependencies (OpenSSL's
+# libcrypto and libssl, nghttp2, nghttp3, ngtcp2 and its OpenSSL crypto glue), built by
 # `ci/build-curlstack.sh` through `ci/arm-cc.py` (so each carries link evidence, like FFmpeg),
 # shipped beside the binary, plus the `http3-curlstack` cargo feature that loads them
 # (`plx_net::net::load_bundled`, which falls back to the television's own libcurl 7.53.1 the moment
 # any one of them is missing). The flag and the feature move together: `+curlstack` in the build
-# stamp (RUST_CFG) and its own target dir, for the same reasons LAB has them. GnuTLS, not OpenSSL:
-# `ci/build-curlstack.sh`'s header has the on-device crash a second OpenSSL caused.
+# stamp (RUST_CFG) and its own target dir, for the same reasons LAB has them. OpenSSL 3.5 for its
+# AArch32 Crypto Extension paths; `ci/build-curlstack.sh`'s header has why it coexists now.
 # Like RELEASE and LAB, any non-empty value turns it on; only `1` is accepted, so `CURLSTACK=0`
 # fails here instead of meaning "on".
 ifneq ($(filter-out 1,$(CURLSTACK)),)
@@ -925,13 +925,13 @@ CURLSTACK_FEATFLAG = $(if $(CURLSTACK), --features http3-curlstack,)
 # `ci/check-package.py` grades that field as exactly the dev or the release flag set, and a
 # CURLSTACK=1 package is still one of the two. A hand-set RUST_FEATFLAGS is recorded as given.
 RUST_CFG_FEATFLAGS = $(if $(CURLSTACK),$(subst $(CURLSTACK_FEATFLAG),,$(RUST_FEATFLAGS)),$(RUST_FEATFLAGS))
-CURLSTACK_PREFIXES = gmp nettle libtasn1 gnutls nghttp2 nghttp3 ngtcp2 curl
-CURLSTACK_ALL_SONAMES = libgmp-plx.so.10 libnettle-plx.so.8 libhogweed-plx.so.6 libtasn1-plx.so.6 \
-                     libgnutls-plx.so.30 libnghttp2-plx.so.14 libnghttp3-plx.so.9 \
-                     libngtcp2-plx.so.16 libngtcp2_crypto_gnutls-plx.so.8 libcurl-plx.so.4
+CURLSTACK_PREFIXES = openssl nghttp2 nghttp3 ngtcp2 curl
+CURLSTACK_ALL_SONAMES = libcrypto-plx.so.3 libssl-plx.so.3 libnghttp2-plx.so.14 libnghttp3-plx.so.9 \
+                     libngtcp2-plx.so.16 libngtcp2_crypto_ossl-plx.so.0 libcurl-plx.so.4
 CURLSTACK_SONAMES = $(if $(CURLSTACK),$(CURLSTACK_ALL_SONAMES),)
 CURLSTACK_STAGED = $(addprefix pkg/,$(CURLSTACK_SONAMES))
-# The two licence texts only the stack needs (GMP/Nettle's LGPL-3.0 arm, curl's own licence). In
+# The licence text only the stack needs (curl's own licence; OpenSSL's Apache-2.0 is already in
+# `licenses/`, and nghttp2/nghttp3/ngtcp2 are MIT). In
 # `licenses/curlstack/`, outside `LICENSE_FILES`' `licenses/*.txt` glob, so a default package
 # carries the same licence set it always did; `ipk` copies them in beside the others under the flag.
 CURLSTACK_LICENSE_FILES = $(if $(CURLSTACK),$(wildcard licenses/curlstack/*.txt),)
@@ -1380,7 +1380,7 @@ deploy: pkg/plxnative pkg/plxnative-storage $(FFMPEG_STAGED) $(CURLSTACK_STAGED)
 	# deploy leaves a stack an earlier CURLSTACK=1 deploy put there alone: its binary has no loader
 	# for it (the `http3-curlstack` feature is off), so the files are inert, and a default deploy
 	# keeps the ssh round trips it always had.
-	$(if $(CURLSTACK),$(SSH) 'cd $(APPDIR) && for f in libgmp-plx.so.* libnettle-plx.so.* libhogweed-plx.so.* libtasn1-plx.so.* libgnutls-plx.so.* libnghttp2-plx.so.* libnghttp3-plx.so.* libngtcp2-plx.so.* libngtcp2_crypto_gnutls-plx.so.* libcurl-plx.so.*; do case " $(CURLSTACK_SONAMES) " in *" $$f "*) ;; *) rm -f "$$f";; esac; done')
+	$(if $(CURLSTACK),$(SSH) 'cd $(APPDIR) && for f in libgmp-plx.so.* libnettle-plx.so.* libhogweed-plx.so.* libtasn1-plx.so.* libgnutls-plx.so.* libcrypto-plx.so.* libssl-plx.so.* libnghttp2-plx.so.* libnghttp3-plx.so.* libngtcp2-plx.so.* libngtcp2_crypto_gnutls-plx.so.* libngtcp2_crypto_ossl-plx.so.* libcurl-plx.so.*; do case " $(CURLSTACK_SONAMES) " in *" $$f "*) ;; *) rm -f "$$f";; esac; done')
 
 	$(SCP) pkg/plxnative tv:$(APPDIR)/plxnative.new
 	@# The lab session file, under LAB=1 only. Shipped by deploy as well as by the .ipk so the

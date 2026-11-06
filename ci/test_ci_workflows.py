@@ -863,7 +863,7 @@ class CurlstackCrossBuild(unittest.TestCase):
         self.assertIn("fetch-all --exclude webos-ndk --exclude-group curlstack", action)
         pins = json.loads((ROOT / "ci/dependencies.json").read_text())
         stack = [d for d in pins if d.get("group") == "curlstack"]
-        self.assertEqual(len(stack), 8)
+        self.assertEqual(len(stack), 5)
         # Not `bundled`: no release ships the stack, so the release source bundle does not carry it.
         self.assertFalse(any(d.get("bundled") for d in stack))
 

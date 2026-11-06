@@ -1,48 +1,43 @@
 #!/bin/sh
-# Cross-compile a vendored, HTTP/3-capable libcurl for the webOS ARM target: GMP, Nettle (+
-# Hogweed), libtasn1, GnuTLS (TLS 1.3 + QUIC), nghttp2, ngtcp2 (+ its GnuTLS crypto glue),
-# nghttp3, then curl itself, linked against all nine.
+# Cross-compile a vendored, HTTP/3-capable libcurl for the webOS ARM target: OpenSSL 3.5 (libcrypto +
+# libssl, TLS 1.3 and the QUIC TLS API ngtcp2's `crypto_ossl` glue needs), nghttp2, ngtcp2 (+ that
+# glue), nghttp3, then curl itself, linked against all six.
 #
 # OPT-IN: only `make CURLSTACK=1` runs this (the Makefile's CURLSTACK block), and only that build
 # ships the result and compiles the loader for it (cargo feature `http3-curlstack`). A default
 # build never reaches this script.
 #
-# WHY BUNDLE THIS ONE TOO. The television's own libcurl is pinned at 7.53.1 (`curlio.rs`'s module
-# doc) — HTTP/1.1 and HTTP/2 only, no QUIC. A reverse proxy (e.g. Traefik) in front of a server may
-# advertise `http3` on its entrypoint; the television never could speak it. Same reasoning as
-# `ci/build-ffmpeg.sh`'s FFmpeg bundle: a system library this old cannot be grown a protocol, only
-# replaced, and dlopen-by-absolute-path is what lets a replacement coexist with every webOS release
-# this app still supports (`net::load_bundled` falls back to the television's own libcurl the
-# moment this bundle is absent or any one of its NEEDED libraries fails to open; `net::curlstack`
-# has the loader's side of the story).
+# WHY BUNDLE THIS ONE TOO. The television's own libcurl is pinned at 7.53.1 on the oldest firmware
+# (`curlio.rs`'s module doc) — HTTP/1.1 and HTTP/2 only, no QUIC. A reverse proxy (e.g. Traefik) in
+# front of a server may advertise `http3` on its entrypoint; the television never could speak it.
+# Same reasoning as `ci/build-ffmpeg.sh`'s FFmpeg bundle: a system library this old cannot be grown
+# a protocol, only replaced, and dlopen-by-absolute-path is what lets a replacement coexist with
+# every webOS release this app still supports (`net::load_bundled` falls back to the television's
+# own libcurl the moment this bundle is absent or any one of its NEEDED libraries fails to open;
+# `net::curlstack` has the loader's side of the story).
 #
 # THE OUTPUT IS CACHED, keyed like `ci/build-ffmpeg.sh`'s build tree: under
 # $PLX_BUILD_CACHE/curlstack/<key> (default ~/.cache/plxnative), where the key covers every input
-# that changes a shipped byte (this script, the eight pins, the toolchain's fingerprint, arm-cc.py
+# that changes a shipped byte (this script, the five pins, the toolchain's fingerprint, arm-cc.py
 # and the link-evidence checker it runs, inherited build variables, and the checkout path the
-# build trees and `.pc` files name). A hit re-installs the eight `vendor/*-prefix` trees and
+# build trees and `.pc` files name). A hit re-installs the five `vendor/*-prefix` trees and
 # builds nothing, which is what lets a manifest edit that does not touch the stack (an FFmpeg bump)
 # re-run this script for free, and what CI's `curlstack` cross-build entry caches. A miss builds
 # everything, then publishes it; set PLX_BUILD_CACHE= (empty) to skip the cache entirely.
 #
-# WHY GNUTLS, NOT OPENSSL. An earlier version of this script built the TLS backend on OpenSSL
-# 3.5.9. It built, packaged and installed cleanly — and then crashed the app on every single
-# launch, deterministically, inside the TELEVISION'S OWN system libcurl/libssl/libcrypto 1.0.2,
-# the instant `net::global_init` ran (confirmed on-device: webOS 5.6.2, SIGSEGV addr=0x0 inside
-# `libc`, called from the system `libcrypto.so.1.0.2`, same crash offset every time). Scoping our
-# OpenSSL's `dlopen` to `RTLD_LOCAL` (so its exported symbols never reach the process's global
-# scope) did NOT fix it — proving this was never a symbol-export collision, but a deeper
-# OpenSSL-specific hazard: two different major OpenSSL versions mapped into one process corrupt
-# each other's global init state (`atfork`/signal-handler/RNG bookkeeping), independent of
-# `dlopen` scoping. GnuTLS and its dependencies (Nettle, GMP, libtasn1) live in a completely
-# separate symbol and process-state namespace from OpenSSL — there is nothing for them to
-# collide with, so this class of bug cannot recur. See `rust-modules/net/src/net/curlstack.rs`'s
-# module doc for the device-side half of this story.
+# WHY OPENSSL (AGAIN), AND WHY IT IS EXPECTED TO COEXIST NOW. The first version of this script was
+# OpenSSL 3.5.9 and crashed every launch inside the television's own libcurl/libcrypto; the stack
+# moved to GnuTLS and the IDENTICAL crash persisted, because the cause was never OpenSSL: it was the
+# bundled curl's internal self-calls being resolved, through the PLT, to the system libcurl that
+# `libplayerAPIs.so.1` puts in the global scope before `main`. `RTLD_DEEPBIND` on every library of
+# the stack fixed that (`net::curlstack`'s module doc). OpenSSL is back because its `linux-armv4`
+# perlasm carries ARMv8 Crypto Extension paths (AES, PMULL/GHASH, SHA-1, SHA-256) for AArch32,
+# dispatched at run time, which GnuTLS/Nettle do not have on 32-bit ARM: on a Cortex-A55 set that is
+# the difference between table AES and the hardware's own instructions for every TLS byte.
 #
 # THE SONAME-RENAME CONVENTION is the same `-plx` infix FFmpeg uses (`libavformat-plx.so.63`,
-# ...): `libgmp-plx.so.10`, `libnettle-plx.so.8`, `libhogweed-plx.so.6`, `libtasn1-plx.so.6`,
-# `libgnutls-plx.so.30`, `libnghttp2-plx.so.14`, `libnghttp3-plx.so.9`, `libngtcp2-plx.so.16`,
-# `libngtcp2_crypto_gnutls-plx.so.8`, `libcurl-plx.so.4`. A renamed SONAME is not cosmetic:
+# ...): `libcrypto-plx.so.3`, `libssl-plx.so.3`, `libnghttp2-plx.so.14`, `libnghttp3-plx.so.9`,
+# `libngtcp2-plx.so.16`, `libngtcp2_crypto_ossl-plx.so.0`, `libcurl-plx.so.4`. A renamed SONAME is not cosmetic:
 # `net::curlstack` dlopens these by ABSOLUTE PATH beside the binary (no rpath survives
 # FFmpeg's own configure-eval problem, and these build systems have the identical issue), so the
 # bare name must never collide with anything the device itself might already carry.
@@ -52,12 +47,12 @@
 # incident from targeting newer ARM codegen (docs/simplification-audit-2026-07-18.md:
 # `-C target-cpu=cortex-a53` SIGILLs on this SoC via a missing/different CP15 barrier). The NDK
 # gcc's default target (cortex-a9/armv7-a/soft-float, Makefile:263) is exactly right for every one
-# of these builds with ZERO `-march=`/`-mcpu=`/`-mfpu=` flags added — do not add them. GMP's own
-# `--host=arm-webos-linux-gnueabi` match picks hand-written `mpn/arm/*.asm` — plain ARMv4-class
-# integer routines (checked: no NEON mnemonic anywhere in them), not a CPU-specific variant.
-# Nettle's "fat" ARM build (`Assembly files: arm/fat arm` in its own configure summary)
-# runtime-dispatches NEON vs plain paths via `getauxval`, the same pattern OpenSSL's perlasm used
-# — that stays on; it is not a compile-time ISA assumption.
+# of these builds with ZERO `-march=`/`-mcpu=`/`-mfpu=` flags added — do not add them. Any
+# hand-written assembly here must be plain ARMv4/v7 integer code or runtime-dispatched
+# integer routines, not a CPU-specific variant. OpenSSL's `linux-armv4` perlasm is assembled with
+# `.fpu neon`/ARMv8 instruction encodings, but every one of those paths is selected at RUN TIME from
+# `OPENSSL_armcap_P` (`crypto/armcap.c`), so the same library runs table code on a Cortex-A9 and the
+# Crypto Extensions on an A55 — not a compile-time ISA assumption.
 #
 # CC IS `ci/arm-cc.py`, THE SAME WRAPPER THE APP'S OWN LINK USES — not the raw NDK gcc. Every
 # other vendored C/C++ library in this project already builds this way (`ci/build-sentry-native.sh`'s
@@ -78,7 +73,7 @@ RANLIB="$WEBOS_SDK/bin/arm-webos-linux-gnueabi-ranlib"
 STRIP="$WEBOS_SDK/bin/arm-webos-linux-gnueabi-strip"
 PATCHELF=${PATCHELF:-patchelf}
 CMAKE=${CMAKE:-cmake}
-# None of these ten build with -g explicitly, yet every output below carries debug_info and
+# None of these seven build with -g explicitly, yet every output below carries debug_info and
 # embeds this host's absolute build path regardless (every project's `__FILE__` in an
 # assert/debug macro) — the exact leak `ci/check-package.py`'s HOSTPATH scan exists to catch (its
 # own doc: "v0.2.1 went out with the maintainer's working directory baked into all three bundled
@@ -209,202 +204,84 @@ repoint_needed() {
     [ -f "$1.link.json" ] && fix_elf_sha256 "$1"
 }
 
-build_gmp() {
-    # SHARED, deliberately, even though GMP is normally static-only in most builds: the webOS
-    # NDK's OWN sysroot already ships a real `libgmp.so.10` (GCC's own cross-toolchain build
-    # depends on GMP, and this buildroot-derived NDK bundles the target-side copy it built with) —
-    # confirmed by letting nettle's build run with `--disable-shared` on GMP first and finding
-    # `libgmp.so.10` as an EXTRA, unrenamed NEEDED entry in the resulting libhogweed.so: the
-    # cross-linker found the sysroot's ambient copy ahead of, or regardless of, our own `-L`
-    # order, because `--sysroot` injects its own default library search paths at a fixed point
-    # GCC's spec files control, not whatever position `-L` appears at on our command line. A
-    # STATIC gmp.a cannot create that conflict (nothing to find instead of linking it in
-    # directly) — so go shared and own the SONAME ourselves, same as everything else here, rather
-    # than fight the sysroot's search order with linker tricks of increasing fragility.
-    local archive src build prefix
-    archive="$(python3 "$DEPS" cache-dir)/$(python3 "$DEPS" get gmp archive)"
-    python3 "$DEPS" fetch gmp >/dev/null
-    src="$ROOT/vendor/gmp-src"; build="$ROOT/vendor/gmp-build"; prefix="$ROOT/vendor/gmp-prefix"
-    rm -rf "$src" "$build" "$prefix"; mkdir -p "$src" "$build"
-    tar xJf "$archive" --strip-components=1 -C "$src"
-    (
-        cd "$build"
-        "$src/configure" --host=arm-webos-linux-gnueabi --prefix="$prefix" \
-            --enable-shared --disable-static --with-pic \
-            CC="$CC" AR="$AR" RANLIB="$RANLIB" \
-            CFLAGS="--sysroot=$SYSROOT $FILEMAP" \
-            CPPFLAGS="--sysroot=$SYSROOT" \
-            LDFLAGS="--sysroot=$SYSROOT"
-        make -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
-        make install
-    )
-    ( cd "$prefix/lib"
-      real=$(ls libgmp.so.10.* 2>/dev/null | head -1); [ -z "$real" ] && real=libgmp.so.10
-      find_evidence_by_content "$real" "$build"
-      rename_soname "$real" libgmp-plx.so.10
-      scrub_buildpath libgmp-plx.so.10
-      # Restore a bare "libgmp.so" link-time name pointing at OUR renamed file: nettle's, gnutls's
-      # and curl's own `./configure` still probe/link against a bare "-lgmp" for certain checks
-      # (hogweed.pc's Libs.private, gnutls's final link), and this is the same symlink-shim
-      # resolution trick `build_curl`'s own shim directory already relies on — the NEEDED entry
-      # `ld` records is the TARGET's internal DT_SONAME (already "libgmp-plx.so.10"), not this
-      # symlink's name, so it stays correct regardless of which bare name found it.
-      ln -sf libgmp-plx.so.10 libgmp.so
-    )
-}
-
-build_nettle() {
-    # Needs GMP; produces TWO shared libraries (libnettle, and libhogweed for the public-key
-    # primitives GnuTLS needs). nettle's own `AC_CHECK_LIB(gmp, __gmpn_zero_p, ...)` unconditionally
-    # APPENDS a bare "-lgmp" to LIBS on success — it does not replace an existing LIBS override —
-    # so simply passing `LIBS="-l:libgmp-plx.so.10"` produces `LIBS = -lgmp -l:libgmp-plx.so.10`
-    # in the generated config.make, and `-lgmp` would resolve via the symlink shim `build_gmp`
-    # leaves behind, giving a harmless but untidy EXTRA NEEDED entry pointing at the SAME file
-    # under its renamed SONAME twice. Pre-seeding the check's cache variable to suppress the
-    # append entirely (`ac_cv_lib_gmp___gmpn_zero_p=no`) also disables hogweed/public-key support
-    # (that cached answer gates the feature, not just the LIBS append) — so instead: let the
-    # check run normally, then strip the bare "-lgmp " out of the GENERATED config.make before
-    # `make` ever reads it. A build-flag edit after generation, not a patch to any vendored
-    # source.
-    local archive src build prefix gmp_prefix
-    gmp_prefix="$ROOT/vendor/gmp-prefix"
-    archive="$(python3 "$DEPS" cache-dir)/$(python3 "$DEPS" get nettle archive)"
-    python3 "$DEPS" fetch nettle >/dev/null
-    src="$ROOT/vendor/nettle-src"; build="$ROOT/vendor/nettle-build"; prefix="$ROOT/vendor/nettle-prefix"
-    rm -rf "$src" "$build" "$prefix"; mkdir -p "$src" "$build"
+build_openssl() {
+    # `linux-armv4`, NOT `linux-generic32` (which implies `no-asm`): the armv4 target is OpenSSL's
+    # real 32-bit ARM port, and its perlasm (aesv8-armx, ghashv8-armx, sha1/sha256-armv4,
+    # chacha/poly1305-armv4, bsaes-armv7) is what carries the ARMv8 Crypto Extension and NEON paths.
+    # Each is gated at run time by `OPENSSL_armcap_P`. HOW that is filled matters on this sysroot:
+    # `crypto/armcap.c` uses `getauxval(AT_HWCAP/AT_HWCAP2)` only when `__GLIBC_PREREQ(2, 16)`, and
+    # the NDK's glibc is 2.12, so it takes its third route — executing one probe instruction per
+    # feature under a temporary SIGILL handler (`sigsetjmp`), once, in the library's init. That
+    # route needs no glibc symbol the oldest firmware lacks, and it sees exactly what the CPU
+    # executes in AArch32 state, which on a 64-bit kernel is what the compat HWCAP2 bits describe.
+    #
+    # THE `-plx` NAME IS OpenSSL's OWN `shlib_variant`, not a post-link patchelf. OpenSSL's shared
+    # libraries carry symbol versions (`OPENSSL_3.0.0`, ...) whose `.gnu.version_r` entries name the
+    # FILE that defines them; a renamed SONAME with a stale `libcrypto.so.3` there would let the
+    # loader match libssl's version needs against the FIRMWARE's libcrypto.so.3 (webOS 10 ships
+    # 3.0.x). A small config target that inherits `linux-armv4` and sets `shlib_variant => "-plx"`
+    # makes the build itself emit `libcrypto-plx.so.3`/`libssl-plx.so.3`, so every SONAME, NEEDED
+    # and version-needs entry is right from the link.
+    #
+    # NO CONFIG FILE, NO MODULE DIRECTORY, ANYWHERE ON THE DEVICE. curl calls
+    # `OPENSSL_init_ssl(OPENSSL_INIT_LOAD_CONFIG)`, which reads `$OPENSSLDIR/openssl.cnf`; with the
+    # firmware's `/etc/ssl` that would be the television's own OpenSSL configuration, written for a
+    # different major. So `--openssldir`/`--prefix` name a path that exists on no television
+    # (`/nonexistent/plx-openssl`; a missing default config is silently skipped), the install goes
+    # through DESTDIR, and the `.pc` files are pointed back at the real tree afterwards.
+    # `no-module` builds the default provider INTO libcrypto (nothing is ever looked up under
+    # MODULESDIR), `no-legacy` drops the legacy provider, `no-engine` the engines directory and
+    # `no-autoload-config` libssl's implicit config load. TRUST ANCHORS are not OpenSSL's business
+    # here: curl is built `--with-ca-path=/etc/ssl/certs` (build_curl), the television's hashed
+    # directory, never its stale concatenated bundle.
+    #
+    # `-Wl,--as-needed`: `linux-armv4` inherits `linux-latomic`, which appends `-latomic` for
+    # 64-bit atomics on 32-bit targets. GCC inlines those as `ldrexd`/`strexd` for ARMv7, so
+    # libcrypto imports nothing from libatomic, and an unconditional `NEEDED libatomic.so.1` is a
+    # library webOS 1.2, 1.4, 4.4.2 and 4.10.0 do not have (`tools/fwcompat.py`).
+    local archive src build prefix stage fake
+    fake=/nonexistent/plx-openssl
+    archive="$(python3 "$DEPS" cache-dir)/$(python3 "$DEPS" get openssl archive)"
+    python3 "$DEPS" fetch openssl >/dev/null
+    src="$ROOT/vendor/openssl-src"; build="$ROOT/vendor/openssl-build"; prefix="$ROOT/vendor/openssl-prefix"
+    stage="$ROOT/vendor/openssl-stage"
+    rm -rf "$src" "$build" "$prefix" "$stage"; mkdir -p "$src" "$build" "$stage"
     tar xzf "$archive" --strip-components=1 -C "$src"
+    cat > "$build/plx-target.conf" <<'CONF'
+my %targets = (
+    "linux-armv4-plx" => {
+        inherit_from  => [ "linux-armv4" ],
+        shlib_variant => "-plx",
+    },
+);
+CONF
     (
         cd "$build"
-        "$src/configure" --host=arm-webos-linux-gnueabi --prefix="$prefix" \
-            --disable-static --enable-shared --disable-documentation \
-            CC="$CC" AR="$AR" RANLIB="$RANLIB" STRIP="$STRIP" \
-            CFLAGS="--sysroot=$SYSROOT -O2 $FILEMAP" \
-            CPPFLAGS="--sysroot=$SYSROOT -I$gmp_prefix/include" \
-            LDFLAGS="--sysroot=$SYSROOT -L$gmp_prefix/lib" \
-            LIBS="-l:libgmp-plx.so.10"
-        sed -i.bak 's/^LIBS = -lgmp /LIBS = /' config.make && rm -f config.make.bak
+        # NO --cross-compile-prefix: Configure prepends it to CC, and CC is already a full path.
+        perl "$src/Configure" --config="$build/plx-target.conf" linux-armv4-plx shared \
+            "CC=$CC" "AR=$AR" "RANLIB=$RANLIB" \
+            "CFLAGS=--sysroot=$SYSROOT -O3 -Wall -ffunction-sections -fdata-sections $FILEMAP" \
+            "LDFLAGS=--sysroot=$SYSROOT -Wl,--gc-sections -Wl,--as-needed" \
+            --prefix="$fake" --openssldir="$fake" --libdir=lib \
+            no-module no-legacy no-engine no-autoload-config no-deprecated no-comp \
+            no-idea no-camellia no-seed no-md2 no-mdc2 no-rc5 no-whirlpool no-srp no-ssl3 \
+            no-weak-ssl-ciphers no-apps no-docs no-tests no-fuzz-afl no-fuzz-libfuzzer
         make -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
-        make install
+        make install_sw DESTDIR="$stage"
     )
+    mv "$stage$fake" "$prefix"; rm -rf "$stage"
+    sed -i.bak "s|^prefix=.*|prefix=$prefix|; s|^libdir=.*|libdir=$prefix/lib|; s|^includedir=.*|includedir=$prefix/include|" \
+        "$prefix"/lib/pkgconfig/*.pc && rm -f "$prefix"/lib/pkgconfig/*.pc.bak
     ( cd "$prefix/lib"
-      real=$(ls libnettle.so.8.* 2>/dev/null | head -1); [ -z "$real" ] && real=libnettle.so.8
-      find_evidence_by_content "$real" "$build"
-      rename_soname "$real" libnettle-plx.so.8
-      scrub_buildpath libnettle-plx.so.8
-      real=$(ls libhogweed.so.6.* 2>/dev/null | head -1); [ -z "$real" ] && real=libhogweed.so.6
-      find_evidence_by_content "$real" "$build"
-      rename_soname "$real" libhogweed-plx.so.6
-      repoint_needed libhogweed-plx.so.6 libnettle.so.8 libnettle-plx.so.8
-      scrub_buildpath libhogweed-plx.so.6
-      ln -sf libnettle-plx.so.8 libnettle.so
-      ln -sf libhogweed-plx.so.6 libhogweed.so
-    )
-}
-
-build_libtasn1() {
-    local archive src build prefix
-    archive="$(python3 "$DEPS" cache-dir)/$(python3 "$DEPS" get libtasn1 archive)"
-    python3 "$DEPS" fetch libtasn1 >/dev/null
-    src="$ROOT/vendor/libtasn1-src"; build="$ROOT/vendor/libtasn1-build"; prefix="$ROOT/vendor/libtasn1-prefix"
-    rm -rf "$src" "$build" "$prefix"; mkdir -p "$src" "$build"
-    tar xzf "$archive" --strip-components=1 -C "$src"
-    (
-        cd "$build"
-        "$src/configure" --host=arm-webos-linux-gnueabi --prefix="$prefix" \
-            --disable-static --enable-shared --disable-doc \
-            CC="$CC" AR="$AR" RANLIB="$RANLIB" STRIP="$STRIP" \
-            CFLAGS="--sysroot=$SYSROOT -O2 $FILEMAP" \
-            CPPFLAGS="--sysroot=$SYSROOT" \
-            LDFLAGS="--sysroot=$SYSROOT"
-        make -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
-        make install
-    )
-    ( cd "$prefix/lib"
-      real=$(ls libtasn1.so.6.* 2>/dev/null | head -1); [ -z "$real" ] && real=libtasn1.so.6
-      find_evidence_by_content "$real" "$build"
-      rename_soname "$real" libtasn1-plx.so.6
-      scrub_buildpath libtasn1-plx.so.6
-      ln -sf libtasn1-plx.so.6 libtasn1.so
-    )
-}
-
-build_gnutls() {
-    # Minimised to what an HTTPS client actually needs: no PKCS#11, no TPM, no DANE/unbound, no
-    # C++ library, no NLS, no tools/tests/docs. `--with-included-unistring` sidesteps needing a
-    # sixth vendored library — GnuTLS can bundle its own copy rather than requiring a system one.
-    # `--without-zstd --without-brotli` matters beyond tidiness: left on, GnuTLS's configure
-    # auto-detects the MAC'S OWN host zstd via pkg-config/brew and links against it, which is a
-    # host-architecture library a cross-compiled .so cannot actually use — curl's later build
-    # surfaced this as "undefined reference to ZSTD_compressBound" the first time through, not as
-    # an immediate failure here (GnuTLS's own link only needed symbols zstd satisfies lazily).
-    #
-    # NETTLE_LIBS/HOGWEED_LIBS/LIBTASN1_LIBS override pkg-config entirely (cross-compiling pkg-config
-    # itself is more fragile than just saying what we already know) and use `-l:exact-name.so.N`
-    # syntax against our ALREADY-RENAMED dependencies, so GnuTLS's own build never touches an
-    # unrenamed bare name at all — no post-link `repoint_needed` dance needed for this one.
-    #
-    # `--with-default-trust-store-dir`: without it, GnuTLS has NO idea where root CAs live on
-    # this device when curl does not pass an explicit `CURLOPT_CAINFO` (net.rs's own CA logic
-    # only sets that on specific fallback paths — see its own doc — so the FIRST, ordinary
-    # connection attempt relies entirely on whatever default the TLS backend was built with). The
-    # television's system OpenSSL gets this for free (its own default CAPATH, `/etc/ssl/certs`,
-    # is OpenSSL's own hashed-symlink convention); GnuTLS has no equivalent auto-discovery once
-    # `--without-p11-kit` removes its usual system-trust mechanism. Confirmed on-device: every
-    # connection through the bundled stack failed with `GNUTLS_CERT_SIGNER_NOT_FOUND` (bit 1<<6 —
-    # decode `CURLINFO_SSL_VERIFYRESULT`'s raw bitmask against GnuTLS's OWN enum, not OpenSSL's
-    # X509_V_ERR_* numbering net.rs's other comments describe; the two backends use completely
-    # different schemes for the same option).
-    #
-    # NOT `--with-default-trust-store-file=/etc/ssl/certs/ca-certificates.crt`: tried first, still
-    # failed the exact same way. The concatenated bundle on this firmware is STALE relative to its
-    # own `/etc/ssl/certs/` hash-symlink directory — `grep -c ISRG ca-certificates.crt` is 0, even
-    # though `ISRG_Root_X1.pem` exists as its own file right beside it (confirmed inside the app's
-    # own jail via `/proc/<pid>/root/etc/ssl/certs/`, which does bind-mount `/etc/ssl` — jail
-    # visibility was never the problem). The individual per-cert files are current; only the
-    # pre-concatenated file was never regenerated after a later cert update. Pointing GnuTLS at the
-    # DIRECTORY instead makes it read every individual cert file itself — the same files OpenSSL's
-    # own hashed-CAPATH lookup already reads — so it sees ISRG Root X1 regardless of the stale
-    # bundle.
-    local archive src build prefix nettle_prefix tasn1_prefix gmp_prefix
-    nettle_prefix="$ROOT/vendor/nettle-prefix"; tasn1_prefix="$ROOT/vendor/libtasn1-prefix"; gmp_prefix="$ROOT/vendor/gmp-prefix"
-    archive="$(python3 "$DEPS" cache-dir)/$(python3 "$DEPS" get gnutls archive)"
-    python3 "$DEPS" fetch gnutls >/dev/null
-    src="$ROOT/vendor/gnutls-src"; build="$ROOT/vendor/gnutls-build"; prefix="$ROOT/vendor/gnutls-prefix"
-    rm -rf "$src" "$build" "$prefix"; mkdir -p "$src" "$build"
-    tar xJf "$archive" --strip-components=1 -C "$src"
-    (
-        cd "$build"
-        "$src/configure" --host=arm-webos-linux-gnueabi --prefix="$prefix" \
-            --disable-static --enable-shared \
-            --without-p11-kit --disable-doc --disable-tests --disable-tools --disable-nls \
-            --without-idn --disable-cxx --disable-libdane --without-tpm2 --without-tpm \
-            --disable-rpath --with-included-unistring --without-zstd --without-brotli \
-            --with-default-trust-store-dir=/etc/ssl/certs \
-            CC="$CC" AR="$AR" RANLIB="$RANLIB" STRIP="$STRIP" \
-            CFLAGS="--sysroot=$SYSROOT -O2 $FILEMAP" \
-            CPPFLAGS="--sysroot=$SYSROOT" \
-            LDFLAGS="--sysroot=$SYSROOT" \
-            NETTLE_CFLAGS="-I$nettle_prefix/include" NETTLE_LIBS="-L$nettle_prefix/lib -l:libnettle-plx.so.8" \
-            HOGWEED_CFLAGS="-I$nettle_prefix/include" HOGWEED_LIBS="-L$nettle_prefix/lib -l:libhogweed-plx.so.6 -l:libnettle-plx.so.8" \
-            LIBTASN1_CFLAGS="-I$tasn1_prefix/include" LIBTASN1_LIBS="-L$tasn1_prefix/lib -l:libtasn1-plx.so.6"
-        make -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
-        make install
-    )
-    ( cd "$prefix/lib"
-      real=$(ls libgnutls.so.30.* 2>/dev/null | head -1); [ -z "$real" ] && real=libgnutls.so.30
-      find_evidence_by_content "$real" "$build"
-      rename_soname "$real" libgnutls-plx.so.30
-      # GnuTLS's own link records a NEEDED of bare `libgmp.so.10`, not our renamed
-      # `libgmp-plx.so.10`, even though hogweed's own link (same GMP, same -L path) gets the
-      # rename right — almost certainly stale libtool `.la` dependency_libs bookkeeping captured
-      # before gmp was renamed. Observed on-device: dlopen of the bundled curl stack fails
-      # closed on this one NEEDED entry alone, silently falling back to the television's own
-      # libcurl with no error beyond "dependency did not load" (plx_base::dynlib only reports
-      # which candidate failed, not why — there is no gnutls-side symptom to grep for here other
-      # than this exact NEEDED mismatch).
-      repoint_needed libgnutls-plx.so.30 libgmp.so.10 libgmp-plx.so.10
-      scrub_buildpath libgnutls-plx.so.30
-      ln -sf libgnutls-plx.so.30 libgnutls.so
+      for lib in libcrypto-plx.so.3 libssl-plx.so.3; do
+          test -f "$lib" || fail "OpenSSL did not produce $lib (shlib_variant ignored?)"
+          find_evidence_by_content "$lib" "$build"
+          scrub_buildpath "$lib"
+      done
+      # Link-time names for ngtcp2's and curl's `-lssl -lcrypto`; the NEEDED `ld` records is the
+      # target's own DT_SONAME (already `-plx`).
+      ln -sf libcrypto-plx.so.3 libcrypto.so
+      ln -sf libssl-plx.so.3 libssl.so
     )
 }
 
@@ -465,21 +342,20 @@ build_nghttp3() {
 }
 
 build_ngtcp2() {
-    # `-DENABLE_GNUTLS=ON -DENABLE_OPENSSL=OFF`: ngtcp2's CMake `find_package(GnuTLS 3.7.2
-    # REQUIRED)` wants the CACHE variables `GNUTLS_INCLUDE_DIR`/`GNUTLS_LIBRARY` — set them
-    # directly to our renamed build rather than fighting cross-compiled pkg-config detection.
-    # `CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY` is CRITICAL here, not optional: without it
-    # the symbol probe this find_package performs tries to link a full EXECUTABLE against our
-    # cross sysroot, which fails in a way indistinguishable from "GnuTLS genuinely lacks the
-    # symbol" — it does not (confirmed: the real built header has it) — this is purely a
-    # cross-compile try_compile artifact, the same class of gotcha `ci/build-sentry-native.sh`'s
-    # own doc describes for its CXX-detection problem.
+    # `-DENABLE_OPENSSL=ON -DENABLE_GNUTLS=OFF`: with plain OpenSSL >= 3.5 (it has
+    # `SSL_set_quic_tls_cbs`, and not quictls' `SSL_provide_quic_data`), ngtcp2's CMake enables the
+    # `crypto_ossl` glue and disables quictls on its own. `find_package(OpenSSL)` is fed the CACHE
+    # variables directly rather than fighting cross-compiled pkg-config detection.
+    # `CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY` is CRITICAL, not optional: without it the
+    # `check_symbol_exists` probes try to link a full EXECUTABLE against the cross sysroot, which
+    # fails in a way indistinguishable from "OpenSSL genuinely lacks the symbol" — a cross-compile
+    # try_compile artifact, the same class of gotcha `ci/build-sentry-native.sh`'s doc describes.
     # ngtcp2's CMakeLists also `enable_language()`s CXX unconditionally (examples/tests exist even
     # with BUILD_TESTING=OFF); left unset, CMake derives a companion CXX from the HOST's own
     # default (`/usr/bin/c++`) rather than the cross toolchain. Point it at the real cross g++
     # directly: nothing here links a C++ object.
-    local archive src build prefix gnutls_prefix
-    gnutls_prefix="$ROOT/vendor/gnutls-prefix"
+    local archive src build prefix ossl
+    ossl="$ROOT/vendor/openssl-prefix"
     archive="$(python3 "$DEPS" cache-dir)/$(python3 "$DEPS" get ngtcp2 archive)"
     python3 "$DEPS" fetch ngtcp2 >/dev/null
     src="$ROOT/vendor/ngtcp2-src"; build="$ROOT/vendor/ngtcp2-build"; prefix="$ROOT/vendor/ngtcp2-prefix"
@@ -489,13 +365,14 @@ build_ngtcp2() {
         -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=arm \
         -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$WEBOS_SDK/bin/arm-webos-linux-gnueabi-c++" \
         -DCMAKE_AR="$AR" -DCMAKE_RANLIB="$RANLIB" \
-        -DCMAKE_SYSROOT="$SYSROOT" -DCMAKE_FIND_ROOT_PATH="$SYSROOT;$gnutls_prefix" \
+        -DCMAKE_SYSROOT="$SYSROOT" -DCMAKE_FIND_ROOT_PATH="$SYSROOT;$ossl" \
         -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY \
         -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY \
         -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
         -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$prefix" \
-        -DGNUTLS_INCLUDE_DIR="$gnutls_prefix/include" -DGNUTLS_LIBRARY="$gnutls_prefix/lib/libgnutls-plx.so.30" \
-        -DENABLE_GNUTLS=ON -DENABLE_OPENSSL=OFF \
+        -DOPENSSL_ROOT_DIR="$ossl" -DOPENSSL_INCLUDE_DIR="$ossl/include" \
+        -DOPENSSL_SSL_LIBRARY="$ossl/lib/libssl-plx.so.3" -DOPENSSL_CRYPTO_LIBRARY="$ossl/lib/libcrypto-plx.so.3" \
+        -DENABLE_OPENSSL=ON -DENABLE_GNUTLS=OFF -DENABLE_BORINGSSL=OFF -DENABLE_PICOTLS=OFF -DENABLE_WOLFSSL=OFF \
         -DENABLE_STATIC_LIB=OFF -DENABLE_SHARED_LIB=ON -DBUILD_TESTING=OFF \
         -DCMAKE_C_FLAGS="-ffunction-sections -fdata-sections $FILEMAP" \
         -DCMAKE_SHARED_LINKER_FLAGS="-Wl,--gc-sections"
@@ -503,43 +380,35 @@ build_ngtcp2() {
     "$CMAKE" --install "$build"
     ( cd "$prefix/lib"
       real1=$(ls libngtcp2.so.16.* 2>/dev/null | head -1); [ -z "$real1" ] && real1=libngtcp2.so.16
-      real2=$(ls libngtcp2_crypto_gnutls.so.8.* 2>/dev/null | head -1); [ -z "$real2" ] && real2=libngtcp2_crypto_gnutls.so.8
+      real2=$(ls libngtcp2_crypto_ossl.so.0.* 2>/dev/null | head -1); [ -z "$real2" ] && real2=libngtcp2_crypto_ossl.so.0
+      test -f "$real2" || fail "ngtcp2 built no crypto_ossl glue (OpenSSL QUIC TLS API not detected)"
       find_evidence_by_content "$real1" "$build"
       find_evidence_by_content "$real2" "$build"
       rename_soname "$real1" libngtcp2-plx.so.16
-      rename_soname "$real2" libngtcp2_crypto_gnutls-plx.so.8
-      repoint_needed libngtcp2_crypto_gnutls-plx.so.8 libngtcp2.so.16 libngtcp2-plx.so.16
+      rename_soname "$real2" libngtcp2_crypto_ossl-plx.so.0
+      repoint_needed libngtcp2_crypto_ossl-plx.so.0 libngtcp2.so.16 libngtcp2-plx.so.16
       scrub_buildpath libngtcp2-plx.so.16
-      scrub_buildpath libngtcp2_crypto_gnutls-plx.so.8
+      scrub_buildpath libngtcp2_crypto_ossl-plx.so.0
       ln -sf libngtcp2-plx.so.16 libngtcp2.so
-      ln -sf libngtcp2_crypto_gnutls-plx.so.8 libngtcp2_crypto_gnutls.so
+      ln -sf libngtcp2_crypto_ossl-plx.so.0 libngtcp2_crypto_ossl.so
     )
 }
 
 build_curl() {
-    # `PKG_CONFIG_PATH` spans EVERY prefix, not just ngtcp2's/gnutls's own: curl's configure
-    # resolves `libngtcp2_crypto_gnutls`'s pkg-config `Requires.private: libngtcp2, gnutls`
-    # transitively, and gnutls.pc's own `Requires.private` reaches nettle/hogweed/libtasn1 in
-    # turn — missing any ONE of their pkgconfig dirs makes the whole chain report "not found"
-    # with no further explanation (confirmed: curl's configure said plainly "could not find
-    # ngtcp2_crypto_gnutls pkg-config file" when only ngtcp2's and gnutls's own dirs were listed;
-    # the actual `.pc` file was right there — it was gnutls's OWN transitive deps failing to
-    # resolve one level further in).
-    # `LIBS="-lhogweed -lnettle -ltasn1 -lgmp"` (bare names, via the shim) is needed for the SAME
-    # reason it was needed inside gnutls's own build: this NDK's linker requires every symbol a
-    # shared library's own NEEDED entries would satisfy to ALSO resolve explicitly at THIS link
-    # step — it does not trust that a `-lgnutls` reference's own transitive NEEDED chain will be
-    # satisfied at runtime the way an ordinary ELF loader does; `-z defs`-equivalent strictness,
-    # by default, on every link this toolchain performs. Exact-name `-l:lib*.so.N` syntax is
-    # unnecessary here (unlike GMP's own case) because nothing else on this system's search path
-    # could plausibly satisfy `-lhogweed`/`-lnettle`/`-ltasn1`/`-lgmp` — only our shim does.
-    # `--without-ca-bundle --without-ca-path`, no `--with-ca-fallback`: that flag is
-    # OpenSSL-specific (`configure: error: --with-ca-fallback only works with OpenSSL`). No CA
-    # default is compiled into curl on purpose: the ordinary (strict) path sets NO `CURLOPT_CAINFO`
-    # and trusts the device's store through `CURLSSLOPT_NATIVE_CA` (`net.rs`'s and `curlio.rs`'s
-    # `TlsCfg::Ca` arm) plus GnuTLS's own `--with-default-trust-store-dir=/etc/ssl/certs` above.
-    # Only the `*.plex.direct` roots fallback sets `CURLOPT_CAINFO`, to the shipped `le-roots.pem`
-    # (`apply_roots`/`shipped_ca_bundle`).
+    # `PKG_CONFIG_PATH` spans every prefix: curl's configure resolves `libngtcp2_crypto_ossl`'s
+    # pkg-config `Requires.private` (libngtcp2, libssl, libcrypto) transitively, and missing ONE
+    # dir makes the whole chain report "not found" with no further explanation.
+    # `--with-openssl` + `--with-ngtcp2`, NOT `--with-openssl-quic`: that one is OpenSSL's OWN QUIC
+    # stack, mutually exclusive with ngtcp2; with ngtcp2 and OpenSSL >= 3.5 curl's configure picks
+    # the `ngtcp2_crypto_ossl` glue (its OPENSSL_QUIC_API2 branch).
+    # TRUST: `--with-ca-path=/etc/ssl/certs --without-ca-bundle`, no `--with-ca-fallback`. Under the
+    # OpenSSL backend on Linux `CURLSSLOPT_NATIVE_CA` loads nothing (curl's `vtls/openssl.c` honours
+    # it only for Windows and Apple stores), and the fallback would mean OpenSSL's built-in default
+    # paths, which build_openssl deliberately points at a directory no television has. So the CA
+    # PATH is compiled in: the television's hashed `/etc/ssl/certs` (the c_rehash `<hash>.0` links
+    # OpenSSL itself reads), which is current even where the concatenated `ca-certificates.crt`
+    # beside it is stale (no ISRG Root X1 on webOS 5.6.2). The `*.plex.direct` roots fallback still
+    # adds the shipped `le-roots.pem` with `CURLOPT_CAINFO` (`apply_roots`/`shipped_ca_bundle`).
     local version archive src build prefix shim
     version=$(python3 "$DEPS" get curl version)
     archive="$(python3 "$DEPS" cache-dir)/$(python3 "$DEPS" get curl archive)"
@@ -549,28 +418,24 @@ build_curl() {
     rm -rf "$src" "$build" "$prefix" "$shim"
     mkdir -p "$src" "$build" "$shim"
     tar xJf "$archive" --strip-components=1 -C "$src"
-    # Every dependency was already renamed to its `-plx` SONAME. The shim directory holds a
-    # same-basename symlink to each so `-lfoo` resolves at link time while the NEEDED entry `ld`
-    # records is the TARGET's own (already renamed) DT_SONAME — no post-link patchelf needed here.
-    ln -sf "$ROOT/vendor/gnutls-prefix/lib/libgnutls-plx.so.30" "$shim/libgnutls.so"
-    ln -sf "$ROOT/vendor/nettle-prefix/lib/libnettle-plx.so.8" "$shim/libnettle.so"
-    ln -sf "$ROOT/vendor/nettle-prefix/lib/libhogweed-plx.so.6" "$shim/libhogweed.so"
-    ln -sf "$ROOT/vendor/libtasn1-prefix/lib/libtasn1-plx.so.6" "$shim/libtasn1.so"
-    ln -sf "$ROOT/vendor/gmp-prefix/lib/libgmp-plx.so.10" "$shim/libgmp.so"
+    # Every dependency already carries its `-plx` SONAME. The shim directory holds a same-basename
+    # symlink to each so `-lfoo` resolves at link time while the NEEDED entry `ld` records is the
+    # TARGET's own DT_SONAME — no post-link patchelf needed here.
+    ln -sf "$ROOT/vendor/openssl-prefix/lib/libssl-plx.so.3" "$shim/libssl.so"
+    ln -sf "$ROOT/vendor/openssl-prefix/lib/libcrypto-plx.so.3" "$shim/libcrypto.so"
     ln -sf "$ROOT/vendor/nghttp2-prefix/lib/libnghttp2-plx.so.14" "$shim/libnghttp2.so"
     ln -sf "$ROOT/vendor/nghttp3-prefix/lib/libnghttp3-plx.so.9" "$shim/libnghttp3.so"
     ln -sf "$ROOT/vendor/ngtcp2-prefix/lib/libngtcp2-plx.so.16" "$shim/libngtcp2.so"
-    ln -sf "$ROOT/vendor/ngtcp2-prefix/lib/libngtcp2_crypto_gnutls-plx.so.8" "$shim/libngtcp2_crypto_gnutls.so"
+    ln -sf "$ROOT/vendor/ngtcp2-prefix/lib/libngtcp2_crypto_ossl-plx.so.0" "$shim/libngtcp2_crypto_ossl.so"
     (
         cd "$build"
-        export PKG_CONFIG_PATH="$ROOT/vendor/ngtcp2-prefix/lib/pkgconfig:$ROOT/vendor/gnutls-prefix/lib/pkgconfig:$ROOT/vendor/nettle-prefix/lib/pkgconfig:$ROOT/vendor/libtasn1-prefix/lib/pkgconfig:$ROOT/vendor/gmp-prefix/lib/pkgconfig:$ROOT/vendor/nghttp2-prefix/lib/pkgconfig:$ROOT/vendor/nghttp3-prefix/lib/pkgconfig"
+        export PKG_CONFIG_PATH="$ROOT/vendor/ngtcp2-prefix/lib/pkgconfig:$ROOT/vendor/openssl-prefix/lib/pkgconfig:$ROOT/vendor/nghttp2-prefix/lib/pkgconfig:$ROOT/vendor/nghttp3-prefix/lib/pkgconfig"
         "$src/configure" --host=arm-webos-linux-gnueabi --prefix="$prefix" \
             CC="$CC" AR="$AR" RANLIB="$RANLIB" STRIP="$STRIP" \
-            CFLAGS="--sysroot=$SYSROOT -O2 -ffunction-sections -fdata-sections $FILEMAP -I$ROOT/vendor/gnutls-prefix/include -I$ROOT/vendor/nghttp2-prefix/include -I$ROOT/vendor/nghttp3-prefix/include -I$ROOT/vendor/ngtcp2-prefix/include" \
+            CFLAGS="--sysroot=$SYSROOT -O2 -ffunction-sections -fdata-sections $FILEMAP -I$ROOT/vendor/openssl-prefix/include -I$ROOT/vendor/nghttp2-prefix/include -I$ROOT/vendor/nghttp3-prefix/include -I$ROOT/vendor/ngtcp2-prefix/include" \
             CPPFLAGS="--sysroot=$SYSROOT" \
             LDFLAGS="--sysroot=$SYSROOT -Wl,--gc-sections -L$shim" \
-            LIBS="-lhogweed -lnettle -ltasn1 -lgmp" \
-            --with-gnutls="$ROOT/vendor/gnutls-prefix" \
+            --with-openssl="$ROOT/vendor/openssl-prefix" \
             --with-nghttp2="$ROOT/vendor/nghttp2-prefix" --with-nghttp3="$ROOT/vendor/nghttp3-prefix" \
             --with-ngtcp2="$ROOT/vendor/ngtcp2-prefix" \
             --disable-static --enable-shared \
@@ -579,7 +444,7 @@ build_curl() {
             --disable-mqtt --disable-manual --disable-docs \
             --without-libssh2 --without-libidn2 --without-libpsl \
             --without-brotli --without-zstd --without-gssapi --without-libgsasl \
-            --without-ca-bundle --without-ca-path
+            --without-ca-bundle --with-ca-path=/etc/ssl/certs
         make -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
         make install
     )
@@ -592,7 +457,7 @@ build_curl() {
 }
 
 # ---- the keyed output cache (see the header) -----------------------------------------------------
-PREFIXES="gmp nettle libtasn1 gnutls nghttp2 nghttp3 ngtcp2 curl"
+PREFIXES="openssl nghttp2 nghttp3 ngtcp2 curl"
 CACHE_ROOT=${PLX_BUILD_CACHE-$HOME/.cache/plxnative}
 if [ -n "$CACHE_ROOT" ]; then
     mkdir -p "$CACHE_ROOT"
@@ -624,10 +489,7 @@ if [ -n "$CACHE_ROOT" ]; then
     fi
 fi
 
-build_gmp
-build_nettle
-build_libtasn1
-build_gnutls
+build_openssl
 build_nghttp2
 build_nghttp3
 build_ngtcp2
@@ -652,4 +514,4 @@ if [ -n "$CACHE_ROOT" ]; then
     fi
 fi
 
-echo "build-curlstack: done — see vendor/{gmp,nettle,libtasn1,gnutls,nghttp2,nghttp3,ngtcp2,curl}-prefix/lib"
+echo "build-curlstack: done — see vendor/{openssl,nghttp2,nghttp3,ngtcp2,curl}-prefix/lib"

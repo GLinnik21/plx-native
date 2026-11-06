@@ -1028,23 +1028,26 @@ has any transport of its own.
 
 **An opt-in fourth family: the bundled HTTP/3 curl, `make CURLSTACK=1` only.** Off by default, and a
 default build, package and CI job contain none of it. With the flag, `ci/build-curlstack.sh` builds
-curl 8.23 over **GnuTLS** (never OpenSSL: the television's libcurl already brings OpenSSL 1.0.2 into the
-process and a second major crashed on-device) with nghttp2/nghttp3/ngtcp2, ten `-plx` libraries
+curl 8.23 over **OpenSSL 3.5** (for its run-time-dispatched AArch32 Crypto Extension paths; an earlier
+crash blamed on a second OpenSSL turned out to be the PLT hijack `RTLD_DEEPBIND` fixes) with
+nghttp2/nghttp3/ngtcp2 (`crypto_ossl`), seven `-plx` libraries
 (`make -s print-curlstack-staged`) shipped beside the binary, and the cargo feature `http3-curlstack`
 compiles the loader, `plx_net::net::curlstack`: every library opened by absolute path with
 **`RTLD_DEEPBIND | RTLD_LOCAL`** (`dynlib::Handle::open_in_deepbind`), because the TV's libcurl
 (`libcurl.so.5` through 4.10.0, `libcurl.so.4` from 5.3.1) is in the global scope before `main`
 (`libplayerAPIs.so.1` needs it) and otherwise wins the bundled curl's own internal PLT calls; LOCAL
-so that none of the stack joins the global scope, where the firmware's own older GnuTLS, Nettle and
-GMP libraries' users could bind to it. `net::global_init` makes the one bundled-or-system choice and `curlio` binds its
+so that none of the stack joins the global scope, where the firmware's own OpenSSL (1.0.2 or 3.0.x)
+users could bind to it. `net::global_init` makes the one bundled-or-system choice and `curlio` binds its
 multi table from the same handle (`net::bundled_curl`, `dynlib!`'s `load_from`); a missing bundle falls
 back to the system libcurl. Behind `net::bundled()` (constant false without the feature, so the code
-compiles and is tested in every build): the GnuTLS verify-result bitmask decoding in `keypin`
-(`VerifyScheme`), `CURLSSLOPT_NATIVE_CA` (curl's GnuTLS backend loads no trust anchors without it)
+compiles and is tested in every build): `CURLSSLOPT_NATIVE_CA` (needed by a GnuTLS build, inert
+under OpenSSL on Linux, whose trust is the compiled-in CA path `/etc/ssl/certs`)
 and the Alt-Svc cache that lets a strict request upgrade to HTTP/3. The flag puts `+curlstack` in
 `pkg/.build-config`, gets its own `target-curlstack` dir, and `ci/check-package.py` grades the
 package both ways against THIRD-PARTY-NOTICES' "(CURLSTACK=1 builds only)" section and
-`licenses/curlstack/`. The eight pins are the `curlstack` group of `ci/dependencies.json`, not
+`licenses/curlstack/`. The verify-result numbering in `keypin` (`VerifyScheme`) follows
+`net::tls_backend()`, read from `curl_version_info().ssl_version`, not which curl was bound. The five
+pins are the `curlstack` group of `ci/dependencies.json`, not
 `bundled` (no release ships them) and skipped by the shared download cache; `ci.yml`'s
 `cross-build-curlstack` job builds and grades it, caching the script's own keyed output under
 `~/.cache/plxnative/curlstack`, and no required check waits on it.

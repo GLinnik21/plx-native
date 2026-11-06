@@ -35,66 +35,19 @@
     ]
   },
   {
-    "id": "gmp",
+    "id": "openssl",
     "group": "curlstack",
     "bundled": false,
-    "version": "6.3.0",
-    "license": "LGPL-3.0-or-later OR GPL-2.0-or-later",
-    "archive": "gmp-6.3.0.tar.xz",
-    "url": "https://ftp.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz",
-    "sha256": "a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898",
+    "version": "3.5.9",
+    "license": "Apache-2.0",
+    "archive": "openssl-3.5.9.tar.gz",
+    "url": "https://github.com/openssl/openssl/releases/download/openssl-3.5.9/openssl-3.5.9.tar.gz",
+    "sha256": "603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a",
     "update": {
-      "type": "listing",
-      "url": "https://ftp.gnu.org/gnu/gmp/",
-      "file_pattern": "^gmp-(\\d+\\.\\d+\\.\\d+)\\.tar\\.xz$"
-    },
-    "patches": []
-  },
-  {
-    "id": "nettle",
-    "group": "curlstack",
-    "bundled": false,
-    "version": "3.10.2",
-    "license": "LGPL-3.0-or-later OR GPL-2.0-or-later",
-    "archive": "nettle-3.10.2.tar.gz",
-    "url": "https://ftp.gnu.org/gnu/nettle/nettle-3.10.2.tar.gz",
-    "sha256": "fe9ff51cb1f2abb5e65a6b8c10a92da0ab5ab6eaf26e7fc2b675c45f1fb519b5",
-    "update": {
-      "type": "listing",
-      "url": "https://ftp.gnu.org/gnu/nettle/",
-      "file_pattern": "^nettle-(3\\.\\d+(?:\\.\\d+)?)\\.tar\\.gz$"
-    },
-    "patches": []
-  },
-  {
-    "id": "libtasn1",
-    "group": "curlstack",
-    "bundled": false,
-    "version": "4.21.0",
-    "license": "LGPL-2.1-or-later",
-    "archive": "libtasn1-4.21.0.tar.gz",
-    "url": "https://ftp.gnu.org/gnu/libtasn1/libtasn1-4.21.0.tar.gz",
-    "sha256": "1d8a444a223cc5464240777346e125de51d8e6abf0b8bac742ac84609167dc87",
-    "update": {
-      "type": "listing",
-      "url": "https://ftp.gnu.org/gnu/libtasn1/",
-      "file_pattern": "^libtasn1-(\\d+\\.\\d+\\.\\d+)\\.tar\\.gz$"
-    },
-    "patches": []
-  },
-  {
-    "id": "gnutls",
-    "group": "curlstack",
-    "bundled": false,
-    "version": "3.8.13",
-    "license": "LGPL-2.1-or-later",
-    "archive": "gnutls-3.8.13.tar.xz",
-    "url": "https://www.gnupg.org/ftp/gcrypt/gnutls/v3.8/gnutls-3.8.13.tar.xz",
-    "sha256": "ffed8ec1bf09c2426d4f14aae377de4753b53e537d685e604e99a8b16ca9c97e",
-    "update": {
-      "type": "listing",
-      "url": "https://www.gnupg.org/ftp/gcrypt/gnutls/v3.8/",
-      "file_pattern": "^gnutls-(3\\.8\\.\\d+)\\.tar\\.xz$"
+      "type": "github-release",
+      "repo": "openssl/openssl",
+      "tag_pattern": "^openssl-(3\\.5\\.\\d+)$",
+      "tag_format": "openssl-{version}"
     },
     "patches": []
   },

@@ -1290,7 +1290,7 @@ shipped = {p.name for p in (ROOT / "pkg").glob("*.so.*")
 CURLSTACK_SECTION = re.compile(r"^### [0-9.]+ .*\(CURLSTACK=1 builds only\)$(.*?)(?=^#{2,3} |^---$)", re.M | re.S)
 if shipped:
     # `[a-z0-9_]+`, not `[a-z]+`: the curl stack's upstream basenames carry digits (nghttp2,
-    # nghttp3, ngtcp2) and an underscore (`libngtcp2_crypto_gnutls`, ngtcp2's QUIC crypto glue).
+    # nghttp3, ngtcp2) and an underscore (`libngtcp2_crypto_ossl`, ngtcp2's QUIC crypto glue).
     soname_re = r"`(lib[a-z0-9_]+-plx\.so\.\d+)`"
     notices = (ROOT / "THIRD-PARTY-NOTICES.md").read_text()
     named = set(re.findall(soname_re, notices))
@@ -1750,12 +1750,11 @@ NEEDED_LICENCES = {
 for name, why in NEEDED_LICENCES.items():
     p = ROOT / "licenses" / name
     check(p.exists() and p.stat().st_size > 200, f"licenses/{name} — {why}")
-# The two texts only the opt-in curl stack needs (THIRD-PARTY-NOTICES, the CURLSTACK=1 section; it
-# also leans on LGPL-2.1 for GnuTLS/libtasn1 and MIT for nghttp2/nghttp3/ngtcp2). Kept outside the
+# The text only the opt-in curl stack needs (THIRD-PARTY-NOTICES, the CURLSTACK=1 section; it
+# also leans on Apache-2.0 for OpenSSL and MIT for nghttp2/nghttp3/ngtcp2, both always shipped). Kept outside the
 # `licenses/*.txt` glob the Makefile ships, so a default package carries exactly the set above, and
 # copied in beside them under CURLSTACK=1 — graded on the STAGED payload both ways.
 CURLSTACK_LICENCES = {
-    "LGPL-3.0.txt": "GMP, Nettle — the LGPL arm of each project's dual licence",
     "curl.txt": "curl — its own permissive licence, not MIT verbatim",
 }
 for name, why in CURLSTACK_LICENCES.items():

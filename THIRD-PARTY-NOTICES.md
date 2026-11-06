@@ -540,56 +540,46 @@ file only if its target is itself a `*.plex.direct` name that fails the same way
 
 **A default PlxNative package does not contain anything in this section**, and no published
 release does. It applies only to a package built with `make CURLSTACK=1`, which ships its own build
-of curl beside the binary and prefers it to the television's libcurl 7.53.1 (HTTP/1.1 and HTTP/2
-only, no QUIC). `net.rs` falls back to the television's copy, unchanged, the moment any file below
-is missing or fails to load. `ci/check-package.py` grades a package against this section: a
-CURLSTACK=1 package must carry every file in the table, and any other package none of them.
+of curl beside the binary and prefers it to the television's libcurl (7.53.1 on the oldest
+firmware; HTTP/1.1 and HTTP/2 only, no QUIC). `net.rs` falls back to the television's copy,
+unchanged, the moment any file below is missing or fails to load. `ci/check-package.py` grades a
+package against this section: a CURLSTACK=1 package must carry every file in the table, and any
+other package none of them.
 
-The TLS backend is **GnuTLS**, not OpenSSL: the television's libcurl already brings its own
-OpenSSL 1.0.2 into the process, and a second OpenSSL major in the same process crashed
-deterministically on-device (webOS 5.6.2). GnuTLS shares no code, symbol names or process-global
-state with OpenSSL.
+The TLS backend is **OpenSSL 3.5**, built for 32-bit ARM with its assembly (`linux-armv4`), whose
+ARMv8 Crypto Extension paths are selected at run time on CPUs that have them. Every library is
+loaded `RTLD_DEEPBIND | RTLD_LOCAL`, so none of it joins the process's global symbol scope, where
+the television's own OpenSSL lives.
 
 | Shipped file | Upstream | Version | Licence |
 |---|---|---|---|
 | `libcurl-plx.so.4` | curl | **8.23.0** | **curl** (`licenses/curl.txt`) |
-| `libgnutls-plx.so.30` | GnuTLS | **3.8.13** | **LGPL-2.1-or-later** (`licenses/LGPL-2.1.txt`); also contains the parts of GNU libunistring that GnuTLS's `--with-included-unistring` compiles in, under libunistring's LGPL-3.0-or-later (`licenses/LGPL-3.0.txt`) / GPL-2.0-or-later dual licence |
-| `libnettle-plx.so.8`, `libhogweed-plx.so.6` | Nettle | **3.10.2** | **LGPL-3.0-or-later** (`licenses/LGPL-3.0.txt`), the LGPL arm of Nettle's LGPL-3.0-or-later/GPL-2.0-or-later dual licence |
-| `libtasn1-plx.so.6` | libtasn1 | **4.21.0** | **LGPL-2.1-or-later** (`licenses/LGPL-2.1.txt`) |
-| `libgmp-plx.so.10` | GMP | **6.3.0** | **LGPL-3.0-or-later** (`licenses/LGPL-3.0.txt`), the LGPL arm of GMP's LGPL-3.0-or-later/GPL-2.0-or-later dual licence |
+| `libcrypto-plx.so.3`, `libssl-plx.so.3` | OpenSSL | **3.5.9** | **Apache-2.0** (`licenses/Apache-2.0.txt`); Copyright (c) 1998-2026 The OpenSSL Project Authors, Copyright (c) 1995-1998 Eric A. Young, Tim J. Hudson |
 | `libnghttp2-plx.so.14` | nghttp2 | **1.71.0** | **MIT** (`licenses/MIT.txt`); Copyright (c) 2012, 2014, 2015, 2016 Tatsuhiro Tsujikawa and nghttp2 contributors |
 | `libnghttp3-plx.so.9` | nghttp3 | **1.19.0** | **MIT** (`licenses/MIT.txt`); Copyright (c) 2019 nghttp3 contributors |
-| `libngtcp2-plx.so.16`, `libngtcp2_crypto_gnutls-plx.so.8` | ngtcp2 | **1.26.0** | **MIT** (`licenses/MIT.txt`); Copyright (c) 2016 ngtcp2 contributors |
+| `libngtcp2-plx.so.16`, `libngtcp2_crypto_ossl-plx.so.0` | ngtcp2 | **1.26.0** | **MIT** (`licenses/MIT.txt`); Copyright (c) 2016 ngtcp2 contributors |
 
-**Complete corresponding source.** Each upstream tarball these are built from, with its sha256, is
-pinned in `ci/dependencies.json` (the `curlstack` group: `gmp`, `nettle`, `libtasn1`, `gnutls`,
-`nghttp2`, `nghttp3`, `ngtcp2`, `curl`), and `python3 ci/deps.py fetch <id>` retrieves and verifies
-each one. The sources are **unmodified**: no patches are applied to any of the eight. The complete
-build recipe — cross-compile flags, the `-plx` SONAME rename of each output, and curl's
-enabled-feature list — is `ci/build-curlstack.sh` in the PlxNative repository. Whoever distributes
-a CURLSTACK=1 package distributes these libraries and takes on the LGPL's source offer for them;
-the release workflow builds without the flag, so its source attachments do not include them.
+**Source.** Each upstream tarball these are built from, with its sha256, is pinned in
+`ci/dependencies.json` (the `curlstack` group: `openssl`, `nghttp2`, `nghttp3`, `ngtcp2`, `curl`),
+and `python3 ci/deps.py fetch <id>` retrieves and verifies each one. The sources are
+**unmodified**: no patches are applied to any of the five. The complete build recipe —
+cross-compile flags, the `-plx` SONAME of each output (OpenSSL's own `shlib_variant`; a patchelf
+rename for the others), and curl's enabled-feature list — is `ci/build-curlstack.sh` in the
+PlxNative repository. Apache-2.0 and MIT carry no source obligation; the pins are there so the
+build can be reproduced.
 
-**Configuration.** curl's enabled protocols, as its own `curl-config --protocols` reports for the
-built library, are `FILE FTP FTPS HTTP HTTPS IPFS IPNS WS WSS`, and its features `alt-svc
-AsynchDNS HSTS HTTP2 HTTP3 HTTPS-proxy IPv6 Largefile libz SSL threadsafe UnixSockets`. It is
-configured with `--disable-ldap --disable-ldaps --disable-rtsp --disable-telnet --disable-dict
+**Configuration.** curl is configured with `--with-openssl --with-ngtcp2 --with-nghttp2
+--with-nghttp3 --disable-ldap --disable-ldaps --disable-rtsp --disable-telnet --disable-dict
 --disable-gopher --disable-smtp --disable-pop3 --disable-imap --disable-tftp --disable-mqtt
 --disable-manual --disable-docs --without-libssh2 --without-libidn2 --without-libpsl
 --without-brotli --without-zstd --without-gssapi --without-libgsasl --without-ca-bundle
---without-ca-path`; `libz` is the television's own `libz.so.1`, not a shipped copy. This app uses
-it only for its own HTTP and HTTPS requests. GMP is built shared, under this project's own `-plx`
-SONAME, specifically because the webOS NDK's own sysroot already ships an unrelated
-`libgmp.so.10` (a dependency of the NDK's own cross GCC) that a static-only GMP would have
-silently let the linker substitute. GnuTLS is configured with `--without-p11-kit --disable-doc
---disable-tests --disable-tools --disable-nls --without-idn --disable-cxx --disable-libdane
---without-tpm2 --without-tpm --disable-rpath --with-included-unistring --without-zstd
---without-brotli --with-default-trust-store-dir=/etc/ssl/certs` (`ci/build-curlstack.sh` is the
-source of truth for every flag above).
-
-**The GPL text the LGPL-3.0 incorporates.** LGPL-3.0 is a set of additional permissions on top of
-the GNU GPL version 3, so it must travel with the GPL's text: that text is `LICENSE`, which every
-PlxNative package already ships (as `licenses/LICENSE`) because it is PlxNative's own licence.
+--with-ca-path=/etc/ssl/certs`; `libz` is the television's own `libz.so.1`, not a shipped copy. This
+app uses it only for its own HTTP and HTTPS requests. OpenSSL is configured `linux-armv4 shared
+no-module no-legacy no-engine no-autoload-config no-deprecated no-comp no-idea no-camellia no-seed
+no-md2 no-mdc2 no-rc5 no-whirlpool no-srp no-ssl3 no-weak-ssl-ciphers no-apps no-docs no-tests`,
+with its configuration and module directories set to a path that exists on no television, so it
+reads neither the television's `openssl.cnf` nor any provider module (`ci/build-curlstack.sh` is
+the source of truth for every flag above).
 
 *Why it exists:* the television's libcurl is pinned at 7.53.1 for the same reason FFmpeg is
 bundled (§1.1) — a system library this old can be worked around, never grown a protocol. HTTP/3
@@ -659,10 +649,9 @@ runtime notices listed below:
 
 | File | Required by |
 |---|---|
-| `licenses/LGPL-2.1.txt` | FFmpeg, FriBidi, GLib, GNU C Library (§1); in a CURLSTACK=1 package also GnuTLS and libtasn1 (§2.8) — GNU Lesser General Public License, version 2.1 |
+| `licenses/LGPL-2.1.txt` | FFmpeg, FriBidi, GLib, GNU C Library (§1) — GNU Lesser General Public License, version 2.1 |
 | `licenses/MIT.txt` | Feather Icons, Heroicons, the MIT-elected Rust packages, Sentry Native and libunwind (§2.2, §2.4, §2.6); in a CURLSTACK=1 package also nghttp2, nghttp3 and ngtcp2 (§2.8). One copy of the MIT text; the copyright holders it refers to are the ones named in this file |
-| `licenses/Apache-2.0.txt` | Google Material Design Icons; calendrical_calculations; moxcms; pxfm; compiler_builtins (§2.2, §2.4) |
-| `licenses/LGPL-3.0.txt` | CURLSTACK=1 packages only: GMP, Nettle (§2.8) — the LGPL arm of each project's LGPL-3.0-or-later/GPL-2.0-or-later dual licence |
+| `licenses/Apache-2.0.txt` | Google Material Design Icons; calendrical_calculations; moxcms; pxfm; compiler_builtins (§2.2, §2.4); in a CURLSTACK=1 package also OpenSSL (§2.8) |
 | `licenses/curl.txt` | CURLSTACK=1 packages only: curl (§2.8) — its own permissive licence, textually close to MIT but not identical, kept separate |
 | `licenses/LLVM-exception.txt` | compiler_builtins (§2.4) |
 | `licenses/Unicode-3.0.txt` | Unicode Character Database tables in Rust `core` (§2.4) — UNICODE LICENSE V3, "Copyright © 1991-2024 Unicode, Inc." |
