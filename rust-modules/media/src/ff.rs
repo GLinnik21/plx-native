@@ -3816,6 +3816,20 @@ impl Keyframe {
         self != Keyframe::No
     }
 
+    /// What the `ff: AU#0` line prints for the first access unit: `true`/`false` as before, with the
+    /// HEVC NAL type of a non-IDR IRAP named (`irap=CRA(21)`), which would have named #1166 from the
+    /// first log.
+    fn label(self) -> String {
+        match self {
+            Keyframe::No => "false".to_string(),
+            Keyframe::Clean => "true".to_string(),
+            Keyframe::HevcIrapNotIdr(t) => {
+                let kind = if t == 21 { "CRA" } else if (16..=18).contains(&t) { "BLA" } else { "reserved IRAP" };
+                format!("true irap={kind}({t})")
+            }
+        }
+    }
+
     /// The `key` the access unit is queued with ([`crate::aq::AU_KEY`] and [`crate::aq::hevc_irap_not_idr`]).
     fn au_key(self) -> c_int {
         match self {
@@ -3871,14 +3885,22 @@ unsafe fn packet_to_annexb(
             break;
         }
         let b0 = d[i];
-        let key = if is_hevc {
-            (16..=23).contains(&((b0 >> 1) & 0x3f))
+        let class = if is_hevc {
+            // An IRAP picture's VCL NALs all share one type (HEVC 7.4.2.2), so the first IRAP NAL
+            // names the picture. Only an IDR (19, 20) is `Clean`: a CRA or BLA (16 to 18, 21) and the
+            // reserved IRAP types (22, 23) are not, because a Dolby Vision splitter may take only an
+            // IDR as its first picture.
+            match (b0 >> 1) & 0x3f {
+                19 | 20 => Keyframe::Clean,
+                t @ (16..=18 | 21..=23) => Keyframe::HevcIrapNotIdr(t),
+                _ => Keyframe::No,
+            }
         } else {
             in_band_sps |= (b0 & 0x1f) == 7;
-            h264_is_rap(&d[i..i + nl], container_key || in_band_sps)
+            Keyframe::of(h264_is_rap(&d[i..i + nl], container_key || in_band_sps))
         };
-        if key {
-            is_key = Keyframe::Clean;
+        if class.is_key() {
+            is_key = class;
             break;
         }
         i += nl;
@@ -10046,7 +10068,7 @@ pub fn demux(
                             crate::player::log(&format!(
                                 "ff: AU#0 size={} key={} head=[{}]",
                                 aubuf.len(),
-                                is_key,
+                                kf.label(),
                                 head
                             ));
                         }
