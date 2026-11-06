@@ -69,6 +69,13 @@ pub struct Header<'a> {
     pub preview_cycle: Option<&'a super::widgets::ArtCycle>,
     /// A loading read-out in the copy: accounted and sentinel-painted at the actual draw.
     pub pending_copy: Option<&'a str>,
+    /// The copy as a sentence that FOLLOWS FOCUS (Settings v2): drawn by the cross-fade in the
+    /// fixed spot under the title, up to [`super::follow_copy::FOLLOW_LINES`] lines, in place of
+    /// `copy` (which stays the page's own sentence, the one a row with none shows). `None` draws
+    /// `copy` as before.
+    pub follow: Option<&'a super::follow_copy::FollowCopy>,
+    /// Display-only art in the picture slot ([`RouteLayout::picture_slot`]); no focus or hit stop.
+    pub picture: Option<&'a dyn super::follow_copy::PictureSlot>,
 }
 
 impl<'a> Header<'a> {
@@ -83,7 +90,21 @@ impl<'a> Header<'a> {
             preview: None,
             preview_cycle: None,
             pending_copy: None,
+            follow: None,
+            picture: None,
         }
+    }
+
+    /// The copy follows focus: `follow` is stepped by the screen and lent for the frame.
+    pub fn with_follow(mut self, follow: &'a super::follow_copy::FollowCopy) -> Self {
+        self.follow = Some(follow);
+        self
+    }
+
+    /// Display-only art in the fixed picture slot under the sentence.
+    pub fn with_picture(mut self, picture: &'a dyn super::follow_copy::PictureSlot) -> Self {
+        self.picture = Some(picture);
+        self
     }
 
     pub fn with_pending_copy(mut self, key: &'a str) -> Self {
@@ -115,7 +136,18 @@ impl<'a> Header<'a> {
 
     /// The one drawing routine, for both loops.
     pub fn paint(&self, p: Painter, measure: &dyn Measure) {
-        let copy_end = self.layout.draw_narrative_pending(p, self.crumb, self.title, self.copy, self.copy_size, measure, self.pending_copy);
+        let copy_end = if let Some(follow) = self.follow {
+            // the title (and crumb) alone, then the followed sentence in the fixed frame under it
+            self.layout.draw_narrative_pending(p, self.crumb, self.title, "", self.copy_size, measure, None);
+            let frame = self.layout.narrative_copy_frame(self.crumb.is_some(), self.title, self.layout.action.y, measure);
+            follow.draw(p, frame, self.copy_size);
+            frame.y
+        } else {
+            self.layout.draw_narrative_pending(p, self.crumb, self.title, self.copy, self.copy_size, measure, self.pending_copy)
+        };
+        if let Some(picture) = self.picture {
+            picture.draw(p, self.layout.picture_slot(), measure);
+        }
         let mut extra_end = copy_end;
         if let Some(hint) = &self.hint {
             // The copy's end, then the hint one MD under it: a two-item run from `copy_end`.

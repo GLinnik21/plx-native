@@ -105,6 +105,7 @@ pub mod text_lift; // the animated focus treatment (lift + plate + shadow) for a
 pub mod theme;
 pub mod underlay; // the shared UNDERLAY FIELD: a coarse, spatially faithful colour field of what is drawn beneath an overlay
 pub mod widgets;
+pub mod follow_copy; // the route narrative's sentence that follows focus (+ its display-only picture slot)
 pub mod xfade; // content cross-fade: fade out → swap the data at the floor → fade in
 
 /// The focus fill — a near-white with near-black ink/icons over it, and the only fill a control
