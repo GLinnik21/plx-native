@@ -38,7 +38,7 @@
 //! a collapsed or ended preview cannot strand it.
 //!
 //! Sound stays on. A preview has no mute control: the per-pipeline `setVolume` the sink exposes is
-//! used for one thing only, the silent paused-seek preroll (`player::mute_for_preroll`), and is not
+//! used for one thing only, the silent paused-seek preroll (`player::mute_for_preroll_on`), and is not
 //! a preview or UI feature. The Settings toggle is the only sound control.
 //!
 //! **Cycle budget is source arithmetic, not a measured leak.** Spike 0a never produced a delta.
@@ -1342,7 +1342,7 @@ mod abandoned_load_tests {
         crate::player::ffi_host::force_clocksink_for_test(true);
         let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe { plx_base::task::MainThread::assume() });
         let epoch = FEED_SHARED.begin_native_session().expect("native session");
-        assert_eq!(unsafe { crate::player::sink().load(c"{}".as_ptr(), epoch) }, 1);
+        assert_eq!(unsafe { crate::player::test_physical::sink().load(c"{}".as_ptr(), epoch) }, 1);
         assert!(FEED_SHARED.mark_native_load_returned(epoch, None).is_some());
         let mut eng = crate::player::engine::streaming_engine_for_test(epoch);
         let attempt = crate::route::RouteStartAttempt::fixture();

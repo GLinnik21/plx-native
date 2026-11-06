@@ -27,7 +27,7 @@ pub enum RuntimeFailure {
 }
 
 /// How the pipeline refused a Load, for the `playback.failed` event: the Load call itself returned
-/// 0 (`Sync`, `threads::load_thread` via `publish_native_load_failure`), or the call returned and
+/// 0 (`Sync`, `native_load::load_thread` via `publish_native_load_failure`), or the call returned and
 /// a `type=18` error callback arrived before any picture (`Async`, `sf_on_event`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]

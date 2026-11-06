@@ -58,6 +58,7 @@ pub mod open;
 pub mod physical;
 pub mod seek;
 pub mod sf_event;
+pub mod sink_fence;
 pub mod playurl;
 pub mod readout;
 pub mod pcm_lead;

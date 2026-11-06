@@ -32,8 +32,6 @@ use super::backend;
 #[cfg(feature = "play-feed")]
 use plx_playback_contract::feed::{FeedTransportAction, OpenRequest};
 use plx_playback_contract::feed::{PhysicalSet, UriOnlySet};
-#[cfg(all(test, feature = "play-feed", feature = "hostsim"))]
-use super::threads;
 use plx_base::task::MainThread;
 use plx_platform::tv::sink::{NoSink, VideoSink};
 use std::collections::VecDeque;
@@ -415,9 +413,6 @@ pub enum QueuedLanding {
 impl PlayerAdapter {
     /// Take the token. `app::boot` calls this once, with the token `plex_run` minted.
     pub fn new(mt: MainThread) -> Self {
-        // The pipeline callback has no user-data pointer, so its hooks are installed once per process.
-        #[cfg(feature = "play-feed")]
-        super::install_sf_event_hooks();
         Self {
             mt,
             physical: Box::new(UriOnlySet::new()),
@@ -467,6 +462,7 @@ impl PlayerAdapter {
         let mut adapter = Self::new(mt);
         let (probe, physical) = plx_play_feed::physical::probe::Probe::new(
             super::test_physical::feed_set());
+        super::test_physical::install_sf_event_hooks();
         adapter.physical = physical;
         adapter.sink = super::test_physical::sink;
         adapter.probe = Some(probe);
@@ -1946,7 +1942,7 @@ impl PlayerAdapter {
     /// Address one Load verdict without handing route state to the native worker.
     #[cfg(all(test, feature = "play-feed", feature = "hostsim"))]
     pub(super) fn load_receipt(&mut self, attempt: crate::route::RouteStartAttempt, native_epoch: u32,
-        _trace_generation: u32) -> threads::LoadReceipt {
+        _trace_generation: u32) -> plx_play_feed::feed_resources::LoadReceipt {
         self.probe().resources(|resources|
             resources.load_receipt(attempt.contract_id(), native_epoch))
     }

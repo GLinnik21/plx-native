@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 /// issue #74 D.1: whether the epoch's Starfish `Load` call has returned yet. Mirrors, on the Rust
 /// side, the `g_load_returned` flag `starfish.c`'s `sf_ready_object()` now requires alongside
-/// `SMP_READY()` — every session begins `InFlight`, and `threads::load_thread` flips it to
+/// `SMP_READY()` — every session begins `InFlight`, and `native_load::load_thread` flips it to
 /// `Returned` right after the real, synchronous `sf_load` call comes back, before
 /// `publish_route_start_result` runs. `pump.rs`'s `loadCompleted` arm requires
 /// `NativeGate::native_load_returned` before it may even poll `sf_is_load_completed` — that poll is
@@ -192,7 +192,7 @@ impl NativeGate {
     }
 
     /// Mark `epoch`'s Starfish `Load` call as returned (issue #74 D.1) — called by
-    /// `threads::load_thread` immediately after the real, blocking `sf_load` call comes back,
+    /// `native_load::load_thread` immediately after the real, blocking `sf_load` call comes back,
     /// BEFORE `route::publish_route_start_result` runs (that mechanism stays separate: a route
     /// ticket can be rejected as stale independent of whether Load has returned, and this gate
     /// must never depend on the reducer's verdict). Returns the elapsed time since the session's
@@ -419,7 +419,7 @@ impl NativeGate {
     }
 
     /// Whether an off-frame `Unload` owns the native object ([`NativeSessionPhase::Releasing`]):
-    /// `player::sink()` answers the fenced sink for the main thread while this holds.
+    /// [`crate::sink_fence::SinkFence`] answers the fenced sink for the main thread while this holds.
     pub fn native_releasing(&self) -> bool {
         matches!(
             self.state

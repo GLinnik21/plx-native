@@ -591,7 +591,7 @@ pub fn tick_load(feed: &mut FeedResources, mt: &MainThread, now: u32,
     // BEFORE this arm may even poll `sf_is_load_completed` — that poll is itself a concurrent
     // Starfish call, and on v0.6.0 it was the FIRST thing this arm did while `sf_load` was still
     // executing (synchronously) on the load thread. See `src/starfish.c`'s `g_load_returned` for
-    // the matching seam-side half; `threads::load_thread` flips the Rust side right after the
+    // the matching seam-side half; `native_load::load_thread` flips the Rust side right after the
     // real, blocking `sf_load` call returns. Gated on `!eng.preview_abandon` too, same as the
     // completion arm below: an abandoned trailer-preview Load must not drive any of this — no
     // deferral logging, no budget clock, nothing that reacts to it as if it were live. That is
@@ -603,7 +603,7 @@ pub fn tick_load(feed: &mut FeedResources, mt: &MainThread, now: u32,
         && (FEED_SHARED.load_completed.load(Relaxed) || unsafe { (hooks.feed.sink)().is_load_completed(mt) } != 0)
     {
         // "native: Load returned after Nms" is logged unconditionally at the gate transition
-        // itself (`threads::load_thread`, right where `mark_native_load_returned` flips it), not
+        // itself (`native_load::load_thread`, right where `mark_native_load_returned` flips it), not
         // here — see `load-returned-log-is-conditional-on-loadcompleted-and-unbounded-after`. It
         // used to live in this arm, which meant it only ever appeared paired with the deferral
         // line above, and never at all on the path this fix is most likely to be read on: Load

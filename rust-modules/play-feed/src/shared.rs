@@ -365,7 +365,7 @@ pub struct Shared {
     /// first should log.
     pub native_load_deferred_logged_epoch: AtomicU32,
     /// issue #74 D.1: the elapsed milliseconds `mark_native_load_returned` measured at the moment
-    /// it flipped `load_call` to `Returned` — captured there (by `threads::load_thread`) rather
+    /// it flipped `load_call` to `Returned` — captured there (by `native_load::load_thread`) rather
     /// than re-derived on a later pump tick, since a later tick would over-count by however long
     /// the pump took to run again. `pump.rs` reads this once, for the "native: Load returned
     /// after Nms" log, exactly when it observes the deferral epoch marker above matching its own.
@@ -1842,7 +1842,7 @@ pub struct Transport {
     /// Transport-wide on purpose: a reload (`reset_for_reload`) replaces the Engine but keeps the
     /// viewer's Pause and this ownership, so the landing is settled on whichever Engine is live.
     seek_preroll_owned: AtomicI64,
-    /// The sink volume the paused preroll's Play window muted (`player::mute_for_preroll`) saved for
+    /// The sink volume the paused preroll's Play window muted (`player::mute_for_preroll_on`) saved for
     /// its restore, `PREROLL_VOLUME_NONE` when the pipeline is not muted. The volume is PER PIPELINE:
     /// a stop unloads it (`reset` forgets this with it) and a reload's fresh Load starts at the
     /// default again, so only a still-live pipeline ever needs the restore
@@ -1971,9 +1971,19 @@ pub static FEED_TX: Transport = Transport::new();
 /// presentation stamp, the pump's silence watchdog, the player's audio-pick window) reads this one
 /// clock, so a stamp one of them stores is comparable by any other.
 pub fn vclock_ms() -> u32 {
+    clock_origin().elapsed().as_millis() as u32
+}
+
+/// [`vclock_ms`] in microseconds, on the same origin: the Feed executor's slice clock
+/// (`FeedHooks::feed_clock_us`), only ever differenced.
+pub fn vclock_us() -> u64 {
+    clock_origin().elapsed().as_micros() as u64
+}
+
+fn clock_origin() -> &'static Instant {
     use std::sync::OnceLock;
     static T0: OnceLock<Instant> = OnceLock::new();
-    T0.get_or_init(Instant::now).elapsed().as_millis() as u32
+    T0.get_or_init(Instant::now)
 }
 
 /// **Film time to the pipeline's timeline.** At speed `r` the pipeline still plays at its own 1x,

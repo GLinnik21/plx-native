@@ -315,7 +315,7 @@ Starfish seam, 29 of them, with the C return values and the `&MainThread` token 
 a real stop's Unload can run on a worker; the trait's own doc is the current list). It is **Starfish-shaped**: a load payload, `feed`, and the
 ACB bind verbs that `pump` walks. Another TV OS cannot implement it as it stands. `player::ffi`
 keeps its `extern "C"` block unchanged and implements the trait as `StarfishSink`; `engine`, `pump`
-and `threads` call it through `player::sink()`. `player/ffi_host.rs` is no longer swapped in under
+and the Load worker call it through the sink the composition hands the adapter (`PlayerAdapter::display_sink`). `player/ffi_host.rs` is no longer swapped in under
 `player::ffi`. It is `ffi_host`, the simulator's own `VideoSink` (`HostSink`), outside the
 fence. It is the Feed backend's stand-in, so it lives in `plx_play_feed` behind that crate's
 `hostsim` feature and names only the layers below it; the three things it needs from above arrive

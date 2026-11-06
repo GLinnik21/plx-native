@@ -105,8 +105,9 @@ and the native feed refuses a source shape it cannot represent.
   `route_start::poll_release` (a pure machine, `release.rs`, decides): on the first frame after the Unload
   returns (`run.rs` → `poll_release_frame`). Nothing blocks on the worker: a start over a running
   Unload returns `BufferfeedStartOutcome::Deferred` (the player reads Connecting) and runs the frame
-  the tail has run; `pa.mt()`/`pa.split()` hand out the token at once while `player::sink()` answers
-  `RefusingSink` (`player::FENCE`: every verb refused, the memoized queries real) for the `Releasing` phase; `shutdown` waits via
+  the tail has run; `pa.mt()`/`pa.split()` hand out the token at once while the sink the composition handed the adapter
+  (`PlayerAdapter::display_sink`; the Feed's `plx_play_feed::sink_fence::SinkFence`) answers `RefusingSink` (every verb refused, the memoized
+  queries real) for the `Releasing` phase; `shutdown` waits via
   `exit_native`, bounded by `RELEASE_DEADLINE` (10 s), and skips `SDL_Quit` when a worker is still in
   firmware. Past the deadline a start is refused with `FailureKind::ReleaseTimeout` (Try Again), and the
   object is leaked, never destroyed under the worker, until the Unload returns. The foreground restore
@@ -120,8 +121,7 @@ and the native feed refuses a source shape it cannot represent.
   X ms after the stop`.
 - `pump.rs` — the **main-thread pump** (was `bufferfeed_pump`): each frame it drives bind → Play →
   feed and services seeks.
-- `threads.rs` — **`load_thread`** constructs Starfish + `Load()` on its own GMainContext and
-  returns an addressed result to the adapter. `timeline.rs` owns the adapter's periodic PMS
+- `timeline.rs` owns the adapter's periodic PMS
   reporter: it consumes fresh normalized samples, never backend globals. Its stopped handle
   joins off-frame before the final stopped report. The **demux thread body is `ff::demux`**
   (spawned by `route_start::start_bufferfeed`): open
@@ -171,7 +171,7 @@ and the native feed refuses a source shape it cannot represent.
   `AttemptFacts::load_abandoned`.
 
 **The main-thread rule is compiler-enforced.** The seam is the `VideoSink` trait in `plx_platform::tv::sink` (`rust-modules/platform/src/tv/sink.rs`)
-(Starfish-shaped: one method per verb, reached through `player::sink()`). `platform/src/webos/video_sink.rs`'s `extern "C"`
+(Starfish-shaped: one method per verb, reached through `PlayerAdapter::display_sink`). `platform/src/webos/video_sink.rs`'s `extern "C"`
 declarations are private to that module and only `StarfishSink` there implements the trait on the
 television; `HostSink` (`play-feed/src/ffi_host.rs`, re-exported as `player::ffi_host`) is the simulator's. Every verb but `load` and `unload`
 takes a `task::MainThread` (the constant queries `feed_abi_is_cow`, `window_mode` and `window_id`
@@ -834,7 +834,7 @@ something.
   untouched, so no producer of PCM stamps its own offset.
   *Where the output is read:* `start_bufferfeed_inner` runs on the FRAME thread (the Engine is
   main-thread-confined and the frame may not wait on the bus), so it cannot ask. A plan that follows the
-  output goes to `threads::load_thread` (the `media` worker, which blocks in `Load` anyway), which reads
+  output goes to `native_load::load_thread` (the `media` worker, which blocks in `Load` anyway), which reads
   `tv::sound::output` BEFORE `Load` (a `getSystemSettings {"category":"sound","keys":["soundOutput"]}` call
   through the `tv` port, 300 ms budget, `NoPlatform` on hosts), logs `pcm: audio sink pts +<N>ms (stack
   <liblxa|audiosink_new>, output <name|unknown>, default 400ms[, not measured])` once per Load (the
