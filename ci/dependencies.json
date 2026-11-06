@@ -110,7 +110,8 @@
     "update": {
       "type": "github-release",
       "repo": "nghttp2/nghttp2",
-      "tag_pattern": "^v(\\d+\\.\\d+\\.\\d+)$"
+      "tag_pattern": "^v(\\d+\\.\\d+\\.\\d+)$",
+      "tag_format": "v{version}"
     },
     "patches": []
   },
@@ -126,7 +127,8 @@
     "update": {
       "type": "github-release",
       "repo": "ngtcp2/ngtcp2",
-      "tag_pattern": "^v(\\d+\\.\\d+\\.\\d+)$"
+      "tag_pattern": "^v(\\d+\\.\\d+\\.\\d+)$",
+      "tag_format": "v{version}"
     },
     "patches": []
   },
@@ -142,7 +144,8 @@
     "update": {
       "type": "github-release",
       "repo": "ngtcp2/nghttp3",
-      "tag_pattern": "^v(\\d+\\.\\d+\\.\\d+)$"
+      "tag_pattern": "^v(\\d+\\.\\d+\\.\\d+)$",
+      "tag_format": "v{version}"
     },
     "patches": []
   },
