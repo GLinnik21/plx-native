@@ -3209,6 +3209,21 @@ pub(super) fn video_copy_fps(contract: &plx_plex::plex::EncodeContract, src_fps:
     if contract.remux && !contract.no_video_copy { src_fps } else { 0.0 }
 }
 
+/// The Load audio declaration as the pipeline names it.
+///
+/// The demuxer feeds DTS core bytes for every spelling of the DTS family (the extension is
+/// stripped before the ES leaves), so the declaration maps all of PMS's spellings — `dca`
+/// (DTS core), `dca-ma` / `dca_ma` (DTS-HD MA), `dts_ma`, `dtshd` — to the one name the
+/// start guard's payload table knows: `dts`. Declaring a PMS spelling as-is (a no-pick play
+/// of a DTS title carries `src_acodec` = `dca`) would fail that table and refuse the whole
+/// play at Load. Case is normalised to the table's lowercase on the way through.
+pub(super) fn audio_declaration(codec: &str) -> String {
+    match codec.to_ascii_lowercase().as_str() {
+        "dts" | "dca" | "dca-ma" | "dca_ma" | "dts_ma" | "dtshd" => "dts".to_string(),
+        other => other.to_string(),
+    }
+}
+
 /// The direct-play plan: the pipeline decodes the SOURCE codecs natively, so the Load payload uses
 /// them (h264/hevc + the chosen audio track's codec). If a specific track was picked (aidx >= 0),
 /// tell the demuxer to feed that stream — by CONTAINER ordinal, not the list position
@@ -3228,21 +3243,35 @@ fn fill_direct_plan(
     dv_decision: plx_data::metadata::DvDecision,
     sub_pick: Option<(i64, i32)>,
 ) {
-    let (aidx, _achosen, asid) = audio_sel.cloned().unwrap_or((-1, acodec.to_string(), 0));
+    let (aidx, achosen, asid) = audio_sel.cloned().unwrap_or((-1, acodec.to_string(), 0));
     // source fps for the Load esInfo — from the playing item's own store (present for the
     // straight-from-Home path too, which never ran load_detail)
     let fps = plan.playing.as_ref().map(|p| p.video_fps).unwrap_or(0.0);
     plan.vcodec = vcodec.to_string();
     // Direct play feeds the FILE's own elementary stream, so the Load audio declaration must
-    // name the codec of the BYTES actually fed — the file's default audio codec (`src_acodec`,
-    // the demuxer's ground truth) — NOT the PMS track's `achosen`. They agree for an untouched
-    // original, but diverge when the file is a remux/transcode of a different codec than PMS
-    // reports: a FileFlows AAC 5.1 cut of an E-AC3 7.1 source, where PMS still lists the track
-    // as `eac3`. Declaring `eac3` ("AC3 PLUS" / audio/x-eac3) while the pipeline feeds AAC frames
-    // misconfigures the audio ES, and with audioSync the video sink slaves to the dead audio
-    // clock and stalls — the "one title kills playback" defect. `_achosen` (the PMS codec) is
-    // kept for the timeline/track metadata below; the declaration follows the file.
-    plan.acodec = plan.src_acodec.clone();
+    // name the codec of the BYTES actually fed. Two different bytes, two different names:
+    //
+    // * **No pick** (`aidx < 0`): the file's DEFAULT audio is fed, and its ground-truth codec is
+    //   `src_acodec` — NOT the PMS track's `achosen`. They agree for an untouched original, but
+    //   diverge when the file is a remux/transcode of a different codec than PMS reports: a
+    //   FileFlows AAC 5.1 cut of an E-AC3 7.1 source, where PMS still lists the track as `eac3`.
+    //   Declaring `eac3` ("AC3 PLUS" / audio/x-eac3) while the pipeline feeds AAC frames
+    //   misconfigures the audio ES, and with audioSync the video sink slaves to the dead audio
+    //   clock and stalls — the "one title kills playback" defect.
+    //
+    // * **A track picked** (`aidx >= 0`): the demuxer is told to feed THAT stream (the container
+    //   ordinal below), so the file's default is a different, unfed track — naming its codec
+    //   (the `truehd` default of a lossless cut whose AC3/EAC3 sibling was picked) declares a
+    //   codec the pipeline cannot configure and the start guard refuses the whole play. The
+    //   pick's own PMS codec is what is fed. A stale pick codec (the same eac3-over-AAC shape,
+    //   one that the user chose by hand) is caught by the demuxer's guard plus the one-shot
+    //   probe reload, exactly as a no-pick declaration is.
+    let declared = if aidx >= 0 {
+        achosen
+    } else {
+        plan.src_acodec.clone()
+    };
+    plan.acodec = audio_declaration(&declared);
     plan.fps = fps;
     // Set here for the direct play, which feeds the FILE's own elementary stream; a server remux
     // that copies the video sets the same pair after its `/decision` (`copied_video_dv`).
