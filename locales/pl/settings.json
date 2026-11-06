@@ -380,5 +380,8 @@
   "settings.playback.marker.manual": "Ręcznie",
   "settings.playback.marker.automatic": "Automatycznie",
   "settings.playback.intro_skip.copy": "Wyłączone ukrywa przycisk. Ręcznie proponuje pominięcie czołówki. Automatycznie pomija ją po pięciu sekundach, chyba że wybierzesz oglądanie czołówki. Ustawienie jest zapisywane dla tego profilu.",
-  "settings.playback.credits_skip.copy": "Wyłączone ukrywa pomijanie napisów. Ręcznie zachowuje obecne przyciski. Automatycznie pomija po pięciu sekundach, chyba że wybierzesz oglądanie napisów. Następny odcinek i jego odliczanie ustawia się osobno."
+  "settings.playback.credits_skip.copy": "Wyłączone ukrywa pomijanie napisów. Ręcznie zachowuje obecne przyciski. Automatycznie pomija po pięciu sekundach, chyba że wybierzesz oglądanie napisów. Następny odcinek i jego odliczanie ustawia się osobno.",
+  "settings.support.section": "Pomoc",
+  "settings.diagnostics.detail": "Nagrywaj diagnostykę odtwarzania i zapisz dziennik dla pomocy technicznej.",
+  "settings.libraries.more": "Pominięte biblioteki zostają na serwerze Plex i na innych urządzeniach."
 }

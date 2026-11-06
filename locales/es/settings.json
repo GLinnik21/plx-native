@@ -377,5 +377,8 @@
   "settings.playback.marker.manual": "Manual",
   "settings.playback.marker.automatic": "Automático",
   "settings.playback.intro_skip.copy": "Desactivado oculta el botón. Manual permite saltar la introducción. Automático la salta tras cinco segundos, salvo que elijas Ver introducción. Se guarda para este perfil.",
-  "settings.playback.credits_skip.copy": "Desactivado oculta Saltar créditos. Manual conserva los controles actuales. Automático salta tras cinco segundos, salvo que elijas Ver créditos. El siguiente episodio y su cuenta atrás se configuran por separado."
+  "settings.playback.credits_skip.copy": "Desactivado oculta Saltar créditos. Manual conserva los controles actuales. Automático salta tras cinco segundos, salvo que elijas Ver créditos. El siguiente episodio y su cuenta atrás se configuran por separado.",
+  "settings.support.section": "Soporte",
+  "settings.diagnostics.detail": "Graba diagnósticos de reproducción y guarda un registro para el soporte.",
+  "settings.libraries.more": "Las bibliotecas que dejas fuera siguen en tu servidor Plex y en tus otros dispositivos."
 }

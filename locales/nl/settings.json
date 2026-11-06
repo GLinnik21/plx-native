@@ -374,5 +374,8 @@
   "settings.playback.marker.manual": "Handmatig",
   "settings.playback.marker.automatic": "Automatisch",
   "settings.playback.intro_skip.copy": "Uitgeschakeld verbergt de knop. Handmatig biedt aan de intro over te slaan. Automatisch slaat na vijf seconden over, tenzij je Intro bekijken kiest. Wordt voor dit profiel opgeslagen.",
-  "settings.playback.credits_skip.copy": "Uitgeschakeld verbergt Aftiteling overslaan. Handmatig behoudt de huidige knoppen. Automatisch slaat na vijf seconden over, tenzij je Aftiteling bekijken kiest. De volgende aflevering en de aftelling worden apart ingesteld."
+  "settings.playback.credits_skip.copy": "Uitgeschakeld verbergt Aftiteling overslaan. Handmatig behoudt de huidige knoppen. Automatisch slaat na vijf seconden over, tenzij je Aftiteling bekijken kiest. De volgende aflevering en de aftelling worden apart ingesteld.",
+  "settings.support.section": "Ondersteuning",
+  "settings.diagnostics.detail": "Neem afspeeldiagnostiek op en bewaar een logboek voor ondersteuning.",
+  "settings.libraries.more": "Bibliotheken die je weglaat, blijven op je Plex-server en op je andere apparaten."
 }

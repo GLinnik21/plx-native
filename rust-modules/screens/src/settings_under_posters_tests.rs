@@ -444,7 +444,9 @@ fn the_root_row_reads_the_setting_and_names_the_poster_it_governs() {
     let read = |title, details| root_row_text(&RootInputs { under_posters: UnderPosters { title, details, sort_value: false }, ..text_fit_inputs() });
     let (value, sub) = read(false, UnderPostersDetails::YearLength);
     assert_eq!(value.as_deref(), Some("Year \u{b7} Length"), "the default reads its details line");
-    assert_eq!(sub, "Under posters, for movies and TV shows.");
+    assert_eq!(sub, "", "Settings v2: the root row has no sub-line");
+    assert_eq!(sentence_for(Some(&RootId::UnderPosters)), "Under posters, for movies and TV shows.",
+        "the sentence moved beside the table");
     assert_eq!(read(true, UnderPostersDetails::YearLength).0.as_deref(), Some("Year \u{b7} Length"), "the title is the page's own row");
     assert_eq!(read(true, UnderPostersDetails::Genre).0.as_deref(), Some("Genre"));
     assert_eq!(read(false, UnderPostersDetails::Video).0.as_deref(), Some("Video"));

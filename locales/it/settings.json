@@ -377,5 +377,8 @@
   "settings.playback.marker.manual": "Manuale",
   "settings.playback.marker.automatic": "Automatico",
   "settings.playback.intro_skip.copy": "Disattivato nasconde il pulsante. Manuale propone di saltare l’introduzione. Automatico la salta dopo cinque secondi, salvo che tu scelga di guardarla. Il valore viene salvato per questo profilo.",
-  "settings.playback.credits_skip.copy": "Disattivato nasconde Salta titoli di coda. Manuale mantiene i controlli attuali. Automatico salta dopo cinque secondi, salvo che tu scelga di guardare i titoli. L’episodio successivo e il suo conto alla rovescia si impostano separatamente."
+  "settings.playback.credits_skip.copy": "Disattivato nasconde Salta titoli di coda. Manuale mantiene i controlli attuali. Automatico salta dopo cinque secondi, salvo che tu scelga di guardare i titoli. L’episodio successivo e il suo conto alla rovescia si impostano separatamente.",
+  "settings.support.section": "Assistenza",
+  "settings.diagnostics.detail": "Registra la diagnostica della riproduzione e salva un registro per l'assistenza.",
+  "settings.libraries.more": "Le librerie che escludi restano sul tuo server Plex e sugli altri dispositivi."
 }

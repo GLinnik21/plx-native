@@ -377,5 +377,8 @@
   "settings.hud.up_next": "A continuació",
   "settings.hud.unavailable": "Aquest HUD ja no està disponible al catàleg.",
   "settings.hud.catalog_cached": "No s'han pogut actualitzar els HUD. Es mostra el catàleg desat.",
-  "settings.hud.catalog_unavailable": "No s'han pogut carregar els HUD. Torna-ho a provar més tard."
+  "settings.hud.catalog_unavailable": "No s'han pogut carregar els HUD. Torna-ho a provar més tard.",
+  "settings.support.section": "Assistència",
+  "settings.diagnostics.detail": "Enregistra diagnòstics de reproducció i desa un registre per a l'assistència.",
+  "settings.libraries.more": "Les biblioteques que deixes fora es queden al teu servidor Plex i als teus altres dispositius."
 }

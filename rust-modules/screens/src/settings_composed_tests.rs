@@ -498,13 +498,14 @@ fn a_real_push_seats_the_new_page_fresh_and_a_pop_restores_the_row_that_opened_i
 
     // Mounting the surface already seats row 0 (its own `Enter::Fresh`); three real DOWNs
     // move focus — and the engine's remembered cursor for `(id, GroupId(0))` — to row 3.
-    for i in 1..=3u32 {
+    // (Settings v2: Diagnostics is the root's own row now, so Legal notices is the fourth.)
+    for i in 1..=4u32 {
         frame(&mut d, &mut rig, 16 * i, vec![key(Key::Down, tick(16 * i))]);
     }
     let legal_row = d.focus().expect("a row is focused after a real DOWN");
-    assert_eq!(legal_row.elem, root_key(RootId::Legal), "the third DOWN is Legal notices in the signed-out fixture");
+    assert_eq!(legal_row.elem, root_key(RootId::Legal), "the fourth DOWN is Legal notices in the signed-out fixture");
 
-    frame(&mut d, &mut rig, 64, vec![key(Key::Ok, tick(64))]);
+    frame(&mut d, &mut rig, 96, vec![key(Key::Ok, tick(96))]);
     assert!(
         path(&d, id).contains("/legal:"),
         "OK on Legal notices pushed the index: {}",

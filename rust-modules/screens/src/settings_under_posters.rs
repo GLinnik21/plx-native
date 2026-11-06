@@ -387,6 +387,19 @@ fn draw_preview(p: Painter, v: UnderPosters, posters: &[&PmsMovie], foot: Option
     }
 }
 
+/// The Settings root's picture for the Under posters row: the very preview the page draws, in its
+/// own frame (stage 2 of Settings v2 moves that frame into the shared picture slot).
+pub(super) struct RootPicture<'a> {
+    pub value: UnderPosters,
+    pub posters: &'a [&'a PmsMovie],
+}
+
+impl plx_ui::follow_copy::PictureSlot for RootPicture<'_> {
+    fn draw(&self, p: Painter, _slot: Rect, measure: &dyn plx_machine::machine::Measure) {
+        draw_preview(p, self.value, self.posters, None, measure);
+    }
+}
+
 /// The posters a page's preview shows: the current library's first cached ones.
 fn preview_posters<'a>(cx: &Cx<'a, InnerHost>) -> Vec<&'a PmsMovie> {
     cx.views.directory.sample(PREVIEW_TILES).collect()

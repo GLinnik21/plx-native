@@ -374,5 +374,8 @@
   "settings.playback.marker.manual": "Kézi",
   "settings.playback.marker.automatic": "Automatikus",
   "settings.playback.intro_skip.copy": "Kikapcsolva elrejti az átugrás gombját. Kézi módban felajánlja az átugrást. Automatikus módban öt másodperc után átugrik, ha nem választod a bevezető megtekintését. A beállítás ehhez a profilhoz tartozik.",
-  "settings.playback.credits_skip.copy": "Kikapcsolva elrejti a stáblista átugrását. Kézi módban megmaradnak a jelenlegi vezérlők. Automatikus módban öt másodperc után átugrik, ha nem választod a stáblista megtekintését. A következő rész és a visszaszámlálása külön állítható."
+  "settings.playback.credits_skip.copy": "Kikapcsolva elrejti a stáblista átugrását. Kézi módban megmaradnak a jelenlegi vezérlők. Automatikus módban öt másodperc után átugrik, ha nem választod a stáblista megtekintését. A következő rész és a visszaszámlálása külön állítható.",
+  "settings.support.section": "Támogatás",
+  "settings.diagnostics.detail": "Lejátszási diagnosztika rögzítése és napló mentése a támogatáshoz.",
+  "settings.libraries.more": "A kihagyott könyvtárak megmaradnak a Plex-szerveren és a többi eszközön."
 }

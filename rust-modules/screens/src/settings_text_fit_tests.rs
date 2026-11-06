@@ -50,6 +50,13 @@ fn every_settings_row_fits_its_column_in_every_language() {
         let tag = language.tag();
         overflowing(&format!("{tag} root (signed out)"), &RootPage::new(EntryId(0), test_support::cx(None).views.directory).form.table, &mut out);
         overflowing(&format!("{tag} language"), &LanguagePage::new(EntryId(0)).form.table, &mut out);
+        for status in [plx_platform::playback_trace::Status::Off, plx_platform::playback_trace::Status::Recording,
+            plx_platform::playback_trace::Status::Saved, plx_platform::playback_trace::Status::Failed] {
+            let mut diagnostics = FormTable::<_, _, SettingsPage>::new(super::super::registry::BAND);
+            diagnostics.table.compact = false;
+            diagnostics.set(diagnostics::diagnostics_form(status), None);
+            overflowing(&format!("{tag} diagnostics page {status:?}"), &diagnostics.table, &mut out);
+        }
 
         overflowing_root(&format!("{tag} root (signed in)"), &base_root_inputs(), &mut out);
         for trace in [plx_platform::playback_trace::Status::Off, plx_platform::playback_trace::Status::Recording,

@@ -374,5 +374,8 @@
   "settings.playback.marker.manual": "Manuell",
   "settings.playback.marker.automatic": "Automatisch",
   "settings.playback.intro_skip.copy": "Deaktiviert blendet die Schaltfläche aus. Manuell bietet das Überspringen an. Automatisch überspringt nach fünf Sekunden, sofern du nicht „Vorspann ansehen“ wählst. Wird für dieses Profil gespeichert.",
-  "settings.playback.credits_skip.copy": "Deaktiviert blendet „Abspann überspringen“ aus. Manuell behält die bisherigen Steuerelemente bei. Automatisch überspringt nach fünf Sekunden, sofern du nicht „Abspann ansehen“ wählst. Die nächste Folge und ihr Countdown werden separat eingestellt."
+  "settings.playback.credits_skip.copy": "Deaktiviert blendet „Abspann überspringen“ aus. Manuell behält die bisherigen Steuerelemente bei. Automatisch überspringt nach fünf Sekunden, sofern du nicht „Abspann ansehen“ wählst. Die nächste Folge und ihr Countdown werden separat eingestellt.",
+  "settings.support.section": "Support",
+  "settings.diagnostics.detail": "Wiedergabe-Diagnose aufzeichnen und ein Protokoll für den Support speichern.",
+  "settings.libraries.more": "Mediatheken, die du weglässt, bleiben auf deinem Plex-Server und auf deinen anderen Geräten."
 }

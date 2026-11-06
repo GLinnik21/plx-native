@@ -1547,5 +1547,17 @@
   "settings.playback.credits_skip.copy": {
     "value": "Disabled hides Skip Credits. Manual keeps the current credit controls. Automatic skips after five seconds unless you choose Watch Credits. Next episode settings still control what plays next; their Up Next countdown is independent.",
     "description": "Playback marker skipping preference or cancellation action."
+  },
+  "settings.support.section": {
+    "value": "Support",
+    "description": "Settings root group: privacy, diagnostics, legal notices and About."
+  },
+  "settings.diagnostics.detail": {
+    "value": "Record playback diagnostics and save a log for support.",
+    "description": "Settings root: the sentence beside the Diagnostics row."
+  },
+  "settings.libraries.more": {
+    "value": "Libraries you leave out stay on your Plex server and on your other devices.",
+    "description": "Settings root: second sentence beside Favorite libraries (proposed copy)."
   }
 }

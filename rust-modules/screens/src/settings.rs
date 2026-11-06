@@ -482,6 +482,7 @@ fn mount_page(
         SettingsPage::LibraryFavourites => Box::new(super::onboard::OnboardScreen::library(entry, cx.views.directory)),
         SettingsPage::Picker(kind) => Box::new(super::preferences::PickerPage::new(entry, kind)),
         SettingsPage::PlayerHud => Box::new(super::hud_settings::HudPage::new(entry)),
+        SettingsPage::Diagnostics => Box::new(diagnostics::DiagnosticsPage::new(entry)),
         page @ (SettingsPage::HudGallery | SettingsPage::HudDetail(..) | SettingsPage::HudAbout(..) | SettingsPage::HudPreview(..)) =>
             Box::new(super::hud_settings::HudPage::at(entry, page)),
     }
@@ -986,9 +987,9 @@ enum RootId {
     /// ([`root_form`] assigns it); its identity is the machine, so a rebuild keeps the row.
     Plaintext(ServerMachineId),
     Privacy,
-    PlaybackTrace,
-    TraceExport,
-    TraceDelete,
+    /// The single Diagnostics row (Settings v2): its value reads Off or On and it opens the page
+    /// that holds the trace rows.
+    Diagnostics,
     Legal,
     About,
 }
@@ -1010,9 +1011,7 @@ impl FormId for RootId {
             RootId::About => 9,
             RootId::Resolution => 10,
             RootId::UnderPosters => 11,
-            RootId::PlaybackTrace => 12,
-            RootId::TraceExport => 13,
-            RootId::TraceDelete => 14,
+            RootId::Diagnostics => 12,
             // the base; `root_form` adds the position (`item_keyed`)
             RootId::Plaintext(_) => PLAINTEXT_KEY_BASE,
         })
@@ -1027,9 +1026,6 @@ enum Action {
     Door,
     AutoSignIn,
     TrailerAutoplay,
-    PlaybackTrace,
-    TraceExport,
-    TraceDelete,
     /// A server's "connect without encryption" switch.
     Plaintext(ServerMachineId),
 }
@@ -1057,6 +1053,9 @@ pub struct RootPage {
     alert: PlaintextAlert,
     /// `plex::grant::revision` as last read — an offer or an answer landing rebuilds the rows.
     grant_seen: u64,
+    /// The sentence beside the table: the focused row's own, else the page's (Settings v2). A pure
+    /// function of the focused row ([`sentence_for`]); this only fades between its answers.
+    follow: plx_ui::follow_copy::FollowCopy,
 }
 
 struct RootState {
@@ -1158,10 +1157,37 @@ fn trace_label(status: plx_platform::playback_trace::Status) -> &'static str {
     }
 }
 
+/// **The sentence a root row states beside the table** (Settings v2). The rows carry no sub-line:
+/// what each one used to say under its label is said here, in the left column, while the row has
+/// focus. A row with no sentence of its own (a server's switch, which states its own status in the
+/// table) shows the page's. Pure: a function of the focused row's identity alone, so a test states
+/// every answer and the screen only fades between them.
+fn sentence_for(id: Option<&RootId>) -> Cow<'static, str> {
+    use plx_platform::i18n::msg;
+    match id {
+        Some(RootId::Favourites) => Cow::Owned(format!("{} {}", msg::settings_libraries_detail(), msg::settings_libraries_more())),
+        Some(RootId::UnderPosters) => Cow::Borrowed(msg::under_posters_detail()),
+        Some(RootId::Playback) => Cow::Borrowed(msg::settings_playback_detail()),
+        Some(RootId::AudioSubtitles) => Cow::Borrowed(msg::settings_audio_detail()),
+        Some(RootId::Language) => Cow::Borrowed(msg::settings_language_detail()),
+        Some(RootId::AutoSignIn) => Cow::Borrowed(msg::settings_auto_sign_in_detail()),
+        Some(RootId::TrailerAutoplay) => Cow::Borrowed(msg::settings_trailers_detail()),
+        Some(RootId::Resolution) => Cow::Borrowed(msg::settings_resolution_detail()),
+        Some(RootId::Privacy) => Cow::Borrowed(msg::settings_privacy_detail()),
+        Some(RootId::Diagnostics) => Cow::Borrowed(msg::settings_diagnostics_detail()),
+        Some(RootId::Legal) => Cow::Borrowed(msg::settings_legal_detail()),
+        Some(RootId::About) => Cow::Borrowed(msg::settings_about_detail()),
+        Some(RootId::Plaintext(_)) | None => Cow::Borrowed(msg::settings_root_copy()),
+    }
+}
+
 fn root_form(inputs: &RootInputs) -> Form<RootId, Action, SettingsPage> {
     let signed_in = inputs.signed_in;
-    // Order: Libraries, Playback (player experience only), System (Language, Automatically Sign
-    // In, Trailer autoplay), Unencrypted connections, Privacy, Diagnostics, then About alone at the very end.
+    // Order (Settings v2): Libraries (Favorite libraries, Under posters), Playback (Video &
+    // playback, Audio & subtitles), System (Language, Automatically Sign In, Play trailers
+    // automatically, Interface resolution on webOS 1-3), Unencrypted connections, then Support
+    // (Privacy & data, Diagnostics, Legal notices, About PlxNative). A row is its label and a value,
+    // a switch or a chevron: its sentence is [`sentence_for`]'s.
     //
     // The Libraries section is Libraries and the row is Favorite libraries: the switch governs
     // the whole app — Home's shelves, the top tab strip and the Library's Sources picker.
@@ -1172,7 +1198,6 @@ fn root_form(inputs: &RootInputs) -> Form<RootId, Action, SettingsPage> {
             RowKind::Nav(SettingsPage::Favourites),
             Action::Door,
             Row::new(plx_platform::i18n::msg::settings_libraries_title())
-                .detail(plx_platform::i18n::msg::settings_libraries_detail())
                 .value(plx_platform::i18n::msg::settings_libraries_count(inputs.library_count))
                 .chevron(true),
         )
@@ -1181,7 +1206,6 @@ fn root_form(inputs: &RootInputs) -> Form<RootId, Action, SettingsPage> {
             RowKind::Nav(SettingsPage::UnderPosters),
             Action::Door,
             Row::new(plx_platform::i18n::msg::under_posters_title())
-                .detail(plx_platform::i18n::msg::under_posters_detail())
                 .value(under_posters::summary(inputs.under_posters))
                 .chevron(true),
         );
@@ -1190,18 +1214,14 @@ fn root_form(inputs: &RootInputs) -> Form<RootId, Action, SettingsPage> {
             RootId::Playback,
             RowKind::Nav(SettingsPage::Playback),
             Action::Door,
-            Row::new(plx_platform::i18n::msg::settings_playback_title())
-                .detail(plx_platform::i18n::msg::settings_playback_detail())
-                .chevron(true),
+            Row::new(plx_platform::i18n::msg::settings_playback_title()).chevron(true),
         )
         .item_if(
             signed_in,
             RootId::AudioSubtitles,
             RowKind::Nav(SettingsPage::AudioSubtitles),
             Action::Door,
-            Row::new(plx_platform::i18n::msg::settings_audio_title())
-                .detail(plx_platform::i18n::msg::settings_audio_detail())
-                .chevron(true),
+            Row::new(plx_platform::i18n::msg::settings_audio_title()).chevron(true),
         );
     let system = FormSection::new(plx_platform::i18n::msg::settings_system_section())
         .item(
@@ -1209,7 +1229,6 @@ fn root_form(inputs: &RootInputs) -> Form<RootId, Action, SettingsPage> {
             RowKind::Nav(SettingsPage::Language),
             Action::Door,
             Row::new(plx_platform::i18n::msg::settings_language_title())
-                .detail(plx_platform::i18n::msg::settings_language_detail())
                 .value(preference_name(inputs.language))
                 .chevron(true),
         )
@@ -1218,18 +1237,14 @@ fn root_form(inputs: &RootInputs) -> Form<RootId, Action, SettingsPage> {
             RootId::AutoSignIn,
             RowKind::Toggle,
             Action::AutoSignIn,
-            Row::new(plx_platform::i18n::msg::settings_auto_sign_in_title())
-                .detail(plx_platform::i18n::msg::settings_auto_sign_in_detail())
-                .toggle(inputs.auto_sign_in),
+            Row::new(plx_platform::i18n::msg::settings_auto_sign_in_title()).toggle(inputs.auto_sign_in),
         )
         .item_if(
             signed_in,
             RootId::TrailerAutoplay,
             RowKind::Toggle,
             Action::TrailerAutoplay,
-            Row::new(plx_platform::i18n::msg::settings_trailers_title())
-                .detail(plx_platform::i18n::msg::settings_trailers_detail())
-                .toggle(inputs.trailer_autoplay),
+            Row::new(plx_platform::i18n::msg::settings_trailers_title()).toggle(inputs.trailer_autoplay),
         )
         // Signed in AND on webOS 1-3 only (`resolution_offered`), like the switches above for the
         // first: the signed-out root is the sign-in path's own short list. On webOS 4+ the root is
@@ -1242,7 +1257,6 @@ fn root_form(inputs: &RootInputs) -> Form<RootId, Action, SettingsPage> {
             RowKind::Nav(SettingsPage::Picker(PickerKind::UiResolution)),
             Action::Door,
             Row::new(plx_platform::i18n::msg::settings_resolution_title())
-                .detail(plx_platform::i18n::msg::settings_resolution_detail())
                 .value(super::preferences::resolution_label(inputs.resolution))
                 .chevron(true),
         );
@@ -1252,6 +1266,8 @@ fn root_form(inputs: &RootInputs) -> Form<RootId, Action, SettingsPage> {
         for (i, row) in inputs.plaintext.iter().enumerate() {
             let label = Row::new(&row.name);
             let label = if row.named { label.server_label() } else { label };
+            // The one sub-line the root keeps: a server's switch states a STATUS (whether a grant
+            // carries it now), which has to stay beside the switch it describes.
             plaintext = plaintext.item_keyed(
                 RootId::Plaintext(row.machine.clone()),
                 RowKey(PLAINTEXT_KEY_BASE + i as u32),
@@ -1263,51 +1279,39 @@ fn root_form(inputs: &RootInputs) -> Form<RootId, Action, SettingsPage> {
             );
         }
     }
-    let privacy = FormSection::new(plx_platform::i18n::msg::settings_privacy_section())
+    let support = FormSection::new(plx_platform::i18n::msg::settings_support_section())
         .item(
             RootId::Privacy,
             RowKind::Nav(SettingsPage::Privacy),
             Action::Door,
-            Row::new(plx_platform::i18n::msg::settings_privacy_title())
-                .detail(plx_platform::i18n::msg::settings_privacy_detail())
+            Row::new(plx_platform::i18n::msg::settings_privacy_title()).chevron(true),
+        )
+        .item(
+            RootId::Diagnostics,
+            RowKind::Nav(SettingsPage::Diagnostics),
+            Action::Door,
+            Row::new(plx_platform::i18n::msg::settings_trace_section())
+                .value(diagnostics::root_value(inputs.trace))
                 .chevron(true),
         )
         .item(
             RootId::Legal,
             RowKind::Nav(SettingsPage::Legal),
             Action::Door,
-            Row::new(plx_platform::i18n::msg::settings_legal_title())
-                .detail(plx_platform::i18n::msg::settings_legal_detail())
-                .chevron(true),
+            Row::new(plx_platform::i18n::msg::settings_legal_title()).chevron(true),
+        )
+        .item(
+            RootId::About,
+            RowKind::Nav(SettingsPage::About),
+            Action::Door,
+            Row::new(plx_platform::i18n::msg::settings_about_title()).chevron(true),
         );
-    let recording = inputs.trace == plx_platform::playback_trace::Status::Recording;
-    let trace = FormSection::new(plx_platform::i18n::msg::settings_trace_section())
-        .disabled(inputs.trace == plx_platform::playback_trace::Status::Saving)
-        .item(RootId::PlaybackTrace, RowKind::Toggle, Action::PlaybackTrace,
-            Row::new(plx_platform::i18n::msg::settings_trace_title())
-                .detail(plx_platform::i18n::msg::settings_trace_detail()).toggle(recording))
-        .item(RootId::TraceExport, RowKind::Button, Action::TraceExport,
-            Row::new(plx_platform::i18n::msg::settings_trace_export())
-                .detail(plx_platform::i18n::msg::settings_trace_export_detail())
-                .value(trace_label(inputs.trace)))
-        .item(RootId::TraceDelete, RowKind::Button, Action::TraceDelete,
-            Row::new(plx_platform::i18n::msg::settings_trace_delete()));
-    let about = FormSection::new(plx_platform::i18n::msg::settings_about_section()).item(
-        RootId::About,
-        RowKind::Nav(SettingsPage::About),
-        Action::Door,
-        Row::new(plx_platform::i18n::msg::settings_about_title())
-            .detail(plx_platform::i18n::msg::settings_about_detail())
-            .chevron(true),
-    );
     Form::new()
         .section(libraries)
         .section(playback)
         .section(system)
         .section(plaintext)
-        .section(privacy)
-        .section(trace)
-        .section(about)
+        .section(support)
 }
 
 impl RootPage {
@@ -1322,6 +1326,7 @@ impl RootPage {
             pending_plaintext: None,
             alert: PlaintextAlert::new(ALERT_GROUP, super::registry::ALERT, super::registry::ALERT + 1),
             grant_seen: plx_plex::plex::grant::revision(),
+            follow: plx_ui::follow_copy::FollowCopy::new(plx_platform::i18n::msg::settings_root_copy()),
             state: RootState {
                 sel: RowKey(0),
                 auto_sign_in: false,
@@ -1372,6 +1377,7 @@ impl RootPage {
         if let Some(key) = self.form.key_at(self.form.table.sel.max(0) as usize) {
             self.state.sel = key;
         }
+        self.follow.follow(&sentence_for(self.form.selected_id()));
     }
 
     /// **Unencrypted connections**: one input per server the signed-in account answered
@@ -1435,7 +1441,8 @@ impl RootPage {
                 None,
                 plx_platform::i18n::msg::settings_title(),
                 plx_platform::i18n::msg::settings_root_copy(),
-            ),
+            )
+            .with_follow(&self.follow),
             &self.form.table,
             GroupId(0),
             self.entry,
@@ -1451,12 +1458,6 @@ impl RootPage {
         };
         match action {
             Action::Door => {}
-            Action::PlaybackTrace => fx.push(Fx::App(AppFx::PlaybackTrace(
-                if self.state.trace == plx_platform::playback_trace::Status::Recording {
-                    plx_platform::playback_trace::Command::Stop
-                } else { plx_platform::playback_trace::Command::Start }))),
-            Action::TraceExport => fx.push(Fx::App(AppFx::PlaybackTrace(plx_platform::playback_trace::Command::Export))),
-            Action::TraceDelete => fx.push(Fx::App(AppFx::PlaybackTrace(plx_platform::playback_trace::Command::Delete))),
             Action::AutoSignIn => {
                 let on = !self.state.auto_sign_in;
                 if let Ok(ticket) = plx_plex::plex::session::queue_update_ticket(move |current|
@@ -1552,9 +1553,6 @@ impl Machine<InnerHost> for RootPage {
                 Handled::Yes
             }
             ScreenEvent::Tick(t) => {
-                if matches!(self.state.trace, plx_platform::playback_trace::Status::Recording | plx_platform::playback_trace::Status::Saving) {
-                    fx.push(Fx::App(AppFx::PlaybackTrace(plx_platform::playback_trace::Command::Status)));
-                }
                 let mut landed = self.session_watch.changed();
                 if self.pending_auto.as_ref().is_some_and(|(_, ticket)| !matches!(ticket.try_recv(),
                     Err(std::sync::mpsc::TryRecvError::Empty))) {
@@ -1594,6 +1592,7 @@ impl Machine<InnerHost> for RootPage {
 
                 self.form.table
                     .update(t.dt(), RouteLayout::screen().sectioned_table().h);
+                self.follow.update(t.dt());
                 Handled::Yes
             }
             ScreenEvent::FocusMoved { to, .. } => {
@@ -1601,6 +1600,7 @@ impl Machine<InnerHost> for RootPage {
                 if let Some(key) = self.form.key_at(self.form.table.sel.max(0) as usize) {
                     self.state.sel = key;
                 }
+                self.follow.follow(&sentence_for(self.form.selected_id()));
                 Handled::Yes
             }
             ScreenEvent::Activate(e) => {
@@ -1682,7 +1682,20 @@ impl Screen<InnerHost> for RootPage {
     }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
+        // The picture slot: only Favorite libraries and Under posters wear one (Settings v2), built
+        // from the focused row alone and the library's own first posters.
+        let posters: Vec<&plx_data::pms::PmsMovie> = f.cx.views.directory.sample(PICTURE_POSTERS).collect();
+        let fan = plx_ui::follow_copy::PosterFan { arts: posters.iter().map(|m| plx_ui::widgets::Art::Poster(Some(super::registry::tile_facts::of(m)))).collect() };
+        let under = under_posters::RootPicture { value: self.state.under_posters, posters: &posters };
+        let picture: Option<&dyn plx_ui::follow_copy::PictureSlot> = match self.form.selected_id() {
+            Some(RootId::Favourites) => Some(&fan),
+            Some(RootId::UnderPosters) => Some(&under),
+            _ => None,
+        };
         let mut v = self.view();
+        if let Some(picture) = picture {
+            v.header.picture = Some(picture);
+        }
         plx_ui::screen::Part::<InnerHost>::draw(&mut v, f, Rect::FULL);
         self.alert.draw(f, self.entry);
     }
@@ -1699,6 +1712,14 @@ impl Screen<InnerHost> for RootPage {
 
 #[path = "settings_under_posters.rs"]
 mod under_posters;
+#[path = "settings_diagnostics.rs"]
+mod diagnostics;
+#[cfg(test)]
+#[path = "settings_v2_tests.rs"]
+mod v2_tests;
+
+/// How many of the library's posters the root's Favorite libraries fan draws.
+const PICTURE_POSTERS: usize = 4;
 pub use under_posters::caption_policy_of;
 
 #[cfg(test)]

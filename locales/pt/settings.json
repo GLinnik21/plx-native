@@ -377,5 +377,8 @@
   "settings.playback.marker.manual": "Manual",
   "settings.playback.marker.automatic": "Automático",
   "settings.playback.intro_skip.copy": "Desativado oculta o botão. Manual oferece a opção de pular a introdução. Automático pula após cinco segundos, a menos que você escolha assistir à introdução. A configuração é salva para este perfil.",
-  "settings.playback.credits_skip.copy": "Desativado oculta Pular créditos. Manual mantém os controles atuais. Automático pula após cinco segundos, a menos que você escolha assistir aos créditos. O próximo episódio e sua contagem regressiva são configurados separadamente."
+  "settings.playback.credits_skip.copy": "Desativado oculta Pular créditos. Manual mantém os controles atuais. Automático pula após cinco segundos, a menos que você escolha assistir aos créditos. O próximo episódio e sua contagem regressiva são configurados separadamente.",
+  "settings.support.section": "Suporte",
+  "settings.diagnostics.detail": "Gravar diagnósticos de reprodução e guardar um registo para o suporte.",
+  "settings.libraries.more": "As bibliotecas que deixar de fora continuam no seu servidor Plex e nos seus outros dispositivos."
 }
