@@ -964,6 +964,15 @@ pub const fn aq_caps() -> (i64, i64) {
     (AQ_VIDEO_BYTES as i64, AQ_AUDIO_BYTES as i64)
 }
 
+/// A native release transition the telemetry owner records at the exact moment it happens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReleaseStep {
+    NativeUnload,
+    AcbPlaneUnload,
+    NativeQuarantined,
+    NativeDestroyed,
+}
+
 /// Why an HLS clock fence was refused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HlsClockFenceError {

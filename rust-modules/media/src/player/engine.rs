@@ -146,8 +146,8 @@ pub use plx_play_feed::feed_state::AbandonedLoad;
 pub use plx_play_feed::feed_state::PendingRelease;
 
 /// The `on_release_step` hook: the release's breadcrumbs belong to the common telemetry owner.
-pub fn release_step(step: plx_play_feed::native_release::ReleaseStep) {
-    use plx_play_feed::native_release::ReleaseStep;
+pub fn release_step(step: plx_playback_contract::feed::ReleaseStep) {
+    use plx_playback_contract::feed::ReleaseStep;
     window_step(match step {
         ReleaseStep::NativeUnload => WindowStage::NativeUnload,
         ReleaseStep::AcbPlaneUnload => WindowStage::AcbPlaneUnload,
@@ -375,12 +375,6 @@ fn with_window_id(mt: &MainThread, p: &str) -> String {
 /// The `on_exported_window_create` hook.
 pub fn exported_window_created() {
     window_step(WindowStage::ExportedWindowCreate);
-}
-
-/// The `demux_transport` hook: the HTTPS credential facade is media-owned (`curlio`), so the
-/// composition names it and the executor only calls the function.
-pub fn demux_transport() -> crate::ff::DemuxTransport {
-    crate::ff::DemuxTransport::new(crate::curlio::range_factory(), crate::curlio::CREDENTIAL_GATE)
 }
 
 pub use super::route_start::{reload_at, reload_transcode, reload_transcode_tracked,
