@@ -791,6 +791,7 @@ dependencies = [
  "plx_machine",
  "plx_net",
  "plx_platform",
+ "plx_playback_contract",
  "plx_plex",
  "plx_telemetry",
  "serde",
