@@ -326,7 +326,8 @@ fn load_bundled() -> Option<plx_base::dynlib::Loaded> {
         }
         _ => {
             plx_base::eventlog::log(&format!(
-                "net: {BUNDLED_CURL_SONAME} opened but is missing curl_easy_* symbols —                  falling back to the system libcurl"
+                "net: {BUNDLED_CURL_SONAME} opened but is missing curl_easy_* symbols — falling back to the \
+                 system libcurl"
             ));
             None
         }
