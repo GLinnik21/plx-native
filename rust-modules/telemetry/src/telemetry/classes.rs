@@ -502,7 +502,7 @@ impl TraceOutcome {
 
 /// **How long a native Load spent in flight, as a bucket — never the millisecond count.**
 ///
-/// Recorded once per attempt, either when `player::threads::load_thread`'s Load-returned gate
+/// Recorded once per attempt, either when `plx_play_feed::native_load::load_thread`'s Load-returned gate
 /// opens (the ordinary case) or when issue #74 D.1.4's `player::pump::NATIVE_LOAD_BUDGET` fires
 /// first (the k5lp hang this bucket exists to make visible on a dashboard rather than only in a
 /// device log). A duration is exactly the kind of measurement `PlaybackErrorContext`'s other

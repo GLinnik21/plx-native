@@ -112,7 +112,7 @@ pub(super) fn start(ps: &mut PlaybackSession, pa: &mut super::adapter::PlayerAda
     let input = ProbeOpen {
         attempt, url,
         transport: plx_platform::tv::uri::installed(),
-        display: super::sink(),
+        display: pa.display_sink(),
         plane: super::plane(),
         log: super::log,
         app_id: plx_base::paths::app_id().to_owned(),
@@ -233,7 +233,7 @@ mod port_tests {
         fn new() -> Rig {
             let ps = PlaybackSession::IDLE;
             crate::route::reset_player_control_for_test(&ps);
-            let mut pa = super::super::adapter::PlayerAdapter::new(unsafe { MainThread::assume() });
+            let mut pa = super::super::adapter::PlayerAdapter::new_fed(unsafe { MainThread::assume() });
             let script = Arc::new(Mutex::new(Script::default()));
             pa.install_uri_probe(Box::new(FakeProbe { script: script.clone() }));
             Rig { ps, pa, script }

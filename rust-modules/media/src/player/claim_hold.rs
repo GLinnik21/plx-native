@@ -163,7 +163,7 @@ mod tests {
             Rig {
                 _serial: serial,
                 clock,
-                pa: super::super::adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() }),
+                pa: super::super::adapter::PlayerAdapter::new_fed(unsafe { plx_base::task::MainThread::assume() }),
                 ps: crate::route::PlaybackSession::IDLE,
             }
         }
@@ -234,7 +234,7 @@ mod tests {
         let (token, _) = FEED_SHARED
             .reserve_hls_prime_play(HlsPrimeKind::Fresh, generation, FEED_SHARED.hls_recovery())
             .expect("the Initial prime is owed the Play once the viewer hold is released");
-        assert_ne!(unsafe { crate::player::sink().play(rig.pa.mt()) }, 0);
+        assert_ne!(unsafe { crate::player::test_physical::sink().play(rig.pa.mt()) }, 0);
         assert!(matches!(FEED_SHARED.complete_hls_prime_play(token, true), HlsPlayCompletion::Accepted { .. }));
         assert_eq!(crate::player::ffi_host::play_calls_for_test(), plays + 1);
         assert!(rig.position().1, "the sink clock is running again");

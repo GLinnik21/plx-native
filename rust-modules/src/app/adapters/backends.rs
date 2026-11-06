@@ -18,6 +18,13 @@ use plx_media::route::PlaybackSession;
 use plx_platform::tv::plane::{self, PlaneFacts, PlaneOwner, DEFAULT_PLAYER_TYPE};
 use plx_platform::tv::sink::{self, DisplaySink, VP_EXPORTED, VP_NONE};
 use std::os::raw::c_int;
+#[cfg(feature = "play-feed")]
+use plx_play_feed::{control::FeedBackend, feed_resources::{FeedResources, LoadReceipt},
+    native_executor::{FeedHooks, LaunchHooks, NativeHooks, PrepareHooks, ReleaseHooks},
+    pcm_lead::PcmLead, physical::FeedSet, sf_event::SfEventHooks, shared::{Stage, FEED_SHARED},
+    sink_fence::SinkFence, SendPtr};
+#[cfg(feature = "play-feed")]
+use plx_platform::tv::sink::{RefusingSink, UnloadTicket, VideoSink};
 #[cfg(feature = "play-uri")]
 use plx_media::route::uri_preflight::{OriginalQualifier, ProductEvidence, ProductQualifier, ResolvePort};
 #[cfg(feature = "play-uri")]
@@ -100,6 +107,16 @@ fn acb_init_acb(mt: &MainThread, display: &dyn DisplaySink) -> PlaneFacts {
 /// form.
 pub(crate) fn compose_backends(adapter: &mut PlayerAdapter, session: &mut PlaybackSession,
     controlled: bool) {
+    #[cfg(feature = "play-feed")]
+    if !adapter.composed_backends().feed && !install_feed(adapter, &TV_HOOKS) {
+        log("feed: physical set installation refused");
+    }
+    // A build with no Feed reaches the seam through the platform's own sink, unfenced: there is no
+    // off-frame `Unload` to fence it from.
+    #[cfg(not(feature = "play-feed"))]
+    if !adapter.install_display_sink(sink::installed) {
+        log("player: display sink installation refused");
+    }
     #[cfg(feature = "play-uri")]
     if !controlled && !install_uri_product(adapter, session) {
         log("uri: product driver installation refused");
@@ -111,6 +128,109 @@ pub(crate) fn compose_backends(adapter: &mut PlayerAdapter, session: &mut Playba
     #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
     crate::dev::uriprobe::install(adapter);
     session.install_backends(adapter.composed_backends());
+}
+
+/// The hooks table the Feed's native executor runs over, built over the raw sink and the slice
+/// clock the composition names, as one value. A macro, not a function, because a hook is a plain
+/// `fn` that can capture nothing: the raw sink has to be a path the functions below can name. The
+/// television's table ([`TV_HOOKS`]) and the host tests' (`TEST_HOOKS`) are two expansions, so what
+/// differs between them is exactly the two paths and no `cfg` stands in the production one.
+///
+/// Every hook but the release takes the FENCED sink ([`SinkFence`]), which refuses each verb while
+/// an off-frame `Unload` owns the native object; the release takes the raw one. The policy the
+/// hooks run (the ACB mirror, the preroll mute, the window breadcrumbs, the HTTPS credential
+/// facade) is `plx_media`'s; this table only says which sink it runs over.
+#[cfg(feature = "play-feed")]
+macro_rules! native_hooks_over {
+    ($raw:path, $clock:path) => {{
+        const FENCE: SinkFence = SinkFence::new($raw, &RefusingSink($raw));
+        fn fenced() -> &'static dyn VideoSink { FENCE.current() }
+        fn mirror_playstate(mt: &MainThread, stage: Stage, playing: bool) {
+            plx_media::player::acb_mirror_playstate_on(fenced(), mt, stage, playing);
+        }
+        fn mute_for_preroll(mt: &MainThread) { plx_media::player::mute_for_preroll_on(fenced(), mt); }
+        fn load_thread(payload: SendPtr<std::os::raw::c_char>, native_epoch: u32,
+            receipt: Option<LoadReceipt>, pcm_lead: PcmLead) {
+            plx_play_feed::native_load::load_thread(fenced, payload, native_epoch, receipt, pcm_lead);
+        }
+        fn spawn_unload(ticket: UnloadTicket) -> Option<std::thread::JoinHandle<()>> {
+            plx_base::task::spawn("sf-unload", move || unsafe { $raw().unload(&ticket) })
+        }
+        NativeHooks {
+            prepare: PrepareHooks {
+                sink: fenced,
+                on_exported_window_create: plx_media::player::engine::exported_window_created,
+                load_refusal_latch: plx_telemetry::telemetry::classes::DemuxExitClass::LoadRefused.latch(),
+            },
+            launch: LaunchHooks {
+                demux_transport: plx_media::player::engine::demux_transport,
+                load_thread,
+                sink: fenced,
+            },
+            feed: FeedHooks { sink: fenced, mirror_playstate, mute_for_preroll, feed_clock_us: $clock },
+            release: ReleaseHooks {
+                raw_sink: $raw,
+                plane: plx_platform::tv::plane::installed(),
+                on_release_step: plx_media::player::engine::release_step,
+                on_exported_window_destroy: plx_media::player::engine::exported_window_destroyed,
+                spawn_unload,
+            },
+        }
+    }};
+}
+
+/// The television's (and the simulator's, whose port table holds the host sink) hooks: the
+/// installed port's sink and the Feed's own monotonic clock.
+#[cfg(feature = "play-feed")]
+const TV_HOOKS: NativeHooks = native_hooks_over!(sink::installed, plx_play_feed::shared::vclock_us);
+
+/// The host tests' hooks: the host sink (a hostsim test binary installs no port) and a clock that
+/// never moves, so the host seam's near-free `sf_feed` cannot run out a slice on a slow machine.
+#[cfg(all(test, feature = "play-feed"))]
+const TEST_HOOKS: NativeHooks = native_hooks_over!(test_raw_sink, test_clock_us);
+
+#[cfg(all(test, feature = "play-feed"))]
+fn test_raw_sink() -> &'static dyn VideoSink {
+    #[cfg(feature = "hostsim")]
+    {
+        &plx_media::player::HOST_SINK
+    }
+    #[cfg(not(feature = "hostsim"))]
+    {
+        sink::installed()
+    }
+}
+
+#[cfg(all(test, feature = "play-feed"))]
+fn test_clock_us() -> u64 { 0 }
+
+/// Compose the buffer-feed backend into the player's physical set: the Feed backend over the
+/// process's shared feed state and `hooks`, with the URI driver's seat beside it, and the sink the
+/// set's hooks go through handed to the adapter beside it. The pipeline callback has no user-data
+/// pointer, so its hooks are installed here too, once per process, before the first `Load`. The
+/// adapter starts with the contract's URI-only set, so this runs before the URI driver is
+/// installed and before the session is told the set. False when the adapter refused the set.
+#[cfg(feature = "play-feed")]
+pub(crate) fn install_feed(adapter: &mut PlayerAdapter, hooks: &'static NativeHooks) -> bool {
+    let set = FeedSet::new(FeedBackend::new(FeedResources::new(&FEED_SHARED, hooks)));
+    let display_sink = set.display_sink();
+    if adapter.install_physical(Box::new(set), display_sink).is_err() {
+        return false;
+    }
+    let _ = plx_play_feed::sf_event::install(
+        &SfEventHooks { audio_rebuild_presented: plx_media::player::audio_rebuild_presented });
+    true
+}
+
+/// An adapter with the Feed composed in, as the boot composes it: what an app test builds when
+/// the player's own physical set is part of what it drives.
+#[cfg(test)]
+pub(crate) fn test_adapter() -> PlayerAdapter {
+    #[cfg_attr(not(feature = "play-feed"), allow(unused_mut))]
+    let mut adapter = PlayerAdapter::new(unsafe { MainThread::assume() });
+    #[cfg(feature = "play-feed")]
+    assert!(install_feed(&mut adapter, &TEST_HOOKS), "a fresh adapter takes the composed Feed set");
+    adapter
 }
 
 /// Explicit product URI settings captured with the resolve port's certification evidence.

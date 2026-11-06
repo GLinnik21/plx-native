@@ -16,13 +16,15 @@
 //! the slot takes `&mut PlayerAdapter`, and the token is `!Send`, so a closure that captured
 //! either cannot be handed to `task::spawn`. The exceptions are the honest ones: the two callbacks
 //! above are `extern "C"` entry points *from* the library thread and touch only `FEED_SHARED`,
-//! `threads::load_thread` calls `sf_load` off-main by design (see `ffi`), and a real stop's
+//! the Load worker (`plx_play_feed::native_load::load_thread`) calls `sf_load` off-main by design (see `ffi`), and a real stop's
 //! `sf_unload` runs on the `sf-unload` worker on an `UnloadTicket` (`engine::PendingRelease`): the
 //! rest of that release (gate, retire, ACB UNLOADED, D1, `destroy_window`) stays on the main thread,
-//! and `sink()` answers a no-op sink to every other main-thread verb until it is done.
+//! and the composed sink (`PlayerAdapter::display_sink`) answers a no-op sink to every other main-thread
+//! verb until it is done.
 #![allow(non_upper_case_globals)]
 pub mod adapter;
-mod physical; // the adapter's physical drivers as one `PhysicalSet` (the Feed backend and the URI driver)
+#[cfg(test)]
+pub(crate) mod test_physical; // the tests' composition of the physical set (the application's own is `app::adapters::backends`)
 pub mod attempt_view;
 pub mod readout; // the player's own readout (pure machine): the members only the player writes, and the feed's last raw facts
 #[cfg(feature = "play-feed")]
@@ -86,8 +88,6 @@ pub(crate) mod subtitle_cue; // embedded/side-reader cue bridge; caption stores 
 pub mod sim_video; // the simulator's decoded picture, for screenshots (see its doc)
 pub mod text_ass; // text subtitles to ASS: dialect converter, synthesized header, sidecar scripts (pure)
 pub mod text_style; // the viewer's size/position picks as the numbers that converter and the screen's lift use (pure)
-#[cfg(feature = "play-feed")]
-pub mod threads;
 mod timeline;
 pub mod transport;
 pub mod video_geometry;
@@ -111,46 +111,11 @@ use shared::HlsPauseCompletion;
 #[cfg(feature = "play-feed")]
 use plx_playback_contract::feed::{UserPauseOutcome, UserResumeOutcome};
 
-/// The video sink every seam call goes through. The port installs the television's
-/// native `StarfishSink` or the simulator's (`player::ffi_host::HostSink`) once at boot; a
-/// hostsim test binary reads the host sink directly, so it needs no port. Everything in `player/`
-/// reaches the seam as `sink().<verb>(mt, ..)`, and nothing branches on which platform it is.
-///
-/// **While an off-frame `Unload` owns the native object this answers [`FENCE`]**, so the
-/// main thread cannot reach the object the worker is inside (the fence `PlayerAdapter::mt` used to
-/// provide by joining the worker, without a bound: PLX-NATIVE-1Q). The release itself, which has
-/// to reach the real seam, uses [`raw_sink`].
-#[cfg(feature = "play-feed")]
-fn sink() -> &'static dyn plx_platform::tv::sink::VideoSink {
-    if FEED_SHARED.native_releasing() {
-        &FENCE
-    } else {
-        raw_sink()
-    }
-}
-
 /// The process's ACB plane owner: the one holder of the video-plane binding for both backends,
 /// booted once by the application's `acb_init` (`app/adapters/backends.rs`). It replaces the old `ACB_OK` / `PTYPE` statics.
 #[cfg(feature = "play-feed")]
 pub(crate) fn plane() -> &'static plx_platform::tv::plane::PlaneOwner {
     plx_platform::tv::plane::installed()
-}
-
-/// What a main-thread verb gets while the object is inside its off-frame `Unload`: nothing happens
-/// (every verb refused, `NoSink`'s answers), except the memoized queries that say nothing about the
-/// object, which keep the real answer.
-#[cfg(feature = "play-feed")]
-static FENCE: plx_platform::tv::sink::RefusingSink = plx_platform::tv::sink::RefusingSink(raw_sink);
-
-/// The seam itself, unfenced: only the native release (the `Unload` worker and its main-thread
-/// tail) may use it while the object is `Releasing`.
-#[cfg(all(feature = "play-feed", not(all(any(test, feature = "test-support"), feature = "hostsim"))))]
-fn raw_sink() -> &'static dyn plx_platform::tv::sink::VideoSink {
-    plx_platform::tv::sink::installed()
-}
-#[cfg(all(feature = "play-feed", any(test, feature = "test-support"), feature = "hostsim"))]
-fn raw_sink() -> &'static dyn plx_platform::tv::sink::VideoSink {
-    &HOST_SINK
 }
 
 /// The simulator's video sink ([`ffi_host::HostSink`]), built with this crate's side of what the
@@ -498,19 +463,19 @@ pub(crate) fn pause_result(ps: &mut crate::route::PlaybackSession, pa: &mut adap
     }
 } // playback_pause
 /// Mute the sink for a paused preroll's Play window (`native_executor::try_prime`, immediately before that
-/// Play): the preroll plays ONE picture for a viewer who is paused, and the ~0.2-0.3 s until the
+/// Play; the composition's hook runs this over its own fenced sink): the preroll plays ONE picture for a viewer who is paused, and the ~0.2-0.3 s until the
 /// plane binds is audible. The mute is the pipeline's own `setVolume` (per pipeline: the next Load
 /// starts at the default); [`restore_preroll_volume`] sets that default back. The volume is never
 /// read: `getVolume` is not bound (it returns an int on 4.5 where the NDK header says a string, and
 /// the wrong guess killed the app), so the log says what was SET, not what the pipeline reports.
 #[cfg(feature = "play-feed")]
-pub(crate) fn mute_for_preroll(mt: &plx_base::task::MainThread) {
-    unsafe { sink().set_volume(mt, 0) };
+pub fn mute_for_preroll_on(sink: &dyn plx_platform::tv::sink::VideoSink, mt: &plx_base::task::MainThread) {
+    unsafe { sink.set_volume(mt, 0) };
     let default = plx_platform::tv::sink::PIPELINE_DEFAULT_VOLUME;
     log(&format!("preroll: volume set 0 (pipeline default {default} is restored later; no readback)"));
 }
 
-/// Give back the volume [`mute_for_preroll`] took. Idempotent (nothing muted: nothing happens), so
+/// Give back the volume [`mute_for_preroll_on`] took. Idempotent (nothing muted: nothing happens), so
 /// every path that ends or abandons the preroll can call it: `resume`, the accepted re-pause, and
 /// the pump's per-tick sweep, which catches a preroll closed by a path with no adapter in hand
 /// (`abandon_seek`). A stop or reload needs no restore: the volume belonged to the pipeline that
@@ -518,7 +483,7 @@ pub(crate) fn mute_for_preroll(mt: &plx_base::task::MainThread) {
 #[cfg(feature = "play-feed")]
 pub(crate) fn restore_preroll_volume(pa: &mut adapter::PlayerAdapter) {
     let Some(volume) = pa.feed_take_preroll_volume() else { return };
-    unsafe { sink().set_volume(pa.mt(), volume) };
+    unsafe { pa.display_sink().set_volume(pa.mt(), volume) };
     log(&format!("preroll: volume set {volume} (restored; no readback)"));
 }
 
@@ -683,16 +648,18 @@ pub fn acb_mirror_playstate(ps: &crate::route::PlaybackSession, pa: &mut adapter
     let Some(stage) = ps.readout().raw().load.stage else {
         return;
     };
-    acb_mirror_playstate_at(pa.mt(), stage, playing);
+    acb_mirror_playstate_on(pa.display_sink(), pa.mt(), stage, playing);
 }
 
-/// [`acb_mirror_playstate`] for a caller that already holds the session's `&mut Engine` and so
-/// cannot ask the adapter for it a second time — `native_executor::try_prime`, inside the feed. Splitting
-/// the two is what the owned slot forces: with `ENGINE` a `static mut` handing out `&'static mut`,
-/// the prime path re-entered the slot it was already holding, which is the aliasing the token
-/// could only assert was safe.
+/// [`acb_mirror_playstate`] over the sink the caller reaches the seam through, for a caller that
+/// already holds the session's `&mut Engine` and so cannot ask the adapter for it a second time:
+/// `native_executor::try_prime`, inside the feed, through the composition's hook. Splitting the two
+/// is what the owned slot forces: with `ENGINE` a `static mut` handing out `&'static mut`, the
+/// prime path re-entered the slot it was already holding, which is the aliasing the token could
+/// only assert was safe.
 #[cfg(feature = "play-feed")]
-pub fn acb_mirror_playstate_at(mt: &MainThread, stage: shared::Stage, playing: bool) {
+pub fn acb_mirror_playstate_on(sink: &dyn plx_platform::tv::sink::VideoSink, mt: &MainThread,
+    stage: shared::Stage, playing: bool) {
     if !plane().handle() {
         return;
     }
@@ -701,9 +668,9 @@ pub fn acb_mirror_playstate_at(mt: &MainThread, stage: shared::Stage, playing: b
     }
     unsafe {
         if playing {
-            sink().plane_resume(mt);
+            sink.plane_resume(mt);
         } else {
-            sink().plane_pause(mt);
+            sink.plane_pause(mt);
         }
     }
 }
@@ -1839,14 +1806,23 @@ impl Diag {
     }
 }
 
-pub fn diag(ps: &crate::route::PlaybackSession) -> Diag {
+pub fn diag(ps: &crate::route::PlaybackSession, pa: &adapter::PlayerAdapter) -> Diag {
+    diag_on(ps, pa.display_sink())
+}
+
+/// [`diag`] over the sink the caller reaches the seam through (the window facts are its two
+/// queries).
+pub(crate) fn diag_on(ps: &crate::route::PlaybackSession, display: &dyn plx_platform::tv::sink::VideoSink) -> Diag {
     let view = ps.attempt_view();
     let backend = view.backend();
     let observed = *view.facts();
     let common = Diag { backend, observed,
         source_kbps: crate::route::transport_kbps(ps), ..Default::default() };
     #[cfg(not(feature = "play-feed"))]
-    { common }
+    {
+        let _ = display;
+        common
+    }
     #[cfg(feature = "play-feed")]
     {
     if backend != Some(attempt_view::Backend::Feed) {
@@ -1857,7 +1833,7 @@ pub fn diag(ps: &crate::route::PlaybackSession) -> Diag {
     let (fed_v, fed_a) = engine::fed_totals();
     // The sink hands back the seam's own static buffer — never NULL, "" when no window was
     // created — so this is a copy of a bounded char[64], not a borrow with a lifetime to reason about.
-    let window_id = sink().window_id().to_string_lossy().into_owned();
+    let window_id = display.window_id().to_string_lossy().into_owned();
     // The feed-written rows are the readout's last sample of the Feed (`FeedRaw::diag`): the pump
     // samples at its start and end of every frame, and a teardown's `SessionReset` returns them to
     // the idle set the mailboxes were just reset to.
@@ -1867,7 +1843,7 @@ pub fn diag(ps: &crate::route::PlaybackSession) -> Diag {
     Diag {
         backend,
         observed,
-        vp_mode: sink().window_mode(),
+        vp_mode: display.window_mode(),
         window_id,
         acb_ok: plane().handle(),
         place_rv: fd.place_rv,
@@ -2724,24 +2700,16 @@ pub fn bitmap_by_key(key: i64) -> Option<(i32, i32, Vec<SubRect>)> {
 pub use plx_base::eventlog::log; // event-log sink (crate-wide single copy in lib.rs)
 
 /// What `plx_play_feed::sf_event::sf_on_event` reads of this module's common state: the first
-/// picture after a viewer's audio pick ends the switch (`AudioSwitch::Reloading` -> `None`).
+/// picture after a viewer's audio pick ends the switch (`AudioSwitch::Reloading` -> `None`). The
+/// composition installs it as the callback's `SfEventHooks` row, once, before the first `Load`.
 #[cfg(feature = "play-feed")]
-static SF_EVENT_HOOKS: plx_play_feed::sf_event::SfEventHooks = plx_play_feed::sf_event::SfEventHooks {
-    audio_rebuild_presented: || {
-        let _ = SHARED.audio_switch.compare_exchange(
-            AudioSwitch::Reloading as u8,
-            AudioSwitch::None as u8,
-            Relaxed,
-            Relaxed,
-        );
-    },
-};
-
-/// Hand the callback its hooks. `PlayerAdapter::new`, which every boot (the television's and the
-/// simulator's) runs before the first `Load`, calls it; a second call is refused and changes nothing.
-#[cfg(feature = "play-feed")]
-pub(crate) fn install_sf_event_hooks() {
-    let _ = plx_play_feed::sf_event::install(&SF_EVENT_HOOKS);
+pub fn audio_rebuild_presented() {
+    let _ = SHARED.audio_switch.compare_exchange(
+        AudioSwitch::Reloading as u8,
+        AudioSwitch::None as u8,
+        Relaxed,
+        Relaxed,
+    );
 }
 
 /// Monotonic milliseconds: the Feed backend's one clock (`plx_play_feed::shared::vclock_ms`, which
@@ -2975,7 +2943,7 @@ mod tests {
         }
         let _restore = Restore;
         let mut ps = crate::route::PlaybackSession::IDLE;
-        let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        let mut pa = adapter::PlayerAdapter::new_fed(unsafe { plx_base::task::MainThread::assume() });
         crate::player::reset_session_for_test();
         FEED_SHARED.reset_session();
         FEED_TX.reset();
@@ -3042,7 +3010,7 @@ mod tests {
         }
         let _restore = Restore;
         let mut ps = crate::route::PlaybackSession::IDLE;
-        let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        let mut pa = adapter::PlayerAdapter::new_fed(unsafe { plx_base::task::MainThread::assume() });
         crate::player::reset_session_for_test();
         FEED_TX.reset();
         crate::ff::force_speed_decoder_for_test(true);
@@ -3084,7 +3052,7 @@ mod tests {
         crate::player::reset_session_for_test();
         FEED_TX.reset();
         let mut ps = crate::route::PlaybackSession::IDLE;
-        let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        let mut pa = adapter::PlayerAdapter::new_fed(unsafe { plx_base::task::MainThread::assume() });
 
         request_seek(&mut ps, &mut pa, 42_000_000_000);
         request_seek(&mut ps, &mut pa, 50_000_000_000);
@@ -3128,7 +3096,7 @@ mod tests {
         let _restore = Restore;
         crate::player::reset_session_for_test();
         FEED_TX.reset();
-        let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        let mut pa = adapter::PlayerAdapter::new_fed(unsafe { plx_base::task::MainThread::assume() });
 
         FEED_SHARED.disp_base.store(77, Relaxed);
         arm_open(&mut pa, 90_000_000_000);
@@ -3152,7 +3120,7 @@ mod tests {
     fn forced_original_never_offers_or_retains_a_pcm_speed() {
         let _serial = plx_base::testlock::serial();
         let mut ps = crate::route::PlaybackSession::IDLE;
-        let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        let mut pa = adapter::PlayerAdapter::new_fed(unsafe { plx_base::task::MainThread::assume() });
         crate::route::set_direct_play_mode_for_test(&mut ps, crate::route::DirectPlayMode::Forced);
         assert!(speed_offer(&ps).is_empty());
         assert!(!set_play_rate(&mut ps, &mut pa, 1250));
@@ -3449,7 +3417,7 @@ mod tests {
         sf_on_event(epoch, 28, 1, c"true".as_ptr());
         assert!(FEED_SHARED.pipeline_eos.load(Relaxed), "the pipeline said it reached the end");
         let mut ps = crate::route::PlaybackSession::IDLE;
-        let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        let mut pa = adapter::PlayerAdapter::new_fed(unsafe { plx_base::task::MainThread::assume() });
         request_seek(&mut ps, &mut pa, 1_000_000_000);
         assert!(!FEED_SHARED.pipeline_eos.load(Relaxed), "a seek back from the end un-ends it");
         FEED_SHARED.retire_native_session(epoch);
@@ -3866,7 +3834,7 @@ mod tests {
         }
         let _restore = Restore(old_paused);
         let before = ffi_host::play_calls_for_test();
-        let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        let mut pa = adapter::PlayerAdapter::new_fed(unsafe { plx_base::task::MainThread::assume() });
         let mut ps = crate::route::PlaybackSession::IDLE;
         commit_paused(&mut ps, &mut pa, true);
 
@@ -3889,7 +3857,7 @@ mod tests {
         let _guard = plx_base::testlock::serial();
         FEED_TX.reset();
         let mut ps = crate::route::PlaybackSession::IDLE;
-        let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        let mut pa = adapter::PlayerAdapter::new_fed(unsafe { plx_base::task::MainThread::assume() });
         commit_paused(&mut ps, &mut pa, true);
         arm_resume_pend(&mut ps);
         begin_paused_seek(&mut ps, &mut pa);
@@ -3929,7 +3897,7 @@ mod tests {
         let was_display = FEED_SHARED.seek_display_ns.load(Relaxed);
 
         let mut ps = crate::route::PlaybackSession::IDLE;
-        let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        let mut pa = adapter::PlayerAdapter::new_fed(unsafe { plx_base::task::MainThread::assume() });
         request_seek(&mut ps, &mut pa, 40_000_000_000);
         assert!(ps.readout().seeking(), "the requester arms the spinner");
         assert!(
@@ -4769,7 +4737,7 @@ mod native_failure_regressions {
         let mut ps = crate::route::PlaybackSession::IDLE;
         crate::route::reset_player_control_for_test(&ps);
         crate::player::reset_session_for_test();
-        let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        let mut pa = adapter::PlayerAdapter::new_fed(unsafe { plx_base::task::MainThread::assume() });
         plx_platform::tv::sandbox::FORCE_BLOCKED.store(true, Relaxed);
         assert!(start_bufferfeed(&mut ps, &mut pa));
         assert!(!pa.is_live());
@@ -4835,7 +4803,7 @@ mod seek_hud_regressions {
         assert_eq!(state(&ps), PlaybackState::Playing);
         // the REAL press path — and deliberately so: `tests/test_harness.py` holds that exactly
         // one place in the tree arms this flag, which a test arming it by hand would break
-        let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        let mut pa = adapter::PlayerAdapter::new_fed(unsafe { plx_base::task::MainThread::assume() });
         request_seek(&mut ps, &mut pa, 90_000_000_000);
         assert_eq!(state(&ps), PlaybackState::Seeking, "the pump has not run yet");
         assert!(state(&ps).is_busy(), "busy is what freezes the HUD's playhead on the target");
@@ -4856,7 +4824,7 @@ mod audio_switch_tests {
     use std::sync::atomic::Ordering::Relaxed;
 
     fn reset() {
-        install_sf_event_hooks();
+        test_physical::install_sf_event_hooks();
         crate::player::reset_session_for_test();
         SHARED.audio_switch.store(AudioSwitch::None as u8, Relaxed);
     }

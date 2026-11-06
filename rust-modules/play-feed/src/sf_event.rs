@@ -267,7 +267,7 @@ pub fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char, scope: shared::E
         // the adaptive controller stepped down against an estimator that would never see a frame,
         // and the failure read-out — the one screen built to survive a phone photograph — never
         // ran, for ~70 s, on the failure it most exists for. Publishing the same flag the
-        // synchronous refusal publishes (`threads::load_thread` on `sf_load == 0`) hands it to the
+        // synchronous refusal publishes (`native_load::load_thread` on `sf_load == 0`) hands it to the
         // pump's existing `load_failed` arm, whose failed-open ladder (`recovery::OpenRecovery`)
         // picks: the HLS rollback if one is pending, else the conversion of a stream the attempt can
         // do without (the DTS of #695), else the cold Auto Original's HLS contingency, else `Error`

@@ -878,9 +878,105 @@ impl PhysicalSet for NoPhysical {
     fn feed(&mut self) -> Option<&mut dyn FeedControl> { None }
 }
 
+/// The set a player starts with before a composition installs its own, and the whole set of a
+/// build with no Feed: no feed, and the URI driver's seat. It is [`NoPhysical`] that keeps the one
+/// driver the composition may seat, so a URI-only build installs nothing but the driver.
+#[derive(Default)]
+pub struct UriOnlySet {
+    uri: Option<Box<dyn UriDriver<Context = MainThread>>>,
+}
+
+impl UriOnlySet {
+    pub fn new() -> Self { Self::default() }
+}
+
+impl DriverSet for UriOnlySet {
+    type Context = MainThread;
+
+    fn capabilities(&self, backend: BackendKind) -> Option<Capabilities> {
+        match backend {
+            BackendKind::Feed => None,
+            BackendKind::Uri => self.uri.as_ref().and_then(|d| d.capabilities(BackendKind::Uri)),
+        }
+    }
+
+    fn dispatch(&mut self, backend: BackendKind, ctx: &MainThread, attempt: AttemptId,
+        command: CommandId, operation: Operation) -> DispatchResult {
+        match (backend, self.uri.as_mut()) {
+            (BackendKind::Uri, Some(driver)) =>
+                driver.dispatch(BackendKind::Uri, ctx, attempt, command, operation),
+            _ => DispatchResult::Refused(Failure::Unavailable),
+        }
+    }
+
+    fn poll(&mut self, ctx: &MainThread) -> Vec<BackendEvent> {
+        self.uri.as_mut().map_or_else(Vec::new, |driver| driver.poll(ctx))
+    }
+
+    fn discard_staged(&mut self, backend: BackendKind, attempt: AttemptId, key: SourceKey) {
+        if let (BackendKind::Uri, Some(driver)) = (backend, self.uri.as_mut()) {
+            driver.discard_staged(BackendKind::Uri, attempt, key);
+        }
+    }
+
+    fn exit_disposition(&self) -> ExitDisposition {
+        self.uri.as_ref().map_or(ExitDisposition::Clean, |driver| driver.exit_disposition())
+    }
+}
+
+impl PhysicalSet for UriOnlySet {
+    fn feed(&mut self) -> Option<&mut dyn FeedControl> { None }
+
+    fn uri(&self) -> Option<&(dyn UriDriver<Context = MainThread> + 'static)> { self.uri.as_deref() }
+
+    fn uri_mut(&mut self) -> Option<&mut (dyn UriDriver<Context = MainThread> + 'static)> {
+        self.uri.as_deref_mut()
+    }
+
+    fn install_uri(&mut self, driver: Box<dyn UriDriver<Context = MainThread>>)
+        -> Result<(), Box<dyn UriDriver<Context = MainThread>>> {
+        self.uri = Some(driver);
+        Ok(())
+    }
+
+    fn take_uri(&mut self) -> Option<Box<dyn UriDriver<Context = MainThread>>> { self.uri.take() }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::FakeUriDriver;
+    use crate::{DriverEvent, ReleaseStatus};
+
+    /// The URI driver answers through the seat alone: its capabilities, its polled events, its
+    /// staged-source discards (never a feed discard) and its exit disposition count, and nothing
+    /// is offered for the feed backend.
+    #[test]
+    fn the_uri_only_set_answers_for_its_seated_driver_alone() {
+        let caps = Capabilities { progressive_uri: true, hls_uri: false, packet_feed: false,
+            pause: true, seek: true, audio_track: false, subtitle_track: false, audio_off: false,
+            subtitle_off: false };
+        let mt = unsafe { MainThread::assume() };
+        let (attempt, key) = (AttemptId::new(1, 1), SourceKey::new(3));
+        let mut set = UriOnlySet::new();
+        assert!(set.uri().is_none() && set.feed().is_none() && set.poll(&mt).is_empty());
+        assert_eq!(crate::BackendSet::from_capabilities(&set), crate::BackendSet::NONE);
+        let (driver, handle) = FakeUriDriver::new(caps);
+        assert!(set.install_uri(Box::new(driver)).is_ok());
+        assert_eq!(crate::BackendSet::from_capabilities(&set), crate::BackendSet::URI);
+        assert!(set.capabilities(BackendKind::Feed).is_none());
+        handle.queue([DriverEvent::Release { attempt, status: ReleaseStatus::Released }]);
+        let events = set.poll(&mt);
+        assert_eq!((events.len(), events[0].backend), (1, BackendKind::Uri));
+        set.discard_staged(BackendKind::Feed, attempt, key);
+        assert!(handle.discarded().is_empty(), "a feed discard never reaches the URI driver");
+        set.discard_staged(BackendKind::Uri, attempt, key);
+        assert_eq!(handle.discarded(), [(attempt, key)]);
+        assert_eq!(set.exit_disposition(), ExitDisposition::Clean);
+        handle.set_exit_preserved(true);
+        assert_eq!(set.exit_disposition(), ExitDisposition::PreserveNativeOwnership);
+        assert!(set.take_uri().is_some() && set.uri().is_none());
+    }
 
     /// A feed with no session has seen nothing and runs at 1x, and a default sample is the empty
     /// readout beside it: the starting value every ingestion replaces.

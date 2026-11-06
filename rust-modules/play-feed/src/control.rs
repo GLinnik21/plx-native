@@ -340,7 +340,7 @@ impl FeedControl for FeedBackend {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::native_executor::{
         FeedHooks, LaunchHooks, NativeHooks, PrepareHooks, ReleaseHooks,
@@ -380,7 +380,7 @@ mod tests {
         },
     };
 
-    fn backend() -> FeedBackend {
+    pub(crate) fn backend() -> FeedBackend {
         FeedBackend::new(FeedResources::new(&FEED_SHARED, &HOOKS))
     }
 

@@ -10,7 +10,8 @@ use plx_playback_contract::feed::{FeedDiag, FeedFacts};
 use std::sync::atomic::Ordering::Relaxed;
 
 use super::attempt_view::Backend;
-use super::{diag, Diag};
+use super::test_physical::diag;
+use super::Diag;
 use crate::route::{PlaybackSession, RouteStartAttempt};
 
 /// Every field a different, non-idle value, so a swapped pair or a field read from the wrong place

@@ -4353,7 +4353,7 @@ mod abr_diag_tests {
         let _serial = plx_base::testlock::serial();
         let demux = DemuxAbr { mode: code::ABR_MODE_HLS, kbps: 3_000, declared_kbps: 2_900 };
         let (ps, _) = session(demux, full());
-        let d = crate::player::diag(&ps);
+        let d = crate::player::test_physical::diag(&ps);
         assert_eq!((d.abr_mode, d.abr_kbps, d.abr_declared_kbps), (code::ABR_MODE_HLS, 3_000, 2_900));
         assert_eq!((d.abr_media_kbps, d.abr_net_kbps, d.abr_buffer_ms, d.abr_ratio_pm), (6_000, 12_000, 31_000, 2_000));
         assert_eq!((d.abr_action, d.abr_target_kbps, d.abr_why), (code::ABR_ACTION_COMMIT_DOWN, 3_000, crate::player::ABR_WHY_BUFFER));
@@ -4370,15 +4370,15 @@ mod abr_diag_tests {
         let _serial = plx_base::testlock::serial();
         let started = DemuxAbr { mode: code::ABR_MODE_HLS, kbps: 3_000, declared_kbps: -1 };
         let (ps, _) = session(started, AbrReadout::IDLE);
-        let d = crate::player::diag(&ps);
+        let d = crate::player::test_physical::diag(&ps);
         assert_eq!((d.abr_action, d.abr_target_kbps), (code::ABR_ACTION_STEADY, 0));
         assert_eq!((d.abr_media_kbps, d.abr_net_kbps, d.abr_samples, d.abr_why), (-1, -1, -1, 0));
         let (ps, _) = session(DemuxAbr::IDLE, AbrReadout::IDLE);
-        assert_eq!(crate::player::diag(&ps).abr_action, 0, "no controller at all");
+        assert_eq!(crate::player::test_physical::diag(&ps).abr_action, 0, "no controller at all");
         let original = DemuxAbr { mode: code::ABR_MODE_ORIGINAL, kbps: 8_000, declared_kbps: -1 };
         let decided = AbrReadout { action: code::ABR_ACTION_PRIME_UP, ..AbrReadout::IDLE };
         let (ps, _) = session(original, decided);
-        assert_eq!(crate::player::diag(&ps).abr_action, code::ABR_ACTION_PRIME_UP);
+        assert_eq!(crate::player::test_physical::diag(&ps).abr_action, code::ABR_ACTION_PRIME_UP);
     }
 
     /// A line printed after the stop reads what the reset left: the photograph and the sample's
@@ -4389,7 +4389,7 @@ mod abr_diag_tests {
         let demux = DemuxAbr { mode: code::ABR_MODE_HLS, kbps: 3_000, declared_kbps: 2_900 };
         let (mut ps, _) = session(demux, full());
         ps.step_readout(ReadoutEvent::SessionReset);
-        let d = crate::player::diag(&ps);
+        let d = crate::player::test_physical::diag(&ps);
         assert_eq!((d.abr_mode, d.abr_kbps, d.abr_declared_kbps), (0, 0, -1));
         assert_eq!((d.abr_media_kbps, d.abr_net_kbps, d.abr_buffer_ms, d.abr_ratio_pm), (-1, -1, -1, -1));
         assert_eq!((d.abr_action, d.abr_target_kbps, d.abr_unsafe_deficit_ms, d.abr_why), (0, 0, 0, 0));

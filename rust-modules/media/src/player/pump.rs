@@ -2000,7 +2000,7 @@ mod tests {
         FEED_TX.reset();
         crate::route::reject_user_seek();
         let mut ps = crate::route::PlaybackSession::IDLE;
-        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+        let mut pa = crate::player::adapter::PlayerAdapter::new_fed(unsafe {
             plx_base::task::MainThread::assume()
         });
         if let Some(target) = pressed {
@@ -2130,7 +2130,7 @@ mod flight_tests {
             let epoch = FEED_SHARED.begin_native_session().expect("native session");
             // The installed Engine represents a completed Load. Give the host sink that same
             // object and callback epoch so a later rollback must prove its real Unload/D1.
-            assert_eq!(unsafe { super::super::sink().load(c"{}".as_ptr(), epoch) }, 1);
+            assert_eq!(unsafe { crate::player::test_physical::sink().load(c"{}".as_ptr(), epoch) }, 1);
             if load_returned {
                 assert!(FEED_SHARED.mark_native_load_returned(epoch, None).is_some());
             }
@@ -2383,7 +2383,7 @@ mod flight_tests {
         super::super::ffi_host::force_clocksink_for_test(true);
         let mut pa = super::super::adapter::PlayerAdapter::new_probed(unsafe { MainThread::assume() });
         let epoch = FEED_SHARED.begin_native_session().expect("native session");
-        assert_eq!(unsafe { super::super::sink().load(c"{}".as_ptr(), epoch) }, 1);
+        assert_eq!(unsafe { crate::player::test_physical::sink().load(c"{}".as_ptr(), epoch) }, 1);
         assert!(FEED_SHARED.mark_native_load_returned(epoch, None).is_some());
         ps.begin_attempt_view(crate::route::RouteStartAttempt::fixture(), super::super::attempt_view::Backend::Feed);
         pa.install(super::super::engine::streaming_engine_for_test(epoch));
@@ -2601,7 +2601,7 @@ mod flight_tests {
         super::super::ffi_host::force_clocksink_for_test(true);
         let mut pa = super::super::adapter::PlayerAdapter::new_probed(unsafe { MainThread::assume() });
         let epoch = FEED_SHARED.begin_native_session().expect("native session");
-        assert_eq!(unsafe { super::super::sink().load(c"{}".as_ptr(), epoch) }, 1);
+        assert_eq!(unsafe { crate::player::test_physical::sink().load(c"{}".as_ptr(), epoch) }, 1);
         assert!(FEED_SHARED.mark_native_load_returned(epoch, None).is_some());
         ps.begin_attempt_view(crate::route::RouteStartAttempt::fixture(), super::super::attempt_view::Backend::Feed);
         pa.install(super::super::engine::streaming_engine_for_test(epoch));
@@ -4793,7 +4793,7 @@ mod native_seek_pump_tests {
         assert_eq!(ffi_host::segment_calls_for_test(), 0);
 
         // A fresh play is a new playback and gets to try the native Seek again.
-        let _ = crate::player::start_bufferfeed_tracked(&mut rig.ps, &mut super::super::adapter::PlayerAdapter::new(unsafe { MainThread::assume() }));
+        let _ = crate::player::start_bufferfeed_tracked(&mut rig.ps, &mut super::super::adapter::PlayerAdapter::new_fed(unsafe { MainThread::assume() }));
         assert!(!plx_play_feed::seek::native_seek_refused(), "a fresh play clears the latch");
     }
 
@@ -5699,7 +5699,7 @@ mod end_of_film_tests {
             let mut pa = super::super::adapter::PlayerAdapter::new_probed(unsafe { MainThread::assume() });
             let epoch = FEED_SHARED.begin_native_session().expect("native session");
             assert_eq!(
-                unsafe { crate::player::sink().load(c"{}".as_ptr(), epoch) },
+                unsafe { crate::player::test_physical::sink().load(c"{}".as_ptr(), epoch) },
                 1,
                 "PRECONDITION FAILED, not the defect: the host Load did not take"
             );

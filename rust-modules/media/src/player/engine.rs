@@ -41,19 +41,16 @@ pub(crate) use plx_play_feed::LoadVideo;
 pub(crate) use plx_play_feed::load_video_refused;
 #[cfg(all(test, feature = "hostsim"))]
 use super::shared::Stage;
-use plx_play_feed::native_executor::{FeedHooks, LaunchHooks, NativeHooks, PrepareHooks, ReleaseHooks};
 #[cfg(all(test, feature = "hostsim"))]
 use plx_play_feed::seek::{inplace_layout_known, old_abi_seek_tested, select_seek_mode};
 #[cfg(all(test, feature = "hostsim"))]
 use plx_playback_contract::feed::SeekMode;
-use super::{sink, threads};
 #[cfg(test)]
 use super::log;
+#[cfg(all(test, feature = "hostsim"))]
 use plx_base::task::MainThread;
 #[cfg(test)]
 use plx_platform::devcaps::AudioStack;
-use plx_platform::tv::sink::UnloadTicket;
-use plx_telemetry::telemetry::classes::DemuxExitClass;
 use plx_telemetry::telemetry::window::Stage as WindowStage;
 #[cfg(all(test, feature = "hostsim"))]
 use std::os::raw::{c_char, c_int};
@@ -149,17 +146,8 @@ pub use plx_play_feed::feed_state::AbandonedLoad;
 /// A real stop hands its native object to off-frame Unload and retains its Engine until the tail.
 pub use plx_play_feed::feed_state::PendingRelease;
 
-fn spawn_unload(ticket: UnloadTicket) -> Option<std::thread::JoinHandle<()>> {
-    #[cfg(all(test, feature = "hostsim"))]
-    let worker = super::ffi_host::UnloadWorker::enter();
-    plx_base::task::spawn("sf-unload", move || {
-        #[cfg(all(test, feature = "hostsim"))]
-        let _worker = worker;
-        unsafe { super::raw_sink().unload(&ticket) }
-    })
-}
-
-fn release_step(step: plx_play_feed::native_release::ReleaseStep) {
+/// The `on_release_step` hook: the release's breadcrumbs belong to the common telemetry owner.
+pub fn release_step(step: plx_play_feed::native_release::ReleaseStep) {
     use plx_play_feed::native_release::ReleaseStep;
     window_step(match step {
         ReleaseStep::NativeUnload => WindowStage::NativeUnload,
@@ -169,7 +157,8 @@ fn release_step(step: plx_play_feed::native_release::ReleaseStep) {
     });
 }
 
-fn exported_window_destroyed() {
+/// The `on_exported_window_destroy` hook.
+pub fn exported_window_destroyed() {
     window_step(WindowStage::ExportedWindowDestroy);
 }
 
@@ -185,7 +174,7 @@ use plx_play_feed::native_executor::TeardownSpans;
 fn release_native_object_timed(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans)
     -> plx_playback_contract::ReleaseStatus {
     plx_play_feed::native_executor::release_native_object_timed(
-        mt, epoch, sp, &FEED_SHARED, &NATIVE_HOOKS.release)
+        mt, epoch, sp, &FEED_SHARED, &crate::player::test_physical::TEST_HOOKS.release)
 }
 
 /// Release breadcrumbs belong to the common telemetry owner, not the physical executor.
@@ -381,49 +370,19 @@ use plx_play_feed::native_executor::{app_id_key, with_app_id};
 
 #[cfg(all(test, feature = "hostsim"))]
 fn with_window_id(mt: &MainThread, p: &str) -> String {
-    plx_play_feed::native_executor::with_window_id(mt, p, &NATIVE_HOOKS.prepare)
+    plx_play_feed::native_executor::with_window_id(mt, p, &crate::player::test_physical::TEST_HOOKS.prepare)
 }
 
-fn exported_window_created() {
+/// The `on_exported_window_create` hook.
+pub fn exported_window_created() {
     window_step(WindowStage::ExportedWindowCreate);
 }
 
 /// The `demux_transport` hook: the HTTPS credential facade is media-owned (`curlio`), so the
 /// composition names it and the executor only calls the function.
-fn demux_transport() -> crate::ff::DemuxTransport {
+pub fn demux_transport() -> crate::ff::DemuxTransport {
     crate::ff::DemuxTransport::new(crate::curlio::range_factory(), crate::curlio::CREDENTIAL_GATE)
 }
-
-/// **Everything the common composition lends the physical executor, as one value.** A `const`,
-/// not a registry: `PlayerAdapter` hands `&NATIVE_HOOKS` to the `FeedResources` it owns, and every
-/// caller reaches the executor through that owner (`feed.hooks()`), so there is no installer and no
-/// process-global. `sink` is the FENCED one (`player::sink`) for every verb but the release, which
-/// takes `raw_sink`.
-pub(super) const NATIVE_HOOKS: NativeHooks = NativeHooks {
-    prepare: PrepareHooks {
-        sink,
-        on_exported_window_create: exported_window_created,
-        load_refusal_latch: DemuxExitClass::LoadRefused.latch(),
-    },
-    launch: LaunchHooks {
-        demux_transport,
-        load_thread: threads::load_thread,
-        sink,
-    },
-    feed: FeedHooks {
-        sink,
-        mirror_playstate: super::acb_mirror_playstate_at,
-        mute_for_preroll: super::mute_for_preroll,
-        feed_clock_us,
-    },
-    release: ReleaseHooks {
-        raw_sink: super::raw_sink,
-        plane: plx_platform::tv::plane::installed(),
-        on_release_step: release_step,
-        on_exported_window_destroy: exported_window_destroyed,
-        spawn_unload,
-    },
-};
 
 pub use super::route_start::{reload_at, reload_transcode, reload_transcode_tracked,
     stop_bufferfeed, suspend_bufferfeed, switch_audio_native, ReloadOutcome};
@@ -471,34 +430,6 @@ use plx_play_feed::native_executor::{
     AUDIO_STALE_AHEAD_NS, FEED_LANE_SLICE_US, FEED_LOW_WATER_NS, PRIME_AUDIO_NS, PRIME_NS,
 };
 
-#[cfg(any(test, feature = "test-support"))]
-thread_local! {
-    /// The test feed clock: each read advances it by `FEED_TEST_CLOCK_STEP_US`, which is 0 unless
-    /// a test sets it. At 0, the host seam's near-free `sf_feed` never runs out the slice, so a
-    /// slow or preempted test machine cannot change what one tick feeds.
-    static FEED_TEST_CLOCK_US: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-    static FEED_TEST_CLOCK_STEP_US: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
-
-/// Monotonic µs for [`FeedSlice`]; only ever differenced.
-fn feed_clock_us() -> u64 {
-    #[cfg(any(test, feature = "test-support"))]
-    {
-        let step = FEED_TEST_CLOCK_STEP_US.with(|s| s.get());
-        FEED_TEST_CLOCK_US.with(|c| {
-            c.set(c.get() + step);
-            c.get()
-        })
-    }
-    #[cfg(not(any(test, feature = "test-support")))]
-    {
-        use std::sync::OnceLock;
-        use std::time::Instant;
-        static T0: OnceLock<Instant> = OnceLock::new();
-        T0.get_or_init(Instant::now).elapsed().as_micros() as u64
-    }
-}
-
 /// VIDEO lane feeder (aq_video is video-only). Owns the seek rebase + in-place-seek handshake + prime→Play, all of
 /// which key off the first post-seek VIDEO keyframe. A BufferFull/over-budget breaks THIS lane
 /// only — the audio lane (feed_audio_lane) keeps flowing so the audioSync master clock advances.
@@ -515,22 +446,16 @@ pub use plx_play_feed::native_executor::arm_live_clock_prime;
 
 #[cfg(all(test, feature = "hostsim"))]
 pub(super) fn try_prime(mt: &MainThread, eng: &mut Engine) {
-    plx_play_feed::native_executor::try_prime(mt, eng, &plx_play_feed::shared::FEED_TX, &NATIVE_HOOKS.feed);
+    plx_play_feed::native_executor::try_prime(mt, eng, &plx_play_feed::shared::FEED_TX, &crate::player::test_physical::TEST_HOOKS.feed);
 }
 
 #[cfg(all(test, feature = "hostsim"))]
 pub(super) fn feed_both_lanes(mt: &MainThread, eng: &mut Engine) {
-    plx_play_feed::native_executor::feed_both_lanes(mt, eng, &plx_play_feed::shared::FEED_TX, &NATIVE_HOOKS.feed);
+    plx_play_feed::native_executor::feed_both_lanes(mt, eng, &plx_play_feed::shared::FEED_TX, &crate::player::test_physical::TEST_HOOKS.feed);
 }
 
 #[cfg(test)]
 use plx_play_feed::native_executor::audio_lead_in;
-
-/// Feed the local validation sample through the physical executor.
-pub fn feed_sample(mt: &MainThread, eng: &mut Engine) {
-    plx_play_feed::native_executor::feed_sample(mt, eng, sink);
-}
-
 
 #[cfg(all(test, feature = "hostsim"))]
 mod native_lifecycle_host_seam_tests {
@@ -586,8 +511,8 @@ mod native_lifecycle_host_seam_tests {
 
     fn loaded_epoch(mt: &MainThread) -> u32 {
         let epoch = FEED_SHARED.begin_native_session().expect("native epoch");
-        assert_eq!(unsafe { crate::player::sink().load(c"{}".as_ptr(), epoch) }, 1);
-        assert_eq!(unsafe { crate::player::sink().ready(mt) }, 1);
+        assert_eq!(unsafe { crate::player::test_physical::sink().load(c"{}".as_ptr(), epoch) }, 1);
+        assert_eq!(unsafe { crate::player::test_physical::sink().ready(mt) }, 1);
         epoch
     }
 
@@ -1460,13 +1385,13 @@ mod prime_livelock_tests {
     impl SlowFeed {
         fn arm(step_us: u64) -> Self {
             crate::player::ffi_host::force_clocksink_for_test(true);
-            FEED_TEST_CLOCK_STEP_US.with(|s| s.set(step_us));
+            crate::player::test_physical::FEED_TEST_CLOCK_STEP_US.with(|s| s.set(step_us));
             SlowFeed
         }
     }
     impl Drop for SlowFeed {
         fn drop(&mut self) {
-            FEED_TEST_CLOCK_STEP_US.with(|s| s.set(0));
+            crate::player::test_physical::FEED_TEST_CLOCK_STEP_US.with(|s| s.set(0));
             crate::player::ffi_host::force_clocksink_for_test(false);
         }
     }
@@ -2121,7 +2046,7 @@ mod lifecycle_clock_tests {
     fn stop_without_an_engine_cannot_poison_the_next_initial_hold() {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let _serial = plx_base::testlock::serial();
-        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+        let mut pa = crate::player::adapter::PlayerAdapter::new_fed(unsafe {
             plx_base::task::MainThread::assume()
         });
         assert!(
@@ -2163,7 +2088,7 @@ mod replay_after_stop_tests {
     fn a_completed_stop_grants_the_next_start_a_route_owner() {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let _serial = plx_base::testlock::serial();
-        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+        let mut pa = crate::player::adapter::PlayerAdapter::new_fed(unsafe {
             plx_base::task::MainThread::assume()
         });
         crate::route::reset_player_control_for_test(&ps);
@@ -2226,13 +2151,13 @@ mod off_frame_release_tests {
     }
 
     fn ready_now() -> c_int {
-        unsafe { crate::player::sink().ready(&MainThread::assume()) }
+        unsafe { crate::player::test_physical::sink().ready(&MainThread::assume()) }
     }
 
     /// A live Engine over a ready host object whose Load has returned: what BACK tears down.
     fn playing_engine(pa: &mut crate::player::adapter::PlayerAdapter) -> u32 {
         let epoch = FEED_SHARED.begin_native_session().expect("native session");
-        assert_eq!(unsafe { crate::player::sink().load(c"{}".as_ptr(), epoch) }, 1);
+        assert_eq!(unsafe { crate::player::test_physical::sink().load(c"{}".as_ptr(), epoch) }, 1);
         assert!(FEED_SHARED.mark_native_load_returned(epoch, None).is_some());
         let mut eng = streaming_engine_for_test(epoch);
         eng.load_th = None;
@@ -2396,9 +2321,10 @@ mod off_frame_release_tests {
                 "{} waited for the running Unload (PLX-NATIVE-1Q)",
                 if use_split { "split()" } else { "mt()" }
             );
-            // …and a verb through the fenced sink does not reach the object the worker is inside.
+            // …and a verb through the adapter's sink (the composition's fence) does not reach the
+            // object the worker is inside.
             assert_eq!(
-                unsafe { crate::player::sink().pause(pa.mt()) },
+                unsafe { pa.display_sink().pause(pa.mt()) },
                 0,
                 "a main-thread verb reached the object while it was Releasing"
             );
@@ -2506,7 +2432,7 @@ mod off_frame_release_tests {
         assert!(!pa.is_live());
         assert_eq!(crate::player::error_now(&ps).kind, crate::player::FailureKind::ReleaseTimeout);
         assert_ne!(
-            unsafe { crate::player::raw_sink().ready(&MainThread::assume()) },
+            unsafe { crate::player::test_physical::raw_sink().ready(&MainThread::assume()) },
             0,
             "the overdue object was destroyed under a worker that may still be inside it"
         );
@@ -2843,7 +2769,7 @@ mod load_in_flight_tests {
         }
     }
 
-    /// The primary test: real concurrency, a real second thread running `threads::load_thread`,
+    /// The primary test: real concurrency, a real second thread running `native_load::load_thread`,
     /// a real held `sf_load`.
     #[test]
     fn nothing_reaches_the_seam_while_load_is_still_in_flight() {
@@ -2892,10 +2818,10 @@ mod load_in_flight_tests {
 
         crate::player::ffi_host::hold_load_for_test();
         let payload = std::ffi::CString::new("{}").unwrap();
-        let payload_ptr = threads::SendPtr(payload.as_ptr() as *mut c_char);
+        let payload_ptr = plx_play_feed::SendPtr(payload.as_ptr() as *mut c_char);
         let load_thread = std::thread::Builder::new()
             .name("test-load-thread".into())
-            .spawn(move || threads::load_thread(payload_ptr, epoch, None, PcmLead::Off))
+            .spawn(move || crate::player::test_physical::load_thread(payload_ptr, epoch, None, PcmLead::Off))
             .expect("spawn load_thread");
 
         wait_for_load_in_flight();
@@ -2938,7 +2864,7 @@ mod load_in_flight_tests {
         }
         assert!(
             FEED_SHARED.native_load_returned(epoch),
-            "the Rust-side gate must open once threads::load_thread has actually returned"
+            "the Rust-side gate must open once native_load::load_thread has actually returned"
         );
         assert!(
             advanced,
@@ -2981,10 +2907,10 @@ mod load_in_flight_tests {
         // `nothing_reaches_the_seam_while_load_is_still_in_flight`, not a bare phase flip.
         crate::player::ffi_host::hold_load_for_test();
         let payload = std::ffi::CString::new("{}").unwrap();
-        let payload_ptr = threads::SendPtr(payload.as_ptr() as *mut c_char);
+        let payload_ptr = plx_play_feed::SendPtr(payload.as_ptr() as *mut c_char);
         let load_thread = std::thread::Builder::new()
             .name("test-load-thread-2".into())
-            .spawn(move || threads::load_thread(payload_ptr, epoch, None, PcmLead::Off))
+            .spawn(move || crate::player::test_physical::load_thread(payload_ptr, epoch, None, PcmLead::Off))
             .expect("spawn load_thread");
         wait_for_load_in_flight();
 
@@ -3050,10 +2976,10 @@ mod load_in_flight_tests {
 
         crate::player::ffi_host::hold_load_for_test();
         let payload = std::ffi::CString::new("{}").unwrap();
-        let payload_ptr = threads::SendPtr(payload.as_ptr() as *mut c_char);
+        let payload_ptr = plx_play_feed::SendPtr(payload.as_ptr() as *mut c_char);
         let load_thread = std::thread::Builder::new()
             .name("test-load-thread-budget".into())
-            .spawn(move || threads::load_thread(payload_ptr, epoch, None, PcmLead::Off))
+            .spawn(move || crate::player::test_physical::load_thread(payload_ptr, epoch, None, PcmLead::Off))
             .expect("spawn load_thread");
         wait_for_load_in_flight();
 
@@ -3131,13 +3057,13 @@ mod load_in_flight_tests {
             "PRECONDITION FAILED: loadCompleted must genuinely never have arrived"
         );
         assert_ne!(
-            unsafe { crate::player::sink().ready(pa.mt()) },
+            unsafe { crate::player::test_physical::sink().ready(pa.mt()) },
             0,
             "PRECONDITION FAILED: sf_ready() must read true (force_object_ready_for_test), or \
              pump() bails out at its own sf_ready wait before ever reaching the arm under test"
         );
         assert_eq!(
-            unsafe { crate::player::sink().is_load_completed(pa.mt()) },
+            unsafe { crate::player::test_physical::sink().is_load_completed(pa.mt()) },
             0,
             "PRECONDITION FAILED: sf_is_load_completed() must read false — if it reads true, the \
              OTHER arm (loadCompleted arrived) fires instead and this test proves nothing about \
@@ -3198,7 +3124,7 @@ mod load_in_flight_tests {
         // Get the host seam's OBJECT_READY (so `sf_ready(mt)` reads true and the pump reaches
         // the loadCompleted arm at all) without arming HOLD_LOAD — this call returns at once.
         let payload = std::ffi::CString::new("{}").unwrap();
-        assert_eq!(unsafe { crate::player::sink().load(payload.as_ptr(), epoch) }, 1);
+        assert_eq!(unsafe { crate::player::test_physical::sink().load(payload.as_ptr(), epoch) }, 1);
         // Hand-set the in-flight window and publish loadCompleted via the existing sf_on_event
         // path — simulating "Load has not returned" without a real second thread.
         crate::player::ffi_host::set_load_in_flight_for_test(true);
@@ -3257,7 +3183,7 @@ mod load_in_flight_tests {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let epoch = FEED_SHARED.begin_native_session().unwrap();
         pa.install(engine_loading(epoch));
-        assert_eq!(unsafe { crate::player::sink().ready(pa.mt()) }, 0);
+        assert_eq!(unsafe { crate::player::test_physical::sink().ready(pa.mt()) }, 0);
         crate::player::pump::pump(&mut ps, &mut pa, 1000);
         assert!(!FEED_SHARED.load_failed.load(Ordering::Acquire));
         assert!(FEED_SHARED.test_backdate_native_load_issued(epoch, crate::player::pump::NATIVE_LOAD_BUDGET));
@@ -3272,14 +3198,14 @@ mod load_in_flight_tests {
         crate::player::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
         let mt = unsafe { plx_base::task::MainThread::assume() };
-        unsafe { crate::player::sink().quarantine(&mt); }
+        unsafe { crate::player::test_physical::sink().quarantine(&mt); }
         let old = FEED_SHARED.begin_native_session().unwrap();
         assert!(FEED_SHARED.retire_native_session(old));
         let current = FEED_SHARED.begin_native_session().unwrap();
-        threads::load_thread(threads::SendPtr(c"{}".as_ptr() as *mut c_char), old, None, PcmLead::Off);
+        crate::player::test_physical::load_thread(plx_play_feed::SendPtr(c"{}".as_ptr() as *mut c_char), old, None, PcmLead::Off);
         assert!(!FEED_SHARED.load_failed.load(Ordering::Acquire), "a stale worker must not poison the newer epoch");
         assert!(!FEED_SHARED.native_load_returned(current));
-        threads::load_thread(threads::SendPtr(c"{}".as_ptr() as *mut c_char), current, None, PcmLead::Off);
+        crate::player::test_physical::load_thread(plx_play_feed::SendPtr(c"{}".as_ptr() as *mut c_char), current, None, PcmLead::Off);
         assert!(FEED_SHARED.load_failed.load(Ordering::Acquire), "a current synchronous refusal must still fail");
     }
 
@@ -3329,11 +3255,11 @@ mod load_in_flight_tests {
         let epoch = FEED_SHARED.begin_native_session().expect("native session");
         let mut eng = engine_loading(epoch);
         crate::player::ffi_host::hold_load_for_test();
-        let payload_ptr = threads::SendPtr(eng.payload.as_ptr() as *mut c_char);
+        let payload_ptr = plx_play_feed::SendPtr(eng.payload.as_ptr() as *mut c_char);
         eng.load_th = Some(
             std::thread::Builder::new()
                 .name("test-load-thread-hung".into())
-                .spawn(move || threads::load_thread(payload_ptr, epoch, None, PcmLead::Off))
+                .spawn(move || crate::player::test_physical::load_thread(payload_ptr, epoch, None, PcmLead::Off))
                 .expect("spawn load_thread"),
         );
         pa.install(eng);
@@ -3387,7 +3313,7 @@ mod load_in_flight_tests {
         assert!(!pa.is_live(), "the stop must still complete from the route's point of view");
         assert!(pa.has_abandoned_load(), "the in-flight Load must be parked, not dropped");
         assert_ne!(
-            unsafe { crate::player::sink().ready(pa.mt()) },
+            unsafe { crate::player::test_physical::sink().ready(pa.mt()) },
             0,
             "the object must be neither unloaded, destroyed nor quarantined while Load is in flight"
         );
@@ -3425,7 +3351,7 @@ mod load_in_flight_tests {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         assert!(!pa.has_abandoned_load());
-        assert_eq!(unsafe { crate::player::sink().ready(pa.mt()) }, 0, "the released object must be gone");
+        assert_eq!(unsafe { crate::player::test_physical::sink().ready(pa.mt()) }, 0, "the released object must be gone");
         assert!(
             !crate::player::ffi_host::lifecycle_blocked_for_test(),
             "the release must be a D1 with complete evidence, not a process-long quarantine"
@@ -3456,11 +3382,11 @@ mod load_in_flight_tests {
         ps.begin_attempt_view(crate::route::RouteStartAttempt::fixture(), crate::player::attempt_view::Backend::Feed);
         let mut eng = engine_loading(epoch);
         crate::player::ffi_host::hold_load_for_test();
-        let payload_ptr = threads::SendPtr(eng.payload.as_ptr() as *mut c_char);
+        let payload_ptr = plx_play_feed::SendPtr(eng.payload.as_ptr() as *mut c_char);
         eng.load_th = Some(
             std::thread::Builder::new()
                 .name("test-load-thread-hung".into())
-                .spawn(move || threads::load_thread(payload_ptr, epoch, None, PcmLead::Off))
+                .spawn(move || crate::player::test_physical::load_thread(payload_ptr, epoch, None, PcmLead::Off))
                 .expect("spawn load_thread"),
         );
         pa.install(eng);
@@ -3516,7 +3442,7 @@ mod load_in_flight_tests {
         let live = crate::player::diag_sample_tests::scripted();
         crate::player::diag_sample_tests::store_mailboxes(&live);
         pa.publish_feed_attempt_view(ps);
-        assert_eq!(crate::player::diag_sample_tests::rows(&crate::player::diag(ps)), live,
+        assert_eq!(crate::player::diag_sample_tests::rows(&crate::player::test_physical::diag(ps)), live,
             "PRECONDITION FAILED: the live session's rows must be on the read-out before the teardown");
     }
 
@@ -3538,7 +3464,7 @@ mod load_in_flight_tests {
         });
         show_live_rows(&mut ps, &mut pa);
         stop_bufferfeed(&mut ps, &mut pa);
-        let d = crate::player::diag(&ps);
+        let d = crate::player::test_physical::diag(&ps);
         assert_eq!(crate::player::diag_sample_tests::rows(&d), plx_playback_contract::feed::FeedDiag::IDLE,
             "after a stop the rows are the reset mailboxes' values");
         assert_eq!(d.place_rv, i32::MIN);
@@ -3563,7 +3489,7 @@ mod load_in_flight_tests {
         show_live_rows(&mut ps, &mut pa);
         let outcome = reload_transcode(&mut ps, &mut pa, 0);
         let _ = crate::player::pump::settle_reload(outcome, "test reload", &mut ps);
-        let d = crate::player::diag(&ps);
+        let d = crate::player::test_physical::diag(&ps);
         assert_eq!(crate::player::diag_sample_tests::rows(&d), plx_playback_contract::feed::FeedDiag::IDLE,
             "after a reload the rows are the reset mailboxes' values");
         crate::player::ffi_host::release_load_for_test();
@@ -3598,7 +3524,7 @@ mod load_in_flight_tests {
         show_original_failure(&mut ps, &mut pa);
         stop_bufferfeed(&mut ps, &mut pa);
         assert_eq!(ps.readout().original_failure(), None);
-        let d = crate::player::diag(&ps);
+        let d = crate::player::test_physical::diag(&ps);
         assert_eq!((d.abr_failure_kind, d.abr_failure_status), (0, 0));
         crate::player::ffi_host::release_load_for_test();
     }
@@ -3622,7 +3548,7 @@ mod load_in_flight_tests {
         let outcome = reload_transcode(&mut ps, &mut pa, 0);
         let _ = crate::player::pump::settle_reload(outcome, "test rollback reload", &mut ps);
         assert_eq!(ps.readout().original_failure(), Some((crate::player::ABR_FAILURE_ORIGINAL_HTTP, 503)));
-        let d = crate::player::diag(&ps);
+        let d = crate::player::test_physical::diag(&ps);
         assert_eq!((d.abr_failure_kind, d.abr_failure_status), (crate::player::ABR_FAILURE_ORIGINAL_HTTP, 503));
         crate::player::ffi_host::release_load_for_test();
     }
@@ -3758,7 +3684,7 @@ mod load_in_flight_tests {
         );
         assert_eq!(ps.native_start_refused, Some(crate::route::StartRefusal::LoadTimeout));
         assert!(
-            crate::player::diag(&ps).load_failed,
+            crate::player::test_physical::diag(&ps).load_failed,
             "the diagnostics Load row (and the lab snapshot) must read the refused reload as refused"
         );
     }
@@ -3805,7 +3731,7 @@ mod load_in_flight_tests {
             "the read-out must offer Try Again: {actions:?}"
         );
         assert!(
-            crate::player::diag(&ps).load_failed,
+            crate::player::test_physical::diag(&ps).load_failed,
             "the diagnostics Load row (and the lab snapshot) must read the refused start as refused"
         );
 
@@ -4839,7 +4765,7 @@ mod native_seek_tests {
     fn a_webos5_session_seeks_natively_and_never_reloads() {
         let _serial = plx_base::testlock::serial();
         let _restore = arm(None);
-        let sink_mode = sink().window_mode();
+        let sink_mode = crate::player::test_physical::sink().window_mode();
         assert_eq!(sink_mode, crate::player::VP_EXPORTED, "PRECONDITION: the armed host sink is the webOS 5+ one");
         let mode = mode_for(5, false, sink_mode);
         assert_eq!(mode, SeekMode::NativeSeek, "VP_EXPORTED selects LG's public Seek");
@@ -5636,7 +5562,7 @@ mod pcm_sink_lead_tests {
         let load = |lead: PcmLead| {
             let epoch = FEED_SHARED.begin_native_session().expect("native session");
             assert_eq!(FEED_SHARED.native_load_pcm_lead(epoch), None, "nothing before the Load returns");
-            threads::load_thread(threads::SendPtr(c"{}".as_ptr() as *mut c_char), epoch, None, lead);
+            crate::player::test_physical::load_thread(plx_play_feed::SendPtr(c"{}".as_ptr() as *mut c_char), epoch, None, lead);
             assert!(FEED_SHARED.native_load_returned(epoch), "PRECONDITION: the Load returned");
             let published = FEED_SHARED.native_load_pcm_lead(epoch);
             crate::player::reset_session_for_test();
@@ -5750,7 +5676,7 @@ mod explicit_source_start_tests {
     /// **`is_live` is the adapter's bound attempt, so a start that returns before it binds must
     /// leave no Engine installed.** `start_bufferfeed_prepared` returns early on any `Rejected` or
     /// `CommandRefused` for its attempt. A `Rejected` Start never reaches the driver; a refused
-    /// dispatch (`FeedDriver::dispatch`: no staged open, a busy slot, a failed launch) returns
+    /// dispatch (the Feed driver's `dispatch`: no staged open, a busy slot, a failed launch) returns
     /// before `launch_native_open` installs, which is its last step; and one `send_at(Start)`
     /// dispatches no follow-on command (the startup plan waits at `Ready` for the Load's own
     /// observation), so no refusal of a later command can reach that exit with an Engine standing.

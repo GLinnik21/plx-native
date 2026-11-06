@@ -19,7 +19,7 @@
 //! the `VideoSink` implementation require that feature.
 //!
 //! The wrappers are the methods of [`StarfishSink`], the television's `tv::sink::VideoSink`; the
-//! port table installs it (`port.rs`) and `player::sink()` reaches it. They stay `unsafe fn`,
+//! port table installs it (`port.rs`) and the player's composed sink reaches it. They stay `unsafe fn`,
 //! one-for-one with the declarations. Several take raw pointers, and the pointer-free ones still
 //! carry ordering preconditions the C side does not check (`acb_start` before the bind completes,
 //! `sf_play` after `sf_destroy`). Calling any of them remains something to think about; the token
@@ -130,7 +130,7 @@ pub struct StarfishSink;
 impl crate::tv::sink::VideoSink for StarfishSink {
     /// **One of the two verbs of this seam that is NOT main-thread (the other is `unload`, on its
     /// `UnloadTicket`), and the missing token is how you can tell.** `Load` blocks for the pipeline construction and the library owns its own GMainContext
-    /// behind it, so it runs on the media worker (`threads::load_thread`) by design — putting it on
+    /// behind it, so it runs on the media worker (`native_load::load_thread`) by design — putting it on
     /// the main thread would stall the frame loop for the whole load. What keeps that safe is NOT
     /// `sf_ready()` — that reads true the moment the object is constructed, before the real Load call
     /// returns (issue #74) — but the C seam's own `g_load_returned` gate inside `sf_ready_object()`,

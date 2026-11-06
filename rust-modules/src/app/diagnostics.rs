@@ -411,7 +411,8 @@ impl Diagnostics {
     ///
     /// The panel being switched ON is its own re-sample: the rising edge of [`ON`] is what the
     /// static-era `kick()` expressed by zeroing the deadline from three modules away.
-    pub(crate) fn update(&mut self, ps: &plx_media::route::PlaybackSession, paused: Option<bool>, now: u32) {
+    pub(crate) fn update(&mut self, ps: &plx_media::route::PlaybackSession, pa: &plx_media::player::adapter::PlayerAdapter,
+        paused: Option<bool>, now: u32) {
         let on = enabled();
         let woke = on && !self.was_on;
         self.was_on = on;
@@ -425,20 +426,22 @@ impl Diagnostics {
         // The panel is the maintainer's instrument: its own messages are English-only, and the
         // shared helpers it composes (units, decimals, quality labels) read the UI language, so
         // the whole sample is taken in English. Nothing sampled here reaches product UI.
-        self.sample(ps, paused, now);
+        self.sample(ps, pa, paused, now);
     }
 
     /// Take the sample in English (see `update`). The one entry to `resample`.
-    fn sample(&mut self, ps: &plx_media::route::PlaybackSession, paused: Option<bool>, now: u32) {
-        plx_platform::i18n::render_in_english(|| self.resample(ps, paused, now));
+    fn sample(&mut self, ps: &plx_media::route::PlaybackSession, pa: &plx_media::player::adapter::PlayerAdapter,
+        paused: Option<bool>, now: u32) {
+        plx_platform::i18n::render_in_english(|| self.resample(ps, pa, paused, now));
     }
 
     /// The sample itself: everything the panel will show until the next one.
-    fn resample(&mut self, ps: &plx_media::route::PlaybackSession, paused: Option<bool>, now: u32) {
+    fn resample(&mut self, ps: &plx_media::route::PlaybackSession, pa: &plx_media::player::adapter::PlayerAdapter,
+        paused: Option<bool>, now: u32) {
         // ONE sample feeding the whole panel. Calling `diag()` per block would let one row report
         // "no frames" beside a position taken a moment later — a panel that tells a story that
         // never happened is worse than no panel.
-        let d = plx_media::player::diag(ps);
+        let d = plx_media::player::diag(ps, pa);
         let prev = self.prev_fed;
         self.head = header(ps, &d, now, paused);
         // ONE decision per sample, held with the rows it chose. Deciding this in `draw` instead
@@ -3491,10 +3494,11 @@ mod tests {
         // which is where the shared localized helpers are reached. The state is this session's own
         // readout, so nothing global is written and nothing needs restoring.
         plx_media::player::swap_state_for_test(&mut ps.ps, plx_media::player::PlaybackState::Playing);
+        let pa = crate::app::adapters::backends::test_adapter();
         for pref in plx_platform::i18n::SHIPPED {
             let _lang = plx_platform::i18n::language_on_this_thread_for_test(pref);
             let mut panel = Diagnostics::default();
-            panel.sample(&ps, None, 1_000);
+            panel.sample(&ps, &pa, None, 1_000);
             assert!(!panel.idle && panel.columns.iter().all(|c| !c.is_empty()), "{}: a live session builds column rows", pref.tag());
             let mut text: Vec<String> = panel.head.to_vec();
             text.extend(panel.rows.iter().chain(panel.columns.iter().flatten()).flat_map(|f| {

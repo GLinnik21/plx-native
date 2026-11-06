@@ -920,7 +920,7 @@ unsafe fn ingress_token(app: &mut App, fr: &mut Frame, token: &str) -> bool {
             return true;
         }
     }
-    let accepted = dispatch_remote_token(token, &app.player.session);
+    let accepted = dispatch_remote_token(token, &app.player.session, &app.adapters.player);
     if accepted && token_is_direct(token) { app.rec.input(super::recorder::enc_token(token)); }
     accepted
 }
@@ -1321,7 +1321,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         // `continue`s on every key — and because a snapshot changes no app state, so
         // there is nothing for a later arm to have wanted first. Compiles to `false`
         // in every other build (`crate::lab::key_press`).
-        if crate::lab::key_press(sym, wcode, &app.player.session) {
+        if crate::lab::key_press(sym, wcode, &app.player.session, &app.adapters.player) {
             return;
         }
 
@@ -2647,7 +2647,7 @@ fn loop_requests(app: &mut App) {
             // `ps` is threaded rather than read from a global (lane D's lab gate: `player::diag`
             // has taken a `&PlaybackSession` since phase 9, and `lab::request_upload` with it).
             plx_screens::registry::LoopReq::AccountSendDiagnostics => {
-                crate::lab::request_upload("menu", &app.player.session);
+                crate::lab::request_upload("menu", &app.player.session, &app.adapters.player);
             }
         }
     }
@@ -2810,7 +2810,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // panel is a surface now and the dispatcher ticks it, containers before pages, once per
         // frame: `PlayerOverlayScreen::step`'s `Tick` arm.)
         // Re-samples on its own 2 Hz hold; a no-op when the panel is off.
-        app.diagnostics.update(&app.player.session,
+        app.diagnostics.update(&app.player.session, &app.adapters.player,
             app.adapters.player.backend_viewer_paused(), fr.now);
         // …and the lab upload's toast, which expires on a clock rather than a spring.
         crate::lab::update(fr.now);
@@ -3939,9 +3939,7 @@ mod lifecycle_regression_tests {
             diagnostics: Default::default(),
             player: plx_media::player::machine::Player::new(),
             adapters: Adapters {
-                player: plx_media::player::adapter::PlayerAdapter::new(unsafe {
-                    plx_base::task::MainThread::assume()
-                }),
+                player: crate::app::adapters::backends::test_adapter(),
             },
             repause_at: -1,
             decoder_parked: false,

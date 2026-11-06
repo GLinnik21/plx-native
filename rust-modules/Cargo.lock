@@ -1004,6 +1004,7 @@ dependencies = [
  "plx_media_codecs",
  "plx_net",
  "plx_platform",
+ "plx_play_feed",
  "plx_play_uri",
  "plx_playback_contract",
  "plx_plex",

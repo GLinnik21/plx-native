@@ -202,7 +202,7 @@ impl Rig {
         plane: &'static plx_platform::tv::plane::PlaneOwner) -> Rig {
         let mut ps = PlaybackSession::IDLE;
         plx_media::route::reset_player_control_for_test(&ps);
-        let pa = PlayerAdapter::new(unsafe { MainThread::assume() });
+        let pa = crate::app::adapters::backends::test_adapter();
         let ticket = plx_media::route::begin_route_start().expect("a start owner");
         assert!(plx_media::route::prepare_route_start(ticket));
         let attempt = plx_media::route::claim_route_start_attempt(ticket).expect("an attempt");
@@ -899,7 +899,7 @@ mod hostsim {
             assert!(ps.qualify_resolved_feed_offer(plx_media::route::backend_policy::OfferId::FEED_ORIGINAL,
                 plx_media::route::CandidatePurpose::NewCandidate),
                 "the prepared fixture source must qualify its stable Feed recipe");
-            let mut pa = PlayerAdapter::new(unsafe { MainThread::assume() });
+            let mut pa = crate::app::adapters::backends::test_adapter();
             // The composition installs the probe at boot (`compose_backends`); the fork is a boot.
             super::super::install(&mut pa);
             Fork { ps, pa, pms, _host: host }

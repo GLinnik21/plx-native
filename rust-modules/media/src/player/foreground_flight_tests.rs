@@ -28,12 +28,12 @@ impl ForegroundActuator for RigActuator {
     fn prepare_resume(&mut self, ps: &mut crate::route::PlaybackSession, resume_ns: i64) -> ResumeStart {
         // The rig's adapter belongs to the `Rig`; `ArmOpen` reaches the same process mailboxes
         // through any adapter of this composition.
-        let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        let mut pa = adapter::PlayerAdapter::new_fed(unsafe { plx_base::task::MainThread::assume() });
         begin_resume(ps, &mut pa, resume_ns)
     }
 
     fn land_prepare(&mut self, ps: &mut crate::route::PlaybackSession) -> FlightLanding<ResumeOutcome> {
-        let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        let mut pa = adapter::PlayerAdapter::new_fed(unsafe { plx_base::task::MainThread::assume() });
         match land_resume(ps, &mut pa) {
             Some(outcome) => FlightLanding::Landed(outcome),
             None if crate::route::resume_flight_outstanding() => FlightLanding::Waiting,
@@ -82,7 +82,7 @@ impl Rig {
         crate::player::reset_session_for_test();
         FEED_TX.reset();
         claim_hold::clear();
-        let pa = adapter::PlayerAdapter::new(unsafe { MainThread::assume() });
+        let pa = adapter::PlayerAdapter::new_fed(unsafe { MainThread::assume() });
         let mut lifecycle = ForegroundLifecycle::<u64>::IDLE;
         lifecycle.step(
             &ForegroundEvent::Park { saved_ns: RESUME_NS, viewer_paused: true },

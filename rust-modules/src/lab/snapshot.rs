@@ -199,8 +199,9 @@ pub(crate) fn build(
     session: &str,
     route: &'static str,
     ps: &plx_media::route::PlaybackSession,
+    pa: &plx_media::player::adapter::PlayerAdapter,
 ) -> String {
-    let d = plx_media::player::diag(ps);
+    let d = plx_media::player::diag(ps, pa);
     let (recs, dropped) = plx_base::eventlog::ring::take();
     body(seq, reason, session, route, &d, recs, dropped)
 }

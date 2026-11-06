@@ -156,7 +156,7 @@ mod viewer_resume_for_load_tests {
         }
         let _restore = Restore(FEED_TX.paused.load(Ordering::Acquire));
         let mut ps = crate::route::PlaybackSession::IDLE;
-        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+        let mut pa = crate::player::adapter::PlayerAdapter::new_fed(unsafe {
             plx_base::task::MainThread::assume()
         });
         crate::player::commit_paused(&mut ps, &mut pa, true);
@@ -212,7 +212,7 @@ mod transport_pause_contract_tests {
             rebuffering: old_rebuffering,
         };
         let mut ps = crate::route::PlaybackSession::IDLE;
-        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+        let mut pa = crate::player::adapter::PlayerAdapter::new_fed(unsafe {
             plx_base::task::MainThread::assume()
         });
 
@@ -258,7 +258,7 @@ mod transport_pause_contract_tests {
         let _restore = Restore(old_paused);
         FEED_SHARED.reset_hls_clock_for_test();
         FEED_TX.commit_paused(false);
-        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+        let mut pa = crate::player::adapter::PlayerAdapter::new_fed(unsafe {
             plx_base::task::MainThread::assume()
         });
         crate::player::force_pause_result_for_test(Some(1));

@@ -61,7 +61,7 @@ fn opened() -> (crate::route::PlaybackSession, PlayerAdapter, FakeUriHandle,
     let route_attempt = crate::route::claim_route_start_attempt(ticket)
         .expect("first physical route attempt");
     ps.begin_attempt_view(route_attempt, super::super::attempt_view::Backend::Uri);
-    let mut pa = PlayerAdapter::new(unsafe { MainThread::assume() });
+    let mut pa = PlayerAdapter::new_fed(unsafe { MainThread::assume() });
     let (driver, handle) = FakeUriDriver::new(CAPS);
     for track in [AUDIO_42, AUDIO_43, SUBTITLE_77] { handle.map_track(track); }
     assert!(pa.install_uri_driver(Box::new(driver)).is_ok());

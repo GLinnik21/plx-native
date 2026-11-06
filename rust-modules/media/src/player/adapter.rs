@@ -2,8 +2,9 @@
 //! (restructure spec §2.2, phase 9).
 //!
 //! The adapter owns the one backend attempt runner beside its OS/FFI resources; route and viewer
-//! decisions live one field away in [`crate::player::machine::Player`]. Buffer-feed ownership is grouped in [`FeedResources`]:
-//! the [`Engine`] slot, native Load receipts, abandoned Load and parked release. The adapter
+//! decisions live one field away in [`crate::player::machine::Player`]. Buffer-feed ownership (the [`Engine`] slot, native Load
+//! receipts, abandoned Load and parked release) belongs to the physical set the application composes
+//! (`plx_play_feed`), which the adapter reaches only through [`PhysicalSet`]. The adapter
 //! retains the [`MainThread`] token, periodic Plex reporter, release policy, and URI admission.
 //!
 //! # Why the slot moved here, and what replaced the token argument
@@ -27,15 +28,13 @@
 
 #[cfg(all(test, feature = "play-feed"))]
 use super::engine::Engine;
-use super::physical::Physical;
 use super::timeline;
 use super::backend;
 #[cfg(feature = "play-feed")]
 use plx_playback_contract::feed::{FeedTransportAction, OpenRequest};
-use plx_playback_contract::feed::PhysicalSet;
-#[cfg(all(test, feature = "play-feed", feature = "hostsim"))]
-use super::threads;
+use plx_playback_contract::feed::{PhysicalSet, UriOnlySet};
 use plx_base::task::MainThread;
+use plx_platform::tv::sink::{NoSink, VideoSink};
 use std::collections::VecDeque;
 
 const MAX_METRIC_NOTICES: usize = 32;
@@ -111,8 +110,46 @@ mod composed_backends_tests {
 
     #[test]
     fn a_fresh_adapter_forms_exactly_the_set_its_constructor_installs() {
-        let adapter = PlayerAdapter::new(unsafe { MainThread::assume() });
+        let adapter = PlayerAdapter::new_fed(unsafe { MainThread::assume() });
         assert_eq!(adapter.composed_backends(), FEED_ONLY);
+    }
+
+    /// The sink a composition installs is asked afresh at every use (the Feed's fence changes its
+    /// answer while an off-frame `Unload` owns the object), and until one is installed the adapter
+    /// reaches the seam through a sink that refuses every verb.
+    #[test]
+    fn the_adapters_sink_is_inert_until_installed_and_asked_afresh_at_every_use() {
+        use plx_platform::tv::sink::{NoSink, VideoSink, VP_NONE};
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+        static ASKED: AtomicUsize = AtomicUsize::new(0);
+        fn counted() -> &'static dyn VideoSink {
+            ASKED.fetch_add(1, SeqCst);
+            &NoSink
+        }
+        let mut adapter = PlayerAdapter::new(unsafe { MainThread::assume() });
+        assert_eq!(adapter.display_sink().window_mode(), VP_NONE);
+        assert_eq!(ASKED.load(SeqCst), 0, "nothing installed yet: the inert sink answered");
+        assert!(adapter.install_display_sink(counted));
+        let _ = (adapter.display_sink(), adapter.display_sink());
+        assert_eq!(ASKED.load(SeqCst), 2, "the provider is asked at each use, not once at install");
+    }
+
+    /// A set the adapter refuses brings its sink with it: the adapter keeps the one it had.
+    #[cfg(feature = "play-feed")]
+    #[test]
+    fn a_refused_physical_set_leaves_the_adapters_sink_alone() {
+        use plx_platform::tv::sink::{NoSink, VideoSink};
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+        static ASKED: AtomicUsize = AtomicUsize::new(0);
+        fn counted() -> &'static dyn VideoSink {
+            ASKED.fetch_add(1, SeqCst);
+            &NoSink
+        }
+        let mut adapter = PlayerAdapter::new_fed(unsafe { MainThread::assume() });
+        assert!(adapter.install_physical(Box::new(UriOnlySet::new()), counted).is_err(),
+            "a Feed is already installed");
+        let _ = adapter.display_sink();
+        assert_eq!(ASKED.load(SeqCst), 0, "the refused set's sink was not installed");
     }
 
     #[test]
@@ -120,7 +157,7 @@ mod composed_backends_tests {
         let caps = Capabilities { progressive_uri: true, hls_uri: false, packet_feed: false,
             pause: true, seek: true, audio_track: true, subtitle_track: true,
             audio_off: false, subtitle_off: false };
-        let mut adapter = PlayerAdapter::new(unsafe { MainThread::assume() });
+        let mut adapter = PlayerAdapter::new_fed(unsafe { MainThread::assume() });
         assert_eq!(adapter.composed_backends(), FEED_ONLY);
         let (first, _) = FakeUriDriver::new(caps);
         assert!(adapter.install_uri_driver(Box::new(first)).is_ok());
@@ -162,7 +199,7 @@ mod qualified_uri_offer_tests {
                 crate::route::backend_policy::Selection::Open(offer)
                     if offer.backend == BackendKind::Feed));
         }
-        let mut adapter = PlayerAdapter::new(unsafe { MainThread::assume() });
+        let mut adapter = PlayerAdapter::new_fed(unsafe { MainThread::assume() });
         // The driver queues a Start, and its open is refused afterwards, as a transport that
         // cannot open does.
         let (driver, handle) = FakeUriDriver::new(Capabilities { progressive_uri: true,
@@ -302,6 +339,15 @@ struct BoundFeed {
     foreground_follows_load: bool,
 }
 
+/// The seam's sink, asked afresh at every use. A provider and not a stored reference because the
+/// Feed's composition hands a fence in front of the real sink, and which of the two answers
+/// changes while an off-frame `Unload` owns the native object.
+pub type SinkProvider = fn() -> &'static dyn VideoSink;
+
+/// What an adapter reaches the seam through until the composition installs a sink: every verb
+/// refused ([`NoSink`]).
+fn inert_sink() -> &'static dyn VideoSink { &NoSink }
+
 /// Common coordinator and main-thread proof, as one owned value (`App.adapters.player`).
 pub struct PlayerAdapter {
     /// Proof, held rather than passed: see the module doc. It is a ZST, so this costs nothing and
@@ -309,12 +355,18 @@ pub struct PlayerAdapter {
     mt: MainThread,
     /// The persistent physical executors: the native feed (its slot, Load and release workers
     /// and driver) and the optional URI driver, as the one set the runner and the pump drive.
-    /// Production boxes [`Physical`]; the adapter reaches it only through [`PhysicalSet`].
+    /// The application composes it ([`Self::install_physical`]); until it does, and in a build with
+    /// no Feed, the set is the contract's [`UriOnlySet`]. The adapter reaches it only through
+    /// [`PhysicalSet`].
     pub(super) physical: Box<dyn PhysicalSet>,
-    /// The test fixtures' handle on the [`Physical`] boxed behind `physical`
+    /// The sink the seam is reached through, composed beside the set ([`Self::install_physical`],
+    /// [`Self::install_display_sink`]) and read through [`Self::display_sink`]. Until the
+    /// composition installs one it refuses every verb ([`inert_sink`]).
+    sink: SinkProvider,
+    /// The test fixtures' handle on the Feed set boxed behind `physical`
     /// ([`Self::new_probed`]); `None` on an adapter built by [`Self::new`].
     #[cfg(all(test, feature = "play-feed"))]
-    probe: Option<super::physical::probe::Probe>,
+    probe: Option<plx_play_feed::physical::probe::Probe>,
     /// The one neutral attempt owner, over the physical executors above.
     backend: backend::BackendRunner,
     /// Recent typed measurements for local diagnostics. Older notices are evicted; the
@@ -400,12 +452,10 @@ pub enum QueuedLanding {
 impl PlayerAdapter {
     /// Take the token. `app::boot` calls this once, with the token `plex_run` minted.
     pub fn new(mt: MainThread) -> Self {
-        // The pipeline callback has no user-data pointer, so its hooks are installed once per process.
-        #[cfg(feature = "play-feed")]
-        super::install_sf_event_hooks();
         Self {
             mt,
-            physical: Box::new(Physical::new()),
+            physical: Box::new(UriOnlySet::new()),
+            sink: inert_sink,
             #[cfg(all(test, feature = "play-feed"))]
             probe: None,
             backend: backend::BackendRunner::new(),
@@ -441,23 +491,26 @@ impl PlayerAdapter {
         }
     }
 
-    /// [`Self::new`] over a set that forwards to the [`Physical`] the Engine fixtures keep a
+    /// [`Self::new`] over a set that forwards to the Feed set the Engine fixtures keep a
     /// handle on ([`Self::engine`], [`Self::install`], [`Self::take`], [`Self::split`],
-    /// [`Self::has_pending_release`]): the adapter drives the same [`Physical`] through the same
+    /// [`Self::has_pending_release`]): the adapter drives the same set through the same
     /// `dyn PhysicalSet`, and only the fixtures reach it through the probe. A test that calls one
-    /// of those fixtures builds its adapter with this; one that does not uses [`Self::new`].
+    /// of those fixtures builds its adapter with this; one that does not uses [`Self::new_fed`].
     #[cfg(all(test, feature = "play-feed"))]
     pub fn new_probed(mt: MainThread) -> Self {
         let mut adapter = Self::new(mt);
-        let (probe, physical) = super::physical::probe::Probe::new();
+        let (probe, physical) = plx_play_feed::physical::probe::Probe::new(
+            super::test_physical::feed_set());
+        super::test_physical::install_sf_event_hooks();
         adapter.physical = physical;
+        adapter.sink = super::test_physical::sink;
         adapter.probe = Some(probe);
         adapter
     }
 
-    /// The fixtures' handle on the boxed [`Physical`].
+    /// The fixtures' handle on the boxed Feed set.
     #[cfg(all(test, feature = "play-feed"))]
-    pub(super) fn probe(&self) -> &super::physical::probe::Probe {
+    pub(super) fn probe(&self) -> &plx_play_feed::physical::probe::Probe {
         self.probe.as_ref().expect("this fixture needs an adapter built by PlayerAdapter::new_probed")
     }
 
@@ -960,6 +1013,35 @@ impl PlayerAdapter {
         }
         self.physical.install_uri(driver)
     }
+
+    /// Install the physical set the application composed (the Feed backend and the URI driver's
+    /// seat) with the sink its verbs go through, replacing the [`UriOnlySet`] and the inert sink
+    /// the adapter starts with. It is the composition's one call, made before the first Start; a
+    /// set that would lose something is handed back untouched: the current set seats a URI
+    /// driver, a Feed is already installed, or a native attempt is still being released.
+    pub fn install_physical(&mut self, set: Box<dyn PhysicalSet>, display_sink: SinkProvider)
+        -> Result<(), Box<dyn PhysicalSet>> {
+        if self.physical.uri().is_some() || self.physical.feed().is_some()
+            || self.backend_exit_disposition() != ExitDisposition::Clean {
+            return Err(set);
+        }
+        self.physical = set;
+        self.sink = display_sink;
+        Ok(())
+    }
+
+    /// Install the sink of a composition with no Feed set (the URI-only build hands the platform
+    /// sink). False, and nothing changes, while a native attempt is still being released.
+    pub fn install_display_sink(&mut self, display_sink: SinkProvider) -> bool {
+        if self.backend_exit_disposition() != ExitDisposition::Clean { return false; }
+        self.sink = display_sink;
+        true
+    }
+
+    /// The composed sink, right now: the Feed's fence answers in its place while an off-frame
+    /// `Unload` owns the native object, so a main-thread verb cannot reach what the worker is
+    /// inside (PLX-NATIVE-1Q). Every media-side verb that is not a hook goes through here.
+    pub fn display_sink(&self) -> &'static dyn VideoSink { (self.sink)() }
 
     /// Escrow an exact resolved URL and its source-specific native track map. The route owner
     /// still has to supply a qualified offer and send an addressed Start through the runner.
@@ -1899,7 +1981,7 @@ impl PlayerAdapter {
     /// Address one Load verdict without handing route state to the native worker.
     #[cfg(all(test, feature = "play-feed", feature = "hostsim"))]
     pub(super) fn load_receipt(&mut self, attempt: crate::route::RouteStartAttempt, native_epoch: u32,
-        _trace_generation: u32) -> threads::LoadReceipt {
+        _trace_generation: u32) -> plx_play_feed::feed_resources::LoadReceipt {
         self.probe().resources(|resources|
             resources.load_receipt(attempt.contract_id(), native_epoch))
     }
@@ -2080,8 +2162,8 @@ impl PlayerAdapter {
     /// module doc for why that surface keeps its own argument.
     ///
     /// Does not wait for a pending off-frame release: a caller holding the token may call any verb,
-    /// and while the object is `Releasing` `player::sink()` answers a sink on which every verb is
-    /// a no-op, so none of them reaches the object the worker is inside.
+    /// and while the object is `Releasing` [`Self::display_sink`] answers a sink on which every verb
+    /// is a no-op, so none of them reaches the object the worker is inside.
     #[inline]
     pub fn mt(&self) -> &MainThread {
         &self.mt
@@ -2103,7 +2185,7 @@ mod repair_receipt_tests {
     #[test]
     fn local_metric_history_evicts_old_effects_after_real_reducer_results() {
         use super::super::attempt_metrics::{Origin, RequestOutcome, Tick, Fx};
-        let mut adapter = PlayerAdapter::new(unsafe { MainThread::assume() });
+        let mut adapter = PlayerAdapter::new_fed(unsafe { MainThread::assume() });
         for revision in 1..=40 {
             let request = backend::LogicalRequestId::new(revision);
             let begun = adapter.backend.begin_request_at(request, Origin::Fresh,
@@ -2126,7 +2208,7 @@ mod repair_receipt_tests {
     fn a_receipt_lands_without_a_player_screen_and_cannot_rearm_the_attempt() {
         let mut owner = super::super::machine::RepairAttempt::new();
         let token = owner.begin(true).unwrap();
-        let mut adapter = PlayerAdapter::new(unsafe { MainThread::assume() });
+        let mut adapter = PlayerAdapter::new_fed(unsafe { MainThread::assume() });
         let (tx, rx) = std::sync::mpsc::channel();
         adapter.repair = Some((token, rx));
         assert!(!adapter.poll_repair(&mut owner));
@@ -2173,7 +2255,7 @@ mod uri_stop_refusal_tests {
     fn uri_rebuffering_publishes_the_shared_readout_and_unreported_stays_unknown() {
         use plx_playback_contract::readout::PlaybackState as S;
         let _serial = plx_base::testlock::serial();
-        let mut adapter = PlayerAdapter::new(unsafe { MainThread::assume() });
+        let mut adapter = PlayerAdapter::new_fed(unsafe { MainThread::assume() });
         let route = crate::route::RouteStartAttempt::fixture();
         adapter.uri_route_attempt = Some(route);
         let mut ps = crate::route::PlaybackSession::default();
@@ -2204,7 +2286,7 @@ mod uri_stop_refusal_tests {
     #[test]
     fn unavailable_uri_driver_cannot_begin_release_or_queue_a_successor() {
         let _serial = plx_base::testlock::serial();
-        let mut adapter = PlayerAdapter::new(unsafe { MainThread::assume() });
+        let mut adapter = PlayerAdapter::new_fed(unsafe { MainThread::assume() });
         // The route still names the old physical attempt, but no URI driver can accept Stop.
         // This is the same unavailable-driver result the adapter's physical set returns.
         let route = crate::route::RouteStartAttempt::fixture();

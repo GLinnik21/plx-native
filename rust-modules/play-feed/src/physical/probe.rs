@@ -1,22 +1,22 @@
-//! Test support: a handle on the [`Physical`] an adapter boxes as its `dyn PhysicalSet`.
+//! Test support: a handle on the [`FeedSet`] an adapter boxes as its `dyn PhysicalSet`.
 //!
 //! The adapter holds its set as `Box<dyn PhysicalSet>`, so a test fixture that installs, takes or
 //! inspects the Engine inside the Feed cannot reach it through the box, and the production traits
 //! carry no downcast and no test-only verb. [`Probe::new`] builds the set the other way round:
-//! it shares one [`Physical`] between a [`SharedPhysical`], which is the box's content and
+//! it shares one [`FeedSet`] between a [`SharedFeedSet`], which is the box's content and
 //! forwards every [`DriverSet`], [`PhysicalSet`] and Feed verb to it, and a [`Probe`], which the
-//! adapter keeps beside the box (`PlayerAdapter::new_probed`).
+//! adapter keeps beside the box (the player's `PlayerAdapter::new_probed`).
 //! The fixtures read the Feed's resources through the probe; everything the adapter itself does
-//! goes through the box, so the code under test is the production code over the same [`Physical`].
+//! goes through the box, so the code under test is the production code over the same [`FeedSet`].
 //!
 //! The forwarder is the Feed the pump sees (a borrow of the shared value cannot outlive the call
 //! that takes it), and it seats no URI driver: a probed adapter is for the Engine fixtures.
 //! Every verb borrows the shared value for the length of the call, so a verb that re-entered the
 //! adapter's fixtures would panic on the second borrow; none does.
 
-use super::Physical;
-use crate::player::engine::Engine;
-use plx_play_feed::feed_resources::FeedResources;
+use super::FeedSet;
+use crate::feed_resources::FeedResources;
+use crate::feed_state::Engine;
 use plx_base::task::MainThread;
 use plx_playback_contract::demux::DemuxSession;
 use plx_playback_contract::feed::{
@@ -34,24 +34,24 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicI32, AtomicU32};
 use std::time::Duration;
 
-/// The test fixtures' handle on the [`Physical`] behind a [`SharedPhysical`].
-pub(in crate::player) struct Probe(Rc<RefCell<Physical>>);
+/// The test fixtures' handle on the [`FeedSet`] behind a [`SharedFeedSet`].
+pub struct Probe(Rc<RefCell<FeedSet>>);
 
 impl Probe {
-    /// A fresh [`Physical`], as the forwarding set an adapter boxes and the handle it keeps.
-    pub(in crate::player) fn new() -> (Self, Box<dyn PhysicalSet>) {
-        let shared = Rc::new(RefCell::new(Physical::new()));
-        (Self(Rc::clone(&shared)), Box::new(SharedPhysical(shared)))
+    /// `set`, as the forwarding set an adapter boxes and the handle it keeps.
+    pub fn new(set: FeedSet) -> (Self, Box<dyn PhysicalSet>) {
+        let shared = Rc::new(RefCell::new(set));
+        (Self(Rc::clone(&shared)), Box::new(SharedFeedSet(shared)))
     }
 
     /// Run `fixture` over the Feed's resources: the Engine slot, the Load receipts, the release
     /// slot and the unload spawner.
-    pub(in crate::player) fn resources<R>(&self, fixture: impl FnOnce(&mut FeedResources) -> R) -> R {
+    pub fn resources<R>(&self, fixture: impl FnOnce(&mut FeedResources) -> R) -> R {
         fixture(self.0.borrow_mut().feed.resources_mut())
     }
 
     /// The installed Engine, borrowed from the shared value until the guard drops.
-    pub(in crate::player) fn engine(&self) -> Option<RefMut<'_, Engine>> {
+    pub fn engine(&self) -> Option<RefMut<'_, Engine>> {
         let mut physical = self.0.borrow_mut();
         physical.feed.resources_mut().engine()?;
         Some(RefMut::map(physical, |physical| {
@@ -60,7 +60,7 @@ impl Probe {
     }
 }
 
-/// Forwards `&mut self` Feed verbs to the shared [`Physical`]'s Feed.
+/// Forwards `&mut self` Feed verbs to the shared [`FeedSet`]'s Feed.
 macro_rules! forward_mut {
     ($($name:ident($($arg:ident: $ty:ty),*) $(-> $ret:ty)?;)*) => {$(
         fn $name(&mut self $(, $arg: $ty)*) $(-> $ret)? {
@@ -69,7 +69,7 @@ macro_rules! forward_mut {
     )*};
 }
 
-/// Forwards `&self` Feed queries to the shared [`Physical`]'s Feed.
+/// Forwards `&self` Feed queries to the shared [`FeedSet`]'s Feed.
 macro_rules! forward_ref {
     ($($name:ident($($arg:ident: $ty:ty),*) $(-> $ret:ty)?;)*) => {$(
         fn $name(&self $(, $arg: $ty)*) $(-> $ret)? {
@@ -78,17 +78,17 @@ macro_rules! forward_ref {
     )*};
 }
 
-/// The [`Physical`] shared with a [`Probe`], as the adapter's `dyn PhysicalSet`.
-struct SharedPhysical(Rc<RefCell<Physical>>);
+/// The [`FeedSet`] shared with a [`Probe`], as the adapter's `dyn PhysicalSet`.
+struct SharedFeedSet(Rc<RefCell<FeedSet>>);
 
-impl SharedPhysical {
+impl SharedFeedSet {
     fn with_feed<R>(&self, verb: impl FnOnce(&mut dyn FeedControl) -> R) -> R {
         let mut physical = self.0.borrow_mut();
         verb(physical.feed().expect("a probed set is only built over a feed build"))
     }
 }
 
-impl DriverSet for SharedPhysical {
+impl DriverSet for SharedFeedSet {
     type Context = MainThread;
 
     fn capabilities(&self, backend: BackendKind) -> Option<Capabilities> {
@@ -109,11 +109,11 @@ impl DriverSet for SharedPhysical {
     fn exit_disposition(&self) -> ExitDisposition { self.0.borrow().exit_disposition() }
 }
 
-impl PhysicalSet for SharedPhysical {
+impl PhysicalSet for SharedFeedSet {
     fn feed(&mut self) -> Option<&mut dyn FeedControl> { Some(self) }
 }
 
-impl FeedSeek for SharedPhysical {
+impl FeedSeek for SharedFeedSet {
     forward_mut! {
         paused_seek_step(now: u32, route_flight: bool, claim_owns_pause: bool) -> PausedSeekStep;
         stuck_seek_due(now: u32, feed_allowed: bool, route_flight: bool, budget_ms: u32) -> bool;
@@ -128,7 +128,7 @@ impl FeedSeek for SharedPhysical {
     }
 }
 
-impl FeedLoad for SharedPhysical {
+impl FeedLoad for SharedFeedSet {
     forward_mut! {
         tick_load(mt: &MainThread, now: u32, segmented_hls: bool, budget: Duration,
             speed_deadline_ms: u32, no_audio: bool) -> LoadTick;
@@ -149,7 +149,7 @@ impl FeedLoad for SharedPhysical {
     }
 }
 
-impl FeedOpen for SharedPhysical {
+impl FeedOpen for SharedFeedSet {
     forward_mut! {
         open_begin(mt: &MainThread) -> bool;
         open_prepare(mt: &MainThread, request: OpenRequest) -> Result<u32, Failure>;
@@ -159,7 +159,7 @@ impl FeedOpen for SharedPhysical {
     }
 }
 
-impl FeedStop for SharedPhysical {
+impl FeedStop for SharedFeedSet {
     forward_mut! {
         stop_begin() -> Option<FeedFacts>;
         stop_side_reader(for_reload: bool);
@@ -174,7 +174,7 @@ impl FeedStop for SharedPhysical {
     }
 }
 
-impl FeedControl for SharedPhysical {
+impl FeedControl for SharedFeedSet {
     forward_mut! {
         command(command: FeedCommand);
         user_pause(mt: &MainThread) -> UserPauseOutcome;

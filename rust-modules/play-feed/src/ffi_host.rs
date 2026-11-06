@@ -62,7 +62,7 @@
 //!
 //! The verbs below are private; [`HostSink`] is the simulator's own `tv::sink::VideoSink`, one
 //! method per verb, installed by `port.rs` for the `hostsim` build and returned directly by
-//! `player::sink()` in the hostsim tests. The `*_for_test` hooks stay here, next to the statics
+//! the media tests' composition (`player::test_physical`) in the hostsim tests. The `*_for_test` hooks stay here, next to the statics
 //! they touch, and the tests reach them as `player::ffi_host::<hook>` (media re-exports this module
 //! under that name).
 //!
@@ -273,7 +273,7 @@ fn note_dispatch(verb: &'static str) {
 /// open on the host, rather than a single-threaded simulation of one.
 #[cfg(any(test, feature = "test-support"))]
 static HOLD_LOAD: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
-/// Arm the hold BEFORE spawning `threads::load_thread`, so its `sf_load` call blocks once it
+/// Arm the hold BEFORE spawning `native_load::load_thread`, so its `sf_load` call blocks once it
 /// reaches the wait above. A test that never calls this gets the unmodified, non-blocking
 /// `sf_load` — this is opt-in per test, not a global change in behaviour.
 #[cfg(any(test, feature = "test-support"))]

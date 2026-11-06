@@ -190,7 +190,7 @@ pub trait VideoSink: DisplaySink {
 
 /// The installed sink: the only way out of `tv` for the Starfish verbs, and only `player/` may
 /// call it (`ci/check-deps.sh`, rule `sink`).
-#[cfg_attr(all(any(test, feature = "test-support"), feature = "hostsim"), allow(dead_code))] // player::sink() answers HostSink there
+#[cfg_attr(all(any(test, feature = "test-support"), feature = "hostsim"), allow(dead_code))]
 pub fn installed() -> &'static dyn VideoSink { super::port().sink }
 
 /// Resolve the shared display interface in composition/IO code, then inject it into a driver.
@@ -293,7 +293,7 @@ impl VideoSink for NoSink {
 
 /// A fence in front of a real sink (read through the getter it holds, so a static can name it): every verb is refused (NoSink's answers, nothing reaches the
 /// wrapped sink) while the three memoized queries, which say nothing about the native object,
-/// keep the wrapped sink's real answer. `player::sink()` hands this out while an off-frame
+/// keep the wrapped sink's real answer. the Feed's `SinkFence` hands this out while an off-frame
 /// `Unload` owns the object, so the main thread cannot reach what the worker is inside.
 pub struct RefusingSink(pub fn() -> &'static dyn VideoSink);
 
