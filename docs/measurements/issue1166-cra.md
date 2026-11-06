@@ -30,9 +30,11 @@ The archived DAS W20O firmware 04.64.00 is webOS 5.6.2. Its
 `libgstdvsplitter.so` SHA-256 is
 `e03029b263ef6eb453cd2df4b4200fba3b14326ca113cdcf2ecf06b2f449457a`.
 Its initial HEVC random-access scan accepts NAL types 16 through 21, including CRA.
-It is not the reporter's exact library. That affected 5.5/o20 ELF was not found in the
-available DAS images or prior local labs. Logs from the two builds therefore cannot be
-explained by treating them as identical firmware.
+It is not the reporter's exact library. The affected 5.5/o20 ELF (5.5.0-19, `jhericurl-jervisbay`,
+SHA-256 prefix `0cda1717`) is archived (`W20O@04.50.90`); no other archived 5.5.0-19 image
+carries a splitter (`W20P` has none), and the 4.10.2 (`b38aedc9`, `4096b724`) and 6.5.3 (`239b3e04`)
+splitters carry the same first-IDR strings, with the NAL types their tables admit unread. Logs from
+the two builds therefore cannot be explained by treating them as identical firmware.
 
 The newer plugin's supported properties cover dual-stream, secure-path and memory
 configuration. No public first-IDR bypass was established. Secure-video paths require
