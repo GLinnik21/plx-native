@@ -403,7 +403,7 @@ fn refresh_hud(app: &mut App) {
         app.dev_hud = crate::dev::scenarios::hud_trigger();
     }
     if let DevHud::Package(dev) = &mut app.dev_hud {
-        match dev.refresh(plx_plex::plex::identity::version(), cx, app.bridge.measure()) {
+        match dev.refresh(crate::app::adapters::huds::PACK_APP_VERSION, cx, app.bridge.measure()) {
             DevStep::Report(_line) => {
                 #[cfg(feature = "devtriggers")]
                 plx_base::eventlog::log(&format!("plxnative-hud: {_line}"));
@@ -423,7 +423,7 @@ fn refresh_hud(app: &mut App) {
         }
     }
     if app.hud.is_none() {
-        let hud = plx_appkit::player_hud::loaded::load_classic(plx_plex::plex::identity::version(), cx, app.bridge.measure());
+        let hud = plx_appkit::player_hud::loaded::load_classic(crate::app::adapters::huds::PACK_APP_VERSION, cx, app.bridge.measure());
         adopt_hud(&mut app.bridge, &mut app.hud, hud);
     }
 }
@@ -438,7 +438,7 @@ pub(super) fn boot_hud(bridge: &mut super::bridge::Bridge, controlled: bool) -> 
     if controlled {
         return None;
     }
-    let loaded = plx_appkit::player_hud::loaded::load_classic(plx_plex::plex::identity::version(), plx_platform::i18n::current(), bridge.measure());
+    let loaded = plx_appkit::player_hud::loaded::load_classic(crate::app::adapters::huds::PACK_APP_VERSION, plx_platform::i18n::current(), bridge.measure());
     bridge.huds_start(loaded.clone());
     let mut hud = None;
     adopt_hud(bridge, &mut hud, loaded);

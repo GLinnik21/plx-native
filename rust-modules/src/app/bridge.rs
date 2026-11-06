@@ -964,7 +964,7 @@ impl Bridge {
     /// Begin the player-HUD store with the compiled classic as what draws until a package lands, and read
     /// what is installed. Boot calls it once, outside any frame; a controlled run never does.
     pub(crate) fn huds_start(&mut self, classic: plx_appkit::player_hud::loaded::LoadedHud) {
-        self.huds.start(classic, plx_plex::plex::identity::version());
+        self.huds.start(classic, super::adapters::huds::PACK_APP_VERSION);
         self.huds_refresh();
     }
 
@@ -986,7 +986,7 @@ impl Bridge {
         let env = super::adapters::huds::Env {
             measure: &self.measure,
             cx: plx_platform::i18n::current(),
-            app_version: plx_plex::plex::identity::version(),
+            app_version: super::adapters::huds::PACK_APP_VERSION,
             // a player page is mounted, or a playback is live (starting included): no compile runs now
             player: route_player || self.playback_live,
         };
@@ -1011,7 +1011,7 @@ impl Bridge {
             HudCmd::CancelRegistry(sha) => self.huds.cancel_registry(sha),
             HudCmd::FetchRegistry(sha) => {
                 self.huds_notice = None;
-                self.huds.fetch_registry(sha, plx_plex::plex::identity::version(), plx_platform::i18n::current().language().tag());
+                self.huds.fetch_registry(sha, super::adapters::huds::PACK_APP_VERSION, plx_platform::i18n::current().language().tag());
             }
             HudCmd::Select(id) => self.huds.select(id),
             HudCmd::Remove(id) => {
@@ -1083,7 +1083,7 @@ impl Bridge {
             catalog_date: self.huds.store().catalog().checked_at.and_then(|s| i64::try_from(s).ok())
                 .and_then(plx_platform::i18n::local_calendar_date)
                 .and_then(|[y,m,d]| plx_platform::i18n::current().date_medium(y, m as u8, d as u8)).unwrap_or_default(),
-            app_version: plx_plex::plex::identity::version().into(),
+            app_version: super::adapters::huds::PACK_APP_VERSION.into(),
             language_tag: tag.into(),
             entries: self.huds.store().entries(),
             drops: self.huds.store().drops(),

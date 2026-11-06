@@ -91,6 +91,10 @@ pub(crate) fn live_setup() -> Setup {
 }
 
 /// One effect's blocking work. `None` is an effect with no answer (`Delete`).
+/// The release a pack's `app` range is judged against: the PlxNative this build is based on, because packs name
+/// PlxNative versions. `identity::version()` is FinNative's own line (0.1.0), which would refuse a pack that asks for 0.10.0.
+pub(crate) const PACK_APP_VERSION: &str = plx_screens::legal::PLXNATIVE_BASE;
+
 fn run_effect(effect: HudEffect, app_version: &str) -> Option<HudEvent> {
     match effect {
         // The cache is verified again here, on the storage worker, with the same function a reply goes through.
@@ -1115,6 +1119,14 @@ mod tests {
         price_package(&verified(text), measure, langs)
     }
     const REFERENCE_ID: &str = "com.plxnative.examples.reference";
+    #[test]
+    fn a_pack_is_judged_against_the_plxnative_base() {
+        use plx_data::hudpacks::Semver;
+        // Packs name PlxNative releases; FinNative's own line (0.1.0) would refuse one that asks for 0.10.0.
+        let base = Semver::app_release(PACK_APP_VERSION).expect("a numeric base");
+        assert!(base >= Semver::parse("0.10.0").unwrap(), "{PACK_APP_VERSION}");
+    }
+
     const APP: &str = "0.2.1";
 
     struct Dir(PathBuf);
