@@ -42,7 +42,7 @@ TOOLCHAIN = pinned()  # the repo's one toolchain
 # What the workspace needs for cargo to resolve (not compile) the app package: the manifest and
 # lockfile, the `.cargo/config.toml` that cargo finds from the working directory, and the sources
 # the manifest names. A mutated copy replaces `Cargo.toml` only.
-WORKSPACE_FILES = (".cargo", "Cargo.lock", "build.rs", "build_support", "src", "storage", "base", "machine", "net", "platform", "gfx", "ui", "plex", "telemetry", "data", "session", "media", "appkit", "screens")
+WORKSPACE_FILES = (".cargo", "Cargo.lock", "build.rs", "build_support", "src", "storage", "base", "machine", "net", "platform", "gfx", "ui", "plex", "telemetry", "data", "session", "media", "playback-contract", "appkit", "screens")
 
 
 def offences(unit_graph=None, metadata=None):
