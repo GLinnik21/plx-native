@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-06T03:49:07Z",
+ "generated": "2026-11-06T03:51:41Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -102,18 +102,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -49.7,
-   "change7_pct": 20.7,
+   "change30_pct": -49.9,
+   "change7_pct": 20.2,
    "d30": 880,
-   "delta30": -437,
-   "delta7": 76.0,
+   "delta30": -439.0,
+   "delta7": 74.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 61,
+   "n_now": 62,
    "n_prev": 94,
-   "now": 443,
+   "now": 441.0,
    "prev7": 367.0,
    "shown": true,
    "state": "worse",
@@ -391,14 +391,14 @@
    "change7_pct": 12.7,
    "d30": 245.0,
    "delta30": 56.0,
-   "delta7": 34,
+   "delta7": 34.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 57,
+   "n_now": 58,
    "n_prev": 81,
-   "now": 301,
+   "now": 301.0,
    "prev7": 267,
    "shown": true,
    "state": "flat",
@@ -409,17 +409,17 @@
   },
   {
    "change30_pct": -76.6,
-   "change7_pct": -0.5,
+   "change7_pct": -0.7,
    "d30": 904.5,
-   "delta30": -692.5,
-   "delta7": -1,
+   "delta30": -693.0,
+   "delta7": -1.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 57,
+   "n_now": 58,
    "n_prev": 81,
-   "now": 212,
+   "now": 211.5,
    "prev7": 213,
    "shown": true,
    "state": "flat",
@@ -429,18 +429,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -41.5,
-   "change7_pct": 9.1,
+   "change30_pct": -41.0,
+   "change7_pct": 9.9,
    "d30": 348.5,
-   "delta30": -144.5,
-   "delta7": 17,
+   "delta30": -143.0,
+   "delta7": 18.5,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 57,
+   "n_now": 58,
    "n_prev": 81,
-   "now": 204,
+   "now": 205.5,
    "prev7": 187,
    "shown": true,
    "state": "flat",
@@ -557,18 +557,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 25.0,
-   "change7_pct": 11.1,
+   "change30_pct": 21.9,
+   "change7_pct": 8.3,
    "d30": 16.0,
-   "delta30": 4.0,
-   "delta7": 2,
+   "delta30": 3.5,
+   "delta7": 1.5,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 57,
+   "n_now": 58,
    "n_prev": 81,
-   "now": 20,
+   "now": 19.5,
    "prev7": 18,
    "shown": false,
    "state": "flat",
@@ -667,11 +667,6 @@
    "change_pct": 31.9,
    "commits": [
     {
-     "pr": 1239,
-     "sha": "5588f5bfd",
-     "title": "HUD gallery: accept only a signed registry index"
-    },
-    {
      "pr": 1240,
      "sha": "ab00d73b0",
      "title": "HUD plugins: a cargo fuzz package over every package and registry parser"
@@ -715,6 +710,11 @@
      "pr": 1254,
      "sha": "e5f19d679",
      "title": "Playback: a retired PMS session gets its stopped timeline"
+    },
+    {
+     "pr": 1250,
+     "sha": "9cc53ed28",
+     "title": "Deps: Bump encoding_rs from 0.8.42 to 0.8.44 in /rust-modules in the rust-minor-patch group"
     }
    ],
    "from": 63.7,
@@ -728,11 +728,6 @@
    "change_pct": 30.5,
    "commits": [
     {
-     "pr": 1239,
-     "sha": "5588f5bfd",
-     "title": "HUD gallery: accept only a signed registry index"
-    },
-    {
      "pr": 1240,
      "sha": "ab00d73b0",
      "title": "HUD plugins: a cargo fuzz package over every package and registry parser"
@@ -776,6 +771,11 @@
      "pr": 1254,
      "sha": "e5f19d679",
      "title": "Playback: a retired PMS session gets its stopped timeline"
+    },
+    {
+     "pr": 1250,
+     "sha": "9cc53ed28",
+     "title": "Deps: Bump encoding_rs from 0.8.42 to 0.8.44 in /rust-modules in the rust-minor-patch group"
     }
    ],
    "from": 229.5,
@@ -786,13 +786,8 @@
    "to": 299.5
   },
   {
-   "change_pct": 20.7,
+   "change_pct": 20.2,
    "commits": [
-    {
-     "pr": 1239,
-     "sha": "5588f5bfd",
-     "title": "HUD gallery: accept only a signed registry index"
-    },
     {
      "pr": 1240,
      "sha": "ab00d73b0",
@@ -837,6 +832,11 @@
      "pr": 1254,
      "sha": "e5f19d679",
      "title": "Playback: a retired PMS session gets its stopped timeline"
+    },
+    {
+     "pr": 1250,
+     "sha": "9cc53ed28",
+     "title": "Deps: Bump encoding_rs from 0.8.42 to 0.8.44 in /rust-modules in the rust-minor-patch group"
     }
    ],
    "from": 367.0,
@@ -844,7 +844,7 @@
    "label": "Wait after merge",
    "since": "2026-11-06",
    "threshold_pct": 15.0,
-   "to": 443
+   "to": 441.0
   }
  ],
  "schema": 2,
