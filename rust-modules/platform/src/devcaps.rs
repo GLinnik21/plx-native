@@ -1444,7 +1444,8 @@ pub fn probe() {
     // [`EXCLUSIONS`]. That is the boot snapshot, and it is final. The refusals this install learned
     // come after, from the stored record alone, at each play's start ([`start_caps`]): named or
     // proved, a refusal reaches a play only once its queued write has landed. `nativeaudiowide` skips
-    // the exclusions and the learned layer (`nativeaudiolearn` beside it keeps the layer),
+    // the AUDIO exclusions (a row's `dv_first_picture` stays, it is not an audio fact) and the learned
+    // layer (`nativeaudiolearn` beside it keeps the layer),
     // `nativeaudioforget` the record.
     let stack = audio_stack_from(|path| std::path::Path::new(path).exists());
     let _ = AUDIO_STACK.set(stack);
@@ -1489,8 +1490,8 @@ pub fn probe() {
         if excluded.is_empty() { "none".to_string() } else { excluded.join(" ") },
         boot.audio,
         match (wide, learn) {
-            (true, true) => " (nativeaudiowide: exclusions ignored; nativeaudiolearn: refusals still learned)",
-            (true, false) => " (nativeaudiowide: exclusions and learned entries ignored)",
+            (true, true) => " (nativeaudiowide: audio exclusions ignored; nativeaudiolearn: refusals still learned)",
+            (true, false) => " (nativeaudiowide: audio exclusions and learned entries ignored)",
             _ => "",
         },
         if forget { " (nativeaudioforget: stored refusals ignored this run)" } else { "" },

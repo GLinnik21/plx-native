@@ -29,10 +29,15 @@ pub(super) struct Probe {
     pub load_returned: bool,
     /// Pictures the pipeline has shown this session.
     pub frames: i32,
-    /// Access units the pipeline has ACCEPTED this session (video and audio).
+    /// Access units the pipeline has ACCEPTED this session: audio only (`engine::fed_totals().1`), the
+    /// lane whose swallowing this watch is for.
     pub accepted: i64,
     pub audio_queue_bytes: i64,
     pub video_queue_bytes: i64,
+    /// The Dolby Vision landing guard holds the landing keyframe for its reload
+    /// ([`super::dv_start::Guard::landing_held`], #1166): neither lane feeds, so a count that does not
+    /// move is a held feed, not a decoder that swallowed it.
+    pub landing_held: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -76,8 +81,13 @@ impl Watch {
             self.armed = None;
             return Step::Quiet;
         }
-        // Stereo is proven fine natively, so it is never learned from a stall.
-        let candidate = p.channels > 2 && p.load_returned && p.audio_queue_bytes > 0 && p.video_queue_bytes > 0;
+        // Stereo is proven fine natively, so it is never learned from a stall, and a feed the Dolby
+        // Vision guard is holding back is not one either: the window restarts when it lets go.
+        let candidate = p.channels > 2
+            && p.load_returned
+            && p.audio_queue_bytes > 0
+            && p.video_queue_bytes > 0
+            && !p.landing_held;
         if !candidate {
             self.armed = None;
             return Step::Quiet;
@@ -165,7 +175,16 @@ mod tests {
     use super::*;
 
     fn probe(now: u32) -> Probe {
-        Probe { now, channels: 6, load_returned: true, frames: 0, accepted: 8, audio_queue_bytes: 200_000, video_queue_bytes: 1_400_000 }
+        Probe {
+            now,
+            channels: 6,
+            load_returned: true,
+            frames: 0,
+            accepted: 8,
+            audio_queue_bytes: 200_000,
+            video_queue_bytes: 1_400_000,
+            landing_held: false,
+        }
     }
 
     #[test]
@@ -207,6 +226,22 @@ mod tests {
         // The window restarts when the queues fill again.
         assert_eq!(w.step(&probe(21_000)), Step::Armed);
         assert_eq!(w.step(&probe(24_000)), Step::Quiet);
+    }
+
+    #[test]
+    fn a_held_landing_is_not_a_stall_and_restarts_the_window() {
+        let mut w = Watch::new();
+        assert_eq!(w.step(&probe(0)), Step::Armed);
+        // The Dolby Vision guard holds the landing keyframe: nothing feeds, for far longer than the window.
+        let mut p = probe(NATIVE_AUDIO_STALL_MS - 1);
+        p.landing_held = true;
+        assert_eq!(w.step(&p), Step::Quiet);
+        p.now = 20_000;
+        assert_eq!(w.step(&p), Step::Quiet, "a held feed never fires");
+        // Let go: the window starts over from the first tick, it does not resume the old one.
+        assert_eq!(w.step(&probe(20_100)), Step::Armed);
+        assert_eq!(w.step(&probe(20_100 + NATIVE_AUDIO_STALL_MS - 1)), Step::Quiet);
+        assert!(matches!(w.step(&probe(20_100 + NATIVE_AUDIO_STALL_MS)), Step::Fire { .. }));
     }
 
     #[test]

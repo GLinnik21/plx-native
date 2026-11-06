@@ -43,8 +43,9 @@ keyframe that is not an IDR (the demuxer classifies it, `aq::hevc_irap_not_idr`)
 Off would have planned, the probed capability kept) and reloads once at the same target. For a build
 nobody has read, the same guard withdraws after 4 s with no position update once 700 ms of video was
 accepted. The withdrawal lasts for the rest of that play (Diagnostics reads `base-layer (supported)`,
-the viewer gets the HDR10 base layer, a seek back to 0:00 stays HDR10); the next play is planned
-again. Only a declared direct play is withdrawn: a Profile 5 (no base layer) and a remux that copies
+the viewer gets the HDR10 base layer, a seek back to 0:00 stays HDR10, and so does a return to
+Original after a trip to HLS, because the stored Original candidate is downgraded with the route);
+the next play is planned again. Only a declared direct play is withdrawn: a Profile 5 (no base layer) and a remux that copies
 the video are reported in the log and fed as before. `platform_gate` is not the vehicle: it removes
 Dolby Vision from every play on a set, while this keeps it wherever the landing is an IDR.
 

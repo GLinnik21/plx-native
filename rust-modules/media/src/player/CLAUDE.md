@@ -132,8 +132,10 @@ something.
   stored presentation rather than re-reading the later cache; `dvnonode` is the logged diagnostic
   exception, and `player/dv_start.rs` is the one mid-play change (#1166): at a landing the firmware's
   Dolby Vision splitter would skip, or after 4 s with no position update, it takes the declaration
-  out of the route for the rest of that play (`route::withdraw_dv_presentation`: what DV Off would
-  have planned, the probed capability kept) and reloads once. Atmos routing and ACB forwarding are independent and unchanged. The payload evidence,
+  out of the route for the rest of that play request (`route::withdraw_dv_presentation`: what DV Off
+  would have planned, the probed capability kept, on the installed route, the file's own declaration
+  and the stored Auto Original candidate, so a trip to HLS and back to Original stays base-layer)
+  and reloads once. Atmos routing and ACB forwarding are independent and unchanged. The payload evidence,
   Profile 5 one-tick fix and instrument traps live in that document.
 - **The Load's `adaptiveStreaming` ceiling is derived per session (`engine::sink_envelope`), and
   it was a 4K60 constant for EVERY codec until 2026-09-03 — which on webOS 10 refused every H.264
@@ -847,13 +849,17 @@ something.
   pump. `route::transcode_seek` is a test-only composition. The
   rebase machinery
   (`pts_shift`/`rebase_pending` in `shared.rs`) keeps Starfish from ever seeing a PTS jump.
-  **One landing is not anchored at all (#1166):** a landing keyframe that is a non-IDR HEVC IRAP
-  (`aq::hevc_irap_not_idr`, read on the demux thread) on a firmware whose Dolby Vision splitter takes
-  only an IDR first (`Caps::dv_first_picture`), or a declared direct play that gets no position update
-  4 s after it, is not fed and gets no native `Seek`: `dv_start::Guard` holds it, the pump's driver
-  withdraws the route's declaration and calls `reload_at` once, at the newest tap else the seek's
-  target, and the stuck-watchdog yields to it. The reloaded Load carries no `DolbyHdrInfo` node, so
-  every later seek of the play is in place as above.
+  **One landing is not anchored at all (#1166), and a second trigger follows one that was:** a
+  landing keyframe that is a non-IDR HEVC IRAP (`aq::hevc_irap_not_idr`, read on the demux thread) on
+  a firmware whose Dolby Vision splitter takes only an IDR first (`Caps::dv_first_picture`, the
+  ROW) is not fed and gets no native `Seek`: `dv_start::Guard::land` answers `Step::Withdraw`, the
+  keyframe stays `pending` (`landing_held()`, which both feeders and the stuck-watchdog yield to),
+  and the pump's driver withdraws the route's declaration and calls `reload_at` once, at the newest
+  tap else the seek's target. The other trigger, the 4 s WATCH (a declared direct play with no
+  position update 4 s after a landing, for a build nobody has read), fires AFTER the landing was fed
+  and anchored (its clock needs `landed = !eng.rebase_pending`, `prime_released` and 700 ms of video
+  accepted), so nothing is held and the reload is simply handed over. The reloaded Load carries no
+  `DolbyHdrInfo` node, so every later seek of the play is in place as above.
 - **`frames` is SEEK-scoped, `seen_frame` is SESSION-scoped.** `pump` zeroes `SHARED.frames` as
   *part of applying* an in-place seek (it counts only post-seek frames, for the rebind + resume
   re-pause gate), so `frames == 0` does **not** mean "we have never shown a picture" — it is true

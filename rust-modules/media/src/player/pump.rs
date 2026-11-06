@@ -872,6 +872,7 @@ fn native_audio_stall_fired(eng: &Engine, now: u32) -> bool {
         accepted,
         audio_queue_bytes: qa,
         video_queue_bytes: qv,
+        landing_held: eng.dv_start.landing_held(),
     };
     match WATCH.lock().unwrap_or_else(|e| e.into_inner()).step(&probe) {
         Step::Quiet => false,

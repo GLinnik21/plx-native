@@ -979,6 +979,34 @@ fn dv_withdraw_then_a_copied_rebuild_declares_nothing() {
 }
 
 #[test]
+fn dv_withdraw_downgrades_the_stored_original_candidate_too() {
+    use plx_plex::plex::session::DolbyVisionMode;
+    // The stored Auto Original candidate is installed verbatim when a play that fell to HLS (or to a
+    // fixed rung, or an enhanced remux) goes back to Original: if it still declared the node, the
+    // withdrawn play would send it again and meet the same landing.
+    let declared = frozen_dv_decision(DolbyVisionMode::Auto, DvCapability::Supported, p8(), "hevc");
+    let mut ps = declared_route(p8());
+    assert!(crate::route::auto_original_dv_for_test(&ps).is_none(), "the premise: nothing stored yet");
+    crate::route::set_auto_original_dv_for_test(&mut ps, p8(), declared);
+    assert!(
+        crate::route::auto_original_dv_for_test(&ps).unwrap().1.presentation.declared().is_some(),
+        "the premise: the candidate declares the node"
+    );
+    assert!(crate::route::withdraw_dv_presentation(&mut ps, "test"));
+    let (dovi, now) = crate::route::auto_original_dv_for_test(&ps).expect("the candidate is kept, not dropped");
+    assert_eq!(dovi, p8(), "the raw record is not rewritten");
+    assert_eq!(now.presentation, DvPresentation::NotDv, "the way back declares no node: {now:?}");
+    assert_eq!(now.capability, DvCapability::Supported, "the probe's answer is kept");
+
+    // A refused withdrawal (Profile 5: no base layer to fall back to) leaves the candidate as it was.
+    let p5_declared = frozen_dv_decision(DolbyVisionMode::Auto, DvCapability::Supported, p5(), "hevc");
+    let mut ps = declared_route(p5());
+    crate::route::set_auto_original_dv_for_test(&mut ps, p5(), p5_declared);
+    assert!(!crate::route::withdraw_dv_presentation(&mut ps, "test"));
+    assert_eq!(crate::route::auto_original_dv_for_test(&ps).unwrap().1, p5_declared);
+}
+
+#[test]
 fn dv_withdraw_first_picture_reads_the_attempt_caps() {
     use plx_platform::devcaps::{apply_exclusions, Caps, DvFirstPicture, EXCLUSIONS};
     let mut ps = crate::route::PlaybackSession::IDLE;

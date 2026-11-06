@@ -39,9 +39,11 @@ the two builds therefore cannot be explained by treating them as identical firmw
 The newer plugin's supported properties cover dual-stream, secure-path and memory
 configuration. No public first-IDR bypass was established. Secure-video paths require
 secure buffers, and relabeling CRA as IDR would misdescribe the bitstream. Unbounded
-decode preroll from an earlier IDR is not a verified or bounded workaround. Obtain the
-affected plugin's version/hash and, through a private channel, the exact binary before
-claiming a binary-level comparison or a DV-preserving fix.
+decode preroll from an earlier IDR is not a verified or bounded workaround. Still open: the
+reporter's own TV was never hashed (its firmware string matches the archived 5.5.0-19 image, which
+is not the same as the library being byte-identical), and a fix that KEEPS Dolby Vision at a CRA
+landing is unestablished. The shipped answer withdraws the declaration and plays the HDR10 base
+layer.
 
 ## Original test material and diagnostic export
 

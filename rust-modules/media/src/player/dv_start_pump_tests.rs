@@ -6,14 +6,17 @@
 //! (`begin_attempt_for_test`), never the per-thread firmware override, which applies no rows.
 //! `reload_at` has no route in a unit rig, so each call is read off `engine::RELOAD_AT_LOG`.
 //!
-//! Case 11 of the plan (a declared direct play with surround native Opus: the DV watch fires before
-//! `native_stall`, and a stall before the prime leaves only `native_stall`) is NOT written here yet:
-//! it needs a native-audio rig, see the handoff note.
+//! The last group is the guard beside the native surround-audio watchdog (`native_stall`): both read the
+//! same silence (a pipeline that accepts nothing and shows no picture), and only the Dolby Vision guard
+//! may act on it once the prime has released Play, so a declared play with native 5.1 Opus withdraws the
+//! node and never writes the install-wide learned Opus refusal.
 
-use super::native_seek_pump_tests::{preroll_at_reload, reloads, Rig, TARGET_NS};
+use super::native_seek_pump_tests::{preroll_at_reload, reloads, Rig, TARGET_NS, V_STEP_NS};
 use super::*;
+use crate::ff::native_audio::{self, Kind};
 use crate::player::dv_start::Mode;
 use crate::player::ffi_host;
+use crate::player::native_stall::{Watch, NATIVE_AUDIO_STALL_MS, WATCH};
 use plx_data::metadata::Dovi;
 use plx_platform::devcaps::{apply_exclusions, dv::DvCapability, Caps, EXCLUSIONS};
 use std::os::raw::c_int;
@@ -280,4 +283,130 @@ fn a_paused_seek_landing_reloads_with_the_preroll_kept() {
     assert_eq!(preroll_at_reload(), vec![true], "the paused seek's preroll is carried across the reload");
     // The guard `dv_start_for` built for this route (checked last: the behaviour above is the symptom).
     assert_eq!(rig.eng().dv_start.mode(), Mode::Act);
+}
+
+// -- beside the native surround-audio watchdog -------------------------------------------------------
+
+/// One audio access unit's duration in these rigs.
+const A_STEP_NS: i64 = 20_000_000;
+
+/// The facts of a play whose 5.1 Opus track is fed natively and whose Load has returned: what
+/// `native_stall` needs besides the two non-empty queues. They are process globals, so the guard takes
+/// them over and gives them back (its `Drop` runs on a failing assertion too, and before the `Rig`'s).
+struct NativeOpus51;
+
+impl NativeOpus51 {
+    fn on(rig: &mut Rig) -> NativeOpus51 {
+        *WATCH.lock().unwrap_or_else(|e| e.into_inner()) = Watch::new();
+        native_audio::publish_fed(Kind::Opus, 6);
+        let epoch = rig.eng().native_epoch;
+        assert!(SHARED.mark_native_load_returned(epoch, None).is_some(), "the Load returned: the watchdog's precondition");
+        NativeOpus51
+    }
+}
+
+impl Drop for NativeOpus51 {
+    fn drop(&mut self) {
+        native_audio::reset();
+        *WATCH.lock().unwrap_or_else(|e| e.into_inner()) = Watch::new();
+        SHARED.native_audio_refused.store(false, Release);
+    }
+}
+
+/// `n` video access units from `ns` (the demux thread's non-key frames after a landing).
+fn push_video(rig: &mut Rig, ns: i64, n: i64) {
+    let au = [0u8; 64];
+    let q = &mut **rig.eng().aq_video.as_mut().expect("the video queue") as *mut crate::aq::AuQueue;
+    for i in 0..n {
+        crate::aq::aq_push(q, au.as_ptr(), au.len() as c_int, ns + i * V_STEP_NS, 0, 1);
+    }
+}
+
+/// `n` audio access units from `ns`.
+fn push_audio(rig: &mut Rig, ns: i64, n: i64) {
+    let au = [0u8; 64];
+    let q = &mut **rig.eng().aq_audio.as_mut().expect("the audio queue") as *mut crate::aq::AuQueue;
+    for i in 0..n {
+        crate::aq::aq_push(q, au.as_ptr(), au.len() as c_int, ns + i * A_STEP_NS, 1, 0);
+    }
+}
+
+#[test]
+fn a_dv_and_surround_opus_stall_withdraws_dolby_vision_first() {
+    let _serial = plx_base::testlock::serial();
+    // No row: the 4 s watch is the trigger, so the landing is fed and anchored before it runs.
+    let mut rig = declared(p81(), false);
+    let _opus = NativeOpus51::on(&mut rig);
+    let mut held = false;
+    let log = logged(|| {
+        rig.arm(TARGET_NS);
+        // The presented position the feed-ahead throttle measures from: once the prime has released
+        // Play, video stops 1.6 s ahead of it and audio 3.6 s, whatever the queues hold.
+        SHARED.pres_fed.store(TARGET_NS, Relaxed);
+        rig.land_keyframe_with_key(TARGET_NS, 70, CRA);
+        push_audio(&mut rig, TARGET_NS, 30); // 600 ms: the prime wants 300 ms of audio beside the video
+        frames(&mut rig, 12);
+        assert!(!rig.eng().prime_play, "PRECONDITION: the prime released Play on its audio");
+        assert!(reloads().is_empty(), "no row: the CRA is fed");
+        // Both queues hold data far past the throttle, and the pipeline accepts no more audio.
+        push_video(&mut rig, TARGET_NS + 3_000_000_000, 40);
+        push_audio(&mut rig, TARGET_NS + 4_000_000_000, 40);
+        advance(&mut rig, 3_000);
+        assert!(reloads().is_empty(), "inside the 4 s");
+        advance(&mut rig, 2_500);
+        // The rig's Engine is not replaced by the reload (production builds a fresh one and a fresh
+        // watch): what keeps the audio watchdog quiet from here on is the landing the guard still holds.
+        held = rig.eng().dv_start.landing_held();
+        advance(&mut rig, 6_000);
+    });
+    assert!(log.contains("native audio: watching opus with 6 channels"), "PRECONDITION: native_stall armed on this feed:\n{log}");
+    assert_eq!(reloads(), vec![TARGET_NS], "the Dolby Vision watch fired: one reload at the landing\n{log}");
+    assert!(log.contains("dv: withdrawn"), "{log}");
+    assert!(!is_declared(&rig));
+    assert!(!log.contains("native audio: STALL"), "the audio watchdog stayed out of it:\n{log}");
+    assert!(!SHARED.native_audio_refused.load(Relaxed), "no install-wide Opus refusal is raised for the Dolby Vision splitter's silence");
+    assert!(held, "the guard still holds the landing until the reload replaces the Engine");
+}
+
+#[test]
+fn a_surround_opus_stall_before_the_prime_leaves_only_native_stall() {
+    let _serial = plx_base::testlock::serial();
+    let mut rig = declared(p81(), false);
+    let _opus = NativeOpus51::on(&mut rig);
+    // The Load returned, both queues hold data and nothing is accepted, and the prime never released
+    // Play: the Engine is still `Loading` (no frame feeds), `prime_play` set, so the guard's clock cannot
+    // run (it needs the prime released and 700 ms of video accepted) and the audio watchdog is the
+    // only reader of the silence.
+    rig.eng().stage = Stage::Loading;
+    rig.eng().prime_play = true;
+    push_video(&mut rig, TARGET_NS, 3);
+    push_audio(&mut rig, TARGET_NS, 3);
+    let log = logged(|| {
+        rig.frame();
+        rig.now += NATIVE_AUDIO_STALL_MS + 100;
+        rig.frame();
+    });
+    assert!(log.contains("native audio: STALL, no picture"), "PRECONDITION: the audio watchdog fired:\n{log}");
+    assert!(!log.contains("dv: withdrawn"), "{log}");
+    assert!(reloads().is_empty(), "the guard did not reload");
+    assert!(!rig.eng().dv_start.withdrawal_pending());
+    assert!(is_declared(&rig), "the declaration is untouched");
+}
+
+#[test]
+fn a_held_landing_is_not_a_native_stall() {
+    let _serial = plx_base::testlock::serial();
+    // The row's landing is held for the reload and neither lane feeds: audio accepted does not move
+    // for far longer than the audio watchdog's window, with both queues full and no picture.
+    let mut rig = declared(p81(), true);
+    let _opus = NativeOpus51::on(&mut rig);
+    let log = logged(|| {
+        seek_and_land(&mut rig, CRA);
+        assert!(rig.eng().dv_start.landing_held(), "PRECONDITION: the landing is held");
+        push_audio(&mut rig, TARGET_NS, 40);
+        advance(&mut rig, NATIVE_AUDIO_STALL_MS * 3);
+    });
+    assert_eq!(reloads(), vec![TARGET_NS], "the row's reload, once");
+    assert!(!log.contains("native audio:"), "the audio watchdog neither armed nor fired on a held feed:\n{log}");
+    assert!(!SHARED.native_audio_refused.load(Relaxed));
 }
