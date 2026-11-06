@@ -2,14 +2,16 @@
 //! authority; this value freezes its applied projection before native construction begins.
 //! URLs and reader credentials are deliberately absent from `Debug` output.
 
-use plx_play_feed::shared::FEED_SHARED;
 use crate::route;
 use plx_base::eventlog::log;
 use plx_play_feed::bf_split;
 use plx_play_feed::feed_state::SampleBuf;
 
 pub(super) struct FeedOpenRequest {
-    pub physical: plx_play_feed::open::PhysicalOpen,
+    /// The stream's address as the network layer spells it, for the credential policy; `stream`
+    /// carries the same address in the feed's plain form.
+    origin: plx_net::net::origin::Origin,
+    pub stream: plx_playback_contract::feed::OpenStream,
     /// The player's end of the channel the open's adaptive worker reports on. The open is claimed
     /// under an attempt only after it is captured, so the caller takes this out
     /// ([`Self::take_readouts`]) and holds it beside the attempt.
@@ -55,13 +57,7 @@ impl plx_play_feed::side_reader::SideReaderPort for SideReaderOpen {
 
     fn start_after_load_spawn(&mut self) {
         if !self.selected { return; }
-        let started = self.spec.take().is_some_and(|spec| plx_play_feed::side_reader::start(spec, super::subside::JOB));
-        if !started {
-            plx_play_feed::side_reader::failed_reading(self.clock_only, "subside: could not start the reader thread");
-            if !self.clock_only {
-                FEED_SHARED.side_subs_owner.store(false, std::sync::atomic::Ordering::Release);
-            }
-        }
+        plx_play_feed::side_reader::start_run(self.spec.take(), self.clock_only, super::subside::JOB);
     }
 
     fn stop_before_demux_join(&mut self, reason: &str) {
@@ -138,8 +134,13 @@ impl FeedOpenRequest {
         let (readouts_tx, readouts) = crate::adaptive::readout_channel();
         Self {
             readouts: Some(readouts),
-            physical: plx_play_feed::open::PhysicalOpen {
-                origin: source.origin,
+            origin: source.origin.clone(),
+            stream: plx_playback_contract::feed::OpenStream {
+                origin: plx_playback_contract::feed::OpenOrigin {
+                    tls: source.origin.scheme() == plx_net::net::origin::Scheme::Https,
+                    host: source.origin.host().to_string(),
+                    port: source.origin.port(),
+                },
                 path: source.path,
                 video_codec: route::stream_vcodec(ps),
                 audio_codec: route::stream_acodec(ps),
@@ -150,7 +151,6 @@ impl FeedOpenRequest {
                 original_dv,
                 // The exact route attempt and native epoch do not exist until after claim. The
                 // common owner attaches their addressed observer before launching the worker.
-                session: None,
                 hls_abr: route::hls_abr_control(ps).map(|control| {
                     crate::adaptive::boxed_session(
                         crate::adaptive::Start::from(control).with_plant_geometry(plant_geometry),
@@ -169,7 +169,7 @@ impl FeedOpenRequest {
 
     /// The common owner checks the credential policy before claiming the native attempt.
     pub fn credential_transport_allowed(&self) -> bool {
-        plx_plex::http::credential_transport_allowed(&self.physical.origin, &self.physical.path, &[])
+        plx_plex::http::credential_transport_allowed(&self.origin, &self.stream.path, &[])
     }
 
     /// The inbox of the open's adaptive worker (once).
@@ -177,8 +177,8 @@ impl FeedOpenRequest {
         self.readouts.take().expect("an open's readout inbox is taken once, before it is consumed")
     }
 
-    pub fn into_physical(self) -> plx_play_feed::open::PhysicalOpen {
-        self.physical
+    pub fn into_stream(self) -> plx_playback_contract::feed::OpenStream {
+        self.stream
     }
 }
 
@@ -216,10 +216,10 @@ mod tests {
         route::set_stream_codecs(&mut ps, "h264", "aac");
         let open = FeedOpenRequest::capture(&ps, "https://example.invalid/first".into());
         route::set_stream_codecs(&mut ps, "hevc", "eac3");
-        assert_eq!(open.physical.origin.base(), "https://example.invalid:32400");
-        assert_eq!(open.physical.path, "/first");
-        assert_eq!(open.physical.video_codec, "h264");
-        assert_eq!(open.physical.audio_codec, "aac");
+        assert_eq!(open.origin.base(), "https://example.invalid:32400");
+        assert_eq!(open.stream.path, "/first");
+        assert_eq!(open.stream.video_codec, "h264");
+        assert_eq!(open.stream.audio_codec, "aac");
     }
 
     /// `present` is DERIVED, so it cannot disagree with the profile in either direction.

@@ -77,19 +77,7 @@ impl FeedPace {
 }
 
 
-pub struct SampleBuf {
-    pub data: Vec<u8>,
-    pub au: Vec<usize>, // AU start offsets
-    pub next: usize,
-    pub loops: i64,
-}
-
-impl SampleBuf {
-    /// The local validation sample, positioned at its first AU.
-    pub fn new(data: Vec<u8>, au: Vec<usize>) -> Self {
-        Self { data, au, next: 0, loops: 0 }
-    }
-}
+pub use plx_playback_contract::feed::SampleBuf;
 
 pub enum Source {
     Stream, // host/port/path are consumed by the demux thread at spawn

@@ -92,6 +92,9 @@ impl FeedDemuxObserver {
 
 impl DemuxObserver for FeedDemuxObserver {
     fn attempt(&self) -> AttemptId { self.attempt }
+    fn with_active(&self, f: &mut dyn FnMut()) -> bool {
+        FEED_SHARED.with_active_demux_epoch(self.native_epoch, f).is_some()
+    }
     fn playpos_ns(&self) -> Option<i64> {
         FEED_SHARED.with_active_demux_epoch(self.native_epoch, || FEED_SHARED.playpos_ns.load(Ordering::Relaxed))
     }

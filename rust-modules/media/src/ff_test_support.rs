@@ -9,6 +9,7 @@ impl DemuxObserver for FixtureDemuxObserver {
     fn attempt(&self) -> plx_playback_contract::AttemptId {
         plx_playback_contract::AttemptId::new(0, 0)
     }
+    fn with_active(&self, f: &mut dyn FnMut()) -> bool { f(); true }
     fn playpos_ns(&self) -> Option<i64> { Some(FEED_SHARED.playpos_ns.load(Ordering::Relaxed)) }
     fn caption_retention(&self) -> Option<plx_playback_contract::subtitle::CaptionRetention> {
         let seeking = FEED_SHARED.seeking.load(Ordering::Acquire);

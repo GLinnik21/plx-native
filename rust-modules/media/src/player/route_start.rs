@@ -2,14 +2,12 @@
 //! the feed constructor only runs after admission and source preparation.
 
 #[cfg(feature = "play-feed")]
-use plx_play_feed::shared::{FEED_SHARED, FEED_TX};
+use plx_play_feed::shared::FEED_TX;
 use super::adapter::PlayerAdapter;
 #[cfg(feature = "play-feed")]
 use plx_playback_contract::feed::ResetScope;
 #[cfg(feature = "play-feed")]
 use super::{engine, SHARED};
-#[cfg(feature = "play-feed")]
-use std::sync::atomic::Ordering;
 use plx_base::eventlog::log;
 
 /// Start one native Engine and settle any route candidate which was prepared before (or, for a
@@ -403,10 +401,10 @@ fn start_bufferfeed_prepared(
     // A timed-out Load from an earlier Engine may still own the one native object the C seam
     // holds. Release it now if it has returned; otherwise refuse before anything below (the
     // exported window in particular) can touch state that object is still using.
-    if !pa.begin_native_open() {
+    if !pa.open_begin() {
         return Err(crate::route::RouteStartResult::StartFailed);
     }
-    // `begin_native_open` can reap a previously abandoned Load. Admit its exact D1/quarantine
+    // `open_begin` can reap a previously abandoned Load. Admit its exact D1/quarantine
     // verdict before asking the common runner to admit another attempt.
     let at = pa.backend_tick();
     let _ = pa.backend_poll_at(ps, at);
@@ -474,26 +472,37 @@ fn start_bufferfeed_prepared(
     let trace_generation = crate::route::playback_trace_generation();
     // A native refusal is mapped here, by the common owner: the executor logs why, and the route
     // only learns that the start failed.
-    let mut prepared_native = plx_play_feed::native_executor::prepare_native_open(
-        pa.mt(), pa.physical.feed_backend().resources().shared(), start_paused, ps.readout().seek_preroll(),
-        open.map(super::feed_open::FeedOpenRequest::into_physical), sample, is_h265, session_rate,
-        side_reader, super::no_audio_armed(), super::play_rate_permille(ps), &pa.physical.feed_backend().resources().hooks().prepare)
-        .map_err(|_| crate::route::RouteStartResult::StartFailed)?;
+    let native_epoch = pa.open_prepare(plx_playback_contract::feed::OpenRequest {
+        start_paused,
+        seek_preroll: ps.readout().seek_preroll(),
+        stream: open.map(super::feed_open::FeedOpenRequest::into_stream),
+        sample,
+        is_h265,
+        session_rate,
+        requested_rate: super::play_rate_permille(ps),
+        no_audio: super::no_audio_armed(),
+        side_reader,
+    }).map_err(|_| crate::route::RouteStartResult::StartFailed)?;
     // The route reducer alone mints the physical attempt. The native constructor consumes this
     // identity; no backend-owned logical counter can alias a later route.
     let Some(route_attempt) = crate::route::claim_route_start_attempt(route_start) else {
         log("start_bufferfeed: prepared route lost before native construction");
+        // The parked open owns the clock and epoch guards; a later start needs them idle.
+        pa.open_abort();
         return Err(crate::route::RouteStartResult::StartFailed);
     };
     let attempt = route_attempt.contract_id();
     let (video_fidelity, audio_fidelity) = ps.planned_feed_fidelity()
         .expect("qualified feed has fidelity requirements");
-    let epoch = prepared_native.native_epoch();
-    prepared_native.bind_demux_session(super::demux_session::capture(attempt, epoch));
+    let session = super::demux_session::capture(attempt, native_epoch);
     ps.begin_attempt_view(route_attempt, super::attempt_view::Backend::Feed);
     let source = pa.next_source_key();
-    pa.stage_native_feed(attempt, source, prepared_native)
-        .map_err(|_| crate::route::RouteStartResult::StartFailed)?;
+    if pa.open_stage(attempt, source, session).is_err() {
+        // The stage consumed the parked open on its refusal; abort is the explicit no-op that
+        // keeps the pairing with `open_prepare` whole.
+        pa.open_abort();
+        return Err(crate::route::RouteStartResult::StartFailed);
+    }
     if let Some(inbox) = abr_inbox {
         pa.bind_abr_inbox(route_attempt, inbox);
     }
@@ -1294,7 +1303,6 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAd
             super::attempt_metrics::Origin::Fresh,
             at,
         );
-        let _ = pa.take_backend_feed_stop();
     }
     if !begin_teardown(ps, pa, for_reload) { return; }
     #[cfg(feature = "play-feed")]
@@ -1408,7 +1416,8 @@ pub(super) fn begin_teardown(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
             } else if cfg!(feature = "play-feed") && crate::route::engine_failure(ps).is_some() {
                 #[cfg(feature = "play-feed")]
                 {
-                let dur = FEED_SHARED.duration_ns.load(Ordering::Relaxed);
+                // The session's last sample of the attempt, as the URI branch and `final_report` read it.
+                let dur = super::duration_ns(ps).unwrap_or(0);
                 let pos = crate::route::unpresented_resume_ns(ps);
                 crate::player::report::ended(ps, pos, dur);
                 let rk = crate::route::cur_rk(ps);
@@ -1590,6 +1599,7 @@ mod readout_stop_tests {
 #[cfg(all(test, feature = "play-feed"))]
 mod feed_start_controls_tests {
     use super::*;
+    use std::sync::atomic::Ordering;
 
     #[test]
     fn a_feed_start_uses_the_session_rate_after_a_uri_attempt() {

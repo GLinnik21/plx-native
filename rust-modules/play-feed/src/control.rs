@@ -2,25 +2,32 @@
 //! seek, Load and stop verbs reach the physical feed through this one owner of its native session
 //! and its driver, and every method is the body of the function the player's adapter called
 //! directly before the seam existed. A forwarding layer, except `sample`, which answers only for a
-//! live session and adds the Engine's Load-side half (`FeedRaw::load`) to the mailbox sample, and
-//! the stop, which keeps the [`NativeStop`] in progress between its phases; the verbs, their
+//! live session and adds the Engine's Load-side half (`FeedRaw::load`) to the mailbox sample, the
+//! open, which parks the prepared open between its phases, and the stop, which keeps the
+//! [`NativeStop`] in progress between its phases; the verbs, their
 //! borrows and their answers are otherwise unchanged.
 
-use crate::feed_driver::{FeedDriver, FeedTransportAction};
+use crate::feed_driver::FeedDriver;
 use crate::feed_pump;
 use crate::feed_resources::FeedResources;
 use crate::feed_state::PendingRelease;
-use crate::native_executor::{NativePrepared, NativeStop};
+use crate::native_executor::{
+    begin_native_open, prepare_native_open, reap_abandoned_load_resource, NativePrepared,
+    NativeStop, PrepareRefusal,
+};
+use crate::open::PhysicalOpen;
 use crate::shared::FEED_TX;
 use plx_base::task::MainThread;
 use plx_playback_contract::feed::{
     AcceptedLoadOutcome, CtorGate, FeedCommand, FeedControl, FeedFacts, FeedLoad, FeedSeek,
-    FeedStop, LoadTick, PausedSeekStep, PresentationTick, ReleaseHandoff, ResetScope, SeekMode,
-    SeekPause, StuckSeekAction, UnblockFacts, UserPauseOutcome, UserResumeOutcome,
+    FeedOpen, FeedStop, FeedTransportAction, LoadTick, OpenRequest, PausedSeekStep,
+    PresentationTick, ReleaseHandoff, ResetScope, SeekMode, SeekPause, StuckSeekAction,
+    UnblockFacts, UserPauseOutcome, UserResumeOutcome,
 };
+use plx_playback_contract::demux::DemuxSession;
 use plx_playback_contract::{
     AttemptId, BackendEvent, BackendKind, Capabilities, CommandId, DispatchResult, DriverSet,
-    ExitDisposition, Failure, Operation, SourceKey, StopReason,
+    ExitDisposition, Failure, Operation, SourceKey,
 };
 use std::sync::atomic::{AtomicI32, AtomicU32};
 use std::time::Duration;
@@ -36,46 +43,21 @@ pub struct FeedBackend {
     /// A parked release whose `Unload` worker returned and was joined, waiting for its
     /// main-thread tail ([`FeedStop::run_release_tail`]).
     returned_release: Option<PendingRelease>,
+    /// The prepared open between [`FeedOpen::open_prepare`] and [`FeedOpen::open_stage`] (or
+    /// [`FeedOpen::open_abort`]): it owns the clock and native-epoch guards, a payload and a side
+    /// reader, so it stays here instead of crossing the seam. At most one exists.
+    prepared: Option<NativePrepared>,
 }
 
 impl FeedBackend {
     pub fn new(resources: FeedResources) -> Self {
-        Self { resources, driver: FeedDriver::new(), stop: None, returned_release: None }
+        Self { resources, driver: FeedDriver::new(), stop: None, returned_release: None, prepared: None }
     }
 
-    /// The session resources, for the open and abandoned-Load paths that do not yet go through
-    /// the trait.
+    /// The session resources, for the test fixtures that install, take and inspect an Engine.
     pub fn resources(&self) -> &FeedResources { &self.resources }
 
     pub fn resources_mut(&mut self) -> &mut FeedResources { &mut self.resources }
-
-    /// Escrow the prepared native open for the Start the runner will address to `attempt`.
-    pub fn stage_prepared(&mut self, attempt: AttemptId, key: SourceKey, prepared: NativePrepared)
-        -> Result<(), Failure> {
-        self.driver.stage(attempt, key, prepared)
-    }
-
-    /// The stop the driver asked the player for, once.
-    pub fn take_stop_request(&mut self) -> Option<(AttemptId, StopReason)> {
-        self.driver.take_stop_request()
-    }
-
-    /// The next native transport action the driver queued for the player's transport door.
-    pub fn take_transport_action(&mut self) -> Option<FeedTransportAction> {
-        self.driver.take_transport_action()
-    }
-
-    /// Report what the transport door did with `action`, so the driver can answer the runner.
-    pub fn note_transport_result(&mut self, mt: &MainThread, action: FeedTransportAction,
-        accepted: bool, native_acknowledged: bool) {
-        self.driver.note_transport_result(&mut self.resources, mt, action, accepted,
-            native_acknowledged);
-    }
-
-    /// The Load for `attempt` settled.
-    pub fn note_load_outcome(&mut self, attempt: AttemptId, ok: bool) {
-        self.driver.note_load_outcome(attempt, ok);
-    }
 }
 
 /// The feed alone composes with the runner directly, as a URI-only set does: it answers only for
@@ -159,8 +141,14 @@ impl FeedLoad for FeedBackend {
         feed_pump::ctor_gate(&mut self.resources, mt)
     }
 
+    /// The driver learns each verdict as the player takes it, so a Load that failed for the active
+    /// attempt becomes that attempt's `Failed` observation on the runner's next poll.
     fn take_load_outcomes(&mut self) -> Vec<AcceptedLoadOutcome> {
-        self.resources.take_load_outcomes()
+        let outcomes = self.resources.take_load_outcomes();
+        for outcome in &outcomes {
+            self.driver.note_load_outcome(outcome.attempt, outcome.ok);
+        }
+        outcomes
     }
 
     fn native_audio_stall_fired(&mut self, now: u32) -> bool {
@@ -188,6 +176,44 @@ impl FeedLoad for FeedBackend {
             facts
         })
     }
+
+    fn has_abandoned_load(&self) -> bool { self.resources.has_abandoned_load() }
+
+    fn reap_abandoned_load(&mut self, mt: &MainThread) -> bool {
+        let hooks = self.resources.hooks();
+        reap_abandoned_load_resource(&mut self.resources, mt, &hooks.release)
+    }
+}
+
+impl FeedOpen for FeedBackend {
+    fn open_begin(&mut self, mt: &MainThread) -> bool {
+        begin_native_open(&mut self.resources, mt)
+    }
+
+    fn open_prepare(&mut self, mt: &MainThread, request: OpenRequest) -> Result<u32, Failure> {
+        debug_assert!(self.prepared.is_none(), "an open is staged or aborted before the next one");
+        let prepared = prepare_native_open(
+            mt, self.resources.shared(), request.start_paused, request.seek_preroll,
+            request.stream.map(PhysicalOpen::from), request.sample, request.is_h265,
+            request.session_rate, request.side_reader, request.no_audio, request.requested_rate,
+            &self.resources.hooks().prepare,
+        ).map_err(|refusal| match refusal {
+            PrepareRefusal::ClockBusy | PrepareRefusal::NativeBusy => Failure::Busy,
+            PrepareRefusal::Refused => Failure::Refused,
+        })?;
+        let epoch = prepared.native_epoch();
+        self.prepared = Some(prepared);
+        Ok(epoch)
+    }
+
+    fn open_stage(&mut self, attempt: AttemptId, key: SourceKey, session: Box<dyn DemuxSession>)
+        -> Result<(), Failure> {
+        let Some(mut prepared) = self.prepared.take() else { return Err(Failure::Stale); };
+        prepared.bind_demux_session(session);
+        self.driver.stage(attempt, key, prepared)
+    }
+
+    fn open_abort(&mut self) { self.prepared = None; }
 }
 
 impl FeedBackend {
@@ -238,8 +264,6 @@ impl FeedStop for FeedBackend {
     fn reset(&mut self, scope: ResetScope, common: &mut dyn FnMut()) {
         self.resources.shared().reset_scoped(scope, common);
     }
-
-    fn has_pending_release(&self) -> bool { self.resources.has_pending_release() }
 
     fn take_returned_release(&mut self) -> Option<u32> {
         let mut release = self.resources.take_finished_release()?;
@@ -300,6 +324,16 @@ impl FeedControl for FeedBackend {
 
     fn user_resume(&mut self, mt: &MainThread) -> UserResumeOutcome {
         feed_pump::user_resume(&mut self.resources, mt)
+    }
+
+    fn take_transport_action(&mut self) -> Option<FeedTransportAction> {
+        self.driver.take_transport_action()
+    }
+
+    fn note_transport_result(&mut self, mt: &MainThread, action: FeedTransportAction,
+        accepted: bool, native_acknowledged: bool) {
+        self.driver.note_transport_result(&mut self.resources, mt, action, accepted,
+            native_acknowledged);
     }
 
     fn take_preroll_volume(&mut self) -> Option<i32> { FEED_TX.take_preroll_volume() }
@@ -772,6 +806,44 @@ mod tests {
 
     /// The backend is the runner's single-backend driver set: it answers for the feed alone, and
     /// with no session installed it has nothing to report and nothing to preserve at exit.
+    struct NoSideReader;
+
+    impl plx_playback_contract::feed::SideReaderPort for NoSideReader {
+        fn embedded_owner(&self) -> bool { false }
+        fn start_after_load_spawn(&mut self) {}
+        fn stop_before_demux_join(&mut self, _reason: &str) {}
+    }
+
+    /// A local-sample open: it needs no stream, no demux session and no device.
+    fn sample_request() -> OpenRequest {
+        OpenRequest {
+            start_paused: false, seek_preroll: false, stream: None,
+            sample: Some(Box::new(crate::feed_state::SampleBuf::new(Vec::new(), Vec::new()))),
+            is_h265: false, session_rate: crate::shared::RATE_NORMAL, requested_rate: 1000,
+            no_audio: true, side_reader: Box::new(NoSideReader),
+        }
+    }
+
+    /// A start lost between `open_prepare` and `open_stage` (the route reducer refused the attempt
+    /// claim) aborts its parked open: the prepared open owns the clock and native-epoch guards, so
+    /// without the abort the next start would be refused as an overlapping one, and with it the
+    /// next start prepares.
+    #[test]
+    fn a_start_lost_after_open_prepare_aborts_and_the_next_open_prepares() {
+        let _serial = plx_base::testlock::serial();
+        // SAFETY: a host test; nothing here touches the thread-affine state the token guards.
+        let mt = unsafe { MainThread::assume() };
+        let mut backend = backend();
+        assert!(backend.open_begin(&mt));
+        backend.open_prepare(&mt, sample_request()).expect("the first open prepares");
+        backend.open_abort();
+        assert!(backend.open_begin(&mt));
+        let epoch = backend.open_prepare(&mt, sample_request())
+            .expect("the guards of the lost start were released, so the next start prepares");
+        assert!(epoch > 0);
+        backend.open_abort();
+    }
+
     #[test]
     fn the_backend_is_a_feed_only_driver_set_that_is_idle_without_a_session() {
         // SAFETY: a host test; nothing here touches the thread-affine state the token guards.
@@ -782,7 +854,6 @@ mod tests {
         assert!(backend.poll(&mt).is_empty());
         assert_eq!(backend.exit_disposition(), ExitDisposition::Clean);
         backend.discard_staged(BackendKind::Feed, AttemptId::new(1, 1), SourceKey::new(1));
-        assert_eq!(backend.take_stop_request(), None);
         assert_eq!(backend.take_transport_action(), None);
     }
 }
