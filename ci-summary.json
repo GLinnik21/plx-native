@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-06T18:04:21Z",
+ "generated": "2026-11-06T18:04:51Z",
  "metrics": [
   {
    "change30_pct": 7.8,
@@ -148,14 +148,14 @@
    "change7_pct": 20.3,
    "d30": 816.0,
    "delta30": -371.0,
-   "delta7": 75,
+   "delta7": 75.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 63,
+   "n_now": 64,
    "n_prev": 93,
-   "now": 445,
+   "now": 445.0,
    "prev7": 370,
    "shown": true,
    "state": "worse",
@@ -387,18 +387,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 21.9,
-   "change7_pct": 12.7,
+   "change30_pct": 22.1,
+   "change7_pct": 12.9,
    "d30": 247,
-   "delta30": 54,
-   "delta7": 34,
+   "delta30": 54.5,
+   "delta7": 34.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 59,
+   "n_now": 60,
    "n_prev": 81,
-   "now": 301,
+   "now": 301.5,
    "prev7": 267,
    "shown": true,
    "state": "flat",
@@ -408,18 +408,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -75.0,
-   "change7_pct": 0.0,
+   "change30_pct": -74.8,
+   "change7_pct": 0.7,
    "d30": 848,
-   "delta30": -636,
-   "delta7": 0,
+   "delta30": -634.5,
+   "delta7": 1.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 59,
+   "n_now": 60,
    "n_prev": 81,
-   "now": 212,
+   "now": 213.5,
    "prev7": 212,
    "shown": true,
    "state": "flat",
@@ -429,18 +429,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -34.7,
-   "change7_pct": 10.7,
+   "change30_pct": -33.8,
+   "change7_pct": 12.3,
    "d30": 317.0,
-   "delta30": -110.0,
-   "delta7": 20,
+   "delta30": -107.0,
+   "delta7": 23.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 59,
+   "n_now": 60,
    "n_prev": 81,
-   "now": 207,
+   "now": 210.0,
    "prev7": 187,
    "shown": true,
    "state": "flat",
@@ -557,18 +557,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 11.8,
-   "change7_pct": 5.6,
+   "change30_pct": 14.7,
+   "change7_pct": 8.3,
    "d30": 17,
-   "delta30": 2,
-   "delta7": 1,
+   "delta30": 2.5,
+   "delta7": 1.5,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 59,
+   "n_now": 60,
    "n_prev": 81,
-   "now": 19,
+   "now": 19.5,
    "prev7": 18,
    "shown": false,
    "state": "flat",
@@ -667,11 +667,6 @@
    "change_pct": 29.8,
    "commits": [
     {
-     "pr": 1243,
-     "sha": "8c6904d1b",
-     "title": "HUD registry: serve from huds.plxnative.com"
-    },
-    {
      "pr": 1244,
      "sha": "6d5089359",
      "title": "Tests: the lint, screenshot and replay runs delete their temp trees"
@@ -715,6 +710,11 @@
      "pr": null,
      "sha": "5b9ff4a0a",
      "title": "Settings: a pushed page's text is made resident before it moves"
+    },
+    {
+     "pr": null,
+     "sha": "4bf133d57",
+     "title": "Settings: fps scenes for the pages Settings v2 added"
     }
    ],
    "from": 230,
@@ -728,11 +728,6 @@
    "change_pct": 25.2,
    "commits": [
     {
-     "pr": 1243,
-     "sha": "8c6904d1b",
-     "title": "HUD registry: serve from huds.plxnative.com"
-    },
-    {
      "pr": 1244,
      "sha": "6d5089359",
      "title": "Tests: the lint, screenshot and replay runs delete their temp trees"
@@ -776,6 +771,11 @@
      "pr": null,
      "sha": "5b9ff4a0a",
      "title": "Settings: a pushed page's text is made resident before it moves"
+    },
+    {
+     "pr": null,
+     "sha": "4bf133d57",
+     "title": "Settings: fps scenes for the pages Settings v2 added"
     }
    ],
    "from": 74.8,
@@ -789,11 +789,6 @@
    "change_pct": 21.7,
    "commits": [
     {
-     "pr": 1243,
-     "sha": "8c6904d1b",
-     "title": "HUD registry: serve from huds.plxnative.com"
-    },
-    {
      "pr": 1244,
      "sha": "6d5089359",
      "title": "Tests: the lint, screenshot and replay runs delete their temp trees"
@@ -837,6 +832,11 @@
      "pr": null,
      "sha": "5b9ff4a0a",
      "title": "Settings: a pushed page's text is made resident before it moves"
+    },
+    {
+     "pr": null,
+     "sha": "4bf133d57",
+     "title": "Settings: fps scenes for the pages Settings v2 added"
     }
    ],
    "from": 313,
@@ -850,11 +850,6 @@
    "change_pct": 20.3,
    "commits": [
     {
-     "pr": 1243,
-     "sha": "8c6904d1b",
-     "title": "HUD registry: serve from huds.plxnative.com"
-    },
-    {
      "pr": 1244,
      "sha": "6d5089359",
      "title": "Tests: the lint, screenshot and replay runs delete their temp trees"
@@ -898,6 +893,11 @@
      "pr": null,
      "sha": "5b9ff4a0a",
      "title": "Settings: a pushed page's text is made resident before it moves"
+    },
+    {
+     "pr": null,
+     "sha": "4bf133d57",
+     "title": "Settings: fps scenes for the pages Settings v2 added"
     }
    ],
    "from": 365,
@@ -911,11 +911,6 @@
    "change_pct": 20.3,
    "commits": [
     {
-     "pr": 1243,
-     "sha": "8c6904d1b",
-     "title": "HUD registry: serve from huds.plxnative.com"
-    },
-    {
      "pr": 1244,
      "sha": "6d5089359",
      "title": "Tests: the lint, screenshot and replay runs delete their temp trees"
@@ -959,6 +954,11 @@
      "pr": null,
      "sha": "5b9ff4a0a",
      "title": "Settings: a pushed page's text is made resident before it moves"
+    },
+    {
+     "pr": null,
+     "sha": "4bf133d57",
+     "title": "Settings: fps scenes for the pages Settings v2 added"
     }
    ],
    "from": 370,
@@ -966,7 +966,7 @@
    "label": "Wait after merge",
    "since": "2026-11-06",
    "threshold_pct": 15.0,
-   "to": 445
+   "to": 445.0
   }
  ],
  "schema": 2,
