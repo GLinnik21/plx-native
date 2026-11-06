@@ -198,8 +198,9 @@ const TITLE_LEADING: f32 = theme::size::HERO as f32 * 1.05;
 pub const PICTURE_TOP: f32 = 440.0;
 
 /// **The Settings page title rung** (Settings v2, `Sv2-6-Spec`: "48 bold on every Settings page"):
-/// the design system's `--size-display`. Read by [`TitleStyle::Page`] only; every other route
-/// keeps [`TitleStyle::Hero`].
+/// the design system's `--size-display`. Read by [`TitleStyle::Page`] only, which the pages moved
+/// to the v2 board so far use ([`RouteLayout::settings_page`]); every other route, Legal included,
+/// keeps [`TitleStyle::Hero`] until its stage.
 pub const PAGE_TITLE_SIZE: std::os::raw::c_int = theme::size::DISPLAY;
 const PAGE_TITLE_LEADING: f32 = PAGE_TITLE_SIZE as f32 * 1.05;
 /// The Page title's letter-spacing, the board's `-.02em`.
@@ -211,9 +212,9 @@ const PAGE_TITLE_TRACKING_EM: f32 = -0.02;
 /// * [`Hero`](Self::Hero) is every route's own title: `--size-hero` (72), with a crumb PUSHING
 ///   the title down by its band (first-run consent, sign-in, filmography, Legal, the library
 ///   editors).
-/// * [`Page`](Self::Page) is the Settings family's (Settings v2): `--size-display` (48), the
-///   title on the column's guide with the crumb hanging ABOVE it, so a nested page's title is at
-///   the root's y.
+/// * [`Page`](Self::Page) is the Settings pages moved to the v2 board so far (see
+///   [`RouteLayout::settings_page`]): `--size-display` (48), the title on the column's guide with
+///   the crumb hanging ABOVE it, so a nested page's title is at the root's y.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum TitleStyle {
     #[default]
@@ -870,7 +871,10 @@ impl RouteLayout {
         Self { title_style: TitleStyle::Page, ..self }
     }
 
-    /// A Settings-family route's layout: [`Self::screen`] with [`TitleStyle::Page`].
+    /// The layout of the Settings pages moved to the v2 board so far: [`Self::screen`] with
+    /// [`TitleStyle::Page`] (the root, Language, the preferences and pickers, Under posters,
+    /// Diagnostics, HUD settings). Legal, Privacy & data, About, the Favorite libraries
+    /// onboarding and first-run consent still use [`Self::screen`] (Hero) until their stage.
     pub fn settings_page() -> Self {
         Self::screen().page_titled()
     }
@@ -951,7 +955,8 @@ impl RouteLayout {
     ///
     /// `has_crumb` for the same reason [`Self::narrative_top`] takes it: the title anchor moves by
     /// exactly the crumb's band, and a document on a crumbless route must follow it up rather than
-    /// leaving a gap nothing explains.
+    /// leaving a gap nothing explains. On a [`TitleStyle::Page`] layout the crumb hangs ABOVE the
+    /// title, so the two anchors are one y and `has_crumb` changes nothing.
     pub fn document(self, has_crumb: bool) -> Rect {
         let top = self.narrative_top(has_crumb);
         Rect::new(
@@ -1088,8 +1093,9 @@ impl RouteLayout {
         draw_back_crumb(p, Rect::new(self.narrative.x, top, self.narrative.w, CRUMB_BAND), back_to, measure);
     }
 
-    /// **The narrative title, as the view [`draw_narrative`] actually draws** — its rung, its
-    /// weight, its wrap and its [`TITLE_LEADING`] line pitch, in one place a host test can call.
+    /// **The HERO narrative title** — its rung, its weight, its wrap and its [`TITLE_LEADING`]
+    /// line pitch, in one place a host test can call. It is the layout-free view first-run consent
+    /// grades; a LAYOUT draws [`Self::title_view`], which follows its [`TitleStyle`].
     ///
     /// It is split out for exactly that reason and the reason is a lesson: the first test for the
     /// leading correction asserted `TITLE_LEADING == HERO * 1.05` and nothing else, so deleting

@@ -363,7 +363,7 @@ fn composed_owner_favourites_footer_survives_left_down_and_idle_frames() {
 }
 
 /// **The composition, at depth.** Signed out, the Settings root's rows are Video & playback
-/// / Language / Privacy & data / Legal notices / About, so OK on Legal notices pushes the Legal index; LEFT off that index's
+/// / Language / Privacy & data / Diagnostics / Legal notices / About, so OK on Legal notices pushes the Legal index; LEFT off that index's
 /// column then runs the whole chain — edge rule, synthetic BACK, the surface's own pop —
 /// and lands back on the Settings root with the surface still up and still owning input.
 #[test]
@@ -496,9 +496,9 @@ fn a_real_push_seats_the_new_page_fresh_and_a_pop_restores_the_row_that_opened_i
         path(&d, id)
     );
 
-    // Mounting the surface already seats row 0 (its own `Enter::Fresh`); three real DOWNs
-    // move focus — and the engine's remembered cursor for `(id, GroupId(0))` — to row 3.
-    // (Settings v2: Diagnostics is the root's own row now, so Legal notices is the fourth.)
+    // Mounting the surface already seats row 0 (its own `Enter::Fresh`); four real DOWNs
+    // move focus — and the engine's remembered cursor for `(id, GroupId(0))` — to row 4,
+    // Legal notices (Settings v2: Diagnostics is the root's own row, between Privacy & data and it).
     for i in 1..=4u32 {
         frame(&mut d, &mut rig, 16 * i, vec![key(Key::Down, tick(16 * i))]);
     }

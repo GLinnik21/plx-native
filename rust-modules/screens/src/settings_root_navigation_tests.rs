@@ -885,7 +885,7 @@ fn a_rebuild_keeps_the_row_by_id_and_a_vanished_row_falls_to_its_neighbour() {
 
 /// The root keeps ONE Diagnostics row (Settings v2) whose value is the recording switch, Off or On;
 /// the status the runner answers drives that value, and the trace rows live one page down
-/// (`settings_diagnostics_tests.rs`).
+/// (`settings_diagnostics.rs`, `settings_v2_tests.rs`).
 #[test]
 fn the_root_diagnostics_row_reads_the_status_the_runner_answers() {
     use plx_platform::playback_trace::Status;
