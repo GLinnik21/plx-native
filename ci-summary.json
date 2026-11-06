@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-06T16:01:58Z",
+ "generated": "2026-11-06T16:07:13Z",
  "metrics": [
   {
    "change30_pct": 7.4,
@@ -312,9 +312,9 @@
    "id": "nightly|ARM build + gates / build + verify",
    "kind": "job",
    "label": "Nightly: ARM build + gates / build + verify",
-   "n_now": 33,
+   "n_now": 34,
    "n_prev": 6,
-   "now": 1114,
+   "now": 1114.0,
    "prev7": 993.0,
    "shown": true,
    "state": "flat",
@@ -524,9 +524,9 @@
    "id": "nightly|publish nightly prerelease",
    "kind": "job",
    "label": "Nightly: publish nightly prerelease",
-   "n_now": 33,
+   "n_now": 34,
    "n_prev": 6,
-   "now": 23,
+   "now": 23.0,
    "prev7": 23.0,
    "shown": false,
    "state": "flat",
@@ -545,9 +545,9 @@
    "id": "nightly|plan today's nightly",
    "kind": "job",
    "label": "Nightly: plan today's nightly",
-   "n_now": 33,
+   "n_now": 34,
    "n_prev": 6,
-   "now": 20,
+   "now": 20.0,
    "prev7": 16.5,
    "shown": false,
    "state": "flat",
@@ -914,7 +914,7 @@
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
    "label": "Nightly: ARM build + gates / build + verify",
-   "now": 1114
+   "now": 1114.0
   },
   {
    "group": "ci",
