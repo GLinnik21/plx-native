@@ -1560,8 +1560,8 @@ rebuilds the application only. The no-op build is 0.1 s in both.
 This section records the original media extraction. In the current layout,
 `plx_play_feed` owns the physical FFmpeg demuxer, HLS parser and access-unit
 queues; `plx_media_codecs` owns the FFmpeg binding and encoder. `plx_media::ff`
-is a compatibility facade for the feed's application entry points and media
-integration fixtures.
+re-exports `plx_media_codecs`' FFmpeg bindings and holds the integration fixtures;
+the feed's application entry points are `plx_play_feed`'s (`plx_play_feed::demux`).
 
 `media` was extracted eleventh: `rust-modules/media/` is the workspace member `plx_media` (an `rlib`,
 `uses = base machine platform gfx net plex telemetry data`; the manifest names those eight, with

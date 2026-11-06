@@ -1234,9 +1234,11 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
 - `rust-modules/src/` — the app core (Rust): `app/` (`mod.rs` the `run_application` shim + `struct App`, `boot.rs` the bring-up, `run.rs` the frame loop and its phase functions, `events.rs`/`input.rs` the input decode and key ladders, `lifecycle.rs`, `playback.rs`, `content.rs`, `bridge.rs` the seam onto the container and the ONE navigation vocabulary, `words.rs` the heartbeat's `route=`/`overlay=` alphabet — `nav.rs` is gone with `enum Route` since restructure phase 12), `system.rs` (wayland),
   and, in the media layer (`rust-modules/media/`, crate `plx_media`, which the application links),
   `player/` (buffer-feed engine + worker threads — **`rust-modules/media/src/player/CLAUDE.md` is the
-  playback deep-dive; read it before touching playback**), `ff.rs` (the feed demuxer over the **bundled,
-  pinned** libavformat shipped beside the binary, *not* the TV's), `abr/` and `route/`.
-  `play-feed` owns the AU queues and HLS parser; `media-codecs` owns the FFmpeg ABI and encoder;
+  playback deep-dive; read it before touching playback**), `abr/` and `route/`, and `ff.rs`, which
+  re-exports `plx_media_codecs`' FFmpeg bindings and holds the integration fixtures.
+  `play-feed` owns the feed demuxer (`play-feed/src/ff.rs`, `plx_play_feed::demux`, over the **bundled,
+  pinned** libavformat shipped beside the binary, *not* the TV's), the AU queues and the HLS parser;
+  `media-codecs` owns the FFmpeg ABI and encoder;
   `net::range_io` owns interruptible HTTPS byte ranges while media supplies credential authorization.
   The Plex layer (`rust-modules/plex/`, crate `plx_plex`: `plex/` and `http.rs` — **its own
   `rust-modules/plex/src/plex/CLAUDE.md`**, which the rest of this file never pointed at: read it before
