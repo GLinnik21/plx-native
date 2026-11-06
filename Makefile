@@ -1929,8 +1929,10 @@ check-python-harness:
 #    (ci/exit-interpose-lib.c: it registers a finalizer that would `_exit(42)`, then calls `exit(7)`)
 #    and calls it from a second thread, the shape of PLX-NATIVE-1P's SDLTimer thread. The executable
 #    is built twice. With src/exit.c linked and the link's own EXIT_INTERPOSER_LDFLAG, the child must
-#    end with 7: the real status survived and the finalizer never ran. Without src/exit.c it must end
-#    with 42, which is what proves the test can fail. (The flag is not the variable between the two:
+#    end with 7: the real status survived, the finalizer never ran, and the return address handed to
+#    plx_exit_intercepted (for the event-log line that names the caller of exit) lies in the library
+#    that called exit; a stub checks that with dladdr and ends with 96 when it names another object.
+#    Without src/exit.c it must end with 42, which is what proves the test can fail. (The flag is not the variable between the two:
 #    ld exports an executable's `exit` anyway, because libc.so defines it too, measured with the
 #    NDK's ld; what ships is asserted on the artifact by ci/check-elf.sh.) The library is opened by
 #    path, never linked: a shared object on the link line can change what the linker exports. Darwin's

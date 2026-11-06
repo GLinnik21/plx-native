@@ -20,12 +20,16 @@
  * This file defines `exit`, and the link exports it (`-Wl,--export-dynamic-symbol=exit`, the
  * Makefile's `EXIT_INTERPOSER_LDFLAG`), so the `R_ARM_JUMP_SLOT` of every shared object's `exit`
  * binds to this definition instead of libc's. The same mechanism carries the Starfish
- * `callbackFunctionHook` interposer in `src/starfish.c`. It hands the status to
- * `plx_exit_intercepted` (`rust-modules/base/src/process.rs`), which logs the caller and ends the
- * process with `exit_now`. That is why this is an interposer and not an `atexit` handler: it does
- * not depend on the order the finalizers were registered in (a handler registered once at boot is
- * run AFTER everything registered later), it keeps the caller's real status, and it runs before
- * glibc's `__call_tls_dtors`.
+ * `callbackFunctionHook` interposer in `src/starfish.c`. It hands the status and its own return
+ * address to `plx_exit_intercepted` (`rust-modules/base/src/process.rs`), which logs the calling
+ * thread and the shared object and offset the return address falls in, then ends the process with
+ * `exit_now`. The return address is there because the PLX-NATIVE-1P event shows no frame above
+ * `__run_exit_handlers`, so which library called `exit` is otherwise unknown.
+ *
+ * This is an interposer and not an `atexit` handler because it does not depend on the order the
+ * finalizers were registered in (a handler registered once at boot is run AFTER everything
+ * registered later), it keeps the caller's real status, and it runs before glibc's
+ * `__call_tls_dtors`.
  *
  * The firmware's own SDL2 imports `exit@GLIBC_2.4` through an `R_ARM_JUMP_SLOT` on the inventoried
  * images (webOS 4.x W19P/W19R, 6.x W21O, 9.2 W24G, 11.2 W23O), so an `exit` SDL makes binds to this
@@ -51,8 +55,8 @@
  */
 #include <stdlib.h>
 
-extern void plx_exit_intercepted(int status) __attribute__((noreturn));
+extern void plx_exit_intercepted(int status, void *caller) __attribute__((noreturn));
 
 __attribute__((noreturn)) void exit(int status) {
-    plx_exit_intercepted(status);
+    plx_exit_intercepted(status, __builtin_return_address(0));
 }

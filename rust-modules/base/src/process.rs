@@ -12,7 +12,7 @@
 //! [`plx_exit_intercepted`] and [`exit_now`] as well.
 
 use crate::task::watchdog::CrashPhase;
-use std::os::raw::c_int;
+use std::os::raw::{c_int, c_void};
 
 /// End the process with `code` without running `atexit` handlers or shared-library destructors.
 ///
@@ -42,8 +42,11 @@ pub fn exit_now(code: c_int) -> ! {
 ///
 /// The executable defines libc's `exit` itself and the link exports it
 /// (`-Wl,--export-dynamic-symbol=exit`), so the `exit` that every other shared object calls binds
-/// to that definition. It lands here with the caller's real `status`; one event-log line names the
-/// calling thread, and [`exit_now`] ends the process: no `atexit` handler and no finalizer runs.
+/// to that definition. It lands here with the caller's real `status` and the return address of the
+/// `exit` call; one event-log line names the calling thread and the caller of `exit` (the shared
+/// object and the return address's offset in it, [`describe_caller`]), and [`exit_now`] ends the
+/// process: no `atexit` handler and no finalizer runs. The caller is logged because the Sentry event
+/// has no frame above `__run_exit_handlers`, so which library called `exit` is otherwise unknown.
 ///
 /// The firmware's own SDL2 imports `exit@GLIBC_2.4` through an `R_ARM_JUMP_SLOT` on the inventoried
 /// images (webOS 4.x, 6.x, 9.2, 11.2), so an `exit` SDL makes binds here; whether PLX-NATIVE-1P's
@@ -77,12 +80,73 @@ pub fn exit_now(code: c_int) -> ! {
 /// ran, or before `main`, so it must not panic and must not use `std::thread::current()` or any
 /// `thread_local`; `caller_thread` reads the thread's identity from the kernel for that reason.
 #[no_mangle]
-pub extern "C" fn plx_exit_intercepted(status: c_int) -> ! {
+pub extern "C" fn plx_exit_intercepted(status: c_int, caller: *const c_void) -> ! {
     crate::eventlog::log(&format!(
-        "exit: libc exit({status}) on {}; ending with _exit, no exit handlers run",
-        caller_thread()
+        "exit: libc exit({status}) on {}, {}; ending with _exit, no exit handlers run",
+        caller_thread(),
+        describe_caller(caller)
     ));
     exit_now(status)
+}
+
+/// `caller=<object>+0x<offset>` for the return address of an `exit` call, plus
+/// ` (near <symbol>+0x<offset>)` when the loader knows a symbol at or below it. `<offset>` is the
+/// raw return address minus the object's load base: the number to look up in that library
+/// (`addr2line`, `objdump -d`) after backing up the 1-4 bytes of the call instruction. The firmware's
+/// libraries are stripped, so the symbol is the nearest exported one, not necessarily the function
+/// that made the call. An address in no loaded object reads `caller=0x<addr> (no shared object)`.
+///
+/// `dladdr` gets the byte BEFORE the return address: `exit` never returns, so a call to it can be the
+/// last instruction of a function, and the return address is then one past that function's end, in
+/// the next symbol.
+fn describe_caller(caller: *const c_void) -> String {
+    #[cfg(unix)]
+    {
+        use std::ffi::CStr;
+        use std::fmt::Write;
+
+        // A return address into Thumb code carries the Thumb bit in bit 0; no instruction address
+        // is odd, so it is cleared before it is used as one.
+        #[cfg(target_arch = "arm")]
+        let caller = (caller as usize & !1) as *const c_void;
+        // SAFETY: `Dl_info` is plain data (pointers and no invariants), valid when zeroed.
+        let mut info: libc::Dl_info = unsafe { std::mem::zeroed() };
+        // SAFETY: `dladdr` only reads the address it is given, which is never dereferenced, and
+        // writes into `info`.
+        let known = !caller.is_null()
+            && unsafe { libc::dladdr(caller.wrapping_byte_sub(1), &mut info) } != 0;
+        if !known {
+            return format!("caller={caller:p} (no shared object)");
+        }
+        let at = caller as usize;
+        // SAFETY: on success `dladdr` sets each string pointer to a NUL-terminated string that
+        // lives as long as the object stays loaded, or to null; null is handled.
+        let name = |ptr: *const libc::c_char| {
+            (!ptr.is_null()).then(|| {
+                unsafe { CStr::from_ptr(ptr) }
+                    .to_string_lossy()
+                    .into_owned()
+            })
+        };
+        let object = name(info.dli_fname).unwrap_or_else(|| "?".to_string());
+        let mut out = format!(
+            "caller={object}+{:#x}",
+            at.wrapping_sub(info.dli_fbase as usize)
+        );
+        if let Some(symbol) = name(info.dli_sname) {
+            let _ = write!(
+                out,
+                " (near {symbol}+{:#x})",
+                at.wrapping_sub(info.dli_saddr as usize)
+            );
+        }
+        out
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = caller;
+        "caller=?".to_string()
+    }
 }
 
 /// `tid=<n> name=<comm>` of the calling thread, best effort, with no filesystem and no thread-local.
@@ -113,15 +177,17 @@ fn caller_thread() -> String {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, unix))]
 mod tests {
-    use super::caller_thread;
+    use super::describe_caller;
+    use std::os::raw::c_void;
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn caller_thread_names_the_calling_thread_and_its_own_tid() {
         let seen = std::thread::Builder::new()
             .name("exit-probe".into())
-            .spawn(caller_thread)
+            .spawn(super::caller_thread)
             .expect("spawn")
             .join()
             .expect("join");
@@ -136,5 +202,25 @@ mod tests {
             std::process::id(),
             "a spawned thread has a tid of its own: {seen}"
         );
+    }
+
+    #[test]
+    fn describe_caller_names_the_object_and_offset_of_an_address_in_libc() {
+        let inside_libc = (libc::getpid as *const c_void).wrapping_byte_add(4);
+        let seen = describe_caller(inside_libc).to_lowercase();
+        assert!(seen.starts_with("caller="), "{seen}");
+        // Linux resolves `getpid` into libc.so.6, macOS into libsystem_kernel.dylib.
+        assert!(
+            seen.contains("libc.so") || seen.contains("libsystem"),
+            "{seen}"
+        );
+        assert!(seen.contains("+0x"), "{seen}");
+        assert!(seen.contains("(near "), "{seen}");
+    }
+
+    #[test]
+    fn describe_caller_without_an_address_says_no_shared_object() {
+        let seen = describe_caller(std::ptr::null());
+        assert!(seen.contains("no shared object"), "{seen}");
     }
 }
