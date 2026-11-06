@@ -107,8 +107,24 @@ pub trait PictureSlot {
 /// A fan of poster cards, the real tile ([`crate::widgets::card`]) at rest: the first card full
 /// size on the slot's left, each next one a step right and a step smaller, drawn back to front so
 /// the first overlaps the rest.
+///
+/// **Art only.** The picture never reads as a control, so no card of the fan wears the poster's
+/// state language (the watched tick, the resume bar's fact): [`PosterFan::art`] hands the shared
+/// tile the row's facts with that state cleared, and the tile's own art path does the rest.
 pub struct PosterFan<'a> {
     pub arts: Vec<crate::widgets::Art<'a>>,
+}
+
+impl<'a> PosterFan<'a> {
+    /// The art the shared tile is handed for card `i`: a poster's facts with no watch state, so
+    /// `widgets::poster_mark` is `None` and the tile draws no tick. Other variants carry no state.
+    pub fn art(&self, i: usize) -> crate::widgets::Art<'a> {
+        use crate::widgets::Art;
+        match self.arts[i] {
+            Art::Poster(Some(f)) => Art::Poster(Some(crate::tile::TileFacts { watched: false, resume: None, ..f })),
+            other => other,
+        }
+    }
 }
 
 impl PictureSlot for PosterFan<'_> {
@@ -127,7 +143,7 @@ impl PictureSlot for PosterFan<'_> {
             let x = slot.x + step * i as f32;
             // cards behind sit on the front card's floor
             let y = slot.y + front_w * 1.5 - h;
-            crate::widgets::card(p.alpha(1.0 - FAN_FADE * i as f32), Rect::new(x, y, w, h), self.arts[i], theme::CARD_RING_RAD, false, 1.0, 0.0);
+            crate::widgets::card(p.alpha(1.0 - FAN_FADE * i as f32), Rect::new(x, y, w, h), self.art(i), theme::CARD_RING_RAD, false, 1.0, 0.0);
         }
     }
 }
@@ -163,6 +179,26 @@ mod tests {
         assert_eq!(c.arrival(), 1.0, "the shared appear spring arrives");
         assert!(c.left.is_empty(), "nothing left to fade out once arrived");
         assert!(!c.follow("row"), "the sentence already shown is not a change");
+    }
+
+    #[test]
+    fn the_fan_is_art_only_whatever_the_rows_watch_state() {
+        use crate::tile::{Resume, TileFacts};
+        use crate::widgets::{poster_mark, Art, PosterMark};
+        let finished = TileFacts { watched: true, unwatched: false, thumb: "/t", ..Default::default() };
+        let mid = TileFacts { resume: Some(Resume { frac: 0.3, left_ms: 1 }), thumb: "/t", ..Default::default() };
+        assert_eq!(poster_mark(&finished), PosterMark::Watched, "the row alone would wear a tick");
+        let fan = PosterFan { arts: vec![Art::Poster(Some(finished)), Art::Poster(Some(mid)), Art::Poster(None)] };
+        for i in 0..3 {
+            match fan.art(i) {
+                Art::Poster(Some(f)) => {
+                    assert_eq!(poster_mark(&f), PosterMark::None, "card {i} wears no tick or bar");
+                    assert_eq!(f.thumb, "/t", "the art itself is untouched");
+                }
+                Art::Poster(None) => assert_eq!(i, 2),
+                _ => panic!("the fan only holds posters here"),
+            }
+        }
     }
 
     #[test]
