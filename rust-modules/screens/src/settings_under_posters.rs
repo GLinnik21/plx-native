@@ -35,7 +35,6 @@ use plx_data::pms::PmsMovie;
 use plx_ui::caption_policy::CaptionFacts;
 use plx_ui::follow_copy::FollowCopy;
 use plx_ui::widgets::Art;
-use crate::family::PosterKind;
 use crate::registry::tile_facts;
 
 /// The stored setting as the UI's caption policy. The mapping lives here, not in `plx_plex`: the

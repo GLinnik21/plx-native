@@ -1,11 +1,15 @@
 # Playback settings
 
-Settings has **Video & playback** and **Audio & subtitles** pages. The Video & playback
-settings (quality, Direct Play, subtitle size and position, next episode, Continue Watching
-and skip interval) are saved on this television, **per profile**: each Plex Home profile keeps
-its own picks, and a profile that has not chosen yet starts from the value the television held
-before profiles had their own. The page names the profile it shows ("Playback settings for
-Maya") and follows a profile switch (Settings itself closes on one). Settings is reached
+Settings has **Video & playback** and **Audio & subtitles** pages. **Video & playback** holds
+Video (quality, Direct Play, Dolby Vision), Player (skip interval, D-pad seeking, HDR overlay,
+intro and credits skip, Player HUD) and Up next (next episode, Continue Watching). Subtitle size and
+position live in the Look group of **Audio & subtitles**: this app's own settings, kept per profile
+and never sent to the account. These settings are saved on this television, **per profile**: each
+Plex Home profile keeps its own picks, and a profile that has not chosen yet starts from the value
+the television held before profiles had their own. The page follows a profile switch (Settings itself closes on one). Each row states its own
+explanation beside the table; the page's fallback sentence ("Playback settings for Maya.", naming
+the seated profile) shows only while the Player HUD row, or another row with no sentence of its
+own, has focus, or while nobody is seated. Settings is reached
 through a profile, so a normal session always has one seated; where none is (a developer-token
 run or a controlled replay; `Seat` in `plex/session.rs` lists the unseated states) the rows show
 those starting values read-only, with the line "Choose a profile to change this", because
@@ -28,9 +32,9 @@ Entering Force requires an explicit acknowledgement, initially focused on Cancel
 names missing sound, incorrect pictures, freezes, crashes and the possibility that the app
 cannot recover gracefully. It instructs the user to enable Force only if they know how to
 restart the app and return to Auto. An enabled-state warning remains visible in Settings
-(on the Video & playback page the explanation names the profile, "Playback settings for Maya.",
-and the warning follows it in the same paragraph);
-the quality controls explain that the saved quality is overridden. Returning to Auto or
+(on the Video & playback page the warning follows the page's fallback sentence in the same
+paragraph); while Force is on, Default quality reads "Overridden" and its sentence says the saved
+quality is overridden. Returning to Auto or
 Disabled needs no confirmation.
 
 Audio passthrough remains the television's Digital Sound Output setting.
