@@ -940,13 +940,13 @@ pub(crate) fn finish_playback(
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
 ) -> bool {
-    if plx_media::player::server_stop_applies(&player.session) {
-        return false;
-    }
     if plx_media::route::next_episode_mode() != plx_media::route::NextEpisodeMode::Off
         && play_up_next(&mut player.session, pa, HUD_LINGER_MS, pages, bridge)
     {
         return true;
+    }
+    if plx_media::player::server_stop_applies(&player.session) {
+        return false;
     }
     exit_player(player, pa, repause_at, refresh_hubs, pages);
     // The ring goes back to the scrubber for the NEXT session, and the next session is a fresh

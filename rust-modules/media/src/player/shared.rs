@@ -1452,7 +1452,7 @@ impl Shared {
         )
     }
 
-    /// Whether a timed-out Load is parked ([`NativeSessionPhase::Abandoned`]): the native object
+    /// Whether an unfinished Load is parked ([`NativeSessionPhase::Abandoned`]): the native object
     /// is still owned by a `Load` that has not returned, so every native start is refused.
     pub fn native_load_abandoned(&self) -> bool {
         matches!(

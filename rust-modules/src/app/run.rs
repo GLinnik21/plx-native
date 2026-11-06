@@ -6856,8 +6856,15 @@ mod lifecycle_regression_tests {
             return;
         };
         let mut fr = rig.due_up_next();
+        let transaction = plx_media::route::begin_route_start().unwrap();
+        assert!(plx_media::route::prepare_route_start(transaction));
+        let attempt = plx_media::route::claim_route_start_attempt(transaction).unwrap();
+        assert!(plx_media::route::settle_route_start(
+            &mut rig.app.player.session, attempt, plx_media::route::RouteStartResult::Started,
+        ));
         let lease = plx_media::route::begin_timeline_reporting(&rig.app.player.session).unwrap();
         assert!(!plx_media::route::report_timeline(&lease, plx_plex::plex::TimelineState::Playing, 12_000, 60_000));
+        assert!(plx_media::player::server_stop_applies(&rig.app.player.session));
 
         unsafe { playback_tick(&mut rig.app, &mut fr); }
 
