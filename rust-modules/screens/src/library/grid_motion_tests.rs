@@ -356,9 +356,9 @@ fn the_under_posters_policy_sizes_the_focused_rows_band() {
         settle(&mut page, &mut engine, &fixture, 0);
         page.layout.row_y(4, 0.0) - rest
     };
-    let nothing = below_focus(UnderPosters { title: false, details: UnderPostersDetails::None, sort_value: false });
-    let one_line = below_focus(UnderPosters { title: false, details: UnderPostersDetails::Genre, sort_value: false });
-    let two_lines = below_focus(UnderPosters { title: true, details: UnderPostersDetails::Genre, sort_value: false });
+    let nothing = below_focus(UnderPosters { title: false, details: UnderPostersDetails::None, show_details: UnderPostersDetails::None.for_shows(), sort_value: false });
+    let one_line = below_focus(UnderPosters { title: false, details: UnderPostersDetails::Genre, show_details: UnderPostersDetails::Genre.for_shows(), sort_value: false });
+    let two_lines = below_focus(UnderPosters { title: true, details: UnderPostersDetails::Genre, show_details: UnderPostersDetails::Genre.for_shows(), sort_value: false });
     crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.set(None));
     assert!(nothing.abs() < 0.01, "a policy showing nothing opens no band: {nothing}");
     assert!((one_line - 40.0).abs() < 0.01, "one line opens 80 - 40 px: {one_line}");
