@@ -11,9 +11,35 @@ pub struct AuNode {
     next: *mut AuNode,
     pts: i64,
     len: c_int,
+    /// `0`: not a keyframe. [`AU_KEY`]: a keyframe, which for HEVC means an IDR (NAL 19 or 20) and
+    /// for every other codec any keyframe. Any other value is the HEVC `nal_unit_type` of a non-IDR
+    /// IRAP (16, 17, 18, 21, 22, 23: a BLA or a CRA), which [`hevc_irap_not_idr`] reads back. Every
+    /// reader that only asks "is this a keyframe" tests `key != 0`; the one that asks which kind is
+    /// the player's Dolby Vision landing guard (`player::dv_start`), because a firmware's Dolby
+    /// Vision splitter may take only an IDR as the first picture after a seek.
     key: c_int,
     es: c_int,
     // flexible array `data[]` follows immediately after `es` (see node_data)
+}
+
+/// The [`AuNode::key`] of a keyframe that is not a non-IDR HEVC IRAP: an HEVC IDR, or a keyframe of
+/// any other codec.
+pub const AU_KEY: c_int = 1;
+
+/// The HEVC `nal_unit_type` a [`AuNode::key`] carries when the access unit opens on a non-IDR IRAP
+/// (a BLA, 16 to 18, or a CRA, 21; 22 and 23 are reserved IRAP types and are treated the same), else
+/// `None`: not a keyframe, an IDR, or a keyframe of another codec.
+pub fn hevc_irap_not_idr(key: c_int) -> Option<u8> {
+    match key {
+        16..=18 | 21..=23 => Some(key as u8),
+        _ => None,
+    }
+}
+
+/// How a [`hevc_irap_not_idr`] type reads in the event log: `CRA(21)`, `BLA(16)`, `reserved IRAP(22)`.
+pub fn hevc_irap_label(nal: u8) -> String {
+    let kind = if nal == 21 { "CRA" } else if (16..=18).contains(&nal) { "BLA" } else { "reserved IRAP" };
+    format!("{kind}({nal})")
 }
 
 #[repr(C)]

@@ -84,6 +84,7 @@
 //! The paragraph is never shortened to make translated actions fit.
 
 use crate::consts::SAFE;
+use crate::containers::modal::SURFACE_TEXT_HOLD_MAX_MS;
 use crate::hstack::{Align as StackAlign, HStack, Item as HItem};
 use crate::icons::{self, Icon};
 use crate::vstack::{Anchor, VSpan, VStack};
@@ -158,6 +159,9 @@ pub fn draw_back_crumb(p: Painter, band: Rect, back_to: &str, measure: &dyn Meas
 }
 
 const PUSH_K: f32 = 200.0;
+/// The narrative column's cross-fade runs on the appear token (`popover::K_APPEAR`, 300): a fade is
+/// not a journey, and it settles before the list that travels (design note m2/sv2-n7).
+const FADE_K: f32 = crate::popover::K_APPEAR;
 const PARENT_TRAVEL: f32 = 0.35;
 const CHILD_LEAD: f32 = 0.22;
 
@@ -192,6 +196,61 @@ pub struct RouteGround {
 /// where it was noticed — every route in this family drew it). On a WRAPPED title it is also the
 /// pitch between the two lines, and the same argument applies there: display type sets tight.
 const TITLE_LEADING: f32 = theme::size::HERO as f32 * 1.05;
+
+/// The picture slot's top (the board: y 440): a one-line title, [`crate::follow_copy::FOLLOW_LINES`]
+/// lines of sentence under it, and the air a picture wants.
+pub const PICTURE_TOP: f32 = 440.0;
+
+/// **The Settings page title rung** (Settings v2, `Sv2-6-Spec`: "48 bold on every Settings page"):
+/// the design system's `--size-display`. Read by [`TitleStyle::Page`] only, which the pages moved
+/// to the v2 board use ([`RouteLayout::settings_page`]); every other route keeps
+/// [`TitleStyle::Hero`] until its stage (first-run consent, the Privacy & data documents' readers).
+pub const PAGE_TITLE_SIZE: std::os::raw::c_int = theme::size::DISPLAY;
+const PAGE_TITLE_LEADING: f32 = PAGE_TITLE_SIZE as f32 * 1.05;
+/// The Page title's letter-spacing, the board's `-.02em`.
+const PAGE_TITLE_TRACKING_EM: f32 = -0.02;
+
+/// **How a route's narrative title sets**, chosen once on the [`RouteLayout`] so tabs, rows,
+/// focus and paint all read the same flow.
+///
+/// * [`Hero`](Self::Hero) is every route's own title: `--size-hero` (72), with a crumb PUSHING
+///   the title down by its band (first-run consent, sign-in, filmography, Legal, the library
+///   editors).
+/// * [`Page`](Self::Page) is the Settings pages moved to the v2 board so far (see
+///   [`RouteLayout::settings_page`]): `--size-display` (48), the title on the column's guide with
+///   the crumb hanging ABOVE it, so a nested page's title is at the root's y.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum TitleStyle {
+    #[default]
+    Hero,
+    Page,
+}
+
+impl TitleStyle {
+    /// The title's rung.
+    pub const fn size(self) -> std::os::raw::c_int {
+        match self {
+            Self::Hero => theme::size::HERO,
+            Self::Page => PAGE_TITLE_SIZE,
+        }
+    }
+
+    /// The title's line pitch: 1.05 of its rung, the design system's number for display type.
+    pub const fn leading(self) -> f32 {
+        match self {
+            Self::Hero => TITLE_LEADING,
+            Self::Page => PAGE_TITLE_LEADING,
+        }
+    }
+
+    /// The title's letter-spacing in px: the Page title's board tracking (`-.02em`), none for Hero.
+    pub const fn tracking(self) -> f32 {
+        match self {
+            Self::Hero => 0.0,
+            Self::Page => PAGE_TITLE_TRACKING_EM * PAGE_TITLE_SIZE as f32,
+        }
+    }
+}
 
 impl RouteGround {
     pub const fn new() -> Self {
@@ -339,12 +398,105 @@ const SURFACE_APP_RGB: [f32; 3] = [
 /// Reversing `open` produces the exact inverse spring, so BACK never invents a second motion.
 pub struct RoutePush {
     progress: Spring,
+    /// The narrative column's cross-fade, toward the same endpoint as `progress` but on
+    /// [`FADE_K`]. It moves nothing: a page that holds its narrative column
+    /// ([`PushFrame::narrative`]) fades its content with this and keeps its frame still.
+    fade: Spring,
+    /// A push waiting at its start for the destination's text ([`RoutePush::begin_warm`]).
+    warm: Option<Warm>,
+}
+
+/// **A push's pre-roll**: the springs wait at 0 while the incoming page's strings are rasterised
+/// off-screen, so the push's first drawn frame finds them resident.
+///
+/// A push commits at once: the destination is mounted and owns input before the spring moves, so
+/// its strings were first rasterised in the first frame the page was drawn. On the television a
+/// cold page (Video & playback, Language) cost that one frame 28-30 ms (`textx33:18.2`). The route
+/// dip never had the problem: its OUT half walks the staged destination through the text recorder
+/// and drains the queue under a budget (`Transition::prewarms_text`). This is the same walk for the
+/// surface's own spring.
+///
+/// The wait costs a warm page nothing. The frame the push is requested on is the probe: it draws
+/// the parent alone while the surface walks the destination ([`Screen::draw_warm`]), and the springs
+/// step on the next frame with the probe's `dt` added, so the push is exactly where it would have
+/// been without the wait. If that walk queued strings, the springs hold until the iteration's
+/// latched readiness ([`plx_gfx::text::surface_text_pending`]) says they are resident, for at most
+/// [`SURFACE_TEXT_HOLD_MAX_MS`], and then start from rest.
+#[derive(Clone, Copy, Debug)]
+struct Warm {
+    /// The destination has been walked at least once since the wait began.
+    walked: bool,
+    /// Frame time spent waiting, against the bound.
+    waited_ms: f32,
+    /// The probe frame's own `dt`, repaid to the springs when the wait ends the frame after it.
+    owed_us: u32,
+}
+
+/// **Which end of a push a page is on.**
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PushRole {
+    /// The page being left (a push) or returned to (a pop): exits left while fading.
+    Parent,
+    /// The page being entered (a push) or retired (a pop): leads in from the right while appearing.
+    Child,
+}
+
+/// **What a page is told about the push it is drawn under** (`DrawFrame::push`).
+///
+/// A page that does NOT hold its narrative column is drawn whole through [`RoutePush::parent`] /
+/// [`RoutePush::child`]'s painter, as it always was, and its frame carries no `PushFrame`. A page
+/// that does (the Settings v2 anatomy: title, crumb, sentence, picture and action band on the
+/// left, the table on the right) is drawn at the plain entrance painter with this frame, and its
+/// two columns take it separately:
+///
+/// - [`list`](Self::list) — the table: the child leads in from `.22 x screen-w`, the parent travels
+///   `.35 x screen-w` left, both fading, on the push spring (`PUSH_K`);
+/// - [`narrative`](Self::narrative) — the narrative column: its FRAME never moves, its content
+///   cross-fades (parent out, child in) on the appear token.
+///
+/// Pure arithmetic over the two spring positions, so every frame of a push is testable without a
+/// GL context.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct PushFrame {
+    pub role: PushRole,
+    /// The push spring's position, `0..=1`.
+    pub list: f32,
+    /// The narrative cross-fade's position, `0..=1`.
+    pub fade: f32,
+}
+
+impl PushFrame {
+    /// The table's painter: translate and alpha, from the push spring.
+    pub fn list(self, p: Painter) -> Painter {
+        let t = self.list.clamp(0.0, 1.0);
+        match self.role {
+            PushRole::Parent => p.alpha(1.0 - t).translate(-PARENT_TRAVEL * Rect::FULL.w * t, 0.0),
+            PushRole::Child => p.alpha(t).translate(CHILD_LEAD * Rect::FULL.w * (1.0 - t), 0.0),
+        }
+    }
+
+    /// The narrative column's painter: alpha only, from the fade spring. The column is where it
+    /// was before the push and where it will be after it.
+    pub fn narrative(self, p: Painter) -> Painter {
+        p.alpha(self.narrative_alpha())
+    }
+
+    /// The narrative content's alpha: `1 - fade` for the page leaving, `fade` for the page entering.
+    pub fn narrative_alpha(self) -> f32 {
+        let f = self.fade.clamp(0.0, 1.0);
+        match self.role {
+            PushRole::Parent => 1.0 - f,
+            PushRole::Child => f,
+        }
+    }
 }
 
 impl RoutePush {
     pub const fn new() -> Self {
         Self {
             progress: Spring::at(0.0),
+            fade: Spring::at(0.0),
+            warm: None,
         }
     }
 
@@ -353,26 +505,62 @@ impl RoutePush {
     pub const fn at(t: f32) -> Self {
         Self {
             progress: Spring::at(t),
+            fade: Spring::at(t),
+            warm: None,
         }
     }
 
     pub fn jump(&mut self, open: bool) {
-        self.progress.jump(if open { 1.0 } else { 0.0 });
+        let to = if open { 1.0 } else { 0.0 };
+        self.progress.jump(to);
+        self.fade.jump(to);
+        // a jump names a new journey: a wait for the old one's destination ends with it
+        self.warm = None;
+    }
+
+    /// **Hold a push at its start until the incoming page's text is resident** (see [`Warm`]).
+    /// Called after [`jump`](Self::jump)`(false)` on a push; a pop never waits, since the page it
+    /// returns to has been drawn. The surface answers [`warming`](Self::warming) by walking the
+    /// destination and says so with [`walked`](Self::walked).
+    pub fn begin_warm(&mut self) {
+        self.warm = Some(Warm { walked: false, waited_ms: 0.0, owed_us: 0 });
+    }
+
+    /// Is the push waiting for its destination's text? Then the surface walks the incoming page
+    /// through the recorder this frame ([`Screen::draw_warm`]).
+    pub fn warming(&self) -> bool {
+        self.warm.is_some()
+    }
+
+    /// The surface walked the destination this frame. The wait ends no earlier than the next one,
+    /// when the iteration's latch has seen what the walk queued.
+    pub fn walked(&mut self) {
+        if let Some(w) = self.warm.as_mut() {
+            w.walked = true;
+        }
     }
 
     pub fn update(&mut self, open: bool, dt: f32) {
-        self.progress.step(if open { 1.0 } else { 0.0 }, PUSH_K, dt);
+        let to = if open { 1.0 } else { 0.0 };
+        self.progress.step(to, PUSH_K, dt);
+        self.fade.step(to, FADE_K, dt);
     }
 
     pub fn amount(&self) -> f32 {
         self.progress.pos.clamp(0.0, 1.0)
     }
 
-    /// **At rest at `open`'s endpoint** — position AND velocity, the integrator's own stop rule.
-    /// Stricter than [`settled`](Self::settled), which is the pointer's positional guard.
+    /// The narrative cross-fade's position (see [`PushFrame::fade`]).
+    pub fn fade_amount(&self) -> f32 {
+        self.fade.pos.clamp(0.0, 1.0)
+    }
+
+    /// **At rest at `open`'s endpoint** — position AND velocity of both springs, the integrator's
+    /// own stop rule. Stricter than [`settled`](Self::settled), which is the pointer's positional guard.
     pub fn resting(&self, open: bool) -> bool {
         let target = if open { 1.0 } else { 0.0 };
-        (self.progress.pos - target).abs() < 0.001 && self.progress.vel.abs() < 0.02
+        let at = |s: &Spring| (s.pos - target).abs() < 0.001 && s.vel.abs() < 0.02;
+        at(&self.progress) && at(&self.fade)
     }
 
     /// Advance toward `open` on the frame clock, reporting motion to the present gate, and snap
@@ -386,6 +574,7 @@ impl RoutePush {
         if self.resting(open) {
             return;
         }
+        let Some(t) = self.wait_for_text(t, present) else { return };
         let target = if open { 1.0 } else { 0.0 };
         plx_machine::motion::spring(
             &mut self.progress.pos,
@@ -395,13 +584,49 @@ impl RoutePush {
             t,
             present,
         );
+        plx_machine::motion::spring(
+            &mut self.fade.pos,
+            &mut self.fade.vel,
+            target,
+            FADE_K,
+            t,
+            present,
+        );
         if self.resting(open) {
             self.progress.pos = target;
             self.progress.vel = 0.0;
+            self.fade.pos = target;
+            self.fade.vel = 0.0;
         }
     }
 
-    /// Seed this push's spring — position AND velocity, not just [`amount`](Self::amount)'s
+    /// One frame of the pre-roll ([`Warm`]). `None`: still waiting, the springs stay put and the
+    /// next frame is requested. `Some(t)`: step the springs with `t`, which carries the probe
+    /// frame's `dt` when the wait lasted only that frame (and was not spent).
+    fn wait_for_text(
+        &mut self,
+        t: plx_machine::machine::Tick,
+        present: &mut plx_machine::machine::PresentHandle<'_>,
+    ) -> Option<plx_machine::machine::Tick> {
+        let Some(w) = self.warm.as_mut() else { return Some(t) };
+        w.waited_ms += t.dt() * 1000.0;
+        let spent = w.waited_ms >= SURFACE_TEXT_HOLD_MAX_MS;
+        if !spent && !w.walked {
+            // the probe: nothing has been walked yet, so nothing is known to be pending
+            w.owed_us = w.owed_us.saturating_add(t.dt_us);
+        } else if !spent && plx_gfx::text::surface_text_pending() {
+            // still rasterising: the wait is dead time, not part of the motion
+            w.owed_us = 0;
+        } else {
+            let owed = if spent { 0 } else { w.owed_us };
+            self.warm = None;
+            return Some(plx_machine::machine::Tick { ms: t.ms, dt_us: t.dt_us.saturating_add(owed) });
+        }
+        present.note(plx_machine::present::PresentEvent::Motion);
+        None
+    }
+
+    /// Seed this push's springs — position AND velocity, not just [`amount`](Self::amount)'s
     /// clamped read-out — from ANOTHER push's current state. For a screen that gets its OWN
     /// dedicated `RoutePush` split out of a shared one so a sibling's fade cannot bleed into it
     /// (`settings::HOME_PUSH` off `settings::CHILD`, 2026-09-04), a caller that starts the new
@@ -420,6 +645,7 @@ impl RoutePush {
     /// away from rest: when `other` already IS at rest the copy is a harmless no-op.
     pub fn sync_to(&mut self, other: &RoutePush) {
         self.progress = other.progress;
+        self.fade = other.fade;
     }
 
     /// **Is the push parked at the endpoint `open` names?** Rule 11's timing guard.
@@ -440,16 +666,19 @@ impl RoutePush {
         }
     }
 
-    pub fn parent(&self, p: Painter) -> Painter {
-        let t = self.amount();
-        p.alpha(1.0 - t)
-            .translate(-PARENT_TRAVEL * Rect::FULL.w * t, 0.0)
+    /// This frame's [`PushFrame`] for `role`.
+    pub fn frame(&self, role: PushRole) -> PushFrame {
+        PushFrame { role, list: self.amount(), fade: self.fade_amount() }
     }
 
+    /// The whole page in the parent role (a page that does not hold its narrative column).
+    pub fn parent(&self, p: Painter) -> Painter {
+        self.frame(PushRole::Parent).list(p)
+    }
+
+    /// The whole page in the child role (a page that does not hold its narrative column).
     pub fn child(&self, p: Painter) -> Painter {
-        let t = self.amount();
-        p.alpha(t)
-            .translate(CHILD_LEAD * Rect::FULL.w * (1.0 - t), 0.0)
+        self.frame(PushRole::Child).list(p)
     }
 }
 
@@ -771,6 +1000,9 @@ pub struct RouteLayout {
     pub narrative: Rect,
     pub content: Rect,
     pub action: Rect,
+    /// How the narrative title sets ([`TitleStyle`]); [`Self::screen`] and its siblings return
+    /// [`TitleStyle::Hero`], [`Self::settings_page`] / [`Self::page_titled`] opt in to the Page.
+    pub title_style: TitleStyle,
 }
 
 impl RouteLayout {
@@ -802,7 +1034,24 @@ impl RouteLayout {
             narrative,
             content,
             action,
+            title_style: TitleStyle::Hero,
         }
+    }
+
+    /// The same columns with the narrative title set as a Settings page's ([`TitleStyle::Page`]):
+    /// 48 bold on the guide, a crumb hanging above it. The one switch; a Settings-family route
+    /// builds its layout with [`Self::settings_page`].
+    pub fn page_titled(self) -> Self {
+        Self { title_style: TitleStyle::Page, ..self }
+    }
+
+    /// The layout of the Settings pages moved to the v2 board so far: [`Self::screen`] with
+    /// [`TitleStyle::Page`] (the root, Language, the preferences and pickers, Under posters,
+    /// Diagnostics, Privacy & data, the Legal index and its documents, About, HUD settings). The
+    /// Favorite libraries onboarding, first-run consent, the Privacy & data document readers and
+    /// the Language page's Contribute page still use [`Self::screen`] (Hero).
+    pub fn settings_page() -> Self {
+        Self::screen().page_titled()
     }
 
     /// Allocate enough narrative width for an unbreakable title word at HERO size, while
@@ -881,7 +1130,8 @@ impl RouteLayout {
     ///
     /// `has_crumb` for the same reason [`Self::narrative_top`] takes it: the title anchor moves by
     /// exactly the crumb's band, and a document on a crumbless route must follow it up rather than
-    /// leaving a gap nothing explains.
+    /// leaving a gap nothing explains. On a [`TitleStyle::Page`] layout the crumb hangs ABOVE the
+    /// title, so the two anchors are one y and `has_crumb` changes nothing.
     pub fn document(self, has_crumb: bool) -> Rect {
         let top = self.narrative_top(has_crumb);
         Rect::new(
@@ -965,7 +1215,22 @@ impl RouteLayout {
     /// [`CRUMB_RISE`] below the column's top), and the copy [`theme::space::MD`] under the title.
     /// `title_h` is the title's measured height (the title's own top does not depend on it).
     /// [`Self::draw_narrative`] and [`Self::narrative_copy_frame`] both read these spans.
+    ///
+    /// A [`TitleStyle::Page`] layout stands the title on the column's guide whether or not a crumb
+    /// precedes it and hangs the crumb ABOVE the guide ([`CRUMB_RISE`] over it), so a nested
+    /// Settings page's title is at the root's y.
     fn narrative_flow(self, has_crumb: bool, title_h: f32) -> NarrativeFlow {
+        if self.title_style == TitleStyle::Page {
+            let items = [HItem::new(title_h), HItem::new(0.0)];
+            let stack = VStack::new(&items, theme::space::MD, Anchor::Top(self.narrative.y));
+            let mut spans = stack.placed();
+            let (Some(title), Some(copy)) = (spans.next(), spans.next()) else {
+                unreachable!("the title and the copy anchor are always present")
+            };
+            let crumb_y = self.narrative.y - CRUMB_RISE;
+            let crumb = has_crumb.then_some(VSpan { i: 0, y: crumb_y, h: CRUMB_BAND, box_y: crumb_y });
+            return NarrativeFlow { crumb, title, copy_top: copy.y };
+        }
         let items = [
             if has_crumb { HItem::new(CRUMB_BAND) } else { HItem::absent() },
             HItem::new(title_h).before(theme::space::SM),
@@ -984,18 +1249,28 @@ impl RouteLayout {
     /// A scrolling disclosure uses exactly the same title flow as an ordinary route header.
     pub fn narrative_copy_frame(self, has_crumb: bool, title: &str,
         actions_top: f32, measure: &dyn Measure) -> Rect {
-        let title_h = Self::narrative_title(title).with_measure(measure).measure_h(self.narrative.w);
+        let title_h = self.title_view(title).with_measure(measure).measure_h(self.narrative.w);
         let top = self.narrative_flow(has_crumb, title_h).copy_top;
         Rect::new(self.narrative.x, top, self.narrative.w,
             (actions_top - theme::space::MD - top).max(0.0))
+    }
+
+    /// **The picture slot** (Settings v2): the narrative column's display-only picture, 660 wide
+    /// at [`PICTURE_TOP`] and as tall as the safe area leaves (the board's 586). It does not move
+    /// with the title or the sentence: a followed sentence takes at most
+    /// [`crate::follow_copy::FOLLOW_LINES`] lines and ends above it.
+    pub fn picture_slot(self) -> Rect {
+        let top = PICTURE_TOP.max(self.narrative.y);
+        Rect::new(self.narrative.x, top, self.narrative.w, (self.narrative.y + self.narrative.h - top).max(0.0))
     }
 
     fn draw_crumb(self, p: Painter, top: f32, back_to: &str, measure: &dyn Measure) {
         draw_back_crumb(p, Rect::new(self.narrative.x, top, self.narrative.w, CRUMB_BAND), back_to, measure);
     }
 
-    /// **The narrative title, as the view [`draw_narrative`] actually draws** — its rung, its
-    /// weight, its wrap and its [`TITLE_LEADING`] line pitch, in one place a host test can call.
+    /// **The HERO narrative title** — its rung, its weight, its wrap and its [`TITLE_LEADING`]
+    /// line pitch, in one place a host test can call. It is the layout-free view first-run consent
+    /// grades; a LAYOUT draws [`Self::title_view`], which follows its [`TitleStyle`].
     ///
     /// It is split out for exactly that reason and the reason is a lesson: the first test for the
     /// leading correction asserted `TITLE_LEADING == HERO * 1.05` and nothing else, so deleting
@@ -1004,10 +1279,43 @@ impl RouteLayout {
     /// constant grades the constant. Building the view here lets it grade the thing that is drawn.
     /// App-owned titles and questions wrap completely; following content uses their measured height.
     pub fn narrative_title(title: &str) -> TextView<'_> {
-        TextView::new(title, theme::size::HERO, theme::TEXT_HEADING)
+        Self::styled_title(title, TitleStyle::Hero)
+    }
+
+    /// [`Self::narrative_title`] for THIS layout's [`TitleStyle`]: what [`Self::draw_narrative`]
+    /// and [`Self::narrative_copy_frame`] draw and measure.
+    pub fn title_view(self, title: &str) -> TextView<'_> {
+        Self::styled_title(title, self.title_style)
+    }
+
+    fn styled_title(title: &str, style: TitleStyle) -> TextView<'_> {
+        TextView::new(title, style.size(), theme::TEXT_HEADING)
             .bold()
             .break_long_words()
-            .leading(TITLE_LEADING)
+            .leading(style.leading())
+            .tracking(style.tracking())
+    }
+
+    /// **Where a Page layout sets its title's glyphs inside the title's box.** `TextView` anchors
+    /// the CAP TOP on the y it is given; a Settings board specifies the title as a CSS box (`top`
+    /// 142, `line-height` 1.05), which sets the cap top the half-leading plus the ascent above it
+    /// below the box top ([`plx_gfx::text::css_cap_drop`], 7 px at 48/1.05). Hero titles are
+    /// cap-anchored, as they always were: no drop.
+    pub fn title_cap_drop(self, measure: &dyn Measure) -> f32 {
+        self.cap_drop(self.title_style.size(), self.title_style.leading(), measure)
+    }
+
+    /// The same for the copy under the title (`size`, [`theme::space::XS`] over it as the pitch,
+    /// the board's `26/34`): a Page layout's sentence sits where the board's CSS box puts it.
+    pub fn copy_cap_drop(self, size: std::os::raw::c_int, measure: &dyn Measure) -> f32 {
+        self.cap_drop(size, size as f32 + theme::space::XS, measure)
+    }
+
+    fn cap_drop(self, size: std::os::raw::c_int, leading: f32, measure: &dyn Measure) -> f32 {
+        match self.title_style {
+            TitleStyle::Hero => 0.0,
+            TitleStyle::Page => plx_gfx::text::css_cap_drop(size, leading, measure.cap_h(size)),
+        }
     }
 
     /// Draw a measured crumb→title→copy flow.  Each block begins after the previous one's actual
@@ -1037,15 +1345,15 @@ impl RouteLayout {
     #[allow(clippy::too_many_arguments)]
     pub fn draw_narrative_pending(self, p: Painter, back_to: Option<&str>, title: &str, copy: &str,
         copy_size: std::os::raw::c_int, measure: &dyn Measure, pending: Option<&str>) -> f32 {
-        let title = Self::narrative_title(title);
+        let title = self.title_view(title);
         let title_h = title.measure_h(self.narrative.w);
         let flow = self.narrative_flow(back_to.is_some(), title_h);
         if let (Some(back_to), Some(crumb)) = (back_to, flow.crumb) {
             self.draw_crumb(p, crumb.y, back_to, measure);
         }
-        title.draw(p, Rect::new(self.narrative.x, flow.title.y, self.narrative.w, flow.title.h));
+        title.draw(p, Rect::new(self.narrative.x, flow.title.y + self.title_cap_drop(measure), self.narrative.w, flow.title.h));
 
-        let copy_top = flow.copy_top;
+        let copy_top = flow.copy_top + self.copy_cap_drop(copy_size, measure);
         let copy_bottom = self.action.y - theme::space::XL;
         let (copy_p, copy_ink) = pending.map_or((p, theme::TEXT_READING), |key|
             crate::placeholder::ink(p, crate::placeholder::Reason::WorkingReadout, key, theme::TEXT_READING));
@@ -1857,5 +2165,320 @@ mod tests {
         assert!(bare.crumb.is_none());
         assert!((bare.title.y - l.narrative.y).abs() < 0.01);
         assert!((bare.copy_top - (l.narrative.y + 90.0 + theme::space::MD)).abs() < 0.01);
+    }
+    /// The Hero title (every route that is not a Settings page) keeps its 72 px rung and its
+    /// crumb pushing the title down; the Page title (a Settings page) is 48 on the guide with the
+    /// crumb above it. One switch, [`RouteLayout::page_titled`]; `screen()` never sets it.
+    #[test]
+    fn a_route_sets_the_hero_title_and_a_settings_page_sets_the_page_title() {
+        let hero = RouteLayout::screen();
+        let page = RouteLayout::settings_page();
+        assert_eq!(hero.title_style, TitleStyle::Hero);
+        assert_eq!(page.title_style, TitleStyle::Page);
+        assert_eq!((hero.narrative, hero.content, hero.action), (page.narrative, page.content, page.action));
+        assert_eq!(TitleStyle::Hero.size(), theme::size::HERO);
+        assert_eq!(TitleStyle::Page.size(), theme::size::DISPLAY);
+        assert_eq!(TitleStyle::Page.size(), 48);
+        assert!((hero.title_view("Settings").line_h() - theme::size::HERO as f32 * 1.05).abs() < 0.01);
+        assert!((page.title_view("Settings").line_h() - theme::size::DISPLAY as f32 * 1.05).abs() < 0.01);
+        // `narrative_title` (the layout-free view consent grades) stays the Hero one
+        assert_eq!(RouteLayout::narrative_title("Settings").line_h(), hero.title_view("Settings").line_h());
+    }
+
+    /// Hero: a crumb pushes the title down by its band plus one rung. Page: the crumb hangs above
+    /// the guide, the title stays at the root's y, and the copy moves with neither.
+    #[test]
+    fn a_crumb_pushes_a_hero_title_and_hangs_above_a_page_title() {
+        let hero = RouteLayout::screen();
+        assert_eq!(hero.narrative_top(true) - hero.narrative_top(false), CRUMB_RISE);
+        let crumb = hero.narrative_flow(true, 90.0).crumb.expect("crumb");
+        assert_eq!(crumb.y, hero.narrative.y);
+
+        let page = RouteLayout::settings_page();
+        assert_eq!(page.narrative_top(false), page.narrative.y);
+        assert_eq!(page.narrative_top(true), page.narrative_top(false), "a crumb costs a Page title no room");
+        let crumb = page.narrative_flow(true, 50.0).crumb.expect("crumb");
+        assert_eq!(crumb.y + CRUMB_RISE, page.narrative.y, "the band and one rung of air end on the guide");
+        assert!(crumb.y >= SAFE.y, "…and the band stays inside the safe area");
+        assert_eq!(page.narrative_flow(true, 50.0).copy_top, page.narrative_flow(false, 50.0).copy_top);
+        assert!((page.narrative_flow(false, 50.0).copy_top - (page.narrative.y + 50.0 + theme::space::MD)).abs() < 0.01);
+        assert!(page.document(true).y >= page.narrative.y);
+    }
+
+    /// A Page title is the board's CSS box: tracked `-.02em` and set its half-leading plus ascent
+    /// under the box top; a Hero title is tracked by nothing and cap-anchored on the box top.
+    #[test]
+    fn a_page_title_is_tracked_and_dropped_into_its_css_box_and_a_hero_title_is_neither() {
+        struct M;
+        impl Measure for M {
+            fn width(&self, text: &std::ffi::CStr, size: i32, _bold: bool) -> f32 {
+                text.to_string_lossy().chars().count() as f32 * size as f32 * 0.6
+            }
+            fn cap_h(&self, size: i32) -> f32 { size as f32 * 0.727 }
+            fn line_h(&self, size: i32) -> f32 { size as f32 * 1.2 }
+        }
+        assert_eq!(TitleStyle::Hero.tracking(), 0.0);
+        assert!((TitleStyle::Page.tracking() - (-0.96)).abs() < 1e-4);
+        let (hero, page) = (RouteLayout::screen(), RouteLayout::settings_page());
+        assert_eq!(hero.title_cap_drop(&M), 0.0);
+        assert_eq!(hero.copy_cap_drop(theme::size::LABEL, &M), 0.0);
+        assert!((page.title_cap_drop(&M) - 7.1).abs() < 0.2, "{}", page.title_cap_drop(&M));
+        assert!((page.copy_cap_drop(theme::size::LABEL, &M) - 7.1).abs() < 0.2, "{}", page.copy_cap_drop(theme::size::LABEL, &M));
+    }
+
+    /// The picture slot is the board's: 660 wide at y 440, ending on the safe area's floor, under
+    /// the five lines a followed sentence may take below a one-line Page title.
+    #[test]
+    fn the_picture_slot_clears_five_sentence_lines_under_a_one_line_page_title() {
+        let l = RouteLayout::settings_page();
+        let slot = l.picture_slot();
+        assert_eq!((slot.x, slot.y, slot.w), (l.narrative.x, 440.0, 660.0));
+        assert!(slot.h <= 586.0 + 0.5 && (slot.y + slot.h - (SAFE.y + SAFE.h)).abs() < 0.01);
+        let title_h = l.title_view("Settings").line_h();
+        let lines = crate::follow_copy::FOLLOW_LINES as f32 * (theme::size::LABEL as f32 + theme::space::XS);
+        assert!(l.narrative_flow(false, title_h).copy_top + lines <= slot.y, "five lines end above the slot");
+    }
+
+    // ---- the held-narrative push (Settings v2 motion) ------------------------------------------
+
+    /// One frame of `push` driven toward `open` at 60 fps, returning `(list, fade)`.
+    fn push_trace(open: bool, from: f32, frames: usize) -> Vec<(f32, f32)> {
+        let mut push = RoutePush::at(from);
+        let mut out = vec![(push.amount(), push.fade_amount())];
+        for _ in 0..frames {
+            push.update(open, 1.0 / 60.0);
+            out.push((push.amount(), push.fade_amount()));
+        }
+        out
+    }
+
+    fn at(role: PushRole, list: f32, fade: f32) -> PushFrame {
+        PushFrame { role, list, fade }
+    }
+
+    /// **The narrative column's frame is constant across a whole push, both roles**: whatever the
+    /// spring does, the narrative painter carries no translate, and only its alpha moves.
+    #[test]
+    fn the_narrative_frame_never_moves_through_a_push() {
+        for (list, fade) in push_trace(true, 0.0, 90) {
+            for role in [PushRole::Parent, PushRole::Child] {
+                let p = at(role, list, fade).narrative(Painter::root());
+                assert_eq!((p.dx(), p.dy()), (0.0, 0.0), "{role:?} at list {list}");
+            }
+        }
+    }
+
+    /// **The two columns' content cross-fades**: at every frame the leaving page's narrative alpha
+    /// and the entering page's sum to exactly 1, from `(1, 0)` at the start to `(0, 1)` at rest.
+    #[test]
+    fn the_narrative_cross_fade_sums_to_one_and_runs_from_parent_to_child() {
+        let trace = push_trace(true, 0.0, 120);
+        for &(list, fade) in &trace {
+            let (parent, child) = (at(PushRole::Parent, list, fade), at(PushRole::Child, list, fade));
+            assert!((parent.narrative_alpha() + child.narrative_alpha() - 1.0).abs() < 1e-6);
+        }
+        let (list, fade) = trace[0];
+        assert_eq!(at(PushRole::Parent, list, fade).narrative_alpha(), 1.0);
+        assert_eq!(at(PushRole::Child, list, fade).narrative_alpha(), 0.0);
+        let (list, fade) = *trace.last().unwrap();
+        assert!(at(PushRole::Parent, list, fade).narrative_alpha() < 1e-3);
+        assert!(at(PushRole::Child, list, fade).narrative_alpha() > 1.0 - 1e-3);
+    }
+
+    /// **The cross-fade is on the appear token (300) and the list on the push token (200)**: the
+    /// fade is ahead of the list at every frame of the flight, and both land.
+    #[test]
+    fn the_fade_rides_the_appear_spring_and_leads_the_list_on_the_push_spring() {
+        let mut fade = Spring::at(0.0);
+        let mut list = Spring::at(0.0);
+        let trace = push_trace(true, 0.0, 90);
+        for (i, &(l, f)) in trace.iter().enumerate().skip(1) {
+            fade.step(1.0, crate::popover::K_APPEAR, 1.0 / 60.0);
+            list.step(1.0, 200.0, 1.0 / 60.0);
+            assert_eq!(f, fade.pos.clamp(0.0, 1.0), "frame {i}: the fade is the K_APPEAR spring");
+            assert_eq!(l, list.pos.clamp(0.0, 1.0), "frame {i}: the list is the k 200 spring");
+            if l < 0.999 {
+                assert!(f >= l, "frame {i}: fade {f} behind list {l}");
+            }
+        }
+        let (l, f) = *trace.last().unwrap();
+        assert!((l - 1.0).abs() < 1e-3 && (f - 1.0).abs() < 1e-3);
+    }
+
+    /// **The list endpoints are the board's**: the child leads in from `.22 x screen-w` and the
+    /// parent leaves `.35 x screen-w` to the left, each fading, and both rest where the page does.
+    #[test]
+    fn the_list_travels_to_the_board_endpoints() {
+        let w = Rect::FULL.w;
+        let root = Painter::root();
+        let child_start = at(PushRole::Child, 0.0, 0.0).list(root);
+        assert_eq!((child_start.dx(), child_start.opacity()), (0.22 * w, 0.0));
+        let child_end = at(PushRole::Child, 1.0, 1.0).list(root);
+        assert_eq!((child_end.dx(), child_end.opacity()), (0.0, 1.0));
+        let parent_start = at(PushRole::Parent, 0.0, 0.0).list(root);
+        assert_eq!((parent_start.dx(), parent_start.opacity()), (0.0, 1.0));
+        let parent_end = at(PushRole::Parent, 1.0, 1.0).list(root);
+        assert_eq!((parent_end.dx(), parent_end.opacity()), (-0.35 * w, 0.0));
+        let mid = at(PushRole::Parent, 0.5, 0.5).list(root);
+        assert_eq!((mid.dx(), mid.opacity()), (-0.175 * w, 0.5));
+    }
+
+    /// **Back is the exact reverse**: the springs are symmetric, so frame `i` of a pop is `1 - ` frame
+    /// `i` of the push, for the list and for the fade, and the roles' formulas are the same ones.
+    #[test]
+    fn a_pop_reverses_the_push_frame_for_frame() {
+        let forward = push_trace(true, 0.0, 90);
+        let back = push_trace(false, 1.0, 90);
+        for (i, (f, b)) in forward.iter().zip(&back).enumerate() {
+            assert!((f.0 - (1.0 - b.0)).abs() < 1e-5, "frame {i}: list {f:?} vs {b:?}");
+            assert!((f.1 - (1.0 - b.1)).abs() < 1e-5, "frame {i}: fade {f:?} vs {b:?}");
+        }
+    }
+
+    /// **A page that does not hold its column is drawn exactly as before**: `parent`/`child` are the
+    /// whole-page translate and alpha off the list spring alone, frame for frame (the golden is the
+    /// pre-change arithmetic, stepped on its own `Spring`).
+    #[test]
+    fn a_whole_page_push_is_the_pre_change_translate_and_alpha() {
+        let w = Rect::FULL.w;
+        let mut old = Spring::at(0.0);
+        let mut push = RoutePush::new();
+        let root = Painter::root();
+        for i in 0..90 {
+            old.step(1.0, 200.0, 1.0 / 60.0);
+            push.update(true, 1.0 / 60.0);
+            let t = old.pos.clamp(0.0, 1.0);
+            let (parent, child) = (push.parent(root), push.child(root));
+            assert_eq!((parent.dx(), parent.opacity()), (-0.35 * w * t, 1.0 - t), "parent, frame {i}");
+            assert_eq!((child.dx(), child.opacity()), (0.22 * w * (1.0 - t), t), "child, frame {i}");
+            assert_eq!((parent.dy(), child.dy()), (0.0, 0.0));
+        }
+    }
+
+    #[test]
+    fn a_push_rests_only_when_both_springs_have_arrived() {
+        let mut push = RoutePush::new();
+        assert!(push.resting(false));
+        push.update(true, 1.0 / 60.0);
+        assert!(!push.resting(true) && !push.resting(false));
+        for _ in 0..600 {
+            push.update(true, 1.0 / 60.0);
+        }
+        assert!(push.resting(true));
+        let mut other = RoutePush::new();
+        other.sync_to(&push);
+        assert_eq!((other.amount(), other.fade_amount()), (push.amount(), push.fade_amount()), "sync_to seeds both springs");
+        assert!(other.fade_amount() > 0.999);
+    }
+
+    // ---- the pre-roll: a push waits at 0 while its destination's text is rasterised --------------
+
+    /// One frame of `push` toward open at 16 ms, the way the surface's tick drives it. `latched`
+    /// is the iteration's text readiness; `walk` is what the surface's draw does afterwards.
+    /// Returns whether the frame asked for another.
+    fn warm_frame(push: &mut RoutePush, ms: &mut u32, latched: bool, walk: bool) -> bool {
+        let mut present = plx_machine::present::Present::new();
+        *ms += 16;
+        plx_gfx::text::latch_surface_text_pending(latched);
+        let t = plx_machine::machine::Tick { ms: *ms, dt_us: 16_000 };
+        push.tick(true, t, &mut plx_machine::machine::PresentHandle::of(&mut present));
+        if walk && push.warming() {
+            push.walked();
+        }
+        present.changed()
+    }
+
+    fn started() -> RoutePush {
+        let mut push = RoutePush::new();
+        push.jump(false);
+        push.begin_warm();
+        push
+    }
+
+    /// The same push without a wait, `frames` ticks of 16 ms in.
+    fn unwarmed(frames: u32) -> RoutePush {
+        let mut push = RoutePush::new();
+        push.jump(false);
+        let mut ms = 0;
+        for _ in 0..frames {
+            warm_frame(&mut push, &mut ms, false, false);
+        }
+        push
+    }
+
+    /// **A warm page's push is exactly where it would have been without the wait**: the request
+    /// frame is the probe (nothing is moved, the next frame is asked for), and the next frame steps
+    /// the springs by both frames' time.
+    #[test]
+    fn a_warm_pages_push_loses_no_time_to_its_probe() {
+        let _g = plx_base::testlock::serial();
+        let mut push = started();
+        let mut ms = 0;
+        assert!(warm_frame(&mut push, &mut ms, false, true), "the probe frame asks for another");
+        assert_eq!(push.amount(), 0.0, "…and moved nothing: the incoming page was walked, not shown");
+        assert!(push.warming());
+        warm_frame(&mut push, &mut ms, false, true);
+        assert!(!push.warming(), "nothing pending: the wait is over");
+        let reference = unwarmed(2);
+        assert!((push.amount() - reference.amount()).abs() < 1e-5, "{} vs {}", push.amount(), reference.amount());
+        assert!((push.fade_amount() - reference.fade_amount()).abs() < 1e-5);
+        for _ in 0..3 {
+            warm_frame(&mut push, &mut ms, false, true);
+        }
+        let reference = unwarmed(5);
+        assert!((push.amount() - reference.amount()).abs() < 1e-5, "and it stays on that curve");
+    }
+
+    /// **A cold page's push waits, motionless, while its text is pending, then starts from rest**
+    /// without crediting the wait to the spring.
+    #[test]
+    fn a_cold_pages_push_waits_for_its_text_and_starts_from_rest() {
+        let _g = plx_base::testlock::serial();
+        let mut push = started();
+        let mut ms = 0;
+        warm_frame(&mut push, &mut ms, false, true); // the probe
+        for frame in 0..3 {
+            assert!(warm_frame(&mut push, &mut ms, true, true), "wait {frame} asks for another frame");
+            assert_eq!((push.amount(), push.fade_amount()), (0.0, 0.0), "wait {frame}: still at the start");
+            assert!(push.warming());
+        }
+        warm_frame(&mut push, &mut ms, false, true);
+        assert!(!push.warming());
+        let reference = unwarmed(1);
+        assert!(push.amount() > 0.0, "it started");
+        assert!((push.amount() - reference.amount()).abs() < 1e-5, "from rest, one frame of spring: {} vs {}", push.amount(), reference.amount());
+    }
+
+    /// **The wait is bounded**: a queue that never drains, and a surface that is never drawn, each
+    /// release the push by [`SURFACE_TEXT_HOLD_MAX_MS`], and the spring then runs from rest.
+    #[test]
+    fn the_wait_is_bounded() {
+        let _g = plx_base::testlock::serial();
+        for (label, walks) in [("a queue that never drains", true), ("a surface that is never drawn", false)] {
+            let mut push = started();
+            let mut ms = 0;
+            let mut frames = 0u32;
+            while push.warming() {
+                warm_frame(&mut push, &mut ms, true, walks);
+                frames += 1;
+                assert!(frames <= (SURFACE_TEXT_HOLD_MAX_MS / 16.0).ceil() as u32 + 1, "{label}: still waiting after {frames} frames");
+            }
+            assert!(push.amount() > 0.0 && push.amount() < 0.05, "{label}: released into a spring that starts from rest ({})", push.amount());
+        }
+    }
+
+    /// **A pop never waits, and a jump ends a wait**: the page a pop returns to has been drawn, and
+    /// a new journey is not held for the old one's destination.
+    #[test]
+    fn a_pop_never_waits_and_a_jump_ends_a_wait() {
+        let mut push = started();
+        assert!(push.warming());
+        push.jump(true);
+        assert!(!push.warming(), "BACK during the wait ends it");
+        let mut push = RoutePush::new();
+        push.jump(true);
+        assert!(!push.warming(), "a pop has no wait to begin");
+        push.walked();
+        assert!(!push.warming(), "…and a walk reported to no wait begins none");
     }
 }

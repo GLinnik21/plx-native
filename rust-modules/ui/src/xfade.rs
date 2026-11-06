@@ -1,5 +1,6 @@
-//! `Xfade` — the ONE content cross-fade choreography: fade the outgoing content OUT, swap the
-//! data at the floor, fade the incoming content IN. Sibling of
+//! `Xfade` — the content cross-fade CHOREOGRAPHY for replaced data: fade the outgoing content OUT,
+//! swap the data at the floor, fade the incoming content IN. (A sentence that only changes WHICH
+//! text it shows, with nothing to wipe, fades simultaneously in [`crate::follow_copy`].) Sibling of
 //! [`Popover`](crate::popover::Popover), which owns the modal *appear*; this owns the case
 //! where a screen's CONTENT is replaced under it.
 //!

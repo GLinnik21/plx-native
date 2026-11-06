@@ -44,7 +44,7 @@ because the overlay's state shape changed on purpose.
 
 - Style follows Timing's availability: omitted while a transcode has no subtitle on (nothing to
   style); once the server draws the selected subtitle (`route::subtitle_presenter` = `ServerBurn`) both
-  stay, dim and inert, with a reason under Style: "Drawn by your server while it converts the audio."
+  stay, disabled, with a reason under Style: "Drawn by your server while it converts the audio."
   (`BurnReason::AudioConversion`: an embedded track on a remux the app cannot read beside the stream —
   a relay or remote link, an unmeasured or over-30 Mbit/s Part, a failed reader — the app's own enhanced
   burn, or the plain Original-quality burn) or "Drawn by your server at this quality." (a burn outside that family, e.g. a
@@ -53,11 +53,13 @@ because the overlay's state shape changed on purpose.
   So is an embedded track on a local-link remux of a Part of at most 30 Mbit/s: the side reader
   (`player::subside`) reads the track from the film's own Part beside the stream, and a pick, a switch
   or Off changes nothing about the stream itself.
-- Per active renderer: image -> Size and Position dim and inert ("Image subtitles keep their own
+- Per active renderer: image -> Size and Position disabled ("Image subtitles keep their own
   size and position."); native ASS/SSA -> the same ("Styled subtitles keep ..."); Color stays live in
   both, since the subtitle ink tints bitmaps and ASS.
-- A dim row is focusable so the viewer can read why, and it is INERT at the form layer
-  (`FormTable::activate` answers `None` for OK and RIGHT alike), not by a guard in each caller.
+- A DISABLED row (`FormSection::disabled`, `Row::disabled`) is focusable so the viewer can read why,
+  is drawn soft with a ghost pill under focus, and is inert at the form layer (`FormTable::activate`
+  answers `None` for OK, RIGHT and a click alike), not by a guard in each caller. A merely `dim`
+  row still acts.
 
 ## Persistence and live preview
 
@@ -108,7 +110,7 @@ re-recorded.
   `page_initial`, a Nav row whose `Dest` is the variant, and the `TrackRow`s it needs.
 - **Form extensions**, reusable by Settings PRs 3-5 (`docs/settings-form.md`): a Nav row gets the
   chevron from its kind; Choice rows derive `checked` from a current-value predicate; an item can be
-  disabled (dim, focusable, inert).
+  disabled (`Row::disabled`: focusable, ghost pill under focus, inert).
 - **Title band** (`TableView::set_title`): "< TITLE" in the section-header caps caption, then a
   `DIV_H` divider gap, so it reads as the page's heading and not a caption glued to row one. The
   glyph is separated from the text by the check-column->label gap. It is part of `measured_height`,

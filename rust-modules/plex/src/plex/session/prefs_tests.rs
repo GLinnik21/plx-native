@@ -115,7 +115,7 @@ fn every_marker_names_its_own_field() {
     check_row::<super::IntroSkipPref>(super::MarkerSkipMode::Automatic);
     check_row::<super::CreditsSkipPref>(super::MarkerSkipMode::Disabled);
     check_row::<DeckPressPref>(DeckPress::Play);
-    check_row::<UnderPostersPref>(UnderPosters { title: true, details: UnderPostersDetails::Genre, sort_value: false });
+    check_row::<UnderPostersPref>(UnderPosters { title: true, details: UnderPostersDetails::Genre, show_details: UnderPostersDetails::Genre.for_shows(), sort_value: false });
     check_row::<AudioEnhancementsPref>(crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false });
     // A5: the remaining `Copy` rows.
     check_row::<AutoSignInPref>(true);
@@ -495,14 +495,58 @@ fn under_posters_is_soft_per_field_and_omitted_at_the_default() {
     }
     // A later build's spelling of `details` keeps the title the viewer chose.
     let kept = under_posters_session(json!({ "title": true, "details": "future_kind" }));
-    assert_eq!(kept.under_posters(), UnderPosters { title: true, details: UnderPostersDetails::YearLength, sort_value: true });
+    assert_eq!(kept.under_posters(), UnderPosters { title: true, details: UnderPostersDetails::YearLength, show_details: UnderPostersDetails::YearLength.for_shows(), sort_value: true });
     // And a bad title keeps the details.
     let kept = under_posters_session(json!({ "title": "yes", "details": "genre" }));
-    assert_eq!(kept.under_posters(), UnderPosters { title: false, details: UnderPostersDetails::Genre, sort_value: true });
+    assert_eq!(kept.under_posters(), UnderPosters { title: false, details: UnderPostersDetails::Genre, show_details: UnderPostersDetails::Genre.for_shows(), sort_value: true });
     // The default is not written, so a session predating the field serializes as it did.
     let json = serde_json::to_string(&Session::default()).unwrap();
     assert!(!json.contains("under_posters"), "{json}");
     assert_eq!(UnderPosters::default(), UnderPosters::DEFAULT);
+}
+
+/// **The Settings v2 split of Details into Movie details and TV show details.** A setting saved
+/// before the split has one `details` key: it stays the movie value as it is, and seeds the show
+/// value, Video quality (which a show has none of) reading as Year and Seasons.
+#[test]
+fn the_single_details_value_seeds_both_kinds_and_a_show_never_holds_video_quality() {
+    use UnderPostersDetails as D;
+    for d in D::LADDER {
+        let seeded = under_posters_session(json!({ "details": d })).under_posters();
+        assert_eq!(seeded.details, d, "the movie key takes the old value as it is");
+        assert_eq!(seeded.show_details, if d == D::Video { D::YearLength } else { d }, "{d:?}: the show key is seeded from it");
+        assert_eq!(seeded.show_details, d.for_shows());
+        assert_ne!(seeded.show_details, D::Video);
+    }
+    // A profile with no stored details at all reads the defaults on both keys.
+    assert_eq!(under_posters_session(json!({})).under_posters(), UnderPosters::DEFAULT);
+    // Once a show value is stored it is a choice, whatever the movie value is, and it is held to what a show can have.
+    let chosen = under_posters_session(json!({ "details": "genre", "show_details": "age_rating_score" })).under_posters();
+    assert_eq!((chosen.details, chosen.show_details), (D::Genre, D::AgeRatingScore));
+    let held = under_posters_session(json!({ "details": "genre", "show_details": "video" })).under_posters();
+    assert_eq!(held.show_details, D::YearLength, "a movie-only value under the show key reads as Year and Seasons");
+    // A spelling this build does not know is no choice: the movie value seeds it.
+    let unknown = under_posters_session(json!({ "details": "age_rating_score", "show_details": "future_kind" })).under_posters();
+    assert_eq!(unknown.show_details, D::AgeRatingScore);
+    // The show ladder is the whole ladder less Video quality.
+    assert_eq!(D::SHOW_LADDER.to_vec(), D::LADDER.into_iter().filter(|d| *d != D::Video).collect::<Vec<_>>());
+}
+
+/// The old key survives a write: an older build reads the movie value from `details`, and the show
+/// value is written beside it so a later change of the movie value cannot re-seed it.
+#[test]
+fn the_movie_value_keeps_the_old_key_and_the_show_value_is_always_written() {
+    use UnderPostersDetails as D;
+    let v = UnderPosters { details: D::Video, show_details: D::Genre, ..UnderPosters::DEFAULT };
+    let session = Session::default().with_pref::<UnderPostersPref>(v);
+    let json: Value = serde_json::to_value(&session).unwrap();
+    assert_eq!(json["under_posters"]["details"], json!("video"));
+    assert_eq!(json["under_posters"]["show_details"], json!("genre"));
+    let back: Session = serde_json::from_value(json).unwrap();
+    assert_eq!(back.under_posters(), v);
+    assert_eq!(UnderPosters::unpack(v.pack()), v);
+    // A packed show value no show can have is held to one it can.
+    assert_eq!(UnderPosters::unpack(UnderPosters { show_details: D::Video, ..v }.pack()).show_details, D::YearLength);
 }
 
 #[test]
@@ -510,7 +554,7 @@ fn under_posters_round_trips_and_packs_into_one_byte() {
     for details in UnderPostersDetails::LADDER {
         for title in [false, true] {
             for sort_value in [true, false] {
-                let v = UnderPosters { title, details, sort_value };
+                let v = UnderPosters { title, details, show_details: details.for_shows(), sort_value };
                 let session = Session::default().with_pref::<UnderPostersPref>(v);
                 assert_eq!(serde_json::to_string(&session).unwrap().contains("under_posters"), v != UnderPosters::DEFAULT);
                 let back: Session = serde_json::from_str(&serde_json::to_string(&session).unwrap()).unwrap();
@@ -539,12 +583,12 @@ fn sort_value_is_on_by_default_stored_as_its_off_state_and_soft_parsed() {
     // is never written back.
     for old in [json!(true), json!(false), json!("yes")] {
         let read = under_posters_session(json!({"title":true,"details":"genre","show_sort_info":old}));
-        assert_eq!(read.under_posters(), UnderPosters { title: true, details: UnderPostersDetails::Genre, sort_value: true });
+        assert_eq!(read.under_posters(), UnderPosters { title: true, details: UnderPostersDetails::Genre, show_details: UnderPostersDetails::Genre.for_shows(), sort_value: true });
     }
     assert!(!serde_json::to_string(&Session::default().with_pref::<UnderPostersPref>(
         UnderPosters { title: true, ..UnderPosters::DEFAULT })).unwrap().contains("show_sort_info"));
     // Off round-trips through the file and the packed cell, and only Off is written.
-    let off = UnderPosters { title: true, details: UnderPostersDetails::Video, sort_value: false };
+    let off = UnderPosters { title: true, details: UnderPostersDetails::Video, show_details: UnderPostersDetails::Video.for_shows(), sort_value: false };
     let json = serde_json::to_string(&Session::default().with_pref::<UnderPostersPref>(off)).unwrap();
     assert!(json.contains("sort_value_off"), "{json}");
     let on = serde_json::to_string(&Session::default().with_pref::<UnderPostersPref>(
@@ -556,7 +600,7 @@ fn sort_value_is_on_by_default_stored_as_its_off_state_and_soft_parsed() {
     // A malformed value costs only that field and reads as the default On.
     for bad in [json!("yes"), json!(3), Value::Null, json!([true])] {
         let read = under_posters_session(json!({"title":true,"details":"genre","sort_value_off":bad}));
-        assert_eq!(read.under_posters(), UnderPosters { title: true, details: UnderPostersDetails::Genre, sort_value: true });
+        assert_eq!(read.under_posters(), UnderPosters { title: true, details: UnderPostersDetails::Genre, show_details: UnderPostersDetails::Genre.for_shows(), sort_value: true });
     }
     let read = under_posters_session(json!({"title":true,"sort_value_off":true}));
     assert!(!read.under_posters().sort_value && read.under_posters().title);

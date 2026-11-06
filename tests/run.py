@@ -5549,14 +5549,17 @@ def require_release_binary(tv, runner=None):
 # is the automated form of the by-hand FPS hunting that found the hero / cast+about / info-panel
 # regressions.
 # ---------------------------------------------------------------------------
-LOOP_RE = re.compile(r"loop=(\d+) route=(\w+)(?: overlay=(\w+))?")
+# An ` overlay=` word is a screen's own `Screen::name`, and the Settings family's pages answer hyphenated ones
+# (`under-posters`, `player-hud`): its capture group is `[\w-]+`, because `\w+` would stop at the hyphen and
+# read `player-hud` as `player`. (A route word has no hyphen, so `route=` keeps `\w+`.)
+LOOP_RE = re.compile(r"loop=(\d+) route=(\w+)(?: overlay=([\w-]+))?")
 
 # ` section=<word>` rides right after ` overlay=` while the player page holds an HUD section open
 # (`app/words.rs`'s `section_word`; absent, never `none`, with nothing open). A section is the page's state and
 # not a surface, so ` overlay=` keeps meaning the topmost MODAL surface and a scene that needs a section says so
 # with its own `"section"` key. It is applied as a filter over the heartbeat lines (`select_section`) rather than
 # as a group on every regex below, so each parser and gate keeps its signature.
-SECTION_RE = re.compile(r"\bloop=\d+ route=\w+(?: overlay=\w+)?(?: section=(\w+))?")
+SECTION_RE = re.compile(r"\bloop=\d+ route=\w+(?: overlay=[\w-]+)?(?: section=(\w+))?")
 
 
 def select_section(lines, scene):
@@ -5628,7 +5631,7 @@ def parse_loop(lines, route, overlay):
 # Deliberately a SECOND regex rather than a group on LOOP_RE: the field is newer than the heartbeat,
 # and a scene graded on a log from a build without it must fail as "no samples" rather than silently
 # match zero and read as a spectacular pass.
-FPS_RE = re.compile(r"\bloop=\d+ route=(\w+)(?: overlay=(\w+))?.*?\bfps=(\d+)")
+FPS_RE = re.compile(r"\bloop=\d+ route=(\w+)(?: overlay=([\w-]+))?.*?\bfps=(\d+)")
 
 
 def parse_fps(lines, route, overlay):
@@ -5650,7 +5653,7 @@ def parse_fps(lines, route, overlay):
 # `plxnative-framedrop` is armed (run_fps_scene arms it for any scene declaring a ceiling below).
 # Deliberately its own regex, for FPS_RE's reason: a log from a build or a run without the field
 # must fail as "no samples", never match nothing and pass.
-WORST_RE = re.compile(r"\bloop=\d+ route=(\w+)(?: overlay=(\w+))?.*?\bworstframe=(\d+(?:\.\d+)?)ms")
+WORST_RE = re.compile(r"\bloop=\d+ route=(\w+)(?: overlay=([\w-]+))?.*?\bworstframe=(\d+(?:\.\d+)?)ms")
 # One `FRAMEDROP` line per frame over the armed threshold; `total=` is the whole iteration. The
 # route word sits after the phase breakdown (`route=<word>`), so a scene grades only its own screen.
 FRAMEDROP_RE = re.compile(r"^FRAMEDROP total=(\d+(?:\.\d+)?) .*?\broute=(\w+)")
@@ -5760,7 +5763,7 @@ def frame_ceiling_threshold(scene):
 # `POSTER_UPLOAD_MAX_PX`), those of them whose present-to-present interval was >= 22 ms, and the
 # uploads on them. Absent in a second with none, so a log from an older build or an unarmed run
 # yields no samples and `grade_upload_pacing` fails it rather than passing on zero.
-PUP_RE = re.compile(r"\bloop=\d+ route=(\w+)(?: overlay=(\w+))?.*?\bpupf=(\d+) pupf_ge22=(\d+) pup=(\d+)")
+PUP_RE = re.compile(r"\bloop=\d+ route=(\w+)(?: overlay=([\w-]+))?.*?\bpupf=(\d+) pupf_ge22=(\d+) pup=(\d+)")
 
 
 def parse_upload_pacing(lines, route, overlay):
