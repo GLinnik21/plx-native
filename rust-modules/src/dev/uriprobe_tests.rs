@@ -887,7 +887,7 @@ mod hostsim {
     impl Fork {
         fn new() -> Fork {
             let host = ExportedHost::arm();
-            plx_media::player::SHARED.reset_session();
+            plx_media::player::reset_session_for_test();
             plx_plex::plex::reset_servers_for_test();
             let pms = CountingPms::start();
             let mut ps = PlaybackSession::IDLE;

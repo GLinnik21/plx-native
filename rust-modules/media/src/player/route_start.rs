@@ -5,6 +5,8 @@
 use plx_play_feed::shared::{FEED_SHARED, FEED_TX};
 use super::adapter::PlayerAdapter;
 #[cfg(feature = "play-feed")]
+use plx_playback_contract::feed::ResetScope;
+#[cfg(feature = "play-feed")]
 use super::{engine, SHARED};
 #[cfg(feature = "play-feed")]
 use std::sync::atomic::Ordering;
@@ -624,7 +626,6 @@ pub(super) fn run_release_effects(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut super::adapter::PlayerAdapter,
     fx: Vec<super::release::ReleaseEffect>,
-    mut joined: Option<engine::PendingRelease>,
     may_start: bool,
 ) -> ReleasePass {
     use super::release::ReleaseEffect as E;
@@ -632,13 +633,7 @@ pub(super) fn run_release_effects(
     for effect in fx {
         match effect {
             E::RunTail { epoch } => {
-                if let Some(p) = joined.take() {
-                    debug_assert_eq!(p.epoch(), epoch);
-                    let attempt = p.attempt();
-                    let hooks = pa.physical.feed_backend().resources().hooks();
-                    let status = plx_play_feed::native_executor::run_release_tail(
-                        pa.mt(), p, pa.physical.feed_backend().resources().shared(), &hooks.release);
-                    pa.note_backend_feed_release(attempt, status);
+                if pa.run_release_tail(epoch) {
                     let at = pa.backend_tick();
                     let _ = pa.backend_poll_at(ps, at);
                     pass.tail_ran = true;
@@ -1004,8 +999,8 @@ pub fn poll_release(
     pa: &mut super::adapter::PlayerAdapter,
     now: std::time::Instant,
 ) -> bool {
-    let (fx, joined) = drive_release(ps, pa, now, None);
-    super::route_start::run_release_effects(ps, pa, fx, joined, true).tail_ran
+    let fx = drive_release(ps, pa, now, None);
+    super::route_start::run_release_effects(ps, pa, fx, true).tail_ran
 }
 
 /// [`poll_release`] at the wall clock: the per-frame entry `app::run` calls.
@@ -1020,27 +1015,26 @@ pub fn reap_abandoned_load(pa: &mut super::adapter::PlayerAdapter) -> bool {
     pa.reap_abandoned_load()
 }
 
-/// Join a returned worker, then step the machine with its return, the clock and (at the exit) the
-/// exit request. Returns the effects and the joined release, whose tail the effects may run.
+/// Step the release machine with a returned worker (the Feed has joined it and keeps the release
+/// for its tail), the clock and (at the exit) the exit request. Returns the effects, one of which
+/// may be that tail.
 #[cfg(feature = "play-feed")]
 fn drive_release(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut super::adapter::PlayerAdapter,
     now: std::time::Instant,
     exit: Option<std::time::Instant>,
-) -> (Vec<super::release::ReleaseEffect>, Option<engine::PendingRelease>) {
+) -> Vec<super::release::ReleaseEffect> {
     use super::release::ReleaseEvent as V;
     let mut fx = Vec::new();
-    let joined = pa.take_finished_release().map(|mut p| {
-        p.join_returned_worker();
-        pa.release_step(ps, &V::UnloadReturned { epoch: p.epoch() }, &mut fx);
-        p
-    });
+    if let Some(epoch) = pa.take_returned_release() {
+        pa.release_step(ps, &V::UnloadReturned { epoch }, &mut fx);
+    }
     pa.release_step(ps, &V::Tick { now }, &mut fx);
     if let Some(at) = exit {
         pa.release_step(ps, &V::Exit { now: at }, &mut fx);
     }
-    (fx, joined)
+    fx
 }
 
 /// Whether the process may tear the display down.
@@ -1095,7 +1089,7 @@ pub fn exit_native_with(
                 log("exit: URI ownership unresolved; the display is left to the OS");
                 if let Some(session) = pa.take_uri() { std::mem::forget(session); }
                 #[cfg(feature = "play-feed")]
-                leak_parked_for_exit(pa);
+                pa.leak_for_exit();
                 return NativeExit::WorkerInFirmware;
             }
             idle();
@@ -1122,7 +1116,7 @@ pub fn exit_native_with(
                 log("exit: URI ownership unresolved; the display is left to the OS");
                 pa.park_uri_backend_for_exit();
                 #[cfg(feature = "play-feed")]
-                leak_parked_for_exit(pa);
+                pa.leak_for_exit();
                 return NativeExit::WorkerInFirmware;
             }
             idle();
@@ -1143,7 +1137,7 @@ pub fn exit_native_with(
             }
             if clock().saturating_duration_since(started) >= super::release::RELEASE_DEADLINE {
                 log("exit: a preview's Load is still inside firmware; the display is left to the OS");
-                leak_parked_for_exit(pa);
+                pa.leak_for_exit();
                 return NativeExit::WorkerInFirmware;
             }
             idle();
@@ -1154,7 +1148,7 @@ pub fn exit_native_with(
     #[cfg(feature = "play-feed")]
     if pa.has_abandoned_load() {
         log("exit: a timed-out Load is still inside firmware; the display is left to the OS");
-        leak_parked_for_exit(pa);
+        pa.leak_for_exit();
         return NativeExit::WorkerInFirmware;
     }
     #[cfg(not(feature = "play-feed"))]
@@ -1162,38 +1156,16 @@ pub fn exit_native_with(
     #[cfg(feature = "play-feed")]
     loop {
         let now = clock();
-        let (fx, joined) = drive_release(ps, pa, now, Some(now));
-        match super::route_start::run_release_effects(ps, pa, fx, joined, false).exit {
+        let fx = drive_release(ps, pa, now, Some(now));
+        match super::route_start::run_release_effects(ps, pa, fx, false).exit {
             Some(super::release::ReleaseEffect::ExitClean) => return NativeExit::Clean,
             Some(super::release::ReleaseEffect::ExitWorkerInFirmware) => {
                 log("exit: the native Unload is overdue; the display is left to the OS");
-                leak_parked_for_exit(pa);
+                pa.leak_for_exit();
                 return NativeExit::WorkerInFirmware;
             }
             _ => idle(),
         }
-    }
-}
-
-/// **A worker still in firmware reads memory its owner is about to drop.** The caller skips
-/// `SDL_Quit` and `app::run_and_shutdown` ends the process with `_exit` (no `App` drop, no libc
-/// finalizers), but the stack above it may still unwind, so the parked
-/// [`PendingRelease`] (its Engine: the Load payload Starfish holds a raw pointer into, the
-/// handle set, the AU queues) and the parked [`AbandonedLoad`] (the payload its `media` thread
-/// reads) would be freed under the live call. They are leaked instead, for the life of the process
-/// (`release.rs`: the `_exit` that follows skips their destructors). The same holds for an
-/// Engine still installed over a preview Load that never returned. Only `exit_native` calls this,
-/// and only on that outcome.
-#[cfg(feature = "play-feed")]
-fn leak_parked_for_exit(pa: &mut super::adapter::PlayerAdapter) {
-    if let Some(engine) = pa.take_installed_engine() {
-        std::mem::forget(engine);
-    }
-    if let Some(p) = pa.take_pending_release_any() {
-        std::mem::forget(p);
-    }
-    if let Some(l) = pa.take_abandoned_load() {
-        std::mem::forget(l);
     }
 }
 
@@ -1202,8 +1174,8 @@ fn leak_parked_for_exit(pa: &mut super::adapter::PlayerAdapter) {
 pub(crate) fn finish_release_for_test(pa: &mut super::adapter::PlayerAdapter) {
     let mut ps = crate::route::PlaybackSession::IDLE;
     while pa.release_busy() {
-        let (fx, joined) = drive_release(&mut ps, pa, std::time::Instant::now(), None);
-        let _ = super::route_start::run_release_effects(&mut ps, pa, fx, joined, false);
+        let fx = drive_release(&mut ps, pa, std::time::Instant::now(), None);
+        let _ = super::route_start::run_release_effects(&mut ps, pa, fx, false);
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
 }
@@ -1332,33 +1304,30 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAd
         return;
     }
     begin_feed_teardown(for_reload);
-    FEED_SHARED.stop_hls_clock();
     let route_attempt = pa.active_feed_attempt().expect("live feed has a route owner");
     // The outgoing attempt's last position, sampled while it is still the addressed one: the stop
-    // below retires the address and the reset after it idles the readout.
-    pa.publish_feed_attempt_view(ps);
-    let mut native = pa.take_native_stop();
+    // retires the address and the reset after it idles the readout.
+    pa.stop_begin(ps);
     let final_report = final_report(ps, for_reload);
-    native.stop_side_reader(for_reload);
+    pa.stop_side_reader(for_reload);
     let mut report_th = stop_feed_timeline(pa, route_attempt);
-    native.unblock_join_close();
+    let unblocked = pa.stop_unblock();
     // The adaptive worker is joined: take its last report in (the carried link estimate a reload
     // hands on, the Original failure its probe noted, and the two members the terminal facts
     // carry), then close its channel. The reset below keeps the failure; a real stop clears it last.
     pa.drain_abr(ps);
     pa.close_abr_inbox();
-    let mut terminal_facts = plx_play_feed::feed_pump::native_attempt_facts();
+    let mut terminal_facts = unblocked.attempt;
     ps.readout().fill_abr_facts(&mut terminal_facts);
     terminal_facts.started = Some(false);
     // The Load this teardown is about to park (its budget had expired) is a fact of THIS attempt: the
     // native phase says so only after the release below and outlives the session reset, which the
     // readout does not. A reload refused for that Load reads it from here (`pump::settle_reload`).
-    terminal_facts.load_abandoned = Some(native.load_abandoned());
+    terminal_facts.load_abandoned = Some(unblocked.load_abandoned);
     let _ = ps.ingest_attempt_facts(route_attempt, crate::player::attempt_view::Backend::Feed, terminal_facts);
     after_physical_close(ps, for_reload, final_report, &mut report_th);
-    native.report_dispatched();
-    pa.release_native_stop(&mut native, for_reload);
-    let release_status = native.release_status();
+    pa.stop_report_dispatched();
+    pa.stop_release(for_reload);
     // A reload preserves the file's duration and viewer transport, then restarts the same item.
     // A real stop retires both along with the current claim hold.
     // Every reset of the Feed's session also retires the readout's view of it (`SessionReset`). A
@@ -1366,17 +1335,16 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAd
     // `ended` is what a replay finds while its start is deferred behind this Unload, the loop's
     // end-of-stream rule exits the replay's player page and that stop cancels the start.
     if for_reload {
-        SHARED.reset_session_for_reload();
+        pa.reset_session(ResetScope::Reload, &mut || SHARED.reset_session_for_reload());
         FEED_TX.reset_for_reload();
     } else {
-        SHARED.reset_session();
+        pa.reset_session(ResetScope::Stop, &mut || SHARED.reset_session());
         stop_transport(ps);
         super::claim_hold::clear();
     }
     ps.step_readout(super::readout::ReadoutEvent::SessionReset);
     finish_feed_teardown(ps, for_reload, report_th);
-    pa.finish_native_stop(ps, native, for_reload);
-    pa.note_backend_feed_release(route_attempt.contract_id(), release_status);
+    pa.stop_finish(ps, for_reload);
     let at = pa.backend_tick();
     let _ = pa.backend_poll_at(ps, at);
     }
@@ -1401,7 +1369,7 @@ pub(super) fn begin_teardown(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
         let mut fx = Vec::new();
         pa.release_step(ps, &super::release::ReleaseEvent::CancelQueued, &mut fx);
         #[cfg(feature = "play-feed")]
-        let _ = run_release_effects(ps, pa, fx, None, false);
+        let _ = run_release_effects(ps, pa, fx, false);
         #[cfg(not(feature = "play-feed"))]
         run_uri_queued_effects(ps, pa, fx);
     }
@@ -1452,7 +1420,7 @@ pub(super) fn begin_teardown(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
             crate::route::drop_original_recovery(ps);
             crate::route::clear_url(ps);
             #[cfg(feature = "play-feed")]
-            SHARED.reset_session();
+            pa.reset_session(ResetScope::Stop, &mut || SHARED.reset_session());
             #[cfg(feature = "play-feed")]
             stop_transport(ps);
             ps.step_readout(super::readout::ReadoutEvent::SessionReset);

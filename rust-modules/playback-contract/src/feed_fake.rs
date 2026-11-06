@@ -15,8 +15,10 @@ use std::time::Duration;
 
 use plx_base::task::MainThread;
 
+use crate::readout::AttemptFacts;
 use crate::feed::{
     defer_media_join, AcceptedLoadOutcome, CtorGate, FeedCommand, FeedControl, FeedFacts, FeedLoad, FeedSeek,
+    FeedStop, ReleaseHandoff, ResetScope, UnblockFacts,
     LoadTick, PausedSeekStep,
     PhysicalSet, PresentationTick, SeekMode, SeekPause, Stage, StuckSeekAction, UserPauseOutcome,
     UserResumeOutcome,
@@ -62,6 +64,17 @@ pub enum FeedCall {
     UserPause,
     UserResume,
     TakePrerollVolume,
+    StopBegin,
+    StopSideReader { for_reload: bool },
+    StopUnblock,
+    StopReportDispatched,
+    StopRelease { for_reload: bool },
+    StopFinish { for_reload: bool },
+    Reset { scope: ResetScope },
+    HasPendingRelease,
+    TakeReturnedRelease,
+    RunReleaseTail { epoch: u32 },
+    LeakForExit,
 }
 
 /// What the fake feed answers. The default is an idle feed: nothing live, nothing loading, no
@@ -88,6 +101,16 @@ pub struct FeedScript {
     pub user_resume: UserResumeOutcome,
     /// Delivered once by the next `take_preroll_volume`.
     pub preroll_volume: Option<i32>,
+    /// What `stop_unblock` reports.
+    pub unblock: UnblockFacts,
+    /// Delivered once by the next `stop_finish`.
+    pub handoff: Option<ReleaseHandoff>,
+    /// What `has_pending_release` answers.
+    pub pending_release: bool,
+    /// Delivered once by the next `take_returned_release`.
+    pub returned_release: Option<u32>,
+    /// Whether `run_release_tail` finds a returned release to run.
+    pub release_tail_runs: bool,
 }
 
 impl Default for FeedScript {
@@ -108,6 +131,11 @@ impl Default for FeedScript {
             user_pause: UserPauseOutcome::Deferred,
             user_resume: UserResumeOutcome::NoHold,
             preroll_volume: None,
+            unblock: UnblockFacts { attempt: AttemptFacts::default(), load_abandoned: false },
+            handoff: None,
+            pending_release: false,
+            returned_release: None,
+            release_tail_runs: false,
         }
     }
 }
@@ -244,6 +272,43 @@ impl FeedLoad for FakeFeed {
 
     fn sample(&self) -> Option<FeedFacts> {
         self.answer(FeedCall::Sample, |s| s.facts.raw.load.stage.is_some().then_some(s.facts))
+    }
+}
+
+impl FeedStop for FakeFeed {
+    fn stop_begin(&mut self) -> Option<FeedFacts> {
+        self.answer(FeedCall::StopBegin, |s| s.facts.raw.load.stage.is_some().then_some(s.facts))
+    }
+    fn stop_side_reader(&mut self, for_reload: bool) {
+        self.answer(FeedCall::StopSideReader { for_reload }, |_| ());
+    }
+    fn stop_unblock(&mut self) -> UnblockFacts {
+        self.answer(FeedCall::StopUnblock, |s| s.unblock)
+    }
+    fn stop_report_dispatched(&mut self) {
+        self.answer(FeedCall::StopReportDispatched, |_| ());
+    }
+    fn stop_release(&mut self, _mt: &MainThread, for_reload: bool) {
+        self.answer(FeedCall::StopRelease { for_reload }, |_| ());
+    }
+    fn stop_finish(&mut self, for_reload: bool) -> Option<ReleaseHandoff> {
+        self.answer(FeedCall::StopFinish { for_reload }, |s| s.handoff.take())
+    }
+    fn reset(&mut self, scope: ResetScope, common: &mut dyn FnMut()) {
+        self.answer(FeedCall::Reset { scope }, |_| ());
+        common();
+    }
+    fn has_pending_release(&self) -> bool {
+        self.answer(FeedCall::HasPendingRelease, |s| s.pending_release)
+    }
+    fn take_returned_release(&mut self) -> Option<u32> {
+        self.answer(FeedCall::TakeReturnedRelease, |s| s.returned_release.take())
+    }
+    fn run_release_tail(&mut self, _mt: &MainThread, epoch: u32) -> bool {
+        self.answer(FeedCall::RunReleaseTail { epoch }, |s| s.release_tail_runs)
+    }
+    fn leak_for_exit(&mut self) {
+        self.answer(FeedCall::LeakForExit, |_| ());
     }
 }
 
@@ -444,5 +509,47 @@ mod tests {
         assert_eq!(fake.exit_disposition(), ExitDisposition::Clean);
         handle.set_exit_preserved(true);
         assert_eq!(fake.exit_disposition(), ExitDisposition::PreserveNativeOwnership);
+    }
+
+    /// The stop is driven phase by phase through the one object the adapter holds: the fake logs
+    /// each phase with its arguments, the handoff and the returned release are delivered once, and
+    /// `reset` runs the player's own stores exactly once, as the real feed does inside its barrier.
+    #[test]
+    fn the_stop_phases_are_logged_in_the_order_they_are_driven() {
+        let (fake, handle) = FakePhysical::new();
+        let handoff = ReleaseHandoff { epoch: 3, at: std::time::Instant::now() };
+        handle.script(|script| {
+            script.facts.raw.load.stage = Some(Stage::Streaming);
+            script.handoff = Some(handoff);
+            script.pending_release = true;
+            script.returned_release = Some(3);
+            script.release_tail_runs = true;
+            script.unblock.load_abandoned = true;
+        });
+        let mut set: Box<dyn PhysicalSet<Context = MainThread>> = Box::new(fake);
+        let feed = set.feed().unwrap();
+        let mut common = 0;
+        assert!(feed.stop_begin().is_some(), "a live session has a last sample");
+        feed.stop_side_reader(true);
+        assert!(feed.stop_unblock().load_abandoned);
+        feed.stop_report_dispatched();
+        feed.stop_release(&mt(), true);
+        feed.reset(ResetScope::Reload, &mut || common += 1);
+        assert_eq!(feed.stop_finish(true), Some(handoff));
+        assert_eq!(feed.stop_finish(true), None, "a handoff is delivered once");
+        assert!(feed.has_pending_release());
+        assert_eq!(feed.take_returned_release(), Some(3));
+        assert_eq!(feed.take_returned_release(), None, "a returned release is delivered once");
+        assert!(feed.run_release_tail(&mt(), 3));
+        feed.leak_for_exit();
+        assert_eq!(common, 1, "reset runs the player's stores once");
+        assert_eq!(handle.calls(), [
+            FeedCall::StopBegin, FeedCall::StopSideReader { for_reload: true }, FeedCall::StopUnblock,
+            FeedCall::StopReportDispatched, FeedCall::StopRelease { for_reload: true },
+            FeedCall::Reset { scope: ResetScope::Reload }, FeedCall::StopFinish { for_reload: true },
+            FeedCall::StopFinish { for_reload: true }, FeedCall::HasPendingRelease,
+            FeedCall::TakeReturnedRelease, FeedCall::TakeReturnedRelease,
+            FeedCall::RunReleaseTail { epoch: 3 }, FeedCall::LeakForExit,
+        ]);
     }
 }

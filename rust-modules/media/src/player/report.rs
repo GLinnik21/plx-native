@@ -1339,7 +1339,7 @@ mod tests {
     fn physical_feed_reset_preserves_common_request_trace() {
         let _serial = plx_base::testlock::serial();
         TRACE.lock().unwrap_or_else(|e| e.into_inner()).seed_for_reset_test();
-        super::super::SHARED.reset_session();
+        crate::player::reset_session_for_test();
         let steps = TRACE.lock().unwrap_or_else(|e| e.into_inner()).step_count_for_test();
         clear_error_trace();
         assert_eq!(steps, 1, "a physical reset cannot erase the request's causal history");
@@ -1778,7 +1778,7 @@ mod tests {
         let _g = plx_base::testlock::serial();
         let mut ps = crate::route::PlaybackSession::default();
         let attempt = begin_view(&mut ps);
-        super::super::SHARED.reset_session();
+        crate::player::reset_session_for_test();
         assert_eq!(error_context(&ps).pipeline_error, 0, "no callback, nothing to report");
         let epoch = FEED_SHARED.begin_native_session().expect("session");
         plx_play_feed::sf_event::sf_on_event(epoch, 18, 601, c"Resource Allocation Error".as_ptr());
@@ -1789,7 +1789,7 @@ mod tests {
         });
         assert_eq!(error_context(&ps).pipeline_error, 601);
         FEED_SHARED.retire_native_session(epoch);
-        super::super::SHARED.reset_session();
+        crate::player::reset_session_for_test();
         ps.begin_attempt_view(attempt, crate::player::attempt_view::Backend::Feed);
         assert_eq!(error_context(&ps).pipeline_error, 0, "the latch does not outlive its session");
     }
@@ -1804,7 +1804,7 @@ mod tests {
         let mut ps = crate::route::PlaybackSession::default();
         let attempt = begin_view(&mut ps);
         let feed = &FEED_SHARED;
-        super::super::SHARED.reset_session();
+        crate::player::reset_session_for_test();
         assert_eq!(error_context(&ps).demux_exit, DemuxExitClass::None, "nothing recorded");
 
         feed.fail_demux_latch(DemuxExitClass::HttpsOpenFailed.latch());
@@ -1821,7 +1821,7 @@ mod tests {
             "the first cause is the real one"
         );
 
-        super::super::SHARED.reset_session();
+        crate::player::reset_session_for_test();
         ps.begin_attempt_view(attempt, crate::player::attempt_view::Backend::Feed);
         assert_eq!(error_context(&ps).demux_exit, DemuxExitClass::None, "cleared per session");
         feed.note_demux_exit_latch(DemuxExitClass::NoVideoStream.latch());
@@ -1830,7 +1830,7 @@ mod tests {
             demux_exit: Some(feed.dg_demux_exit.load(Relaxed)), ..Default::default()
         });
         assert_eq!(error_context(&ps).demux_exit, DemuxExitClass::NoVideoStream);
-        super::super::SHARED.reset_session();
+        crate::player::reset_session_for_test();
     }
 
     /// **Sentry PLX-NATIVE-V.** A playback that was running, then switched quality to Original, and
@@ -2135,7 +2135,7 @@ mod tests {
                 plx_platform::devcaps::dv::DvCapability::Supported,
             ));
             requested(&ps, plx_plex::plex::ServerId::UNSET, AttemptOrigin::Fresh);
-            super::super::SHARED.reset_session();
+            crate::player::reset_session_for_test();
             let epoch = FEED_SHARED.begin_native_session().expect("session");
             plx_play_feed::sf_event::sf_on_event(epoch, 18, 601, c"Resource Allocation Error".as_ptr());
             let attempt = begin_view(&mut ps);
@@ -2147,7 +2147,7 @@ mod tests {
             observe(&mut ps, S::Resolving);
             let (_, events) = plx_telemetry::diag::test_events::capture(|| observe(&mut ps, S::Error));
             FEED_SHARED.retire_native_session(epoch);
-            super::super::SHARED.reset_session();
+            crate::player::reset_session_for_test();
             match events.as_slice() {
                 [DiagEvent::PlaybackFailed { video, audio, pipeline_error, refusal, .. }] => {
                     assert_eq!(*video, "h264");
@@ -2176,7 +2176,7 @@ mod tests {
                 plx_platform::devcaps::dv::DvCapability::Supported,
             ));
             requested(&ps, plx_plex::plex::ServerId::UNSET, AttemptOrigin::Fresh);
-            super::super::SHARED.reset_session();
+            crate::player::reset_session_for_test();
             let epoch = FEED_SHARED.begin_native_session().expect("session");
             assert!(FEED_SHARED.publish_native_load_failure(epoch));
             let attempt = begin_view(&mut ps);
@@ -2187,7 +2187,7 @@ mod tests {
             observe(&mut ps, S::Resolving);
             let (_, events) = plx_telemetry::diag::test_events::capture(|| observe(&mut ps, S::Error));
             FEED_SHARED.retire_native_session(epoch);
-            super::super::SHARED.reset_session();
+            crate::player::reset_session_for_test();
             assert_eq!(FEED_SHARED.refusal_path(), super::super::shared::RefusalPath::None, "reset_session clears it");
             match events.as_slice() {
                 [DiagEvent::PlaybackFailed { video, audio, pipeline_error, refusal, .. }] => {

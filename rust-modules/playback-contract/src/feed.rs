@@ -634,9 +634,78 @@ pub trait FeedLoad {
     fn sample(&self) -> Option<FeedFacts>;
 }
 
-/// One buffer-feed backend as the player drives it: the seek and Load halves, and the one verb
-/// every intent goes through. Later steps of the seam add the open and stop verbs here.
-pub trait FeedControl: FeedSeek + FeedLoad {
+/// Which end of a Feed session a [`FeedStop::reset`] serves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResetScope {
+    /// A reload of the same item: the file's duration survives (the demuxer re-publishes it a few
+    /// hundred ms after it reopens, and a zero until then is a playbar drawn at position / 0).
+    Reload,
+    /// A real stop: everything of the session goes.
+    Stop,
+}
+
+/// An off-frame release a stop handed off: the native epoch being unloaded and when. The release
+/// itself (the Engine it keeps alive, its worker) stays in the feed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReleaseHandoff {
+    pub epoch: u32,
+    pub at: std::time::Instant,
+}
+
+/// What the stop learned once it had woken and joined the feed's workers.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UnblockFacts {
+    /// The attempt's terminal sample (the player adds the members it owns).
+    pub attempt: AttemptFacts,
+    /// A Load past its budget was still inside the native call and stays parked: the release that
+    /// follows hands it to the abandoned-Load release.
+    pub load_abandoned: bool,
+}
+
+/// The stop of the feed backend, in phases the player's teardown drives in this order. Common
+/// route and report work runs between the phases and never receives the Engine or a native
+/// handle: the stop in progress is the backend's own state, keyed by nothing because at most one
+/// exists. A phase called out of order is a programming error.
+pub trait FeedStop {
+    /// Begin a stop: stop the HLS clock, sample the outgoing attempt's last facts while it is still
+    /// installed (`None` with no session) and take the Engine out. The sample is taken after the
+    /// clock stops, as the player published it before this verb existed.
+    fn stop_begin(&mut self) -> Option<FeedFacts>;
+    /// The side reader stops before the paired demux reader is joined.
+    fn stop_side_reader(&mut self, for_reload: bool);
+    /// Wake both transports and queues, join the demux and Load workers (a Load past its budget
+    /// stays parked, unjoined) and close the socket once the demux reader no longer owns its fd.
+    fn stop_unblock(&mut self) -> UnblockFacts;
+    /// The common final report has been handed to its off-frame worker.
+    fn stop_report_dispatched(&mut self);
+    /// Release the native object after the common reporting has handed off its final write: an
+    /// off-frame `Unload` for a real stop, a timed one in place for a reload. A Load found
+    /// abandoned is parked instead, and its object stays until the Load returns.
+    fn stop_release(&mut self, mt: &MainThread, for_reload: bool);
+    /// End the stop. The Engine drops, or stays alive under an off-frame `Unload` whose handoff is
+    /// returned; the driver is told how the release stands.
+    fn stop_finish(&mut self, for_reload: bool) -> Option<ReleaseHandoff>;
+    /// Clear the session's mirrors and run `common` (the player's own session stores), both inside
+    /// the callback/reset barrier, so a native callback cannot validate one session and then write
+    /// into the next one's reset storage.
+    fn reset(&mut self, scope: ResetScope, common: &mut dyn FnMut());
+    /// Is a stopped native object's `Unload` still owed its main-thread tail?
+    fn has_pending_release(&self) -> bool;
+    /// The epoch of a parked release whose `Unload` worker has returned. The worker is joined, so
+    /// the epoch can be fed to the release machine, and the release waits for its main-thread tail.
+    fn take_returned_release(&mut self) -> Option<u32>;
+    /// Run the main-thread tail of the release [`Self::take_returned_release`] reported for
+    /// `epoch`, and tell the driver how it ended. `false` when no returned release was waiting.
+    fn run_release_tail(&mut self, mt: &MainThread, epoch: u32) -> bool;
+    /// **A worker still in firmware reads memory its owner is about to drop.** At the exit's
+    /// WorkerInFirmware outcome the installed Engine, the parked release and the parked
+    /// abandoned Load are leaked for the life of the process instead of dropped under the call.
+    fn leak_for_exit(&mut self);
+}
+
+/// One buffer-feed backend as the player drives it: the seek, Load and stop halves, and the one
+/// verb every intent goes through. Later steps of the seam add the open verbs here.
+pub trait FeedControl: FeedSeek + FeedLoad + FeedStop {
     /// Carry out one player intent (see [`FeedCommand`]).
     fn command(&mut self, command: FeedCommand);
     /// The viewer's Pause: prepare the clock transition, issue the native Pause through the

@@ -3,7 +3,6 @@
 
 use plx_play_feed::shared::{FEED_SHARED, FEED_TX};
 use super::*;
-use crate::player::SHARED;
 #[allow(unused_imports)]
 use super::test_support::*;
 
@@ -774,11 +773,11 @@ fn a_frame_read_failure_names_the_curl_rc_and_publishes_it_for_the_report() {
         impl Drop for Clear {
             fn drop(&mut self) {
                 FEED_SHARED.demux_io_failed.store(false, Ordering::Relaxed);
-                SHARED.reset_session();
+                crate::player::reset_session_for_test();
             }
         }
         let _clear = Clear;
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
 
         fn state(src: Src, aq: *mut crate::aq::AuQueue) -> AvioState {
             AvioState {

@@ -49,8 +49,6 @@ use plx_playback_contract::feed::SeekMode;
 use super::{sink, threads};
 #[cfg(test)]
 use super::log;
-#[cfg(all(test, feature = "hostsim"))]
-use super::SHARED;
 use plx_base::task::MainThread;
 #[cfg(test)]
 use plx_platform::devcaps::AudioStack;
@@ -544,7 +542,7 @@ mod native_lifecycle_host_seam_tests {
         fn drop(&mut self) {
             crate::player::ffi_host::reset_native_lifecycle_for_test();
             crate::player::ffi_host::force_clocksink_for_test(false);
-            SHARED.reset_session();
+            crate::player::reset_session_for_test();
         }
     }
 
@@ -598,7 +596,7 @@ mod native_lifecycle_host_seam_tests {
         let _serial = plx_base::testlock::serial();
         crate::player::ffi_host::reset_native_lifecycle_for_test();
         crate::player::ffi_host::force_clocksink_for_test(true);
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         let _fresh_process = FreshProcess;
         let consent = Consented::grant_in_cycle();
         let mt = unsafe { MainThread::assume() };
@@ -617,7 +615,7 @@ mod native_lifecycle_host_seam_tests {
         let _serial = plx_base::testlock::serial();
         crate::player::ffi_host::reset_native_lifecycle_for_test();
         crate::player::ffi_host::force_clocksink_for_test(true);
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         let _fresh_process = FreshProcess;
         let consent = Consented::grant_in_cycle();
         let mt = unsafe { MainThread::assume() };
@@ -638,7 +636,7 @@ mod native_lifecycle_host_seam_tests {
         let _serial = plx_base::testlock::serial();
         crate::player::ffi_host::reset_native_lifecycle_for_test();
         crate::player::ffi_host::force_clocksink_for_test(true);
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         let _fresh_process = FreshProcess;
         let consent = Consented::grant_in_cycle();
         let mt = unsafe { MainThread::assume() };
@@ -659,7 +657,7 @@ mod native_lifecycle_host_seam_tests {
         let _serial = plx_base::testlock::serial();
         crate::player::ffi_host::reset_native_lifecycle_for_test();
         crate::player::ffi_host::force_clocksink_for_test(true);
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         let _fresh_process = FreshProcess;
         let consent = Consented::grant_in_cycle();
         let mt = unsafe { MainThread::assume() };
@@ -682,7 +680,7 @@ mod native_lifecycle_host_seam_tests {
         let _serial = plx_base::testlock::serial();
         crate::player::ffi_host::reset_native_lifecycle_for_test();
         crate::player::ffi_host::force_clocksink_for_test(false);
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         let _fresh_process = FreshProcess;
         let consent = Consented::grant_in_cycle();
         let mt = unsafe { MainThread::assume() };
@@ -699,7 +697,7 @@ mod native_lifecycle_host_seam_tests {
     fn creating_the_exported_window_is_a_step_only_in_that_mode() {
         let _serial = plx_base::testlock::serial();
         crate::player::ffi_host::reset_native_lifecycle_for_test();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         let _fresh_process = FreshProcess;
         let consent = Consented::grant_in_cycle();
         let mt = unsafe { MainThread::assume() };
@@ -735,7 +733,7 @@ mod native_lifecycle_host_seam_tests {
         let _serial = plx_base::testlock::serial();
         crate::player::ffi_host::reset_native_lifecycle_for_test();
         crate::player::ffi_host::force_clocksink_for_test(true);
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         let _fresh_process = FreshProcess;
         let consent = Consented::grant();
         let mt = unsafe { MainThread::assume() };
@@ -2222,7 +2220,7 @@ mod off_frame_release_tests {
             crate::player::ffi_host::reset_native_lifecycle_for_test();
             crate::player::ffi_host::force_clocksink_for_test(false);
             FEED_SHARED.test_force_native_idle();
-            SHARED.reset_session();
+            crate::player::reset_session_for_test();
             crate::route::reset_player_control_for_test(crate::route::idle_session_for_test());
         }
     }
@@ -2248,7 +2246,7 @@ mod off_frame_release_tests {
     }
 
     fn arm(ps: &crate::route::PlaybackSession) -> crate::player::adapter::PlayerAdapter {
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(ps);
         crate::player::ffi_host::reset_native_lifecycle_for_test();
         crate::player::ffi_host::force_clocksink_for_test(true);
@@ -2801,7 +2799,7 @@ mod load_in_flight_tests {
             crate::player::ffi_host::force_clocksink_for_test(false);
             crate::player::ffi_host::set_load_in_flight_for_test(false);
             FEED_SHARED.test_force_native_idle();
-            SHARED.reset_session();
+            crate::player::reset_session_for_test();
             crate::route::reset_player_control_for_test(crate::route::idle_session_for_test());
         }
     }
@@ -2851,7 +2849,7 @@ mod load_in_flight_tests {
     fn nothing_reaches_the_seam_while_load_is_still_in_flight() {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let _serial = plx_base::testlock::serial();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
         crate::player::ffi_host::reset_native_lifecycle_for_test();
         crate::player::ffi_host::force_clocksink_for_test(true);
@@ -2965,7 +2963,7 @@ mod load_in_flight_tests {
     fn losing_the_active_phase_while_still_deferred_fires_the_budget_instead_of_hanging() {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let _serial = plx_base::testlock::serial();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
         crate::player::ffi_host::reset_native_lifecycle_for_test();
         crate::player::ffi_host::force_clocksink_for_test(true);
@@ -3038,7 +3036,7 @@ mod load_in_flight_tests {
     fn native_load_budget_expiry_fires_load_failed() {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let _serial = plx_base::testlock::serial();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
         crate::player::ffi_host::reset_native_lifecycle_for_test();
         crate::player::ffi_host::force_clocksink_for_test(true);
@@ -3106,7 +3104,7 @@ mod load_in_flight_tests {
     fn native_load_returned_loadcompleted_never_arrives_fires_load_failed() {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let _serial = plx_base::testlock::serial();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
         crate::player::ffi_host::reset_native_lifecycle_for_test();
         crate::player::ffi_host::force_clocksink_for_test(true);
@@ -3185,7 +3183,7 @@ mod load_in_flight_tests {
     fn the_gate_is_epoch_scoped() {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let _serial = plx_base::testlock::serial();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
         crate::player::ffi_host::reset_native_lifecycle_for_test();
         crate::player::ffi_host::force_clocksink_for_test(true);
@@ -3250,7 +3248,7 @@ mod load_in_flight_tests {
     #[test]
     fn native_source_correction_ctor_wait_has_an_issued_budget() {
         let _serial = plx_base::testlock::serial();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&crate::route::PlaybackSession::IDLE);
         crate::player::ffi_host::reset_native_lifecycle_for_test();
         crate::player::ffi_host::force_clocksink_for_test(true);
@@ -3269,7 +3267,7 @@ mod load_in_flight_tests {
     #[test]
     fn native_source_correction_stale_load_refusal_cannot_fail_new_epoch() {
         let _serial = plx_base::testlock::serial();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         crate::player::ffi_host::reset_native_lifecycle_for_test();
         crate::player::ffi_host::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
@@ -3288,7 +3286,7 @@ mod load_in_flight_tests {
     #[test]
     fn native_ready_demux_failure_keeps_precedence_over_the_load_wait() {
         let _serial = plx_base::testlock::serial();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&crate::route::PlaybackSession::IDLE);
         crate::player::ffi_host::reset_native_lifecycle_for_test();
         crate::player::ffi_host::force_clocksink_for_test(true);
@@ -3319,7 +3317,7 @@ mod load_in_flight_tests {
         const WATCHDOG: std::time::Duration = std::time::Duration::from_secs(3);
         let mut ps = crate::route::PlaybackSession::IDLE;
         let _serial = plx_base::testlock::serial();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
         crate::player::ffi_host::reset_native_lifecycle_for_test();
         crate::player::ffi_host::force_clocksink_for_test(true);
@@ -3485,7 +3483,7 @@ mod load_in_flight_tests {
     fn exit_after_a_load_timeout_never_quits_the_display_under_a_hung_load() {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let _serial = plx_base::testlock::serial();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
         crate::player::ffi_host::reset_native_lifecycle_for_test();
         crate::player::ffi_host::force_clocksink_for_test(true);
@@ -3529,7 +3527,7 @@ mod load_in_flight_tests {
     fn the_rows_after_a_real_stop_are_the_idle_rows() {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let _serial = plx_base::testlock::serial();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
         crate::player::ffi_host::reset_native_lifecycle_for_test();
         crate::player::ffi_host::force_clocksink_for_test(true);
@@ -3553,7 +3551,7 @@ mod load_in_flight_tests {
     fn the_rows_after_a_real_reload_are_the_idle_rows() {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let _serial = plx_base::testlock::serial();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
         crate::player::ffi_host::reset_native_lifecycle_for_test();
         crate::player::ffi_host::force_clocksink_for_test(true);
@@ -3588,7 +3586,7 @@ mod load_in_flight_tests {
     fn a_real_stop_clears_the_original_failure() {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let _serial = plx_base::testlock::serial();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
         crate::player::ffi_host::reset_native_lifecycle_for_test();
         crate::player::ffi_host::force_clocksink_for_test(true);
@@ -3611,7 +3609,7 @@ mod load_in_flight_tests {
     fn a_rollback_reload_keeps_the_original_failure() {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let _serial = plx_base::testlock::serial();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
         crate::player::ffi_host::reset_native_lifecycle_for_test();
         crate::player::ffi_host::force_clocksink_for_test(true);
@@ -3639,7 +3637,7 @@ mod load_in_flight_tests {
         use plx_playback_contract::adaptive::{AdaptiveEffects, FailureEdit};
         let mut ps = crate::route::PlaybackSession::IDLE;
         let _serial = plx_base::testlock::serial();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
         crate::player::ffi_host::reset_native_lifecycle_for_test();
         crate::player::ffi_host::force_clocksink_for_test(true);
@@ -3695,7 +3693,7 @@ mod load_in_flight_tests {
         use plx_playback_contract::adaptive::{AdaptiveEffects, FailureEdit};
         let mut ps = crate::route::PlaybackSession::IDLE;
         let _serial = plx_base::testlock::serial();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
         crate::player::ffi_host::reset_native_lifecycle_for_test();
         crate::player::ffi_host::force_clocksink_for_test(true);
@@ -3722,7 +3720,7 @@ mod load_in_flight_tests {
     fn a_recovery_reload_refused_for_an_abandoned_load_still_reports_the_timeout() {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let _serial = plx_base::testlock::serial();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
         crate::player::ffi_host::reset_native_lifecycle_for_test();
         crate::player::ffi_host::force_clocksink_for_test(true);
@@ -3773,7 +3771,7 @@ mod load_in_flight_tests {
     fn a_fresh_start_refused_for_an_abandoned_load_shows_an_error_with_try_again() {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let _serial = plx_base::testlock::serial();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
         crate::player::ffi_host::reset_native_lifecycle_for_test();
         crate::player::ffi_host::force_clocksink_for_test(true);
@@ -3837,7 +3835,7 @@ mod load_in_flight_tests {
     fn a_reload_that_starts_after_a_refused_fresh_start_does_not_keep_the_refusals_error() {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let _serial = plx_base::testlock::serial();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
         crate::player::ffi_host::reset_native_lifecycle_for_test();
         crate::player::ffi_host::force_clocksink_for_test(true);
@@ -4608,7 +4606,7 @@ mod load_refusal_tests {
     struct Cleanup;
     impl Drop for Cleanup {
         fn drop(&mut self) {
-            SHARED.reset_session();
+            crate::player::reset_session_for_test();
             // A `Drop` takes no arguments and this test's own session is being dropped beside it;
             // the reducer only needs SOME idle projection to be put back.
             crate::route::reset_player_control_for_test(crate::route::idle_session_for_test());
@@ -4619,7 +4617,7 @@ mod load_refusal_tests {
     fn an_asynchronous_load_refusal_is_a_verdict_not_a_black_screen() {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let _serial = plx_base::testlock::serial();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
         let _cleanup = Cleanup;
         let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
@@ -5282,7 +5280,7 @@ mod pcm_stack_wiring_tests {
             crate::player::ffi_host::reset_native_lifecycle_for_test();
             crate::player::ffi_host::force_clocksink_for_test(false);
             FEED_SHARED.test_force_native_idle();
-            SHARED.reset_session();
+            crate::player::reset_session_for_test();
             crate::route::reset_player_control_for_test(crate::route::idle_session_for_test());
         }
     }
@@ -5295,7 +5293,7 @@ mod pcm_stack_wiring_tests {
     fn lead_of_a_flac_start_on(stack: AudioStack, unload_ms: u64, linger_ms: u64) -> (bool, i64) {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let _serial = plx_base::testlock::serial();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
         crate::player::ffi_host::reset_native_lifecycle_for_test();
         crate::player::ffi_host::force_clocksink_for_test(true);
@@ -5368,7 +5366,7 @@ mod pcm_stack_wiring_tests {
         const OFFSET_NS: i64 = 600_000_000_000;
         let mut ps = crate::route::PlaybackSession::IDLE;
         let _serial = plx_base::testlock::serial();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
         crate::player::ffi_host::reset_native_lifecycle_for_test();
         crate::player::ffi_host::force_clocksink_for_test(true);
@@ -5397,7 +5395,7 @@ mod pcm_stack_wiring_tests {
     fn a_start_hands_the_feed_the_sessions_audio_choice_and_a_reload_keeps_it() {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let _serial = plx_base::testlock::serial();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
         crate::player::ffi_host::reset_native_lifecycle_for_test();
         crate::player::ffi_host::force_clocksink_for_test(true);
@@ -5610,7 +5608,7 @@ mod pcm_sink_lead_tests {
     fn audio_waits_for_the_output_lead_then_takes_exactly_that() {
         let _serial = plx_base::testlock::serial();
         let _restore = arm();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         let epoch = FEED_SHARED.begin_native_session().expect("native session");
         let mut eng = engine_at(0, 0);
         eng.native_epoch = epoch;
@@ -5625,14 +5623,14 @@ mod pcm_sink_lead_tests {
         assert!(!eng.pcm_lead_pending, "taken once, at the first feed after the Load returned");
         assert_eq!(eng.pcm_sink_lead_ns, 250_000_000);
         assert_lead(&eng, 250_000_000, "a Bluetooth Load");
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
     }
 
     #[test]
     fn the_load_thread_publishes_the_lead_it_resolved_with_the_loads_return() {
         let _serial = plx_base::testlock::serial();
         let _restore = arm();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         ffi_host::reset_native_lifecycle_for_test();
         let load = |lead: PcmLead| {
             let epoch = FEED_SHARED.begin_native_session().expect("native session");
@@ -5640,7 +5638,7 @@ mod pcm_sink_lead_tests {
             threads::load_thread(threads::SendPtr(c"{}".as_ptr() as *mut c_char), epoch, None, lead);
             assert!(FEED_SHARED.native_load_returned(epoch), "PRECONDITION: the Load returned");
             let published = FEED_SHARED.native_load_pcm_lead(epoch);
-            SHARED.reset_session();
+            crate::player::reset_session_for_test();
             ffi_host::reset_native_lifecycle_for_test();
             published
         };
@@ -5699,7 +5697,7 @@ mod explicit_source_start_tests {
             crate::player::ffi_host::reset_native_lifecycle_for_test();
             crate::player::ffi_host::force_clocksink_for_test(false);
             FEED_SHARED.test_force_native_idle();
-            SHARED.reset_session();
+            crate::player::reset_session_for_test();
             crate::route::reset_player_control_for_test(crate::route::idle_session_for_test());
         }
     }
@@ -5721,7 +5719,7 @@ mod explicit_source_start_tests {
         &mut crate::player::adapter::PlayerAdapter)) {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let _serial = plx_base::testlock::serial();
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(&ps);
         crate::player::ffi_host::reset_native_lifecycle_for_test();
         crate::player::ffi_host::force_clocksink_for_test(true);
@@ -5837,7 +5835,7 @@ mod explicit_source_start_tests {
 
     /// The cause of `pipe_replay_after_eos` on the set. A play that ends is stopped with its
     /// end-of-stream still standing in the attempt view (`teardown` publishes the physical facts, `ended`
-    /// among them, before `SHARED.reset_session()` clears them). The replay's page mounts while its
+    /// among them, before `crate::player::reset_session_for_test()` clears them). The replay's page mounts while its
     /// start is deferred behind the old `Unload`, with no new attempt yet to replace those facts, and
     /// the loop's end-of-stream rule (`app::run::playback_tick`: player page up and `ended` true)
     /// exits the player again: that stop cancels the deferred start, so no second Load ever comes.

@@ -76,7 +76,7 @@ one of TWO transports** (design record: `docs/ffmpeg-demuxer-plan.md`; the hand-
 fallback is retired/deleted). `media/src/ff.rs` reexports its application entry points. **Which transport is decided in `ff::demux` from the part URL's
 scheme, or by a plaintext open's redirect to https (`stream::redirect` hands that hop to curl)** —
 `AvioState` holds a source enum and `read_cb`/`seek_cb` dispatch: `http` → `stream.rs`'s raw socket, `https` → media's `curlio` credential facade over `plx_net::range_io`. That matters *here* because teardown is a
-different mechanism per arm: `route_start::teardown` (through `NativeStop::unblock_join_close`) fires `stream::http_shutdown` at the socket **and**
+different mechanism per arm: `route_start::teardown` (through `FeedStop::stop_unblock`) fires `stream::http_shutdown` at the socket **and**
 `curlio::abort_active()` through `net::range_io` at the curl source's wake pipe, since a thread parked in `curl_multi_wait`
 is not one any `shutdown(2)` of ours can reach. Exactly one of the two ever has anything to do. Ours ships beside the binary as `libav*-plx.so.*`, is `dlopen`'d by absolute path
 and pinned to majors 63/63/61, and is built `--disable-network` with `file` as its only protocol —
@@ -140,7 +140,7 @@ and the native feed refuses a source shape it cannot represent.
   user; `plx_media::player::{FEED_SHARED, FEED_TX}` re-exports them for `screens` and the
   application loop). `SHARED` and `TX` in `shared_resources.rs` hold only what is common to a
   backend (captions, container track names, the audio-pick reason, `hud_until`, `scrub_ns`), and
-  `SHARED.reset_session` composes the caption reset into the feed's reset barrier. Route ownership
+  `FeedStop::reset` runs `SHARED.reset_session` inside the feed's reset barrier. Route ownership
   and route-changing intents are the separate process-wide authority in `route::PLAYER_CONTROL`.
 - **The pending seek is the session readout's, not a mailbox media writes.** A request is
   `ReadoutEvent::SeekRequested` plus `FeedCommand::Seek` (`player::request_seek`, the one place);

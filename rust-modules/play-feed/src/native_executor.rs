@@ -712,7 +712,7 @@ fn destroy_native_window(mt: &MainThread, sp: &mut TeardownSpans, hooks: &Releas
 
 /// Owns a removed Engine through worker joins, native release and queue destruction. Common
 /// route/report work may run between its phases without receiving the Engine or native handles.
-pub struct NativeStop {
+pub(crate) struct NativeStop {
     eng: Engine,
     stream: bool,
     spans: TeardownSpans,
@@ -729,6 +729,9 @@ impl NativeStop {
         Self { eng, stream, spans: TeardownSpans::new(), abandoned_load: None, unload_th: None,
             release_status: plx_playback_contract::ReleaseStatus::Closing }
     }
+
+    /// The attempt whose Engine this stop owns.
+    pub fn attempt(&self) -> plx_playback_contract::AttemptId { self.eng.attempt }
 
     /// The side reader must stop before the paired demux reader is joined.
     pub fn stop_side_reader(&mut self, for_reload: bool) {

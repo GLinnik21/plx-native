@@ -1316,7 +1316,7 @@ mod tests {
 mod abandoned_load_tests {
     use super::*;
     use crate::player::shared::Stage;
-    use crate::player::{FEED_SHARED, SHARED};
+    use crate::player::FEED_SHARED;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
@@ -1327,7 +1327,7 @@ mod abandoned_load_tests {
             crate::player::ffi_host::reset_native_lifecycle_for_test();
             crate::player::ffi_host::force_clocksink_for_test(false);
             FEED_SHARED.test_force_native_idle();
-            SHARED.reset_session();
+            crate::player::reset_session_for_test();
             crate::route::reset_player_control_for_test(crate::route::idle_session_for_test());
         }
     }
@@ -1336,7 +1336,7 @@ mod abandoned_load_tests {
     /// until `release` is set. Bound to the fixture attempt, addressed in `ps`.
     fn loading_preview(ps: &mut crate::route::PlaybackSession,
         release: &Arc<AtomicBool>) -> crate::player::adapter::PlayerAdapter {
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
         crate::route::reset_player_control_for_test(ps);
         crate::player::ffi_host::reset_native_lifecycle_for_test();
         crate::player::ffi_host::force_clocksink_for_test(true);

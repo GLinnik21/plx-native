@@ -3,7 +3,6 @@
 
 use plx_play_feed::shared::{FEED_SHARED, FEED_TX};
 use super::*;
-use crate::player::SHARED;
 #[allow(unused_imports)]
 use super::test_support::*;
 use crate::abr::Direction;
@@ -965,10 +964,10 @@ fn retired_reserve_does_not_sample_successor_playhead() {
     let _serial = plx_base::testlock::serial();
     struct Reset;
     impl Drop for Reset {
-        fn drop(&mut self) { SHARED.reset_session(); }
+        fn drop(&mut self) { crate::player::reset_session_for_test(); }
     }
     let _reset = Reset;
-    SHARED.reset_session();
+    crate::player::reset_session_for_test();
     let first_epoch = FEED_SHARED.begin_native_session().expect("first native epoch");
     let first = crate::player::demux_session::capture(
         plx_playback_contract::AttemptId::new(8, 1), first_epoch,
@@ -980,7 +979,7 @@ fn retired_reserve_does_not_sample_successor_playhead() {
     FEED_SHARED.playpos_ns.store(40_000_000_000, Ordering::Release);
     assert_eq!(reserve.remaining(), Some(std::time::Duration::from_millis(500)));
 
-    SHARED.reset_session();
+    crate::player::reset_session_for_test();
     let _next_epoch = FEED_SHARED.begin_native_session().expect("successor native epoch");
     FEED_SHARED.playpos_ns.store(40_100_000_000, Ordering::Release);
     assert_eq!(reserve.remaining(), None);

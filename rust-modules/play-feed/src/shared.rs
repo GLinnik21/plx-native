@@ -15,6 +15,7 @@ use std::sync::atomic::{
 use std::sync::{Condvar, Mutex};
 
 pub use plx_playback_contract::readout::RefusalPath;
+use plx_playback_contract::feed::ResetScope;
 use std::time::{Duration, Instant};
 
 /// Physical 1x transport rate and its unknown speed-audio readout.
@@ -963,21 +964,23 @@ impl Shared {
     /// later, and until then a zero here is a playbar drawn at position ÷ 0 (`engine::teardown`
     /// has the account).
     pub fn reset_session_for_reload(&self) {
-        let duration_ns = self.duration_ns.load(Ordering::Relaxed);
-        self.reset_session_inner();
-        self.duration_ns.store(duration_ns, Ordering::Relaxed);
+        self.reset_scoped(ResetScope::Reload, &mut || {});
     }
 
     /// Everything here describes one engine's session and must not outlive it. (The Original
     /// failure, which outlives an engine reload, is the player's readout, not a mailbox.)
     pub fn reset_session(&self) {
-        self.reset_session_inner();
+        self.reset_scoped(ResetScope::Stop, &mut || {});
     }
 
-    fn reset_session_inner(&self) {
-        // Preserve the callback/reset barrier across every mirror write below. Abandoned and
-        // releasing objects keep their native phase while their old callbacks drain.
-        self.reset_session_with(|| {});
+    /// The session reset of [`plx_playback_contract::feed::FeedStop::reset`]: the mirrors and `common` inside the
+    /// callback/reset barrier, and for a reload the duration the demuxer published kept.
+    pub fn reset_scoped(&self, scope: ResetScope, common: &mut dyn FnMut()) {
+        let duration_ns = self.duration_ns.load(Ordering::Relaxed);
+        self.reset_session_with(|| common());
+        if scope == ResetScope::Reload {
+            self.duration_ns.store(duration_ns, Ordering::Relaxed);
+        }
     }
 
     /// Keep common resource retirement inside the existing callback/reset barrier.
