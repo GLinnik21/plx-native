@@ -13,7 +13,7 @@ use crate::abr::Direction;
 struct HlsCandidateTransition(u64);
 
 impl HlsCandidateTransition {
-    fn arm_unowned_for_test() -> Result<Self, crate::player::HlsClockFenceError> {
+    fn arm_unowned_for_test() -> Result<Self, plx_play_feed::shared::HlsClockFenceError> {
         FEED_SHARED.begin_hls_candidate_transition(None).map(Self)
     }
 

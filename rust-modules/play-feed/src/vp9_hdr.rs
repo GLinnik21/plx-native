@@ -32,7 +32,10 @@
 //! HEVC mastering-display SEI), not FFmpeg's R, G, B; the HEVC envelope above has G's x in
 //! `displayPrimariesX0`.
 
-pub use plx_playback_contract::video::{Rat, Mastering, ContainerHdr, TRC_PQ};
+pub use plx_playback_contract::video::{Rat, Mastering, ContainerHdr};
+
+/// `AVCOL_TRC_SMPTE2084`: the PQ transfer function, i.e. HDR10 when carried with BT.2020.
+pub const TRC_PQ: i32 = 16;
 
 fn le_i32(b: &[u8], at: usize) -> Option<i32> {
     Some(i32::from_le_bytes(b.get(at..at + 4)?.try_into().ok()?))

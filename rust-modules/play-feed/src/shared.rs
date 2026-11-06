@@ -184,9 +184,22 @@ impl HlsClockState {
     }
 }
 
-// The fence error, the transition kinds and the pause cursor are contract vocabulary; the old
-// paths stay for this crate's own code.
-pub use plx_playback_contract::feed::{HlsAutomaticTransition, HlsClockFenceError};
+/// Why an HLS clock fence was refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HlsClockFenceError {
+    Stopping,
+    Overlap,
+    Exhausted,
+    Superseded,
+}
+
+/// Which automatic quality transition owns the HLS clock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HlsAutomaticTransition {
+    QualityUp,
+    QualityDown,
+    Original,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HlsAutomaticPhase {
@@ -206,8 +219,16 @@ struct HlsAutomaticOwner {
 // (`plx_playback_contract::feed`); the old paths stay for this crate's own code and for media's
 // `player::shared` glob.
 pub use plx_playback_contract::feed::{
-    HlsPauseCompletion, HlsPlayCompletion, HlsSeekPause, HlsUserPause, HlsUserResume, Stage,
+    HlsPauseCompletion, HlsPlayCompletion, HlsUserPause, HlsUserResume, Stage,
 };
+
+/// What reserving the native Pause for an in-place seek decided: a Pause to issue under the
+/// clock's token, or the hold that is already in place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HlsSeekPause {
+    Issue(u64),
+    AlreadyHeld,
+}
 
 pub use plx_playback_contract::readout::PlaybackState;
 
@@ -1911,7 +1932,43 @@ impl UserPauseClock {
     }
 }
 
-pub use plx_playback_contract::feed::{UserPauseCursor, UserPauseSnapshot};
+/// The accepted-transport state a worker samples: the monotone sequence of Pause/Resume pairs and
+/// the cumulative time spent paused.
+#[derive(Clone, Copy, Debug)]
+pub struct UserPauseSnapshot {
+    pub now: std::time::Instant,
+    pub elapsed: Duration,
+    pub paused: bool,
+    pub sequence: u64,
+}
+
+/// Per-worker cursor over accepted transport events. A complete Pause→Resume may happen while a
+/// worker is blocked in native queue/network I/O; consuming the monotone sequence plus cumulative
+/// duration makes that interval observable even when both surrounding boolean samples are false.
+#[derive(Clone, Copy, Debug)]
+pub struct UserPauseCursor {
+    sequence: u64,
+    elapsed: Duration,
+}
+
+impl UserPauseCursor {
+    pub fn new(snapshot: UserPauseSnapshot) -> Self {
+        Self {
+            sequence: snapshot.sequence,
+            elapsed: snapshot.elapsed,
+        }
+    }
+
+    pub fn consume_completed(&mut self, snapshot: UserPauseSnapshot) -> Option<Duration> {
+        if snapshot.paused || snapshot.sequence == self.sequence {
+            return None;
+        }
+        let elapsed = snapshot.elapsed.saturating_sub(self.elapsed);
+        self.sequence = snapshot.sequence;
+        self.elapsed = snapshot.elapsed;
+        (!elapsed.is_zero()).then_some(elapsed)
+    }
+}
 
 /// **The Feed backend's process-lifetime transport** (pause, seek intent, preroll). The common
 /// player's own `TX` holds only what the player screen publishes (`hud_until`, `scrub_ns`).

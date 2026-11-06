@@ -26,6 +26,3 @@ pub struct ContainerHdr {
     /// (MaxCLL, MaxFALL), from `AVContentLightMetadata`.
     pub cll: Option<(u32, u32)>,
 }
-
-/// `AVCOL_TRC_SMPTE2084`: the PQ transfer function, i.e. HDR10 when carried with BT.2020.
-pub const TRC_PQ: i32 = 16;
