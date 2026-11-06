@@ -127,8 +127,14 @@ impl<'a> PosterFan<'a> {
     /// The art the shared tile is handed for card `i`: a poster's facts with no watch state, so
     /// `widgets::poster_mark` is `None` and the tile draws no tick. Other variants carry no state.
     pub fn art(&self, i: usize) -> crate::widgets::Art<'a> {
+        Self::stateless(self.arts[i])
+    }
+
+    /// `art` with no watch state: the rule [`PosterFan::art`] applies, for a picture that draws
+    /// its tiles itself (the Under posters picture, whose tile of a kind with no poster is not art).
+    pub fn stateless(art: crate::widgets::Art<'a>) -> crate::widgets::Art<'a> {
         use crate::widgets::Art;
-        match self.arts[i] {
+        match art {
             Art::Poster(Some(f)) => Art::Poster(Some(crate::tile::TileFacts { watched: false, resume: None, ..f })),
             other => other,
         }

@@ -91,7 +91,7 @@ fn pops(effects: &[Stamped<InnerHost>]) -> bool {
 }
 
 fn poster(title: &str, year: i32, genre: &str) -> PmsMovie {
-    PmsMovie { title: title.into(), year, genre: Some(genre.into()), ..Default::default() }
+    PmsMovie { title: title.into(), year, genre: Some(genre.into()), thumb: format!("/library/metadata/{title}/thumb"), ..Default::default() }
 }
 
 fn show(title: &str, year: i32, genre: &str) -> PmsMovie {
@@ -672,15 +672,86 @@ fn every_under_posters_string_fits_in_every_language() {
 // ---- the picture ----------------------------------------------------------------------------
 
 #[test]
-fn the_pages_picture_reads_the_first_cached_posters_of_the_current_library() {
+fn the_pages_picture_reads_the_first_movie_and_the_first_show_of_the_cache() {
     let _guard = plx_base::testlock::serial();
-    let items: Vec<PmsMovie> = ["Alpha", "Bravo", "Charlie", "Delta", "Echo"].into_iter().map(|t| poster(t, 2000, "Noir")).collect();
+    let items: Vec<PmsMovie> = [show("Sitcom", 2011, "Comedy"), poster("Alpha", 2000, "Noir"), poster("Bravo", 2001, "Noir"), show("Drama", 2012, "Drama")].into();
     let snapshot = plx_data::stores::browse::DirectorySnapshot::fixture(0, 0, Vec::new()).with_sample(items);
     let c = cx_with(None, snapshot.view());
     let titles: Vec<&str> = preview_posters(&c).iter().map(|m| m.title.as_str()).collect();
-    assert_eq!(titles.len(), SAMPLE_POSTERS);
-    assert_eq!(titles, vec!["Alpha", "Bravo", "Charlie", "Delta"], "the first few, no more");
-    assert!(preview_posters(&cx(None)).is_empty(), "no library cached: the samples");
+    assert_eq!(titles, vec!["Alpha", "Sitcom"], "the first movie, then the first show, no more");
+    assert!(preview_posters(&cx(None)).is_empty(), "no library cached: no poster of either kind");
+}
+
+#[test]
+fn both_kinds_are_sourced_when_the_last_opened_library_lists_only_one() {
+    let _guard = plx_base::testlock::serial();
+    // The last opened library is Movies. The show is in another library's retained shelf.
+    let movies: Vec<PmsMovie> = [poster("Alpha", 2000, "Noir"), poster("Bravo", 2001, "Noir")].into();
+    let elsewhere: Vec<PmsMovie> = [poster("Other film", 1990, "Noir"), show("Sitcom", 2011, "Comedy")].into();
+    let snapshot = plx_data::stores::browse::DirectorySnapshot::fixture(0, 0, Vec::new()).with_sample(movies).with_shelf_sample(elsewhere);
+    let c = cx_with(None, snapshot.view());
+    let titles: Vec<&str> = preview_posters(&c).iter().map(|m| m.title.as_str()).collect();
+    assert_eq!(titles, vec!["Alpha", "Sitcom"], "the current library's movie first, the show from the widest cache");
+    // Only a shelf, no listing at all (the library has not landed): both kinds still come from it.
+    let shelf_only = plx_data::stores::browse::DirectorySnapshot::fixture(0, 0, Vec::new())
+        .with_shelf_sample([show("Sitcom", 2011, "Comedy"), poster("Other film", 1990, "Noir")].into());
+    let c = cx_with(None, shelf_only.view());
+    let titles: Vec<&str> = preview_posters(&c).iter().map(|m| m.title.as_str()).collect();
+    assert_eq!(titles, vec!["Other film", "Sitcom"]);
+}
+
+#[test]
+fn a_title_with_no_poster_path_is_not_art_and_never_a_sample() {
+    let _guard = plx_base::testlock::serial();
+    let bare = PmsMovie { thumb: String::new(), ..show("Bare", 2011, "Comedy") };
+    let snapshot = plx_data::stores::browse::DirectorySnapshot::fixture(0, 0, Vec::new())
+        .with_sample([poster("Alpha", 2000, "Noir"), bare].into())
+        .with_shelf_sample([show("Sitcom", 2011, "Comedy")].into());
+    let c = cx_with(None, snapshot.view());
+    let titles: Vec<&str> = preview_posters(&c).iter().map(|m| m.title.as_str()).collect();
+    assert_eq!(titles, vec!["Alpha", "Sitcom"], "the show with no thumb is passed over for one that has art");
+}
+
+/// What one draw of the picture (both kinds) counts as placeholders, over `posters`.
+fn placeholders_of(value: UnderPosters, posters: &[&PmsMovie], kinds: &[PosterKind]) -> plx_ui::placeholder::Frame {
+    use plx_ui::follow_copy::PictureSlot;
+    let picture = RootPicture { value, posters, kinds, sorted: false };
+    plx_ui::placeholder::capture_declared(|| picture.draw(plx_ui::Painter::root(), RouteLayout::settings_page().picture_slot(), &ShippedMeasure)).1
+}
+
+#[test]
+fn the_picture_never_draws_a_skeleton_or_an_empty_art_key_card() {
+    let _guard = plx_base::testlock::serial();
+    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let (movie, tv) = (poster("Alpha", 1999, "Noir"), show("Sitcom", 2011, "Comedy"));
+    let kinds = [PosterKind::Movie, PosterKind::Show];
+    for value in every_value() {
+        // neither kind has art anywhere: the finished art-less face, twice
+        let none = placeholders_of(value, &[], &kinds);
+        assert_eq!(none.count, 0, "{value:?}: no poster of either kind is not a placeholder: {none:?}");
+        // one kind has art, the other has none
+        let one = placeholders_of(value, &[&movie], &kinds);
+        // only the movie's card waits (on its own poster, by its own key); the show wears the face
+        assert_eq!(one.count, 1, "{value:?}: a show with no art is not a skeleton: {one:?}");
+        assert_eq!(one.entries[0].key, movie.thumb, "{value:?}: the one card waiting is the movie's, by its art key: {one:?}");
+        // a poster whose row has no poster path is no art either
+        let bare = PmsMovie { thumb: String::new(), ..tv.clone() };
+        let blank = placeholders_of(value, &[&bare], &[PosterKind::Show]);
+        assert_eq!(blank.of(plx_ui::placeholder::Reason::CardSkeleton), 0, "{value:?}: a row with no thumb draws the art-less face: {blank:?}");
+        assert!(blank.entries.iter().all(|e| !e.key.is_empty()), "{blank:?}");
+    }
+}
+
+#[test]
+fn a_kind_with_art_still_draws_through_the_shared_card() {
+    let _guard = plx_base::testlock::serial();
+    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let (movie, tv) = (poster("Alpha", 1999, "Noir"), show("Sitcom", 2011, "Comedy"));
+    // With art, the card is the shared one: it waits on its poster like any tile (a counted skeleton
+    // with its real key until the poster source answers), and never on an empty key.
+    let seen = placeholders_of(UnderPosters::DEFAULT, &[&movie, &tv], &[PosterKind::Movie, PosterKind::Show]);
+    assert_eq!(seen.of(plx_ui::placeholder::Reason::CardSkeleton), 2, "two tiles of art, each still waiting on its poster: {seen:?}");
+    assert!(seen.entries.iter().all(|e| !e.key.is_empty()), "every card names its art: {seen:?}");
 }
 
 #[test]

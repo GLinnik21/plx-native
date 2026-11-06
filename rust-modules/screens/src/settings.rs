@@ -1747,7 +1747,8 @@ impl Screen<InnerHost> for RootPage {
         // from the focused row alone and the library's own first posters.
         let posters: Vec<&plx_data::pms::PmsMovie> = f.cx.views.directory.sample(PICTURE_POSTERS).collect();
         let fan = plx_ui::follow_copy::PosterFan { arts: posters.iter().map(|m| plx_ui::widgets::Art::Poster(Some(super::registry::tile_facts::of(m)))).collect() };
-        let under = under_posters::RootPicture { value: self.state.under_posters, posters: &posters, kinds: &[PosterKind::Movie, PosterKind::Show], sorted: false };
+        let kind_posters = under_posters::preview_posters(f.cx);
+        let under = under_posters::RootPicture { value: self.state.under_posters, posters: &kind_posters, kinds: &[PosterKind::Movie, PosterKind::Show], sorted: false };
         let picture: Option<&dyn plx_ui::follow_copy::PictureSlot> = match self.form.selected_id() {
             Some(RootId::Favourites) => Some(&fan),
             Some(RootId::UnderPosters) => Some(&under),

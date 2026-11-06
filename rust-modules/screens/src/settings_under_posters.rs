@@ -12,7 +12,9 @@
 //! shared [`FollowCopy`](plx_ui::follow_copy::FollowCopy)), and a row with none shows the page's.
 //! The picture under that sentence is the shared picture slot ([`RootPicture`], also drawn on the
 //! Settings root): a movie poster and a show poster, each with the lines the stored setting gives
-//! it. The lines are worded by the SAME policy the Library, Collections, the Watchlist, Home and
+//! it. Each tile's art is the first poster of its kind from the widest cache the Browse store holds
+//! ([`preview_posters`]); a kind with none anywhere is a finished art-less face
+//! (`plx_ui::widgets::absent_card`), never a skeleton. The lines are worded by the SAME policy the Library, Collections, the Watchlist, Home and
 //! Recommended read ([`crate::registry::captions`], [`plx_ui::caption_policy`]); a face with no
 //! artwork carries no word, and a tile whose kind the library has no poster of is worded from a
 //! sample of its kind. A line the setting turns on is never drawn empty, for any kind of tile (a
@@ -337,9 +339,6 @@ impl UnderPostersPage {
 /// The year of the sample a picture with no poster behind it shows.
 const SAMPLE_YEAR: i32 = 2019;
 
-/// How many of the library's first cached posters a picture looks through for one of each kind.
-pub(super) const SAMPLE_POSTERS: usize = 4;
-
 /// The sample facts a tile with no poster behind it is captioned from.
 fn sample_facts() -> CaptionFacts {
     use plx_platform::i18n::msg;
@@ -431,14 +430,20 @@ impl plx_ui::follow_copy::PictureSlot for RootPicture<'_> {
     fn draw(&self, p: Painter, slot: Rect, measure: &dyn plx_machine::machine::Measure) {
         use plx_ui::label::{HAlign, Label, VAlign};
         let size = theme::size::CAPTION;
-        // The art of a tile is the shared one, with no watch state (the fan's own rule).
-        let fan = plx_ui::follow_copy::PosterFan {
-            arts: self.kinds.iter().map(|k| Art::Poster(poster_of(*k, self.posters).map(|m| tile_facts::of(m)))).collect(),
-        };
+        // The art of a tile is the shared one, with no watch state (the fan's own rule). A kind with
+        // no poster path anywhere is `None`: drawn as the art-less face, never as `Art::Poster(None)`,
+        // which is a skeleton (a card that is still loading, and for an empty key one that never will).
+        let arts: Vec<Option<Art>> = self.kinds.iter()
+            .map(|k| poster_of(*k, self.posters).filter(|m| !m.thumb.is_empty()).map(|m| Art::Poster(Some(tile_facts::of(m)))))
+            .collect();
         let line_cap_top = plx_gfx::text::css_cap_drop(size, PICTURE_LINE_H, measure.cap_h(size));
         for (i, kind) in self.kinds.iter().enumerate() {
             let x = slot.x + PICTURE_TILE_STEP * i as f32;
-            plx_ui::widgets::card(p, Rect::new(x, slot.y, PICTURE_TILE_W, PICTURE_TILE_H), fan.art(i), theme::CARD_RING_RAD, false, 1.0, 0.0);
+            let tile = Rect::new(x, slot.y, PICTURE_TILE_W, PICTURE_TILE_H);
+            match arts[i] {
+                Some(art) => plx_ui::widgets::card(p, tile, plx_ui::follow_copy::PosterFan::stateless(art), theme::CARD_RING_RAD, false, 1.0, 0.0),
+                None => plx_ui::widgets::absent_card(p, tile, theme::CARD_RING_RAD),
+            }
             let lines = picture_lines(self.value, *kind, poster_of(*kind, self.posters), self.sorted);
             // Present lines stack from the first: a title (bold) over its details.
             for (n, (line, is_title)) in lines.into_iter().zip([true, false]).filter_map(|(l, t)| l.map(|l| (l, t))).enumerate() {
@@ -458,9 +463,13 @@ impl plx_ui::follow_copy::PictureSlot for RootPicture<'_> {
     }
 }
 
-/// The posters a page's picture looks through: the current library's first cached ones.
-fn preview_posters<'a>(cx: &Cx<'a, InnerHost>) -> Vec<&'a PmsMovie> {
-    cx.views.directory.sample(SAMPLE_POSTERS).collect()
+/// The posters a page's picture draws: the first movie and the first show, with art, from the
+/// widest cache the Browse store holds (`DirectoryView::kind_poster`: the current library, then every
+/// other library it still has rows of), so a user whose last opened library lists only Movies still
+/// sees a real show. A kind the cache has no poster of is absent from the list, and its tile is the
+/// finished art-less face ([`RootPicture`]).
+pub(super) fn preview_posters<'a>(cx: &Cx<'a, InnerHost>) -> Vec<&'a PmsMovie> {
+    [plx_data::pms::KIND_MOVIE, plx_data::pms::KIND_SHOW].into_iter().filter_map(|kind| cx.views.directory.kind_poster(kind)).collect()
 }
 
 impl Machine<InnerHost> for UnderPostersPage {
