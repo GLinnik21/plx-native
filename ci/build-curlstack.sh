@@ -25,15 +25,16 @@
 # re-run this script for free, and what CI's `curlstack` cross-build entry caches. A miss builds
 # everything, then publishes it; set PLX_BUILD_CACHE= (empty) to skip the cache entirely.
 #
-# WHY OPENSSL (AGAIN), AND WHY IT IS EXPECTED TO COEXIST NOW. The first version of this script was
-# OpenSSL 3.5.9 and crashed every launch inside the television's own libcurl/libcrypto; the stack
-# moved to GnuTLS and the IDENTICAL crash persisted, because the cause was never OpenSSL: it was the
-# bundled curl's internal self-calls being resolved, through the PLT, to the system libcurl that
-# `libplayerAPIs.so.1` puts in the global scope before `main`. `RTLD_DEEPBIND` on every library of
-# the stack fixed that (`net::curlstack`'s module doc). OpenSSL is back because its `linux-armv4`
-# perlasm carries ARMv8 Crypto Extension paths (AES, PMULL/GHASH, SHA-1, SHA-256) for AArch32,
-# dispatched at run time, which GnuTLS/Nettle do not have on 32-bit ARM: on a Cortex-A55 set that is
-# the difference between table AES and the hardware's own instructions for every TLS byte.
+# WHY OPENSSL, AND HOW IT COEXISTS WITH THE TELEVISION'S. OpenSSL's `linux-armv4` perlasm carries
+# ARMv8 Crypto Extension paths (AES, PMULL/GHASH, SHA-1, SHA-256) for AArch32, dispatched at run
+# time: on a set with a Cortex-A55 that is the difference between table AES and the hardware's own
+# instructions for every TLS byte. The television's own OpenSSL (1.0.x to 3.x by firmware) is in the
+# process too, brought in by the system libcurl that `libplayerAPIs.so.1` needs, so this one is
+# kept apart from it at every level: its own SONAMEs and symbol-version file names
+# (`shlib_variant`, build_openssl), no configuration or module directory any television has
+# (build_openssl), and every library opened `RTLD_DEEPBIND | RTLD_LOCAL` (`net::curlstack`'s
+# module doc), so the bundle binds its own internal calls to itself and none of it joins the
+# global scope.
 #
 # THE SONAME-RENAME CONVENTION is the same `-plx` infix FFmpeg uses (`libavformat-plx.so.63`,
 # ...): `libcrypto-plx.so.3`, `libssl-plx.so.3`, `libnghttp2-plx.so.14`, `libnghttp3-plx.so.9`,

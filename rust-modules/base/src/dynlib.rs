@@ -123,9 +123,10 @@ impl Handle {
     /// resolves ITS OWN undefined references against itself and its own dependency chain FIRST,
     /// and only then against the process's global scope. LOCAL, the opposite direction: its exports
     /// are never added to the global scope. glibc's `RTLD_GLOBAL` would add the library's whole
-    /// search list there, and the television carries older libraries under the same unversioned
-    /// symbol names (`libgnutls.so.28`, `libnettle.so.4`, `libhogweed.so.2`, `libgmp.so.3`), so a
-    /// firmware library `dlopen`'d later could bind to this stack's newer ABIs. Callers reach the
+    /// search list there, and the television carries its own OpenSSL under the same symbol names
+    /// (`libcrypto.so.1.0.0` through `libcrypto.so.3` by firmware, `tools/fwcompat.py --inventory
+    /// libcrypto`), so a firmware library `dlopen`'d later could bind to this stack's
+    /// `libcrypto-plx.so.3` instead of its own. Callers reach the
     /// symbols through the returned handle (`Handle::sym`), which `RTLD_LOCAL` does not affect, and
     /// a later open whose `NEEDED` names one of these SONAMEs still reuses the mapped copy.
     ///

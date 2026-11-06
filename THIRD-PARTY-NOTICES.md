@@ -554,7 +554,7 @@ the television's own OpenSSL lives.
 | Shipped file | Upstream | Version | Licence |
 |---|---|---|---|
 | `libcurl-plx.so.4` | curl | **8.23.0** | **curl** (`licenses/curl.txt`) |
-| `libcrypto-plx.so.3`, `libssl-plx.so.3` | OpenSSL | **3.5.9** | **Apache-2.0** (`licenses/Apache-2.0.txt`); Copyright (c) 1998-2026 The OpenSSL Project Authors, Copyright (c) 1995-1998 Eric A. Young, Tim J. Hudson |
+| `libcrypto-plx.so.3`, `libssl-plx.so.3` | OpenSSL | **3.5.9** | **Apache-2.0** (`licenses/Apache-2.0.txt`); Copyright 1995-2026 The OpenSSL Project Authors (OpenSSL ships no `NOTICE` file) |
 | `libnghttp2-plx.so.14` | nghttp2 | **1.71.0** | **MIT** (`licenses/MIT.txt`); Copyright (c) 2012, 2014, 2015, 2016 Tatsuhiro Tsujikawa and nghttp2 contributors |
 | `libnghttp3-plx.so.9` | nghttp3 | **1.19.0** | **MIT** (`licenses/MIT.txt`); Copyright (c) 2019 nghttp3 contributors |
 | `libngtcp2-plx.so.16`, `libngtcp2_crypto_ossl-plx.so.0` | ngtcp2 | **1.26.0** | **MIT** (`licenses/MIT.txt`); Copyright (c) 2016 ngtcp2 contributors |
@@ -562,11 +562,14 @@ the television's own OpenSSL lives.
 **Source.** Each upstream tarball these are built from, with its sha256, is pinned in
 `ci/dependencies.json` (the `curlstack` group: `openssl`, `nghttp2`, `nghttp3`, `ngtcp2`, `curl`),
 and `python3 ci/deps.py fetch <id>` retrieves and verifies each one. The sources are
-**unmodified**: no patches are applied to any of the five. The complete build recipe —
+**unmodified**: no patches are applied to any of the five. OpenSSL's is the `openssl-3.5.9`
+release tag's own tarball; the one thing the build adds is a configuration target written beside
+the build tree, outside the source (`linux-armv4-plx`: `linux-armv4` plus `shlib_variant => "-plx"`),
+which names the output files and changes no source file. The complete build recipe —
 cross-compile flags, the `-plx` SONAME of each output (OpenSSL's own `shlib_variant`; a patchelf
 rename for the others), and curl's enabled-feature list — is `ci/build-curlstack.sh` in the
-PlxNative repository. Apache-2.0 and MIT carry no source obligation; the pins are there so the
-build can be reproduced.
+PlxNative repository. Apache-2.0 and MIT carry no source obligation, and both are compatible with
+PlxNative's GPL-3.0-or-later; the pins are there so the build can be reproduced.
 
 **Configuration.** curl is configured with `--with-openssl --with-ngtcp2 --with-nghttp2
 --with-nghttp3 --disable-ldap --disable-ldaps --disable-rtsp --disable-telnet --disable-dict

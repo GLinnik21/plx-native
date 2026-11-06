@@ -828,9 +828,10 @@ class CurlstackCrossBuild(unittest.TestCase):
     """The opt-in bundled curl stack (`make CURLSTACK=1`) is built and graded in a job of its own, and
     stays out of everything else. Each hole here stays green: a job that builds without the flag on
     one of its two make lines grades a default package twice; a required check waiting on it puts an
-    opt-in build on every merge's critical path; the shared download cache fetching the stack's eight
-    tarballs adds eight hosts that can fail every job; a cache of `vendor/*-prefix` restores and
-    rebuilds anyway (`HostLibraryCaches`)."""
+    opt-in build on every merge's critical path; the shared download cache fetching the stack's five
+    tarballs (~61 MB) adds hosts that can fail every job; a cache of `vendor/*-prefix` restores and
+    rebuilds anyway (`HostLibraryCaches`); pins, the script's build order and the Makefile's list
+    drifting apart leave a library unbuilt, unshipped or unkeyed."""
 
     def test_both_make_lines_carry_the_flag_and_the_default_job_neither(self):
         body = job_body("ci.yml", "cross-build-curlstack")
@@ -866,6 +867,29 @@ class CurlstackCrossBuild(unittest.TestCase):
         self.assertEqual(len(stack), 5)
         # Not `bundled`: no release ships the stack, so the release source bundle does not carry it.
         self.assertFalse(any(d.get("bundled") for d in stack))
+
+    def test_pins_script_and_makefile_name_the_same_stack(self):
+        pins = json.loads((ROOT / "ci/dependencies.json").read_text())
+        ids = {d["id"] for d in pins if d.get("group") == "curlstack"}
+        sh = (ROOT / "ci/build-curlstack.sh").read_text()
+        script = set(re.search(r'(?m)^PREFIXES="([^"]+)"$', sh).group(1).split())
+        mk = (ROOT / "Makefile").read_text()
+        make = set(re.search(r"(?m)^CURLSTACK_PREFIXES = (.+)$", mk).group(1).split())
+        self.assertEqual(ids, script)
+        self.assertEqual(ids, make)
+        # Every pin is built: one `build_<id>` call per prefix, in the script's own build order.
+        for i in ids:
+            self.assertRegex(sh, rf"(?m)^build_{i}$")
+
+    def test_the_job_installs_what_the_script_demands(self):
+        body = job_body("ci.yml", "cross-build-curlstack")
+        packages = set(re.search(r"(?m)^          packages: (.+)$", body).group(1).split())
+        sh = (ROOT / "ci/build-curlstack.sh").read_text()
+        # The tools the script refuses to start without (`command -v ... || fail`).
+        for tool in ("patchelf", "cmake"):
+            self.assertIn(f'command -v "${tool.upper()}"', sh)
+            self.assertIn(tool, packages)
+        self.assertIn("pkg-config", packages)
 
 
 class SiteVideoRelease(unittest.TestCase):

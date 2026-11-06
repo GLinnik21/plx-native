@@ -8,14 +8,15 @@
 //! handle it returns, and `curlio` binds its multi table from the same handle
 //! (`net::bundled_curl`), so the choice between bundled and system curl is made once.
 //!
-//! TLS BACKEND IS OpenSSL 3.5 (libcrypto/libssl `-plx`), for its AArch32 ARMv8 Crypto Extension
-//! paths (AES, PMULL, SHA-1/SHA-256, dispatched at run time) that GnuTLS/Nettle lack on 32-bit ARM.
-//! The first OpenSSL build of this bundle crashed deterministically beside the television's own
-//! libcurl/libcrypto, was replaced by GnuTLS, and the IDENTICAL crash persisted: the cause was the
-//! system libcurl winning the bundled curl's internal PLT calls, which `RTLD_DEEPBIND` below fixed,
-//! not a second OpenSSL in the process. Every library here is still `RTLD_LOCAL`, so the bundled
-//! libcrypto/libssl never join the global scope the firmware's own OpenSSL users resolve against.
-//! `ci/build-curlstack.sh`'s `build_openssl` has the config/module isolation.
+//! TLS BACKEND IS OpenSSL 3.5 (`libcrypto-plx.so.3`, `libssl-plx.so.3`), for its AArch32 ARMv8
+//! Crypto Extension paths (AES, PMULL/GHASH, SHA-1, SHA-256), chosen at run time, so a CPU that has
+//! them runs TLS on its own instructions instead of table code. The television's own OpenSSL (1.0.x
+//! to 3.x by firmware) is usually in the process too, through the system libcurl below. The two
+//! never meet: every library here is opened `RTLD_DEEPBIND` (the bundle binds its own calls to
+//! itself) and `RTLD_LOCAL` (nothing of it joins the global scope the firmware's OpenSSL users
+//! resolve against); the `-plx` SONAMEs and symbol-version file names come from OpenSSL's own
+//! build; and `ci/build-curlstack.sh`'s `build_openssl` points its configuration and module
+//! directories at a path no television has, so it reads none of the firmware's OpenSSL files.
 //!
 //! WHY `RTLD_DEEPBIND` on every one of the seven (`dynlib::Handle::open_in_deepbind`'s doc has the
 //! mechanism): the television's `libplayerAPIs.so.1`, linked by every build of this app, has a

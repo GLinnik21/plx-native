@@ -914,7 +914,8 @@ FFMPEG_STAGED = $(addprefix pkg/,$(FFMPEG_SONAMES))
 # (`plx_net::net::load_bundled`, which falls back to the television's own libcurl 7.53.1 the moment
 # any one of them is missing). The flag and the feature move together: `+curlstack` in the build
 # stamp (RUST_CFG) and its own target dir, for the same reasons LAB has them. OpenSSL 3.5 for its
-# AArch32 Crypto Extension paths; `ci/build-curlstack.sh`'s header has why it coexists now.
+# AArch32 Crypto Extension paths; `ci/build-curlstack.sh`'s header has how it coexists with the
+# television's own OpenSSL.
 # Like RELEASE and LAB, any non-empty value turns it on; only `1` is accepted, so `CURLSTACK=0`
 # fails here instead of meaning "on".
 ifneq ($(filter-out 1,$(CURLSTACK)),)
@@ -1380,7 +1381,7 @@ deploy: pkg/plxnative pkg/plxnative-storage $(FFMPEG_STAGED) $(CURLSTACK_STAGED)
 	# deploy leaves a stack an earlier CURLSTACK=1 deploy put there alone: its binary has no loader
 	# for it (the `http3-curlstack` feature is off), so the files are inert, and a default deploy
 	# keeps the ssh round trips it always had.
-	$(if $(CURLSTACK),$(SSH) 'cd $(APPDIR) && for f in libgmp-plx.so.* libnettle-plx.so.* libhogweed-plx.so.* libtasn1-plx.so.* libgnutls-plx.so.* libcrypto-plx.so.* libssl-plx.so.* libnghttp2-plx.so.* libnghttp3-plx.so.* libngtcp2-plx.so.* libngtcp2_crypto_gnutls-plx.so.* libngtcp2_crypto_ossl-plx.so.* libcurl-plx.so.*; do case " $(CURLSTACK_SONAMES) " in *" $$f "*) ;; *) rm -f "$$f";; esac; done')
+	$(if $(CURLSTACK),$(SSH) 'cd $(APPDIR) && for f in libcrypto-plx.so.* libssl-plx.so.* libnghttp2-plx.so.* libnghttp3-plx.so.* libngtcp2-plx.so.* libngtcp2_crypto_*-plx.so.* libcurl-plx.so.*; do case " $(CURLSTACK_SONAMES) " in *" $$f "*) ;; *) rm -f "$$f";; esac; done')
 
 	$(SCP) pkg/plxnative tv:$(APPDIR)/plxnative.new
 	@# The lab session file, under LAB=1 only. Shipped by deploy as well as by the .ipk so the

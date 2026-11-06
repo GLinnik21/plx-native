@@ -18,11 +18,11 @@ description: >
 # an incomplete entry for the life of that manifest. Fetching everything on a miss costs one
 # ~40 MB download, once per manifest change.
 #
-# THE CURL STACK IS NOT IN IT. The `curlstack` group (ci/build-curlstack.sh's eight tarballs) is
-# read only by a CURLSTACK=1 build, which no default job makes, so fetching it here would add ~20 MB
-# and eight more upstream hosts that can fail every job's cache fill. The one job that builds it
-# (ci.yml's cross-build `curlstack` entry) restores the script's installed tree from its own cache
-# and downloads the tarballs only on a miss.
+# THE CURL STACK IS NOT IN IT. The `curlstack` group (ci/build-curlstack.sh's five tarballs) is
+# read only by a CURLSTACK=1 build, which no default job makes, so fetching it here would add ~61 MB
+# (OpenSSL's alone is 53 MB) and more upstream hosts that can fail every job's cache fill. The one
+# job that builds it (ci.yml's `cross-build-curlstack`) restores the script's installed tree from
+# its own cache and downloads the tarballs only on a miss.
 #
 # Call it after actions/checkout; the manifest has to be on disk to be hashed.
 

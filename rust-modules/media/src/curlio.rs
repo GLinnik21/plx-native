@@ -226,9 +226,9 @@ const CURLOPT_SSL_VERIFYHOST: c_int = 81;
 const CURLOPT_BUFFERSIZE: c_int = 98;
 const CURLOPT_NOSIGNAL: c_int = 99;
 /// `CURLOPT_SSL_OPTIONS` (VALUES + 216) / `CURLSSLOPT_NATIVE_CA` (`1 << 4`) — see `net.rs`'s own
-/// doc on the same pair for why it is sent (a GnuTLS build of the bundled curl loads no trust
-/// anchors without it; the current OpenSSL build ignores it on Linux and uses its compiled-in CA
-/// path). Set only for a strict attempt, never key or roots
+/// doc on the same pair: sent only when [`plx_net::net::native_ca_needed`] says the bound curl's
+/// TLS library loads no trust anchors without it (GnuTLS; no curl this app binds today), and
+/// only for a strict attempt, never key or roots
 /// mode: roots mode deliberately narrows trust to the shipped bundle, and key mode may already
 /// have `VERIFYPEER` off, so widening the trust store there would be pointless or wrong.
 const CURLOPT_SSL_OPTIONS: c_int = 216;
@@ -1147,11 +1147,14 @@ impl CurlSource {
                 plx_net::net::curl_easy_setopt_long(easy, CURLOPT_SSL_VERIFYHOST, 2),
                 "CURLOPT_SSL_VERIFYHOST"
             );
-            if matches!(mode, keypin::Mode::Strict) && plx_net::net::bundled() {
+            let strict = matches!(mode, keypin::Mode::Strict);
+            if strict && plx_net::net::native_ca_needed(plx_net::net::tls_backend()) {
                 require_setopt!(
                     plx_net::net::curl_easy_setopt_long(easy, CURLOPT_SSL_OPTIONS, CURLSSLOPT_NATIVE_CA),
                     "CURLOPT_SSL_OPTIONS"
                 );
+            }
+            if strict && plx_net::net::bundled() {
                 require_setopt!(
                     plx_net::net::curl_easy_setopt_long(easy, CURLOPT_ALTSVC_CTRL, CURLALTSVC_H3),
                     "CURLOPT_ALTSVC_CTRL"

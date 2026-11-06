@@ -135,20 +135,15 @@ const CURLOPT_MAXREDIRS: c_int = 68;
 const CURLOPT_SSL_VERIFYPEER: c_int = 64;
 const CURLOPT_SSL_VERIFYHOST: c_int = 81;
 /// `CURLOPT_SSL_OPTIONS` (VALUES + 216) and its `CURLSSLOPT_NATIVE_CA` bit (`1 << 4`). Set only
-/// in [`TlsCfg::Ca`]'s arm, and only when [`bundled`]. Under the bundled curl's current OpenSSL
-/// backend it is inert on Linux (curl's `vtls/openssl.c` reads it only for the Windows and Apple
-/// stores); that build's trust comes from its compiled-in CA path, the television's hashed
-/// `/etc/ssl/certs` (`ci/build-curlstack.sh`, `build_curl`). It is kept because a GnuTLS build of
-/// the same bundle needs it: curl's GnuTLS backend does NOT
-/// fall back to its own build-time default trust store on its own: `gtls_populate_creds` in
-/// curl's `vtls/gtls.c` only calls `gnutls_certificate_set_x509_system_trust` when this bit is
-/// set, so without it every bundled-curl handle carries ZERO trust anchors regardless of how
-/// GnuTLS itself was built (confirmed on-device — every request failed
-/// `GNUTLS_CERT_SIGNER_NOT_FOUND` even after GnuTLS was built with a correct
-/// `--with-default-trust-store-dir`). The firmware's system curl (7.53.1, OpenSSL) predates this
-/// option's `CURLSSLOPT_NATIVE_CA` meaning and has its own default CAPATH regardless, so this is
-/// never sent on that path. Present in libcurl since 7.25.0 (the option id) / 7.71.0 (this bit);
-/// the bundled curl is 8.23.0, so it is always recognised when sent.
+/// in [`TlsCfg::Ca`]'s arm, and only when [`native_ca_needed`] says the bound curl's TLS library
+/// loads no trust anchors without it, which today is GnuTLS alone: `gtls_populate_creds` in curl's
+/// `vtls/gtls.c` calls `gnutls_certificate_set_x509_system_trust` only when this bit is set. No
+/// curl this app ships or binds is a GnuTLS build (the television's and the bundled one are both
+/// OpenSSL), so on every device it is not sent. Under OpenSSL on Linux the bit adds no anchors
+/// (curl's `vtls/openssl.c` reads it only for the Windows and Apple stores) and would only turn
+/// off curl's shared CA-store cache; the bundled curl's trust is its compiled-in CA path, the
+/// television's hashed `/etc/ssl/certs` (`ci/build-curlstack.sh`, `build_curl`). Present in
+/// libcurl since 7.25.0 (the option id) / 7.71.0 (this bit).
 const CURLOPT_SSL_OPTIONS: c_int = 216;
 const CURLSSLOPT_NATIVE_CA: c_long = 1 << 4;
 /// `CURLOPT_ALTSVC_CTRL` (VALUES + 286) and `CURLOPT_ALTSVC` (OBJECTPOINT + 287) — opportunistic
@@ -160,7 +155,7 @@ const CURLSSLOPT_NATIVE_CA: c_long = 1 << 4;
 /// it in — uses QUIC on every later request to that host for as long as the entry stays fresh.
 /// Only `CURLALTSVC_H3` is set: H1/H2 upgrades offer nothing new, since ALPN already picks the
 /// best of those on every handshake. Both options present since libcurl 7.64.1; the bundled curl
-/// is 8.23.0. Set only in [`TlsCfg::Ca`]'s arm, alongside `CURLSSLOPT_NATIVE_CA`: roots and key
+/// is 8.23.0, the only curl it is set on ([`bundled`]). Set only in [`TlsCfg::Ca`]'s arm: roots and key
 /// mode are deliberately narrower trust decisions already paying for an extra round trip, and are
 /// not where a transport upgrade should be learned or spent.
 const CURLOPT_ALTSVC_CTRL: c_int = 286;
@@ -286,9 +281,10 @@ pub fn curl_version_num() -> u32 {
 
 /// The TLS library behind the bound libcurl, read once by [`global_init`] from
 /// `curl_version_info().ssl_version`. It decides how `CURLINFO_SSL_VERIFYRESULT` is numbered
-/// (`keypin`'s `VerifyScheme`): OpenSSL reports one `X509_V_ERR_*` code, GnuTLS a bitmask. Which
-/// curl was bound (bundled or system) does not decide it — the bundled stack has been built over
-/// either library — so the answer comes from the library itself.
+/// (`keypin`'s `VerifyScheme`): OpenSSL reports one `X509_V_ERR_*` code, GnuTLS a bitmask; and
+/// whether a strict request sends `CURLSSLOPT_NATIVE_CA` ([`native_ca_needed`]). Which curl was
+/// bound (bundled or system) does not decide either: both follow the TLS library the bound curl
+/// itself reports.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TlsBackend {
     /// Before [`global_init`], or a curl that reported no TLS library.
@@ -301,12 +297,13 @@ pub enum TlsBackend {
 }
 
 impl TlsBackend {
-    /// Classify `ssl_version` (`OpenSSL/3.5.9`, `GnuTLS/3.8.13`, `(OpenSSL/3.0.13)` for a
-    /// MultiSSL build's inactive backend). Only the leading name counts.
+    /// Classify `ssl_version`: `OpenSSL/3.5.9`, `GnuTLS/3.8.13`, or for a MultiSSL build every
+    /// backend it has, space-separated, with each one NOT in use in parentheses
+    /// (`(SecureTransport) LibreSSL/3.3.6`; curl's `vtls.c`, `multissl_version`). The backend in
+    /// use is the one word without parentheses, and only its name before the `/` counts.
     pub fn from_ssl_version(v: &str) -> TlsBackend {
-        let name = v.trim_start_matches('(');
-        let name = name.split('/').next().unwrap_or("");
-        match name {
+        let active = v.split_ascii_whitespace().find(|w| !w.starts_with('(')).unwrap_or("");
+        match active.split('/').next().unwrap_or("") {
             "" => TlsBackend::Unknown,
             "OpenSSL" | "LibreSSL" | "BoringSSL" | "quictls" | "AWS-LC" => TlsBackend::OpenSsl,
             "GnuTLS" => TlsBackend::GnuTls,
@@ -339,6 +336,60 @@ static TLS_BACKEND: AtomicU8 = AtomicU8::new(0);
 /// The bound libcurl's TLS library, or [`TlsBackend::Unknown`] before [`global_init`].
 pub fn tls_backend() -> TlsBackend {
     TlsBackend::from_u8(TLS_BACKEND.load(Ordering::Acquire))
+}
+
+/// Does a strict (CA-verified) request through a curl over `backend` need `CURLSSLOPT_NATIVE_CA`
+/// to have any trust anchors at all? Only GnuTLS does ([`CURLSSLOPT_NATIVE_CA`]'s doc). `net.rs`
+/// and `curlio.rs` both ask this with [`tls_backend`], so the two planes cannot disagree.
+pub fn native_ca_needed(backend: TlsBackend) -> bool {
+    backend == TlsBackend::GnuTls
+}
+
+#[cfg(test)]
+mod tls_backend_tests {
+    use super::{native_ca_needed, TlsBackend as B};
+
+    /// What `curl_version_info()->ssl_version` reads on the curls this app meets, and on a
+    /// MultiSSL build, where only the backend outside parentheses is the one in use.
+    #[test]
+    fn the_backend_is_the_library_curl_reports_in_use() {
+        for (v, want) in [
+            ("OpenSSL/3.5.9", B::OpenSsl),
+            ("OpenSSL/1.0.2p", B::OpenSsl),
+            ("OpenSSL/3.0.13", B::OpenSsl),
+            ("LibreSSL/3.3.6", B::OpenSsl),
+            ("BoringSSL", B::OpenSsl),
+            ("GnuTLS/3.8.13", B::GnuTls),
+            ("SecureTransport", B::Other),
+            ("mbedTLS/3.6.2", B::Other),
+            ("(SecureTransport) LibreSSL/3.3.6", B::OpenSsl),
+            ("SecureTransport (LibreSSL/3.3.6)", B::Other),
+            ("(OpenSSL/3.5.9) GnuTLS/3.8.13", B::GnuTls),
+            ("GnuTLS/3.8.13 (OpenSSL/3.5.9)", B::GnuTls),
+            ("(OpenSSL/3.0.13)", B::Unknown),
+            ("", B::Unknown),
+        ] {
+            assert_eq!(B::from_ssl_version(v), want, "{v:?}");
+        }
+    }
+
+    #[test]
+    fn the_stored_byte_round_trips() {
+        for b in [B::Unknown, B::OpenSsl, B::GnuTls, B::Other] {
+            assert_eq!(B::from_u8(b.to_u8()), b);
+        }
+        assert_eq!(B::from_u8(200), B::Unknown);
+    }
+
+    /// `CURLSSLOPT_NATIVE_CA` goes only to a GnuTLS curl: under OpenSSL it loads nothing on Linux
+    /// and turns off curl's CA-store cache.
+    #[test]
+    fn only_gnutls_is_sent_native_ca() {
+        assert!(native_ca_needed(B::GnuTls));
+        for b in [B::OpenSsl, B::Other, B::Unknown] {
+            assert!(!native_ca_needed(b), "{b:?}");
+        }
+    }
 }
 /// Only used on the abnormal old-OpenSSL/no-callback fallback. Normal devices never take it.
 static CURL_FALLBACK_SERIAL: Mutex<()> = Mutex::new(());
@@ -375,8 +426,9 @@ pub fn bundled_curl() -> Option<plx_base::dynlib::Handle> {
 }
 
 /// Is the bound libcurl the bundled `libcurl-plx.so.4` rather than the television's own? (Which TLS
-/// library either one uses is [`tls_backend`]'s question, not this one's.) Always false without the `http3-curlstack` feature, which makes every
-/// `if bundled()` branch below dead code the compiler drops. Only meaningful after [`global_init`].
+/// library either one uses is [`tls_backend`]'s question, not this one's.) Always false without
+/// the `http3-curlstack` feature, which makes every `if bundled()` branch below dead code the
+/// compiler drops. Only meaningful after [`global_init`].
 pub fn bundled() -> bool {
     bundled_curl().is_some()
 }
@@ -2519,11 +2571,13 @@ fn request_tls_sink(
                 // module got wrong — it called for a new request mode to obtain what `request` had
                 // been doing since it was written.
                 TlsCfg::Ca => {
-                    if bundled() {
+                    if native_ca_needed(tls_backend()) {
                         require_setopt!(
                             curl_easy_setopt_long(easy.0, CURLOPT_SSL_OPTIONS, CURLSSLOPT_NATIVE_CA),
                             "CURLOPT_SSL_OPTIONS"
                         );
+                    }
+                    if bundled() {
                         require_setopt!(
                             curl_easy_setopt_long(easy.0, CURLOPT_ALTSVC_CTRL, CURLALTSVC_H3),
                             "CURLOPT_ALTSVC_CTRL"
@@ -3362,8 +3416,8 @@ pub mod keypin {
     const X509_NO_LEAF_SIGNATURE_KEY: c_long = 21;
     /// GnuTLS's own `gnutls_certificate_status_t` bits (`gnutls/gnutls.h`): a BITMASK of
     /// independent reasons, unlike OpenSSL's single-value `X509_V_ERR_*` enum above. Read only when
-    /// the bound curl reports GnuTLS ([`super::tls_backend`]); see [`VerifyScheme`]. GnuTLS has no bit for
-    /// "self-signed leaf" distinct from "issuer not found" — both set only
+    /// the bound curl reports GnuTLS ([`super::tls_backend`]); see [`VerifyScheme`]. GnuTLS has no
+    /// bit for "self-signed leaf" distinct from "issuer not found" — both set only
     /// `GNUTLS_CERT_SIGNER_NOT_FOUND` — so under GnuTLS that one bit stands in for the whole
     /// OpenSSL 2/18/19/20/21 group; a self-signed server still fails a roots-mode retry on its own,
     /// since the bundle holds public CAs, not the server's own key.
@@ -3382,11 +3436,11 @@ pub mod keypin {
     }
 
     /// Which numbering `CURLINFO_SSL_VERIFYRESULT` is in: it reports whatever the BOUND libcurl's
-    /// TLS backend uses. The television's system curl is OpenSSL (1.0.2p to 3.0.x by firmware), and
-    /// so is the opt-in bundled curl as currently built; a GnuTLS build of either reports a
-    /// bitmask instead. Reading a GnuTLS bitmask as an `X509_V_ERR_*`
-    /// number silently misreads every real verification failure (64, "signer not found", is no
-    /// OpenSSL code this module knows), so each predicate below decodes by the active scheme.
+    /// TLS backend uses. The television's system curl is OpenSSL (1.0.x to 3.x by firmware), and so
+    /// is the opt-in bundled curl (3.5); a curl built over GnuTLS reports a bitmask instead.
+    /// Reading a GnuTLS bitmask as an `X509_V_ERR_*` number silently misreads every real
+    /// verification failure (64, "signer not found", is no OpenSSL code this module knows), so each
+    /// predicate below decodes by the active scheme.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum VerifyScheme {
         OpenSsl,
@@ -3504,26 +3558,41 @@ pub mod keypin {
         const GNUTLS_CERT_SIGNATURE_FAILURE: c_long = 1 << 11;
         const GNUTLS_CERT_MISMATCH: c_long = 1 << 17;
 
-        /// The scheme follows the TLS library curl reports, not which curl was bound.
+        /// The scheme follows the TLS library curl reports, not which curl was bound: GnuTLS is the
+        /// one bitmask, and every other answer, "not bound yet" included, is OpenSSL's numbering.
         #[test]
         fn the_scheme_follows_the_reported_tls_library() {
             use super::super::TlsBackend as B;
-            for (v, want) in [
-                ("OpenSSL/3.5.9", B::OpenSsl),
-                ("OpenSSL/1.0.2p", B::OpenSsl),
-                ("(OpenSSL/3.0.13)", B::OpenSsl),
-                ("LibreSSL/3.3.6", B::OpenSsl),
-                ("GnuTLS/3.8.13", B::GnuTls),
-                ("SecureTransport", B::Other),
-                ("", B::Unknown),
-            ] {
-                assert_eq!(B::from_ssl_version(v), want, "{v}");
-                assert_eq!(B::from_u8(want.to_u8()), want);
-            }
             assert_eq!(scheme_for(B::GnuTls), VerifyScheme::GnuTls);
             for b in [B::OpenSsl, B::Unknown, B::Other] {
-                assert_eq!(scheme_for(b), VerifyScheme::OpenSsl);
+                assert_eq!(scheme_for(b), VerifyScheme::OpenSsl, "{b:?}");
             }
+        }
+
+        /// The same `CURLINFO_SSL_VERIFYRESULT` numbers read through each backend's scheme, from the
+        /// `ssl_version` string down to the three predicates: the bundled OpenSSL curl and the
+        /// television's OpenSSL 1.0.x curl decode `X509_V_ERR_*`, a GnuTLS curl decodes bits, and
+        /// neither reading leaks into the other.
+        #[test]
+        fn each_backend_decodes_its_own_verify_results() {
+            use super::super::TlsBackend as B;
+            let untrusted_bits = GNUTLS_CERT_SIGNER_NOT_FOUND | GNUTLS_CERT_INVALID; // 66
+            let expired_bits = GNUTLS_CERT_EXPIRED | GNUTLS_CERT_INVALID;
+            for ssl_version in ["OpenSSL/3.5.9", "OpenSSL/1.0.2p"] {
+                let s = scheme_for(B::from_ssl_version(ssl_version));
+                assert!(is_untrusted_issuer_in(s, TLS_VERIFY_FAILED, Some(20)), "{ssl_version}");
+                assert_eq!(untrusted_chain_verify_in(s, TLS_VERIFY_FAILED, Some(18)), Some(18));
+                assert!(is_date_failure_in(s, TLS_VERIFY_FAILED, Some(10)), "{ssl_version}");
+                assert!(!is_untrusted_issuer_in(s, TLS_VERIFY_FAILED, Some(untrusted_bits)));
+                assert!(!is_date_failure_in(s, TLS_VERIFY_FAILED, Some(expired_bits)));
+            }
+            let s = scheme_for(B::from_ssl_version("GnuTLS/3.8.13"));
+            assert!(is_untrusted_issuer_in(s, TLS_VERIFY_FAILED, Some(untrusted_bits)));
+            assert_eq!(untrusted_chain_verify_in(s, TLS_VERIFY_FAILED, Some(untrusted_bits)), Some(66));
+            assert!(is_date_failure_in(s, TLS_VERIFY_FAILED, Some(expired_bits)));
+            assert!(!is_untrusted_issuer_in(s, TLS_VERIFY_FAILED, Some(20)));
+            assert!(!is_date_failure_in(s, TLS_VERIFY_FAILED, Some(10)));
+            assert_eq!(untrusted_chain_verify_in(s, TLS_VERIFY_FAILED, Some(18)), None);
         }
 
         #[test]
