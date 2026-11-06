@@ -389,5 +389,13 @@
   "settings.playback.credits_skip.copy": "Deaktiviert blendet „Abspann überspringen“ aus. Manuell behält die bisherigen Steuerelemente bei. Automatisch überspringt nach fünf Sekunden, sofern du nicht „Abspann ansehen“ wählst. Die nächste Folge und ihr Countdown werden separat eingestellt.",
   "settings.support.section": "Support",
   "settings.diagnostics.detail": "Wiedergabe-Diagnose aufzeichnen und ein Protokoll für den Support speichern.",
-  "settings.libraries.more": "Mediatheken, die du weglässt, bleiben auf deinem Plex-Server und auf deinen anderen Geräten."
+  "settings.libraries.more": "Mediatheken, die du weglässt, bleiben auf deinem Plex-Server und auf deinen anderen Geräten.",
+  "settings.playback.group_video": "Video",
+  "settings.playback.group_player": "Player",
+  "settings.playback.group_up_next": "Als Nächstes",
+  "settings.audio.group_audio": "Audio",
+  "settings.audio.group_subtitles": "Untertitel",
+  "settings.audio.group_look": "Darstellung",
+  "settings.playback.overridden_value": "Überschrieben",
+  "settings.audio.page_copy": "Sprachpräferenzen für Audio und Untertitel werden mit deinem Plex-Konto synchronisiert. Wiedergabeeinstellungen gehören zu jedem Profil."
 }

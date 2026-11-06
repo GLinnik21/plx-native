@@ -52,7 +52,7 @@ use plx_ui::table::Row;
 use plx_ui::table_screen::{Header, TableScreen};
 use plx_ui::{theme, Painter, Rect};
 
-use super::family::{form_activate, form_focus, form_right_target, inner_cx, InnerHost, PickerKind, SettingsPage, ALERT_GROUP};
+use super::family::{form_activate, form_focus, form_right_target, inner_cx, InnerHost, PickerKind, PosterKind, SettingsPage, ALERT_GROUP};
 use super::plaintext_question::{self, AlertStep, PlaintextAlert};
 use super::registry::{word, AppFx, DirectoryLike};
 
@@ -477,7 +477,7 @@ fn mount_page(
         SettingsPage::Root => Box::new(RootPage::new(entry, cx.views.directory)),
         SettingsPage::Language => Box::new(LanguagePage::new(entry)),
         SettingsPage::UnderPosters => Box::new(under_posters::UnderPostersPage::new(entry)),
-        SettingsPage::UnderPostersDetails => Box::new(under_posters::DetailsPage::new(entry)),
+        SettingsPage::UnderPostersDetails(kind) => Box::new(under_posters::DetailsPage::new(entry, kind)),
         SettingsPage::Contribute => Box::new(super::legal::DocumentPage::contribute(entry)),
         SettingsPage::Playback => Box::new(super::preferences::PreferencesPage::new(entry, super::preferences::Kind::Playback)),
         SettingsPage::AudioSubtitles => Box::new(super::preferences::PreferencesPage::new(entry, super::preferences::Kind::AudioSubtitles)),
@@ -1747,7 +1747,7 @@ impl Screen<InnerHost> for RootPage {
         // from the focused row alone and the library's own first posters.
         let posters: Vec<&plx_data::pms::PmsMovie> = f.cx.views.directory.sample(PICTURE_POSTERS).collect();
         let fan = plx_ui::follow_copy::PosterFan { arts: posters.iter().map(|m| plx_ui::widgets::Art::Poster(Some(super::registry::tile_facts::of(m)))).collect() };
-        let under = under_posters::RootPicture { value: self.state.under_posters, posters: &posters };
+        let under = under_posters::RootPicture { value: self.state.under_posters, posters: &posters, kinds: &[PosterKind::Movie, PosterKind::Show], sorted: false };
         let picture: Option<&dyn plx_ui::follow_copy::PictureSlot> = match self.form.selected_id() {
             Some(RootId::Favourites) => Some(&fan),
             Some(RootId::UnderPosters) => Some(&under),

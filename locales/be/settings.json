@@ -395,5 +395,13 @@
   "settings.playback.credits_skip.copy": "Выключана хавае кнопку пропуску тытраў. Уручную захоўвае цяперашнія элементы кіравання. Аўтаматычна прапускае праз пяць секунд, калі не выбраць «Глядзець тытры». Наступны эпізод і яго адлік наладжваюцца асобна.",
   "settings.support.section": "Падтрымка",
   "settings.diagnostics.detail": "Запісваць дыягностыку прайгравання і захоўваць журнал для падтрымкі.",
-  "settings.libraries.more": "Бібліятэкі, якія вы выключыце, застаюцца на вашым серверы Plex і на іншых вашых прыладах."
+  "settings.libraries.more": "Бібліятэкі, якія вы выключыце, застаюцца на вашым серверы Plex і на іншых вашых прыладах.",
+  "settings.playback.group_video": "Відэа",
+  "settings.playback.group_player": "Прайгравальнік",
+  "settings.playback.group_up_next": "Далей",
+  "settings.audio.group_audio": "Гук",
+  "settings.audio.group_subtitles": "Субцітры",
+  "settings.audio.group_look": "Выгляд",
+  "settings.playback.overridden_value": "Не ўлічваецца",
+  "settings.audio.page_copy": "Моўныя налады гуку і субцітраў сінхранізуюцца з уліковым запісам Plex. Налады прайгравання належаць кожнаму профілю."
 }

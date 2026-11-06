@@ -389,5 +389,13 @@
   "settings.playback.credits_skip.copy": "Kikapcsolva elrejti a stáblista átugrását. Kézi módban megmaradnak a jelenlegi vezérlők. Automatikus módban öt másodperc után átugrik, ha nem választod a stáblista megtekintését. A következő rész és a visszaszámlálása külön állítható.",
   "settings.support.section": "Támogatás",
   "settings.diagnostics.detail": "Lejátszási diagnosztika rögzítése és napló mentése a támogatáshoz.",
-  "settings.libraries.more": "A kihagyott könyvtárak megmaradnak a Plex-szerveren és a többi eszközön."
+  "settings.libraries.more": "A kihagyott könyvtárak megmaradnak a Plex-szerveren és a többi eszközön.",
+  "settings.playback.group_video": "Videó",
+  "settings.playback.group_player": "Lejátszó",
+  "settings.playback.group_up_next": "Következő",
+  "settings.audio.group_audio": "Hang",
+  "settings.audio.group_subtitles": "Feliratok",
+  "settings.audio.group_look": "Megjelenés",
+  "settings.playback.overridden_value": "Felülírva",
+  "settings.audio.page_copy": "Az hang- és feliratnyelvi beállítások szinkronizálódnak a Plex-fiókoddal. A lejátszási beállítások profilonként érvényesek."
 }

@@ -395,5 +395,13 @@
   "settings.playback.credits_skip.copy": "Wyłączone ukrywa pomijanie napisów. Ręcznie zachowuje obecne przyciski. Automatycznie pomija po pięciu sekundach, chyba że wybierzesz oglądanie napisów. Następny odcinek i jego odliczanie ustawia się osobno.",
   "settings.support.section": "Pomoc",
   "settings.diagnostics.detail": "Nagrywaj diagnostykę odtwarzania i zapisz dziennik dla pomocy technicznej.",
-  "settings.libraries.more": "Pominięte biblioteki zostają na serwerze Plex i na innych urządzeniach."
+  "settings.libraries.more": "Pominięte biblioteki zostają na serwerze Plex i na innych urządzeniach.",
+  "settings.playback.group_video": "Obraz",
+  "settings.playback.group_player": "Odtwarzacz",
+  "settings.playback.group_up_next": "Dalej",
+  "settings.audio.group_audio": "Dźwięk",
+  "settings.audio.group_subtitles": "Napisy",
+  "settings.audio.group_look": "Wygląd",
+  "settings.playback.overridden_value": "Nadpisana",
+  "settings.audio.page_copy": "Preferencje języka dźwięku i napisów synchronizują się z kontem Plex. Ustawienia odtwarzania należą do każdego profilu."
 }

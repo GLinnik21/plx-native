@@ -128,7 +128,7 @@ fn the_focused_row_opens_for_the_value_and_the_setting_off_restores_the_old_band
         let (page, _) = focused(&fixture, 3 * cols);
         page.layout.row_y(4, 0.0) - rest
     };
-    let title_on = UnderPosters { title: true, details: UnderPostersDetails::Genre, sort_value: true };
+    let title_on = UnderPosters { title: true, details: UnderPostersDetails::Genre, show_details: UnderPostersDetails::Genre.for_shows(), sort_value: true };
     for listed in [LibraryType::Episodes, LibraryType::Seasons] {
         assert!((opened(listed, UnderPosters::DEFAULT) - 26.0).abs() < 0.01, "{listed:?} opens 26 px under a value");
         assert!((opened(listed, title_on) - 26.0).abs() < 0.01, "{listed:?}: the Title switch does not widen a value's band");

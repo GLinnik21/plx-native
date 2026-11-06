@@ -112,7 +112,7 @@ fn every_card_harness_follows_the_pin_not_the_live_setting() {
         h.tick(1);
         h.drawn_rect(cards[7.min(cards.len() - 1)], 1.0).map(|rect| rect.y)
     };
-    let two_lines = UnderPosters { title: true, details: UnderPostersDetails::Genre, sort_value: false };
+    let two_lines = UnderPosters { title: true, details: UnderPostersDetails::Genre, show_details: UnderPostersDetails::Genre.for_shows(), sort_value: false };
     let mut moved = Vec::new();
     for (screen, mount) in table() {
         let (default, held) = (lower_card_y(UnderPosters::DEFAULT, mount), lower_card_y(two_lines, mount));

@@ -392,5 +392,13 @@
   "settings.playback.credits_skip.copy": "Désactivé masque le bouton de saut. Manuel conserve les commandes actuelles. Automatique passe après cinq secondes, sauf si vous choisissez de regarder le générique. L’épisode suivant et son compte à rebours se règlent séparément.",
   "settings.support.section": "Assistance",
   "settings.diagnostics.detail": "Enregistrer des diagnostics de lecture et sauvegarder un journal pour l'assistance.",
-  "settings.libraries.more": "Les bibliothèques que vous retirez restent sur votre serveur Plex et sur vos autres appareils."
+  "settings.libraries.more": "Les bibliothèques que vous retirez restent sur votre serveur Plex et sur vos autres appareils.",
+  "settings.playback.group_video": "Vidéo",
+  "settings.playback.group_player": "Lecteur",
+  "settings.playback.group_up_next": "À suivre",
+  "settings.audio.group_audio": "Audio",
+  "settings.audio.group_subtitles": "Sous-titres",
+  "settings.audio.group_look": "Apparence",
+  "settings.playback.overridden_value": "Remplacée",
+  "settings.audio.page_copy": "Les préférences de langue audio et sous-titres sont synchronisées avec votre compte Plex. Les réglages de lecture sont propres à chaque profil."
 }

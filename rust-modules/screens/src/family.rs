@@ -18,6 +18,14 @@ use plx_ui::widgets::ControlPalette;
 
 use super::registry::{AppFx, AppMsg, DirectoryLike};
 
+/// Which kind of title an Under posters details picker words (Settings v2 split the one Details
+/// setting in two: a TV show has no single video quality).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PosterKind {
+    Movie,
+    Show,
+}
+
 /// A page of the surface's own stack (§6.2: root → Privacy | Legal | Favourites → Document).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SettingsPage {
@@ -27,8 +35,9 @@ pub enum SettingsPage {
     Language,
     /// Settings > Libraries > Under posters: what the focused poster's caption band shows.
     UnderPosters,
-    /// Settings > Libraries > Under posters > Details: the picker of the one details line.
-    UnderPostersDetails,
+    /// Settings > Libraries > Under posters > Movie details / TV show details: the picker of the
+    /// details line under one kind of poster.
+    UnderPostersDetails(PosterKind),
     /// Translation contribution guide with an offline QR link.
     Contribute,
     /// Playback settings: each profile's own picks (a profile that has not chosen reads the install's older value). The page names the seated profile; while nobody is seated its rows are read-only.
@@ -137,8 +146,8 @@ impl PickerKind {
     /// The page that lists this field (its picker is pushed from there and returns there).
     pub fn parent(self) -> SettingsPage {
         match self {
-            PickerKind::Quality | PickerKind::DirectPlay | PickerKind::SubtitleSize | PickerKind::SubtitlePosition | PickerKind::HdrOverlay | PickerKind::NextEpisode | PickerKind::DeckPress | PickerKind::SkipInterval | PickerKind::InstantDpadSeeking | PickerKind::DolbyVision | PickerKind::IntroSkip | PickerKind::CreditsSkip => SettingsPage::Playback,
-            PickerKind::AudioLanguage | PickerKind::SubtitleMode | PickerKind::SubtitleLanguage | PickerKind::ForcedSubtitles => SettingsPage::AudioSubtitles,
+            PickerKind::Quality | PickerKind::DirectPlay | PickerKind::HdrOverlay | PickerKind::NextEpisode | PickerKind::DeckPress | PickerKind::SkipInterval | PickerKind::InstantDpadSeeking | PickerKind::DolbyVision | PickerKind::IntroSkip | PickerKind::CreditsSkip => SettingsPage::Playback,
+            PickerKind::AudioLanguage | PickerKind::SubtitleMode | PickerKind::SubtitleLanguage | PickerKind::ForcedSubtitles | PickerKind::SubtitleSize | PickerKind::SubtitlePosition => SettingsPage::AudioSubtitles,
             PickerKind::UiResolution => SettingsPage::Root,
         }
     }
@@ -156,7 +165,7 @@ impl ScreenArg for SettingsPage {
             SettingsPage::Language => 110,
             SettingsPage::Contribute => 111,
             SettingsPage::UnderPosters => 113,
-            SettingsPage::UnderPostersDetails => 114,
+            SettingsPage::UnderPostersDetails(_) => 114,
             SettingsPage::Favourites => 101,
             SettingsPage::LibraryFavourites => 116,
             SettingsPage::Privacy => 102,
@@ -207,7 +216,6 @@ impl LogicalState for SettingsPage {
             SettingsPage::Root
             | SettingsPage::Language
             | SettingsPage::UnderPosters
-            | SettingsPage::UnderPostersDetails
             | SettingsPage::Contribute
             | SettingsPage::Playback
             | SettingsPage::AudioSubtitles
@@ -221,6 +229,7 @@ impl LogicalState for SettingsPage {
             | SettingsPage::About => 0,
             SettingsPage::Document(i) | SettingsPage::Preview(i) | SettingsPage::ConsentStage(i) => *i,
             SettingsPage::Picker(kind) => *kind as u8,
+            SettingsPage::UnderPostersDetails(kind) => *kind as u8,
             SettingsPage::HudDetail(..) | SettingsPage::HudAbout(..) | SettingsPage::HudPreview(..) => unreachable!("written above"),
         });
     }
@@ -230,7 +239,7 @@ impl LogicalState for SettingsPage {
             SettingsPage::Language => "language",
             SettingsPage::Contribute => "contribute",
             SettingsPage::UnderPosters => "under-posters",
-            SettingsPage::UnderPostersDetails => "under-posters-details",
+            SettingsPage::UnderPostersDetails(_) => "under-posters-details",
             SettingsPage::Playback => "playback",
             SettingsPage::AudioSubtitles => "audio-subtitles",
             SettingsPage::Favourites => "favourites",
@@ -253,6 +262,9 @@ impl LogicalState for SettingsPage {
             out.push_str(&format!("[{i}]"));
         }
         if let SettingsPage::Picker(kind) = self {
+            out.push_str(&format!("[{}]", *kind as u8));
+        }
+        if let SettingsPage::UnderPostersDetails(kind) = self {
             out.push_str(&format!("[{}]", *kind as u8));
         }
     }
@@ -407,7 +419,7 @@ mod tests {
             SettingsPage::Root,
             SettingsPage::Language,
             SettingsPage::UnderPosters,
-            SettingsPage::UnderPostersDetails,
+            SettingsPage::UnderPostersDetails(PosterKind::Movie),
             SettingsPage::Contribute,
             SettingsPage::Playback,
             SettingsPage::AudioSubtitles,
