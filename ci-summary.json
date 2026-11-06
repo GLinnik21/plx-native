@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-06T12:00:21Z",
+ "generated": "2026-11-06T12:06:20Z",
  "metrics": [
   {
    "change30_pct": 6.8,
@@ -102,27 +102,6 @@
    "unit": "s"
   },
   {
-   "change30_pct": -47.8,
-   "change7_pct": 20.5,
-   "d30": 850,
-   "delta30": -406.0,
-   "delta7": 75.5,
-   "group": "ci",
-   "id": "push_wait",
-   "kind": "wait",
-   "label": "Wait after merge",
-   "n_now": 60,
-   "n_prev": 96,
-   "now": 444.0,
-   "prev7": 368.5,
-   "shown": true,
-   "state": "worse",
-   "state30": "better",
-   "threshold_abs": 60.0,
-   "threshold_pct": 15.0,
-   "unit": "s"
-  },
-  {
    "change30_pct": 16.8,
    "change7_pct": 20.2,
    "d30": 173,
@@ -141,6 +120,27 @@
    "state30": "flat",
    "threshold_abs": 20.0,
    "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": -47.9,
+   "change7_pct": 20.2,
+   "d30": 850,
+   "delta30": -407,
+   "delta7": 74.5,
+   "group": "ci",
+   "id": "push_wait",
+   "kind": "wait",
+   "label": "Wait after merge",
+   "n_now": 61,
+   "n_prev": 96,
+   "now": 443,
+   "prev7": 368.5,
+   "shown": true,
+   "state": "worse",
+   "state30": "better",
+   "threshold_abs": 60.0,
+   "threshold_pct": 15.0,
    "unit": "s"
   },
   {
@@ -408,18 +408,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 20.2,
-   "change7_pct": 12.1,
+   "change30_pct": 20.4,
+   "change7_pct": 12.3,
    "d30": 250.0,
-   "delta30": 50.5,
-   "delta7": 32.5,
+   "delta30": 51.0,
+   "delta7": 33,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 56,
+   "n_now": 57,
    "n_prev": 83,
-   "now": 300.5,
+   "now": 301,
    "prev7": 268,
    "shown": true,
    "state": "flat",
@@ -429,18 +429,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -75.8,
-   "change7_pct": -0.7,
+   "change30_pct": -75.7,
+   "change7_pct": -0.5,
    "d30": 873.5,
-   "delta30": -662.0,
-   "delta7": -1.5,
+   "delta30": -661.5,
+   "delta7": -1,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 56,
+   "n_now": 57,
    "n_prev": 83,
-   "now": 211.5,
+   "now": 212,
    "prev7": 213,
    "shown": true,
    "state": "flat",
@@ -450,18 +450,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -38.5,
-   "change7_pct": 9.9,
+   "change30_pct": -38.0,
+   "change7_pct": 10.7,
    "d30": 334,
-   "delta30": -128.5,
-   "delta7": 18.5,
+   "delta30": -127,
+   "delta7": 20,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 56,
+   "n_now": 57,
    "n_prev": 83,
-   "now": 205.5,
+   "now": 207,
    "prev7": 187,
    "shown": true,
    "state": "flat",
@@ -557,18 +557,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 21.9,
-   "change7_pct": 8.3,
+   "change30_pct": 18.8,
+   "change7_pct": 5.6,
    "d30": 16.0,
-   "delta30": 3.5,
-   "delta7": 1.5,
+   "delta30": 3.0,
+   "delta7": 1,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 56,
+   "n_now": 57,
    "n_prev": 83,
-   "now": 19.5,
+   "now": 19,
    "prev7": 18,
    "shown": false,
    "state": "flat",
@@ -667,11 +667,6 @@
    "change_pct": 30.0,
    "commits": [
     {
-     "pr": 1240,
-     "sha": "ab00d73b0",
-     "title": "HUD plugins: a cargo fuzz package over every package and registry parser"
-    },
-    {
      "pr": 1241,
      "sha": "951db621f",
      "title": "HUD plugins: tools/hud-dev, and Play re-fetches a development-source HUD on the TV"
@@ -715,6 +710,11 @@
      "pr": 1250,
      "sha": "9cc53ed28",
      "title": "Deps: Bump encoding_rs from 0.8.42 to 0.8.44 in /rust-modules in the rust-minor-patch group"
+    },
+    {
+     "pr": 1256,
+     "sha": "ece36ea6d",
+     "title": "Settings: v2 anatomy and root (follow-focus sentence, 48 title, groups, Diagnostics page)"
     }
    ],
    "from": 230.0,
@@ -728,11 +728,6 @@
    "change_pct": 20.8,
    "commits": [
     {
-     "pr": 1240,
-     "sha": "ab00d73b0",
-     "title": "HUD plugins: a cargo fuzz package over every package and registry parser"
-    },
-    {
      "pr": 1241,
      "sha": "951db621f",
      "title": "HUD plugins: tools/hud-dev, and Play re-fetches a development-source HUD on the TV"
@@ -776,6 +771,11 @@
      "pr": 1250,
      "sha": "9cc53ed28",
      "title": "Deps: Bump encoding_rs from 0.8.42 to 0.8.44 in /rust-modules in the rust-minor-patch group"
+    },
+    {
+     "pr": 1256,
+     "sha": "ece36ea6d",
+     "title": "Settings: v2 anatomy and root (follow-focus sentence, 48 title, groups, Diagnostics page)"
     }
    ],
    "from": 313.0,
@@ -786,75 +786,9 @@
    "to": 378.0
   },
   {
-   "change_pct": 20.5,
-   "commits": [
-    {
-     "pr": 1240,
-     "sha": "ab00d73b0",
-     "title": "HUD plugins: a cargo fuzz package over every package and registry parser"
-    },
-    {
-     "pr": 1241,
-     "sha": "951db621f",
-     "title": "HUD plugins: tools/hud-dev, and Play re-fetches a development-source HUD on the TV"
-    },
-    {
-     "pr": 1230,
-     "sha": "e1ea6e2ec",
-     "title": "Add Catalan localization"
-    },
-    {
-     "pr": 1243,
-     "sha": "8c6904d1b",
-     "title": "HUD registry: serve from huds.plxnative.com"
-    },
-    {
-     "pr": 1244,
-     "sha": "6d5089359",
-     "title": "Tests: the lint, screenshot and replay runs delete their temp trees"
-    },
-    {
-     "pr": 1247,
-     "sha": "43cdc8deb",
-     "title": "Settings: the built-in HUD is named Built-in"
-    },
-    {
-     "pr": 1252,
-     "sha": "02be3ead1",
-     "title": "Site: add three outlets to Featured in"
-    },
-    {
-     "pr": 1253,
-     "sha": "c01b5136a",
-     "title": "HUD previews: the long-title corpus covers Catalan"
-    },
-    {
-     "pr": 1254,
-     "sha": "e5f19d679",
-     "title": "Playback: a retired PMS session gets its stopped timeline"
-    },
-    {
-     "pr": 1250,
-     "sha": "9cc53ed28",
-     "title": "Deps: Bump encoding_rs from 0.8.42 to 0.8.44 in /rust-modules in the rust-minor-patch group"
-    }
-   ],
-   "from": 368.5,
-   "id": "push_wait",
-   "label": "Wait after merge",
-   "since": "2026-11-06",
-   "threshold_pct": 15.0,
-   "to": 444.0
-  },
-  {
    "change_pct": 20.2,
    "commits": [
     {
-     "pr": 1240,
-     "sha": "ab00d73b0",
-     "title": "HUD plugins: a cargo fuzz package over every package and registry parser"
-    },
-    {
      "pr": 1241,
      "sha": "951db621f",
      "title": "HUD plugins: tools/hud-dev, and Play re-fetches a development-source HUD on the TV"
@@ -898,6 +832,11 @@
      "pr": 1250,
      "sha": "9cc53ed28",
      "title": "Deps: Bump encoding_rs from 0.8.42 to 0.8.44 in /rust-modules in the rust-minor-patch group"
+    },
+    {
+     "pr": 1256,
+     "sha": "ece36ea6d",
+     "title": "Settings: v2 anatomy and root (follow-focus sentence, 48 title, groups, Diagnostics page)"
     }
    ],
    "from": 168.0,
@@ -908,13 +847,8 @@
    "to": 202
   },
   {
-   "change_pct": 20.1,
+   "change_pct": 20.2,
    "commits": [
-    {
-     "pr": 1240,
-     "sha": "ab00d73b0",
-     "title": "HUD plugins: a cargo fuzz package over every package and registry parser"
-    },
     {
      "pr": 1241,
      "sha": "951db621f",
@@ -959,6 +893,72 @@
      "pr": 1250,
      "sha": "9cc53ed28",
      "title": "Deps: Bump encoding_rs from 0.8.42 to 0.8.44 in /rust-modules in the rust-minor-patch group"
+    },
+    {
+     "pr": 1256,
+     "sha": "ece36ea6d",
+     "title": "Settings: v2 anatomy and root (follow-focus sentence, 48 title, groups, Diagnostics page)"
+    }
+   ],
+   "from": 368.5,
+   "id": "push_wait",
+   "label": "Wait after merge",
+   "since": "2026-11-06",
+   "threshold_pct": 15.0,
+   "to": 443
+  },
+  {
+   "change_pct": 20.1,
+   "commits": [
+    {
+     "pr": 1241,
+     "sha": "951db621f",
+     "title": "HUD plugins: tools/hud-dev, and Play re-fetches a development-source HUD on the TV"
+    },
+    {
+     "pr": 1230,
+     "sha": "e1ea6e2ec",
+     "title": "Add Catalan localization"
+    },
+    {
+     "pr": 1243,
+     "sha": "8c6904d1b",
+     "title": "HUD registry: serve from huds.plxnative.com"
+    },
+    {
+     "pr": 1244,
+     "sha": "6d5089359",
+     "title": "Tests: the lint, screenshot and replay runs delete their temp trees"
+    },
+    {
+     "pr": 1247,
+     "sha": "43cdc8deb",
+     "title": "Settings: the built-in HUD is named Built-in"
+    },
+    {
+     "pr": 1252,
+     "sha": "02be3ead1",
+     "title": "Site: add three outlets to Featured in"
+    },
+    {
+     "pr": 1253,
+     "sha": "c01b5136a",
+     "title": "HUD previews: the long-title corpus covers Catalan"
+    },
+    {
+     "pr": 1254,
+     "sha": "e5f19d679",
+     "title": "Playback: a retired PMS session gets its stopped timeline"
+    },
+    {
+     "pr": 1250,
+     "sha": "9cc53ed28",
+     "title": "Deps: Bump encoding_rs from 0.8.42 to 0.8.44 in /rust-modules in the rust-minor-patch group"
+    },
+    {
+     "pr": 1256,
+     "sha": "ece36ea6d",
+     "title": "Settings: v2 anatomy and root (follow-focus sentence, 48 title, groups, Diagnostics page)"
     }
    ],
    "from": 306.5,
@@ -972,11 +972,6 @@
    "change_pct": 20.1,
    "commits": [
     {
-     "pr": 1240,
-     "sha": "ab00d73b0",
-     "title": "HUD plugins: a cargo fuzz package over every package and registry parser"
-    },
-    {
      "pr": 1241,
      "sha": "951db621f",
      "title": "HUD plugins: tools/hud-dev, and Play re-fetches a development-source HUD on the TV"
@@ -1020,6 +1015,11 @@
      "pr": 1250,
      "sha": "9cc53ed28",
      "title": "Deps: Bump encoding_rs from 0.8.42 to 0.8.44 in /rust-modules in the rust-minor-patch group"
+    },
+    {
+     "pr": 1256,
+     "sha": "ece36ea6d",
+     "title": "Settings: v2 anatomy and root (follow-focus sentence, 48 title, groups, Diagnostics page)"
     }
    ],
    "from": 363.5,
