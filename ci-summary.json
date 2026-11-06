@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-06T12:11:28Z",
+ "generated": "2026-11-06T12:32:24Z",
  "metrics": [
   {
    "change30_pct": 6.6,
@@ -70,9 +70,9 @@
    "kind": "job",
    "label": "CI: host python/shell/C gates",
    "n_now": 62,
-   "n_prev": 96,
+   "n_prev": 95,
    "now": 298.5,
-   "prev7": 230.0,
+   "prev7": 230,
    "shown": true,
    "state": "worse",
    "state30": "flat",
@@ -81,19 +81,40 @@
    "unit": "s"
   },
   {
+   "change30_pct": null,
+   "change7_pct": 25.2,
+   "d30": null,
+   "delta30": null,
+   "delta7": 18.8,
+   "group": "local",
+   "id": "bench.ui",
+   "kind": "local",
+   "label": "Rebuild after editing plx_ui",
+   "n_now": 6,
+   "n_prev": 7,
+   "now": 93.7,
+   "prev7": 74.8,
+   "shown": true,
+   "state": "worse",
+   "state30": "new",
+   "threshold_abs": 5.0,
+   "threshold_pct": 25.0,
+   "unit": "s"
+  },
+  {
    "change30_pct": 60.1,
    "change7_pct": 21.7,
    "d30": 238,
    "delta30": 143,
-   "delta7": 68.0,
+   "delta7": 68,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
    "n_now": 61,
-   "n_prev": 96,
+   "n_prev": 95,
    "now": 381,
-   "prev7": 313.0,
+   "prev7": 313,
    "shown": true,
    "state": "worse",
    "state30": "worse",
@@ -123,27 +144,6 @@
    "unit": "s"
   },
   {
-   "change30_pct": 178.8,
-   "change7_pct": 20.1,
-   "d30": 132,
-   "delta30": 236.0,
-   "delta7": 61.5,
-   "group": "ci",
-   "id": "ci|host harness tests",
-   "kind": "job",
-   "label": "CI: host harness tests",
-   "n_now": 62,
-   "n_prev": 96,
-   "now": 368.0,
-   "prev7": 306.5,
-   "shown": true,
-   "state": "worse",
-   "state30": "worse",
-   "threshold_abs": 20.0,
-   "threshold_pct": 20.0,
-   "unit": "s"
-  },
-  {
    "change30_pct": -53.1,
    "change7_pct": 20.1,
    "d30": 967.5,
@@ -166,17 +166,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -19.1,
+   "change7_pct": -14.7,
    "d30": null,
    "delta30": null,
-   "delta7": -5.4,
+   "delta7": -4.2,
    "group": "local",
    "id": "bench.app",
    "kind": "local",
    "label": "Rebuild after editing the app crate",
-   "n_now": 5,
+   "n_now": 6,
    "n_prev": 7,
-   "now": 23.1,
+   "now": 24.3,
    "prev7": 28.5,
    "shown": true,
    "state": "flat",
@@ -187,17 +187,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -7.6,
+   "change7_pct": -6.9,
    "d30": null,
    "delta30": null,
-   "delta7": -4.2,
+   "delta7": -3.8,
    "group": "local",
    "id": "bench.screens",
    "kind": "local",
    "label": "Rebuild after editing plx_screens",
-   "n_now": 5,
+   "n_now": 6,
    "n_prev": 7,
-   "now": 50.4,
+   "now": 50.8,
    "prev7": 54.6,
    "shown": true,
    "state": "flat",
@@ -208,38 +208,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 24.7,
+   "change7_pct": 24.5,
    "d30": null,
    "delta30": null,
-   "delta7": 18.5,
-   "group": "local",
-   "id": "bench.ui",
-   "kind": "local",
-   "label": "Rebuild after editing plx_ui",
-   "n_now": 5,
-   "n_prev": 7,
-   "now": 93.3,
-   "prev7": 74.8,
-   "shown": true,
-   "state": "flat",
-   "state30": "new",
-   "threshold_abs": 5.0,
-   "threshold_pct": 25.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": null,
-   "change7_pct": 24.3,
-   "d30": null,
-   "delta30": null,
-   "delta7": 41.1,
+   "delta7": 41.3,
    "group": "local",
    "id": "bench.leaf",
    "kind": "local",
    "label": "Rebuild after editing plx_base",
-   "n_now": 5,
+   "n_now": 6,
    "n_prev": 7,
-   "now": 210.0,
+   "now": 210.3,
    "prev7": 168.9,
    "shown": true,
    "state": "flat",
@@ -250,17 +229,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -0.9,
+   "change7_pct": 8.8,
    "d30": null,
    "delta30": null,
-   "delta7": -1.4,
+   "delta7": 13.8,
    "group": "local",
    "id": "bench.tests",
    "kind": "local",
    "label": "Unit suite",
-   "n_now": 5,
+   "n_now": 6,
    "n_prev": 7,
-   "now": 155.7,
+   "now": 170.9,
    "prev7": 157.1,
    "shown": true,
    "state": "flat",
@@ -346,18 +325,39 @@
   },
   {
    "change30_pct": 41.8,
-   "change7_pct": 19.4,
+   "change7_pct": 18.9,
    "d30": 306,
    "delta30": 128,
-   "delta7": 70.5,
+   "delta7": 69,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
    "n_now": 61,
-   "n_prev": 96,
+   "n_prev": 95,
    "now": 434,
-   "prev7": 363.5,
+   "prev7": 365,
+   "shown": true,
+   "state": "flat",
+   "state30": "worse",
+   "threshold_abs": 20.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": 178.8,
+   "change7_pct": 19.9,
+   "d30": 132,
+   "delta30": 236.0,
+   "delta7": 61.0,
+   "group": "ci",
+   "id": "ci|host harness tests",
+   "kind": "job",
+   "label": "CI: host harness tests",
+   "n_now": 62,
+   "n_prev": 95,
+   "now": 368.0,
+   "prev7": 307,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -376,9 +376,9 @@
    "kind": "job",
    "label": "CI: armv7 cross-build and artifact assertions",
    "n_now": 62,
-   "n_prev": 96,
+   "n_prev": 95,
    "now": 359.5,
-   "prev7": 327.0,
+   "prev7": 327,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -460,9 +460,9 @@
    "kind": "job",
    "label": "CI: host lint + type-checks",
    "n_now": 62,
-   "n_prev": 96,
+   "n_prev": 95,
    "now": 201.5,
-   "prev7": 168.0,
+   "prev7": 168,
    "shown": true,
    "state": "flat",
    "state30": "flat",
@@ -588,9 +588,9 @@
    "kind": "job",
    "label": "CI: which gates apply",
    "n_now": 62,
-   "n_prev": 96,
+   "n_prev": 95,
    "now": 5.0,
-   "prev7": 5.0,
+   "prev7": 5,
    "shown": false,
    "state": "flat",
    "state30": "new",
@@ -603,15 +603,15 @@
    "change7_pct": 33.3,
    "d30": 4,
    "delta30": 0,
-   "delta7": 1.0,
+   "delta7": 1,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
    "n_now": 61,
-   "n_prev": 96,
+   "n_prev": 95,
    "now": 4,
-   "prev7": 3.0,
+   "prev7": 3,
    "shown": false,
    "state": "flat",
    "state30": "flat",
@@ -630,9 +630,9 @@
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
    "n_now": 62,
-   "n_prev": 96,
+   "n_prev": 95,
    "now": 3.0,
-   "prev7": 3.0,
+   "prev7": 3,
    "shown": false,
    "state": "flat",
    "state30": "better",
@@ -642,15 +642,15 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 1.8,
+   "change7_pct": 11.8,
    "d30": null,
    "delta30": null,
-   "delta7": 0.0,
+   "delta7": 0.1,
    "group": "local",
    "id": "bench.noop",
    "kind": "local",
    "label": "No-op build",
-   "n_now": 5,
+   "n_now": 6,
    "n_prev": 7,
    "now": 0.6,
    "prev7": 0.6,
@@ -717,12 +717,73 @@
      "title": "Settings: v2 anatomy and root (follow-focus sentence, 48 title, groups, Diagnostics page)"
     }
    ],
-   "from": 230.0,
+   "from": 230,
    "id": "ci|host python/shell/C gates",
    "label": "CI: host python/shell/C gates",
    "since": "2026-11-06",
    "threshold_pct": 20.0,
    "to": 298.5
+  },
+  {
+   "change_pct": 25.2,
+   "commits": [
+    {
+     "pr": 1241,
+     "sha": "951db621f",
+     "title": "HUD plugins: tools/hud-dev, and Play re-fetches a development-source HUD on the TV"
+    },
+    {
+     "pr": 1230,
+     "sha": "e1ea6e2ec",
+     "title": "Add Catalan localization"
+    },
+    {
+     "pr": 1243,
+     "sha": "8c6904d1b",
+     "title": "HUD registry: serve from huds.plxnative.com"
+    },
+    {
+     "pr": 1244,
+     "sha": "6d5089359",
+     "title": "Tests: the lint, screenshot and replay runs delete their temp trees"
+    },
+    {
+     "pr": 1247,
+     "sha": "43cdc8deb",
+     "title": "Settings: the built-in HUD is named Built-in"
+    },
+    {
+     "pr": 1252,
+     "sha": "02be3ead1",
+     "title": "Site: add three outlets to Featured in"
+    },
+    {
+     "pr": 1253,
+     "sha": "c01b5136a",
+     "title": "HUD previews: the long-title corpus covers Catalan"
+    },
+    {
+     "pr": 1254,
+     "sha": "e5f19d679",
+     "title": "Playback: a retired PMS session gets its stopped timeline"
+    },
+    {
+     "pr": 1250,
+     "sha": "9cc53ed28",
+     "title": "Deps: Bump encoding_rs from 0.8.42 to 0.8.44 in /rust-modules in the rust-minor-patch group"
+    },
+    {
+     "pr": 1256,
+     "sha": "ece36ea6d",
+     "title": "Settings: v2 anatomy and root (follow-focus sentence, 48 title, groups, Diagnostics page)"
+    }
+   ],
+   "from": 74.8,
+   "id": "bench.ui",
+   "label": "Rebuild after editing plx_ui",
+   "since": "2026-11-05",
+   "threshold_pct": 25.0,
+   "to": 93.7
   },
   {
    "change_pct": 21.7,
@@ -778,7 +839,7 @@
      "title": "Settings: v2 anatomy and root (follow-focus sentence, 48 title, groups, Diagnostics page)"
     }
    ],
-   "from": 313.0,
+   "from": 313,
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
    "since": "2026-11-05",
@@ -845,67 +906,6 @@
    "since": "2026-11-06",
    "threshold_pct": 15.0,
    "to": 445
-  },
-  {
-   "change_pct": 20.1,
-   "commits": [
-    {
-     "pr": 1241,
-     "sha": "951db621f",
-     "title": "HUD plugins: tools/hud-dev, and Play re-fetches a development-source HUD on the TV"
-    },
-    {
-     "pr": 1230,
-     "sha": "e1ea6e2ec",
-     "title": "Add Catalan localization"
-    },
-    {
-     "pr": 1243,
-     "sha": "8c6904d1b",
-     "title": "HUD registry: serve from huds.plxnative.com"
-    },
-    {
-     "pr": 1244,
-     "sha": "6d5089359",
-     "title": "Tests: the lint, screenshot and replay runs delete their temp trees"
-    },
-    {
-     "pr": 1247,
-     "sha": "43cdc8deb",
-     "title": "Settings: the built-in HUD is named Built-in"
-    },
-    {
-     "pr": 1252,
-     "sha": "02be3ead1",
-     "title": "Site: add three outlets to Featured in"
-    },
-    {
-     "pr": 1253,
-     "sha": "c01b5136a",
-     "title": "HUD previews: the long-title corpus covers Catalan"
-    },
-    {
-     "pr": 1254,
-     "sha": "e5f19d679",
-     "title": "Playback: a retired PMS session gets its stopped timeline"
-    },
-    {
-     "pr": 1250,
-     "sha": "9cc53ed28",
-     "title": "Deps: Bump encoding_rs from 0.8.42 to 0.8.44 in /rust-modules in the rust-minor-patch group"
-    },
-    {
-     "pr": 1256,
-     "sha": "ece36ea6d",
-     "title": "Settings: v2 anatomy and root (follow-focus sentence, 48 title, groups, Diagnostics page)"
-    }
-   ],
-   "from": 306.5,
-   "id": "ci|host harness tests",
-   "label": "CI: host harness tests",
-   "since": "2026-11-06",
-   "threshold_pct": 20.0,
-   "to": 368.0
   }
  ],
  "schema": 2,
@@ -952,25 +952,25 @@
    "group": "local",
    "id": "bench.leaf",
    "label": "Rebuild after editing plx_base",
-   "now": 210.0
+   "now": 210.3
   },
   {
    "group": "local",
    "id": "bench.tests",
    "label": "Unit suite",
-   "now": 155.7
+   "now": 170.9
   },
   {
    "group": "local",
    "id": "bench.ui",
    "label": "Rebuild after editing plx_ui",
-   "now": 93.3
+   "now": 93.7
   },
   {
    "group": "local",
    "id": "bench.screens",
    "label": "Rebuild after editing plx_screens",
-   "now": 50.4
+   "now": 50.8
   }
  ],
  "thresholds": {
