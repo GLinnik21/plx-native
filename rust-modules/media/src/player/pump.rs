@@ -916,6 +916,72 @@ fn note_missing_era_callback(eng: &mut Engine) {
     }
 }
 
+/// The Dolby Vision landing guard's work for this frame ([`super::dv_start`], #1166): the withdrawal the
+/// feed path raised at a landing it predicted a skip for, else the watch's verdict on this tick's
+/// [`Probe`](super::dv_start::Probe). A report-only guard's silence is logged here and answers `None`.
+///
+/// A flight owns the route's reload (`route::flight_outstanding`), so while one is out a pending
+/// withdrawal waits and the watch's clock does not run: the first frame after it clears takes the
+/// withdrawal, at the target read THEN.
+fn dv_start_due(eng: &mut Engine, now: u32) -> Option<super::dv_start::Withdrawal> {
+    use super::dv_start::{Mode, Probe, Step};
+    if eng.dv_start.mode() == Mode::Inert {
+        return None;
+    }
+    let flying = crate::route::flight_outstanding();
+    if !flying {
+        if let Some(w) = eng.dv_start.take_withdrawal() {
+            return Some(w);
+        }
+    }
+    let probe = Probe {
+        now,
+        landed: !eng.rebase_pending,
+        prime_released: !eng.prime_play,
+        accepted_ns: eng.max_fed_video_pts - eng.seek_base_pts,
+        feed_open: TX.feed_allowed(),
+        // The viewer's clock runs (or a paused-seek preroll is open): the `TX.paused && !preroll` test
+        // the Play/pause ladder below uses. A flight holds presentation, so it is not a running clock.
+        clock_running: !flying && (!TX.paused.load(Acquire) || TX.seek_preroll_active()),
+        frames: SHARED.frames.load(Relaxed),
+    };
+    match eng.dv_start.step(&probe) {
+        Step::Quiet => None,
+        Step::Report(r) => {
+            super::log(&r.line());
+            None
+        }
+        Step::Withdraw(w) => Some(w),
+    }
+}
+
+/// Withdraw the route's Dolby Vision declaration for `w` and answer where the reload goes. `None`: the
+/// route refused (it no longer declares what it can take out, a race the arming did not see), the
+/// guard stands down and the held landing feeds.
+///
+/// The target is read NOW, not when the withdrawal was raised: the newest coalesced tap if one is
+/// pending (as the seek stuck-watchdog adopts it, `commit_user_seek` included), else, for an in-place
+/// landing, the seek's own target (as a refused native `Seek` re-posts it), else the target the
+/// Engine was armed with (a resume), else the landed keyframe (a plain start).
+fn withdraw_dolby_vision(ps: &mut crate::route::PlaybackSession, eng: &mut Engine, w: &super::dv_start::Withdrawal) -> Option<i64> {
+    if !crate::route::withdraw_dv_presentation(ps, &w.why()) {
+        super::log("dv: the route no longer declares a Dolby Vision node it can withdraw; nothing changed");
+        eng.dv_start.stand_down();
+        return None;
+    }
+    let tap = TX.seek_to_ns.swap(-1, Relaxed);
+    let target = if tap >= 0 {
+        crate::route::commit_user_seek();
+        tap
+    } else {
+        let in_place = SHARED.seek_target_ns.load(Relaxed);
+        if w.in_place && in_place >= 0 { in_place } else { w.armed_target.unwrap_or(w.kf_pts) }
+    }
+    .max(0);
+    super::log(&w.line(target));
+    Some(target)
+}
+
 /// The Engine fails for good: any flight ends, the viewer gets the read-out, and the Engine's
 /// pipeline is released next frame ([`super::engine::release_failed_engine`]).
 fn fail_engine_for_good() {
@@ -1620,6 +1686,23 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         }
         return;
     }
+    // ---------- the Dolby Vision landing guard (#1166): a declared landing the firmware's splitter
+    // would skip (the keyframe was held back at the landing) or that no position update follows turns
+    // the declaration off for this play and reloads once. It runs BEFORE the native surround-audio
+    // watchdog below and before the seek stuck-watchdog further down, which yields to a pending
+    // withdrawal (it could neither retry the reopen nor reload with the node still sent). The order
+    // against `native_audio_stall_fired` matters on a tie: a pipeline that took some video and audio in
+    // one frame and then stopped accepting starts BOTH clocks on the next frame, and the audio verdict
+    // writes an install-wide learned refusal for a fault that may be the Dolby Vision splitter's.
+    if let Some(w) = dv_start_due(eng, now) {
+        if let Some(target) = withdraw_dolby_vision(ps, eng, &w) {
+            settle_reload(
+                super::engine::reload_at(ps, pa, target),
+                "Dolby Vision withdrawn at a landing",
+            ); // REPLACES the engine — eng dangles, return
+            return;
+        }
+    }
     if !eng.preview_abandon && native_audio_stall_fired(eng, now) {
         // A trailer preview is direct-play only: its stall ends the preview, never the player's
         // read-out (as in the failure branches below).
@@ -1988,6 +2071,7 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     if eng.flushed && eng.rebase_pending
         && now.wrapping_sub(eng.seek_armed_at) > SEEK_STUCK_MS
         && !crate::route::flight_outstanding()
+        && !eng.dv_start.landing_held() // the Dolby Vision guard holds this landing and reloads it itself
     {
         // Adopt the NEWEST coalesced target if later taps landed while this seek was resolving
         // (TX.seek_to_ns holds the latest request): retrying/reloading at the original armed

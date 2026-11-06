@@ -27,10 +27,6 @@
 //! [`Landing`], so every rule is a unit test. One [`Guard`] lives on the Engine and is re-armed at every
 //! landing ([`Guard::rearm`]: the Engine's start, and each in-place seek).
 
-// The vocabulary lands before the code that reads it (the engine's landing hook and the pump's driver
-// come in the next commit of this change, which deletes this attribute).
-#![allow(dead_code)]
-
 use plx_platform::devcaps::DvFirstPicture;
 use std::os::raw::c_int;
 
@@ -121,6 +117,66 @@ pub(super) struct Report {
     pub cause: Cause,
 }
 
+/// A content time as the event log prints it: seconds with milliseconds (`71.780s`).
+fn secs(ns: i64) -> String {
+    format!("{:.3}s", ns as f64 / 1e9)
+}
+
+/// The landing keyframe as the lines name it: its time and, for a non-IDR IRAP, its HEVC NAL type.
+fn keyframe(kf_pts: i64, nal: Option<u8>) -> String {
+    match nal {
+        Some(t) => format!("landing keyframe {} is HEVC NAL {}", secs(kf_pts), crate::aq::hevc_irap_label(t)),
+        None => format!("landing keyframe {}", secs(kf_pts)),
+    }
+}
+
+impl Cause {
+    /// What happened, for a line: the prediction at a landing, or the silence after it.
+    fn what(&self, kf_pts: i64, nal: Option<u8>) -> String {
+        match *self {
+            Cause::Row => format!(
+                "{}; this firmware's Dolby Vision splitter takes only an IDR first (devcaps dv-first-picture=idr)",
+                keyframe(kf_pts, nal)
+            ),
+            Cause::NoPositionUpdate { silent_ms, accepted_ns } => format!(
+                "no position update {silent_ms} ms after the {} with {} ms of video accepted",
+                keyframe(kf_pts, nal),
+                accepted_ns / 1_000_000
+            ),
+        }
+    }
+}
+
+impl Withdrawal {
+    /// The reason the route logs with the withdrawal itself.
+    pub fn why(&self) -> String {
+        self.cause.what(self.kf_pts, self.nal)
+    }
+
+    /// The `dv: withdrawn` line: the trigger, the landing and where the reload goes.
+    pub fn line(&self, target_ns: i64) -> String {
+        format!(
+            "dv: withdrawn for this play: {}; reload at {} without DolbyHdrInfo, the base layer plays",
+            self.why(),
+            secs(target_ns)
+        )
+    }
+}
+
+impl Report {
+    /// The line a report-only guard logs, for a landing it predicts a skip for or a silence it saw.
+    pub fn line(&self) -> String {
+        let tail = "a Profile 5 direct play or a remux that copies the video is not withdrawn";
+        match self.cause {
+            Cause::Row => format!("dv: {}: {tail}; fed as before", self.cause.what(self.kf_pts, self.nal)),
+            Cause::NoPositionUpdate { .. } => {
+                let row = if self.row { ", a firmware whose splitter takes only an IDR first" } else { "" };
+                format!("dv: {}{row}: {tail}; nothing changed", self.cause.what(self.kf_pts, self.nal))
+            }
+        }
+    }
+}
+
 /// What the guard asks the engine or the pump to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Step {
@@ -140,18 +196,31 @@ pub(super) struct Guard {
     armed_target: Option<i64>,
     /// A landing withdrawal not yet taken by the driver.
     pending: Option<Withdrawal>,
+    /// The driver took the landing withdrawal and has asked for the reload: this Engine is doomed, so
+    /// its landing stays held until the reload replaces it (or fails, and the read-out shows).
+    handed_over: bool,
+    /// The landing this arming has met ([`land`](Self::land)): what the watch counts from.
+    landing: Option<Landing>,
+    /// The pump's clock (ms) when the watch's conditions last started to hold; `None` while one fails.
+    clock_from: Option<u32>,
+    /// The watch has fired or ended for the landing: it is a single shot.
+    spent: bool,
 }
 
 impl Guard {
     /// A guard that never does anything: the Engine literal's value when no node is sent.
     pub(super) const fn inert() -> Guard {
-        Guard { mode: Mode::Inert, row: DvFirstPicture::AnyIrap, armed_target: None, pending: None }
+        Guard::with(Mode::Inert, DvFirstPicture::AnyIrap, None)
     }
 
     /// A guard in `mode` for a set whose splitter takes `row` first, armed with `armed_target` (the
     /// seek an Engine started with, or `None`). `engine::dv_start_for` is the one production caller.
     pub(super) fn armed(mode: Mode, row: DvFirstPicture, armed_target: Option<i64>) -> Guard {
-        Guard { mode, row, armed_target, pending: None }
+        Guard::with(mode, row, armed_target)
+    }
+
+    const fn with(mode: Mode, row: DvFirstPicture, armed_target: Option<i64>) -> Guard {
+        Guard { mode, row, armed_target, pending: None, handed_over: false, landing: None, clock_from: None, spent: false }
     }
 
     pub(super) fn mode(&self) -> Mode {
@@ -163,31 +232,124 @@ impl Guard {
     pub(super) fn rearm(&mut self, armed_target: Option<i64>) {
         self.armed_target = armed_target;
         self.pending = None;
+        self.handed_over = false;
+        self.landing = None;
+        self.clock_from = None;
+        self.spent = false;
+    }
+
+    /// The route refused the withdrawal (it changed since this guard was built): never act again for
+    /// this Engine, and let the held landing feed.
+    pub(super) fn stand_down(&mut self) {
+        self.mode = Mode::Inert;
+        self.pending = None;
+        self.handed_over = false;
+        self.clock_from = None;
+    }
+
+    /// This guard still waits for its landing: an Engine started with no seek armed has no rebase to
+    /// carry the landing, so the engine asks for the first video keyframe it feeds. False once
+    /// [`land`](Self::land) met one, and for a guard that does nothing.
+    pub(super) fn awaiting_landing(&self) -> bool {
+        self.mode != Mode::Inert && self.landing.is_none()
     }
 
     /// The landing keyframe `l` arrived. A guard in [`Mode::Act`] on a set whose splitter takes only an
     /// IDR answers [`Step::Withdraw`] for a non-IDR IRAP and holds it pending; a [`Mode::ReportOnly`]
     /// guard answers [`Step::Report`] for the same landing; every other landing starts the watch.
-    pub(super) fn land(&mut self, _l: &Landing) -> Step {
-        Step::Quiet
+    pub(super) fn land(&mut self, l: &Landing) -> Step {
+        if self.mode == Mode::Inert {
+            return Step::Quiet;
+        }
+        self.landing = Some(*l);
+        self.clock_from = None;
+        self.spent = false;
+        let nal = crate::aq::hevc_irap_not_idr(l.key);
+        let predicted = self.row == DvFirstPicture::IdrOnly && nal.is_some();
+        match (self.mode, predicted) {
+            (Mode::Act, true) => {
+                let w = self.withdrawal(l, Cause::Row);
+                self.pending = Some(w);
+                Step::Withdraw(w)
+            }
+            (Mode::ReportOnly, true) => Step::Report(self.report(l, Cause::Row)),
+            _ => Step::Quiet,
+        }
     }
 
-    /// A withdrawal [`land`](Self::land) raised is waiting for the driver. While one is, the seek
-    /// stuck-watchdog yields and both lane feeders hold.
+    /// A withdrawal [`land`](Self::land) raised is waiting for the driver.
     pub(super) fn withdrawal_pending(&self) -> bool {
         self.pending.is_some()
     }
 
+    /// The landing keyframe is held back: a withdrawal is waiting for the driver, or the driver took it
+    /// and the reload it asked for has not replaced this Engine. While it is, the seek stuck-watchdog
+    /// yields (it could neither retry the reopen nor reload with the node still sent) and both lane
+    /// feeders hold.
+    pub(super) fn landing_held(&self) -> bool {
+        self.withdrawal_pending() || self.handed_over
+    }
+
+    /// The driver takes the landing withdrawal, once. The landing stays held ([`landing_held`](Self::landing_held)).
     pub(super) fn take_withdrawal(&mut self) -> Option<Withdrawal> {
-        self.pending.take()
+        let w = self.pending.take();
+        self.handed_over |= w.is_some();
+        w
     }
 
     /// One pump tick of the watch. Its clock runs only while the landing keyframe was fed, the prime has
     /// released Play, at least [`ACCEPTED_MIN_NS`] was accepted past it, the feed gate is open, the
     /// viewer's clock runs and `frames` is zero; any condition dropping resets it. It fires once per
     /// landing, at [`DV_FIRST_PICTURE_MS`].
-    pub(super) fn step(&mut self, _p: &Probe) -> Step {
-        Step::Quiet
+    pub(super) fn step(&mut self, p: &Probe) -> Step {
+        let Some(l) = self.landing else {
+            return Step::Quiet;
+        };
+        if self.mode == Mode::Inert || self.spent || self.landing_held() {
+            return Step::Quiet;
+        }
+        if p.frames > 0 {
+            // A position update is the picture this watch waits for: it ends for this landing.
+            self.spent = true;
+            self.clock_from = None;
+            return Step::Quiet;
+        }
+        let running = p.landed && p.prime_released && p.accepted_ns >= ACCEPTED_MIN_NS && p.feed_open && p.clock_running;
+        if !running {
+            self.clock_from = None;
+            return Step::Quiet;
+        }
+        let from = *self.clock_from.get_or_insert(p.now);
+        let silent_ms = p.now.wrapping_sub(from);
+        if silent_ms < DV_FIRST_PICTURE_MS {
+            return Step::Quiet;
+        }
+        self.spent = true;
+        let cause = Cause::NoPositionUpdate { silent_ms, accepted_ns: p.accepted_ns };
+        match self.mode {
+            Mode::Act => Step::Withdraw(self.withdrawal(&l, cause)),
+            Mode::ReportOnly => Step::Report(self.report(&l, cause)),
+            Mode::Inert => Step::Quiet,
+        }
+    }
+
+    fn withdrawal(&self, l: &Landing, cause: Cause) -> Withdrawal {
+        Withdrawal {
+            kf_pts: l.kf_pts,
+            nal: crate::aq::hevc_irap_not_idr(l.key),
+            armed_target: self.armed_target,
+            in_place: l.in_place,
+            cause,
+        }
+    }
+
+    fn report(&self, l: &Landing, cause: Cause) -> Report {
+        Report {
+            kf_pts: l.kf_pts,
+            nal: crate::aq::hevc_irap_not_idr(l.key),
+            row: self.row == DvFirstPicture::IdrOnly,
+            cause,
+        }
     }
 }
 
@@ -379,6 +541,8 @@ mod tests {
     fn dv_start_a_re_arm_starts_a_fresh_landing() {
         let mut g = act(DvFirstPicture::AnyIrap);
         g.land(&landing(IDR));
+        // The clock starts at the first tick its conditions hold (the guard reads no clock at the landing).
+        assert_eq!(g.step(&probe(0)), Step::Quiet);
         assert!(matches!(g.step(&probe(4_000)), Step::Withdraw(_)), "the first landing fired");
         assert_eq!(fired(&mut g, &[5_000, 9_000]), [], "and is spent");
         // A new in-place seek: its own target, its own clock, its own single shot.

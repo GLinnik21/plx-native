@@ -5819,19 +5819,54 @@ pub fn dv_first_picture(ps: &PlaybackSession) -> plx_platform::devcaps::DvFirstP
     ps.attempt_caps().dv_first_picture
 }
 
+/// What Dolby Vision Off would have planned for the installed route's stream, keeping the probed
+/// capability: `NotDv` for a usable base layer, a refusal for a Profile 5 or an unconverted dual layer.
+fn dv_off_decision(ps: &PlaybackSession) -> plx_data::metadata::DvDecision {
+    frozen_dv_decision(
+        plx_plex::plex::session::DolbyVisionMode::Off,
+        ps.stream_dv_decision.capability,
+        ps.stream_dovi,
+        &ps.stream_vcodec,
+    )
+}
+
 /// Whether the installed route's Dolby Vision declaration can be withdrawn: it declares a node, and
 /// what Dolby Vision Off would have planned for the same stream is the base layer (a Profile 5, or an
 /// unconverted dual layer, has none, so there is nothing to fall back to).
-pub fn dv_withdrawable(_ps: &PlaybackSession) -> bool {
-    false
+pub fn dv_withdrawable(ps: &PlaybackSession) -> bool {
+    stream_dv_presentation(ps).declared().is_some()
+        && dv_off_decision(ps).presentation == plx_data::metadata::DvPresentation::NotDv
 }
 
 /// Withdraw the installed route's Dolby Vision declaration for the rest of this play: rewrite the
 /// stored presentation to exactly what Dolby Vision Off would have planned, keeping the probed
 /// capability, so every later Load of the route (seek, reload, audio switch, recovery, foreground
 /// restore) is a base-layer play. Returns whether anything changed. `why` is the logged reason.
-pub fn withdraw_dv_presentation(_ps: &mut PlaybackSession, _why: &str) -> bool {
-    false
+///
+/// The file's own declaration (`src_dv_decision`) follows, so a rebuild that copies the video and
+/// re-derives the stream's declaration from it ([`copied_video_dv`]) keeps the node off. The
+/// write goes to `ps` directly, the way `set_stream_acodec` does for the audio switch: it is a
+/// mutation of the installed route, not a transaction.
+pub fn withdraw_dv_presentation(ps: &mut PlaybackSession, why: &str) -> bool {
+    if !dv_withdrawable(ps) {
+        return false;
+    }
+    let off = dv_off_decision(ps);
+    ps.stream_dv_decision = off;
+    if ps.src_dv_decision.presentation.declared().is_some() {
+        ps.src_dv_decision = frozen_dv_decision(
+            plx_plex::plex::session::DolbyVisionMode::Off,
+            ps.src_dv_decision.capability,
+            ps.src_dovi,
+            &ps.stream_vcodec,
+        );
+    }
+    crate::player::log(&format!(
+        "dv: capability={} presentation={} (withdrawn: {why})",
+        off.capability.label(),
+        off.presentation.label(),
+    ));
+    true
 }
 
 /// Is the audio being fed a Dolby Atmos stream? — the Load payload's `contents.immersive` node.

@@ -3823,10 +3823,7 @@ impl Keyframe {
         match self {
             Keyframe::No => "false".to_string(),
             Keyframe::Clean => "true".to_string(),
-            Keyframe::HevcIrapNotIdr(t) => {
-                let kind = if t == 21 { "CRA" } else if (16..=18).contains(&t) { "BLA" } else { "reserved IRAP" };
-                format!("true irap={kind}({t})")
-            }
+            Keyframe::HevcIrapNotIdr(t) => format!("true irap={}", crate::aq::hevc_irap_label(t)),
         }
     }
 

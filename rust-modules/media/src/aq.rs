@@ -36,6 +36,12 @@ pub fn hevc_irap_not_idr(key: c_int) -> Option<u8> {
     }
 }
 
+/// How a [`hevc_irap_not_idr`] type reads in the event log: `CRA(21)`, `BLA(16)`, `reserved IRAP(22)`.
+pub fn hevc_irap_label(nal: u8) -> String {
+    let kind = if nal == 21 { "CRA" } else if (16..=18).contains(&nal) { "BLA" } else { "reserved IRAP" };
+    format!("{kind}({nal})")
+}
+
 #[repr(C)]
 pub struct AuQueue {
     head: *mut AuNode,
