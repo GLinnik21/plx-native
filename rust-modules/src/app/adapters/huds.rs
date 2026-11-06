@@ -1120,11 +1120,13 @@ mod tests {
     }
     const REFERENCE_ID: &str = "com.plxnative.examples.reference";
     #[test]
-    fn a_pack_is_judged_against_the_plxnative_base() {
-        use plx_data::hudpacks::Semver;
-        // Packs name PlxNative releases; FinNative's own line (0.1.0) would refuse one that asks for 0.10.0.
-        let base = Semver::app_release(PACK_APP_VERSION).expect("a numeric base");
-        assert!(base >= Semver::parse("0.10.0").unwrap(), "{PACK_APP_VERSION}");
+    fn a_pack_made_for_a_plxnative_release_runs_on_the_base_it_is_built_on() {
+        let manifest = include_str!("../../../appkit/src/hud_format/fixtures/minimal/manifest.json")
+            .replacen("\"package_format\": \"1.0\",", "\"package_format\": \"1.0\", \"app\": {\"min\": \"0.10.0\"},", 1);
+        let pack = fixtures::with_manifest("minimal", &manifest);
+        assert!(matches!(verdict(&pack, PACK_APP_VERSION), Verdict::Loadable(_)), "{PACK_APP_VERSION}");
+        // FinNative's own line, which callers once passed, is below every pack's min.
+        assert!(matches!(verdict(&pack, "0.1.0"), Verdict::Unloadable(_, Unloadable::AppRange)));
     }
 
     const APP: &str = "0.2.1";
