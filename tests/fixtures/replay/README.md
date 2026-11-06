@@ -624,3 +624,13 @@ shape (`state_fp` 3894237859247589253 → 8768599049636669478). All three old an
 preflight, were recorded afresh against the synthetic mock with `tests/focusfp.sh --rec --only
 1,6,12`, and installed with `plxnative-rec rerecord`, preserving anchors. Targets and Resolve
 replay every frame with all difference counters zero.
+
+The Settings v2 root (stage 1: Libraries / Playback / System / Support groups, a Diagnostics row and
+page, the 48 title) changed recorded behaviour without moving the shape (`state_fp`
+2626795085001354380): the old `6-settings-family` was observed being refused in both modes
+(`replay: REFUSED — replay measurement table miss`), because the new root draws text the recording
+never measured. `tests/focusfp.sh` flow 6 now steps down twice from Privacy to reach Legal, since
+Diagnostics sits between them. The anchor was recorded afresh on the unchanged shape
+(`tests/focusfp.sh --rec --only 6`, old fixture removed, `tools/plxnative-rec import`, `anchor: true`
+restored) and replayed SAME in Targets and Resolve on three consecutive runs. The closed alphabet
+adds `Settings` and `SUPPORT` (`_sources.settings_v2`).
