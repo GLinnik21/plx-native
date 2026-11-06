@@ -138,7 +138,7 @@ fn the_shipped_measure_sums_whole_pixel_advances_like_the_device() {
 fn the_restart_hint_fits_the_language_narrative_in_every_language() {
     use plx_ui::text_view::TextView;
     use plx_ui::widgets::KeyHint;
-    let layout = RouteLayout::screen();
+    let layout = RouteLayout::settings_page();
     let mut out = Vec::new();
     for language in SHIPPED {
         let _guard = language_on_this_thread_for_test(language);

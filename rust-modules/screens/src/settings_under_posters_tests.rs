@@ -478,7 +478,7 @@ fn every_under_posters_string_fits_in_every_language() {
     use plx_ui::text_view::TextView;
     let _guard = plx_base::testlock::serial();
     let _live = Live::set(UnderPosters::DEFAULT);
-    let layout = RouteLayout::screen();
+    let layout = RouteLayout::settings_page();
     let mut out = Vec::new();
     for language in SHIPPED {
         let _lang = language_on_this_thread_for_test(language);

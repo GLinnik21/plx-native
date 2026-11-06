@@ -190,7 +190,7 @@ impl UnderPostersPage {
     fn view(&self) -> TableScreen<'_> {
         use plx_platform::i18n::msg;
         TableScreen::new(
-            Header::new(RouteLayout::screen(), Some(msg::settings_title()), msg::under_posters_title(), msg::under_posters_copy()),
+            Header::new(RouteLayout::settings_page(), Some(msg::settings_title()), msg::under_posters_title(), msg::under_posters_copy()),
             &self.form.table, GroupId(0), self.entry,
         ).keyed(&self.form)
     }
@@ -283,7 +283,7 @@ const PREVIEW_REST_ALPHA: f32 = 0.35;
 
 /// The preview's frame: the whole block rests on the narrative column's floor.
 fn preview_frame() -> Rect {
-    let narrative = RouteLayout::screen().narrative;
+    let narrative = RouteLayout::settings_page().narrative;
     Rect::new(narrative.x, narrative.y + narrative.h - PREVIEW_FRAME_H, PREVIEW_FRAME_W, PREVIEW_FRAME_H)
 }
 
@@ -424,7 +424,7 @@ impl Machine<InnerHost> for UnderPostersPage {
                 if self.poll() {
                     fx.invalidate(Provenance::Input);
                 }
-                self.form.table.update(t.dt(), RouteLayout::screen().sectioned_table().h);
+                self.form.table.update(t.dt(), RouteLayout::settings_page().sectioned_table().h);
                 Handled::Yes
             }
             ScreenEvent::FocusMoved { to, .. } => {
@@ -589,7 +589,7 @@ impl DetailsPage {
     fn view(&self) -> TableScreen<'_> {
         use plx_platform::i18n::msg;
         TableScreen::new(
-            Header::new(RouteLayout::screen(), Some(msg::under_posters_title()), msg::under_posters_details_row(), msg::under_posters_details_copy()),
+            Header::new(RouteLayout::settings_page(), Some(msg::under_posters_title()), msg::under_posters_details_row(), msg::under_posters_details_copy()),
             &self.form.table, GroupId(0), self.entry,
         ).keyed(&self.form)
     }
@@ -657,7 +657,7 @@ impl Machine<InnerHost> for DetailsPage {
                 if settled || moved {
                     fx.invalidate(Provenance::Input);
                 }
-                self.form.table.update(t.dt(), RouteLayout::screen().sectioned_table().h);
+                self.form.table.update(t.dt(), RouteLayout::settings_page().sectioned_table().h);
                 Handled::Yes
             }
             ScreenEvent::FocusMoved { to, .. } => {

@@ -113,7 +113,7 @@ impl PickerPage {
             .iter().position(|(_, v)| *v == current).map_or(u32::MAX, |i| i as u32)
     }
     fn view(&self) -> TableScreen<'_> {
-        TableScreen::new(Header::new(RouteLayout::screen(), Some(self.state.field.parent_title()),
+        TableScreen::new(Header::new(RouteLayout::settings_page(), Some(self.state.field.parent_title()),
             self.state.field.title(), &self.copy), &self.form.table, GroupId(0), self.entry).keyed(&self.form)
     }
     fn focus(&self, fx: &mut Effects<'_, InnerHost>, group: GroupId) {
@@ -278,7 +278,7 @@ impl Machine<InnerHost> for PickerPage {
                     Landed::Nothing if started => { self.rebuild(true); fx.invalidate(plx_machine::present::Provenance::Landing(MachineId::Session)); }
                     Landed::Nothing => {}
                 }
-                self.form.table.update(t.dt(), RouteLayout::screen().sectioned_table().h);
+                self.form.table.update(t.dt(), RouteLayout::settings_page().sectioned_table().h);
                 Handled::Yes
             }
             ScreenEvent::FocusMoved { to, .. } => {

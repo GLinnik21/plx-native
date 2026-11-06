@@ -103,7 +103,7 @@ impl DiagnosticsPage {
     fn view(&self) -> TableScreen<'_> {
         use plx_platform::i18n::msg;
         TableScreen::new(
-            Header::new(RouteLayout::screen(), Some(msg::settings_title()), msg::settings_trace_section(), msg::settings_trace_export_detail()),
+            Header::new(RouteLayout::settings_page(), Some(msg::settings_title()), msg::settings_trace_section(), msg::settings_trace_export_detail()),
             &self.form.table, GroupId(0), self.entry,
         )
         .keyed(&self.form)
@@ -149,7 +149,7 @@ impl Machine<InnerHost> for DiagnosticsPage {
                 if matches!(self.state.status, Status::Recording | Status::Saving) {
                     fx.push(Fx::App(AppFx::PlaybackTrace(Command::Status)));
                 }
-                self.form.table.update(t.dt(), RouteLayout::screen().sectioned_table().h);
+                self.form.table.update(t.dt(), RouteLayout::settings_page().sectioned_table().h);
                 Handled::Yes
             }
             ScreenEvent::FocusMoved { to, .. } => {

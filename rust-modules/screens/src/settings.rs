@@ -1437,7 +1437,7 @@ impl RootPage {
     fn view(&self) -> TableScreen<'_> {
         TableScreen::new(
             Header::new(
-                RouteLayout::screen(),
+                RouteLayout::settings_page(),
                 None,
                 plx_platform::i18n::msg::settings_title(),
                 plx_platform::i18n::msg::settings_root_copy(),
@@ -1591,7 +1591,7 @@ impl Machine<InnerHost> for RootPage {
                 if landed { self.rebuild(cx.views.directory); fx.invalidate(plx_machine::present::Provenance::Landing(MachineId::Session)); }
 
                 self.form.table
-                    .update(t.dt(), RouteLayout::screen().sectioned_table().h);
+                    .update(t.dt(), RouteLayout::settings_page().sectioned_table().h);
                 self.follow.update(t.dt());
                 Handled::Yes
             }
@@ -1884,7 +1884,7 @@ impl LanguagePage {
         } else {
             plx_platform::i18n::msg::settings_language_copy()
         };
-        TableScreen::new(Header::new(RouteLayout::screen(), Some(plx_platform::i18n::msg::settings_title()),
+        TableScreen::new(Header::new(RouteLayout::settings_page(), Some(plx_platform::i18n::msg::settings_title()),
             plx_platform::i18n::msg::settings_language_title(), copy).with_hint(restart_hint()),
             &self.form.table, GroupId(0), self.entry).keyed(&self.form)
     }
@@ -1941,7 +1941,7 @@ impl Machine<InnerHost> for LanguagePage {
             }
             ScreenEvent::Tick(t) => {
                 if self.poll_save() { fx.invalidate(plx_machine::present::Provenance::Input); }
-                self.form.table.update(t.dt(), RouteLayout::screen().sectioned_table().h);
+                self.form.table.update(t.dt(), RouteLayout::settings_page().sectioned_table().h);
                 Handled::Yes
             }
             ScreenEvent::FocusMoved { to, .. } => {

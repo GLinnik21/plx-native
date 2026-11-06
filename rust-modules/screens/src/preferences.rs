@@ -415,7 +415,7 @@ impl PreferencesPage {
         s
     }
     fn view(&self) -> TableScreen<'_> {
-        TableScreen::new(Header::new(RouteLayout::screen(), Some(plx_platform::i18n::msg::settings_title()),
+        TableScreen::new(Header::new(RouteLayout::settings_page(), Some(plx_platform::i18n::msg::settings_title()),
             self.state.kind.title(), &self.copy), &self.form.table, GroupId(0), self.entry).keyed(&self.form)
     }
     fn focus(&self, fx: &mut Effects<'_, InnerHost>) {
@@ -722,7 +722,7 @@ impl Machine<InnerHost> for PreferencesPage {
                     }
                     fx.invalidate(plx_machine::present::Provenance::Landing(MachineId::Session));
                 }
-                self.form.table.update(t.dt(), RouteLayout::screen().sectioned_table().h);
+                self.form.table.update(t.dt(), RouteLayout::settings_page().sectioned_table().h);
                 Handled::Yes
             }
             ScreenEvent::FocusMoved { to, .. } => {

@@ -259,7 +259,7 @@ fn long_profile() -> Whose {
 fn every_explanation_under_a_title_fits_the_column_in_every_language() {
     const MAX_COPY_LINES: usize = 5;
     let _serial = plx_base::testlock::serial();
-    let layout = RouteLayout::screen();
+    let layout = RouteLayout::settings_page();
     let all_fields = [PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition,
         PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval, PickerKind::InstantDpadSeeking, PickerKind::DolbyVision, PickerKind::IntroSkip, PickerKind::CreditsSkip, PickerKind::UiResolution, PickerKind::AudioLanguage, PickerKind::SubtitleMode,
         PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles];

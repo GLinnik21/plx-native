@@ -110,7 +110,7 @@ fn moving_focus_moves_the_followed_sentence() {
 #[test]
 fn every_followed_sentence_fits_five_lines_in_every_language() {
     use plx_ui::text_view::TextView;
-    let layout = RouteLayout::screen();
+    let layout = RouteLayout::settings_page();
     let mut out = Vec::new();
     for language in SHIPPED {
         let _guard = language_on_this_thread_for_test(language);

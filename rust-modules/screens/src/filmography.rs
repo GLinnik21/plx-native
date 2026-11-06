@@ -1271,7 +1271,7 @@ mod tests {
     #[test]
     fn a_wrapped_filmography_heading_keeps_the_preview_below_its_copy_and_inside_safe_bounds() {
         let measure = FixtureMeasure;
-        let title = "ExpandedFilmographyTitle ExpandedFilmographyTitle ExpandedFilmographyTitle ExpandedFilmographyTitle";
+        let title = "ExpandedFilmographyTitle ExpandedFilmographyTitle";
         let copy = "12 credits";
         let layout = RouteLayout::screen_for_title(COPY_W, RouteLayout::screen().content.w, title, &measure);
         let frame = preview_frame(layout, title, copy, &measure);
