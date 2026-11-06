@@ -84,8 +84,6 @@ pub mod sub_charset; // legacy-encoding text subtitles (GBK, Big5, Shift_JIS, ..
 pub mod subside; // the media half of the side subtitle reader (the thread is `plx_play_feed::side_reader`; dev trigger `plxnative-subside`)
 #[cfg(feature = "play-feed")]
 pub(crate) mod subtitle_cue; // embedded/side-reader cue bridge; caption stores remain common. Gated: it calls `push/close_subtitle_bitmap_for_generation` and `ass_source::begin_inventory`, which exist only with the Feed
-#[cfg(all(feature = "hostsim", feature = "play-feed"))]
-pub mod sim_video; // the simulator's decoded picture, for screenshots (see its doc)
 pub mod text_ass; // text subtitles to ASS: dialect converter, synthesized header, sidecar scripts (pure)
 pub mod text_style; // the viewer's size/position picks as the numbers that converter and the screen's lift use (pure)
 mod timeline;
@@ -117,17 +115,6 @@ use plx_playback_contract::feed::{UserPauseOutcome, UserResumeOutcome};
 pub(crate) fn plane() -> &'static plx_platform::tv::plane::PlaneOwner {
     plx_platform::tv::plane::installed()
 }
-
-/// The simulator's video sink ([`ffi_host::HostSink`]), built with this crate's side of what the
-/// Feed backend's stand-in cannot name: the pipeline-event entry `plx_play_feed::sf_event::sf_on_event`, the inverse of the
-/// position rebase that entry applies (`plx_play_feed::sf_event::media_to_fed`), and the simulator's decoded picture ([`sim_video`]). The
-/// simulator's port table holds it as `Port.sink`; a hostsim test binary reads it directly.
-#[cfg(all(feature = "hostsim", feature = "play-feed"))]
-pub static HOST_SINK: ffi_host::HostSink = ffi_host::HostSink::new(ffi_host::Hooks {
-    deliver_event: plx_play_feed::sf_event::sf_on_event,
-    media_to_fed: plx_play_feed::sf_event::media_to_fed,
-    frames: &sim_video::SimVideo,
-});
 
 /// `/tmp/plxnative-tracknames[=<audio>;<subs>]` — **stand in for the container's own track names**,
 /// which nothing off-device can read.
@@ -1645,12 +1632,6 @@ pub use engine::aq_caps;
 #[cfg(feature = "play-feed")]
 pub use engine::feed_leads_ms;
 pub use plx_platform::tv::sink::{VP_ACB, VP_EXPORTED, VP_NONE};
-/// The simulator's clock-sink stop; the television's pipeline has no such control.
-#[cfg(all(feature = "hostsim", feature = "play-feed"))]
-pub fn stop_sim_clock_at(media_ns: Option<i64>) -> bool {
-    HOST_SINK.stop_clock_at(media_ns)
-}
-
 /// The video codec a `dg_load_v` code names (video 1 = H264, 2 = H265, 3 = AV1, 4 = VP9; 0 = not built).
 /// The codes are written from `engine::LoadVideo::diag_code`, the names from its `payload_name`.
 #[cfg(feature = "play-feed")]

@@ -771,7 +771,7 @@ unsafe fn present_and_swap(
         // compositor puts its video plane under ours — before the capture, so shots include it.
         #[cfg(all(feature = "hostsim", feature = "play-feed"))]
         if fr.player {
-            plx_media::player::sim_video::composite_under();
+            crate::app::adapters::hostsim::composite_under();
         }
         // Before the swap, never after: the back buffer is undefined once presented.
         // A dump decides here whether this frame is written (`dev::framedump`); otherwise the

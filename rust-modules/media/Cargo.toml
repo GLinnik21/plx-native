@@ -25,13 +25,12 @@ play-feed = ["dep:plx_play_feed", "plx_platform/feed-sink"]
 # behaviour here, not plumbing: the quality-override, track-name, playurl and forced-route triggers
 # read their files through `plx_base::devtrig`, which is compile-time `None` without it, and
 # 130-odd `cfg`s select the dev surface.
-devtriggers = ["plx_play_feed?/devtriggers", "plx_media_codecs/devtriggers", "plx_base/devtriggers", "plx_machine/devtriggers", "plx_net/devtriggers", "plx_platform/devtriggers", "plx_gfx?/devtriggers", "plx_plex/devtriggers", "plx_telemetry/devtriggers", "plx_data/devtriggers"]
+devtriggers = ["plx_play_feed?/devtriggers", "plx_media_codecs/devtriggers", "plx_base/devtriggers", "plx_machine/devtriggers", "plx_net/devtriggers", "plx_platform/devtriggers", "plx_plex/devtriggers", "plx_telemetry/devtriggers", "plx_data/devtriggers"]
 # `player::ffi_host` (the simulator's `VideoSink`, which lives in `plx_play_feed` and is re-exported here)
-# and `player::sim_video` replace the platform webOS port's native sink (Starfish/ACB) under it.
-# `sim_video` is the Feed stand-in's frame sink (`ffi_host::FrameSink`) and the one thing here that
-# draws, so `plx_gfx` is a dependency of this feature only. Both exist only with `play-feed`: the
-# stand-in is the Feed backend's, so a simulator build names `play-feed` too (ci/test_sim_backend.py).
-hostsim = ["dep:plx_gfx", "plx_play_feed?/hostsim", "plx_base/hostsim", "plx_machine/hostsim", "plx_platform/hostsim", "plx_gfx/hostsim", "plx_plex/hostsim", "plx_telemetry/hostsim", "plx_data/hostsim"]
+# replaces the platform webOS port's native sink (Starfish/ACB) under it. It exists only with `play-feed`:
+# the stand-in is the Feed backend's, so a simulator build names `play-feed` too (ci/test_sim_backend.py).
+# The simulator's decoded picture (its frame sink, the one thing that draws) is the application's.
+hostsim = ["plx_play_feed?/hostsim", "plx_base/hostsim", "plx_machine/hostsim", "plx_platform/hostsim", "plx_plex/hostsim", "plx_telemetry/hostsim", "plx_data/hostsim"]
 # Two `cfg_attr(not(feature = "lab-diagnostics"), allow(dead_code))` in `player`; the Cloud Lab bridge
 # that reads those items is the application crate's.
 lab-diagnostics = []
@@ -40,7 +39,7 @@ lab-diagnostics = []
 # `cfg(test)` alone cannot give a dependent (the stand-in sink, the stepped feed clock, the asset
 # directory, the settled route start). Enabled from the dependents' `[dev-dependencies]`; never in a
 # shipped build.
-test-support = ["plx_play_feed?/test-support", "plx_media_codecs/test-support", "plx_base/test-support", "plx_machine/test-support", "plx_platform/test-support", "plx_gfx?/test-support", "plx_net/test-support", "plx_plex/test-support", "plx_telemetry/test-support", "plx_data/test-support"]
+test-support = ["plx_play_feed?/test-support", "plx_media_codecs/test-support", "plx_base/test-support", "plx_machine/test-support", "plx_platform/test-support", "plx_net/test-support", "plx_plex/test-support", "plx_telemetry/test-support", "plx_data/test-support"]
 
 [dependencies]
 plx_playback_contract = { path = "../playback-contract" }
@@ -49,7 +48,6 @@ plx_media_codecs = { path = "../media-codecs" }
 plx_base = { path = "../base" }
 plx_machine = { path = "../machine" }
 plx_platform = { path = "../platform" }
-plx_gfx = { path = "../gfx", optional = true }
 plx_net = { path = "../net" }
 plx_plex = { path = "../plex" }
 plx_telemetry = { path = "../telemetry" }

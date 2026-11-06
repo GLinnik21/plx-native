@@ -410,7 +410,7 @@ pub(crate) fn clockstop_arm(app: &mut App, fr: &Frame) {
             return;
         }
         let at = i64::from(ms) * 1_000_000;
-        plx_media::player::stop_sim_clock_at(Some(at));
+        crate::app::adapters::hostsim::stop_sim_clock_at(Some(at));
         let arms = &mut app.scenarios.shots;
         if arms.clockstop_reached {
             return;

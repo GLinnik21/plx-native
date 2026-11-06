@@ -318,10 +318,12 @@ keeps its `extern "C"` block unchanged and implements the trait as `StarfishSink
 and the Load worker call it through the sink the composition hands the adapter (`PlayerAdapter::display_sink`). `player/ffi_host.rs` is no longer swapped in under
 `player::ffi`. It is `ffi_host`, the simulator's own `VideoSink` (`HostSink`), outside the
 fence. It is the Feed backend's stand-in, so it lives in `plx_play_feed` behind that crate's
-`hostsim` feature and names only the layers below it; the three things it needs from above arrive
-as `ffi_host::Hooks` its sink is built with (`player::HOST_SINK`): the media player's `sf_on_event`,
-the inverse of that callback's position rebase, and a `ffi_host::FrameSink` that `player::sim_video`
-implements (the one place that draws, so `plx_gfx` stays on the media side). Call order, arguments and log text did not change. The deeper cut is L15b.
+`hostsim` feature and names only the layers below it; what its sink is built with arrives as
+`ffi_host::Hooks`: the pipeline-event entry and the inverse of its position rebase, both that
+crate's own (`Hooks::over`), and a `ffi_host::FrameSink` that the application's
+`app::adapters::hostsim::sim_video` implements (the one place that draws, so `plx_gfx` stays on the
+application side), as `app::adapters::hostsim::HOST_SINK`; the media tests build their own beside it
+with `ffi_host::NoFrames`. Call order, arguments and log text did not change. The deeper cut is L15b.
 
 The verb cut was taken first because the bind sequence cannot be moved safely from here. It lives in
 `pump`'s `Stage` machine, is gated on state the firmware callback writes (`FEED_SHARED`) and interleaves
@@ -1557,7 +1559,8 @@ integration fixtures.
 
 `media` was extracted eleventh: `rust-modules/media/` is the workspace member `plx_media` (an `rlib`,
 `uses = base machine platform gfx net plex telemetry data`; the manifest names those eight, with
-`plx_gfx` optional behind `hostsim` because only the simulator's `player::sim_video` draws), holding
+`plx_gfx` optional behind `hostsim` because only the simulator's `player::sim_video` drew; that file
+has since moved to the application, `app::adapters::hostsim`, and the manifest no longer names `plx_gfx`), holding
 `ff` (then the bundled-FFmpeg demuxer), `aq`, `abr`, `hls`, `curlio`, `player` (the buffer-feed engine,
 `player/CLAUDE.md` with it) and `route`: 70 files, 84,579 lines. It is the layer with the FFI, and
 the one that held the last import cycle of the application, `abr curlio ff hls player route`, which

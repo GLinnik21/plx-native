@@ -419,7 +419,7 @@ device-verified" is a useful, honest status. "Verified" without a TV is not.
   read-out and the HUD's busy states. With it there is a real one, driven by a real stream — but
   the video PLANE is empty, because the app decodes nothing and the wayland overlay is webOS-only:
   the HUD sits over black. Arm `plxnative-simvideo` as well and a system `ffmpeg` child decodes
-  the stream the clock sink accepts and composites it UNDER the UI (`player/sim_video.rs`). That
+  the stream the clock sink accepts and composites it UNDER the UI (`src/app/adapters/hostsim/sim_video.rs`). That
   is a screenshot facility for the documentation's player figure; it says nothing about LG's
   decoder, the video plane or picture timing on the television.
 

@@ -1723,7 +1723,7 @@ fn autopause_arm(app: &mut App, fr: &mut Frame) {
         // the stop is kept in movie time, so re-arming is idempotent.
         #[cfg(all(feature = "hostsim", feature = "play-feed"))]
         if let Some(ms) = at_ms {
-            plx_media::player::stop_sim_clock_at(Some(i64::from(ms) * 1_000_000));
+            crate::app::adapters::hostsim::stop_sim_clock_at(Some(i64::from(ms) * 1_000_000));
         }
         let reached = at_ms.is_none_or(|ms| crate::app::playback::playpos(&app.player.session)
             .is_some_and(|pos| pos >= i64::from(ms) * 1_000_000));
@@ -1737,7 +1737,7 @@ fn autopause_arm(app: &mut App, fr: &mut Frame) {
                 app.scenarios.pause_script = None;
                 app.scenarios.pause_resume_at = hold_ms.map(|hold| fr.now.wrapping_add(hold));
                 #[cfg(all(feature = "hostsim", feature = "play-feed"))]
-                plx_media::player::stop_sim_clock_at(None);
+                crate::app::adapters::hostsim::stop_sim_clock_at(None);
                 pin_headless_hud(app, fr.now, None);
             }
         }
