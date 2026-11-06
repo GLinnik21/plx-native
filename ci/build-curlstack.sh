@@ -401,7 +401,7 @@ build_gnutls() {
       # closed on this one NEEDED entry alone, silently falling back to the television's own
       # libcurl with no error beyond "dependency did not load" (plx_base::dynlib only reports
       # which candidate failed, not why — there is no gnutls-side symptom to grep for here other
-      # than this exact NEEDED mismatch). Same fix as `libssl-plx.so.3`'s `libcrypto` reference.
+      # than this exact NEEDED mismatch).
       repoint_needed libgnutls-plx.so.30 libgmp.so.10 libgmp-plx.so.10
       scrub_buildpath libgnutls-plx.so.30
       ln -sf libgnutls-plx.so.30 libgnutls.so
@@ -534,9 +534,12 @@ build_curl() {
     # unnecessary here (unlike GMP's own case) because nothing else on this system's search path
     # could plausibly satisfy `-lhogweed`/`-lnettle`/`-ltasn1`/`-lgmp` — only our shim does.
     # `--without-ca-bundle --without-ca-path`, no `--with-ca-fallback`: that flag is
-    # OpenSSL-specific (`configure: error: --with-ca-fallback only works with OpenSSL`) and is
-    # moot regardless — `net.rs` always sets `CURLOPT_CAINFO` explicitly at runtime (see its
-    # `apply_roots`/`shipped_ca_bundle`), never relying on curl's own compiled-in default.
+    # OpenSSL-specific (`configure: error: --with-ca-fallback only works with OpenSSL`). No CA
+    # default is compiled into curl on purpose: the ordinary (strict) path sets NO `CURLOPT_CAINFO`
+    # and trusts the device's store through `CURLSSLOPT_NATIVE_CA` (`net.rs`'s and `curlio.rs`'s
+    # `TlsCfg::Ca` arm) plus GnuTLS's own `--with-default-trust-store-dir=/etc/ssl/certs` above.
+    # Only the `*.plex.direct` roots fallback sets `CURLOPT_CAINFO`, to the shipped `le-roots.pem`
+    # (`apply_roots`/`shipped_ca_bundle`).
     local version archive src build prefix shim
     version=$(python3 "$DEPS" get curl version)
     archive="$(python3 "$DEPS" cache-dir)/$(python3 "$DEPS" get curl archive)"

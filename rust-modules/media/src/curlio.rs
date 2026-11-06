@@ -151,8 +151,8 @@ pub type CURLM = c_void;
 
 // ---- the SECOND libcurl table: curl_multi_*, and nothing else --------------------------------
 //
-// Same candidate list as `net.rs`, in the same order, so a set carrying both SONAMEs binds both
-// tables against the same library. The macOS name is last for the same reason it is there: the
+// On the system-curl path: the same candidate list as `net.rs`, in the same order, so a set
+// carrying both SONAMEs binds both tables against the same library. The macOS name is last for the same reason it is there: the
 // host simulator and `PlxNative.app` run this code, and the host suite below drives real libcurl
 // over plain loopback HTTP.
 //

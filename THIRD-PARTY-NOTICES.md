@@ -553,13 +553,13 @@ state with OpenSSL.
 | Shipped file | Upstream | Version | Licence |
 |---|---|---|---|
 | `libcurl-plx.so.4` | curl | **8.23.0** | **curl** (`licenses/curl.txt`) |
-| `libgnutls-plx.so.30` | GnuTLS | **3.8.13** | **LGPL-2.1-or-later** (`licenses/LGPL-2.1.txt`) |
+| `libgnutls-plx.so.30` | GnuTLS | **3.8.13** | **LGPL-2.1-or-later** (`licenses/LGPL-2.1.txt`); also contains the parts of GNU libunistring that GnuTLS's `--with-included-unistring` compiles in, under libunistring's LGPL-3.0-or-later (`licenses/LGPL-3.0.txt`) / GPL-2.0-or-later dual licence |
 | `libnettle-plx.so.8`, `libhogweed-plx.so.6` | Nettle | **3.10.2** | **LGPL-3.0-or-later** (`licenses/LGPL-3.0.txt`), the LGPL arm of Nettle's LGPL-3.0-or-later/GPL-2.0-or-later dual licence |
 | `libtasn1-plx.so.6` | libtasn1 | **4.21.0** | **LGPL-2.1-or-later** (`licenses/LGPL-2.1.txt`) |
 | `libgmp-plx.so.10` | GMP | **6.3.0** | **LGPL-3.0-or-later** (`licenses/LGPL-3.0.txt`), the LGPL arm of GMP's LGPL-3.0-or-later/GPL-2.0-or-later dual licence |
-| `libnghttp2-plx.so.14` | nghttp2 | **1.71.0** | **MIT** (`licenses/MIT.txt`) |
-| `libnghttp3-plx.so.9` | nghttp3 | **1.19.0** | **MIT** (`licenses/MIT.txt`) |
-| `libngtcp2-plx.so.16`, `libngtcp2_crypto_gnutls-plx.so.8` | ngtcp2 | **1.26.0** | **MIT** (`licenses/MIT.txt`) |
+| `libnghttp2-plx.so.14` | nghttp2 | **1.71.0** | **MIT** (`licenses/MIT.txt`); Copyright (c) 2012, 2014, 2015, 2016 Tatsuhiro Tsujikawa and nghttp2 contributors |
+| `libnghttp3-plx.so.9` | nghttp3 | **1.19.0** | **MIT** (`licenses/MIT.txt`); Copyright (c) 2019 nghttp3 contributors |
+| `libngtcp2-plx.so.16`, `libngtcp2_crypto_gnutls-plx.so.8` | ngtcp2 | **1.26.0** | **MIT** (`licenses/MIT.txt`); Copyright (c) 2016 ngtcp2 contributors |
 
 **Complete corresponding source.** Each upstream tarball these are built from, with its sha256, is
 pinned in `ci/dependencies.json` (the `curlstack` group: `gmp`, `nettle`, `libtasn1`, `gnutls`,
@@ -570,17 +570,26 @@ enabled-feature list — is `ci/build-curlstack.sh` in the PlxNative repository.
 a CURLSTACK=1 package distributes these libraries and takes on the LGPL's source offer for them;
 the release workflow builds without the flag, so its source attachments do not include them.
 
-**Configuration.** curl is built with only `file ftp ftps http https ipfs ipns ws wss` enabled
-(`ldap`, `rtsp`, `telnet`, `dict`, `gopher`, `smtp`, `pop3`, `imap`, `tftp`, `mqtt` and the
-`libssh2`/`librtmp`/`libidn2`/`libpsl`/`brotli`/`zstd`/`gssapi` dependencies they would otherwise
-pull in are all disabled — this app only ever does HTTPS GET and byte-range requests). GMP is
-built shared, under this project's own `-plx` SONAME, specifically because the webOS NDK's own
-sysroot already ships an unrelated `libgmp.so.10` (a dependency of the NDK's own cross GCC) that
-a static-only GMP would have silently let the linker substitute. GnuTLS is built without
-PKCS#11 (`--without-p11-kit`), DANE/DNSSEC (`--disable-libdane`), its command-line tools, tests,
-Guile bindings, NLS and IDN support (`--disable-tools --disable-tests --disable-guile
---disable-nls --without-idn`) and TPM2 support (`--without-tpm2`) — none of which this app has
-ever had a reason to use.
+**Configuration.** curl's enabled protocols, as its own `curl-config --protocols` reports for the
+built library, are `FILE FTP FTPS HTTP HTTPS IPFS IPNS WS WSS`, and its features `alt-svc
+AsynchDNS HSTS HTTP2 HTTP3 HTTPS-proxy IPv6 Largefile libz SSL threadsafe UnixSockets`. It is
+configured with `--disable-ldap --disable-ldaps --disable-rtsp --disable-telnet --disable-dict
+--disable-gopher --disable-smtp --disable-pop3 --disable-imap --disable-tftp --disable-mqtt
+--disable-manual --disable-docs --without-libssh2 --without-libidn2 --without-libpsl
+--without-brotli --without-zstd --without-gssapi --without-libgsasl --without-ca-bundle
+--without-ca-path`; `libz` is the television's own `libz.so.1`, not a shipped copy. This app uses
+it only for its own HTTP and HTTPS requests. GMP is built shared, under this project's own `-plx`
+SONAME, specifically because the webOS NDK's own sysroot already ships an unrelated
+`libgmp.so.10` (a dependency of the NDK's own cross GCC) that a static-only GMP would have
+silently let the linker substitute. GnuTLS is configured with `--without-p11-kit --disable-doc
+--disable-tests --disable-tools --disable-nls --without-idn --disable-cxx --disable-libdane
+--without-tpm2 --without-tpm --disable-rpath --with-included-unistring --without-zstd
+--without-brotli --with-default-trust-store-dir=/etc/ssl/certs` (`ci/build-curlstack.sh` is the
+source of truth for every flag above).
+
+**The GPL text the LGPL-3.0 incorporates.** LGPL-3.0 is a set of additional permissions on top of
+the GNU GPL version 3, so it must travel with the GPL's text: that text is `LICENSE`, which every
+PlxNative package already ships (as `licenses/LICENSE`) because it is PlxNative's own licence.
 
 *Why it exists:* the television's libcurl is pinned at 7.53.1 for the same reason FFmpeg is
 bundled (§1.1) — a system library this old can be worked around, never grown a protocol. HTTP/3
