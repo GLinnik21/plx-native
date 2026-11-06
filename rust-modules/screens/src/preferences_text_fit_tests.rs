@@ -65,19 +65,19 @@ fn every_field_readout_and_detail_fits_its_column_in_every_language() {
         for &quality in available_quality_ladder() {
             check_field_section(&format!("{tag} quality={quality:?}"), &playback(quality, DirectPlayMode::Auto), &mut out);
         }
-        // Forced adds the "overridden" detail line to the Quality row.
+        // Forced reads the Quality row's value as "Overridden".
         check_field_section(&format!("{tag} quality overridden detail"), &playback(Quality::Original, DirectPlayMode::Forced), &mut out);
         for direct_play in [DirectPlayMode::Auto, DirectPlayMode::Forced, DirectPlayMode::Disabled] {
             check_field_section(&format!("{tag} direct_play={direct_play:?}"), &playback(Quality::Original, direct_play), &mut out);
         }
         for size in plx_media::route::SubtitleSize::LADDER {
             plx_media::route::restore_subtitle_size(size);
-            check_field_section(&format!("{tag} subtitle_size={size:?}"), &playback(Quality::Original, DirectPlayMode::Auto), &mut out);
+            check_field_section(&format!("{tag} subtitle_size={size:?}"), &audio(Some(&AudioPreferences::default())), &mut out);
         }
         plx_media::route::restore_subtitle_size(plx_media::route::SubtitleSize::Medium);
         for position in plx_media::route::SubtitlePosition::LADDER {
             plx_media::route::restore_subtitle_position(position);
-            check_field_section(&format!("{tag} subtitle_position={position:?}"), &playback(Quality::Original, DirectPlayMode::Auto), &mut out);
+            check_field_section(&format!("{tag} subtitle_position={position:?}"), &audio(Some(&AudioPreferences::default())), &mut out);
         }
         plx_media::route::restore_subtitle_position(plx_media::route::SubtitlePosition::Low);
         for mode in plx_media::route::NextEpisodeMode::LADDER {
@@ -110,6 +110,7 @@ fn every_field_readout_and_detail_fits_its_column_in_every_language() {
         check_field_section(&format!("{tag} read-only"), &FieldListInputs { read_only: true, ..playback(Quality::Original, DirectPlayMode::Auto) }, &mut out);
         check_field_section(&format!("{tag} read-only forced"), &FieldListInputs { read_only: true, ..playback(Quality::Original, DirectPlayMode::Forced) }, &mut out);
 
+        check_field_section(&format!("{tag} read-only look"), &FieldListInputs { read_only: true, ..audio(Some(&AudioPreferences::default())) }, &mut out);
         check_field_section(&format!("{tag} retry row"), &FieldListInputs { show_retry: true, ..audio(None) }, &mut out);
 
         // Every catalog language as the Audio/Subtitle Language read-out (app data, so judged).

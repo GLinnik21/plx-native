@@ -381,5 +381,13 @@
   "settings.playback.credits_skip.copy": "Выключено скрывает кнопку пропуска титров. Вручную сохраняет текущие элементы управления. Автоматически пропускает через пять секунд, если не выбрать «Смотреть титры». Следующий эпизод и его отсчёт настраиваются отдельно.",
   "settings.support.section": "Поддержка",
   "settings.diagnostics.detail": "Записывать диагностику воспроизведения и сохранять журнал для поддержки.",
-  "settings.libraries.more": "Медиатеки, которые вы отключите, останутся на вашем сервере Plex и на других устройствах."
+  "settings.libraries.more": "Медиатеки, которые вы отключите, останутся на вашем сервере Plex и на других устройствах.",
+  "settings.playback.group_video": "Видео",
+  "settings.playback.group_player": "Плеер",
+  "settings.playback.group_up_next": "Далее",
+  "settings.audio.group_audio": "Звук",
+  "settings.audio.group_subtitles": "Субтитры",
+  "settings.audio.group_look": "Внешний вид",
+  "settings.playback.overridden_value": "Переопределено",
+  "settings.audio.page_copy": "Языковые предпочтения для звука и субтитров синхронизируются с аккаунтом Plex. Настройки воспроизведения относятся к каждому профилю."
 }

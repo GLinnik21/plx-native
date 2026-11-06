@@ -378,5 +378,13 @@
   "settings.playback.credits_skip.copy": "Desativado oculta Pular créditos. Manual mantém os controles atuais. Automático pula após cinco segundos, a menos que você escolha assistir aos créditos. O próximo episódio e sua contagem regressiva são configurados separadamente.",
   "settings.support.section": "Suporte",
   "settings.diagnostics.detail": "Gravar diagnósticos de reprodução e guardar um registo para o suporte.",
-  "settings.libraries.more": "As bibliotecas que deixar de fora continuam no seu servidor Plex e nos seus outros dispositivos."
+  "settings.libraries.more": "As bibliotecas que deixar de fora continuam no seu servidor Plex e nos seus outros dispositivos.",
+  "settings.playback.group_video": "Vídeo",
+  "settings.playback.group_player": "Player",
+  "settings.playback.group_up_next": "A seguir",
+  "settings.audio.group_audio": "Áudio",
+  "settings.audio.group_subtitles": "Legendas",
+  "settings.audio.group_look": "Aspeto",
+  "settings.playback.overridden_value": "Substituída",
+  "settings.audio.page_copy": "As preferências de idioma de áudio e legendas sincronizam com a sua conta Plex. As definições de reprodução pertencem a cada perfil."
 }

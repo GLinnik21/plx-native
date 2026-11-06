@@ -378,5 +378,13 @@
   "settings.playback.credits_skip.copy": "Disattivato nasconde Salta titoli di coda. Manuale mantiene i controlli attuali. Automatico salta dopo cinque secondi, salvo che tu scelga di guardare i titoli. L’episodio successivo e il suo conto alla rovescia si impostano separatamente.",
   "settings.support.section": "Assistenza",
   "settings.diagnostics.detail": "Registra la diagnostica della riproduzione e salva un registro per l'assistenza.",
-  "settings.libraries.more": "Le librerie che escludi restano sul tuo server Plex e sugli altri dispositivi."
+  "settings.libraries.more": "Le librerie che escludi restano sul tuo server Plex e sugli altri dispositivi.",
+  "settings.playback.group_video": "Video",
+  "settings.playback.group_player": "Player",
+  "settings.playback.group_up_next": "Prossimo",
+  "settings.audio.group_audio": "Audio",
+  "settings.audio.group_subtitles": "Sottotitoli",
+  "settings.audio.group_look": "Aspetto",
+  "settings.playback.overridden_value": "Sostituita",
+  "settings.audio.page_copy": "Le preferenze di lingua per audio e sottotitoli sono sincronizzate con il tuo account Plex. Le impostazioni di riproduzione appartengono a ciascun profilo."
 }

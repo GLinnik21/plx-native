@@ -375,5 +375,13 @@
   "settings.playback.credits_skip.copy": "Uitgeschakeld verbergt Aftiteling overslaan. Handmatig behoudt de huidige knoppen. Automatisch slaat na vijf seconden over, tenzij je Aftiteling bekijken kiest. De volgende aflevering en de aftelling worden apart ingesteld.",
   "settings.support.section": "Ondersteuning",
   "settings.diagnostics.detail": "Neem afspeeldiagnostiek op en bewaar een logboek voor ondersteuning.",
-  "settings.libraries.more": "Bibliotheken die je weglaat, blijven op je Plex-server en op je andere apparaten."
+  "settings.libraries.more": "Bibliotheken die je weglaat, blijven op je Plex-server en op je andere apparaten.",
+  "settings.playback.group_video": "Video",
+  "settings.playback.group_player": "Speler",
+  "settings.playback.group_up_next": "Hierna",
+  "settings.audio.group_audio": "Audio",
+  "settings.audio.group_subtitles": "Ondertitels",
+  "settings.audio.group_look": "Uiterlijk",
+  "settings.playback.overridden_value": "Overschreven",
+  "settings.audio.page_copy": "Taalvoorkeuren voor audio en ondertitels worden gesynchroniseerd met je Plex-account. Afspeelinstellingen horen bij elk profiel."
 }

@@ -378,5 +378,13 @@
   "settings.playback.credits_skip.copy": "Desactivado oculta Saltar créditos. Manual conserva los controles actuales. Automático salta tras cinco segundos, salvo que elijas Ver créditos. El siguiente episodio y su cuenta atrás se configuran por separado.",
   "settings.support.section": "Soporte",
   "settings.diagnostics.detail": "Graba diagnósticos de reproducción y guarda un registro para el soporte.",
-  "settings.libraries.more": "Las bibliotecas que dejas fuera siguen en tu servidor Plex y en tus otros dispositivos."
+  "settings.libraries.more": "Las bibliotecas que dejas fuera siguen en tu servidor Plex y en tus otros dispositivos.",
+  "settings.playback.group_video": "Vídeo",
+  "settings.playback.group_player": "Reproductor",
+  "settings.playback.group_up_next": "A continuación",
+  "settings.audio.group_audio": "Audio",
+  "settings.audio.group_subtitles": "Subtítulos",
+  "settings.audio.group_look": "Aspecto",
+  "settings.playback.overridden_value": "Anulada",
+  "settings.audio.page_copy": "Las preferencias de idioma del audio y los subtítulos se sincronizan con tu cuenta de Plex. Los ajustes de reproducción pertenecen a cada perfil."
 }

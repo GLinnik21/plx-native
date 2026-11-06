@@ -1551,5 +1551,37 @@
   "settings.libraries.more": {
     "value": "Libraries you leave out stay on your Plex server and on your other devices.",
     "description": "Settings root: second sentence beside Favorite libraries (proposed copy)."
+  },
+  "settings.playback.group_video": {
+    "value": "Video",
+    "description": "Header of the first group on the Video & playback page: default quality, Direct Play, Dolby Vision. One word."
+  },
+  "settings.playback.group_player": {
+    "value": "Player",
+    "description": "Header of the second group on the Video & playback page: the in-player settings (skip interval, D-pad seeking, HDR overlay, intro and credits skip, Player HUD). One word."
+  },
+  "settings.playback.group_up_next": {
+    "value": "Up next",
+    "description": "Header of the third group on the Video & playback page: what happens after an episode (next episode, Continue Watching). Short phrase."
+  },
+  "settings.audio.group_audio": {
+    "value": "Audio",
+    "description": "Header of the first group on the Audio & subtitles page: the preferred audio language. One word."
+  },
+  "settings.audio.group_subtitles": {
+    "value": "Subtitles",
+    "description": "Header of the second group on the Audio & subtitles page: subtitles mode, language and forced subtitles. One word."
+  },
+  "settings.audio.group_look": {
+    "value": "Look",
+    "description": "Header of the third group on the Audio & subtitles page: how subtitles look (size and position). One short word."
+  },
+  "settings.playback.overridden_value": {
+    "value": "Overridden",
+    "description": "Trailing value of the Default quality row while Force Direct Play is on: the choice is overridden. One short word."
+  },
+  "settings.audio.page_copy": {
+    "value": "Audio and subtitle language preferences sync with your Plex account. Playback settings belong to each profile.",
+    "description": "Sentence beside the Audio & subtitles page when no row has a sentence of its own: the account preferences sync with Plex, the Look group belongs to each profile. Two sentences."
   }
 }
