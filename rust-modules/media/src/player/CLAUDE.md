@@ -134,8 +134,8 @@ and the native feed refuses a source shape it cannot represent.
   native mailbox and gate) and `FEED_TX` (the pause transport, and the Feed's own copy of the
   pending seek). They are statics because
   `sf_on_event` is a firmware callback with no user-data pointer and the demux, Load and subtitle
-  workers reach them off-thread; the executor types (`FeedResources`, `native_executor`) are handed
-  `&'static` references instead of naming them. Media's `player::shared` re-exports the module,
+  workers reach them off-thread; the executor types (`native_executor` and the Feed backend the
+  application composes) are handed `&'static` references instead of naming them. Media's `player::shared` re-exports the module,
   and media code that still names the owners spells `FEED_SHARED` / `FEED_TX` (so `grep` finds every
   user; `plx_media::player::{FEED_SHARED, FEED_TX}` re-exports them for `screens` and the
   application loop). `SHARED` and `TX` in `shared_resources.rs` hold only what is common to a

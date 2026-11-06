@@ -47,7 +47,7 @@ use plx_play_feed::seek::{inplace_layout_known, old_abi_seek_tested, select_seek
 use plx_playback_contract::feed::SeekMode;
 #[cfg(test)]
 use super::log;
-#[cfg(test)]
+#[cfg(all(test, feature = "hostsim"))]
 use plx_base::task::MainThread;
 #[cfg(test)]
 use plx_platform::devcaps::AudioStack;
@@ -5675,7 +5675,7 @@ mod explicit_source_start_tests {
     /// **`is_live` is the adapter's bound attempt, so a start that returns before it binds must
     /// leave no Engine installed.** `start_bufferfeed_prepared` returns early on any `Rejected` or
     /// `CommandRefused` for its attempt. A `Rejected` Start never reaches the driver; a refused
-    /// dispatch (`FeedDriver::dispatch`: no staged open, a busy slot, a failed launch) returns
+    /// dispatch (the Feed driver's `dispatch`: no staged open, a busy slot, a failed launch) returns
     /// before `launch_native_open` installs, which is its last step; and one `send_at(Start)`
     /// dispatches no follow-on command (the startup plan waits at `Ready` for the Load's own
     /// observation), so no refusal of a later command can reach that exit with an Engine standing.

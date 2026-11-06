@@ -2,8 +2,9 @@
 //! (restructure spec §2.2, phase 9).
 //!
 //! The adapter owns the one backend attempt runner beside its OS/FFI resources; route and viewer
-//! decisions live one field away in [`crate::player::machine::Player`]. Buffer-feed ownership is grouped in [`FeedResources`]:
-//! the [`Engine`] slot, native Load receipts, abandoned Load and parked release. The adapter
+//! decisions live one field away in [`crate::player::machine::Player`]. Buffer-feed ownership (the [`Engine`] slot, native Load
+//! receipts, abandoned Load and parked release) belongs to the physical set the application composes
+//! (`plx_play_feed`), which the adapter reaches only through [`PhysicalSet`]. The adapter
 //! retains the [`MainThread`] token, periodic Plex reporter, release policy, and URI admission.
 //!
 //! # Why the slot moved here, and what replaced the token argument
