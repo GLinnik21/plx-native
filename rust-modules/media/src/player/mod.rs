@@ -95,15 +95,15 @@ use plx_base::task::MainThread;
 #[cfg(all(test, feature = "play-feed"))]
 pub(crate) use shared::pinned_pause_clock;
 #[cfg(feature = "play-feed")]
-pub use shared::HlsAutomaticTransition;
+pub use plx_playback_contract::feed::HlsAutomaticTransition;
 #[cfg(feature = "play-feed")]
-pub use shared::HlsClockFenceError;
+pub use plx_playback_contract::feed::HlsClockFenceError;
 /// one rect of an image-subtitle display set — the demuxer builds them, the HUD draws them
 pub use subtitle_bitmap::SubRect;
 use subtitle_bitmap::SubBitmap;
 pub use plx_data::metadata::track_names::TrackNames;
 #[cfg(feature = "play-feed")]
-pub use shared::UserPauseCursor;
+pub use plx_playback_contract::feed::UserPauseCursor;
 #[cfg(feature = "play-feed")]
 use shared::HlsPauseCompletion;
 #[cfg(feature = "play-feed")]
@@ -1246,7 +1246,7 @@ pub struct ErrorShape {
 
 pub(crate) use attempt_view::RuntimeFailure;
 #[cfg(feature = "play-feed")]
-use plx_play_feed::readout::runtime_failure;
+use plx_playback_contract::readout::runtime_failure;
 
 /// The cause the worker signals publish right now: what [`error_now`] reads while an Engine is up,
 /// and what a failed Engine freezes into the session as it is released.
@@ -1636,8 +1636,8 @@ pub use plx_platform::tv::sink::{VP_ACB, VP_EXPORTED, VP_NONE};
 /// The codes are written from `engine::LoadVideo::diag_code`, the names from its `payload_name`.
 #[cfg(feature = "play-feed")]
 pub fn load_v_name(code: u8) -> &'static str {
-    plx_play_feed::LoadVideo::from_diag_code(code)
-        .map_or("—", plx_play_feed::LoadVideo::payload_name)
+    plx_platform::devcaps::LoadVideo::from_diag_code(code)
+        .map_or("—", plx_platform::devcaps::LoadVideo::payload_name)
 }
 
 /// One consistent read of everything the on-screen diagnostics overlay shows (`app::diagnostics`).
@@ -2359,7 +2359,7 @@ pub fn subtitle_draw(ps: &crate::route::PlaybackSession) -> Option<(std::sync::A
 ///
 /// Moved only when ALL hold: the attempt uses Feed, the selection is a sidecar, the app draws it over a live remux
 /// ([`crate::route::SubtitlePresenter::ClientOverRemux`]) and the reader matched this run's first
-/// keyframe byte for byte (`side_reader::exact_delta_ns` on Feed). Never for an embedded track — the reader
+/// keyframe byte for byte (`FeedRaw::side_exact_delta_ns`). Never for an embedded track — the reader
 /// has moved its cues by `-delta` already, so adding it here too would correct them twice — and
 /// never from an ASSUMED delta, which was measured 2.002 s wrong (see `ff_subside`'s
 /// `sidecar_clock_at_917…` test). **Off the reader's gate** (a remote link, a Part above the
@@ -2375,7 +2375,8 @@ pub fn sidecar_clock_ns(ps: &crate::route::PlaybackSession, playhead_ns: i64) ->
     }
     #[cfg(feature = "play-feed")]
     if ps.attempt_view().backend() == Some(attempt_view::Backend::Feed) {
-        return plx_play_feed::side_reader::exact_delta_ns().map_or(playhead_ns, |delta| playhead_ns.saturating_add(delta));
+        return ps.readout().raw().side_exact_delta_ns
+            .map_or(playhead_ns, |delta| playhead_ns.saturating_add(delta));
     }
     // A URI attempt has no side reader measurement; its source clock is used as observed.
     playhead_ns

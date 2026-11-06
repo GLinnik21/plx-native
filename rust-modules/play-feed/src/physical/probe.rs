@@ -32,7 +32,6 @@ use plx_playback_contract::{
 use std::cell::{RefCell, RefMut};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicI32, AtomicU32};
-use std::time::Duration;
 
 /// The test fixtures' handle on the [`FeedSet`] behind a [`SharedFeedSet`].
 pub struct Probe(Rc<RefCell<FeedSet>>);
@@ -130,7 +129,7 @@ impl FeedSeek for SharedFeedSet {
 
 impl FeedLoad for SharedFeedSet {
     forward_mut! {
-        tick_load(mt: &MainThread, now: u32, segmented_hls: bool, budget: Duration,
+        tick_load(mt: &MainThread, now: u32, segmented_hls: bool,
             speed_deadline_ms: u32, no_audio: bool) -> LoadTick;
         tick_presentation(mt: &MainThread, segmented_hls: bool, immersive: bool)
             -> PresentationTick;

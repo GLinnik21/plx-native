@@ -17,6 +17,7 @@ use crate::native_executor::{
 };
 use crate::open::PhysicalOpen;
 use crate::shared::FEED_TX;
+use crate::side_reader::SideReaderOpen;
 use plx_base::task::MainThread;
 use plx_playback_contract::feed::{
     AcceptedLoadOutcome, CtorGate, FeedCommand, FeedControl, FeedFacts, FeedLoad, FeedSeek,
@@ -30,7 +31,6 @@ use plx_playback_contract::{
     ExitDisposition, Failure, Operation, SourceKey,
 };
 use std::sync::atomic::{AtomicI32, AtomicU32};
-use std::time::Duration;
 
 /// The physical buffer-feed backend: the native session slot with its Load and release
 /// resources, and the driver that answers the runner for it.
@@ -126,10 +126,9 @@ impl FeedSeek for FeedBackend {
 }
 
 impl FeedLoad for FeedBackend {
-    fn tick_load(&mut self, mt: &MainThread, now: u32, segmented_hls: bool, budget: Duration,
+    fn tick_load(&mut self, mt: &MainThread, now: u32, segmented_hls: bool,
         speed_deadline_ms: u32, no_audio: bool) -> LoadTick {
-        feed_pump::tick_load(&mut self.resources, mt, now, segmented_hls, budget,
-            speed_deadline_ms, no_audio)
+        feed_pump::tick_load(&mut self.resources, mt, now, segmented_hls, speed_deadline_ms, no_audio)
     }
 
     fn tick_presentation(&mut self, mt: &MainThread, segmented_hls: bool, immersive: bool)
@@ -192,11 +191,13 @@ impl FeedOpen for FeedBackend {
 
     fn open_prepare(&mut self, mt: &MainThread, request: OpenRequest) -> Result<u32, Failure> {
         debug_assert!(self.prepared.is_none(), "an open is staged or aborted before the next one");
+        let hooks = &self.resources.hooks().prepare;
+        let side_reader = Box::new(SideReaderOpen::new(request.side_reader, hooks.side_reader_job));
         let prepared = prepare_native_open(
             mt, self.resources.shared(), request.start_paused, request.seek_preroll,
             request.stream.map(PhysicalOpen::from), request.sample, request.is_h265,
-            request.session_rate, request.side_reader, request.no_audio, request.requested_rate,
-            &self.resources.hooks().prepare,
+            request.session_rate, side_reader, request.no_audio, request.requested_rate,
+            hooks,
         ).map_err(|refusal| match refusal {
             PrepareRefusal::ClockBusy | PrepareRefusal::NativeBusy => Failure::Busy,
             PrepareRefusal::Refused => Failure::Refused,
@@ -263,6 +264,13 @@ impl FeedStop for FeedBackend {
 
     fn reset(&mut self, scope: ResetScope, common: &mut dyn FnMut()) {
         self.resources.shared().reset_scoped(scope, common);
+        // The transport's half of the same teardown, after the common stores (as the player ran it
+        // when it reached for the transport itself): a real stop clears the viewer's Pause, the
+        // preroll and the owed re-pause; a reload keeps them for the new engine.
+        match scope {
+            ResetScope::Stop => FEED_TX.reset(),
+            ResetScope::Reload => FEED_TX.reset_for_reload(),
+        }
     }
 
     fn take_returned_release(&mut self) -> Option<u32> {
@@ -315,6 +323,9 @@ impl FeedControl for FeedBackend {
             FeedCommand::NoteFailure(flag) => feed_pump::note_failure(flag),
             FeedCommand::Rebase { playpos_ns, disp_base } => feed_pump::rebase(playpos_ns, disp_base),
             FeedCommand::SelectAudio { idx } => feed_pump::select_audio(idx),
+            FeedCommand::BeginPlayback => crate::seek::set_native_seek_refused(false),
+            FeedCommand::SyncSideReader(want) => crate::side_reader::sync(
+                want.map(|spec| (*spec).clone()), self.resources.hooks().prepare.side_reader_job),
         }
     }
 
@@ -362,6 +373,7 @@ pub(crate) mod tests {
     const HOOKS: NativeHooks = NativeHooks {
         prepare: PrepareHooks {
             sink, on_exported_window_create: || {}, load_refusal_latch: 0,
+            side_reader_job: &NoSideJob,
         },
         launch: LaunchHooks {
             demux_transport: || unreachable!("no session, no demux"),
@@ -392,7 +404,7 @@ pub(crate) mod tests {
         let mt = unsafe { MainThread::assume() };
         let mut backend = backend();
         let wrapped = feed_pump::ctor_gate(backend.resources_mut(), &mt);
-        assert_eq!(wrapped, CtorGate::Awaiting { budget_epoch: None });
+        assert_eq!(wrapped, CtorGate::Awaiting { timeout: None });
         let control: &mut dyn FeedControl = &mut backend;
         assert_eq!(control.ctor_gate(&mt), wrapped);
     }
@@ -432,6 +444,39 @@ pub(crate) mod tests {
             assert_eq!(FEED_SHARED.duration_ns.load(Relaxed), duration_after, "{scope:?}");
         }
         FEED_SHARED.reset_session();
+    }
+
+    /// The transport's half of a teardown is the feed's own `reset`, by scope: a real stop clears the
+    /// viewer's Pause, a reload keeps it for the new engine (the player no longer reaches for the
+    /// transport itself).
+    #[test]
+    fn reset_clears_the_transports_pause_for_a_stop_and_keeps_it_for_a_reload() {
+        use std::sync::atomic::Ordering::Acquire;
+        let _serial = plx_base::testlock::serial();
+        let mut backend = backend();
+        let control: &mut dyn FeedControl = &mut backend;
+        FEED_TX.commit_paused(true);
+        control.reset(ResetScope::Reload, &mut || {});
+        assert!(FEED_TX.paused.load(Acquire), "a reload keeps the viewer's Pause");
+        control.reset(ResetScope::Stop, &mut || {});
+        assert!(!FEED_TX.paused.load(Acquire), "a real stop clears it");
+        FEED_SHARED.reset_session();
+    }
+
+    /// A fresh play gets to try the native `Seek` again (`BeginPlayback`), and the session's seek
+    /// mode reaches the player in the sample instead of a call.
+    #[test]
+    fn a_new_playback_clears_the_native_seek_latch_and_the_sample_carries_the_seek_mode() {
+        use plx_playback_contract::feed::SeekMode;
+        let _serial = plx_base::testlock::serial();
+        let mut backend = backend();
+        crate::seek::set_native_seek_refused(true);
+        backend.command(FeedCommand::BeginPlayback);
+        assert!(!crate::seek::native_seek_refused());
+        crate::seek::set_seek_mode(SeekMode::NativeSeek);
+        assert_eq!(mailboxes().raw.seek_mode, SeekMode::NativeSeek);
+        crate::seek::set_seek_mode(SeekMode::Segment);
+        assert_eq!(mailboxes().raw.seek_mode, SeekMode::Segment);
     }
 
     /// `command(Seek)` makes the stores the player's `request_seek` made itself, and the sample
@@ -804,14 +849,19 @@ pub(crate) mod tests {
         assert_eq!(mailboxes().raw.diag, FeedDiag::IDLE, "a stop or a reload returns the whole set");
     }
 
-    /// The backend is the runner's single-backend driver set: it answers for the feed alone, and
-    /// with no session installed it has nothing to report and nothing to preserve at exit.
-    struct NoSideReader;
+    /// The side reader's caption runner for tests that never start a reader.
+    struct NoSideJob;
 
-    impl plx_playback_contract::feed::SideReaderPort for NoSideReader {
-        fn embedded_owner(&self) -> bool { false }
-        fn start_after_load_spawn(&mut self) {}
-        fn stop_before_demux_join(&mut self, _reason: &str) {}
+    impl plx_playback_contract::subtitle::SideReaderJobPort for NoSideJob {
+        fn read_once(
+            &self, _: &plx_playback_contract::subtitle::ReadCfg, _: &std::sync::Arc<crate::side_reader::SideStop>,
+            _: &plx_playback_contract::subtitle::Anchor, _: &mut Option<i64>, _: &dyn Fn(i64) -> i64,
+            _: &dyn Fn() -> i64, _: &dyn Fn() -> (i64, i64),
+            _: &dyn Fn() -> plx_playback_contract::subtitle::CaptionRetention, _: &dyn Fn(i64),
+        ) -> crate::side_reader::RunEnd { crate::side_reader::RunEnd::Stopped }
+        fn desired_sub_idx(&self) -> i32 { -1 }
+        fn request_subtitle(&self, _: i32) {}
+        fn clear_bitmaps(&self) {}
     }
 
     /// A local-sample open: it needs no stream, no demux session and no device.
@@ -820,7 +870,7 @@ pub(crate) mod tests {
             start_paused: false, seek_preroll: false, stream: None,
             sample: Some(Box::new(crate::feed_state::SampleBuf::new(Vec::new(), Vec::new()))),
             is_h265: false, session_rate: crate::shared::RATE_NORMAL, requested_rate: 1000,
-            no_audio: true, side_reader: Box::new(NoSideReader),
+            no_audio: true, side_reader: Default::default(),
         }
     }
 

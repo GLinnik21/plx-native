@@ -43,6 +43,20 @@ pub enum LoadGateVerdict {
     LostEpoch,
 }
 
+/// issue #74 D.1.4: the longest the `loadCompleted` arm will wait for `sf_load` to actually
+/// return before giving up and publishing `load_failed`. Kodi's own precedent
+/// (`MediaPipelineWebOS.cpp:795-801`) is a 1s `wait_for` then `PLAYER_ABORT`; this budget is
+/// deliberately far larger because a real `Load` on the dev set measures in the HUNDREDS OF
+/// MILLISECONDS for a cold pipeline (investigation.md §A.0's own citation), and the point of this
+/// timeout is to catch a genuine hang — the k5lp `DirectVoInit` block investigation.md §B
+/// describes — not to interrupt an ordinary slow one. It exists so a Load that never returns
+/// becomes a failure read-out instead of a permanent Connecting spinner.
+///
+/// Its clock is the wall clock from `begin_native_session`, so it counts the Load thread's
+/// sound-output read in front of `Load`; the Load-timing log and telemetry do not (`threads::load_alone`).
+/// The feed owns it: the player is told only that it ran out ([`LoadTimeout`]).
+pub const NATIVE_LOAD_BUDGET: Duration = Duration::from_secs(20);
+
 /// The native Load's issued→returned gate. The worker's epoch, not a later route choice,
 /// authorizes the result. A timeout publishes the existing callback failure latches and lets
 /// the common pump attach the appropriate trace class to its current route attempt.
@@ -82,11 +96,19 @@ pub fn load_gate(epoch: u32, budget: Duration) -> LoadGate {
 
 pub fn ctor_gate(feed: &mut FeedResources, mt: &MainThread) -> CtorGate {
     let hooks = feed.hooks();
-    let Some(eng) = feed.engine() else { return CtorGate::Awaiting { budget_epoch: None }; };
+    let Some(eng) = feed.engine() else { return CtorGate::Awaiting { timeout: None }; };
     if unsafe { (hooks.feed.sink)().ready(mt) } != 0 { return CtorGate::Ready; }
-    CtorGate::Awaiting {
-        budget_epoch: (eng.stage == Stage::Loading && !eng.preview_abandon).then_some(eng.native_epoch),
-    }
+    // A constructor still in flight owes the Load budget check while its Load is live; the verdict
+    // is the feed's, on the feed's clock, and the player only attributes a timeout.
+    let timeout = (eng.stage == Stage::Loading && !eng.preview_abandon)
+        .then(|| match load_gate(eng.native_epoch, NATIVE_LOAD_BUDGET).verdict {
+            LoadGateVerdict::Returned | LoadGateVerdict::Deferred => None,
+            LoadGateVerdict::TimedOut(elapsed) => Some(LoadTimeout::Elapsed(elapsed)),
+            // The epoch retired before this poll could measure its elapsed time.
+            LoadGateVerdict::LostEpoch => Some(LoadTimeout::LostEpoch),
+        })
+        .flatten();
+    CtorGate::Awaiting { timeout }
 }
 
 /// Native seek reopen watchdog. A closed feed gate cannot make progress, so its clock is reset
@@ -568,7 +590,8 @@ pub fn prime_before_play(rebase_pending: bool, segmented_hls: bool) -> bool {
 /// Physical Load/Play transition. Route and report side effects are returned as addressed facts
 /// for the common pump to apply before ACB bind and feeding.
 pub fn tick_load(feed: &mut FeedResources, mt: &MainThread, now: u32,
-    segmented_hls: bool, budget: Duration, speed_deadline_ms: u32, no_audio: bool) -> LoadTick {
+    segmented_hls: bool, speed_deadline_ms: u32, no_audio: bool) -> LoadTick {
+    let budget = NATIVE_LOAD_BUDGET;
     let hooks = feed.hooks();
     let eng = feed.engine().expect("Load tick belongs to live feed");
     let mut notice = LoadTick::default();
@@ -595,8 +618,8 @@ pub fn tick_load(feed: &mut FeedResources, mt: &MainThread, now: u32,
     // real, blocking `sf_load` call returns. Gated on `!eng.preview_abandon` too, same as the
     // completion arm below: an abandoned trailer-preview Load must not drive any of this — no
     // deferral logging, no budget clock, nothing that reacts to it as if it were live. That is
-    // why the guard is checked BEFORE `native_load_gate_ready` is even called: the helper is
-    // where the deferral logging and D.1.4 budget/telemetry actually live (see its own doc).
+    // why the guard is checked BEFORE [`load_gate`] is even called: the gate is
+    // where the deferral logging and the D.1.4 budget actually live (see its own doc).
     if eng.stage == Stage::Loading
         && !eng.preview_abandon
         && gate_ready
@@ -656,7 +679,7 @@ pub fn tick_load(feed: &mut FeedResources, mt: &MainThread, now: u32,
         && !eng.preview_abandon
         && FEED_SHARED.native_load_returned(eng.native_epoch)
     {
-        // Load HAS returned here (the first arm's `native_load_gate_ready` failed) and
+        // Load HAS returned here (the first arm's `load_gate` did not return) and
         // `loadCompleted` has NOT arrived (the previous arm's condition also failed) — the other
         // half of issue #74 D.1's budget, and the one `load-returned-log-is-conditional-on-
         // loadcompleted-and-unbounded-after` found unbounded: on v0.6.0 and unchanged until now,
@@ -1230,6 +1253,10 @@ fn native_feed_raw(failure: FailureSample) -> FeedRaw {
             kbps: FEED_SHARED.dg_abr_kbps.load(Relaxed),
             declared_kbps: FEED_SHARED.dg_abr_declared_kbps.load(Relaxed),
         },
+        side_reader_active: crate::side_reader::active(),
+        side_failures: crate::side_reader::failures(),
+        seek_mode: crate::seek::seek_mode(),
+        side_exact_delta_ns: crate::side_reader::exact_delta_ns(),
     }
 }
 

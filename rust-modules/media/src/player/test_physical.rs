@@ -107,6 +107,13 @@ fn spawn_unload(ticket: UnloadTicket) -> Option<std::thread::JoinHandle<()>> {
     })
 }
 
+/// The HTTPS credential facade is media's (`curlio`); the Feed only calls this function. The
+/// application's table builds the same value.
+#[cfg(feature = "play-feed")]
+fn demux_transport() -> plx_play_feed::DemuxTransport {
+    plx_play_feed::DemuxTransport::new(crate::curlio::range_factory(), crate::curlio::CREDENTIAL_GATE)
+}
+
 /// The hooks the fixtures' Feed runs over: the application's table (`app::adapters::backends`)
 /// with the host sink and the stepped test clock in place of the television's.
 #[cfg(feature = "play-feed")]
@@ -115,9 +122,10 @@ pub(super) const TEST_HOOKS: NativeHooks = NativeHooks {
         sink,
         on_exported_window_create: super::engine::exported_window_created,
         load_refusal_latch: DemuxExitClass::LoadRefused.latch(),
+        side_reader_job: super::subside::JOB,
     },
     launch: LaunchHooks {
-        demux_transport: super::engine::demux_transport,
+        demux_transport,
         load_thread,
         sink,
     },

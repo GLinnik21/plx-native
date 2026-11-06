@@ -1895,7 +1895,7 @@ impl PlayerAdapter {
     pub(super) fn feed_ctor_gate(&mut self) -> plx_playback_contract::feed::CtorGate {
         let mt = &self.mt;
         self.physical.feed().map_or(
-            plx_playback_contract::feed::CtorGate::Awaiting { budget_epoch: None },
+            plx_playback_contract::feed::CtorGate::Awaiting { timeout: None },
             |feed| feed.ctor_gate(mt))
     }
 
@@ -1950,10 +1950,10 @@ impl PlayerAdapter {
 
     #[cfg(feature = "play-feed")]
     pub(super) fn tick_feed_load(&mut self, now: u32, segmented_hls: bool,
-        budget: std::time::Duration, speed_deadline_ms: u32) -> plx_playback_contract::feed::LoadTick {
+        speed_deadline_ms: u32) -> plx_playback_contract::feed::LoadTick {
         let mt = &self.mt;
         self.physical.feed().map_or_else(plx_playback_contract::feed::LoadTick::default, |feed|
-            feed.tick_load(mt, now, segmented_hls, budget, speed_deadline_ms,
+            feed.tick_load(mt, now, segmented_hls, speed_deadline_ms,
                 super::no_audio_armed()))
     }
 

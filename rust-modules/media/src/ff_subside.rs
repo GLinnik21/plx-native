@@ -25,7 +25,7 @@ use crate::player::subtitle_cue::{begin_sources, SideTracks, SubCue};
 use plx_playback_contract::subtitle::CaptionRetention;
 use plx_media_codecs::subtitle_extract::{Job, JobOpenError, ReadOutcome, ReadSeek};
 use plx_net::stream::HttpStream;
-use plx_play_feed::side_reader::{ReadCfg, RunEnd, SideStop, SCAN_NS};
+use plx_playback_contract::subtitle::{ReadCfg, RunEnd, SideStop, SCAN_NS};
 use std::os::raw::c_int;
 use std::sync::Arc;
 
@@ -79,7 +79,10 @@ impl Drop for SideIo {
 }
 
 fn open_curl_private(url: &str, at: i64, stop: &Arc<SideStop>) -> Result<Box<crate::curlio::CurlSource>, SideOpenErr> {
-    match crate::curlio::CurlSource::open_private_with(url, at, &|a| stop.publish_curl(a)) {
+    match crate::curlio::CurlSource::open_private_with(url, at, &|a| {
+        let abort = Arc::clone(a);
+        stop.publish_curl(move || abort.signal());
+    }) {
         Ok(cs) => Ok(cs),
         Err(crate::curlio::OpenErr::Aborted) => Err(SideOpenErr::Stopped),
         Err(_) if stop.is_set() => Err(SideOpenErr::Stopped),
@@ -101,7 +104,10 @@ impl SideIo {
             (SideSrc::Curl(cs), size)
         } else {
             let mut hs = plx_net::stream::http_stream_boxed();
-            stop.publish_sock(&mut *hs);
+            // The wake owns the address, not the stream: `SideIo`'s drop clears it (under the
+            // stop's lock) before the stream is freed, so the address is never woken once gone.
+            let sock = &mut *hs as *mut plx_net::stream::HttpStream as usize;
+            stop.publish_sock(move || plx_net::stream::http_shutdown(sock as *mut plx_net::stream::HttpStream));
             let opened = Self::follow(&mut hs, &origin, path, None, stop);
             match opened {
                 Ok((Followed::Socket { origin, path }, size)) => (SideSrc::Socket { hs, origin, path }, size),

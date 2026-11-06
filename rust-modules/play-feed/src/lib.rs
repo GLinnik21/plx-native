@@ -166,76 +166,13 @@ pub const ENVELOPE_FHD60: SinkEnvelope = SinkEnvelope {
     fps: 60,
 };
 
-/// The video codec one Load declares: what the payload's `codec.video` names, and what the
-/// `dg_load_v` diagnostic code says. Written once here so the three never disagree.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum LoadVideo {
-    H264,
-    H265,
-    Av1,
-    Vp9,
-}
+// The codec one Load declares lives with the device's codec table (`plx_platform::devcaps`), where
+// the player names it without naming this crate; the old path stays for this crate's own code.
+pub use plx_platform::devcaps::LoadVideo;
 
-impl LoadVideo {
-    /// Decode the diagnostic code written alongside a successful Load.
-    pub fn from_diag_code(code: u8) -> Option<Self> {
-        match code {
-            1 => Some(Self::H264),
-            2 => Some(Self::H265),
-            3 => Some(Self::Av1),
-            4 => Some(Self::Vp9),
-            _ => None,
-        }
-    }
-
-    /// The route's stream vcodec -> what the Load declares, case-insensitively (PMS emits lowercase;
-    /// the route's own comparisons elsewhere are case-insensitive too). **An unknown codec is `None`,
-    /// not H.264**: the old catch-all declared an H.264 Load for whatever the route held, so a codec
-    /// the pipeline cannot feed arrived as an H.264 declaration over a bitstream it could not parse,
-    /// i.e. a black screen with nothing in the log naming the cause. The empty string is the one
-    /// deliberate H.264: the route holds it until a decision installs a codec, which is the pipeline
-    /// tier's and the local-sample feeds' baseline.
-    pub fn of_stream(vcodec: &str) -> Option<Self> {
-        match vcodec.to_ascii_lowercase().as_str() {
-            "" | "h264" => Some(Self::H264),
-            "hevc" | "h265" => Some(Self::H265),
-            "av1" => Some(Self::Av1),
-            "vp9" => Some(Self::Vp9),
-            _ => None,
-        }
-    }
-    /// The payload's `codec.video` string. libpf selects its AV1 caps for `"AV1"`; the pipeline
-    /// has no av1parse, so an AV1 Load carries its configuration in-band (see `ff.rs`). `"VP9"`
-    /// is the name in libpf's codec table beside `"VP8"`; its `video/x-vp9` appsrc caps carry no
-    /// `codec_data`, and a VP9 frame carries its own headers, so nothing is added to the packets.
-    pub fn payload_name(self) -> &'static str {
-        match self {
-            Self::H264 => "H264",
-            Self::H265 => "H265",
-            Self::Av1 => "AV1",
-            Self::Vp9 => "VP9",
-        }
-    }
-    /// `FEED_SHARED.dg_load_v`'s code (video 1 = H264, 2 = H265, 3 = AV1, 4 = VP9).
-    pub fn diag_code(self) -> u8 {
-        match self {
-            Self::H264 => 1,
-            Self::H265 => 2,
-            Self::Av1 => 3,
-            Self::Vp9 => 4,
-        }
-    }
-}
-
-/// True when the Load must be refused: an AV1 or VP9 stream on a set whose table lists no such
-/// decoder. Only reachable when a server ignores the profile we sent, so the refusal is a refusal
-/// to declare a codec the set may not have, never a fallback to H.264 for another bitstream.
+/// True when the Load must be refused: see [`LoadVideo::refused_by`].
 pub fn load_video_refused(lv: LoadVideo, caps: &plx_platform::devcaps::Caps) -> bool {
-    match lv {
-        LoadVideo::Av1 => !caps.av1,
-        LoadVideo::Vp9 => !caps.vp9,
-        LoadVideo::H264 | LoadVideo::H265 => false,
-    }
+    lv.refused_by(caps)
 }
 
 /// **The sink envelope for this session, and the rule is deliberately narrow.** Until 2026-09-03
@@ -318,12 +255,7 @@ pub fn sink_envelope(
 /// The device's measured decoder row (`(w, h, fps)`, 0 = no bound) for the codec a Load declares:
 /// what [`sink_envelope`] clamps to and [`speed_fps_ceiling`] reads.
 pub fn decoder_row(video: LoadVideo, caps: &plx_platform::devcaps::Caps) -> (u32, u32, u32) {
-    match video {
-        LoadVideo::H264 => caps.h264_row,
-        LoadVideo::H265 => caps.hevc_row,
-        LoadVideo::Av1 => caps.av1_row,
-        LoadVideo::Vp9 => caps.vp9_row,
-    }
+    video.decoder_row(caps)
 }
 
 // The Load payload's plain facts live in the contract (`plx_playback_contract::feed`), where the

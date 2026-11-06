@@ -4,32 +4,9 @@
 //! for its own readout (`live_runtime_failure`); `feed_pump::native_attempt_facts` names them for
 //! the addressed attempt's facts.
 
-use plx_playback_contract::readout::RuntimeFailure;
-
-/// PURE: turn the four terminal worker signals into one cause. More specific downstream evidence
-/// wins over the generic producer flag when concurrent teardown makes more than one bit visible.
-/// `load_timed_out` is checked FIRST and independently of `load_failed`, even though `pump.rs`
-/// always sets both together on a budget expiry: the distinction this function exists to make is
-/// "did the pipeline refuse this, or did it never answer at all", and only the timed-out signal
-/// can tell the two apart.
-pub fn runtime_failure(
-    demux_failed: bool,
-    io_failed: bool,
-    load_failed: bool,
-    load_timed_out: bool,
-) -> RuntimeFailure {
-    if load_timed_out {
-        RuntimeFailure::LoadTimeout
-    } else if load_failed {
-        RuntimeFailure::TvPipeline
-    } else if io_failed {
-        RuntimeFailure::PlaybackInterrupted
-    } else if demux_failed {
-        RuntimeFailure::MediaSource
-    } else {
-        RuntimeFailure::Unknown
-    }
-}
+// `runtime_failure` is contract vocabulary (the player's own readout names it too); the old path
+// stays for this crate's own code.
+pub use plx_playback_contract::readout::runtime_failure;
 
 /// One physical reserve definition for every delivery mode. Direct-file tails already use movie
 /// time and have `display_base_ns == 0`; segmented HLS and offset progressive transcodes publish a
@@ -94,14 +71,5 @@ mod tests {
             Some(3_000),
             "a declared video-only stream uses its video tail",
         );
-    }
-
-    #[test]
-    fn the_most_specific_signal_wins() {
-        assert_eq!(runtime_failure(true, true, true, true), RuntimeFailure::LoadTimeout);
-        assert_eq!(runtime_failure(true, true, true, false), RuntimeFailure::TvPipeline);
-        assert_eq!(runtime_failure(true, true, false, false), RuntimeFailure::PlaybackInterrupted);
-        assert_eq!(runtime_failure(true, false, false, false), RuntimeFailure::MediaSource);
-        assert_eq!(runtime_failure(false, false, false, false), RuntimeFailure::Unknown);
     }
 }

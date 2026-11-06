@@ -27,41 +27,18 @@ pub(super) fn original_dv(dv: plx_data::metadata::Dovi) -> plx_playback_contract
     }
 }
 
-/// Common reader IO for one feed attempt. It remains attached to the Engine through teardown,
-/// so a failed Load spawn and a later dynamic track switch get the same stop-before-join barrier.
-pub(super) struct SideReaderOpen {
-    selected: bool,
-    clock_only: bool,
-    spec: Option<plx_play_feed::side_reader::Spec>,
-}
-
-impl SideReaderOpen {
-    pub fn capture(ps: &route::PlaybackSession, stream: bool) -> Self {
-        let Some(target) = stream.then(|| route::side_reader_target(ps)).flatten() else {
-            return Self::empty();
-        };
-        Self {
-            selected: true,
-            clock_only: target.clock_only(),
-            spec: super::subside::spec_for(&target, super::subside::capture_offset_ns(ps)),
-        }
-    }
-
-    pub fn empty() -> Self {
-        Self { selected: false, clock_only: false, spec: None }
-    }
-}
-
-impl plx_play_feed::side_reader::SideReaderPort for SideReaderOpen {
-    fn embedded_owner(&self) -> bool { self.selected && !self.clock_only }
-
-    fn start_after_load_spawn(&mut self) {
-        if !self.selected { return; }
-        plx_play_feed::side_reader::start_run(self.spec.take(), self.clock_only, super::subside::JOB);
-    }
-
-    fn stop_before_demux_join(&mut self, reason: &str) {
-        plx_play_feed::side_reader::stop(reason);
+/// What the route decided about the side subtitle reader for this open: no reader unless the
+/// start is a stream with a reader target. The Feed builds the reader's port from it
+/// (`plx_play_feed::side_reader::SideReaderOpen`).
+pub(super) fn side_reader_request(ps: &route::PlaybackSession, stream: bool)
+    -> plx_playback_contract::feed::SideReaderRequest {
+    let Some(target) = stream.then(|| route::side_reader_target(ps)).flatten() else {
+        return Default::default();
+    };
+    plx_playback_contract::feed::SideReaderRequest {
+        selected: true,
+        clock_only: target.clock_only(),
+        spec: super::subside::spec_for(&target, super::subside::capture_offset_ns(ps)),
     }
 }
 
@@ -199,7 +176,7 @@ pub(super) fn payload_options(facts: &plx_playback_contract::feed::PayloadFacts)
 /// Apply the current route's selected codec and Force policy to the native speed ceiling.
 pub(crate) fn speed_fps_ceiling_now(ps: &route::PlaybackSession) -> f64 {
     super::engine::speed_fps_ceiling(
-        plx_play_feed::LoadVideo::of_stream(&route::stream_vcodec(ps)),
+        plx_platform::devcaps::LoadVideo::of_stream(&route::stream_vcodec(ps)),
         &plx_platform::devcaps::caps(),
         plx_platform::devcaps::measured() && !route::forced_direct_play(ps),
     )

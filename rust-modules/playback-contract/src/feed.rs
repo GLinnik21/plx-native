@@ -147,14 +147,18 @@ impl SampleBuf {
     }
 }
 
-/// The player's side-subtitle reader as one Engine owns it and drives it from the main thread.
-pub trait SideReaderPort: Send {
-    /// The demuxer must leave embedded subtitles to this reader from its first instruction.
-    fn embedded_owner(&self) -> bool;
-    /// Start only after both demux and native Load workers have spawned.
-    fn start_after_load_spawn(&mut self);
-    /// Stop and join before the paired demux worker is joined, including a failed Load spawn.
-    fn stop_before_demux_join(&mut self, reason: &str);
+/// What the route decided about the side subtitle reader for one open: whether a reader is
+/// admitted for it, whether it runs clock-only (a sidecar the app draws itself), and the
+/// [`Spec`] it starts with (`None` when the target's server is gone). Plain data: the Feed
+/// builds the reader's port from it ([`OpenRequest::side_reader`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SideReaderRequest {
+    /// A reader is admitted for this open.
+    pub selected: bool,
+    /// The reader reads no subtitle and only measures the remux's clock
+    /// ([`crate::subtitle::SIDE_READER_CLOCK_ONLY`]).
+    pub clock_only: bool,
+    pub spec: Option<crate::subtitle::Spec>,
 }
 
 /// Everything [`FeedOpen::open_prepare`] consumes. `stream` is `Some` for a stream and `sample`
@@ -170,7 +174,7 @@ pub struct OpenRequest {
     /// The viewer's requested playback rate, in permille.
     pub requested_rate: i32,
     pub no_audio: bool,
-    pub side_reader: Box<dyn SideReaderPort>,
+    pub side_reader: SideReaderRequest,
 }
 
 /// A native transport action the feed's driver queued for the player's transport door.
@@ -186,12 +190,13 @@ pub enum FeedTransportAction {
 // Verdicts: what one physical tick or one native transition answers, applied by the caller.
 // ---------------------------------------------------------------------------------------------
 
-/// Whether native construction is callable yet. A blocked Load exposes its exact epoch only
-/// while the live non-preview session still owes the Load budget check.
+/// Whether native construction is callable yet. While a blocked Load's live non-preview session
+/// still owes the Load budget check, the feed runs that check itself, on its own clock, and says
+/// here when the budget ran out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CtorGate {
     Ready,
-    Awaiting { budget_epoch: Option<u32> },
+    Awaiting { timeout: Option<LoadTimeout> },
 }
 
 /// What a stuck native seek does next: re-arm the demux target (the retry count so far) or fall
@@ -439,6 +444,18 @@ pub struct FeedRaw {
     pub load: LoadRaw,
     /// The Auto-quality facts the demux publishes ([`DemuxAbr`]).
     pub abr: DemuxAbr,
+    /// The side subtitle reader's thread is running (the draw gate reads it for the dev trigger's run).
+    pub side_reader_active: bool,
+    /// The reader's give-ups this session that no stop has voided (`0` = none): a counter like
+    /// [`Self::decoder_revocations`], so the player holds how many it has taken. A failure the stopped
+    /// reader raised is voided by that stop, and reads `0` again.
+    pub side_failures: u32,
+    /// The clock delta the reader matched byte for byte for this engine run (Part time minus the
+    /// playhead, ns); `None` while none has been measured.
+    pub side_exact_delta_ns: Option<i64>,
+    /// This session's direct-play seek mode (`Segment` before a Load selects one); the feed
+    /// downgrades it to `Reload` when the pipeline refuses a native `Seek`.
+    pub seek_mode: SeekMode,
 }
 
 /// The Auto-quality facts the demux publishes about the open it runs: which controller started, the
@@ -584,6 +601,8 @@ impl FeedRaw {
         diag: FeedDiag::IDLE,
         vpres_gap_sum_ms: 0, vpres_gap_count: 0, disp_base: 0, load: LoadRaw::IDLE,
         abr: DemuxAbr::IDLE,
+        side_reader_active: false, side_failures: 0, side_exact_delta_ns: None,
+        seek_mode: SeekMode::Segment,
     };
 }
 
@@ -609,7 +628,7 @@ pub struct FeedFacts {
 /// that used to write several of the feed's members is one value here. The feed carries a command
 /// out where it stands, in the order it was given. Seeking is not an [`Operation`]: it stays
 /// outside the runner's door (R8).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FeedCommand {
     /// A seek was requested. `epoch` is the player's requested-seek count after this request (a
     /// later request carries a larger one); the feed reports it back as [`FeedRaw::seek_landed_epoch`]
@@ -656,6 +675,14 @@ pub enum FeedCommand {
     /// audio stream index, `-1` the file's own default). The demuxer reads the feed's copy as it
     /// opens the container, so the player sends this before every start that spawns one.
     SelectAudio { idx: i32 },
+    /// Make the running side subtitle reader match the route's target while the stream plays on:
+    /// start one for a track picked on a live remux, run it clock-only for a sidecar, switch its
+    /// track, or stop it (`None`). Never blocks: stopping a reader joins its thread, which the feed
+    /// hands to a worker. The newest request wins.
+    SyncSideReader(Option<std::sync::Arc<crate::subtitle::Spec>>),
+    /// A fresh play (not a reload of the one on screen) begins: this playback gets to try the
+    /// platform's native `Seek` again, whatever an earlier playback learned about its refusal.
+    BeginPlayback,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -689,7 +716,7 @@ pub trait FeedSeek {
 /// The Load-side verbs and pure queries of the feed backend.
 pub trait FeedLoad {
     /// Physical Load and Play transition. `no_audio` is the common player's no-audio arming.
-    fn tick_load(&mut self, mt: &MainThread, now: u32, segmented_hls: bool, budget: Duration,
+    fn tick_load(&mut self, mt: &MainThread, now: u32, segmented_hls: bool,
         speed_deadline_ms: u32, no_audio: bool) -> LoadTick;
     fn tick_presentation(&mut self, mt: &MainThread, segmented_hls: bool, immersive: bool)
         -> PresentationTick;
@@ -940,6 +967,92 @@ impl PhysicalSet for UriOnlySet {
     }
 
     fn take_uri(&mut self) -> Option<Box<dyn UriDriver<Context = MainThread>>> { self.uri.take() }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Vocabulary the player and the feed backend both name: plain data and constants, so the player
+// reads them without naming the crate that runs the feed.
+// ---------------------------------------------------------------------------------------------
+
+/// "No presentation position yet" in the feed's `pres_fed` mailbox.
+pub const PRES_NONE: i64 = i64::MIN;
+/// Maximum video lead beyond the presented position in the native feed.
+pub const MAX_FEED_AHEAD_NS: i64 = 1_600_000_000;
+/// How much further ahead than [`MAX_FEED_AHEAD_NS`] the audio lane may ride: audio is cheap and
+/// the master clock, so its bound is looser.
+pub const AUDIO_SLACK_NS: i64 = 2_000_000_000;
+/// Byte caps of the native video and audio access-unit queues.
+pub const AQ_VIDEO_BYTES: std::os::raw::c_long = 10 * 1024 * 1024;
+pub const AQ_AUDIO_BYTES: std::os::raw::c_long = 1024 * 1024;
+
+/// The AU queues' two base byte caps, video then audio: the denominators the read-out shows its
+/// `dg_aq_*` against.
+pub const fn aq_caps() -> (i64, i64) {
+    (AQ_VIDEO_BYTES as i64, AQ_AUDIO_BYTES as i64)
+}
+
+/// A native release transition the telemetry owner records at the exact moment it happens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReleaseStep {
+    NativeUnload,
+    AcbPlaneUnload,
+    NativeQuarantined,
+    NativeDestroyed,
+}
+
+/// Why an HLS clock fence was refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HlsClockFenceError {
+    Stopping,
+    Overlap,
+    Exhausted,
+    Superseded,
+}
+
+/// Which automatic quality transition owns the HLS clock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HlsAutomaticTransition {
+    QualityUp,
+    QualityDown,
+    Original,
+}
+
+/// The accepted-transport state a worker samples: the monotone sequence of Pause/Resume pairs and
+/// the cumulative time spent paused.
+#[derive(Clone, Copy, Debug)]
+pub struct UserPauseSnapshot {
+    pub now: std::time::Instant,
+    pub elapsed: Duration,
+    pub paused: bool,
+    pub sequence: u64,
+}
+
+/// Per-worker cursor over accepted transport events. A complete Pause→Resume may happen while a
+/// worker is blocked in native queue/network I/O; consuming the monotone sequence plus cumulative
+/// duration makes that interval observable even when both surrounding boolean samples are false.
+#[derive(Clone, Copy, Debug)]
+pub struct UserPauseCursor {
+    sequence: u64,
+    elapsed: Duration,
+}
+
+impl UserPauseCursor {
+    pub fn new(snapshot: UserPauseSnapshot) -> Self {
+        Self {
+            sequence: snapshot.sequence,
+            elapsed: snapshot.elapsed,
+        }
+    }
+
+    pub fn consume_completed(&mut self, snapshot: UserPauseSnapshot) -> Option<Duration> {
+        if snapshot.paused || snapshot.sequence == self.sequence {
+            return None;
+        }
+        let elapsed = snapshot.elapsed.saturating_sub(self.elapsed);
+        self.sequence = snapshot.sequence;
+        self.elapsed = snapshot.elapsed;
+        (!elapsed.is_zero()).then_some(elapsed)
+    }
 }
 
 #[cfg(test)]

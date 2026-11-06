@@ -116,6 +116,9 @@ pub struct PrepareHooks {
     pub sink: fn() -> &'static dyn VideoSink,
     pub on_exported_window_create: fn(),
     pub load_refusal_latch: u8,
+    /// The common caption runner the side subtitle reader's thread calls back into: what each
+    /// open's reader and every `FeedCommand::SyncSideReader` run over.
+    pub side_reader_job: &'static dyn plx_playback_contract::subtitle::SideReaderJobPort,
 }
 
 /// Native release uses the installed raw sink while the public sink is fenced for other verbs.
@@ -869,7 +872,7 @@ pub use crate::feed_state::PRIME_VIDEO_MAX_NS;
 // clock from running ahead, and cuts latency. AUDIO gets a looser bound so it can ride slightly
 // ahead (audio buffer is cheap and it's the master clock) without unbounded race on odd muxes.
 pub use crate::feed_state::MAX_FEED_AHEAD_NS;
-pub const AUDIO_SLACK_NS: i64 = 2_000_000_000;
+pub use plx_playback_contract::feed::AUDIO_SLACK_NS;
 // A fed pts this far below a lane's high-water is a stale pre-seek AU (past the B-frame reorder
 // distance) → drop it rather than feed a backward jump.
 pub const STALE_BACKJUMP_NS: i64 = 2_000_000_000;

@@ -1734,7 +1734,7 @@ impl PlaybackSession {
         } = self;
         PlaybackSession {
             attempt_view: *attempt_view,
-            readout: *readout,
+            readout: readout.clone(),
             uri_recovery_pending: *uri_recovery_pending,
             backend_policy: None,
             planned_feed_offer: *planned_feed_offer,
@@ -10746,7 +10746,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
             attempt_view: crate::player::attempt_view::AttemptView::EMPTY,
             // A new plan is not a new item or a torn-down engine: the readout's members live
             // exactly as long as the mailbox statics they replace, which nothing here resets.
-            readout: s.readout,
+            readout: s.readout.clone(),
             backend_policy: Some(backend_policy),
             planned_feed_offer,
             planned_feed_purpose: candidate_purpose,
@@ -11888,7 +11888,7 @@ pub fn sidecar_over_remux(ps: &PlaybackSession) -> bool {
 /// draw is silenced by: a transcode burns whatever is selected, except a remux the app draws the
 /// subtitle over ([`SubtitlePresenter::ClientOverRemux`]).
 pub fn subtitles_burned(ps: &PlaybackSession) -> bool {
-    let side_reader_override = ps.cur_sub_sid == 0 && crate::player::route_fx::side_reader_active();
+    let side_reader_override = ps.cur_sub_sid == 0 && crate::player::route_fx::side_reader_active(ps);
     is_transcoding(ps)
         && subtitle_presenter(ps) != SubtitlePresenter::ClientOverRemux
         // Dev trigger `plxnative-subside` only: the reader draws an embedded track over a plain
@@ -11900,8 +11900,8 @@ pub fn subtitles_burned(ps: &PlaybackSession) -> bool {
 
 /// Make the side reader match the live route: start it for an admitted embedded pick, switch its
 /// track, run it clock-only for a sidecar, or stop it for Off. Never blocks (see
-/// `player::subside::sync`, which hands it to `plx_play_feed::side_reader::sync`).
-fn sync_side_reader(ps: &PlaybackSession) {
+/// `player::route_fx::sync_side_reader`, which only states the want; the pump hands it to the feed).
+fn sync_side_reader(ps: &mut PlaybackSession) {
     crate::player::route_fx::sync_side_reader(ps, side_reader_target(ps));
 }
 

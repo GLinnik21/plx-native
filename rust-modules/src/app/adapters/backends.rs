@@ -155,6 +155,11 @@ macro_rules! native_hooks_over {
             receipt: Option<LoadReceipt>, pcm_lead: PcmLead) {
             plx_play_feed::native_load::load_thread(fenced, payload, native_epoch, receipt, pcm_lead);
         }
+        // The HTTPS credential facade is media-owned (`curlio`); the Feed only calls this function.
+        fn demux_transport() -> plx_play_feed::DemuxTransport {
+            plx_play_feed::DemuxTransport::new(
+                plx_media::curlio::range_factory(), plx_media::curlio::CREDENTIAL_GATE)
+        }
         fn spawn_unload(ticket: UnloadTicket) -> Option<std::thread::JoinHandle<()>> {
             let worker = $worker();
             plx_base::task::spawn("sf-unload", move || {
@@ -167,9 +172,10 @@ macro_rules! native_hooks_over {
                 sink: fenced,
                 on_exported_window_create: plx_media::player::engine::exported_window_created,
                 load_refusal_latch: plx_telemetry::telemetry::classes::DemuxExitClass::LoadRefused.latch(),
+                side_reader_job: plx_media::player::subside::JOB,
             },
             launch: LaunchHooks {
-                demux_transport: plx_media::player::engine::demux_transport,
+                demux_transport,
                 load_thread,
                 sink: fenced,
             },

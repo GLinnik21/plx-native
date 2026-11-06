@@ -33,14 +33,9 @@ pub fn native_object_disposition(
     }
 }
 
-/// The common telemetry owner records these at the exact native transition.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ReleaseStep {
-    NativeUnload,
-    AcbPlaneUnload,
-    NativeQuarantined,
-    NativeDestroyed,
-}
+// The common telemetry owner records these at the exact native transition; the step is contract
+// vocabulary so the owner names it without naming this crate.
+pub use plx_playback_contract::feed::ReleaseStep;
 
 /// Execute the tail after Unload returns. Keep the C callback gate ahead of Rust epoch
 /// retirement, ACB plane unload ahead of D1, and quarantine whenever proof is incomplete.

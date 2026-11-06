@@ -19,7 +19,6 @@ use super::route_start::{exit_native, exit_native_with, finish_release_for_test,
 use super::feed_open::PayloadFacts;
 #[cfg(test)]
 use super::feed_open::install_synthetic_playurl;
-use plx_play_feed::decoder_row;
 #[cfg(test)]
 use plx_play_feed::{
     renamed_static_payload, static_envelope, with_opus_info, SinkEnvelope, PAYLOAD_H265, PAYLOAD_V,
@@ -36,7 +35,7 @@ use plx_play_feed::pcm_lead::{pcm_output_lead, PCM_LEAD_BY_OUTPUT, PCM_SINK_LEAD
 use plx_play_feed::{
     fed_fps_rational, opus_head, pcm_rate_khz, ENVELOPE_FHD60, ENVELOPE_UHD60, PAYLOAD_AV,
 };
-pub(crate) use plx_play_feed::LoadVideo;
+pub(crate) use plx_platform::devcaps::LoadVideo;
 #[cfg(test)]
 pub(crate) use plx_play_feed::load_video_refused;
 #[cfg(all(test, feature = "hostsim"))]
@@ -74,7 +73,7 @@ pub use plx_play_feed::native_executor::fed_totals;
 /// this ahead of its video (issue #600) runs the lane up to `ff::AUDIO_AHEAD_HEADROOM` (16 MiB)
 /// beyond it for as long as the video lane holds less than `MAX_FEED_AHEAD_NS` of media.
 pub const fn aq_caps() -> (i64, i64) {
-    plx_play_feed::feed_state::aq_caps()
+    plx_playback_contract::feed::aq_caps()
 }
 
 /// **The feed-ahead throttle's two leads, milliseconds** — video, then audio.
@@ -147,8 +146,8 @@ pub use plx_play_feed::feed_state::AbandonedLoad;
 pub use plx_play_feed::feed_state::PendingRelease;
 
 /// The `on_release_step` hook: the release's breadcrumbs belong to the common telemetry owner.
-pub fn release_step(step: plx_play_feed::native_release::ReleaseStep) {
-    use plx_play_feed::native_release::ReleaseStep;
+pub fn release_step(step: plx_playback_contract::feed::ReleaseStep) {
+    use plx_playback_contract::feed::ReleaseStep;
     window_step(match step {
         ReleaseStep::NativeUnload => WindowStage::NativeUnload,
         ReleaseStep::AcbPlaneUnload => WindowStage::AcbPlaneUnload,
@@ -199,7 +198,7 @@ pub(crate) fn speed_fps_ceiling(
     measured: bool,
 ) -> f64 {
     let row_fps = match video {
-        Some(video) if measured => decoder_row(video, caps).2,
+        Some(video) if measured => video.decoder_row(caps).2,
         _ => 0,
     };
     if row_fps == 0 {
@@ -378,12 +377,6 @@ pub fn exported_window_created() {
     window_step(WindowStage::ExportedWindowCreate);
 }
 
-/// The `demux_transport` hook: the HTTPS credential facade is media-owned (`curlio`), so the
-/// composition names it and the executor only calls the function.
-pub fn demux_transport() -> crate::ff::DemuxTransport {
-    crate::ff::DemuxTransport::new(crate::curlio::range_factory(), crate::curlio::CREDENTIAL_GATE)
-}
-
 pub use super::route_start::{reload_at, reload_transcode, reload_transcode_tracked,
     stop_bufferfeed, suspend_bufferfeed, switch_audio_native, ReloadOutcome};
 #[cfg(all(test, feature = "hostsim"))]
@@ -420,11 +413,11 @@ pub(super) fn clear_failed_engine_release_arm() {
 pub use plx_play_feed::native_executor::drain_aq;
 
 
-pub(crate) use plx_play_feed::feed_state::MAX_FEED_AHEAD_NS;
+pub(crate) use plx_playback_contract::feed::MAX_FEED_AHEAD_NS;
 #[cfg(test)]
 pub(crate) use plx_play_feed::feed_state::{AUDIO_LEAD_IN_NS, PRIME_VIDEO_MAX_NS};
-pub use plx_play_feed::feed_state::PRES_NONE;
-pub(crate) use plx_play_feed::native_executor::AUDIO_SLACK_NS;
+pub use plx_playback_contract::feed::PRES_NONE;
+pub(crate) use plx_playback_contract::feed::AUDIO_SLACK_NS;
 #[cfg(all(test, feature = "hostsim"))]
 use plx_play_feed::native_executor::{
     AUDIO_STALE_AHEAD_NS, FEED_LANE_SLICE_US, FEED_LOW_WATER_NS, PRIME_AUDIO_NS, PRIME_NS,
@@ -1267,7 +1260,8 @@ mod prime_livelock_tests {
             source: Source::Stream,
             stream_th: None,
             load_th: None,
-            side_reader: Box::new(super::super::feed_open::SideReaderOpen::empty()),
+            side_reader: Box::new(plx_play_feed::side_reader::SideReaderOpen::new(
+                Default::default(), super::super::subside::JOB)),
             preview_abandon: false,
             era_watch: plx_play_feed::era_callbacks::Watch::new(),
         }
@@ -2984,14 +2978,14 @@ mod load_in_flight_tests {
         wait_for_load_in_flight();
 
         assert!(
-            FEED_SHARED.test_backdate_native_load_issued(epoch, crate::player::pump::NATIVE_LOAD_BUDGET),
+            FEED_SHARED.test_backdate_native_load_issued(epoch, plx_play_feed::feed_pump::NATIVE_LOAD_BUDGET),
             "PRECONDITION FAILED: the epoch must still own the Active phase to backdate its \
              load_issued_at, or this test proves nothing about the arm under test"
         );
         assert!(
             FEED_SHARED
                 .native_load_elapsed(epoch)
-                .is_some_and(|e| e >= crate::player::pump::NATIVE_LOAD_BUDGET),
+                .is_some_and(|e| e >= plx_play_feed::feed_pump::NATIVE_LOAD_BUDGET),
             "PRECONDITION FAILED: the backdate must actually push elapsed past the budget — a \
              silent-instrument trap (AGENTS.md) if it doesn't"
         );
@@ -3073,7 +3067,7 @@ mod load_in_flight_tests {
         assert!(
             FEED_SHARED.test_backdate_native_load_returned(
                 epoch,
-                crate::player::pump::NATIVE_LOAD_BUDGET
+                plx_play_feed::feed_pump::NATIVE_LOAD_BUDGET
             ),
             "PRECONDITION FAILED: the epoch must still own the Active phase to backdate when it \
              returned, or this test proves nothing about the arm under test"
@@ -3081,7 +3075,7 @@ mod load_in_flight_tests {
         assert!(
             FEED_SHARED
                 .native_load_returned_elapsed(epoch)
-                .is_some_and(|e| e >= crate::player::pump::NATIVE_LOAD_BUDGET),
+                .is_some_and(|e| e >= plx_play_feed::feed_pump::NATIVE_LOAD_BUDGET),
             "PRECONDITION FAILED: the backdate must actually push the returned-elapsed past the \
              budget — a silent-instrument trap (AGENTS.md) if it doesn't"
         );
@@ -3186,7 +3180,7 @@ mod load_in_flight_tests {
         assert_eq!(unsafe { crate::player::test_physical::sink().ready(pa.mt()) }, 0);
         crate::player::pump::pump(&mut ps, &mut pa, 1000);
         assert!(!FEED_SHARED.load_failed.load(Ordering::Acquire));
-        assert!(FEED_SHARED.test_backdate_native_load_issued(epoch, crate::player::pump::NATIVE_LOAD_BUDGET));
+        assert!(FEED_SHARED.test_backdate_native_load_issued(epoch, plx_play_feed::feed_pump::NATIVE_LOAD_BUDGET));
         crate::player::pump::pump(&mut ps, &mut pa, 1001);
         assert!(FEED_SHARED.load_failed.load(Ordering::Acquire), "constructor readiness must not bypass the issued budget");
     }
@@ -3266,7 +3260,7 @@ mod load_in_flight_tests {
         wait_for_load_in_flight();
 
         assert!(
-            FEED_SHARED.test_backdate_native_load_issued(epoch, crate::player::pump::NATIVE_LOAD_BUDGET),
+            FEED_SHARED.test_backdate_native_load_issued(epoch, plx_play_feed::feed_pump::NATIVE_LOAD_BUDGET),
             "PRECONDITION FAILED: the epoch must still own Active to backdate it"
         );
         crate::player::pump::pump(&mut ps, &mut pa, 1_000);
@@ -3392,7 +3386,7 @@ mod load_in_flight_tests {
         pa.install(eng);
         wait_for_load_in_flight();
         assert!(
-            FEED_SHARED.test_backdate_native_load_issued(epoch, crate::player::pump::NATIVE_LOAD_BUDGET),
+            FEED_SHARED.test_backdate_native_load_issued(epoch, plx_play_feed::feed_pump::NATIVE_LOAD_BUDGET),
             "PRECONDITION FAILED: the epoch must still own Active to backdate it"
         );
         crate::player::pump::pump(ps, pa, 1_000);

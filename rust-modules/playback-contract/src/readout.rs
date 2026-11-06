@@ -26,6 +26,31 @@ pub enum RuntimeFailure {
     ResolveFailed,
 }
 
+/// PURE: turn the four terminal worker signals into one cause. More specific downstream evidence
+/// wins over the generic producer flag when concurrent teardown makes more than one bit visible.
+/// `load_timed_out` is checked FIRST and independently of `load_failed`, even though the pump
+/// always sets both together on a budget expiry: the distinction this function exists to make is
+/// "did the pipeline refuse this, or did it never answer at all", and only the timed-out signal
+/// can tell the two apart.
+pub fn runtime_failure(
+    demux_failed: bool,
+    io_failed: bool,
+    load_failed: bool,
+    load_timed_out: bool,
+) -> RuntimeFailure {
+    if load_timed_out {
+        RuntimeFailure::LoadTimeout
+    } else if load_failed {
+        RuntimeFailure::TvPipeline
+    } else if io_failed {
+        RuntimeFailure::PlaybackInterrupted
+    } else if demux_failed {
+        RuntimeFailure::MediaSource
+    } else {
+        RuntimeFailure::Unknown
+    }
+}
+
 /// How the pipeline refused a Load, for the `playback.failed` event: the Load call itself returned
 /// 0 (`Sync`, `native_load::load_thread` via `publish_native_load_failure`), or the call returned and
 /// a `type=18` error callback arrived before any picture (`Async`, `sf_on_event`).
@@ -186,3 +211,17 @@ pub const ABR_ACTION_ORIGINAL_PROBE_FAILED: u8 = 10;
 pub const ABR_ACTION_PRIME_REFRESH: u8 = 11;
 pub const ABR_ACTION_COMMIT_REFRESH: u8 = 12;
 pub const ABR_ACTION_REJECT_REFRESH: u8 = 13;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_most_specific_signal_wins() {
+        assert_eq!(runtime_failure(true, true, true, true), RuntimeFailure::LoadTimeout);
+        assert_eq!(runtime_failure(true, true, true, false), RuntimeFailure::TvPipeline);
+        assert_eq!(runtime_failure(true, true, false, false), RuntimeFailure::PlaybackInterrupted);
+        assert_eq!(runtime_failure(true, false, false, false), RuntimeFailure::MediaSource);
+        assert_eq!(runtime_failure(false, false, false, false), RuntimeFailure::Unknown);
+    }
+}

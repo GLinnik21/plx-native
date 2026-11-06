@@ -3,19 +3,19 @@
 //! [`spec_for`] builds the reader's [`Spec`] from a route's [`crate::route::SideReaderTarget`] (route
 //! and Plex facts), [`JOB`] is the common caption runner the thread calls back into (`subtitle_job`
 //! runs the transport and presentation loop over a codec-owned extraction job, `desired_sub_idx` /
-//! `request_subtitle` are the viewer's selection, `sub_bitmaps` the bitmap store), [`sync`] is the
-//! route's request to match the running reader to the selection, and [`dev_armed_ordinal`] reads the
-//! diagnostic trigger `plxnative-subside`.
+//! `request_subtitle` are the viewer's selection, `sub_bitmaps` the bitmap store), the route's
+//! request to match the running reader to the selection is a readout event the pump hands the Feed
+//! as a `FeedCommand::SyncSideReader`, and [`dev_armed_ordinal`] reads the diagnostic trigger
+//! `plxnative-subside`.
 //!
 //! See `plx_play_feed::side_reader` for what the reader does, when it starts and stops, and how a
 //! SIDECAR gets it clock-only (`plx_playback_contract::subtitle::SIDE_READER_CLOCK_ONLY`).
 
-use plx_play_feed::side_reader::{ReadCfg, RunEnd, SideReaderJobPort, SideStop, Spec};
-use plx_playback_contract::subtitle::{Anchor, CaptionRetention};
+use plx_playback_contract::subtitle::{Anchor, CaptionRetention, ReadCfg, RunEnd, SideReaderJobPort, SideStop, Spec};
 use std::sync::Arc;
 
 /// The common caption runner the reader thread calls back into.
-pub(super) const JOB: &dyn SideReaderJobPort = &MediaSideReaderJob;
+pub const JOB: &dyn SideReaderJobPort = &MediaSideReaderJob;
 
 struct MediaSideReaderJob;
 
@@ -80,33 +80,11 @@ pub(super) fn capture_offset_ns(ps: &crate::route::PlaybackSession) -> i64 {
     ps.readout().open_disp_base_ns()
 }
 
-/// Make the running reader match `desired` while the stream plays on (see
-/// `plx_play_feed::side_reader::sync`).
-pub fn sync(desired: Option<Spec>) {
-    // A host test of the route asks what the route wanted; it must not start a real reader.
-    #[cfg(test)]
-    TEST_SYNCS.with(|l| l.borrow_mut().push(desired.map(|d| d.ordinal)));
-    #[cfg(not(test))]
-    plx_play_feed::side_reader::sync(desired, JOB);
-}
-
-#[cfg(test)]
-thread_local! {
-    static TEST_SYNCS: std::cell::RefCell<Vec<Option<i32>>> = const { std::cell::RefCell::new(Vec::new()) };
-}
-
-/// The changes `sync` was asked for on this thread since the last call (host tests of the route):
-/// `Some(ordinal)` = draw this track, `None` = draw nothing.
-#[cfg(test)]
-pub(crate) fn take_test_syncs() -> Vec<Option<i32>> {
-    TEST_SYNCS.with(|l| std::mem::take(&mut *l.borrow_mut()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use plx_play_feed::shared::FEED_SHARED;
-    use plx_play_feed::side_reader::{active, start, stop, take_failure};
+    use plx_play_feed::side_reader::{active, failures, start, stop};
     use std::sync::atomic::Ordering;
 
     /// A listener that accepts connections and never answers: a stalled server. Held connections
@@ -150,7 +128,7 @@ mod tests {
             }
             stop("test-stalled");
             assert!(!active());
-            assert!(!take_failure(), "a stop is not a failure");
+            assert_eq!(failures(), 0, "a stop is not a failure");
             drop(conn);
             let log = std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default();
             assert!(log.contains("subside: stop reason=test-stalled"), "{log}");
