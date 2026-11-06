@@ -9,7 +9,6 @@
 //! even read.
 
 use crate::route::{PlaybackSession, RouteStartAttempt, RouteStartResult};
-#[cfg(feature = "play-feed")]
 use crate::route::RouteStartTransaction;
 use plx_base::task::MainThread;
 
@@ -104,7 +103,6 @@ pub fn ingest_position(ps: &mut PlaybackSession, attempt: RouteStartAttempt, pos
 /// Claim and install the route start before any probe reply can settle it. Only the Feed start path
 /// arms the probe (`route_start::start_bufferfeed_inner`), so a build without Feed has no way to
 /// open one.
-#[cfg(feature = "play-feed")]
 pub(super) fn start(ps: &mut PlaybackSession, pa: &mut super::adapter::PlayerAdapter,
     route_start: RouteStartTransaction, url: &str, launch: Box<dyn ProbeLaunch>)
     -> Result<RouteStartAttempt, RouteStartResult> {
@@ -254,7 +252,6 @@ mod port_tests {
         }
     }
 
-    #[cfg(feature = "play-feed")]
     #[test]
     fn a_probe_installed_through_the_port_is_opened_driven_settled_and_released_by_the_route_half() {
         let _serial = plx_base::testlock::serial();
@@ -296,7 +293,6 @@ mod port_tests {
         assert_eq!(rig.script.lock().unwrap().advances, 3, "an empty slot is not driven");
     }
 
-    #[cfg(feature = "play-feed")]
     #[test]
     fn a_failed_settle_fails_the_route_start() {
         let _serial = plx_base::testlock::serial();
@@ -313,7 +309,6 @@ mod port_tests {
         assert_eq!(crate::route::route_start_status(attempt), crate::route::RouteStartStatus::Failed);
     }
 
-    #[cfg(feature = "play-feed")]
     #[test]
     fn a_second_start_under_a_live_session_is_refused_and_opens_nothing() {
         let _serial = plx_base::testlock::serial();

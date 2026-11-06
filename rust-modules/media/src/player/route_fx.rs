@@ -11,7 +11,6 @@ use crate::route::{PlaybackSession, SideReaderTarget};
 
 /// Drop the claim hold: the playback it belonged to is gone.
 pub fn clear_claim_hold() {
-    #[cfg(feature = "play-feed")]
     super::claim_hold::clear();
 }
 
@@ -54,11 +53,9 @@ pub fn side_reader_active(ps: &PlaybackSession) -> bool {
 }
 
 /// The track the dev trigger arms the side reader for, if any.
-pub fn side_reader_dev_armed_ordinal() -> Option<i32> {
-    #[cfg(feature = "play-feed")]
-    { super::subside::dev_armed_ordinal() }
-    #[cfg(not(feature = "play-feed"))]
-    { None }
+pub fn side_reader_dev_armed_ordinal(ps: &PlaybackSession) -> Option<i32> {
+    if !ps.backends().feed { return None; }
+    super::subside::dev_armed_ordinal()
 }
 
 /// Make the side reader match the route's target: start, switch, run clock-only, or stop for `None`.
@@ -67,15 +64,11 @@ pub fn side_reader_dev_armed_ordinal() -> Option<i32> {
 ///
 /// A reader begun mid-play starts at the display base the live sample carries.
 pub fn sync_side_reader(ps: &mut PlaybackSession, target: Option<SideReaderTarget>) {
-    #[cfg(feature = "play-feed")]
-    {
-        let want = target
-            .and_then(|t| super::subside::spec_for(&t, ps.readout().raw().disp_base))
-            .map(std::sync::Arc::new);
-        ps.step_readout(super::readout::ReadoutEvent::SideReaderWanted(want));
-    }
-    #[cfg(not(feature = "play-feed"))]
-    let _ = (ps, target);
+    if !ps.backends().feed { return; }
+    let want = target
+        .and_then(|t| super::subside::spec_for(&t, ps.readout().raw().disp_base))
+        .map(std::sync::Arc::new);
+    ps.step_readout(super::readout::ReadoutEvent::SideReaderWanted(want));
 }
 
 #[cfg(test)]

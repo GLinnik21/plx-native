@@ -50,13 +50,11 @@ mod tests {
 
     /// The parse lives with the callback that reads sourceInfo (`plx_play_feed::sf_event`); the
     /// reduced pair it returns is what the mailbox publishes and `video_viewport` unpacks.
-    #[cfg(feature = "play-feed")]
     fn source_aspect(json: &[u8]) -> Option<Aspect> {
         let (num, den) = plx_play_feed::sf_event::source_aspect(json)?;
         Aspect::unpack((u64::from(num) << 32) | u64::from(den))
     }
 
-    #[cfg(feature = "play-feed")]
     #[test]
     fn picture_fit_covers_pillarbox_letterbox_and_anamorphic_sources() {
         let fit = |json: &[u8]| source_aspect(json).unwrap().fit(1920, 1080);
@@ -84,7 +82,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "play-feed")]
     #[test]
     fn the_published_pair_round_trips_through_the_aspect() {
         assert_eq!(Aspect::unpack(0), None);

@@ -4318,7 +4318,7 @@ mod abr_readout_tests {
 /// the sample and the worker's half is the readout's photograph: the same text and values the
 /// shared mirror held. `diag()` reaches the host stand-ins for the TV's seam, so these run in the
 /// `hostsim` pass.
-#[cfg(all(test, feature = "hostsim", feature = "play-feed"))]
+#[cfg(all(test, feature = "hostsim"))]
 mod abr_diag_tests {
     use super::*;
     use crate::player::attempt_view::Backend;

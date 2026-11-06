@@ -624,10 +624,10 @@ pub fn hold_load_for_test(on: bool) {
 #[cfg(any(test, feature = "test-support"))]
 static LOAD_STILL_OUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-#[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
+#[cfg(any(test, feature = "test-support"))]
 fn load_still_out() -> bool { LOAD_STILL_OUT.load(std::sync::atomic::Ordering::SeqCst) }
 
-#[cfg(all(feature = "play-feed", not(any(test, feature = "test-support"))))]
+#[cfg(not(any(test, feature = "test-support")))]
 fn load_still_out() -> bool { false }
 
 /// Test-only: [`set_phase_for_test`] plus the `picture_ms` half `view()` also checks, skipping
@@ -643,7 +643,6 @@ pub fn force_playing_for_test() {
 /// `Machine`.
 #[cfg(any(test, feature = "test-support"))]
 pub fn reset_for_test() {
-    #[cfg(feature = "play-feed")]
     hold_load_for_test(false);
     with_mut(|m| *m = Machine::default());
 }
@@ -723,7 +722,6 @@ pub fn settle(f: PumpFacts) -> Settle {
 ///
 /// **It only ever stops a PREVIEW engine.** A machine that is out of step with the installed
 /// session ([`Settle::Stale`]) is reset without touching the engine: that engine is a film's.
-#[cfg(feature = "play-feed")]
 pub fn after_pump(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut super::adapter::PlayerAdapter,
@@ -804,7 +802,6 @@ pub fn after_pump(
 /// Is the live preview's transport paused? The engine is shared, so this is the same transport
 /// Pause the session's readout holds for the player HUD, qualified by a preview actually being what
 /// occupies it — with no session there is nothing paused, whatever the readout last said.
-#[cfg(feature = "play-feed")]
 pub fn paused(ps: &crate::route::PlaybackSession) -> bool {
     occupies() && super::transport::paused(ps)
 }
@@ -822,7 +819,6 @@ pub fn paused(ps: &crate::route::PlaybackSession) -> bool {
 /// including Fetching/Loading/Abandoning/Stopping, and a press landing in any of those IS the
 /// race this doc says must be refused — there is no bound engine yet (or no longer) for a
 /// pause/resume to reach.
-#[cfg(feature = "play-feed")]
 pub fn transport(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut super::adapter::PlayerAdapter,
@@ -863,7 +859,6 @@ pub enum SeekOutcome {
 /// ([`Machine::admit_seek`]); a synchronous start failure is [`refuse_admission`], not
 /// [`fail_admitted`] — the native call never ran, so it is not itself evidence the trailer can't
 /// play.
-#[cfg(feature = "play-feed")]
 pub fn seek(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut super::adapter::PlayerAdapter,
@@ -895,7 +890,6 @@ pub fn seek(
 /// machine still `Fetching` is released so its landing is discarded ([`expects_landing`]), and
 /// any other non-Idle phase is stale; neither is a reason to tear down whatever engine the
 /// session does hold — that one belongs to a film.
-#[cfg(feature = "play-feed")]
 pub fn halt(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) {
     if !crate::route::is_preview(ps) {
         if occupies() {
@@ -915,7 +909,6 @@ pub fn halt(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
 /// the machine `Abandoning` until [`after_pump`] finishes it: clearing the flag under a live
 /// engine is how a failed trailer open was once rescued onto an HLS transcode that reported a
 /// timeline to the viewer's account.
-#[cfg(feature = "play-feed")]
 pub fn retire(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut super::adapter::PlayerAdapter,
@@ -1095,7 +1088,7 @@ mod tests {
     /// (`ffi_host::HostSink`) to hold a native session, which the default build's `NoSink` does
     /// not — `make check` runs the full suite a second time with it on for exactly this class of test.
     #[test]
-    #[cfg(all(feature = "hostsim", feature = "play-feed"))]
+    #[cfg(feature = "hostsim")]
     fn seek_refuses_and_touches_no_user_seek_bookkeeping_with_no_live_preview() {
         let _serial = plx_base::testlock::serial();
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -1312,7 +1305,7 @@ mod tests {
 
 /// The retire path of a preview whose Load has not returned, against a real Engine and the real
 /// Feed: the join is deferred while the Load thread runs, and the abandoned-Load poll finishes it.
-#[cfg(all(test, feature = "hostsim", feature = "play-feed"))]
+#[cfg(all(test, feature = "hostsim"))]
 mod abandoned_load_tests {
     use super::*;
     use plx_playback_contract::feed::Stage;

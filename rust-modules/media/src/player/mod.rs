@@ -27,27 +27,23 @@ pub mod adapter;
 pub(crate) mod test_physical; // the tests' composition of the physical set (the application's own is `app::adapters::backends`)
 pub mod attempt_view;
 pub mod readout; // the player's own readout (pure machine): the members only the player writes, and the feed's last raw facts
-#[cfg(feature = "play-feed")]
 pub mod demux_session;
 pub mod backend;
-#[cfg(feature = "play-feed")]
 pub mod claim_hold; // gated: it calls `pause`/`resume` and `transport::paused`, which exist only with the Feed
 pub mod ass; // pinned libass worker and immutable rendered frames
 pub mod ass_perf; // per-second libass cost line (`assperf:`)
 pub mod ass_timing; // libass clock reading and the validity window of a rendered frame
 pub mod ass_script; // a sidecar script fed in windows around the playhead
 pub mod ass_source; // bounded embedded scripts and subtitle presentation clock
-#[cfg(feature = "play-feed")]
 pub mod engine;
-#[cfg(feature = "play-feed")]
-mod feed_open; // gated: one resolved request for the prepared route's physical feed open, built over `plx_play_feed` types
+mod feed_open; // one resolved request for the prepared route's physical feed open, built over `plx_play_feed` types
 pub mod foreground;
 pub mod lifecycle;
 pub mod machine;
 pub mod preview;
-#[cfg(all(test, feature = "play-feed"))]
+#[cfg(test)]
 mod abr_plant_tests; // pins the ABR plant's constants to the Feed pipeline's
-#[cfg(all(test, feature = "play-feed"))]
+#[cfg(test)]
 mod readout_obs_tests; // the readers that ask the session's readout, not the feed's mailbox
 pub mod route_fx; // what route policy asks of the player: the audio and speed picks step the readout in every build; the Feed's own effects are no-ops without it
 pub mod recovery; // the failed-open ladder (pure machine); `pump` drives it
@@ -56,25 +52,24 @@ mod route_start; // common transaction admission and release-queued start policy
 #[cfg(feature = "devtriggers")]
 pub mod uriprobe_drive; // the URI-mode probe's route half and its port (issue #1064, dev trigger `plxnative-uriprobe`): the route-start settle and the adapter slot; the probe itself is the application's (`dev::uriprobe`), over the play-uri crate's `uriprobe`
 pub mod attempt_metrics; // pure logical-request and physical-attempt measurement reducer
-#[cfg(feature = "play-feed")]
 mod pump; // gated: the per-frame tick reads and drives `FEED_SHARED`/`FEED_TX` and `plx_play_feed::feed_pump`
 pub mod report;
-#[cfg(all(test, feature = "hostsim", feature = "play-feed"))]
+#[cfg(test)]
+mod no_feed_tests; // the doors a session with no Feed composed answers as a URI-only build always did
+#[cfg(all(test, feature = "hostsim"))]
 mod diag_sample_tests; // the Stats-for-nerds rows the Feed writes are the readout's last sample of it
-#[cfg(all(test, feature = "hostsim", feature = "play-feed"))]
+#[cfg(all(test, feature = "hostsim"))]
 mod foreground_flight_tests;
-#[cfg(all(test, feature = "hostsim", feature = "play-feed"))]
+#[cfg(all(test, feature = "hostsim"))]
 mod resume_tests;
-#[cfg(all(test, feature = "play-feed"))]
+#[cfg(test)]
 mod shared;
 mod shared_resources;
 mod subtitle_bitmap;
 use shared_resources::{AudioSwitch, Shared, Transport, AUDIO_PICK_WINDOW_MS};
 pub mod sidecar;
 pub mod sub_charset; // legacy-encoding text subtitles (GBK, Big5, Shift_JIS, ...) read as UTF-8; decided once per track
-#[cfg(feature = "play-feed")]
 pub mod subside; // the media half of the side subtitle reader (the thread is `plx_play_feed::side_reader`; dev trigger `plxnative-subside`)
-#[cfg(feature = "play-feed")]
 pub(crate) mod subtitle_cue; // embedded/side-reader cue bridge; caption stores remain common. Gated: it calls `push/close_subtitle_bitmap_for_generation` and `ass_source::begin_inventory`, which exist only with the Feed
 pub mod text_ass; // text subtitles to ASS: dialect converter, synthesized header, sidecar scripts (pure)
 pub mod text_style; // the viewer's size/position picks as the numbers that converter and the screen's lift use (pure)
@@ -82,32 +77,25 @@ mod timeline;
 pub mod transport;
 pub mod video_geometry;
 
-#[cfg(feature = "play-feed")]
 use plx_base::task::MainThread;
-#[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
+#[cfg(test)]
 use plx_play_feed::shared::FEED_SHARED;
-#[cfg(all(test, feature = "play-feed"))]
+#[cfg(test)]
 use plx_play_feed::shared::FEED_TX;
-#[cfg(all(test, feature = "play-feed"))]
+#[cfg(test)]
 pub(crate) use plx_play_feed::shared::pinned_pause_clock;
-#[cfg(feature = "play-feed")]
 pub use plx_playback_contract::feed::HlsAutomaticTransition;
-#[cfg(feature = "play-feed")]
 pub use plx_playback_contract::feed::HlsClockFenceError;
 /// one rect of an image-subtitle display set — the demuxer builds them, the HUD draws them
 pub use subtitle_bitmap::SubRect;
 use subtitle_bitmap::SubBitmap;
 pub use plx_data::metadata::track_names::TrackNames;
-#[cfg(feature = "play-feed")]
 pub use plx_playback_contract::feed::UserPauseCursor;
-#[cfg(feature = "play-feed")]
 use plx_playback_contract::feed::HlsPauseCompletion;
-#[cfg(feature = "play-feed")]
 use plx_playback_contract::feed::{UserPauseOutcome, UserResumeOutcome};
 
 /// The process's ACB plane owner: the one holder of the video-plane binding for both backends,
 /// booted once by the application's `acb_init` (`app/adapters/backends.rs`). It replaces the old `ACB_OK` / `PTYPE` statics.
-#[cfg(feature = "play-feed")]
 pub(crate) fn plane() -> &'static plx_platform::tv::plane::PlaneOwner {
     plx_platform::tv::plane::installed()
 }
@@ -170,42 +158,32 @@ pub fn seed_dev_track_names() {
     *SHARED.track_names.lock().unwrap() = TrackNames { audio, subs };
 }
 use std::os::raw::c_int;
-#[cfg(feature = "play-feed")]
 use plx_playback_contract::feed::FeedCommand;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 
 pub static SHARED: Shared = Shared::new();
 pub static TX: Transport = Transport::new();
 
-/// **The one test-support reset of a whole session**: what a real stop does (`FeedStop::reset`
-/// with [`ResetScope::Stop`]), the Feed's mirrors and the common stores together inside the
-/// callback/reset barrier. `SHARED.reset_session` alone resets only the common stores.
-#[cfg(any(test, feature = "test-support"))]
+/// **The one test-support reset of a whole session** (this crate's own tests): what a real stop
+/// does (`FeedStop::reset` with [`ResetScope::Stop`]), the Feed's mirrors and the common stores
+/// together inside the callback/reset barrier. `SHARED.reset_session` alone resets only the common
+/// stores; a suite that composes the Feed itself runs [`reset_common_for_test`] inside
+/// `plx_play_feed::ff_test_support::reset_session_for_test`.
+#[cfg(test)]
 pub fn reset_session_for_test() {
-    reset_scoped_for_test(plx_playback_contract::feed::ResetScope::Stop);
+    plx_play_feed::ff_test_support::reset_session_for_test(&mut reset_common_for_test);
 }
 
 /// [`reset_session_for_test`] for a reload of the same item (`ResetScope::Reload`).
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub fn reset_session_for_reload_for_test() {
-    reset_scoped_for_test(plx_playback_contract::feed::ResetScope::Reload);
+    plx_play_feed::ff_test_support::reset_session_for_reload_for_test(&mut || SHARED.reset_session_for_reload());
 }
 
+/// The common (Feed-free) half of a session reset: what the Feed's reset barrier runs for this crate.
 #[cfg(any(test, feature = "test-support"))]
-fn reset_scoped_for_test(scope: plx_playback_contract::feed::ResetScope) {
-    use plx_playback_contract::feed::ResetScope;
-    let common = &mut || match scope {
-        ResetScope::Stop => SHARED.reset_session(),
-        ResetScope::Reload => SHARED.reset_session_for_reload(),
-    };
-    #[cfg(feature = "play-feed")]
-    {
-        FEED_SHARED.reset_scoped(scope, common);
-        // The counters the diag sample reads outside the mailboxes: a fresh session's are zero.
-        plx_play_feed::ff_test_support::store_diag_counters(0, 0, false);
-    }
-    #[cfg(not(feature = "play-feed"))]
-    common();
+pub fn reset_common_for_test() {
+    SHARED.reset_session();
 }
 
 /// **Is the Stats-for-nerds read-out on screen?** The bit `pump::publish_diag` asks before it
@@ -293,7 +271,6 @@ pub const ABR_WHY_SWITCH_COST: u8 = 14;
 /// Did the pipeline take this session's video decoder back since the last ask? Consumes the
 /// answer ([`readout::ReadoutEvent::Taken`]): the app loop parks the session once per release. It
 /// reads the readout's last ingested sample, so the answer is the pump's, a frame behind the callback.
-#[cfg(feature = "play-feed")]
 pub fn take_decoder_revoked(ps: &mut crate::route::PlaybackSession) -> bool {
     if !ps.readout().decoder_revoked() {
         return false;
@@ -302,22 +279,14 @@ pub fn take_decoder_revoked(ps: &mut crate::route::PlaybackSession) -> bool {
     true
 }
 
-/// The pipeline's decoder release as the app loop sees it: the feed counts one, and the sample the
-/// pump would take next is ingested now.
-#[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
-pub fn note_decoder_revoked_for_test(ps: &mut crate::route::PlaybackSession, pa: &mut adapter::PlayerAdapter) {
-    FEED_SHARED.raise_decoder_revoked();
+/// Ingest the Feed's sample now, the one the pump would take next: a suite that composes the Feed
+/// raises its edge (`FEED_SHARED.raise_decoder_revoked()`) and calls this to see the session's
+/// readout take it.
+#[cfg(any(test, feature = "test-support"))]
+pub fn publish_feed_sample_for_test(ps: &mut crate::route::PlaybackSession, pa: &mut adapter::PlayerAdapter) {
     pa.publish_feed_attempt_view(ps);
 }
 
-/// Whether the session's native clock is held for the viewer's pause, for a test with no native
-/// session to observe the fenced first Play on.
-#[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
-pub fn clock_user_held_for_test() -> bool {
-    FEED_SHARED.clock_user_held_for_test()
-}
-
-#[cfg(feature = "play-feed")]
 pub use engine::{
     start_bufferfeed, start_bufferfeed_tracked,
 };
@@ -330,11 +299,9 @@ pub use route_start::{begin_resume, exit_native, land_resume, stop_bufferfeed,
     start_playback, start_playback_tracked, suspend_playback_if_attempt};
 pub use route_start::suspend_bufferfeed as suspend_playback;
 pub use route_start::stop_bufferfeed as stop_playback;
-#[cfg(feature = "play-feed")]
 pub use route_start::{foreground_follows_load, poll_release_frame, reap_abandoned_load,
     suspend_bufferfeed_if_attempt};
 
-#[cfg(feature = "play-feed")]
 pub use pump::{
     drain_engineless_rollback, land_engineless_rollback, pump, recover_failed_foreground_original, ForegroundOriginalRecovery,
     RollbackLanding,
@@ -397,12 +364,10 @@ pub fn set_audio_switch_for_test(state: u8) {
     SHARED.audio_switch.store(state, Relaxed);
 }
 #[derive(Clone, Copy)]
-#[cfg(feature = "play-feed")]
 pub(crate) struct TransportResult {
     pub accepted: bool,
     pub native_acknowledged: bool,
 }
-#[cfg(feature = "play-feed")]
 impl TransportResult {
     const fn deferred(accepted: bool) -> Self {
         Self { accepted, native_acknowledged: false }
@@ -412,11 +377,9 @@ impl TransportResult {
     }
 }
 
-#[cfg(feature = "play-feed")]
 pub fn pause(ps: &mut crate::route::PlaybackSession, pa: &mut adapter::PlayerAdapter) -> bool {
     pause_result(ps, pa).accepted
 }
-#[cfg(feature = "play-feed")]
 pub(crate) fn pause_result(ps: &mut crate::route::PlaybackSession, pa: &mut adapter::PlayerAdapter)
     -> TransportResult {
     // The feed runs the clock transition, the native Pause and the transport commit as one step,
@@ -455,7 +418,6 @@ pub(crate) fn pause_result(ps: &mut crate::route::PlaybackSession, pa: &mut adap
 /// starts at the default); [`restore_preroll_volume`] sets that default back. The volume is never
 /// read: `getVolume` is not bound (it returns an int on 4.5 where the NDK header says a string, and
 /// the wrong guess killed the app), so the log says what was SET, not what the pipeline reports.
-#[cfg(feature = "play-feed")]
 pub fn mute_for_preroll_on(sink: &dyn plx_platform::tv::sink::VideoSink, mt: &plx_base::task::MainThread) {
     unsafe { sink.set_volume(mt, 0) };
     let default = plx_platform::tv::sink::PIPELINE_DEFAULT_VOLUME;
@@ -467,28 +429,24 @@ pub fn mute_for_preroll_on(sink: &dyn plx_platform::tv::sink::VideoSink, mt: &pl
 /// the pump's per-tick sweep, which catches a preroll closed by a path with no adapter in hand
 /// (`abandon_seek`). A stop or reload needs no restore: the volume belonged to the pipeline that
 /// went with it (`Transport::reset` forgets the mute).
-#[cfg(feature = "play-feed")]
 pub(crate) fn restore_preroll_volume(pa: &mut adapter::PlayerAdapter) {
     let Some(volume) = pa.feed_take_preroll_volume() else { return };
     unsafe { pa.display_sink().set_volume(pa.mt(), volume) };
     log(&format!("preroll: volume set {volume} (restored; no readback)"));
 }
 
-#[cfg(feature = "play-feed")]
 pub fn resume(ps: &mut crate::route::PlaybackSession, pa: &mut adapter::PlayerAdapter) -> bool {
     resume_result(ps, pa).accepted
 }
 /// The readout's half of the feed's "close an open preroll with the commit" (`feed_pump::user_resume`):
 /// the close only when one is open (it also ends the owed re-pause, which a Resume with no preroll
 /// must leave alone), then the commit.
-#[cfg(feature = "play-feed")]
 fn step_resume_commit(ps: &mut crate::route::PlaybackSession) {
     if ps.readout().seek_preroll() {
         ps.step_readout(readout::ReadoutEvent::FinishSeekPreroll);
     }
     ps.step_readout(readout::ReadoutEvent::CommitPaused { paused: false });
 }
-#[cfg(feature = "play-feed")]
 pub(crate) fn resume_result(ps: &mut crate::route::PlaybackSession, pa: &mut adapter::PlayerAdapter)
     -> TransportResult {
     // First, whichever branch follows: the viewer asked for sound, and a Play below must not run muted.
@@ -549,7 +507,6 @@ pub(crate) fn resume_result(ps: &mut crate::route::PlaybackSession, pa: &mut ada
 /// object reaches this only after native acceptance; before a new object exists the common
 /// foreground owner seeds its saved paused viewer goal as the initial hold). The feed is the writer
 /// of its gate; the readout's copy is stepped in the same call.
-#[cfg(feature = "play-feed")]
 pub fn commit_paused(ps: &mut crate::route::PlaybackSession, pa: &mut adapter::PlayerAdapter,
     paused: bool) {
     ps.step_readout(readout::ReadoutEvent::CommitPaused { paused });
@@ -558,7 +515,6 @@ pub fn commit_paused(ps: &mut crate::route::PlaybackSession, pa: &mut adapter::P
 
 /// Open the one-frame paused-seek preroll for a restore that is about to Load (a feed that is not
 /// paused opens nothing).
-#[cfg(feature = "play-feed")]
 pub fn begin_paused_seek(ps: &mut crate::route::PlaybackSession, pa: &mut adapter::PlayerAdapter) {
     ps.step_readout(readout::ReadoutEvent::BeginPausedSeek);
     pa.feed_command(FeedCommand::BeginPausedSeek);
@@ -566,7 +522,6 @@ pub fn begin_paused_seek(ps: &mut crate::route::PlaybackSession, pa: &mut adapte
 
 /// Close the paused-seek preroll and any ownership of it, and the re-pause the foreground restore
 /// owed with it.
-#[cfg(feature = "play-feed")]
 pub fn finish_seek_preroll(ps: &mut crate::route::PlaybackSession, pa: &mut adapter::PlayerAdapter) {
     ps.step_readout(readout::ReadoutEvent::FinishSeekPreroll);
     pa.feed_command(FeedCommand::FinishSeekPreroll);
@@ -574,7 +529,7 @@ pub fn finish_seek_preroll(ps: &mut crate::route::PlaybackSession, pa: &mut adap
 
 /// Test-only: the feed's gate copy and the session's readout copy of the transport say the same
 /// (both are stepped at every writer, so a drift is a missed site).
-#[cfg(all(test, feature = "play-feed"))]
+#[cfg(test)]
 pub(crate) fn assert_transport_copies_agree(ps: &crate::route::PlaybackSession) {
     assert_eq!(FEED_TX.paused.load(Relaxed), ps.readout().paused(),
         "the feed's Pause and the readout's disagree");
@@ -586,20 +541,17 @@ pub(crate) fn assert_transport_copies_agree(ps: &crate::route::PlaybackSession) 
 
 /// The foreground restore of a paused film owes a re-pause for the instant its resume frame is on
 /// screen ([`finish_paused_seek`] settles it, and anything that closes the preroll ends it).
-#[cfg(feature = "play-feed")]
 pub fn arm_resume_pend(ps: &mut crate::route::PlaybackSession) {
     ps.step_readout(readout::ReadoutEvent::ResumePending);
 }
 
 /// A paused seek may decode one frame before the re-pause.
-#[cfg(feature = "play-feed")]
 pub fn seek_preroll_active(ps: &crate::route::PlaybackSession) -> bool {
     ps.readout().seek_preroll()
 }
 
 /// Re-establish the viewer's Pause after the seek prime has decoded its first landed frame. The
 /// transport intent stayed Paused throughout; only this method closes the temporary feed override.
-#[cfg(feature = "play-feed")]
 pub fn finish_paused_seek(ps: &mut crate::route::PlaybackSession, pa: &mut adapter::PlayerAdapter) -> bool {
     if !ps.readout().seek_preroll() {
         return true;
@@ -615,12 +567,12 @@ pub fn finish_paused_seek(ps: &mut crate::route::PlaybackSession, pa: &mut adapt
     true
 }
 
-#[cfg(all(feature = "play-feed", any(test, feature = "test-support"), feature = "hostsim"))]
+#[cfg(all(test, feature = "hostsim"))]
 pub fn force_pause_result_for_test(result: Option<c_int>) {
     plx_play_feed::ffi_host::force_pause_result_for_test(result);
 }
 
-#[cfg(all(feature = "play-feed", any(test, feature = "test-support"), feature = "hostsim"))]
+#[cfg(all(test, feature = "hostsim"))]
 pub fn force_play_result_for_test(result: Option<c_int>) {
     plx_play_feed::ffi_host::force_play_result_for_test(result);
 }
@@ -629,7 +581,6 @@ pub fn force_play_result_for_test(result: Option<c_int>) {
 /// leaves the app-owned sink's ACB state stale). Only once the plane is streaming — `Bound` means
 /// setMediaId/LOADED has happened but setMediaVideoData/window/PLAYING has not, so mirroring a user
 /// Resume there would overtake the rest of the ordered bind transaction.
-#[cfg(feature = "play-feed")]
 pub fn acb_mirror_playstate(ps: &crate::route::PlaybackSession, pa: &mut adapter::PlayerAdapter,
     playing: bool) {
     let Some(stage) = ps.readout().raw().load.stage else {
@@ -644,7 +595,6 @@ pub fn acb_mirror_playstate(ps: &crate::route::PlaybackSession, pa: &mut adapter
 /// is what the owned slot forces: with `ENGINE` a `static mut` handing out `&'static mut`, the
 /// prime path re-entered the slot it was already holding, which is the aliasing the token could
 /// only assert was safe.
-#[cfg(feature = "play-feed")]
 pub fn acb_mirror_playstate_on(sink: &dyn plx_platform::tv::sink::VideoSink, mt: &MainThread,
     stage: plx_playback_contract::feed::Stage, playing: bool) {
     if !plane().handle() {
@@ -662,7 +612,6 @@ pub fn acb_mirror_playstate_on(sink: &dyn plx_platform::tv::sink::VideoSink, mt:
     }
 }
 
-#[cfg(feature = "play-feed")]
 fn acb_playstate_ready(stage: plx_playback_contract::feed::Stage) -> bool {
     stage >= plx_playback_contract::feed::Stage::Streaming
 }
@@ -689,10 +638,7 @@ pub fn observe_video_plane(
     pl: &mut machine::Player,
     _pa: &mut adapter::PlayerAdapter,
 ) -> Option<bool> {
-    #[cfg(feature = "play-feed")]
     let bound = pl.session.readout().raw().load.stage.is_some_and(acb_playstate_ready);
-    #[cfg(not(feature = "play-feed"))]
-    let bound = false;
     let bound = bound || _pa.uri_product_plane_owned();
     #[cfg(feature = "devtriggers")]
     let bound = bound || _pa.uri_plane_open();
@@ -760,7 +706,6 @@ pub fn seek_pending(ps: &crate::route::PlaybackSession) -> Option<i64> {
 }
 /// true once the pipeline has drained to true end-of-stream (see pump's EOS check). app.rs polls
 /// this to tear the player down at the credits.
-#[cfg(feature = "play-feed")]
 pub(crate) fn feed_ended(ps: &crate::route::PlaybackSession) -> bool {
     ps.readout().ended()
 }
@@ -773,7 +718,6 @@ pub fn ended(ps: &crate::route::PlaybackSession) -> Option<bool> {
         _ => ps.attempt_view().facts().ended,
     }
 }
-#[cfg(feature = "play-feed")]
 pub fn request_seek(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut adapter::PlayerAdapter,
@@ -814,7 +758,6 @@ pub fn request_seek(
 /// command: `SeekAbandoned` settles every request so far, and the feed's display target goes back
 /// to `-1` with it, since the HUD reads that as "no seek target" and a stale one would keep the
 /// frozen playhead after the spinner cleared.
-#[cfg(feature = "play-feed")]
 pub fn abandon_seek(ps: &mut crate::route::PlaybackSession, pa: &mut adapter::PlayerAdapter) {
     crate::route::reject_user_seek();
     ps.step_readout(readout::ReadoutEvent::SeekAbandoned);
@@ -826,7 +769,6 @@ pub fn abandon_seek(ps: &mut crate::route::PlaybackSession, pa: &mut adapter::Pl
     }
 }
 /// The seek the pump took off the pending slot: where it is aimed and how many requests it folded.
-#[cfg(feature = "play-feed")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct TakenSeek {
     pub target_ns: i64,
@@ -839,7 +781,6 @@ pub(super) struct TakenSeek {
 /// while a seek is armed) never outlives a target the player no longer holds. The command goes out
 /// whether or not the player held one: a take is "nothing waits any more", and the feed clears its
 /// copy unconditionally. Returns what the readout held.
-#[cfg(feature = "play-feed")]
 pub(super) fn take_pending_seek(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut adapter::PlayerAdapter,
@@ -854,7 +795,6 @@ pub(super) fn take_pending_seek(
 /// **A taken seek waits again** (the clock transition was busy, or a newer tap outlived a reload):
 /// the readout's pending target and the feed's copy are armed in the same call. This is not a
 /// request, so no epoch is numbered and no seek is put in flight; see [`FeedCommand::SeekRequeued`].
-#[cfg(feature = "play-feed")]
 pub(super) fn requeue_seek(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut adapter::PlayerAdapter,
@@ -868,7 +808,6 @@ pub(super) fn requeue_seek(
 /// demuxer is armed to open and seek there, the display base is 0 (the landed keyframe is
 /// re-based to content time) and the HUD reads the target as the position until frames land. A
 /// negative target is the start (the clamp the Feed's old `arm_seek` applied itself).
-#[cfg(feature = "play-feed")]
 pub(super) fn arm_open(pa: &mut adapter::PlayerAdapter, target_ns: i64) {
     let at = target_ns.max(0);
     pa.feed_command(FeedCommand::ArmOpen { target_ns: at, disp_base: 0, playpos_ns: at });
@@ -878,7 +817,6 @@ pub(super) fn arm_open(pa: &mut adapter::PlayerAdapter, target_ns: i64) {
 /// encode is 0-based there, so the published position carries the offset as its display base from
 /// the first frame and the HUD reads it until frames land. Nothing is armed to seek, and the feed's
 /// video lane alone owns the pts shift.
-#[cfg(feature = "play-feed")]
 pub(super) fn rebase_transcode(ps: &mut crate::route::PlaybackSession, pa: &mut adapter::PlayerAdapter, offset_ns: i64) {
     ps.step_readout(readout::ReadoutEvent::OpenRebased { disp_base: offset_ns });
     pa.feed_command(FeedCommand::Rebase { playpos_ns: offset_ns, disp_base: offset_ns });
@@ -919,8 +857,7 @@ pub fn state(ps: &crate::route::PlaybackSession) -> PlaybackState {
     // foreground restore's resume, a rollback after a Load that failed before its Engine
     // existed): `route::engineless_flight_outstanding`.
     if crate::route::play_pending() || crate::route::engineless_flight_outstanding()
-        || { #[cfg(feature = "play-feed")] { ps.readout().start_queued() }
-             #[cfg(not(feature = "play-feed"))] { false } } {
+        || (ps.backends().feed && ps.readout().start_queued()) {
         return PlaybackState::Resolving;
     }
     // …and so is the PRE-FLIGHT refusal, for exactly the same reason: `/decision` answers before a
@@ -950,19 +887,18 @@ pub fn state(ps: &crate::route::PlaybackSession) -> PlaybackState {
         return if facts.runtime_failure.is_some() { PlaybackState::Error }
             else { facts.status.unwrap_or(PlaybackState::Connecting) };
     }
-    #[cfg(feature = "play-feed")]
-    {
-        if ps.readout().seeking() {
-            return PlaybackState::Seeking;
-        }
-        // A retranscode claim holds presentation during the server round trip.
-        if claim_hold::active() {
-            return PlaybackState::Buffering;
-        }
-        ps.readout().state()
+    // With no Feed composed nothing derives a state but the URI attempt's, answered above.
+    if !ps.backends().feed {
+        return PlaybackState::Idle;
     }
-    #[cfg(not(feature = "play-feed"))]
-    { PlaybackState::Idle }
+    if ps.readout().seeking() {
+        return PlaybackState::Seeking;
+    }
+    // A retranscode claim holds presentation during the server round trip.
+    if claim_hold::active() {
+        return PlaybackState::Buffering;
+    }
+    ps.readout().state()
 }
 
 /// The one line that makes a phone photograph of the failure read-out a complete report:
@@ -1245,7 +1181,6 @@ pub struct ErrorShape {
 }
 
 pub(crate) use attempt_view::RuntimeFailure;
-#[cfg(feature = "play-feed")]
 use plx_playback_contract::readout::runtime_failure;
 
 /// The cause the worker signals publish right now: what [`error_now`] reads while an Engine is up,
@@ -1259,23 +1194,19 @@ fn live_runtime_failure(ps: &crate::route::PlaybackSession) -> RuntimeFailure {
     if crate::route::play_resolution_failed(ps) {
         return RuntimeFailure::ResolveFailed;
     }
-    if ps.attempt_view().backend().is_some_and(|backend| backend != attempt_view::Backend::Feed) {
+    if !ps.backends().feed
+        || ps.attempt_view().backend().is_some_and(|backend| backend != attempt_view::Backend::Feed) {
         return ps.attempt_view().facts().runtime_failure.unwrap_or(RuntimeFailure::Unknown);
     }
-    #[cfg(not(feature = "play-feed"))]
-    { ps.attempt_view().facts().runtime_failure.unwrap_or(RuntimeFailure::Unknown) }
     // One sample of the four flags: the readout's last ingestion, which collapses them together.
-    #[cfg(feature = "play-feed")]
-    {
-        let flags = ps.readout().raw().flags;
-        runtime_failure(
-            flags.demux_failed,
-            flags.demux_io_failed,
-            flags.load_failed,
-            // The refused start's cause: an abandoned Load exists only after the budget fired.
-            flags.load_timed_out || ps.native_start_refused == Some(crate::route::StartRefusal::LoadTimeout),
-        )
-    }
+    let flags = ps.readout().raw().flags;
+    runtime_failure(
+        flags.demux_failed,
+        flags.demux_io_failed,
+        flags.load_failed,
+        // The refused start's cause: an abandoned Load exists only after the budget fired.
+        flags.load_timed_out || ps.native_start_refused == Some(crate::route::StartRefusal::LoadTimeout),
+    )
 }
 
 /// The read-out for [`FailureKind::JailMissingRtkmem`] — the one `ErrorShape` not produced by
@@ -1594,26 +1525,26 @@ pub fn error_reason(ps: &crate::route::PlaybackSession) -> &'static str {
 /// that needs the app in a given state — `app.rs`'s HUD-visibility pair, which pins the bug that
 /// made the `…` disc unreachable while stalled — delivers that event here rather than widening a
 /// module for a test. It writes nothing but the readout it is given.
-#[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
+#[cfg(any(test, feature = "test-support"))]
 pub fn swap_state_for_test(ps: &mut crate::route::PlaybackSession, s: plx_playback_contract::readout::PlaybackState) -> u8 {
     let prev = ps.readout().state() as u8;
     ps.step_readout(readout::ReadoutEvent::StateDerived(s));
     prev
 }
-#[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
+#[cfg(any(test, feature = "test-support"))]
 pub fn restore_state_for_test(ps: &mut crate::route::PlaybackSession, raw: u8) {
     ps.step_readout(readout::ReadoutEvent::StateDerived(plx_playback_contract::readout::PlaybackState::from_u8(raw)));
 }
 /// Test-only: the native audio-track index the Feed's demuxer reads (what `SelectAudio` stores;
 /// -1 feeds the file's own default). Media's own choice is the session readout's
 /// (`PlayerReadout::audio_choice`).
-#[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
+#[cfg(test)]
 pub fn feed_audio_idx_for_test() -> i32 {
     FEED_SHARED.desired_audio_idx.load(Relaxed)
 }
 /// Test-only: put the Feed's playhead clock where a remux run leaves it (`playpos_ns` is
 /// `fed - pts_shift + disp_base`). `pts_shift` is left alone when `None`.
-#[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
+#[cfg(test)]
 pub fn set_clock_for_test(pts_shift: Option<i64>, disp_base: i64, playpos_ns: i64) {
     if let Some(shift) = pts_shift { FEED_SHARED.pts_shift.store(shift, Relaxed); }
     FEED_SHARED.disp_base.store(disp_base, Relaxed);
@@ -1622,19 +1553,16 @@ pub fn set_clock_for_test(pts_shift: Option<i64>, disp_base: i64, playpos_ns: i6
 
 // ---- diagnostics --------------------------------------------------------------------------
 
-#[cfg(feature = "play-feed")]
 pub use engine::aq_caps;
 /// The two feed-ahead throttles, as milliseconds.
 ///
 /// The Feed open adapter captures these with `aq_caps()` as one value for the pure ABR plant.
 /// `abr::sim` keeps its own copy by value, so its parity test can catch a changed physical
 /// throttle without making the simulated plant read its subject's geometry.
-#[cfg(feature = "play-feed")]
 pub use engine::feed_leads_ms;
 pub use plx_platform::tv::sink::{VP_ACB, VP_EXPORTED, VP_NONE};
 /// The video codec a `dg_load_v` code names (video 1 = H264, 2 = H265, 3 = AV1, 4 = VP9; 0 = not built).
 /// The codes are written from `engine::LoadVideo::diag_code`, the names from its `payload_name`.
-#[cfg(feature = "play-feed")]
 pub fn load_v_name(code: u8) -> &'static str {
     plx_platform::devcaps::LoadVideo::from_diag_code(code)
         .map_or("—", plx_platform::devcaps::LoadVideo::payload_name)
@@ -1658,6 +1586,9 @@ pub struct Diag {
     /// Origin and sparse facts of the session's current physical attempt.
     pub backend: Option<attempt_view::Backend>,
     pub observed: attempt_view::AttemptFacts,
+    /// Whether the session's composition holds a Feed (`PlaybackSession::backends`): the lab's
+    /// wire spellings of the Feed's rows read `—` when none does.
+    pub feed_composed: bool,
     pub vp_mode: c_int,
     pub window_id: String,
     pub acb_ok: bool,
@@ -1730,9 +1661,9 @@ impl Diag {
     /// The lab snapshot's wire spelling; the on-screen read-out words its own labels.
     #[cfg_attr(not(feature = "lab-diagnostics"), allow(dead_code))]
     pub fn vp_mode_str(&self) -> &'static str {
-        #[cfg(not(feature = "play-feed"))]
-        { "—" }
-        #[cfg(feature = "play-feed")]
+        if !self.feed_composed {
+            return "—";
+        }
         match self.vp_mode {
             VP_EXPORTED => "exported window (webOS 5+)",
             VP_ACB => "ACB (webOS 4)",
@@ -1741,9 +1672,6 @@ impl Diag {
     }
     /// What the Load payload named as the video codec, or `—` before one was built.
     pub fn load_v_str(&self) -> &'static str {
-        #[cfg(not(feature = "play-feed"))]
-        { "—" }
-        #[cfg(feature = "play-feed")]
         load_v_name(self.load_v)
     }
     /// …and the audio codec. `needAudio:false` is its own answer, not an absence.
@@ -1797,14 +1725,8 @@ pub(crate) fn diag_on(ps: &crate::route::PlaybackSession, display: &dyn plx_plat
     let view = ps.attempt_view();
     let backend = view.backend();
     let observed = *view.facts();
-    let common = Diag { backend, observed,
+    let common = Diag { backend, observed, feed_composed: ps.backends().feed,
         source_kbps: crate::route::transport_kbps(ps), ..Default::default() };
-    #[cfg(not(feature = "play-feed"))]
-    {
-        let _ = display;
-        common
-    }
-    #[cfg(feature = "play-feed")]
     {
     if backend != Some(attempt_view::Backend::Feed) {
         // No buffer-feed Engine owns these callback mailboxes. In particular a URI open must
@@ -1823,6 +1745,7 @@ pub(crate) fn diag_on(ps: &crate::route::PlaybackSession, display: &dyn plx_plat
     Diag {
         backend,
         observed,
+        feed_composed: ps.backends().feed,
         vp_mode: display.window_mode(),
         window_id,
         acb_ok: plane().handle(),
@@ -1981,7 +1904,6 @@ pub fn reset_audio_track(ps: &mut crate::route::PlaybackSession) {
 /// Hand the feed the session's audio choice: its demuxer reads that copy as it opens the container,
 /// so every start that spawns one sends it first (`start_bufferfeed_prepared`), and a pick made where
 /// the adapter is in hand sends it at once. The choice itself is the readout's.
-#[cfg(feature = "play-feed")]
 pub(super) fn publish_audio_choice(ps: &crate::route::PlaybackSession, pa: &mut adapter::PlayerAdapter) {
     pa.feed_command(FeedCommand::SelectAudio { idx: ps.readout().audio_choice() });
 }
@@ -2004,7 +1926,6 @@ pub fn rate_name(permille: i32) -> String {
 /// `play_rate_permille`, which [`session_rate_for`] lowers to 1x when this playback does not offer
 /// it. It is not the viewer's intent, which is the session's `requested_rate_permille`
 /// ([`selected_rate`]) and survives that downgrade.
-#[cfg(feature = "play-feed")]
 pub fn play_rate_permille(ps: &crate::route::PlaybackSession) -> i32 {
     ps.readout().play_rate_permille()
 }
@@ -2017,12 +1938,9 @@ pub fn selected_rate(ps: &crate::route::PlaybackSession) -> Option<i32> {
 
 pub fn applied_rate(ps: &crate::route::PlaybackSession) -> Option<i32> {
     if ps.attempt_view().backend() != Some(attempt_view::Backend::Feed) { return None; }
-    #[cfg(feature = "play-feed")]
     // The speed the pipeline on screen is actually running at: [`play_rate_permille`] once a Load
     // has applied it, 1x before that, and 1x for good if LG refused it. The session's last sample.
-    { Some(ps.readout().raw().applied_rate_permille) }
-    #[cfg(not(feature = "play-feed"))]
-    { None }
+    Some(ps.readout().raw().applied_rate_permille)
 }
 
 /// **Change the playback speed of the item on screen.**
@@ -2037,7 +1955,6 @@ pub fn applied_rate(ps: &crate::route::PlaybackSession) -> Option<i32> {
 /// too (`pump::seek_must_reload`), so each session starts on a fresh timeline.
 ///
 /// Returns whether anything was requested: picking the speed already set does nothing.
-#[cfg(feature = "play-feed")]
 pub fn set_play_rate(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut adapter::PlayerAdapter,
@@ -2061,7 +1978,6 @@ pub fn set_play_rate(
     request_seek(ps, pa, target);
     true
 }
-#[cfg(feature = "play-feed")]
 plx_base::devtrig::latched_flag!(
     /// `/tmp/plxnative-noaudio` — a video-only Load (`needAudio:false`, no audio ES fed), the dev A/B
     /// that isolates the audio path. Latched: [`speed_offer`] runs every frame while the More menu
@@ -2077,27 +1993,23 @@ plx_base::devtrig::latched_flag!(
 /// declare ([`feed_open::speed_fps_ceiling_now`]). The menu offers exactly these, and a Load plays
 /// only one of them.
 pub fn speed_offer(ps: &crate::route::PlaybackSession) -> Vec<i32> {
+    if !ps.backends().feed {
+        return Vec::new();
+    }
     if ps.attempt_view().backend() == Some(attempt_view::Backend::Uri) {
         // URI has no native speed operation. A viewer pick can re-resolve this same source for
         // Feed's decoder only while its position is known and the item is still resolvable.
-        #[cfg(feature = "play-feed")]
-        { return if crate::route::can_retry_current_play(ps)
+        return if crate::route::can_retry_current_play(ps)
             && crate::route::source_decodable(ps)
             && intended_pos_known_ns(ps).is_some() { feed_speed_offer(ps) }
-            else { Vec::new() }; }
-        #[cfg(not(feature = "play-feed"))]
-        { return Vec::new(); }
+            else { Vec::new() };
     }
-    #[cfg(feature = "play-feed")]
-    { feed_speed_offer(ps) }
-    #[cfg(not(feature = "play-feed"))]
-    { Vec::new() }
+    feed_speed_offer(ps)
 }
 
 /// Feasibility of the *resolved Feed candidate*, independent of the outgoing attempt's backend.
 /// Start admission uses this after URI→Feed reconfiguration, while the visible speed menu still
 /// asks [`speed_offer`] about the current executor. It does not certify native application.
-#[cfg(feature = "play-feed")]
 pub(crate) fn feed_speed_offer(ps: &crate::route::PlaybackSession) -> Vec<i32> {
     if crate::route::forced_direct_play(ps) || crate::route::is_preview(ps)
         || crate::route::is_segmented_hls(ps) || speed_unsupported(ps) {
@@ -2128,7 +2040,6 @@ pub fn speeds_within(fps: f64, max_fps: f64) -> Vec<i32> {
 /// **The speed a Load is about to play at**: the viewer's, if this playback offers it, else 1x —
 /// and a refusal puts the viewer's speed back to Normal so the menu does not claim a speed the
 /// picture is not playing at.
-#[cfg(feature = "play-feed")]
 pub(crate) fn session_rate_for(ps: &mut crate::route::PlaybackSession) -> i32 {
     let want = play_rate_permille(ps);
     if want == RATE_NORMAL || crate::route::is_preview(ps) {
@@ -2151,14 +2062,12 @@ pub fn session_rate(want: i32, offer: &[i32]) -> i32 {
 /// **A television that did not take this session's PCM.** Latched in the session's readout
 /// ([`fall_back_from_speed`]) for the life of the session, which is the life of the process:
 /// the same set will refuse the next one too.
-#[cfg(feature = "play-feed")]
 pub fn speed_unsupported(ps: &crate::route::PlaybackSession) -> bool {
     ps.readout().speed_unsupported()
 }
 
 /// What the pipeline reported for this speed session's audio, for the Stats for nerds read-out:
 /// `None` before any report, `Some(true)` for the declared 48 kHz stereo, `Some(false)` otherwise.
-#[cfg(feature = "play-feed")]
 pub fn speed_audio_report(ps: &crate::route::PlaybackSession) -> Option<bool> {
     ps.readout().raw().speed_audio_ok
 }
@@ -2166,7 +2075,6 @@ pub fn speed_audio_report(ps: &crate::route::PlaybackSession) -> Option<bool> {
 /// **The safety net**: this television did not take a speed session's PCM (`why`). Latch speed off
 /// ([`speed_unsupported`]), put the viewer's speed back to Normal, and reload at their position —
 /// the same reload a speed change is, which now lands at 1x on the TV's own audio path.
-#[cfg(feature = "play-feed")]
 pub(crate) fn fall_back_from_speed(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut adapter::PlayerAdapter,
@@ -2372,7 +2280,6 @@ pub fn sidecar_clock_ns(ps: &crate::route::PlaybackSession, playhead_ns: i64) ->
     if !crate::route::sidecar_over_remux(ps) {
         return playhead_ns;
     }
-    #[cfg(feature = "play-feed")]
     if ps.attempt_view().backend() == Some(attempt_view::Backend::Feed) {
         return ps.readout().raw().side_exact_delta_ns
             .map_or(playhead_ns, |delta| playhead_ns.saturating_add(delta));
@@ -2569,7 +2476,6 @@ pub fn push_subtitle_bitmap(
 
 /// Publish from a captured demux only while its bitmap store generation still
 /// owns the slot. Reset changes the generation under this same store mutex.
-#[cfg(feature = "play-feed")]
 pub(crate) fn push_subtitle_bitmap_for_generation(
     generation: u64, track: i32, start_ns: i64, cw: i32, ch: i32, rects: Vec<SubRect>,
     retention: plx_playback_contract::subtitle::CaptionRetention,
@@ -2638,7 +2544,6 @@ pub fn close_subtitle_bitmap(track: i32, end_ns: i64) {
     close_subtitle_bitmap_locked(&mut v, track, end_ns);
 }
 
-#[cfg(feature = "play-feed")]
 pub(crate) fn close_subtitle_bitmap_for_generation(generation: u64, track: i32, end_ns: i64) -> bool {
     let mut v = SHARED.sub_bitmaps.lock().unwrap();
     if SHARED.bitmap_generation.load(std::sync::atomic::Ordering::Acquire) != generation { return false; }
@@ -2683,7 +2588,6 @@ pub use plx_base::eventlog::log; // event-log sink (crate-wide single copy in li
 /// What `plx_play_feed::sf_event::sf_on_event` reads of this module's common state: the first
 /// picture after a viewer's audio pick ends the switch (`AudioSwitch::Reloading` -> `None`). The
 /// composition installs it as the callback's `SfEventHooks` row, once, before the first `Load`.
-#[cfg(feature = "play-feed")]
 pub fn audio_rebuild_presented() {
     let _ = SHARED.audio_switch.compare_exchange(
         AudioSwitch::Reloading as u8,
@@ -2724,7 +2628,6 @@ pub struct VplaneMark {
 /// whether the pipeline still thinks it is running. A steady `5 / 201` through a picture the
 /// viewer says is stuttering is a real and useful finding: it rules the fault OUT of everything
 /// this process can see, and sends the search to the display side.
-#[cfg(feature = "play-feed")]
 pub fn vplane_since(ps: &crate::route::PlaybackSession, mark: &mut VplaneMark) -> (u32, u32) {
     let raw = ps.readout().raw();
     let now = VplaneMark {
@@ -2772,7 +2675,7 @@ pub fn every_failure_row() -> Vec<(FailureKind, FailureContext, Vec<FailureActio
     out
 }
 
-#[cfg(all(test, feature = "play-feed"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use plx_play_feed::sf_event::{sf_on_event, sf_on_event_inner};
@@ -2814,7 +2717,6 @@ mod tests {
 
     /// The speeds a source can be offered: everything up to 2x for film, nothing above 1x for 60p
     /// (it would ask the decoder for more than 60 fps), and a Load plays only an offered speed.
-    #[cfg(feature = "play-feed")]
     #[test]
     fn a_session_plays_only_an_offered_speed() {
         assert_eq!(speeds_within(23.976, SPEED_MAX_FPS), PLAY_RATES.to_vec());
@@ -2898,7 +2800,6 @@ mod tests {
     /// real change on the ladder is one: the speed already set, or a value Plex Web does not offer,
     /// asks for nothing. With nothing on screen the speed is only remembered for the next Load.
     /// The choice, its one-shot reload and the latch are the SESSION's readout, not a mailbox.
-    #[cfg(feature = "play-feed")]
     #[test]
     fn a_speed_change_requests_a_reload_at_the_viewers_position() {
         let _serial = plx_base::testlock::serial();
@@ -2966,7 +2867,6 @@ mod tests {
     /// The safety net is ONE decision: the latch, the viewer back at 1x and the armed reload
     /// together, with the reload's seek posted at the viewer's own position. The readout holds all
     /// three, and the speed menu reads the latch from the session.
-    #[cfg(feature = "play-feed")]
     #[test]
     fn a_refused_speed_session_latches_the_set_and_arms_the_reload_in_the_readout() {
         let _serial = plx_base::testlock::serial();
@@ -3007,7 +2907,6 @@ mod tests {
     /// copy would leave the AU gate shut through the whole flight. The take reports what the player
     /// held, how many requests it folded, and clears the feed's copy even when the player held
     /// nothing (a copy it no longer owns must never outlive it).
-    #[cfg(feature = "play-feed")]
     #[test]
     fn a_take_clears_the_feeds_gate_with_the_players_target_in_one_call() {
         let _serial = plx_base::testlock::serial();
@@ -3052,7 +2951,6 @@ mod tests {
 
     /// `arm_open` is the old `arm_seek` through the feed's command: the demuxer's open target, a
     /// display base of 0 and the HUD's position, with the start as the floor of a negative target.
-    #[cfg(feature = "play-feed")]
     #[test]
     fn arm_open_arms_the_next_open_with_the_start_as_the_floor() {
         let _serial = plx_base::testlock::serial();
@@ -3085,7 +2983,6 @@ mod tests {
     // `native_failure_regressions::jail_refusal_enters_error_without_engine_and_retires_on_exit`
     // below, against the real `ps.jail_load_blocked`-based gate in `engine.rs` — see that test.
 
-    #[cfg(feature = "play-feed")]
     #[test]
     fn forced_original_never_offers_or_retains_a_pcm_speed() {
         let _serial = plx_base::testlock::serial();
@@ -4693,7 +4590,7 @@ mod tests {
     }
 }
 
-#[cfg(all(test, feature = "hostsim", feature = "play-feed"))]
+#[cfg(all(test, feature = "hostsim"))]
 mod native_failure_regressions {
     use super::*;
     struct JailGuard;
@@ -4736,7 +4633,7 @@ mod native_failure_regressions {
 /// before #568 every seek was a reload. The guard still applies to every reload-based seek: `Reload`
 /// mode (a refused native `Seek`, `sendSegment=0`, an untested old-ABI release), a stuck in-place
 /// seek's reload, and every seek at a speed other than 1x.
-#[cfg(all(test, feature = "play-feed"))]
+#[cfg(test)]
 mod seek_hud_regressions {
     use super::*;
 
@@ -4810,7 +4707,6 @@ mod audio_switch_tests {
         assert_eq!(busy_caption_with(S::Resolving, true), state_caption(S::Resolving));
     }
 
-    #[cfg(feature = "play-feed")]
     #[test]
     fn a_pick_names_the_rebuild_through_the_reload_until_the_first_frame() {
         let _g = plx_base::testlock::serial();
