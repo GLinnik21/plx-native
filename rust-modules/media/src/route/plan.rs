@@ -1308,7 +1308,6 @@ pub struct ResolveEnv {
     /// the mode so the worker never reads the process cache. A regression sets it directly: no
     /// test mutates the production `OnceLock` or makes the whole host a DV set.
     pub dv_capability: plx_platform::devcaps::dv::DvCapability,
-    pub panel: plx_platform::devcaps::panel::Panel,
     /// **The capability value this attempt plans from**, copied off the session
     /// ([`PlaybackSession::attempt_caps`]) beside the quality and the mode, so the worker never reads the
     /// process-wide capability answer: every direct-play gate, the audio pick and the transcode
@@ -1680,7 +1679,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 None => match env.cached_item.clone() {
                     Some(item) => (Some(item), None),
                     None => match plx_data::metadata::fetch_playing_item_choosing(client, env.sid, rk, |it| {
-                        panel_version(&plx_data::pms::versions_of(it), env.panel, &env.caps).map(|v| v.id)
+                        decodable_version(&plx_data::pms::versions_of(it), &env.caps).map(|v| v.id)
                     }) {
                         Some((item, played)) => (Some(item), played),
                         None => (None, None),
@@ -1696,10 +1695,8 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             }
             if let (None, Some(v)) = (env.version, played.as_ref()) {
                 crate::player::log(&format!(
-                    "route: the {} panel plays version {} (mediaIndex {})",
-                    env.panel.label(),
-                    v.id.0,
-                    v.index
+                    "route: the first version cannot play directly; version {} (mediaIndex {}) can",
+                    v.id.0, v.index
                 ));
             }
             // The picked version's part, codecs and `mediaIndex` replace the caller's (the default's)
@@ -3765,13 +3762,23 @@ pub(super) fn video_direct_plays(
     codec_ok && src_w <= bw as i64 && src_h <= bh as i64 && dv.refusal().is_none()
 }
 
-pub(super) fn panel_version<'a>(
+pub(super) fn decodable_version<'a>(
     versions: &'a [plx_data::pms::MediaVersion],
-    panel: plx_platform::devcaps::panel::Panel,
     caps: &plx_platform::devcaps::Caps,
 ) -> Option<&'a plx_data::pms::MediaVersion> {
-    let ceiling = panel.max_height()?;
+    let direct = |v: &plx_data::pms::MediaVersion| {
+        video_direct_plays(
+            &v.vcodec,
+            v.width,
+            v.height,
+            plx_data::metadata::DvPresentation::NotDv,
+            caps,
+        )
+    };
     let first = versions.first()?;
+    if direct(first) {
+        return None;
+    }
     let classed = || {
         versions
             .iter()
@@ -3779,22 +3786,13 @@ pub(super) fn panel_version<'a>(
             .filter_map(|(index, v)| Some((index, v, resolution_class(v)?)))
     };
     let target = classed()
+        .filter(|&(_, v, _)| direct(v))
         .map(|(_, _, class)| class)
-        .filter(|&class| class <= ceiling)
         .max()
         .or_else(|| classed().map(|(_, _, class)| class).min())?;
     let (_, chosen, _) = classed()
         .filter(|&(_, _, class)| class == target)
-        .max_by_key(|&(index, v, _)| {
-            let direct = video_direct_plays(
-                &v.vcodec,
-                v.width,
-                v.height,
-                plx_data::metadata::DvPresentation::NotDv,
-                caps,
-            );
-            (direct, v.kbps, std::cmp::Reverse(index))
-        })?;
+        .max_by_key(|&(index, v, _)| (direct(v), std::cmp::Reverse(index)))?;
     (chosen.id != first.id).then_some(chosen)
 }
 
@@ -4066,8 +4064,8 @@ mod track_memory_tests;
 mod dolby_vision_tests;
 
 #[cfg(test)]
-#[path = "plan_panel_version_tests.rs"]
-mod panel_version_tests;
+#[path = "plan_default_version_tests.rs"]
+mod default_version_tests;
 
 #[cfg(test)]
 #[path = "plan_mde_decision_tests.rs"]

@@ -308,7 +308,6 @@
   "settings.consent.placeholder.webos_codename_short": "nome in codice webOS",
   "settings.hud.title": "HUD del player",
   "settings.hud.copy": "Scegli l’aspetto dei controlli di riproduzione.",
-  "settings.hud.classic": "Classico",
   "settings.hud.builtin": "Integrato",
   "settings.hud.unreviewed": "Non verificato",
   "settings.hud.until_restart": "Installato fino al riavvio",

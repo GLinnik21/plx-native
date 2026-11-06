@@ -78,7 +78,7 @@ fn resolve_on(
     (part, vcodec, acodec): (&str, &str, &str),
     mde: &'static [u8],
     version: Option<plx_plex::plex::MediaId>,
-    panel: Option<plx_platform::devcaps::panel::Panel>,
+    caps: Option<plx_platform::devcaps::Caps>,
 ) -> (Plan, Vec<String>) {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -86,8 +86,8 @@ fn resolve_on(
     let sid = plx_plex::plex::register_for_test("versions", "127.0.0.1", port, "token", "versions-client");
     let mut env = ResolveEnv::snapshot(&ps, plx_data::stores::metadata::MetadataStore::default().view(), sid, rk);
     env.version = version;
-    if let Some(panel) = panel {
-        env.panel = panel;
+    if let Some(caps) = caps {
+        env.caps = std::sync::Arc::new(caps);
     }
     let plan = build_stream(&plx_base::task::OffFrame::for_test(), rk, part, vcodec, acodec, &env);
     done.send(()).unwrap();
@@ -98,11 +98,14 @@ fn resolve_on(
 
 const FOUR_K_DEFAULT: (&str, &str, &str) = ("/library/parts/3130/1/file.mkv", "hevc", "eac3");
 
+fn full_hd_set() -> plx_platform::devcaps::Caps {
+    plx_platform::devcaps::Caps { hevc_max: (1920, 1088), ..plx_platform::devcaps::Caps::assumed() }
+}
+
 #[test]
 #[cfg(feature = "devtriggers")]
-fn a_panel_that_is_not_uhd_plays_the_1080p_version_listed_after_the_4k() {
-    use plx_platform::devcaps::panel::Panel;
-    let (plan, requests) = resolve_on("rk-4k", FOUR_K_DEFAULT, MDE_DIRECTPLAY, None, Some(Panel::NotUhd));
+fn a_1080p_decoder_plays_the_1080p_version_listed_after_the_4k() {
+    let (plan, requests) = resolve_on("rk-4k", FOUR_K_DEFAULT, MDE_DIRECTPLAY, None, Some(full_hd_set()));
     let mde = requests.iter().find(|l| l.contains("/decision?")).unwrap_or_else(|| panic!("{requests:?}"));
     assert_eq!(query_param(mde, "mediaIndex"), Some("1"), "{mde}");
     assert_eq!(query_param(mde, "audioStreamID"), Some("31342"), "{mde}");
@@ -114,17 +117,7 @@ fn a_panel_that_is_not_uhd_plays_the_1080p_version_listed_after_the_4k() {
 
 #[test]
 #[cfg(feature = "devtriggers")]
-fn a_uhd_panel_plays_the_4k_version_listed_first_as_before() {
-    use plx_platform::devcaps::panel::Panel;
-    let (plan, requests) = resolve_on("rk-4k", FOUR_K_DEFAULT, MDE_DIRECTPLAY, None, Some(Panel::Uhd));
-    let mde = requests.iter().find(|l| l.contains("/decision?")).unwrap_or_else(|| panic!("{requests:?}"));
-    assert_eq!(query_param(mde, "mediaIndex"), Some("0"), "{mde}");
-    assert_eq!((plan.part_id, plan.media_index), (3130, 0));
-}
-
-#[test]
-#[cfg(feature = "devtriggers")]
-fn an_unknown_panel_plays_the_first_version_as_before() {
+fn a_4k_decoder_plays_the_4k_version_listed_first_as_before() {
     let (plan, requests) = resolve_on("rk-4k", FOUR_K_DEFAULT, MDE_DIRECTPLAY, None, None);
     let mde = requests.iter().find(|l| l.contains("/decision?")).unwrap_or_else(|| panic!("{requests:?}"));
     assert_eq!(query_param(mde, "mediaIndex"), Some("0"), "{mde}");
@@ -133,18 +126,16 @@ fn an_unknown_panel_plays_the_first_version_as_before() {
 
 #[test]
 #[cfg(feature = "devtriggers")]
-fn a_picked_version_wins_over_the_panel() {
-    use plx_platform::devcaps::panel::Panel;
+fn a_picked_version_wins_over_the_decoder() {
     let picked = Some(plx_plex::plex::MediaId(3082));
-    let (plan, requests) = resolve_on("rk-4k", FOUR_K_DEFAULT, MDE_DIRECTPLAY, picked, Some(Panel::NotUhd));
+    let (plan, requests) = resolve_on("rk-4k", FOUR_K_DEFAULT, MDE_DIRECTPLAY, picked, Some(full_hd_set()));
     let mde = requests.iter().find(|l| l.contains("/decision?")).unwrap_or_else(|| panic!("{requests:?}"));
     assert_eq!(query_param(mde, "mediaIndex"), Some("0"), "{mde}");
     assert_eq!((plan.part_id, plan.media_index), (3130, 0));
 }
 
 #[test]
-fn a_page_whose_default_the_panel_passes_over_gives_up_its_cached_copy() {
-    use plx_platform::devcaps::panel::Panel;
+fn a_page_whose_default_the_set_cannot_decode_gives_up_its_cached_copy() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     let mut meta = plx_data::stores::metadata::MetadataStore::default();
@@ -173,12 +164,12 @@ fn a_page_whose_default_the_panel_passes_over_gives_up_its_cached_copy() {
     );
     let mut env = ResolveEnv::snapshot(&ps, meta.view(), sid, "rk-4k");
     assert!(env.cached_item.is_some(), "the page is the item");
-    env.panel = Panel::Uhd;
-    leave_the_cached_default_for_the_panel(&mut env, meta.view(), sid, "rk-4k");
-    assert!(env.cached_item.is_some(), "a UHD panel plays the page's own default");
-    env.panel = Panel::NotUhd;
-    leave_the_cached_default_for_the_panel(&mut env, meta.view(), sid, "rk-4k");
-    assert!(env.cached_item.is_none(), "the page describes the 4K, which this panel passes over");
+    env.caps = std::sync::Arc::new(plx_platform::devcaps::Caps::assumed());
+    leave_a_cached_default_the_set_cannot_decode(&mut env, meta.view(), sid, "rk-4k");
+    assert!(env.cached_item.is_some(), "a 4K decoder plays the page's own default");
+    env.caps = std::sync::Arc::new(full_hd_set());
+    leave_a_cached_default_the_set_cannot_decode(&mut env, meta.view(), sid, "rk-4k");
+    assert!(env.cached_item.is_none(), "the page describes the 4K, which this decoder cannot take");
     assert_eq!(env.src_kbps, 2372);
     plx_data::metadata::set_current_for_test(meta.state_mut(), None);
 }

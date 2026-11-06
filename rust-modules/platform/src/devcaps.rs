@@ -43,7 +43,6 @@ use std::borrow::Cow;
 use std::sync::OnceLock;
 
 pub mod dv;
-pub mod panel;
 
 /// The AUDIO codec set the buffer-feed PIPELINE decodes. This is the software half of a
 /// two-sided test — what our demuxer/payload path can feed, before asking whether this

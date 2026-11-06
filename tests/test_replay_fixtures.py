@@ -177,6 +177,56 @@ class ParallelRunTests(unittest.TestCase):
                 self.assertIn(path.name.split('-')[1], (path / 'plxnative-recplay').read_text())
 
 
+class OutputFolderTests(unittest.TestCase):
+    """The evidence folder `main` makes for itself: gone after a clean run, kept and named after a
+    failing one, and a folder the caller passed in is never `main`'s to remove."""
+
+    def main(self, scratch, failures, *argv):
+        """Run `main` against a fake `run_all` that writes one evidence file into the output
+        folder, with `scratch/tmp` as the temp directory; returns (exit status, stdout)."""
+        tmp = scratch / 'tmp'
+        tmp.mkdir(exist_ok=True)
+
+        def run_all(binary, assets, fixtures, output, *rest):
+            (output / 'evidence.log').write_text('one replay')
+            return failures
+
+        out = io.StringIO()
+        with mock.patch.object(replay.tempfile, 'tempdir', str(tmp)), \
+                mock.patch.object(replay, 'discover', return_value=[]), \
+                mock.patch.object(replay, 'run_all', run_all), \
+                mock.patch.object(replay.sys, 'argv', ['replay_fixtures.py', '--sim', 'sim', *argv]), \
+                contextlib.redirect_stdout(out):
+            failed = replay.main()
+        return failed, out.getvalue()
+
+    def test_a_folder_main_made_is_removed_when_every_replay_passed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            failed, out = self.main(Path(temp), [])
+            self.assertFalse(failed)
+            self.assertEqual(list((Path(temp) / 'tmp').iterdir()), [])
+            self.assertNotIn('evidence', out)
+
+    def test_a_folder_main_made_is_kept_and_named_when_a_replay_failed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            failed, out = self.main(Path(temp), [ValueError('a/targets: diverged')])
+            self.assertTrue(failed)
+            (kept,) = (Path(temp) / 'tmp').iterdir()
+            self.assertTrue(kept.name.startswith('plxnative-replay-gate-'))
+            self.assertEqual((kept / 'evidence.log').read_text(), 'one replay')
+            self.assertIn(f'evidence {kept}', out)
+
+    def test_a_folder_the_caller_named_is_never_removed(self):
+        for failures in ([], [ValueError('a/targets: diverged')]):
+            with self.subTest(failures=len(failures)), tempfile.TemporaryDirectory() as temp:
+                named = Path(temp) / 'mine'
+                failed, out = self.main(Path(temp), failures, '--output', str(named))
+                self.assertEqual(failed, bool(failures))
+                self.assertEqual((named / 'evidence.log').read_text(), 'one replay')
+                self.assertEqual(list((Path(temp) / 'tmp').iterdir()), [])
+                self.assertIn(f'evidence {named}', out)
+
+
 class WindowTests(unittest.TestCase):
     """The replay window: full size by default, chosen by the driver, strictly validated."""
 

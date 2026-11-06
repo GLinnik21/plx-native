@@ -305,7 +305,6 @@
   "settings.consent.placeholder.webos_codename_short": "webOS-kódnév",
   "settings.hud.title": "Lejátszó HUD",
   "settings.hud.copy": "Válassza ki a lejátszásvezérlők megjelenését.",
-  "settings.hud.classic": "Klasszikus",
   "settings.hud.builtin": "Beépített",
   "settings.hud.unreviewed": "Nem ellenőrzött",
   "settings.hud.until_restart": "Újraindításig telepítve",
