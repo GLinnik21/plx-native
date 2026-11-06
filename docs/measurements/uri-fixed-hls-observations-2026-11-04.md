@@ -1,22 +1,30 @@
-# URI HLS observations in an offline W22 firmware inventory, 2026-11-04
+# URI HLS observations in the webOS 11.2.0 (o22) firmware image, 2026-11-04
 
-This is a read-only analysis of an **offline, W22-labelled ARM inventory**. It does not establish
-the event format or adaptive controls of the webOS 4.5 dev set. The inventory in
-`/private/tmp/tvlab-urifw-26/bin/` has no harvest manifest, so its original device and firmware
-version cannot be independently checked from this copy. The binary hashes and build IDs below
-identify exactly what was analysed; they should be compared with a documented harvest before
-applying these findings to another device. No library was pulled from or run on the TV for this
+This is a read-only analysis of two libraries from one archived LG firmware image in the DAS
+firmware archive: `HE_DTV_W22O_AFABATPU` (OLED65C24LA, board o22 LX, firmware 43.00.74,
+**webOS 11.2.0**; `epk/HE_DTV_W22O_AFABATPU/SOURCE.txt` records the download on 2026-10-27 and
+`INDEX.md` the board and version). Everything below holds for that webOS 11.2.0 image only. It does
+not establish the event format or adaptive controls of the webOS 4.5 dev set or of any other
+firmware generation. The dev set's firmware, W19H (`HE_DTV_W19H_AFADABAA`, webOS 4.10.2), has no
+`libpf-hls`: the only file with `hls` in its name under its `usr/lib` is
+`usr/lib/gstreamer-1.0/libgsthls.so`, so which component plays HLS in URI mode there is not
+answered by this note. The paths below are inside the image's unpacked tree
+(`x/HE_DTV_W22O_AFABATPU/rootfs.pak.unsquashfs/`); the harvested copies used for the decompile
+are in `lab/uri-HE_DTV_W22O_AFABATPU/bin/`. No library was pulled from or run on the TV for this
 analysis.
 
-| Offline binary | SHA-256 | ELF build ID |
-| --- | --- | --- |
-| `libpf-hls-W22` | `3a444ed2099851085aaed7e5939b2eb23dd098559ca5bf79ef54e1cb85742a43` | `cef0019a037a0234712df48adac2b267b34bd667` |
-| `libpf-1.0.so.1.0.0-W22` | `059265268fac05f49fdc7bea1bf1d9ae892d9683709eba0bf19905517c152bd6` | `5e9682a54b8fbe534a6cb1cbf739bc710af3c2ed` |
+| Binary | Path in the unpacked image | SHA-256 | ELF build ID |
+| --- | --- | --- | --- |
+| `libpf-hls-1.0.so.1.0.0` | `usr/palm/resources/com.webos.resource.media-framework.resource/lib/` | `3a444ed2099851085aaed7e5939b2eb23dd098559ca5bf79ef54e1cb85742a43` | `cef0019a037a0234712df48adac2b267b34bd667` |
+| `libpf-1.0.so.1.0.0` | `usr/lib/` | `059265268fac05f49fdc7bea1bf1d9ae892d9683709eba0bf19905517c152bd6` | `5e9682a54b8fbe534a6cb1cbf739bc710af3c2ed` |
+
+The hashes of the unpacked files and of the lab copies are identical, and the build IDs were read
+from the lab copies.
 
 ## What the producer does
 
 Decompilation of `mediapipeline::HlsPipeline::updateBufferingInfo()` at ELF virtual address
-`0x1c2ac` in `libpf-hls-W22` shows that it reads GStreamer's
+`0x1c2ac` in `libpf-hls-1.0.so.1.0.0` shows that it reads GStreamer's
 `current-level-time-video` and `current-level-time-audio` values, chooses the applicable buffered
 range, and combines it with `mediapipeline::Pipeline::position()`. Before formatting the range,
 it divides the 64-bit time values by the literal `1,000,000,000` at ELF file offset `0x1c960`.
@@ -29,13 +37,13 @@ presented picture.
 through its callback, and separately sends the number of rates and current rate index. Those
 are stream/rendition metadata. Neither function measures a completed transfer's byte count or
 active fetch duration. `mediapipeline::Pipeline::notifyBufferRangeInfo(long long, char const*)`
-at `0x71cc0` in the matching W22 `libpf` forwards its text to installed callbacks; it does not
+at `0x71cc0` in the same image's `libpf-1.0.so.1.0.0` forwards its text to installed callbacks; it does not
 attach or validate a media ID there. A higher service layer may supply an identity envelope,
 but these functions do not prove that it does.
 
 The [webOS 4.5 URI experiment](uri-acb-dass-2026-11-02.md) logged `bufferRange` beginning and
 ending near 0–58 as `currentTime` advanced in milliseconds. That is consistent with seconds,
-but the W22 producer does not prove the 4.5 producer's units. The experiment logged only the
+but the webOS 11.2.0 producer does not prove the 4.5 producer's units. The experiment logged only the
 selected `streamingInfo` event name, not a transfer rate or rendition identity.
 
 ## Application boundary and missing evidence
@@ -65,14 +73,15 @@ URI fixed playlists describes this integration gap, not a claim that the firmwar
 
 ## Reproduction
 
-Use the repository's `.agents/skills/decompile-tv-lib/decomp.sh` with the offline inventory;
-do not run its `pull` command for this note. The script rebases the two function addresses by
-`0x10000` in Ghidra. For example:
+Use the repository's `.agents/skills/decompile-tv-lib/decomp.sh` with the DAS lab directory for
+this image (`lab/uri-HE_DTV_W22O_AFABATPU`, which holds `bin/`, the Ghidra project and the
+scripts); do not run its `pull` command for this note. The script rebases the two function
+addresses by `0x10000` in Ghidra. For example, with `DAS_LAB` set to that directory:
 
 ```sh
-DECOMP_LAB=/private/tmp/tvlab-urifw-26 .agents/skills/decompile-tv-lib/decomp.sh fn libpf-hls-W22 updateBufferingInfo 1
-DECOMP_LAB=/private/tmp/tvlab-urifw-26 .agents/skills/decompile-tv-lib/decomp.sh fn libpf-hls-W22 updateStreamingInfo 1
-DECOMP_LAB=/private/tmp/tvlab-urifw-26 .agents/skills/decompile-tv-lib/decomp.sh fn libpf-1.0.so.1.0.0-W22 notifyBufferRangeInfo 3
+DECOMP_LAB="$DAS_LAB" .agents/skills/decompile-tv-lib/decomp.sh fn libpf-hls-1.0.so.1.0.0 updateBufferingInfo 1
+DECOMP_LAB="$DAS_LAB" .agents/skills/decompile-tv-lib/decomp.sh fn libpf-hls-1.0.so.1.0.0 updateStreamingInfo 1
+DECOMP_LAB="$DAS_LAB" .agents/skills/decompile-tv-lib/decomp.sh fn libpf-1.0.so.1.0.0 notifyBufferRangeInfo 3
 ```
 
 Check the SHA-256 values above before using the inventory. The addresses, divisor, callback
