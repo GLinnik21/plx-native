@@ -57,43 +57,22 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-06T05:24:32Z",
+ "generated": "2026-11-06T11:34:12Z",
  "metrics": [
   {
-   "change30_pct": null,
-   "change7_pct": 31.9,
-   "d30": null,
-   "delta30": null,
-   "delta7": 20.3,
-   "group": "local",
-   "id": "bench.ui",
-   "kind": "local",
-   "label": "Rebuild after editing plx_ui",
-   "n_now": 6,
-   "n_prev": 7,
-   "now": 84.1,
-   "prev7": 63.7,
-   "shown": true,
-   "state": "worse",
-   "state30": "new",
-   "threshold_abs": 5.0,
-   "threshold_pct": 25.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": 4.7,
-   "change7_pct": 30.3,
-   "d30": 285.5,
-   "delta30": 13.5,
-   "delta7": 69.5,
+   "change30_pct": 6.8,
+   "change7_pct": 30.0,
+   "d30": 280,
+   "delta30": 19,
+   "delta7": 69.0,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
    "kind": "job",
    "label": "CI: host python/shell/C gates",
-   "n_now": 63,
-   "n_prev": 94,
+   "n_now": 61,
+   "n_prev": 96,
    "now": 299,
-   "prev7": 229.5,
+   "prev7": 230.0,
    "shown": true,
    "state": "worse",
    "state30": "flat",
@@ -102,17 +81,17 @@
    "unit": "s"
   },
   {
-   "change30_pct": 58.2,
+   "change30_pct": 58.8,
    "change7_pct": 20.8,
-   "d30": 239.0,
-   "delta30": 139.0,
+   "d30": 238,
+   "delta30": 140.0,
    "delta7": 65.0,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
-   "n_now": 62,
-   "n_prev": 94,
+   "n_now": 60,
+   "n_prev": 96,
    "now": 378.0,
    "prev7": 313.0,
    "shown": true,
@@ -123,19 +102,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": -49.7,
-   "change7_pct": 20.7,
-   "d30": 880,
-   "delta30": -437.0,
-   "delta7": 76.0,
+   "change30_pct": -47.8,
+   "change7_pct": 20.5,
+   "d30": 850,
+   "delta30": -406.0,
+   "delta7": 75.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 62,
-   "n_prev": 94,
-   "now": 443.0,
-   "prev7": 367.0,
+   "n_now": 60,
+   "n_prev": 96,
+   "now": 444.0,
+   "prev7": 368.5,
    "shown": true,
    "state": "worse",
    "state30": "better",
@@ -144,17 +123,38 @@
    "unit": "s"
   },
   {
-   "change30_pct": 179.8,
+   "change30_pct": 16.8,
+   "change7_pct": 20.2,
+   "d30": 173,
+   "delta30": 29,
+   "delta7": 34.0,
+   "group": "ci",
+   "id": "ci|host lint + type-checks",
+   "kind": "job",
+   "label": "CI: host lint + type-checks",
+   "n_now": 61,
+   "n_prev": 96,
+   "now": 202,
+   "prev7": 168.0,
+   "shown": true,
+   "state": "worse",
+   "state30": "flat",
+   "threshold_abs": 20.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": 178.8,
    "change7_pct": 20.1,
-   "d30": 131.5,
-   "delta30": 236.5,
+   "d30": 132,
+   "delta30": 236,
    "delta7": 61.5,
    "group": "ci",
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
-   "n_now": 63,
-   "n_prev": 94,
+   "n_now": 61,
+   "n_prev": 96,
    "now": 368,
    "prev7": 306.5,
    "shown": true,
@@ -165,18 +165,39 @@
    "unit": "s"
   },
   {
-   "change30_pct": -54.0,
-   "change7_pct": 19.4,
-   "d30": 981,
-   "delta30": -529.5,
-   "delta7": 73.5,
+   "change30_pct": 42.6,
+   "change7_pct": 20.1,
+   "d30": 306,
+   "delta30": 130.5,
+   "delta7": 73.0,
+   "group": "ci",
+   "id": "ci|host unit tests (default features)",
+   "kind": "job",
+   "label": "CI: host unit tests (default features)",
+   "n_now": 60,
+   "n_prev": 96,
+   "now": 436.5,
+   "prev7": 363.5,
+   "shown": true,
+   "state": "worse",
+   "state30": "worse",
+   "threshold_abs": 20.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": -53.1,
+   "change7_pct": 20.0,
+   "d30": 967.5,
+   "delta30": -514.0,
+   "delta7": 75.5,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 188,
-   "n_prev": 230,
-   "now": 451.5,
+   "n_now": 184,
+   "n_prev": 234,
+   "now": 453.5,
    "prev7": 378.0,
    "shown": true,
    "state": "flat",
@@ -187,18 +208,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -6.9,
+   "change7_pct": -19.1,
    "d30": null,
    "delta30": null,
-   "delta7": -1.8,
+   "delta7": -5.4,
    "group": "local",
    "id": "bench.app",
    "kind": "local",
    "label": "Rebuild after editing the app crate",
-   "n_now": 6,
+   "n_now": 5,
    "n_prev": 7,
-   "now": 24.3,
-   "prev7": 26.1,
+   "now": 23.1,
+   "prev7": 28.5,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -208,18 +229,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -2.6,
+   "change7_pct": -7.6,
    "d30": null,
    "delta30": null,
-   "delta7": -1.4,
+   "delta7": -4.2,
    "group": "local",
    "id": "bench.screens",
    "kind": "local",
    "label": "Rebuild after editing plx_screens",
-   "n_now": 6,
+   "n_now": 5,
    "n_prev": 7,
-   "now": 50.8,
-   "prev7": 52.2,
+   "now": 50.4,
+   "prev7": 54.6,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -229,18 +250,39 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 21.2,
+   "change7_pct": 24.7,
    "d30": null,
    "delta30": null,
-   "delta7": 33.1,
+   "delta7": 18.5,
+   "group": "local",
+   "id": "bench.ui",
+   "kind": "local",
+   "label": "Rebuild after editing plx_ui",
+   "n_now": 5,
+   "n_prev": 7,
+   "now": 93.3,
+   "prev7": 74.8,
+   "shown": true,
+   "state": "flat",
+   "state30": "new",
+   "threshold_abs": 5.0,
+   "threshold_pct": 25.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": 24.3,
+   "d30": null,
+   "delta30": null,
+   "delta7": 41.1,
    "group": "local",
    "id": "bench.leaf",
    "kind": "local",
    "label": "Rebuild after editing plx_base",
-   "n_now": 6,
+   "n_now": 5,
    "n_prev": 7,
-   "now": 189.5,
-   "prev7": 156.4,
+   "now": 210.0,
+   "prev7": 168.9,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -250,18 +292,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 4.3,
+   "change7_pct": -0.9,
    "d30": null,
    "delta30": null,
-   "delta7": 6.6,
+   "delta7": -1.4,
    "group": "local",
    "id": "bench.tests",
    "kind": "local",
    "label": "Unit suite",
-   "n_now": 6,
+   "n_now": 5,
    "n_prev": 7,
-   "now": 161.4,
-   "prev7": 154.8,
+   "now": 155.7,
+   "prev7": 157.1,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -303,19 +345,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 9.1,
-   "change7_pct": 12.3,
-   "d30": 2446.5,
-   "delta30": 221.5,
-   "delta7": 291.5,
+   "change30_pct": 9.8,
+   "change7_pct": 12.2,
+   "d30": 2431.5,
+   "delta30": 237.5,
+   "delta7": 291.0,
    "group": "ci",
    "id": "minutes",
    "kind": "cost",
    "label": "Runner time per push",
-   "n_now": 55,
-   "n_prev": 74,
-   "now": 2668,
-   "prev7": 2376.5,
+   "n_now": 53,
+   "n_prev": 76,
+   "now": 2669,
+   "prev7": 2378.0,
    "shown": true,
    "state": "flat",
    "state30": "flat",
@@ -345,27 +387,6 @@
    "unit": "s"
   },
   {
-   "change30_pct": 40.5,
-   "change7_pct": 19.9,
-   "d30": 309.0,
-   "delta30": 125.0,
-   "delta7": 72.0,
-   "group": "ci",
-   "id": "ci|host unit tests (default features)",
-   "kind": "job",
-   "label": "CI: host unit tests (default features)",
-   "n_now": 62,
-   "n_prev": 94,
-   "now": 434.0,
-   "prev7": 362.0,
-   "shown": true,
-   "state": "flat",
-   "state30": "worse",
-   "threshold_abs": 20.0,
-   "threshold_pct": 20.0,
-   "unit": "s"
-  },
-  {
    "change30_pct": null,
    "change7_pct": 9.8,
    "d30": null,
@@ -375,8 +396,8 @@
    "id": "ci|armv7 cross-build and artifact assertions",
    "kind": "job",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "n_now": 63,
-   "n_prev": 94,
+   "n_now": 61,
+   "n_prev": 96,
    "now": 359,
    "prev7": 327.0,
    "shown": true,
@@ -387,19 +408,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 22.9,
-   "change7_pct": 12.7,
-   "d30": 245.0,
-   "delta30": 56.0,
-   "delta7": 34.0,
+   "change30_pct": 20.2,
+   "change7_pct": 12.1,
+   "d30": 250.0,
+   "delta30": 50.5,
+   "delta7": 32.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 58,
-   "n_prev": 81,
-   "now": 301.0,
-   "prev7": 267,
+   "n_now": 56,
+   "n_prev": 83,
+   "now": 300.5,
+   "prev7": 268,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -408,17 +429,17 @@
    "unit": "s"
   },
   {
-   "change30_pct": -76.6,
+   "change30_pct": -75.8,
    "change7_pct": -0.7,
-   "d30": 904.5,
-   "delta30": -693.0,
+   "d30": 873.5,
+   "delta30": -662.0,
    "delta7": -1.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 58,
-   "n_prev": 81,
+   "n_now": 56,
+   "n_prev": 83,
    "now": 211.5,
    "prev7": 213,
    "shown": true,
@@ -429,44 +450,23 @@
    "unit": "s"
   },
   {
-   "change30_pct": -41.0,
+   "change30_pct": -38.5,
    "change7_pct": 9.9,
-   "d30": 348.5,
-   "delta30": -143.0,
+   "d30": 334,
+   "delta30": -128.5,
    "delta7": 18.5,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 58,
-   "n_prev": 81,
+   "n_now": 56,
+   "n_prev": 83,
    "now": 205.5,
    "prev7": 187,
    "shown": true,
    "state": "flat",
    "state30": "better",
    "threshold_abs": 30.0,
-   "threshold_pct": 20.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": 15.2,
-   "change7_pct": 19.6,
-   "d30": 174.5,
-   "delta30": 26.5,
-   "delta7": 33.0,
-   "group": "ci",
-   "id": "ci|host lint + type-checks",
-   "kind": "job",
-   "label": "CI: host lint + type-checks",
-   "n_now": 63,
-   "n_prev": 94,
-   "now": 201,
-   "prev7": 168.0,
-   "shown": true,
-   "state": "flat",
-   "state30": "flat",
-   "threshold_abs": 20.0,
    "threshold_pct": 20.0,
    "unit": "s"
   },
@@ -566,8 +566,8 @@
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 58,
-   "n_prev": 81,
+   "n_now": 56,
+   "n_prev": 83,
    "now": 19.5,
    "prev7": 18,
    "shown": false,
@@ -587,8 +587,8 @@
    "id": "ci|which gates apply",
    "kind": "job",
    "label": "CI: which gates apply",
-   "n_now": 63,
-   "n_prev": 94,
+   "n_now": 61,
+   "n_prev": 96,
    "now": 5,
    "prev7": 5.0,
    "shown": false,
@@ -608,8 +608,8 @@
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 62,
-   "n_prev": 94,
+   "n_now": 60,
+   "n_prev": 96,
    "now": 4.0,
    "prev7": 3.0,
    "shown": false,
@@ -629,8 +629,8 @@
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 63,
-   "n_prev": 94,
+   "n_now": 61,
+   "n_prev": 96,
    "now": 3,
    "prev7": 3.0,
    "shown": false,
@@ -642,7 +642,7 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 5.5,
+   "change7_pct": 1.8,
    "d30": null,
    "delta30": null,
    "delta7": 0.0,
@@ -650,7 +650,7 @@
    "id": "bench.noop",
    "kind": "local",
    "label": "No-op build",
-   "n_now": 6,
+   "n_now": 5,
    "n_prev": 7,
    "now": 0.6,
    "prev7": 0.6,
@@ -664,7 +664,7 @@
  ],
  "regressions": [
   {
-   "change_pct": 31.9,
+   "change_pct": 30.0,
    "commits": [
     {
      "pr": 1240,
@@ -717,68 +717,7 @@
      "title": "Deps: Bump encoding_rs from 0.8.42 to 0.8.44 in /rust-modules in the rust-minor-patch group"
     }
    ],
-   "from": 63.7,
-   "id": "bench.ui",
-   "label": "Rebuild after editing plx_ui",
-   "since": "2026-11-02",
-   "threshold_pct": 25.0,
-   "to": 84.1
-  },
-  {
-   "change_pct": 30.3,
-   "commits": [
-    {
-     "pr": 1240,
-     "sha": "ab00d73b0",
-     "title": "HUD plugins: a cargo fuzz package over every package and registry parser"
-    },
-    {
-     "pr": 1241,
-     "sha": "951db621f",
-     "title": "HUD plugins: tools/hud-dev, and Play re-fetches a development-source HUD on the TV"
-    },
-    {
-     "pr": 1230,
-     "sha": "e1ea6e2ec",
-     "title": "Add Catalan localization"
-    },
-    {
-     "pr": 1243,
-     "sha": "8c6904d1b",
-     "title": "HUD registry: serve from huds.plxnative.com"
-    },
-    {
-     "pr": 1244,
-     "sha": "6d5089359",
-     "title": "Tests: the lint, screenshot and replay runs delete their temp trees"
-    },
-    {
-     "pr": 1247,
-     "sha": "43cdc8deb",
-     "title": "Settings: the built-in HUD is named Built-in"
-    },
-    {
-     "pr": 1252,
-     "sha": "02be3ead1",
-     "title": "Site: add three outlets to Featured in"
-    },
-    {
-     "pr": 1253,
-     "sha": "c01b5136a",
-     "title": "HUD previews: the long-title corpus covers Catalan"
-    },
-    {
-     "pr": 1254,
-     "sha": "e5f19d679",
-     "title": "Playback: a retired PMS session gets its stopped timeline"
-    },
-    {
-     "pr": 1250,
-     "sha": "9cc53ed28",
-     "title": "Deps: Bump encoding_rs from 0.8.42 to 0.8.44 in /rust-modules in the rust-minor-patch group"
-    }
-   ],
-   "from": 229.5,
+   "from": 230.0,
    "id": "ci|host python/shell/C gates",
    "label": "CI: host python/shell/C gates",
    "since": "2026-11-06",
@@ -847,7 +786,7 @@
    "to": 378.0
   },
   {
-   "change_pct": 20.7,
+   "change_pct": 20.5,
    "commits": [
     {
      "pr": 1240,
@@ -900,12 +839,73 @@
      "title": "Deps: Bump encoding_rs from 0.8.42 to 0.8.44 in /rust-modules in the rust-minor-patch group"
     }
    ],
-   "from": 367.0,
+   "from": 368.5,
    "id": "push_wait",
    "label": "Wait after merge",
    "since": "2026-11-06",
    "threshold_pct": 15.0,
-   "to": 443.0
+   "to": 444.0
+  },
+  {
+   "change_pct": 20.2,
+   "commits": [
+    {
+     "pr": 1240,
+     "sha": "ab00d73b0",
+     "title": "HUD plugins: a cargo fuzz package over every package and registry parser"
+    },
+    {
+     "pr": 1241,
+     "sha": "951db621f",
+     "title": "HUD plugins: tools/hud-dev, and Play re-fetches a development-source HUD on the TV"
+    },
+    {
+     "pr": 1230,
+     "sha": "e1ea6e2ec",
+     "title": "Add Catalan localization"
+    },
+    {
+     "pr": 1243,
+     "sha": "8c6904d1b",
+     "title": "HUD registry: serve from huds.plxnative.com"
+    },
+    {
+     "pr": 1244,
+     "sha": "6d5089359",
+     "title": "Tests: the lint, screenshot and replay runs delete their temp trees"
+    },
+    {
+     "pr": 1247,
+     "sha": "43cdc8deb",
+     "title": "Settings: the built-in HUD is named Built-in"
+    },
+    {
+     "pr": 1252,
+     "sha": "02be3ead1",
+     "title": "Site: add three outlets to Featured in"
+    },
+    {
+     "pr": 1253,
+     "sha": "c01b5136a",
+     "title": "HUD previews: the long-title corpus covers Catalan"
+    },
+    {
+     "pr": 1254,
+     "sha": "e5f19d679",
+     "title": "Playback: a retired PMS session gets its stopped timeline"
+    },
+    {
+     "pr": 1250,
+     "sha": "9cc53ed28",
+     "title": "Deps: Bump encoding_rs from 0.8.42 to 0.8.44 in /rust-modules in the rust-minor-patch group"
+    }
+   ],
+   "from": 168.0,
+   "id": "ci|host lint + type-checks",
+   "label": "CI: host lint + type-checks",
+   "since": "2026-11-06",
+   "threshold_pct": 20.0,
+   "to": 202
   },
   {
    "change_pct": 20.1,
@@ -967,6 +967,67 @@
    "since": "2026-11-06",
    "threshold_pct": 20.0,
    "to": 368
+  },
+  {
+   "change_pct": 20.1,
+   "commits": [
+    {
+     "pr": 1240,
+     "sha": "ab00d73b0",
+     "title": "HUD plugins: a cargo fuzz package over every package and registry parser"
+    },
+    {
+     "pr": 1241,
+     "sha": "951db621f",
+     "title": "HUD plugins: tools/hud-dev, and Play re-fetches a development-source HUD on the TV"
+    },
+    {
+     "pr": 1230,
+     "sha": "e1ea6e2ec",
+     "title": "Add Catalan localization"
+    },
+    {
+     "pr": 1243,
+     "sha": "8c6904d1b",
+     "title": "HUD registry: serve from huds.plxnative.com"
+    },
+    {
+     "pr": 1244,
+     "sha": "6d5089359",
+     "title": "Tests: the lint, screenshot and replay runs delete their temp trees"
+    },
+    {
+     "pr": 1247,
+     "sha": "43cdc8deb",
+     "title": "Settings: the built-in HUD is named Built-in"
+    },
+    {
+     "pr": 1252,
+     "sha": "02be3ead1",
+     "title": "Site: add three outlets to Featured in"
+    },
+    {
+     "pr": 1253,
+     "sha": "c01b5136a",
+     "title": "HUD previews: the long-title corpus covers Catalan"
+    },
+    {
+     "pr": 1254,
+     "sha": "e5f19d679",
+     "title": "Playback: a retired PMS session gets its stopped timeline"
+    },
+    {
+     "pr": 1250,
+     "sha": "9cc53ed28",
+     "title": "Deps: Bump encoding_rs from 0.8.42 to 0.8.44 in /rust-modules in the rust-minor-patch group"
+    }
+   ],
+   "from": 363.5,
+   "id": "ci|host unit tests (default features)",
+   "label": "CI: host unit tests (default features)",
+   "since": "2026-11-06",
+   "threshold_pct": 20.0,
+   "to": 436.5
   }
  ],
  "schema": 2,
@@ -981,7 +1042,7 @@
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
-   "now": 434.0
+   "now": 436.5
   },
   {
    "group": "ci",
@@ -1013,25 +1074,25 @@
    "group": "local",
    "id": "bench.leaf",
    "label": "Rebuild after editing plx_base",
-   "now": 189.5
+   "now": 210.0
   },
   {
    "group": "local",
    "id": "bench.tests",
    "label": "Unit suite",
-   "now": 161.4
+   "now": 155.7
   },
   {
    "group": "local",
    "id": "bench.ui",
    "label": "Rebuild after editing plx_ui",
-   "now": 84.1
+   "now": 93.3
   },
   {
    "group": "local",
    "id": "bench.screens",
    "label": "Rebuild after editing plx_screens",
-   "now": 50.8
+   "now": 50.4
   }
  ],
  "thresholds": {
