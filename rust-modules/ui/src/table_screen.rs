@@ -63,10 +63,6 @@ pub struct Header<'a> {
     /// [BACK] to close PlxNative"). Never elided: a screen that sets one owns a fit test for it
     /// against [`RouteLayout`]'s narrative width.
     pub hint: Option<KeyHint<'a>>,
-    /// Display-only landscape artwork after the narrative. It contributes no focus or hit stop.
-    pub preview: Option<super::widgets::Art<'a>>,
-    /// A cycle in the same display-only landscape slot; contributes no focus or hit stop.
-    pub preview_cycle: Option<&'a super::widgets::ArtCycle>,
     /// A loading read-out in the copy: accounted and sentinel-painted at the actual draw.
     pub pending_copy: Option<&'a str>,
     /// The copy as a sentence that FOLLOWS FOCUS (Settings v2): drawn by the cross-fade in the
@@ -75,12 +71,8 @@ pub struct Header<'a> {
     /// `copy` as before.
     pub follow: Option<&'a super::follow_copy::FollowCopy>,
     /// Display-only art in the picture slot ([`RouteLayout::picture_slot`]); no focus or hit stop.
-    ///
-    /// Why this exists beside [`preview`](Self::preview) / [`preview_cycle`](Self::preview_cycle):
-    /// those are the OLD landscape slot after the narrative (the HUD pages still draw into it, with
-    /// its own frame and size), and this is the v2 slot every Settings page moves to at its stage,
-    /// under the followed sentence at [`RouteLayout::picture_slot`]. Both stay until the last page
-    /// has moved.
+    /// The one slot for a page's picture: a poster fan, the Under posters tiles, a HUD's preview
+    /// ([`super::follow_copy::LandscapePicture`]).
     pub picture: Option<&'a dyn super::follow_copy::PictureSlot>,
 }
 
@@ -93,8 +85,6 @@ impl<'a> Header<'a> {
             copy,
             copy_size: theme::size::LABEL,
             hint: None,
-            preview: None,
-            preview_cycle: None,
             pending_copy: None,
             follow: None,
             picture: None,
@@ -115,18 +105,6 @@ impl<'a> Header<'a> {
 
     pub fn with_pending_copy(mut self, key: &'a str) -> Self {
         self.pending_copy = Some(key);
-        self
-    }
-
-    pub fn with_preview(mut self, art: super::widgets::Art<'a>) -> Self {
-        self.preview = Some(art);
-        self.preview_cycle = None;
-        self
-    }
-
-    /// The same display-only landscape slot, with a shared image cycle instead of static art.
-    pub fn with_preview_cycle(mut self, cycle: &'a super::widgets::ArtCycle) -> Self {
-        self.preview_cycle = Some(cycle);
         self
     }
 
@@ -157,7 +135,6 @@ impl<'a> Header<'a> {
         if let Some(picture) = self.picture {
             picture.draw(p, self.layout.picture_slot(), measure);
         }
-        let mut extra_end = copy_end;
         if let Some(hint) = &self.hint {
             // The copy's end, then the hint one MD under it: a two-item run from `copy_end`.
             let run = [Item::new(0.0), Item::new(KeyHint::height())];
@@ -167,20 +144,6 @@ impl<'a> Header<'a> {
             // The copy already stops short of the action band; the hint keeps the same margin.
             if top + KeyHint::height() <= self.layout.action.y - theme::space::XL {
                 hint.draw(p, self.layout.narrative.x, top + KeyHint::height() * 0.5, measure);
-                extra_end = top + KeyHint::height();
-            }
-        }
-        if self.preview.is_some() || self.preview_cycle.is_some() {
-            let top = extra_end + theme::space::XL;
-            let width = self.layout.narrative.w;
-            let height = (width * 9.0 / 16.0).min((self.layout.action.y - top).max(0.0));
-            if height > 0.0 {
-                let rect = Rect::new(self.layout.narrative.x, top, height * 16.0 / 9.0, height);
-                if let Some(cycle) = self.preview_cycle {
-                    cycle.draw(p, rect, theme::CARD_RING_RAD);
-                } else if let Some(art) = self.preview {
-                    super::widgets::card(p, rect, art, theme::CARD_RING_RAD, false, 1.0, 0.0);
-                }
             }
         }
     }

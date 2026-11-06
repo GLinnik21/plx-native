@@ -163,6 +163,17 @@ impl<Id, A, Dest> FormSection<Id, A, Dest> {
         }
         self
     }
+    /// Mark the item just declared UNUSABLE when `cond` holds: disabled exactly as
+    /// [`Self::disabled`] (focusable, never activated), but drawn in the [`Row::unusable`] state
+    /// instead of the plain dim - a row whose reason is its value, whose focus pill is the ghost
+    /// (Settings v2). Skips under the same rules as `disabled`.
+    pub fn unusable(mut self, cond: bool) -> Self {
+        if let Some(Slot::Item(b, row)) = self.slots.last_mut().filter(|_| cond && !self.skipped) {
+            b.disabled = true;
+            row.unusable = true;
+        }
+        self
+    }
     pub fn item_keyed_if(
         mut self,
         cond: bool,

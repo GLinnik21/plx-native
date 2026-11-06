@@ -82,6 +82,18 @@ pub struct Row {
     /// state, an action glyph is only decoration.
     pub licon: Option<crate::icons::Icon>,
     pub dim: bool, // render dimmer (unavailable / de-emphasised)
+    /// The row **cannot be used** and says why in its [`Row::value`] (a withdrawn HUD, a HUD that
+    /// does not fit the language). Unfocused it reads exactly as a [`Row::dim`] row; FOCUSED it
+    /// keeps that softness instead of taking the pressable look: the pill under it is a GHOST (the
+    /// faint [`theme::OVERLAY_FOCUS_PILL`], not the solid [`crate::ACCENT`] fill), its label reads at
+    /// [`theme::TEXT_SECONDARY`] and its read-out at [`theme::TEXT_TERTIARY`]. A plain `dim` row
+    /// under the solid pill turns near-black like a live one, so its label looks pressable (the
+    /// Settings v2 HUD boards 4.4 and 4.5).
+    ///
+    /// This is the one state for it, opt-in: a row that never calls [`Row::unusable`] draws exactly
+    /// as before. It states only how the row LOOKS; whether OK does anything stays the owner's
+    /// (`FormTable`'s `disabled`).
+    pub unusable: bool,
     /// A **non-selectable hairline** that groups the rows above it from the rows below (the item
     /// menu's navigation-vs-state divider). It occupies a global row index like any other row, but
     /// [`TableView::move_sel`] steps OVER it, [`TableView::hit_row`] refuses it, and
@@ -116,6 +128,7 @@ impl Row {
             ticon: None,
             licon: None,
             dim: false,
+            unusable: false,
             sep: false,
             destructive: false,
             note_lines: std::cell::Cell::new(1),
@@ -220,6 +233,11 @@ impl Row {
     }
     pub fn dim(mut self, v: bool) -> Self {
         self.dim = v;
+        self
+    }
+    /// Mark the row unusable - see [`Row::unusable`]. Its reason is the [`Row::value`].
+    pub fn unusable(mut self, v: bool) -> Self {
+        self.unusable = v;
         self
     }
     /// Mark the row's action destructive — see [`Row::destructive`].
@@ -1330,6 +1348,27 @@ impl TableView {
         ((self.hl_bot.pos.min(bot) - self.hl_top.pos.max(top)) / (bot - top)).clamp(0.0, 1.0)
     }
 
+    /// How much of the pill is the GHOST right now, 0..1: the share of the pill's travel that sits on
+    /// [`Row::unusable`] rows, by the very coverage rule the ink follows ([`Self::pill_cover`]), so
+    /// the fill and the ink can never disagree about which row the pill is on. The sum is clamped:
+    /// between two unusable rows the pill is ghost throughout (their two coverages add to one).
+    /// 0 for a table with no unusable row, which then pays no walk.
+    fn ghost_cover(&self) -> f32 {
+        if !self.list_focused || !self.sections.iter().any(|s| s.rows.iter().any(|r| r.unusable)) {
+            return 0.0;
+        }
+        let mut sum = 0.0f32;
+        self.walk(|cy, gi, _| {
+            if gi >= 0 {
+                let row = self.rows_at(gi);
+                if row.unusable {
+                    sum += self.pill_cover(cy, row.height_in(self.tall_row_h()));
+                }
+            }
+        });
+        sum.clamp(0.0, 1.0)
+    }
+
     /// How opaque ink whose top is at `ink_top` is drawn under the viewport's top edge `vis_top`:
     /// whole once it is [`TOP_FADE_H`] below it, gone as it reaches it. The top edge DISSOLVES a row
     /// rather than cutting it (rows scroll up under the crumb band); the scissor still clips the
@@ -1483,6 +1522,13 @@ impl TableView {
         )
     }
 
+    /// How much of the focus pill is the ghost right now ([`Row::unusable`]), for a screen's test that its rows wired
+    /// the state.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn ghost_cover_for_test(&self) -> f32 {
+        self.ghost_cover()
+    }
+
     /// The scroll spring's live position, in content coordinates.
     ///
     /// It was `#[cfg(test)]` — the tests are still its main reader, for the reason below — until a
@@ -1563,11 +1609,18 @@ impl TableView {
             // fades with its row's ink under the top edge (focus keeps a row of context above it,
             // so this only shows while the scroll is still catching up)
             let fade = Self::top_edge_alpha(py0 - PILL_INSET + ROW_INK_PAD, vis_top);
+            // solid under a usable row, the GHOST under an unusable one ([`Row::unusable`]), crossed
+            // by the same coverage rule the ink uses so a pill travelling between the two changes
+            // fill as it arrives; exactly `ACCENT` when no row opts in
+            let fill = match self.ghost_cover() {
+                g if g <= 0.0 => crate::ACCENT,
+                g => theme::cross(crate::ACCENT, theme::OVERLAY_FOCUS_PILL, g),
+            };
             self.group_painter(p.alpha(fade), self.section_of_row(self.sel)).rrect(
                 pill,
                 PILL_RAD,
                 PILL_RAD,
-                crate::ACCENT,
+                fill,
             );
         }
 
@@ -1737,7 +1790,12 @@ impl TableView {
                 c if c >= 1.0 => over,
                 c => theme::cross(rest, over, c),
             };
-            let base = on_pill(if row.dim { dimc } else { white }, ink);
+            // an unusable row keeps its soft ink under the pill (the ghost): secondary, not near-black
+            let base = if row.unusable {
+                on_pill(dimc, theme::TEXT_SECONDARY)
+            } else {
+                on_pill(if row.dim { dimc } else { white }, ink)
+            };
             let row_bg = on_pill(PANEL_BG, crate::ACCENT);
             let cyc = sy + h * 0.5; // row vertical center
 
@@ -1908,7 +1966,7 @@ impl TableView {
             // while the badges sat on the title's line: right-aligned and row-centred, a chip now
             // occupies the sub-line's band too, and an unbounded sub-line would run under it.
             if !row.detail.is_empty() {
-                let sub = on_pill(dimc, theme::scrim_black(0.6));
+                let sub = if row.unusable { dimc } else { on_pill(dimc, theme::scrim_black(0.6)) };
                 let detail = plx_gfx::text::elide_by(&row.detail, text_w, false, |t| {
                     measure.width_str(t, theme::size::CAPTION, false)
                 });
@@ -1994,6 +2052,10 @@ impl TableView {
 /// its floor) still announced itself at the trailing edge. Over the focused pill a dim row's
 /// read-out takes the quiet rung.
 fn row_value_ink(row: &Row, focused: bool) -> [f32; 4] {
+    // an unusable row's reason reads the same under the ghost pill as off it ([`Row::unusable`])
+    if row.unusable {
+        return theme::TEXT_TERTIARY;
+    }
     match (focused, row.dim, row.value_dim) {
         (true, false, false) => theme::ROW_VALUE_INK_ON,
         (true, _, _) => theme::ROW_VALUE_INK_ON_DIM,
@@ -2740,6 +2802,105 @@ mod tests {
         }
         assert!(crossed, "the premise: some frame has both rows part-covered");
         assert_eq!((cover_of(&t, 1), cover_of(&t, 0)), (1.0, 0.0), "settled: the new row is inked, the old is released");
+    }
+
+    // ---- the ghost pill of an unusable row (Settings v2 HUD boards 4.4 / 4.5) --------------------
+
+    /// What a frame of `t` drew: the pill's effective alpha (the one tag-2 fill as wide as the pill) and the text
+    /// runs by their words.
+    fn ghost_frame(t: &TableView) -> (Option<f32>, Vec<crate::draw_census::Run>) {
+        let frame = Rect::new(0.0, 0.0, 900.0, 400.0);
+        let mut runs = Vec::new();
+        let inks = crate::draw_census::capture_inks(|| {
+            runs = crate::draw_census::capture_runs(|| t.draw(crate::Painter::recording(), frame, &crate::fixture::FixtureMeasure));
+        });
+        let pill = inks.into_iter().find(|(tag, r, _)| *tag == 2 && (r.w - (frame.w - 2.0 * SIDE)).abs() < 0.5).map(|(_, _, a)| a);
+        (pill, runs)
+    }
+
+    fn ink_of(runs: &[crate::draw_census::Run], text: &str) -> [f32; 4] {
+        runs.iter().find(|r| r.text == text).unwrap_or_else(|| panic!("{text:?} not drawn: {runs:?}")).ink
+    }
+
+    /// Rows `Live` and `Gone` (unusable, its reason as the value) with focus on row `sel`.
+    fn ghost_rows(sel: i32, unusable: bool) -> TableView {
+        let mut t = TableView::new();
+        let gone = Row::new("Gone").value("Withdrawn").unusable(unusable);
+        t.set_sections(vec![Section::new("S").row(Row::new("Live").value("On")).row(gone)], sel, false);
+        t
+    }
+
+    /// **An unusable row under the focus pill is a GHOST**, not the solid pill with near-black ink: the pill is the
+    /// faint overlay, the label reads at the secondary ink and the reason at the tertiary. The same row off the pill
+    /// is the dim row it always was, and a usable row under the solid pill is unchanged.
+    #[test]
+    fn an_unusable_row_under_the_pill_draws_a_ghost_and_not_the_solid_focus() {
+        let _serial = plx_base::testlock::serial();
+        let (solid_pill, solid) = ghost_frame(&ghost_rows(0, true));
+        assert_eq!(solid_pill, Some(crate::ACCENT[3]), "a usable row is under the solid pill");
+        assert_eq!(ink_of(&solid, "Live"), crate::ACCENT_INK, "and its label is the pill's near-black ink");
+        assert_eq!(ink_of(&solid, "Gone"), theme::TEXT_TERTIARY, "the unusable row off the pill is the dim row");
+        assert_eq!(ink_of(&solid, "Withdrawn"), theme::TEXT_TERTIARY);
+
+        let (ghost_pill, ghost) = ghost_frame(&ghost_rows(1, true));
+        // the ghost alpha is a lerp that lands within an ulp of the constant, not on it
+        assert!((ghost_pill.unwrap() - theme::OVERLAY_FOCUS_PILL[3]).abs() < 1e-5, "the pill under an unusable row is the ghost: {ghost_pill:?}");
+        assert!(ghost_pill < solid_pill);
+        assert_eq!(ink_of(&ghost, "Gone"), theme::TEXT_SECONDARY, "its label stays light on the ghost pill");
+        assert_eq!(ink_of(&ghost, "Withdrawn"), theme::TEXT_TERTIARY, "and its reason stays quiet");
+        assert_ne!(ink_of(&ghost, "Gone"), crate::ACCENT_INK, "not the solid pill's near-black, which reads as pressable");
+
+        // the same row, not unusable (a plain dim one), is under the solid pill with the near-black ink
+        let mut dimmed = ghost_rows(1, false);
+        dimmed.sections[0].rows[1].dim = true;
+        let (dim_pill, dim) = ghost_frame(&dimmed);
+        assert_eq!(dim_pill, Some(crate::ACCENT[3]));
+        assert_eq!(ink_of(&dim, "Gone"), crate::ACCENT_INK);
+    }
+
+    /// **A table with no unusable row draws exactly what it drew**: the pill is `ACCENT` itself (no crossing), every
+    /// ink is the one it always was, and the walk that finds the ghost is skipped.
+    #[test]
+    fn a_table_that_never_opts_in_draws_as_before() {
+        let _serial = plx_base::testlock::serial();
+        let t = ghost_rows(1, false);
+        assert_eq!(t.ghost_cover(), 0.0);
+        let (pill, runs) = ghost_frame(&t);
+        assert_eq!(pill, Some(crate::ACCENT[3]));
+        assert_eq!(ink_of(&runs, "Gone"), crate::ACCENT_INK);
+        assert_eq!(ink_of(&runs, "Withdrawn"), theme::ROW_VALUE_INK_ON, "a read-out over the solid pill is the quiet rung of its ink");
+        assert_eq!(ink_of(&runs, "Live"), theme::TEXT_PRIMARY);
+    }
+
+    /// **The pill changes fill as it ARRIVES**, by the coverage rule the ink uses: solid while it is still on the live
+    /// row, ghost once it has settled on the unusable one, and in between a monotonic crossing.
+    #[test]
+    fn the_pill_crosses_to_the_ghost_as_it_arrives_on_an_unusable_row() {
+        let _serial = plx_base::testlock::serial();
+        let mut t = ghost_rows(0, true);
+        assert_eq!(t.ghost_cover(), 0.0, "settled on the live row: solid");
+        t.move_sel(1);
+        t.update(1.0 / 60.0, 600.0);
+        assert_eq!(t.ghost_cover(), 0.0, "one frame in the pill has not reached the unusable row");
+        let mut prev = 0.0f32;
+        let mut between = false;
+        for _ in 0..240 {
+            t.update(1.0 / 60.0, 600.0);
+            let g = t.ghost_cover();
+            assert!(g + 1e-4 >= prev, "the ghost only grows as the pill arrives: {prev} -> {g}");
+            between |= g > 0.0 && g < 1.0;
+            prev = g;
+        }
+        assert!(between, "the premise: some frame is part way");
+        assert_eq!(t.ghost_cover(), 1.0, "settled on the unusable row: all ghost");
+        t.move_sel(-1);
+        for _ in 0..240 {
+            t.update(1.0 / 60.0, 600.0);
+        }
+        assert_eq!(t.ghost_cover(), 0.0, "and back to solid");
+        t.list_focused = false;
+        t.move_sel(1);
+        assert_eq!(t.ghost_cover(), 0.0, "a table that holds no focus draws no pill, so no ghost");
     }
 
     /// A table that does not hold focus draws no pill, so no row is inked for one.

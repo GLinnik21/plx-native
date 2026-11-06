@@ -1516,6 +1516,60 @@
     "value": "Couldn't load HUDs. Try again later.",
     "description": "Gallery index-refresh failure; does not claim the device is disconnected and does not disable explicit package downloads."
   },
+  "settings.hud.remove_named": {
+    "value": "Remove {name}",
+    "description": "Settings > Playback > Player HUD: the label of an installed package's removal row; {name} is the package's own name (draft copy).",
+    "args": {"name": "str"}
+  },
+  "settings.hud.remove_detail": {
+    "value": "Deletes this HUD from the television. If it was in use, the built-in HUD is used instead.",
+    "description": "Settings > Playback > Player HUD: the sentence beside a removal row while it has focus (draft copy)."
+  },
+  "settings.hud.withdrawn_detail": {
+    "value": "The author withdrew this HUD, so it can't be used. Choose another HUD, or remove this one.",
+    "description": "Settings > Playback > Player HUD: beside a withdrawn HUD's row while it has focus: why it cannot be used and what to do."
+  },
+  "settings.hud.unfit_detail": {
+    "value": "This HUD doesn't fit in {language}, so the built-in HUD is shown instead. Choose another HUD, or switch to a language it fits.",
+    "description": "Settings > Playback > Player HUD: beside a HUD that does not fit the current language while its row has focus. {language} is the language's own name.",
+    "args": {"language": "str"}
+  },
+  "settings.hud.newer_detail": {
+    "value": "This HUD was made for a newer PlxNative. Update the app to use it, or choose another HUD.",
+    "description": "Settings > Playback > Player HUD: beside a HUD made for a newer app while its row has focus."
+  },
+  "settings.hud.older_detail": {
+    "value": "This HUD uses a format this version no longer reads. Look for an updated version of it, or choose another HUD.",
+    "description": "Settings > Playback > Player HUD: beside a HUD in a format this version no longer reads while its row has focus."
+  },
+  "settings.hud.app_range_detail": {
+    "value": "The author says this HUD doesn't run on this version of PlxNative. Look for a version made for it, or choose another HUD.",
+    "description": "Settings > Playback > Player HUD: beside a HUD that says it does not run on this app version while its row has focus."
+  },
+  "settings.hud.file_detail": {
+    "value": "This file can't be installed. Replace it in the HUD folder with a valid HUD package, or delete it.",
+    "description": "Settings > Playback > Player HUD: beside a file in the HUD folder that cannot be installed while its row has focus."
+  },
+  "settings.hud.preview_detail": {
+    "value": "See how this HUD looks while you watch.",
+    "description": "Player HUD gallery: the sentence beside the Preview row while it has focus."
+  },
+  "settings.hud.use_detail": {
+    "value": "Use this HUD for the playback controls.",
+    "description": "Player HUD gallery: the sentence beside the Use HUD row while it has focus."
+  },
+  "settings.hud.install_detail": {
+    "value": "Download this HUD to the television. Your current HUD stays selected.",
+    "description": "Player HUD gallery: the sentence beside the Install row while it has focus."
+  },
+  "settings.hud.update_detail": {
+    "value": "Download the newer version of this HUD. It replaces the one installed.",
+    "description": "Player HUD gallery: the sentence beside the Update row while it has focus."
+  },
+  "settings.hud.about_detail": {
+    "value": "Who made this HUD, its version, license and download size.",
+    "description": "Player HUD gallery: the sentence beside the About this HUD row while it has focus."
+  },
   "settings.playback.intro_skip": {
     "value": "Skip intros",
     "description": "Playback marker skipping preference or cancellation action."
