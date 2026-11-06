@@ -202,6 +202,8 @@ pub const PICTURE_TOP: f32 = 440.0;
 /// keeps [`TitleStyle::Hero`].
 pub const PAGE_TITLE_SIZE: std::os::raw::c_int = theme::size::DISPLAY;
 const PAGE_TITLE_LEADING: f32 = PAGE_TITLE_SIZE as f32 * 1.05;
+/// The Page title's letter-spacing, the board's `-.02em`.
+const PAGE_TITLE_TRACKING_EM: f32 = -0.02;
 
 /// **How a route's narrative title sets**, chosen once on the [`RouteLayout`] so tabs, rows,
 /// focus and paint all read the same flow.
@@ -233,6 +235,14 @@ impl TitleStyle {
         match self {
             Self::Hero => TITLE_LEADING,
             Self::Page => PAGE_TITLE_LEADING,
+        }
+    }
+
+    /// The title's letter-spacing in px: the Page title's board tracking (`-.02em`), none for Hero.
+    pub const fn tracking(self) -> f32 {
+        match self {
+            Self::Hero => 0.0,
+            Self::Page => PAGE_TITLE_TRACKING_EM * PAGE_TITLE_SIZE as f32,
         }
     }
 }
@@ -1102,6 +1112,29 @@ impl RouteLayout {
             .bold()
             .break_long_words()
             .leading(style.leading())
+            .tracking(style.tracking())
+    }
+
+    /// **Where a Page layout sets its title's glyphs inside the title's box.** `TextView` anchors
+    /// the CAP TOP on the y it is given; a Settings board specifies the title as a CSS box (`top`
+    /// 142, `line-height` 1.05), which sets the cap top the half-leading plus the ascent above it
+    /// below the box top ([`plx_gfx::text::css_cap_drop`], 7 px at 48/1.05). Hero titles are
+    /// cap-anchored, as they always were: no drop.
+    pub fn title_cap_drop(self, measure: &dyn Measure) -> f32 {
+        self.cap_drop(self.title_style.size(), self.title_style.leading(), measure)
+    }
+
+    /// The same for the copy under the title (`size`, [`theme::space::XS`] over it as the pitch,
+    /// the board's `26/34`): a Page layout's sentence sits where the board's CSS box puts it.
+    pub fn copy_cap_drop(self, size: std::os::raw::c_int, measure: &dyn Measure) -> f32 {
+        self.cap_drop(size, size as f32 + theme::space::XS, measure)
+    }
+
+    fn cap_drop(self, size: std::os::raw::c_int, leading: f32, measure: &dyn Measure) -> f32 {
+        match self.title_style {
+            TitleStyle::Hero => 0.0,
+            TitleStyle::Page => plx_gfx::text::css_cap_drop(size, leading, measure.cap_h(size)),
+        }
     }
 
     /// Draw a measured crumb→title→copy flow.  Each block begins after the previous one's actual
@@ -1137,9 +1170,9 @@ impl RouteLayout {
         if let (Some(back_to), Some(crumb)) = (back_to, flow.crumb) {
             self.draw_crumb(p, crumb.y, back_to, measure);
         }
-        title.draw(p, Rect::new(self.narrative.x, flow.title.y, self.narrative.w, flow.title.h));
+        title.draw(p, Rect::new(self.narrative.x, flow.title.y + self.title_cap_drop(measure), self.narrative.w, flow.title.h));
 
-        let copy_top = flow.copy_top;
+        let copy_top = flow.copy_top + self.copy_cap_drop(copy_size, measure);
         let copy_bottom = self.action.y - theme::space::XL;
         let (copy_p, copy_ink) = pending.map_or((p, theme::TEXT_READING), |key|
             crate::placeholder::ink(p, crate::placeholder::Reason::WorkingReadout, key, theme::TEXT_READING));
@@ -1989,6 +2022,27 @@ mod tests {
         assert_eq!(page.narrative_flow(true, 50.0).copy_top, page.narrative_flow(false, 50.0).copy_top);
         assert!((page.narrative_flow(false, 50.0).copy_top - (page.narrative.y + 50.0 + theme::space::MD)).abs() < 0.01);
         assert!(page.document(true).y >= page.narrative.y);
+    }
+
+    /// A Page title is the board's CSS box: tracked `-.02em` and set its half-leading plus ascent
+    /// under the box top; a Hero title is tracked by nothing and cap-anchored on the box top.
+    #[test]
+    fn a_page_title_is_tracked_and_dropped_into_its_css_box_and_a_hero_title_is_neither() {
+        struct M;
+        impl Measure for M {
+            fn width(&self, text: &std::ffi::CStr, size: i32, _bold: bool) -> f32 {
+                text.to_string_lossy().chars().count() as f32 * size as f32 * 0.6
+            }
+            fn cap_h(&self, size: i32) -> f32 { size as f32 * 0.727 }
+            fn line_h(&self, size: i32) -> f32 { size as f32 * 1.2 }
+        }
+        assert_eq!(TitleStyle::Hero.tracking(), 0.0);
+        assert!((TitleStyle::Page.tracking() - (-0.96)).abs() < 1e-4);
+        let (hero, page) = (RouteLayout::screen(), RouteLayout::settings_page());
+        assert_eq!(hero.title_cap_drop(&M), 0.0);
+        assert_eq!(hero.copy_cap_drop(theme::size::LABEL, &M), 0.0);
+        assert!((page.title_cap_drop(&M) - 7.1).abs() < 0.2, "{}", page.title_cap_drop(&M));
+        assert!((page.copy_cap_drop(theme::size::LABEL, &M) - 7.1).abs() < 0.2, "{}", page.copy_cap_drop(theme::size::LABEL, &M));
     }
 
     /// The picture slot is the board's: 660 wide at y 440, ending on the safe area's floor, under

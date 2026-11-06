@@ -139,7 +139,10 @@ impl<'a> Header<'a> {
         let copy_end = if let Some(follow) = self.follow {
             // the title (and crumb) alone, then the followed sentence in the fixed frame under it
             self.layout.draw_narrative_pending(p, self.crumb, self.title, "", self.copy_size, measure, None);
-            let frame = self.layout.narrative_copy_frame(self.crumb.is_some(), self.title, self.layout.action.y, measure);
+            let mut frame = self.layout.narrative_copy_frame(self.crumb.is_some(), self.title, self.layout.action.y, measure);
+            let drop = self.layout.copy_cap_drop(self.copy_size, measure);
+            frame.y += drop;
+            frame.h = (frame.h - drop).max(0.0);
             follow.draw(p, frame, self.copy_size);
             frame.y
         } else {
