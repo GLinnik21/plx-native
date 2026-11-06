@@ -869,6 +869,16 @@ pub fn set_url(ps: &mut PlaybackSession, s: &str) {
 pub fn clear_url(ps: &mut PlaybackSession) {
     ps.url.clear()
 }
+/// A full stop retires the logical playback after capturing its final report. A late timeline
+/// reply can still name that old playback, but can no longer match the foreground session.
+pub(crate) fn retire_stopped_playback(ps: &mut PlaybackSession) {
+    clear_url(ps);
+    ps.sess.clear();
+    if ps.engine_failure == Some(crate::player::RuntimeFailure::ServerStopped) {
+        ps.engine_failure = None;
+    }
+}
+
 pub fn transcode_session(ps: &PlaybackSession) -> String {
     ps.tsession.clone()
 }
@@ -1265,6 +1275,7 @@ struct TimelineSnapshot {
     time_ms: i64,
     duration_ms: i64,
     session: String,
+    playback: String,
     play_queue_id: String,
     play_queue_item_id: String,
     audio_stream_id: i64,
@@ -5438,8 +5449,8 @@ pub fn rollback_original_recovery(ps: &mut PlaybackSession) -> Option<OriginalRo
 /// somebody's server.
 pub fn drop_original_recovery(ps: &PlaybackSession) {
     if let Some(pending) = take_pending_original() {
-        // The only caller is real teardown, immediately after `scrobble_stop` took the active
-        // identity. During a direct handoff that identity is the trial's own session: a live
+        // The caller owns the active session's retirement. During a direct handoff that
+        // identity is the trial's own session: a live
         // hls encoder's id (== `pending.encoder`, so scrobble owns its one full stop/resource
         // close) or, from a remux or burn, a fresh id recorded as `replacement_encoder`. During a
         // remux handoff it is the new replacement. Either way, when `replacement_encoder` is set,
@@ -5449,6 +5460,18 @@ pub fn drop_original_recovery(ps: &PlaybackSession) {
             retire_replaced_encoder(ps, pending.encoder);
         }
     }
+}
+
+/// A termination can name the prior encoder if ABR switched while the report was in flight.
+/// Keep the current identity for the final timeline, but stop its producer now.
+pub(crate) fn retire_server_stopped_resources(ps: &PlaybackSession, wire_session: &str) {
+    let active = PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()).active.id.clone();
+    if active != wire_session && ps.auto_fixture_base.is_empty() {
+        if let Some(client) = cur_client(ps) {
+            stop_encoder_session(client, active);
+        }
+    }
+    drop_original_recovery(ps);
 }
 
 fn retire_replaced_encoder(ps: &PlaybackSession, encoder: String) {
@@ -5521,7 +5544,11 @@ pub(crate) fn engine_failure(ps: &PlaybackSession) -> Option<crate::player::Runt
 pub(crate) fn note_engine_failure(ps: &mut PlaybackSession, cause: crate::player::RuntimeFailure, resume_ns: i64) {
     { let s = &mut *ps; {
         s.engine_failure = Some(cause);
-        s.requested_resume_ns = s.requested_resume_ns.max(resume_ns.max(0));
+        s.requested_resume_ns = if cause == crate::player::RuntimeFailure::ServerStopped {
+            resume_ns.max(0)
+        } else {
+            s.requested_resume_ns.max(resume_ns.max(0))
+        };
     } }
 }
 /// The refusal's own sentence for the read-out to quote — `None` when the server did not refuse,
@@ -5723,7 +5750,11 @@ pub fn cur_part_id(ps: &PlaybackSession) -> i64 {
 }
 /// The stable app-owned playback generation (and the first encoder's PMS session id).
 pub fn sess(ps: &PlaybackSession) -> String {
-    ps.sess.clone()
+    playback_session_id(ps).to_owned()
+}
+
+pub(crate) fn playback_session_id(ps: &PlaybackSession) -> &str {
+    &ps.sess
 }
 pub fn pq_id(ps: &PlaybackSession) -> String {
     ps.pq_id.clone()
@@ -11842,6 +11873,7 @@ fn timeline_snapshot(
         time_ms,
         duration_ms,
         session,
+        playback: projection.logical_session.clone(),
         play_queue_id: projection.play_queue_id.clone(),
         play_queue_item_id: projection.play_queue_item_id.clone(),
         audio_stream_id: projection.audio_stream_id,
@@ -11875,8 +11907,8 @@ fn note_reported_session(sid: ServerId, rating_key: &str, session: &str) {
 
 /// Take the id item `rating_key` of server `sid` last reported under, to compare with the id the
 /// final `stopped` goes out under. Called with the effect lane held and after the reporter's last
-/// POST ([`ScrobbleWork::run`], or [`scrobble_stop`] when it has no worker). The record is consumed
-/// either way: this playback is over, and another item's entry is stale.
+/// POST ([`ScrobbleWork::run`], or [`scrobble_stop`] when it has no worker). A reporter that
+/// has successfully retired its server-stopped session also consumes the record here.
 fn take_reported_session(sid: ServerId, rating_key: &str) -> Option<String> {
     let mut control = PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner());
     control
@@ -11896,7 +11928,8 @@ fn take_reported_session(sid: ServerId, rating_key: &str) -> Option<String> {
 /// commit, a seek's retranscode, a fallback replaced the encoder in between), the previous id is
 /// first sent a `stopped` with `continuing=1` at this report's position
 /// ([`retired_report_session`]), then this report goes out and its id is recorded
-/// ([`ReportedTimeline`]). Both POSTs sit inside the one `TIMELINE_EFFECT` hold, in that order.
+/// ([`ReportedTimeline`]). On termination the reporter publishes the stop, retires its row,
+/// and exits. All POSTs and their record updates are ordered inside one `TIMELINE_EFFECT` hold.
 pub fn report_timeline(
     lease: &TimelineLease,
     state: plx_plex::plex::TimelineState,
@@ -11911,6 +11944,9 @@ pub fn report_timeline(
     let Some(report) = timeline_snapshot(lease, state, t_ms, d_ms) else {
         return false;
     };
+    if crate::player::server_stop_for(&report.playback) {
+        return false;
+    }
     let c = match plx_plex::plex::client_for(report.sid) {
         Some(c) => c,
         None => return true,
@@ -11927,8 +11963,22 @@ pub fn report_timeline(
             ));
         }
     }
-    let ok = c.timeline(&report.wire(&report.session, report.state, false));
+    let answer = c.timeline_answer(&report.wire(&report.session, report.state, false));
+    let ok = answer.taken;
     note_reported_session(report.sid, &report.rating_key, &report.session);
+    if let Some(stop) = answer.stop {
+        // Playback ends as soon as we know. Dashboard cleanup can wait on the network.
+        crate::player::note_server_stop(&report.playback, &report.session, &stop.reason, report.time_ms);
+        plx_base::eventlog::log(&format!(
+            "timeline: the server ended this session rk={} code={}",
+            report.rating_key, stop.code,
+        ));
+        if c.timeline(&report.wire(&report.session, plx_plex::plex::TimelineState::Stopped, true)) {
+            // The effect lane orders this retirement with a reload's reporter and the final stop.
+            drop(take_reported_session(report.sid, &report.rating_key));
+        }
+        return false;
+    }
     // FAILURES ONLY. The reporter thread logs `timeline <state> t=…s/…s` for every tick whichever
     // way the POST went (`player::threads`), so a report the server never took looks exactly like
     // one it did — for the whole length of a film, ten seconds at a time. The success half is
