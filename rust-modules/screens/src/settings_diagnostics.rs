@@ -64,7 +64,8 @@ pub(super) fn root_value(status: Status) -> &'static str {
 
 pub(super) struct DiagnosticsPage {
     entry: EntryId,
-    form: FormTable<DiagId, DiagAction, SettingsPage>,
+    /// `pub(super)` for the fit tests, which grade the table [`Self::at`] builds.
+    pub(super) form: FormTable<DiagId, DiagAction, SettingsPage>,
     state: DiagState,
 }
 
@@ -84,10 +85,16 @@ impl LogicalState for DiagState {
 
 impl DiagnosticsPage {
     pub(super) fn new(entry: EntryId) -> Self {
+        Self::at(entry, Status::Off)
+    }
+
+    /// The page as it stands once the runner has answered `status`: the table the fit tests grade
+    /// in every status, the one a player sees.
+    pub(super) fn at(entry: EntryId, status: Status) -> Self {
         let mut page = Self {
             entry,
             form: FormTable::new(super::super::registry::BAND),
-            state: DiagState { sel: DiagId::Trace.key(), status: Status::Off },
+            state: DiagState { sel: DiagId::Trace.key(), status },
         };
         page.rebuild();
         page

@@ -24,7 +24,7 @@
     "description": "Row label on the Under posters page that opens the details picker, and that picker's page title. Its right side reads the chosen line, e.g. Year · Length. One short word."
   },
   "under_posters.details_detail": {
-    "value": "One line, worded for a movie or a TV show.",
+    "value": "One line, worded for a movie or a show.",
     "description": "Detail line under the Details row on the Under posters page. One short sentence."
   },
   "under_posters.details_copy": {

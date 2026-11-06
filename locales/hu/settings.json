@@ -212,7 +212,7 @@
   "settings.audio.foreign.short": "Ha a hang nem a felirat nyelvén szól",
   "settings.audio.always": "Mindig",
   "settings.audio.prefer_regular": "Nem kényszerített feliratok előnyben",
-  "settings.audio.prefer_regular.short": "Nem kényszerített előnyben",
+  "settings.audio.prefer_regular.short": "Nem kényszerítettek",
   "settings.audio.prefer_forced": "Kényszerített feliratok előnyben",
   "settings.audio.prefer_forced.short": "Kényszerített előnyben",
   "settings.audio.only_forced": "Csak kényszerített feliratok",

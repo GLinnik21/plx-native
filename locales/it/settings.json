@@ -226,7 +226,7 @@
   "settings.audio.no_preference": "Nessuna preferenza",
   "settings.audio.not_set": "Non impostato",
   "settings.playback.overridden": "Direct Play forzato: qualità Originale.",
-  "settings.audio.selection_off": "Scelta automatica disattivata. Scegli una lingua per attivarla.",
+  "settings.audio.selection_off": "Scelta automatica spenta. Scegli una lingua per attivarla.",
   "settings.audio.retry": "Riprova",
   "settings.audio.retry_detail": "Ripeti la richiesta all'account.",
   "settings.audio.sign_in_again": "Accedi nuovamente a questo profilo Plex per modificarne le preferenze dell'account.",

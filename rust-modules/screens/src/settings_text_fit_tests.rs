@@ -21,6 +21,12 @@ fn overflowing(page: &str, table: &TableView, out: &mut Vec<String>) {
     out.extend(table.app_fit_failures(frame_w, page));
 }
 
+/// Every status the playback trace can be in; the Diagnostics Export row's value is `trace_label` of it.
+const ALL_TRACE_STATUSES: [plx_platform::playback_trace::Status; 7] = {
+    use plx_platform::playback_trace::Status::*;
+    [Off, Recording, Saved, Exported, Saving, Unavailable, Failed]
+};
+
 /// The baseline `RootInputs` each variant below changes one field of (a sum over fields, not a
 /// product).
 fn base_root_inputs() -> RootInputs {
@@ -37,6 +43,7 @@ fn base_root_inputs() -> RootInputs {
 fn overflowing_root(tag: &str, inputs: &RootInputs, out: &mut Vec<String>) {
     let mut form = FormTable::<RootId, Action, SettingsPage>::new(super::super::registry::BAND);
     form.table.compact = false;
+    form.table.board_metrics(true); // as `RootPage::rebuild` draws it
     form.set(root_form(inputs), None);
     overflowing(tag, &form.table, out);
 }
@@ -50,12 +57,11 @@ fn every_settings_row_fits_its_column_in_every_language() {
         let tag = language.tag();
         overflowing(&format!("{tag} root (signed out)"), &RootPage::new(EntryId(0), test_support::cx(None).views.directory).form.table, &mut out);
         overflowing(&format!("{tag} language"), &LanguagePage::new(EntryId(0)).form.table, &mut out);
-        for status in [plx_platform::playback_trace::Status::Off, plx_platform::playback_trace::Status::Recording,
-            plx_platform::playback_trace::Status::Saved, plx_platform::playback_trace::Status::Failed] {
-            let mut diagnostics = FormTable::<_, _, SettingsPage>::new(super::super::registry::BAND);
-            diagnostics.table.compact = false;
-            diagnostics.set(diagnostics::diagnostics_form(status), None);
-            overflowing(&format!("{tag} diagnostics page {status:?}"), &diagnostics.table, &mut out);
+        // The Diagnostics page's Export row reads `trace_label(status)`: every status, through the
+        // page's own constructor (the table it draws), not a table of the test's own.
+        for status in ALL_TRACE_STATUSES {
+            let page = diagnostics::DiagnosticsPage::at(EntryId(0), status);
+            overflowing(&format!("{tag} diagnostics page {status:?}"), &page.form.table, &mut out);
         }
 
         overflowing_root(&format!("{tag} root (signed in)"), &base_root_inputs(), &mut out);

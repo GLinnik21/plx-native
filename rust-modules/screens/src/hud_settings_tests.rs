@@ -360,6 +360,7 @@ fn every_row_fits_its_column_in_every_language() {
         every.drops.push(drop_file("ok.plxhud", 40, Ok(())));
         let mut form: FormTable<HudId, HudAction, SettingsPage> = FormTable::new(BAND);
         form.table.compact = false;
+        form.table.board_metrics(true); // as `hud_settings.rs` draws it
         form.set(hud_form(&every, None), None);
         for e in form.table.app_fit_failures(RouteLayout::screen().sectioned_table().w, language.tag()) {
             out.push(e);
@@ -371,6 +372,7 @@ fn every_row_fits_its_column_in_every_language() {
             busy.fetching = fetching;
             let mut form: FormTable<HudId, HudAction, SettingsPage> = FormTable::new(BAND);
             form.table.compact = false;
+            form.table.board_metrics(true);
             let draft = draft.map(|text| TextBuffer::new(text.to_owned(), text.len()));
             form.set(hud_form(&busy, draft.as_ref()), None);
             out.extend(form.table.app_fit_failures(RouteLayout::screen().sectioned_table().w, language.tag()));

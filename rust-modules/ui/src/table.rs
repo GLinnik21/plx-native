@@ -1085,7 +1085,9 @@ impl TableView {
         for section in &self.sections {
             if !section.header.is_empty() {
                 let header_text = section.header.to_uppercase();
-                let header_nat = measure.width_str(&header_text, theme::size::CAPTION, false);
+                // As the draw elides it: a board table tracks its caps, and the tracking is width too.
+                let header_nat = measure.width_str(&header_text, theme::size::CAPTION, false)
+                    + plx_gfx::text::tracking_extra(&header_text, self.header_tracking());
                 let (header_w, accessory_w) = Self::header_columns(section, frame_w, measure, headroom);
                 if header_w + FIT_EPS < header_nat / headroom {
                     out.push(FitIssue { role: FitRole::Header, origin: section.header_origin, text: header_text, natural: header_nat, budget: header_w });
@@ -2327,6 +2329,30 @@ mod tests {
         let natural = M.width_str(LONG_VALUE, theme::size::LABEL, true);
         assert!(cols.value_w < natural, "the premise: the long value does not fit beside its label");
         assert!(cols.value_w > 0.0, "a value keeps a visible slot");
+    }
+
+    /// `fit_report` grades a board table's section header at its tracked width, the width the
+    /// draw elides against.
+    #[test]
+    fn fit_report_measures_a_board_header_tracked_as_the_draw_elides_it() {
+        use plx_base::fontcov::advances::ShippedMeasure as M;
+        use plx_machine::machine::Measure;
+        let header = "Video and playback settings";
+        let upper = header.to_uppercase();
+        let plain = M.width_str(&upper, theme::size::CAPTION, false);
+        let extra = plx_gfx::text::tracking_extra(&upper, BOARD_CAPS_TRACK_EM * theme::size::CAPTION as f32);
+        assert!(extra > 4.0, "the board tracks its caps ({extra}px for this header)");
+        // a frame whose column holds the header untracked, and not tracked
+        let frame_w = 2.0 * CONTENT_X + plain + extra * 0.5;
+        let flagged = |board: bool| {
+            let mut table = TableView::new();
+            table.compact = false;
+            table.board_metrics(board);
+            table.set_sections(vec![Section::new(header).row(Row::new("Row"))], 0, false);
+            table.fit_report(frame_w, &M, 1.0).iter().any(|i| i.role == FitRole::Header)
+        };
+        assert!(flagged(true), "a board header that only fits untracked would end in an ellipsis on the television");
+        assert!(!flagged(false), "a plain table's header is untracked and fits");
     }
 
     /// `fit_report` does not flag a short value that fits, and still flags one that does not.

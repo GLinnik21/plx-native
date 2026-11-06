@@ -31,6 +31,7 @@ fn audio(prefs: Option<&AudioPreferences>) -> FieldListInputs<'_> {
 fn table_of(section: Section) -> TableView {
     let mut table = TableView::new();
     table.compact = false;
+    table.board_metrics(true); // the Settings pages' table, as `preferences.rs` draws it
     table.set_sections(vec![section], 0, false);
     table
 }
@@ -41,6 +42,7 @@ fn table_of(section: Section) -> TableView {
 fn check_field_section(tag: &str, inputs: &FieldListInputs<'_>, out: &mut Vec<String>) {
     let mut form: FormTable<RowId, Action, SettingsPage> = FormTable::new(BAND);
     form.table.compact = false;
+    form.table.board_metrics(true); // as `preferences.rs` draws it
     form.set(field_form(inputs), None);
     let ui_language = tag.split_whitespace().next().unwrap_or(tag);
     for e in form.table.app_fit_failures(frame_w(), tag) {

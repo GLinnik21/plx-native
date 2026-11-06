@@ -190,7 +190,7 @@
     "many": "{count} секунд",
     "other": "{count} секунды"
   },
-  "settings.audio.language": "Предпочитаемый язык звука",
+  "settings.audio.language": "Основной язык звука",
   "settings.audio.subtitles": "Субтитры",
   "settings.audio.subtitle_language": "Язык субтитров",
   "settings.audio.forced_subtitles": "Принудительные",

@@ -486,14 +486,17 @@ fn every_under_posters_string_fits_in_every_language() {
         for value in every_value() {
             let mut page = FormTable::<UpId, UpAction, SettingsPage>::new(crate::registry::BAND);
             page.table.compact = false;
+            page.table.board_metrics(true); // as the page draws it
             page.set(under_posters_form(value), None);
             out.extend(page.table.app_fit_failures(layout.sectioned_table().w, &format!("{tag} under posters {value:?}")));
             let mut picker = FormTable::<DetailsId, UnderPostersDetails, SettingsPage>::new(crate::registry::BAND);
             picker.table.compact = false;
+            picker.table.board_metrics(true);
             picker.set(details_form(value.details, &sample_facts()), None);
             out.extend(picker.table.app_fit_failures(layout.sectioned_table().w, &format!("{tag} details picker {value:?}")));
             let mut root = FormTable::<RootId, Action, SettingsPage>::new(crate::registry::BAND);
             root.table.compact = false;
+            root.table.board_metrics(true);
             root.set(root_form(&RootInputs { under_posters: value, ..text_fit_inputs() }), None);
             out.extend(root.table.app_fit_failures(layout.sectioned_table().w, &format!("{tag} settings root {value:?}")));
         }

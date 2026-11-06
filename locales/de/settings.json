@@ -223,7 +223,7 @@
   "settings.audio.no_preference": "Keine Präferenz",
   "settings.audio.not_set": "Nicht festgelegt",
   "settings.playback.overridden": "Direktwiedergabe erzwungen: Originalqualität.",
-  "settings.audio.selection_off": "Automatische Auswahl ist aus. Eine Sprachwahl aktiviert sie.",
+  "settings.audio.selection_off": "Automatische Auswahl ist aus. Sprachwahl aktiviert sie.",
   "settings.audio.retry": "Erneut versuchen",
   "settings.audio.retry_detail": "Die Kontoanfrage erneut senden.",
   "settings.audio.sign_in_again": "Melde dich erneut bei diesem Plex-Profil an, um seine Kontoeinstellungen zu bearbeiten.",
