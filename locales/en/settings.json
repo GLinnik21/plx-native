@@ -354,6 +354,10 @@
     "value": "Delete all local data?",
     "description": "Settings, account, onboarding or privacy UI: settings.consent.delete_question"
   },
+  "settings.consent.discard_note": {
+    "value": "Back discards your changes.",
+    "description": "Privacy & data: the line beside Done while a draft is pending (proposed copy)."
+  },
   "settings.cancel": {
     "value": "Cancel",
     "description": "Settings, account, onboarding or privacy UI: settings.cancel"

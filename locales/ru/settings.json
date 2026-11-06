@@ -92,6 +92,7 @@
   "settings.consent.share_reports": "Отправлять",
   "settings.consent.do_not_share": "Не отправлять",
   "settings.consent.delete_question": "Удалить все локальные данные?",
+  "settings.consent.discard_note": "Назад отменяет ваши изменения.",
   "settings.cancel": "Отмена",
   "settings.delete": "Удалить",
   "settings.legal.privacy.title": "Политика приватности",

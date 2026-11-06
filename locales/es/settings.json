@@ -90,6 +90,7 @@
   "settings.consent.share_reports": "Compartir",
   "settings.consent.do_not_share": "No compartir",
   "settings.consent.delete_question": "¿Borrar todos los datos locales?",
+  "settings.consent.discard_note": "Atrás descarta tus cambios.",
   "settings.cancel": "Cancelar",
   "settings.delete": "Borrar",
   "settings.legal.privacy.title": "Política de privacidad",
