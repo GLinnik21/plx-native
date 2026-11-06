@@ -233,7 +233,7 @@ fn the_unfit_reason_names_the_language_and_the_selection_is_still_shown_checked(
     let alpha = rows.iter().find(|r| r.0 == HudId::Pack("com.example.a".into())).expect("the package's row");
     assert!(alpha.3, "the unfit package is still the checked row: the selection is kept");
     assert_eq!(value_of(&page, &alpha.0), Some(plx_platform::i18n::msg::settings_hud_unfit_language("Deutsch")), "{alpha:?}");
-    assert!(row_of(&page, &alpha.0).unusable, "and it wears the ghost state");
+    assert!(row_of(&page, &alpha.0).disabled, "and it wears the ghost state");
     let classic = rows.iter().find(|r| r.0 == HudId::Pack(BUILTIN_CLASSIC.into())).expect("the built-in's row");
     assert!(!classic.3, "and the built-in is not");
 }
@@ -291,7 +291,7 @@ fn a_too_large_drop_is_listed_with_its_reason_and_cannot_be_installed() {
     let huge = rows.iter().find(|r| r.1 == "huge.plxhud").expect("the file is on the page");
     assert_eq!(huge.2, "", "no sub-line: the reason is the value");
     assert_eq!(value_of(&page, &huge.0).as_deref(), Some(plx_platform::i18n::msg::settings_hud_too_large()));
-    assert!(row_of(&page, &huge.0).unusable);
+    assert!(row_of(&page, &huge.0).disabled);
     let key = page.form.key_at(page.form.index_of(&huge.0).unwrap()).unwrap().0;
     let emitted = drive(&mut page, ScreenEvent::Activate(key), key);
     assert!(huds(&emitted).is_empty() && !page.prompt.is_open(), "nothing is installable from it");
@@ -1012,24 +1012,24 @@ fn a_withdrawn_hud_is_a_ghost_row_with_its_reason_as_the_value() {
     let (mut page, _tx) = page_with(withdrawn_list());
     let alpha = HudId::Pack("com.example.a".into());
     let row = row_of(&page, &alpha);
-    assert!(row.unusable && row.detail == msg::settings_hud_unreviewed(), "a ghost row keeps its status sub-line");
+    assert!(row.disabled && row.detail == msg::settings_hud_unreviewed(), "a ghost row keeps its status sub-line");
     assert_eq!(row.value.as_deref(), Some(msg::settings_hud_revoked()), "This HUD was withdrawn. is the value");
     let key = key_of(&page, &alpha);
     assert!(huds(&drive(&mut page, ScreenEvent::Activate(key), key)).is_empty(), "and OK does nothing");
     let remove = row_of(&page, &HudId::Remove("com.example.a".into()));
     assert_eq!(remove.label, msg::settings_hud_remove_named("Alpha"));
     assert_eq!(remove.detail, "", "the old sub-line Remove is the label now");
-    assert!(!remove.unusable);
+    assert!(!remove.disabled);
     let address = row_of(&page, &HudId::Address);
     assert_eq!(address.detail, msg::settings_hud_address_hint(), "a field hint keeps its sub-line");
     let builtin = row_of(&page, &HudId::Pack(BUILTIN_CLASSIC.into()));
-    assert!(!builtin.unusable && builtin.value.is_none());
+    assert!(!builtin.disabled && builtin.value.is_none());
 }
 
-/// **A HUD that does not fit the language** (board 4.5) is the same ghost, its value "Doesn't fit in {language}" - and,
-/// as before, it is not disabled and the selection stays on it.
+/// **A HUD that does not fit the language** (board 4.5) is the same DISABLED row, its value "Doesn't fit in {language}":
+/// focus lands on it and reads why, and OK (or a click, which is the same `Activate`) does nothing.
 #[test]
-fn a_hud_that_does_not_fit_the_language_is_a_ghost_row_that_is_still_selectable() {
+fn a_hud_that_does_not_fit_the_language_is_a_disabled_row_and_ok_is_inert() {
     use plx_platform::i18n::msg;
     let mut l = list();
     l.unfit = vec![Sha::of(&[1])];
@@ -1037,11 +1037,15 @@ fn a_hud_that_does_not_fit_the_language_is_a_ghost_row_that_is_still_selectable(
     let (mut page, _tx) = page_with(l);
     let alpha = HudId::Pack("com.example.a".into());
     assert_eq!(row_of(&page, &alpha).value.as_deref(), Some(msg::settings_hud_unfit_language("Français").as_str()));
-    assert!(row_of(&page, &alpha).unusable);
+    assert!(row_of(&page, &alpha).disabled);
     focus_on(&mut page, &alpha);
     assert_eq!(page.sentence(), msg::settings_hud_unfit_detail("Français"));
     let key = key_of(&page, &alpha);
-    assert!(matches!(huds(&drive(&mut page, ScreenEvent::Activate(key), key)).as_slice(), [HudCmd::Select(_)]), "OK is unchanged");
+    assert!(huds(&drive(&mut page, ScreenEvent::Activate(key), key)).is_empty(), "OK on a disabled row selects nothing");
+    // a row that fits is unchanged: OK still selects it
+    let classic = HudId::Pack(BUILTIN_CLASSIC.into());
+    let key = key_of(&page, &classic);
+    assert!(matches!(huds(&drive(&mut page, ScreenEvent::Activate(key), key)).as_slice(), [HudCmd::Select(id)] if id == BUILTIN_CLASSIC), "a usable row selects");
 }
 
 /// A file the store refused says why as its value and what to do beside the table; one it can install keeps its sub-line.
@@ -1052,9 +1056,9 @@ fn a_refused_file_is_a_ghost_row_and_an_installable_one_keeps_its_sub_line() {
     l.drops = vec![drop_file("ok.plxhud", 9, Ok(())), drop_file("bad.plxhud", 3, Err(Refusal::Invalid)), drop_file("new.plxhud", 4, Err(Refusal::Unloadable(Unloadable::NewerFormat)))];
     let (mut page, _tx) = page_with(l);
     let ok = row_of(&page, &HudId::Drop(Sha::of(&[9])));
-    assert!(!ok.unusable && ok.value.is_none() && ok.detail.contains(msg::settings_hud_install()));
+    assert!(!ok.disabled && ok.value.is_none() && ok.detail.contains(msg::settings_hud_install()));
     let bad = row_of(&page, &HudId::Drop(Sha::of(&[3])));
-    assert!(bad.unusable && bad.detail.is_empty());
+    assert!(bad.disabled && bad.detail.is_empty());
     assert_eq!(bad.value.as_deref(), Some(msg::settings_hud_not_a_hud()));
     focus_on(&mut page, &HudId::Drop(Sha::of(&[3])));
     assert_eq!(page.sentence(), msg::settings_hud_file_detail());
@@ -1107,7 +1111,7 @@ fn an_uninstallable_package_page_row_is_a_ghost_with_its_reason() {
     let mut page = gallery_page(SettingsPage::HudDetail(sha));
     with_index(&mut page, |index| index.revoked.push(plx_data::hudpacks::catalog::Revocation { sha256: sha.hex(), reason: "Unsafe.".into() }));
     let install = HudId::InstallRegistry(sha);
-    assert!(row_of(&page, &install).unusable);
+    assert!(row_of(&page, &install).disabled);
     assert_eq!(row_of(&page, &install).value.as_deref(), Some(msg::settings_hud_revoked()));
     focus_on(&mut page, &install);
     assert_eq!(page.sentence(), format!("{} Unsafe.", msg::settings_hud_withdrawn_detail()));

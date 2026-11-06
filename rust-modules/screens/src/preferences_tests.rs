@@ -242,8 +242,8 @@ fn seat_named(session: &plx_plex::plex::session::TempSession, uuid: &str, title:
 }
 
 /// Whether each listed row is drawn dim, in list order.
-fn dims(page: &PreferencesPage) -> Vec<bool> {
-    page.form.table.sections.iter().flat_map(|section| section.rows.iter().map(|row| row.dim)).collect()
+fn disabled_rows(page: &PreferencesPage) -> Vec<bool> {
+    page.form.table.sections.iter().flat_map(|section| section.rows.iter().map(|row| row.disabled)).collect()
 }
 
 fn right_at_edge() -> ScreenEvent<InnerHost> {
@@ -266,7 +266,7 @@ fn playback_rows_are_read_only_while_no_profile_is_seated() {
         PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval, PickerKind::InstantDpadSeeking, PickerKind::DolbyVision] {
         let key = RowId::Field(field).key().0;
         let row = page.form.index_of(&RowId::Field(field)).expect("the row is still listed");
-        assert!(dims(&page)[row], "{field:?}: dimmed");
+        assert!(disabled_rows(&page)[row], "{field:?}: disabled");
         let ok = drive(&mut page, ScreenEvent::Activate(key), key);
         let right = drive(&mut page, right_at_edge(), key);
         assert!(pushed(&ok).is_empty() && pushed(&right).is_empty(), "{field:?}: OK and RIGHT open nothing");
@@ -274,7 +274,7 @@ fn playback_rows_are_read_only_while_no_profile_is_seated() {
     }
     let account = Account::new("pref-read-only-audio", 31, AudioPreferences::default());
     let audio = loaded_audio_page(&account);
-    assert!(!dims(&audio).is_empty() && dims(&audio).iter().all(|dim| !dim),
+    assert!(!disabled_rows(&audio).is_empty() && disabled_rows(&audio).iter().all(|dim| !dim),
         "the account fields are not read-only");
 }
 
@@ -288,7 +288,7 @@ fn the_player_hud_row_is_read_only_while_no_profile_is_seated() {
     let mut page = PreferencesPage::new(EntryId(0), Kind::Playback);
     let key = RowId::PlayerHud.key().0;
     let row = page.form.index_of(&RowId::PlayerHud).expect("the Player HUD row is listed while unseated");
-    assert!(dims(&page)[row], "dimmed");
+    assert!(disabled_rows(&page)[row], "disabled");
     let ok = drive(&mut page, ScreenEvent::Activate(key), key);
     let right = drive(&mut page, right_at_edge(), key);
     assert!(pushed(&ok).is_empty() && pushed(&right).is_empty(), "OK and RIGHT open nothing with no seat");
@@ -296,7 +296,7 @@ fn the_player_hud_row_is_read_only_while_no_profile_is_seated() {
     seat_named(&session, "maya", "Maya");
     drive(&mut page, tick(), 0);
     let row = page.form.index_of(&RowId::PlayerHud).expect("the row is still listed once a profile is seated");
-    assert!(!dims(&page)[row], "a seated profile's row is not dimmed");
+    assert!(!disabled_rows(&page)[row], "a seated profile's row is not disabled");
     assert_eq!(pushed(&drive(&mut page, ScreenEvent::Activate(key), key)), vec![SettingsPage::PlayerHud], "and OK opens the page");
 }
 
