@@ -2139,7 +2139,9 @@ fn below_drawn(d: &Dispatcher<FixtureHost>) -> u32 {
 #[test]
 fn a_video_plane_screen_replaces_its_host_and_takes_no_snapshot() {
     let _g = plx_base::testlock::serial();
-    // A transition that DRAWS BELOW while it is in flight (`RoutePush`, the Settings family's).
+    // A transition that DRAWS BELOW while it is in flight (`transition::RoutePush`, the stack
+    // transition that draws both levels; the Settings family's own push is `route_screen::RoutePush`,
+    // a different type).
     // The default `Immediate` never draws the level under the top one, so on it this test's first
     // half would be vacuous — it would pass whether or not the rule exists.
     let mut d: Dispatcher<FixtureHost> = Dispatcher::with_transition(Box::new(
