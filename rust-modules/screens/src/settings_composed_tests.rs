@@ -363,7 +363,7 @@ fn composed_owner_favourites_footer_survives_left_down_and_idle_frames() {
 }
 
 /// **The composition, at depth.** Signed out, the Settings root's rows are Video & playback
-/// / Language / Privacy & data / Legal notices / About, so OK on Legal notices pushes the Legal index; LEFT off that index's
+/// / Language / Privacy & data / Diagnostics / Legal notices / About, so OK on Legal notices pushes the Legal index; LEFT off that index's
 /// column then runs the whole chain — edge rule, synthetic BACK, the surface's own pop —
 /// and lands back on the Settings root with the surface still up and still owning input.
 #[test]
@@ -455,11 +455,12 @@ fn the_hud_pages_address_field_raises_and_lowers_the_television_keyboard() {
     assert!(before.starts_with("settings/"), "{before}");
     let rows = d.focus().map(|k| k.elem);
     assert!(rows.is_some(), "the page seats a row");
-    // With no store behind the rig the page lists only its address row.
-    frame(&mut d, &mut rig, 32, vec![key(Key::Ok, tick(32))]);
+    // With no store behind the rig the page lists the gallery row and its address row, and seats the first.
+    frame(&mut d, &mut rig, 32, vec![key(Key::Down, tick(32))]);
+    frame(&mut d, &mut rig, 48, vec![key(Key::Ok, tick(48))]);
     assert_eq!(rig.keyboard, [true], "OK on the address row raises the keyboard");
     assert!(path(&d, id).contains("editing=true"), "{}", path(&d, id));
-    frame(&mut d, &mut rig, 48, vec![key(Key::Back, tick(48))]);
+    frame(&mut d, &mut rig, 64, vec![key(Key::Back, tick(64))]);
     assert_eq!(rig.keyboard, [true, false], "BACK lowers it");
     assert!(path(&d, id).contains("editing=false"), "the page is still there: {}", path(&d, id));
     assert_eq!(d.nav.input_owner(), Some(InputOwner::Entry(id)), "BACK closed the field, not the surface");
@@ -495,15 +496,16 @@ fn a_real_push_seats_the_new_page_fresh_and_a_pop_restores_the_row_that_opened_i
         path(&d, id)
     );
 
-    // Mounting the surface already seats row 0 (its own `Enter::Fresh`); three real DOWNs
-    // move focus — and the engine's remembered cursor for `(id, GroupId(0))` — to row 3.
-    for i in 1..=3u32 {
+    // Mounting the surface already seats row 0 (its own `Enter::Fresh`); four real DOWNs
+    // move focus — and the engine's remembered cursor for `(id, GroupId(0))` — to row 4,
+    // Legal notices (Settings v2: Diagnostics is the root's own row, between Privacy & data and it).
+    for i in 1..=4u32 {
         frame(&mut d, &mut rig, 16 * i, vec![key(Key::Down, tick(16 * i))]);
     }
     let legal_row = d.focus().expect("a row is focused after a real DOWN");
-    assert_eq!(legal_row.elem, root_key(RootId::Legal), "the third DOWN is Legal notices in the signed-out fixture");
+    assert_eq!(legal_row.elem, root_key(RootId::Legal), "the fourth DOWN is Legal notices in the signed-out fixture");
 
-    frame(&mut d, &mut rig, 64, vec![key(Key::Ok, tick(64))]);
+    frame(&mut d, &mut rig, 96, vec![key(Key::Ok, tick(96))]);
     assert!(
         path(&d, id).contains("/legal:"),
         "OK on Legal notices pushed the index: {}",

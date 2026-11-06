@@ -49,5 +49,9 @@
   "settings.legal.privacy.fin.uninstall_body": "Az eltávolítás törli a FinNative alkalmazást, de a webOS nem teszi lehetővé, hogy egy alkalmazás kódot futtasson az eltávolításakor, így az alkalmazás saját könyvtárán kívül tárolt adatok megmaradhatnak. A bejelentkezése szándékosan ott marad, hogy az újratelepítés ne jelentkeztesse ki, és az alkalmazás nyelvi beállítása is. Ha semmit nem szeretne hagyni a FinNative-ból ezen a TV-n, az eltávolítás ELŐTT használja a Minden helyi adat törlése funkciót.",
   "settings.legal.privacy.fin.contact_body": "Adatvédelmi kérdések: github.com/tiper/fin-native/issues",
   "settings.account.add_user": "Felhasználó hozzáadása",
-  "settings.privacy.detail": "Adatvédelmi tudnivalók és helyi adatok."
+  "settings.privacy.detail": "Adatvédelmi tudnivalók és helyi adatok.",
+  "settings.hud.newer_detail": "Ez a HUD a FinNative újabb verziójához készült. Frissítse az alkalmazást a használatához, vagy válasszon másik HUD-ot.",
+  "settings.hud.app_range_detail": "A készítő szerint ez a HUD nem fut a FinNative ezen verzióján. Keressen hozzá való változatot, vagy válasszon másik HUD-ot.",
+  "settings.libraries.more": "A kihagyott könyvtárak megmaradnak a Jellyfin-szerveren és a többi eszközön.",
+  "settings.audio.page_copy": "A hang- és feliratnyelvi beállítások szinkronizálódnak a Jellyfin-felhasználójával. A lejátszási beállítások profilonként érvényesek."
 }

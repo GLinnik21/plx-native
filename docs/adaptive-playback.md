@@ -195,6 +195,24 @@ certificate releases the cleanup barrier. Checks are coalesced and driven by com
 quanta, not sleep, retry-count or elapsed-time policy. Emergency descent remains available while
 cleanup is pending.
 
+The Plex dashboard (`/status/sessions`) keeps a third, separate record. Every
+`X-Plex-Session-Identifier` that ever reported `playing` to `/:/timeline` keeps its row for minutes
+after its last report, whatever the encoder `/stop` and the close did (measured on PMS 1.43.5:
+about three minutes), so one playback showed a row for every encoder it had used (13 in one
+measured session). The periodic timeline reporter therefore sends the id it last reported under a `state=stopped` with
+`continuing=1`, at the current position, immediately before the first report under the id that
+replaced it (an ABR commit, a seek's retranscode, the Original-to-HLS fallback, an Engine reload
+that moved to a new encoder); Plex's own TV client sends the same pair before it restarts a stream
+for a quality change. The final teardown does the same for the last reported id when it differs
+from the id the final `stopped` goes out under; the stop worker reads that id only after the
+reporter has been joined, so a tick still in flight at the stop counts. An id that never reported
+(a candidate that was never committed, or one replaced between two ticks) is never named.
+
+The cleanup ledger above is unchanged and independent of this report: its stop, ping and close act
+on the physical encoder and its Streaming Resource, not on the dashboard row. They run on their own
+schedule, the stop at the landing and ping/close on completed quanta, while the `stopped` report
+waits for the next reporter tick (up to ten seconds), so the ledger does not depend on it.
+
 For the initial phase of an upward experiment, one playhead-funded reserve clock, bounded by `E`,
 covers:
 

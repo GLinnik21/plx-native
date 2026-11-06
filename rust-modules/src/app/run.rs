@@ -3150,10 +3150,9 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                                 plx_gfx::gfx::frame_clear(plx_ui::theme::CLEAR_RGB.0, plx_ui::theme::CLEAR_RGB.1, plx_ui::theme::CLEAR_RGB.2);
                             }
                         };
-                        {
-                            let _declarations = plx_ui::frame::backdrop::discover(sources.clone());
-                            plx_base::diag::spans::span("disc", || page(Z::ALL));
-                        }
+                        plx_base::diag::spans::span("disc", || {
+                            plx_ui::frame::backdrop::discover_with(sources.clone(), || page(Z::ALL));
+                        });
                         sources.borrow_mut().resolve();
                         // `plxnative-framedrop` armed: which recorded draw invalidated a source.
                         // Empty (no allocation, no work) unarmed.

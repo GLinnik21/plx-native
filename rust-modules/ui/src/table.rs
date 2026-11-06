@@ -82,6 +82,20 @@ pub struct Row {
     /// state, an action glyph is only decoration.
     pub licon: Option<crate::icons::Icon>,
     pub dim: bool, // render dimmer (unavailable / de-emphasised)
+    /// The row is **DISABLED**, a control state of its own beside focused, selected and dim: focus
+    /// can land on it (the viewer reads why, in its [`Row::value`]) but it does nothing. Unfocused it
+    /// reads exactly as a [`Row::dim`] row; FOCUSED it keeps that softness instead of taking the
+    /// pressable look: the pill under it is a GHOST (the faint [`theme::OVERLAY_FOCUS_PILL`], not the
+    /// solid [`crate::ACCENT`] fill), its label reads at [`theme::TEXT_SECONDARY`] and its read-out
+    /// at [`theme::TEXT_TERTIARY`]. A plain `dim` row under the solid pill turns near-black like a
+    /// live one, so its label looks pressable (Settings v2 HUD boards 4.4 and 4.5).
+    ///
+    /// This flag is only how the row LOOKS, so a page that draws a bare [`TableView`] sets it with
+    /// [`Row::disabled`]. A page built on a [`crate::form::Form`] never sets it by hand: it declares
+    /// [`crate::form::FormSection::disabled`], the ONE mechanism, which sets this flag and makes
+    /// `FormTable::activate` answer `None` (OK, RIGHT, a click and a hold all go through it), so the
+    /// look and the inertness cannot disagree. Opt-in: a row that never asks draws exactly as before.
+    pub disabled: bool,
     /// A **non-selectable hairline** that groups the rows above it from the rows below (the item
     /// menu's navigation-vs-state divider). It occupies a global row index like any other row, but
     /// [`TableView::move_sel`] steps OVER it, [`TableView::hit_row`] refuses it, and
@@ -116,6 +130,7 @@ impl Row {
             ticon: None,
             licon: None,
             dim: false,
+            disabled: false,
             sep: false,
             destructive: false,
             note_lines: std::cell::Cell::new(1),
@@ -220,6 +235,11 @@ impl Row {
     }
     pub fn dim(mut self, v: bool) -> Self {
         self.dim = v;
+        self
+    }
+    /// Mark the row disabled - see [`Row::disabled`]. Its reason is the [`Row::value`].
+    pub fn disabled(mut self, v: bool) -> Self {
+        self.disabled = v;
         self
     }
     /// Mark the row's action destructive — see [`Row::destructive`].
@@ -369,6 +389,16 @@ const GROUP_DIM_A: f32 = 0.52;
 const NOTE_LEADING: f32 = 32.0;
 const NOTE_PAD: f32 = 14.0;
 const DIV_H: f32 = 24.0; // gap + hairline between sections
+/// [`DIV_H`] of a [`TableView::board_metrics`] table: the design system's section break is a 2px
+/// hairline with 12px of margin above AND below it (`TableView.jsx`: `height: 2, margin: "12px
+/// 32px"`), 26 in all.
+const BOARD_DIV_H: f32 = 26.0;
+/// The gap between the runs of a [`TableView::board_metrics`] row's trailing stack (read-out, badge
+/// run, icon BOX): the design system's cell is a flex row with `gap: var(--space-sm)`.
+const BOARD_TRAIL_GAP: f32 = theme::space::SM;
+/// A section header's caps tracking in em (`--track-caps`, `.06em`), set on a
+/// [`TableView::board_metrics`] table only.
+const BOARD_CAPS_TRACK_EM: f32 = 0.06;
 /// Extra air between a page title band and the hairline under it (owner, 2026-10-01: "a bigger gap
 /// under the title"): the title sits on its own, then the divider, then the rows.
 const TITLE_GAP: f32 = 12.0;
@@ -501,23 +531,28 @@ fn ticon_slot_w(icon: crate::icons::Icon) -> f32 {
 /// without one. The width the label may not use ([`trailing_reserved`]), where each run stands
 /// ([`trailing_stack`] at `text_right`) and the tests' read-out edge all read these items, so
 /// they cannot disagree.
-fn trailing_items(row: &Row, value_w: Option<f32>, measure: &dyn plx_machine::machine::Measure) -> [Item; 3] {
+///
+/// A `board` table ([`TableView::board_metrics`]) stands the icon's BOX instead, the way the design
+/// system's flex row does, and [`trailing_stack`] spaces the runs by [`BOARD_TRAIL_GAP`].
+fn trailing_items(row: &Row, value_w: Option<f32>, measure: &dyn plx_machine::machine::Measure, board: bool) -> [Item; 3] {
     [
         value_w.map_or(Item::absent(), Item::new),
         if row.badges.is_empty() { Item::absent() } else { Item::new(badge_run_w(&row.badges, measure)) },
-        row.ticon.map_or(Item::absent(), |icon| Item::glyph(icon, ACCESSORY_ICON_W)),
+        row.ticon.map_or(Item::absent(), |icon| {
+            if board { Item::new(ACCESSORY_ICON_W) } else { Item::glyph(icon, ACCESSORY_ICON_W) }
+        }),
     ]
 }
 
 /// [`trailing_items`] anchored with its trailing edge at `right` (the content edge).
-fn trailing_stack(items: &[Item; 3], right: f32) -> HStack<'_> {
-    HStack::new(items, ACCESSORY_GAP, Align::Trailing(right))
+fn trailing_stack(items: &[Item; 3], right: f32, board: bool) -> HStack<'_> {
+    HStack::new(items, if board { BOARD_TRAIL_GAP } else { ACCESSORY_GAP }, Align::Trailing(right))
 }
 
 /// What a row reserves for its trailing run: the stack's width plus the [`ACCESSORY_GAP`] between
 /// the run and the label before it (0 for a row with no trailing run at all).
-fn trailing_reserved(items: &[Item; 3]) -> f32 {
-    let width = trailing_stack(items, 0.0).width();
+fn trailing_reserved(items: &[Item; 3], board: bool) -> f32 {
+    let width = trailing_stack(items, 0.0, board).width();
     if items.iter().any(|item| *item != Item::absent()) { width + ACCESSORY_GAP } else { 0.0 }
 }
 
@@ -597,6 +632,8 @@ pub struct TableView {
     pub compact: bool,
     /// see [`TableView::tall_rows`]
     tall: bool,
+    /// see [`TableView::board_metrics`]. Layout configuration like `min_panel_w`, not motion.
+    board: bool,
     /// Semantic ink for section labels. Ambient routes can raise this role for contrast without
     /// replacing the shared table header renderer or changing row/detail hierarchy.
     pub header_ink: [f32; 4],
@@ -632,7 +669,7 @@ impl TableView {
     /// The owner records its row data separately. These fields determine layout, the selected
     /// face and subsequent motion; no text/texture cache or renderer pointer is traversed.
     pub fn write_motion(&self, c: &mut plx_machine::machine::Canon) {
-        let Self { sections: _, sel, list_focused, compact, tall, header_ink, hl_top, hl_bot, scroll, title: _, min_panel_w: _, rev: _, empty_text: _ } = self;
+        let Self { sections: _, sel, list_focused, compact, tall, board: _, header_ink, hl_top, hl_bot, scroll, title: _, min_panel_w: _, rev: _, empty_text: _ } = self;
         c.u32(*sel as u32).bool(*list_focused).bool(*compact).bool(*tall);
         for component in header_ink { c.f32(*component); }
         for spring in [hl_top, hl_bot, scroll] { c.f32(spring.pos).f32(spring.vel); }
@@ -646,6 +683,42 @@ impl TableView {
     /// what every other table here has always drawn.
     pub fn tall_rows(&mut self, v: bool) {
         self.tall = v;
+    }
+    /// **The Settings family's table, set to the design system's `TableView` to the pixel.**
+    /// Opt-in per table (the Settings screens set it where they set `compact`), because the same
+    /// widget is every popover menu, picker and track menu, which keep the measures they have
+    /// always drawn. A board table differs in four things, all read off `TableView.jsx`:
+    ///
+    /// * the break between sections is [`BOARD_DIV_H`] (12px margin, 2px hairline, 12px margin)
+    ///   and the hairline stands in the middle of it;
+    /// * a section header's caps are set where a 24px, `line-height: 1` CSS line centred in the
+    ///   [`HDR_H`] band puts them ([`Self::header_cap_inset`]), tracked `--track-caps` (.06em);
+    /// * the trailing run is a flex row `gap: --space-sm` of boxes: the icon's 26px BOX, not its
+    ///   ink, ends on the content edge ([`trailing_items`]).
+    pub fn board_metrics(&mut self, v: bool) {
+        self.board = v;
+    }
+    /// The gap between two sections: [`DIV_H`], or the board's.
+    fn div_h(&self) -> f32 {
+        if self.board { BOARD_DIV_H } else { DIV_H }
+    }
+    /// Where the hairline between sections stands, as an offset from the next section's top
+    /// (negative): centred in the gap, its thickness (2) included.
+    fn divider_dy(&self) -> f32 {
+        -self.div_h() * 0.5 - if self.board { 1.0 } else { 0.0 }
+    }
+    /// Distance from a section header band's top to its caps' top: [`HEADER_CAP_INSET`], or on a
+    /// board table where a `line-height: 1` CSS line centred in the band sets the caps.
+    fn header_cap_inset(&self, measure: &dyn plx_machine::machine::Measure) -> f32 {
+        if !self.board {
+            return HEADER_CAP_INSET;
+        }
+        let sz = theme::size::CAPTION;
+        (HDR_H - sz as f32) * 0.5 + plx_gfx::text::css_cap_drop(sz, sz as f32, measure.cap_h(sz))
+    }
+    /// A header's letter-spacing in px: none, or the board's `--track-caps`.
+    fn header_tracking(&self) -> f32 {
+        if self.board { BOARD_CAPS_TRACK_EM * theme::size::CAPTION as f32 } else { 0.0 }
     }
     fn tall_row_h(&self) -> f32 {
         if self.tall {
@@ -662,6 +735,7 @@ impl TableView {
             list_focused: true,
             compact: false,
             tall: false,
+            board: false,
             header_ink: theme::TEXT_TERTIARY,
             min_panel_w: MENU_MIN_W,
             hl_top: Spring::at(0.0),
@@ -692,6 +766,7 @@ impl TableView {
         t.list_focused = self.list_focused;
         t.compact = self.compact;
         t.tall = self.tall;
+        t.board = self.board;
         t.header_ink = self.header_ink;
         t.min_panel_w = self.min_panel_w;
         t.empty_text = self.empty_text.clone();
@@ -958,7 +1033,7 @@ impl TableView {
                     Some(value) => primary + ROW_VALUE_GAP + value / h,
                     None => primary,
                 };
-                let fixed = trailing_reserved(&trailing_items(row, None, measure));
+                let fixed = trailing_reserved(&trailing_items(row, None, measure, self.board), self.board);
                 width = width.max(2.0 * CONTENT_X + LABEL_INSET + fixed + text);
             }
         }
@@ -1030,7 +1105,9 @@ impl TableView {
         for section in &self.sections {
             if !section.header.is_empty() {
                 let header_text = section.header.to_uppercase();
-                let header_nat = measure.width_str(&header_text, theme::size::CAPTION, false);
+                // As the draw elides it: a board table tracks its caps, and the tracking is width too.
+                let header_nat = measure.width_str(&header_text, theme::size::CAPTION, false)
+                    + plx_gfx::text::tracking_extra(&header_text, self.header_tracking());
                 let (header_w, accessory_w) = Self::header_columns(section, frame_w, measure, headroom);
                 if header_w + FIT_EPS < header_nat / headroom {
                     out.push(FitIssue { role: FitRole::Header, origin: section.header_origin, text: header_text, natural: header_nat, budget: header_w });
@@ -1110,8 +1187,8 @@ impl TableView {
     /// the panel's left, the same [`trailing_stack`] edge the draw uses.
     #[cfg(any(test, feature = "test-support"))]
     fn value_right_edge(&self, row: &Row, frame_w: f32) -> f32 {
-        let items = trailing_items(row, None, &plx_base::fontcov::advances::ShippedMeasure);
-        frame_w - SIDE - CONTENT_PAD - trailing_reserved(&items)
+        let items = trailing_items(row, None, &plx_base::fontcov::advances::ShippedMeasure, self.board);
+        frame_w - SIDE - CONTENT_PAD - trailing_reserved(&items, self.board)
     }
 
     /// The text column a [`Row::note`] wraps in: the ROW-LABEL column (past the check column), so
@@ -1158,7 +1235,7 @@ impl TableView {
     /// [`Self::fit_report`] passes the device's headroom to model glyphs wider than the measure.
     /// The label is hugged with [`fit::HUG_MARGIN`] before dividing.
     fn row_columns_under(&self, row: &Row, frame_w: f32, measure: &dyn plx_machine::machine::Measure, headroom: f32) -> RowColumns {
-        let fixed = trailing_reserved(&trailing_items(row, None, measure));
+        let fixed = trailing_reserved(&trailing_items(row, None, measure, self.board), self.board);
         let span = (frame_w - 2.0 * CONTENT_X - LABEL_INSET - fixed).max(0.0);
         let (label, value) = self.row_runs(row, measure);
         let Some(value) = value else {
@@ -1273,6 +1350,27 @@ impl TableView {
         ((self.hl_bot.pos.min(bot) - self.hl_top.pos.max(top)) / (bot - top)).clamp(0.0, 1.0)
     }
 
+    /// How much of the pill is the GHOST right now, 0..1: the share of the pill's travel that sits on
+    /// [`Row::disabled`] rows, by the very coverage rule the ink follows ([`Self::pill_cover`]), so
+    /// the fill and the ink can never disagree about which row the pill is on. The sum is clamped:
+    /// between two disabled rows the pill is ghost throughout (their two coverages add to one).
+    /// 0 for a table with no disabled row, which then pays no walk.
+    fn ghost_cover(&self) -> f32 {
+        if !self.list_focused || !self.sections.iter().any(|s| s.rows.iter().any(|r| r.disabled)) {
+            return 0.0;
+        }
+        let mut sum = 0.0f32;
+        self.walk(|cy, gi, _| {
+            if gi >= 0 {
+                let row = self.rows_at(gi);
+                if row.disabled {
+                    sum += self.pill_cover(cy, row.height_in(self.tall_row_h()));
+                }
+            }
+        });
+        sum.clamp(0.0, 1.0)
+    }
+
     /// How opaque ink whose top is at `ink_top` is drawn under the viewport's top edge `vis_top`:
     /// whole once it is [`TOP_FADE_H`] below it, gone as it reaches it. The top edge DISSOLVES a row
     /// rather than cutting it (rows scroll up under the crumb band); the scissor still clips the
@@ -1332,14 +1430,14 @@ impl TableView {
         let mut gi = 0i32;
         if self.title.is_some() {
             f(y, WALK_TITLE, 0);
-            y += HDR_H + TITLE_GAP + DIV_H;
+            y += HDR_H + TITLE_GAP + self.div_h();
             f(y, WALK_DIVIDER, 0);
         }
         for (si, sec) in self.sections.iter().enumerate() {
             // an EMPTY section (a `Form` whose items all fell through) has nothing to divide from
             // the one above: no hairline, no gap, and it must not lengthen the content
             if si > 0 && !sec.rows.is_empty() {
-                y += DIV_H;
+                y += self.div_h();
                 f(y, WALK_DIVIDER, si);
             }
             if !sec.header.is_empty() {
@@ -1426,6 +1524,13 @@ impl TableView {
         )
     }
 
+    /// How much of the focus pill is the ghost right now ([`Row::disabled`]), for a screen's test that its rows wired
+    /// the state.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn ghost_cover_for_test(&self) -> f32 {
+        self.ghost_cover()
+    }
+
     /// The scroll spring's live position, in content coordinates.
     ///
     /// It was `#[cfg(test)]` — the tests are still its main reader, for the reason below — until a
@@ -1506,11 +1611,18 @@ impl TableView {
             // fades with its row's ink under the top edge (focus keeps a row of context above it,
             // so this only shows while the scroll is still catching up)
             let fade = Self::top_edge_alpha(py0 - PILL_INSET + ROW_INK_PAD, vis_top);
+            // solid under a usable row, the GHOST under an disabled one ([`Row::disabled`]), crossed
+            // by the same coverage rule the ink uses so a pill travelling between the two changes
+            // fill as it arrives; exactly `ACCENT` when no row opts in
+            let fill = match self.ghost_cover() {
+                g if g <= 0.0 => crate::ACCENT,
+                g => theme::cross(crate::ACCENT, theme::OVERLAY_FOCUS_PILL, g),
+            };
             self.group_painter(p.alpha(fade), self.section_of_row(self.sel)).rrect(
                 pill,
                 PILL_RAD,
                 PILL_RAD,
-                crate::ACCENT,
+                fill,
             );
         }
 
@@ -1523,7 +1635,7 @@ impl TableView {
             if gi == WALK_DIVIDER {
                 // the hairline between this section and the one above, headed or not, centred in
                 // the `DIV_H` gap; it fades with the group like everything else in it
-                let y = sy - DIV_H * 0.5;
+                let y = sy + self.divider_dy();
                 if y + 2.0 > vis_top && y < vis_bot {
                     // dissolves with the section it heads, a hair before its caps
                     p.alpha(Self::top_edge_alpha(sy, vis_top)).rect(
@@ -1562,9 +1674,11 @@ impl TableView {
                 if sy + HDR_H > vis_top && sy < vis_bot {
                     // dissolves under the top edge, and a panel's fades out at the bottom edge before
                     // its caps are cut (`bottom_edge_alpha`)
+                    let cap_inset = self.header_cap_inset(measure);
+                    let ink_pad = HDR_H - cap_inset - theme::size::CAPTION as f32;
                     let p = p.alpha(
-                        bottom_alpha(sy + HDR_H - HDR_INK_PAD, HDR_INK_PAD)
-                            * Self::top_edge_alpha(sy + HEADER_CAP_INSET, vis_top),
+                        bottom_alpha(sy + HDR_H - ink_pad, ink_pad)
+                            * Self::top_edge_alpha(sy + cap_inset, vis_top),
                     );
                     let sec = &self.sections[si];
                     // **CAPS at CAPTION, one size in BOTH size classes.** The caps are what make a
@@ -1577,7 +1691,8 @@ impl TableView {
                     // `to_uppercase`, not `to_ascii_uppercase`: a header is a machine name or a
                     // library name and can be any script — the share measured here is Cyrillic.
                     let hsz = theme::size::CAPTION;
-                    let cap_y = sy + HEADER_CAP_INSET;
+                    let cap_y = sy + cap_inset;
+                    let tracking = self.header_tracking();
                     let (cap_top, baseline) = plx_gfx::text::text_cap_band(hsz, 0);
                     let header_band = Rect::new(
                         content_x,
@@ -1587,10 +1702,11 @@ impl TableView {
                     );
                     let (header_w, accessory_w) = Self::header_columns(sec, frame.w, measure, 1.0);
                     let header_text = plx_gfx::text::elide_by(&sec.header.to_uppercase(), header_w, false, |t| {
-                        measure.width_str(t, hsz, false)
+                        measure.width_str(t, hsz, false) + plx_gfx::text::tracking_extra(t, tracking)
                     });
                     if let Ok(cs) = CString::new(header_text) {
                         Label::new(cs.as_ptr(), hsz, self.header_ink)
+                            .tracking(tracking)
                             .v(VAlign::CapTop)
                             .draw(p, header_band);
                     }
@@ -1676,8 +1792,13 @@ impl TableView {
                 c if c >= 1.0 => over,
                 c => theme::cross(rest, over, c),
             };
-            let base = on_pill(if row.dim { dimc } else { white }, ink);
-            let row_bg = on_pill(PANEL_BG, crate::ACCENT);
+            // a disabled row keeps its soft ink under the pill (the ghost): secondary, not near-black
+            let base = if row.disabled {
+                on_pill(dimc, theme::TEXT_SECONDARY)
+            } else {
+                on_pill(if row.dim { dimc } else { white }, ink)
+            };
+            let (chip_border, row_bg) = chip_ground(row, cover, ink);
             let cyc = sy + h * 0.5; // row vertical center
 
             // Leading column (SVG): the PICKER's tick, or an ACTION's glyph — one or the other, and
@@ -1698,8 +1819,8 @@ impl TableView {
             // anchored by the icon's ink at `text_right`; each part below is drawn where it stands.
             // The read-out is flush right at its item's trailing edge (below), so its width moves
             // nothing the draw reads: a zero-wide item places the same edge, and costs no measure.
-            let trailing_run = trailing_items(row, row.readout().map(|_| 0.0), measure);
-            let trailing_at = |i: usize| trailing_stack(&trailing_run, text_right).placed().find(|s| s.i == i);
+            let trailing_run = trailing_items(row, row.readout().map(|_| 0.0), measure, self.board);
+            let trailing_at = |i: usize| trailing_stack(&trailing_run, text_right, self.board).placed().find(|s| s.i == i);
             // trailing accessory (SVG), its BOX at the stack's `box_x` so its ink ends on the edge
             if let (Some(ti), Some(at)) = (row.ticon, trailing_at(2)) {
                 let cs = ACCESSORY_ICON_W;
@@ -1728,7 +1849,7 @@ impl TableView {
                     // knocked out of the interior
                     let sty = crate::widgets::BadgeStyle::Outlined {
                         col: base,
-                        border: on_pill(theme::OVERLAY_BORDER, ink),
+                        border: chip_border,
                         bg: row_bg,
                     };
                     crate::widgets::badge(p, start + span.x, cyc, b.text(), None, sty, measure);
@@ -1847,7 +1968,7 @@ impl TableView {
             // while the badges sat on the title's line: right-aligned and row-centred, a chip now
             // occupies the sub-line's band too, and an unbounded sub-line would run under it.
             if !row.detail.is_empty() {
-                let sub = on_pill(dimc, theme::scrim_black(0.6));
+                let sub = if row.disabled { dimc } else { on_pill(dimc, theme::scrim_black(0.6)) };
                 let detail = plx_gfx::text::elide_by(&row.detail, text_w, false, |t| {
                     measure.width_str(t, theme::size::CAPTION, false)
                 });
@@ -1926,13 +2047,33 @@ impl TableView {
     }
 }
 
+/// A row's badge chip ground as `(ring, interior)`, at the pill's `cover` of the row's ink band
+/// (0 off the pill, 1 under it) and the pill's `ink`: over the SOLID pill the ring is that near-black
+/// ink and the interior the accent; a disabled row's pill is the faint ghost, which is no ground to
+/// knock a chip out of, so its chip keeps its rest colours (like its label and sub-line do).
+fn chip_ground(row: &Row, cover: f32, ink: [f32; 4]) -> ([f32; 4], [f32; 4]) {
+    if row.disabled {
+        return (theme::OVERLAY_BORDER, PANEL_BG);
+    }
+    let mix = |rest: [f32; 4], over: [f32; 4]| match cover {
+        c if c <= 0.0 => rest,
+        c if c >= 1.0 => over,
+        c => theme::cross(rest, over, c),
+    };
+    (mix(theme::OVERLAY_BORDER, ink), mix(PANEL_BG, crate::ACCENT))
+}
+
 /// The ink of a row's trailing read-out ([`Row::readout`]): one step behind the row's label, so it
 /// follows the row's [`Row::dim`] as well as its own [`Row::value_dim`]. A dim row's label is
 /// already [`theme::TEXT_TERTIARY`], so its read-out takes [`theme::ROW_VALUE_INK_DIM`] below
 /// that; drawn at the live row's ink, a step that cannot be taken (the Timing section's Earlier at
 /// its floor) still announced itself at the trailing edge. Over the focused pill a dim row's
-/// read-out takes the quiet rung.
+/// read-out takes the quiet rung. A disabled row's reason is the dim row's off the pill and
+/// [`theme::TEXT_TERTIARY`] under the ghost ([`Row::disabled`]).
 fn row_value_ink(row: &Row, focused: bool) -> [f32; 4] {
+    if row.disabled {
+        return if focused { theme::TEXT_TERTIARY } else { theme::ROW_VALUE_INK_DIM };
+    }
     match (focused, row.dim, row.value_dim) {
         (true, false, false) => theme::ROW_VALUE_INK_ON,
         (true, _, _) => theme::ROW_VALUE_INK_ON_DIM,
@@ -2268,6 +2409,30 @@ mod tests {
         let natural = M.width_str(LONG_VALUE, theme::size::LABEL, true);
         assert!(cols.value_w < natural, "the premise: the long value does not fit beside its label");
         assert!(cols.value_w > 0.0, "a value keeps a visible slot");
+    }
+
+    /// `fit_report` grades a board table's section header at its tracked width, the width the
+    /// draw elides against.
+    #[test]
+    fn fit_report_measures_a_board_header_tracked_as_the_draw_elides_it() {
+        use plx_base::fontcov::advances::ShippedMeasure as M;
+        use plx_machine::machine::Measure;
+        let header = "Video and playback settings";
+        let upper = header.to_uppercase();
+        let plain = M.width_str(&upper, theme::size::CAPTION, false);
+        let extra = plx_gfx::text::tracking_extra(&upper, BOARD_CAPS_TRACK_EM * theme::size::CAPTION as f32);
+        assert!(extra > 4.0, "the board tracks its caps ({extra}px for this header)");
+        // a frame whose column holds the header untracked, and not tracked
+        let frame_w = 2.0 * CONTENT_X + plain + extra * 0.5;
+        let flagged = |board: bool| {
+            let mut table = TableView::new();
+            table.compact = false;
+            table.board_metrics(board);
+            table.set_sections(vec![Section::new(header).row(Row::new("Row"))], 0, false);
+            table.fit_report(frame_w, &M, 1.0).iter().any(|i| i.role == FitRole::Header)
+        };
+        assert!(flagged(true), "a board header that only fits untracked would end in an ellipsis on the television");
+        assert!(!flagged(false), "a plain table's header is untracked and fits");
     }
 
     /// `fit_report` does not flag a short value that fits, and still flags one that does not.
@@ -2657,6 +2822,113 @@ mod tests {
         assert_eq!((cover_of(&t, 1), cover_of(&t, 0)), (1.0, 0.0), "settled: the new row is inked, the old is released");
     }
 
+    // ---- the ghost pill of a disabled row (Settings v2 HUD boards 4.4 / 4.5) --------------------
+
+    /// What a frame of `t` drew: the pill's effective alpha (the one tag-2 fill as wide as the pill) and the text
+    /// runs by their words.
+    fn ghost_frame(t: &TableView) -> (Option<f32>, Vec<crate::draw_census::Run>) {
+        let frame = Rect::new(0.0, 0.0, 900.0, 400.0);
+        let mut runs = Vec::new();
+        let inks = crate::draw_census::capture_inks(|| {
+            runs = crate::draw_census::capture_runs(|| t.draw(crate::Painter::recording(), frame, &crate::fixture::FixtureMeasure));
+        });
+        let pill = inks.into_iter().find(|(tag, r, _)| *tag == 2 && (r.w - (frame.w - 2.0 * SIDE)).abs() < 0.5).map(|(_, _, a)| a);
+        (pill, runs)
+    }
+
+    fn ink_of(runs: &[crate::draw_census::Run], text: &str) -> [f32; 4] {
+        runs.iter().find(|r| r.text == text).unwrap_or_else(|| panic!("{text:?} not drawn: {runs:?}")).ink
+    }
+
+    /// Rows `Live` and `Gone` (disabled, its reason as the value) with focus on row `sel`.
+    fn ghost_rows(sel: i32, disabled: bool) -> TableView {
+        let mut t = TableView::new();
+        let gone = Row::new("Gone").value("Withdrawn").badge(Badge::Sdh).disabled(disabled);
+        t.set_sections(vec![Section::new("S").row(Row::new("Live").value("On")).row(gone)], sel, false);
+        t
+    }
+
+    /// **A disabled row under the focus pill is a GHOST**, not the solid pill with near-black ink: the pill is the
+    /// faint overlay, the label reads at the secondary ink and the reason at the tertiary. The same row off the pill
+    /// is the dim row it always was, and a usable row under the solid pill is unchanged.
+    #[test]
+    fn a_disabled_row_under_the_pill_draws_a_ghost_and_not_the_solid_focus() {
+        let _serial = plx_base::testlock::serial();
+        let (solid_pill, solid) = ghost_frame(&ghost_rows(0, true));
+        assert_eq!(solid_pill, Some(crate::ACCENT[3]), "a usable row is under the solid pill");
+        assert_eq!(ink_of(&solid, "Live"), crate::ACCENT_INK, "and its label is the pill's near-black ink");
+        assert_eq!(ink_of(&solid, "Gone"), theme::TEXT_TERTIARY, "the disabled row off the pill is the dim row");
+        assert_eq!(ink_of(&solid, "Withdrawn"), theme::ROW_VALUE_INK_DIM, "and its reason is the dim row's, as the doc says");
+
+        let (ghost_pill, ghost) = ghost_frame(&ghost_rows(1, true));
+        // the ghost alpha is a lerp that lands within an ulp of the constant, not on it
+        assert!((ghost_pill.unwrap() - theme::OVERLAY_FOCUS_PILL[3]).abs() < 1e-5, "the pill under a disabled row is the ghost: {ghost_pill:?}");
+        assert!(ghost_pill < solid_pill);
+        assert_eq!(ink_of(&ghost, "Gone"), theme::TEXT_SECONDARY, "its label stays light on the ghost pill");
+        assert_eq!(ink_of(&ghost, "Withdrawn"), theme::TEXT_TERTIARY, "and its reason stays quiet");
+        assert_eq!(ink_of(&ghost, Badge::Sdh.text()), theme::TEXT_SECONDARY, "and so does its chip's label");
+        // the chip keeps its rest ground and keyline under the ghost; a usable row's chip over the solid pill takes the pill's
+        let ink = crate::ACCENT_INK;
+        assert_eq!(chip_ground(&Row::new("x").disabled(true), 1.0, ink), (theme::OVERLAY_BORDER, PANEL_BG));
+        assert_ne!(chip_ground(&Row::new("x").disabled(true), 1.0, ink).1, crate::ACCENT, "not the solid pill's fill");
+        assert_ne!(chip_ground(&Row::new("x").disabled(true), 1.0, ink).0, ink, "nor its near-black ring");
+        assert_eq!(chip_ground(&Row::new("x"), 1.0, ink), (ink, crate::ACCENT), "a usable row's chip is unchanged");
+        assert_eq!(chip_ground(&Row::new("x"), 0.0, ink), (theme::OVERLAY_BORDER, PANEL_BG));
+        assert_ne!(ink_of(&ghost, "Gone"), crate::ACCENT_INK, "not the solid pill's near-black, which reads as pressable");
+
+        // the same row, not disabled (a plain dim one), is under the solid pill with the near-black ink
+        let mut dimmed = ghost_rows(1, false);
+        dimmed.sections[0].rows[1].dim = true;
+        let (dim_pill, dim) = ghost_frame(&dimmed);
+        assert_eq!(dim_pill, Some(crate::ACCENT[3]));
+        assert_eq!(ink_of(&dim, "Gone"), crate::ACCENT_INK);
+    }
+
+    /// **A table with no disabled row draws exactly what it drew**: the pill is `ACCENT` itself (no crossing), every
+    /// ink is the one it always was, and the walk that finds the ghost is skipped.
+    #[test]
+    fn a_table_that_never_opts_in_draws_as_before() {
+        let _serial = plx_base::testlock::serial();
+        let t = ghost_rows(1, false);
+        assert_eq!(t.ghost_cover(), 0.0);
+        let (pill, runs) = ghost_frame(&t);
+        assert_eq!(pill, Some(crate::ACCENT[3]));
+        assert_eq!(ink_of(&runs, "Gone"), crate::ACCENT_INK);
+        assert_eq!(ink_of(&runs, "Withdrawn"), theme::ROW_VALUE_INK_ON, "a read-out over the solid pill is the quiet rung of its ink");
+        assert_eq!(ink_of(&runs, "Live"), theme::TEXT_PRIMARY);
+    }
+
+    /// **The pill changes fill as it ARRIVES**, by the coverage rule the ink uses: solid while it is still on the live
+    /// row, ghost once it has settled on the disabled one, and in between a monotonic crossing.
+    #[test]
+    fn the_pill_crosses_to_the_ghost_as_it_arrives_on_a_disabled_row() {
+        let _serial = plx_base::testlock::serial();
+        let mut t = ghost_rows(0, true);
+        assert_eq!(t.ghost_cover(), 0.0, "settled on the live row: solid");
+        t.move_sel(1);
+        t.update(1.0 / 60.0, 600.0);
+        assert_eq!(t.ghost_cover(), 0.0, "one frame in the pill has not reached the disabled row");
+        let mut prev = 0.0f32;
+        let mut between = false;
+        for _ in 0..240 {
+            t.update(1.0 / 60.0, 600.0);
+            let g = t.ghost_cover();
+            assert!(g + 1e-4 >= prev, "the ghost only grows as the pill arrives: {prev} -> {g}");
+            between |= g > 0.0 && g < 1.0;
+            prev = g;
+        }
+        assert!(between, "the premise: some frame is part way");
+        assert_eq!(t.ghost_cover(), 1.0, "settled on the disabled row: all ghost");
+        t.move_sel(-1);
+        for _ in 0..240 {
+            t.update(1.0 / 60.0, 600.0);
+        }
+        assert_eq!(t.ghost_cover(), 0.0, "and back to solid");
+        t.list_focused = false;
+        t.move_sel(1);
+        assert_eq!(t.ghost_cover(), 0.0, "a table that holds no focus draws no pill, so no ghost");
+    }
+
     /// A table that does not hold focus draws no pill, so no row is inked for one.
     #[test]
     fn an_unfocused_table_inks_no_row() {
@@ -2787,5 +3059,82 @@ mod tests {
         let value = runs.iter().find(|r| r.text == "All" && r.bold).expect("read-out painted");
         assert_eq!(value.align, 2, "the read-out is right-aligned at its anchor");
         assert!((value.at.x + ACCESSORY_GAP - first.0).abs() < 0.5, "read-out ends a gap before the first chip {first:?}: {value:?}");
+    }
+
+    fn three_sections(board: bool) -> TableView {
+        let mut t = TableView::new();
+        t.board_metrics(board);
+        t.set_sections(
+            vec![
+                Section::new("One").row(Row::new("a")).row(Row::new("b")),
+                Section::new("Two").row(Row::new("c")),
+                Section::new("Three").row(Row::new("d")),
+            ],
+            0,
+            false,
+        );
+        t
+    }
+
+    /// **A board table's section break is the design system's 26** (12 margin + 2 hairline + 12
+    /// margin), the hairline 14 above the next header; every other table keeps its 24 and the
+    /// hairline 12 above. Nothing else in the walk moves.
+    #[test]
+    fn a_board_table_breaks_sections_by_26_and_every_other_table_by_24() {
+        let walk = |t: &TableView| {
+            let (mut headers, mut dividers) = (Vec::new(), Vec::new());
+            t.walk(|y, gi, _| match gi {
+                -1 => headers.push(y),
+                WALK_DIVIDER => dividers.push(y),
+                _ => {}
+            });
+            (headers, dividers)
+        };
+        let (plain, plain_div) = (three_sections(false), three_sections(false));
+        let (h, d) = walk(&plain);
+        assert_eq!(h, vec![0.0, 2.0 * ROW_H + HDR_H + 24.0, 3.0 * ROW_H + 2.0 * HDR_H + 48.0]);
+        assert_eq!(d.len(), 2);
+        assert_eq!(plain_div.divider_dy(), -12.0);
+        let board = three_sections(true);
+        let (h, d) = walk(&board);
+        assert_eq!(h, vec![0.0, 2.0 * ROW_H + HDR_H + 26.0, 3.0 * ROW_H + 2.0 * HDR_H + 52.0]);
+        assert_eq!(d.len(), 2);
+        assert_eq!(board.divider_dy(), -14.0, "12 of margin above the 2px hairline, 12 below");
+        assert_eq!(board.measured_height(), plain.measured_height() + 4.0, "two breaks, 2px each");
+    }
+
+    /// **A board header's caps stand where a 24px `line-height: 1` CSS line centred in the 40px
+    /// band puts them (about 11 under the band top, not 8) and are tracked `.06em`.** A default
+    /// table keeps `HEADER_CAP_INSET` and no tracking.
+    #[test]
+    fn a_board_header_is_set_in_its_css_line_and_tracked_caps() {
+        let m = &plx_base::fontcov::advances::ShippedMeasure;
+        let (plain, board) = (three_sections(false), three_sections(true));
+        assert_eq!(plain.header_cap_inset(m), HEADER_CAP_INSET);
+        assert_eq!(plain.header_tracking(), 0.0);
+        let inset = board.header_cap_inset(m);
+        assert!((10.0..12.0).contains(&inset), "cap top {inset} under the header band");
+        assert!((board.header_tracking() - 1.44).abs() < 1e-4);
+    }
+
+    /// **A board row's trailing run is a flex row of boxes `--space-sm` apart: the chevron's 26px
+    /// BOX ends on the content edge and the read-out ends 16 before it.** A default table's read-out
+    /// still ends `ACCESSORY_GAP` before the chevron's INK (the test above).
+    #[test]
+    fn a_board_rows_chevron_box_ends_on_the_content_edge_and_the_readout_a_space_sm_before_it() {
+        let _serial = plx_base::testlock::serial();
+        let m = &plx_base::fontcov::advances::ShippedMeasure;
+        let frame = Rect::new(0.0, 0.0, 900.0, 300.0);
+        let text_right = frame.x + frame.w - SIDE - CONTENT_PAD;
+        let readout_edge = |board: bool| {
+            let mut t = TableView::new();
+            t.board_metrics(board);
+            t.set_sections(vec![Section::new("S").row(Row::new("a").value("All").chevron(true))], 0, false);
+            let runs = crate::draw_census::capture_runs(|| t.draw(crate::Painter::recording(), frame, m));
+            runs.iter().find(|r| r.text == "All" && r.bold).expect("read-out painted").at.x
+        };
+        assert!((readout_edge(true) - (text_right - ACCESSORY_ICON_W - theme::space::SM)).abs() < 0.5);
+        let (l, r) = crate::icons::ink_x(crate::icons::Icon::Chevron);
+        assert!((readout_edge(false) - (text_right - (r - l) * ACCESSORY_ICON_W - ACCESSORY_GAP)).abs() < 0.5);
     }
 }

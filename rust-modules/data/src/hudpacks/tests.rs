@@ -1378,12 +1378,132 @@ fn a_fetched_higher_version_replaces_the_installed_one() {
     assert!(!r.files.contains_key(&pack_path(0, old_sha)), "the replaced pack is deleted");
 }
 
+// ---- re-fetch a dev source (PR15) ----
+
+const DEV_URL: &str = "http://192.168.1.20:8123/hud.plxhud";
+
+/// Fetch `text` and confirm the offer, the way the Settings page does.
+fn fetch_and_confirm(r: &mut Rig, text: &str, bytes: &[u8], now: u64) {
+    assert_eq!(r.send(HudEvent::Fetch { address: address(text) }), Handled::Yes);
+    assert_eq!(r.send(HudEvent::InstallOffer { sha: Sha::of(bytes), now }), Handled::Yes);
+    assert!(!r.m.busy());
+}
+
+/// The address a package came from is recorded for a development source only: the `http://` address of a
+/// machine on the home network. A published address, a drop file and the registry record none, and the
+/// index a store writes without a development source is the one it always wrote.
+#[test]
+fn an_install_from_a_dev_source_records_its_address_and_no_other_install_does() {
+    let dev = pack("org.example.dev", "1.0.0");
+    let published = pack("org.example.published", "1.0.0");
+    let dropped = pack("org.example.dropped", "1.0.0");
+    let registry = pack("org.example.registry", "1.0.0");
+    let mut r = Rig::new();
+    r.network.insert(DEV_URL.to_owned(), Ok(dev.clone()));
+    r.network.insert(HUD_URL.to_owned(), Ok(published.clone()));
+    r.refresh();
+    fetch_and_confirm(&mut r, "gh:org/hud", &published, 5);
+    fetch_and_confirm(&mut r, DEV_URL, &dev, 6);
+    r.install(&dropped, Source::Drop, 7);
+    r.install(&registry, Source::Registry, 8);
+
+    assert_eq!(r.entry("org.example.dev").dev_source, Some(address(DEV_URL)));
+    for id in ["org.example.published", "org.example.dropped", "org.example.registry"] {
+        assert_eq!(r.entry(id).dev_source, None, "{id}");
+    }
+    assert_eq!(r.entry(BUILTIN_CLASSIC).dev_source, None);
+    let packs = packs_of(&r, 0);
+    assert_eq!(packs["org.example.dev"]["from"], DEV_URL);
+    for id in ["org.example.published", "org.example.dropped", "org.example.registry"] {
+        assert!(packs[id].get("from").is_none(), "{id} carries no address: {:?}", packs[id]);
+    }
+}
+
+/// The address is state like the rest of the record: a store that starts from the disk it left lists the
+/// package with it, and fetching that address asks the network lane for the recorded URL, again.
+#[test]
+fn the_recorded_address_is_read_back_and_fetches_the_next_build() {
+    let first = pack("org.example.dev", "1.0.0");
+    let next = pack("org.example.dev", "1.0.1");
+    let mut r = Rig::new();
+    r.network.insert(DEV_URL.to_owned(), Ok(first.clone()));
+    r.refresh();
+    fetch_and_confirm(&mut r, DEV_URL, &first, 5);
+
+    // A restart: a new store over the files the first one wrote.
+    let mut again = Rig::new();
+    again.files = r.files.clone();
+    again.network.insert(DEV_URL.to_owned(), Ok(next.clone()));
+    again.refresh();
+    let recorded = again.entry("org.example.dev").dev_source.expect("the address survives a restart");
+    assert_eq!((recorded.url(), recorded.host(), recorded.dev_source()), (DEV_URL, "192.168.1.20", true));
+
+    let mark = again.log.len();
+    assert_eq!(again.send(HudEvent::Fetch { address: recorded }), Handled::Yes);
+    assert_eq!(again.lines(mark), [format!("fetch {DEV_URL}"), format!("validate {}", Sha::of(&next).hex())]);
+    assert!(again.m.offer().is_some_and(|offer| offer.meta.version == "1.0.1" && offer.source == Source::Address));
+    assert_eq!(again.entry("org.example.dev").sha, Some(Sha::of(&first)), "nothing is installed before the viewer confirms");
+    assert_eq!(again.send(HudEvent::InstallOffer { sha: Sha::of(&next), now: 9 }), Handled::Yes);
+    let entry = again.entry("org.example.dev");
+    assert_eq!((entry.sha, entry.meta.map(|m| m.version)), (Some(Sha::of(&next)), Some("1.0.1".to_owned())));
+    assert_eq!(entry.dev_source, Some(address(DEV_URL)), "the next build is still the development one");
+}
+
+/// A package that a later install replaces from somewhere else is no longer a development one.
+#[test]
+fn an_install_from_elsewhere_forgets_the_dev_address() {
+    let dev = pack("org.example.hud", "1.0.0");
+    let released = pack("org.example.hud", "2.0.0");
+    let mut r = Rig::new();
+    r.network.insert(DEV_URL.to_owned(), Ok(dev.clone()));
+    r.network.insert(HUD_URL.to_owned(), Ok(released.clone()));
+    r.refresh();
+    fetch_and_confirm(&mut r, DEV_URL, &dev, 5);
+    assert!(r.entry("org.example.hud").dev_source.is_some());
+    fetch_and_confirm(&mut r, "gh:org/hud", &released, 6);
+    assert_eq!(r.entry("org.example.hud").dev_source, None);
+    assert!(packs_of(&r, 0)["org.example.hud"].get("from").is_none());
+}
+
+/// The store trusts the disk it reads, and fails closed on an address it would not have recorded: one
+/// that is not a development source, or that sits on a record from another source, or that is no address.
+/// The package is listed all the same, and the index stays writable.
+#[test]
+fn an_address_the_store_would_not_have_recorded_is_not_a_dev_source() {
+    let a = pack("org.example.a", "1.0.0");
+    let sha = Sha::of(&a).hex();
+    let index = |source: &str, from: &str| {
+        format!(r#"{{"v":1,"packs":{{"org.example.a":{{"sha":"{sha}","source":"{source}","at":1,"package_format":"1.0","hud_format":"1.0","from":{from}}}}}}}"#)
+    };
+    let dev = format!("\"{DEV_URL}\"");
+    let cases = [
+        ("address", dev.clone(), true),
+        ("address", format!("\"{HUD_URL}\""), false),
+        ("address", "\"http://8.8.8.8/hud.plxhud\"".to_owned(), false),
+        ("address", "\"http://printer.local/hud.plxhud\"".to_owned(), false),
+        ("address", "\"not an address\"".to_owned(), false),
+        ("address", "\"\"".to_owned(), false),
+        ("registry", dev.clone(), false),
+        ("drop", dev, false),
+    ];
+    for (source, from, expect) in cases {
+        let mut r = rig_with_index(index(source, &from), &a);
+        r.refresh();
+        let entry = r.entry("org.example.a");
+        assert_eq!(entry.dev_source.is_some(), expect, "{source} {from}");
+        assert_eq!(entry.sha.map(|s| s.hex()), Some(sha.clone()), "the package is listed: {source} {from}");
+        let other = pack("org.example.b", "1.0.0");
+        r.install(&other, Source::Drop, 2);
+        assert!(r.entry("org.example.b").sha.is_some(), "the index is not read-only: {source} {from}");
+    }
+}
+
 fn registry_fixture(bytes: &[u8], revoked: bool) -> Vec<u8> {
     let meta = match validator(bytes) { Verdict::Loadable(meta) => meta, _ => panic!("fixture") };
     let sha = Sha::of(bytes).hex();
     let art = "b".repeat(64);
     let base = catalog::ORIGIN;
-    serde_json::to_vec(&serde_json::json!({"format":1,"entries":[{
+    serde_json::to_vec(&serde_json::json!({"format":1,"serial":1000,"entries":[{
         "id":meta.id,"name":meta.name,"version":meta.version,"package_format":"1.0","hud_format":"1.0",
         "author":"Author","license":"CC0-1.0","app":{},"sha256":sha,"bytes":bytes.len(),
         "url":format!("{base}/p/{sha}.plxhud"),"unfit":[],
@@ -1397,7 +1517,8 @@ fn publish_catalog(store: &mut HudStore, bytes: Vec<u8>) -> Vec<HudEffect> {
     store.step(HudEvent::Catalog(catalog::Event::Open {candidates:vec![],now:10}),&mut fx);
     let tag=fx.iter().find_map(|e| match e {HudEffect::Catalog(catalog::CatalogEffect::Get {tag,..})=>Some(*tag),_=>None}).unwrap();
     fx.clear();
-    store.step(HudEvent::Catalog(catalog::Event::Reply {tag,result:Ok(catalog::Reply::http(200,None,bytes))}),&mut fx);
+    let signed=catalog::testing::sign(&bytes);
+    store.step(HudEvent::Catalog(catalog::Event::Reply {tag,result:Ok(catalog::Reply::http(200,None,&signed,&catalog::testing::keys()))}),&mut fx);
     fx
 }
 

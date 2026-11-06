@@ -1,0 +1,10 @@
+{
+  "widgets.reason.jail_help": "La reparació requereix un televisor amb accés root i Homebrew Channel. Ajuda: github.com/tiper/fin-native/blob/main/docs/native-video-sandbox.md.",
+  "widgets.repair.question": "Vols reparar l'entorn aïllat de FinNative?",
+  "widgets.repair.body": "Utilitza l'accés root de Homebrew Channel per actualitzar l'entorn aïllat de FinNative amb el perfil natiu de LG. Cal un televisor amb accés root. Després, tanca i torna a obrir FinNative.",
+  "widgets.repair.reopen": "Tanca i torna a obrir FinNative abans de reproduir vídeos.",
+  "widgets.repair.start_failed": "No s'ha pogut iniciar la reparació. Tanca i torna a obrir FinNative per tornar-ho a provar.",
+  "widgets.tracks.enh_note_burn": "Els subtítols es mantenen. El teu servidor tornarà a processar el vídeo per conservar-los, i la imatge pot perdre una mica de nitidesa.",
+  "widgets.tracks.enh_reason_not_analyzed": "Aquest vídeo encara no està preparat. El teu servidor primer ha d'analitzar-ne l'àudio.",
+  "widgets.tracks.enh_reason_refused": "El teu servidor no ha pogut activar aquesta funció per a aquest vídeo."
+}

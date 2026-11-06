@@ -23,5 +23,9 @@
   "browse.jf.favorite_add": "Aggiungi ai preferiti",
   "browse.jf.favorite_remove": "Rimuovi dai preferiti",
   "browse.jf.favorites": "Preferiti",
-  "browse.auth.sign_in_again": "Il server non accetta più l’accesso di {profile}. Accedi di nuovo con Aggiungi utente."
+  "browse.auth.sign_in_again": "Il server non accetta più l’accesso di {profile}. Accedi di nuovo con Aggiungi utente.",
+  "browse.home.failed": "Server non raggiungibile",
+  "browse.login.title": "Accedi a Jellyfin",
+  "browse.login.instructions": "Sul telefono o sul computer apri Jellyfin, vai a Quick Connect nelle impostazioni utente e inserisci questo codice. Puoi anche scansionare il codice per aprire quella pagina.",
+  "browse.login.connecting": "Connessione a Jellyfin in corso…"
 }

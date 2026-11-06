@@ -883,26 +883,28 @@ fn a_rebuild_keeps_the_row_by_id_and_a_vanished_row_falls_to_its_neighbour() {
     }
 }
 
+/// The root keeps ONE Diagnostics row (Settings v2) whose value is the recording switch, Off or On;
+/// the status the runner answers drives that value, and the trace rows live one page down
+/// (`settings_diagnostics.rs`, `settings_v2_tests.rs`).
 #[test]
-fn playback_diagnostics_requests_are_effects_and_answered_status_drives_the_toggle() {
+fn the_root_diagnostics_row_reads_the_status_the_runner_answers() {
+    use plx_platform::playback_trace::Status;
     let _serial = plx_base::testlock::serial();
     let mut root = RootPage::new(EntryId(0), cx(None).views.directory);
     let mut present = plx_machine::present::Present::new();
     let mut out = Vec::new();
     let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(0)), &mut present);
-    root.activate(root_key(RootId::PlaybackTrace), cx(None).views.directory, &mut fx);
-    assert_eq!(root.state.trace, plx_platform::playback_trace::Status::Off,
-        "a press must not claim a recording before the runner answers");
-    assert!(out.iter().any(|s| matches!(s.fx, Fx::App(AppFx::PlaybackTrace(
-        plx_platform::playback_trace::Command::Start)))));
-    out.clear();
-    let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(0)), &mut present);
-    root.step(&ScreenEvent::App(super::super::registry::AppMsg::PlaybackTrace(
-        plx_platform::playback_trace::Status::Recording)), &cx(None), &mut fx);
-    assert_eq!(root.state.trace, plx_platform::playback_trace::Status::Recording);
-    root.activate(root_key(RootId::PlaybackTrace), cx(None).views.directory, &mut fx);
-    assert!(out.iter().any(|s| matches!(s.fx, Fx::App(AppFx::PlaybackTrace(
-        plx_platform::playback_trace::Command::Stop)))));
+    assert_eq!(root.state.trace, Status::Off);
+    root.step(&ScreenEvent::App(super::super::registry::AppMsg::PlaybackTrace(Status::Recording)), &cx(None), &mut fx);
+    assert_eq!(root.state.trace, Status::Recording);
+    assert_eq!(diagnostics::root_value(Status::Recording), plx_platform::i18n::msg::widgets_toggle_on());
+    for not_recording in [Status::Off, Status::Saved, Status::Saving, Status::Exported, Status::Unavailable, Status::Failed] {
+        assert_eq!(diagnostics::root_value(not_recording), plx_platform::i18n::msg::widgets_toggle_off(),
+            "{not_recording:?} is not a recording, and Off is the toggle's own word");
+    }
+    // opening it is a Nav row's own job, and no root row dispatches a trace command any more
+    let index = root.form.index_of_key(RowKey(root_key(RootId::Diagnostics))).expect("the Diagnostics row");
+    assert!(matches!(root.form.activate(index), Some(Activation::Push(SettingsPage::Diagnostics))));
 }
 
 fn hud_return_to_player_hud(remove: bool) {
@@ -912,11 +914,11 @@ fn hud_return_to_player_hud(remove: bool) {
     let _g=plx_base::testlock::serial();let _session=scratch_session("hud-ancestor-return");
     let index=plx_data::hudpacks::catalog::parse(include_bytes!("../../../tests/fixtures/hud-gallery/index.json")).unwrap();
     let p=index.entries[0].clone();let sha=p.sha();
-    let list=HudList {gallery_enabled:true,app_version:"0.10.0".into(),language_tag:"en".into(),
+    let list=HudList {app_version:"0.10.0".into(),language_tag:"en".into(),
         catalog:plx_data::hudpacks::catalog::Snapshot {index:Some(std::sync::Arc::new(index)),..Default::default()},
-        entries:vec![Entry {id:BUILTIN_CLASSIC.into(),meta:None,sha:None,source:None,trust:Trust::BuiltIn,loadable:Ok(()),until_restart:false,selected:true},
+        entries:vec![Entry {id:BUILTIN_CLASSIC.into(),meta:None,sha:None,source:None,trust:Trust::BuiltIn,loadable:Ok(()),until_restart:false,selected:true,dev_source:None},
             Entry {id:p.id.clone(),meta:Some(Meta {id:p.id.clone(),name:p.name.clone(),version:p.version,package_format:p.package_format,hud_format:p.hud_format}),
-                sha:Some(sha),source:Some(Source::Registry),trust:Trust::Registry,loadable:Ok(()),until_restart:false,selected:false}],..HudList::default()};
+                sha:Some(sha),source:Some(Source::Registry),trust:Trust::Registry,loadable:Ok(()),until_restart:false,selected:false,dev_source:None}],..HudList::default()};
     let outer=EntryId(987);let mut s=RouteSurface::new(outer,InstanceId(4),Family::Settings,SettingsPage::Root);
     step(&mut s,ScreenEvent::Mount,None);
     let pages=if remove {vec![SettingsPage::Playback,SettingsPage::PlayerHud,SettingsPage::HudGallery,SettingsPage::HudDetail(sha),SettingsPage::HudAbout(sha)]}

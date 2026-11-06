@@ -1,0 +1,140 @@
+name: Fuzz the HUD parsers
+
+# The `cargo fuzz` package in `fuzz/` (docs/hud-plugins.md, "Fuzzing"): one libFuzzer target over each parser
+# a HUD package or the registry reaches. It is not part of the rust-modules workspace, so nothing in `ci.yml`
+# compiles it; this workflow is what keeps it from rotting, and the only place it is fuzzed for longer than
+# a smoke test.
+#
+#   pull_request   a PR that touches the fuzz package, its tool, or a parser it targets BUILDS every target on
+#                  the pinned nightly and runs each for 10 seconds from its seeds. That catches a parser
+#                  change that breaks a target's assertion, or an API change that stops the package compiling,
+#                  before it lands. It starts only for those paths, and `ci.yml`'s required checks do not wait
+#                  for it (it is not one of them), so it adds no minutes to a PR's critical path.
+#   schedule       weekly: every target for 5 minutes, resuming from the corpus the previous run left when the
+#                  Actions cache still holds it (a cache only this workflow reads; GitHub evicts the least
+#                  recently used entries, and any entry unused for 7 days, so a run may start from the seeds
+#                  again). A crash fails the run and uploads the input.
+#   workflow_dispatch   the same, with the time per target and an optional target chosen by hand.
+#
+# WHY NOT ON EVERY PR. A cold build of the instrumented binaries takes minutes on a hosted runner and the long
+# run takes ~45; neither belongs behind a documentation edit. The path filter below is the list of files whose
+# change can alter what a target sees or whether the package compiles.
+#
+# WHY A DATED NIGHTLY. `cargo fuzz` needs the sanitizer and coverage flags only a nightly accepts. `nightly`
+# moves every day, so a rustc regression would turn this workflow red for no change of ours, and "toolchains
+# named exactly" is this repository's rule (rust-modules/rust-toolchain.toml pins the stable one). Bump the date
+# below by hand when a newer nightly is wanted: Dependabot does not read it.
+#
+# CACHES. The build tree (3 GiB with debuginfo) is NOT cached: the repository's Actions cache is 10 GB and
+# is already evicting (cache-cleanup.yml), and the scheduled run is weekly. What is cached is small: the cargo
+# registry and the installed `cargo-fuzz` (rust-cache with `cache-targets: false`, on the `fuzz` package, whose
+# lock the tool seeds first so the cache key follows the shipped lock) and the corpus (tens of MB).
+#
+# THE TIMEOUT. The run step stops itself at 100 minutes, inside the job's 120: a dispatch asked for more
+# time than fits then FAILS that step instead of cancelling the job, so the corpus save and the crash upload
+# below (`!cancelled()`, `failure()`) still run.
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/fuzz.yml'
+      - 'fuzz/**'
+      - 'tools/fuzz-hud.py'
+      - 'rust-modules/appkit/src/hud_format.rs'
+      - 'rust-modules/appkit/src/hud_format/**'
+      - 'rust-modules/data/src/hudpacks.rs'
+      - 'rust-modules/data/src/hudpacks/**'
+      - 'rust-modules/ui/src/rec/strict_json.rs'
+      - 'rust-modules/build_support/host_link.rs'
+      - 'rust-modules/Cargo.lock'
+      - 'site/hud/schema/**'
+      - 'site/hud/examples/**'
+  schedule:
+    - cron: '47 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      secs:
+        description: 'Seconds per target (8 targets run one after another; the step stops at 100 minutes)'
+        type: string
+        default: '300'
+      target:
+        description: 'One target (admit, bundle_read, archive_read, svg_check, address_parse, catalog_parse, catalog_verify, catalog_cache); empty runs all'
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  # A newer push to the same PR replaces its run; the weekly run and a manual one never cancel each other.
+  group: fuzz-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # The nightly `cargo fuzz` builds with. tools/fuzz-hud.py reads it (default: the local `nightly`).
+  FUZZ_TOOLCHAIN: nightly-2026-10-03
+  CARGO_FUZZ_VERSION: 0.13.2
+
+jobs:
+  fuzz:
+    name: build every target and fuzz
+    # A fork's scheduled run would fuzz for nobody; a fork's PR is still built.
+    if: github.event_name == 'pull_request' || github.repository == 'GLinnik21/plx-native'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Cache the pinned downloads
+        # host_link.rs stages the pinned nanosvg headers (ci/deps.py) for the SVG rasteriser the package links.
+        uses: ./.github/actions/deps-cache
+      - name: Install the desktop SDL/GL libraries the instrumented binaries LINK against
+        uses: ./.github/actions/apt-install
+        with:
+          packages: libsdl2-dev libsdl2-ttf-dev libgl1-mesa-dev pkg-config
+      - name: Install the fuzzing nightly
+        run: |
+          rustup toolchain install "$FUZZ_TOOLCHAIN" --profile minimal
+          rustup run "$FUZZ_TOOLCHAIN" rustc --version --verbose
+      - name: Seed the fuzz package's lock
+        # rust-cache keys on, and prunes the registry to, the lock of its workspace: this is the copy of the
+        # shipped lock `make fuzz-hud` would make, so the key follows rust-modules/Cargo.lock.
+        run: python3 tools/fuzz-hud.py lock
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          # `fuzz` is the one directory with a Cargo.toml (the repository root has none). No target dir: see
+          # CACHES above. This keeps ~/.cargo/registry and ~/.cargo/bin (cargo-fuzz).
+          workspaces: fuzz -> ../rust-modules/target-fuzz
+          cache-targets: false
+          key: fuzz-hud
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked --version "$CARGO_FUZZ_VERSION"
+      - name: Restore the corpus the last long run left
+        if: github.event_name != 'pull_request'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz/corpus
+          key: fuzz-corpus-${{ github.run_id }}
+          restore-keys: fuzz-corpus-
+      - name: Build every target, then run each for a bounded time
+        timeout-minutes: 100
+        env:
+          # 10 s per target on a PR, 5 minutes weekly, what was asked for on a dispatch.
+          SECS: ${{ github.event_name == 'pull_request' && '10' || (github.event_name == 'schedule' && '300' || inputs.secs) }}
+          TARGET: ${{ inputs.target }}
+        run: make fuzz-hud SECS="$SECS" T="$TARGET"
+      - name: Save the corpus for the next long run
+        if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz/corpus
+          key: fuzz-corpus-${{ github.run_id }}
+      - name: Keep the inputs that crashed a target
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/
+          if-no-files-found: ignore
+          retention-days: 90

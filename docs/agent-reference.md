@@ -328,6 +328,29 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   `CARGO_TARGET_DIR` at a `/tmp` directory: those trees were not in any checkout, so no tool
   counted or reclaimed them (28 of them, 45.6 GiB, were found in `/tmp` on 2026-10-19). Refused
   under `RELEASE=1`; `ci/test_managed_targets.py` pins that the target dir is inside the checkout.
+- `make fuzz-hud [T=<target> ...] [SECS=60]` — the `cargo fuzz` package over every parser a HUD package or the
+  registry reaches (`docs/hud-plugins.md`, threat model): `admit` (the whole admission path),
+  `bundle_read`, `archive_read` (the 1.0 ZIP container), `svg_check` (the SVG gate in front of nanosvg),
+  `address_parse`, `catalog_parse` (the registry index), `catalog_verify` (the signed index: no input is accepted
+  under the shipped keys; the fuzzer's bytes are also signed with the data layer's TEST ONLY keys to reach what
+  follows the signature check) and `catalog_cache` (its cache record, verified again). Each target
+  asserts only what its code promises (no panic, the documented bounds, round trips) and a crash fails the
+  run, with the input in `fuzz/artifacts/<target>/`. The package is a top-level `fuzz/` with its own
+  `[workspace]`, so no shipped `Cargo.toml` names it and no shipped build changes; it depends on the layer
+  crates by path, with `plx_media/hostsim` (the one configuration that links on a host), and `fuzz/build.rs`
+  reuses `rust-modules/build_support/host_link.rs`. `tools/fuzz-hud.py` is the whole workflow
+  (`list | seed | lock | build | run`): it copies `rust-modules/Cargo.lock` to the gitignored `fuzz/Cargo.lock`
+  (the shared crates are exactly the shipped versions), builds with the nightly named by `FUZZ_TOOLCHAIN`
+  (default `nightly`; CI names a dated one; `cargo install cargo-fuzz --locked` once) in
+  `rust-modules/target-fuzz` (3.1 GiB after a cold build; `make disk` lists it), generates the seeds from
+  the fixtures, the examples and the icons the repository already has plus a dictionary from the published
+  schemas, and runs the targets one after another. A corpus is thousands of tiny files read and written all
+  run long: on a slow or shared disk (the external one a lane may sit on) set `FUZZ_WORK=<dir>` to move seeds,
+  corpora and artifacts to a fast one, or a 5 minute run spends its first two loading the corpus. Minimise a
+  crash with `cargo +nightly fuzz tmin --fuzz-dir fuzz --target-dir rust-modules/target-fuzz <target> <file>`,
+  add it as a red-first test in the owning crate, then fix the code. `.github/workflows/fuzz.yml` builds
+  every target and runs each for 10 s on a PR that touches the package or a parser, and runs each for 5
+  minutes weekly, resuming from a cached corpus when the cache still holds one. Not a gate: nothing in `make check` runs it.
 - `make check-nodef` — the shipping-feature-set type check, `cargo check --lib
   --no-default-features`, which is the configuration `RELEASE=1` ships and which `make check` does
   not cover. `CARGO_INCREMENTAL=0`, as every one-shot gate. It builds in the checkout's own
@@ -1338,6 +1361,16 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   and queue is capped, and there is no filesystem serving or subprocess. `tools/plxnative-lab
   selftest` proves upload, ordered redelivery/ack and refusal paths on loopback with no television,
   and runs inside `make check`.
+- `tools/hud-dev` — **Player HUD authoring server** (host-side, python3 stdlib only; on a Mac run it with
+  `/usr/bin/python3`, the interpreter the application firewall allows by default; any other python is dropped
+  silently until its "allow incoming connections?" prompt is clicked, as for `tools/netcond.py` below):
+  `tools/hud-dev SOURCE --sim PATH [--port N]` packs a HUD source folder or `.plxhud` with `tools/hud_package.py` (the simulator's `--hud-pack`),
+  lints it with `--hud-lint` on every mtime change, serves the last CLEAN bundle on `0.0.0.0` at a
+  `http://<RFC 1918 address>:<port>/<name>.plxhud` it prints (and refuses to start without such an address), and
+  raises the served patch version on every clean change (numeric `MAJOR.MINOR.PATCH` is all the store compares). It
+  touches no TV: the TV side is Settings > Player HUD > Install from address, then Play on the HUD's row to fetch the
+  next build. `tests/test_hud_dev.py` (a stub simulator, loopback port 0) is in `ci/check-python-steps.txt`; the
+  recipe is `site/hud/AUTHORING.md`, "Developing a HUD on the TV".
 - `tools/netcond.py` — **network-conditioning TCP proxy** (host-side), for the failures a healthy LAN
   cannot produce. Sits between the TV and the PMS (`--listen 32499 --target 127.0.0.1:32400
   --allow-client <TV_IP>`; the PMS runs on the dev Mac) and makes the server misbehave on demand

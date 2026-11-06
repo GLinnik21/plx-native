@@ -36,6 +36,14 @@ plx_telemetry = { path = "../telemetry" }
 # `rc`: Home cards are `Arc<PmsMovie>`, which the derived (de)serializers must be able to carry.
 serde = { version = "1", default-features = false, features = ["derive", "alloc", "rc"] }
 serde_json = { version = "1", default-features = false, features = ["alloc", "std"] }
+# Verify-only Ed25519 for the signed HUD registry index (`hudpacks::catalog::verify`). Pinned exactly, like the
+# HUD bundle reader's `zip`. `default-features = false` drops `random` (and so `getrandom`), `std`, `x25519` and
+# `pem`: it has no dependency and no build script, and no C or asm. Its `verify` rejects a non-canonical `S`
+# (`sc_reject_noncanonical`) and a small-order public key or `R` (`decode_point_negated`). `opt_size` keeps its field
+# arithmetic out of line and drops its base-point table: with the release profile's flags for armv7 the library
+# grows the shipped binary by 376 KB without it and by 56 KB with it (a scratch staticlib under `lto = "fat"`,
+# `opt-level = 2`, `target-cpu = cortex-a9`), and one verification a day does not need the speed.
+ed25519-compact = { version = "=2.6.0", default-features = false, features = ["opt_size"] }
 
 [dev-dependencies]
 plx_base = { path = "../base", features = ["test-support"] }

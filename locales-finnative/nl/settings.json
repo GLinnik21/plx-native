@@ -50,5 +50,9 @@
   "settings.legal.privacy.fin.uninstall_body": "Als je FinNative verwijdert, wordt de applicatie verwijderd, maar webOS geeft een applicatie geen mogelijkheid om code uit te voeren tijdens het verwijderen, dus alles wat buiten de eigen map van de applicatie is opgeslagen, kan achterblijven. Je inlog wordt daar bewust bewaard, zodat je na opnieuw installeren niet bent uitgelogd, en je voorkeur voor de app-taal ook. Gebruik ‘Alle lokale gegevens wissen’ VÓÓR het verwijderen als je wilt dat er niets van FinNative op deze tv achterblijft.",
   "settings.legal.privacy.fin.contact_body": "Privacyvragen: github.com/tiper/fin-native/issues",
   "settings.account.add_user": "Gebruiker toevoegen",
-  "settings.privacy.detail": "Privacy-info en lokale gegevens."
+  "settings.privacy.detail": "Privacy-info en lokale gegevens.",
+  "settings.hud.newer_detail": "Deze HUD is gemaakt voor een nieuwere FinNative. Werk de app bij om hem te gebruiken, of kies een andere HUD.",
+  "settings.hud.app_range_detail": "De maker geeft aan dat deze HUD niet werkt met deze versie van FinNative. Zoek een versie die ervoor gemaakt is, of kies een andere HUD.",
+  "settings.libraries.more": "Bibliotheken die je weglaat, blijven op je Jellyfin-server en op je andere apparaten.",
+  "settings.audio.page_copy": "Taalvoorkeuren voor audio en ondertitels worden gesynchroniseerd met je Jellyfin-gebruiker. Afspeelinstellingen horen bij elk profiel."
 }

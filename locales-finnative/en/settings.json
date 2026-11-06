@@ -217,5 +217,21 @@
   "settings.privacy.detail": {
     "value": "Privacy information and local data.",
     "description": "FinNative: the Privacy & data row's subtitle, with no optional reports (FinNative sends none)"
+  },
+  "settings.hud.newer_detail": {
+    "value": "This HUD was made for a newer FinNative. Update the app to use it, or choose another HUD.",
+    "description": "Settings > Playback > Player HUD: beside a HUD made for a newer app while its row has focus."
+  },
+  "settings.hud.app_range_detail": {
+    "value": "The author says this HUD doesn't run on this version of FinNative. Look for a version made for it, or choose another HUD.",
+    "description": "Settings > Playback > Player HUD: beside a HUD that says it does not run on this app version while its row has focus."
+  },
+  "settings.libraries.more": {
+    "value": "Libraries you leave out stay on your Jellyfin server and on your other devices.",
+    "description": "Settings root: second sentence beside Favorite libraries (proposed copy)."
+  },
+  "settings.audio.page_copy": {
+    "value": "Audio and subtitle language preferences sync with your Jellyfin user. Playback settings belong to each profile.",
+    "description": "Sentence beside the Audio & subtitles page when no row has a sentence of its own: the account preferences sync with Plex, the Look group belongs to each profile. Two sentences."
   }
 }

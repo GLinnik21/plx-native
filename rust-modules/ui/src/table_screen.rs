@@ -63,10 +63,17 @@ pub struct Header<'a> {
     /// [BACK] to close PlxNative"). Never elided: a screen that sets one owns a fit test for it
     /// against [`RouteLayout`]'s narrative width.
     pub hint: Option<KeyHint<'a>>,
-    /// Display-only landscape artwork after the narrative. It contributes no focus or hit stop.
-    pub preview: Option<super::widgets::Art<'a>>,
     /// A loading read-out in the copy: accounted and sentinel-painted at the actual draw.
     pub pending_copy: Option<&'a str>,
+    /// The copy as a sentence that FOLLOWS FOCUS (Settings v2): drawn by the cross-fade in the
+    /// fixed spot under the title, up to [`super::follow_copy::FOLLOW_LINES`] lines, in place of
+    /// `copy` (which stays the page's own sentence, the one a row with none shows). `None` draws
+    /// `copy` as before.
+    pub follow: Option<&'a super::follow_copy::FollowCopy>,
+    /// Display-only art in the picture slot ([`RouteLayout::picture_slot`]); no focus or hit stop.
+    /// The one slot for a page's picture: a poster fan, the Under posters tiles, a HUD's preview
+    /// ([`super::follow_copy::LandscapePicture`]).
+    pub picture: Option<&'a dyn super::follow_copy::PictureSlot>,
 }
 
 impl<'a> Header<'a> {
@@ -78,18 +85,26 @@ impl<'a> Header<'a> {
             copy,
             copy_size: theme::size::LABEL,
             hint: None,
-            preview: None,
             pending_copy: None,
+            follow: None,
+            picture: None,
         }
+    }
+
+    /// The copy follows focus: `follow` is stepped by the screen and lent for the frame.
+    pub fn with_follow(mut self, follow: &'a super::follow_copy::FollowCopy) -> Self {
+        self.follow = Some(follow);
+        self
+    }
+
+    /// Display-only art in the fixed picture slot under the sentence.
+    pub fn with_picture(mut self, picture: &'a dyn super::follow_copy::PictureSlot) -> Self {
+        self.picture = Some(picture);
+        self
     }
 
     pub fn with_pending_copy(mut self, key: &'a str) -> Self {
         self.pending_copy = Some(key);
-        self
-    }
-
-    pub fn with_preview(mut self, art: super::widgets::Art<'a>) -> Self {
-        self.preview = Some(art);
         self
     }
 
@@ -105,8 +120,21 @@ impl<'a> Header<'a> {
 
     /// The one drawing routine, for both loops.
     pub fn paint(&self, p: Painter, measure: &dyn Measure) {
-        let copy_end = self.layout.draw_narrative_pending(p, self.crumb, self.title, self.copy, self.copy_size, measure, self.pending_copy);
-        let mut extra_end = copy_end;
+        let copy_end = if let Some(follow) = self.follow {
+            // the title (and crumb) alone, then the followed sentence in the fixed frame under it
+            self.layout.draw_narrative_pending(p, self.crumb, self.title, "", self.copy_size, measure, None);
+            let mut frame = self.layout.narrative_copy_frame(self.crumb.is_some(), self.title, self.layout.action.y, measure);
+            let drop = self.layout.copy_cap_drop(self.copy_size, measure);
+            frame.y += drop;
+            frame.h = (frame.h - drop).max(0.0);
+            follow.draw(p, frame, self.copy_size);
+            frame.y
+        } else {
+            self.layout.draw_narrative_pending(p, self.crumb, self.title, self.copy, self.copy_size, measure, self.pending_copy)
+        };
+        if let Some(picture) = self.picture {
+            picture.draw(p, self.layout.picture_slot(), measure);
+        }
         if let Some(hint) = &self.hint {
             // The copy's end, then the hint one MD under it: a two-item run from `copy_end`.
             let run = [Item::new(0.0), Item::new(KeyHint::height())];
@@ -116,16 +144,6 @@ impl<'a> Header<'a> {
             // The copy already stops short of the action band; the hint keeps the same margin.
             if top + KeyHint::height() <= self.layout.action.y - theme::space::XL {
                 hint.draw(p, self.layout.narrative.x, top + KeyHint::height() * 0.5, measure);
-                extra_end = top + KeyHint::height();
-            }
-        }
-        if let Some(art) = self.preview {
-            let top = extra_end + theme::space::XL;
-            let width = self.layout.narrative.w;
-            let height = (width * 9.0 / 16.0).min((self.layout.action.y - top).max(0.0));
-            if height > 0.0 {
-                super::widgets::card(p, Rect::new(self.layout.narrative.x, top, height * 16.0 / 9.0, height), art,
-                    theme::CARD_RING_RAD, false, 1.0, 0.0);
             }
         }
     }
@@ -165,7 +183,8 @@ where
 impl<H: Host> Part<H> for Header<'_> {
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, H>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>, _rect: Rect) {
-        self.paint(f.painter, f.measure);
+        // the narrative column holds still under a route push and cross-fades its content
+        self.paint(f.narrative_painter(), f.measure);
     }
 }
 
@@ -290,7 +309,8 @@ where
 {
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, H>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>, rect: Rect) {
-        let p = f.painter;
+        // the list is what travels under a route push that holds the narrative column
+        let p = f.list_painter();
         self.frame = rect;
         self.paint(p, f.measure);
         // every selectable row is a stop (rule 11: hover parks, a click activates)
@@ -341,7 +361,15 @@ pub struct BandPart<'a> {
     pub palette: ControlPalette,
     /// The one control drawn in the danger face (an alert's destructive answer), if any.
     pub danger: Option<usize>,
+    /// ONE line of words beside a LONE control, in the action slot ("Back discards your changes."
+    /// beside Settings' Done): [`Self::note_rect`] places it, so it is never part of the focus
+    /// geometry. Ignored beside a pair (first run's two answers stand alone).
+    pub note: Option<&'a CStr>,
 }
+
+/// The gap between a lone control and the [`BandPart::note`] beside it: a control gap, the way
+/// two peers of the action slot are spaced ([`super::widgets::CONTROL_GAP`]).
+pub const NOTE_GAP: f32 = super::widgets::CONTROL_GAP;
 
 /// `Button::pill_w`'s formula over a `Measure`: label width plus the pill's air.
 pub fn pill_w(m: &dyn Measure, label: &CStr, sz: std::os::raw::c_int) -> f32 {
@@ -365,6 +393,17 @@ impl BandPart<'_> {
                 vec![lr, tr]
             }
         }
+    }
+
+    /// Where the [`Self::note`] is set: one line beside the lone control, as wide as the slot
+    /// leaves; `None` without a note or beside a pair. A note that is wider than that is a copy
+    /// bug the screen's fit test catches, never a clip.
+    pub fn note_rect(&self, m: &dyn Measure) -> Option<Rect> {
+        let (&[_], Some(_)) = (self.labels, self.note) else { return None };
+        let pill = *self.rects(m).first()?;
+        let x = pill.x + pill.w + NOTE_GAP;
+        let a = self.layout.action;
+        Some(Rect::new(x, pill.y, (a.x + a.w - x).max(0.0), pill.h))
     }
 
     /// The band's actual occupied region, including a second row when labels reflow.
@@ -463,7 +502,8 @@ where
 {
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, H>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>, _rect: Rect) {
-        let p = f.painter;
+        // the action band is the narrative column's: it holds still and cross-fades with it
+        let p = f.narrative_painter();
         let focused = f.focus.current.and_then(|k| k.elem.index()).and_then(|e| e.checked_sub(BAND_BASE));
         let rects = self.rects(f.measure);
         let env = super::Env::inert();
@@ -487,6 +527,9 @@ where
                     activate: Activate::Press,
                 },
             );
+        }
+        if let (Some(note), Some(frame)) = (self.note, self.note_rect(f.measure)) {
+            super::label::Label::new(note.as_ptr(), theme::size::CAPTION, theme::TEXT_SECONDARY).draw(p, frame);
         }
     }
 }
@@ -721,7 +764,8 @@ where
 {
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, H>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>, rect: Rect) {
-        let p = f.painter;
+        // the document is the route's content column: it travels under a push that holds the narrative column
+        let p = f.list_painter();
         self.frame = rect;
         self.paint(p);
         f.stop(
@@ -1017,7 +1061,7 @@ mod tests {
         let labels = [c"Адпраўляць справаздачы", c"Не адпраўляць"];
         let layout = RouteLayout::screen();
         let band = BandPart { layout, labels: &labels, group: G, entry: E,
-            uncommitted: false, scales: [1.0; 2], palette: ControlPalette::default(), danger: None };
+            uncommitted: false, scales: [1.0; 2], palette: ControlPalette::default(), danger: None, note: None };
         let (measure, view) = (CyrillicMeasure, FixtureView::default());
         let cx = cx(&measure, &view);
         let rects = band.rects(&measure);

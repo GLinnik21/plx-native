@@ -483,7 +483,7 @@ fn the_settings_surface_owns_input_and_walks_its_own_stack() {
     assert_eq!(overlay_word(&d), Some("settings"));
     assert_ne!(d.nav.input_owner(), home_owner, "Settings takes input from its Home host");
     assert!(host_frozen(&d));
-    // DOWN x3 to Legal notices (signed out: Playback, Language, Privacy, Legal, About)
+    // DOWN x4 to Legal notices (signed out: Playback, Language, Privacy, Diagnostics, Legal, About)
     let mut t = 2;
     let mut press = |d: &mut Dispatcher<AppHost>, rig: &mut Bridge, key: Key| {
         let ev = script_key(key, tick(t));
@@ -492,7 +492,7 @@ fn the_settings_surface_owns_input_and_walks_its_own_stack() {
         frame(d, rig, AppArg::Home, tick(t), vec![]);
         t += 1;
     };
-    for _ in 0..3 {
+    for _ in 0..4 {
         press(&mut d, &mut rig, Key::Down);
     }
     press(&mut d, &mut rig, Key::Ok);
@@ -509,6 +509,31 @@ fn the_settings_surface_owns_input_and_walks_its_own_stack() {
     assert_eq!(d.nav.tabs.stack.depth(), 1, "the app's page never moved");
 }
 
+/// The gate that kept the registry out of the stable install sat on the Bridge's `HudCmd::Open` arm
+/// (`ENV_STEERABLE || flavour().is_some()`), a second copy of the field PR14 deleted from the page, so the
+/// gallery showed in stable and never fetched `index.signed`. This suite builds with no flavour in its app
+/// directory and without `hostsim`, which is the stable install's answer to both halves of that test.
+#[test]
+fn opening_the_player_hud_settings_asks_the_registry_in_the_stable_install_too() {
+    assert!(plx_base::paths::flavour().is_none(), "this test stands for the stable install");
+    let dir = std::env::temp_dir().join(format!("plx-hud-gallery-open-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
+    let _cleanup = Cleanup(dir.clone());
+    let mut world = World::new("hud-gallery-opens");
+    world.step(vec![]);
+    let classic = plx_appkit::player_hud::loaded::load_classic("0.10.0", plx_platform::i18n::current(), world.bridge.measure());
+    world.bridge.huds = crate::app::adapters::huds::HudDriver::started_in(dir, classic, "0.10.0");
+    assert!(!world.bridge.huds.store().catalog().refresh_failed);
+    open_settings_at(&mut world.d, SettingsPage::PlayerHud);
+    world.settle(40);
+    for _ in 0..8 { world.bridge.huds_tick(false); }
+    // The runner is offline, so a request that was made is a refresh that failed; none made is none failed.
+    assert!(world.bridge.huds.store().catalog().refresh_failed, "the Open command reached the catalog and dialled");
+}
+
 fn hud_preview_world(name: &str) -> World {
     let mut world = World::new(name);
     world.step(vec![]);
@@ -523,7 +548,6 @@ fn hud_preview_world(name: &str) -> World {
             index: Some(std::sync::Arc::new(index)),
             ..Default::default()
         },
-        gallery_enabled: true,
         app_version: "0.10.0".into(),
         language_tag: "en".into(),
         ..Default::default()
@@ -1442,7 +1466,15 @@ fn dismiss_surfaces_now_settles_the_surface_in_the_same_call_unlike_the_ordinary
     // …and a THIRD: the first tick after `present` holds the spring at 0 for the frame that
     // renders the host into its snapshot (`PopoverMotion::hold`), so the ramp starts one later.
     frame(&mut d, &mut rig, AppArg::Home, tick(3), vec![]);
-    // Now one tick HAS run over it: the appear spring is climbing toward its open target and
+    // …and Settings opens on the route dip (`EntryMotion::Dip`, 70 ms with the surface still at
+    // appear 0 while the host dips, then 140 ms up), so the climb starts a few frames later still.
+    for i in 4..40 {
+        if d.nav.modals.top().expect("just presented").motion.appear > 0.0 {
+            break;
+        }
+        frame(&mut d, &mut rig, AppArg::Home, tick(i), vec![]);
+    }
+    // Now one tick HAS run over it: the appear curve is climbing toward its open target and
     // the phase has not yet been promoted past `Opening` (`ModalStack::tick` only promotes it
     // to `Open` once `motion.settled()`) — i.e. deliberately mid-open, nowhere near the
     // "already at the closed end" state `dismiss_surfaces_now` must reach in the SAME call.

@@ -42,5 +42,17 @@
   "settings.legal.privacy.fin.uninstall_body": "Rimuovere FinNative rimuove l’applicazione, ma webOS non offre a un’applicazione alcun modo di eseguire codice quando viene rimossa, quindi tutto ciò che è conservato fuori dalla cartella dell’applicazione può restare. Il tuo accesso è conservato lì di proposito, così che reinstallare non termini la sessione, e lo stesso vale per la preferenza di lingua dell’app. Usa Elimina tutti i dati locali PRIMA di disinstallare se non vuoi che resti nulla di FinNative su questo televisore.",
   "settings.legal.privacy.fin.contact_body": "Domande sulla privacy: github.com/tiper/fin-native/issues",
   "settings.account.add_user": "Aggiungi utente",
-  "settings.privacy.detail": "Privacy e dati locali."
+  "settings.privacy.detail": "Privacy e dati locali.",
+  "settings.hud.newer_detail": "Questo HUD è fatto per una versione più recente di FinNative. Aggiorna l’app per usarlo o scegli un altro HUD.",
+  "settings.hud.app_range_detail": "L’autore indica che questo HUD non funziona con questa versione di FinNative. Cerca una versione adatta o scegli un altro HUD.",
+  "settings.libraries.more": "Le librerie che escludi restano sul tuo server Jellyfin e sugli altri dispositivi.",
+  "settings.audio.page_copy": "Le preferenze di lingua per audio e sottotitoli sono sincronizzate con il tuo utente Jellyfin. Le impostazioni di riproduzione appartengono a ciascun profilo.",
+  "settings.root.copy": "Gestisci questa TV e il tuo utente Jellyfin. Le preferenze linguistiche di audio e sottotitoli si sincronizzano con l'utente Jellyfin; le impostazioni di riproduzione sono per profilo, mentre la lingua dell'app vale per questa TV.",
+  "settings.audio.detail": "Preferenze di lingua sincronizzate con il tuo utente Jellyfin.",
+  "settings.audio.account_note": "Salvate in questo utente Jellyfin e condivise con le altre app Jellyfin. Le modifiche possono richiedere tempo prima di influire sulla riproduzione; le scelte già fatte per un contenuto hanno comunque la precedenza.",
+  "settings.playback.quality.copy": "La qualità massima di riproduzione. Il server converte i file più grandi per rispettarla. Disponibile anche nel menu Altro del lettore.",
+  "settings.playback.direct_play.copy": "Auto riproduce il file originale se la TV può gestirlo; altrimenti il server lo converte. Disattivato converte sempre. Forzato ignora tutti i controlli: solo per risolvere problemi.",
+  "settings.audio.saving": "Salvataggio nell'account…",
+  "settings.audio.loading": "Caricamento preferenze dell'account…",
+  "settings.audio.sign_in_again": "Accedi nuovamente a questo utente Jellyfin per modificarne le preferenze."
 }

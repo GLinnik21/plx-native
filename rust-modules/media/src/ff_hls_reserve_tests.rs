@@ -6,6 +6,15 @@ use super::*;
 use super::test_support::*;
 use crate::abr::Direction;
 
+/// A transport-liveness budget these tests never reach. `TransportWatchdog` is WALL-clock inactivity
+/// by design (a pause or a frozen playhead must not renew or spend it), so any budget a test could
+/// overrun is one a descheduled test thread overruns too: a 50 ms watchdog turned a 2 ms sleep into
+/// "HLS transport stalled" whenever the scheduler kept the thread off a core for 50 ms. A test whose
+/// subject is another clock gives the watchdog a budget that cannot be due; the tests whose subject
+/// IS the watchdog expiring (a 1 ms budget, then a sleep) are not affected, because a late wake only
+/// makes an overdue watchdog more overdue.
+const LIVENESS_NEVER_DUE: std::time::Duration = std::time::Duration::from_secs(3600);
+
 #[test]
 fn fractional_hls_duration_is_rounded_up_as_a_reserve_obligation() {
     assert_eq!(
@@ -639,7 +648,7 @@ fn spent_playhead_reserve_wins_before_live_transport_watchdog() {
         std::time::Duration::from_millis(1),
         false,
     );
-    let watchdog = TransportWatchdog::with_inactivity(std::time::Duration::from_secs(1));
+    let watchdog = TransportWatchdog::with_inactivity(LIVENESS_NEVER_DUE);
     let attempted = watchdog.effective(reserve.active(false));
     SHARED
         .playpos_ns
@@ -846,7 +855,7 @@ fn resume_during_a_blocked_pause_projection_cannot_overspend_reserve() {
         std::time::Duration::from_millis(100),
         false,
     );
-    let watchdog = TransportWatchdog::with_inactivity(std::time::Duration::from_secs(1));
+    let watchdog = TransportWatchdog::with_inactivity(LIVENESS_NEVER_DUE);
     let attempted = reserve
         .active(false)
         .expect("a paused issue still schedules the unchanged reserve boundary");
@@ -868,6 +877,15 @@ fn resume_during_a_blocked_pause_projection_cannot_overspend_reserve() {
 
 #[test]
 fn a_pause_projection_spends_neither_reserve_nor_transport_liveness() {
+    pause_projection_verdict_after(std::time::Duration::from_millis(2));
+}
+
+#[test]
+fn a_scheduler_stall_between_a_pause_projection_and_its_classification_spends_nothing() {
+    pause_projection_verdict_after(std::time::Duration::from_millis(120));
+}
+
+fn pause_projection_verdict_after(stall: std::time::Duration) {
     let _guard = plx_base::testlock::serial();
     let start_ns = 72_000_000_000;
     let old_pos = SHARED
@@ -900,13 +918,16 @@ fn a_pause_projection_spends_neither_reserve_nor_transport_liveness() {
         std::time::Duration::from_millis(1),
         false,
     );
-    let watchdog = TransportWatchdog::with_inactivity(std::time::Duration::from_millis(50));
+    let watchdog = TransportWatchdog::with_inactivity(LIVENESS_NEVER_DUE);
     let liveness_deadline = watchdog.deadline;
     let attempted = reserve.active(false).expect("paused reserve projection");
     let attempted = watchdog.effective(Some(attempted));
-    std::thread::sleep(std::time::Duration::from_millis(2));
+    std::thread::sleep(stall);
     let wake = observe_hls_deadline(Some(&mut reserve), attempted, &watchdog, false);
-    assert!(classify_hls_deadline(wake).is_none());
+    assert!(
+        classify_hls_deadline(wake).is_none(),
+        "a pause projection classified a boundary: {wake:?}"
+    );
     assert!(!reserve.expired);
     assert_eq!(watchdog.deadline, liveness_deadline);
 }

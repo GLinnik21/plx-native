@@ -1191,6 +1191,10 @@ mod db8_policy_tests {
     /// only trusting that the two ARM-gated call sites still agree.
     #[test]
     fn arm_candidate_assembly_puts_the_canonical_wrapper_first() {
+        // `path()` reads the process-global persistent state root, which every redirecting test in
+        // this binary moves under the lock. Two unlocked reads can straddle one of those moves, so
+        // this takes the same lock: both reads then see one root.
+        let _serial = plx_base::testlock::serial();
         let mut candidates = vec![PathBuf::from("/some/legacy/auth.json")];
         insert_arm_canonical_wrapper(&mut candidates);
         assert_eq!(candidates[0], path());

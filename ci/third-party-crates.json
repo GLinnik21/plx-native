@@ -187,6 +187,11 @@
      "copyright": "2018 Sam Rijs, Alex Crichton and contributors"
     },
     {
+     "name": "ed25519-compact",
+     "licence": "MIT",
+     "copyright": "2020-2026 Frank Denis"
+    },
+    {
      "name": "either",
      "licence": "MIT OR Apache-2.0",
      "copyright": "Copyright (c) 2015 (the upstream notice names no holder)"

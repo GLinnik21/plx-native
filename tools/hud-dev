@@ -1,0 +1,485 @@
+#!/usr/bin/env python3
+"""Develop a Player HUD against the television: bundle it, lint it, serve it to the set.
+
+    /usr/bin/python3 tools/hud-dev SOURCE [--sim PATH] [--port N]
+
+SOURCE is a HUD source directory (manifest.json, hud.json and the declared SVGs) or a `.plxhud`. The tool
+bundles it with the native packer (`tools/hud_package.py`; it builds no archive of its own), lints it with
+`plxnative-sim --hud-lint` on every change (it polls modification times; no watcher library), and serves the last
+CLEAN bundle over plain HTTP at an address the television accepts (`docs/hud-plugins.md`, "Sideload": `http://` only
+for a literal RFC 1918 IPv4 address). A source with findings is never served: the findings are printed and the
+previous clean bundle stays up.
+
+Every clean change is served under a version strictly higher than the one before it, because the set installs a
+fetched package only when its `version` is higher than the installed one. The comparator reads three plain numbers
+(MAJOR.MINOR.PATCH, no pre-release), so the tool raises the PATCH: the author's patch plus the seconds since
+2026-01-01. A clock-seeded number is higher after a restart of the tool too, when a counter that started over would
+land under what the set already holds. Your own manifest on disk is never touched.
+
+That number is also above any later release that only raises the patch, so the TV would call the published version
+not newer and never offer it: remove the dev install (Player HUD page, the row named after the HUD, "Remove") before
+installing the published one.
+
+On the Mac, run it with `/usr/bin/python3`: macOS's firewall allows that interpreter to accept LAN connections by
+default, while any other Python (Homebrew's, say) is silently dropped until "allow incoming connections" is clicked
+for its path (the set then never reaches the server).
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import http.server
+import json
+import os
+import re
+import shutil
+import socket
+import socketserver
+import stat
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import zipfile
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
+
+from hud_package import native_json, snapshot
+
+ROOT = Path(__file__).resolve().parents[1]
+#: Not 32400 (Plex), 8080 (the TV dashboard) or 39443 (the lab receiver's default, `tools/plxnative-lab`).
+DEFAULT_PORT = 8731
+POLL_SECONDS = 0.5
+#: Dev versions count from here (2026-01-01T00:00:00Z), so they stay far below a u64 patch and above any counter.
+DEV_EPOCH = 1767225600
+#: What a `.plxhud` source may unpack to: the format's own artifact limit is far smaller; this only bounds a bomb.
+EXTRACT_FILES = 4096
+EXTRACT_BYTES = 64 * 1024 * 1024
+MANIFEST = "manifest.json"
+HOW_TO = (
+    "On the TV: Settings > Video & playback > Player HUD > Install from address (type the address, OK, confirm); "
+    "for every later build focus that HUD's row on the same page, press Play, confirm."
+)
+REMOVE_FIRST = (
+    "Before you install the published version of this HUD, remove this dev install (Player HUD page, the row named "
+    "after the HUD, 'Remove'): its version is above the release's, so the TV would not offer the release."
+)
+
+
+# --------------------------------------------------------------------------- the address the TV may use
+
+_DOTTED = re.compile(r"(0|[1-9][0-9]{0,2})(\.(0|[1-9][0-9]{0,2})){3}")
+
+
+def is_rfc1918(text):
+    """Exactly the addresses `hudpacks::address::parse` takes over `http://`: a dotted quad in 10/8, 172.16/12 or
+    192.168/16. Not `ipaddress.is_private`, which also takes loopback, link-local and carrier-grade space."""
+    if not isinstance(text, str) or not _DOTTED.fullmatch(text):
+        return False
+    first, second, third, fourth = (int(part) for part in text.split("."))
+    if max(first, second, third, fourth) > 255:
+        return False
+    return first == 10 or (first == 172 and 16 <= second <= 31) or (first == 192 and second == 168)
+
+
+def route_address(destination):
+    """The local address a packet to `destination` would leave from (a UDP `connect` sends nothing)."""
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probing:
+        probing.connect((destination, 9))
+        return probing.getsockname()[0]
+
+
+def private_addresses():
+    """This machine's RFC 1918 IPv4 addresses, the one the default route leaves by first (a documentation address
+    the network cannot answer: a VPN that routes 10/8 would put its own tunnel address first otherwise), then the one
+    each private block's route leaves by, then the host name's and every interface's."""
+    found = []
+
+    def add(address):
+        if is_rfc1918(address) and address not in found:
+            found.append(address)
+
+    for probe in ("192.0.2.1", "10.255.255.255", "172.31.255.255", "192.168.255.255"):
+        try:
+            add(route_address(probe))
+        except OSError:
+            pass
+    try:
+        for family, _kind, _proto, _name, address in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            add(address[0])
+    except OSError:
+        pass
+    for command in (["/sbin/ifconfig"], ["ip", "-4", "-o", "addr", "show"]):
+        try:
+            listing = subprocess.run(command, capture_output=True, text=True, timeout=5).stdout
+        except (OSError, subprocess.SubprocessError):
+            continue
+        for address in re.findall(r"\binet (?:addr:)?([0-9.]+)", listing):
+            add(address)
+    return found
+
+
+# --------------------------------------------------------------------------- the version
+
+def parse_version(text):
+    match = re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", text) if isinstance(text, str) else None
+    if match is None:
+        raise ValueError(f"{MANIFEST} version {text!r} is not MAJOR.MINOR.PATCH (the set orders plain numbers only)")
+    return tuple(int(part) for part in match.groups())
+
+
+def dev_version(author, last, now):
+    """The next version to serve, as a tuple: above the author's own, above the last one served, and above anything an
+    earlier run served (the clock term). Only the patch moves, so the set's `Semver` order takes it as newer."""
+    major, minor, patch = parse_version(author)
+    candidate = (major, minor, patch + max(int(now) - DEV_EPOCH, 1))
+    if last is not None:
+        candidate = max(candidate, (last[0], last[1], last[2] + 1))
+    if candidate[2] >= 2**63:
+        raise ValueError(f"{MANIFEST} version {author} leaves no room above it")
+    return candidate
+
+
+def format_version(version):
+    return ".".join(str(part) for part in version)
+
+
+# --------------------------------------------------------------------------- the source
+
+def source_files(root):
+    """Every file under a source directory, `.git` aside, as sorted relative paths. A symlink is refused: the set
+    would be served whatever it points at."""
+    out = []
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root)
+        if ".git" in relative.parts:
+            continue
+        if path.is_symlink():
+            raise ValueError(f"{relative} is a symlink; a HUD source holds plain files")
+        if path.is_file():
+            out.append(relative)
+    return out
+
+
+def fingerprint(source):
+    """What changing the source changes: each file's path, size and modification time."""
+    source = Path(source)
+    if source.is_dir():
+        return tuple((str(rel), (source / rel).stat().st_mtime_ns, (source / rel).stat().st_size) for rel in source_files(source))
+    info = source.stat()
+    return ((source.name, info.st_mtime_ns, info.st_size),)
+
+
+def stage_source(source, stage):
+    """A private copy of the source for one build, so a save in the middle of it cannot tear the bundle."""
+    source = Path(source)
+    stage.mkdir(parents=True)
+    if source.is_dir():
+        for relative in source_files(source):
+            (stage / relative).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source / relative, stage / relative)
+        return
+    if source.is_symlink() or not source.is_file():
+        raise ValueError(f"{source} is not a regular file or a directory")
+    with zipfile.ZipFile(source) as archive:
+        members = [info for info in archive.infolist() if not info.is_dir()]
+        if len(members) > EXTRACT_FILES or sum(info.file_size for info in members) > EXTRACT_BYTES:
+            raise ValueError(f"{source.name} unpacks to more than {EXTRACT_FILES} files or {EXTRACT_BYTES} bytes")
+        for info in members:
+            name = PurePosixPath(info.filename)
+            unsafe = name.is_absolute() or ".." in name.parts or "\\" in info.filename or "\0" in info.filename
+            if unsafe or stat.S_ISLNK(info.external_attr >> 16):
+                raise ValueError(f"{source.name} holds a member that is not a plain relative file: {info.filename!r}")
+            target = stage.joinpath(*name.parts)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(archive.read(info))
+
+
+def tree_digest(root):
+    digest = hashlib.sha256()
+    for relative in source_files(root):
+        digest.update(f"{relative.as_posix()}\0".encode())
+        digest.update(hashlib.sha256((root / relative).read_bytes()).digest())
+    return digest.hexdigest()
+
+
+# --------------------------------------------------------------------------- one build
+
+class Findings(Exception):
+    """`--hud-lint` reported findings: the source is not served."""
+
+    def __init__(self, findings):
+        super().__init__(f"{len(findings)} lint finding(s)")
+        self.findings = findings
+
+
+@dataclass(frozen=True)
+class Bundle:
+    version: str
+    content: bytes
+    sha256: str
+    name: str
+
+
+def sim_env():
+    """The simulator's environment as `tools/hud_preview.py` builds it: no inherited PLXNATIVE_*, the checkout's assets."""
+    env = {key: value for key, value in os.environ.items() if not key.startswith("PLXNATIVE_")}
+    env["PLXNATIVE_APP_DIR"] = str(ROOT / "pkg")
+    return env
+
+
+class Builder:
+    """Lint a source and bundle it under the next version. The simulator is the only linter and packer."""
+
+    def __init__(self, sim, source, *, clock=time.time, env=None):
+        self.sim, self.source, self.clock = Path(sim), Path(source), clock
+        self.env = sim_env() if env is None else env
+        self.last_version = None
+        self.last_tree = None
+
+    def build(self):
+        """The next bundle; `None` when the content is what was last built. Raises `Findings` (the source has findings)
+        or `ValueError` (the SDK refused it, or the manifest carries no usable version)."""
+        with tempfile.TemporaryDirectory(prefix="hud-dev-") as temporary:
+            stage = Path(temporary) / "source"
+            stage_source(self.source, stage)
+            tree = tree_digest(stage)
+            if tree == self.last_tree:
+                return None
+            report = native_json(self.sim, "--hud-lint", stage, "--format", "json", "--lang", "all", env=self.env, findings=True)
+            if report.get("findings"):
+                raise Findings(report["findings"])
+            manifest_path = stage / MANIFEST
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            version = dev_version(manifest.get("version"), self.last_version, self.clock())
+            manifest["version"] = format_version(version)
+            manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            with snapshot(self.sim, stage, env=self.env) as package:
+                name = package.inspection.get("manifest", {}).get("name", "")
+                bundle = Bundle(format_version(version), package.content, package.sha256, str(name))
+            self.last_version, self.last_tree = version, tree
+            return bundle
+
+
+def printable(text):
+    """`text` with every control character (a terminal's escape sequences among them) written out as \\xNN."""
+    return "".join(ch if ch.isprintable() else ch.encode("unicode_escape").decode("ascii") for ch in text)
+
+
+def finding_lines(findings):
+    for finding in findings:
+        where = f"{finding.get('file') or ''}{finding.get('path') or ''}".strip() or "(package)"
+        yield f"  {where}  {finding.get('code', '')} {finding.get('severity', '')}: {finding.get('message', '')}"
+        if finding.get("hint"):
+            yield f"      hint: {finding['hint']}"
+
+
+# --------------------------------------------------------------------------- serving
+
+class Shelf:
+    """The one bundle the server hands out; swapped whole when a build comes out clean."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._bundle = None
+
+    def put(self, bundle):
+        with self._lock:
+            self._bundle = bundle
+
+    def get(self):
+        with self._lock:
+            return self._bundle
+
+
+def package_name(source):
+    """The stable file name the address ends in: the source's own name, in URL-safe characters."""
+    stem = Path(source).resolve().stem or "hud"
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", stem).strip(".-") or "hud"
+
+
+class Server(http.server.ThreadingHTTPServer):
+    """`ThreadingHTTPServer` minus the reverse DNS lookup its `server_bind` makes for a name nothing here reads."""
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+
+def make_server(shelf, name, bind, port, log):
+    route = f"/{name}.plxhud"
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.0"
+        server_version = "hud-dev"
+
+        def do_GET(self):
+            self.answer(True)
+
+        def do_HEAD(self):
+            self.answer(False)
+
+        def answer(self, with_body):
+            bundle = shelf.get()
+            if self.path.split("?", 1)[0] != route:
+                status, body, kind = 404, f"hud-dev serves {route}\n".encode(), "text/plain; charset=utf-8"
+            elif bundle is None:
+                status, body, kind = 503, b"no clean bundle yet: fix the lint findings in the terminal\n", "text/plain; charset=utf-8"
+            else:
+                status, body, kind = 200, bundle.content, "application/octet-stream"
+            # Logged before the bytes go out: the line says what was offered, even to a client that hangs up.
+            served = bundle.version if status == 200 else "-"
+            log(f"{self.client_address[0]}  {printable(self.command)} {printable(self.path)}  {status}  version {served}")
+            self.send_response(status)
+            self.send_header("Content-Type", kind)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            if with_body:
+                try:
+                    self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+
+        def log_message(self, *_):
+            pass
+
+    return Server((bind, port), Handler)
+
+
+# --------------------------------------------------------------------------- the loop
+
+class Dev:
+    """Build when the source changed, shelve what comes out clean, say what happened in one place."""
+
+    def __init__(self, builder, shelf, say=print):
+        self.builder, self.shelf, self.say = builder, shelf, say
+        self.seen = None
+
+    def poll(self):
+        """One look at the source: a build when it changed since the last look. Whether it shelved a new bundle."""
+        try:
+            now = fingerprint(self.builder.source)
+        except (OSError, ValueError) as error:
+            if self.seen != "gone":
+                self.say(f"cannot read the source: {error}")
+            self.seen = "gone"
+            return False
+        if now == self.seen:
+            return False
+        self.seen = now
+        return self.cycle()
+
+    def cycle(self):
+        held = self.shelf.get()
+        try:
+            bundle = self.builder.build()
+        except Findings as error:
+            self.say(f"lint: {len(error.findings)} finding(s); " + (f"still serving {held.version}" if held else "nothing to serve yet"))
+            for line in finding_lines(error.findings):
+                self.say(line)
+            return False
+        except (ValueError, OSError, subprocess.SubprocessError, zipfile.BadZipFile) as error:
+            self.say(f"not built: {error}; " + (f"still serving {held.version}" if held else "nothing to serve yet"))
+            return False
+        if bundle is None:
+            self.say("no content change; nothing rebuilt")
+            return False
+        self.shelf.put(bundle)
+        self.say(f"serving {bundle.name or 'package'} {bundle.version}  ({len(bundle.content)} bytes, sha256 {bundle.sha256[:12]})")
+        return True
+
+
+def find_sim(explicit):
+    """`--sim`, else `plxnative-sim` on PATH (the SDK's name for it), else what `make sim-macos` builds here."""
+    if explicit:
+        path = Path(explicit)
+        if path.is_file() and os.access(path, os.X_OK):
+            return path.resolve()
+        raise ValueError(f"--sim {explicit} is not an executable file")
+    on_path = shutil.which("plxnative-sim")
+    for path in ([Path(on_path)] if on_path else []) + [ROOT / "rust-modules/target-sim/debug/plxnative-sim"]:
+        if path.is_file() and os.access(path, os.X_OK):
+            return path.resolve()
+    raise ValueError("no plxnative-sim found: build it with `make sim-macos` or pass --sim PATH")
+
+
+def addresses_for(host, found):
+    """The addresses to print: `--host` alone when given (it must be RFC 1918), else every one this machine has."""
+    if host is not None:
+        if not is_rfc1918(host):
+            raise ValueError(f"--host {host} is not an RFC 1918 address (10/8, 172.16/12, 192.168/16); the TV refuses http:// to any other")
+        return [host]
+    if not found:
+        raise ValueError(
+            "this machine has no RFC 1918 address (10/8, 172.16/12, 192.168/16), and the TV fetches http:// only from one; "
+            "join the TV's network, or name the address with --host")
+    return list(found)
+
+
+def banner(addresses, port, name):
+    urls = [f"http://{address}:{port}/{name}.plxhud" for address in addresses]
+    lines = [f"TV address: {urls[0]}"]
+    lines += [f"  or, on another interface: {url}" for url in urls[1:]]
+    lines.append(HOW_TO)
+    lines.append(REMOVE_FIRST)
+    return lines
+
+
+def say(line):
+    print(line, flush=True)
+
+
+def pause(seconds):
+    """The wait between two looks at the source. Its own name so a test can end the loop here without touching
+    `time.sleep`, which the subprocess waits of a build share."""
+    time.sleep(seconds)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(prog="hud-dev", description="Bundle, lint and serve a Player HUD to the television.")
+    parser.add_argument("source", type=Path, help="a HUD source directory or a .plxhud")
+    parser.add_argument("--sim", help="the plxnative-sim to lint and pack with (default: on PATH, else the make sim-macos build)")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"TCP port to serve on (default {DEFAULT_PORT})")
+    parser.add_argument("--host", help="print this RFC 1918 address instead of discovering this machine's")
+    parser.add_argument("--interval", type=float, default=POLL_SECONDS, help="seconds between looks at the source")
+    args = parser.parse_args(argv)
+    try:
+        addresses = addresses_for(args.host, private_addresses())
+        sim = find_sim(args.sim)
+        if not args.source.exists():
+            raise ValueError(f"{args.source} does not exist")
+        if args.interval <= 0:
+            raise ValueError("--interval must be positive")
+    except ValueError as error:
+        print(f"hud-dev: {error}", file=sys.stderr)
+        return 2
+    if sys.platform == "darwin" and sys.executable != "/usr/bin/python3":
+        print("hud-dev: if the TV cannot connect, the macOS firewall may be blocking this interpreter; "
+              "/usr/bin/python3 is the one it allows by default.", file=sys.stderr)
+    name = package_name(args.source)
+    shelf = Shelf()
+    try:
+        server = make_server(shelf, name, "0.0.0.0", args.port, lambda line: say(f"{time.strftime('%H:%M:%S')}  {line}"))
+    except OSError as error:
+        print(f"hud-dev: cannot listen on port {args.port}: {error}", file=sys.stderr)
+        return 1
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    for line in banner(addresses, server.server_address[1], name):
+        say(line)
+    dev = Dev(Builder(sim, args.source), shelf, say)
+    try:
+        while True:
+            dev.poll()
+            pause(args.interval)
+    except KeyboardInterrupt:
+        say("stopped")
+    finally:
+        server.shutdown()
+        server.server_close()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

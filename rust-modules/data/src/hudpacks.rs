@@ -20,8 +20,9 @@
 //! Nothing is decided before that answer, and the sha the store trusts is always its own.
 //!
 //! **Layout** per candidate directory: `packs/<sha256>.plxhud` (content-addressed, so an update is
-//! a new file), `installed.json` (id -> sha, source, installed-at), `drop/` (the sideload drop folder).
-//! `index-cache.json` is the registry gallery's dated conditional-GET cache ([`catalog`]); boot reads cached revocations, while only a settings visit authorizes an index GET.
+//! a new file), `installed.json` (id -> sha, source, installed-at, and for a package fetched from a development
+//! source the address it came from), `drop/` (the sideload drop folder).
+//! `index-cache.json` is the registry gallery's dated conditional-GET cache of the signed index ([`catalog`], verified again on every load); boot reads cached revocations, while only a settings visit authorizes an index GET.
 //! A listing reads every candidate; one sha found in two of them is one package; for one id the higher
 //! `version` wins, and on a tie the earlier candidate.
 //!
@@ -31,6 +32,13 @@
 //! volatile (`/tmp`-backed) candidate took is [`Entry::until_restart`]. A new package replaces an
 //! installed one of its id only with a strictly higher `version` ([`Semver`]). `builtin:classic` is
 //! refused from every source: the built-in entry is compiled in, always listed, always selectable.
+//!
+//! **A development source is remembered** (PR15). An install from an address whose [`Address::dev_source`] is set (an
+//! `http://` URL on a private LAN address: an author's machine) records that address with the package, and
+//! [`Entry::dev_source`] hands it back, so the Settings page can send the same [`HudEvent::Fetch`] again and
+//! the author sees the next build through the same confirmation. No other source records an address. An address a
+//! record could not have been written with (not a development one, or on a record of another source) is dropped
+//! on read, never obeyed.
 //!
 //! A missing installed index is an empty writable candidate. An invalid, unreadable or unsupported
 //! index is read-only in its entirety. Installs use another candidate, and the original index and its
@@ -459,6 +467,10 @@ pub struct Entry {
     /// The profile's selection names this row. It may name a package that cannot load: what plays is
     /// [`HudStore::resolved`].
     pub selected: bool,
+    /// The development source it was installed from: the `http://` address of an author's machine on the
+    /// home network, recorded with the package so the Settings page can fetch the next build of it again
+    /// (PR15). `None` for the built-in and for every package that did not come from such an address.
+    pub dev_source: Option<address::Address>,
 }
 
 /// A fetched package the store holds for the viewer to confirm: what the prompt shows, and the sha
@@ -498,11 +510,19 @@ struct Record {
     at: u64,
     package_format: String,
     hud_format: String,
+    /// The development source the bytes came from: only ever an address install's, and only a [`Address::dev_source`].
+    from: Option<address::Address>,
 }
 
 impl Record {
     fn new(sha: Sha, source: Source, at: u64, package_format: &str, hud_format: &str) -> Self {
-        Record { sha, source, at, package_format: package_format.into(), hud_format: hud_format.into() }
+        Record { sha, source, at, package_format: package_format.into(), hud_format: hud_format.into(), from: None }
+    }
+
+    /// This record with the development source `from` names, when a record of `self.source` may carry one.
+    fn from_dev_source(mut self, from: Option<&address::Address>) -> Self {
+        self.from = from.filter(|address| self.source == Source::Address && address.dev_source()).cloned();
+        self
     }
 }
 
@@ -705,6 +725,7 @@ impl HudStore {
             loadable: Ok(()),
             until_restart: false,
             selected: self.selected == BUILTIN_CLASSIC,
+            dev_source: None,
         }];
         for (id, win) in self.winners() {
             out.push(Entry {
@@ -716,6 +737,7 @@ impl HudStore {
                 loadable: if self.catalog.snapshot().revoked(win.record.sha).is_some() { Err(Unloadable::Revoked) } else { win.loaded.loadable },
                 until_restart: win.loaded.volatile,
                 selected: self.selected == id,
+                dev_source: win.record.from.clone(),
             });
         }
         out
@@ -1255,7 +1277,8 @@ impl HudStore {
                     // The pack is down: switch the candidate's index to it.
                     let mut index = self.dirs[dir].index.clone();
                     let replaced = index
-                        .insert(meta.id.clone(), Record::new(offer.sha, offer.source, offer.now.unwrap_or_default(), &meta.package_format, &meta.hud_format))
+                        .insert(meta.id.clone(), Record::new(offer.sha, offer.source, offer.now.unwrap_or_default(), &meta.package_format, &meta.hud_format)
+                            .from_dev_source(offer.from.as_ref()))
                         .map(|old| old.sha);
                     let tag = self.tag();
                     fx.push(HudEffect::WriteFile {
@@ -1426,6 +1449,10 @@ struct IndexRecord {
     at: u64,
     package_format: String,
     hud_format: String,
+    /// Absent unless the package came from a development source (PR15), so an index without one is the
+    /// bytes it always was.
+    #[serde(default)]
+    from: Option<String>,
 }
 
 /// Require JSON objects at both struct boundaries. Serde's struct decoder also accepts sequences,
@@ -1482,7 +1509,11 @@ fn parse_index(bytes: &[u8]) -> Dir {
             return readonly();
         }
         let Some(sha) = Sha::parse(&record.sha) else { return readonly() };
-        index.insert(id, Record::new(sha, record.source, record.at, &record.package_format, &record.hud_format));
+        // Fail closed: an address that does not parse as a development one, or that sits on a record another
+        // source wrote, is no address (the package is still listed and the index still writable).
+        let from = record.from.as_deref().and_then(|text| address::parse(text).ok());
+        index.insert(id, Record::new(sha, record.source, record.at, &record.package_format, &record.hud_format)
+            .from_dev_source(from.as_ref()));
     }
     Dir { index, access: Access::Writable }
 }
@@ -1491,10 +1522,14 @@ fn parse_index(bytes: &[u8]) -> Dir {
 fn index_bytes(index: &Index) -> Arc<[u8]> {
     let mut packs = Map::new();
     for (id, record) in index {
-        packs.insert(id.clone(), serde_json::json!({
+        let mut entry = serde_json::json!({
             "sha": record.sha.hex(), "source": record.source.as_str(), "at": record.at,
             "package_format": record.package_format, "hud_format": record.hud_format
-        }));
+        });
+        if let (Some(from), Some(object)) = (&record.from, entry.as_object_mut()) {
+            object.insert("from".to_owned(), from.url().into());
+        }
+        packs.insert(id.clone(), entry);
     }
     serde_json::json!({"v": INDEX_FORMAT, "packs": packs}).to_string().into_bytes().into()
 }

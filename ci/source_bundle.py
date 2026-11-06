@@ -149,6 +149,11 @@ PUBLIC_SAMPLE_FILES = {
         (PRIVATE_KEY_PATTERN, 'be6a429443a8687241f20f9bd2511614b9b8a150e52ed89e445960fbd2ae1906'),
     'cargo-vendor/rcgen/src/certificate.rs':
         (PRIVATE_KEY_PATTERN, '04d367a1ffb3a4c6f74154b68721690fef8e319fe591118211eb039a672963a1'),
+    # The unit-test PEM keys in `ed25519-compact` 2.6.0's `ed25519_tests` module: the verify-only
+    # dependency of the signed HUD registry index (Cargo.lock pins the crate's checksum). They sign
+    # nothing the app ships or trusts; the registry's keys are public keys compiled in as bytes.
+    'cargo-vendor/ed25519-compact/src/pem.rs':
+        (PRIVATE_KEY_PATTERN, 'ba3b0792845a9f5819ef4f52fb6ddf780ea84953a06fe69c916bc4c17e20145c'),
 }
 
 def scan(data, name, private_values=(), depth=0, budget=None):

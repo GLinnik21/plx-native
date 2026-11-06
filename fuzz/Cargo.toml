@@ -1,0 +1,107 @@
+# The `cargo fuzz` package over every parser a HUD package or the registry reaches (PR16 of the
+# player-HUD plugin series; docs/hud-plugins.md, "Trust and safety"). It ships nothing and changes no
+# shipped build.
+#
+# WHERE IT LIVES. A top-level `fuzz/`, with a `[workspace]` of its own: it is not a member of the
+# `rust-modules` workspace and no shipped Cargo.toml names it, so `rust-modules/Cargo.toml`,
+# `rust-modules/Cargo.lock`, Dependabot, the notices generator (which reads only that lock) and every
+# `make` target stay as they were. Under `rust-modules/` it would sit inside the gates that walk that
+# tree (`ci/check-module-layers.py`, `ci/check-deps.sh`, `ci/check-list-caps.py`) and its binaries
+# would need an `exclude`; here they cannot see it.
+#
+# WHAT IT FUZZES. The parsers of `plx_appkit` (`hud_format`) and `plx_data` (`hudpacks`), built in the
+# host-simulator configuration: `hostsim`, the only one a host executable can link (the television build
+# declares the LS2, glib and ACB symbols only the TV's own libraries define). The parsers have no `cfg`
+# on that feature (`rust-modules/Cargo.toml`, "What it changes, and nothing else"), and nothing here
+# enables `test-support` or `devtriggers`. `fuzz/Cargo.lock` is not committed: `tools/fuzz-hud.py` copies
+# `rust-modules/Cargo.lock` over it before a build, so the shared crates (zip, serde_json, ...) are exactly
+# the versions that ship and cargo adds only libfuzzer-sys and its own dependencies. The nightly toolchain
+# is for the sanitizer and coverage flags; nothing here needs it otherwise.
+[workspace]
+
+[package]
+name = "plxnative-fuzz"
+version = "0.0.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Fuzz targets over the HUD package, bundle, SVG, address and registry-index parsers. Not shipped."
+repository = "https://github.com/GLinnik21/plx-native"
+publish = false
+build = "build.rs"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+# `=`: a fuzzer upgrade changes the corpus's coverage map, so it moves on purpose, not on a rebuild.
+libfuzzer-sys = "=0.4.13"
+serde_json = { version = "1", default-features = false, features = ["alloc", "std"] }
+plx_base = { path = "../rust-modules/base" }
+plx_appkit = { path = "../rust-modules/appkit" }
+plx_data = { path = "../rust-modules/data" }
+# The registry-index targets sign with TEST ONLY keys (`src/signing.rs`) to reach what follows the signature
+# check. The same version and features as `plx_data`, so the lock gains nothing.
+ed25519-compact = { version = "=2.6.0", default-features = false, features = ["opt_size"] }
+# Named only to switch the layers below `plx_appkit` to their host stand-ins (`plx_media/hostsim`
+# forwards to every layer that has the feature); no code here calls it.
+plx_media = { path = "../rust-modules/media", features = ["hostsim"] }
+
+[lib]
+name = "plxnative_fuzz"
+path = "src/lib.rs"
+
+[[bin]]
+name = "admit"
+path = "fuzz_targets/admit.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bundle_read"
+path = "fuzz_targets/bundle_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "archive_read"
+path = "fuzz_targets/archive_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "svg_check"
+path = "fuzz_targets/svg_check.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "address_parse"
+path = "fuzz_targets/address_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "catalog_parse"
+path = "fuzz_targets/catalog_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "catalog_verify"
+path = "fuzz_targets/catalog_verify.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "catalog_cache"
+path = "fuzz_targets/catalog_cache.rs"
+test = false
+doc = false
+bench = false
