@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-06T21:56:12Z",
+ "generated": "2026-11-06T21:59:13Z",
  "metrics": [
   {
    "change30_pct": 24.0,
@@ -144,18 +144,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -13.6,
-   "change7_pct": 18.7,
+   "change30_pct": -13.8,
+   "change7_pct": 18.4,
    "d30": 514,
-   "delta30": -70.0,
-   "delta7": 70.0,
+   "delta30": -71,
+   "delta7": 69,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 62,
+   "n_now": 63,
    "n_prev": 93,
-   "now": 444.0,
+   "now": 443,
    "prev7": 374,
    "shown": true,
    "state": "worse",
@@ -387,18 +387,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 22.3,
-   "change7_pct": 12.5,
+   "change30_pct": 22.5,
+   "change7_pct": 12.7,
    "d30": 246.5,
-   "delta30": 55.0,
-   "delta7": 33.5,
+   "delta30": 55.5,
+   "delta7": 34,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 83,
-   "now": 301.5,
+   "now": 302,
    "prev7": 268,
    "shown": true,
    "state": "flat",
@@ -408,18 +408,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -26.6,
-   "change7_pct": 18.0,
+   "change30_pct": -26.8,
+   "change7_pct": 17.7,
    "d30": 291,
-   "delta30": -77.5,
-   "delta7": 32.5,
+   "delta30": -78,
+   "delta7": 32,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 83,
-   "now": 213.5,
+   "now": 213,
    "prev7": 181,
    "shown": true,
    "state": "flat",
@@ -430,17 +430,17 @@
   },
   {
    "change30_pct": -71.8,
-   "change7_pct": -0.7,
+   "change7_pct": -0.5,
    "d30": 751.0,
-   "delta30": -539.5,
-   "delta7": -1.5,
+   "delta30": -539.0,
+   "delta7": -1,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 83,
-   "now": 211.5,
+   "now": 212,
    "prev7": 213,
    "shown": true,
    "state": "flat",
@@ -557,18 +557,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 14.7,
-   "change7_pct": 8.3,
+   "change30_pct": 11.8,
+   "change7_pct": 5.6,
    "d30": 17.0,
-   "delta30": 2.5,
-   "delta7": 1.5,
+   "delta30": 2.0,
+   "delta7": 1,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 83,
-   "now": 19.5,
+   "now": 19,
    "prev7": 18,
    "shown": false,
    "state": "flat",
@@ -667,11 +667,6 @@
    "change_pct": 30.4,
    "commits": [
     {
-     "pr": 1244,
-     "sha": "6d5089359",
-     "title": "Tests: the lint, screenshot and replay runs delete their temp trees"
-    },
-    {
      "pr": 1247,
      "sha": "43cdc8deb",
      "title": "Settings: the built-in HUD is named Built-in"
@@ -715,6 +710,11 @@
      "pr": null,
      "sha": "4bf133d57",
      "title": "Settings: fps scenes for the pages Settings v2 added"
+    },
+    {
+     "pr": 1263,
+     "sha": "2f5e79630",
+     "title": "Playback: a Dolby Vision resume or seek that lands on a CRA plays the HDR10 base layer"
     }
    ],
    "from": 230,
@@ -728,11 +728,6 @@
    "change_pct": 25.2,
    "commits": [
     {
-     "pr": 1244,
-     "sha": "6d5089359",
-     "title": "Tests: the lint, screenshot and replay runs delete their temp trees"
-    },
-    {
      "pr": 1247,
      "sha": "43cdc8deb",
      "title": "Settings: the built-in HUD is named Built-in"
@@ -776,6 +771,11 @@
      "pr": null,
      "sha": "4bf133d57",
      "title": "Settings: fps scenes for the pages Settings v2 added"
+    },
+    {
+     "pr": 1263,
+     "sha": "2f5e79630",
+     "title": "Playback: a Dolby Vision resume or seek that lands on a CRA plays the HDR10 base layer"
     }
    ],
    "from": 74.8,
@@ -789,11 +789,6 @@
    "change_pct": 23.7,
    "commits": [
     {
-     "pr": 1244,
-     "sha": "6d5089359",
-     "title": "Tests: the lint, screenshot and replay runs delete their temp trees"
-    },
-    {
      "pr": 1247,
      "sha": "43cdc8deb",
      "title": "Settings: the built-in HUD is named Built-in"
@@ -837,6 +832,11 @@
      "pr": null,
      "sha": "4bf133d57",
      "title": "Settings: fps scenes for the pages Settings v2 added"
+    },
+    {
+     "pr": 1263,
+     "sha": "2f5e79630",
+     "title": "Playback: a Dolby Vision resume or seek that lands on a CRA plays the HDR10 base layer"
     }
    ],
    "from": 312,
@@ -850,11 +850,6 @@
    "change_pct": 20.2,
    "commits": [
     {
-     "pr": 1244,
-     "sha": "6d5089359",
-     "title": "Tests: the lint, screenshot and replay runs delete their temp trees"
-    },
-    {
      "pr": 1247,
      "sha": "43cdc8deb",
      "title": "Settings: the built-in HUD is named Built-in"
@@ -898,6 +893,11 @@
      "pr": null,
      "sha": "4bf133d57",
      "title": "Settings: fps scenes for the pages Settings v2 added"
+    },
+    {
+     "pr": 1263,
+     "sha": "2f5e79630",
+     "title": "Playback: a Dolby Vision resume or seek that lands on a CRA plays the HDR10 base layer"
     }
    ],
    "from": 307,
@@ -908,13 +908,8 @@
    "to": 369
   },
   {
-   "change_pct": 18.7,
+   "change_pct": 18.4,
    "commits": [
-    {
-     "pr": 1244,
-     "sha": "6d5089359",
-     "title": "Tests: the lint, screenshot and replay runs delete their temp trees"
-    },
     {
      "pr": 1247,
      "sha": "43cdc8deb",
@@ -959,6 +954,11 @@
      "pr": null,
      "sha": "4bf133d57",
      "title": "Settings: fps scenes for the pages Settings v2 added"
+    },
+    {
+     "pr": 1263,
+     "sha": "2f5e79630",
+     "title": "Playback: a Dolby Vision resume or seek that lands on a CRA plays the HDR10 base layer"
     }
    ],
    "from": 374,
@@ -966,7 +966,7 @@
    "label": "Wait after merge",
    "since": "2026-11-06",
    "threshold_pct": 15.0,
-   "to": 444.0
+   "to": 443
   }
  ],
  "schema": 2,
