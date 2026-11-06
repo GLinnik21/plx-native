@@ -21,10 +21,12 @@
  * Makefile's `EXIT_INTERPOSER_LDFLAG`), so the `R_ARM_JUMP_SLOT` of every shared object's `exit`
  * binds to this definition instead of libc's. The same mechanism carries the Starfish
  * `callbackFunctionHook` interposer in `src/starfish.c`. It hands the status and its own return
- * address to `plx_exit_record` (`src/crashtrace.c`), which writes one record to the event log (the
- * thread, and the mapping the return address falls in: the shared object that called `exit`) and
- * ends the process with `_exit`. The return address is there because the PLX-NATIVE-1P event shows
- * no frame above `__run_exit_handlers`, so which library called `exit` is otherwise unknown.
+ * address to `plx_exit_record` (`src/crashtrace.c`), which writes one record to the event log and
+ * to the append-only crash log (the thread, and the mapping the return address falls in: the
+ * shared object that called `exit`) and ends the process with `_exit`. The next launch reports the
+ * crash log's copy as an error event under the crash-report consent (`crashreport::parse`). The
+ * return address is there because the PLX-NATIVE-1P event shows no frame above
+ * `__run_exit_handlers`, so which library called `exit` is otherwise unknown.
  *
  * **The interposer must be async-signal-safe, because `exit` can be reached from a signal
  * handler** (a library's own, on any thread), where a lock the interrupted code holds is a

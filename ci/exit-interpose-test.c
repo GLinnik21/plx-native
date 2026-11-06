@@ -12,7 +12,7 @@
  * a firmware library binds there (Sentry PLX-NATIVE-1P: an exit made on SDL's own `SDLTimer`
  * thread ran an exit handler that crashed). It hands the status and its return address to
  * `plx_exit_record` in `src/crashtrace.c`, which writes an async-signal-safe record to the event log
- * and ends the process. This test makes that call for real, with the REAL `src/crashtrace.c` (only
+ * and to the crash log, and ends the process. This test makes that call for real, with the REAL `src/crashtrace.c` (only
  * what Rust owns, `plx_crash_phase` and `plx_freeze_seq`, is defined below):
  *
  *   1. the parent creates two temporary files, the event log and the crash log;
@@ -23,11 +23,13 @@
  *   3. the parent asserts how the child ended and what it wrote (argv[2] is the mode).
  *
  * Built twice by the Makefile. In `interposed` mode `src/exit.c` is linked and the child must end
- * with 7: the caller's real status survived and the finalizer never ran. The event log must hold the
- * `*** EXIT status=7 caller=0x` header, a `thread:` line naming `exit-caller`, and an `at:` line
- * naming `libexitcaller.so`, the object that called `exit`, which is the return address resolved
- * through `/proc/self/maps` with no `dladdr`. The CRASH log must be empty: the next launch's crash
- * importer reads that one and an exit is not a crash. In `control` mode `src/exit.c` is NOT linked
+ * with 7: the caller's real status survived and the finalizer never ran. BOTH logs must hold the
+ * `*** EXIT status=7 caller=0x` header, a `time:` line, a `thread:` line naming `exit-caller`, and
+ * an `at:` line naming `libexitcaller.so`, the object that called `exit`, which is the return
+ * address resolved through `/proc/self/maps` with no `dladdr`. The event log is this session's
+ * story; the crash log is the file the next launch's importer reads (`crashreport::parse`) and
+ * turns into an error report of its own kind, so the record has to be there, whole. Neither log
+ * holds a `bin:` line: an exit names no load base. In `control` mode `src/exit.c` is NOT linked
  * (`src/crashtrace.c` still is) and the same program must end with 42, because libc's `exit` runs
  * the finalizer: that control is what proves this test can fail, and that it is `src/exit.c` that
  * changes the result.
@@ -144,8 +146,8 @@ static int has_line(const char *text, const char *prefix, const char *needle) {
     return 0;
 }
 
-static int fail(const char *what, const char *events) {
-    fprintf(stderr, "FAIL: %s\n--- the event log ---\n%s--- end ---\n", what, events);
+static int fail(const char *what, const char *log) {
+    fprintf(stderr, "FAIL: %s\n--- the log in question ---\n%s--- end ---\n", what, log);
     return 1;
 }
 
@@ -207,15 +209,24 @@ int main(int argc, char **argv) {
             return fail("no `thread:` line naming " CALLER_THREAD, events);
         if (!has_line(events, "at: ", CALLER_OBJECT))
             return fail("no `at:` line naming " CALLER_OBJECT, events);
-        if (crash_len != 0) {
-            fprintf(stderr, "FAIL: the crash log is not empty (%zu bytes):\n%s\n", crash_len, crash);
-            return 1;
-        }
+        /* The crash log: the same record. This is what the next launch reports. */
+        if (!strstr(crash, "*** EXIT status=7 caller=0x"))
+            return fail("no `*** EXIT status=7 caller=0x` header in the crash log", crash);
+        if (!has_line(crash, "time: ", ""))
+            return fail("no `time:` line in the crash log", crash);
+        if (!has_line(crash, "thread: ", "name=" CALLER_THREAD))
+            return fail("no `thread:` line naming " CALLER_THREAD " in the crash log", crash);
+        if (!has_line(crash, "at: ", CALLER_OBJECT))
+            return fail("no `at:` line naming " CALLER_OBJECT " in the crash log", crash);
+        if (has_line(events, "bin: ", "") || has_line(crash, "bin: ", ""))
+            return fail("a `bin:` line in an exit record (the exit names no load base)", crash);
+        if (crash_len == 0)
+            return fail("the crash log is empty", crash);
     }
 
     printf("exit-interpose (%s): the library's exit(%d) ended the child with status %d%s\n",
            argv[2], CALLER_STATUS, expected,
-           interposed ? ", with an event-log record naming the thread and " CALLER_OBJECT ", and an empty crash log" : ", as expected");
+           interposed ? ", with an exit record naming the thread and " CALLER_OBJECT " in both the event log and the crash log" : ", as expected");
     fflush(stdout);
     return 0;
 }

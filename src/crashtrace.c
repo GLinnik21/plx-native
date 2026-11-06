@@ -135,7 +135,8 @@ struct bufs {
 };
 static struct bufs crash_bufs;
 static struct bufs freeze_bufs;
-/* `plx_exit_record`'s set. Its lines go to the event log ONLY (see `emit`). */
+/* `plx_exit_record`'s set. Its lines go to both logs, and are dropped once a crash has begun (see
+ * `emit`). */
 static struct bufs exit_bufs;
 
 /* Set on entry to the fatal handler and never cleared: the process is dying. The freeze probe
@@ -144,14 +145,16 @@ static struct bufs exit_bufs;
 static volatile sig_atomic_t crashing;
 
 /* Both sinks get every line, so the two logs tell the same story: the event log is where the rest
- * of the session is, and the crash log is the half that survives the relaunch. A freeze line
- * (written from the freeze buffers) is dropped once a crash has begun. The exit record (written
- * from `exit_bufs`) goes to the event log alone: the crash log is what the next launch's crash
- * importer turns into reports, and an exit is not a crash. */
+ * of the session is, and the crash log is the half that survives the relaunch. That includes the
+ * exit record (written from `exit_bufs`): the next launch's importer reads it from the crash log
+ * and reports it, as a record of its own kind and not as a crash.
+ *
+ * A freeze line (written from the freeze buffers) and an exit line are dropped once a crash has
+ * begun: the crash is the record that must be whole, and a line of either one landing in the
+ * middle of it would be read as part of it. */
 static void emit(const struct plx_sbuf *b) {
-    if (crashing && b->p == freeze_bufs.rec) return;
+    if (crashing && (b->p == freeze_bufs.rec || b->p == exit_bufs.rec)) return;
     s_write((int)event_fd, b->p, b->n);
-    if (b->p == exit_bufs.rec) return;
     s_write((int)crash_fd, b->p, b->n);
 }
 
@@ -161,7 +164,9 @@ static void emit_map_line(struct bufs *B, const char *line, size_t n,
                           const unsigned long *addrs, size_t n_addrs) {
     int kind = plx_map_line_kind_n(line, n, addrs, n_addrs);
     /* The exit record names the caller's mapping and has no use for the load base of the
-     * executable (an `ET_EXEC`, see the note at the top): no `bin:` line for it. */
+     * executable (an `ET_EXEC`, see the note at the top): no `bin:` line for it. The importer
+     * identifies the app's own build from the `img:` marker the app wrote at startup, as it does
+     * for a fault, and ignores a `bin:` line in any case. */
     if (B == &exit_bufs) kind &= PLX_MAP_AT;
     struct plx_sbuf b = { B->rec, 0, sizeof B->rec };
     if (kind & PLX_MAP_AT) {
@@ -536,8 +541,9 @@ void plx_exit_record(int status, unsigned long caller) {
     __atomic_store_n(&plx_crash_phase, PLX_PHASE_EXITING, __ATOMIC_RELAXED);
 
     /* Before `plx_crash_install` there is no sink (both descriptors are -1, so `s_write` would be a
-     * no-op) and so no record: skip the formatting and the maps scan and just end. */
-    if (event_fd >= 0) {
+     * no-op) and so no record: skip the formatting and the maps scan and just end. Either sink is
+     * enough: a log that failed to open does not cost the other one its copy. */
+    if (event_fd >= 0 || crash_fd >= 0) {
         struct bufs *B = &exit_bufs;
         struct plx_sbuf b = { B->rec, 0, sizeof B->rec };
         b.n = plx_fmt_exit(B->rec, sizeof B->rec, status, caller);

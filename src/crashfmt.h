@@ -402,9 +402,10 @@ static inline size_t plx_fmt_frames(char *out, size_t cap, const unsigned long *
  * (`src/crashtrace.c`) before it ends the process with `_exit`.
  *
  * Not a fault and not a freeze, so it has its own header (`*** EXIT`, never `*** SIGNAL` or
- * `*** FREEZE`) and every tool that scans a log for faults keeps skipping it. Unlike those two it
- * is written to the EVENT log only, never the crash log, so the next launch's crash importer never
- * sees it. Its lines are the fault record's own (`time:`, `thread:`, `at:`), under this header.
+ * `*** FREEZE`) and every tool that scans a log for faults keeps skipping it. Like those two it is
+ * written to both the event log and the crash log; the next launch's importer
+ * (`crashreport::parse`) reads it as a record of its own kind, an error event that is not counted
+ * as a crash. Its lines are the fault record's own (`time:`, `thread:`, `at:`), under this header.
  * ------------------------------------------------------------------------------------------- */
 
 /* The exit record's FIRST line:

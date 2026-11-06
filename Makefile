@@ -1931,10 +1931,11 @@ check-python-harness:
 #    a finalizer that would `_exit(42)`, then calls `exit(7)`) and calls it from a second thread named
 #    `exit-caller`, the shape of PLX-NATIVE-1P's SDLTimer thread. The executable is built twice. With
 #    src/exit.c linked and the link's own EXIT_INTERPOSER_LDFLAG, the child must end with 7: the real
-#    status survived, the finalizer never ran, the event log holds the `*** EXIT status=7 caller=0x`
-#    record (plx_exit_record) with a `thread:` line naming `exit-caller` and an `at:` line naming
-#    libexitcaller.so, and the crash log is EMPTY (an exit is not a crash; the next launch's importer
-#    reads that file). Without src/exit.c (crashtrace.c still linked) it must end with 42, which is
+#    status survived, the finalizer never ran, and BOTH the event log and the crash log hold the
+#    `*** EXIT status=7 caller=0x` record (plx_exit_record) with a `time:` line, a `thread:` line
+#    naming `exit-caller` and an `at:` line naming libexitcaller.so (no `bin:` line): the next
+#    launch's importer reads the crash log and reports the record, as an error and not a crash.
+#    Without src/exit.c (crashtrace.c still linked) it must end with 42, which is
 #    what proves the test can fail. (The flag is not the variable between the two:
 #    ld exports an executable's `exit` anyway, because libc.so defines it too, measured with the
 #    NDK's ld; what ships is asserted on the artifact by ci/check-elf.sh.) The library is opened by

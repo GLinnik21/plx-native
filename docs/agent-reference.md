@@ -1191,8 +1191,8 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   StarfishMediaAPIs C++/ACB seam. `src/svg.c` — nanosvg rasterizer. `src/sentry_context.c` — the
   narrow C wrapper that keeps Sentry's opaque by-value object ABI out of Rust. `src/exit.c` — libc
   `exit` defined in the executable (and exported by the link), so a shared library's `exit()` ends the
-  process through `plx_exit_record` in `src/crashtrace.c` (an async-signal-safe event-log record
-  naming the thread and the calling library, then `_exit`; not through Rust's `exit_now`, which
+  process through `plx_exit_record` in `src/crashtrace.c` (an async-signal-safe record, in the event
+  log and the crash log, naming the thread and the calling library, then `_exit`; not through Rust's `exit_now`, which
   flushes under locks); `ci/exit-interpose-test.c` grades it on Linux. These six are the
   entire normal C side (`gpdebug.c` is an opt-in allocator instrument). Reach for
   `/tmp/plxnative-crashtest=<segv|abrt|bus|ill|trap|panic|unwind>` to fault the app deliberately
@@ -1208,6 +1208,9 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   (`telemetry::crashreport`). The app is never stopped. A default (`threadcheck`) build aborts the
   stalled main thread at 2 s, before the 5 s probe, unless `/tmp/plxnative-guard` contains `log`:
   write `log` there before launching, or no freeze report is produced.
+  An `exit()` made by a firmware library (`src/exit.c`) writes a `*** EXIT status=<n> caller=0x…`
+  record to the event log and the crash log, and the next launch reports it as an `error` event
+  that is not a crash (`telemetry::crashreport`; its session is `abnormal`, like a freeze's).
 - `rust-modules/src/` — the app core (Rust): `app/` (`mod.rs` the `run_application` shim + `struct App`, `boot.rs` the bring-up, `run.rs` the frame loop and its phase functions, `events.rs`/`input.rs` the input decode and key ladders, `lifecycle.rs`, `playback.rs`, `content.rs`, `bridge.rs` the seam onto the container and the ONE navigation vocabulary, `words.rs` the heartbeat's `route=`/`overlay=` alphabet — `nav.rs` is gone with `enum Route` since restructure phase 12), `system.rs` (wayland),
   and, in the media layer (`rust-modules/media/`, crate `plx_media`, which the application links),
   `player/` (buffer-feed engine + worker threads — **`rust-modules/media/src/player/CLAUDE.md` is the

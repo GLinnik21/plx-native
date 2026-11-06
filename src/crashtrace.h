@@ -46,11 +46,13 @@ void plx_crash_scan_maps_file(const char *path, unsigned long pc, unsigned long 
  * here) calls this with the status and its own return address (`caller`, the RAW address of the
  * `exit` call), and it never returns.
  *
- * It writes one record to the EVENT log only, never the crash log (the next launch's crash importer
- * reads that one, and an exit is not a crash): a `*** EXIT status=<n> caller=0x<hex>` header, the
- * `time:` and `thread:` lines of a fault record, and the `/proc/self/maps` line (`at:`) of the
- * mapping that contains the call, which is how a stripped firmware library that called `exit` gets
- * named. Then `_exit(status)`. It also stores the "exiting" phase in `plx_crash_phase`, so a fault
+ * It writes one record to BOTH logs: the event log, and the append-only crash log, which the next
+ * launch's importer (`crashreport::parse`) turns into an error report of its own kind (an exit is
+ * not a crash, so it is not counted as one). The record is a `*** EXIT status=<n> caller=0x<hex>`
+ * header, the `time:` and `thread:` lines of a fault record, and the `/proc/self/maps` line (`at:`)
+ * of the mapping that contains the call, which is how a stripped firmware library that called
+ * `exit` gets named. Then `_exit(status)`. Its lines are dropped once a fatal signal's handler has
+ * begun, so they never land in the middle of a crash record. It also stores the "exiting" phase in `plx_crash_phase`, so a fault
  * in these last instructions says so.
  *
  * **Async-signal-safe, all of it,** because `exit` can be called from a signal handler: lock-free
