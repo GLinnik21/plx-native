@@ -2438,7 +2438,10 @@ pub fn begin_engine_teardown(for_reload: bool) {
         control.pending_seek_ns = None;
         control.phase = ControlPhase::Stopping;
         control.clear_flight();
-        control.timeline = None;
+        // The timeline projection is NOT cleared here. The epoch bump above already ends every
+        // reporter's authority to sample it, and the stop worker still owes the session id the
+        // reporter last used its `stopped`: [`scrobble_stop`] runs after this on the live-Engine
+        // path and takes the projection (and with it that id) itself.
         } else {
         let current = control.phase;
         control.phase = match current {
@@ -6609,11 +6612,12 @@ pub fn scrobble_stop(
     } else {
         tsession.clone()
     };
-    // What the reporter last reported under is read here, on the thread that owns the route, next
-    // to the id the final `stopped` goes out under. The reporter itself is only joined by the
-    // worker, so a tick landing between this read and `begin_engine_teardown` (which retires its
-    // lease, a few calls later on this thread) is not accounted for.
-    let retired_id = retired_report_session(reported_timeline_session().as_deref(), &session)
+    // What the reporter last reported under is taken here, on the thread that owns the route, next
+    // to the id the final `stopped` goes out under. `begin_engine_teardown` has already retired the
+    // reporter's lease on the live-Engine path (the Engine-less one runs this first), and the
+    // reporter itself is only joined by the worker, so a tick in flight when the teardown began is
+    // not accounted for.
+    let retired_id = retired_report_session(take_reported_timeline_session().as_deref(), &session)
         .map(str::to_owned);
     // The two fields THIS function retires (teardown clears the URL a few lines later, and that is
     // the whole of what a stop resets). A partial write rather than a whole-session reset because
@@ -11641,8 +11645,9 @@ pub fn begin_timeline_reporting(ps: &PlaybackSession) -> Option<TimelineLease> {
     let mut control = PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner());
     // An Engine reload (a quality change, a transcode seek) starts a new reporter for the SAME
     // playback while the old projection still stands, and the id the old reporter last reported
-    // under may be the one that reload just retired. A stop (or a failed start) cleared the
-    // projection, so a playback that follows one starts with nothing to carry.
+    // under may be the one that reload just retired. A stop took the projection
+    // ([`take_reported_timeline_session`]) and a failed start cleared it, so a playback that
+    // follows one starts with nothing to carry.
     projection.reported_session = control
         .timeline
         .take()
@@ -11722,10 +11727,11 @@ fn note_reported_session(lease: &TimelineLease, session: &str) {
 }
 
 /// The id this playback last reported under, for [`scrobble_stop`] to compare with the id its
-/// final `stopped` goes out under.
-fn reported_timeline_session() -> Option<String> {
-    let control = PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner());
-    control.timeline.as_ref()?.reported_session.clone()
+/// final `stopped` goes out under. It takes the whole projection: a stop ends the playback it
+/// describes, so the next one starts with nothing to carry.
+fn take_reported_timeline_session() -> Option<String> {
+    let mut control = PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner());
+    control.timeline.take()?.reported_session
 }
 
 /// POST one periodic timeline update for an exact [`TimelineLease`]. After waiting for the stop

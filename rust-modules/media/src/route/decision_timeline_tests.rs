@@ -1052,3 +1052,35 @@ fn the_final_stop_under_the_reported_id_sends_no_extra_stopped() {
         lines[1]
     );
 }
+
+/// The order a real stop runs in (`player::engine::teardown`): the route's teardown retires the
+/// Engine and the reporter's projection FIRST, and only then, after the media threads are joined,
+/// does `scrobble_stop` build the stop worker. The id the reporter last used has to survive the
+/// first to reach the second, or the final stop never names it.
+#[test]
+fn the_final_stop_retires_the_last_reported_id_after_the_engine_teardown_ran_first() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let (rx, lease) = playing_on_recording_pms(&mut ps, "logical-1236-abr-1");
+    assert!(report_timeline(&lease, plx_plex::plex::TimelineState::Playing, 10_000, 60_000));
+    commit_hls_encoder("logical-1236-abr-2");
+
+    begin_engine_teardown(false);
+    scrobble_stop(&mut ps, Some(("rk-1236".into(), 30_000, 60_000)), None);
+    drain_scrobble();
+
+    let lines = requests_until_quiet(&rx);
+    leave_recording_pms_case(&mut ps);
+    assert_eq!(
+        lines.len(),
+        4,
+        "playing(abr-1), stopped(abr-1), stopped(abr-2), encoder stop: {lines:#?}"
+    );
+    assert!(
+        lines[1].contains("state=stopped")
+            && lines[1].contains("continuing=1")
+            && lines[1].contains("X-Plex-Session-Identifier=logical-1236-abr-1"),
+        "the reported id is retired first: {}",
+        lines[1]
+    );
+}
