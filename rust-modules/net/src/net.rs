@@ -321,7 +321,7 @@ pub fn bundled() -> bool {
 /// `None` also when the bundle is absent or any one of its libraries fails to open or resolve:
 /// `load_from` is all-or-nothing and never publishes a partial table, so the fallback's
 /// `curl::load(None)` starts from empty cells.
-#[cfg(all(feature = "http3-curlstack", target_os = "linux"))]
+#[cfg(all(feature = "http3-curlstack", target_os = "linux", target_env = "gnu"))]
 fn load_bundled() -> Option<plx_base::dynlib::Loaded> {
     let handle = curlstack::open(plx_base::paths::app_dir())?;
     match curl::load_from(handle, BUNDLED_CURL_SONAME) {
@@ -341,12 +341,12 @@ fn load_bundled() -> Option<plx_base::dynlib::Loaded> {
 
 /// No bundled loader: the feature is off, or the target has no `RTLD_DEEPBIND` (the host
 /// simulator on macOS), so the system candidates are the only ones.
-#[cfg(not(all(feature = "http3-curlstack", target_os = "linux")))]
+#[cfg(not(all(feature = "http3-curlstack", target_os = "linux", target_env = "gnu")))]
 fn load_bundled() -> Option<plx_base::dynlib::Loaded> {
     None
 }
 
-#[cfg(all(feature = "http3-curlstack", target_os = "linux"))]
+#[cfg(all(feature = "http3-curlstack", target_os = "linux", target_env = "gnu"))]
 mod curlstack;
 
 // OpenSSL before 1.1 delegates its process-global locks to the application. These symbols remain

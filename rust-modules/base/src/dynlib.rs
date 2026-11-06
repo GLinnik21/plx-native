@@ -62,15 +62,6 @@ pub struct Handle(*mut c_void);
 unsafe impl Send for Handle {}
 unsafe impl Sync for Handle {}
 
-/// Whether [`Handle::open_in_deepbind`] adds the opened library's exports to the process's global
-/// scope (`RTLD_GLOBAL`) or keeps them to itself and its dependents (`RTLD_LOCAL`).
-#[cfg(all(feature = "http3-curlstack", target_os = "linux"))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Scope {
-    Global,
-    Local,
-}
-
 impl Handle {
     /// Try each SONAME in order, returning the first that opens **and which one it was**.
     ///
@@ -128,29 +119,30 @@ impl Handle {
         None
     }
 
-    /// As [`open_in`], but with `RTLD_DEEPBIND`: the opened library resolves ITS OWN undefined
-    /// references against itself and its own dependency chain FIRST, and only then against the
-    /// process's global scope. `scope` picks `RTLD_GLOBAL` or `RTLD_LOCAL` for its exports, the
-    /// opposite direction, which DEEPBIND does not touch.
+    /// As [`open_in`], but `RTLD_NOW | RTLD_DEEPBIND | RTLD_LOCAL`. DEEPBIND: the opened library
+    /// resolves ITS OWN undefined references against itself and its own dependency chain FIRST,
+    /// and only then against the process's global scope. LOCAL, the opposite direction: its exports
+    /// are never added to the global scope. glibc's `RTLD_GLOBAL` would add the library's whole
+    /// search list there, and the television carries older libraries under the same unversioned
+    /// symbol names (`libgnutls.so.28`, `libnettle.so.4`, `libhogweed.so.2`, `libgmp.so.3`), so a
+    /// firmware library `dlopen`'d later could bind to this stack's newer ABIs. Callers reach the
+    /// symbols through the returned handle (`Handle::sym`), which `RTLD_LOCAL` does not affect, and
+    /// a later open whose `NEEDED` names one of these SONAMEs still reuses the mapped copy.
     ///
     /// Only for the opt-in bundled curl stack (`make CURLSTACK=1`, cargo feature
     /// `http3-curlstack`; `plx_net::net`'s `load_bundled`), and only on glibc, the one libc this
     /// flag exists in. The reason it is needed at all: the television's `libplayerAPIs.so.1`,
-    /// linked by every build of this app, has a real `NEEDED` entry on the system's
-    /// `libcurl.so.4`, so that library and its `nghttp2` are in the GLOBAL scope before `main`
-    /// runs. A same-named bundled copy opened the ordinary way binds its OWN internal calls
+    /// linked by every build of this app, has a real `NEEDED` entry on the TV's libcurl
+    /// (`libcurl.so.5` through 4.10.0, `libcurl.so.4` from 5.3.1), so that library and its
+    /// `nghttp2` are in the GLOBAL scope before `main` runs. A same-named bundled copy opened the ordinary way binds its OWN internal calls
     /// between its own exported functions through the PLT, and the system copy, first in the
     /// scope, wins them: the bundled `curl_easy_perform` then jumped into the system library's
     /// ABI-incompatible internals and crashed at a fixed offset inside `libcurl.so.4.5.0` on the
     /// first HTTPS request, every launch. `RTLD_LOCAL` alone cannot fix that, because it governs
     /// whether OUR symbols are visible to others, not whether we see theirs.
-    #[cfg(all(feature = "http3-curlstack", target_os = "linux"))]
-    pub fn open_in_deepbind<'a>(dir: Option<&Path>, candidates: &[&'a str], scope: Scope) -> Option<(Handle, &'a str)> {
-        let scope = match scope {
-            Scope::Global => RTLD_GLOBAL,
-            Scope::Local => libc::RTLD_LOCAL,
-        };
-        Self::open_in_mode(dir, candidates, RTLD_NOW | libc::RTLD_DEEPBIND | scope)
+    #[cfg(all(feature = "http3-curlstack", target_os = "linux", target_env = "gnu"))]
+    pub fn open_in_deepbind<'a>(dir: Option<&Path>, candidates: &[&'a str]) -> Option<(Handle, &'a str)> {
+        Self::open_in_mode(dir, candidates, RTLD_NOW | libc::RTLD_DEEPBIND | libc::RTLD_LOCAL)
     }
 
     /// As [`open`], but only a library that is **already mapped** into the process

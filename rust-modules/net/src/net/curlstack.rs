@@ -1,7 +1,8 @@
 //! Opening the opt-in bundled curl stack (`make CURLSTACK=1`, cargo feature `http3-curlstack`):
 //! curl 8.23 and the nine libraries it links, built `-plx`-suffixed beside the binary by
-//! `ci/build-curlstack.sh`. Compiled only with that feature and only on glibc (`RTLD_DEEPBIND`);
-//! everywhere else `net::load_bundled` is a constant `None` and the system libcurl is the only one.
+//! `ci/build-curlstack.sh`. Compiled only with that feature and only on glibc (`target_env =
+//! "gnu"`, for `RTLD_DEEPBIND`); everywhere else `net::load_bundled` is a constant `None` and the
+//! system libcurl is the only one.
 //!
 //! This module only OPENS the libraries. `net::load_bundled` binds the `curl` table from the
 //! handle it returns, and `curlio` binds its multi table from the same handle
@@ -18,15 +19,15 @@
 //!
 //! WHY `RTLD_DEEPBIND` on every one of the ten (`dynlib::Handle::open_in_deepbind`'s doc has the
 //! mechanism): the television's `libplayerAPIs.so.1`, linked by every build of this app, has a
-//! real `NEEDED` entry on the system `libcurl.so.4`, which is therefore in the GLOBAL scope before
-//! `main` runs, together with its own `nghttp2` (its version string names `nghttp2/1.26.0`). Opened
+//! real `NEEDED` entry on the TV's libcurl (`libcurl.so.5` through 4.10.0, `libcurl.so.4` from
+//! 5.3.1), which is therefore in the GLOBAL scope before `main` runs, together with its own `nghttp2` (its version string names `nghttp2/1.26.0`). Opened
 //! the ordinary way, the bundled curl's internal calls between its own exported functions resolved
 //! to the system copy through the PLT: a SIGSEGV inside `libcurl.so.4.5.0`, at a byte-for-byte
 //! reproducible offset, on the first HTTPS request, every launch, even though every pointer this
 //! app `dlsym`'d sat inside the bundled library. The same hazard applies to any of the nine
 //! dependencies that makes an internal self-call, so they are opened the same way.
 
-use plx_base::dynlib::{Handle, Scope};
+use plx_base::dynlib::Handle;
 use std::path::Path;
 
 use super::BUNDLED_CURL_SONAME;
@@ -61,7 +62,7 @@ pub(super) fn open(dir: &Path) -> Option<Handle> {
     }
     let mut gnutls = None;
     for &name in DEPS {
-        match Handle::open_in_deepbind(Some(dir), &[name], Scope::Local) {
+        match Handle::open_in_deepbind(Some(dir), &[name]) {
             Some((handle, _)) if name == "libgnutls-plx.so.30" => gnutls = Some(handle),
             Some(_) => {}
             None => {
@@ -74,12 +75,13 @@ pub(super) fn open(dir: &Path) -> Option<Handle> {
             }
         }
     }
-    // `gnutls_global_init()` here, synchronously, on the main thread, before any worker exists to
-    // race on it. `curl_global_init(CURL_GLOBAL_ALL)` is documented to do this eagerly, but the
-    // first on-device test crashed two worker threads at the IDENTICAL instruction address (two
-    // warm fetches racing their first HTTPS request after a restored session), the signature of a
-    // non-atomic lazy TLS-backend init. Calling it directly takes the question off the table.
-    // GnuTLS reference-counts the call, so curl's own later one is harmless.
+    // `gnutls_global_init()` here, synchronously, on the main thread, before any worker exists.
+    // GnuTLS 3.3 and later already initialise in a library constructor, so on this build the call
+    // only bumps a reference count (curl's own later one is as harmless); it is kept as a cheap
+    // guarantee, not as a fix. The first on-device test of this bundle crashed two worker threads
+    // at the IDENTICAL instruction address (two warm fetches racing their first HTTPS request after
+    // a restored session). What caused that crash was not determined, and this call is not known
+    // to have resolved it.
     if let Some(handle) = gnutls {
         match handle.sym("gnutls_global_init") {
             Some(init) if !init.is_null() => {
@@ -99,9 +101,9 @@ pub(super) fn open(dir: &Path) -> Option<Handle> {
             ),
         }
     }
-    // `RTLD_GLOBAL`, as on-device verification ran it: the curl table's own `dlsym`s go through
-    // this handle either way, so this only affects what LATER loads could see.
-    match Handle::open_in_deepbind(Some(dir), &[BUNDLED_CURL_SONAME], Scope::Global) {
+    // `RTLD_LOCAL` like its nine dependencies (`open_in_deepbind`'s doc): the curl and multi tables
+    // `dlsym` through this handle, so nothing needs the stack in the global scope.
+    match Handle::open_in_deepbind(Some(dir), &[BUNDLED_CURL_SONAME]) {
         Some((handle, _)) => Some(handle),
         None => {
             plx_base::eventlog::log(&format!(
