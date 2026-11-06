@@ -11819,8 +11819,18 @@ pub fn report_timeline(
             ));
         }
     }
-    let ok = c.timeline(&report.wire(&report.session, report.state, false));
+    let answer = c.timeline_answer(&report.wire(&report.session, report.state, false));
+    let ok = answer.taken;
     note_reported_session(report.sid, &report.rating_key, &report.session);
+    if let Some(stop) = answer.stop {
+        plx_base::eventlog::log(&format!(
+            "timeline: the server ended this session rk={} code={}",
+            report.rating_key, stop.code,
+        ));
+        c.timeline(&report.wire(&report.session, plx_plex::plex::TimelineState::Stopped, true));
+        crate::player::note_server_stop(&stop.reason);
+        return false;
+    }
     // FAILURES ONLY. The reporter thread logs `timeline <state> t=…s/…s` for every tick whichever
     // way the POST went (`player::threads`), so a report the server never took looks exactly like
     // one it did — for the whole length of a film, ten seconds at a time. The success half is

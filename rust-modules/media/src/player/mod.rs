@@ -937,6 +937,7 @@ pub enum FailureKind {
     /// same item resolves the same way again, so unlike [`ResolveFailed`](Self::ResolveFailed) it
     /// is not transient.
     PreviewNotDirect,
+    ServerStopped,
     /// Everything else. Honest rather than tidy — see the type's doc.
     Unspecified,
 }
@@ -960,6 +961,7 @@ impl FailureKind {
             FailureKind::ReleaseTimeout => C::ReleaseTimeout,
             FailureKind::ResolveFailed => C::ResolveFailed,
             FailureKind::PreviewNotDirect => C::PreviewNotDirect,
+            FailureKind::ServerStopped => C::ServerStopped,
             FailureKind::Unspecified => C::Unspecified,
         }
     }
@@ -1039,6 +1041,7 @@ pub fn failure_actions(kind: FailureKind, cx: FailureContext) -> Vec<FailureActi
         }
         // The file itself has no picture; no rung and no retry puts one in it.
         K::NoVideoTrack => {}
+        K::ServerStopped => {}
         _ if cx.forced => {
             if cx.can_retry {
                 v.push(A::PlayAutomatically);
@@ -1128,6 +1131,7 @@ pub(crate) enum RuntimeFailure {
     ReleaseTimeout,
     /// The resolve landed no plan and no verdict ([`FailureKind::ResolveFailed`]).
     ResolveFailed,
+    ServerStopped,
 }
 
 /// PURE: turn the four terminal worker signals into one cause. More specific downstream evidence
@@ -1158,6 +1162,9 @@ fn runtime_failure(
 /// The cause the worker signals publish right now: what [`error_now`] reads while an Engine is up,
 /// and what a failed Engine freezes into the session as it is released.
 fn live_runtime_failure(ps: &crate::route::PlaybackSession) -> RuntimeFailure {
+    if SHARED.server_stopped.load(std::sync::atomic::Ordering::Acquire) {
+        return RuntimeFailure::ServerStopped;
+    }
     if ps.native_start_refused == Some(crate::route::StartRefusal::ReleaseTimeout) {
         return RuntimeFailure::ReleaseTimeout;
     }
@@ -1270,6 +1277,14 @@ fn error_shape(
             panel: plx_platform::i18n::msg::widgets_panel_stopped(),
             readout: plx_platform::i18n::msg::widgets_reason_stopped(),
             detail: std::borrow::Cow::Borrowed(""),
+            no_pass: false,
+        },
+        RuntimeFailure::ServerStopped => ErrorShape {
+            kind: FailureKind::ServerStopped,
+            caption: plx_platform::i18n::msg::widgets_failure_stopped_c(),
+            panel: plx_platform::i18n::msg::widgets_panel_stopped(),
+            readout: plx_platform::i18n::msg::widgets_reason_stopped(),
+            detail: std::borrow::Cow::Owned(server_stop_reason()),
             no_pass: false,
         },
         RuntimeFailure::TvPipeline => ErrorShape {
@@ -1393,14 +1408,27 @@ pub fn error_now(ps: &crate::route::PlaybackSession) -> ErrorShape {
     if crate::route::play_refused_as_preview(ps) {
         return preview_not_direct_shape();
     }
-    with_forced_playback_context(error_shape(
+    let shape = error_shape(
         SHARED.demux_no_video.load(Relaxed),
         crate::route::is_transcoding(ps),
         playing_subscription(&ps),
         crate::route::play_verdict(ps).as_deref(),
         // The cause a released Engine left behind, else the live worker signals.
         crate::route::engine_failure(ps).unwrap_or_else(|| live_runtime_failure(ps)),
-    ), crate::route::forced_direct_play(ps))
+    );
+    if shape.kind == FailureKind::ServerStopped {
+        return shape;
+    }
+    with_forced_playback_context(shape, crate::route::forced_direct_play(ps))
+}
+
+pub(crate) fn note_server_stop(reason: &str) {
+    *SHARED.server_stop_reason.lock().unwrap_or_else(|e| e.into_inner()) = reason.to_owned();
+    SHARED.server_stopped.store(true, std::sync::atomic::Ordering::Release);
+}
+
+fn server_stop_reason() -> String {
+    SHARED.server_stop_reason.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 /// A sample PMS refusal, for the `verdict` variant of the dev trigger below. Real wording: this is
@@ -2839,7 +2867,8 @@ pub fn every_failure_row() -> Vec<(FailureKind, FailureContext, Vec<FailureActio
     use FailureKind as K;
     let kinds = [K::DecisionRefused, K::PlaybackPolicy, K::NoVideoTranscodeTarget, K::NoVideoTrack,
         K::MediaSource, K::PlaybackInterrupted, K::TvPipeline, K::LoadTimeout,
-        K::ReleaseTimeout, K::JailMissingRtkmem, K::ResolveFailed, K::PreviewNotDirect, K::Unspecified];
+        K::ReleaseTimeout, K::JailMissingRtkmem, K::ResolveFailed, K::PreviewNotDirect, K::ServerStopped,
+        K::Unspecified];
     let mut out = Vec::new();
     for kind in kinds {
         for forced in [false, true] {
@@ -3068,6 +3097,7 @@ mod tests {
             (K::ReleaseTimeout, "release_timeout"),
             (K::ResolveFailed, "resolve_failed"),
             (K::PreviewNotDirect, "preview_not_direct"),
+            (K::ServerStopped, "server_stopped"),
             (K::Unspecified, "unspecified"),
         ];
         for (kind, code) in table {

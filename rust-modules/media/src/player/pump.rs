@@ -1685,6 +1685,11 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         note_missing_era_callback(eng);
     }
 
+    if SHARED.server_stopped.load(Acquire) {
+        fail_engine_for_good();
+        return;
+    }
+
     // The producer died before publishing a duration: the EOS path is gated on `duration_ns > 0`
     // so it can NEVER fire, and the player used to sit on a black screen forever with no error
     // and no exit. Surface it instead — BACK is already the escape.
@@ -3393,6 +3398,24 @@ mod flight_tests {
             f.stopped().iter().any(|s| s.starts_with("rig-logical-abr-"))
         });
         assert!(!rig.flight.stopped().iter().any(|s| s == "rig-1"), "{:?}", rig.flight.stopped());
+    }
+
+    #[test]
+    fn a_stop_from_the_server_ends_the_playback_with_its_reason_and_only_back() {
+        let mut rig = Rig::new(120);
+        SHARED.frames.store(10, Relaxed);
+        crate::player::note_server_stop("stopped by the admin");
+        rig.frame();
+        assert_eq!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error);
+        rig.frame();
+        assert!(!rig.pa.is_live(), "the Engine is released, with no recovery attempted");
+        let shape = crate::player::error_now(&rig.ps);
+        assert_eq!(shape.kind, crate::player::FailureKind::ServerStopped);
+        assert_eq!(shape.detail, "stopped by the admin");
+        assert_eq!(
+            crate::player::failure_actions(shape.kind, crate::player::failure_context(&rig.ps)),
+            vec![crate::player::FailureAction::Back]
+        );
     }
 
     /// **A terminal playback error lets go of the pipeline.** The read-out stands, but the loaded

@@ -506,6 +506,17 @@ pub(super) fn recording_pms(
     std::sync::mpsc::Receiver<String>,
     std::thread::JoinHandle<()>,
 ) {
+    recording_pms_answering(max, "")
+}
+
+pub(super) fn recording_pms_answering(
+    max: usize,
+    body: &'static str,
+) -> (
+    i32,
+    std::sync::mpsc::Receiver<String>,
+    std::thread::JoinHandle<()>,
+) {
     use std::io::{BufRead, BufReader, Write};
     let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     l.set_nonblocking(true).expect("nonblocking listener");
@@ -520,9 +531,11 @@ pub(super) fn recording_pms(
                     let _ = s.set_nonblocking(false);
                     let mut line = String::new();
                     let _ = BufReader::new(&s).read_line(&mut line);
-                    let _ = s.write_all(
-                        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    let answer = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
                     );
+                    let _ = s.write_all(answer.as_bytes());
                     let _ = tx.send(line);
                     served += 1;
                     idle = std::time::Instant::now();
