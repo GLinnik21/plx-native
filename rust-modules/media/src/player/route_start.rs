@@ -1128,6 +1128,27 @@ pub fn exit_native_with(
             idle();
         }
     }
+    // A stop that deferred leaves a preview whose Load had not returned installed: the release
+    // machine owes nothing for it, so the loop below would call the display clean over a Load still
+    // inside firmware. Wait for the Load as the exit waits for the URI driver and the release; when
+    // it returns, run the deferred stop and let the loop wait for its Unload. The Engine is leaked
+    // only at the deadline, never dropped under the thread that reads its payload.
+    #[cfg(feature = "play-feed")]
+    if pa.is_live() {
+        let started = clock();
+        loop {
+            if !pa.defer_preview_join() {
+                stop_bufferfeed(ps, pa);
+                break;
+            }
+            if clock().saturating_duration_since(started) >= super::release::RELEASE_DEADLINE {
+                log("exit: a preview's Load is still inside firmware; the display is left to the OS");
+                leak_parked_for_exit(pa);
+                return NativeExit::WorkerInFirmware;
+            }
+            idle();
+        }
+    }
     #[cfg(feature = "play-feed")]
     reap_abandoned_load(pa);
     #[cfg(feature = "play-feed")]
@@ -1160,9 +1181,14 @@ pub fn exit_native_with(
 /// [`PendingRelease`] (its Engine: the Load payload Starfish holds a raw pointer into, the
 /// handle set, the AU queues) and the parked [`AbandonedLoad`] (the payload its `media` thread
 /// reads) would be freed under the live call. They are leaked instead, for the life of the process
-/// (`release.rs`: the `_exit` that follows skips their destructors). Only `exit_native` calls this, and only on that outcome.
+/// (`release.rs`: the `_exit` that follows skips their destructors). The same holds for an
+/// Engine still installed over a preview Load that never returned. Only `exit_native` calls this,
+/// and only on that outcome.
 #[cfg(feature = "play-feed")]
 fn leak_parked_for_exit(pa: &mut super::adapter::PlayerAdapter) {
+    if let Some(engine) = pa.take_installed_engine() {
+        std::mem::forget(engine);
+    }
     if let Some(p) = pa.take_pending_release_any() {
         std::mem::forget(p);
     }

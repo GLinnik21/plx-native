@@ -1590,6 +1590,14 @@ impl PlayerAdapter {
         self.feed_attempt = None;
     }
 
+    /// The Engine still installed after a stop that deferred, with its bound attempt: only the
+    /// exit takes it, to leak it (`route_start::leak_parked_for_exit`).
+    #[cfg(feature = "play-feed")]
+    pub(super) fn take_installed_engine(&mut self) -> Option<super::engine::Engine> {
+        self.clear_feed_attempt();
+        self.physical.feed_backend_mut().resources_mut().take()
+    }
+
     #[cfg(feature = "play-feed")]
     pub(super) fn take_native_stop(&mut self) -> NativeStop {
         let stop = NativeStop::take(self.physical.feed_backend_mut().resources_mut());
