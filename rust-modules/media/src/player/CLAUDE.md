@@ -358,8 +358,9 @@ something.
   audio layers:`: the codec table, minus the codecs `/etc/gst/gstcool.conf` shows nothing can decode
   (`apply_gst_decoders`), minus `devcaps::EXCLUSIONS` (rows per firmware codename, each carrying its
   evidence: the C1's `kisscurl-koli` limits Opus to stereo, and records that Vorbis is refused; a row
-  may also declare the Dolby Vision splitter IDR-first, `jhericurl-jervisbay`, which takes no audio
-  away and is not skipped by `nativeaudiowide`),
+  may also declare the Dolby Vision splitter IDR-first (`jhericurl-jervisbay`, webOS 5.5.0-19, and
+  the C1's `kisscurl-koli`, webOS 6.5.3-47, whose row is read from the image and not observed), which
+  takes no audio away and is not skipped by `nativeaudiowide`),
   minus the refusals this install learned. Auto's own stereo ceiling for Opus
   (`OPUS_AUTO_MAX_CHANNELS`) stays as it is; the rows add a ceiling Force Direct Play also holds
   (`Caps::forced_feeds_audio_track`). FLAC, ALAC and LPCM are not native: the app decodes them and feeds PCM

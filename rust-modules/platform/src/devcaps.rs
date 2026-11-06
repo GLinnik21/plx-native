@@ -341,6 +341,16 @@ pub const EXCLUSIONS: &[Exclusion] = &[
                    Supported' (stereo 44.1/48 kHz and 5.1, with the three header packets fed in-band); \
                    libpf's payload has no key for Vorbis headers.",
     },
+    // LG C1, webOS 6.5.3-47, #1166: read from the firmware image; the hang was not observed on a C1.
+    Exclusion {
+        codename: "kisscurl-koli",
+        limit: Limit::DvFirstPictureIdr,
+        evidence: "libgstdvsplitter.so of the 6.5.3-47 image (sha256 239b3e042cc94c87...) is the same scan as \
+                   5.5.0-19's: gst_dvsplitter_chain dispatches on the NAL type through a table at 0x5b1a that \
+                   sends only 19 and 20 to the branch that sets found_first_IDR (the latch at +0xe0), and \
+                   16/17/18/21 only bump a counter, so a CRA or BLA first picture is skipped. Read from that \
+                   image's disassembly, not observed on a set.",
+    },
     // LG CX (OLED55CX6LA), webOS 5.5.0-19, firmware 04.50.90, #1166.
     Exclusion {
         codename: "jhericurl-jervisbay",
@@ -1800,8 +1810,10 @@ mod tests {
     fn the_c1s_firmware_family_loses_the_combinations_measured_broken() {
         let mut c = native_set();
         let applied = apply_exclusions(&mut c, "kisscurl-koli", false, EXCLUSIONS);
-        // The Vorbis row has nothing to take away: the pipeline's list does not feed Vorbis at all.
-        assert_eq!(applied, ["opus<=2"]);
+        // The Vorbis row has nothing to take away: the pipeline's list does not feed Vorbis at all. The
+        // third row is the Dolby Vision splitter's (#1166), which takes no audio away.
+        assert_eq!(applied, ["opus<=2", "dv-first-picture=idr"]);
+        assert_eq!(c.dv_first_picture, DvFirstPicture::IdrOnly);
         assert_eq!(c.audio, "aac,ac3,eac3,dts,opus,flac,alac,pcm");
         assert!(c.audio_supports("opus", 2) && !c.audio_supports("opus", 6));
         // Force Direct Play applies no table ceiling, but it holds a measured one.
@@ -1811,7 +1823,8 @@ mod tests {
         assert!(c.audio_supports("eac3", 8) && c.audio_supports("dts", 6) && c.audio_supports("aac", 6));
         // The codename compares without regard to case.
         let mut d = native_set();
-        assert_eq!(apply_exclusions(&mut d, "Kisscurl-Koli", false, EXCLUSIONS).len(), 1);
+        assert_eq!(apply_exclusions(&mut d, "Kisscurl-Koli", false, EXCLUSIONS), applied);
+        assert_eq!(d, c);
     }
 
     /// `without` is the learned-refusal rule, applied to a copy and nothing else: no global is read
@@ -1841,11 +1854,31 @@ mod tests {
         assert_eq!(stereo.without(&facet("dts", 2)), stereo);
     }
 
-    #[test]
-    fn the_debug_flag_ignores_the_exclusions() {
+    /// `native_set()` on a firmware whose Dolby Vision splitter takes only an IDR first: the one
+    /// field a Dolby Vision row moves, and what remains of a family's exclusions once `nativeaudiowide`
+    /// has skipped its audio rows.
+    fn native_set_idr_only() -> Caps {
         let mut c = native_set();
-        assert!(apply_exclusions(&mut c, "kisscurl-koli", true, EXCLUSIONS).is_empty());
-        assert_eq!(c, native_set());
+        c.dv_first_picture = DvFirstPicture::IdrOnly;
+        c
+    }
+
+    #[test]
+    fn the_debug_flag_ignores_the_audio_exclusions() {
+        let mut c = native_set();
+        // The C1's two audio rows are skipped; its Dolby Vision row (#1166) is not an audio row and stays.
+        assert_eq!(apply_exclusions(&mut c, "kisscurl-koli", true, EXCLUSIONS), ["dv-first-picture=idr"]);
+        assert_eq!(c, native_set_idr_only(), "only the Dolby Vision field moved: the audio table is the set's own");
+        assert!(c.audio_supports("opus", 2) && c.forced_feeds_audio_track("opus", 6), "the Opus row was skipped");
+        // The sanity half: without the flag the same rows do take Opus away, so the skip is real.
+        let mut applied = native_set();
+        apply_exclusions(&mut applied, "kisscurl-koli", false, EXCLUSIONS);
+        assert_ne!(applied.audio_channels, c.audio_channels);
+        // A family with audio rows only (a test-local table) is untouched by the flag altogether.
+        let table = [Exclusion { codename: "x", limit: Limit::Audio { codec: "opus", max_channels: 2 }, evidence: "" }];
+        let mut d = native_set();
+        assert!(apply_exclusions(&mut d, "x", true, &table).is_empty());
+        assert_eq!(d, native_set());
     }
 
     // -- the Dolby Vision first-picture row (#1166) ---------------------------------------------------
@@ -1867,6 +1900,27 @@ mod tests {
         assert_eq!(c, plain);
     }
 
+    /// The C1's row (webOS 6.5.3-47, `kisscurl-koli`) is read from the firmware image, not observed; it
+    /// shares the codename with the two audio rows, which still apply beside it.
+    #[test]
+    fn dv_first_picture_c1_family_takes_only_an_idr() {
+        let mut c = native_set();
+        let applied = apply_exclusions(&mut c, "kisscurl-koli", false, EXCLUSIONS);
+        assert_eq!(c.dv_first_picture, DvFirstPicture::IdrOnly);
+        assert!(applied.iter().any(|a| a == "dv-first-picture=idr"), "{applied:?}");
+        // The audio rows are still there: Opus bounded to stereo, and Vorbis (not announced) takes nothing.
+        assert!(applied.iter().any(|a| a == "opus<=2"), "{applied:?}");
+        assert!(c.audio_supports("opus", 2) && !c.audio_supports("opus", 6));
+        // The codename compares without regard to case.
+        let mut d = native_set();
+        apply_exclusions(&mut d, "Kisscurl-Koli", false, EXCLUSIONS);
+        assert_eq!(d.dv_first_picture, DvFirstPicture::IdrOnly);
+        // With `nativeaudiowide` the audio rows are skipped and the splitter row is not.
+        let mut wide = native_set();
+        assert_eq!(apply_exclusions(&mut wide, "kisscurl-koli", true, EXCLUSIONS), ["dv-first-picture=idr"]);
+        assert_eq!(wide.dv_first_picture, DvFirstPicture::IdrOnly);
+    }
+
     #[test]
     fn dv_first_picture_5_6_2_and_unknown_families_take_any_irap() {
         // 5.6.2-21 (`jhericurl-jimna`) admits CRA; the rest are unmeasured and never promised less.
@@ -1886,10 +1940,11 @@ mod tests {
         let applied = apply_exclusions(&mut c, "jhericurl-jervisbay", true, EXCLUSIONS);
         assert_eq!(c.dv_first_picture, DvFirstPicture::IdrOnly);
         assert_eq!(applied, ["dv-first-picture=idr"]);
-        // ... while the audio rows stay skipped by it.
+        // ... while the audio rows stay skipped by it: the C1 has both kinds, and only its Dolby Vision
+        // row is applied (no `opus<=2`), the audio table being the set's own.
         let mut k = native_set();
-        assert!(apply_exclusions(&mut k, "kisscurl-koli", true, EXCLUSIONS).is_empty());
-        assert_eq!(k, native_set());
+        assert_eq!(apply_exclusions(&mut k, "kisscurl-koli", true, EXCLUSIONS), ["dv-first-picture=idr"]);
+        assert_eq!(k, native_set_idr_only());
     }
 
     #[test]
@@ -1941,7 +1996,7 @@ mod tests {
         // the codec the row left (stereo Opus).
         let mut c = native_set();
         assert_eq!(apply_gst_decoders(&mut c, &GST_C1.replace("dts_audiodec=290\n", "")).0, ["dts"]);
-        assert_eq!(apply_exclusions(&mut c, "kisscurl-koli", false, EXCLUSIONS), ["opus<=2"]);
+        assert_eq!(apply_exclusions(&mut c, "kisscurl-koli", false, EXCLUSIONS), ["opus<=2", "dv-first-picture=idr"]);
         let c = c.minus(&[refusal("opus", 2)], "");
         assert_eq!(c.audio, "aac,ac3,eac3,flac,alac,pcm");
     }
