@@ -64,10 +64,13 @@ arguments, and its time is the `dt` it is handed.
    paint): use `ui::label::Label` (single run) or `ui::text_view::TextView` (multi-line, pixel-
    wrapped), or if you must call `Painter::text` directly, derive the y from `text::text_vcenter_y` /
    `text::text_cap_band`. See `label.rs`'s module docs for the rule.
-   Tracking (DS8): a string that needs letter-spacing goes through `Painter::text_tracked` with a
-   named constant (`theme::TRACKING_TITLE_TIGHT`, -0.5 px, the DS8 title tracking the Watchlist header wore before it took the Library's header row); at `0.0` it is
-   exactly `text`. The gaps are n-1 between characters (CSS adds one after the last too, a
-   sub-pixel difference shipped code keeps), and no screen adopts it yet.
+   Tracking (DS8): a string that needs letter-spacing goes through `Label::tracking` /
+   `TextView::tracking` (they wrap and measure by the tracked width and reach `Painter::text_tracked`),
+   never a hand-spaced draw. Screens use it today: the Settings page title (`TitleStyle::Page`,
+   -.02em) and the board section headers (`TableView::board_metrics`, .06em). A fixed pixel
+   tracking has a named constant (`theme::TRACKING_TITLE_TIGHT`, -0.5 px, the DS8 title case); at
+   `0.0` it is exactly `text`. The gaps are n-1 between characters (CSS adds one after the last
+   too, a sub-pixel difference shipped code keeps).
 
 4. **Improve a component before forking one, and never write an ad-hoc mechanism.** If a shared
    widget almost does what you need, add a builder method / style variant to it (e.g.
@@ -84,6 +87,14 @@ arguments, and its time is the `dt` it is handed.
      the owner's `Focusable` contract (`screen.rs`: `neighbour`, `Link`, `EdgeRule`, `Seat`). A
      screen declares its groups and edges; it never matches a direction key to move focus between
      regions.
+   - **Cold text before it is shown** (a destination's strings meeting the glyph cache in the first
+     visible frame): the shared prewarm — a recording walk (`record_walk`, `Painter::recording`)
+     drained by `plx_gfx::text::drain_prewarm` under the frame's budget. A route dip does it for its
+     staged page (`Transition::prewarms_text`), a held surface for itself (`PopoverMotion::held`), a
+     panel for the page it drills into (`PanelMotion::prewarm_text`), and a surface that holds
+     content back for a visible frame — the Settings push — answers `Screen::warms_text` /
+     `draw_warm` and waits at its start (`RoutePush::begin_warm`). Never rasterise a page's strings
+     in its first drawn frame, and never write a screen-local warm loop.
    - **A row of pills** (selection and focus capsules that travel): `widgets::TabStrip` and
      `SelMark` (`widgets.rs`), the nav bar's own motion.
    - **Menus**: `Popover` (`popover.rs`) around a `TableView` (`table.rs`). A menu placed beside the
@@ -480,6 +491,15 @@ presentation in a design pass.
    field is the standing example: its focus is carried by INK ALONE — no capsule, rim, rule, plate
    or focus pop — and an accent underline was rejected on sight. A punch-list line like "make focus
    more visible" is satisfied WITHIN the contract (widen the ink step), never with a new primitive.
+
+   **A table row has one DISABLED state** (`Row::disabled`, Settings v2 HUD boards 4.4 / 4.5), beside
+   focused, selected and dim: focus can land on it, the pill under it is the faint GHOST
+   (`theme::OVERLAY_FOCUS_PILL`) and not the solid accent, its label reads at `TEXT_SECONDARY` and its
+   read-out (the reason it cannot be used) at `TEXT_TERTIARY`, and OK does nothing. A `Form` page asks for
+   it with `FormSection::disabled(cond)`, which sets the look AND makes `FormTable::activate` answer
+   `None` (OK, RIGHT and a click all go through it): never hand-set `Row::disabled` and guard the action
+   in the screen, and never add a second "unusable" or "unavailable" flag. `dim` stays what it was: a
+   de-emphasised row that still acts.
 
 6. **An icon tab and a bookmark disc are both a mark, never a label.** The strip's faces are
    `TabFace::{Label, Icon}` (the Watchlist bookmark and Search are `Icon` faces: square, 60 x 60,

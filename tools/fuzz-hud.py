@@ -52,7 +52,7 @@ FIXTURES = ROOT / "rust-modules/appkit/src/hud_format/fixtures"
 EXAMPLES = ROOT / "site/hud/examples"
 SCHEMAS = ROOT / "site/hud/schema"
 ICONS = ROOT / "assets/icons"
-ORIGIN = "https://glinnik21.github.io/plxnative-huds"       # data/src/hudpacks/catalog.rs, ORIGIN
+ORIGIN = "https://huds.plxnative.com"       # data/src/hudpacks/catalog.rs, ORIGIN
 CATALOG = ROOT / "rust-modules/data/src/hudpacks/catalog.rs"
 CATALOG_TESTING = ROOT / "rust-modules/data/src/hudpacks/catalog/testing.rs"
 

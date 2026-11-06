@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
+import signal
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -14,6 +15,11 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 import hud_preview as preview
+
+
+def shipped_languages():
+    """The UI languages the app ships: `locales/languages.json` generates `i18n::SHIPPED`."""
+    return [entry["tag"] for entry in json.loads((ROOT / "locales" / "languages.json").read_text())]
 
 
 def inspection():
@@ -27,7 +33,7 @@ def inspection():
                     states.append({"slot": "discs", "open": opened, "paused": paused, "navigation_pair": pair,
                                    "episode": episode, "chapters": chapters, "scrub": [90, 700, 1700, 60],
                                    "controls": [{"id": "subs", "label":"Subtitles", "menu": "tracks", "rect": [100, 800-opened*100, 52, 52]}]})
-    return {"languages": [{"lang": lang, "states": states} for lang in preview.LONG_TITLES]}
+    return {"languages": [{"lang": lang, "states": states} for lang in shipped_languages()]}
 
 
 class Matrix(unittest.TestCase):
@@ -129,6 +135,19 @@ class Matrix(unittest.TestCase):
                         self.assertEqual(native.call_count, 1)
                         self.assertEqual(native.call_args.args[1], "--hud-info")
 
+    def test_a_run_stopped_by_sigterm_or_sighup_unwinds_so_its_instance_roots_are_removed(self):
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            self.addCleanup(signal.signal, sig, signal.getsignal(sig))
+        with patch.object(sys, "argv", ["hud_preview.py", "--bin", "/native", "--hud", "/hud", "--out", "/out"]), \
+                patch.object(preview, "run"):
+            preview.main()
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            with self.subTest(signal=sig.name):
+                self.assertTrue(callable(signal.getsignal(sig)), "the default action ends the process at once")
+                with self.assertRaises(SystemExit) as stopped:
+                    signal.raise_signal(sig)
+                self.assertEqual(stopped.exception.code, 128 + sig)
+
     @unittest.skipUnless(hasattr(os, "mkfifo"), "requires a POSIX FIFO")
     def test_special_archive_input_is_rejected_without_opening_it(self):
         info = {"protocol": 1, "supported_formats": [{"package": "1.0", "hud": "1.0"}],
@@ -140,6 +159,13 @@ class Matrix(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "regular file"):
                     with preview.snapshot(Path("/native"), fifo):
                         self.fail("special input admitted")
+
+    def test_every_shipped_language_has_its_authored_long_title(self):
+        # The preview matrix refuses to plan when the corpus and the shipped list differ (Catalan
+        # shipped in #1230 without an entry), so a language PR must add its sentence in the same PR.
+        self.assertEqual(set(preview.LONG_TITLES), set(shipped_languages()))
+        self.assertEqual({s["lang"] for s in preview.plan(inspection()) if s.get("long_title")},
+                         set(shipped_languages()))
 
     def test_a_new_shipped_language_requires_a_long_title_sample(self):
         value = inspection()

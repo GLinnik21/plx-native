@@ -1274,7 +1274,7 @@ mod tests {
         let after = lay(source_draft(11, 1, &changed_groups, &changed_sections, &(0..9).collect::<Vec<u32>>(), false));
 
         assert_ne!(before.stamp, after.stamp);
-        assert!(after.sections[0].rows[1].dim);
+        assert!(after.sections[0].rows[1].disabled);
         assert_eq!(
             before.rows.iter().map(|r| &r.0).collect::<Vec<_>>(),
             after.rows.iter().map(|r| &r.0).collect::<Vec<_>>()
@@ -1645,7 +1645,7 @@ mod tests {
             let ids: Vec<String> = laid.rows.iter().map(|(id, ..)| id.clone())
                 .filter(|id| id.starts_with("section:")).collect();
             let shared = laid.sections.iter().flat_map(|s| &s.rows).find(|row| row.label == "Shared Movies")
-                .map(|row| (row.dim, row.detail.clone()));
+                .map(|row| (row.disabled, row.detail.clone()));
             (ids, shared)
         };
         let (ids, shared) = offered(SourceState::NotProbed);
@@ -1706,7 +1706,7 @@ mod tests {
             .flat_map(|section| &section.rows)
             .filter(|row| row.checked).map(|row| row.label.as_str()).collect();
         assert_eq!(ticked, ["Shared Movies"], "a visit to a library on a server that went dark is still ticked");
-        assert!(laid.sections.iter().flat_map(|s| &s.rows).any(|row| row.label == "Shared Movies" && row.dim));
+        assert!(laid.sections.iter().flat_map(|s| &s.rows).any(|row| row.label == "Shared Movies" && row.disabled));
     }
 
     /// **A library shared while the menu is open appears in it** (and a server's fault is said as

@@ -13,7 +13,7 @@
 
 pub mod eventlog; // THE event log: `eventlog::log` is the one sink every module writes through
 pub mod paths; // where the app's own files live — /proc/self/exe, not a hardcoded install prefix
-pub mod process; // `exit_now`: the one way the app process ends (`_exit`, never libc `exit`, #1115)
+pub mod process; // `exit_now`: the one way the app's own exits end the process (`_exit`, never libc `exit`, #1115)
 pub mod clock; // `vclock_ms`/`vclock_us`: the one monotonic clock for stamps that are only differenced
 pub mod task; // the one spawn: a refused thread is a return value, not a panic that kills the app
 pub mod cbuf; // fixed NUL-terminated C-string buffer read/write

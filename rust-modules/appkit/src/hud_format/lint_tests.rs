@@ -4,7 +4,7 @@
 //! [`UNIT_ONLY`](super::lint_zorder::UNIT_ONLY) lists and what the whole pipeline says about them.
 //!
 //! The goldens are here: `builtin_classic_passes_every_invariant` and `reference_passes_every_invariant`
-//! (zero findings in all eleven shipped languages, measured with the real font advances), the four other
+//! (zero findings in all twelve shipped languages, measured with the real font advances), the four other
 //! fixtures (`other_fixtures_lint_without_an_error`), the requirement that every one of the sixteen lint
 //! codes has an invalid case or a stated reason it has none (`every_new_code_has_an_invalid_case`), and the
 //! behaviours of the whole run: sorted and deterministic output, every finding of a package reported in one
@@ -64,9 +64,9 @@ fn finding(code: &super::Code, pointer: &str, lang: Option<&str>, measured: f32)
 #[test]
 fn the_shipped_languages_in_catalog_order() {
     let tags: Vec<&str> = LintLang::shipped().iter().map(|l| l.tag).collect();
-    assert_eq!(tags, ["en", "es", "be", "fr", "it", "pt", "de", "hu", "ru", "pl", "nl"]);
+    assert_eq!(tags, ["en", "es", "be", "ca", "fr", "it", "pt", "de", "hu", "ru", "pl", "nl"]);
     let chapters: BTreeSet<String> = LintLang::shipped().into_iter().map(|l| l.labels.tab_chapters).collect();
-    assert!(chapters.len() > 5, "the labels are the languages' own, not one language eleven times: {chapters:?}");
+    assert!(chapters.len() > 5, "the labels are the languages' own, not one language twelve times: {chapters:?}");
 }
 
 #[test]
@@ -105,7 +105,7 @@ fn the_labels_come_from_the_language_asked_for_never_from_the_current_one() {
 /// `text` linted in every shipped language, measured with the real font advances.
 fn lint_in_all_languages(text: &str) -> Vec<Finding> {
     let langs = LintLang::shipped();
-    assert_eq!(langs.len(), 11, "the goldens are the eleven shipped languages");
+    assert_eq!(langs.len(), 12, "the checks cover all twelve shipped languages");
     lint(text, &ShippedMeasure, &langs)
 }
 
@@ -659,7 +659,7 @@ fn findings_are_sorted_by_pointer_and_deterministic() {
 
 /// **Splitting the lint into a fit pass and a price pass changed no byte of what it says.** The pipeline as it
 /// was (`lint::single_pipeline`, kept for this under `cfg(test)`) and the two passes joined, with one measure
-/// for both, are the same findings and the same cost lines: for the shipped fixtures in all eleven languages,
+/// for both, are the same findings and the same cost lines: for the shipped fixtures in all twelve languages,
 /// for a package that does not parse, for no language at all, and for every invalid case.
 #[test]
 fn the_two_passes_say_what_the_one_pipeline_said() {
@@ -794,7 +794,7 @@ const CLASSIC_ROW: &str = "/layout/block/0/cells/1/segment/items";
 fn every_kind_of_reach_error_is_linted_on_to_stage_three_in_every_language() {
     // Continuing past the reach and validate findings is only sound while `compile` and the six checks are
     // total over a package that parsed (`pr5c-handoff.md`). This runs one package for each rule of `check`
-    // (R1, R3, R4, I3, I9) through all of stage 3 in the eleven languages: a panic in the compile or in a check
+    // (R1, R3, R4, I3, I9) through all of stage 3 in the twelve languages: a panic in the compile or in a check
     // fails it, the way an index into a part the broken package lacks would. Each must still report its own
     // reach code at its pointer.
     let more_absent = format!(",\n          {CLASSIC_MORE}");
@@ -923,7 +923,7 @@ const EXPECTED_JSON: &str = r##"{
 #[test]
 fn collapsed_language_context() {
     // A fault that does not depend on the language (a disc's size) is one finding without a language when
-    // the eleven languages are linted together ...
+    // the twelve languages are linted together ...
     let all = small_disc(&LintLang::shipped().iter().map(|l| l.tag).collect::<Vec<_>>());
     assert_eq!(all.len(), 1, "{}", describe("small-disc", &all));
     assert_eq!(all[0].ctx.lang, None, "identical in every language: reported once, for all of them");

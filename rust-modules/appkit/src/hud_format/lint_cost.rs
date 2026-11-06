@@ -30,8 +30,8 @@
 //! aim) at the 99th percentile of -4.0 to -9.8 ms (`docs/hud-plugins.md`, "The ceilings (PR19)", has them). What makes the
 //! compositor late is not determined; it is not specific to a HUD state. Every constant says which state and language it came from, and
 //! `the_ceilings_are_the_maximum_over_every_state_of_classic_and_the_reference_in_every_language` recomputes
-//! all twelve from `classic.plxhud` and `reference.plxhud` over all eleven languages, every state and
-//! slot (330 rows), and asserts each is attained by the pair the constant names, so a layout change that moves
+//! all twelve from `classic.plxhud` and `reference.plxhud` over all twelve languages, every state and
+//! slot (360 rows), and asserts each is attained by the pair the constant names, so a layout change that moves
 //! one fails until someone re-measures.
 //!
 //! **A strip is priced by what its Shelf paints at rest.** The chapters strip's cards are
@@ -70,7 +70,7 @@
 //! chapters (4.17; 10, 5, 81920, 942912), the reference's film (3.73; 11, 4, 81280, 838253) and classic's Info in
 //! English (6.84; 10, 14, 230400, 1383936). None draws a strip.
 //!
-//! **What this does not know.** Not every one of the 330 rows was run: a row below a ceiling is admitted because
+//! **What this does not know.** Not every one of the 360 rows was run: a row below a ceiling is admitted because
 //! it costs no more, in each term, than the states the television did run, not because it was run itself. The
 //! terms are the compiler's accounting of what the GPU draws, not the GPU's, so a package under every term can
 //! still read more GPU_ACTIVE than a measured one; PR12 measures that.
@@ -478,7 +478,7 @@ mod tests {
         strip: usize,
     }
 
-    /// **Every state and slot of `classic` and the reference in each of the eleven shipped languages** (330 rows),
+    /// **Every state and slot of `classic` and the reference in each of the twelve shipped languages** (360 rows),
     /// costed as `--hud-lint` prints them ([`state_cost`], the television's advances).
     fn every_row() -> Vec<Row> {
         let mut rows = Vec::new();
@@ -497,7 +497,7 @@ mod tests {
     #[test]
     fn the_ceilings_are_the_maximum_over_every_state_of_classic_and_the_reference_in_every_language() {
         let rows = every_row();
-        assert_eq!(rows.len(), 330, "classic 18 states x 11 languages, the reference 12 x 11");
+        assert_eq!(rows.len(), 360, "classic 18 states x 12 languages, the reference 12 x 12");
         for (class, sources) in SOURCES {
             let of_class: Vec<&Row> = rows.iter().filter(|r| r.class == class).collect();
             assert!(!of_class.is_empty(), "{}: no state", class.name());
@@ -595,7 +595,7 @@ mod tests {
             let rest = PAIRS.iter().enumerate().filter(|&(i, _)| i != skip).fold(0, |m, (_, p)| m | mask_of(p));
             assert_ne!(rest, ALL, "pair {} attains a maximum no other pair does", PAIRS[skip].n);
         }
-        // ... and no six of the 330 rows attain all twelve: search the distinct masks, six at a time
+        // ... and no six of the 360 rows attain all twelve: search the distinct masks, six at a time
         let mut masks: Vec<u16> = by_row.iter().map(|&(m, _)| m).filter(|&m| m != 0).collect();
         masks.sort_unstable();
         masks.dedup();

@@ -47,7 +47,7 @@ fn contract_matches_registry_and_rejects_every_cross_origin_resource() {
         let mut value = index();
         match path {
             "url" => {
-                value["entries"][0]["url"] = json!("https://glinnik21.github.io.evil/p/pack.plxhud")
+                value["entries"][0]["url"] = json!("https://huds.plxnative.com.evil/p/pack.plxhud")
             }
             "preview-url" => {
                 value["entries"][0]["previews"][0]["url"] = json!("https://evil.test/image.png")

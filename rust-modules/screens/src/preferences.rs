@@ -79,10 +79,15 @@ impl PickerKind {
     /// The field-list page this field belongs to; `None` for a field the Settings root lists itself.
     fn kind(self) -> Option<Kind> {
         match self {
-            Self::Quality | Self::DirectPlay | Self::SubtitleSize | Self::SubtitlePosition | Self::HdrOverlay | Self::NextEpisode | Self::DeckPress | Self::SkipInterval | Self::InstantDpadSeeking | Self::DolbyVision | Self::IntroSkip | Self::CreditsSkip => Some(Kind::Playback),
-            Self::AudioLanguage | Self::SubtitleMode | Self::SubtitleLanguage | Self::ForcedSubtitles => Some(Kind::AudioSubtitles),
+            Self::Quality | Self::DirectPlay | Self::HdrOverlay | Self::NextEpisode | Self::DeckPress | Self::SkipInterval | Self::InstantDpadSeeking | Self::DolbyVision | Self::IntroSkip | Self::CreditsSkip => Some(Kind::Playback),
+            Self::AudioLanguage | Self::SubtitleMode | Self::SubtitleLanguage | Self::ForcedSubtitles | Self::SubtitleSize | Self::SubtitlePosition => Some(Kind::AudioSubtitles),
             Self::UiResolution => None,
         }
+    }
+    /// Whether this field is a Plex ACCOUNT preference (saved to the account, loaded with it); every
+    /// other field is this app's own, per profile, and never touches the account.
+    fn is_account(self) -> bool {
+        matches!(self, Self::AudioLanguage | Self::SubtitleMode | Self::SubtitleLanguage | Self::ForcedSubtitles)
     }
     /// The crumb over this field's picker: the title of the page it was opened from.
     fn parent_title(self) -> &'static str {
@@ -137,8 +142,9 @@ impl Whose {
         let name = account.name.unwrap_or_else(|| plx_platform::i18n::msg::settings_account_title().to_string());
         (profile.generation, Self::Profile(name))
     }
-    /// The Playback list's Profile rows cannot be changed.
-    fn read_only(&self, kind: Kind) -> bool { kind == Kind::Playback && *self == Self::Nobody }
+    /// The rows that are this app's own per-profile picks (every Playback row, and the Look group of
+    /// Audio & subtitles) cannot be changed.
+    fn read_only(&self) -> bool { *self == Self::Nobody }
 }
 
 /// The copy under the title: the failure / progress status (with the Force note while Forced is
@@ -167,7 +173,7 @@ fn copy_text<'a>(subject: Subject, status: &'a str, direct_play: DirectPlayMode,
     }
     if forced { return Cow::Borrowed(plx_platform::i18n::msg::settings_playback_force_note()); }
     Cow::Borrowed(match subject {
-        Subject::Page(_) => plx_platform::i18n::msg::settings_audio_account_note(),
+        Subject::Page(_) => plx_platform::i18n::msg::settings_audio_page_copy(),
         Subject::Picker(field) => field.copy(),
     })
 }
@@ -342,8 +348,12 @@ impl FormId for RowId {
         RowKey(match self {
             Self::Field(PickerKind::Quality | PickerKind::AudioLanguage) => 0,
             Self::Field(PickerKind::DirectPlay | PickerKind::SubtitleMode) => 1,
-            Self::Field(PickerKind::SubtitleSize | PickerKind::SubtitleLanguage) => 2,
-            Self::Field(PickerKind::SubtitlePosition | PickerKind::ForcedSubtitles) => 3,
+            Self::Field(PickerKind::SubtitleLanguage) => 2,
+            Self::Field(PickerKind::ForcedSubtitles) => 3,
+            // Moved from the Playback list to the Audio & subtitles page, whose own keys 0-3 they
+            // must not meet.
+            Self::Field(PickerKind::SubtitleSize) => 15,
+            Self::Field(PickerKind::SubtitlePosition) => 16,
             Self::Field(PickerKind::NextEpisode) => 4,
             Self::Field(PickerKind::SkipInterval) => 5,
             Self::Field(PickerKind::DeckPress) => 7,
@@ -384,7 +394,11 @@ pub struct PreferencesPage {
     entry: EntryId,
     form: FormTable<RowId, Action, SettingsPage>,
     state: State,
+    /// The page's own sentence: the status while one is showing, else what the page is about. The
+    /// sentence under the title is the focused row's ([`row_sentence`]) and falls back to this.
     copy: String,
+    /// The sentence beside the table, which fades to the focused row's.
+    follow: plx_ui::follow_copy::FollowCopy,
     txn: Txn,
     /// The caption Size/Position the rows were last built from. Not canonical state: it only
     /// notices a pick made elsewhere (the player's Style pages, or this page's picker, which
@@ -406,17 +420,23 @@ impl PreferencesPage {
         let mut s = Self { marker_prefs: Default::default(), entry, form: FormTable::new(BAND),
             state: State { marker_prefs: Default::default(), kind, selected: 0, io: Io { busy: false, status: String::new() },
                 quality: plx_media::route::quality(), direct_play: plx_media::route::direct_play_mode(), values: Vec::new() },
-            copy: String::new(), txn: Txn::new(false),
+            copy: String::new(), follow: plx_ui::follow_copy::FollowCopy::new(""), txn: Txn::new(false),
             look: (plx_media::route::subtitle_size(), plx_media::route::subtitle_position(), plx_media::route::hdr_overlay_brightness()),
             next_episode: plx_media::route::next_episode_mode(), deck_press: plx_media::route::deck_press(),
             skip_interval: plx_media::route::skip_interval(), instant_dpad_seeking: plx_media::route::instant_dpad_seeking(),
             dolby_vision: plx_media::route::dolby_vision_mode(), whose: Whose::now() };
         s.rebuild(None);
+        // A page opens on its first row's sentence at once, with nothing fading.
+        s.follow = plx_ui::follow_copy::FollowCopy::new(&s.sentence());
         s
     }
     fn view(&self) -> TableScreen<'_> {
-        TableScreen::new(Header::new(RouteLayout::screen(), Some(plx_platform::i18n::msg::settings_title()),
-            self.state.kind.title(), &self.copy), &self.form.table, GroupId(0), self.entry).keyed(&self.form)
+        TableScreen::new(Header::new(RouteLayout::settings_page(), Some(plx_platform::i18n::msg::settings_title()),
+            self.state.kind.title(), &self.copy).with_follow(&self.follow), &self.form.table, GroupId(0), self.entry).keyed(&self.form)
+    }
+    /// The sentence the focused row states beside the table ([`row_sentence`]).
+    fn sentence(&self) -> Cow<'_, str> {
+        row_sentence(self.state.kind, self.form.selected_id(), &self.copy, !self.state.io.status.is_empty(), self.state.direct_play, &self.whose.1)
     }
     fn focus(&self, fx: &mut Effects<'_, InnerHost>) {
         let key = self.form.key_at(self.form.table.sel.max(0) as usize).map_or(0, |k| k.0);
@@ -446,13 +466,15 @@ impl PreferencesPage {
         let inputs = FieldListInputs {
             kind: self.state.kind, quality: self.state.quality, direct_play: self.state.direct_play,
             prefs: self.txn.prefs(), busy: self.state.io.busy, show_retry: !self.state.io.status.is_empty(),
-            read_only: self.whose.1.read_only(self.state.kind), marker_prefs: self.marker_prefs,
+            read_only: self.whose.1.read_only(), marker_prefs: self.marker_prefs,
         };
         self.state.values = fields_of(&inputs).iter()
             .map(|&f| field_readout_with_marker(f, inputs.quality, inputs.direct_play, inputs.prefs, inputs.marker_prefs)).collect();
-        self.form.table.compact = false; self.form.table.header_ink = theme::TEXT_READING; self.form.table.list_focused = true;
+        self.form.table.compact = false; self.form.table.board_metrics(true); self.form.table.header_ink = theme::TEXT_READING; self.form.table.list_focused = true;
         self.form.set(field_form(&inputs), keep.as_ref());
         self.state.selected = self.form.key_at(self.form.table.sel.max(0) as usize).map_or(0, |k| k.0);
+        let sentence = self.sentence().into_owned();
+        self.follow.follow(&sentence);
     }
     fn rebuild_keeping(&mut self) {
         let keep = self.form.selected_id().copied();
@@ -472,19 +494,68 @@ impl PreferencesPage {
     }
 }
 
-/// Which fields `kind`'s list shows: Audio & Subtitles has none until a snapshot has loaded.
-fn fields_of(inputs: &FieldListInputs<'_>) -> Vec<PickerKind> {
-    let fields: &[PickerKind] = match inputs.kind {
-        Kind::Playback => &[PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition, PickerKind::HdrOverlay, PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval, PickerKind::InstantDpadSeeking, PickerKind::DolbyVision, PickerKind::IntroSkip, PickerKind::CreditsSkip],
-        Kind::AudioSubtitles if inputs.prefs.is_some() => &[PickerKind::AudioLanguage, PickerKind::SubtitleMode, PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles],
-        _ => &[],
-    };
-    fields.iter().copied().filter(|f| match f {
+/// **The groups of a field-list page** (Settings v2), in the order the page draws them: each is its
+/// header and the fields it can show. Video & playback is Video, Player and Up next; Audio &
+/// subtitles is Audio and Subtitles (both from the Plex account) and Look (this app's own).
+fn groups_of(kind: Kind) -> [(&'static str, &'static [PickerKind]); 3] {
+    use plx_platform::i18n::msg;
+    match kind {
+        Kind::Playback => [
+            (msg::settings_playback_group_video(), &[PickerKind::Quality, PickerKind::DirectPlay, PickerKind::DolbyVision]),
+            (msg::settings_playback_group_player(), &[PickerKind::SkipInterval, PickerKind::InstantDpadSeeking, PickerKind::HdrOverlay, PickerKind::IntroSkip, PickerKind::CreditsSkip]),
+            (msg::settings_playback_group_up_next(), &[PickerKind::NextEpisode, PickerKind::DeckPress]),
+        ],
+        Kind::AudioSubtitles => [
+            (msg::settings_audio_group_audio(), &[PickerKind::AudioLanguage]),
+            (msg::settings_audio_group_subtitles(), &[PickerKind::SubtitleMode, PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles]),
+            (msg::settings_audio_group_look(), &[PickerKind::SubtitleSize, PickerKind::SubtitlePosition]),
+        ],
+    }
+}
+
+/// Whether the page lists `field` now: a marker skip only when the marker prefs are granted, an
+/// account field (Audio & subtitles' first two groups) only once a snapshot has loaded, and the
+/// Look rows (this app's own, so they never wait for the account) once the page has settled, with
+/// its rows or its Retry (a failed load): a page still loading lists nothing, so the first landing
+/// seats its top row.
+fn shown(field: PickerKind, inputs: &FieldListInputs<'_>) -> bool {
+    match field {
+        PickerKind::SubtitleSize | PickerKind::SubtitlePosition => inputs.prefs.is_some() || (inputs.show_retry && !inputs.busy),
         PickerKind::IntroSkip => inputs.marker_prefs.intro_granted,
         PickerKind::CreditsSkip => inputs.marker_prefs.credits_granted,
+        PickerKind::AudioLanguage | PickerKind::SubtitleMode | PickerKind::SubtitleLanguage | PickerKind::ForcedSubtitles => inputs.prefs.is_some(),
         _ => true,
-    }).collect()
+    }
 }
+
+/// Which fields `kind`'s list shows, in page order.
+fn fields_of(inputs: &FieldListInputs<'_>) -> Vec<PickerKind> {
+    groups_of(inputs.kind).into_iter().flat_map(|(_, fields)| fields.iter().copied()).filter(|f| shown(*f, inputs)).collect()
+}
+
+/// **The sentence a field-list row states beside the table** (Settings v2). Pure: a function of the
+/// focused row, the page's own sentence and the facts that change what a row means.
+///
+/// * a status (loading, a failed save) is the page's, which holds it, whatever row has focus;
+/// * the rows this app owns per profile say, with nobody seated, that a profile has to be chosen
+///   (Playback's page sentence says so itself);
+/// * a Playback row, and the Look group, state their own explanation (the one their picker opens
+///   on); Default quality, overridden by Force Direct Play, says so first;
+/// * the account rows (Audio, Subtitles), the Retry button and the Player HUD row have none of their
+///   own: the page's sentence.
+fn row_sentence<'a>(kind: Kind, id: Option<&RowId>, page: &'a str, status: bool, direct_play: DirectPlayMode, whose: &Whose) -> Cow<'a, str> {
+    use plx_platform::i18n::msg;
+    let Some(RowId::Field(field)) = id else { return Cow::Borrowed(page) };
+    if field.is_account() || status { return Cow::Borrowed(page); }
+    if *whose == Whose::Nobody {
+        return Cow::Borrowed(if kind == Kind::Playback { page } else { msg::settings_playback_unseated() });
+    }
+    if *field == PickerKind::Quality && direct_play == DirectPlayMode::Forced {
+        return Cow::Owned(format!("{} {}", msg::settings_playback_overridden(), field.copy()));
+    }
+    Cow::Borrowed(field.copy())
+}
+
 /// `PickerKind`'s current [`Value`] from the two locally-saved settings plus the account preferences, if
 /// loaded. Free rather than a page method so [`field_section`] needs no page and no globals.
 fn resolve_value(field: PickerKind, quality: Quality, direct_play: DirectPlayMode, prefs: Option<&AudioPreferences>) -> Value {
@@ -557,6 +628,8 @@ fn field_options(field: PickerKind, quality: Quality, direct_play: DirectPlayMod
 fn field_readout(field: PickerKind, quality: Quality, direct_play: DirectPlayMode, prefs: Option<&AudioPreferences>) -> String {
     match field {
         PickerKind::DirectPlay => direct_play_readout(direct_play).into(),
+        // Force Direct Play plays the original file whatever this says (the row's sentence tells it).
+        PickerKind::Quality if direct_play == DirectPlayMode::Forced => plx_platform::i18n::msg::settings_playback_overridden_value().into(),
         PickerKind::ForcedSubtitles => forced_readout(prefs.map_or(0, |p| p.subtitle_forced)).into(),
         // Only the foreign-audio mode has a short form (es does not fit beside the label); the
         // other two modes show the picker's own label.
@@ -589,26 +662,37 @@ struct FieldListInputs<'a> {
 /// The page's field list as a [`Form`]: each field a `Nav` item onto its picker page, plus the
 /// Audio & Subtitles Retry button, built from [`FieldListInputs`] alone.
 fn field_form(inputs: &FieldListInputs<'_>) -> Form<RowId, Action, SettingsPage> {
-    let mut section = FormSection::new("");
-    for field in fields_of(inputs) {
-        let value = field_readout_with_marker(field, inputs.quality, inputs.direct_play, inputs.prefs, inputs.marker_prefs);
-        let mut row = Row::new(field.title()).value(&value).chevron(true).dim(inputs.busy);
-        if field == PickerKind::Quality && inputs.direct_play == DirectPlayMode::Forced {
-            row = row.detail(plx_platform::i18n::msg::settings_playback_overridden());
+    use plx_platform::i18n::msg;
+    let mut form = Form::new();
+    for (index, (header, fields)) in groups_of(inputs.kind).into_iter().enumerate() {
+        // The Audio & subtitles Retry button belongs to the account groups (the first two), so it
+        // stands after them, ahead of Look.
+        if inputs.kind == Kind::AudioSubtitles && index == 2 {
+            form = form.section(FormSection::new("").visible(!inputs.busy && inputs.show_retry).item(
+                RowId::Retry, RowKind::Button, Action::Retry,
+                Row::new(msg::settings_audio_retry()).detail(msg::settings_audio_retry_detail())));
         }
-        if field == PickerKind::AudioLanguage && inputs.prefs.is_some_and(|p| p.auto_select_audio == Some(false)) {
-            row = row.detail(plx_platform::i18n::msg::settings_audio_selection_off());
+        let mut section = FormSection::new(header).visible(fields.iter().any(|f| shown(*f, inputs)) || (inputs.kind == Kind::Playback && index == 1));
+        for &field in fields.iter().filter(|f| shown(**f, inputs)) {
+            let value = field_readout_with_marker(field, inputs.quality, inputs.direct_play, inputs.prefs, inputs.marker_prefs);
+            let mut row = Row::new(field.title()).value(&value).chevron(true).dim(inputs.busy);
+            // A status the table states itself: it has to stay visible beside the row.
+            if field == PickerKind::AudioLanguage && inputs.prefs.is_some_and(|p| p.auto_select_audio == Some(false)) {
+                row = row.detail(msg::settings_audio_selection_off());
+            }
+            let account = field.is_account();
+            section = section.item(RowId::Field(field), RowKind::Nav(SettingsPage::Picker(field)), Action::Open, row)
+                .disabled(inputs.read_only && !account);
         }
-        section = section.item(RowId::Field(field), RowKind::Nav(SettingsPage::Picker(field)), Action::Open, row)
-            .disabled(inputs.read_only);
+        // The Player HUD page closes the Player group.
+        if inputs.kind == Kind::Playback && index == 1 {
+            section = section.item(RowId::PlayerHud, RowKind::Nav(SettingsPage::PlayerHud), Action::Open,
+                Row::new(msg::settings_hud_title()).chevron(true).dim(inputs.busy))
+                .disabled(inputs.read_only);
+        }
+        form = form.section(section);
     }
-    section = section.item_if(inputs.kind == Kind::Playback, RowId::PlayerHud, RowKind::Nav(SettingsPage::PlayerHud), Action::Open,
-        Row::new(plx_platform::i18n::msg::settings_hud_title()).chevron(true).dim(inputs.busy))
-        .disabled(inputs.read_only);
-    section = section.item_if(inputs.kind == Kind::AudioSubtitles && !inputs.busy && inputs.show_retry,
-        RowId::Retry, RowKind::Button, Action::Retry,
-        Row::new(plx_platform::i18n::msg::settings_audio_retry()).detail(plx_platform::i18n::msg::settings_audio_retry_detail()));
-    Form::new().section(section)
+    form
 }
 fn mode_label(mode: DirectPlayMode) -> &'static str {
     match mode { DirectPlayMode::Auto => plx_platform::i18n::msg::settings_playback_auto(), DirectPlayMode::Forced => plx_platform::i18n::msg::settings_playback_forced(), DirectPlayMode::Disabled => plx_platform::i18n::msg::settings_playback_disabled() }
@@ -722,12 +806,15 @@ impl Machine<InnerHost> for PreferencesPage {
                     }
                     fx.invalidate(plx_machine::present::Provenance::Landing(MachineId::Session));
                 }
-                self.form.table.update(t.dt(), RouteLayout::screen().sectioned_table().h);
+                self.form.table.update(t.dt(), RouteLayout::settings_page().sectioned_table().h);
+                self.follow.update(t.dt());
                 Handled::Yes
             }
             ScreenEvent::FocusMoved { to, .. } => {
                 form_focus(&mut self.form, to.elem);
                 self.state.selected = self.form.key_at(self.form.table.sel.max(0) as usize).map_or(0, |k| k.0);
+                let sentence = self.sentence().into_owned();
+                self.follow.follow(&sentence);
                 Handled::Yes
             }
             ScreenEvent::Activate(key) => { self.activate(*key, fx); Handled::Yes }

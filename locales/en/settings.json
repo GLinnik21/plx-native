@@ -15,10 +15,6 @@
     "value": "Which libraries this television shows.",
     "description": "Settings, account, onboarding or privacy UI: settings.libraries.detail"
   },
-  "settings.privacy.section": {
-    "value": "Privacy",
-    "description": "Settings, account, onboarding or privacy UI: settings.privacy.section"
-  },
   "settings.privacy.title": {
     "value": "Privacy & data",
     "description": "Settings, account, onboarding or privacy UI: settings.privacy.title"
@@ -70,10 +66,6 @@
   "settings.about.title": {
     "value": "About PlxNative",
     "description": "Settings, account, onboarding or privacy UI: settings.about.title"
-  },
-  "settings.about.section": {
-    "value": "About",
-    "description": "Settings, account, onboarding or privacy UI: settings.about.section"
   },
   "settings.about.detail": {
     "value": "Version, copyright and project information.",
@@ -361,6 +353,10 @@
   "settings.consent.delete_question": {
     "value": "Delete all local data?",
     "description": "Settings, account, onboarding or privacy UI: settings.consent.delete_question"
+  },
+  "settings.consent.discard_note": {
+    "value": "Back discards your changes.",
+    "description": "Privacy & data: the line beside Done while a draft is pending (proposed copy)."
   },
   "settings.cancel": {
     "value": "Cancel",
@@ -1259,13 +1255,9 @@
     "value": "Choose how the playback controls look.",
     "description": "Settings > Playback > Player HUD: the line under the page title."
   },
-  "settings.hud.classic": {
-    "value": "Classic",
-    "description": "Settings > Playback > Player HUD: the name of the built-in HUD."
-  },
   "settings.hud.builtin": {
     "value": "Built-in",
-    "description": "Settings > Playback > Player HUD: the trust label of the HUD that ships with the app."
+    "description": "Settings > Playback > Player HUD: the name of the HUD that ships with the app (its row says only this, no trust label under it)."
   },
   "settings.hud.unreviewed": {
     "value": "Unreviewed",
@@ -1520,6 +1512,10 @@
     "value": "This HUD is no longer available in the catalog.",
     "description": "A catalog refresh removed the package a detail view was showing. Its preview remains viewable; installation is disabled."
   },
+  "settings.hud.unavailable_value": {
+    "value": "Unavailable",
+    "description": "Player HUD gallery: the value of a disabled Install row when the catalog no longer lists the package (its sentence is settings.hud.unavailable)."
+  },
   "settings.hud.catalog_cached": {
     "value": "Couldn't refresh HUDs. Showing the saved catalog.",
     "description": "Gallery index-refresh failure; does not claim the device is disconnected and does not disable explicit package downloads."
@@ -1527,6 +1523,60 @@
   "settings.hud.catalog_unavailable": {
     "value": "Couldn't load HUDs. Try again later.",
     "description": "Gallery index-refresh failure; does not claim the device is disconnected and does not disable explicit package downloads."
+  },
+  "settings.hud.remove_named": {
+    "value": "Remove {name}",
+    "description": "Settings > Playback > Player HUD: the label of an installed package's removal row; {name} is the package's own name (draft copy).",
+    "args": {"name": "str"}
+  },
+  "settings.hud.remove_detail": {
+    "value": "Deletes this HUD from the television. If it was in use, the built-in HUD is used instead.",
+    "description": "Settings > Playback > Player HUD: the sentence beside a removal row while it has focus (draft copy)."
+  },
+  "settings.hud.withdrawn_detail": {
+    "value": "The author withdrew this HUD, so it can't be used. Choose another HUD, or remove this one.",
+    "description": "Settings > Playback > Player HUD: beside a withdrawn HUD's row while it has focus: why it cannot be used and what to do."
+  },
+  "settings.hud.unfit_detail": {
+    "value": "This HUD doesn't fit in {language}, so the built-in HUD is shown instead. Choose another HUD, or switch to a language it fits.",
+    "description": "Settings > Playback > Player HUD: beside a HUD that does not fit the current language while its row has focus. {language} is the language's own name.",
+    "args": {"language": "str"}
+  },
+  "settings.hud.newer_detail": {
+    "value": "This HUD was made for a newer PlxNative. Update the app to use it, or choose another HUD.",
+    "description": "Settings > Playback > Player HUD: beside a HUD made for a newer app while its row has focus."
+  },
+  "settings.hud.older_detail": {
+    "value": "This HUD uses a format this version no longer reads. Look for an updated version of it, or choose another HUD.",
+    "description": "Settings > Playback > Player HUD: beside a HUD in a format this version no longer reads while its row has focus."
+  },
+  "settings.hud.app_range_detail": {
+    "value": "The author says this HUD doesn't run on this version of PlxNative. Look for a version made for it, or choose another HUD.",
+    "description": "Settings > Playback > Player HUD: beside a HUD that says it does not run on this app version while its row has focus."
+  },
+  "settings.hud.file_detail": {
+    "value": "This file can't be installed. Replace it in the HUD folder with a valid HUD package, or delete it.",
+    "description": "Settings > Playback > Player HUD: beside a file in the HUD folder that cannot be installed while its row has focus."
+  },
+  "settings.hud.preview_detail": {
+    "value": "See how this HUD looks while you watch.",
+    "description": "Player HUD gallery: the sentence beside the Preview row while it has focus."
+  },
+  "settings.hud.use_detail": {
+    "value": "Use this HUD for the playback controls.",
+    "description": "Player HUD gallery: the sentence beside the Use HUD row while it has focus."
+  },
+  "settings.hud.install_detail": {
+    "value": "Download this HUD to the television. Your current HUD stays selected.",
+    "description": "Player HUD gallery: the sentence beside the Install row while it has focus."
+  },
+  "settings.hud.update_detail": {
+    "value": "Download the newer version of this HUD. It replaces the one installed.",
+    "description": "Player HUD gallery: the sentence beside the Update row while it has focus."
+  },
+  "settings.hud.about_detail": {
+    "value": "Who made this HUD, its version, license and download size.",
+    "description": "Player HUD gallery: the sentence beside the About this HUD row while it has focus."
   },
   "settings.playback.intro_skip": {
     "value": "Skip intros",
@@ -1551,5 +1601,49 @@
   "settings.playback.credits_skip.copy": {
     "value": "Disabled hides Skip Credits. Manual keeps the current credit controls. Automatic skips after five seconds unless you choose Watch Credits. Next episode settings still control what plays next; their Up Next countdown is independent.",
     "description": "Playback marker skipping preference or cancellation action."
+  },
+  "settings.support.section": {
+    "value": "Support",
+    "description": "Settings root group: privacy, diagnostics, legal notices and About."
+  },
+  "settings.diagnostics.detail": {
+    "value": "Record playback diagnostics and save a log for support.",
+    "description": "Settings root: the sentence beside the Diagnostics row."
+  },
+  "settings.libraries.more": {
+    "value": "Libraries you leave out stay on your Plex server and on your other devices.",
+    "description": "Settings root: second sentence beside Favorite libraries (proposed copy)."
+  },
+  "settings.playback.group_video": {
+    "value": "Video",
+    "description": "Header of the first group on the Video & playback page: default quality, Direct Play, Dolby Vision. One word."
+  },
+  "settings.playback.group_player": {
+    "value": "Player",
+    "description": "Header of the second group on the Video & playback page: the in-player settings (skip interval, D-pad seeking, HDR overlay, intro and credits skip, Player HUD). One word."
+  },
+  "settings.playback.group_up_next": {
+    "value": "Up next",
+    "description": "Header of the third group on the Video & playback page: what happens after an episode (next episode, Continue Watching). Short phrase."
+  },
+  "settings.audio.group_audio": {
+    "value": "Audio",
+    "description": "Header of the first group on the Audio & subtitles page: the preferred audio language. One word."
+  },
+  "settings.audio.group_subtitles": {
+    "value": "Subtitles",
+    "description": "Header of the second group on the Audio & subtitles page: subtitles mode, language and forced subtitles. One word."
+  },
+  "settings.audio.group_look": {
+    "value": "Look",
+    "description": "Header of the third group on the Audio & subtitles page: how subtitles look (size and position). One short word."
+  },
+  "settings.playback.overridden_value": {
+    "value": "Overridden",
+    "description": "Trailing value of the Default quality row while Force Direct Play is on: the choice is overridden. One short word."
+  },
+  "settings.audio.page_copy": {
+    "value": "Audio and subtitle language preferences sync with your Plex account. Playback settings belong to each profile.",
+    "description": "Sentence beside the Audio & subtitles page when no row has a sentence of its own: the account preferences sync with Plex, the Look group belongs to each profile. Two sentences."
   }
 }

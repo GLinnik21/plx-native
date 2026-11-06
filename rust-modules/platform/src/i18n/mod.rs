@@ -186,7 +186,7 @@ impl LocaleContext {
         let name = self.month_short(month)?;
         Some(match self.language {
             Language::Hu => format!("{year}. {name}"),
-            Language::Pt => format!("{name} de {year}"),
+            Language::Ca | Language::Pt => format!("{name} de {year}"),
             Language::Ru | Language::Be => format!("{name} {year}\u{a0}г."),
             _ => format!("{name} {year}"),
         })
@@ -230,6 +230,7 @@ impl LocaleContext {
 /// nominative "май" ("май 2024 г."), and Russian also writes "март", "июнь" and "июль" in full.
 fn standalone_abbreviated(language: Language) -> &'static [&'static str; 12] {
     match language {
+        Language::Ca => &CA_STANDALONE_MEDIUM,
         Language::Ru => &RU_STANDALONE,
         Language::Be => &BE_STANDALONE,
         other => month_names(other, MonthWidth::Medium).0,
@@ -237,11 +238,13 @@ fn standalone_abbreviated(language: Language) -> &'static [&'static str; 12] {
 }
 
 /// Month data shared by yearless captions and full sort dates. Keep the ICU pattern/number
-/// formatter, but do not link its all-locale Gregorian month-name database for these eleven tables.
+/// formatter, but do not link its all-locale Gregorian month-name database for these twelve tables.
 fn month_names(language: Language, width: MonthWidth) -> (&'static [&'static str; 12], &'static str) {
     match (language, width) {
         (Language::En | Language::Pseudo, MonthWidth::Medium) => (&EN_MEDIUM, " "),
         (Language::En | Language::Pseudo, MonthWidth::Long) => (&EN_LONG, " "),
+        (Language::Ca, MonthWidth::Medium) => (&CA_MEDIUM, " "),
+        (Language::Ca, MonthWidth::Long) => (&CA_LONG, " "),
         (Language::Es, MonthWidth::Medium) => (&ES_MEDIUM, " "),
         (Language::Es, MonthWidth::Long) => (&ES_LONG, " de "),
         (Language::Be, MonthWidth::Medium) => (&BE_MEDIUM, " "),
@@ -422,6 +425,19 @@ const ES_MEDIUM: [&str; 12] =
 const ES_LONG: [&str; 12] = [
     "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre",
     "octubre", "noviembre", "diciembre",
+];
+const CA_MEDIUM: [&str; 12] = [
+    "de gen.", "de febr.", "de març", "d’abr.", "de maig", "de juny", "de jul.", "d’ag.", "de set.",
+    "d’oct.", "de nov.", "de des.",
+];
+
+const CA_STANDALONE_MEDIUM: [&str; 12] = [
+    "gen.", "febr.", "març", "abr.", "maig", "juny", "jul.", "ag.", "set.", "oct.", "nov.", "des.",
+];
+
+const CA_LONG: [&str; 12] = [
+    "de gener", "de febrer", "de març", "d’abril", "de maig", "de juny", "de juliol",
+    "d’agost", "de setembre", "d’octubre", "de novembre", "de desembre",
 ];
 /// CLDR `be` abbreviated format months: three letters, no dot, and "мая" (the genitive) for May.
 const BE_MEDIUM: [&str; 12] =

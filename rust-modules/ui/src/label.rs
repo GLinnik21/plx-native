@@ -72,6 +72,8 @@ pub struct Label {
     col: [f32; 4],
     h: HAlign,
     v: VAlign,
+    /// px of tracking between glyphs (negative tightens); `0.0` draws the plain string.
+    tracking: f32,
 }
 impl Label {
     pub fn new(text: *const c_char, sz: c_int, col: [f32; 4]) -> Self {
@@ -82,7 +84,14 @@ impl Label {
             col,
             h: HAlign::Left,
             v: VAlign::Middle,
+            tracking: 0.0,
         }
+    }
+    /// Letter-spacing in px, [`Painter::text_tracked`]'s: the board's `letter-spacing: -.02em` on a
+    /// title. At `0.0` (the default) the draw is exactly the untracked one.
+    pub fn tracking(mut self, px: f32) -> Self {
+        self.tracking = px;
+        self
     }
     pub fn bold(mut self) -> Self {
         self.bold = 1;
@@ -119,7 +128,7 @@ impl Label {
             VAlign::CapTop => frame.y - cap_top,
             VAlign::Baseline => frame.y + frame.h - baseline,
         };
-        p.text(self.text, x, y, self.sz, self.col, code, self.bold)
+        p.text_tracked(self.text, x, y, self.sz, self.col, code, self.bold, self.tracking)
     }
 }
 
