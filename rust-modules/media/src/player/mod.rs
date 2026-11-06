@@ -59,6 +59,8 @@ pub mod attempt_metrics; // pure logical-request and physical-attempt measuremen
 #[cfg(feature = "play-feed")]
 mod pump; // gated: the per-frame tick reads and drives `FEED_SHARED`/`FEED_TX` and `plx_play_feed::feed_pump`
 pub mod report;
+#[cfg(test)]
+mod no_feed_tests; // the doors a session with no Feed composed answers as a URI-only build always did
 #[cfg(all(test, feature = "hostsim", feature = "play-feed"))]
 mod diag_sample_tests; // the Stats-for-nerds rows the Feed writes are the readout's last sample of it
 #[cfg(all(test, feature = "hostsim", feature = "play-feed"))]
@@ -673,10 +675,7 @@ pub fn observe_video_plane(
     pl: &mut machine::Player,
     _pa: &mut adapter::PlayerAdapter,
 ) -> Option<bool> {
-    #[cfg(feature = "play-feed")]
     let bound = pl.session.readout().raw().load.stage.is_some_and(acb_playstate_ready);
-    #[cfg(not(feature = "play-feed"))]
-    let bound = false;
     let bound = bound || _pa.uri_product_plane_owned();
     #[cfg(feature = "devtriggers")]
     let bound = bound || _pa.uri_plane_open();
@@ -903,8 +902,7 @@ pub fn state(ps: &crate::route::PlaybackSession) -> PlaybackState {
     // foreground restore's resume, a rollback after a Load that failed before its Engine
     // existed): `route::engineless_flight_outstanding`.
     if crate::route::play_pending() || crate::route::engineless_flight_outstanding()
-        || { #[cfg(feature = "play-feed")] { ps.readout().start_queued() }
-             #[cfg(not(feature = "play-feed"))] { false } } {
+        || (ps.backends().feed && ps.readout().start_queued()) {
         return PlaybackState::Resolving;
     }
     // …and so is the PRE-FLIGHT refusal, for exactly the same reason: `/decision` answers before a
@@ -934,19 +932,18 @@ pub fn state(ps: &crate::route::PlaybackSession) -> PlaybackState {
         return if facts.runtime_failure.is_some() { PlaybackState::Error }
             else { facts.status.unwrap_or(PlaybackState::Connecting) };
     }
-    #[cfg(feature = "play-feed")]
-    {
-        if ps.readout().seeking() {
-            return PlaybackState::Seeking;
-        }
-        // A retranscode claim holds presentation during the server round trip.
-        if claim_hold::active() {
-            return PlaybackState::Buffering;
-        }
-        ps.readout().state()
+    // With no Feed composed nothing derives a state but the URI attempt's, answered above.
+    if !ps.backends().feed {
+        return PlaybackState::Idle;
     }
-    #[cfg(not(feature = "play-feed"))]
-    { PlaybackState::Idle }
+    if ps.readout().seeking() {
+        return PlaybackState::Seeking;
+    }
+    // A retranscode claim holds presentation during the server round trip.
+    if claim_hold::active() {
+        return PlaybackState::Buffering;
+    }
+    ps.readout().state()
 }
 
 /// The one line that makes a phone photograph of the failure read-out a complete report:
@@ -1243,23 +1240,19 @@ fn live_runtime_failure(ps: &crate::route::PlaybackSession) -> RuntimeFailure {
     if crate::route::play_resolution_failed(ps) {
         return RuntimeFailure::ResolveFailed;
     }
-    if ps.attempt_view().backend().is_some_and(|backend| backend != attempt_view::Backend::Feed) {
+    if !ps.backends().feed
+        || ps.attempt_view().backend().is_some_and(|backend| backend != attempt_view::Backend::Feed) {
         return ps.attempt_view().facts().runtime_failure.unwrap_or(RuntimeFailure::Unknown);
     }
-    #[cfg(not(feature = "play-feed"))]
-    { ps.attempt_view().facts().runtime_failure.unwrap_or(RuntimeFailure::Unknown) }
     // One sample of the four flags: the readout's last ingestion, which collapses them together.
-    #[cfg(feature = "play-feed")]
-    {
-        let flags = ps.readout().raw().flags;
-        runtime_failure(
-            flags.demux_failed,
-            flags.demux_io_failed,
-            flags.load_failed,
-            // The refused start's cause: an abandoned Load exists only after the budget fired.
-            flags.load_timed_out || ps.native_start_refused == Some(crate::route::StartRefusal::LoadTimeout),
-        )
-    }
+    let flags = ps.readout().raw().flags;
+    runtime_failure(
+        flags.demux_failed,
+        flags.demux_io_failed,
+        flags.load_failed,
+        // The refused start's cause: an abandoned Load exists only after the budget fired.
+        flags.load_timed_out || ps.native_start_refused == Some(crate::route::StartRefusal::LoadTimeout),
+    )
 }
 
 /// The read-out for [`FailureKind::JailMissingRtkmem`] — the one `ErrorShape` not produced by
@@ -1642,6 +1635,9 @@ pub struct Diag {
     /// Origin and sparse facts of the session's current physical attempt.
     pub backend: Option<attempt_view::Backend>,
     pub observed: attempt_view::AttemptFacts,
+    /// Whether the session's composition holds a Feed (`PlaybackSession::backends`): the lab's
+    /// wire spellings of the Feed's rows read `—` when none does.
+    pub feed_composed: bool,
     pub vp_mode: c_int,
     pub window_id: String,
     pub acb_ok: bool,
@@ -1714,9 +1710,9 @@ impl Diag {
     /// The lab snapshot's wire spelling; the on-screen read-out words its own labels.
     #[cfg_attr(not(feature = "lab-diagnostics"), allow(dead_code))]
     pub fn vp_mode_str(&self) -> &'static str {
-        #[cfg(not(feature = "play-feed"))]
-        { "—" }
-        #[cfg(feature = "play-feed")]
+        if !self.feed_composed {
+            return "—";
+        }
         match self.vp_mode {
             VP_EXPORTED => "exported window (webOS 5+)",
             VP_ACB => "ACB (webOS 4)",
@@ -1725,9 +1721,6 @@ impl Diag {
     }
     /// What the Load payload named as the video codec, or `—` before one was built.
     pub fn load_v_str(&self) -> &'static str {
-        #[cfg(not(feature = "play-feed"))]
-        { "—" }
-        #[cfg(feature = "play-feed")]
         load_v_name(self.load_v)
     }
     /// …and the audio codec. `needAudio:false` is its own answer, not an absence.
@@ -1781,14 +1774,8 @@ pub(crate) fn diag_on(ps: &crate::route::PlaybackSession, display: &dyn plx_plat
     let view = ps.attempt_view();
     let backend = view.backend();
     let observed = *view.facts();
-    let common = Diag { backend, observed,
+    let common = Diag { backend, observed, feed_composed: ps.backends().feed,
         source_kbps: crate::route::transport_kbps(ps), ..Default::default() };
-    #[cfg(not(feature = "play-feed"))]
-    {
-        let _ = display;
-        common
-    }
-    #[cfg(feature = "play-feed")]
     {
     if backend != Some(attempt_view::Backend::Feed) {
         // No buffer-feed Engine owns these callback mailboxes. In particular a URI open must
@@ -1807,6 +1794,7 @@ pub(crate) fn diag_on(ps: &crate::route::PlaybackSession, display: &dyn plx_plat
     Diag {
         backend,
         observed,
+        feed_composed: ps.backends().feed,
         vp_mode: display.window_mode(),
         window_id,
         acb_ok: plane().handle(),
@@ -2001,12 +1989,9 @@ pub fn selected_rate(ps: &crate::route::PlaybackSession) -> Option<i32> {
 
 pub fn applied_rate(ps: &crate::route::PlaybackSession) -> Option<i32> {
     if ps.attempt_view().backend() != Some(attempt_view::Backend::Feed) { return None; }
-    #[cfg(feature = "play-feed")]
     // The speed the pipeline on screen is actually running at: [`play_rate_permille`] once a Load
     // has applied it, 1x before that, and 1x for good if LG refused it. The session's last sample.
-    { Some(ps.readout().raw().applied_rate_permille) }
-    #[cfg(not(feature = "play-feed"))]
-    { None }
+    Some(ps.readout().raw().applied_rate_permille)
 }
 
 /// **Change the playback speed of the item on screen.**
@@ -2061,21 +2046,18 @@ plx_base::devtrig::latched_flag!(
 /// declare ([`feed_open::speed_fps_ceiling_now`]). The menu offers exactly these, and a Load plays
 /// only one of them.
 pub fn speed_offer(ps: &crate::route::PlaybackSession) -> Vec<i32> {
+    if !ps.backends().feed {
+        return Vec::new();
+    }
     if ps.attempt_view().backend() == Some(attempt_view::Backend::Uri) {
         // URI has no native speed operation. A viewer pick can re-resolve this same source for
         // Feed's decoder only while its position is known and the item is still resolvable.
-        #[cfg(feature = "play-feed")]
-        { return if crate::route::can_retry_current_play(ps)
+        return if crate::route::can_retry_current_play(ps)
             && crate::route::source_decodable(ps)
             && intended_pos_known_ns(ps).is_some() { feed_speed_offer(ps) }
-            else { Vec::new() }; }
-        #[cfg(not(feature = "play-feed"))]
-        { return Vec::new(); }
+            else { Vec::new() };
     }
-    #[cfg(feature = "play-feed")]
-    { feed_speed_offer(ps) }
-    #[cfg(not(feature = "play-feed"))]
-    { Vec::new() }
+    feed_speed_offer(ps)
 }
 
 /// Feasibility of the *resolved Feed candidate*, independent of the outgoing attempt's backend.

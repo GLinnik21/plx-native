@@ -675,14 +675,11 @@ fn error_context_with_source(ps: &crate::route::PlaybackSession,
         pipeline_error: facts.pipeline_error.unwrap_or(0),
         refusal,
     };
-    #[cfg(feature = "play-feed")]
     if crate::route::preview_request(ps) {
         as_preview(context)
     } else {
         context
     }
-    #[cfg(not(feature = "play-feed"))]
-    { context }
 }
 
 /// **Whether a failed detail-page preview is reported at all.** This is the one switch: `false`
@@ -1005,8 +1002,6 @@ pub fn preview_requested() {
 /// [`REPORT_PREVIEW_FAILURES`].
 fn tick_with(ps: &crate::route::PlaybackSession, report_preview_failures: bool,
     source: Option<super::backend::TerminalFailureSource>) {
-    #[cfg(not(feature = "play-feed"))]
-    let _ = report_preview_failures;
     let now = super::state(ps);
     let prev = super::attempt_view::PlaybackState::from_u8(LAST.swap(now as u8, Relaxed));
     #[cfg(feature = "play-feed")]
@@ -1016,12 +1011,7 @@ fn tick_with(ps: &crate::route::PlaybackSession, report_preview_failures: bool,
     }
     // A claim's presentation hold answers Buffering on purpose (`state()`), so its
     // Playing -> Buffering edge is the viewer's own pick working, not a stall.
-    let claim_held = {
-        #[cfg(feature = "play-feed")]
-        { super::claim_hold::active() }
-        #[cfg(not(feature = "play-feed"))]
-        { false }
-    };
+    let claim_held = super::claim_hold::active();
     if !claim_held {
         note_rebuffer(prev, now, SAW_START.load(Relaxed));
     }

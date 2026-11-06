@@ -11967,7 +11967,7 @@ pub fn side_reader_target(ps: &PlaybackSession) -> Option<SideReaderTarget> {
         return None;
     }
     let ordinal = if ps.cur_sub_sid == 0 {
-        crate::player::route_fx::side_reader_dev_armed_ordinal()?
+        crate::player::route_fx::side_reader_dev_armed_ordinal(ps)?
     } else if !ps.cur_sub_sidecar
         && ps.cur_sub_ordinal >= 0
         && subtitle_presenter(ps) == SubtitlePresenter::ClientOverRemux

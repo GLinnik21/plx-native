@@ -63,10 +63,7 @@ pub fn viewer_paused(ps: &crate::route::PlaybackSession) -> bool {
 pub fn viewer_paused_for(ps: &crate::route::PlaybackSession,
     pa: &crate::player::adapter::PlayerAdapter) -> bool {
     if let Some(goal) = pa.backend_viewer_paused() { return goal; }
-    #[cfg(feature = "play-feed")]
-    { viewer_paused(ps) }
-    #[cfg(not(feature = "play-feed"))]
-    { let _ = ps; false }
+    ps.backends().feed && viewer_paused(ps)
 }
 
 /// Ask the synchronized player clock to commit a user Pause/Resume. The player publishes the feed
@@ -79,32 +76,31 @@ pub fn set_transport_paused(
     pa: &mut crate::player::adapter::PlayerAdapter,
     value: bool,
 ) -> bool {
-    #[cfg(not(feature = "play-feed"))]
-    if !matches!(pa.backend_snapshot().phase,
+    // With no Feed composed the only transport is the addressed attempt's: none running, nothing to ask.
+    let feed = ps.backends().feed;
+    if !feed && !matches!(pa.backend_snapshot().phase,
         plx_playback_contract::Phase::Starting | plx_playback_contract::Phase::Active) {
         return false;
     }
     // PLAY while a hold owns the pause: the viewer sees a spinner over a playing intent, so Play is
     // already satisfied. Resuming here would run the OLD stream mid-flight and replay its seconds
     // after the landing, which still owes the play-back. Not a press that outranks the hold.
-    #[cfg(feature = "play-feed")]
-    if !value && crate::player::claim_hold::owns_pause() {
+    if feed && !value && crate::player::claim_hold::owns_pause() {
         return true;
     }
     // A viewer press outranks a claim's presentation hold (`player::claim_hold`), including the
     // press that finds the transport already in the state it asks for.
-    #[cfg(feature = "play-feed")]
-    crate::player::claim_hold::note_user_transport();
+    if feed {
+        crate::player::claim_hold::note_user_transport();
+    }
     if viewer_paused_for(ps, pa) == value {
         return true;
     }
     if let Some(accepted) = pa.backend_transport_control(ps, value) {
         return accepted;
     }
-    #[cfg(feature = "play-feed")]
-    { if value { crate::player::pause(ps, pa) } else { crate::player::resume(ps, pa) } }
-    #[cfg(not(feature = "play-feed"))]
-    { false }
+    if !feed { return false; }
+    if value { crate::player::pause(ps, pa) } else { crate::player::resume(ps, pa) }
 }
 
 /// Resume if a seek landed while paused. Its stay-paused counterpart is the pump's

@@ -711,13 +711,9 @@ impl PlayerAdapter {
     /// coalescing/reload planner. An unavailable physical backend refuses without global writes.
     pub fn request_seek(&mut self, ps: &mut crate::route::PlaybackSession, target_ns: i64) -> bool {
         if let Some(accepted) = self.seek_uri(ps, target_ns) { return accepted; }
-        #[cfg(feature = "play-feed")]
-        {
-            super::request_seek(ps, self, target_ns);
-            return true;
-        }
-        #[cfg(not(feature = "play-feed"))]
-        { let _ = (ps, target_ns); false }
+        if !ps.backends().feed { return false; }
+        super::request_seek(ps, self, target_ns);
+        true
     }
 
     /// Playback-rate conversion is a Feed capability. A URI attempt never mutates the Feed
@@ -726,10 +722,8 @@ impl PlayerAdapter {
         if ps.attempt_view().backend() == Some(super::attempt_view::Backend::Uri) {
             return false;
         }
-        #[cfg(feature = "play-feed")]
-        { super::set_play_rate(ps, self, permille) }
-        #[cfg(not(feature = "play-feed"))]
-        { let _ = (ps, permille); false }
+        if !ps.backends().feed { return false; }
+        super::set_play_rate(ps, self, permille)
     }
 
     /// `None` is a Feed attempt. A URI answer is derived from the active source's private
@@ -835,13 +829,9 @@ impl PlayerAdapter {
         if let Some(accepted) = self.select_uri_audio(ps, audio.clone(), memo.clone()) {
             return accepted;
         }
-        #[cfg(feature = "play-feed")]
-        {
-            super::pump::deliver_container_names(ps);
-            crate::route::commit_audio_pick(ps, audio, memo)
-        }
-        #[cfg(not(feature = "play-feed"))]
-        { let _ = (ps, audio, memo); false }
+        if !ps.backends().feed { return false; }
+        super::pump::deliver_container_names(ps);
+        crate::route::commit_audio_pick(ps, audio, memo)
     }
 
     pub fn commit_subtitle_track(&mut self, ps: &mut crate::route::PlaybackSession,
@@ -851,14 +841,10 @@ impl PlayerAdapter {
             sidecar_key.is_some(), memo.clone()) {
             return accepted;
         }
-        #[cfg(feature = "play-feed")]
-        {
-            crate::route::commit_subtitle_and_sidecar(ps, ordinal, stream_id,
-                sidecar_key, sidecar_codec, memo);
-            true
-        }
-        #[cfg(not(feature = "play-feed"))]
-        { let _ = (ps, ordinal, stream_id, sidecar_key, sidecar_codec, memo); false }
+        if !ps.backends().feed { return false; }
+        crate::route::commit_subtitle_and_sidecar(ps, ordinal, stream_id,
+            sidecar_key, sidecar_codec, memo);
+        true
     }
 
     pub fn commit_forced_only_track(&mut self, ps: &mut crate::route::PlaybackSession,
@@ -866,13 +852,9 @@ impl PlayerAdapter {
         if ps.attempt_view().backend() == Some(super::attempt_view::Backend::Uri) {
             return false;
         }
-        #[cfg(feature = "play-feed")]
-        {
-            crate::route::commit_forced_only_and_sidecar(ps, ordinal, stream_id, lang, changed);
-            true
-        }
-        #[cfg(not(feature = "play-feed"))]
-        { let _ = (ps, ordinal, stream_id, lang, changed); false }
+        if !ps.backends().feed { return false; }
+        crate::route::commit_forced_only_and_sidecar(ps, ordinal, stream_id, lang, changed);
+        true
     }
 
     pub fn commit_audio_enhancement(&mut self, ps: &mut crate::route::PlaybackSession,
@@ -880,10 +862,9 @@ impl PlayerAdapter {
         if ps.attempt_view().backend() == Some(super::attempt_view::Backend::Uri) {
             return false;
         }
-        #[cfg(feature = "play-feed")]
-        { super::request_audio_enhancement(ps, enhancement); true }
-        #[cfg(not(feature = "play-feed"))]
-        { let _ = (ps, enhancement); false }
+        if !ps.backends().feed { return false; }
+        super::request_audio_enhancement(ps, enhancement);
+        true
     }
 
     /// Address a seek to the active URI attempt. A refused command changes no Feed mailbox or
@@ -993,11 +974,7 @@ impl PlayerAdapter {
     /// answer.
     fn finish_backend_actions(&mut self, ps: &mut crate::route::PlaybackSession,
         result: backend::RunResult, at: super::attempt_metrics::Tick) -> backend::RunResult {
-        #[cfg(not(feature = "play-feed"))]
-        let _ = ps;
-        #[cfg(feature = "play-feed")]
         let mut result = result;
-        #[cfg(feature = "play-feed")]
         loop {
             let next = self.physical.feed().and_then(|feed| feed.take_transport_action());
             let Some(action) = next else { break };
@@ -1015,8 +992,6 @@ impl PlayerAdapter {
             result.metrics.extend(next.metrics);
             result.controls.extend(next.controls);
         }
-        #[cfg(not(feature = "play-feed"))]
-        let _ = at;
         result
     }
 

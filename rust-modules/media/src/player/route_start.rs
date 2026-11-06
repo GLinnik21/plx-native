@@ -233,15 +233,11 @@ pub(super) fn start_bufferfeed_for(
         crate::route::backend_policy::Selection::Open(offer)
             if offer.backend == plx_playback_contract::BackendKind::Uri) {
         start_qualified_uri_inner(ps, pa, route_start)
+    } else if !ps.backends().feed {
+        // No Feed composed: there is no physical open to resolve a source for.
+        Err(crate::route::RouteStartResult::StartFailed)
     } else {
-        #[cfg(feature = "play-feed")]
-        {
         start_bufferfeed_inner(ps, pa, route_start)
-        }
-        #[cfg(not(feature = "play-feed"))]
-        {
-            Err(crate::route::RouteStartResult::StartFailed)
-        }
     };
     match start {
         Ok(attempt) => {
@@ -390,7 +386,7 @@ fn start_bufferfeed_prepared(
     // dev trigger's) is qualified by being resolved. Nothing native is touched until the
     // offer check below has passed.
     let resolved = super::feed_open::resolve_source(ps, pa)?;
-    if !cfg!(feature = "play-feed") || !ps.backend_planned_feed_allowed() {
+    if !ps.backend_planned_feed_allowed() {
         log("start_bufferfeed: no qualified feed offer for this resolved route");
         return Err(crate::route::RouteStartResult::StartFailed);
     }
@@ -931,10 +927,7 @@ fn resume_prelude(
         return ResumePrelude::Settled(ResumeOutcome::NoRoute);
     }
     if !crate::route::is_transcoding(ps) {
-        #[cfg(feature = "play-feed")]
         super::arm_open(pa, resume_ns); // direct-play: av_seek the file at the first open
-        #[cfg(not(feature = "play-feed"))]
-        let _ = pa;
         return ResumePrelude::Settled(ResumeOutcome::Prepared);
     }
     ResumePrelude::Rebuild
@@ -991,10 +984,9 @@ pub fn land_resume(
     let landing = crate::route::take_ready_recovery_flight(ps)?;
     Some(match landing.verdict {
         crate::route::RecoveryVerdict::Install => {
-            #[cfg(feature = "play-feed")]
-            note_transcode_resumed(ps, pa, landing.offset_ns);
-            #[cfg(not(feature = "play-feed"))]
-            let _ = (pa, landing.offset_ns);
+            if ps.backends().feed {
+                note_transcode_resumed(ps, pa, landing.offset_ns);
+            }
             ResumeOutcome::Prepared
         }
         crate::route::RecoveryVerdict::Refused => ResumeOutcome::RebuildRejected,
@@ -1163,9 +1155,10 @@ pub fn exit_native_with(
         pa.leak_for_exit();
         return NativeExit::WorkerInFirmware;
     }
-    #[cfg(not(feature = "play-feed"))]
-    { return NativeExit::Clean; }
-    #[cfg(feature = "play-feed")]
+    // No Feed composed: the URI waits above are the whole exit.
+    if !ps.backends().feed {
+        return NativeExit::Clean;
+    }
     loop {
         let now = clock();
         let fx = drive_release(ps, pa, now, Some(now));
@@ -1259,10 +1252,7 @@ pub fn suspend_playback_if_attempt(ps: &mut crate::route::PlaybackSession,
         teardown(ps, pa, true, plx_playback_contract::StopReason::Suspend);
         return true;
     }
-    #[cfg(feature = "play-feed")]
-    { return suspend_bufferfeed_if_attempt(ps, pa, attempt); }
-    #[cfg(not(feature = "play-feed"))]
-    { let _ = (ps, pa, attempt); false }
+    suspend_bufferfeed_if_attempt(ps, pa, attempt)
 }
 
 /// The foreground lifecycle follows `attempt` (it launched that Load, or took over following it):
@@ -1358,8 +1348,6 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAd
     let at = pa.backend_tick();
     let _ = pa.backend_poll_at(ps, at);
     }
-    #[cfg(not(feature = "play-feed"))]
-    let _ = reason;
 }
 
 
@@ -1378,18 +1366,16 @@ pub(super) fn begin_teardown(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
     {
         let mut fx = Vec::new();
         pa.release_step(ps, &super::release::ReleaseEvent::CancelQueued, &mut fx);
-        #[cfg(feature = "play-feed")]
-        let _ = run_release_effects(ps, pa, fx, false);
-        #[cfg(not(feature = "play-feed"))]
-        run_uri_queued_effects(ps, pa, fx);
+        if ps.backends().feed {
+            let _ = run_release_effects(ps, pa, fx, false);
+        } else {
+            run_uri_queued_effects(ps, pa, fx);
+        }
     }
     // A prepared route whose native start failed has no Engine but still owns its exact PMS
     // resource and Session projection. A real stop must retire that ownership exactly once;
     // returning here used to leak the candidate forever while the reducer remained Failed.
-    #[cfg(feature = "play-feed")]
     let feed_live = pa.is_live();
-    #[cfg(not(feature = "play-feed"))]
-    let feed_live = false;
     if !feed_live {
         let uri_attempt = (ps.attempt_view().backend() == Some(super::attempt_view::Backend::Uri))
             .then(|| ps.attempt_view().attempt()).flatten();
@@ -1415,8 +1401,7 @@ pub(super) fn begin_teardown(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
                 let rk = crate::route::cur_rk(ps);
                 final_report = (!rk.is_empty() && dur > 0)
                     .then(|| (rk, pos / 1_000_000, dur / 1_000_000));
-            } else if cfg!(feature = "play-feed") && crate::route::engine_failure(ps).is_some() {
-                #[cfg(feature = "play-feed")]
+            } else if ps.backends().feed && crate::route::engine_failure(ps).is_some() {
                 {
                 // The session's last sample of the attempt, as the URI branch and `final_report` read it.
                 let dur = super::duration_ns(ps).unwrap_or(0);
