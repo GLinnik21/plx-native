@@ -388,16 +388,64 @@ fn draw_preview(p: Painter, v: UnderPosters, posters: &[&PmsMovie], foot: Option
     }
 }
 
-/// The Settings root's picture for the Under posters row: the very preview the page draws, in its
-/// own frame (stage 2 of Settings v2 moves that frame into the shared picture slot).
+/// The Settings root's picture for the Under posters row (board `Sv2-2`): two art-only poster
+/// tiles, a movie and a show, each with its details line centred under it, painted INTO the
+/// picture slot. No panel, ring, tick or label: it is display-only and never reads as a control.
+/// (The Under posters PAGE's own preview, in its own frame, stays as it is until stage 2.)
 pub(super) struct RootPicture<'a> {
     pub value: UnderPosters,
     pub posters: &'a [&'a PmsMovie],
 }
 
+/// The board's two picture tiles: 200 x 300 posters, their left edges 240 apart.
+const PICTURE_TILES: usize = 2;
+const PICTURE_TILE_W: f32 = 200.0;
+const PICTURE_TILE_H: f32 = 300.0;
+const PICTURE_TILE_STEP: f32 = 240.0;
+/// The details line's CSS box under a tile: 24 px on a 24 px line, its top 312 px under the tile's.
+const PICTURE_LINE_TOP: f32 = 312.0;
+const PICTURE_LINE_H: f32 = 24.0;
+/// The room a details line may take: a tile's width and the air up to its neighbour's.
+const PICTURE_LINE_W: f32 = PICTURE_TILE_STEP - 16.0;
+
+/// The facts tile `i` of the picture is worded from: its poster's own, else the sample a movie (the
+/// first tile) or a show (the second) wears.
+fn picture_facts(i: usize, poster: Option<&PmsMovie>) -> CaptionFacts {
+    poster.map_or_else(
+        || match i {
+            0 => CaptionFacts { year: Some(2024), duration_min: Some(112), is_movie: true, ..sample_facts() },
+            _ => CaptionFacts { year: Some(SAMPLE_YEAR), duration_min: None, season_count: Some(6), is_show: true, ..sample_facts() },
+        },
+        tile_facts::caption_facts,
+    )
+}
+
+/// The details line under picture tile `i` (what the stored value words, the title line aside).
+fn picture_line(v: UnderPosters, i: usize, poster: Option<&PmsMovie>) -> Option<String> {
+    let [_title, details] = lines_of(v, &picture_facts(i, poster));
+    details
+}
+
 impl plx_ui::follow_copy::PictureSlot for RootPicture<'_> {
-    fn draw(&self, p: Painter, _slot: Rect, measure: &dyn plx_machine::machine::Measure) {
-        draw_preview(p, self.value, self.posters, None, measure);
+    fn draw(&self, p: Painter, slot: Rect, measure: &dyn plx_machine::machine::Measure) {
+        use plx_ui::label::{HAlign, Label, VAlign};
+        let size = theme::size::CAPTION;
+        // The art of a tile is the shared one, with no watch state (the fan's own rule).
+        let fan = plx_ui::follow_copy::PosterFan {
+            arts: (0..PICTURE_TILES).map(|i| Art::Poster(self.posters.get(i).map(|m| tile_facts::of(m)))).collect(),
+        };
+        let line_cap_top = plx_gfx::text::css_cap_drop(size, PICTURE_LINE_H, measure.cap_h(size));
+        for i in 0..PICTURE_TILES {
+            let x = slot.x + PICTURE_TILE_STEP * i as f32;
+            plx_ui::widgets::card(p, Rect::new(x, slot.y, PICTURE_TILE_W, PICTURE_TILE_H), fan.art(i), theme::CARD_RING_RAD, false, 1.0, 0.0);
+            let Some(line) = picture_line(self.value, i, self.posters.get(i).copied()) else { continue };
+            let line = plx_gfx::text::elide_by(&line, PICTURE_LINE_W, false, |t| measure.width_str(t, size, false));
+            let Ok(line) = std::ffi::CString::new(line) else { continue };
+            Label::new(line.as_ptr(), size, theme::CAPTION_DETAIL_INK).h(HAlign::Center).v(VAlign::CapTop).draw(
+                p,
+                Rect::new(x + (PICTURE_TILE_W - PICTURE_LINE_W) * 0.5, slot.y + PICTURE_LINE_TOP + line_cap_top, PICTURE_LINE_W, PICTURE_LINE_H),
+            );
+        }
     }
 }
 

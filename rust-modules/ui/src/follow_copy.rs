@@ -13,6 +13,14 @@
 //!   ([`crate::popover::K_APPEAR`]), the motion every entry on the page runs on; the springs report
 //!   their own motion to the idle gate, so the fade needs no invalidation of its own. It is
 //!   decoration: it is never part of a page's canonical state.
+//!
+//!   **Why it is not [`crate::xfade::Xfade`]** (the shared content cross-fade, `ui/CLAUDE.md` rule
+//!   4). `Xfade` is a fade OUT, a data swap at the floor, a fade IN: a millisecond ramp whose hard
+//!   deadline gates a state commit, for content that is WIPED under the screen. A followed sentence
+//!   commits nothing and wipes nothing: both strings are in hand, so the old one leaves while the
+//!   new one arrives, SIMULTANEOUSLY, on a spring (which also lets a key held down retarget the fade
+//!   mid-flight without a restart, [`FollowCopy::follow`]). Putting that behind `Xfade` would mean
+//!   a dip to nothing between two sentences the board shows overlapping.
 //! * [`PictureSlot`] - the display-only picture under the sentence ([`crate::route_screen::
 //!   RouteLayout::picture_slot`]), which contributes no focus or hit stop.
 
@@ -179,6 +187,44 @@ mod tests {
         assert_eq!(c.arrival(), 1.0, "the shared appear spring arrives");
         assert!(c.left.is_empty(), "nothing left to fade out once arrived");
         assert!(!c.follow("row"), "the sentence already shown is not a change");
+    }
+
+    /// One frame of a fade, judged the way the present gate judges it: `frame_begin` forgets the
+    /// last frame's motion, `update` steps the springs, and the springs report their own motion.
+    fn step_frame(c: &mut FollowCopy) -> bool {
+        plx_machine::idle::frame_begin(1.0 / 60.0);
+        c.update(1.0 / 60.0);
+        plx_machine::idle::page_moving()
+    }
+
+    /// A fade that is running reports motion every frame (the gate is spring-instrumented, so it
+    /// stays on springs), and a settled one goes quiet (`ui/CLAUDE.md` rule 4).
+    #[test]
+    fn a_running_fade_reports_animating_each_frame() {
+        let _g = plx_base::testlock::serial();
+        let mut c = FollowCopy::new("page");
+        assert!(c.follow("row"));
+        for f in 0..4 {
+            assert!(step_frame(&mut c), "frame {f} of a running fade must report motion");
+            assert!(c.arrival() < 1.0, "frame {f} is still mid-fade");
+        }
+    }
+
+    #[test]
+    fn a_settled_copy_goes_quiet() {
+        let _g = plx_base::testlock::serial();
+        let mut c = FollowCopy::new("page");
+        c.follow("row");
+        for _ in 0..600 {
+            step_frame(&mut c);
+        }
+        for f in 0..8 {
+            assert!(!step_frame(&mut c), "frame {f} after arriving must not hold the panel awake");
+        }
+        let mut fresh = FollowCopy::new("page");
+        for f in 0..8 {
+            assert!(!step_frame(&mut fresh), "a page that never followed anything is at rest too (frame {f})");
+        }
     }
 
     #[test]

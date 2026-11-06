@@ -898,8 +898,10 @@ fn the_root_diagnostics_row_reads_the_status_the_runner_answers() {
     root.step(&ScreenEvent::App(super::super::registry::AppMsg::PlaybackTrace(Status::Recording)), &cx(None), &mut fx);
     assert_eq!(root.state.trace, Status::Recording);
     assert_eq!(diagnostics::root_value(Status::Recording), plx_platform::i18n::msg::widgets_toggle_on());
-    assert_eq!(diagnostics::root_value(Status::Saved), plx_platform::i18n::msg::settings_trace_off(),
-        "a saved log is not a recording");
+    for not_recording in [Status::Off, Status::Saved, Status::Saving, Status::Exported, Status::Unavailable, Status::Failed] {
+        assert_eq!(diagnostics::root_value(not_recording), plx_platform::i18n::msg::widgets_toggle_off(),
+            "{not_recording:?} is not a recording, and Off is the toggle's own word");
+    }
     // opening it is a Nav row's own job, and no root row dispatches a trace command any more
     let index = root.form.index_of_key(RowKey(root_key(RootId::Diagnostics))).expect("the Diagnostics row");
     assert!(matches!(root.form.activate(index), Some(Activation::Push(SettingsPage::Diagnostics))));

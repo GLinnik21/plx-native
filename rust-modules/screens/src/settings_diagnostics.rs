@@ -52,13 +52,13 @@ pub(super) fn diagnostics_form(status: Status) -> Form<DiagId, DiagAction, Setti
     Form::new().section(record).section(delete)
 }
 
-/// The root's Diagnostics value: the recording switch, as Off or On (a saved or exported log is
-/// not a recording).
+/// The root's Diagnostics value: the recording switch, as Off or On, both from the toggle's own
+/// string family (a saved, saving or exported log is not a recording).
 pub(super) fn root_value(status: Status) -> &'static str {
-    if matches!(status, Status::Recording | Status::Saving) {
+    if status == Status::Recording {
         plx_platform::i18n::msg::widgets_toggle_on()
     } else {
-        plx_platform::i18n::msg::settings_trace_off()
+        plx_platform::i18n::msg::widgets_toggle_off()
     }
 }
 

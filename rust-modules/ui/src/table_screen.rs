@@ -75,6 +75,12 @@ pub struct Header<'a> {
     /// `copy` as before.
     pub follow: Option<&'a super::follow_copy::FollowCopy>,
     /// Display-only art in the picture slot ([`RouteLayout::picture_slot`]); no focus or hit stop.
+    ///
+    /// Why this exists beside [`preview`](Self::preview) / [`preview_cycle`](Self::preview_cycle):
+    /// those are the OLD landscape slot after the narrative (the HUD pages still draw into it, with
+    /// its own frame and size), and this is the v2 slot every Settings page moves to at its stage,
+    /// under the followed sentence at [`RouteLayout::picture_slot`]. Both stay until the last page
+    /// has moved.
     pub picture: Option<&'a dyn super::follow_copy::PictureSlot>,
 }
 

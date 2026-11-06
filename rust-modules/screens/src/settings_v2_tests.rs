@@ -93,6 +93,18 @@ fn the_sentence_follows_the_focused_row_and_falls_back_to_the_pages() {
     assert!(libraries.starts_with(msg::settings_libraries_detail()) && libraries.ends_with(msg::settings_libraries_more()));
 }
 
+/// A page that opens shows its first row's sentence at once: the page's own sentence is never
+/// faded into it.
+#[test]
+fn the_root_opens_on_its_first_rows_sentence_with_nothing_fading() {
+    let _serial = plx_base::testlock::serial();
+    let root = RootPage::new(EntryId(0), cx(None).views.directory);
+    let first = root.form.selected_id().cloned();
+    assert!(first.is_some(), "the root seats a row on mount");
+    assert_eq!(root.follow.text(), sentence_for(first.as_ref()).as_ref());
+    assert_eq!(root.follow.arrival(), 1.0, "nothing is fading right after mount");
+}
+
 #[test]
 fn moving_focus_moves_the_followed_sentence() {
     let _serial = plx_base::testlock::serial();

@@ -1326,7 +1326,8 @@ impl RootPage {
             pending_plaintext: None,
             alert: PlaintextAlert::new(ALERT_GROUP, super::registry::ALERT, super::registry::ALERT + 1),
             grant_seen: plx_plex::plex::grant::revision(),
-            follow: plx_ui::follow_copy::FollowCopy::new(plx_platform::i18n::msg::settings_root_copy()),
+            // placeholder: the page opens on the sentence of the row it seats, set below
+            follow: plx_ui::follow_copy::FollowCopy::new(""),
             state: RootState {
                 sel: RowKey(0),
                 auto_sign_in: false,
@@ -1338,6 +1339,10 @@ impl RootPage {
             },
         };
         s.rebuild(directory);
+        // A page opens on its first seated row's sentence at once, with nothing fading: the
+        // `follow` the first rebuild asked for would otherwise cross-fade the page's sentence
+        // into row 0's on every open.
+        s.follow = plx_ui::follow_copy::FollowCopy::new(&sentence_for(s.form.selected_id()));
         s
     }
 

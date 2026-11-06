@@ -767,3 +767,35 @@ fn the_frames_captions_fit_in_every_language() {
     }
     assert!(out.is_empty(), "{out:#?}");
 }
+
+/// **The root's Under posters picture paints into the slot it is handed** (board `Sv2-2`): a movie
+/// and a show, 240 px apart from the slot's left edge, each with its details line centred under it
+/// in the slot's own box. Handed a different slot, the same picture moves with it, so it cannot be
+/// painting in the page's own preview frame.
+#[test]
+fn the_roots_picture_paints_into_the_slot_it_is_handed() {
+    use plx_ui::follow_copy::PictureSlot;
+    let _guard = plx_base::testlock::serial();
+    let _live = Live::set(UnderPosters::DEFAULT);
+    let picture = RootPicture { value: UnderPosters::DEFAULT, posters: &[] };
+    let at = |slot: Rect| {
+        plx_ui::draw_census::capture_text(|| {
+            plx_gfx::gfx::without_frame_clear(|| picture.draw(plx_ui::Painter::recording(), slot, &ShippedMeasure));
+        })
+    };
+    let slot = RouteLayout::settings_page().picture_slot();
+    let runs = at(slot);
+    let words: Vec<&str> = runs.iter().map(|(s, _)| s.as_str()).collect();
+    assert_eq!(words, ["2024 · 1h 52m", "2019 · 6 seasons"], "the movie's and the show's details lines, and no label or title");
+    for (i, (word, rect)) in runs.iter().enumerate() {
+        let tile_cx = slot.x + PICTURE_TILE_STEP * i as f32 + PICTURE_TILE_W * 0.5;
+        // a recorded run's rect is its ANCHOR (the centre, for a centred run) and measured width
+        assert!((rect.x - tile_cx).abs() <= 1.0, "{word:?} is centred under its tile: anchor {} vs {tile_cx}", rect.x);
+        assert!(rect.y >= slot.y + PICTURE_TILE_H && rect.y <= slot.y + PICTURE_LINE_TOP + PICTURE_LINE_H,
+            "{word:?} stands in the line box under the tile: {rect:?}");
+    }
+    let moved = Rect::new(slot.x + 123.0, slot.y + 45.0, slot.w, slot.h);
+    for ((_, a), (_, b)) in runs.iter().zip(at(moved).iter()) {
+        assert!((b.x - a.x - 123.0).abs() < 0.01 && (b.y - a.y - 45.0).abs() < 0.01, "the picture follows its slot: {a:?} -> {b:?}");
+    }
+}
