@@ -31,12 +31,18 @@ use plx_telemetry::telemetry::classes::DemuxExitClass;
 #[cfg(feature = "play-feed")]
 use std::os::raw::c_char;
 
+/// The host sink these fixtures run over: the Feed backend's stand-in with no picture to draw.
+/// (The simulator's own, with its decoded picture, is the application's: `app::adapters::hostsim`.)
+#[cfg(all(feature = "hostsim", feature = "play-feed"))]
+static HOST_SINK: super::ffi_host::HostSink =
+    super::ffi_host::HostSink::new(super::ffi_host::Hooks::over(&super::ffi_host::NoFrames));
+
 /// The seam itself, unfenced: the host sink in a hostsim run, the installed port's otherwise.
 #[cfg(feature = "play-feed")]
 pub(crate) fn raw_sink() -> &'static dyn VideoSink {
     #[cfg(feature = "hostsim")]
     {
-        &super::HOST_SINK
+        &HOST_SINK
     }
     #[cfg(not(feature = "hostsim"))]
     {

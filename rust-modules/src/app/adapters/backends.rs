@@ -193,7 +193,7 @@ const TEST_HOOKS: NativeHooks = native_hooks_over!(test_raw_sink, test_clock_us)
 fn test_raw_sink() -> &'static dyn VideoSink {
     #[cfg(feature = "hostsim")]
     {
-        &plx_media::player::HOST_SINK
+        &super::hostsim::HOST_SINK
     }
     #[cfg(not(feature = "hostsim"))]
     {

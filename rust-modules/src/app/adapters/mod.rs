@@ -4,6 +4,8 @@
 
 pub(crate) mod backends;
 pub(crate) mod consent;
+#[cfg(all(feature = "hostsim", feature = "play-feed"))]
+pub(crate) mod hostsim;
 pub(crate) mod huds;
 pub(crate) mod poster;
 pub(crate) mod session;

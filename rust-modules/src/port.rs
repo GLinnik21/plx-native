@@ -9,7 +9,7 @@ use std::os::raw::{c_char, c_int};
 #[cfg(all(not(feature = "hostsim"), not(test), feature = "play-feed"))]
 const SINK: &dyn plx_platform::tv::sink::VideoSink = &plx_platform::webos::video_sink::StarfishSink;
 #[cfg(all(feature = "hostsim", feature = "play-feed"))]
-const SINK: &dyn plx_platform::tv::sink::VideoSink = &plx_media::player::HOST_SINK;
+const SINK: &dyn plx_platform::tv::sink::VideoSink = &crate::app::adapters::hostsim::HOST_SINK;
 #[cfg(any(
     all(feature = "hostsim", not(feature = "play-feed")),
     all(not(feature = "hostsim"), any(test, not(feature = "play-feed"))),
@@ -86,7 +86,7 @@ mod tests {
     /// report no plane to every backend and nothing in a simulator run would say so.
     #[test]
     fn the_simulator_port_display_is_the_host_sink_the_acb_init_reads() {
-        let host = std::ptr::from_ref(&plx_media::player::HOST_SINK).cast::<()>();
+        let host = std::ptr::from_ref(&crate::app::adapters::hostsim::HOST_SINK).cast::<()>();
         assert_eq!(std::ptr::from_ref(PORT.display_sink).cast::<()>(), host,
             "display_installed() is the host sink");
         assert_eq!(std::ptr::from_ref(PORT.sink).cast::<()>(), host, "so is the video sink");

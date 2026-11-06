@@ -7,7 +7,7 @@
 fn display() -> &'static dyn plx_platform::tv::sink::DisplaySink {
     #[cfg(feature = "hostsim")]
     {
-        &plx_media::player::HOST_SINK
+        &crate::app::adapters::hostsim::HOST_SINK
     }
     #[cfg(not(feature = "hostsim"))]
     {

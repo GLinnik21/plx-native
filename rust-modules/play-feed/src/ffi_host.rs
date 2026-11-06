@@ -61,19 +61,21 @@
 //! # How it is reached
 //!
 //! The verbs below are private; [`HostSink`] is the simulator's own `tv::sink::VideoSink`, one
-//! method per verb, installed by `port.rs` for the `hostsim` build and returned directly by
-//! the media tests' composition (`player::test_physical`) in the hostsim tests. The `*_for_test` hooks stay here, next to the statics
+//! method per verb, installed by `port.rs` for the `hostsim` build (the application builds it in
+//! `app::adapters::hostsim`, with the simulator's picture) and returned directly by the media
+//! tests' composition (`player::test_physical`) and the application's (`app::adapters::backends`)
+//! in the hostsim tests. The `*_for_test` hooks stay here, next to the statics
 //! they touch, and the tests reach them as `player::ffi_host::<hook>` (media re-exports this module
 //! under that name).
 //!
 //! # What it is handed, and why
 //!
 //! This is the Feed backend's stand-in, so it lives in `plx_play_feed`, which may name only the
-//! layers below it. Three things it needs are above it, and each arrives as a [`Hooks`] value the
-//! sink is built with (the way the firmware is handed its callback and context at `Load`), never as
-//! a name this file imports: the pipeline-event entry (`sf_on_event`, this crate's `sf_event`), the
-//! inverse of that entry's position rebase, and a [`FrameSink`] for the simulator's decoded
-//! picture (`plxnative-simvideo`; it draws, so `plx_gfx` is its home and not this crate's).
+//! layers below it. What it is built with arrives as a [`Hooks`] value (the way the firmware is
+//! handed its callback and context at `Load`): the pipeline-event entry (`sf_on_event`, this
+//! crate's `sf_event`) and the inverse of that entry's position rebase, which [`Hooks::over`]
+//! names, and a [`FrameSink`] for the simulator's decoded picture (`plxnative-simvideo`; it draws,
+//! so `plx_gfx` is its home and not this crate's: the application's `app::adapters::hostsim`).
 //! `Load` adopts the hooks; every later report is gated on the epoch only a successful `Load`
 //! sets, so no event can precede them.
 
@@ -116,6 +118,30 @@ pub struct Hooks {
     pub media_to_fed: fn(i64) -> i64,
     /// The simulator's decoded picture.
     pub frames: &'static dyn FrameSink,
+}
+
+impl Hooks {
+    /// The hooks every host sink is built with: this crate's own pipeline-event entry and rebase
+    /// ([`crate::sf_event::sf_on_event`], [`crate::sf_event::media_to_fed`]) and the picture the
+    /// caller draws. The simulator passes its decoded picture (`app::adapters::hostsim`), a host
+    /// test [`NoFrames`].
+    pub const fn over(frames: &'static dyn FrameSink) -> Self {
+        Self {
+            deliver_event: crate::sf_event::sf_on_event,
+            media_to_fed: crate::sf_event::media_to_fed,
+            frames,
+        }
+    }
+}
+
+/// A [`FrameSink`] that draws nothing: the picture of a host sink no screen shows.
+pub struct NoFrames;
+
+impl FrameSink for NoFrames {
+    fn load(&self, _: &str, _: fn() -> i64) {}
+    fn flush(&self) {}
+    fn feed(&self, _: &[u8], _: i64) {}
+    fn stop(&self) {}
 }
 
 /// The hooks of the one sink this process built, adopted by its first `Load` (or stop request). The

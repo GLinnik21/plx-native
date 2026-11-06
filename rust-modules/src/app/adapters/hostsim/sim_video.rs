@@ -9,11 +9,11 @@
 //! is a screenshot facility, nothing more: every number the clock sink's module doc disowns stays
 //! disowned, and nothing here says anything about LG's decoder.
 //!
-//! **Why a child process, and why only in the simulator.** The host FFmpeg this crate links
+//! **Why a child process, and why only in the simulator.** The host FFmpeg the simulator links
 //! (`ci/build-ffmpeg.sh`) is built from the television's ONE component list, which has no video
 //! decoders — the TV decodes in hardware — and growing that list for a Mac would make the two
 //! builds diverge. A system `ffmpeg` binary (`PLXNATIVE_SIM_FFMPEG`, else `ffmpeg` on `PATH`) keeps
-//! the decode entirely outside this process and this crate's link line. `hostsim`-only: the
+//! the decode entirely outside this process and the simulator's link line. `hostsim`-only: the
 //! television build does not contain this file.
 //!
 //! **What it costs, and the bound.** One 1920x1080 RGBA frame (8 MiB) crosses a pipe per decoded
@@ -28,7 +28,7 @@
 //! cannot break that: a frame cannot be output before every frame that precedes it in display
 //! order has been fed.
 
-use super::ffi_host;
+use plx_play_feed::ffi_host;
 use std::collections::BinaryHeap;
 use std::cmp::Reverse;
 use std::io::{Read, Write};
@@ -88,7 +88,7 @@ impl Drop for Session {
     }
 }
 
-/// The simulator's decoded picture, as the Feed backend's host sink ([`ffi_host`](super::ffi_host))
+/// The simulator's decoded picture, as the Feed backend's host sink ([`ffi_host`])
 /// is handed it: the sink calls these four at its `Load`, flush/seek, feed and unload.
 pub struct SimVideo;
 

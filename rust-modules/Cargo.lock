@@ -825,7 +825,6 @@ dependencies = [
  "libc",
  "plx_base",
  "plx_data",
- "plx_gfx",
  "plx_machine",
  "plx_media",
  "plx_media_codecs",
