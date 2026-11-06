@@ -3917,7 +3917,7 @@ mod lifecycle_regression_tests {
 
     // No boot, renderer or device: the real App/event/frame phases with Bridge's host rig.
     fn app() -> App {
-        plx_media::player::reset_session_for_test();
+        plx_play_feed::ff_test_support::reset_session_for_test(&mut plx_media::player::reset_common_for_test);
         let mut app = App {
             last_input: Default::default(),
             loop_t: Default::default(),
@@ -5745,6 +5745,13 @@ mod lifecycle_regression_tests {
             self.entered.recv_timeout(Duration::from_secs(3)).unwrap();
         }
 
+        /// The pipeline's decoder release as the app loop sees it: the Feed counts one, and the sample
+        /// the pump would take next is ingested now.
+        fn note_decoder_revoked(&mut self) {
+            plx_play_feed::shared::FEED_SHARED.raise_decoder_revoked();
+            plx_media::player::publish_feed_sample_for_test(&mut self.app.player.session, &mut self.app.adapters.player);
+        }
+
         fn accept_start(&mut self) {
             assert!(start_playback(
                 &mut self.app.player.session,
@@ -5837,7 +5844,7 @@ mod lifecycle_regression_tests {
             if let Some(h) = self.worker.take() {
                 plx_base::task::join("lifecycle-fixture", h);
             }
-            plx_media::player::reset_session_for_test();
+            plx_play_feed::ff_test_support::reset_session_for_test(&mut plx_media::player::reset_common_for_test);
             plx_media::route::reset_player_control_for_test(&self.app.player.session);
             plx_plex::plex::reset_servers_for_test();
         }
@@ -6524,7 +6531,7 @@ mod lifecycle_regression_tests {
         ));
         let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
 
-        plx_media::player::note_decoder_revoked_for_test(&mut rig.app.player.session, &mut rig.app.adapters.player);
+        rig.note_decoder_revoked();
         unsafe { playback_tick(&mut rig.app, &mut fr); }
         assert!(!rig.app.adapters.player.is_live(), "the dead pipeline is dropped");
         assert!(rig.app.player.lifecycle.awaiting_load(), "…and the session parked for a restore");
@@ -6582,7 +6589,7 @@ mod lifecycle_regression_tests {
         ));
         let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
 
-        plx_media::player::note_decoder_revoked_for_test(&mut rig.app.player.session, &mut rig.app.adapters.player);
+        rig.note_decoder_revoked();
         unsafe { playback_tick(&mut rig.app, &mut fr); }
         assert!(rig.app.player.lifecycle.awaiting_load(), "{press:?}: the session parked");
 
@@ -6672,7 +6679,7 @@ mod lifecycle_regression_tests {
             );
             assert!(!paused(&rig.app.player.session), "{press:?}: the viewer's resume is published before the Load");
             assert!(
-                !plx_media::player::clock_user_held_for_test(),
+                !plx_play_feed::shared::FEED_SHARED.clock_user_held_for_test(),
                 "{press:?}: the Load's first Play must not be fenced behind the viewer's pause"
             );
             assert!(
@@ -6943,7 +6950,7 @@ mod lifecycle_regression_tests {
         frame(&mut rig.app, 0); // settle the pending Player page mount before opening a surface
         let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
 
-        plx_media::player::note_decoder_revoked_for_test(&mut rig.app.player.session, &mut rig.app.adapters.player);
+        rig.note_decoder_revoked();
         unsafe { playback_tick(&mut rig.app, &mut fr); }
         assert!(rig.app.player.lifecycle.awaiting_load(), "the session is parked for a restore");
 

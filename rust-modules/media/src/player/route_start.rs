@@ -1,7 +1,7 @@
 //! Common native route-start orchestration. The route owns the transaction and exact attempt;
 //! the feed constructor only runs after admission and source preparation.
 
-#[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
+#[cfg(test)]
 use plx_play_feed::shared::FEED_TX;
 use super::adapter::PlayerAdapter;
 #[cfg(feature = "play-feed")]
@@ -767,23 +767,23 @@ fn reload_transcode_start(ps: &mut crate::route::PlaybackSession, pa: &mut super
 /// path, which never wedges. Heavier than a flush (a ~1 s re-preroll) but correct.
 /// Every target `reload_at` was asked for (test probe, #568): proves a refused native Seek reloads
 /// exactly once, at the user's target.
-#[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
+#[cfg(test)]
 pub(super) static RELOAD_AT_LOG: std::sync::Mutex<Vec<i64>> = std::sync::Mutex::new(Vec::new());
 
 /// Whether the paused-seek preroll was open as each `reload_at` / `reload_transcode` was entered,
 /// before its teardown (test probe): the reload keeps it, so what the fresh session's feed gate and
 /// prime see is whatever the dispatcher left open here.
-#[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
+#[cfg(test)]
 pub(super) static RELOAD_PREROLL_LOG: std::sync::Mutex<Vec<bool>> = std::sync::Mutex::new(Vec::new());
 
-#[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
+#[cfg(test)]
 fn note_reload_preroll() {
     RELOAD_PREROLL_LOG.lock().unwrap_or_else(|e| e.into_inner()).push(FEED_TX.seek_preroll_active());
 }
 
 #[cfg(feature = "play-feed")]
 pub fn reload_at(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, target_ns: i64) -> ReloadOutcome {
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     {
         RELOAD_AT_LOG.lock().unwrap_or_else(|e| e.into_inner()).push(target_ns);
         note_reload_preroll();
@@ -828,7 +828,7 @@ pub fn switch_audio_native(ps: &mut crate::route::PlaybackSession, pa: &mut supe
 /// route::retranscode has already set the URL + session + STREAM_VCODEC=h264 before this call.
 #[cfg(feature = "play-feed")]
 pub fn reload_transcode(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, offset_ns: i64) -> ReloadOutcome {
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     note_reload_preroll();
     if crate::route::url(ps).is_empty() {
         // The other abandonment path with the same hole: `request_seek` armed the spinner and

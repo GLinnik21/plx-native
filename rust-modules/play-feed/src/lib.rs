@@ -35,6 +35,21 @@ pub mod ff_test_support {
         crate::native_executor::store_fed_totals(fed_v, fed_a);
         crate::ff::store_pushed_any(pushed_any);
     }
+    /// The Feed's half of a whole-session reset (`FeedStop::reset` with `ResetScope::Stop`): its
+    /// mirrors and the diag counters, with `common` (the caller's own stores) run inside the
+    /// callback/reset barrier.
+    pub fn reset_session_for_test(common: &mut dyn FnMut()) {
+        reset_scoped_for_test(plx_playback_contract::feed::ResetScope::Stop, common);
+    }
+    /// [`reset_session_for_test`] for a reload of the same item (`ResetScope::Reload`).
+    pub fn reset_session_for_reload_for_test(common: &mut dyn FnMut()) {
+        reset_scoped_for_test(plx_playback_contract::feed::ResetScope::Reload, common);
+    }
+    fn reset_scoped_for_test(scope: plx_playback_contract::feed::ResetScope, common: &mut dyn FnMut()) {
+        crate::shared::FEED_SHARED.reset_scoped(scope, common);
+        // The counters the diag sample reads outside the mailboxes: a fresh session's are zero.
+        store_diag_counters(0, 0, false);
+    }
     pub use crate::ff::subs::SubTracks;
     pub use crate::ff::{annexb_start, arm_active_stall_guard, candidate_reserve_deadline,
         classify_curl_open_err, classify_hls_avio_facts, classify_hls_deadline,

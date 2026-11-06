@@ -624,10 +624,10 @@ pub fn hold_load_for_test(on: bool) {
 #[cfg(any(test, feature = "test-support"))]
 static LOAD_STILL_OUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-#[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
+#[cfg(any(test, feature = "test-support"))]
 fn load_still_out() -> bool { LOAD_STILL_OUT.load(std::sync::atomic::Ordering::SeqCst) }
 
-#[cfg(all(feature = "play-feed", not(any(test, feature = "test-support"))))]
+#[cfg(not(any(test, feature = "test-support")))]
 fn load_still_out() -> bool { false }
 
 /// Test-only: [`set_phase_for_test`] plus the `picture_ms` half `view()` also checks, skipping

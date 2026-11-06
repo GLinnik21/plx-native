@@ -2162,7 +2162,7 @@ impl PlayerAdapter {
 
     /// Seat a probe session the way `uriprobe_drive::start` does, for a suite outside this crate that
     /// drives a session it built over a scripted transport (`dev::uriprobe`'s tests).
-    #[cfg(all(feature = "devtriggers", feature = "play-feed", any(test, feature = "test-support")))]
+    #[cfg(all(feature = "devtriggers", any(test, feature = "test-support")))]
     pub fn install_uri_for_test(&mut self, session: Box<dyn super::uriprobe_drive::UriProbeSession>) {
         self.install_uri(session);
     }

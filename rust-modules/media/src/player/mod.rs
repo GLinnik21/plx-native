@@ -84,7 +84,7 @@ pub mod video_geometry;
 
 #[cfg(feature = "play-feed")]
 use plx_base::task::MainThread;
-#[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
+#[cfg(test)]
 use plx_play_feed::shared::FEED_SHARED;
 #[cfg(all(test, feature = "play-feed"))]
 use plx_play_feed::shared::FEED_TX;
@@ -177,35 +177,26 @@ use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 pub static SHARED: Shared = Shared::new();
 pub static TX: Transport = Transport::new();
 
-/// **The one test-support reset of a whole session**: what a real stop does (`FeedStop::reset`
-/// with [`ResetScope::Stop`]), the Feed's mirrors and the common stores together inside the
-/// callback/reset barrier. `SHARED.reset_session` alone resets only the common stores.
-#[cfg(any(test, feature = "test-support"))]
+/// **The one test-support reset of a whole session** (this crate's own tests): what a real stop
+/// does (`FeedStop::reset` with [`ResetScope::Stop`]), the Feed's mirrors and the common stores
+/// together inside the callback/reset barrier. `SHARED.reset_session` alone resets only the common
+/// stores; a suite that composes the Feed itself runs [`reset_common_for_test`] inside
+/// `plx_play_feed::ff_test_support::reset_session_for_test`.
+#[cfg(test)]
 pub fn reset_session_for_test() {
-    reset_scoped_for_test(plx_playback_contract::feed::ResetScope::Stop);
+    plx_play_feed::ff_test_support::reset_session_for_test(&mut reset_common_for_test);
 }
 
 /// [`reset_session_for_test`] for a reload of the same item (`ResetScope::Reload`).
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub fn reset_session_for_reload_for_test() {
-    reset_scoped_for_test(plx_playback_contract::feed::ResetScope::Reload);
+    plx_play_feed::ff_test_support::reset_session_for_reload_for_test(&mut || SHARED.reset_session_for_reload());
 }
 
+/// The common (Feed-free) half of a session reset: what the Feed's reset barrier runs for this crate.
 #[cfg(any(test, feature = "test-support"))]
-fn reset_scoped_for_test(scope: plx_playback_contract::feed::ResetScope) {
-    use plx_playback_contract::feed::ResetScope;
-    let common = &mut || match scope {
-        ResetScope::Stop => SHARED.reset_session(),
-        ResetScope::Reload => SHARED.reset_session_for_reload(),
-    };
-    #[cfg(feature = "play-feed")]
-    {
-        FEED_SHARED.reset_scoped(scope, common);
-        // The counters the diag sample reads outside the mailboxes: a fresh session's are zero.
-        plx_play_feed::ff_test_support::store_diag_counters(0, 0, false);
-    }
-    #[cfg(not(feature = "play-feed"))]
-    common();
+pub fn reset_common_for_test() {
+    SHARED.reset_session();
 }
 
 /// **Is the Stats-for-nerds read-out on screen?** The bit `pump::publish_diag` asks before it
@@ -302,19 +293,12 @@ pub fn take_decoder_revoked(ps: &mut crate::route::PlaybackSession) -> bool {
     true
 }
 
-/// The pipeline's decoder release as the app loop sees it: the feed counts one, and the sample the
-/// pump would take next is ingested now.
-#[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
-pub fn note_decoder_revoked_for_test(ps: &mut crate::route::PlaybackSession, pa: &mut adapter::PlayerAdapter) {
-    FEED_SHARED.raise_decoder_revoked();
+/// Ingest the Feed's sample now, the one the pump would take next: a suite that composes the Feed
+/// raises its edge (`FEED_SHARED.raise_decoder_revoked()`) and calls this to see the session's
+/// readout take it.
+#[cfg(any(test, feature = "test-support"))]
+pub fn publish_feed_sample_for_test(ps: &mut crate::route::PlaybackSession, pa: &mut adapter::PlayerAdapter) {
     pa.publish_feed_attempt_view(ps);
-}
-
-/// Whether the session's native clock is held for the viewer's pause, for a test with no native
-/// session to observe the fenced first Play on.
-#[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
-pub fn clock_user_held_for_test() -> bool {
-    FEED_SHARED.clock_user_held_for_test()
 }
 
 #[cfg(feature = "play-feed")]
@@ -615,12 +599,12 @@ pub fn finish_paused_seek(ps: &mut crate::route::PlaybackSession, pa: &mut adapt
     true
 }
 
-#[cfg(all(feature = "play-feed", any(test, feature = "test-support"), feature = "hostsim"))]
+#[cfg(all(test, feature = "hostsim"))]
 pub fn force_pause_result_for_test(result: Option<c_int>) {
     plx_play_feed::ffi_host::force_pause_result_for_test(result);
 }
 
-#[cfg(all(feature = "play-feed", any(test, feature = "test-support"), feature = "hostsim"))]
+#[cfg(all(test, feature = "hostsim"))]
 pub fn force_play_result_for_test(result: Option<c_int>) {
     plx_play_feed::ffi_host::force_play_result_for_test(result);
 }
@@ -1594,26 +1578,26 @@ pub fn error_reason(ps: &crate::route::PlaybackSession) -> &'static str {
 /// that needs the app in a given state — `app.rs`'s HUD-visibility pair, which pins the bug that
 /// made the `…` disc unreachable while stalled — delivers that event here rather than widening a
 /// module for a test. It writes nothing but the readout it is given.
-#[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
+#[cfg(any(test, feature = "test-support"))]
 pub fn swap_state_for_test(ps: &mut crate::route::PlaybackSession, s: plx_playback_contract::readout::PlaybackState) -> u8 {
     let prev = ps.readout().state() as u8;
     ps.step_readout(readout::ReadoutEvent::StateDerived(s));
     prev
 }
-#[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
+#[cfg(any(test, feature = "test-support"))]
 pub fn restore_state_for_test(ps: &mut crate::route::PlaybackSession, raw: u8) {
     ps.step_readout(readout::ReadoutEvent::StateDerived(plx_playback_contract::readout::PlaybackState::from_u8(raw)));
 }
 /// Test-only: the native audio-track index the Feed's demuxer reads (what `SelectAudio` stores;
 /// -1 feeds the file's own default). Media's own choice is the session readout's
 /// (`PlayerReadout::audio_choice`).
-#[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
+#[cfg(test)]
 pub fn feed_audio_idx_for_test() -> i32 {
     FEED_SHARED.desired_audio_idx.load(Relaxed)
 }
 /// Test-only: put the Feed's playhead clock where a remux run leaves it (`playpos_ns` is
 /// `fed - pts_shift + disp_base`). `pts_shift` is left alone when `None`.
-#[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
+#[cfg(test)]
 pub fn set_clock_for_test(pts_shift: Option<i64>, disp_base: i64, playpos_ns: i64) {
     if let Some(shift) = pts_shift { FEED_SHARED.pts_shift.store(shift, Relaxed); }
     FEED_SHARED.disp_base.store(disp_base, Relaxed);
