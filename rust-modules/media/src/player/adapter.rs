@@ -32,7 +32,6 @@ use super::timeline;
 use super::backend;
 #[cfg(feature = "play-feed")]
 use plx_playback_contract::feed::{FeedTransportAction, OpenRequest};
-#[cfg(feature = "play-feed")]
 use plx_playback_contract::feed::PhysicalSet;
 #[cfg(all(test, feature = "play-feed", feature = "hostsim"))]
 use super::threads;
@@ -933,8 +932,7 @@ impl PlayerAdapter {
             || self.backend_exit_disposition() != ExitDisposition::Clean {
             return Err(driver);
         }
-        self.physical.install_uri(driver);
-        Ok(())
+        self.physical.install_uri(driver)
     }
 
     /// Escrow an exact resolved URL and its source-specific native track map. The route owner

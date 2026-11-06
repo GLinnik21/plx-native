@@ -45,26 +45,6 @@ impl Physical {
 
     #[cfg(all(test, feature = "play-feed"))]
     pub(super) fn feed_backend_mut(&mut self) -> &mut FeedBackend { &mut self.feed }
-
-    /// The installed URI driver, if the composition built one.
-    pub(super) fn uri(&self) -> Option<&(dyn UriDriver<Context = MainThread> + 'static)> {
-        self.uri.as_deref()
-    }
-
-    pub(super) fn uri_mut(&mut self)
-        -> Option<&mut (dyn UriDriver<Context = MainThread> + 'static)> {
-        self.uri.as_deref_mut()
-    }
-
-    /// Seat the URI driver. The caller has already refused a second one.
-    pub(super) fn install_uri(&mut self, driver: Box<dyn UriDriver<Context = MainThread>>) {
-        self.uri = Some(driver);
-    }
-
-    /// Take the URI driver out, to be dropped or leaked by the caller.
-    pub(super) fn take_uri(&mut self) -> Option<Box<dyn UriDriver<Context = MainThread>>> {
-        self.uri.take()
-    }
 }
 
 impl DriverSet for Physical {
@@ -146,6 +126,24 @@ impl PhysicalSet for Physical {
         #[cfg(not(feature = "play-feed"))]
         { None }
     }
+
+    fn uri(&self) -> Option<&(dyn UriDriver<Context = MainThread> + 'static)> {
+        self.uri.as_deref()
+    }
+
+    fn uri_mut(&mut self) -> Option<&mut (dyn UriDriver<Context = MainThread> + 'static)> {
+        self.uri.as_deref_mut()
+    }
+
+    fn install_uri(&mut self, driver: Box<dyn UriDriver<Context = MainThread>>)
+        -> Result<(), Box<dyn UriDriver<Context = MainThread>>> {
+        self.uri = Some(driver);
+        Ok(())
+    }
+
+    fn take_uri(&mut self) -> Option<Box<dyn UriDriver<Context = MainThread>>> {
+        self.uri.take()
+    }
 }
 
 #[cfg(test)]
@@ -184,7 +182,7 @@ mod tests {
     fn an_installed_uri_driver_answers_beside_the_feed() {
         let (driver, handle) = FakeUriDriver::new(URI_CAPS);
         let mut set = Physical::new();
-        set.install_uri(Box::new(driver));
+        assert!(set.install_uri(Box::new(driver)).is_ok());
         let expected = if cfg!(feature = "play-feed") { BackendSet::BOTH } else { BackendSet::URI };
         assert_eq!(BackendSet::from_capabilities(&set), expected);
         handle.queue([DriverEvent::Release { attempt: attempt(), status: ReleaseStatus::Released }]);

@@ -53,7 +53,7 @@ use crate::demux::DemuxSession;
 use crate::readout::AttemptFacts;
 use crate::{
     AttemptId, BackendEvent, BackendKind, Capabilities, CommandId, DispatchResult, DriverSet,
-    ExitDisposition, Failure, Operation, SourceKey,
+    ExitDisposition, Failure, Operation, SourceKey, UriDriver,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -834,9 +834,27 @@ pub trait FeedControl: FeedSeek + FeedLoad + FeedOpen + FeedStop {
 
 /// The physical drivers one composition supplies, behind one object. It is the runner's
 /// [`DriverSet`] on the main thread, and `feed` is the buffer-feed half for the pump's direct
-/// verbs; a set without a feed answers `None`.
+/// verbs; a set without a feed answers `None`. The other half is the URI driver's seat: the
+/// composition installs one driver after the set is built, and the adapter reads, drives and
+/// takes it back out through the four seat methods. A set with no URI seat (the defaults) holds
+/// none, answers `None` and hands an offered driver back.
 pub trait PhysicalSet: DriverSet<Context = MainThread> {
     fn feed(&mut self) -> Option<&mut dyn FeedControl>;
+
+    /// The installed URI driver, if the composition built one.
+    fn uri(&self) -> Option<&(dyn UriDriver<Context = MainThread> + 'static)> { None }
+
+    fn uri_mut(&mut self) -> Option<&mut (dyn UriDriver<Context = MainThread> + 'static)> { None }
+
+    /// Seat the URI driver. The caller has already refused a second one; a set with no URI seat
+    /// hands the driver back untouched.
+    fn install_uri(&mut self, driver: Box<dyn UriDriver<Context = MainThread>>)
+        -> Result<(), Box<dyn UriDriver<Context = MainThread>>> {
+        Err(driver)
+    }
+
+    /// Take the URI driver out, to be dropped or leaked by the caller.
+    fn take_uri(&mut self) -> Option<Box<dyn UriDriver<Context = MainThread>>> { None }
 }
 
 /// The set that installs no physical driver: every backend is absent, every dispatch is refused
@@ -924,5 +942,19 @@ mod tests {
             set.dispatch(BackendKind::Feed, &mt, AttemptId::new(1, 1), CommandId(1),
                 Operation::Pause),
             DispatchResult::Refused(Failure::Unavailable)));
+    }
+
+    /// A set with no URI seat holds no driver and gives an offered one straight back, so the
+    /// adapter's refusal of an install reaches the composition instead of dropping the driver.
+    #[test]
+    fn a_set_without_a_uri_seat_hands_an_offered_driver_back() {
+        let caps = Capabilities { progressive_uri: true, hls_uri: false, packet_feed: false,
+            pause: true, seek: true, audio_track: false, subtitle_track: false, audio_off: false,
+            subtitle_off: false };
+        let (driver, _handle) = crate::test_support::FakeUriDriver::new(caps);
+        let mut set: Box<dyn PhysicalSet<Context = MainThread>> = Box::new(NoPhysical);
+        assert!(set.uri().is_none() && set.uri_mut().is_none() && set.take_uri().is_none());
+        assert!(set.install_uri(Box::new(driver)).is_err(), "nowhere to seat it");
+        assert!(set.uri().is_none());
     }
 }
