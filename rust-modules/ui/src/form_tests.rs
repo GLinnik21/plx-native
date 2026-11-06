@@ -337,10 +337,10 @@ fn choice_rows_derive_checked_from_the_current_value() {
     assert_eq!(t.binding_at(1).map(|b| b.kind.clone()), Some(RowKind::Choice));
 }
 
-/// **A disabled item is dim, still focusable, and never activates** (the `activate` is what OK and
-/// RIGHT both go through).
+/// **A disabled item wears the shared DISABLED state, is still focusable, and never activates** (the
+/// `activate` is what OK, RIGHT and a click all go through).
 #[test]
-fn a_disabled_item_is_dim_focusable_and_inert() {
+fn a_disabled_item_is_disabled_focusable_and_inert() {
     let mut t = table(F::new().section(
         S::new("")
             .item(Id::A, RowKind::Button, Act::A, Row::new("Alpha"))
@@ -350,8 +350,8 @@ fn a_disabled_item_is_dim_focusable_and_inert() {
             .item(Id::C, RowKind::Button, Act::C, Row::new("Gamma"))
             .disabled(false),
     ));
-    assert!(t.table.sections[0].rows[0].dim && t.table.sections[0].rows[1].dim);
-    assert!(!t.table.sections[0].rows[2].dim);
+    assert!(t.table.sections[0].rows[0].disabled && t.table.sections[0].rows[1].disabled);
+    assert!(!t.table.sections[0].rows[2].disabled);
     assert_eq!(t.table.next_selectable(0, 1), Some(1), "focus can land on a disabled row");
     t.table.sel = 1;
     assert_eq!(t.selected_id(), Some(&Id::B));
@@ -372,7 +372,7 @@ fn disabled_after_a_skipped_item_does_not_reach_the_previous_row() {
             .item_keyed_if(false, Id::C, RowKey(9), RowKind::Button, Act::C, Row::new("Gamma"))
             .disabled(true),
     ));
-    assert!(!t.table.sections[0].rows[0].dim, "Alpha is not the skipped row");
+    assert!(!t.table.sections[0].rows[0].disabled, "Alpha is not the skipped row");
     assert_eq!(t.activate(0), Some(Activation::Action(Act::A)));
     // and a later real item is still disableable
     let t = table(F::new().section(
@@ -381,7 +381,33 @@ fn disabled_after_a_skipped_item_does_not_reach_the_previous_row() {
             .item(Id::B, RowKind::Button, Act::B, Row::new("Beta"))
             .disabled(true),
     ));
-    assert!(t.table.sections[0].rows[0].dim);
+    assert!(t.table.sections[0].rows[0].disabled);
+}
+
+/// **One mechanism**: the look and the inertness are set together by `FormSection::disabled`, so a
+/// disabled row never emits an activation (a Button's action, a Choice's pick, a Nav's push) while the
+/// pill can still land on it, and a row that never opted in is exactly what it was.
+#[test]
+fn a_disabled_row_never_activates_and_an_undisabled_row_is_unchanged() {
+    let mut t = table(F::new().section(
+        S::new("")
+            .item(Id::A, RowKind::Button, Act::A, Row::new("Button"))
+            .disabled(true)
+            .item(Id::B, RowKind::Choice, Act::B, Row::new("Choice"))
+            .disabled(true)
+            .item(Id::C, nav(), Act::C, Row::new("Nav"))
+            .disabled(true)
+            .item(Id::D, RowKind::Button, Act::D, Row::new("Live")),
+    ));
+    for i in 0..3 {
+        assert!(t.table.sections[0].rows[i].disabled, "row {i} wears the state");
+        assert_eq!(t.activate(i), None, "row {i} emits no activation");
+        t.table.sel = i as i32;
+        assert_eq!(t.selected_id(), Some(&[Id::A, Id::B, Id::C][i]), "but focus can land on row {i}");
+    }
+    let live = &t.table.sections[0].rows[3];
+    assert!(!live.disabled && !live.dim, "a row that never opted in carries neither state");
+    assert_eq!(t.activate(3), Some(Activation::Action(Act::D)));
 }
 
 fn tall_page(ids: &[Id]) -> F {

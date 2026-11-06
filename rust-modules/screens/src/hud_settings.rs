@@ -27,12 +27,12 @@
 //! and no string is added.
 //!
 //! **What a row says** (Settings v2). A row is its label and, when it cannot be used, the reason as its value
-//! ([`Row::unusable`]: the ghost focus pill, `docs/agent-reference.md`): the package's `name` (the author's text: a
+//! ([`Row::disabled`]: the ghost focus pill, `docs/agent-reference.md`): the package's `name` (the author's text: a
 //! server-style label, never measured by the fit report; the app's own HUD is named *Built-in*, which is also its
 //! tier, so its row says no tier under it), *Unreviewed* under it for a sideload (a status, so it keeps its sub-line),
 //! and, for a package that cannot run, why as the value: a format the app does not read, an app range it is outside
 //! of, a withdrawal, or "Doesn't fit in {language}" (a compile the television refused in the current language, where
-//! classic draws and the selection is kept). "Installed until restart", when only the volatile directory holds a
+//! classic draws and the selection is kept; the row is DISABLED, so OK on it does nothing). "Installed until restart", when only the volatile directory holds a
 //! usable package, joins the sub-line. Everything else a row used to say under its name is the **sentence that follows
 //! focus** in the left column ([`FollowCopy`]; [`HudPage::sentence`] is a pure function of the focused row and the
 //! listing): the page's own while a row has none, a refusal or fetch notice outranking every row's.
@@ -297,11 +297,11 @@ fn why_sentence(why: Why, list: &HudList, sha: Option<Sha>) -> String {
     }
 }
 
-/// `row` as the row of a HUD that has `why` (or none): the reason as its value, the ghost state on. Whether OK does
-/// anything is the form's (`FormSection::unusable` also disables).
+/// `row` as the row of a HUD that has `why` (or none): the reason as its value. The ghost state, and OK doing nothing,
+/// are the section's `.disabled(why.is_some())`: one mechanism ([`plx_ui::form::FormSection::disabled`]).
 fn with_why(row: Row, why: Option<Why>, list: &HudList) -> Row {
     match why {
-        Some(why) => row.value(why_value(why, list)).unusable(true),
+        Some(why) => row.value(why_value(why, list)),
         None => row,
     }
 }
@@ -343,7 +343,7 @@ fn hud_form(list: &HudList, draft: Option<&TextBuffer>) -> (Form<HudId, HudActio
             row = row.server_label();
         }
         packs = packs.item_keyed(HudId::Pack(entry.id.clone()), RowKey(i as u32), RowKind::Choice, HudAction::Select(entry.id.clone()), row)
-            .unusable(entry.loadable.is_err());
+            .disabled(why.is_some());
         if let Some(why) = why {
             says.push((HudId::Pack(entry.id.clone()), why_sentence(why, list, entry.sha)));
         }
@@ -379,14 +379,14 @@ fn hud_form(list: &HudList, draft: Option<&TextBuffer>) -> (Form<HudId, HudActio
         match file.status {
             Ok(()) => row = row.detail(join(&[msg::settings_hud_install().to_owned(), msg::settings_hud_unreviewed().to_owned()])),
             Err(why) => {
-                row = row.value(refusal_text(why)).unusable(true);
+                row = row.value(refusal_text(why));
                 says.push((id.clone(), match why {
                     Refusal::Unloadable(why) => why_sentence(Why::Format(why), list, file.sha),
                     _ => msg::settings_hud_file_detail().to_owned(),
                 }));
             }
         }
-        folder = folder.item_keyed(id, RowKey(DROP_KEY + i as u32), RowKind::Button, action, row).unusable(file.status.is_err());
+        folder = folder.item_keyed(id, RowKey(DROP_KEY + i as u32), RowKind::Button, action, row).disabled(file.status.is_err());
     }
     let gallery = FormSection::new("").item_keyed(HudId::Browse, RowKey(0x4000), RowKind::Nav(SettingsPage::HudGallery), HudAction::Inert,
         Row::new(msg::settings_hud_browse()));
@@ -518,7 +518,7 @@ impl HudPage {
                     let why = why_of(entry, &self.list);
                     rows = rows.item_keyed(HudId::Use, RowKey(1), RowKind::Button, HudAction::Use(package.id.clone()),
                         with_why(Row::new(msg::settings_hud_use()).checked(entry.selected), why, &self.list))
-                        .unusable(entry.loadable.is_err());
+                        .disabled(why.is_some());
                     says.push((HudId::Use, why.map_or_else(|| msg::settings_hud_use_detail().to_owned(), |why| why_sentence(why, &self.list, Some(sha)))));
                 } else {
                     let newer = installed.and_then(|e| e.meta.as_ref()).is_none_or(|m|
@@ -534,7 +534,7 @@ impl HudPage {
                     let label = if self.list.fetching { msg::settings_hud_fetching() }
                         else if updating { msg::settings_hud_update() } else { msg::settings_hud_install() };
                     let row = with_why(Row::new(label), why, &self.list);
-                    rows = rows.item_keyed(HudId::InstallRegistry(sha), RowKey(1), RowKind::Button, HudAction::FetchRegistry(sha), row).unusable(!can);
+                    rows = rows.item_keyed(HudId::InstallRegistry(sha), RowKey(1), RowKind::Button, HudAction::FetchRegistry(sha), row).disabled(!can);
                     says.push((HudId::InstallRegistry(sha), match why {
                         Some(why) => why_sentence(why, &self.list, Some(sha)),
                         None if updating => msg::settings_hud_update_detail().to_owned(),

@@ -484,6 +484,15 @@ presentation in a design pass.
    or focus pop — and an accent underline was rejected on sight. A punch-list line like "make focus
    more visible" is satisfied WITHIN the contract (widen the ink step), never with a new primitive.
 
+   **A table row has one DISABLED state** (`Row::disabled`, Settings v2 HUD boards 4.4 / 4.5), beside
+   focused, selected and dim: focus can land on it, the pill under it is the faint GHOST
+   (`theme::OVERLAY_FOCUS_PILL`) and not the solid accent, its label reads at `TEXT_SECONDARY` and its
+   read-out (the reason it cannot be used) at `TEXT_TERTIARY`, and OK does nothing. A `Form` page asks for
+   it with `FormSection::disabled(cond)`, which sets the look AND makes `FormTable::activate` answer
+   `None` (OK, RIGHT and a click all go through it): never hand-set `Row::disabled` and guard the action
+   in the screen, and never add a second "unusable" or "unavailable" flag. `dim` stays what it was: a
+   de-emphasised row that still acts.
+
 6. **An icon tab and a bookmark disc are both a mark, never a label.** The strip's faces are
    `TabFace::{Label, Icon}` (the Watchlist bookmark and Search are `Icon` faces: square, 60 x 60,
    the mark at `TAB_ICON_D`), and a destination is found by its KEY (`TAB_KEY_WATCHLIST` is
