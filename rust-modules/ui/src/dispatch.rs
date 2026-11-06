@@ -1808,6 +1808,7 @@ where
                 let painter = if held { Painter::recording() } else { Painter::root() };
                 let mut f = DrawFrame::with_navigation(&surface_cx, painter, navigation);
                 f.page_alpha = s.motion.appear;
+                f.entry_floor = s.motion.floor();
                 f.underlay = Some(field);
                 if held {
                     // Recorded on the capture frame, drained only on the held frames after it.
@@ -1819,6 +1820,7 @@ where
                     // …and what it already shows (its opener, which the page has left out) live.
                     let mut face = DrawFrame::with_navigation(&surface_cx, Painter::root(), navigation);
                     face.page_alpha = s.motion.appear;
+                    face.entry_floor = s.motion.floor();
                     face.underlay = Some(field);
                     backdrop::draw_span("surf", || inst.screen.draw_held(&mut face));
                 } else {

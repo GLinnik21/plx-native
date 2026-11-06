@@ -82,6 +82,20 @@ pub struct Row {
     /// state, an action glyph is only decoration.
     pub licon: Option<crate::icons::Icon>,
     pub dim: bool, // render dimmer (unavailable / de-emphasised)
+    /// The row is **DISABLED**, a control state of its own beside focused, selected and dim: focus
+    /// can land on it (the viewer reads why, in its [`Row::value`]) but it does nothing. Unfocused it
+    /// reads exactly as a [`Row::dim`] row; FOCUSED it keeps that softness instead of taking the
+    /// pressable look: the pill under it is a GHOST (the faint [`theme::OVERLAY_FOCUS_PILL`], not the
+    /// solid [`crate::ACCENT`] fill), its label reads at [`theme::TEXT_SECONDARY`] and its read-out
+    /// at [`theme::TEXT_TERTIARY`]. A plain `dim` row under the solid pill turns near-black like a
+    /// live one, so its label looks pressable (Settings v2 HUD boards 4.4 and 4.5).
+    ///
+    /// This flag is only how the row LOOKS, so a page that draws a bare [`TableView`] sets it with
+    /// [`Row::disabled`]. A page built on a [`crate::form::Form`] never sets it by hand: it declares
+    /// [`crate::form::FormSection::disabled`], the ONE mechanism, which sets this flag and makes
+    /// `FormTable::activate` answer `None` (OK, RIGHT, a click and a hold all go through it), so the
+    /// look and the inertness cannot disagree. Opt-in: a row that never asks draws exactly as before.
+    pub disabled: bool,
     /// A **non-selectable hairline** that groups the rows above it from the rows below (the item
     /// menu's navigation-vs-state divider). It occupies a global row index like any other row, but
     /// [`TableView::move_sel`] steps OVER it, [`TableView::hit_row`] refuses it, and
@@ -116,6 +130,7 @@ impl Row {
             ticon: None,
             licon: None,
             dim: false,
+            disabled: false,
             sep: false,
             destructive: false,
             note_lines: std::cell::Cell::new(1),
@@ -220,6 +235,11 @@ impl Row {
     }
     pub fn dim(mut self, v: bool) -> Self {
         self.dim = v;
+        self
+    }
+    /// Mark the row disabled - see [`Row::disabled`]. Its reason is the [`Row::value`].
+    pub fn disabled(mut self, v: bool) -> Self {
+        self.disabled = v;
         self
     }
     /// Mark the row's action destructive — see [`Row::destructive`].
@@ -1330,6 +1350,27 @@ impl TableView {
         ((self.hl_bot.pos.min(bot) - self.hl_top.pos.max(top)) / (bot - top)).clamp(0.0, 1.0)
     }
 
+    /// How much of the pill is the GHOST right now, 0..1: the share of the pill's travel that sits on
+    /// [`Row::disabled`] rows, by the very coverage rule the ink follows ([`Self::pill_cover`]), so
+    /// the fill and the ink can never disagree about which row the pill is on. The sum is clamped:
+    /// between two disabled rows the pill is ghost throughout (their two coverages add to one).
+    /// 0 for a table with no disabled row, which then pays no walk.
+    fn ghost_cover(&self) -> f32 {
+        if !self.list_focused || !self.sections.iter().any(|s| s.rows.iter().any(|r| r.disabled)) {
+            return 0.0;
+        }
+        let mut sum = 0.0f32;
+        self.walk(|cy, gi, _| {
+            if gi >= 0 {
+                let row = self.rows_at(gi);
+                if row.disabled {
+                    sum += self.pill_cover(cy, row.height_in(self.tall_row_h()));
+                }
+            }
+        });
+        sum.clamp(0.0, 1.0)
+    }
+
     /// How opaque ink whose top is at `ink_top` is drawn under the viewport's top edge `vis_top`:
     /// whole once it is [`TOP_FADE_H`] below it, gone as it reaches it. The top edge DISSOLVES a row
     /// rather than cutting it (rows scroll up under the crumb band); the scissor still clips the
@@ -1483,6 +1524,13 @@ impl TableView {
         )
     }
 
+    /// How much of the focus pill is the ghost right now ([`Row::disabled`]), for a screen's test that its rows wired
+    /// the state.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn ghost_cover_for_test(&self) -> f32 {
+        self.ghost_cover()
+    }
+
     /// The scroll spring's live position, in content coordinates.
     ///
     /// It was `#[cfg(test)]` — the tests are still its main reader, for the reason below — until a
@@ -1563,11 +1611,18 @@ impl TableView {
             // fades with its row's ink under the top edge (focus keeps a row of context above it,
             // so this only shows while the scroll is still catching up)
             let fade = Self::top_edge_alpha(py0 - PILL_INSET + ROW_INK_PAD, vis_top);
+            // solid under a usable row, the GHOST under an disabled one ([`Row::disabled`]), crossed
+            // by the same coverage rule the ink uses so a pill travelling between the two changes
+            // fill as it arrives; exactly `ACCENT` when no row opts in
+            let fill = match self.ghost_cover() {
+                g if g <= 0.0 => crate::ACCENT,
+                g => theme::cross(crate::ACCENT, theme::OVERLAY_FOCUS_PILL, g),
+            };
             self.group_painter(p.alpha(fade), self.section_of_row(self.sel)).rrect(
                 pill,
                 PILL_RAD,
                 PILL_RAD,
-                crate::ACCENT,
+                fill,
             );
         }
 
@@ -1737,8 +1792,13 @@ impl TableView {
                 c if c >= 1.0 => over,
                 c => theme::cross(rest, over, c),
             };
-            let base = on_pill(if row.dim { dimc } else { white }, ink);
-            let row_bg = on_pill(PANEL_BG, crate::ACCENT);
+            // a disabled row keeps its soft ink under the pill (the ghost): secondary, not near-black
+            let base = if row.disabled {
+                on_pill(dimc, theme::TEXT_SECONDARY)
+            } else {
+                on_pill(if row.dim { dimc } else { white }, ink)
+            };
+            let (chip_border, row_bg) = chip_ground(row, cover, ink);
             let cyc = sy + h * 0.5; // row vertical center
 
             // Leading column (SVG): the PICKER's tick, or an ACTION's glyph — one or the other, and
@@ -1789,7 +1849,7 @@ impl TableView {
                     // knocked out of the interior
                     let sty = crate::widgets::BadgeStyle::Outlined {
                         col: base,
-                        border: on_pill(theme::OVERLAY_BORDER, ink),
+                        border: chip_border,
                         bg: row_bg,
                     };
                     crate::widgets::badge(p, start + span.x, cyc, b.text(), None, sty, measure);
@@ -1908,7 +1968,7 @@ impl TableView {
             // while the badges sat on the title's line: right-aligned and row-centred, a chip now
             // occupies the sub-line's band too, and an unbounded sub-line would run under it.
             if !row.detail.is_empty() {
-                let sub = on_pill(dimc, theme::scrim_black(0.6));
+                let sub = if row.disabled { dimc } else { on_pill(dimc, theme::scrim_black(0.6)) };
                 let detail = plx_gfx::text::elide_by(&row.detail, text_w, false, |t| {
                     measure.width_str(t, theme::size::CAPTION, false)
                 });
@@ -1987,13 +2047,33 @@ impl TableView {
     }
 }
 
+/// A row's badge chip ground as `(ring, interior)`, at the pill's `cover` of the row's ink band
+/// (0 off the pill, 1 under it) and the pill's `ink`: over the SOLID pill the ring is that near-black
+/// ink and the interior the accent; a disabled row's pill is the faint ghost, which is no ground to
+/// knock a chip out of, so its chip keeps its rest colours (like its label and sub-line do).
+fn chip_ground(row: &Row, cover: f32, ink: [f32; 4]) -> ([f32; 4], [f32; 4]) {
+    if row.disabled {
+        return (theme::OVERLAY_BORDER, PANEL_BG);
+    }
+    let mix = |rest: [f32; 4], over: [f32; 4]| match cover {
+        c if c <= 0.0 => rest,
+        c if c >= 1.0 => over,
+        c => theme::cross(rest, over, c),
+    };
+    (mix(theme::OVERLAY_BORDER, ink), mix(PANEL_BG, crate::ACCENT))
+}
+
 /// The ink of a row's trailing read-out ([`Row::readout`]): one step behind the row's label, so it
 /// follows the row's [`Row::dim`] as well as its own [`Row::value_dim`]. A dim row's label is
 /// already [`theme::TEXT_TERTIARY`], so its read-out takes [`theme::ROW_VALUE_INK_DIM`] below
 /// that; drawn at the live row's ink, a step that cannot be taken (the Timing section's Earlier at
 /// its floor) still announced itself at the trailing edge. Over the focused pill a dim row's
-/// read-out takes the quiet rung.
+/// read-out takes the quiet rung. A disabled row's reason is the dim row's off the pill and
+/// [`theme::TEXT_TERTIARY`] under the ghost ([`Row::disabled`]).
 fn row_value_ink(row: &Row, focused: bool) -> [f32; 4] {
+    if row.disabled {
+        return if focused { theme::TEXT_TERTIARY } else { theme::ROW_VALUE_INK_DIM };
+    }
     match (focused, row.dim, row.value_dim) {
         (true, false, false) => theme::ROW_VALUE_INK_ON,
         (true, _, _) => theme::ROW_VALUE_INK_ON_DIM,
@@ -2740,6 +2820,113 @@ mod tests {
         }
         assert!(crossed, "the premise: some frame has both rows part-covered");
         assert_eq!((cover_of(&t, 1), cover_of(&t, 0)), (1.0, 0.0), "settled: the new row is inked, the old is released");
+    }
+
+    // ---- the ghost pill of a disabled row (Settings v2 HUD boards 4.4 / 4.5) --------------------
+
+    /// What a frame of `t` drew: the pill's effective alpha (the one tag-2 fill as wide as the pill) and the text
+    /// runs by their words.
+    fn ghost_frame(t: &TableView) -> (Option<f32>, Vec<crate::draw_census::Run>) {
+        let frame = Rect::new(0.0, 0.0, 900.0, 400.0);
+        let mut runs = Vec::new();
+        let inks = crate::draw_census::capture_inks(|| {
+            runs = crate::draw_census::capture_runs(|| t.draw(crate::Painter::recording(), frame, &crate::fixture::FixtureMeasure));
+        });
+        let pill = inks.into_iter().find(|(tag, r, _)| *tag == 2 && (r.w - (frame.w - 2.0 * SIDE)).abs() < 0.5).map(|(_, _, a)| a);
+        (pill, runs)
+    }
+
+    fn ink_of(runs: &[crate::draw_census::Run], text: &str) -> [f32; 4] {
+        runs.iter().find(|r| r.text == text).unwrap_or_else(|| panic!("{text:?} not drawn: {runs:?}")).ink
+    }
+
+    /// Rows `Live` and `Gone` (disabled, its reason as the value) with focus on row `sel`.
+    fn ghost_rows(sel: i32, disabled: bool) -> TableView {
+        let mut t = TableView::new();
+        let gone = Row::new("Gone").value("Withdrawn").badge(Badge::Sdh).disabled(disabled);
+        t.set_sections(vec![Section::new("S").row(Row::new("Live").value("On")).row(gone)], sel, false);
+        t
+    }
+
+    /// **A disabled row under the focus pill is a GHOST**, not the solid pill with near-black ink: the pill is the
+    /// faint overlay, the label reads at the secondary ink and the reason at the tertiary. The same row off the pill
+    /// is the dim row it always was, and a usable row under the solid pill is unchanged.
+    #[test]
+    fn a_disabled_row_under_the_pill_draws_a_ghost_and_not_the_solid_focus() {
+        let _serial = plx_base::testlock::serial();
+        let (solid_pill, solid) = ghost_frame(&ghost_rows(0, true));
+        assert_eq!(solid_pill, Some(crate::ACCENT[3]), "a usable row is under the solid pill");
+        assert_eq!(ink_of(&solid, "Live"), crate::ACCENT_INK, "and its label is the pill's near-black ink");
+        assert_eq!(ink_of(&solid, "Gone"), theme::TEXT_TERTIARY, "the disabled row off the pill is the dim row");
+        assert_eq!(ink_of(&solid, "Withdrawn"), theme::ROW_VALUE_INK_DIM, "and its reason is the dim row's, as the doc says");
+
+        let (ghost_pill, ghost) = ghost_frame(&ghost_rows(1, true));
+        // the ghost alpha is a lerp that lands within an ulp of the constant, not on it
+        assert!((ghost_pill.unwrap() - theme::OVERLAY_FOCUS_PILL[3]).abs() < 1e-5, "the pill under a disabled row is the ghost: {ghost_pill:?}");
+        assert!(ghost_pill < solid_pill);
+        assert_eq!(ink_of(&ghost, "Gone"), theme::TEXT_SECONDARY, "its label stays light on the ghost pill");
+        assert_eq!(ink_of(&ghost, "Withdrawn"), theme::TEXT_TERTIARY, "and its reason stays quiet");
+        assert_eq!(ink_of(&ghost, Badge::Sdh.text()), theme::TEXT_SECONDARY, "and so does its chip's label");
+        // the chip keeps its rest ground and keyline under the ghost; a usable row's chip over the solid pill takes the pill's
+        let ink = crate::ACCENT_INK;
+        assert_eq!(chip_ground(&Row::new("x").disabled(true), 1.0, ink), (theme::OVERLAY_BORDER, PANEL_BG));
+        assert_ne!(chip_ground(&Row::new("x").disabled(true), 1.0, ink).1, crate::ACCENT, "not the solid pill's fill");
+        assert_ne!(chip_ground(&Row::new("x").disabled(true), 1.0, ink).0, ink, "nor its near-black ring");
+        assert_eq!(chip_ground(&Row::new("x"), 1.0, ink), (ink, crate::ACCENT), "a usable row's chip is unchanged");
+        assert_eq!(chip_ground(&Row::new("x"), 0.0, ink), (theme::OVERLAY_BORDER, PANEL_BG));
+        assert_ne!(ink_of(&ghost, "Gone"), crate::ACCENT_INK, "not the solid pill's near-black, which reads as pressable");
+
+        // the same row, not disabled (a plain dim one), is under the solid pill with the near-black ink
+        let mut dimmed = ghost_rows(1, false);
+        dimmed.sections[0].rows[1].dim = true;
+        let (dim_pill, dim) = ghost_frame(&dimmed);
+        assert_eq!(dim_pill, Some(crate::ACCENT[3]));
+        assert_eq!(ink_of(&dim, "Gone"), crate::ACCENT_INK);
+    }
+
+    /// **A table with no disabled row draws exactly what it drew**: the pill is `ACCENT` itself (no crossing), every
+    /// ink is the one it always was, and the walk that finds the ghost is skipped.
+    #[test]
+    fn a_table_that_never_opts_in_draws_as_before() {
+        let _serial = plx_base::testlock::serial();
+        let t = ghost_rows(1, false);
+        assert_eq!(t.ghost_cover(), 0.0);
+        let (pill, runs) = ghost_frame(&t);
+        assert_eq!(pill, Some(crate::ACCENT[3]));
+        assert_eq!(ink_of(&runs, "Gone"), crate::ACCENT_INK);
+        assert_eq!(ink_of(&runs, "Withdrawn"), theme::ROW_VALUE_INK_ON, "a read-out over the solid pill is the quiet rung of its ink");
+        assert_eq!(ink_of(&runs, "Live"), theme::TEXT_PRIMARY);
+    }
+
+    /// **The pill changes fill as it ARRIVES**, by the coverage rule the ink uses: solid while it is still on the live
+    /// row, ghost once it has settled on the disabled one, and in between a monotonic crossing.
+    #[test]
+    fn the_pill_crosses_to_the_ghost_as_it_arrives_on_a_disabled_row() {
+        let _serial = plx_base::testlock::serial();
+        let mut t = ghost_rows(0, true);
+        assert_eq!(t.ghost_cover(), 0.0, "settled on the live row: solid");
+        t.move_sel(1);
+        t.update(1.0 / 60.0, 600.0);
+        assert_eq!(t.ghost_cover(), 0.0, "one frame in the pill has not reached the disabled row");
+        let mut prev = 0.0f32;
+        let mut between = false;
+        for _ in 0..240 {
+            t.update(1.0 / 60.0, 600.0);
+            let g = t.ghost_cover();
+            assert!(g + 1e-4 >= prev, "the ghost only grows as the pill arrives: {prev} -> {g}");
+            between |= g > 0.0 && g < 1.0;
+            prev = g;
+        }
+        assert!(between, "the premise: some frame is part way");
+        assert_eq!(t.ghost_cover(), 1.0, "settled on the disabled row: all ghost");
+        t.move_sel(-1);
+        for _ in 0..240 {
+            t.update(1.0 / 60.0, 600.0);
+        }
+        assert_eq!(t.ghost_cover(), 0.0, "and back to solid");
+        t.list_focused = false;
+        t.move_sel(1);
+        assert_eq!(t.ghost_cover(), 0.0, "a table that holds no focus draws no pill, so no ghost");
     }
 
     /// A table that does not hold focus draws no pill, so no row is inked for one.

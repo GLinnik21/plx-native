@@ -544,12 +544,17 @@ impl LibraryScreen {
     }
 
     /// The caption policy the grid reserves its band for: the Under posters setting for every
-    /// listing of POSTERS (the Collections page included), and `None`, the legacy band, for the
+    /// listing of POSTERS (the Collections page included; narrowed to the one kind it lists,
+    /// `CaptionPolicy::only`), and `None`, the legacy band, for the
     /// Episodes listing, whose landscape stills are not on the policy like every other landscape
     /// surface (`registry::captions::still_label` words their 92 px block in the 114 px legacy band,
     /// which the policy's 80 / 40 px gap would run under the next row).
     fn grid_policy(&self) -> Option<plx_ui::caption_policy::CaptionPolicy> {
-        (self.listed != plx_data::browse::LibraryType::Episodes).then(parts::caption_policy)
+        use plx_data::browse::LibraryType;
+        // a grid lists ONE kind of tile, so its band is sized by that kind's own line (a TV shows
+        // grid by the show line; Movies, Seasons and Collections by the movie line, `details_for`)
+        let shows = self.listed == LibraryType::Primary && self.kind == SecKind::Show;
+        (self.listed != LibraryType::Episodes).then(|| parts::caption_policy().only(shows))
     }
 
     fn sync<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) {

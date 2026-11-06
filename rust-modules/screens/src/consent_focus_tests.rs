@@ -684,7 +684,7 @@ fn translated_first_run_disclosures_fit_above_one_row_of_complete_answers() {
             assert!(layout.content.w >= table.measured_width(&measure) * plx_ui::fit::HEADROOM,
                 "{name} product={product}: content {} < measured {}", layout.content.w, table.measured_width(&measure));
             let band = BandPart { layout, labels: &labels, group: BAND_GROUP, entry: EntryId(1),
-                uncommitted: false, scales: [1.0, 1.0], palette: palette(), danger: None };
+                uncommitted: false, scales: [1.0, 1.0], palette: palette(), danger: None, note: None };
             let rects = band.rects(&measure);
             assert_eq!(rects[0].y, rects[1].y, "{name}: both answers must stay in one row: available={}, first={}, second={}, link_min={}, labels={labels:?}", layout.action.w, rects[0].w, rects[1].w, table.measured_width(&measure));
             assert_eq!(rects[0].h, rects[1].h, "both answers retain equal treatment");

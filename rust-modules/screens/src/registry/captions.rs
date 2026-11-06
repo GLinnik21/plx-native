@@ -102,8 +102,8 @@ impl Drop for PolicyPin {
 /// Nothing, two with Title On, per shelf and never per tile) and [`shelf_label`] words its tiles by
 /// it, so the band and the label cannot disagree.
 pub fn deck_policy(policy: &CaptionPolicy) -> CaptionPolicy {
-    let details = if policy.details == DetailsKind::None { DetailsKind::YearLength } else { policy.details };
-    CaptionPolicy { details, ..*policy }
+    let some = |kind| if kind == DetailsKind::None { DetailsKind::YearLength } else { kind };
+    CaptionPolicy { details: some(policy.details), show_details: some(policy.show_details), ..*policy }
 }
 
 /// The focused block of one poster under `policy`: `[title, details]` as the setting words them
@@ -111,7 +111,7 @@ pub fn deck_policy(policy: &CaptionPolicy) -> CaptionPolicy {
 /// the play mark when `plays` (a press on this tile starts playback).
 pub fn label(policy: &CaptionPolicy, facts: &CaptionFacts, state: Option<String>, plays: bool) -> TileLabel {
     let [title, details] = caption_lines(policy, facts, plx_platform::i18n::current());
-    let details = if policy.details == DetailsKind::None { None } else { state.or(details) };
+    let details = if policy.details_for(facts.is_show) == DetailsKind::None { None } else { state.or(details) };
     // The mark leads the FIRST line drawn (the title, else the details line), so a press that plays
     // is announced under every setting that draws a line; Nothing with the title off draws none.
     let glyph = plays && (title.is_some() || details.is_some());
@@ -211,7 +211,7 @@ mod tests {
     fn a_state_line_replaces_the_details_line_and_the_play_mark_needs_a_title() {
         let facts = CaptionFacts { title: Some("Heat".into()), year: Some(1995), genre: Some("Crime".into()), ..Default::default() };
         let state = || Some("8m left".to_owned());
-        let with = |title, details, plays| label(&CaptionPolicy { title, details }, &facts, state(), plays);
+        let with = |title, details, plays| label(&CaptionPolicy::same(title, details), &facts, state(), plays);
         for details in [DetailsKind::YearLength, DetailsKind::Genre, DetailsKind::Video, DetailsKind::AgeRatingScore] {
             assert_eq!(lines(&with(true, details, true)), [Some("Heat".into()), Some("8m left".into())], "{details:?}");
         }
@@ -221,7 +221,7 @@ mod tests {
         assert!(with(true, DetailsKind::None, true).glyph, "Title On + Nothing: the title carries it");
         assert!(!with(false, DetailsKind::None, true).glyph, "no line drawn, nothing to lead");
         let episode = CaptionFacts { title: Some("Pilot".into()), episode: Some((1, 8)), ..Default::default() };
-        let p = CaptionPolicy { title: false, details: DetailsKind::YearLength };
+        let p = CaptionPolicy::same(false, DetailsKind::YearLength);
         assert_eq!(lines(&label(&p, &episode, None, false)), [None, Some("S1 \u{b7} E8".into())]);
     }
 
@@ -237,7 +237,7 @@ mod tests {
     fn the_deck_progress_line_is_shown_under_nothing() {
         let ep = deck_episode();
         let movie = plx_data::pms::PmsMovie { kind: 1, title: "Heat".into(), dur_ns: 45 * 60 * 1_000_000_000, resume_ms: 20 * 60 * 1000, ..Default::default() };
-        let at = |title, item: &plx_data::pms::PmsMovie, deck| lines(&shelf_label(&CaptionPolicy { title, details: DetailsKind::None }, item, deck));
+        let at = |title, item: &plx_data::pms::PmsMovie, deck| lines(&shelf_label(&CaptionPolicy::same(title, DetailsKind::None), item, deck));
         assert_eq!(at(false, &ep, true), [None, Some("S2 \u{b7} E5 \u{b7} 25m left".into())]);
         assert_eq!(at(false, &movie, true), [None, Some("25m left".into())]);
         assert_eq!(at(true, &ep, true), [Some("Pilot".into()), Some("S2 \u{b7} E5 \u{b7} 25m left".into())]);
@@ -249,10 +249,10 @@ mod tests {
     #[test]
     fn the_deck_policy_keeps_a_band_line_under_nothing() {
         use plx_ui::caption_policy::{band_h, BAND_NONE, BAND_ONE_LINE, BAND_TWO_LINES};
-        let (off, on) = (CaptionPolicy { title: false, details: DetailsKind::None }, CaptionPolicy { title: true, details: DetailsKind::None });
+        let (off, on) = (CaptionPolicy::same(false, DetailsKind::None), CaptionPolicy::same(true, DetailsKind::None));
         assert_eq!([band_h(&off), band_h(&deck_policy(&off))], [BAND_NONE, BAND_ONE_LINE]);
         assert_eq!([band_h(&on), band_h(&deck_policy(&on))], [BAND_ONE_LINE, BAND_TWO_LINES]);
-        let genre = CaptionPolicy { title: true, details: DetailsKind::Genre };
+        let genre = CaptionPolicy::same(true, DetailsKind::Genre);
         assert_eq!(deck_policy(&genre), genre, "a policy that shows a details line is the deck's own");
     }
 
@@ -261,7 +261,7 @@ mod tests {
     #[test]
     fn a_non_deck_state_line_still_drops_under_nothing() {
         let facts = CaptionFacts { title: Some("Heat".into()), ..Default::default() };
-        let p = CaptionPolicy { title: false, details: DetailsKind::None };
+        let p = CaptionPolicy::same(false, DetailsKind::None);
         assert_eq!(lines(&label(&p, &facts, Some("Server offline".into()), true)), [None, None]);
     }
 
@@ -273,11 +273,11 @@ mod tests {
             kind: 2, title: "Season 6".into(), show_title: "The Office".into(), season_index: 6, ..Default::default()
         };
         for details in [DetailsKind::YearLength, DetailsKind::Genre, DetailsKind::Video, DetailsKind::AgeRatingScore] {
-            let at = |title| lines(&shelf_label(&CaptionPolicy { title, details }, &season, false));
+            let at = |title| lines(&shelf_label(&CaptionPolicy::same(title, details), &season, false));
             assert_eq!(at(true), [Some("The Office".into()), Some("Season 6".into())], "{details:?}");
             assert_eq!(at(false), [None, Some("Season 6".into())], "{details:?}");
         }
-        let at = |title| lines(&shelf_label(&CaptionPolicy { title, details: DetailsKind::None }, &season, false));
+        let at = |title| lines(&shelf_label(&CaptionPolicy::same(title, DetailsKind::None), &season, false));
         assert_eq!(at(true), [Some("The Office".into()), None]);
         assert_eq!(at(false), [None, None]);
     }

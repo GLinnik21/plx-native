@@ -356,13 +356,48 @@ fn the_under_posters_policy_sizes_the_focused_rows_band() {
         settle(&mut page, &mut engine, &fixture, 0);
         page.layout.row_y(4, 0.0) - rest
     };
-    let nothing = below_focus(UnderPosters { title: false, details: UnderPostersDetails::None, sort_value: false });
-    let one_line = below_focus(UnderPosters { title: false, details: UnderPostersDetails::Genre, sort_value: false });
-    let two_lines = below_focus(UnderPosters { title: true, details: UnderPostersDetails::Genre, sort_value: false });
+    let nothing = below_focus(UnderPosters { title: false, details: UnderPostersDetails::None, show_details: UnderPostersDetails::None.for_shows(), sort_value: false });
+    let one_line = below_focus(UnderPosters { title: false, details: UnderPostersDetails::Genre, show_details: UnderPostersDetails::Genre.for_shows(), sort_value: false });
+    let two_lines = below_focus(UnderPosters { title: true, details: UnderPostersDetails::Genre, show_details: UnderPostersDetails::Genre.for_shows(), sort_value: false });
     crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.set(None));
     assert!(nothing.abs() < 0.01, "a policy showing nothing opens no band: {nothing}");
     assert!((one_line - 40.0).abs() < 0.01, "one line opens 80 - 40 px: {one_line}");
     assert!((two_lines - 72.0).abs() < 0.01, "two lines open 112 - 40 px: {two_lines}");
+}
+
+/// **A grid lists one kind of tile, so its band is that kind's.** Movie details Nothing with the show
+/// line set must not leave a Movies grid an empty 80 px band under the focused poster (112 px with
+/// Title On for one line): the band of a Movies, Seasons or Collections grid is the movie line's, a TV
+/// shows grid's the show line's. The Episodes listing keeps the legacy band (`None`).
+#[test]
+fn a_single_kind_grid_is_banded_by_its_own_details_line() {
+    use plx_data::browse::LibraryType;
+    use plx_plex::plex::session::{UnderPosters, UnderPostersDetails};
+    use plx_ui::caption_policy::{band_h, BAND_NONE, BAND_ONE_LINE, BAND_TWO_LINES};
+    let _guard = plx_base::testlock::serial();
+    let fixture = Fixture::new();
+    let mut page = fixture.screen();
+    let band = |page: &LibraryScreen, setting: UnderPosters| {
+        crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.set(Some(setting)));
+        page.grid_policy().as_ref().map(band_h)
+    };
+    let movies_off = UnderPosters { title: false, details: UnderPostersDetails::None, show_details: UnderPostersDetails::YearLength, sort_value: false };
+    let shows_off = UnderPosters { details: UnderPostersDetails::YearLength, show_details: UnderPostersDetails::None, ..movies_off };
+    for (kind, listed, off, on, line) in [
+        (SecKind::Movie, LibraryType::Primary, movies_off, shows_off, "Movies"),
+        (SecKind::Show, LibraryType::Primary, shows_off, movies_off, "TV shows"),
+        (SecKind::Show, LibraryType::Seasons, movies_off, shows_off, "Seasons"),
+        (SecKind::Movie, LibraryType::Collections, movies_off, shows_off, "Collections"),
+    ] {
+        (page.kind, page.listed) = (kind, listed);
+        assert_eq!(band(&page, off), Some(BAND_NONE), "{line}: its own line is Nothing and the other kind's line opens no band here");
+        assert_eq!(band(&page, UnderPosters { title: true, ..off }), Some(BAND_ONE_LINE), "{line}: Title On alone is one line, not two");
+        assert_eq!(band(&page, on), Some(BAND_ONE_LINE), "{line}: its own line set opens one line");
+        assert_eq!(band(&page, UnderPosters { title: true, ..on }), Some(BAND_TWO_LINES), "{line}: title and details are two");
+    }
+    (page.kind, page.listed) = (SecKind::Show, LibraryType::Episodes);
+    assert_eq!(band(&page, movies_off), None, "the Episodes listing keeps the legacy band");
+    crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.set(None));
 }
 
 #[test]

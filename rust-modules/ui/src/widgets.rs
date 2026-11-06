@@ -1106,11 +1106,21 @@ pub fn card_named_led(p: Painter, frame: Rect, art: Art, fan_name: Option<&str>,
 /// counted. A key behind an unresolved texture is a fetch in flight, and is a placeholder.
 fn person_ground(p: Painter, key: &str, r: Rect, rad: f32) {
     if key.is_empty() {
-        // placeholder-exempt: absence, a person the server has no headshot of; nothing will arrive
-        p.rrect_sheened(r, rad, theme::CARD_ABSENT);
+        absent_card(p, r, rad);
     } else {
         crate::placeholder::ground(p, crate::placeholder::Reason::CardGround, key, r, rad);
     }
+}
+
+/// **A finished poster-shaped face for a title that has NO artwork**, for a caller that knows so
+/// (a picture of "a movie" and "a show" when the cache holds none of one kind): the sheened
+/// never-sentinel [`theme::CARD_ABSENT`] ground, uncounted. It is ABSENCE, not a wait, so it is
+/// never a skeleton (`placeholder`): nothing will arrive, the harness does not hold for it, and it
+/// carries no ring, tick or label. A poster ROW goes through [`card`] instead; its `Art::Poster(None)`
+/// is the skeleton of a card still loading, which this is not.
+pub fn absent_card(p: Painter, r: Rect, rad: f32) {
+    // placeholder-exempt: absence, a title with no artwork anywhere; nothing will arrive
+    p.rrect_sheened(r, rad, theme::CARD_ABSENT);
 }
 
 /// Which state mark a poster wears — the pure half of [`card`]'s corner, split out for exactly the
