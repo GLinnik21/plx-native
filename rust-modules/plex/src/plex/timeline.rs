@@ -6,6 +6,10 @@
 //! per-playback session id, PlayQueue ids, and the SELECTED audio/subtitle stream ids, so
 //! /status/sessions shows the right track and the Direct Play vs Transcode badge
 //! (correlated by the active encoder's coupled `X-Plex-Session-Identifier == session=`).
+//! PMS keeps a dashboard row for every session id that ever reported `playing` until that id goes
+//! quiet for minutes, whatever the encoder stop and `/status/sessions/close` did; a report with
+//! `state=stopped` and `continuing=1` ([`TimelineReport::continuing`]) retires the row of an id
+//! the playback has moved off (issue #1236).
 use super::client::{Client, QueryBuilder};
 use super::params::TimelineReport;
 use super::servers::ServerId;
@@ -20,6 +24,12 @@ impl Client {
     /// same success line for all four. The reporting is `crate::route::scrobble_stop`'s; this
     /// only has to stop throwing the answer away.
     pub fn timeline(&self, r: &TimelineReport) -> bool {
+        self.post_ok(&self.timeline_query(r))
+    }
+
+    /// The request path and query of one report, without the token. Its own function so the wire
+    /// shape is graded without a server.
+    fn timeline_query(&self, r: &TimelineReport) -> String {
         let q = QueryBuilder::new("/:/timeline")
             .str("ratingKey", r.rating_key)
             .str("key", &format!("/library/metadata/{}", r.rating_key))
@@ -33,8 +43,9 @@ impl Client {
             .opt_str("playQueueID", r.play_queue_id)
             .opt_str("playQueueItemID", r.play_queue_item_id)
             .opt_int("audioStreamID", r.audio_stream_id)
-            .opt_int("subtitleStreamID", r.subtitle_stream_id);
-        self.post_ok(&q.build())
+            .opt_int("subtitleStreamID", r.subtitle_stream_id)
+            .opt_int("continuing", i64::from(r.continuing));
+        q.build()
     }
 
     /// GET /identity → the server's stable machineIdentifier (None on failure/empty).
@@ -444,6 +455,47 @@ mod tests {
             ("", "", "")
         );
         assert_eq!(bare.rk, "775", "the rest of the row still projects");
+    }
+
+    /// Issue #1236: `continuing=1` is what takes a retired session's row off the dashboard, and
+    /// it is only true of a report that says so. Every ordinary report (playing, paused, the
+    /// final `stopped`) must not carry the key at all, so a server sees the same request it
+    /// always did.
+    #[test]
+    fn continuing_rides_the_timeline_query_only_when_true() {
+        use super::super::params::TimelineState;
+        let client = Client::new(
+            ServerId::from_raw(3),
+            "machine",
+            crate::plex::Origin::http("10.0.0.1", 32400),
+            "tok",
+            "cid-1236",
+        );
+        let query = |state, continuing| {
+            client.timeline_query(&TimelineReport {
+                rating_key: "42",
+                state,
+                time_ms: 20_000,
+                duration_ms: 60_000,
+                session: "logical-abr-1",
+                play_queue_id: "pq",
+                play_queue_item_id: "pqi",
+                audio_stream_id: 0,
+                subtitle_stream_id: 0,
+                continuing,
+            })
+        };
+
+        let retired = query(TimelineState::Stopped, true);
+        assert!(retired.starts_with("/:/timeline?ratingKey=42&"), "{retired}");
+        assert!(retired.contains("&state=stopped&"), "{retired}");
+        assert!(retired.contains("&continuing=1"), "{retired}");
+        assert!(retired.contains("&X-Plex-Session-Identifier=logical-abr-1&"), "{retired}");
+
+        for state in [TimelineState::Playing, TimelineState::Paused, TimelineState::Stopped] {
+            let ordinary = query(state, false);
+            assert!(!ordinary.contains("continuing"), "{ordinary}");
+        }
     }
 }
 

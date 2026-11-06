@@ -757,3 +757,509 @@ fn a_stop_posted_after_the_identity_changed_is_dropped() {
     assert_eq!(take_landed_stops().len(), 1, "a stop made after the switch lands as ever");
     reset_player_control_for_test(&ps);
 }
+
+/// Test-only: stand up a playing item on a recording PMS, with `first` as the live HLS encoder.
+/// Returns the PMS's request lines and the reporter's lease; the caller holds the serial guard.
+fn playing_on_recording_pms(
+    ps: &mut crate::route::PlaybackSession,
+    first: &str,
+) -> (std::sync::mpsc::Receiver<String>, TimelineLease) {
+    drain_scrobble();
+    reset_session(ps);
+    reset_player_control_for_test(ps);
+    // `max` is a ceiling (the stub gives up after ten idle seconds), not an expectation.
+    let (port, rx, _server) = recording_pms(8);
+    (rx, playing_on_port(ps, first, port))
+}
+
+/// The item `playing_on_recording_pms` plays, on the PMS at `port`: registered, planned, `first`
+/// installed as the live HLS encoder, and a reporter lease taken.
+fn playing_on_port(ps: &mut crate::route::PlaybackSession, first: &str, port: i32) -> TimelineLease {
+    let sid = plx_plex::plex::register_for_test(
+        "timeline-retired",
+        "127.0.0.1",
+        port,
+        "tok",
+        "timeline-client",
+    );
+    apply_plan(
+        ps,
+        Plan {
+            sid,
+            url: "https://example.invalid/auto.m3u8".into(),
+            sess: "logical-1236".into(),
+            pq_id: "pq-1236".into(),
+            pq_item_id: "pqi-1236".into(),
+            ..Default::default()
+        },
+        "rk-1236",
+    );
+    install_active_hls(first, "http://fixture.invalid/first.m3u8", crate::abr::Rung::P720);
+    begin_timeline_reporting(ps).expect("timeline lease")
+}
+
+/// What the stop worker leaves in `PlayerControl` once it is done: the last reported id.
+fn reported_timeline_left_behind() -> Option<ReportedTimeline> {
+    PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()).reported_timeline.clone()
+}
+
+/// Test-only: commit `id` as the live HLS encoder through the door an automatic quality switch
+/// uses, so the route epoch moves the way it does in production.
+fn commit_hls_encoder(id: &str) {
+    replace_active_hls_for(
+        &worker_ticket(),
+        id,
+        "http://fixture.invalid/next.m3u8",
+        crate::abr::Rung::P1080,
+        None,
+    )
+    .expect("the ABR commit is current");
+}
+
+/// Every request line the PMS gets until it has been quiet for 300 ms, oldest first. The caller
+/// compares the whole list, so a missing report and an extra one both read as a wrong sequence.
+fn requests_until_quiet(rx: &std::sync::mpsc::Receiver<String>) -> Vec<String> {
+    use std::time::Duration;
+    let mut lines = vec![rx.recv_timeout(Duration::from_secs(5)).expect("no request reached the PMS")];
+    while let Ok(line) = rx.recv_timeout(Duration::from_millis(300)) {
+        lines.push(line);
+    }
+    lines
+}
+
+fn leave_recording_pms_case(ps: &mut crate::route::PlaybackSession) {
+    plx_plex::plex::reset_servers_for_test();
+    reset_session(ps);
+    install_active_encoder("");
+    reset_player_control_for_test(ps);
+}
+
+/// Issue #1236: an automatic quality switch replaces the PMS encoder, and every id that ever
+/// reported `playing` kept a "playing" dashboard row for minutes after its last report (one
+/// playback showed up as 13). The periodic report moves to the new id; the old one must be told
+/// it stopped, as Plex's own TV client does before it restarts a stream: `state=stopped` with
+/// `continuing=1`, at the position the playback has reached, BEFORE the new id's first report.
+#[test]
+fn a_retired_encoder_that_reported_gets_a_continuing_stopped_before_the_next_report() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let (rx, lease) = playing_on_recording_pms(&mut ps, "logical-1236-abr-1");
+    assert!(report_timeline(&lease, plx_plex::plex::TimelineState::Playing, 10_000, 60_000));
+
+    commit_hls_encoder("logical-1236-abr-2");
+    assert!(report_timeline(&lease, plx_plex::plex::TimelineState::Playing, 20_000, 60_000));
+
+    let lines = requests_until_quiet(&rx);
+    leave_recording_pms_case(&mut ps);
+    assert_eq!(lines.len(), 3, "playing(A), stopped(A), playing(B) expected: {lines:#?}");
+    assert!(
+        lines[0].contains("state=playing")
+            && lines[0].contains("X-Plex-Session-Identifier=logical-1236-abr-1"),
+        "the first report is A's playing: {}",
+        lines[0]
+    );
+    assert!(
+        lines[1].contains("state=stopped")
+            && lines[1].contains("continuing=1")
+            && lines[1].contains("X-Plex-Session-Identifier=logical-1236-abr-1")
+            && lines[1].contains("ratingKey=rk-1236")
+            && lines[1].contains("time=20000")
+            && lines[1].contains("playQueueID=pq-1236"),
+        "before B reports, A is told it stopped, continuing, at the new position: {}",
+        lines[1]
+    );
+    assert!(
+        lines[2].contains("state=playing")
+            && !lines[2].contains("continuing")
+            && lines[2].contains("X-Plex-Session-Identifier=logical-1236-abr-2"),
+        "B's report follows, as an ordinary playing: {}",
+        lines[2]
+    );
+}
+
+/// The whole decision, pure: the previous report's id against the id about to go out.
+#[test]
+fn only_an_id_that_reported_and_was_left_behind_is_retired() {
+    // first report: nothing was reported, so nothing is retired
+    assert_eq!(retired_report_session(None, "a"), None);
+    // the same id again: still the reporting identity
+    assert_eq!(retired_report_session(Some("a"), "a"), None);
+    // the identity moved: the id it left is the one to stop, never the new one
+    assert_eq!(retired_report_session(Some("a"), "b"), Some("a"));
+    // an empty id names no session on the wire, so it is never stopped
+    assert_eq!(retired_report_session(Some(""), "b"), None);
+    // a direct play's logical id retired by the HLS fallback's encoder, and back
+    assert_eq!(retired_report_session(Some("logical"), "logical-abr-1"), Some("logical"));
+    assert_eq!(retired_report_session(Some("logical-abr-1"), "logical"), Some("logical-abr-1"));
+}
+
+/// An ordinary playback sends ordinary reports: the same id every tick means no `stopped` and no
+/// `continuing` anywhere, so a server that never saw the retirement sees the same requests as ever.
+#[test]
+fn reports_under_one_id_never_retire_anything() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let (rx, lease) = playing_on_recording_pms(&mut ps, "logical-1236-abr-1");
+    assert!(report_timeline(&lease, plx_plex::plex::TimelineState::Playing, 10_000, 60_000));
+    assert!(report_timeline(&lease, plx_plex::plex::TimelineState::Paused, 20_000, 60_000));
+    assert!(report_timeline(&lease, plx_plex::plex::TimelineState::Playing, 30_000, 60_000));
+
+    let lines = requests_until_quiet(&rx);
+    leave_recording_pms_case(&mut ps);
+    assert_eq!(lines.len(), 3, "one report per call: {lines:#?}");
+    for line in &lines {
+        assert!(
+            !line.contains("state=stopped") && !line.contains("continuing"),
+            "nothing was retired: {line}"
+        );
+        assert!(line.contains("X-Plex-Session-Identifier=logical-1236-abr-1"), "{line}");
+    }
+}
+
+/// **A `stopped` is only for an id that reported.** An automatic switch can mint and commit an
+/// encoder and replace it again before the next tick (and a candidate that is never committed
+/// never becomes the reporting identity at all); PMS has no row for such an id, and a `stopped`
+/// naming one would be a write about a session this playback never announced. Only the id the
+/// periodic report last went out under is retired, once.
+#[test]
+fn an_encoder_that_never_reported_is_never_stopped() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let (rx, lease) = playing_on_recording_pms(&mut ps, "logical-1236-abr-1");
+    assert!(report_timeline(&lease, plx_plex::plex::TimelineState::Playing, 10_000, 60_000));
+
+    // Two commits land between ticks: the first one is never the reporting identity.
+    commit_hls_encoder("logical-1236-abr-2");
+    commit_hls_encoder("logical-1236-abr-3");
+    assert!(report_timeline(&lease, plx_plex::plex::TimelineState::Playing, 20_000, 60_000));
+
+    let lines = requests_until_quiet(&rx);
+    leave_recording_pms_case(&mut ps);
+    assert_eq!(lines.len(), 3, "playing(abr-1), stopped(abr-1), playing(abr-3): {lines:#?}");
+    assert!(
+        lines[1].contains("state=stopped")
+            && lines[1].contains("X-Plex-Session-Identifier=logical-1236-abr-1"),
+        "the stopped is the reported id's: {}",
+        lines[1]
+    );
+    assert!(
+        lines.iter().all(|l| !l.contains("logical-1236-abr-2")),
+        "abr-2 never reported, it must not be named: {lines:#?}"
+    );
+}
+
+/// A quality change or a transcode seek reloads the Engine, which starts a NEW reporter for the
+/// same playback, after `begin_engine_teardown(true)` has retired the old one's lease. The id the
+/// old reporter last reported under is the one the reload retired, so the new reporter's first
+/// report must still stop it.
+#[test]
+fn a_reloaded_engine_still_retires_the_id_its_predecessor_reported() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let (rx, old_lease) = playing_on_recording_pms(&mut ps, "logical-1236-abr-1");
+    assert!(report_timeline(&old_lease, plx_plex::plex::TimelineState::Playing, 10_000, 60_000));
+
+    commit_hls_encoder("logical-1236-abr-2");
+    begin_engine_teardown(true);
+    assert!(
+        !report_timeline(&old_lease, plx_plex::plex::TimelineState::Playing, 15_000, 60_000),
+        "premise: the reload retired the old Engine's lease"
+    );
+    let new_lease = begin_timeline_reporting(&ps).expect("the reload's lease");
+    assert!(report_timeline(&new_lease, plx_plex::plex::TimelineState::Playing, 20_000, 60_000));
+
+    let lines = requests_until_quiet(&rx);
+    leave_recording_pms_case(&mut ps);
+    assert_eq!(lines.len(), 3, "playing(abr-1), stopped(abr-1), playing(abr-2): {lines:#?}");
+    assert!(
+        lines[1].contains("state=stopped")
+            && lines[1].contains("continuing=1")
+            && lines[1].contains("X-Plex-Session-Identifier=logical-1236-abr-1"),
+        "the reload's first report retires its predecessor's id: {}",
+        lines[1]
+    );
+}
+
+#[test]
+fn a_different_item_inherits_no_reported_id() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let (rx, lease) = playing_on_recording_pms(&mut ps, "logical-1236-abr-1");
+    assert!(report_timeline(&lease, plx_plex::plex::TimelineState::Playing, 10_000, 60_000));
+
+    // The next item starts without a stop in between (the projection is republished for it).
+    let sid = cur_sid(&ps);
+    apply_plan(
+        &mut ps,
+        Plan { sid, url: "https://example.invalid/next.m3u8".into(), sess: "logical-next".into(), ..Default::default() },
+        "rk-next",
+    );
+    install_active_hls("logical-next-abr-1", "http://fixture.invalid/n.m3u8", crate::abr::Rung::P720);
+    let next = begin_timeline_reporting(&ps).expect("the next item's lease");
+    assert!(report_timeline(&next, plx_plex::plex::TimelineState::Playing, 5_000, 60_000));
+
+    let lines = requests_until_quiet(&rx);
+    leave_recording_pms_case(&mut ps);
+    assert_eq!(lines.len(), 2, "playing(first), playing(next): {lines:#?}");
+    assert!(
+        lines[1].contains("ratingKey=rk-next") && !lines[1].contains("state=stopped"),
+        "a different item's first report stops nothing: {}",
+        lines[1]
+    );
+}
+
+/// The final teardown: when the encoder changed after the last periodic report, the last reported
+/// id must still be told `stopped` (before the final one, which commits the resume point), and the
+/// encoder stop follows as ever. With the id unchanged there is nothing extra to send.
+#[test]
+fn the_final_stop_also_retires_the_last_reported_id_when_it_moved_on() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let (rx, lease) = playing_on_recording_pms(&mut ps, "logical-1236-abr-1");
+    assert!(report_timeline(&lease, plx_plex::plex::TimelineState::Playing, 10_000, 60_000));
+    commit_hls_encoder("logical-1236-abr-2");
+
+    scrobble_stop(&mut ps, Some(("rk-1236".into(), 30_000, 60_000)), None);
+    drain_scrobble();
+
+    let lines = requests_until_quiet(&rx);
+    leave_recording_pms_case(&mut ps);
+    assert_eq!(
+        lines.len(),
+        4,
+        "playing(abr-1), stopped(abr-1), stopped(abr-2), encoder stop: {lines:#?}"
+    );
+    assert!(
+        lines[1].contains("state=stopped")
+            && lines[1].contains("continuing=1")
+            && lines[1].contains("X-Plex-Session-Identifier=logical-1236-abr-1")
+            && lines[1].contains("time=30000"),
+        "the reported id is retired first: {}",
+        lines[1]
+    );
+    assert!(
+        lines[2].contains("state=stopped")
+            && !lines[2].contains("continuing")
+            && lines[2].contains("X-Plex-Session-Identifier=logical-1236-abr-2"),
+        "then the final stopped, an ordinary one: {}",
+        lines[2]
+    );
+    assert!(lines[3].contains("/transcode/universal/stop"), "{}", lines[3]);
+}
+
+#[test]
+fn the_final_stop_under_the_reported_id_sends_no_extra_stopped() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let (rx, lease) = playing_on_recording_pms(&mut ps, "logical-1236-abr-1");
+    assert!(report_timeline(&lease, plx_plex::plex::TimelineState::Playing, 10_000, 60_000));
+
+    scrobble_stop(&mut ps, Some(("rk-1236".into(), 30_000, 60_000)), None);
+    drain_scrobble();
+
+    let lines = requests_until_quiet(&rx);
+    leave_recording_pms_case(&mut ps);
+    assert_eq!(lines.len(), 3, "playing, the final stopped, the encoder stop: {lines:#?}");
+    assert!(
+        lines[1].contains("state=stopped")
+            && !lines[1].contains("continuing")
+            && lines[1].contains("X-Plex-Session-Identifier=logical-1236-abr-1"),
+        "{}",
+        lines[1]
+    );
+}
+
+/// The order a real stop runs in (`player::engine::teardown`): the route's teardown retires the
+/// Engine and the reporter's projection FIRST, and only then, after the media threads are joined,
+/// does `scrobble_stop` build the stop worker. The id the reporter last used has to survive the
+/// first to reach the second, or the final stop never names it.
+#[test]
+fn the_final_stop_retires_the_last_reported_id_after_the_engine_teardown_ran_first() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let (rx, lease) = playing_on_recording_pms(&mut ps, "logical-1236-abr-1");
+    assert!(report_timeline(&lease, plx_plex::plex::TimelineState::Playing, 10_000, 60_000));
+    commit_hls_encoder("logical-1236-abr-2");
+
+    begin_engine_teardown(false);
+    scrobble_stop(&mut ps, Some(("rk-1236".into(), 30_000, 60_000)), None);
+    drain_scrobble();
+
+    let lines = requests_until_quiet(&rx);
+    leave_recording_pms_case(&mut ps);
+    assert_eq!(
+        lines.len(),
+        4,
+        "playing(abr-1), stopped(abr-1), stopped(abr-2), encoder stop: {lines:#?}"
+    );
+    assert!(
+        lines[1].contains("state=stopped")
+            && lines[1].contains("continuing=1")
+            && lines[1].contains("X-Plex-Session-Identifier=logical-1236-abr-1"),
+        "the reported id is retired first: {}",
+        lines[1]
+    );
+}
+
+/// A failed Engine (like a failed start or a failed Original trial) clears the timeline
+/// projection, and the Engine that follows it (Try Again, or a rollback's rebase onto a new
+/// encoder) reports from a fresh one. The id the playback had been reporting under must survive
+/// that. `fail_current_engine` is the real edge; the same item is then played again.
+#[test]
+fn a_cleared_projection_does_not_forget_the_id_the_playback_reported_under() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let (rx, lease) = playing_on_recording_pms(&mut ps, "logical-1236-abr-1");
+    assert!(report_timeline(&lease, plx_plex::plex::TimelineState::Playing, 10_000, 60_000));
+
+    fail_current_engine();
+    assert!(
+        PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()).timeline.is_none(),
+        "premise: the failure cleared the projection"
+    );
+    let sid = cur_sid(&ps);
+    apply_plan(
+        &mut ps,
+        Plan {
+            sid,
+            url: "https://example.invalid/auto.m3u8".into(),
+            sess: "logical-1236".into(),
+            pq_id: "pq-1236".into(),
+            pq_item_id: "pqi-1236".into(),
+            ..Default::default()
+        },
+        "rk-1236",
+    );
+    install_active_hls("logical-1236-abr-2", "http://fixture.invalid/second.m3u8", crate::abr::Rung::P1080);
+    let rebuilt = begin_timeline_reporting(&ps).expect("the rebuilt Engine's lease");
+    assert!(report_timeline(&rebuilt, plx_plex::plex::TimelineState::Playing, 20_000, 60_000));
+
+    let lines = requests_until_quiet(&rx);
+    leave_recording_pms_case(&mut ps);
+    assert_eq!(lines.len(), 3, "playing(abr-1), stopped(abr-1), playing(abr-2): {lines:#?}");
+    assert!(
+        lines[1].contains("state=stopped")
+            && lines[1].contains("continuing=1")
+            && lines[1].contains("X-Plex-Session-Identifier=logical-1236-abr-1"),
+        "the rebuilt reporter retires the id the cleared projection had reported: {}",
+        lines[1]
+    );
+}
+
+/// **The stop worker takes the reported id AFTER the reporter's last POST, not before.** On a real
+/// stop `begin_engine_teardown` bumps the epoch, `engine::teardown` only signals the reporter and
+/// hands its handle to `scrobble_stop` unjoined, and the worker joins it. A tick already past its
+/// epoch check is not stopped by the bump: it finishes its POSTs and records its id. The encoder
+/// moved A to B and the viewer pressed BACK while tick N was sending `stopped(A)` + `playing(B)`:
+/// a take on the main thread, before that join, saw A and sent `stopped(A)` a second time, then
+/// left B behind for the next playback of the item to retire.
+#[test]
+fn a_tick_in_flight_at_the_stop_is_not_retired_twice_and_leaves_no_record() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    drain_scrobble();
+    reset_session(&mut ps);
+    reset_player_control_for_test(&ps);
+    // Request 1 is `playing(A)`; request 2 is the tick's `stopped(A)`, which the stub parks.
+    let (port, rx, release, _server) = held_pms(2);
+    let lease = playing_on_port(&mut ps, "logical-1236-abr-1", port);
+    assert!(report_timeline(&lease, plx_plex::plex::TimelineState::Playing, 10_000, 60_000));
+    commit_hls_encoder("logical-1236-abr-2");
+
+    let reporter = std::thread::spawn(move || {
+        assert!(report_timeline(&lease, plx_plex::plex::TimelineState::Playing, 20_000, 60_000));
+    });
+    let first = rx.recv_timeout(std::time::Duration::from_secs(5)).expect("playing(A)");
+    let parked = rx.recv_timeout(std::time::Duration::from_secs(5)).expect("the tick's stopped(A)");
+    assert!(first.contains("state=playing"), "{first}");
+    assert!(
+        parked.contains("state=stopped") && parked.contains("logical-1236-abr-1"),
+        "premise: the tick is parked mid-POST, holding the effect lane: {parked}"
+    );
+
+    // The stop, in the order `engine::teardown` runs it, with the tick's thread as the reporter.
+    begin_engine_teardown(false);
+    scrobble_stop(&mut ps, Some(("rk-1236".into(), 30_000, 60_000)), Some(reporter));
+    release.send(()).unwrap();
+    drain_scrobble();
+
+    let mut lines = vec![first, parked];
+    lines.extend(requests_until_quiet(&rx));
+    let left = reported_timeline_left_behind();
+    leave_recording_pms_case(&mut ps);
+    let retired_a = lines
+        .iter()
+        .filter(|l| l.contains("state=stopped") && l.contains("continuing=1"))
+        .count();
+    assert_eq!(
+        retired_a, 1,
+        "A is retired exactly once, by the tick that moved off it: {lines:#?}"
+    );
+    assert_eq!(
+        lines.len(),
+        5,
+        "playing(A), stopped(A), playing(B), the final stopped(B), the encoder stop: {lines:#?}"
+    );
+    assert!(
+        lines[3].contains("state=stopped")
+            && !lines[3].contains("continuing")
+            && lines[3].contains("X-Plex-Session-Identifier=logical-1236-abr-2"),
+        "the final stopped goes out under B: {}",
+        lines[3]
+    );
+    assert_eq!(left, None, "the stop worker consumed the record the late tick wrote");
+}
+
+/// A reporter cut loose by a reload (its handle dropped) can still have a tick in flight when the
+/// Engine-less stop runs with nothing to post. That stop has no worker to take the record, so it
+/// must not leave one behind, and must not wait on the tick either: it hands the take to a worker.
+#[test]
+fn a_stop_with_nothing_to_post_still_leaves_no_record_behind_a_tick_in_flight() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    drain_scrobble();
+    reset_session(&mut ps);
+    reset_player_control_for_test(&ps);
+    let (port, rx, release, _server) = held_pms(2);
+    let lease = playing_on_port(&mut ps, "logical-1236-abr-1", port);
+    assert!(report_timeline(&lease, plx_plex::plex::TimelineState::Playing, 10_000, 60_000));
+    commit_hls_encoder("logical-1236-abr-2");
+
+    let tick = std::thread::spawn(move || {
+        report_timeline(&lease, plx_plex::plex::TimelineState::Playing, 20_000, 60_000)
+    });
+    rx.recv_timeout(std::time::Duration::from_secs(5)).expect("playing(A)");
+    rx.recv_timeout(std::time::Duration::from_secs(5)).expect("the tick's stopped(A), parked");
+
+    // The reload cut the reporter loose; the new start failed and Back is pressed with no encoder.
+    begin_engine_teardown(true);
+    install_active_encoder("");
+    scrobble_stop(&mut ps, None, None);
+    release.send(()).unwrap();
+    assert!(tick.join().expect("the tick returns"), "the tick completed its POSTs");
+    drain_scrobble();
+
+    let left = reported_timeline_left_behind();
+    leave_recording_pms_case(&mut ps);
+    assert_eq!(left, None, "no worker, or a worker that ran before the tick's note, leaves it");
+}
+
+/// With no reporter alive the stop has nothing to wait for and spawns no worker, but the record a
+/// reporter left must still go with the playback it belonged to.
+#[test]
+fn a_stop_that_spawns_no_worker_still_consumes_the_record() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let (_rx, lease) = playing_on_recording_pms(&mut ps, "logical-1236-abr-1");
+    assert!(report_timeline(&lease, plx_plex::plex::TimelineState::Playing, 10_000, 60_000));
+    assert!(reported_timeline_left_behind().is_some(), "premise: the report was recorded");
+
+    install_active_encoder("");
+    begin_engine_teardown(false);
+    scrobble_stop(&mut ps, None, None);
+    drain_scrobble();
+
+    let left = reported_timeline_left_behind();
+    leave_recording_pms_case(&mut ps);
+    assert_eq!(left, None);
+}
