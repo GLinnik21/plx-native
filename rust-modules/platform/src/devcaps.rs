@@ -341,6 +341,19 @@ pub const EXCLUSIONS: &[Exclusion] = &[
                    Supported' (stereo 44.1/48 kHz and 5.1, with the three header packets fed in-band); \
                    libpf's payload has no key for Vorbis headers.",
     },
+    // LG CX (OLED55CX6LA), webOS 5.5.0-19, firmware 04.50.90, #1166.
+    Exclusion {
+        codename: "jhericurl-jervisbay",
+        limit: Limit::DvFirstPictureIdr,
+        evidence: "libgstdvsplitter.so (sha256 0cda1717b31aa978...) lets only an HEVC IDR (NAL 19 or 20) be \
+                   the first picture after its init or a FLUSH_STOP: the scan's byte table at 0x5b12 sends \
+                   only those two types to the branch that sets found_first_IDR, and 16/17/18/21 only bump a \
+                   counter. A Profile 8.1 film whose only IDR is frame 0 and whose later random access points \
+                   are CRAs (NAL 21) therefore skipped every buffer after a seek and on a resume: the traces \
+                   show 84 and 16926 'non IDR. skip this buffer' lines and no picture. With Dolby Vision Off \
+                   (no DolbyHdrInfo node, so no splitter) the same landings play. 5.6.2-21 (jhericurl-jimna) \
+                   differs only in that table, which admits 16 to 21, so this row does not name it.",
+    },
 ];
 
 /// Bound the native channels of `codec` in `caps` to `max` (`0`: the codec is not announced at all),
@@ -1443,6 +1456,21 @@ pub fn probe() {
         plx_base::eventlog::log(&format!(
             "devcaps: appdecodelossy trigger: every lossy APP_DECODED row decoded in the app (All, in force: {:?})",
             boot.app_lossy_in_force
+        ));
+    }
+    // `dvfirstpicture` (a file holding `idr` or `any`) overrides the firmware row for this run: `idr`
+    // forces it on, to exercise the landing guard on the dev set; `any` forces it off, so the no-picture
+    // watchdog can be exercised on a set the row covers.
+    match plx_base::devtrig::read("dvfirstpicture").as_deref() {
+        Some("idr") => boot.dv_first_picture = DvFirstPicture::IdrOnly,
+        Some("any") => boot.dv_first_picture = DvFirstPicture::AnyIrap,
+        _ => {}
+    }
+    #[cfg(feature = "devtriggers")]
+    if plx_base::devtrig::read("dvfirstpicture").is_some() {
+        plx_base::eventlog::log(&format!(
+            "devcaps: dvfirstpicture trigger: the Dolby Vision splitter takes {:?} first",
+            boot.dv_first_picture
         ));
     }
     let lossy_rows = || APP_DECODED.iter().filter(|r| r.lossy);
