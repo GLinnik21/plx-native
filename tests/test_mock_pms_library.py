@@ -1267,6 +1267,7 @@ class ExtraMediaAudioSelection(unittest.TestCase):
 
 
 
+@unittest.skipUnless(HAS_FFMPEG_AND_FFPROBE, "no ffmpeg/ffprobe")
 class ExtraMediaSubtitle(unittest.TestCase):
     """`--extra-media-subtitle N`: the Nth subtitle stream of an `--extra-media` file is the server-selected
     one (`selected` on it alone), the file's `default` flag untouched: the shape PMS reports when a profile's
