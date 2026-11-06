@@ -1084,3 +1084,31 @@ fn the_final_stop_retires_the_last_reported_id_after_the_engine_teardown_ran_fir
         lines[1]
     );
 }
+
+/// A failed start, a failed Original trial and a failed Engine clear the timeline projection, and
+/// the rebuilt Engine's reporter (the rollback's rebase installed a new encoder) starts from a
+/// fresh one. The id the playback had been reporting under must survive that.
+#[test]
+fn a_cleared_projection_does_not_forget_the_id_the_playback_reported_under() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let (rx, lease) = playing_on_recording_pms(&mut ps, "logical-1236-abr-1");
+    assert!(report_timeline(&lease, plx_plex::plex::TimelineState::Playing, 10_000, 60_000));
+
+    // What `fail_current_engine` and a failed trial's settlement do to the projection.
+    PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()).timeline = None;
+    commit_hls_encoder("logical-1236-abr-2");
+    let rebuilt = begin_timeline_reporting(&ps).expect("the rebuilt Engine's lease");
+    assert!(report_timeline(&rebuilt, plx_plex::plex::TimelineState::Playing, 20_000, 60_000));
+
+    let lines = requests_until_quiet(&rx);
+    leave_recording_pms_case(&mut ps);
+    assert_eq!(lines.len(), 3, "playing(abr-1), stopped(abr-1), playing(abr-2): {lines:#?}");
+    assert!(
+        lines[1].contains("state=stopped")
+            && lines[1].contains("continuing=1")
+            && lines[1].contains("X-Plex-Session-Identifier=logical-1236-abr-1"),
+        "the rebuilt reporter retires the id the cleared projection had reported: {}",
+        lines[1]
+    );
+}

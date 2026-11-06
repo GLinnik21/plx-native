@@ -1212,13 +1212,10 @@ fn commit_in_place_route_projection(ps: &PlaybackSession, quality_contract: bool
     }
 }
 
-/// Main-thread projection consumed by the periodic timeline worker. `Session` itself is
+/// Immutable main-thread projection consumed by the periodic timeline worker. `Session` itself is
 /// deliberately absent: it is main-thread-confined, while this owned clone lives under the same
 /// mutex as the active encoder and engine epoch. A report therefore observes either the complete
 /// old playback projection or the complete new one, never a hybrid assembled across a reload.
-///
-/// Every field but `reported_session` is fixed when the projection is published (the track pair
-/// follows a pick, under the same lock). `reported_session` is the one the reporter writes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TimelineProjection {
     sid: ServerId,
@@ -1228,13 +1225,24 @@ struct TimelineProjection {
     play_queue_item_id: String,
     audio_stream_id: i64,
     subtitle_stream_id: i64,
-    /// **The session id this playback last sent a periodic report under** — `None` until the first
-    /// one goes out. PMS keeps a dashboard row for every id that ever reported `playing`, whatever
-    /// the encoder stop and `/status/sessions/close` did, so when the reporting identity moves
-    /// (an ABR commit, a seek's retranscode, an Original-to-HLS fallback) the id it left must be
-    /// told `stopped` ([`retired_report_session`]; issue #1236). Carried across an Engine reload
-    /// of the same item by [`begin_timeline_reporting`]; a stop discards the projection with it.
-    reported_session: Option<String>,
+}
+
+/// **The session id a playback last sent a periodic report under**, with the item and server it
+/// reported for. PMS keeps a dashboard row for every id that ever reported `playing`, whatever the
+/// encoder stop and `/status/sessions/close` did, so when the reporting identity moves (an ABR
+/// commit, a seek's retranscode, an Original-to-HLS fallback, a rollback's rebase) the id it left
+/// must be told `stopped` ([`retired_report_session`]; issue #1236).
+///
+/// It lives BESIDE [`TimelineProjection`] in [`PlayerControl`], not in it, because the projection
+/// does not outlive the moments that matter: a stop, a failed start, a failed Original trial and a
+/// failed Engine all clear it, and each of them is followed by a reporter or a final `stopped`
+/// that has to name the id the playback had been reporting. The `(sid, rating_key)` key ties it to
+/// one playback: another item's entry is ignored, and [`scrobble_stop`] takes it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ReportedTimeline {
+    sid: ServerId,
+    rating_key: String,
+    session: String,
 }
 
 /// One reporter's authority to sample the playback which spawned it.
@@ -1258,7 +1266,7 @@ struct TimelineSnapshot {
     play_queue_item_id: String,
     audio_stream_id: i64,
     subtitle_stream_id: i64,
-    /// [`TimelineProjection::reported_session`] as the sample saw it.
+    /// [`PlayerControl::reported_session_of`] as the sample saw it.
     reported_session: Option<String>,
 }
 
@@ -1418,6 +1426,9 @@ pub(super) struct PlayerControl {
     start_deferred: Option<(u64, DeferredOriginalEffects)>,
     pending_original: Option<PendingOriginal>,
     timeline: Option<TimelineProjection>,
+    /// The session id the current playback's periodic reports last went out under; survives
+    /// every `timeline = None`. See [`ReportedTimeline`].
+    reported_timeline: Option<ReportedTimeline>,
     /// **The HLS encoder an automatic Original recovery was refused on** — the reducer's own
     /// record of a [`RouteApplyResult::Rejected`] settlement of an automatic `HlsToOriginal`
     /// action ([`finish_route_action`]), or of an Original trial PMS admitted whose Load then
@@ -1435,6 +1446,14 @@ pub(super) struct PlayerControl {
 }
 
 impl PlayerControl {
+    /// The id item `rating_key` of server `sid` last reported under, if it has.
+    fn reported_session_of(&self, sid: ServerId, rating_key: &str) -> Option<String> {
+        self.reported_timeline
+            .as_ref()
+            .filter(|r| r.sid == sid && r.rating_key == rating_key)
+            .map(|r| r.session.clone())
+    }
+
     /// Forget the flight a worker was running, of whichever kind.
     fn clear_flight(&mut self) {
         self.flight = None;
@@ -1481,6 +1500,7 @@ static PLAYER_CONTROL: std::sync::Mutex<PlayerControl> = std::sync::Mutex::new(P
     start_deferred: None,
     pending_original: None,
     timeline: None,
+    reported_timeline: None,
     original_refused_on: None,
 });
 
@@ -2438,10 +2458,7 @@ pub fn begin_engine_teardown(for_reload: bool) {
         control.pending_seek_ns = None;
         control.phase = ControlPhase::Stopping;
         control.clear_flight();
-        // The timeline projection is NOT cleared here. The epoch bump above already ends every
-        // reporter's authority to sample it, and the stop worker still owes the session id the
-        // reporter last used its `stopped`: [`scrobble_stop`] runs after this on the live-Engine
-        // path and takes the projection (and with it that id) itself.
+        control.timeline = None;
         } else {
         let current = control.phase;
         control.phase = match current {
@@ -2696,6 +2713,7 @@ pub fn reset_player_control_for_test(ps: &PlaybackSession) {
     control.start_deferred = None;
     control.pending_original = None;
     control.timeline = None;
+    control.reported_timeline = None;
     control.original_refused_on = None;
 }
 
@@ -6613,12 +6631,12 @@ pub fn scrobble_stop(
         tsession.clone()
     };
     // What the reporter last reported under is taken here, on the thread that owns the route, next
-    // to the id the final `stopped` goes out under. `begin_engine_teardown` has already retired the
-    // reporter's lease on the live-Engine path (the Engine-less one runs this first), and the
-    // reporter itself is only joined by the worker, so a tick in flight when the teardown began is
-    // not accounted for.
-    let retired_id = retired_report_session(take_reported_timeline_session().as_deref(), &session)
-        .map(str::to_owned);
+    // to the id the final `stopped` goes out under. On the live-Engine path a real stop has
+    // already run `begin_engine_teardown`, which cleared the projection and retired the
+    // reporter's lease, so the answer is the id kept beside the projection ([`ReportedTimeline`]);
+    // a tick that was in flight when the teardown began is not accounted for.
+    let reported = take_reported_session(cur_sid(ps), &cur_rk(ps));
+    let retired_id = retired_report_session(reported.as_deref(), &session).map(str::to_owned);
     // The two fields THIS function retires (teardown clears the URL a few lines later, and that is
     // the whole of what a stop resets). A partial write rather than a whole-session reset because
     // the rest is still read after teardown returns — see `reset_session`'s doc for the reader that
@@ -11619,16 +11637,16 @@ pub fn set_forced_only_lang_for_test(ps: &mut PlaybackSession, lang: &str) {
 /// Atomically publish the main-thread session fields a newly spawned timeline reporter may read.
 /// Called at the reporter spawn site, before ownership crosses to its worker. The active encoder
 /// remains in `PlayerControl`, so a later in-place ABR commit changes the wire session and this
-/// projection under one lock without touching main-thread-only `Session`. A reload of the same
-/// item hands the new projection the id its predecessor last reported under
-/// ([`TimelineProjection::reported_session`]), so the id the reload retired still gets its
-/// `stopped`.
+/// projection under one lock without touching main-thread-only `Session`. The id the previous
+/// Engine's reporter last reported under ([`ReportedTimeline`]) is not part of the projection and
+/// is not reset here: the new reporter's first report still stops it when the reload (or a
+/// rollback's rebase) retired it.
 pub fn begin_timeline_reporting(ps: &PlaybackSession) -> Option<TimelineLease> {
     // A trailer never writes watch state, whatever became of its preview flag.
     if preview_request(ps) {
         return None;
     }
-    let mut projection = TimelineProjection {
+    let projection = TimelineProjection {
         sid: cur_sid(ps),
         rating_key: cur_rk(ps),
         logical_session: sess(ps),
@@ -11636,23 +11654,12 @@ pub fn begin_timeline_reporting(ps: &PlaybackSession) -> Option<TimelineLease> {
         play_queue_item_id: pq_item_id(ps),
         audio_stream_id: cur_audio_sid(ps),
         subtitle_stream_id: cur_sub_sid(ps),
-        reported_session: None,
     };
     if projection.rating_key.is_empty() || !projection.sid.is_set() {
         return None;
     }
     let required_stop = TIMELINE_STOP_FENCE.announced();
     let mut control = PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner());
-    // An Engine reload (a quality change, a transcode seek) starts a new reporter for the SAME
-    // playback while the old projection still stands, and the id the old reporter last reported
-    // under may be the one that reload just retired. A stop took the projection
-    // ([`take_reported_timeline_session`]) and a failed start cleared it, so a playback that
-    // follows one starts with nothing to carry.
-    projection.reported_session = control
-        .timeline
-        .take()
-        .filter(|old| old.sid == projection.sid && old.rating_key == projection.rating_key)
-        .and_then(|old| old.reported_session);
     control.timeline = Some(projection);
     Some(TimelineLease {
         engine_epoch: control.engine_epoch,
@@ -11698,7 +11705,7 @@ fn timeline_snapshot(
         play_queue_item_id: projection.play_queue_item_id.clone(),
         audio_stream_id: projection.audio_stream_id,
         subtitle_stream_id: projection.subtitle_stream_id,
-        reported_session: projection.reported_session.clone(),
+        reported_session: control.reported_session_of(projection.sid, &projection.rating_key),
     })
 }
 
@@ -11713,25 +11720,28 @@ fn retired_report_session<'a>(reported: Option<&'a str>, current: &str) -> Optio
     reported.filter(|id| !id.is_empty() && *id != current)
 }
 
-/// Record `session` as the id this playback last reported under, for the Engine `lease` names. A
-/// reporter whose Engine was retired while its POST was in flight writes nothing: the projection
-/// it would write into is another Engine's, or gone.
-fn note_reported_session(lease: &TimelineLease, session: &str) {
+/// Record that item `rating_key` of server `sid` has now reported under `session`. Called under
+/// `TIMELINE_EFFECT` right after the POST, so the record follows the order the reports reached
+/// the wire in, whichever Engine's reporter sent them.
+fn note_reported_session(sid: ServerId, rating_key: &str, session: &str) {
     let mut control = PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner());
-    if control.engine_epoch != lease.engine_epoch {
-        return;
-    }
-    if let Some(projection) = control.timeline.as_mut() {
-        projection.reported_session = Some(session.to_owned());
-    }
+    control.reported_timeline = Some(ReportedTimeline {
+        sid,
+        rating_key: rating_key.to_owned(),
+        session: session.to_owned(),
+    });
 }
 
-/// The id this playback last reported under, for [`scrobble_stop`] to compare with the id its
-/// final `stopped` goes out under. It takes the whole projection: a stop ends the playback it
-/// describes, so the next one starts with nothing to carry.
-fn take_reported_timeline_session() -> Option<String> {
+/// Take the id item `rating_key` of server `sid` last reported under, for [`scrobble_stop`] to
+/// compare with the id its final `stopped` goes out under. The record is consumed either way: this
+/// playback is over, and another item's entry is stale.
+fn take_reported_session(sid: ServerId, rating_key: &str) -> Option<String> {
     let mut control = PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner());
-    control.timeline.take()?.reported_session
+    control
+        .reported_timeline
+        .take()
+        .filter(|r| r.sid == sid && r.rating_key == rating_key)
+        .map(|r| r.session)
 }
 
 /// POST one periodic timeline update for an exact [`TimelineLease`]. After waiting for the stop
@@ -11743,9 +11753,8 @@ fn take_reported_timeline_session() -> Option<String> {
 /// When the snapshot's session id is not the one the previous report went out under (an ABR
 /// commit, a seek's retranscode, a fallback replaced the encoder in between), the previous id is
 /// first sent a `stopped` with `continuing=1` at this report's position
-/// ([`retired_report_session`]), then this report goes out and its id is recorded. Both POSTs
-/// sit inside the one `TIMELINE_EFFECT` hold, in that order, and the recording is the lease's own
-/// Engine's.
+/// ([`retired_report_session`]), then this report goes out and its id is recorded
+/// ([`ReportedTimeline`]). Both POSTs sit inside the one `TIMELINE_EFFECT` hold, in that order.
 pub fn report_timeline(
     lease: &TimelineLease,
     state: plx_plex::plex::TimelineState,
@@ -11777,7 +11786,7 @@ pub fn report_timeline(
         }
     }
     let ok = c.timeline(&report.wire(&report.session, report.state, false));
-    note_reported_session(lease, &report.session);
+    note_reported_session(report.sid, &report.rating_key, &report.session);
     // FAILURES ONLY. The reporter thread logs `timeline <state> t=…s/…s` for every tick whichever
     // way the POST went (`player::threads`), so a report the server never took looks exactly like
     // one it did — for the whole length of a film, ten seconds at a time. The success half is
