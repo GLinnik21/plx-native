@@ -1,0 +1,30 @@
+[package]
+name = "plx_playback_contract"
+version = "0.0.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Backend-neutral playback commands and evidence"
+repository = "https://github.com/GLinnik21/plx-native"
+publish = false
+
+[package.metadata.plx]
+mount = "playback_contract"
+
+[lib]
+name = "plx_playback_contract"
+crate-type = ["rlib"]
+
+[features]
+# `test_support::FakeUriDriver`, a scriptable `UriDriver` for the crates that test against the
+# trait. Enabled only from the dependents' `[dev-dependencies]`; never in a shipped build.
+test-support = []
+
+[dependencies]
+# The worker-only adaptive session carries the existing off-frame proof across its port.
+plx_base = { path = "../base" }
+# `playurl::PlayUrl` is the dev trigger's JSON value. The same spec as plx_play_feed's, so the
+# lockfile gains no crate.
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+
+[lints]
+workspace = true

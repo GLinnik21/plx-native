@@ -59,7 +59,7 @@ Scenarios (each a named row; `--only ID,ID` selects, `--quick` is `noop,leaf,siz
   leaf-inc  `leaf` with CARGO_INCREMENTAL=1 in rust-modules/target-fast (the `make test-fast` tree).
   hub-inc   `hub`, incremental. The two -inc rows are skipped with a note when target-fast is
             absent, unless `--cold` (which builds it, untimed, first).
-  tests     the default-feature unit suite (`cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens`, run through
+  tests     the default-feature unit suite (`cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_appkit -p plx_screens`, run through
             tools/cargo-test-parallel.py exactly as the Makefile's recipes do) on a warm tree;
             the `test result:` counts of every crate are summed.
   arm       the ARM staticlib line (`cargo rustc ... --crate-type staticlib`) after touching lib.rs,
