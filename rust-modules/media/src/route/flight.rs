@@ -235,6 +235,16 @@ pub(super) static RETRANSCODE_CLAIM_SLOT: std::sync::Mutex<Option<RetranscodeCla
 /// Written only by [`post_claim_landing`] and [`take_claim_landing`], under the slot's guard.
 static RETRANSCODE_CLAIM_LANDED: AtomicBool = AtomicBool::new(false);
 
+/// Test-only: whether ANY claim worker's landing (a retranscode's, a rebase's, an auto-HLS's or a
+/// recovery's: the flag covers every `RetranscodeClaimLanding`) is posted and the frame thread has
+/// not drained it yet. A test that must act in exactly that window (after the worker answered,
+/// before the next pump reloads the session) waits on this instead of on a clock; it must know
+/// which flight it has started, because the flag does not say whose landing it is.
+#[cfg(any(test, feature = "test-support"))]
+pub fn claim_landing_posted_for_test() -> bool {
+    RETRANSCODE_CLAIM_LANDED.load(Ordering::Acquire)
+}
+
 /// Publish a landing for the frame thread's next drain.
 pub(super) fn post_claim_landing(landing: RetranscodeClaimLanding) {
     let replaced = {

@@ -18,6 +18,8 @@ mod prefs;
 mod track_memory;
 
 pub use decision::*;
+#[cfg(any(test, feature = "test-support"))]
+pub use flight::claim_landing_posted_for_test;
 pub use flight::{
     discard_stale_flight_landing, engineless_flight_outstanding, flight_is_current, flight_outstanding, recovery_flight_offset_ns, recovery_flight_outstanding, resume_flight_outstanding, retire_superseded_encoder, take_ready_flight,
     take_ready_recovery_flight, ReadyFlight, RecoveryLanding, RecoveryVerdict, SeekVerdict,
