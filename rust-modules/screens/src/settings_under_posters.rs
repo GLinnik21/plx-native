@@ -555,7 +555,7 @@ impl Machine<InnerHost> for UnderPostersPage {
 plx_ui::focusable_via_view!(UnderPostersPage, InnerHost, view);
 
 impl Screen<InnerHost> for UnderPostersPage {
-    fn name(&self) -> &'static str { "under-posters" }
+    fn name(&self) -> &'static str { crate::registry::word::UNDER_POSTERS }
     fn state(&self) -> &dyn LogicalState { &self.state }
     fn crumb(&self, _cx: &Cx<'_, InnerHost>) -> Option<Cow<'_, str>> { Some(Cow::Borrowed(plx_platform::i18n::msg::settings_title())) }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
@@ -783,7 +783,13 @@ impl Machine<InnerHost> for DetailsPage {
 plx_ui::focusable_via_view!(DetailsPage, InnerHost, view);
 
 impl Screen<InnerHost> for DetailsPage {
-    fn name(&self) -> &'static str { "under-posters-details" }
+    /// One word per kind, so a scene that boots the Show picker is not satisfied by the Movie one.
+    fn name(&self) -> &'static str {
+        match self.kind {
+            PosterKind::Movie => crate::registry::word::UNDER_POSTERS_MOVIE,
+            PosterKind::Show => crate::registry::word::UNDER_POSTERS_SHOW,
+        }
+    }
     fn state(&self) -> &dyn LogicalState { &self.state }
     fn crumb(&self, _cx: &Cx<'_, InnerHost>) -> Option<Cow<'_, str>> { Some(Cow::Borrowed(plx_platform::i18n::msg::under_posters_title())) }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
