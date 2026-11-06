@@ -1151,6 +1151,22 @@ class FpsIdentity(unittest.TestCase):
         self.assertEqual(run.parse_fps(lines, "home", "privacy"), [59])
         self.assertEqual(run.parse_fps(lines, "home", "legal"), [58])
 
+    def test_hyphenated_settings_page_words_are_captured_whole(self):
+        """Settings v2's pages answer hyphenated `Screen::name`s (`under-posters`, `player-hud`). A
+        `\\w+` overlay group stops at the hyphen and reads them as `under` / `player`, so a scene
+        selecting on the full word would find no samples and the harness would report a booted page
+        as "never entered"."""
+        lines = [
+            "loop=60 route=home overlay=under-posters fps=61",
+            "loop=60 route=home overlay=under-posters-movie fps=57 worstframe=9.5ms",
+            "loop=60 route=home overlay=player-hud fps=55",
+        ]
+        self.assertEqual(run.parse_fps(lines, "home", "under-posters"), [61])
+        self.assertEqual(run.parse_fps(lines, "home", "under-posters-movie"), [57])
+        self.assertEqual(run.parse_fps(lines, "home", "player-hud"), [55])
+        self.assertEqual(run.parse_worst(lines, "home", "under-posters-movie"), [9.5])
+        self.assertEqual(run.parse_loop(lines, "home", "player-hud"), [60])
+
     def test_a_scene_that_pins_a_section_grades_only_the_heartbeats_that_name_it(self):
         """A section is the player page's state, not a surface: ` overlay=` stays `none` and the
         heartbeat gains ` section=<word>` after it, which only a scene with a `"section"` key reads."""
@@ -1227,7 +1243,14 @@ class FpsIdentity(unittest.TestCase):
                               ("settings-playback", "playback"),
                               ("settings-picker", "picker"),
                               ("settings-privacy", "privacy"),
-                              ("settings-legal", "legal")):
+                              ("settings-legal", "legal"),
+                              ("settings-language", "language"),
+                              ("settings-audio", "audio"),
+                              ("settings-under-posters", "under-posters"),
+                              ("settings-under-posters-movie", "under-posters-movie"),
+                              ("settings-under-posters-show", "under-posters-show"),
+                              ("settings-player-hud", "player-hud"),
+                              ("settings-diagnostics", "diagnostics")):
             with self.subTest(scene=name):
                 scene = scenes[name]
                 self.assertEqual(scene["route"], "home")
@@ -1235,6 +1258,21 @@ class FpsIdentity(unittest.TestCase):
                 self.assertGreaterEqual(scene["loop_floor"], 50)
                 self.assertGreaterEqual(scene["fps_floor"], 50)
                 self.assertTrue(scene["triggers"]["plxnative-settingsosc"])
+
+        # each Settings v2 page scene boots its own page, and no scene can be satisfied by the root
+        for name, boot in (("settings-language", "language"),
+                           ("settings-audio", "audio"),
+                           ("settings-under-posters", "under-posters"),
+                           ("settings-under-posters-movie", "under-posters-movie"),
+                           ("settings-under-posters-show", "under-posters-show"),
+                           ("settings-player-hud", "player-hud"),
+                           ("settings-diagnostics", "diagnostics")):
+            with self.subTest(scene=name, boot=boot):
+                self.assertEqual(scenes[name]["triggers"]["plxnative-settings"], boot)
+                self.assertNotEqual(scenes[name]["overlay"], "settings")
+        # the two details pickers answer one heartbeat word each, so neither scene can be satisfied by the other
+        self.assertNotEqual(scenes["settings-under-posters-movie"]["overlay"],
+                            scenes["settings-under-posters-show"]["overlay"])
 
         idle = scenes["settings-idle"]
         self.assertEqual(idle["overlay"], "settings")

@@ -2063,7 +2063,7 @@ impl Machine<InnerHost> for LanguagePage {
 plx_ui::focusable_via_view!(LanguagePage, InnerHost, view);
 
 impl Screen<InnerHost> for LanguagePage {
-    fn name(&self) -> &'static str { "language" }
+    fn name(&self) -> &'static str { word::LANGUAGE }
     fn state(&self) -> &dyn LogicalState { &self.state }
     fn crumb(&self, _cx: &Cx<'_, InnerHost>) -> Option<Cow<'_, str>> { Some(Cow::Borrowed(plx_platform::i18n::msg::settings_title())) }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}

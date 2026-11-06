@@ -187,7 +187,7 @@ impl Machine<InnerHost> for DiagnosticsPage {
 plx_ui::focusable_via_view!(DiagnosticsPage, InnerHost, view);
 
 impl Screen<InnerHost> for DiagnosticsPage {
-    fn name(&self) -> &'static str { "diagnostics" }
+    fn name(&self) -> &'static str { super::super::registry::word::DIAGNOSTICS }
     fn state(&self) -> &dyn LogicalState { &self.state }
     fn crumb(&self, _cx: &Cx<'_, InnerHost>) -> Option<Cow<'_, str>> { Some(Cow::Borrowed(plx_platform::i18n::msg::settings_title())) }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
