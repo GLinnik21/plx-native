@@ -11,8 +11,9 @@
 //! under its label is stated in the left column while the row has focus ([`sentence_for`], the
 //! shared [`FollowCopy`](plx_ui::follow_copy::FollowCopy)), and a row with none shows the page's.
 //! The picture under that sentence is the shared picture slot ([`RootPicture`], also drawn on the
-//! Settings root): a movie poster and a show poster, each with the lines the stored setting gives
-//! it. Each tile's art is the first poster of its kind from the widest cache the Browse store holds
+//! Settings root): a movie poster and a show poster, each under its kind ("MOVIES", "SHOWS": the
+//! Settings table's section-header caps, [`plx_ui::table::draw_caps_label`], in the slot's top band)
+//! and over the lines the stored setting gives it. Each tile's art is the first poster of its kind from the widest cache the Browse store holds
 //! ([`preview_posters`]); a kind with none anywhere is a finished art-less face
 //! (`plx_ui::widgets::absent_card`), never a skeleton. The lines are worded by the SAME policy the Library, Collections, the Watchlist, Home and
 //! Recommended read ([`crate::registry::captions`], [`plx_ui::caption_policy`]); a face with no
@@ -402,9 +403,12 @@ fn picture_lines(v: UnderPosters, kind: PosterKind, poster: Option<&PmsMovie>, s
 }
 
 /// The Under posters picture (board `Sv2-2`): one art-only poster tile per kind, each with the
-/// lines the stored setting gives it centred under it, painted INTO the picture slot. No panel,
-/// ring, tick or label: it is display-only and never reads as a control. The Settings root draws
-/// the same picture, so root and child agree; a details picker draws the one tile of its kind.
+/// lines the stored setting gives it centred under it and its KIND ("MOVIES", "SHOWS") over it,
+/// painted INTO the picture slot. No panel, ring or tick: it is display-only and never reads as a
+/// control, and the kind caption is the table's section-header look
+/// ([`plx_ui::table::draw_caps_label`]), not a mark that could be pressed. The Settings root draws
+/// the same picture, so root and child agree; a details picker draws the one tile of its kind,
+/// under its own kind's caption.
 pub(super) struct RootPicture<'a> {
     pub value: UnderPosters,
     pub posters: &'a [&'a PmsMovie],
@@ -418,6 +422,8 @@ pub(super) struct RootPicture<'a> {
 const PICTURE_TILE_W: f32 = 200.0;
 const PICTURE_TILE_H: f32 = 300.0;
 const PICTURE_TILE_STEP: f32 = 240.0;
+/// The air between a kind caption's baseline and the top of its tile.
+const PICTURE_KIND_GAP: f32 = theme::space::SM;
 /// The first line's CSS box under a tile: 24 px on a 24 px line, its top 312 px under the tile's;
 /// the second line (the details, under a title) hangs one line and a gap under it.
 const PICTURE_LINE_TOP: f32 = 312.0;
@@ -425,6 +431,26 @@ const PICTURE_LINE_H: f32 = 24.0;
 const PICTURE_LINE_STEP: f32 = 32.0;
 /// The room a line may take: a tile's width and the air up to its neighbour's.
 const PICTURE_LINE_W: f32 = PICTURE_TILE_STEP - 16.0;
+
+/// The word over a tile of `kind`: the library kind's own name, as the Library tab reads it
+/// (`browse.kind.movies`; `browse.kind.shows`, the short plural a collection's heading uses).
+/// Upper-cased where it is drawn ([`plx_ui::table::draw_caps_label`]).
+fn kind_caption(kind: PosterKind) -> &'static str {
+    use plx_platform::i18n::msg;
+    match kind {
+        PosterKind::Movie => msg::browse_kind_movies(),
+        PosterKind::Show => msg::browse_kind_shows(),
+    }
+}
+
+/// The slot's top-down stack: the kind caption's band, then the tile with the gap that belongs to it.
+/// Returns the tile's top edge.
+fn picture_tile_top(slot_y: f32) -> f32 {
+    use plx_ui::hstack::Item;
+    use plx_ui::vstack::{Anchor, VStack};
+    let items = [Item::new(plx_ui::table::caps_band_h()), Item::new(PICTURE_TILE_H).before(PICTURE_KIND_GAP)];
+    VStack::new(&items, 0.0, Anchor::Top(slot_y)).span(1).map_or(slot_y, |(y, _)| y)
+}
 
 impl plx_ui::follow_copy::PictureSlot for RootPicture<'_> {
     fn draw(&self, p: Painter, slot: Rect, measure: &dyn plx_machine::machine::Measure) {
@@ -439,7 +465,13 @@ impl plx_ui::follow_copy::PictureSlot for RootPicture<'_> {
         let line_cap_top = plx_gfx::text::css_cap_drop(size, PICTURE_LINE_H, measure.cap_h(size));
         for (i, kind) in self.kinds.iter().enumerate() {
             let x = slot.x + PICTURE_TILE_STEP * i as f32;
-            let tile = Rect::new(x, slot.y, PICTURE_TILE_W, PICTURE_TILE_H);
+            // The kind caption is the slot's top band and the tile hangs under it, so the picture
+            // stays inside the slot's own box and nothing in the narrative column moves.
+            plx_ui::table::draw_caps_label(
+                p, plx_ui::table::caps_band(x, slot.y, PICTURE_TILE_W), kind_caption(*kind), PICTURE_TILE_W,
+                theme::TEXT_READING, plx_ui::table::BOARD_CAPS_TRACK_PX, measure,
+            );
+            let tile = Rect::new(x, picture_tile_top(slot.y), PICTURE_TILE_W, PICTURE_TILE_H);
             match arts[i] {
                 Some(art) => plx_ui::widgets::card(p, tile, plx_ui::follow_copy::PosterFan::stateless(art), theme::CARD_RING_RAD, false, 1.0, 0.0),
                 None => plx_ui::widgets::absent_card(p, tile, theme::CARD_RING_RAD),
@@ -456,7 +488,7 @@ impl plx_ui::follow_copy::PictureSlot for RootPicture<'_> {
                 label.draw(
                     p,
                     Rect::new(x + (PICTURE_TILE_W - PICTURE_LINE_W) * 0.5,
-                        slot.y + PICTURE_LINE_TOP + PICTURE_LINE_STEP * n as f32 + line_cap_top, PICTURE_LINE_W, PICTURE_LINE_H),
+                        tile.y + PICTURE_LINE_TOP + PICTURE_LINE_STEP * n as f32 + line_cap_top, PICTURE_LINE_W, PICTURE_LINE_H),
                 );
             }
         }
