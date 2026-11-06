@@ -76,7 +76,8 @@ def defaults():
 
 def uri_defaults():
     spec = defaults()
-    spec["readelf:--dyn-syms"]["output"] = ""
+    # No Starfish hook, but src/exit.c's interposer is linked whatever the backend set.
+    spec["readelf:--dyn-syms"]["output"] = EXIT_ROW
     spec["readelf:-d"]["output"] = "Shared library: [libalpha.so]\n"
     return spec
 
@@ -144,7 +145,7 @@ class ElfGateTests(unittest.TestCase):
 
     def test_uri_mode_rejects_any_feed_hook_or_library(self):
         for label, change, diagnostic in [
-            ("hook", lambda spec: spec["readelf:--dyn-syms"].update(output=f"1: 00000000 16 FUNC GLOBAL DEFAULT 1 {HOOK}\n"), "callbackFunctionHook"),
+            ("hook", lambda spec: spec["readelf:--dyn-syms"].update(output=HOOK_ROW + EXIT_ROW), "callbackFunctionHook"),
             ("player", lambda spec: spec["readelf:-d"].update(output="Shared library: [libalpha.so]\nShared library: [libplayerAPIs.so.1]\n"), "Feed library"),
             ("pipeline", lambda spec: spec["readelf:-d"].update(output="Shared library: [libalpha.so]\nShared library: [libpf-1.0.so.1]\n"), "Feed library"),
         ]:
@@ -168,10 +169,10 @@ class ElfGateTests(unittest.TestCase):
         result = self.run_gate(defaults(), extra_env={"PLAYBACK_BACKENDS": "feed"})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         spec = defaults()
-        spec["readelf:--dyn-syms"]["output"] = ""
+        spec["readelf:--dyn-syms"]["output"] = EXIT_ROW
         result = self.run_gate(spec, extra_env={"PLAYBACK_BACKENDS": "feed"})
         self.assertNotEqual(result.returncode, 0, result.stdout)
-        self.assertIn("interposer", result.stdout)
+        self.assertIn("callbackFunctionHook interposer", result.stdout)
 
     def test_unknown_or_empty_backend_mode_is_rejected(self):
         for backend in ("none", "uri feed", "", "surprise"):
