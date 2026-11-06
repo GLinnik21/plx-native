@@ -130,11 +130,13 @@ pub(crate) fn compose_backends(adapter: &mut PlayerAdapter, session: &mut Playba
     session.install_backends(adapter.composed_backends());
 }
 
-/// The hooks table the Feed's native executor runs over, built over the raw sink and the slice
-/// clock the composition names, as one value. A macro, not a function, because a hook is a plain
-/// `fn` that can capture nothing: the raw sink has to be a path the functions below can name. The
-/// television's table ([`TV_HOOKS`]) and the host tests' (`TEST_HOOKS`) are two expansions, so what
-/// differs between them is exactly the two paths and no `cfg` stands in the production one.
+/// The hooks table the Feed's native executor runs over, built over the raw sink, the slice
+/// clock and the `sf-unload` worker's guard the composition names, as one value. A macro, not a
+/// function, because a hook is a plain `fn` that can capture nothing: the raw sink has to be a path
+/// the functions below can name. The television's table ([`TV_HOOKS`]) and the host tests'
+/// (`TEST_HOOKS`) are two expansions, so what differs between them is exactly the three paths and
+/// no `cfg` stands in the production one. The guard is what the Unload worker holds while it lives:
+/// nothing on the television ([`no_unload_worker`]), the host drain's counter in a host test.
 ///
 /// Every hook but the release takes the FENCED sink ([`SinkFence`]), which refuses each verb while
 /// an off-frame `Unload` owns the native object; the release takes the raw one. The policy the
@@ -142,7 +144,7 @@ pub(crate) fn compose_backends(adapter: &mut PlayerAdapter, session: &mut Playba
 /// facade) is `plx_media`'s; this table only says which sink it runs over.
 #[cfg(feature = "play-feed")]
 macro_rules! native_hooks_over {
-    ($raw:path, $clock:path) => {{
+    ($raw:path, $clock:path, $worker:path) => {{
         const FENCE: SinkFence = SinkFence::new($raw, &RefusingSink($raw));
         fn fenced() -> &'static dyn VideoSink { FENCE.current() }
         fn mirror_playstate(mt: &MainThread, stage: Stage, playing: bool) {
@@ -154,7 +156,11 @@ macro_rules! native_hooks_over {
             plx_play_feed::native_load::load_thread(fenced, payload, native_epoch, receipt, pcm_lead);
         }
         fn spawn_unload(ticket: UnloadTicket) -> Option<std::thread::JoinHandle<()>> {
-            plx_base::task::spawn("sf-unload", move || unsafe { $raw().unload(&ticket) })
+            let worker = $worker();
+            plx_base::task::spawn("sf-unload", move || {
+                let _worker = worker;
+                unsafe { $raw().unload(&ticket) }
+            })
         }
         NativeHooks {
             prepare: PrepareHooks {
@@ -182,12 +188,34 @@ macro_rules! native_hooks_over {
 /// The television's (and the simulator's, whose port table holds the host sink) hooks: the
 /// installed port's sink and the Feed's own monotonic clock.
 #[cfg(feature = "play-feed")]
-const TV_HOOKS: NativeHooks = native_hooks_over!(sink::installed, plx_play_feed::shared::vclock_us);
+const TV_HOOKS: NativeHooks =
+    native_hooks_over!(sink::installed, plx_play_feed::shared::vclock_us, no_unload_worker);
+
+/// What the television's `sf-unload` worker holds while it lives: nothing.
+#[cfg(feature = "play-feed")]
+struct NoWorker;
+
+#[cfg(feature = "play-feed")]
+fn no_unload_worker() -> NoWorker { NoWorker }
 
 /// The host tests' hooks: the host sink (a hostsim test binary installs no port) and a clock that
 /// never moves, so the host seam's near-free `sf_feed` cannot run out a slice on a slow machine.
 #[cfg(all(test, feature = "play-feed"))]
-const TEST_HOOKS: NativeHooks = native_hooks_over!(test_raw_sink, test_clock_us);
+const TEST_HOOKS: NativeHooks = native_hooks_over!(test_raw_sink, test_clock_us, test_unload_worker);
+
+/// The host drain counts each `sf-unload` worker from before it is spawned until it ends, so a
+/// test's reset can wait it out (`ffi_host::UnloadWorker`); a build with no host sink has no drain.
+#[cfg(all(test, feature = "play-feed"))]
+fn test_unload_worker() -> impl Send + 'static {
+    #[cfg(feature = "hostsim")]
+    {
+        plx_play_feed::ffi_host::UnloadWorker::enter()
+    }
+    #[cfg(not(feature = "hostsim"))]
+    {
+        NoWorker
+    }
+}
 
 #[cfg(all(test, feature = "play-feed"))]
 fn test_raw_sink() -> &'static dyn VideoSink {
@@ -393,6 +421,30 @@ mod tests {
         }
         unsafe fn plane_pause(&self, mt: &MainThread) { NoSink.plane_pause(mt) }
         unsafe fn plane_resume(&self, mt: &MainThread) { NoSink.plane_resume(mt) }
+    }
+
+    /// The host drain (`ffi_host::reset_native_lifecycle_for_test`) waits out every `sf-unload` worker
+    /// so none delivers UNLOADCOMPLETED into the next test's session; it can only wait for the
+    /// workers it counts, and a worker is counted by the hooks' `spawn_unload` entering
+    /// `UnloadWorker` before it spawns. The application's test hooks are the table the app's player
+    /// tests run their Unload over, so their worker has to be one of those.
+    #[cfg(all(feature = "hostsim", feature = "play-feed"))]
+    #[test]
+    fn the_test_hooks_unload_worker_is_counted_by_the_drain_wait() {
+        use plx_play_feed::ffi_host;
+        let _serial = plx_base::testlock::serial();
+        let mt = unsafe { MainThread::assume() };
+        ffi_host::reset_native_lifecycle_for_test();
+        ffi_host::hold_unload_for_test();
+        let worker = (TEST_HOOKS.release.spawn_unload)(sink::UnloadTicket::issue(&mt));
+        let counted = ffi_host::unload_workers_for_test();
+        ffi_host::release_unload_for_test();
+        if let Some(worker) = worker {
+            worker.join().unwrap();
+        }
+        ffi_host::reset_native_lifecycle_for_test();
+        assert_eq!(counted, 1, "the held Unload's worker was not counted: the drain wait cannot wait it out");
+        assert_eq!(ffi_host::unload_workers_for_test(), 0, "the worker ended with the release");
     }
 
     /// Run the boot over a scripted sink on a private owner, then offer the owner a DIFFERENT boot:
