@@ -29,6 +29,12 @@ pub mod ff_test_support {
         }
     }
     pub use acquisition::{AcquisitionRuntime, Phase, SegmentAcquisition};
+    /// The diag sample's counters that live outside the mailboxes: the access units fed per lane
+    /// and whether the demuxer has handed over a video one.
+    pub fn store_diag_counters(fed_v: i64, fed_a: i64, pushed_any: bool) {
+        crate::native_executor::store_fed_totals(fed_v, fed_a);
+        crate::ff::store_pushed_any(pushed_any);
+    }
     pub use crate::ff::subs::SubTracks;
     pub use crate::ff::{annexb_start, arm_active_stall_guard, candidate_reserve_deadline,
         classify_curl_open_err, classify_hls_avio_facts, classify_hls_deadline,

@@ -453,9 +453,21 @@ pub struct FeedRaw {
     /// The clock delta the reader matched byte for byte for this engine run (Part time minus the
     /// playhead, ns); `None` while none has been measured.
     pub side_exact_delta_ns: Option<i64>,
+    /// The audio the demuxer feeds the pipeline natively (the TV decodes the codec itself), once it
+    /// has said so; `None` before that and for any track the TV decodes by name alone or the app
+    /// decodes. The player reads it to tell a native audio refusal from any other.
+    pub native_audio: Option<NativeAudio>,
     /// This session's direct-play seek mode (`Segment` before a Load selects one); the feed
     /// downgrades it to `Reload` when the pipeline refuses a native `Seek`.
     pub seek_mode: SeekMode,
+}
+
+/// The audio a session feeds the pipeline natively: the codec's FFmpeg name and the track's channel
+/// count ([`FeedRaw::native_audio`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NativeAudio {
+    pub codec: &'static str,
+    pub channels: u32,
 }
 
 /// The Auto-quality facts the demux publishes about the open it runs: which controller started, the
@@ -552,6 +564,14 @@ pub struct FeedDiag {
     pub frame_at: u32,
     /// The pipeline's reported frame rate in thousandths of a frame per second; 0 = not reported.
     pub video_fps_milli: i64,
+    /// Video and audio access units the feed has handed the pipeline this session (accepted, not
+    /// attempted: a refused push is not counted).
+    pub fed_v: i64,
+    pub fed_a: i64,
+    /// The session's demuxer has handed over at least one video access unit. Tells "the demuxer
+    /// produced nothing" from "it produced access units that never reached the decoder": two stalls
+    /// that present identically as a spinner.
+    pub pushed_any: bool,
 }
 
 impl FeedDiag {
@@ -560,6 +580,7 @@ impl FeedDiag {
         place_rv: i32::MIN, placed_w: 0, placed_h: 0, load_completed: false, cb_count: 0,
         aq_video: 0, aq_audio: 0, fed_v_pts: 0, fed_a_pts: 0, load_v: 0, load_a: 0, feed_state: 0,
         cb_err: 0, cb_err_at: 0, net_rx: 0, load_at: 0, frame_at: 0, video_fps_milli: 0,
+        fed_v: 0, fed_a: 0, pushed_any: false,
     };
 }
 
@@ -601,7 +622,7 @@ impl FeedRaw {
         diag: FeedDiag::IDLE,
         vpres_gap_sum_ms: 0, vpres_gap_count: 0, disp_base: 0, load: LoadRaw::IDLE,
         abr: DemuxAbr::IDLE,
-        side_reader_active: false, side_failures: 0, side_exact_delta_ns: None,
+        side_reader_active: false, side_failures: 0, side_exact_delta_ns: None, native_audio: None,
         seek_mode: SeekMode::Segment,
     };
 }

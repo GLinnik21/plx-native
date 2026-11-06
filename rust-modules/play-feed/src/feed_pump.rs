@@ -1257,6 +1257,8 @@ fn native_feed_raw(failure: FailureSample) -> FeedRaw {
         side_failures: crate::side_reader::failures(),
         seek_mode: crate::seek::seek_mode(),
         side_exact_delta_ns: crate::side_reader::exact_delta_ns(),
+        native_audio: crate::ff::native_audio::fed()
+            .map(|(kind, channels)| plx_playback_contract::feed::NativeAudio { codec: kind.ffmpeg_name(), channels }),
     }
 }
 
@@ -1265,6 +1267,7 @@ fn native_feed_raw(failure: FailureSample) -> FeedRaw {
 /// pump's publish ([`publish_diag`]), the placement, the Load's payload, the pipeline's callbacks
 /// and the demux's byte counter; the session's reset returns every one to [`FeedDiag::IDLE`].
 fn native_feed_diag() -> FeedDiag {
+    let (fed_v, fed_a) = fed_totals();
     FeedDiag {
         place_rv: FEED_SHARED.dg_place_rv.load(Relaxed),
         placed_w: FEED_SHARED.dg_placed_w.load(Relaxed),
@@ -1284,6 +1287,9 @@ fn native_feed_diag() -> FeedDiag {
         load_at: FEED_SHARED.dg_load_at.load(Relaxed),
         frame_at: FEED_SHARED.dg_frame_at.load(Relaxed),
         video_fps_milli: FEED_SHARED.video_fps_milli.load(Relaxed),
+        fed_v,
+        fed_a,
+        pushed_any: crate::ff::pushed_any(),
     }
 }
 

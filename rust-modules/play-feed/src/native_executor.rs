@@ -31,6 +31,13 @@ pub fn fed_totals() -> (i64, i64) {
     (VTOT.load(Ordering::Relaxed), ATOT.load(Ordering::Relaxed))
 }
 
+/// A test's stand-in for a live session's counters (the diag sample reads them like any other).
+#[cfg(any(test, feature = "test-support"))]
+pub fn store_fed_totals(video: i64, audio: i64) {
+    VTOT.store(video, Ordering::Relaxed);
+    ATOT.store(audio, Ordering::Relaxed);
+}
+
 pub fn reset_fed_counters() {
     VTOT.store(0, Ordering::Relaxed);
     ATOT.store(0, Ordering::Relaxed);

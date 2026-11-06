@@ -304,7 +304,7 @@ fn native_audio_fact(ps: &mut crate::route::PlaybackSession) -> Option<plx_platf
     if !ps.readout().native_audio_refused() {
         return None;
     }
-    let fed = refused_native_audio();
+    let fed = refused_native_audio(ps);
     if fed.is_none() {
         ps.step_readout(super::readout::ReadoutEvent::Taken {
             edge: super::readout::Edge::NativeAudioRefused,
@@ -493,9 +493,9 @@ fn decode_in_app(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter
 
 /// The native audio the demuxer is feeding, as the capability facet the pipeline's refusal of it
 /// removes from an attempt (`Caps::without`). `None` when nothing is fed natively.
-fn refused_native_audio() -> Option<plx_platform::devcaps::Facet> {
-    let (kind, channels) = crate::ff::native_audio::fed()?;
-    Some(plx_platform::devcaps::Facet::Audio { codec: kind.ffmpeg_name().into(), channels })
+fn refused_native_audio(ps: &crate::route::PlaybackSession) -> Option<plx_platform::devcaps::Facet> {
+    let fed = ps.readout().raw().native_audio?;
+    Some(plx_platform::devcaps::Facet::Audio { codec: fed.codec.into(), channels: fed.channels })
 }
 
 /// The machine asked for `facet` to be recorded as refused on this firmware (`record`, which is

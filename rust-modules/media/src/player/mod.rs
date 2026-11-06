@@ -203,7 +203,11 @@ fn reset_scoped_for_test(scope: plx_playback_contract::feed::ResetScope) {
         ResetScope::Reload => SHARED.reset_session_for_reload(),
     };
     #[cfg(feature = "play-feed")]
-    FEED_SHARED.reset_scoped(scope, common);
+    {
+        FEED_SHARED.reset_scoped(scope, common);
+        // The counters the diag sample reads outside the mailboxes: a fresh session's are zero.
+        plx_play_feed::ff_test_support::store_diag_counters(0, 0, false);
+    }
     #[cfg(not(feature = "play-feed"))]
     common();
 }
@@ -1811,7 +1815,6 @@ pub(crate) fn diag_on(ps: &crate::route::PlaybackSession, display: &dyn plx_plat
         // never display the previous Engine's feed counts or a guessed zero as an observation.
         return common;
     }
-    let (fed_v, fed_a) = engine::fed_totals();
     // The sink hands back the seam's own static buffer — never NULL, "" when no window was
     // created — so this is a copy of a bounded char[64], not a borrow with a lifetime to reason about.
     let window_id = display.window_id().to_string_lossy().into_owned();
@@ -1838,9 +1841,9 @@ pub(crate) fn diag_on(ps: &crate::route::PlaybackSession, display: &dyn plx_plat
         load_failed: ps.readout().raw().flags.load_failed
             || ps.native_start_refused == Some(crate::route::StartRefusal::LoadTimeout),
         cb_count: fd.cb_count,
-        pushed_any: crate::ff::pushed_any(),
-        fed_v,
-        fed_a,
+        pushed_any: fd.pushed_any,
+        fed_v: fd.fed_v,
+        fed_a: fd.fed_a,
         frames: observed.frames.unwrap_or(0),
         seen_frame: observed.reported_frame.unwrap_or(false),
         aq_video: fd.aq_video,
@@ -2694,20 +2697,9 @@ pub fn audio_rebuild_presented() {
     );
 }
 
-/// Monotonic milliseconds: the Feed backend's one clock (`plx_play_feed::shared::vclock_ms`, which
-/// the pipeline callback stamps with), or the same private-origin clock when no Feed is built.
-/// Private to `player::`; only ever differenced.
-#[cfg(feature = "play-feed")]
-fn vclock_ms() -> u32 {
-    plx_play_feed::shared::vclock_ms()
-}
-#[cfg(not(feature = "play-feed"))]
-fn vclock_ms() -> u32 {
-    use std::sync::OnceLock;
-    use std::time::Instant;
-    static T0: OnceLock<Instant> = OnceLock::new();
-    T0.get_or_init(Instant::now).elapsed().as_millis() as u32
-}
+// Monotonic milliseconds: the process clock the Feed's pipeline callback stamps with
+// (`plx_base::clock`). Private to `player::`; only ever differenced.
+use plx_base::clock::vclock_ms;
 
 /// What the heartbeat remembers of the pipeline's `FRAMEREADY` counters between two of its lines: it
 /// differences two samples of the readout's raw facts itself, so nothing is drained from the feed.

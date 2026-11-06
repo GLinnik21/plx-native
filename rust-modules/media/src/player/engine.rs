@@ -55,8 +55,6 @@ use plx_telemetry::telemetry::window::Stage as WindowStage;
 use std::os::raw::{c_char, c_int};
 use std::sync::atomic::Ordering;
 
-pub use plx_play_feed::native_executor::fed_totals;
-
 /// The AU queues' BASE byte caps — the denominators the read-out shows `dg_aq_*` against, so a viewer
 /// can see backpressure (a video lane pinned at its cap is the demuxer outrunning the decoder;
 /// both lanes empty while Stage is Playing is the opposite).
