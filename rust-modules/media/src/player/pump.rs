@@ -7,7 +7,6 @@ use super::engine::Engine;
 #[cfg(all(test, feature = "hostsim"))]
 use super::shared::Stage;
 use super::SHARED;
-use plx_play_feed::seek::seek_mode;
 use plx_playback_contract::feed::SeekMode;
 #[cfg(all(test, feature = "hostsim"))]
 #[cfg(all(test, feature = "hostsim"))]
@@ -15,38 +14,22 @@ use plx_base::task::MainThread;
 use std::sync::atomic::Ordering::Acquire;
 #[cfg(all(test, feature = "hostsim"))]
 use std::sync::atomic::Ordering::Release;
+#[cfg(all(test, feature = "hostsim"))]
 use std::time::Duration;
 
-/// issue #74 D.1.4: the longest the `loadCompleted` arm will wait for `sf_load` to actually
-/// return before giving up and publishing `load_failed`. Kodi's own precedent
-/// (`MediaPipelineWebOS.cpp:795-801`) is a 1s `wait_for` then `PLAYER_ABORT`; this budget is
-/// deliberately far larger because a real `Load` on the dev set measures in the HUNDREDS OF
-/// MILLISECONDS for a cold pipeline (investigation.md §A.0's own citation), and the point of this
-/// timeout is to catch a genuine hang — the k5lp `DirectVoInit` block investigation.md §B
-/// describes — not to interrupt an ordinary slow one. It exists so a Load that never returns
-/// becomes a failure read-out instead of a permanent Connecting spinner.
-///
-/// Its clock is the wall clock from `begin_native_session`, so it counts the Load thread's
-/// sound-output read in front of `Load`; the Load-timing log and telemetry do not (`threads::load_alone`).
-pub const NATIVE_LOAD_BUDGET: Duration = Duration::from_secs(20);
-
-/// Attach the physical Load gate's addressed timeout to the current common trace. Both the
-/// constructor wait and loadCompleted arm call this after demux-failure precedence is settled.
-fn native_load_gate_ready(epoch: u32) -> bool {
-    let gate = plx_play_feed::feed_pump::load_gate(epoch, NATIVE_LOAD_BUDGET);
-    debug_assert_eq!(gate.native_epoch, epoch);
-    let timeout = match gate.verdict {
-        plx_play_feed::feed_pump::LoadGateVerdict::Returned => return true,
-        plx_play_feed::feed_pump::LoadGateVerdict::Deferred => return false,
-        plx_play_feed::feed_pump::LoadGateVerdict::TimedOut(elapsed) => {
-            super::report::LoadElapsedClass::from_ms(elapsed.as_millis() as i64)
-        }
-        // The epoch retired before this poll could measure its elapsed time.
-        plx_play_feed::feed_pump::LoadGateVerdict::LostEpoch => super::report::LoadElapsedClass::Over20s,
+/// Attach the physical Load gate's timeout to the current common trace: the feed ran the Load
+/// budget check ([`plx_play_feed::feed_pump::NATIVE_LOAD_BUDGET`]), this only attributes its verdict.
+fn note_load_timeout(timeout: plx_playback_contract::feed::LoadTimeout) {
+    let class = match timeout {
+        plx_playback_contract::feed::LoadTimeout::Elapsed(elapsed) =>
+            super::report::LoadElapsedClass::from_ms(elapsed.as_millis() as i64),
+        plx_playback_contract::feed::LoadTimeout::LostEpoch => super::report::LoadElapsedClass::Over20s,
     };
-    super::report::note_load_gate_for(crate::route::playback_trace_generation(), timeout);
-    false
+    super::report::note_load_gate_for(crate::route::playback_trace_generation(), class);
 }
+
+/// This session's direct-play seek mode, as the feed's last sample carries it.
+fn seek_mode(ps: &crate::route::PlaybackSession) -> SeekMode { ps.readout().raw().seek_mode }
 
 /// Publish the one value the HUD renders from: the session's readout holds it, and this is the
 /// pump's event for the states it settles outside the per-frame ladder (the ladder itself is the
@@ -1197,10 +1180,10 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
             return;
         }
     }
-    // A constructor still in flight yields its exact native epoch for the existing Load budget
-    // gate; no route decision below may treat it as a callable object.
-    if let plx_playback_contract::feed::CtorGate::Awaiting { budget_epoch } = pa.feed_ctor_gate() {
-        if let Some(epoch) = budget_epoch { native_load_gate_ready(epoch); }
+    // A constructor still in flight reports the Load budget gate's timeout (the feed runs the
+    // gate); no route decision below may treat it as a callable object.
+    if let plx_playback_contract::feed::CtorGate::Awaiting { timeout } = pa.feed_ctor_gate() {
+        if let Some(timeout) = timeout { note_load_timeout(timeout); }
         set_state(ps, PlaybackState::Connecting);
         return;
     }
@@ -1524,7 +1507,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
         // belongs to was applied in an earlier frame, so the pump-start sample holds it.
         let tgt = if pending >= 0 { pending } else { ps.readout().raw().seek_target_ns.unwrap_or(-1) }.max(0);
         if pending >= 0 { crate::route::commit_user_seek(); }
-        match pa.retry_stuck_seek(now, tgt, !seek_reloads(seek_mode())) {
+        match pa.retry_stuck_seek(now, tgt, !seek_reloads(seek_mode(ps))) {
             plx_playback_contract::feed::StuckSeekAction::Retried(retries) => {
                 super::log(&format!(
                     "seek: in-place stuck → retry reopen at {}s (#{}) coalesced={}",
@@ -1544,7 +1527,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
     // only and seek by RESTARTING the transcode at a time &offset (below). Direct-play
     // seeks in place via av_seek.
     let is_transcode = crate::route::is_transcoding(ps);
-    if pa.pending_seek_ready(seek_reloads(seek_mode()))
+    if pa.pending_seek_ready(seek_reloads(seek_mode(ps)))
         && t >= 0
         && !crate::route::original_recovery_pending()
         && !crate::route::flight_outstanding() // see the SEEK_STUCK_MS branch's doc above
@@ -1583,7 +1566,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
         // plx_play_feed::seek::select_seek_mode), or set by feed_stream when sendSegmentEvent can't find the
         // pipeline or a native Seek is refused — is reload-per-seek. reload_at REPLACES the ENGINE,
         // so `eng` dangles after it: return immediately.
-        if seek_must_reload(seek_mode(), super::play_rate_permille(ps), rate_reload) {
+        if seek_must_reload(seek_mode(ps), super::play_rate_permille(ps), rate_reload) {
             crate::route::commit_user_seek();
             own_seek_under_pause(ps, pa, t);
             settle_reload(super::engine::reload_at(ps, pa, t), "direct seek reload", ps);
@@ -1628,21 +1611,13 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
         // Advancing earlier would strand the live worker when PMS/native refused; advancing later
         // would let pre-seek ABR evidence publish while queues are already being reset.
         crate::route::commit_user_seek();
-        pa.apply_inplace_seek_pre(t, seek_mode(), coalesced);
+        pa.apply_inplace_seek_pre(t, seek_mode(ps), coalesced);
         own_seek_under_pause(ps, pa, t);
         pa.apply_inplace_seek_post(t, now);
     }
 
-    let load = pa.tick_feed_load(now, crate::route::is_segmented_hls(ps),
-        NATIVE_LOAD_BUDGET, SPEED_AUDIO_DEADLINE_MS);
-    if let Some(timeout) = load.timeout {
-        let class = match timeout {
-            plx_playback_contract::feed::LoadTimeout::Elapsed(elapsed) =>
-                super::report::LoadElapsedClass::from_ms(elapsed.as_millis() as i64),
-            plx_playback_contract::feed::LoadTimeout::LostEpoch => super::report::LoadElapsedClass::Over20s,
-        };
-        super::report::note_load_gate_for(crate::route::playback_trace_generation(), class);
-    }
+    let load = pa.tick_feed_load(now, crate::route::is_segmented_hls(ps), SPEED_AUDIO_DEADLINE_MS);
+    if let Some(timeout) = load.timeout { note_load_timeout(timeout); }
     if let Some(reason) = load.speed_fallback { super::fall_back_from_speed(ps, pa, reason); }
 
     // Load and speed policy are settled. Borrow the physical feed for ACB, feeding and EOS.
@@ -4947,7 +4922,9 @@ mod native_seek_pump_tests {
         rig.viewer_pause();
         rig.arm(TARGET_NS);
         assert_eq!(FEED_TX.owned_paused_seek(), Some(TARGET_NS));
-        super::super::route_start::stop_transport(&mut rig.ps); // a stop
+        // a stop: the feed's reset by scope clears the transport, the route steps the readout's copy
+        rig.pa.reset_session(plx_playback_contract::feed::ResetScope::Stop, &mut || {});
+        super::super::route_start::stop_transport(&mut rig.ps);
         assert!(FEED_TX.owned_paused_seek().is_none() && !FEED_TX.seek_preroll_active());
         assert!(!rig.ps.readout().paused() && !rig.ps.readout().seek_preroll(), "the readout's too");
         crate::player::assert_transport_copies_agree(&rig.ps);

@@ -11,7 +11,6 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicI32, AtomicU32};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use plx_base::task::MainThread;
 
@@ -51,7 +50,7 @@ pub enum FeedCall {
     ApplyInplaceSeekPre { target_ns: i64, mode: SeekMode, coalesced: u32 },
     ApplyInplaceSeekPost { target_ns: i64, now: u32 },
     Command(FeedCommand),
-    TickLoad { now: u32, segmented_hls: bool, budget: Duration, speed_deadline_ms: u32,
+    TickLoad { now: u32, segmented_hls: bool, speed_deadline_ms: u32,
         no_audio: bool },
     TickPresentation { segmented_hls: bool, immersive: bool },
     CtorGate,
@@ -258,9 +257,9 @@ impl FeedSeek for FakeFeed {
 }
 
 impl FeedLoad for FakeFeed {
-    fn tick_load(&mut self, _mt: &MainThread, now: u32, segmented_hls: bool, budget: Duration,
+    fn tick_load(&mut self, _mt: &MainThread, now: u32, segmented_hls: bool,
         speed_deadline_ms: u32, no_audio: bool) -> LoadTick {
-        self.answer(FeedCall::TickLoad { now, segmented_hls, budget, speed_deadline_ms, no_audio },
+        self.answer(FeedCall::TickLoad { now, segmented_hls, speed_deadline_ms, no_audio },
             |s| s.load_tick)
     }
     fn tick_presentation(&mut self, _mt: &MainThread, segmented_hls: bool, immersive: bool)

@@ -1,7 +1,7 @@
 //! Common native route-start orchestration. The route owns the transaction and exact attempt;
 //! the feed constructor only runs after admission and source preparation.
 
-#[cfg(feature = "play-feed")]
+#[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
 use plx_play_feed::shared::FEED_TX;
 use super::adapter::PlayerAdapter;
 #[cfg(feature = "play-feed")]
@@ -69,7 +69,7 @@ pub fn start_bufferfeed_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut
     // playback: it gets to try the native Seek again.
     #[cfg(feature = "play-feed")]
     if !pa.is_live() {
-        plx_play_feed::seek::set_native_seek_refused(false);
+        pa.feed_command(plx_playback_contract::feed::FeedCommand::BeginPlayback);
     }
     // A URI-mode probe session (dev trigger `plxnative-uriprobe`) holds the route-start attempt and
     // the exported window without an Engine in the slot. Active double-start stays a no-op;
@@ -336,12 +336,11 @@ pub(super) fn start_bufferfeed_inner(
     })
 }
 
-/// A REAL stop of the transport (a reload does not stop it): the feed's `Transport::reset` and the
-/// readout's `TransportStopped` in the same call, so the Pause, the preroll and the owed re-pause
-/// go from both copies at once.
+/// A REAL stop of the transport (a reload does not stop it): the readout's `TransportStopped`. The
+/// feed's own `Transport::reset` runs in `FeedControl::reset(ResetScope::Stop, ..)`, called just
+/// before, so the Pause, the preroll and the owed re-pause go from both copies at once.
 #[cfg(feature = "play-feed")]
 pub(super) fn stop_transport(ps: &mut crate::route::PlaybackSession) {
-    FEED_TX.reset();
     ps.step_readout(super::readout::ReadoutEvent::TransportStopped);
 }
 
@@ -1344,7 +1343,6 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAd
     // end-of-stream rule exits the replay's player page and that stop cancels the start.
     if for_reload {
         pa.reset_session(ResetScope::Reload, &mut || SHARED.reset_session_for_reload());
-        FEED_TX.reset_for_reload();
     } else {
         pa.reset_session(ResetScope::Stop, &mut || SHARED.reset_session());
         stop_transport(ps);

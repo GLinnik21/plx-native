@@ -31,7 +31,6 @@ use plx_playback_contract::{
     ExitDisposition, Failure, Operation, SourceKey,
 };
 use std::sync::atomic::{AtomicI32, AtomicU32};
-use std::time::Duration;
 
 /// The physical buffer-feed backend: the native session slot with its Load and release
 /// resources, and the driver that answers the runner for it.
@@ -127,10 +126,9 @@ impl FeedSeek for FeedBackend {
 }
 
 impl FeedLoad for FeedBackend {
-    fn tick_load(&mut self, mt: &MainThread, now: u32, segmented_hls: bool, budget: Duration,
+    fn tick_load(&mut self, mt: &MainThread, now: u32, segmented_hls: bool,
         speed_deadline_ms: u32, no_audio: bool) -> LoadTick {
-        feed_pump::tick_load(&mut self.resources, mt, now, segmented_hls, budget,
-            speed_deadline_ms, no_audio)
+        feed_pump::tick_load(&mut self.resources, mt, now, segmented_hls, speed_deadline_ms, no_audio)
     }
 
     fn tick_presentation(&mut self, mt: &MainThread, segmented_hls: bool, immersive: bool)
@@ -266,6 +264,13 @@ impl FeedStop for FeedBackend {
 
     fn reset(&mut self, scope: ResetScope, common: &mut dyn FnMut()) {
         self.resources.shared().reset_scoped(scope, common);
+        // The transport's half of the same teardown, after the common stores (as the player ran it
+        // when it reached for the transport itself): a real stop clears the viewer's Pause, the
+        // preroll and the owed re-pause; a reload keeps them for the new engine.
+        match scope {
+            ResetScope::Stop => FEED_TX.reset(),
+            ResetScope::Reload => FEED_TX.reset_for_reload(),
+        }
     }
 
     fn take_returned_release(&mut self) -> Option<u32> {
@@ -318,6 +323,7 @@ impl FeedControl for FeedBackend {
             FeedCommand::NoteFailure(flag) => feed_pump::note_failure(flag),
             FeedCommand::Rebase { playpos_ns, disp_base } => feed_pump::rebase(playpos_ns, disp_base),
             FeedCommand::SelectAudio { idx } => feed_pump::select_audio(idx),
+            FeedCommand::BeginPlayback => crate::seek::set_native_seek_refused(false),
             FeedCommand::SyncSideReader(want) => crate::side_reader::sync(
                 want.map(|spec| (*spec).clone()), self.resources.hooks().prepare.side_reader_job),
         }
@@ -398,7 +404,7 @@ pub(crate) mod tests {
         let mt = unsafe { MainThread::assume() };
         let mut backend = backend();
         let wrapped = feed_pump::ctor_gate(backend.resources_mut(), &mt);
-        assert_eq!(wrapped, CtorGate::Awaiting { budget_epoch: None });
+        assert_eq!(wrapped, CtorGate::Awaiting { timeout: None });
         let control: &mut dyn FeedControl = &mut backend;
         assert_eq!(control.ctor_gate(&mt), wrapped);
     }
@@ -438,6 +444,39 @@ pub(crate) mod tests {
             assert_eq!(FEED_SHARED.duration_ns.load(Relaxed), duration_after, "{scope:?}");
         }
         FEED_SHARED.reset_session();
+    }
+
+    /// The transport's half of a teardown is the feed's own `reset`, by scope: a real stop clears the
+    /// viewer's Pause, a reload keeps it for the new engine (the player no longer reaches for the
+    /// transport itself).
+    #[test]
+    fn reset_clears_the_transports_pause_for_a_stop_and_keeps_it_for_a_reload() {
+        use std::sync::atomic::Ordering::Acquire;
+        let _serial = plx_base::testlock::serial();
+        let mut backend = backend();
+        let control: &mut dyn FeedControl = &mut backend;
+        FEED_TX.commit_paused(true);
+        control.reset(ResetScope::Reload, &mut || {});
+        assert!(FEED_TX.paused.load(Acquire), "a reload keeps the viewer's Pause");
+        control.reset(ResetScope::Stop, &mut || {});
+        assert!(!FEED_TX.paused.load(Acquire), "a real stop clears it");
+        FEED_SHARED.reset_session();
+    }
+
+    /// A fresh play gets to try the native `Seek` again (`BeginPlayback`), and the session's seek
+    /// mode reaches the player in the sample instead of a call.
+    #[test]
+    fn a_new_playback_clears_the_native_seek_latch_and_the_sample_carries_the_seek_mode() {
+        use plx_playback_contract::feed::SeekMode;
+        let _serial = plx_base::testlock::serial();
+        let mut backend = backend();
+        crate::seek::set_native_seek_refused(true);
+        backend.command(FeedCommand::BeginPlayback);
+        assert!(!crate::seek::native_seek_refused());
+        crate::seek::set_seek_mode(SeekMode::NativeSeek);
+        assert_eq!(mailboxes().raw.seek_mode, SeekMode::NativeSeek);
+        crate::seek::set_seek_mode(SeekMode::Segment);
+        assert_eq!(mailboxes().raw.seek_mode, SeekMode::Segment);
     }
 
     /// `command(Seek)` makes the stores the player's `request_seek` made itself, and the sample

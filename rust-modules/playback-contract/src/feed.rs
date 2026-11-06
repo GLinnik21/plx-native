@@ -190,12 +190,13 @@ pub enum FeedTransportAction {
 // Verdicts: what one physical tick or one native transition answers, applied by the caller.
 // ---------------------------------------------------------------------------------------------
 
-/// Whether native construction is callable yet. A blocked Load exposes its exact epoch only
-/// while the live non-preview session still owes the Load budget check.
+/// Whether native construction is callable yet. While a blocked Load's live non-preview session
+/// still owes the Load budget check, the feed runs that check itself, on its own clock, and says
+/// here when the budget ran out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CtorGate {
     Ready,
-    Awaiting { budget_epoch: Option<u32> },
+    Awaiting { timeout: Option<LoadTimeout> },
 }
 
 /// What a stuck native seek does next: re-arm the demux target (the retry count so far) or fall
@@ -452,6 +453,9 @@ pub struct FeedRaw {
     /// The clock delta the reader matched byte for byte for this engine run (Part time minus the
     /// playhead, ns); `None` while none has been measured.
     pub side_exact_delta_ns: Option<i64>,
+    /// This session's direct-play seek mode (`Segment` before a Load selects one); the feed
+    /// downgrades it to `Reload` when the pipeline refuses a native `Seek`.
+    pub seek_mode: SeekMode,
 }
 
 /// The Auto-quality facts the demux publishes about the open it runs: which controller started, the
@@ -598,6 +602,7 @@ impl FeedRaw {
         vpres_gap_sum_ms: 0, vpres_gap_count: 0, disp_base: 0, load: LoadRaw::IDLE,
         abr: DemuxAbr::IDLE,
         side_reader_active: false, side_failures: 0, side_exact_delta_ns: None,
+        seek_mode: SeekMode::Segment,
     };
 }
 
@@ -675,6 +680,9 @@ pub enum FeedCommand {
     /// track, or stop it (`None`). Never blocks: stopping a reader joins its thread, which the feed
     /// hands to a worker. The newest request wins.
     SyncSideReader(Option<std::sync::Arc<crate::subtitle::Spec>>),
+    /// A fresh play (not a reload of the one on screen) begins: this playback gets to try the
+    /// platform's native `Seek` again, whatever an earlier playback learned about its refusal.
+    BeginPlayback,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -708,7 +716,7 @@ pub trait FeedSeek {
 /// The Load-side verbs and pure queries of the feed backend.
 pub trait FeedLoad {
     /// Physical Load and Play transition. `no_audio` is the common player's no-audio arming.
-    fn tick_load(&mut self, mt: &MainThread, now: u32, segmented_hls: bool, budget: Duration,
+    fn tick_load(&mut self, mt: &MainThread, now: u32, segmented_hls: bool,
         speed_deadline_ms: u32, no_audio: bool) -> LoadTick;
     fn tick_presentation(&mut self, mt: &MainThread, segmented_hls: bool, immersive: bool)
         -> PresentationTick;

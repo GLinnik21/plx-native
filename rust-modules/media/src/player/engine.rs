@@ -2978,14 +2978,14 @@ mod load_in_flight_tests {
         wait_for_load_in_flight();
 
         assert!(
-            FEED_SHARED.test_backdate_native_load_issued(epoch, crate::player::pump::NATIVE_LOAD_BUDGET),
+            FEED_SHARED.test_backdate_native_load_issued(epoch, plx_play_feed::feed_pump::NATIVE_LOAD_BUDGET),
             "PRECONDITION FAILED: the epoch must still own the Active phase to backdate its \
              load_issued_at, or this test proves nothing about the arm under test"
         );
         assert!(
             FEED_SHARED
                 .native_load_elapsed(epoch)
-                .is_some_and(|e| e >= crate::player::pump::NATIVE_LOAD_BUDGET),
+                .is_some_and(|e| e >= plx_play_feed::feed_pump::NATIVE_LOAD_BUDGET),
             "PRECONDITION FAILED: the backdate must actually push elapsed past the budget — a \
              silent-instrument trap (AGENTS.md) if it doesn't"
         );
@@ -3067,7 +3067,7 @@ mod load_in_flight_tests {
         assert!(
             FEED_SHARED.test_backdate_native_load_returned(
                 epoch,
-                crate::player::pump::NATIVE_LOAD_BUDGET
+                plx_play_feed::feed_pump::NATIVE_LOAD_BUDGET
             ),
             "PRECONDITION FAILED: the epoch must still own the Active phase to backdate when it \
              returned, or this test proves nothing about the arm under test"
@@ -3075,7 +3075,7 @@ mod load_in_flight_tests {
         assert!(
             FEED_SHARED
                 .native_load_returned_elapsed(epoch)
-                .is_some_and(|e| e >= crate::player::pump::NATIVE_LOAD_BUDGET),
+                .is_some_and(|e| e >= plx_play_feed::feed_pump::NATIVE_LOAD_BUDGET),
             "PRECONDITION FAILED: the backdate must actually push the returned-elapsed past the \
              budget — a silent-instrument trap (AGENTS.md) if it doesn't"
         );
@@ -3180,7 +3180,7 @@ mod load_in_flight_tests {
         assert_eq!(unsafe { crate::player::test_physical::sink().ready(pa.mt()) }, 0);
         crate::player::pump::pump(&mut ps, &mut pa, 1000);
         assert!(!FEED_SHARED.load_failed.load(Ordering::Acquire));
-        assert!(FEED_SHARED.test_backdate_native_load_issued(epoch, crate::player::pump::NATIVE_LOAD_BUDGET));
+        assert!(FEED_SHARED.test_backdate_native_load_issued(epoch, plx_play_feed::feed_pump::NATIVE_LOAD_BUDGET));
         crate::player::pump::pump(&mut ps, &mut pa, 1001);
         assert!(FEED_SHARED.load_failed.load(Ordering::Acquire), "constructor readiness must not bypass the issued budget");
     }
@@ -3260,7 +3260,7 @@ mod load_in_flight_tests {
         wait_for_load_in_flight();
 
         assert!(
-            FEED_SHARED.test_backdate_native_load_issued(epoch, crate::player::pump::NATIVE_LOAD_BUDGET),
+            FEED_SHARED.test_backdate_native_load_issued(epoch, plx_play_feed::feed_pump::NATIVE_LOAD_BUDGET),
             "PRECONDITION FAILED: the epoch must still own Active to backdate it"
         );
         crate::player::pump::pump(&mut ps, &mut pa, 1_000);
@@ -3386,7 +3386,7 @@ mod load_in_flight_tests {
         pa.install(eng);
         wait_for_load_in_flight();
         assert!(
-            FEED_SHARED.test_backdate_native_load_issued(epoch, crate::player::pump::NATIVE_LOAD_BUDGET),
+            FEED_SHARED.test_backdate_native_load_issued(epoch, plx_play_feed::feed_pump::NATIVE_LOAD_BUDGET),
             "PRECONDITION FAILED: the epoch must still own Active to backdate it"
         );
         crate::player::pump::pump(ps, pa, 1_000);
