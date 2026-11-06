@@ -175,6 +175,41 @@ fn switching_profile_leaves_the_container_holding_nothing_of_the_previous_profil
     );
 }
 
+/// **Each `settings-*` fps scene's boot target stands on the page whose heartbeat word the scene selects on.**
+/// `tests/manifest.json` names a `plxnative-settings=<target>` trigger and an `overlay` word; the harness grades
+/// the frames that print the word, so a target that opened another page (or the root, as an unknown one does)
+/// would leave the scene with no samples or, worse, another page's. The pairs are READ from the manifest (every
+/// scene that names a `plxnative-settings` trigger and an `overlay`), not transcribed. About answers the Legal
+/// index's word, which is why it has a boot target and no scene of its own.
+#[test]
+fn each_settings_fps_scene_boot_target_prints_the_overlay_word_the_scene_selects_on() {
+    let _g = plx_base::testlock::serial();
+    let manifest: serde_json::Value =
+        serde_json::from_str(include_str!("../../../tests/manifest.json")).expect("manifest.json parses");
+    let mut checked = 0;
+    for scene in manifest["fps_scenes"].as_array().expect("fps_scenes is an array") {
+        let name = scene["name"].as_str().unwrap_or("?");
+        let (Some(target), Some(word)) = (
+            scene["triggers"]["plxnative-settings"].as_str(),
+            scene["overlay"].as_str(),
+        ) else { continue };
+        let page = crate::dev::scenarios::settings_boot_page(target)
+            .unwrap_or_else(|| panic!("scene {name}: no such boot target {target:?}"));
+        let mut d = Dispatcher::<AppHost>::new();
+        let mut rig = Bridge::for_test(|| 0);
+        frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
+        open_settings_at(&mut d, page);
+        for ms in 1..=40 {
+            frame(&mut d, &mut rig, AppArg::Home, tick(ms * 16), vec![]);
+        }
+        assert!(settings_up(&d), "scene {name}: the Settings surface is up");
+        assert_eq!(overlay_word(&d), Some(word), "scene {name}: the heartbeat word of the page {target:?} boots");
+        checked += 1;
+    }
+    assert!(checked >= 14, "the manifest's settings scenes were found ({checked})");
+    assert!(crate::dev::scenarios::settings_boot_page("no-such-page").is_none());
+}
+
 /// **A profile switch dismisses an open Settings surface, at once.** The Playback page names the
 /// seated profile and lists that profile's own picks, so it must not survive the switch to the next
 /// one: it would say "for Maya" over Noah's values for as long as it stayed up. The surfaces go
@@ -531,7 +566,9 @@ fn opening_the_player_hud_settings_asks_the_registry_in_the_stable_install_too()
     world.settle(40);
     for _ in 0..8 { world.bridge.huds_tick(false); }
     // The runner is offline, so a request that was made is a refresh that failed; none made is none failed.
-    assert!(world.bridge.huds.store().catalog().refresh_failed, "the Open command reached the catalog and dialled");
+    // FinNative keeps the gallery off, so the same Open must dial nothing.
+    assert_eq!(world.bridge.huds.store().catalog().refresh_failed, plx_screens::hud_settings::GALLERY,
+        "the Open command reached the catalog and dialled exactly when the gallery is on");
 }
 
 fn hud_preview_world(name: &str) -> World {

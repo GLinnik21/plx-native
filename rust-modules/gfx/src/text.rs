@@ -496,6 +496,14 @@ pub fn capture_text_runs_for_test(f: impl FnOnce()) -> Vec<String> {
 /// Does the resident cache already hold this exact key? Unlike `text_tex`, this does not touch the
 /// LRU or the frame occupancy: merely observing a destination must not make it hot.
 fn cache_has(s: &[u8], sz: c_int, bold: c_int) -> bool {
+    // Host tests have no glyph cache: the residency ledger [`rasterise_warm`] writes is the cache
+    // there, so a string a drain made resident is not queued again, as on the device. Without it
+    // a recording walk repeated every frame requeues what the drain just rasterised and the queue
+    // of a page with more strings than one frame's budget never empties.
+    #[cfg(any(test, feature = "test-support"))]
+    if PREWARMED_FOR_TEST.with(|w| w.borrow().iter().any(|k| k.sz == sz && k.bold == bold && k.bytes == s)) {
+        return true;
+    }
     let hash = key_hash(s, sz, bold);
     unsafe {
         (&*addr_of!(TCACHE_A)).iter().any(|e| {

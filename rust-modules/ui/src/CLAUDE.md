@@ -87,6 +87,14 @@ arguments, and its time is the `dt` it is handed.
      the owner's `Focusable` contract (`screen.rs`: `neighbour`, `Link`, `EdgeRule`, `Seat`). A
      screen declares its groups and edges; it never matches a direction key to move focus between
      regions.
+   - **Cold text before it is shown** (a destination's strings meeting the glyph cache in the first
+     visible frame): the shared prewarm — a recording walk (`record_walk`, `Painter::recording`)
+     drained by `plx_gfx::text::drain_prewarm` under the frame's budget. A route dip does it for its
+     staged page (`Transition::prewarms_text`), a held surface for itself (`PopoverMotion::held`), a
+     panel for the page it drills into (`PanelMotion::prewarm_text`), and a surface that holds
+     content back for a visible frame — the Settings push — answers `Screen::warms_text` /
+     `draw_warm` and waits at its start (`RoutePush::begin_warm`). Never rasterise a page's strings
+     in its first drawn frame, and never write a screen-local warm loop.
    - **A row of pills** (selection and focus capsules that travel): `widgets::TabStrip` and
      `SelMark` (`widgets.rs`), the nav bar's own motion.
    - **Menus**: `Popover` (`popover.rs`) around a `TableView` (`table.rs`). A menu placed beside the

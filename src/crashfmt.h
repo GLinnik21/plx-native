@@ -230,7 +230,8 @@ static inline size_t plx_fmt_thread(char *out, size_t cap, unsigned long tid, in
 /* The process phase values Rust stores in `plx_crash_phase` (`plx_base::task::watchdog`). */
 #define PLX_PHASE_RUNNING  0u   /* the main loop, or before it */
 #define PLX_PHASE_SHUTDOWN 1u   /* the loop has ended and the teardown is running */
-#define PLX_PHASE_EXITING  2u   /* the teardown is over; the process is ending (exit_now) */
+#define PLX_PHASE_EXITING  2u   /* an exit is under way: `exit_now` after the teardown, or `plx_exit_record`
+                                 * (src/crashtrace.c) for a library's `exit()`, mid-session with no teardown */
 
 /* The record's phase line: how far the process had got, and how long it had lived.
  *
@@ -395,6 +396,40 @@ static inline size_t plx_fmt_frames(char *out, size_t cap, const unsigned long *
     plx_s_ch(&b, '\n');
     *len = b.n;
     return i - from;
+}
+
+/* ---------------------------------------------------------------------------------------------
+ * The EXIT record: a libc `exit()` made inside the process, written by `plx_exit_record`
+ * (`src/crashtrace.c`) before it ends the process with the `exit_group` syscall (or parks, if a
+ * fatal signal's handler is already running).
+ *
+ * Not a fault and not a freeze, so it has its own header (`*** EXIT`, never `*** SIGNAL` or
+ * `*** FREEZE`) and every tool that scans a log for faults keeps skipping it. Like those two it is
+ * written to both the event log and the crash log; the next launch's importer
+ * (`crashreport::parse`) reads it as a record of its own kind, an error event that is not counted
+ * as a crash. Its lines are the fault record's own (`time:`, `thread:`, `at:`), under this header.
+ * ------------------------------------------------------------------------------------------- */
+
+/* The exit record's FIRST line:
+ *
+ *     *** EXIT status=7 caller=0x76e2a1c4
+ *
+ * `status` is what `exit` was given, as a signed decimal (a caller may pass -1), and `caller` is the
+ * RAW return address of the `exit` call, Thumb bit and all: the address to subtract the `at:` line's
+ * mapping base from, then back up into the call instruction. Which mapping the `at:` line names is
+ * `plx_exit_record`'s lookup (one byte below this address, see there). Like `plx_fmt_signal`, it
+ * opens with a blank line that separates the record from the log line before it, and repeats
+ * `caller=` on no later line. */
+static inline size_t plx_fmt_exit(char *out, size_t cap, int status, unsigned long caller) {
+    struct plx_sbuf b = { out, 0, cap };
+    plx_s_str(&b, "\n*** EXIT status=");
+    if (status < 0) plx_s_ch(&b, '-');
+    /* The magnitude as unsigned arithmetic, so INT_MIN needs no negation that overflows. */
+    plx_s_dec(&b, status < 0 ? 0UL - (unsigned long)(long)status : (unsigned long)status);
+    plx_s_str(&b, " caller=");
+    plx_s_hex(&b, caller);
+    plx_s_ch(&b, '\n');
+    return b.n;
 }
 
 #endif /* PLX_CRASHFMT_H */

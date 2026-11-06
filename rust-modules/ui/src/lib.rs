@@ -2020,8 +2020,21 @@ impl Painter {
             // The live draw rasterizes each CLUSTER as its own string, so that is what to prewarm.
             plx_gfx::text::queue_prewarm_tracked(s, sz, bold);
             let w = plx_gfx::text::text_width_tracked(s, sz, bold, letter_spacing);
+            // The census reads a tracked string as it reads a plain one (its text, ink and place), so
+            // a test can name a tracked label by its words; its width is the tracked one.
             #[cfg(any(test, feature = "test-support"))]
-            draw_census::note(100, self.place(Rect::new(x, y, w, 0.0)));
+            {
+                let at = self.place(Rect::new(x, y, w, 0.0));
+                draw_census::note(100, at);
+                if !s.is_null() {
+                    let text = unsafe { CStr::from_ptr(s) }.to_string_lossy().into_owned();
+                    draw_census::note_text(text.clone(), at);
+                    draw_census::note_run(draw_census::Run {
+                        text, size: sz, ink: self.c(col), bold: bold != 0, align, at,
+                        clip: draw_census::clip(), fade: None, lead: None, label: false,
+                    });
+                }
+            }
             return w;
         }
         let c = self.c(col);

@@ -1319,38 +1319,55 @@ fn grid_library_search_heroidx_arm(app: &mut App, _fr: &mut Frame) {
     }
 }
 
+/// The page a `plxnative-settings=<target>` boot target names, or `None` for a target this build does not know.
+/// `tests/manifest.json`'s `settings-*` fps scenes select on the heartbeat word of the page this returns, and
+/// `surface_navigation_tests` pins each of those words.
+pub(crate) fn settings_boot_page(target: &str) -> Option<plx_screens::family::SettingsPage> {
+    use plx_screens::family::{PickerKind, PosterKind, SettingsPage};
+    Some(match target {
+        "" | "root" => SettingsPage::Root,
+        "home" => SettingsPage::Favourites,
+        "privacy" => SettingsPage::Privacy,
+        "legal" => SettingsPage::Legal,
+        "language" => SettingsPage::Language,
+        "contribute" => SettingsPage::Contribute,
+        "playback" => SettingsPage::Playback,
+        // root → Playback → the Quality picker (`SettingsPage::boot_trail`; BACK dismisses the surface, see there).
+        "picker-quality" => SettingsPage::Picker(PickerKind::Quality),
+        "picker-next-episode" => SettingsPage::Picker(PickerKind::NextEpisode),
+        "picker-deck-press" => SettingsPage::Picker(PickerKind::DeckPress),
+        "picker-audio-conversion" => SettingsPage::Picker(PickerKind::AudioConversion),
+        "picker-hdr-overlay" => SettingsPage::Picker(PickerKind::HdrOverlay),
+        // root → the Interface resolution picker
+        "picker-resolution" => SettingsPage::Picker(PickerKind::UiResolution),
+        "picker-instant-dpad-seeking" => SettingsPage::Picker(PickerKind::InstantDpadSeeking),
+        "picker-dolby-vision" => SettingsPage::Picker(PickerKind::DolbyVision),
+        "picker-skip-interval" => SettingsPage::Picker(PickerKind::SkipInterval),
+        // root → Playback → the Player HUD page (`SettingsPage::boot_trail`; BACK dismisses the surface, see there)
+        "player-hud" => SettingsPage::PlayerHud,
+        "audio" => SettingsPage::AudioSubtitles,
+        "diagnostics" => SettingsPage::Diagnostics,
+        // Prints `overlay=legal`, the Legal index's word (a `DocumentPage` answers `word::LEGAL`), so no fps scene
+        // selects on it.
+        "about" => SettingsPage::About,
+        "under-posters" => SettingsPage::UnderPosters,
+        // root → Under posters → the details picker of one kind (`SettingsPage::boot_trail`)
+        "under-posters-movie" => SettingsPage::UnderPostersDetails(PosterKind::Movie),
+        "under-posters-show" => SettingsPage::UnderPostersDetails(PosterKind::Show),
+        _ => return None,
+    })
+}
+
 fn settings_boot_arm(app: &mut App, fr: &mut Frame) {
     if !app.scenarios.settings_tried && fr.now.wrapping_sub(app.t0) > 800 {
         if matches!(app.route(), AppArg::Home) {
             app.scenarios.settings_tried = true;
-            let page = match app.scenarios.dev.settings_boot.as_deref().map(str::trim).unwrap_or("root") {
-                "" | "root" => plx_screens::family::SettingsPage::Root,
-                "home" => plx_screens::family::SettingsPage::Favourites,
-                "privacy" => plx_screens::family::SettingsPage::Privacy,
-                "legal" => plx_screens::family::SettingsPage::Legal,
-                "language" => plx_screens::family::SettingsPage::Language,
-                "contribute" => plx_screens::family::SettingsPage::Contribute,
-                "playback" => plx_screens::family::SettingsPage::Playback,
-                // root → Playback → the Quality picker (`SettingsPage::boot_trail`; BACK dismisses the surface, see there).
-                "picker-quality" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::Quality),
-                "picker-next-episode" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::NextEpisode),
-                "picker-deck-press" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::DeckPress),
-                "picker-audio-conversion" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::AudioConversion),
-                "picker-hdr-overlay" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::HdrOverlay),
-                // root → the Interface resolution picker
-                "picker-resolution" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::UiResolution),
-                "picker-instant-dpad-seeking" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::InstantDpadSeeking),
-                "picker-dolby-vision" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::DolbyVision),
-                "picker-skip-interval" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::SkipInterval),
-                // root → Playback → the Player HUD page (`SettingsPage::boot_trail`; BACK dismisses the surface, see there)
-                "player-hud" => plx_screens::family::SettingsPage::PlayerHud,
-                "audio" => plx_screens::family::SettingsPage::AudioSubtitles,
-                _other => {
-                    #[cfg(feature = "devtriggers")]
-                    plx_base::eventlog::log(&format!("BADTRIGGER settings-boot target {_other:?} unknown; opened root instead"));
-                    plx_screens::family::SettingsPage::Root
-                }
-            };
+            let target = app.scenarios.dev.settings_boot.as_deref().map(str::trim).unwrap_or("root");
+            let page = settings_boot_page(target).unwrap_or_else(|| {
+                #[cfg(feature = "devtriggers")]
+                plx_base::eventlog::log(&format!("BADTRIGGER settings-boot target {target:?} unknown; opened root instead"));
+                plx_screens::family::SettingsPage::Root
+            });
             crate::app::bridge::open_settings_at(&mut app.pages, page);
         } else if fr.now.wrapping_sub(app.t0) > 12_000 {
             app.scenarios.settings_tried = true;

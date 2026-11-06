@@ -28,9 +28,13 @@
 //!   image, then switches to identical live output on the following frame. No VISIBLE frame draws a live
 //!   page under a full-screen image. [`PAGE_QUIESCENCE_HOLD_MAX_MS`] bounds a page that never
 //!   settles. Screen/input/lifecycle state continues ticking behind the held image.
-//! - [`RoutePush`] — the Settings family's push: commit is immediate, BOTH levels are drawn, and a
-//!   k=200 spring carries the incoming level in from −0.35 and the outgoing one out to +0.22 (in
-//!   fractions of the width).
+//! - [`RoutePush`] — a `NavStack` push as a transition: commit is immediate, BOTH levels are drawn,
+//!   and a k=200 spring carries the incoming level in from −0.35 and the outgoing one out to +0.22
+//!   (in fractions of the width). Only the test bundle's `FixtureModal` runs it as a stack
+//!   transition. The Settings family's own push is `route_screen::RoutePush`, a spring the surface
+//!   drives itself (it must keep drawing a popped page); that one waits at its start while the
+//!   destination's text is made resident (`route_screen::RoutePush::begin_warm`), and this one
+//!   does not.
 //!
 //! Motion and image policy are pure: no static, no clock but the frame tick, no GL. The one fact they
 //! read besides the tick is the frame dump's: `PageDip::tick` and `PageImage::plan` read
@@ -331,7 +335,8 @@ impl Transition for PageDip {
     }
 }
 
-/// The Settings family's push (`RouteLayout`'s numbers): immediate commit, both levels drawn.
+/// A push as a stack transition (`RouteLayout`'s numbers): immediate commit, both levels drawn.
+/// The Settings family's own push is `route_screen::RoutePush`.
 pub struct RoutePush {
     pos: f32,
     vel: f32,
