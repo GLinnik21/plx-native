@@ -13,7 +13,7 @@
 
 use super::lifecycle::{
     Flight, ForegroundClock, ForegroundEffect, ForegroundEvent, ForegroundInput, ForegroundLifecycle,
-    ForegroundLoadStart, ForegroundLoadStatus, PrepareAnswer,
+    ForegroundLoadStart, ForegroundLoadStatus, PrepareAnswer, Successor,
 };
 use plx_machine::machine::Handled;
 
@@ -108,8 +108,17 @@ fn run_foreground<A: ForegroundActuator>(
     let mut next = Some(first);
     let mut fed_back = false;
     while let Some(ev) = next.take() {
-        let handled = lifecycle.step(&ev, &mut fx);
-        if fed_back {
+        let stopped = !matches!(ev, ForegroundEvent::Input(ForegroundInput::Superseded(_)))
+            && super::accept_server_stop(ps);
+        let event = if stopped {
+            ForegroundEvent::Input(ForegroundInput::Superseded(Successor::Exit))
+        } else {
+            ev
+        };
+        let handled = lifecycle.step(&event, &mut fx);
+        if stopped {
+            run.handled = Handled::Yes;
+        } else if fed_back {
             debug_assert_eq!(handled, Handled::Yes, "an answer is addressed to the claim it settles");
         } else {
             run.handled = handled;
@@ -206,6 +215,15 @@ pub fn poll_foreground_flight<A: ForegroundActuator>(
     let Some((flight, id)) = lifecycle.pending_flight() else {
         return ForegroundActivation::Handled;
     };
+    if super::accept_server_stop(ps) {
+        let _ = run_foreground(
+            lifecycle,
+            ps,
+            actuator,
+            ForegroundEvent::Input(ForegroundInput::Superseded(Successor::Exit)),
+        );
+        return ForegroundActivation::Handled;
+    }
     let landing = match flight {
         Flight::Prepare => match actuator.land_prepare(ps) {
             FlightLanding::Waiting => return ForegroundActivation::Handled,

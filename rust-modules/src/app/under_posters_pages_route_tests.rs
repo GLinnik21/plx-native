@@ -15,7 +15,7 @@ use super::test_support::World;
 use super::under_posters_shelf_route_tests::{set, Cell};
 use plx_data::pms::PmsMovie;
 use plx_data::search::{CollectionHit, Item, Kind, Shelf};
-use plx_plex::plex::session::UnderPostersDetails as Details;
+use plx_plex::plex::session::UnderPostersLadder as Details;
 
 /// A poster tile as a server describes a film it knows everything about.
 fn rich(sid: plx_plex::plex::ServerId, rk: &str, title: &str) -> PmsMovie {

@@ -1440,7 +1440,7 @@
         "plxnative-settings": "under-posters",
         "plxnative-settingsosc": true
       },
-      "comment": "The Under posters page (Settings v2: Title, Movie details, TV show details, Sort value, Reset) with the shared picture slot of two poster tiles. settingsosc alternates its first two rows. The heartbeat word is the page's own (`under-posters`), which only this page prints. The hyphen matters: tests/run.py's overlay capture group is `[\\w-]+` for exactly this reason."
+      "comment": "The Under posters page (Settings v2: Title, Movie details, TV show details, Sort value, Reset) with the shared picture slot of two poster tiles (a movie and a TV show, each under its kind). settingsosc alternates its first two rows. The heartbeat word is the page's own (`under-posters`), which only this page prints. The hyphen matters: tests/run.py's overlay capture group is `[\\w-]+` for exactly this reason."
     },
     {
       "name": "settings-under-posters-movie",
@@ -1455,7 +1455,7 @@
         "plxnative-settings": "under-posters-movie",
         "plxnative-settingsosc": true
       },
-      "comment": "The Movie details picker, booted over Under posters over the Settings root (`SettingsPage::boot_trail`). settingsosc sweeps UP/DOWN through its options (Nothing first, a sample on each row). The heartbeat word is the page's own PER KIND (`DetailsPage::name`), so neither the TV show picker (`under-posters-show`), the parent page (`under-posters`) nor the root (`settings`) can satisfy it."
+      "comment": "The Movie details picker, booted over Under posters over the Settings root (`SettingsPage::boot_trail`). settingsosc sweeps UP/DOWN through its six parts (Year, Length, Genre, Video quality, Age rating, Score; a sample on each row). The heartbeat word is the page's own PER KIND (`DetailsPage::name`), so neither the TV show picker (`under-posters-show`), the parent page (`under-posters`) nor the root (`settings`) can satisfy it."
     },
     {
       "name": "settings-under-posters-show",
@@ -1470,7 +1470,7 @@
         "plxnative-settings": "under-posters-show",
         "plxnative-settingsosc": true
       },
-      "comment": "The TV show details picker: the same `DetailsPage` as settings-under-posters-movie with PosterKind::Show (its list never offers Video quality, so it has one row fewer). Its heartbeat word is its own (`under-posters-show`), distinct from the Movie picker's (`under-posters-movie`), so a boot target that opened the wrong kind cannot satisfy either scene."
+      "comment": "The TV show details picker: the same `DetailsPage` as settings-under-posters-movie with PosterKind::Show (it lists five parts, Seasons in place of Length and no Video quality, against the Movie picker's six). Its heartbeat word is its own (`under-posters-show`), distinct from the Movie picker's (`under-posters-movie`), so a boot target that opened the wrong kind cannot satisfy either scene."
     },
     {
       "name": "settings-player-hud",

@@ -2024,6 +2024,12 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         let foreground = playback_may_run(app);
         let backend_at = app.adapters.player.backend_tick();
         let _ = app.adapters.player.backend_set_foreground_at(&mut app.player.session, foreground, backend_at);
+        // A playback the server ended is retired whichever backend plays it; the Feed's `pump` opens
+        // with the same door.
+        #[cfg(feature = "play-uri")]
+        if foreground {
+            plx_media::player::retire_if_server_stopped(&mut app.player.session, &mut app.adapters.player);
+        }
         #[cfg(feature = "play-feed")]
         if foreground {
             if is_started(&app.player.session) == Some(true) {
@@ -7030,6 +7036,37 @@ mod lifecycle_regression_tests {
             "foreground auto-advance must remain enabled"
         );
         assert!(plx_media::route::up_next(&rig.app.player.session).is_none());
+    }
+
+    #[test]
+    fn server_stop_blocks_an_up_next_action_sampled_before_the_reply() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving_with(|request| {
+            if request.contains("/:/timeline?") && request.contains("state=playing") {
+                return r#"{"MediaContainer":{"terminationCode":2006,"terminationText":"stopped by the admin"}}"#.into();
+            }
+            queue_body(request, true).to_owned()
+        }) else {
+            eprintln!("SKIPPED server stop: lifecycle fixture worker could not be spawned");
+            return;
+        };
+        let mut fr = rig.due_up_next();
+        let transaction = plx_media::route::begin_route_start().unwrap();
+        assert!(plx_media::route::prepare_route_start(transaction));
+        let attempt = plx_media::route::claim_route_start_attempt(transaction).unwrap();
+        assert!(plx_media::route::settle_route_start(
+            &mut rig.app.player.session, attempt, plx_media::route::RouteStartResult::Started,
+        ));
+        let lease = plx_media::route::begin_timeline_reporting(&rig.app.player.session).unwrap();
+        assert!(!plx_media::route::report_timeline(&lease, plx_plex::plex::TimelineState::Playing, 12_000, 60_000));
+        assert!(plx_media::player::server_stop_applies(&rig.app.player.session));
+
+        unsafe { playback_tick(&mut rig.app, &mut fr); }
+
+        assert!(!plx_media::route::play_pending());
+        assert!(!rig.app.player.session.finished);
+        assert_eq!(plx_media::player::error_now(&rig.app.player.session).kind, plx_media::player::FailureKind::ServerStopped);
+        assert_eq!(plx_media::route::up_next(&rig.app.player.session).unwrap().rk, "2");
     }
 
     #[test]

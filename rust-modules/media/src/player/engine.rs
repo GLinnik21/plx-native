@@ -14,7 +14,7 @@
 use plx_play_feed::shared::FEED_SHARED;
 #[cfg(all(test, feature = "hostsim"))]
 use super::route_start::{exit_native, exit_native_with, finish_release_for_test, poll_release,
-    reap_abandoned_load, NativeExit};
+    reap_abandoned_load, release_server_stopped_engine, NativeExit};
 #[cfg(test)]
 use super::feed_open::PayloadFacts;
 #[cfg(test)]
@@ -743,6 +743,27 @@ mod payload_tests {
         assert!(!payload.contains("DolbyHdrInfo"), "{payload}");
     }
 
+    /// A declared Profile 8.1 direct play whose declaration the route withdrew (#1166) sends the Load
+    /// with no `DolbyHdrInfo` node, so no Dolby Vision splitter is built and the base layer plays.
+    #[test]
+    fn dv_withdraw_payload_has_no_dolby_hdr_info() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        assert!(crate::route::set_stream_declaration_for_test(
+            &mut ps,
+            "hevc",
+            "eac3",
+            23.976,
+            p8(),
+            false,
+            plx_platform::devcaps::dv::DvCapability::Supported,
+        ));
+        let env = SinkEnvelope { w: 3840, h: 2160, fps: 60 };
+        assert!(build_av_payload(&ps, "H265", "AC3 PLUS", env).contains("DolbyHdrInfo"));
+        assert!(crate::route::withdraw_dv_presentation(&mut ps, "test"));
+        let payload = build_av_payload(&ps, "H265", "AC3 PLUS", env);
+        assert!(!payload.contains("DolbyHdrInfo"), "{payload}");
+    }
+
     /// An AV1 Profile 10.1 direct play (HDR10-compatible base) on a set with confirmed Dolby Vision
     /// support carries the node like an HEVC Profile 8 does, with the codec string left at `"AV1"`.
     /// VP9 never does: no Dolby Vision profile rides on it.
@@ -1237,6 +1258,7 @@ mod prime_livelock_tests {
                 Default::default(), super::super::subside::JOB)),
             preview_abandon: false,
             era_watch: plx_play_feed::era_callbacks::Watch::new(),
+            dv_start: plx_play_feed::dv_start::Guard::inert(),
         }
     }
 
@@ -2143,6 +2165,24 @@ mod off_frame_release_tests {
         plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
         plx_play_feed::ffi_host::force_clocksink_for_test(true);
         crate::player::adapter::PlayerAdapter::new_probed(unsafe { MainThread::assume() })
+    }
+
+    #[test]
+    fn server_stop_releases_a_loaded_engine_off_the_frame() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        let mut pa = arm(&ps);
+        let _cleanup = Cleanup;
+        playing_engine(&mut pa);
+        crate::route::note_engine_failure(&mut ps, super::super::RuntimeFailure::ServerStopped, 0);
+        plx_play_feed::ffi_host::delay_unload_for_test(UNLOAD_MS);
+
+        release_server_stopped_engine(&mut ps, &mut pa);
+
+        assert!(!pa.is_live());
+        assert!(pa.has_pending_release(), "the Unload must run off the frame thread");
+        finish_release_for_test(&mut pa);
+        assert_eq!(crate::player::error_now(&ps).kind, crate::player::FailureKind::ServerStopped);
     }
 
     #[test]
@@ -3242,6 +3282,56 @@ mod load_in_flight_tests {
         FEED_SHARED.demux_failed.store(true, Ordering::Release);
         crate::player::pump::pump(&mut ps, &mut pa, 1001);
         assert_eq!(crate::player::state(&ps), crate::player::PlaybackState::Error);
+    }
+
+    #[test]
+    fn server_stop_parks_a_native_load_that_has_not_returned() {
+        use std::time::Duration;
+
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _flight = crate::route::flight_rig::FlightRig::start(&mut ps, Duration::ZERO);
+        crate::player::reset_session_for_test();
+        plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
+        let _cleanup = Cleanup;
+
+        let mut pa = crate::player::adapter::PlayerAdapter::new_probed(unsafe {
+            plx_base::task::MainThread::assume()
+        });
+        let epoch = FEED_SHARED.begin_native_session().expect("native session");
+        let mut eng = engine_loading(epoch);
+        plx_play_feed::ffi_host::hold_load_for_test();
+        let payload_ptr = plx_play_feed::SendPtr(eng.payload.as_ptr() as *mut c_char);
+        eng.load_th = Some(plx_base::task::spawn("test-server-stopped-load", move || {
+            crate::player::test_physical::load_thread(payload_ptr, epoch, None, PcmLead::Off)
+        }).expect("spawn the held Load"));
+        pa.install(eng);
+        let (done, wait) = std::sync::mpsc::channel::<()>();
+        let (result, returned) = std::sync::mpsc::channel();
+        let watchdog = plx_base::task::spawn("test-server-stop-watchdog", move || {
+            let returned_in_time = wait.recv_timeout(Duration::from_secs(5)).is_ok();
+            plx_play_feed::ffi_host::release_load_for_test();
+            let _ = result.send(returned_in_time);
+        }).expect("spawn the held Load watchdog");
+        wait_for_load_in_flight();
+
+        crate::player::note_server_stop(crate::route::playback_session_id(&ps), "rig-1", "admin stop", 12_000);
+        crate::player::pump::pump(&mut ps, &mut pa, 1_000);
+        let parked = !pa.is_live() && pa.has_abandoned_load();
+        let _ = done.send(());
+        plx_base::task::join("test-server-stop-watchdog", watchdog);
+        let returned = returned.recv().unwrap();
+        if pa.is_live() {
+            stop_bufferfeed(&mut ps, &mut pa);
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while pa.has_abandoned_load() && !reap_abandoned_load(&mut pa) {
+            assert!(std::time::Instant::now() < deadline, "the released Load was not reaped");
+            std::thread::yield_now();
+        }
+        assert!(returned, "server stop blocked on the held native Load");
+        assert!(parked, "the unfinished Load should be parked with its payload");
+        assert_eq!(crate::player::error_now(&ps).kind, crate::player::FailureKind::ServerStopped);
     }
 
     /// PR #105 review finding: the D.1.4 budget turns a `Load` that never returns into a

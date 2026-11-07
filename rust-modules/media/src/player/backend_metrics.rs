@@ -65,6 +65,8 @@ pub fn handled_failure(kind: crate::player::FailureKind) -> m::Failure {
         K::LoadTimeout => m::Failure { stage: Stage::Open, cause: Cause::Timeout },
         K::ReleaseTimeout => m::Failure { stage: Stage::Release, cause: Cause::Timeout },
         K::ResolveFailed => m::Failure { stage: Stage::Planning, cause: Cause::Unknown },
+        // The server ended the session: not the backend's refusal, so it arms no backend fallback.
+        K::ServerStopped => m::Failure { stage: Stage::Presentation, cause: Cause::Unknown },
         K::Unspecified => m::Failure { stage: Stage::Unknown, cause: Cause::Unknown },
     }
 }

@@ -1705,9 +1705,9 @@ impl PlayerAdapter {
     /// Begin the native stop: the Feed stops its HLS clock, samples the outgoing attempt's last
     /// facts while it is still the addressed one (published into `ps` here) and takes its Engine
     /// out; the bound attempt is dropped with it.
-    pub(super) fn stop_begin(&mut self, ps: &mut crate::route::PlaybackSession) {
+    pub(super) fn stop_begin(&mut self, ps: &mut crate::route::PlaybackSession, terminal: bool) {
         let attempt = self.active_feed_attempt();
-        let last = self.physical.feed().and_then(|feed| feed.stop_begin());
+        let last = self.physical.feed().and_then(|feed| feed.stop_begin(terminal));
         if let (Some(attempt), Some(facts)) = (attempt, last) {
             let _ = ps.ingest_feed_facts(attempt, facts);
         }
@@ -1859,6 +1859,13 @@ impl PlayerAdapter {
     /// Probe the native audio feed's own stall evidence after common Load-refusal handling.
     pub(super) fn native_audio_stall_fired(&mut self, now: u32) -> bool {
         self.physical.feed().is_some_and(|feed| feed.native_audio_stall_fired(now))
+    }
+
+    /// The Dolby Vision landing guard's verdict for this frame (#1166): the withdrawal the player must
+    /// answer with one reload, if any.
+    pub(super) fn dv_landing_due(&mut self, now: u32, route_flight: bool)
+        -> Option<plx_playback_contract::feed::DvWithdrawal> {
+        self.physical.feed().and_then(|feed| feed.dv_landing_due(now, route_flight))
     }
 
     /// Gate the active physical tick on native constructor readiness.
@@ -2349,7 +2356,7 @@ mod load_outcome_tests {
         assert!(pa.is_live());
         assert_eq!(pa.active_feed_attempt(), Some(attempt));
         assert!(pa.sample_feed().is_some(), "the Feed has the Engine the binding names");
-        pa.stop_begin(&mut ps);
+        pa.stop_begin(&mut ps, false);
         pa.stop_finish(&mut ps, false);
         assert!(!pa.is_live() && pa.active_feed_attempt().is_none(), "the stop drops the binding");
         assert!(pa.sample_feed().is_none(), "and the Feed has no session to sample");
@@ -2382,7 +2389,7 @@ mod load_outcome_tests {
         assert!(!pa.foreground_follows_feed_load(), "a rebind resets the mark");
         assert!(pa.mark_foreground_follows_feed_load(bound));
         let mut ps = crate::route::PlaybackSession::IDLE;
-        pa.stop_begin(&mut ps);
+        pa.stop_begin(&mut ps, false);
         pa.stop_finish(&mut ps, false);
         assert!(!pa.foreground_follows_feed_load(), "the stop drops the mark with the binding");
         assert!(!pa.mark_foreground_follows_feed_load(bound), "and nothing is bound to mark");

@@ -1,7 +1,7 @@
 //! T1: the Collections page's own rules: Sort visibility, the section-sync guard, the crumb's
 //! geometry and focus order, the tile caption (Belarusian plurals 1/2/5/21).
 use super::*;
-use plx_ui::caption_policy::{CaptionFacts, CaptionPolicy, DetailsKind};
+use plx_ui::caption_policy::{CaptionFacts, CaptionPolicy, DetailPart, DetailParts};
 use plx_base::fontcov::advances::ShippedMeasure;
 use plx_platform::i18n::{self, language_on_this_thread_for_test, Language, Preference};
 use plx_ui::page_header::{self, HeaderLayout, ItemRect, PageHeader, Slot};
@@ -92,7 +92,7 @@ fn the_default_caption_is_the_count_alone_and_title_on_puts_the_name_above() {
     let en = "en";
     assert_eq!(lines(en, CaptionPolicy::DEFAULT, &films(24)), [None, Some("24 films".into())]);
     assert_eq!(lines(en, CaptionPolicy::DEFAULT, &films(1)), [None, Some("1 film".into())]);
-    let titled = CaptionPolicy::same(true, DetailsKind::YearLength);
+    let titled = CaptionPolicy::same(true, DetailParts::MOVIE_DEFAULT);
     assert_eq!(lines(en, titled, &films(24)), [Some("Starfall Saga".into()), Some("24 films".into())]);
     let shows = CaptionFacts { subtype: Some("show".into()), ..films(3) };
     assert_eq!(lines(en, CaptionPolicy::DEFAULT, &shows)[1].as_deref(), Some("3 shows"));
@@ -103,11 +103,11 @@ fn the_default_caption_is_the_count_alone_and_title_on_puts_the_name_above() {
 #[test]
 fn a_film_describing_details_choice_falls_back_to_the_count_and_none_stays_none() {
     let en = "en";
-    for d in [DetailsKind::Genre, DetailsKind::Video, DetailsKind::AgeRatingScore] {
+    for d in [DetailParts::of(&[DetailPart::Genre]), DetailParts::of(&[DetailPart::VideoQuality]), DetailParts::of(&[DetailPart::AgeRating, DetailPart::Score])] {
         let p = CaptionPolicy::same(false, d);
         assert_eq!(lines(en, p, &films(4)), [None, Some("4 films".into())], "{d:?}");
     }
-    let none = CaptionPolicy::same(true, DetailsKind::None);
+    let none = CaptionPolicy::same(true, DetailParts::NONE);
     assert_eq!(lines(en, none, &films(4)), [Some("Starfall Saga".into()), None]);
 }
 
@@ -118,7 +118,7 @@ fn a_film_describing_details_choice_falls_back_to_the_count_and_none_stays_none(
 fn a_name_the_face_cuts_rides_the_details_line_inside_the_policys_band() {
     let en = "en";
     let cut = CaptionFacts { name_cut: true, ..films(4) };
-    let silent = CaptionPolicy::same(false, DetailsKind::None);
+    let silent = CaptionPolicy::same(false, DetailParts::NONE);
     assert_eq!(lines(en, silent, &cut), [None, None], "Nothing opens nothing");
     assert_eq!(lines(en, CaptionPolicy::DEFAULT, &cut), [None, Some("Starfall Saga \u{b7} 4 films".into())]);
     assert_eq!(lines(en, CaptionPolicy { title: true, ..CaptionPolicy::DEFAULT }, &cut), [Some("Starfall Saga".into()), Some("4 films".into())]);

@@ -16,7 +16,7 @@ use plx_base::task::MainThread;
 use crate::demux::DemuxSession;
 use crate::readout::AttemptFacts;
 use crate::feed::{
-    defer_media_join, AcceptedLoadOutcome, CtorGate, FeedCommand, FeedControl, FeedFacts, FeedLoad, FeedOpen,
+    defer_media_join, AcceptedLoadOutcome, CtorGate, DvWithdrawal, FeedCommand, FeedControl, FeedFacts, FeedLoad, FeedOpen,
     FeedSeek, FeedStop, FeedTransportAction, OpenRequest, ReleaseHandoff, ResetScope, UnblockFacts,
     LoadTick, PausedSeekStep,
     PresentationTick, SeekMode, SeekPause, Stage, StuckSeekAction, UserPauseOutcome,
@@ -44,6 +44,7 @@ pub enum FeedCall {
     CtorGate,
     TakeLoadOutcomes,
     NativeAudioStallFired { now: u32 },
+    DvLandingDue { now: u32, route_flight: bool },
     NoteMissingEraCallback,
     InjectRefuse601 { generation: u32, preview: bool },
     PublishDiag { now: u32, diag_readout_on: bool },
@@ -61,7 +62,7 @@ pub enum FeedCall {
     OpenPrepare { start_paused: bool },
     OpenStage { attempt: AttemptId, key: SourceKey },
     OpenAbort,
-    StopBegin,
+    StopBegin { terminal: bool },
     StopSideReader { for_reload: bool },
     StopUnblock,
     StopReportDispatched,
@@ -93,6 +94,8 @@ pub struct FeedScript {
     /// Delivered once, in order, by the next `take_load_outcomes`.
     pub load_outcomes: Vec<AcceptedLoadOutcome>,
     pub native_audio_stall_fired: bool,
+    /// Delivered once by the next `dv_landing_due`.
+    pub dv_landing: Option<DvWithdrawal>,
     pub user_pause: UserPauseOutcome,
     pub user_resume: UserResumeOutcome,
     /// Delivered once by the next `take_preroll_volume`.
@@ -134,6 +137,7 @@ impl Default for FeedScript {
             ctor_gate: CtorGate::Ready,
             load_outcomes: Vec::new(),
             native_audio_stall_fired: false,
+            dv_landing: None,
             user_pause: UserPauseOutcome::Deferred,
             user_resume: UserResumeOutcome::NoHold,
             preroll_volume: None,
@@ -247,6 +251,9 @@ impl FeedLoad for FakeFeed {
     fn native_audio_stall_fired(&mut self, now: u32) -> bool {
         self.answer(FeedCall::NativeAudioStallFired { now }, |s| s.native_audio_stall_fired)
     }
+    fn dv_landing_due(&mut self, now: u32, route_flight: bool) -> Option<DvWithdrawal> {
+        self.answer(FeedCall::DvLandingDue { now, route_flight }, |s| s.dv_landing.take())
+    }
     fn note_missing_era_callback(&mut self) {
         self.answer(FeedCall::NoteMissingEraCallback, |_| ());
     }
@@ -293,8 +300,8 @@ impl FeedOpen for FakeFeed {
 }
 
 impl FeedStop for FakeFeed {
-    fn stop_begin(&mut self) -> Option<FeedFacts> {
-        self.answer(FeedCall::StopBegin, |s| s.facts.raw.load.stage.is_some().then_some(s.facts))
+    fn stop_begin(&mut self, terminal: bool) -> Option<FeedFacts> {
+        self.answer(FeedCall::StopBegin { terminal }, |s| s.facts.raw.load.stage.is_some().then_some(s.facts))
     }
     fn stop_side_reader(&mut self, for_reload: bool) {
         self.answer(FeedCall::StopSideReader { for_reload }, |_| ());
@@ -444,7 +451,7 @@ mod tests {
             script.unblock.load_abandoned = true;
         });
         let mut common = 0;
-        assert!(feed.stop_begin().is_some(), "a live session has a last sample");
+        assert!(feed.stop_begin(false).is_some(), "a live session has a last sample");
         feed.stop_side_reader(true);
         assert!(feed.stop_unblock().load_abandoned);
         feed.stop_report_dispatched();
@@ -458,7 +465,7 @@ mod tests {
         feed.leak_for_exit();
         assert_eq!(common, 1, "reset runs the player's stores once");
         assert_eq!(handle.calls(), [
-            FeedCall::StopBegin, FeedCall::StopSideReader { for_reload: true }, FeedCall::StopUnblock,
+            FeedCall::StopBegin { terminal: false }, FeedCall::StopSideReader { for_reload: true }, FeedCall::StopUnblock,
             FeedCall::StopReportDispatched, FeedCall::StopRelease { for_reload: true },
             FeedCall::Reset { scope: ResetScope::Reload }, FeedCall::StopFinish { for_reload: true },
             FeedCall::StopFinish { for_reload: true },
