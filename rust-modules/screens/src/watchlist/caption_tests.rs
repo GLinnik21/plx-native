@@ -3,7 +3,7 @@
 //! 112 px by what it will show. (Owner, on a TV: the page showed "Missing Link / 2019" with the Title
 //! switch Off.)
 use plx_data::watchlist::model::TileState;
-use plx_plex::plex::session::{UnderPosters, UnderPostersDetails};
+use plx_plex::plex::session::{UnderPosters, UnderPostersLadder};
 use plx_plex::plex::ListingFacts;
 use plx_platform::i18n::{language_on_this_thread_for_test, Preference};
 
@@ -12,8 +12,8 @@ use crate::registry::captions::TEST_UNDER_POSTERS;
 use super::cards_harness::{row, tile, Harness};
 use super::page::WatchlistScreen;
 
-fn set(title: bool, details: UnderPostersDetails) {
-    TEST_UNDER_POSTERS.with(|c| c.set(Some(UnderPosters { title, details, show_details: details.for_shows(), sort_value: false })));
+fn set(title: bool, details: UnderPostersLadder) {
+    TEST_UNDER_POSTERS.with(|c| c.set(Some(UnderPosters { title, details: details.movie_parts(), show_details: details.show_parts(), sort_value: false })));
 }
 
 fn lines(state: TileState) -> (Option<String>, Option<String>) {
@@ -25,32 +25,39 @@ fn lines(state: TileState) -> (Option<String>, Option<String>) {
 #[test]
 fn the_title_line_follows_the_title_switch_and_defaults_off() {
     let _guard = language_on_this_thread_for_test(Preference::En);
-    set(false, UnderPostersDetails::YearLength);
+    set(false, UnderPostersLadder::YearLength);
     assert_eq!(lines(TileState::Available), (None, Some("2001".into())), "Title Off: the year alone");
-    set(true, UnderPostersDetails::YearLength);
+    set(true, UnderPostersLadder::YearLength);
     assert_eq!(lines(TileState::Available), (Some("1".into()), Some("2001".into())));
-    set(true, UnderPostersDetails::None);
+    set(true, UnderPostersLadder::None);
     assert_eq!(lines(TileState::Available), (Some("1".into()), None), "Details Nothing: the title only");
 }
 
 #[test]
-fn a_state_sentence_takes_the_details_line_unless_the_setting_shows_none() {
+fn a_state_sentence_takes_the_details_line_and_survives_an_empty_set() {
     let _guard = language_on_this_thread_for_test(Preference::En);
-    set(false, UnderPostersDetails::YearLength);
+    set(false, UnderPostersLadder::YearLength);
     assert_eq!(lines(TileState::NotOnAnyServer).1.as_deref(), Some("Not on your servers"));
-    set(false, UnderPostersDetails::Genre);
+    set(false, UnderPostersLadder::Genre);
     assert_eq!(lines(TileState::ServerOffline).1.as_deref(), Some("Server offline"), "the state sentence replaces the genre");
-    set(false, UnderPostersDetails::None);
-    assert_eq!(lines(TileState::ServerOffline), (None, None));
+    // The status lines are the tile's own words (the tile says nothing in words), so no ticked part
+    // is needed for them: with the empty set they still show, and a playable title still shows none.
+    set(false, UnderPostersLadder::None);
+    assert_eq!(lines(TileState::ServerOffline), (None, Some("Server offline".into())));
+    assert_eq!(lines(TileState::NotOnAnyServer), (None, Some("Not on your servers".into())));
+    assert_eq!(lines(TileState::ComingSoon), (None, Some("Coming soon".into())), "a row with no release date");
+    assert_eq!(lines(TileState::Available), (None, None), "an available title has no state and no ticked part");
+    set(true, UnderPostersLadder::None);
+    assert_eq!(lines(TileState::NotOnAnyServer), (Some("1".into()), Some("Not on your servers".into())));
 }
 
 #[test]
-fn the_focused_band_is_the_settings_0_80_or_112() {
+fn the_focused_band_is_the_settings_80_or_112_and_opens_for_the_status_line_under_an_empty_set() {
     for (title, details, want) in [
-        (false, UnderPostersDetails::None, 0.0),
-        (false, UnderPostersDetails::YearLength, 80.0),
-        (true, UnderPostersDetails::None, 80.0),
-        (true, UnderPostersDetails::YearLength, 112.0),
+        (false, UnderPostersLadder::None, 80.0),
+        (false, UnderPostersLadder::YearLength, 80.0),
+        (true, UnderPostersLadder::None, 112.0),
+        (true, UnderPostersLadder::YearLength, 112.0),
     ] {
         set(title, details);
         let mut h = Harness::new(vec![tile(1), tile(2)]);
@@ -85,10 +92,10 @@ fn details_of(row: &plx_data::watchlist::model::WatchRow, state: TileState, copy
 fn an_available_title_reads_its_matched_copys_facts_under_every_details_pick() {
     let _guard = language_on_this_thread_for_test(Preference::En);
     for (details, want) in [
-        (UnderPostersDetails::YearLength, "2001 \u{b7} 1h 40m"),
-        (UnderPostersDetails::Genre, "Drama"),
-        (UnderPostersDetails::Video, "4K \u{b7} HDR"),
-        (UnderPostersDetails::AgeRatingScore, "PG-13 \u{b7} 7.8"),
+        (UnderPostersLadder::YearLength, "2001 \u{b7} 1h 40m"),
+        (UnderPostersLadder::Genre, "Drama"),
+        (UnderPostersLadder::Video, "4K \u{b7} HDR"),
+        (UnderPostersLadder::AgeRatingScore, "PG-13 \u{b7} 7.8"),
     ] {
         set(false, details);
         assert_eq!(details_of(&row(1), TileState::Available, &drama()).as_deref(), Some(want), "{details:?}");
@@ -100,7 +107,7 @@ fn an_available_title_reads_its_matched_copys_facts_under_every_details_pick() {
 #[test]
 fn a_copy_with_no_such_fact_reads_the_year_under_a_pick_it_cannot_fill() {
     let _guard = language_on_this_thread_for_test(Preference::En);
-    for details in [UnderPostersDetails::Genre, UnderPostersDetails::Video, UnderPostersDetails::AgeRatingScore] {
+    for details in [UnderPostersLadder::Genre, UnderPostersLadder::Video, UnderPostersLadder::AgeRatingScore] {
         set(false, details);
         assert_eq!(details_of(&row(1), TileState::Available, &ListingFacts::default()).as_deref(), Some("2001"), "{details:?}");
     }
@@ -112,7 +119,7 @@ fn a_copy_with_no_such_fact_reads_the_year_under_a_pick_it_cannot_fill() {
 fn a_show_reads_its_seasons_and_its_new_episodes_like_every_show_tile() {
     use plx_data::watchlist::model::Kind;
     let _guard = language_on_this_thread_for_test(Preference::En);
-    set(false, UnderPostersDetails::YearLength);
+    set(false, UnderPostersLadder::YearLength);
     let mut show = row(1);
     show.kind = Kind::Show;
     let unwatched = ListingFacts { season_count: Some(3), leaf_count: Some(30), viewed_leaf_count: Some(0), ..Default::default() };
@@ -126,6 +133,6 @@ fn a_show_reads_its_seasons_and_its_new_episodes_like_every_show_tile() {
 #[test]
 fn a_state_sentence_still_replaces_the_copys_facts() {
     let _guard = language_on_this_thread_for_test(Preference::En);
-    set(false, UnderPostersDetails::Genre);
+    set(false, UnderPostersLadder::Genre);
     assert_eq!(details_of(&row(1), TileState::ServerOffline, &drama()).as_deref(), Some("Server offline"));
 }

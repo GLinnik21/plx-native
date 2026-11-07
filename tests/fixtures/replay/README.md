@@ -466,7 +466,7 @@ moved (`plxnative-rec check` refused the fresh recording for one 13-character st
 the committed one refused a measurement table miss from frame 304); `6-settings-family` and
 `12-filmography-detail-return` replayed `verdict=SAME` on the new tree. The owner decided the
 alphabet's answer (2026-10-20): ONE general pattern, `[0-9]{4} · ([0-9]+h )?[0-9]+m`, not the one
-literal (sourced in `_sources.year_length_caption`: `year_length`, `fmt::duration_minutes_in`,
+literal (sourced in `_sources.year_length_caption`: `caption_policy::part_value` (Year, Length), `fmt::duration_minutes_in`,
 `core.duration_hours` / `core.duration_minutes`, and `tests/mock_pms.py` `_base` / `_movie`, which draw
 the year and the length). The fresh recording (`tests/focusfp.sh --rec --only 1`) passed
 `plxnative-rec check` with that pattern and nothing else added, and only

@@ -921,7 +921,7 @@ fn a_remove_changes_nothing_on_the_grid_until_the_landing_starts() {
 /// puts them.
 #[test]
 fn the_harness_sizes_its_band_from_its_own_pin_not_from_the_live_setting() {
-    use plx_plex::plex::session::{UnderPosters, UnderPostersDetails};
+    use plx_plex::plex::session::{UnderPosters, UnderPostersLadder};
     use plx_ui::cards::conformance::CardHarness;
     /// Puts the live cell back on its default, a panic included.
     struct Live;
@@ -944,7 +944,7 @@ fn the_harness_sizes_its_band_from_its_own_pin_not_from_the_live_setting() {
         (h.screen.band_h(), h.drawn_rect(below, 1.0).unwrap().y)
     };
     let default = settled(UnderPosters::DEFAULT);
-    let two_lines = settled(UnderPosters { title: true, details: UnderPostersDetails::Genre, show_details: UnderPostersDetails::Genre.for_shows(), sort_value: false });
+    let two_lines = settled(UnderPosters { title: true, details: UnderPostersLadder::Genre.movie_parts(), show_details: UnderPostersLadder::Genre.show_parts(), sort_value: false });
     assert_eq!(default.0, Some(80.0), "premise: the default opens one line of band");
     assert_eq!(two_lines, default, "the live cell held two lines (112 px) and the harness followed it: (band, y of a lower card)");
 }
