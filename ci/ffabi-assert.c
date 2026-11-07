@@ -44,7 +44,7 @@
  * VERSIONS at run time on a device whose libraries we could not inspect; this picks between two
  * ABIs of ONE version at COMPILE time, on evidence the compiler has in front of it.
  *
- * **It has already earned its keep.** `AVSubtitleRect` was modelled in media-codecs/src/ffi.rs with `flags` last
+ * **It has already earned its keep.** `AVSubtitleRect` was modelled in ff.rs (now media-codecs/src/ffi.rs) with `flags` last
  * when the header puts it before `type` — latent, because nothing reads those four fields, and
  * invisible to the 32-bit assertions because they never asserted `flags` at all. Deriving the
  * table a second time at a different width is what surfaced it: on the host the model's `flags`
@@ -72,7 +72,7 @@ SAME64(offsetof(AVStream, codecpar), 16, "OFF_STREAM_CODECPAR != 12 [host]");
 SAME32(offsetof(AVStream, time_base), 20, "OFF_STREAM_TIME_BASE != 20");
 SAME64(offsetof(AVStream, time_base), 32, "OFF_STREAM_TIME_BASE != 20 [host]");
 /* The container's per-track tags — where a track's NAME is, and the only place it is for an MP4
-   (PMS sends Stream.title for Matroska and nothing at all for MP4; see media-codecs/src/ffi.rs's stream_name). The
+   (PMS sends Stream.title for Matroska and nothing at all for MP4; see media/src/ff.rs's stream_name). The
    int64 start_time/duration/nb_frames ahead of it are 8-ALIGNED on ARM EABI, so there is a 4-byte
    pad after time_base that a 64-bit reading of the struct does not show — the same trap
    AVFrame.pts carries below. */
@@ -252,7 +252,7 @@ SAME32(offsetof(AVSubtitleRect, data), 20, "AVSubtitleRect.data != 20 (the AVPic
 SAME64(offsetof(AVSubtitleRect, data), 24, "AVSubtitleRect.data != 20 (the AVPicture is gone) [host]");
 SAME32(offsetof(AVSubtitleRect, linesize), 36, "AVSubtitleRect.linesize moved");
 SAME64(offsetof(AVSubtitleRect, linesize), 56, "AVSubtitleRect.linesize moved [host]");
-/* `flags` sits BETWEEN linesize and type, and media-codecs/src/ffi.rs modelled it last until 2026-08-28. Nothing
+/* `flags` sits BETWEEN linesize and type, and ff.rs (now media-codecs/src/ffi.rs) modelled it last until 2026-08-28. Nothing
    reads these four, so it was latent — and it was invisible here because `flags`, `text` and
    `ass` were never asserted. They are now: an ORDER is only pinned by asserting every member of
    it, and the three that were missing are exactly the three that were wrong. */

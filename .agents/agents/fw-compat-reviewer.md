@@ -3,12 +3,9 @@ name: fw-compat-reviewer
 description: >
   Review a change that touches FFI, linkage, or the runtime library seam and answer one
   question — can this binary still START on every firmware this project claims to support?
-  Use before pushing anything that edits `rust-modules/base/src/dynlib.rs`,
-  `rust-modules/media-codecs/src/ffi.rs`, `rust-modules/media-codecs/src/venc.rs`,
-  `rust-modules/net/src/net.rs`, `rust-modules/net/src/curlio.rs`,
-  `src/starfish.c`, `src/video_plane.c`, `ci/expected-dt-needed.txt`,
-  `ci/expected-dt-needed-uri.txt`, the Makefile's `LIBS_REAL`, `PLAYBACK_BACKENDS` or
-  `PLAYBACK_HAS_FEED`, or that adds any
+  Use before pushing anything that edits `rust-modules/base/src/dynlib.rs`, `rust-modules/media-codecs/src/ffi.rs`,
+  `rust-modules/media-codecs/src/venc.rs`, `net.rs`,
+  `src/starfish.c`, `ci/expected-dt-needed.txt`, the Makefile's `LIBS_REAL`, or that adds any
   `extern "C"` block, `#[link]` directive, `dlopen`, mangled-symbol declaration or new FFmpeg /
   curl / Starfish / ACB call. Also use when a reviewer asks "does this still load on webOS 5?",
   when `ci/check-elf.sh` reports DT_NEEDED drift, or when a `dynlib!` declaration is being added
@@ -53,13 +50,10 @@ In scope if the diff touches any of:
 | `rust-modules/media-codecs/src/ffi.rs` | the four bundled-FFmpeg `dynlib!` blocks + the pinned-major gate |
 | `rust-modules/media-codecs/src/venc.rs` | the moved encoder ABI self-check and its FFmpeg calls |
 | `rust-modules/net/src/net.rs` | the libcurl `dynlib!` block — variadic wrappers over two C symbols, plus the candidate list |
-| `rust-modules/net/src/curlio.rs` | the byte-range `curl_multi_*` `dynlib!` table, exposed as `net::range_io` |
-| `src/starfish.c` | 15 mangled C++ externs against real libraries (built only when `PLAYBACK_HAS_FEED`) |
-| `src/video_plane.c` | the video-plane binding: its own `dlopen` of ACB, the `dlsym` probe for the SDL exported window, and `vp_mode()` choosing between them |
+| `src/starfish.c` | 15 mangled C++ externs against real libraries, plus its own `dlopen` of ACB |
 | any new `extern "C"` block, `#[link]`, or `__asm__("<mangled>")` declaration | each one adds an undefined symbol, or a whole `DT_NEEDED` entry |
-| `Makefile`'s `LIBS_REAL` and the link rule that uses it | a new `-l` is a new hard `DT_NEEDED` |
-| `Makefile`'s `PLAYBACK_BACKENDS` / `PLAYBACK_HAS_FEED` | they choose whether `src/starfish.c`, `-lplayerAPIs -lpf-1.0` and the `callbackFunctionHook` export are in the binary at all |
-| `ci/expected-dt-needed.txt`, `ci/expected-dt-needed-uri.txt` | somebody is *recording* drift; the question is whether it is safe drift |
+| `Makefile`'s `LIBS_REAL` / the link line (currently line 256 / 444) | a new `-l` is a new hard `DT_NEEDED` |
+| `ci/expected-dt-needed.txt` | somebody is *recording* drift; the question is whether it is safe drift |
 | `ci/build-ffmpeg.sh`, `ci/check-elf.sh`, the CI compat steps | they define what "supported" means |
 
 Out of scope and worth saying so in one line rather than reviewing anyway: UI, the Plex data
@@ -110,17 +104,15 @@ Consequences to check in any FFmpeg-touching diff:
   this; both blocks now carry a comment about it. Check every added symbol is in the library that
   *defines* it.
 
-**ACB is the same idea but is not `dynlib!`** — `src/video_plane.c` is C and does its own
+**ACB is the same idea but is not `dynlib!`** — `src/starfish.c` is C and does its own
 `dlopen("libAcbAPI.so.1", RTLD_NOW|RTLD_GLOBAL)`, falling back to
 `dlsym(RTLD_DEFAULT, "SDL_webOSCreateExportedWindow")` and picking between them in `vp_mode()`
 (`VP_ACB` / `VP_EXPORTED` / `VP_NONE`). The two are complementary across all 14 firmwares. A change
 there is in scope and is read in that file, not in `dynlib.rs`.
 
 **Everything else stays linked, and that is correct.** `LIBS_REAL` is `-lSDL2 -lSDL2_ttf -lGLESv2
--lluna-service2 -lglib-2.0 -lwayland-client`, plus `-lplayerAPIs -lpf-1.0` only when
-`PLAYBACK_HAS_FEED` is set (a `PLAYBACK_BACKENDS=uri` build links neither, and `ci/check-elf.sh` then
-diffs against `ci/expected-dt-needed-uri.txt`), and `-ldl -lpthread -lm`. Every one of them carries
-the same SONAME on every release from 2.2.3 to 11.2.0. Moving a library
+-lluna-service2 -lglib-2.0 -lwayland-client -lplayerAPIs -lpf-1.0` (plus `-ldl -lpthread -lm`),
+every one of which carries the same SONAME on every release from 2.2.3 to 11.2.0. Moving a library
 into `dynlib!` **trades link-time symbol checking away** for version tolerance and is only worth
 it where the version actually varies. If a diff moves a stable library there, push back and ask
 for the `--inventory` output that justifies it. The precedent for the other direction is
@@ -157,9 +149,8 @@ grade an ELF at all.
 ```sh
 git -C <repo> diff --stat HEAD          # or the range under review
 git -C <repo> diff HEAD -- rust-modules/base/src/dynlib.rs rust-modules/media-codecs/src/ffi.rs rust-modules/media-codecs/src/venc.rs \
-    rust-modules/net/src/net.rs rust-modules/net/src/curlio.rs src/starfish.c src/video_plane.c Makefile \
-    ci/expected-dt-needed.txt ci/expected-dt-needed-uri.txt
-rg -n '#\[link|extern "C"|__asm__\("' rust-modules/src rust-modules/media/src rust-modules/media-codecs/src rust-modules/net/src src   # against the diff, not the tree
+    rust-modules/net/src/net.rs src/starfish.c Makefile ci/expected-dt-needed.txt
+grep -rn '#\[link\|extern "C"\|__asm__("' rust-modules/src rust-modules/media/src rust-modules/media-codecs/src rust-modules/net/src src   # against the diff, not the tree
 ```
 
 ### 1. Decide, out loud, whether you are grading an ELF or grading source
@@ -225,8 +216,7 @@ tools/fwcompat.py --lib <soname> --grep '^<symbol>$'   # presence + one symbol, 
 ```
 
 Then the recorded expectation has to move with it — `ci/check-elf.sh` diffs the binary's
-`DT_NEEDED` against `ci/expected-dt-needed.txt` (15 entries today; `ci/expected-dt-needed-uri.txt`, 13 entries,
-for a `PLAYBACK_BACKENDS=uri` build) and fails on any drift.
+`DT_NEEDED` against `ci/expected-dt-needed.txt` (15 entries today) and fails on any drift.
 Regenerate it in **C collation**, not the shell's default: macOS orders case-insensitively and the
 Linux runner puts capitals first, and that pure-ordering diff reads exactly like the ABI drift the
 check exists to catch. That is what `LC_ALL=C` in the check is for.
