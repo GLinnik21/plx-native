@@ -10,7 +10,7 @@
 use super::*;
 use super::home_chrome_route_tests::{home_shelves_of, TITLES};
 use super::test_support::World;
-use plx_plex::plex::session::{UnderPosters, UnderPostersDetails as Details};
+use plx_plex::plex::session::{UnderPosters, UnderPostersLadder as Details};
 
 /// Holds the live setting on its default for the test and puts it back after it.
 pub(super) struct Cell;
@@ -46,7 +46,7 @@ const VIDEO: &str = "1080p \u{b7} HDR";
 fn left() -> String { plx_ui::fmt::time_left(80 * 60 * 1000) }
 
 pub(super) fn set(w: &mut World, title: bool, details: Details) {
-    plx_media::route::restore_under_posters(UnderPosters { title, details, show_details: details.for_shows(), sort_value: false });
+    plx_media::route::restore_under_posters(UnderPosters { title, details: details.movie_parts(), show_details: details.show_parts(), sort_value: false });
     w.frames(60);
 }
 
@@ -370,7 +370,7 @@ fn a_setting_changed_under_a_kept_home_reaches_the_card_after_back() {
         open_settings_at(&mut w.d, plx_screens::family::SettingsPage::UnderPosters);
         w.frames(40);
         assert_ne!(w.focus(), focus, "premise ({setting}): the Settings page holds focus over the kept Home");
-        plx_media::route::restore_under_posters(UnderPosters { title, details, show_details: details.for_shows(), sort_value: false });
+        plx_media::route::restore_under_posters(UnderPosters { title, details: details.movie_parts(), show_details: details.show_parts(), sort_value: false });
         w.frames(30);
         w.press(Key::Back);
         w.frames(60);

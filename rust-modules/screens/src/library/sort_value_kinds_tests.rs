@@ -6,7 +6,7 @@
 use super::*;
 use plx_data::browse::LibraryType;
 use plx_data::pms::{PmsMovie, SortInfo, KIND_EPISODE, KIND_SEASON};
-use plx_plex::plex::session::{UnderPosters, UnderPostersDetails};
+use plx_plex::plex::session::{UnderPosters, UnderPostersLadder};
 use super::grid_motion_tests::settle;
 
 const SHOW_ORDER_SEASONS: &str = "show.titleSort,index";
@@ -128,7 +128,7 @@ fn the_focused_row_opens_for_the_value_and_the_setting_off_restores_the_old_band
         let (page, _) = focused(&fixture, 3 * cols);
         page.layout.row_y(4, 0.0) - rest
     };
-    let title_on = UnderPosters { title: true, details: UnderPostersDetails::Genre, show_details: UnderPostersDetails::Genre.for_shows(), sort_value: true };
+    let title_on = UnderPosters { title: true, details: UnderPostersLadder::Genre.movie_parts(), show_details: UnderPostersLadder::Genre.show_parts(), sort_value: true };
     for listed in [LibraryType::Episodes, LibraryType::Seasons] {
         assert!((opened(listed, UnderPosters::DEFAULT) - 26.0).abs() < 0.01, "{listed:?} opens 26 px under a value");
         assert!((opened(listed, title_on) - 26.0).abs() < 0.01, "{listed:?}: the Title switch does not widen a value's band");

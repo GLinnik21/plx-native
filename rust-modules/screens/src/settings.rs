@@ -411,7 +411,8 @@ impl RouteSurface {
         //
         // **…AND IT QUEUES IT BEFORE THE DESTINATION'S MOUNT RUNS.** The engine takes the Enters in
         // the order they are queued and the last one wins, and a page that wants another seat (the
-        // Details picker on its checked line, the Language page on the chosen language) asks for it
+        // Language page on the chosen language; a details picker opens on its first part, a set of
+        // switches has no checked line) asks for it
         // from its `Mount`, which `run_inner` below delivers. Queued after that, this default put
         // every such page back on its first row.
         if !popping {
@@ -1159,7 +1160,7 @@ impl LogicalState for RootState {
     fn write(&self, w: &mut Canon) {
         w.u32(self.sel.0).bool(self.auto_sign_in).bool(self.trailer_autoplay).str(self.language.tag());
         if self.under_posters != plx_plex::plex::session::UnderPosters::DEFAULT {
-            w.u8(self.under_posters.pack());
+            w.u32(u32::from(self.under_posters.pack()));
         }
         if self.trace != plx_platform::playback_trace::Status::Off { w.u8(0xd1).u8(self.trace as u8); }
         if !self.plaintext.is_empty() {
@@ -1775,7 +1776,7 @@ impl Screen<InnerHost> for RootPage {
         let posters: Vec<&plx_data::pms::PmsMovie> = f.cx.views.directory.sample(PICTURE_POSTERS).collect();
         let fan = plx_ui::follow_copy::PosterFan { arts: posters.iter().map(|m| plx_ui::widgets::Art::Poster(Some(super::registry::tile_facts::of(m)))).collect() };
         let kind_posters = under_posters::preview_posters(f.cx);
-        let under = under_posters::RootPicture { value: self.state.under_posters, posters: &kind_posters, kinds: &[PosterKind::Movie, PosterKind::Show], sorted: false };
+        let under = under_posters::RootPicture { value: self.state.under_posters, posters: &kind_posters, sorted: false, opacity: [1.0, 1.0] };
         let picture: Option<&dyn plx_ui::follow_copy::PictureSlot> = match self.form.selected_id() {
             Some(RootId::Favourites) => Some(&fan),
             Some(RootId::UnderPosters) => Some(&under),
