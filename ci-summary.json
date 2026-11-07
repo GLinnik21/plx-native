@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-07T10:35:23Z",
+ "generated": "2026-11-07T10:47:22Z",
  "metrics": [
   {
    "change30_pct": 45.7,
@@ -78,6 +78,27 @@
    "state30": "worse",
    "threshold_abs": 20.0,
    "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": 25.7,
+   "d30": null,
+   "delta30": null,
+   "delta7": 19.2,
+   "group": "local",
+   "id": "bench.ui",
+   "kind": "local",
+   "label": "Rebuild after editing plx_ui",
+   "n_now": 5,
+   "n_prev": 7,
+   "now": 94.0,
+   "prev7": 74.8,
+   "shown": true,
+   "state": "worse",
+   "state30": "new",
+   "threshold_abs": 5.0,
+   "threshold_pct": 25.0,
    "unit": "s"
   },
   {
@@ -123,19 +144,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": -38.1,
-   "change7_pct": 22.5,
-   "d30": 755.5,
-   "delta30": -287.5,
-   "delta7": 86.0,
+   "change30_pct": -36.8,
+   "change7_pct": 22.4,
+   "d30": 740,
+   "delta30": -272.0,
+   "delta7": 85.5,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
    "n_now": 178,
-   "n_prev": 240,
+   "n_prev": 238,
    "now": 468.0,
-   "prev7": 382.0,
+   "prev7": 382.5,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -145,18 +166,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -16.2,
+   "change7_pct": -10.3,
    "d30": null,
    "delta30": null,
-   "delta7": -4.7,
+   "delta7": -2.9,
    "group": "local",
    "id": "bench.app",
    "kind": "local",
    "label": "Rebuild after editing the app crate",
-   "n_now": 6,
-   "n_prev": 6,
-   "now": 24.3,
-   "prev7": 29.0,
+   "n_now": 5,
+   "n_prev": 7,
+   "now": 25.6,
+   "prev7": 28.5,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -166,18 +187,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -7.3,
+   "change7_pct": -6.1,
    "d30": null,
    "delta30": null,
-   "delta7": -4.0,
+   "delta7": -3.3,
    "group": "local",
    "id": "bench.screens",
    "kind": "local",
    "label": "Rebuild after editing plx_screens",
-   "n_now": 6,
-   "n_prev": 6,
-   "now": 50.8,
-   "prev7": 54.8,
+   "n_now": 5,
+   "n_prev": 7,
+   "now": 51.2,
+   "prev7": 54.6,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -190,36 +211,15 @@
    "change7_pct": 24.6,
    "d30": null,
    "delta30": null,
-   "delta7": 18.5,
-   "group": "local",
-   "id": "bench.ui",
-   "kind": "local",
-   "label": "Rebuild after editing plx_ui",
-   "n_now": 6,
-   "n_prev": 6,
-   "now": 93.7,
-   "prev7": 75.2,
-   "shown": true,
-   "state": "flat",
-   "state30": "new",
-   "threshold_abs": 5.0,
-   "threshold_pct": 25.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": null,
-   "change7_pct": 23.5,
-   "d30": null,
-   "delta30": null,
-   "delta7": 40.0,
+   "delta7": 41.6,
    "group": "local",
    "id": "bench.leaf",
    "kind": "local",
    "label": "Rebuild after editing plx_base",
-   "n_now": 6,
-   "n_prev": 6,
-   "now": 210.3,
-   "prev7": 170.3,
+   "n_now": 5,
+   "n_prev": 7,
+   "now": 210.5,
+   "prev7": 168.9,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -229,18 +229,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 6.5,
+   "change7_pct": 18.5,
    "d30": null,
    "delta30": null,
-   "delta7": 10.5,
+   "delta7": 29.0,
    "group": "local",
    "id": "bench.tests",
    "kind": "local",
    "label": "Unit suite",
-   "n_now": 6,
-   "n_prev": 6,
-   "now": 170.9,
-   "prev7": 160.4,
+   "n_now": 5,
+   "n_prev": 7,
+   "now": 186.1,
+   "prev7": 157.1,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -270,18 +270,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 25.9,
+   "change30_pct": 26.0,
    "change7_pct": 12.2,
    "d30": 884.5,
-   "delta30": 229.5,
-   "delta7": 121.0,
+   "delta30": 230.0,
+   "delta7": 121.5,
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
    "kind": "job",
    "label": "Nightly: ARM build + gates / build + verify",
-   "n_now": 45,
+   "n_now": 46,
    "n_prev": 6,
-   "now": 1114,
+   "now": 1114.5,
    "prev7": 993.0,
    "shown": true,
    "state": "flat",
@@ -447,9 +447,9 @@
    "id": "nightly|publish nightly prerelease",
    "kind": "job",
    "label": "Nightly: publish nightly prerelease",
-   "n_now": 45,
+   "n_now": 46,
    "n_prev": 6,
-   "now": 24,
+   "now": 24.0,
    "prev7": 23.0,
    "shown": false,
    "state": "flat",
@@ -468,9 +468,9 @@
    "id": "nightly|plan today's nightly",
    "kind": "job",
    "label": "Nightly: plan today's nightly",
-   "n_now": 45,
+   "n_now": 46,
    "n_prev": 6,
-   "now": 20,
+   "now": 20.0,
    "prev7": 16.5,
    "shown": false,
    "state": "flat",
@@ -565,17 +565,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 7.0,
+   "change7_pct": 21.8,
    "d30": null,
    "delta30": null,
-   "delta7": 0.0,
+   "delta7": 0.1,
    "group": "local",
    "id": "bench.noop",
    "kind": "local",
    "label": "No-op build",
-   "n_now": 6,
-   "n_prev": 6,
-   "now": 0.6,
+   "n_now": 5,
+   "n_prev": 7,
+   "now": 0.7,
    "prev7": 0.6,
    "shown": false,
    "state": "flat",
@@ -646,6 +646,67 @@
    "since": "2026-11-07",
    "threshold_pct": 20.0,
    "to": 303
+  },
+  {
+   "change_pct": 25.7,
+   "commits": [
+    {
+     "pr": 1256,
+     "sha": "ece36ea6d",
+     "title": "Settings: v2 anatomy and root (follow-focus sentence, 48 title, groups, Diagnostics page)"
+    },
+    {
+     "pr": null,
+     "sha": "a67e3c95f",
+     "title": "Settings v2: the remaining pages, the push motion and the Under posters split"
+    },
+    {
+     "pr": null,
+     "sha": "5b9ff4a0a",
+     "title": "Settings: a pushed page's text is made resident before it moves"
+    },
+    {
+     "pr": null,
+     "sha": "4bf133d57",
+     "title": "Settings: fps scenes for the pages Settings v2 added"
+    },
+    {
+     "pr": 1263,
+     "sha": "2f5e79630",
+     "title": "Playback: a Dolby Vision resume or seek that lands on a CRA plays the HDR10 base layer"
+    },
+    {
+     "pr": 1265,
+     "sha": "96be5e274",
+     "title": "Playback: honor Plex server stops"
+    },
+    {
+     "pr": 1268,
+     "sha": "ec0df8cc3",
+     "title": "Playback contract crate, BackendRunner and attempt-metrics reducers (unwired)"
+    },
+    {
+     "pr": 1269,
+     "sha": "97e43889d",
+     "title": "Settings: Under posters takes composable details and the two-poster preview"
+    },
+    {
+     "pr": 1271,
+     "sha": "279b66d9f",
+     "title": "Media codecs crate: the bundled-FFmpeg ABI, PCM decode, speed audio and the encoder leave plx_media"
+    },
+    {
+     "pr": 1272,
+     "sha": "dc3d03c20",
+     "title": "Lower-layer prerequisites of the neutral media crate: plx_net::range_io, plx_base::clock, LoadVideo in platform, contrac"
+    }
+   ],
+   "from": 74.8,
+   "id": "bench.ui",
+   "label": "Rebuild after editing plx_ui",
+   "since": "2026-11-05",
+   "threshold_pct": 25.0,
+   "to": 94.0
   },
   {
    "change_pct": 21.1,
@@ -776,7 +837,7 @@
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
    "label": "Nightly: ARM build + gates / build + verify",
-   "now": 1114
+   "now": 1114.5
   },
   {
    "group": "ci",
@@ -808,31 +869,31 @@
    "group": "local",
    "id": "bench.leaf",
    "label": "Rebuild after editing plx_base",
-   "now": 210.3
+   "now": 210.5
   },
   {
    "group": "local",
    "id": "bench.tests",
    "label": "Unit suite",
-   "now": 170.9
+   "now": 186.1
   },
   {
    "group": "local",
    "id": "bench.ui",
    "label": "Rebuild after editing plx_ui",
-   "now": 93.7
+   "now": 94.0
   },
   {
    "group": "local",
    "id": "bench.screens",
    "label": "Rebuild after editing plx_screens",
-   "now": 50.8
+   "now": 51.2
   },
   {
    "group": "local",
    "id": "bench.app",
    "label": "Rebuild after editing the app crate",
-   "now": 24.3
+   "now": 25.6
   }
  ],
  "thresholds": {
