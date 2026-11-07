@@ -579,7 +579,7 @@ impl LoadVideo {
         }
     }
 
-    /// `FEED_SHARED.dg_load_v`'s code (video 1 = H264, 2 = H265, 3 = AV1, 4 = VP9).
+    /// `SHARED.dg_load_v`'s code (video 1 = H264, 2 = H265, 3 = AV1, 4 = VP9).
     pub fn diag_code(self) -> u8 {
         match self {
             Self::H264 => 1,

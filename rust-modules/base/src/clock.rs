@@ -2,7 +2,7 @@
 //!
 //! Not SDL ticks: it is read on the pipeline's own callback thread, and a private origin owes SDL
 //! nothing. Every reader (the pipeline callback's presentation stamp, the pump's silence watchdog,
-//! the player's audio-pick window, the Feed executor's slice clock) reads this one clock, so a
+//! the player's audio-pick window) reads this one clock, so a
 //! stamp one of them stores is comparable by any other. The origin is fixed at the first call.
 //! It lives here, in `base`, because the Feed that stamps with it and the player that differences
 //! the stamps are separate layers and neither may name the other.

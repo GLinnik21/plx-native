@@ -972,12 +972,17 @@ impl<A: UrlAuthorizer> CurlSource<A> {
         deadline: Option<std::time::Instant>,
         checkpoint: &mut dyn Checkpoint,
     ) -> Result<(), OpenErr> {
-        let original = self.url.to_str().map_err(|_| OpenErr::Local)?.to_owned();
         // A seek is a fresh request too: a revoked credential grant may not be reused merely
-        // because the source was authorized when it first opened.
-        if !A::allows(&original) {
-            return Err(OpenErr::Local);
-        }
+        // because the source was authorized when it first opened. The refusal retires the attempt
+        // in flight like any other failed start, so a read after it fails instead of serving the
+        // bytes the retired transfer had buffered.
+        let original = match self.url.to_str() {
+            Ok(url) if A::allows(url) => url.to_owned(),
+            _ => {
+                self.retire_attempt();
+                return Err(OpenErr::Local);
+            }
+        };
         let mut hop = Hop::first(&self.url, self.resolve_entry.clone());
         loop {
             match self.run_hop(at, range_end, deadline, checkpoint, &original, &hop)? {
@@ -1054,6 +1059,19 @@ impl<A: UrlAuthorizer> CurlSource<A> {
         }
     }
 
+    /// Retire the attempt in flight: detach its easy handle and drop everything it left to read.
+    /// What every attempt begins from, and what a start refused before it sends anything leaves
+    /// behind: `readable` is false, so a read fails rather than serving the retired transfer's
+    /// buffered bytes or reporting a clean end of stream, and another seek may recover.
+    fn retire_attempt(&mut self) {
+        self.stop();
+        self.xfer.reset();
+        self.done = false;
+        self.rc = 0;
+        self.failed = false;
+        self.readable = false;
+    }
+
     /// One attempt of [`run_hop`](Self::run_hop) in `mode`: a fresh easy handle for `hop`'s URL,
     /// pumped until the response headers are in. `original` is the URL the chain began on, which
     /// decides what a redirect may be to ([`next_hop`]). `roots_tried` is whether this hop has
@@ -1074,7 +1092,7 @@ impl<A: UrlAuthorizer> CurlSource<A> {
         // `hop.key` is the hop URL's `host:port` in `net::keypin`'s tables, or `None` when the URL can
         // never use them.
         let key = hop.key.as_deref();
-        self.stop();
+        self.retire_attempt();
         if self.multi_failed {
             // A CURLM error describes this multi handle, not the remote byte range. Rebuild the
             // local machinery before allowing a later seek to retry; clearing the flag while
@@ -1088,11 +1106,6 @@ impl<A: UrlAuthorizer> CurlSource<A> {
             }
             self.multi_failed = false;
         }
-        self.xfer.reset();
-        self.done = false;
-        self.rc = 0;
-        self.failed = false;
-        self.readable = false;
         self.started = std::time::Instant::now();
         self.hop_url = hop.url.clone();
         if self.abort.is_set() {
@@ -2572,6 +2585,8 @@ mod tests {
 
     /// A seek is a fresh request on a fresh easy handle, so a grant revoked after the first open
     /// stops it before anything reaches the wire; restoring the grant lets the next seek through.
+    /// A refused seek leaves the source unreadable, like any other failed start: a read after it is
+    /// an error, never the pre-seek bytes still buffered and never a clean end of stream.
     #[test]
     fn a_seek_rechecks_the_caller_authority_before_the_next_request() {
         static REVOKED: AtomicBool = AtomicBool::new(false);
@@ -2589,8 +2604,14 @@ mod tests {
             REVOKED.store(true, Ordering::Release);
             assert!(!src.seek(2), "a revoked grant refuses the seek");
             assert_eq!(requests.load(Ordering::Acquire), sent, "the refused seek sent no request");
+            let mut buf = [0u8; 16];
+            assert!(src.read(&mut buf) < 0, "a read after a refused seek is an error, not bytes or EOF");
+            assert!(src.read(&mut buf) < 0, "and it stays one");
             REVOKED.store(false, Ordering::Release);
             assert!(src.seek(2), "with the grant back the next seek goes through");
+            let n = src.read(&mut buf);
+            assert!(n > 0, "the recovered source reads again, got {n}");
+            assert_eq!(&buf[..n as usize], &BODY[2..2 + n as usize]);
         });
     }
 
