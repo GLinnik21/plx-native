@@ -231,7 +231,7 @@ fn menu_play_season_load_inside_a_frame_needs_no_blocking_exception() {
     // The season fetch is one `http::request_with` GET, i.e. `net`'s easy API and nothing of the
     // media plane, so what this needs from the machine is `net`'s own "libcurl is bound and may be
     // used from several threads" -- not `curlio::available()`, which adds the multi table only the
-    // media transport reads (and `curlio` is not the data layer's to name).
+    // media transport reads.
     assert!(
         plx_net::net::global_init() && plx_net::net::available() && plx_net::net::threaded_tls_ready()
     );

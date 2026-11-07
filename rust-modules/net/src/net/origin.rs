@@ -20,7 +20,7 @@
 //! Every half of that limit is gone, through separate transports:
 //! `stream.rs` resolves through `getaddrinfo` and dials either address family, and the CONTROL
 //! plane routes a TLS origin through libcurl (`crate::http` dispatches on the scheme), while the
-//! MEDIA plane uses `crate::curlio` as a libcurl-multi pull source. What
+//! MEDIA plane uses `crate::range_io` as a libcurl-multi pull source. What
 //! `(host, port)` still could not say is the SCHEME, which is this type's reason for existing.
 //!
 //! It is not a complete description of the servers plex.tv actually advertises, and the gap is not
