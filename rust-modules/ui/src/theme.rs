@@ -891,7 +891,7 @@ pub const ROW_VALUE_INK_ON_DIM: [f32; 4] = with_a(ACCENT_INK, 0.38);
 pub const ROW_VALUE_INK_DIM: [f32; 4] = with_a(TEXT_TERTIARY, 0.45);
 
 /// **The DISABLED control state, as one value** — what a table row that is present but cannot be
-/// used wears ([`crate::table::Row::disabled`], [`crate::table::Row::disabled_state`]):
+/// used wears ([`crate::table::Row::disabled`]):
 ///
 /// * `label` — the name off the pill: [`TEXT_TERTIARY`], the dim row's label rung.
 /// * `value` — the read-out beside it (a row's value): [`ROW_VALUE_INK_DIM`], the label's ink

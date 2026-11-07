@@ -580,7 +580,8 @@ fn stored_part_lists_win_over_the_old_keys_and_are_held_to_the_kind_and_the_maxi
 }
 
 /// A write keeps the old keys beside the parts, so a build that predates the parts reads the
-/// nearest choice, and a downgrade-then-upgrade loses nothing: the parts are written too.
+/// nearest old rung. The ticks survive a downgrade only until that older build saves the record
+/// (its `ProfilePrefs` carries no extensions, so it writes back the old keys alone).
 #[test]
 fn a_write_carries_the_parts_and_the_nearest_old_rung_for_a_downgrade() {
     use DetailPart as P;

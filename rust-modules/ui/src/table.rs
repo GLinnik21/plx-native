@@ -242,12 +242,6 @@ impl Row {
         self.disabled = v;
         self
     }
-    /// The state this row is in when it is disabled ([`theme::DISABLED`]): `None` for a usable row.
-    /// The row's inks are read from it, and so are any other thing's that must read as the same
-    /// state (the Under posters picture's tile that is not in focus).
-    pub fn disabled_state(&self) -> Option<theme::Disabled> {
-        self.disabled.then_some(theme::DISABLED)
-    }
     /// Mark the row's action destructive — see [`Row::destructive`].
     pub fn destructive(mut self, v: bool) -> Self {
         self.destructive = v;

@@ -18,21 +18,26 @@ fn up(title: bool, details: &[DetailPart], show_details: &[DetailPart]) -> Under
     UnderPosters { title, details: parts(details), show_details: parts(show_details), sort_value: false }
 }
 
-/// Every value the page can show: both title states over the sets the pickers can produce (none,
-/// the defaults, one part, a full four, a pair), a kind holding what it offers of each.
+/// Every set of up to four of the parts a kind offers (what the picker can produce): 57 for a
+/// movie, 31 for a show.
+fn subsets(offered: &[DetailPart]) -> Vec<DetailParts> {
+    (0u32..(1 << offered.len()))
+        .map(|m| parts(&offered.iter().enumerate().filter(|(i, _)| m >> i & 1 == 1).map(|(_, p)| *p).collect::<Vec<_>>()))
+        .filter(|s| s.len() <= DetailParts::MAX)
+        .collect()
+}
+
+/// **Every value the page can show**: both title states over EVERY set of up to four parts of each
+/// kind. A row's text depends on its own kind's set alone (the root row on the movie's, each details
+/// row on its own, a picker on its kind's), so the movie and show sets are walked side by side, the
+/// shorter list wrapping, rather than as a 57 x 31 product: every set of both kinds appears in
+/// every title state, and no combination of a row's own set is skipped.
 fn every_value() -> Vec<UnderPosters> {
-    let sets = [
-        DetailParts::NONE,
-        DetailParts::MOVIE_DEFAULT,
-        parts(&[P::Genre]),
-        parts(&[P::Year, P::Length, P::Genre, P::VideoQuality]),
-        parts(&[P::Year, P::Seasons, P::Genre, P::AgeRating]),
-        parts(&[P::AgeRating, P::Score]),
-    ];
+    let (movies, shows) = (subsets(PosterKind::Movie.offered()), subsets(PosterKind::Show.offered()));
     let mut all = Vec::new();
     for title in [false, true] {
-        for set in sets {
-            all.push(UnderPosters { title, details: set.for_movies(), show_details: set.for_shows(), sort_value: false });
+        for i in 0..movies.len().max(shows.len()) {
+            all.push(UnderPosters { title, details: movies[i % movies.len()], show_details: shows[i % shows.len()], sort_value: false });
         }
     }
     all
@@ -195,7 +200,7 @@ fn each_details_row_reads_its_kinds_names_and_opens_its_own_picker() {
 }
 
 /// **A details row's value**: the ticked names joined with the middle dot in the line's order,
-/// "Nothing" for none, and "4 details" once the names would not fit.
+/// "Nothing" for none, and a count ("4 details") once the joined names run past the row's budget.
 #[test]
 fn a_details_value_is_the_names_nothing_or_a_count() {
     let _guard = plx_base::testlock::serial();
@@ -205,6 +210,7 @@ fn a_details_value_is_the_names_nothing_or_a_count() {
     assert_eq!(names_value(parts(&[P::Length, P::Year])), format!("Year {DOT} Length"), "the line's order, not the order ticked");
     assert_eq!(names_value(parts(&[P::Year, P::Length, P::Genre])), format!("Year {DOT} Length {DOT} Genre"));
     assert_eq!(names_value(parts(&[P::Year, P::Length, P::Genre, P::Score])), "4 details");
+    assert_eq!(names_value(parts(&[P::Year, P::Length, P::VideoQuality])), "3 details", "names past the budget read their count");
 }
 
 #[test]
@@ -397,9 +403,6 @@ fn with_four_ticked_the_other_rows_are_disabled_by_the_shared_state_and_ok_does_
     assert_eq!(disabled_rows(&page), vec![
         (P::Year, false), (P::Length, false), (P::Genre, false), (P::VideoQuality, false), (P::AgeRating, true), (P::Score, true),
     ], "only the unticked rows are disabled");
-    for row in page.form.table.sections.iter().flat_map(|s| s.rows.iter()) {
-        assert_eq!(row.disabled_state(), row.disabled.then_some(theme::DISABLED), "{}: the disabled row is in THE disabled state", row.label);
-    }
     let i = page.form.index_of_key(PartId(P::AgeRating).key()).unwrap();
     assert_eq!(page.form.activate(i), None, "a disabled row answers nothing");
     assert!(write_request(pick(&mut page, P::Score)).is_none(), "OK on a disabled row writes nothing");
@@ -447,7 +450,7 @@ fn the_unfocused_kind_is_dimmed_to_the_designs_value_per_focus() {
     let _live = Live::set(UnderPosters { details: four, ..UnderPosters::DEFAULT });
     let picker = DetailsPage::new(EntryId(0), PosterKind::Movie);
     let blocked = picker.form.table.sections.iter().flat_map(|s| s.rows.iter()).find(|r| r.disabled).expect("a blocked row");
-    assert_eq!(blocked.disabled_state(), Some(theme::DISABLED));
+    assert!(blocked.disabled);
 }
 
 #[test]
@@ -1171,12 +1174,6 @@ fn a_details_line_is_one_line_and_ends_in_an_ellipsis_when_wider_than_its_tile()
     let slot = RouteLayout::settings_page().picture_slot();
     let size = theme::size::CAPTION;
     let width = |text: &str, bold: bool| ShippedMeasure.width_str(text, size, bold);
-    let subsets = |offered: &[DetailPart]| -> Vec<DetailParts> {
-        (0u32..(1 << offered.len()))
-            .map(|m| parts(&offered.iter().enumerate().filter(|(i, _)| m >> i & 1 == 1).map(|(_, p)| *p).collect::<Vec<_>>()))
-            .filter(|s| s.len() <= DetailParts::MAX)
-            .collect()
-    };
     let mut out = Vec::new();
     let mut widest: Option<(String, f32)> = None;
     let mut elided = 0;

@@ -11,8 +11,8 @@
 //! parts' values joined with " · " in the parts' fixed order, **at most four**
 //! ([`DetailParts::MAX`]); with four ticked the others are DISABLED, the shared control state
 //! (`FormSection::disabled`), and say why in the sentence beside the table. The details rows' value
-//! is the ticked names joined (`Year · Length`), "Nothing", or "4 details" once there are more than
-//! three ([`names_value`]); the Settings root's Under posters row reads the Movie one ([`summary`]).
+//! is the ticked names joined (`Year · Length`), "Nothing", or "3 details" (a count) once the joined
+//! names are longer than [`NAMES_BUDGET_CHARS`] ([`names_value`]); the Settings root's Under posters row reads the Movie one ([`summary`]).
 //!
 //! **No panel and no sub-lines.** A row is its label and its value; the sentence that explained it
 //! under its label is stated in the left column while the row has focus ([`sentence_for`],
@@ -133,16 +133,24 @@ fn part_label(part: DetailPart) -> &'static str {
     }
 }
 
+/// How many characters of joined part names a details row's value holds before it reads a count
+/// instead. The value column is what the row's label leaves (381 px for "Detalles de películas",
+/// 421 px for the Belarusian "Звесткі серыялаў"), and the longest languages' names run about 14 px a
+/// character: `every_under_posters_string_fits_in_every_language` walks every set of every kind in
+/// every language and fails on a value the television would end in an ellipsis. Nothing is lost to
+/// the count: the picker one level down names every ticked part.
+const NAMES_BUDGET_CHARS: usize = 26;
+
 /// **A details row's value**: the ticked parts' names joined with " · " in the line's order
-/// ("Year · Length"), "Nothing" when none, "4 details" when more than three (the names would not fit
-/// the row).
+/// ("Year · Length"), "Nothing" when none, and the count ("3 details") when the joined names run
+/// past [`NAMES_BUDGET_CHARS`] and would end in an ellipsis in the row.
 fn names_value(parts: DetailParts) -> String {
     use plx_platform::i18n::msg;
-    match parts.len() {
-        0 => msg::under_posters_none().to_string(),
-        n if n > 3 => msg::under_posters_details_count(n as i64),
-        _ => parts.iter().map(part_label).collect::<Vec<_>>().join(" \u{b7} "),
+    if parts.is_empty() {
+        return msg::under_posters_none().to_string();
     }
+    let names = parts.iter().map(part_label).collect::<Vec<_>>().join(" \u{b7} ");
+    if names.chars().count() > NAMES_BUDGET_CHARS { msg::under_posters_details_count(parts.len() as i64) } else { names }
 }
 
 /// **The Settings root's value for the Under posters row**: the Movie details row's value (the show
@@ -407,7 +415,9 @@ fn poster_of<'a>(kind: PosterKind, posters: &[&'a PmsMovie]) -> Option<&'a PmsMo
 }
 
 /// **The ONE source of every sample on the Under posters pages**: the facts of the tile a picker
-/// words, so a row never promises "2019 · 2h 14m" over a picture that says "2022 · 6m".
+/// words, so a row never promises "2019 · 2h 14m" over a picture that says "2022 · 6m". A fact the
+/// poster lacks is the exception ([`part_example`]): the row then shows the kind's sample, and
+/// ticking that part adds nothing to that poster's line.
 fn kind_facts(kind: PosterKind, posters: &[&PmsMovie]) -> CaptionFacts {
     picture_facts(kind, poster_of(kind, posters))
 }
@@ -499,7 +509,9 @@ impl plx_ui::follow_copy::PictureSlot for RootPicture<'_> {
             let lines = picture_lines(self.value, *kind, poster_of(*kind, self.posters), self.sorted);
             // Present lines stack from the first: a title (bold) over its details.
             for (n, (line, is_title)) in lines.into_iter().zip([true, false]).filter_map(|(l, t)| l.map(|l| (l, t))).enumerate() {
-                // The shared poster-caption fit: one line, an ellipsis when it is wider than its tile.
+                // One line, an ellipsis when it is wider than its tile (`Measure::fit_line`, the poster
+                // captions' own fit). A FOCUSED real poster's caption scrolls instead of eliding
+                // (`card_row.rs`, the focused-title marquee); the picture is a still, so it elides.
                 let line = measure.fit_line(&line, PICTURE_LINE_FIT_W, size, is_title);
                 let ink = if is_title { theme::TEXT_PRIMARY } else { theme::CAPTION_DETAIL_INK };
                 let mut label = Label::new(line.as_ptr(), size, ink).h(HAlign::Center).v(VAlign::CapTop);
@@ -611,8 +623,9 @@ impl FormId for PartId {
 }
 
 /// What a part shows under a poster, as the picture words it from `facts` ([`kind_facts`]): the
-/// row's sample on the right and the example in its sentence. A fact the poster lacks is sampled from
-/// the kind's sample tile instead, so a row always shows an example.
+/// row's sample on the right and the example in its sentence. A part the poster lacks (a movie with
+/// no genre, say) shows the kind's sample ([`kind_sample`]) instead, so a row always shows an
+/// example; ticking such a part adds nothing to THAT poster's line, which stays as it was.
 fn part_example(kind: PosterKind, part: DetailPart, facts: &CaptionFacts) -> String {
     let cx = plx_platform::i18n::current();
     part_value(part, facts, cx).or_else(|| part_value(part, &kind_sample(kind), cx)).unwrap_or_default()

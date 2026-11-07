@@ -738,7 +738,7 @@ fn a_refused_direct_play_write_does_not_republish_auto() {
 // =====================================================================================
 
 /// **The in-memory index of every live cell**, read back from the raw atomics (the numbers the
-/// future `Packed::to_u8` must reproduce). Out-of-range indices fall back to the documented
+/// future `Packed::to_bits` must reproduce). Out-of-range indices fall back to the documented
 /// default of each type, never a neighbouring rung.
 #[test]
 fn live_cell_indices_are_pinned() {
