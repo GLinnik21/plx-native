@@ -3290,7 +3290,6 @@ mod load_in_flight_tests {
 
         let mut ps = crate::route::PlaybackSession::IDLE;
         let _flight = crate::route::flight_rig::FlightRig::start(&mut ps, Duration::ZERO);
-        let _serial = plx_base::testlock::serial();
         crate::player::reset_session_for_test();
         plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
         plx_play_feed::ffi_host::force_clocksink_for_test(true);

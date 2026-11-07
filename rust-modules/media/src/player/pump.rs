@@ -2778,7 +2778,7 @@ mod flight_tests {
     fn server_stop_releases_a_replacement_engine_before_its_first_picture() {
         let mut rig = failed_original_trial_rig(40);
         assert_eq!(FEED_SHARED.frames.load(Relaxed), 0);
-        crate::player::request_seek(SEEK_TARGET_NS);
+        crate::player::request_seek(&mut rig.ps, &mut rig.pa, SEEK_TARGET_NS);
         crate::player::note_server_stop(&crate::route::sess(&rig.ps), "rig-1", "stopped on reload", 10_000);
         rig.frame();
         assert_eq!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error);
