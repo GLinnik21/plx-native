@@ -44,7 +44,7 @@
  * VERSIONS at run time on a device whose libraries we could not inspect; this picks between two
  * ABIs of ONE version at COMPILE time, on evidence the compiler has in front of it.
  *
- * **It has already earned its keep.** `AVSubtitleRect` was modelled in media-codecs/src/ffi.rs with `flags` last
+ * **It has already earned its keep.** `AVSubtitleRect` was modelled in ff.rs (now media-codecs/src/ffi.rs) with `flags` last
  * when the header puts it before `type` — latent, because nothing reads those four fields, and
  * invisible to the 32-bit assertions because they never asserted `flags` at all. Deriving the
  * table a second time at a different width is what surfaced it: on the host the model's `flags`
@@ -72,7 +72,7 @@ SAME64(offsetof(AVStream, codecpar), 16, "OFF_STREAM_CODECPAR != 12 [host]");
 SAME32(offsetof(AVStream, time_base), 20, "OFF_STREAM_TIME_BASE != 20");
 SAME64(offsetof(AVStream, time_base), 32, "OFF_STREAM_TIME_BASE != 20 [host]");
 /* The container's per-track tags — where a track's NAME is, and the only place it is for an MP4
-   (PMS sends Stream.title for Matroska and nothing at all for MP4; see media-codecs/src/ffi.rs's stream_name). The
+   (PMS sends Stream.title for Matroska and nothing at all for MP4; see play-feed/src/ff.rs's stream_name). The
    int64 start_time/duration/nb_frames ahead of it are 8-ALIGNED on ARM EABI, so there is a 4-byte
    pad after time_base that a 64-bit reading of the struct does not show — the same trap
    AVFrame.pts carries below. */
@@ -113,7 +113,7 @@ SAME64(offsetof(AVFrame, format), 116, "OFF_FRAME_FORMAT != 80 [host]");
    likely to be got wrong by reading a struct definition on a 64-bit machine. This assertion is
    the reason the FFmpeg 9 bump did not ship a wrong PTS: it fired here, on a desk. */
 SAME32(offsetof(AVFrame, pts), 96, "OFF_FRAME_PTS != 96 (ARM EABI int64 alignment)");
-/* The audio half, read by media-codecs/src/ffi.rs's SpeedDecoder (playback speed) and ff_pcm.rs's PcmDecoder (FLAC, ALAC, LPCM). */
+/* The audio half, read by media-codecs/src/speed_decoder.rs's SpeedDecoder (playback speed) and ff_pcm.rs's PcmDecoder (FLAC, ALAC, LPCM). */
 SAME32(offsetof(AVFrame, extended_data), 64, "OFF_AFRAME_EXTENDED_DATA != 64");
 SAME64(offsetof(AVFrame, extended_data), 96, "OFF_AFRAME_EXTENDED_DATA != 96 [host]");
 SAME32(offsetof(AVFrame, nb_samples), 76, "OFF_AFRAME_NB_SAMPLES != 76");
@@ -252,7 +252,7 @@ SAME32(offsetof(AVSubtitleRect, data), 20, "AVSubtitleRect.data != 20 (the AVPic
 SAME64(offsetof(AVSubtitleRect, data), 24, "AVSubtitleRect.data != 20 (the AVPicture is gone) [host]");
 SAME32(offsetof(AVSubtitleRect, linesize), 36, "AVSubtitleRect.linesize moved");
 SAME64(offsetof(AVSubtitleRect, linesize), 56, "AVSubtitleRect.linesize moved [host]");
-/* `flags` sits BETWEEN linesize and type, and media-codecs/src/ffi.rs modelled it last until 2026-08-28. Nothing
+/* `flags` sits BETWEEN linesize and type, and ff.rs (now media-codecs/src/ffi.rs) modelled it last until 2026-08-28. Nothing
    reads these four, so it was latent — and it was invisible here because `flags`, `text` and
    `ass` were never asserted. They are now: an ORDER is only pinned by asserting every member of
    it, and the three that were missing are exactly the three that were wrong. */
