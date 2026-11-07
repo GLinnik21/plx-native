@@ -132,8 +132,8 @@ of the payoff is. L10 took the player widgets out of `ui` (66k lines at baseline
 `playback_contract` is a fifteenth layer, declared after the split and not in the table above. Its
 crate is `plx_playback_contract` (`rust-modules/playback-contract/`) and it names only `base`: the
 backend-neutral playback vocabulary (commands and readouts, the time, track and subtitle types, the
-`BackendState` machine and the Feed port traits `FeedSeek`, `FeedLoad` and `FeedControl` with their
-test fakes), which a backend can implement without naming `media`, `route` or Plex. `data` and
+`BackendState` machine, the Feed port traits `FeedSeek`, `FeedLoad`, `FeedOpen`, `FeedStop` and `FeedControl`
+over them, and the adaptive `FeedPort`, with their test fakes), which a backend can implement without naming `media`, `route` or Plex. `data` and
 `media` may name it (`data`'s `TrackNames` and `media`'s `abr::units::MediaTimeMs` are re-exports of
 its types, and the `BackendRunner` and attempt-metrics reducers in `media::player` are written
 against it). `BackendState` is a machine in `ci/machines.ini`, and `ci/check-deps.sh` reads the
