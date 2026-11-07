@@ -414,7 +414,7 @@ LIBS_REAL = -lSDL2 -lSDL2_ttf -lGLESv2 -lluna-service2 -lglib-2.0 \
 #   those files land BESIDE the binary, which is on no library search path, and they carry no rpath
 #   — so a DT_NEEDED entry would be resolved at exec() against the system path, where it either
 #   finds nothing (dead before main) or finds the TELEVISION's copy, which is the wrong one:
-#   webOS 11.2.0 ships FFmpeg 6 itself. ff.rs::load_libraries opens the three by ABSOLUTE PATH out
+#   webOS 11.2.0 ships FFmpeg 6 itself. media-codecs/src/ffi.rs::load_libraries opens the three by ABSOLUTE PATH out
 #   of paths::app_dir(), one pinned SONAME each, in dependency order under RTLD_GLOBAL — not a
 #   candidate list, and nothing is being tolerated.
 #
@@ -899,7 +899,7 @@ src/%.o: src/%.c $(wildcard src/*.h) Makefile $(CONFIG_LOCAL_STAMP)
 # RELEASE=1 drops swscale and the mpeg1/mpegts pair, which only the dev capture stream uses.
 FFMPEG_PREFIX = vendor/ffmpeg-prefix
 FFMPEG_INC    = $(FFMPEG_PREFIX)/include
-# Staged into pkg/ under their SONAMEs, which is the name ff.rs dlopens by absolute path.
+# Staged into pkg/ under their SONAMEs, which is the name media-codecs/src/ffi.rs dlopens by absolute path.
 FFMPEG_SONAMES = libavutil-plx.so.61 libavcodec-plx.so.63 libavformat-plx.so.63 \
                  $(if $(RELEASE),,libswscale-plx.so.10)
 FFMPEG_STAGED = $(addprefix pkg/,$(FFMPEG_SONAMES))
@@ -959,7 +959,7 @@ $(FFMPEG_STAGED): pkg/%: $(FFMPEG_INC)/libavformat/avformat.h
 	cp -L $(FFMPEG_PREFIX)/lib/$* $@
 	python3 ci/stage-link-evidence.py $(FFMPEG_PREFIX)/lib/$* $@
 
-# The FFmpeg ABI gate. ff.rs reads FFmpeg structs at hardcoded offsets; ci/ffabi-assert.c
+# The FFmpeg ABI gate. media-codecs/src/ffi.rs reads FFmpeg structs at hardcoded offsets; ci/ffabi-assert.c
 # re-derives every one with offsetof against THE HEADERS THE SHIPPED LIBRARIES WERE BUILT FROM, so
 # a slip is a compile error naming the field instead of a wild pointer on a television. Compiled,
 # never linked — it contains only _Static_asserts — and a prerequisite of the staticlib, so no
@@ -975,7 +975,7 @@ $(FFABI_STAMP): ci/ffabi-assert.c $(FFMPEG_INC)/libavformat/avformat.h Makefile
 # rule would leave every later `make` linking a library built by the OLD one. Cargo's own
 # `rerun-if-changed` cannot save that — it is only consulted when make decides to invoke cargo at
 # all, and this target is an ordinary timestamp comparison.
-RUST_INPUTS := $(shell find rust-modules/src rust-modules/base rust-modules/machine rust-modules/net rust-modules/platform rust-modules/gfx rust-modules/ui rust-modules/plex rust-modules/telemetry rust-modules/data rust-modules/session rust-modules/media rust-modules/playback-contract rust-modules/appkit rust-modules/screens rust-modules/build_support locales assets -type f 2>/dev/null)
+RUST_INPUTS := $(shell find rust-modules/src rust-modules/base rust-modules/machine rust-modules/net rust-modules/platform rust-modules/gfx rust-modules/ui rust-modules/plex rust-modules/telemetry rust-modules/data rust-modules/session rust-modules/media rust-modules/playback-contract rust-modules/media-codecs rust-modules/appkit rust-modules/screens rust-modules/build_support locales assets -type f 2>/dev/null)
 $(RUST_LIB): LICENSE $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock rust-modules/build.rs ci/install-identities.json rust-modules/.cargo/config.toml Makefile ci/check-staticlib-artifact.py $(FFABI_STAMP)
 	@# BEFORE the mkdir: the seed is only ever cloned into a target dir that does not exist yet.
 	$(CARGO_SEED) restore $(RUST_TDIR) rust-modules/$(RUST_TDIR)
@@ -1298,7 +1298,7 @@ deploy: pkg/plxnative pkg/plxnative-storage $(FFMPEG_STAGED) $(SENTRY_NATIVE_STA
 	# one for a `python3 -c`.
 	@python3 -c "import json,sys; got=json.load(open('$(APPINFO)'))['id']; \
 	  sys.exit(0) if got=='$(APPID)' else sys.exit('$(APPINFO) declares id=%s but deploys into $(APPID)' % got)"
-	# The bundled FFmpeg, under its SONAMEs — ff.rs dlopens these by absolute path from the app
+	# The bundled FFmpeg, under its SONAMEs — media-codecs/src/ffi.rs dlopens these by absolute path from the app
 	# directory. ONE scp for all of them: each connection is a full SSH handshake to a television
 	# that is not fast, and this is ~2.1 MB on every deploy. Unconditional, like the fonts —
 	# a CHANGED library must be able to reach the TV.
@@ -1322,7 +1322,7 @@ deploy: pkg/plxnative pkg/plxnative-storage $(FFMPEG_STAGED) $(SENTRY_NATIVE_STA
 	# ...then retire any FFmpeg from a PREVIOUS version. `scp` only adds, so bumping the bundled
 	# release left the old majors sitting in the app directory forever — observed on the dev TV,
 	# which was carrying libavcodec-plx.so.60 and .so.58 from an earlier experiment alongside the
-	# live .63/.61. Harmless (ff.rs opens by exact name) but it accumulates, and it ships nothing:
+	# live .63/.61. Harmless (media-codecs/src/ffi.rs opens by exact name) but it accumulates, and it ships nothing:
 	# the .ipk only ever contains the current set. Removal comes AFTER the copy so there is never
 	# a moment with no FFmpeg on the device.
 	$(SSH) 'cd $(APPDIR) && for f in libav*-plx.so.* libswscale-plx.so.*; do case " $(FFMPEG_SONAMES) " in *" $$f "*) ;; *) rm -f "$$f";; esac; done'
@@ -1555,7 +1555,7 @@ check:
 # No --target and no RUST_ENV here on purpose. Those flags exist to stop the ARM build SIGILL-ing
 # on this TV's A53 (see the codegen comment above); pointed at the aarch64 host they are wrong at
 # best. A bare `cargo test` builds for the host triple, which is exactly what we want — and it is
-# also why this suite cannot cover anything that links the TV's own libraries: ff.rs gates its four
+# also why this suite cannot cover anything that links the TV's own libraries: media-codecs/src/ffi.rs gates its four
 # `#[link]` directives out of cfg(test) so the crate's pure logic stays host-testable, and a test
 # that actually calls into FFmpeg or GL fails to link by design. --lib keeps it to the crate's own
 # `#[cfg(test)] mod tests` blocks (there are no integration tests in tests/ — that directory is the
@@ -1628,7 +1628,7 @@ check-cargo-lint: lint
 	@# gate has nothing to reuse a cache for. No `pkg/lab.json` is involved — that file is `make
 	@# LAB=1`'s requirement (a live session secret), not the compiler's.
 	@set -e; cd rust-modules && CARGO_INCREMENTAL=0 PATH="$$HOME/.cargo/bin:$$PATH" \
-	  cargo +$(RUST_TOOLCHAIN) check --lib --tests -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_appkit -p plx_screens --features lab-diagnostics
+	  cargo +$(RUST_TOOLCHAIN) check --lib --tests -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_media_codecs -p plx_appkit -p plx_screens --features lab-diagnostics
 	@# And the demo-video dump build's pixel oracle, `placeholder-sentinel`: in no default set and
 	@# built only by `make site-video-sim`, which no gate runs and which compiles no `plx_ui` tests, so
 	@# this line is what keeps it compiling (its code AND its tests, `--tests`). `plx_ui` is the only
@@ -1647,7 +1647,7 @@ check-cargo-lint: lint
 # `-p` lists in the recipes below (those stay literal because ci/test_ci_split.py greps for them);
 # ci/test_test_crate.py pins the two equal.
 UNIT_RUN = python3 ../tools/cargo-test-parallel.py
-UNIT_SUITE = plxnative-modules plx_base plx_machine plx_platform plx_gfx plx_net plx_ui plx_plex plx_telemetry plx_data plx_session plx_media plx_playback_contract plx_appkit plx_screens
+UNIT_SUITE = plxnative-modules plx_base plx_machine plx_platform plx_gfx plx_net plx_ui plx_plex plx_telemetry plx_data plx_session plx_media plx_playback_contract plx_media_codecs plx_appkit plx_screens
 
 # The default-feature unit suite and everything that drives cargo through ci/ self-tests.
 check-cargo-unit-default:
@@ -1676,7 +1676,7 @@ check-cargo-unit-default:
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
 	  $(TELEMETRY_ENV) \
 	  $(HOST_ENV) \
-	  $(UNIT_RUN) -- cargo +$(RUST_TOOLCHAIN) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_appkit -p plx_screens
+	  $(UNIT_RUN) -- cargo +$(RUST_TOOLCHAIN) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_media_codecs -p plx_appkit -p plx_screens
 	RUST_TOOLCHAIN=$(RUST_TOOLCHAIN) python3 ci/test_storage_service_package.py
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" cargo +$(RUST_TOOLCHAIN) test -p plxnative-storage --bin plxnative-storage
 	@# The helper is its own package, so building it compiles no copy of the app library; this reads
@@ -1710,7 +1710,7 @@ check-cargo-unit-hostsim:
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
 	  $(TELEMETRY_ENV) \
 	  $(HOST_ENV) \
-	  $(UNIT_RUN) -- cargo +$(RUST_TOOLCHAIN) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_appkit -p plx_screens --features hostsim
+	  $(UNIT_RUN) -- cargo +$(RUST_TOOLCHAIN) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_media_codecs -p plx_appkit -p plx_screens --features hostsim
 
 # OPT-IN incremental inner loop: the default-feature unit suite (the same `cargo test --lib` as
 # `check-cargo-unit-default`, same throwaway runtime root and telemetry env) with
@@ -1734,7 +1734,7 @@ test-fast:
 	  PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
 	  $(TELEMETRY_ENV) \
 	  $(HOST_ENV) \
-	  $(UNIT_RUN) $(if $(T),--filter '$(T)') -- cargo +$(RUST_TOOLCHAIN) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_appkit -p plx_screens
+	  $(UNIT_RUN) $(if $(T),--filter '$(T)') -- cargo +$(RUST_TOOLCHAIN) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_media_codecs -p plx_appkit -p plx_screens
 
 # `make test-crate C=plx_ui [T=filter] [DEPS=1]` -- build and run ONLY the named crate's lib tests, in
 # the same incremental `$(TEST_FAST_TDIR)` tree and with the same flags as `test-fast`, so the two
@@ -2341,7 +2341,7 @@ SIM_ENV = PLXNATIVE_RUNTIME_DIR=$(SIM_DIR) PLXNATIVE_APP_DIR=$(CURDIR)/pkg $(SIM
 SIM_PRE = mkdir -p $(SIM_DIR); test -n "$(SIM_PMS)" || \
           { echo "no PMS host — set SIM_PMS=<ip> or add PMS_HOST to src/config.local.h"; exit 1; }
 
-# **The simulator needs its own FFmpeg, and that is what makes it able to STREAM.** `ff.rs` opens
+# **The simulator needs its own FFmpeg, and that is what makes it able to STREAM.** `media-codecs/src/ffi.rs` opens
 # the bundled libraries by absolute path out of the app directory, where they are 32-bit ARM ELF —
 # so until 2026-08-28 the entire streaming half of the app (both AVIO transports, the HLS demux,
 # the AU queues and therefore the whole adaptive controller) was device-only, and `make sim-macos`
@@ -2392,7 +2392,7 @@ check-ffmpeg: $(FFMPEG_HOST_STAGED) $(LIBASS_HOST_STAGED)
 	  cargo +$(RUST_TOOLCHAIN) test --lib -p plx_media -- ff::image_subtitle_tests ff::subtitle_charset_tests ff::subside::tests::side_reader_draws_a_shifted_cue_from_a_generated_mkv ff::late_audio_tests ff::pcm_decode_tests --ignored
 
 # The same ABI gate the cross build runs, at the other pointer width. ci/ffabi-assert.c `#if`s on
-# `__SIZEOF_POINTER__` and carries both tables, so this compile is what holds ff.rs's 64-bit
+# `__SIZEOF_POINTER__` and carries both tables, so this compile is what holds media-codecs/src/ffi.rs's 64-bit
 # constants in place — and it is the reading that found `AVSubtitleRect`'s field order.
 pkg/.ffabi-host-ok: ci/ffabi-assert.c $(FFMPEG_HOST_INC)/libavformat/avformat.h Makefile
 	@mkdir -p pkg
@@ -2520,7 +2520,7 @@ sim-macos-token:
 # which had any host coverage at all before.
 #
 # **The source is a raw Annex-B sample, deliberately.** `sample.h264` bypasses `ff.rs` entirely,
-# which matters because the bundled FFmpeg is an ARM build and `ff.rs`'s struct offsets are
+# which matters because the bundled FFmpeg is an ARM build and `media-codecs/src/ffi.rs`'s struct offsets are
 # hard-coded for 32-bit ARM EABI (`ci/ffabi-assert.c` asserts `AVDictionaryEntry` is two 32-bit
 # pointers). Demuxing on a 64-bit host needs a second offset table and a host FFmpeg 9.0; until
 # then the STREAMING half of the pipeline stays device-only and this target covers the rest.

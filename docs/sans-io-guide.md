@@ -18,7 +18,7 @@ step then has no seam to fake: a test and a replay feed it the events the produc
 - `rust-modules/playback-contract/src`.
 
 `forks` reads every machine crate whole (`FORK_SCOPE`): all of `data/`, `plex/`, `media/`,
-`session/`, `screens/`, `ui/`, `appkit/`, `machine/` and `playback-contract/`.
+`session/`, `screens/`, `ui/`, `appkit/`, `machine/`, `playback-contract/` and `media-codecs/`.
 
 The scan is by file; the rule is about what a `run`, `pump`, `tick` or `step` body does. These are
 NOT steps, and are where IO belongs: a job's body (`finish_collection_job` in `data/src/collection.rs`,

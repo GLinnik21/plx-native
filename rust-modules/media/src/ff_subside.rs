@@ -16,92 +16,25 @@
 //!   ([`SubCue::shifted`]); a SIDECAR (file time, fetched by the app) is not read here at all —
 //!   a [`ReadCfg::clock_only`] pass measures the same `delta`, publishes it only when the keyframe
 //!   matched byte for byte, and `player::sidecar_clock_ns` adds it to the sidecar's render clock.
-//! - the pacing rule ([`pacing_parks`]): the reader stays [`WINDOW_NS`] ahead of the playhead.
+//! - the pacing rule ([`pacing_parks`]): the reader stays [`WINDOW_NS`](plx_playback_contract::subtitle::WINDOW_NS) ahead of the playhead.
 //!
 //! No URL, host, token or session identifier is ever logged from here.
 
 use super::subs::SubCue;
 use super::*;
+use plx_media_codecs::subtitle_extract::Scan;
+use plx_playback_contract::subtitle::{
+    delta_assumed, delta_exact, judged_clock, pacing_parks, playhead_of, Anchor, ReadCfg, RunEnd, SCAN_NS,
+};
 use std::sync::{Arc, Mutex};
 
-/// How far ahead of the playhead (Part time minus `delta`) the reader may be before it parks.
-pub(super) const WINDOW_NS: i64 = 12_000_000_000;
 /// How long it parks per decision.
 pub(super) const PARK_MS: u64 = 250;
-/// The half-width of the keyframe scan around the start offset, both directions.
-pub(crate) const SCAN_NS: i64 = 15_000_000_000;
-
-/// **Pacing**: is this packet (stamped `pkt_part_ns` in the Part's own time) more than
-/// [`WINDOW_NS`] ahead of the remux playhead `playpos_ns` once `delta_ns` maps one clock onto the
-/// other? Pure, so the decision is graded without a thread.
-pub(super) fn pacing_parks(pkt_part_ns: i64, delta_ns: i64, playpos_ns: i64) -> bool {
-    pkt_part_ns.saturating_sub(delta_ns) > playpos_ns.saturating_add(WINDOW_NS)
-}
-
 // ---- the clock mapping ----------------------------------------------------------------------
-
-/// How many bytes of the head and the tail of a packet identify it.
-const FINGERPRINT: usize = 32;
-
-/// The first video keyframe the MAIN demuxer read from the remux: its stream time and enough of its
-/// payload to recognise the same picture in the Part. Size alone is not an identity (two keyframes
-/// of one film can share a size), and the remux copies the video, so the bytes agree exactly.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Anchor {
-    /// The packet's stream time in the remux's own clock, nanoseconds.
-    pub pts_ns: i64,
-    pub size: usize,
-    pub head: [u8; FINGERPRINT],
-    pub tail: [u8; FINGERPRINT],
-}
-
-impl Anchor {
-    /// The anchor of a packet of stream time `pts_ns` holding `data`.
-    pub(crate) fn of(pts_ns: i64, data: &[u8]) -> Anchor {
-        let (head, tail) = fingerprint(data);
-        Anchor { pts_ns, size: data.len(), head, tail }
-    }
-
-    /// Is `data` the same keyframe? Size, head AND tail must all agree.
-    pub(crate) fn matches(&self, data: &[u8]) -> bool {
-        let (head, tail) = fingerprint(data);
-        data.len() == self.size && head == self.head && tail == self.tail
-    }
-}
-
-/// The first and last [`FINGERPRINT`] bytes of `data`, zero-padded when it is shorter.
-fn fingerprint(data: &[u8]) -> ([u8; FINGERPRINT], [u8; FINGERPRINT]) {
-    let mut head = [0u8; FINGERPRINT];
-    let mut tail = [0u8; FINGERPRINT];
-    let h = data.len().min(FINGERPRINT);
-    head[..h].copy_from_slice(&data[..h]);
-    tail[..h].copy_from_slice(&data[data.len() - h..]);
-    (head, tail)
-}
-
-/// The remux playhead that the packet at remux stream time `anchor_pts_ns` is shown at —
-/// `fed − pts_shift + disp_base`, the formula `player::mod`'s position callback stores in
-/// `playpos_ns`.
-pub(crate) fn playhead_of(anchor_pts_ns: i64, pts_shift: i64, disp_base: i64) -> i64 {
-    anchor_pts_ns.saturating_sub(pts_shift).saturating_add(disp_base)
-}
-
-/// `delta = part_time − playhead` from a keyframe the scan matched byte for byte.
-pub(crate) fn delta_exact(part_kf_pts: i64, anchor_pts_ns: i64, pts_shift: i64, disp_base: i64) -> i64 {
-    part_kf_pts.saturating_sub(playhead_of(anchor_pts_ns, pts_shift, disp_base))
-}
 
 /// The last keyframe at or before `offset_ns`, from keyframe times in any order.
 pub(super) fn keyframe_at_or_before(keyframes: &[i64], offset_ns: i64) -> Option<i64> {
     keyframes.iter().copied().filter(|k| *k <= offset_ns).max()
-}
-
-/// `delta` when no keyframe matched: ASSUMES PMS started the remux on the last keyframe at or
-/// before `offset`. That is wrong whenever PMS started earlier (917 s: started 914.914, assumed
-/// 916.916, 2.002 s off), so the sidecar draw never uses it (only
-/// [`crate::player::subside::publish_exact`]'s byte-exact delta); an embedded track's cues still do.
-pub(super) fn delta_assumed(k_le: i64, anchor_pts_ns: i64, pts_shift: i64, disp_base: i64) -> i64 {
-    delta_exact(k_le, anchor_pts_ns, pts_shift, disp_base)
 }
 
 // ---- stopping -------------------------------------------------------------------------------
@@ -364,35 +297,6 @@ pub(crate) extern "C" fn side_seek_cb(op: *mut c_void, offset: i64, whence: c_in
 
 // ---- the reader -----------------------------------------------------------------------------
 
-/// What one pass of the reader needs. The URL carries the token and is never logged.
-pub(crate) struct ReadCfg<'a> {
-    pub url: &'a str,
-    /// Where the remux was started in the film, nanoseconds.
-    pub offset_ns: i64,
-    /// The 0-based position of the drawn track among the Part's subtitle streams.
-    pub ordinal: usize,
-    /// The Part's whole-file bitrate, for the log line.
-    pub kbps: u32,
-    /// Measure the clock mapping only: open the Part, scan for the anchor's keyframe and return
-    /// ([`RunEnd::Measured`]). No subtitle track is opened, enumerated or read (`ordinal` is unused),
-    /// no render store is touched, and the Part's connection is closed on return. For a SIDECAR the
-    /// app fetches itself, drawn over a remux.
-    pub clock_only: bool,
-}
-
-/// How a pass of the reader ended.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum RunEnd {
-    /// The stop was set (or the Part ended and the reader idled until it was).
-    Stopped,
-    /// A transport or demux error: worth reopening.
-    Failed,
-    /// Retrying cannot help: the Part has no such track, no video stream, or the open was refused.
-    Unusable,
-    /// A [`ReadCfg::clock_only`] pass finished its scan (matched or not): nothing is left to read.
-    Measured,
-}
-
 /// One open `AVFormatContext` over a [`SideIo`], freed in the one order libavformat needs.
 struct SideDemux {
     fmt: *mut AVFormatContext,
@@ -438,7 +342,7 @@ unsafe fn open_side(cfg: &ReadCfg, stop: &Arc<SideStop>) -> Result<(SideDemux, c
     // gate, so on such a device the reader never gets this far. (Checking it before the anchor
     // wait would be wrong: the flag is not set until the demuxer has registered FFmpeg.)
     // `Unusable` raises the failure (a rebuild as the server burn).
-    if !ABI_OK.load(std::sync::atomic::Ordering::Relaxed) {
+    if !crate::ff::abi_ok() {
         return Err(RunEnd::Unusable);
     }
     let io = Box::into_raw(io);
@@ -495,15 +399,6 @@ unsafe fn open_side(cfg: &ReadCfg, stop: &Arc<SideStop>) -> Result<(SideDemux, c
         return Err(RunEnd::Unusable);
     }
     Ok((d, vi, generation))
-}
-
-/// What the keyframe scan found.
-struct Scan {
-    /// The Part's stream time of the keyframe that matched the anchor byte for byte.
-    matched: Option<i64>,
-    /// The last keyframe at or before the start offset.
-    k_le: Option<i64>,
-    bytes: i64,
 }
 
 /// Seek to `from_ns` on the video stream. `Err` is how the pass ends if it fails.
@@ -592,17 +487,6 @@ pub(super) fn anchor_line(
 /// behind a video packet already read.
 const OPEN_SET_SLACK_NS: i64 = 2_000_000_000;
 
-/// The playhead the side reader judges a cue against, on the remux's display clock: the player's
-/// own `playpos` once it has advanced, but never behind where the first keyframe of this run is
-/// shown (`anchor_playhead`) — before the first frame (a start, or a seek's reload) `playpos` is
-/// still 0 or the position the viewer just left, and a cue read then must not be placed against it.
-/// Taken on the SUBTITLE clock too (the viewer's timing offset), keeping the earlier of the two so
-/// that a delay never lets a still-due cue be judged past.
-pub(super) fn judged_clock(playpos_ns: i64, anchor_playhead_ns: i64, offset_ns: i64) -> i64 {
-    let now = playpos_ns.max(anchor_playhead_ns);
-    now.min(now.saturating_sub(offset_ns))
-}
-
 /// Hands the side reader's cues to the render stores.
 ///
 /// The reader starts reading BEHIND the playhead (a keyframe scan, a reopen's lead, the start of a
@@ -675,7 +559,7 @@ impl Delivery {
 
 /// One pass of the side reader: open the Part, map its clock onto the remux's (the first pass only:
 /// `delta` is kept across a reopen), then decode the drawn track's cues from `resume_part_ns()` on,
-/// staying [`WINDOW_NS`] ahead of the playhead. Returns when stopped or on failure; a Part that
+/// staying [`WINDOW_NS`](plx_playback_contract::subtitle::WINDOW_NS) ahead of the playhead. Returns when stopped or on failure; a Part that
 /// simply ends idles until the stop.
 ///
 /// `playpos` is the remux playhead, `clock` its `(pts_shift, disp_base)`. A
@@ -799,6 +683,7 @@ pub(crate) fn read_once(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use plx_playback_contract::subtitle::WINDOW_NS;
     #[allow(unused_imports)]
     use super::super::test_support::*;
 

@@ -28,7 +28,9 @@
 //! Logs: `subside: open|anchor|reopen|failed|clock-only failed|stop …` — labels and numbers, never
 //! the URL, host, token or session identifier.
 
-use crate::ff::subside::{read_once, Anchor, ReadCfg, RunEnd, SideStop};
+use crate::ff::subside::{read_once, SideStop};
+use plx_playback_contract::subtitle::{Anchor, ReadCfg, RunEnd, SCAN_NS};
+pub use plx_playback_contract::subtitle::{Spec, SIDE_READER_CLOCK_ONLY as CLOCK_ONLY};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -40,31 +42,6 @@ const POLL: Duration = Duration::from_millis(50);
 const BACKOFF: Duration = Duration::from_millis(500);
 /// How far before the playhead a reopen starts reading, so a cue already on screen comes back.
 const REOPEN_LEAD_NS: i64 = 15_000_000_000;
-
-/// [`Spec::ordinal`] of a CLOCK-ONLY run: no track is read (a sidecar is drawn), only the clock is
-/// measured. Negative, so it is never a track position and two runs of different roles never
-/// compare equal in `apply`.
-pub const CLOCK_ONLY: i32 = -1;
-
-/// Everything one run of the reader is started with. `url` carries the token: held, never logged.
-#[derive(Clone)]
-pub struct Spec {
-    /// The fresh-session URL of the original Part (`direct_play_url(part, "<live>-subs")`).
-    pub url: String,
-    /// Where the remux was started in the film, nanoseconds.
-    pub offset_ns: i64,
-    /// The Part's whole-file bitrate, for the log line only.
-    pub part_kbps: u32,
-    /// The 0-based position of the drawn track among the Part's subtitle streams, or
-    /// [`CLOCK_ONLY`].
-    pub ordinal: i32,
-    /// Start reading at the playhead instead of the run's start offset: the reader begins mid-play
-    /// (a pick on a live remux), not with the engine run.
-    pub from_playhead: bool,
-    /// The Part-to-playhead clock delta a reader of this same run already measured, so a reader
-    /// that replaces it (a track switch) does not scan for the anchor again.
-    pub delta: Option<i64>,
-}
 
 struct Running {
     stop: Arc<SideStop>,
@@ -397,7 +374,7 @@ fn run(spec: Spec, stop: Arc<SideStop>) {
         let first = delta.is_none() && !from_playhead;
         let resume = |d: i64| {
             if first {
-                cfg.offset_ns - crate::ff::subside::SCAN_NS
+                cfg.offset_ns - SCAN_NS
             } else {
                 playpos().saturating_add(d).saturating_sub(REOPEN_LEAD_NS)
             }

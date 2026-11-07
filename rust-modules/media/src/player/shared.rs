@@ -744,7 +744,7 @@ pub struct Shared {
     /// The main demuxer's FIRST video keyframe of this engine run (stream time + a payload
     /// fingerprint), published once for the side subtitle reader's clock mapping and cleared when
     /// the demuxer starts. `None` until that packet is read.
-    pub side_anchor: Mutex<Option<crate::ff::subside::Anchor>>,
+    pub side_anchor: Mutex<Option<plx_playback_contract::subtitle::Anchor>>,
     /// The side subtitle reader owns this playback's subtitles: `ff::demux` then neither enumerates
     /// the stream's own subtitle tracks nor begins an ASS source, which the reader's would replace.
     pub side_subs_owner: AtomicBool,

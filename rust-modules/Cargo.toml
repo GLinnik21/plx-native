@@ -1,5 +1,5 @@
 # A cargo workspace with this package as its ROOT; the other members are the storage helper and the
-# layer crates split out of the application so far (base/, machine/, net/, platform/, gfx/, ui/, plex/, telemetry/, data/, session/, media/, appkit/, screens/;
+# layer crates split out of the application so far (base/, machine/, net/, platform/, gfx/, ui/, plex/, telemetry/, data/, session/, media/, media-codecs/, appkit/, screens/;
 # docs/module-layers.md).
 # The root keeps the literal `version` below (release tooling reads it), `make`/CI run their usual
 # commands from this directory against this package (a bare `cargo test`/`check`/`build` here still
@@ -19,6 +19,7 @@ members = [
     "data",
     "session",
     "media",
+    "media-codecs",
     "appkit",
     "screens",
     "storage",
@@ -98,6 +99,7 @@ devtriggers = [
     "plx_data/devtriggers",
     "plx_session/devtriggers",
     "plx_media/devtriggers",
+    "plx_media_codecs/devtriggers",
     "plx_appkit/devtriggers",
     "plx_screens/devtriggers",
 ]
@@ -246,6 +248,7 @@ plx_session = { path = "session" }
 # HLS, adaptive bitrate, the buffer-feed player engine and route selection. It declares the Starfish/ACB
 # externs and the two C callbacks `src/starfish.c` calls, and links nothing on the television.
 plx_media = { path = "media" }
+plx_media_codecs = { path = "media-codecs" }
 # The appkit layer (ci/module-layers.ini `[appkit]`): the widgets several screens share, composed from
 # the ui library over application types (the player HUD, the track menus, the info panel, the Sources row
 # model). It links nothing on the television; its build script is for the host test binary.
@@ -327,6 +330,8 @@ plx_data = { path = "data", features = ["test-support"] }
 plx_session = { path = "session", features = ["test-support"] }
 # Likewise the media layer's seams (`player::preview`, `player::restore_state_for_test`, ...).
 plx_media = { path = "media", features = ["test-support"] }
+# Likewise the codec layer's seams (`ffi::force_speed_decoder_for_test`: a host test loads no FFmpeg).
+plx_media_codecs = { path = "media-codecs", features = ["test-support"] }
 # Likewise the appkit layer's seams (`player_hud::SkipIntervalGuard`, the `overscan_rects` audits, ...).
 plx_appkit = { path = "appkit", features = ["test-support"] }
 # Likewise the screens layer's seams (`account_menu::overscan_rects`, `registry::every_surface_arg`, ...).
