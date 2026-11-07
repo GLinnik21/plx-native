@@ -16,6 +16,8 @@
   "core.preview_domain_line": "{label}: {values}",
   "core.preview_domain_failure_kind": "hiba típusa (a megtartott korábbi kódokkal együtt)",
   "core.preview_domain_delivery": "továbbítási mód",
+  "core.preview_domain_backend": "lejátszási háttérrendszer",
+  "core.preview_domain_terminal_stage": "a végső hiba szakasza",
   "core.preview_domain_refusal_codes": "a szerver általános és átkódolási döntési kódjai (csak az elutasított lejátszási tervekről szóló jelentésekben)",
   "core.preview_domain_attempted_delivery": "megkísérelt továbbítási mód",
   "core.preview_domain_source_video": "a forrás videokodekje (csak az elutasított lejátszási tervekről szóló jelentésekben)",

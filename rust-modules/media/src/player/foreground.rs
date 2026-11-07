@@ -41,7 +41,8 @@ pub trait ForegroundActuator {
         &mut self,
         ps: &mut crate::route::PlaybackSession,
     ) -> FlightLanding<ForegroundLoadStart<Self::Attempt>>;
-    fn before_load(&mut self, resume_ns: i64, clock: ForegroundClock);
+    fn before_load(&mut self, ps: &mut crate::route::PlaybackSession, resume_ns: i64,
+        clock: ForegroundClock);
     fn start_load(
         &mut self,
         ps: &mut crate::route::PlaybackSession,
@@ -54,7 +55,7 @@ pub trait ForegroundActuator {
         clock: ForegroundClock,
         started: bool,
     );
-    fn play_clock(&mut self) -> bool;
+    fn play_clock(&mut self, ps: &mut crate::route::PlaybackSession) -> bool;
 }
 
 /// What draining a pending flight's landing found.
@@ -142,7 +143,7 @@ fn run_foreground<A: ForegroundActuator>(
                     resume_ns,
                     clock,
                 } => {
-                    actuator.before_load(resume_ns, clock);
+                    actuator.before_load(ps, resume_ns, clock);
                     next = Some(ForegroundEvent::LoadAnswered {
                         id,
                         start: actuator.start_load(ps),
@@ -151,7 +152,7 @@ fn run_foreground<A: ForegroundActuator>(
                 ForegroundEffect::PlayClock { id } => {
                     next = Some(ForegroundEvent::ClockAnswered {
                         id,
-                        accepted: actuator.play_clock(),
+                        accepted: actuator.play_clock(ps),
                     });
                 }
                 ForegroundEffect::AfterLoad {
@@ -260,7 +261,7 @@ pub fn park_pending_foreground_flight<Attempt: Copy + PartialEq>(
     }
     for effect in fx {
         match effect {
-            ForegroundEffect::DropFlight => crate::player::suspend_bufferfeed(ps, pa),
+            ForegroundEffect::DropFlight => crate::player::suspend_playback(ps, pa),
             _ => debug_assert!(false, "ParkFlight emits only DropFlight"),
         }
     }

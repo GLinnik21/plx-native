@@ -805,7 +805,7 @@ fn failed_original_then_auto_keeps_the_live_adaptive_route() {
     reset_session(&mut ps);
     restore_quality(Quality::Original);
     install_active_encoder("");
-    crate::player::reset_audio_track();
+    crate::player::reset_audio_track(&mut ps);
     crate::player::reset_subtitle();
 }
 
@@ -866,7 +866,7 @@ fn hls_recovery_restores_the_exact_direct_source_and_rearms_its_watchdog() {
     restore_quality(Quality::Original);
     reset_session(&mut ps);
     install_active_encoder("");
-    crate::player::reset_audio_track();
+    crate::player::reset_audio_track(&mut ps);
     crate::player::reset_subtitle();
 }
 
@@ -975,7 +975,7 @@ fn a_recovery_that_never_opens_can_still_go_back_to_the_encoder_it_replaced() {
     restore_quality(Quality::Original);
     reset_session(&mut ps);
     install_active_encoder("");
-    crate::player::reset_audio_track();
+    crate::player::reset_audio_track(&mut ps);
     crate::player::reset_subtitle();
 }
 
@@ -1141,7 +1141,7 @@ fn a_remux_recovery_keeps_hls_until_frames_and_rolls_back_the_replacement() {
     reset_session(&mut ps);
     install_active_encoder("");
     plx_plex::plex::reset_servers_for_test();
-    crate::player::reset_audio_track();
+    crate::player::reset_audio_track(&mut ps);
     crate::player::reset_subtitle();
 }
 
@@ -1296,7 +1296,7 @@ fn a_recovery_that_opens_spends_the_way_back_rather_than_leaving_it_armed() {
     restore_quality(Quality::Original);
     reset_session(&mut ps);
     install_active_encoder("");
-    crate::player::reset_audio_track();
+    crate::player::reset_audio_track(&mut ps);
     crate::player::reset_subtitle();
 }
 
@@ -1366,7 +1366,7 @@ fn manual_original_adopts_one_running_trial_and_revokes_its_auto_ticket_on_frame
     reset_session(&mut ps);
     install_active_encoder("");
     reset_player_control_for_test(&ps);
-    crate::player::reset_audio_track();
+    crate::player::reset_audio_track(&mut ps);
     crate::player::reset_subtitle();
 }
 
@@ -1878,7 +1878,7 @@ fn automatic_recovery_issues_no_part_admission_before_the_trial() {
     reset_session(&mut ps);
     install_active_encoder("");
     plx_plex::plex::reset_servers_for_test();
-    crate::player::reset_audio_track();
+    crate::player::reset_audio_track(&mut ps);
     crate::player::reset_subtitle();
 }
 
@@ -2048,7 +2048,7 @@ fn a_confirmed_direct_recovery_remains_seekable_after_hls_is_retired() {
     reset_session(&mut ps);
     install_active_encoder("");
     plx_plex::plex::reset_servers_for_test();
-    crate::player::reset_audio_track();
+    crate::player::reset_audio_track(&mut ps);
     crate::player::reset_subtitle();
 }
 
@@ -2186,7 +2186,7 @@ fn stopping_a_pending_direct_recovery_closes_its_resource_once() {
     reset_session(&mut ps);
     install_active_encoder("");
     plx_plex::plex::reset_servers_for_test();
-    crate::player::reset_audio_track();
+    crate::player::reset_audio_track(&mut ps);
     crate::player::reset_subtitle();
 }
 
@@ -2278,7 +2278,7 @@ fn manually_picking_original_restores_native_dolby_vision_instead_of_retranscodi
         "rk-auto",
     );
 
-    crate::player::note_original_failure(crate::player::ABR_FAILURE_ORIGINAL_HTTP, 503);
+    crate::player::note_original_failure(&mut ps, crate::player::ABR_FAILURE_ORIGINAL_HTTP, 503);
 
     set_quality(&mut ps, Quality::Original);
     assert_eq!(quality(), Quality::Original);
@@ -2302,10 +2302,8 @@ fn manually_picking_original_restores_native_dolby_vision_instead_of_retranscodi
         "the native Load must regain its Dolby Vision declaration"
     );
     assert_eq!(
-        crate::player::SHARED
-            .abr_failure_kind
-            .load(std::sync::atomic::Ordering::Relaxed),
-        0,
+        ps.readout().original_failure(),
+        None,
         "the new Original attempt supersedes the old probe's failure",
     );
     assert!(!is_transcoding(&ps));
@@ -2316,7 +2314,7 @@ fn manually_picking_original_restores_native_dolby_vision_instead_of_retranscodi
 
     reset_session(&mut ps);
     install_active_encoder("");
-    crate::player::reset_audio_track();
+    crate::player::reset_audio_track(&mut ps);
     crate::player::reset_subtitle();
 }
 
@@ -2607,7 +2605,7 @@ fn manual_original_after_a_fixed_rung_returns_to_the_native_source() {
 
     reset_session(&mut ps);
     install_active_encoder("");
-    crate::player::reset_audio_track();
+    crate::player::reset_audio_track(&mut ps);
     crate::player::reset_subtitle();
 }
 
@@ -2829,6 +2827,129 @@ fn manual_original_after_a_fixed_rung_with_a_subtitle_returns_to_direct_play() {
 
     reset_session(&mut ps);
     install_active_encoder("");
-    crate::player::reset_audio_track();
+    crate::player::reset_audio_track(&mut ps);
     crate::player::reset_subtitle();
+}
+
+/// What `start_bufferfeed_inner` asks of the session at the start door, and then does on a start:
+/// the recipe the route plans must be allowed, and the common owner admits exactly that recipe.
+/// Returns the recipe it admitted, or `None` where the door answers "no qualified feed offer for
+/// this resolved route".
+#[cfg(test)]
+fn feed_start_door(ps: &mut PlaybackSession) -> Option<crate::route::backend_policy::OfferId> {
+    if !ps.backend_planned_feed_allowed() {
+        return None;
+    }
+    let offer = ps.planned_feed_offer().expect("an allowed Feed start has a recipe");
+    assert!(
+        ps.backend_offer_admitted(plx_playback_contract::BackendKind::Feed, offer),
+        "the prechecked feed offer must remain admissible on the main thread",
+    );
+    Some(offer)
+}
+
+/// **An Auto request that STARTED on its Original can return to it after an HLS drop.**
+///
+/// The device case `pipe_auto_original_slow_recover` (Original start, a slow link drops ABR to an
+/// HLS transcode, the link recovers, an Original probe measures enough, the ABR machine reloads
+/// the Original file): the third `Load` never came, because the reload's Start was refused at the
+/// start door with "no qualified feed offer for this resolved route". The first start had spent
+/// `FEED_ORIGINAL` in the request's finite catalog, and the recovery landing asked for it again as
+/// a brand-new candidate. The existing rig tests all begin on an HLS route (`FEED_PMS_HLS`
+/// admitted, `FEED_ORIGINAL` untouched), which is why none of them could see it.
+///
+/// Every step goes through the door the way `start_bufferfeed_inner` does.
+#[test]
+fn an_auto_request_that_started_on_its_original_can_reload_it_after_an_hls_drop() {
+    use crate::route::backend_policy::OfferId;
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    restore_quality(Quality::Auto);
+    reset_player_control_for_test(&ps);
+    assert_eq!(
+        arm_auto_fixture(&mut ps, "http://host/clip.mp4", 8_000, "http://host/__abr", false, (1_920, 1_080)),
+        None,
+        "the fixture starts on its Original",
+    );
+    // The first start: `resolve_source` qualifies the explicit source's one recipe.
+    assert!(ps.qualify_explicit_feed_source());
+    assert_eq!(feed_start_door(&mut ps), Some(OfferId::FEED_ORIGINAL), "the Original start");
+
+    for cycle in 1..=2 {
+        let hls = fallback_auto_to_hls_for(&mut ps, &worker_ticket(), 4_000, 11)
+            .expect("the watched fixture Original falls back to fixture HLS");
+        assert!(hls.contains("/__abr/"), "cycle {cycle}: {hls}");
+        // The fallback qualifies the recipe it installed (it used to ride the Original's label),
+        // the first time as a new candidate and every later time as a revisit.
+        assert_eq!(
+            feed_start_door(&mut ps),
+            Some(OfferId::FEED_PMS_HLS),
+            "cycle {cycle}: the HLS reload is admitted at the door",
+        );
+
+        assert_eq!(
+            recover_auto_to_original_for(&mut ps, &worker_ticket(), 24, RecoveryCause::Automatic),
+            Some(AutoOriginalReload::Direct),
+            "cycle {cycle}: the ABR machine reloads the Original file",
+        );
+        assert_eq!(
+            feed_start_door(&mut ps),
+            Some(OfferId::FEED_ORIGINAL),
+            "cycle {cycle}: the Original reload gets a qualified Feed offer, as the first start did",
+        );
+        // The trial's first decoded frame makes the recovery permanent.
+        settle_pending_native_start(&mut ps, RouteStartResult::Started);
+        confirm_original_recovery(&mut ps);
+    }
+}
+
+/// **A failed Original trial of a request that STARTED on its Original rolls back to the HLS route
+/// it left.** The Auto fallback installs an HLS route nobody re-qualified, so the way back named
+/// the Original's recipe, not the HLS the viewer was watching: the rollback's Start was refused at
+/// the door with "no qualified feed offer for this resolved route" and the restored HLS never
+/// reloaded. The trial fails either after its Start was admitted (the Load or its first frame
+/// fails) or before it (the Start is refused), and both rollbacks must pass the door.
+///
+/// The rollback mirrors the flight's landing: the route is restored, then the installed recipe is
+/// qualified as `RollbackExisting` and the door asks for it.
+#[test]
+fn a_failed_original_trial_of_an_original_start_rolls_back_through_the_door() {
+    use crate::route::backend_policy::OfferId;
+    for trial_admitted in [true, false] {
+        let mut ps = PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        restore_quality(Quality::Auto);
+        reset_player_control_for_test(&ps);
+        assert_eq!(
+            arm_auto_fixture(&mut ps, "http://host/clip.mp4", 8_000, "http://host/__abr", false, (1_920, 1_080)),
+            None,
+            "the fixture starts on its Original",
+        );
+        assert!(ps.qualify_explicit_feed_source());
+        assert_eq!(feed_start_door(&mut ps), Some(OfferId::FEED_ORIGINAL), "the Original start");
+
+        let hls = fallback_auto_to_hls_for(&mut ps, &worker_ticket(), 4_000, 11)
+            .expect("the watched fixture Original falls back to fixture HLS");
+        assert!(hls.contains("/__abr/"), "{hls}");
+        assert_eq!(
+            feed_start_door(&mut ps),
+            Some(OfferId::FEED_PMS_HLS),
+            "the HLS reload carries the recipe it actually installed",
+        );
+        assert_eq!(
+            recover_auto_to_original_for(&mut ps, &worker_ticket(), 24, RecoveryCause::Automatic),
+            Some(AutoOriginalReload::Direct),
+        );
+        if trial_admitted {
+            assert_eq!(feed_start_door(&mut ps), Some(OfferId::FEED_ORIGINAL), "the trial's Start");
+        }
+        // The trial fails to open: the way back restores the HLS route.
+        assert_eq!(rollback_seconds(&mut ps), Some(24), "trial_admitted={trial_admitted}");
+        assert!(ps.qualify_installed_feed_offer(CandidatePurpose::RollbackExisting));
+        assert_eq!(
+            feed_start_door(&mut ps),
+            Some(OfferId::FEED_PMS_HLS),
+            "trial_admitted={trial_admitted}: the rollback reopens the HLS route through the door",
+        );
+    }
 }

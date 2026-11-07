@@ -3,8 +3,8 @@
 //! the buffer-feed pump orchestration, and the dev triggers. The C boot shim
 //! (main.c) sets up the log and fallback crash tracer, calls the Rust image-marker and native-spool
 //! entries when required, then calls `plex_run` (port.rs), which hands over to `run_application`.
-//! The only application subsystem left in C is the starfish.c C++/ACB seam (the engine itself is
-//! Rust: plx_media::player).
+//! The only application subsystems left in C are the starfish.c C++ Feed seam and the video_plane.c
+//! ACB / exported-window display binding (the engine itself is Rust: plx_media::player).
 #![allow(non_upper_case_globals)]
 pub(crate) mod hud_source;
 use std::os::raw::{c_char, c_int, c_uint, c_void};
@@ -240,6 +240,10 @@ pub(crate) struct App {
     #[cfg(feature = "devtools")]
     fps_shown: i32,
     play_prev: Option<(i64, u32)>,
+    /// The pipeline's `FRAMEREADY` counters at the last heartbeat line (`vtick=` and `vgap=` are
+    /// differences of them).
+    #[cfg(feature = "play-feed")]
+    vpres_prev: plx_media::player::VplaneMark,
     /// The compiled HUD the player page draws from (`player_hud::loaded`), in the language the process
     /// started in (a label's width sets a pill's width; the language cannot change while it runs). Compiled at boot (`boot::enter_application`), outside any frame, and handed to
     /// the mount through the mounter's seed (`Bridge::seed_player_compiled`); `None` only in a controlled
@@ -447,7 +451,7 @@ fn pre_boot_diagnostics() -> plx_telemetry::telemetry::native::Guard {
     //
     // `APPID_env` is here for a second reason, and it is evidence rather than configuration.
     // Nothing this project can read off a desk says whether SAM exports `APPID` to a native app on
-    // this firmware, or what it sets it to — and `engine::acb_init_acb` used to depend on it. It
+    // this firmware, or what it sets it to — and the ACB boot (`adapters::backends::acb_init`) used to depend on it. It
     // does not any more (the install directory is the authority), so this line turns an unanswered
     // device question into something every single run answers for free.
     log(&format!(

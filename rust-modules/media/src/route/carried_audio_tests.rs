@@ -148,11 +148,11 @@ fn candidate_audio_none_matches_legacy_payload() {
         },
         "rk-auto",
     );
-    crate::player::set_audio_track(3);
+    crate::player::set_audio_track(&mut ps, 3);
     assert_eq!(recover_auto_to_original(&mut ps, 120), Some(AutoOriginalReload::Direct));
     assert_eq!(stream_acodec(&ps), "eac3", "the file's own default codec, as the legacy payload");
     assert_eq!(
-        crate::player::SHARED.desired_audio_idx.load(std::sync::atomic::Ordering::Relaxed),
+        ps.readout().audio_choice(),
         -1,
         "no known ordinal: the demuxer feeds the file's default track",
     );
@@ -160,7 +160,7 @@ fn candidate_audio_none_matches_legacy_payload() {
     restore_quality(Quality::Original);
     reset_session(&mut ps);
     install_active_encoder("");
-    crate::player::reset_audio_track();
+    crate::player::reset_audio_track(&mut ps);
     crate::player::reset_subtitle();
 }
 

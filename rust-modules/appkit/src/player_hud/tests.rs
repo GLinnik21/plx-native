@@ -772,18 +772,17 @@ fn an_audio_pick_rebuild_reads_switching_audio_and_nothing_else_does() {
 }
 
 /// A paused session that is doing no work, driven through the state the HUD really reads
-/// (`player::state` over the published `pb_state`, which `pump::paused_and_idle` sets to
-/// `Paused`): no centred read-out, no transport spinner, and the paused transport (not
-/// "playing").
+/// (`player::state` over the session's readout, which derives `Paused` from its own Pause and
+/// `pump::nothing_in_flight`): no centred read-out, no transport spinner, and the paused transport
+/// (not "playing").
 #[test]
 fn a_paused_idle_session_with_no_picture_draws_the_paused_transport_not_a_busy_surface() {
     let _g = plx_base::testlock::serial();
-    let ps = plx_media::route::PlaybackSession::IDLE;
-    let was = plx_media::player::swap_state_for_test(S::Paused);
+    let mut ps = plx_media::route::PlaybackSession::IDLE;
+    plx_media::player::swap_state_for_test(&mut ps, S::Paused);
     let st = plx_media::player::state(&ps);
     let busy = busy_surface_with(&ps, st, false, false);
     let playing = plx_media::player::is_playing(&ps);
-    plx_media::player::restore_state_for_test(was);
     assert_eq!(st, S::Paused);
     assert_eq!(busy, Busy::None);
     assert!(!playing, "the transport shows its paused glyph");

@@ -24,7 +24,7 @@ changes apply to the next playback; the player menu retains its existing current
 
 Direct Play defaults to **Auto**, which uses device capabilities and normal routing.
 **Disabled** excludes original-file playback while allowing a remux or transcode.
-**Force Direct Play (advanced)** attempts original playback through supported engine paths,
+**Force Direct Play (advanced)** plans the original selected streams through an available backend,
 overrides the saved quality and disables automatic remux/transcode fallback. It does not add
 codec implementations or a TrueHD path. It cannot guarantee that the TV accepts a stream.
 
@@ -119,12 +119,10 @@ Auto keeps the measured DTS channel ceiling: DTS-HD sources reporting more chann
 ceiling (including 7.1 on the six-channel dev set), or no usable channel count, still convert on
 the server. Stripping an HD extension alone does not prove the remaining core fits the decoder;
 this change does not advertise all DTS-HD streams as directly playable. PMS reports DTS as
-`dca`; Auto and Force treat it as `dts`, and the profile sends `dca`. Force skips the channel
-ceiling for DTS and, where the device table lists no DTS decoder (webOS 10+) or the install learned that
-the set's decoder refuses a layout, decodes the DTS core of a track with one or two channels in the app instead
-(plain stereo, no downmix); a set whose table lists DTS keeps decoding it itself. The app never mixes a source
-of more than two channels down to stereo by default (owner decision, 2026-10-28), so Force refuses a DTS 5.1 track the set
-cannot decode, with the same read-out as any unplayable track, instead of playing it in stereo. Auto never decodes
+`dca`; Auto and Force treat it as `dts`, and the profile sends `dca`. Force keeps the selected
+original audio track regardless of a missing DTS table row, channel ceiling or learned refusal.
+It does not extract the DTS-HD core or decode to PCM; if the feed cannot represent the original
+wire shape, it reports a refusal without switching to another track or server conversion. Auto never decodes
 in the app on its own except as the very last rung, after the server refused to convert a direct play's audio and,
 for a track of more than two channels, after the manual encode was refused too (`open recovery: decoding dts in
 the app`); a surround track played that way is marked "played in stereo" in the audio menu. One exception, inside

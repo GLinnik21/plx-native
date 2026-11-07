@@ -61,8 +61,11 @@ impl AssSubtitles {
         let clock = clock.saturating_sub(plx_media::player::subtitle_offset_ms());
         let (viewport, (coded_w, coded_h)) = frame_geometry(
             source.origin,
-            plx_media::player::video_viewport(SCR_W as i32, SCR_H as i32),
-            plx_media::player::video_raster(),
+            plx_media::player::video_viewport(ps, SCR_W as i32, SCR_H as i32)
+                .unwrap_or(plx_media::player::video_geometry::Viewport {
+                    x: 0, y: 0, width: SCR_W as i32, height: SCR_H as i32,
+                }),
+            plx_media::player::video_raster(ps).unwrap_or((0, 0)),
         );
         if self.viewport != viewport {
             self.viewport = viewport;

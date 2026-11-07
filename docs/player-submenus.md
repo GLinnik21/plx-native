@@ -51,7 +51,7 @@ because the overlay's state shape changed on purpose.
   quality-limited re-encode). An external sidecar over a remux is drawn by the app
   (`SubtitlePresenter::ClientOverRemux`): the video stays a copy, and Timing and Style are live with no reason.
   So is an embedded track on a local-link remux of a Part of at most 30 Mbit/s: the side reader
-  (`player::subside`) reads the track from the film's own Part beside the stream, and a pick, a switch
+  (`plx_play_feed::side_reader`) reads the track from the film's own Part beside the stream, and a pick, a switch
   or Off changes nothing about the stream itself.
 - Per active renderer: image -> Size and Position disabled ("Image subtitles keep their own
   size and position."); native ASS/SSA -> the same ("Styled subtitles keep ..."); Color stays live in

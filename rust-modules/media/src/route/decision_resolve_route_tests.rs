@@ -7,11 +7,111 @@ use super::test_support::*;
 use super::test_support::apply_plan;
 
 #[test]
+fn a_uri_original_logical_resource_is_closed_once_on_stop() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    assert!(plx_net::net::global_init());
+    let (port, rx, server) = plan_pms_within(1, EMPTY_MC,
+        std::time::Duration::from_secs(10), true);
+    let sid = plx_plex::plex::register_for_test("uri-resource", "127.0.0.1", port,
+        "token", "uri-resource-client");
+    apply_plan(&mut ps, Plan { sid, uri_source_ready: true,
+        sess: "uri-logical-resource".to_owned(), ..Default::default() }, "rk-v");
+    scrobble_stop(&mut ps, None, None);
+    drain_scrobble();
+    // A repeated stop has no active resource to take and cannot close it twice.
+    scrobble_stop(&mut ps, None, None);
+    drain_scrobble();
+    let requests = rx.recv_timeout(std::time::Duration::from_secs(10)).expect("resource stop");
+    server.join().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].contains("/video/:/transcode/universal/stop?")
+        && requests[0].contains("session=uri-logical-resource"), "{requests:?}");
+    plx_plex::plex::reset_servers_for_test();
+}
+
+#[test]
+fn expired_uri_landing_retires_its_unstarted_logical_resource_once() {
+    use plx_playback_contract::{Fidelity, Requirements, SourceKind, TrackChoice};
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    assert!(plx_net::net::global_init());
+    let (port, rx, server) = plan_pms_within(1, EMPTY_MC,
+        std::time::Duration::from_secs(10), true);
+    let sid = plx_plex::plex::register_for_test("expired-uri", "127.0.0.1", port,
+        "token", "expired-uri-client");
+    let selection = crate::route::SourceSelection { server: sid, part_id: 3134,
+        audio_sid: 42, subtitle_sid: 0,
+        audio_contract: plx_plex::plex::AudioEnhancements::NONE };
+    let known = crate::route::uri_preflight::KnownSource { selection,
+        source: plx_playback_contract::uri::UriSource::new(
+            "https://example.invalid/expired.mkv".to_owned(), Vec::new()),
+        requirements: Requirements { source: SourceKind::ProgressiveUri,
+            video: Fidelity::Exact, audio: Fidelity::Exact,
+            audio_track: TrackChoice::Selected(42), subtitle_track: TrackChoice::Unspecified },
+        certified_dolby_vision: None, certified_subtitle_source: None,
+        expires_at: std::time::Instant::now() - std::time::Duration::from_secs(1) };
+    let mut playing = fourk_item(sid, Vec::new());
+    playing.rk = "rk-v".to_owned();
+    playing.duration_ms = Some(60_000);
+    let plan = Plan { sid, part_id: 3134, source_selection: Some(selection),
+        uri_original: Some(known), uri_source_ready: true,
+        playing: Some(playing),
+        sess: "expired-uri-resource".to_owned(), ..Default::default() };
+    assert!(begin_playback_request().is_some());
+    PLAY_GEN.store(41, Ordering::SeqCst);
+    PLAY_BUSY.store(true, Ordering::SeqCst);
+    *PLAY_SLOT.lock().unwrap_or_else(|e| e.into_inner()) = Some(PlayLanding {
+        gen: 41, trace_generation: 0, contract_revision: desired_contract_revision(),
+        candidate_purpose: CandidatePurpose::NewCandidate, plan, rk: "rk-v".to_owned() });
+    assert!(pump_play(&mut ps, &mut plx_data::stores::metadata::MetadataStore::default()).is_none());
+    scrobble_stop(&mut ps, None, None);
+    drain_scrobble();
+    let requests = rx.recv_timeout(std::time::Duration::from_secs(10)).expect("expired resource stop");
+    server.join().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].contains("/video/:/transcode/universal/stop?")
+        && requests[0].contains("session=expired-uri-resource"), "{requests:?}");
+    plx_plex::plex::reset_servers_for_test();
+}
+
+#[test]
+fn same_source_intent_keeps_spent_candidates_across_effective_audio_and_failed_retry() {
+    use super::super::backend_policy::{BackendPolicy, OfferId};
+    use plx_playback_contract::BackendKind;
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    ps.install_backends(plx_playback_contract::BackendSet::BOTH);
+    let source = crate::route::SourceSelection { server: plx_plex::plex::ServerId::from_raw(1),
+        part_id: 3134, audio_sid: 42, subtitle_sid: 0,
+        audio_contract: plx_plex::plex::AudioEnhancements::NONE };
+    let mut policy = BackendPolicy::for_request(false);
+    policy.qualify_planned_feed(OfferId::FEED_ORIGINAL);
+    assert!(policy.admitted(BackendKind::Feed, OfferId::FEED_ORIGINAL));
+    ps.backend_policy = Some(policy);
+    ps.bind_source_selection(source);
+    ps.cur_audio = Some(CarriedAudio::named(42, 1));
+    // Feed chose a different effective audio track, while the selected source Part and
+    // stream remain the same. Reapplying its plan must not buy another Original attempt.
+    apply_plan(&mut ps, Plan { sid: source.server, part_id: source.part_id,
+        source_selection: Some(source), url: "https://example.invalid/part.mkv".to_owned(),
+        audio: Some(CarriedAudio::named(99, 2)), acodec: "aac".to_owned(),
+        src_acodec: "aac".to_owned(), ..Default::default() }, "rk-v");
+    assert!(ps.backend_policy.as_ref().is_some_and(|policy|
+        policy.can_reopen(BackendKind::Feed, OfferId::FEED_ORIGINAL)));
+    // A bounded Feed re-resolve after URI expiry can fail before PMS supplies a new Part.
+    // That refusal has no new source fact, and still cannot refill the spent candidate.
+    apply_plan(&mut ps, Plan { sid: source.server, ..Default::default() }, "rk-v");
+    assert!(ps.backend_policy.as_ref().is_some_and(|policy|
+        policy.can_reopen(BackendKind::Feed, OfferId::FEED_ORIGINAL)));
+}
+
+#[test]
 #[cfg(feature = "devtriggers")]
 fn a_user_contract_requested_during_resolve_survives_the_landing() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
-    begin_playback_request();
+    begin_playback_request().expect("request admission");
     request_user_route_intent(&ps, UserRouteIntent::Retranscode);
 
     assert!(
@@ -33,7 +133,7 @@ fn a_user_contract_requested_during_resolve_survives_the_landing() {
 fn a_cancelled_resolve_has_an_explicit_terminal_phase() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
-    begin_playback_request();
+    begin_playback_request().expect("request admission");
     cancel_playback_request(&mut ps, false);
     assert!(
         claim_route_action().is_none(),
@@ -41,7 +141,7 @@ fn a_cancelled_resolve_has_an_explicit_terminal_phase() {
     );
 
     reset_player_control_for_test(&ps);
-    begin_playback_request();
+    begin_playback_request().expect("request admission");
     request_user_route_intent(&ps, UserRouteIntent::AdaptiveReload);
     cancel_playback_request(&mut ps, true);
     let action = claim_route_action().expect("the retained route lands Stable");
@@ -69,7 +169,7 @@ fn cancelling_resolve_restores_failed_even_when_its_projection_has_a_url() {
         control.phase = ControlPhase::Failed(73);
     }
 
-    begin_playback_request();
+    begin_playback_request().expect("request admission");
     { let s = &mut ps; {
         s.url = "https://example.invalid/incoming.mkv".into();
         s.cur_audio = None;
@@ -204,7 +304,7 @@ fn resolve_cannot_hide_a_live_start_transaction() {
     let attempt = claim_route_start_attempt(transaction).expect("physical Load attempt");
     let before_revision = desired_contract_revision();
 
-    assert!(!begin_playback_request());
+    assert!(begin_playback_request().is_none());
     assert_eq!(desired_contract_revision(), before_revision);
     assert_eq!(route_start_status(attempt), RouteStartStatus::Pending);
     assert!(settle_route_start(&mut ps, attempt, RouteStartResult::Started));
@@ -295,7 +395,7 @@ fn a_failed_resolve_spawn_preserves_the_old_playable_route() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     { let s = &mut ps; s.url = "https://example.invalid/still-playing.mkv".into() };
-    begin_playback_request();
+    begin_playback_request().expect("request admission");
     request_user_route_intent(&ps, UserRouteIntent::AdaptiveReload);
 
     settle_failed_resolve_spawn(&mut ps);
@@ -318,7 +418,7 @@ fn a_failed_resolve_spawn_without_an_old_url_lands_idle() {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .phase = ControlPhase::Idle;
-    begin_playback_request();
+    begin_playback_request().expect("request admission");
 
     settle_failed_resolve_spawn(&mut ps);
 
@@ -340,7 +440,7 @@ fn quality_changed_during_resolve_cannot_land_the_old_contract() {
     let _g = fresh_registry(&mut ps);
     reset_session(&mut ps);
     reset_player_control_for_test(&ps);
-    begin_playback_request();
+    begin_playback_request().expect("request admission");
     let old_contract = desired_contract_revision();
     let gen = 41;
     PLAY_GEN.store(gen, Ordering::SeqCst);
@@ -349,6 +449,7 @@ fn quality_changed_during_resolve_cannot_land_the_old_contract() {
         gen,
         trace_generation: 7,
         contract_revision: old_contract,
+        candidate_purpose: CandidatePurpose::NewCandidate,
         plan: Plan {
             url: "https://example.invalid/old-contract.mkv".into(),
             contract: plx_plex::plex::EncodeContract {
@@ -365,7 +466,7 @@ fn quality_changed_during_resolve_cannot_land_the_old_contract() {
 
     // This is the reducer half of a quality edit after ResolveEnv was snapshotted.
     begin_user_contract_boundary();
-    assert_eq!(pump_play(&mut ps, &mut plx_data::stores::metadata::MetadataStore::default()), None);
+    assert!(pump_play(&mut ps, &mut plx_data::stores::metadata::MetadataStore::default()).is_none());
     assert!(
         url(&ps).is_empty(),
         "the stale plan must never become the applied URL"
@@ -990,7 +1091,7 @@ fn audio_change_invalidates_a_pending_original_recovery() {
 
     reset_session(&mut ps);
     reset_player_control_for_test(&ps);
-    crate::player::reset_audio_track();
+    crate::player::reset_audio_track(&mut ps);
 }
 
 #[test]
@@ -1300,6 +1401,7 @@ fn abandoned_resolves_retire_the_streaming_resources_they_created() {
         gen: 1,
         trace_generation: 1,
         contract_revision: desired_contract_revision(),
+        candidate_purpose: CandidatePurpose::NewCandidate,
         plan: Plan {
             sid,
             sess: "abandoned-logical-resource".into(),
@@ -1309,17 +1411,15 @@ fn abandoned_resolves_retire_the_streaming_resources_they_created() {
         rk: "abandoned-rk".into(),
     });
 
-    assert_eq!(
-        pump_play(&mut ps, &mut plx_data::stores::metadata::MetadataStore::default()),
-        None,
-        "the superseded plan may not be installed"
-    );
+    assert!(pump_play(&mut ps, &mut plx_data::stores::metadata::MetadataStore::default()).is_none(),
+        "the superseded plan may not be installed");
 
     PLAY_GEN.store(3, Ordering::SeqCst);
     *PLAY_SLOT.lock().unwrap_or_else(|e| e.into_inner()) = Some(PlayLanding {
         gen: 3,
         trace_generation: 2,
         contract_revision: desired_contract_revision(),
+        candidate_purpose: CandidatePurpose::NewCandidate,
         plan: Plan {
             sid,
             sess: "refused-logical-resource".into(),
@@ -1328,7 +1428,7 @@ fn abandoned_resolves_retire_the_streaming_resources_they_created() {
         },
         rk: "refused-rk".into(),
     });
-    assert_eq!(pump_play(&mut ps, &mut plx_data::stores::metadata::MetadataStore::default()), None, "a refusal has no playable URL");
+    assert!(pump_play(&mut ps, &mut plx_data::stores::metadata::MetadataStore::default()).is_none(), "a refusal has no playable URL");
     assert!(
         play_refused(&ps),
         "its server verdict still reaches the error read-out"
@@ -1405,42 +1505,44 @@ fn the_visible_switch_stamp_is_the_frame_tick_and_a_landing_cannot_rewind_it() {
 /// genuinely new request (no retry) still starts at 0.
 #[test]
 fn a_retry_keeps_the_subtitle_offset_a_new_item_does_not() {
+    let mut ps = PlaybackSession::IDLE;
     let _g = plx_base::testlock::serial();
     crate::player::reset_subtitle();
     crate::player::set_subtitle_offset(2_000);
     let retry = RetryContext {
             direct_play_mode: DirectPlayMode::Auto,
         resume_ns: 0,
+        candidate_purpose: CandidatePurpose::ReopenCurrent,
         selection: Some((17, 23)),
         sub_offset_ms: crate::player::subtitle_offset_ms(),
         suppress_enhancement: false,
         sub_mode: SubMode::Track,
     };
-    reset_track_selection(plx_plex::plex::ServerId::UNSET, "rk-no-memory", Some(retry));
+    reset_track_selection(&mut ps, plx_plex::plex::ServerId::UNSET, "rk-no-memory", Some(retry));
     assert_eq!(
         crate::player::subtitle_offset_ms(),
         2_000,
         "a retry of the same item must keep the offset tuned against its subtitle",
     );
-    reset_track_selection(plx_plex::plex::ServerId::UNSET, "rk-no-memory", None);
+    reset_track_selection(&mut ps, plx_plex::plex::ServerId::UNSET, "rk-no-memory", None);
     assert_eq!(crate::player::subtitle_offset_ms(), 0, "a new item with no remembered correction starts at 0");
 
     // A sidecar's advance survives the reset (which deselects the sidecar) and is held to the
     // range of whatever the landing re-selected: kept for the sidecar, dropped for anything else.
     let advanced = RetryContext { sub_offset_ms: -2_000, ..retry };
-    reset_track_selection(plx_plex::plex::ServerId::UNSET, "rk-no-memory", Some(advanced));
+    reset_track_selection(&mut ps, plx_plex::plex::ServerId::UNSET, "rk-no-memory", Some(advanced));
     assert_eq!(crate::player::subtitle_offset_ms(), -2_000);
     crate::player::sidecar::select_without_fetch_for_test(23);
     crate::player::reclamp_subtitle_offset();
     assert_eq!(crate::player::subtitle_offset_ms(), -2_000, "the sidecar landed again");
-    reset_track_selection(plx_plex::plex::ServerId::UNSET, "rk-no-memory", Some(advanced));
+    reset_track_selection(&mut ps, plx_plex::plex::ServerId::UNSET, "rk-no-memory", Some(advanced));
     crate::player::reclamp_subtitle_offset();
     assert_eq!(
         crate::player::subtitle_offset_ms(),
         0,
         "an advance never outlives the sidecar that allowed it",
     );
-    crate::player::reset_audio_track();
+    crate::player::reset_audio_track(&mut ps);
     crate::player::reset_subtitle();
 }
 
@@ -1473,6 +1575,7 @@ fn a_refused_retry_keeps_its_position_and_full_request_for_the_next_quality() {
         RetryContext {
             direct_play_mode: DirectPlayMode::Auto,
             resume_ns: 3_600_000_000_000,
+            candidate_purpose: CandidatePurpose::ReopenCurrent,
             selection: Some((17, 23)),
             sub_offset_ms: 0,
             suppress_enhancement: false,
@@ -1679,7 +1782,7 @@ fn source_probe_reuses_live_hls_resource_instead_of_entering_adhoc_mde() {
     };
     let result = control.probe_original_while_hls(&active_route, source_plan);
     assert!(
-        matches!(result, OriginalProbeResult::Measured(sample) if sample.target_reached),
+        matches!(result, OriginalProbeResult::Measured(sample) if sample.completed),
         "the finite source response is the measurement: {result:?}",
     );
 
@@ -2300,7 +2403,7 @@ fn restored_sidecar_is_part_of_the_route_contract() {
     ));
     let start = super::apply_plan(&mut ps, &mut meta, Plan {
         sid, playing, url: "http://fixture.invalid/movie.mkv".into(), ..Default::default()
-    }, "rk-4k");
+    }, "rk-4k", CandidatePurpose::NewCandidate);
     settle_plan_start_in_unit_test(&mut ps, start);
     assert_eq!(cur_sub_sid(&ps), 77, "timeline and later audio/quality transcodes must retain the restored sidecar");
     crate::player::sidecar::reset();
@@ -2407,17 +2510,17 @@ fn a_subtitle_offset_survives_a_resume_of_the_same_item() {
     plx_base::storage_worker::drain_for_test();
 
     // a resume of the SAME item restores the correction before the resolve even starts
-    reset_track_selection(sid, "rk-resume-a", None);
+    reset_track_selection(&mut ps, sid, "rk-resume-a", None);
     assert_eq!(crate::player::subtitle_offset_ms(), 1_800, "the same item's correction comes back");
 
     // a DIFFERENT item on the same server has no record of its own
-    reset_track_selection(sid, "rk-resume-b", None);
+    reset_track_selection(&mut ps, sid, "rk-resume-b", None);
     assert_eq!(crate::player::subtitle_offset_ms(), 0, "another item has no record");
 
     // setting it back to Original forgets the record
     persist_subtitle_offset(&ps, 0);
     plx_base::storage_worker::drain_for_test();
-    reset_track_selection(sid, "rk-resume-a", None);
+    reset_track_selection(&mut ps, sid, "rk-resume-a", None);
     assert_eq!(crate::player::subtitle_offset_ms(), 0, "Original forgets the correction");
 
     plx_plex::plex::reset_servers_for_test();
@@ -2683,13 +2786,11 @@ fn a_stand_in_is_dropped_when_direct_play_does_not_result() {
     );
 }
 
-/// The viewer's own pick of a track the TV cannot play is converted by the server, whatever else
-/// the file offers; and forced direct play, which has no server to convert, refuses it rather than
-/// playing another track.
+/// Force keeps the viewer's explicit source track even when the device table lacks its codec.
 #[test]
 #[cfg(feature = "devtriggers")]
-fn forced_direct_play_refuses_an_unplayable_session_pick() {
-    let (plan, _) = cold_audio_resolve(
+fn forced_direct_play_keeps_an_unsupported_by_declaration_session_pick() {
+    let (plan, requests) = cold_audio_resolve(
         "cold-forced-session-pick",
         2,
         MDE_DIRECTPLAY,
@@ -2698,14 +2799,14 @@ fn forced_direct_play_refuses_an_unplayable_session_pick() {
         "ac3",
         |env, _| { env.direct_play_mode = DirectPlayMode::Forced; env.audio_sid = 2; },
     );
-    assert!(matches!(plan.verdict, Some(PlayVerdict::Forced(ForcedFailure::Audio { .. }))), "{:?}", plan.verdict);
+    assert!(plan.verdict.is_none(), "{:?}", plan.verdict);
+    assert!(request_with(&requests, "hasMDE=1").iter().all(|l| query_param(l, "audioStreamID") == Some("2")));
 }
 
-/// The Force Direct Play audio refusal names the codec it refused, by the one codec->name map: PMS
-/// spells DTS `dca`, and the read-out must say "DTS" for it, "Dolby TrueHD" for `truehd`.
+/// A missing explicit source track is refused without substituting the file default.
 #[test]
 #[cfg(feature = "devtriggers")]
-fn forced_audio_refusal_names_the_codec() {
+fn forced_audio_refusal_names_the_available_original_codec() {
     for (name, raw, shown) in [("cold-forced-names-dca", "dca", "DTS"), ("cold-forced-names-truehd", "truehd", "Dolby TrueHD")] {
         let (plan, _) = cold_audio_resolve(
             name,
@@ -2714,14 +2815,15 @@ fn forced_audio_refusal_names_the_codec() {
             vec![cold_track(1, "ac3", "rus", true, ""), cold_track(2, raw, "eng", false, "")],
             Vec::new(),
             "ac3",
-            |env, _| { env.direct_play_mode = DirectPlayMode::Forced; env.audio_sid = 2; },
+            |env, _| { env.direct_play_mode = DirectPlayMode::Forced; env.audio_sid = 99; },
         );
         let Some(PlayVerdict::Forced(ForcedFailure::Audio { codec })) = &plan.verdict else {
             panic!("{raw}: {:?}", plan.verdict);
         };
-        assert_eq!(codec, shown, "{raw}");
+        assert_eq!(codec, "Dolby Digital", "{raw}: the available file default is named");
         let sentence = plan.verdict.as_ref().unwrap().text();
-        assert!(sentence.contains(shown), "{raw}: {sentence}");
+        assert!(sentence.contains(codec), "{raw}: {sentence}");
+        assert_eq!(plx_data::metadata::friendly_codec(raw), shown);
     }
 }
 
@@ -2737,10 +2839,11 @@ fn forced_audio_refusal_without_a_codec_keeps_the_generic_sentence() {
     assert!(named.text().contains("DTS"), "{}", named.text());
 }
 
-/// Rule 2: with no copy to fall back on, today's ladder stays — a non-commentary stand-in first.
+/// Force keeps the original selected stream even when only other-language or commentary siblings
+/// are known to decode on this set.
 #[test]
 #[cfg(feature = "devtriggers")]
-fn forced_direct_play_keeps_its_stand_in() {
+fn forced_direct_play_keeps_the_source_instead_of_a_stand_in() {
     let (plan, requests) = cold_audio_resolve(
         "cold-forced-stand-in",
         2,
@@ -2756,7 +2859,7 @@ fn forced_direct_play_keeps_its_stand_in() {
     );
     assert!(plan.verdict.is_none(), "{:?}", plan.verdict);
     assert!(plan.url.contains("/library/parts/36013/"), "{}", plan.url);
-    assert!(request_with(&requests, "hasMDE=1").iter().all(|l| query_param(l, "audioStreamID") == Some("3")), "{requests:?}");
+    assert!(request_with(&requests, "hasMDE=1").iter().all(|l| query_param(l, "audioStreamID") == Some("1")), "{requests:?}");
 }
 
 #[test]
@@ -2782,15 +2885,11 @@ fn uncopyable_video_keeps_its_stand_in() {
     assert!(request_with(&requests, "hasMDE=1").iter().all(|l| query_param(l, "audioStreamID") == Some("3")), "{requests:?}");
 }
 
-/// Force Direct Play with a PMS-spelled `dca` track on a set whose table has no DTS row: refused
-/// with `ForcedFailure::Audio` and no part URL to Load, not a Load the pipeline cannot decode
-/// (#584's endless spinner). The test-process caps are `Caps::assumed()`, which lists no DTS and has
-/// no lossy policy (`AppLossy::Off`), so the app does not decode it either: the same track on a value
-/// the policy admits DTS on is `forced_resolve_decodes_dts_in_the_app_when_the_set_has_no_dts_row`.
+/// Force asks the native open to try a DTS source even without a declared DTS row or app decode.
 #[test]
 #[cfg(feature = "devtriggers")]
-fn forced_direct_play_refuses_dca_without_a_dts_row() {
-    let (plan, _) = cold_audio_resolve(
+fn forced_direct_play_attempts_dca_without_a_dts_row() {
+    let (plan, requests) = cold_audio_resolve(
         "cold-forced-dca-no-row",
         2,
         MDE_DIRECTPLAY,
@@ -2799,19 +2898,15 @@ fn forced_direct_play_refuses_dca_without_a_dts_row() {
         "dca",
         |env, _| { env.direct_play_mode = DirectPlayMode::Forced; },
     );
-    let Some(PlayVerdict::Forced(ForcedFailure::Audio { codec })) = &plan.verdict else {
-        panic!("{:?}", plan.verdict);
-    };
-    assert_eq!(codec, "DTS");
-    assert!(!plan.url.contains("/library/parts/"), "no part URL may reach the Load: {}", plan.url);
+    assert!(plan.verdict.is_none(), "{:?}", plan.verdict);
+    assert!(plan.url.contains("/library/parts/"), "the original reaches native open: {}", plan.url);
+    assert!(request_with(&requests, "hasMDE=1").iter().all(|l| query_param(l, "audioStreamID") == Some("1")));
 }
 
 /// A cold Force Direct Play resolve on a set that ANNOUNCES DTS 5.1 and whose install has watched
 /// the pipeline refuse it (a stored, applied `dca 6` row), planned from the play start's value
-/// (`devcaps::start_caps`) the way the app hands it to route. The row narrows DTS to 2 channels and
-/// leaves the codec announced, so `forced_admits_dts` stays true and only the Forced native ceiling
-/// refuses it: the case `forced_direct_play_refuses_dca_without_a_dts_row` (no DTS row at all) does
-/// not reach.
+/// (`devcaps::start_caps`) the way the app hands it to route. Force carries the original track
+/// despite that narrowed declaration.
 #[cfg(feature = "devtriggers")]
 fn forced_resolve_on_a_learned_dts_refusal(
     name: &'static str,
@@ -2865,32 +2960,21 @@ fn forced_resolve_on_a_learned_dts_refusal_with(
     )
 }
 
-/// #1048: under Force Direct Play a refusal the install learned is refused BEFORE the Load, with the
-/// codec named, not sent to the pipeline that already refused it. The Forced gate reads the
-/// attempt's start value (`env.caps`), so the row's native ceiling holds although the boot value
-/// still announces DTS 5.1 and the codec's table row is still there. The fixture's policy is `Off`:
-/// where the policy admits DTS the app decodes it instead
-/// (`forced_resolve_decodes_dts_in_the_app_after_a_learned_surround_refusal`).
+/// Force still tries the original stream after a learned device refusal; the stored row is a
+/// declaration, not a substitute for an addressed native-open result on this attempt.
 #[test]
 #[cfg(feature = "devtriggers")]
-fn forced_direct_play_refuses_a_learned_refusal_before_the_load() {
-    let (plan, _) = forced_resolve_on_a_learned_dts_refusal("forced-learned-dts", vec![cold_track(1, "dca", "eng", true, "")]);
-    let Some(PlayVerdict::Forced(ForcedFailure::Audio { codec })) = &plan.verdict else {
-        panic!("a learned DTS refusal must refuse under Force Direct Play before the Load, got {:?}", plan.verdict);
-    };
-    assert_eq!(codec, "DTS");
-    assert!(plan.url.is_empty(), "no part URL may reach the Load: {}", plan.url);
-    assert!(plan.verdict.as_ref().is_some_and(|v| v.text().contains("DTS")), "the read-out names the codec");
+fn forced_direct_play_attempts_a_learned_refusal_at_native_open() {
+    let (plan, requests) = forced_resolve_on_a_learned_dts_refusal("forced-learned-dts", vec![cold_track(1, "dca", "eng", true, "")]);
+    assert!(plan.verdict.is_none(), "{:?}", plan.verdict);
+    assert!(plan.url.contains("/library/parts/"), "original Part reaches native open: {}", plan.url);
+    assert!(request_with(&requests, "hasMDE=1").iter().all(|l| query_param(l, "audioStreamID") == Some("1")));
 }
 
-/// The same learned refusal with an AC3 sibling: Forced keeps its ladder (a non-commentary,
-/// same-language stand-in), so the part plays with the sibling named to the server and the learned
-/// DTS is not offered. Pins the rule `forced_direct_play_keeps_its_stand_in` pins for a TrueHD default.
-/// (The policy is `Off` here; with it on, the sibling still wins:
-/// `forced_resolve_keeps_a_native_sibling_over_an_app_decoded_track`.)
+/// A learned DTS refusal does not silently substitute an AC3 sibling under Force.
 #[test]
 #[cfg(feature = "devtriggers")]
-fn forced_direct_play_plays_the_ac3_sibling_of_a_learned_dts() {
+fn forced_direct_play_keeps_learned_dts_instead_of_the_ac3_sibling() {
     let (plan, requests) = forced_resolve_on_a_learned_dts_refusal(
         "forced-learned-dts-sibling",
         vec![cold_track(1, "dca", "eng", true, ""), cold_track(2, "ac3", "eng", false, "")],
@@ -2900,8 +2984,8 @@ fn forced_direct_play_plays_the_ac3_sibling_of_a_learned_dts() {
     let probes = request_with(&requests, "hasMDE=1");
     assert!(!probes.is_empty(), "{requests:?}");
     assert!(
-        probes.iter().all(|l| query_param(l, "audioStreamID") == Some("2")),
-        "Forced must name the AC3 sibling (stream 2), not the learned DTS (stream 1): {requests:?}"
+        probes.iter().all(|l| query_param(l, "audioStreamID") == Some("1")),
+        "Forced must name the original DTS (stream 1), not the AC3 sibling: {requests:?}"
     );
 }
 
@@ -2920,14 +3004,11 @@ fn forced_resolve_with_policy(
     })
 }
 
-/// **Force Direct Play decodes a STEREO DTS track in the app where the set has no DTS row** (webOS 10+):
-/// the track is picked, the Part is direct, and nothing refuses it. A 2.0 source is no downmix, so the
-/// app's decode loses nothing (a surround one is
-/// `forced_resolve_refuses_a_surround_dts_track_instead_of_mixing_it_down`).
-/// `forced_direct_play_refuses_dca_without_a_dts_row` is the same play with no lossy policy.
+/// Force attempts the original stereo DTS stream natively on a set with no DTS row. The app's
+/// lossy policy does not change the selected stream or create PCM.
 #[test]
 #[cfg(feature = "devtriggers")]
-fn forced_resolve_decodes_dts_in_the_app_when_the_set_has_no_dts_row() {
+fn forced_resolve_attempts_stereo_dts_natively_without_a_dts_row() {
     let (plan, requests) = forced_resolve_with_policy(
         "cold-forced-dca-app",
         vec![cold_track_ch(1, "dca", "eng", true, "", 2)],
@@ -2940,25 +3021,20 @@ fn forced_resolve_decodes_dts_in_the_app_when_the_set_has_no_dts_row() {
     assert!(!probes.is_empty() && probes.iter().all(|l| query_param(l, "audioStreamID") == Some("1")), "{requests:?}");
 }
 
-/// **Force Direct Play never mixes a surround source down** (owner, 2026-10-28, #1082). The same set (no
-/// DTS row, the lossy policy admitting DTS) with a 5.1 DTS track: the app does not decode it to stereo,
-/// so Force shows its refusal exactly as it did before the app decoded anything, naming the codec,
-/// and no part URL reaches the Load.
+/// Force also attempts the original surround DTS stream despite a missing row and never mixes it
+/// down to PCM. The native open determines whether this set can play it.
 #[test]
 #[cfg(feature = "devtriggers")]
-fn forced_resolve_refuses_a_surround_dts_track_instead_of_mixing_it_down() {
-    let (plan, _) = forced_resolve_with_policy(
+fn forced_resolve_attempts_surround_dts_without_mixing_it_down() {
+    let (plan, requests) = forced_resolve_with_policy(
         "cold-forced-dca-surround",
         vec![cold_track(1, "dca", "eng", true, "")],
         "dca",
         plx_platform::devcaps::AppLossy::Measured,
     );
-    let Some(PlayVerdict::Forced(ForcedFailure::Audio { codec })) = &plan.verdict else {
-        panic!("a 5.1 DTS track must not be decoded to stereo under Force Direct Play, got {:?}", plan.verdict);
-    };
-    assert_eq!(codec, "DTS", "the read-out names the codec");
-    assert!(plan.url.is_empty(), "no part URL may reach the Load: {}", plan.url);
-    assert!(plan.verdict.as_ref().is_some_and(|v| v.text().contains("DTS")), "{:?}", plan.verdict);
+    assert!(plan.verdict.is_none(), "{:?}", plan.verdict);
+    assert!(plan.url.contains("/library/parts/"), "original Part reaches native open: {}", plan.url);
+    assert!(request_with(&requests, "hasMDE=1").iter().all(|l| query_param(l, "audioStreamID") == Some("1")));
 }
 
 /// **Auto direct-plays a codec in force**: a DTS-only file on a value with every lossy row in force (the
@@ -2984,11 +3060,10 @@ fn auto_resolve_picks_a_codec_in_force_in_one_pass() {
     assert!(!probes.is_empty() && probes.iter().all(|l| query_param(l, "audioStreamID") == Some("1")), "{requests:?}");
 }
 
-/// **A native sibling always beats an app decode**: the Forced pick tries the set's own decoder over
-/// every track first, so the AC3 track plays and the (stereo) DTS default is not decoded in the app.
+/// A native AC3 sibling cannot replace the source DTS under Force, regardless of app policy.
 #[test]
 #[cfg(feature = "devtriggers")]
-fn forced_resolve_keeps_a_native_sibling_over_an_app_decoded_track() {
+fn forced_resolve_keeps_original_instead_of_a_native_sibling() {
     let (plan, requests) = forced_resolve_with_policy(
         "cold-forced-dca-sibling",
         vec![cold_track_ch(1, "dca", "eng", true, "", 2), cold_track(2, "ac3", "eng", false, "")],
@@ -2998,13 +3073,12 @@ fn forced_resolve_keeps_a_native_sibling_over_an_app_decoded_track() {
     assert!(plan.verdict.is_none(), "{:?}", plan.verdict);
     let probes = request_with(&requests, "hasMDE=1");
     assert!(
-        !probes.is_empty() && probes.iter().all(|l| query_param(l, "audioStreamID") == Some("2")),
-        "the AC3 sibling (stream 2) plays, not the DTS the app could decode: {requests:?}"
+        !probes.is_empty() && probes.iter().all(|l| query_param(l, "audioStreamID") == Some("1")),
+        "the original DTS (stream 1) stays selected, not the AC3 sibling: {requests:?}"
     );
 }
 
-/// The intended track of a Force Direct Play on a set with no DTS row (policy `Measured`) is the one
-/// the app decodes: the audio probes of `audio` name stream `want`, the verdict is none.
+/// The intended source track stays selected under Force: the MDE probe names stream `want`.
 #[cfg(feature = "devtriggers")]
 fn forced_measured_probes_stream(name: &'static str, audio: Vec<plx_data::metadata::Stream>, acodec: &str, want: &str, why: &str) {
     let (plan, requests) = forced_resolve_with_policy(name, audio, acodec, plx_platform::devcaps::AppLossy::Measured);
@@ -3016,13 +3090,10 @@ fn forced_measured_probes_stream(name: &'static str, audio: Vec<plx_data::metada
     );
 }
 
-/// **A native COMMENTARY is not the intent's sibling.** An English stereo DTS main (the default) beside an
-/// English AC3 commentary, on a set with no DTS row: the main is decoded in the app; the commentary,
-/// which the old first pass reached through its language arm, must not stand in for it. (A SURROUND main
-/// is not decoded at all, `forced_resolve_plays_the_last_resort_stand_in_for_a_surround_dts_main`.)
+/// An AC3 commentary never substitutes for the original DTS main under Force.
 #[test]
 #[cfg(feature = "devtriggers")]
-fn forced_resolve_decodes_the_dts_main_not_a_native_commentary() {
+fn forced_resolve_keeps_the_dts_main_not_a_native_commentary() {
     forced_measured_probes_stream(
         "cold-forced-dca-commentary",
         vec![cold_track_ch(1, "dca", "eng", true, "", 2), cold_track(2, "ac3", "eng", false, "Director's Commentary")],
@@ -3032,11 +3103,10 @@ fn forced_resolve_decodes_the_dts_main_not_a_native_commentary() {
     );
 }
 
-/// **A native dub in another language is not the intent's sibling either.** A Japanese stereo DTS original
-/// (the default) beside an English AC3 dub: the original is decoded in the app, not replaced by the dub.
+/// A dub in another language cannot substitute for the original Japanese DTS track under Force.
 #[test]
 #[cfg(feature = "devtriggers")]
-fn forced_resolve_decodes_the_dts_original_not_a_native_dub() {
+fn forced_resolve_keeps_the_dts_original_not_a_native_dub() {
     forced_measured_probes_stream(
         "cold-forced-dca-dub",
         vec![cold_track_ch(1, "dca", "jpn", true, "", 2), cold_track(2, "ac3", "eng", false, "")],
@@ -3046,44 +3116,39 @@ fn forced_resolve_decodes_the_dts_original_not_a_native_dub() {
     );
 }
 
-/// **A surround DTS main the app will not mix down falls to the last resort, as it did before the app
-/// decoded anything**: pass 3 is the native stand-in of any track, so an English AC3 commentary beside an
-/// English 5.1 DTS main plays (the same pick `forced_direct_play_keeps_its_stand_in` pins for a TrueHD
-/// default). The refusal is only for a file with nothing native to stand in
-/// (`forced_resolve_refuses_a_surround_dts_track_instead_of_mixing_it_down`).
+/// The original surround DTS main wins over an AC3 commentary even when declared support is
+/// absent. Force permits neither a stand-in nor a downmix.
 #[test]
 #[cfg(feature = "devtriggers")]
-fn forced_resolve_plays_the_last_resort_stand_in_for_a_surround_dts_main() {
+fn forced_resolve_keeps_surround_dts_main_instead_of_a_commentary() {
     forced_measured_probes_stream(
         "cold-forced-dca-surround-stand-in",
         vec![cold_track(1, "dca", "eng", true, ""), cold_track(2, "ac3", "eng", false, "Director's Commentary")],
         "dca",
-        "2",
-        "the native stand-in, not a 5.1 DTS mixed down to stereo",
+        "1",
+        "the original DTS, not a 5.1 downmix or a commentary substitute",
     );
 }
 
-/// **Nothing that played before is refused**: where the intended track's codec is not enabled (TrueHD
-/// under `Measured`), the app decodes nothing and the last resort, the native stand-in of another
-/// language, plays as it did before the app decode existed.
+/// Force's planning keeps TrueHD selected instead of silently substituting an AC3 dub. Whether
+/// the physical backend can represent that source is a separate admission decision.
 #[test]
 #[cfg(feature = "devtriggers")]
-fn forced_resolve_keeps_the_native_stand_in_when_the_intended_codec_is_not_enabled() {
+fn forced_resolve_keeps_original_truehd_instead_of_a_native_stand_in() {
     forced_measured_probes_stream(
         "cold-forced-truehd-stand-in",
         vec![cold_track(1, "truehd", "jpn", true, ""), cold_track(2, "ac3", "eng", false, "")],
         "truehd",
-        "2",
-        "the English AC3 stand-in",
+        "1",
+        "the original TrueHD, not the English AC3 stand-in",
     );
 }
 
-/// **A lossy codec nothing has enabled is still refused**: TrueHD has no recorded measurement, so a
-/// read table does not enable it and Force Direct Play ends on the audio read-out, as before. The debug
-/// policy (`All`, the `appdecodelossy` trigger) is the contrast: the same track plays there.
+/// Capability policy does not alter Force's selected source. The mock MDE grants direct play, so
+/// both Measured and All preserve the original TrueHD; a feed backend may refuse its wire type.
 #[test]
 #[cfg(feature = "devtriggers")]
-fn forced_resolve_still_refuses_an_unmeasured_lossy_codec() {
+fn forced_resolve_keeps_unmeasured_original_codec() {
     use plx_platform::devcaps::AppLossy;
     let (plan, _) = forced_resolve_with_policy(
         "cold-forced-truehd-unmeasured",
@@ -3091,44 +3156,35 @@ fn forced_resolve_still_refuses_an_unmeasured_lossy_codec() {
         "truehd",
         AppLossy::Measured,
     );
-    let Some(PlayVerdict::Forced(ForcedFailure::Audio { codec })) = &plan.verdict else {
-        panic!("{:?}", plan.verdict);
-    };
-    assert_eq!(codec, "Dolby TrueHD");
-    assert!(plan.url.is_empty(), "no part URL may reach the Load: {}", plan.url);
+    assert!(plan.verdict.is_none(), "{:?}", plan.verdict);
+    assert!(plan.url.contains("/library/parts/"), "original Part reaches backend admission: {}", plan.url);
     let (plan, _) = forced_resolve_with_policy(
         "cold-forced-truehd-all",
         vec![cold_track(1, "truehd", "eng", true, "")],
         "truehd",
         AppLossy::All,
     );
-    assert!(plan.verdict.is_none(), "every lossy row is enabled under the debug policy: {:?}", plan.verdict);
+    assert!(plan.verdict.is_none(), "debug decode policy cannot change Force: {:?}", plan.verdict);
 }
 
-/// A learned surround refusal (the set's own DTS decoder was watched refusing 5.1) leaves a 5.1 track
-/// with no native path, but it is still a surround track: Force Direct Play does not mix it down in the
-/// app (owner, 2026-10-28, #1082), so even on a value the policy admits DTS on the play ends on the same
-/// read-out `forced_direct_play_refuses_a_learned_refusal_before_the_load` pins for a value with no
-/// policy. (The refusal narrowed DTS to two channels, so the set's own decoder keeps a stereo track.)
+/// A learned surround refusal does not substitute a stereo PCM decode under Force.
 #[test]
 #[cfg(feature = "devtriggers")]
-fn forced_resolve_refuses_a_learned_surround_dts_refusal_instead_of_mixing_it_down() {
-    let (plan, _) = forced_resolve_on_a_learned_dts_refusal_with(
+fn forced_resolve_keeps_learned_surround_dts_without_mixing_it_down() {
+    let (plan, requests) = forced_resolve_on_a_learned_dts_refusal_with(
         "forced-learned-dts-app",
         vec![cold_track(1, "dca", "eng", true, "")],
         plx_platform::devcaps::AppLossy::Measured,
     );
-    let Some(PlayVerdict::Forced(ForcedFailure::Audio { codec })) = &plan.verdict else {
-        panic!("a learned DTS 5.1 refusal must still refuse under Force Direct Play, got {:?}", plan.verdict);
-    };
-    assert_eq!(codec, "DTS");
-    assert!(plan.url.is_empty(), "no part URL may reach the Load: {}", plan.url);
+    assert!(plan.verdict.is_none(), "{:?}", plan.verdict);
+    assert!(plan.url.contains("/library/parts/"), "original Part reaches native open: {}", plan.url);
+    assert!(request_with(&requests, "hasMDE=1").iter().all(|l| query_param(l, "audioStreamID") == Some("1")));
 }
 
 /// The detail page's facts row is a read-out of what the device would do NOW, so it reads the same
 /// start value a play would (`devcaps::start_caps`: the boot snapshot less the install's stored
 /// refusals), not the boot snapshot. A set that announces DTS 5.1 and has watched its pipeline refuse
-/// it must not promise "Direct Play" under Force Direct Play.
+/// Force still asks the native open to try the original despite that stored declaration.
 #[test]
 fn the_facts_row_reads_the_start_value() {
     let mut ps = crate::route::PlaybackSession::IDLE;
@@ -3158,10 +3214,10 @@ fn the_facts_row_reads_the_start_value() {
     assert!(plx_plex::plex::session::record_named_refusal(&dts6), "the write is queued");
     plx_base::storage_worker::drain_for_test();
     assert_eq!(plx_plex::plex::session::peek().native_audio_refused().len(), 1, "the row is stored");
-    assert_ne!(
+    assert_eq!(
         playback_preview(&detail),
         Some(Preview::DirectPlay),
-        "the facts row promised Direct Play for a combination this install watched the pipeline refuse"
+        "Force previews the original path despite a past declaration refusal"
     );
     restore_direct_play_mode(DirectPlayMode::Auto);
 }
@@ -3191,5 +3247,5 @@ fn the_converted_mark_reads_the_attempt_not_the_boot() {
     assert!(!audio_converted_by_server(&ps, "ac3", 6, 48_000), "an untouched codec still plays");
     assert!(plx_platform::devcaps::caps().audio_supports("dts", 6), "the boot value is untouched");
     ps.direct_play_mode = DirectPlayMode::Forced;
-    assert!(!audio_converted_by_server(&ps, "dts", 6, 48_000), "Forced Direct Play refuses instead of converting");
+    assert!(!audio_converted_by_server(&ps, "dts", 6, 48_000), "Forced Direct Play attempts native playback instead of converting");
 }

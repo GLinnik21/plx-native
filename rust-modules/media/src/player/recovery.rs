@@ -28,8 +28,7 @@
 //!
 //! **The ladder** is the order of [`decide`](OpenRecovery::decide): a pending HLS->Original
 //! rollback first (its HLS route is the one a failed open owes the viewer); under Forced Direct
-//! Play the app-decode rung (a track of at most two channels only) or the read-out (a forced play is never
-//! converted, and the app never mixes a surround source down to stereo for it); else, for a refusal that names the
+//! Play the read-out with no conversion or app decode; else, for a refusal that names the
 //! pipeline, the conversion of the stream the pipeline was fed when [`suspect`] names it (the facet
 //! rung, once per request, [`RecoveryEffect::ConvertFacet`]: the audio when it is outside the codecs
 //! every set decodes, else the source's video for a numbered refusal, which a cold Auto Original
@@ -50,8 +49,7 @@
 //! default ([`plx_platform::devcaps::app_decode_mixes_down`] is its one predicate, shared with the route
 //! planner): a stereo track's app decode comes before the encode because it keeps the direct play, asks the
 //! server nothing and loses nothing; a surround track's comes after it, because the encode keeps the
-//! channels; and a Forced play takes the app decode only for a stereo track, else the read-out, and is never
-//! converted. The rungs which
+//! channels. A Forced play goes straight to the read-out and is never converted. The rungs which
 //! start a flight (the facet rung and the both-facets rungs) are bounded by [`MAX_RECOVERY_FLIGHTS`] per
 //! request. A timeout and a source failure name no stream, so a manual pick keeps main's read-out for
 //! them, and an encode's own refusal reads out: it feeds an encoded video and no audio suspect. A Load
@@ -100,7 +98,7 @@ pub enum LoadRefusal {
     /// The Load budget ran out with the pipeline silent.
     TimedOut,
     /// The surround native-audio watchdog fired: the pipeline took the Load and a few access units,
-    /// then swallowed the feed with no picture ([`super::native_stall`]).
+    /// then swallowed the feed with no picture (`plx_play_feed::native_stall`).
     Stalled,
     /// Not the pipeline: the demuxer or the transport died before a picture.
     SourceFailed,
@@ -480,13 +478,12 @@ impl OpenRecovery {
     /// a pipeline refusal of a direct play that has shown no picture, whose audio the pipeline itself
     /// decoded (not PCM the app fed), of a lossy codec the start value's policy admits, with the rung
     /// not yet spent in this request. The app decodes to stereo, so a source of more than two channels
-    /// (or of an unknown width) is never decoded under Force Direct Play
-    /// ([`Caps::app_may_mix_down`]: the owner's rule, the one the route planner's Forced passes use);
-    /// Auto reaches this rung only as the last one ([`Self::decide`]).
+    /// (or of an unknown width) is decoded only by Auto's last rung ([`Self::decide`]).
     fn app_decode_for(&self, refusal: LoadRefusal, facts: &OpenFacts) -> Option<Facet> {
         let audio = facts.audio.as_ref().filter(|a| !a.app_decoded_lossy)?;
         let id = plx_platform::devcaps::audio_codec_id(&audio.codec);
-        (self.in_app.is_none()
+        (!facts.forced
+            && self.in_app.is_none()
             && refusal.names_pipeline()
             && facts.no_frames
             && facts.direct
@@ -495,8 +492,8 @@ impl OpenRecovery {
         .then(|| Facet::Audio { codec: id.into_owned(), channels: audio.channels })
     }
 
-    /// Fire the app-decode rung when it is available, else the failure read-out. Forced's ladder and a
-    /// refused both-facets flight end here.
+    /// Fire Auto's app-decode rung when it is available, else the failure read-out. A refused
+    /// both-facets flight ends here.
     fn app_decode_or_error(&mut self, refusal: LoadRefusal, facts: &OpenFacts, fx: &mut Vec<RecoveryEffect>) {
         if self.try_app_decode(refusal, facts, fx) {
             return;
@@ -583,7 +580,7 @@ impl OpenRecovery {
     }
 
     /// The rung `facts` select. The order is the proof that no rung of main is reordered: pending
-    /// rollback, Forced's app decode (a track of at most two channels) or read-out, the facet rung, a cold
+    /// rollback, Forced's read-out, the facet rung, a cold
     /// Auto Original's HLS rung, then for a track of at most two channels the app decode and a manual
     /// pick's encode, or for a surround track the encode and then the app decode (the owner's rule: the
     /// app mixes a surround source down only as the last rung), the read-out. The facet
@@ -606,11 +603,8 @@ impl OpenRecovery {
             return;
         }
         if facts.forced {
-            // A forced play is never converted, but the app can decode a stereo track the set refused (a
-            // surround track is not mixed down for it: `app_decode_for` declines, and the read-out follows).
-            if self.try_app_decode(refusal, facts, fx) {
-                return;
-            }
+            // Force reports the refusal of the exact source stream. No app decoder, alternate
+            // track, server conversion, or further recovery rung may replace that stream.
             if let Some(codec) = self.refusal_attributable_to_audio(refusal, facts) {
                 fx.push(RecoveryEffect::NameRefusedAudio { codec });
             }
@@ -721,7 +715,7 @@ impl OpenRecovery {
     /// | `Proving`, after its reload | `LoadStarted` | none; `Opening` (a foreign Load: the proof is dropped) |
     /// | `Flight`, `Failed` | `LoadStarted` | none; `Opening`, `flights` and the excluded facets kept, the rung forgotten |
     ///
-    /// The ladder: `pending_original` -> `Rollback`; else `forced` -> `DecodeInApp` (at most two channels) or `ShowError`; else a pipeline
+    /// The ladder: `pending_original` -> `Rollback`; else `forced` -> `ShowError`; else a pipeline
     /// refusal, of an Engine with no picture (`no_frames`), of a [`suspect`] stream which narrows the
     /// attempt (the audio outside `aac`/`ac3`/`eac3`; else, for a numbered refusal of a play that is
     /// not a cold Auto Original, the source's video), with no flight spent -> `ConvertFacet`; else
@@ -1412,14 +1406,12 @@ mod tests {
         }
     }
 
-    /// **M1d. Force Direct Play never mixes a surround track down.** Where the set has no native path for
-    /// a track of more than two channels (or of an unknown width), Forced reads the refusal out; the
-    /// stereo track is decoded as ever. The `appdecodelossy` debug trigger (`AppLossy::All`) is the one
-    /// explicit override.
+    /// Force Direct Play reads out a native refusal at every channel width, even where app
+    /// decoding or a debug capability override would otherwise offer stereo PCM.
     #[test]
     fn forced_never_mixes_a_surround_track_down_in_the_app() {
         let forced = |channels| OpenFacts { forced: true, ..direct(on_dts_ch(facts(false, false, true), channels)) };
-        for channels in [3, 6, 8, 0] {
+        for channels in [0, 1, 2, 3, 6, 8] {
             let mut m = measured_machine();
             let (handled, fx) = run(&mut m, refused(SHUT, forced(channels)));
             assert_eq!((handled, fx, m.phase()), (Handled::Yes, ERROR.to_vec(), Phase::Failed), "{channels}ch: the refusal reads out; a DTS row plays DTS, so the audio is not named");
@@ -1428,17 +1420,13 @@ mod tests {
         }
         // A set with no DTS row does not play it, so the refusal reads out naming the codec.
         let no_row = || OpenRecovery::new(Arc::new(Caps { app_lossy: plx_platform::devcaps::AppLossy::Measured, ..Caps::assumed() }));
-        for channels in [3, 6, 8, 0] {
+        for channels in [0, 1, 2, 3, 6, 8] {
             let (_, fx) = run(&mut no_row(), refused(SHUT, forced(channels)));
             assert_eq!(fx, forced_dts_error(), "{channels}ch: no DTS row: the codec is named");
         }
-        for channels in [1, 2] {
-            let (_, fx) = run(&mut measured_machine(), refused(SHUT, forced(channels)));
-            assert_eq!(fx, [decode_dts_ch(SHUT, channels)], "{channels}ch: not a downmix");
-        }
         let all = OpenRecovery::new(Arc::new(Caps { app_lossy: plx_platform::devcaps::AppLossy::All, ..(*dts_start()).clone() }));
         let (_, fx) = run(&mut all.clone(), refused(SHUT, forced(6)));
-        assert_eq!(fx, [decode_dts(SHUT)], "the debug trigger is the explicit override");
+        assert_eq!(fx, ERROR, "a debug capability does not override the forced source contract");
     }
 
     /// **M2. A cold Auto Original reaches the rung after its HLS contingency is refused too**, the refused
@@ -1461,21 +1449,22 @@ mod tests {
         assert_eq!(m.attempt().audio_channels.get("dts"), Some(&8));
     }
 
-    /// **M3. Forced decodes a refused STEREO lossy track in the app and does nothing else**: no conversion,
-    /// no flight. Everything the rung needs, and nothing it does not: a codec the policy has not enabled, a
-    /// failure that is not the pipeline's, a route with a server in it, an `Off` start, a stream the
-    /// app already decodes, a Load that showed a picture. (A surround track is not decoded at all under
-    /// Force: `forced_never_mixes_a_surround_track_down_in_the_app`.)
+    /// Force reads out the refusal of the original selected stream, whatever recovery rungs Auto
+    /// could take. No app decode, conversion flight, or alternate track may follow.
     #[test]
-    fn forced_decodes_a_refused_lossy_track_in_the_app_and_nothing_else() {
+    fn forced_reads_out_refused_lossy_track_without_a_decode_rung() {
         let forced = |f: OpenFacts| OpenFacts { forced: true, ..f };
         let base = || forced(direct(on_dts_ch(facts(false, false, true), 2)));
         for refusal in [SHUT, NATIVE, LoadRefusal::Stalled] {
             let mut m = measured_machine();
             let (handled, fx) = run(&mut m, refused(refusal, base()));
-            assert_eq!((handled, fx, m.phase()), (Handled::Yes, vec![decode_dts_ch(refusal, 2)], Phase::Opening), "{refusal}");
+            assert_eq!(
+                (handled, fx, m.phase()),
+                (Handled::Yes, vec![RecoveryEffect::ShowError { refusal }], Phase::Failed),
+                "{refusal}: the read-out keeps this refusal's cause"
+            );
             assert_eq!(m.flights, 0, "no flight: Forced asks no server");
-            assert!(m.attempt().app_lossy_in_force.contains("dts"));
+            assert!(m.in_app.is_none() && !m.attempt().app_lossy_in_force.contains("dts"));
         }
         // The read-out names the codec of a native audio the TV refused as the play started (`named`).
         let ends_as = |m: &mut OpenRecovery, refusal: LoadRefusal, f: OpenFacts, named: bool, what: &str| {
@@ -1507,21 +1496,28 @@ mod tests {
         assert_eq!(fx, ERROR);
     }
 
-    /// **M4. The rung runs once per request.** A second pipeline refusal after it (the app-decoded Load
-    /// refused, or a reload that fed the codec natively again) is the read-out, whatever the facts say.
+    /// **M4. Auto's app-decode rung runs once per request.** A refused app-decoded Load reads out;
+    /// a later native reload may still take the remaining manual encode, never the app rung again.
     #[test]
     fn the_app_decode_rung_runs_once_per_request() {
-        let forced = |f: OpenFacts| OpenFacts { forced: true, ..f };
-        // The native DTS the TV refuses again is named; an app-decoded Load's refusal names no audio.
-        for (second, want) in [
-            (on_dts_ch(facts(false, false, true), 2), forced_dts_error()),
-            (OpenFacts { audio: app_decoded("dca", 2), ..facts(false, false, true) }, ERROR.to_vec()),
+        // The native DTS reload still has an unspent manual encode; the app-decoded Load does not.
+        for (second, has_manual_encode) in [
+            (on_dts_ch(facts(false, false, true), 2), true),
+            (OpenFacts { audio: app_decoded("dca", 2), ..facts(false, false, true) }, false),
         ] {
             let mut m = measured_machine();
-            run(&mut m, refused(SHUT, forced(direct(on_dts_ch(facts(false, false, true), 2)))));
+            run(&mut m, refused(SHUT, direct(on_dts_ch(facts(false, false, true), 2))));
+            run(&mut m, RecoveryEvent::FlightRefused);
             assert_eq!(m.phase(), Phase::Opening);
-            let (handled, fx) = run(&mut m, refused(SHUT, forced(direct(second))));
-            assert_eq!((handled, fx, m.phase()), (Handled::Yes, want, Phase::Failed));
+            let (handled, fx) = run(&mut m, refused(SHUT, direct(second)));
+            if has_manual_encode {
+                assert_eq!((handled, fx, m.phase()), (Handled::Yes, vec![RecoveryEffect::ConvertBoth { flight: 2 }], Phase::Flight));
+                let (handled, fx) = run(&mut m, RecoveryEvent::FlightRefused);
+                assert_eq!((handled, fx, m.phase()), (Handled::Yes, ERROR.to_vec(), Phase::Failed));
+            } else {
+                assert_eq!((handled, fx, m.phase()), (Handled::Yes, ERROR.to_vec(), Phase::Failed));
+            }
+            assert!(m.in_app.is_some(), "the one app-decode attempt remains spent");
         }
         // Not Forced: after the rung, the app-decoded Load's refusal names no audio and no video that
         // is still to lower, so the read-out follows.
@@ -1547,7 +1543,8 @@ mod tests {
     #[test]
     fn an_app_decode_never_proves_and_an_app_decoded_refusal_never_proves() {
         let mut m = measured_machine();
-        run(&mut m, refused(SHUT, OpenFacts { forced: true, ..direct(on_dts_ch(facts(false, false, true), 2)) }));
+        run(&mut m, refused(SHUT, direct(on_dts_ch(facts(false, false, true), 2))));
+        run(&mut m, RecoveryEvent::FlightRefused);
         assert_eq!(run(&mut m, landed_with(CLEAN)), (Handled::No, vec![]), "no flight is outstanding");
         assert_eq!(run(&mut m, RecoveryEvent::FirstPicture), (Handled::Yes, vec![]), "and its picture proves nothing");
         assert_eq!(m.phase(), Phase::Playing);
@@ -1620,7 +1617,8 @@ mod tests {
         assert_eq!(m.phase(), Phase::Failed);
         // After the rung the machine is an ordinary `Opening`: its picture and a foreign Load are as ever.
         let mut m = measured_machine();
-        run(&mut m, refused(SHUT, OpenFacts { forced: true, ..direct(on_dts_ch(facts(false, false, true), 2)) }));
+        run(&mut m, refused(SHUT, direct(on_dts_ch(facts(false, false, true), 2))));
+        run(&mut m, RecoveryEvent::FlightRefused);
         assert_eq!(run(&mut m, RecoveryEvent::LoadStarted), (No, vec![]), "the rung's own reload changes nothing");
         assert_eq!(run(&mut m, RecoveryEvent::FlightRefused), (No, vec![]));
         assert_eq!(run(&mut m, RecoveryEvent::FirstPicture), (Yes, vec![]));
@@ -1641,10 +1639,9 @@ mod tests {
         // (cold Auto Original, the audio fed, the video fed): the audio-suspect profiles of S1a and the
         // video ones (a 4K H.264 behind an audio no set refuses, and behind one that is a suspect).
         let profiles = [(true, "dca", None), (false, "dca", None), (true, "ac3", h264_4k()), (false, "ac3", h264_4k()), (true, "dca", h264_4k()), (false, "dca", h264_4k()), (false, "ac3", h264_1080p()), (true, "ac3", h264_1080p())];
-        // Every profile on a start with no policy and on one the policy admits DTS on, for a direct play
-        // and Forced alike: the app-decode rung (`in_app`) and `unprovable` are two more dimensions. And
-        // for a stereo and a surround source alike: the width decides the rung's place (and, under Force,
-        // whether it exists at all).
+        // Every profile on a start with no policy and one where Auto admits DTS, alongside Force.
+        // Auto's app-decode rung (`in_app`) and `unprovable` are two more dimensions; Force has
+        // neither. Stereo and surround widths place Auto's rung differently.
         let shapes = [(false, false), (true, false), (true, true)];
         let widths = [2, 6];
         for (((auto, fed, video), (measured, forced)), channels) in profiles
@@ -1687,8 +1684,7 @@ mod tests {
                     assert!(rung <= 1, "{fx:?}");
                     if rung == 1 {
                         assert!(measured && m.in_app.is_none() && next.in_app.is_some(), "{ev:?} in {:?}", m.state);
-                        // Force Direct Play never mixes a surround source down.
-                        assert!(!forced || channels <= 2, "a Forced {channels}-channel track was decoded in the app: {ev:?}");
+                        assert!(!forced, "Force decoded the original {channels}-channel source in the app: {ev:?}");
                         assert!(next.excluded.video.is_none(), "the video raster comes back");
                     }
                     assert!(m.in_app.is_none() || next.in_app == m.in_app, "the rung is spent for good");
@@ -1698,8 +1694,8 @@ mod tests {
                     }
                 }
             }
-            // Forced converts nothing, so it has few states: the rung's (a stereo track only), and the read-out.
-            let floor = if forced && channels > 2 { 2 } else if forced { 3 } else { 5 };
+            // Forced converts and decodes nothing, so its state space ends at the read-out.
+            let floor = if forced { 2 } else { 5 };
             assert!(seen.len() > floor, "the walk reached {} states", seen.len());
         }
     }

@@ -165,6 +165,8 @@ pub fn event_body(
         }]},
         "tags": {
             "playback.kind": code,
+            "playback.backend": context.backend.code(),
+            "playback.terminal_stage": context.terminal_stage.code(),
             "playback.delivery": context.delivery.code(),
             "playback.selected_quality": context.selected.code(),
             "playback.requested_quality": context.requested.code(),
@@ -182,6 +184,8 @@ pub fn event_body(
         },
         "contexts": {"playback": {
             "type": "playback",
+            "backend": context.backend.code(),
+            "terminal_stage": context.terminal_stage.code(),
             "delivery": context.delivery.code(),
             "selected_quality": context.selected.code(),
             "requested_quality": context.requested.code(),
@@ -406,6 +410,7 @@ fn queue_handled(event_id: String, body: Vec<u8>, what: &str) {
 pub fn preview_event() -> Vec<u8> {
     use crate::telemetry::classes::{
         AttemptOrdinal, AttemptOrigin, AudioCodecClass, BufferClass, DecisionCodeClass, DeliveryClass,
+        ErrorBackendClass, TerminalStageClass,
         DeliveryReason, HttpClass, OriginalProbePhase, PipelineClass, QualityClass, RasterClass, RateClass, RefusalContext,
         TraceAge, TraceDirection, TraceOutcome, TransferAgeClass, TransportClass, VideoCodecClass,
         DemuxExitClass,
@@ -471,6 +476,8 @@ pub fn preview_event() -> Vec<u8> {
         Some(super::native::PREVIEW_USER_ID),
         FailureClass::PlaybackInterrupted,
         PlaybackErrorContext {
+            backend: ErrorBackendClass::Feed,
+            terminal_stage: TerminalStageClass::Decode,
             delivery: DeliveryClass::Hls,
             selected: QualityClass::Auto,
             requested: QualityClass::M22,
@@ -570,7 +577,8 @@ fn codes<T: Copy>(values: &[T], code: fn(T) -> &'static str) -> String {
 /// sample value is the only possible one.
 pub fn preview_domains() -> String {
     use crate::telemetry::classes::{
-        BufferClass as B, DeliveryClass as D, DeliveryReason as W, HttpClass as H,
+        BufferClass as B, DeliveryClass as D, DeliveryReason as W, ErrorBackendClass as U,
+        TerminalStageClass as S, HttpClass as H,
         OriginalProbePhase as P, PipelineClass as L, QualityClass as Q, RasterClass as X,
         RateClass as R, TraceAge as A, TraceDirection as I, TraceOutcome as O,
         DemuxExitClass as E, TransferAgeClass as T, TransportClass as K,
@@ -580,7 +588,7 @@ pub fn preview_domains() -> String {
     use FailureClass as F;
     use plx_platform::i18n::msg;
     // The labels are the reader's words; the codes after them are the wire values themselves.
-    let domains: [(&str, String); 25] = [
+    let domains: [(&str, String); 27] = [
         (msg::core_preview_domain_failure_kind(), codes(
             &[
                 F::DecisionRefused,
@@ -595,6 +603,8 @@ pub fn preview_domains() -> String {
             ],
             F::code,
         )),
+        (msg::core_preview_domain_backend(), codes(&U::ALL, U::code)),
+        (msg::core_preview_domain_terminal_stage(), codes(&S::ALL, S::code)),
         (msg::core_preview_domain_delivery(), codes(&[D::Unknown, D::Direct, D::Remux, D::Hls, D::Transcode], D::code)),
         // The route the failed attempt was opening rides every report (a refusal's own block names
         // the same value), so its row is the whole delivery domain.
@@ -722,12 +732,15 @@ mod tests {
     use super::*;
     use crate::telemetry::classes::{
         AttemptOrdinal, AttemptOrigin, AudioCodecClass, BufferClass, DecisionCodeClass,
+        ErrorBackendClass, TerminalStageClass,
         DeliveryClass, HttpClass, OriginalProbePhase, PipelineClass, QualityClass, RasterClass, RateClass, RefusalContext,
         TraceAge, TraceOutcome, TransferAgeClass, TransportClass, VideoCodecClass, DemuxExitClass,
     };
 
     fn context() -> PlaybackErrorContext {
         PlaybackErrorContext {
+            backend: ErrorBackendClass::Unknown,
+            terminal_stage: TerminalStageClass::Unknown,
             delivery: DeliveryClass::Hls,
             selected: QualityClass::Auto,
             requested: QualityClass::M22,
@@ -749,6 +762,35 @@ mod tests {
             pipeline_error: 0,
             refusal: None,
         }
+    }
+
+    #[test]
+    fn handled_error_names_backend_and_terminal_stage_even_when_unobserved() {
+        let body = event_body(&"a".repeat(32), "", None,
+            FailureClass::MediaSource, context(), &[]);
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["tags"]["playback.backend"], "unknown");
+        assert_eq!(value["tags"]["playback.terminal_stage"], "unknown");
+        assert_eq!(value["contexts"]["playback"]["backend"], "unknown");
+        assert_eq!(value["contexts"]["playback"]["terminal_stage"], "unknown");
+        assert!(value.get("request_id").is_none());
+        assert!(value.get("attempt_id").is_none());
+    }
+
+    #[test]
+    fn handled_error_carries_only_closed_current_backend_and_stage_codes() {
+        let mut context = context();
+        context.backend = ErrorBackendClass::Uri;
+        context.terminal_stage = TerminalStageClass::Decode;
+        let body = event_body(&"a".repeat(32), "", None,
+            FailureClass::TvPipeline, context, &[]);
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["tags"]["playback.backend"], "uri");
+        assert_eq!(value["tags"]["playback.terminal_stage"], "decode");
+        assert_eq!(value["contexts"]["playback"]["backend"], "uri");
+        assert_eq!(value["contexts"]["playback"]["terminal_stage"], "decode");
+        assert_eq!(value["fingerprint"], serde_json::json!(["playback-error", "tv_pipeline"]),
+            "backend and stage refine context without splitting the established issue group");
     }
 
     #[test]
@@ -993,6 +1035,7 @@ mod tests {
                 "attempt_origin",
                 "attempt_started",
                 "attempted_delivery",
+                "backend",
                 "buffer",
                 "declared_rate",
                 "delivery",
@@ -1006,6 +1049,7 @@ mod tests {
                 "requested_quality",
                 "selected_quality",
                 "started",
+                "terminal_stage",
                 "transfer_age",
                 "transport",
                 "type",
@@ -1018,6 +1062,7 @@ mod tests {
                 "playback.attempt_origin",
                 "playback.attempt_started",
                 "playback.attempted_delivery",
+                "playback.backend",
                 "playback.declared_rate",
                 "playback.delivery",
                 "playback.demux_exit",
@@ -1027,6 +1072,7 @@ mod tests {
                 "playback.requested_quality",
                 "playback.selected_quality",
                 "playback.started",
+                "playback.terminal_stage",
                 "playback.transfer_age",
                 "playback.transport",
             ]
@@ -1118,6 +1164,7 @@ mod tests {
                 "playback.attempt_origin",
                 "playback.attempt_started",
                 "playback.attempted_delivery",
+                "playback.backend",
                 "playback.declared_rate",
                 "playback.delivery",
                 "playback.demux_exit",
@@ -1131,6 +1178,7 @@ mod tests {
                 "playback.source_audio",
                 "playback.source_video",
                 "playback.started",
+                "playback.terminal_stage",
                 "playback.transfer_age",
                 "playback.transport",
             ]
@@ -1472,7 +1520,7 @@ mod tests {
         let codes: Vec<_> = AttemptOrigin::ALL.iter().map(|o| o.code()).collect();
         assert_eq!(
             codes,
-            ["fresh", "user_retry", "quality_change", "auto_handoff", "recovery", "resume", "preview"],
+            ["fresh", "user_retry", "quality_change", "viewer_reconfigure", "auto_handoff", "recovery", "resume", "preview"],
         );
         assert_eq!(AttemptOrdinal::all().count(), 10, "1..=9 and the saturated value");
     }
@@ -1515,6 +1563,8 @@ mod tests {
         use plx_platform::i18n::msg;
         let v: Value = serde_json::from_slice(&preview_event()).expect("preview JSON");
         for key in [
+            "backend",
+            "terminal_stage",
             "attempted_delivery",
             "attempt_started",
             "attempt_origin",
@@ -1527,6 +1577,8 @@ mod tests {
         assert!(v["contexts"]["playback"]["http_status"].is_u64());
         let legend = preview_domains();
         for label in [
+            msg::core_preview_domain_backend(),
+            msg::core_preview_domain_terminal_stage(),
             msg::core_preview_domain_attempted_delivery(),
             msg::core_preview_domain_attempt_started(),
             msg::core_preview_domain_attempt_origin(),
@@ -1536,11 +1588,14 @@ mod tests {
             assert!(legend.contains(label), "legend omitted the row {label:?}");
         }
         assert!(legend.contains("yes / no"), "the attempt_started domain");
+        assert!(legend.contains("unknown / feed / uri"), "the backend domain");
+        assert!(legend.contains("unknown / planning / open / decode / presentation / release"),
+            "the terminal-stage domain");
         assert!(legend.contains("100 to 599"), "the http_status domain");
         // Every origin and every ordinal the producer can send is listed, in the enum's own order.
         assert!(
             legend.contains(
-                "fresh / user_retry / quality_change / auto_handoff / recovery / resume / preview"
+                "fresh / user_retry / quality_change / viewer_reconfigure / auto_handoff / recovery / resume / preview"
             ),
             "the attempt_origin domain",
         );
@@ -1553,6 +1608,8 @@ mod tests {
         assert_eq!(legend.matches(all).count(), 2, "delivery and attempted delivery both list it");
         let privacy = include_str!("../../../../PRIVACY.md");
         for key in [
+            "backend",
+            "terminal_stage",
             "attempted_delivery",
             "attempt_started",
             "attempt_origin",

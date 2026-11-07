@@ -95,7 +95,8 @@ fn set_phase(p: u8, detail: String) {
 }
 
 /// **Main thread.** Sample everything, then hand it to a worker.
-pub(crate) fn request(reason: &str, ps: &plx_media::route::PlaybackSession) {
+pub(crate) fn request(reason: &str, ps: &plx_media::route::PlaybackSession,
+    pa: &plx_media::player::adapter::PlayerAdapter) {
     let Some(cfg) = config::get() else { return };
     if INFLIGHT.swap(true, Relaxed) {
         plx_base::eventlog::log("lab: upload already in flight — press ignored");
@@ -107,7 +108,7 @@ pub(crate) fn request(reason: &str, ps: &plx_media::route::PlaybackSession) {
     plx_base::eventlog::log(&format!(
         "lab: snapshot seq={seq} reason={reason} route={route}"
     ));
-    let doc = crate::lab::snapshot::build(seq, reason, &cfg.session, route, ps);
+    let doc = crate::lab::snapshot::build(seq, reason, &cfg.session, route, ps, pa);
     set_phase(PHASE_SENDING, String::new());
     let url = cfg.url();
     let secret = cfg.secret.clone();

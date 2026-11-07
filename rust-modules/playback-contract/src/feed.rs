@@ -102,7 +102,7 @@ pub struct OriginalDvFacts {
     pub el_present: bool,
 }
 
-/// What the Dolby Vision landing guard (`media::player::dv_start`, #1166) does for one open, decided
+/// What the Dolby Vision landing guard (`plx_play_feed::dv_start`, #1166) does for one open, decided
 /// once from the route.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DvLandingMode {
@@ -116,8 +116,8 @@ pub enum DvLandingMode {
     Act,
 }
 
-/// The route's half of the Dolby Vision landing guard for one open: plain data, so the guard can be built
-/// from it without naming the route.
+/// The route's half of the Dolby Vision landing guard for one open: plain data, so the Feed builds
+/// its guard from it at the Engine's construction without naming the route.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DvLandingPlan {
     pub mode: DvLandingMode,

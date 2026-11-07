@@ -32,7 +32,7 @@
 //! while 916.916 s existed; see `ff_subside`'s `sidecar_clock_at_917…` test) — and the engine
 //! labels that frame with the requested offset (`disp_base`), so the playhead leads the content by
 //! the snap (0.6 s to 2.2 s measured). The side reader finds that keyframe clock-only
-//! (`subside::CLOCK_ONLY`: no cue read, byte-exact anchor match only) and
+//! (`SIDE_READER_CLOCK_ONLY`: no cue read, byte-exact anchor match only) and
 //! `player::sidecar_clock_ns` adds its delta to the position the sidecar is drawn at, for a
 //! sidecar over a live remux only. Without an exact match, or off the reader's local-link and
 //! bitrate gate, nothing is added and the sidecar keeps the remux's clock. Until the measurement

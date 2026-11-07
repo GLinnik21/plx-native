@@ -178,9 +178,9 @@ const DIAG: [&str; 48] = [
     // variants must not move the boot screen out from under the playback being compared.
     "plxnative-av1obu",
     // Send VP9's sourceInfo envelope as the pipeline made it, without the container-derived HDR10
-    // declaration (`media::player::vp9_hdr`): the A/B for whether the television switches to HDR.
+    // declaration (`plx_play_feed::vp9_hdr`): the A/B for whether the television switches to HDR.
     "plxnative-novp9hdr",
-    // The side subtitle reader (`media::player::subside`): content = the 0-based position of the
+    // The side subtitle reader (`plx_play_feed::side_reader`, `media::player::subside`): content = the 0-based position of the
     // embedded subtitle stream to draw over a plain remux, read at each playback start.
     "plxnative-subside",
     // The URI-mode probe (`media::player::uriprobe_drive`, issue #1064): content = `load`, `late`
@@ -570,7 +570,7 @@ pub(crate) fn quality_switch_script() -> Option<(u32, Vec<plx_plex::plex::sessio
 /// ordinary six-second dev gate and stay paused. A non-empty script may delay that edge and name a
 /// finite accepted hold. `at` also holds the edge until the PUBLISHED playhead has reached that
 /// media position (and, in the simulator, stops the clock sink exactly on it, so the pause freezes
-/// that position: `ffi_host.rs::stop_clock_at`): a wall-clock delay pauses wherever the host's
+/// that position: `HostSink::stop_clock_at`): a wall-clock delay pauses wherever the host's
 /// scheduling has got playback to, which moves from run to run, and the documentation's player
 /// figure wants the same frame and the same clock every time. The simulator's settled capture
 /// (`PLXNATIVE_SHOT_SETTLE`) waits for the Pause to land (`scenarios::screenshot::PauseDebt`): the

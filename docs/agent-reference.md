@@ -16,12 +16,13 @@ Media Server (PMS) entirely in-app.
 the streaming/demux pipeline, and the Plex data layer), compiled to a static lib and linked in
 (see the Makefile). What stays C is `src/main.c` — a small **boot shim** (the event-log
 handle, stderr capture, process bring-up) that then calls the Rust `plex_run()` — and
-`src/starfish.c`, the **StarfishMediaAPIs C++/ACB seam**, beside `src/svg.c` (the nanosvg
-rasterizer), `src/sentry_context.c`, `src/exit.c` (the key-files list below says what each does)
-and, since 2026-08-29, `src/crashtrace.c` — the async-signal-safe **crash tracer**, lifted out of
-`main.c` into its own translation unit for one reason, that `ci/crashtrace-test.c` links it ALONE
-and can therefore fault a process on purpose and check how it died. Doing that immediately found a
-seven-week-old bug no log could have shown (below).
+`src/starfish.c`, the **buffer-feed StarfishMediaAPIs C++ seam**, and `src/video_plane.c`, the shared
+**ACB/exported-window display binding**, beside `src/svg.c` (the nanosvg rasterizer),
+`src/sentry_context.c`, `src/exit.c` (the key-files list below says what each does) and, since
+2026-08-29, `src/crashtrace.c` — the async-signal-safe **crash tracer**, lifted out of `main.c` into
+its own translation unit for one reason, that `ci/crashtrace-test.c` links it ALONE and can therefore
+fault a process on purpose and check how it died. Doing that immediately found a seven-week-old bug no
+log could have shown (below).
 
 Target device: LG 49SM9000PLA, webOS 4.5, rooted, reached as `root` over ssh. **Its address is NOT
 in the repo** — it comes from one line (an IP or hostname) in a gitignored file, found by ONE shared
@@ -222,7 +223,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   (`host-lint`, `host-unit-default`, `host-unit-hostsim`, `host-python`, `host-python-harness`) behind an aggregator named
   `host checks (NOT a device gate)`; `ci/test_ci_split.py` pins that no gate falls between them. The cargo half runs `cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_media_codecs -p plx_appkit -p plx_screens`
   **twice: once on the default feature set and once with `--features hostsim`**, which is not a
-  duplicate run. The host feed seam (`player/ffi_host.rs`) exists ONLY in the hostsim
+  duplicate run. The host feed seam (`play-feed/src/ffi_host.rs`) exists ONLY in the hostsim
   configuration, so every test that drives an access unit through `sf_feed` is compiled out of the
   default pass and cannot fail it — which is how the prime-livelock regression
   (`player::engine::prime_livelock_tests`) sat outside the gate entirely while 1398 default-feature
@@ -353,16 +354,22 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   every target and runs each for 10 s on a PR that touches the package or a parser, and runs each for 5
   minutes weekly, resuming from a cached corpus when the cache still holds one. Not a gate: nothing in `make check` runs it.
 - `make check-nodef` — the shipping-feature-set type check, `cargo check --lib
-  --no-default-features`, which is the configuration `RELEASE=1` ships and which `make check` does
-  not cover. `CARGO_INCREMENTAL=0`, as every one-shot gate. It builds in the checkout's own
+  --no-default-features --features play-uri,play-feed`, which is the configuration `RELEASE=1`
+  ships and which `make check` does not cover. The backend features are part of the shipping set:
+  both are in the application crate's `default`, so the bare `--no-default-features` would check a
+  build with no playback backend (`PLAYBACK_BACKENDS=uri|feed|none` checks the matching
+  single-backend set, as for `RELEASE=1`). `CARGO_INCREMENTAL=0`, as every one-shot gate. It
+  builds in the checkout's own
   `target/` (or the `CARGO_TARGET_DIR` a lane exports, as `make lint` does) rather than a tree of
   its own, and restores the cargo seed first like `lint`. Sharing is safe because cargo hashes a
-  unit by package, target, kind, mode, features and profile: of the 165 units this check needs, 139
+  unit by package, target, kind, mode, features and profile: of the 181 units this check needs, 151
   third-party units match `make lint`'s exactly (a `--unit-graph` comparison, nothing compiled) and
-  are reused, while all 26 workspace units differ in features (the application crate no longer
+  are reused, while the workspace units differ in features (the application crate no longer
   forwards `devtools`, `devtriggers` and `threadcheck`, so the layer crates get `default` only) and
   coexist beside lint's under their own hashes; `cargo check` writes no unhashed artifact that
-  could collide. The price is cargo's build-directory lock: a `make check-nodef` started while
+  could collide. The backend features add no third-party feature of their own: they reach only
+  workspace crates and activate `play-feed`'s `dolby_vision` subtree, which lint builds with the
+  same features. The price is cargo's build-directory lock: a `make check-nodef` started while
   another cargo runs in the same tree waits for it. The recipe carries neither `HOST_ENV` nor
   `TELEMETRY_ENV`: both change the third-party units it shares with lint. It never touches the
   release binaries (`SIDE_EFFECT_FREE`).
@@ -388,7 +395,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
     enforces them: the stripped ARM `plxnative` that `make ipk` stages (the cross-build job, dev
     flavour, `release` profile: CI selects it by itself, a local `make ipk` needs `ARM_PROFILE=release`), the number of third-party packages in the app crate's resolved graph for
     `armv7-unknown-linux-gnueabi` (normal + build edges, dev-dependencies excluded; asked for both with
-    default features and with `--no-default-features`, which is what ships), and the number of crate
+    default features and with the shipping set, `make RELEASE=1`'s `--no-default-features` plus the playback backends, read from the Makefile and not restated: that is what ships), and the number of crate
     names present in two versions on the normal-edge graph (what `cargo tree -d --edges normal`
     prints). The graph budgets run in `host-lint` from `cargo tree`, which compiles nothing and resolves
     features the way a build does: `cargo metadata` unifies them across dependency kinds, so it
@@ -914,9 +921,10 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   Each feature set also gets its own `--target-dir`, because cargo does not hash its output and
   would otherwise report the dev build fresh while the release `.a` sat at that path.
   **`make check` cannot see a break in this configuration** — it builds the default feature set —
-  **but the PR gate now can**: `.github/workflows/ci.yml` type-checks `--no-default-features` and
-  both `hostsim` configurations on every push. Until that landed, `--no-default-features` was first
-  compiled during a release cut, i.e. after the change had merged. The
+  **but the PR gate now can**: `.github/workflows/ci.yml` runs `make check-nodef` (the shipping set:
+  `--no-default-features` plus the playback backends) and type-checks both `hostsim` configurations
+  on every push. Until that landed, the shipping set was first compiled during a release cut, i.e.
+  after the change had merged. The
   **`PostToolUse` hook** (`.claude/hooks/release-config-check.py`) stays and is now the fast path
   rather than the only one — it catches the break before the push, and CI does not run in somebody
   else's checkout. It type-checks after
@@ -976,6 +984,13 @@ bundled in the NDK), so the Starfish C++ calls get real link-time symbol checkin
 those has the **same SONAME on every webOS release from 2.2.3 to 11.2.0**, which is what makes
 linking them normally the right call — check any of it with `tools/fwcompat.py --inventory`.
 
+`PLAYBACK_BACKENDS=uri` omits the Feed Starfish objects and the `libplayerAPIs` / `libpf-1.0`
+imports. Grade that artifact with `PLAYBACK_BACKENDS=uri ./ci/check-elf.sh pkg/plxnative` (or pass
+`uri` as the script's second argument). The gate requires the Feed callback hook and the full
+`ci/expected-dt-needed.txt` set for the default `both` and explicit `feed` modes; URI mode
+requires the hook and both Feed imports to be absent and matches the exact
+`ci/expected-dt-needed-uri.txt` set. A bare `ci/check-elf.sh` grades the default `both` artifact.
+
 **Two families are deliberately NOT linked because their SONAME MOVES**: `libcurl`
 (`.so.5`→`.so.4`) and `libAcbAPI` (*deleted outright* at webOS 5.0). A `DT_NEEDED` entry is a hard
 requirement for one exact name, which cannot express "either of these", and a name the device lacks
@@ -988,7 +1003,7 @@ kills the process at `exec()` — before `main`, before the event log exists. So
   names go to the event log. Read that module's doc before adding a library to it; the rule is
   *only* when the version actually varies, because moving a library there trades link-time symbol
   checking for version tolerance.
-- **`src/starfish.c`** resolves ACB and the webOS 5+ SDL exported-window API the same way, and
+- **`src/video_plane.c`** resolves ACB and the webOS 5+ SDL exported-window API the same way, and
   picks between them (`vp_mode()`). The two are complementary across all 14 firmwares.
 - Adding a new FFmpeg/curl call means **adding it to the `dynlib!` block**. There is no link error
   to catch you any more — the failure is a logged `Incomplete` at boot and a refusal to demux.
@@ -1126,12 +1141,12 @@ through ACB on the webOS 4.5 dev set, with and without `connectDass`. The normal
 is all Rust: `PMS HTTP GET` → demux (**`ff.rs`, over a custom AVIO on the
 FFmpeg the app BUNDLES** — not the television's; see the linking section, and note ours is built
 `--disable-network`, so the AVIO is the *only* way bytes reach it) → AU queues with backpressure
-(`aq.rs`) → the pump `Feed()`s the Starfish
+(`play-feed/src/aq.rs`) → the pump `Feed()`s the Starfish
 pipeline. Worker threads (demux, media/load, and `sf-unload` for a real stop's `Unload`) sit
 beside the main loop, which owns every other ACB/Starfish control call
 (`rust-modules/media/src/player/CLAUDE.md`, threading model). **That GET has TWO transports and the part URL's SCHEME picks one**,
 once, in `ff::demux`: `http` reads through `stream.rs`'s raw socket, `https` through
-**`net::range_io`** (through media's credential facade, `media/src/curlio.rs`) — libcurl's *multi* interface behind a `read`/`seek`/`size`/`status`/`abort` pull
+**`net::range_io`** (through media's credential facade) — libcurl's *multi* interface behind a `read`/`seek`/`size`/`status`/`abort` pull
 source, so `ff.rs` never learns curl-multi mechanics. It exists because LG's reviewers have no PMS
 on their LAN and stream from the public internet, which `stream.rs` cannot reach: it speaks
 cleartext. So **libcurl is used by two modules for two jobs** — `net.rs` for plex.tv plus HTTPS PMS
@@ -1189,13 +1204,13 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   `make check`** — `ci/crashfmt-test.c` grades the parsing, `ci/crashtrace-test.c` crashes seven
   processes on purpose and checks the record AND the exit status, and probes another with the freeze
   signal (`SIGUSR2`) to check it records and survives. `src/starfish.c` — the
-  StarfishMediaAPIs C++/ACB seam. `src/svg.c` — nanosvg rasterizer. `src/sentry_context.c` — the
+  buffer-feed StarfishMediaAPIs C++ seam. `src/video_plane.c` — shared ACB/exported-window binding. `src/svg.c` — nanosvg rasterizer. `src/sentry_context.c` — the
   narrow C wrapper that keeps Sentry's opaque by-value object ABI out of Rust. `src/exit.c` — libc
   `exit` defined in the executable (and exported by the link), so a shared library's `exit()` ends the
   process through `plx_exit_record` in `src/crashtrace.c` (an async-signal-safe record, in the event
   log and the crash log, naming the thread and the calling library, then the `exit_group` syscall,
   or a park while a fatal signal's handler is running, which lets that crash end the process; not
-  through Rust's `exit_now`, which flushes under locks); `ci/exit-interpose-test.c` grades it on Linux. These six are the
+  through Rust's `exit_now`, which flushes under locks); `ci/exit-interpose-test.c` grades it on Linux. These seven are the
   entire normal C side (`gpdebug.c` is an opt-in allocator instrument). Reach for
   `/tmp/plxnative-crashtest=<segv|abrt|bus|ill|trap|panic|unwind>` to fault the app deliberately
   ON the television — `segv` is a real null write, `abrt`/`bus`/`ill`/`trap` are `raise`, `panic`
@@ -1219,10 +1234,13 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
 - `rust-modules/src/` — the app core (Rust): `app/` (`mod.rs` the `run_application` shim + `struct App`, `boot.rs` the bring-up, `run.rs` the frame loop and its phase functions, `events.rs`/`input.rs` the input decode and key ladders, `lifecycle.rs`, `playback.rs`, `content.rs`, `bridge.rs` the seam onto the container and the ONE navigation vocabulary, `words.rs` the heartbeat's `route=`/`overlay=` alphabet — `nav.rs` is gone with `enum Route` since restructure phase 12), `system.rs` (wayland),
   and, in the media layer (`rust-modules/media/`, crate `plx_media`, which the application links),
   `player/` (buffer-feed engine + worker threads — **`rust-modules/media/src/player/CLAUDE.md` is the
-  playback deep-dive; read it before touching playback**), `ff.rs` (THE demuxer — the **bundled,
-  pinned** libavformat shipped beside the binary, *not* the TV's), `aq.rs` (the AU pipeline behind
-  `plx_net`'s HTTP socket, `rust-modules/net/src/stream.rs`; libcurl/TLS is `rust-modules/net/src/net.rs`),
-  `curlio.rs` (the credential facade over `plx_net::range_io`), `hls.rs`, `abr/` and `route/`; and the Plex layer (`rust-modules/plex/`, crate `plx_plex`: `plex/` and `http.rs` — **its own
+  playback deep-dive; read it before touching playback**), `abr/` and `route/`, and `ff.rs`, which
+  re-exports `plx_media_codecs`' FFmpeg bindings and holds the integration fixtures.
+  `play-feed` owns the feed demuxer (`play-feed/src/ff.rs`, `plx_play_feed::demux`, over the **bundled,
+  pinned** libavformat shipped beside the binary, *not* the TV's), the AU queues and the HLS parser;
+  `media-codecs` owns the FFmpeg ABI and encoder;
+  `net::range_io` owns interruptible HTTPS byte ranges while media supplies credential authorization.
+  The Plex layer (`rust-modules/plex/`, crate `plx_plex`: `plex/` and `http.rs` — **its own
   `rust-modules/plex/src/plex/CLAUDE.md`**, which the rest of this file never pointed at: read it before
   adding a PMS query, and before assuming there is one server. There is a REGISTRY behind
   `client()` now — the app can hold a friend's shared server beside your own, each with its own
@@ -1330,7 +1348,7 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   a table of its own so that a television without libz degrades to an uncompressed upload rather
   than emptying anybody else's table; it exists only in a `lab-diagnostics` build, which is not the
   default set, so an ordinary binary really does have five. (**ACB** is the same idea but not this
-  module: `src/starfish.c` is C and does its own `dlopen`.) Replaced `stub/`, which is deleted.
+  module: `src/video_plane.c` is C and does its own `dlopen`.) Replaced `stub/`, which is deleted.
   `tools/fwcompat.py` grades the result;
   `docs/webos5-port.md` is the full account.
 - `docs/release-notes/` + `docs/release-audits/` — **the two halves of a release, split
@@ -1957,7 +1975,7 @@ you get without waking a television. What it covers today, by module:
   `plx_base::testlock::serial()` (one lock per test binary: `plx_data`'s tests and the application's each have their own) — not because its own state is global any more (`MetadataState` and
   `MetadataAdapter`, detail and season mailboxes included, are per-owner fields now, like the other
   five stores), but because `set_current_for_test`'s `assert_held` enforces the SAME
-  lock the genuinely-still-global seams (route's play mailbox, the player's SHARED block) also
+  lock the genuinely-still-global seams (route's play mailbox, the Feed backend's `FEED_SHARED` block) also
   take, and the convention is one lock, not one per module. Browse, Hubs, Metadata, Person, Search
   and ViewState are all owned now: a production `Bridge` owns each store's state, adapters and
   notices, so separate owners share neither state nor landings; their fixtures use explicit
@@ -1994,7 +2012,7 @@ controller.** `make sim-macos` builds a HOST copy of the same bundled FFmpeg 9.0
 `ci/build-ffmpeg.sh` component list (`HOST=1`, into `vendor/ffmpeg-prefix-host`, staged into
 `pkg/` as `libavformat-plx.63.dylib` beside the ARM `.so.63`), and `media-codecs/src/ffi.rs` carries a second ABI
 table selected on `target_pointer_width` with `ci/ffabi-assert.c` holding both. Arm
-`plxnative-clocksink` (`player/ffi_host.rs` — AUs accepted and discarded, a presentation clock
+`plxnative-clocksink` (`play-feed/src/ffi_host.rs` — AUs accepted and discarded, a presentation clock
 clamped to the last fed PTS, position reported at the television's measured 5 Hz) and the whole
 pipeline between the socket and the decoder runs on the Mac: both AVIO transports, `ff.rs`'s
 demux, the AU queues and their byte-cap backpressure, the feed-ahead throttle, rung transactions,
@@ -2101,20 +2119,20 @@ resume, the `/:/timeline` reporter — which is also why it needs somebody's lib
 It needs a TV address and nothing else — no token, no ratingKey, no `manifest.local.json`, no
 sharing — so it is the only tier a stranger can run, and it is what separates "the player is
 broken" from "the library layer is broken" when a server case fails. **What it covers, precisely:**
-the player feeds `{h264,hevc}` (plus `av1` / `vp9` on a set whose codec table lists that decoder's row) × `{aac,ac3,eac3,dts}` (plus `flac`, `alac` and `pcm`, decoded in the app and fed as PCM) in mkv/mp4/m4v. Auto intersects this
+the feed player accepts `{h264,hevc,av1,vp9}` video and native `{aac,ac3,eac3,dts,opus}` audio wire formats (plus `flac`, `alac` and `pcm`, decoded in the app and fed as PCM under Auto) in mkv/mp4/m4v. Auto intersects this
 software set with the device table, per-codec channel ceilings and a 48 kHz sample-rate ceiling on the
 codecs `devcaps::audio_rate_bounded` names (`devcaps::AUDIO_RATE_CEILING`, #951; not DTS, TrueHD, nor FLAC, ALAC and LPCM,
-which the app resamples to 48 or 44.1 kHz itself, `devcaps::pcm_load_rate`; a 5.1 hi-res track still converts on the server); DTS requires a measured
+which the app resamples to 48 or 44.1 kHz itself, `devcaps::pcm_load_rate`; a 5.1 hi-res track still converts on the server); native DTS under Auto requires a measured
 DTS row and feeds only the DTS core when an HD extension is present. PMS names DTS `dca`:
 `devcaps::audio_codec_id` folds it (and `ec-3`) onto the pipeline's `dts` at membership and at
 the Load payload, and the profile sends `dca` (`transcoder.rs::profile_codec_name`). Force
-Direct Play admits DTS natively only when the table has a DTS row with channels (`Caps::forced_admits_dts`)
-but skips the channel ceiling; where the set has no native path for a lossy track whose row has TV evidence
-(`devcaps::AppDecoded::measured`: DTS), Force Direct Play decodes it in the app instead, as stereo, for a track
-of at most two channels only: the app never mixes a source of more than two channels down to stereo by default, so a
-surround track there is refused like any unplayable one (`Caps::app_decodes_lossy_track`, `Caps::app_may_mix_down`,
-`devcaps::app_decode_mixes_down`). The implemented Load
-strings are `H264`/`H265`/`AV1`/`VP9` (AV1 and VP9 only on a set whose table lists that decoder; elsewhere the Load is refused) and `AC3`/`AC3 PLUS`/`AAC`/`DTS`, plus `PCM` for FLAC, ALAC and LPCM decoded in the app (and for the lossy rows the attempt decodes in the app: DTS where Force Direct Play has no native path (a stereo track only) or the failed-open ladder's last rung asks for it (a surround track only after the server conversions, the manual encode included, were refused), and every lossy row, MP3, Vorbis and TrueHD included, on a debug build with `/tmp/plxnative-appdecodelossy`; those three have no TV measurement, so a release build does not offer them); these are not the firmware's whole
+Direct Play keeps the original selected stream despite missing device codec rows or learned
+refusals. Its feed profile advertises native wire formats without device bounds; the physical
+open may still refuse a wire shape it cannot represent. Force neither extracts a DTS-HD core
+nor app-decodes, downmixes, resamples or switches to a sibling track. The implemented Load
+strings are `H264`/`H265`/`AV1`/`VP9` and `AC3`/`AC3 PLUS`/`AAC`/`DTS`/`OPUS`, plus `PCM`
+for FLAC, ALAC and LPCM decoded in the app under Auto (and for lossy rows Auto's failed-open
+ladder puts in force, or a debug build's `/tmp/plxnative-appdecodelossy`); these are not the firmware's whole
 vocabulary. The six AC3/EAC3/AAC combinations and H264/DTS are covered
 here, plus DV 8.1, both containers, in-place seek in each, and the FRAME-RATE axis added the same
 day (`pipe_h264_1080p5994` is the only fixture that reaches `fps_rational`'s 1001-denominator
@@ -2142,12 +2160,13 @@ gap — `devcaps` reads the table's `maxFrameRate` only into the per-codec rows 
 envelope clamps against (since 2026-09-03), so the profile sent to PMS still bounds no frame rate
 at all. Three things about it
 are worth knowing before reading a result. **(1)** The declaration is the interesting half and the
-main false-PASS risk: `engine`'s `_ =>` arm maps an unrecognised AUDIO codec to `"AC3"`, but the video side no longer
-defaults: `LoadVideo::of_stream` is case-insensitive, `""` and `h264` are the only H264, `hevc`/`h265`, `av1` and `vp9` get their own
+main false-PASS risk: an unrecognised AUDIO codec (`""` included) no longer defaults to `"AC3"`
+(`plx_play_feed::audio_payload_codec`'s `_ => None` arm gives it no payload name, and the Load is refused with an
+`unsupported audio codec` log line), and the video side no longer defaults either: `LoadVideo::of_stream` is case-insensitive, `""` and `h264` are the only H264, `hevc`/`h265`, `av1` and `vp9` get their own
 payloads (`av1` and `vp9` only where the device's codec table lists the row, otherwise the Load is refused), and any other `vcodec` in a
-`playurl` declaration refuses the Load with a log line naming it. So a trigger that was never read (`""`) still produces exactly the right
-payload for the AC-3 baseline case — which is why the matrix carries cases expecting
-`"AC3 PLUS"` and `"AAC"`, and why the engine now logs one `load: v=… a=… fps=… dv=… atmos=…` line
+`playurl` declaration refuses the Load with a log line naming it. So a trigger that was never read (`""`) declares H264 and is refused
+at the audio step, and the matrix carries cases expecting
+`"AC3 PLUS"` and `"AAC"` because the declaration decides those names; the engine now logs one `load: v=… a=… fps=… dv=… atmos=…` line
 per streamed playback (the only place an event log says what the app told the television the stream
 WAS, as opposed to what the demuxer found in it). **(2)** `python3 -m http.server` is DISQUALIFIED
 and the failure is silent: the AVIO seeks by reopening with `Range: bytes=N-`, `stream.rs` accepts
@@ -2275,7 +2294,7 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   a loop rate as a frame rate. Analysis docs under `docs/` still quote the old names against the
   line numbers of their day and carry a mapping banner instead of being rewritten.
 - **The once/sec `loop=` heartbeat carries `pos=<s>` while frames are presenting** — the same
-  `SHARED.playpos_ns` the 10s `/:/timeline` reporter posts, sampled at 1 Hz. The harness grades
+  `FEED_SHARED.playpos_ns` the 10s `/:/timeline` reporter posts, sampled at 1 Hz. The harness grades
   playback progress from it (`progress_secs`), because observing a 15s climb through 10s samples
   costs ~30s of playback. It is gated on `player::is_playing()`, not `is_started()`: a direct-play
   resume does not seed `playpos_ns` (only the transcode branch does), so the pre-roll would log a
@@ -2487,7 +2506,7 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   at each playback start, no relaunch: while a plain remux plays with no subtitle selected, a side
   reader demuxes the Part's subtitle packets over a fresh-session range read and the client
   renderer draws that track; logs `subside: open|anchor|reopen|failed|stop …`, never a URL, token
-  or session; `media::player::subside`, `ff_subside.rs`),
+  or session; `plx_play_feed::side_reader`, `media::player::subside`, `ff_subside.rs`),
   `/tmp/plxnative-uriprobe[=load|late|none|drive]` (the webOS 5+ URI-mode probe, issue #1064: the
   next Play hands its stream URL to `com.webos.media` over the platform bus instead of building an
   Engine, to learn whether the exported window id is honoured and where it may go. The content
@@ -2496,10 +2515,13 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   and then exercises the transport — pause, resume, a seek 20 s ahead, a text and an audio
   `selectTrack`, `setSubtitleEnable` — logging the position before and after each, so the summary
   says whether the pipeline accepts them; text naming no variant leaves the probe unarmed and the
-  play normal. Read at each playback start, no relaunch; skipped for a hero preview. No Engine
+  play normal. After the variant, `bpsstart=N`, `bpsmax=N` and `bpsmin=N` (bit/s, each 1 to
+  1000000000, at most once, space separated, e.g. `load bpsmax=720000`) put the native
+  adaptive-streaming seed and limits into the `load` option as `adaptiveStreaming.bps.{start,maximum,minimum}`
+  and onto the `armed` line; any other token leaves the probe unarmed. Read at each playback start, no relaunch; skipped for a hero preview. No Engine
   runs, so nothing is reported to Plex (no timeline, scrobble or unscrobble). The event log gets `uriprobe: …` lines ending in one `summary` line, never the URL,
   token, host or a service payload; a tester sends those lines and removes the file.
-  `dev::DIAG`, so it does not move the boot screen; `media::player::uriprobe`, `uriprobe_drive`),
+  `dev::DIAG`, so it does not move the boot screen; the play-uri crate's `uriprobe` (the machine), `dev::uriprobe` (the application's driver over it), `media::player::uriprobe_drive` (its route half and port)),
   `/tmp/plxnative-url` (override the streamed part
   URL) and **`/tmp/plxnative-playurl`** (the same, plus the LOAD DECLARATION — one JSON object,
   `{"url":…,"vcodec":…,"acodec":…,"fps":…,"dovi":{…},"atmos":…}`, which is what the pipeline test
@@ -2518,7 +2540,7 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   one seek to 140s; else a seek script: optional `gap=<ms>` + comma steps, absolute `120` or
   tap-relative `+10`/`-10` — rapid-burst seek testing), `/tmp/plxnative-ptype` (ACB playerType
   bisect knob), `/tmp/plxnative-holdload[=ms]` (sleep `ms` — default 30000 for a bare/empty
-  trigger — on `threads::load_thread` right after the real `sf_load` call returns and BEFORE the
+  trigger — on `native_load::load_thread` right after the real `sf_load` call returns and BEFORE the
   Load-returned flag publishes, making issue #74 D.1's budget observable on demand: the pump's
   `deferring` line, then, past `NATIVE_LOAD_BUDGET`, the failure read-out; NOT `DIAG`, since it
   changes playback behaviour), `/tmp/plxnative-marker[=intro|credits]` (once playing, seek to 5s before that

@@ -45,7 +45,7 @@ plx_plex = { path = "../plex" }
 plx_telemetry = { path = "../telemetry" }
 plx_data = { path = "../data" }
 plx_session = { path = "../session" }
-plx_media = { path = "../media" }
+plx_media = { path = "../media", default-features = false }
 plx_appkit = { path = "../appkit" }
 serde_json = { version = "1", default-features = false, features = ["alloc", "std"] }
 
@@ -63,8 +63,11 @@ plx_plex = { path = "../plex", features = ["test-support"] }
 plx_telemetry = { path = "../telemetry", features = ["test-support"] }
 plx_data = { path = "../data", features = ["test-support"] }
 plx_session = { path = "../session", features = ["test-support"] }
-plx_media = { path = "../media", features = ["test-support"] }
+plx_media = { path = "../media", default-features = false, features = ["test-support"] }
 plx_appkit = { path = "../appkit", features = ["test-support"] }
+# The player pins drive the Feed's process-lifetime transport flags (`plx_play_feed::shared::FEED_TX`), which
+# `plx_media` no longer re-exports.
+plx_play_feed = { path = "../play-feed" }
 # `login`'s helper-failure tests name an errno (`libc::ENOENT`).
 libc = "0.2"
 
