@@ -24,8 +24,8 @@ pub trait MonotonicClock { fn now_ms(&self) -> u64; }
 /// is the webOS 4.x plane: the paced bind sequence of `acb_bind` through the one plane owner,
 /// released by `UNLOADED` and its completion fence. The executor refuses to start on it unless the
 /// display is in ACB mode and the gate (`acb_bind::gate`) passes, and it forwards only a descriptor
-/// the service itself reported. Present, and not routed in production: the product composition certifies
-/// no source for it, so no offer reaches it. A `devtriggers` build can compose a dev qualifier and
+/// the service itself reported. Routed in production only for a viewer who turned on Settings > Playback
+/// engine > TV player: nothing else is offered to it. A `devtriggers` build can compose a dev qualifier and
 /// certified capabilities for it (the app's `dev::uri_product`); its attempt then also writes the
 /// `uri-trace:` stream (`uri_trace`).
 pub use plx_playback_contract::uri::Binding;

@@ -96,7 +96,7 @@ changes remains undetermined. Neither arm created an SDL exported window; `windo
 therefore does not determine whether an ACB arm can display its picture.
 
 That sequence is now one shared machine (`rust-modules/play-uri/src/acb_bind.rs`) that the probe and
-the production URI backend (`Binding::Acb`, present and not routed) both step. The production
+the production URI backend (`Binding::Acb`, routed only for the Playback engine opt-in) both step. The production
 backend never uses the fixture descriptor that the controlled arms fell back to (a developer-probe
 exception). It sends the video-data envelope the service itself reported in the ACB schema (a
 `sourceInfo` with a string `context` and a decodable `video`) when there is one, and otherwise an

@@ -7,8 +7,9 @@ use plx_playback_contract::uri::UriSource;
 use plx_playback_contract::Failure;
 
 /// An external IO qualifier's verdict for one resolved Part and its exact selected streams.
-/// The owned URL and native track map never enter the route machine or a Debug value. No
-/// production qualifier currently supplies this value; absence preserves the Feed choice.
+/// The owned URL and native track map never enter the route machine or a Debug value. Production
+/// supplies `OriginalPart` only for a viewer who opted in (`OriginalRequest::uri_opt_in`) and never
+/// a converted PMS output; for everyone else absence preserves the Feed choice.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UriSourceRecipe {
     OriginalPart,

@@ -84,7 +84,7 @@ The ACB plane is released through the plane owner (`platform/src/tv/plane.rs`): 
 fence on that call's completion callback (`docs/measurements/acb-release-fence-2026-11-04.md`), so a
 released plane is reusable in the same process. Only a failed fence (a refused unload, a completion
 that is not "complete", no completion within `RELEASE_FENCE_MS`) quarantines it until process exit.
-The production URI backend has the binding (`Binding::Acb`) and no qualifier routes to it yet.
+The production URI backend has the binding (`Binding::Acb`); only a viewer's own Playback engine opt-in qualifier routes to it.
 
 ## Routing and evidence requirements
 

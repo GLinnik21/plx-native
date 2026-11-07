@@ -315,7 +315,7 @@ impl MonotonicClock for ProductUriClock {
 /// Capture the installed display and URI bus at the playback IO boundary. Current product
 /// evidence remains unqualified for everyone but a viewer who opted in to the URI engine in
 /// Settings; returning a port never certifies a source by itself. (A debug
-/// build's URI dev route, armed by a trigger read once here, is the one thing that changes that:
+/// build's URI dev route, armed by a trigger read once here, is the other thing that changes that:
 /// `dev::uri_product`.)
 #[cfg(feature = "play-uri")]
 pub(crate) fn install_uri_product(adapter: &mut PlayerAdapter, session: &mut PlaybackSession) -> bool {

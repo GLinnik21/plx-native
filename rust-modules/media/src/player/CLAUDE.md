@@ -30,7 +30,7 @@ capabilities are empty, so ordinary routes still choose Feed. Host fixtures inje
 and firmware evidence to exercise source, control and release logic.
 
 The product driver also carries the ACB plane binding the probe proved (`Binding::Acb` in
-`play-uri/src/backend.rs`): present and not routed. The paced sequence (gate, `setMediaId`, LOADED,
+`play-uri/src/backend.rs`): routed only for a viewer's own Playback engine opt-in, never otherwise. The paced sequence (gate, `setMediaId`, LOADED,
 the `connectDass` slot left empty, video data, full-screen display and PLAYING) is ONE pure machine,
 `play-uri/src/acb_bind.rs`, stepped by both the probe and the backend and performed through the sink by
 `play-uri/src/acb_drive.rs`; neither keeps a private copy. The backend starts it at `loadCompleted`
