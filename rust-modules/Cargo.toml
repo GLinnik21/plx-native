@@ -131,9 +131,8 @@ placeholder-sentinel = ["plx_ui/placeholder-sentinel"]
 # loader finds no `libcurl-plx.so.4` beside the binary, logs it, and binds the television's own
 # libcurl exactly as a build without the feature does. What it compiles in: `plx_net::net`'s
 # bundled loader (`net::curlstack`, glibc only, `RTLD_DEEPBIND`) and `dynlib::open_in_deepbind`.
-# What it does NOT gate: the verify-result decoding and `CURLSSLOPT_NATIVE_CA`, which follow the TLS
-# library the bound curl reports (`net::tls_backend()`), and the Alt-Svc options, which sit behind
-# `net::bundled()` (constant false without the feature), so their tests run in every build.
+# What it does NOT gate: the Alt-Svc options, which sit behind `net::bundled()` (constant false
+# without the feature), so their tests run in every build.
 http3-curlstack = ["plx_base/http3-curlstack", "plx_net/http3-curlstack"]
 
 # **There is no `telemetry` cargo feature, and this comment is here so nobody adds one back.**

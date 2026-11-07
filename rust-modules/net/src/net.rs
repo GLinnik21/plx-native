@@ -1,6 +1,9 @@
 //! `net` — a small blocking HTTPS client over **whatever libcurl the machine already has**, bound
 //! at runtime by the candidate list below (nothing is linked, and `stub/` — which this line named
-//! for months after it was deleted — is gone). The plain-HTTP socket in [`crate::stream`] can
+//! for months after it was deleted — is gone). A `make CURLSTACK=1` build first tries the bundled
+//! `libcurl-plx.so.4` beside the binary (`net::curlstack`, cargo feature `http3-curlstack`) and falls
+//! back to that candidate list; the choice is made once, in [`global_init`], and `curlio`'s multi
+//! table binds the same library ([`bundled_curl`]). The plain-HTTP socket in [`crate::stream`] can
 //! resolve names now, but it still cannot do TLS; this fills that gap. Every call is
 //! **blocking**, so callers must run it off the SDL main loop (the account and PMS workers).
 //!
@@ -36,7 +39,7 @@ use std::ffi::CString;
 use std::mem::MaybeUninit;
 use std::os::raw::{c_char, c_int, c_long, c_uint, c_void};
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 /// `Origin`, `Scheme`, `ResolvePin`, `url_host`: the address types the transport reads, which the
@@ -51,9 +54,7 @@ pub type curl_slist = c_void;
 
 /// The stable head of `curl_version_info_data`. Passing `CURLVERSION_FIRST` promises to inspect
 /// only these original fields; libcurl extends the struct at the tail for later ages, so this
-/// prefix has the same offsets on the television's 7.53.1 and current macOS. `ssl_version` is one
-/// of them (age 0, like the four before it): the TLS backend's name and version, e.g.
-/// `OpenSSL/3.5.9` or `GnuTLS/3.8.13`, or NULL for a curl without TLS.
+/// prefix has the same offsets on the television's 7.53.1 and current macOS.
 #[repr(C)]
 pub struct CurlVersionInfo {
     age: c_int,
@@ -61,7 +62,6 @@ pub struct CurlVersionInfo {
     version_num: c_uint,
     host: *const c_char,
     features: c_int,
-    ssl_version: *const c_char,
 }
 
 // ---- libcurl, bound at RUNTIME by SONAME candidate list ----
@@ -134,18 +134,6 @@ const CURLOPT_FOLLOWLOCATION: c_int = 52;
 const CURLOPT_MAXREDIRS: c_int = 68;
 const CURLOPT_SSL_VERIFYPEER: c_int = 64;
 const CURLOPT_SSL_VERIFYHOST: c_int = 81;
-/// `CURLOPT_SSL_OPTIONS` (VALUES + 216) and its `CURLSSLOPT_NATIVE_CA` bit (`1 << 4`). Set only
-/// in [`TlsCfg::Ca`]'s arm, and only when [`native_ca_needed`] says the bound curl's TLS library
-/// loads no trust anchors without it, which today is GnuTLS alone: `gtls_populate_creds` in curl's
-/// `vtls/gtls.c` calls `gnutls_certificate_set_x509_system_trust` only when this bit is set. No
-/// curl this app ships or binds is a GnuTLS build (the television's and the bundled one are both
-/// OpenSSL), so on every device it is not sent. Under OpenSSL on Linux the bit adds no anchors
-/// (curl's `vtls/openssl.c` reads it only for the Windows and Apple stores) and would only turn
-/// off curl's shared CA-store cache; the bundled curl's trust is its compiled-in CA path, the
-/// television's hashed `/etc/ssl/certs` (`ci/build-curlstack.sh`, `build_curl`). Present in
-/// libcurl since 7.25.0 (the option id) / 7.71.0 (this bit).
-const CURLOPT_SSL_OPTIONS: c_int = 216;
-const CURLSSLOPT_NATIVE_CA: c_long = 1 << 4;
 /// `CURLOPT_ALTSVC_CTRL` (VALUES + 286) and `CURLOPT_ALTSVC` (OBJECTPOINT + 287) — opportunistic
 /// HTTP/3: a strict request is still plain HTTP/2 over TLS the FIRST time it reaches a host (QUIC
 /// does not negotiate over the same TCP/TLS handshake HTTP/1.1 and 2 share, so there is no ALPN
@@ -279,118 +267,6 @@ pub fn curl_version_num() -> u32 {
     CURL_VERSION_NUM.load(Ordering::Acquire)
 }
 
-/// The TLS library behind the bound libcurl, read once by [`global_init`] from
-/// `curl_version_info().ssl_version`. It decides how `CURLINFO_SSL_VERIFYRESULT` is numbered
-/// (`keypin`'s `VerifyScheme`): OpenSSL reports one `X509_V_ERR_*` code, GnuTLS a bitmask; and
-/// whether a strict request sends `CURLSSLOPT_NATIVE_CA` ([`native_ca_needed`]). Which curl was
-/// bound (bundled or system) does not decide either: both follow the TLS library the bound curl
-/// itself reports.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TlsBackend {
-    /// Before [`global_init`], or a curl that reported no TLS library.
-    Unknown,
-    /// OpenSSL, or a fork that keeps its verify-result numbering (LibreSSL, BoringSSL, quictls).
-    OpenSsl,
-    GnuTls,
-    /// Anything else (Secure Transport, Schannel, mbedTLS, wolfSSL, rustls...).
-    Other,
-}
-
-impl TlsBackend {
-    /// Classify `ssl_version`: `OpenSSL/3.5.9`, `GnuTLS/3.8.13`, or for a MultiSSL build every
-    /// backend it has, space-separated, with each one NOT in use in parentheses
-    /// (`(SecureTransport) LibreSSL/3.3.6`; curl's `vtls.c`, `multissl_version`). The backend in
-    /// use is the one word without parentheses, and only its name before the `/` counts.
-    pub fn from_ssl_version(v: &str) -> TlsBackend {
-        let active = v.split_ascii_whitespace().find(|w| !w.starts_with('(')).unwrap_or("");
-        match active.split('/').next().unwrap_or("") {
-            "" => TlsBackend::Unknown,
-            "OpenSSL" | "LibreSSL" | "BoringSSL" | "quictls" | "AWS-LC" => TlsBackend::OpenSsl,
-            "GnuTLS" => TlsBackend::GnuTls,
-            _ => TlsBackend::Other,
-        }
-    }
-
-    fn to_u8(self) -> u8 {
-        match self {
-            TlsBackend::Unknown => 0,
-            TlsBackend::OpenSsl => 1,
-            TlsBackend::GnuTls => 2,
-            TlsBackend::Other => 3,
-        }
-    }
-
-    fn from_u8(v: u8) -> TlsBackend {
-        match v {
-            1 => TlsBackend::OpenSsl,
-            2 => TlsBackend::GnuTls,
-            3 => TlsBackend::Other,
-            _ => TlsBackend::Unknown,
-        }
-    }
-}
-
-/// [`TlsBackend`] as stored by [`global_init`]; `0` ([`TlsBackend::Unknown`]) until then.
-static TLS_BACKEND: AtomicU8 = AtomicU8::new(0);
-
-/// The bound libcurl's TLS library, or [`TlsBackend::Unknown`] before [`global_init`].
-pub fn tls_backend() -> TlsBackend {
-    TlsBackend::from_u8(TLS_BACKEND.load(Ordering::Acquire))
-}
-
-/// Does a strict (CA-verified) request through a curl over `backend` need `CURLSSLOPT_NATIVE_CA`
-/// to have any trust anchors at all? Only GnuTLS does ([`CURLSSLOPT_NATIVE_CA`]'s doc). `net.rs`
-/// and `curlio.rs` both ask this with [`tls_backend`], so the two planes cannot disagree.
-pub fn native_ca_needed(backend: TlsBackend) -> bool {
-    backend == TlsBackend::GnuTls
-}
-
-#[cfg(test)]
-mod tls_backend_tests {
-    use super::{native_ca_needed, TlsBackend as B};
-
-    /// What `curl_version_info()->ssl_version` reads on the curls this app meets, and on a
-    /// MultiSSL build, where only the backend outside parentheses is the one in use.
-    #[test]
-    fn the_backend_is_the_library_curl_reports_in_use() {
-        for (v, want) in [
-            ("OpenSSL/3.5.9", B::OpenSsl),
-            ("OpenSSL/1.0.2p", B::OpenSsl),
-            ("OpenSSL/3.0.13", B::OpenSsl),
-            ("LibreSSL/3.3.6", B::OpenSsl),
-            ("BoringSSL", B::OpenSsl),
-            ("GnuTLS/3.8.13", B::GnuTls),
-            ("SecureTransport", B::Other),
-            ("mbedTLS/3.6.2", B::Other),
-            ("(SecureTransport) LibreSSL/3.3.6", B::OpenSsl),
-            ("SecureTransport (LibreSSL/3.3.6)", B::Other),
-            ("(OpenSSL/3.5.9) GnuTLS/3.8.13", B::GnuTls),
-            ("GnuTLS/3.8.13 (OpenSSL/3.5.9)", B::GnuTls),
-            ("(OpenSSL/3.0.13)", B::Unknown),
-            ("", B::Unknown),
-        ] {
-            assert_eq!(B::from_ssl_version(v), want, "{v:?}");
-        }
-    }
-
-    #[test]
-    fn the_stored_byte_round_trips() {
-        for b in [B::Unknown, B::OpenSsl, B::GnuTls, B::Other] {
-            assert_eq!(B::from_u8(b.to_u8()), b);
-        }
-        assert_eq!(B::from_u8(200), B::Unknown);
-    }
-
-    /// `CURLSSLOPT_NATIVE_CA` goes only to a GnuTLS curl: under OpenSSL it loads nothing on Linux
-    /// and turns off curl's CA-store cache.
-    #[test]
-    fn only_gnutls_is_sent_native_ca() {
-        assert!(native_ca_needed(B::GnuTls));
-        for b in [B::OpenSsl, B::Other, B::Unknown] {
-            assert!(!native_ca_needed(b), "{b:?}");
-        }
-    }
-}
 /// Only used on the abnormal old-OpenSSL/no-callback fallback. Normal devices never take it.
 static CURL_FALLBACK_SERIAL: Mutex<()> = Mutex::new(());
 
@@ -425,9 +301,8 @@ pub fn bundled_curl() -> Option<plx_base::dynlib::Handle> {
     }
 }
 
-/// Is the bound libcurl the bundled `libcurl-plx.so.4` rather than the television's own? (Which TLS
-/// library either one uses is [`tls_backend`]'s question, not this one's.) Always false without
-/// the `http3-curlstack` feature, which makes every `if bundled()` branch below dead code the
+/// Is the bound libcurl the bundled `libcurl-plx.so.4` rather than the television's own? Always
+/// false without the `http3-curlstack` feature, which makes every `if bundled()` branch below dead code the
 /// compiler drops. Only meaningful after [`global_init`].
 pub fn bundled() -> bool {
     bundled_curl().is_some()
@@ -538,6 +413,38 @@ fn needs_legacy_thread_id(version: &str) -> bool {
         .any(|part| part.starts_with("OpenSSL/0."))
 }
 
+/// Which mapped libcurl's OpenSSL takes the legacy lock callbacks, by SONAME: the bound one when
+/// its own version string names OpenSSL 0.x/1.0.x, else, when the bundle is bound, the
+/// television's own libcurl still resident in the process (`resident`, its SONAME and version
+/// string) when THAT names one. `None`: no OpenSSL in the process needs them.
+fn legacy_lock_target<'a>(bound: (&'a str, &str), resident: Option<(&'a str, &str)>) -> Option<&'a str> {
+    if needs_legacy_crypto_locks(bound.1) {
+        return Some(bound.0);
+    }
+    resident.and_then(|(soname, version)| needs_legacy_crypto_locks(version).then_some(soname))
+}
+
+/// The television's own libcurl when the BUNDLE is bound and the system one is mapped anyway:
+/// `libplayerAPIs.so.1`, which every build links, has a `NEEDED` on it, so it and the firmware's
+/// OpenSSL are in the process before `main`. Its handle comes from `RTLD_NOLOAD` (nothing new is
+/// loaded) with its SONAME and `curl_version()` string, which is all [`legacy_lock_target`] needs.
+/// `None` when the system curl is the bound one (the bound path already covers it) or not mapped.
+fn resident_system_curl() -> Option<(plx_base::dynlib::Handle, &'static str, String)> {
+    if !bundled() {
+        return None;
+    }
+    let (handle, soname) = plx_base::dynlib::Handle::open_loaded(curl::CANDIDATES)?;
+    let version = handle.sym("curl_version").filter(|p| !p.is_null())?;
+    // SAFETY: `curl_version` is `char *curl_version(void)` in every libcurl.
+    let version: unsafe extern "C" fn() -> *const c_char = unsafe { std::mem::transmute(version) };
+    let v = unsafe { version() };
+    if v.is_null() {
+        return None;
+    }
+    let v = unsafe { std::ffi::CStr::from_ptr(v) }.to_string_lossy().into_owned();
+    Some((handle, soname, v))
+}
+
 fn threaded_tls_policy(version: &str, locks: LegacyCrypto) -> bool {
     if needs_legacy_thread_id(version) {
         // 0.9.x defaults to getpid() on Unix, which is not a thread identity. We do not take
@@ -552,8 +459,10 @@ fn threaded_tls_policy(version: &str, locks: LegacyCrypto) -> bool {
 
 /// Install OpenSSL 1.0's process locks, or preserve a callback somebody loaded before us.
 ///
-/// Reopening the selected libcurl SONAME returns its existing loader object, and symbol lookup on
-/// that handle follows its dependency closure to the libcrypto it actually uses. This deliberately
+/// `scope` is a handle to the libcurl whose OpenSSL needs them ([`legacy_lock_target`]): the bound
+/// one reopened by SONAME, or, with the bundle bound, the television's own one already resident
+/// (`RTLD_NOLOAD`). Either returns the existing loader object, and symbol lookup on that handle
+/// follows its dependency closure to the libcrypto it actually uses. This deliberately
 /// costs one permanent reference instead of guessing a moving `libcrypto.so.*` SONAME or asking a
 /// process-global scope that might contain two crypto majors. OpenSSL 1.1+ removes these entry
 /// points; absence is therefore only fatal when curl's version string names a legacy backend.
@@ -561,9 +470,9 @@ fn threaded_tls_policy(version: &str, locks: LegacyCrypto) -> bool {
 /// No ID callback is installed: on the target's glibc, OpenSSL 1.0's documented default uses the
 /// address of thread-local `errno`, which is already a unique thread identity. Overwriting an ID
 /// callback owned by another component would be strictly less safe.
-fn setup_legacy_crypto_locks(soname: &'static str) -> LegacyCrypto {
+fn setup_legacy_crypto_locks(scope: Option<plx_base::dynlib::Handle>) -> LegacyCrypto {
     *LEGACY_CRYPTO_RESULT.get_or_init(|| {
-        let Some((scope, _)) = plx_base::dynlib::Handle::open(&[soname]) else {
+        let Some(scope) = scope else {
             return LegacyCrypto::Missing;
         };
         let (Some(num), Some(get), Some(set)) = (
@@ -773,10 +682,22 @@ fn global_init_once() -> bool {
                     .into_owned()
             };
             let legacy = needs_legacy_crypto_locks(&v);
-            let locks = if legacy {
-                setup_legacy_crypto_locks(soname)
-            } else {
-                LegacyCrypto::NotNeeded
+            // With the bundle bound, the television's own libcurl is still mapped, and with it the
+            // firmware's OpenSSL, which a default build gives its 1.0.x lock callbacks: so does this.
+            let resident = resident_system_curl();
+            let target = legacy_lock_target((soname, &v), resident.as_ref().map(|r| (r.1, r.2.as_str())));
+            let locks = match (target, &resident) {
+                (None, _) => LegacyCrypto::NotNeeded,
+                (Some(t), Some((handle, resident_soname, _))) if t == *resident_soname => {
+                    setup_legacy_crypto_locks(Some(*handle))
+                }
+                (Some(_), _) => setup_legacy_crypto_locks(
+                    plx_base::dynlib::Handle::open(&[soname]).map(|(handle, _)| handle),
+                ),
+            };
+            let on_resident = match (target, &resident) {
+                (Some(t), Some((_, r, _))) if t == *r => format!(" (on the resident {r})"),
+                _ => String::new(),
             };
             let threaded = threaded_tls_policy(&v, locks);
             CURL_THREADED_TLS_OK.store(threaded, Ordering::Release);
@@ -787,15 +708,6 @@ fn global_init_once() -> bool {
             let vi = unsafe { curl_version_info(CURLVERSION_FIRST) };
             if !vi.is_null() {
                 CURL_VERSION_NUM.store(unsafe { (*vi).version_num } as u32, Ordering::Release);
-                let ssl = unsafe { (*vi).ssl_version };
-                let backend = if ssl.is_null() {
-                    TlsBackend::Unknown
-                } else {
-                    TlsBackend::from_ssl_version(
-                        &unsafe { std::ffi::CStr::from_ptr(ssl) }.to_string_lossy(),
-                    )
-                };
-                TLS_BACKEND.store(backend.to_u8(), Ordering::Release);
             }
             let async_dns = if vi.is_null() {
                 "unknown"
@@ -806,7 +718,7 @@ fn global_init_once() -> bool {
             };
             plx_base::eventlog::log(&format!(
                 "net: bound libcurl -> {soname} ({v}; AsynchDNS={async_dns}); \
-                 threaded-tls={threaded} legacy-locks={locks:?}"
+                 threaded-tls={threaded} legacy-locks={locks:?}{on_resident}"
             ));
             if legacy && !threaded {
                 plx_base::eventlog::log(
@@ -2571,12 +2483,6 @@ fn request_tls_sink(
                 // module got wrong — it called for a new request mode to obtain what `request` had
                 // been doing since it was written.
                 TlsCfg::Ca => {
-                    if native_ca_needed(tls_backend()) {
-                        require_setopt!(
-                            curl_easy_setopt_long(easy.0, CURLOPT_SSL_OPTIONS, CURLSSLOPT_NATIVE_CA),
-                            "CURLOPT_SSL_OPTIONS"
-                        );
-                    }
                     if bundled() {
                         require_setopt!(
                             curl_easy_setopt_long(easy.0, CURLOPT_ALTSVC_CTRL, CURLALTSVC_H3),
@@ -3414,52 +3320,6 @@ pub mod keypin {
     const X509_NO_ISSUER: c_long = 2;
     const X509_NO_LOCAL_ISSUER: c_long = 20;
     const X509_NO_LEAF_SIGNATURE_KEY: c_long = 21;
-    /// GnuTLS's own `gnutls_certificate_status_t` bits (`gnutls/gnutls.h`): a BITMASK of
-    /// independent reasons, unlike OpenSSL's single-value `X509_V_ERR_*` enum above. Read only when
-    /// the bound curl reports GnuTLS ([`super::tls_backend`]); see [`VerifyScheme`]. GnuTLS has no
-    /// bit for "self-signed leaf" distinct from "issuer not found" — both set only
-    /// `GNUTLS_CERT_SIGNER_NOT_FOUND` — so under GnuTLS that one bit stands in for the whole
-    /// OpenSSL 2/18/19/20/21 group; a self-signed server still fails a roots-mode retry on its own,
-    /// since the bundle holds public CAs, not the server's own key.
-    const GNUTLS_CERT_SIGNER_NOT_FOUND: c_long = 1 << 6;
-    const GNUTLS_CERT_NOT_ACTIVATED: c_long = 1 << 9;
-    const GNUTLS_CERT_EXPIRED: c_long = 1 << 10;
-    const GNUTLS_DATE_BITS: c_long = GNUTLS_CERT_NOT_ACTIVATED | GNUTLS_CERT_EXPIRED;
-
-    /// GnuTLS's "this device's trust cannot vouch for the chain": `SIGNER_NOT_FOUND`, with nothing
-    /// at bit 8 or above, where every bit that names a date, an algorithm, a signature, the name or
-    /// the purpose sits. The one GnuTLS reading of both [`is_untrusted_issuer`] and
-    /// [`untrusted_chain_verify`] (GnuTLS cannot tell their two OpenSSL groups apart), which keeps
-    /// the second a superset of the first and both disjoint from [`is_date_failure`].
-    fn gnutls_untrusted(v: c_long) -> bool {
-        v & GNUTLS_CERT_SIGNER_NOT_FOUND != 0 && (0..=0xff).contains(&v)
-    }
-
-    /// Which numbering `CURLINFO_SSL_VERIFYRESULT` is in: it reports whatever the BOUND libcurl's
-    /// TLS backend uses. The television's system curl is OpenSSL (1.0.x to 3.x by firmware), and so
-    /// is the opt-in bundled curl (3.5); a curl built over GnuTLS reports a bitmask instead.
-    /// Reading a GnuTLS bitmask as an `X509_V_ERR_*` number silently misreads every real
-    /// verification failure (64, "signer not found", is no OpenSSL code this module knows), so each
-    /// predicate below decodes by the active scheme.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    enum VerifyScheme {
-        OpenSsl,
-        GnuTls,
-    }
-
-    /// The scheme of the libcurl [`super::global_init`] bound, from the TLS library it reports
-    /// ([`super::tls_backend`]). GnuTLS is the one bitmask; every other answer, including
-    /// "not bound yet", reads OpenSSL's numbering, which is what this module always assumed.
-    fn active_scheme() -> VerifyScheme {
-        scheme_for(super::tls_backend())
-    }
-
-    fn scheme_for(backend: super::TlsBackend) -> VerifyScheme {
-        match backend {
-            super::TlsBackend::GnuTls => VerifyScheme::GnuTls,
-            _ => VerifyScheme::OpenSsl,
-        }
-    }
     /// The shipped bundle's file name, beside the binary (`pkg/le-roots.pem`). NOT `roots.pem`:
     /// that name belongs to [`super::post_ca`]'s telemetry bundle, which is a different trust
     /// decision for a different set of hosts.
@@ -3469,41 +3329,17 @@ pub mod keypin {
 
     /// libcurl 60 with a date verify result: the one failure a wrong clock explains.
     fn is_date_failure(rc: c_int, verify: Option<c_long>) -> bool {
-        is_date_failure_in(active_scheme(), rc, verify)
-    }
-
-    fn is_date_failure_in(scheme: VerifyScheme, rc: c_int, verify: Option<c_long>) -> bool {
-        if rc != TLS_VERIFY_FAILED {
-            return false;
-        }
-        let Some(v) = verify else { return false };
-        match scheme {
-            VerifyScheme::OpenSsl => matches!(v, X509_NOT_YET_VALID | X509_EXPIRED),
-            VerifyScheme::GnuTls => v & GNUTLS_DATE_BITS != 0,
-        }
+        rc == TLS_VERIFY_FAILED && matches!(verify, Some(X509_NOT_YET_VALID | X509_EXPIRED))
     }
 
     /// libcurl 60 with an issuer-not-found verify result: the one failure an out-of-date CA store
-    /// explains. **Disjoint from [`is_date_failure`] by construction**: under OpenSSL the verify
-    /// results 9/10 and 2/20/21 share nothing; under GnuTLS this is `gnutls_untrusted`, which
-    /// admits no date bit, and that is what lets key mode and roots mode coexist
-    /// without a precedence rule — a failure is one or the other, and a failure that is neither (a
-    /// name mismatch, a self-signed leaf under OpenSSL, a refused connection) gets neither.
+    /// explains. **Disjoint from [`is_date_failure`] by construction** (the verify results 9/10 and
+    /// 2/20/21 share nothing), which is what lets key mode and roots mode coexist without a
+    /// precedence rule: a failure is one or the other, and a failure that is neither (a name
+    /// mismatch, a self-signed leaf, a refused connection) gets neither.
     fn is_untrusted_issuer(rc: c_int, verify: Option<c_long>) -> bool {
-        is_untrusted_issuer_in(active_scheme(), rc, verify)
-    }
-
-    fn is_untrusted_issuer_in(scheme: VerifyScheme, rc: c_int, verify: Option<c_long>) -> bool {
-        if rc != TLS_VERIFY_FAILED {
-            return false;
-        }
-        let Some(v) = verify else { return false };
-        match scheme {
-            VerifyScheme::OpenSsl => {
-                matches!(v, X509_NO_ISSUER | X509_NO_LOCAL_ISSUER | X509_NO_LEAF_SIGNATURE_KEY)
-            }
-            VerifyScheme::GnuTls => gnutls_untrusted(v),
-        }
+        rc == TLS_VERIFY_FAILED
+            && matches!(verify, Some(X509_NO_ISSUER | X509_NO_LOCAL_ISSUER | X509_NO_LEAF_SIGNATURE_KEY))
     }
 
     /// OpenSSL `X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT` (18) and `…_SELF_SIGNED_CERT_IN_CHAIN` (19):
@@ -3514,164 +3350,26 @@ pub mod keypin {
     const X509_SELF_SIGNED_LEAF: c_long = 18;
     const X509_SELF_SIGNED_IN_CHAIN: c_long = 19;
 
-    /// **The closed answer to "did the television's trust store fail this server?"** — libcurl 60
-    /// with, under OpenSSL, a verify result of 2, 18, 19, 20 or 21 (a missing issuer, or a chain
-    /// that ends at a root nobody here holds), or under GnuTLS a verify result with
-    /// `SIGNER_NOT_FOUND` set (GnuTLS has no separate bit for a self-signed leaf; that bit is the
-    /// whole group) — as that number, and `None` for everything else. Never a date bit: that is the
-    /// clock, which key mode, [`Blocked::NoKey`] and `app::clock_notice` already own. Never a
-    /// different `rc` (a refused connection, a timeout, a handshake the firmware cannot speak, 51's
-    /// name check), and never a `60` whose verify result was not reported or names a signature, a
-    /// name or a purpose. The set is a superset of [`is_untrusted_issuer`]'s and disjoint from
-    /// [`is_date_failure`]'s by construction.
+    /// **The closed answer to "did the television's trust store fail this server?"** — libcurl 60 with
+    /// an OpenSSL verify result of 2, 18, 19, 20 or 21 (a missing issuer, or a chain that ends at a
+    /// root nobody here holds), as that number, and `None` for everything else. Never 9 or 10: those
+    /// are the date, which a wrong television clock explains and which key mode, [`Blocked::NoKey`] and
+    /// `app::clock_notice` already own. Never a different `rc` (a refused connection, a timeout, a
+    /// handshake the firmware cannot speak, 51's name check), and never a `60` whose verify result
+    /// was not reported or names a signature, a name or a purpose. The set is a superset of
+    /// [`is_untrusted_issuer`]'s and disjoint from [`is_date_failure`]'s by construction.
     ///
     /// What the answer is evidence of is the server's certificate and this device's trust, not the
     /// network: it is what a failed identity probe is graded by (`plex::probe::Cause`), so a failure
     /// that is only this no longer reads as "unreachable" or, worse, "no access".
     pub fn untrusted_chain_verify(rc: c_int, verify: Option<c_long>) -> Option<u8> {
-        untrusted_chain_verify_in(active_scheme(), rc, verify)
-    }
-
-    fn untrusted_chain_verify_in(scheme: VerifyScheme, rc: c_int, verify: Option<c_long>) -> Option<u8> {
         if rc != TLS_VERIFY_FAILED {
             return None;
         }
-        let v = verify?;
-        match scheme {
-            VerifyScheme::OpenSsl => match v {
-                v @ (X509_NO_ISSUER | X509_SELF_SIGNED_LEAF | X509_SELF_SIGNED_IN_CHAIN
-                    | X509_NO_LOCAL_ISSUER | X509_NO_LEAF_SIGNATURE_KEY) => u8::try_from(v).ok(),
-                _ => None,
-            },
-            // The whole bitmask is the evidence, so it is reported as is; `gnutls_untrusted`
-            // admits only masks that fit a `u8`.
-            VerifyScheme::GnuTls => gnutls_untrusted(v).then(|| u8::try_from(v).ok()).flatten(),
-        }
-    }
-
-    #[cfg(test)]
-    mod verify_scheme_tests {
-        use super::*;
-
-        const SCHEMES: [VerifyScheme; 2] = [VerifyScheme::OpenSsl, VerifyScheme::GnuTls];
-        const GNUTLS_CERT_INVALID: c_long = 1 << 1;
-        const GNUTLS_CERT_SIGNATURE_FAILURE: c_long = 1 << 11;
-        const GNUTLS_CERT_MISMATCH: c_long = 1 << 17;
-
-        /// The scheme follows the TLS library curl reports, not which curl was bound: GnuTLS is the
-        /// one bitmask, and every other answer, "not bound yet" included, is OpenSSL's numbering.
-        #[test]
-        fn the_scheme_follows_the_reported_tls_library() {
-            use super::super::TlsBackend as B;
-            assert_eq!(scheme_for(B::GnuTls), VerifyScheme::GnuTls);
-            for b in [B::OpenSsl, B::Unknown, B::Other] {
-                assert_eq!(scheme_for(b), VerifyScheme::OpenSsl, "{b:?}");
-            }
-        }
-
-        /// The same `CURLINFO_SSL_VERIFYRESULT` numbers read through each backend's scheme, from the
-        /// `ssl_version` string down to the three predicates: the bundled OpenSSL curl and the
-        /// television's OpenSSL 1.0.x curl decode `X509_V_ERR_*`, a GnuTLS curl decodes bits, and
-        /// neither reading leaks into the other.
-        #[test]
-        fn each_backend_decodes_its_own_verify_results() {
-            use super::super::TlsBackend as B;
-            let untrusted_bits = GNUTLS_CERT_SIGNER_NOT_FOUND | GNUTLS_CERT_INVALID; // 66
-            let expired_bits = GNUTLS_CERT_EXPIRED | GNUTLS_CERT_INVALID;
-            for ssl_version in ["OpenSSL/3.5.9", "OpenSSL/1.0.2p"] {
-                let s = scheme_for(B::from_ssl_version(ssl_version));
-                assert!(is_untrusted_issuer_in(s, TLS_VERIFY_FAILED, Some(20)), "{ssl_version}");
-                assert_eq!(untrusted_chain_verify_in(s, TLS_VERIFY_FAILED, Some(18)), Some(18));
-                assert!(is_date_failure_in(s, TLS_VERIFY_FAILED, Some(10)), "{ssl_version}");
-                assert!(!is_untrusted_issuer_in(s, TLS_VERIFY_FAILED, Some(untrusted_bits)));
-                assert!(!is_date_failure_in(s, TLS_VERIFY_FAILED, Some(expired_bits)));
-            }
-            let s = scheme_for(B::from_ssl_version("GnuTLS/3.8.13"));
-            assert!(is_untrusted_issuer_in(s, TLS_VERIFY_FAILED, Some(untrusted_bits)));
-            assert_eq!(untrusted_chain_verify_in(s, TLS_VERIFY_FAILED, Some(untrusted_bits)), Some(66));
-            assert!(is_date_failure_in(s, TLS_VERIFY_FAILED, Some(expired_bits)));
-            assert!(!is_untrusted_issuer_in(s, TLS_VERIFY_FAILED, Some(20)));
-            assert!(!is_date_failure_in(s, TLS_VERIFY_FAILED, Some(10)));
-            assert_eq!(untrusted_chain_verify_in(s, TLS_VERIFY_FAILED, Some(18)), None);
-        }
-
-        #[test]
-        fn openssl_numbers_decode_as_before() {
-            let s = VerifyScheme::OpenSsl;
-            for v in [9, 10] {
-                assert!(is_date_failure_in(s, TLS_VERIFY_FAILED, Some(v)));
-                assert!(!is_untrusted_issuer_in(s, TLS_VERIFY_FAILED, Some(v)));
-                assert_eq!(untrusted_chain_verify_in(s, TLS_VERIFY_FAILED, Some(v)), None);
-            }
-            for v in [2, 20, 21] {
-                assert!(!is_date_failure_in(s, TLS_VERIFY_FAILED, Some(v)));
-                assert!(is_untrusted_issuer_in(s, TLS_VERIFY_FAILED, Some(v)));
-                assert_eq!(untrusted_chain_verify_in(s, TLS_VERIFY_FAILED, Some(v)), Some(v as u8));
-            }
-            for v in [18, 19] {
-                assert!(!is_untrusted_issuer_in(s, TLS_VERIFY_FAILED, Some(v)));
-                assert_eq!(untrusted_chain_verify_in(s, TLS_VERIFY_FAILED, Some(v)), Some(v as u8));
-            }
-            // GnuTLS's "signer not found | invalid" is no OpenSSL code this module knows.
-            assert!(!is_untrusted_issuer_in(s, TLS_VERIFY_FAILED, Some(66)));
-        }
-
-        #[test]
-        fn gnutls_bitmasks_decode_by_bit() {
-            let s = VerifyScheme::GnuTls;
-            let untrusted = GNUTLS_CERT_SIGNER_NOT_FOUND | GNUTLS_CERT_INVALID;
-            assert!(is_untrusted_issuer_in(s, TLS_VERIFY_FAILED, Some(untrusted)));
-            assert_eq!(untrusted_chain_verify_in(s, TLS_VERIFY_FAILED, Some(untrusted)), Some(66));
-            assert!(!is_date_failure_in(s, TLS_VERIFY_FAILED, Some(untrusted)));
-            for date in [GNUTLS_CERT_EXPIRED, GNUTLS_CERT_NOT_ACTIVATED] {
-                let v = date | GNUTLS_CERT_INVALID;
-                assert!(is_date_failure_in(s, TLS_VERIFY_FAILED, Some(v)));
-                assert!(!is_untrusted_issuer_in(s, TLS_VERIFY_FAILED, Some(v)));
-                // A date bit wins over a missing signer: the clock is key mode's to answer.
-                let both = v | GNUTLS_CERT_SIGNER_NOT_FOUND;
-                assert!(is_date_failure_in(s, TLS_VERIFY_FAILED, Some(both)));
-                assert!(!is_untrusted_issuer_in(s, TLS_VERIFY_FAILED, Some(both)));
-                assert_eq!(untrusted_chain_verify_in(s, TLS_VERIFY_FAILED, Some(both)), None);
-            }
-            // A signature or name failure alongside the missing signer is not a trust-store gap.
-            for other in [GNUTLS_CERT_SIGNATURE_FAILURE, GNUTLS_CERT_MISMATCH] {
-                let v = untrusted | other;
-                assert!(!is_untrusted_issuer_in(s, TLS_VERIFY_FAILED, Some(v)));
-                assert_eq!(untrusted_chain_verify_in(s, TLS_VERIFY_FAILED, Some(v)), None);
-            }
-            // OpenSSL's issuer codes mean nothing as GnuTLS bits (20 = bits 2 and 4).
-            assert!(!is_untrusted_issuer_in(s, TLS_VERIFY_FAILED, Some(20)));
-        }
-
-        #[test]
-        fn every_scheme_needs_rc_60_and_a_reported_result() {
-            for s in SCHEMES {
-                for v in [Some(9), Some(20), Some(66), Some(GNUTLS_CERT_EXPIRED)] {
-                    assert!(!is_date_failure_in(s, PIN_MISMATCH, v));
-                    assert!(!is_untrusted_issuer_in(s, PIN_MISMATCH, v));
-                    assert_eq!(untrusted_chain_verify_in(s, PIN_MISMATCH, v), None);
-                }
-                assert!(!is_date_failure_in(s, TLS_VERIFY_FAILED, None));
-                assert!(!is_untrusted_issuer_in(s, TLS_VERIFY_FAILED, None));
-                assert_eq!(untrusted_chain_verify_in(s, TLS_VERIFY_FAILED, None), None);
-            }
-        }
-
-        /// The two invariants the predicates' docs state, over every small verify result in both
-        /// numberings: issuer-not-found and the date never overlap, and the chain answer covers
-        /// every issuer-not-found.
-        #[test]
-        fn date_and_issuer_are_disjoint_and_chain_covers_issuer() {
-            for s in SCHEMES {
-                for v in 0..(1 << 12) {
-                    let date = is_date_failure_in(s, TLS_VERIFY_FAILED, Some(v));
-                    let issuer = is_untrusted_issuer_in(s, TLS_VERIFY_FAILED, Some(v));
-                    let chain = untrusted_chain_verify_in(s, TLS_VERIFY_FAILED, Some(v));
-                    assert!(!(date && issuer), "{s:?} {v}: date and issuer overlap");
-                    assert!(!(date && chain.is_some()), "{s:?} {v}: date and chain overlap");
-                    assert!(!issuer || chain.is_some(), "{s:?} {v}: issuer without chain");
-                }
-            }
+        match verify? {
+            v @ (X509_NO_ISSUER | X509_SELF_SIGNED_LEAF | X509_SELF_SIGNED_IN_CHAIN
+                | X509_NO_LOCAL_ISSUER | X509_NO_LEAF_SIGNATURE_KEY) => u8::try_from(v).ok(),
+            _ => None,
         }
     }
 
@@ -5420,6 +5118,23 @@ mod legacy_tests {
         assert!(!needs_legacy_crypto_locks("libcurl/8.7 OpenSSL/1.1.1w"));
         assert!(!needs_legacy_crypto_locks("libcurl/8.7 OpenSSL/3.2.1"));
         assert!(!needs_legacy_crypto_locks("libcurl/8.7 SecureTransport"));
+    }
+
+    /// A `CURLSTACK=1` build binds the bundle (OpenSSL 3.5), but the television's own libcurl stays
+    /// mapped for `libplayerAPIs.so.1`, and on webOS 5 and older its OpenSSL is 1.0.x: the locks a
+    /// default build installs there must be installed with the bundle bound too.
+    #[test]
+    fn legacy_locks_go_on_the_televisions_openssl_even_with_the_bundle_bound() {
+        let bundle = ("libcurl-plx.so.4", "libcurl/8.23.0 OpenSSL/3.5.9 zlib/1.2.11 nghttp2/1.71.0");
+        let webos5 = ("libcurl.so.4", "libcurl/7.53.1 OpenSSL/1.0.2p zlib/1.2.11 c-ares/1.12.0");
+        let webos10 = ("libcurl.so.4", "libcurl/7.82.0 OpenSSL/3.0.13 zlib/1.2.11 c-ares/1.19.0");
+        // The default build: the television's libcurl is the bound one.
+        assert_eq!(legacy_lock_target(webos5, None), Some("libcurl.so.4"));
+        assert_eq!(legacy_lock_target(webos10, None), None);
+        // The bundle bound beside a resident firmware libcurl.
+        assert_eq!(legacy_lock_target(bundle, Some(webos5)), Some("libcurl.so.4"));
+        assert_eq!(legacy_lock_target(bundle, Some(webos10)), None);
+        assert_eq!(legacy_lock_target(bundle, None), None);
     }
 
     #[test]
