@@ -102,6 +102,51 @@ pub struct OriginalDvFacts {
     pub el_present: bool,
 }
 
+/// What the Dolby Vision landing guard (`plx_play_feed::dv_start`, #1166) does for one open, decided
+/// once from the route.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DvLandingMode {
+    /// Nothing: no node is sent, or the play is a trailer preview.
+    #[default]
+    Inert,
+    /// The node is sent and no rung exists for the route (a Profile 5 direct play, or a remux that
+    /// copies a declared video): the guard says so in the log and changes nothing.
+    ReportOnly,
+    /// Withdraw the declaration at a landing the firmware's splitter would skip, or after a silent one.
+    Act,
+}
+
+/// The route's half of the Dolby Vision landing guard for one open: plain data, so the Feed builds
+/// its guard from it at the Engine's construction without naming the route.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DvLandingPlan {
+    pub mode: DvLandingMode,
+    /// The attempt's firmware row says the splitter lets only an HEVC IDR be the first picture after
+    /// a flush (`Caps::dv_first_picture`).
+    pub idr_first: bool,
+}
+
+impl DvLandingPlan {
+    /// No guard: the plan of an open whose Load sends no `DolbyHdrInfo`.
+    pub const INERT: Self = Self { mode: DvLandingMode::Inert, idr_first: false };
+}
+
+/// A withdrawal [`FeedLoad::dv_landing_due`] hands the player: take the declaration out of the route,
+/// then reload once without the node. The reload's target is the player's to choose (the newest tap
+/// else the seek's own, else `armed_target`, else `kf_pts`), so the facts it chooses by are here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DvWithdrawal {
+    /// The reason the route logs with the withdrawal itself.
+    pub why: String,
+    /// The landing keyframe's content pts (ns).
+    pub kf_pts: i64,
+    /// The seek target the guard was armed with: an Engine started with a seek armed, or the in-place
+    /// seek's target (`None` for a plain start).
+    pub armed_target: Option<i64>,
+    /// The landing was an in-place seek of a live Engine.
+    pub in_place: bool,
+}
+
 // ---------------------------------------------------------------------------------------------
 // The native open: what the route freezes for one Load, handed to the feed in one request.
 // ---------------------------------------------------------------------------------------------
@@ -195,6 +240,9 @@ pub struct OpenRequest {
     pub requested_rate: i32,
     pub no_audio: bool,
     pub side_reader: SideReaderRequest,
+    /// The Dolby Vision landing guard this open's Engine starts with ([`DvLandingPlan::INERT`] for a
+    /// sample, which carries no node).
+    pub dv_landing: DvLandingPlan,
 }
 
 /// A native transport action the feed's driver queued for the player's transport door.
@@ -718,6 +766,10 @@ pub enum FeedCommand {
     /// A fresh play (not a reload of the one on screen) begins: this playback gets to try the
     /// platform's native `Seek` again, whatever an earlier playback learned about its refusal.
     BeginPlayback,
+    /// The route refused the withdrawal [`FeedLoad::dv_landing_due`] handed over (it no longer declares
+    /// a node it can take out): the Dolby Vision guard never acts again for this Engine and the held
+    /// landing feeds.
+    DvStandDown,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -760,6 +812,14 @@ pub trait FeedLoad {
     /// Load verdicts the live session still owns, in arrival order.
     fn take_load_outcomes(&mut self) -> Vec<AcceptedLoadOutcome>;
     fn native_audio_stall_fired(&mut self, now: u32) -> bool;
+    /// The Dolby Vision landing guard's verdict for this frame (#1166): the withdrawal the feed raised
+    /// at a landing it predicted a skip for, else the guard's watch on the pipeline's silence after a
+    /// fed landing. `None` for a play the guard does not act on; a report-only guard's lines are the
+    /// feed's own. A route flight owns the route's reload, so while `route_flight` a pending withdrawal
+    /// waits and the watch's clock does not run. The player calls it BEFORE
+    /// [`Self::native_audio_stall_fired`], which yields to a held landing, and answers a refused
+    /// withdrawal with [`FeedCommand::DvStandDown`].
+    fn dv_landing_due(&mut self, now: u32, route_flight: bool) -> Option<DvWithdrawal>;
     fn note_missing_era_callback(&mut self);
     /// Feed the dev firmware-refusal probe with route facts.
     fn inject_refuse601(&mut self, generation: u32, preview: bool, refused_for: &AtomicU32);
@@ -838,12 +898,15 @@ pub struct UnblockFacts {
 pub trait FeedStop {
     /// Begin a stop: stop the HLS clock, sample the outgoing attempt's last facts while it is still
     /// installed (`None` with no session) and take the Engine out. The sample is taken after the
-    /// clock stops, as the player published it before this verb existed.
-    fn stop_begin(&mut self) -> Option<FeedFacts>;
+    /// clock stops, as the player published it before this verb existed. `terminal` is the logical
+    /// playback's end under a kept session (the server stopped it, and the read-out stays): the
+    /// release is the off-frame kind of a real stop, though the stop is shaped like a reload.
+    fn stop_begin(&mut self, terminal: bool) -> Option<FeedFacts>;
     /// The side reader stops before the paired demux reader is joined.
     fn stop_side_reader(&mut self, for_reload: bool);
-    /// Wake both transports and queues, join the demux and Load workers (a Load past its budget
-    /// stays parked, unjoined) and close the socket once the demux reader no longer owns its fd.
+    /// Wake both transports and queues, join the demux and Load workers (a Load past its budget, or
+    /// one still in the native call when the stop is terminal, stays parked, unjoined) and close the
+    /// socket once the demux reader no longer owns its fd.
     fn stop_unblock(&mut self) -> UnblockFacts;
     /// The common final report has been handed to its off-frame worker.
     fn stop_report_dispatched(&mut self);
