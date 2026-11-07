@@ -599,6 +599,14 @@ pub struct Shared {
     /// "there is no sound": the pipeline was never asked for any.
     pub dg_load_v: AtomicU8,
     pub dg_load_a: AtomicU8,
+    /// The demuxer's conditional-probe answers, in `dg_load_v` / `dg_load_a`'s own code spaces
+    /// (0 = no disagreement): when the bytes it opened disagree with the Load's declared codec, it
+    /// refuses the stream AND records what the file really carries, so the pump's one-shot probe
+    /// retry can reload with the corrected declaration. Written ONLY on that failure path — a
+    /// healthy open never touches either field, so the happy path pays nothing — and cleared with
+    /// `demux_failed` in the session reset.
+    pub probe_actual_v: AtomicU8,
+    pub probe_actual_a: AtomicU8,
     /// Auto-quality facts written by the demux worker and read through `FeedRaw::abr`.
     /// Mode: 0 inactive, 1 progressive Original watchdog, 2 fixed-session HLS controller. The
     /// adaptive worker's own measurements and decisions are not mailboxes: it ships them to the
@@ -683,6 +691,8 @@ impl Shared {
             dg_fed_a_pts: AtomicI64::new(0),
             dg_load_v: AtomicU8::new(0),
             dg_load_a: AtomicU8::new(0),
+            probe_actual_v: AtomicU8::new(0),
+            probe_actual_a: AtomicU8::new(0),
             dg_abr_mode: AtomicU8::new(0),
             dg_abr_kbps: AtomicI64::new(0),
             dg_abr_declared_kbps: AtomicI64::new(-1),
@@ -1035,6 +1045,8 @@ impl Shared {
         self.dg_fed_a_pts.store(0, Ordering::Relaxed);
         self.dg_load_v.store(0, Ordering::Relaxed);
         self.dg_load_a.store(0, Ordering::Relaxed);
+        self.probe_actual_v.store(0, Ordering::Relaxed);
+        self.probe_actual_a.store(0, Ordering::Relaxed);
         self.dg_abr_mode.store(0, Ordering::Relaxed);
         self.dg_abr_kbps.store(0, Ordering::Relaxed);
         self.dg_abr_declared_kbps.store(-1, Ordering::Relaxed);

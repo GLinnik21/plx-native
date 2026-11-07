@@ -44,6 +44,8 @@ pub trait DemuxObserver: Send + Sync {
     fn audio_expected(&self) -> Option<bool>;
     fn duration_ns(&self) -> Option<i64>;
     fn declared_video_code(&self) -> Option<u8>;
+    /// The `dg_load_a` code the Load declared for this open (0 = `needAudio:false`).
+    fn declared_audio_code(&self) -> Option<u8>;
     fn paused(&self) -> Option<bool>;
     fn pause_clock(&self) -> Option<PauseClock>;
     fn hls_buffer_ms(&self) -> Option<Option<i64>>;
@@ -141,6 +143,11 @@ pub enum DemuxEffect {
     IoFailed,
     Failed,
     NoVideo,
+    /// The codec the file ACTUALLY carries, in the `dg_load_v` / `dg_load_a` code spaces, published
+    /// only when the demuxer refuses a Load whose bytes disagree with its declared codec. The
+    /// pump's one-shot probe retry consumes it to reload with the corrected declaration; a healthy
+    /// open publishes nothing.
+    ProbeActual { video: Option<u8>, audio: Option<u8> },
     HttpStatus(i32),
     TrackNames { audio: Vec<String>, subs: Vec<String> },
     SideAnchor(Option<Anchor>),

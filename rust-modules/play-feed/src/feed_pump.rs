@@ -1246,6 +1246,8 @@ struct FailureSample {
     flags: FailureFlags,
     cb_err_num: i32,
     http_status: i32,
+    probe_actual_video: u8,
+    probe_actual_audio: u8,
     native_audio_refusals: u32,
 }
 
@@ -1260,6 +1262,8 @@ fn failure_sample() -> FailureSample {
         flags,
         cb_err_num: FEED_SHARED.dg_cb_err_num.load(Relaxed),
         http_status: FEED_SHARED.dg_http_status.load(Relaxed),
+        probe_actual_video: FEED_SHARED.probe_actual_v.load(Relaxed),
+        probe_actual_audio: FEED_SHARED.probe_actual_a.load(Relaxed),
         native_audio_refusals: FEED_SHARED.native_audio_refusals.load(Acquire),
     }
 }
@@ -1293,6 +1297,8 @@ fn native_feed_raw(failure: FailureSample) -> FeedRaw {
         },
         cb_err_num: failure.cb_err_num,
         http_status: failure.http_status,
+        probe_actual_video: failure.probe_actual_video,
+        probe_actual_audio: failure.probe_actual_audio,
         diag: native_feed_diag(),
         vpres_gap_sum_ms: FEED_SHARED.dg_vpres_gap_sum.load(Relaxed),
         vpres_gap_count: FEED_SHARED.dg_vpres_gap_ct.load(Relaxed),

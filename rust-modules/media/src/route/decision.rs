@@ -523,6 +523,10 @@ pub struct PlaybackSession {
     /// `false` on every transcode and remux; see where it is set for why that is deliberate rather
     /// than an omission.
     stream_immersive: bool,
+    /// The demuxer's probe (a declared codec the file's own bytes disproved) has authorised at
+    /// most ONE reload with the corrected declaration: [`take_codec_probe_retry`] consumes it. A
+    /// second mismatch on the same playback is a different failure and gets the ordinary read-out.
+    codec_probe_retried: bool,
     /// HUD strings as fixed NUL-terminated C buffers, so title_cptr()/ctxline_cptr() hand
     /// draw_text (extern "C", *const c_char) a pointer that stays valid for the whole frame.
     ///
@@ -1737,6 +1741,7 @@ impl PlaybackSession {
         src_dovi: plx_data::metadata::Dovi::NONE,
         src_dv_decision: plx_data::metadata::DvDecision::NONE,
         stream_immersive: false,
+        codec_probe_retried: false,
         title: [0; 128],
         ctxline: [0; 96],
         up_next: None,
@@ -1845,6 +1850,7 @@ impl PlaybackSession {
             src_dovi,
             src_dv_decision,
             stream_immersive,
+            codec_probe_retried,
             title,
             ctxline,
             up_next,
@@ -1933,6 +1939,7 @@ impl PlaybackSession {
             src_dovi: *src_dovi,
             src_dv_decision: *src_dv_decision,
             stream_immersive: *stream_immersive,
+            codec_probe_retried: *codec_probe_retried,
             title: *title,
             ctxline: *ctxline,
             up_next: up_next.clone(),
@@ -7718,6 +7725,24 @@ mod pcm_format_tests {
 pub fn set_stream_acodec(ps: &mut PlaybackSession, codec: &str) {
     { let s = &mut *ps; s.stream_acodec = codec.to_owned() }
 }
+/// Override the video codec used to build the Load payload — set by the demuxer's probe retry to
+/// the codec the file's own bytes carry, before the one-shot corrective reload.
+pub fn set_stream_vcodec(ps: &mut PlaybackSession, codec: &str) {
+    { let s = &mut *ps; s.stream_vcodec = codec.to_owned() }
+}
+/// The demuxer's probe (a declared codec the file's own bytes disproved) authorises EXACTLY one
+/// reload with the corrected declaration. Consume it here: a second mismatch on the same playback
+/// is a different failure and gets the ordinary failure read-out, never a loop.
+pub fn take_codec_probe_retry(ps: &mut PlaybackSession) -> bool {
+    { let s = &mut *ps;
+        if s.codec_probe_retried {
+            false
+        } else {
+            s.codec_probe_retried = true;
+            true
+        }
+    }
+}
 /// Record the streamed item's video+audio codec pair in one write (the Load-payload source of
 /// truth) for route-policy tests that install a synthetic live HLS response.
 #[cfg(any(test, feature = "test-support"))]
@@ -11407,6 +11432,8 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
             src_dovi: plan.src_dovi,
             src_dv_decision: plan.src_dv_decision,
             stream_immersive: plan.immersive,
+            // A landing is a fresh playback: the one-shot probe-retry budget starts unspent.
+            codec_probe_retried: false,
             title,
             ctxline,
             up_next: plan.up_next.map(std::sync::Arc::new),

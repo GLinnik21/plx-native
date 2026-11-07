@@ -1311,10 +1311,51 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
             finish_preview_open_failure(ps, pa);
             return;
         }
-        let loading = ps.readout().raw().load.loading();
-        let run = recover_failed_open(ps, loading, super::recovery::LoadRefusal::SourceFailed, None, "");
-        if let OpenRecoveryRun::DecodeInApp { offset_ns } = run {
-            decode_in_app(ps, pa, offset_ns);
+        let raw = ps.readout().raw();
+        let loading = raw.load.loading();
+        // The conditional codec probe: the demuxer refused a stream whose BYTES disagree with the
+        // Load's declaration — a stale PMS track list (a file replaced under the server, never
+        // re-analyzed) or a transcode whose output the route described from the source's record —
+        // and recorded what the file really carries. Reload ONCE with the corrected declaration:
+        // a healthy open never sets the probe, so a healthy start pays nothing for this. The
+        // probe rides the same sample as the `demux_failed` flag that gates this branch — the
+        // demuxer publishes it before that flag — so a flag without its probe is impossible.
+        let probe_v = raw.probe_actual_video;
+        let probe_a = raw.probe_actual_audio;
+        if (probe_v != 0 || probe_a != 0) && crate::route::take_codec_probe_retry(ps) {
+            if probe_v != 0 {
+                let v = match probe_v {
+                    1 => "h264",
+                    2 => "hevc",
+                    3 => "av1",
+                    _ => "vp9",
+                };
+                crate::route::set_stream_vcodec(ps, v);
+            }
+            if probe_a != 0 {
+                let a = match probe_a {
+                    1 => "ac3",
+                    2 => "eac3",
+                    3 => "aac",
+                    _ => "dts",
+                };
+                crate::route::set_stream_acodec(ps, a);
+            }
+            super::log(&format!(
+                "probe retry: the demuxer refused a stale declaration (video probe={probe_v}, audio probe={probe_a}); one reload with the codec the file really carries"
+            ));
+            // `reload_at` tears the failed Engine down — Starting -> Prepared keeps the same
+            // transaction, so the retry mints a fresh attempt — reopens the same URL and
+            // re-issues the Load with the corrected payload. Its teardown also clears
+            // `demux_failed`, so this hook cannot re-fire for the attempt it is correcting;
+            // if the corrected Load is refused too, the one-shot guard hands the next
+            // mismatch to the ordinary failure read-out instead of a loop.
+            let _ = settle_reload(super::engine::reload_at(ps, pa, 0), "probe retry reload", ps);
+        } else {
+            let run = recover_failed_open(ps, loading, super::recovery::LoadRefusal::SourceFailed, None, "");
+            if let OpenRecoveryRun::DecodeInApp { offset_ns } = run {
+                decode_in_app(ps, pa, offset_ns);
+            }
         }
         return;
     }
