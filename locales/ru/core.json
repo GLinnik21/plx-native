@@ -16,6 +16,8 @@
   "core.preview_domain_line": "{label}: {values}",
   "core.preview_domain_failure_kind": "тип сбоя (включая сохранённые устаревшие коды)",
   "core.preview_domain_delivery": "способ передачи",
+  "core.preview_domain_backend": "механизм воспроизведения",
+  "core.preview_domain_terminal_stage": "этап окончательного сбоя",
   "core.preview_domain_refusal_codes": "коды решения сервера: общие и для транскодирования (только при отказе)",
   "core.preview_domain_attempted_delivery": "способ передачи при неудачной попытке",
   "core.preview_domain_source_video": "видеокодек источника (только при отказе)",

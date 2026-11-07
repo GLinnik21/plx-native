@@ -16,6 +16,8 @@
   "core.preview_domain_line": "{label}: {values}",
   "core.preview_domain_failure_kind": "rodzaj błędu (w tym zachowane kody historyczne)",
   "core.preview_domain_delivery": "sposób dostarczania",
+  "core.preview_domain_backend": "silnik odtwarzania",
+  "core.preview_domain_terminal_stage": "etap końcowego błędu",
   "core.preview_domain_refusal_codes": "kody decyzji serwera, ogólne i transkodowania (tylko raporty odmowy planu)",
   "core.preview_domain_attempted_delivery": "próbowany sposób dostarczania",
   "core.preview_domain_source_video": "źródłowy kodek obrazu (tylko raporty odmowy planu)",

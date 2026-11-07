@@ -13,7 +13,7 @@
 
 use super::lifecycle::{
     Flight, ForegroundClock, ForegroundEffect, ForegroundEvent, ForegroundInput, ForegroundLifecycle,
-    ForegroundLoadStart, ForegroundLoadStatus, PrepareAnswer,
+    ForegroundLoadStart, ForegroundLoadStatus, PrepareAnswer, Successor,
 };
 use plx_machine::machine::Handled;
 
@@ -41,7 +41,8 @@ pub trait ForegroundActuator {
         &mut self,
         ps: &mut crate::route::PlaybackSession,
     ) -> FlightLanding<ForegroundLoadStart<Self::Attempt>>;
-    fn before_load(&mut self, resume_ns: i64, clock: ForegroundClock);
+    fn before_load(&mut self, ps: &mut crate::route::PlaybackSession, resume_ns: i64,
+        clock: ForegroundClock);
     fn start_load(
         &mut self,
         ps: &mut crate::route::PlaybackSession,
@@ -54,7 +55,7 @@ pub trait ForegroundActuator {
         clock: ForegroundClock,
         started: bool,
     );
-    fn play_clock(&mut self) -> bool;
+    fn play_clock(&mut self, ps: &mut crate::route::PlaybackSession) -> bool;
 }
 
 /// What draining a pending flight's landing found.
@@ -107,8 +108,17 @@ fn run_foreground<A: ForegroundActuator>(
     let mut next = Some(first);
     let mut fed_back = false;
     while let Some(ev) = next.take() {
-        let handled = lifecycle.step(&ev, &mut fx);
-        if fed_back {
+        let stopped = !matches!(ev, ForegroundEvent::Input(ForegroundInput::Superseded(_)))
+            && super::accept_server_stop(ps);
+        let event = if stopped {
+            ForegroundEvent::Input(ForegroundInput::Superseded(Successor::Exit))
+        } else {
+            ev
+        };
+        let handled = lifecycle.step(&event, &mut fx);
+        if stopped {
+            run.handled = Handled::Yes;
+        } else if fed_back {
             debug_assert_eq!(handled, Handled::Yes, "an answer is addressed to the claim it settles");
         } else {
             run.handled = handled;
@@ -133,7 +143,7 @@ fn run_foreground<A: ForegroundActuator>(
                     resume_ns,
                     clock,
                 } => {
-                    actuator.before_load(resume_ns, clock);
+                    actuator.before_load(ps, resume_ns, clock);
                     next = Some(ForegroundEvent::LoadAnswered {
                         id,
                         start: actuator.start_load(ps),
@@ -142,7 +152,7 @@ fn run_foreground<A: ForegroundActuator>(
                 ForegroundEffect::PlayClock { id } => {
                     next = Some(ForegroundEvent::ClockAnswered {
                         id,
-                        accepted: actuator.play_clock(),
+                        accepted: actuator.play_clock(ps),
                     });
                 }
                 ForegroundEffect::AfterLoad {
@@ -205,6 +215,15 @@ pub fn poll_foreground_flight<A: ForegroundActuator>(
     let Some((flight, id)) = lifecycle.pending_flight() else {
         return ForegroundActivation::Handled;
     };
+    if super::accept_server_stop(ps) {
+        let _ = run_foreground(
+            lifecycle,
+            ps,
+            actuator,
+            ForegroundEvent::Input(ForegroundInput::Superseded(Successor::Exit)),
+        );
+        return ForegroundActivation::Handled;
+    }
     let landing = match flight {
         Flight::Prepare => match actuator.land_prepare(ps) {
             FlightLanding::Waiting => return ForegroundActivation::Handled,
@@ -242,7 +261,7 @@ pub fn park_pending_foreground_flight<Attempt: Copy + PartialEq>(
     }
     for effect in fx {
         match effect {
-            ForegroundEffect::DropFlight => crate::player::suspend_bufferfeed(ps, pa),
+            ForegroundEffect::DropFlight => crate::player::suspend_playback(ps, pa),
             _ => debug_assert!(false, "ParkFlight emits only DropFlight"),
         }
     }

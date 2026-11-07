@@ -238,13 +238,19 @@ mod heartbeat_word_tests {
     /// harness could not tell "opened the Home-sources editor" from "opened Settings and did
     /// nothing", so a trigger that silently failed to reach Favourites still produced a scene that
     /// passed, measuring the wrong screen.
-    const FAMILY_INNER: [&str; 6] = [
+    const FAMILY_INNER: [&str; 12] = [
         plx_screens::registry::word::PRIVACY,
         plx_screens::registry::word::LEGAL,
         plx_screens::registry::word::ONBOARD,
         plx_screens::registry::word::PLAYBACK,
         plx_screens::registry::word::AUDIO,
         plx_screens::registry::word::PICKER,
+        plx_screens::registry::word::LANGUAGE,
+        plx_screens::registry::word::DIAGNOSTICS,
+        plx_screens::registry::word::UNDER_POSTERS,
+        plx_screens::registry::word::UNDER_POSTERS_MOVIE,
+        plx_screens::registry::word::UNDER_POSTERS_SHOW,
+        plx_screens::registry::word::PLAYER_HUD,
     ];
 
     /// **Every caller holds `plx_base::testlock::serial()` for its whole body**, because deriving
@@ -306,14 +312,21 @@ mod heartbeat_word_tests {
             every_route().len(),
             "one word per route, derived: {routes:?}"
         );
-        // Nothing empty, nothing with a space in it: every one of these is a `\w+` token the
-        // harness's `LOOP_RE`/`FPS_RE` capture groups have to match, and a word carrying the
+        // Nothing empty, nothing with a space in it: a route is a `\w+` token and an overlay a
+        // `[\w-]+` one (the Settings family's pages are hyphenated: `player-hud`), which is what
+        // the harness's `LOOP_RE`/`FPS_RE` capture groups match, and a word carrying the
         // heartbeat's own ` overlay=` prefix (which is how the mapping table this replaced spelled
         // them) would match nothing at all.
-        for w in routes.iter().chain(overlays.iter()) {
+        for w in &routes {
             assert!(
                 !w.is_empty() && w.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
-                "{w:?} is not a heartbeat token"
+                "{w:?} is not a heartbeat route token"
+            );
+        }
+        for w in &overlays {
+            assert!(
+                !w.is_empty() && w.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
+                "{w:?} is not a heartbeat overlay token"
             );
         }
         // ONE word is in both alphabets, and it names one screen mounted on two stacks. Any other

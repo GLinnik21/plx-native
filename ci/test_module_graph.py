@@ -381,5 +381,86 @@ class Gate(unittest.TestCase):
                 self.assertIn(message, out)
 
 
+class CargoDeclarations(unittest.TestCase):
+    """A dependency declaration is an edge even when no Rust token names that crate yet."""
+    LAYERS = '[low]\nuses =\nmembers = low\n[high]\nuses = low\nmembers = high\n[app]\nuses = low high\nmembers = crate\n'
+    BASE = {
+        'src/lib.rs': '',
+        'low/src/lib.rs': '',
+        'high/src/lib.rs': '',
+        'high/Cargo.toml': '[package]\nname = "plx_high"\n[package.metadata.plx]\nmount = "high"\n',
+    }
+
+    def run_cargo_gate(self, low_extra, high_extra='', root_manifest=None):
+        files = dict(self.BASE)
+        files['low/Cargo.toml'] = '[package]\nname = "plx_low"\n[package.metadata.plx]\nmount = "low"\n' + low_extra
+        files['high/Cargo.toml'] += high_extra
+        if root_manifest is not None:
+            files['Cargo.toml'] = root_manifest
+        with Tree(files) as tree:
+            layers = tree.root / 'layers.ini'
+            layers.write_text(self.LAYERS)
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                result = gate.main(['--src', str(tree.root / 'src'), '--layers', str(layers),
+                                    '--allow', str(tree.root / 'allow.txt')])
+        return result, output.getvalue()
+
+    def test_unused_upward_dependency_fails_and_downward_dependency_passes(self):
+        code, out = self.run_cargo_gate('[dependencies]\nplx_high = { path = "../high" }\n')
+        self.assertEqual(code, 1, out)
+        self.assertIn('plx_high declares [low] -> [high]', out)
+        code, out = self.run_cargo_gate('', '[dependencies]\nplx_low = { path = "../low" }\n')
+        self.assertEqual(code, 0, out)
+        self.assertIn('1 Cargo layer declarations', out)
+
+    def test_build_dev_optional_target_and_feature_dependency_edges(self):
+        for body in [
+            '[build-dependencies]\nplx_high = { path = "../high" }\n',
+            '[dev-dependencies]\nplx_high = { path = "../high" }\n',
+            '[target.\'cfg(target_os = "linux")\'.dependencies]\nplx_high = { path = "../high", optional = true }\n',
+            '[dependencies.plx_high]\npath = "../high"\noptional = true\n[features]\nprobe = ["dep:plx_high"]\n',
+        ]:
+            with self.subTest(body=body):
+                code, out = self.run_cargo_gate(body)
+                self.assertEqual(code, 1, out)
+                self.assertIn('plx_high declares [low] -> [high]', out)
+
+    def test_renamed_local_dependency_cannot_hide_the_edge(self):
+        code, out = self.run_cargo_gate('[dependencies]\nback = { package = "plx_high", path = "../high" }\n')
+        self.assertEqual(code, 1, out)
+        self.assertIn('back declares [low] -> [high]', out)
+
+    def test_multiline_single_quoted_optional_target_rename_cannot_hide_the_edge(self):
+        body = ("[target.'cfg(target_os = \"linux\")'.dependencies.back]\n"
+                "package = 'plx_high'\npath = '../high'\n"
+                "optional = true\n[features]\nprobe = ['dep:back']\n")
+        code, out = self.run_cargo_gate(body)
+        self.assertEqual(code, 1, out)
+        self.assertIn('back declares [low] -> [high]', out)
+
+    def test_external_unknown_dep_and_self_test_dep_do_not_add_an_edge(self):
+        code, out = self.run_cargo_gate('[dependencies]\nplx_external = "1"\n[dev-dependencies]\nplx_low = { path = "." }\n')
+        self.assertEqual(code, 0, out)
+        self.assertIn('0 Cargo layer declarations', out)
+
+    def test_workspace_inheritance_resolves_alias_and_root_relative_path(self):
+        root = ('[workspace]\nmembers = ["low", "high"]\n'
+                '[workspace.dependencies]\nback = { package = "plx_high", path = "high" }\n'
+                '[package]\nname = "plxnative-modules"\n')
+        code, out = self.run_cargo_gate('[dependencies]\nback = { workspace = true, optional = true }\n',
+                                        root_manifest=root)
+        self.assertEqual(code, 1, out)
+        self.assertIn('back declares [low] -> [high]', out)
+
+    def test_app_root_is_checked_and_cannot_be_a_hidden_upward_path_target(self):
+        root = '[package]\nname = "plxnative-modules"\n[dependencies]\nplx_high = { path = "high" }\n'
+        code, out = self.run_cargo_gate('[dependencies]\napp = { package = "plxnative-modules", path = ".." }\n',
+                                        root_manifest=root)
+        self.assertEqual(code, 1, out)
+        self.assertIn('app declares [low] -> [app]', out)
+        self.assertNotIn('plx_high declares [app] -> [high]', out, 'the application may use lower layers')
+
+
 if __name__ == '__main__':
     unittest.main()

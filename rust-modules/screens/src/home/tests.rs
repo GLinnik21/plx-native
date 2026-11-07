@@ -1196,10 +1196,10 @@ fn the_focused_shelfs_heading_rests_at_one_y_whatever_the_band() {
 
 #[test]
 fn every_settled_row_keeps_its_focused_label_block_above_the_overscan_bottom() {
-    use plx_plex::plex::session::{UnderPosters, UnderPostersDetails as Details};
+    use plx_plex::plex::session::{UnderPosters, UnderPostersLadder as Details};
     // Every block the Under posters setting can draw: two lines, one line, nothing.
     for (title, details) in [(true, Details::Genre), (false, Details::YearLength), (false, Details::None)] {
-        crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.set(Some(UnderPosters { title, details, sort_value: false })));
+        crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.set(Some(UnderPosters { title, details: details.movie_parts(), show_details: details.show_parts(), sort_value: false })));
         let lines = crate::registry::captions::policy().max_lines();
         crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.set(None));
         let block = if lines == 0 { 0.0 } else { ui_cards::TileLabel::height(lines == 2) };
@@ -5606,7 +5606,7 @@ fn an_unchanged_refetch_leaves_the_billboard_exactly_as_it_was() {
 /// ordinary shelf's is none, and the band the focused deck opens carries the rows below it down.
 #[test]
 fn home_hands_the_continue_watching_shelf_the_deck_policy_under_nothing() {
-    use plx_plex::plex::session::{UnderPosters, UnderPostersDetails};
+    use plx_plex::plex::session::{UnderPosters, UnderPostersLadder};
     use crate::registry::captions::TEST_UNDER_POSTERS;
     let _guard = plx_base::testlock::serial();
     let mut state = plx_data::pms::PmsState::default();
@@ -5614,7 +5614,7 @@ fn home_hands_the_continue_watching_shelf_the_deck_policy_under_nothing() {
     plx_data::pms::seed_continue_window_for_test(&mut state, &adapter, 12, true);
     let snapshot = plx_data::pms::hubs_snapshot(&state);
     for (title, tall) in [(false, plx_ui::caption_policy::BAND_ONE_LINE), (true, plx_ui::caption_policy::BAND_TWO_LINES)] {
-        TEST_UNDER_POSTERS.with(|cell| cell.set(Some(UnderPosters { title, details: UnderPostersDetails::None, sort_value: false })));
+        TEST_UNDER_POSTERS.with(|cell| cell.set(Some(UnderPosters { title, details: UnderPostersLadder::None.movie_parts(), show_details: UnderPostersLadder::None.show_parts(), sort_value: false })));
         let s = screen(snapshot.view());
         assert_eq!(s.rows[0].identity, HomeHubIdentity::ContinueWatching);
         assert_eq!(s.grid.shelves[0].band_h(), tall, "title {title}: the deck keeps its progress line's band");
@@ -5632,11 +5632,11 @@ fn home_hands_the_continue_watching_shelf_the_deck_policy_under_nothing() {
 /// nothing, one line and two lines.
 #[test]
 fn home_opens_its_focused_shelf_band_by_the_policys_band_h() {
-    use plx_plex::plex::session::{UnderPosters, UnderPostersDetails};
+    use plx_plex::plex::session::{UnderPosters, UnderPostersLadder};
     use crate::registry::captions::TEST_UNDER_POSTERS;
-    for (title, details, tall) in [(false, UnderPostersDetails::None, 0.0), (false, UnderPostersDetails::Genre, 80.0),
-        (true, UnderPostersDetails::YearLength, 112.0)] {
-        TEST_UNDER_POSTERS.with(|cell| cell.set(Some(UnderPosters { title, details, sort_value: false })));
+    for (title, details, tall) in [(false, UnderPostersLadder::None, 0.0), (false, UnderPostersLadder::Genre, 80.0),
+        (true, UnderPostersLadder::YearLength, 112.0)] {
+        TEST_UNDER_POSTERS.with(|cell| cell.set(Some(UnderPosters { title, details: details.movie_parts(), show_details: details.show_parts(), sort_value: false })));
         let opened = shelf_top_settled(1, 0, band_open_of(false)) - shelf_top_settled(1, 1, band_open_of(false));
         let policy = crate::registry::captions::policy();
         TEST_UNDER_POSTERS.with(|cell| cell.set(None));
@@ -5655,14 +5655,14 @@ fn home_opens_its_focused_shelf_band_by_the_policys_band_h() {
 /// block, and the band the shelf reserves for it, follow it on the next layout.
 #[test]
 fn a_caption_input_that_changes_under_a_kept_row_reaches_the_drawn_block() {
-    use plx_plex::plex::session::{UnderPosters, UnderPostersDetails as Details};
+    use plx_plex::plex::session::{UnderPosters, UnderPostersLadder as Details};
     use crate::registry::captions::TEST_UNDER_POSTERS;
     let _guard = plx_base::testlock::serial();
     let (rows, items) = (4usize, 5usize);
     let mut state = plx_data::pms::PmsState::default();
     let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
     plx_data::pms::seed_ring_for_test(&mut state, &adapter, rows, items, &|_| 0, (0, rows - 1));
-    let setting = |title, details| TEST_UNDER_POSTERS.with(|cell| cell.set(Some(UnderPosters { title, details, sort_value: false })));
+    let setting = |title: bool, details: Details| TEST_UNDER_POSTERS.with(|cell| cell.set(Some(UnderPosters { title, details: details.movie_parts(), show_details: details.show_parts(), sort_value: false })));
     // The block the shelf draws under card `col` of `row`, as the card source words it.
     let block = |s: &HomeScreen, state: &plx_data::pms::PmsState, row: usize, col: usize| {
         let snapshot = plx_data::pms::hubs_snapshot(state);

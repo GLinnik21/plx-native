@@ -109,6 +109,12 @@ pub(super) const VIDEO_LEAD_MS: i64 = 1_600;
 /// Audio feed-ahead throttle: `MAX_FEED_AHEAD_NS + AUDIO_SLACK_NS` = 1.6 s + 2.0 s.
 pub(super) const AUDIO_LEAD_MS: i64 = 3_600;
 
+/// The plant's pipeline constants as `(video queue bytes, audio queue bytes, video lead ms, audio
+/// lead ms)`, for the test beside the Feed pipeline that pins them (`player::abr_plant_tests`).
+pub(crate) const fn pipeline_constants() -> (u64, u64, i64, i64) {
+    (VIDEO_QUEUE_BYTES, AUDIO_QUEUE_BYTES, VIDEO_LEAD_MS, AUDIO_LEAD_MS)
+}
+
 /// **One measured operating point.** Three DIFFERENT rates, and conflating any two of them is how
 /// this plant was wrong before.
 ///
@@ -831,7 +837,14 @@ mod tests {
     use super::*;
 
     fn cat() -> super::super::HlsActuatorCatalog {
-        super::super::HlsActuatorCatalog::measured()
+        super::super::HlsActuatorCatalog::measured().with_plant_geometry(Some(
+            super::super::PlantGeometry {
+                video_queue_bytes: VIDEO_QUEUE_BYTES,
+                audio_queue_bytes: AUDIO_QUEUE_BYTES,
+                video_lead_ms: VIDEO_LEAD_MS,
+                audio_lead_ms: AUDIO_LEAD_MS,
+            }
+        ))
     }
 
     /// The three census points, so a test reads like the device record.
@@ -1010,24 +1023,6 @@ mod tests {
             ..p720()
         };
         assert_eq!(plant.b_max_ms(&video_bound), 1_600 + 83_886_080 / 20_000);
-    }
-
-    /// MATHEMATICAL INVARIANT: the plant's constants are still the pipeline's.
-    ///
-    /// **All FOUR of them.** `B_max = lead + queue_bytes/rate`, and this test used to pin only the
-    /// two byte caps — so either FEED LEAD could move in `player::engine` and this plant would go
-    /// on modelling a pipeline that no longer exists, silently. That is not a hypothetical failure
-    /// mode here: the operating-point table one level up was hand-transcribed, the fixture pack was
-    /// rebuilt under it, and two of its three points described a television that had stopped
-    /// existing for a month without a single test going red.
-    #[test]
-    fn the_plant_constants_still_match_the_pipeline() {
-        let (video, audio) = crate::player::aq_caps();
-        assert_eq!(video as u64, VIDEO_QUEUE_BYTES);
-        assert_eq!(audio as u64, AUDIO_QUEUE_BYTES);
-        let (video_lead, audio_lead) = crate::player::feed_leads_ms();
-        assert_eq!(video_lead, VIDEO_LEAD_MS);
-        assert_eq!(audio_lead, AUDIO_LEAD_MS);
     }
 
     /// MATHEMATICAL INVARIANT: dB/dt = C/R_ts - 1, read off the plant.
@@ -1262,8 +1257,7 @@ mod tests {
             let trace = Trace::new(legs);
             // A 720p source makes P720 the smallest sufficient box. Higher requests cannot improve
             // its raster and are removed by the same feasibility rule used in real playback.
-            let catalog =
-                super::super::HlsActuatorCatalog::measured().limited_to((3840, 2176), (1280, 720));
+            let catalog = cat().limited_to((3840, 2176), (1280, 720));
             let mut controller = Controller::starting_at(Rung::P480, None, catalog);
             let report = match run(&plant, &trace, &mut controller, &tx) {
                 Ok(report) => report,
@@ -1425,8 +1419,7 @@ mod tests {
         // uncensused 18 Mbit/s point before this test ever reached its collapse leg. That is a
         // measurement gap, not a controller failure; the test's subject is the calibrated
         // 4000 -> 2000 -> 720 -> 320 descent.
-        let catalog =
-            super::super::HlsActuatorCatalog::measured().limited_to((3840, 2176), (1280, 720));
+        let catalog = cat().limited_to((3840, 2176), (1280, 720));
         let mut controller = Controller::starting_at(Rung::P720Low, None, catalog);
         let report = run(
             &plant,

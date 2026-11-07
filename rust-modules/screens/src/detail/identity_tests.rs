@@ -18,6 +18,12 @@ impl ScreenArg for Arg {
     fn same_instance(&self, other: &Self) -> bool { self == other }
 }
 struct TestHost;
+impl crate::registry::PlayerLike for TestHost {
+    fn session<'a>(_cx: &Cx<'a, Self>) -> &'a plx_media::route::PlaybackSession {
+        plx_media::route::idle_session_for_test()
+    }
+    fn transport_paused(_cx: &Cx<'_, Self>) -> bool { false }
+}
 impl Host for TestHost {
     type Arg = Arg;
     type Fx = AppFx;

@@ -385,7 +385,7 @@
     },
     {
      "name": "dolby_vision",
-     "copyright": "Copyright (c) 2026 quietvoid. Parses and rewrites Dolby Vision RPUs for the Profile 7 to 8.1 conversion (`plx_media`'s `ff.rs`); used unmodified, with no optional features"
+     "copyright": "Copyright (c) 2026 quietvoid. Parses and rewrites Dolby Vision RPUs for the Profile 7 to 8.1 conversion (`plx_play_feed`'s `ff.rs`); used unmodified, with no optional features"
     },
     {
      "name": "funty",

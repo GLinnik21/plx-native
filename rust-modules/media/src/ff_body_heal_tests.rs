@@ -154,14 +154,17 @@ fn with_source<R>(port: u16, f: impl FnOnce(*mut c_void) -> R) -> R {
 /// [`with_source`] for a body of `size` bytes (-1: no length, as a transcode).
 fn with_sized_source<R>(port: u16, size: i64, f: impl FnOnce(*mut c_void) -> R) -> R {
     let mut hs = plx_net::stream::http_stream_boxed();
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let mut state = AvioState {
+        observer: super::test_support::demux_observer(),
         src: Src::Socket {
             hs: &mut *hs,
             host: CString::new("127.0.0.1").unwrap(),
             port: port as c_int,
             path: CString::new("/Videos/a/stream.mkv?static=true").unwrap(),
         },
+        range: crate::curlio::range_factory(),
+        credential_gate: crate::curlio::CREDENTIAL_GATE,
         aq: &mut *aq,
         off: 0,
         size,
@@ -169,19 +172,20 @@ fn with_sized_source<R>(port: u16, size: i64, f: impl FnOnce(*mut c_void) -> R) 
         body_active_us: 0,
         body_bytes: 0,
         first_byte_at: None,
-        reserve_deadline: ReserveDeadlineState::new(None, false),
+        reserve_deadline: ReserveDeadlineState::new(None, false, super::test_support::demux_observer()),
         transport_watchdog: None,
         acquisition: None,
         bounce: Vec::new(),
         bounce_pos: 0,
         parked_at_end: false,
+        body_silence: super::test_support::fixture_body_silence(),
         heal: HealBudget::default(),
     };
     let op = &mut state as *mut AvioState as *mut c_void;
     assert_eq!(seek_cb(op, 0, SEEK_SET), 0, "the first open");
     let out = f(op);
     plx_net::stream::http_close(&mut *hs);
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
     out
 }
 
@@ -256,7 +260,7 @@ fn an_unsized_body_is_not_given_the_silence_deadline() {
     let srv = ShortBody::start(UNSIZED_HEAD, true, false);
     let release = srv.release.clone();
     // Well past the silence a sized body would be reopened after.
-    let quiet = BODY_SILENCE * 3;
+    let quiet = super::test_support::fixture_body_silence() * 3;
     let releaser = std::thread::spawn(move || {
         std::thread::sleep(quiet);
         release.store(true, Ordering::Release);

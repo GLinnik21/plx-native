@@ -20,13 +20,18 @@ loop, its adapters, every dev and diagnostic surface, and the application's side
 (`port`, `system`, and the other `[port webos]` members that are not in a layer crate). They are
 the one `staticlib` the Makefile links and the one place that may name every other layer, so there
 is nothing below it to split off. **Decision: the `[port webos]` members stay where they are**
-(`webos`, `keymanager` and `system` are modules of `plx_platform`, `player::ffi` of `plx_media`, and
-`port` of the top crate) **until a second TV OS exists.** A port crate now would have one
+(`webos`, `keymanager` and `system` are modules of `plx_platform` (the Starfish sink is
+`webos::video_sink`), and `port` of the top crate) **until a second TV OS exists.** A port crate now would have one
 customer and a boundary drawn from guesses about the second; the fence in `ci/check-module-layers.py`
 (a reference from outside `[port webos]` to a member of it fails) already holds the line a crate
 would, and L15b is where the port's OS-neutral shape is worked out.
 
 The gate is `ci/check-module-layers.py` and its config is `ci/module-layers.ini`.
+The gate also checks each extracted crate's local Cargo declarations, including build, dev,
+optional and target-specific dependencies, against those same `uses` edges. A declared edge is
+checked even before Rust code names the dependency, so an unused upward dependency cannot bypass
+the module graph. A crate's `[package.metadata.plx] mount` selects its layer; ordinary `plx_` crate
+names fall back to their package suffix. External crates are outside this graph.
 `ci/allow/layers.txt` holds the migration list. L1 to L14 emptied it, L15 declared 44 entries of
 its own and then removed them, so it is empty again and only shrinks. Run
 `ci/check-module-layers.py --report` for current numbers. The graph findings and the migration
@@ -91,14 +96,18 @@ in `screens` above it; `media` also draws through `gfx`.
 app        everything below
 screens    appkit  ui  media  session  data  telemetry  plex  net  gfx    + platform machine base
 appkit         ui  media  session  data  telemetry  plex  net  gfx        + platform machine base
-media          data  telemetry  plex  net  gfx                            + platform machine base
+media          data  telemetry  plex  net  gfx  playback_contract  media_codecs  + platform machine base
 session        telemetry  plex  net                                       + platform machine base
-data           telemetry  plex  net                                       + platform machine base
+data           telemetry  plex  net  playback_contract                    + platform machine base
 ui             gfx                                                        + platform machine base
 telemetry      plex  net                                                  + platform machine base
 plex           net                                                        + platform machine base
 net                                                                       + platform base
 gfx                                                                       + platform machine base
+play_feed      net  playback_contract  media_codecs                       + platform base
+play_uri       playback_contract                                          + platform base
+media_codecs   playback_contract                                          + base
+playback_contract                                                         + base
 platform                                                                             machine base
 machine                                                                                      base
 base
@@ -106,7 +115,7 @@ base
 
 | layer | members | prod lines | an edit there recompiles |
 |---|---|---:|---:|
-| base | `eventlog paths task cbuf sha256 b64 spki dynlib checkpoint storage_worker fontcov surface tile hold devtrig diag::{zlib,spans,heartbeat} testlock testnet testscratch testrace` | 9k | everything |
+| base | `eventlog paths task cbuf sha256 b64 spki dynlib checkpoint storage_worker fontcov surface tile hold detail_parts devtrig diag::{zlib,spans,heartbeat} testlock testnet testscratch testrace` | 9k | everything |
 | machine | `ui::{machine,present,idle,landgate,landing,motion}` | 4k | 97% |
 | platform | `webos storage keymanager devcaps imgcache i18n labcfg tv` | 11k | 96% |
 | gfx | `gfx egl text rtl img svg gpu_timer hwcnt overdraw dump` | 15k | 68% |
@@ -116,7 +125,7 @@ base
 | ui | `ui` (the library) | 51k | 47% |
 | data | `stores browse metadata person collection search subsearch viewstate viewledger pms watchlist catalog hudpacks` | 27k | 56% |
 | session | `auth` | 11k | 35% |
-| media | `ff aq abr hls curlio player route` | 56k | 49% |
+| media | `ff` (a facade over `play_feed`'s demuxer) `abr curlio player route speed_audio`; `aq` and `hls` moved to `play_feed` | 56k | 49% |
 | appkit | `appkit` (the player panels and the Sources row several screens draw) | 13k | 32% |
 | screens | `screens` | 54k | 28% |
 | app | `crate app dev lab capture remote focusprobe shot coldstart textinput system release_line port` | 42k | 12% |
@@ -127,6 +136,48 @@ for build time here; they are not measured build times. Today every row would re
 the split has not happened. Of the last 33 commits that touched `rust-modules/src` at baseline, 26
 touched `screens/` or `ui/`, so a screens-only edit dropping from 100% to about 28% is where most
 of the payoff is. L10 took the player widgets out of `ui` (66k lines at baseline, 51k now).
+
+`playback_contract` is a fifteenth layer, declared after the split and not in the table above. Its
+crate is `plx_playback_contract` (`rust-modules/playback-contract/`) and it names only `base`: the
+backend-neutral playback vocabulary (commands and readouts, the time, track and subtitle types, the
+`BackendState` machine, the Feed port traits `FeedSeek`, `FeedLoad`, `FeedOpen`, `FeedStop` and `FeedControl`
+over them, and the adaptive `FeedPort`, with their test fakes), which a backend can implement without naming `media`, `route` or Plex. `data` and
+`media` may name it (`data`'s `TrackNames` and `media`'s `abr::units::MediaTimeMs` are re-exports of
+its types, and the `BackendRunner` and attempt-metrics reducers in `media::player` are written
+against it). `BackendState` is a machine in `ci/machines.ini`, and `ci/check-deps.sh` reads the
+whole crate as machine code.
+
+`media_codecs` is a sixteenth layer, declared the same way. Its crate is `plx_media_codecs`
+(`rust-modules/media-codecs/`) and it names `base` and `playback_contract`: the bundled FFmpeg's
+ABI (`ffi`, the dlopen'd libraries and the layout asserts), the decoders and encoder built on it (the
+PCM decode and conversion, `speed_audio`, `SpeedDecoder`, `Venc`) and the subtitle extraction
+(`subtitle`, `subtitle_extract`), all with owned, neutral output. `media` names it (`plx_media::ff`
+re-exports its bindings; the demux is `plx_play_feed`'s) and so does the application crate (`capture`
+drives `Venc`); it names neither `media` nor Plex. `ci/check-deps.sh`
+reads the whole crate for the same IO and clock gates as every other layer.
+
+`play_feed` is a seventeenth layer, declared the same way. Its crate is `plx_play_feed`
+(`rust-modules/play-feed/`) and it names `base`, `platform`, `net`, `playback_contract` and `media_codecs`: the
+buffer-feed backend (the guarded transport, the physical FFmpeg demuxer and HLS parser, the native payload
+construction and executor, which implement the Feed port traits) and the simulator's `VideoSink` stand-in
+(`ffi_host`, behind that crate's `hostsim` feature). It was `plx_media::player`'s own until the player stopped
+depending on a backend: `plx_media` is the neutral orchestration (routes, the engine, the `BackendRunner`) and
+does not name it in production code, while the application composes it
+(`app/adapters/backends.rs`, behind the application crate's `play-feed` feature, which the release build
+passes explicitly). `media` and `screens` list it in `ci/module-layers.ini` for their TESTS, which drive the real
+Feed through a dev-dependency edge; `ci/check-deps.sh` reads the whole crate for the same IO and clock gates as
+every other layer.
+
+`play_uri` is an eighteenth layer, declared the same way. Its crate is `plx_play_uri`
+(`rust-modules/play-uri/`) and it names `base`, `platform` and `playback_contract`: the URI backend (the
+`com.webos.media` protocol and request lifecycle, the ACB bind machine and its envelope map, the picture gate,
+and the product driver `UriBackend`, which implements the contract's `UriDriver`) and the developer probe's machine
+and driver (`uriprobe`, `uriprobe_drive`, `devtriggers` builds only). `plx_media` does not name it: the route planner and the player adapter see
+only the contract's traits and the `UriProbe` port, and the application composes the driver
+(`app/adapters/backends.rs`, behind the application crate's `play-uri` feature, which the release build passes
+explicitly) and the probe (`dev/uriprobe.rs`). The driver is compiled into every build that has the feature and
+is never offered a source: production evidence certifies nothing (`media::route::uri_preflight::ProductQualifier`
+answers `Unknown`). `ci/check-deps.sh` reads the whole crate for the same IO and clock gates as every other layer.
 
 The Watchlist adds two data modules and no new edge. `watchlist` (rows, match table, `TileState`,
 intent ledger, comparator; with `stores::watchlist`) and `catalog` (the Discover-only item page; with
@@ -156,8 +207,12 @@ Four choices that were not obvious:
   library, and `ci/check-deps.sh`'s `sibling` gate forbids one screen family naming another. They
   name `route`, `player`, `metadata`, `plex` and `stores`, so they cannot stay in `ui` either.
   `appkit` may name everything below `screens`; `screens` and `app` may name it.
-- **The webOS port is a fence, not a layer.** `[port webos]` lists `webos`, `keymanager`,
-  `system`, `player::ffi` and `port`, which stay in `platform`, `app` and `media` above, and
+- **`screens` names `play_feed` in its tests only.** The player pins drive the Feed's process-lifetime transport
+  flags (`plx_play_feed::shared::FEED_TX`), which `plx_media` stopped re-exporting when it stopped depending
+  on a backend (W3h): a dev-dependency edge, so `[screens] uses` lists `play_feed` and no production code of
+  `screens` may name it.
+- **The webOS port is a fence, not a layer.** `[port webos]` lists `webos` (which holds
+  `webos::video_sink`), `keymanager`, `system` and `port`, which stay in `platform` and `app` above, and
   nothing outside the port may name them. A layer on top would say the same thing, but then the
   modules in `platform`, `plex` and `telemetry` that named webOS before L15 would have held up
   those layers' extraction until it was finished, video sink and all. As a fence it held the line
@@ -243,7 +298,7 @@ proves the references are gone and nothing more; L15b is open.
 | step | entries / refs | what moved |
 |---|---:|---|
 | **L1** log core to base — **done** | 72 / 325 | `log`, `redact_tokens`, `events_log`, `open_log_append`, `write_log_line` and their tests moved from `lib.rs` to `eventlog.rs` in `base`. `log` calls `eventlog::ring::record` directly (`lab::record` was a one-line wrapper of it and is gone), and all 473 references in 95 files name `crate::eventlog::log`. The log's own guards moved under it too (`diag::scrub` and `diag::ring`, which named nothing but `redact_tokens`, are `eventlog::{scrub, ring}`), and `paths::app_dir` no longer logs: the boot preamble writes the same `appdir:` line from `paths::app_dir_line()`. So `eventlog` names nothing but `paths`, `paths` names nothing, and both sit outside every cycle. |
-| **L2** dev trigger primitives to base — **done** | 28 / 68 | The primitives (`read`, `flag`, `latched_flag!`, `read_sample`, `controlled_trigger`, `listed`, `guard_log_only`, `no_wan`, `holdload_delay_ms`) are the base module `devtrig`, which every caller names; the typed triggers moved beside their one consumer (`abr_pin` to `abr::ladder`, `PlayUrl`/`PlayDovi` to `player::playurl`), and the scenario reads lower layers made moved down rather than becoming hooks (`auth::scripted`, `telemetry::consent::state_override`, `screens::login`'s `harness_driven`, `player::failure_fixture`). |
+| **L2** dev trigger primitives to base — **done** | 28 / 68 | The primitives (`read`, `flag`, `latched_flag!`, `read_sample`, `controlled_trigger`, `listed`, `guard_log_only`, `no_wan`, `holdload_delay_ms`) are the base module `devtrig`, which every caller names; the typed triggers moved beside their one consumer (`abr_pin` to `abr::ladder`, `PlayUrl`/`PlayDovi` to `player::playurl`, now `plx_playback_contract::playurl` with the parse in `plx_play_feed::playurl`), and the scenario reads lower layers made moved down rather than becoming hooks (`auth::scripted`, `telemetry::consent::state_override`, `screens::login`'s `harness_driven`, `player::failure_fixture`). |
 | **L3** lab config to platform — **done** | 5 / 7 | `lab::{config, is_trigger_key, menu_row_enabled}` are the platform module `labcfg`, and `ui/lab_toast.rs` went to `lab/toast.rs`, since only `lab` draws it. |
 | **L4** machine runtime leaves ui — **done** | 4 / 6 | The six upward names are cut: `page_frozen` lives in `ui::idle` (`gfx` re-exports it), `ScreenArg`/`ScreenEvent` and `fit_line_by`/`elide_by` moved into `ui::machine` (`ui::screen` and `text` re-export them), the loop calls `card_motion_metrics::presented` itself, and idle's plane-bit test moved to `app::run`. |
 | **L5** gfx stops naming ui — **done** | 2 / 61 | `Rect`, `Crop` and `Zoom` are `gfx/geom.rs`, the colour and size tokens `gfx` and `text` draw with are `gfx/tokens.rs`, and the backdrop walk and the profilers moved whole to `gfx/backdrop.rs` and `gfx/profile.rs`; `ui` re-exports all of them at the old paths. |
@@ -256,7 +311,7 @@ proves the references are gone and nothing more; L15b is open.
 | **L12** media owns its lifecycle seams — **done** | 7 / 28 | The foreground-resume machine is `player::lifecycle`, its drivers `player::foreground` and the transport-pause contract `player::transport` (`app::lifecycle` re-exports them), the stats switch is `player::DIAG_READOUT_ON`, `Venc::open` takes the capture socket writer as an argument, and `route` takes the HUD context line as a parameter, with the up-next still prefetch a hook the app installs. |
 | **L13** tests move up to the layer that owns their parts — **done** | 41 / 96 | Part a moved the auth, plex, i18n, task and fontcov tests that named upper layers to `app/` (`session_*_tests.rs`), `screens/login_text_fit_tests.rs`, `plex`, `auth::owner` and `storage::client`, and moved `fontcov`'s `Measure` impl beside the trait, with `ui::machine`'s new `BareArg`/`BareMeasure` fixtures for the rest; part b moved the data, media and ui ones to `app/` (`dispatch_return_tests.rs`, `overscan_audit_tests.rs`) and `screens/` (`plaintext_question`, `library/labels_tests.rs`, `search/tests.rs`, `player`), and rewrote two against their own layer. |
 | **L14** session-layer presentation to screens — **done** | 2 / 4 | `auth::signed_in_reason` is a private fn of `screens::login`, its only caller, with its two tests; `auth` already handed over the plain account name. |
-| **L15** the webOS port — **gate-complete** | 44 / 205 | Everything outside `[port webos]` reaches the television through the `tv` interfaces in `platform` that the port fills at boot: `tv::{device, sandbox, secure, home, toast, window}`, `devcaps::dv`, and `tv::sink::VideoSink`, a Starfish-shaped verb trait that `player::ffi::StarfishSink` and `player::ffi_host::HostSink` implement. `plex_run` is `port::plex_run`. The allowlist is empty. Not "done": the sink is not OS-neutral and the simulator is not its own port (L15b). |
+| **L15** the webOS port — **gate-complete** | 44 / 205 | Everything outside `[port webos]` reaches the television through the `tv` interfaces in `platform` that the port fills at boot: `tv::{device, sandbox, secure, home, toast, window}`, `devcaps::dv`, and `tv::sink::VideoSink`, a Starfish-shaped verb trait that `plx_platform::webos::video_sink::StarfishSink` and `plx_play_feed::ffi_host::HostSink` implement. `plex_run` is `port::plex_run`. The allowlist is empty. Not "done": the sink is not OS-neutral and the simulator is not its own port (L15b). |
 | **L15b** the OS-neutral port — **open** | — | An OS-neutral video sink with the ACB bind sequence behind it, the simulator as its own port, and the webOS facts the gate cannot see. See below. |
 
 ### L15: the webOS port
@@ -275,9 +330,13 @@ statement of `port::plex_run`, before anything that reads it. With no port insta
 tests, where nothing calls `plex_run`) `tv::ABSENT` answers what the host arms answered before; a
 shipping build that reaches it logs `tv: port not installed - using the no-port defaults` once.
 Only `tv`'s own modules read the table. Two things leave it: the sink, through
-`tv::sink::installed()` (rule `sink` of `ci/check-deps.sh` fences it to `player/`, `tv/`, `tv.rs`
-and `port.rs`), and, in a `devtriggers` build only, the developer URI-mode probe's
-`tv::uri::installed()`, read by `player::uriprobe_drive`.
+`tv::sink::installed()` (rule `sink` of `ci/check-deps.sh` fences naming `VideoSink` or `installed` to `media`'s
+`player/`, `play-uri/`, `platform`'s `tv/`, `tv.rs` and `webos/`, `port.rs` and
+`app/adapters/backends.rs`; `play-feed/` may name the trait but never resolves `installed`), and the URI media pipe through
+`tv::uri::installed()`, resolved once by the composition (`app/adapters/backends.rs::install_uri_product`, every build with the
+`play-uri` feature) and, in a `devtriggers` build, again by the media wrapper `player::uriprobe_drive` for the developer probe. The independent
+`play-uri` driver receives that transport and a shared `DisplaySink` as injected ports; it
+does not read the webOS port registry or the feed-only `VideoSink` itself.
 Lazily computed facts (device identity, the sandbox verdict, the Dolby Vision capability) are
 published values rather than hooks: the webOS code writes them into `tv::device`, `tv::sandbox` and
 `devcaps::dv` at the same boot moment as before, so readers keep their `OnceLock` semantics.
@@ -287,7 +346,7 @@ published values rather than hooks: the webOS code writes them into `tv::device`
 | device identity | `tv::device::{info, device, Info, Hardware}`, published by `webos::probe` | `telemetry`, `diag::schema`, `plex::identity`, `plex::session`'s tests, `screens::login`, `lab::snapshot`, `app`, `player` |
 | playback capability | `devcaps::dv::{capability, probe, DvCapability}`, published by `webos::caps`; `tv::start_capability_probe` starts the probe | `metadata`, `route`, `player::engine`, `app` |
 | native-video availability and repair | `tv::sandbox::{blocks_native_video, context, repair, Verdict, State, Failure, FORCE_BLOCKED}`; the verdict is published by `webos::probe` and the repair is a port hook | `player`, `route`, `appkit::player_hud`, `screens::player`, `app::playback` |
-| video sink | `tv::sink::VideoSink`, implemented by `player::ffi::StarfishSink` and `player::ffi_host::HostSink`, installed in `Port.sink` and read through `tv::sink::installed` | `player::{engine, pump, threads}`, `player::claim_hold`'s tests |
+| video sink | `tv::sink::VideoSink`, implemented by `plx_platform::webos::video_sink::StarfishSink` and `HostSink` (`plx_play_feed::ffi_host`), installed in `Port.sink` and read through `tv::sink::installed` | `player::{adapter, test_physical}`, `plx_play_feed::{native_executor, native_load, physical, seek}` (which receive it injected), `app::adapters::backends` (which resolves `installed` and `display_installed`) |
 | secure store | `tv::secure::{seal, open, remove, Sealed, Backend}` | `plex::session` |
 | storage backend | `storage::client::install_activator`, which the port calls with `webos::activate_storage_helper` | `port::plex_run` |
 | locale | `tv::system_locale` and `tv::LocaleReply`; `i18n` still owns the parse and the log lines | `i18n` |
@@ -306,14 +365,21 @@ The video sink landed as a verb-level cut. `tv::sink::VideoSink` has one method 
 Starfish seam, 29 of them, with the C return values and the `&MainThread` token on every method but
 `load`, `window_mode` and `window_id` (since 2026-10-15 `unload` takes an `UnloadTicket` instead, so
 a real stop's Unload can run on a worker; the trait's own doc is the current list). It is **Starfish-shaped**: a load payload, `feed`, and the
-ACB bind verbs that `pump` walks. Another TV OS cannot implement it as it stands. `player::ffi`
-keeps its `extern "C"` block unchanged and implements the trait as `StarfishSink`; `engine`, `pump`
-and `threads` call it through `player::sink()`. `player/ffi_host.rs` is no longer swapped in under
-`player::ffi`. It is `player::ffi_host`, the simulator's own `VideoSink` (`HostSink`), outside the
-fence. Call order, arguments and log text did not change. The deeper cut is L15b.
+ACB bind verbs that the Feed pump walks. Another TV OS cannot implement it as it stands.
+`plx_platform::webos::video_sink` keeps its `extern "C"` block unchanged and implements the trait as
+`StarfishSink`; the player adapter and the Feed backend's pump, executor and Load worker call it
+through the sink the composition hands them (`PlayerAdapter::display_sink`; `app/adapters/backends.rs`).
+`ffi_host` is no longer swapped in under `webos::video_sink`. It is the simulator's own `VideoSink`
+(`HostSink`), outside the fence. It is the Feed backend's stand-in, so it lives in `plx_play_feed` behind that crate's
+`hostsim` feature and names only the layers below it; what its sink is built with arrives as
+`ffi_host::Hooks`: the pipeline-event entry and the inverse of its position rebase, both that
+crate's own (`Hooks::over`), and a `ffi_host::FrameSink` that the application's
+`app::adapters::hostsim::sim_video` implements (the one place that draws, so `plx_gfx` stays on the
+application side), as `app::adapters::hostsim::HOST_SINK`; the media tests build their own beside it
+with `ffi_host::NoFrames`. Call order, arguments and log text did not change. The deeper cut is L15b.
 
 The verb cut was taken first because the bind sequence cannot be moved safely from here. It lives in
-`pump`'s `Stage` machine, is gated on state the firmware callback writes (`SHARED`) and interleaves
+`pump`'s `Stage` machine, is gated on state the firmware callback writes (`FEED_SHARED`) and interleaves
 with seek re-anchoring, the auto-rebuffer pause and the claim hold. `ffi_host` deliberately never
 models ACB (it reports `VP_EXPORTED`, which skips the bind stages), so no host test covers the bind
 order or its interleaving, and its log lines are graded on the television. A verb-for-verb move
@@ -748,7 +814,7 @@ own binary: the suite is 5603 before and after (with Split 4 landed in the same 
 the recipe and Splits 1 to 3:
 
 - **A `dynlib!` table is `pub(crate)` in the crate that expands it, and a layer's callers are in
-  another crate.** `curlio` (in `media`) drives libcurl's easy API through `net`'s own table:
+  another crate.** `curlio` (then in `media`; it has since moved into `net` as `range_io`) drove libcurl's easy API through `net`'s own table:
   `curl_easy_init`, `curl_easy_cleanup`, `curl_easy_setopt_{ptr,long}`, `curl_slist_{append,free_all}`
   and the `curl` module's `curl_easy_init` cell. They cannot be re-exported (E0364: a `pub(crate)`
   item cannot be `pub use`d), and wrapping them would add a second layer of calls to the variadic
@@ -1538,10 +1604,17 @@ rebuilds the application only. The no-op build is 0.1 s in both.
 
 ### Split 11 (media)
 
+This section records the original media extraction. In the current layout,
+`plx_play_feed` owns the physical FFmpeg demuxer, HLS parser and access-unit
+queues; `plx_media_codecs` owns the FFmpeg binding and encoder. `plx_media::ff`
+re-exports `plx_media_codecs`' FFmpeg bindings and holds the integration fixtures;
+the feed's application entry points are `plx_play_feed`'s (`plx_play_feed::demux`).
+
 `media` was extracted eleventh: `rust-modules/media/` is the workspace member `plx_media` (an `rlib`,
 `uses = base machine platform gfx net plex telemetry data`; the manifest names those eight, with
-`plx_gfx` optional behind `hostsim` because only the simulator's `player::sim_video` draws), holding
-`ff` (the bundled-FFmpeg demuxer), `aq`, `abr`, `hls`, `curlio`, `player` (the buffer-feed engine,
+`plx_gfx` optional behind `hostsim` because only the simulator's `player::sim_video` drew; that file
+has since moved to the application, `app::adapters::hostsim`, and the manifest no longer names `plx_gfx`), holding
+`ff` (then the bundled-FFmpeg demuxer), `aq`, `abr`, `hls`, `curlio`, `player` (the buffer-feed engine,
 `player/CLAUDE.md` with it) and `route`: 70 files, 84,579 lines. It is the layer with the FFI, and
 the one that held the last import cycle of the application, `abr curlio ff hls player route`, which
 is now inside one crate where a cycle is legal. The 12 root-level files the modules include by
@@ -1552,7 +1625,7 @@ files (`pub(super)` only where it was written at the top level of a file whose p
 root), and one intra-doc link to `screens` unbracketed. The module-cycle baseline now reads "3
 modules on the cycle (`app dev textinput`), 10 outside". What it taught:
 
-- **FFI and the final link: proven in the artifact, not assumed.** The crate holds every
+- **FFI and the final link: proven in the artifact, not assumed.** At this extraction, the crate held every
   `dynlib!` table of FFmpeg (`ff.rs`, four), libass's subtitle surface (`player/ass.rs`; the UI text
   surface's table is `plx_gfx::rtl`) and the second libcurl table
   (`curlio.rs`), `player::ffi`'s `extern "C"` block (the Starfish/ACB verbs, 29 undefined

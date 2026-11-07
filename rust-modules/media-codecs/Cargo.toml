@@ -1,0 +1,31 @@
+[package]
+name = "plx_media_codecs"
+version = "0.0.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Bundled FFmpeg ABI, codec jobs and capture encoder for PlxNative."
+repository = "https://github.com/GLinnik21/plx-native"
+publish = false
+
+[package.metadata.plx]
+mount = "media_codecs"
+
+[lib]
+name = "plx_media_codecs"
+crate-type = ["rlib"]
+
+[features]
+default = []
+devtriggers = ["plx_base/devtriggers"]
+test-support = ["plx_base/test-support"]
+
+[dependencies]
+plx_playback_contract = { path = "../playback-contract" }
+plx_base = { path = "../base" }
+libc = "0.2"
+
+[dev-dependencies]
+plx_media_codecs = { path = ".", features = ["devtriggers"] }
+
+[lints]
+workspace = true

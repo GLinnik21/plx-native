@@ -33,6 +33,24 @@ as `webos-caps: … answer=unsupported source=webos3`). Device-measured 2026-10-
 access unit and never starts its clock (0:00 forever), and the same build with the declaration
 removed plays. One set measured; webOS 4+ and an unreadable version keep configd's answer.
 
+**On webOS 5.5.0-19 (`jhericurl-jervisbay`) and 6.5.3-47 (`kisscurl-koli`, the LG C1) a Dolby Vision
+play withdraws its declaration at a landing the splitter would skip** (#1166). The 5.5.0-19
+`libgstdvsplitter.so` (built only when the Load carries the node) lets only an HEVC IDR be the first
+picture after its init or a flush, so a file whose later random access points are CRAs sits on
+Buffering after every seek and every resume (observed on a CX). The 6.5.3-47 image's splitter has the
+same dispatch, read from its disassembly; the hang was not observed on a C1. The shared device
+table (`devcaps::EXCLUSIONS`) declares those two firmwares IDR-first (`Caps::dv_first_picture`); a landing
+keyframe that is not an IDR (the demuxer classifies it, `aq::hevc_irap_not_idr`) is then not fed:
+the Feed's `dv_start` guard (`play-feed/src/dv_start.rs`) holds it and raises a withdrawal (`FeedLoad::dv_landing_due`), and the pump withdraws the route's declaration (`route::withdraw_dv_presentation`: exactly what
+Off would have planned, the probed capability kept) and reloads once at the same target. For a build
+nobody has read, the same guard withdraws after 4 s with no position update once 700 ms of video was
+accepted. The withdrawal lasts for the rest of that play (Diagnostics reads `base-layer (supported)`,
+the viewer gets the HDR10 base layer, a seek back to 0:00 stays HDR10, and so does a return to
+Original after a trip to HLS, because the stored Original candidate is downgraded with the route);
+the next play is planned again. Only a declared direct play is withdrawn: a Profile 5 (no base layer) and a remux that copies
+the video are reported in the log and fed as before. `platform_gate` is not the vehicle: it removes
+Dolby Vision from every play on a set, while this keeps it wherever the landing is an IDR.
+
 | Source | Confirmed supported | Unsupported / unknown |
 |---|---|---|
 | **P8 single-layer, CCID 1/2/4** | declare + direct play | no node; direct-play the HDR10/SDR/HLG base |
@@ -299,6 +317,10 @@ vs transcoded"; `/tmp/plxnative-nofps` withholds the esInfo fps rational (withho
 **worse** — 163/160 misses against 82/3 — which is how we learned the pipeline's lattice depends on
 what we send, shortly before learning it does not depend on it in the way we hoped).
 
+`/tmp/plxnative-dvfirstpicture` (a file holding `idr` or `any`, `devtriggers` builds, read at boot) forces
+the splitter rule for this run: `idr` makes every non-IDR landing withdraw, `any` turns a listed
+build's row off so the 4 s watch is what fires (#1166).
+
 Capability experiments use two presence-only, boot-latched triggers:
 `/tmp/plxnative-dvcaps0` forces Unsupported and `/tmp/plxnative-dvcaps1` forces Supported. If both
 exist, `dvcaps0` wins and the conflict is logged. Restart the app between cases; changing a file
@@ -470,6 +492,15 @@ human at the panel, check whether the platform already publishes it.
 
 ## 7. Open
 
+- **The IDR-first splitter (#1166).** The NAL-type tables of the 4.10.2 (`b38aedc9`, `4096b724`) and
+  6.5.3-47 (`239b3e04`) splitters are read (`docs/measurements/issue1166-cra.md`): 4.10.2 admits 16
+  to 21, so a CRA first is accepted and the dev set cannot reproduce the hang; 6.5.3-47 admits only
+  19 and 20, so the C1 has a row. The C1 row is from the disassembly; the hang was not observed on
+  a C1. Still open: the 4 s threshold is unmeasured on any 5.x or 6.x set; the watch reads the
+  pipeline's 5 Hz position updates (`SHARED.frames`), not presented pictures, so a firmware that
+  keeps sending them while presenting nothing is not caught (a listed build is covered by its row);
+  the panel's Dolby Vision to HDR10 switch on the withdrawing reload and a PMS video-copy remux
+  landing on a CRA are unmeasured.
 - **Profile 7.** Converted to 8.1 in-app (§1), which plays the base layer and the dynamic metadata
   and discards a full enhancement layer's residual detail. Playing that detail would need to know
   whether `gst_dvbin_pipeline_dovi_dual` can be fed from a single appsrc, or whether a second one

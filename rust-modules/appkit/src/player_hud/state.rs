@@ -216,8 +216,8 @@ pub fn slot_with_preferences(ps: &plx_media::route::PlaybackSession, meta: plx_d
     // The data layer does not read the player: the playhead is sampled here, once, and handed in.
     let head = plx_data::metadata::Playhead {
         playing: plx_media::player::is_playing(ps),
-        pos_ns: plx_media::player::playpos_ns(),
-        dur_ns: plx_media::player::duration_ns(),
+        pos_ns: plx_media::player::observed_position_ns(ps).unwrap_or(0),
+        dur_ns: plx_media::player::observed_duration_ns(ps).unwrap_or(0),
     };
     // Server marker first; the synthesized tail only exists where credits DETECTION does not
     // (a Plex Pass server feature) — see `metadata::synthesized_tail_marker` — and only to feed
@@ -380,7 +380,7 @@ pub fn busy(ps: &plx_media::route::PlaybackSession) -> Busy {
     if plx_base::devtrig::flag("failtest") {
         return Busy::Readout(StatusKind::Failed, plx_media::player::error_caption(ps));
     }
-    busy_surface(ps, plx_media::player::state(ps), plx_media::player::seen_frame())
+    busy_surface(ps, plx_media::player::state(ps), plx_media::player::reported_frame(ps).unwrap_or(false))
 }
 
 // ---- the transport STATE READ-OUT (the glyph slot just past the elapsed clock) ---------------
@@ -417,7 +417,7 @@ pub enum TransportMark {
 
 /// PURE: which mark the state read-out wears, given the transport's live state.
 ///
-/// * `paused` — `player::TX.paused`.
+/// * `paused` — `plx_play_feed::shared::FEED_TX.paused`.
 /// * `busy` — the frame's single resolve ([`busy_surface`]); only [`Busy::Transport`] reaches here,
 ///   the other two being the centred read-out's business.
 /// * `scrubbing` — `player::TX.scrub_ns >= 0`, i.e. a LIVE preview the user is dragging. It is its

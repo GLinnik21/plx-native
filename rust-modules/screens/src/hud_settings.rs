@@ -26,13 +26,16 @@
 //! (no fetch or package work in flight, no keyboard or prompt up). On any other row Play is left unhandled; no row
 //! and no string is added.
 //!
-//! **What a row says.** The package's `name` (the author's text: a server-style label, never measured by
-//! the fit report; the app's own HUD is named *Built-in*, which is also its tier, so its row says no tier under
-//! it), then its trust tier (*Unreviewed* for a sideload, none for a registry package) and one more fact: why it
-//! cannot run (a format the app does not read, an app range it is outside of, or "Doesn't fit in {language}": a
-//! compile the television refused in the current language, where classic draws and the selection is kept), else
-//! "Installed until restart" when only the volatile directory holds it. One fact is what the detail line fits in
-//! every language.
+//! **What a row says** (Settings v2). A row is its label and, when it cannot be used, the reason as its value
+//! ([`Row::disabled`]: the ghost focus pill, `rust-modules/ui/src/CLAUDE.md` rule 5, the disabled paragraph): the package's `name` (the author's text: a
+//! server-style label, never measured by the fit report; the app's own HUD is named *Built-in*, which is also its
+//! tier, so its row says no tier under it), *Unreviewed* under it for a sideload (a status, so it keeps its sub-line),
+//! and, for a package that cannot run, why as the value: a format the app does not read, an app range it is outside
+//! of, a withdrawal, or "Doesn't fit in {language}" (a compile the television refused in the current language, where
+//! classic draws and the selection is kept; the row is DISABLED, so OK on it does nothing). "Installed until restart", when only the volatile directory holds a
+//! usable package, joins the sub-line. Everything else a row used to say under its name is the **sentence that follows
+//! focus** in the left column ([`FollowCopy`]; [`HudPage::sentence`] is a pure function of the focused row and the
+//! listing): the page's own while a row has none, a refusal or fetch notice outranking every row's.
 use std::borrow::Cow;
 use std::sync::mpsc::{self, Receiver};
 
@@ -43,6 +46,7 @@ use plx_machine::machine::{
     Machine, MachineId, TextEdit, NavOp,
 };
 use plx_ui::decision_prompt::{DecisionPrompt, PromptStep};
+use plx_ui::follow_copy::{FollowCopy, LandscapePicture};
 use plx_ui::text_buffer::TextBuffer;
 use plx_ui::form::{Form, FormSection, FormTable, RowKey, RowKind};
 use plx_ui::frame::Budget;
@@ -168,6 +172,10 @@ pub struct HudPage {
     state: State,
     list: HudList,
     copy: String,
+    /// The sentence each row with one of its own says beside the table while it has focus ([`HudPage::sentence`]).
+    says: Says,
+    /// The sentence beside the table, which follows the focused row. Decoration: not part of the canonical state.
+    follow: FollowCopy,
     /// The list's channel: the sender went to the Bridge with `HudCmd::Open`.
     rx: Receiver<HudList>,
     tx: Option<mpsc::Sender<HudList>>,
@@ -243,91 +251,175 @@ fn join(parts: &[String]) -> String {
     parts.join(" \u{b7} ")
 }
 
+/// Why a package cannot be used now. The reason is its row's value ([`why_value`]); the sentence under the title says
+/// what to do ([`why_sentence`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Why {
+    /// The app will not run it: a format or app range it does not accept, or a withdrawal.
+    Format(Unloadable),
+    /// The television refused its compile in the current language, so classic draws and the selection is kept.
+    Language,
+}
+
+/// Why `entry` cannot be used, if it cannot.
+fn why_of(entry: &Entry, list: &HudList) -> Option<Why> {
+    match entry.loadable {
+        Err(why) => Some(Why::Format(why)),
+        Ok(()) if entry.sha.is_some_and(|sha| list.unfit.contains(&sha)) => Some(Why::Language),
+        Ok(()) => None,
+    }
+}
+
+/// The reason, as the row's value: short, in the viewer's words.
+fn why_value(why: Why, list: &HudList) -> String {
+    match why {
+        Why::Format(why) => unloadable_text(why).to_owned(),
+        Why::Language => plx_platform::i18n::msg::settings_hud_unfit_language(&list.language),
+    }
+}
+
+/// What the line under the title says while the row of a HUD that cannot be used has focus: why, and what to do. A
+/// withdrawn HUD adds the catalog's own reason when it gave one.
+fn why_sentence(why: Why, list: &HudList, sha: Option<Sha>) -> String {
+    use plx_platform::i18n::msg;
+    match why {
+        Why::Format(Unloadable::Revoked) => {
+            let said = msg::settings_hud_withdrawn_detail();
+            match list.catalog.revoked(sha.unwrap_or_else(|| Sha::of(&[]))) {
+                Some(reason) => format!("{said} {reason}"),
+                None => said.to_owned(),
+            }
+        }
+        Why::Format(Unloadable::NewerFormat) => msg::settings_hud_newer_detail().to_owned(),
+        Why::Format(Unloadable::OlderFormat) => msg::settings_hud_older_detail().to_owned(),
+        Why::Format(Unloadable::AppRange) => msg::settings_hud_app_range_detail().to_owned(),
+        Why::Language => msg::settings_hud_unfit_detail(&list.language),
+    }
+}
+
+/// `row` as the row of a HUD that has `why` (or none): the reason as its value. The ghost state, and OK doing nothing,
+/// are the section's `.disabled(why.is_some())`: one mechanism ([`plx_ui::form::FormSection::disabled`]).
+fn with_why(row: Row, why: Option<Why>, list: &HudList) -> Row {
+    match why {
+        Some(why) => row.value(why_value(why, list)),
+        None => row,
+    }
+}
+
 /// What a package row says under its name: its trust tier (*Unreviewed* for a sideload; a registry package says
-/// none, and the built-in's tier is its name, [`name_of`], so it is not said twice) and ONE more fact: why it cannot
-/// run (a format or app range the app does not accept, or a compile the television refused in the current
-/// language), else "Installed until restart" when only the volatile directory holds it.
+/// none, and the built-in's tier is its name, [`name_of`], so it is not said twice) and, when the package is usable,
+/// "Installed until restart" when only the volatile directory holds it. Why a package cannot be used is its row's
+/// value ([`why_of`]), not a fact here.
 fn facts_of(entry: &Entry, list: &HudList) -> Vec<String> {
     let mut facts = Vec::new();
     match entry.trust {
         Trust::BuiltIn | Trust::Registry => {}
         Trust::Unreviewed => facts.push(plx_platform::i18n::msg::settings_hud_unreviewed().to_owned()),
     }
-    // Two facts fit a row's detail line in every language; three do not (French and Belarusian with the
-    // longest language name), so the reason a package cannot run outranks "installed until restart".
-    match entry.loadable {
-        Err(Unloadable::Revoked) => facts.push(list.catalog.revoked(entry.sha.unwrap_or_else(|| Sha::of(&[])))
-            .map_or_else(|| unloadable_text(Unloadable::Revoked).to_owned(), |why| format!("{} {why}", unloadable_text(Unloadable::Revoked)))),
-        Err(why) => facts.push(unloadable_text(why).to_owned()),
-        Ok(()) if entry.sha.is_some_and(|sha| list.unfit.contains(&sha)) => {
-            facts.push(plx_platform::i18n::msg::settings_hud_unfit_language(&list.language));
-        }
-        Ok(()) if entry.until_restart => facts.push(plx_platform::i18n::msg::settings_hud_until_restart().to_owned()),
-        Ok(()) => {}
+    // The reason a package cannot be used outranks "installed until restart": the value column and a second fact do
+    // not both fit a row in every language.
+    if entry.until_restart && why_of(entry, list).is_none() {
+        facts.push(plx_platform::i18n::msg::settings_hud_until_restart().to_owned());
     }
     facts
 }
 
+/// One row's sentence: the row, and what the line under the title says while it has focus.
+type Says = Vec<(HudId, String)>;
+
 /// The page's rows from the list alone: the packages (the built-in first), a removal row for each installed
-/// one, and the drop files under their own header when there are any.
-fn hud_form(list: &HudList, draft: Option<&TextBuffer>) -> Form<HudId, HudAction, SettingsPage> {
+/// one, and the drop files under their own header when there are any. Beside them, the sentence each row that has
+/// one of its own says while it has focus.
+fn hud_form(list: &HudList, draft: Option<&TextBuffer>) -> (Form<HudId, HudAction, SettingsPage>, Says) {
+    use plx_platform::i18n::msg;
+    let mut says = Says::new();
     let mut packs = FormSection::new("");
     let mut removals = FormSection::new("");
     for (i, entry) in list.entries.iter().enumerate() {
         let name = name_of(entry);
-        let mut row = Row::new(&name).checked(entry.selected).detail(join(&facts_of(entry, list))).dim(entry.loadable.is_err());
+        let why = why_of(entry, list);
+        let mut row = with_why(Row::new(&name).checked(entry.selected).detail(join(&facts_of(entry, list))), why, list);
         if entry.meta.is_some() {
             row = row.server_label();
         }
         packs = packs.item_keyed(HudId::Pack(entry.id.clone()), RowKey(i as u32), RowKind::Choice, HudAction::Select(entry.id.clone()), row)
-            .disabled(entry.loadable.is_err());
+            .disabled(why.is_some());
+        if let Some(why) = why {
+            says.push((HudId::Pack(entry.id.clone()), why_sentence(why, list, entry.sha)));
+        }
         let managed_in_gallery = entry.sha.is_some_and(|sha|
             list.catalog.index.as_ref().is_some_and(|index| index.entries.iter().any(|p| p.sha() == sha
                 && p.compatible(&list.app_version, &list.language_tag, plx_appkit::hud_format::bundle::MAX_ARTIFACT_BYTES)))
                 && list.catalog.revoked(sha).is_none() && !list.unfit.contains(&sha));
         if entry.id != BUILTIN_CLASSIC && !managed_in_gallery {
-            let row = Row::new(&name).server_label().detail(plx_platform::i18n::msg::settings_hud_remove());
+            let row = Row::new(msg::settings_hud_remove_named(&name)).server_label();
             removals = removals.item_keyed(HudId::Remove(entry.id.clone()), RowKey(REMOVE_KEY + i as u32), RowKind::Button, HudAction::Remove(entry.id.clone()), row).disabled(list.package_busy);
+            says.push((HudId::Remove(entry.id.clone()), msg::settings_hud_remove_detail().to_owned()));
         }
     }
-    // The address row: the keyboard's text while it is up, "Downloading…" while a fetch runs, else what to type.
+    // The address row: the keyboard's text while it is up, "Downloading…" while a fetch runs, else what to type. The
+    // line is a field hint (and the typed text), so it stays the row's sub-line.
     let detail = match draft {
         Some(text) => text.with_insertion_marker("|"),
-        None if list.fetching => plx_platform::i18n::msg::settings_hud_fetching().to_owned(),
-        None => plx_platform::i18n::msg::settings_hud_address_hint().to_owned(),
+        None if list.fetching => msg::settings_hud_fetching().to_owned(),
+        None => msg::settings_hud_address_hint().to_owned(),
     };
-    let row = Row::new(plx_platform::i18n::msg::settings_hud_address()).detail(detail).dim(list.fetching);
+    let row = Row::new(msg::settings_hud_address()).detail(detail).dim(list.fetching);
     let address = FormSection::new("").item_keyed(HudId::Address, RowKey(ADDRESS_KEY), RowKind::Button, HudAction::Address, row);
-    let mut folder = FormSection::new(plx_platform::i18n::msg::settings_hud_folder()).visible(!list.drops.is_empty());
+    let mut folder = FormSection::new(msg::settings_hud_folder()).visible(!list.drops.is_empty());
     for (i, file) in list.drops.iter().enumerate() {
         let name = file.meta.as_ref().map_or_else(|| file.name.clone(), |m| m.name.clone());
-        let detail = match file.status {
-            Ok(()) => join(&[plx_platform::i18n::msg::settings_hud_install().to_owned(), plx_platform::i18n::msg::settings_hud_unreviewed().to_owned()]),
-            Err(why) => refusal_text(why).to_owned(),
-        };
-        let row = Row::new(&name).server_label().detail(detail);
+        // An installable file keeps its sub-line (what OK does, and that the file is unreviewed); one that cannot be
+        // installed says why as its value, and the sentence says what to do.
+        let mut row = Row::new(&name).server_label();
         let (id, action) = match file.sha {
             Some(sha) => (HudId::Drop(sha), HudAction::Install(sha)),
             None => (HudId::DropFile(i), HudAction::Inert),
         };
+        match file.status {
+            Ok(()) => row = row.detail(join(&[msg::settings_hud_install().to_owned(), msg::settings_hud_unreviewed().to_owned()])),
+            Err(why) => {
+                row = row.value(refusal_text(why));
+                says.push((id.clone(), match why {
+                    Refusal::Unloadable(why) => why_sentence(Why::Format(why), list, file.sha),
+                    _ => msg::settings_hud_file_detail().to_owned(),
+                }));
+            }
+        }
         folder = folder.item_keyed(id, RowKey(DROP_KEY + i as u32), RowKind::Button, action, row).disabled(file.status.is_err());
     }
     let gallery = FormSection::new("").item_keyed(HudId::Browse, RowKey(0x4000), RowKind::Nav(SettingsPage::HudGallery), HudAction::Inert,
-        Row::new(plx_platform::i18n::msg::settings_hud_browse()));
-    Form::new().section(packs).section(gallery).section(removals).section(address).section(folder)
+        Row::new(msg::settings_hud_browse()));
+    (Form::new().section(packs).section(gallery).section(removals).section(address).section(folder), says)
+}
+
+/// What a refusal, a failed fetch or an install no storage took puts under the title, while one is in force: the typed
+/// address's refusal, else the last notice's. `None` when nothing is, and the page says its own sentence.
+fn notice_text(list: &HudList, refused: Option<AddressError>) -> Option<String> {
+    if let Some(why) = refused {
+        return Some(address_text(why).to_owned());
+    }
+    match &list.notice {
+        Some(Notice::Refused { reason, .. }) => Some(refusal_text(*reason).to_owned()),
+        Some(Notice::FetchFailed { reason }) => Some(fetch_text(*reason).to_owned()),
+        Some(Notice::NotWritten { .. }) => Some(plx_platform::i18n::msg::settings_hud_not_saved().to_owned()),
+        _ => None,
+    }
 }
 
 /// What the line under the title says: the last notice, else what the page is.
 fn copy_of(list: &HudList, refused: Option<AddressError>) -> String {
-    if let Some(why) = refused {
-        return address_text(why).to_owned();
-    }
-    match &list.notice {
-        Some(Notice::Refused { reason, .. }) => refusal_text(*reason).to_owned(),
-        Some(Notice::FetchFailed { reason }) => fetch_text(*reason).to_owned(),
-        Some(Notice::NotWritten { .. }) => plx_platform::i18n::msg::settings_hud_not_saved().to_owned(),
-        _ => plx_platform::i18n::msg::settings_hud_copy().to_owned(),
-    }
+    notice_text(list, refused).unwrap_or_else(|| plx_platform::i18n::msg::settings_hud_copy().to_owned())
+}
+
+/// What a page builds from the listing.
+struct Built {
+    form: Form<HudId, HudAction, SettingsPage>,
+    says: Says,
+    title: String,
+    parent: String,
+    /// The page's own sentence.
+    copy: String,
 }
 
 impl HudPage {
@@ -342,6 +434,8 @@ impl HudPage {
             state: State { selected: 0, rows: 0, notice: 0, confirming: false, affirmative: false, alert_scroll: 0, editing: false, fetching: false, kind: 0, scene: 0, visible: false, suspended: false, pending_select_focus: false, registry_request: false, provisional: true },
             list: HudList::default(),
             copy: String::new(),
+            says: Says::new(),
+            follow: FollowCopy::new(""),
             rx,
             tx: Some(tx),
             asking: None,
@@ -360,6 +454,8 @@ impl HudPage {
             ),
         };
         page.rebuild(None);
+        // a page opens on its first sentence at once, with nothing fading
+        page.follow = FollowCopy::new(&page.sentence());
         page
     }
 
@@ -369,6 +465,7 @@ impl HudPage {
         out.state.kind = match page { SettingsPage::HudGallery => 1, SettingsPage::HudDetail(..) => 2,
             SettingsPage::HudAbout(..) => 3, SettingsPage::HudPreview(..) => 4, _ => 0 };
         out.rebuild(None);
+        out.follow = FollowCopy::new(&out.sentence());
         out
     }
 
@@ -380,14 +477,19 @@ impl HudPage {
         self.list.catalog.package(sha)
     }
 
-    fn gallery_form(&self) -> (Form<HudId, HudAction, SettingsPage>, String, String, String) {
+    /// The page's rows and words from the listing alone.
+    fn gallery_form(&self) -> Built {
         // placeholder-exempt: Selects copy only; Header::with_pending_copy counts and sentinel-paints its loading read-out.
         use plx_platform::i18n::msg;
         let mut rows = FormSection::new("");
+        let mut says = Says::new();
+        // the page's STATE (a delisted or withdrawn package, a catalog that could not refresh) is the
+        // sentence beside the table whatever row has focus, as a refusal notice is on the Player HUD page
+        let mut stateful = false;
         let (title, parent, mut copy) = match self.page {
             SettingsPage::PlayerHud => {
-                let form = hud_form(&self.list, self.state.editing.then_some(&self.draft));
-                return (form, msg::settings_hud_title().into(), parent_title().into(), copy_of(&self.list, self.address_error));
+                let (form, says) = hud_form(&self.list, self.state.editing.then_some(&self.draft));
+                return Built { form, says, title: msg::settings_hud_title().into(), parent: parent_title().into(), copy: copy_of(&self.list, self.address_error) };
             }
             SettingsPage::HudGallery => {
                 if let Some(index) = &self.list.catalog.index {
@@ -409,39 +511,59 @@ impl HudPage {
             }
             SettingsPage::HudDetail(sha) | SettingsPage::HudPreview(sha) => {
                 let Some(package) = self.package() else {
-                    return (Form::new(), msg::settings_hud_title().into(), msg::settings_hud_gallery().into(), msg::settings_hud_empty().into());
+                    return Built { form: Form::new(), says, title: msg::settings_hud_title().into(), parent: msg::settings_hud_gallery().into(), copy: msg::settings_hud_empty().into() };
                 };
                 rows = rows.item_keyed(HudId::Preview, RowKey(0), RowKind::Nav(SettingsPage::HudPreview(sha)),
                     HudAction::Inert, Row::new(msg::settings_hud_preview()));
+                says.push((HudId::Preview, msg::settings_hud_preview_detail().into()));
                 let installed = self.list.entries.iter().find(|e| e.id == package.id);
                 if let Some(entry) = installed.filter(|e| e.sha == Some(sha)) {
+                    let why = why_of(entry, &self.list);
                     rows = rows.item_keyed(HudId::Use, RowKey(1), RowKind::Button, HudAction::Use(package.id.clone()),
-                        Row::new(msg::settings_hud_use()).checked(entry.selected).dim(entry.loadable.is_err()))
-                        .disabled(entry.loadable.is_err());
+                        with_why(Row::new(msg::settings_hud_use()).checked(entry.selected), why, &self.list))
+                        .disabled(why.is_some());
+                    says.push((HudId::Use, why.map_or_else(|| msg::settings_hud_use_detail().to_owned(), |why| why_sentence(why, &self.list, Some(sha)))));
                 } else {
                     let newer = installed.and_then(|e| e.meta.as_ref()).is_none_or(|m|
                         plx_data::hudpacks::Semver::parse(&m.version) < plx_data::hudpacks::Semver::parse(&package.version));
                     let listed = self.list.catalog.index.as_ref().is_some_and(|index| index.entries.iter().any(|p| p.sha() == sha));
-                    let can = listed && newer && !self.list.package_busy
-                        && self.list.catalog.revoked(sha).is_none() && !self.list.unfit.contains(&sha)
-                        && package.compatible(&self.list.app_version, &self.list.language_tag, plx_appkit::hud_format::bundle::MAX_ARTIFACT_BYTES);
+                    // why this package cannot be installed, when the catalog or the language says so
+                    let why = if self.list.catalog.revoked(sha).is_some() { Some(Why::Format(Unloadable::Revoked)) }
+                        else if self.list.unfit.contains(&sha) { Some(Why::Language) }
+                        else if !package.compatible(&self.list.app_version, &self.list.language_tag, plx_appkit::hud_format::bundle::MAX_ARTIFACT_BYTES) { Some(Why::Format(Unloadable::AppRange)) }
+                        else { None };
+                    let can = listed && newer && !self.list.package_busy && why.is_none();
+                    // a disabled Install always says why: the format, language or app range, else the catalog no
+                    // longer lists the package, else an equal or newer version is installed (busy has its own label)
+                    let reason = why.map(|why| why_value(why, &self.list)).or_else(|| if !listed { Some(msg::settings_hud_unavailable_value().to_owned()) }
+                        else if !newer { Some(msg::settings_hud_already().to_owned()) } else { None });
+                    let updating = installed.is_some() && newer;
                     let label = if self.list.fetching { msg::settings_hud_fetching() }
-                        else if installed.is_some() && newer { msg::settings_hud_update() } else { msg::settings_hud_install() };
-                    let row = Row::new(label).dim(!can);
+                        else if updating { msg::settings_hud_update() } else { msg::settings_hud_install() };
+                    let row = reason.iter().fold(Row::new(label), |row, reason| row.value(reason));
                     rows = rows.item_keyed(HudId::InstallRegistry(sha), RowKey(1), RowKind::Button, HudAction::FetchRegistry(sha), row).disabled(!can);
+                    // no sentence of its own when its value already says why (delisted, or not newer): the page's
+                    says.extend(match why {
+                        Some(why) => Some(why_sentence(why, &self.list, Some(sha))),
+                        None if reason.is_some() => None,
+                        None if updating => Some(msg::settings_hud_update_detail().to_owned()),
+                        None => Some(msg::settings_hud_install_detail().to_owned()),
+                    }.map(|says| (HudId::InstallRegistry(sha), says)));
                 }
                 rows = rows.item_keyed(HudId::About, RowKey(2), RowKind::Nav(SettingsPage::HudAbout(sha)),
                     HudAction::Inert, Row::new(msg::settings_hud_about()));
+                says.push((HudId::About, msg::settings_hud_about_detail().into()));
                 let listed = self.list.catalog.index.as_ref().is_some_and(|index| index.entries.iter().any(|p| p.sha() == sha));
                 let copy = if !listed && self.list.catalog.revoked(sha).is_none() { msg::settings_hud_unavailable().into() }
                     else if let Some(why) = self.list.catalog.revoked(sha) { format!("{} {why}", msg::settings_hud_revoked()) }
                     else if self.list.catalog.refresh_failed && installed.is_none() { msg::settings_hud_catalog_cached().into() }
                     else { msg::settings_hud_copy().into() };
+                stateful = copy != msg::settings_hud_copy();
                 (package.name.clone(), msg::settings_hud_gallery().into(), copy)
             }
             SettingsPage::HudAbout(_) => {
                 let Some(package) = self.package() else {
-                    return (Form::new(), msg::settings_hud_about().into(), msg::settings_hud_gallery().into(), msg::settings_hud_empty().into());
+                    return Built { form: Form::new(), says, title: msg::settings_hud_about().into(), parent: msg::settings_hud_gallery().into(), copy: msg::settings_hud_empty().into() };
                 };
                 for (i, (label, value)) in [(msg::settings_hud_author(), package.author.clone()),
                     (msg::settings_hud_version(), package.version.clone()), (msg::settings_hud_license(), package.license.clone()),
@@ -453,6 +575,7 @@ impl HudPage {
                 if self.list.entries.iter().any(|e| e.id == package.id) {
                     rows = rows.item_keyed(HudId::Remove(package.id.clone()), RowKey(4), RowKind::Button,
                         HudAction::RemoveAndReturn(package.id.clone()), Row::new(msg::settings_hud_remove())).disabled(self.list.package_busy);
+                    says.push((HudId::Remove(package.id.clone()), msg::settings_hud_remove_detail().into()));
                 }
                 (msg::settings_hud_about().into(), package.name.clone(), String::new())
             }
@@ -464,7 +587,24 @@ impl HudPage {
         if self.state.registry_request && matches!(self.list.notice, Some(Notice::FetchFailed {..} | Notice::Refused {..} | Notice::NotWritten {..})) {
             copy = copy_of(&self.list, None);
         }
-        (Form::new().section(rows), title, parent, copy)
+        if stateful { says.clear(); }
+        Built { form: Form::new().section(rows), says, title, parent, copy }
+    }
+
+    /// **The sentence beside the table**, a pure function of the focused row and the listing: a refusal or fetch
+    /// notice in force outranks everything; else the focused row's own ([`Says`]: why it cannot be used, or what it
+    /// does); else the page's.
+    fn sentence(&self) -> String {
+        let noticed = match self.page {
+            SettingsPage::PlayerHud => notice_text(&self.list, self.address_error).is_some(),
+            _ => self.state.registry_request && matches!(self.list.notice, Some(Notice::FetchFailed {..} | Notice::Refused {..} | Notice::NotWritten {..})),
+        };
+        if noticed {
+            return self.copy.clone();
+        }
+        self.form.selected_id()
+            .and_then(|id| self.says.iter().find(|(row, _)| row == id))
+            .map_or_else(|| self.copy.clone(), |(_, says)| says.clone())
     }
 
     /// The focused catalog appearance. Its artwork is display-only; Preview is a separate row.
@@ -521,18 +661,27 @@ impl HudPage {
     }
 
     fn view(&self) -> TableScreen<'_> {
-        let mut header = Header::new(RouteLayout::screen(), Some(&self.parent), &self.title, &self.copy);
-        if matches!(self.page, SettingsPage::HudGallery) && self.list.catalog.fetching && self.form.table.n_rows() == 0 {
-            header = header.with_pending_copy("hud-gallery");
-        }
-        if !self.preview_cycle.is_empty() && !matches!(self.page, SettingsPage::HudAbout(..)) {
-            header = header.with_preview_cycle(&self.preview_cycle);
-        } else if !matches!(self.page, SettingsPage::HudAbout(..)) {
-            if let Some(art) = self.preview_package().and_then(|p| p.preview(&self.list.language_tag)) {
-                header = header.with_preview(plx_ui::widgets::Art::content_png(&art.url));
-            }
-        }
+        let header = Header::new(RouteLayout::settings_page(), Some(&self.parent), &self.title, &self.copy);
+        // The gallery's loading read-out is the page's own copy, counted and sentinel-painted as one; any other
+        // sentence follows focus.
+        let header = if matches!(self.page, SettingsPage::HudGallery) && self.list.catalog.fetching && self.form.table.n_rows() == 0 {
+            header.with_pending_copy("hud-gallery")
+        } else {
+            header.with_follow(&self.follow)
+        };
         TableScreen::new(header, &self.form.table, GroupId(0), self.entry).keyed(&self.form)
+    }
+
+    /// The picture slot's art: the focused (gallery) or shown (package page) HUD's preview, display-only. Nothing on
+    /// About, on a page whose focus is on no HUD, or for a HUD with no preview in the language.
+    fn picture(&self) -> Option<LandscapePicture<'_>> {
+        if matches!(self.page, SettingsPage::HudAbout(..)) {
+            return None;
+        }
+        let art = self.preview_package().and_then(|p| p.preview(&self.list.language_tag))
+            .map(|art| plx_ui::widgets::Art::content_png(&art.url));
+        let cycle = (!self.preview_cycle.is_empty()).then_some(&self.preview_cycle);
+        (art.is_some() || cycle.is_some()).then_some(LandscapePicture { art, cycle })
     }
 
     fn focus(&self, fx: &mut Effects<'_, InnerHost>, group: GroupId) {
@@ -550,11 +699,13 @@ impl HudPage {
 
     /// Build the rows from `self.list`, keeping the cursor on its row by identity.
     fn rebuild(&mut self, keep: Option<HudId>) {
-        let (form, title, parent, copy) = self.gallery_form();
+        let Built { form, says, title, parent, copy } = self.gallery_form();
         self.copy = copy;
+        self.says = says;
         self.title = title;
         self.parent = parent;
         self.form.table.compact = false;
+        self.form.table.board_metrics(true);
         self.form.table.header_ink = theme::TEXT_READING;
         self.form.table.list_focused = true;
         self.form.set(form, keep.as_ref());
@@ -570,6 +721,7 @@ impl HudPage {
             Some(Notice::FetchFailed { .. }) => 7,
         };
         self.state.selected = self.form.key_at(self.form.table.sel.max(0) as usize).map_or(0, |k| k.0);
+        self.follow.follow(&self.sentence());
     }
 
     /// Open the page's channel on the first event, so a page that never gets one asks for nothing.
@@ -827,6 +979,10 @@ impl Machine<InnerHost> for HudPage {
                         Some(HudId::Use)
                     } else { self.form.selected_id().cloned() };
                     self.rebuild(keep);
+                    if !had_rows && self.form.table.n_rows() > 0 {
+                        // the first rows are the page arriving, not a focus move: its sentence is there at once
+                        self.follow = FollowCopy::new(&self.sentence());
+                    }
                     if !had_rows && self.form.table.n_rows() > 0 && cx.focus.current.is_none() {
                         self.focus(fx, GroupId(0));
                     }
@@ -854,7 +1010,8 @@ impl Machine<InnerHost> for HudPage {
                 cycle.set_frames(&self.preview_frames());
                 cycle.tick(*t, self.preview_active(), &mut fx.present());
                 self.preview_cycle = cycle;
-                self.form.table.update(t.dt(), RouteLayout::screen().sectioned_table().h);
+                self.form.table.update(t.dt(), RouteLayout::settings_page().sectioned_table().h);
+                self.follow.update(t.dt());
                 Handled::Yes
             }
             ScreenEvent::Input(InputEvent { kind, .. }) if self.state.editing || matches!(kind, InputKind::SystemKeyboard(_)) => self.typing(kind, cx, fx),
@@ -881,6 +1038,7 @@ impl Machine<InnerHost> for HudPage {
                 if matches!(by, plx_machine::machine::By::Dir | plx_machine::machine::By::Pointer) { self.state.provisional = false; }
                 form_focus(&mut self.form, to.elem);
                 self.state.selected = self.form.key_at(self.form.table.sel.max(0) as usize).map_or(0, |k| k.0);
+                self.follow.follow(&self.sentence());
                 Handled::Yes
             }
             ScreenEvent::Activate(key) => {
@@ -986,7 +1144,15 @@ impl Screen<InnerHost> for HudPage {
                     }
                 }
             }
-        } else { plx_ui::screen::Part::<InnerHost>::draw(&mut self.view(), f, Rect::FULL); }
+        } else {
+            // the picture slot, built from the focused row and the listing alone
+            let picture = self.picture();
+            let mut view = self.view();
+            if let Some(picture) = &picture {
+                view.header.picture = Some(picture);
+            }
+            plx_ui::screen::Part::<InnerHost>::draw(&mut view, f, Rect::FULL);
+        }
         self.prompt.draw(f, self.entry);
     }
     fn render(&self) -> RenderStrategy {
@@ -1004,7 +1170,7 @@ impl Screen<InnerHost> for HudPage {
 #[cfg(test)]
 fn rows_for_test(list: &HudList) -> Vec<(u32, HudId)> {
     let mut form: FormTable<HudId, HudAction, SettingsPage> = FormTable::new(BAND);
-    form.set(hud_form(list, None), None);
+    form.set(hud_form(list, None).0, None);
     (0..form.table.n_rows() as usize).filter_map(|i| Some((form.key_at(i)?.0, form.binding_at(i)?.id.clone()))).collect()
 }
 

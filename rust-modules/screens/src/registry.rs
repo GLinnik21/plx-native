@@ -1338,6 +1338,8 @@ pub trait HomeLike: AppLike<Memory = PageMemory> + Sized {
 /// on this path by construction.
 pub trait PlayerLike: AppLike<Memory = PageMemory> + Sized {
     fn session<'a>(cx: &Cx<'a, Self>) -> &'a plx_media::route::PlaybackSession;
+    /// Viewer pause intent sampled by the host at this frame's Tick boundary.
+    fn transport_paused(cx: &Cx<'_, Self>) -> bool;
 }
 
 pub trait SearchLike: AppLike<Memory = PageMemory> + Sized {
@@ -1557,6 +1559,16 @@ pub mod word {
     pub const PICKER: &str = "picker";
     /// The Player HUD page (`screens::hud_settings`), a page of the Settings family's inner stack.
     pub const PLAYER_HUD: &str = "player-hud";
+    /// The Language page, the Diagnostics page and the Under posters pages (`screens::settings`,
+    /// `settings_diagnostics`, `settings_under_posters`): pages of the Settings family's inner stack, each its own
+    /// `overlay=` word. The two details pickers answer one word PER KIND (`DetailsPage::name`) so a scene
+    /// that boots the Show picker cannot be satisfied by the Movie one. Several are hyphenated, which is why
+    /// `tests/run.py` captures an overlay word as `[\w-]+`.
+    pub const LANGUAGE: &str = "language";
+    pub const DIAGNOSTICS: &str = "diagnostics";
+    pub const UNDER_POSTERS: &str = "under-posters";
+    pub const UNDER_POSTERS_MOVIE: &str = "under-posters-movie";
+    pub const UNDER_POSTERS_SHOW: &str = "under-posters-show";
     pub const HUD_GALLERY: &str = "hud-gallery";
     pub const HUD_DETAIL: &str = "hud-detail";
     pub const HUD_ABOUT: &str = "hud-about";

@@ -22,6 +22,7 @@ synthetic): the invariants being checked — every case ends with an `rk` or a `
 skips only its owner — are properties of the tracked matrix as it actually stands, and a case added
 tomorrow that breaks one of them should fail here rather than on the television.
 """
+import array
 import concurrent.futures
 import functools
 import http.client
@@ -34,6 +35,7 @@ import re
 import shutil
 import signal
 import socket
+import socketserver
 import subprocess
 import sys
 import tempfile
@@ -1151,6 +1153,22 @@ class FpsIdentity(unittest.TestCase):
         self.assertEqual(run.parse_fps(lines, "home", "privacy"), [59])
         self.assertEqual(run.parse_fps(lines, "home", "legal"), [58])
 
+    def test_hyphenated_settings_page_words_are_captured_whole(self):
+        """Settings v2's pages answer hyphenated `Screen::name`s (`under-posters`, `player-hud`). A
+        `\\w+` overlay group stops at the hyphen and reads them as `under` / `player`, so a scene
+        selecting on the full word would find no samples and the harness would report a booted page
+        as "never entered"."""
+        lines = [
+            "loop=60 route=home overlay=under-posters fps=61",
+            "loop=60 route=home overlay=under-posters-movie fps=57 worstframe=9.5ms",
+            "loop=60 route=home overlay=player-hud fps=55",
+        ]
+        self.assertEqual(run.parse_fps(lines, "home", "under-posters"), [61])
+        self.assertEqual(run.parse_fps(lines, "home", "under-posters-movie"), [57])
+        self.assertEqual(run.parse_fps(lines, "home", "player-hud"), [55])
+        self.assertEqual(run.parse_worst(lines, "home", "under-posters-movie"), [9.5])
+        self.assertEqual(run.parse_loop(lines, "home", "player-hud"), [60])
+
     def test_a_scene_that_pins_a_section_grades_only_the_heartbeats_that_name_it(self):
         """A section is the player page's state, not a surface: ` overlay=` stays `none` and the
         heartbeat gains ` section=<word>` after it, which only a scene with a `"section"` key reads."""
@@ -1227,7 +1245,14 @@ class FpsIdentity(unittest.TestCase):
                               ("settings-playback", "playback"),
                               ("settings-picker", "picker"),
                               ("settings-privacy", "privacy"),
-                              ("settings-legal", "legal")):
+                              ("settings-legal", "legal"),
+                              ("settings-language", "language"),
+                              ("settings-audio", "audio"),
+                              ("settings-under-posters", "under-posters"),
+                              ("settings-under-posters-movie", "under-posters-movie"),
+                              ("settings-under-posters-show", "under-posters-show"),
+                              ("settings-player-hud", "player-hud"),
+                              ("settings-diagnostics", "diagnostics")):
             with self.subTest(scene=name):
                 scene = scenes[name]
                 self.assertEqual(scene["route"], "home")
@@ -1235,6 +1260,21 @@ class FpsIdentity(unittest.TestCase):
                 self.assertGreaterEqual(scene["loop_floor"], 50)
                 self.assertGreaterEqual(scene["fps_floor"], 50)
                 self.assertTrue(scene["triggers"]["plxnative-settingsosc"])
+
+        # each Settings v2 page scene boots its own page, and no scene can be satisfied by the root
+        for name, boot in (("settings-language", "language"),
+                           ("settings-audio", "audio"),
+                           ("settings-under-posters", "under-posters"),
+                           ("settings-under-posters-movie", "under-posters-movie"),
+                           ("settings-under-posters-show", "under-posters-show"),
+                           ("settings-player-hud", "player-hud"),
+                           ("settings-diagnostics", "diagnostics")):
+            with self.subTest(scene=name, boot=boot):
+                self.assertEqual(scenes[name]["triggers"]["plxnative-settings"], boot)
+                self.assertNotEqual(scenes[name]["overlay"], "settings")
+        # the two details pickers answer one heartbeat word each, so neither scene can be satisfied by the other
+        self.assertNotEqual(scenes["settings-under-posters-movie"]["overlay"],
+                            scenes["settings-under-posters-show"]["overlay"])
 
         idle = scenes["settings-idle"]
         self.assertEqual(idle["overlay"], "settings")
@@ -1959,6 +1999,114 @@ class PipelineTier(unittest.TestCase):
 
     def _pipeline_cases(self):
         return _manifest()["pipeline_cases"]
+
+    def test_uri_terminal_errors_fail_the_error_gate_and_settle_early(self):
+        # A refusal, a platform error and a probe that could not START are failures. The summary line
+        # is the probe's closing line on a healthy run too, so it is read, never matched whole.
+        for end in ("timeout:load", "timeout:play", "timeout:acb", "timeout:acb-video",
+                    "timeout:register", "refused:play", "refused:acb", "error:601", "error:?"):
+            with self.subTest(end=end):
+                lines = [f"uriprobe: t=40000 summary load=ok playing=yes end={end}"]
+                self.assertFalse(run.a_no_error(lines)[0])
+                self.assertIsNotNone(run.failed_for_good({"expect": {}, "operations": []}, lines))
+        failed_load = ["uriprobe: t=900 summary load=fail(load) playing=no end=back"]
+        self.assertFalse(run.a_no_error(failed_load)[0], "a load that did not complete is an error")
+
+    def test_normal_uri_endings_do_not_fail_the_error_gate(self):
+        # `timeout:currentTime` is the probe's watchdog noticing a stopped clock (about 10 s after it
+        # stops): a stall is graded by `uri_max_stall_s`, and a link-collapse case ends this way on
+        # purpose, so it must not be an error of its own.
+        for end in ("eos", "back", "script", "timeout:currentTime"):
+            with self.subTest(end=end):
+                lines = [f"uriprobe: t=40000 summary load=ok playing=yes end={end}"]
+                self.assertTrue(run.a_no_error(lines)[0])
+                self.assertIsNone(run.failed_for_good({"expect": {}, "operations": []}, lines))
+
+    def test_loopback_fixture_mode_requires_a_fixed_forwarded_port(self):
+        result = subprocess.run([sys.executable, run.__file__, "--fixtures-loopback", "--list"],
+                                capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--fixtures-loopback needs a fixed --fixtures-port", result.stderr)
+
+    def test_loopback_fixture_listing_is_offline(self):
+        result = subprocess.run([sys.executable, run.__file__, "--fixtures-loopback",
+                                 "--fixtures-port", "32498", "--list"],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("pipe_h264_ac3_1080p", result.stdout)
+
+    def test_pipeline_case_arms_requested_extra_triggers_without_changing_assertions(self):
+        case = {"name": "uri-routing", "fixture": "clip.mkv", "operations": [{"op": "play"}],
+                "expect": {"require_video_bound": True}}
+        cfg = {"tv": "test-tv", "extra_triggers": [("plxnative-uriprobe", "load")]}
+        server = mock.Mock()
+        server.stats.return_value = (1, 0, 0)
+        server.segment_rungs.return_value = {}
+        with mock.patch.object(run, "require_tv"), mock.patch.object(run, "make"), \
+                mock.patch.object(run, "apply_triggers") as arm, \
+                mock.patch.object(run, "early_exit_allowed", return_value=(False, None)), \
+                mock.patch.object(run, "stream_case", return_value=([], 1, False, None)), \
+                mock.patch.object(run, "evaluate_pipeline", return_value=(False, [("video_bound", False, "missing")])) as grade, \
+                mock.patch.object(run, "crash_gate", side_effect=lambda cfg, c, n, ls, ok, rs: (ok, rs)), \
+                mock.patch.object(run, "report_and_record"), mock.patch("sys.stdout", io.StringIO()):
+            passed, results, _ = run.run_pipeline_case(case, cfg, server, "http://fixture.invalid", False)
+        self.assertIn(("plxnative-uriprobe", "load"), arm.call_args.args[1])
+        self.assertEqual(json.loads(dict(arm.call_args.args[1])["plxnative-playurl"])["url"],
+                         "http://fixture.invalid/clip.mkv")
+        self.assertIs(grade.call_args.args[0], case)
+        self.assertFalse(passed)
+        self.assertEqual(results, [("video_bound", False, "missing")])
+
+    def test_the_uri_ladder_cases_serve_the_ladder_master_and_arm_the_probe(self):
+        cases = {c["name"]: c for c in self._pipeline_cases()}
+        collapse, capped = cases["pipe_abr_uri_ladder_collapse"], cases["pipe_abr_uri_ladder_capped"]
+        for case, query in ((collapse, "?top=6000"), (capped, "")):
+            # the query is the server's (`top=`), so the ladder pattern is matched on the path alone
+            self.assertTrue(serve_fixtures.RE_ABR_LADDER.match("/" + case["fixture"].split("?", 1)[0]),
+                            case["fixture"])
+            self.assertNotIn("auto_network", case, "the app's own ABR controller never runs in URI mode")
+            files = dict(run.triggers_for_case(case, url_base="http://fixture.invalid"))
+            self.assertEqual(json.loads(files["plxnative-playurl"])["url"],
+                             "http://fixture.invalid/__abr/ladder/master.m3u8" + query,
+                             "a query in `fixture` must survive into the URL the TV is handed")
+        self.assertEqual(serve_fixtures.abr_playlist_rungs(collapse["fixture"]),
+                         ("320", "720", "2000", "4000", "6000"),
+                         "the collapse case stops at 6000, so a segment in flight is not a 20000 one")
+        self.assertEqual(serve_fixtures.abr_playlist_rungs(capped["fixture"]), serve_fixtures.ABR_LADDER,
+                         "the capped case keeps the whole ladder")
+        self.assertEqual(dict(run.triggers_for_case(collapse, url_base="http://fixture.invalid"))["plxnative-uriprobe"],
+                         "load")
+        # the link is the sibling's, so the two cases differ in the controller under test only
+        self.assertEqual(collapse["network_profile"], cases["pipe_abr_down_collapse"]["network_profile"])
+        self.assertNotIn("network_profile", capped, "the capped case runs on an unshaped link")
+        # the cap is the second-lowest rung's BANDWIDTH, and the trigger parses as the probe's syntax
+        second_lowest = int(serve_fixtures.ABR_RUNGS.split("|")[1]) * 1000
+        text = dict(run.triggers_for_case(capped, url_base="http://fixture.invalid"))["plxnative-uriprobe"]
+        self.assertEqual(text, f"load bpsmax={second_lowest}")
+
+    def test_a_ladder_case_needs_every_rung_clip_and_no_file_of_its_own(self):
+        def fresh():
+            return [{"name": "ladder", "fixture": "__abr/ladder/master.m3u8"}]
+
+        with tempfile.TemporaryDirectory() as root:
+            cases = fresh()
+            run._resolve_fixtures(cases, root)
+            self.assertNotIn("path", cases[0])
+            for rung_file in serve_fixtures.ABR_FIXTURE.values():
+                self.assertIn(rung_file, cases[0]["skip"], "every missing clip is named")
+            for rung_file in serve_fixtures.ABR_FIXTURE.values():
+                with open(os.path.join(root, rung_file), "wb") as stream:
+                    stream.write(b"\0")
+            partial = os.path.join(root, serve_fixtures.ABR_FIXTURE["22000"])
+            os.rename(partial, partial + ".gone")
+            cases = fresh()
+            run._resolve_fixtures(cases, root)
+            self.assertIn(serve_fixtures.ABR_FIXTURE["22000"], cases[0]["skip"])
+            os.rename(partial + ".gone", partial)
+            cases = fresh()
+            run._resolve_fixtures(cases, root)
+            self.assertNotIn("skip", cases[0])
+            self.assertIn("path", cases[0])
 
     def test_every_case_ends_with_a_path_or_a_skip(self):
         """The invariant behind `case["fixture"]`/`case["path"]` downstream. Run against an EMPTY
@@ -2787,11 +2935,19 @@ class AutoNetworkProfile(unittest.TestCase):
         same disturbance to the media-segment COUNT, which makes it exact instead of a phase
         coincidence. The rule this test enforces is unchanged — a case that DISTURBS the link must
         assert what the controller does about it — and "disturbs" is what widened, not the duty.
+
+        SCOPED AGAIN on 2026-11-04 for a FOURTH family, `pipe_abr_uri_*`: URI mode hands the
+        playlist to the television's own player, so the app's controller never runs and there is no
+        `abr:` line for an `abr_shape` bound to read. The family measures that native player (what
+        it fetches, per rung, and what its events report), one case collapses the link and one
+        leaves it alone; `test_the_uri_ladder_cases_serve_the_ladder_master_and_arm_the_probe`
+        is their rule.
         """
         shaped = [c for c in _manifest()["pipeline_cases"]
                   if c["name"].startswith("pipe_abr_")
                   and not c["name"].startswith("pipe_abr_pin_")
-                  and not c["name"].startswith("pipe_abr_band_")]
+                  and not c["name"].startswith("pipe_abr_band_")
+                  and not c["name"].startswith("pipe_abr_uri_")]
         self.assertGreaterEqual(len(shaped), 4, "the bad-network profiles are missing")
         for case in shaped:
             with self.subTest(case["name"]):
@@ -3505,6 +3661,124 @@ class AbrTraceMetrics(unittest.TestCase):
             "the pipeline evaluator must grade every authored Pause/Resume edge",
         )
 
+    @staticmethod
+    def _paused_seek_log():
+        """The lines a healthy seek-under-Pause leaves: Pause, a stationary stretch, the scripted
+        seek, its in-place av_seek, the one-shot paused-frame receipt, a stationary landed frame,
+        the Resume, and a climb with both A/V lanes accepted."""
+        return [
+            "loop=60 route=player pos=9s fps=60",
+            "autopause: Pause accepted hold=18000ms",
+            "loop=60 route=player pos=9s fps=0",
+            "loop=60 route=player pos=9s fps=0",
+            "loop=60 route=player pos=9s fps=0",
+            "autoseek: step \u2192 30s (0 left)",
+            "seek(in-place): av_seek t=30000000000 coalesced=0",
+            "in-place seek: setTimeToDecode(30000000000) rv=1 setContentInfo=1 sendSegment=1",
+            "seek: paused frame restored ns=30040000000",
+            "loop=60 route=player pos=30s fps=0",
+            "loop=60 route=player pos=30s fps=0",
+            "loop=60 route=player pos=30s fps=0",
+            "autopause: Resume accepted",
+            "loop=60 route=player pos=30s fps=60",
+            "feed v#400 sz=4096 fed=31000000000 reply=O qbytes=8192",
+            "feed a#800 sz=512 fed=31000000000 reply=O qbytes=1024",
+            "loop=60 route=player pos=31s fps=60",
+            "loop=60 route=player pos=36s fps=60",
+            "loop=60 route=player pos=43s fps=60",
+        ]
+
+    def test_paused_seek_passes_on_the_healthy_sequence(self):
+        ok, why = run.op_paused_seek(self._paused_seek_log(), 30, 12)
+        self.assertTrue(ok, why)
+        self.assertIn("landed 30s", why)
+
+    def test_paused_seek_fails_without_the_paused_frame_receipt(self):
+        lines = [ln for ln in self._paused_seek_log() if "paused frame restored" not in ln]
+        ok, why = run.op_paused_seek(lines, 30, 12)
+        self.assertFalse(ok, "a seek whose landing under Pause was never logged cannot pass")
+        self.assertIn("never landed under the Pause", why)
+
+    def test_paused_seek_fails_when_the_film_plays_on_between_the_receipt_and_the_resume(self):
+        lines = self._paused_seek_log()
+        at = next(i for i, ln in enumerate(lines) if ln.startswith("loop=") and "pos=30s" in ln)
+        lines[at + 1] = "loop=60 route=player pos=33s fps=60"
+        ok, why = run.op_paused_seek(lines, 30, 12)
+        self.assertFalse(ok)
+        self.assertIn("did not stay paused", why)
+
+    def test_paused_seek_fails_when_the_receipt_only_comes_after_the_resume(self):
+        lines = self._paused_seek_log()
+        receipt = next(ln for ln in lines if "paused frame restored" in ln)
+        lines.remove(receipt)
+        lines.insert(lines.index("autopause: Resume accepted") + 1, receipt)
+        ok, why = run.op_paused_seek(lines, 30, 12)
+        self.assertFalse(ok)
+        self.assertIn("AFTER the Resume", why)
+
+    def test_paused_seek_names_a_seek_that_fired_outside_the_hold(self):
+        lines = self._paused_seek_log()
+        step = lines.pop(next(i for i, ln in enumerate(lines) if "autoseek: step" in ln))
+        after = lines.index("autopause: Resume accepted") + 1
+        late = lines[:after] + [step] + lines[after:]
+        ok, why = run.op_paused_seek(late, 30, 12)
+        self.assertFalse(ok)
+        self.assertIn("after the Resume", why)
+        early = [step] + lines
+        ok, why = run.op_paused_seek(early, 30, 12)
+        self.assertFalse(ok)
+        self.assertIn("before the Pause", why)
+        ok, why = run.op_paused_seek(lines, 30, 12)
+        self.assertFalse(ok)
+        self.assertIn("never fired", why)
+
+    def test_paused_seek_fails_when_it_lands_far_from_the_target(self):
+        lines = [ln.replace("ns=30040000000", "ns=9040000000") for ln in self._paused_seek_log()]
+        ok, why = run.op_paused_seek(lines, 30, 12)
+        self.assertFalse(ok)
+        self.assertIn("landed at 9s", why)
+
+    def test_paused_seek_fails_when_the_seek_fell_back_to_a_reload(self):
+        lines = self._paused_seek_log()
+        lines.insert(lines.index("seek(in-place): av_seek t=30000000000 coalesced=0") + 1,
+                     "reload_at: fresh Load t=30000000000")
+        ok, why = run.op_paused_seek(lines, 30, 12)
+        self.assertFalse(ok)
+        self.assertIn("fell back to a reload", why)
+        no_seek = [ln for ln in self._paused_seek_log() if "av_seek" not in ln]
+        self.assertFalse(run.op_paused_seek(no_seek, 30, 12)[0])
+
+    def test_paused_seek_needs_the_recovery_a_plain_resume_needs(self):
+        lines = self._paused_seek_log()
+        self.assertFalse(run.op_paused_seek(lines[:-2], 30, 12)[0], "no climb after the Resume")
+        self.assertFalse(
+            run.op_paused_seek([ln for ln in lines if "feed a#" not in ln], 30, 12)[0],
+            "moving pictures without a resumed audio lane are not recovery")
+        # a Resume that restarts from the PRE-seek position is not playing on from the landing
+        rewound = [ln.replace("pos=31s", "pos=10s").replace("pos=36s", "pos=22s")
+                   .replace("pos=43s", "pos=40s") for ln in lines]
+        rewound[rewound.index("autopause: Resume accepted") + 1] = "loop=60 route=player pos=9s fps=60"
+        self.assertFalse(run.op_paused_seek(rewound, 30, 12)[0])
+
+    def test_pause_resume_alone_still_fails_on_a_playhead_that_jumps_inside_the_hold(self):
+        """`op_pause_resume` stays the strict plain-hold grader; the seek variant is a different op."""
+        self.assertFalse(run.op_pause_resume(self._paused_seek_log(), 12)[0])
+
+    def test_pipeline_evaluation_routes_a_pause_resume_with_seek_s_to_the_paused_seek_grader(self):
+        case = {
+            "fixture": "fixture.mp4",
+            "expect": {"require_video_bound": False, "min_pos_climb_s": 0},
+            "operations": [{"op": "pause_resume", "seek_s": 30, "min_climb_after_s": 12}],
+        }
+        with mock.patch.object(run, "a_stream_path", return_value=(True, "fixture opened")), \
+             mock.patch.object(run, "a_load_decl", return_value=(True, "payload loaded")):
+            _passed, results = run.evaluate_pipeline(case, self._paused_seek_log(), (2, 1))
+        labels = [label for label, _ok, _evidence in results]
+        self.assertIn("paused_seek", labels)
+        self.assertNotIn("pause_resume", labels,
+                         "the hold-stationary grader would fail a seek the case authored")
+        self.assertTrue(dict((label, ok) for label, ok, _ in results)["paused_seek"])
+
     def test_min_rejected_upshifts_counts_refused_up_transactions_only(self):
         """`min_rejected_upshifts` grades E_tx(up, reject): an upshift PROPOSED and then REFUSED.
 
@@ -3973,17 +4247,19 @@ class AbrLogLineContract(unittest.TestCase):
     """MATHEMATICAL INVARIANT: the app's format string and this harness's regex are ONE statement.
 
     They are written in two languages in two files, and nothing but this test keeps them in step.
-    The failure mode is silent and total: rename or reorder a field in `ff.rs` and every metric in
+    The failure mode is silent and total: rename or reorder a field in `adaptive.rs` and every metric in
     `a_abr_shape` reads `n/a` forever, which looks exactly like a controller that never ran. That
     is the same shape as the stale-regex bug this project has already had once, when the heartbeat
     fields were renamed and an old log read as "no samples".
     """
 
-    FF = os.path.join(REPO_ROOT, "rust-modules", "media", "src", "ff.rs")
+    # The controller's `abr: <kind>` lines are written by `adaptive.rs` (they were `ff.rs`'s
+    # until the playback split moved the controller out of the feed engine).
+    ADAPTIVE = os.path.join(REPO_ROOT, "rust-modules", "media", "src", "adaptive.rs")
 
     def _emitted_fields(self, prefix):
         """The `name=` fields of the app's format literal for `abr: <prefix>`, in order."""
-        with open(self.FF) as f:
+        with open(self.ADAPTIVE) as f:
             src = f.read()
         start = src.index(f'"abr: {prefix} ')
         end = src.index('",', start)
@@ -3999,18 +4275,18 @@ class AbrLogLineContract(unittest.TestCase):
         emitted = self._emitted_fields("sample")
         parsed = self._regex_fields(run.RE_ABR_SAMPLE)
         self.assertEqual(emitted[: len(parsed)], parsed,
-                         f"ff.rs emits {emitted}, run.py parses {parsed}")
+                         f"adaptive.rs emits {emitted}, run.py parses {parsed}")
         self.assertIn("reason", emitted, "the decision reason must stay on the line")
 
     def test_the_mode_line_emits_exactly_the_fields_the_harness_parses(self):
         """The Original-vs-HLS comparison, both sides of the contract.
 
-        Field NAMES come out of `ff.rs`'s own format literal, so a rename there fails here rather
+        Field NAMES come out of `adaptive.rs`'s own format literal, so a rename there fails here rather
         than silently yielding zero comparison rows — and this line is the only record of a decision
         that tears down an encoder session, so a silent zero is the expensive failure."""
         emitted = self._emitted_fields("mode")
         parsed = self._regex_fields(run.RE_ABR_MODE)
-        self.assertEqual(emitted, parsed, f"ff.rs emits {emitted}, run.py parses {parsed}")
+        self.assertEqual(emitted, parsed, f"adaptive.rs emits {emitted}, run.py parses {parsed}")
 
     def test_a_rendered_mode_line_yields_both_decompositions(self):
         line = ("[  12.345] abr: mode chose=Original why=OriginalWorthIt vs_hls=8000kbps "
@@ -4037,7 +4313,7 @@ class AbrLogLineContract(unittest.TestCase):
         self.assertIsNotNone(run.RE_ABR_SAMPLE.search(_sample_line(abuf="none", buf=-1)))
 
     def test_the_steady_line_emits_the_four_gate_fields_the_harness_parses(self):
-        """Both sides of the guard read-out. Names come out of `ff.rs`'s own format literal, so a
+        """Both sides of the guard read-out. Names come out of `adaptive.rs`'s own format literal, so a
         rename on the app side fails here rather than silently yielding zero gate rows.
 
         `stable`/`cool` were the first two until 2026-08-28 and went with the counters they
@@ -4045,7 +4321,7 @@ class AbrLogLineContract(unittest.TestCase):
         emitted = self._emitted_fields("steady")
         for field in ("dwell", "block", "onrung", "draining"):
             with self.subTest(field=field):
-                self.assertIn(field, emitted, f"ff.rs no longer emits {field}=")
+                self.assertIn(field, emitted, f"adaptive.rs no longer emits {field}=")
                 self.assertIn(field, self._regex_fields(run.RE_ABR_GATES))
 
     def test_a_rendered_steady_line_yields_its_guard_state(self):
@@ -4246,43 +4522,97 @@ class TheQualitySwitchAssertion(unittest.TestCase):
 class EverySeekGiveUpPathDisarmsTheSpinner(unittest.TestCase):
     """**A source-level spot-check on an invariant the type system cannot state.**
 
-    `player::request_seek` sets `SHARED.seeking`; `pump::set_state` publishes
-    `PlaybackState::Seeking` from it AHEAD of every other arm; and until 2026-08-27 the only place
-    that ever cleared it was the successful prime→Play. So any path that gave up on a seek left a
-    permanent spinner, a playhead frozen at the target and `is_playing()` false, while the pipeline
-    played on underneath. Device-measured: 84 seconds of that, through 37 segment acquisitions and
-    four rung commits (`docs/measurements/j3e-logs/pipe_abr_seek_flat.log`).
+    A requested seek puts `PlaybackState::Seeking` ahead of every other arm of the derived state, and
+    until 2026-08-27 the only thing that ever ended it was the successful prime->Play. So any path
+    that gave up on a seek left a permanent spinner, a playhead frozen at the target and
+    `is_playing()` false, while the pipeline played on underneath. Device-measured: 84 seconds of
+    that, through 37 segment acquisitions and four rung commits
+    (`docs/measurements/j3e-logs/pipe_abr_seek_flat.log`).
 
-    **This checks the two KNOWN give-up paths and cannot check a future one**, which is stated
-    rather than papered over: a real guard would derive the state instead of latching a flag —
-    `Seeking` iff a target is pending or the engine is priming after one — and that is the shape
-    this should eventually take. It is not taken here because `prime_play` is also set outside a
-    seek, so deriving would change the startup read-out too, and stacking that onto a bug fix is
-    what the plan forbids.
+    The flag is no longer stored: the readout DERIVES `seeking()` from the epoch of the newest
+    request against the epoch the feed reports landed, so nothing can leave a latch armed. A seek is
+    still in flight until it lands, though, so a path that gives up on one must say so, and the one
+    way to say so is `player::abandon_seek(ps, pa)`: the `SeekAbandoned` event (it settles every
+    request so far) and the `AbandonSeek` command (the feed's flag and display target).
+
+    **This checks the KNOWN give-up paths and cannot check a future one**, which is stated rather
+    than papered over. What it also pins is the other half of the old count: the one place that
+    ARMS a seek is the `SeekRequested` event, sent from `player::request_seek`, so a second writer
+    cannot appear without this class noticing that its account of the give-up paths is incomplete.
     """
+
+    # Where the first inline test module starts: from there on the text is test code, not the shipped
+    # player (`mod x;` declarations of test files do not match: they have no body).
+    _TEST_MOD = re.compile(r"^#\[cfg\((?:all\()?test[^\n]*\]\n(?:#\[[^\n]*\]\n)*(?:pub )?mod \w+\s*\{", re.M)
 
     def _src(self, *parts):
         with open(os.path.join(REPO_ROOT, "rust-modules", "media", "src", *parts), encoding="utf-8") as fh:
             return fh.read()
 
+    def _shipped(self, *parts):
+        """The file's text without its test module."""
+        src = self._src(*parts)
+        m = self._TEST_MOD.search(src)
+        return src[:m.start()] if m else src
+
+    def _every(self, src, needle):
+        starts = [m.start() for m in re.finditer(re.escape(needle), src)]
+        self.assertTrue(starts, f"{needle!r} is gone: this check no longer guards what it names")
+        return starts
+
     def test_a_failed_transcode_seek_rebuild_abandons_the_seek(self):
+        """Both places the rebuild can be refused (the flight's landing, and its dispatch)."""
         src = self._src("player", "pump.rs")
-        i = src.index('"seek(transcode): rebuild failed"')
-        self.assertIn("abandon_seek()", src[max(0, i - 600):i],
-                      "the failed rebuild returns without disarming the spinner")
+        for i in self._every(src, '"seek(transcode): rebuild failed"'):
+            self.assertIn("abandon_seek(ps, pa)", src[max(0, i - 600):i],
+                          "a failed rebuild returns without abandoning the seek through the readout")
 
     def test_a_reload_with_no_url_abandons_the_seek(self):
-        src = self._src("player", "engine.rs")
-        i = src.index('"reload_transcode: no url (ignored)"')
-        self.assertIn("abandon_seek()", src[max(0, i - 400):i],
-                      "the ignored reload returns without disarming the spinner")
+        src = self._src("player", "route_start.rs")
+        for needle in ('"reload_transcode: no url (ignored)"', '"reload_transcode_tracked: no url (ignored)"'):
+            for i in self._every(src, needle):
+                self.assertIn("abandon_seek(ps, pa)", src[max(0, i - 400):i],
+                              "the ignored reload returns without abandoning the seek")
 
-    def test_the_flag_is_armed_in_exactly_one_place(self):
-        """If a second writer appears, the two known clear sites stop being a complete account and
-        this whole class is measuring the wrong thing."""
-        src = self._src("player", "mod.rs")
-        self.assertEqual(src.count("SHARED.seeking.store(true"), 1,
-                         "more than one place arms the spinner; re-audit the give-up paths")
+    def test_abandoning_is_the_readout_event_and_the_feed_command(self):
+        """The one way to give up says it twice, in one call: the readout settles the requests and
+        the feed ends its flag and its frozen display target."""
+        src = self._shipped("player", "mod.rs")
+        i = src.index("pub fn abandon_seek(")
+        body = src[i:src.index("\n}\n", i)]
+        self.assertIn("ReadoutEvent::SeekAbandoned", body)
+        self.assertIn("FeedCommand::AbandonSeek", body)
+
+    def test_a_seek_is_requested_in_exactly_one_place(self):
+        """If a second writer appears, the known give-up paths stop being a complete account and
+        this whole class is measuring the wrong thing. The request is one event and one command, in
+        `request_seek`; a requeue or a take (`pump.rs`) is neither, and never numbers a request."""
+        root = os.path.join(REPO_ROOT, "rust-modules", "media", "src")
+        events, commands = [], []
+        for dirpath, _dirs, files in os.walk(root):
+            for name in sorted(files):
+                if not name.endswith(".rs") or name.endswith("_tests.rs") or name == "tests.rs":
+                    continue
+                path = os.path.join(dirpath, name)
+                with open(path, encoding="utf-8") as fh:
+                    src = fh.read()
+                m = self._TEST_MOD.search(src)
+                src = src[:m.start()] if m else src
+                rel = os.path.relpath(path, root)
+                if name != "readout.rs":  # the machine that defines the event steps it in its tests only
+                    events += [rel] * src.count("ReadoutEvent::SeekRequested {")
+                commands += [rel] * len(re.findall(r"FeedCommand::Seek\s*\{", src))
+        self.assertEqual(events, [os.path.join("player", "mod.rs")],
+                         "more than one place requests a seek; re-audit the give-up paths")
+        self.assertEqual(commands, [os.path.join("player", "mod.rs")],
+                         "more than one place sends the feed a Seek; re-audit the give-up paths")
+
+    def test_the_spinner_is_derived_never_stored(self):
+        """What makes a forgotten clear the only way to wedge it: no field holds `seeking`."""
+        src = self._shipped("player", "readout.rs")
+        body = src[src.index("pub struct PlayerReadout"):src.index("\n}\n", src.index("pub struct PlayerReadout"))]
+        self.assertNotRegex(body, r"\bseeking\s*:", "the readout stores the spinner again")
+        self.assertIn("pub fn seeking(&self) -> bool", src)
 
 
 class TheRequestIndexedShaper(unittest.TestCase):
@@ -4461,6 +4791,64 @@ class AbrTriggers(unittest.TestCase):
             "delay=25000,hold=6000",
         )
 
+    def test_a_pause_resume_with_seek_s_also_writes_the_autoseek_script(self):
+        case = {
+            **self.BASE,
+            "operations": [{"op": "pause_resume", "delay_ms": 10_000, "hold_ms": 18_000,
+                            "seek_s": 30, "seek_delay_ms": 14_000}],
+        }
+        names = self._names(case)
+        self.assertEqual(names["plxnative-autopause"], "delay=10000,hold=18000")
+        self.assertEqual(names["plxnative-autoseek"], "delay=14000,30")
+        undelayed = {**self.BASE, "operations": [{"op": "pause_resume", "hold_ms": 6_000,
+                                                  "seek_s": 30}]}
+        self.assertEqual(self._names(undelayed)["plxnative-autoseek"], "30")
+        plain = {**self.BASE, "operations": [{"op": "pause_resume", "hold_ms": 6_000}]}
+        self.assertNotIn("plxnative-autoseek", self._names(plain),
+                         "a plain hold must not grow a seek")
+
+    def test_a_seek_under_pause_is_a_depth_the_length_check_reads(self):
+        self.assertEqual(run._case_depth_s({
+            "operations": [{"op": "pause_resume", "hold_ms": 1, "seek_s": 40}],
+            "expect": {"min_pos_climb_s": 8}}), 40)
+        self.assertEqual(run._case_depth_s({
+            "operations": [{"op": "pause_resume", "hold_ms": 1}],
+            "expect": {"min_pos_climb_s": 8}}), 8)
+
+    def test_the_original_pause_cases_pin_direct_play_and_carry_no_abr_shape(self):
+        """No `auto_network` is what keeps the case off Auto and HLS: nothing writes the Auto
+        trigger set, and `stream_path` then requires the demuxer to open the fixture itself."""
+        cases = {c["name"]: c for c in _manifest()["pipeline_cases"]}
+        hls = cases["pipe_auto_pause_fill_resume"]
+        for name in ("pipe_original_pause_resume", "pipe_original_paused_seek"):
+            with self.subTest(case=name):
+                case = cases[name]
+                self.assertNotIn("auto_network", case)
+                self.assertEqual(case["fixture"], hls["fixture"])
+                self.assertNotIn("abr_shape", case["expect"])
+                names = dict(run.triggers_for_case(case, url_base="http://h:8020"))
+                for auto_only in ("plxnative-quality", "plxnative-abrpin"):
+                    self.assertNotIn(auto_only, names)
+                spec = json.loads(names["plxnative-playurl"])
+                self.assertNotIn("auto_start_hls", spec)
+                self.assertNotIn("auto_hls_base", spec)
+                self.assertIn("plxnative-autopause", names)
+                self.assertTrue(case["expect"]["no_playing_error"])
+                self.assertTrue(case["expect"]["require_video_bound"])
+        seek = cases["pipe_original_paused_seek"]
+        self.assertIn("plxnative-autoseek",
+                      dict(run.triggers_for_case(seek, url_base="http://h:8020")))
+        self.assertNotIn("plxnative-autoseek",
+                         dict(run.triggers_for_case(cases["pipe_original_pause_resume"],
+                                                    url_base="http://h:8020")))
+        # a pack too short for the case skips; it must not fail as a regression
+        self.assertLessEqual(run._case_depth_s(seek), 60 * 0.8)
+        pause_op = next(o for o in seek["operations"] if o["op"] == "pause_resume")
+        # the seek can land up to 6 s later than `seek_delay_ms - delay_ms` into the hold (its gate
+        # is 6 s later than the Pause's); the hold must still leave 6 s of paused landing after it
+        worst_seek_into_hold = pause_op["seek_delay_ms"] - pause_op["delay_ms"] + 6000
+        self.assertGreaterEqual(pause_op["hold_ms"] - worst_seek_into_hold, 2000 + 6000)
+
     def test_no_manifest_case_carries_a_new_abr_bound_yet(self):
         """POLICY GUARD, not a policy test. Increment I0 adds the metrics and deliberately grades
         none of them: a bound written before the I1 baseline exists is a number somebody guessed.
@@ -4541,13 +4929,17 @@ class AbrLadderFixtures(unittest.TestCase):
 # silently stops matching does not fail loudly, it reports "no samples" and every derived
 # statistic quietly becomes a statement about the empty set.
 #
-# The test is DIFFERENTIAL, not a golden literal: it reads the format strings out of ff.rs and
-# compares the field names and their ORDER against what the regex captures. A frozen example line
+# The test is DIFFERENTIAL, not a golden literal: it reads the format strings out of the Rust
+# source that writes each line (`adaptive.rs` for `abr: tx`, the feed engine's `ff.rs` for
+# `hls: segment`) and compares the field names and their ORDER against what the regex captures. A frozen example line
 # would keep passing after someone renamed a field in Rust, which is the exact failure this is
 # here to catch.
 # ---------------------------------------------------------------------------------------------
 
-FF_RS = os.path.join(REPO_ROOT, "rust-modules", "media", "src", "ff.rs")
+# The feed engine's `ff.rs` writes `hls: segment=` (it lives in `play-feed`, not `media`);
+# the controller's `abr: tx` / `abr: committed` lines are `media/src/adaptive.rs`'s.
+FF_RS = os.path.join(REPO_ROOT, "rust-modules", "play-feed", "src", "ff.rs")
+ADAPTIVE_RS = os.path.join(REPO_ROOT, "rust-modules", "media", "src", "adaptive.rs")
 WINDOW_RS = os.path.join(REPO_ROOT, "rust-modules", "media", "src", "abr", "window.rs")
 
 # `name=` in a format string or a regex pattern. Deliberately anchored on the `=`, because that is
@@ -4589,6 +4981,8 @@ class LogLineContract(unittest.TestCase):
     def setUp(self):
         with open(FF_RS, encoding="utf-8") as fh:
             self.ff = fh.read()
+        with open(ADAPTIVE_RS, encoding="utf-8") as fh:
+            self.adaptive = fh.read()
 
     def _assert_contract(self, opening, pattern, fields, label, source=None):
         rendered = _rust_format_string(source if source is not None else self.ff, opening)
@@ -4597,7 +4991,7 @@ class LogLineContract(unittest.TestCase):
         self.assertEqual(
             rust_names,
             regex_names,
-            f"{label}: ff.rs emits {rust_names} but run.py's regex reads {regex_names}. "
+            f"{label}: the Rust source emits {rust_names} but run.py's regex reads {regex_names}. "
             "One side was changed without the other; the harness would report 'no samples' "
             "rather than failing, so this is the only place it can be caught.",
         )
@@ -4621,18 +5015,19 @@ class LogLineContract(unittest.TestCase):
         self.assertRegex(
             rendered_line,
             pattern,
-            f"{label}: the regex does not match ff.rs's own format string rendered with "
+            f"{label}: the regex does not match the Rust source's own format string rendered with "
             f"placeholder values -- a separator or a unit suffix differs.\n  {rendered_line}",
         )
 
     def test_abr_tx_regex_matches_the_rust_format_string(self):
-        self._assert_contract('"abr: tx {:?}', run.RE_ABR_TX, run.TX_FIELDS, "abr: tx")
+        self._assert_contract('"abr: tx {:?}', run.RE_ABR_TX, run.TX_FIELDS, "abr: tx",
+                              source=self.adaptive)
 
     def test_abr_window_regex_matches_the_rust_format_string(self):
         """Same contract, but the format string lives beside the arithmetic rather than in ff.rs.
 
         `AdmissionReadout::log_line` formats it in `abr/window.rs` so the wire shape is testable
-        next to the numbers it prints; `ff.rs` only decides when to emit it.
+        next to the numbers it prints; `adaptive.rs` only decides when to emit it.
         """
         with open(WINDOW_RS, encoding="utf-8") as fh:
             source = fh.read()
@@ -5138,6 +5533,2131 @@ class AbrResponseProfile(unittest.TestCase):
         self.assertGreaterEqual(shape["decoded_width_floor"], 3800)
 
 
+class AbrLadderMaster(unittest.TestCase):
+    """`/__abr/ladder/master.m3u8`: every rung as its own variant, for a player that chooses itself."""
+
+    def _server(self):
+        srv = serve_fixtures.FixtureServer.__new__(serve_fixtures.FixtureServer)
+        srv.lock = threading.Lock()
+        srv.abr_response_profile = {}
+        srv.abr_response_counts = {}
+        srv.abr_response_generations = {}
+        srv.rung_segments = {}
+        return srv
+
+    def _playlist(self, srv, path):
+        handler = serve_fixtures.FixtureHandler.__new__(serve_fixtures.FixtureHandler)
+        handler.server = srv
+        handler.path = path
+        return handler._abr_playlist().decode()
+
+    @staticmethod
+    def _variants(text):
+        """[(bandwidth, resolution, uri)] in playlist order."""
+        rows = text.splitlines()
+        out = []
+        for i, row in enumerate(rows):
+            if row.startswith("#EXT-X-STREAM-INF:"):
+                attrs = dict(kv.split("=", 1) for kv in row.split(":", 1)[1].split(","))
+                out.append((int(attrs["BANDWIDTH"]), attrs["RESOLUTION"], rows[i + 1]))
+        return out
+
+    def test_it_lists_every_rung_lowest_first_pointing_at_that_rungs_own_media_playlist(self):
+        text = self._playlist(self._server(), "/__abr/ladder/master.m3u8")
+        self.assertTrue(text.startswith("#EXTM3U\n#EXT-X-VERSION:3\n"))
+        rungs = serve_fixtures.ABR_RUNGS.split("|")
+        self.assertEqual(
+            self._variants(text),
+            [(int(r) * 1000, serve_fixtures.ABR_RASTER[r], f"/__abr/{r}/media.m3u8?continuous=1")
+             for r in rungs],
+            "the ladder is for a native player, so every child asks for continuous timestamps")
+        self.assertEqual(rungs[:2], ["320", "720"], "the manifest caps at the second-lowest rung")
+        bandwidths = [bw for bw, _, _ in self._variants(text)]
+        self.assertEqual(bandwidths, sorted(bandwidths))
+
+    def test_the_single_rung_master_is_unchanged(self):
+        self.assertEqual(
+            self._playlist(self._server(), "/__abr/720/master.m3u8"),
+            "#EXTM3U\n#EXT-X-VERSION:3\n"
+            "#EXT-X-STREAM-INF:BANDWIDTH=720000,RESOLUTION=854x480\nmedia.m3u8\n")
+
+    def test_a_response_profile_composes_per_rung(self):
+        srv = self._server()
+        srv.set_abr_response_profile({"22000": ["2000", "22000"]})
+        first = self._variants(self._playlist(srv, "/__abr/ladder/master.m3u8"))
+        top = first[-1]
+        self.assertEqual(top, (2_000_000, "1280x720",
+                               "/__abr/22000/media.m3u8?fixtureGeneration=1&continuous=1"),
+                         "the first fresh master maps 22000 to the 2000 rendition, as its own master would")
+        self.assertTrue(all("fixtureGeneration" not in uri for _, _, uri in first[:-1]),
+                        "unprofiled rungs are untouched")
+        media = self._playlist(srv, "/__abr/22000/media.m3u8?fixtureGeneration=1")
+        self.assertIn("segment.ts?sequence=0&fixtureGeneration=1", media)
+        second = self._variants(self._playlist(srv, "/__abr/ladder/master.m3u8"))
+        self.assertEqual(second[-1], (22_000_000, "3840x2160",
+                                      "/__abr/22000/media.m3u8?fixtureGeneration=2&continuous=1"))
+        # the ordinary single-rung master still allocates from the same counter
+        self.assertIn("fixtureGeneration=3", self._playlist(srv, "/__abr/22000/master.m3u8"))
+
+    def test_segment_requests_are_counted_by_the_rung_in_the_request_path(self):
+        with tempfile.TemporaryDirectory() as root:
+            for rung in ("320", "720"):
+                with open(os.path.join(root, serve_fixtures.ABR_FIXTURE[rung]), "wb") as stream:
+                    stream.write(b"fixture")
+            srv = serve_fixtures.FixtureServer(root, 0, bind="127.0.0.1")
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+            try:
+                self.assertEqual(srv.segment_rungs(), {})
+                conn = http.client.HTTPConnection(*srv.server_address, timeout=5)
+
+                def get(path):
+                    conn.request("GET", path)
+                    response = conn.getresponse()
+                    response.read()
+                    return response.status
+
+                self.assertEqual(get("/__abr/ladder/master.m3u8"), 200)
+                self.assertEqual(get("/__abr/320/media.m3u8"), 200)
+                self.assertEqual(srv.segment_rungs(), {}, "playlists carry no media")
+                for path in ("/__abr/720/segment.ts?sequence=0", "/__abr/320/segment.ts?sequence=0",
+                             "/__abr/720/segment.ts?sequence=1"):
+                    self.assertEqual(get(path), 200)
+                self.assertEqual(get("/__abr/2000/segment.ts?sequence=0"), 404,
+                                 "this pack has no 720p clip and the 1080p fallback is refused for it")
+                conn.close()
+            finally:
+                srv.shutdown()
+                srv.server_close()
+        self.assertEqual(list(srv.segment_rungs().items()), [("320", 1), ("720", 2)],
+                         "lowest rung first; a 404 is not a fetch")
+
+    def test_the_case_line_reports_only_what_this_case_fetched(self):
+        self.assertEqual(run.rung_segments_line({"320": 1}, {"320": 1, "720": 3, "2000": 2}), "720=3 2000=2")
+        self.assertEqual(run.rung_segments_line({"320": 1, "720": 2}, {"320": 4, "720": 2}), "320=3")
+        self.assertEqual(run.rung_segments_line({}, {}), "")
+
+
+# ---- Continuous timestamps (`?continuous=1`) ----
+#
+# Synthetic MPEG-TS, because the pack may be absent on CI and because the expected value of a
+# shifted segment must come from somewhere that is not the code under test: `TsBuilder` encodes the
+# timestamps itself from the ISO 13818-1 bit layouts, so "the server's answer equals the builder's
+# part rebuilt with every timestamp moved on" is checked byte for byte, marker bits and PCR
+# reserved bits included.
+class TsBuilder:
+    VIDEO_PID, AUDIO_PID, FRAME = 0x100, 0x101, 3750      # 24 fps at 90 kHz
+    AUDIO_FRAME = 1920                                    # 1024 samples at 48 kHz
+
+    @staticmethod
+    def stamp(prefix, value):
+        """A 5-byte PTS/DTS field: 4-bit prefix, then 33 bits in 3 groups, each closed by a marker."""
+        value %= 1 << 33
+        bits = (prefix << 36) | ((value >> 30) << 33) | (1 << 32) | (((value >> 15) & 0x7FFF) << 17) \
+            | (1 << 16) | ((value & 0x7FFF) << 1) | 1
+        return bits.to_bytes(5, "big")
+
+    @staticmethod
+    def pcr(base, extension):
+        """A 6-byte PCR: 33-bit base, 6 reserved bits all ones, 9-bit extension."""
+        return (((base % (1 << 33)) << 15) | (0x3F << 9) | extension).to_bytes(6, "big")
+
+    @staticmethod
+    def first_video(segment):
+        """(PCR base, PCR extension, PTS, DTS) of a part's first video packet, read back from the
+        bits: the packet after the PAT, with its PCR in the adaptation field and a DTS-carrying PES."""
+        packet = segment[188:376]
+        pcr = int.from_bytes(packet[6:12], "big")
+        pes = packet[5 + packet[4]:]
+
+        def read(raw):
+            bits = int.from_bytes(raw, "big")
+            return (bits >> 33 & 0x7) << 30 | (bits >> 17 & 0x7FFF) << 15 | (bits >> 1 & 0x7FFF)
+
+        return pcr >> 15, pcr & 0x1FF, read(pes[9:14]), read(pes[14:19])
+
+    @classmethod
+    def pes(cls, stream_id, pts, dts, body):
+        marks = 0xC0 if dts is not None else 0x80
+        head = bytes([0, 0, 1, stream_id, 0, 0, 0x80, marks, 10 if dts is not None else 5])
+        head += cls.stamp(3 if dts is not None else 2, pts)
+        if dts is not None:
+            head += cls.stamp(1, dts)
+        return head + body
+
+    @classmethod
+    def packets(cls, pid, counter, payload, pcr=None):
+        """`payload` over as many 188-byte packets as it needs; the first carries `pcr` if given."""
+        out, first = [], True
+        while first or payload:
+            need = 8 if (first and pcr is not None) else 0        # adaptation field bytes for the PCR
+            chunk, payload = payload[:184 - need], payload[184 - need:]
+            adaptation = 184 - len(chunk)                         # whole adaptation field, stuffing included
+            head = bytes([0x47, (0x40 if first else 0) | (pid >> 8), pid & 0xFF,
+                          (0x30 if adaptation else 0x10) | counter[pid] & 0x0F])
+            counter[pid] += 1
+            field = b""
+            if adaptation:
+                field = bytes([adaptation - 1])
+                if adaptation > 1:
+                    field += bytes([0x10 if (first and pcr is not None) else 0])
+                    field += pcr if (first and pcr is not None) else b""
+                    field += b"\xff" * (adaptation - len(field))
+            out.append(head + field + chunk)
+            first = False
+        return b"".join(out)
+
+    @classmethod
+    def part(cls, frames, video_pts, audio_pts):
+        """A part: a PAT, then per video frame one video PES (an every-4th-frame PCR, DTS on all
+        but every 5th, a start-code-looking run in a continuation packet) and one audio PES."""
+        counter = {0: 0, cls.VIDEO_PID: 0, cls.AUDIO_PID: 0}
+        out = [cls.packets(0, counter, bytes([0, 0, 0xB0, 13, 0, 1, 0xC1, 0, 0, 0, 1, 0xE1, 0]))]
+        for i in range(frames):
+            pts = video_pts + i * cls.FRAME
+            dts = None if i % 5 == 3 else pts - 2 * cls.FRAME
+            body = bytes(range(200)) + bytes([0, 0, 1, 0xE0, 0x12, 0x34, 0x80, 0xC0, 10]) + bytes(range(60))
+            out.append(cls.packets(cls.VIDEO_PID, counter, cls.pes(0xE0, pts, dts, body),
+                                   pcr=cls.pcr(pts - 9000, i) if i % 4 == 0 else None))
+            out.append(cls.packets(cls.AUDIO_PID, counter,
+                                   cls.pes(0xC0, audio_pts + i * cls.AUDIO_FRAME, None, bytes(range(90)))))
+        return b"".join(out)
+
+
+class AbrContinuousTimestamps(unittest.TestCase):
+    """`?continuous=1`: the same bytes with every PCR/PTS/DTS moved on by what came before."""
+
+    FRAMES = (48, 47, 48)           # the middle part is one frame short: 2.0 s, 1.958333 s, 2.0 s
+    VIDEO0, AUDIO0 = 133500, 131580  # where every real part starts: 1.4833 s, 1.4620 s
+    RUNG = "320"
+
+    @classmethod
+    def ticks(cls, sequence):
+        """Where `sequence` starts in the continuous stream, from the part lengths and nothing else."""
+        return sum(cls.FRAMES[k % len(cls.FRAMES)] * TsBuilder.FRAME for k in range(sequence))
+
+    @classmethod
+    def part_bytes(cls, sequence, extra=0):
+        frames = cls.FRAMES[sequence % len(cls.FRAMES)]
+        return TsBuilder.part(frames, cls.VIDEO0 + extra, cls.AUDIO0 + extra)
+
+    def _pack(self):
+        """A root holding the three parts of `RUNG`, named as the generator names them."""
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, True)
+        stem = serve_fixtures.ABR_FIXTURE[self.RUNG][:-len(".ts")]
+        for i, name in enumerate([f"{stem}.ts", f"{stem}_01.ts", f"{stem}_02.ts"]):
+            with open(os.path.join(root, name), "wb") as stream:
+                stream.write(self.part_bytes(i))
+        return root
+
+    def _serve(self, root):
+        srv = serve_fixtures.FixtureServer(root, 0, bind="127.0.0.1")
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        return srv
+
+    @staticmethod
+    def _get(srv, path, headers=None, method="GET"):
+        conn = http.client.HTTPConnection(*srv.server_address, timeout=10)
+        try:
+            conn.request(method, path, headers=headers or {})
+            response = conn.getresponse()
+            return response.status, response.read(), response
+        finally:
+            conn.close()
+
+    def _segment_path(self, sequence, suffix="&continuous=1"):
+        return f"/__abr/{self.RUNG}/segment.ts?sequence={sequence}{suffix}"
+
+    # -- the byte level --
+
+    def test_a_part_is_measured_as_its_video_span_plus_one_frame(self):
+        for frames in (48, 47):
+            timeline = serve_fixtures.scan_ts(TsBuilder.part(frames, self.VIDEO0, self.AUDIO0))
+            self.assertEqual(timeline.duration, frames * TsBuilder.FRAME,
+                             "first-to-last PTS alone would be one frame short")
+            self.assertEqual(len(timeline.dts), frames - len(range(3, frames, 5)), "DTS only where flagged")
+            self.assertEqual(len(timeline.pcr), len(range(0, frames, 4)))
+            self.assertEqual(len(timeline.pts), 2 * frames, "one video and one audio PTS per frame")
+            self.assertEqual(timeline.opcr, [])
+            # a PES-looking run inside every video frame's continuation packet added no entry
+
+    def test_a_shift_equals_the_part_rebuilt_with_every_timestamp_moved_on(self):
+        original = TsBuilder.part(48, self.VIDEO0, self.AUDIO0)
+        timeline = serve_fixtures.scan_ts(original)
+        for ticks in (0, 1, 180000, 536250, 123456789):
+            shifted = serve_fixtures.shift_ts(original, timeline, ticks)
+            self.assertEqual(len(shifted), len(original))
+            self.assertEqual(shifted, TsBuilder.part(48, self.VIDEO0 + ticks, self.AUDIO0 + ticks), ticks)
+        self.assertEqual(serve_fixtures.shift_ts(original, timeline, 0), original)
+
+    def test_the_33_bit_clocks_wrap_and_the_pcr_extension_and_markers_survive(self):
+        wrap = 1 << 33
+        near = wrap - 5000                     # video and audio both about to wrap
+        original = TsBuilder.part(48, near, near - 2000)
+        timeline = serve_fixtures.scan_ts(original)
+        self.assertEqual(timeline.duration, 180000, "a part straddling 2^33 still measures 2.0 s")
+        shifted = serve_fixtures.shift_ts(original, timeline, 10000)
+        expected = TsBuilder.part(48, 5000, near - 2000 + 10000 - wrap)
+        self.assertEqual(shifted, expected)
+        # and a shift that is itself a whole turn of the clock is a no-op
+        self.assertEqual(serve_fixtures.shift_ts(original, timeline, wrap), original)
+
+    def test_a_file_it_cannot_honestly_shift_is_refused(self):
+        part = TsBuilder.part(48, self.VIDEO0, self.AUDIO0)
+        for bad, why in ((part[:-1], "whole number"), (b"", "whole number"),
+                         (part[:188] + b"\x00" + part[189:], "lost TS sync"),
+                         (TsBuilder.part(1, self.VIDEO0, self.AUDIO0), "too few")):
+            with self.subTest(why=why):
+                with self.assertRaisesRegex(ValueError, why):
+                    serve_fixtures.scan_ts(bad)
+
+    # -- through the server --
+
+    def test_a_flagged_segment_is_its_part_moved_on_by_every_earlier_duration_across_cycles(self):
+        srv = self._serve(self._pack())
+        # 8 sequences over 3 parts: both cycle wraps (3 and 6) and a 47-frame part before them
+        for sequence in range(8):
+            status, body, _ = self._get(srv, self._segment_path(sequence))
+            self.assertEqual(status, 200)
+            offset = self.ticks(sequence)
+            self.assertEqual(body, self.part_bytes(sequence, offset), f"sequence {sequence} @ +{offset}")
+            # spelled out for the first fields of the segment: PCR, then the video PES's PTS and DTS
+            self.assertEqual(
+                TsBuilder.first_video(body),
+                ((self.VIDEO0 + offset - 9000) % (1 << 33), 0, self.VIDEO0 + offset,
+                 self.VIDEO0 + offset - 2 * TsBuilder.FRAME),
+                "PCR base, PCR extension (not a timestamp), PTS, DTS")
+        self.assertEqual(self.ticks(3), 2 * 180000 + 176250, "the sum of the real lengths, not 3 x 2.0 s")
+
+    def test_unflagged_segments_are_byte_identical_to_their_files(self):
+        root = self._pack()
+        srv = self._serve(root)
+        stem = serve_fixtures.ABR_FIXTURE[self.RUNG][:-len(".ts")]
+        names = [f"{stem}.ts", f"{stem}_01.ts", f"{stem}_02.ts"]
+        for sequence in range(7):
+            with open(os.path.join(root, names[sequence % 3]), "rb") as stream:
+                on_disk = stream.read()
+            for path in (f"/__abr/{self.RUNG}/segment.ts?sequence={sequence}",
+                         f"/__abr/{self.RUNG}/segment.ts?sequence={sequence}&continuous=0"):
+                self.assertEqual(self._get(srv, path)[1], on_disk, path)
+
+    def test_range_head_and_length_of_a_flagged_segment_are_the_files(self):
+        srv = self._serve(self._pack())
+        path = self._segment_path(4)
+        _, whole, _ = self._get(srv, path)
+        status, tail, response = self._get(srv, path, {"Range": "bytes=1000-"})
+        self.assertEqual(status, 206)
+        self.assertEqual(tail, whole[1000:], "a ranged flagged body is the tail of the whole one")
+        self.assertEqual(response.getheader("Content-Range"), f"bytes 1000-{len(whole) - 1}/{len(whole)}")
+        status, middle, _ = self._get(srv, path, {"Range": "bytes=188-375"})
+        self.assertEqual((status, middle), (206, whole[188:376]))
+        status, empty, head = self._get(srv, path, method="HEAD")
+        self.assertEqual((status, empty), (200, b""))
+        self.assertEqual(int(head.getheader("Content-Length")), len(whole))
+        self.assertEqual(len(whole), len(self.part_bytes(4)), "the bytes keep their length")
+
+    def test_flagged_segments_are_counted_like_any_other(self):
+        srv = self._serve(self._pack())
+        self._get(srv, self._segment_path(0))
+        self._get(srv, self._segment_path(1, suffix=""))
+        self.assertEqual(srv.segment_rungs(), {self.RUNG: 2})
+        self.assertEqual(srv.count_segment(), 2, "both went through the segment-indexed counter")
+
+    def test_a_missing_clip_is_never_served_from_the_1080p_fallback_when_flagged(self):
+        """6000 is a 1080p rung, so an unflagged request for its missing clip falls back to
+        `pipe_abr_1080p.ts`. A flagged one has no timeline for that stand-in: 404, loudly."""
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, True)
+        with open(os.path.join(root, serve_fixtures.ABR_FALLBACK), "wb") as stream:
+            stream.write(TsBuilder.part(48, self.VIDEO0, self.AUDIO0))
+        notes = []
+        srv = serve_fixtures.FixtureServer(root, 0, sink=notes.append, bind="127.0.0.1")
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        self.assertEqual(self._get(srv, "/__abr/6000/segment.ts?sequence=0")[0], 200, "unflagged: the old fallback")
+        self.assertEqual(self._get(srv, "/__abr/6000/segment.ts?sequence=0&continuous=1")[0], 404)
+        self.assertEqual(self._get(srv, "/__abr/6000/media.m3u8?continuous=1")[0], 404)
+        self.assertTrue(any("never takes" in note for note in notes), notes)
+
+    def test_a_clip_that_is_not_transport_stream_is_a_500_when_flagged_and_served_when_not(self):
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, True)
+        with open(os.path.join(root, serve_fixtures.ABR_FIXTURE[self.RUNG]), "wb") as stream:
+            stream.write(b"fixture")
+        srv = self._serve(root)
+        self.assertEqual(self._get(srv, f"/__abr/{self.RUNG}/segment.ts?sequence=0")[:2], (200, b"fixture"))
+        self.assertEqual(self._get(srv, self._segment_path(0))[0], 500)
+        self.assertEqual(self._get(srv, f"/__abr/{self.RUNG}/media.m3u8?continuous=1")[0], 500)
+
+    # -- the playlists --
+
+    @staticmethod
+    def _extinfs(text):
+        return [float(row[len("#EXTINF:"):].rstrip(",")) for row in text.splitlines()
+                if row.startswith("#EXTINF:")]
+
+    def test_a_flagged_playlist_says_what_the_media_measures_and_the_two_agree(self):
+        srv = self._serve(self._pack())
+        status, body, _ = self._get(srv, f"/__abr/{self.RUNG}/media.m3u8?continuous=1")
+        self.assertEqual(status, 200)
+        text = body.decode()
+        extinfs = self._extinfs(text)
+        self.assertEqual(len(extinfs), 90)
+        for sequence, length in enumerate(extinfs):
+            self.assertAlmostEqual(length, self.FRAMES[sequence % 3] * TsBuilder.FRAME / 90000, delta=1e-6)
+        self.assertEqual(extinfs[:3], [2.0, 1.958333, 2.0], "never sequence * 2.0")
+        self.assertIn("#EXT-X-TARGETDURATION:2\n", text)
+        self.assertIn("segment.ts?sequence=3&continuous=1\n", text)
+        # the playlist's running total is where the media itself starts that segment
+        for sequence in (1, 2, 3, 4, 7):
+            _, segment, _ = self._get(srv, self._segment_path(sequence))
+            starts = (TsBuilder.first_video(segment)[2] - self.VIDEO0) / 90000
+            self.assertAlmostEqual(sum(extinfs[:sequence]), starts, delta=1e-5, msg=f"sequence {sequence}")
+
+    def test_target_duration_is_the_longest_extinf_rounded(self):
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, True)
+        with open(os.path.join(root, serve_fixtures.ABR_FIXTURE[self.RUNG]), "wb") as stream:
+            stream.write(TsBuilder.part(72, self.VIDEO0, self.AUDIO0))     # 3.0 s
+        srv = self._serve(root)
+        _, body, _ = self._get(srv, f"/__abr/{self.RUNG}/media.m3u8?continuous=1")
+        self.assertIn("#EXT-X-TARGETDURATION:3\n", body.decode())
+        self.assertEqual(set(self._extinfs(body.decode())), {3.0})
+
+    def test_an_unflagged_playlist_is_exactly_what_it_always_was(self):
+        srv = self._serve(self._pack())
+        _, body, _ = self._get(srv, f"/__abr/{self.RUNG}/media.m3u8")
+        rows = ["#EXTM3U", "#EXT-X-VERSION:3", "#EXT-X-TARGETDURATION:2", "#EXT-X-MEDIA-SEQUENCE:0"]
+        for sequence in range(90):
+            rows.extend(("#EXTINF:2.0,", f"segment.ts?sequence={sequence}"))
+        rows.append("#EXT-X-ENDLIST")
+        self.assertEqual(body.decode(), "\n".join(rows) + "\n")
+
+    def test_the_flag_rides_master_to_media_to_segment_with_and_without_a_generation(self):
+        srv = self._serve(self._pack())
+
+        def follow(path):
+            """master -> its child playlist -> that playlist's first segment URI, as a player resolves them."""
+            rows = self._get(srv, path)[1].decode().splitlines()
+            child = rows[[i for i, row in enumerate(rows) if row.startswith("#EXT-X-STREAM-INF")][0] + 1]
+            media_path = child if child.startswith("/") else path.rsplit("/", 1)[0] + "/" + child
+            media = self._get(srv, media_path)[1].decode().splitlines()
+            return child, [row for row in media if row.startswith("segment.ts")][0]
+
+        self.assertEqual(follow(f"/__abr/{self.RUNG}/master.m3u8?continuous=1"),
+                         ("media.m3u8?continuous=1", "segment.ts?sequence=0&continuous=1"))
+        self.assertEqual(follow(f"/__abr/{self.RUNG}/master.m3u8"),
+                         ("media.m3u8", "segment.ts?sequence=0"), "unflagged: nothing is added")
+        srv.set_abr_response_profile({self.RUNG: [self.RUNG]})
+        self.assertEqual(
+            follow(f"/__abr/{self.RUNG}/master.m3u8?continuous=1"),
+            ("media.m3u8?fixtureGeneration=1&continuous=1",
+             "segment.ts?sequence=0&fixtureGeneration=1&continuous=1"))
+        # ...and the ladder master, which asks for no flag and always gets it
+        _, ladder, _ = self._get(srv, "/__abr/ladder/master.m3u8?top=320")
+        self.assertIn(f"/__abr/{self.RUNG}/media.m3u8?fixtureGeneration=2&continuous=1\n", ladder.decode())
+
+    def test_a_flagged_segment_follows_the_generation_to_the_rendition_it_names(self):
+        """The offset walks the EFFECTIVE rung's parts, so a profile that maps 720 to 320 serves 320's."""
+        srv = self._serve(self._pack())
+        srv.set_abr_response_profile({"720": [self.RUNG]})
+        _, master, _ = self._get(srv, "/__abr/720/master.m3u8?continuous=1")
+        self.assertIn("BANDWIDTH=320000", master.decode())
+        status, body, _ = self._get(srv, "/__abr/720/segment.ts?sequence=4&fixtureGeneration=1&continuous=1")
+        self.assertEqual((status, body), (200, self.part_bytes(4, self.ticks(4))))
+
+    # -- `top=` --
+
+    def test_top_limits_the_ladder_and_an_unknown_rung_is_refused(self):
+        srv = self._serve(self._pack())
+
+        def listed(query):
+            status, body, _ = self._get(srv, "/__abr/ladder/master.m3u8" + query)
+            rungs = [row.split("/")[2] for row in body.decode().splitlines() if row.startswith("/__abr/")]
+            return status, rungs
+
+        self.assertEqual(listed(""), (200, list(serve_fixtures.ABR_LADDER)))
+        self.assertEqual(listed("?top=6000"), (200, ["320", "720", "2000", "4000", "6000"]))
+        self.assertEqual(listed("?top=320"), (200, ["320"]))
+        self.assertEqual(listed("?top=22000"), (200, list(serve_fixtures.ABR_LADDER)))
+        for bad in ("?top=7000", "?top=", "?top=abc", "?top=06000", "?x=1&top=-1"):
+            with self.subTest(query=bad):
+                self.assertEqual(listed(bad)[0], 400)
+        with self.assertRaises(ValueError):
+            serve_fixtures.ladder_rungs("top=7000")
+        self.assertEqual(serve_fixtures.ladder_rungs("continuous=1&top=2000"), ("320", "720", "2000"))
+
+    def test_a_fixture_string_names_the_clips_it_needs_query_and_all(self):
+        rungs = serve_fixtures.abr_playlist_rungs
+        self.assertEqual(rungs("__abr/ladder/master.m3u8"), serve_fixtures.ABR_LADDER)
+        self.assertEqual(rungs("__abr/ladder/master.m3u8?top=720"), ("320", "720"))
+        self.assertEqual(rungs("__abr/20000/master.m3u8?continuous=1"), ("20000",))
+        self.assertEqual(rungs("__abr/720/media.m3u8"), ("720",))
+        self.assertIsNone(rungs("pipe_h264_aac_mp4.mp4"))
+        self.assertIsNone(rungs("__abr/999/master.m3u8"), "not a rung: a plain (missing) file name")
+        with self.assertRaises(ValueError):
+            rungs("__abr/ladder/master.m3u8?top=7000")
+
+    def test_the_harness_resolves_query_carrying_playlist_fixtures_by_the_rungs_they_list(self):
+        def resolve(root, name):
+            cases = [{"name": "case", "fixture": name}]
+            run._resolve_fixtures(cases, root)
+            return cases[0]
+
+        with tempfile.TemporaryDirectory() as root:
+            for rung in ("320", "720"):
+                with open(os.path.join(root, serve_fixtures.ABR_FIXTURE[rung]), "wb") as stream:
+                    stream.write(b"\0")
+            sliced = resolve(root, "__abr/ladder/master.m3u8?top=720")
+            self.assertEqual((sliced.get("path", "absent"), sliced.get("skip")), (None, None),
+                             "only the clips of the rungs listed are needed")
+            whole = resolve(root, "__abr/ladder/master.m3u8")
+            self.assertIn(serve_fixtures.ABR_FIXTURE["22000"], whole["skip"])
+            single = resolve(root, "__abr/20000/master.m3u8?continuous=1")
+            self.assertIn(serve_fixtures.ABR_FIXTURE["20000"], single["skip"])
+            self.assertNotIn("path", single)
+            with open(os.path.join(root, serve_fixtures.ABR_FIXTURE["20000"]), "wb") as stream:
+                stream.write(b"\0")
+            single = resolve(root, "__abr/20000/master.m3u8?continuous=1")
+            self.assertEqual((single.get("path", "absent"), single.get("skip")), (None, None))
+            self.assertIn("7000", resolve(root, "__abr/ladder/master.m3u8?top=7000")["skip"])
+
+    # -- the manifest --
+
+    def test_the_continuous_case_is_the_capped_case_on_one_flagged_rung(self):
+        cases = {c["name"]: c for c in _manifest()["pipeline_cases"]}
+        case, capped = cases["pipe_abr_uri_continuous_20000"], cases["pipe_abr_uri_ladder_capped"]
+        self.assertEqual(case["fixture"], "__abr/20000/master.m3u8?continuous=1")
+        self.assertEqual(serve_fixtures.abr_playlist_rungs(case["fixture"]), ("20000",))
+        self.assertEqual(case["triggers"], {"uriprobe": "load"})
+        self.assertNotIn("network_profile", case)
+        self.assertNotIn("auto_network", case)
+        for key in ("declare", "run_secs", "operations", "expect"):
+            self.assertEqual(case[key], capped[key], key)
+        self.assertIn("pipeline limit", case["_uri_note"])
+        self.assertEqual(json.loads(dict(run.triggers_for_case(case, url_base="http://fixture.invalid"))
+                                    ["plxnative-playurl"])["url"],
+                         "http://fixture.invalid/__abr/20000/master.m3u8?continuous=1")
+        self.assertEqual(dict(run.triggers_for_case(case, url_base="http://fixture.invalid"))
+                         ["plxnative-uriprobe"], "load")
+
+    @unittest.skipUnless(os.path.isdir(serve_fixtures.default_root()), "no fixture pack built here")
+    def test_every_clip_of_a_built_pack_can_be_shifted_and_is_about_two_seconds(self):
+        root = serve_fixtures.default_root()
+        srv = serve_fixtures.FixtureServer.__new__(serve_fixtures.FixtureServer)
+        srv.lock, srv.root, srv._abr_parts, srv._abr_timelines = threading.Lock(), root, {}, {}
+        found = 0
+        for rung, base in serve_fixtures.ABR_FIXTURE.items():
+            if not os.path.isfile(os.path.join(root, base)):
+                continue
+            for part in srv.abr_parts(base):
+                found += 1
+                self.assertAlmostEqual(srv.abr_timeline(part).duration / 90000, 2.0, delta=0.1, msg=part)
+        if not found:
+            self.skipTest("the pack has no ABR clips")
+
+
+def _uri(t, text):
+    """One synthetic probe line: `t` is the probe's own milliseconds since arm."""
+    return f"uriprobe: t={t} {text}"
+
+
+def _uri_run(seconds, clock=lambda sec: sec * 1000, remaining=lambda sec: 12, plane=True,
+             extra=None, first_ms=3000):
+    """A SYNTHETIC URI-probe log: the arm, the plane lines, the initial fill, `ev=playing`, then one
+    `currentTime` and one `bufferRange` a second for `seconds` seconds.
+
+    `clock(sec)` is the reported media clock in ms (None omits that second's sample), `remaining(sec)`
+    the reported `remainingTime`, `extra` maps a second to the lines to add at that second. None of
+    this is a device log: nothing here comes from the television.
+    """
+    lines = [_uri(0, "armed variant=acb-control scheme=http kind=hls window=none")]
+    if plane:
+        lines += ["videoplane: BOUND — the gate presents unconditionally and no frame may snapshot"]
+        lines += [f"acb callback task={n} ev=1 app=1 play={1 + n // 4}" for n in (1, 2, 3, 4)]
+    lines += [_uri(700, "ev=bufferingStart"), _uri(2000, "ev=bufferingEnd"), _uri(2000, "ev=playing")]
+    for sec in range(seconds):
+        t = first_ms + 1000 * sec
+        value = clock(sec)
+        if value is not None:
+            lines.append(_uri(t, f"ev=currentTime value={value}" + (" (first report)" if sec == 0 else "")))
+        r = remaining(sec)
+        lines.append(_uri(t, f"ev=bufferRange beginTime=0 endTime={r} remainingTime={r} percent=10"))
+        lines.extend(_uri(t, text) if not text.startswith(("videoplane", "acb ")) else text
+                     for text in (extra or {}).get(sec, ()))
+    return lines
+
+
+SUMMARY = ("summary load=ok playing={playing} t_load=700 t_playing=2000 currentTime_advanced={moved} "
+           "videoInfo=seen audioInfo=seen window=none setWindowId=n/a variant=acb-control scheme=http "
+           "shape=named end={end}")
+
+
+def _trace(t, text):
+    """One synthetic PRODUCT trace line: `t` is the backend's own clock in ms."""
+    return f"uri-trace: t={t} {text}"
+
+
+def _product_run(seconds, clock=lambda sec: sec * 1000, remaining=lambda sec: 12, display=6, playing=7,
+                 service=True, presented=True, plane=True, callbacks=True, extra=()):
+    """A SYNTHETIC log in the line formats the PRODUCTION URI backend writes (the dev route): the plane
+    lines with task ids that are NOT 1-4, `uri: service playing`, `uri: presented`, then one
+    `uri-trace:` `currentTime` and `bufferRange` a second. No line here comes from a television."""
+    lines = []
+    if plane:
+        lines += ["videoplane: BOUND — the gate presents unconditionally and no frame may snapshot",
+                  f"acb display fullscreen=1 rv=1 task={display}", f"acb playing rv=1 task={playing}",
+                  "uri-acb: bound (a dispatch result, not a picture)"]
+    if callbacks:
+        lines += [f"acb callback task={display} ev=1 app=1 play=0",
+                  f"acb callback task={playing} ev=1 app=1 play=1",
+                  "uri-acb: display/PLAYING completed (event 1 on both tasks)"]
+    lines += [_trace(700, "ev=bufferingStart"), _trace(2000, "ev=bufferingEnd")]
+    if service:
+        lines.append("uri: service playing")
+    lines.append(_trace(2000, "ev=playing"))
+    for sec in range(seconds):
+        t = 3000 + 1000 * sec
+        value = clock(sec)
+        if value is not None:
+            lines.append(_trace(t, f"ev=currentTime value={value}"))
+        r = remaining(sec)
+        lines.append(_trace(t, f"ev=bufferRange beginTime=0 endTime={r} remainingTime={r} percent=10"))
+    if presented:
+        lines.append("uri: presented (service playing; plane window and PLAYING completed; "
+                     "clock advanced from 0 to 1042 ms)")
+    return lines + list(extra)
+
+
+class UriProductGrading(unittest.TestCase):
+    """The product route (`uri_route: product`): the PRODUCTION URI backend, bound through ACB, on a
+    dev route. Its evidence is `uri-trace:` lines (the probe's event text, a different prefix) plus the
+    plane and backend lines production already writes. Synthetic logs in those line formats."""
+
+    CASE = {"name": "product", "fixture": "pipe_hls_720p24_20m/index.m3u8", "uri_route": "product",
+            "triggers": {"ptype": "0"}, "operations": [{"op": "play"}],
+            "expect": {"no_playing_error": True, "uri_playing": True, "uri_plane_bound": True,
+                       "uri_presented": True, "uri_service_playing": True,
+                       "uri_clock_past_s": 60, "uri_max_stall_s": 3}}
+    P = "product"
+
+    def test_the_route_selects_the_graders(self):
+        self.assertEqual(run.uri_route(self.CASE), "product")
+        self.assertEqual(run.uri_route({"triggers": {"uriprobe": "load"}}), "probe")
+        self.assertIsNone(run.uri_route({"triggers": {"sinkmax": "4"}}))
+        self.assertTrue(run.uri_mode(self.CASE))
+        self.assertFalse(run.uri_mode({"name": "plain"}))
+
+    def test_a_healthy_product_log_passes_every_grade_and_the_wire_check(self):
+        passed, results = run.evaluate_pipeline(self.CASE, _product_run(66), (36, 36, 2))
+        self.assertTrue(passed, results)
+        self.assertEqual({label for label, _, _ in results},
+                         {"uri_playing", "uri_plane_bound", "uri_presented", "uri_service_playing",
+                          "uri_dev_offer", "uri_route_held", "uri_clock_past", "uri_max_stall", "no_error",
+                          "server_wire"})
+
+    def test_the_probe_prefix_is_not_product_evidence_and_the_trace_prefix_is_not_probe_evidence(self):
+        probe_lines = [ln.replace("uri-trace:", "uriprobe:") for ln in _product_run(66)]
+        self.assertFalse(run.a_uri_playing(probe_lines, self.P)[0])
+        self.assertFalse(run.a_uri_clock_past(probe_lines, 60, self.P)[0])
+        self.assertFalse(run.a_uri_max_stall(probe_lines, 3, self.P)[0])
+        self.assertFalse(run.a_uri_playing(_product_run(66))[0], "the probe reader reads uriprobe: only")
+
+    def test_each_grade_fails_on_its_own_broken_log(self):
+        broken = {
+            "uri_playing": _product_run(8, clock=lambda sec: 500),
+            "uri_plane_bound": _product_run(66, plane=False),
+            "uri_presented": _product_run(66, presented=False),
+            "uri_service_playing": _product_run(66, service=False),
+            "uri_clock_past": _product_run(40),
+            "uri_max_stall": _product_run(40, clock=lambda sec: min(sec, 19) * 1000 if sec < 30 else sec * 1000),
+            "no_error": _product_run(66, extra=["uri-acb: the bind failed (Refused(Rejected)); closing"]),
+        }
+        for label, log in broken.items():
+            with self.subTest(label):
+                passed, results = run.evaluate_pipeline(self.CASE, log, (36, 36, 2))
+                self.assertFalse(passed)
+                self.assertIn(label, {name for name, ok, _ in results if not ok})
+
+    def test_a_probe_only_log_has_no_product_lines_so_it_cannot_pass_a_product_case(self):
+        passed, results = run.evaluate_pipeline(self.CASE, _uri_run(66), (36, 36, 2))
+        self.assertFalse(passed)
+
+    # -- uri_service_playing / uri_presented --
+
+    def test_service_playing_is_its_own_line_and_not_the_words_inside_the_presented_line(self):
+        only_presented = _product_run(5, service=False)
+        self.assertTrue(any("service playing" in ln for ln in only_presented))
+        self.assertFalse(run.a_uri_service_playing(only_presented)[0])
+        self.assertTrue(run.a_uri_service_playing(_product_run(5))[0])
+        self.assertFalse(run.a_uri_service_playing([])[0])
+
+    def test_presented_wants_the_clock_to_have_advanced(self):
+        def line(p, n):
+            return (f"uri: presented (service playing; plane window and PLAYING completed; "
+                    f"clock advanced from {p} to {n} ms)")
+        self.assertTrue(run.a_uri_presented([line(0, 1042)])[0])
+        self.assertTrue(run.a_uri_presented([line(500, 501)])[0])
+        for p, n in ((1000, 1000), (1000, 900), (0, 0)):
+            with self.subTest(p=p, n=n):
+                ok, why = run.a_uri_presented([line(p, n)])
+                self.assertFalse(ok)
+                self.assertIn("from", why)
+        self.assertFalse(run.a_uri_presented(_product_run(5, presented=False))[0])
+        self.assertFalse(run.a_uri_presented(["uri: presented (garbled)"])[0])
+        stuck_then_moved = [line(10, 10), line(10, 400)]
+        self.assertTrue(run.a_uri_presented(stuck_then_moved)[0])
+
+    # -- uri_plane_bound reads the ids from the log --
+
+    URI_OWN = ["uri-acb: bound (a dispatch result, not a picture)",
+               "uri-acb: display/PLAYING completed (event 1 on both tasks)"]
+
+    def test_the_plane_bound_grade_reads_the_task_ids_from_the_log(self):
+        for display, playing in ((6, 7), (1, 2), (41, 9)):
+            with self.subTest(display=display, playing=playing):
+                ok, why = run.a_uri_plane_bound(_product_run(2, display=display, playing=playing), self.P)
+                self.assertTrue(ok, why)
+                self.assertIn(f"task={display}", why)
+                self.assertIn(f"task={playing}", why)
+        # the order of the lines is not graded: a callback may print before the display line
+        shuffled = ["acb callback task=6 ev=1 app=1 play=0", "acb callback task=7 ev=1 app=1 play=1",
+                    "acb display fullscreen=1 rv=1 task=6", "acb playing rv=1 task=7",
+                    "videoplane: BOUND"] + self.URI_OWN
+        self.assertTrue(run.a_uri_plane_bound(shuffled, self.P)[0])
+
+    def test_the_plane_bound_grade_refuses_each_way_the_bind_can_be_incomplete(self):
+        base = ["videoplane: BOUND", "acb display fullscreen=1 rv=1 task=6", "acb playing rv=1 task=7",
+                "acb callback task=6 ev=1 app=1 play=0", "acb callback task=7 ev=1 app=1 play=1"] + self.URI_OWN
+        self.assertTrue(run.a_uri_plane_bound(base, self.P)[0])
+        cases = {
+            "no BOUND line": [ln for ln in base if "BOUND" not in ln],
+            "unbound": [ln.replace("BOUND", "unbound") for ln in base],
+            "no display line": [ln for ln in base if "acb display" not in ln],
+            "no playing line": [ln for ln in base if "acb playing" not in ln],
+            "display rv=0": [ln.replace("fullscreen=1 rv=1", "fullscreen=1 rv=0") for ln in base],
+            "playing rv=-1": [ln.replace("playing rv=1", "playing rv=-1") for ln in base],
+            "display task never called back": [ln for ln in base if "callback task=6" not in ln],
+            "playing task never called back": [ln for ln in base if "callback task=7" not in ln],
+            "display callback ev=0": [ln.replace("task=6 ev=1", "task=6 ev=0") for ln in base],
+            "a stray task answers ev=2": base + ["acb callback task=9 ev=2 app=1 play=1"],
+            "callbacks for the wrong ids": [ln.replace("callback task=6", "callback task=1")
+                                            .replace("callback task=7", "callback task=2") for ln in base],
+        }
+        for what, log in cases.items():
+            with self.subTest(what):
+                self.assertFalse(run.a_uri_plane_bound(log, self.P)[0], what)
+
+    def test_only_the_unloaded_task_may_answer_other_than_ev_1(self):
+        base = ["videoplane: BOUND", "acb display fullscreen=1 rv=1 task=6", "acb playing rv=1 task=7",
+                "acb callback task=6 ev=1 app=1 play=0", "acb callback task=7 ev=1 app=1 play=1"] + self.URI_OWN
+        released = base + ["acb unloaded rv=1 task=8", "acb callback task=8 ev=0 app=1 play=0"]
+        self.assertTrue(run.a_uri_plane_bound(released, self.P)[0])
+        wrong = base + ["acb unloaded rv=1 task=8", "acb callback task=9 ev=0 app=1 play=0"]
+        self.assertFalse(run.a_uri_plane_bound(wrong, self.P)[0])
+        # an unload that was refused (task=0) excuses nothing
+        refused = base + ["acb unloaded rv=-2 task=0", "acb callback task=0 ev=3 app=1 play=0"]
+        self.assertFalse(run.a_uri_plane_bound(refused, self.P)[0])
+        # ...and the unloaded id does not stand in for the bind's own callback
+        self.assertFalse(run.a_uri_plane_bound(
+            [ln for ln in released if "callback task=6" not in ln] +
+            ["acb unloaded rv=1 task=6", "acb callback task=6 ev=0 app=1 play=0"], self.P)[0])
+
+    def test_the_probe_plane_rule_is_unchanged(self):
+        self.assertTrue(run.a_uri_plane_bound(_uri_run(2))[0])
+        self.assertFalse(run.a_uri_plane_bound(_product_run(2))[0], "tasks 1-4 are the PROBE's contract")
+
+    # -- the shared clock graders, on the other prefix --
+
+    def test_clock_stall_and_drain_run_unchanged_on_trace_lines(self):
+        log = _product_run(66)
+        self.assertTrue(run.a_uri_clock_past(log, 60, self.P)[0])
+        self.assertFalse(run.a_uri_clock_past(_product_run(56), 60, self.P)[0])
+        self.assertTrue(run.a_uri_max_stall(log, 3, self.P)[0])
+        held = _product_run(40, clock=lambda sec: min(sec, 19) * 1000 if sec < 27 else sec * 1000)
+        ok, why = run.a_uri_max_stall(held, 3, self.P)
+        self.assertFalse(ok)
+        self.assertIn("stall", why)
+        series = [12, 12, 12, 12, 11, 10, 9, 8, 7, 6]
+        drain = [_trace(2000, "ev=playing")]
+        drain += [_trace(3000 + 1000 * i, f"ev=bufferRange beginTime={i} endTime={i + r} remainingTime={r}")
+                  for i, r in enumerate(series)]
+        drain.append(_trace(13000, "ev=bufferingStart"))
+        self.assertTrue(run.a_uri_drain_warning(drain, 5, self.P)[0])
+        self.assertFalse(run.a_uri_drain_warning(drain, 15, self.P)[0])
+        probe = [ln.replace("uri-trace:", "uriprobe:") for ln in drain]
+        self.assertFalse(run.a_uri_drain_warning(probe, 5, self.P)[0])
+
+    def test_a_product_playing_grade_never_reads_a_probe_summary(self):
+        summary = _uri(9000, SUMMARY.format(playing="yes", moved="yes", end="back"))
+        ok, why = run.a_uri_playing([summary], self.P)
+        self.assertFalse(ok)
+        self.assertIn("uri-trace", why)
+
+    # -- no_error --
+
+    def test_the_product_error_keys(self):
+        for line in ("uri-acb: the bind failed (Refused(Rejected)); closing",
+                     "uri-acb: bind not granted (Refused(Deferred))",
+                     "uri: product driver installation refused",
+                     "uri-dev: armed but this display is not ACB-bound; ignored",
+                     "uri-dev: the trigger names no part=; ignored",
+                     "smp_cb type=18 error", "Playing error 5"):
+            with self.subTest(line):
+                ok, why = run.a_no_error(_product_run(3, extra=[line]), self.P)
+                self.assertFalse(ok)
+                self.assertIn(line.split(" (")[0][:20], why)
+        self.assertTrue(run.a_no_error(_product_run(3), self.P)[0])
+        # a log line that merely mentions the dev route is not a refusal
+        self.assertTrue(run.a_no_error(["uri-dev: armed part=990001"], self.P)[0])
+
+    # -- the dev route armed, but no product offer --
+
+    ARMED = "uri-dev: armed part=990001"
+
+    def test_an_armed_dev_route_that_never_reaches_the_product_backend_fails_with_the_pin_reason(self):
+        """The pin matches no server, the qualifier answers Unknown, the route plays the Feed, and the log
+        says nothing else: the grade names the likely cause."""
+        lines = [self.ARMED] + [ln for ln in _product_run(66, service=False, presented=False)
+                                if not ln.startswith("uri-acb:")]
+        ok, why = run.a_uri_dev_offer(lines)
+        self.assertFalse(ok)
+        self.assertEqual(why, "dev route armed but no product offer (pin mismatch?)")
+        passed, results = run.evaluate_pipeline(self.CASE, lines, (36, 36, 2))
+        self.assertFalse(passed)
+        graded = {label: (ok, why) for label, ok, why in results}
+        self.assertEqual(graded["uri_dev_offer"],
+                         (False, "dev route armed but no product offer (pin mismatch?)"))
+
+    WAITING = "uri-acb: waiting for the service's source envelope (real video facts)"
+
+    def test_an_offer_whose_bind_never_completed_is_told_from_no_offer(self):
+        """The 4.5 service sent `videoInfo` and no ACB-schema envelope, so the production backend waited
+        and timed out: the offer WAS made, and a pin mismatch is the wrong thing to suspect."""
+        waited = [self.ARMED, "uri-acb: request=1 step=Check", self.WAITING]
+        ok, why = run.a_uri_dev_offer(waited)
+        self.assertFalse(ok)
+        self.assertIn("offer made but the ACB bind never completed", why)
+        self.assertIn("source envelope", why)
+        self.assertNotIn("pin mismatch", why)
+        # an offer that stopped elsewhere in the sequence says so without naming the envelope
+        other = [self.ARMED, "uri-acb: request=1 step=Check", "uri-acb: bind not granted (Refused(NoPlane))"]
+        ok, why = run.a_uri_dev_offer(other)
+        self.assertFalse(ok)
+        self.assertIn("offer made but the ACB bind never completed", why)
+        self.assertNotIn("envelope", why)
+        self.assertNotIn("pin mismatch", why)
+        # no `uri-acb:` line at all stays the pin reason
+        self.assertIn("pin mismatch", run.a_uri_dev_offer([self.ARMED])[1])
+
+    # -- the route held: a fallback to the Feed fails the case by name --
+
+    FALLBACK = ["uri-dev: armed part=990001", "uri-acb: request=1 step=Check", WAITING,
+                "uri-acb: the bind failed (TimedOut); closing", "ls2uri: released",
+                "decision: part=991001 video=- general=Some(1000) mde=None -> DIRECT PLAY",
+                'load: v=H264 a="AAC" fps=24.000 dv=present:0 P0/0 el:0 atmos:0 max=1280x720@24',
+                "stream: path=direct"]
+
+    def test_the_route_held_grade_fails_a_run_the_feed_finished_and_passes_one_that_never_fell_back(self):
+        ok, why = run.a_uri_route_held(self.FALLBACK)
+        self.assertFalse(ok)
+        self.assertIn("fell back to the Feed", why)
+        self.assertIn("decision: part=991001", why)
+        for dropped in (5, 6, 7):
+            with self.subTest(first_feed_line=self.FALLBACK[dropped]):
+                ok, why = run.a_uri_route_held(self.FALLBACK[:5] + self.FALLBACK[dropped:dropped + 1])
+                self.assertFalse(ok, why)
+        # the release at the end of a healthy run is followed by no Feed line
+        self.assertTrue(run.a_uri_route_held(_product_run(66) + ["ls2uri: released"])[0])
+        self.assertTrue(run.a_uri_route_held(self.FALLBACK[:5])[0])
+        self.assertTrue(run.a_uri_route_held(_product_run(66))[0])
+        # Feed vocabulary BEFORE the URI session is the route's own planning, not a fallback
+        self.assertTrue(run.a_uri_route_held([self.FALLBACK[5], "ls2uri: released"])[0])
+        # a quarantined session that the Feed then replaced counts too
+        quarantined = [ln.replace("ls2uri: released", "ls2uri: quarantined") for ln in self.FALLBACK]
+        self.assertFalse(run.a_uri_route_held(quarantined)[0])
+
+    def test_a_product_case_the_feed_finished_fails_even_with_every_feed_plane_line_in_the_log(self):
+        """The false pass of 2026-11-05: the route fell back to the Feed, which wrote `videoplane: BOUND`,
+        `acb display/playing ... task=N` and their callbacks, so the plane grade read a bind that the
+        URI backend never made."""
+        feed = [ln for ln in _product_run(66, service=False, presented=False) if not ln.startswith("uri-acb:")]
+        log = ["uri-dev: armed part=990001", "uri-acb: request=1 step=Check", self.WAITING,
+               "ls2uri: released", "decision: part=991001 video=- general=Some(1000) mde=None -> DIRECT PLAY",
+               'load: v=H264 a="AAC" fps=24.000 dv=present:0 P0/0 el:0 atmos:0'] + feed
+        passed, results = run.evaluate_pipeline(self.CASE, log, (36, 36, 2))
+        self.assertFalse(passed)
+        graded = {label: (ok, why) for label, ok, why in results}
+        for label in ("uri_plane_bound", "uri_route_held", "uri_dev_offer", "uri_service_playing", "uri_presented"):
+            self.assertFalse(graded[label][0], label)
+        self.assertIn("waited for an envelope", graded["uri_plane_bound"][1])
+        self.assertIn("fell back to the Feed", graded["uri_route_held"][1])
+        self.assertIn("offer made but the ACB bind never completed", graded["uri_dev_offer"][1])
+
+    def test_the_plane_grade_reads_the_uri_backends_own_bind_lines_on_a_product_case(self):
+        feed_only = ["videoplane: BOUND", "acb display fullscreen=1 rv=1 task=6", "acb playing rv=1 task=7",
+                     "acb callback task=6 ev=1 app=1 play=0", "acb callback task=7 ev=1 app=1 play=1"]
+        ok, why = run.a_uri_plane_bound(feed_only, self.P)
+        self.assertFalse(ok)
+        self.assertIn("uri-acb: bound", why)
+        # bound, but the plane's display/PLAYING never completed (or said it failed)
+        bound = feed_only + [self.URI_OWN[0]]
+        ok, why = run.a_uri_plane_bound(bound, self.P)
+        self.assertFalse(ok)
+        self.assertIn("display/PLAYING completed", why)
+        failed = bound + ["uri-acb: display/PLAYING completion failed (event 3); no picture will be claimed"]
+        ok, why = run.a_uri_plane_bound(failed, self.P)
+        self.assertFalse(ok)
+        self.assertIn("did not complete", why)
+        self.assertTrue(run.a_uri_plane_bound(feed_only + self.URI_OWN, self.P)[0])
+        # the URI lines alone do not stand in for the plane's own evidence
+        self.assertFalse(run.a_uri_plane_bound(self.URI_OWN, self.P)[0])
+        # the probe route is unchanged: it never reads the production lines
+        self.assertTrue(run.a_uri_plane_bound(_uri_run(2))[0])
+
+    def test_an_armed_dev_route_that_played_passes_and_an_unarmed_log_has_nothing_to_check(self):
+        self.assertTrue(run.a_uri_dev_offer([self.ARMED] + _product_run(66))[0])
+        self.assertTrue(run.a_uri_dev_offer(_product_run(66))[0])
+        self.assertTrue(run.a_uri_dev_offer([])[0])
+        # the grade runs on a healthy product log too, and passes
+        passed, results = run.evaluate_pipeline(self.CASE, [self.ARMED] + _product_run(66), (36, 36, 2))
+        self.assertEqual(dict((label, ok) for label, ok, _ in results)["uri_dev_offer"], True)
+        self.assertTrue(passed, results)
+
+    def test_a_probe_case_does_not_grade_the_dev_route(self):
+        _, results = run.evaluate_pipeline(UriModeGrading.BOUND_CASE, _uri_run(10), (1, 1, 1))
+        self.assertNotIn("uri_dev_offer", [label for label, _, _ in results])
+
+    def test_the_product_error_gate_has_no_summary_to_read(self):
+        summary = _uri(9000, SUMMARY.format(playing="no", moved="no", end="refused:acb"))
+        self.assertTrue(run.a_no_error([summary], self.P)[0])
+        self.assertFalse(run.a_no_error([summary])[0], "the probe mode still reads it")
+
+    # -- the expect keys --
+
+    def test_product_only_keys_are_unknown_on_a_probe_case_and_known_on_a_product_one(self):
+        for key in ("uri_presented", "uri_service_playing"):
+            self.assertIn(key, run.URI_EXPECT_KEYS)
+        probe = dict(UriModeGrading.BOUND_CASE, expect={"uri_presented": True})
+        passed, results = run.evaluate_pipeline(probe, _uri_run(10), (1, 1, 1))
+        self.assertFalse(passed)
+        self.assertEqual(results[0][:2], ("uri_expect", False))
+        self.assertIn("uri_presented", results[0][2])
+
+    def test_an_unknown_route_fails_loudly(self):
+        case = dict(self.CASE, uri_route="prduct")
+        passed, results = run.evaluate_pipeline(case, _product_run(66), (36, 36, 2))
+        self.assertFalse(passed)
+        self.assertEqual(results[0][:2], ("uri_route", False))
+
+    def test_a_product_case_never_exits_early(self):
+        early, why = run.early_exit_allowed(self.CASE, {})
+        self.assertFalse(early)
+        self.assertIn("window", why)
+
+
+# The lines the production URI backend writes about the startup audio selection
+# (`rust-modules/play-uri/src/backend.rs`): the select it SENDS (the native index and the Plex stream id
+# it stands for), the settle without a native call, the refusal of an unconfirmed control (`{:?}` of the
+# Operation, whose Selected(..) is the Plex stream id, not the native index), and, under `devtriggers`,
+# the service's own events as `uri-trace:` lines.
+SENT = "uri: selectTrack sent kind=audio index={n} stream={sid}"
+ALREADY = "uri: audio index={n} is already selected (audioInfo); no selectTrack sent"
+TIMED_OUT = ("uri: control SelectTrack {{ kind: Audio, choice: Selected({sid}) }} unconfirmed "
+             "after 15000 ms; refused (TimedOut)")
+
+
+def _audio_log(*lines, playing=True):
+    """A synthetic startup audio-selection log: the lines given, in order, then `uri: service playing`
+    (unless `playing` is False). `info(n)` and `TRACK_SELECTED` are the trace lines the service's events
+    become. Nothing here comes from a television."""
+    return list(lines) + (["uri: service playing"] if playing else [])
+
+
+def _audio_info(track, t=300):
+    return _trace(t, f"ev=audioInfo codec=AAC channels=1 sampleRate=48000 track={track}")
+
+
+TRACK_SELECTED = _trace(900, "ev=trackSelected")
+SENT_1 = SENT.format(n=1, sid=99100102)
+SELECT_1 = {"path": "select", "index": 1}
+ALREADY_0 = {"path": "already", "index": 0}
+
+
+class UriAudioSelectedGrading(unittest.TestCase):
+    """`uri_audio_selected`: what the production backend did with the startup audio selection, read from
+    the lines it writes. `select` is a REAL native `selectTrack` to another track, which the service
+    confirmed before the first Play; `already` is the settle without a native call (the control)."""
+
+    def grade(self, log, want):
+        return run.a_uri_audio_selected(log, want)
+
+    # -- select: a non-default track, really asked for --
+
+    def test_a_select_the_service_confirmed_with_trackselected_passes(self):
+        ok, why = self.grade(_audio_log(_audio_info(0), SENT_1, TRACK_SELECTED), SELECT_1)
+        self.assertTrue(ok, why)
+        self.assertIn(SENT_1, why, "the index it proves comes from the line the backend wrote when it sent")
+        self.assertIn("ev=trackSelected", why)
+        self.assertIn("service playing", why)
+
+    def test_a_confirmation_that_names_the_track_must_name_the_one_asked_for(self):
+        typed = _trace(900, "ev=trackSelected type=audio index=1")
+        ok, why = self.grade(_audio_log(_audio_info(0), SENT_1, typed), SELECT_1)
+        self.assertTrue(ok, why)
+        self.assertIn("type=audio index=1", why)
+        for wrong in ("ev=trackSelected type=audio index=0", "ev=trackSelected type=audio index=2",
+                      "ev=trackSelected type=text index=1"):
+            line = _trace(900, wrong)
+            ok, why = self.grade(_audio_log(_audio_info(0), SENT_1, line), SELECT_1)
+            self.assertFalse(ok, wrong)
+            self.assertIn(line, why)
+            self.assertIn("not audio index=1", why)
+
+    def test_a_confirmation_that_names_the_wrong_track_fails_even_after_a_right_one(self):
+        right, wrong = _trace(900, "ev=trackSelected type=audio index=1"), _trace(950, "ev=trackSelected type=audio index=0")
+        ok, why = self.grade(_audio_log(_audio_info(0), SENT_1, right, wrong), SELECT_1)
+        self.assertFalse(ok)
+        self.assertIn(wrong, why)
+
+    def test_a_select_with_no_sent_line_fails_even_when_the_service_moved_and_confirmed(self):
+        """The sent line is what proves WHICH index went out: a confirmation alone does not."""
+        for log in (_audio_log(_audio_info(0), TRACK_SELECTED),
+                    _audio_log(_audio_info(0), _audio_info(1, t=700))):
+            ok, why = self.grade(log, SELECT_1)
+            self.assertFalse(ok)
+            self.assertIn("selectTrack sent kind=audio index=N stream=SID", why)
+            self.assertIn("never sent", why)
+
+    def test_a_select_sent_to_another_index_than_the_one_wanted_fails_and_names_the_line(self):
+        for n in (0, 2):
+            line = SENT.format(n=n, sid=99100101)
+            ok, why = self.grade(_audio_log(_audio_info(0), line, TRACK_SELECTED), SELECT_1)
+            self.assertFalse(ok, n)
+            self.assertIn(line, why)
+            self.assertIn(f"index={n}, wanted 1", why)
+
+    def test_a_subtitle_select_is_not_the_audio_one(self):
+        sub = "uri: selectTrack sent kind=text index=1 stream=99100103"
+        ok, why = self.grade(_audio_log(_audio_info(0), sub, TRACK_SELECTED), SELECT_1)
+        self.assertFalse(ok)
+        self.assertIn("never sent", why)
+
+    def test_a_select_the_service_confirmed_by_naming_the_new_track_passes(self):
+        log = _audio_log(_audio_info(0), SENT_1, _audio_info(1, t=700))
+        ok, why = self.grade(log, SELECT_1)
+        self.assertTrue(ok, why)
+        self.assertIn("track=1", why)
+
+    def test_the_already_selected_line_is_the_dev_routes_index_zero_and_fails_a_select(self):
+        """The failure a dev route that maps the second stream to native index 0 shows (as
+        `DevQualifier` once did): the backend finds the track the service already has (0) and sends
+        nothing."""
+        line = ALREADY.format(n=0)
+        ok, why = self.grade(_audio_log(_audio_info(0), line), SELECT_1)
+        self.assertFalse(ok)
+        self.assertIn(line, why)
+        self.assertIn("no selectTrack was sent", why)
+
+    def test_a_refused_select_fails_and_names_the_line(self):
+        line = TIMED_OUT.format(sid=99100102)
+        ok, why = self.grade(_audio_log(_audio_info(0), line, playing=False), SELECT_1)
+        self.assertFalse(ok)
+        self.assertIn(line, why)
+        # ...also when something else still played afterwards (a Feed fallback writes the same lines)
+        ok, why = self.grade(_audio_log(_audio_info(0), line), SELECT_1)
+        self.assertFalse(ok)
+        self.assertIn("refused (TimedOut)", why)
+
+    def test_a_refusal_carries_the_index_that_went_out_and_the_one_the_service_named(self):
+        """A wrong numbering ends in a refusal: the service names an index the backend cannot match to its
+        pending select, and the control times out. The failure must still say which index was sent and
+        which the service answered with."""
+        line = TIMED_OUT.format(sid=99100102)
+        named = _trace(900, "ev=trackSelected type=audio index=2")
+        ok, why = self.grade(_audio_log(_audio_info(0), SENT_1, named, _audio_info(2, t=950), line,
+                                        playing=False), SELECT_1)
+        self.assertFalse(ok)
+        for part in (line, SENT_1, named, "audioInfo last said track=2"):
+            self.assertIn(part, why)
+        ok, why = self.grade(_audio_log(_audio_info(0), line, playing=False), SELECT_1)
+        self.assertFalse(ok)
+        self.assertIn("no `uri: selectTrack sent` line", why)
+
+    def test_a_select_nothing_confirmed_fails(self):
+        ok, why = self.grade(_audio_log(_audio_info(0), SENT_1, _audio_info(0, t=700)), SELECT_1)
+        self.assertFalse(ok)
+        self.assertIn("no confirmation", why)
+
+    def test_a_service_that_ends_on_another_track_than_the_one_asked_fails(self):
+        ok, why = self.grade(_audio_log(_audio_info(0), SENT_1, _audio_info(2, t=700)), SELECT_1)
+        self.assertFalse(ok)
+        self.assertIn("track=2", why)
+        ok, why = self.grade(_audio_log(_audio_info(0), SENT_1, TRACK_SELECTED, _audio_info(2, t=950)), SELECT_1)
+        self.assertFalse(ok, "a confirmation does not excuse a service that names another track after it")
+
+    def test_a_select_without_the_service_ever_playing_fails(self):
+        ok, why = self.grade(_audio_log(_audio_info(0), SENT_1, TRACK_SELECTED, playing=False), SELECT_1)
+        self.assertFalse(ok)
+        self.assertIn("uri: service playing", why)
+
+    def test_a_select_needs_the_service_to_have_named_its_own_track_first(self):
+        ok, why = self.grade(_audio_log(SENT_1, TRACK_SELECTED), SELECT_1)
+        self.assertFalse(ok)
+        self.assertIn("ev=audioInfo", why)
+
+    def test_a_select_of_the_track_the_service_started_on_has_nothing_to_select(self):
+        ok, why = self.grade(_audio_log(_audio_info(1), SENT_1, TRACK_SELECTED), SELECT_1)
+        self.assertFalse(ok)
+        self.assertIn("nothing to select", why)
+
+    # -- already: the control --
+
+    def test_the_already_selected_settle_passes_the_control(self):
+        line = ALREADY.format(n=0)
+        ok, why = self.grade(_audio_log(_audio_info(0), line), ALREADY_0)
+        self.assertTrue(ok, why)
+        self.assertIn(line, why)
+
+    def test_the_control_fails_when_a_select_was_sent_instead(self):
+        ok, why = self.grade(_audio_log(_audio_info(0), TRACK_SELECTED), ALREADY_0)
+        self.assertFalse(ok)
+        self.assertIn("already selected", why)
+        sent = SENT.format(n=0, sid=99100101)
+        ok, why = self.grade(_audio_log(_audio_info(0), sent, TRACK_SELECTED), ALREADY_0)
+        self.assertFalse(ok)
+        self.assertIn(sent, why)
+
+    def test_the_control_fails_when_it_sent_a_select_as_well_as_settling(self):
+        sent = SENT.format(n=0, sid=99100101)
+        ok, why = self.grade(_audio_log(_audio_info(0), sent, ALREADY.format(n=0)), ALREADY_0)
+        self.assertFalse(ok)
+        self.assertIn(sent, why)
+        self.assertIn("sent a selectTrack", why)
+
+    def test_the_control_fails_on_another_index_or_a_report_that_disagrees(self):
+        ok, why = self.grade(_audio_log(_audio_info(1), ALREADY.format(n=1)), ALREADY_0)
+        self.assertFalse(ok)
+        self.assertIn("index=1", why)
+        ok, why = self.grade(_audio_log(_audio_info(1), ALREADY.format(n=0)), ALREADY_0)
+        self.assertFalse(ok, "the backend's claim must be the service's own last audioInfo")
+        self.assertIn("audioInfo", why)
+        ok, why = self.grade(_audio_log(ALREADY.format(n=0)), ALREADY_0)
+        self.assertFalse(ok, "no audioInfo line before the claim")
+
+    def test_the_control_fails_on_a_refusal_or_when_nothing_plays(self):
+        line = TIMED_OUT.format(sid=99100101)
+        ok, why = self.grade(_audio_log(_audio_info(0), ALREADY.format(n=0), line), ALREADY_0)
+        self.assertFalse(ok)
+        self.assertIn(line, why)
+        ok, why = self.grade(_audio_log(_audio_info(0), ALREADY.format(n=0), playing=False), ALREADY_0)
+        self.assertFalse(ok)
+        self.assertIn("uri: service playing", why)
+
+    def test_a_subtitle_refusal_is_not_an_audio_refusal(self):
+        sub = "uri: control SelectTrack { kind: Subtitle, choice: Selected(7) } unconfirmed after 15000 ms; refused (TimedOut)"
+        self.assertTrue(self.grade(_audio_log(_audio_info(0), ALREADY.format(n=0), sub), ALREADY_0)[0])
+
+    # -- the expectation itself --
+
+    def test_a_malformed_expectation_fails_by_name_instead_of_passing(self):
+        log = _audio_log(_audio_info(0), ALREADY.format(n=0))
+        for want in (True, "select", 1, None, {}, {"path": "select"}, {"index": 1},
+                     {"path": "both", "index": 0}, {"path": "select", "index": -1},
+                     {"path": "select", "index": True}, {"path": "select", "index": "1"},
+                     {"path": "select", "index": 1, "extra": 1}):
+            with self.subTest(want=want):
+                ok, why = self.grade(log, want)
+                self.assertFalse(ok)
+                self.assertIn("uri_audio_selected", why)
+
+    # -- wired into the product case's grades --
+
+    CASE = dict(UriProductGrading.CASE, expect=dict(UriProductGrading.CASE["expect"],
+                uri_clock_past_s=30, uri_audio_selected=SELECT_1))
+
+    def _graded(self, case, *audio):
+        return run.evaluate_pipeline(case, _product_run(40, extra=audio), (36, 36, 2))
+
+    def test_the_key_is_a_known_product_only_expectation(self):
+        self.assertIn("uri_audio_selected", run.URI_EXPECT_KEYS)
+        self.assertIn("uri_audio_selected", run.URI_PRODUCT_ONLY_KEYS)
+        probe = dict(UriModeGrading.BOUND_CASE, expect={"uri_audio_selected": SELECT_1})
+        passed, results = run.evaluate_pipeline(probe, _uri_run(10), (1, 1, 1))
+        self.assertFalse(passed)
+        self.assertEqual(results[0][:2], ("uri_expect", False))
+        self.assertIn("uri_audio_selected", results[0][2])
+
+    def test_a_healthy_select_log_passes_every_product_grade_with_the_new_one(self):
+        passed, results = self._graded(self.CASE, _audio_info(0), SENT_1, TRACK_SELECTED)
+        self.assertTrue(passed, results)
+        self.assertEqual(dict((label, ok) for label, ok, _ in results)["uri_audio_selected"], True)
+
+    def test_todays_dev_route_fails_only_the_new_grade_when_it_asks_for_the_second_track(self):
+        passed, results = self._graded(self.CASE, _audio_info(0), ALREADY.format(n=0))
+        self.assertFalse(passed)
+        self.assertEqual([label for label, ok, _ in results if not ok], ["uri_audio_selected"])
+
+    def test_the_control_passes_through_the_same_path_a_select_fails_on(self):
+        case = dict(self.CASE, expect=dict(self.CASE["expect"], uri_audio_selected=ALREADY_0))
+        passed, results = self._graded(case, _audio_info(0), ALREADY.format(n=0))
+        self.assertTrue(passed, results)
+
+    def test_a_case_that_does_not_ask_grades_nothing_about_audio(self):
+        _, results = run.evaluate_pipeline(UriProductGrading.CASE, _product_run(66), (36, 36, 2))
+        self.assertNotIn("uri_audio_selected", [label for label, _, _ in results])
+
+
+class UriProductRunner(unittest.TestCase):
+    """The product route's runner: what it writes on the set, in what order, and what it always takes
+    back. Nothing here touches a television, a mock PMS process or the network: every seam is patched."""
+
+    URL = "http://192.0.2.10:8020/pipe_hls_720p24_20m/index.m3u8"
+    HOST, PORT = "192.0.2.5", 32499
+    PMS = (HOST, PORT)
+    SYN = "pms: server 0 version=1.41.0.0000-synthetic name=demo"
+
+    @staticmethod
+    def case(**over):
+        base = next(c for c in _manifest()["pipeline_cases"]
+                    if c["name"] == "pipe_uri_product_hls_720p24_20m_bound")
+        return dict(json.loads(json.dumps(base)), **over)
+
+    # -- the trigger text --
+
+    def test_the_dev_trigger_text_is_the_grammar_the_app_parses(self):
+        self.assertEqual(run.uri_dev_trigger(991001, self.HOST, self.PORT, self.URL),
+                         f"acb part=991001 pms={self.HOST}:{self.PORT} url={self.URL}")
+
+    def test_the_dev_trigger_refuses_what_the_app_would_ignore_silently(self):
+        bad_urls = ["https://192.0.2.10:8020/a.m3u8", "http://fixtures.local:8020/a.m3u8",
+                    "http://192.0.2.10/a.m3u8", "http://192.0.2.300:8020/a.m3u8",
+                    "http://192.0.2.10:0/a.m3u8", "http://192.0.2.10:70000/a.m3u8",
+                    "http://u:p@192.0.2.10:8020/a.m3u8", "http://192.0.2.10:8020",
+                    "http://192.0.2.10:8020/a b.m3u8", "http://192.0.2.10:8020/a'b.m3u8"]
+        for url in bad_urls:
+            with self.subTest(url=url):
+                with self.assertRaises(run.UriProductRefused):
+                    run.uri_dev_trigger(991001, self.HOST, self.PORT, url)
+        for part in (0, -3, "991001", None):
+            with self.subTest(part=part), self.assertRaises(run.UriProductRefused):
+                run.uri_dev_trigger(part, self.HOST, self.PORT, self.URL)
+
+    def test_the_pms_pin_is_the_origin_the_app_dials_or_it_is_refused(self):
+        """The app compares ORIGINS: its client holds `http://PMS_HOST:PMS_PORT` verbatim, so a host spelling
+        it would parse differently (leading zeros, a name) or a port it cannot dial never matches, and the
+        mock never takes the real PMS's port."""
+        self.assertEqual(run.uri_dev_pms("192.0.2.5", 32499), "192.0.2.5:32499")
+        self.assertEqual(run.uri_dev_pms("10.0.0.1", 1), "10.0.0.1:1")
+        for host in ("", "localhost", "mac.local", "192.0.2", "192.0.2.5.6", "192.0.2.256", "192.000.2.5",
+                     "192.0.2.05", " 192.0.2.5", "192.0.2.5 ", "::1", None, 5):
+            with self.subTest(host=host), self.assertRaises(run.UriProductRefused):
+                run.uri_dev_pms(host, 32499)
+        for port in (0, -1, 65536, "32499", None, True, 32400):
+            with self.subTest(port=port), self.assertRaises(run.UriProductRefused):
+                run.uri_dev_pms("192.0.2.5", port)
+        with self.assertRaises(run.UriProductRefused) as why:
+            run.uri_dev_pms("192.0.2.5", run.REAL_PMS_PORT)
+        self.assertIn("real PMS", str(why.exception))
+
+    # -- the trigger files --
+
+    def test_the_files_pin_the_routing_contract_and_name_the_carrier(self):
+        files = run.uri_product_files(self.case(), "http://192.0.2.10:8020", self.PMS)
+        names = [n for n, _ in files]
+        self.assertEqual(len(names), len(set(names)), "a trigger name written twice is read once")
+        got = dict(files)
+        self.assertEqual(got["plxnative-play"], str(run.mock_fps.CARRIER_RK))
+        self.assertEqual((got["plxnative-quality"], got["plxnative-audioenh"], got["plxnative-ptype"]),
+                         ("original", "off", "0"))
+        self.assertEqual(got["plxnative-uridev"],
+                         f"acb part={run.mock_fps.CARRIER_PART_ID} pms={self.HOST}:{self.PORT} "
+                         f"url=http://192.0.2.10:8020/pipe_hls_720p24_20m/index.m3u8")
+        for never in ("plxnative-uriprobe", "plxnative-playurl"):
+            self.assertNotIn(never, got)
+
+    def test_nothing_may_arm_the_probe_or_the_dev_route_by_hand_in_a_product_run(self):
+        for name in ("plxnative-uriprobe", "plxnative-playurl", "plxnative-uridev", "plxnative-pms-origin",
+                     "plxnative-play", "plxnative-ptype", "plxnative-quality"):
+            with self.subTest(extra=name), self.assertRaises(run.UriProductRefused):
+                run.uri_product_files(self.case(), "http://192.0.2.10:8020", self.PMS,
+                                      extra=[(name, "x")])
+        for key in ("uriprobe", "uridev", "playurl", "pms-origin"):
+            with self.subTest(case_trigger=key), self.assertRaises(run.UriProductRefused):
+                run.uri_product_files(self.case(triggers={"ptype": "0", key: "x"}),
+                                      "http://192.0.2.10:8020", self.PMS)
+        # an unrelated extra trigger still passes through, after the case's own
+        files = run.uri_product_files(self.case(), "http://192.0.2.10:8020", self.PMS,
+                                      extra=[("plxnative-framedrop", "20")])
+        self.assertEqual(files[-1], ("plxnative-framedrop", "20"))
+
+    # -- the carrier and the mock --
+
+    def test_the_carrier_resolves_against_the_runs_own_pack_root(self):
+        with tempfile.TemporaryDirectory() as root:
+            cfg = os.path.join(root, "config.local.h")
+            with open(cfg, "w") as f:
+                f.write('#define PMS_HOST "192.0.2.5"\n#define PMS_PORT 32400\n')
+            cases = [self.case()]
+            run._resolve_uri_product(cases, root, flavour="debug", config=cfg)
+            self.assertIn("carrier", cases[0]["skip"])
+            self.assertNotIn("carrier_path", cases[0])
+            clip = os.path.join(root, "pipe_uri_carrier_720p24.mp4")
+            open(clip, "wb").close()
+            cases = [self.case()]
+            run._resolve_uri_product(cases, root, flavour="debug", config=cfg)
+            self.assertNotIn("skip", cases[0])
+            self.assertEqual(cases[0]["carrier_path"], clip)
+            for flavour, config, why in (("stable", cfg, "debug"), ("debug", cfg + ".gone", "PMS_HOST")):
+                with self.subTest(flavour=flavour, config=os.path.basename(config)):
+                    cases = [self.case()]
+                    run._resolve_uri_product(cases, root, flavour=flavour, config=config)
+                    self.assertIn(why, cases[0]["skip"])
+            # a sidecar subtitle beside the carrier would give the movie a subtitle stream
+            sidecar = os.path.join(root, "pipe_uri_carrier_720p24.srt")
+            open(sidecar, "w").close()
+            cases = [self.case()]
+            run._resolve_uri_product(cases, root, flavour="debug", config=cfg)
+            self.assertIn("sidecar", cases[0]["skip"])
+            os.unlink(sidecar)
+            # a Feed case is none of its business
+            feed = [{"name": "plain", "fixture": "x.mkv"}]
+            run._resolve_uri_product(feed, root, flavour="stable", config=cfg + ".gone")
+            self.assertNotIn("skip", feed[0])
+
+    # -- the run --
+
+    def _run(self, lines=None, *, stream=None, apply=None, case=None, endpoint=PMS, cfg_extra=None):
+        """`run_uri_product_case` with every seam patched. Returns (outcome, record)."""
+        # `make` is every `make` target the runner invoked, `order` the set-and-mock steps in the order
+        # they happened (`kill`, `mock-up`, `apply`, `stream`).
+        rec = {"ssh": [], "apply": [], "mock": [], "reported": [], "make": [], "order": []}
+        lines = lines if lines is not None else [self.SYN] + _product_run(66)
+        case = case or dict(self.case(), carrier_path="/packs/pipe_uri_carrier_720p24.mp4")
+
+        def fake_make(target_args, timeout, capture=True):
+            rec["make"].append(list(target_args))
+            rec["order"].append(target_args[0])
+            return mock.Mock(returncode=0)
+
+        class FakeMock:
+            def __init__(self, host, port, args=(), log_path=None):
+                rec["mock"].append(("new", host, port, list(args)))
+
+            def __enter__(self):
+                rec["mock"].append("enter")
+                rec["order"].append("mock-up")
+                return self
+
+            def __exit__(self, *exc):
+                rec["mock"].append("exit")
+                return False
+
+        def fake_stream(c, cfg, secs, early=True, **kw):
+            rec["mock"].append("stream")
+            rec["order"].append("stream")
+            if stream:
+                raise stream
+            return list(lines), 75.0, False, None
+
+        def fake_apply(tv, files, extra=None):
+            rec["apply"].append((list(files), extra))
+            rec["order"].append("apply")
+            if apply:
+                raise apply
+
+        cfg = {"tv": "192.0.2.99", "extra_triggers": (), **(cfg_extra or {})}
+        endpoint_patch = (mock.patch.object(run.mock_fps, "configured_endpoint", return_value=endpoint)
+                          if not isinstance(endpoint, BaseException) else
+                          mock.patch.object(run.mock_fps, "configured_endpoint", side_effect=endpoint))
+        with mock.patch.object(run, "RUNDIR", "/tmp/com.beb.plxnative.debug"), \
+                mock.patch.object(run, "require_tv"), mock.patch.object(run, "make", side_effect=fake_make), \
+                mock.patch.object(run, "ssh", side_effect=lambda tv, cmd, timeout=30: rec["ssh"].append(cmd)), \
+                mock.patch.object(run, "apply_triggers", side_effect=fake_apply), \
+                mock.patch.object(run, "stream_case", side_effect=fake_stream), \
+                mock.patch.object(run, "crash_gate", side_effect=lambda cfg, c, n, ls, p, r: (p, r)), \
+                mock.patch.object(run, "report_and_record",
+                                  side_effect=lambda *a, **k: rec["reported"].append(a[2:4])), \
+                mock.patch.object(run.mock_fps, "MockPms", FakeMock), \
+                mock.patch.object(run.mock_fps, "resolve_mock_token", return_value="plxnative-mock-guest"), \
+                endpoint_patch:
+            srv = mock.Mock()
+            reads = iter([(0, 0, 0), (36, 36, 2)] * 4)   # before the stream, then after it
+            srv.stats.side_effect = lambda: next(reads)
+            out = None
+            try:
+                out = run.run_uri_product_case(case, cfg, srv, "http://192.0.2.10:8020", False)
+            except Exception as e:  # noqa: BLE001 — the tests below assert on it
+                out = e
+        return out, rec
+
+    def test_a_healthy_run_arms_the_route_then_grades_and_takes_the_trigger_back(self):
+        out, rec = self._run()
+        self.assertEqual(out[0], True, out)
+        # the mock carries the carrier, on the configured address, alive across the stream
+        self.assertEqual(rec["mock"][0], ("new", self.HOST, self.PORT,
+                                          ["--extra-media", "/packs/pipe_uri_carrier_720p24.mp4"]))
+        self.assertEqual(rec["mock"][1:], ["enter", "stream", "exit"])
+        files, extra = rec["apply"][0]
+        got = dict(files)
+        # the pin is the origin the mock was started on: one source, the configured address
+        self.assertIn(f" pms={rec['mock'][0][1]}:{rec['mock'][0][2]} ", got["plxnative-uridev"])
+        self.assertNotIn("server=", got["plxnative-uridev"])
+        self.assertNotIn("plxnative-uriprobe", got)
+        # the token rides `extra=` so it never reaches stdout, and is the fabricated guest's
+        self.assertTrue(any("plxnative-token" in cmd and "plxnative-mock-guest" in cmd for cmd in extra))
+        self.assertNotIn("plxnative-mock-guest", " ".join(f"{n}={c}" for n, c in files))
+        self.assertEqual(rec["ssh"], ["rm -f /tmp/com.beb.plxnative.debug/plxnative-uridev"])
+        self.assertTrue(rec["reported"][0][0])
+
+    def test_the_previous_cases_app_is_closed_before_this_cases_mock_is_up(self):
+        """**A case starts where its carrier says (0) because no stale app is alive when its mock comes up.**
+
+        Nothing closes a case's app at the end of its own case, so it is still playing, and still
+        reporting, when the next case starts. A close answers with a `stopped` timeline carrying
+        the position (76795 ms in the 2026-11-05 TV run). Every case's mock listens on the same
+        configured address, so a close that comes AFTER the next case's mock is up delivers that
+        report to the FRESH mock, which stores it as the carrier's `viewOffset`, and the new app
+        resumes from it: `_bound_collapse` resumed at 76.8 s of its 90 s clip, ran 14 s to the end of
+        stream and never drained. This is `run_case`'s rule for the integration tier ("the close is what
+        makes the seed stick: the PREVIOUS case's app is still running"), kept here: close first,
+        then bring up the server state."""
+        out, rec = self._run()
+        self.assertTrue(out[0], out)
+        self.assertEqual(rec["make"], [["kill", "TV=192.0.2.99"]], "the previous app is closed once")
+        self.assertEqual(rec["order"], ["kill", "mock-up", "apply", "stream"],
+                         "the app is closed before the mock listens, and both before the triggers arm")
+
+    def test_the_dev_trigger_is_deleted_however_the_run_ends(self):
+        for what, kwargs in (("the stream raises", {"stream": RuntimeError("ssh died")}),
+                             ("arming raises", {"apply": RuntimeError("no route to host")})):
+            with self.subTest(what):
+                out, rec = self._run(**kwargs)
+                self.assertIsInstance(out, RuntimeError)
+                self.assertEqual(rec["ssh"], ["rm -f /tmp/com.beb.plxnative.debug/plxnative-uridev"])
+                self.assertEqual(rec["mock"][-1], "exit", "the mock is stopped too")
+
+    def test_a_log_that_does_not_prove_the_synthetic_mock_is_not_graded(self):
+        for what, lines in (("no server line", _product_run(66)),
+                            ("a real server", ["pms: server 0 version=1.40.1.8227 name=home"] + _product_run(66))):
+            with self.subTest(what):
+                out, rec = self._run(lines=lines)
+                self.assertFalse(out[0])
+                self.assertEqual(out[1][0][:2], ("synthetic_identity", False))
+                self.assertEqual(len(out[1]), 1, "refusing to grade means grading nothing else")
+                self.assertFalse(rec["reported"][0][0])
+                self.assertEqual(len(rec["ssh"]), 1, "the trigger is still taken back")
+
+    def test_a_setup_refusal_fails_the_case_instead_of_ending_the_suite(self):
+        out, rec = self._run(endpoint=SystemExit("--mock needs src/config.local.h for PMS_HOST"))
+        self.assertFalse(out[0])
+        self.assertEqual(out[1][0][:2], ("uri_product", False))
+        self.assertIn("PMS_HOST", out[1][0][2])
+        self.assertEqual((rec["apply"], rec["make"]), ([], []), "nothing was written to or closed on the set")
+        out, rec = self._run(cfg_extra={"extra_triggers": [("plxnative-uriprobe", "load")]})
+        self.assertFalse(out[0])
+        self.assertIn("uriprobe", out[1][0][2])
+        self.assertEqual((rec["apply"], rec["mock"], rec["make"]), ([], [], []),
+                         "refused before the mock started and before the set was touched")
+
+    def test_an_address_the_dev_route_cannot_pin_is_refused_before_the_mock_starts(self):
+        """The real PMS's port, and a configured host that is not a canonical dotted quad: the case FAILS
+        with the reason, and neither the mock nor the set is touched."""
+        for endpoint, why in (((self.HOST, run.REAL_PMS_PORT), "real PMS"),
+                              (("mac.local", self.PORT), "dotted quad"),
+                              (("192.0.2.05", self.PORT), "dotted quad")):
+            with self.subTest(endpoint=endpoint):
+                out, rec = self._run(endpoint=endpoint)
+                self.assertFalse(out[0])
+                self.assertEqual(out[1][0][:2], ("uri_product", False))
+                self.assertIn(why, out[1][0][2])
+                self.assertEqual((rec["apply"], rec["mock"], rec["ssh"], rec["make"]), ([], [], [], []))
+
+    def test_the_carrier_args_name_the_audio_stream_the_mock_selects(self):
+        carrier = run.mock_fps.carrier_server_args
+        self.assertEqual(carrier("/p/c.mp4"), ["--extra-media", "/p/c.mp4"], "unchanged without a knob")
+        self.assertEqual(carrier("/p/c.mp4", None), ["--extra-media", "/p/c.mp4"])
+        self.assertEqual(carrier("/p/c.mp4", 2), ["--extra-media", "/p/c.mp4", "--extra-media-audio", "2"])
+        for bad in (0, -1, True, "2", 1.5):
+            with self.subTest(audio=bad), self.assertRaises(ValueError) as why:
+                carrier("/p/c.mp4", bad)
+            self.assertIn("carrier_audio", str(why.exception))
+
+    def test_a_case_with_a_carrier_audio_starts_its_mock_on_that_selection(self):
+        case = dict(self.case(), carrier_path="/packs/pipe_uri_carrier_720p24_2a.mp4", carrier_audio=2)
+        out, rec = self._run(case=case)
+        self.assertEqual(out[0], True, out)
+        self.assertEqual(rec["mock"][0], ("new", self.HOST, self.PORT, [
+            "--extra-media", "/packs/pipe_uri_carrier_720p24_2a.mp4", "--extra-media-audio", "2"]))
+
+    def test_a_bad_carrier_audio_fails_the_case_before_the_mock_or_the_set_is_touched(self):
+        for bad in (0, "2", True):
+            with self.subTest(audio=bad):
+                case = dict(self.case(), carrier_path="/packs/x.mp4", carrier_audio=bad)
+                out, rec = self._run(case=case)
+                self.assertFalse(out[0])
+                self.assertEqual(out[1][0][:2], ("uri_product", False))
+                self.assertIn("carrier_audio", out[1][0][2])
+                self.assertEqual((rec["apply"], rec["mock"], rec["ssh"], rec["make"]), ([], [], [], []))
+
+    def test_the_suite_dispatches_a_product_case_to_the_product_runner(self):
+        with mock.patch.object(run, "run_uri_product_case", return_value=(True, [], [])) as product, \
+                mock.patch.object(run, "make") as make_, mock.patch.object(run, "require_tv"):
+            out = run.run_pipeline_case(self.case(), {"tv": "192.0.2.99"}, mock.Mock(), "http://192.0.2.10:8020",
+                                        False)
+        self.assertEqual(out, (True, [], []))
+        product.assert_called_once()
+        make_.assert_not_called()
+
+
+class UriModeGrading(unittest.TestCase):
+    """Cases that arm the URI probe play through the TV's native player, so the buffer-feed checks
+    grade lines it never writes. These tests pin the graders that replace them, on SYNTHETIC logs
+    (no device log is ever copied into the repo: they carry LAN addresses)."""
+
+    BOUND_CASE = {"name": "bound", "fixture": "pipe_hls_720p24_20m/index.m3u8",
+                  "triggers": {"uriprobe": "acb-control", "ptype": "0"},
+                  "operations": [{"op": "play"}],
+                  "expect": {"uri_playing": True, "uri_plane_bound": True,
+                             "uri_clock_past_s": 60, "uri_max_stall_s": 3}}
+
+    # -- dispatch --
+
+    def test_a_case_is_uri_mode_by_its_own_triggers_only(self):
+        self.assertTrue(run.uri_mode(self.BOUND_CASE))
+        self.assertFalse(run.uri_mode({"triggers": {"sinkmax": "4"}}))
+        self.assertFalse(run.uri_mode({"name": "plain"}))
+
+    def test_a_uri_case_runs_no_buffer_feed_check_and_keeps_the_wire_check(self):
+        log = _uri_run(66)
+        passed, results = run.evaluate_pipeline(self.BOUND_CASE, log, (36, 36, 2))
+        self.assertTrue(passed, results)
+        self.assertEqual({label for label, _, _ in results},
+                         {"uri_playing", "uri_plane_bound", "uri_clock_past", "uri_max_stall",
+                          "no_error", "server_wire"})
+        # ...and the same log graded as a Feed case fails on the lines a native player never writes
+        feed = dict(self.BOUND_CASE, triggers={}, expect={}, fixture="clip.mkv", declare={})
+        self.assertFalse(run.evaluate_pipeline(feed, log, (36, 36, 2))[0])
+
+    def test_a_refusal_fails_the_uri_gate_and_names_why(self):
+        log = [_uri(0, "armed variant=acb-control scheme=http kind=hls window=none"),
+               _uri(1000, SUMMARY.format(playing="no", moved="no", end="refused:acb"))]
+        passed, results = run.evaluate_pipeline(self.BOUND_CASE, log, (1, 1, 1))
+        self.assertFalse(passed)
+        self.assertEqual({label for label, ok, _ in results if not ok},
+                         {"uri_playing", "uri_plane_bound", "uri_clock_past", "uri_max_stall", "no_error"})
+
+    def test_a_mistyped_uri_expectation_fails_loudly_instead_of_grading_nothing(self):
+        case = dict(self.BOUND_CASE, expect={"uri_max_stal_s": 3})
+        passed, results = run.evaluate_pipeline(case, _uri_run(10), (1, 1, 1))
+        self.assertFalse(passed)
+        self.assertEqual(results[0][:2], ("uri_expect", False))
+        self.assertIn("uri_max_stal_s", results[0][2])
+
+    def test_a_uri_case_never_exits_early(self):
+        early, why = run.early_exit_allowed(self.BOUND_CASE, {})
+        self.assertFalse(early)
+        self.assertIn("window", why)
+        self.assertEqual(run.early_exit_allowed({"expect": {}, "operations": []}, {}), (True, ""))
+
+    def test_the_clock_a_case_must_reach_counts_as_the_depth_the_pack_needs(self):
+        self.assertEqual(run._case_depth_s({"expect": {"uri_clock_past_s": 60}}), 60)
+        self.assertEqual(run._case_depth_s({"expect": {"min_pos_climb_s": 8, "uri_clock_past_s": 3}}), 8)
+
+    # -- uri_playing --
+
+    def test_uri_playing_reads_the_terminal_summary_when_there_is_one(self):
+        ok = [_uri(9000, SUMMARY.format(playing="yes", moved="yes", end="timeout:currentTime"))]
+        self.assertTrue(run.a_uri_playing(ok)[0])
+        for playing, moved in (("no", "no"), ("yes", "no"), ("no", "yes")):
+            with self.subTest(playing=playing, moved=moved):
+                bad = [_uri(9000, SUMMARY.format(playing=playing, moved=moved, end="back"))]
+                self.assertFalse(run.a_uri_playing(bad)[0])
+        # the LAST summary is the terminal one
+        two = [_uri(1000, SUMMARY.format(playing="no", moved="no", end="refused:play")),
+               _uri(2000, SUMMARY.format(playing="yes", moved="yes", end="back"))]
+        self.assertTrue(run.a_uri_playing(two)[0])
+
+    def test_uri_playing_without_a_summary_reads_the_events(self):
+        # a healthy run has no summary: the probe never ends on its own, the harness stops at its cap
+        self.assertTrue(run.a_uri_playing(_uri_run(8))[0])
+        self.assertFalse(run.a_uri_playing([_uri(0, "armed variant=acb-control")])[0])
+        no_playing = [ln for ln in _uri_run(8) if "ev=playing" not in ln]
+        self.assertFalse(run.a_uri_playing(no_playing)[0])
+        frozen = _uri_run(8, clock=lambda sec: 500)
+        ok, why = run.a_uri_playing(frozen)
+        self.assertFalse(ok, "ev=playing with a clock that never advanced is not playing")
+        self.assertIn("never advanced", why)
+        self.assertFalse(run.a_uri_playing([])[0])
+
+    # -- uri_plane_bound --
+
+    def test_uri_plane_bound_wants_the_bound_line_and_acb_callbacks_1_to_4_all_ev_1(self):
+        self.assertTrue(run.a_uri_plane_bound(_uri_run(2))[0])
+        # task 5 is the release, not part of the bind
+        released = _uri_run(2) + ["acb callback task=5 ev=1 app=1 play=0",
+                                  "videoplane: unbound — ordinary idle rules from here"]
+        self.assertTrue(run.a_uri_plane_bound(released)[0])
+        cb = [f"acb callback task={n} ev=1 app=1 play=1" for n in (1, 2, 3, 4)]
+        self.assertFalse(run.a_uri_plane_bound(cb)[0], "callbacks alone are not a bound plane")
+        unbound = ["videoplane: unbound — ordinary idle rules from here"] + cb
+        self.assertFalse(run.a_uri_plane_bound(unbound)[0], "the match is case-sensitive")
+        for missing in (1, 2, 3, 4):
+            with self.subTest(missing=missing):
+                partial = ["videoplane: BOUND"] + [c for c in cb if f"task={missing} " not in c]
+                ok, why = run.a_uri_plane_bound(partial)
+                self.assertFalse(ok)
+                self.assertIn(str(missing), why)
+        refused = ["videoplane: BOUND"] + cb[:1] + ["acb callback task=2 ev=0 app=1 play=1"] + cb[2:]
+        ok, why = run.a_uri_plane_bound(refused)
+        self.assertFalse(ok)
+        self.assertIn("ev=1", why)
+
+    # -- uri_clock_past_s --
+
+    def test_uri_clock_past_is_the_largest_clock_sample(self):
+        log = _uri_run(66)
+        self.assertTrue(run.a_uri_clock_past(log, 60)[0])
+        self.assertTrue(run.a_uri_clock_past(_uri_run(61), 60)[0], "exactly 60 s counts")
+        ok, why = run.a_uri_clock_past(_uri_run(56), 60)
+        self.assertFalse(ok)
+        self.assertIn("55.0s", why)
+        self.assertFalse(run.a_uri_clock_past([_uri(0, "armed variant=at-load")], 1)[0])
+
+    # -- uri_max_stall_s --
+
+    def test_a_steady_clock_has_no_stall(self):
+        ok, why = run.a_uri_max_stall(_uri_run(66), 3)
+        self.assertTrue(ok, why)
+        self.assertIn("1.0s", why)
+
+    def test_a_clock_that_stands_still_mid_run_is_a_stall(self):
+        held = _uri_run(40, clock=lambda sec: min(sec, 19) * 1000 if sec < 27 else sec * 1000)
+        ok, why = run.a_uri_max_stall(held, 3)
+        self.assertFalse(ok)
+        self.assertIn("8.0s", why)
+        self.assertTrue(run.a_uri_max_stall(held, 8)[0])
+
+    def test_a_clock_that_stops_and_never_resumes_is_a_stall_by_its_trailing_stretch(self):
+        # the unbound arm's shape: every gap BETWEEN samples is a second, and then the samples repeat
+        for stopped in (lambda sec: min(sec, 14) * 1000, lambda sec: sec * 1000 if sec <= 14 else None):
+            with self.subTest():
+                log = _uri_run(31, clock=stopped)
+                ok, why = run.a_uri_max_stall(log, 3)
+                self.assertFalse(ok, why)
+                self.assertIn("16.0s", why)
+
+    def test_the_probes_closing_summary_extends_the_observation(self):
+        # nothing periodic after the clock stops: the summary is the probe's last word on when it quit
+        log = _uri_run(15, remaining=lambda sec: 12) + [
+            _uri(26000, SUMMARY.format(playing="yes", moved="yes", end="timeout:currentTime"))]
+        ok, why = run.a_uri_max_stall(log, 3)
+        self.assertFalse(ok, why)
+        self.assertIn("9.0s", why)
+
+    def test_a_pause_or_a_seek_the_case_drove_is_not_a_stall(self):
+        paused = _uri_run(40, clock=lambda sec: min(sec, 19) * 1000 if sec < 27 else (sec - 8) * 1000,
+                          extra={19: ["drive pause pos=19000", "call pause ok", "ev=paused"],
+                                 26: ["drive resume pos=19000"], 27: ["ev=playing"]})
+        self.assertTrue(run.a_uri_max_stall(paused, 3)[0])
+        # the same standing clock with nothing driving it is a stall
+        undriven = [ln for ln in paused if not any(w in ln for w in ("drive", "call pause", "ev=paused"))]
+        self.assertFalse(run.a_uri_max_stall(undriven, 3)[0])
+        # a seek BACK: the clock steps down and climbs again, and the gap over the seek is exempt
+        sought = _uri_run(40, clock=lambda sec: (sec * 1000 if sec < 20 else
+                                                 8000 if sec < 25 else (sec - 24) * 1000 + 8000),
+                          extra={20: ["drive seek target=8000", "call seek ok"], 21: ["ev=seekDone"]})
+        self.assertTrue(run.a_uri_max_stall(sought, 3)[0], run.a_uri_max_stall(sought, 3)[1])
+        unannounced = [ln for ln in sought if "seek" not in ln.lower()]
+        self.assertFalse(run.a_uri_max_stall(unannounced, 3)[0])
+
+    def test_uri_max_stall_needs_playback(self):
+        self.assertFalse(run.a_uri_max_stall([_uri(0, "armed variant=acb-control")], 3)[0])
+        no_clock = _uri_run(5, clock=lambda sec: None)
+        self.assertFalse(run.a_uri_max_stall(no_clock, 3)[0])
+
+    # -- uri_drain_warning_s --
+
+    @staticmethod
+    def _drain(series, tail=(), form="remaining"):
+        """The buffered lead, one `bufferRange` sample a second, then the stall's `bufferingStart`.
+
+        `form` is what the line carries: `remaining` (a `remainingTime` field), `window` (only
+        `beginTime`/`endTime`, as one TV session printed it, the position at `beginTime` and the lead
+        the gap to `endTime`) or `mixed` (the field on every other sample).
+        """
+        lines = [_uri(700, "ev=bufferingStart"), _uri(2000, "ev=bufferingEnd"), _uri(2000, "ev=playing")]
+        for i, r in enumerate(series):
+            with_field = form == "remaining" or (form == "mixed" and i % 2 == 0)
+            span = f"beginTime={i} endTime={i + r}" + (f" remainingTime={r} percent=1" if with_field else "")
+            lines.append(_uri(3000 + 1000 * i, f"ev=bufferRange {span}"))
+        return lines + [_uri(3000 + 1000 * len(series), "ev=bufferingStart")] + list(tail)
+
+    def test_a_buffer_that_drains_before_it_stalls_is_a_warning(self):
+        # fills to 12, holds, then falls about a second a second with repeats; the 10 s decline
+        # is counted from the last 12
+        log = self._drain([4, 6, 8, 10, 12, 12, 12, 12, 11, 11, 10, 9, 8, 8, 6, 5, 4, 3, 2])
+        ok, why = run.a_uri_drain_warning(log, 5)
+        self.assertTrue(ok, why)
+        self.assertIn("12 -> 2", why)
+        self.assertFalse(run.a_uri_drain_warning(log, 15)[0], "the threshold is a duration")
+
+    def test_a_full_buffer_that_just_stops_is_no_warning(self):
+        # the unbound arm's shape: remainingTime claims the same lead right up to the stall
+        flat = self._drain([4, 8, 12, 12, 12, 12, 12, 12, 12, 12])
+        ok, why = run.a_uri_drain_warning(flat, 5)
+        self.assertFalse(ok)
+        self.assertIn("12 -> 12", why)
+
+    def test_a_short_or_interrupted_decline_is_not_enough(self):
+        self.assertFalse(run.a_uri_drain_warning(self._drain([12, 12, 12, 12, 11, 10, 9]), 5)[0])
+        self.assertTrue(run.a_uri_drain_warning(self._drain([12, 12, 12, 12, 11, 10, 9]), 4)[0])
+        # 12 -> 9 over six seconds, but it rose once: only the run after the rise counts
+        risen = self._drain([12, 12, 11, 10, 9, 10, 9])
+        ok, why = run.a_uri_drain_warning(risen, 5)
+        self.assertFalse(ok)
+        self.assertIn("10 -> 9", why)
+
+    def test_the_lead_reads_the_buffer_window_when_the_field_is_absent(self):
+        # the field is not reliably printed on the 4.5 set (one session had it on every sample, the
+        # next on none): the window `endTime - beginTime` is the same lead on a bound plane
+        self.assertEqual(run._uri_lead("ev=bufferRange beginTime=33 endTime=35"), 2)
+        self.assertEqual(run._uri_lead("ev=bufferRange beginTime=0 endTime=4.5 percent=3"), 4.5)
+        self.assertEqual(run._uri_lead("ev=bufferRange beginTime=32 endTime=44 remainingTime=9 percent=1"), 9,
+                         "the field wins where the line has it")
+        self.assertIsNone(run._uri_lead("ev=currentTime value=1000"))
+        warned = [4, 6, 8, 10, 12, 12, 12, 12, 11, 11, 10, 8, 7, 5, 4, 3, 2]
+        for form in ("window", "mixed"):
+            with self.subTest(form=form, leg="drain"):
+                ok, why = run.a_uri_drain_warning(self._drain(warned, form=form), 5)
+                self.assertTrue(ok, why)
+                self.assertIn("12 -> 2", why)
+            with self.subTest(form=form, leg="full buffer that just stops"):
+                self.assertFalse(run.a_uri_drain_warning(
+                    self._drain([4, 8, 12, 12, 12, 12, 12, 12, 12, 12], form=form), 5)[0])
+            with self.subTest(form=form, leg="short decline"):
+                self.assertFalse(run.a_uri_drain_warning(self._drain([12, 12, 12, 12, 11, 10, 9], form=form), 5)[0])
+                self.assertTrue(run.a_uri_drain_warning(self._drain([12, 12, 12, 12, 11, 10, 9], form=form), 4)[0])
+            with self.subTest(form=form, leg="rise inside the decline"):
+                self.assertFalse(run.a_uri_drain_warning(self._drain([12, 12, 11, 10, 9, 10, 9], form=form), 5)[0])
+            with self.subTest(form=form, leg="no bufferRange sample at all"):
+                bare = [_uri(2000, "ev=playing"), _uri(9000, "ev=bufferingStart")]
+                self.assertFalse(run.a_uri_drain_warning(bare, 5)[0])
+
+    def test_a_field_that_disagrees_with_the_window_is_read_as_the_field(self):
+        # remainingTime drains while endTime - beginTime sits at 12: the field is the claim
+        series = [12, 12, 12, 12, 11, 10, 9, 8, 7, 6]
+        log = [_uri(2000, "ev=playing")]
+        log += [_uri(3000 + 1000 * i, f"ev=bufferRange beginTime={i} endTime={i + 12} remainingTime={r}")
+                for i, r in enumerate(series)]
+        log.append(_uri(13000, "ev=bufferingStart"))
+        self.assertTrue(run.a_uri_drain_warning(log, 5)[0])
+
+    def test_the_stall_must_be_a_mid_playback_one(self):
+        series = [12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2]
+        playing_only = self._drain(series)[:-1]
+        ok, why = run.a_uri_drain_warning(playing_only, 5)
+        self.assertFalse(ok, "the initial bufferingStart precedes ev=playing and is not the stall")
+        self.assertIn("bufferingStart", why)
+        self.assertFalse(run.a_uri_drain_warning([ln for ln in self._drain(series)
+                                                  if "ev=playing" not in ln], 5)[0])
+        bare = [_uri(2000, "ev=playing"), _uri(9000, "ev=bufferingStart")]
+        self.assertFalse(run.a_uri_drain_warning(bare, 5)[0], "no bufferRange samples to read")
+
+    # -- the manifest --
+
+    def _cases(self):
+        return {c["name"]: c for c in _manifest()["pipeline_cases"]}
+
+    def test_every_uri_expectation_is_known_and_sits_on_a_case_that_arms_the_probe(self):
+        feed_only = ("min_pos_climb_s", "codec", "video_size", "min_video_width", "reaches_eos",
+                     "replays", "require_video_bound", "abr_shape", "load_count_exact",
+                     "audio_stream_index", "presented_rate")
+        for case in _manifest()["pipeline_cases"]:
+            uri_keys = [k for k in case["expect"] if k.startswith("uri_")]
+            for key in uri_keys:
+                self.assertIn(key, run.URI_EXPECT_KEYS, f"{case['name']}: {key}")
+            if uri_keys:
+                self.assertTrue(run.uri_mode(case), f"{case['name']} has uri_* expectations that "
+                                                    f"would grade nothing: it never arms the probe")
+            if run.uri_mode(case):
+                self.assertFalse([k for k in feed_only if k in case["expect"]],
+                                 f"{case['name']}: buffer-feed expectations on a URI case grade nothing")
+                self.assertTrue(uri_keys, f"{case['name']} arms the probe and asserts nothing about it")
+
+    def test_the_bound_cases_arm_the_acb_arm_and_the_bound_plane(self):
+        cases = self._cases()
+        bound, collapse = cases["pipe_uri_hls_720p24_20m_bound"], cases["pipe_uri_hls_720p24_20m_bound_collapse"]
+        for case in (bound, collapse):
+            files = dict(run.triggers_for_case(case, url_base="http://fixture.invalid"))
+            self.assertEqual((files["plxnative-uriprobe"], files["plxnative-ptype"]), ("acb-control", "0"),
+                             case["name"])
+            self.assertEqual(json.loads(files["plxnative-playurl"])["url"],
+                             "http://fixture.invalid/pipe_hls_720p24_20m/index.m3u8")
+            self.assertTrue(case["expect"]["uri_playing"] and case["expect"]["uri_plane_bound"], case["name"])
+            self.assertEqual(case["run_secs"], 75)
+        self.assertEqual(bound["expect"]["uri_clock_past_s"], 60)
+        self.assertEqual(bound["expect"]["uri_max_stall_s"], 3)
+        self.assertEqual(collapse["expect"]["uri_drain_warning_s"], 5)
+        self.assertNotIn("uri_max_stall_s", collapse["expect"], "the clock stops in a collapse on purpose")
+        self.assertNotIn("network_profile", bound)
+        self.assertEqual(collapse["network_profile"], cases["pipe_abr_uri_ladder_collapse"]["network_profile"])
+        for key in ("declare", "triggers", "fixture", "operations"):
+            self.assertEqual(bound[key], collapse[key], key)
+
+    def test_the_bound_cases_name_the_stream_the_generator_builds(self):
+        bound = self._cases()["pipe_uri_hls_720p24_20m_bound"]
+        key = "pipe_hls_720p24_20m"
+        spec = fixturegen.PIPE_SHAPES[key]
+        self.assertEqual(bound["fixture"], f"{key}/{spec['entry']}")
+        self.assertEqual([p for _, p in fixturegen.out_paths(fixturegen.Path("/root"), key, spec)],
+                         [fixturegen.Path("/root") / key / "index.m3u8"])
+        for k in ("vcodec", "acodec", "fps"):
+            self.assertEqual(bound["declare"][k], spec["declare"][k], f"declare.{k} drifted from the shape")
+        # the ACB arm accepts a stream whose videoInfo is exactly 1280x720 at 24 fps
+        self.assertEqual((spec["video"]["size"], fixturegen.shape_fps(spec)), ("1280x720", 24))
+        self.assertGreaterEqual(spec["duration"] * 0.8, bound["expect"]["uri_clock_past_s"],
+                                "the stream must outlast the clock the case demands")
+        self.assertIn(key, fixturegen.PIPE_MBIT)
+
+    def test_the_ladder_instruments_assert_only_what_an_unbound_arm_can_carry(self):
+        cases = self._cases()
+        for name in ("pipe_abr_uri_ladder_collapse", "pipe_abr_uri_ladder_capped",
+                     "pipe_abr_uri_continuous_20000"):
+            case = cases[name]
+            self.assertEqual(case["expect"], {"no_playing_error": True, "uri_playing": True}, name)
+            for needle in ("INSTRUMENT", "UNBOUND", "pipe_uri_hls_720p24_20m_bound"):
+                self.assertIn(needle, case["_uri_note"], f"{name}: {needle}")
+
+    # -- the manifest and the carrier --
+
+    PRODUCT = ("pipe_uri_product_hls_720p24_20m_bound", "pipe_uri_product_hls_720p24_20m_bound_collapse")
+
+    def _product_cases(self):
+        cases = {c["name"]: c for c in _manifest()["pipeline_cases"]}
+        return [cases[n] for n in self.PRODUCT]
+
+    def test_the_product_pair_mirrors_the_probe_pair_and_adds_the_two_product_grades(self):
+        cases = {c["name"]: c for c in _manifest()["pipeline_cases"]}
+        for product, probe in zip(self._product_cases(), ("pipe_uri_hls_720p24_20m_bound",
+                                                          "pipe_uri_hls_720p24_20m_bound_collapse")):
+            probe = cases[probe]
+            for key in ("fixture", "declare", "network_profile", "run_secs", "operations"):
+                self.assertEqual(product.get(key), probe.get(key), f"{product['name']}: {key}")
+            self.assertEqual(product["uri_route"], "product")
+            want = dict(probe["expect"], uri_presented=True, uri_service_playing=True)
+            self.assertEqual(product["expect"], want, product["name"])
+            self.assertEqual(run.uri_route(product), "product")
+        bound, collapse = self._product_cases()
+        self.assertEqual((bound["expect"]["uri_clock_past_s"], bound["expect"]["uri_max_stall_s"]), (60, 3))
+        self.assertEqual(collapse["expect"]["uri_drain_warning_s"], 5)
+        self.assertNotIn("uri_max_stall_s", collapse["expect"], "the clock stops in a collapse on purpose")
+
+    def test_the_product_cases_arm_neither_the_probe_nor_the_dev_route_by_hand(self):
+        """`uridev` carries the carrier's part id, the mock's origin and the fixture URL, none
+        of which a manifest knows, so the RUNNER writes it; `uriprobe` would divert the very route under
+        test; `playurl` would play the Feed."""
+        for case in self._product_cases():
+            self.assertEqual(case["triggers"], {"ptype": "0"}, case["name"])
+            self.assertNotIn("rk", case, "the runner supplies the carrier's ratingKey")
+            self.assertEqual(case["carrier"], "pipe_uri_carrier_720p24.mp4")
+
+    def test_the_carrier_is_the_progressive_twin_the_dev_qualifier_needs(self):
+        spec = fixturegen.PIPE_SHAPES["pipe_uri_carrier_720p24"]
+        twin = fixturegen.PIPE_SHAPES["pipe_hls_720p24_20m"]
+        self.assertEqual((spec["ext"], spec["kind"]), ("mp4", "clip"))
+        self.assertNotIn("entry", spec, "a flat progressive file, not a playlist directory")
+        self.assertGreaterEqual(spec["duration"], twin["duration"], "the offer's duration bounds the clock")
+        self.assertEqual((spec["video"]["size"], fixturegen.shape_fps(spec)), ("1280x720", 24))
+        self.assertEqual(spec["video"]["codec"], twin["video"]["codec"])
+        self.assertEqual(len(spec["audio"]), 1, "ONE audio stream: the qualifier needs a selected audio track")
+        self.assertEqual(spec["subs"], [], "no subtitle stream: subtitle_choice Off is refused")
+        self.assertNotIn("sidecar", str(spec))
+        self.assertIn("pipe_uri_carrier_720p24", fixturegen.PIPE_MBIT)
+        self.assertEqual(fixturegen.out_paths(fixturegen.Path("/r"), "pipe_uri_carrier_720p24", spec),
+                         [("pipe_uri_carrier_720p24", fixturegen.Path("/r/pipe_uri_carrier_720p24.mp4"))])
+        for case in self._product_cases():
+            self.assertEqual(case["carrier"], f"pipe_uri_carrier_720p24.{spec['ext']}")
+
+    # -- the audio pair: a NON-DEFAULT audio track selected at startup, and its control --
+
+    AUDIO = ("pipe_uri_product_hls_720p24_2a_audio2", "pipe_uri_product_hls_720p24_2a_audio1")
+
+    def _audio_cases(self):
+        cases = {c["name"]: c for c in _manifest()["pipeline_cases"]}
+        return [cases[n] for n in self.AUDIO]
+
+    def test_the_audio_pair_plays_the_two_audio_stream_through_its_own_carrier(self):
+        stream, twin = fixturegen.PIPE_SHAPES["pipe_hls_720p24_2a"], fixturegen.PIPE_SHAPES["pipe_uri_carrier_720p24_2a"]
+        for case in self._audio_cases():
+            with self.subTest(case["name"]):
+                self.assertEqual(run.uri_route(case), "product")
+                self.assertEqual(case["fixture"], "pipe_hls_720p24_2a/index.m3u8")
+                self.assertEqual(case["carrier"], "pipe_uri_carrier_720p24_2a.mp4")
+                self.assertEqual(case["triggers"], {"ptype": "0"})
+                self.assertNotIn("rk", case, "the runner supplies the carrier's ratingKey")
+                for k in ("vcodec", "acodec", "fps"):
+                    self.assertEqual(case["declare"][k], stream["declare"][k], f"declare.{k} drifted from the shape")
+                self.assertEqual(case["operations"], [{"op": "play"}])
+                # the stream outlasts the cap, so no case ends in a finish's teardown
+                self.assertLess(case["run_secs"], stream["duration"])
+                self.assertLessEqual(case["expect"]["uri_clock_past_s"], case["run_secs"] - 10)
+                self.assertGreaterEqual(stream["duration"] * 0.8, case["expect"]["uri_clock_past_s"])
+                # every grade of the product pair, and no more of its link: nothing here is shaped
+                for key in ("no_playing_error", "uri_playing", "uri_plane_bound", "uri_presented",
+                            "uri_service_playing"):
+                    self.assertTrue(case["expect"][key], key)
+                self.assertEqual(case["expect"]["uri_max_stall_s"], 3)
+                self.assertNotIn("network_profile", case)
+                self.assertGreaterEqual(twin["duration"], stream["duration"])
+
+    def test_the_audio_pair_differs_only_in_what_the_mock_selects_and_what_the_backend_must_do(self):
+        second, first = self._audio_cases()
+        self.assertEqual(second["carrier_audio"], 2)
+        self.assertNotIn("carrier_audio", first, "the control keeps the file's own default selection")
+        self.assertEqual(second["expect"]["uri_audio_selected"], {"path": "select", "index": 1})
+        self.assertEqual(first["expect"]["uri_audio_selected"], {"path": "already", "index": 0})
+        strip = lambda c: {k: v for k, v in c.items()                                  # noqa: E731
+                           if k not in ("name", "title", "covers", "_uri_note", "carrier_audio", "expect")}
+        self.assertEqual(strip(second), strip(first))
+        self.assertEqual({k: v for k, v in second["expect"].items() if k != "uri_audio_selected"},
+                         {k: v for k, v in first["expect"].items() if k != "uri_audio_selected"})
+
+    def test_the_selected_audio_is_a_stream_the_carrier_has_and_not_the_one_the_file_defaults_to(self):
+        second, _ = self._audio_cases()
+        audio = fixturegen.PIPE_SHAPES["pipe_uri_carrier_720p24_2a"]["audio"]
+        n = second["carrier_audio"]
+        self.assertTrue(1 <= n <= len(audio))
+        self.assertFalse(audio[n - 1].get("default"), "the server's pick must differ from the file's default")
+        self.assertTrue(audio[0].get("default"))
+        # the grade's native index is the 0-based position of that stream (`audioInfo.track`'s numbering)
+        self.assertEqual(second["expect"]["uri_audio_selected"]["index"], n - 1)
+
+    def test_the_audio_pair_resolves_its_own_carrier_and_skips_without_it(self):
+        cases = [dict(c) for c in self._audio_cases()]
+        with tempfile.TemporaryDirectory() as root:
+            cfg = os.path.join(root, "config.local.h")
+            with open(cfg, "w") as f:
+                f.write('#define PMS_HOST "192.0.2.5"\n#define PMS_PORT 32499\n')
+            run._resolve_uri_product(cases, root, flavour="debug", config=cfg)
+            for case in cases:
+                self.assertIn("pipe_uri_carrier_720p24_2a.mp4", case["skip"])
+            clip = os.path.join(root, "pipe_uri_carrier_720p24_2a.mp4")
+            with open(clip, "wb") as f:
+                f.write(b"\0")
+            cases = [dict(c) for c in self._audio_cases()]
+            run._resolve_uri_product(cases, root, flavour="debug", config=cfg)
+            for case in cases:
+                self.assertNotIn("skip", case)
+                self.assertEqual(case["carrier_path"], clip)
+
+    def test_the_carrier_ids_are_the_mocks_first_extra_media_block(self):
+        with open(os.path.join(TESTS_DIR, "mock_pms.py"), encoding="utf-8") as fh:
+            text = fh.read()
+        rk = int(re.search(r"^EXTRA_MEDIA_RK_BASE = (\d+)", text, re.M).group(1))
+        part = int(re.search(r"^EXTRA_MEDIA_PART_ID_BASE = (\d+)", text, re.M).group(1))
+        self.assertEqual((run.mock_fps.CARRIER_RK, run.mock_fps.CARRIER_PART_ID), (rk, part))
+
+    # -- the fixture --
+
+    def test_a_static_playlist_needs_every_segment_it_names(self):
+        case = {"name": "bound", "fixture": "pipe_hls_720p24_20m/index.m3u8", "expect": {}}
+        with tempfile.TemporaryDirectory() as root:
+            cases = [dict(case)]
+            run._resolve_fixtures(cases, root)
+            self.assertIn("no fixture 'pipe_hls_720p24_20m/index.m3u8'", cases[0]["skip"])
+            self.assertIn("make fixtures-pipeline", cases[0]["skip"])
+            self.assertNotIn("path", cases[0])
+            stream = os.path.join(root, "pipe_hls_720p24_20m")
+            os.makedirs(stream)
+            with open(os.path.join(stream, "index.m3u8"), "w") as f:
+                f.write("#EXTM3U\n#EXT-X-PLAYLIST-TYPE:VOD\n" + "".join(
+                    f"#EXTINF:2.000000,\nseg_{i:03d}.ts\n" for i in range(4)) + "#EXT-X-ENDLIST\n")
+            with open(os.path.join(stream, "seg_000.ts"), "wb") as f:
+                f.write(b"\0")
+            cases = [dict(case)]
+            run._resolve_fixtures(cases, root)
+            self.assertIn("3 segment file(s)", cases[0]["skip"])
+            self.assertIn("seg_001.ts", cases[0]["skip"])
+            self.assertNotIn("path", cases[0])
+            for i in range(1, 4):
+                with open(os.path.join(stream, f"seg_{i:03d}.ts"), "wb") as f:
+                    f.write(b"\0")
+            cases = [dict(case)]
+            run._resolve_fixtures(cases, root)
+            self.assertNotIn("skip", cases[0])
+            self.assertEqual(cases[0]["path"], os.path.join(stream, "index.m3u8"))
+
+    def test_the_stream_is_built_by_the_recipe_that_played_on_the_television(self):
+        captured = []
+        key = "pipe_hls_720p24_20m"
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(fixturegen, "run",
+                                  side_effect=lambda argv, quiet=True: captured.append(list(argv)) or ""):
+            root = fixturegen.Path(d)
+            work = root / ".work"
+            work.mkdir()
+            dest = root / key / "index.m3u8"
+            fixturegen.build_hls_vod(mock.Mock(markers=False), key, fixturegen.PIPE_SHAPES[key], 90, None,
+                                     dest, work)
+            self.assertTrue(dest.parent.is_dir(), "the staged directory is renamed into place")
+            self.assertFalse((work / (key + "__hls")).exists())
+        argv = captured[0]
+        flat = " ".join(argv)
+
+        def after(flag):
+            return argv[argv.index(flag) + 1]
+
+        self.assertIn("testsrc2=size=1280x720:rate=24", flat)
+        self.assertIn("sine=frequency=440:sample_rate=48000", flat)
+        self.assertEqual(after("-t"), "90")
+        self.assertEqual([after(f) for f in ("-profile:v", "-level", "-pix_fmt", "-preset")],
+                         ["high", "4.1", "yuv420p", "veryfast"])
+        self.assertEqual({after(f) for f in ("-b:v", "-minrate", "-maxrate", "-bufsize")}, {"20M"})
+        self.assertEqual(after("-x264-params"), "nal-hrd=cbr")
+        self.assertEqual([after(f) for f in ("-g", "-keyint_min", "-sc_threshold")], ["48", "48", "0"])
+        self.assertEqual([after(f) for f in ("-c:a", "-b:a")], ["aac", "128k"])
+        self.assertEqual([after(f) for f in ("-hls_time", "-hls_playlist_type")], ["2", "vod"])
+        self.assertEqual([argv[i + 1] for i, a in enumerate(argv) if a == "-f"], ["lavfi", "lavfi", "hls"],
+                         "two lavfi inputs and the hls muxer")
+        self.assertTrue(after("-hls_segment_filename").endswith("seg_%03d.ts"))
+        self.assertTrue(argv[-1].endswith("index.m3u8"))
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe")
+                         and {"libx264", "aac"} <= set(fixturegen.ffmpeg_encoders()),
+                         "needs ffmpeg with libx264 and aac")
+    def test_a_built_stream_verifies_and_a_damaged_one_does_not(self):
+        key = "pipe_hls_720p24_20m"
+        spec = fixturegen.PIPE_SHAPES[key]
+        with tempfile.TemporaryDirectory() as d:
+            root = fixturegen.Path(d)
+            (root / ".work").mkdir()
+            dest = root / key / "index.m3u8"
+            fixturegen.build_hls_vod(mock.Mock(markers=False), key, spec, 6, None, dest, root / ".work")
+            rec, problems = fixturegen.verify(key, spec, 6, dest)
+            self.assertEqual(problems, [])
+            self.assertEqual((rec["segments"], rec["video"]["key_packets"]), (3, 3))
+            self.assertEqual((rec["video"]["width"], rec["video"]["height"]), (1280, 720))
+            self.assertTrue(rec["quick"], "6 s is shorter than the shape declares")
+            # asked for less than is on disk: the ONE complaint is the duration, which is what
+            # main() keys its keep-the-longer-file rule on
+            self.assertEqual([p.split()[0] for p in fixturegen.verify(key, spec, 2, dest)[1]], ["duration"])
+            text = dest.read_text()
+            dest.write_text(text.replace("#EXT-X-ENDLIST", ""))
+            self.assertTrue(any("complete VOD" in p for p in fixturegen.verify(key, spec, 6, dest)[1]))
+            dest.write_text(text)
+            (dest.parent / "seg_001.ts").unlink()
+            self.assertIn("not on disk", fixturegen.verify(key, spec, 6, dest)[1][0])
+
+    # -- the two-audio pair (W6: a NON-DEFAULT audio track selected at startup) --
+
+    TWO = "pipe_hls_720p24_2a"
+    TWIN = "pipe_uri_carrier_720p24_2a"
+
+    def test_the_two_audio_stream_is_the_20m_recipe_at_a_lower_rate_with_two_tagged_tones(self):
+        spec, base = fixturegen.PIPE_SHAPES[self.TWO], fixturegen.PIPE_SHAPES["pipe_hls_720p24_20m"]
+        for key in ("kind", "ext", "builder", "entry", "hls_seg_s", "declare"):
+            self.assertEqual(spec[key], base[key], key)
+        self.assertEqual({k: spec["video"][k] for k in ("codec", "size")},
+                         {k: base["video"][k] for k in ("codec", "size")})
+        self.assertEqual((spec["video"]["size"], fixturegen.shape_fps(spec)), ("1280x720", 24))
+        self.assertLess(spec["video"]["mbit"], base["video"]["mbit"], "nothing here needs 20 Mbit/s")
+        self.assertEqual([(a["codec"], a["lang"], a["pitch"], bool(a.get("default"))) for a in spec["audio"]],
+                         [("aac", "eng", 440, True), ("aac", "ger", 880, False)])
+        self.assertEqual(spec["subs"], [])
+        self.assertLessEqual(60, spec["duration"])
+        self.assertLessEqual(spec["duration"], 90)
+        self.assertIn(self.TWO, fixturegen.PIPE_MBIT)
+        self.assertEqual(fixturegen.out_paths(fixturegen.Path("/r"), self.TWO, spec),
+                         [(self.TWO, fixturegen.Path("/r") / self.TWO / "index.m3u8")])
+
+    def test_the_carrier_twin_has_the_same_two_audio_streams_in_the_same_order_and_no_subtitles(self):
+        spec, stream = fixturegen.PIPE_SHAPES[self.TWIN], fixturegen.PIPE_SHAPES[self.TWO]
+        self.assertEqual((spec["ext"], spec["kind"]), ("mp4", "clip"))
+        self.assertNotIn("entry", spec)
+        self.assertEqual(spec["subs"], [])
+        self.assertEqual([(a["codec"], a["lang"], a["pitch"], bool(a.get("default"))) for a in spec["audio"]],
+                         [(a["codec"], a["lang"], a["pitch"], bool(a.get("default"))) for a in stream["audio"]])
+        self.assertGreaterEqual(spec["duration"], stream["duration"], "the offer's duration bounds the clock")
+        self.assertEqual((spec["video"]["size"], fixturegen.shape_fps(spec)), ("1280x720", 24))
+        self.assertIn(self.TWIN, fixturegen.PIPE_MBIT)
+        self.assertEqual(fixturegen.out_paths(fixturegen.Path("/r"), self.TWIN, spec),
+                         [(self.TWIN, fixturegen.Path("/r") / (self.TWIN + ".mp4"))])
+
+    def _argv(self, key, dur=60):
+        captured = []
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(fixturegen, "run",
+                                  side_effect=lambda argv, quiet=True: captured.append(list(argv)) or ""):
+            root = fixturegen.Path(d)
+            (root / ".work").mkdir()
+            fixturegen.build_hls_vod(mock.Mock(markers=False), key, fixturegen.PIPE_SHAPES[key], dur, None,
+                                     root / key / "index.m3u8", root / ".work")
+        return captured[0]
+
+    def test_the_two_audio_stream_is_one_ffmpeg_run_with_both_tones_muxed_into_the_ts(self):
+        argv = self._argv(self.TWO)
+        flat = " ".join(argv)
+
+        def values(flag):
+            return [argv[i + 1] for i, a in enumerate(argv) if a == flag]
+
+        self.assertEqual(flat.count("testsrc2="), 1)
+        self.assertEqual(values("-i"), ["testsrc2=size=1280x720:rate=24", "sine=frequency=440:sample_rate=48000",
+                                        "sine=frequency=880:sample_rate=48000"])
+        self.assertEqual(values("-map"), ["0:v", "1:a", "2:a"], "every stream named: the default map takes ONE audio")
+        self.assertEqual(values("-metadata:s:a:0"), ["language=eng"])
+        self.assertEqual(values("-metadata:s:a:1"), ["language=ger"])
+        self.assertEqual({values(f)[0] for f in ("-b:v", "-minrate", "-maxrate", "-bufsize")},
+                         {"%dM" % fixturegen.PIPE_SHAPES[self.TWO]["video"]["mbit"]})
+        self.assertEqual(values("-x264-params"), ["nal-hrd=cbr"])
+        self.assertEqual(values("-t"), ["60"])
+        self.assertEqual(values("-f"), ["lavfi", "lavfi", "lavfi", "hls"])
+        self.assertEqual(len([a for a in argv if a.startswith("-c:a")]), 1, "one audio codec for every stream")
+
+    def test_the_one_audio_recipe_is_byte_for_byte_what_it_was_and_maps_nothing(self):
+        argv = self._argv("pipe_hls_720p24_20m", 90)
+        self.assertNotIn("-map", argv)
+        self.assertFalse([a for a in argv if a.startswith("-metadata")], "no tags on the 20m stream")
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe")
+                         and {"libx264", "aac"} <= set(fixturegen.ffmpeg_encoders()),
+                         "needs ffmpeg with libx264 and aac")
+    def test_a_built_two_audio_stream_verifies_and_its_audio_is_what_it_is_tagged_as(self):
+        key = self.TWO
+        spec = fixturegen.PIPE_SHAPES[key]
+        with tempfile.TemporaryDirectory() as d:
+            root = fixturegen.Path(d)
+            (root / ".work").mkdir()
+            dest = root / key / "index.m3u8"
+            fixturegen.build_hls_vod(mock.Mock(markers=False), key, spec, 6, None, dest, root / ".work")
+            rec, problems = fixturegen.verify(key, spec, 6, dest)
+            self.assertEqual(problems, [])
+            self.assertEqual([a["codec"] for a in rec["audio"]], ["aac", "aac"])
+            tags = json.loads(subprocess.check_output(
+                ["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=index:stream_tags=language",
+                 "-of", "json", str(dest)]))["streams"]
+            self.assertEqual([t["tags"]["language"] for t in tags], ["eng", "ger"])
+            for n, want_hz in ((0, 440), (1, 880)):
+                pcm = subprocess.check_output(
+                    ["ffmpeg", "-v", "error", "-nostdin", "-i", str(dest), "-map", f"0:a:{n}", "-t", "3",
+                     "-ac", "1", "-ar", "48000", "-f", "s16le", "-"])
+                samples = array.array("h")
+                samples.frombytes(pcm)
+                samples = samples[12000:]   # past the encoder's priming, which is not the tone
+                crossings = sum(1 for a, b in zip(samples, samples[1:]) if (a < 0) != (b < 0))
+                hz = crossings / 2 / (len(samples) / 48000)
+                self.assertAlmostEqual(hz, want_hz, delta=want_hz * 0.05, msg=f"audio stream {n}")
+            # a stream missing its second track does not verify
+            one = dict(spec, audio=spec["audio"][:1])
+            self.assertTrue(any("2 audio streams, wanted 1" in p for p in fixturegen.verify(key, one, 6, dest)[1]))
+            swapped = dict(spec, audio=[dict(spec["audio"][0], lang="ger"), dict(spec["audio"][1], lang="eng")])
+            self.assertTrue(any("language" in p for p in fixturegen.verify(key, swapped, 6, dest)[1]))
+
+
 class SharedLinkShaping(unittest.TestCase):
     """The fixture server's rate limiter must shape the LINK, not each response separately.
 
@@ -5406,7 +7926,7 @@ class ThePlaybackRateIsTheOnlyThingThatSeesASlowFilm(unittest.TestCase):
 
 
 class TheAbrCommitLineMatchesTheHarnessRegex(unittest.TestCase):
-    """**The commit line's format string, read out of `ff.rs` and matched against both regexes.**
+    """**The commit line's format string, read out of `adaptive.rs` and matched against both regexes.**
 
     Same contract as `TheAbrWindowLineMatchesTheHarnessRegex` and the same failure if it lapses:
     the app formats this on a television and the harness parses it on a Mac, and a drift shows up
@@ -5421,10 +7941,10 @@ class TheAbrCommitLineMatchesTheHarnessRegex(unittest.TestCase):
     append silently retired a grader (`RE_ABR_UP` parses this line too).
     """
 
-    FF_RS = os.path.join(REPO_ROOT, "rust-modules", "media", "src", "ff.rs")
+    ADAPTIVE_RS = os.path.join(REPO_ROOT, "rust-modules", "media", "src", "adaptive.rs")
 
     def commit_format(self):
-        with open(self.FF_RS, encoding="utf-8") as fh:
+        with open(self.ADAPTIVE_RS, encoding="utf-8") as fh:
             source = fh.read()
         found = re.findall(r'"(abr: committed [^"\\]*)"', source)
         self.assertEqual(len(found), 1,
@@ -6053,6 +8573,8 @@ class DepGates(unittest.TestCase):
         "rust-modules/data/src",
         "rust-modules/session/src",
         "rust-modules/media/src",
+        # `SRC_PLAY_FEED`: the fork ledger holds the simulator's sink (`ffi_host.rs`), which lives here.
+        "rust-modules/play-feed/src",
         "rust-modules/appkit/src",
         "rust-modules/screens/src",
         "rust-modules/Cargo.toml",
@@ -6813,10 +9335,11 @@ impl PersonOwnerGateFixture {
                          "`it.revision()` is not a registry read\n" + out)
 
     def test_globals_ledger_sees_the_player_transport_readers_in_a_machine(self):
-        """RED: `transport::paused`, `transport::viewer_paused` and `preview::paused` read `TX.paused` behind
-        a function (Sans-IO lifecycle PR B), so a machine that calls one reads the registry as surely as
-        `client_for` does. Qualified, bare-after-an-import (singly, in a group, through a glob) and the
-        rename that would hide the calls are all caught; the writers (`set_paused`, `set_transport_paused`)
+        """RED: `transport::viewer_paused` (the pause-hold claim) and `preview::paused` (the preview machine's
+        process-global phase) still read process-wide state, so a machine that calls one is a site, as a
+        `client_for` call is. `transport::paused` reads the session's readout and is NOT a site any more.
+        Qualified, bare-after-an-import (singly, in a group) and the rename that would hide the calls are all
+        caught; the writers (`set_paused`, `set_transport_paused`)
         and a file that merely has a local named `paused` are not registry reads. An import that only
         ENDS in one of the module names (`plx_appkit::scrub_preview::*`, `plx_ui::hud_transport::{..}`) is not
         an import of `preview` / `transport`, so a `paused` local beside it is no site either."""
@@ -6852,13 +9375,18 @@ impl PersonOwnerGateFixture {
         self.assertNotEqual(r.returncode, 0, out)
         self.assertIn("globals:", out)
         base = f"rust-modules/{crate}/src/_check_deps_selftest_"
-        for spelling in ("transport::paused", "transport::viewer_paused", "preview::paused"):
+        for spelling in ("transport::viewer_paused", "preview::paused"):
             with self.subTest(qualified=spelling):
                 self.assertIn(f"{base}qualified.rs::qualified::{spelling}  (ledger: ", out)
+        self.assertNotIn(f"{base}qualified.rs::qualified::transport::paused  (ledger: ", out,
+                         "`transport::paused` reads the session readout, not a registry\n" + out)
+        # The alias rule keys on the getter's bare name, and `paused` is still `preview::paused`'s, so renaming
+        # `transport::paused` stays refused too (conservative: an alias the ledger cannot count).
         for line in (1, 2, 3):
             with self.subTest(rename_line=line):
                 self.assertIn(f"{base}renamed.rs:{line}\n", out + "\n")
-        for fn, spelling in (("bare", "viewer_paused"), ("bare", "paused"), ("globbed", "paused")):
+        self.assertNotIn(f"{base}globbed.rs", out, "a glob of `transport` reaching `paused()` is no registry read\n" + out)
+        for fn, spelling in (("bare", "viewer_paused"), ("bare", "paused")):
             with self.subTest(fn=fn, spelling=spelling):
                 self.assertIn(f"{base}{fn}.rs::{fn}::{spelling}  (ledger: ", out)
         self.assertEqual(out.count(f"{base}bare.rs::bare::paused  (ledger: "), 1,
@@ -7090,12 +9618,16 @@ impl PersonOwnerGateFixture {
         """RED: lifecycle.rs, the machine, reads no `crate::player::TX` (the transport contract lives in
         player/transport.rs), and the spellings stay pinned there as a zero-guard: planting `super::TX`,
         a bare `TX` and a renamed import reaches the same atomic from that file. The first two are sites
-        of their own, the rename fails outright (the calls through it are invisible)."""
+        of their own, the rename fails outright (the calls through it are invisible). The pause itself
+        is the Feed backend's `plx_play_feed::shared::FEED_TX` (and `FEED_SHARED` its callback mailbox),
+        so those spellings are pinned there too, qualified and bare."""
         rel = "rust-modules/media/src/player/lifecycle.rs"
         with open(os.path.join(self.tree, rel), encoding="utf-8") as f:
             before = f.read().count("\n")
         appended = ("\nfn planted_super_tx() -> bool {\n    super::TX.paused.load(Relaxed)\n}\n"
                     "use super::TX;\nfn planted_bare_tx() {\n    TX.commit_paused(true);\n}\n"
+                    "fn planted_feed_tx() -> bool {\n    plx_play_feed::shared::FEED_TX.paused.load(Relaxed)\n}\n"
+                    "use plx_play_feed::shared::FEED_SHARED;\nfn planted_feed_shared() {\n    FEED_SHARED.pb_state.load(Relaxed);\n}\n"
                     "use super::TX as Transport2;\n")
         r = self._append_to(rel, appended)
         out = r.stdout + r.stderr
@@ -7103,6 +9635,8 @@ impl PersonOwnerGateFixture {
         self.assertIn("globals:", out)
         self.assertIn(f"{rel}::planted_super_tx::super::TX  (ledger: ci/allow/globals/media.txt)", out)
         self.assertIn(f"{rel}::planted_bare_tx::TX  (ledger: ci/allow/globals/media.txt)", out)
+        self.assertIn(f"{rel}::planted_feed_tx::shared::FEED_TX  (ledger: ci/allow/globals/media.txt)", out)
+        self.assertIn(f"{rel}::planted_feed_shared::FEED_SHARED  (ledger: ci/allow/globals/media.txt)", out)
         rename_line = before + appended.split("\n").index("use super::TX as Transport2;") + 1
         self.assertIn(f"{rel}:{rename_line}\n", out + "\n")
 
@@ -7732,10 +10266,10 @@ impl PersonOwnerGateFixture {
         # `server_roster_gen`, `server_facts_gen`, `server_probe_result`, `session::peek_settled`,
         # `session::current_gen`, `tape::active`), +57 (57 -> 114); the forks rule gained the machine crates
         # screens/, ui/, appkit/ and machine/ (it read only data/, plex/, media/, session/), +17 (58 -> 75).
-        "globals": 114,  # production process-global reads inside machines (`ci/allow/globals/`)
+        "globals": 111,  # production process-global reads inside machines (`ci/allow/globals/`)
         # Dolby Vision setting (#1156): -1 on forks (`build_stream` takes the DV probe from `ResolveEnv`, captured
         # at the request, so its test/production read of `devcaps::dv::capability` is gone).
-        "forks": 74,  # production test/production forks in every machine crate: data/, plex/, media/, session/, screens/, ui/, appkit/, machine/ (`ci/allow/forks/`)
+        "forks": 71,  # production test/production forks in every machine crate: data/, plex/, media/, session/, screens/, ui/, appkit/, machine/ (`ci/allow/forks/`)
         "fxlanes": 11,  # Bridge::app_effect arms that do not push Fx::Deliver (`ci/allow/fxlanes/`)
     }
 
@@ -9411,6 +11945,101 @@ class FpsMock(unittest.TestCase):
         self.assertIn("[mock-only]", deep[0])
         grid = [ln for ln in p.stdout.splitlines() if ln.startswith("fps:home-grid ")]
         self.assertIn("[mock ok]", grid[0])
+
+
+class MockRouteSideReader(unittest.TestCase):
+    """`pms_route: "mock"` (`pipe_side_reader_srt`): the app plays an item of the harness's mock PMS, and the
+    case is graded on the log alone: the side reader opened on the server-selected track, anchored, and drew
+    a cue. The lines are the app's own (`subside:` in `ff_subside.rs`, `sub cue` in `ass_source.rs`)."""
+
+    CASE = next(c for c in json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                       "manifest.json")))["pipeline_cases"]
+                if c["name"] == "pipe_side_reader_srt")
+    GOOD = [
+        "route: Normalize Loudness on",
+        "enhancement: applied boost=0 loudness=1",
+        "stream: /video/:/transcode/universal/start.mkv path=/video/:/transcode/universal/start.mkv"
+        "?directStream=1&directStreamAudio=1&subtitles=none",
+        "server-selected subtitle: sid=9910013 render_idx=0",
+        "subside: open tracks=1 ordinal=0 kbps=1400",
+        "subside: anchor match=exact part_kf_ms=0 remux_kf_ms=0 disp_base_ms=0 pts_shift_ms=0 delta_ms=0 "
+        "assumed_delta_ms=0 scan_bytes=1 scan_ms=1",
+        "sub cue [10000..18000ms] len=24",
+    ]
+
+    def test_the_case_is_a_mock_route_case_and_not_a_uri_one(self):
+        self.assertTrue(run.mock_route(self.CASE))
+        self.assertFalse(run.uri_mode(self.CASE))
+        self.assertEqual(self.CASE["carrier_subtitle"], 1)
+
+    def test_its_clips_exist_in_the_pipeline_table_and_agree_with_it(self):
+        spec, remux = fixturegen.PIPE_SHAPES["pipe_side_reader_srt"], fixturegen.PIPE_SHAPES["pipe_side_reader_remux"]
+        self.assertEqual(self.CASE["carrier"], "pipe_side_reader_srt." + spec["ext"])
+        self.assertEqual(self.CASE["fixture"], "pipe_side_reader_remux." + remux["ext"])
+        self.assertEqual([s["codec"] for s in spec["subs"]], ["subrip"], "one embedded SubRip track: ordinal 0")
+        self.assertEqual(remux["subs"], [], "the remux is what the server sends for subtitles=none")
+        self.assertEqual(spec["video"], remux["video"], "the same picture: the reader's keyframe anchor matches")
+        self.assertEqual(spec["duration"], remux["duration"])
+        self.assertEqual(remux["declare"]["acodec"], "ac3")
+        self.assertLess(fixturegen.PIPE_MBIT["pipe_side_reader_srt"] * 1000, 30000, "under SIDE_MAX_PART_KBPS")
+
+    def test_the_carrier_args_select_the_subtitle_and_serve_the_remux(self):
+        self.assertEqual(
+            run.mock_fps.carrier_server_args("/p/a.mkv", None, 1, "/p/b.mkv"),
+            ["--extra-media", "/p/a.mkv", "--extra-media-subtitle", "1", "--transcode-fixture", "/p/b.mkv"])
+        self.assertEqual(run.mock_fps.carrier_server_args("/p/a.mkv"), ["--extra-media", "/p/a.mkv"])
+        for bad in (0, -1, True, "1"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                run.mock_fps.carrier_server_args("/p/a.mkv", None, bad)
+
+    def test_the_triggers_pin_the_carrier_the_enhancement_and_no_other_route(self):
+        files = dict(run.mock_route_files(self.CASE))
+        self.assertEqual(files["plxnative-play"], str(run.mock_fps.CARRIER_RK))
+        self.assertEqual(files["plxnative-audioenh"], "loudness")
+        for name in ("plxnative-playurl", "plxnative-uridev", "plxnative-uriprobe", "plxnative-pms-origin"):
+            self.assertNotIn(name, files)
+        with self.assertRaises(run.UriProductRefused):
+            run.mock_route_files(self.CASE, [("plxnative-uriprobe", "load")])
+        with self.assertRaises(run.UriProductRefused):
+            run.mock_route_files(dict(self.CASE, triggers={"uridev": "x"}))
+
+    def grade(self, lines):
+        return dict((n, (ok, ev)) for n, ok, ev in run.evaluate_mock_route(
+            dict(self.CASE), lines + ["videoplane: BOUND"], ())[1])
+
+    def test_a_log_with_the_whole_chain_passes_the_side_reader_grades(self):
+        got = self.grade(self.GOOD)
+        self.assertTrue(got["side_reader"][0], got["side_reader"])
+        self.assertTrue(got["side_reader_anchor"][0], got["side_reader_anchor"])
+
+    def test_each_link_of_the_chain_is_graded_by_name(self):
+        for drop, side, anchor in (
+                ("subside: open", False, False), ("subside: anchor", True, False),
+                ("sub cue", False, True), ("server-selected", False, True), ("enhancement: applied", False, True)):
+            with self.subTest(drop=drop):
+                got = self.grade([ln for ln in self.GOOD if not ln.startswith(drop)])
+                self.assertEqual((got["side_reader"][0], got["side_reader_anchor"][0]), (side, anchor), got)
+
+    def test_a_cue_of_length_zero_and_a_failed_reader_are_not_a_drawn_cue(self):
+        self.assertFalse(self.grade([ln.replace("len=24", "len=0") for ln in self.GOOD])["side_reader"][0])
+        self.assertFalse(self.grade(self.GOOD[:5] + ["subside: failed"] + self.GOOD[5:])["side_reader"][0])
+
+    def test_the_wrong_track_is_refused(self):
+        self.assertFalse(self.grade([ln.replace("ordinal=0", "ordinal=1") for ln in self.GOOD])["side_reader"][0])
+
+    def test_a_missing_pack_or_a_release_install_skips_the_case(self):
+        with tempfile.TemporaryDirectory() as root, tempfile.NamedTemporaryFile() as cfg:
+            c = dict(self.CASE)
+            run._resolve_mock_route([c], root, flavour="stable", config=cfg.name)
+            self.assertIn("debug install only", c["skip"])
+            c = dict(self.CASE)
+            run._resolve_mock_route([c], root, flavour="debug", config=cfg.name)
+            self.assertIn("pipe_side_reader_srt.mkv", c["skip"])
+            open(os.path.join(root, "pipe_side_reader_srt.mkv"), "w").close()
+            c = dict(self.CASE)
+            run._resolve_mock_route([c], root, flavour="debug", config=cfg.name)
+            self.assertNotIn("skip", c)
+            self.assertEqual(c["transcode_path"], os.path.join(root, "pipe_side_reader_remux.mkv"))
 
 
 def load_tests(loader, tests, pattern):

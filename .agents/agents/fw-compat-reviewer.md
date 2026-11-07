@@ -3,8 +3,12 @@ name: fw-compat-reviewer
 description: >
   Review a change that touches FFI, linkage, or the runtime library seam and answer one
   question — can this binary still START on every firmware this project claims to support?
-  Use before pushing anything that edits `rust-modules/base/src/dynlib.rs`, `ff.rs`, `net.rs`,
-  `src/starfish.c`, `ci/expected-dt-needed.txt`, the Makefile's `LIBS_REAL`, or that adds any
+  Use before pushing anything that edits `rust-modules/base/src/dynlib.rs`,
+  `rust-modules/media-codecs/src/ffi.rs`, `rust-modules/media-codecs/src/venc.rs`,
+  `rust-modules/net/src/net.rs`, `rust-modules/net/src/curlio.rs`,
+  `src/starfish.c`, `src/video_plane.c`, `src/starfish.h`, `rust-modules/platform/src/webos/ls2/uri.rs`,
+  `rust-modules/play-uri/src`, `ci/expected-dt-needed.txt`,
+  the Makefile's `LIBS_REAL`, or that adds any
   `extern "C"` block, `#[link]` directive, `dlopen`, mangled-symbol declaration or new FFmpeg /
   curl / Starfish / ACB call. Also use when a reviewer asks "does this still load on webOS 5?",
   when `ci/check-elf.sh` reports DT_NEEDED drift, or when a `dynlib!` declaration is being added
@@ -46,9 +50,14 @@ In scope if the diff touches any of:
 | path / edit | why it can move the answer |
 |---|---|
 | `rust-modules/base/src/dynlib.rs` | the one door for runtime-bound libraries; the macro's shape *is* the calling convention |
-| `rust-modules/media/src/ff.rs` | the four bundled-FFmpeg `dynlib!` blocks + the pinned-major gate |
+| `rust-modules/media-codecs/src/ffi.rs` | the four bundled-FFmpeg `dynlib!` blocks + the pinned-major gate |
+| `rust-modules/media-codecs/src/venc.rs` | the moved encoder ABI self-check and its FFmpeg calls |
 | `rust-modules/net/src/net.rs` | the libcurl `dynlib!` block — variadic wrappers over two C symbols, plus the candidate list |
-| `src/starfish.c` | 15 mangled C++ externs against real libraries, plus its own `dlopen` of ACB |
+| `rust-modules/net/src/curlio.rs` | the byte-range `curl_multi_*` `dynlib!` table, exposed as `net::range_io` |
+| `src/starfish.c` | 15 mangled C++ externs against real libraries |
+| `src/video_plane.c`, `src/starfish.h` | the video-plane binding: its own `dlopen` of ACB, the `dlsym` probe for the SDL exported window, and `vp_mode()` choosing between them; the header declares the `acb_*` / `sf_*` seam the Rust externs mirror |
+| `rust-modules/platform/src/webos/ls2/uri.rs` and the `LSCall` declaration in `webos.rs` | the `com.webos.media` LS2 worker; `LSCall` is a hard import of `libluna-service2` in every build with the platform feature `uri-transport`, which the application's `play-uri` feature (in the shipping set) turns on |
+| `rust-modules/play-uri/src` | the URI backend declares no `extern "C"` of its own: it reaches ACB through `DisplaySink` (the platform's `acb_*` externs) and the bus through `tv::uri::UriMedia`; a declaration appearing here is a new undefined symbol and a layer violation |
 | any new `extern "C"` block, `#[link]`, or `__asm__("<mangled>")` declaration | each one adds an undefined symbol, or a whole `DT_NEEDED` entry |
 | `Makefile`'s `LIBS_REAL` / the link line (currently line 256 / 444) | a new `-l` is a new hard `DT_NEEDED` |
 | `ci/expected-dt-needed.txt` | somebody is *recording* drift; the question is whether it is safe drift |
@@ -78,7 +87,7 @@ crossing 5→4 at exactly the same release.
 **3 — FFmpeg: the app BUNDLES its own and PINS it.** This one is *not* a version question, and
 treating it as one ("FFmpeg SONAMEs drift, 55→57→58→59→60") is the stale mental model. `make`
 cross-compiles FFmpeg 9.0 under a `-plx` build suffix (`ci/build-ffmpeg.sh`, `--build-suffix=-plx`),
-ships the `.so` files beside the binary, and `ff.rs::load_libraries` opens them by **absolute path
+ships the `.so` files beside the binary, and `media-codecs/src/ffi.rs::load_libraries` opens them by **absolute path
 out of `paths::app_dir()`** — because they sit on no library search path, and because webOS 11.2.0
 ships an FFmpeg 6 of its own that a bare SONAME could open instead. Both halves of that guarantee
 are load-bearing; `tools/fwcompat.py --inventory libavformat-plx` returns `-` on all 14 releases,
@@ -102,7 +111,7 @@ Consequences to check in any FFmpeg-touching diff:
   this; both blocks now carry a comment about it. Check every added symbol is in the library that
   *defines* it.
 
-**ACB is the same idea but is not `dynlib!`** — `src/starfish.c` is C and does its own
+**ACB is the same idea but is not `dynlib!`** — `src/video_plane.c` is C and does its own
 `dlopen("libAcbAPI.so.1", RTLD_NOW|RTLD_GLOBAL)`, falling back to
 `dlsym(RTLD_DEFAULT, "SDL_webOSCreateExportedWindow")` and picking between them in `vp_mode()`
 (`VP_ACB` / `VP_EXPORTED` / `VP_NONE`). The two are complementary across all 14 firmwares. A change
@@ -146,9 +155,10 @@ grade an ELF at all.
 
 ```sh
 git -C <repo> diff --stat HEAD          # or the range under review
-git -C <repo> diff HEAD -- rust-modules/base/src/dynlib.rs rust-modules/media/src/ff.rs \
-    rust-modules/net/src/net.rs src/starfish.c Makefile ci/expected-dt-needed.txt
-grep -rn '#\[link\|extern "C"\|__asm__("' rust-modules/src rust-modules/media/src rust-modules/net/src src   # against the diff, not the tree
+git -C <repo> diff HEAD -- rust-modules/base/src/dynlib.rs rust-modules/media-codecs/src/ffi.rs rust-modules/media-codecs/src/venc.rs \
+    rust-modules/net/src/net.rs rust-modules/net/src/curlio.rs src/starfish.c src/video_plane.c src/starfish.h \
+    rust-modules/platform/src/webos.rs rust-modules/platform/src/webos/ls2/uri.rs Makefile ci/expected-dt-needed.txt
+grep -rn '#\[link\|extern "C"\|__asm__("' rust-modules/src rust-modules/media/src rust-modules/play-feed/src rust-modules/play-uri/src rust-modules/platform/src rust-modules/media-codecs/src rust-modules/net/src src   # against the diff, not the tree
 ```
 
 ### 1. Decide, out loud, whether you are grading an ELF or grading source

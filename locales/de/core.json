@@ -16,6 +16,8 @@
   "core.preview_domain_line": "{label}: {values}",
   "core.preview_domain_failure_kind": "Fehlerart (einschließlich beibehaltener historischer Codes)",
   "core.preview_domain_delivery": "Übertragungsart",
+  "core.preview_domain_backend": "Wiedergabe-Backend",
+  "core.preview_domain_terminal_stage": "Phase des endgültigen Fehlers",
   "core.preview_domain_refusal_codes": "Entscheidungscodes des Servers, allgemein und Transkodierung (nur Ablehnungsberichte)",
   "core.preview_domain_attempted_delivery": "versuchte Übertragungsart",
   "core.preview_domain_source_video": "Videocodec der Quelle (nur Ablehnungsberichte)",

@@ -377,7 +377,7 @@ active codec.
 
 ### 4c. HDR10 — separate `setHdrInfo` call (NOT Load, NOT ACB)
 
-> **NEVER IMPLEMENTED, and not implementable on webOS 4.5:** `setHdrInfo` is absent from `libplayerAPIs`, which exports only `updateHdrInfo(const HdrInfo*)`. HEVC carries HDR10 in-band and the pipeline reports it; a VP9 PQ stream is declared by rewriting the `sourceInfo` envelope ACB is sent (`media::player::vp9_hdr`; measured: the TV's `picture.dynamicRange` flips to HDR).
+> **NEVER IMPLEMENTED, and not implementable on webOS 4.5:** `setHdrInfo` is absent from `libplayerAPIs`, which exports only `updateHdrInfo(const HdrInfo*)`. HEVC carries HDR10 in-band and the pipeline reports it; a VP9 PQ stream is declared by rewriting the `sourceInfo` envelope ACB is sent (`plx_play_feed::vp9_hdr`; measured: the TV's `picture.dynamicRange` flips to HDR).
 
 On webOS HDR10 static metadata is delivered by `StarfishMediaAPIs::setHdrInfo(const char*)`,
 called **after `Load()` reports LOADCOMPLETED and before `Play()`** (Kodi's `SetHDR`).

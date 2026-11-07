@@ -102,6 +102,14 @@
     "value": "delivery",
     "description": "Field name in the consent preview's list of possible playback-error values: how the video was delivered."
   },
+  "core.preview_domain_backend": {
+    "value": "playback backend",
+    "description": "Field name in the consent preview: the physical executor of the terminal playback attempt, or unknown when no current attempt was proven."
+  },
+  "core.preview_domain_terminal_stage": {
+    "value": "terminal failure stage",
+    "description": "Field name in the consent preview: the stage of the current terminal failure, or unknown when no stage was proven."
+  },
   "core.preview_domain_refusal_codes": {
     "value": "server decision codes, general and transcode (refused-plan reports only)",
     "description": "Field name in the consent preview's list of possible playback-error values: the numeric verdict codes the media server gave when it refused to play or convert an item. Only reports about a refusal carry it."

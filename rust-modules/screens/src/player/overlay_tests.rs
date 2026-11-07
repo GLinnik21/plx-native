@@ -39,15 +39,46 @@ impl Host for TestHost {
     type Fx = AppFx;
     type Msg = AppMsg;
     type Elem = u32;
-    type Views<'a> = ();
+    type Views<'a> = &'a plx_media::route::PlaybackSession;
     type Init = plx_ui::fixture::FixtureArg;
     type Memory = PageMemory;
 }
 
 impl crate::registry::PlayerLike for TestHost {
-    fn session<'a>(_cx: &Cx<'a, Self>) -> &'a plx_media::route::PlaybackSession {
-        plx_media::route::idle_session_for_test()
+    fn session<'a>(cx: &Cx<'a, Self>) -> &'a plx_media::route::PlaybackSession {
+        cx.views
     }
+    fn transport_paused(_cx: &Cx<'_, Self>) -> bool { false }
+}
+
+pub(super) fn playback_session(position_ns: i64, duration_ns: i64) -> plx_media::route::PlaybackSession {
+    use plx_media::player::attempt_view::{AttemptFacts, Backend};
+    let mut ps = plx_media::route::PlaybackSession::IDLE;
+    let attempt = plx_media::route::RouteStartAttempt::fixture();
+    ps.begin_attempt_view(attempt, Backend::Feed);
+    assert!(ps.ingest_attempt_facts(attempt, Backend::Feed, AttemptFacts {
+        position_ns: Some(position_ns),
+        duration_ns: Some(duration_ns),
+        started: Some(true),
+        rebuffering: Some(false),
+        seen_frame: Some(true),
+        ..AttemptFacts::default()
+    }));
+    ps
+}
+
+/// Deliver the pump's `StateDerived` event to `ps`: the state `player::state(ps)` then reads, for a
+/// test that needs a stalled load, a seek or a failure on screen. The state is the session's own
+/// readout, so the test owns the session it steps and hands THAT to the `Cx` the screen reads; it
+/// never writes a global, and there is nothing to restore.
+pub(super) fn derive_state(ps: &mut plx_media::route::PlaybackSession, state: plx_media::player::PlaybackState) {
+    ps.step_readout(plx_media::player::readout::ReadoutEvent::StateDerived(state));
+}
+
+pub(super) fn publish_facts(ps: &mut plx_media::route::PlaybackSession, facts: plx_media::player::attempt_view::AttemptFacts) {
+    use plx_media::player::attempt_view::Backend;
+    let attempt = plx_media::route::RouteStartAttempt::fixture();
+    assert!(ps.ingest_attempt_facts(attempt, Backend::Feed, facts));
 }
 
 thread_local! {
@@ -72,7 +103,7 @@ const INST: InstanceId = InstanceId(7);
 
 fn cx() -> Cx<'static, TestHost> {
     Cx {
-        views: (),
+        views: plx_media::route::idle_session_for_test(),
         tick: Tick::default(),
         measure: &FixtureMeasure,
         focus: Default::default(),
@@ -271,7 +302,7 @@ fn back_dismisses_more_at_the_root_and_pops_the_quality_page_first() {
 /// root before it dismisses.
 #[test]
 fn the_more_popover_mounts_on_the_speed_page_when_addressed_to_it() {
-    plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+    plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
     let ps = plx_media::route::PlaybackSession::IDLE;
     let meta = plx_data::stores::metadata::MetadataStore::default();
     let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::More { page: Some(MorePage::Speed) });
@@ -294,7 +325,7 @@ fn a_folded_row_closes_more_first_and_asks_the_one_performer() {
         Ask(PlayerReq),
     }
     let _g = plx_base::testlock::serial();
-    plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+    plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
     let ps = plx_media::route::PlaybackSession::IDLE;
     let meta = plx_data::stores::metadata::MetadataStore::default();
     let minimal = plx_appkit::player_hud::loaded::load(
@@ -984,7 +1015,7 @@ fn the_player_panels_dim_through_the_container_in_the_neutral_dim_whatever_the_i
     let ps = plx_media::route::PlaybackSession::IDLE;
     let mut store = plx_data::stores::metadata::MetadataStore::default();
     assert!(store.run(plx_data::stores::metadata::MetadataCmd::InstallPlaying(Some(plx_data::metadata::PlayingItem {
-        sid: plx_plex::plex::ServerId::from_raw(0), rk: "rk".into(), show_rk: String::new(), kind: String::new(), audio: Vec::new(), subs: Vec::new(),
+        sid: plx_plex::plex::ServerId::from_raw(0), rk: "rk".into(), show_rk: String::new(), kind: String::new(), duration_ms: None, audio: Vec::new(), subs: Vec::new(),
         video_fps: 0.0, width: 0, height: 0, bitrate: 0, dovi: Default::default(),
         markers: Vec::new(), chapters: Vec::new(), hdr: false,
     }))));

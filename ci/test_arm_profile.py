@@ -217,6 +217,60 @@ class ScratchTree(unittest.TestCase):
                                         f"{' to the tvdev configuration' if stamp_is_tvdev else ''}")
 
 
+class PackageGateDecodesTheStampTheMakefileWrites(ScratchTree):
+    """`ci/check-package.py` decodes `pkg/.build-config` into dev / release / none, and every gate that
+    grades "a RELEASE build" or "a dev build" rests on the answer.
+
+    The playback backends are explicit features of the application crate, so a release stamp is
+    `features:--no-default-features --features play-uri,play-feed...` rather than the bare `--no-default-features`
+    a decoder written against two literal flag strings still called "release". Here the stamp is the one a
+    real `make` writes into a scratch tree (the reset runs at parse time, so `make -n clean` writes it), so
+    the test cannot agree with a decoder that is wrong in the same way as its table.
+    """
+
+    def decode(self, *make_args: str) -> str:
+        proc = self.make(*make_args, "clean")  # `clean` is not exempt, so this writes the stamp
+        self.assertEqual(proc.returncode, 0, proc.stderr[-300:])
+        out = subprocess.run([sys.executable, str(ROOT / "ci" / "check-package.py"), "--print-build-config",
+                              str(self.tree / STAMP)], capture_output=True, text=True, env=self.env, timeout=120)
+        self.assertEqual(out.returncode, 0, out.stderr[-300:])
+        return out.stdout.strip()
+
+    def test_a_dev_and_a_release_build_decode_as_the_configuration_that_wrote_them(self):
+        for release, want in ((False, "dev"), (True, "release")):
+            for profile in ("tvdev", "release"):  # a plain local build is tvdev; CI and every cut are release
+                with self.subTest(release=release, profile=profile):
+                    self.assertEqual(self.decode(f"ARM_PROFILE={profile}", "RELEASE=1" if release else "RELEASE="), want)
+
+    def test_the_shipped_cuts_decode_as_release(self):
+        for label, args in (
+            ("release cut", ("FLAVOR=stable", "RELEASE=1", "SYMBOLS=1")),
+            ("nightly cut", ("FLAVOR=nightly", "RELEASE=1", "SYMBOLS=1", "PLX_NIGHTLY_DATE=20260919")),
+            ("release candidate", ("FLAVOR=stable", "RELEASE=1", "SYMBOLS=1", "RC=2")),
+            ("submission candidate", ("FLAVOR=debug", "RELEASE=1")),
+        ):
+            with self.subTest(label):
+                self.assertEqual(self.decode(*args), "release")
+
+    def test_lab_and_the_shots_recipe_are_neither_shipped_configuration(self):
+        self.assertEqual(self.decode("LAB=1"), "none")
+        self.assertEqual(self.decode("LAB=1", "RELEASE=1"), "none")
+        # the recipe in the Makefile's header: only the trigger surface, none of the release's backend
+        self.assertEqual(self.decode("RUST_FEATFLAGS=--no-default-features --features devtriggers"), "none")
+
+    def test_the_shipping_feature_flags_are_what_a_release_build_passes(self):
+        """`rust_toolchain.shipping_featflags()` is what the budget and notices gates resolve the shipping
+        graph with; it must be the flags `make RELEASE=1` passes cargo, not a restatement of them."""
+        sys.path.insert(0, str(ROOT / "ci"))
+        import rust_toolchain
+        proc = subprocess.run(["make", "-s", "--no-print-directory", "-C", str(ROOT), "RELEASE=1", "print-bench-config"],
+                              capture_output=True, text=True, env=self.env, timeout=60)
+        self.assertEqual(proc.returncode, 0, proc.stderr[-300:])
+        flags = rust_toolchain.shipping_featflags()
+        self.assertEqual(flags[:2], ["--no-default-features", "--features"])
+        self.assertIn("RUST_FEATFLAGS=" + " ".join(flags), proc.stdout)
+
+
 class DeviceControlGoalsKeepTheBuild(ScratchTree):
     """`tools/tv-session.sh` closes the app with a plain `make kill` right after a
     `make ARM_PROFILE=release` build. `kill` builds nothing, but it was not in `SIDE_EFFECT_FREE`, so

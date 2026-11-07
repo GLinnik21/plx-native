@@ -221,6 +221,40 @@ int main(void) {
 
     eq_int("plxnative-sim is a different name", kind("00010000-00020000 r-xp 0 0:0 1 /x/plxnative-sim\n", 0, 0), 0);
 
+    /* ---- the EXIT record (`plx_fmt_exit`) ---- */
+    {
+        char out[256];
+        size_t n = plx_fmt_exit(out, sizeof out - 1, 7, 0x76e2a1c4UL);
+        out[n] = 0;
+        eq_str("exit header", out, "\n*** EXIT status=7 caller=0x76e2a1c4\n");
+        /* Never a fault's or a freeze's header: every tool that scans for those keeps skipping it. */
+        eq_int("exit header is not a SIGNAL line", strstr(out, "SIGNAL") == NULL, 1);
+        eq_int("exit header is not a FREEZE line", strstr(out, "FREEZE") == NULL, 1);
+        n = plx_fmt_exit(out, sizeof out - 1, 0, 0);
+        out[n] = 0;
+        eq_str("exit header, status 0 and no caller", out, "\n*** EXIT status=0 caller=0x0\n");
+        /* A caller may pass any int: negative statuses keep their sign, INT_MIN included. */
+        n = plx_fmt_exit(out, sizeof out - 1, -1, 0x1UL);
+        out[n] = 0;
+        eq_str("exit header, status -1", out, "\n*** EXIT status=-1 caller=0x1\n");
+        n = plx_fmt_exit(out, sizeof out - 1, -2147483647 - 1, 0xffffffffUL);
+        out[n] = 0;
+        eq_str("exit header, INT_MIN", out, "\n*** EXIT status=-2147483648 caller=0xffffffff\n");
+        n = plx_fmt_exit(out, sizeof out - 1, 2147483647, 0x10UL);
+        out[n] = 0;
+        eq_str("exit header, INT_MAX", out, "\n*** EXIT status=2147483647 caller=0x10\n");
+        /* Bounded like every formatter here: a short buffer truncates and never overruns, and the
+         * bytes before the cut are the header's own. */
+        char tiny[12];
+        memset(tiny, '#', sizeof tiny);
+        n = plx_fmt_exit(tiny, 8, 7, 0x76e2a1c4UL);
+        eq_int("a short buffer truncates the exit header", (long)n, 8);
+        eq_int("the exit header's cut is its own prefix", memcmp(tiny, "\n*** EXI", 8), 0);
+        eq_int("nothing is written past the cap", tiny[8], '#');
+        n = plx_fmt_exit(tiny, 0, 7, 0x1UL);
+        eq_int("a zero cap writes nothing", (long)n, 0);
+    }
+
     /* ---- the FREEZE record (`plx_fmt_freeze` and the frame walk) ---- */
     {
         char out[256];

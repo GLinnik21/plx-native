@@ -100,7 +100,7 @@ pub enum LoadRefusal {
     /// The Load budget ran out with the pipeline silent.
     TimedOut,
     /// The surround native-audio watchdog fired: the pipeline took the Load and a few access units,
-    /// then swallowed the feed with no picture ([`super::native_stall`]).
+    /// then swallowed the feed with no picture (`plx_play_feed::native_stall`).
     Stalled,
     /// Not the pipeline: the demuxer or the transport died before a picture.
     SourceFailed,

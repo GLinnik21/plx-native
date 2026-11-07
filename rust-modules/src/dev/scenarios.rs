@@ -1319,37 +1319,54 @@ fn grid_library_search_heroidx_arm(app: &mut App, _fr: &mut Frame) {
     }
 }
 
+/// The page a `plxnative-settings=<target>` boot target names, or `None` for a target this build does not know.
+/// `tests/manifest.json`'s `settings-*` fps scenes select on the heartbeat word of the page this returns, and
+/// `surface_navigation_tests` pins each of those words.
+pub(crate) fn settings_boot_page(target: &str) -> Option<plx_screens::family::SettingsPage> {
+    use plx_screens::family::{PickerKind, PosterKind, SettingsPage};
+    Some(match target {
+        "" | "root" => SettingsPage::Root,
+        "home" => SettingsPage::Favourites,
+        "privacy" => SettingsPage::Privacy,
+        "legal" => SettingsPage::Legal,
+        "language" => SettingsPage::Language,
+        "contribute" => SettingsPage::Contribute,
+        "playback" => SettingsPage::Playback,
+        // root → Playback → the Quality picker (`SettingsPage::boot_trail`; BACK dismisses the surface, see there).
+        "picker-quality" => SettingsPage::Picker(PickerKind::Quality),
+        "picker-next-episode" => SettingsPage::Picker(PickerKind::NextEpisode),
+        "picker-deck-press" => SettingsPage::Picker(PickerKind::DeckPress),
+        "picker-hdr-overlay" => SettingsPage::Picker(PickerKind::HdrOverlay),
+        // root → the Interface resolution picker
+        "picker-resolution" => SettingsPage::Picker(PickerKind::UiResolution),
+        "picker-instant-dpad-seeking" => SettingsPage::Picker(PickerKind::InstantDpadSeeking),
+        "picker-dolby-vision" => SettingsPage::Picker(PickerKind::DolbyVision),
+        "picker-skip-interval" => SettingsPage::Picker(PickerKind::SkipInterval),
+        // root → Playback → the Player HUD page (`SettingsPage::boot_trail`; BACK dismisses the surface, see there)
+        "player-hud" => SettingsPage::PlayerHud,
+        "audio" => SettingsPage::AudioSubtitles,
+        "diagnostics" => SettingsPage::Diagnostics,
+        // Prints `overlay=legal`, the Legal index's word (a `DocumentPage` answers `word::LEGAL`), so no fps scene
+        // selects on it.
+        "about" => SettingsPage::About,
+        "under-posters" => SettingsPage::UnderPosters,
+        // root → Under posters → the details picker of one kind (`SettingsPage::boot_trail`)
+        "under-posters-movie" => SettingsPage::UnderPostersDetails(PosterKind::Movie),
+        "under-posters-show" => SettingsPage::UnderPostersDetails(PosterKind::Show),
+        _ => return None,
+    })
+}
+
 fn settings_boot_arm(app: &mut App, fr: &mut Frame) {
     if !app.scenarios.settings_tried && fr.now.wrapping_sub(app.t0) > 800 {
         if matches!(app.route(), AppArg::Home) {
             app.scenarios.settings_tried = true;
-            let page = match app.scenarios.dev.settings_boot.as_deref().map(str::trim).unwrap_or("root") {
-                "" | "root" => plx_screens::family::SettingsPage::Root,
-                "home" => plx_screens::family::SettingsPage::Favourites,
-                "privacy" => plx_screens::family::SettingsPage::Privacy,
-                "legal" => plx_screens::family::SettingsPage::Legal,
-                "language" => plx_screens::family::SettingsPage::Language,
-                "contribute" => plx_screens::family::SettingsPage::Contribute,
-                "playback" => plx_screens::family::SettingsPage::Playback,
-                // root → Playback → the Quality picker (`SettingsPage::boot_trail`; BACK dismisses the surface, see there).
-                "picker-quality" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::Quality),
-                "picker-next-episode" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::NextEpisode),
-                "picker-deck-press" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::DeckPress),
-                "picker-hdr-overlay" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::HdrOverlay),
-                // root → the Interface resolution picker
-                "picker-resolution" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::UiResolution),
-                "picker-instant-dpad-seeking" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::InstantDpadSeeking),
-                "picker-dolby-vision" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::DolbyVision),
-                "picker-skip-interval" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::SkipInterval),
-                // root → Playback → the Player HUD page (`SettingsPage::boot_trail`; BACK dismisses the surface, see there)
-                "player-hud" => plx_screens::family::SettingsPage::PlayerHud,
-                "audio" => plx_screens::family::SettingsPage::AudioSubtitles,
-                _other => {
-                    #[cfg(feature = "devtriggers")]
-                    plx_base::eventlog::log(&format!("BADTRIGGER settings-boot target {_other:?} unknown; opened root instead"));
-                    plx_screens::family::SettingsPage::Root
-                }
-            };
+            let target = app.scenarios.dev.settings_boot.as_deref().map(str::trim).unwrap_or("root");
+            let page = settings_boot_page(target).unwrap_or_else(|| {
+                #[cfg(feature = "devtriggers")]
+                plx_base::eventlog::log(&format!("BADTRIGGER settings-boot target {target:?} unknown; opened root instead"));
+                plx_screens::family::SettingsPage::Root
+            });
             crate::app::bridge::open_settings_at(&mut app.pages, page);
         } else if fr.now.wrapping_sub(app.t0) > 12_000 {
             app.scenarios.settings_tried = true;
@@ -1622,7 +1639,8 @@ fn play_await_tick(app: &mut App, fr: &mut Frame) {
 fn autoseek_arm(app: &mut App, fr: &mut Frame) {
     if !app.scenarios.seek_tried
         && matches!(app.route(), AppArg::Player)
-        && crate::app::playback::dur() > 0
+        && crate::app::playback::dur(&app.player.session).is_some_and(|dur| dur > 0)
+        && crate::app::playback::playpos(&app.player.session).is_some()
         && fr.now.wrapping_sub(app.t0) > 12000
     {
         app.scenarios.seek_tried = true;
@@ -1643,7 +1661,8 @@ fn autoseek_arm(app: &mut App, fr: &mut Frame) {
             if steps.is_empty() {
                 steps.push("140".to_string());
             }
-            app.scenarios.seek_script_last = plx_media::player::playpos_ns();
+            app.scenarios.seek_script_last = crate::app::playback::playpos(&app.player.session)
+                .expect("the autoseek arm required an observed position");
             app.scenarios.seek_script_at = fr.now.wrapping_sub(app.scenarios.seek_gap_ms).wrapping_add(first_delay_ms);
             app.scenarios.seek_script = steps;
         }
@@ -1663,7 +1682,8 @@ fn autoseek_arm(app: &mut App, fr: &mut Frame) {
         }.max(0);
         app.scenarios.seek_script_last = t;
         plx_base::eventlog::log(&format!("autoseek: step → {}s ({} left)", t / 1_000_000_000, app.scenarios.seek_script.len()));
-        crate::app::playback::request_seek(t);
+        crate::app::playback::request_seek(&mut app.player.session,
+            &mut app.adapters.player, t);
     }
 }
 
@@ -1671,7 +1691,7 @@ fn qualityswitch_arm(app: &mut App, fr: &mut Frame) {
     if !app.scenarios.quality_tried {
         const QUALITY_SWITCH_OBSERVE_MS: u32 = 12_000;
         let playing = matches!(app.route(), AppArg::Player)
-            && crate::app::playback::dur() > 0
+            && crate::app::playback::dur(&app.player.session).is_some_and(|dur| dur > 0)
             && plx_media::player::is_playing(&app.player.session);
         if !playing {
             app.scenarios.quality_playing_since = None;
@@ -1707,33 +1727,42 @@ fn autopause_arm(app: &mut App, fr: &mut Frame) {
         }
     }
     if let Some((pause_at, hold_ms, at_ms)) = app.scenarios.pause_script {
+        #[cfg(all(feature = "hostsim", not(feature = "play-feed")))]
+        if at_ms.is_some() {
+            plx_base::eventlog::log("autopause: exact at= unavailable without Feed simulator clock");
+            app.scenarios.pause_script = None;
+            return;
+        }
         // In the simulator the clock sink is also told to stop on `at` exactly, so the pause
         // (accepted a little after the gate opens) freezes that position rather than wherever
-        // scheduling had got to: the same frame and clock every run (`ffi_host.rs::stop_clock_at`).
+        // scheduling had got to: the same frame and clock every run (`HostSink::stop_clock_at`).
         // Re-armed every frame until accepted: a Load in between rebases the fed timeline, and
         // the stop is kept in movie time, so re-arming is idempotent.
-        #[cfg(feature = "hostsim")]
+        #[cfg(all(feature = "hostsim", feature = "play-feed"))]
         if let Some(ms) = at_ms {
-            plx_media::player::stop_sim_clock_at(Some(i64::from(ms) * 1_000_000));
+            crate::app::adapters::hostsim::stop_sim_clock_at(Some(i64::from(ms) * 1_000_000));
         }
-        let reached = at_ms.is_none_or(|ms| crate::app::playback::playpos() >= i64::from(ms) * 1_000_000);
+        let reached = at_ms.is_none_or(|ms| crate::app::playback::playpos(&app.player.session)
+            .is_some_and(|pos| pos >= i64::from(ms) * 1_000_000));
         if matches!(app.route(), AppArg::Player) && script_step_due(fr.now, pause_at, 0) && reached {
-            if crate::app::lifecycle::set_transport_paused(&mut app.adapters.player, true) {
+            if crate::app::lifecycle::set_transport_paused(&mut app.player.session,
+                &mut app.adapters.player, true) {
                 plx_base::eventlog::log(&format!(
                     "autopause: Pause accepted hold={}ms",
                     hold_ms.map_or_else(|| "forever".to_string(), |ms| ms.to_string()),
                 ));
                 app.scenarios.pause_script = None;
                 app.scenarios.pause_resume_at = hold_ms.map(|hold| fr.now.wrapping_add(hold));
-                #[cfg(feature = "hostsim")]
-                plx_media::player::stop_sim_clock_at(None);
+                #[cfg(all(feature = "hostsim", feature = "play-feed"))]
+                crate::app::adapters::hostsim::stop_sim_clock_at(None);
                 pin_headless_hud(app, fr.now, None);
             }
         }
     }
     if let Some(resume_at) = app.scenarios.pause_resume_at {
         if matches!(app.route(), AppArg::Player) && script_step_due(fr.now, resume_at, 0) {
-            if crate::app::lifecycle::set_transport_paused(&mut app.adapters.player, false) {
+            if crate::app::lifecycle::set_transport_paused(&mut app.player.session,
+                &mut app.adapters.player, false) {
                 plx_base::eventlog::log("autopause: Resume accepted");
                 app.scenarios.pause_resume_at = None;
             }
@@ -1799,12 +1828,14 @@ fn menupick_arm(app: &mut App, fr: &mut Frame) {
         match crate::app::bridge::player_overlay_mut(&mut app.pages) {
             Some(surface) => match surface.resolve_menupick_track(&target) {
                 Some(i) => match surface.pick_sub_track(meta, i) {
-                    Some(commit) => crate::app::playback::commit_track(&mut app.player.session, commit),
+                    Some(commit) => crate::app::playback::commit_track(&mut app.player.session,
+                        &mut app.adapters.player, app.bridge.metadata_mut(), commit),
                     None => plx_base::eventlog::log(&format!("menupick: track {i} gave no commit")),
                 },
                 None => match surface.resolve_menupick_row(&target) {
                     Some(row) => match surface.pick_track_row(meta, row) {
-                        Some(commit) => crate::app::playback::commit_track(&mut app.player.session, commit),
+                        Some(commit) => crate::app::playback::commit_track(&mut app.player.session,
+                            &mut app.adapters.player, app.bridge.metadata_mut(), commit),
                         // The menu's own on_ok treats picking the already-active row as a no-op: no
                         // commit, no route transition line. Without this, a manifest case whose row
                         // no longer differs from the start pick (e.g. #210's file-default rule) fails
@@ -2096,6 +2127,8 @@ fn subtiming_arm(app: &mut App, fr: &mut Frame) {
     app.scenarios.subtiming.pending = Some(SubtimingPending { sid: stream_id, armed_at: fr.now });
     crate::app::playback::commit_track(
         &mut app.player.session,
+        &mut app.adapters.player,
+        app.bridge.metadata_mut(),
         plx_appkit::track_menu::TrackCommit::Subtitle {
             render_ordinal,
             stream_id,
@@ -2210,7 +2243,8 @@ fn marker_arm(app: &mut App, _fr: &mut Frame) {
                     if let Some(m) = markers.iter().find(|m| m.kind == want) {
                         let t = (m.start_ms - 5_000).max(0) * 1_000_000;
                         plx_base::eventlog::log(&format!("marker trigger: seek to {}s (5s before {:?})", t / 1_000_000_000, want));
-                        crate::app::playback::request_seek(t);
+                        crate::app::playback::request_seek(&mut app.player.session,
+                            &mut app.adapters.player, t);
                     } else {
                         plx_base::eventlog::log(&format!("marker trigger: item has no {want:?} marker"));
                     }

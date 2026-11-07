@@ -1,5 +1,6 @@
 //! `StallGuard` arming and abort decisions for a server-paced HLS transfer.
 
+use plx_play_feed::shared::FEED_SHARED;
 use super::*;
 #[allow(unused_imports)]
 use super::test_support::*;
@@ -19,10 +20,10 @@ use super::test_support::*;
 fn a_server_paced_prefix_cannot_forecast_its_unseen_remainder() {
     let _serial = plx_base::testlock::serial();
     let pos = 5_000_000_000i64;
-    crate::player::SHARED
+    FEED_SHARED
         .playpos_ns
         .store(pos, std::sync::atomic::Ordering::Relaxed);
-    let guard = StallGuard::arm(6_376).expect("a live reserve arms");
+    let guard = StallGuard::arm(6_376, super::test_support::demux_observer()).expect("a live reserve arms");
     assert!(
         !guard.should_abort(false, false),
         "a censored JIT prefix cannot prove that the complete response will miss the reserve",
@@ -37,25 +38,25 @@ fn a_server_paced_prefix_cannot_forecast_its_unseen_remainder() {
 #[test]
 fn an_empty_reserve_at_the_start_of_a_fetch_arms_nothing() {
     assert!(
-        StallGuard::arm(0).is_none(),
+        StallGuard::arm(0, super::test_support::demux_observer()).is_none(),
         "so the guard must refuse to be armed"
     );
-    assert!(StallGuard::arm(-1).is_none());
+    assert!(StallGuard::arm(-1, super::test_support::demux_observer()).is_none());
     assert!(
-        StallGuard::arm(1).is_some(),
+        StallGuard::arm(1, super::test_support::demux_observer()).is_some(),
         "and must arm as soon as there is a picture to keep"
     );
 }
 
 #[test]
 fn the_floor_guard_holds_the_clock_without_abandoning_the_only_rung() {
-    let hold = StallGuard::arm_clock_hold(2_000).expect("a live floor reserve arms");
+    let hold = StallGuard::arm_clock_hold(2_000, super::test_support::demux_observer()).expect("a live floor reserve arms");
     assert!(
         !hold.aborts_fetch(),
         "the floor has no cheaper object to re-fetch"
     );
     assert!(
-        StallGuard::arm(2_000)
+        StallGuard::arm(2_000, super::test_support::demux_observer())
             .expect("a live non-floor reserve arms")
             .aborts_fetch(),
         "above the floor the same signal must still release the controller to downshift",
@@ -65,11 +66,11 @@ fn the_floor_guard_holds_the_clock_without_abandoning_the_only_rung() {
 #[test]
 fn an_existing_terminal_hold_arms_no_second_abort() {
     assert!(
-        arm_active_stall_guard(Some(2_000), false, true).is_none(),
+        arm_active_stall_guard(Some(2_000), false, true, super::test_support::demux_observer()).is_none(),
         "the response rebuilding an empty reserve must be allowed to complete",
     );
     assert!(
-        arm_active_stall_guard(Some(2_000), false, false).is_some(),
+        arm_active_stall_guard(Some(2_000), false, false, super::test_support::demux_observer()).is_some(),
         "a running clock still needs its terminal boundary",
     );
 }
@@ -80,13 +81,14 @@ fn an_existing_terminal_hold_arms_no_second_abort() {
 fn a_fetch_the_playhead_is_not_consuming_never_aborts() {
     let _serial = plx_base::testlock::serial();
     let pos = 5_000_000_000i64;
-    crate::player::SHARED
+    FEED_SHARED
         .playpos_ns
         .store(pos, std::sync::atomic::Ordering::Relaxed);
     let guard = StallGuard {
+        observer: super::test_support::demux_observer(),
         reserve_ms_at_start: 2_000,
         playhead_at_start_ns: pos,
-        hold_epoch_at_arm: SHARED
+        hold_epoch_at_arm: FEED_SHARED
             .hls_internal_hold_epoch
             .load(std::sync::atomic::Ordering::Acquire),
         action: super::StallAction::AbortFetch,
@@ -104,14 +106,15 @@ fn a_fetch_the_playhead_is_consuming_still_aborts() {
     let _serial = plx_base::testlock::serial();
     let pos = 5_000_000_000i64;
     let guard = StallGuard {
+        observer: super::test_support::demux_observer(),
         reserve_ms_at_start: 2_000,
         playhead_at_start_ns: pos,
-        hold_epoch_at_arm: SHARED
+        hold_epoch_at_arm: FEED_SHARED
             .hls_internal_hold_epoch
             .load(std::sync::atomic::Ordering::Acquire),
         action: super::StallAction::AbortFetch,
     };
-    crate::player::SHARED
+    FEED_SHARED
         .playpos_ns
         .store(pos + 1_999_000_000, std::sync::atomic::Ordering::Relaxed);
     assert!(
@@ -119,7 +122,7 @@ fn a_fetch_the_playhead_is_consuming_still_aborts() {
         "one millisecond of reserve remains"
     );
     // Exactly the two seconds of media present at the boundary have now been consumed.
-    crate::player::SHARED
+    FEED_SHARED
         .playpos_ns
         .store(pos + 2_000_000_000, std::sync::atomic::Ordering::Relaxed);
     assert!(
@@ -141,7 +144,7 @@ fn the_lookahead_policy_must_abort_under_a_terminal_hold_like_the_ordinary_polic
     use std::io::{Read, Write};
 
     let _serial = plx_base::testlock::serial();
-    crate::player::SHARED
+    FEED_SHARED
         .playpos_ns
         .store(5_000_000_000, std::sync::atomic::Ordering::Relaxed);
 
@@ -176,7 +179,7 @@ fn the_lookahead_policy_must_abort_under_a_terminal_hold_like_the_ordinary_polic
             let _ = socket.write_all(b"EFGH");
         });
 
-        SHARED
+        FEED_SHARED
             .hls_rebuffering
             .store(false, std::sync::atomic::Ordering::Release);
         let host = CString::new("127.0.0.1").unwrap();
@@ -193,7 +196,7 @@ fn the_lookahead_policy_must_abort_under_a_terminal_hold_like_the_ordinary_polic
             ),
             0,
         );
-        let mut aq = crate::aq::aq_new(1 << 20);
+        let mut aq = plx_play_feed::aq::aq_new(1 << 20);
         let mut state = avio_state_for(
             Src::Socket {
                 hs: &mut *hs,
@@ -213,7 +216,7 @@ fn the_lookahead_policy_must_abort_under_a_terminal_hold_like_the_ordinary_polic
         assert_eq!(first, 4, "fixture: the first 4 bytes must arrive cleanly");
 
         // The link collapses; the main thread publishes the terminal hold. 4 of 8 bytes remain.
-        SHARED
+        FEED_SHARED
             .hls_rebuffering
             .store(true, std::sync::atomic::Ordering::Release);
         let second = read_cb(op, dst.as_mut_ptr(), dst.len() as c_int);
@@ -221,19 +224,19 @@ fn the_lookahead_policy_must_abort_under_a_terminal_hold_like_the_ordinary_polic
         drop(state);
         let _ = finish.send(());
 
-        SHARED
+        FEED_SHARED
             .hls_rebuffering
             .store(false, std::sync::atomic::Ordering::Release);
         plx_net::stream::http_close(&mut *hs);
-        crate::aq::aq_destroy(&mut *aq);
+        plx_play_feed::aq::aq_destroy(&mut *aq);
         server.join().expect("loopback server");
         aborted
     }
 
-    let ordinary_policy = SegmentAcquisition::for_test(Some(6_000), false, false);
+    let ordinary_policy = SegmentAcquisition::for_test(Some(6_000), false, false, super::test_support::demux_observer());
     assert_eq!(
         ordinary_policy.stall(),
-        arm_active_stall_guard(Some(6_000), false, false),
+        arm_active_stall_guard(Some(6_000), false, false, super::test_support::demux_observer()),
         "fixture: the acquisition arms exactly the ordinary branch's guard"
     );
     assert!(
@@ -245,7 +248,7 @@ fn the_lookahead_policy_must_abort_under_a_terminal_hold_like_the_ordinary_polic
     // (via the test-only `for_test` escape hatch, which is `active` under a name `ff` cannot
     // reach — see `ff_acquisition.rs`) — not a hand-built guard, the same evaluation the
     // production constructor runs for both the ordinary fetch and the lookahead.
-    let lookahead_policy = SegmentAcquisition::for_test(Some(6_000), false, false);
+    let lookahead_policy = SegmentAcquisition::for_test(Some(6_000), false, false, super::test_support::demux_observer());
     assert!(
         drive_two_reads_across_a_terminal_hold(lookahead_policy),
         "the same-encoder lookahead must abort under a terminal hold exactly like the ordinary \
@@ -261,25 +264,25 @@ fn the_lookahead_policy_must_abort_under_a_terminal_hold_like_the_ordinary_polic
 #[test]
 fn the_active_acquisition_constructor_preserves_arm_active_stall_guards_exclusions() {
     assert!(
-        SegmentAcquisition::for_test(None, false, false)
+        SegmentAcquisition::for_test(None, false, false, super::test_support::demux_observer())
             .stall()
             .is_none(),
         "an unknowable reserve arms nothing"
     );
     assert!(
-        SegmentAcquisition::for_test(Some(0), false, false)
+        SegmentAcquisition::for_test(Some(0), false, false, super::test_support::demux_observer())
             .stall()
             .is_none(),
         "a reserve of zero at the start of a fetch arms nothing"
     );
     assert!(
-        SegmentAcquisition::for_test(Some(2_000), false, true)
+        SegmentAcquisition::for_test(Some(2_000), false, true, super::test_support::demux_observer())
             .stall()
             .is_none(),
         "an already-held clock arms no second abort"
     );
     assert!(
-        SegmentAcquisition::for_test(Some(2_000), false, false)
+        SegmentAcquisition::for_test(Some(2_000), false, false, super::test_support::demux_observer())
             .stall()
             .is_some(),
         "a live reserve with no existing hold must still arm"
@@ -292,7 +295,8 @@ fn the_active_acquisition_constructor_preserves_arm_active_stall_guards_exclusio
 #[test]
 fn for_cursor_with_no_controller_is_unarmed() {
     assert!(
-        SegmentAcquisition::for_cursor(None).stall().is_none(),
+        SegmentAcquisition::for_cursor(None, super::test_support::demux_observer())
+            .expect("fixture observer is active").stall().is_none(),
         "non-adaptive playback must never arm a stall guard"
     );
 }
@@ -316,19 +320,19 @@ fn the_lookahead_wiring_aborts_through_the_shared_reducer_when_the_guard_is_arme
     // Live inputs `SegmentAcquisition::for_cursor` samples for ITSELF — a real reserve, no
     // existing hold — so it is the constructor's own evaluation, not a test-supplied bool, that
     // decides whether the guard arms.
-    crate::player::SHARED
+    FEED_SHARED
         .playpos_ns
         .store(0, std::sync::atomic::Ordering::Relaxed);
-    SHARED
+    FEED_SHARED
         .hls_video_tail_ns
         .store(6_000_000_000, std::sync::atomic::Ordering::Release);
-    SHARED
+    FEED_SHARED
         .hls_audio_tail_ns
         .store(-1, std::sync::atomic::Ordering::Release);
-    SHARED
+    FEED_SHARED
         .disp_base
         .store(0, std::sync::atomic::Ordering::Relaxed);
-    SHARED
+    FEED_SHARED
         .hls_rebuffering
         .store(false, std::sync::atomic::Ordering::Release);
 
@@ -340,11 +344,11 @@ fn the_lookahead_wiring_aborts_through_the_shared_reducer_when_the_guard_is_arme
          the clock instead of aborting the fetch"
     );
 
-    let master = crate::hls::Resource {
+    let master = plx_play_feed::hls::Resource {
         origin: plx_plex::plex::Origin::http("127.0.0.1", 32400),
         path: "/master.m3u8?X-Plex-Token=test-token".to_string(),
     };
-    let auth = crate::hls::InheritedAuth::capture(&master).expect("fixture token pair");
+    let auth = plx_play_feed::hls::InheritedAuth::capture(&master).expect("fixture token pair");
     let mut cursor = HlsCursor {
         publishes_duration: true,
         declared_bps: 0,
@@ -356,7 +360,7 @@ fn the_lookahead_wiring_aborts_through_the_shared_reducer_when_the_guard_is_arme
         target_duration_secs: 6,
         start_applied: true,
     };
-    let n1 = crate::hls::Segment {
+    let n1 = plx_play_feed::hls::Segment {
         sequence: 11,
         duration: std::time::Duration::from_secs(6),
         resource: cursor.media.clone(),
@@ -366,11 +370,12 @@ fn the_lookahead_wiring_aborts_through_the_shared_reducer_when_the_guard_is_arme
     let result = hls_prefetch_same_encoder_with(
         &mut cursor,
         n1.clone(),
-        crate::hls::SegmentTimeline::default(),
-        crate::hls::SegmentTimeline::default()
+        plx_play_feed::hls::SegmentTimeline::default(),
+        plx_play_feed::hls::SegmentTimeline::default()
             .begin(std::time::Duration::from_secs(0))
             .expect("fixture clock"),
-        Some(&controller),
+        Some(controller.current().at_floor()),
+        super::test_support::demux_observer(),
         |_segment, _clock, acquisition| {
             let armed = acquisition.stall().is_some();
             observed_armed = Some(armed);
@@ -430,10 +435,10 @@ fn the_lookahead_wiring_aborts_through_the_shared_reducer_when_the_guard_is_arme
 #[test]
 fn a_terminal_hold_aborts_only_an_incomplete_response() {
     let _serial = plx_base::testlock::serial();
-    crate::player::SHARED
+    FEED_SHARED
         .playpos_ns
         .store(5_000_000_000, std::sync::atomic::Ordering::Relaxed);
-    let guard = StallGuard::arm(6_000).expect("a live reserve arms");
+    let guard = StallGuard::arm(6_000, super::test_support::demux_observer()).expect("a live reserve arms");
     assert!(
         guard.should_abort(false, true),
         "B=0 with bytes remaining is terminal"
@@ -600,10 +605,6 @@ impl ScriptedPms {
         }
     }
 
-    fn release(&self) {
-        self.released.store(true, Ordering::Release);
-    }
-
     fn requests(&self) -> usize {
         self.requests.load(Ordering::Acquire)
     }
@@ -622,16 +623,16 @@ impl Drop for ScriptedPms {
     }
 }
 
-/// Restores every `SHARED` fact these tests publish, however the test leaves.
+/// Restores every `FEED_SHARED` fact these tests publish, however the test leaves.
 struct SharedHoldReset;
 
 impl SharedHoldReset {
     fn at(playpos_ns: i64) -> SharedHoldReset {
-        crate::player::SHARED
+        FEED_SHARED
             .playpos_ns
             .store(playpos_ns, Ordering::Relaxed);
-        SHARED.hls_rebuffering.store(false, Ordering::Release);
-        SHARED
+        FEED_SHARED.hls_rebuffering.store(false, Ordering::Release);
+        FEED_SHARED
             .hls_rebuffer_requested
             .store(false, Ordering::Release);
         SharedHoldReset
@@ -641,8 +642,8 @@ impl SharedHoldReset {
 impl Drop for SharedHoldReset {
     fn drop(&mut self) {
         acquisition::observe::unwatch();
-        SHARED.hls_rebuffering.store(false, Ordering::Release);
-        SHARED
+        FEED_SHARED.hls_rebuffering.store(false, Ordering::Release);
+        FEED_SHARED
             .hls_rebuffer_requested
             .store(false, Ordering::Release);
     }
@@ -650,8 +651,8 @@ impl Drop for SharedHoldReset {
 
 /// The main thread accepting its internal rebuffer hold: `hls_rebuffering` plus a new epoch.
 fn publish_accepted_hold() {
-    SHARED.hls_rebuffering.store(true, Ordering::Release);
-    SHARED
+    FEED_SHARED.hls_rebuffering.store(true, Ordering::Release);
+    FEED_SHARED
         .hls_internal_hold_epoch
         .fetch_add(1, Ordering::AcqRel);
 }
@@ -665,18 +666,18 @@ const PROMPT: std::time::Duration = std::time::Duration::from_millis(1_500);
 /// A leg deadline shorter than `CHECK_SLICE`: the transport ends on it without asking again.
 const SHORT_DEADLINE: std::time::Duration = std::time::Duration::from_millis(60);
 
-fn segment_on(port: u16) -> (crate::hls::Segment, crate::hls::InheritedAuth) {
+fn segment_on(port: u16) -> (plx_play_feed::hls::Segment, plx_play_feed::hls::InheritedAuth) {
     let origin = plx_plex::plex::Origin::http("127.0.0.1", i32::from(port));
-    let master = crate::hls::Resource {
+    let master = plx_play_feed::hls::Resource {
         origin: origin.clone(),
         path: "/video/:/transcode/universal/session/t/base/index.m3u8?X-Plex-Token=test-token"
             .to_string(),
     };
-    let auth = crate::hls::InheritedAuth::capture(&master).expect("fixture token pair");
-    let segment = crate::hls::Segment {
+    let auth = plx_play_feed::hls::InheritedAuth::capture(&master).expect("fixture token pair");
+    let segment = plx_play_feed::hls::Segment {
         sequence: 7,
         duration: std::time::Duration::from_secs(2),
-        resource: crate::hls::Resource {
+        resource: plx_play_feed::hls::Resource {
             origin,
             path: "/video/:/transcode/universal/session/t/base/00007.ts".to_string(),
         },
@@ -750,7 +751,7 @@ fn demux_against_when(
     acquisition::observe::watch_this_thread(answers_tx);
     let (segment, auth) = segment_on(pms.port);
     let mut hs = plx_net::stream::http_stream_boxed();
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let (hs_addr, aq_addr) = (
         &mut *hs as *mut HttpStream as usize,
         &mut *aq as *mut AuQueue as usize,
@@ -784,17 +785,20 @@ fn demux_against_when(
         let fired_at = *fired.lock().unwrap();
         let torn_down = done_rx.recv_timeout(TEARDOWN_AFTER).is_err();
         if torn_down {
-            crate::aq::aq_abort(aq_addr as *mut AuQueue);
+            plx_play_feed::aq::aq_abort(aq_addr as *mut AuQueue);
             plx_net::stream::http_shutdown(hs_addr as *mut HttpStream);
         }
         (fired_at, torn_down, seen)
     });
-    let mut clock = crate::hls::SegmentTimeline::default()
+    let mut clock = plx_play_feed::hls::SegmentTimeline::default()
         .begin(segment.duration)
         .expect("fixture clock");
     let mut net = HlsNet {
         hs: &mut *hs,
         curl: None,
+        range: crate::curlio::range_factory(),
+        credential_gate: crate::curlio::CREDENTIAL_GATE,
+        observer: super::test_support::demux_observer(),
     };
     let result = unsafe {
         hls_demux_segment(
@@ -813,7 +817,7 @@ fn demux_against_when(
     acquisition::observe::unwatch();
     pms.seen = Some(seen);
     plx_net::stream::http_close(&mut *hs);
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
     DemuxRun {
         result,
         after_trigger: fired_at.map(|at| returned_at.saturating_duration_since(at)),
@@ -859,7 +863,7 @@ fn a_hold_accepted_while_the_open_waits_for_headers_abandons_the_fetch() {
     let _serial = plx_base::testlock::serial();
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
     let mut pms = ScriptedPms::start(|_| Reply::Withhold);
-    let acquisition = SegmentAcquisition::for_test(Some(6_000), false, false);
+    let acquisition = SegmentAcquisition::for_test(Some(6_000), false, false, super::test_support::demux_observer());
     let run = demux_against(&mut pms, acquisition, publish_accepted_hold);
     assert_prompt_zero_byte_stall_abort(&run, "open, accepted hold");
 }
@@ -871,16 +875,16 @@ fn a_playhead_that_spends_the_reserve_during_the_open_abandons_the_fetch() {
     let _serial = plx_base::testlock::serial();
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
     let mut pms = ScriptedPms::start(|_| Reply::Withhold);
-    let acquisition = SegmentAcquisition::for_test(Some(2_000), false, false);
+    let acquisition = SegmentAcquisition::for_test(Some(2_000), false, false, super::test_support::demux_observer());
     fn spend_the_reserve() {
-        crate::player::SHARED
+        FEED_SHARED
             .playpos_ns
             .store(PLAYHEAD_NS + 2_000_000_000, Ordering::Relaxed);
     }
     let run = demux_against(&mut pms, acquisition, spend_the_reserve);
     assert_prompt_zero_byte_stall_abort(&run, "open, playhead spend");
     assert!(
-        SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
+        FEED_SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
         "the boundary still asks the main thread to hold the clock"
     );
 }
@@ -894,7 +898,7 @@ fn a_hold_accepted_during_the_not_ready_wait_abandons_the_fetch_without_another_
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
     let mut pms =
         ScriptedPms::start(|_| Reply::Send(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"));
-    let acquisition = SegmentAcquisition::for_test(Some(6_000), false, false);
+    let acquisition = SegmentAcquisition::for_test(Some(6_000), false, false, super::test_support::demux_observer());
     // Strictly inside the wait: after the runtime entered it AND answered its first Continue.
     let fire = Fire::AfterContinue(Phase::RetryWaiting, 1);
     let run = demux_against_when(&mut pms, acquisition, fire, publish_accepted_hold);
@@ -959,7 +963,7 @@ fn blocked_body_read_stalled(
         ),
         0,
     );
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let (hs_addr, aq_addr) = (
         &mut *hs as *mut HttpStream as usize,
         &mut *aq as *mut AuQueue as usize,
@@ -999,7 +1003,7 @@ fn blocked_body_read_stalled(
         }
         let torn_down = done_rx.recv_timeout(TEARDOWN_AFTER).is_err();
         if torn_down {
-            crate::aq::aq_abort(aq_addr as *mut AuQueue);
+            plx_play_feed::aq::aq_abort(aq_addr as *mut AuQueue);
             plx_net::stream::http_shutdown(hs_addr as *mut HttpStream);
         }
         assert!(
@@ -1016,7 +1020,7 @@ fn blocked_body_read_stalled(
     let latched = avio_stall_aborted(&state);
     drop(state);
     plx_net::stream::http_close(&mut *hs);
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
     let accepts = pms.accepts();
     drop(pms);
     BlockedRead {
@@ -1038,7 +1042,7 @@ fn a_hold_accepted_during_a_blocked_body_read_ends_that_read() {
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
     let run = blocked_body_read(
         Reply::SendThenWithhold(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nABCD"),
-        SegmentAcquisition::for_test(Some(6_000), false, false),
+        SegmentAcquisition::for_test(Some(6_000), false, false, super::test_support::demux_observer()),
         None,
         |_| {},
     );
@@ -1068,7 +1072,7 @@ fn a_stalled_observer_cannot_reorder_the_hold_against_the_runtimes_rechecks() {
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
     let run = blocked_body_read_stalled(
         Reply::SendThenWithhold(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nABCD"),
-        SegmentAcquisition::for_test(Some(6_000), false, false),
+        SegmentAcquisition::for_test(Some(6_000), false, false, super::test_support::demux_observer()),
         None,
         acquisition::CHECK_SLICE * 3,
         |_| {},
@@ -1093,7 +1097,7 @@ fn a_hold_before_a_body_reads_short_deadline_settles_as_a_stall_abort() {
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
     let run = blocked_body_read(
         Reply::SendThenWithhold(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nABCD"),
-        SegmentAcquisition::for_test(Some(6_000), false, false),
+        SegmentAcquisition::for_test(Some(6_000), false, false, super::test_support::demux_observer()),
         Some(SHORT_DEADLINE),
         |_| {},
     );
@@ -1115,7 +1119,7 @@ fn at_the_floor_a_body_reads_short_deadline_keeps_its_transport_classification()
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
     let run = blocked_body_read(
         Reply::SendThenWithhold(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nABCD"),
-        SegmentAcquisition::for_test(Some(6_000), true, false),
+        SegmentAcquisition::for_test(Some(6_000), true, false, super::test_support::demux_observer()),
         Some(SHORT_DEADLINE),
         |_| {},
     );
@@ -1126,7 +1130,7 @@ fn at_the_floor_a_body_reads_short_deadline_keeps_its_transport_classification()
     );
     assert!(!run.latched);
     assert!(
-        SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
+        FEED_SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
         "the hold was requested"
     );
 }
@@ -1139,17 +1143,17 @@ fn at_the_floor_a_blocked_body_read_asks_once_and_keeps_reading() {
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
     let run = blocked_body_read(
         Reply::PrefixThenRelease(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nABCD", b"EFGH"),
-        SegmentAcquisition::for_test(Some(6_000), true, false),
+        SegmentAcquisition::for_test(Some(6_000), true, false, super::test_support::demux_observer()),
         None,
         |released| {
             let asked_by = std::time::Instant::now() + std::time::Duration::from_secs(2);
-            while !SHARED.hls_rebuffer_requested.load(Ordering::Acquire)
+            while !FEED_SHARED.hls_rebuffer_requested.load(Ordering::Acquire)
                 && std::time::Instant::now() < asked_by
             {
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
             // Clear it: a second request would set it again.
-            if SHARED.hls_rebuffer_requested.swap(false, Ordering::AcqRel) {
+            if FEED_SHARED.hls_rebuffer_requested.swap(false, Ordering::AcqRel) {
                 released.store(true, Ordering::Release);
             }
         },
@@ -1166,7 +1170,7 @@ fn at_the_floor_a_blocked_body_read_asks_once_and_keeps_reading() {
         "then the sized body is complete"
     );
     assert!(
-        !SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
+        !FEED_SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
         "asked exactly once"
     );
     assert_eq!(run.accepts, 1, "one connection");
@@ -1187,7 +1191,7 @@ fn at_the_floor_the_not_ready_wait_asks_once_and_retries() {
             b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n"
         })
     });
-    let acquisition = SegmentAcquisition::for_test(Some(6_000), true, false);
+    let acquisition = SegmentAcquisition::for_test(Some(6_000), true, false, super::test_support::demux_observer());
     let fire = Fire::AfterContinue(Phase::RetryWaiting, 1);
     let run = demux_against_when(&mut pms, acquisition, fire, publish_accepted_hold);
     assert!(!run.torn_down, "{}", describe(&run.result));
@@ -1197,7 +1201,7 @@ fn at_the_floor_the_not_ready_wait_asks_once_and_retries() {
         describe(&run.result)
     );
     assert!(
-        SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
+        FEED_SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
         "the hold was requested"
     );
     assert_eq!(pms.requests(), 2, "the wait carried on into its retry");
@@ -1216,7 +1220,9 @@ fn a_hold_before_an_opens_short_deadline_settles_as_a_stall_abort() {
         Some(6_000),
         false,
         false,
-        ReserveDeadlineState::new(Some(std::time::Instant::now() + SHORT_DEADLINE), false),
+        ReserveDeadlineState::new(Some(std::time::Instant::now() + SHORT_DEADLINE), false,
+            super::test_support::demux_observer()),
+        super::test_support::demux_observer(),
     );
     let fire = Fire::AfterContinue(Phase::Opening, 1);
     let run = demux_against_when(&mut pms, acquisition, fire, publish_accepted_hold);
@@ -1234,7 +1240,9 @@ fn at_the_floor_an_opens_short_deadline_keeps_its_classification() {
         Some(6_000),
         true,
         false,
-        ReserveDeadlineState::new(Some(std::time::Instant::now() + SHORT_DEADLINE), false),
+        ReserveDeadlineState::new(Some(std::time::Instant::now() + SHORT_DEADLINE), false,
+            super::test_support::demux_observer()),
+        super::test_support::demux_observer(),
     );
     let fire = Fire::AfterContinue(Phase::Opening, 1);
     let run = demux_against_when(&mut pms, acquisition, fire, publish_accepted_hold);
@@ -1245,7 +1253,7 @@ fn at_the_floor_an_opens_short_deadline_keeps_its_classification() {
         describe(&run.result)
     );
     assert!(
-        SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
+        FEED_SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
         "the hold was requested"
     );
     assert_eq!(pms.requests(), 1);
@@ -1259,25 +1267,25 @@ fn at_the_floor_an_opens_short_deadline_keeps_its_classification() {
 fn a_zero_byte_abort_reaches_the_controller_as_an_abandoned_sample() {
     let _serial = plx_base::testlock::serial();
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
-    SHARED
+    FEED_SHARED
         .hls_video_tail_ns
         .store(PLAYHEAD_NS + 6_000_000_000, Ordering::Release);
-    SHARED.hls_audio_tail_ns.store(-1, Ordering::Release);
-    SHARED.disp_base.store(0, Ordering::Relaxed);
+    FEED_SHARED.hls_audio_tail_ns.store(-1, Ordering::Release);
+    FEED_SHARED.disp_base.store(0, Ordering::Relaxed);
     let pre_body = SegmentTransfer {
         bytes: 0,
         active_us: 0,
         total_us: 1,
         audio_expected: true,
     };
-    let master = crate::hls::Resource {
+    let master = plx_play_feed::hls::Resource {
         origin: plx_plex::plex::Origin::http("127.0.0.1", 32400),
         path: "/master.m3u8?X-Plex-Token=test-token".to_string(),
     };
     let cursor_at = |pending| HlsCursor {
         publishes_duration: true,
         declared_bps: 0,
-        auth: crate::hls::InheritedAuth::capture(&master).expect("fixture token pair"),
+        auth: plx_play_feed::hls::InheritedAuth::capture(&master).expect("fixture token pair"),
         media: master.clone(),
         tracker: Default::default(),
         pending,
@@ -1285,13 +1293,13 @@ fn a_zero_byte_abort_reaches_the_controller_as_an_abandoned_sample() {
         target_duration_secs: 6,
         start_applied: true,
     };
-    let segment = crate::hls::Segment {
+    let segment = plx_play_feed::hls::Segment {
         sequence: 11,
         duration: std::time::Duration::from_secs(6),
         resource: master.clone(),
     };
     let clock = || {
-        crate::hls::SegmentTimeline::default()
+        plx_play_feed::hls::SegmentTimeline::default()
             .begin(std::time::Duration::from_secs(0))
             .expect("fixture clock")
     };
@@ -1307,9 +1315,10 @@ fn a_zero_byte_abort_reaches_the_controller_as_an_abandoned_sample() {
     let lookahead_round = hls_prefetch_same_encoder_with(
         &mut lookahead,
         segment.clone(),
-        crate::hls::SegmentTimeline::default(),
+        plx_play_feed::hls::SegmentTimeline::default(),
         clock(),
-        Some(&controller),
+        Some(controller.current().at_floor()),
+        super::test_support::demux_observer(),
         |_, _, _| Err(HlsExit::StallAbort(pre_body)),
     )
     .expect("a StallAbort is a round, not an error")
@@ -1357,7 +1366,7 @@ fn at_the_floor_the_open_asks_for_the_hold_once_and_keeps_its_connection() {
     let (segment, auth) = segment_on(pms.port);
     let path = auth.request_path(&segment.resource).expect("fixture path");
     let mut hs = plx_net::stream::http_stream_boxed();
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let (hs_addr, aq_addr) = (
         &mut *hs as *mut HttpStream as usize,
         &mut *aq as *mut AuQueue as usize,
@@ -1370,7 +1379,7 @@ fn at_the_floor_the_open_asks_for_the_hold_once_and_keeps_its_connection() {
             publish_accepted_hold();
             // The worker's own request is the seam: release the headers once it has asked.
             let asked_by = std::time::Instant::now() + std::time::Duration::from_secs(2);
-            while !SHARED.hls_rebuffer_requested.load(Ordering::Acquire)
+            while !FEED_SHARED.hls_rebuffer_requested.load(Ordering::Acquire)
                 && std::time::Instant::now() < asked_by
             {
                 std::thread::sleep(std::time::Duration::from_millis(1));
@@ -1379,18 +1388,21 @@ fn at_the_floor_the_open_asks_for_the_hold_once_and_keeps_its_connection() {
         }
         let torn_down = done_rx.recv_timeout(TEARDOWN_AFTER).is_err();
         if torn_down {
-            crate::aq::aq_abort(aq_addr as *mut AuQueue);
+            plx_play_feed::aq::aq_abort(aq_addr as *mut AuQueue);
             plx_net::stream::http_shutdown(hs_addr as *mut HttpStream);
         }
         torn_down
     });
     let mut runtime = runtime_for(
-        SegmentAcquisition::for_test(Some(6_000), true, false),
+        SegmentAcquisition::for_test(Some(6_000), true, false, super::test_support::demux_observer()),
         &mut aq,
     );
     let mut net = HlsNet {
         hs: &mut *hs,
         curl: None,
+        range: crate::curlio::range_factory(),
+        credential_gate: crate::curlio::CREDENTIAL_GATE,
+        observer: super::test_support::demux_observer(),
     };
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     let opened = hls_open_source(
@@ -1409,7 +1421,7 @@ fn at_the_floor_the_open_asks_for_the_hold_once_and_keeps_its_connection() {
         .map_err(|e| format!("{e:?}"));
     drop(opened);
     plx_net::stream::http_close(&mut *hs);
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
 
     assert!(
         !torn_down,
@@ -1417,7 +1429,7 @@ fn at_the_floor_the_open_asks_for_the_hold_once_and_keeps_its_connection() {
     );
     assert_eq!(outcome, Ok(4), "the floor never abandons its only response");
     assert!(
-        SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
+        FEED_SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
         "the hold was requested"
     );
     assert!(!runtime.armed(), "asked once, then disarmed");
@@ -1429,15 +1441,15 @@ fn at_the_floor_the_open_asks_for_the_hold_once_and_keeps_its_connection() {
 fn a_floor_runtime_requests_the_hold_once_then_disarms() {
     let _serial = plx_base::testlock::serial();
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let mut runtime = runtime_for(
-        SegmentAcquisition::for_test(Some(6_000), true, false),
+        SegmentAcquisition::for_test(Some(6_000), true, false, super::test_support::demux_observer()),
         &mut aq,
     );
     publish_accepted_hold();
     assert!(!stops(&mut runtime));
     assert!(
-        SHARED.hls_rebuffer_requested.swap(false, Ordering::AcqRel),
+        FEED_SHARED.hls_rebuffer_requested.swap(false, Ordering::AcqRel),
         "asked once"
     );
     assert_eq!(
@@ -1446,10 +1458,10 @@ fn a_floor_runtime_requests_the_hold_once_then_disarms() {
         "disarmed: nothing left to check"
     );
     assert!(
-        !SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
+        !FEED_SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
         "and never asks twice"
     );
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
 }
 
 /// Candidates and already-held fetches carry no guard, so neither a hold nor a spent playhead can
@@ -1458,9 +1470,9 @@ fn a_floor_runtime_requests_the_hold_once_then_disarms() {
 fn unarmed_runtimes_never_stop_and_armed_ones_recheck_within_a_slice() {
     let _serial = plx_base::testlock::serial();
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let mut armed = runtime_for(
-        SegmentAcquisition::for_test(Some(60_000), false, false),
+        SegmentAcquisition::for_test(Some(60_000), false, false, super::test_support::demux_observer()),
         &mut aq,
     );
     let before = std::time::Instant::now();
@@ -1474,16 +1486,17 @@ fn unarmed_runtimes_never_stop_and_armed_ones_recheck_within_a_slice() {
         other => panic!("an armed runtime keeps asking: {other:?}"),
     }
     let mut candidate = runtime_for(
-        SegmentAcquisition::candidate(ReserveDeadlineState::new(None, false)),
+        SegmentAcquisition::candidate(ReserveDeadlineState::new(None, false,
+            super::test_support::demux_observer())),
         &mut aq,
     );
     let mut held = runtime_for(
-        SegmentAcquisition::for_test(Some(2_000), false, true),
+        SegmentAcquisition::for_test(Some(2_000), false, true, super::test_support::demux_observer()),
         &mut aq,
     );
     assert!(!candidate.armed() && !held.armed());
     publish_accepted_hold();
-    crate::player::SHARED
+    FEED_SHARED
         .playpos_ns
         .store(PLAYHEAD_NS + 60_000_000_000, Ordering::Relaxed);
     for (role, runtime) in [("candidate", &mut candidate), ("already held", &mut held)] {
@@ -1493,7 +1506,7 @@ fn unarmed_runtimes_never_stop_and_armed_ones_recheck_within_a_slice() {
             "{role}: never stops, never polls"
         );
     }
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
 }
 
 /// A hold accepted AND released between two checks still moved the epoch: it is seen.
@@ -1501,18 +1514,18 @@ fn unarmed_runtimes_never_stop_and_armed_ones_recheck_within_a_slice() {
 fn a_hold_that_came_and_went_between_checks_is_still_seen() {
     let _serial = plx_base::testlock::serial();
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let mut runtime = runtime_for(
-        SegmentAcquisition::for_test(Some(6_000), false, false),
+        SegmentAcquisition::for_test(Some(6_000), false, false, super::test_support::demux_observer()),
         &mut aq,
     );
     assert!(!stops(&mut runtime));
     publish_accepted_hold();
-    SHARED.hls_rebuffering.store(false, Ordering::Release);
+    FEED_SHARED.hls_rebuffering.store(false, Ordering::Release);
     assert!(stops(&mut runtime), "the epoch moved since arming");
     assert!(runtime.stall_aborted());
     assert!(stops(&mut runtime), "and the stop is latched");
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
 }
 
 /// A sized body whose every byte arrived is credited, whatever arrives after; an unsized body is
@@ -1521,8 +1534,8 @@ fn a_hold_that_came_and_went_between_checks_is_still_seen() {
 fn a_completed_body_outranks_a_later_hold_and_an_unsized_one_needs_its_end() {
     let _serial = plx_base::testlock::serial();
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
-    let mut aq = crate::aq::aq_new(1 << 20);
-    let armed = || SegmentAcquisition::for_test(Some(6_000), false, false);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
+    let armed = || SegmentAcquisition::for_test(Some(6_000), false, false, super::test_support::demux_observer());
     let mut sized = runtime_for(armed(), &mut aq);
     let mut unsized_open = runtime_for(armed(), &mut aq);
     let mut unsized_ended = runtime_for(armed(), &mut aq);
@@ -1539,7 +1552,7 @@ fn a_completed_body_outranks_a_later_hold_and_an_unsized_one_needs_its_end() {
         stops(&mut unsized_open),
         "an unsized body without its end is not complete"
     );
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
 }
 
 /// Teardown outranks a simultaneous hold: the fetch ends as `Aborted`, never as recovery evidence.
@@ -1547,17 +1560,17 @@ fn a_completed_body_outranks_a_later_hold_and_an_unsized_one_needs_its_end() {
 fn teardown_outranks_a_simultaneous_hold() {
     let _serial = plx_base::testlock::serial();
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let mut runtime = runtime_for(
-        SegmentAcquisition::for_test(Some(6_000), false, false),
+        SegmentAcquisition::for_test(Some(6_000), false, false, super::test_support::demux_observer()),
         &mut aq,
     );
     publish_accepted_hold();
-    crate::aq::aq_abort(&mut *aq);
+    plx_play_feed::aq::aq_abort(&mut *aq);
     assert!(stops(&mut runtime));
     assert!(!runtime.stall_aborted(), "teardown latched first");
     assert!(matches!(runtime.stopped_exit(true), Some(HlsExit::Aborted)));
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
 }
 
 /// The retry wait keeps its original end across rechecks, and a stop ends it at once.
@@ -1570,7 +1583,7 @@ fn teardown_outranks_a_simultaneous_hold() {
 /// exactly four times, three that continue and the stop.
 #[test]
 fn the_retry_wait_keeps_its_end_across_rechecks_and_ends_on_a_stop() {
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let wait = std::time::Duration::from_millis(120);
     let mut rechecking =
         plx_base::checkpoint::TestCheckpoint::every(std::time::Duration::from_millis(10));
@@ -1597,7 +1610,7 @@ fn the_retry_wait_keeps_its_end_across_rechecks_and_ends_on_a_stop() {
         4,
         "the wait re-asked as its checks fell due: three that continued, then the stop"
     );
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
 }
 
 // -- a body the transport already HOLDS is complete, whatever FFmpeg has read ----------------
@@ -1688,7 +1701,7 @@ fn read_across_a_hold_with_the_body(
         }
     });
 
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let mut hs = plx_net::stream::http_stream_boxed();
     let src = match transport {
         HeldTransport::Socket => {
@@ -1725,7 +1738,7 @@ fn read_across_a_hold_with_the_body(
         src,
         &mut *aq,
         8,
-        SegmentAcquisition::for_test(Some(6_000), false, false),
+        SegmentAcquisition::for_test(Some(6_000), false, false, super::test_support::demux_observer()),
     );
     let op = &mut state as *mut AvioState as *mut c_void;
     let mut dst = [0u8; 4];
@@ -1743,7 +1756,7 @@ fn read_across_a_hold_with_the_body(
     drop(state);
     let _ = finish.send(());
     plx_net::stream::http_close(&mut *hs);
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
     server.join().expect("loopback server");
     Some(HeldBodyRead {
         second,
@@ -1868,12 +1881,12 @@ fn transfer_work_a_receipt_takes_is_counted_in_body_time() {
     // completion query is the one that steps curl's `perform` (`stepped == true`) rather than
     // finding bytes already waiting in the transfer buffer.
     std::thread::sleep(std::time::Duration::from_millis(100));
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let mut state = avio_state_for(
         Src::Curl(cs),
         &mut *aq,
         BODY as i64,
-        SegmentAcquisition::for_test(Some(6_000), false, false),
+        SegmentAcquisition::for_test(Some(6_000), false, false, super::test_support::demux_observer()),
     );
     let op = &mut state as *mut AvioState as *mut c_void;
     let mut dst = [0u8; 4];
@@ -1888,7 +1901,7 @@ fn transfer_work_a_receipt_takes_is_counted_in_body_time() {
          whole of body_active_us, exactly",
     );
     drop(state);
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
     server.join().expect("loopback server");
 }
 
@@ -1921,7 +1934,7 @@ fn a_non_stepping_receipt_contributes_nothing_only_the_read_does() {
         socket.flush().expect("flush");
         std::thread::sleep(std::time::Duration::from_millis(200));
     });
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let mut hs = plx_net::stream::http_stream_boxed();
     let host = CString::new("127.0.0.1").unwrap();
     let path = CString::new("/segment.ts").unwrap();
@@ -1946,7 +1959,7 @@ fn a_non_stepping_receipt_contributes_nothing_only_the_read_does() {
         src,
         &mut *aq,
         8,
-        SegmentAcquisition::for_test(Some(6_000), false, false),
+        SegmentAcquisition::for_test(Some(6_000), false, false, super::test_support::demux_observer()),
     );
     let op = &mut state as *mut AvioState as *mut c_void;
     let mut dst = [0u8; 4];
@@ -1959,7 +1972,7 @@ fn a_non_stepping_receipt_contributes_nothing_only_the_read_does() {
     );
     drop(state);
     plx_net::stream::http_close(&mut *hs);
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
     server.join().expect("loopback server");
 }
 
@@ -1982,12 +1995,12 @@ fn a_failed_read_credits_nothing_and_its_settlement_receipt_is_credited_once() {
     let pms = ScriptedPms::start(|_| REPLY.lock().unwrap().expect("scripted reply"));
     let cs = crate::curlio::CurlSource::open(&format!("http://127.0.0.1:{}/segment.ts", pms.port), 0)
         .expect("fixture: the open must succeed");
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let mut state = avio_state_for(
         Src::Curl(cs),
         &mut *aq,
         8,
-        SegmentAcquisition::for_test(Some(6_000), false, false),
+        SegmentAcquisition::for_test(Some(6_000), false, false, super::test_support::demux_observer()),
     );
     let op = &mut state as *mut AvioState as *mut c_void;
     let mut dst = [0u8; 4];
@@ -2019,7 +2032,7 @@ fn a_failed_read_credits_nothing_and_its_settlement_receipt_is_credited_once() {
          the failed read itself must credit nothing beyond them",
     );
     drop(state);
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
     drop(pms);
 }
 
@@ -2036,7 +2049,10 @@ fn avio_state_for(
     let (reserve_deadline, mut runtime) = acquisition.begin(aq);
     runtime.enter(Phase::Body);
     AvioState {
+        observer: super::test_support::demux_observer(),
         src,
+        range: crate::curlio::range_factory(),
+        credential_gate: crate::curlio::CREDENTIAL_GATE,
         aq,
         off: 0,
         size,
@@ -2050,6 +2066,7 @@ fn avio_state_for(
         bounce: Vec::new(),
         bounce_pos: 0,
         parked_at_end: false,
+        body_silence: super::test_support::fixture_body_silence(),
         heal: HealBudget::default(),
     }
 }
@@ -2067,5 +2084,9 @@ fn demux_loop_sample(
     duration: std::time::Duration,
     fetch_abandoned: bool,
 ) -> Option<crate::abr::SegmentSample> {
-    hls_round_sample(output, duration, fetch_abandoned)
+    crate::adaptive::active_sample(
+        hls_acquisition(output, duration, 0),
+        hls_buffer_fact(super::test_support::demux_observer().as_ref(), Some(output))?,
+        fetch_abandoned,
+    )
 }

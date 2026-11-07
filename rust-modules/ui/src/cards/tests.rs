@@ -1748,10 +1748,7 @@ fn a_grid_restore_after_dormant_ticks_arrives_popped_and_a_deliberate_move_still
 fn left_lifted() -> Rig<Grid> {
     let mut r = Rig::<Grid>::new(4 * poster_grid::COLS);
     r.src.captioned = true;
-    r.sect.set_caption_policy(Some(crate::caption_policy::CaptionPolicy {
-        title: true,
-        details: crate::caption_policy::DetailsKind::YearLength,
-    }));
+    r.sect.set_caption_policy(Some(crate::caption_policy::CaptionPolicy::same(true, crate::caption_policy::DetailParts::MOVIE_DEFAULT)));
     r.run(2);
     r.land_focus(100, By::Dir);
     r.run(200);
@@ -1789,10 +1786,7 @@ fn a_grid_that_returns_under_a_held_image_keeps_its_seat_lifted_and_its_caption_
         };
         if !covered {
             r.src.captioned = true;
-            r.sect.set_caption_policy(Some(crate::caption_policy::CaptionPolicy {
-                title: true,
-                details: crate::caption_policy::DetailsKind::YearLength,
-            }));
+            r.sect.set_caption_policy(Some(crate::caption_policy::CaptionPolicy::same(true, crate::caption_policy::DetailParts::MOVIE_DEFAULT)));
         }
         r.sect.dormant(true);
         r.feed(ScreenEvent::Enter(Enter::Restored));
@@ -1969,10 +1963,7 @@ fn a_dormant_seats_caption_opens_with_its_lift_and_never_before_it() {
     let full = RowStyle::HOME.focus_scale;
     let mut r = Rig::<Grid>::new(4 * cols);
     r.src.captioned = true;
-    r.sect.set_caption_policy(Some(crate::caption_policy::CaptionPolicy {
-        title: true,
-        details: crate::caption_policy::DetailsKind::YearLength,
-    }));
+    r.sect.set_caption_policy(Some(crate::caption_policy::CaptionPolicy::same(true, crate::caption_policy::DetailParts::MOVIE_DEFAULT)));
     r.run(2);
     // the caption of card 0 on the frame the grid last drew
     let caption = |r: &Rig<Grid>| -> f32 {
@@ -2009,10 +2000,7 @@ fn a_dormant_seats_caption_opens_with_its_lift_and_never_before_it() {
 /// frame is painted before any tile.
 #[test]
 fn captions_are_painted_beneath_every_tile() {
-    let policy = crate::caption_policy::CaptionPolicy {
-        title: true,
-        details: crate::caption_policy::DetailsKind::YearLength,
-    };
+    let policy = crate::caption_policy::CaptionPolicy::same(true, crate::caption_policy::DetailParts::MOVIE_DEFAULT);
     let mut r = Rig::<Grid>::new(4 * poster_grid::COLS);
     r.src.captioned = true;
     r.sect.set_caption_policy(Some(policy));
@@ -4931,15 +4919,15 @@ struct RowFrame {
 fn shape_captions(src: &mut Cards, policy: Option<crate::caption_policy::CaptionPolicy>) {
     src.captioned = true;
     if let Some(policy) = policy {
-        src.title_only = policy.details == crate::caption_policy::DetailsKind::None;
+        src.title_only = policy.details == crate::caption_policy::DetailParts::NONE;
         src.details_only = !policy.title;
     }
 }
 
 const BOTH_LINES: crate::caption_policy::CaptionPolicy =
-    crate::caption_policy::CaptionPolicy { title: true, details: crate::caption_policy::DetailsKind::YearLength };
+    crate::caption_policy::CaptionPolicy::same(true, crate::caption_policy::DetailParts::MOVIE_DEFAULT);
 const TITLE_ONLY: crate::caption_policy::CaptionPolicy =
-    crate::caption_policy::CaptionPolicy { title: true, details: crate::caption_policy::DetailsKind::None };
+    crate::caption_policy::CaptionPolicy::same(true, crate::caption_policy::DetailParts::NONE);
 
 /// A grid of `rows` rows of captioned cards under `policy`, focus seated on card 0 with its band open.
 fn captioned_grid(rows: usize, policy: Option<crate::caption_policy::CaptionPolicy>) -> Rig<Grid> {
@@ -5188,7 +5176,7 @@ fn a_shelf_told_nothing_about_the_heading_below_does_reach_it() {
 /// block: the room never holds a line's box, and a block folded over no lines is not a pass.
 #[test]
 fn a_shelf_with_a_band_of_zero_draws_no_caption_line() {
-    let none = crate::caption_policy::CaptionPolicy { title: false, details: crate::caption_policy::DetailsKind::None };
+    let none = crate::caption_policy::CaptionPolicy::same(false, crate::caption_policy::DetailParts::NONE);
     let mut a = Rig::<Shelf>::new(6);
     a.sect.set_caption_policy(Some(none));
     a.src.captioned = true;
@@ -5303,7 +5291,7 @@ fn a_down_hands_the_caption_over_from_the_key_frame_and_the_arrival_waits_for_it
 /// or a headshot row (Search's Episode and Person rows, Detail's Extras) reads it.
 #[test]
 fn a_shelf_reserves_and_reveals_the_band_its_caption_policy_asks_for() {
-    use crate::caption_policy::{band_h, CaptionPolicy, DetailsKind};
+    use crate::caption_policy::{band_h, CaptionPolicy, DetailPart, DetailParts};
     let settled_under_band = |policy: Option<CaptionPolicy>| {
         let mut r = Rig::<Shelf>::new(6);
         r.sect.set_caption_policy(policy);
@@ -5314,9 +5302,9 @@ fn a_shelf_reserves_and_reveals_the_band_its_caption_policy_asks_for() {
         let whole = r.src.label(0).revealed(r.sect.band_h(), r.sect.band_expand(), 0.0);
         (r.sect.under_band(), r.sect.band_h(), whole.lines().iter().flatten().map(|l| l.alpha).fold(1.0, f32::min))
     };
-    for (title, details, tall) in [(false, DetailsKind::None, 0.0), (false, DetailsKind::Genre, 80.0),
-        (true, DetailsKind::YearLength, 112.0), (true, DetailsKind::None, 80.0)] {
-        let policy = CaptionPolicy { title, details };
+    for (title, details, tall) in [(false, DetailParts::NONE, 0.0), (false, DetailParts::of(&[DetailPart::Genre]), 80.0),
+        (true, DetailParts::MOVIE_DEFAULT, 112.0), (true, DetailParts::NONE, 80.0)] {
+        let policy = CaptionPolicy::same(title, details);
         let (under, h, reveal) = settled_under_band(Some(policy));
         assert_eq!(h, tall, "title {title}, details {details:?}: the shelf's band is the policy's");
         assert_eq!(h, band_h(&policy));
@@ -5336,9 +5324,9 @@ fn a_shelf_reserves_and_reveals_the_band_its_caption_policy_asks_for() {
 /// reserves [`card_row::LEGACY_BAND_H`], not the stored setting's 80 / 40 px.
 #[test]
 fn a_grid_taken_off_the_policy_keeps_the_legacy_band() {
-    use crate::caption_policy::{band_h, CaptionPolicy, DetailsKind};
+    use crate::caption_policy::{band_h, CaptionPolicy, DetailParts};
     let mut r = Rig::<Grid>::new(2 * poster_grid::COLS);
-    let silent = CaptionPolicy { title: false, details: DetailsKind::None };
+    let silent = CaptionPolicy::same(false, DetailParts::NONE);
     r.sect.set_caption_policy(Some(silent));
     assert_eq!(r.sect.band_h(), band_h(&silent));
     r.sect.set_caption_policy(None);

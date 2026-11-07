@@ -8,7 +8,9 @@
 //! score, length, season and episode counts) is the MATCHED COPY's, as the guid lookup's row said it
 //! ([`ListingFacts`]), so a playable title reads like any poster and one with no copy falls to its year.
 //! An unplayable title's state sentence (below) REPLACES the details line whenever the setting shows
-//! one: with Details set to Nothing the sentence is dropped with the details line (and the band is not opened when the Title switch is Off).
+//! one, **and with no part ticked it still shows** (the tile says nothing in words, so the sentence is
+//! the tile's own: [`crate::registry::captions::label_with_states`]); the band opens for it
+//! ([`band_policy`]), a title with no state and no part having an empty second line.
 //!
 //! A playable title reads like any poster under the setting (its copy's year and length, genre, stream or age
 //! rating and score), and falls to its year when it has no copy. An unplayable title carries its state as
@@ -48,6 +50,10 @@ pub fn state_sentence(state: TileState, release: Option<&str>) -> Option<String>
 /// poster shelf reads ([`crate::registry::captions::policy`]).
 pub fn policy() -> CaptionPolicy { crate::registry::captions::policy() }
 
+/// The policy the focused band is reserved by: the setting's, with the status sentence counted as a
+/// details line under an empty set of parts ([`crate::registry::captions::status_policy`]).
+pub fn band_policy() -> CaptionPolicy { crate::registry::captions::status_policy(&policy()) }
+
 /// The focused tile's label under `policy`: `[title, details]` as the setting words them, the
 /// details line being the state sentence when the title has one. `copy` is what the matched copy's
 /// lookup row says of the title (default: no copy, or a row that said nothing).
@@ -69,5 +75,5 @@ pub fn label(row: &WatchRow, state: TileState, policy: &CaptionPolicy, copy: &Li
         season_count: copy.season_count,
         ..Default::default()
     };
-    crate::registry::captions::label(policy, &facts, state_sentence(state, row.release.as_deref()), false)
+    crate::registry::captions::label_with_states(policy, &facts, state_sentence(state, row.release.as_deref()), false)
 }

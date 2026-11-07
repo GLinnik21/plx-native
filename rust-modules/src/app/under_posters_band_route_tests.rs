@@ -7,7 +7,7 @@
 
 use super::test_support::World;
 use super::under_posters_shelf_route_tests::{set, Cell};
-use plx_plex::plex::session::UnderPostersDetails as Details;
+use plx_plex::plex::session::UnderPostersLadder as Details;
 
 pub(super) const PICKERS: [Details; 5] =
     [Details::YearLength, Details::Genre, Details::Video, Details::AgeRatingScore, Details::None];
@@ -60,12 +60,23 @@ fn grade_grid_bands(w: &mut World, surface: &str) {
             .unwrap_or_else(|| panic!("{surface}: premise: the grid holds a second row"))
     };
     let gap = |w: &World| below(w).y - (w.poster_cell(0).y + w.poster_cell(0).h);
+    // The Watchlist's tiles carry their own status words, so its band is reserved by
+    // `captions::status_policy`: an empty set of parts still opens the one line the status takes
+    // (`Nothing` opens 40 px, two lines 72 with the Title On), never the closed band of the others.
+    let status = surface == "Watchlist";
     set(w, false, Details::None);
-    let closed = gap(w);
+    let closed = gap(w) - if status { 40.0 } else { 0.0 };
     for (title, details, band, want) in [(true, Details::YearLength, 112.0, 72.0), (false, Details::YearLength, 80.0, 40.0),
         (true, Details::None, 80.0, 40.0), (false, Details::None, 0.0, 0.0)] {
+        // an empty set on the Watchlist: the status line is the details line (112 / 72 with the title, 80 / 40 without)
+        let (band, want) = match (status && details == Details::None, title) {
+            (true, true) => (112.0, 72.0),
+            (true, false) => (80.0, 40.0),
+            _ => (band, want),
+        };
         set(w, title, details);
-        let policy: CaptionPolicy = caption_policy_of(plx_plex::plex::session::UnderPosters { title, details, sort_value: false });
+        let mut policy: CaptionPolicy = caption_policy_of(plx_plex::plex::session::UnderPosters { title, details: details.movie_parts(), show_details: details.show_parts(), sort_value: false });
+        if status { policy = plx_screens::registry::captions::status_policy(&policy); }
         assert_eq!(band_h(&policy), band, "{surface}: premise: the policy's band");
         let (card, next) = (w.poster_cell(0), below(w));
         let opened = gap(w) - closed;
@@ -74,7 +85,10 @@ fn grade_grid_bands(w: &mut World, surface: &str) {
         let under: Vec<_> = drawn.runs.iter()
             .filter(|run| run.at.y >= card.y + card.h && run.at.y < next.y && run.at.x < card.x + card.w && run.at.x + run.at.w > card.x)
             .collect();
-        assert_eq!(!under.is_empty(), band > 0.0, "{surface}: premise: the focused poster draws a caption exactly when a band is open ({title}, {details:?})");
+        // (the Watchlist's focused first tile has no status, so under an empty set its open band holds no line)
+        if !(status && details == Details::None && !title) {
+            assert_eq!(!under.is_empty(), band > 0.0, "{surface}: premise: the focused poster draws a caption exactly when a band is open ({title}, {details:?})");
+        }
         for line in under {
             assert!(line.at.y + line.at.h.max(line.size as f32) <= next.y,
                 "{surface}: {:?} ends under the next row (title {title}, {details:?})", line.text);
@@ -168,10 +182,10 @@ fn grade_shelf_bands(w: &mut World, surface: &str, focused: &str, next: &str, de
     };
     let closed = pitch(w, false, Details::None);
     let effective = |policy: CaptionPolicy| if deck { plx_screens::registry::captions::deck_policy(&policy) } else { policy };
-    let baseline = band_open_for(band_h(&effective(caption_policy_of(plx_plex::plex::session::UnderPosters { title: false, details: Details::None, sort_value: false }))));
+    let baseline = band_open_for(band_h(&effective(caption_policy_of(plx_plex::plex::session::UnderPosters { title: false, details: Details::None.movie_parts(), show_details: Details::None.show_parts(), sort_value: false }))));
     for (title, details, band, grows) in [(true, Details::YearLength, 112.0, 72.0), (false, Details::YearLength, 80.0, 40.0),
         (true, Details::None, 80.0, 40.0), (false, Details::None, 0.0, 0.0), (true, Details::Genre, 112.0, 72.0)] {
-        let policy: CaptionPolicy = caption_policy_of(plx_plex::plex::session::UnderPosters { title, details, sort_value: false });
+        let policy: CaptionPolicy = caption_policy_of(plx_plex::plex::session::UnderPosters { title, details: details.movie_parts(), show_details: details.show_parts(), sort_value: false });
         assert_eq!(band_h(&policy), band, "{surface}: premise: the policy's band for title {title}, {details:?}");
         assert!((band_open_for(band) - grows).abs() < 0.5, "{surface}: premise: the layout's growth for a {band} band");
         let (band, grows) = (band_h(&effective(policy)), band_open_for(band_h(&effective(policy))) - baseline);

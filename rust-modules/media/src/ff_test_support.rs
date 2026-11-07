@@ -1,58 +1,112 @@
 //! Shared fixtures and helpers for the `ff` test modules split out below.
 
+use plx_play_feed::shared::{FEED_SHARED, FEED_TX};
 use super::*;
 
-/// Build a length-prefixed (AVCC-style) packet: 4-byte big-endian length + payload, repeated.
-pub(super) fn avcc(nals: &[&[u8]]) -> Vec<u8> {
-    let mut v = Vec::new();
-    for n in nals {
-        v.extend_from_slice(&(n.len() as u32).to_be_bytes());
-        v.extend_from_slice(n);
+struct FixtureDemuxObserver;
+
+impl DemuxObserver for FixtureDemuxObserver {
+    fn attempt(&self) -> plx_playback_contract::AttemptId {
+        plx_playback_contract::AttemptId::new(0, 0)
     }
-    v
+    fn with_active(&self, f: &mut dyn FnMut()) -> bool { f(); true }
+    fn playpos_ns(&self) -> Option<i64> { Some(FEED_SHARED.playpos_ns.load(Ordering::Relaxed)) }
+    fn caption_retention(&self) -> Option<plx_playback_contract::subtitle::CaptionRetention> {
+        let seeking = FEED_SHARED.seeking.load(Ordering::Acquire);
+        let target = FEED_SHARED.seek_display_ns.load(Ordering::Relaxed);
+        Some(plx_playback_contract::subtitle::CaptionRetention {
+            playhead_ns: Some(FEED_SHARED.playpos_ns.load(Ordering::Relaxed)),
+            seek_target_ns: (seeking && target >= 0).then_some(target),
+        })
+    }
+    fn hold_epoch(&self) -> Option<u64> {
+        Some(FEED_SHARED.hls_internal_hold_epoch.load(Ordering::Acquire))
+    }
+    fn rebuffering(&self) -> Option<bool> {
+        Some(FEED_SHARED.hls_rebuffering.load(Ordering::Acquire))
+    }
+    fn audio_expected(&self) -> Option<bool> {
+        Some(FEED_SHARED.hls_audio_expected.load(Ordering::Acquire))
+    }
+    fn duration_ns(&self) -> Option<i64> {
+        Some(FEED_SHARED.duration_ns.load(Ordering::Relaxed))
+    }
+    fn declared_video_code(&self) -> Option<u8> {
+        Some(FEED_SHARED.dg_load_v.load(Ordering::Relaxed))
+    }
+    fn paused(&self) -> Option<bool> { Some(FEED_TX.paused.load(Ordering::Acquire)) }
+    fn pause_clock(&self) -> Option<plx_playback_contract::demux::PauseClock> {
+        let (at, elapsed) = FEED_TX.pause_clock_sample();
+        Some(plx_playback_contract::demux::PauseClock { at, elapsed })
+    }
+    fn hls_buffer_ms(&self) -> Option<Option<i64>> {
+        Some(hls_buffer_fact_at(self.hls_buffer_clocks()?, None).buffered_ms())
+    }
+    fn hls_buffer_clocks(&self) -> Option<plx_playback_contract::demux::HlsBufferClocks> {
+        Some(plx_playback_contract::demux::HlsBufferClocks {
+            playhead_ns: FEED_SHARED.playpos_ns.load(Ordering::Relaxed),
+            video_tail_ns: FEED_SHARED.hls_video_tail_ns.load(Ordering::Acquire),
+            audio_tail_ns: FEED_SHARED.hls_audio_tail_ns.load(Ordering::Acquire),
+            display_base_ns: FEED_SHARED.disp_base.load(Ordering::Relaxed),
+        })
+    }
+    fn remaining_playback_ms(&self) -> Option<i64> {
+        let duration = FEED_SHARED.duration_ns.load(Ordering::Relaxed);
+        Some(if duration <= 0 { 0 } else {
+            (duration - FEED_SHARED.playpos_ns.load(Ordering::Relaxed).max(0)).max(0) / 1_000_000
+        })
+    }
+    fn user_sequence(&self) -> Option<u64> { Some(FEED_SHARED.hls_user_sequence()) }
+    fn publish(&self, effect: DemuxCallbackEffect) -> bool {
+        match effect {
+            DemuxCallbackEffect::NetworkBytes(bytes) => {
+                FEED_SHARED.dg_net_rx.fetch_add(bytes, Ordering::Relaxed);
+            }
+            DemuxCallbackEffect::HttpStatus(status) =>
+                FEED_SHARED.dg_http_status.store(status, Ordering::Relaxed),
+            DemuxCallbackEffect::FileSize(size) =>
+                FEED_SHARED.file_size.store(size, Ordering::Release),
+            DemuxCallbackEffect::DurationNs(ns) =>
+                FEED_SHARED.duration_ns.store(ns, Ordering::Relaxed),
+            DemuxCallbackEffect::TransportFailure { rc, age_ms, reopen_failed } => {
+                FEED_SHARED.dg_transport_rc.store(rc, Ordering::Release);
+                FEED_SHARED.dg_transport_age_ms.store(age_ms, Ordering::Release);
+                FEED_SHARED.dg_transport_reopen_failed.store(reopen_failed, Ordering::Release);
+                FEED_SHARED.demux_io_failed.store(true, Ordering::Release);
+            }
+            DemuxCallbackEffect::IoFailed =>
+                FEED_SHARED.demux_io_failed.store(true, Ordering::Release),
+            DemuxCallbackEffect::RequestTerminalHold => {
+                FEED_SHARED.hls_rebuffer_request_tail_ns.store(
+                    FEED_SHARED.hls_video_tail_ns.load(Ordering::Acquire), Ordering::Release,
+                );
+                FEED_SHARED.hls_rebuffer_requested.store(true, Ordering::Release);
+            }
+        }
+        true
+    }
 }
 
-pub(super) fn to_annexb(buf: &[u8], is_hevc: bool, param: &[u8]) -> (bool, Vec<u8>) {
-    let mut out = Vec::new();
-    let key =
-        unsafe { packet_to_annexb(buf.as_ptr(), buf.len(), 4, is_hevc, false, false, param, &mut out) };
-    (key, out)
+pub(super) fn demux_observer() -> Arc<dyn DemuxObserver> {
+    Arc::new(FixtureDemuxObserver)
 }
 
-/// [`to_annexb`] for an H.264 packet the container flags as a keyframe (`AV_PKT_FLAG_KEY`).
-pub(super) fn to_annexb_flagged(buf: &[u8], param: &[u8]) -> (bool, Vec<u8>) {
-    let mut out = Vec::new();
-    let key = unsafe { packet_to_annexb(buf.as_ptr(), buf.len(), 4, false, false, true, param, &mut out) };
-    (key, out)
+pub(super) fn with_demux_session<R>(run: impl FnOnce(Box<dyn DemuxSession>) -> R) -> R {
+    let epoch = FEED_SHARED.begin_native_session().expect("fixture owns native epoch");
+    struct Retire(u32);
+    impl Drop for Retire {
+        fn drop(&mut self) { FEED_SHARED.retire_native_session(self.0); }
+    }
+    let _retire = Retire(epoch);
+    run(crate::player::demux_session::capture(
+        plx_playback_contract::AttemptId::new(0, u64::from(epoch)), epoch,
+    ))
 }
 
-/// [`to_annexb`] for an HEVC stream with the Dolby Vision Profile 7 -> 8.1 conversion armed.
-pub(super) fn to_annexb_p7(buf: &[u8], param: &[u8]) -> (bool, Vec<u8>) {
-    let mut out = Vec::new();
-    let key = unsafe { packet_to_annexb(buf.as_ptr(), buf.len(), 4, true, true, false, param, &mut out) };
-    (key, out)
-}
-
-/// One of `tests/fixtures/dovi-p7-*-rpu.bin` (an RPU as `dovi_tool` writes it: a 4-byte start
-/// code, then the payload after the `7C 01` NAL header) as the `UNSPEC62` NAL a demuxed packet
-/// carries.
-pub(super) fn rpu_fixture_nal(file: &[u8]) -> Vec<u8> {
-    assert_eq!(&file[..4], &[0, 0, 0, 1], "a dovi_tool RPU file starts with a start code");
-    let mut nal = vec![0x7C, 0x01];
-    nal.extend_from_slice(&file[4..]);
-    nal
-}
-
-// -- parse_dovi_conf: the Dolby Vision configuration record ---------------------------
-//
-// The record is nine plain bytes, so these fixtures ARE the wire format — no builder, no
-// FFmpeg. That is the point: `dovi_conf`'s pointer walk cannot be host-tested (dlopen returns
-// None on Darwin, so a test naming it would pass without executing one line of it), but the
-// parse is where a field could be transposed, and the parse is pure.
-
-/// The nine bytes as the header lays them out, so a fixture reads like the spec table.
-pub(super) fn dovi_bytes(profile: u8, level: u8, rpu: u8, el: u8, bl: u8, compat: u8) -> Vec<u8> {
-    vec![1, 0, profile, level, rpu, el, bl, compat, 0]
+/// Short, explicit silence budget for loopback AVIO fixtures. Production AVIO
+/// captures its own 15-second budget when the worker is constructed.
+pub(super) fn fixture_body_silence() -> std::time::Duration {
+    std::time::Duration::from_millis(400)
 }
 
 // -- the AVIO callbacks under teardown -------------------------------------------------
@@ -62,105 +116,7 @@ pub(super) fn dovi_bytes(profile: u8, level: u8, rpu: u8, el: u8, bl: u8, compat
 // (an HttpStream, an AuQueue, two CStrings, three integers) is ordinary Rust. So long as a
 // test stays off `av_*`, the callbacks link and run here exactly as they do on the TV.
 
-/// A loopback PMS stand-in that COUNTS both accepted connections and requests served — the
-/// observables that matter, since "did the callback go back to the server" is the whole
-/// question and no return value can answer it.
-///
-/// **Why two counters.** Sequential HLS/media GETs now reuse a keep-alive fd, so a new
-/// request is no longer a new connection. The accept count still answers "did we dial",
-/// which is what teardown and Range-seek tests care about (`seek_cb` still `http_close`s
-/// first). libcurl keeps the connection in its multi handle's cache; HLS HTTPS now holds
-/// that multi across playlist and segment URLs. The request count is what moves when reuse
-/// works.
-///
-/// Each connection gets its own handler thread and is served keep-alive; the accept count is
-/// bumped BEFORE the reply is written, so it is already final by the time any `http_open`
-/// against this listener can return — every assertion below is causally ordered behind that,
-/// and needs no sleep and no timing margin.
-pub(super) fn with_counting_listener(
-    body: impl FnOnce(u16, &std::sync::atomic::AtomicUsize, &std::sync::atomic::AtomicUsize),
-) {
-    use std::io::{Read, Write};
-    use std::sync::atomic::AtomicUsize;
-    let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = srv.local_addr().unwrap().port();
-    srv.set_nonblocking(true).expect("set_nonblocking"); // so the acceptor can be stopped
-    let accepts = AtomicUsize::new(0);
-    let requests = AtomicUsize::new(0);
-    let stop = AtomicBool::new(false);
-    std::thread::scope(|sc| {
-        sc.spawn(|| {
-            while !stop.load(Ordering::Acquire) {
-                match plx_base::testnet::accept(&srv) {
-                    Ok((s, _)) => {
-                        accepts.fetch_add(1, Ordering::AcqRel);
-                        let (rq, st) = (&requests, &stop);
-                        sc.spawn(move || {
-                            // Read each request head, count it, answer 200 with an 8-byte
-                            // body — small enough that it arrives inside the client's header
-                            // read, so `http_read` serves it from `HttpStream`'s buffer and
-                            // never needs the socket again.
-                            let _ =
-                                s.set_read_timeout(Some(std::time::Duration::from_millis(100)));
-                            let mut w = match s.try_clone() {
-                                Ok(c) => c,
-                                Err(_) => return,
-                            };
-                            let mut buf: Vec<u8> = Vec::new();
-                            loop {
-                                if let Some(k) = buf.windows(4).position(|x| x == b"\r\n\r\n") {
-                                    buf.drain(..k + 4);
-                                    rq.fetch_add(1, Ordering::AcqRel);
-                                    if w.write_all(
-                                        b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nABCDEFGH",
-                                    )
-                                    .is_err()
-                                    {
-                                        return;
-                                    }
-                                    let _ = w.flush();
-                                    continue;
-                                }
-                                let mut tmp = [0u8; 1024];
-                                match (&s).read(&mut tmp) {
-                                    Ok(0) => return,
-                                    Ok(n) => buf.extend_from_slice(&tmp[..n]),
-                                    Err(ref e)
-                                        if matches!(
-                                            e.kind(),
-                                            std::io::ErrorKind::WouldBlock
-                                                | std::io::ErrorKind::TimedOut
-                                        ) =>
-                                    {
-                                        if st.load(Ordering::Acquire) {
-                                            return;
-                                        }
-                                    }
-                                    Err(_) => return,
-                                }
-                            }
-                        });
-                    }
-                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(std::time::Duration::from_millis(1))
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
-        // Stop everything on the way out however we leave. A FAILING assertion in `body`
-        // unwinds through here and `scope` joins before it reports, so a flag set only on the
-        // success path would turn every real failure into a hang instead of a message.
-        struct StopAcceptor<'a>(&'a AtomicBool);
-        impl Drop for StopAcceptor<'_> {
-            fn drop(&mut self) {
-                self.0.store(true, Ordering::Release);
-            }
-        }
-        let _stop_on_exit = StopAcceptor(&stop);
-        body(port, &accepts, &requests);
-    });
-}
+pub(crate) use crate::http_test_support::{serve_file, with_counting_listener};
 
 /// A server that honours `Range` and cuts the body: the first `cuts` connections send `per` bytes
 /// of what was asked for and then close, so each cut is a transfer that dies mid-body. `reset` ends a
@@ -251,8 +207,8 @@ pub(super) fn opened_stream_with_aborted_lane(
         "GET",
     );
     assert_eq!(rv, 0, "fixture: the first open must succeed");
-    let mut aq = crate::aq::aq_new(1 << 20);
-    crate::aq::aq_abort(&mut *aq);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
+    plx_play_feed::aq::aq_abort(&mut *aq);
     (hs, aq, ip, path)
 }
 
@@ -283,59 +239,7 @@ pub(super) fn curl_gate() -> Option<plx_base::testlock::Serial> {
 pub(super) fn opened_curl_with_aborted_lane(port: u16) -> (Box<crate::curlio::CurlSource>, Box<AuQueue>) {
     let cs = crate::curlio::CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0)
         .expect("fixture: the first open must succeed");
-    let mut aq = crate::aq::aq_new(1 << 20);
-    crate::aq::aq_abort(&mut *aq);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
+    plx_play_feed::aq::aq_abort(&mut *aq);
     (cs, aq)
-}
-
-/// Serve media bytes over HTTP with Range support for the native subtitle readers.
-pub(super) fn serve_file(body: Vec<u8>, stop: &'static AtomicBool) -> (u16, std::thread::JoinHandle<()>) {
-    use std::io::{Read, Write};
-    let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = srv.local_addr().unwrap().port();
-    srv.set_nonblocking(true).unwrap();
-    let h = std::thread::spawn(move || {
-        while !stop.load(Ordering::Acquire) {
-            let Ok((mut s, _)) = plx_base::testnet::accept(&srv) else {
-                std::thread::yield_now();
-                continue;
-            };
-            let body = body.clone();
-            std::thread::spawn(move || {
-                let mut buf: Vec<u8> = Vec::new();
-                let mut chunk = [0u8; 1024];
-                loop {
-                    let Some(k) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
-                        match s.read(&mut chunk) {
-                            Ok(0) | Err(_) => return,
-                            Ok(n) => {
-                                buf.extend_from_slice(&chunk[..n]);
-                                continue;
-                            }
-                        }
-                    };
-                    let head = String::from_utf8_lossy(&buf[..k]).to_ascii_lowercase();
-                    buf.drain(..k + 4);
-                    let from = head
-                        .lines()
-                        .find_map(|l| l.strip_prefix("range: bytes="))
-                        .and_then(|r| r.trim_end_matches('-').parse::<usize>().ok());
-                    let reply = match from {
-                        Some(n) if n < body.len() => format!(
-                            "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {n}-{}/{}\r\n\r\n",
-                            body.len() - n,
-                            body.len() - 1,
-                            body.len()
-                        ),
-                        _ => format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()),
-                    };
-                    let n = from.filter(|n| *n < body.len()).unwrap_or(0);
-                    if s.write_all(reply.as_bytes()).is_err() || s.write_all(&body[n..]).is_err() {
-                        return;
-                    }
-                }
-            });
-        }
-    });
-    (port, h)
 }

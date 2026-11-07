@@ -469,7 +469,7 @@ impl MoreMenuState {
         let forced = plx_media::route::forced_direct_play(ps);
         let rows = rows_for(forced);
         let current = plx_media::route::quality();
-        let speed = plx_media::player::play_rate_permille();
+        let speed = plx_media::player::selected_rate(ps).unwrap_or(plx_media::player::RATE_NORMAL);
         let speeds = plx_media::player::speed_offer(ps);
         let mut form = FormTable::new(plx_ui::table_screen::BAND_BASE);
         form.table.compact = true; // a short action list — BODY labels, like the profile menu
@@ -600,7 +600,7 @@ impl MoreMenuState {
             forced,
             rows_for(forced),
             plx_media::route::quality(),
-            plx_media::player::play_rate_permille(),
+            plx_media::player::selected_rate(ps).unwrap_or(plx_media::player::RATE_NORMAL),
             plx_media::player::speed_offer(ps),
         )
     }
@@ -1043,7 +1043,7 @@ mod tests {
     /// into four lines of noise.
     #[test]
     fn only_the_original_row_says_the_source_cannot_be_preserved() {
-        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         use plx_media::route::Quality;
         assert_eq!(
             quality_detail(Quality::Original, false),
@@ -1070,7 +1070,7 @@ mod tests {
     /// would read as a second fact, and the two surfaces answer from the same predicate.
     #[test]
     fn the_conversion_notice_is_the_words_the_detail_page_already_uses() {
-        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         assert_eq!(
             quality_detail(plx_media::route::Quality::Original, false),
             plx_ui::fmt::converts_on_server(),
@@ -1079,7 +1079,7 @@ mod tests {
 
     #[test]
     fn every_row_has_a_label() {
-        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         for a in rows_for(false) {
             assert!(!label(a).is_empty(), "{a:?} would draw a blank row");
         }
@@ -1142,7 +1142,7 @@ mod tests {
     /// Options row on the root and a rung on the Quality page.
     #[test]
     fn a_focused_row_commits_its_own_action() {
-        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let ps = plx_media::route::PlaybackSession::default();
         let mut st = menu(false, Quality::P1080);
         for a in rows_for(false).into_iter().filter(|a| !matches!(a, Action::SetQuality(_))) {
@@ -1162,7 +1162,7 @@ mod tests {
     /// longer lists a rung, the page lists the ladder in order and nothing else.
     #[test]
     fn the_root_leads_with_the_quality_row_and_the_page_holds_the_ladder() {
-        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let st = menu(false, Quality::Original);
         let ids: Vec<Option<MoreRow>> =
             (0..st.form.table.n_rows() as usize).map(|i| st.form.id_at(i).copied()).collect();
@@ -1182,7 +1182,7 @@ mod tests {
     /// as its value, and the page checks that rung and no other.
     #[test]
     fn the_quality_row_reads_the_current_rung_and_the_page_checks_it() {
-        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         for q in plx_media::route::QUALITY_LADDER {
             let mut st = menu(false, q);
             let want = if q == plx_media::route::Quality::Auto {
@@ -1209,7 +1209,7 @@ mod tests {
     /// title band comes and goes with the page, and BACK at the root pops nothing.
     #[test]
     fn push_lands_on_the_checked_rung_and_pop_restores_the_quality_row() {
-        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let ps = plx_media::route::PlaybackSession::default();
         for q in plx_media::route::available_quality_ladder() {
             let mut st = menu(false, *q);
@@ -1231,7 +1231,7 @@ mod tests {
     /// does nothing either (there is no deeper page and no tab to switch to).
     #[test]
     fn right_enters_the_quality_row_and_nothing_else() {
-        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let ps = plx_media::route::PlaybackSession::default();
         let mut st = menu(false, Quality::P720);
         st.focus_key(Action::ToggleStats.key().0);
@@ -1248,7 +1248,7 @@ mod tests {
     /// ordinary entry, the Quality page for a quality entry.
     #[test]
     fn warm_open_queues_the_opening_page_once_without_an_update() {
-        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         use plx_ui::fixture::FixtureMeasure as M;
         let _serial = plx_base::testlock::serial();
         let ps = plx_media::route::PlaybackSession::default();
@@ -1266,7 +1266,7 @@ mod tests {
     /// Force Direct Play entry (no ladder) and the ordinary entry open the root.
     #[test]
     fn the_quality_entry_opens_on_the_page_and_the_ordinary_entry_on_the_root() {
-        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let _serial = plx_base::testlock::serial();
         let ps = plx_media::route::PlaybackSession::default();
         let st = MoreMenuState::new(&ps);
@@ -1286,7 +1286,7 @@ mod tests {
     /// picture plays, not what the server sends — and a row commits its own speed.
     #[test]
     fn the_speed_page_offers_the_seven_speeds_with_the_current_one_checked() {
-        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let ps = plx_media::route::PlaybackSession::default();
         for forced in [false, true] {
             let mut root = MoreMenuState::new(&ps);
@@ -1327,7 +1327,7 @@ mod tests {
     /// (`speed_offer`'s own tests grade when that is).
     #[test]
     fn the_menu_opens_straight_on_the_speed_page_when_it_is_offered() {
-        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let ps = plx_media::route::PlaybackSession::default();
         let mut st = MoreMenuState::new_on(&ps, Some(MorePage::Speed));
         assert_eq!(st.speeds.len(), plx_media::player::PLAY_RATES.len(), "the fixture offers every speed");
@@ -1349,7 +1349,7 @@ mod tests {
     /// row, and an open Speed page goes back to the root when the offer goes away under it.
     #[test]
     fn the_speed_row_follows_the_offer() {
-        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let ps = plx_media::route::PlaybackSession::default();
         let rows = rows_for(false);
         for offer in [vec![], vec![1000]] {
@@ -1371,7 +1371,7 @@ mod tests {
     /// spells them (it writes `.5x`; we keep the leading zero and the real multiplication sign).
     #[test]
     fn speeds_are_named_like_plex_webs() {
-        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let names: Vec<String> = plx_media::player::PLAY_RATES.iter().map(|r| speed_label(*r)).collect();
         assert_eq!(names, ["0.5×", "0.75×", "Normal", "1.25×", "1.5×", "1.75×", "2×"]);
     }
@@ -1379,7 +1379,7 @@ mod tests {
     /// Every speed row has its own focus key, clear of every other row's.
     #[test]
     fn every_speed_row_has_a_distinct_key() {
-        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let mut keys: Vec<u32> = plx_media::player::PLAY_RATES.iter().map(|r| Action::SetSpeed(*r).key().0).collect();
         keys.extend([MoreRow::OpenQuality.key().0, MoreRow::OpenSpeed.key().0]);
         keys.extend([Action::None, Action::ToggleStats, Action::SendDiagnostics].iter().map(|a| a.key().0));
@@ -1394,7 +1394,7 @@ mod tests {
     /// the press still commits the row's own action.
     #[test]
     fn a_reordered_menu_resolves_every_key_to_the_same_action() {
-        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let ps = plx_media::route::PlaybackSession::default();
         let mut rows = rows_for(false);
         rows.reverse();
@@ -1428,7 +1428,7 @@ mod tests {
     /// built from, so a rung added on the wrong side of the split would reach the Options section.
     #[test]
     fn every_quality_rung_sits_ahead_of_the_stats_toggle() {
-        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let rows = rows_for(false);
         let stats_i = rows
             .iter()
@@ -1448,7 +1448,7 @@ mod tests {
     /// it, so none is offered and a quality entry lands on the root's first row, Playback speed.
     #[test]
     fn forced_direct_play_offers_no_quality_row_and_lands_on_the_first_option() {
-        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let ps = plx_media::route::PlaybackSession::default();
         let forced = rows_for(true);
         assert!(
@@ -1488,7 +1488,7 @@ mod tests {
     /// and the focused row by id (the checked rung when the focused one left).
     #[test]
     fn a_live_rung_change_refreshes_the_open_page_in_place() {
-        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let ps = plx_media::route::PlaybackSession::default();
         let mut st = quality_page(Quality::P1080);
         st.focus_key(Action::SetQuality(Quality::P720).key().0);
@@ -1516,7 +1516,7 @@ mod tests {
     /// comes back without the Quality row.
     #[test]
     fn quality_becoming_unavailable_pops_the_page_to_the_root() {
-        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let ps = plx_media::route::PlaybackSession::default();
         let mut st = quality_page(Quality::P1080);
         assert!(st.refresh_to(&ps, true, rows_for(true), Quality::P1080, plx_media::player::RATE_NORMAL, plx_media::player::PLAY_RATES.to_vec()));
@@ -1531,7 +1531,7 @@ mod tests {
     /// A key that names no row commits nothing, never a neighbour's action.
     #[test]
     fn an_unknown_key_is_none_not_a_neighbour() {
-        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let mut st = menu(false, Quality::Auto);
         let before = st.sel();
         assert!(!st.focus_key(0xdead), "an unknown key reports it seated nothing");
@@ -1543,7 +1543,7 @@ mod tests {
     /// them.
     #[test]
     fn every_key_is_distinct_and_below_the_band() {
-        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let mut all: Vec<MoreRow> = plx_media::route::QUALITY_LADDER.iter().map(|q| MoreRow::Act(Action::SetQuality(*q))).collect();
         all.extend([MoreRow::OpenQuality, MoreRow::Act(Action::ToggleStats), MoreRow::Act(Action::SendDiagnostics)]);
         let mut keys: Vec<u32> = all.iter().map(|a| a.key().0).collect();
@@ -1559,7 +1559,7 @@ mod tests {
     /// another: the same index on the two pages must not hash alike.
     #[test]
     fn the_canon_tells_the_root_and_the_page_apart() {
-        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         use plx_machine::machine::Canon;
         let fp = |st: &MoreMenuState| {
             let mut c = Canon::new();
@@ -1579,7 +1579,7 @@ mod tests {
     /// frame it animates and asks for none once settled — the same bar as the track menu.
     #[test]
     fn a_push_and_a_pop_slide_and_then_rest() {
-        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let _serial = plx_base::testlock::serial();
         const DT: f32 = 1.0 / 60.0;
         let ps = plx_media::route::PlaybackSession::default();
@@ -1623,7 +1623,7 @@ mod tests {
     /// right stay anchored, then it asks for no more frames.
     #[test]
     fn a_changed_row_set_resizes_the_card_with_a_spring_and_then_rests() {
-        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let _serial = plx_base::testlock::serial();
         const DT: f32 = 1.0 / 60.0;
         let ps = plx_media::route::PlaybackSession::default();
@@ -1729,7 +1729,7 @@ mod focus_tests {
     /// exercised here through the real `Focusable` dispatch over `HostFixture`.
     #[test]
     fn up_down_step_by_one_and_clamp_at_both_ends() {
-        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let e = EntryId(4);
         let st = three_row_menu();
         let part = MoreMenuPart { state: &st, entry: e, group: GroupId(0) };
@@ -1761,7 +1761,7 @@ mod focus_tests {
     /// paint at.
     #[test]
     fn place_matches_the_tables_own_row_frame() {
-        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let e = EntryId(4);
         let st = three_row_menu();
         let r = st.panel_rect(&plx_ui::fixture::FixtureMeasure);
@@ -1777,7 +1777,7 @@ mod focus_tests {
     /// OPENING row — a key has no neighbour to slide to — reached through `Focusable::reconcile`.
     #[test]
     fn a_stale_cursor_settles_onto_the_opening_row() {
-        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let e = EntryId(4);
         let st = three_row_menu();
         let part = MoreMenuPart { state: &st, entry: e, group: GroupId(0) };
@@ -1806,7 +1806,7 @@ mod focus_tests {
     /// Measured with the device's whole-pixel advances.
     #[test]
     fn every_row_fits_the_panel_in_every_language() {
-        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
         let ps = plx_media::route::PlaybackSession::default();
         let mut out = Vec::new();
@@ -1996,7 +1996,7 @@ mod classic_placement_tests {
     use plx_base::fontcov::advances::ShippedMeasure;
 
     fn settled() -> Vec<(&'static str, [f32; 4])> {
-        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let _g = plx_base::testlock::serial();
         let ps = plx_media::route::PlaybackSession::IDLE;
         let rect = |st: &MoreMenuState| {
@@ -2026,7 +2026,7 @@ mod classic_placement_tests {
     }
 
     fn menu_at(anchor: Rect) -> MoreMenuState {
-        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         MoreMenuState::new(&plx_media::route::PlaybackSession::IDLE).with_anchor(anchor)
     }
 
@@ -2053,7 +2053,7 @@ mod classic_placement_tests {
     /// **The anchor is latched**: a push changes the panel's size, not its side or its edge by the opener.
     #[test]
     fn the_panel_does_not_move_off_its_anchor_while_it_is_open() {
-        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let _g = plx_base::testlock::serial();
         let ps = plx_media::route::PlaybackSession::IDLE;
         let mut st = menu_at(Rect::new(1500.0, 300.0, 324.0, 64.0));
@@ -2075,7 +2075,7 @@ mod classic_placement_tests {
     /// an app-owned row on a side with less room.
     #[test]
     fn need_h_covers_the_quality_page_with_auto_and_fits_classics_room() {
-        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let _g = plx_base::testlock::serial();
         let st = MoreMenuState::new_quality(&plx_media::route::PlaybackSession::IDLE);
         assert_eq!(st.page(), Some(MorePage::Quality));
@@ -2146,7 +2146,7 @@ mod folded_tests {
     /// labels, as the one built without any.
     #[test]
     fn classic_folds_nothing_and_its_root_is_unchanged() {
-        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let ps = PlaybackSession::default();
         let classic = classic_for_test();
         for episode in [true, false] {
@@ -2197,7 +2197,7 @@ mod folded_tests {
     /// is the Options row it always was (a command with its own row never folds).
     #[test]
     fn the_rows_follow_quality_and_speed_and_precede_options() {
-        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let ps = PlaybackSession::default();
         let rows = rows_of(&compiled(MINIMAL), &model(true));
         let st = MoreMenuState::new_folded(&ps, None, rows.clone());
@@ -2215,7 +2215,7 @@ mod folded_tests {
     /// and the container performs that command.
     #[test]
     fn a_folded_row_reports_its_own_command() {
-        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let ps = PlaybackSession::default();
         let mut st = MoreMenuState::new_folded(&ps, None, rows_of(&compiled(MINIMAL), &model(true)));
         let wanted = hud_order(&st);
@@ -2230,7 +2230,7 @@ mod folded_tests {
     /// the page is pushed from its opener's row, so popping it restores the root the menu would have shown.
     #[test]
     fn back_from_a_page_opened_directly_shows_the_folded_root() {
-        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let ps = PlaybackSession::default();
         let rows = rows_of(&compiled(MINIMAL), &model(true));
         let mut st = MoreMenuState::new_folded(&ps, Some(MorePage::Speed), rows.clone());
@@ -2278,7 +2278,7 @@ mod folded_tests {
     /// zero to seven folded rows (the most a package can fold), is as tall as the formula says.
     #[test]
     fn root_height_is_the_tables() {
-        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let ps = PlaybackSession::default();
         let all = [
             HudCommand::Previous,

@@ -12,8 +12,8 @@ pub(super) fn step(
 ) {
     if direction == QueueStep::Previous && previous_restarts(plx_media::player::intended_pos_ns(ps))
     {
-        request_seek(0);
-        resume_if_paused(pa);
+        request_seek(ps, pa, 0);
+        resume_if_paused(ps, pa);
         return;
     }
     let Some(row) = queue_neighbor(ps, direction) else {
@@ -40,7 +40,9 @@ pub(super) fn play(
         String::new()
     };
     close_player_overlays(pages);
-    plx_media::player::stop_bufferfeed(ps, pa);
+    if !plx_media::player::stop_for_replacement(ps, pa) {
+        return false;
+    }
     let requested = plx_media::route::request_play_queue_item(ps, bridge.metadata_mut(), start_caps(), &row, &context);
     bridge.start_store_jobs();
     if !requested { return false; }

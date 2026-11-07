@@ -93,6 +93,9 @@ pub struct TextView<'a> {
     col: [f32; 4],
     bold: c_int,
     leading: f32, // line pitch; 0 = derive from sz
+    /// px of letter-spacing between glyphs (negative tightens), 0 = none. Measured by the wrap and
+    /// drawn through [`Label::tracking`]; see [`tracking`](Self::tracking).
+    tracking: f32,
     align: HAlign,
     max_lines: usize,                      // 0 = unlimited
     break_long_words: bool, // preserve oversized words by wrapping at UTF-8 character boundaries
@@ -138,6 +141,7 @@ impl<'a> TextView<'a> {
             col,
             bold: 0,
             leading: 0.0,
+            tracking: 0.0,
             align: HAlign::Left,
             max_lines: 0,
             break_long_words: false,
@@ -164,14 +168,18 @@ impl<'a> TextView<'a> {
     }
 
     fn width(&self, text: &std::ffi::CStr, bold: bool) -> f32 {
-        match self.measure {
+        let plain = match self.measure {
             Some(measure) => measure.width(text, self.sz, bold),
             None => {
                 #[cfg(any(test, feature = "test-support"))]
                 assert!(!FORBID_LIVE.with(std::cell::Cell::get), "live TextView measurement forbidden");
                 plx_gfx::text::text_width(text.as_ptr(), self.sz, i32::from(bold))
             }
+        };
+        if self.tracking == 0.0 {
+            return plain;
         }
+        plain + plx_gfx::text::tracking_extra(&text.to_string_lossy(), self.tracking)
     }
 
     fn elide(&self, text: &str, width: f32) -> String {
@@ -190,6 +198,15 @@ impl<'a> TextView<'a> {
     }
     pub fn h(mut self, a: HAlign) -> Self {
         self.align = a;
+        self
+    }
+    /// Letter-spacing in px between glyphs (the board's `letter-spacing: -.02em` on a title is
+    /// `-0.02 * sz`). The wrap measures every line tracked and the draw sets it tracked, so a
+    /// title fits the column it was wrapped for. Right-to-left text is never tracked
+    /// ([`plx_gfx::text::tracking_extra`]). A line CLIPPED by `max_lines`/`trailing` is
+    /// elided against the untracked width, so a tracked view is for text that wraps whole.
+    pub fn tracking(mut self, px: f32) -> Self {
+        self.tracking = px;
         self
     }
     /// Preserve the complete text of an oversized word by wrapping it across lines. Opt in
@@ -361,6 +378,7 @@ impl<'a> TextView<'a> {
         self.text.hash(&mut h);
         self.sz.hash(&mut h);
         self.bold.hash(&mut h);
+        self.tracking.to_bits().hash(&mut h);
         (width as i32).hash(&mut h);
         self.max_lines.hash(&mut h);
         self.break_long_words.hash(&mut h);
@@ -733,7 +751,8 @@ impl<'a> TextView<'a> {
             }
             let mut lab = Label::new(tc.as_ptr(), self.sz, self.col)
                 .h(align)
-                .v(VAlign::CapTop);
+                .v(VAlign::CapTop)
+                .tracking(self.tracking);
             if self.bold == 1 {
                 lab = lab.bold();
             }
@@ -1191,5 +1210,25 @@ mod tests {
         assert_eq!(at("سلام", HAlign::Left), 180.0, "an RTL paragraph's left is its end: drawn at the right");
         assert_eq!(at("سلام", HAlign::Right), 180.0);
         assert_eq!(at("سلام", HAlign::Center), 105.0);
+    }
+    /// Tracking is part of the MEASURE, not only of the draw: a word that fits its column only
+    /// because the gaps are tightened must wrap as one line, and the same word untracked must not.
+    #[test]
+    fn a_tracked_view_wraps_by_its_tracked_width() {
+        struct Ten;
+        impl plx_machine::machine::Measure for Ten {
+            fn width(&self, s: &std::ffi::CStr, _: i32, _: bool) -> f32 {
+                s.to_bytes().len() as f32 * 10.0
+            }
+            fn cap_h(&self, _: i32) -> f32 { 20.0 }
+            fn line_h(&self, _: i32) -> f32 { 28.0 }
+        }
+        let _guard = ForbidLive::enter();
+        let plain = TextView::new("abcd", 20, theme::TEXT_PRIMARY).with_measure(&Ten).break_long_words();
+        assert!(plain.wrap(35.0).lines.len() > 1, "40 px does not fit 35");
+        let tight = TextView::new("abcd", 20, theme::TEXT_PRIMARY).with_measure(&Ten).break_long_words().tracking(-2.0);
+        let w = tight.wrap(35.0);
+        assert_eq!(w.lines.len(), 1, "40 - 3 gaps * 2 = 34 fits 35");
+        assert!((w.widths[0] - 34.0).abs() < 1e-4);
     }
 }

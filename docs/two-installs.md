@@ -145,7 +145,7 @@ is only safe while something checks.
 fallback: Rust read `getenv("APPID")` and passed NULL when SAM had not exported it, and C then
 quietly claimed to be the app users install. With two installs on one set that binds the video
 plane for the wrong application, which is a black plane with working audio and no error line.
-The near half is gone (`engine::acb_init_acb` passes `paths::app_id()`, which cannot be absent) and
+The near half is gone (`adapters::backends::acb_init_acb` passes `paths::app_id()`, which cannot be absent) and
 the far half now refuses and logs instead of guessing. Worth recording rather than just fixing: it
 was a bare literal in C, so no selftest could have seen it — the guarantee above is only as wide as
 the languages it names.
@@ -226,12 +226,13 @@ inside a bullet already claiming to be separate. It is written out in full below
   every key they type goes into the other install's FIFO. Reachable only with a dev build on both
   ids at once — which `release-guard` makes deliberate rather than accidental, but the point of a
   named hatch (§5) is that somebody will use it.
-- **The Load payload's `option.appId` and the ACB id.** `player/engine.rs` carries `@APPID@` in
+- **The Load payload's `option.appId` and the ACB id.** `plx_play_feed`'s `lib.rs` carries `@APPID@` in
   every BUFFERSTREAM payload variant and substitutes `paths::app_id()` at the one choke point they
   all pass through (asserted to match exactly once per payload, in the host suite — a `replace`
   matching twice would leave a second `appId` key for `with_window_id` to splice a duplicate
   `windowId` onto, and one matching nothing would hand LG's parser the placeholder as a literal id;
-  both are silent). `acb_init_acb` passes the same string to `AcbAPI_initialize`. It used to be
+  both are silent). `acb_init_acb` passes the same string to `AcbAPI_initialize`; the developer
+  URI probe also receives `paths::app_id()` through its injected driver configuration. It used to be
   `env::var("APPID")` with a NULL fallback that `starfish.c` turned into the shipped id — a double
   fallback under which a developer install announces itself as the released app on any launch where
   SAM does not export `APPID`. See §7 for what is and is not known about who reads that key.
@@ -389,7 +390,7 @@ forgetting: the stable package must not contain the `plxnative-noidle` dev witne
 That gate is graded **unconditionally**, outside the build-configuration branch, and the nesting is
 why it is worth a paragraph rather than a clause. `pkg/.build-config` records a feature set, and it
 maps to `None` for anything that is neither shipped configuration — the Makefile's own header
-documents a third (`--no-default-features --features devtriggers`, the on-device screenshot recipe).
+documents a third (`--no-default-features --features devtriggers,play-feed`, the on-device screenshot recipe).
 Nested under that stamp, exactly that combination satisfied `release-guard` (`RELEASE` is
 non-empty), printed `SKIP — neither shipped configuration`, and would have packaged a dev-trigger
 binary under the released id on an all-green run. "This package carries no dev-trigger surface" is a
@@ -438,7 +439,7 @@ session with the set; several are answerable from one run's event log.
    (`AcbAPI_initialize(…, PLAYER_TYPE_MSE, getenv("APPID"), …)`, `docs/distribution.md` §3.5).
    What either consumer *does* with the value has not been read out of this television's binaries,
    so no mechanism is claimed here; §7 grades both halves. This paragraph used to say the argument
-   locates the app's own compositor window, which was invented — the same sentence `engine.rs`'s
+   locates the app's own compositor window, which was invented — the same sentence `plx_play_feed`'s
    `@APPID@` comment now refuses to make.
    Both ids now say `com.beb.plxnative.debug`. If LG's stack keys on the *registered* id and finds
    it, this is fine; if anything keys on a hardcoded id, or on a `getenv("APPID")` that disagrees
@@ -453,7 +454,7 @@ session with the set; several are answerable from one run's event log.
 2. **Does SAM export `APPID` to a native app on this firmware, and to what?** Nothing readable off
    a desk answers this. Kodi's webOS backend passes `getenv("APPID")` straight into
    `AcbAPI_initialize`, which is evidence that *some* webOS sets it, not that ours does.
-   `engine::acb_init_acb` no longer depends on it — the install directory is the authority — so this
+   `adapters::backends::acb_init_acb` no longer depends on it — the install directory is the authority — so this
    is now free information rather than a dependency.
    *Settled by:* the `APPID_env=` field of the boot `install:` line, in any run's log, on either
    install. `unset` is as interesting an answer as a value, and a value that is *not* the id we
@@ -522,7 +523,7 @@ What is already known, and its provenance:
   §3.5), and `mariotaku/ss4s` binds the same symbols in the same sequence — though only Kodi's
   argument list is quoted anywhere in this repo. What the argument is *for* — whether ACB resolves
   a window with it, forwards it, or merely stores it — does not follow from that and is not
-  established anywhere in this tree. `engine::acb_init_acb`'s comment says the same in the same
+  established anywhere in this tree. `adapters::backends::acb_init_acb`'s comment says the same in the same
   words, deliberately: two places stating one honest limit is safer than one stating it and
   another inventing a mechanism.
 - **ACB posts the app id onward.** `docs/dolby-vision.md` §3 records

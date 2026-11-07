@@ -3156,9 +3156,9 @@ mod tests {
     #[test]
     fn a_shelfs_caption_keeps_clear_of_the_next_shelfs_lifted_heading() {
         use crate::registry::captions::TEST_UNDER_POSTERS;
-        use plx_plex::plex::session::{UnderPosters, UnderPostersDetails as Details};
+        use plx_plex::plex::session::{UnderPosters, UnderPostersLadder as Details};
         let _serial = plx_base::testlock::serial();
-        TEST_UNDER_POSTERS.with(|cell| cell.set(Some(UnderPosters { title: true, details: Details::YearLength, sort_value: false })));
+        TEST_UNDER_POSTERS.with(|cell| cell.set(Some(UnderPosters { title: true, details: Details::YearLength.movie_parts(), show_details: Details::YearLength.show_parts(), sort_value: false })));
         let (mut store, mut s) = shelved_page(PORTRAIT_EXP);
         let (movies, shows) = (focus_of(&s, &store, 0, 0), focus_of(&s, &store, 1, 0));
         settle_shelves(&mut s, &store, movies, 120);

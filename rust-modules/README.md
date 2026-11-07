@@ -23,15 +23,20 @@ side. Its Rust entry points are `plex_run`, `plx_crash_write_image_marker`,
 | `system` | SDL/wayland platform glue | the over-allocated `SDL_SysWMinfo` buffer lives here |
 | `ui_home` | home screen + navigation | reusable component seed (card/pill/circle/label) |
 
-## Left as C by design (5)
+## Left as C by design
 
 - **`src/starfish.c`** — LG's `StarfishMediaAPIs` (the mangled C++ methods called
-  via `__asm__`, an `sret` `std::string` return, a 64 KB in-place object buffer)
-  plus the ACB video-plane bind. The engine that *drives* it is Rust (`player/`).
+  via `__asm__`, an `sret` `std::string` return, a 64 KB in-place object buffer). The engine
+  that *drives* it is Rust (`player/` and `plx_play_feed`).
+- **`src/video_plane.c`** — the ACB / exported-window video-plane bind (`vp_*` and `acb_*`),
+  kept apart from the Starfish seam so the display binding is not a Starfish detail.
 - **`src/main.c`** — the boot shim: event-log/stderr setup, process bring-up, native-crash reporter
   re-entry and the fallback image marker; it calls the Rust entry points named above and owns no
   application state.
-- **`src/crashtrace.c`** — the async-signal-safe fallback fault recorder installed by the shim.
+- **`src/crashtrace.c`** — the async-signal-safe fallback fault recorder installed by the shim; it
+  also writes the `*** EXIT` record of a library's `exit()` (`plx_exit_record`) and the freeze record.
+- **`src/exit.c`** — libc `exit` defined in the executable, so a library's `exit()` ends the process
+  through `plx_exit_record` without running the exit handlers.
 - **`src/sentry_context.c`** — a narrow string-only wrapper around Sentry's opaque, by-value
   `sentry_value_t`; Rust calls it without having to reproduce that ARM32 ABI.
 - **`src/svg.c`** — the nanosvg rasterizer (header-only C, fetched at the pinned commit by `ci/deps.py`).

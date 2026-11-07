@@ -18,6 +18,7 @@ from mkipk import storage_archive_errors
 import deps  # noqa: E402  — ci/deps.py, the manifest reader (ci/dependencies.json pins the FFmpeg tarball)
 import flavor  # noqa: E402  — ci/flavor.py, which DECIDES a flavour's id and title
 import version_rule  # noqa: E402  — ci/version_rule.py, the shared "next X.Y.Z" arithmetic
+from rust_toolchain import shipping_featflags  # noqa: E402  — the Makefile's release feature set
 
 ROOT = Path(__file__).resolve().parent.parent
 FAILURES: list[str] = []
@@ -33,6 +34,14 @@ def check(cond: bool, msg: str) -> None:
 def lg_maintainer_address(value: str) -> bool:
     """Whether Maintainer uses the email form accepted by LG's package validator."""
     return re.fullmatch(r"[^<>]+ <[A-Za-z0-9._-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}>", value) is not None
+
+
+# What the Makefile's `RUST_FEATFLAGS` is under `RELEASE=1`: the playback backends are explicit
+# features of the application crate (`RUST_BACKEND_FEATURES`), so a release build is not a bare
+# `--no-default-features` (that one is no backend at all, which no shipped package is). It is read from
+# the Makefile (`rust_toolchain.shipping_featflags`), not restated; the literal stamps in `--selftest`
+# pin that this still decodes what the Makefile writes, and `ci/test_arm_profile.py` pins the Makefile side.
+RELEASE_FEATFLAGS = " ".join(shipping_featflags())
 
 
 def build_configuration(stamp: str) -> "str | None":
@@ -55,7 +64,7 @@ def build_configuration(stamp: str) -> "str | None":
     left the release job ungraded anyway.
 
     Only the FEATURE half is decoded, and matched WHOLE rather than by substring: the "shots"
-    recipe in the Makefile's header is `--no-default-features --features devtriggers`, which a
+    recipe in the Makefile's header is `--no-default-features --features devtriggers,play-feed`, which a
     substring test would grade as a release build and then fail for carrying exactly the surface it
     asked for. `+tel:`, `+symbols`, `+nightly:` and `+rc:` are all optional so a stamp written by an older
     Makefile still decodes, and the feature flags are lazy so they cannot swallow a trailing field.
@@ -67,7 +76,7 @@ def build_configuration(stamp: str) -> "str | None":
         stamp.strip())
     if not fields:
         return None
-    return {"": "dev", "--no-default-features": "release"}.get(fields.group("flags").strip())
+    return {"": "dev", RELEASE_FEATFLAGS: "release"}.get(fields.group("flags").strip())
 
 
 def parse_release_line(content: str) -> "tuple[int, int] | None":
@@ -329,19 +338,23 @@ def _selftest() -> int:
     cases = {
         # what the Makefile writes today, per documented configuration
         "features:+tel:98c4b7d37a4c": "dev",
-        "features:--no-default-features+tel:98c4b7d37a4c": "release",
-        "features:--no-default-features+symbols+tel:98c4b7d37a4c": "release",   # the release cut
+        "features:--no-default-features --features play-uri,play-feed+tel:98c4b7d37a4c": "release",
+        "features:--no-default-features --features play-uri,play-feed+symbols+tel:98c4b7d37a4c": "release",   # the release cut
         "features:+symbols+tel:98c4b7d37a4c": "dev",
         # the local ARM profile (Makefile ARM_PROFILE=tvdev): only a plain dev build ever carries it
         "features:+profile:tvdev+tel:98c4b7d37a4c": "dev",
-        "features:--no-default-features+profile:tvdev+tel:98c4b7d37a4c": "release",
-        # the nightly cut: RELEASE=1 (so --no-default-features), SYMBOLS=1, and the dated field
-        "features:--no-default-features+symbols+nightly:20260919+tel:98c4b7d37a4c": "release",
+        "features:--no-default-features --features play-uri,play-feed+profile:tvdev+tel:98c4b7d37a4c": "release",
+        # the nightly cut: RELEASE=1 (so --no-default-features --features play-uri,play-feed), SYMBOLS=1, and the dated field
+        "features:--no-default-features --features play-uri,play-feed+symbols+nightly:20260919+tel:98c4b7d37a4c": "release",
         # a release candidate: the release cut plus the candidate number
-        "features:--no-default-features+symbols+rc:2+tel:98c4b7d37a4c": "release",
+        "features:--no-default-features --features play-uri,play-feed+symbols+rc:2+tel:98c4b7d37a4c": "release",
         # older stamps, from before the telemetry and symbols fields existed
         "features:": "dev",
-        "features:--no-default-features": "release",
+        "features:--no-default-features --features play-uri,play-feed": "release",
+        # a release build names its backend: a bare `--no-default-features` links no playback at all
+        "features:--no-default-features+tel:98c4b7d37a4c": None,
+        "features:--no-default-features+symbols+tel:98c4b7d37a4c": None,
+        "features:--no-default-features": None,
         # configurations that are neither shipped one, and must SAY so rather than be graded
         "features: --features lab-diagnostics+tel:abc123def456": None,          # LAB=1
         "features:--no-default-features --features lab-diagnostics+tel:abc123def456": None,
@@ -665,6 +678,14 @@ if len(sys.argv) > 2 and sys.argv[1] == "--print-nightly-label":
 # The same entry point onto `rc_stamp_number`, for the same caller and the same reason: the source
 # bundle of a release candidate is named `plxnative-source-X.Y.Z-rc.N`, and the number comes from
 # the stamp. Empty output (exit 0) when the build was not a candidate.
+# `--print-build-config <stamp>`: the same decode as the packaging gate's, for a caller outside this
+# file. Prints `dev`, `release` or `none` (exit 0 whatever the answer: the caller decides what a build
+# that is neither shipped configuration means). `ci/test_arm_profile.py` feeds it the stamp a real
+# `make` writes, so the decoder cannot agree with a table that is wrong in the same way.
+if len(sys.argv) > 2 and sys.argv[1] == "--print-build-config":
+    print(build_configuration(Path(sys.argv[2]).read_text()) or "none")
+    sys.exit(0)
+
 if len(sys.argv) > 2 and sys.argv[1] == "--print-rc":
     rc = rc_stamp_number(Path(sys.argv[2]).read_text())
     if rc is not None:
@@ -1301,7 +1322,7 @@ check(binary.exists(), f"the staged payload carries the binary ({binary.name})")
 #
 # It must not sit under `if BUILD:` — `BUILD` is `None` for any stamp that is neither shipped
 # configuration, and the Makefile itself documents a third (`RUST_FEATFLAGS="--no-default-features
-# --features devtriggers"`, the on-device screenshot recipe). Nested, that combination would satisfy
+# --features devtriggers,play-feed"`, the on-device screenshot recipe). Nested, that combination would satisfy
 # `release-guard` (RELEASE is non-empty), print "SKIP — neither shipped configuration", and package
 # a dev-trigger binary under the released id on a green run. "This package carries no dev-trigger
 # surface" is a property of the BYTES and needs no stamp to grade.

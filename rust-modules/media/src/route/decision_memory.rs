@@ -321,6 +321,17 @@ fn remember_track_pick(ps: &PlaybackSession, pick: TrackPick) -> bool {
     })
 }
 
+/// A URI source-track edit is remembered only after the common viewer request door accepts its
+/// same-source resolve. The old physical route stays confirmed until the replacement lands; this
+/// uses the existing show-memory writer without running Feed track or sidecar controls.
+pub fn remember_accepted_source_audio(ps: &PlaybackSession, memo: AudioMemo) {
+    let _ = remember_track_pick(ps, TrackPick::Audio(memo));
+}
+
+pub fn remember_accepted_source_subtitle(ps: &PlaybackSession, memo: SubtitleMemo) {
+    let _ = remember_track_pick(ps, TrackPick::Subtitle(memo));
+}
+
 /// **The track menu's audio pick: commit it, and remember it if the route took it.** `memo` is the
 /// descriptor of the picked row ([`memo_of_audio`](super::super::memo_of_audio)); `None` is a commit that is
 /// not a viewer's choice and remembers nothing. The write is made only when
@@ -339,6 +350,42 @@ pub fn commit_audio_pick(ps: &mut PlaybackSession, audio: CarriedAudio, memo: Op
         }
     }
     accepted
+}
+
+/// A URI native selection is applied only after the common owner accepts its exact command's
+/// confirmed track report. It changes the selected source stream and the existing Plex/memory
+/// projections without scheduling a Feed demux reload or a server conversion.
+pub fn confirm_uri_audio_pick(ps: &mut PlaybackSession, audio: CarriedAudio, memo: Option<AudioMemo>) {
+    let sid = audio.sid;
+    ps.cur_audio = Some(audio);
+    if let Some(source) = ps.source_selection.as_mut() {
+        source.audio_sid = sid;
+    }
+    ps.selection_known = true;
+    ps.cur_memory_note = false;
+    queue_put_selection(cur_sid(ps), cur_part_id(ps), cur_audio_sid(ps), cur_sub_sid(ps));
+    if let Some(memo) = memo { remember_track_pick(ps, TrackPick::Audio(memo)); }
+}
+
+/// The product URI driver renders its selected embedded subtitle. No side reader, burn refresh,
+/// or Feed subtitle mailbox may run for this confirmed native selection.
+pub fn confirm_uri_subtitle_pick(ps: &mut PlaybackSession, ordinal: i32, stream_id: i64,
+    memo: Option<SubtitleMemo>) {
+    let changed = subtitle_pick_changed(ps.cur_sub_sid, stream_id,
+        ps.sub_mode == SubMode::ForcedOnly);
+    ps.sub_mode = SubMode::of_stream(stream_id);
+    ps.cur_sub_sid = stream_id;
+    if let Some(source) = ps.source_selection.as_mut() {
+        source.subtitle_sid = stream_id;
+    }
+    ps.cur_sub_ordinal = ordinal;
+    ps.cur_sub_sidecar = false;
+    ps.cur_sub_client_drawable = false;
+    ps.cur_memory_note = false;
+    queue_put_selection(cur_sid(ps), cur_part_id(ps), cur_audio_sid(ps), cur_sub_sid(ps));
+    if let Some(memo) = memo.filter(|_| changed) {
+        remember_track_pick(ps, TrackPick::Subtitle(memo));
+    }
 }
 
 /// **The track menu's subtitle pick: commit it, and remember it.** `memo` is
@@ -466,10 +513,7 @@ pub(super) fn follow_audio_with_forced_only(ps: &mut PlaybackSession, audio_sid:
         return;
     }
     let Some(ctx) = ps.track_ctx.as_ref() else { return };
-    let shown = {
-        let names = crate::player::SHARED.track_names_lenient();
-        forced_only_shown(&ctx.subs, &names, ctx.audio_lang_of(audio_sid), &ctx.forced_lang)
-    };
+    let shown = forced_only_shown(&ctx.subs, ps.container_names(), ctx.audio_lang_of(audio_sid), &ctx.forced_lang);
     if shown.id != ps.cur_sub_sid {
         commit_derived_subtitle(ps, (shown.id, shown.ordinal), true, true);
     }
@@ -513,10 +557,8 @@ pub fn rematch_subtitle_with_names(ps: &mut PlaybackSession) -> Option<i64> {
         return None;
     }
     let ctx = ps.track_ctx.as_ref()?;
-    let rematched = {
-        let names = crate::player::SHARED.track_names_lenient();
-        rematch_with_names(&ctx.subs, &names, &owed.memo, ctx.audio_lang_of(cur_audio_sid(ps)), owed.landed_sub)
-    };
+    let rematched =
+        rematch_with_names(&ctx.subs, ps.container_names(), &owed.memo, ctx.audio_lang_of(cur_audio_sid(ps)), owed.landed_sub);
     if let Some(found) = rematched {
         crate::player::log(&format!(
             "track-memory: re-matched with the container's names (track {})",

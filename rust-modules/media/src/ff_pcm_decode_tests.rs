@@ -15,7 +15,7 @@
 
 use super::image_subtitle_tests::bind_host_ffmpeg;
 use super::*;
-use crate::ff_pcm::{PcmDecoder, PcmOut};
+use plx_play_feed::ff_pcm::{PcmDecoder, PcmOut};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 

@@ -175,6 +175,41 @@ fn switching_profile_leaves_the_container_holding_nothing_of_the_previous_profil
     );
 }
 
+/// **Each `settings-*` fps scene's boot target stands on the page whose heartbeat word the scene selects on.**
+/// `tests/manifest.json` names a `plxnative-settings=<target>` trigger and an `overlay` word; the harness grades
+/// the frames that print the word, so a target that opened another page (or the root, as an unknown one does)
+/// would leave the scene with no samples or, worse, another page's. The pairs are READ from the manifest (every
+/// scene that names a `plxnative-settings` trigger and an `overlay`), not transcribed. About answers the Legal
+/// index's word, which is why it has a boot target and no scene of its own.
+#[test]
+fn each_settings_fps_scene_boot_target_prints_the_overlay_word_the_scene_selects_on() {
+    let _g = plx_base::testlock::serial();
+    let manifest: serde_json::Value =
+        serde_json::from_str(include_str!("../../../tests/manifest.json")).expect("manifest.json parses");
+    let mut checked = 0;
+    for scene in manifest["fps_scenes"].as_array().expect("fps_scenes is an array") {
+        let name = scene["name"].as_str().unwrap_or("?");
+        let (Some(target), Some(word)) = (
+            scene["triggers"]["plxnative-settings"].as_str(),
+            scene["overlay"].as_str(),
+        ) else { continue };
+        let page = crate::dev::scenarios::settings_boot_page(target)
+            .unwrap_or_else(|| panic!("scene {name}: no such boot target {target:?}"));
+        let mut d = Dispatcher::<AppHost>::new();
+        let mut rig = Bridge::for_test(|| 0);
+        frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
+        open_settings_at(&mut d, page);
+        for ms in 1..=40 {
+            frame(&mut d, &mut rig, AppArg::Home, tick(ms * 16), vec![]);
+        }
+        assert!(settings_up(&d), "scene {name}: the Settings surface is up");
+        assert_eq!(overlay_word(&d), Some(word), "scene {name}: the heartbeat word of the page {target:?} boots");
+        checked += 1;
+    }
+    assert!(checked >= 14, "the manifest's settings scenes were found ({checked})");
+    assert!(crate::dev::scenarios::settings_boot_page("no-such-page").is_none());
+}
+
 /// **A profile switch dismisses an open Settings surface, at once.** The Playback page names the
 /// seated profile and lists that profile's own picks, so it must not survive the switch to the next
 /// one: it would say "for Maya" over Noah's values for as long as it stayed up. The surfaces go
@@ -483,7 +518,7 @@ fn the_settings_surface_owns_input_and_walks_its_own_stack() {
     assert_eq!(overlay_word(&d), Some("settings"));
     assert_ne!(d.nav.input_owner(), home_owner, "Settings takes input from its Home host");
     assert!(host_frozen(&d));
-    // DOWN x3 to Legal notices (signed out: Playback, Language, Privacy, Legal, About)
+    // DOWN x4 to Legal notices (signed out: Playback, Language, Privacy, Diagnostics, Legal, About)
     let mut t = 2;
     let mut press = |d: &mut Dispatcher<AppHost>, rig: &mut Bridge, key: Key| {
         let ev = script_key(key, tick(t));
@@ -492,7 +527,7 @@ fn the_settings_surface_owns_input_and_walks_its_own_stack() {
         frame(d, rig, AppArg::Home, tick(t), vec![]);
         t += 1;
     };
-    for _ in 0..3 {
+    for _ in 0..4 {
         press(&mut d, &mut rig, Key::Down);
     }
     press(&mut d, &mut rig, Key::Ok);
@@ -1166,6 +1201,7 @@ fn a_seeded_menu_anchor_is_mounted_into_the_next_menu_and_only_that_one() {
 /// opener's rect they ride the mounter (`Bridge::seed_player_more_folds`): a press that seeds nothing mounts the root
 /// More always had, and a Tracks menu opened with a seed pending ignores it (and leaves none for a later More).
 #[test]
+#[cfg(feature = "play-feed")] // forces the speed decoder through `plx_media::ff`
 fn seeded_folded_rows_are_mounted_into_the_next_more_menu_and_only_that_one() {
     use plx_appkit::more_menu::{Action, FoldedRow, MoreRow};
     use plx_appkit::player_hud::command::HudCommand;
@@ -1195,7 +1231,7 @@ fn seeded_folded_rows_are_mounted_into_the_next_more_menu_and_only_that_one() {
             frame(d, rig, AppArg::Player, tick(next()), vec![]);
         }
     };
-    plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+    plx_media_codecs::ffi::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
     rig.seed_player_more_folds(seeded());
     open(&mut d, &mut rig, OverlayKind::More { page: None });
     assert!(has_row(&mut d), "More mounts with the rows it was handed");
@@ -1466,7 +1502,15 @@ fn dismiss_surfaces_now_settles_the_surface_in_the_same_call_unlike_the_ordinary
     // …and a THIRD: the first tick after `present` holds the spring at 0 for the frame that
     // renders the host into its snapshot (`PopoverMotion::hold`), so the ramp starts one later.
     frame(&mut d, &mut rig, AppArg::Home, tick(3), vec![]);
-    // Now one tick HAS run over it: the appear spring is climbing toward its open target and
+    // …and Settings opens on the route dip (`EntryMotion::Dip`, 70 ms with the surface still at
+    // appear 0 while the host dips, then 140 ms up), so the climb starts a few frames later still.
+    for i in 4..40 {
+        if d.nav.modals.top().expect("just presented").motion.appear > 0.0 {
+            break;
+        }
+        frame(&mut d, &mut rig, AppArg::Home, tick(i), vec![]);
+    }
+    // Now one tick HAS run over it: the appear curve is climbing toward its open target and
     // the phase has not yet been promoted past `Opening` (`ModalStack::tick` only promotes it
     // to `Open` once `motion.settled()`) — i.e. deliberately mid-open, nowhere near the
     // "already at the closed end" state `dismiss_surfaces_now` must reach in the SAME call.

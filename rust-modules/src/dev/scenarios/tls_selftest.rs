@@ -229,24 +229,14 @@ impl Selftest {
     }
 
     fn media(&self, r: u32) -> Plane {
-        use plx_media::curlio::{CurlSource, OpenErr};
-        let refused = |what: String| Plane { line: format!("tls-selftest r={r} media: refused {what} pin_held={}", self.pin_held()), ok: false, key: false };
-        let reservation = match CurlSource::reserve_open() {
-            Ok(res) => res,
-            Err(e) => return refused(format!("open={e:?}")),
-        };
+        // One non-generic media call, not `CurlSource<PlexAuthorization>` named here: this crate
+        // would otherwise carry its own copy of that transport beside media's.
         let url = format!("{}/identity", self.cfg.origin.base());
-        let until = Instant::now() + PLANE_BUDGET;
-        let mut src = match CurlSource::open_reserved_checked(&url, 0, reservation, Some(until), &mut plx_base::checkpoint::NoCheckpoint) {
-            Ok(src) => src,
-            Err(OpenErr::Transport(rc)) => return refused(format!("rc={rc}")),
-            Err(e) => return refused(format!("open={e:?}")),
-        };
         let mut buf = [0u8; READ_BYTES];
-        let n = src.read_until(&mut buf, Some(until), &mut plx_base::checkpoint::NoCheckpoint);
-        if n <= 0 {
-            return refused(format!("read={n}"));
-        }
+        let n = match plx_media::curlio::first_read(&url, Instant::now() + PLANE_BUDGET, &mut buf) {
+            Ok(n) => n,
+            Err(why) => return Plane { line: format!("tls-selftest r={r} media: refused {why} pin_held={}", self.pin_held()), ok: false, key: false },
+        };
         let mode = self.mode();
         Plane { line: format!("tls-selftest r={r} media: ok mode={mode} bytes={n} pin_held={}", self.pin_held()), ok: true, key: mode == "key" }
     }
