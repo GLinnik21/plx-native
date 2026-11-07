@@ -871,7 +871,9 @@ endif
 RUST_TARGET = armv7-unknown-linux-gnueabi
 RUST_LIB    = rust-modules/$(RUST_TDIR)/$(RUST_TARGET)/$(ARM_PROFILE)/libplxnative_modules.a
 
-# Every ordinary C translation unit ships; gpdebug remains an opt-in allocator guard.
+# Every ordinary C translation unit ships except `src/gpdebug.c` (an opt-in allocator guard) and, when
+# no Feed backend is built (`PLAYBACK_HAS_FEED` empty: `PLAYBACK_BACKENDS=uri|none`), `src/starfish.c`,
+# whose only callers are the Feed's.
 # ass.c, ass_fonts.c and ass_text.c belong to the privately bundled renderer, never the application
 # ELF (ci/test_renderer_sources.py holds this list to ci/build-libass.py's).
 SRCS = $(filter-out src/gpdebug.c src/ass.c src/ass_fonts.c src/ass_text.c $(if $(PLAYBACK_HAS_FEED),,src/starfish.c),$(wildcard src/*.c)) src/compat/getauxval.c
@@ -1091,13 +1093,15 @@ EXIT_INTERPOSER_LDFLAG = -Wl,--export-dynamic-symbol=exit
 # it DOES use is kept) and 13.2 MB .text, and 62 libc/libm imports (posix_spawn, chroot, splice,
 # sinf, ...) that only dead code used.
 # Roots needed no extra KEEP/--undefined: the entry point and the .init_array/.fini_array
-# constructors are roots by construction, the Starfish interposer and `exit` are roots because
-# --export-dynamic-symbol exports them, and everything else the app needs is reached by a relocation
+# constructors are roots by construction, the Starfish interposer (Feed builds only) and `exit` are
+# roots because --export-dynamic-symbol exports them, and everything else the app needs is reached by a relocation
 # (the ffmpeg/curl/ACB/Starfish entry points are dlsym'd out of OTHER libraries, never out of this
-# executable, whose .dynsym defines only _init, _fini, the Starfish interposer and `exit`).
+# executable, whose .dynsym defines only _init, _fini, the Starfish interposer and `exit`; a
+# `PLAYBACK_BACKENDS=uri` binary has no interposer and no Starfish import, and `ci/check-elf.sh` uri
+# mode asserts the interposer is absent).
 # Nothing here uses `#[used]`/`link_section`/`__attribute__((constructor))`. If a future feature
 # needs a symbol that only `dlsym(RTLD_DEFAULT, ...)` reaches inside this binary, it must be
-# exported or KEEP()ed explicitly. `ci/check-elf.sh` only asserts that the Starfish interposer and
+# exported or KEEP()ed explicitly. `ci/check-elf.sh` only asserts that the Starfish interposer (a Feed build's) and
 # `exit` are exported (and that Load-with-context is not a loader dependency); it does not assert
 # that nothing else is defined.
 GC_SECTIONS_LDFLAG = -Wl,--gc-sections
@@ -1884,8 +1888,9 @@ fuzz-hud:
 # no playback backend at all: neither backend crate, none of the `cfg(feature = "play-feed")` code
 # in the application, and not `dolby_vision` and the rest of play-feed's third-party tree, all of
 # which the release ships. `RELEASE=1` passes the backend features explicitly (`RUST_BUILD_FEATURES`),
-# so this passes the same ones; `PLAYBACK_BACKENDS=uri|feed|none` checks the matching single-backend
-# set. They cannot change the units shared with `lint`: measured 2026-11-04 with `--unit-graph`,
+# so this passes the same ones; `PLAYBACK_BACKENDS=uri|feed` checks that one backend's
+# set (`none` checks the bare no-backend set, which is not a television package). They cannot change
+# the units shared with `lint`: measured 2026-11-04 with `--unit-graph`,
 # every third-party unit of `--no-default-features --features play-uri,play-feed` (151 of its 181)
 # matches a unit of `check --workspace --all-targets` in package, target kind, mode, features and
 # profile, and the two backend features enable no third-party feature (they reach only workspace
