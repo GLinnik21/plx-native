@@ -1381,7 +1381,7 @@ RE_LOAD = re.compile(r'load: v=(\S+) a="([^"]*)" fps=([\d.]+) '
 RE_SINK_ECHO = re.compile(r"smp_cb type=5 .*?video/x-(h264|h265|hevc)\b.*?\b(\d{3,4}) (\d{3,4}) \S+ ([\d.]+)")
 # The audio LANE the demuxer actually fed, off the same `ff: v=#0 …` line: `a=#<index>`.
 RE_ALANE = re.compile(r"ff: v=#0 .*\ba=#(-?\d+)")
-# The RATIONAL the Load payload's esInfo actually carries — `engine::fps_rational`'s output, as
+# The RATIONAL the Load payload's esInfo actually carries — `plx_play_feed::fps_rational`'s output, as
 # opposed to the float that went into it. Emitted on every playback that declares a non-zero rate.
 RE_ESINFO = re.compile(r"esInfo: videoFps (\d+/\d+)")
 # GStreamer's monotonic debug timestamp. GST is used only for lxvideosink's per-picture cadence;
@@ -1952,7 +1952,7 @@ def a_load_decl(lines, exp):
             return False, f"declared fps={fps}, want {want_fps:.3f} :: {line}"
     if "load_fps_rational" in exp:
         # ...and the RATIONAL it produced, which is the thing the frame-rate fixtures exist for.
-        # `engine::fps_rational` has one branch for the 1001-denominator broadcast rates and
+        # `plx_play_feed::fps_rational` has one branch for the 1001-denominator broadcast rates and
         # another for the integers, and grading only the float above would grade the INPUT to that
         # split — leaving the branch a fixture was built to reach unobserved. It also pins the two
         # copies of the broadcast-rate table (this repo has one in Rust and one in the generator's
@@ -1965,7 +1965,7 @@ def a_load_decl(lines, exp):
             return False, f"esInfo videoFps {rat}, want {exp['load_fps_rational']} :: {line}"
     if "load_max" in exp:
         # The `adaptiveStreaming` ceiling the app declared — `WxH@F`. Until 2026-09-03 this was a
-        # 4K60 constant for every stream; now it is derived per session (`engine::sink_envelope`),
+        # 4K60 constant for every stream; now it is derived per session (`plx_play_feed::sink_envelope`),
         # and the cases that carry this key pin each cell of that rule on the device.
         if max_w is None:
             return False, f"no `max=` on the load line — the binary predates the envelope :: {line}"
@@ -3440,7 +3440,7 @@ def a_replayed(lines, want):
       * `replay: starting the finished stream again` exactly `want` times (`app.rs`, at the EOS
         site). COUNTED, not merely found: a replay that fires more often than the case armed is a
         loop, and a loop satisfies every other assertion here while meaning the opposite.
-      * at least `want + 1` `load:` lines. `engine::start_bufferfeed` writes one per SESSION and
+      * at least `want + 1` `load:` lines. `route_start::start_bufferfeed` writes one per SESSION and
         `teardown` clears the URL, so a second line is what says `player::playurl::playurl()` was re-read and
         the payload rebuilt — the thing that distinguishes a real restart from a pipeline that
         never tore down.

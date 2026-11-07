@@ -568,8 +568,10 @@ RUST_TDIR      = target$(if $(RELEASE),-release,)$(if $(LAB),-lab,)$(if $(SYMBOL
 # cargo's staticlib looks up to date, the stamp below deletes pkg/plxnative, and make relinks the
 # PREVIOUS feature set without a word. Exactly the stale-artifact trap the stamp exists to prevent,
 # one step removed — and it burned two builds while shooting the README screenshots (which want
-# devtriggers ON and devtools OFF, a combination neither RELEASE nor the default gives). Correct:
-#   make RUST_FEATFLAGS="--no-default-features --features devtriggers" RUST_TDIR=target-shots deploy
+# devtriggers ON and devtools OFF, a combination neither RELEASE nor the default gives). The set
+# must name the playback backend too (`$(RUST_BACKEND_FEATURES)`): a hand-set RUST_FEATFLAGS replaces
+# everything, and an ARM build with no backend is refused by `lib.rs`. Correct:
+#   make RUST_FEATFLAGS="--no-default-features --features devtriggers,play-feed" RUST_TDIR=target-shots deploy
 
 # WHICH VERSION THE BINARY REPORTS, which is not always the version it was cut from. A release
 # commit leaves the whole tree at the version it just published, so every developer build after it

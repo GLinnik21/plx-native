@@ -124,7 +124,7 @@ base
 | ui | `ui` (the library) | 51k | 47% |
 | data | `stores browse metadata person collection search subsearch viewstate viewledger pms watchlist catalog hudpacks` | 27k | 56% |
 | session | `auth` | 11k | 35% |
-| media | `ff aq abr hls curlio player route` | 56k | 49% |
+| media | `ff` (a facade over `play_feed`'s demuxer) `abr curlio player route speed_audio`; `aq` and `hls` moved to `play_feed` | 56k | 49% |
 | appkit | `appkit` (the player panels and the Sources row several screens draw) | 13k | 32% |
 | screens | `screens` | 54k | 28% |
 | app | `crate app dev lab capture remote focusprobe shot coldstart textinput system release_line port` | 42k | 12% |

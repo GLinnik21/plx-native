@@ -229,7 +229,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   (`player::engine::prime_livelock_tests`) sat outside the gate entirely while 1398 default-feature
   tests passed. Cargo keys fingerprints by feature set, so the two coexist in one `target/` and the
   second pass costs seconds warm. See the testing section for what it does and does not cover.
-  **The 14 test binaries run side by side, not one after another.** `cargo test` executes the
+  **The per-crate test binaries (`UNIT_SUITE`) run side by side, not one after another.** `cargo test` executes the
   binaries it builds serially, so after the workspace split the suite's wall time was the SUM of
   the per-crate times and one slow binary set it: measured 2026-10-05, 78.8 s sequential, of which
   `plx_media` alone was 28.7 s because `route::decision::plan_tests::unconfirmed_profile_5_forbids_copy_before_mde`
@@ -266,7 +266,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
 - `make test-fast [T=filter]` — **opt-in** incremental inner loop: the same default-feature
   `cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens` as `check-cargo-unit-default` (throwaway runtime root, telemetry env), but
   with `CARGO_INCREMENTAL=1` in its own `rust-modules/target-fast` (gitignored). `T=route::`
-  is the test-name filter, handed to every one of the 14 test binaries; each prints its own libtest
+  is the test-name filter, handed to every one of the per-crate test binaries; each prints its own libtest
   `test result:` line (the counts are per crate, never one total), followed by the wrapper's summary line. Use it for a long series of
   small edits in one lane: an edit-rebuild is ~10 s against 31-32 s non-incremental, flat across
   leaf/mid/hub edits (measured 2026-10-01, 5 interleaved rounds; cold is 51.7 s vs 46.2 s, so it
@@ -926,7 +926,8 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   after the change had merged. The
   **`PostToolUse` hook** (`.claude/hooks/release-config-check.py`) stays and is now the fast path
   rather than the only one — it catches the break before the push, and CI does not run in somebody
-  else's checkout. It type-checks after
+  else's checkout. It type-checks the bare `--no-default-features` set, which drops `play-feed` too (a build with
+  no playback backend), so it does not replace `make check-nodef`, which passes the Makefile's `RUST_BACKEND_FEATURES`. It type-checks after
   every edit to a `rust-modules/src/**.rs` or a layer crate's `rust-modules/*/src/**.rs`; it costs well under a second warm, because cargo keys
   fingerprints by feature set and the two configurations coexist in one `target/`. The hazard it
   guards is hand-written `#[cfg(feature = "devtriggers")]` PAIRS, where a spliced-in function
@@ -1436,7 +1437,7 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   for a reason worth writing down rather than re-deriving.** The finding was recorded as
   `THREADJOIN timeline 6974ms` (`task::join` emits one NAMED line per join), so the attribution
   came from the instrument and not from inferring a total; and `timeline` is the only join that
-  COULD have parked whatever else was stalled, because `engine::teardown`'s step 1 deliberately
+  COULD have parked whatever else was stalled, because `route_start::teardown`'s step 1 deliberately
   wakes the other two before joining them — `http_shutdown` on the demux socket, `aq_abort` on
   both AU lanes — while the reporter's POST had no such wake, `stream`'s one-shot wrappers boxing
   their socket privately. The before and after were taken the same way, so the 14x is
@@ -2419,7 +2420,7 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   tool here reports as "no line found", i.e. exactly like a total regression. Why any of it:
   **`docs/two-installs.md`**.
   **The catalog is the source, not this list** — get the real one with
-  `{ grep -rhoE '/tmp/plxnative-[a-z0-9]+' rust-modules/src rust-modules/media/src rust-modules/appkit/src rust-modules/screens/src src | sed 's|.*/||'; grep -rhoE 'devtrig::(flag|read)\("[a-z0-9]+"' rust-modules/src rust-modules/media/src rust-modules/appkit/src rust-modules/screens/src src | sed 's/.*("/plxnative-/;s/"$//'; } | sort -u`.
+  `{ grep -rhoE '/tmp/plxnative-[a-z0-9]+' rust-modules/src rust-modules/*/src src | sed 's|.*/||'; grep -rhoE 'devtrig::(flag|read)\("[a-z0-9]+"' rust-modules/src rust-modules/*/src src | sed 's/.*("/plxnative-/;s/"$//'; } | sort -u`.
   **Both halves are needed**: a path literal only ever appears in a COMMENT now, and four triggers
   (`grid`, `h265`, `playidx`, `ptype`) are named nowhere but their `devtrig::flag`/`devtrig::read` call, so
   the path grep alone silently under-reports. This line carried that grep alone and called it
@@ -2499,7 +2500,7 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   reader demuxes the Part's subtitle packets over a fresh-session range read and the client
   renderer draws that track; logs `subside: open|anchor|reopen|failed|stop …`, never a URL, token
   or session; `plx_play_feed::side_reader`, `media::player::subside`, `ff_subside.rs`),
-  `/tmp/plxnative-uriprobe[=load|late|none|drive]` (the webOS 5+ URI-mode probe, issue #1064: the
+  `/tmp/plxnative-uriprobe[=load|late|none|drive]` (INERT in this tree: nothing installs a probe behind its port, so the file is never read until the URI backend lands. The webOS 5+ URI-mode probe, issue #1064: the
   next Play hands its stream URL to `com.webos.media` over the platform bus instead of building an
   Engine, to learn whether the exported window id is honoured and where it may go. The content
   picks the variant: empty or `load` puts `windowId` in the `load` payload, `late` sends it with
