@@ -1,4 +1,4 @@
-//! The per-profile choice for instant D-pad seeking.
+//! The per-profile choices for instant D-pad seeking and the playback engine.
 use serde::{Deserialize, Serialize};
 
 /// Whether Left/Right on a hidden transport jumps at once instead of first revealing the scrubber —
@@ -20,6 +20,40 @@ impl InstantDpadSeeking {
     /// An in-memory index back to an option — out of range is the default, for the reason
     /// [`super::SubtitleTone::from_index`] gives: the ladder can grow or shrink.
     pub fn from_index(i: u8) -> InstantDpadSeeking {
+        Self::LADDER.get(i as usize).copied().unwrap_or_default()
+    }
+
+    pub fn index(self) -> u8 {
+        Self::LADDER.iter().position(|&m| m == self).unwrap_or(0) as u8
+    }
+
+    /// `skip_serializing_if` needs a function, not just `PartialEq` with `Default::default()`.
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// Which engine plays the viewer's direct-play videos — one per profile. `Off` (the default, and what
+/// absence means) is the Feed engine every build before the preference had. `On` is the viewer's own
+/// opt-in to the URI engine, the television's media pipeline fetching the file itself: the opt-in IS
+/// the qualification of a URI source for this viewer (`route::uri_preflight::ProductQualifier`), so
+/// nobody who has not turned it on is ever routed to URI. A URI failure still takes the one handoff
+/// to Feed.
+#[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UriEngine {
+    #[default]
+    #[serde(rename = "off")]
+    Off,
+    #[serde(rename = "on")]
+    On,
+}
+
+impl UriEngine {
+    /// Every option, the order the picker lists them in.
+    pub const LADDER: [UriEngine; 2] = [UriEngine::Off, UriEngine::On];
+
+    /// An in-memory index back to an option; out of range is the default, as [`InstantDpadSeeking::from_index`].
+    pub fn from_index(i: u8) -> UriEngine {
         Self::LADDER.get(i as usize).copied().unwrap_or_default()
     }
 
@@ -81,7 +115,7 @@ impl DolbyVisionMode {
 mod tests {
     use super::*;
     use crate::plex::session::{effective, own_prefs, put_own, DolbyVisionModePref,
-        InstantDpadSeekingPref, Preferences, ProfilePrefs};
+        InstantDpadSeekingPref, Preferences, ProfilePrefs, UriEnginePref};
 
     #[test]
     fn instant_dpad_seeking_is_defaulted_and_scoped_per_profile() {
@@ -100,6 +134,28 @@ mod tests {
         }
         let encoded = serde_json::to_string(&records[0].prefs).unwrap();
         assert_eq!(serde_json::from_str::<ProfilePrefs>(&encoded).unwrap(), records[0].prefs);
+    }
+
+    #[test]
+    fn the_uri_engine_opt_in_is_off_unless_the_profile_chose_it() {
+        for json in ["{}", r#"{"uri_engine":"future"}"#, r#"{"uri_engine":null}"#] {
+            let prefs: Preferences = serde_json::from_str(json).unwrap();
+            assert_eq!(prefs.uri_engine, UriEngine::Off);
+            let encoded = serde_json::to_value(&prefs).unwrap();
+            assert!(encoded.get("uri_engine").is_none(), "the default is never written");
+        }
+        let prefs = Preferences::default();
+        let mut records = Vec::new();
+        assert!(put_own::<UriEnginePref>(&mut records, "alice", "account", UriEngine::On));
+        assert_eq!(effective::<UriEnginePref>(&prefs, own_prefs(&records, "alice", "account")), UriEngine::On);
+        for (user, account) in [("bob", "account"), ("alice", "other")] {
+            assert_eq!(effective::<UriEnginePref>(&prefs, own_prefs(&records, user, account)), UriEngine::Off,
+                "another profile, or another account, is never opted in");
+        }
+        let encoded = serde_json::to_string(&records[0].prefs).unwrap();
+        assert_eq!(serde_json::from_str::<ProfilePrefs>(&encoded).unwrap(), records[0].prefs);
+        assert_eq!(UriEngine::LADDER.map(UriEngine::index), [0, 1]);
+        assert_eq!(UriEngine::from_index(99), UriEngine::Off);
     }
 
     #[test]

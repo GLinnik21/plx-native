@@ -1410,6 +1410,11 @@ pub struct ResolveEnv {
     /// cross-compatible base layer plays that layer, and one without (Profile 5) is refused
     /// direct play.
     pub dolby_vision_mode: plx_plex::plex::session::DolbyVisionMode,
+    /// The seated profile's playback engine, captured with the modes above for the same reason.
+    /// `On` is the viewer's opt-in to the URI engine: it reaches the qualifier as
+    /// [`OriginalRequest::uri_opt_in`](super::uri_preflight::OriginalRequest::uri_opt_in), so a
+    /// viewer who has not turned it on is never routed to URI.
+    pub uri_engine: plx_plex::plex::session::UriEngine,
     /// The set's Dolby Vision answer (`devcaps::dv::capability`), read once at the request beside
     /// the mode so the worker never reads the process cache. A regression sets it directly: no
     /// test mutates the production `OnceLock` or makes the whole host a DV set.
@@ -1997,6 +2002,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                     video_codec: vcodec.to_owned(),
                     dolby_vision: plan.playing.as_ref().map_or(plx_data::metadata::Dovi::NONE, |p| p.dovi),
                     dolby_vision_mode: env.dolby_vision_mode,
+                    uri_opt_in: env.uri_engine == plx_plex::plex::session::UriEngine::On,
                     audio_codec: source_audio.as_ref().map_or_else(|| acodec.to_owned(), |(_, codec, _)| codec.clone()),
                     audio_ordinal: source_audio.as_ref().filter(|(position, _, sid)| *position >= 0 && *sid > 0)
                         .map(|(position, _, _)| i64::from(plx_data::metadata::audio_ordinal(tracks, *position as usize))),

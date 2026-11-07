@@ -9624,6 +9624,7 @@ impl ResolveEnv {
             quality: quality(),
             direct_play_mode: direct_play_mode(),
             dolby_vision_mode: dolby_vision_mode(),
+            uri_engine: uri_engine(),
             dv_capability: plx_platform::devcaps::dv::capability(),
             caps: ps.attempt_caps(),
             backends: ps.backends,

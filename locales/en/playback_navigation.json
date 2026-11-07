@@ -26,5 +26,21 @@
   "settings.playback.dolby_vision.off": {
     "value": "Off",
     "description": "Choice for the Dolby Vision setting (singular): Dolby Vision is never used."
+  },
+  "settings.playback.uri_engine": {
+    "value": "Playback engine",
+    "description": "Playback setting title (Settings > Video & playback > Video). Which player plays direct-play videos; default Standard. Opt-in to the television's own player."
+  },
+  "settings.playback.uri_engine.copy": {
+    "value": "TV player uses the TV's own player for direct play. It is experimental: if it fails, the video restarts in Standard. Some videos always use Standard.",
+    "description": "Explanation of the Playback engine setting. Names the picker's two labels: settings.playback.uri_engine.off (Standard) and settings.playback.uri_engine.on (TV player). Experimental opt-in; a failure restarts the video once in Standard; videos with subtitles, or converted by the Plex server, always use Standard. Kept to five lines in every language."
+  },
+  "settings.playback.uri_engine.off": {
+    "value": "Standard",
+    "description": "Choice for the Playback engine setting: this app's own player (the default)."
+  },
+  "settings.playback.uri_engine.on": {
+    "value": "TV player",
+    "description": "Choice for the Playback engine setting: the television's built-in player, an experimental opt-in. A table row label, so short."
   }
 }

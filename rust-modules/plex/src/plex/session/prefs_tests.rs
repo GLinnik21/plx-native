@@ -9,12 +9,12 @@
 //! T-live and T-settings sit in media (`route/prefs_tests.rs`), where the lists they hold to these
 //! descriptors are declared.
 use super::prefs::{Descriptor, Fallback, ListRow, Parse, ProfileMemory, Row, Scope, Setting, SettingsWrite, DESCRIPTORS};
-use super::prefs::{DolbyVisionModePref, InstantDpadSeekingPref, AudioEnhancementsPref, AutoSignInPref, DeckPressPref, UnderPostersPref, DirectPlayModePref, LastHeroBlurPref,
+use super::prefs::{DolbyVisionModePref, InstantDpadSeekingPref, UriEnginePref, AudioEnhancementsPref, AutoSignInPref, DeckPressPref, UnderPostersPref, DirectPlayModePref, LastHeroBlurPref,
     LastLibraryRow, LibraryViewsRow, NextEpisodeModePref, PlaintextConsentRow, QualityPref, ServerKeyPinsRow,
     HdrOverlayBrightnessPref, SkipIntervalPref, SubtitleOffsetsPref, SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref,
     HoldHintTaughtPref, TrailerAutoplayPref, UiResolutionPref};
 use super::{
-    DolbyVisionMode, InstantDpadSeeking, CanonicalSessionPreferences, DeckPress, UnderPosters, UnderPostersLadder, DetailPart, DetailParts, DirectPlayMode, LastLibrary, LibraryViews, NextEpisodeMode,
+    DolbyVisionMode, InstantDpadSeeking, UriEngine, CanonicalSessionPreferences, DeckPress, UnderPosters, UnderPostersLadder, DetailPart, DetailParts, DirectPlayMode, LastLibrary, LibraryViews, NextEpisodeMode,
     PlaintextChoice, PlaintextConsent, PlaybackQuality, Preferences, ServerKeyPin, Session, SkipInterval,
     HdrOverlayBrightness, HoldHintTaught, SubtitleOffsetEntry, SubtitlePosition, SubtitleSize, SubtitleTone, UiResolution,
 };
@@ -111,6 +111,7 @@ fn every_marker_names_its_own_field() {
     check_row::<NextEpisodeModePref>(NextEpisodeMode::Off);
     check_row::<SkipIntervalPref>(SkipInterval::Seconds30);
     check_row::<InstantDpadSeekingPref>(InstantDpadSeeking::On);
+    check_row::<UriEnginePref>(UriEngine::On);
     check_row::<DolbyVisionModePref>(DolbyVisionMode::Off);
     check_row::<super::IntroSkipPref>(super::MarkerSkipMode::Automatic);
     check_row::<super::CreditsSkipPref>(super::MarkerSkipMode::Disabled);

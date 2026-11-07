@@ -313,7 +313,8 @@ impl MonotonicClock for ProductUriClock {
 }
 
 /// Capture the installed display and URI bus at the playback IO boundary. Current product
-/// evidence remains unqualified; returning a port never certifies a source by itself. (A debug
+/// evidence remains unqualified for everyone but a viewer who opted in to the URI engine in
+/// Settings; returning a port never certifies a source by itself. (A debug
 /// build's URI dev route, armed by a trigger read once here, is the one thing that changes that:
 /// `dev::uri_product`.)
 #[cfg(feature = "play-uri")]
@@ -348,7 +349,9 @@ pub(crate) fn install_uri_product_with_ports(adapter: &mut PlayerAdapter,
         clock: Box::new(ProductUriClock(plx_media::player::adapter::MonotonicMs::start())),
         app_id: plx_base::paths::app_id().to_owned(),
         binding: evidence.binding,
-        capabilities: evidence.certified,
+        // What the driver can carry is what an opted-in viewer certifies; it is offered a source
+        // only by a qualification, which production supplies for that viewer alone.
+        capabilities: evidence.opted_in().certified,
         startup_timeout_ms: 15_000,
         release_allowance_ms: 10_000,
         source_ttl_ms: 30_000,

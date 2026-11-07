@@ -3,7 +3,7 @@
 //! seats. The live half (cells, the door, the restore) is `media::route::prefs_tests`; the seat
 //! trigger is the app's `restore_characterisation_tests`.
 use super::super::{
-    DolbyVisionMode, InstantDpadSeeking, current_seat, AudioEnhancementsPref, CurrentProfile, DeckPress, DeckPressPref, UnderPosters, DetailPart, DetailParts, DirectPlayMode, DirectPlayModePref,
+    DolbyVisionMode, InstantDpadSeeking, UriEngine, current_seat, AudioEnhancementsPref, CurrentProfile, DeckPress, DeckPressPref, UnderPosters, DetailPart, DetailParts, DirectPlayMode, DirectPlayModePref,
     HdrOverlayBrightness, HdrOverlayBrightnessPref, NextEpisodeMode, NextEpisodeModePref, PlaybackQuality, QualityPref, Seat, Session, SkipInterval, SkipIntervalPref,
     SubtitlePosition, SubtitlePositionPref, SubtitleSize, SubtitleSizePref, SubtitleTone, SubtitleTonePref, TempSession,
     TrailerAutoplayPref, UserRef,
@@ -57,6 +57,7 @@ fn the_record_has_one_field_for_each_setting_with_a_legacy_fallback() {
         next_episode_mode: Some(NextEpisodeMode::AfterCredits),
         skip_interval: Some(SkipInterval::Seconds30),
         instant_dpad_seeking: Some(InstantDpadSeeking::On),
+        uri_engine: Some(UriEngine::On),
         dolby_vision_mode: Some(DolbyVisionMode::Off),
         intro_skip: Some(crate::plex::session::MarkerSkipMode::Automatic),
         credits_skip: Some(crate::plex::session::MarkerSkipMode::Disabled),

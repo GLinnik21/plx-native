@@ -24,7 +24,8 @@ playback (`com.webos.media/load`) failed to bind, prompting the pivot recorded i
 through ACB on the webOS 4.5 dev set, both with and without `connectDass`; see
 `docs/measurements/uri-acb-dass-2026-11-02.md`. That proves this fixture's display path on one
 set, not production source, control or release coverage. Boot now installs a product URI driver
-and source qualification port. Its production qualifier returns Unknown and its certified
+and source qualification port. Its production qualifier returns Unknown (but for a viewer's own
+Playback engine opt-in, `OriginalRequest::uri_opt_in`, below) and its certified
 capabilities are empty, so ordinary routes still choose Feed. Host fixtures inject qualified source
 and firmware evidence to exercise source, control and release logic.
 
@@ -47,6 +48,12 @@ composition (ACB display mode, an initialized handle, player type 0); media's `u
 `ResolvePort::could_qualify_pms` accept `Binding::Acb` as an offerable display path beside an exported
 canvas, but only through `certified` capabilities: the production evidence certifies nothing and
 `ProductQualifier` answers `Unknown`, which is what keeps the ACB binding from being offered a source.
+The one exception is a viewer who turned on Settings > Video & playback > Playback engine > TV player
+(`UriEngine::On`, per profile, off by default): the route snapshots it into `ResolveEnv::uri_engine`,
+`OriginalRequest::uri_opt_in` carries it to the worker, `ProductQualifier` then answers the original
+file as a progressive URL carrier (`KnownSource::url_carrier`) and `ResolvePort::qualify` checks it
+against `ProductEvidence::opted_in()`. A converted PMS output (`qualify_pms`) and a selected subtitle
+stay unqualified, so those play on Feed; a URI failure keeps the one handoff to Feed.
 
 The sequence's last step (`Op::Display`, the full-screen `setDisplayWindow` and `setState(PLAYING)`)
 goes through `PlaneOwner::show`, not straight to the sink: the C seam (`acb_finish`) returns the task id
