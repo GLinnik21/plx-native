@@ -2112,10 +2112,10 @@ resume, the `/:/timeline` reporter — which is also why it needs somebody's lib
 It needs a TV address and nothing else — no token, no ratingKey, no `manifest.local.json`, no
 sharing — so it is the only tier a stranger can run, and it is what separates "the player is
 broken" from "the library layer is broken" when a server case fails. **What it covers, precisely:**
-the feed player accepts `{h264,hevc,av1,vp9}` video and native `{aac,ac3,eac3,dts,opus}` audio wire formats (plus `flac`, `alac` and `pcm`, decoded in the app and fed as PCM under Auto) in mkv/mp4/m4v. Auto intersects this
+the player feeds `{h264,hevc}` (plus `av1` / `vp9` on a set whose codec table lists that decoder's row) × `{aac,ac3,eac3,dts}` (plus `flac`, `alac` and `pcm`, decoded in the app and fed as PCM) in mkv/mp4/m4v. Auto intersects this
 software set with the device table, per-codec channel ceilings and a 48 kHz sample-rate ceiling on the
 codecs `devcaps::audio_rate_bounded` names (`devcaps::AUDIO_RATE_CEILING`, #951; not DTS, TrueHD, nor FLAC, ALAC and LPCM,
-which the app resamples to 48 or 44.1 kHz itself, `devcaps::pcm_load_rate`; a 5.1 hi-res track still converts on the server); native DTS under Auto requires a measured
+which the app resamples to 48 or 44.1 kHz itself, `devcaps::pcm_load_rate`; a 5.1 hi-res track still converts on the server); DTS requires a measured
 DTS row and feeds only the DTS core when an HD extension is present. PMS names DTS `dca`:
 `devcaps::audio_codec_id` folds it (and `ec-3`) onto the pipeline's `dts` at membership and at
 the Load payload, and the profile sends `dca` (`transcoder.rs::profile_codec_name`). Force

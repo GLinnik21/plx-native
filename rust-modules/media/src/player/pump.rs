@@ -4715,7 +4715,7 @@ mod flight_tests {
         assert_eq!(log.matches(DECODING).count(), 1, "the rung runs once: {log}");
         assert_eq!(log.matches("open recovery: no rung left").count(), 1, "the read-out is asked for once: {log}");
         assert_eq!(log.matches("reload_at: fresh Load at").count(), 1, "no second reload: {log}");
-        assert_eq!(rig.flight.decisions(), 2, "the spent conversion candidates must not repeat");
+        assert!(rig.flight.requests().iter().all(|r| !r.contains("/decision")), "{:?}", rig.flight.requests());
     }
 
     /// **P5. A refused conversion of a remux still ends on the read-out**: the app decode is for a

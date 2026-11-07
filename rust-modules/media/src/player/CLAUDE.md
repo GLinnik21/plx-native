@@ -464,7 +464,7 @@ something.
   (`zeros 12, beta 14`: 25 taps against 83; flat to 0.45 * out, 120 dB down over `[R/2 - 0.55 * out, R/2]`, the derivation is on the kernel),
   one per halving while the rate is even and at least 4x the output, so 192 kHz to 48 kHz is half the multiply-adds of the one ratio-4 stage it used to be;
   what is left goes through one FULL stage of ratio at most 8 down to `out * 2^k`, then `k` exact FULL 2:1 stages (halved from the output up, so an odd rate gets one table, not one per stage); the tables stay under 6.7 MB for any rate). MP3 and Vorbis stay
-  `audio_rate_bounded` under Auto (a 96 kHz Vorbis has not been through the TV), so a track above 48 kHz is the server's; DTS (a core is 48 kHz at most), TrueHD
+  `audio_rate_bounded` (a 96 kHz Vorbis has not been through the TV), so a track above 48 kHz is the server's; DTS (a core is 48 kHz at most), TrueHD
   (decimated by the app) and FLAC, ALAC and LPCM (below) are exempt. **Lossless hi-res**: a mono or stereo FLAC, ALAC or LPCM track above 48 kHz is
   resampled by the app (`ff_pcm::PcmConverter`, lossless shape) to 48 kHz, or to 44.1 kHz for a multiple of 44.1 kHz (`devcaps::pcm_load_rate`, the one rule
   for the planner, Forced, the track menu and the profile), and declared S32 whatever its own depth, at unity gain, saturating at the i32 range,
