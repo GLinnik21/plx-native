@@ -554,7 +554,7 @@ the television's own OpenSSL lives.
 | Shipped file | Upstream | Version | Licence |
 |---|---|---|---|
 | `libcurl-plx.so.4` | curl | **8.23.0** | **curl** (`licenses/curl.txt`) |
-| `libcrypto-plx.so.3`, `libssl-plx.so.3` | OpenSSL | **3.5.9** | **Apache-2.0** (`licenses/Apache-2.0.txt`); Copyright 1995-2026 The OpenSSL Project Authors (OpenSSL ships no `NOTICE` file) |
+| `libcrypto-plx.so.3`, `libssl-plx.so.3` | OpenSSL | **3.5.9** | **Apache-2.0** (`licenses/Apache-2.0.txt`); Copyright (c) 1998-2026 The OpenSSL Project Authors, Copyright (c) 1995-1998 Eric A. Young, Tim J. Hudson (OpenSSL ships no `NOTICE` file) |
 | `libnghttp2-plx.so.14` | nghttp2 | **1.71.0** | **MIT** (`licenses/MIT.txt`); Copyright (c) 2012, 2014, 2015, 2016 Tatsuhiro Tsujikawa and nghttp2 contributors |
 | `libnghttp3-plx.so.9` | nghttp3 | **1.19.0** | **MIT** (`licenses/MIT.txt`); Copyright (c) 2019 nghttp3 contributors |
 | `libngtcp2-plx.so.16`, `libngtcp2_crypto_ossl-plx.so.0` | ngtcp2 | **1.26.0** | **MIT** (`licenses/MIT.txt`); Copyright (c) 2016 ngtcp2 contributors |
@@ -571,22 +571,27 @@ rename for the others), and curl's enabled-feature list — is `ci/build-curlsta
 PlxNative repository. Apache-2.0 and MIT carry no source obligation, and both are compatible with
 PlxNative's GPL-3.0-or-later; the pins are there so the build can be reproduced.
 
-**Configuration.** curl is configured with `--with-openssl --with-ngtcp2 --with-nghttp2
+**Configuration.** curl's enabled protocols, as its own `curl-config --protocols` reports for the
+built library, are `FILE FTP FTPS HTTP HTTPS IPFS IPNS WS WSS`, and its features `alt-svc
+AsynchDNS HSTS HTTP2 HTTP3 HTTPS-proxy IPv6 Largefile libz SSL threadsafe UnixSockets`. It is
+configured with `--with-openssl --with-ngtcp2 --with-nghttp2
 --with-nghttp3 --disable-ldap --disable-ldaps --disable-rtsp --disable-telnet --disable-dict
 --disable-gopher --disable-smtp --disable-pop3 --disable-imap --disable-tftp --disable-mqtt
 --disable-manual --disable-docs --without-libssh2 --without-libidn2 --without-libpsl
 --without-brotli --without-zstd --without-gssapi --without-libgsasl --without-ca-bundle
 --with-ca-path=/etc/ssl/certs`; `libz` is the television's own `libz.so.1`, not a shipped copy. This
-app uses it only for its own HTTP and HTTPS requests. OpenSSL is configured `linux-armv4 shared
+app uses it only for its own HTTP and HTTPS requests. OpenSSL is configured `linux-armv4-plx shared
 no-module no-legacy no-engine no-autoload-config no-deprecated no-comp no-idea no-camellia no-seed
-no-md2 no-mdc2 no-rc5 no-whirlpool no-srp no-ssl3 no-weak-ssl-ciphers no-apps no-docs no-tests`,
+no-md2 no-mdc2 no-rc5 no-whirlpool no-srp no-ssl3 no-weak-ssl-ciphers no-apps no-docs no-tests
+no-fuzz-afl no-fuzz-libfuzzer` (`linux-armv4-plx` is `linux-armv4` with the `-plx` file names),
 with its configuration and module directories set to a path that exists on no television, so it
 reads neither the television's `openssl.cnf` nor any provider module (`ci/build-curlstack.sh` is
 the source of truth for every flag above).
 
-*Why it exists:* the television's libcurl is pinned at 7.53.1 for the same reason FFmpeg is
-bundled (§1.1) — a system library this old can be worked around, never grown a protocol. HTTP/3
-needs a modern TLS stack curl's existing floor cannot supply.
+*Why it exists:* the television's libcurl is fixed by its firmware (7.53.1 on the oldest sets,
+7.82.0 on webOS 10), and none is built with HTTP/3. As with FFmpeg (§1.1), a system library can
+be worked around, never grown a protocol: HTTP/3 needs a curl built with QUIC over a TLS library
+that supports it, which no firmware ships.
 
 ---
 
