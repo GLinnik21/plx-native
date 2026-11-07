@@ -36,8 +36,8 @@ def lg_maintainer_address(value: str) -> bool:
     return re.fullmatch(r"[^<>]+ <[A-Za-z0-9._-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}>", value) is not None
 
 
-# What the Makefile's `RUST_FEATFLAGS` is under `RELEASE=1`: the playback backend is an explicit
-# feature of the application crate (`RUST_BACKEND_FEATURES`), so a release build is not a bare
+# What the Makefile's `RUST_FEATFLAGS` is under `RELEASE=1`: the playback backends are explicit
+# features of the application crate (`RUST_BACKEND_FEATURES`), so a release build is not a bare
 # `--no-default-features` (that one is no backend at all, which no shipped package is). It is read from
 # the Makefile (`rust_toolchain.shipping_featflags`), not restated; the literal stamps in `--selftest`
 # pin that this still decodes what the Makefile writes, and `ci/test_arm_profile.py` pins the Makefile side.
@@ -338,19 +338,19 @@ def _selftest() -> int:
     cases = {
         # what the Makefile writes today, per documented configuration
         "features:+tel:98c4b7d37a4c": "dev",
-        "features:--no-default-features --features play-feed+tel:98c4b7d37a4c": "release",
-        "features:--no-default-features --features play-feed+symbols+tel:98c4b7d37a4c": "release",   # the release cut
+        "features:--no-default-features --features play-uri,play-feed+tel:98c4b7d37a4c": "release",
+        "features:--no-default-features --features play-uri,play-feed+symbols+tel:98c4b7d37a4c": "release",   # the release cut
         "features:+symbols+tel:98c4b7d37a4c": "dev",
         # the local ARM profile (Makefile ARM_PROFILE=tvdev): only a plain dev build ever carries it
         "features:+profile:tvdev+tel:98c4b7d37a4c": "dev",
-        "features:--no-default-features --features play-feed+profile:tvdev+tel:98c4b7d37a4c": "release",
-        # the nightly cut: RELEASE=1 (so --no-default-features --features play-feed), SYMBOLS=1, and the dated field
-        "features:--no-default-features --features play-feed+symbols+nightly:20260919+tel:98c4b7d37a4c": "release",
+        "features:--no-default-features --features play-uri,play-feed+profile:tvdev+tel:98c4b7d37a4c": "release",
+        # the nightly cut: RELEASE=1 (so --no-default-features --features play-uri,play-feed), SYMBOLS=1, and the dated field
+        "features:--no-default-features --features play-uri,play-feed+symbols+nightly:20260919+tel:98c4b7d37a4c": "release",
         # a release candidate: the release cut plus the candidate number
-        "features:--no-default-features --features play-feed+symbols+rc:2+tel:98c4b7d37a4c": "release",
+        "features:--no-default-features --features play-uri,play-feed+symbols+rc:2+tel:98c4b7d37a4c": "release",
         # older stamps, from before the telemetry and symbols fields existed
         "features:": "dev",
-        "features:--no-default-features --features play-feed": "release",
+        "features:--no-default-features --features play-uri,play-feed": "release",
         # a release build names its backend: a bare `--no-default-features` links no playback at all
         "features:--no-default-features+tel:98c4b7d37a4c": None,
         "features:--no-default-features+symbols+tel:98c4b7d37a4c": None,

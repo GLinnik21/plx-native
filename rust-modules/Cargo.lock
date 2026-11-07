@@ -893,6 +893,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "plx_play_uri"
+version = "0.0.0"
+dependencies = [
+ "plx_base",
+ "plx_platform",
+ "plx_play_uri",
+ "plx_playback_contract",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "plx_playback_contract"
 version = "0.0.0"
 dependencies = [
@@ -994,6 +1006,7 @@ dependencies = [
  "plx_net",
  "plx_platform",
  "plx_play_feed",
+ "plx_play_uri",
  "plx_playback_contract",
  "plx_plex",
  "plx_screens",

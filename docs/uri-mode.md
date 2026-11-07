@@ -95,6 +95,28 @@ so it was not required for that demonstrated sequence. The contribution of the s
 changes remains undetermined. Neither arm created an SDL exported window; `window=none` alone
 therefore does not determine whether an ACB arm can display its picture.
 
+That sequence is now one shared machine (`rust-modules/play-uri/src/acb_bind.rs`) that the probe and
+the production URI backend (`Binding::Acb`, present and not routed) both step. The production
+backend never uses the fixture descriptor that the controlled arms fell back to (a developer-probe
+exception). It sends the video-data envelope the service itself reported in the ACB schema (a
+`sourceInfo` with a string `context` and a decodable `video`) when there is one, and otherwise an
+envelope derived from the service's own `videoInfo` event. The 4.5 service never sends the ACB schema:
+its `sourceInfo` is a track list, so the controlled arms saw `ev=sourceInfo` and still used the fixture
+descriptor, and a production bind that waited only for the schema timed out and fell back to Feed. The
+firmware's own conversion (libplayerAPIs builds the envelope Feed binds with from the same members the LS2 `videoInfo` reports)
+is measured and mapped in [the envelope measurement](measurements/uri-acb-envelope-2026-11-05.md); the
+backend applies that map as pure functions (`acb_envelope.rs`), writes only the firmware's own constants
+itself, and builds nothing when a member the firmware always writes is missing, so a run with no usable
+`videoInfo` still waits and times out. Whether ACB accepts the derived envelope on the set has not been
+measured yet. The ACB plane is released
+by `UNLOADED` and a fence on its completion callback
+([evidence](measurements/acb-release-fence-2026-11-04.md)), so a later bind in the same process waits
+for that fence instead of needing a relaunch; only a failed fence quarantines the plane until exit.
+The production backend also reports the first picture (`Observation::Presented`) on this binding,
+once the service has played, the firmware has completed the bind's window and PLAYING calls, and the
+service's clock then advances; the probe shares the display step but
+reports no observation.
+
 ## Driving it: what is settled and what is not
 
 The `drive` variant of the probe binds like `load` and then, three seconds after `playing`, pauses,
@@ -121,17 +143,59 @@ restarts (the first position after resume dropped to 333 ms here), whether text 
 produces `trackSelected` and a rendered subtitle, and what the seek bar can be fed — the service
 reports `currentTime` but no duration, so a duration has to come from `sourceInfo` or from Plex.
 
+The production backend's first Play waits behind the startup selection of the viewer's audio track
+(the common startup owner sequences track, seek, then Play, each confirmed). On the 4.5 service that
+selection is already made at load: `audioInfo` names it (`{"audioInfo":{"track":0,...}}`, before
+`loadCompleted`), the `selectTrack` for it is acknowledged, and no `trackSelected` follows (none in the
+2026-11-05 `ls-monitor` capture), so a backend that waited for the event never played and its control
+timed out 15 s later. The backend therefore settles a selection of the track `audioInfo` (or a
+`trackSelected`) last reported without a native call (`uri: audio index=N is already selected
+(audioInfo); no selectTrack sent`), and an `audioInfo` that names a pending select's track after its
+acknowledgement settles it like `trackSelected` would. A `selectTrack` the backend does send is logged
+first, `uri: selectTrack sent kind=audio index=N stream=SID` (the native index and the Plex stream id), and a
+`trackSelected` the service names is traced with its `type` and `index`. The dev route maps the selected
+stream to its 0-based position among the Part's audio streams in container order. Measured only with a
+one-track source: that `audioInfo.track` and the `selectTrack` index are one numbering, that this position is
+that index, and whether a select of a different track before `play` is confirmed at all, are not. A control that is never confirmed is
+refused when its deadline passes and logs `uri: control ... unconfirmed after N ms; refused
+(TimedOut)`.
+
+A start that carries a resume position sends `seek` before the first `play` (track, seek, then Play).
+The service answers that call with the plain method reply, which has no `seekDone` in it, and reports
+`{"seekDone":{"mediaId":...}}` on the subscription some 110 ms later (the `bound-controls` bus
+capture; the TV's `..._bound_collapse` case waited 15 s for a `seekDone` in the reply and fell back
+to Feed). The backend lands the Seek on that event (`uri: control Seek(..) landed on the service's
+seekDone (its reply acknowledged first: yes|no)`): in whatever order the reply came, only for the
+loaded media's id, only when exactly one Seek is pending, and never after a refusal. Not determined:
+whether a `seek` sent before `play` is answered at all (the capture's came after `play`); the
+landing line says whether the reply had been acknowledged.
+
 ## Reproducing it
 
-1. Deploy a debug build carrying the probe (devtriggers; no `RELEASE=1` package contains it). The probe's
-   machine and transport driver arrive with the URI backend (a later PR): until then the trigger below is
-   never read, because nothing installs a probe behind the media port (`player::uriprobe_drive`).
+1. Deploy a debug build carrying the probe (devtriggers; no `RELEASE=1` package contains it).
 2. Arm a variant in the install's runtime root:
    `echo load > /tmp/com.beb.plxnative.debug/plxnative-uriprobe` (empty, `load`, `late`, `none`, or
-   `drive`). The separate controlled `acb-control` and `acb-dass` arms require a fresh process,
-   `ptype=0` and the fixture constraints in the measurement linked above. A `plex.direct` URL needs
+   `drive`). The separate controlled `acb-control` and `acb-dass` arms require `ptype=0` (the ACB handle
+   is initialized once per process, so the boot must have been given player type 0) and the fixture
+   constraints in the measurement linked above. The 2026-11-02 pair each ran in a fresh process; a second
+   arm in the same process binds only after the previous release's fence is proven. A `plex.direct` URL needs
    working name resolution on the set; a plain `http://` URL to
    a LAN server does not.
+
+   To test the TV's own adaptive controller (R-ABR-2), add native bit-rate rates after the
+   variant, space separated and in any order: `bpsstart=N` seeds it, `bpsmax=N` caps it and
+   `bpsmin=N` floors it, each in bit/s from 1 to 1000000000 and given at most once, for example
+   `echo 'load bpsmax=720000' > /tmp/com.beb.plxnative.debug/plxnative-uriprobe`. They become
+   `"adaptiveStreaming":{"bps":{"start":N,"maximum":N,"minimum":N}}` inside the `load` option
+   (only the rates given) and the `armed` line ends with the same tokens (` bpsmax=720000`). A bare
+   `bpsmax=720000` arms the default variant. Any other token, a repeated or non-numeric rate, or a
+   rate outside the range arms nothing and the play is normal; the event log says so. Read
+   `streamingInfo` (`instantBitrate`, `totalBitrate`), `customizedStreamingInfo` (`numOfRates`,
+   `currentIndexOfRate`), `bufferRange` (`remainingTime`, `percent`) and `videoInfo`
+   (`currentBitrate`, `contentBitrate`) from the same log: only numbers are printed, never a
+   host. Whether the firmware honours the rates, and what those fields mean on the 4.5 set, is
+   what the run is for. `tests/run.py --filter pipe_abr_uri_ladder` drives it against a ladder
+   master (`tests/README.md`).
 3. Play a title the route chooses to direct-play (`kind=direct` on the `armed` line), watch, press
    Back.
 4. Read `grep 'uriprobe:' /tmp/com.beb.plxnative.debug/plxnative-events.log`: `window=`,

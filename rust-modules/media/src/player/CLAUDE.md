@@ -23,24 +23,54 @@ playback (`com.webos.media/load`) failed to bind, prompting the pivot recorded i
 (history, not spec). The controlled 2026-11-02 experiment later displayed its SDR720p24 fixture
 through ACB on the webOS 4.5 dev set, both with and without `connectDass`; see
 `docs/measurements/uri-acb-dass-2026-11-02.md`. That proves this fixture's display path on one
-set, not production source, control or release coverage. The player is backend-neutral
-(`plx_playback_contract`: offers, requests, observations), and the Feed (`plx_play_feed`) is the only
-backend this tree composes. Source qualification for a URI
-backend is policy in the route planner (`route/{backend_policy,uri_offer,uri_preflight}.rs`):
-production composes no qualification port into it, so every route chooses Feed, and host fixtures
-inject qualified source and firmware evidence to exercise that logic. The URI backend arrives in a
-later PR. What this tree keeps of URI mode is the developer probe's media half
-(`player/uriprobe_drive.rs`, trigger `plxnative-uriprobe`, issue #1064): the claimed start attempt,
-the route-start settle and the adapter's one probe slot. The probe itself is the application's and
-no probe is installed behind that port yet, so the trigger is never read.
+set, not production source, control or release coverage. Boot now installs a product URI driver
+and source qualification port. Its production qualifier returns Unknown and its certified
+capabilities are empty, so ordinary routes still choose Feed. Host fixtures inject qualified source
+and firmware evidence to exercise source, control and release logic.
 
-The plane owner (`platform/src/tv/plane.rs`) also tracks the last step of a paced ACB bind: the
-C seam's `acb_finish` returns the task id of the full-screen `setDisplayWindow` and of
-`setState(PLAYING)`, and `PlaneOwner::show` / `Shown` is `Done` only when BOTH tasks have completed
-with event 1 (matched on the ids, like the `UNLOADED` fence; reset by a granted bind and by an
-unload). Nothing on this tree calls it: it is the fence a URI backend's first-picture report
-waits on, and Feed's `acb_start` is the same two calls without the ids.
+The product driver also carries the ACB plane binding the probe proved (`Binding::Acb` in
+`play-uri/src/backend.rs`): present and not routed. The paced sequence (gate, `setMediaId`, LOADED,
+the `connectDass` slot left empty, video data, full-screen display and PLAYING) is ONE pure machine,
+`play-uri/src/acb_bind.rs`, stepped by both the probe and the backend and performed through the sink by
+`play-uri/src/acb_drive.rs`; neither keeps a private copy. The backend starts it at `loadCompleted`
+from the envelope the service sent in the ACB schema, else the one the firmware itself makes of the
+service's `videoInfo` (`play-uri/src/acb_envelope.rs`, a fail-closed map; no fixture descriptor outside
+the probe, and nothing is built from video facts that lack the members the firmware writes),
+grants the bind through `PlaneOwner::bind(.., BindPolicy::Strict, ..)` (deferred: retried on a later
+poll; refused: a typed failure and a close that does not unload someone else's binding), and mirrors
+accepted pause/resume to the plane once the bind has completed. Release is `UNLOADED` and then the
+plane owner's fence on that call's completion callback, pumped from the backend's `poll`
+(`docs/measurements/acb-release-fence-2026-11-04.md`); a quarantine until process exit is only the
+outcome of a failed fence, not the normal one. `plx_play_uri::backend::product_binding` selects it at
+composition (ACB display mode, an initialized handle, player type 0); media's `uri_preflight` only receives the result as
+`ProductEvidence::unqualified_on(.., binding)`. `ProductEvidence::permits` and
+`ResolvePort::could_qualify_pms` accept `Binding::Acb` as an offerable display path beside an exported
+canvas, but only through `certified` capabilities: the production evidence certifies nothing and
+`ProductQualifier` answers `Unknown`, which is what keeps the ACB binding from being offered a source.
 
+The sequence's last step (`Op::Display`, the full-screen `setDisplayWindow` and `setState(PLAYING)`)
+goes through `PlaneOwner::show`, not straight to the sink: the C seam (`acb_finish`) returns the task id
+of each call and the owner's `Plane` keeps a `Shown` state, `Done` only when BOTH tasks have completed
+with event 1 (matched on the ids, like the `UNLOADED` fence; reset by a granted bind and by an unload).
+That fence is what `Observation::Presented` waits for on this binding: with the service's `playing`
+and a later `currentTime` advance (`play-uri/src/picture_gate.rs`, fed by `UriBackend`, ACB only; the
+backend asks `PlaneOwner::shown` from `poll` until it has an answer) the URI driver reports the first
+picture. `acb_finish` / `PlaneFinish` are the only change to the C seam's shape; Feed's `acb_start` is
+the same two calls and does not use the ids.
+
+The separate developer probe is invoked by the
+`plxnative-uriprobe` trigger. Media owns its route half and its port (`player/uriprobe_drive.rs`:
+the claimed start attempt, the settle, the adapter's one slot); the probe itself, the play-uri
+crate's driver over the URI transport, is the application's (`dev/uriprobe.rs`), installed at boot
+behind `UriProbeSession`, so media names no play-uri item. It plays one stream through `com.webos.media` with no Engine and
+can log pause, resume, seek, track selection and `setSubtitleEnable` behavior (issue #1064).
+That probe is `devtriggers`-only and reports nothing to Plex; the product driver is separate and
+uses common attempt reporting. The play-uri crate holds their protocol and driver implementation.
+`play-uri/src/uri_protocol.rs` holds pure builders/strict decoding; `play-uri/src/uri_lifecycle.rs` owns registration
+and request correlation, close deadlines and quarantine. The probe's logical Done does not release
+its adapter slot or exported window: the driver waits for successful bus unregister, keeps polling
+outside the player screen, and blocks reuse through unresolved close. Generic track/seek events and
+method ACKs remain distinct observations; they do not invent confirmation or resume policy.
 The stream side: `PMS HTTP GET` → demux → per-lane access-unit
 queues with byte-cap backpressure (`play-feed/src/aq.rs`) → the pump `Feed()`s each AU to the Starfish pipeline.
 The demuxer is **`play-feed/src/ff.rs` — the libavformat the app BUNDLES (not the TV's), over a custom AVIO on
@@ -399,8 +429,8 @@ something.
   `setDisplayWindow` take a `long *taskId` out-param as their last arg — the 3-arg ABI is required
   (2-arg calls corrupt memory / segfault). The developer-only `acb-control`/`acb-dass` URI
   experiment separately permits a reconstructed descriptor for its known SDR720p24 fixture;
-  that exception applies neither to normal buffer-feed playback nor to the URI backend (a later PR, not in
-  this tree), which is specified to forward only an envelope the service reported.
+  that exception applies neither to normal buffer-feed playback nor to the production URI backend,
+  which forwards only an envelope the service reported.
 - **Opus goes to LG's own decoder only as far as the set is known to take it** (`ff_native_audio.rs`,
   `devcaps.rs`). What a set announces is layered, in this order and logged at boot as `devcaps: ...
   audio layers:`: the codec table, minus the codecs `/etc/gst/gstcool.conf` shows nothing can decode
@@ -988,10 +1018,10 @@ count), `stream.rs`'s socket lifecycle, `route/plan.rs`'s direct-play-vs-transco
 `task.rs`'s `MainThread` token being genuinely `!Send`. Cheap enough that there is no reason to skip
 it before a deploy.
 
-Host tests run the Feed sink simulator and scripted driver sets, so they can grade
+Host tests run the Feed sink simulator and fake URI transport/display ports, so they can grade
 attempt ownership, control correlation, source handoff and release ordering. They do not decode
-a frame through the television's Starfish/ACB pipeline, and URI picture presentation and
-reusable release on firmware are not exercised at all on this tree. The host is Darwin while the TV is Linux, which is why
+a frame through the television's Starfish/ACB pipeline or prove URI picture presentation and
+reusable release on firmware. The host is Darwin while the TV is Linux, which is why
 `tools/sockprobe.c` exists. For device playback behavior, deploy and read
 `/tmp/plxnative-events.log` (feed stats, bind steps, seek/rebase, `RECEIVE_GOOD_VIDEO`). The
 `tests/` harness drives real playback per case — see the root `docs/agent-reference.md` testing

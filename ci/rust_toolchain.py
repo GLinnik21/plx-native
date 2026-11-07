@@ -11,10 +11,10 @@ here instead of restating a version, so moving the pin is a one-line change that
 (the GPL source rebuild links its isolated toolchain as `source-rebuild` and passes it that way).
 
 `shipping_featflags()` is the same idea for the feature set: the Makefile's `RUST_FEATFLAGS` under
-`RELEASE=1`, which is `--no-default-features` plus the playback backend (`RUST_BACKEND_FEATURES`) as an
+`RELEASE=1`, which is `--no-default-features` plus the playback backends (`RUST_BACKEND_FEATURES`) as an
 explicit `--features`, read from the Makefile rather than restated. A caller that wrote a bare
-`--no-default-features` would describe a build with no playback backend at all: neither `plx_play_feed`
-nor `dolby_vision` and the rest of its third-party tree, all of which the release links.
+`--no-default-features` would describe a build with no playback backend at all: neither `plx_play_uri`
+nor `plx_play_feed`, nor `dolby_vision` and the rest of its third-party tree, all of which the release links.
 `ci/test_arm_profile.py` pins that this answer is what the Makefile passes.
 """
 from __future__ import annotations

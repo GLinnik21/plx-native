@@ -557,10 +557,10 @@ $(if $(findstring nightly,$(RUST_TOOLCHAIN)),,$(error HOST_THREADS=$(HOST_THREAD
 endif
 HOST_ENV = $(if $(filter-out 0 1,$(HOST_THREADS)),CARGO_BUILD_RUSTFLAGS='-Zthreads=$(HOST_THREADS)')
 
-# `--no-default-features` drops `play-feed` too (it is in the application crate's `default`), and a
-# build with no playback backend is not a television package (`lib.rs` refuses it), so RELEASE names
-# the backend explicitly. `make check-nodef` passes the same word.
-RUST_BACKEND_FEATURES = play-feed
+# `--no-default-features` drops `play-uri` and `play-feed` too (both are in the application crate's
+# `default`), and a build with no playback backend is not a television package (`lib.rs` refuses it),
+# so RELEASE names the backends explicitly. `make check-nodef` passes the same words.
+RUST_BACKEND_FEATURES = play-uri,play-feed
 RUST_FEATFLAGS = $(if $(RELEASE),--no-default-features --features $(RUST_BACKEND_FEATURES),)$(if $(LAB), --features lab-diagnostics,)
 RUST_TDIR      = target$(if $(RELEASE),-release,)$(if $(LAB),-lab,)$(if $(SYMBOLS),-sym,)
 # OVERRIDING RUST_FEATFLAGS BY HAND? PASS RUST_TDIR TOO. This dir is keyed on RELEASE, not on the
@@ -569,8 +569,9 @@ RUST_TDIR      = target$(if $(RELEASE),-release,)$(if $(LAB),-lab,)$(if $(SYMBOL
 # PREVIOUS feature set without a word. Exactly the stale-artifact trap the stamp exists to prevent,
 # one step removed — and it burned two builds while shooting the README screenshots (which want
 # devtriggers ON and devtools OFF, a combination neither RELEASE nor the default gives). The set
-# must name the playback backend too (`$(RUST_BACKEND_FEATURES)`): a hand-set RUST_FEATFLAGS replaces
-# everything, and an ARM build with no backend is refused by `lib.rs`. Correct:
+# must name at least one playback backend (`$(RUST_BACKEND_FEATURES)` is the shipping pair; the screenshot
+# recipe needs only `play-feed`): a hand-set RUST_FEATFLAGS replaces everything, and an ARM build with no
+# backend is refused by `lib.rs`. Correct:
 #   make RUST_FEATFLAGS="--no-default-features --features devtriggers,play-feed" RUST_TDIR=target-shots deploy
 
 # WHICH VERSION THE BINARY REPORTS, which is not always the version it was cut from. A release
@@ -981,7 +982,7 @@ $(FFABI_STAMP): ci/ffabi-assert.c $(FFMPEG_INC)/libavformat/avformat.h Makefile
 # rule would leave every later `make` linking a library built by the OLD one. Cargo's own
 # `rerun-if-changed` cannot save that — it is only consulted when make decides to invoke cargo at
 # all, and this target is an ordinary timestamp comparison.
-RUST_INPUTS := $(shell find rust-modules/src rust-modules/base rust-modules/machine rust-modules/net rust-modules/platform rust-modules/gfx rust-modules/ui rust-modules/plex rust-modules/telemetry rust-modules/data rust-modules/session rust-modules/media rust-modules/playback-contract rust-modules/play-feed rust-modules/media-codecs rust-modules/appkit rust-modules/screens rust-modules/build_support locales assets -type f 2>/dev/null)
+RUST_INPUTS := $(shell find rust-modules/src rust-modules/base rust-modules/machine rust-modules/net rust-modules/platform rust-modules/gfx rust-modules/ui rust-modules/plex rust-modules/telemetry rust-modules/data rust-modules/session rust-modules/media rust-modules/playback-contract rust-modules/play-uri rust-modules/play-feed rust-modules/media-codecs rust-modules/appkit rust-modules/screens rust-modules/build_support locales assets -type f 2>/dev/null)
 $(RUST_LIB): LICENSE $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock rust-modules/build.rs ci/install-identities.json rust-modules/.cargo/config.toml Makefile ci/check-staticlib-artifact.py $(FFABI_STAMP)
 	@# BEFORE the mkdir: the seed is only ever cloned into a target dir that does not exist yet.
 	$(CARGO_SEED) restore $(RUST_TDIR) rust-modules/$(RUST_TDIR)
@@ -1634,7 +1635,7 @@ check-cargo-lint: lint
 	@# gate has nothing to reuse a cache for. No `pkg/lab.json` is involved — that file is `make
 	@# LAB=1`'s requirement (a live session secret), not the compiler's.
 	@set -e; cd rust-modules && CARGO_INCREMENTAL=0 PATH="$$HOME/.cargo/bin:$$PATH" \
-	  cargo +$(RUST_TOOLCHAIN) check --lib --tests -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens --features lab-diagnostics
+	  cargo +$(RUST_TOOLCHAIN) check --lib --tests -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens --features lab-diagnostics
 	@# And the demo-video dump build's pixel oracle, `placeholder-sentinel`: in no default set and
 	@# built only by `make site-video-sim`, which no gate runs and which compiles no `plx_ui` tests, so
 	@# this line is what keeps it compiling (its code AND its tests, `--tests`). `plx_ui` is the only
@@ -1653,7 +1654,7 @@ check-cargo-lint: lint
 # `-p` lists in the recipes below (those stay literal because ci/test_ci_split.py greps for them);
 # ci/test_test_crate.py pins the two equal.
 UNIT_RUN = python3 ../tools/cargo-test-parallel.py
-UNIT_SUITE = plxnative-modules plx_base plx_machine plx_platform plx_gfx plx_net plx_ui plx_plex plx_telemetry plx_data plx_session plx_media plx_playback_contract plx_play_feed plx_media_codecs plx_appkit plx_screens
+UNIT_SUITE = plxnative-modules plx_base plx_machine plx_platform plx_gfx plx_net plx_ui plx_plex plx_telemetry plx_data plx_session plx_media plx_playback_contract plx_play_uri plx_play_feed plx_media_codecs plx_appkit plx_screens
 
 # The default-feature unit suite and everything that drives cargo through ci/ self-tests.
 check-cargo-unit-default:
@@ -1682,7 +1683,7 @@ check-cargo-unit-default:
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
 	  $(TELEMETRY_ENV) \
 	  $(HOST_ENV) \
-	  $(UNIT_RUN) -- cargo +$(RUST_TOOLCHAIN) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens
+	  $(UNIT_RUN) -- cargo +$(RUST_TOOLCHAIN) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens
 	RUST_TOOLCHAIN=$(RUST_TOOLCHAIN) python3 ci/test_storage_service_package.py
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" cargo +$(RUST_TOOLCHAIN) test -p plxnative-storage --bin plxnative-storage
 	@# The helper is its own package, so building it compiles no copy of the app library; this reads
@@ -1716,7 +1717,7 @@ check-cargo-unit-hostsim:
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
 	  $(TELEMETRY_ENV) \
 	  $(HOST_ENV) \
-	  $(UNIT_RUN) -- cargo +$(RUST_TOOLCHAIN) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens --features hostsim
+	  $(UNIT_RUN) -- cargo +$(RUST_TOOLCHAIN) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens --features hostsim
 
 # OPT-IN incremental inner loop: the default-feature unit suite (the same `cargo test --lib` as
 # `check-cargo-unit-default`, same throwaway runtime root and telemetry env) with
@@ -1740,7 +1741,7 @@ test-fast:
 	  PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
 	  $(TELEMETRY_ENV) \
 	  $(HOST_ENV) \
-	  $(UNIT_RUN) $(if $(T),--filter '$(T)') -- cargo +$(RUST_TOOLCHAIN) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens
+	  $(UNIT_RUN) $(if $(T),--filter '$(T)') -- cargo +$(RUST_TOOLCHAIN) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens
 
 # `make test-crate C=plx_ui [T=filter] [DEPS=1]` -- build and run ONLY the named crate's lib tests, in
 # the same incremental `$(TEST_FAST_TDIR)` tree and with the same flags as `test-fast`, so the two
@@ -1824,7 +1825,7 @@ fuzz-hud:
 	@PATH="$$HOME/.cargo/bin:$$PATH" python3 tools/fuzz-hud.py run --secs $(or $(strip $(SECS)),60) $(T)
 
 # `make check-nodef` -- type-check the SHIPPING feature set (`--no-default-features` plus the
-# playback backend, `$(RUST_BACKEND_FEATURES)`: devtools, devtriggers and threadcheck off, what
+# playback backends, `$(RUST_BACKEND_FEATURES)`: devtools, devtriggers and threadcheck off, what
 # `RELEASE=1` builds). `make check`, `make` and `make sim` all
 # build the DEV features, so a break that only the release set has is invisible to every one of them
 # (docs/agent-reference.md; AGENTS.md says when to run it). It replaces the hand command
@@ -1850,11 +1851,19 @@ fuzz-hud:
 # later `make check` there would build third-party cold. `CARGO_INCREMENTAL=0`: a one-shot gate has
 # no use for an incremental cache, and (unlike `test-hostsim`) there is no loop here.
 #
-# THE BACKEND IS NOT OPTIONAL HERE. `--no-default-features` also drops `play-feed` (it is in the
-# application crate's `default`), so the bare flag would type-check a build with no playback backend
-# at all: not the Feed crate, none of the `cfg(feature = "play-feed")` code in the application, and
-# not `dolby_vision` and the rest of play-feed's third-party tree, all of which the release ships.
-# `RELEASE=1` passes the backend feature explicitly (`RUST_FEATFLAGS`), so this passes the same one.
+# THE BACKENDS ARE NOT OPTIONAL HERE. `--no-default-features` also drops `play-uri` and `play-feed`
+# (they are in the application crate's `default`), so the bare flag would type-check a build with
+# no playback backend at all: neither backend crate, none of the `cfg(feature = "play-feed")` code
+# in the application, and not `dolby_vision` and the rest of play-feed's third-party tree, all of
+# which the release ships. `RELEASE=1` passes the backend features explicitly (`RUST_FEATFLAGS`),
+# so this passes the same ones. They cannot change the units shared with `lint`: measured
+# 2026-11-04 with `--unit-graph`, every third-party unit of `--no-default-features --features
+# play-uri,play-feed` (151 of its 181) matches a unit of `check --workspace --all-targets` in
+# package, target kind, mode, features and profile, and the two backend features enable no
+# third-party feature (they reach only workspace crates and make the optional `plx_play_feed` ->
+# `dolby_vision` subtree active, which `lint` already builds with the same features).
+# ci/test_managed_targets.py holds it to `$(RUST_BACKEND_FEATURES)` alone, never `$(RUST_FEATFLAGS)`,
+# whose devtools / devtriggers / threadcheck / LAB words do change them.
 .PHONY: check-nodef
 check-nodef:
 	$(CARGO_SEED) restore target rust-modules/target --env-var CARGO_TARGET_DIR --env-base rust-modules

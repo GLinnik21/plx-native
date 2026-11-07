@@ -546,6 +546,82 @@ pub(crate) fn close_player_overlays(pages: &mut plx_ui::dispatch::Dispatcher<sup
     crate::app::diagnostics::close(); // a diagnostics panel must not survive into the next session
 }
 
+#[cfg(feature = "play-uri")]
+fn reconfigure_uri_audio(ps: &mut plx_media::route::PlaybackSession,
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
+    meta: &mut plx_data::stores::metadata::MetadataStore, sid: i64,
+    memo: Option<plx_plex::plex::session::prefs::AudioMemo>) -> bool {
+    let position = plx_media::player::intended_pos_known_ns(ps);
+    let paused = pa.backend_viewer_paused();
+    let accepted = plx_media::route::request_viewer_reconfigure(ps, meta,
+        plx_media::route::ViewerReconfigure::SourceAudio(sid), position, paused);
+    if accepted {
+        pa.cancel_uri_interactive_picks();
+        if let Some(memo) = memo { plx_media::route::remember_accepted_source_audio(ps, memo); }
+    }
+    accepted
+}
+
+#[cfg(feature = "play-uri")]
+fn reconfigure_uri_subtitle(ps: &mut plx_media::route::PlaybackSession,
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
+    meta: &mut plx_data::stores::metadata::MetadataStore, sid: i64,
+    mode: plx_media::route::SubMode, forced_lang: Option<String>,
+    memo: Option<plx_plex::plex::session::prefs::SubtitleMemo>) -> bool {
+    let position = plx_media::player::intended_pos_known_ns(ps);
+    let paused = pa.backend_viewer_paused();
+    let accepted = plx_media::route::request_viewer_reconfigure(ps, meta,
+        plx_media::route::ViewerReconfigure::SourceSubtitle { sid, mode, forced_lang },
+        position, paused);
+    if accepted {
+        pa.cancel_uri_interactive_picks();
+        if let Some(memo) = memo { plx_media::route::remember_accepted_source_subtitle(ps, memo); }
+    }
+    accepted
+}
+
+/// A delivered URI native SelectTrack refusal keeps its exact command and original menu choice
+/// in the adapter. The app has the metadata store and can submit that choice through the same
+/// viewer re-resolve door used by a source track absent from the native map.
+#[cfg(feature = "play-uri")]
+pub(crate) fn drain_uri_track_fallbacks(ps: &mut plx_media::route::PlaybackSession,
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
+    meta: &mut plx_data::stores::metadata::MetadataStore) {
+    use plx_media::player::adapter::UriTrackFallback;
+    let (mut audio, mut subtitle) = (None, None);
+    while let Some(fallback) = pa.take_uri_track_fallback() {
+        match fallback {
+            UriTrackFallback::Audio { audio: selected, memo } =>
+                audio = Some((selected.sid, memo)),
+            UriTrackFallback::Subtitle { stream_id, memo } =>
+                subtitle = Some((stream_id, memo)),
+        }
+    }
+    match (audio, subtitle) {
+        (Some((audio_sid, audio_memo)), Some((subtitle_sid, subtitle_memo))) => {
+            let position = plx_media::player::intended_pos_known_ns(ps);
+            let paused = pa.backend_viewer_paused();
+            if plx_media::route::request_viewer_reconfigure(ps, meta,
+                plx_media::route::ViewerReconfigure::SourceTracks {
+                    audio_sid, subtitle_sid }, position, paused) {
+                pa.cancel_uri_interactive_picks();
+                if let Some(memo) = audio_memo {
+                    plx_media::route::remember_accepted_source_audio(ps, memo);
+                }
+                if let Some(memo) = subtitle_memo {
+                    plx_media::route::remember_accepted_source_subtitle(ps, memo);
+                }
+            }
+        }
+        (Some((sid, memo)), None) => { let _ = reconfigure_uri_audio(ps, pa, meta, sid, memo); }
+        (None, Some((sid, memo))) => {
+            let _ = reconfigure_uri_subtitle(ps, pa, meta, sid,
+                plx_media::route::SubMode::Track, None, memo);
+        }
+        (None, None) => {}
+    }
+}
+
 /// **Perform the track menu's pick.**
 ///
 /// `route::commit_audio_pick`/`commit_subtitle_pick`/`commit_forced_only_pick` take the playback
@@ -576,6 +652,15 @@ pub(crate) fn commit_track(
     use plx_appkit::track_menu::TrackCommit;
     match commit {
         TrackCommit::Audio { carried, memo } => {
+            #[cfg(feature = "play-uri")]
+            if ps.attempt_view().backend() == Some(plx_media::player::attempt_view::Backend::Uri) {
+                if pa.uri_maps_track(ps, plx_playback_contract::TrackKind::Audio,
+                    carried.sid) == Some(false)
+                    || !pa.commit_audio_track(ps, carried.clone(), memo.clone()) {
+                    let _ = reconfigure_uri_audio(ps, pa, meta, carried.sid, memo);
+                }
+                return;
+            }
             pa.commit_audio_track(ps, carried, memo);
         }
         TrackCommit::AudioEnhancement(a) => {
@@ -593,12 +678,34 @@ pub(crate) fn commit_track(
         // The route commits the pick and performs the sidecar half of it too
         // (`route::commit_subtitle_and_sidecar`): the sidecar policy lives beside the track memory's.
         TrackCommit::Subtitle { render_ordinal, stream_id, sidecar_key, sidecar_codec, memo } => {
+            #[cfg(feature = "play-uri")]
+            if ps.attempt_view().backend() == Some(plx_media::player::attempt_view::Backend::Uri) {
+                if render_ordinal < 0 || sidecar_key.is_some()
+                    || pa.uri_maps_track(ps, plx_playback_contract::TrackKind::Subtitle,
+                        stream_id) == Some(false)
+                    || !pa.commit_subtitle_track(ps, render_ordinal, stream_id,
+                        sidecar_key.clone(), sidecar_codec.clone(), memo.clone()) {
+                    let mode = if stream_id == 0 { plx_media::route::SubMode::Off }
+                        else { plx_media::route::SubMode::Track };
+                    let _ = reconfigure_uri_subtitle(ps, pa, meta, stream_id, mode, None, memo);
+                }
+                return;
+            }
             pa.commit_subtitle_track(ps, render_ordinal, stream_id, sidecar_key, sidecar_codec, memo);
         }
         // Forced only (FO): the panel matched the forced track for the playing audio (or nothing),
         // the route holds the mode and remembers `ForcedOnly { lang }` when it changed, and drops
         // any sidecar (`route::commit_forced_only_and_sidecar`).
         TrackCommit::SubtitleForcedOnly { render_ordinal, stream_id, lang, changed } => {
+            #[cfg(feature = "play-uri")]
+            if ps.attempt_view().backend() == Some(plx_media::player::attempt_view::Backend::Uri) {
+                let memo = changed.then(||
+                    plx_plex::plex::session::prefs::SubtitleMemo::ForcedOnly {
+                        lang: lang.clone() });
+                let _ = reconfigure_uri_subtitle(ps, pa, meta, stream_id,
+                    plx_media::route::SubMode::ForcedOnly, Some(lang), memo);
+                return;
+            }
             pa.commit_forced_only_track(ps, render_ordinal, stream_id, &lang, changed);
         }
         TrackCommit::SubtitleTone(tone) => plx_media::player::set_subtitle_tone(tone),

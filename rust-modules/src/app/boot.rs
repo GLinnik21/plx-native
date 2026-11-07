@@ -2317,11 +2317,12 @@ pub(crate) unsafe fn construct(
     let adapters = super::Adapters {
         player: plx_media::player::adapter::PlayerAdapter::new(mt),
     };
-    // The session's backend set is the one the installed drivers form.
+    // The session's backend set is the one the installed drivers form (after the product URI driver
+    // is installed, and for every build, not only a URI one).
     let (player, adapters) = {
         let mut player = player;
         let mut adapters = adapters;
-        super::adapters::backends::compose_backends(&mut adapters.player, &mut player.session);
+        super::adapters::backends::compose_backends(&mut adapters.player, &mut player.session, controlled);
         (player, adapters)
     };
     let repause_at = 0i64;

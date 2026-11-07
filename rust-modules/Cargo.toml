@@ -20,6 +20,7 @@ members = [
     "session",
     "media",
     "playback-contract",
+    "play-uri",
     "play-feed",
     "media-codecs",
     "appkit",
@@ -72,9 +73,12 @@ required-features = ["hostsim"]
 
 [features]
 # On by default, so every ordinary `make`, every `make test` and every on-device harness run
-# includes the buffer-feed backend. `make RELEASE=1` drops diagnostic defaults and passes
-# the selected backend feature explicitly.
-default = ["play-feed", "devtools", "devtriggers", "threadcheck"]
+# retains both backend implementations. `make RELEASE=1` drops diagnostic defaults and passes
+# the selected backend features explicitly. Inclusion does not qualify or promote URI playback.
+default = ["play-uri", "play-feed", "devtools", "devtriggers", "threadcheck"]
+# Explicit production URI transport/driver inclusion. The buffer-feed route remains the default;
+# this feature does not qualify, select or promote a URI playback attempt.
+play-uri = ["dep:plx_play_uri", "plx_platform/uri-transport"]
 play-feed = ["dep:plx_play_feed", "plx_platform/feed-sink"]
 # Developer-facing chrome that must not reach a public build. Currently: the on-screen
 # seven-segment counter. Everything gated here must be DRAW-ONLY or otherwise inert — the device
@@ -102,6 +106,7 @@ devtriggers = [
     "plx_data/devtriggers",
     "plx_session/devtriggers",
     "plx_media/devtriggers",
+    "plx_play_uri?/devtriggers",
     "plx_play_feed?/devtriggers",
     "plx_media_codecs/devtriggers",
     "plx_appkit/devtriggers",
@@ -256,6 +261,7 @@ plx_session = { path = "session" }
 # `plx_platform`'s (`webos::video_sink`); it links nothing on the television.
 plx_media = { path = "media", default-features = false }
 plx_playback_contract = { path = "playback-contract" }
+plx_play_uri = { path = "play-uri", optional = true }
 # The buffer-feed backend the application composes into the player's physical set (`app::adapters::backends`).
 plx_play_feed = { path = "play-feed", optional = true }
 plx_media_codecs = { path = "media-codecs" }
@@ -338,6 +344,8 @@ plx_telemetry = { path = "telemetry", features = ["test-support"] }
 plx_data = { path = "data", features = ["test-support"] }
 # Likewise the session layer's test fixtures (`auth::test_support`, `auth::owner::scenarios`, ...).
 plx_session = { path = "session", features = ["test-support"] }
+# Likewise the play-uri layer's seams (`uriprobe_drive::UriSession::touch_acb_for_test`), for the probe's tests.
+plx_play_uri = { path = "play-uri", features = ["test-support"] }
 # Likewise the play-feed layer's test composition (`physical::probe`, the scoped reset).
 plx_play_feed = { path = "play-feed", features = ["test-support"] }
 # Likewise the media layer's seams (`player::preview`, `player::restore_state_for_test`, ...).

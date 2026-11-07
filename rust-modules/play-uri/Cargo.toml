@@ -1,0 +1,35 @@
+[package]
+name = "plx_play_uri"
+version = "0.0.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Independent URI playback protocol, ownership machine, and probe driver."
+repository = "https://github.com/GLinnik21/plx-native"
+publish = false
+
+[package.metadata.plx]
+mount = "play_uri"
+
+[lib]
+name = "plx_play_uri"
+crate-type = ["rlib"]
+
+[features]
+devtriggers = ["plx_base/devtriggers", "plx_platform/devtriggers"]
+default = []
+test-support = ["plx_base/test-support", "plx_platform/test-support"]
+
+[dependencies]
+plx_base = { path = "../base" }
+plx_platform = { path = "../platform" }
+plx_playback_contract = { path = "../playback-contract" }
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+serde_json = { version = "1", default-features = false, features = ["alloc", "std"] }
+
+[dev-dependencies]
+plx_play_uri = { path = ".", features = ["devtriggers"] }
+plx_base = { path = "../base", features = ["test-support"] }
+plx_platform = { path = "../platform", features = ["test-support"] }
+
+[lints]
+workspace = true

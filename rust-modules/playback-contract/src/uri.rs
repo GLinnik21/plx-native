@@ -55,7 +55,7 @@ impl UriSource {
 
 /// What the player adapter needs of a URI driver beyond [`DriverSet`]: the escrow of an
 /// authorized source, and two ownership facts the route reads. The adapter holds one as
-/// `Box<dyn UriDriver<Context = MainThread>>`, so the URI product driver and a
+/// `Box<dyn UriDriver<Context = MainThread>>`, so the product driver (`plx_play_uri`) and a
 /// test fake are interchangeable and the player crate names neither.
 pub trait UriDriver: DriverSet {
     /// Give exactly one authorized, owned URL to the next matching Start. Superseding a staged

@@ -2024,6 +2024,12 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         let foreground = playback_may_run(app);
         let backend_at = app.adapters.player.backend_tick();
         let _ = app.adapters.player.backend_set_foreground_at(&mut app.player.session, foreground, backend_at);
+        // A playback the server ended is retired whichever backend plays it; the Feed's `pump` opens
+        // with the same door.
+        #[cfg(feature = "play-uri")]
+        if foreground {
+            plx_media::player::retire_if_server_stopped(&mut app.player.session, &mut app.adapters.player);
+        }
         #[cfg(feature = "play-feed")]
         if foreground {
             if is_started(&app.player.session) == Some(true) {
@@ -2048,6 +2054,20 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         // Engine and is polled here on every frame as well.
         let backend_at = app.adapters.player.backend_tick();
         let _ = app.adapters.player.backend_poll_session_at(&mut app.player.session, backend_at);
+        #[cfg(feature = "play-uri")]
+        super::playback::drain_uri_track_fallbacks(&mut app.player.session,
+            &mut app.adapters.player, app.bridge.metadata_mut());
+        #[cfg(feature = "play-uri")]
+        if let Some(recovery) = app.adapters.player.take_released_uri_recovery() {
+            // The driver has proved this exact URI owner Released and the adapter has retired
+            // its reporter. Re-resolve the same source episode before generic report::tick can
+            // mistake a recoverable physical failure for a handled terminal error.
+            let _ = plx_media::route::retry_failed_uri_after_release(
+                &mut app.player.session, app.bridge.metadata_mut(), recovery.attempt,
+                recovery.offer_id, recovery.phase, recovery.known_position_ns,
+                recovery.viewer_paused);
+            app.player.session.clear_uri_recovery_pending(recovery.attempt);
+        }
         app.adapters.player.observe_backend_condition(&app.player.session, foreground);
         // **The ONE place the Player machine is asked whether the hardware video plane is bound**
         // (spec §9), immediately after the pump that advances the ACB bind transaction and BEFORE
@@ -2844,6 +2864,23 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
                 }
                 if let Some(r) = plx_media::route::pump_play(&mut app.player.session, app.bridge.metadata_mut()) {
                     plx_machine::idle::invalidate();
+                    // The resolved URI locator is an owned IO result. Install it against the
+                    // route ticket before the common start door chooses a physical backend.
+                    #[cfg(feature = "play-uri")]
+                    if let Some(offer) = r.uri_offer {
+                        let offer_id = offer.offer_id();
+                        if app.adapters.player.offer_qualified_uri(&mut app.player.session, offer).is_err() {
+                            if let Some(ticket) = r.route_start {
+                                let _ = plx_media::route::retry_declined_uri_source(
+                                    &mut app.player.session, app.bridge.metadata_mut(), ticket, offer_id);
+                            }
+                            return;
+                        }
+                        // This source owns its resume position in InitialPlayback. Feed's
+                        // begin_resume checks a Feed URL and would refuse a valid URI original.
+                        finish_landed_play(app, true);
+                        return;
+                    }
                     // A preview landing nobody is waiting for any more (the page halted it while
                     // the resolve was in flight) must not start an engine: nothing would track
                     // it, so nothing would stop it at its end or hand the engine to a later Play.
@@ -5576,6 +5613,15 @@ mod lifecycle_regression_tests {
             Self::serving_registered_as("lifecycle-fixture", respond)
         }
 
+        /// [`Self::serving`] with the server registered by ADDRESS ONLY (`""` for its machine
+        /// identifier), the way a dev-token boot registers its primary
+        /// (`install_captured_registry` calls `register("", …)`): nothing has learned the id.
+        #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
+        fn serving_by_address(successor: bool) -> Option<Rig> {
+            Self::serving_registered_as("",
+                move |request: &str| queue_body(request, successor).to_owned())
+        }
+
         /// The fixture server, registered under `machine_id` (the registry's id for the client).
         fn serving_registered_as(machine_id: &str, respond: impl Fn(&str) -> String + Send + 'static)
             -> Option<Rig> {
@@ -5809,6 +5855,8 @@ mod lifecycle_regression_tests {
             plx_plex::plex::reset_servers_for_test();
         }
     }
+
+    include!("run_uri_boot_tests.rs");
 
     // ---- track memory: what the viewer picked on one episode is what the next episode plays -----
 

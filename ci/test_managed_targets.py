@@ -17,8 +17,8 @@ matters, that neither can put a cargo tree outside the checkout:
   reads exactly like a green run);
 * `check-nodef` sets no target dir of its own (so cargo's default, `rust-modules/target`, or the
   `CARGO_TARGET_DIR` a fleet lane exports for `make check` too), runs the non-incremental
-  `check --lib --no-default-features --features play-feed` (the shipping set:
-  `--no-default-features` alone would also drop the playback backend) and never carries HOST_ENV
+  `check --lib --no-default-features --features play-uri,play-feed` (the shipping set:
+  `--no-default-features` alone would also drop both playback backends) and never carries HOST_ENV
   or the telemetry words (they would change the third-party units it shares with `make lint`);
 * neither is part of `make check`, and both sit in SIDE_EFFECT_FREE so a dry run or a call from
   another configuration cannot delete a built release binary;
@@ -180,7 +180,7 @@ class TestCheckNodef(unittest.TestCase):
             self.assertTrue(call["cwd"].endswith("rust-modules"), call["cwd"])
             # The release set is `--no-default-features` PLUS the backends: both are in the app
             # crate's `default`, so the bare flag would check a build with no playback backend.
-            self.assertRegex(call["args"], r"^\+\S+ check --lib --no-default-features --features play-feed$")
+            self.assertRegex(call["args"], r"^\+\S+ check --lib --no-default-features --features play-uri,play-feed$")
             # No target dir of its own: cargo's default, <workspace>/target, is inside the checkout.
             self.assertIn(call["target_dir"], ("None", "", None))
             self.assertEqual(inside_checkout(call), Path("target"))
