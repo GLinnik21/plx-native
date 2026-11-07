@@ -1,18 +1,11 @@
-//! FFmpeg FFI (libavformat / libavcodec / libavutil). The TV ships FFmpeg n3.3
-//! (SONAMEs libavformat.so.57 / libavcodec.so.57 / libavutil.so.55 = 57.71.100 /
-//! 57.89.100 / 55.58.100); we link stub `.so`s carrying those SONAMEs and the device
-//! loads the real libraries at runtime — the same stub trick as SDL/GLES/Starfish.
+//! The media demuxer over FFmpeg (libavformat / libavcodec / libavutil; the TV ships n3.3): robust
+//! MKV/MP4/TS demux, HTTP input, and index-based seeking (av_seek_frame), plus the Feed's demux-side
+//! items. Design record: docs/ffmpeg-demuxer-plan.md.
 //!
-//! This module is THE media demuxer: robust MKV/MP4/TS demux, HTTP input, and
-//! index-based seeking (av_seek_frame). Design record: docs/ffmpeg-demuxer-plan.md.
-//! It also owns the ONE encode path (`venc`, near the end of the file): the dev
-//! capture stream's MPEG1 + MPEG-TS muxer, kept here because every FFmpeg ABI
-//! detail — struct offsets, AVOption names, custom AVIO — belongs in one module.
-//! The struct layouts below are the FFmpeg n3.3 ABI, confirmed on-device by the
-//! Phase A probe (/tmp/plxnative-ffprobe logs codec_id/width/height for a known title).
+//! The FFmpeg ABI (stub-linked SONAMEs, struct offsets, the loader and its ABI fence) and the one encode
+//! path (`venc`, the dev capture stream's MPEG1 + MPEG-TS muxer) live in `plx_media_codecs::{ffi, venc}`;
+//! this module re-exports them under their old `ff::` paths.
 #![allow(dead_code)]
-// The FFmpeg ABI, loader and codec jobs live in `plx_media_codecs` (below this crate); this module keeps
-// the demuxer, the feed and their tests, and re-exports the codec items under their old paths.
 pub use plx_media_codecs::ffi::*;
 pub use plx_media_codecs::{SpeedDecoder, Venc};
 use plx_media_codecs::subtitle_extract::{pts_ns, pts_ns_opt};
