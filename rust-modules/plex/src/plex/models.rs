@@ -653,6 +653,9 @@ pub struct Media {
 pub struct MediaPart {
     #[serde(default, deserialize_with = "de_i64")]
     pub id: i64,
+    /// This version's Part duration in milliseconds; an item may have a different cut.
+    #[serde(default, deserialize_with = "de_i64")]
+    pub duration: i64,
     #[serde(default)]
     pub key: String, // /library/parts/{id}/{changestamp}/file.mkv
     /// /decision only: the MDE verdict for this part — "directplay" | "transcode" | "copy"

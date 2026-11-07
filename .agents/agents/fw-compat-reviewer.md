@@ -4,7 +4,7 @@ description: >
   Review a change that touches FFI, linkage, or the runtime library seam and answer one
   question — can this binary still START on every firmware this project claims to support?
   Use before pushing anything that edits `rust-modules/base/src/dynlib.rs`, `rust-modules/media-codecs/src/ffi.rs`,
-  `rust-modules/media-codecs/src/venc.rs`, `net.rs`,
+  `rust-modules/media-codecs/src/venc.rs`, `rust-modules/net/src/net.rs`, `rust-modules/net/src/curlio.rs`,
   `src/starfish.c`, `ci/expected-dt-needed.txt`, the Makefile's `LIBS_REAL`, or that adds any
   `extern "C"` block, `#[link]` directive, `dlopen`, mangled-symbol declaration or new FFmpeg /
   curl / Starfish / ACB call. Also use when a reviewer asks "does this still load on webOS 5?",
@@ -50,6 +50,7 @@ In scope if the diff touches any of:
 | `rust-modules/media-codecs/src/ffi.rs` | the four bundled-FFmpeg `dynlib!` blocks + the pinned-major gate |
 | `rust-modules/media-codecs/src/venc.rs` | the moved encoder ABI self-check and its FFmpeg calls |
 | `rust-modules/net/src/net.rs` | the libcurl `dynlib!` block — variadic wrappers over two C symbols, plus the candidate list |
+| `rust-modules/net/src/curlio.rs` | the byte-range `curl_multi_*` `dynlib!` table, exposed as `net::range_io` |
 | `src/starfish.c` | 15 mangled C++ externs against real libraries, plus its own `dlopen` of ACB |
 | any new `extern "C"` block, `#[link]`, or `__asm__("<mangled>")` declaration | each one adds an undefined symbol, or a whole `DT_NEEDED` entry |
 | `Makefile`'s `LIBS_REAL` / the link line (currently line 256 / 444) | a new `-l` is a new hard `DT_NEEDED` |
@@ -149,7 +150,7 @@ grade an ELF at all.
 ```sh
 git -C <repo> diff --stat HEAD          # or the range under review
 git -C <repo> diff HEAD -- rust-modules/base/src/dynlib.rs rust-modules/media-codecs/src/ffi.rs rust-modules/media-codecs/src/venc.rs \
-    rust-modules/net/src/net.rs src/starfish.c Makefile ci/expected-dt-needed.txt
+    rust-modules/net/src/net.rs rust-modules/net/src/curlio.rs src/starfish.c Makefile ci/expected-dt-needed.txt
 grep -rn '#\[link\|extern "C"\|__asm__("' rust-modules/src rust-modules/media/src rust-modules/media-codecs/src rust-modules/net/src src   # against the diff, not the tree
 ```
 

@@ -463,6 +463,7 @@ impl Chaptered {
                 rk: "rk".into(),
                 show_rk: String::new(),
                 kind: String::new(),
+                duration_ms: None,
                 audio: Vec::new(),
                 subs: Vec::new(),
                 video_fps: 0.0,
