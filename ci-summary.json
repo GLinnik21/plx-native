@@ -57,12 +57,12 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-07T14:52:51Z",
+ "generated": "2026-11-07T14:58:52Z",
  "metrics": [
   {
    "change30_pct": 47.1,
    "change7_pct": 27.6,
-   "d30": 206,
+   "d30": 206.0,
    "delta30": 97.0,
    "delta7": 65.5,
    "group": "ci",
@@ -102,10 +102,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 82.2,
+   "change30_pct": 82.6,
    "change7_pct": 22.8,
-   "d30": 219,
-   "delta30": 180,
+   "d30": 218.5,
+   "delta30": 180.5,
    "delta7": 74.0,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
@@ -123,18 +123,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 17.3,
+   "change30_pct": 21.2,
    "change7_pct": 17.4,
-   "d30": 384.5,
-   "delta30": 66.5,
+   "d30": 372.0,
+   "delta30": 79.0,
    "delta7": 67.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 56,
+   "n_now": 57,
    "n_prev": 88,
-   "now": 451.0,
+   "now": 451,
    "prev7": 384.0,
    "shown": true,
    "state": "worse",
@@ -148,15 +148,15 @@
    "change7_pct": 21.9,
    "d30": 572.0,
    "delta30": -104.0,
-   "delta7": 84,
+   "delta7": 84.0,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
    "n_now": 175,
-   "n_prev": 229,
+   "n_prev": 228,
    "now": 468,
-   "prev7": 384,
+   "prev7": 384.0,
    "shown": true,
    "state": "flat",
    "state30": "flat",
@@ -249,10 +249,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 16.5,
+   "change30_pct": 16.6,
    "change7_pct": 11.3,
-   "d30": 2345.5,
-   "delta30": 387.5,
+   "d30": 2343.0,
+   "delta30": 390.0,
    "delta7": 277,
    "group": "ci",
    "id": "minutes",
@@ -271,18 +271,18 @@
   },
   {
    "change30_pct": 25.1,
-   "change7_pct": 11.1,
+   "change7_pct": 12.0,
    "d30": 890.5,
    "delta30": 223.5,
-   "delta7": 111.0,
+   "delta7": 119,
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
    "kind": "job",
    "label": "Nightly: ARM build + gates / build + verify",
    "n_now": 47,
-   "n_prev": 4,
+   "n_prev": 3,
    "now": 1114,
-   "prev7": 1003.0,
+   "prev7": 995,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -293,8 +293,8 @@
   {
    "change30_pct": 62.5,
    "change7_pct": 18.6,
-   "d30": 277,
-   "delta30": 173,
+   "d30": 277.0,
+   "delta30": 173.0,
    "delta7": 70.5,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
@@ -335,7 +335,7 @@
   {
    "change30_pct": 159.8,
    "change7_pct": 12.2,
-   "d30": 138,
+   "d30": 138.0,
    "delta30": 220.5,
    "delta7": 39.0,
    "group": "ci",
@@ -354,18 +354,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 27.2,
-   "change7_pct": 10.9,
-   "d30": 239,
-   "delta30": 65,
-   "delta7": 30,
+   "change30_pct": 29.2,
+   "change7_pct": 11.3,
+   "d30": 236,
+   "delta30": 69.0,
+   "delta7": 31.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 53,
+   "n_now": 54,
    "n_prev": 79,
-   "now": 304,
+   "now": 305.0,
    "prev7": 274,
    "shown": true,
    "state": "flat",
@@ -375,18 +375,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -57.0,
-   "change7_pct": 0.9,
-   "d30": 502,
-   "delta30": -286,
-   "delta7": 2,
+   "change30_pct": -56.7,
+   "change7_pct": 0.7,
+   "d30": 498,
+   "delta30": -282.5,
+   "delta7": 1.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 53,
+   "n_now": 54,
    "n_prev": 79,
-   "now": 216,
+   "now": 215.5,
    "prev7": 214,
    "shown": true,
    "state": "flat",
@@ -396,18 +396,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 35.2,
-   "change7_pct": 10.3,
-   "d30": 159,
-   "delta30": 56,
-   "delta7": 20,
+   "change30_pct": 35.8,
+   "change7_pct": 10.0,
+   "d30": 158.0,
+   "delta30": 56.5,
+   "delta7": 19.5,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 53,
+   "n_now": 54,
    "n_prev": 79,
-   "now": 215,
+   "now": 214.5,
    "prev7": 195,
    "shown": true,
    "state": "flat",
@@ -417,10 +417,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 10.1,
+   "change30_pct": 9.8,
    "change7_pct": 13.1,
-   "d30": 173,
-   "delta30": 17.5,
+   "d30": 173.5,
+   "delta30": 17.0,
    "delta7": 22.0,
    "group": "ci",
    "id": "ci|host lint + type-checks",
@@ -439,18 +439,18 @@
   },
   {
    "change30_pct": 33.3,
-   "change7_pct": -18.6,
+   "change7_pct": -35.1,
    "d30": 18.0,
    "delta30": 6.0,
-   "delta7": -5.5,
+   "delta7": -13,
    "group": "ci",
    "id": "nightly|publish nightly prerelease",
    "kind": "job",
    "label": "Nightly: publish nightly prerelease",
    "n_now": 47,
-   "n_prev": 4,
+   "n_prev": 3,
    "now": 24,
-   "prev7": 29.5,
+   "prev7": 37,
    "shown": false,
    "state": "flat",
    "state30": "flat",
@@ -460,18 +460,18 @@
   },
   {
    "change30_pct": 42.9,
-   "change7_pct": 11.1,
+   "change7_pct": 0.0,
    "d30": 14.0,
    "delta30": 6.0,
-   "delta7": 2.0,
+   "delta7": 0,
    "group": "ci",
    "id": "nightly|plan today's nightly",
    "kind": "job",
    "label": "Nightly: plan today's nightly",
    "n_now": 47,
-   "n_prev": 4,
+   "n_prev": 3,
    "now": 20,
-   "prev7": 18.0,
+   "prev7": 20,
    "shown": false,
    "state": "flat",
    "state30": "flat",
@@ -483,15 +483,15 @@
    "change30_pct": 17.6,
    "change7_pct": 11.1,
    "d30": 17,
-   "delta30": 3,
-   "delta7": 2,
+   "delta30": 3.0,
+   "delta7": 2.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 53,
+   "n_now": 54,
    "n_prev": 79,
-   "now": 20,
+   "now": 20.0,
    "prev7": 18,
    "shown": false,
    "state": "flat",
@@ -590,11 +590,6 @@
    "change_pct": 27.6,
    "commits": [
     {
-     "pr": 1256,
-     "sha": "ece36ea6d",
-     "title": "Settings: v2 anatomy and root (follow-focus sentence, 48 title, groups, Diagnostics page)"
-    },
-    {
      "pr": null,
      "sha": "a67e3c95f",
      "title": "Settings v2: the remaining pages, the push motion and the Under posters split"
@@ -638,6 +633,11 @@
      "pr": 1272,
      "sha": "dc3d03c20",
      "title": "Lower-layer prerequisites of the neutral media crate: plx_net::range_io, plx_base::clock, LoadVideo in platform, contrac"
+    },
+    {
+     "pr": 1274,
+     "sha": "5d9c5903b",
+     "title": "Neutral playback orchestration: the Feed becomes plx_play_feed, the app composes backends, the sink/plane seam is split"
     }
    ],
    "from": 237.5,
@@ -651,11 +651,6 @@
    "change_pct": 25.2,
    "commits": [
     {
-     "pr": 1256,
-     "sha": "ece36ea6d",
-     "title": "Settings: v2 anatomy and root (follow-focus sentence, 48 title, groups, Diagnostics page)"
-    },
-    {
      "pr": null,
      "sha": "a67e3c95f",
      "title": "Settings v2: the remaining pages, the push motion and the Under posters split"
@@ -699,6 +694,11 @@
      "pr": 1272,
      "sha": "dc3d03c20",
      "title": "Lower-layer prerequisites of the neutral media crate: plx_net::range_io, plx_base::clock, LoadVideo in platform, contrac"
+    },
+    {
+     "pr": 1274,
+     "sha": "5d9c5903b",
+     "title": "Neutral playback orchestration: the Feed becomes plx_play_feed, the app composes backends, the sink/plane seam is split"
     }
    ],
    "from": 74.8,
@@ -712,11 +712,6 @@
    "change_pct": 22.8,
    "commits": [
     {
-     "pr": 1256,
-     "sha": "ece36ea6d",
-     "title": "Settings: v2 anatomy and root (follow-focus sentence, 48 title, groups, Diagnostics page)"
-    },
-    {
      "pr": null,
      "sha": "a67e3c95f",
      "title": "Settings v2: the remaining pages, the push motion and the Under posters split"
@@ -760,6 +755,11 @@
      "pr": 1272,
      "sha": "dc3d03c20",
      "title": "Lower-layer prerequisites of the neutral media crate: plx_net::range_io, plx_base::clock, LoadVideo in platform, contrac"
+    },
+    {
+     "pr": 1274,
+     "sha": "5d9c5903b",
+     "title": "Neutral playback orchestration: the Feed becomes plx_play_feed, the app composes backends, the sink/plane seam is split"
     }
    ],
    "from": 325.0,
@@ -773,11 +773,6 @@
    "change_pct": 17.4,
    "commits": [
     {
-     "pr": 1256,
-     "sha": "ece36ea6d",
-     "title": "Settings: v2 anatomy and root (follow-focus sentence, 48 title, groups, Diagnostics page)"
-    },
-    {
      "pr": null,
      "sha": "a67e3c95f",
      "title": "Settings v2: the remaining pages, the push motion and the Under posters split"
@@ -821,6 +816,11 @@
      "pr": 1272,
      "sha": "dc3d03c20",
      "title": "Lower-layer prerequisites of the neutral media crate: plx_net::range_io, plx_base::clock, LoadVideo in platform, contrac"
+    },
+    {
+     "pr": 1274,
+     "sha": "5d9c5903b",
+     "title": "Neutral playback orchestration: the Feed becomes plx_play_feed, the app composes backends, the sink/plane seam is split"
     }
    ],
    "from": 384.0,
@@ -828,7 +828,7 @@
    "label": "Wait after merge",
    "since": "2026-11-07",
    "threshold_pct": 15.0,
-   "to": 451.0
+   "to": 451
   }
  ],
  "schema": 2,
