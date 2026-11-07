@@ -85,7 +85,7 @@
 //! `https://…plex.direct` name that only public DNS resolves, so a LAN with its uplink down could
 //! not reach a server one hop away. `CurlSource::open*` now asks `net::resolve` for a pin by the
 //! URL's host and port — recorded by the registry from the address plex.tv advertised beside the
-//! name, validated in `plex::origin::ResolvePin` — and applies it as ONE `CURLOPT_RESOLVE` entry
+//! name, validated in `net::origin::ResolvePin` — and applies it as ONE `CURLOPT_RESOLVE` entry
 //! on every easy handle it attaches, each handle dialling one URL: a redirect's target is looked up
 //! by its own host and port, so a hop to another `*.plex.direct` name is as offline-safe as the
 //! first request. The hostname stays in the URL, so SNI and certificate
@@ -601,8 +601,9 @@ pub trait UrlAuthorizer {
     fn allows(url: &str) -> bool;
 }
 
-/// The demuxer's owned HTTPS source. Object safety keeps a caller's authorization policy out
-/// of the lower feed worker while retaining this transport's read, seek and abort semantics.
+/// An HTTPS source seen without its authorization policy. Object safety keeps the [`UrlAuthorizer`]
+/// type parameter out of a caller that cannot name it while retaining this transport's read, seek
+/// and abort semantics.
 pub trait RangeReader {
     fn body_receipt(&mut self) -> crate::stream::BodyReceipt;
     fn body_complete(&self) -> bool;
@@ -630,7 +631,7 @@ pub trait RangeFactory: Send + Sync {
         -> Result<Box<dyn RangeReader>, OpenErr>;
 }
 
-/// Zero-sized factory chosen by the owner of the credential policy, then moved with a demux job.
+/// Zero-sized factory chosen by the owner of the credential policy.
 pub struct AuthorizingRangeFactory<A: UrlAuthorizer>(std::marker::PhantomData<A>);
 impl<A: UrlAuthorizer> AuthorizingRangeFactory<A> {
     pub const fn new() -> Self { Self(std::marker::PhantomData) }

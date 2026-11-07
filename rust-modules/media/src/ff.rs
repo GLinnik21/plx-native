@@ -462,8 +462,8 @@ enum Src {
         path: CString,
     },
     /// Owned by this state, and so by the demux thread — which is why teardown reaches it through
-    /// `curlio`'s registry instead of a pointer the engine holds. `curlio`'s module doc says why
-    /// that is not the accident it looks like.
+    /// `curlio`'s registry instead of a pointer the engine holds. `plx_net::range_io`'s module doc
+    /// (`net/src/curlio.rs`) says why that is not the accident it looks like.
     Curl(Box<crate::curlio::CurlSource>),
     Idle,
 }

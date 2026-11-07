@@ -2922,8 +2922,9 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         // …and the same interrupt for the OTHER transport. An https demux is parked in
         // `curl_multi_wait`, where no `shutdown(2)` of ours can reach it — this writes a byte to
         // the wake pipe it is polling. A no-op when the live source is a plaintext socket, or when
-        // there is none; exactly one of these two lines ever has anything to do. `curlio`'s module
-        // doc explains why the handle lives in a registry rather than being passed up to here.
+        // there is none; exactly one of these two lines ever has anything to do. `plx_net::range_io`'s
+        // module doc (`net/src/curlio.rs`) explains why the handle lives in a registry rather than being
+        // passed up to here.
         crate::curlio::abort_active();
     }
     sp.mark("unblock");
