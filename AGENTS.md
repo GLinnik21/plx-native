@@ -161,7 +161,7 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   `tvdev` binary (`make deploy` records the profile on the set); build with `make ARM_PROFILE=release
   deploy` before any other FPS or smoothness measurement (`docs/agent-reference.md`, "ARM_PROFILE").
 - After editing `rust-modules/src/**/*.rs` or a layer crate's `rust-modules/*/src/**/*.rs`, also check the shipping feature set with
-  `make check-nodef` (`cargo check --lib --no-default-features --features play-uri,play-feed`, non-incremental, in the checkout's
+  `make check-nodef` (`cargo check --lib --no-default-features --features play-feed`, non-incremental, in the checkout's
   own `target/`: it shares the third-party units `make lint` built and adds no tree) when the
   Claude-only release hook did not run. Keep the `CARGO_INCREMENTAL=0` prefix on every other direct
   `cargo` call: they bypass `make`,

@@ -354,11 +354,10 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   every target and runs each for 10 s on a PR that touches the package or a parser, and runs each for 5
   minutes weekly, resuming from a cached corpus when the cache still holds one. Not a gate: nothing in `make check` runs it.
 - `make check-nodef` — the shipping-feature-set type check, `cargo check --lib
-  --no-default-features --features play-uri,play-feed`, which is the configuration `RELEASE=1`
-  ships and which `make check` does not cover. The backend features are part of the shipping set:
-  both are in the application crate's `default`, so the bare `--no-default-features` would check a
-  build with no playback backend (`PLAYBACK_BACKENDS=uri|feed|none` checks the matching
-  single-backend set, as for `RELEASE=1`). `CARGO_INCREMENTAL=0`, as every one-shot gate. It
+  --no-default-features --features play-feed`, which is the configuration `RELEASE=1`
+  ships and which `make check` does not cover. The backend feature is part of the shipping set:
+  `play-feed` is in the application crate's `default`, so the bare `--no-default-features` would
+  check a build with no playback backend. `CARGO_INCREMENTAL=0`, as every one-shot gate. It
   builds in the checkout's own
   `target/` (or the `CARGO_TARGET_DIR` a lane exports, as `make lint` does) rather than a tree of
   its own, and restores the cargo seed first like `lint`. Sharing is safe because cargo hashes a
@@ -983,13 +982,6 @@ wayland-client, glib-2.0, luna-service2, and LG's proprietary `libplayerAPIs` / 
 bundled in the NDK), so the Starfish C++ calls get real link-time symbol checking. Every one of
 those has the **same SONAME on every webOS release from 2.2.3 to 11.2.0**, which is what makes
 linking them normally the right call — check any of it with `tools/fwcompat.py --inventory`.
-
-`PLAYBACK_BACKENDS=uri` omits the Feed Starfish objects and the `libplayerAPIs` / `libpf-1.0`
-imports. Grade that artifact with `PLAYBACK_BACKENDS=uri ./ci/check-elf.sh pkg/plxnative` (or pass
-`uri` as the script's second argument). The gate requires the Feed callback hook and the full
-`ci/expected-dt-needed.txt` set for the default `both` and explicit `feed` modes; URI mode
-requires the hook and both Feed imports to be absent and matches the exact
-`ci/expected-dt-needed-uri.txt` set. A bare `ci/check-elf.sh` grades the default `both` artifact.
 
 **Two families are deliberately NOT linked because their SONAME MOVES**: `libcurl`
 (`.so.5`→`.so.4`) and `libAcbAPI` (*deleted outright* at webOS 5.0). A `DT_NEEDED` entry is a hard
@@ -2521,7 +2513,7 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   and onto the `armed` line; any other token leaves the probe unarmed. Read at each playback start, no relaunch; skipped for a hero preview. No Engine
   runs, so nothing is reported to Plex (no timeline, scrobble or unscrobble). The event log gets `uriprobe: …` lines ending in one `summary` line, never the URL,
   token, host or a service payload; a tester sends those lines and removes the file.
-  `dev::DIAG`, so it does not move the boot screen; the play-uri crate's `uriprobe` (the machine), `dev::uriprobe` (the application's driver over it), `media::player::uriprobe_drive` (its route half and port)),
+  `dev::DIAG`, so it does not move the boot screen; `media::player::uriprobe_drive` is its route half and port, and nothing installs a probe behind that port yet, so the trigger is not read),
   `/tmp/plxnative-url` (override the streamed part
   URL) and **`/tmp/plxnative-playurl`** (the same, plus the LOAD DECLARATION — one JSON object,
   `{"url":…,"vcodec":…,"acodec":…,"fps":…,"dovi":{…},"atmos":…}`, which is what the pipeline test
