@@ -23,7 +23,8 @@ or a SIGSEGV, on a device with no debugger.
 
 This project has paid for that twice: `setHdrInfo` linked fine and was simply absent on
 webOS 4.5 (feature dropped after the fact), and `docs/ffmpeg-demuxer-plan.md` ranks "ABI
-offset mismatch" as the highest project risk. The FFmpeg struct offsets in `ff.rs` have
+offset mismatch" as the highest project risk. The FFmpeg struct offsets in
+`rust-modules/media-codecs/src/ffi.rs` have
 been re-derived from device binaries at least five separate times.
 
 All paths below are relative to the repo root. The TV address comes from the `Makefile`
@@ -112,7 +113,7 @@ account for two things that bite on this target:
   4-byte pad at +100 aligns it. Miss the pad and every later field is wrong.
 
 Record each offset as a named constant with its derivation in the comment — the house
-pattern is `ff.rs`'s `OFF_STREAM_*` / `OFF_CTX_*` / `OFF_FRAME_*` blocks.
+pattern is `rust-modules/media-codecs/src/ffi.rs`'s `OFF_STREAM_*` / `OFF_CTX_*` / `OFF_FRAME_*` blocks.
 
 ### 4. Add the stub symbol
 
@@ -129,7 +130,7 @@ matter (`void foo(void){}` is fine) — only the name is resolved at link time.
 ### 5. Add a runtime ABI self-check
 
 Any code that pokes raw offsets must prove them at runtime and **disable itself** on
-mismatch rather than run on. The pattern (`ff.rs`'s `Venc::open`): after opening the
+mismatch rather than run on. The pattern (`rust-modules/media-codecs/src/venc.rs`'s `Venc::open`): after opening the
 codec, round-trip the poked fields through an already-trusted struct
 (`avcodec_parameters_from_context`) and compare. On mismatch, log and latch the feature
 off. Corrupting memory silently is far worse than losing a dev feature.

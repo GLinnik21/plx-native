@@ -828,6 +828,7 @@ dependencies = [
  "plx_gfx",
  "plx_machine",
  "plx_media",
+ "plx_media_codecs",
  "plx_net",
  "plx_platform",
  "plx_playback_contract",
@@ -835,6 +836,16 @@ dependencies = [
  "plx_telemetry",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "plx_media_codecs"
+version = "0.0.0"
+dependencies = [
+ "libc",
+ "plx_base",
+ "plx_media_codecs",
+ "plx_playback_contract",
 ]
 
 [[package]]
@@ -963,6 +974,7 @@ dependencies = [
  "plx_gfx",
  "plx_machine",
  "plx_media",
+ "plx_media_codecs",
  "plx_net",
  "plx_platform",
  "plx_plex",
