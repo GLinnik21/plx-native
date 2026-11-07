@@ -791,6 +791,7 @@ dependencies = [
  "plx_machine",
  "plx_net",
  "plx_platform",
+ "plx_playback_contract",
  "plx_plex",
  "plx_telemetry",
  "serde",
@@ -829,6 +830,7 @@ dependencies = [
  "plx_media",
  "plx_net",
  "plx_platform",
+ "plx_playback_contract",
  "plx_plex",
  "plx_telemetry",
  "serde",
@@ -862,6 +864,14 @@ dependencies = [
  "plx_machine",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "plx_playback_contract"
+version = "0.0.0"
+dependencies = [
+ "plx_base",
+ "serde",
 ]
 
 [[package]]

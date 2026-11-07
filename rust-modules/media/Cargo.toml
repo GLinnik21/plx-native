@@ -40,6 +40,7 @@ lab-diagnostics = []
 test-support = ["plx_base/test-support", "plx_machine/test-support", "plx_platform/test-support", "plx_gfx?/test-support", "plx_net/test-support", "plx_plex/test-support", "plx_telemetry/test-support", "plx_data/test-support"]
 
 [dependencies]
+plx_playback_contract = { path = "../playback-contract" }
 plx_base = { path = "../base" }
 plx_machine = { path = "../machine" }
 plx_platform = { path = "../platform" }
