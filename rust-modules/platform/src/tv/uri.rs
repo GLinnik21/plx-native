@@ -1,4 +1,5 @@
-//! Nonblocking, addressed transport to the developer URI probe. Payloads stay opaque here.
+//! Nonblocking, addressed transport to `com.webos.media` for the URI playback drivers (the product
+//! `plx_play_uri::backend::UriBackend` and the developer probe). Payloads stay opaque here.
 use std::sync::atomic::{AtomicU8, Ordering};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

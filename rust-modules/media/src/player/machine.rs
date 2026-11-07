@@ -44,7 +44,8 @@ pub struct Player {
     /// A DECISION of this machine, with defined transitions, not an expression the frame
     /// re-derives: it is set when the ACB bind transaction has actually reached the sink (in a
     /// `devtriggers` build also when a URI-mode probe session's service reports `playing`, which
-    /// binds no sink of ours) and cleared only when the sink is confirmed unbound or the probe's
+    /// binds no sink of ours; in any build with the product URI driver installed, also while that
+    /// driver owns the ACB plane) and cleared only when the sink is confirmed unbound or the probe's
     /// registration release is acknowledged. The controlled URI ACB experiment retains plane
     /// ownership through bus release until app exit. A logical probe stop retains the observation
     /// while release remains unresolved. Read it; never recompute it. Through
