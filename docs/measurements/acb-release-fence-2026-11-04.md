@@ -23,7 +23,7 @@ re-derived while writing this note.
 
 1. **`AcbCore::setState` @0x1e9dc answers `-2` without sending when its registered latch
    (`this[9]`) is 0.** The caller's task id is not written on that path, which is why the seam
-   (`acb_unload` in `src/video_plane.c`) reads the id from a local and reports it only for an
+   (`acb_unload` in `src/video_plane.c`) reads the id from its own zeroed slot (not the shared one) and reports it only for an
    accepted call, and why the plane owner treats `-2` as "released, no callback to wait for".
 2. **Otherwise it calls `createTask(type 3, &taskId)` and returns 1.** `createTask` writes a
    client-local id, taken from the counter at `+0x15c`, synchronously, before the `/setState`
