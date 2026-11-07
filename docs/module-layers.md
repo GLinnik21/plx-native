@@ -104,6 +104,7 @@ telemetry      plex  net                                                  + plat
 plex           net                                                        + platform machine base
 net                                                                       + platform base
 gfx                                                                       + platform machine base
+play_feed      net  playback_contract  media_codecs                       + platform base
 media_codecs   playback_contract                                          + base
 playback_contract                                                         + base
 platform                                                                             machine base
@@ -123,7 +124,7 @@ base
 | ui | `ui` (the library) | 51k | 47% |
 | data | `stores browse metadata person collection search subsearch viewstate viewledger pms watchlist catalog hudpacks` | 27k | 56% |
 | session | `auth` | 11k | 35% |
-| media | `ff aq abr hls curlio player route` | 56k | 49% |
+| media | `ff` (a facade over `play_feed`'s demuxer) `abr curlio player route speed_audio`; `aq` and `hls` moved to `play_feed` | 56k | 49% |
 | appkit | `appkit` (the player panels and the Sources row several screens draw) | 13k | 32% |
 | screens | `screens` | 54k | 28% |
 | app | `crate app dev lab capture remote focusprobe shot coldstart textinput system release_line port` | 42k | 12% |
@@ -153,6 +154,18 @@ PCM decode and conversion, `speed_audio`, `SpeedDecoder`, `Venc`) and the subtit
 re-exports its bindings; the demux is `plx_play_feed`'s) and so does the application crate (`capture`
 drives `Venc`); it names neither `media` nor Plex. `ci/check-deps.sh`
 reads the whole crate for the same IO and clock gates as every other layer.
+
+`play_feed` is a seventeenth layer, declared the same way. Its crate is `plx_play_feed`
+(`rust-modules/play-feed/`) and it names `base`, `platform`, `net`, `playback_contract` and `media_codecs`: the
+buffer-feed backend (the guarded transport, the physical FFmpeg demuxer and HLS parser, the native payload
+construction and executor, which implement the Feed port traits) and the simulator's `VideoSink` stand-in
+(`ffi_host`, behind that crate's `hostsim` feature). It was `plx_media::player`'s own until the player stopped
+depending on a backend: `plx_media` is the neutral orchestration (routes, the engine, the `BackendRunner`) and
+does not name it in production code, while the application composes it
+(`app/adapters/backends.rs`, behind the application crate's `play-feed` feature, which the release build
+passes explicitly). `media` and `screens` list it in `ci/module-layers.ini` for their TESTS, which drive the real
+Feed through a dev-dependency edge; `ci/check-deps.sh` reads the whole crate for the same IO and clock gates as
+every other layer.
 
 The Watchlist adds two data modules and no new edge. `watchlist` (rows, match table, `TileState`,
 intent ledger, comparator; with `stores::watchlist`) and `catalog` (the Discover-only item page; with

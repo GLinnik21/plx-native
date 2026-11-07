@@ -105,20 +105,22 @@ fn force_retains_feed_limits_and_session_snapshot_across_retry_and_track_edits()
     assert_eq!(current_retry_context(&ps, 123).direct_play_mode, DirectPlayMode::Forced);
     assert!(forced_direct_play(&ps.publication()));
     assert!(audio_track_direct_plays(&ps, "eac3", 8, 0), "Force bypasses device channels");
-    assert!(audio_track_direct_plays(&ps, "dca", 6, 0), "Force attempts DTS without a declared row");
-    assert!(audio_track_direct_plays(&ps, "truehd", 8, 0));
-    assert!(video_feed_supported("vp9", plx_data::metadata::DvPresentation::NotDv, &plx_platform::devcaps::Caps::assumed()));
+    assert!(!audio_track_direct_plays(&ps, "dca", 6, 0), "Force admits DTS only with a table DTS row (assumed caps have none)");
+    assert!(!audio_track_direct_plays(&ps, "truehd", 8, 0));
+    assert!(!audio_track_direct_plays(&ps, "", 0, 0));
+    assert!(!video_feed_supported("vp9", plx_data::metadata::DvPresentation::NotDv, &plx_platform::devcaps::Caps::assumed()));
     let blocked_dv = plx_data::metadata::Dovi { present: true, profile: 5, bl_compat: 0, ..plx_data::metadata::Dovi::NONE }
         .presentation(false, plx_platform::devcaps::dv::DvCapability::Unsupported, true);
     assert!(!video_feed_supported("hevc", blocked_dv, &plx_platform::devcaps::Caps::assumed()));
-    assert!(video_feed_supported("av1", plx_data::metadata::DvPresentation::NotDv, &plx_platform::devcaps::Caps::assumed()), "Force attempts AV1 despite a missing row");
+    assert!(!video_feed_supported("av1", plx_data::metadata::DvPresentation::NotDv, &plx_platform::devcaps::Caps::assumed()), "Force never feeds AV1 to a set whose table lists no AV1 decoder");
     assert!(hls_abr_control(&ps).is_none());
     assert!(auto_original_watch(&ps).is_none());
     assert!(fallback_auto_to_hls(&mut ps, 1000, 0).is_none());
     assert!(transcode_seek(&mut ps, 0).is_none());
     assert!(recover_auto_to_original(&mut ps, 0).is_none());
-    assert!(commit_audio_selection(&mut ps, CarriedAudio { sid: 9, ordinal: 0, codec: "truehd".into(), channels: 8, can_normalize_loudness: false, immersive: false, sample_rate: 0, bit_depth: 0 }));
-    assert_eq!(cur_audio_sid(&ps), 9, "the explicit unsupported-by-declaration pick is preserved");
+    commit_audio_selection(&mut ps, CarriedAudio { sid: 9, ordinal: 0, codec: "truehd".into(), channels: 8, can_normalize_loudness: false, immersive: false, sample_rate: 0, bit_depth: 0 });
+    assert!(play_verdict(&ps).unwrap().contains("Force Direct Play is on"));
+    assert_eq!(cur_audio_sid(&ps), 0, "refusing an unsupported track leaves the current selection intact");
     restore_direct_play_mode(DirectPlayMode::Auto);
 }
 
@@ -178,22 +180,24 @@ fn a_96_khz_aac_is_converted_not_reloaded_natively_by_the_paths_that_skip_the_de
     assert_eq!(desired_audio_idx(&ps), -1, "a 96 kHz AAC must not be staged for a native reload");
     assert!(commit_audio_selection(&mut ps, aac(48_000)));
     assert_eq!(desired_audio_idx(&ps), 2, "a 48 kHz AAC reloads natively");
-    // Force Direct Play attempts the original high-rate track without server conversion.
+    // Force Direct Play refuses it, as it refuses a 5.1 FLAC (a 96 kHz stereo one is resampled by the app and plays), rather than failing at the Load
     ps.direct_play_mode = DirectPlayMode::Forced;
     restore_direct_play_mode(DirectPlayMode::Forced);
-    assert!(audio_track_direct_plays(&ps, "aac", 2, 96_000));
-    assert!(!audio_converted_by_server(&ps, "aac", 2, 96_000));
-    assert!(commit_audio_selection(&mut ps, aac(96_000)));
-    assert_eq!(cur_audio_sid(&ps), 31);
+    assert!(!commit_audio_selection(&mut ps, aac(96_000)));
+    assert!(play_verdict(&ps).unwrap().contains("Force Direct Play is on"));
     restore_direct_play_mode(DirectPlayMode::Auto);
     crate::player::reset_route_requests_for_test(&mut ps);
     crate::player::reset_audio_track(&mut ps);
 }
 
-/// Force keeps a later explicit track pick at both stereo and surround widths without consulting
-/// declarations or selecting app PCM. The native open reports a physical refusal.
+/// **A mid-play pick under Force Direct Play accepts a STEREO track the app decodes, and refuses a
+/// surround one** (owner, 2026-10-28, #1082: the app never mixes a surround source down by default): the
+/// pick goes through the same `audio_direct_plays_with` the planner uses, so a stereo DTS track on a set
+/// whose table has no DTS row is staged for a native reload (the app decodes it, nothing is lost) while
+/// a DTS 5.1 track is refused as it was before the app decoded anything; with no lossy policy both are
+/// refused (`force_retains_feed_limits_and_session_snapshot_across_retry_and_track_edits`).
 #[test]
-fn a_forced_pick_keeps_original_track_without_app_decode_or_conversion() {
+fn a_forced_pick_of_an_app_decodable_track_is_accepted() {
     let mut ps = PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     let dts = |channels| CarriedAudio {
@@ -203,10 +207,10 @@ fn a_forced_pick_keeps_original_track_without_app_decode_or_conversion() {
     ps.direct_play_mode = DirectPlayMode::Forced;
     restore_direct_play_mode(DirectPlayMode::Forced);
     crate::player::reset_audio_track(&mut ps);
-    assert!(audio_track_direct_plays(&ps, "dca", 2, 48_000), "no DTS row still attempts original");
-    assert!(commit_audio_selection(&mut ps, dts(2)));
-    assert_eq!(cur_audio_sid(&ps), 41);
-    assert!(play_verdict(&ps).is_none());
+    assert!(!audio_track_direct_plays(&ps, "dca", 2, 48_000), "sanity: no DTS row, no policy");
+    assert!(!commit_audio_selection(&mut ps, dts(2)), "with no policy the pick is refused");
+    assert!(play_verdict(&ps).is_some());
+    ps.play_verdict = None;
 
     ps.begin_attempt(std::sync::Arc::new(plx_platform::devcaps::Caps {
         app_lossy: plx_platform::devcaps::AppLossy::Measured,
@@ -214,12 +218,13 @@ fn a_forced_pick_keeps_original_track_without_app_decode_or_conversion() {
     }));
     assert!(audio_track_direct_plays(&ps, "dca", 2, 48_000));
     assert!(!audio_decoded_in_app(&ps, "dca", 6, 48_000), "a surround track is not mixed down under Force");
-    assert!(audio_track_direct_plays(&ps, "dca", 6, 48_000));
+    assert!(!audio_track_direct_plays(&ps, "dca", 6, 48_000));
     assert!(!audio_converted_by_server(&ps, "dca", 2, 48_000), "Forced converts nothing");
-    assert!(audio_track_direct_plays(&ps, "truehd", 2, 48_000), "an unmeasured row is attempted");
-    assert!(commit_audio_selection(&mut ps, dts(6)), "a DTS 5.1 pick remains native");
-    assert!(!audio_decoded_in_app(&ps, "dca", 6, 48_000));
-    assert!(commit_audio_selection(&mut ps, dts(2)), "a stereo pick remains native too");
+    assert!(!audio_track_direct_plays(&ps, "truehd", 2, 48_000), "an unmeasured row stays refused");
+    assert!(!commit_audio_selection(&mut ps, dts(6)), "a DTS 5.1 pick is refused, not decoded to stereo");
+    assert!(play_verdict(&ps).is_some());
+    ps.play_verdict = None;
+    assert!(commit_audio_selection(&mut ps, dts(2)), "the app decodes a stereo one");
     assert!(play_verdict(&ps).is_none(), "{:?}", play_verdict(&ps));
     assert_eq!(desired_audio_idx(&ps), 3, "staged for a native reload of its ordinal");
     restore_direct_play_mode(DirectPlayMode::Auto);

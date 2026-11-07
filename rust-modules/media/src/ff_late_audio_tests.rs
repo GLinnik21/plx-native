@@ -312,7 +312,7 @@ impl DemuxRun {
             let off = plx_base::task::OffFrame::for_test();
             // `acodec` is the Load payload's audio codec: the demuxer feeds the track that matches.
             super::test_support::with_demux_session(|session| {
-                demux(&off, origin, "/library/parts/1/file.mkv".into(), acodec.into(), false, DemuxTransport::new(crate::curlio::range_factory(), crate::curlio::CREDENTIAL_GATE), session, None, None, vp, ap, hp)
+                demux(&off, origin, "/library/parts/1/file.mkv".into(), acodec.into(), DemuxTransport::new(crate::curlio::range_factory(), crate::curlio::CREDENTIAL_GATE), session, None, None, vp, ap, hp)
             })
         });
         DemuxRun { video, audio, thread: Some(thread), hs }

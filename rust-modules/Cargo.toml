@@ -1,5 +1,5 @@
 # A cargo workspace with this package as its ROOT; the other members are the storage helper and the
-# layer crates split out of the application so far (base/, machine/, net/, platform/, gfx/, ui/, plex/, telemetry/, data/, session/, media/, appkit/, screens/;
+# layer crates split out of the application (everything under `rust-modules/*/` with a `[package.metadata.plx] mount`: base/, machine/, net/, platform/, gfx/, ui/, plex/, telemetry/, data/, session/, media/, play-feed/, appkit/, screens/ and the contract and codec crates;
 # docs/module-layers.md).
 # The root keeps the literal `version` below (release tooling reads it), `make`/CI run their usual
 # commands from this directory against this package (a bare `cargo test`/`check`/`build` here still
@@ -255,8 +255,10 @@ plx_data = { path = "data" }
 # who's-watching picker and the install of the chosen profile's credentials, and the owner machine
 # that holds them. It reads no build variable: the version it reports is `plx_plex`'s.
 plx_session = { path = "session" }
-# The media layer (ci/module-layers.ini `[media]`): the bundled-FFmpeg demuxer, the HTTPS media plane,
-# HLS, adaptive bitrate, the buffer-feed player engine and route selection. It exports the two C callbacks `src/starfish.c` calls, and links nothing on the television.
+# The media layer (ci/module-layers.ini `[media]`): neutral orchestration over the backend seam: the HTTPS
+# media plane, adaptive bitrate, the player engine and route selection. The demuxer, HLS and the buffer-feed
+# engine are `plx_play_feed`'s, and the two C callbacks `src/starfish.c` calls are `plx_play_feed::sf_event`'s and
+# `plx_platform`'s (`webos::video_sink`); it links nothing on the television.
 plx_media = { path = "media", default-features = false }
 plx_playback_contract = { path = "playback-contract" }
 plx_play_uri = { path = "play-uri", optional = true }

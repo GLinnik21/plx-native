@@ -86,7 +86,7 @@ def build_configuration(stamp: str) -> "str | None":
     None, as the Makefile's own refusal to link that build says.
 
     Only the FEATURE half is decoded, and matched WHOLE rather than by substring: the "shots"
-    recipe in the Makefile's header is `--no-default-features --features devtriggers`, which a
+    recipe in the Makefile's header is `--no-default-features --features devtriggers,play-feed`, which a
     substring test would grade as a release build and then fail for carrying exactly the surface it
     asked for. `+symbols`, `+nightly:`, `+rc:` and `+tel:` are all optional so a stamp written by an older
     Makefile still decodes its trailing fields, and the feature flags are lazy so they cannot swallow a
@@ -1381,7 +1381,7 @@ check(binary.exists(), f"the staged payload carries the binary ({binary.name})")
 #
 # It must not sit under `if BUILD:` — `BUILD` is `None` for any stamp that is neither shipped
 # configuration, and the Makefile itself documents a third (`RUST_FEATFLAGS="--no-default-features
-# --features devtriggers"`, the on-device screenshot recipe). Nested, that combination would satisfy
+# --features devtriggers,play-feed"`, the on-device screenshot recipe). Nested, that combination would satisfy
 # `release-guard` (RELEASE is non-empty), print "SKIP — neither shipped configuration", and package
 # a dev-trigger binary under the released id on a green run. "This package carries no dev-trigger
 # surface" is a property of the BYTES and needs no stamp to grade.

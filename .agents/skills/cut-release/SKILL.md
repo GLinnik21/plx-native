@@ -116,7 +116,7 @@ mechanism.
 unconditionally** — the check sits outside the `pkg/.build-config` branch, gated on nothing but
 "this package is the stable id". That matters because the stamp cannot be trusted to be one of the
 two shipped configurations: the Makefile documents a third (`RUST_FEATFLAGS="--no-default-features
---features devtriggers"`, the on-device screenshot recipe), and while the check was nested it would
+--features devtriggers,play-feed"`, the on-device screenshot recipe), and while the check was nested it would
 have printed "SKIP — neither shipped configuration" and packaged a dev-trigger binary under the
 released id on a green run. So the gate genuinely holds against the two ways past the recipe: the
 documented `ALLOW_DEV_ON_STABLE=1` hatch, and a third feature set that satisfies `release-guard`

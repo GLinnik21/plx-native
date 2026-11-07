@@ -17,7 +17,7 @@ pub(super) struct FeedOpenRequest {
     readouts: Option<crate::adaptive::AbrInbox>,
 }
 
-/// Original wire evidence for Force preflight and the declaration log. The converted sink
+/// Original wire evidence for the declaration log. The converted sink
 /// presentation is separately represented by `feed_payload.dv`.
 pub(super) fn original_dv(dv: plx_data::metadata::Dovi) -> plx_playback_contract::feed::OriginalDvFacts {
     plx_playback_contract::feed::OriginalDvFacts {

@@ -1382,7 +1382,7 @@ RE_LOAD = re.compile(r'load: v=(\S+) a="([^"]*)" fps=([\d.]+) '
 RE_SINK_ECHO = re.compile(r"smp_cb type=5 .*?video/x-(h264|h265|hevc)\b.*?\b(\d{3,4}) (\d{3,4}) \S+ ([\d.]+)")
 # The audio LANE the demuxer actually fed, off the same `ff: v=#0 …` line: `a=#<index>`.
 RE_ALANE = re.compile(r"ff: v=#0 .*\ba=#(-?\d+)")
-# The RATIONAL the Load payload's esInfo actually carries — `engine::fps_rational`'s output, as
+# The RATIONAL the Load payload's esInfo actually carries — `plx_play_feed::fps_rational`'s output, as
 # opposed to the float that went into it. Emitted on every playback that declares a non-zero rate.
 RE_ESINFO = re.compile(r"esInfo: videoFps (\d+/\d+)")
 # GStreamer's monotonic debug timestamp. GST is used only for lxvideosink's per-picture cadence;

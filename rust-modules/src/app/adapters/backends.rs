@@ -262,11 +262,10 @@ fn test_raw_sink() -> &'static dyn VideoSink {
 fn test_clock_us() -> u64 { 0 }
 
 /// Compose the buffer-feed backend into the player's physical set: the Feed backend over the
-/// process's shared feed state and `hooks`, with the URI driver's seat beside it, and the sink the
-/// set's hooks go through handed to the adapter beside it. The pipeline callback has no user-data
-/// pointer, so its hooks are installed here too, once per process, before the first `Load`. The
-/// adapter starts with the contract's URI-only set, so this runs before the URI driver is
-/// installed and before the session is told the set. False when the adapter refused the set.
+/// process's shared feed state and `hooks`, and the sink the set's hooks go through handed to the
+/// adapter beside it. The pipeline callback has no user-data pointer, so its hooks are installed
+/// here too, once per process, before the first `Load`. This runs before the session is told the
+/// set. False when the adapter refused the set.
 #[cfg(feature = "play-feed")]
 pub(crate) fn install_feed(adapter: &mut PlayerAdapter, hooks: &'static NativeHooks) -> bool {
     let set = FeedSet::new(FeedBackend::new(FeedResources::new(&FEED_SHARED, hooks)));

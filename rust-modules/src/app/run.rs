@@ -7290,6 +7290,38 @@ mod lifecycle_regression_tests {
         );
     }
 
+    /// **A claim hold's pause is the native pause an engineless foreground-resume Load must clear.**
+    /// `before_load` (Playing) reads the transport's own pause (`transport::paused`), the one the new
+    /// Load arms its clock hold from, so a pause the claim hold loaned still counts: with the viewer's
+    /// view of it (`viewer_paused_for`, which excludes the hold's loan) the Load would arm its
+    /// hold from a stale pause and start under it, owing a late `PlayClock` the whole Play.
+    #[test]
+    fn before_load_clears_a_pause_the_claim_hold_owns_when_no_engine_is_live() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::new() else {
+            eprintln!(
+                "SKIPPED before_load_clears_a_pause_the_claim_hold_owns_when_no_engine_is_live: \
+                 lifecycle fixture worker thread could not be spawned"
+            );
+            return;
+        };
+        let _ = refuse_restore(&mut rig);
+        let (ps, pa) = (&mut rig.app.player.session, &mut rig.app.adapters.player);
+        assert!(!pa.is_live(), "the premise: a Prepared restore with no Engine");
+        plx_media::player::commit_paused(ps, pa, true);
+        plx_media::player::claim_hold::hold_for_test(7, true);
+        plx_media::route::force_applying_for_test(7);
+        assert!(plx_media::player::transport::paused(ps), "the premise: the transport reads Paused");
+        assert!(plx_media::player::claim_hold::owns_pause(), "the premise: the hold owns that pause");
+
+        PlayerForegroundActuator { pa, repause_at: &mut rig.app.repause_at }
+            .before_load(ps, 0, ForegroundClock::Playing);
+
+        assert!(!plx_media::player::transport::paused(ps),
+            "the Load's resume is committed over the hold's loan, as the Load arms its hold from it");
+        plx_media::player::claim_hold::clear();
+    }
+
     /// An exit over a parked restore whose Load was refused (`Prepared`) must retire it; main left
     /// it standing, so `playback_may_run` stayed false until the next play released it.
     #[test]

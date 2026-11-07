@@ -36,7 +36,7 @@ helper to apply the value with, so a request belongs in `plx_net`. This is a cou
 call is on the path every request takes; the wire tests (`net_user_agent_tests.rs`,
 `stream_user_agent_tests.rs`, `curlio_redirect_tests.rs`) are what prove the value reaches the socket.
 A libavformat open of a URL (its own HTTP, its own name) is not visible to this gate; the only one is the
-devtriggers-only `ffprobe` probe in `media/src/ff.rs`.
+devtriggers-only `ffprobe` probe in `play-feed/src/ff.rs`.
 
     ci/check-user-agent.py            # the gate (check-python-steps.txt runs it)
 """

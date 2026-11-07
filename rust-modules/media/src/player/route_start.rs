@@ -566,7 +566,7 @@ fn feed_start_rate(ps: &mut crate::route::PlaybackSession)
         log("start_bufferfeed: requested playback speed is unavailable for this Feed source");
         return Err(crate::route::RouteStartResult::StartFailed);
     }
-    // Physical payload/Force preflight still consumes the offered rate. Publish the session's
+    // The physical payload still consumes the offered rate. Publish the session's
     // accepted value before that preflight; a refused native start puts the old offer back
     // ([`restoring_offered_rate_on_failure`]).
     ps.step_readout(super::readout::ReadoutEvent::RateSelected { permille: want });
@@ -1715,10 +1715,11 @@ mod feed_start_controls_tests {
         let mut ps = crate::route::PlaybackSession::IDLE;
         crate::ff::force_speed_decoder_for_test(true);
         ps.accept_requested_rate(1500);
-        crate::route::set_direct_play_mode_for_test(&mut ps, crate::route::DirectPlayMode::Forced);
+        // The set already refused a PCM session, so the offer holds no speed above 1x.
+        ps.step_readout(super::super::readout::ReadoutEvent::SpeedRefused);
 
         assert!(feed_start_rate(&mut ps).is_err(),
-            "Force cannot silently reinterpret a requested PCM speed as 1x");
+            "a requested speed the offer does not hold is refused, never reinterpreted as 1x");
         assert_eq!(ps.readout().play_rate_permille(), super::super::RATE_NORMAL);
         assert_eq!(ps.requested_rate_permille(), 1500,
             "a refused candidate does not alter the viewer's logical rate goal");

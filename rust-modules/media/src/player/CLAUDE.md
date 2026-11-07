@@ -84,10 +84,7 @@ and pinned to majors 63/63/61, and is built `--disable-network` with `file` as i
 so the AVIO is not merely how bytes reach it today, it is the only way they *can*. See the root
 `docs/agent-reference.md` linking section for why. It
 emits Annex-B video AUs (param sets prepended at each keyframe; a stream with no avcC/hvcC record, which is what an MPEG-TS or raw elementary stream under a `.mp4` name looks like since the route trusts the part's file NAME, arrives with start codes already: `ff::NalInput` decides it once per stream from the extradata, H.264 is framed in place and held back until its first keyframe, and HEVC is refused like a codec with no framing; its clock is also moved to 0 at the demuxer (`ff::stream_origin_ns`: packets rebased after the read, the origin added back on a seek) because the engine takes a fresh play's first keyframe to be near 0 and a capture's clock starts wherever the transmitter's did; Matroska and MP4 keep theirs; #1084) and, for AV1, Section-5 temporal units (TD OBU first, the av1C sequence header and metadata OBUs in-band on keyframes; `/tmp/plxnative-av1obu` = notd,noseq,raw tokens varies it on a debug build), for VP9 the demuxed packet unchanged (a frame carries its own headers and libpf's `video/x-vp9` caps have no `codec_data`), and AC3/EAC3, ADTS-framed AAC, or DTS core audio frames,
-and seeks by time via `av_seek_frame` (libavformat's own Cues index). The DTS-core extraction
-described above belongs to Auto. Force Direct Play
-preserves source audio packets; it neither strips DTS-HD extensions nor runs app PCM decode,
-and the native feed refuses a source shape it cannot represent.
+and seeks by time via `av_seek_frame` (libavformat's own Cues index).
 
 ## Threading model (this is the whole ballgame)
 
@@ -124,8 +121,8 @@ and the native feed refuses a source shape it cannot represent.
   feed and services seeks.
 - `timeline.rs` owns the adapter's periodic PMS
   reporter: it consumes fresh normalized samples, never backend globals. Its stopped handle
-  joins off-frame before the final stopped report. The **demux thread body is `ff::demux`**
-  (spawned by `route_start::start_bufferfeed`): open
+  joins off-frame before the final stopped report. The **demux thread body is `plx_play_feed::ff::demux`**
+  (spawned by `plx_play_feed::native_executor::launch_native_open`): open
   the part URL, read+convert packets, push AUs to the two lanes; **and service seeks** — it
   `av_seek_frame`s on `FEED_SHARED.seek_to_ns` (the demuxer's target, not the pending-seek slot
   below) between two `av_read_frame` calls, which is the whole seek mechanism (nothing interrupts
@@ -327,7 +324,7 @@ something.
   `PlaybackStarted`). The preroll opens only while the prime is still owed (`Engine::prime_play`)
   and is owned at 0: `frames` is per-session, so the first presented frame is the landing.
   **On the ACB route (webOS 4) the landing also needs the video plane BOUND**
-  (`pump::plane_shows_the_picture`): the plane connects only through `setMediaVideoData` +
+  (`plx_play_feed::feed_pump::plane_shows_the_picture`): the plane connects only through `setMediaVideoData` +
   `acb_start` (`Stage::Streaming`), and a tick counted before that is a picture the panel never
   showed. A preroll re-paused on the first tick left the panel black ("no signal" on a VIDEO-only
   capture) until Resume, because the pause stops the ticks the bind waits on and
@@ -442,9 +439,8 @@ something.
   the C1's `kisscurl-koli`, webOS 6.5.3-47, whose row is read from the image and not observed), which
   takes no audio away and is not skipped by `nativeaudiowide`),
   minus the refusals this install learned. Auto's own stereo ceiling for Opus
-  (`OPUS_AUTO_MAX_CHANNELS`) stays as it is; Force Direct Play attempts the selected source
-  despite a missing or narrowed device row. FLAC, ALAC and LPCM are not native to the feed:
-  under Auto the app decodes them and feeds PCM
+  (`OPUS_AUTO_MAX_CHANNELS`) stays as it is; the rows add a ceiling Force Direct Play also holds
+  (`Caps::forced_feeds_audio_track`). FLAC, ALAC and LPCM are not native: the app decodes them and feeds PCM
   (`ff_pcm.rs`, `devcaps::APP_DECODED`), so a PCM Load never raises the NAMED refusal below
   (`native_audio::Kind` is Opus only). They are NOT outside the learner, though: `recovery::suspect_audio` excludes only
   aac/ac3/eac3, so a PCM Load refused before its first picture can take the facet rung (the server converts
@@ -455,33 +451,37 @@ something.
   `flac` from the set's value and with it the bit-exact 44.1 and 48 kHz FLAC. Accepted knowingly, not keyed by (codec, resampled). A stream the Load declared PCM for but the app has no decoder for
   (float or 8-bit LPCM under PMS's `pcm`) is refused in the demuxer (`ff::pcm_load_feeds_raw`) and ends as
   `demux_failed` -> `LoadRefusal::SourceFailed`, which names no facet, so the audio-only conversion rung is not
-  reached: Auto Original falls to its HLS contingency. Force Direct Play does not start a PCM
-  Load for these codecs; feed admission refuses an original wire format it cannot represent.
+  reached: Auto Original falls to its HLS contingency, Force Direct Play shows the error.
   DTS, MP3, Vorbis and TrueHD are the lossy entries of `devcaps::APP_DECODED`, enabled **per row**: `Caps::app_lossy` (`AppLossy`) is `Off` in the assumed
   fallback, `Measured` in a table that was read (the rows whose `AppDecoded::measured` carries TV evidence: DTS only, the
   U5 core decode at 13.1% of one of four cores with 60 fps held; MP3, Vorbis and TrueHD are unmeasured, so not offered) and
   `All` under the DEBUG trigger `/tmp/plxnative-appdecodelossy` (read once at boot by `devcaps::probe`), which is also how an
-  unmeasured row is measured. Under Auto, a row is decoded in the app only where it is in force
-  (`Caps::app_decodes_lossy_track`): the debug trigger puts every lossy row in force, and the
-  recovery rung can put one refused codec in force for the current request. Force Direct Play
-  neither invokes this policy nor app-decodes any source. It keeps the exact selected track
-  despite missing or learned device declarations; an unrepresentable feed wire format is
-  refused by the physical backend, and a refused native open reads out without a conversion rung.
-  **The app never mixes a source of more than two channels down to stereo by default** (owner
-  decision 2026-10-28). Under Auto the surround downmix is only the very last rung of the ladder
-  (below), after every server option was
+  unmeasured row is measured. A row is DECODED IN THE APP only where it is in force
+  (`Caps::app_decodes_lossy_track`, the one answer): the trigger puts every lossy row in force (even where the set has the
+  decoder); otherwise Force Direct Play has no native path for the track on a set without a DTS row (webOS 10+, or a refusal
+  the install learned) AND the track has at most two channels, or the recovery rung below put the codec in force (`Caps::with_app_lossy_for`).
+  **The app never mixes a source of more than two channels down to stereo by default** (owner decision 2026-10-28;
+  D1(b) and D2 as amended). `devcaps::app_decode_mixes_down(channels)` (channels outside 1..=2, so an unknown
+  width counts too) is the ONE predicate, `Caps::app_may_mix_down` its gate, and both the planner and the recovery
+  ladder read it: under Force Direct Play (D1(b)) a surround track the set has no native path for is NOT decoded
+  in the app (`app_decodes_lossy_track` is false for it, in either arm, the codec being in force or not), so the
+  Forced pick refuses it like any unplayable track (`ForcedFailure::Audio`, naming the codec; before S4 the same)
+  and a pipeline refusal of it reads out (`RecoveryEffect::NameRefusedAudio`: LG's 601 names no codec and is also a video/resource refusal, so the read-out names the
+  track the Load was fed only when the refusal is attributable to it (`OpenRecovery::refusal_attributable_to_audio`: an Engine with no picture, a codec the attempt's `Caps::native_audio_track(.., forced)` says the set does not play, not the app's PCM decode, and no video above `VIDEO_REFUSAL_FLOOR` that the facet rungs would suspect; Opus, DTS on a set with a DTS row and FLAC/ALAC/LPCM keep the generic read-out), then the same `ForcedFailure::Audio` sentence as the planner's up-front refusal; scheme of discussion #695 row 10); a track of one or two channels is no downmix and keeps the app decode. Under
+  Auto (D2) the surround downmix is only the very last rung of the ladder (below), after every server option was
   refused, and stays labelled; Auto's default for a 5.1 track the set cannot take is the server conversion that keeps its channels.
-  **One Auto exception, inside a request:** once the app-decode rung has put a codec in force (`Caps::app_lossy_in_force`) for a track of at most two channels,
+  **One exception, inside a request:** once the app-decode rung has put a codec in force (`Caps::app_lossy_in_force`) for a track of at most two channels,
   the in-force arm of `Caps::app_decodes_lossy_track` admits a track of ANY width, so a later pick of a surround track of that
   codec (`commit_audio_route`, `audio_track_direct_plays`) is a native switch that is mixed down and labelled "played in stereo"
   WITHOUT that track's own server conversion or manual encode asked first. Admitting the mix-down only for a rung entered
   for a surround source would send that pick to the server, and a refused switch rebuild is a `ClaimTail::Rejected` ("current
   stream retained", `pump::rejected_tail`), not a `LoadRefusal` the `OpenRecovery` machine steps, so it would not reach the
   labelled stereo play the ladder gives an open. Not built; the next request starts from `start` again.
-  The `appdecodelossy` debug trigger (`AppLossy::All`) can enable Auto's decoder but never overrides
-  Force. Auto never decodes in the app on its own. Force Direct Play's pick is the exact original
-  source track (`route/plan.rs`), including an explicit later audio selection; no sibling,
-  commentary, dub or app decoder substitutes for it. An Auto app-decoded track is never the set's own decoder's (the Load
+  The `appdecodelossy` debug trigger (`AppLossy::All`) is the one explicit override. Auto never decodes in
+  the app on its own, and Force Direct Play's pick is three passes (`route/plan.rs`): (1) a native track that honours the intent
+  (the selected track, or a same-language non-commentary sibling: `StandIn::SameKind`), (2) the app's decode of the
+  intended track (at most two channels), (3) only then the native stand-in of any track. A native sibling wins over the app decode, and a
+  native commentary or dub never does. An app-decoded track is never the set's own decoder's (the Load
   declares `PCM`: stereo 48 kHz S16 for a lossy codec; the track's own table rate and width for FLAC, ALAC and LPCM, or the rate
   they are resampled to as S32 below: `route::stream_pcm`), is announced without a table row, the track menu says a surround one plays in
   stereo (`route::audio_decoded_in_app`), and
@@ -493,10 +493,10 @@ something.
   (`zeros 12, beta 14`: 25 taps against 83; flat to 0.45 * out, 120 dB down over `[R/2 - 0.55 * out, R/2]`, the derivation is on the kernel),
   one per halving while the rate is even and at least 4x the output, so 192 kHz to 48 kHz is half the multiply-adds of the one ratio-4 stage it used to be;
   what is left goes through one FULL stage of ratio at most 8 down to `out * 2^k`, then `k` exact FULL 2:1 stages (halved from the output up, so an odd rate gets one table, not one per stage); the tables stay under 6.7 MB for any rate). MP3 and Vorbis stay
-  `audio_rate_bounded` under Auto (a 96 kHz Vorbis has not been through the TV), so a track above 48 kHz is the server's; DTS (a core is 48 kHz at most), TrueHD
+  `audio_rate_bounded` (a 96 kHz Vorbis has not been through the TV), so a track above 48 kHz is the server's; DTS (a core is 48 kHz at most), TrueHD
   (decimated by the app) and FLAC, ALAC and LPCM (below) are exempt. **Lossless hi-res**: a mono or stereo FLAC, ALAC or LPCM track above 48 kHz is
   resampled by the app (`ff_pcm::PcmConverter`, lossless shape) to 48 kHz, or to 44.1 kHz for a multiple of 44.1 kHz (`devcaps::pcm_load_rate`, the one rule
-  for Auto's planner, the track menu and the profile), and declared S32 whatever its own depth, at unity gain, saturating at the i32 range,
+  for the planner, Forced, the track menu and the profile), and declared S32 whatever its own depth, at unity gain, saturating at the i32 range,
   without dither or limiter; one log line per stream counts the clipped samples and the peak. A 5.1 hi-res track still converts on the server
   (the profile keeps `audio.channels <= 2` for these codecs). A table rate (8 to 48 kHz) builds no converter and stays bit-exact. TrueHD is
   decoded as FFmpeg's `truehd` decodes it, up to the 7.1 bed; an Atmos object substream is not rendered. Its access units are
@@ -521,9 +521,9 @@ something.
   below never waits for it: it rebuilds from the attempt's own narrowed `start`. A write that does not
   land (unwritable storage) leaves the record as it was, as it does for every preference: the next
   play loads the combination, is refused once more, and the ladder converts it, one refused Load
-  slower. Under Force Direct Play a learned row does not veto the original before Load; the
-  physical backend may refuse an unsupported native wire format or the native open may refuse
-  the stream. No Force recovery rung converts it. **A row is applied only on facet-clean proof** (S2a, #1046):
+  slower. Under Force Direct Play a row in force refuses before any Load: the Forced audio gate
+  (`route/plan.rs`, `ForcedFailure::Audio`) reads the attempt's start value, so the read-out names
+  the codec and offers Switch to Auto. **A row is applied only on facet-clean proof** (S2a, #1046):
   a NAMED refusal
   (`num=200`, the stall) applies at once (its row has no `proofs`), but the DTS 601 of #695 names no
   codec, so it is learned the other way. The machine's facet flight lands (`FlightLanded` carries the
@@ -548,7 +548,8 @@ something.
   **The ladder** (the order of `OpenRecovery::decide`): (1) a pending Original trial's
   rollback, which narrows the attempt first by the facet the refusal named, because its rebase, the next
   retry and a quality change must plan from the narrowed value; (2) under Forced Direct Play, the
-  read-out with no app decode or conversion; (3) the **facet rung**, for a refusal that names the
+  app-decode rung (6) for a track of at most two channels, else the read-out (a forced play is never converted, and the app never
+  mixes a surround source down for it); (3) the **facet rung**, for a refusal that names the
   pipeline (`type=18` of ANY number, or the stall; not a Load timeout or a source failure) of an
   Engine that has shown no picture (`OpenFacts::no_frames`: the machine lives per request but a
   picture is per Engine, so a reload after the request's first picture, a track pick, owes its own
@@ -586,8 +587,8 @@ something.
   (6) the **app-decode rung** (`RecoveryEffect::DecodeInApp`): a pipeline refusal of a direct play
   (`OpenFacts::direct`: no server session) that has shown no picture, whose audio
   the pipeline itself decoded (`StreamAudio::app_decoded_lossy` is false), of a lossy codec the START value's policy admits
-  (`Caps::app_may_decode_lossy`), once per request (`in_app`), after a refused HLS contingency
-  or facet flight, or when Auto has no earlier rung to take. **The source's width sets where it
+  (`Caps::app_may_decode_lossy`), once per request (`in_app`), after a refused HLS contingency or a refused facet flight, or at
+  once under Forced (a track of at most two channels only, `Caps::app_may_mix_down`). **The source's width sets where it
   sits (owner decision 2026-10-28):** for a source of at most two channels the app decode is no downmix, keeps the direct play
   and asks no server, so it runs BEFORE (5); for a surround source (more than two channels, or an unknown
   width: `devcaps::app_decode_mixes_down`, the planner's predicate) (5), which keeps the channels, runs first when it is earned
@@ -926,7 +927,7 @@ something.
   `route::discard_stale_flight_landing`, which `playback_tick` runs every frame since there is no
   pump. `route::transcode_seek` is a test-only composition. The
   rebase machinery
-  (`pts_shift`/`rebase_pending` in `shared.rs`) keeps Starfish from ever seeing a PTS jump.
+  (`FEED_SHARED.pts_shift` in `plx_play_feed::shared` and the Feed engine's `rebase_pending`) keeps Starfish from ever seeing a PTS jump.
   **One landing is not anchored at all (#1166), and a second trigger follows one that was:** a
   landing keyframe that is a non-IDR HEVC IRAP (`aq::hevc_irap_not_idr`, read on the demux thread) on
   a firmware whose Dolby Vision splitter takes only an IDR first (`Caps::dv_first_picture`, the

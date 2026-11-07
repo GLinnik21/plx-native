@@ -1051,7 +1051,7 @@ pub fn tick_presentation(feed: &mut FeedResources, mt: &MainThread,
     // ---------- ACB bind, Kodi/ss4s order: setSinkType(MAIN)+setMediaId+setState(LOADED) ----------
     if eng.stage == Stage::Playing && hooks.release.plane.handle() {
         let id = FEED_SHARED.media_id.lock().unwrap().clone();
-        // One binding at a time, across both backends: a bind waits for the previous release to
+        // One binding at a time, across backends: a bind waits for the previous release to
         // be proven (the firmware's completion callback), pumping the plane owner each tick it
         // waits, and goes ahead anyway once that release has failed or timed out (`Rebind`), so a
         // firmware that never completes still gets its picture. A deferred tick leaves the stage
