@@ -1,25 +1,40 @@
-//! **Settings > Libraries > Under posters**: what the focused poster shows beneath it (Settings v2).
+//! **Settings > Libraries > Under posters**: what the focused poster shows beneath it (Settings v2,
+//! composable details: Under posters v3).
 //!
 //! One setting, saved per profile (`plx_plex::plex::session::UnderPosters`). The page holds five
 //! rows: a Title switch, two pickers (Movie details and TV show details, each a pushed page,
-//! [`DetailsPage`], with one checked choice per details line and a sample of what it shows), a Sort
-//! value switch and Reset. The details are two rows because a TV show has no single video quality:
-//! the movie picker lists Video quality, the show picker does not (and the stored show value can
-//! never be Video quality, [`UnderPostersDetails::for_shows`]).
+//! [`DetailsPage`]), a Sort value switch and Reset. A picker is one section, "Show under posters",
+//! with a row per **part** a line under that kind of poster can carry (a movie: Year, Length, Genre,
+//! Video quality, Age rating, Score; a TV show: Year, Seasons, Genre, Age rating, Score): a check
+//! mark on the ticked ones and, on the right, a sample of the part. OK ticks or unticks the row and
+//! STAYS on the page; Back returns to the Under posters page. The line under a poster is the ticked
+//! parts' values joined with " · " in the parts' fixed order, **at most four**
+//! ([`DetailParts::MAX`]); with four ticked the others are DISABLED, the shared control state
+//! (`FormSection::disabled`), and say why in the sentence beside the table. The details rows' value
+//! is the ticked names joined (`Year · Length`), "Nothing", or "4 details" once there are more than
+//! three ([`names_value`]); the Settings root's Under posters row reads the Movie one ([`summary`]).
 //!
 //! **No panel and no sub-lines.** A row is its label and its value; the sentence that explained it
-//! under its label is stated in the left column while the row has focus ([`sentence_for`], the
-//! shared [`FollowCopy`](plx_ui::follow_copy::FollowCopy)), and a row with none shows the page's.
-//! The picture under that sentence is the shared picture slot ([`RootPicture`], also drawn on the
-//! Settings root): a movie poster and a show poster, each under its kind ("MOVIES", "SHOWS": the
-//! Settings table's section-header caps, [`plx_ui::table::draw_caps_label`], in the slot's top band)
-//! and over the lines the stored setting gives it. Each tile's art is the first poster of its kind from the widest cache the Browse store holds
-//! ([`preview_posters`]); a kind with none anywhere is a finished art-less face
-//! (`plx_ui::widgets::absent_card`), never a skeleton. The lines are worded by the SAME policy the Library, Collections, the Watchlist, Home and
-//! Recommended read ([`crate::registry::captions`], [`plx_ui::caption_policy`]); a face with no
-//! artwork carries no word, and a tile whose kind the library has no poster of is worded from a
-//! sample of its kind. A line the setting turns on is never drawn empty, for any kind of tile (a
-//! film or show with not even a year says what it is: "Movie", "Show").
+//! under its label is stated in the left column while the row has focus ([`sentence_for`],
+//! [`picker_sentence`], the shared [`FollowCopy`](plx_ui::follow_copy::FollowCopy)), and a row with
+//! none shows the page's. The picture under that sentence is the shared picture slot
+//! ([`RootPicture`], also drawn on the Settings root and on both pickers): a movie poster on the left
+//! and a TV show poster on the right, each under its KIND ("MOVIE", "TV SHOW") and over the lines the
+//! stored setting gives it. Each tile's art is the first poster of its kind from the widest cache the
+//! Browse store holds ([`preview_posters`]); a kind with none anywhere is a finished art-less face
+//! (`plx_ui::widgets::absent_card`), never a skeleton. The lines are worded by the SAME policy the
+//! Library, Collections, the Watchlist, Home and Recommended read ([`crate::registry::captions`],
+//! [`plx_ui::caption_policy`]); a face with no artwork carries no word, and a tile whose kind the
+//! library has no poster of is worded from a sample of its kind. A line the setting turns on is never
+//! drawn empty, for any kind of tile (a film or show with not even a year says what it is: "Movie",
+//! "Show"). **The column of the kind that is not being chosen is dimmed** to the design's `dim`
+//! ([`DIM`](plx_ui::follow_copy::DIM), 0.45; `Sv2s-P2-Details`): on the Under posters page the kind
+//! whose details row is not focused (both are at full strength on Title, Sort value and Reset and on
+//! the Settings root), in a picker the other kind. The caption, tile, title line and details line
+//! are drawn as one group at that opacity, which moves on the shared appear spring
+//! ([`ColumnDims`](plx_ui::follow_copy::ColumnDims)). It is NOT the disabled control state: a poster
+//! tile is not a control.
+//!
 //! Except a movie or TV show library grid showing its sort value (one value line under every card),
 //! the policy is the same under every POSTER in the app (Search results, a person's filmography,
 //! Detail's Related and collection shelves and a collection's members included); a landscape still
@@ -32,51 +47,42 @@
 //! refused write (nobody seated) puts the row back.
 
 use super::*;
-use plx_plex::plex::session::{UnderPosters, UnderPostersDetails};
-use plx_ui::caption_policy::{CaptionPolicy, DetailsKind};
 use plx_data::pms::PmsMovie;
-use plx_ui::caption_policy::CaptionFacts;
-use plx_ui::follow_copy::FollowCopy;
+use plx_plex::plex::session::{DetailPart, DetailParts, UnderPosters};
+use plx_ui::caption_policy::{part_value, CaptionFacts, CaptionPolicy};
+use plx_ui::follow_copy::{ColumnDims, FollowCopy};
 use plx_ui::widgets::Art;
 use crate::registry::tile_facts;
 
 /// The stored setting as the UI's caption policy. The mapping lives here, not in `plx_plex`: the
-/// data layer must not name the UI layer.
+/// data layer must not name the UI layer (the parts themselves are the one `plx_base` type both read).
 pub fn caption_policy_of(v: UnderPosters) -> CaptionPolicy {
-    let kind = |d| match d {
-        UnderPostersDetails::YearLength => DetailsKind::YearLength,
-        UnderPostersDetails::Genre => DetailsKind::Genre,
-        UnderPostersDetails::Video => DetailsKind::Video,
-        UnderPostersDetails::AgeRatingScore => DetailsKind::AgeRatingScore,
-        UnderPostersDetails::None => DetailsKind::None,
-    };
-    CaptionPolicy { title: v.title, details: kind(v.details), show_details: kind(v.show_details) }
+    CaptionPolicy { title: v.title, details: v.details, show_details: v.show_details }
 }
 
 impl PosterKind {
-    /// The stored details line for this kind.
-    fn details(self, v: UnderPosters) -> UnderPostersDetails {
+    /// The stored parts for this kind.
+    fn parts(self, v: UnderPosters) -> DetailParts {
         match self {
             PosterKind::Movie => v.details,
             PosterKind::Show => v.show_details,
         }
     }
 
-    /// `v` with this kind's details line set to `d` (a show can never hold Video quality).
-    fn with_details(self, v: UnderPosters, d: UnderPostersDetails) -> UnderPosters {
+    /// `v` with this kind's parts set to `parts` (held to what the kind offers and to the maximum).
+    fn with_parts(self, v: UnderPosters, parts: DetailParts) -> UnderPosters {
         match self {
-            PosterKind::Movie => UnderPosters { details: d, ..v },
-            PosterKind::Show => UnderPosters { show_details: d.for_shows(), ..v },
+            PosterKind::Movie => UnderPosters { details: parts.for_movies(), ..v },
+            PosterKind::Show => UnderPosters { show_details: parts.for_shows(), ..v },
         }
     }
 
-    /// The choices this kind's picker lists, Nothing first, then the ladder's order.
-    fn picker_order(self) -> impl Iterator<Item = UnderPostersDetails> {
-        let ladder: &'static [UnderPostersDetails] = match self {
-            PosterKind::Movie => &UnderPostersDetails::LADDER,
-            PosterKind::Show => &UnderPostersDetails::SHOW_LADDER,
-        };
-        std::iter::once(UnderPostersDetails::None).chain(ladder.iter().copied().filter(|d| *d != UnderPostersDetails::None))
+    /// The parts this kind's picker lists, in the line's order.
+    fn offered(self) -> &'static [DetailPart] {
+        match self {
+            PosterKind::Movie => &DetailPart::MOVIE,
+            PosterKind::Show => &DetailPart::SHOW,
+        }
     }
 
     /// The row on the Under posters page that opens this kind's picker, and that picker's title.
@@ -95,11 +101,12 @@ impl PosterKind {
         }
     }
 
-    /// The sentence beside that kind's picker.
-    fn picker_copy(self) -> &'static str {
+    /// The word over a tile of this kind: the library kind's own singular name, as the Library reads
+    /// it (`browse.kind.movie`, `browse.kind.tv_show`). Upper-cased where it is drawn.
+    fn caption(self) -> &'static str {
         match self {
-            PosterKind::Movie => plx_platform::i18n::msg::under_posters_movie_details_copy(),
-            PosterKind::Show => plx_platform::i18n::msg::under_posters_show_details_copy(),
+            PosterKind::Movie => plx_platform::i18n::msg::browse_kind_movie(),
+            PosterKind::Show => plx_platform::i18n::msg::browse_kind_tv_show(),
         }
     }
 
@@ -112,30 +119,40 @@ impl PosterKind {
     }
 }
 
-/// A details line's name in a picker and on the page's row. A show's year line says its seasons.
-fn details_label(kind: PosterKind, d: UnderPostersDetails) -> &'static str {
+/// A part's name in a picker and in a details row's value.
+fn part_label(part: DetailPart) -> &'static str {
     use plx_platform::i18n::msg;
-    match d {
-        UnderPostersDetails::YearLength if kind == PosterKind::Show => msg::under_posters_year_seasons(),
-        UnderPostersDetails::YearLength => msg::under_posters_year_length(),
-        UnderPostersDetails::Genre => msg::under_posters_genre(),
-        UnderPostersDetails::Video => msg::under_posters_video(),
-        UnderPostersDetails::AgeRatingScore => msg::under_posters_age_rating_score(),
-        UnderPostersDetails::None => msg::under_posters_none(),
+    match part {
+        DetailPart::Year => msg::under_posters_part_year(),
+        DetailPart::Length => msg::under_posters_part_length(),
+        DetailPart::Seasons => msg::under_posters_part_seasons(),
+        DetailPart::Genre => msg::under_posters_part_genre(),
+        DetailPart::VideoQuality => msg::under_posters_part_video(),
+        DetailPart::AgeRating => msg::under_posters_part_age_rating(),
+        DetailPart::Score => msg::under_posters_part_score(),
     }
 }
 
-/// **The Settings root's value for the Under posters row**: the movie details line the page's Movie
-/// details row reads ("Year · Length", "Genre"), the way Language reads its language (the board's
-/// root shows one value; the show line is one level down). The Title switch adds a bold line above
-/// it and is the page's own row; it shows here only when it is all there is ("Title"), so the value
-/// is never "Nothing" beside a poster that wears its name.
-pub(super) fn summary(v: UnderPosters) -> String {
+/// **A details row's value**: the ticked parts' names joined with " · " in the line's order
+/// ("Year · Length"), "Nothing" when none, "4 details" when more than three (the names would not fit
+/// the row).
+fn names_value(parts: DetailParts) -> String {
     use plx_platform::i18n::msg;
-    match (v.details, v.title) {
-        (UnderPostersDetails::None, true) => msg::under_posters_title_row().to_string(),
-        (details, _) => details_label(PosterKind::Movie, details).to_string(),
+    match parts.len() {
+        0 => msg::under_posters_none().to_string(),
+        n if n > 3 => msg::under_posters_details_count(n as i64),
+        _ => parts.iter().map(part_label).collect::<Vec<_>>().join(" \u{b7} "),
     }
+}
+
+/// **The Settings root's value for the Under posters row**: the Movie details row's value (the show
+/// line is one level down), the way Language reads its language.
+pub(super) fn summary(v: UnderPosters) -> String {
+    // "Title" when the title is all a movie's poster wears (never "Nothing" beside a name).
+    if v.title && v.details.is_empty() {
+        return plx_platform::i18n::msg::under_posters_title_row().to_string();
+    }
+    names_value(v.details)
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -182,6 +199,12 @@ fn sentence_for(id: Option<&UpId>) -> &'static str {
     }
 }
 
+/// **Which column of the picture is dimmed for the focused row**: the kind whose details row is
+/// NOT focused (`[movie, show]`); both stay at full strength on Title, Sort value and Reset.
+fn dimmed_columns_for(id: Option<&UpId>) -> [bool; 2] {
+    [matches!(id, Some(UpId::ShowDetails)), matches!(id, Some(UpId::MovieDetails))]
+}
+
 /// The page's rows from plain inputs (the text-fit tests call this directly).
 fn under_posters_form(v: UnderPosters) -> Form<UpId, UpAction, SettingsPage> {
     use plx_platform::i18n::msg;
@@ -193,7 +216,7 @@ fn under_posters_form(v: UnderPosters) -> Form<UpId, UpAction, SettingsPage> {
             PosterKind::Show => UpId::ShowDetails,
         };
         rows.item(id, RowKind::Nav(SettingsPage::UnderPostersDetails(kind)), UpAction::Details,
-            Row::new(kind.row_label()).value(details_label(kind, kind.details(v))).chevron(true))
+            Row::new(kind.row_label()).value(names_value(kind.parts(v))).chevron(true))
     });
     let rows = rows.item(UpId::SortValue, RowKind::Toggle, UpAction::SortValue,
         Row::new(msg::under_posters_sort_value()).toggle(v.sort_value));
@@ -212,6 +235,8 @@ pub(super) struct UnderPostersPage {
     state: UpState,
     /// The sentence beside the table, which fades to the focused row's.
     follow: FollowCopy,
+    /// Which column of the picture is dimmed, moving as focus moves between the details rows.
+    dims: ColumnDims<2>,
     /// A pick not yet answered: the value the rows show meanwhile, and the receipt of its write.
     pending: Option<(UnderPosters, std::sync::mpsc::Receiver<bool>)>,
 }
@@ -225,12 +250,12 @@ struct UpState {
 
 impl LogicalState for UpState {
     fn write(&self, w: &mut Canon) {
-        w.u32(self.sel.0).u8(self.value.pack()).bool(self.busy);
+        w.u32(self.sel.0).u32(u32::from(self.value.pack())).bool(self.busy);
     }
     fn probe(&self, out: &mut String) {
         out.push_str(&format!(
             "under_posters sel={} title={} details={} show_details={} busy={} sort_value={}",
-            self.sel.0, self.value.title, self.value.details.index(), self.value.show_details.index(), self.busy, self.value.sort_value
+            self.sel.0, self.value.title, self.value.details.bits(), self.value.show_details.bits(), self.busy, self.value.sort_value
         ));
     }
 }
@@ -244,11 +269,13 @@ impl UnderPostersPage {
             form: FormTable::new(super::super::registry::BAND),
             state: UpState { value, sel, busy: false },
             follow: FollowCopy::new(""),
+            dims: ColumnDims::at([false, false]),
             pending: None,
         };
         page.rebuild();
         // A page opens on its first row's sentence at once, with nothing fading.
         page.follow = FollowCopy::new(sentence_for(page.form.selected_id()));
+        page.dims = ColumnDims::at(dimmed_columns_for(page.form.selected_id()));
         page
     }
 
@@ -356,20 +383,22 @@ fn sample_facts() -> CaptionFacts {
     }
 }
 
+/// The sample a movie or a show wears when the library has no poster of its kind.
+fn kind_sample(kind: PosterKind) -> CaptionFacts {
+    match kind {
+        PosterKind::Movie => CaptionFacts { year: Some(2024), duration_min: Some(112), is_movie: true, ..sample_facts() },
+        PosterKind::Show => CaptionFacts {
+            title: Some(plx_platform::i18n::msg::browse_kind_show().to_string()),
+            year: Some(SAMPLE_YEAR), duration_min: None, season_count: Some(6), is_show: true,
+            content_rating: Some("TV-14".to_string()), audience_rating: Some(8.4), ..sample_facts()
+        },
+    }
+}
+
 /// The facts a picture tile of `kind` is worded from: its poster's own, else the sample a movie or
 /// a show wears.
 fn picture_facts(kind: PosterKind, poster: Option<&PmsMovie>) -> CaptionFacts {
-    poster.map_or_else(
-        || match kind {
-            PosterKind::Movie => CaptionFacts { year: Some(2024), duration_min: Some(112), is_movie: true, ..sample_facts() },
-            PosterKind::Show => CaptionFacts {
-                title: Some(plx_platform::i18n::msg::browse_kind_show_in(plx_platform::i18n::current()).to_string()),
-                year: Some(SAMPLE_YEAR), duration_min: None, season_count: Some(6), is_show: true,
-                content_rating: Some("TV-14".to_string()), audience_rating: Some(8.4), ..sample_facts()
-            },
-        },
-        tile_facts::caption_facts,
-    )
+    poster.map_or_else(|| kind_sample(kind), tile_facts::caption_facts)
 }
 
 /// The first of `posters` that is a title of `kind`.
@@ -402,55 +431,40 @@ fn picture_lines(v: UnderPosters, kind: PosterKind, poster: Option<&PmsMovie>, s
     lines_of(v, &picture_facts(kind, poster))
 }
 
-/// The Under posters picture (board `Sv2-2`): one art-only poster tile per kind, each with the
-/// lines the stored setting gives it centred under it and its KIND ("MOVIES", "SHOWS") over it,
-/// painted INTO the picture slot. No panel, ring or tick: it is display-only and never reads as a
-/// control, and the kind caption is the table's section-header look
-/// ([`plx_ui::table::draw_caps_label`]), not a mark that could be pressed. The Settings root draws
-/// the same picture, so root and child agree; a details picker draws the one tile of its kind,
-/// under its own kind's caption.
+/// **The Under posters picture** (boards `Sv2-2`, `Sv2s-P1`, `Sv2s-P2`): a movie poster on the left and
+/// a TV show poster on the right, each art-only, with its KIND ("MOVIE", "TV SHOW") centred over it
+/// and the lines the stored setting gives it centred under it, painted INTO the picture slot. No
+/// panel, ring or tick: it is display-only and never reads as a control. The Settings root, the
+/// Under posters page and both details pickers draw this one picture, so they agree.
+///
+/// The column of the kind that is not being chosen is dimmed ([`Self::opacity`], the design's
+/// [`DIM`](plx_ui::follow_copy::DIM)): caption, tile and lines are drawn together at that opacity.
 pub(super) struct RootPicture<'a> {
     pub value: UnderPosters,
     pub posters: &'a [&'a PmsMovie],
-    /// The kinds drawn, left to right.
-    pub kinds: &'a [PosterKind],
     /// Word each tile with its poster's year rather than the caption.
     pub sorted: bool,
+    /// The opacity of each kind's whole column, `[movie, show]` ([`ColumnDims::opacity`]).
+    pub opacity: [f32; 2],
 }
 
-/// The board's picture tiles: 200 x 300 posters, their left edges 240 apart.
-const PICTURE_TILE_W: f32 = 200.0;
-const PICTURE_TILE_H: f32 = 300.0;
-const PICTURE_TILE_STEP: f32 = 240.0;
-/// The air between a kind caption's baseline and the top of its tile.
-const PICTURE_KIND_GAP: f32 = theme::space::SM;
-/// The first line's CSS box under a tile: 24 px on a 24 px line, its top 312 px under the tile's;
-/// the second line (the details, under a title) hangs one line and a gap under it.
-const PICTURE_LINE_TOP: f32 = 312.0;
+/// The board's picture tiles: 250 x 375 posters, their left edges 410 apart (a 660 px slot).
+const PICTURE_TILE_W: f32 = 250.0;
+const PICTURE_TILE_H: f32 = 375.0;
+const PICTURE_TILE_STEP: f32 = 410.0;
+/// The kind caption's CSS box (24 px on a 24 px line) and the tile's top under it: 52 px under the slot's.
+const PICTURE_CAPTION_H: f32 = 24.0;
+const PICTURE_TILE_TOP: f32 = 52.0;
+/// The first line's CSS box under a tile: 24 px on a 24 px line, its top 28 px under the tile's
+/// bottom; the second line (the details, under a title) hangs one line and a gap under it.
+const PICTURE_LINE_GAP: f32 = 28.0;
 const PICTURE_LINE_H: f32 = 24.0;
 const PICTURE_LINE_STEP: f32 = 32.0;
-/// The room a line may take: a tile's width and the air up to its neighbour's.
-const PICTURE_LINE_W: f32 = PICTURE_TILE_STEP - 16.0;
-
-/// The word over a tile of `kind`: the library kind's own name, as the Library tab reads it
-/// (`browse.kind.movies`; `browse.kind.shows`, the short plural a collection's heading uses).
-/// Upper-cased where it is drawn ([`plx_ui::table::draw_caps_label`]).
-fn kind_caption(kind: PosterKind) -> &'static str {
-    use plx_platform::i18n::msg;
-    match kind {
-        PosterKind::Movie => msg::browse_kind_movies(),
-        PosterKind::Show => msg::browse_kind_shows(),
-    }
-}
-
-/// The slot's top-down stack: the kind caption's band, then the tile with the gap that belongs to it.
-/// Returns the tile's top edge.
-fn picture_tile_top(slot_y: f32) -> f32 {
-    use plx_ui::hstack::Item;
-    use plx_ui::vstack::{Anchor, VStack};
-    let items = [Item::new(plx_ui::table::caps_band_h()), Item::new(PICTURE_TILE_H).before(PICTURE_KIND_GAP)];
-    VStack::new(&items, 0.0, Anchor::Top(slot_y)).span(1).map_or(slot_y, |(y, _)| y)
-}
+/// The room a line or a caption is centred in: the board's 380 px, centred on the tile.
+const PICTURE_LINE_W: f32 = 380.0;
+/// **A line is ONE line and ends in an ellipsis when it is wider than its tile** (`DetailsByKind`:
+/// "one line, never wrapped"), through the same `elide_by` the poster captions use.
+const PICTURE_LINE_FIT_W: f32 = PICTURE_TILE_W;
 
 impl plx_ui::follow_copy::PictureSlot for RootPicture<'_> {
     fn draw(&self, p: Painter, slot: Rect, measure: &dyn plx_machine::machine::Measure) {
@@ -459,19 +473,25 @@ impl plx_ui::follow_copy::PictureSlot for RootPicture<'_> {
         // The art of a tile is the shared one, with no watch state (the fan's own rule). A kind with
         // no poster path anywhere is `None`: drawn as the art-less face, never as `Art::Poster(None)`,
         // which is a skeleton (a card that is still loading, and for an empty key one that never will).
-        let arts: Vec<Option<Art>> = self.kinds.iter()
+        let kinds = [PosterKind::Movie, PosterKind::Show];
+        let arts: Vec<Option<Art>> = kinds.iter()
             .map(|k| poster_of(*k, self.posters).filter(|m| !m.thumb.is_empty()).map(|m| Art::Poster(Some(tile_facts::of(m)))))
             .collect();
         let line_cap_top = plx_gfx::text::css_cap_drop(size, PICTURE_LINE_H, measure.cap_h(size));
-        for (i, kind) in self.kinds.iter().enumerate() {
+        let caption_cap_top = plx_gfx::text::css_cap_drop(size, PICTURE_CAPTION_H, measure.cap_h(size));
+        let centred = (PICTURE_LINE_W - PICTURE_TILE_W) * 0.5;
+        for (i, kind) in kinds.iter().enumerate() {
             let x = slot.x + PICTURE_TILE_STEP * i as f32;
-            // The kind caption is the slot's top band and the tile hangs under it, so the picture
-            // stays inside the slot's own box and nothing in the narrative column moves.
-            plx_ui::table::draw_caps_label(
-                p, plx_ui::table::caps_band(x, slot.y, PICTURE_TILE_W), kind_caption(*kind), PICTURE_TILE_W,
-                theme::TEXT_READING, plx_ui::table::BOARD_CAPS_TRACK_PX, measure,
+            // One group per kind: caption, tile and lines share the column's opacity.
+            let p = p.alpha(self.opacity[i]);
+            // The kind over its tile: the table's section-header caps, centred.
+            plx_ui::table::draw_caps_label_aligned(
+                p, Rect::new(x - centred, slot.y + caption_cap_top, PICTURE_LINE_W, plx_ui::table::caps_band_h()),
+                kind.caption(), PICTURE_LINE_W,
+                theme::TEXT_READING, plx_ui::table::BOARD_CAPS_TRACK_PX,
+                HAlign::Center, measure,
             );
-            let tile = Rect::new(x, picture_tile_top(slot.y), PICTURE_TILE_W, PICTURE_TILE_H);
+            let tile = Rect::new(x, slot.y + PICTURE_TILE_TOP, PICTURE_TILE_W, PICTURE_TILE_H);
             match arts[i] {
                 Some(art) => plx_ui::widgets::card(p, tile, plx_ui::follow_copy::PosterFan::stateless(art), theme::CARD_RING_RAD, false, 1.0, 0.0),
                 None => plx_ui::widgets::absent_card(p, tile, theme::CARD_RING_RAD),
@@ -479,16 +499,17 @@ impl plx_ui::follow_copy::PictureSlot for RootPicture<'_> {
             let lines = picture_lines(self.value, *kind, poster_of(*kind, self.posters), self.sorted);
             // Present lines stack from the first: a title (bold) over its details.
             for (n, (line, is_title)) in lines.into_iter().zip([true, false]).filter_map(|(l, t)| l.map(|l| (l, t))).enumerate() {
-                let line = plx_gfx::text::elide_by(&line, PICTURE_LINE_W, false, |t| measure.width_str(t, size, is_title));
-                let Ok(line) = std::ffi::CString::new(line) else { continue };
-                let mut label = Label::new(line.as_ptr(), size, if is_title { theme::TEXT_PRIMARY } else { theme::CAPTION_DETAIL_INK }).h(HAlign::Center).v(VAlign::CapTop);
+                // The shared poster-caption fit: one line, an ellipsis when it is wider than its tile.
+                let line = measure.fit_line(&line, PICTURE_LINE_FIT_W, size, is_title);
+                let ink = if is_title { theme::TEXT_PRIMARY } else { theme::CAPTION_DETAIL_INK };
+                let mut label = Label::new(line.as_ptr(), size, ink).h(HAlign::Center).v(VAlign::CapTop);
                 if is_title {
                     label = label.bold();
                 }
                 label.draw(
                     p,
-                    Rect::new(x + (PICTURE_TILE_W - PICTURE_LINE_W) * 0.5,
-                        tile.y + PICTURE_LINE_TOP + PICTURE_LINE_STEP * n as f32 + line_cap_top, PICTURE_LINE_W, PICTURE_LINE_H),
+                    Rect::new(x - centred, tile.y + PICTURE_TILE_H + PICTURE_LINE_GAP + PICTURE_LINE_STEP * n as f32 + line_cap_top,
+                        PICTURE_LINE_W, PICTURE_LINE_H),
                 );
             }
         }
@@ -525,6 +546,7 @@ impl Machine<InnerHost> for UnderPostersPage {
                 }
                 self.form.table.update(t.dt(), RouteLayout::settings_page().sectioned_table().h);
                 self.follow.update(t.dt());
+                self.dims.update(t.dt());
                 Handled::Yes
             }
             ScreenEvent::FocusMoved { to, .. } => {
@@ -533,6 +555,7 @@ impl Machine<InnerHost> for UnderPostersPage {
                     self.state.sel = key;
                 }
                 self.follow.follow(sentence_for(self.form.selected_id()));
+                self.dims.set(dimmed_columns_for(self.form.selected_id()));
                 Handled::Yes
             }
             ScreenEvent::Activate(key) => {
@@ -562,7 +585,7 @@ impl Screen<InnerHost> for UnderPostersPage {
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
         let posters = preview_posters(f.cx);
         let picture = RootPicture {
-            value: self.state.value, posters: &posters, kinds: &[PosterKind::Movie, PosterKind::Show], sorted: self.previews_sort_value(),
+            value: self.state.value, posters: &posters, sorted: self.previews_sort_value(), opacity: self.dims.opacity(),
         };
         let mut v = self.view();
         v.header.picture = Some(&picture);
@@ -577,33 +600,62 @@ impl Screen<InnerHost> for UnderPostersPage {
 // the details pickers
 // ---------------------------------------------------------------------------------------------
 
-/// A details choice's row key: its place on the ladder, clear of the first page's rows.
+/// A part's row key: its place among the parts, clear of the first page's rows.
 #[derive(Clone, PartialEq, Eq, Debug)]
-struct DetailsId(UnderPostersDetails);
+struct PartId(DetailPart);
 
-impl FormId for DetailsId {
+impl FormId for PartId {
     fn key(&self) -> RowKey {
-        RowKey(10 + self.0.index() as u32)
+        RowKey(10 + self.0 as u32)
     }
 }
 
-/// What a choice shows under a poster, as the picture words it from `facts` ([`kind_facts`]): the
-/// row's sample on the right. `None` for Nothing; a kind the poster has no fact for samples the identity
-/// line the tile says instead (its year), as the picture draws it.
-fn details_sample(d: UnderPostersDetails, facts: &CaptionFacts) -> Option<String> {
-    lines_of(UnderPosters { title: false, details: d, show_details: d, sort_value: false }, facts)[1].clone()
+/// What a part shows under a poster, as the picture words it from `facts` ([`kind_facts`]): the
+/// row's sample on the right and the example in its sentence. A fact the poster lacks is sampled from
+/// the kind's sample tile instead, so a row always shows an example.
+fn part_example(kind: PosterKind, part: DetailPart, facts: &CaptionFacts) -> String {
+    let cx = plx_platform::i18n::current();
+    part_value(part, facts, cx).or_else(|| part_value(part, &kind_sample(kind), cx)).unwrap_or_default()
 }
 
-/// The picker's rows: one checked choice per details line, the ladder's order, a sample of each
-/// on the right, all from the picture's tile of that kind.
-fn details_form(kind: PosterKind, current: UnderPostersDetails, facts: &CaptionFacts) -> Form<DetailsId, UnderPostersDetails, SettingsPage> {
-    let mut section = FormSection::new("");
-    for d in kind.picker_order() {
-        let mut row = Row::new(details_label(kind, d));
-        if let Some(sample) = details_sample(d, facts) {
-            row = row.value(sample);
+/// **The sentence the focused picker row states beside the table**: the part's own ("Shows the
+/// release year, like 2024.") or, for a row that cannot be ticked because four already are, why
+/// ("Up to four details fit under a poster. Remove one to add genre.").
+fn picker_sentence(kind: PosterKind, parts: DetailParts, part: DetailPart, example: &str) -> String {
+    use plx_platform::i18n::msg;
+    if !parts.fits(part) {
+        return match part {
+            DetailPart::Year => msg::under_posters_blocked_year(),
+            DetailPart::Length => msg::under_posters_blocked_length(),
+            DetailPart::Seasons => msg::under_posters_blocked_seasons(),
+            DetailPart::Genre => msg::under_posters_blocked_genre(),
+            DetailPart::VideoQuality => msg::under_posters_blocked_video(),
+            DetailPart::AgeRating => msg::under_posters_blocked_age_rating(),
+            DetailPart::Score => msg::under_posters_blocked_score(),
         }
-        section = section.choice(DetailsId(d), d, row, |id| id.0 == current);
+        .to_string();
+    }
+    match (part, kind) {
+        (DetailPart::Year, PosterKind::Movie) => msg::under_posters_sentence_year_movie(example),
+        (DetailPart::Year, PosterKind::Show) => msg::under_posters_sentence_year_show(example),
+        (DetailPart::Length, _) => msg::under_posters_sentence_length(example),
+        (DetailPart::Seasons, _) => msg::under_posters_sentence_seasons(example),
+        (DetailPart::Genre, _) => msg::under_posters_sentence_genre(example),
+        (DetailPart::VideoQuality, _) => msg::under_posters_sentence_video(example),
+        (DetailPart::AgeRating, _) => msg::under_posters_sentence_age_rating(example),
+        (DetailPart::Score, _) => msg::under_posters_sentence_score(example),
+    }
+}
+
+/// The picker's rows: one row per part the kind offers, in the line's order, a check mark on the
+/// ticked ones and a sample of each on the right (all from the picture's tile of that kind). With
+/// the maximum ticked, the others are DISABLED (the shared control state, `Row::disabled`): focusable so the viewer can land
+/// on one and read why, and inert to OK.
+fn details_form(kind: PosterKind, parts: DetailParts, facts: &CaptionFacts) -> Form<PartId, DetailPart, SettingsPage> {
+    let mut section = FormSection::new(plx_platform::i18n::msg::under_posters_picker_header());
+    for part in kind.offered().iter().copied() {
+        let row = Row::new(part_label(part)).value(part_example(kind, part, facts));
+        section = section.choice(PartId(part), part, row, |id| parts.contains(id.0)).disabled(!parts.fits(part));
     }
     Form::new().section(section)
 }
@@ -611,12 +663,14 @@ fn details_form(kind: PosterKind, current: UnderPostersDetails, facts: &CaptionF
 pub(super) struct DetailsPage {
     entry: EntryId,
     kind: PosterKind,
-    form: FormTable<DetailsId, UnderPostersDetails, SettingsPage>,
+    form: FormTable<PartId, DetailPart, SettingsPage>,
     state: DetailsState,
+    /// The sentence beside the table, which fades to the focused row's.
+    follow: FollowCopy,
     /// What the rows' samples are worded from: the picture's tile of this kind ([`kind_facts`]),
     /// refreshed whenever the library's cached posters change.
     facts: CaptionFacts,
-    /// A pick not yet answered, and the receipt of its write: the page pops when it is durable.
+    /// A tick not yet answered, and the receipt of its write.
     pending: Option<(UnderPosters, std::sync::mpsc::Receiver<bool>)>,
 }
 
@@ -629,20 +683,20 @@ struct DetailsState {
 }
 
 impl DetailsState {
-    /// The line the focused row stands for: what the picture shows.
-    fn focused(&self) -> UnderPostersDetails {
-        UnderPostersDetails::LADDER.into_iter().find(|d| DetailsId(*d).key() == self.sel).unwrap_or(self.kind.details(self.value))
+    /// The part the focused row stands for.
+    fn focused(&self) -> DetailPart {
+        self.kind.offered().iter().copied().find(|p| PartId(*p).key() == self.sel).unwrap_or(self.kind.offered()[0])
     }
 }
 
 impl LogicalState for DetailsState {
     fn write(&self, w: &mut Canon) {
-        w.u8(self.kind as u8).u32(self.sel.0).u8(self.value.pack()).bool(self.busy);
+        w.u8(self.kind as u8).u32(self.sel.0).u32(u32::from(self.value.pack())).bool(self.busy);
     }
     fn probe(&self, out: &mut String) {
         out.push_str(&format!(
-            "under_posters_details kind={} sel={} details={} busy={}",
-            self.kind as u8, self.sel.0, self.kind.details(self.value).index(), self.busy
+            "under_posters_details kind={} sel={} parts={} busy={}",
+            self.kind as u8, self.sel.0, self.kind.parts(self.value).bits(), self.busy
         ));
     }
 }
@@ -654,12 +708,20 @@ impl DetailsPage {
             entry,
             kind,
             form: FormTable::new(super::super::registry::BAND),
-            state: DetailsState { kind, value, sel: DetailsId(kind.details(value)).key(), busy: false },
+            state: DetailsState { kind, value, sel: PartId(kind.offered()[0]).key(), busy: false },
+            follow: FollowCopy::new(""),
             facts: picture_facts(kind, None),
             pending: None,
         };
         page.rebuild();
+        page.follow = FollowCopy::new(&page.sentence());
         page
+    }
+
+    /// The sentence for the focused row now.
+    fn sentence(&self) -> String {
+        let part = self.state.focused();
+        picker_sentence(self.kind, self.kind.parts(self.state.value), part, &part_example(self.kind, part, &self.facts))
     }
 
     /// Word the rows' samples from the picture's tile as it is now; `true` when they changed.
@@ -674,39 +736,33 @@ impl DetailsPage {
     }
 
     fn rebuild(&mut self) {
-        let current = self.kind.details(self.state.value);
-        let keep = self.form.selected_id().cloned().unwrap_or(DetailsId(current));
+        let keep = self.form.selected_id().cloned().unwrap_or(PartId(self.state.focused()));
         self.form.table.compact = false;
         self.form.table.board_metrics(true);
-        self.form.set(details_form(self.kind, current, &self.facts), Some(&keep));
+        self.form.set(details_form(self.kind, self.kind.parts(self.state.value), &self.facts), Some(&keep));
         self.form.table.list_focused = true;
+        let sentence = self.sentence();
+        self.follow.follow(&sentence);
     }
 
     fn view(&self) -> TableScreen<'_> {
-        use plx_platform::i18n::msg;
         TableScreen::new(
-            Header::new(RouteLayout::settings_page(), Some(msg::under_posters_title()), self.kind.row_label(), self.kind.picker_copy()),
+            Header::new(RouteLayout::settings_page(), Some(plx_platform::i18n::msg::under_posters_title()), self.kind.row_label(), self.follow.text())
+                .with_follow(&self.follow),
             &self.form.table, GroupId(0), self.entry,
         ).keyed(&self.form)
     }
 
-    fn pop(fx: &mut Effects<'_, InnerHost>) {
-        fx.push(Fx::Nav(plx_machine::machine::NavOp::Pop));
-        fx.invalidate(Provenance::Input);
-    }
-
-    /// Choosing the checked line pops without a write; any other goes through the one write door
-    /// and the page pops when the receipt answers durable.
+    /// OK on a row ticks it or unticks it and STAYS on the page: the new set goes through the one
+    /// write door and the rows and the picture show it at once. A row that does not fit (four are
+    /// ticked) is disabled in the form, so `form_activate` answers nothing for it.
     fn activate(&mut self, key: u32, fx: &mut Effects<'_, InnerHost>) {
-        if self.state.busy {
+        let Some(part) = form_activate(&self.form, key, fx) else { return };
+        let parts = self.kind.parts(self.state.value);
+        let next = self.kind.with_parts(self.state.value, parts.toggled(part));
+        if next == self.state.value {
             return;
         }
-        let Some(details) = form_activate(&self.form, key, fx) else { return };
-        if details == self.kind.details(self.state.value) {
-            Self::pop(fx);
-            return;
-        }
-        let next = self.kind.with_details(self.state.value, details);
         let (reply, receipt) = std::sync::mpsc::channel();
         fx.push(Fx::App(AppFx::Preferences(super::super::registry::PreferenceCmd::Choose(
             plx_media::route::Choice::UnderPosters(next), reply))));
@@ -714,22 +770,21 @@ impl DetailsPage {
         self.state.value = next;
         self.state.busy = true;
         self.rebuild();
+        fx.invalidate(Provenance::Input);
     }
 
-    /// Settle an answered write: a durable one pops, a refused one puts the checkmark back.
-    fn poll(&mut self, fx: &mut Effects<'_, InnerHost>) -> bool {
+    /// Settle an answered write: the rows read the stored value again, which holds the tick only if
+    /// the write was durable (a refused one puts the check mark back).
+    fn poll(&mut self) -> bool {
         let Some((_, receipt)) = &self.pending else { return false };
         match receipt.try_recv() {
             Err(std::sync::mpsc::TryRecvError::Empty) => return false,
             Ok(_) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {}
         }
-        let wrote = self.pending.take().map(|(next, _)| next);
+        self.pending = None;
         self.state.busy = false;
         self.state.value = plx_media::route::under_posters();
         self.rebuild();
-        if wrote == Some(self.state.value) {
-            Self::pop(fx);
-        }
         true
     }
 }
@@ -749,11 +804,12 @@ impl Machine<InnerHost> for DetailsPage {
                 Handled::Yes
             }
             ScreenEvent::Tick(t) => {
-                let (settled, moved) = (self.poll(fx), self.adopt(cx));
+                let (settled, moved) = (self.poll(), self.adopt(cx));
                 if settled || moved {
                     fx.invalidate(Provenance::Input);
                 }
                 self.form.table.update(t.dt(), RouteLayout::settings_page().sectioned_table().h);
+                self.follow.update(t.dt());
                 Handled::Yes
             }
             ScreenEvent::FocusMoved { to, .. } => {
@@ -761,18 +817,12 @@ impl Machine<InnerHost> for DetailsPage {
                 if let Some(key) = self.form.key_at(self.form.table.sel.max(0) as usize) {
                     self.state.sel = key;
                 }
+                let sentence = self.sentence();
+                self.follow.follow(&sentence);
                 Handled::Yes
             }
             ScreenEvent::Activate(key) => {
                 self.activate(*key, fx);
-                Handled::Yes
-            }
-            ScreenEvent::Input(plx_machine::machine::InputEvent {
-                kind: plx_machine::machine::InputKind::Key { key: Key::Right, at_edge: true, .. }, ..
-            }) => {
-                if let Some(key) = cx.focus.current.and_then(|k| form_right_target(&self.form, k.elem)) {
-                    self.activate(key, fx);
-                }
                 Handled::Yes
             }
             _ => Handled::No,
@@ -794,11 +844,12 @@ impl Screen<InnerHost> for DetailsPage {
     fn crumb(&self, _cx: &Cx<'_, InnerHost>) -> Option<Cow<'_, str>> { Some(Cow::Borrowed(plx_platform::i18n::msg::under_posters_title())) }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
-        // The picker chooses one kind's details line, so its picture is the one tile of that kind
-        // wearing the focused choice: the sort caption would hide every choice behind the same words.
-        let previewed = UnderPosters { sort_value: false, ..self.kind.with_details(self.state.value, self.state.focused()) };
+        // The picker chooses one kind's parts, so the picture is the same two tiles the page draws
+        // with the other kind dimmed, the lines following each tick; the sort caption would hide
+        // every choice behind the same words.
+        let previewed = UnderPosters { sort_value: false, ..self.state.value };
         let posters = preview_posters(f.cx);
-        let picture = RootPicture { value: previewed, posters: &posters, kinds: &[self.kind], sorted: false };
+        let picture = RootPicture { value: previewed, posters: &posters, sorted: false, opacity: self.picture_opacity() };
         let mut v = self.view();
         v.header.picture = Some(&picture);
         plx_ui::screen::Part::<InnerHost>::draw(&mut v, f, Rect::FULL);
@@ -806,6 +857,17 @@ impl Screen<InnerHost> for DetailsPage {
     fn render(&self) -> RenderStrategy { RenderStrategy::Page }
     fn focus_source(&self) -> FocusSource { FocusSource::Engine }
     fn hit_source(&self) -> HitSource { HitSource::Engine }
+}
+
+impl DetailsPage {
+    /// The picker's picture: the kind being chosen is at full strength, the other dimmed. The page below
+    /// already drew exactly this for the focused details row, so the push moves nothing.
+    fn picture_opacity(&self) -> [f32; 2] {
+        match self.kind {
+            PosterKind::Movie => [1.0, plx_ui::follow_copy::DIM],
+            PosterKind::Show => [plx_ui::follow_copy::DIM, 1.0],
+        }
+    }
 }
 
 /// The `(focus key, destination)` of every `Nav` row the page lists: the structural navigation
@@ -822,10 +884,10 @@ pub(super) fn nav_items_for_test() -> Vec<(u32, SettingsPage)> {
         .collect()
 }
 
-/// The focus key of a details line's row in the picker.
+/// The focus key of a part's row in the picker.
 #[cfg(test)]
-pub(super) fn details_elem_for_test(d: UnderPostersDetails) -> u32 {
-    DetailsId(d).key().0
+pub(super) fn details_elem_for_test(part: DetailPart) -> u32 {
+    PartId(part).key().0
 }
 
 #[cfg(test)]

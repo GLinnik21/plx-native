@@ -242,6 +242,12 @@ impl Row {
         self.disabled = v;
         self
     }
+    /// The state this row is in when it is disabled ([`theme::DISABLED`]): `None` for a usable row.
+    /// The row's inks are read from it, and so are any other thing's that must read as the same
+    /// state (the Under posters picture's tile that is not in focus).
+    pub fn disabled_state(&self) -> Option<theme::Disabled> {
+        self.disabled.then_some(theme::DISABLED)
+    }
     /// Mark the row's action destructive — see [`Row::destructive`].
     pub fn destructive(mut self, v: bool) -> Self {
         self.destructive = v;
@@ -409,12 +415,19 @@ pub const BOARD_CAPS_TRACK_PX: f32 = BOARD_CAPS_TRACK_EM * theme::size::CAPTION 
 /// `band`'s top, and elided to `budget_w` as it is drawn (tracking is width too).
 /// [`caps_band`] makes the band.
 pub fn draw_caps_label(p: Painter, band: Rect, text: &str, budget_w: f32, ink: [f32; 4], tracking: f32, measure: &dyn plx_machine::machine::Measure) {
+    draw_caps_label_aligned(p, band, text, budget_w, ink, tracking, HAlign::Left, measure);
+}
+
+/// [`draw_caps_label`] set `align`ed in `band` (a label centred over what it names: the Under
+/// posters picture's kind captions over their tiles).
+#[allow(clippy::too_many_arguments)]
+pub fn draw_caps_label_aligned(p: Painter, band: Rect, text: &str, budget_w: f32, ink: [f32; 4], tracking: f32, align: HAlign, measure: &dyn plx_machine::machine::Measure) {
     let hsz = theme::size::CAPTION;
     let run = plx_gfx::text::elide_by(&text.to_uppercase(), budget_w, false, |t| {
         measure.width_str(t, hsz, false) + plx_gfx::text::tracking_extra(t, tracking)
     });
     if let Ok(cs) = CString::new(run) {
-        Label::new(cs.as_ptr(), hsz, ink).tracking(tracking).v(VAlign::CapTop).draw(p, band);
+        Label::new(cs.as_ptr(), hsz, ink).tracking(tracking).h(align).v(VAlign::CapTop).draw(p, band);
     }
 }
 
@@ -1817,7 +1830,7 @@ impl TableView {
             };
             // a disabled row keeps its soft ink under the pill (the ghost): secondary, not near-black
             let base = if row.disabled {
-                on_pill(dimc, theme::TEXT_SECONDARY)
+                on_pill(theme::DISABLED.label, theme::TEXT_SECONDARY)
             } else {
                 on_pill(if row.dim { dimc } else { white }, ink)
             };
@@ -1991,7 +2004,7 @@ impl TableView {
             // while the badges sat on the title's line: right-aligned and row-centred, a chip now
             // occupies the sub-line's band too, and an unbounded sub-line would run under it.
             if !row.detail.is_empty() {
-                let sub = if row.disabled { dimc } else { on_pill(dimc, theme::scrim_black(0.6)) };
+                let sub = if row.disabled { theme::DISABLED.label } else { on_pill(dimc, theme::scrim_black(0.6)) };
                 let detail = plx_gfx::text::elide_by(&row.detail, text_w, false, |t| {
                     measure.width_str(t, theme::size::CAPTION, false)
                 });
@@ -2095,7 +2108,7 @@ fn chip_ground(row: &Row, cover: f32, ink: [f32; 4]) -> ([f32; 4], [f32; 4]) {
 /// [`theme::TEXT_TERTIARY`] under the ghost ([`Row::disabled`]).
 fn row_value_ink(row: &Row, focused: bool) -> [f32; 4] {
     if row.disabled {
-        return if focused { theme::TEXT_TERTIARY } else { theme::ROW_VALUE_INK_DIM };
+        return if focused { theme::DISABLED.label } else { theme::DISABLED.value };
     }
     match (focused, row.dim, row.value_dim) {
         (true, false, false) => theme::ROW_VALUE_INK_ON,

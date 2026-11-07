@@ -341,7 +341,7 @@ fn a_membership_requery_under_a_page_keeps_focus_and_scroll_when_refilled_after_
 /// focusing a tile moves no row below it, while the default opens one and pushes them down.
 #[test]
 fn the_under_posters_policy_sizes_the_focused_rows_band() {
-    use plx_plex::plex::session::{UnderPosters, UnderPostersDetails};
+    use plx_plex::plex::session::{UnderPosters, UnderPostersLadder};
     let _guard = plx_base::testlock::serial();
     let below_focus = |setting: UnderPosters| {
         crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.set(Some(setting)));
@@ -356,9 +356,9 @@ fn the_under_posters_policy_sizes_the_focused_rows_band() {
         settle(&mut page, &mut engine, &fixture, 0);
         page.layout.row_y(4, 0.0) - rest
     };
-    let nothing = below_focus(UnderPosters { title: false, details: UnderPostersDetails::None, show_details: UnderPostersDetails::None.for_shows(), sort_value: false });
-    let one_line = below_focus(UnderPosters { title: false, details: UnderPostersDetails::Genre, show_details: UnderPostersDetails::Genre.for_shows(), sort_value: false });
-    let two_lines = below_focus(UnderPosters { title: true, details: UnderPostersDetails::Genre, show_details: UnderPostersDetails::Genre.for_shows(), sort_value: false });
+    let nothing = below_focus(UnderPosters { title: false, details: UnderPostersLadder::None.movie_parts(), show_details: UnderPostersLadder::None.show_parts(), sort_value: false });
+    let one_line = below_focus(UnderPosters { title: false, details: UnderPostersLadder::Genre.movie_parts(), show_details: UnderPostersLadder::Genre.show_parts(), sort_value: false });
+    let two_lines = below_focus(UnderPosters { title: true, details: UnderPostersLadder::Genre.movie_parts(), show_details: UnderPostersLadder::Genre.show_parts(), sort_value: false });
     crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.set(None));
     assert!(nothing.abs() < 0.01, "a policy showing nothing opens no band: {nothing}");
     assert!((one_line - 40.0).abs() < 0.01, "one line opens 80 - 40 px: {one_line}");
@@ -372,7 +372,7 @@ fn the_under_posters_policy_sizes_the_focused_rows_band() {
 #[test]
 fn a_single_kind_grid_is_banded_by_its_own_details_line() {
     use plx_data::browse::LibraryType;
-    use plx_plex::plex::session::{UnderPosters, UnderPostersDetails};
+    use plx_plex::plex::session::{UnderPosters, UnderPostersLadder};
     use plx_ui::caption_policy::{band_h, BAND_NONE, BAND_ONE_LINE, BAND_TWO_LINES};
     let _guard = plx_base::testlock::serial();
     let fixture = Fixture::new();
@@ -381,8 +381,8 @@ fn a_single_kind_grid_is_banded_by_its_own_details_line() {
         crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.set(Some(setting)));
         page.grid_policy().as_ref().map(band_h)
     };
-    let movies_off = UnderPosters { title: false, details: UnderPostersDetails::None, show_details: UnderPostersDetails::YearLength, sort_value: false };
-    let shows_off = UnderPosters { details: UnderPostersDetails::YearLength, show_details: UnderPostersDetails::None, ..movies_off };
+    let movies_off = UnderPosters { title: false, details: UnderPostersLadder::None.movie_parts(), show_details: UnderPostersLadder::YearLength.show_parts(), sort_value: false };
+    let shows_off = UnderPosters { details: UnderPostersLadder::YearLength.movie_parts(), show_details: UnderPostersLadder::None.show_parts(), ..movies_off };
     for (kind, listed, off, on, line) in [
         (SecKind::Movie, LibraryType::Primary, movies_off, shows_off, "Movies"),
         (SecKind::Show, LibraryType::Primary, shows_off, movies_off, "TV shows"),

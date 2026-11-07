@@ -105,6 +105,65 @@ impl FollowCopy {
     }
 }
 
+/// **The opacity of the column of a picture tile that is not the one in focus** — the design's own
+/// `dim = 0.45` (`Sv2s-P2-Details.dc.html`, script `both(o1, o2)`): each kind's whole column (its
+/// kind caption, tile, title line and details line) is one element at this opacity while the OTHER
+/// kind is the one being chosen, and at 1 when both are usable. The ONE place the number lives; it
+/// is not the disabled control state (a poster tile is not a control).
+pub const DIM: f32 = 0.45;
+
+/// **How dimmed each of a picture's `N` columns reads** (0 = full, 1 = [`DIM`]), moving on a
+/// [`Spring`] at the shared appear stiffness ([`crate::popover::K_APPEAR`]), the motion the followed
+/// sentence beside it fades on; the springs report their own motion to the idle gate. A picture that
+/// opens on a column already dimmed starts settled ([`Self::at`]).
+pub struct ColumnDims<const N: usize> {
+    target: [bool; N],
+    pos: [Spring; N],
+}
+
+impl<const N: usize> ColumnDims<N> {
+    /// Settled on `dimmed`: no motion.
+    pub fn at(dimmed: [bool; N]) -> Self {
+        Self { target: dimmed, pos: dimmed.map(|d| Spring::at(if d { 1.0 } else { 0.0 })) }
+    }
+
+    /// Ask for `dimmed`; a column whose answer changed starts moving.
+    pub fn set(&mut self, dimmed: [bool; N]) {
+        self.target = dimmed;
+    }
+
+    /// Step the motion one frame.
+    pub fn update(&mut self, dt: f32) {
+        for (pos, target) in self.pos.iter_mut().zip(self.target) {
+            let to = if target { 1.0 } else { 0.0 };
+            if pos.pos != to || pos.vel != 0.0 {
+                pos.step(to, crate::popover::K_APPEAR, dt);
+                pos.land(to, dt);
+            }
+        }
+    }
+
+    /// Each column's dimming now, 0..1.
+    pub fn amounts(&self) -> [f32; N] {
+        self.pos.map(|s| s.pos.clamp(0.0, 1.0))
+    }
+
+    /// Each column's opacity now: 1 at rest, [`DIM`] fully dimmed.
+    pub fn opacity(&self) -> [f32; N] {
+        self.amounts().map(opacity_at)
+    }
+
+    /// Whether column `i` is asked to be dimmed (its settled answer).
+    pub fn is_dimmed(&self, i: usize) -> bool {
+        self.target.get(i).copied().unwrap_or(false)
+    }
+}
+
+/// A column's opacity at `amount` of dimming (0..1): 1 at 0, [`DIM`] at 1.
+pub fn opacity_at(amount: f32) -> f32 {
+    1.0 + (DIM - 1.0) * amount
+}
+
 /// Display-only art in a route page's picture slot. It is never a focus or hit stop, so it wears
 /// no ring, tick or label (the board: "so it never reads as a control").
 pub trait PictureSlot {
@@ -284,6 +343,29 @@ mod tests {
                 _ => panic!("the fan only holds posters here"),
             }
         }
+    }
+
+    /// **The unfocused column is the design's 0.45**, one constant, moving on the shared spring and
+    /// arriving exactly; a settled picture reports its asked answer.
+    #[test]
+    fn the_unfocused_column_dims_to_the_designs_value_on_the_shared_spring() {
+        let _g = plx_base::testlock::serial();
+        assert_eq!(DIM, 0.45, "Sv2s-P2-Details: dim = 0.45");
+        assert_eq!(opacity_at(0.0), 1.0);
+        assert_eq!(opacity_at(1.0), DIM);
+        let mut dims = ColumnDims::<2>::at([false, true]);
+        assert_eq!(dims.opacity(), [1.0, DIM], "opened settled");
+        assert!(!dims.is_dimmed(0) && dims.is_dimmed(1));
+        dims.set([true, false]);
+        plx_machine::idle::frame_begin(1.0 / 60.0);
+        dims.update(1.0 / 60.0);
+        let mid = dims.opacity();
+        assert!(mid[0] < 1.0 && mid[0] > DIM && mid[1] < 1.0 && mid[1] > DIM, "mid-motion: {mid:?}");
+        assert!(plx_machine::idle::page_moving(), "a dim reports its own motion");
+        for _ in 0..600 {
+            dims.update(1.0 / 60.0);
+        }
+        assert_eq!(dims.opacity(), [DIM, 1.0], "arrived exactly");
     }
 
     #[test]

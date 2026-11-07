@@ -1,21 +1,22 @@
 //! **Under posters** — what a focused poster's caption band shows and how tall that band is.
 //!
-//! Settings > Libraries > Under posters: a Title switch (default Off) and a
-//! Details picker. Only the FOCUSED row opens its band: 80 px for one line, 112 px for two,
+//! Settings > Libraries > Under posters: a Title switch (default Off) and, per kind of title, a SET
+//! of detail parts ([`DetailParts`]: year, length, seasons, genre, video quality, age rating, score;
+//! at most four, shown in a fixed order and joined with " · "). Only the FOCUSED row opens its band: 80 px for one line, 112 px for two,
 //! nothing when the policy shows nothing; non-focused rows keep their 40 px spacing. (The Continue Watching
 //! deck is the one shelf handed a different policy: its progress line is always shown, so under Nothing
 //! it is handed `registry::captions::deck_policy` and keeps its one line.)
 //!
 //! **A line the setting turns on is never drawn empty**, whatever the tile is. The title line is the
 //! name a reader knows the tile by (a season by its SHOW, an episode by its own title). The details
-//! line is the picked kind's facts, and a tile that has none of them (a season has no length and
+//! line is the ticked parts' facts, and a tile that has none of them (a season has no length and
 //! often no genre or rating) says its identity line instead (a season "Season 6" or "Specials", an
 //! episode its "S1 · E8" address, a show or movie its year, a collection its size), and a tile with
 //! not even that says what KIND it is ("Episode", "Movie", "Show", "Collection"), so a band the
-//! policy opens is never open over nothing. Under Nothing with Title Off no band opens at all (but for the deck).
+//! policy opens is never open over nothing. With no part ticked and Title Off no band opens at all (but for the deck).
 //!
 //! **One collection rule, on every surface.** A collection's details line is its size ("7 films")
-//! under every details kind but Nothing; the Title switch governs its title line like any poster's;
+//! under every set of parts but the empty one; the Title switch governs its title line like any poster's;
 //! and a name its face cuts ([`CaptionFacts::name_cut`]) is told on the details line when the title
 //! line is off, since the face is the only other place it is told.
 //!
@@ -36,6 +37,7 @@
 //! library, collection and settings packages compile against. [`band_h`] sizes the band;
 //! [`caption_lines`] words the lines in the given locale, with the catalog's plurals.
 
+pub use plx_base::detail_parts::{DetailPart, DetailParts};
 use plx_platform::i18n::LocaleContext;
 
 /// Band height with nothing to show.
@@ -45,48 +47,41 @@ pub const BAND_ONE_LINE: f32 = 80.0;
 /// Band height for two caption lines.
 pub const BAND_TWO_LINES: f32 = 112.0;
 
-/// Which facts the details line carries.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum DetailsKind {
-    /// "2019 · 2h 14m" (default).
-    #[default]
-    YearLength,
-    Genre,
-    /// "4K · HDR".
-    Video,
-    /// "PG-13 · 7.8".
-    AgeRatingScore,
-    None,
-}
-
 /// The setting.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CaptionPolicy {
     /// Show the title above the details.
     pub title: bool,
-    /// The details line under a movie (and under every tile that is not a TV show: a season, an
-    /// episode, a collection).
-    pub details: DetailsKind,
-    /// The details line under a TV show ([`CaptionFacts::is_show`]). Settings v2 split Details in
-    /// two because a show has no single video quality.
-    pub show_details: DetailsKind,
+    /// The parts of the details line under a movie (and under every tile that is not a TV show: a
+    /// season, an episode, a collection).
+    pub details: DetailParts,
+    /// The parts of the details line under a TV show ([`CaptionFacts::is_show`]): a show has seasons
+    /// and no length or video quality.
+    pub show_details: DetailParts,
+}
+
+impl Default for CaptionPolicy {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
 }
 
 impl CaptionPolicy {
-    pub const DEFAULT: CaptionPolicy = CaptionPolicy { title: false, details: DetailsKind::YearLength, show_details: DetailsKind::YearLength };
+    pub const DEFAULT: CaptionPolicy =
+        CaptionPolicy { title: false, details: DetailParts::MOVIE_DEFAULT, show_details: DetailParts::SHOW_DEFAULT };
 
-    /// The same details line under every kind of tile.
-    pub const fn same(title: bool, details: DetailsKind) -> CaptionPolicy {
+    /// The same parts under every kind of tile.
+    pub const fn same(title: bool, details: DetailParts) -> CaptionPolicy {
         CaptionPolicy { title, details, show_details: details }
     }
 
-    /// The details kind a tile is worded by: the show line for a TV show, the movie line for the rest.
-    pub fn details_for(&self, is_show: bool) -> DetailsKind {
+    /// The parts a tile is worded by: the show set for a TV show, the movie set for the rest.
+    pub fn details_for(&self, is_show: bool) -> DetailParts {
         if is_show { self.show_details } else { self.details }
     }
 
     /// The policy of a surface that lists ONE kind of tile (a Movies or Shows grid, Seasons,
-    /// Collections): both lines are that kind's own, so the band opens for what the kind shows and
+    /// Collections): both sets are that kind's own, so the band opens for what the kind shows and
     /// not for the other kind's line ([`Self::max_lines`] holds the room for either kind, which only a
     /// mixed shelf needs).
     pub fn only(&self, is_show: bool) -> CaptionPolicy {
@@ -98,7 +93,7 @@ impl CaptionPolicy {
     /// line: a shelf mixing movies and shows holds the room for whichever has one. A surface that
     /// lists one kind narrows first ([`Self::only`]).
     pub fn max_lines(&self) -> usize {
-        usize::from(self.title) + usize::from(self.details != DetailsKind::None || self.show_details != DetailsKind::None)
+        usize::from(self.title) + usize::from(!self.details.is_empty() || !self.show_details.is_empty())
     }
 }
 
@@ -164,25 +159,25 @@ pub struct CaptionFacts {
 ///
 /// **One rule for every kind of tile: a line the setting turns on is never drawn empty.** The title
 /// line is `facts.title`, the name a reader knows the tile by (the caller puts a season's SHOW there).
-/// The details line is the picked kind's facts, and a tile that has none of them (a season has no
+/// The details line is the ticked parts' facts, and a tile that has none of them (a season has no
 /// length and often no genre or rating, a movie may have no genre) says its identity line instead
 /// ([`identity_line`]; a movie, show or collection with not even that says what KIND it is, the last
 /// fallback), so a band the policy opens is never open over nothing, and the source credit
-/// ([`CaptionFacts::source`]) follows whatever the details line says. Under
-/// [`DetailsKind::None`] there is no details line, no fallback and no credit; a line is `None` only
-/// when the setting turns it off (or the tile has no name or identity at all), never for want of one
-/// picked fact.
+/// ([`CaptionFacts::source`]) follows whatever the details line says. With no part ticked there is
+/// no details line, no fallback and no credit; a line is `None` only when the setting turns it off
+/// (or the tile has no name or identity at all), never for want of one ticked fact. The ticked parts
+/// that have a value are joined in their fixed order ([`DetailParts::iter`]).
 ///
 /// Every word on a line comes from the catalog in `locale` (the shared `core.*` / `browse.*`
 /// duration, count and plural keys plus `captions.new_episodes`); the only literals are the
 /// technical marks `HDR`, `4K`, `1080p` and the middle dot.
 pub fn caption_lines(policy: &CaptionPolicy, facts: &CaptionFacts, locale: &LocaleContext) -> [Option<String>; 2] {
     let title = policy.title.then(|| facts.title.clone()).flatten().filter(|t| !t.is_empty());
-    let kind = policy.details_for(facts.is_show);
-    if kind == DetailsKind::None {
+    let parts = policy.details_for(facts.is_show);
+    if parts.is_empty() {
         return [title, None];
     }
-    // A COLLECTION has one fact worth a line, its size, under every details kind (it has no genre,
+    // A COLLECTION has one fact worth a line, its size, under every set of parts (it has no genre,
     // stream or age rating to pick): one rule on every surface that shows one. A name its face cuts
     // is the only other place the name is told, so with the title line off it rides the details line.
     if facts.subtype.is_some() {
@@ -190,25 +185,42 @@ pub fn caption_lines(policy: &CaptionPolicy, facts: &CaptionFacts, locale: &Loca
         let name = facts.title.clone().filter(|name| facts.name_cut && title.is_none() && !name.is_empty());
         return [title, join(name.into_iter().chain(size).chain(facts.source.clone().filter(|s| !s.is_empty())).collect())];
     }
-    let picked = match kind {
-        DetailsKind::None => unreachable!("returned above"),
-        DetailsKind::YearLength => year_length(facts, locale),
-        DetailsKind::Genre => facts.genre.clone().filter(|g| !g.is_empty()),
-        DetailsKind::Video => join(
-            facts.video_resolution.as_deref().and_then(resolution_mark).into_iter()
-                .chain(facts.hdr.then(|| "HDR".to_string())).collect(),
-        ),
-        DetailsKind::AgeRatingScore => join(
-            facts.content_rating.clone().into_iter().filter(|r| !r.is_empty())
-                .chain(facts.audience_rating.filter(|s| *s > 0.0)
-                    .map(|s| locale.decimal((s * 10.0).round() as i64, 1))).collect(),
-        ),
-    };
+    // What matters more than the year, length and seasons (a season's own title, an episode's
+    // address, a show's new episodes, a started movie's time left) stands in for the line when the
+    // viewer ticked any of those three parts; a line of genre, video, age rating or score alone has
+    // no such stand-in.
+    let status = [DetailPart::Year, DetailPart::Length, DetailPart::Seasons]
+        .iter()
+        .any(|p| parts.contains(*p))
+        .then(|| status_line(facts, locale))
+        .flatten();
+    let picked = status.or_else(|| join(parts.iter().filter_map(|part| part_value(part, facts, locale)).collect()));
     let details = picked.or_else(|| identity_line(facts, locale));
     // The same words are never drawn twice: a season named by its show over its show, or an orphan
     // season over its own title, shows the one line.
     let details = details.filter(|line| title.as_ref() != Some(line));
     [title, join(details.into_iter().chain(facts.source.clone().filter(|s| !s.is_empty())).collect())]
+}
+
+/// **One part's value for `facts`**, as the line says it: the year, the length ("1h 52m"), the season
+/// count ("6 seasons"), the first genre, the video quality ("4K · HDR"), the age rating, the audience
+/// score ("8.1"). `None` when the tile has no such fact. The Under posters picker words each row's
+/// sample through this, so a row and the line it ticks can never word a fact differently.
+pub fn part_value(part: DetailPart, facts: &CaptionFacts, locale: &LocaleContext) -> Option<String> {
+    use plx_platform::i18n::msg;
+    match part {
+        DetailPart::Year => facts.year.filter(|y| *y > 0).map(|y| y.to_string()),
+        DetailPart::Length => facts.duration_min.filter(|m| *m > 0).map(|d| crate::fmt::duration_minutes_in(locale, i64::from(d))),
+        DetailPart::Seasons => facts.season_count.or(facts.child_count).filter(|n| *n > 0)
+            .map(|n| msg::browse_detail_seasons_in(locale, i64::from(n))),
+        DetailPart::Genre => facts.genre.clone().filter(|g| !g.is_empty()),
+        DetailPart::VideoQuality => join(
+            facts.video_resolution.as_deref().and_then(resolution_mark).into_iter()
+                .chain(facts.hdr.then(|| "HDR".to_string())).collect(),
+        ),
+        DetailPart::AgeRating => facts.content_rating.clone().filter(|r| !r.is_empty()),
+        DetailPart::Score => facts.audience_rating.filter(|s| *s > 0.0).map(|s| locale.decimal((s * 10.0).round() as i64, 1)),
+    }
 }
 
 /// The facts of one caption line joined with the app's one separator (" · "); no facts, no line.
@@ -245,42 +257,28 @@ fn episode_line(f: &CaptionFacts, cx: &LocaleContext) -> Option<String> {
         .or_else(|| episode_address(f, cx))
 }
 
-/// The default details line, by kind: a collection is its size, an episode its address, a season its
-/// own identity ("Season 6": it beats its year, which names neither the show nor the season), a show
-/// its season count (or, once it is in progress, its unwatched new episodes), a started item the time
-/// it has left, anything else year and length ([`identity_line`] answers when there is none).
-fn year_length(f: &CaptionFacts, cx: &LocaleContext) -> Option<String> {
+/// **The line that stands in for the year, length and seasons** when a tile has something that
+/// matters more: a season is its own identity ("Season 6": it beats its year, which names neither
+/// the show nor the season), an episode its address, a show in progress its unwatched new episodes,
+/// a started movie the time it has left. `None` for a tile with none of those, which the parts word.
+fn status_line(f: &CaptionFacts, cx: &LocaleContext) -> Option<String> {
     use plx_platform::i18n::msg;
     if f.season.is_some() {
         return identity_line(f, cx);
     }
-    if let Some(sub) = f.subtype.as_deref() {
-        return Some(crate::fmt::collection_count_in(cx, Some(sub), i64::from(f.child_count?)));
-    }
     if let Some(line) = episode_line(f, cx) {
         return Some(line);
     }
-    let year = f.year.filter(|y| *y > 0).map(|y| y.to_string());
     if f.is_show {
         // "N new episodes" is for a show IN PROGRESS: something watched and something left. A show
         // nobody opened has every episode unwatched, and "62 new episodes" tells a reader nothing.
         let in_progress = f.viewed_leaf_count.filter(|v| *v > 0);
         let unwatched = f.leaf_count.zip(in_progress).map(|(l, v)| l.saturating_sub(v)).filter(|n| *n > 0);
-        if let Some(n) = unwatched {
-            return Some(msg::captions_new_episodes_in(cx, i64::from(n)));
-        }
-        let seasons = f.season_count.or(f.child_count).filter(|n| *n > 0)
-            .map(|n| msg::browse_detail_seasons_in(cx, i64::from(n)));
-        return join(year.into_iter().chain(seasons).collect());
+        return unwatched.map(|n| msg::captions_new_episodes_in(cx, i64::from(n)));
     }
-    let dur = f.duration_min.filter(|m| *m > 0);
-    if let (Some(d), Some(off)) = (dur, f.view_offset_min.filter(|m| *m > 0)) {
-        if off < d {
-            return Some(crate::fmt::time_left_minutes_in(cx, i64::from(d - off)));
-        }
-    }
-    let length = dur.map(|d| crate::fmt::duration_minutes_in(cx, i64::from(d)));
-    join(year.into_iter().chain(length).collect())
+    let dur = f.duration_min.filter(|m| *m > 0)?;
+    let off = f.view_offset_min.filter(|m| *m > 0 && *m < dur)?;
+    Some(crate::fmt::time_left_minutes_in(cx, i64::from(dur - off)))
 }
 
 /// What a tile IS, in one short line, for a tile the picked details kind has nothing to say about,
@@ -343,13 +341,19 @@ mod more_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use DetailPart as P;
+
+    fn parts(ps: &[DetailPart]) -> DetailParts {
+        DetailParts::of(ps)
+    }
 
     #[test]
-    fn default_is_year_length_without_title_and_one_line_tall() {
+    fn default_is_year_length_and_year_seasons_without_title_and_one_line_tall() {
         let p = CaptionPolicy::default();
         assert_eq!(p, CaptionPolicy::DEFAULT);
         assert!(!p.title);
-        assert_eq!(p.details, DetailsKind::YearLength);
+        assert_eq!(p.details, parts(&[P::Year, P::Length]));
+        assert_eq!(p.show_details, parts(&[P::Year, P::Seasons]));
         assert_eq!(band_h(&p), 80.0);
     }
 
@@ -357,7 +361,7 @@ mod tests {
     /// for either.
     #[test]
     fn a_single_kind_surface_is_sized_by_its_own_line_and_a_mixed_one_by_either() {
-        let movies_nothing = CaptionPolicy { title: false, details: DetailsKind::None, show_details: DetailsKind::YearLength };
+        let movies_nothing = CaptionPolicy { title: false, details: DetailParts::NONE, show_details: DetailParts::SHOW_DEFAULT };
         assert_eq!(band_h(&movies_nothing), BAND_ONE_LINE, "a mixed shelf holds the room for the show line");
         assert_eq!(band_h(&movies_nothing.only(false)), BAND_NONE, "a Movies grid with Movie details Nothing opens nothing");
         assert_eq!(band_h(&movies_nothing.only(true)), BAND_ONE_LINE, "a Shows grid still has its line");
@@ -365,14 +369,14 @@ mod tests {
         assert_eq!(band_h(&titled), BAND_TWO_LINES);
         assert_eq!(band_h(&titled.only(false)), BAND_ONE_LINE, "the title alone is one line, not two");
         assert_eq!(band_h(&titled.only(true)), BAND_TWO_LINES);
-        assert_eq!(titled.only(true), CaptionPolicy::same(true, DetailsKind::YearLength));
+        assert_eq!(titled.only(true), CaptionPolicy::same(true, DetailParts::SHOW_DEFAULT));
     }
 
     #[test]
     fn band_height_is_zero_for_nothing_80_for_one_line_112_for_two() {
-        let none = CaptionPolicy::same(false, DetailsKind::None);
-        let title_only = CaptionPolicy::same(true, DetailsKind::None);
-        let both = CaptionPolicy::same(true, DetailsKind::Genre);
+        let none = CaptionPolicy::same(false, DetailParts::NONE);
+        let title_only = CaptionPolicy::same(true, DetailParts::NONE);
+        let both = CaptionPolicy::same(true, parts(&[P::Genre]));
         assert_eq!([band_h(&none), band_h(&title_only), band_h(&both)], [0.0, 80.0, 112.0]);
     }
 
@@ -380,17 +384,63 @@ mod tests {
     fn lines_follow_the_policy_and_fall_back_to_identity_for_missing_facts() {
         let facts = CaptionFacts { title: Some("Heat".into()), year: Some(1995), genre: Some("Crime".into()), ..Default::default() };
         let l = plx_platform::i18n::current();
-        let p = CaptionPolicy::same(true, DetailsKind::Genre);
+        let p = CaptionPolicy::same(true, parts(&[P::Genre]));
         assert_eq!(caption_lines(&p, &facts, l), [Some("Heat".into()), Some("Crime".into())]);
         // no stream facts: the line is the item's identity (its year), never an open band over nothing
-        let p = CaptionPolicy::same(false, DetailsKind::Video);
+        let p = CaptionPolicy::same(false, parts(&[P::VideoQuality]));
         assert_eq!(caption_lines(&p, &facts, l), [None, Some("1995".into())]);
-        let p = CaptionPolicy::same(false, DetailsKind::YearLength);
+        let p = CaptionPolicy::same(false, parts(&[P::Year, P::Length]));
         assert_eq!(caption_lines(&p, &facts, l), [None, Some("1995".into())]);
-        let p = CaptionPolicy::same(true, DetailsKind::None);
+        let p = CaptionPolicy::same(true, DetailParts::NONE);
         assert_eq!(caption_lines(&p, &facts, l), [Some("Heat".into()), None], "Nothing has no fallback");
-        assert_eq!(caption_lines(&CaptionPolicy::same(false, DetailsKind::Genre), &CaptionFacts::default(), l), [None, None],
+        assert_eq!(caption_lines(&CaptionPolicy::same(false, parts(&[P::Genre])), &CaptionFacts::default(), l), [None, None],
             "an item with no name and no facts has nothing to say");
+    }
+
+    /// **The line is the ticked parts' values joined with the middle dot in the fixed order**, whatever
+    /// order they were ticked in; a part the tile has no fact for is skipped, and one that is the only
+    /// tick falls to the identity line.
+    #[test]
+    fn the_line_joins_the_ticked_parts_in_the_fixed_order() {
+        let l = plx_platform::i18n::english();
+        let movie = CaptionFacts {
+            year: Some(2024), duration_min: Some(112), genre: Some("Drama".into()), video_resolution: Some("4k".into()), hdr: true,
+            content_rating: Some("PG-13".into()), audience_rating: Some(8.1), is_movie: true, ..Default::default()
+        };
+        let at = |ps: &[DetailPart]| caption_lines(&CaptionPolicy::same(false, parts(ps)), &movie, l)[1].clone();
+        assert_eq!(at(&[P::Score, P::Year]).as_deref(), Some("2024 \u{b7} 8.1"));
+        assert_eq!(at(&[P::Year, P::Length, P::Genre, P::VideoQuality]).as_deref(), Some("2024 \u{b7} 1h 52m \u{b7} Drama \u{b7} 4K \u{b7} HDR"));
+        assert_eq!(at(&[P::AgeRating, P::Score]).as_deref(), Some("PG-13 \u{b7} 8.1"));
+        assert_eq!(at(&[P::Seasons]).as_deref(), Some("2024"), "a movie has no seasons: its identity says the year");
+        let show = CaptionFacts { is_show: true, year: Some(2019), season_count: Some(6), genre: Some("Mystery".into()), content_rating: Some("TV-14".into()), audience_rating: Some(8.4), ..Default::default() };
+        let at = |ps: &[DetailPart]| caption_lines(&CaptionPolicy::same(false, parts(ps)), &show, l)[1].clone();
+        assert_eq!(at(&[P::Year, P::Seasons]).as_deref(), Some("2019 \u{b7} 6 seasons"));
+        assert_eq!(at(&[P::Seasons, P::Genre, P::AgeRating, P::Score]).as_deref(), Some("6 seasons \u{b7} Mystery \u{b7} TV-14 \u{b7} 8.4"));
+    }
+
+    /// The stand-ins that matter more than the year, length and seasons keep their rules, and only a
+    /// set that ticks one of those three parts has them.
+    #[test]
+    fn a_started_movie_and_a_show_in_progress_say_their_status_only_for_the_year_length_seasons_parts() {
+        let l = plx_platform::i18n::english();
+        let started = CaptionFacts { year: Some(2024), duration_min: Some(112), view_offset_min: Some(74), genre: Some("Drama".into()), ..Default::default() };
+        let at = |ps: &[DetailPart]| caption_lines(&CaptionPolicy::same(false, parts(ps)), &started, l)[1].clone();
+        assert_eq!(at(&[P::Year, P::Length]).as_deref(), Some("38m left"));
+        assert_eq!(at(&[P::Length]).as_deref(), Some("38m left"));
+        assert_eq!(at(&[P::Genre]).as_deref(), Some("Drama"));
+        let ep = CaptionFacts { title: Some("Pilot".into()), episode: Some((1, 8)), genre: Some("Drama".into()), ..Default::default() };
+        assert_eq!(caption_lines(&CaptionPolicy::same(false, parts(&[P::Year])), &ep, l)[1].as_deref(), Some("S1 \u{b7} E8"));
+        assert_eq!(caption_lines(&CaptionPolicy::same(false, parts(&[P::Score])), &ep, l)[1].as_deref(), Some("S1 \u{b7} E8"), "no fact: the identity");
+    }
+
+    #[test]
+    fn a_collection_says_its_size_under_any_non_empty_set_and_nothing_under_the_empty_one() {
+        let l = plx_platform::i18n::english();
+        let films = CaptionFacts { subtype: Some("movie".into()), child_count: Some(7), ..Default::default() };
+        for ps in [&[P::Genre][..], &[P::Year, P::Length], &[P::Score]] {
+            assert_eq!(caption_lines(&CaptionPolicy::same(false, parts(ps)), &films, l)[1].as_deref(), Some("7 films"));
+        }
+        assert_eq!(caption_lines(&CaptionPolicy::same(false, DetailParts::NONE), &films, l)[1], None);
     }
 }
 

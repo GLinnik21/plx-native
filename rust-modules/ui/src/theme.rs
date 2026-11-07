@@ -890,6 +890,24 @@ pub const ROW_VALUE_INK_ON_DIM: [f32; 4] = with_a(ACCENT_INK, 0.38);
 /// quietened, as [`TEXT_SEPARATOR`] is, rather than a grey of its own.
 pub const ROW_VALUE_INK_DIM: [f32; 4] = with_a(TEXT_TERTIARY, 0.45);
 
+/// **The DISABLED control state, as one value** — what a table row that is present but cannot be
+/// used wears ([`crate::table::Row::disabled`], [`crate::table::Row::disabled_state`]):
+///
+/// * `label` — the name off the pill: [`TEXT_TERTIARY`], the dim row's label rung.
+/// * `value` — the read-out beside it (a row's value): [`ROW_VALUE_INK_DIM`], the label's ink
+///   quietened one step.
+///
+/// A poster tile is not a control and never wears it (the Under posters picture dims by
+/// [`crate::follow_copy::DIM`] instead).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Disabled {
+    pub label: [f32; 4],
+    pub value: [f32; 4],
+}
+
+/// The one disabled state.
+pub const DISABLED: Disabled = Disabled { label: TEXT_TERTIARY, value: ROW_VALUE_INK_DIM };
+
 // ── The watched TICK on artwork (the tile's one state mark) ──────────────────
 /// The tick's ink: `COOL_0`, the same near-white a title is set in. **No disc, no plate** — the
 /// artwork stays visible and only the veil below touches it. (The mark was an amber disc with a

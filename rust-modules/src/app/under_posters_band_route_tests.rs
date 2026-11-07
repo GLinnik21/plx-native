@@ -7,7 +7,7 @@
 
 use super::test_support::World;
 use super::under_posters_shelf_route_tests::{set, Cell};
-use plx_plex::plex::session::UnderPostersDetails as Details;
+use plx_plex::plex::session::UnderPostersLadder as Details;
 
 pub(super) const PICKERS: [Details; 5] =
     [Details::YearLength, Details::Genre, Details::Video, Details::AgeRatingScore, Details::None];
@@ -65,7 +65,7 @@ fn grade_grid_bands(w: &mut World, surface: &str) {
     for (title, details, band, want) in [(true, Details::YearLength, 112.0, 72.0), (false, Details::YearLength, 80.0, 40.0),
         (true, Details::None, 80.0, 40.0), (false, Details::None, 0.0, 0.0)] {
         set(w, title, details);
-        let policy: CaptionPolicy = caption_policy_of(plx_plex::plex::session::UnderPosters { title, details, show_details: details.for_shows(), sort_value: false });
+        let policy: CaptionPolicy = caption_policy_of(plx_plex::plex::session::UnderPosters { title, details: details.movie_parts(), show_details: details.show_parts(), sort_value: false });
         assert_eq!(band_h(&policy), band, "{surface}: premise: the policy's band");
         let (card, next) = (w.poster_cell(0), below(w));
         let opened = gap(w) - closed;
@@ -168,10 +168,10 @@ fn grade_shelf_bands(w: &mut World, surface: &str, focused: &str, next: &str, de
     };
     let closed = pitch(w, false, Details::None);
     let effective = |policy: CaptionPolicy| if deck { plx_screens::registry::captions::deck_policy(&policy) } else { policy };
-    let baseline = band_open_for(band_h(&effective(caption_policy_of(plx_plex::plex::session::UnderPosters { title: false, details: Details::None, show_details: Details::None.for_shows(), sort_value: false }))));
+    let baseline = band_open_for(band_h(&effective(caption_policy_of(plx_plex::plex::session::UnderPosters { title: false, details: Details::None.movie_parts(), show_details: Details::None.show_parts(), sort_value: false }))));
     for (title, details, band, grows) in [(true, Details::YearLength, 112.0, 72.0), (false, Details::YearLength, 80.0, 40.0),
         (true, Details::None, 80.0, 40.0), (false, Details::None, 0.0, 0.0), (true, Details::Genre, 112.0, 72.0)] {
-        let policy: CaptionPolicy = caption_policy_of(plx_plex::plex::session::UnderPosters { title, details, show_details: details.for_shows(), sort_value: false });
+        let policy: CaptionPolicy = caption_policy_of(plx_plex::plex::session::UnderPosters { title, details: details.movie_parts(), show_details: details.show_parts(), sort_value: false });
         assert_eq!(band_h(&policy), band, "{surface}: premise: the policy's band for title {title}, {details:?}");
         assert!((band_open_for(band) - grows).abs() < 0.5, "{surface}: premise: the layout's growth for a {band} band");
         let (band, grows) = (band_h(&effective(policy)), band_open_for(band_h(&effective(policy))) - baseline);

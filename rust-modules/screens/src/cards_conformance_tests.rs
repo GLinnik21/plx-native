@@ -90,7 +90,7 @@ fn cards_arriving_in_the_tick_of_a_focus_change_keep_the_view_in_place() {
 /// it. Without the pin the policy-reading harnesses move by the 32 px between the bands.
 #[test]
 fn every_card_harness_follows_the_pin_not_the_live_setting() {
-    use plx_plex::plex::session::{UnderPosters, UnderPostersDetails};
+    use plx_plex::plex::session::{UnderPosters, UnderPostersLadder};
     use plx_ui::screen::By;
     /// Puts the live cell back on its default, a panic included.
     struct Live;
@@ -112,7 +112,7 @@ fn every_card_harness_follows_the_pin_not_the_live_setting() {
         h.tick(1);
         h.drawn_rect(cards[7.min(cards.len() - 1)], 1.0).map(|rect| rect.y)
     };
-    let two_lines = UnderPosters { title: true, details: UnderPostersDetails::Genre, show_details: UnderPostersDetails::Genre.for_shows(), sort_value: false };
+    let two_lines = UnderPosters { title: true, details: UnderPostersLadder::Genre.movie_parts(), show_details: UnderPostersLadder::Genre.show_parts(), sort_value: false };
     let mut moved = Vec::new();
     for (screen, mount) in table() {
         let (default, held) = (lower_card_y(UnderPosters::DEFAULT, mount), lower_card_y(two_lines, mount));
