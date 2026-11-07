@@ -108,7 +108,7 @@ base
 
 | layer | members | prod lines | an edit there recompiles |
 |---|---|---:|---:|
-| base | `eventlog paths task cbuf sha256 b64 spki dynlib checkpoint storage_worker fontcov surface tile hold detail_parts devtrig diag::{zlib,spans,heartbeat} testlock testnet testscratch testrace` | 9k | everything |
+| base | `eventlog paths task cbuf sha256 sha1 b64 spki dynlib checkpoint storage_worker fontcov surface tile hold detail_parts devtrig diag::{zlib,spans,heartbeat} testlock testnet testscratch testrace` | 9k | everything |
 | machine | `ui::{machine,present,idle,landgate,landing,motion}` | 4k | 97% |
 | platform | `webos storage keymanager devcaps imgcache i18n labcfg tv` | 11k | 96% |
 | gfx | `gfx egl text rtl img svg gpu_timer hwcnt overdraw dump` | 15k | 68% |
