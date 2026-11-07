@@ -364,7 +364,7 @@ Report these ONLY from the device, via the **`tv-session`** skill (and `wake-tv`
   declaration, `SOUND_ERROR_019`, frame pacing, which codecs the panel takes. The 29-symbol
   Starfish/ACB seam does not exist off-device, so by default the simulator's stand-in
   (`plx_play_feed::ffi_host::HostSink`; a simulator built without `play-feed` installs `NoSink`,
-  which is why the Makefile's `sim*` recipes and `ci/mkmacapp.py` name `play-feed`) reports the seam's own "no video path" failure and pressing Play
+  see `ci/test_sim_backend.py`) reports the seam's own "no video path" failure and pressing Play
   lands on the app's real failure read-out — correct behaviour, not a bug, and a convenient way to
   look at that screen.
 - ~~**Anything about video.**~~ **Narrowed twice, and the second time is recent.** Arm

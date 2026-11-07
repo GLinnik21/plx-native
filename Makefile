@@ -182,7 +182,7 @@ APPPORT      = $(if $(filter stable,$(FLAVOR)),8910,$(if $(filter nightly,$(FLAV
 # it here also survives the next block that gets added above `all:`.
 .DEFAULT_GOAL := all
 
-QUERY_GOALS = print-flavor print-appid print-appdir print-rundir print-eventlog print-appport print-tv \
+QUERY_GOALS = print-flavor print-appid print-appdir print-rundir print-eventlog print-appport print-tv print-playback-config \
               print-simbin print-app-files print-deploy-files print-sentry-handler print-ffmpeg-staged \
               print-sentry-project print-bench-config print-disk-entries \
               print-subs-font-files print-rust-toolchain print-rust-codegen print-cargo-env
@@ -210,6 +210,9 @@ print-sentry-handler: ; @echo '$(SENTRY_HANDLER)'
 print-ffmpeg-staged:  ; @echo '$(FFMPEG_STAGED)'
 print-sentry-project: ; @echo '$(SENTRY_PROJECT)'
 print-rust-toolchain: ; @echo '$(RUST_TOOLCHAIN)'
+print-playback-config:
+	@printf '%s\n' 'backends=$(PLAYBACK_BACKENDS)' 'features=$(RUST_FEATFLAGS)' 'target=$(RUST_TDIR)' 'native=$(SRCS)' 'libraries=$(LIBS_REAL)' 'interposer=$(SMP_INTERPOSER_LDFLAG)'
+
 print-rust-codegen: ; @echo '$(RUST_CODEGEN)'
 print-cargo-env: ; @env $(TELEMETRY_ENV) env | grep '^PLX_' | sort || true
 # What `tools/build-bench.py` needs to run the recipes' cargo invocations without restating their
@@ -399,7 +402,7 @@ RUST_ENV = RUSTFLAGS="$(RUST_CODEGEN) $(RUST_DEBUGINFO) $(RUST_CAPLINTS) $(RUST_
 # them normally — with real link-time symbol checking — the right call.
 #   libpf-1.0 carries mediapipeline::CustomPipeline (the webOS<11 seek path).
 LIBS_REAL = -lSDL2 -lSDL2_ttf -lGLESv2 -lluna-service2 -lglib-2.0 \
-            -lwayland-client -lplayerAPIs -lpf-1.0
+            -lwayland-client $(if $(PLAYBACK_HAS_FEED),-lplayerAPIs -lpf-1.0,)
 # NOT LISTED, DELIBERATELY — but for TWO different reasons, and this comment used to give only
 # the first, for all three.
 #
@@ -557,12 +560,28 @@ $(if $(findstring nightly,$(RUST_TOOLCHAIN)),,$(error HOST_THREADS=$(HOST_THREAD
 endif
 HOST_ENV = $(if $(filter-out 0 1,$(HOST_THREADS)),CARGO_BUILD_RUSTFLAGS='-Zthreads=$(HOST_THREADS)')
 
-# `--no-default-features` drops `play-feed` too (it is in the application crate's `default`), and a
-# build with no playback backend is not a television package (`lib.rs` refuses it), so RELEASE names
-# the backend explicitly. `make check-nodef` passes the same word.
-RUST_BACKEND_FEATURES = play-feed
-RUST_FEATFLAGS = $(if $(RELEASE),--no-default-features --features $(RUST_BACKEND_FEATURES),)$(if $(LAB), --features lab-diagnostics,)
-RUST_TDIR      = target$(if $(RELEASE),-release,)$(if $(LAB),-lab,)$(if $(SYMBOLS),-sym,)
+# Backend inclusion is explicit even when RELEASE drops diagnostic defaults. These names also
+# key target directories and native objects, so changing a backend cannot reuse another binary.
+PLAYBACK_BACKENDS ?= both
+ifneq ($(words $(PLAYBACK_BACKENDS)),1)
+$(error PLAYBACK_BACKENDS must name one backend configuration)
+endif
+ifneq ($(filter $(PLAYBACK_BACKENDS),both uri feed none),$(PLAYBACK_BACKENDS))
+$(error PLAYBACK_BACKENDS must be both, uri, feed or none)
+endif
+PLAYBACK_FEATURES_both = play-uri,play-feed
+PLAYBACK_FEATURES_uri = play-uri
+PLAYBACK_FEATURES_feed = play-feed
+PLAYBACK_FEATURES_none =
+RUST_BACKEND_FEATURES = $(PLAYBACK_FEATURES_$(PLAYBACK_BACKENDS))
+PLAYBACK_HAS_FEED = $(filter both feed,$(PLAYBACK_BACKENDS))
+PLAYBACK_EMPTY :=
+PLAYBACK_SPACE := $(PLAYBACK_EMPTY) $(PLAYBACK_EMPTY)
+PLAYBACK_COMMA := ,
+RUST_BUILD_FEATURES = $(subst $(PLAYBACK_SPACE),$(PLAYBACK_COMMA),$(strip $(subst $(PLAYBACK_COMMA),$(PLAYBACK_SPACE),$(RUST_BACKEND_FEATURES)) $(if $(RELEASE),,devtools devtriggers threadcheck) $(if $(LAB),lab-diagnostics,)))
+RUST_FEATFLAGS = --no-default-features $(if $(RUST_BUILD_FEATURES),--features $(RUST_BUILD_FEATURES),)
+RUST_TDIR = target$(if $(RELEASE),-release,)$(if $(LAB),-lab,)$(if $(SYMBOLS),-sym,)$(if $(filter both,$(PLAYBACK_BACKENDS)),,-$(PLAYBACK_BACKENDS))
+
 # OVERRIDING RUST_FEATFLAGS BY HAND? PASS RUST_TDIR TOO. This dir is keyed on RELEASE, not on the
 # flag set, so `make RUST_FEATFLAGS=...` alone lands in the SAME target/ as an ordinary build:
 # cargo's staticlib looks up to date, the stamp below deletes pkg/plxnative, and make relinks the
@@ -854,7 +873,7 @@ RUST_LIB    = rust-modules/$(RUST_TDIR)/$(RUST_TARGET)/$(ARM_PROFILE)/libplxnati
 # Every ordinary C translation unit ships; gpdebug remains an opt-in allocator guard.
 # ass.c, ass_fonts.c and ass_text.c belong to the privately bundled renderer, never the application
 # ELF (ci/test_renderer_sources.py holds this list to ci/build-libass.py's).
-SRCS = $(filter-out src/gpdebug.c src/ass.c src/ass_fonts.c src/ass_text.c,$(wildcard src/*.c)) src/compat/getauxval.c
+SRCS = $(filter-out src/gpdebug.c src/ass.c src/ass_fonts.c src/ass_text.c $(if $(PLAYBACK_HAS_FEED),,src/starfish.c),$(wildcard src/*.c)) src/compat/getauxval.c
 OBJS = $(SRCS:.c=.o)
 
 all: pkg/plxnative pkg/plxnative-storage
@@ -981,7 +1000,7 @@ $(FFABI_STAMP): ci/ffabi-assert.c $(FFMPEG_INC)/libavformat/avformat.h Makefile
 # rule would leave every later `make` linking a library built by the OLD one. Cargo's own
 # `rerun-if-changed` cannot save that — it is only consulted when make decides to invoke cargo at
 # all, and this target is an ordinary timestamp comparison.
-RUST_INPUTS := $(shell find rust-modules/src rust-modules/base rust-modules/machine rust-modules/net rust-modules/platform rust-modules/gfx rust-modules/ui rust-modules/plex rust-modules/telemetry rust-modules/data rust-modules/session rust-modules/media rust-modules/playback-contract rust-modules/play-feed rust-modules/media-codecs rust-modules/appkit rust-modules/screens rust-modules/build_support locales assets -type f 2>/dev/null)
+RUST_INPUTS := $(shell find rust-modules/src rust-modules/base rust-modules/machine rust-modules/net rust-modules/platform rust-modules/gfx rust-modules/ui rust-modules/plex rust-modules/telemetry rust-modules/data rust-modules/session rust-modules/media rust-modules/playback-contract rust-modules/play-uri rust-modules/play-feed rust-modules/media-codecs rust-modules/appkit rust-modules/screens rust-modules/build_support locales assets -type f 2>/dev/null)
 $(RUST_LIB): LICENSE $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock rust-modules/build.rs ci/install-identities.json rust-modules/.cargo/config.toml Makefile ci/check-staticlib-artifact.py $(FFABI_STAMP)
 	@# BEFORE the mkdir: the seed is only ever cloned into a target dir that does not exist yet.
 	$(CARGO_SEED) restore $(RUST_TDIR) rust-modules/$(RUST_TDIR)
@@ -1052,7 +1071,7 @@ pkg/plxnative-storage: LICENSE $(STORAGE_INPUTS) rust-modules/Cargo.toml rust-mo
 # interposer resolves the firmware implementation with RTLD_NEXT before every Load. Do not widen
 # this to -E/--export-dynamic: no other executable-private symbol is part of the native ABI.
 SMP_CALLBACK_HOOK = _ZN17StarfishMediaAPIs20callbackFunctionHookEixPKc
-SMP_INTERPOSER_LDFLAG = -Wl,--export-dynamic-symbol=$(SMP_CALLBACK_HOOK)
+SMP_INTERPOSER_LDFLAG = $(if $(PLAYBACK_HAS_FEED),-Wl$(PLAYBACK_COMMA)--export-dynamic-symbol=$(SMP_CALLBACK_HOOK),)
 # The second symbol the executable exports: src/exit.c defines libc's `exit`, and this export makes
 # the `exit` of every shared library bind to it (PLX-NATIVE-1P shows one made on SDL's SDLTimer
 # thread), so the process ends through plx_exit_record (src/crashtrace.c), which ends it with the
@@ -1086,10 +1105,19 @@ GC_SECTIONS_LDFLAG = -Wl,--gc-sections
 # call to __aeabi_fadd). With libm.so first, those names are already defined when the archive is
 # scanned and the members are never extracted, so every call (Rust's and svg.c's) binds to glibc's
 # VFP libm. `ci/check-elf.sh` fails if a local definition of one of them comes back.
+ifeq ($(PLAYBACK_BACKENDS),none)
+.PHONY: playback-no-backend
+playback-no-backend:
+	@echo 'A television package requires a URI or feed playback backend.' >&2
+	@exit 1
+pkg/plxnative: playback-no-backend
+else
 pkg/plxnative: $(OBJS) $(RUST_LIB) $(FFMPEG_STAGED) $(LIBASS_STAGED) $(SENTRY_NATIVE_STAMP) Makefile ci/arm-cc.py ci/check-link-evidence.py
 	$(CC) $(CFLAGS) -Wl,--build-id=sha1 $(GC_SECTIONS_LDFLAG) $(SMP_INTERPOSER_LDFLAG) $(EXIT_INTERPOSER_LDFLAG) \
 	  $(OBJS) -lm $(RUST_LIB) $(SENTRY_NATIVE_LIB) \
 	  $(SENTRY_UNWIND_LIB) $(LIBS_REAL) -ldl -lrt -lpthread -lm -o $@
+
+endif
 
 # --- NDK bootstrap -----------------------------------------------------------
 # Download + extract + relocate the webosbrew native-toolchain into $(WEBOS_SDK).
@@ -1634,7 +1662,7 @@ check-cargo-lint: lint
 	@# gate has nothing to reuse a cache for. No `pkg/lab.json` is involved — that file is `make
 	@# LAB=1`'s requirement (a live session secret), not the compiler's.
 	@set -e; cd rust-modules && CARGO_INCREMENTAL=0 PATH="$$HOME/.cargo/bin:$$PATH" \
-	  cargo +$(RUST_TOOLCHAIN) check --lib --tests -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens --features lab-diagnostics
+	  cargo +$(RUST_TOOLCHAIN) check --lib --tests -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens --features lab-diagnostics
 	@# And the demo-video dump build's pixel oracle, `placeholder-sentinel`: in no default set and
 	@# built only by `make site-video-sim`, which no gate runs and which compiles no `plx_ui` tests, so
 	@# this line is what keeps it compiling (its code AND its tests, `--tests`). `plx_ui` is the only
@@ -1653,7 +1681,7 @@ check-cargo-lint: lint
 # `-p` lists in the recipes below (those stay literal because ci/test_ci_split.py greps for them);
 # ci/test_test_crate.py pins the two equal.
 UNIT_RUN = python3 ../tools/cargo-test-parallel.py
-UNIT_SUITE = plxnative-modules plx_base plx_machine plx_platform plx_gfx plx_net plx_ui plx_plex plx_telemetry plx_data plx_session plx_media plx_playback_contract plx_play_feed plx_media_codecs plx_appkit plx_screens
+UNIT_SUITE = plxnative-modules plx_base plx_machine plx_platform plx_gfx plx_net plx_ui plx_plex plx_telemetry plx_data plx_session plx_media plx_playback_contract plx_play_uri plx_play_feed plx_media_codecs plx_appkit plx_screens
 
 # The default-feature unit suite and everything that drives cargo through ci/ self-tests.
 check-cargo-unit-default:
@@ -1682,7 +1710,7 @@ check-cargo-unit-default:
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
 	  $(TELEMETRY_ENV) \
 	  $(HOST_ENV) \
-	  $(UNIT_RUN) -- cargo +$(RUST_TOOLCHAIN) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens
+	  $(UNIT_RUN) -- cargo +$(RUST_TOOLCHAIN) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens
 	RUST_TOOLCHAIN=$(RUST_TOOLCHAIN) python3 ci/test_storage_service_package.py
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" cargo +$(RUST_TOOLCHAIN) test -p plxnative-storage --bin plxnative-storage
 	@# The helper is its own package, so building it compiles no copy of the app library; this reads
@@ -1716,7 +1744,7 @@ check-cargo-unit-hostsim:
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
 	  $(TELEMETRY_ENV) \
 	  $(HOST_ENV) \
-	  $(UNIT_RUN) -- cargo +$(RUST_TOOLCHAIN) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens --features hostsim
+	  $(UNIT_RUN) -- cargo +$(RUST_TOOLCHAIN) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens --features hostsim
 
 # OPT-IN incremental inner loop: the default-feature unit suite (the same `cargo test --lib` as
 # `check-cargo-unit-default`, same throwaway runtime root and telemetry env) with
@@ -1740,7 +1768,7 @@ test-fast:
 	  PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
 	  $(TELEMETRY_ENV) \
 	  $(HOST_ENV) \
-	  $(UNIT_RUN) $(if $(T),--filter '$(T)') -- cargo +$(RUST_TOOLCHAIN) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens
+	  $(UNIT_RUN) $(if $(T),--filter '$(T)') -- cargo +$(RUST_TOOLCHAIN) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens
 
 # `make test-crate C=plx_ui [T=filter] [DEPS=1]` -- build and run ONLY the named crate's lib tests, in
 # the same incremental `$(TEST_FAST_TDIR)` tree and with the same flags as `test-fast`, so the two
@@ -1824,7 +1852,7 @@ fuzz-hud:
 	@PATH="$$HOME/.cargo/bin:$$PATH" python3 tools/fuzz-hud.py run --secs $(or $(strip $(SECS)),60) $(T)
 
 # `make check-nodef` -- type-check the SHIPPING feature set (`--no-default-features` plus the
-# playback backend, `$(RUST_BACKEND_FEATURES)`: devtools, devtriggers and threadcheck off, what
+# playback backends, `$(RUST_BACKEND_FEATURES)`: devtools, devtriggers and threadcheck off, what
 # `RELEASE=1` builds). `make check`, `make` and `make sim` all
 # build the DEV features, so a break that only the release set has is invisible to every one of them
 # (docs/agent-reference.md; AGENTS.md says when to run it). It replaces the hand command
@@ -1850,16 +1878,24 @@ fuzz-hud:
 # later `make check` there would build third-party cold. `CARGO_INCREMENTAL=0`: a one-shot gate has
 # no use for an incremental cache, and (unlike `test-hostsim`) there is no loop here.
 #
-# THE BACKEND IS NOT OPTIONAL HERE. `--no-default-features` also drops `play-feed` (it is in the
-# application crate's `default`), so the bare flag would type-check a build with no playback backend
-# at all: not the Feed crate, none of the `cfg(feature = "play-feed")` code in the application, and
-# not `dolby_vision` and the rest of play-feed's third-party tree, all of which the release ships.
-# `RELEASE=1` passes the backend feature explicitly (`RUST_FEATFLAGS`), so this passes the same one.
+# THE BACKENDS ARE NOT OPTIONAL HERE. `--no-default-features` also drops `play-uri` and `play-feed`
+# (they are in the application crate's `default`), so the bare flag would type-check a build with
+# no playback backend at all: neither backend crate, none of the `cfg(feature = "play-feed")` code
+# in the application, and not `dolby_vision` and the rest of play-feed's third-party tree, all of
+# which the release ships. `RELEASE=1` passes the backend features explicitly (`RUST_BUILD_FEATURES`),
+# so this passes the same ones; `PLAYBACK_BACKENDS=uri|feed|none` checks the matching single-backend
+# set. They cannot change the units shared with `lint`: measured 2026-11-04 with `--unit-graph`,
+# every third-party unit of `--no-default-features --features play-uri,play-feed` (151 of its 181)
+# matches a unit of `check --workspace --all-targets` in package, target kind, mode, features and
+# profile, and the two backend features enable no third-party feature (they reach only workspace
+# crates and make the optional `plx_play_feed` -> `dolby_vision` subtree active, which `lint`
+# already builds with the same features). ci/test_managed_targets.py holds it to `$(RUST_BACKEND_FEATURES)`
+# alone, never `$(RUST_FEATFLAGS)`, whose devtools / devtriggers / threadcheck / LAB words do change them.
 .PHONY: check-nodef
 check-nodef:
 	$(CARGO_SEED) restore target rust-modules/target --env-var CARGO_TARGET_DIR --env-base rust-modules
 	@set -e; cd rust-modules && CARGO_INCREMENTAL=0 PATH="$$HOME/.cargo/bin:$$PATH" \
-	  cargo +$(RUST_TOOLCHAIN) check --lib --no-default-features --features $(RUST_BACKEND_FEATURES)
+	  cargo +$(RUST_TOOLCHAIN) check --lib --no-default-features $(if $(RUST_BACKEND_FEATURES),--features $(RUST_BACKEND_FEATURES),)
 
 # `make build-bench [ARGS='--runs 5 --json out.json']` -- the repeatable local build benchmark
 # (tools/build-bench.py; docs/agent-reference.md says what it measures and when a PR must paste its
@@ -2452,7 +2488,7 @@ check-replay: sim-macos
 # Its own simulator build: `--no-default-features` drops `devtools` (the on-screen frame counter is
 # not part of the product), `devtriggers` comes back because scenes are reached through them, and
 # `play-feed` comes back because the simulator's video sink is the Feed backend's (without it the build
-# selects no backend and Play can only reach the failure read-out).
+# selects no backend and Play can only reach the failure read-out; `ci/test_sim_backend.py`).
 # Its own target dir, for this file's feature-set rule. `CARGO_INCREMENTAL=0`: a one-shot build.
 SHOT_TDIR ?= $(SIM_TDIR)-shots
 SHOT_BIN   = $(SHOT_TDIR)/debug/plxnative-sim
@@ -2486,7 +2522,7 @@ sim-linux: $(LIBASS_HOST_STAGED)
 # drives it). Release, because a dump is a render of thousands of 1080p frames; its own target dir,
 # because the feature set differs from every other simulator build; `--no-default-features` because
 # `devtools` draws a frame counter into the picture, `play-feed` because that also drops the Feed
-# backend the simulator's sink belongs to, and `placeholder-sentinel` because the second
+# backend the simulator's sink belongs to (`ci/test_sim_backend.py`), and `placeholder-sentinel` because the second
 # oracle is the sentinel colour. Like `sim-linux` it needs only libass: the storyboard plays no
 # video, so no host FFmpeg (whose staged names are `.dylib`s, which is what keeps
 # `screenshots-sim` macOS-only). It builds on macOS (previews) and on Linux, where

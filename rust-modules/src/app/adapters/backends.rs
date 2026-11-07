@@ -3,10 +3,14 @@
 //! plane's boot is not a Feed step.
 //!
 //!   - [`acb_init`] boots the video plane owner (`plx_platform::tv::plane`) once per process, for
-//!     EVERY backend set: the plane's boot is not a Feed step.
-//!   - [`compose_backends`] installs the Feed's physical set and then tells the route session which
+//!     EVERY backend set. It used to live in the Feed engine, so a URI-only build never created the
+//!     ACB handle, and a webOS 4.x television then stalled URI HLS for want of a bound plane.
+//!   - [`compose_backends`] installs the product URI driver and then tells the route session which
 //!     backends the installed drivers form, so policy offers what is physically there instead of
 //!     what Cargo features happened to be on.
+//!   - [`install_uri_product`] builds the product URI driver (`plx_play_uri::backend::UriBackend`)
+//!     from the installed display and URI bus and hands it to the player adapter, which holds it
+//!     only as a `UriDriver`. The player crate names neither the driver nor its settings.
 use plx_base::eventlog::log;
 use plx_base::task::MainThread;
 use plx_media::player::adapter::PlayerAdapter;
@@ -23,6 +27,12 @@ use plx_play_feed::{control::FeedBackend, feed_resources::{FeedResources, LoadRe
     sink_fence::SinkFence, SendPtr};
 #[cfg(feature = "play-feed")]
 use plx_platform::tv::sink::{RefusingSink, UnloadTicket, VideoSink};
+#[cfg(feature = "play-uri")]
+use plx_media::route::uri_preflight::{OriginalQualifier, ProductEvidence, ProductQualifier, ResolvePort};
+#[cfg(feature = "play-uri")]
+use plx_play_uri::backend::{Binding as UriBinding, Config as UriConfig, MonotonicClock, UriBackend};
+#[cfg(feature = "play-uri")]
+use plx_playback_contract::Capabilities;
 
 /// Bind the decoded video sink to the display plane, whichever way this television does it.
 ///
@@ -93,9 +103,12 @@ fn acb_init_acb(mt: &MainThread, display: &dyn DisplaySink) -> PlaneFacts {
     PlaneFacts { handle: acb != 0, player_type: pt }
 }
 
-/// Compose the backends this boot supplies: the Feed's physical set, then the session is told the
-/// set the installed drivers form.
-pub(crate) fn compose_backends(adapter: &mut PlayerAdapter, session: &mut PlaybackSession) {
+/// Compose the backends this boot supplies. A normal boot installs the product URI driver first
+/// (a refused install leaves URI out of the set); a controlled run (replay, scripted Home) touches
+/// no native port and so installs none. Then the session is told the set the installed drivers
+/// form.
+pub(crate) fn compose_backends(adapter: &mut PlayerAdapter, session: &mut PlaybackSession,
+    controlled: bool) {
     #[cfg(feature = "play-feed")]
     if !adapter.composed_backends().feed && !install_feed(adapter, &TV_HOOKS) {
         log("feed: physical set installation refused");
@@ -106,6 +119,16 @@ pub(crate) fn compose_backends(adapter: &mut PlayerAdapter, session: &mut Playba
     if !adapter.install_display_sink(sink::installed) {
         log("player: display sink installation refused");
     }
+    #[cfg(feature = "play-uri")]
+    if !controlled && !install_uri_product(adapter, session) {
+        log("uri: product driver installation refused");
+    }
+    #[cfg(not(feature = "play-uri"))]
+    let _ = controlled;
+    // The URI-mode probe (issue #1064) rides every boot, controlled or not: it reads its trigger
+    // file only when a play starts.
+    #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
+    crate::dev::uriprobe::install(adapter);
     session.install_backends(adapter.composed_backends());
 }
 
@@ -266,6 +289,107 @@ pub(crate) fn test_adapter() -> PlayerAdapter {
     adapter
 }
 
+/// Explicit product URI settings captured with the resolve port's certification evidence.
+/// Platform transport and display are supplied at the IO composition boundary.
+#[cfg(feature = "play-uri")]
+pub(crate) struct UriDriverSettings {
+    pub clock: Box<dyn MonotonicClock>,
+    pub app_id: String,
+    pub binding: UriBinding,
+    pub capabilities: Capabilities,
+    pub startup_timeout_ms: u64,
+    pub release_allowance_ms: u64,
+    pub source_ttl_ms: u64,
+}
+
+/// The URI driver's clock: the player's IO-boundary monotonic clock behind the driver's trait. The
+/// wall clock itself is read in `plx_media` (the `wall` gate keeps raw clock reads out of `app/`).
+#[cfg(feature = "play-uri")]
+struct ProductUriClock(plx_media::player::adapter::MonotonicMs);
+
+#[cfg(feature = "play-uri")]
+impl MonotonicClock for ProductUriClock {
+    fn now_ms(&self) -> u64 { self.0.now_ms() }
+}
+
+/// Capture the installed display and URI bus at the playback IO boundary. Current product
+/// evidence remains unqualified; returning a port never certifies a source by itself. (A debug
+/// build's URI dev route, armed by a trigger read once here, is the one thing that changes that:
+/// `dev::uri_product`.)
+#[cfg(feature = "play-uri")]
+pub(crate) fn install_uri_product(adapter: &mut PlayerAdapter, session: &mut PlaybackSession) -> bool {
+    let display = sink::display_installed();
+    // SAFETY: the adapter holds the main-thread witness, and boot ran `acb_init` before this.
+    let initialized = unsafe { display.plane_initialized(adapter.mt()) };
+    let evidence = ProductEvidence::unqualified_on(
+        display.window_mode(),
+        plx_play_uri::backend::product_binding(display.window_mode(), plane::installed().facts(),
+            initialized));
+    let qualifier: std::sync::Arc<dyn OriginalQualifier> = std::sync::Arc::new(ProductQualifier);
+    // The URI dev route (`dev::uri_product`): a debug build armed with its trigger, on an ACB-bound
+    // display, swaps in evidence and a qualifier for the one Part it names; otherwise this pair is
+    // returned as built.
+    #[cfg(feature = "devtriggers")]
+    let (evidence, qualifier) = crate::dev::uri_product::compose(evidence, qualifier,
+        crate::dev::uri_product::trigger());
+    let port = ResolvePort::new(evidence, qualifier);
+    install_uri_product_with_ports(adapter, session, port, plx_platform::tv::uri::installed(), display)
+}
+
+/// One boot composition for both real and injected ports. The exact evidence configures the
+/// driver and is handed to the resolver only after physical installation succeeds.
+#[cfg(feature = "play-uri")]
+pub(crate) fn install_uri_product_with_ports(adapter: &mut PlayerAdapter,
+    session: &mut PlaybackSession, port: ResolvePort,
+    transport: &'static dyn plx_platform::tv::uri::UriMedia,
+    display: &'static dyn DisplaySink) -> bool {
+    let evidence = port.evidence();
+    let settings = UriDriverSettings {
+        clock: Box::new(ProductUriClock(plx_media::player::adapter::MonotonicMs::start())),
+        app_id: plx_base::paths::app_id().to_owned(),
+        binding: evidence.binding,
+        capabilities: evidence.certified,
+        startup_timeout_ms: 15_000,
+        release_allowance_ms: 10_000,
+        source_ttl_ms: 30_000,
+    };
+    if !install_uri_backend_with_ports(adapter, settings, transport, display) {
+        return false;
+    }
+    session.install_uri_preflight_port(port);
+    true
+}
+
+/// Build the URI driver from `settings` over the captured platform ports and install it into
+/// `adapter`; `false` when the settings are not a URI driver's (it cannot take a packet feed or a
+/// track-disable), or the adapter will not take one now (a driver is already installed, or a
+/// native attempt still owns the player). Installation supplies no source-specific
+/// qualification and therefore does not change the route's default Feed choice. A host rig
+/// can pass the same interfaces without a process-wide port.
+#[cfg(feature = "play-uri")]
+pub(crate) fn install_uri_backend_with_ports(adapter: &mut PlayerAdapter,
+    settings: UriDriverSettings, transport: &'static dyn plx_platform::tv::uri::UriMedia,
+    display: &'static dyn DisplaySink) -> bool {
+    // `UriBackend::new` asserts these; a refusal must come first.
+    if settings.capabilities.packet_feed || settings.capabilities.audio_off
+        || settings.capabilities.subtitle_off {
+        return false;
+    }
+    let driver = UriBackend::new(UriConfig {
+        transport,
+        display,
+        plane: plane::installed(),
+        clock: settings.clock,
+        app_id: settings.app_id,
+        binding: settings.binding,
+        capabilities: settings.capabilities,
+        startup_timeout_ms: settings.startup_timeout_ms,
+        release_allowance_ms: settings.release_allowance_ms,
+        source_ttl_ms: settings.source_ttl_ms,
+    });
+    adapter.install_uri_driver(Box::new(driver)).is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -393,5 +517,48 @@ mod tests {
         let owner = booted(&sink);
         assert_eq!(owner.facts(), PlaneFacts { handle: false, player_type: DEFAULT_PLAYER_TYPE });
         assert_eq!(sink.asked.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    #[cfg(feature = "play-uri")]
+    fn the_session_set_gains_uri_only_when_the_product_driver_is_installed() {
+        let mut adapter = PlayerAdapter::new(unsafe { MainThread::assume() });
+        let mut session = PlaybackSession::IDLE;
+        // A controlled run installs no driver: the set is what the drivers form, not what
+        // Cargo features were on.
+        compose_backends(&mut adapter, &mut session, true);
+        assert!(!session.backends().contains(plx_playback_contract::BackendKind::Uri));
+        compose_backends(&mut adapter, &mut session, false);
+        assert!(session.backends().contains(plx_playback_contract::BackendKind::Uri),
+            "an installed product driver is offered");
+    }
+
+    #[cfg(feature = "play-uri")]
+    fn settings(packet_feed: bool) -> UriDriverSettings {
+        struct Clock;
+        impl MonotonicClock for Clock { fn now_ms(&self) -> u64 { 0 } }
+        UriDriverSettings {
+            clock: Box::new(Clock), app_id: "fixture".to_owned(), binding: UriBinding::Unbound,
+            capabilities: Capabilities { progressive_uri: true, hls_uri: false, packet_feed,
+                pause: true, seek: true, audio_track: true, subtitle_track: true,
+                audio_off: false, subtitle_off: false },
+            startup_timeout_ms: 100, release_allowance_ms: 100, source_ttl_ms: 100,
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "play-uri")]
+    fn a_driver_that_claims_packet_feed_is_refused_and_a_second_install_is_too() {
+        use plx_playback_contract::BackendSet;
+        let mut adapter = PlayerAdapter::new(unsafe { MainThread::assume() });
+        let feed_only = BackendSet { uri: false, feed: adapter.composed_backends().feed };
+        let ports = (&plx_platform::tv::uri::NoUriMedia, &sink::NoSink);
+        // A driver that claims packet feed is refused, so the set does not gain Uri.
+        assert!(!install_uri_backend_with_ports(&mut adapter, settings(true), ports.0, ports.1));
+        assert_eq!(adapter.composed_backends(), feed_only);
+        assert!(install_uri_backend_with_ports(&mut adapter, settings(false), ports.0, ports.1));
+        assert_eq!(adapter.composed_backends(), BackendSet { uri: true, ..feed_only });
+        assert!(!install_uri_backend_with_ports(&mut adapter, settings(false), ports.0, ports.1),
+            "one URI driver per adapter");
     }
 }

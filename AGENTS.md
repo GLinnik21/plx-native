@@ -4,8 +4,8 @@
 
 PlxNative is a production-quality native Plex client for rooted LG webOS 4.5 TVs. Most of the
 application is Rust under `rust-modules/` (the application in `src/`, the layers in their own crates); `src/main.c` is the boot/crash shim,
-`src/starfish.c` is the StarfishMediaAPIs seam, `src/video_plane.c` is the ACB / exported-window
-display binding, and `src/svg.c` rasterizes SVGs. Keep changes
+`src/starfish.c` is the Feed-only StarfishMediaAPIs seam (compiled only with `PLAYBACK_HAS_FEED`),
+`src/video_plane.c` is the ACB / exported-window display binding both backends share, and `src/svg.c` rasterizes SVGs. Keep changes
 properly factored and finished; "only a demo" is never a reason to leave a shortcut behind.
 
 The target is a cross-compiled 32-bit ARM application with a hardware video plane. Host tests and
@@ -161,10 +161,10 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   `tvdev` binary (`make deploy` records the profile on the set); build with `make ARM_PROFILE=release
   deploy` before any other FPS or smoothness measurement (`docs/agent-reference.md`, "ARM_PROFILE").
 - After editing `rust-modules/src/**/*.rs` or a layer crate's `rust-modules/*/src/**/*.rs`, also check the shipping feature set with
-  `make check-nodef` (`cargo check --lib --no-default-features --features play-feed`, non-incremental, in the checkout's
+  `make check-nodef` (`cargo check --lib --no-default-features --features play-uri,play-feed`, non-incremental, in the checkout's
   own `target/`: it shares the third-party units `make lint` built and adds no tree), whether or not the
   Claude-only release hook ran: that hook type-checks the bare `--no-default-features`, which drops
-  `play-feed` too, so it catches an unpaired `devtriggers` cfg but never the Feed's gated code. Keep the `CARGO_INCREMENTAL=0` prefix on every other direct
+  `play-uri` and `play-feed` too, so it catches an unpaired `devtriggers` cfg but never a backend's gated code. Keep the `CARGO_INCREMENTAL=0` prefix on every other direct
   `cargo` call: they bypass `make`,
   so the Makefile's linked-worktree setting cannot reach them, and a one-shot gate has no use for
   a multi-gigabyte incremental cache. `tools/build-gc.sh` also installs

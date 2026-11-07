@@ -15,7 +15,7 @@ of the same tree, so a red result is always a real change to the tree.
 * binary_bytes                 the stripped binary `make ipk` stages (measured in the cross-build job)
 * packages_*                   third-party packages the app crate compiles for the ARM target
 * duplicate_versions_*         crate names in more than one version on the normal-edge graph
-* source_lines                 lines of Rust in rust-modules/src and every split-out layer crate (rust-modules/base/src, rust-modules/machine/src, rust-modules/net/src, rust-modules/platform/src, rust-modules/gfx/src, rust-modules/ui/src, rust-modules/plex/src, rust-modules/telemetry/src, rust-modules/data/src, rust-modules/session/src, rust-modules/media/src, rust-modules/playback-contract/src, rust-modules/media-codecs/src, rust-modules/play-feed/src, rust-modules/appkit/src, rust-modules/screens/src); mode "warn", never fails
+* source_lines                 lines of Rust in rust-modules/src and every split-out layer crate (rust-modules/base/src, rust-modules/machine/src, rust-modules/net/src, rust-modules/platform/src, rust-modules/gfx/src, rust-modules/ui/src, rust-modules/plex/src, rust-modules/telemetry/src, rust-modules/data/src, rust-modules/session/src, rust-modules/media/src, rust-modules/playback-contract/src, rust-modules/media-codecs/src, rust-modules/play-feed/src, rust-modules/play-uri/src, rust-modules/appkit/src, rust-modules/screens/src); mode "warn", never fails
 
 Exit status: 0 all within budget (warn-mode overruns print ::warning::), 1 a fail-mode budget is
 exceeded, 2 the budgets file or an input is unusable.
@@ -152,8 +152,8 @@ def graph_metrics(trees: dict, workspace: Path) -> dict[str, int]:
 
 def run_cargo_tree(shipping: bool) -> dict:
     """The default feature set's trees, or (`shipping`) the shipping build's: the Makefile's `RELEASE=1`
-    flags (`shipping_featflags`) because a bare `--no-default-features` is a build with no playback
-    backend, which leaves plx_play_feed's third-party tree out of the count."""
+    flags, asked of make (`shipping_featflags`) because a bare `--no-default-features` is a build with no
+    playback backend, which leaves play-feed's third-party tree out of the count."""
     try:
         featflags = shipping_featflags(ROOT) if shipping else []
     except ValueError as exc:
@@ -243,7 +243,7 @@ def main(argv=None) -> int:
     ap.add_argument("--graph", action="store_true")
     ap.add_argument("--tree-default")
     ap.add_argument("--tree-no-default")
-    ap.add_argument("--src", action="append", help="a source directory to count; repeat for each crate (rust-modules/src, rust-modules/base/src, rust-modules/machine/src, rust-modules/net/src, rust-modules/platform/src, rust-modules/gfx/src, rust-modules/ui/src, rust-modules/plex/src, rust-modules/telemetry/src, rust-modules/data/src, rust-modules/session/src, rust-modules/media/src, rust-modules/playback-contract/src, rust-modules/media-codecs/src, rust-modules/play-feed/src, rust-modules/appkit/src, rust-modules/screens/src)")
+    ap.add_argument("--src", action="append", help="a source directory to count; repeat for each crate (rust-modules/src, rust-modules/base/src, rust-modules/machine/src, rust-modules/net/src, rust-modules/platform/src, rust-modules/gfx/src, rust-modules/ui/src, rust-modules/plex/src, rust-modules/telemetry/src, rust-modules/data/src, rust-modules/session/src, rust-modules/media/src, rust-modules/playback-contract/src, rust-modules/media-codecs/src, rust-modules/play-feed/src, rust-modules/play-uri/src, rust-modules/appkit/src, rust-modules/screens/src)")
     args = ap.parse_args(argv)
     try:
         budgets = load_budgets(Path(args.budgets))

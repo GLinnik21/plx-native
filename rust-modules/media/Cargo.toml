@@ -32,7 +32,7 @@ crate-type = ["rlib"]
 devtriggers = ["plx_play_feed/devtriggers", "plx_media_codecs/devtriggers", "plx_base/devtriggers", "plx_machine/devtriggers", "plx_net/devtriggers", "plx_platform/devtriggers", "plx_plex/devtriggers", "plx_telemetry/devtriggers", "plx_data/devtriggers"]
 # `plx_play_feed::ffi_host` (the simulator's `VideoSink`, which lives in `plx_play_feed`) replaces the
 # platform webOS port's native sink (Starfish/ACB) under the media tests' Feed; a simulator build names
-# the application's `play-feed` too (the Makefile's `sim*` recipes and `ci/mkmacapp.py` do). The simulator's decoded picture (its
+# the application's `play-feed` too (ci/test_sim_backend.py). The simulator's decoded picture (its
 # frame sink, the one thing that draws) is the application's.
 hostsim = ["plx_play_feed/hostsim", "plx_base/hostsim", "plx_machine/hostsim", "plx_platform/hostsim", "plx_plex/hostsim", "plx_telemetry/hostsim", "plx_data/hostsim"]
 # Two `cfg_attr(not(feature = "lab-diagnostics"), allow(dead_code))` in `player`; the Cloud Lab bridge

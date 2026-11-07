@@ -562,20 +562,20 @@ pub fn bind_window(win: *mut std::os::raw::c_void) {
 #[cfg(any(feature = "hostsim", test, feature = "test-support"))]
 pub fn bind_window(_win: *mut std::os::raw::c_void) {}
 
-/// The URI media pipe the port installs (`tv::Port::uri_media`, the developer probe of issue
-/// #1064): the bus worker on the television in a `devtriggers` build, `NoUriMedia` otherwise, in the
-/// simulator and in tests, like [`bind_window`].
-#[cfg(all(feature = "devtriggers", not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
+/// The URI media pipe the port installs (`tv::Port::uri_media`): the explicitly enabled bus
+/// worker on the television, or `NoUriMedia` in a feature-off build, simulator or test.
+/// This does not select the URI playback route.
+#[cfg(all(feature = "uri-transport", not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
 pub const URI_MEDIA: &dyn crate::tv::uri::UriMedia = &ls2::uri::Transport;
 
-#[cfg(not(all(feature = "devtriggers", not(feature = "hostsim"), not(any(test, feature = "test-support")))))]
+#[cfg(not(all(feature = "uri-transport", not(feature = "hostsim"), not(any(test, feature = "test-support")))))]
 pub const URI_MEDIA: &dyn crate::tv::uri::UriMedia = &crate::tv::uri::NoUriMedia;
 
 /// One LS2 request/reply, on the calling thread.
 ///
 /// **The one LS2 client the frame-thread callers share**, [`super::launch_home`] (one 600 ms call
 /// on the SDL main thread) and `keymanager::platform::Client` (a registration kept alive across
-/// begin → finish, 4 s budget). A `devtriggers` build's URI-mode probe runs a separate client on
+/// begin → finish, 4 s budget). An explicitly enabled URI transport runs a separate client on
 /// its own thread (`ls2::uri`).
 /// Until 2026-09-04 that client was two private copies, both registering with
 /// `LSRegisterApplicationService(NULL, app_id)`, and on this set that registration is REFUSED:
@@ -594,10 +594,10 @@ pub const URI_MEDIA: &dyn crate::tv::uri::UriMedia = &crate::tv::uri::NoUriMedia
 /// | `LSRegisterApplicationService(NULL, app_id)` | `-1027 Invalid permissions for (null)` — the `""` name has no permissions entry |
 /// | **`LSRegister(NULL)`** | registered, and `com.webos.applicationManager/getForegroundAppInfo` answered it |
 ///
-/// Every production caller registers as a plain anonymous client, [`register`]. The one exception
-/// is the `devtriggers` URI-mode probe's worker (`ls2::uri`): it owns its own handle and thread
-/// and tries the named shape `com.webos.media.client.plxprobe` first, because whether the hub
-/// accepts that is what the probe measures. The role file still decides what such a client may
+/// Ordinary frame-thread callers register as plain anonymous clients, [`register`]. The
+/// feature-gated URI worker (`ls2::uri`) owns its own handle and thread and tries the named
+/// shape `com.webos.media.client.plxprobe` first, preserving the probe's measured identity.
+/// The role file still decides what such a client may
 /// CALL — the probe proves SAM's read-only method; `launch_home` grades the reply of the one that
 /// matters — and the hub's refusal, when there is one, travels in [`RegisterFail`] to the
 /// caller's log line instead of being freed. Anonymous clients do not
@@ -609,8 +609,8 @@ pub mod ls2 {
     use std::os::raw::{c_char, c_int, c_void};
     use std::time::{Duration, Instant};
 
-    /// The URI-mode probe's transport (issue #1064): a worker that owns its own bus handle.
-    #[cfg(feature = "devtriggers")]
+    /// The explicitly enabled URI transport: a worker that owns its own bus handle.
+    #[cfg(feature = "uri-transport")]
     pub(super) mod uri;
 
     /// How long [`call_once`] waits for SAM's reply.
@@ -655,8 +655,8 @@ pub mod ls2 {
             error: *mut LSError,
         ) -> bool;
         /// `LSCall`: the call that keeps its token and delivers EVERY message the callee sends on
-        /// it. The URI-mode probe's subscription needs that; every other caller wants one reply.
-        #[cfg(feature = "devtriggers")]
+        /// it. The URI transport's subscription needs that; every other caller wants one reply.
+        #[cfg(feature = "uri-transport")]
         fn LSCall(
             handle: *mut c_void,
             uri: *const c_char,
@@ -747,12 +747,12 @@ pub mod ls2 {
     }
 
     impl RegisterFail {
-        #[cfg(feature = "devtriggers")]
+        #[cfg(feature = "uri-transport")]
         fn uri_diagnostic(&self) -> (&'static str, Option<i32>) {
             match self { Self::Setup {stage, code, ..} => (*stage, *code) }
         }
 
-        #[cfg(feature = "devtriggers")]
+        #[cfg(feature = "uri-transport")]
         fn release_confirmed(&self) -> bool {
             !matches!(self, Self::Setup { stage: "attach-unregister" | "register-unregister", .. })
         }

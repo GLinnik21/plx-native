@@ -46,6 +46,7 @@ keyboard before going headless, and read "the server logged nothing" as the fire
 a quiet television. `--selftest` fetches from itself over the LAN address and says which it is.
 """
 import argparse
+import io
 import os
 import re
 import socket
@@ -73,6 +74,9 @@ RE_RANGE = re.compile(r"^bytes=(\d+)-(\d*)$")
 ABR_RUNGS = "320|720|2000|4000|6000|8000|10000|12000|14000|16000|18000|20000|22000"
 RE_ABR_PLAYLIST = re.compile(rf"^/__abr/({ABR_RUNGS})/(master|media)\.m3u8$")
 RE_ABR_SEGMENT = re.compile(rf"^/__abr/({ABR_RUNGS})/segment\.ts$")
+# One master listing every rung as its own variant, for a player that picks between them itself
+# (the TV's native HLS controller in URI mode) rather than one the app steers rung by rung.
+RE_ABR_LADDER = re.compile(r"^/__abr/ladder/master\.m3u8$")
 RE_SEQUENCE = re.compile(r"(?:^|&)sequence=(\d+)")
 RE_ABR_GENERATION = re.compile(r"(?:^|&)fixtureGeneration=(\d+)")
 # What a rung asks PMS for is a BITRATE CEILING and the raster is the consequence; the controller's
@@ -121,6 +125,206 @@ assert set(ABR_FIXTURE) == set(ABR_RUNGS.split("|")) == set(ABR_RASTER), (
     "a rung the route can request but this server cannot answer reads on the TV as a rejected "
     "candidate, which is indistinguishable from a real refusal"
 )
+# Every rung, lowest first: the order the ladder master lists its variants in.
+ABR_LADDER = tuple(sorted(ABR_FIXTURE, key=int))
+# `?continuous=1` on a master, a media playlist or a segment: serve the rung's parts as ONE
+# continuous stream (see "Continuous timestamps" below) instead of six independent programs.
+RE_ABR_CONTINUOUS = re.compile(r"(?:^|&)continuous=1(?:&|$)")
+# `?top=<rung>` on the ladder master: list only the rungs at or below it.
+RE_ABR_TOP = re.compile(r"(?:^|&)top=([^&]*)")
+
+
+def ladder_rungs(query):
+    """The rungs the ladder master lists for `query` (the part after `?`), lowest first.
+
+    `top=<rung>` keeps the rungs whose number is at most `<rung>`, which must itself be a rung this
+    server answers: `top=7000` would otherwise silently list the same ladder as `top=6000` and read
+    as a typo that worked. ValueError for anything else, which the handler turns into a 400 and the
+    harness into a skip.
+    """
+    found = RE_ABR_TOP.search(query or "")
+    if not found:
+        return ABR_LADDER
+    top = found.group(1)
+    if top not in ABR_FIXTURE:
+        raise ValueError(f"unknown rung top={top!r} (rungs: {', '.join(ABR_LADDER)})")
+    return tuple(rung for rung in ABR_LADDER if int(rung) <= int(top))
+
+
+def abr_playlist_rungs(fixture):
+    """The rungs whose clips a manifest `fixture` needs when it names a playlist this server writes.
+
+    `fixture` is the manifest string, query included (`__abr/ladder/master.m3u8?top=6000`). `None`
+    means it names a plain file under the pack root instead. Raises ValueError for a ladder whose
+    `top` is not a rung.
+    """
+    path, _, query = fixture.partition("?")
+    if RE_ABR_LADDER.match("/" + path):
+        return ladder_rungs(query)
+    found = RE_ABR_PLAYLIST.match("/" + path)
+    return (found.group(1),) if found else None
+
+
+# ---- Continuous timestamps ----
+#
+# Why `?continuous=1` exists. Every part of a rung (`pipe_abr_*.ts`, `_01` .. `_05`) is its own
+# MPEG-TS program cut by the generator, so EVERY part's video starts at PTS 1.483 s and its audio
+# at about 1.40-1.46 s, and the playlist carries no `#EXT-X-DISCONTINUITY`. The app's feed path
+# reads each segment on its own and does not care. A native HLS player that places segments on a
+# timeline by their PTS sees the clock jump backwards at every segment, and whether a stall on a
+# high-bitrate rung is that or a real pipeline limit cannot be told apart from a fixture that
+# restarts its clock. So a flagged request serves the SAME bytes with every timestamp moved
+# forward by the real duration of all the sequences before it, which is what a PMS transcoder's
+# one continuous segmented stream looks like.
+#
+# What is rewritten, and what is not. PCR (and OPCR, which no part carries) in the adaptation
+# field, and the PTS and DTS in each PES header. Nothing changes length, so Range, HEAD and
+# Content-Length are exactly the unflagged ones. NOT rewritten, so a flagged stream is still not a
+# PMS's one continuous stream in two ways:
+#   * continuity counters: each part starts its own at 0, so the counter jumps at every join;
+#   * the audio cut: the shift is the part's VIDEO length (48 frames, exactly 2.0 s in the pack),
+#     and a part's audio is not trimmed to it. Measured on the 20000 rung: inside a cycle each
+#     segment's first audio PTS lands one AAC frame (21.3 ms) after the previous segment's last,
+#     so it abuts; where the six-part cycle wraps (sequence 6, 12, 18 ...: part `_05` into part
+#     0) `_05`'s audio runs about 32 ms past its 2.0 s, so the next segment's first audio PTS is
+#     10.7 ms BEHIND the last one's (13.472667 s, then 13.462000 s).
+TS_PACKET = 188
+TICKS_PER_S = 90_000          # PTS, DTS and the PCR base run at 90 kHz
+PTS_MODULUS = 1 << 33         # 33-bit PTS/DTS/PCR base: wraps after 26.5 hours
+# stream_id values whose PES packet has no optional header (so no PTS): program stream map,
+# padding, private_stream_2, ECM, EMM, DSM-CC, H.222.1 type E and the program stream directory.
+_PES_WITHOUT_HEADER = frozenset((0xBC, 0xBE, 0xBF, 0xF0, 0xF1, 0xF2, 0xF8, 0xFF))
+
+
+class TsTimeline:
+    """Where one TS file's timestamps sit, and how long it plays: found once, patched per request.
+
+    `duration` is in 90 kHz ticks. The four lists are byte offsets into the file: the 6-byte PCR /
+    OPCR fields and the 5-byte PTS / DTS fields.
+    """
+    __slots__ = ("duration", "pcr", "opcr", "pts", "dts")
+
+    def __init__(self, duration, pcr, opcr, pts, dts):
+        self.duration, self.pcr, self.opcr, self.pts, self.dts = duration, pcr, opcr, pts, dts
+
+
+def _read_pts(buf, at):
+    """The 33-bit value of the 5-byte PTS/DTS field at `at` (ISO 13818-1 2.4.3.7)."""
+    return (((buf[at] >> 1) & 0x07) << 30 | buf[at + 1] << 22 | (buf[at + 2] >> 1) << 15
+            | buf[at + 3] << 7 | buf[at + 4] >> 1)
+
+
+def _write_pts(buf, at, value):
+    """Store a 33-bit value, keeping the 4-bit prefix (0010/0011/0001) and the three marker bits."""
+    value %= PTS_MODULUS
+    buf[at] = (buf[at] & 0xF1) | ((value >> 30) & 0x07) << 1
+    buf[at + 1] = (value >> 22) & 0xFF
+    buf[at + 2] = (buf[at + 2] & 0x01) | ((value >> 15) & 0x7F) << 1
+    buf[at + 3] = (value >> 7) & 0xFF
+    buf[at + 4] = (buf[at + 4] & 0x01) | (value & 0x7F) << 1
+
+
+def _read_pcr_base(buf, at):
+    """The 33-bit base of the 6-byte PCR/OPCR at `at`: 33 base bits, 6 reserved, 9 extension."""
+    return buf[at] << 25 | buf[at + 1] << 17 | buf[at + 2] << 9 | buf[at + 3] << 1 | buf[at + 4] >> 7
+
+
+def _write_pcr_base(buf, at, base):
+    """Store the base, leaving the 6 reserved bits and the 9-bit extension byte-for-byte alone."""
+    base %= PTS_MODULUS
+    buf[at] = (base >> 25) & 0xFF
+    buf[at + 1] = (base >> 17) & 0xFF
+    buf[at + 2] = (base >> 9) & 0xFF
+    buf[at + 3] = (base >> 1) & 0xFF
+    buf[at + 4] = (buf[at + 4] & 0x7F) | (base & 1) << 7
+
+
+def scan_ts(data):
+    """Find every timestamp in an MPEG-TS file and measure how long it plays.
+
+    Duration is the span of the VIDEO PTS plus one frame: a part's last frame is displayed for a
+    frame, so first-to-last PTS alone is short by one (47 of 48 frames at 24 fps reads 1.958 s for
+    a 2.000 s part, which is what ffprobe's stream `duration` says). A frame is the most common
+    positive gap between sorted video PTS values (B-frame reordering shuffles packet order, not
+    the sorted set), so 24, 25 and 30 fps parts need no frame rate declared.
+
+    ValueError names a file this cannot honestly shift: lost sync, a PES header split across two
+    TS packets, or fewer than two video frames to measure from.
+    """
+    size = len(data)
+    if not size or size % TS_PACKET:
+        raise ValueError(f"not a whole number of {TS_PACKET}-byte TS packets ({size} bytes)")
+    pcr, opcr, pts, dts, video = [], [], [], [], []
+    for pkt in range(0, size, TS_PACKET):
+        if data[pkt] != 0x47:
+            raise ValueError(f"lost TS sync at byte {pkt}")
+        end = pkt + TS_PACKET
+        control = (data[pkt + 3] >> 4) & 3
+        at = pkt + 4
+        if control & 2:                       # adaptation field
+            field_end = at + 1 + data[at]
+            if field_end > end:
+                raise ValueError(f"adaptation field overruns its packet at byte {pkt}")
+            flags, cursor = (data[at + 1] if data[at] else 0), at + 2    # length 0: no flags byte
+            if flags & 0x10:                  # PCR
+                if cursor + 6 > field_end:
+                    raise ValueError(f"PCR overruns its adaptation field at byte {pkt}")
+                pcr.append(cursor)
+                cursor += 6
+            if flags & 0x08:                  # OPCR
+                if cursor + 6 > field_end:
+                    raise ValueError(f"OPCR overruns its adaptation field at byte {pkt}")
+                opcr.append(cursor)
+            at = field_end
+        # A PES starts in a packet with payload_unit_start set whose payload begins 00 00 01.
+        # PSI tables start with a pointer byte instead, so a section never matches.
+        if not (control & 1 and data[pkt + 1] & 0x40) or at + 9 > end or data[at:at + 3] != b"\0\0\1":
+            continue
+        stream_id = data[at + 3]
+        if stream_id in _PES_WITHOUT_HEADER:
+            continue
+        marks = data[at + 7] >> 6             # PTS_DTS_flags: 2 = PTS, 3 = PTS and DTS
+        if marks == 1:
+            raise ValueError(f"forbidden PTS_DTS_flags at byte {pkt}")
+        if not marks:
+            continue
+        if at + 9 + (5 if marks == 2 else 10) > end:
+            raise ValueError(f"PES header split across TS packets at byte {pkt}")
+        pts.append(at + 9)
+        if marks == 3:
+            dts.append(at + 14)
+        if 0xE0 <= stream_id <= 0xEF:
+            video.append(_read_pts(data, at + 9))
+    # Signed distance from the first frame, so a part that straddles the 2^33 wrap still sorts.
+    half = PTS_MODULUS // 2
+    ordered = sorted({(value - video[0] + half) % PTS_MODULUS - half for value in video})
+    if len(ordered) < 2:
+        raise ValueError(f"{len(ordered)} distinct video PTS: too few to measure a duration from")
+    gaps = [b - a for a, b in zip(ordered, ordered[1:])]
+    frame = sorted(set(gaps), key=lambda gap: (-gaps.count(gap), gap))[0]
+    return TsTimeline(ordered[-1] - ordered[0] + frame, pcr, opcr, pts, dts)
+
+
+def shift_ts(data, timeline, ticks):
+    """`data` with every timestamp `timeline` found moved forward by `ticks` (90 kHz), as new bytes.
+
+    Same length, so every byte offset a Range request names is still the same place. Wraps at
+    2^33 like the fields do.
+    """
+    out = bytearray(data)
+    for at in timeline.pts + timeline.dts:
+        _write_pts(out, at, _read_pts(out, at) + ticks)
+    for at in timeline.pcr + timeline.opcr:
+        _write_pcr_base(out, at, _read_pcr_base(out, at) + ticks)
+    return bytes(out)
+
+
+class _Refused(Exception):
+    """A request this server answers with an explicit status instead of falling through to a 404."""
+
+    def __init__(self, code, why):
+        super().__init__(why)
+        self.code, self.why = code, why
 
 
 class FixtureHandler(BaseHTTPRequestHandler):
@@ -170,6 +374,13 @@ class FixtureHandler(BaseHTTPRequestHandler):
         if rel is None:
             return None
         if seg and self._contained(rel) is None:
+            if self._abr_continuous():
+                # The fallback below is for an OLD pack's unflagged cases. A flagged stream is new,
+                # and the 1080p stand-in has neither this rung's parts nor their durations, so any
+                # offset computed for it would be a plausible wrong timeline.
+                self.server.note(f"!! {rel} missing — a continuous-timestamp segment never takes "
+                                 f"the {ABR_FALLBACK} fallback. Re-run `make fixtures-pipeline`.")
+                return None
             # A pack built before the per-rung ladder existed has only `pipe_abr_1080p.ts`. Serve
             # it rather than 404: a 404 on a rung reads to the controller as a REJECTED CANDIDATE,
             # which is indistinguishable from a real refusal and would make an out-of-date fixture
@@ -221,22 +432,37 @@ class FixtureHandler(BaseHTTPRequestHandler):
         unsuffixed name, which is what lets an OLD pack keep working: if no `_01` exists the list
         is one long and the behaviour is exactly what it was.
         """
+        chosen = self._abr_segment_parts(seg)
+        if chosen is None:
+            return None
+        parts, sequence = chosen
+        return parts[sequence % len(parts)]
+
+    def _abr_segment_parts(self, seg):
+        """`(parts, sequence)` for a segment request: the rung's cycling clip list, and N.
+
+        The rung is the EFFECTIVE one, after the case's response profile. `None` when a
+        `fixtureGeneration` names no master this server issued.
+        """
         requested = seg.group(1)
         effective = self.server.abr_response_rung(requested, self._abr_generation())
         if effective is None:
             return None
-        base = ABR_FIXTURE[effective]
-        parts = self.server.abr_parts(base)
+        parts = self.server.abr_parts(ABR_FIXTURE[effective])
         # The sequence lives in the QUERY, which `_resolve` has already stripped off the path it
         # matched — so it is read from `self.path` here rather than from a capture group.
-        query = self.path.split("?", 1)[1] if "?" in self.path else ""
-        found = RE_SEQUENCE.search(query)
-        sequence = int(found.group(1)) if found else 0
-        return parts[sequence % len(parts)]
+        found = RE_SEQUENCE.search(self._query())
+        return parts, int(found.group(1)) if found else 0
+
+    def _query(self):
+        return self.path.split("?", 1)[1] if "?" in self.path else ""
+
+    def _abr_continuous(self):
+        """Whether this request carries `continuous=1`: timestamps that run on across segments."""
+        return bool(RE_ABR_CONTINUOUS.search(self._query()))
 
     def _abr_generation(self):
-        query = self.path.split("?", 1)[1] if "?" in self.path else ""
-        found = RE_ABR_GENERATION.search(query)
+        found = RE_ABR_GENERATION.search(self._query())
         return int(found.group(1)) if found else None
 
     def _fail(self, code, why):
@@ -256,39 +482,110 @@ class FixtureHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self._serve(body=True)
 
+    def _abr_variant(self, requested, base="", continuous=False):
+        """The `#EXT-X-STREAM-INF` entry a fresh master for `requested` declares, two lines.
+
+        One allocation of a response generation per call (`begin_abr_response`), so the entry's
+        BANDWIDTH/RESOLUTION and the `fixtureGeneration` its child URI carries are the rendition
+        the case's response profile maps this request to, and nothing else. `base` prefixes the
+        child URI: empty for the single-rung master, whose playlist sits beside it, and the rung's
+        own directory for the ladder master, whose playlists do not. `continuous` appends
+        `continuous=1` after the generation, so the flag rides master -> media -> segment.
+        """
+        generation, effective = self.server.begin_abr_response(requested)
+        params = []
+        if generation is not None:
+            params.append(f"fixtureGeneration={generation}")
+        if continuous:
+            params.append("continuous=1")
+        child = f"{base}media.m3u8" + (f"?{'&'.join(params)}" if params else "")
+        return (f"#EXT-X-STREAM-INF:BANDWIDTH={int(effective) * 1000},"
+                f"RESOLUTION={ABR_RASTER[effective]}\n"
+                f"{child}\n")
+
     def _abr_playlist(self):
         target = self.path.split("?", 1)[0].split("#", 1)[0]
+        if RE_ABR_LADDER.match(target):
+            # The ladder exists for a player that fetches the ladder itself, and such a player
+            # places segments by their timestamps, so its children are ALWAYS the continuous
+            # ones. `top=` lists only the rungs up to it.
+            try:
+                rungs = ladder_rungs(self._query())
+            except ValueError as why:
+                raise _Refused(400, str(why))
+            # Absolute child paths: a relative `media.m3u8` would resolve under `/__abr/ladder/`,
+            # which holds nothing. Each entry is exactly what that rung's own master declares, so
+            # a response profile composes per rung.
+            variants = "".join(self._abr_variant(rung, f"/__abr/{rung}/", continuous=True)
+                               for rung in rungs)
+            return ("#EXTM3U\n#EXT-X-VERSION:3\n" + variants).encode("utf-8")
         match = RE_ABR_PLAYLIST.match(target)
         if not match:
             return None
         requested, kind = match.groups()
+        continuous = self._abr_continuous()
         if kind == "master":
-            generation, effective = self.server.begin_abr_response(requested)
-            child = "media.m3u8"
-            if generation is not None:
-                child += f"?fixtureGeneration={generation}"
-            text = ("#EXTM3U\n#EXT-X-VERSION:3\n"
-                    f"#EXT-X-STREAM-INF:BANDWIDTH={int(effective) * 1000},"
-                    f"RESOLUTION={ABR_RASTER[effective]}\n"
-                    f"{child}\n")
+            text = "#EXTM3U\n#EXT-X-VERSION:3\n" + self._abr_variant(requested, continuous=continuous)
         else:
             generation = self._abr_generation()
             effective = self.server.abr_response_rung(requested, generation)
             if effective is None:
                 return None
             suffix = "" if generation is None else f"&fixtureGeneration={generation}"
-            rows = ["#EXTM3U", "#EXT-X-VERSION:3", "#EXT-X-TARGETDURATION:2",
+            if continuous:
+                suffix += "&continuous=1"
+            if continuous:
+                # The MEASURED duration of the part each sequence serves, because the media's
+                # timestamps advance by exactly that and a playlist that says otherwise disagrees
+                # with it. TARGETDURATION is the longest one rounded, as the HLS spec defines it.
+                ticks = self._abr_part_ticks(effective)
+                lengths = [f"{each / TICKS_PER_S:.6f}" for each in ticks]
+                target = max(round(each / TICKS_PER_S) for each in ticks)
+            else:
+                lengths, target = ["2.0"], 2     # what the generator cuts, and what this always said
+            rows = ["#EXTM3U", "#EXT-X-VERSION:3", f"#EXT-X-TARGETDURATION:{target}",
                     "#EXT-X-MEDIA-SEQUENCE:0"]
             for sequence in range(90):
                 # Each backing file is an independent MPEG-TS program with an IDR and in-band
                 # SPS/PPS at its head, matching the measured PMS segment contract.
-                rows.extend(("#EXTINF:2.0,", f"segment.ts?sequence={sequence}{suffix}"))
+                rows.extend((f"#EXTINF:{lengths[sequence % len(lengths)]},",
+                             f"segment.ts?sequence={sequence}{suffix}"))
             rows.append("#EXT-X-ENDLIST")
             text = "\n".join(rows) + "\n"
         return text.encode("utf-8")
 
+    def _abr_part_ticks(self, rung):
+        """The measured duration of each of `rung`'s parts, in 90 kHz ticks, in cycling order."""
+        try:
+            return [self.server.abr_timeline(part).duration
+                    for part in self.server.abr_parts(ABR_FIXTURE[rung])]
+        except OSError as why:
+            self.server.note(f"!! rung {rung}'s clip is missing for a continuous playlist: {why}")
+            raise _Refused(404, f"rung {rung} has no clip here")
+        except ValueError as why:
+            self.server.note(f"!! cannot measure rung {rung}'s parts for a continuous playlist: {why}")
+            raise _Refused(500, f"rung {rung}'s clip cannot be measured: {why}")
+
+    def _continuous_body(self, path):
+        """The whole body of a flagged ABR segment at `path`, timestamps moved on, or None if unflagged.
+
+        Built per request from the file's cached timestamp positions: the clip read into memory
+        (a few MB) and a few hundred fields patched, not re-parsed. Offset is the measured duration
+        of every earlier sequence, walking the SAME parts list `_abr_segment_file` cycles.
+        """
+        seg = RE_ABR_SEGMENT.match(self.path.split("?", 1)[0])
+        if not seg or not self._abr_continuous():
+            return None
+        parts, sequence = self._abr_segment_parts(seg)
+        offset = self.server.abr_continuous_offset(parts, sequence)
+        with open(path, "rb") as f:
+            return shift_ts(f.read(), self.server.abr_timeline(parts[sequence % len(parts)]), offset)
+
     def _serve(self, body):
-        playlist = self._abr_playlist()
+        try:
+            playlist = self._abr_playlist()
+        except _Refused as refusal:
+            return self._fail(refusal.code, refusal.why)
         if playlist is not None:
             self.send_response(200)
             self.send_header("Content-Type", "application/vnd.apple.mpegurl")
@@ -319,6 +616,13 @@ class FixtureHandler(BaseHTTPRequestHandler):
                 return self._fail(416, f"Requested Range Not Satisfiable (start {start} >= {size})")
             partial = True
         length = end - start + 1
+        shifted = None
+        if body:
+            # Before the status line: a clip this cannot measure must be a 500, not a 200 that dies.
+            try:
+                shifted = self._continuous_body(path)
+            except (OSError, ValueError) as why:
+                return self._fail(500, f"cannot shift timestamps: {why}")
         self.send_response(206 if partial else 200)
         self.send_header("Content-Type", "video/x-matroska")
         # §5: the length of THIS body. On a 206 that is size-start, never size.
@@ -334,10 +638,12 @@ class FixtureHandler(BaseHTTPRequestHandler):
         # so the whole body runs at one rate even if the schedule would move under it. Only media
         # segments are counted and only they can be overridden; a playlist carries no media.
         rate_override = None
-        if RE_ABR_SEGMENT.match(self.path.split("?", 1)[0]):
+        segment = RE_ABR_SEGMENT.match(self.path.split("?", 1)[0])
+        if segment:
+            self.server.count_rung_segment(segment.group(1))
             rate_override = self.server.segment_rate_kbps(self.server.count_segment())
         try:
-            with open(path, "rb") as f:
+            with (open(path, "rb") if shifted is None else io.BytesIO(shifted)) as f:
                 f.seek(start)
                 left = length
                 while left > 0:
@@ -371,6 +677,10 @@ class FixtureServer(socketserver.ThreadingTCPServer):
         # The REQUEST-indexed schedule, and the count it is indexed by. See `set_segment_profile`.
         self.segment_profile = []
         self.n_segments = 0
+        # Media-segment responses begun, by the rung the REQUEST named: which rung of a ladder the
+        # player fetched. A running total, never reset; a reader takes the difference of two
+        # `segment_rungs()` snapshots, as it does for `stats()`.
+        self.rung_segments = {}
         # Per-case PMS response mapping. The request path remains the actuator the app sent;
         # each fresh master gets a generation whose media/segments remain pinned to the rendition
         # that master declared. This is what lets an old underfilled session keep playing while a
@@ -381,6 +691,8 @@ class FixtureServer(socketserver.ThreadingTCPServer):
         # The instant the shared link next falls idle. See `write_body`.
         self.link_free_at = None
         self._abr_parts = {}
+        # Per clip file (relative name): its `TsTimeline`, found once. See `abr_timeline`.
+        self._abr_timelines = {}
         super().__init__((bind, port), FixtureHandler)
 
     def abr_parts(self, base):
@@ -404,6 +716,32 @@ class FixtureServer(socketserver.ThreadingTCPServer):
         with self.lock:
             self._abr_parts[base] = parts
         return parts
+
+    def abr_timeline(self, rel):
+        """The `TsTimeline` of the clip `rel` under the root: parsed on first use, then cached.
+
+        ValueError when the file is not a TS this can shift; OSError when it is absent.
+        """
+        with self.lock:
+            cached = self._abr_timelines.get(rel)
+        if cached is not None:
+            return cached
+        with open(os.path.join(self.root, rel), "rb") as f:
+            found = scan_ts(f.read())
+        with self.lock:
+            self._abr_timelines[rel] = found
+        return found
+
+    def abr_continuous_offset(self, parts, sequence):
+        """Ticks (90 kHz) between the start of the stream and the start of `sequence`.
+
+        The sum of the MEASURED durations of every earlier sequence, cycling `parts` the way
+        `_abr_segment_file` does: whole cycles plus the parts of this one already played. Never
+        `sequence * 2.0`: a part need not be 2.0 s.
+        """
+        durations = [self.abr_timeline(part).duration for part in parts]
+        cycles, within = divmod(sequence, len(parts))
+        return cycles * sum(durations) + sum(durations[:within])
 
     def set_network_profile(self, profile):
         """Install one case-local wall-clock rate schedule: [{until_s, kbps}, ...].
@@ -521,6 +859,21 @@ class FixtureServer(socketserver.ThreadingTCPServer):
             index = self.n_segments
             self.n_segments += 1
             return index
+
+    def count_rung_segment(self, rung):
+        """One media-segment response has begun for the rung (`"720"`) its request path named."""
+        with self.lock:
+            self.rung_segments[rung] = self.rung_segments.get(rung, 0) + 1
+
+    def segment_rungs(self):
+        """Media-segment responses begun so far, `{rung: count}`, lowest rung first.
+
+        Keyed by the rung in the request path, which is the player's choice; the rendition a
+        response profile served for it is the profile's business. A separate reader from
+        `stats()`, whose three values `evaluate_pipeline` zips.
+        """
+        with self.lock:
+            return {rung: self.rung_segments[rung] for rung in sorted(self.rung_segments, key=int)}
 
     def segment_rate_kbps(self, index):
         """The request-indexed rate for the segment at `index`, or `None` if none applies."""

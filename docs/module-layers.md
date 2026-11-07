@@ -319,11 +319,11 @@ tests, where nothing calls `plex_run`) `tv::ABSENT` answers what the host arms a
 shipping build that reaches it logs `tv: port not installed - using the no-port defaults` once.
 Only `tv`'s own modules read the table. Two things leave it: the sink, through
 `tv::sink::installed()` (rule `sink` of `ci/check-deps.sh` fences naming `VideoSink` or `installed` to `media`'s
-`player/`, `platform`'s `tv/`, `tv.rs` and `webos/`, `port.rs` and
+`player/`, `play-uri/`, `platform`'s `tv/`, `tv.rs` and `webos/`, `port.rs` and
 `app/adapters/backends.rs`; `play-feed/` may name the trait but never resolves `installed`), and, in a `devtriggers` build only, the developer URI-mode probe's
-`tv::uri::installed()`, read by the media wrapper `player::uriprobe_drive`. A URI driver (a later PR)
-is to receive that transport and a shared `DisplaySink` as injected ports, as the Feed receives its sink;
-neither reads the webOS port registry or resolves the feed-only `VideoSink` itself.
+`tv::uri::installed()`, read by the media wrapper `player::uriprobe_drive`. The independent
+`play-uri` driver receives that transport and a shared `DisplaySink` as injected ports; it
+does not read the webOS port registry or the feed-only `VideoSink` itself.
 Lazily computed facts (device identity, the sandbox verdict, the Dolby Vision capability) are
 published values rather than hooks: the webOS code writes them into `tv::device`, `tv::sandbox` and
 `devcaps::dv` at the same boot moment as before, so readers keep their `OnceLock` semantics.

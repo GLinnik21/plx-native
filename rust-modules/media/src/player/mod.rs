@@ -50,7 +50,7 @@ pub mod recovery; // the failed-open ladder (pure machine); `pump` drives it
 pub mod release; // the native object's off-frame release lifecycle (pure machine); `engine` runs it
 mod route_start; // common transaction admission and release-queued start policy
 #[cfg(feature = "devtriggers")]
-pub mod uriprobe_drive; // the URI-mode probe's route half and its port (issue #1064, dev trigger `plxnative-uriprobe`): the route-start settle and the adapter slot; the probe itself is the application's and arrives with the URI backend
+pub mod uriprobe_drive; // the URI-mode probe's route half and its port (issue #1064, dev trigger `plxnative-uriprobe`): the route-start settle and the adapter slot; the probe itself is the application's (`dev::uriprobe`), over the play-uri crate's `uriprobe`
 pub mod attempt_metrics; // pure logical-request and physical-attempt measurement reducer
 mod pump; // gated: the per-frame tick reads and drives `FEED_SHARED`/`FEED_TX` and `plx_play_feed::feed_pump`
 pub mod report;
@@ -288,7 +288,7 @@ pub use engine::{
     start_bufferfeed, start_bufferfeed_tracked,
 };
 /// [`exit_native`] with the clock and the idle wait the caller names: a suite outside this crate
-/// ticks a scripted clock past the release deadline (the application probe's tests).
+/// ticks a scripted clock past the release deadline (`dev::uriprobe`'s tests).
 #[cfg(any(test, feature = "test-support"))]
 pub use route_start::exit_native_with;
 pub use route_start::{begin_resume, exit_native, land_resume, retire_if_server_stopped, stop_bufferfeed,

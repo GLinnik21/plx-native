@@ -74,6 +74,14 @@ def defaults():
     }.items()}
 
 
+def uri_defaults():
+    spec = defaults()
+    # No Starfish hook, but src/exit.c's interposer is linked whatever the backend set.
+    spec["readelf:--dyn-syms"]["output"] = EXIT_ROW
+    spec["readelf:-d"]["output"] = "Shared library: [libalpha.so]\n"
+    return spec
+
+
 class ElfGateTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="elf-gate-tests-")
@@ -89,6 +97,7 @@ class ElfGateTests(unittest.TestCase):
         self.script = self.root / "ci/check-elf.sh"
         self.script.write_text(source)
         (self.root / "ci/expected-dt-needed.txt").write_text("libalpha.so\nlibbeta.so\n")
+        (self.root / "ci/expected-dt-needed-uri.txt").write_text("libalpha.so\n")
         (self.root / "ci/expected-dt-needed-storage.txt").write_text("libalpha.so\nlibgamma.so\n")
         (self.root / "plxnative-storage").write_text("synthetic helper")
         for name in ("readelf", "objdump", "strings"):
@@ -97,7 +106,7 @@ class ElfGateTests(unittest.TestCase):
             path.chmod(0o755)
         self.spec = self.root / "spec.json"
 
-    def run_gate(self, spec=None, extra_env=None):
+    def run_gate(self, spec=None, extra_env=None, mode_arg=None):
         if spec is not None:
             self.spec.write_text(json.dumps(spec))
         env = os.environ.copy()
@@ -105,10 +114,19 @@ class ElfGateTests(unittest.TestCase):
                     "OBJDUMP": str(self.root / "tools/objdump"),
                     "PATH": str(self.root / "tools") + os.pathsep + env.get("PATH", ""),
                     "TMPDIR": str(self.root / "scratch"), "CI": "true",
-                    "ELF_TEST_SPEC": str(self.spec)})
+                    "ELF_TEST_SPEC": str(self.spec),
+                    "PLAYBACK_BACKENDS": "both"})
         env.update(extra_env or {})
-        return subprocess.run(["bash", str(self.script), "synthetic.elf"], cwd=self.root,
+        args = ["bash", str(self.script), "synthetic.elf"]
+        if mode_arg is not None:
+            args.append(mode_arg)
+        return subprocess.run(args, cwd=self.root,
                               env=env, capture_output=True, text=True, timeout=GATE_HANG_GUARD)
+
+    def gate_scratch(self):
+        # macOS may create xcrun_db in TMPDIR while looking up host tools. The gate owns only
+        # check-elf.* scratch directories, and those must all be removed on every exit path.
+        return list((self.root / "scratch").glob("check-elf.*"))
 
     def assert_pass(self, spec):
         result = self.run_gate(spec)
@@ -117,6 +135,51 @@ class ElfGateTests(unittest.TestCase):
 
     def test_small_valid_artifact(self):
         self.assert_pass(defaults())
+
+    def test_uri_mode_requires_an_exact_nonfeed_import_set_and_no_hook(self):
+        result = self.run_gate(uri_defaults(), extra_env={"PLAYBACK_BACKENDS": "uri"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("all ELF assertions passed", result.stdout)
+        result = self.run_gate(uri_defaults(), extra_env={"PLAYBACK_BACKENDS": "both"}, mode_arg="uri")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_uri_mode_rejects_any_feed_hook_or_library(self):
+        for label, change, diagnostic in [
+            ("hook", lambda spec: spec["readelf:--dyn-syms"].update(output=HOOK_ROW + EXIT_ROW), "callbackFunctionHook"),
+            ("player", lambda spec: spec["readelf:-d"].update(output="Shared library: [libalpha.so]\nShared library: [libplayerAPIs.so.1]\n"), "Feed library"),
+            ("pipeline", lambda spec: spec["readelf:-d"].update(output="Shared library: [libalpha.so]\nShared library: [libpf-1.0.so.1]\n"), "Feed library"),
+        ]:
+            with self.subTest(label=label):
+                spec = uri_defaults()
+                change(spec)
+                result = self.run_gate(spec, extra_env={"PLAYBACK_BACKENDS": "uri"})
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn(diagnostic, result.stdout)
+
+    def test_uri_mode_rejects_extra_and_missing_nonfeed_imports(self):
+        for output in ("Shared library: [libalpha.so]\nShared library: [libbeta.so]\n", ""):
+            with self.subTest(output=output):
+                spec = uri_defaults()
+                spec["readelf:-d"]["output"] = output
+                result = self.run_gate(spec, extra_env={"PLAYBACK_BACKENDS": "uri"})
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn("DT_NEEDED drifted", result.stdout)
+
+    def test_feed_mode_keeps_the_hook_requirement_and_full_import_set(self):
+        result = self.run_gate(defaults(), extra_env={"PLAYBACK_BACKENDS": "feed"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        spec = defaults()
+        spec["readelf:--dyn-syms"]["output"] = EXIT_ROW
+        result = self.run_gate(spec, extra_env={"PLAYBACK_BACKENDS": "feed"})
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("callbackFunctionHook interposer", result.stdout)
+
+    def test_unknown_or_empty_backend_mode_is_rejected(self):
+        for backend in ("none", "uri feed", "", "surprise"):
+            with self.subTest(backend=backend):
+                result = self.run_gate(defaults(), extra_env={"PLAYBACK_BACKENDS": backend})
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn("PLAYBACK_BACKENDS", result.stdout)
 
     def test_early_required_placeholder_with_large_tail(self):
         spec = defaults()
@@ -185,7 +248,7 @@ class ElfGateTests(unittest.TestCase):
                 spec[key]["output"] += FILLER
                 result = self.run_gate(spec)
                 self.assertNotEqual(result.returncode, 0, "producer failed but gate passed: " + key)
-                self.assertEqual(list((self.root / "scratch").iterdir()), [])
+                self.assertEqual(self.gate_scratch(), [])
 
     def test_predicates_still_reject_invalid_artifacts(self):
         for key, replacement in [("readelf:-A", "Tag_CPU_arch: v6\n"),
@@ -313,7 +376,7 @@ class ElfGateTests(unittest.TestCase):
             seen = json.loads((barrier / f"seen-{n}").read_text())
             self.assertEqual(len(seen), 2, "each invocation must reserve private scratch")
             self.assertEqual(len(set(seen)), 2)
-        self.assertEqual(list((self.root / "scratch").iterdir()), [])
+        self.assertEqual(self.gate_scratch(), [])
 
 
 class MakeCheckContractTests(unittest.TestCase):

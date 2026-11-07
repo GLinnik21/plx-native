@@ -66,7 +66,7 @@ void vp_destroy_window(void);
 /* ACB (App Common Binding) — VP_ACB only; every verb is a no-op in the other modes, so callers
  * need not branch. On webOS 5 this whole sequence has no replacement: it is deleted outright. */
 long acb_create(const char *appId, int playerType);        /* create+initialize; 0 = failed */
-/* The paced ACB bind (the URI backend's, a later PR): the same calls acb_bind() makes, split so the caller can
+/* The paced URI bind (play-uri `acb_bind`): the same calls acb_bind() makes, split so the caller can
  * pace them. 1 = the library confirmed AcbAPI_initialize (a created handle alone is not that), 0 not. */
 int acb_initialized(void);
 int acb_probe_dass_available(void);                         /* developer arm only */

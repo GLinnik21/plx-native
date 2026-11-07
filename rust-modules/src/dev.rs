@@ -52,6 +52,15 @@
 
 pub(crate) mod scenarios;
 
+/// The URI-mode probe's driver, the application's half of media's probe port (issue #1064).
+#[cfg(all(feature = "devtriggers", feature = "play-uri"))]
+pub(crate) mod uriprobe;
+
+/// The URI dev route (`plxnative-uridev`): the production URI backend, ACB-bound, playing a URL a
+/// developer names. The application's composition reads it once, at `install_uri_product`.
+#[cfg(all(feature = "devtriggers", feature = "play-uri"))]
+pub(crate) mod uri_product;
+
 /// The demo video's frame dump (simulator only): see the module doc.
 #[cfg(all(feature = "hostsim", feature = "devtriggers"))]
 pub(crate) mod framedump;
@@ -66,7 +75,7 @@ pub(crate) mod framedump;
 // `test` as well as the feature: `any_trigger_present` is the only caller and it is cfg'd out of a
 // release build, but the test below asserts this list's contents and runs with default features.
 #[cfg(any(feature = "devtriggers", test))]
-const DIAG: [&str; 48] = [
+const DIAG: [&str; 49] = [
     "plxnative-diag.log",
     "plxnative-hud-text-metrics",
     "plxnative-hud-text-metrics.json",
@@ -183,13 +192,18 @@ const DIAG: [&str; 48] = [
     // The side subtitle reader (`plx_play_feed::side_reader`, `media::player::subside`): content = the 0-based position of the
     // embedded subtitle stream to draw over a plain remux, read at each playback start.
     "plxnative-subside",
-    // The URI-mode probe (`media::player::uriprobe_drive`, issue #1064): content = `load`, `late`
-    // or `none` (empty = `load`), read at each playback start ONCE a probe is installed behind the
-    // media port (the URI backend, a later PR: on this tree nothing installs one, so the file is
-    // never read). It changes how ONE play is carried out and nothing about the boot: the tester
-    // signs in and picks a profile as always, then plays a title. A non-DIAG trigger would suppress
-    // the who's-watching picker and move that boot away from the one the probe is meant to run on.
+    // The URI-mode probe (`dev::uriprobe`, the application's half of `media::player::uriprobe_drive`, issue #1064): content = `load`, `late`
+    // or `none` (empty = `load`), read at each playback start. It changes how ONE play is carried
+    // out and nothing about the boot: the tester signs in and picks a profile as always, then
+    // plays a title. A non-DIAG trigger would suppress the who's-watching picker and move that
+    // boot away from the one the probe is meant to run on.
     "plxnative-uriprobe",
+    // The URI dev route (`dev::uri_product`): content = `acb part=<N> pms=<dotted-quad:port>
+    // url=<http://dotted-quad:port/path>`, read once at boot. It changes which source one play is
+    // certified for and nothing about the boot, so a test run still signs in and boots as always;
+    // a non-DIAG trigger would suppress the who's-watching picker. It is listed here so that
+    // `ci/check-package.py` greps the shipped bytes for the name.
+    "plxnative-uridev",
 ];
 
 /// **Turn on the TELEVISION'S OWN GStreamer logging** — `/tmp/plxnative-gstlog`.
@@ -1323,6 +1337,17 @@ mod tests {
     #[test]
     fn uriprobe_trigger_is_diagnostic() {
         assert!(super::DIAG.contains(&"plxnative-uriprobe"));
+    }
+
+    // ---- plxnative-uridev (the URI dev route) ----
+
+    /// The dev route changes which source one play is certified for, never which screen the app
+    /// boots to (a test run signs in with the dev token and plays, as always). It is listed so the
+    /// release check (`ci/check-package.py`) greps the shipped bytes for the name, and so a stale
+    /// file in `/tmp` cannot move a later boot off the screen it was going to.
+    #[test]
+    fn uridev_trigger_is_diagnostic() {
+        assert!(super::DIAG.contains(&"plxnative-uridev"));
     }
 
     // ---- plxnative-playurl (the pipeline test tier's one trigger) ----
