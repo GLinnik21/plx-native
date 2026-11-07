@@ -48,7 +48,7 @@ composition (ACB display mode, an initialized handle, player type 0); media's `u
 `ResolvePort::could_qualify_pms` accept `Binding::Acb` as an offerable display path beside an exported
 canvas, but only through `certified` capabilities: the production evidence certifies nothing and
 `ProductQualifier` answers `Unknown`, which is what keeps the ACB binding from being offered a source.
-The one exception is a viewer who turned on Settings > Video & playback > Playback engine > TV player
+The one exception is a viewer who turned on Settings > Video & playback > Playback engine > Experimental
 (`UriEngine::On`, per profile, off by default): the route snapshots it into `ResolveEnv::uri_engine`,
 `OriginalRequest::uri_opt_in` carries it to the worker, `ProductQualifier` then answers the original
 file as a progressive URL carrier (`KnownSource::url_carrier`) and `ResolvePort::qualify` checks it

@@ -95,7 +95,7 @@ pub enum PickerKind {
     UiResolution,
     /// Optional immediate D-pad jumps.
     InstantDpadSeeking,
-    /// The viewer's opt-in to the URI engine (Standard / TV player).
+    /// The viewer's opt-in to the URI engine (Standard / Experimental).
     UriEngine,
     /// Manual Dolby Vision override (Auto / Off).
     DolbyVision,

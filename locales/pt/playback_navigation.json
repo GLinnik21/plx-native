@@ -7,7 +7,7 @@
   "settings.playback.dolby_vision.copy": "Automático usa Dolby Vision quando o televisor o suporta. Desativado reproduz a camada HDR10. Os ficheiros sem camada HDR10 são convertidos pelo seu servidor Plex e podem não ser reproduzidos.",
   "settings.playback.dolby_vision.off": "Desativado",
   "settings.playback.uri_engine": "Motor de reprodução",
-  "settings.playback.uri_engine.copy": "Leitor da TV usa o leitor integrado do televisor na reprodução direta. É experimental: se falhar, o vídeo reinicia em Padrão. Alguns vídeos usam sempre Padrão.",
+  "settings.playback.uri_engine.copy": "Experimental deixa a TV receber o ficheiro em streaming. Os controlos ficam iguais. Se falhar, o vídeo reinicia em Padrão. Alguns vídeos usam sempre Padrão.",
   "settings.playback.uri_engine.off": "Padrão",
-  "settings.playback.uri_engine.on": "Leitor da TV"
+  "settings.playback.uri_engine.on": "Experimental"
 }

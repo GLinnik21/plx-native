@@ -41,20 +41,21 @@ Audio passthrough remains the television's Digital Sound Output setting.
 
 ## Playback engine
 
-**Playback engine** (Video group) chooses which player handles direct-play videos, per profile:
-**Standard** (the default) is this app's own player, which feeds the stream to the TV; **TV player**
-is an experimental opt-in that hands the file's URL to the TV's own media pipeline (the URI engine,
-`docs/uri-first-migration.md`). The opt-in is the viewer's own qualification of a URI source for that
-profile only: nobody who has not turned it on is routed to URI, and the row is visible to everyone in
-every shipped language.
+**Playback engine** (Video group) chooses which engine fetches and decodes direct-play videos, per
+profile: **Standard** (the default) is this app's own player, which feeds the stream to the TV;
+**Experimental** is an opt-in that hands the file's URL to the TV's own media pipeline (the URI engine,
+`docs/uri-first-migration.md`). This app's own player screen and controls stay in both: only fetching
+and decoding move. The opt-in is the viewer's own qualification of a URI source for that profile only:
+nobody who has not turned it on is routed to URI, and the row is visible to everyone in every shipped
+language.
 
-With TV player on, only a direct-play of the original file can go to the TV's pipeline. A video your
+With Experimental on, only a direct-play of the original file can go to the TV's pipeline. A video your
 Plex server converts (remux, transcode or HLS), one with a selected subtitle or a burned or client-drawn
 subtitle, a trailer preview, a non-1x speed, a relay link and Auto quality away from the LAN still play
-in Standard. A TV player failure takes at most one handoff per play: the video restarts in Standard
-(`route::backend_policy`). On webOS 4.x the TV player binds the screen through ACB and waits for each
+in Standard. An Experimental failure takes at most one handoff per play: the video restarts in Standard
+(`route::backend_policy`). On webOS 4.x the Experimental engine binds the screen through ACB and waits for each
 release's completion callback before the next title; when that never arrives the plane stays
-quarantined until the app restarts, the next title's TV player bind is refused and that title takes the
+quarantined until the app restarts, the next title's Experimental bind is refused and that title takes the
 handoff to Standard. Nothing about this setting is sent to telemetry or diagnostics.
 
 ## Plex account preferences

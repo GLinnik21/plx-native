@@ -7,7 +7,7 @@
   "settings.playback.dolby_vision.copy": "Auto utilise Dolby Vision si le téléviseur le prend en charge. Désactivé lit la couche HDR10. Les fichiers sans couche HDR10 sont convertis par votre serveur Plex et risquent de ne pas être lus.",
   "settings.playback.dolby_vision.off": "Désactivé",
   "settings.playback.uri_engine": "Moteur de lecture",
-  "settings.playback.uri_engine.copy": "Lecteur du téléviseur utilise le lecteur intégré du téléviseur pour la lecture directe. C'est expérimental : en cas d'échec, la vidéo redémarre en Standard. Certaines vidéos restent toujours en Standard.",
+  "settings.playback.uri_engine.copy": "Expérimental laisse le téléviseur lire lui-même le fichier en streaming. Les commandes restent les mêmes. En cas d'échec, la vidéo redémarre en Standard. Certaines vidéos utilisent toujours Standard.",
   "settings.playback.uri_engine.off": "Standard",
-  "settings.playback.uri_engine.on": "Lecteur du téléviseur"
+  "settings.playback.uri_engine.on": "Expérimental"
 }

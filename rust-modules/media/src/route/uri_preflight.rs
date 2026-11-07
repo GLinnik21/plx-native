@@ -1,7 +1,7 @@
 //! Source-specific URI qualification on the existing off-frame resolve worker.
 //! A native implementation may answer Unknown until its display and control behavior is proven.
 //! Production proves nothing for anyone; the one qualification it supplies is a viewer's own:
-//! Settings > Video & playback > Playback engine > TV player ([`OriginalRequest::uri_opt_in`]).
+//! Settings > Video & playback > Playback engine > Experimental ([`OriginalRequest::uri_opt_in`]).
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};

@@ -7,7 +7,7 @@
   "settings.playback.dolby_vision.copy": "„Automatisch“ nutzt Dolby Vision, wenn der Fernseher es unterstützt. „Aus“ spielt die HDR10-Ebene ab. Dateien ohne HDR10-Ebene konvertiert dein Plex-Server, und sie werden womöglich nicht abgespielt.",
   "settings.playback.dolby_vision.off": "Aus",
   "settings.playback.uri_engine": "Wiedergabe-Engine",
-  "settings.playback.uri_engine.copy": "TV-Player nutzt für die Direktwiedergabe den im Fernseher eingebauten Player. Das ist experimentell: Bei einem Fehler startet das Video neu in Standard. Manche Videos laufen immer in Standard.",
+  "settings.playback.uri_engine.copy": "Experimentell lässt den Fernseher die Datei selbst streamen. Die Bedienung bleibt gleich. Bei einem Fehler startet das Video neu in Standard. Manche Videos laufen immer in Standard.",
   "settings.playback.uri_engine.off": "Standard",
-  "settings.playback.uri_engine.on": "TV-Player"
+  "settings.playback.uri_engine.on": "Experimentell"
 }

@@ -235,7 +235,7 @@ fn the_continue_watching_row_defaults_to_open_details_and_its_picker_saves_the_p
 }
 
 /// The Playback engine row: the shipped default is Standard (the opt-in is off), the picker lists
-/// the two options with the live one checked, and choosing TV player asks the app to save exactly
+/// the two options with the live one checked, and choosing Experimental asks the app to save exactly
 /// that. The row's value is its readout, not its sentence.
 #[test]
 fn the_playback_engine_row_defaults_to_standard_and_its_picker_saves_the_opt_in() {
@@ -253,7 +253,7 @@ fn the_playback_engine_row_defaults_to_standard_and_its_picker_saves_the_opt_in(
     assert_eq!(readout, "Standard");
     assert_eq!(current, Value::UriEngine(UriEngine::Off));
     assert_eq!(options, [("Standard".to_string(), Value::UriEngine(UriEngine::Off)),
-        ("TV player".to_string(), Value::UriEngine(UriEngine::On))]);
+        ("Experimental".to_string(), Value::UriEngine(UriEngine::On))]);
     assert_eq!(PickerKind::UriEngine.title(), "Playback engine");
     assert_eq!(PickerKind::UriEngine.parent(), SettingsPage::Playback);
 
@@ -267,7 +267,7 @@ fn the_playback_engine_row_defaults_to_standard_and_its_picker_saves_the_opt_in(
     assert_eq!(saved, Some(UriEngine::On));
     // Opting in is visible on the row the picker returns to.
     plx_media::route::restore_uri_engine(UriEngine::On);
-    assert_eq!(field_readout(PickerKind::UriEngine, Quality::Original, DirectPlayMode::Auto, Some(&prefs)), "TV player");
+    assert_eq!(field_readout(PickerKind::UriEngine, Quality::Original, DirectPlayMode::Auto, Some(&prefs)), "Experimental");
     plx_media::route::restore_uri_engine(prior);
 }
 

@@ -3,7 +3,7 @@
 The target is a URI-first player with independently removable URI and buffer-feed executors.
 This is a staged migration. Boot installs the URI executor and a source qualification port, but
 the production qualifier returns Unknown and certifies no URI controls or release, except for a
-viewer who turned on Settings > Video & playback > Playback engine > TV player (off by default,
+viewer who turned on Settings > Video & playback > Playback engine > Experimental (off by default,
 per profile): that opt-in is the viewer's own qualification of the original file's URL for their
 own playback. Ordinary playback therefore still selects buffer-feed. Injected source and firmware
 evidence exercise the URI route in host tests; they do not qualify the production device.
