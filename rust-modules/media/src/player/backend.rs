@@ -940,11 +940,11 @@ mod tests {
     // --- W4: one typed record per failed start, rebuffer, handoff and release failure ---------
     // These run the shared runner against a scripted DriverSet for EACH BackendKind. They prove
     // the reducer, the wrapper and that both drivers' events take the same path; the real
-    // drivers' own event vocabulary is covered beside them (play-uri backend rig, the Feed driver,
-    // run_uri_boot_tests). The scripted sets inject `Observation::Presented` where the real
-    // drivers emit it: the Feed driver's `note_picture` (the displayed-frame counter after the bind) and
-    // `UriBackend::picture_step` (`play-uri/src/picture_gate.rs`: the service's `playing`, the plane
-    // owner's window+PLAYING completions, then a clock advance; ACB binding only).
+    // drivers' own event vocabulary is covered beside them (the Feed driver's tests; a URI driver
+    // brings its own with it). The scripted sets inject `Observation::Presented` where a real
+    // driver emits it: the Feed driver's `note_picture` (the displayed-frame counter after the bind),
+    // and a URI driver once the service's `playing`, the plane owner's window+PLAYING completions
+    // and a clock advance have all been seen (ACB binding only).
     type Rec = measure::Record<LogicalRequestId, AttemptId>;
     fn incidents(result: &RunResult) -> Vec<Rec> {
         result.metrics.iter().filter_map(|n| match n {

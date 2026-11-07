@@ -1,6 +1,7 @@
 //! HTTP and libcurl source teardown/abort behavior: seek-after-teardown, aborted
 //! read/seek races, and stalled or IO-failed transports across both transports.
 
+use plx_play_feed::shared::{FEED_SHARED, FEED_TX};
 use super::*;
 #[allow(unused_imports)]
 use super::test_support::*;
@@ -27,12 +28,15 @@ fn a_seek_after_teardown_fails_instead_of_opening_a_second_connection() {
             "fixture: exactly one connection so far"
         );
         let mut st = AvioState {
+            observer: super::test_support::demux_observer(),
             src: Src::Socket {
                 hs: &mut *hs,
                 host: ip,
                 port: port as c_int,
                 path,
             },
+            range: crate::curlio::range_factory(),
+            credential_gate: crate::curlio::CREDENTIAL_GATE,
             aq: &mut *aq,
             off: 0,
             size: 8,
@@ -40,12 +44,13 @@ fn a_seek_after_teardown_fails_instead_of_opening_a_second_connection() {
             body_active_us: 0,
             body_bytes: 0,
             first_byte_at: None,
-            reserve_deadline: ReserveDeadlineState::new(None, false),
+            reserve_deadline: ReserveDeadlineState::new(None, false, super::test_support::demux_observer()),
             transport_watchdog: None,
             acquisition: None,
             bounce: Vec::new(),
             bounce_pos: 0,
             parked_at_end: false,
+            body_silence: super::test_support::fixture_body_silence(),
             heal: HealBudget::default(),
         };
         let op = &mut st as *mut AvioState as *mut c_void;
@@ -68,7 +73,7 @@ fn a_seek_after_teardown_fails_instead_of_opening_a_second_connection() {
             "a size query is not I/O — the guard belongs AFTER that branch"
         );
         plx_net::stream::http_close(&mut *hs);
-        crate::aq::aq_destroy(&mut *aq);
+        plx_play_feed::aq::aq_destroy(&mut *aq);
     });
 }
 
@@ -84,12 +89,15 @@ fn an_aborted_read_and_seek_cannot_ping_pong_into_new_connections() {
     with_counting_listener(|port, accepts, _| {
         let (mut hs, mut aq, ip, path) = opened_stream_with_aborted_lane(port);
         let mut st = AvioState {
+            observer: super::test_support::demux_observer(),
             src: Src::Socket {
                 hs: &mut *hs,
                 host: ip,
                 port: port as c_int,
                 path,
             },
+            range: crate::curlio::range_factory(),
+            credential_gate: crate::curlio::CREDENTIAL_GATE,
             aq: &mut *aq,
             off: 0,
             size: 8,
@@ -97,12 +105,13 @@ fn an_aborted_read_and_seek_cannot_ping_pong_into_new_connections() {
             body_active_us: 0,
             body_bytes: 0,
             first_byte_at: None,
-            reserve_deadline: ReserveDeadlineState::new(None, false),
+            reserve_deadline: ReserveDeadlineState::new(None, false, super::test_support::demux_observer()),
             transport_watchdog: None,
             acquisition: None,
             bounce: Vec::new(),
             bounce_pos: 0,
             parked_at_end: false,
+            body_silence: super::test_support::fixture_body_silence(),
             heal: HealBudget::default(),
         };
         let op = &mut st as *mut AvioState as *mut c_void;
@@ -128,14 +137,15 @@ fn an_aborted_read_and_seek_cannot_ping_pong_into_new_connections() {
             "every hop must refuse the seek: {seeks:?}"
         );
         plx_net::stream::http_close(&mut *hs);
-        crate::aq::aq_destroy(&mut *aq);
+        plx_play_feed::aq::aq_destroy(&mut *aq);
     });
 }
 
 #[test]
 fn an_expired_candidate_deadline_stops_before_touching_its_transport() {
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let mut st = AvioState {
+        observer: super::test_support::demux_observer(),
         // A null stream would crash if dispatch were reached; the deadline must settle first.
         src: Src::Socket {
             hs: std::ptr::null_mut(),
@@ -143,6 +153,8 @@ fn an_expired_candidate_deadline_stops_before_touching_its_transport() {
             port: 1,
             path: CString::new("/unused").unwrap(),
         },
+        range: crate::curlio::range_factory(),
+        credential_gate: crate::curlio::CREDENTIAL_GATE,
         aq: &mut *aq,
         off: 0,
         size: -1,
@@ -150,12 +162,14 @@ fn an_expired_candidate_deadline_stops_before_touching_its_transport() {
         body_active_us: 0,
         body_bytes: 0,
         first_byte_at: None,
-        reserve_deadline: ReserveDeadlineState::new(Some(std::time::Instant::now()), false),
+        reserve_deadline: ReserveDeadlineState::new(Some(std::time::Instant::now()), false,
+            super::test_support::demux_observer()),
         transport_watchdog: None,
         acquisition: None,
         bounce: Vec::new(),
         bounce_pos: 0,
         parked_at_end: false,
+        body_silence: super::test_support::fixture_body_silence(),
         heal: HealBudget::default(),
     };
     let mut dst = [0u8; 8];
@@ -170,7 +184,7 @@ fn an_expired_candidate_deadline_stops_before_touching_its_transport() {
         !st.io_failed,
         "a rejected prime is not an active-stream transport failure"
     );
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
 }
 
 #[test]
@@ -214,16 +228,19 @@ fn a_stalled_candidate_body_ends_at_transport_liveness_not_recursive_reserve_ret
         0,
     );
     let start_ns = 80_000_000_000;
-    let old_playpos = SHARED.playpos_ns.swap(start_ns, Ordering::AcqRel);
-    let old_paused = crate::player::TX.paused.swap(false, Ordering::AcqRel);
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let old_playpos = FEED_SHARED.playpos_ns.swap(start_ns, Ordering::AcqRel);
+    let old_paused = FEED_TX.paused.swap(false, Ordering::AcqRel);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let mut state = AvioState {
+        observer: super::test_support::demux_observer(),
         src: Src::Socket {
             hs: &mut *hs,
             host,
             port: port as c_int,
             path,
         },
+        range: crate::curlio::range_factory(),
+        credential_gate: crate::curlio::CREDENTIAL_GATE,
         aq: &mut *aq,
         off: 0,
         size: 8,
@@ -235,6 +252,7 @@ fn a_stalled_candidate_body_ends_at_transport_liveness_not_recursive_reserve_ret
             start_ns,
             std::time::Duration::from_millis(2),
             false,
+            super::test_support::demux_observer(),
         ),
         transport_watchdog: Some(TransportWatchdog::with_inactivity(
             std::time::Duration::from_millis(35),
@@ -243,6 +261,7 @@ fn a_stalled_candidate_body_ends_at_transport_liveness_not_recursive_reserve_ret
         bounce: Vec::new(),
         bounce_pos: 0,
         parked_at_end: false,
+        body_silence: super::test_support::fixture_body_silence(),
         heal: HealBudget::default(),
     };
     let started = std::time::Instant::now();
@@ -263,12 +282,12 @@ fn a_stalled_candidate_body_ends_at_transport_liveness_not_recursive_reserve_ret
         "one no-progress epoch should bound every stale reserve wake: {elapsed:?}",
     );
 
-    SHARED.playpos_ns.store(old_playpos, Ordering::Release);
-    crate::player::TX
+    FEED_SHARED.playpos_ns.store(old_playpos, Ordering::Release);
+    FEED_TX
         .paused
         .store(old_paused, Ordering::Release);
     plx_net::stream::http_close(&mut *hs);
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
     server.join().expect("stall server");
 }
 
@@ -311,7 +330,7 @@ fn abort_while_a_playlist_body_is_blocked_wins_over_the_transport_result() {
         ),
         0,
     );
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let aq_addr = (&mut *aq) as *mut AuQueue as usize;
     let hs_addr = (&mut *hs) as *mut HttpStream as usize;
     let mut src = Src::Socket {
@@ -324,7 +343,7 @@ fn abort_while_a_playlist_body_is_blocked_wins_over_the_transport_result() {
     let outcome = std::thread::scope(|scope| {
         scope.spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(30));
-            crate::aq::aq_abort(aq_addr as *mut AuQueue);
+            plx_play_feed::aq::aq_abort(aq_addr as *mut AuQueue);
             plx_net::stream::http_shutdown(hs_addr as *mut HttpStream);
         });
         hls_source_read(
@@ -332,21 +351,22 @@ fn abort_while_a_playlist_body_is_blocked_wins_over_the_transport_result() {
             &mut *aq,
             &mut dst,
             Some(std::time::Instant::now() + std::time::Duration::from_secs(1)),
+            super::test_support::demux_observer().as_ref(),
         )
     });
 
     assert!(matches!(outcome, Err(HlsExit::Aborted)), "got {outcome:?}");
     plx_net::stream::http_close(&mut *hs);
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
     server.join().expect("stall server");
 }
 
 #[test]
 fn a_prefetched_segment_does_not_move_the_published_buffer() {
-    let prev_video = SHARED.hls_video_tail_ns.swap(-1, Ordering::AcqRel);
-    let prev_audio = SHARED.hls_audio_tail_ns.swap(-1, Ordering::AcqRel);
-    let prev_pos = SHARED.playpos_ns.swap(0, Ordering::AcqRel);
-    let prev_base = SHARED.disp_base.swap(0, Ordering::AcqRel);
+    let prev_video = FEED_SHARED.hls_video_tail_ns.swap(-1, Ordering::AcqRel);
+    let prev_audio = FEED_SHARED.hls_audio_tail_ns.swap(-1, Ordering::AcqRel);
+    let prev_pos = FEED_SHARED.playpos_ns.swap(0, Ordering::AcqRel);
+    let prev_base = FEED_SHARED.disp_base.swap(0, Ordering::AcqRel);
     let held = HlsSegmentOutput {
         aus: Vec::new(),
         transfer: SegmentTransfer {
@@ -360,16 +380,17 @@ fn a_prefetched_segment_does_not_move_the_published_buffer() {
         video_tail_ns: 2_000_000_000,
         audio_tail_ns: Some(2_000_000_000),
     };
-    let published = hls_buffer_snapshot(None).buffered_ms();
-    let if_counted = hls_buffer_snapshot(Some(&held)).buffered_ms();
-    SHARED
+    let observer = super::test_support::demux_observer();
+    let published = hls_buffer_fact(observer.as_ref(), None).unwrap().buffered_ms();
+    let if_counted = hls_buffer_fact(observer.as_ref(), Some(&held)).unwrap().buffered_ms();
+    FEED_SHARED
         .hls_video_tail_ns
         .store(prev_video, Ordering::Release);
-    SHARED
+    FEED_SHARED
         .hls_audio_tail_ns
         .store(prev_audio, Ordering::Release);
-    SHARED.playpos_ns.store(prev_pos, Ordering::Release);
-    SHARED.disp_base.store(prev_base, Ordering::Release);
+    FEED_SHARED.playpos_ns.store(prev_pos, Ordering::Release);
+    FEED_SHARED.disp_base.store(prev_base, Ordering::Release);
     assert_ne!(
         published, if_counted,
         "feeding N+1 into the snapshot is what would inflate E; holding it off-queue must not"
@@ -428,9 +449,12 @@ fn io_failed_after_drain_surfaces_once_bounce_is_empty() {
     assert!(park_read_fails_closed(false, true));
     assert!(!park_read_fails_closed(false, false));
 
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let mut st = AvioState {
+        observer: super::test_support::demux_observer(),
         src: Src::Idle,
+        range: crate::curlio::range_factory(),
+        credential_gate: crate::curlio::CREDENTIAL_GATE,
         aq: &mut *aq,
         off: 0,
         size: 8,
@@ -438,12 +462,13 @@ fn io_failed_after_drain_surfaces_once_bounce_is_empty() {
         body_active_us: 0,
         body_bytes: 0,
         first_byte_at: None,
-        reserve_deadline: ReserveDeadlineState::new(None, false),
+        reserve_deadline: ReserveDeadlineState::new(None, false, super::test_support::demux_observer()),
         transport_watchdog: None,
         acquisition: None,
         bounce: b"ABCD".to_vec(),
         bounce_pos: 0,
         parked_at_end: false,
+        body_silence: super::test_support::fixture_body_silence(),
         heal: HealBudget::default(),
     };
     let op = &mut st as *mut AvioState as *mut c_void;
@@ -455,7 +480,7 @@ fn io_failed_after_drain_surfaces_once_bounce_is_empty() {
         AVERROR_IO,
         "park-time RST must not look like EOS after bounce is consumed"
     );
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
 }
 
 #[test]
@@ -472,9 +497,12 @@ fn take_curl_leaves_idle_and_seek_on_idle_does_not_open() {
         "a socket source must come back unchanged"
     );
 
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let mut st = AvioState {
+        observer: super::test_support::demux_observer(),
         src: Src::Idle,
+        range: crate::curlio::range_factory(),
+        credential_gate: crate::curlio::CREDENTIAL_GATE,
         aq: &mut *aq,
         off: 0,
         size: 8,
@@ -482,12 +510,13 @@ fn take_curl_leaves_idle_and_seek_on_idle_does_not_open() {
         body_active_us: 0,
         body_bytes: 0,
         first_byte_at: None,
-        reserve_deadline: ReserveDeadlineState::new(None, false),
+        reserve_deadline: ReserveDeadlineState::new(None, false, super::test_support::demux_observer()),
         transport_watchdog: None,
         acquisition: None,
         bounce: Vec::new(),
         bounce_pos: 0,
         parked_at_end: false,
+        body_silence: super::test_support::fixture_body_silence(),
         heal: HealBudget::default(),
     };
     let op = &mut st as *mut AvioState as *mut c_void;
@@ -504,7 +533,7 @@ fn take_curl_leaves_idle_and_seek_on_idle_does_not_open() {
         "Idle must not panic or dial during avformat_close_input"
     );
     assert!(!st.drain_wire(), "Idle has nothing to drain");
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
 }
 
 #[test]
@@ -535,7 +564,10 @@ fn a_curl_seek_after_teardown_fails_instead_of_opening_a_second_connection() {
             "fixture: and exactly one request"
         );
         let mut st = AvioState {
+            observer: super::test_support::demux_observer(),
             src: Src::Curl(cs),
+            range: crate::curlio::range_factory(),
+            credential_gate: crate::curlio::CREDENTIAL_GATE,
             aq: &mut *aq,
             off: 0,
             size: 8,
@@ -543,12 +575,13 @@ fn a_curl_seek_after_teardown_fails_instead_of_opening_a_second_connection() {
             body_active_us: 0,
             body_bytes: 0,
             first_byte_at: None,
-            reserve_deadline: ReserveDeadlineState::new(None, false),
+            reserve_deadline: ReserveDeadlineState::new(None, false, super::test_support::demux_observer()),
             transport_watchdog: None,
             acquisition: None,
             bounce: Vec::new(),
             bounce_pos: 0,
             parked_at_end: false,
+            body_silence: super::test_support::fixture_body_silence(),
             heal: HealBudget::default(),
         };
         let op = &mut st as *mut AvioState as *mut c_void;
@@ -575,7 +608,7 @@ fn a_curl_seek_after_teardown_fails_instead_of_opening_a_second_connection() {
             8,
             "a size query is not I/O — the guard belongs AFTER that branch, on both transports"
         );
-        crate::aq::aq_destroy(&mut *aq);
+        plx_play_feed::aq::aq_destroy(&mut *aq);
     });
 }
 
@@ -585,7 +618,10 @@ fn an_aborted_curl_read_and_seek_cannot_ping_pong_into_new_connections() {
     with_counting_listener(|port, accepts, requests| {
         let (cs, mut aq) = opened_curl_with_aborted_lane(port);
         let mut st = AvioState {
+            observer: super::test_support::demux_observer(),
             src: Src::Curl(cs),
+            range: crate::curlio::range_factory(),
+            credential_gate: crate::curlio::CREDENTIAL_GATE,
             aq: &mut *aq,
             off: 0,
             size: 8,
@@ -593,12 +629,13 @@ fn an_aborted_curl_read_and_seek_cannot_ping_pong_into_new_connections() {
             body_active_us: 0,
             body_bytes: 0,
             first_byte_at: None,
-            reserve_deadline: ReserveDeadlineState::new(None, false),
+            reserve_deadline: ReserveDeadlineState::new(None, false, super::test_support::demux_observer()),
             transport_watchdog: None,
             acquisition: None,
             bounce: Vec::new(),
             bounce_pos: 0,
             parked_at_end: false,
+            body_silence: super::test_support::fixture_body_silence(),
             heal: HealBudget::default(),
         };
         let op = &mut st as *mut AvioState as *mut c_void;
@@ -628,7 +665,7 @@ fn an_aborted_curl_read_and_seek_cannot_ping_pong_into_new_connections() {
             seeks.iter().all(|r| *r == -1),
             "every hop must refuse the seek: {seeks:?}"
         );
-        crate::aq::aq_destroy(&mut *aq);
+        plx_play_feed::aq::aq_destroy(&mut *aq);
     });
 }
 
@@ -642,19 +679,22 @@ fn a_curl_transport_failure_crosses_avio_as_io_error_not_eof() {
         struct ClearIoFailure;
         impl Drop for ClearIoFailure {
             fn drop(&mut self) {
-                SHARED.demux_io_failed.store(false, Ordering::Relaxed);
+                FEED_SHARED.demux_io_failed.store(false, Ordering::Relaxed);
             }
         }
         let _clear = ClearIoFailure;
-        SHARED.demux_io_failed.store(false, Ordering::Relaxed);
+        FEED_SHARED.demux_io_failed.store(false, Ordering::Relaxed);
 
         let mut cs =
             crate::curlio::CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0)
                 .expect("fixture: open");
         cs.fail_multi_for_test();
-        let mut aq = crate::aq::aq_new(1 << 20);
+        let mut aq = plx_play_feed::aq::aq_new(1 << 20);
         let mut st = AvioState {
+            observer: super::test_support::demux_observer(),
             src: Src::Curl(cs),
+            range: crate::curlio::range_factory(),
+            credential_gate: crate::curlio::CREDENTIAL_GATE,
             aq: &mut *aq,
             off: 0,
             size: 8,
@@ -662,12 +702,13 @@ fn a_curl_transport_failure_crosses_avio_as_io_error_not_eof() {
             body_active_us: 0,
             body_bytes: 0,
             first_byte_at: None,
-            reserve_deadline: ReserveDeadlineState::new(None, false),
+            reserve_deadline: ReserveDeadlineState::new(None, false, super::test_support::demux_observer()),
             transport_watchdog: None,
             acquisition: None,
             bounce: Vec::new(),
             bounce_pos: 0,
             parked_at_end: false,
+            body_silence: super::test_support::fixture_body_silence(),
             heal: HealBudget::default(),
         };
         let op = &mut st as *mut AvioState as *mut c_void;
@@ -692,7 +733,7 @@ fn a_curl_transport_failure_crosses_avio_as_io_error_not_eof() {
             "the callback leaves the error pending on its enclosing operation"
         );
         assert!(
-            !SHARED.demux_io_failed.load(Ordering::Acquire),
+            !FEED_SHARED.demux_io_failed.load(Ordering::Acquire),
             "a callback alone is not fatal because libavformat may still recover via seek"
         );
         assert!(
@@ -703,7 +744,7 @@ fn a_curl_transport_failure_crosses_avio_as_io_error_not_eof() {
             st.io_failed,
             "packet success must not hide a transport failure that only drained bounce"
         );
-        assert!(!SHARED.demux_io_failed.load(Ordering::Acquire));
+        assert!(!FEED_SHARED.demux_io_failed.load(Ordering::Acquire));
 
         let terminal = read_cb(op, dst.as_mut_ptr(), dst.len() as c_int);
         assert_eq!(terminal, AVERROR_IO);
@@ -712,10 +753,10 @@ fn a_curl_transport_failure_crosses_avio_as_io_error_not_eof() {
             "an unrecovered frame read ends the demux loop"
         );
         assert!(
-            SHARED.demux_io_failed.load(Ordering::Acquire),
+            FEED_SHARED.demux_io_failed.load(Ordering::Acquire),
             "the main-thread pump must see the failure even after frames were presented"
         );
-        crate::aq::aq_destroy(&mut *aq);
+        plx_play_feed::aq::aq_destroy(&mut *aq);
     });
 }
 
@@ -731,16 +772,19 @@ fn a_frame_read_failure_names_the_curl_rc_and_publishes_it_for_the_report() {
         struct Clear;
         impl Drop for Clear {
             fn drop(&mut self) {
-                SHARED.demux_io_failed.store(false, Ordering::Relaxed);
-                SHARED.reset_session();
+                FEED_SHARED.demux_io_failed.store(false, Ordering::Relaxed);
+                crate::player::reset_session_for_test();
             }
         }
         let _clear = Clear;
-        SHARED.reset_session();
+        crate::player::reset_session_for_test();
 
-        fn state(src: Src, aq: *mut crate::aq::AuQueue) -> AvioState {
+        fn state(src: Src, aq: *mut plx_play_feed::aq::AuQueue) -> AvioState {
             AvioState {
+                observer: super::test_support::demux_observer(),
                 src,
+                range: crate::curlio::range_factory(),
+                credential_gate: crate::curlio::CREDENTIAL_GATE,
                 aq,
                 off: 0,
                 size: 8,
@@ -748,16 +792,17 @@ fn a_frame_read_failure_names_the_curl_rc_and_publishes_it_for_the_report() {
                 body_active_us: 0,
                 body_bytes: 0,
                 first_byte_at: None,
-                reserve_deadline: ReserveDeadlineState::new(None, false),
+                reserve_deadline: ReserveDeadlineState::new(None, false, super::test_support::demux_observer()),
                 transport_watchdog: None,
                 acquisition: None,
                 bounce: Vec::new(),
                 bounce_pos: 0,
                 parked_at_end: false,
+                body_silence: super::test_support::fixture_body_silence(),
                 heal: HealBudget::default(),
             }
         }
-        let mut aq = crate::aq::aq_new(1 << 20);
+        let mut aq = plx_play_feed::aq::aq_new(1 << 20);
 
         // Not a curl transfer: the old line, and nothing published.
         let mut idle = state(Src::Idle, &mut *aq);
@@ -767,8 +812,8 @@ fn a_frame_read_failure_names_the_curl_rc_and_publishes_it_for_the_report() {
         });
         assert!(plain.contains("media transport failed during av_read_frame r=-5"), "{plain}");
         assert!(!plain.contains("curl_rc="), "no curl code was known: {plain}");
-        assert_eq!(SHARED.dg_transport_rc.load(Ordering::Acquire), 0);
-        SHARED.demux_io_failed.store(false, Ordering::Relaxed);
+        assert_eq!(FEED_SHARED.dg_transport_rc.load(Ordering::Acquire), 0);
+        FEED_SHARED.demux_io_failed.store(false, Ordering::Relaxed);
 
         // A curl transfer that died mid-body.
         let mut cs = crate::curlio::CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0)
@@ -783,11 +828,11 @@ fn a_frame_read_failure_names_the_curl_rc_and_publishes_it_for_the_report() {
             line.contains("media transport failed during av_read_frame r=-5 curl_rc=56"),
             "{line}"
         );
-        assert!(SHARED.demux_io_failed.load(Ordering::Acquire));
-        assert_eq!(SHARED.dg_transport_rc.load(Ordering::Acquire), 56);
-        assert!(SHARED.dg_transport_age_ms.load(Ordering::Acquire) >= 0);
-        assert!(!SHARED.dg_transport_reopen_failed.load(Ordering::Acquire));
-        crate::aq::aq_destroy(&mut *aq);
+        assert!(FEED_SHARED.demux_io_failed.load(Ordering::Acquire));
+        assert_eq!(FEED_SHARED.dg_transport_rc.load(Ordering::Acquire), 56);
+        assert!(FEED_SHARED.dg_transport_age_ms.load(Ordering::Acquire) >= 0);
+        assert!(!FEED_SHARED.dg_transport_reopen_failed.load(Ordering::Acquire));
+        plx_play_feed::aq::aq_destroy(&mut *aq);
     });
 }
 
@@ -806,9 +851,12 @@ fn a_cut_transfer_is_reopened_at_its_offset_before_the_read_fails() {
             .expect("fixture: open");
         cs.fail_body_for_test(56);
         let before = requests.load(Ordering::Acquire);
-        let mut aq = crate::aq::aq_new(1 << 20);
+        let mut aq = plx_play_feed::aq::aq_new(1 << 20);
         let mut st = AvioState {
+            observer: super::test_support::demux_observer(),
             src: Src::Curl(cs),
+            range: crate::curlio::range_factory(),
+            credential_gate: crate::curlio::CREDENTIAL_GATE,
             aq: &mut *aq,
             off: 0,
             size: 16,
@@ -816,12 +864,13 @@ fn a_cut_transfer_is_reopened_at_its_offset_before_the_read_fails() {
             body_active_us: 0,
             body_bytes: 0,
             first_byte_at: None,
-            reserve_deadline: ReserveDeadlineState::new(None, false),
+            reserve_deadline: ReserveDeadlineState::new(None, false, super::test_support::demux_observer()),
             transport_watchdog: None,
             acquisition: None,
             bounce: Vec::new(),
             bounce_pos: 0,
             parked_at_end: false,
+            body_silence: super::test_support::fixture_body_silence(),
             heal: HealBudget::default(),
         };
         let op = &mut st as *mut AvioState as *mut c_void;
@@ -841,7 +890,7 @@ fn a_cut_transfer_is_reopened_at_its_offset_before_the_read_fails() {
             terminal == AVERROR_IO || terminal == AVERROR_EOF,
             "the read must settle, not loop: {terminal}"
         );
-        crate::aq::aq_destroy(&mut *aq);
+        plx_play_feed::aq::aq_destroy(&mut *aq);
     });
 }
 
@@ -884,9 +933,12 @@ fn read_all_through_read_cb(port: u16) -> (Vec<u8>, c_int, bool, Option<c_int>) 
     let cs = crate::curlio::CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0)
         .expect("fixture: open");
     let size = cs.size();
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let mut st = AvioState {
+        observer: super::test_support::demux_observer(),
         src: Src::Curl(cs),
+        range: crate::curlio::range_factory(),
+        credential_gate: crate::curlio::CREDENTIAL_GATE,
         aq: &mut *aq,
         off: 0,
         size,
@@ -894,12 +946,13 @@ fn read_all_through_read_cb(port: u16) -> (Vec<u8>, c_int, bool, Option<c_int>) 
         body_active_us: 0,
         body_bytes: 0,
         first_byte_at: None,
-        reserve_deadline: ReserveDeadlineState::new(None, false),
+        reserve_deadline: ReserveDeadlineState::new(None, false, super::test_support::demux_observer()),
         transport_watchdog: None,
         acquisition: None,
         bounce: Vec::new(),
         bounce_pos: 0,
         parked_at_end: false,
+        body_silence: super::test_support::fixture_body_silence(),
         heal: HealBudget::default(),
     };
     let op = &mut st as *mut AvioState as *mut c_void;
@@ -917,7 +970,7 @@ fn read_all_through_read_cb(port: u16) -> (Vec<u8>, c_int, bool, Option<c_int>) 
         _ => None,
     };
     let io_failed = st.io_failed;
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
     (got, terminal, io_failed, rc)
 }
 
@@ -971,11 +1024,14 @@ fn a_cut_hls_segment_read_is_not_reopened_by_the_read_callback() {
     let cs = crate::curlio::CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0)
         .expect("fixture: open");
     let size = cs.size();
-    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
     let (reserve_deadline, runtime) =
-        SegmentAcquisition::for_test(None, false, false).begin(&mut *aq);
+        SegmentAcquisition::for_test(None, false, false, super::test_support::demux_observer()).begin(&mut *aq);
     let mut st = AvioState {
+        observer: super::test_support::demux_observer(),
         src: Src::Curl(cs),
+        range: crate::curlio::range_factory(),
+        credential_gate: crate::curlio::CREDENTIAL_GATE,
         aq: &mut *aq,
         off: 0,
         size,
@@ -989,6 +1045,7 @@ fn a_cut_hls_segment_read_is_not_reopened_by_the_read_callback() {
         bounce: Vec::new(),
         bounce_pos: 0,
         parked_at_end: false,
+        body_silence: super::test_support::fixture_body_silence(),
         heal: HealBudget::default(),
     };
     let op = &mut st as *mut AvioState as *mut c_void;
@@ -1002,5 +1059,5 @@ fn a_cut_hls_segment_read_is_not_reopened_by_the_read_callback() {
     assert_eq!(terminal, AVERROR_IO);
     assert!(st.io_failed);
     assert_eq!(seen.lock().unwrap().len(), 1, "no reopen: the cut is the retry policy's");
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
 }

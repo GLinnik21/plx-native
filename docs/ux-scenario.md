@@ -805,7 +805,7 @@ data layer are identical to the television's.
 **What the simulator cannot show** is the television's video path. The Starfish/ACB media seam is
 29 symbols that exist only on the television. The player figure (§6.3) is the real HUD over a real
 decoded frame, but the frame is made by a simulator-only facility: a clock sink plays the file the
-mock serves and a system `ffmpeg` decodes it under the UI (`player/sim_video.rs`). It shows what the
+mock serves and a system `ffmpeg` decodes it under the UI (`src/app/adapters/hostsim/sim_video.rs`). It shows what the
 HUD looks like over a picture; it says nothing about LG's decoder or the hardware video plane.
 
 | figure | source | status |

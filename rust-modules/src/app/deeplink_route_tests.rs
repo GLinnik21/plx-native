@@ -233,16 +233,20 @@ fn a_serverless_link_that_waited_across_sign_in_is_dropped() {
     });
 }
 
+#[cfg(feature = "play-feed")]
 fn play_payload(rk: &str) -> String {
     format!(r#"{{"event":"launch","parameters":{{"plex":{{"ratingKey":"{rk}","action":"play"}}}}}}"#)
 }
 
 /// Puts a preview back to Idle when the test ends, however it ends (the machine is process-wide).
+#[cfg(feature = "play-feed")]
 struct PreviewReset;
+#[cfg(feature = "play-feed")]
 impl Drop for PreviewReset {
     fn drop(&mut self) { plx_media::player::preview::reset_for_test(); }
 }
 
+#[cfg(feature = "play-feed")]
 impl Rig {
     /// Frames until the link's item is the loaded detail, then a few more for the wait to act.
     fn until_loaded(&mut self) {
@@ -260,6 +264,7 @@ impl Rig {
 /// A preview whose Load has not returned when it is halted (the trailer on the page the link
 /// unwinds): the session is a preview and the machine stays `Abandoning` across every halt, as a
 /// real one does until the Load returns.
+#[cfg(feature = "play-feed")]
 fn hold_a_preview(rig: &mut Rig) {
     plx_media::route::mark_preview_for_test(&mut rig.ps);
     plx_media::player::preview::hold_load_for_test(true);
@@ -269,6 +274,7 @@ fn hold_a_preview(rig: &mut Rig) {
 /// A Play link whose item lands while a preview is still letting go of the engine does not play
 /// through it: the wait stays armed, and the Play starts once, when the preview is gone.
 #[test]
+#[cfg(feature = "play-feed")] // drives the Feed engine's preview
 fn a_play_landing_waits_for_an_abandoning_preview() {
     use plx_media::player::preview;
     let mut rig = Rig::new(AppArg::Home);
@@ -291,6 +297,7 @@ fn a_play_landing_waits_for_an_abandoning_preview() {
 /// …and a preview that never lets go does not hold the link forever: the wait's own deadline ends
 /// it, with a line saying why, and nothing plays.
 #[test]
+#[cfg(feature = "play-feed")] // drives the Feed engine's preview
 fn a_play_landing_behind_a_preview_that_never_returns_gives_up() {
     plx_base::eventlog::with_private_log(|| {
         let mut rig = Rig::new(AppArg::Home);

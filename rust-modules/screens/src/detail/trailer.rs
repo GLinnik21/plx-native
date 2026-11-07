@@ -239,7 +239,7 @@ impl Transport {
     /// There is no `Reveal`-only first press here (unlike the HUD, which a LEFT/RIGHT can arrive
     /// at hidden): full-trailer mode's transport is already up the instant it is entered
     /// ([`reveal`](Self::reveal) fires on promotion), so every press is a real gesture. `dur_ns`
-    /// is `player::duration_ns()`, `live_ns` is `player::playpos_ns()` — passed in rather than
+    /// is `player::duration_ns(ps)`, `live_ns` is `player::playpos_ns(ps)` — passed in rather than
     /// read here so this stays a pure function of state the caller already has, like the rest of
     /// this type.
     ///
@@ -441,7 +441,7 @@ impl Transport {
     /// While a LEFT/RIGHT scrub is in flight the playbar and the elapsed/remaining read-out follow
     /// the PREVIEW position instead of the live one — same as the player HUD's scrubber — falling
     /// back to the live position the instant the gesture ends (commit or cancel alike): a commit's
-    /// own `engine::arm_seek` republishes the live position at the target immediately, so there is
+    /// own reload (`FeedCommand::ArmOpen`) republishes the live position at the target immediately, so there is
     /// no frame where the two disagree.
     pub(super) fn draw(
         &self,
@@ -449,6 +449,8 @@ impl Transport {
         film_title: &str,
         extra_title: &str,
         paused: bool,
+        live_ns: Option<i64>,
+        duration_ns: Option<i64>,
         measure: &dyn plx_machine::machine::Measure,
     ) {
         if self.alpha <= 0.01 {
@@ -466,12 +468,12 @@ impl Transport {
                 title.as_ptr(),
             );
         }
-        let live_ns = plx_media::player::playpos_ns();
+        let live_ns = live_ns.unwrap_or(0);
         plx_appkit::player_hud::classic::draw_playbar(
             p,
             Playbar {
                 pos_ns: if self.scrubbing() { self.scrub_ns } else { live_ns },
-                dur_ns: plx_media::player::duration_ns(),
+                dur_ns: duration_ns.unwrap_or(0),
                 // The trailer's playbar is not FOCUSABLE and a pointer cannot drag it — the tick
                 // knob everywhere else on this transport is a read-out — but LEFT/RIGHT do move
                 // it now, same as the player HUD's own scrubber.

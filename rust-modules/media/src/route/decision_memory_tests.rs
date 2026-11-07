@@ -73,7 +73,7 @@ fn offset_replayed_before_its_write_lands_is_restored() {
         "setup: the write has not landed, the worker is parked behind it"
     );
 
-    reset_track_selection(sid, "rk-replay", None);
+    reset_track_selection(&mut ps, sid, "rk-replay", None);
     assert_eq!(crate::player::subtitle_offset_ms(), 1_800, "the replay restores the pick the file does not have yet");
 
     parked.release();
@@ -137,7 +137,7 @@ fn an_offset_reset_to_original_is_forgotten_before_its_write_lands() {
     let parked = Parked::new();
     persist_subtitle_offset(&ps, 0);
     crate::player::set_subtitle_offset(0);
-    reset_track_selection(sid, "rk-forget", None);
+    reset_track_selection(&mut ps, sid, "rk-forget", None);
     assert_eq!(crate::player::subtitle_offset_ms(), 0, "Original is not restored as 900");
     assert_eq!(recall::<SubtitleOffsetEntry>("", &key("machine-forget", "rk-forget")), None);
     parked.release();
@@ -379,7 +379,7 @@ fn a_write_after_revocation_is_refused_and_the_mirror_entry_is_invisible() {
     // A pick made after the sign-out is refused outright.
     assert!(!remember::<SubtitleOffsetEntry>("", key("machine-revoked", "rk-new"), |_| Some(offset("machine-revoked", "rk-new", 5))));
     assert_eq!(recall::<SubtitleOffsetEntry>("", &key("machine-revoked", "rk-new")), None);
-    reset_track_selection(sid, "rk-revoked", None);
+    reset_track_selection(&mut ps, sid, "rk-revoked", None);
     assert_eq!(crate::player::subtitle_offset_ms(), 0, "and a replay finds nothing while revoked");
 
     // A later sign-in proves the credentials again, but the mirror is not valid until a restore

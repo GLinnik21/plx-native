@@ -16,9 +16,9 @@ use std::sync::{Arc, MutexGuard};
 // `MAX_EVENTS` events and `MAX_EVENT_BYTES` bytes, of which the selected track may use a whole
 // script's worth and the others share one pool of the same size.
 pub const MAX_HEADER_BYTES: usize = 1024 * 1024;
-const MAX_PACKET_BYTES: usize = 256 * 1024;
+pub(crate) const MAX_PACKET_BYTES: usize = 256 * 1024;
 const MAX_EVENTS: usize = 8192;
-const MAX_EVENT_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const MAX_EVENT_BYTES: usize = 8 * 1024 * 1024;
 /// Byte pool the unselected tracks' events share between them (the selected track has its own).
 const OTHER_TRACKS_EVENT_BYTES: usize = 8 * 1024 * 1024;
 /// An event this far ahead of the newest packet read can only be one a backward seek left
@@ -34,6 +34,7 @@ fn trim_terminators(mut bytes: &[u8]) -> &[u8] {
 }
 
 /// What the demuxer registers for one subtitle track in [`begin`].
+#[derive(Clone)]
 pub enum TrackHeader {
     /// An ASS/SSA track: the codec-private header, as the file wrote it.
     Authored(Vec<u8>),
@@ -46,6 +47,7 @@ pub enum TrackHeader {
 /// A cue as the text track received it, converted: the ASS packet it became and the ReadOrder in it.
 /// The cue's own start and end are the key it is held under ([`RawKey`]); the view's end may be
 /// clipped shorter.
+#[derive(Clone)]
 struct RawCue {
     readorder: u32,
     align: Align,
@@ -71,6 +73,7 @@ pub fn packet_identity(bytes: &[u8]) -> u64 {
 /// ([`TextTrack::view`]): each cue's end clipped to the start of the next cue of its alignment
 /// class (D10, newest wins). The view cannot answer "was this packet seen" (a clipped cue differs
 /// from the packet), which is why a text track has no entry in `Store::seen`.
+#[derive(Clone)]
 struct TextTrack {
     dialect: TextDialect,
     raw: BTreeMap<RawKey, RawCue>,
@@ -145,9 +148,12 @@ fn retire_to_fit(items: &[(i64, i64, usize)], frontier: i64, budget: usize) -> V
     retire
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Store {
     generation: u64,
+    /// Changes on every producer or presentation mutation. An off-lock source
+    /// preparation may publish only against the snapshot it read.
+    revision: u64,
     // Exact delivery identity, never logged: it may include an authentication token.
     media_key: Option<String>,
     awaiting_reopen: bool,
@@ -171,6 +177,7 @@ impl Store {
     pub const fn new() -> Self {
         Self {
             generation: 0,
+            revision: 0,
             media_key: None,
             awaiting_reopen: false,
             tracks: BTreeMap::new(),
@@ -183,6 +190,7 @@ impl Store {
 
     pub(super) fn reset(&mut self) {
         self.generation = self.generation.wrapping_add(1);
+        self.revision = self.revision.wrapping_add(1);
         self.media_key = None;
         self.awaiting_reopen = false;
         self.tracks.clear();
@@ -196,6 +204,7 @@ impl Store {
     /// again in `begin` before it can inherit any packets.
     pub(super) fn retain_for_reload(&mut self) {
         self.generation = self.generation.wrapping_add(1);
+        self.revision = self.revision.wrapping_add(1);
         self.seek(self.generation);
         self.awaiting_reopen = true;
         self.fonts = None;
@@ -211,6 +220,7 @@ impl Store {
         }
         if let (Some(text), Some(source)) = (self.text.get_mut(&track), self.tracks.get_mut(&track)) {
             if text.style_generation != style.generation() {
+                self.revision = self.revision.wrapping_add(1);
                 text.style_generation = style.generation();
                 if let Content::Embedded { events, fonts, .. } = &source.content {
                     *source = Arc::new(Source {
@@ -370,6 +380,7 @@ impl Store {
         if seen.contains(&event) {
             return; // reread after a backward seek: preserve one source event and its budget
         }
+        self.revision = self.revision.wrapping_add(1);
         let mut kept: Vec<Event> = Vec::with_capacity(events.len() + 1);
         for e in events.iter() {
             if e.start_ms.saturating_add(e.duration_ms) >= floor_ms {
@@ -489,6 +500,7 @@ impl Store {
             return None;
         }
         held.next_readorder = readorder.checked_add(1)?;
+        self.revision = self.revision.wrapping_add(1);
         let shown = text_ass::visible_chars(&converted.body);
         let before_prune = held.raw.len();
         held.raw.retain(|(_, end, _), _| *end >= floor_ms);
@@ -526,6 +538,7 @@ impl Store {
         if generation != self.generation {
             return;
         }
+        self.revision = self.revision.wrapping_add(1);
         for source in self.tracks.values_mut() {
             let Content::Embedded {
                 header,
@@ -557,26 +570,74 @@ pub fn begin(media_key: &str, headers: Vec<(i32, TrackHeader)>, fonts: Vec<Font>
     store().begin_styled(media_key, headers, fonts, style)
 }
 
+/// The owned source inventory. Repreparing after a concurrent store change
+/// reuses these facts without rereading FFmpeg's released metadata.
+pub(crate) struct SourceInventory {
+    media_key: String,
+    headers: Vec<(i32, TrackHeader)>,
+    fonts: Vec<Font>,
+}
+
+impl SourceInventory {
+    pub(crate) fn new(media_key: &str, headers: Vec<(i32, TrackHeader)>, fonts: Vec<Font>) -> Self {
+        Self { media_key: media_key.to_owned(), headers, fonts }
+    }
+}
+
+pub(crate) fn begin_inventory(inventory: SourceInventory) -> u64 {
+    begin(&inventory.media_key, inventory.headers, inventory.fonts)
+}
+
+pub(crate) struct PreparedBegin {
+    expected_revision: u64,
+    next: Store,
+    generation: u64,
+}
+
+/// Clone the bounded cue index and merge the next ASS source off the native
+/// retirement barrier. The source's payloads and fonts remain shared Arcs.
+pub(crate) fn prepare_begin(inventory: &SourceInventory) -> PreparedBegin {
+    let style = TextStyle::current();
+    let mut next = store().clone();
+    let expected_revision = next.revision;
+    let generation = next.begin_styled(
+        &inventory.media_key, inventory.headers.clone(), inventory.fonts.clone(), style,
+    );
+    PreparedBegin { expected_revision, next, generation }
+}
+
+/// Only the pointer/map swap runs under the native epoch barrier. If cues,
+/// style or a reset changed during preparation, the caller must reprepare.
+pub(crate) fn commit_prepared(prepared: PreparedBegin) -> Result<(u64, Store), PreparedBegin> {
+    let mut active = store();
+    if active.revision != prepared.expected_revision { return Err(prepared); }
+    let old = std::mem::replace(&mut *active, prepared.next);
+    Ok((prepared.generation, old))
+}
+
 /// One cue of a text track (`text` is UTF-8, in the track's dialect), `start_ns`/`end_ns` in the
 /// clock of the subtitle stream; `identity` is the [`packet_identity`] of the packet before its
 /// charset step. The cue is converted to ASS and joins the track's source; see
 /// [`Store::push_text`]. Logs `sub cue [a..bms] len=N` for the selected track when the cue is new:
 /// the cue's length, never its text (subtitle text is viewing content and the event log is shared
 /// in issue threads), which `tests/run.py` reads to see that a text cue arrived.
-pub fn push_text(generation: u64, track: i32, start_ns: i64, end_ns: i64, text: &str, identity: u64) {
-    let floor_ms = super::subtitle_floor_ns() / 1_000_000;
+pub fn push_text(generation: u64, track: i32, start_ns: i64, end_ns: i64, text: &str, identity: u64, retention: plx_playback_contract::subtitle::CaptionRetention) {
+    let floor_ms = super::subtitle_floor_ns(retention) / 1_000_000;
     let (start_ms, end_ms) = (start_ns / 1_000_000, end_ns / 1_000_000);
     let selected = Some(super::desired_sub_idx()).filter(|&t| t >= 0);
     let shown = {
         let mut store = store();
-        store.selected_track = selected;
+        if store.selected_track != selected {
+            store.selected_track = selected;
+            store.revision = store.revision.wrapping_add(1);
+        }
         store.push_text_keyed(generation, track, start_ms, end_ms, text, identity, floor_ms)
     };
     if let Some(len) = shown.filter(|_| selected == Some(track)) {
         super::log(&format!("sub cue [{start_ms}..{end_ms}ms] len={len}"));
     }
 }
-pub fn push(generation: u64, track: i32, start_ns: i64, end_ns: i64, payload: &[u8]) {
+pub fn push(generation: u64, track: i32, start_ns: i64, end_ns: i64, payload: &[u8], retention: plx_playback_contract::subtitle::CaptionRetention) {
     if payload.len() > MAX_PACKET_BYTES {
         return;
     }
@@ -585,7 +646,11 @@ pub fn push(generation: u64, track: i32, start_ns: i64, end_ns: i64, payload: &[
         return;
     }
     let mut store = store();
-    store.selected_track = Some(super::desired_sub_idx()).filter(|&t| t >= 0);
+    let selected = Some(super::desired_sub_idx()).filter(|&t| t >= 0);
+    if store.selected_track != selected {
+        store.selected_track = selected;
+        store.revision = store.revision.wrapping_add(1);
+    }
     store.push(
         generation,
         track,
@@ -594,7 +659,7 @@ pub fn push(generation: u64, track: i32, start_ns: i64, end_ns: i64, payload: &[
             duration_ms: end_ns.saturating_sub(start_ns) / 1_000_000,
             payload: payload.into(),
         },
-        super::subtitle_floor_ns() / 1_000_000,
+        super::subtitle_floor_ns(retention) / 1_000_000,
     );
 }
 pub fn seek(generation: u64) {
@@ -654,7 +719,42 @@ impl Clock {
 
 #[cfg(test)]
 mod tests {
+    use plx_play_feed::shared::FEED_SHARED;
     use super::*;
+
+    fn fixture_retention() -> plx_playback_contract::subtitle::CaptionRetention {
+        plx_playback_contract::subtitle::CaptionRetention { playhead_ns: None, seek_target_ns: None }
+    }
+
+    #[test]
+    fn prepared_reopen_rebases_after_a_concurrent_cue() {
+        let _serial = plx_base::testlock::serial();
+        reset();
+        let header = b"[Script Info]\n".to_vec();
+        let generation = begin("fixture", vec![(0, TrackHeader::Authored(header.clone()))], Vec::new());
+        let inventory = SourceInventory::new(
+            "fixture", vec![(0, TrackHeader::Authored(header))], Vec::new(),
+        );
+        let stale = prepare_begin(&inventory);
+        push(generation, 0, 1_000_000_000, 3_000_000_000,
+            b"0,0,Default,,0,0,0,,SIGN", fixture_retention());
+        let stale = match commit_prepared(stale) {
+            Ok(_) => panic!("the prepared reopen erased a cue arriving after its snapshot"),
+            Err(stale) => stale,
+        };
+        drop(stale);
+        let fresh = prepare_begin(&inventory);
+        let (next_generation, old) = match commit_prepared(fresh) {
+            Ok(committed) => committed,
+            Err(_) => panic!("no concurrent mutation occurred during the retry"),
+        };
+        drop(old);
+        assert_ne!(generation, next_generation);
+        let selected = selected(0).expect("the authored track survives its reopen");
+        let Content::Embedded { events, .. } = &selected.content else { panic!("embedded source") };
+        assert_eq!(events.len(), 1, "the cue received during preparation is retained");
+        reset();
+    }
 
     #[test]
     fn begin_keeps_empty_headers_but_bounds_raw_bytes_before_trimming() {
@@ -677,7 +777,7 @@ mod tests {
     #[test]
     fn terminators_are_trimmed_from_headers_and_packets_but_a_zero_inside_is_not() {
         let _guard = plx_base::testlock::serial();
-        super::super::SHARED.playpos_ns.store(0, std::sync::atomic::Ordering::Relaxed);
+        FEED_SHARED.playpos_ns.store(0, std::sync::atomic::Ordering::Relaxed);
         let generation = begin(
             "fixture",
             vec![
@@ -699,7 +799,7 @@ mod tests {
             hidden_zero.as_slice(),
             second.as_slice(),
         ] {
-            push(generation, 0, 1_000_000_000, 3_000_000_000, payload);
+            push(generation, 0, 1_000_000_000, 3_000_000_000, payload, fixture_retention());
         }
 
         let track = |n| selected(n).unwrap();
@@ -1593,9 +1693,12 @@ mod tests {
         );
         super::super::request_subtitle(1);
         let log = plx_base::eventlog::with_private_log(|| {
-            push_text(generation, 0, 1_000_000_000, 2_500_000_000, "not the selected track", packet_identity("not the selected track".as_bytes()));
-            push_text(generation, 1, 1_000_000_000, 2_500_000_000, "Secret <i>dialogue</i>", packet_identity("Secret <i>dialogue</i>".as_bytes()));
-            push_text(generation, 1, 1_000_000_000, 2_500_000_000, "Secret <i>dialogue</i>", packet_identity("Secret <i>dialogue</i>".as_bytes()));
+            let retention = plx_playback_contract::subtitle::CaptionRetention {
+                playhead_ns: Some(0), seek_target_ns: None,
+            };
+            push_text(generation, 0, 1_000_000_000, 2_500_000_000, "not the selected track", packet_identity("not the selected track".as_bytes()), retention);
+            push_text(generation, 1, 1_000_000_000, 2_500_000_000, "Secret <i>dialogue</i>", packet_identity("Secret <i>dialogue</i>".as_bytes()), retention);
+            push_text(generation, 1, 1_000_000_000, 2_500_000_000, "Secret <i>dialogue</i>", packet_identity("Secret <i>dialogue</i>".as_bytes()), retention);
             std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default()
         });
         super::super::request_subtitle(-1);

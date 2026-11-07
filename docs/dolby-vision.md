@@ -41,7 +41,7 @@ Buffering after every seek and every resume (observed on a CX). The 6.5.3-47 ima
 same dispatch, read from its disassembly; the hang was not observed on a C1. The shared device
 table (`devcaps::EXCLUSIONS`) declares those two firmwares IDR-first (`Caps::dv_first_picture`); a landing
 keyframe that is not an IDR (the demuxer classifies it, `aq::hevc_irap_not_idr`) is then not fed:
-`player/dv_start.rs` withdraws the route's declaration (`route::withdraw_dv_presentation`: exactly what
+the Feed's `dv_start` guard (`play-feed/src/dv_start.rs`) holds it and raises a withdrawal (`FeedLoad::dv_landing_due`), and the pump withdraws the route's declaration (`route::withdraw_dv_presentation`: exactly what
 Off would have planned, the probed capability kept) and reloads once at the same target. For a build
 nobody has read, the same guard withdraws after 4 s with no position update once 700 ms of video was
 accepted. The withdrawal lasts for the rest of that play (Diagnostics reads `base-layer (supported)`,

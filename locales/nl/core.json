@@ -16,6 +16,8 @@
   "core.preview_domain_line": "{label}: {values}",
   "core.preview_domain_failure_kind": "soort fout (inclusief behouden historische codes)",
   "core.preview_domain_delivery": "leveringswijze",
+  "core.preview_domain_backend": "afspeelbackend",
+  "core.preview_domain_terminal_stage": "fase van de definitieve fout",
   "core.preview_domain_refusal_codes": "beslissingscodes van de server, algemeen en transcodering (alleen weigeringsrapporten)",
   "core.preview_domain_attempted_delivery": "geprobeerde leveringswijze",
   "core.preview_domain_source_video": "videocodec van de bron (alleen weigeringsrapporten)",

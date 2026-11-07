@@ -62,6 +62,7 @@ No third-party deps -- Python 3 stdlib only (macOS system python3 is fine).
 
 import argparse
 import atexit
+import contextlib
 import datetime as datetime_module
 import functools
 import json
@@ -1235,6 +1236,20 @@ def triggers_for_case(case, url_base=None):
                 "plxnative-autopause",
                 f'delay={int(op.get("delay_ms", 0))},hold={int(op["hold_ms"])}',
             ))
+            if "seek_s" in op:
+                # A seek INSIDE the hold: the same `plxnative-autoseek` a `seek` op writes, so the
+                # app's own scripted seek runs under the scripted Pause instead of a second
+                # mechanism standing in for it. The two scripts arm at different gates (autopause
+                # six seconds into the player route, autoseek twelve plus a known playhead), which
+                # is why `seek_delay_ms` is the authored distance from the AUTOSEEK gate, and why
+                # `op_paused_seek` reads the order of the log's own edges rather than trusting
+                # these numbers to have interleaved.
+                seek_delay = op.get("seek_delay_ms")
+                target = int(op["seek_s"])
+                files.append((
+                    "plxnative-autoseek",
+                    f"delay={int(seek_delay)},{target}" if seek_delay else str(target),
+                ))
         # "play", startup "resume" and "audio_enhancement_subtitle" (a cold-start proof against an
         # item whose subtitle is already server-selected) need no extra trigger: the last of those
         # grades the boot-forced preference the `plxnative-audioenh` trigger above already wrote,
@@ -1323,6 +1338,11 @@ RE_TIMELINE = re.compile(r"timeline playing t=(\d+)s/")
 # never pick up a `pos=` that some other line grows later. loop= and NOT fps=, because `pos=` sits
 # between them on the line and because a paused-but-alive player still emits loop=.
 RE_POS = re.compile(r"loop=\d+ .*?\bpos=(\d+)s")
+# The receipt `player::finish_paused_seek` logs ONCE, after the Pause that re-holds a paused seek's
+# landed frame was accepted: the seek prime has presented its first frame and the transport is
+# Paused again. `ns` is the published playhead at that boundary. tests/player_pointer.py pairs the
+# same line with stationary `pos=` samples for the pointer scrub.
+RE_PAUSED_FRAME = re.compile(r"seek: paused frame restored ns=(\d+)")
 # requests a single applied seek MERGED (pump.rs take_coalesced). Present on BOTH paths that
 # apply a coalesced target — the normal `seek(in-place)` and the stuck-watchdog `retry reopen` —
 # which is exactly why op_seek_rapid keys on it instead of on either line. See that docstring.
@@ -1361,7 +1381,7 @@ RE_LOAD = re.compile(r'load: v=(\S+) a="([^"]*)" fps=([\d.]+) '
 RE_SINK_ECHO = re.compile(r"smp_cb type=5 .*?video/x-(h264|h265|hevc)\b.*?\b(\d{3,4}) (\d{3,4}) \S+ ([\d.]+)")
 # The audio LANE the demuxer actually fed, off the same `ff: v=#0 …` line: `a=#<index>`.
 RE_ALANE = re.compile(r"ff: v=#0 .*\ba=#(-?\d+)")
-# The RATIONAL the Load payload's esInfo actually carries — `engine::fps_rational`'s output, as
+# The RATIONAL the Load payload's esInfo actually carries — `plx_play_feed::fps_rational`'s output, as
 # opposed to the float that went into it. Emitted on every playback that declares a non-zero rate.
 RE_ESINFO = re.compile(r"esInfo: videoFps (\d+/\d+)")
 # GStreamer's monotonic debug timestamp. GST is used only for lxvideosink's per-picture cadence;
@@ -1452,7 +1472,7 @@ def timeline_secs(lines):
 def playpos_secs(lines):
     """All `pos=<S>s` values from the once/sec render heartbeat, in order.
 
-    Same SHARED.playpos_ns the /:/timeline reporter posts, but sampled at 1 Hz instead of
+    Same FEED_SHARED.playpos_ns the /:/timeline reporter posts, but sampled at 1 Hz instead of
     every 10s (app.rs). Density is the whole point: seeing a 15s climb through 10s samples
     needs ~30s of playback, so the sparse signal charged every case roughly double its real
     floor. The app only emits the field while genuinely presenting frames, which is what
@@ -1533,6 +1553,164 @@ def a_no_error(lines):
         if "smp_cb type=18" in ln or "Playing error" in ln:
             return False, f"error surfaced :: {ln.strip()}"
     return True, "no `smp_cb type=18` / `Playing error`"
+
+
+MOCK_ROUTE = "mock"
+
+
+class MockRouteRefused(Exception):
+    """The mock route cannot run as asked; the case FAILS with the reason instead of ending the suite."""
+
+
+# The port a real PMS listens on. The mock never takes it: the default PMS port at a LAN address is
+# exactly where a real server lives.
+REAL_PMS_PORT = 32400
+# What a mock-route case must never inherit: `playurl` would play a URL instead of the mock's item and
+# `pms-origin` would move the app's primary off the address the mock listens on; the runner writes the rest.
+MOCK_ROUTE_RESERVED = ("plxnative-playurl", "plxnative-pms-origin", "plxnative-play", "plxnative-ptype",
+                       "plxnative-quality", "plxnative-audioenh", "plxnative-trackmemory")
+
+
+def mock_route(case):
+    """Whether the case plays an item of the harness's MOCK PMS on the ordinary (Feed) route
+    (`"pms_route": "mock"`): the carrier is the item, `fixture` the file the mock serves as the server's
+    transcode (the enhanced remux), and the app's own log is the evidence. Never a real server."""
+    return case.get("pms_route") == MOCK_ROUTE
+
+
+def mock_route_files(case, extra=()):
+    """The trigger files of a mock-route case: the integration tier's routing pins (`play=<carrier rk>`,
+    `quality=original`, the case's `audio_enhancements_boot`, track memory cleared) and nothing that arms
+    another route. `--extra-trigger` of a name the route pins is refused."""
+    for name in (f"plxnative-{k}" for k in (case.get("triggers") or {})):
+        if name in MOCK_ROUTE_RESERVED:
+            raise MockRouteRefused(f"a mock-route case must not set {name} itself")
+    for name, _ in extra:
+        if name in MOCK_ROUTE_RESERVED:
+            raise MockRouteRefused(f"--extra-trigger {name} would replace what the mock route pins")
+    files = triggers_for_case(dict(case, rk=str(mock_fps.CARRIER_RK)))
+    files.extend(extra)
+    names = [n for n, _ in files]
+    dup = sorted({n for n in names if names.count(n) > 1})
+    if dup:
+        raise MockRouteRefused(f"trigger(s) written twice: {', '.join(dup)}")
+    return files
+
+
+def _resolve_mock_route(cases, root, flavour=None, config=None):
+    """The skip channel for mock-route cases: the dev-token boot (`--guest --mock`) is the debug install's, the
+    mock listens at the address `src/config.local.h` names, and the carrier and the remux (`fixture`, already
+    resolved by `_resolve_fixtures`) must be in the pack, with no sidecar beside the carrier. Sets
+    `carrier_path` and `transcode_path`."""
+    flavour = FLAVOUR if flavour is None else flavour
+    config = CONFIG_LOCAL_H if config is None else config
+    for c in cases:
+        if not mock_route(c) or c.get("skip"):
+            continue
+        carrier = c.get("carrier") or ""
+        path = os.path.join(root, carrier)
+        if flavour != "debug":
+            c["skip"] = f"a mock-route case drives the debug install only (this run resolved FLAVOR={flavour})"
+        elif not re.fullmatch(r"[\w.-]+\.\w+", carrier):
+            c["skip"] = f"carrier {carrier!r} must be a plain file name inside the pack"
+        elif not os.path.isfile(config):
+            c["skip"] = f"needs {config} for PMS_HOST and PMS_PORT: the mock listens at the configured address"
+        elif not os.path.isfile(path):
+            c["skip"] = f"no carrier clip {carrier!r} in {root} -- run `make fixtures-pipeline`"
+        elif any(os.path.isfile(os.path.splitext(path)[0] + ext) for ext in (".srt", ".ass", ".ssa", ".vtt")):
+            c["skip"] = f"a sidecar subtitle sits beside {carrier}: the mock would serve it as a subtitle stream"
+        else:
+            c["carrier_path"] = path
+            c["transcode_path"] = os.path.join(root, c["fixture"])
+
+
+RE_SUBSIDE_ANCHOR = re.compile(r"subside: anchor match=(exact|assumed) ")
+
+
+def a_side_reader_anchor(lines):
+    """The side reader found where the remux's picture sits in the Part's file time: a `subside: anchor` line
+    AFTER the `subside: open` one (`exact` when the Part's own keyframe matched the remux's first, `assumed`
+    when the scan found none: either way the reader placed its cues)."""
+    opened = next((i for i, ln in enumerate(lines) if RE_SUBSIDE_OPEN.search(ln)), None)
+    if opened is None:
+        return False, "the side reader never opened (`subside: open` absent), so there is nothing to anchor"
+    anchor = next((ln for ln in lines[opened + 1:] if RE_SUBSIDE_ANCHOR.search(ln)), None)
+    if anchor is None:
+        return False, f"the side reader opened but never anchored :: {lines[opened].strip()}"
+    return True, anchor.strip()
+
+
+def evaluate_mock_route(case, lines, srv_delta):
+    """A mock-route case (`pms_route: "mock"`) on the log alone: the picture bound and the clock climbed, no
+    playing error, and the side reader's whole chain: the server-selected subtitle, the enhanced remux the app
+    draws it over, `subside: open` on that track, `subside: anchor`, and a cue the app drew
+    (`op_audio_enhancement_subtitle`, the grade `audio_enhancement_draws_server_selected_subtitle` takes)."""
+    exp = case["expect"]
+    results = []
+    if exp.get("require_video_bound", True):
+        results.append(("video_bound", *a_video_bound(lines)))
+    results.append(("pos_climb", *a_timeline_climb(lines, exp.get("min_pos_climb_s", 8), dense_only=True)))
+    if exp.get("no_playing_error", True):
+        results.append(("no_error", *a_no_error(lines)))
+    for op in case.get("operations", []):
+        if op["op"] == "audio_enhancement_subtitle":
+            results.append(("side_reader", *op_audio_enhancement_subtitle(lines, op["presenter"], False)))
+            results.append(("side_reader_anchor", *a_side_reader_anchor(lines)))
+    return all(ok for _, ok, _ in results), results
+
+
+def run_mock_route_case(case, cfg, srv, url_base, verbose):
+    """One mock-route case: the app (`--guest --mock` dev token) plays the carrier of the harness's own mock PMS,
+    which answers the enhancement decision like PMS and serves `fixture` as the remux. Order: refuse -> close the
+    previous app -> mock up -> fabricated guest token -> triggers -> stream, and the log must prove the
+    synthetic mock before anything is graded. No fixture server is involved, and no real server can be: the mock listens on the configured
+    address, the token is the mock's own, and a log that does not show the synthetic version is not graded."""
+    name = case["name"]
+    tv = cfg["tv"]
+    run_secs = case.get("run_secs", 30)
+    print(f"\n=== {name}  ({case['fixture']}, {case.get('title', '')}) ===")
+    print(f"    covers: {', '.join(case.get('covers', []))}")
+    require_tv(tv, name)
+    with contextlib.ExitStack() as stack:
+        try:
+            if not case.get("carrier_path"):
+                raise MockRouteRefused("no carrier clip resolved (see _resolve_mock_route)")
+            host, port = mock_fps.configured_endpoint(CONFIG_LOCAL_H)
+            if port == REAL_PMS_PORT:
+                raise MockRouteRefused(f"PMS_PORT {REAL_PMS_PORT} is a real PMS's port: the mock must listen elsewhere")
+            files = mock_route_files(case, list(cfg.get("extra_triggers") or ()))
+            log = os.path.join(tempfile.gettempdir(), f"plx-mock-pms-{os.getpid()}-{name}.log")
+            try:
+                args = mock_fps.carrier_server_args(case["carrier_path"], case.get("carrier_audio"),
+                                                    case.get("carrier_subtitle"), case.get("transcode_path"))
+            except ValueError as why:
+                raise MockRouteRefused(str(why))
+            make(["kill", f"TV={tv}"], timeout=40)   # BEFORE the mock is up: every case's mock listens on the same
+            # address, and the previous app is still playing against the previous one
+            print(f"    mock: tests/mock_pms.py {' '.join(args)}")
+            stack.enter_context(mock_fps.MockPms(host, port, args, log_path=log))
+            token = mock_fps.resolve_mock_token(CONFIG_LOCAL_H)
+        except (SystemExit, MockRouteRefused) as why:
+            print(f"    [FAIL] {why}")
+            return False, [("mock_route", False, str(why))], []
+        apply_triggers(tv, files, extra=[f"printf '%s' '{token}' > {RUNDIR}/plxnative-token"])
+        print("    triggers: " + ", ".join(n + ("=" + c if c is not None else "") for n, c in files))
+        print("    plxnative-token: <synthetic guest, redacted>")
+        early, why = early_exit_allowed(case, cfg)
+        print(f"    run-stream (cap {run_secs}s{'' if early else ', early exit off'}) ...")
+        lines, elapsed, stopped_early, settled = stream_case(
+            case, cfg, run_secs, early=early, evaluator=lambda c, ls: evaluate_mock_route(c, ls, ()))
+        ok_id, why_id = mock_fps.check_synthetic_identity(lines)
+        if not ok_id:
+            msg = f"refusing to grade: {why_id}"
+            print(f"    [FAIL] {msg}")
+            passed, results = False, [("synthetic_identity", False, msg)]
+        else:
+            print(f"    identity: {why_id}")
+            passed, results = evaluate_mock_route(case, lines, ())
+            passed, results = crash_gate(cfg, case, name, lines, passed, results)
+        report_and_record(cfg, name, passed, results, lines, elapsed, run_secs, stopped_early, settled, verbose)
+        return passed, results, lines
 
 
 def a_resolve_pin(lines, want="any"):
@@ -1774,7 +1952,7 @@ def a_load_decl(lines, exp):
             return False, f"declared fps={fps}, want {want_fps:.3f} :: {line}"
     if "load_fps_rational" in exp:
         # ...and the RATIONAL it produced, which is the thing the frame-rate fixtures exist for.
-        # `engine::fps_rational` has one branch for the 1001-denominator broadcast rates and
+        # `plx_play_feed::fps_rational` has one branch for the 1001-denominator broadcast rates and
         # another for the integers, and grading only the float above would grade the INPUT to that
         # split — leaving the branch a fixture was built to reach unobserved. It also pins the two
         # copies of the broadcast-rate table (this repo has one in Rust and one in the generator's
@@ -1787,7 +1965,7 @@ def a_load_decl(lines, exp):
             return False, f"esInfo videoFps {rat}, want {exp['load_fps_rational']} :: {line}"
     if "load_max" in exp:
         # The `adaptiveStreaming` ceiling the app declared — `WxH@F`. Until 2026-09-03 this was a
-        # 4K60 constant for every stream; now it is derived per session (`engine::sink_envelope`),
+        # 4K60 constant for every stream; now it is derived per session (`plx_play_feed::sink_envelope`),
         # and the cases that carry this key pin each cell of that rule on the device.
         if max_w is None:
             return False, f"no `max=` on the load line — the binary predates the envelope :: {line}"
@@ -3262,7 +3440,7 @@ def a_replayed(lines, want):
       * `replay: starting the finished stream again` exactly `want` times (`app.rs`, at the EOS
         site). COUNTED, not merely found: a replay that fires more often than the case armed is a
         loop, and a loop satisfies every other assertion here while meaning the opposite.
-      * at least `want + 1` `load:` lines. `engine::start_bufferfeed` writes one per SESSION and
+      * at least `want + 1` `load:` lines. `route_start::start_bufferfeed` writes one per SESSION and
         `teardown` clears the URL, so a second line is what says `player::playurl::playurl()` was re-read and
         the payload rebuilt — the thing that distinguishes a real restart from a pipeline that
         never tore down.
@@ -3516,12 +3694,47 @@ def op_quality_switch(lines, steps):
                   f"{ts[-1][0] - ts[0][0]}s over {len(ts)} sample(s); {adapt}")
 
 
+def _post_resume_recovery(resumed_lines, min_climb_after_s):
+    """`(why-not or None, [pos samples], climb)` for the lines after an accepted Resume.
+
+    The shared tail of `op_pause_resume` and `op_paused_seek`: the integer playhead must climb
+    `min_climb_after_s`, and BOTH lanes must have fed an accepted access unit after the Resume
+    (`feed v#`/`feed a#` with `reply=O`). Moving pictures with a silent audio lane are the
+    reported failure, so a climb alone is not recovery. The feed lines are sampled by the app
+    (the first four attempts, then every 100th video and 200th audio), so the post-Resume window
+    must be long enough to contain one of each: the callers' `min_climb_after_s` is what buys that.
+    """
+    after = [int(match.group(1)) for line in resumed_lines
+             for match in [RE_POS.search(line)] if match]
+    if len(after) < 2:
+        return f"only {len(after)} playhead sample(s) after Resume", after, 0
+    climb = max(after) - min(after)
+    if climb < min_climb_after_s:
+        return (f"playhead climbed only {climb}s after Resume, want >= {min_climb_after_s}s",
+                after, climb)
+    video_feeds = [match for line in resumed_lines
+                   for match in [RE_VIDEO_FEED.search(line)] if match and match.group(4) == "O"]
+    audio_feeds = [match for line in resumed_lines
+                   for match in [RE_AUDIO_FEED.search(line)] if match and match.group(4) == "O"]
+    if not video_feeds or not audio_feeds:
+        missing = "/".join(
+            name for name, feeds in (("video", video_feeds), ("audio", audio_feeds)) if not feeds
+        )
+        return (f"playhead recovered after Resume but no accepted {missing} feed followed it",
+                after, climb)
+    return None, after, climb
+
+
 def op_pause_resume(lines, min_climb_after_s):
     """The authored user hold was accepted by both clock edges and playback recovered afterward.
 
     This deliberately grades external state, not an ABR diagnostic flag: integer playhead samples
     must stay put during the accepted hold and then climb after Resume. The +/-1 second tolerance
     is the heartbeat's documented quantisation, not a playback threshold.
+
+    Nothing here is HLS-specific. The two edges are `dev/scenarios.rs`'s own `autopause:` lines on
+    any route, the playhead is the render heartbeat, and the feed lines are the Feed's, which it
+    logs for a direct-play (Original) session exactly as for an adaptive one.
     """
     pause = next((i for i, line in enumerate(lines)
                   if "autopause: Pause accepted" in line), None)
@@ -3537,30 +3750,94 @@ def op_pause_resume(lines, min_climb_after_s):
         return False, f"only {len(held)} playhead sample(s) inside the accepted hold"
     if max(held) - min(held) > 1:
         return False, f"playhead advanced during user Pause: {held}"
-    resumed_lines = lines[resume + 1:]
-    after = [int(match.group(1)) for line in resumed_lines
-             for match in [RE_POS.search(line)] if match]
-    if len(after) < 2:
-        return False, f"only {len(after)} playhead sample(s) after Resume"
-    climb = max(after) - min(after)
-    if climb < min_climb_after_s:
-        return False, (
-            f"playhead climbed only {climb}s after Resume, want >= {min_climb_after_s}s"
-        )
-    video_feeds = [match for line in resumed_lines
-                   for match in [RE_VIDEO_FEED.search(line)] if match and match.group(4) == "O"]
-    audio_feeds = [match for line in resumed_lines
-                   for match in [RE_AUDIO_FEED.search(line)] if match and match.group(4) == "O"]
-    if not video_feeds or not audio_feeds:
-        missing = "/".join(
-            name for name, feeds in (("video", video_feeds), ("audio", audio_feeds)) if not feeds
-        )
-        return False, (
-            f"playhead recovered after Resume but no accepted {missing} feed followed it"
-        )
+    why, after, climb = _post_resume_recovery(lines[resume + 1:], min_climb_after_s)
+    if why:
+        return False, why
     return True, (
         f"Pause held {held[0]}..{held[-1]}s over {len(held)} samples; "
         f"Resume climbed {climb}s over {len(after)} samples with both A/V lanes feeding"
+    )
+
+
+# How far the landed second may sit from the seek target. The same allowance `_reached_target`
+# documents: keyframe snap plus the heartbeat's report cadence, not a playback threshold.
+PAUSED_SEEK_LAND_TOLERANCE_S = 6
+
+
+def op_paused_seek(lines, target_s, min_climb_after_s):
+    """A seek taken UNDER the viewer's Pause lands on the target, stays paused, and resumes.
+
+    The Feed's paused-seek preroll: with the transport Paused a seek opens a one-frame preroll,
+    the landed frame is presented, and `player::finish_paused_seek` re-holds it. Four edges bracket
+    that, in the order the log must show them: `autopause: Pause accepted`, `autoseek: step`,
+    `seek: paused frame restored ns=`, `autopause: Resume accepted`. The case's two scripts arm at
+    different gates, so a slow boot can slide the seek out of the hold; this reads the log's own
+    order and FAILS NAMING where the seek fired instead of grading a window it never ran in.
+
+    Graded, each as external state:
+      * the playhead is stationary from the Pause to the seek;
+      * the seek went in place (`seek(in-place): av_seek`, no `reload_at: fresh Load` after it) and
+        the receipt lands before the Resume, at the target within the keyframe tolerance;
+      * the playhead is stationary from the receipt to the Resume, starting at the landed second:
+        the transport stayed Paused until the Resume rather than the seek's prime playing on;
+      * after the Resume the playhead climbs from the landed frame and both A/V lanes feed
+        (`_post_resume_recovery`).
+    Only lines the app prints are read; `tests/player_pointer.py` grades the same receipt.
+    """
+    pause = next((i for i, line in enumerate(lines)
+                  if "autopause: Pause accepted" in line), None)
+    if pause is None:
+        return False, "no accepted scripted Pause edge"
+    resume = next((i for i, line in enumerate(lines)
+                   if i > pause and "autopause: Resume accepted" in line), None)
+    if resume is None:
+        return False, "Pause was accepted but the scripted Resume edge never committed"
+    step = next((i for i, line in enumerate(lines) if "autoseek: step" in line), None)
+    if step is None:
+        return False, "the scripted seek never fired (no `autoseek: step` line)"
+    if not pause < step < resume:
+        where = "before the Pause" if step < pause else "after the Resume"
+        return False, (f"the scripted seek fired {where}, not inside the hold: it was not a seek "
+                       f"under Pause (move seek_delay_ms or widen hold_ms)")
+    before = [int(match.group(1)) for line in lines[pause + 1:step]
+              for match in [RE_POS.search(line)] if match]
+    if len(before) < 2:
+        return False, f"only {len(before)} playhead sample(s) between the Pause and the seek"
+    if max(before) - min(before) > 1:
+        return False, f"playhead advanced between the Pause and the seek: {before}"
+    av_seek = next((i for i in range(step, resume)
+                    if "seek(in-place): av_seek" in lines[i]), None)
+    if av_seek is None:
+        return False, "no `seek(in-place): av_seek` line inside the hold (the paused seek did not go in place)"
+    if find(lines[av_seek + 1:resume], "reload_at: fresh Load"):
+        return False, "the paused seek fell back to a reload (`reload_at: fresh Load` present)"
+    receipt = next((i for i in range(av_seek + 1, resume) if RE_PAUSED_FRAME.search(lines[i])), None)
+    if receipt is None:
+        late = any(RE_PAUSED_FRAME.search(line) for line in lines[resume + 1:])
+        return False, ("the paused frame was restored only AFTER the Resume: the film played on under the seek"
+                       if late else
+                       "no `seek: paused frame restored` line before the Resume: the seek never "
+                       "landed under the Pause")
+    landed_s = int(RE_PAUSED_FRAME.search(lines[receipt]).group(1)) // 1_000_000_000
+    if abs(landed_s - target_s) > PAUSED_SEEK_LAND_TOLERANCE_S:
+        return False, (f"the paused seek landed at {landed_s}s, want {target_s}s "
+                       f"+/- {PAUSED_SEEK_LAND_TOLERANCE_S}s")
+    held = [int(match.group(1)) for line in lines[receipt + 1:resume]
+            for match in [RE_POS.search(line)] if match]
+    if len(held) < 2:
+        return False, f"only {len(held)} playhead sample(s) between the landing and the Resume"
+    if max(held) - min(held) > 1 or abs(held[0] - landed_s) > 1:
+        return False, f"the landed frame did not stay paused (landed {landed_s}s): {held}"
+    why, after, climb = _post_resume_recovery(lines[resume + 1:], min_climb_after_s)
+    if why:
+        return False, why
+    if abs(after[0] - landed_s) > 2:
+        return False, (f"playback did not resume from the landed frame: landed {landed_s}s, "
+                       f"first sample after Resume {after[0]}s")
+    return True, (
+        f"Pause held {before[0]}s; seek under Pause landed {landed_s}s (target {target_s}s) and held "
+        f"{held[0]}..{held[-1]}s over {len(held)} samples; Resume climbed {climb}s over "
+        f"{len(after)} samples with both A/V lanes feeding"
     )
 
 
@@ -3574,7 +3851,7 @@ def op_seek_refused(lines, target_s):
     observable at all; on the server tier the seek succeeds and this branch never runs.
 
     What is graded is the survival, because that is what failed. `player::request_seek` arms
-    `SHARED.seeking` and, before 2026-08-27, only a successful prime→Play ever disarmed it — so a
+    `FEED_SHARED.seeking` and, before 2026-08-27, only a successful prime→Play ever disarmed it — so a
     refused seek left `PlaybackState::Seeking` latched forever: a spinner over the picture, the
     playhead frozen at the target, and `pos=` (gated on `is_playing()`) absent from every
     subsequent heartbeat. Measured before the fix: the position froze at 5 s while 37 further
@@ -3597,7 +3874,7 @@ def op_seek_refused(lines, target_s):
     ts = progress_secs(after)
     if len(ts) < 2:
         return False, (f"only {len(ts)} position sample(s) after the refusal — the read-out is "
-                       "latched (`SHARED.seeking` never disarmed); see player::abandon_seek")
+                       "latched (`FEED_SHARED.seeking` never disarmed); see player::abandon_seek")
     climb = ts[-1][0] - ts[0][0]
     if climb <= 0:
         return False, f"position did not advance after the refusal ({ts[0][0]}s..{ts[-1][0]}s)"
@@ -3617,7 +3894,7 @@ def op_seek_rapid(lines, final_s):
       * a tap that arrives mid-seek is applied by the next pump tick after the in-flight seek
         anchors — which logs `seek(in-place)`;
       * unless the anchor takes longer than SEEK_STUCK_MS (1200ms), in which case the
-        stuck-watchdog applies it instead — it swaps the coalesced target out of TX.seek_to_ns
+        stuck-watchdog applies it instead — it swaps the coalesced target out of FEED_TX.seek_to_ns
         (pump.rs) and logs `in-place stuck → retry reopen`, so the second `seek(in-place)`
         never comes.
 
@@ -3713,7 +3990,7 @@ def op_seek_transcode(lines, target_s, min_climb_after_s=0):
 def a_no_demux_failure(lines):
     """The demuxer giving up is a death `no_playing_error` cannot see.
 
-    `no_playing_error` greps the STARFISH error surface (`smp_cb type=18` / `Playing error`).
+    `no_playing_error` checks Starfish playing errors and terminal URI probe errors.
     A pipeline that dies on the acquisition side never gets there: `ff.rs` reports
     `hls: demux failed: …` (a stopped or hopelessly slow encoder arrives as
     `HLS segment was not produced in time`, because 404 is `NotReady` by design and the retry
@@ -4195,7 +4472,7 @@ def op_resume_transcode(lines, offset_s):
 # Why grading a prefix is sound: almost every assertion is monotone once satisfied — it looks
 # for a line that has appeared, or for a max/climb that only grows. The exceptions are the two
 # ABSENCE checks, which start out true and can only flip the other way:
-#   * a_no_error            — `smp_cb type=18` / `Playing error`
+#   * a_no_error            — Starfish playing errors / terminal URI probe errors
 #   * op_seek_rapid         — `reload_at: fresh Load` (stuck-watchdog gave up on in-place)
 # ...and, since 2026-08-23, one COUNT that is an equality rather than a floor:
 #   * a_replayed            — exactly N `replay:` lines (more than N is a loop)
@@ -4776,6 +5053,9 @@ def evaluate(case, lines):
         elif k == "quality_switch":
             steps = op["to"] if isinstance(op["to"], list) else [op["to"]]
             results.append(("quality_switch", *op_quality_switch(lines, steps)))
+        elif k == "pause_resume" and "seek_s" in op:
+            results.append(("paused_seek", *op_paused_seek(
+                lines, op["seek_s"], op.get("min_climb_after_s", 8))))
         elif k == "pause_resume":
             results.append(("pause_resume", *op_pause_resume(
                 lines, op.get("min_climb_after_s", 8))))
@@ -5106,6 +5386,8 @@ def _case_depth_s(case):
     for op in case.get("operations", []):
         if op.get("op") == "seek":
             depth = max(depth, op.get("final_s", op.get("target_s", 140)))
+        elif op.get("op") == "pause_resume" and "seek_s" in op:
+            depth = max(depth, op["seek_s"])   # a seek under Pause still has to land inside the pack
     return depth
 
 
@@ -5179,6 +5461,8 @@ def evaluate_pipeline(case, lines, srv_delta, gst_lines=None):
     off, and that assertion can never hold here. Splitting keeps the integration tier's behaviour
     bit-identical instead of making it depend on a flag it never sets.
     """
+    if mock_route(case):
+        return evaluate_mock_route(case, lines, srv_delta)
     exp = case["expect"]
     results = [("stream_path", *a_stream_path(
         lines, case["fixture"],
@@ -5232,6 +5516,9 @@ def evaluate_pipeline(case, lines, srv_delta, gst_lines=None):
         elif op["op"] == "seek":
             results.append(("seek_inplace", *op_seek_inplace(
                 lines, op.get("target_s", 140), op.get("min_climb_after_s", 0))))
+        elif op["op"] == "pause_resume" and "seek_s" in op:
+            results.append(("paused_seek", *op_paused_seek(
+                lines, op["seek_s"], op.get("min_climb_after_s", 8))))
         elif op["op"] == "pause_resume":
             results.append(("pause_resume", *op_pause_resume(
                 lines, op.get("min_climb_after_s", 8))))
@@ -5391,6 +5678,8 @@ def run_pipeline_case(case, cfg, srv, url_base, verbose):
     Dropped: the unscrobble, the viewOffset seed, `also_reset`, and the token injection. There is
     no ratingKey here to reset and no identity to be.
     """
+    if mock_route(case):
+        return run_mock_route_case(case, cfg, srv, url_base, verbose)
     name = case["name"]
     tv = cfg["tv"]
     run_secs = case.get("run_secs", 30)
@@ -5414,6 +5703,7 @@ def run_pipeline_case(case, cfg, srv, url_base, verbose):
     # candidate refresh remain distinct even though both paths say /__abr/22000.
     srv.set_abr_response_profile(case.get("abr_response_profile"))
     files = triggers_for_case(case, url_base=url_base)
+    files.extend(cfg.get("extra_triggers") or ())
     apply_triggers(tv, files)
     print("    triggers: " + ", ".join(n + ("=" + c if c is not None else "") for n, c in files))
 
@@ -5461,6 +5751,14 @@ def run_pipeline_case(case, cfg, srv, url_base, verbose):
               "every case, it is almost certainly the macOS application firewall — accept the "
               "'allow incoming connections' prompt for this python once, with a human present.")
     return passed, results, lines
+
+
+def _shape_fixture_server(srv, case):
+    """The fixture server's per-case link: the wall-clock profile, the request-indexed one (they compose;
+    the request-indexed wins where it applies) and the ABR response profile. Each setter clears on None."""
+    srv.set_network_profile(case.get("network_profile"))
+    srv.set_segment_profile(case.get("segment_profile"))
+    srv.set_abr_response_profile(case.get("abr_response_profile"))
 
 
 def run_pipeline_suite(cases, cfg, srv, url_base, verbose, skipped=()):
@@ -6966,7 +7264,7 @@ def main():
                          "NB distinct from fps_scenes' ui|player 'tier'.")
     ap.add_argument("--list", action="store_true", help="list cases and exit")
     ap.add_argument("--extra-trigger", action="append", default=[], metavar="NAME[=CONTENT]",
-                    help="arm one more plxnative-* trigger for every fps scene of this run (e.g. "
+                    help="arm one more plxnative-* trigger for every synthetic case or FPS scene (e.g. "
                          "plxnative-cpuprof, plxnative-framedrop=20). A profiler trigger disqualifies "
                          "the run's fps= as a pacing number, exactly as --graphics-profile does; use "
                          "it to attribute a frame, never to grade one.")
@@ -7052,7 +7350,12 @@ def main():
     ap.add_argument("--fixtures-port", type=int, default=0, metavar="PORT",
                     help="port for the fixture HTTP server (default: pick a free one). Pin it when "
                          "a firewall rule names a port")
+    ap.add_argument("--fixtures-loopback", action="store_true",
+                    help="advertise synthetic fixtures as 127.0.0.1 on the TV; requires a fixed "
+                         "--fixtures-port and an operator-owned reverse SSH forward to that port")
     args = ap.parse_args()
+    if args.fixtures_loopback and not args.fixtures_port:
+        sys.exit("--fixtures-loopback needs a fixed --fixtures-port for reverse SSH forwarding")
     if args.print_test_token:
         # Standalone: this mode answers one question (what token is the managed test user's?)
         # and touches nothing else -- no case selection, no TV lock, no launch. Reject every flag
@@ -7062,6 +7365,7 @@ def main():
             ("--list", args.list), ("--server", args.server), ("--fps", args.fps),
             ("--fps-player", args.fps_player), ("--pipeline", args.pipeline),
             ("--owner", args.owner), ("--build", args.build), ("--mock", args.mock),
+            ("--fixtures-loopback", args.fixtures_loopback),
         ] if v]
         if conflicting:
             sys.exit(f"--print-test-token is standalone and cannot combine with {', '.join(conflicting)}")
@@ -7094,6 +7398,8 @@ def main():
     # The FPS scenes are on the server side of the line whatever else is asked: they navigate a
     # real signed-in Home, so without a token they grade a QR screen.
     server_tier = args.server or args.fps or args.fps_player
+    if args.fixtures_loopback and server_tier:
+        sys.exit("--fixtures-loopback applies only to the synthetic pipeline tier")
     if args.mock:
         # The synthetic library has no real items, no plex.tv account and one fabricated guest, so
         # every flag that names one of those is a contradiction, not a preference to resolve.
@@ -7161,6 +7467,7 @@ def main():
         # in the other table.
         root, pcases = fixtures_root, pipeline_cases
         _resolve_fixtures(pcases, root)
+        _resolve_mock_route(pcases, root)
         for c in pcases:
             d = c.get("declare", {})
             decl = f"{d.get('vcodec','?')}/{d.get('acodec','?')}"
@@ -7251,6 +7558,7 @@ def main():
         if args.filter:
             pcases = [c for c in pcases if args.filter in c["name"]]
         _resolve_fixtures(pcases, root)
+        _resolve_mock_route(pcases, root)
         pcases, pskipped = partition_skips(pcases)
         # Bail BEFORE the server is started and before arm_teardown: arming commits to driving the
         # television, and its cleanup closes the app on EVERY exit path including this one. A run
@@ -7261,7 +7569,7 @@ def main():
                         if pskipped else f" — --filter {args.filter!r} matched nothing"))
         srv, url_base = serve(root, port=args.fixtures_port,
                               sink=(lambda m: print(f"      [srv] {m}")) if args.verbose else None,
-                              peer=cfg["tv"])
+                              peer="127.0.0.1" if args.fixtures_loopback else cfg["tv"])
         # LIFO: registered after the server and BEFORE arm_teardown, so on the way out the TV is
         # cleaned FIRST and the bytes are pulled second. The other order stops serving an app that
         # is still playing, which turns every interrupted run into a demux failure in the log.

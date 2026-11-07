@@ -1057,9 +1057,11 @@ QUICK_SECS = 20
 #   * TrueHD / Atmos. The correct LG Load-payload audio string for TrueHD does not exist
 #     anywhere in this repo, so the shape could not be DECLARED — and the declaration is
 #     this tier's entire subject. A `declare` that is a guess grades a guess.
-#   * PGS and SRT subtitles. The demuxer would carry them, but the `sub cue` / `image cue`
-#     log lines a case would grade sit behind `desired_sub_idx`, which only the Plex path
-#     ever writes — so a subtitle case down here would assert nothing at all.
+#   * PGS and SRT subtitles, in a case that plays by `plxnative-playurl`. The demuxer would carry
+#     them, but the `sub cue` / `image cue` log lines a case would grade sit behind
+#     `desired_sub_idx`, which only the Plex path ever writes — so such a case would assert
+#     nothing at all. The one subtitle clip here (`pipe_side_reader_srt`) is played through the
+#     harness's MOCK PMS (`pms_route: "mock"`), which supplies the server-selected track.
 #   * AV1. The dev set's codec table lists no AV1 decoder, so this tier's TV declares no AV1
 #     video codec, and the AV1 fixtures (`movie_av1_no_dp_audio`) expect a TRANSCODE there. On a
 #     set whose table lists an AV1 decoder the same file would direct-stream video with converted
@@ -1497,6 +1499,33 @@ PIPE_SHAPES = {
         "subs": [],
     },
     # -----------------------------------------------------------------------------------
+    # **The subtitle side reader's pair** (`pipe_side_reader_srt`, a mock-PMS case: the harness's mock serves the
+    # first as the item and the second as the enhanced remux, `pms_route: "mock"`). The app reads a SERVER-selected
+    # embedded SRT track from the Part beside the enhanced remux (`player::subside`), so the two files carry the SAME
+    # picture (`testsrc2`, deterministic, one IDR cadence) and the reader's keyframe anchor matches. The item has
+    # one embedded SubRip track (cues every `SUB_STEP` s from 0) and AAC stereo, at about 1.4 Mbit/s, far under the
+    # reader's `SIDE_MAX_PART_KBPS`; the remux has no subtitle (it is what the server sends for `subtitles=none`)
+    # and AC-3 stereo, the codec the mock's enhancement decision names. Which track is the server's pick is the
+    # case's (`carrier_subtitle`, `mock_pms.py --extra-media-subtitle`), not the file's: the file flags none.
+    "pipe_side_reader_srt": {
+        "kind": "clip", "ext": "mkv",
+        "duration": 90, "rate": 0.02,
+        "declare": {"vcodec": "h264", "acodec": "aac", "fps": float(FPS), "atmos": False},
+        "video": {"codec": "h264", "size": "1280x720", "crf": 30},
+        "audio": [{"codec": "aac", "ch": 2, "lang": "eng", "br": "128k", "pitch": 440,
+                   "default": True, "title": "AAC 2.0 English"}],
+        "subs": [{"codec": "subrip", "lang": "eng", "title": "English"}],
+    },
+    "pipe_side_reader_remux": {
+        "kind": "clip", "ext": "mkv",
+        "duration": 90, "rate": 0.02,
+        "declare": {"vcodec": "h264", "acodec": "ac3", "fps": float(FPS), "atmos": False},
+        "video": {"codec": "h264", "size": "1280x720", "crf": 30},
+        "audio": [{"codec": "ac3", "ch": 2, "lang": "eng", "br": "192k", "pitch": 440,
+                   "default": True, "title": "AC-3 2.0 English"}],
+        "subs": [],
+    },
+    # -----------------------------------------------------------------------------------
     # ...and the one shape in either pack that is SUPPOSED to run out — LG item #46.
     "pipe_h264_ac3_short": {
         # 20 s, and the short length IS the feature: every other clip in both packs is sized so
@@ -1731,6 +1760,8 @@ PIPE_MBIT = {
     # 192 kbps audio track, i.e. the rung's own request. That is the point of them.
     **{f"pipe_abr_1080p_{mbit}m": float(mbit) for mbit in (6, 8, 10, 12, 14, 16, 18, 20)},
     "pipe_abr_4k_22m": 22.0,
+    "pipe_side_reader_srt": 1.4,        # CRF 30 720p24 + 128 kbps AAC in a Matroska with one SubRip track
+    "pipe_side_reader_remux": 1.4,      # the same picture with a 192 kbps AC-3 stereo track and no subtitle
     "pipe_h264_ac3_short": 1.71,        # = pipe_h264_ac3_480p, of which it is a 20 s copy
     "pipe_h264_ac3_audio_tail": 1.71,   # = pipe_h264_ac3_short (the 3 s tail is audio only)
 }

@@ -178,16 +178,17 @@ const DIAG: [&str; 48] = [
     // variants must not move the boot screen out from under the playback being compared.
     "plxnative-av1obu",
     // Send VP9's sourceInfo envelope as the pipeline made it, without the container-derived HDR10
-    // declaration (`media::player::vp9_hdr`): the A/B for whether the television switches to HDR.
+    // declaration (`plx_play_feed::vp9_hdr`): the A/B for whether the television switches to HDR.
     "plxnative-novp9hdr",
-    // The side subtitle reader (`media::player::subside`): content = the 0-based position of the
+    // The side subtitle reader (`plx_play_feed::side_reader`, `media::player::subside`): content = the 0-based position of the
     // embedded subtitle stream to draw over a plain remux, read at each playback start.
     "plxnative-subside",
     // The URI-mode probe (`media::player::uriprobe_drive`, issue #1064): content = `load`, `late`
-    // or `none` (empty = `load`), read at each playback start. It changes how ONE play is carried
-    // out and nothing about the boot: the tester signs in and picks a profile as always, then
-    // plays a title. A non-DIAG trigger would suppress the who's-watching picker and move that
-    // boot away from the one the probe is meant to run on.
+    // or `none` (empty = `load`), read at each playback start ONCE a probe is installed behind the
+    // media port (the URI backend, a later PR: on this tree nothing installs one, so the file is
+    // never read). It changes how ONE play is carried out and nothing about the boot: the tester
+    // signs in and picks a profile as always, then plays a title. A non-DIAG trigger would suppress
+    // the who's-watching picker and move that boot away from the one the probe is meant to run on.
     "plxnative-uriprobe",
 ];
 
@@ -570,7 +571,7 @@ pub(crate) fn quality_switch_script() -> Option<(u32, Vec<plx_plex::plex::sessio
 /// ordinary six-second dev gate and stay paused. A non-empty script may delay that edge and name a
 /// finite accepted hold. `at` also holds the edge until the PUBLISHED playhead has reached that
 /// media position (and, in the simulator, stops the clock sink exactly on it, so the pause freezes
-/// that position: `ffi_host.rs::stop_clock_at`): a wall-clock delay pauses wherever the host's
+/// that position: `HostSink::stop_clock_at`): a wall-clock delay pauses wherever the host's
 /// scheduling has got playback to, which moves from run to run, and the documentation's player
 /// figure wants the same frame and the same clock every time. The simulator's settled capture
 /// (`PLXNATIVE_SHOT_SETTLE`) waits for the Pause to land (`scenarios::screenshot::PauseDebt`): the

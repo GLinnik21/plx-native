@@ -579,7 +579,7 @@ impl LoadVideo {
         }
     }
 
-    /// `SHARED.dg_load_v`'s code (video 1 = H264, 2 = H265, 3 = AV1, 4 = VP9).
+    /// `FEED_SHARED.dg_load_v`'s code (video 1 = H264, 2 = H265, 3 = AV1, 4 = VP9).
     pub fn diag_code(self) -> u8 {
         match self {
             Self::H264 => 1,
@@ -1321,7 +1321,7 @@ fn parse(s: &str) -> Option<Caps> {
 
 /// The VP9 bit depth to claim on a set running webOS `major` (0 = unknown). 10 on webOS 1 to 4, the
 /// ACB video path, where the dev set (4.x) decoded a 10-bit Profile 2 stream with correct levels and a
-/// PQ-tagged one switched the panel to HDR through `player::vp9_hdr`. 8 on every other set: on webOS 5+
+/// PQ-tagged one switched the panel to HDR through `plx_play_feed::vp9_hdr`. 8 on every other set: on webOS 5+
 /// there is no ACB, so `vp9_hdr` sends nothing, and whether a PQ VP9 stream reaches HDR there is
 /// unknown, which means a 10-bit file might direct-play with washed-out colour where the server
 /// would have converted it correctly.

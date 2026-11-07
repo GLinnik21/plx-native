@@ -825,12 +825,12 @@ dependencies = [
  "libc",
  "plx_base",
  "plx_data",
- "plx_gfx",
  "plx_machine",
  "plx_media",
  "plx_media_codecs",
  "plx_net",
  "plx_platform",
+ "plx_play_feed",
  "plx_playback_contract",
  "plx_plex",
  "plx_telemetry",
@@ -878,6 +878,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "plx_play_feed"
+version = "0.0.0"
+dependencies = [
+ "dolby_vision",
+ "libc",
+ "plx_base",
+ "plx_media_codecs",
+ "plx_net",
+ "plx_platform",
+ "plx_playback_contract",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "plx_playback_contract"
 version = "0.0.0"
 dependencies = [
@@ -911,6 +926,7 @@ dependencies = [
  "plx_media",
  "plx_net",
  "plx_platform",
+ "plx_play_feed",
  "plx_plex",
  "plx_screens",
  "plx_session",
@@ -977,6 +993,8 @@ dependencies = [
  "plx_media_codecs",
  "plx_net",
  "plx_platform",
+ "plx_play_feed",
+ "plx_playback_contract",
  "plx_plex",
  "plx_screens",
  "plx_session",

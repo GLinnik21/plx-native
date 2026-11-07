@@ -363,28 +363,50 @@ pub fn starvation_horizon(
 /// shipped — it survived review because the reviewer's expected value came from the same
 /// expression.
 ///
-/// **Every input is read from `player::engine` at run time**, never transcribed: `aq_caps()` for
-/// the byte caps and `feed_leads_ms()` for the two throttles. `abr/sim.rs` deliberately keeps its
-/// own copy of the same geometry, sourced by VALUE with a comment, so that the plant grading this
-/// controller is not the controller agreeing with itself — and
-/// `sim::tests::the_plant_constants_still_match_the_pipeline` is what keeps the two honest.
+/// The physical feed adapter captures the four values from its queue and throttle owners when
+/// the adaptive session is opened. The model receives that snapshot as a value; without one it
+/// cannot claim that a candidate fits the reserve. `abr/sim.rs` keeps independent fixture values,
+/// and `sim::tests::the_plant_constants_still_match_the_pipeline` checks their Feed parity.
 ///
 /// **This is a MODEL, and the device census is what says it is a good one**: seven pinned rungs,
 /// every prediction within 5% of the `buf=` the television settled at
 /// (`sim::tests::the_calibration_reproduces_the_device_census`). It shares no term with that
 /// measurement.
-pub fn b_max_est_ms(video_es_kbps: u32, audio_es_kbps: u32) -> i64 {
-    let (video_bytes, audio_bytes) = crate::player::aq_caps();
-    let (video_lead_ms, audio_lead_ms) = crate::player::feed_leads_ms();
-    let bits = |bytes: i64| u64::try_from(bytes).unwrap_or(0).saturating_mul(8);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlantGeometry {
+    pub video_queue_bytes: u64,
+    pub audio_queue_bytes: u64,
+    pub video_lead_ms: i64,
+    pub audio_lead_ms: i64,
+}
+
+impl PlantGeometry {
+    /// A missing or invalid physical declaration is not a zero-byte queue.
+    pub const fn from_feed(
+        video_queue_bytes: i64, audio_queue_bytes: i64, video_lead_ms: i64, audio_lead_ms: i64,
+    ) -> Option<Self> {
+        if video_queue_bytes <= 0 || audio_queue_bytes <= 0 || video_lead_ms < 0 || audio_lead_ms < 0 {
+            return None;
+        }
+        Some(Self {
+            video_queue_bytes: video_queue_bytes as u64,
+            audio_queue_bytes: audio_queue_bytes as u64,
+            video_lead_ms,
+            audio_lead_ms,
+        })
+    }
+}
+
+pub fn b_max_est_ms(geometry: PlantGeometry, video_es_kbps: u32, audio_es_kbps: u32) -> i64 {
+    let bits = |bytes: u64| bytes.saturating_mul(8);
     // `.max(1)` on both divisors: a rate of zero is reachable (an audio-less stream, or an ES rate
     // that has not been measured yet) and `overflow-checks` is ON under `cargo test` and OFF in
     // release, so a bare division panics on the Mac and traps on the television.
-    let video = video_lead_ms.saturating_add(
-        (bits(video_bytes) / u64::from(video_es_kbps.max(1))).min(i64::MAX as u64) as i64,
+    let video = geometry.video_lead_ms.saturating_add(
+        (bits(geometry.video_queue_bytes) / u64::from(video_es_kbps.max(1))).min(i64::MAX as u64) as i64,
     );
-    let audio = audio_lead_ms.saturating_add(
-        (bits(audio_bytes) / u64::from(audio_es_kbps.max(1))).min(i64::MAX as u64) as i64,
+    let audio = geometry.audio_lead_ms.saturating_add(
+        (bits(geometry.audio_queue_bytes) / u64::from(audio_es_kbps.max(1))).min(i64::MAX as u64) as i64,
     );
     video.min(audio)
 }
@@ -401,11 +423,12 @@ pub fn b_max_est_ms(video_es_kbps: u32, audio_es_kbps: u32) -> i64 {
 /// alpha is INERT almost everywhere. That is the intended shape for landing: the corrected formula
 /// arrives without moving an expected value, and M4 decides whether either number moves.
 pub fn buffer_target_at_ms(
+    geometry: PlantGeometry,
     video_es_kbps: u32,
     audio_es_kbps: u32,
     policy: &AbrPolicy,
 ) -> i64 {
-    let reachable = b_max_est_ms(video_es_kbps, audio_es_kbps)
+    let reachable = b_max_est_ms(geometry, video_es_kbps, audio_es_kbps)
         .saturating_mul(i64::from(policy.buffer_reserve_fraction_pm))
         / 1_000;
     policy.buffer_target_ms.min(reachable)
@@ -443,6 +466,7 @@ pub fn buffer_target_at_ms(
 /// its own complete end-to-end acquisition. Folding the total-acquisition ratio in here would
 /// charge the same server wait, pacing and path-service episode a second time.
 pub fn refill_admits(
+    geometry: PlantGeometry,
     candidate_wire_kbps: u32,
     candidate_video_es_kbps: u32,
     audio_es_kbps: u32,
@@ -450,7 +474,7 @@ pub fn refill_admits(
     safe_budget_kbps: u32,
     policy: &AbrPolicy,
 ) -> bool {
-    let target = buffer_target_at_ms(candidate_video_es_kbps, audio_es_kbps, policy);
+    let target = buffer_target_at_ms(geometry, candidate_video_es_kbps, audio_es_kbps, policy);
     let deficit = (target - buffered_ms).max(0);
     let horizon = policy.buffer_refill_horizon_ms.max(1);
     let r_max =

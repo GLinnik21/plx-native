@@ -1998,6 +1998,40 @@ class PipelineTier(unittest.TestCase):
     def _pipeline_cases(self):
         return _manifest()["pipeline_cases"]
 
+    def test_loopback_fixture_mode_requires_a_fixed_forwarded_port(self):
+        result = subprocess.run([sys.executable, run.__file__, "--fixtures-loopback", "--list"],
+                                capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--fixtures-loopback needs a fixed --fixtures-port", result.stderr)
+
+    def test_loopback_fixture_listing_is_offline(self):
+        result = subprocess.run([sys.executable, run.__file__, "--fixtures-loopback",
+                                 "--fixtures-port", "32498", "--list"],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("pipe_h264_ac3_1080p", result.stdout)
+
+    def test_pipeline_case_arms_requested_extra_triggers_without_changing_assertions(self):
+        case = {"name": "extra-trigger", "fixture": "clip.mkv", "operations": [{"op": "play"}],
+                "expect": {"require_video_bound": True}}
+        cfg = {"tv": "test-tv", "extra_triggers": [("plxnative-framedrop", "20")]}
+        server = mock.Mock()
+        server.stats.return_value = (1, 0, 0)
+        with mock.patch.object(run, "require_tv"), mock.patch.object(run, "make"), \
+                mock.patch.object(run, "apply_triggers") as arm, \
+                mock.patch.object(run, "early_exit_allowed", return_value=(False, None)), \
+                mock.patch.object(run, "stream_case", return_value=([], 1, False, None)), \
+                mock.patch.object(run, "evaluate_pipeline", return_value=(False, [("video_bound", False, "missing")])) as grade, \
+                mock.patch.object(run, "crash_gate", side_effect=lambda cfg, c, n, ls, ok, rs: (ok, rs)), \
+                mock.patch.object(run, "report_and_record"), mock.patch("sys.stdout", io.StringIO()):
+            passed, results, _ = run.run_pipeline_case(case, cfg, server, "http://fixture.invalid", False)
+        self.assertIn(("plxnative-framedrop", "20"), arm.call_args.args[1])
+        self.assertEqual(json.loads(dict(arm.call_args.args[1])["plxnative-playurl"])["url"],
+                         "http://fixture.invalid/clip.mkv")
+        self.assertIs(grade.call_args.args[0], case)
+        self.assertFalse(passed)
+        self.assertEqual(results, [("video_bound", False, "missing")])
+
     def test_every_case_ends_with_a_path_or_a_skip(self):
         """The invariant behind `case["fixture"]`/`case["path"]` downstream. Run against an EMPTY
         pack, which is every machine that has not built one."""
@@ -3543,6 +3577,124 @@ class AbrTraceMetrics(unittest.TestCase):
             "the pipeline evaluator must grade every authored Pause/Resume edge",
         )
 
+    @staticmethod
+    def _paused_seek_log():
+        """The lines a healthy seek-under-Pause leaves: Pause, a stationary stretch, the scripted
+        seek, its in-place av_seek, the one-shot paused-frame receipt, a stationary landed frame,
+        the Resume, and a climb with both A/V lanes accepted."""
+        return [
+            "loop=60 route=player pos=9s fps=60",
+            "autopause: Pause accepted hold=18000ms",
+            "loop=60 route=player pos=9s fps=0",
+            "loop=60 route=player pos=9s fps=0",
+            "loop=60 route=player pos=9s fps=0",
+            "autoseek: step \u2192 30s (0 left)",
+            "seek(in-place): av_seek t=30000000000 coalesced=0",
+            "in-place seek: setTimeToDecode(30000000000) rv=1 setContentInfo=1 sendSegment=1",
+            "seek: paused frame restored ns=30040000000",
+            "loop=60 route=player pos=30s fps=0",
+            "loop=60 route=player pos=30s fps=0",
+            "loop=60 route=player pos=30s fps=0",
+            "autopause: Resume accepted",
+            "loop=60 route=player pos=30s fps=60",
+            "feed v#400 sz=4096 fed=31000000000 reply=O qbytes=8192",
+            "feed a#800 sz=512 fed=31000000000 reply=O qbytes=1024",
+            "loop=60 route=player pos=31s fps=60",
+            "loop=60 route=player pos=36s fps=60",
+            "loop=60 route=player pos=43s fps=60",
+        ]
+
+    def test_paused_seek_passes_on_the_healthy_sequence(self):
+        ok, why = run.op_paused_seek(self._paused_seek_log(), 30, 12)
+        self.assertTrue(ok, why)
+        self.assertIn("landed 30s", why)
+
+    def test_paused_seek_fails_without_the_paused_frame_receipt(self):
+        lines = [ln for ln in self._paused_seek_log() if "paused frame restored" not in ln]
+        ok, why = run.op_paused_seek(lines, 30, 12)
+        self.assertFalse(ok, "a seek whose landing under Pause was never logged cannot pass")
+        self.assertIn("never landed under the Pause", why)
+
+    def test_paused_seek_fails_when_the_film_plays_on_between_the_receipt_and_the_resume(self):
+        lines = self._paused_seek_log()
+        at = next(i for i, ln in enumerate(lines) if ln.startswith("loop=") and "pos=30s" in ln)
+        lines[at + 1] = "loop=60 route=player pos=33s fps=60"
+        ok, why = run.op_paused_seek(lines, 30, 12)
+        self.assertFalse(ok)
+        self.assertIn("did not stay paused", why)
+
+    def test_paused_seek_fails_when_the_receipt_only_comes_after_the_resume(self):
+        lines = self._paused_seek_log()
+        receipt = next(ln for ln in lines if "paused frame restored" in ln)
+        lines.remove(receipt)
+        lines.insert(lines.index("autopause: Resume accepted") + 1, receipt)
+        ok, why = run.op_paused_seek(lines, 30, 12)
+        self.assertFalse(ok)
+        self.assertIn("AFTER the Resume", why)
+
+    def test_paused_seek_names_a_seek_that_fired_outside_the_hold(self):
+        lines = self._paused_seek_log()
+        step = lines.pop(next(i for i, ln in enumerate(lines) if "autoseek: step" in ln))
+        after = lines.index("autopause: Resume accepted") + 1
+        late = lines[:after] + [step] + lines[after:]
+        ok, why = run.op_paused_seek(late, 30, 12)
+        self.assertFalse(ok)
+        self.assertIn("after the Resume", why)
+        early = [step] + lines
+        ok, why = run.op_paused_seek(early, 30, 12)
+        self.assertFalse(ok)
+        self.assertIn("before the Pause", why)
+        ok, why = run.op_paused_seek(lines, 30, 12)
+        self.assertFalse(ok)
+        self.assertIn("never fired", why)
+
+    def test_paused_seek_fails_when_it_lands_far_from_the_target(self):
+        lines = [ln.replace("ns=30040000000", "ns=9040000000") for ln in self._paused_seek_log()]
+        ok, why = run.op_paused_seek(lines, 30, 12)
+        self.assertFalse(ok)
+        self.assertIn("landed at 9s", why)
+
+    def test_paused_seek_fails_when_the_seek_fell_back_to_a_reload(self):
+        lines = self._paused_seek_log()
+        lines.insert(lines.index("seek(in-place): av_seek t=30000000000 coalesced=0") + 1,
+                     "reload_at: fresh Load t=30000000000")
+        ok, why = run.op_paused_seek(lines, 30, 12)
+        self.assertFalse(ok)
+        self.assertIn("fell back to a reload", why)
+        no_seek = [ln for ln in self._paused_seek_log() if "av_seek" not in ln]
+        self.assertFalse(run.op_paused_seek(no_seek, 30, 12)[0])
+
+    def test_paused_seek_needs_the_recovery_a_plain_resume_needs(self):
+        lines = self._paused_seek_log()
+        self.assertFalse(run.op_paused_seek(lines[:-2], 30, 12)[0], "no climb after the Resume")
+        self.assertFalse(
+            run.op_paused_seek([ln for ln in lines if "feed a#" not in ln], 30, 12)[0],
+            "moving pictures without a resumed audio lane are not recovery")
+        # a Resume that restarts from the PRE-seek position is not playing on from the landing
+        rewound = [ln.replace("pos=31s", "pos=10s").replace("pos=36s", "pos=22s")
+                   .replace("pos=43s", "pos=40s") for ln in lines]
+        rewound[rewound.index("autopause: Resume accepted") + 1] = "loop=60 route=player pos=9s fps=60"
+        self.assertFalse(run.op_paused_seek(rewound, 30, 12)[0])
+
+    def test_pause_resume_alone_still_fails_on_a_playhead_that_jumps_inside_the_hold(self):
+        """`op_pause_resume` stays the strict plain-hold grader; the seek variant is a different op."""
+        self.assertFalse(run.op_pause_resume(self._paused_seek_log(), 12)[0])
+
+    def test_pipeline_evaluation_routes_a_pause_resume_with_seek_s_to_the_paused_seek_grader(self):
+        case = {
+            "fixture": "fixture.mp4",
+            "expect": {"require_video_bound": False, "min_pos_climb_s": 0},
+            "operations": [{"op": "pause_resume", "seek_s": 30, "min_climb_after_s": 12}],
+        }
+        with mock.patch.object(run, "a_stream_path", return_value=(True, "fixture opened")), \
+             mock.patch.object(run, "a_load_decl", return_value=(True, "payload loaded")):
+            _passed, results = run.evaluate_pipeline(case, self._paused_seek_log(), (2, 1))
+        labels = [label for label, _ok, _evidence in results]
+        self.assertIn("paused_seek", labels)
+        self.assertNotIn("pause_resume", labels,
+                         "the hold-stationary grader would fail a seek the case authored")
+        self.assertTrue(dict((label, ok) for label, ok, _ in results)["paused_seek"])
+
     def test_min_rejected_upshifts_counts_refused_up_transactions_only(self):
         """`min_rejected_upshifts` grades E_tx(up, reject): an upshift PROPOSED and then REFUSED.
 
@@ -4011,17 +4163,19 @@ class AbrLogLineContract(unittest.TestCase):
     """MATHEMATICAL INVARIANT: the app's format string and this harness's regex are ONE statement.
 
     They are written in two languages in two files, and nothing but this test keeps them in step.
-    The failure mode is silent and total: rename or reorder a field in `ff.rs` and every metric in
+    The failure mode is silent and total: rename or reorder a field in `adaptive.rs` and every metric in
     `a_abr_shape` reads `n/a` forever, which looks exactly like a controller that never ran. That
     is the same shape as the stale-regex bug this project has already had once, when the heartbeat
     fields were renamed and an old log read as "no samples".
     """
 
-    FF = os.path.join(REPO_ROOT, "rust-modules", "media", "src", "ff.rs")
+    # The controller's `abr: <kind>` lines are written by `adaptive.rs` (they were `ff.rs`'s
+    # until the playback split moved the controller out of the feed engine).
+    ADAPTIVE = os.path.join(REPO_ROOT, "rust-modules", "media", "src", "adaptive.rs")
 
     def _emitted_fields(self, prefix):
         """The `name=` fields of the app's format literal for `abr: <prefix>`, in order."""
-        with open(self.FF) as f:
+        with open(self.ADAPTIVE) as f:
             src = f.read()
         start = src.index(f'"abr: {prefix} ')
         end = src.index('",', start)
@@ -4037,18 +4191,18 @@ class AbrLogLineContract(unittest.TestCase):
         emitted = self._emitted_fields("sample")
         parsed = self._regex_fields(run.RE_ABR_SAMPLE)
         self.assertEqual(emitted[: len(parsed)], parsed,
-                         f"ff.rs emits {emitted}, run.py parses {parsed}")
+                         f"adaptive.rs emits {emitted}, run.py parses {parsed}")
         self.assertIn("reason", emitted, "the decision reason must stay on the line")
 
     def test_the_mode_line_emits_exactly_the_fields_the_harness_parses(self):
         """The Original-vs-HLS comparison, both sides of the contract.
 
-        Field NAMES come out of `ff.rs`'s own format literal, so a rename there fails here rather
+        Field NAMES come out of `adaptive.rs`'s own format literal, so a rename there fails here rather
         than silently yielding zero comparison rows — and this line is the only record of a decision
         that tears down an encoder session, so a silent zero is the expensive failure."""
         emitted = self._emitted_fields("mode")
         parsed = self._regex_fields(run.RE_ABR_MODE)
-        self.assertEqual(emitted, parsed, f"ff.rs emits {emitted}, run.py parses {parsed}")
+        self.assertEqual(emitted, parsed, f"adaptive.rs emits {emitted}, run.py parses {parsed}")
 
     def test_a_rendered_mode_line_yields_both_decompositions(self):
         line = ("[  12.345] abr: mode chose=Original why=OriginalWorthIt vs_hls=8000kbps "
@@ -4075,7 +4229,7 @@ class AbrLogLineContract(unittest.TestCase):
         self.assertIsNotNone(run.RE_ABR_SAMPLE.search(_sample_line(abuf="none", buf=-1)))
 
     def test_the_steady_line_emits_the_four_gate_fields_the_harness_parses(self):
-        """Both sides of the guard read-out. Names come out of `ff.rs`'s own format literal, so a
+        """Both sides of the guard read-out. Names come out of `adaptive.rs`'s own format literal, so a
         rename on the app side fails here rather than silently yielding zero gate rows.
 
         `stable`/`cool` were the first two until 2026-08-28 and went with the counters they
@@ -4083,7 +4237,7 @@ class AbrLogLineContract(unittest.TestCase):
         emitted = self._emitted_fields("steady")
         for field in ("dwell", "block", "onrung", "draining"):
             with self.subTest(field=field):
-                self.assertIn(field, emitted, f"ff.rs no longer emits {field}=")
+                self.assertIn(field, emitted, f"adaptive.rs no longer emits {field}=")
                 self.assertIn(field, self._regex_fields(run.RE_ABR_GATES))
 
     def test_a_rendered_steady_line_yields_its_guard_state(self):
@@ -4284,43 +4438,97 @@ class TheQualitySwitchAssertion(unittest.TestCase):
 class EverySeekGiveUpPathDisarmsTheSpinner(unittest.TestCase):
     """**A source-level spot-check on an invariant the type system cannot state.**
 
-    `player::request_seek` sets `SHARED.seeking`; `pump::set_state` publishes
-    `PlaybackState::Seeking` from it AHEAD of every other arm; and until 2026-08-27 the only place
-    that ever cleared it was the successful prime→Play. So any path that gave up on a seek left a
-    permanent spinner, a playhead frozen at the target and `is_playing()` false, while the pipeline
-    played on underneath. Device-measured: 84 seconds of that, through 37 segment acquisitions and
-    four rung commits (`docs/measurements/j3e-logs/pipe_abr_seek_flat.log`).
+    A requested seek puts `PlaybackState::Seeking` ahead of every other arm of the derived state, and
+    until 2026-08-27 the only thing that ever ended it was the successful prime->Play. So any path
+    that gave up on a seek left a permanent spinner, a playhead frozen at the target and
+    `is_playing()` false, while the pipeline played on underneath. Device-measured: 84 seconds of
+    that, through 37 segment acquisitions and four rung commits
+    (`docs/measurements/j3e-logs/pipe_abr_seek_flat.log`).
 
-    **This checks the two KNOWN give-up paths and cannot check a future one**, which is stated
-    rather than papered over: a real guard would derive the state instead of latching a flag —
-    `Seeking` iff a target is pending or the engine is priming after one — and that is the shape
-    this should eventually take. It is not taken here because `prime_play` is also set outside a
-    seek, so deriving would change the startup read-out too, and stacking that onto a bug fix is
-    what the plan forbids.
+    The flag is no longer stored: the readout DERIVES `seeking()` from the epoch of the newest
+    request against the epoch the feed reports landed, so nothing can leave a latch armed. A seek is
+    still in flight until it lands, though, so a path that gives up on one must say so, and the one
+    way to say so is `player::abandon_seek(ps, pa)`: the `SeekAbandoned` event (it settles every
+    request so far) and the `AbandonSeek` command (the feed's flag and display target).
+
+    **This checks the KNOWN give-up paths and cannot check a future one**, which is stated rather
+    than papered over. What it also pins is the other half of the old count: the one place that
+    ARMS a seek is the `SeekRequested` event, sent from `player::request_seek`, so a second writer
+    cannot appear without this class noticing that its account of the give-up paths is incomplete.
     """
+
+    # Where the first inline test module starts: from there on the text is test code, not the shipped
+    # player (`mod x;` declarations of test files do not match: they have no body).
+    _TEST_MOD = re.compile(r"^#\[cfg\((?:all\()?test[^\n]*\]\n(?:#\[[^\n]*\]\n)*(?:pub )?mod \w+\s*\{", re.M)
 
     def _src(self, *parts):
         with open(os.path.join(REPO_ROOT, "rust-modules", "media", "src", *parts), encoding="utf-8") as fh:
             return fh.read()
 
+    def _shipped(self, *parts):
+        """The file's text without its test module."""
+        src = self._src(*parts)
+        m = self._TEST_MOD.search(src)
+        return src[:m.start()] if m else src
+
+    def _every(self, src, needle):
+        starts = [m.start() for m in re.finditer(re.escape(needle), src)]
+        self.assertTrue(starts, f"{needle!r} is gone: this check no longer guards what it names")
+        return starts
+
     def test_a_failed_transcode_seek_rebuild_abandons_the_seek(self):
+        """Both places the rebuild can be refused (the flight's landing, and its dispatch)."""
         src = self._src("player", "pump.rs")
-        i = src.index('"seek(transcode): rebuild failed"')
-        self.assertIn("abandon_seek()", src[max(0, i - 600):i],
-                      "the failed rebuild returns without disarming the spinner")
+        for i in self._every(src, '"seek(transcode): rebuild failed"'):
+            self.assertIn("abandon_seek(ps, pa)", src[max(0, i - 600):i],
+                          "a failed rebuild returns without abandoning the seek through the readout")
 
     def test_a_reload_with_no_url_abandons_the_seek(self):
-        src = self._src("player", "engine.rs")
-        i = src.index('"reload_transcode: no url (ignored)"')
-        self.assertIn("abandon_seek()", src[max(0, i - 400):i],
-                      "the ignored reload returns without disarming the spinner")
+        src = self._src("player", "route_start.rs")
+        for needle in ('"reload_transcode: no url (ignored)"', '"reload_transcode_tracked: no url (ignored)"'):
+            for i in self._every(src, needle):
+                self.assertIn("abandon_seek(ps, pa)", src[max(0, i - 400):i],
+                              "the ignored reload returns without abandoning the seek")
 
-    def test_the_flag_is_armed_in_exactly_one_place(self):
-        """If a second writer appears, the two known clear sites stop being a complete account and
-        this whole class is measuring the wrong thing."""
-        src = self._src("player", "mod.rs")
-        self.assertEqual(src.count("SHARED.seeking.store(true"), 1,
-                         "more than one place arms the spinner; re-audit the give-up paths")
+    def test_abandoning_is_the_readout_event_and_the_feed_command(self):
+        """The one way to give up says it twice, in one call: the readout settles the requests and
+        the feed ends its flag and its frozen display target."""
+        src = self._shipped("player", "mod.rs")
+        i = src.index("pub fn abandon_seek(")
+        body = src[i:src.index("\n}\n", i)]
+        self.assertIn("ReadoutEvent::SeekAbandoned", body)
+        self.assertIn("FeedCommand::AbandonSeek", body)
+
+    def test_a_seek_is_requested_in_exactly_one_place(self):
+        """If a second writer appears, the known give-up paths stop being a complete account and
+        this whole class is measuring the wrong thing. The request is one event and one command, in
+        `request_seek`; a requeue or a take (`pump.rs`) is neither, and never numbers a request."""
+        root = os.path.join(REPO_ROOT, "rust-modules", "media", "src")
+        events, commands = [], []
+        for dirpath, _dirs, files in os.walk(root):
+            for name in sorted(files):
+                if not name.endswith(".rs") or name.endswith("_tests.rs") or name == "tests.rs":
+                    continue
+                path = os.path.join(dirpath, name)
+                with open(path, encoding="utf-8") as fh:
+                    src = fh.read()
+                m = self._TEST_MOD.search(src)
+                src = src[:m.start()] if m else src
+                rel = os.path.relpath(path, root)
+                if name != "readout.rs":  # the machine that defines the event steps it in its tests only
+                    events += [rel] * src.count("ReadoutEvent::SeekRequested {")
+                commands += [rel] * len(re.findall(r"FeedCommand::Seek\s*\{", src))
+        self.assertEqual(events, [os.path.join("player", "mod.rs")],
+                         "more than one place requests a seek; re-audit the give-up paths")
+        self.assertEqual(commands, [os.path.join("player", "mod.rs")],
+                         "more than one place sends the feed a Seek; re-audit the give-up paths")
+
+    def test_the_spinner_is_derived_never_stored(self):
+        """What makes a forgotten clear the only way to wedge it: no field holds `seeking`."""
+        src = self._shipped("player", "readout.rs")
+        body = src[src.index("pub struct PlayerReadout"):src.index("\n}\n", src.index("pub struct PlayerReadout"))]
+        self.assertNotRegex(body, r"\bseeking\s*:", "the readout stores the spinner again")
+        self.assertIn("pub fn seeking(&self) -> bool", src)
 
 
 class TheRequestIndexedShaper(unittest.TestCase):
@@ -4499,6 +4707,64 @@ class AbrTriggers(unittest.TestCase):
             "delay=25000,hold=6000",
         )
 
+    def test_a_pause_resume_with_seek_s_also_writes_the_autoseek_script(self):
+        case = {
+            **self.BASE,
+            "operations": [{"op": "pause_resume", "delay_ms": 10_000, "hold_ms": 18_000,
+                            "seek_s": 30, "seek_delay_ms": 14_000}],
+        }
+        names = self._names(case)
+        self.assertEqual(names["plxnative-autopause"], "delay=10000,hold=18000")
+        self.assertEqual(names["plxnative-autoseek"], "delay=14000,30")
+        undelayed = {**self.BASE, "operations": [{"op": "pause_resume", "hold_ms": 6_000,
+                                                  "seek_s": 30}]}
+        self.assertEqual(self._names(undelayed)["plxnative-autoseek"], "30")
+        plain = {**self.BASE, "operations": [{"op": "pause_resume", "hold_ms": 6_000}]}
+        self.assertNotIn("plxnative-autoseek", self._names(plain),
+                         "a plain hold must not grow a seek")
+
+    def test_a_seek_under_pause_is_a_depth_the_length_check_reads(self):
+        self.assertEqual(run._case_depth_s({
+            "operations": [{"op": "pause_resume", "hold_ms": 1, "seek_s": 40}],
+            "expect": {"min_pos_climb_s": 8}}), 40)
+        self.assertEqual(run._case_depth_s({
+            "operations": [{"op": "pause_resume", "hold_ms": 1}],
+            "expect": {"min_pos_climb_s": 8}}), 8)
+
+    def test_the_original_pause_cases_pin_direct_play_and_carry_no_abr_shape(self):
+        """No `auto_network` is what keeps the case off Auto and HLS: nothing writes the Auto
+        trigger set, and `stream_path` then requires the demuxer to open the fixture itself."""
+        cases = {c["name"]: c for c in _manifest()["pipeline_cases"]}
+        hls = cases["pipe_auto_pause_fill_resume"]
+        for name in ("pipe_original_pause_resume", "pipe_original_paused_seek"):
+            with self.subTest(case=name):
+                case = cases[name]
+                self.assertNotIn("auto_network", case)
+                self.assertEqual(case["fixture"], hls["fixture"])
+                self.assertNotIn("abr_shape", case["expect"])
+                names = dict(run.triggers_for_case(case, url_base="http://h:8020"))
+                for auto_only in ("plxnative-quality", "plxnative-abrpin"):
+                    self.assertNotIn(auto_only, names)
+                spec = json.loads(names["plxnative-playurl"])
+                self.assertNotIn("auto_start_hls", spec)
+                self.assertNotIn("auto_hls_base", spec)
+                self.assertIn("plxnative-autopause", names)
+                self.assertTrue(case["expect"]["no_playing_error"])
+                self.assertTrue(case["expect"]["require_video_bound"])
+        seek = cases["pipe_original_paused_seek"]
+        self.assertIn("plxnative-autoseek",
+                      dict(run.triggers_for_case(seek, url_base="http://h:8020")))
+        self.assertNotIn("plxnative-autoseek",
+                         dict(run.triggers_for_case(cases["pipe_original_pause_resume"],
+                                                    url_base="http://h:8020")))
+        # a pack too short for the case skips; it must not fail as a regression
+        self.assertLessEqual(run._case_depth_s(seek), 60 * 0.8)
+        pause_op = next(o for o in seek["operations"] if o["op"] == "pause_resume")
+        # the seek can land up to 6 s later than `seek_delay_ms - delay_ms` into the hold (its gate
+        # is 6 s later than the Pause's); the hold must still leave 6 s of paused landing after it
+        worst_seek_into_hold = pause_op["seek_delay_ms"] - pause_op["delay_ms"] + 6000
+        self.assertGreaterEqual(pause_op["hold_ms"] - worst_seek_into_hold, 2000 + 6000)
+
     def test_no_manifest_case_carries_a_new_abr_bound_yet(self):
         """POLICY GUARD, not a policy test. Increment I0 adds the metrics and deliberately grades
         none of them: a bound written before the I1 baseline exists is a number somebody guessed.
@@ -4579,13 +4845,17 @@ class AbrLadderFixtures(unittest.TestCase):
 # silently stops matching does not fail loudly, it reports "no samples" and every derived
 # statistic quietly becomes a statement about the empty set.
 #
-# The test is DIFFERENTIAL, not a golden literal: it reads the format strings out of ff.rs and
-# compares the field names and their ORDER against what the regex captures. A frozen example line
+# The test is DIFFERENTIAL, not a golden literal: it reads the format strings out of the Rust
+# source that writes each line (`adaptive.rs` for `abr: tx`, the feed engine's `ff.rs` for
+# `hls: segment`) and compares the field names and their ORDER against what the regex captures. A frozen example line
 # would keep passing after someone renamed a field in Rust, which is the exact failure this is
 # here to catch.
 # ---------------------------------------------------------------------------------------------
 
-FF_RS = os.path.join(REPO_ROOT, "rust-modules", "media", "src", "ff.rs")
+# The feed engine's `ff.rs` writes `hls: segment=` (it lives in `play-feed`, not `media`);
+# the controller's `abr: tx` / `abr: committed` lines are `media/src/adaptive.rs`'s.
+FF_RS = os.path.join(REPO_ROOT, "rust-modules", "play-feed", "src", "ff.rs")
+ADAPTIVE_RS = os.path.join(REPO_ROOT, "rust-modules", "media", "src", "adaptive.rs")
 WINDOW_RS = os.path.join(REPO_ROOT, "rust-modules", "media", "src", "abr", "window.rs")
 
 # `name=` in a format string or a regex pattern. Deliberately anchored on the `=`, because that is
@@ -4627,6 +4897,8 @@ class LogLineContract(unittest.TestCase):
     def setUp(self):
         with open(FF_RS, encoding="utf-8") as fh:
             self.ff = fh.read()
+        with open(ADAPTIVE_RS, encoding="utf-8") as fh:
+            self.adaptive = fh.read()
 
     def _assert_contract(self, opening, pattern, fields, label, source=None):
         rendered = _rust_format_string(source if source is not None else self.ff, opening)
@@ -4635,7 +4907,7 @@ class LogLineContract(unittest.TestCase):
         self.assertEqual(
             rust_names,
             regex_names,
-            f"{label}: ff.rs emits {rust_names} but run.py's regex reads {regex_names}. "
+            f"{label}: the Rust source emits {rust_names} but run.py's regex reads {regex_names}. "
             "One side was changed without the other; the harness would report 'no samples' "
             "rather than failing, so this is the only place it can be caught.",
         )
@@ -4659,18 +4931,19 @@ class LogLineContract(unittest.TestCase):
         self.assertRegex(
             rendered_line,
             pattern,
-            f"{label}: the regex does not match ff.rs's own format string rendered with "
+            f"{label}: the regex does not match the Rust source's own format string rendered with "
             f"placeholder values -- a separator or a unit suffix differs.\n  {rendered_line}",
         )
 
     def test_abr_tx_regex_matches_the_rust_format_string(self):
-        self._assert_contract('"abr: tx {:?}', run.RE_ABR_TX, run.TX_FIELDS, "abr: tx")
+        self._assert_contract('"abr: tx {:?}', run.RE_ABR_TX, run.TX_FIELDS, "abr: tx",
+                              source=self.adaptive)
 
     def test_abr_window_regex_matches_the_rust_format_string(self):
         """Same contract, but the format string lives beside the arithmetic rather than in ff.rs.
 
         `AdmissionReadout::log_line` formats it in `abr/window.rs` so the wire shape is testable
-        next to the numbers it prints; `ff.rs` only decides when to emit it.
+        next to the numbers it prints; `adaptive.rs` only decides when to emit it.
         """
         with open(WINDOW_RS, encoding="utf-8") as fh:
             source = fh.read()
@@ -5444,7 +5717,7 @@ class ThePlaybackRateIsTheOnlyThingThatSeesASlowFilm(unittest.TestCase):
 
 
 class TheAbrCommitLineMatchesTheHarnessRegex(unittest.TestCase):
-    """**The commit line's format string, read out of `ff.rs` and matched against both regexes.**
+    """**The commit line's format string, read out of `adaptive.rs` and matched against both regexes.**
 
     Same contract as `TheAbrWindowLineMatchesTheHarnessRegex` and the same failure if it lapses:
     the app formats this on a television and the harness parses it on a Mac, and a drift shows up
@@ -5459,10 +5732,10 @@ class TheAbrCommitLineMatchesTheHarnessRegex(unittest.TestCase):
     append silently retired a grader (`RE_ABR_UP` parses this line too).
     """
 
-    FF_RS = os.path.join(REPO_ROOT, "rust-modules", "media", "src", "ff.rs")
+    ADAPTIVE_RS = os.path.join(REPO_ROOT, "rust-modules", "media", "src", "adaptive.rs")
 
     def commit_format(self):
-        with open(self.FF_RS, encoding="utf-8") as fh:
+        with open(self.ADAPTIVE_RS, encoding="utf-8") as fh:
             source = fh.read()
         found = re.findall(r'"(abr: committed [^"\\]*)"', source)
         self.assertEqual(len(found), 1,
@@ -6091,6 +6364,8 @@ class DepGates(unittest.TestCase):
         "rust-modules/data/src",
         "rust-modules/session/src",
         "rust-modules/media/src",
+        # `SRC_PLAY_FEED`: the fork ledger holds the simulator's sink (`ffi_host.rs`), which lives here.
+        "rust-modules/play-feed/src",
         "rust-modules/appkit/src",
         "rust-modules/screens/src",
         "rust-modules/Cargo.toml",
@@ -6851,10 +7126,11 @@ impl PersonOwnerGateFixture {
                          "`it.revision()` is not a registry read\n" + out)
 
     def test_globals_ledger_sees_the_player_transport_readers_in_a_machine(self):
-        """RED: `transport::paused`, `transport::viewer_paused` and `preview::paused` read `TX.paused` behind
-        a function (Sans-IO lifecycle PR B), so a machine that calls one reads the registry as surely as
-        `client_for` does. Qualified, bare-after-an-import (singly, in a group, through a glob) and the
-        rename that would hide the calls are all caught; the writers (`set_paused`, `set_transport_paused`)
+        """RED: `transport::viewer_paused` (the pause-hold claim) and `preview::paused` (the preview machine's
+        process-global phase) still read process-wide state, so a machine that calls one is a site, as a
+        `client_for` call is. `transport::paused` reads the session's readout and is NOT a site any more.
+        Qualified, bare-after-an-import (singly, in a group) and the rename that would hide the calls are all
+        caught; the writers (`set_paused`, `set_transport_paused`)
         and a file that merely has a local named `paused` are not registry reads. An import that only
         ENDS in one of the module names (`plx_appkit::scrub_preview::*`, `plx_ui::hud_transport::{..}`) is not
         an import of `preview` / `transport`, so a `paused` local beside it is no site either."""
@@ -6890,13 +7166,18 @@ impl PersonOwnerGateFixture {
         self.assertNotEqual(r.returncode, 0, out)
         self.assertIn("globals:", out)
         base = f"rust-modules/{crate}/src/_check_deps_selftest_"
-        for spelling in ("transport::paused", "transport::viewer_paused", "preview::paused"):
+        for spelling in ("transport::viewer_paused", "preview::paused"):
             with self.subTest(qualified=spelling):
                 self.assertIn(f"{base}qualified.rs::qualified::{spelling}  (ledger: ", out)
+        self.assertNotIn(f"{base}qualified.rs::qualified::transport::paused  (ledger: ", out,
+                         "`transport::paused` reads the session readout, not a registry\n" + out)
+        # The alias rule keys on the getter's bare name, and `paused` is still `preview::paused`'s, so renaming
+        # `transport::paused` stays refused too (conservative: an alias the ledger cannot count).
         for line in (1, 2, 3):
             with self.subTest(rename_line=line):
                 self.assertIn(f"{base}renamed.rs:{line}\n", out + "\n")
-        for fn, spelling in (("bare", "viewer_paused"), ("bare", "paused"), ("globbed", "paused")):
+        self.assertNotIn(f"{base}globbed.rs", out, "a glob of `transport` reaching `paused()` is no registry read\n" + out)
+        for fn, spelling in (("bare", "viewer_paused"), ("bare", "paused")):
             with self.subTest(fn=fn, spelling=spelling):
                 self.assertIn(f"{base}{fn}.rs::{fn}::{spelling}  (ledger: ", out)
         self.assertEqual(out.count(f"{base}bare.rs::bare::paused  (ledger: "), 1,
@@ -7128,12 +7409,16 @@ impl PersonOwnerGateFixture {
         """RED: lifecycle.rs, the machine, reads no `crate::player::TX` (the transport contract lives in
         player/transport.rs), and the spellings stay pinned there as a zero-guard: planting `super::TX`,
         a bare `TX` and a renamed import reaches the same atomic from that file. The first two are sites
-        of their own, the rename fails outright (the calls through it are invisible)."""
+        of their own, the rename fails outright (the calls through it are invisible). The pause itself
+        is the Feed backend's `plx_play_feed::shared::FEED_TX` (and `FEED_SHARED` its callback mailbox),
+        so those spellings are pinned there too, qualified and bare."""
         rel = "rust-modules/media/src/player/lifecycle.rs"
         with open(os.path.join(self.tree, rel), encoding="utf-8") as f:
             before = f.read().count("\n")
         appended = ("\nfn planted_super_tx() -> bool {\n    super::TX.paused.load(Relaxed)\n}\n"
                     "use super::TX;\nfn planted_bare_tx() {\n    TX.commit_paused(true);\n}\n"
+                    "fn planted_feed_tx() -> bool {\n    plx_play_feed::shared::FEED_TX.paused.load(Relaxed)\n}\n"
+                    "use plx_play_feed::shared::FEED_SHARED;\nfn planted_feed_shared() {\n    FEED_SHARED.pb_state.load(Relaxed);\n}\n"
                     "use super::TX as Transport2;\n")
         r = self._append_to(rel, appended)
         out = r.stdout + r.stderr
@@ -7141,6 +7426,8 @@ impl PersonOwnerGateFixture {
         self.assertIn("globals:", out)
         self.assertIn(f"{rel}::planted_super_tx::super::TX  (ledger: ci/allow/globals/media.txt)", out)
         self.assertIn(f"{rel}::planted_bare_tx::TX  (ledger: ci/allow/globals/media.txt)", out)
+        self.assertIn(f"{rel}::planted_feed_tx::shared::FEED_TX  (ledger: ci/allow/globals/media.txt)", out)
+        self.assertIn(f"{rel}::planted_feed_shared::FEED_SHARED  (ledger: ci/allow/globals/media.txt)", out)
         rename_line = before + appended.split("\n").index("use super::TX as Transport2;") + 1
         self.assertIn(f"{rel}:{rename_line}\n", out + "\n")
 
@@ -7770,10 +8057,10 @@ impl PersonOwnerGateFixture {
         # `server_roster_gen`, `server_facts_gen`, `server_probe_result`, `session::peek_settled`,
         # `session::current_gen`, `tape::active`), +57 (57 -> 114); the forks rule gained the machine crates
         # screens/, ui/, appkit/ and machine/ (it read only data/, plex/, media/, session/), +17 (58 -> 75).
-        "globals": 114,  # production process-global reads inside machines (`ci/allow/globals/`)
+        "globals": 111,  # production process-global reads inside machines (`ci/allow/globals/`)
         # Dolby Vision setting (#1156): -1 on forks (`build_stream` takes the DV probe from `ResolveEnv`, captured
         # at the request, so its test/production read of `devcaps::dv::capability` is gone).
-        "forks": 74,  # production test/production forks in every machine crate: data/, plex/, media/, session/, screens/, ui/, appkit/, machine/ (`ci/allow/forks/`)
+        "forks": 71,  # production test/production forks in every machine crate: data/, plex/, media/, session/, screens/, ui/, appkit/, machine/ (`ci/allow/forks/`)
         "fxlanes": 11,  # Bridge::app_effect arms that do not push Fx::Deliver (`ci/allow/fxlanes/`)
     }
 
@@ -9449,6 +9736,100 @@ class FpsMock(unittest.TestCase):
         self.assertIn("[mock-only]", deep[0])
         grid = [ln for ln in p.stdout.splitlines() if ln.startswith("fps:home-grid ")]
         self.assertIn("[mock ok]", grid[0])
+
+
+class MockRouteSideReader(unittest.TestCase):
+    """`pms_route: "mock"` (`pipe_side_reader_srt`): the app plays an item of the harness's mock PMS, and the
+    case is graded on the log alone: the side reader opened on the server-selected track, anchored, and drew
+    a cue. The lines are the app's own (`subside:` in `ff_subside.rs`, `sub cue` in `ass_source.rs`)."""
+
+    CASE = next(c for c in json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                       "manifest.json")))["pipeline_cases"]
+                if c["name"] == "pipe_side_reader_srt")
+    GOOD = [
+        "route: Normalize Loudness on",
+        "enhancement: applied boost=0 loudness=1",
+        "stream: /video/:/transcode/universal/start.mkv path=/video/:/transcode/universal/start.mkv"
+        "?directStream=1&directStreamAudio=1&subtitles=none",
+        "server-selected subtitle: sid=9910013 render_idx=0",
+        "subside: open tracks=1 ordinal=0 kbps=1400",
+        "subside: anchor match=exact part_kf_ms=0 remux_kf_ms=0 disp_base_ms=0 pts_shift_ms=0 delta_ms=0 "
+        "assumed_delta_ms=0 scan_bytes=1 scan_ms=1",
+        "sub cue [10000..18000ms] len=24",
+    ]
+
+    def test_the_case_is_a_mock_route_case(self):
+        self.assertTrue(run.mock_route(self.CASE))
+        self.assertEqual(self.CASE["carrier_subtitle"], 1)
+
+    def test_its_clips_exist_in_the_pipeline_table_and_agree_with_it(self):
+        spec, remux = fixturegen.PIPE_SHAPES["pipe_side_reader_srt"], fixturegen.PIPE_SHAPES["pipe_side_reader_remux"]
+        self.assertEqual(self.CASE["carrier"], "pipe_side_reader_srt." + spec["ext"])
+        self.assertEqual(self.CASE["fixture"], "pipe_side_reader_remux." + remux["ext"])
+        self.assertEqual([s["codec"] for s in spec["subs"]], ["subrip"], "one embedded SubRip track: ordinal 0")
+        self.assertEqual(remux["subs"], [], "the remux is what the server sends for subtitles=none")
+        self.assertEqual(spec["video"], remux["video"], "the same picture: the reader's keyframe anchor matches")
+        self.assertEqual(spec["duration"], remux["duration"])
+        self.assertEqual(remux["declare"]["acodec"], "ac3")
+        self.assertLess(fixturegen.PIPE_MBIT["pipe_side_reader_srt"] * 1000, 30000, "under SIDE_MAX_PART_KBPS")
+
+    def test_the_carrier_args_select_the_subtitle_and_serve_the_remux(self):
+        self.assertEqual(
+            run.mock_fps.carrier_server_args("/p/a.mkv", 1, "/p/b.mkv"),
+            ["--extra-media", "/p/a.mkv", "--extra-media-subtitle", "1", "--transcode-fixture", "/p/b.mkv"])
+        self.assertEqual(run.mock_fps.carrier_server_args("/p/a.mkv"), ["--extra-media", "/p/a.mkv"])
+        for bad in (0, -1, True, "1"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                run.mock_fps.carrier_server_args("/p/a.mkv", bad)
+
+    def test_the_triggers_pin_the_carrier_the_enhancement_and_no_other_route(self):
+        files = dict(run.mock_route_files(self.CASE))
+        self.assertEqual(files["plxnative-play"], str(run.mock_fps.CARRIER_RK))
+        self.assertEqual(files["plxnative-audioenh"], "loudness")
+        for name in ("plxnative-playurl", "plxnative-pms-origin"):
+            self.assertNotIn(name, files)
+        with self.assertRaises(run.MockRouteRefused):
+            run.mock_route_files(self.CASE, [("plxnative-playurl", "{}")])
+        with self.assertRaises(run.MockRouteRefused):
+            run.mock_route_files(dict(self.CASE, triggers={"pms-origin": "x"}))
+
+    def grade(self, lines):
+        return dict((n, (ok, ev)) for n, ok, ev in run.evaluate_mock_route(
+            dict(self.CASE), lines + ["videoplane: BOUND"], ())[1])
+
+    def test_a_log_with_the_whole_chain_passes_the_side_reader_grades(self):
+        got = self.grade(self.GOOD)
+        self.assertTrue(got["side_reader"][0], got["side_reader"])
+        self.assertTrue(got["side_reader_anchor"][0], got["side_reader_anchor"])
+
+    def test_each_link_of_the_chain_is_graded_by_name(self):
+        for drop, side, anchor in (
+                ("subside: open", False, False), ("subside: anchor", True, False),
+                ("sub cue", False, True), ("server-selected", False, True), ("enhancement: applied", False, True)):
+            with self.subTest(drop=drop):
+                got = self.grade([ln for ln in self.GOOD if not ln.startswith(drop)])
+                self.assertEqual((got["side_reader"][0], got["side_reader_anchor"][0]), (side, anchor), got)
+
+    def test_a_cue_of_length_zero_and_a_failed_reader_are_not_a_drawn_cue(self):
+        self.assertFalse(self.grade([ln.replace("len=24", "len=0") for ln in self.GOOD])["side_reader"][0])
+        self.assertFalse(self.grade(self.GOOD[:5] + ["subside: failed"] + self.GOOD[5:])["side_reader"][0])
+
+    def test_the_wrong_track_is_refused(self):
+        self.assertFalse(self.grade([ln.replace("ordinal=0", "ordinal=1") for ln in self.GOOD])["side_reader"][0])
+
+    def test_a_missing_pack_or_a_release_install_skips_the_case(self):
+        with tempfile.TemporaryDirectory() as root, tempfile.NamedTemporaryFile() as cfg:
+            c = dict(self.CASE)
+            run._resolve_mock_route([c], root, flavour="stable", config=cfg.name)
+            self.assertIn("debug install only", c["skip"])
+            c = dict(self.CASE)
+            run._resolve_mock_route([c], root, flavour="debug", config=cfg.name)
+            self.assertIn("pipe_side_reader_srt.mkv", c["skip"])
+            open(os.path.join(root, "pipe_side_reader_srt.mkv"), "w").close()
+            c = dict(self.CASE)
+            run._resolve_mock_route([c], root, flavour="debug", config=cfg.name)
+            self.assertNotIn("skip", c)
+            self.assertEqual(c["transcode_path"], os.path.join(root, "pipe_side_reader_remux.mkv"))
 
 
 def load_tests(loader, tests, pattern):

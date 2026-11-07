@@ -86,7 +86,7 @@ implemented format set, not the complete vocabulary accepted by LG's firmware.
 
 The tier also covers Dolby Vision 8.1 (`pipe_hevc_eac3_4k_dovi_p8`), both containers, in-place seek in each of
 them, the **frame-rate axis** — `pipe_h264_1080p5994` is the only fixture in the repo that reaches
-`engine::fps_rational`'s 1001-denominator branch (`esInfo: videoFps 60000/1001`), and
+`plx_play_feed::fps_rational`'s 1001-denominator branch (`esInfo: videoFps 60000/1001`), and
 `pipe_hevc_4k_60fps` is 4K60 HEVC, the most demanding thing the device table claims; every other
 fixture in both packs is 24p — the **resolution × codec matrix** (SD/HD/FHD/UHD × h264/hevc, eight
 cells, §*The resolution × codec matrix* below), and clips played to their **end**
@@ -100,7 +100,7 @@ one below — a Play control on a detail page is server-tier by construction), a
 item transcodes because the dev set's codec table lists no AV1 decoder; see `transcode_av1_no_dp_audio`
 below for what a set that lists one would do with it). One of
 those is an app gap rather than a test gap: `devcaps` now reads `maxFrameRate` into per-codec rows,
-but only the Starfish Load's `adaptiveStreaming` ceiling clamps against it (`engine::sink_envelope`,
+but only the Starfish Load's `adaptiveStreaming` ceiling clamps against it (`plx_play_feed::sink_envelope`,
 since 2026-09-03) — the profile sent to PMS still carries no frame-rate limitation at all.
 
 - `manifest.json` — the test matrix, and **installation-independent**: the triggers each case
@@ -918,6 +918,10 @@ Append an entry to `manifest.json` → `cases`:
     // or: {"op":"resume","mode":"directplay"|"transcode","offset_s":600}
     // or: {"op":"pause_resume","delay_ms":25000,"hold_ms":6000,
     //      "min_climb_after_s":20}
+    // or, the same with a seek taken UNDER the Pause (`seek_delay_ms` counts from the autoseek
+    //  gate, 12 s into the player route; the Pause's gate is 6 s):
+    //      {"op":"pause_resume","delay_ms":10000,"hold_ms":18000,"seek_s":30,
+    //       "seek_delay_ms":14000,"min_climb_after_s":12}
   ],
   "expect": {
     "decision": "directplay",       // or "transcode"
@@ -933,7 +937,9 @@ Append an entry to `manifest.json` → `cases`:
 `run.py` derives the triggers from `operations` (`play`→`plxnative-play`, `seek`→`plxnative-autoseek`
 — for `"mode":"rapid"` the op's `script` becomes the trigger content: optional `gap=<ms>` +
 comma-separated steps, absolute `120` or tap-relative `+10`/`-10`, fired one per gap;
-`pause_resume`→one `plxnative-autopause=delay=<ms>,hold=<ms>` script;
+`pause_resume`→one `plxnative-autopause=delay=<ms>,hold=<ms>` script, plus a `plxnative-autoseek`
+when it carries `seek_s` (graded by `op_paused_seek`, which reads the log's own edge order:
+Pause, `autoseek: step`, `seek: paused frame restored`, Resume);
 `audio_switch`/`subtitle`→`plxnative-menupick`) and picks the
 per-op assertions from the `op`/`mode`. Track-menu row semantics: **audio tab** row = the
 metadata audio index (0-based, file order); **subtitles tab** row 0 = *Off*, row 1 = *Forced only*
@@ -990,6 +996,29 @@ make fixtures-pipeline          # ~0.9 GB into $FIXTURES_OUT/pipeline; ~4 min, o
 ./tests/run.py                  # runs them on the TV
 ./tests/run.py --list           # offline: what would run, at what resolution, what is missing
 ```
+
+`--extra-trigger NAME[=CONTENT]` also applies to every synthetic case, for example
+`./tests/run.py --extra-trigger plxnative-framedrop=20 --save-logs /tmp/suite`: it arms one more
+`plxnative-*` trigger beside the ones the case derives (a mock-route case refuses a name its route pins).
+
+The mock route. `pipe_side_reader_srt` (`"pms_route": "mock"`) is the one synthetic case that plays an item of the
+harness's mock PMS on the ordinary Feed route, to start the subtitle side reader (`player::subside`) with no real
+account behind it. Preconditions and order: a debug install, `--guest --mock`, the mock on the
+`src/config.local.h` address, the previous case's app closed BEFORE the mock starts (every case's mock listens on the
+same address, and an app still playing would store its `stopped` position as the carrier's `viewOffset`), and a log
+that does not show the synthetic version is not graded. There is no fixture-server stream: `carrier` (`pipe_side_reader_srt.mkv`, one embedded SubRip track) is the mock's only item,
+`carrier_subtitle: 1` makes that track the SERVER-selected one (`mock_pms.py --extra-media-subtitle 1`, so no selection
+is ever written to a server), `audio_enhancements_boot: loudness` makes the cold start the enhanced remux, and `fixture`
+(`pipe_side_reader_remux.mkv`, the same picture without the subtitle) is what the mock serves for it
+(`--transcode-fixture`). It grades the app's log: `op_audio_enhancement_subtitle` (`server-selected subtitle`,
+`subside: open` on that ordinal, no `subside: failed`, a `sub cue .. len=N>0`) plus a `subside: anchor` line after the open.
+Run it with `./tests/run.py --filter pipe_side_reader_srt` (take the TV lock first).
+
+If the TV cannot reach the fixture server over the LAN, `--fixtures-loopback --fixtures-port PORT`
+advertises the fixtures through the TV's loopback interface. Hold the TV lease and keep
+`tools/tv-ssh ssh -o ExitOnForwardFailure=yes -R PORT:127.0.0.1:PORT -N tv` running for that
+case or suite, then stop that forward when the run ends. The harness still owns and grades its
+fixture server; this option changes the advertised interface only.
 
 Nothing else is required — no `manifest.local.json`, no PMS, no token, no ratingKey, no library, no
 sharing. The TV address comes from the overlay's `tv` if you have one, else from `tools/tv-config.sh`
@@ -1165,7 +1194,7 @@ plays the same clip, lets it end, and restarts it. That needed an app change and
 one that works: `/tmp/plxnative-replay[=N]` re-arms `app.rs`'s one-shot `auto_tried` latch N times
 when a `plxnative-playurl` playback reaches EOS, so the next frame goes back through the entry it
 booted through. `teardown` clears the URL and the `ended` flag on a real stop, and
-`engine::start_bufferfeed` re-reads `player::playurl::playurl()` whenever `route::url()` is empty. One more
+`route_start::start_bufferfeed` re-reads `player::playurl::playurl()` whenever `route::url()` is empty. One more
 piece was NOT in place until 2026-09-02: the fixture entry asks the route reducer for a start
 owner directly (no `begin_playback_request` resolve in front of it), and a completed stop used to
 leave the reducer latched in `Stopping`, which refused it — one Load where the case needs two. The

@@ -7,11 +7,111 @@ use super::test_support::*;
 use super::test_support::apply_plan;
 
 #[test]
+fn a_uri_original_logical_resource_is_closed_once_on_stop() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    assert!(plx_net::net::global_init());
+    let (port, rx, server) = plan_pms_within(1, EMPTY_MC,
+        std::time::Duration::from_secs(10), true);
+    let sid = plx_plex::plex::register_for_test("uri-resource", "127.0.0.1", port,
+        "token", "uri-resource-client");
+    apply_plan(&mut ps, Plan { sid, uri_source_ready: true,
+        sess: "uri-logical-resource".to_owned(), ..Default::default() }, "rk-v");
+    scrobble_stop(&mut ps, None, None);
+    drain_scrobble();
+    // A repeated stop has no active resource to take and cannot close it twice.
+    scrobble_stop(&mut ps, None, None);
+    drain_scrobble();
+    let requests = rx.recv_timeout(std::time::Duration::from_secs(10)).expect("resource stop");
+    server.join().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].contains("/video/:/transcode/universal/stop?")
+        && requests[0].contains("session=uri-logical-resource"), "{requests:?}");
+    plx_plex::plex::reset_servers_for_test();
+}
+
+#[test]
+fn expired_uri_landing_retires_its_unstarted_logical_resource_once() {
+    use plx_playback_contract::{Fidelity, Requirements, SourceKind, TrackChoice};
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    assert!(plx_net::net::global_init());
+    let (port, rx, server) = plan_pms_within(1, EMPTY_MC,
+        std::time::Duration::from_secs(10), true);
+    let sid = plx_plex::plex::register_for_test("expired-uri", "127.0.0.1", port,
+        "token", "expired-uri-client");
+    let selection = crate::route::SourceSelection { server: sid, part_id: 3134,
+        audio_sid: 42, subtitle_sid: 0,
+        audio_contract: plx_plex::plex::AudioEnhancements::NONE };
+    let known = crate::route::uri_preflight::KnownSource { selection,
+        source: plx_playback_contract::uri::UriSource::new(
+            "https://example.invalid/expired.mkv".to_owned(), Vec::new()),
+        requirements: Requirements { source: SourceKind::ProgressiveUri,
+            video: Fidelity::Exact, audio: Fidelity::Exact,
+            audio_track: TrackChoice::Selected(42), subtitle_track: TrackChoice::Unspecified },
+        certified_dolby_vision: None, certified_subtitle_source: None,
+        expires_at: std::time::Instant::now() - std::time::Duration::from_secs(1) };
+    let mut playing = fourk_item(sid, Vec::new());
+    playing.rk = "rk-v".to_owned();
+    playing.duration_ms = Some(60_000);
+    let plan = Plan { sid, part_id: 3134, source_selection: Some(selection),
+        uri_original: Some(known), uri_source_ready: true,
+        playing: Some(playing),
+        sess: "expired-uri-resource".to_owned(), ..Default::default() };
+    assert!(begin_playback_request().is_some());
+    PLAY_GEN.store(41, Ordering::SeqCst);
+    PLAY_BUSY.store(true, Ordering::SeqCst);
+    *PLAY_SLOT.lock().unwrap_or_else(|e| e.into_inner()) = Some(PlayLanding {
+        gen: 41, trace_generation: 0, contract_revision: desired_contract_revision(),
+        candidate_purpose: CandidatePurpose::NewCandidate, plan, rk: "rk-v".to_owned() });
+    assert!(pump_play(&mut ps, &mut plx_data::stores::metadata::MetadataStore::default()).is_none());
+    scrobble_stop(&mut ps, None, None);
+    drain_scrobble();
+    let requests = rx.recv_timeout(std::time::Duration::from_secs(10)).expect("expired resource stop");
+    server.join().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].contains("/video/:/transcode/universal/stop?")
+        && requests[0].contains("session=expired-uri-resource"), "{requests:?}");
+    plx_plex::plex::reset_servers_for_test();
+}
+
+#[test]
+fn same_source_intent_keeps_spent_candidates_across_effective_audio_and_failed_retry() {
+    use super::super::backend_policy::{BackendPolicy, OfferId};
+    use plx_playback_contract::BackendKind;
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    ps.install_backends(plx_playback_contract::BackendSet::BOTH);
+    let source = crate::route::SourceSelection { server: plx_plex::plex::ServerId::from_raw(1),
+        part_id: 3134, audio_sid: 42, subtitle_sid: 0,
+        audio_contract: plx_plex::plex::AudioEnhancements::NONE };
+    let mut policy = BackendPolicy::for_request(false);
+    policy.qualify_planned_feed(OfferId::FEED_ORIGINAL);
+    assert!(policy.admitted(BackendKind::Feed, OfferId::FEED_ORIGINAL));
+    ps.backend_policy = Some(policy);
+    ps.bind_source_selection(source);
+    ps.cur_audio = Some(CarriedAudio::named(42, 1));
+    // Feed chose a different effective audio track, while the selected source Part and
+    // stream remain the same. Reapplying its plan must not buy another Original attempt.
+    apply_plan(&mut ps, Plan { sid: source.server, part_id: source.part_id,
+        source_selection: Some(source), url: "https://example.invalid/part.mkv".to_owned(),
+        audio: Some(CarriedAudio::named(99, 2)), acodec: "aac".to_owned(),
+        src_acodec: "aac".to_owned(), ..Default::default() }, "rk-v");
+    assert!(ps.backend_policy.as_ref().is_some_and(|policy|
+        policy.can_reopen(BackendKind::Feed, OfferId::FEED_ORIGINAL)));
+    // A bounded Feed re-resolve after URI expiry can fail before PMS supplies a new Part.
+    // That refusal has no new source fact, and still cannot refill the spent candidate.
+    apply_plan(&mut ps, Plan { sid: source.server, ..Default::default() }, "rk-v");
+    assert!(ps.backend_policy.as_ref().is_some_and(|policy|
+        policy.can_reopen(BackendKind::Feed, OfferId::FEED_ORIGINAL)));
+}
+
+#[test]
 #[cfg(feature = "devtriggers")]
 fn a_user_contract_requested_during_resolve_survives_the_landing() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
-    begin_playback_request();
+    begin_playback_request().expect("request admission");
     request_user_route_intent(&ps, UserRouteIntent::Retranscode);
 
     assert!(
@@ -33,7 +133,7 @@ fn a_user_contract_requested_during_resolve_survives_the_landing() {
 fn a_cancelled_resolve_has_an_explicit_terminal_phase() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
-    begin_playback_request();
+    begin_playback_request().expect("request admission");
     cancel_playback_request(&mut ps, false);
     assert!(
         claim_route_action().is_none(),
@@ -41,7 +141,7 @@ fn a_cancelled_resolve_has_an_explicit_terminal_phase() {
     );
 
     reset_player_control_for_test(&ps);
-    begin_playback_request();
+    begin_playback_request().expect("request admission");
     request_user_route_intent(&ps, UserRouteIntent::AdaptiveReload);
     cancel_playback_request(&mut ps, true);
     let action = claim_route_action().expect("the retained route lands Stable");
@@ -69,7 +169,7 @@ fn cancelling_resolve_restores_failed_even_when_its_projection_has_a_url() {
         control.phase = ControlPhase::Failed(73);
     }
 
-    begin_playback_request();
+    begin_playback_request().expect("request admission");
     { let s = &mut ps; {
         s.url = "https://example.invalid/incoming.mkv".into();
         s.cur_audio = None;
@@ -204,7 +304,7 @@ fn resolve_cannot_hide_a_live_start_transaction() {
     let attempt = claim_route_start_attempt(transaction).expect("physical Load attempt");
     let before_revision = desired_contract_revision();
 
-    assert!(!begin_playback_request());
+    assert!(begin_playback_request().is_none());
     assert_eq!(desired_contract_revision(), before_revision);
     assert_eq!(route_start_status(attempt), RouteStartStatus::Pending);
     assert!(settle_route_start(&mut ps, attempt, RouteStartResult::Started));
@@ -295,7 +395,7 @@ fn a_failed_resolve_spawn_preserves_the_old_playable_route() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     { let s = &mut ps; s.url = "https://example.invalid/still-playing.mkv".into() };
-    begin_playback_request();
+    begin_playback_request().expect("request admission");
     request_user_route_intent(&ps, UserRouteIntent::AdaptiveReload);
 
     settle_failed_resolve_spawn(&mut ps);
@@ -318,7 +418,7 @@ fn a_failed_resolve_spawn_without_an_old_url_lands_idle() {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .phase = ControlPhase::Idle;
-    begin_playback_request();
+    begin_playback_request().expect("request admission");
 
     settle_failed_resolve_spawn(&mut ps);
 
@@ -340,7 +440,7 @@ fn quality_changed_during_resolve_cannot_land_the_old_contract() {
     let _g = fresh_registry(&mut ps);
     reset_session(&mut ps);
     reset_player_control_for_test(&ps);
-    begin_playback_request();
+    begin_playback_request().expect("request admission");
     let old_contract = desired_contract_revision();
     let gen = 41;
     PLAY_GEN.store(gen, Ordering::SeqCst);
@@ -349,6 +449,7 @@ fn quality_changed_during_resolve_cannot_land_the_old_contract() {
         gen,
         trace_generation: 7,
         contract_revision: old_contract,
+        candidate_purpose: CandidatePurpose::NewCandidate,
         plan: Plan {
             url: "https://example.invalid/old-contract.mkv".into(),
             contract: plx_plex::plex::EncodeContract {
@@ -365,7 +466,7 @@ fn quality_changed_during_resolve_cannot_land_the_old_contract() {
 
     // This is the reducer half of a quality edit after ResolveEnv was snapshotted.
     begin_user_contract_boundary();
-    assert_eq!(pump_play(&mut ps, &mut plx_data::stores::metadata::MetadataStore::default()), None);
+    assert!(pump_play(&mut ps, &mut plx_data::stores::metadata::MetadataStore::default()).is_none());
     assert!(
         url(&ps).is_empty(),
         "the stale plan must never become the applied URL"
@@ -990,7 +1091,7 @@ fn audio_change_invalidates_a_pending_original_recovery() {
 
     reset_session(&mut ps);
     reset_player_control_for_test(&ps);
-    crate::player::reset_audio_track();
+    crate::player::reset_audio_track(&mut ps);
 }
 
 #[test]
@@ -1300,6 +1401,7 @@ fn abandoned_resolves_retire_the_streaming_resources_they_created() {
         gen: 1,
         trace_generation: 1,
         contract_revision: desired_contract_revision(),
+        candidate_purpose: CandidatePurpose::NewCandidate,
         plan: Plan {
             sid,
             sess: "abandoned-logical-resource".into(),
@@ -1309,17 +1411,15 @@ fn abandoned_resolves_retire_the_streaming_resources_they_created() {
         rk: "abandoned-rk".into(),
     });
 
-    assert_eq!(
-        pump_play(&mut ps, &mut plx_data::stores::metadata::MetadataStore::default()),
-        None,
-        "the superseded plan may not be installed"
-    );
+    assert!(pump_play(&mut ps, &mut plx_data::stores::metadata::MetadataStore::default()).is_none(),
+        "the superseded plan may not be installed");
 
     PLAY_GEN.store(3, Ordering::SeqCst);
     *PLAY_SLOT.lock().unwrap_or_else(|e| e.into_inner()) = Some(PlayLanding {
         gen: 3,
         trace_generation: 2,
         contract_revision: desired_contract_revision(),
+        candidate_purpose: CandidatePurpose::NewCandidate,
         plan: Plan {
             sid,
             sess: "refused-logical-resource".into(),
@@ -1328,7 +1428,7 @@ fn abandoned_resolves_retire_the_streaming_resources_they_created() {
         },
         rk: "refused-rk".into(),
     });
-    assert_eq!(pump_play(&mut ps, &mut plx_data::stores::metadata::MetadataStore::default()), None, "a refusal has no playable URL");
+    assert!(pump_play(&mut ps, &mut plx_data::stores::metadata::MetadataStore::default()).is_none(), "a refusal has no playable URL");
     assert!(
         play_refused(&ps),
         "its server verdict still reaches the error read-out"
@@ -1405,42 +1505,44 @@ fn the_visible_switch_stamp_is_the_frame_tick_and_a_landing_cannot_rewind_it() {
 /// genuinely new request (no retry) still starts at 0.
 #[test]
 fn a_retry_keeps_the_subtitle_offset_a_new_item_does_not() {
+    let mut ps = PlaybackSession::IDLE;
     let _g = plx_base::testlock::serial();
     crate::player::reset_subtitle();
     crate::player::set_subtitle_offset(2_000);
     let retry = RetryContext {
             direct_play_mode: DirectPlayMode::Auto,
         resume_ns: 0,
+        candidate_purpose: CandidatePurpose::ReopenCurrent,
         selection: Some((17, 23)),
         sub_offset_ms: crate::player::subtitle_offset_ms(),
         suppress_enhancement: false,
         sub_mode: SubMode::Track,
     };
-    reset_track_selection(plx_plex::plex::ServerId::UNSET, "rk-no-memory", Some(retry));
+    reset_track_selection(&mut ps, plx_plex::plex::ServerId::UNSET, "rk-no-memory", Some(retry));
     assert_eq!(
         crate::player::subtitle_offset_ms(),
         2_000,
         "a retry of the same item must keep the offset tuned against its subtitle",
     );
-    reset_track_selection(plx_plex::plex::ServerId::UNSET, "rk-no-memory", None);
+    reset_track_selection(&mut ps, plx_plex::plex::ServerId::UNSET, "rk-no-memory", None);
     assert_eq!(crate::player::subtitle_offset_ms(), 0, "a new item with no remembered correction starts at 0");
 
     // A sidecar's advance survives the reset (which deselects the sidecar) and is held to the
     // range of whatever the landing re-selected: kept for the sidecar, dropped for anything else.
     let advanced = RetryContext { sub_offset_ms: -2_000, ..retry };
-    reset_track_selection(plx_plex::plex::ServerId::UNSET, "rk-no-memory", Some(advanced));
+    reset_track_selection(&mut ps, plx_plex::plex::ServerId::UNSET, "rk-no-memory", Some(advanced));
     assert_eq!(crate::player::subtitle_offset_ms(), -2_000);
     crate::player::sidecar::select_without_fetch_for_test(23);
     crate::player::reclamp_subtitle_offset();
     assert_eq!(crate::player::subtitle_offset_ms(), -2_000, "the sidecar landed again");
-    reset_track_selection(plx_plex::plex::ServerId::UNSET, "rk-no-memory", Some(advanced));
+    reset_track_selection(&mut ps, plx_plex::plex::ServerId::UNSET, "rk-no-memory", Some(advanced));
     crate::player::reclamp_subtitle_offset();
     assert_eq!(
         crate::player::subtitle_offset_ms(),
         0,
         "an advance never outlives the sidecar that allowed it",
     );
-    crate::player::reset_audio_track();
+    crate::player::reset_audio_track(&mut ps);
     crate::player::reset_subtitle();
 }
 
@@ -1473,6 +1575,7 @@ fn a_refused_retry_keeps_its_position_and_full_request_for_the_next_quality() {
         RetryContext {
             direct_play_mode: DirectPlayMode::Auto,
             resume_ns: 3_600_000_000_000,
+            candidate_purpose: CandidatePurpose::ReopenCurrent,
             selection: Some((17, 23)),
             sub_offset_ms: 0,
             suppress_enhancement: false,
@@ -1679,7 +1782,7 @@ fn source_probe_reuses_live_hls_resource_instead_of_entering_adhoc_mde() {
     };
     let result = control.probe_original_while_hls(&active_route, source_plan);
     assert!(
-        matches!(result, OriginalProbeResult::Measured(sample) if sample.target_reached),
+        matches!(result, OriginalProbeResult::Measured(sample) if sample.completed),
         "the finite source response is the measurement: {result:?}",
     );
 
@@ -2300,7 +2403,7 @@ fn restored_sidecar_is_part_of_the_route_contract() {
     ));
     let start = super::apply_plan(&mut ps, &mut meta, Plan {
         sid, playing, url: "http://fixture.invalid/movie.mkv".into(), ..Default::default()
-    }, "rk-4k");
+    }, "rk-4k", CandidatePurpose::NewCandidate);
     settle_plan_start_in_unit_test(&mut ps, start);
     assert_eq!(cur_sub_sid(&ps), 77, "timeline and later audio/quality transcodes must retain the restored sidecar");
     crate::player::sidecar::reset();
@@ -2407,17 +2510,17 @@ fn a_subtitle_offset_survives_a_resume_of_the_same_item() {
     plx_base::storage_worker::drain_for_test();
 
     // a resume of the SAME item restores the correction before the resolve even starts
-    reset_track_selection(sid, "rk-resume-a", None);
+    reset_track_selection(&mut ps, sid, "rk-resume-a", None);
     assert_eq!(crate::player::subtitle_offset_ms(), 1_800, "the same item's correction comes back");
 
     // a DIFFERENT item on the same server has no record of its own
-    reset_track_selection(sid, "rk-resume-b", None);
+    reset_track_selection(&mut ps, sid, "rk-resume-b", None);
     assert_eq!(crate::player::subtitle_offset_ms(), 0, "another item has no record");
 
     // setting it back to Original forgets the record
     persist_subtitle_offset(&ps, 0);
     plx_base::storage_worker::drain_for_test();
-    reset_track_selection(sid, "rk-resume-a", None);
+    reset_track_selection(&mut ps, sid, "rk-resume-a", None);
     assert_eq!(crate::player::subtitle_offset_ms(), 0, "Original forgets the correction");
 
     plx_plex::plex::reset_servers_for_test();

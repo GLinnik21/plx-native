@@ -2038,8 +2038,8 @@ pub(crate) unsafe fn construct(
         activate_session(&mut bridge, &mut pages, &mut super::recorder::Recplay::Off)
     };
     if !controlled {
-        plx_media::player::acb_init(&mt);
-        plx_media::ff::boot(); // Live playback resource boot; controlled Home cannot invoke ABI probes.
+        super::adapters::backends::acb_init(&mt); // every backend set: the plane owner's boot facts
+        plx_media_codecs::ffi::boot(); // Codec resource boot; controlled Home cannot invoke ABI probes.
     }
                        // dev: /tmp/plxnative-logintest validates the plex.tv account path end-to-end on the device — a
                        // real typed create_pin() through the libcurl transport + DTO deserialize. Logs only the
@@ -2292,6 +2292,8 @@ pub(crate) unsafe fn construct(
     // nothing is presenting, so the first beat of a playback reports no rate rather than a
     // fabricated one.
     let play_prev: Option<(i64, u32)> = None;
+    #[cfg(feature = "play-feed")]
+    let vpres_prev = plx_media::player::VplaneMark::default();
     let running = true;
     // Dev-only panel proof: advance a red/green counter phase only after SDL_GL_SwapWindow
     // returns. Hold each colour for 30 swaps: per-buffer alternation blends yellow at 60 Hz,
@@ -2314,6 +2316,13 @@ pub(crate) unsafe fn construct(
     // what every native-session call now asks for. See `player::adapter`.
     let adapters = super::Adapters {
         player: plx_media::player::adapter::PlayerAdapter::new(mt),
+    };
+    // The session's backend set is the one the installed drivers form.
+    let (player, adapters) = {
+        let mut player = player;
+        let mut adapters = adapters;
+        super::adapters::backends::compose_backends(&mut adapters.player, &mut player.session);
+        (player, adapters)
     };
     let repause_at = 0i64;
     // ui::press click state: a grid-card OK is deferred (press-in on down, activate on the
@@ -2411,7 +2420,7 @@ pub(crate) unsafe fn construct(
     // Why the app needs this at all: the synthetic tier boots with NO Plex session, so after a
     // stream ends there is no detail page, no Play control and no key path back into the
     // player. Everything else was already in place — `teardown` clears the URL and `ended` on a
-    // real stop, and `engine::start_bufferfeed` re-reads `player::playurl::playurl()` whenever
+    // real stop, and `engine::start_bufferfeed` re-reads `plx_play_feed::playurl::playurl()` whenever
     // `route::url()` is empty — so a replay is a second trip through the entry below.
     let replay_left: u32 = if controlled { 0 } else { replay_budget(crate::dev::scenarios::replay_trigger_value().as_deref()) };
     let grid_tried = false;
@@ -2471,6 +2480,8 @@ pub(crate) unsafe fn construct(
         #[cfg(feature = "devtools")]
         fps_shown,
         play_prev,
+        #[cfg(feature = "play-feed")]
+        vpres_prev,
         hud,
         dev_hud: Default::default(),
         running,

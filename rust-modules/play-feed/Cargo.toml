@@ -1,0 +1,47 @@
+[package]
+name = "plx_play_feed"
+version = "0.0.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Buffer-feed execution, guarded transport, FFmpeg demux and native payload construction."
+repository = "https://github.com/GLinnik21/plx-native"
+publish = false
+
+[package.metadata.plx]
+mount = "play_feed"
+
+
+[lib]
+name = "plx_play_feed"
+crate-type = ["rlib"]
+
+[features]
+# The simulator's stand-in for the Starfish/ACB seam (`ffi_host`, which the application hands its
+# callback, rebase and frame sink as `Hooks`) and the `hostsim` test hooks of `shared`.
+hostsim = []
+test-support = ["plx_media_codecs/test-support"]
+devtriggers = ["plx_media_codecs/devtriggers"]
+
+[dependencies]
+# Dolby Vision RPU parse/convert/write (quietvoid's dovi_tool library, MIT): the in-app Profile 7 ->
+# 8.1 conversion in `ff::packet_to_annexb`. Pure Rust; the RPU API needs none of its optional
+# features (xml, serde, capi).
+dolby_vision = { version = "3.4", default-features = false }
+plx_playback_contract = { path = "../playback-contract" }
+plx_media_codecs = { path = "../media-codecs" }
+plx_net = { path = "../net" }
+libc = "0.2"
+plx_base = { path = "../base" }
+plx_platform = { path = "../platform" }
+# The sourceInfo envelope rewrite (`vp9_hdr`) and the dev-trigger Load payload (`playurl`) are JSON
+# text. The same specs as plx_platform and plx_net, so the lockfile gains no crate.
+serde_json = { version = "1", default-features = false, features = ["alloc", "std"] }
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+
+[dev-dependencies]
+# So `cargo test -p plx_play_feed` alone builds (the layer crates' rule): the tests share
+# `plx_base::testlock`, which the unit suite otherwise gets from its sibling packages' features.
+plx_base = { path = "../base", features = ["test-support"] }
+
+[lints]
+workspace = true

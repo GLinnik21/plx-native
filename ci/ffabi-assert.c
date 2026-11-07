@@ -72,7 +72,7 @@ SAME64(offsetof(AVStream, codecpar), 16, "OFF_STREAM_CODECPAR != 12 [host]");
 SAME32(offsetof(AVStream, time_base), 20, "OFF_STREAM_TIME_BASE != 20");
 SAME64(offsetof(AVStream, time_base), 32, "OFF_STREAM_TIME_BASE != 20 [host]");
 /* The container's per-track tags — where a track's NAME is, and the only place it is for an MP4
-   (PMS sends Stream.title for Matroska and nothing at all for MP4; see media/src/ff.rs's stream_name). The
+   (PMS sends Stream.title for Matroska and nothing at all for MP4; see play-feed/src/ff.rs's stream_name). The
    int64 start_time/duration/nb_frames ahead of it are 8-ALIGNED on ARM EABI, so there is a 4-byte
    pad after time_base that a 64-bit reading of the struct does not show — the same trap
    AVFrame.pts carries below. */
@@ -277,7 +277,7 @@ SAME(AV_CODEC_ID_H264, 27, "AV_CODEC_ID_H264 != 27");
 SAME(AV_CODEC_ID_HEVC, 172, "AV_CODEC_ID_HEVC != 172 (173 on FFmpeg 6 — the enum shifts again)");
 SAME(AV_PKT_DATA_MASTERING_DISPLAY_METADATA, 20, "AV_PKT_DATA_MASTERING_DISPLAY_METADATA != 20");
 SAME(AV_PKT_DATA_CONTENT_LIGHT_LEVEL, 22, "AV_PKT_DATA_CONTENT_LIGHT_LEVEL != 22");
-/* `player/vp9_hdr.rs` parses these two structs out of raw bytes at hard-coded offsets, so a size
+/* `play-feed/src/vp9_hdr.rs` parses these two structs out of raw bytes at hard-coded offsets, so a size
    alone cannot pin them: a reorder that keeps 88 bytes would swap fields silently. Every member is
    4-byte aligned, so the offsets are the same at both pointer widths. */
 SAME(sizeof(AVMasteringDisplayMetadata), 88, "AVMasteringDisplayMetadata size moved");

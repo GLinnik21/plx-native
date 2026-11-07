@@ -123,7 +123,9 @@ reports `currentTime` but no duration, so a duration has to come from `sourceInf
 
 ## Reproducing it
 
-1. Deploy a debug build carrying the probe (devtriggers; no `RELEASE=1` package contains it).
+1. Deploy a debug build carrying the probe (devtriggers; no `RELEASE=1` package contains it). The probe's
+   machine and transport driver arrive with the URI backend (a later PR): until then the trigger below is
+   never read, because nothing installs a probe behind the media port (`player::uriprobe_drive`).
 2. Arm a variant in the install's runtime root:
    `echo load > /tmp/com.beb.plxnative.debug/plxnative-uriprobe` (empty, `load`, `late`, `none`, or
    `drive`). The separate controlled `acb-control` and `acb-dass` arms require a fresh process,

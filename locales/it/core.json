@@ -16,6 +16,8 @@
   "core.preview_domain_line": "{label}: {values}",
   "core.preview_domain_failure_kind": "tipo di errore (inclusi i codici storici conservati)",
   "core.preview_domain_delivery": "modalità di trasmissione",
+  "core.preview_domain_backend": "motore di riproduzione",
+  "core.preview_domain_terminal_stage": "fase dell'errore finale",
   "core.preview_domain_refusal_codes": "codici di rifiuto del server: generale e transcodifica (solo se il server rifiuta)",
   "core.preview_domain_attempted_delivery": "modalità di trasmissione richiesta",
   "core.preview_domain_source_video": "codec video del file originale (solo se il server rifiuta)",

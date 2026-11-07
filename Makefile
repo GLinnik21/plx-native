@@ -15,7 +15,7 @@
 # trick pinned the binary to webOS 4.x: on anything newer the loader killed it at
 # exec(), before main, before the event log existed. Those libraries are now
 # dlopen'd by SONAME candidate list instead — rust-modules/base/src/dynlib.rs, and the
-# video-plane comment at the top of src/starfish.c. `tools/fwcompat.py` grades the
+# video-plane comment in src/video_plane.c. `tools/fwcompat.py` grades the
 # result against 14 real firmware inventories without leaving the desk.
 #
 # make          — build pkg/plxnative
@@ -263,8 +263,8 @@ SYSROOT      = $(WEBOS_SDK)/arm-webos-linux-gnueabi/sysroot
 # NDK gcc default target is cortex-a9 / armv7-a / soft-float — portable across
 # webOS 3–6 and safe on the A53 (ARMv7 barriers are `dmb`, not the ARMv6 CP15
 # `mcr p15` that SIGILLs on ARMv8). So we do NOT pin -mcpu here.
-# -Wall -Wextra -Werror: the C side is five files (boot shim, crash tracer, narrow Sentry value
-# wrapper, Starfish/ACB seam and nanosvg rasterizer) and it built without this gate until
+# -Wall -Wextra -Werror: the C side includes the boot shim, crash tracer, narrow Sentry value
+# wrapper, separate Starfish/display seams and nanosvg rasterizer and it built without this gate until
 # 2026-08-15 — so the crash tracer and the 15-symbol C++ seam, the two places where a sloppy cast is
 # least survivable, were compiled at gcc's bare default. Turning it on cost nothing: the only hit
 # in the tree is inside the fetched nanosvg, suppressed at its include in src/svg.c.
@@ -407,7 +407,7 @@ LIBS_REAL = -lSDL2 -lSDL2_ttf -lGLESv2 -lluna-service2 -lglib-2.0 \
 #   outright at webOS 5.0). A DT_NEEDED entry is a hard requirement for one exact name, cannot say
 #   "either of these", and a name the device lacks kills the process at exec() — before main,
 #   before the event log exists. So they are dlopen'd by SONAME CANDIDATE LIST:
-#   rust-modules/base/src/dynlib.rs, and the video-plane comment at the top of src/starfish.c.
+#   rust-modules/base/src/dynlib.rs, and the video-plane comment in src/video_plane.c.
 #
 #   FFmpeg is not a version question at all any more: we SHIP our own, pinned (the bundled-FFmpeg
 #   section below builds libav*-plx.so.63/63/61 and stages them into pkg/). It is unlinked because
@@ -425,8 +425,8 @@ LIBS_REAL = -lSDL2 -lSDL2_ttf -lGLESv2 -lluna-service2 -lglib-2.0 \
 # open a URL at all. `docs/agent-reference.md`'s "Linking" section carries the same account at length.
 
 # Rust-first build. The app is Rust (rust-modules/, compiled to a staticlib and
-# linked in); C is only main.c (boot shim) + starfish.c (the StarfishMediaAPIs
-# C++/ACB seam) + svg.c (nanosvg rasterizer).
+# linked in); the native playback seam is starfish.c (buffer-feed StarfishMediaAPIs)
+# plus video_plane.c (shared display binding). main.c is the boot shim; svg.c rasterizes SVGs.
 # (src/gpdebug.c is a debug-only guard-page allocator — never in the normal build.)
 # RELEASE=1 drops BOTH default cargo features — `devtools` (the on-screen seven-segment counter,
 # app.rs) and `devtriggers` (the whole /tmp surface, src/dev.rs). Neither may ship to users.
@@ -557,15 +557,21 @@ $(if $(findstring nightly,$(RUST_TOOLCHAIN)),,$(error HOST_THREADS=$(HOST_THREAD
 endif
 HOST_ENV = $(if $(filter-out 0 1,$(HOST_THREADS)),CARGO_BUILD_RUSTFLAGS='-Zthreads=$(HOST_THREADS)')
 
-RUST_FEATFLAGS = $(if $(RELEASE),--no-default-features,)$(if $(LAB), --features lab-diagnostics,)
+# `--no-default-features` drops `play-feed` too (it is in the application crate's `default`), and a
+# build with no playback backend is not a television package (`lib.rs` refuses it), so RELEASE names
+# the backend explicitly. `make check-nodef` passes the same word.
+RUST_BACKEND_FEATURES = play-feed
+RUST_FEATFLAGS = $(if $(RELEASE),--no-default-features --features $(RUST_BACKEND_FEATURES),)$(if $(LAB), --features lab-diagnostics,)
 RUST_TDIR      = target$(if $(RELEASE),-release,)$(if $(LAB),-lab,)$(if $(SYMBOLS),-sym,)
 # OVERRIDING RUST_FEATFLAGS BY HAND? PASS RUST_TDIR TOO. This dir is keyed on RELEASE, not on the
 # flag set, so `make RUST_FEATFLAGS=...` alone lands in the SAME target/ as an ordinary build:
 # cargo's staticlib looks up to date, the stamp below deletes pkg/plxnative, and make relinks the
 # PREVIOUS feature set without a word. Exactly the stale-artifact trap the stamp exists to prevent,
 # one step removed — and it burned two builds while shooting the README screenshots (which want
-# devtriggers ON and devtools OFF, a combination neither RELEASE nor the default gives). Correct:
-#   make RUST_FEATFLAGS="--no-default-features --features devtriggers" RUST_TDIR=target-shots deploy
+# devtriggers ON and devtools OFF, a combination neither RELEASE nor the default gives). The set
+# must name the playback backend too (`$(RUST_BACKEND_FEATURES)`): a hand-set RUST_FEATFLAGS replaces
+# everything, and an ARM build with no backend is refused by `lib.rs`. Correct:
+#   make RUST_FEATFLAGS="--no-default-features --features devtriggers,play-feed" RUST_TDIR=target-shots deploy
 
 # WHICH VERSION THE BINARY REPORTS, which is not always the version it was cut from. A release
 # commit leaves the whole tree at the version it just published, so every developer build after it
@@ -975,7 +981,7 @@ $(FFABI_STAMP): ci/ffabi-assert.c $(FFMPEG_INC)/libavformat/avformat.h Makefile
 # rule would leave every later `make` linking a library built by the OLD one. Cargo's own
 # `rerun-if-changed` cannot save that — it is only consulted when make decides to invoke cargo at
 # all, and this target is an ordinary timestamp comparison.
-RUST_INPUTS := $(shell find rust-modules/src rust-modules/base rust-modules/machine rust-modules/net rust-modules/platform rust-modules/gfx rust-modules/ui rust-modules/plex rust-modules/telemetry rust-modules/data rust-modules/session rust-modules/media rust-modules/playback-contract rust-modules/media-codecs rust-modules/appkit rust-modules/screens rust-modules/build_support locales assets -type f 2>/dev/null)
+RUST_INPUTS := $(shell find rust-modules/src rust-modules/base rust-modules/machine rust-modules/net rust-modules/platform rust-modules/gfx rust-modules/ui rust-modules/plex rust-modules/telemetry rust-modules/data rust-modules/session rust-modules/media rust-modules/playback-contract rust-modules/play-feed rust-modules/media-codecs rust-modules/appkit rust-modules/screens rust-modules/build_support locales assets -type f 2>/dev/null)
 $(RUST_LIB): LICENSE $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock rust-modules/build.rs ci/install-identities.json rust-modules/.cargo/config.toml Makefile ci/check-staticlib-artifact.py $(FFABI_STAMP)
 	@# BEFORE the mkdir: the seed is only ever cloned into a target dir that does not exist yet.
 	$(CARGO_SEED) restore $(RUST_TDIR) rust-modules/$(RUST_TDIR)
@@ -1628,7 +1634,7 @@ check-cargo-lint: lint
 	@# gate has nothing to reuse a cache for. No `pkg/lab.json` is involved — that file is `make
 	@# LAB=1`'s requirement (a live session secret), not the compiler's.
 	@set -e; cd rust-modules && CARGO_INCREMENTAL=0 PATH="$$HOME/.cargo/bin:$$PATH" \
-	  cargo +$(RUST_TOOLCHAIN) check --lib --tests -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_media_codecs -p plx_appkit -p plx_screens --features lab-diagnostics
+	  cargo +$(RUST_TOOLCHAIN) check --lib --tests -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens --features lab-diagnostics
 	@# And the demo-video dump build's pixel oracle, `placeholder-sentinel`: in no default set and
 	@# built only by `make site-video-sim`, which no gate runs and which compiles no `plx_ui` tests, so
 	@# this line is what keeps it compiling (its code AND its tests, `--tests`). `plx_ui` is the only
@@ -1647,7 +1653,7 @@ check-cargo-lint: lint
 # `-p` lists in the recipes below (those stay literal because ci/test_ci_split.py greps for them);
 # ci/test_test_crate.py pins the two equal.
 UNIT_RUN = python3 ../tools/cargo-test-parallel.py
-UNIT_SUITE = plxnative-modules plx_base plx_machine plx_platform plx_gfx plx_net plx_ui plx_plex plx_telemetry plx_data plx_session plx_media plx_playback_contract plx_media_codecs plx_appkit plx_screens
+UNIT_SUITE = plxnative-modules plx_base plx_machine plx_platform plx_gfx plx_net plx_ui plx_plex plx_telemetry plx_data plx_session plx_media plx_playback_contract plx_play_feed plx_media_codecs plx_appkit plx_screens
 
 # The default-feature unit suite and everything that drives cargo through ci/ self-tests.
 check-cargo-unit-default:
@@ -1676,7 +1682,7 @@ check-cargo-unit-default:
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
 	  $(TELEMETRY_ENV) \
 	  $(HOST_ENV) \
-	  $(UNIT_RUN) -- cargo +$(RUST_TOOLCHAIN) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_media_codecs -p plx_appkit -p plx_screens
+	  $(UNIT_RUN) -- cargo +$(RUST_TOOLCHAIN) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens
 	RUST_TOOLCHAIN=$(RUST_TOOLCHAIN) python3 ci/test_storage_service_package.py
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" cargo +$(RUST_TOOLCHAIN) test -p plxnative-storage --bin plxnative-storage
 	@# The helper is its own package, so building it compiles no copy of the app library; this reads
@@ -1700,7 +1706,7 @@ check-cargo-unit-default:
 # The `hostsim` unit suite (the host feed seam exists only there).
 check-cargo-unit-hostsim:
 	@# The SAME suite as `check-cargo-unit-default`'s `cargo test --lib`, again under `hostsim`, which is
-	@# not a duplicate run: the host feed seam (`player/ffi_host.rs`) only exists in that configuration,
+	@# not a duplicate run: the host feed seam (`play-feed/src/ffi_host.rs`) only exists in that configuration,
 	@# so every test that drives an AU through `sf_feed` is COMPILED OUT of the default pass and cannot fail it. The prime-livelock
 	@# regression is one of those, and it guards the 94-second freeze of 2026-08-29 — a defect that
 	@# was invisible to all 1398 default-feature tests because the seam it needs was not there.
@@ -1710,7 +1716,7 @@ check-cargo-unit-hostsim:
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
 	  $(TELEMETRY_ENV) \
 	  $(HOST_ENV) \
-	  $(UNIT_RUN) -- cargo +$(RUST_TOOLCHAIN) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_media_codecs -p plx_appkit -p plx_screens --features hostsim
+	  $(UNIT_RUN) -- cargo +$(RUST_TOOLCHAIN) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens --features hostsim
 
 # OPT-IN incremental inner loop: the default-feature unit suite (the same `cargo test --lib` as
 # `check-cargo-unit-default`, same throwaway runtime root and telemetry env) with
@@ -1734,7 +1740,7 @@ test-fast:
 	  PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
 	  $(TELEMETRY_ENV) \
 	  $(HOST_ENV) \
-	  $(UNIT_RUN) $(if $(T),--filter '$(T)') -- cargo +$(RUST_TOOLCHAIN) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_media_codecs -p plx_appkit -p plx_screens
+	  $(UNIT_RUN) $(if $(T),--filter '$(T)') -- cargo +$(RUST_TOOLCHAIN) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens
 
 # `make test-crate C=plx_ui [T=filter] [DEPS=1]` -- build and run ONLY the named crate's lib tests, in
 # the same incremental `$(TEST_FAST_TDIR)` tree and with the same flags as `test-fast`, so the two
@@ -1817,8 +1823,9 @@ FUZZ_TDIR = target-fuzz
 fuzz-hud:
 	@PATH="$$HOME/.cargo/bin:$$PATH" python3 tools/fuzz-hud.py run --secs $(or $(strip $(SECS)),60) $(T)
 
-# `make check-nodef` -- type-check the SHIPPING feature set (`--no-default-features`: devtools,
-# devtriggers and threadcheck off, what `RELEASE=1` builds). `make check`, `make` and `make sim` all
+# `make check-nodef` -- type-check the SHIPPING feature set (`--no-default-features` plus the
+# playback backend, `$(RUST_BACKEND_FEATURES)`: devtools, devtriggers and threadcheck off, what
+# `RELEASE=1` builds). `make check`, `make` and `make sim` all
 # build the DEV features, so a break that only the release set has is invisible to every one of them
 # (docs/agent-reference.md; AGENTS.md says when to run it). It replaces the hand command
 # `CARGO_INCREMENTAL=0 cargo +<pin> check --manifest-path rust-modules/Cargo.toml --lib
@@ -1842,11 +1849,17 @@ fuzz-hud:
 # fresh lane whose first cargo call is this one would otherwise create `target` unseeded and every
 # later `make check` there would build third-party cold. `CARGO_INCREMENTAL=0`: a one-shot gate has
 # no use for an incremental cache, and (unlike `test-hostsim`) there is no loop here.
+#
+# THE BACKEND IS NOT OPTIONAL HERE. `--no-default-features` also drops `play-feed` (it is in the
+# application crate's `default`), so the bare flag would type-check a build with no playback backend
+# at all: not the Feed crate, none of the `cfg(feature = "play-feed")` code in the application, and
+# not `dolby_vision` and the rest of play-feed's third-party tree, all of which the release ships.
+# `RELEASE=1` passes the backend feature explicitly (`RUST_FEATFLAGS`), so this passes the same one.
 .PHONY: check-nodef
 check-nodef:
 	$(CARGO_SEED) restore target rust-modules/target --env-var CARGO_TARGET_DIR --env-base rust-modules
 	@set -e; cd rust-modules && CARGO_INCREMENTAL=0 PATH="$$HOME/.cargo/bin:$$PATH" \
-	  cargo +$(RUST_TOOLCHAIN) check --lib --no-default-features
+	  cargo +$(RUST_TOOLCHAIN) check --lib --no-default-features --features $(RUST_BACKEND_FEATURES)
 
 # `make build-bench [ARGS='--runs 5 --json out.json']` -- the repeatable local build benchmark
 # (tools/build-bench.py; docs/agent-reference.md says what it measures and when a PR must paste its
@@ -2437,7 +2450,9 @@ check-replay: sim-macos
 # OUT or CHECK exported by some other script (tests/focusfp.sh has an OUT) would otherwise move
 # the figures elsewhere or silently render everything twice.
 # Its own simulator build: `--no-default-features` drops `devtools` (the on-screen frame counter is
-# not part of the product) and `devtriggers` comes back because scenes are reached through them.
+# not part of the product), `devtriggers` comes back because scenes are reached through them, and
+# `play-feed` comes back because the simulator's video sink is the Feed backend's (without it the build
+# selects no backend and Play can only reach the failure read-out).
 # Its own target dir, for this file's feature-set rule. `CARGO_INCREMENTAL=0`: a one-shot build.
 SHOT_TDIR ?= $(SIM_TDIR)-shots
 SHOT_BIN   = $(SHOT_TDIR)/debug/plxnative-sim
@@ -2448,7 +2463,7 @@ SHOT_HERO   ?=
 SHOT_HERO_VARIANTS ?=
 screenshots-sim: $(FFMPEG_HOST_STAGED) $(LIBASS_HOST_STAGED) pkg/.ffabi-host-ok
 	CARGO_INCREMENTAL=0 cargo +$(RUST_TOOLCHAIN) build --manifest-path rust-modules/Cargo.toml --target-dir $(SHOT_TDIR) \
-	  --no-default-features --features hostsim,devtriggers --bin plxnative-sim
+	  --no-default-features --features hostsim,play-feed,devtriggers --bin plxnative-sim
 
 demo-library:
 	python3 tools/demo_library.py derive
@@ -2470,7 +2485,8 @@ sim-linux: $(LIBASS_HOST_STAGED)
 # The demo video's frame-dump simulator (`rust-modules/src/dev/framedump.rs`; `tools/site_video.py render`
 # drives it). Release, because a dump is a render of thousands of 1080p frames; its own target dir,
 # because the feature set differs from every other simulator build; `--no-default-features` because
-# `devtools` draws a frame counter into the picture, and `placeholder-sentinel` because the second
+# `devtools` draws a frame counter into the picture, `play-feed` because that also drops the Feed
+# backend the simulator's sink belongs to, and `placeholder-sentinel` because the second
 # oracle is the sentinel colour. Like `sim-linux` it needs only libass: the storyboard plays no
 # video, so no host FFmpeg (whose staged names are `.dylib`s, which is what keeps
 # `screenshots-sim` macOS-only). It builds on macOS (previews) and on Linux, where
@@ -2480,7 +2496,7 @@ SITE_VIDEO_BIN   = $(SITE_VIDEO_TDIR)/release/plxnative-sim
 site-video-sim: $(LIBASS_HOST_STAGED)
 	CARGO_INCREMENTAL=0 cargo +$(RUST_TOOLCHAIN) build --release --manifest-path rust-modules/Cargo.toml \
 	  --target-dir $(SITE_VIDEO_TDIR) --no-default-features \
-	  --features hostsim,devtriggers,placeholder-sentinel --bin plxnative-sim
+	  --features hostsim,play-feed,devtriggers,placeholder-sentinel --bin plxnative-sim
 
 # Compatibility spelling used by the Windows launcher and existing documentation.
 sim-wsl: sim-linux
@@ -2512,7 +2528,7 @@ sim-macos-token:
 
 # `make sim-play` — a REAL playback session on this Mac, with no television and no Plex.
 #
-# Arms the CLOCK SINK (`rust-modules/media/src/player/ffi_host.rs`): access units are accepted, discarded,
+# Arms the CLOCK SINK (`rust-modules/play-feed/src/ffi_host.rs`): access units are accepted, discarded,
 # and a presentation clock advances at real time, reporting position at the television's own
 # measured 5 Hz. Nothing decodes. What that exercises is everything between the demuxer and the
 # decoder — the AU queues and their byte-cap backpressure, the feed-ahead throttle, the engine's
@@ -2552,7 +2568,7 @@ sim-macos-clean:
 # note (what it can and cannot do — chiefly: no video off-device).
 #
 # Its own target dir, per this file's rule for feature-set splits: this one is `--release
-# --no-default-features --features hostsim`, which is a fourth configuration, and sharing a dir
+# --no-default-features --features hostsim,play-feed`, which is a fourth configuration, and sharing a dir
 # with `sim` would make each invocation rebuild the crate the other way round.
 MACAPP_TDIR ?= rust-modules/target-macapp
 

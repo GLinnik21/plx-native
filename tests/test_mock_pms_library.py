@@ -1200,6 +1200,52 @@ class DoviAndExtraMedia(unittest.TestCase):
                 server.server_close()
 
 
+@unittest.skipUnless(HAS_FFMPEG_AND_FFPROBE, "no ffmpeg/ffprobe")
+class ExtraMediaSubtitle(unittest.TestCase):
+    """`--extra-media-subtitle N`: the Nth subtitle stream of an `--extra-media` file is the server-selected
+    one (`selected` on it alone), the file's `default` flag untouched: the shape PMS reports when a profile's
+    subtitle preference picks an embedded track, which the app reads as `server-selected subtitle: ...`."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        root = pathlib.Path(cls.tmp.name)
+        for n, text in enumerate(("1\n00:00:00,000 --> 00:00:01,000\nA\n", "1\n00:00:00,000 --> 00:00:01,000\nB\n")):
+            (root / f"s{n}.srt").write_text(text, encoding="utf-8")
+        cls.clip = root / "two-subs.mkv"
+        subprocess.check_call([
+            "ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "color=size=64x64:rate=24:duration=1",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+            "-i", str(root / "s0.srt"), "-i", str(root / "s1.srt"),
+            "-map", "0:v", "-map", "1:a", "-map", "2", "-map", "3", "-c:v", "libx264", "-c:a", "aac", "-c:s", "srt",
+            "-metadata:s:s:0", "language=eng", "-metadata:s:s:1", "language=deu",
+            "-disposition:s:0", "0", "-disposition:s:1", "0", "-t", "1", str(cls.clip)])
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def subs(self, lib):
+        streams = lib.items[EXTRA_MEDIA_RK_BASE]["Media"][0]["Part"][0]["Stream"]
+        return [(s["languageCode"], s["selected"]) for s in streams if s["streamType"] == 3]
+
+    def test_without_the_flag_no_subtitle_is_selected(self):
+        self.assertEqual(self.subs(Library(movies=0, extra_media=[self.clip])), [("eng", False), ("deu", False)])
+
+    def test_the_flag_selects_the_nth_subtitle_and_only_that_one(self):
+        for n, want in ((1, [("eng", True), ("deu", False)]), (2, [("eng", False), ("deu", True)])):
+            with self.subTest(n=n):
+                self.assertEqual(self.subs(Library(movies=0, extra_media=[self.clip], extra_media_subtitle=n)), want)
+
+    def test_an_ordinal_the_file_cannot_satisfy_is_refused_at_startup(self):
+        for bad in (0, -1, 3):
+            with self.subTest(n=bad), self.assertRaises(ValueError):
+                Library(movies=0, extra_media=[self.clip], extra_media_subtitle=bad)
+
+    def test_it_needs_extra_media(self):
+        with self.assertRaises(ValueError):
+            Library(movies=0, extra_media_subtitle=1)
+
 class PartFaults(unittest.TestCase):
     """`--cut-part-after` and `--part-range-answers-200`: opt-in faults on media part bytes, for
     reproducing a direct-play body cut (and a server that ignores Range) against the mock."""

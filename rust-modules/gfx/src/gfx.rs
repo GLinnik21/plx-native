@@ -3399,7 +3399,7 @@ pub fn draw_tex_carded_blend(tex: c_uint, next: c_uint, mix: f32, crop: [f32; 4]
 /// premultiplied colour over a transparent clear (see the blend note in the GL setup above), so
 /// the panel shows `ui.rgb + video.rgb * (1 - ui.a)`; drawing the picture with
 /// `(ONE_MINUS_DST_ALPHA, ONE)` computes exactly that, and leaves the surface opaque. Used by
-/// `player::sim_video` for the screenshot pipeline's player figure; restores the app's blend.
+/// `app::adapters::hostsim::sim_video` for the screenshot pipeline's player figure; restores the app's blend.
 #[cfg(feature = "hostsim")]
 pub fn draw_under(tex: c_uint, x: f32, y: f32, w: f32, h: f32) {
     unsafe {

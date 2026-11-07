@@ -16,6 +16,8 @@
   "core.preview_domain_line": "{label} : {values}",
   "core.preview_domain_failure_kind": "type d’échec (codes historiques conservés inclus)",
   "core.preview_domain_delivery": "mode de diffusion",
+  "core.preview_domain_backend": "moteur de lecture",
+  "core.preview_domain_terminal_stage": "étape de l’échec final",
   "core.preview_domain_refusal_codes": "codes de décision du serveur, généraux et de transcodage (rapports de refus uniquement)",
   "core.preview_domain_attempted_delivery": "diffusion tentée",
   "core.preview_domain_source_video": "codec vidéo source (rapports de refus uniquement)",
