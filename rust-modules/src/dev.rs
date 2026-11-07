@@ -184,10 +184,11 @@ const DIAG: [&str; 48] = [
     // embedded subtitle stream to draw over a plain remux, read at each playback start.
     "plxnative-subside",
     // The URI-mode probe (`media::player::uriprobe_drive`, issue #1064): content = `load`, `late`
-    // or `none` (empty = `load`), read at each playback start. It changes how ONE play is carried
-    // out and nothing about the boot: the tester signs in and picks a profile as always, then
-    // plays a title. A non-DIAG trigger would suppress the who's-watching picker and move that
-    // boot away from the one the probe is meant to run on.
+    // or `none` (empty = `load`), read at each playback start ONCE a probe is installed behind the
+    // media port (the URI backend, a later PR: on this tree nothing installs one, so the file is
+    // never read). It changes how ONE play is carried out and nothing about the boot: the tester
+    // signs in and picks a profile as always, then plays a title. A non-DIAG trigger would suppress
+    // the who's-watching picker and move that boot away from the one the probe is meant to run on.
     "plxnative-uriprobe",
 ];
 

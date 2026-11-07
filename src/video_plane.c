@@ -247,8 +247,8 @@ long acb_create(const char *appId, int playerType) {
     }
     return g_acb;
 }
-/* The URI bind (the production backend and the developer probe, both through play-uri's
- * `acb_bind`) uses the same process-lifetime boot handle and callback as BF. These split the
+/* The paced ACB bind (the URI backend and the developer probe, both a later PR's) uses the same
+ * process-lifetime boot handle and callback as BF. These split the
  * existing bind solely to preserve observed inter-call delays. */
 /* Same device SHA pinned above: initialize wrapper@0x15c4c forwards core@0xcd5c.
  * Core returns exactly 1 only after valid parameters and callback installation; 0 refuses.

@@ -437,7 +437,7 @@ pub struct PlayerAdapter {
     /// main thread may. Absent from a release build.
     #[cfg(feature = "devtriggers")]
     uri: Option<Box<dyn super::uriprobe_drive::UriProbeSession>>,
-    /// The application's probe (`dev::uriprobe`), installed at boot: it reads the trigger text and
+    /// The application's probe, installed at boot: it reads the trigger text and
     /// opens the [`uri`](Self::uri) session. Absent when nothing composed one, and then the trigger
     /// file is not read.
     #[cfg(feature = "devtriggers")]
@@ -2056,7 +2056,7 @@ impl PlayerAdapter {
     pub(super) fn uri_acb_exit_quarantine(&self) -> bool { self.uri.as_ref().is_some_and(|session| session.acb_exit_quarantine()) }
 
     /// [`uri_acb_exit_quarantine`](Self::uri_acb_exit_quarantine) for a suite outside this crate
-    /// (`dev::uriprobe`'s tests); the product reads it only inside `exit_native`.
+    /// (the application probe's tests); the product reads it only inside `exit_native`.
     #[cfg(all(feature = "devtriggers", any(test, feature = "test-support")))]
     pub fn uri_acb_exit_quarantine_for_test(&self) -> bool { self.uri_acb_exit_quarantine() }
 
@@ -2068,7 +2068,7 @@ impl PlayerAdapter {
         self.uri = Some(session);
     }
 
-    /// Install the application's probe at boot (`dev::uriprobe`). A later install replaces it; a
+    /// Install the application's probe at boot. A later install replaces it; a
     /// session already open keeps running under the probe which opened it.
     #[cfg(feature = "devtriggers")]
     pub fn install_uri_probe(&mut self, probe: Box<dyn super::uriprobe_drive::UriProbe>) {
@@ -2076,7 +2076,7 @@ impl PlayerAdapter {
     }
 
     /// Seat a probe session the way `uriprobe_drive::start` does, for a suite outside this crate that
-    /// drives a session it built over a scripted transport (`dev::uriprobe`'s tests).
+    /// drives a session it built over a scripted transport (the application probe's tests).
     #[cfg(all(feature = "devtriggers", any(test, feature = "test-support")))]
     pub fn install_uri_for_test(&mut self, session: Box<dyn super::uriprobe_drive::UriProbeSession>) {
         self.install_uri(session);

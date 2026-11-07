@@ -1,8 +1,7 @@
 //! Adapter integration tests for source-selected URI controls and route projection, over the
 //! contract's scriptable `FakeUriDriver`: what the adapter does with the events a URI driver
 //! publishes. The native `selectTrack` round trip (acknowledgement, `trackSelected`, request-id
-//! retirement) is the product driver's and is covered through a real `UriBackend` in the
-//! application's `run_uri_boot_tests`.
+//! retirement) is the URI backend's and is covered with it.
 use super::*;
 use plx_playback_contract::test_support::{FakeUriDriver, FakeUriHandle};
 use plx_playback_contract::uri::NativeTrackIndex;

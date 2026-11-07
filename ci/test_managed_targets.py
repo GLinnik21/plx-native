@@ -18,7 +18,7 @@ matters, that neither can put a cargo tree outside the checkout:
 * `check-nodef` sets no target dir of its own (so cargo's default, `rust-modules/target`, or the
   `CARGO_TARGET_DIR` a fleet lane exports for `make check` too), runs the non-incremental
   `check --lib --no-default-features --features play-feed` (the shipping set:
-  `--no-default-features` alone would also drop both playback backends) and never carries HOST_ENV
+  `--no-default-features` alone would also drop the playback backend) and never carries HOST_ENV
   or the telemetry words (they would change the third-party units it shares with `make lint`);
 * neither is part of `make check`, and both sit in SIDE_EFFECT_FREE so a dry run or a call from
   another configuration cannot delete a built release binary;

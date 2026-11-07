@@ -50,7 +50,7 @@ pub mod recovery; // the failed-open ladder (pure machine); `pump` drives it
 pub mod release; // the native object's off-frame release lifecycle (pure machine); `engine` runs it
 mod route_start; // common transaction admission and release-queued start policy
 #[cfg(feature = "devtriggers")]
-pub mod uriprobe_drive; // the URI-mode probe's route half and its port (issue #1064, dev trigger `plxnative-uriprobe`): the route-start settle and the adapter slot; the probe itself is the application's (`dev::uriprobe`), over the play-uri crate's `uriprobe`
+pub mod uriprobe_drive; // the URI-mode probe's route half and its port (issue #1064, dev trigger `plxnative-uriprobe`): the route-start settle and the adapter slot; the probe itself is the application's and arrives with the URI backend
 pub mod attempt_metrics; // pure logical-request and physical-attempt measurement reducer
 mod pump; // gated: the per-frame tick reads and drives `FEED_SHARED`/`FEED_TX` and `plx_play_feed::feed_pump`
 pub mod report;
@@ -91,7 +91,7 @@ pub use plx_data::metadata::track_names::TrackNames;
 use plx_playback_contract::feed::HlsPauseCompletion;
 use plx_playback_contract::feed::{UserPauseOutcome, UserResumeOutcome};
 
-/// The process's ACB plane owner: the one holder of the video-plane binding for both backends,
+/// The process's ACB plane owner: the one holder of the video-plane binding for every backend,
 /// booted once by the application's `acb_init` (`app/adapters/backends.rs`). It replaces the old `ACB_OK` / `PTYPE` statics.
 pub(crate) fn plane() -> &'static plx_platform::tv::plane::PlaneOwner {
     plx_platform::tv::plane::installed()
@@ -288,7 +288,7 @@ pub use engine::{
     start_bufferfeed, start_bufferfeed_tracked,
 };
 /// [`exit_native`] with the clock and the idle wait the caller names: a suite outside this crate
-/// ticks a scripted clock past the release deadline (`dev::uriprobe`'s tests).
+/// ticks a scripted clock past the release deadline (the application probe's tests).
 #[cfg(any(test, feature = "test-support"))]
 pub use route_start::exit_native_with;
 pub use route_start::{begin_resume, exit_native, land_resume, retire_if_server_stopped, stop_bufferfeed,

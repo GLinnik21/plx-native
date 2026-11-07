@@ -1,9 +1,9 @@
 //! The URI probe's route half and its port (issue #1064, dev trigger `plxnative-uriprobe`). Route
 //! ownership stays here: the claimed start attempt, the settle into the route reducer, the facts the
 //! attempt view takes, the adapter's one probe slot and when it is freed, and every `uriprobe:` line
-//! the route side writes. The probe itself, the independent driver over the URI transport and the
-//! machine it steps (the play-uri crate's `uriprobe` and `uriprobe_drive`), is the application's: it
-//! implements [`UriProbe`] and [`UriProbeSession`] (`dev::uriprobe`) and installs them at boot
+//! the route side writes. The probe itself, an independent driver over the URI transport and the
+//! machine it steps, is the application's (it arrives with the URI backend): it
+//! implements [`UriProbe`] and [`UriProbeSession`] and installs them at boot
 //! ([`PlayerAdapter::install_uri_probe`](super::adapter::PlayerAdapter::install_uri_probe)), so this
 //! crate names neither the driver nor its types. Without an installed probe the trigger file is not
 //! even read.
@@ -147,17 +147,17 @@ pub(super) fn stop(ps: &mut PlaybackSession, pa: &mut super::adapter::PlayerAdap
 }
 
 /// [`stop`] for a suite outside this crate that drives a session it built over a scripted
-/// transport (`dev::uriprobe`'s tests); the product reaches it only through `begin_teardown` and
+/// transport (the application probe's tests); the product reaches it only through `begin_teardown` and
 /// `exit_native`.
 #[cfg(any(test, feature = "test-support"))]
 pub fn stop_for_test(ps: &mut PlaybackSession, pa: &mut super::adapter::PlayerAdapter) {
     stop(ps, pa);
 }
 
-/// The port, driven through the trait objects with scripted fakes: no play-uri, no transport. These
+/// The port, driven through the trait objects with scripted fakes: no transport. These
 /// pin what media keeps (the route half): when a session is installed and refused, how a reply
 /// settles the route start, which facts reach the attempt view, and when the slot is freed. What the
-/// probe DOES on the bus is the application's implementation and its tests (`dev::uriprobe`).
+/// probe DOES on the bus is the application's implementation and its tests.
 #[cfg(test)]
 mod port_tests {
     use super::*;

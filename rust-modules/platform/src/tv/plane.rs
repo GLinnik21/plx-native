@@ -16,16 +16,17 @@
 //! The plane owner also tracks the other half of a URI bind: the full-screen window and
 //! `setState(PLAYING)` that end it. [`PlaneOwner::show`] dispatches them and [`Shown`] says whether
 //! the firmware has completed BOTH (event 1, matched on each call's own task id, never the event
-//! alone). That is necessary evidence for a picture, not proof of one; the URI backend combines it
-//! with the service's `playing` and a clock advance (`play-uri`'s `picture_gate`).
+//! alone). That is necessary evidence for a picture, not proof of one; a URI backend (a later PR)
+//! combines it with the service's `playing` and a clock advance.
 //!
 //! **Shape.** [`Plane`] is the pure machine (no clock, no global, no IO: time arrives as `now_ms`
 //! in events, work leaves as [`Fx`]). [`PlaneOwner`] is its runner: the single holder of the
 //! machine, the only consumer of the sink's completion mailbox ([`CompletionQueue`], the shape of
-//! `uri::ReplyQueue`), and the one monotonic clock the machine's deadlines are measured on. Both
-//! backends (Feed's `plane_bind`/`plane_unload`, the URI probe's ACB experiment) go through it, so
-//! "one binding at a time" holds across them. The mailbox static itself lives in the webOS port
-//! (`webos::video_sink`), which is the only place that has a library thread to receive from.
+//! `uri::ReplyQueue`), and the one monotonic clock the machine's deadlines are measured on. Every
+//! backend (today the Feed's `plane_bind`/`plane_unload`; the URI backend's paced bind in a later PR)
+//! goes through it, so "one binding at a time" holds across them. The mailbox static itself lives in
+//! the webOS port (`webos::video_sink`), which is the only place that has a library thread to receive
+//! from.
 use super::sink::{DisplaySink, PlaneFinish, PlaneUnload};
 use plx_base::task::MainThread;
 use std::collections::VecDeque;

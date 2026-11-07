@@ -65,7 +65,6 @@ import atexit
 import contextlib
 import datetime as datetime_module
 import functools
-import ipaddress
 import json
 import math
 import os
@@ -94,7 +93,7 @@ CONFIG_LOCAL_H = os.path.join(REPO_ROOT, "src", "config.local.h")
 TV_SSH = os.path.join(REPO_ROOT, "tools", "tv-ssh")  # key-first ssh/scp front door; see its header
 
 sys.path.insert(0, TESTS_DIR)
-from serve_fixtures import serve, default_root as serve_fixtures_default_root, ABR_FIXTURE, abr_playlist_rungs  # noqa: E402  (needs TESTS_DIR on the path first)
+from serve_fixtures import serve, default_root as serve_fixtures_default_root  # noqa: E402  (needs TESTS_DIR on the path first)
 import mock_fps  # noqa: E402  (the --mock tier; same path juggling as above)
 sys.path.insert(0, TOOLS_DIR)
 import tv_config  # noqa: E402  (the TV address: tools/tv-config.sh is the one lookup)
@@ -1549,692 +1548,27 @@ def a_codec(lines, expected, min_width, size=None):
     return ok, f"codec={name} {w}x{h} (want {want}) :: {ln.strip()}"
 
 
-# ---------------------------------------------------------------------------------------------
-# URI mode. A case whose own `triggers` arm `uriprobe`, or that says `"uri_route": "product"`, plays
-# through the TV's NATIVE player, not the app's buffer feed, so none of the Feed vocabulary
-# (`stream: ... path=`, `load:`, media-position samples) is ever written. Two routes, one set of graders:
-#   probe    the developer probe (`uriprobe`): evidence is `uriprobe: t=<ms since arm> ...` lines;
-#   product  the PRODUCTION URI backend, ACB-bound, on the debug-only dev route (`plxnative-uridev`):
-#            evidence is `uri-trace: t=<ms> ...` lines whose event text is the probe's, plus the
-#            plane and backend lines production writes (`uri: service playing`, `uri: presented`).
-# `evaluate_pipeline` runs this branch INSTEAD of the Feed checks.
-# ---------------------------------------------------------------------------------------------
-URI_PROBE, URI_PRODUCT = "probe", "product"
-URI_EXPECT_KEYS = ("uri_playing", "uri_plane_bound", "uri_clock_past_s", "uri_max_stall_s",
-                   "uri_drain_warning_s", "uri_presented", "uri_service_playing", "uri_audio_selected")
-# Lines only the production backend writes: on a probe case they grade nothing, so they are unknown there.
-URI_PRODUCT_ONLY_KEYS = ("uri_presented", "uri_service_playing", "uri_audio_selected")
-RE_URI_LINE = re.compile(r"uriprobe: t=(\d+) (\S.*?)\s*$")
-RE_URI_TRACE_LINE = re.compile(r"uri-trace: t=(\d+) (\S.*?)\s*$")
-URI_LINE_RES = {URI_PROBE: RE_URI_LINE, URI_PRODUCT: RE_URI_TRACE_LINE}
-URI_LINE_NAMES = {URI_PROBE: "uriprobe", URI_PRODUCT: "uri-trace"}
-RE_URI_SERVICE_PLAYING = re.compile(r"\buri: service playing\b")
-RE_URI_PRESENTED = re.compile(r"\buri: presented \(.*?\bfrom (-?\d+) to (-?\d+) ms\)")
-RE_ACB_DISPLAY = re.compile(r"acb display fullscreen=\d+ rv=(-?\d+) task=(-?\d+)")
-RE_ACB_PLAYING = re.compile(r"acb playing rv=(-?\d+) task=(-?\d+)")
-RE_ACB_UNLOADED = re.compile(r"acb unloaded rv=(-?\d+) task=(-?\d+)")
-# What the production backend and the dev route log when the bind did not happen or the route was refused.
-RE_URI_PRODUCT_ERROR = re.compile(r"uri-acb: the bind failed|uri-acb: bind not granted|"
-                                  r"uri: product driver installation refused|uri-dev: .*ignored")
-# The URI binding's OWN bind lines. Feed prints `videoplane: BOUND` and `acb display/playing ... task=N` through
-# the same display sink, so those lines prove a bind for a product case only together with these.
-RE_URI_ACB_BOUND = re.compile(r"\buri-acb: bound\b")
-RE_URI_ACB_COMPLETED = re.compile(r"\buri-acb: display/PLAYING completed\b")
-RE_URI_ACB_COMPLETION_FAILED = re.compile(r"\buri-acb: display/PLAYING completion failed\b")
-RE_URI_ACB_WAITING = re.compile(r"\buri-acb: waiting for the service's source envelope\b")
-RE_URI_ACB_ANY = re.compile(r"\buri-acb: ")
-# The URI session ending, and what only the Feed route writes after it (the route fell back to Feed).
-RE_URI_SESSION_ENDED = re.compile(r"\bls2uri: (?:released|quarantined)\b")
-RE_FEED_DECISION = re.compile(r"\bdecision: part=.*->")
-RE_URI_CLOCK = re.compile(r"ev=currentTime value=(-?\d+)")
-# The startup audio selection. The backend settles a select of the track the service already has without
-# a native call and says so (`uri: audio index=N is already selected (audioInfo); no selectTrack sent`);
-# a control the service never confirms is refused when its deadline passes, and `{:?}` of the Operation
-# names it (`Selected(..)` is the Plex stream id, not the native index). The service's own events come
-# from the `uri-trace:` stream: `ev=audioInfo ... track=N` is the track in use, `ev=trackSelected` the
-# confirmation of a select that changed it (`ev=trackSelected type=audio index=N` when the service names the
-# track, bare when it only says true). A select the backend SENDS writes `uri: selectTrack sent kind=audio
-# index=N stream=SID`: N the native index it asked the service for, SID the Plex stream id it stands for.
-RE_URI_AUDIO_ALREADY = re.compile(r"\buri: audio index=(-?\d+) is already selected \(audioInfo\); no selectTrack sent")
-RE_URI_AUDIO_SENT = re.compile(r"\buri: selectTrack sent kind=audio index=(-?\d+) stream=(\d+)\s*$")
-RE_URI_TRACK_SELECTED = re.compile(r"^ev=trackSelected(?: type=(\w+) index=(-?\d+))?$")
-RE_URI_AUDIO_REFUSED = re.compile(r"\buri: control SelectTrack \{ kind: Audio\b.*\} unconfirmed after \d+ ms; refused \(TimedOut\)")
-RE_URI_AUDIO_INFO = re.compile(r"^ev=audioInfo\b.*?\btrack=(\d+)\b")
-RE_URI_REMAINING = re.compile(r"ev=bufferRange .*?remainingTime=(-?\d+(?:\.\d+)?)")
-RE_URI_RANGE = re.compile(r"ev=bufferRange beginTime=(-?\d+(?:\.\d+)?) endTime=(-?\d+(?:\.\d+)?)")
-RE_ACB_CALLBACK = re.compile(r"acb callback task=(\d+) ev=(-?\d+)")
-# The ends that mean the probe could not START or was refused. `timeout:currentTime` is not among
-# them: it is the probe's own watchdog noticing the clock stood still, and whether that is a failure
-# is the case's to say (`uri_max_stall_s` makes it one; a link-collapse case expects it).
-URI_START_PHASES = ("register", "acb", "acb-video", "load", "play", "setWindowId")
-
-
-def uri_route(case):
-    """`"probe"` when the case arms the URI probe itself, through its own `triggers`; `"product"` when it
-    says `"uri_route": "product"` (the production backend on the dev route); None for a Feed case.
-    Any other `uri_route` value is returned as written, so `evaluate_uri` can fail it by name.
-
-    Deliberately NOT `--extra-trigger plxnative-uriprobe=...`: that flag runs the Feed assertions
-    with the probe armed on top (README), and grading it as a URI case would swallow them.
-    """
-    if "uri_route" in case:
-        return case["uri_route"]
-    return URI_PROBE if "uriprobe" in (case.get("triggers") or {}) else None
-
-
-def uri_mode(case):
-    """Whether this case is graded as a URI case at all (either route)."""
-    return uri_route(case) is not None
-
-
-def _uri_events(lines, mode=URI_PROBE):
-    """`[(t_ms, text), ...]` for every `uriprobe:` (probe) or `uri-trace:` (product) line, in log order."""
-    out = []
-    for ln in lines:
-        m = URI_LINE_RES[mode].search(ln)
-        if m:
-            out.append((int(m.group(1)), m.group(2)))
-    return out
-
-
-def _uri_summary(events):
-    """`(t_ms, {key: value})` for the LAST `summary` line (the terminal one), or None.
-
-    A healthy run has none: the probe does not end on its own, so a harness that stops at the cap
-    leaves the log without it. Values keep their parentheses (`load=fail(register)`).
-    """
-    found = None
-    for t, text in events:
-        if text.startswith("summary "):
-            found = (t, dict(re.findall(r"(\S+?)=(\S+)", text)))
-    return found
-
-
-def _uri_summary_error(fields):
-    """Why a summary says the probe failed or was refused, or None."""
-    if fields.get("load", "ok") != "ok":
-        return f"load={fields['load']}"
-    kind, _, phase = fields.get("end", "back").partition(":")
-    if kind in ("error", "refused"):
-        return f"end={fields['end']}"
-    if kind == "timeout" and phase in URI_START_PHASES:
-        return f"end={fields['end']}"
-    return None
-
-
-def a_no_error(lines, mode=URI_PROBE):
-    """No Starfish playing error, and in URI mode no terminal URI error: the probe's own `summary` for
-    the probe route; for the product route (which has no summary) a bind that failed or was not granted,
-    a driver installation that was refused, or a dev trigger that was `ignored`."""
+def a_no_error(lines):
     for ln in lines:
         if "smp_cb type=18" in ln or "Playing error" in ln:
             return False, f"error surfaced :: {ln.strip()}"
-        if mode == URI_PRODUCT:
-            if RE_URI_PRODUCT_ERROR.search(ln):
-                return False, f"URI product error surfaced :: {ln.strip()}"
-            continue
-        m = RE_URI_LINE.search(ln)
-        if m and m.group(2).startswith("summary "):
-            # The summary is the probe's own closing line and exists on a healthy run that ended
-            # normally too, so it is read, not matched: only a failure or a refusal in it is an error.
-            why = _uri_summary_error(dict(re.findall(r"(\S+?)=(\S+)", m.group(2))))
-            if why:
-                return False, f"URI error surfaced ({why}) :: {ln.strip()}"
-    return True, "no Starfish playing error or terminal URI error"
-
-
-def _uri_clock(events):
-    """`[(t_ms, clock_ms), ...]`: every parsed `ev=currentTime` sample."""
-    out = []
-    for t, text in events:
-        m = RE_URI_CLOCK.match(text)
-        if m:
-            out.append((t, int(m.group(1))))
-    return out
-
-
-def a_uri_playing(lines, mode=URI_PROBE):
-    """The native player played: `playing` and a media clock that advanced.
-
-    Read from the probe's terminal `summary` when there is one (`playing=yes`,
-    `currentTime_advanced=yes`). A run the harness cut off at its cap has none, so the same claim
-    is then read from the events: an `ev=playing`, and a `currentTime` that strictly advanced after it.
-    The product route has no summary and is read from its `uri-trace:` events alone.
-    """
-    events = _uri_events(lines, mode)
-    summary = _uri_summary(events) if mode == URI_PROBE else None
-    if summary:
-        fields = summary[1]
-        ok = fields.get("playing") == "yes" and fields.get("currentTime_advanced") == "yes"
-        return ok, (f"summary playing={fields.get('playing')} "
-                    f"currentTime_advanced={fields.get('currentTime_advanced')}")
-    play = next((i for i, (_, text) in enumerate(events) if text == "ev=playing"), None)
-    if play is None:
-        return False, f"no `{URI_LINE_NAMES[mode]}: ... ev=playing`" + (" and no summary" if mode == URI_PROBE else "")
-    clock = [v for _, v in _uri_clock(events[play:])]
-    if not any(b > a for a, b in zip(clock, clock[1:])):
-        return False, f"ev=playing seen, but the media clock never advanced ({len(clock)} sample(s))"
-    return True, f"ev=playing, then the media clock advanced to {max(clock) / 1000:.1f}s"
-
-
-def _uri_own_bind(lines):
-    """The production URI backend's own evidence of a bind: `uri-acb: bound` and, from the plane owner,
-    `uri-acb: display/PLAYING completed`. The plane lines Feed also prints (`videoplane: BOUND`,
-    `acb display ... task=N`, `acb playing ...`) say nothing about WHO bound: a route that fell back
-    to Feed writes all of them, so on a product case they are read only once these two are there."""
-    if not any(RE_URI_ACB_BOUND.search(ln) for ln in lines):
-        why = ("no `uri-acb: bound` line: the production URI backend never bound the plane"
-               + (" (it waited for an envelope the service never sent)"
-                  if any(RE_URI_ACB_WAITING.search(ln) for ln in lines) else ""))
-        return False, why
-    failed = next((ln for ln in lines if RE_URI_ACB_COMPLETION_FAILED.search(ln)), None)
-    if failed:
-        return False, f"the URI bind's display/PLAYING did not complete :: {failed.strip()}"
-    if not any(RE_URI_ACB_COMPLETED.search(ln) for ln in lines):
-        return False, "`uri-acb: bound`, but no `uri-acb: display/PLAYING completed` line"
-    return True, "uri-acb: bound, display/PLAYING completed"
-
-
-def _uri_product_plane_bound(lines):
-    """The product route's bind: the task ids are READ from the log, never assumed.
-
-    `acb display fullscreen=1 rv=1 task=N` and `acb playing rv=1 task=M` name the two tasks the bind
-    waits on; each needs an `acb callback task=<id> ev=1`. No callback may answer another `ev`, except
-    for the id an `acb unloaded ... task=K` line names (the release answers for itself, and a refused
-    unload, `task=0`, excuses nothing). Line order is not graded.
-    """
-    shown = {}
-    for what, rx in (("display", RE_ACB_DISPLAY), ("playing", RE_ACB_PLAYING)):
-        found = [m for m in (rx.search(ln) for ln in lines) if m]
-        if not found:
-            return False, f"`videoplane: BOUND`, but no `acb {what} ... task=N` line"
-        bad = [m.group(0) for m in found if int(m.group(1)) != 1]
-        if bad:
-            return False, f"`acb {what}` did not answer rv=1 :: {bad[0]}"
-        shown[what] = sorted({int(m.group(2)) for m in found})
-    callbacks = {}
-    for ln in lines:
-        m = RE_ACB_CALLBACK.search(ln)
-        if m:
-            callbacks.setdefault(int(m.group(1)), []).append(int(m.group(2)))
-    released = {int(m.group(2)) for m in (RE_ACB_UNLOADED.search(ln) for ln in lines) if m} - {0}
-    for what, tasks in shown.items():
-        for task in tasks:
-            if 1 not in callbacks.get(task, ()):
-                return False, f"`acb {what}` named task={task}, which has no `acb callback task={task} ev=1`"
-    odd = {t: evs for t, evs in callbacks.items() if t not in released and any(ev != 1 for ev in evs)}
-    if odd:
-        return False, f"acb callback task(s) answered other than ev=1 (and were not unloaded): {odd}"
-    return True, (f"videoplane: BOUND, display task={shown['display'][-1]} and playing "
-                  f"task={shown['playing'][-1]} both answered ev=1")
-
-
-def a_uri_plane_bound(lines, mode=URI_PROBE):
-    """The ACB video plane was bound: `videoplane: BOUND`, and ACB callback tasks 1-4, all `ev=1`.
-
-    A `videoplane: unbound` line (case-sensitive match) is a plane that was never attached or has
-    been released, and a task that answered anything but `ev=1` did not complete. The product route
-    reads its task ids from the display and playing lines instead (`_uri_product_plane_bound`).
-    """
-    if mode == URI_PRODUCT:
-        uri = _uri_own_bind(lines)
-        if not uri[0]:
-            return uri
-    if not any("videoplane: BOUND" in ln for ln in lines):
-        return False, "no `videoplane: BOUND` line"
-    if mode == URI_PRODUCT:
-        return _uri_product_plane_bound(lines)
-    seen = {}
-    for ln in lines:
-        m = RE_ACB_CALLBACK.search(ln)
-        if m:
-            seen.setdefault(int(m.group(1)), []).append(int(m.group(2)))
-    absent = [n for n in (1, 2, 3, 4) if n not in seen]
-    if absent:
-        return False, f"`videoplane: BOUND`, but no acb callback for task(s) {absent}"
-    bad = {n: seen[n] for n in (1, 2, 3, 4) if any(ev != 1 for ev in seen[n])}
-    if bad:
-        return False, f"acb callback task(s) answered other than ev=1: {bad}"
-    return True, "videoplane: BOUND, acb callbacks 1-4 all ev=1"
-
-
-def a_uri_service_playing(lines):
-    """The production backend logged `uri: service playing` (the service reported Playing). The words
-    also sit inside the `uri: presented (service playing; ...` line, so the match wants the line's own
-    `uri: ` prefix."""
-    hit = next((ln for ln in lines if RE_URI_SERVICE_PLAYING.search(ln)), None)
-    if hit is None:
-        return False, "no `uri: service playing` line"
-    return True, hit.strip()
-
-
-RE_URI_DEV_ARMED = re.compile(r"\buri-dev: armed\b")
-
-
-def a_uri_dev_offer(lines):
-    """A product run whose dev route armed (`uri-dev: armed ...`) must reach the production backend
-    (`uri: service playing`). Armed and silent afterwards is the pin not matching: the dev qualifier
-    answers Unknown for any other origin or Part, the route plays the Feed, and nothing in the log says
-    why. A log that never armed has no pin to check (the refusal itself is `no_error`'s)."""
-    if not any(RE_URI_DEV_ARMED.search(ln) for ln in lines):
-        return True, "the dev route did not arm (a refusal is graded by no_error)"
-    if a_uri_service_playing(lines)[0]:
-        return True, "the dev route armed and the production backend played"
-    if any(RE_URI_ACB_WAITING.search(ln) for ln in lines):
-        return False, ("offer made but the ACB bind never completed: the production backend waited for the "
-                       "service's source envelope and none was usable")
-    if any(RE_URI_ACB_ANY.search(ln) for ln in lines):
-        return False, "offer made but the ACB bind never completed (see the `uri-acb:` lines)"
-    return False, "dev route armed but no product offer (pin mismatch?)"
-
-
-def a_uri_route_held(lines):
-    """A product run stayed on the production URI backend. The route falls back to the Feed when the URI
-    start fails (a bind that never completes, a timeout), and the Feed then plays the same stream: the
-    picture is real and every Feed-written plane line is there, so the run must fail by name. The
-    fallback is told by what only the Feed route writes (`decision: part=... ->`, `load: v=...`,
-    `stream: ... path=`) AFTER the URI session ended (`ls2uri: released` / `ls2uri: quarantined`)."""
-    ended = next((i for i, ln in enumerate(lines) if RE_URI_SESSION_ENDED.search(ln)), None)
-    if ended is None:
-        return True, "the URI session did not end before the log did"
-    for ln in lines[ended + 1:]:
-        if RE_FEED_DECISION.search(ln) or RE_LOAD.search(ln) or RE_STREAM_PATH.search(ln):
-            return False, ("the route fell back to the Feed: the URI session ended (`ls2uri: released`), "
-                           f"then the Feed wrote :: {ln.strip()}")
-    return True, "no Feed line after the URI session ended"
-
-
-def a_uri_presented(lines):
-    """The production backend claimed a picture and its clock moved: `uri: presented (... from P to N ms)`
-    with N > P. A claim whose clock did not advance is not a presentation."""
-    seen = [m for m in (RE_URI_PRESENTED.search(ln) for ln in lines) if m]
-    if not seen:
-        return False, "no `uri: presented (... from P to N ms)` line"
-    for m in seen:
-        if int(m.group(2)) > int(m.group(1)):
-            return True, f"presented, clock advanced from {m.group(1)} to {m.group(2)} ms"
-    last = seen[-1]
-    return False, f"presented, but the clock did not advance (from {last.group(1)} to {last.group(2)} ms)"
-
-
-URI_AUDIO_PATHS = ("select", "already")
-
-
-def a_uri_audio_selected(lines, want):
-    """What the production backend did with the startup audio selection, read from the lines it writes.
-
-    `want` is `{"path": "select"|"already", "index": N}` (N the native audio index, in the numbering the
-    service's own `audioInfo.track` uses):
-
-    * `already` (the control): the backend found the wanted track already the service's (`uri: audio
-      index=N is already selected (audioInfo); no selectTrack sent`, N equal to the last `ev=audioInfo
-      track=` before it) and sent nothing.
-    * `select`: a native `selectTrack` WAS sent, to index N (`uri: selectTrack sent kind=audio index=N
-      stream=SID`, the backend's own line for the call it makes), which is a track other than the one the
-      service started on, and the service confirmed it before the first Play: an `ev=trackSelected`
-      (naming `type=audio index=N` when it names anything: another type or index fails), or an
-      `ev=audioInfo` that names a different track than the first, and no later `audioInfo` that names a
-      third. A bare `ev=trackSelected` names no index, so then only `audioInfo` and the sent line carry it.
-
-    The control also fails on a sent line: it sent nothing. Both need the first Play to have happened (`uri: service playing`: the startup plan holds it behind
-    the select) and no refusal. A refused select (`... unconfirmed after N ms; refused (TimedOut)`) fails
-    with that line as the evidence.
-    """
-    bad = (not isinstance(want, dict) or set(want) != {"path", "index"} or want["path"] not in URI_AUDIO_PATHS
-           or not isinstance(want["index"], int) or isinstance(want["index"], bool) or want["index"] < 0)
-    if bad:
-        return False, (f"uri_audio_selected wants {{'path': 'select'|'already', 'index': N >= 0}}, got {want!r}")
-    path, index = want["path"], want["index"]
-    already = next(((i, m) for i, ln in enumerate(lines) if (m := RE_URI_AUDIO_ALREADY.search(ln))), None)
-    trace = [(i, m.group(2)) for i, ln in enumerate(lines) if (m := RE_URI_TRACE_LINE.search(ln))]
-    tracks = [(i, int(m.group(1))) for i, text in trace if (m := RE_URI_AUDIO_INFO.match(text))]
-    selected = [(i, m) for i, text in trace if (m := RE_URI_TRACK_SELECTED.match(text))]
-    confirmed = lines[selected[0][0]] if selected else None
-    sent = next(((i, m) for i, ln in enumerate(lines) if (m := RE_URI_AUDIO_SENT.search(ln))), None)
-    played = a_uri_service_playing(lines)[0]
-    refused = next((ln for ln in lines if RE_URI_AUDIO_REFUSED.search(ln)), None)
-    if refused:
-        # A refusal is where a wrong numbering ends (the service names an index the backend cannot match
-        # to its pending select, and the control times out), so it carries what the run did say: the
-        # index that went out, the track the service named, and the track it last reported in use.
-        said = [f"sent :: {lines[sent[0]].strip()}"] if sent else ["no `uri: selectTrack sent` line"]
-        said += [f"the service named :: {lines[i].strip()}" for i, m in selected if m.group(1) is not None]
-        if tracks:
-            said.append(f"audioInfo last said track={tracks[-1][1]}")
-        return False, f"the audio select was never confirmed :: {refused.strip()} ; " + " ; ".join(said)
-    if path == "already":
-        if already is None:
-            return False, ("no `uri: audio index=N is already selected (audioInfo); no selectTrack sent` line: "
-                           + (f"a selectTrack was sent :: {lines[sent[0]].strip()}" if sent
-                              else "a selectTrack was sent (`ev=trackSelected` followed)" if confirmed
-                              else "the app never reached the startup selection"))
-        at, said = already[0], int(already[1].group(1))
-        if sent is not None:
-            return False, f"the control sent a selectTrack as well :: {lines[sent[0]].strip()}"
-        before = [track for i, track in tracks if i < at]
-        if said != index:
-            return False, f"the backend settled audio index={said}, wanted {index} :: {lines[at].strip()}"
-        if not before:
-            return False, f"no `ev=audioInfo ... track=` line before the claim :: {lines[at].strip()}"
-        if before[-1] != said:
-            return False, (f"the claim (index={said}) is not the service's own last audioInfo "
-                           f"(track={before[-1]}) :: {lines[at].strip()}")
-        if not played:
-            return False, "no `uri: service playing` line: the first Play never went out behind the selection"
-        return True, f"{lines[at].strip()} ; audioInfo track={before[-1]} ; uri: service playing"
-    if already is not None:
-        return False, ("the backend took the already-selected path, so no selectTrack was sent :: "
-                       f"{lines[already[0]].strip()}")
-    if sent is None:
-        return False, ("no `uri: selectTrack sent kind=audio index=N stream=SID` line: the backend never sent "
-                       "the audio selectTrack")
-    sent_at, sent_index = sent[0], int(sent[1].group(1))
-    if sent_index != index:
-        return False, f"the backend sent selectTrack index={sent_index}, wanted {index} :: {lines[sent_at].strip()}"
-    for i, m in selected:
-        if m.group(1) is not None and (m.group(1) != "audio" or int(m.group(2)) != index):
-            return False, (f"the service confirmed {m.group(1)} index={m.group(2)}, not audio index={index} :: "
-                           f"{lines[i].strip()}")
-    if not tracks:
-        return False, "no `ev=audioInfo ... track=` line: the service never named the track it started on"
-    initial, final = tracks[0][1], tracks[-1][1]
-    if initial == index:
-        return False, f"the service started on audio track={index} already: nothing to select"
-    if confirmed is None and final == initial:
-        return False, (f"no confirmation: no `ev=trackSelected`, and audioInfo never moved off track={initial}")
-    if final not in (initial, index):
-        return False, f"the service ended on audio track={final}, wanted {index} (it started on {initial})"
-    if not played:
-        return False, "no `uri: service playing` line: the first Play never went out behind the selection"
-    how = confirmed.strip() if confirmed else f"audioInfo moved track={initial} -> track={final}"
-    return True, (f"{lines[sent_at].strip()} ; selected away from track={initial} and confirmed (not an "
-                  f"already-selected settle) :: {how} ; audioInfo last said track={final} ; uri: service playing")
-
-
-def a_uri_clock_past(lines, secs, mode=URI_PROBE):
-    """The media clock reached `secs` seconds: the largest `ev=currentTime value=` (ms)."""
-    clock = _uri_clock(_uri_events(lines, mode))
-    if not clock:
-        return False, "no `ev=currentTime` sample"
-    top = max(v for _, v in clock)
-    return top >= secs * 1000, f"max currentTime {top / 1000:.1f}s (want >= {secs}s)"
-
-
-def _uri_exempt_spans(events):
-    """`[(start_t, end_t), ...]`: where the clock is allowed to stand still, because the case
-    drove it there. A pause runs from `drive pause`/`call pause` to the `ev=playing` after its
-    `drive resume`; a seek from `drive seek`/`call seek` to `ev=seekDone`. A window the log never
-    closes runs to the end."""
-    spans, start, kind = [], None, None
-    for t, text in events:
-        if kind is None and text.startswith(("drive pause", "call pause")):
-            start, kind = t, "pause"
-        elif kind is None and text.startswith(("drive seek", "call seek")):
-            start, kind = t, "seek"
-        elif kind == "seek" and text.startswith("ev=seekDone"):
-            spans.append((start, t))
-            kind = None
-        elif kind == "pause" and text.startswith("drive resume"):
-            kind = "resume"
-        elif kind == "resume" and text == "ev=playing":
-            spans.append((start, t))
-            kind = None
-    if kind is not None:
-        spans.append((start, float("inf")))
-    return spans
-
-
-def a_uri_max_stall(lines, max_s, mode=URI_PROBE):
-    """While playing, the media clock never stood still for more than `max_s` seconds of wall time.
-
-    The unit is the gap between successive STRICTLY INCREASING `currentTime` samples (a sample
-    that repeats or steps back is not an advance), on the probe's own `t=` clock. The stretch from
-    the last advance to the end of what the probe observed counts too, and that is the one that
-    matters: a stream that stops delivering simply stops advancing, so every gap BETWEEN samples
-    stays at about a second. The end of observation is the last periodic report (`currentTime`,
-    `bufferRange`, `streamingInfo`), which keeps arriving through a stall, or the probe's closing
-    `summary` if that is later. A gap that overlaps a pause or seek the case drove is not a stall.
-    """
-    events = _uri_events(lines, mode)
-    play = next((i for i, (_, text) in enumerate(events) if text == "ev=playing"), None)
-    if play is None:
-        return False, "no `ev=playing`, so there was no playback to hold steady"
-    advances, last = [], None
-    for t, v in _uri_clock(events[play:]):
-        if last is None or v > last:
-            advances.append(t)
-        last = v
-    if not advances:
-        return False, "no `ev=currentTime` sample after `ev=playing`"
-    periodic = [t for t, text in events if text.startswith(("ev=currentTime", "ev=bufferRange",
-                                                            "ev=streamingInfo"))]
-    horizon = max(periodic + [t for t, text in events if text.startswith("summary ")])
-    exempt = _uri_exempt_spans(events)
-    gaps = list(zip(advances, advances[1:]))
-    if horizon > advances[-1]:
-        gaps.append((advances[-1], horizon))
-    worst = (0, 0, 0)
-    for a, b in gaps:
-        if any(a <= end and start <= b for start, end in exempt):
-            continue
-        worst = max(worst, (b - a, a, b))
-    ok = worst[0] <= max_s * 1000
-    where = f" (t={worst[1] / 1000:.1f}s to t={worst[2] / 1000:.1f}s)" if worst[0] else ""
-    return ok, f"longest stall {worst[0] / 1000:.1f}s{where}, want <= {max_s}s"
-
-
-def _uri_lead(text):
-    """The seconds of media buffered ahead, from one `ev=bufferRange` line, or None for any other.
-
-    `remainingTime` when the line carries it, else `endTime - beginTime`. The field is not reliably
-    there on the 4.5 set: the same binary printed it on every sample in one session and on none in
-    the next (cause not determined). The window is the same quantity on a bound plane, whose
-    `endTime` is real and which `beginTime` trails by the lead.
-    """
-    m = RE_URI_REMAINING.match(text)
-    if m:
-        return float(m.group(1))
-    m = RE_URI_RANGE.match(text)
-    return float(m.group(2)) - float(m.group(1)) if m else None
-
-
-def a_uri_drain_warning(lines, min_s, mode=URI_PROBE):
-    """A collapse is WARNED of: before the first mid-playback `bufferingStart`, the buffered lead
-    (`bufferRange.remainingTime`, else `endTime - beginTime`: see `_uri_lead`) declined without once
-    rising for at least `min_s` seconds.
-
-    "Mid-playback" is the first `bufferingStart` after the first `ev=playing`; the one before it is
-    the initial fill. Equal successive readings are allowed (the lead is whole seconds and
-    repeats 2-3 times per step), a rise ends the run. The decline is counted from the LAST sample
-    at the run's peak, so a buffer that sat full and then stalled with no slope in between is not
-    a warning, and it must be a net decline.
-    """
-    events = _uri_events(lines, mode)
-    play = next((i for i, (_, text) in enumerate(events) if text == "ev=playing"), None)
-    if play is None:
-        return False, "no `ev=playing`"
-    stall = next((i for i in range(play + 1, len(events)) if events[i][1] == "ev=bufferingStart"), None)
-    if stall is None:
-        return False, "no `ev=bufferingStart` after `ev=playing`: the buffer never ran dry"
-    samples = []
-    for t, text in events[play:stall]:
-        lead = _uri_lead(text)
-        if lead is not None:
-            samples.append((t, lead))
-    if not samples:
-        return False, "no `ev=bufferRange` sample between `ev=playing` and the stall"
-    first = len(samples) - 1
-    while first > 0 and samples[first - 1][1] >= samples[first][1]:
-        first -= 1
-    peak = samples[first][1]
-    top = max(i for i in range(first, len(samples)) if samples[i][1] == peak)
-    slope = samples[top:]
-    declined = peak - slope[-1][1]
-    secs = (events[stall][0] - slope[0][0]) / 1000
-    ok = declined > 0 and secs >= min_s
-    return ok, (f"buffered lead fell {peak:g} -> {slope[-1][1]:g} over {secs:.1f}s before the "
-                f"bufferingStart at t={events[stall][0] / 1000:.1f}s (want a net decline lasting >= {min_s}s)")
-
-
-def evaluate_uri(case, lines, srv_delta):
-    """Every assertion for a case that arms the URI probe. Returns (passed, [(label, ok, evidence)]).
-
-    No Feed check runs: the native player writes none of the lines they read, so they fail by
-    construction. Kept: `no_error` (a refusal or a failed load is still a failure) and
-    `server_wire` (the TV did fetch from the fixture server).
-    """
-    exp = case["expect"]
-    mode = uri_route(case)
-    results = []
-    if mode not in (URI_PROBE, URI_PRODUCT):
-        results.append(("uri_route", False, f"unknown uri_route {mode!r}: want 'product' (or arm uriprobe)"))
-        mode = URI_PRODUCT if "uri_route" in case else URI_PROBE
-    if mode == URI_PRODUCT and "uriprobe" in (case.get("triggers") or {}):
-        results.append(("uri_route", False, "a product case must not arm the probe: the two routes "
-                                           "would write one boot's evidence twice"))
-    unknown = sorted(k for k in exp if k.startswith("uri_")
-                     and (k not in URI_EXPECT_KEYS or (mode != URI_PRODUCT and k in URI_PRODUCT_ONLY_KEYS)))
-    if unknown:
-        results.append(("uri_expect", False, f"unknown expect key(s): {', '.join(unknown)}"))
-    if exp.get("uri_playing"):
-        results.append(("uri_playing", *a_uri_playing(lines, mode)))
-    if exp.get("uri_plane_bound"):
-        results.append(("uri_plane_bound", *a_uri_plane_bound(lines, mode)))
-    if exp.get("uri_service_playing"):
-        results.append(("uri_service_playing", *a_uri_service_playing(lines)))
-    if exp.get("uri_presented"):
-        results.append(("uri_presented", *a_uri_presented(lines)))
-    if mode == URI_PRODUCT:
-        results.append(("uri_dev_offer", *a_uri_dev_offer(lines)))
-        results.append(("uri_route_held", *a_uri_route_held(lines)))
-    if "uri_audio_selected" in exp and mode == URI_PRODUCT:
-        results.append(("uri_audio_selected", *a_uri_audio_selected(lines, exp["uri_audio_selected"])))
-    if "uri_clock_past_s" in exp:
-        results.append(("uri_clock_past", *a_uri_clock_past(lines, exp["uri_clock_past_s"], mode)))
-    if "uri_max_stall_s" in exp:
-        results.append(("uri_max_stall", *a_uri_max_stall(lines, exp["uri_max_stall_s"], mode)))
-    if "uri_drain_warning_s" in exp:
-        results.append(("uri_drain_warning", *a_uri_drain_warning(lines, exp["uri_drain_warning_s"], mode)))
-    if exp.get("no_playing_error", True):
-        results.append(("no_error", *a_no_error(lines, mode)))
-    results.append(("server_wire", *a_server_wire(
-        srv_delta, exp.get("server_opens_min", 1), exp.get("server_range_opens_min", 0),
-        exp.get("server_opens_exact"), exp.get("server_range_opens_exact"))))
-    return all(ok for _, ok, _ in results), results
-
-
-# ---------------------------------------------------------------------------------------------
-# URI product route: the runner's pure half. `plxnative-uridev` is the debug-only dev route that makes the
-# PRODUCTION URI backend play a URL on a 4.x set bound through ACB; its grammar is
-# `acb part=<N> pms=<dotted-quad:port> url=<http://dotted-quad:port/path>`. `pms=` is the ORIGIN the app's
-# own client holds for the mock: a `--guest --mock` boot registers its primary by ADDRESS ONLY (no
-# machineIdentifier is known before the first play), as `http://PMS_HOST:PMS_PORT` from the same
-# `src/config.local.h` the mock listens on. The app ignores a trigger it cannot parse (one log line), so
-# every refusal the app would make is made here first.
-# ---------------------------------------------------------------------------------------------
-class UriProductRefused(Exception):
-    """The product route cannot run as asked; the case FAILS with the reason instead of ending the suite."""
-
-
-RE_URI_DEV_URL = re.compile(r"http://(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3}):(\d{1,5})/[^\s']+")
-# The port a real PMS listens on. The mock never takes it: the `pms=` pin names an ORIGIN, and the
-# default PMS port at a LAN address is exactly where a real server lives.
-REAL_PMS_PORT = 32400
-
-
-def uri_dev_pms(host, port):
-    """The `pms=` value for the mock at `host`:`port`: a canonical dotted quad (the app compares ORIGINS, and
-    its client holds `http://PMS_HOST:PMS_PORT` verbatim, so a spelling it would not parse the same way, or a
-    hostname, could never match) and a port other than the real PMS's."""
-    quad = None
-    if isinstance(host, str) and re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", host):
-        try:
-            quad = str(ipaddress.IPv4Address(host))
-        except ValueError:
-            quad = None
-    if quad is None or quad != host:
-        raise UriProductRefused(f"PMS_HOST {host!r} must be a canonical dotted quad: the dev route pins the "
-                                f"server by origin (pms=<dotted-quad:port>)")
-    if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
-        raise UriProductRefused(f"PMS_PORT {port!r} is not 1-65535")
-    if port == REAL_PMS_PORT:
-        raise UriProductRefused(f"PMS_PORT {REAL_PMS_PORT} is a real PMS's port: the mock must listen "
-                                f"elsewhere (mock_pms.py's default is 32499)")
-    return f"{host}:{port}"
-
-
-def uri_dev_trigger(part_id, host, port, url):
-    """The content of `plxnative-uridev`, in the order the app documents it: `acb part= pms= url=`."""
-    if not isinstance(part_id, int) or isinstance(part_id, bool) or part_id <= 0:
-        raise UriProductRefused(f"part id {part_id!r} is not a positive integer")
-    pms = uri_dev_pms(host, port)
-    m = RE_URI_DEV_URL.fullmatch(url or "")
-    if m is None or any(int(m.group(i)) > 255 for i in (1, 2, 3, 4)) or not 1 <= int(m.group(5)) <= 65535:
-        raise UriProductRefused("the fixture URL must be http://<dotted-quad>:<port>/<path> with no space "
-                                "or apostrophe (the app ignores anything else)")
-    return f"acb part={part_id} pms={pms} url={url}"
-
-
-# What a product run must never inherit from the case or the command line: `uriprobe` would divert the
-# route under test, `playurl` would play the Feed, and the rest are written by the runner itself.
-# `pms-origin` would move the app's primary off the configured address the trigger's `pms=` names.
-URI_PRODUCT_DIVERTING = ("plxnative-uriprobe", "plxnative-playurl", "plxnative-uridev", "plxnative-pms-origin")
-URI_PRODUCT_RESERVED = URI_PRODUCT_DIVERTING + ("plxnative-play", "plxnative-ptype", "plxnative-quality")
-
-
-def uri_product_files(case, url_base, pms, extra=()):
-    """The trigger files of a product case: the integration tier's routing pins (`play=<rk>`,
-    `quality=original`, `audioenh=off`, the case's `ptype`) pointed at the CARRIER clip's ratingKey, plus
-    `plxnative-uridev` carrying the carrier's part, the mock's origin and the fixture URL. `pms` is the
-    mock's `(host, port)` as `configured_endpoint` reads it from `src/config.local.h`."""
-    for name in (f"plxnative-{k}" for k in (case.get("triggers") or {})):
-        if name in URI_PRODUCT_DIVERTING:
-            raise UriProductRefused(f"a product case must not set {name} itself: the runner writes it")
-    for name, _ in extra:
-        if name in URI_PRODUCT_RESERVED:
-            raise UriProductRefused(f"--extra-trigger {name} would replace what the product route pins "
-                                    f"(or arm the probe on top of it)")
-    carrier = dict(case, rk=str(mock_fps.CARRIER_RK))
-    files = triggers_for_case(carrier)
-    files.append(("plxnative-uridev", uri_dev_trigger(
-        mock_fps.CARRIER_PART_ID, *pms, f"{url_base}/{case['fixture']}")))
-    files.extend(extra)
-    names = [n for n, _ in files]
-    dup = sorted({n for n in names if names.count(n) > 1})
-    if dup:
-        raise UriProductRefused(f"trigger(s) written twice: {', '.join(dup)}")
-    return files
-
-
-def _resolve_uri_product(cases, root, flavour=None, config=None):
-    """The skip channel for product cases: they need the debug install (the dev route is compiled out of
-    a release), the configured PMS address (`src/config.local.h`, where the mock must listen), and the
-    carrier clip in the pack being served, with no sidecar subtitle beside it. Sets `carrier_path`."""
-    flavour = FLAVOUR if flavour is None else flavour
-    config = CONFIG_LOCAL_H if config is None else config
-    for c in cases:
-        if uri_route(c) != URI_PRODUCT or c.get("skip"):
-            continue
-        carrier = c.get("carrier") or ""
-        path = os.path.join(root, carrier)
-        if flavour != "debug":
-            c["skip"] = f"the product route drives the debug install only (this run resolved FLAVOR={flavour})"
-        elif not re.fullmatch(r"[\w.-]+\.\w+", carrier):
-            c["skip"] = f"carrier {carrier!r} must be a plain file name inside the pack"
-        elif not os.path.isfile(config):
-            c["skip"] = f"needs {config} for PMS_HOST and PMS_PORT: the mock listens at the configured address"
-        elif not os.path.isfile(path):
-            c["skip"] = f"no carrier clip {carrier!r} in {root} -- run `make fixtures-pipeline`"
-        elif any(os.path.isfile(os.path.splitext(path)[0] + ext) for ext in (".srt", ".ass", ".ssa", ".vtt")):
-            c["skip"] = f"a sidecar subtitle sits beside {carrier}: the mock would serve it as a subtitle stream"
-        else:
-            c["carrier_path"] = path
+    return True, "no `smp_cb type=18` / `Playing error`"
 
 
 MOCK_ROUTE = "mock"
-# What a mock-route case must never inherit: `playurl`/`uriprobe`/`uridev` would divert the route under test and
+
+
+class MockRouteRefused(Exception):
+    """The mock route cannot run as asked; the case FAILS with the reason instead of ending the suite."""
+
+
+# The port a real PMS listens on. The mock never takes it: the default PMS port at a LAN address is
+# exactly where a real server lives.
+REAL_PMS_PORT = 32400
+# What a mock-route case must never inherit: `playurl` would play a URL instead of the mock's item and
 # `pms-origin` would move the app's primary off the address the mock listens on; the runner writes the rest.
-MOCK_ROUTE_RESERVED = URI_PRODUCT_RESERVED + ("plxnative-audioenh", "plxnative-trackmemory")
+MOCK_ROUTE_RESERVED = ("plxnative-playurl", "plxnative-pms-origin", "plxnative-play", "plxnative-ptype",
+                       "plxnative-quality", "plxnative-audioenh", "plxnative-trackmemory")
 
 
 def mock_route(case):
@@ -2247,19 +1581,19 @@ def mock_route(case):
 def mock_route_files(case, extra=()):
     """The trigger files of a mock-route case: the integration tier's routing pins (`play=<carrier rk>`,
     `quality=original`, the case's `audio_enhancements_boot`, track memory cleared) and nothing that arms
-    another route. `--extra-trigger` of a name the route pins is refused, as on the product route."""
+    another route. `--extra-trigger` of a name the route pins is refused."""
     for name in (f"plxnative-{k}" for k in (case.get("triggers") or {})):
         if name in MOCK_ROUTE_RESERVED:
-            raise UriProductRefused(f"a mock-route case must not set {name} itself")
+            raise MockRouteRefused(f"a mock-route case must not set {name} itself")
     for name, _ in extra:
         if name in MOCK_ROUTE_RESERVED:
-            raise UriProductRefused(f"--extra-trigger {name} would replace what the mock route pins")
+            raise MockRouteRefused(f"--extra-trigger {name} would replace what the mock route pins")
     files = triggers_for_case(dict(case, rk=str(mock_fps.CARRIER_RK)))
     files.extend(extra)
     names = [n for n, _ in files]
     dup = sorted({n for n in names if names.count(n) > 1})
     if dup:
-        raise UriProductRefused(f"trigger(s) written twice: {', '.join(dup)}")
+        raise MockRouteRefused(f"trigger(s) written twice: {', '.join(dup)}")
     return files
 
 
@@ -2327,10 +1661,9 @@ def evaluate_mock_route(case, lines, srv_delta):
 
 def run_mock_route_case(case, cfg, srv, url_base, verbose):
     """One mock-route case: the app (`--guest --mock` dev token) plays the carrier of the harness's own mock PMS,
-    which answers the enhancement decision like PMS and serves `fixture` as the remux. Order as on the product
-    route and for the same reason (`run_uri_product_case`): refuse -> close the previous app -> mock up ->
-    fabricated guest token -> triggers -> stream, and the log must prove the synthetic mock before anything is
-    graded. No fixture server is involved, and no real server can be: the mock listens on the configured
+    which answers the enhancement decision like PMS and serves `fixture` as the remux. Order: refuse -> close the
+    previous app -> mock up -> fabricated guest token -> triggers -> stream, and the log must prove the
+    synthetic mock before anything is graded. No fixture server is involved, and no real server can be: the mock listens on the configured
     address, the token is the mock's own, and a log that does not show the synthetic version is not graded."""
     name = case["name"]
     tv = cfg["tv"]
@@ -2341,22 +1674,23 @@ def run_mock_route_case(case, cfg, srv, url_base, verbose):
     with contextlib.ExitStack() as stack:
         try:
             if not case.get("carrier_path"):
-                raise UriProductRefused("no carrier clip resolved (see _resolve_mock_route)")
+                raise MockRouteRefused("no carrier clip resolved (see _resolve_mock_route)")
             host, port = mock_fps.configured_endpoint(CONFIG_LOCAL_H)
             if port == REAL_PMS_PORT:
-                raise UriProductRefused(f"PMS_PORT {REAL_PMS_PORT} is a real PMS's port: the mock must listen elsewhere")
+                raise MockRouteRefused(f"PMS_PORT {REAL_PMS_PORT} is a real PMS's port: the mock must listen elsewhere")
             files = mock_route_files(case, list(cfg.get("extra_triggers") or ()))
             log = os.path.join(tempfile.gettempdir(), f"plx-mock-pms-{os.getpid()}-{name}.log")
             try:
                 args = mock_fps.carrier_server_args(case["carrier_path"], case.get("carrier_audio"),
                                                     case.get("carrier_subtitle"), case.get("transcode_path"))
             except ValueError as why:
-                raise UriProductRefused(str(why))
-            make(["kill", f"TV={tv}"], timeout=40)   # BEFORE the mock is up: see run_uri_product_case
+                raise MockRouteRefused(str(why))
+            make(["kill", f"TV={tv}"], timeout=40)   # BEFORE the mock is up: every case's mock listens on the same
+            # address, and the previous app is still playing against the previous one
             print(f"    mock: tests/mock_pms.py {' '.join(args)}")
             stack.enter_context(mock_fps.MockPms(host, port, args, log_path=log))
             token = mock_fps.resolve_mock_token(CONFIG_LOCAL_H)
-        except (SystemExit, UriProductRefused) as why:
+        except (SystemExit, MockRouteRefused) as why:
             print(f"    [FAIL] {why}")
             return False, [("mock_route", False, str(why))], []
         apply_triggers(tv, files, extra=[f"printf '%s' '{token}' > {RUNDIR}/plxnative-token"])
@@ -3061,9 +2395,6 @@ def early_exit_allowed(case, cfg):
     is why the rule keys on the SCHEDULE rather than on the operation kind -- an undelayed seek
     fires promptly and stays eligible.
 
-    A URI case (`uriprobe` in its own `triggers`): the whole `uriprobe:` window is its evidence, and
-    `uri_max_stall_s` grades the worst stretch of the clock, which a prefix cannot settle.
-
     `min_play_rate_pm`: the same shape from the other side. It grades the WORST window of the
     media clock, so it is satisfied by every prefix that has not met the slow leg yet, and a case
     that stopped early would report the rate of its healthy opening. Both tiers ask it now, which
@@ -3073,12 +2404,6 @@ def early_exit_allowed(case, cfg):
     exp = case.get("expect") or {}
     if cfg.get("no_early"):
         return False, ""                      # the operator already said so; no need to explain
-    if uri_mode(case):
-        # The saved `uriprobe:` log over the whole window IS a URI case's evidence (an R-ABR-2
-        # instrument exists to show the collapse, which comes late), and `uri_max_stall_s` grades the
-        # WORST stretch of the clock, which a prefix cannot settle: a stall at 50 s is invisible to a
-        # run that stopped at 8 s because every assertion held.
-        return False, "a URI case's evidence is the whole `uriprobe:`/`uri-trace:` window, and a stall can come late"
     if case.get("gst_trace"):
         return False, "gst_trace assertions are graded only after the run"
     if "abr_shape" in exp:
@@ -6057,32 +5382,13 @@ def _case_depth_s(case):
     deepest step, which was both dead (no synthetic case declares a rapid seek) and wrong (it
     read a tap-relative `+10` as an absolute 10).
     """
-    exp = case.get("expect", {})
-    # `uri_clock_past_s` is a depth too: the native player's clock has to reach it, so a pack
-    # shorter than that plays out (or ends the session) before the case can pass.
-    depth = max(exp.get("min_pos_climb_s", 0), exp.get("uri_clock_past_s", 0))
+    depth = case.get("expect", {}).get("min_pos_climb_s", 0)
     for op in case.get("operations", []):
         if op.get("op") == "seek":
             depth = max(depth, op.get("final_s", op.get("target_s", 140)))
         elif op.get("op") == "pause_resume" and "seek_s" in op:
             depth = max(depth, op["seek_s"])   # a seek under Pause still has to land inside the pack
     return depth
-
-
-def _playlist_missing_segments(playlist):
-    """The relative segment files a local HLS playlist names that are not beside it, in order.
-
-    URI lines only (a line that is not a `#` tag); an absolute URL is the server's and is left
-    alone. A playlist that cannot be read names nothing missing: the fixture's own `isfile` check
-    has already said the file is there.
-    """
-    try:
-        with open(playlist, encoding="utf-8") as f:
-            names = [ln.strip() for ln in f if ln.strip() and not ln.startswith("#")]
-    except (OSError, UnicodeDecodeError):
-        return []
-    base = os.path.dirname(playlist)
-    return [n for n in names if "://" not in n and not os.path.isfile(os.path.join(base, n))]
 
 
 def _resolve_fixtures(cases, root):
@@ -6102,39 +5408,10 @@ def _resolve_fixtures(cases, root):
         if not name:
             c["skip"] = "case declares no `fixture`"
             continue
-        try:
-            rungs = abr_playlist_rungs(name)
-        except ValueError as why:
-            c["skip"] = f"{name}: {why}"
-            continue
-        if rungs is not None:
-            # The server writes this playlist itself, so there is no file to find or probe, and the
-            # query in `name` (`?top=6000`, `?continuous=1`) is the server's, not part of a path.
-            # What it points at is the clips of the rungs it lists (the whole ladder, a `top=` slice
-            # of it, or the one rung of a per-rung master), and a missing one would 404 (or fall back
-            # to 1080p) under the player and confound which rung it fetched, so every one must exist.
-            absent = sorted(ABR_FIXTURE[r] for r in rungs
-                            if not os.path.isfile(os.path.join(root, ABR_FIXTURE[r])))
-            if absent:
-                c["skip"] = (f"the playlist {name} serves rung(s) {', '.join(rungs)} but {root} lacks "
-                             f"{', '.join(absent)} -- run `make fixtures-pipeline`")
-            else:
-                c["path"] = None   # no single file: the server writes the playlist
-            continue
         path = os.path.join(root, name)
         if not os.path.isfile(path):
             c["skip"] = f"no fixture {name!r} in {root} — run `make fixtures-pipeline`"
             continue
-        if name.split("?", 1)[0].endswith(".m3u8"):
-            # A static playlist is only as good as the segment files it names, and the player
-            # fetches those by relative URL: a pack with the playlist and not its segments (a
-            # build interrupted, or one directory copied) would 404 under the player mid-run.
-            absent = _playlist_missing_segments(path)
-            if absent:
-                c["skip"] = (f"{name} names {len(absent)} segment file(s) the pack lacks "
-                             f"({', '.join(absent[:3])}{', ...' if len(absent) > 3 else ''}) -- "
-                             f"run `make fixtures-pipeline`")
-                continue
         if c.get("auto_network"):
             abr_names = ["pipe_abr_240p.ts", "pipe_abr_480p.ts",
                          "pipe_abr_720p.ts", "pipe_abr_1080p.ts"]
@@ -6184,8 +5461,6 @@ def evaluate_pipeline(case, lines, srv_delta, gst_lines=None):
     off, and that assertion can never hold here. Splitting keeps the integration tier's behaviour
     bit-identical instead of making it depend on a flag it never sets.
     """
-    if uri_mode(case):
-        return evaluate_uri(case, lines, srv_delta)
     if mock_route(case):
         return evaluate_mock_route(case, lines, srv_delta)
     exp = case["expect"]
@@ -6393,13 +5668,6 @@ def save_profiler_files(cfg, stem, pulled):
                   "(phase unknown, trigger unread, or the counters refused): this leg has no counters")
 
 
-def rung_segments_line(before, after):
-    """Which rungs the player fetched in a case, from two `FixtureServer.segment_rungs()`
-    snapshots: `720=2 2000=14` (request-path rung = count), lowest first; `""` when it fetched none."""
-    return " ".join(f"{rung}={n - before.get(rung, 0)}" for rung, n in after.items()
-                    if n > before.get(rung, 0))
-
-
 def run_pipeline_case(case, cfg, srv, url_base, verbose):
     """One pipeline case. A sibling of `run_case` with every PMS step removed.
 
@@ -6410,8 +5678,6 @@ def run_pipeline_case(case, cfg, srv, url_base, verbose):
     Dropped: the unscrobble, the viewOffset seed, `also_reset`, and the token injection. There is
     no ratingKey here to reset and no identity to be.
     """
-    if uri_route(case) == URI_PRODUCT:
-        return run_uri_product_case(case, cfg, srv, url_base, verbose)
     if mock_route(case):
         return run_mock_route_case(case, cfg, srv, url_base, verbose)
     name = case["name"]
@@ -6442,7 +5708,6 @@ def run_pipeline_case(case, cfg, srv, url_base, verbose):
     print("    triggers: " + ", ".join(n + ("=" + c if c is not None else "") for n, c in files))
 
     before = srv.stats()
-    before_rungs = srv.segment_rungs()
 
     def grade(c, ls):
         """The wire counters are read LIVE, so the early-exit poll grades the same
@@ -6462,12 +5727,6 @@ def run_pipeline_case(case, cfg, srv, url_base, verbose):
                                                          evaluator=grade)
     after = srv.stats()
     delta = tuple(a - b for a, b in zip(after, before))
-    # Which rung of a ladder master the player asked for: the plant's own count, since the app logs
-    # nothing of a native player's choice. Printed, and kept beside the case's log.
-    rungs = rung_segments_line(before_rungs, srv.segment_rungs())
-    if rungs:
-        print(f"    segments fetched by rung (kbps): {rungs}")
-        save_logs_file(cfg, f"{name}.rungs", f"{rungs}\n")
 
     gst_lines = pull_runtime_log(tv, "plxnative-gst.log") if case.get("gst_trace") else None
     if gst_lines is not None:
@@ -6500,91 +5759,6 @@ def _shape_fixture_server(srv, case):
     srv.set_network_profile(case.get("network_profile"))
     srv.set_segment_profile(case.get("segment_profile"))
     srv.set_abr_response_profile(case.get("abr_response_profile"))
-
-
-def run_uri_product_case(case, cfg, srv, url_base, verbose):
-    """One product-route case (`"uri_route": "product"`): the PRODUCTION URI backend, ACB-bound, on a 4.x set.
-
-    The harness's own mock PMS is only the plan CARRIER: the app resolves its clip as an ordinary movie
-    (guest, `--mock`), the dev route (`plxnative-uridev`) answers the qualification with the fixture
-    server's URL, and the TV fetches the HLS stream from the fixture server (shaper and wire counters
-    keep working). Order matters and is kept: refuse (case, address) -> close the previous app -> mock up ->
-    fabricated guest token (which proves the synthetic mock) -> triggers -> stream; the dev trigger is
-    deleted in a `finally` however the run ends, and the log must prove the synthetic mock before anything
-    is graded (fail closed). A refusal that comes before the set is touched fails THIS case, not the suite.
-
-    **The previous app is closed BEFORE the mock is up, never after.** Nothing closes a case's app at the end
-    of its own case, so the previous case's app is still playing when this one starts, and every case's mock
-    listens on the same configured address. Its close reports `stopped` with its position, and a close that
-    comes after this case's mock is up delivers that report to the FRESH mock, which stores it as the carrier's
-    `viewOffset`: the app then resumes from the previous case's position (`_bound_collapse` resumed at 76.8 s of
-    its 90 s clip and ran to the end of stream instead of draining). This is the rule `run_case` keeps for the
-    integration tier's seeded position; the position is server state, and the mock is that server.
-    """
-    name = case["name"]
-    tv = cfg["tv"]
-    run_secs = case.get("run_secs", 30)
-    print(f"\n=== {name}  ({case['fixture']}, {case.get('title', '')}) ===")
-    print(f"    covers: {', '.join(case.get('covers', []))}")
-    require_tv(tv, name)
-    with contextlib.ExitStack() as stack:
-        try:
-            if not case.get("carrier_path"):
-                raise UriProductRefused("no carrier clip resolved (see _resolve_uri_product)")
-            extra = list(cfg.get("extra_triggers") or ())
-            host, port = mock_fps.configured_endpoint(CONFIG_LOCAL_H)
-            # The dev route pins the app's own primary origin (`http://PMS_HOST:PMS_PORT`, address only:
-            # no machineIdentifier is known on a dev-token boot), so the trigger comes from the SAME
-            # configured address the mock listens on. Refuse a bad case/CLI/address BEFORE any start.
-            files = uri_product_files(case, url_base, (host, port), extra)
-            log = os.path.join(tempfile.gettempdir(), f"plx-mock-pms-{os.getpid()}-{name}.log")
-            try:
-                args = mock_fps.carrier_server_args(case["carrier_path"], case.get("carrier_audio"))
-            except ValueError as why:
-                raise UriProductRefused(str(why))
-            # The previous case's app is closed HERE, before this case's mock listens: its close reports
-            # `stopped` at its position, and the mock would store that as the carrier's `viewOffset` (see
-            # the docstring). After the refusals above, so a refused case still touches neither the set nor
-            # the mock.
-            make(["kill", f"TV={tv}"], timeout=40)
-            print(f"    mock: tests/mock_pms.py {' '.join(args)}")
-            stack.enter_context(mock_fps.MockPms(host, port, args, log_path=log))
-            token = mock_fps.resolve_mock_token(CONFIG_LOCAL_H)
-        except (SystemExit, UriProductRefused) as why:
-            print(f"    [FAIL] {why}")
-            return False, [("uri_product", False, str(why))], []
-        _shape_fixture_server(srv, case)
-
-        def take_back():
-            try:
-                ssh(tv, f"rm -f {RUNDIR}/plxnative-uridev", timeout=30)
-            except Exception as e:  # noqa: BLE001 — never mask the run's own outcome
-                print(f"    WARN: could not remove plxnative-uridev: {e}")
-        stack.callback(take_back)   # registered BEFORE arming: a half-written arm is still taken back
-        apply_triggers(tv, files, extra=[f"printf '%s' '{token}' > {RUNDIR}/plxnative-token"])
-        print("    triggers: " + ", ".join(n + ("=" + c if c is not None else "") for n, c in files))
-        print("    plxnative-token: <synthetic guest, redacted>")
-        before = srv.stats()
-        early, why = early_exit_allowed(case, cfg)
-        print(f"    run-stream (cap {run_secs}s, early exit off) ...")
-        lines, elapsed, stopped_early, settled = stream_case(
-            case, cfg, run_secs, early=early,
-            evaluator=lambda c, ls: evaluate_pipeline(c, ls, tuple(n - b for n, b in zip(srv.stats(), before))))
-        delta = tuple(a - b for a, b in zip(srv.stats(), before))
-        ok_id, why_id = mock_fps.check_synthetic_identity(lines)
-        if not ok_id:
-            msg = f"refusing to grade: {why_id}"
-            print(f"    [FAIL] {msg}")
-            passed, results = False, [("synthetic_identity", False, msg)]
-        else:
-            print(f"    identity: {why_id}")
-            passed, results = evaluate_pipeline(case, lines, delta)
-            passed, results = crash_gate(cfg, case, name, lines, passed, results)
-        report_and_record(cfg, name, passed, results, lines, elapsed, run_secs, stopped_early, settled, verbose)
-        if delta[0] == 0:
-            print("       NOTE: the fixture server saw NO request from the TV (macOS application "
-                  "firewall? see run_pipeline_case).")
-        return passed, results, lines
 
 
 def run_pipeline_suite(cases, cfg, srv, url_base, verbose, skipped=()):
@@ -8293,7 +7467,6 @@ def main():
         # in the other table.
         root, pcases = fixtures_root, pipeline_cases
         _resolve_fixtures(pcases, root)
-        _resolve_uri_product(pcases, root)
         _resolve_mock_route(pcases, root)
         for c in pcases:
             d = c.get("declare", {})
@@ -8385,7 +7558,6 @@ def main():
         if args.filter:
             pcases = [c for c in pcases if args.filter in c["name"]]
         _resolve_fixtures(pcases, root)
-        _resolve_uri_product(pcases, root)
         _resolve_mock_route(pcases, root)
         pcases, pskipped = partition_skips(pcases)
         # Bail BEFORE the server is started and before arm_teardown: arming commits to driving the

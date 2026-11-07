@@ -67,7 +67,7 @@ never the event alone.
   `Shown::Done` once each id has an event-1 completion, `Shown::Failed` on any other event. A
   completion that beat the dispatch is matched from the early queue; the early queue is dropped at a
   granted bind and `Shown` is reset by a bind and by an unload, so a previous binding's task ids never
-  count. This is the plane half of the URI `Observation::Presented` rule (`docs/uri-first-migration.md`).
+  count. This is the plane half of the first-picture (`Observation::Presented`) rule a URI backend applies.
 - An answer of `-2` releases at once (point 1); any other refusal quarantines.
 - A completion that is not event 1, or none within `RELEASE_FENCE_MS` (2000 ms; the device logs
   show the callback within about 100 ms), quarantines the plane. A late completion does not undo a

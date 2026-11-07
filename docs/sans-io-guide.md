@@ -15,13 +15,12 @@ step then has no seam to fake: a test and a replay feed it the events the produc
 - `rust-modules/plex/src/plex/session.rs` (the session owner's state);
 - `rust-modules/media/src/player/{lifecycle,attempt_metrics,attempt_view,readout,backend_startup,backend_metrics,recovery,release}.rs` and
   `media/src/route/{backend_policy,plan,plan_memory}.rs`;
-- `rust-modules/playback-contract/src` and the extracted pure
-  `play-uri/src/{uriprobe,uri_protocol,uri_lifecycle,acb_bind,picture_gate}.rs` modules;
+- `rust-modules/playback-contract/src`;
 - `rust-modules/platform/src/tv/plane.rs`, the ACB plane's pure `Plane` (its runner `PlaneOwner` is in
   the same file, so the scan covers it too).
 
 `forks` reads every machine crate whole (`FORK_SCOPE`): all of `data/`, `plex/`, `media/`,
-`session/`, `screens/`, `ui/`, `appkit/`, `machine/`, `playback-contract/`, `play-uri/`,
+`session/`, `screens/`, `ui/`, `appkit/`, `machine/`, `playback-contract/`,
 `play-feed/` and `media-codecs/`. `platform/` is not in it: it holds forks that are not ledgered, so
 `plane.rs` is scanned for workers and globals only.
 

@@ -104,6 +104,7 @@ telemetry      plex  net                                                  + plat
 plex           net                                                        + platform machine base
 net                                                                       + platform base
 gfx                                                                       + platform machine base
+play_feed      net  playback_contract  media_codecs                       + platform base
 media_codecs   playback_contract                                          + base
 playback_contract                                                         + base
 platform                                                                             machine base
@@ -153,6 +154,18 @@ PCM decode and conversion, `speed_audio`, `SpeedDecoder`, `Venc`) and the subtit
 re-exports its bindings; the demux is `plx_play_feed`'s) and so does the application crate (`capture`
 drives `Venc`); it names neither `media` nor Plex. `ci/check-deps.sh`
 reads the whole crate for the same IO and clock gates as every other layer.
+
+`play_feed` is a seventeenth layer, declared the same way. Its crate is `plx_play_feed`
+(`rust-modules/play-feed/`) and it names `base`, `platform`, `net`, `playback_contract` and `media_codecs`: the
+buffer-feed backend (the guarded transport, the physical FFmpeg demuxer and HLS parser, the native payload
+construction and executor, which implement the Feed port traits) and the simulator's `VideoSink` stand-in
+(`ffi_host`, behind that crate's `hostsim` feature). It was `plx_media::player`'s own until the player stopped
+depending on a backend: `plx_media` is the neutral orchestration (routes, the engine, the `BackendRunner`) and
+does not name it in production code, while the application composes it
+(`app/adapters/backends.rs`, behind the application crate's `play-feed` feature, which the release build
+passes explicitly). `media` and `screens` list it in `ci/module-layers.ini` for their TESTS, which drive the real
+Feed through a dev-dependency edge; `ci/check-deps.sh` reads the whole crate for the same IO and clock gates as
+every other layer.
 
 The Watchlist adds two data modules and no new edge. `watchlist` (rows, match table, `TileState`,
 intent ledger, comparator; with `stores::watchlist`) and `catalog` (the Discover-only item page; with
@@ -306,11 +319,11 @@ tests, where nothing calls `plex_run`) `tv::ABSENT` answers what the host arms a
 shipping build that reaches it logs `tv: port not installed - using the no-port defaults` once.
 Only `tv`'s own modules read the table. Two things leave it: the sink, through
 `tv::sink::installed()` (rule `sink` of `ci/check-deps.sh` fences naming `VideoSink` or `installed` to `media`'s
-`player/`, `play-uri/`, `platform`'s `tv/`, `tv.rs` and `webos/`, `port.rs` and
+`player/`, `platform`'s `tv/`, `tv.rs` and `webos/`, `port.rs` and
 `app/adapters/backends.rs`; `play-feed/` may name the trait but never resolves `installed`), and, in a `devtriggers` build only, the developer URI-mode probe's
-`tv::uri::installed()`, read by the media wrapper `player::uriprobe_drive`. The independent
-`play-uri` driver receives that transport and a shared `DisplaySink` as injected ports; it
-does not read the webOS port registry or the feed-only `VideoSink` itself.
+`tv::uri::installed()`, read by the media wrapper `player::uriprobe_drive`. A URI driver (a later PR)
+is to receive that transport and a shared `DisplaySink` as injected ports, as the Feed receives its sink;
+neither reads the webOS port registry or resolves the feed-only `VideoSink` itself.
 Lazily computed facts (device identity, the sandbox verdict, the Dolby Vision capability) are
 published values rather than hooks: the webOS code writes them into `tv::device`, `tv::sandbox` and
 `devcaps::dv` at the same boot moment as before, so readers keep their `OnceLock` semantics.
