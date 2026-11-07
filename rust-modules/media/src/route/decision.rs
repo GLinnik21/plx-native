@@ -495,6 +495,8 @@ pub struct PlaybackSession {
     stream_dovi: plx_data::metadata::Dovi,
     /// Capability and presentation frozen when `stream_dovi` entered this physical route. An
     /// audio switch, reload, Original recovery and rollback all copy this beside the raw record.
+    /// Rewritten only by [`withdraw_dv_presentation`] (#1166), which downgrades the presentation to
+    /// what Dolby Vision Off would have planned and keeps the probed capability.
     stream_dv_decision: plx_data::metadata::DvDecision,
     /// The FILE's own Dolby Vision record and the declaration it would make as a direct play,
     /// frozen at the resolve whatever route was taken. `stream_dovi` above is what is being fed;
@@ -6998,6 +7000,71 @@ pub fn stream_dv_decision(ps: &PlaybackSession) -> plx_data::metadata::DvDecisio
     ps.stream_dv_decision
 }
 
+/// Which first picture the Dolby Vision splitter of the set this play runs on takes: the current
+/// ATTEMPT's caps value ([`PlaybackSession::attempt_caps`]), never the process-wide
+/// `devcaps::caps()`, so a test plants the row with [`begin_attempt_for_test`] and the route reads no
+/// global (the player's `feed_open::dv_landing_plan` asks this when it arms the Dolby Vision guard).
+pub fn dv_first_picture(ps: &PlaybackSession) -> plx_platform::devcaps::DvFirstPicture {
+    ps.attempt_caps().dv_first_picture
+}
+
+/// What Dolby Vision Off would have planned for the stream `dovi`/`vcodec` describes, keeping the
+/// probed `capability`: `NotDv` for a usable base layer, a refusal for a Profile 5 or an unconverted
+/// dual layer.
+fn dv_off_decision_for(
+    capability: plx_platform::devcaps::dv::DvCapability,
+    dovi: plx_data::metadata::Dovi,
+    vcodec: &str,
+) -> plx_data::metadata::DvDecision {
+    frozen_dv_decision(plx_plex::plex::session::DolbyVisionMode::Off, capability, dovi, vcodec)
+}
+
+/// [`dv_off_decision_for`] the installed route's stream.
+fn dv_off_decision(ps: &PlaybackSession) -> plx_data::metadata::DvDecision {
+    dv_off_decision_for(ps.stream_dv_decision.capability, ps.stream_dovi, &ps.stream_vcodec)
+}
+
+/// Whether the installed route's Dolby Vision declaration can be withdrawn: it declares a node, and
+/// what Dolby Vision Off would have planned for the same stream is the base layer (a Profile 5, or an
+/// unconverted dual layer, has none, so there is nothing to fall back to).
+pub fn dv_withdrawable(ps: &PlaybackSession) -> bool {
+    stream_dv_presentation(ps).declared().is_some()
+        && dv_off_decision(ps).presentation == plx_data::metadata::DvPresentation::NotDv
+}
+
+/// Withdraw the installed route's Dolby Vision declaration for the rest of this play: rewrite the
+/// stored presentation to exactly what Dolby Vision Off would have planned, keeping the probed
+/// capability, so every later Load of the route (seek, reload, audio switch, recovery, foreground
+/// restore) is a base-layer play. Returns whether anything changed. `why` is the logged reason.
+///
+/// The file's own declaration (`src_dv_decision`) follows, so a rebuild that copies the video and
+/// re-derives the stream's declaration from it ([`copied_video_dv`]) keeps the node off, and so does
+/// the stored Auto Original candidate (`auto_original`): [`recover_original_direct`] installs its
+/// `dv_decision` verbatim, so a play that fell to HLS and came back to Original (Auto's recovery, a
+/// manual Original re-pick, an enhancement release) would otherwise declare the node again and meet
+/// the same landing. The scope is this play request's installed route and what it can return to, not
+/// the next play. The write goes to `ps` directly, the way `set_stream_acodec` does for the audio
+/// switch: it is a mutation of the installed route, not a transaction.
+pub fn withdraw_dv_presentation(ps: &mut PlaybackSession, why: &str) -> bool {
+    if !dv_withdrawable(ps) {
+        return false;
+    }
+    let off = dv_off_decision(ps);
+    ps.stream_dv_decision = off;
+    if ps.src_dv_decision.presentation.declared().is_some() {
+        ps.src_dv_decision = dv_off_decision_for(ps.src_dv_decision.capability, ps.src_dovi, &ps.stream_vcodec);
+    }
+    if let Some(c) = ps.auto_original.as_mut().filter(|c| c.dv_decision.presentation.declared().is_some()) {
+        c.dv_decision = dv_off_decision_for(c.dv_decision.capability, c.dovi, &c.vcodec);
+    }
+    crate::player::log(&format!(
+        "dv: capability={} presentation={} (withdrawn: {why})",
+        off.capability.label(),
+        off.presentation.label(),
+    ));
+    true
+}
+
 /// Is the audio being fed a Dolby Atmos stream? — the Load payload's `contents.immersive` node.
 /// See [`PlaybackSession::stream_immersive`].
 pub fn stream_immersive(ps: &PlaybackSession) -> bool {
@@ -7509,6 +7576,47 @@ pub fn set_stream_declaration_decided_for_test(
     decision: plx_data::metadata::DvDecision,
 ) -> bool {
     install_stream_declaration(ps, vc, ac, fps, dovi, immersive, decision)
+}
+
+/// Plant the FILE's own Dolby Vision record and the declaration it would make as a direct play
+/// (`src_dovi`, `src_dv_decision`), which a rebuild that copies the video hands on again (tests).
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_source_declaration_for_test(
+    ps: &mut PlaybackSession,
+    dovi: plx_data::metadata::Dovi,
+    decision: plx_data::metadata::DvDecision,
+) {
+    ps.src_dovi = dovi;
+    ps.src_dv_decision = decision;
+}
+
+/// The file's own frozen Dolby Vision declaration ([`set_source_declaration_for_test`]'s other half).
+#[cfg(any(test, feature = "test-support"))]
+pub fn source_dv_for_test(ps: &PlaybackSession) -> (plx_data::metadata::Dovi, plx_data::metadata::DvDecision) {
+    (ps.src_dovi, ps.src_dv_decision)
+}
+
+/// Plant a stored Auto Original candidate (a direct play of `dovi`, declared as `decision`) on `ps`,
+/// the way back [`recover_original_direct`] installs (tests).
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_auto_original_dv_for_test(
+    ps: &mut PlaybackSession,
+    dovi: plx_data::metadata::Dovi,
+    decision: plx_data::metadata::DvDecision,
+) {
+    let mut candidate = test_original_candidate(None);
+    candidate.dovi = dovi;
+    candidate.dv_decision = decision;
+    ps.auto_original = Some(candidate);
+}
+
+/// The stored Auto Original candidate's Dolby Vision record and frozen declaration, if one is stored
+/// ([`set_auto_original_dv_for_test`]'s other half).
+#[cfg(any(test, feature = "test-support"))]
+pub fn auto_original_dv_for_test(
+    ps: &PlaybackSession,
+) -> Option<(plx_data::metadata::Dovi, plx_data::metadata::DvDecision)> {
+    ps.auto_original.as_ref().map(|c| (c.dovi, c.dv_decision))
 }
 
 /// Begin an attempt on `caps`, so [`stream_pcm`] and the planner read that value (tests).

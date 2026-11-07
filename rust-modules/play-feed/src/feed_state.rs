@@ -182,6 +182,8 @@ pub struct Engine {
     pub preview_abandon: bool,
     /// Whether this session's era-chosen sink counter has shown up (the callback-era watch).
     pub era_watch: crate::era_callbacks::Watch,
+    /// The Dolby Vision landing guard ([`crate::dv_start`]), re-armed at every landing.
+    pub dv_start: crate::dv_start::Guard,
 }
 
 impl Engine {

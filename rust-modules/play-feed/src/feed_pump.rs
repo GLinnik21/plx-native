@@ -18,7 +18,7 @@ use plx_base::eventlog::log;
 use plx_base::task::MainThread;
 use plx_playback_contract::feed::{
     DemuxAbr, FailureFlag, FailureFlags, FeedDiag, FeedFacts, FeedRaw, LoadRaw, SeekRequeue,
-    UserPauseOutcome, UserResumeOutcome,
+    DvWithdrawal, UserPauseOutcome, UserResumeOutcome,
 };
 use plx_playback_contract::readout::{AttemptFacts, RuntimeFailure};
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
@@ -122,6 +122,7 @@ pub fn stuck_seek_due(feed: &mut FeedResources, now: u32, feed_allowed: bool,
     eng.flushed && eng.rebase_pending
         && now.wrapping_sub(eng.seek_armed_at) > budget_ms
         && !route_flight
+        && !eng.dv_start.landing_held() // the Dolby Vision guard holds this landing and reloads it itself
 }
 
 /// Re-arm only the native demux target after common has committed any newer route seek.
@@ -451,6 +452,53 @@ pub fn inject_refuse601(
     crate::sf_event::sf_on_event(eng.native_epoch, 18, 601, std::ptr::null());
 }
 
+/// The Dolby Vision landing guard's work for this frame ([`crate::dv_start`], #1166): the withdrawal
+/// the feed path raised at a landing it predicted a skip for, else the watch's verdict on this tick's
+/// [`Probe`](crate::dv_start::Probe). A report-only guard's silence is logged here and answers `None`.
+///
+/// A flight owns the route's reload (`route_flight`), so while one is out a pending withdrawal waits
+/// and the watch's clock does not run: the first frame after it clears takes the withdrawal, at the
+/// target the player reads THEN.
+pub fn dv_landing_due(feed: &mut FeedResources, now: u32, route_flight: bool) -> Option<DvWithdrawal> {
+    use crate::dv_start::{Mode, Probe, Step};
+    let eng = feed.engine()?;
+    if eng.dv_start.mode() == Mode::Inert {
+        return None;
+    }
+    if !route_flight {
+        if let Some(w) = eng.dv_start.take_withdrawal() {
+            return Some(w.to_contract());
+        }
+    }
+    let probe = Probe {
+        now,
+        landed: !eng.rebase_pending,
+        prime_released: !eng.prime_play,
+        accepted_ns: eng.max_fed_video_pts - eng.seek_base_pts,
+        feed_open: FEED_TX.feed_allowed(),
+        // The viewer's clock runs (or a paused-seek preroll is open): the `paused && !preroll` test the
+        // Play/pause ladder uses. A flight holds presentation, so it is not a running clock.
+        clock_running: !route_flight && (!FEED_TX.paused.load(Acquire) || FEED_TX.seek_preroll_active()),
+        frames: FEED_SHARED.frames.load(Relaxed),
+    };
+    match eng.dv_start.step(&probe) {
+        Step::Quiet => None,
+        Step::Report(r) => {
+            log(&r.line());
+            None
+        }
+        Step::Withdraw(w) => Some(w.to_contract()),
+    }
+}
+
+/// The route refused the withdrawal [`dv_landing_due`] handed over: the guard stands down and the
+/// held landing feeds.
+pub fn dv_stand_down(feed: &mut FeedResources) {
+    if let Some(eng) = feed.engine() {
+        eng.dv_start.stand_down();
+    }
+}
+
 /// The native surround audio watchdog ([`crate::native_stall`]): the pipeline took the Load and a few
 /// access units of a native Opus track with more than two channels, then stopped
 /// accepting with both our queues full and no picture. True when it fired, with the refusal flag
@@ -472,6 +520,7 @@ pub fn native_audio_stall_fired(feed: &mut FeedResources, now: u32) -> bool {
         accepted,
         audio_queue_bytes: qa,
         video_queue_bytes: qv,
+        landing_held: eng.dv_start.landing_held(),
     };
     match WATCH.lock().unwrap_or_else(|e| e.into_inner()).step(&probe) {
         Step::Quiet => false,
@@ -569,6 +618,7 @@ pub fn apply_inplace_seek_post(feed: &mut FeedResources, t: i64, now: u32) {
         // reopened stream supplies fresh post-seek AUs.
         eng.pending_video = None;
         eng.pending_audio = None;
+        eng.dv_start.rearm(Some(t)); // a fresh landing for the Dolby Vision guard (`crate::dv_start`)
         eng.prime_play = true; // paused above; Play once PRIME_NS is buffered (no fast-forward)
                                // "no post-seek frame presented yet" — the feed-ahead throttle feeds freely until the first
                                // real presented pts lands, instead of comparing the new fed pts against the STALE pre-seek

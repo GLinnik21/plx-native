@@ -20,7 +20,7 @@ use crate::feed_state::Engine;
 use plx_base::task::MainThread;
 use plx_playback_contract::demux::DemuxSession;
 use plx_playback_contract::feed::{
-    AcceptedLoadOutcome, CtorGate, FeedCommand, FeedControl, FeedFacts, FeedLoad, FeedOpen,
+    AcceptedLoadOutcome, CtorGate, DvWithdrawal, FeedCommand, FeedControl, FeedFacts, FeedLoad, FeedOpen,
     FeedSeek, FeedStop, FeedTransportAction, LoadTick, OpenRequest, PausedSeekStep, PhysicalSet,
     PresentationTick, ReleaseHandoff, ResetScope, SeekMode, SeekPause, StuckSeekAction,
     UnblockFacts, UserPauseOutcome, UserResumeOutcome,
@@ -136,6 +136,7 @@ impl FeedLoad for SharedFeedSet {
         ctor_gate(mt: &MainThread) -> CtorGate;
         take_load_outcomes() -> Vec<AcceptedLoadOutcome>;
         native_audio_stall_fired(now: u32) -> bool;
+        dv_landing_due(now: u32, route_flight: bool) -> Option<DvWithdrawal>;
         note_missing_era_callback();
         inject_refuse601(generation: u32, preview: bool, refused_for: &AtomicU32);
         publish_diag(now: u32, last_frames: &AtomicI32, diag_readout_on: bool);

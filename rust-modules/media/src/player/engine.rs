@@ -743,6 +743,27 @@ mod payload_tests {
         assert!(!payload.contains("DolbyHdrInfo"), "{payload}");
     }
 
+    /// A declared Profile 8.1 direct play whose declaration the route withdrew (#1166) sends the Load
+    /// with no `DolbyHdrInfo` node, so no Dolby Vision splitter is built and the base layer plays.
+    #[test]
+    fn dv_withdraw_payload_has_no_dolby_hdr_info() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        assert!(crate::route::set_stream_declaration_for_test(
+            &mut ps,
+            "hevc",
+            "eac3",
+            23.976,
+            p8(),
+            false,
+            plx_platform::devcaps::dv::DvCapability::Supported,
+        ));
+        let env = SinkEnvelope { w: 3840, h: 2160, fps: 60 };
+        assert!(build_av_payload(&ps, "H265", "AC3 PLUS", env).contains("DolbyHdrInfo"));
+        assert!(crate::route::withdraw_dv_presentation(&mut ps, "test"));
+        let payload = build_av_payload(&ps, "H265", "AC3 PLUS", env);
+        assert!(!payload.contains("DolbyHdrInfo"), "{payload}");
+    }
+
     /// An AV1 Profile 10.1 direct play (HDR10-compatible base) on a set with confirmed Dolby Vision
     /// support carries the node like an HEVC Profile 8 does, with the codec string left at `"AV1"`.
     /// VP9 never does: no Dolby Vision profile rides on it.
@@ -1237,6 +1258,7 @@ mod prime_livelock_tests {
                 Default::default(), super::super::subside::JOB)),
             preview_abandon: false,
             era_watch: plx_play_feed::era_callbacks::Watch::new(),
+            dv_start: plx_play_feed::dv_start::Guard::inert(),
         }
     }
 

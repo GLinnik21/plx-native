@@ -20,7 +20,7 @@ use crate::shared::FEED_TX;
 use crate::side_reader::SideReaderOpen;
 use plx_base::task::MainThread;
 use plx_playback_contract::feed::{
-    AcceptedLoadOutcome, CtorGate, FeedCommand, FeedControl, FeedFacts, FeedLoad, FeedSeek,
+    AcceptedLoadOutcome, CtorGate, DvWithdrawal, FeedCommand, FeedControl, FeedFacts, FeedLoad, FeedSeek,
     FeedOpen, FeedStop, FeedTransportAction, LoadTick, OpenRequest, PausedSeekStep,
     PresentationTick, ReleaseHandoff, ResetScope, SeekMode, SeekPause, StuckSeekAction,
     UnblockFacts, UserPauseOutcome, UserResumeOutcome,
@@ -154,6 +154,10 @@ impl FeedLoad for FeedBackend {
         feed_pump::native_audio_stall_fired(&mut self.resources, now)
     }
 
+    fn dv_landing_due(&mut self, now: u32, route_flight: bool) -> Option<DvWithdrawal> {
+        feed_pump::dv_landing_due(&mut self.resources, now, route_flight)
+    }
+
     fn note_missing_era_callback(&mut self) {
         feed_pump::note_missing_era_callback(&mut self.resources);
     }
@@ -197,7 +201,7 @@ impl FeedOpen for FeedBackend {
             mt, self.resources.shared(), request.start_paused, request.seek_preroll,
             request.stream.map(PhysicalOpen::from), request.sample, request.is_h265,
             request.session_rate, side_reader, request.no_audio, request.requested_rate,
-            hooks,
+            request.dv_landing, hooks,
         ).map_err(|refusal| match refusal {
             PrepareRefusal::ClockBusy | PrepareRefusal::NativeBusy => Failure::Busy,
             PrepareRefusal::Refused => Failure::Refused,
@@ -324,6 +328,7 @@ impl FeedControl for FeedBackend {
             FeedCommand::Rebase { playpos_ns, disp_base } => feed_pump::rebase(playpos_ns, disp_base),
             FeedCommand::SelectAudio { idx } => feed_pump::select_audio(idx),
             FeedCommand::BeginPlayback => crate::seek::set_native_seek_refused(false),
+            FeedCommand::DvStandDown => feed_pump::dv_stand_down(&mut self.resources),
             FeedCommand::SyncSideReader(want) => crate::side_reader::sync(
                 want.map(|spec| (*spec).clone()), self.resources.hooks().prepare.side_reader_job),
         }
@@ -892,6 +897,7 @@ pub(crate) mod tests {
             sample: Some(Box::new(crate::feed_state::SampleBuf::new(Vec::new(), Vec::new()))),
             is_h265: false, session_rate: crate::shared::RATE_NORMAL, requested_rate: 1000,
             no_audio: true, side_reader: Default::default(),
+            dv_landing: plx_playback_contract::feed::DvLandingPlan::INERT,
         }
     }
 

@@ -530,6 +530,41 @@ fn confirm_refusal(
     record(facet)
 }
 
+/// Withdraw the route's Dolby Vision declaration for `w` and answer where the reload goes. `None`: the
+/// route refused (it no longer declares what it can take out, a race the arming did not see), the
+/// Feed's guard stands down and the held landing feeds.
+///
+/// The target is read NOW, not when the withdrawal was raised: the newest coalesced tap if one is
+/// pending (as the seek stuck-watchdog adopts it, `commit_user_seek` included), else, for an in-place
+/// landing, the seek's own target (as a refused native `Seek` re-posts it), else the target the
+/// Engine was armed with (a resume), else the landed keyframe (a plain start).
+fn withdraw_dolby_vision(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut super::adapter::PlayerAdapter,
+    w: &plx_playback_contract::feed::DvWithdrawal,
+) -> Option<i64> {
+    if !crate::route::withdraw_dv_presentation(ps, &w.why) {
+        super::log("dv: the route no longer declares a Dolby Vision node it can withdraw; nothing changed");
+        pa.feed_command(plx_playback_contract::feed::FeedCommand::DvStandDown);
+        return None;
+    }
+    let target = if let Some(tap) = super::take_pending_seek(ps, pa) {
+        crate::route::commit_user_seek();
+        tap.target_ns
+    } else {
+        // The feed's in-place target rides the sample (`FeedRaw::seek_target_ns`).
+        let in_place = ps.readout().raw().seek_target_ns.unwrap_or(-1);
+        if w.in_place && in_place >= 0 { in_place } else { w.armed_target.unwrap_or(w.kf_pts) }
+    }
+    .max(0);
+    super::log(&format!(
+        "dv: withdrawn for this play: {}; reload at {:.3}s without DolbyHdrInfo, the base layer plays",
+        w.why,
+        target as f64 / 1e9,
+    ));
+    Some(target)
+}
+
 /// The Engine fails for good: any flight ends, the viewer gets the read-out, and the Engine's
 /// pipeline is released next frame ([`super::route_start::release_failed_engine`]).
 fn fail_engine_for_good(ps: &mut crate::route::PlaybackSession) {
@@ -1159,6 +1194,24 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
             decode_in_app(ps, pa, offset_ns);
         }
         return;
+    }
+    // ---------- the Dolby Vision landing guard (#1166): a declared landing the firmware's splitter
+    // would skip (the keyframe was held back at the landing) or that no position update follows turns
+    // the declaration off for this play and reloads once. It runs BEFORE the native surround-audio
+    // watchdog below and before the seek stuck-watchdog further down, which yield to a held landing
+    // (they could neither retry the reopen nor reload with the node still sent). The order against
+    // `native_audio_stall_fired` matters on a tie: a pipeline that took some video and audio in one
+    // frame and then stopped accepting starts BOTH clocks on the next frame, and the audio verdict
+    // writes an install-wide learned refusal for a fault that may be the Dolby Vision splitter's.
+    if let Some(w) = pa.dv_landing_due(now, crate::route::flight_outstanding()) {
+        if let Some(target) = withdraw_dolby_vision(ps, pa, &w) {
+            settle_reload(
+                super::engine::reload_at(ps, pa, target),
+                "Dolby Vision withdrawn at a landing",
+                ps,
+            ); // REPLACES the engine (the feed's), return
+            return;
+        }
     }
     if pa.native_audio_stall_fired(now) {
         // The watchdog raised its refusal inside that call, after this frame's first sample: take
@@ -4628,18 +4681,18 @@ mod native_seek_pump_tests {
     use plx_playback_contract::feed::SeekMode;
     use std::os::raw::c_int;
 
-    const TARGET_NS: i64 = 905_000_000_000;
+    pub(super) const TARGET_NS: i64 = 905_000_000_000;
     const NEXT_NS: i64 = 1_200_000_000_000;
-    const V_STEP_NS: i64 = 41_708_333;
+    pub(super) const V_STEP_NS: i64 = 41_708_333;
 
-    struct Rig {
-        ps: crate::route::PlaybackSession,
-        pa: super::super::adapter::PlayerAdapter,
-        now: u32,
+    pub(super) struct Rig {
+        pub(super) ps: crate::route::PlaybackSession,
+        pub(super) pa: super::super::adapter::PlayerAdapter,
+        pub(super) now: u32,
     }
 
     impl Rig {
-        fn new(force_seek: Option<c_int>) -> Rig {
+        pub(super) fn new(force_seek: Option<c_int>) -> Rig {
             crate::player::reset_session_for_test();
             FEED_TX.reset();
             super::super::claim_hold::clear();
@@ -4666,7 +4719,7 @@ mod native_seek_pump_tests {
             Rig { ps, pa, now: 1_000 }
         }
 
-        fn frame(&mut self) {
+        pub(super) fn frame(&mut self) {
             let _frame = plx_base::task::FrameScope::enter();
             self.now += 16;
             pump(&mut self.ps, &mut self.pa, self.now);
@@ -4675,7 +4728,7 @@ mod native_seek_pump_tests {
             crate::player::assert_transport_copies_agree(&self.ps);
         }
 
-        fn eng(&mut self) -> std::cell::RefMut<'_, Engine> {
+        pub(super) fn eng(&mut self) -> std::cell::RefMut<'_, Engine> {
             self.pa.engine().expect("engine")
         }
 
@@ -4687,17 +4740,24 @@ mod native_seek_pump_tests {
         /// [`Self::land_keyframe`] with `n` AUs: the prime wants `PRIME_VIDEO_MAX_NS` (2.5 s) of
         /// accepted video on an audioless stream, which is 61 of these.
         fn land_keyframe_aus(&mut self, ns: i64, n: i64) {
+            self.land_keyframe_with_key(ns, n, 1);
+        }
+
+        /// [`Self::land_keyframe_aus`] whose first access unit carries `first_key` (the AU's `key`:
+        /// `1` an IDR or any plain keyframe, `21` an HEVC CRA, see `plx_play_feed::aq::AuNode`).
+        pub(super) fn land_keyframe_with_key(&mut self, ns: i64, n: i64, first_key: c_int) {
             // The demux thread took the av_seek mailbox before it produced the keyframe.
             FEED_SHARED.seek_to_ns.store(-1, Release);
             let au = [0u8; 64];
             let qv = &mut **self.eng().aq_video.as_mut().unwrap() as *mut plx_play_feed::aq::AuQueue;
             for i in 0..n {
-                plx_play_feed::aq::aq_push(qv, au.as_ptr(), au.len() as c_int, ns + i * V_STEP_NS, c_int::from(i == 0), 1);
+                let key = if i == 0 { first_key } else { 0 };
+                plx_play_feed::aq::aq_push(qv, au.as_ptr(), au.len() as c_int, ns + i * V_STEP_NS, key, 1);
             }
         }
 
         /// Request a seek and frame until the pump has armed it (flushed, awaiting the keyframe).
-        fn arm(&mut self, ns: i64) {
+        pub(super) fn arm(&mut self, ns: i64) {
             crate::player::request_seek(&mut self.ps, &mut self.pa, ns);
             for _ in 0..20 {
                 self.frame();
@@ -4724,7 +4784,7 @@ mod native_seek_pump_tests {
         }
     }
 
-    fn reloads() -> Vec<i64> {
+    pub(super) fn reloads() -> Vec<i64> {
         super::super::engine::RELOAD_AT_LOG.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
@@ -4853,7 +4913,7 @@ mod native_seek_pump_tests {
 
     impl Rig {
         /// The viewer pauses through the real path; the HLS clock is fresh so the Pause is accepted.
-        fn viewer_pause(&mut self) {
+        pub(super) fn viewer_pause(&mut self) {
             FEED_SHARED.reset_hls_clock_for_test();
             assert!(crate::player::pause(&mut self.ps, &mut self.pa), "viewer Pause accepted");
             assert!(FEED_TX.paused.load(Acquire));
@@ -5040,7 +5100,7 @@ mod native_seek_pump_tests {
 
     // ---- the paused-seek lifecycle across EVERY route a seek can take, and across a reload ----
 
-    fn preroll_at_reload() -> Vec<bool> {
+    pub(super) fn preroll_at_reload() -> Vec<bool> {
         super::super::engine::RELOAD_PREROLL_LOG.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
@@ -5050,7 +5110,7 @@ mod native_seek_pump_tests {
         /// resets the session and keeps the transport's Pause and preroll, the fresh Engine arms its
         /// Initial hold from those same two inputs (`engine::ClockStartGuard::arm`), and the new
         /// session waits for its first keyframe at `target`.
-        fn complete_reload(&mut self, target: i64) {
+        pub(super) fn complete_reload(&mut self, target: i64) {
             FEED_TX.reset_for_reload();
             crate::player::reset_session_for_reload_for_test();
             self.ps.step_readout(crate::player::readout::ReadoutEvent::SessionReset);
@@ -5680,6 +5740,10 @@ mod native_seek_pump_tests {
         assert_eq!(pause, 1, "ACB was left PLAYING under a paused pipeline");
     }
 }
+
+#[cfg(all(test, feature = "hostsim"))]
+#[path = "dv_start_pump_tests.rs"]
+mod dv_start_pump_tests;
 
 /// **A film whose audio outlasts its video ends on the host sink too (#865).** The pipeline stops
 /// its clock at the last video frame, so the playhead never comes within [`EOS_TAIL_NS`](crate::player::readout::EOS_TAIL_NS) of the

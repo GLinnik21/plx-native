@@ -11,6 +11,12 @@ pub fn avcc(nals: &[&[u8]]) -> Vec<u8> {
 }
 
 pub fn to_annexb(buf: &[u8], is_hevc: bool, param: &[u8]) -> (bool, Vec<u8>) {
+    let (key, out) = to_annexb_class(buf, is_hevc, param);
+    (key.is_key(), out)
+}
+
+/// [`to_annexb`] with the kind of keyframe the packet is ([`Keyframe`]), not just whether it is one.
+pub fn to_annexb_class(buf: &[u8], is_hevc: bool, param: &[u8]) -> (Keyframe, Vec<u8>) {
     let mut out = Vec::new();
     let key =
         unsafe { packet_to_annexb(buf.as_ptr(), buf.len(), 4, is_hevc, false, true, false, param, &mut out) };
@@ -21,14 +27,14 @@ pub fn to_annexb(buf: &[u8], is_hevc: bool, param: &[u8]) -> (bool, Vec<u8>) {
 pub fn to_annexb_flagged(buf: &[u8], param: &[u8]) -> (bool, Vec<u8>) {
     let mut out = Vec::new();
     let key = unsafe { packet_to_annexb(buf.as_ptr(), buf.len(), 4, false, false, true, true, param, &mut out) };
-    (key, out)
+    (key.is_key(), out)
 }
 
 /// [`to_annexb`] for an HEVC stream with the Dolby Vision Profile 7 -> 8.1 conversion armed.
 pub fn to_annexb_p7(buf: &[u8], param: &[u8]) -> (bool, Vec<u8>) {
     let mut out = Vec::new();
     let key = unsafe { packet_to_annexb(buf.as_ptr(), buf.len(), 4, true, true, true, false, param, &mut out) };
-    (key, out)
+    (key.is_key(), out)
 }
 
 /// One of `tests/fixtures/dovi-p7-*-rpu.bin` (an RPU as `dovi_tool` writes it: a 4-byte start

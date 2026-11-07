@@ -158,6 +158,13 @@ impl FeedOpenRequest {
     }
 }
 
+/// Whether the `dvnonode` diagnostic holds back the `DolbyHdrInfo` node of a Load that declares one
+/// (`declared`). **The one predicate** [`payload_options`] hands the Feed's payload splice and
+/// [`sends_dolby_hdr_info`] arms the Dolby Vision landing guard by.
+fn dv_node_suppressed(declared: bool) -> bool {
+    declared && plx_data::metadata::dv_node_suppressed()
+}
+
 /// The developer switches are read once by the common open runner. The physical payload builder
 /// receives resolved values and never consults route metadata or trigger files.
 pub(super) fn payload_options(facts: &plx_playback_contract::feed::PayloadFacts) -> plx_playback_contract::feed::PayloadOptions {
@@ -168,7 +175,37 @@ pub(super) fn payload_options(facts: &plx_playback_contract::feed::PayloadFacts)
     }
     plx_playback_contract::feed::PayloadOptions {
         with_fps,
-        suppress_dv_node: facts.dv.is_some() && plx_data::metadata::dv_node_suppressed(),
+        suppress_dv_node: dv_node_suppressed(facts.dv.is_some()),
+    }
+}
+
+/// Whether a Load of a route frozen as `dv` carries the `DolbyHdrInfo` node: it declares one and the
+/// `dvnonode` diagnostic does not hold it back, the same answer [`payload_options`] gives the splice,
+/// so the Dolby Vision landing guard never watches a play whose Load sent no node.
+pub(super) fn sends_dolby_hdr_info(dv: plx_data::metadata::DvPresentation) -> bool {
+    dv.declared().is_some() && !dv_node_suppressed(true)
+}
+
+/// The route's half of the Dolby Vision landing guard (#1166) for the Engine `ps`'s route is about to
+/// start: what the Feed builds its guard from at the Engine's construction. It reads the firmware row
+/// from the ATTEMPT's caps (`route::dv_first_picture`), never from the process-wide `devcaps::caps()`.
+pub(super) fn dv_landing_plan(ps: &route::PlaybackSession) -> plx_playback_contract::feed::DvLandingPlan {
+    use plx_playback_contract::feed::{DvLandingMode, DvLandingPlan};
+    if !sends_dolby_hdr_info(route::stream_dv_presentation(ps)) {
+        return DvLandingPlan::INERT;
+    }
+    let mode = if route::preview_request(ps) {
+        DvLandingMode::Inert
+    } else if !route::is_transcoding(ps) && route::dv_withdrawable(ps) {
+        DvLandingMode::Act
+    } else {
+        // A Profile 5 direct play has no base layer to fall back to, and a remux that copies a declared
+        // video is a flight's fresh Load: there is no rung for either, so the guard only says so.
+        DvLandingMode::ReportOnly
+    };
+    DvLandingPlan {
+        mode,
+        idr_first: route::dv_first_picture(ps) == plx_platform::devcaps::DvFirstPicture::IdrOnly,
     }
 }
 

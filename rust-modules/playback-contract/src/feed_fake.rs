@@ -16,7 +16,7 @@ use plx_base::task::MainThread;
 use crate::demux::DemuxSession;
 use crate::readout::AttemptFacts;
 use crate::feed::{
-    defer_media_join, AcceptedLoadOutcome, CtorGate, FeedCommand, FeedControl, FeedFacts, FeedLoad, FeedOpen,
+    defer_media_join, AcceptedLoadOutcome, CtorGate, DvWithdrawal, FeedCommand, FeedControl, FeedFacts, FeedLoad, FeedOpen,
     FeedSeek, FeedStop, FeedTransportAction, OpenRequest, ReleaseHandoff, ResetScope, UnblockFacts,
     LoadTick, PausedSeekStep,
     PresentationTick, SeekMode, SeekPause, Stage, StuckSeekAction, UserPauseOutcome,
@@ -44,6 +44,7 @@ pub enum FeedCall {
     CtorGate,
     TakeLoadOutcomes,
     NativeAudioStallFired { now: u32 },
+    DvLandingDue { now: u32, route_flight: bool },
     NoteMissingEraCallback,
     InjectRefuse601 { generation: u32, preview: bool },
     PublishDiag { now: u32, diag_readout_on: bool },
@@ -93,6 +94,8 @@ pub struct FeedScript {
     /// Delivered once, in order, by the next `take_load_outcomes`.
     pub load_outcomes: Vec<AcceptedLoadOutcome>,
     pub native_audio_stall_fired: bool,
+    /// Delivered once by the next `dv_landing_due`.
+    pub dv_landing: Option<DvWithdrawal>,
     pub user_pause: UserPauseOutcome,
     pub user_resume: UserResumeOutcome,
     /// Delivered once by the next `take_preroll_volume`.
@@ -134,6 +137,7 @@ impl Default for FeedScript {
             ctor_gate: CtorGate::Ready,
             load_outcomes: Vec::new(),
             native_audio_stall_fired: false,
+            dv_landing: None,
             user_pause: UserPauseOutcome::Deferred,
             user_resume: UserResumeOutcome::NoHold,
             preroll_volume: None,
@@ -246,6 +250,9 @@ impl FeedLoad for FakeFeed {
     }
     fn native_audio_stall_fired(&mut self, now: u32) -> bool {
         self.answer(FeedCall::NativeAudioStallFired { now }, |s| s.native_audio_stall_fired)
+    }
+    fn dv_landing_due(&mut self, now: u32, route_flight: bool) -> Option<DvWithdrawal> {
+        self.answer(FeedCall::DvLandingDue { now, route_flight }, |s| s.dv_landing.take())
     }
     fn note_missing_era_callback(&mut self) {
         self.answer(FeedCall::NoteMissingEraCallback, |_| ());

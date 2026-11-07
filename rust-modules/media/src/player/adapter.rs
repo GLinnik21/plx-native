@@ -1861,6 +1861,13 @@ impl PlayerAdapter {
         self.physical.feed().is_some_and(|feed| feed.native_audio_stall_fired(now))
     }
 
+    /// The Dolby Vision landing guard's verdict for this frame (#1166): the withdrawal the player must
+    /// answer with one reload, if any.
+    pub(super) fn dv_landing_due(&mut self, now: u32, route_flight: bool)
+        -> Option<plx_playback_contract::feed::DvWithdrawal> {
+        self.physical.feed().and_then(|feed| feed.dv_landing_due(now, route_flight))
+    }
+
     /// Gate the active physical tick on native constructor readiness.
     pub(super) fn feed_ctor_gate(&mut self) -> plx_playback_contract::feed::CtorGate {
         let mt = &self.mt;

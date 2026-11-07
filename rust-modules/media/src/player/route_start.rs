@@ -465,6 +465,12 @@ fn start_bufferfeed_prepared(
         requested_rate: super::play_rate_permille(ps),
         no_audio: super::no_audio_armed(),
         side_reader,
+        // A local sample's static payload carries no node, so only a stream arms the guard.
+        dv_landing: if stream {
+            super::feed_open::dv_landing_plan(ps)
+        } else {
+            plx_playback_contract::feed::DvLandingPlan::INERT
+        },
     }).map_err(|_| crate::route::RouteStartResult::StartFailed)?;
     // The route reducer alone mints the physical attempt. The native constructor consumes this
     // identity; no backend-owned logical counter can alias a later route.

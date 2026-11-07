@@ -25,6 +25,7 @@ fn p8_without_confirmed_dv_support_uses_base_layer() {
         video_ceiling: Default::default(),
         app_lossy: plx_platform::devcaps::AppLossy::Off,
         app_lossy_in_force: Default::default(),
+        dv_first_picture: plx_platform::devcaps::DvFirstPicture::AnyIrap,
     };
     for bl_compat in [1, 2, 4] {
         let dovi = Dovi {
@@ -69,6 +70,7 @@ fn p5_without_confirmed_dv_support_requires_video_encode() {
         video_ceiling: Default::default(),
         app_lossy: plx_platform::devcaps::AppLossy::Off,
         app_lossy_in_force: Default::default(),
+        dv_first_picture: plx_platform::devcaps::DvFirstPicture::AnyIrap,
     };
     for capability in [
         plx_platform::devcaps::dv::DvCapability::Unknown,
@@ -190,6 +192,7 @@ fn a_profile_5_source_does_not_direct_play_undeclared() {
         video_ceiling: Default::default(),
         app_lossy: plx_platform::devcaps::AppLossy::Off,
         app_lossy_in_force: Default::default(),
+        dv_first_picture: plx_platform::devcaps::DvFirstPicture::AnyIrap,
     };
     // the live P5 item's own shape: 3840x1602 hevc, well inside the bound
     assert!(
@@ -237,6 +240,7 @@ fn declaring_dolby_vision_inverts_the_profile_5_refusal() {
         video_ceiling: Default::default(),
         app_lossy: plx_platform::devcaps::AppLossy::Off,
         app_lossy_in_force: Default::default(),
+        dv_first_picture: plx_platform::devcaps::DvFirstPicture::AnyIrap,
     };
     let dv = p5().presentation(DECLARED, plx_platform::devcaps::dv::DvCapability::Supported, true);
     assert!(
@@ -291,6 +295,7 @@ fn a_cross_compatible_profile_7_source_direct_plays_as_profile_8() {
         video_ceiling: Default::default(),
         app_lossy: plx_platform::devcaps::AppLossy::Off,
         app_lossy_in_force: Default::default(),
+        dv_first_picture: plx_platform::devcaps::DvFirstPicture::AnyIrap,
     };
     for signal in [SILENT, DECLARED] {
         let dv = p7().presentation(signal, Supported, true);
@@ -365,6 +370,7 @@ fn profile_8_and_plain_files_are_unaffected() {
         video_ceiling: Default::default(),
         app_lossy: plx_platform::devcaps::AppLossy::Off,
         app_lossy_in_force: Default::default(),
+        dv_first_picture: plx_platform::devcaps::DvFirstPicture::AnyIrap,
     };
     for signal in [SILENT, DECLARED] {
         assert!(
@@ -520,6 +526,7 @@ fn the_direct_play_gate_and_the_payload_node_can_never_disagree() {
         video_ceiling: Default::default(),
         app_lossy: plx_platform::devcaps::AppLossy::Off,
         app_lossy_in_force: Default::default(),
+        dv_first_picture: plx_platform::devcaps::DvFirstPicture::AnyIrap,
     };
     for capability in [
         plx_platform::devcaps::dv::DvCapability::Unknown,
@@ -678,6 +685,7 @@ fn a_source_beyond_the_device_bound_does_not_direct_play() {
         video_ceiling: Default::default(),
         app_lossy: plx_platform::devcaps::AppLossy::Off,
         app_lossy_in_force: Default::default(),
+        dv_first_picture: plx_platform::devcaps::DvFirstPicture::AnyIrap,
     };
     // the codec agrees; the frame size must still refuse — on either codec
     assert!(!video_direct_plays(
@@ -732,6 +740,7 @@ fn unknown_dimensions_fail_open_and_the_codec_half_still_gates() {
         video_ceiling: Default::default(),
         app_lossy: plx_platform::devcaps::AppLossy::Off,
         app_lossy_in_force: Default::default(),
+        dv_first_picture: plx_platform::devcaps::DvFirstPicture::AnyIrap,
     };
     assert!(video_direct_plays(
         "h264",
@@ -893,4 +902,119 @@ fn off_on_a_supported_set_keeps_the_probe_answer_and_plays_the_base_layer() {
             "{probed:?}",
         );
     }
+}
+
+// -- withdrawing a declaration mid-play (#1166) --------------------------------------------------
+//
+// On a firmware whose Dolby Vision splitter skips a non-IDR first picture, the player takes the node
+// out of the Load for the rest of the play. The route does it in one function, to exactly what Dolby
+// Vision Off would have planned, so every later Load of the route reads the base layer.
+
+/// A direct play of `dovi` declared on a Supported set, the file's own declaration planted too.
+fn declared_route(dovi: Dovi) -> crate::route::PlaybackSession {
+    use plx_plex::plex::session::DolbyVisionMode;
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    assert!(crate::route::set_stream_declaration_for_test(
+        &mut ps, "hevc", "eac3", 23.976, dovi, false, DvCapability::Supported,
+    ));
+    crate::route::set_source_declaration_for_test(
+        &mut ps,
+        dovi,
+        frozen_dv_decision(DolbyVisionMode::Auto, DvCapability::Supported, dovi, "hevc"),
+    );
+    ps
+}
+
+#[test]
+fn dv_withdraw_p81_leaves_the_base_layer_and_keeps_the_capability() {
+    let mut ps = declared_route(p8());
+    assert!(crate::route::stream_dv_presentation(&ps).declared().is_some(), "the premise: declared");
+    assert!(crate::route::dv_withdrawable(&ps));
+    assert!(crate::route::withdraw_dv_presentation(&mut ps, "test"), "a Profile 8.1 declaration is withdrawn");
+    let now = crate::route::stream_dv_decision(&ps);
+    assert_eq!(crate::route::stream_dv_presentation(&ps), DvPresentation::NotDv);
+    assert_eq!(now.capability, DvCapability::Supported, "the probe's answer is kept, so Diagnostics still says supported");
+    // The file's own declaration follows, so a rebuild that re-derives a copied stream's declaration keeps it off.
+    let (src_dovi, src) = crate::route::source_dv_for_test(&ps);
+    assert_eq!(src_dovi, p8(), "the raw record is not rewritten");
+    assert_eq!(src.presentation, DvPresentation::NotDv);
+    assert_eq!(src.capability, DvCapability::Supported);
+}
+
+#[test]
+fn dv_withdraw_refuses_profile_5() {
+    // Dolby Vision Off would REFUSE a Profile 5 (no usable base layer), so there is nothing to fall back to.
+    let mut ps = declared_route(p5());
+    let before = crate::route::stream_dv_decision(&ps);
+    assert!(before.presentation.declared().is_some(), "the premise: a Profile 5 is declared on a supported set");
+    assert!(!crate::route::dv_withdrawable(&ps));
+    assert!(!crate::route::withdraw_dv_presentation(&mut ps, "test"));
+    assert_eq!(crate::route::stream_dv_decision(&ps), before, "nothing was rewritten");
+}
+
+#[test]
+fn dv_withdraw_twice_is_a_no_op() {
+    let mut ps = declared_route(p8());
+    assert!(crate::route::withdraw_dv_presentation(&mut ps, "first"));
+    let after = crate::route::stream_dv_decision(&ps);
+    assert!(!crate::route::dv_withdrawable(&ps), "no node is left to withdraw");
+    assert!(!crate::route::withdraw_dv_presentation(&mut ps, "second"));
+    assert_eq!(crate::route::stream_dv_decision(&ps), after);
+    // A route that never declared anything has nothing to withdraw either.
+    let mut idle = crate::route::PlaybackSession::IDLE;
+    assert!(!crate::route::dv_withdrawable(&idle) && !crate::route::withdraw_dv_presentation(&mut idle, "none"));
+}
+
+#[test]
+fn dv_withdraw_then_a_copied_rebuild_declares_nothing() {
+    let mut ps = declared_route(p8());
+    assert!(crate::route::withdraw_dv_presentation(&mut ps, "test"));
+    let (src_dovi, src_decision) = crate::route::source_dv_for_test(&ps);
+    let copy = decision_body(Some("copy"));
+    // An audio switch, a seek or an Original recovery that copies the video hands the source's
+    // declaration on again: it must be the withdrawn one.
+    let (dovi, decision) = copied_video_dv(Some(&copy), &contract(true, false), src_dovi, src_decision);
+    assert_eq!(dovi, p8(), "the copy still carries the DOVI record");
+    assert!(decision.presentation.declared().is_none(), "but declares no node: {decision:?}");
+}
+
+#[test]
+fn dv_withdraw_downgrades_the_stored_original_candidate_too() {
+    use plx_plex::plex::session::DolbyVisionMode;
+    // The stored Auto Original candidate is installed verbatim when a play that fell to HLS (or to a
+    // fixed rung, or an enhanced remux) goes back to Original: if it still declared the node, the
+    // withdrawn play would send it again and meet the same landing.
+    let declared = frozen_dv_decision(DolbyVisionMode::Auto, DvCapability::Supported, p8(), "hevc");
+    let mut ps = declared_route(p8());
+    assert!(crate::route::auto_original_dv_for_test(&ps).is_none(), "the premise: nothing stored yet");
+    crate::route::set_auto_original_dv_for_test(&mut ps, p8(), declared);
+    assert!(
+        crate::route::auto_original_dv_for_test(&ps).unwrap().1.presentation.declared().is_some(),
+        "the premise: the candidate declares the node"
+    );
+    assert!(crate::route::withdraw_dv_presentation(&mut ps, "test"));
+    let (dovi, now) = crate::route::auto_original_dv_for_test(&ps).expect("the candidate is kept, not dropped");
+    assert_eq!(dovi, p8(), "the raw record is not rewritten");
+    assert_eq!(now.presentation, DvPresentation::NotDv, "the way back declares no node: {now:?}");
+    assert_eq!(now.capability, DvCapability::Supported, "the probe's answer is kept");
+
+    // A refused withdrawal (Profile 5: no base layer to fall back to) leaves the candidate as it was.
+    let p5_declared = frozen_dv_decision(DolbyVisionMode::Auto, DvCapability::Supported, p5(), "hevc");
+    let mut ps = declared_route(p5());
+    crate::route::set_auto_original_dv_for_test(&mut ps, p5(), p5_declared);
+    assert!(!crate::route::withdraw_dv_presentation(&mut ps, "test"));
+    assert_eq!(crate::route::auto_original_dv_for_test(&ps).unwrap().1, p5_declared);
+}
+
+#[test]
+fn dv_withdraw_first_picture_reads_the_attempt_caps() {
+    use plx_platform::devcaps::{apply_exclusions, Caps, DvFirstPicture, EXCLUSIONS};
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    assert_eq!(crate::route::dv_first_picture(&ps), DvFirstPicture::AnyIrap, "no attempt: the assumed value");
+    let mut c = Caps::assumed();
+    apply_exclusions(&mut c, "jhericurl-jervisbay", false, EXCLUSIONS);
+    crate::route::begin_attempt_for_test(&mut ps, std::sync::Arc::new(c));
+    assert_eq!(crate::route::dv_first_picture(&ps), DvFirstPicture::IdrOnly, "the attempt's row, not a global");
+    crate::route::begin_attempt_for_test(&mut ps, std::sync::Arc::new(Caps::assumed()));
+    assert_eq!(crate::route::dv_first_picture(&ps), DvFirstPicture::AnyIrap, "a new attempt starts from its own value");
 }

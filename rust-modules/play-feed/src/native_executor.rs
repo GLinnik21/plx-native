@@ -225,6 +225,9 @@ pub struct NativePrepared {
     pub(crate) native_start: NativeSessionStartGuard,
     pub(crate) user_held: bool,
     pub(crate) side_reader: Box<dyn SideReaderPort>,
+    /// The route's half of the Dolby Vision landing guard, which the Engine's construction turns into
+    /// its [`crate::dv_start::Guard`].
+    pub(crate) dv_landing: plx_playback_contract::feed::DvLandingPlan,
 }
 
 impl NativePrepared {
@@ -238,6 +241,7 @@ impl NativePrepared {
         user_held: bool,
         seek_preroll: bool,
         side_reader: Box<dyn SideReaderPort>,
+        dv_landing: plx_playback_contract::feed::DvLandingPlan,
     ) -> Result<Self, PrepareRefusal> {
         let clock_start = ClockStartGuard::arm(shared, user_held, seek_preroll).ok_or_else(|| {
             plx_base::eventlog::log("start_bufferfeed: clock state is not idle (refusing overlapping start)");
@@ -249,7 +253,7 @@ impl NativePrepared {
         })?;
         Ok(Self {
             open, sample, stream, payload_c, audio_lead, clock_start, native_start,
-            user_held, side_reader,
+            user_held, side_reader, dv_landing,
         })
     }
 
@@ -357,7 +361,7 @@ pub fn launch_native_open(
     hooks: &LaunchHooks,
 ) -> Result<(), ()> {
     let NativePrepared { mut open, sample, stream, payload_c, audio_lead, clock_start, native_start,
-        user_held, mut side_reader } = prepared;
+        user_held, mut side_reader, dv_landing } = prepared;
     let shared = feed.shared();
     // fd = -1 (CLOSED) so a teardown before/without http_open doesn't close(0)
     let mut hs = plx_net::stream::http_stream_boxed();
@@ -508,6 +512,11 @@ pub fn launch_native_open(
         side_reader,
         preview_abandon: false,
         era_watch: crate::era_callbacks::Watch::new(),
+        // The seek armed for this first open (a resume, or `reload_at`) is the landing the guard is armed with.
+        dv_start: crate::dv_start::Guard::from_plan(dv_landing, {
+            let armed = shared.seek_to_ns.load(Ordering::Relaxed);
+            (armed >= 0).then_some(armed)
+        }),
     };
     // Select this session's direct-play seek mode (`SeekMode`, seek.rs, whose SCOPE note argues why
     // it is per session). `feed_stream` can downgrade it to `Reload` mid-session (the pipeline was
@@ -1362,7 +1371,25 @@ pub fn feed_both_lanes(mt: &MainThread, eng: &mut Engine, transport: &Transport,
     try_prime(mt, eng, transport, hooks);
 }
 
+/// Meet the landing keyframe (`kf_pts`, the access unit's `key`) with the Dolby Vision guard. True when
+/// the keyframe must be held back: a withdrawal is pending and the player's driver reloads without the
+/// node. A report-only guard logs its line here and the keyframe feeds as before.
+fn meet_dv_landing(eng: &mut Engine, kf_pts: i64, key: c_int) -> bool {
+    use crate::dv_start::{Landing, Step};
+    match eng.dv_start.land(&Landing { kf_pts, key, in_place: eng.flushed }) {
+        Step::Quiet => false,
+        Step::Report(r) => {
+            plx_base::eventlog::log(&r.line());
+            false
+        }
+        Step::Withdraw(_) => true,
+    }
+}
+
 fn feed_stream(mt: &MainThread, eng: &mut Engine, transport: &Transport, hooks: &FeedHooks) {
+    if eng.dv_start.landing_held() {
+        return; // the landing keyframe is held until the player's driver reloads without the node
+    }
     let shared = eng.shared;
     let qp = match eng.aq_video.as_mut() {
         Some(q) => &mut **q as *mut AuQueue,
@@ -1394,6 +1421,11 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine, transport: &Transport, hooks: 
         }
         let n = eng.pending_video.as_ref().unwrap().0;
         let (es, key, pts, len, data) = unsafe { aq::au_fields(n) };
+        // An Engine started with no seek armed has no rebase to carry its landing: its first video
+        // keyframe is the one the Dolby Vision guard asks about ([`crate::dv_start`]).
+        if !eng.rebase_pending && es == 1 && key != 0 && eng.dv_start.awaiting_landing() && meet_dv_landing(eng, pts, key) {
+            break;
+        }
         if eng.rebase_pending {
             if es == 1 && key != 0 {
                 let completing_in_place_seek = eng.flushed;
@@ -1418,6 +1450,13 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine, transport: &Transport, hooks: 
                         eng.pending_video = None;
                         continue;
                     }
+                }
+                // The landing, as the Dolby Vision guard meets it: AFTER the stale-keyframe drop (a
+                // stale keyframe is no landing) and BEFORE any `Seek`, `setTimeToDecode` or `pts_shift`
+                // write, so a withdrawn landing leaves the pipeline untouched. Not for a flushed
+                // keyframe in `Reload` mode: it anchors nothing and the pump's own reload is on its way.
+                if !(eng.flushed && crate::seek::seek_mode() == SeekMode::Reload) && meet_dv_landing(eng, pts, key) {
+                    break;
                 }
                 if eng.flushed && crate::seek::seek_mode() == SeekMode::NativeSeek {
                     // NATIVE in-place seek (#568): feed the REAL content PTS (pts_shift=0,
@@ -1524,8 +1563,9 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine, transport: &Transport, hooks: 
                                                                                     // retained keyframe has returned `O` from sf_feed.
                 eng.presentation_rearm_pending = completing_in_place_seek && segment_installed;
                 plx_base::eventlog::log(&format!(
-                    "rebase: first post-seek keyframe pts={pts} -> pts_shift={}",
-                    shared.pts_shift.load(Ordering::Relaxed)
+                    "rebase: first post-seek keyframe pts={pts} -> pts_shift={} irap={}",
+                    shared.pts_shift.load(Ordering::Relaxed),
+                    aq::hevc_irap_not_idr(key).map_or_else(|| "IDR".to_string(), aq::hevc_irap_label),
                 ));
             } else {
                 eng.pending_video = None; // drop pre-keyframe AUs
@@ -1663,8 +1703,8 @@ pub fn audio_lead_in(fp: i64, opens: bool, start: Option<i64>) -> bool {
 /// is already visible.
 fn feed_audio_lane(mt: &MainThread, eng: &mut Engine, hooks: &FeedHooks) {
     let shared = eng.shared;
-    if eng.rebase_pending {
-        return; // wait for the video lane to publish pts_shift
+    if eng.rebase_pending || eng.dv_start.landing_held() {
+        return; // wait for the video lane to publish pts_shift (or for the withdrawal's reload)
     }
     if !settle_pcm_lead(eng) {
         return; // the output's lead is not here yet: stamping with a guess would move later
@@ -1993,6 +2033,7 @@ pub fn prepare_native_open(
     side_reader: Box<dyn SideReaderPort>,
     no_audio: bool,
     requested_rate: i32,
+    dv_landing: plx_playback_contract::feed::DvLandingPlan,
     hooks: &PrepareHooks,
 ) -> Result<NativePrepared, PrepareRefusal> {
     let stream = sample.is_none();
@@ -2196,7 +2237,7 @@ pub fn prepare_native_open(
 
     NativePrepared::arm(
         shared, open, sample, stream, payload_c, audio_lead,
-        user_held, seek_preroll, side_reader,
+        user_held, seek_preroll, side_reader, dv_landing,
     )
 }
 
