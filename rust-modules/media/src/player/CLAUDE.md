@@ -682,9 +682,9 @@ something.
   The old caption path is gone: there is no `SHARED.sub_cues`, no `active_subtitle*` and no appkit
   `draw_subtitles`/`caption_page`; every text cue lives in `ass_source`. Sidecar ASS keeps the complete script rather than requesting a SubRip conversion. Don't expect the pipeline to burn or overlay them. See `[[tv-subtitle-engine]]` and the `plex/`
   soft-subs note. An image sub's rect coords are in **the subtitle stream's own authoring canvas** —
-  1920×1080 for Blu-ray PGS but 720×480/576 for a DVD VobSub rip — so `ff::sub_canvas` reads that
-  canvas off the decoder (via `avcodec_parameters_from_context`, no raw struct offset; the ABI proof
-  is in its doc comment) and `appkit::player_hud::sub_screen_rect` scales the whole display set into the
+  1920×1080 for Blu-ray PGS but 720×480/576 for a DVD VobSub rip — so `plx_media_codecs::subtitle`'s `sub_canvas` reads that
+  canvas off the decoder (via `avcodec_parameters_from_context`, no raw struct offset; its layout is
+  asserted in `ci/ffabi-assert.c`) and `appkit::player_hud::sub_screen_rect` scales the whole display set into the
   video rect. Assuming 1080p unconditionally is what made VobSub render as a corner postage stamp.
   **An EXTERNAL text subtitle (the `.srt` beside the film) is a third producer, `sidecar.rs`:** the
   demuxer never sees it, so it is fetched whole from PMS and kept in its OWN store — not
