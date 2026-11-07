@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and run the `cargo fuzz` package over the HUD package and registry parsers (`fuzz/`).
+"""Build and run the `cargo fuzz` package over the HUD package and registry parsers and the WebSocket codec (`fuzz/`).
 
     python3 tools/fuzz-hud.py list
     python3 tools/fuzz-hud.py seed                    # fuzz/seeds/: seed corpora and dictionaries, from files in the tree
@@ -26,6 +26,7 @@ memory limit libFuzzer enforces (default 2048). Exit status: 0, or 1 when any ta
 of memory, or a build failed.
 """
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -68,7 +69,11 @@ TARGETS = {
     "catalog_parse": ("catalog", 65536),
     "catalog_verify": ("catalog", 65536),
     "catalog_cache": ("catalog", 65536),
+    "ws_frame": ("ws", 20000),
 }
+
+WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+WS_NONCE = bytes([7] * 16)
 
 ADDRESSES = [
     "gh:GLinnik21/plxnative-huds", "gh:owner/repo@v1.2.3", "GH:Owner-1/Repo_name.x@1.0.0+build",
@@ -99,6 +104,41 @@ def sha256_hex(data):
 def put(directory, name, data):
     directory.mkdir(parents=True, exist_ok=True)
     (directory / name).write_bytes(data if isinstance(data, bytes) else data.encode())
+
+
+def ws_frame(opcode, payload, fin=True):
+    n = len(payload)
+    length = bytes([n]) if n < 126 else bytes([126]) + n.to_bytes(2, "big") if n <= 0xFFFF else bytes([127]) + n.to_bytes(8, "big")
+    return bytes([(0x80 if fin else 0) | opcode]) + length + payload
+
+
+def ws_upgrade():
+    key = base64.b64encode(WS_NONCE).decode()
+    accept = base64.b64encode(hashlib.sha1((key + WS_GUID).encode()).digest()).decode()
+    return (f"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+            f"Sec-WebSocket-Accept: {accept}\r\n\r\n").encode()
+
+
+def ws_seeds():
+    euro = "€".encode()
+    return {
+        "rfc6455-5-7": b"\x00" + ws_frame(0x1, b"Hello") + ws_frame(0x1, b"Hel", fin=False) + ws_frame(0x0, b"lo")
+                       + ws_frame(0x9, b"Hello") + ws_frame(0x2, bytes(range(256))),
+        "fragments-around-a-ping": b"\x02" + ws_frame(0x1, b"price " + euro[:1], fin=False) + ws_frame(0x9, b"p")
+                                   + ws_frame(0x0, euro[1:], fin=False) + ws_frame(0x0, b"5"),
+        "close-with-reason": b"\x04" + ws_frame(0x8, (1000).to_bytes(2, "big") + b"bye"),
+        "close-empty": b"\x00" + ws_frame(0x8, b""),
+        "invalid-text": b"\x00" + ws_frame(0x1, b"\xce\xba\xff"),
+        "length-past-the-limit": b"\x00" + bytes([0x82, 0x7E, 0x04, 0x01]),
+        "unknown-opcode": b"\x00" + bytes([0x83, 0x00]),
+        "upgrade-then-text": b"\x01" + ws_upgrade() + ws_frame(0x1, b'{"type":"joined"}'),
+        "upgrade-refused": b"\x01" + b"HTTP/1.1 403 Forbidden\r\n\r\n",
+        "empty": b"\x00",
+    }
+
+
+def byte_entries(entries):
+    return "".join('"%s"\n' % "".join("\\x%02x" % b for b in entry) for entry in entries)
 
 
 def index_seed(entries=2, revoked=1, serial=1000):
@@ -312,6 +352,9 @@ def write_seeds():
     put(seeds / "catalog_cache", "cache-empty", cache_seed("", checked_at=None))
     put(seeds / "catalog_cache", "cache-attempt-only", cache_seed("", checked_at=None, attempted_at=1_700_000_100, etag=None))
 
+    for name, data in ws_seeds().items():
+        put(seeds / "ws_frame", name, data)
+
     words = schema_words()
     dicts = seeds / "dict"
     put(dicts, "hud.dict", dict_entries(words) + '"PK\\x03\\x04"\n"PK\\x01\\x02"\n"PK\\x05\\x06"\n"manifest.json"\n"hud.json"\n"assets/"\n')
@@ -324,6 +367,12 @@ def write_seeds():
     put(dicts, "address.dict", dict_entries([
         "gh:", "GH:", "https://", "HTTP://", "http://", "@", "/", ":", "?", "#", "%", "%2f", "%zz", "..", "[::1]",
         "10.0.0.1", "192.168.0.1", "172.16.0.1", "169.254.0.1", "127.0.0.1", "user:pass@", "github.com",
+    ]))
+    put(dicts, "ws.dict", byte_entries([
+        b"\x81", b"\x01", b"\x80", b"\x82", b"\x88", b"\x89", b"\x8a", b"\x7e", b"\x7f", b"\x03\xe8", b"\x03\xed",
+        b"\xce\xba", b"\xed\xa0\x80", b"\xf4\x90\x80\x80", b"\xe2\x82\xac", b"\r\n\r\n", b"HTTP/1.1 101 ",
+        b"Upgrade: websocket\r\n", b"Connection: Upgrade\r\n", b"Sec-WebSocket-Accept: ",
+        b"Sec-WebSocket-Extensions: ", b"Sec-WebSocket-Protocol: ",
     ]))
     put(dicts, "catalog.dict", dict_entries([
         "format", "entries", "revoked", "id", "name", "version", "author", "license", "package_format", "hud_format",
