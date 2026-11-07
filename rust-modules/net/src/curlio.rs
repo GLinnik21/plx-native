@@ -2570,6 +2570,30 @@ mod tests {
         });
     }
 
+    /// A seek is a fresh request on a fresh easy handle, so a grant revoked after the first open
+    /// stops it before anything reaches the wire; restoring the grant lets the next seek through.
+    #[test]
+    fn a_seek_rechecks_the_caller_authority_before_the_next_request() {
+        static REVOKED: AtomicBool = AtomicBool::new(false);
+        struct Revocable;
+        impl UrlAuthorizer for Revocable {
+            fn allows(_url: &str) -> bool { !REVOKED.load(Ordering::Acquire) }
+        }
+        let Some(_serial) = curl_gate() else { return };
+        with_server(RangeMode::Honour, |port, _, requests| {
+            REVOKED.store(false, Ordering::Release);
+            let mut src = super::CurlSource::<Revocable>::open(
+                &format!("http://127.0.0.1:{port}/f.mkv"), 0,
+            ).expect("allowed at open");
+            let sent = requests.load(Ordering::Acquire);
+            REVOKED.store(true, Ordering::Release);
+            assert!(!src.seek(2), "a revoked grant refuses the seek");
+            assert_eq!(requests.load(Ordering::Acquire), sent, "the refused seek sent no request");
+            REVOKED.store(false, Ordering::Release);
+            assert!(src.seek(2), "with the grant back the next seek goes through");
+        });
+    }
+
     /// **The offline fix's media half.** A `.invalid` host is opened through the resolve TABLE —
     /// the pin was recorded the way the registry records one, and the source found it by the
     /// URL's host and port with no parameter threaded through `ff::demux`. The bytes arrive, the
