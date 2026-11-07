@@ -865,7 +865,8 @@ class CurlstackCrossBuild(unittest.TestCase):
         pins = json.loads((ROOT / "ci/dependencies.json").read_text())
         stack = [d for d in pins if d.get("group") == "curlstack"]
         self.assertEqual(len(stack), 5)
-        # Not `bundled`: no release ships the stack, so the release source bundle does not carry it.
+        # Not `bundled`: no release ships the stack or has been graded with it, so the release
+        # source bundle leaves it out (its licences carry no source obligation either).
         self.assertFalse(any(d.get("bundled") for d in stack))
 
     def test_pins_script_and_makefile_name_the_same_stack(self):
@@ -880,6 +881,17 @@ class CurlstackCrossBuild(unittest.TestCase):
         # Every pin is built: one `build_<id>` call per prefix, in the script's own build order.
         for i in ids:
             self.assertRegex(sh, rf"(?m)^build_{i}$")
+
+    def test_it_grades_the_stack_libraries_themselves(self):
+        # check-elf.sh grades the binary; the stack's own ISA level and `exit` import are graded by
+        # check-curlstack-elf.sh, over the Makefile's staged list, in this job only.
+        body = job_body("ci.yml", "cross-build-curlstack")
+        self.assertIn("run: ./ci/check-curlstack-elf.sh", body)
+        self.assertNotIn("check-curlstack-elf", job_body("ci.yml", "cross-build"))
+        sh = (ROOT / "ci/check-curlstack-elf.sh").read_text()
+        self.assertIn("make -s print-curlstack-staged CURLSTACK=1", sh)
+        self.assertIn("Tag_CPU_arch: v7", sh)
+        self.assertIn('$8 == "exit"', sh)
 
     def test_the_job_installs_what_the_script_demands(self):
         body = job_body("ci.yml", "cross-build-curlstack")

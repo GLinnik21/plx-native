@@ -763,6 +763,14 @@ jobs:
         env:
           WEBOS_SDK: ${{ steps.ndk.outputs.sdk-dir }}
 
+      - name: Bundled curl stack ELF assertions
+        # The seven stack libraries run in the app's process: the same ARMv7 / no-CP15-barrier
+        # grading as the binary, and no `exit` import, which RTLD_DEEPBIND would bind past the
+        # app's exit interposer (the script's header).
+        run: ./ci/check-curlstack-elf.sh
+        env:
+          WEBOS_SDK: ${{ steps.ndk.outputs.sdk-dir }}
+
       - name: Packaging assertions
         # Reads `+curlstack` from pkg/.build-config: the whole stack and curl's licence text must be
         # in the package, and THIRD-PARTY-NOTICES' CURLSTACK=1 section must name exactly the stack.

@@ -1112,7 +1112,10 @@ SMP_INTERPOSER_LDFLAG = -Wl,--export-dynamic-symbol=$(SMP_CALLBACK_HOOK)
 # executable: it exports `exit` even without this flag, because libc.so (always on the link line)
 # defines it too; the flag keeps the export from depending on that implicit rule, and
 # `ci/check-elf.sh` asserts it on the shipped binary.
-# `check-c-unit` links its host copy of the interposer with this same variable.
+# `check-c-unit` links its host copy of the interposer with this same variable. The CURLSTACK=1
+# libraries are the one exception the export cannot reach: they are opened RTLD_DEEPBIND, which
+# binds a library's own `exit` to libc before the executable, so `ci/check-curlstack-elf.sh` fails
+# the build if any of them imports `exit` (none does).
 EXIT_INTERPOSER_LDFLAG = -Wl,--export-dynamic-symbol=exit
 # --gc-sections: this link is gcc's, not rustc's. rustc passes --gc-sections itself when IT links an
 # executable (which is why pkg/plxnative-storage above never needed the flag), but here the Rust
@@ -2260,8 +2263,9 @@ release-guard:
 	  echo "  developer install:  make $(firstword $(MAKECMDGOALS))          (FLAVOR=$(FLAVOR) is not the default)"; \
 	  echo "  really meant it:    make FLAVOR=stable ALLOW_DEV_ON_STABLE=1 $(firstword $(MAKECMDGOALS))"; \
 	  exit 1; fi
-	@# CURLSTACK=1 is a developer build: no release ships the stack, so the release source bundle
-	@# does not carry its corresponding source (THIRD-PARTY-NOTICES, the CURLSTACK=1 section).
+	@# CURLSTACK=1 is a developer build: no release ships the bundled stack or has been graded with
+	@# it. Its licences (Apache-2.0, MIT, curl's) carry no source obligation, so this guard is
+	@# about release scope (THIRD-PARTY-NOTICES, the CURLSTACK=1 section).
 	@if [ -n "$(CURLSTACK)" ] && [ "$(FLAVOR)" = stable ] && [ -z "$(ALLOW_DEV_ON_STABLE)" ]; then \
 	  echo "refusing to put a CURLSTACK=1 build on $(APPID_STABLE) — no release ships the bundled curl stack."; \
 	  echo "  developer install:  make CURLSTACK=1 $(firstword $(MAKECMDGOALS))          (FLAVOR=$(FLAVOR) is not the default)"; \
