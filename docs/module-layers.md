@@ -91,7 +91,7 @@ in `screens` above it; `media` also draws through `gfx`.
 app        everything below
 screens    appkit  ui  media  session  data  telemetry  plex  net  gfx    + platform machine base
 appkit         ui  media  session  data  telemetry  plex  net  gfx        + platform machine base
-media          data  telemetry  plex  net  gfx  playback_contract         + platform machine base
+media          data  telemetry  plex  net  gfx  playback_contract  media_codecs  + platform machine base
 session        telemetry  plex  net                                       + platform machine base
 data           telemetry  plex  net  playback_contract                    + platform machine base
 ui             gfx                                                        + platform machine base
@@ -99,6 +99,7 @@ telemetry      plex  net                                                  + plat
 plex           net                                                        + platform machine base
 net                                                                       + platform base
 gfx                                                                       + platform machine base
+media_codecs   playback_contract                                          + base
 playback_contract                                                         + base
 platform                                                                             machine base
 machine                                                                                      base
@@ -138,6 +139,15 @@ over them, and the adaptive `FeedPort`, with their test fakes), which a backend 
 its types, and the `BackendRunner` and attempt-metrics reducers in `media::player` are written
 against it). `BackendState` is a machine in `ci/machines.ini`, and `ci/check-deps.sh` reads the
 whole crate as machine code.
+
+`media_codecs` is a sixteenth layer, declared the same way. Its crate is `plx_media_codecs`
+(`rust-modules/media-codecs/`) and it names `base` and `playback_contract`: the bundled FFmpeg's
+ABI (`ffi`, the dlopen'd libraries and the layout asserts), the decoders and encoder built on it (the
+PCM decode and conversion, `speed_audio`, `SpeedDecoder`, `Venc`) and the subtitle extraction
+(`subtitle`, `subtitle_extract`), all with owned, neutral output. `media` names it (`plx_media::ff`
+re-exports its bindings and keeps the demux, which stays in `media` until the Feed split) and so does
+the application crate (`capture` drives `Venc`); it names neither `media` nor Plex. `ci/check-deps.sh`
+reads the whole crate for the same IO and clock gates as every other layer.
 
 The Watchlist adds two data modules and no new edge. `watchlist` (rows, match table, `TileState`,
 intent ledger, comparator; with `stores::watchlist`) and `catalog` (the Discover-only item page; with

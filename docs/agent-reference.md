@@ -90,7 +90,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   static libraries and out-of-process handler (`ci/build-sentry-native.sh`; CMake, patched for the
   webOS glibc-2.12/ARM32 ABI). Also compiles `ci/ffabi-assert.c` against
   `vendor/ffmpeg-prefix/include` — **the headers the shipped libraries were built from**, installed
-  by the same invocation that produced them — which is what proves `ff.rs`'s ABI table. **One**
+  by the same invocation that produced them — which is what proves `media-codecs/src/ffi.rs`'s ABI table. **One**
   header tree per target, **one** FFmpeg. This line long said BOTH vendored trees (n3.3 and n4.0)
   and *two* tables, which was true while the app read the television's FFmpeg and had to select a
   table per firmware; bundling collapsed that into a single equality (`ffabi-assert.c` opens by
@@ -220,7 +220,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   what the user can reach, which is the only class that is tracked rather than accepted; `--sites` lists every hit with its class.
   CI runs the three cargo targets plus those two as five parallel jobs
   (`host-lint`, `host-unit-default`, `host-unit-hostsim`, `host-python`, `host-python-harness`) behind an aggregator named
-  `host checks (NOT a device gate)`; `ci/test_ci_split.py` pins that no gate falls between them. The cargo half runs `cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_appkit -p plx_screens`
+  `host checks (NOT a device gate)`; `ci/test_ci_split.py` pins that no gate falls between them. The cargo half runs `cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_media_codecs -p plx_appkit -p plx_screens`
   **twice: once on the default feature set and once with `--features hostsim`**, which is not a
   duplicate run. The host feed seam (`player/ffi_host.rs`) exists ONLY in the hostsim
   configuration, so every test that drives an access unit through `sf_feed` is compiled out of the
@@ -263,7 +263,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   SDL event loop where no host test can see it. Needs the **clippy component of the pinned toolchain** (`make setup-rust` installs it with
   `--profile minimal --component clippy`).
 - `make test-fast [T=filter]` — **opt-in** incremental inner loop: the same default-feature
-  `cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_appkit -p plx_screens` as `check-cargo-unit-default` (throwaway runtime root, telemetry env), but
+  `cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_media_codecs -p plx_appkit -p plx_screens` as `check-cargo-unit-default` (throwaway runtime root, telemetry env), but
   with `CARGO_INCREMENTAL=1` in its own `rust-modules/target-fast` (gitignored). `T=route::`
   is the test-name filter, handed to every one of the 14 test binaries; each prints its own libtest
   `test result:` line (the counts are per crate, never one total), followed by the wrapper's summary line. Use it for a long series of
@@ -369,12 +369,12 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
 - **CI build health** — four tools keep the build from growing unnoticed, and none of them is a
   device gate.
   - *Timings artifact.* `host-unit-default` compiles the test binary in its own step with
-    `cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_appkit -p plx_screens --no-run --timings`, then `make check-cargo-unit-default` runs against what that
+    `cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_media_codecs -p plx_appkit -p plx_screens --no-run --timings`, then `make check-cargo-unit-default` runs against what that
     built (`--timings` is not part of cargo's fingerprint: checked 2026-10-02 by building with and
     without it and getting `Fresh` for `plxnative-modules` both ways, so the step moves the compile
     rather than adding one). Download `cargo-timings-host-unit-default` from the run page
     ("Artifacts", kept 14 days) and open `cargo-timing.html`: it names the crates on the critical
-    path. Locally: `cd rust-modules && cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_appkit -p plx_screens --no-run --timings` writes
+    path. Locally: `cd rust-modules && cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_media_codecs -p plx_appkit -p plx_screens --no-run --timings` writes
     `target/cargo-timings/cargo-timing.html`.
   - *Trends.* `tools/ci-durations.py [--runs 30] [--recent 5] [--json]` reads the last 30 successful
     `main` runs of CI and Simulator CI through `gh api` and prints, per job, the median and p90 and
@@ -450,7 +450,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   before/after table instead of an ad-hoc scratch-script number. It prints a Markdown table (median /
   min / max over `--runs`, default 3, the scenarios interleaved round by round) and, with `--json`,
   a machine-readable document (git sha, `rustc -V` of the pinned toolchain, host, per-run load and swap). Rows:
-  a **no-op** host test build (`cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_appkit -p plx_screens --no-run`; it reports from cargo's JSON `fresh`
+  a **no-op** host test build (`cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_media_codecs -p plx_appkit -p plx_screens --no-run`; it reports from cargo's JSON `fresh`
   flag whether the app crate was rebuilt and flags a recompile as UNEXPECTED, the
   `ci/test_build_not_always_dirty.py` hazard); an **edit-rebuild** after appending a comment to a
   leaf file of each crate (`plx_base`'s `cbuf.rs`, `plx_machine`'s `landgate.rs`, `plx_platform`'s `devcaps.rs`, `plx_gfx`'s `overdraw.rs`, `plx_net`'s `stream_redirect.rs`, `plx_ui`'s `dwell.rs`, `plx_plex`'s `retry.rs`, `plx_telemetry`'s `window.rs`, `plx_data`'s `tape.rs`, `plx_session`'s `scripted.rs`, `plx_media`'s `units.rs`, `plx_appkit`'s `skip_pill.rs`, `plx_screens`'s `clock_readout.rs`, the application's `coldstart.rs`) and to a hub (`plx_ui`'s `lib.rs`), non-incremental (`CARGO_INCREMENTAL=0`, the
@@ -1007,7 +1007,7 @@ its own and PINS it.** This doc used to file FFmpeg beside curl and ACB as "SONA
 `ci/build-ffmpeg.sh` cross-compiles FFmpeg **9.0** with the NDK — shared, LGPL-clean (no
 `--enable-gpl`), under a `-plx` build suffix: `libavutil-plx.so.61`, `libavcodec-plx.so.63`,
 `libavformat-plx.so.63`, plus `libswscale-plx.so.10` in dev builds only. `make deploy`/`make ipk`
-ship those `.so` files **beside the binary**, and `ff.rs::load_libraries` opens them by **absolute
+ship those `.so` files **beside the binary**, and `media-codecs/src/ffi.rs::load_libraries` opens them by **absolute
 path out of `paths::app_dir()`**, in dependency order under `RTLD_GLOBAL` (they carry no rpath —
 FFmpeg's configure evals its flags and `$ORIGIN` does not survive), after which `boot()` refuses to
 demux unless the majors are exactly **63/63/61**. Both the suffix and the absolute path are
@@ -1316,7 +1316,7 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
 - `rust-modules/base/src/dynlib.rs` — the runtime library binder (`dlopen`, by SONAME candidate list or
   by absolute path). **Six** callers in a lab build and five in every other, each for its own
   reason: `net.rs` binds **curl** by candidate list because its SONAME moves between releases;
-  `ff.rs` binds the **bundled FFmpeg** by absolute path because ours ships beside the binary, on
+  `media-codecs/src/ffi.rs` binds the **bundled FFmpeg** by absolute path because ours ships beside the binary, on
   no library search path — not because any
   version varies; `player/ass.rs` and `gfx/src/rtl.rs` bind the **bundled libass-plx** the same way,
   the subtitle surface and the UI text surface in two tables, each checking the facade ABI against
@@ -1885,7 +1885,7 @@ behaviour; real GL copies, glyphs and presentation still need a device capture w
 There **is** a host unit suite, and it is not the real gate — both halves matter, and conflating
 them is how this section used to be wrong in three files at once.
 
-**Tier 1 — `make check` (host).** `cd rust-modules && cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_appkit -p plx_screens` (a bare `cargo test --lib` runs the application crate only and skips every layer crate: `plx_base`, `plx_machine`, `plx_platform`, `plx_gfx`, `plx_net`, `plx_ui`, `plx_plex`, `plx_telemetry`, `plx_data`, `plx_session`, `plx_media`, `plx_appkit`, `plx_screens`) runs the whole
+**Tier 1 — `make check` (host).** `cd rust-modules && cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_media_codecs -p plx_appkit -p plx_screens` (a bare `cargo test --lib` runs the application crate only and skips every layer crate: `plx_base`, `plx_machine`, `plx_platform`, `plx_gfx`, `plx_net`, `plx_ui`, `plx_plex`, `plx_telemetry`, `plx_data`, `plx_session`, `plx_media`, `plx_appkit`, `plx_screens`) runs the whole
 host suite on the dev Mac, no TV involved — and `make check` runs it a SECOND time under
 `--features hostsim`, because the host feed seam only exists there and the tests that need it are
 compiled out of the first pass (see the build section). **Treat every test COUNT in this section as
@@ -1894,7 +1894,7 @@ documented 59 before that, which was five times stale before anyone noticed — 
 of this paragraph was stale within one *commit*, because two agents were adding tests to the same
 batch that documented it. Three numbers have now rotted here, so do not add a fourth: the only
 count worth having is the one you take yourself, with
-`cd rust-modules && cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_appkit -p plx_screens -- --list | grep -c ': test'`. **The per-module counts
+`cd rust-modules && cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_media_codecs -p plx_appkit -p plx_screens -- --list | grep -c ': test'`. **The per-module counts
 below have the same disease and are worse**, because a stale one reads as precise rather than round
 — several were written when the module was a third its present size, and two bullets have now
 outlived the file they named: `ui/home.rs` (retired to `screens/home/`) and `route.rs` (split in
@@ -1992,7 +1992,7 @@ navigation, every screen, and the whole Plex data layer.
 **On macOS, since 2026-08-28 it STREAMS — real HTTP, real demux, real HLS, the real adaptive
 controller.** `make sim-macos` builds a HOST copy of the same bundled FFmpeg 9.0 from the same
 `ci/build-ffmpeg.sh` component list (`HOST=1`, into `vendor/ffmpeg-prefix-host`, staged into
-`pkg/` as `libavformat-plx.63.dylib` beside the ARM `.so.63`), and `ff.rs` carries a second ABI
+`pkg/` as `libavformat-plx.63.dylib` beside the ARM `.so.63`), and `media-codecs/src/ffi.rs` carries a second ABI
 table selected on `target_pointer_width` with `ci/ffabi-assert.c` holding both. Arm
 `plxnative-clocksink` (`player/ffi_host.rs` — AUs accepted and discarded, a presentation clock
 clamped to the last fed PTS, position reported at the television's measured 5 Hz) and the whole
@@ -2651,7 +2651,7 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   modes, **MPEG1-in-TS** (default) and **JPEG/PXFR** (fallback); `stream-screen.py --source
   app|auto` consumes either and its page switches itself. Both encoders and the measured numbers
   are documented where they live — `capture.rs`'s module doc (slots, wire formats, fd ownership)
-  and `ff.rs`'s `venc` section (the device-verified FFmpeg ABI offsets + the RGBA→NV12-NEON
+  and `media-codecs/src/venc.rs` (using `media-codecs/src/ffi.rs`'s verified FFmpeg ABI offsets and the RGBA→NV12-NEON
   colorspace path). `make deploy` also ships the NDK's NEON libjpeg-turbo next to the binary
   best-effort, which JPEG mode dlopen's).
   **Any `plxnative-*` file in the install's runtime root marks the boot as automated and suppresses

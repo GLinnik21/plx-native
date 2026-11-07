@@ -193,7 +193,8 @@ fn terminated_ass_header_and_packets_render_through_main_subtitle_ingestion() {
 #[test]
 #[ignore = "requires the bundled host FFmpeg, native libass and packaged fonts"]
 fn terminated_ass_header_and_packets_render_through_http_side_reader() {
-    use super::subside::{Anchor, ReadCfg, RunEnd, SideStop};
+    use super::subside::SideStop;
+    use plx_playback_contract::subtitle::{Anchor, ReadCfg, RunEnd};
     let _g = plx_base::testlock::serial();
     let _reset = AssReset;
     let _ffmpeg = bind_host_ffmpeg();
@@ -476,8 +477,8 @@ pub(super) fn bind_host_ffmpeg() -> HostFfmpeg {
 /// --disable-track-statistics-tags s.sup --compression 0:none s.sup v.mkv --compression 0:none
 /// v.mkv --compression 0:zlib t.srt`.
 ///
-/// The image tracks go through the app's own decode path — `open_sub_decoder`, `decode_bitmap_cue`,
-/// `rect_to_indexed`, `sub_canvas`, `push_subtitle_bitmap` — keyed by file-order ordinal as the demux
+/// The image tracks go through the app's own decode path — `open_sub_decoder`, `decode_bitmap_cue`
+/// (the codec crate's `decode_bitmap`), `push_subtitle_bitmap` — keyed by file-order ordinal as the demux
 /// loop keys them.
 #[test]
 #[ignore = "needs the host build of the bundled FFmpeg — run by `make check-ffmpeg`"]
