@@ -244,7 +244,7 @@ jobs:
         # (`cargo metadata` resolves; it compiles nothing), plus an informational line count.
         # The binary-size budget runs in cross-build, where the binary exists. Limits and how to
         # raise one deliberately: ci/build-budgets.json, docs/agent-reference.md.
-        run: python3 ci/check-build-budgets.py --graph --src rust-modules/src --src rust-modules/base/src --src rust-modules/machine/src --src rust-modules/net/src --src rust-modules/platform/src --src rust-modules/gfx/src --src rust-modules/ui/src --src rust-modules/plex/src --src rust-modules/telemetry/src --src rust-modules/data/src --src rust-modules/session/src --src rust-modules/media/src --src rust-modules/appkit/src --src rust-modules/screens/src
+        run: python3 ci/check-build-budgets.py --graph --src rust-modules/src --src rust-modules/base/src --src rust-modules/machine/src --src rust-modules/net/src --src rust-modules/platform/src --src rust-modules/gfx/src --src rust-modules/ui/src --src rust-modules/plex/src --src rust-modules/telemetry/src --src rust-modules/data/src --src rust-modules/session/src --src rust-modules/media/src --src rust-modules/playback-contract/src --src rust-modules/media-codecs/src --src rust-modules/play-feed/src --src rust-modules/play-uri/src --src rust-modules/appkit/src --src rust-modules/screens/src
 
       - name: Third-party notices vs the ARM runtime graph
         # `make check` runs only the OFFLINE half of this (ci/gen-third-party-notices.py --check), which
