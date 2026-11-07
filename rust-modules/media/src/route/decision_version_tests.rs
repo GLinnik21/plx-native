@@ -18,6 +18,16 @@ const TWO_VERSIONS: &[u8] = br#"{"MediaContainer":{"Metadata":[{"ratingKey":"rk-
      {"id":31301,"streamType":1,"codec":"hevc","index":0},
      {"id":31302,"streamType":2,"codec":"eac3","channels":6,"index":1,"languageCode":"eng","default":true,"selected":true}]}]}]}]}}"#;
 
+const FOUR_K_FIRST: &[u8] = br#"{"MediaContainer":{"Metadata":[{"ratingKey":"rk-4k","type":"movie","Media":[
+  {"id":3082,"bitrate":14663,"width":3840,"height":2160,"videoResolution":"4k","videoCodec":"hevc","audioCodec":"eac3","container":"mkv",
+   "Part":[{"id":3130,"key":"/library/parts/3130/1/file.mkv","container":"mkv","Stream":[
+     {"id":31301,"streamType":1,"codec":"hevc","index":0},
+     {"id":31302,"streamType":2,"codec":"eac3","channels":6,"index":1,"languageCode":"eng","default":true,"selected":true}]}]},
+  {"id":3086,"bitrate":2372,"width":1920,"height":800,"videoResolution":"1080","videoCodec":"h264","audioCodec":"aac","container":"mkv",
+   "Part":[{"id":3134,"key":"/library/parts/3134/1/file.mkv","container":"mkv","Stream":[
+     {"id":31341,"streamType":1,"codec":"h264","index":0},
+     {"id":31342,"streamType":2,"codec":"aac","channels":2,"index":1,"languageCode":"eng","default":true,"selected":true}]}]}]}]}}"#;
+
 /// A loopback PMS that serves [`TWO_VERSIONS`] for the item, `mde` for every `/decision`, a
 /// bounded body for `start.mkv`, and records every request line until it is told to stop.
 fn versions_pms(mde: &'static [u8]) -> (i32, std::sync::mpsc::Sender<()>, std::thread::JoinHandle<Vec<String>>) {
@@ -33,6 +43,8 @@ fn versions_pms(mde: &'static [u8]) -> (i32, std::sync::mpsc::Sender<()>, std::t
                     let line = drain_http(&mut socket);
                     let body: &[u8] = if line.starts_with("GET /library/metadata/rk-v") {
                         TWO_VERSIONS
+                    } else if line.starts_with("GET /library/metadata/rk-4k") {
+                        FOUR_K_FIRST
                     } else if line.contains("/decision?") {
                         mde
                     } else {
@@ -58,24 +70,108 @@ fn versions_pms(mde: &'static [u8]) -> (i32, std::sync::mpsc::Sender<()>, std::t
 /// Resolve `rk-v` as the request a menu's play makes: the default's part and codecs (what the
 /// listing row carries), plus the version the viewer picked.
 fn resolve(mde: &'static [u8], version: Option<plx_plex::plex::MediaId>) -> (Plan, Vec<String>) {
+    resolve_on("rk-v", ("/library/parts/3134/1/file.mkv", "h264", "aac"), mde, version, None)
+}
+
+fn resolve_on(
+    rk: &str,
+    (part, vcodec, acodec): (&str, &str, &str),
+    mde: &'static [u8],
+    version: Option<plx_plex::plex::MediaId>,
+    caps: Option<plx_platform::devcaps::Caps>,
+) -> (Plan, Vec<String>) {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     let (port, done, server) = versions_pms(mde);
     let sid = plx_plex::plex::register_for_test("versions", "127.0.0.1", port, "token", "versions-client");
-    let mut env = ResolveEnv::snapshot(&ps, plx_data::stores::metadata::MetadataStore::default().view(), sid, "rk-v");
+    let mut env = ResolveEnv::snapshot(&ps, plx_data::stores::metadata::MetadataStore::default().view(), sid, rk);
     env.version = version;
-    let plan = build_stream(
-        &plx_base::task::OffFrame::for_test(),
-        "rk-v",
-        "/library/parts/3134/1/file.mkv",
-        "h264",
-        "aac",
-        &env,
-    );
+    if let Some(caps) = caps {
+        env.caps = std::sync::Arc::new(caps);
+    }
+    let plan = build_stream(&plx_base::task::OffFrame::for_test(), rk, part, vcodec, acodec, &env);
     done.send(()).unwrap();
     let requests = server.join().unwrap();
     plx_plex::plex::reset_servers_for_test();
     (plan, requests)
+}
+
+const FOUR_K_DEFAULT: (&str, &str, &str) = ("/library/parts/3130/1/file.mkv", "hevc", "eac3");
+
+fn full_hd_set() -> plx_platform::devcaps::Caps {
+    plx_platform::devcaps::Caps { hevc_max: (1920, 1088), ..plx_platform::devcaps::Caps::assumed() }
+}
+
+#[test]
+#[cfg(feature = "devtriggers")]
+fn a_1080p_decoder_plays_the_1080p_version_listed_after_the_4k() {
+    let (plan, requests) = resolve_on("rk-4k", FOUR_K_DEFAULT, MDE_DIRECTPLAY, None, Some(full_hd_set()));
+    let mde = requests.iter().find(|l| l.contains("/decision?")).unwrap_or_else(|| panic!("{requests:?}"));
+    assert_eq!(query_param(mde, "mediaIndex"), Some("1"), "{mde}");
+    assert_eq!(query_param(mde, "audioStreamID"), Some("31342"), "{mde}");
+    assert!(plan.url.contains("/library/parts/3134/"), "{}", plan.url);
+    assert_eq!((plan.part_id, plan.media_index), (3134, 1));
+    assert_eq!((plan.src_vcodec.as_str(), plan.src_acodec.as_str()), ("h264", "aac"));
+    assert_eq!(plan.playing.as_ref().map(|p| (p.width, p.audio[0].id)), Some((1920, 31342)));
+}
+
+#[test]
+#[cfg(feature = "devtriggers")]
+fn a_4k_decoder_plays_the_4k_version_listed_first_as_before() {
+    let (plan, requests) = resolve_on("rk-4k", FOUR_K_DEFAULT, MDE_DIRECTPLAY, None, None);
+    let mde = requests.iter().find(|l| l.contains("/decision?")).unwrap_or_else(|| panic!("{requests:?}"));
+    assert_eq!(query_param(mde, "mediaIndex"), Some("0"), "{mde}");
+    assert_eq!((plan.part_id, plan.media_index), (3130, 0));
+}
+
+#[test]
+#[cfg(feature = "devtriggers")]
+fn a_picked_version_wins_over_the_decoder() {
+    let picked = Some(plx_plex::plex::MediaId(3082));
+    let (plan, requests) = resolve_on("rk-4k", FOUR_K_DEFAULT, MDE_DIRECTPLAY, picked, Some(full_hd_set()));
+    let mde = requests.iter().find(|l| l.contains("/decision?")).unwrap_or_else(|| panic!("{requests:?}"));
+    assert_eq!(query_param(mde, "mediaIndex"), Some("0"), "{mde}");
+    assert_eq!((plan.part_id, plan.media_index), (3130, 0));
+}
+
+#[test]
+fn a_page_whose_default_the_set_cannot_decode_gives_up_its_cached_copy() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let mut meta = plx_data::stores::metadata::MetadataStore::default();
+    let sid = ServerId::from_raw(0);
+    let version = |id, kbps, resolution: &str, width, height, vcodec: &str| plx_data::pms::MediaVersion {
+        id: plx_plex::plex::MediaId(id),
+        kbps,
+        resolution: resolution.into(),
+        width,
+        height,
+        vcodec: vcodec.into(),
+        ..Default::default()
+    };
+    plx_data::metadata::set_current_for_test(
+        meta.state_mut(),
+        Some(plx_data::metadata::Detail {
+            sid,
+            rk: "rk-4k".into(),
+            audio: vec![plx_data::metadata::Stream::default()],
+            versions: vec![
+                version(3082, 14663, "4k", 3840, 2160, "hevc"),
+                version(3086, 2372, "1080", 1920, 800, "h264"),
+            ],
+            ..Default::default()
+        }),
+    );
+    let mut env = ResolveEnv::snapshot(&ps, meta.view(), sid, "rk-4k");
+    assert!(env.cached_item.is_some(), "the page is the item");
+    env.caps = std::sync::Arc::new(plx_platform::devcaps::Caps::assumed());
+    leave_a_cached_default_the_set_cannot_decode(&mut env, meta.view(), sid, "rk-4k");
+    assert!(env.cached_item.is_some(), "a 4K decoder plays the page's own default");
+    env.caps = std::sync::Arc::new(full_hd_set());
+    leave_a_cached_default_the_set_cannot_decode(&mut env, meta.view(), sid, "rk-4k");
+    assert!(env.cached_item.is_none(), "the page describes the 4K, which this decoder cannot take");
+    assert_eq!(env.src_kbps, 2372);
+    plx_data::metadata::set_current_for_test(meta.state_mut(), None);
 }
 
 #[test]
