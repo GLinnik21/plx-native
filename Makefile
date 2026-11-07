@@ -588,7 +588,8 @@ RUST_TDIR = target$(if $(RELEASE),-release,)$(if $(LAB),-lab,)$(if $(SYMBOLS),-s
 # PREVIOUS feature set without a word. Exactly the stale-artifact trap the stamp exists to prevent,
 # one step removed — and it burned two builds while shooting the README screenshots (which want
 # devtriggers ON and devtools OFF, a combination neither RELEASE nor the default gives). The set
-# must name the playback backend too (`$(RUST_BACKEND_FEATURES)`): a hand-set RUST_FEATFLAGS replaces
+# must name at least one playback backend (`$(RUST_BACKEND_FEATURES)` is the selected set, the shipping
+# pair by default; the screenshot recipe needs only `play-feed`): a hand-set RUST_FEATFLAGS replaces
 # everything, and an ARM build with no backend is refused by `lib.rs`. Correct:
 #   make RUST_FEATFLAGS="--no-default-features --features devtriggers,play-feed" RUST_TDIR=target-shots deploy
 

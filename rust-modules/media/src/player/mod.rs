@@ -627,7 +627,9 @@ fn acb_playstate_ready(stage: plx_playback_contract::feed::Stage) -> bool {
 /// ACB experiment's first bind call. It remains latched through logical stop until release is
 /// acknowledged. The ACB experiment retains plane ownership through bus release until app exit,
 /// because asynchronous ACB completion is unproven. `drive` steps ownership before this call,
-/// including frames after the player screen has gone.
+/// including frames after the player screen has gone. In any build with the product URI driver
+/// installed the bit is also set while that driver owns the ACB plane
+/// (`PlayerAdapter::uri_product_plane_owned`).
 ///
 /// This is an OBSERVATION of the adapter, not a second owner: it hands the answer to
 /// [`machine::Player::set_video_plane_bound`], which is the only writer and the only publisher.

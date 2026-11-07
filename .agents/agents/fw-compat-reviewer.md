@@ -6,7 +6,8 @@ description: >
   Use before pushing anything that edits `rust-modules/base/src/dynlib.rs`,
   `rust-modules/media-codecs/src/ffi.rs`, `rust-modules/media-codecs/src/venc.rs`,
   `rust-modules/net/src/net.rs`, `rust-modules/net/src/curlio.rs`,
-  `src/starfish.c`, `src/video_plane.c`, `ci/expected-dt-needed.txt`,
+  `src/starfish.c`, `src/video_plane.c`, `src/starfish.h`, `rust-modules/platform/src/webos/ls2/uri.rs`,
+  `rust-modules/play-uri/src`, `ci/expected-dt-needed.txt`,
   `ci/expected-dt-needed-uri.txt`, the Makefile's `LIBS_REAL`, `PLAYBACK_BACKENDS` or
   `PLAYBACK_HAS_FEED`, or that adds any
   `extern "C"` block, `#[link]` directive, `dlopen`, mangled-symbol declaration or new FFmpeg /
@@ -55,7 +56,9 @@ In scope if the diff touches any of:
 | `rust-modules/net/src/net.rs` | the libcurl `dynlib!` block — variadic wrappers over two C symbols, plus the candidate list |
 | `rust-modules/net/src/curlio.rs` | the byte-range `curl_multi_*` `dynlib!` table, exposed as `net::range_io` |
 | `src/starfish.c` | 15 mangled C++ externs against real libraries (built only when `PLAYBACK_HAS_FEED`) |
-| `src/video_plane.c` | the video-plane binding: its own `dlopen` of ACB, the `dlsym` probe for the SDL exported window, and `vp_mode()` choosing between them |
+| `src/video_plane.c`, `src/starfish.h` | the video-plane binding: its own `dlopen` of ACB, the `dlsym` probe for the SDL exported window, and `vp_mode()` choosing between them; the header declares the `acb_*` / `sf_*` seam the Rust externs mirror |
+| `rust-modules/platform/src/webos/ls2/uri.rs` and the `LSCall` declaration in `webos.rs` | the `com.webos.media` LS2 worker; `LSCall` is a hard import of `libluna-service2` in every build with the platform feature `uri-transport`, which the application's `play-uri` feature (in the shipping set) turns on |
+| `rust-modules/play-uri/src` | the URI backend declares no `extern "C"` of its own: it reaches ACB through `DisplaySink` (the platform's `acb_*` externs) and the bus through `tv::uri::UriMedia`; a declaration appearing here is a new undefined symbol and a layer violation |
 | any new `extern "C"` block, `#[link]`, or `__asm__("<mangled>")` declaration | each one adds an undefined symbol, or a whole `DT_NEEDED` entry |
 | `Makefile`'s `LIBS_REAL` and the link rule that uses it | a new `-l` is a new hard `DT_NEEDED` |
 | `Makefile`'s `PLAYBACK_BACKENDS` / `PLAYBACK_HAS_FEED` | they choose whether `src/starfish.c`, `-lplayerAPIs -lpf-1.0` and the `callbackFunctionHook` export are in the binary at all |
@@ -157,9 +160,10 @@ grade an ELF at all.
 ```sh
 git -C <repo> diff --stat HEAD          # or the range under review
 git -C <repo> diff HEAD -- rust-modules/base/src/dynlib.rs rust-modules/media-codecs/src/ffi.rs rust-modules/media-codecs/src/venc.rs \
-    rust-modules/net/src/net.rs rust-modules/net/src/curlio.rs src/starfish.c src/video_plane.c Makefile \
+    rust-modules/net/src/net.rs rust-modules/net/src/curlio.rs src/starfish.c src/video_plane.c src/starfish.h \
+    rust-modules/platform/src/webos.rs rust-modules/platform/src/webos/ls2/uri.rs Makefile \
     ci/expected-dt-needed.txt ci/expected-dt-needed-uri.txt
-rg -n '#\[link|extern "C"|__asm__\("' rust-modules/src rust-modules/media/src rust-modules/media-codecs/src rust-modules/net/src src   # against the diff, not the tree
+grep -rn '#\[link\|extern "C"\|__asm__("' rust-modules/src rust-modules/media/src rust-modules/play-feed/src rust-modules/play-uri/src rust-modules/platform/src rust-modules/media-codecs/src rust-modules/net/src src   # against the diff, not the tree
 ```
 
 ### 1. Decide, out loud, whether you are grading an ELF or grading source

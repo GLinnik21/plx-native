@@ -2618,7 +2618,7 @@ def a_load_decl(lines, exp):
             return False, f"declared fps={fps}, want {want_fps:.3f} :: {line}"
     if "load_fps_rational" in exp:
         # ...and the RATIONAL it produced, which is the thing the frame-rate fixtures exist for.
-        # `engine::fps_rational` has one branch for the 1001-denominator broadcast rates and
+        # `plx_play_feed::fps_rational` has one branch for the 1001-denominator broadcast rates and
         # another for the integers, and grading only the float above would grade the INPUT to that
         # split — leaving the branch a fixture was built to reach unobserved. It also pins the two
         # copies of the broadcast-rate table (this repo has one in Rust and one in the generator's
@@ -2631,7 +2631,7 @@ def a_load_decl(lines, exp):
             return False, f"esInfo videoFps {rat}, want {exp['load_fps_rational']} :: {line}"
     if "load_max" in exp:
         # The `adaptiveStreaming` ceiling the app declared — `WxH@F`. Until 2026-09-03 this was a
-        # 4K60 constant for every stream; now it is derived per session (`engine::sink_envelope`),
+        # 4K60 constant for every stream; now it is derived per session (`plx_play_feed::sink_envelope`),
         # and the cases that carry this key pin each cell of that rule on the device.
         if max_w is None:
             return False, f"no `max=` on the load line — the binary predates the envelope :: {line}"
@@ -4115,7 +4115,7 @@ def a_replayed(lines, want):
       * `replay: starting the finished stream again` exactly `want` times (`app.rs`, at the EOS
         site). COUNTED, not merely found: a replay that fires more often than the case armed is a
         loop, and a loop satisfies every other assertion here while meaning the opposite.
-      * at least `want + 1` `load:` lines. `engine::start_bufferfeed` writes one per SESSION and
+      * at least `want + 1` `load:` lines. `route_start::start_bufferfeed` writes one per SESSION and
         `teardown` clears the URL, so a second line is what says `player::playurl::playurl()` was re-read and
         the payload rebuilt — the thing that distinguishes a real restart from a pipeline that
         never tore down.

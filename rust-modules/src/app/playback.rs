@@ -546,27 +546,6 @@ pub(crate) fn close_player_overlays(pages: &mut plx_ui::dispatch::Dispatcher<sup
     crate::app::diagnostics::close(); // a diagnostics panel must not survive into the next session
 }
 
-/// **Perform the track menu's pick.**
-///
-/// `route::commit_audio_pick`/`commit_subtitle_pick`/`commit_forced_only_pick` take the playback
-/// session's `&mut`, which no screen has (§2.2) — the panel returns a
-/// [`TrackCommit`](plx_appkit::track_menu::TrackCommit) and this is where it lands, from the
-/// overlay's `PlayerReq` and from the headless `plxnative-menupick` trigger alike. The two subtitle
-/// arms go through `route::commit_subtitle_and_sidecar` / `commit_forced_only_and_sidecar`, which
-/// make the same pick commit and also perform its sidecar half (select or deselect), so the sidecar
-/// policy is the route's and not this file's.
-///
-/// **This is where a track pick is also REMEMBERED** (the `memo` the panel built from the picked
-/// row): the `*_pick` commits write the show's track memory when, and only when, the route
-/// accepted the pick, an episode is playing and the seat is the viewer's. A subtitle OK that
-/// changes nothing (the menu closed on the row already shown) commits without a memo and writes
-/// nothing; the same holds for an OK on the Forced only row that already holds the mode
-/// (`TrackCommit::SubtitleForcedOnly`'s `changed`), which recommits what is on screen. No other door writes it:
-/// an automatic pick (the ladder at start, a retry or a rescue) and the commits derived
-/// from the Forced only mode (a new audio re-pointing it, the first frame's container-name
-/// re-match) go through the bare `*_selection` commits and remember nothing, and an audio pick
-/// deferred behind an Original handoff was remembered when the viewer made it, so its later replay
-/// writes nothing.
 #[cfg(feature = "play-uri")]
 fn reconfigure_uri_audio(ps: &mut plx_media::route::PlaybackSession,
     pa: &mut plx_media::player::adapter::PlayerAdapter,
@@ -643,6 +622,27 @@ pub(crate) fn drain_uri_track_fallbacks(ps: &mut plx_media::route::PlaybackSessi
     }
 }
 
+/// **Perform the track menu's pick.**
+///
+/// `route::commit_audio_pick`/`commit_subtitle_pick`/`commit_forced_only_pick` take the playback
+/// session's `&mut`, which no screen has (§2.2) — the panel returns a
+/// [`TrackCommit`](plx_appkit::track_menu::TrackCommit) and this is where it lands, from the
+/// overlay's `PlayerReq` and from the headless `plxnative-menupick` trigger alike. The two subtitle
+/// arms go through `route::commit_subtitle_and_sidecar` / `commit_forced_only_and_sidecar`, which
+/// make the same pick commit and also perform its sidecar half (select or deselect), so the sidecar
+/// policy is the route's and not this file's.
+///
+/// **This is where a track pick is also REMEMBERED** (the `memo` the panel built from the picked
+/// row): the `*_pick` commits write the show's track memory when, and only when, the route
+/// accepted the pick, an episode is playing and the seat is the viewer's. A subtitle OK that
+/// changes nothing (the menu closed on the row already shown) commits without a memo and writes
+/// nothing; the same holds for an OK on the Forced only row that already holds the mode
+/// (`TrackCommit::SubtitleForcedOnly`'s `changed`), which recommits what is on screen. No other door writes it:
+/// an automatic pick (the ladder at start, a retry or a rescue) and the commits derived
+/// from the Forced only mode (a new audio re-pointing it, the first frame's container-name
+/// re-match) go through the bare `*_selection` commits and remember nothing, and an audio pick
+/// deferred behind an Original handoff was remembered when the viewer made it, so its later replay
+/// writes nothing.
 pub(crate) fn commit_track(
     ps: &mut plx_media::route::PlaybackSession,
     pa: &mut plx_media::player::adapter::PlayerAdapter,

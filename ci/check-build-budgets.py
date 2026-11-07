@@ -153,7 +153,7 @@ def graph_metrics(trees: dict, workspace: Path) -> dict[str, int]:
 def run_cargo_tree(shipping: bool) -> dict:
     """The default feature set's trees, or (`shipping`) the shipping build's: the Makefile's `RELEASE=1`
     flags, asked of make (`shipping_featflags`) because a bare `--no-default-features` is a build with no
-    playback backend, which leaves play-feed's third-party tree out of the count."""
+    playback backend, which leaves plx_play_feed's third-party tree out of the count."""
     try:
         featflags = shipping_featflags(ROOT) if shipping else []
     except ValueError as exc:

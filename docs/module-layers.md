@@ -105,6 +105,7 @@ plex           net                                                        + plat
 net                                                                       + platform base
 gfx                                                                       + platform machine base
 play_feed      net  playback_contract  media_codecs                       + platform base
+play_uri       playback_contract                                          + platform base
 media_codecs   playback_contract                                          + base
 playback_contract                                                         + base
 platform                                                                             machine base
@@ -166,6 +167,17 @@ does not name it in production code, while the application composes it
 passes explicitly). `media` and `screens` list it in `ci/module-layers.ini` for their TESTS, which drive the real
 Feed through a dev-dependency edge; `ci/check-deps.sh` reads the whole crate for the same IO and clock gates as
 every other layer.
+
+`play_uri` is an eighteenth layer, declared the same way. Its crate is `plx_play_uri`
+(`rust-modules/play-uri/`) and it names `base`, `platform` and `playback_contract`: the URI backend (the
+`com.webos.media` protocol and request lifecycle, the ACB bind machine and its envelope map, the picture gate,
+and the product driver `UriBackend`, which implements the contract's `UriDriver`) and the developer probe's machine
+and driver (`uriprobe`, `uriprobe_drive`, `devtriggers` builds only). `plx_media` does not name it: the route planner and the player adapter see
+only the contract's traits and the `UriProbe` port, and the application composes the driver
+(`app/adapters/backends.rs`, behind the application crate's `play-uri` feature, which the release build passes
+explicitly) and the probe (`dev/uriprobe.rs`). The driver is compiled into every build that has the feature and
+is never offered a source: production evidence certifies nothing (`media::route::uri_preflight::ProductQualifier`
+answers `Unknown`). `ci/check-deps.sh` reads the whole crate for the same IO and clock gates as every other layer.
 
 The Watchlist adds two data modules and no new edge. `watchlist` (rows, match table, `TileState`,
 intent ledger, comparator; with `stores::watchlist`) and `catalog` (the Discover-only item page; with
@@ -320,8 +332,9 @@ shipping build that reaches it logs `tv: port not installed - using the no-port 
 Only `tv`'s own modules read the table. Two things leave it: the sink, through
 `tv::sink::installed()` (rule `sink` of `ci/check-deps.sh` fences naming `VideoSink` or `installed` to `media`'s
 `player/`, `play-uri/`, `platform`'s `tv/`, `tv.rs` and `webos/`, `port.rs` and
-`app/adapters/backends.rs`; `play-feed/` may name the trait but never resolves `installed`), and, in a `devtriggers` build only, the developer URI-mode probe's
-`tv::uri::installed()`, read by the media wrapper `player::uriprobe_drive`. The independent
+`app/adapters/backends.rs`; `play-feed/` may name the trait but never resolves `installed`), and the URI media pipe through
+`tv::uri::installed()`, resolved once by the composition (`app/adapters/backends.rs::install_uri_product`, every build with the
+`play-uri` feature) and, in a `devtriggers` build, again by the media wrapper `player::uriprobe_drive` for the developer probe. The independent
 `play-uri` driver receives that transport and a shared `DisplaySink` as injected ports; it
 does not read the webOS port registry or the feed-only `VideoSink` itself.
 Lazily computed facts (device identity, the sandbox verdict, the Dolby Vision capability) are

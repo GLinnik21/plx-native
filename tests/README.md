@@ -21,8 +21,8 @@ how a green run means nothing.
 | cost | ~1.1 GB, a few minutes to build; seconds per case (a URI-gate case runs its 75 s cap) | ~3 GB, ~20 minutes to build; ten to twenty minutes to run |
 
 ```sh
-./tests/run.py                  # the synthetic tier — 20 cases, ~7 min, needs nothing
-./tests/run.py --server         # the library-backed 21, through the whole Plex chain
+./tests/run.py                  # the synthetic tier — `--list` is the census; needs nothing
+./tests/run.py --server         # the library-backed tier (`--list --server`), through the whole Plex chain
 ```
 
 **The synthetic tier is the default**, and that inversion (2026-08-22) is about what a bare
@@ -1009,8 +1009,8 @@ mixed-codec matrix.
 Five synthetic cases arm the URI probe themselves, through the case's `triggers`, so they take no
 `--extra-trigger` (one for the same name would replace their tokens); see *URI mode* below for how
 they are graded. Three are R-ABR-2 **instruments**, on an UNBOUND probe arm (`window=none`, no ACB
-video plane), and two are the regression **gates**, on a bound plane. Two more (`pipe_uri_product_*`,
-below) play the same stream through the PRODUCTION URI backend instead of the probe.
+video plane), and two are the regression **gates**, on a bound plane. The `pipe_uri_product_*` cases
+(below) play the stream through the PRODUCTION URI backend instead of the probe.
 
 The instruments. Two play the fixture server's own `/__abr/ladder/master.m3u8`, which lists the
 rungs as variants (all of them, or only those up to `?top=<rung>`) and so needs those rungs' clips

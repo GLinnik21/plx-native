@@ -353,12 +353,16 @@ int acb_finish(long *displayTask, long *playingTask) {
 int acb_unload(long *taskOut) {
     if (taskOut) *taskOut = 0;
     if (!g_acb) return 0;
-    /* A local, not g_taskId: setState writes nothing on -2 (not registered), and g_taskId would
-     * then still hold the pause / resume / video-data task of an earlier call. */
-    long task = 0;
-    int rv = acb.setState(g_acb, APPSTATE_FOREGROUND, PLAYSTATE_UNLOADED, &task);
-    if (elogf) { fprintf(elogf, "acb unloaded rv=%d task=%ld\n", rv, task); fflush(elogf); }
-    if (rv == 1 && taskOut) *taskOut = task;
+    /* Its own slot, zeroed before the call, not g_taskId: setState writes nothing on -2 (not
+     * registered), and g_taskId would then still hold the pause / resume / video-data task of an
+     * earlier call. Static rather than a stack local so a library build that stored the id after
+     * returning (only the dev set's libAcbAPI is read: docs/measurements/acb-release-fence-2026-11-04.md)
+     * could not write into a dead frame. */
+    static long unload_task;
+    unload_task = 0;
+    int rv = acb.setState(g_acb, APPSTATE_FOREGROUND, PLAYSTATE_UNLOADED, &unload_task);
+    if (elogf) { fprintf(elogf, "acb unloaded rv=%d task=%ld\n", rv, unload_task); fflush(elogf); }
+    if (rv == 1 && taskOut) *taskOut = unload_task;
     return rv;
 }
 /* Kodi-parity: mirror the ACB PLAYSTATE on transport pause/resume (the app owns the sink; the
