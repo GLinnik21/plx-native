@@ -217,7 +217,8 @@ jobs:
         # where a spliced-in function swallows its neighbour's attribute and takes a call site out
         # of the release build with it.
         #
-        # A `PostToolUse` hook does this locally after every edit to `rust-modules/src/**.rs`, and a
+        # A `PostToolUse` hook does the bare-`--no-default-features` half of this locally after every edit to
+        # `rust-modules/src/**.rs` (it omits the backend, see below), and a
         # local hook is a backstop, not a gate: it runs in one person's checkout and not on a fork's
         # pull request. Cheap here for the same reason it is cheap there — cargo keys fingerprints
         # by feature set, so the two configurations coexist in one `target/` and this is a warm

@@ -121,8 +121,8 @@ and seeks by time via `av_seek_frame` (libavformat's own Cues index).
   feed and services seeks.
 - `timeline.rs` owns the adapter's periodic PMS
   reporter: it consumes fresh normalized samples, never backend globals. Its stopped handle
-  joins off-frame before the final stopped report. The **demux thread body is `ff::demux`**
-  (spawned by `route_start::start_bufferfeed`): open
+  joins off-frame before the final stopped report. The **demux thread body is `plx_play_feed::ff::demux`**
+  (spawned by `plx_play_feed::native_executor::launch_native_open`): open
   the part URL, read+convert packets, push AUs to the two lanes; **and service seeks** — it
   `av_seek_frame`s on `FEED_SHARED.seek_to_ns` (the demuxer's target, not the pending-seek slot
   below) between two `av_read_frame` calls, which is the whole seek mechanism (nothing interrupts
@@ -324,7 +324,7 @@ something.
   `PlaybackStarted`). The preroll opens only while the prime is still owed (`Engine::prime_play`)
   and is owned at 0: `frames` is per-session, so the first presented frame is the landing.
   **On the ACB route (webOS 4) the landing also needs the video plane BOUND**
-  (`pump::plane_shows_the_picture`): the plane connects only through `setMediaVideoData` +
+  (`plx_play_feed::feed_pump::plane_shows_the_picture`): the plane connects only through `setMediaVideoData` +
   `acb_start` (`Stage::Streaming`), and a tick counted before that is a picture the panel never
   showed. A preroll re-paused on the first tick left the panel black ("no signal" on a VIDEO-only
   capture) until Resume, because the pause stops the ticks the bind waits on and
@@ -927,7 +927,7 @@ something.
   `route::discard_stale_flight_landing`, which `playback_tick` runs every frame since there is no
   pump. `route::transcode_seek` is a test-only composition. The
   rebase machinery
-  (`pts_shift`/`rebase_pending` in `shared.rs`) keeps Starfish from ever seeing a PTS jump.
+  (`FEED_SHARED.pts_shift` in `plx_play_feed::shared` and the Feed engine's `rebase_pending`) keeps Starfish from ever seeing a PTS jump.
   **One landing is not anchored at all (#1166), and a second trigger follows one that was:** a
   landing keyframe that is a non-IDR HEVC IRAP (`aq::hevc_irap_not_idr`, read on the demux thread) on
   a firmware whose Dolby Vision splitter takes only an IDR first (`Caps::dv_first_picture`, the

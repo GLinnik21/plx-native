@@ -6,7 +6,7 @@
 //! `plx_play_feed::shared::{FEED_SHARED, FEED_TX}`, synchronized there; `SHARED` and `TX` here
 //! hold only what is common to a backend (captions, container track names, the HUD's published
 //! scalars). Route ownership and route-changing intents have their separate synchronized
-//! authority in `route::PLAYER_CONTROL`. The Engine (engine.rs) is main-thread-confined. Design:
+//! authority in `route::PLAYER_CONTROL`. The Engine (`plx_play_feed::feed_state::Engine`) is main-thread-confined. Design:
 //! docs/engine-port-design.md.
 //!
 //! "Runs on the SDL main thread" is a **compile error to violate** for the two things where it
@@ -17,7 +17,7 @@
 //! either cannot be handed to `task::spawn`. The exceptions are the honest ones: the two callbacks
 //! above are `extern "C"` entry points *from* the library thread and touch only `FEED_SHARED`,
 //! the Load worker (`plx_play_feed::native_load::load_thread`) calls `sf_load` off-main by design (see `ffi`), and a real stop's
-//! `sf_unload` runs on the `sf-unload` worker on an `UnloadTicket` (`engine::PendingRelease`): the
+//! `sf_unload` runs on the `sf-unload` worker on an `UnloadTicket` (`plx_play_feed::feed_state::PendingRelease`): the
 //! rest of that release (gate, retire, ACB UNLOADED, D1, `destroy_window`) stays on the main thread,
 //! and the composed sink (`PlayerAdapter::display_sink`) answers a no-op sink to every other main-thread
 //! verb until it is done.
@@ -91,7 +91,7 @@ pub use plx_data::metadata::track_names::TrackNames;
 use plx_playback_contract::feed::HlsPauseCompletion;
 use plx_playback_contract::feed::{UserPauseOutcome, UserResumeOutcome};
 
-/// The process's ACB plane owner: the one holder of the video-plane binding for both backends,
+/// The process's ACB plane owner: the one holder of the video-plane binding for every backend,
 /// booted once by the application's `acb_init` (`app/adapters/backends.rs`). It replaces the old `ACB_OK` / `PTYPE` statics.
 pub(crate) fn plane() -> &'static plx_platform::tv::plane::PlaneOwner {
     plx_platform::tv::plane::installed()

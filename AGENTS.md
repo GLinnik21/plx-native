@@ -162,8 +162,9 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   deploy` before any other FPS or smoothness measurement (`docs/agent-reference.md`, "ARM_PROFILE").
 - After editing `rust-modules/src/**/*.rs` or a layer crate's `rust-modules/*/src/**/*.rs`, also check the shipping feature set with
   `make check-nodef` (`cargo check --lib --no-default-features --features play-uri,play-feed`, non-incremental, in the checkout's
-  own `target/`: it shares the third-party units `make lint` built and adds no tree) when the
-  Claude-only release hook did not run. Keep the `CARGO_INCREMENTAL=0` prefix on every other direct
+  own `target/`: it shares the third-party units `make lint` built and adds no tree), whether or not the
+  Claude-only release hook ran: that hook type-checks the bare `--no-default-features`, which drops
+  `play-uri` and `play-feed` too, so it catches an unpaired `devtriggers` cfg but never a backend's gated code. Keep the `CARGO_INCREMENTAL=0` prefix on every other direct
   `cargo` call: they bypass `make`,
   so the Makefile's linked-worktree setting cannot reach them, and a one-shot gate has no use for
   a multi-gigabyte incremental cache. `tools/build-gc.sh` also installs

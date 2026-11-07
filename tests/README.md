@@ -86,7 +86,7 @@ implemented format set, not the complete vocabulary accepted by LG's firmware.
 
 The tier also covers Dolby Vision 8.1 (`pipe_hevc_eac3_4k_dovi_p8`), both containers, in-place seek in each of
 them, the **frame-rate axis** — `pipe_h264_1080p5994` is the only fixture in the repo that reaches
-`engine::fps_rational`'s 1001-denominator branch (`esInfo: videoFps 60000/1001`), and
+`plx_play_feed::fps_rational`'s 1001-denominator branch (`esInfo: videoFps 60000/1001`), and
 `pipe_hevc_4k_60fps` is 4K60 HEVC, the most demanding thing the device table claims; every other
 fixture in both packs is 24p — the **resolution × codec matrix** (SD/HD/FHD/UHD × h264/hevc, eight
 cells, §*The resolution × codec matrix* below), and clips played to their **end**
@@ -100,7 +100,7 @@ one below — a Play control on a detail page is server-tier by construction), a
 item transcodes because the dev set's codec table lists no AV1 decoder; see `transcode_av1_no_dp_audio`
 below for what a set that lists one would do with it). One of
 those is an app gap rather than a test gap: `devcaps` now reads `maxFrameRate` into per-codec rows,
-but only the Starfish Load's `adaptiveStreaming` ceiling clamps against it (`engine::sink_envelope`,
+but only the Starfish Load's `adaptiveStreaming` ceiling clamps against it (`plx_play_feed::sink_envelope`,
 since 2026-09-03) — the profile sent to PMS still carries no frame-rate limitation at all.
 
 - `manifest.json` — the test matrix, and **installation-independent**: the triggers each case
@@ -1361,7 +1361,7 @@ plays the same clip, lets it end, and restarts it. That needed an app change and
 one that works: `/tmp/plxnative-replay[=N]` re-arms `app.rs`'s one-shot `auto_tried` latch N times
 when a `plxnative-playurl` playback reaches EOS, so the next frame goes back through the entry it
 booted through. `teardown` clears the URL and the `ended` flag on a real stop, and
-`engine::start_bufferfeed` re-reads `player::playurl::playurl()` whenever `route::url()` is empty. One more
+`route_start::start_bufferfeed` re-reads `player::playurl::playurl()` whenever `route::url()` is empty. One more
 piece was NOT in place until 2026-09-02: the fixture entry asks the route reducer for a start
 owner directly (no `begin_playback_request` resolve in front of it), and a completed stop used to
 leave the reducer latched in `Stopping`, which refused it — one Load where the case needs two. The

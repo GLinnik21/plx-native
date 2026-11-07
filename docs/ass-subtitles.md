@@ -156,7 +156,7 @@ make check
 make check-ffmpeg
 make check-ass
 CARGO_INCREMENTAL=0 cargo +$(make -s print-rust-toolchain) check --manifest-path rust-modules/Cargo.toml \
-  --lib --no-default-features
+  --lib --no-default-features --features play-uri,play-feed
 make
 python3 tests/fixtures/make_ass_fixture.py /tmp/ass-render-test
 python3 tests/mock_pms.py --host 0.0.0.0 --port "$MOCK_PMS_PORT" \
