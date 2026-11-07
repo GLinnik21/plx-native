@@ -36,8 +36,8 @@ def lg_maintainer_address(value: str) -> bool:
     return re.fullmatch(r"[^<>]+ <[A-Za-z0-9._-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}>", value) is not None
 
 
-# What the Makefile's `RUST_FEATFLAGS` is under `RELEASE=1`: the playback backend is an explicit
-# feature of the application crate (`RUST_BACKEND_FEATURES`), so a release build is not a bare
+# What the Makefile's `RUST_FEATFLAGS` is under `RELEASE=1`: the playback backends are explicit
+# features of the application crate (`RUST_BACKEND_FEATURES`), so a release build is not a bare
 # `--no-default-features` (that one is no backend at all, which no shipped package is). It is read from
 # the Makefile (`rust_toolchain.shipping_featflags`), not restated; the literal stamps in `--selftest`
 # pin that this still decodes what the Makefile writes, and `ci/test_arm_profile.py` pins the Makefile side.
