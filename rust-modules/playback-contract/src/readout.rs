@@ -24,6 +24,9 @@ pub enum RuntimeFailure {
     ReleaseTimeout,
     /// Planning produced neither a source nor a refusal.
     ResolveFailed,
+    /// The Plex server ended the playback (a timeline answer carried a termination): terminal for
+    /// the logical playback whichever backend plays it, and not the backend's refusal.
+    ServerStopped,
 }
 
 /// PURE: turn the four terminal worker signals into one cause. More specific downstream evidence

@@ -1021,7 +1021,7 @@ both halves compile-time facts, and it is also webosbrew's published guidance.
 **One consequence settles a question that keeps getting re-opened: our FFmpeg has NO network.** It
 is configured `--disable-network` with `--enable-protocol=file` as the *only* protocol, so it
 cannot open a URL — http or https, on any firmware. Every byte reaches the demuxer through **the
-custom AVIO**, whichever transport happens to be under it (`stream.rs` for http, `curlio.rs` for
+custom AVIO**, whichever transport happens to be under it (`stream.rs` for http, `net::range_io` through media's credential facade for
 https), and that is not an accident of the current pipeline but a build-time fact you cannot route
 around. "Does the TV's FFmpeg have https?" is therefore not
 something to go and probe on a device; it is decided, and the answer is that no FFmpeg in this app
@@ -1131,11 +1131,11 @@ pipeline. Worker threads (demux, media/load, and `sf-unload` for a real stop's `
 beside the main loop, which owns every other ACB/Starfish control call
 (`rust-modules/media/src/player/CLAUDE.md`, threading model). **That GET has TWO transports and the part URL's SCHEME picks one**,
 once, in `ff::demux`: `http` reads through `stream.rs`'s raw socket, `https` through
-**`curlio.rs`** — libcurl's *multi* interface behind a `read`/`seek`/`size`/`status`/`abort` pull
+**`net::range_io`** (through media's credential facade, `media/src/curlio.rs`) — libcurl's *multi* interface behind a `read`/`seek`/`size`/`status`/`abort` pull
 source, so `ff.rs` never learns curl-multi mechanics. It exists because LG's reviewers have no PMS
 on their LAN and stream from the public internet, which `stream.rs` cannot reach: it speaks
 cleartext. So **libcurl is used by two modules for two jobs** — `net.rs` for plex.tv plus HTTPS PMS
-control calls, `curlio.rs` for the media bytes — and each binds its own `dynlib!` table,
+control calls, `net::range_io` for the media bytes — and each binds its own `dynlib!` table,
 which the linking section explains is load-bearing rather than tidy.
 
 **Subtitles (summary — `docs/ass-subtitles.md` is the deep-dive; `rust-modules/media/src/player/CLAUDE.md`
@@ -1222,7 +1222,7 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   playback deep-dive; read it before touching playback**), `ff.rs` (THE demuxer — the **bundled,
   pinned** libavformat shipped beside the binary, *not* the TV's), `aq.rs` (the AU pipeline behind
   `plx_net`'s HTTP socket, `rust-modules/net/src/stream.rs`; libcurl/TLS is `rust-modules/net/src/net.rs`),
-  `curlio.rs`, `hls.rs`, `abr/` and `route/`; and the Plex layer (`rust-modules/plex/`, crate `plx_plex`: `plex/` and `http.rs` — **its own
+  `curlio.rs` (the credential facade over `plx_net::range_io`), `hls.rs`, `abr/` and `route/`; and the Plex layer (`rust-modules/plex/`, crate `plx_plex`: `plex/` and `http.rs` — **its own
   `rust-modules/plex/src/plex/CLAUDE.md`**, which the rest of this file never pointed at: read it before
   adding a PMS query, and before assuming there is one server. There is a REGISTRY behind
   `client()` now — the app can hold a friend's shared server beside your own, each with its own
@@ -1321,7 +1321,7 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   version varies; `player/ass.rs` and `gfx/src/rtl.rs` bind the **bundled libass-plx** the same way,
   the subtitle surface and the UI text surface in two tables, each checking the facade ABI against
   its own `NATIVE_ABI`, so a facade bump edits both;
-  and `curlio.rs` binds **`curl_multi_*` in a SECOND table of its own**, from the
+  and `net::range_io` binds **`curl_multi_*` in a SECOND table of its own**, from the
   same candidate list, because `load_into` is all-or-nothing and a set missing one multi symbol
   must still be able to SIGN IN. That table is frozen to the oldest supported set:
   `curl_multi_poll`/`curl_multi_wakeup` resolve on the dev Mac, are absent on the dev television,

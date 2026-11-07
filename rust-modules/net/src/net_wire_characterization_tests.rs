@@ -71,7 +71,7 @@ fn sent(verb: &str, headers: &[String], body: Option<&[u8]>) -> String {
 
 /// **The instrument check.** Every test here skips when libcurl cannot be bound, which is a green
 /// suite grading nothing; this is the line that makes the difference visible, as
-/// `curlio::tests::libcurl_binds_on_this_host_so_the_tests_above_are_not_vacuous` does for the media
+/// `range_io::tests::libcurl_binds_on_this_host_so_the_tests_above_are_not_vacuous` does for the media
 /// plane. If it fails, the tests below did not run.
 #[test]
 fn libcurl_binds_on_this_host_so_the_wire_tests_are_not_vacuous() {
