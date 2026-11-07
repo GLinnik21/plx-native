@@ -1,7 +1,7 @@
 //! plx_net: the application core's HTTP and byte-stream transports.
 //!
 //! `net` is the blocking HTTPS client over the television's own libcurl (bound at run time by a
-//! SONAME candidate list through `plx_base::dynlib!`, so nothing is linked here), `curlio`
+//! SONAME candidate list through `plx_base::dynlib!`, so nothing is linked here), `range_io`
 //! is the interruptible HTTPS byte-range source, and `stream` is the plaintext socket stream. It is the `net` layer of `ci/module-layers.ini`: it uses `base`
 //! (and `platform`, which it does not name today) and nothing else.
 //!
