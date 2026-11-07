@@ -1122,6 +1122,7 @@ pub enum FailureClass {
     ResolveFailed,
     /// A hero/trailer preview refused because its route was not a direct play.
     PreviewNotDirect,
+    ServerStopped,
     /// Everything else. Honest rather than tidy.
     Unspecified,
 }
@@ -1130,7 +1131,7 @@ impl FailureClass {
     /// Every class, so a test can hold the declared `playback.failed` domain to the enum it is
     /// built from.
     #[cfg(any(test, feature = "test-support"))]
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::DecisionRefused,
         Self::PlaybackPolicy,
         Self::NoVideoTranscodeTarget,
@@ -1144,6 +1145,7 @@ impl FailureClass {
         Self::ReleaseTimeout,
         Self::ResolveFailed,
         Self::PreviewNotDirect,
+        Self::ServerStopped,
         Self::Unspecified,
     ];
 
@@ -1164,6 +1166,7 @@ impl FailureClass {
             Self::ReleaseTimeout => "release_timeout",
             Self::ResolveFailed => "resolve_failed",
             Self::PreviewNotDirect => "preview_not_direct",
+            Self::ServerStopped => "server_stopped",
             Self::Unspecified => "unspecified",
         }
     }

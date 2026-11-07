@@ -170,6 +170,31 @@ fn a_foreground_resume_frame_makes_no_pms_call_and_the_worker_lands_the_load_at_
     rig.flight.wait_for("the offset-0 encoder's retirement", |f| f.stopped().iter().any(|s| s == "rig-1"));
 }
 
+#[test]
+fn server_stop_retires_a_parked_resume_and_cancels_an_outstanding_rebuild() {
+    for pending in [false, true] {
+        let mut rig = Rig::new(40);
+        rig.flight.hold_answers();
+        if pending {
+            assert_eq!(rig.did_foreground(), ForegroundActivation::Handled);
+            assert!(rig.lifecycle.flight_pending());
+        }
+
+        note_server_stop(&crate::route::sess(&rig.ps), "retired-encoder", "stopped while parked", 10_000);
+        if pending {
+            assert_eq!(rig.poll_frame(), ForegroundActivation::Handled);
+        } else {
+            assert_eq!(rig.did_foreground(), ForegroundActivation::Handled);
+        }
+        assert!(!rig.lifecycle.awaiting_load());
+        assert!(!crate::route::resume_flight_outstanding());
+        assert!(rig.actuator.loads.is_empty());
+        assert_eq!(state(&rig.ps), PlaybackState::Error);
+        rig.flight.release_answers();
+        rig.flight.wait_for("the active encoder's stop", |f| f.stopped().iter().any(|s| s == "rig-1"));
+    }
+}
+
 /// **(iii) A refused rebuild ends exactly as the inline `None` did**: the machine re-arms the exact
 /// suspended snapshot (`Suspended`, nothing launched, nothing hung), the route is untouched and only
 /// the refused replacement is stopped.

@@ -517,6 +517,9 @@ pub enum RollbackLanding {
 /// [`crate::route::engineless_flight_outstanding`]: reload onto the restored HLS route at the
 /// recovery position, or — the rebase was refused — fail the start. Reaps a stale flight's late landing first, since no pump will.
 pub fn land_engineless_rollback(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) -> RollbackLanding {
+    if super::accept_server_stop(ps) {
+        return RollbackLanding::Landed(ForegroundOriginalRecovery::Terminal);
+    }
     crate::route::discard_stale_flight_landing();
     if !crate::route::engineless_flight_outstanding() {
         return RollbackLanding::Stale;
@@ -872,6 +875,7 @@ fn native_audio_stall_fired(eng: &Engine, now: u32) -> bool {
         accepted,
         audio_queue_bytes: qa,
         video_queue_bytes: qv,
+        landing_held: eng.dv_start.landing_held(),
     };
     match WATCH.lock().unwrap_or_else(|e| e.into_inner()).step(&probe) {
         Step::Quiet => false,
@@ -914,6 +918,72 @@ fn note_missing_era_callback(eng: &mut Engine) {
     if let Step::Missing(m) = eng.era_watch.step(&probe) {
         super::log(&line(&m));
     }
+}
+
+/// The Dolby Vision landing guard's work for this frame ([`super::dv_start`], #1166): the withdrawal the
+/// feed path raised at a landing it predicted a skip for, else the watch's verdict on this tick's
+/// [`Probe`](super::dv_start::Probe). A report-only guard's silence is logged here and answers `None`.
+///
+/// A flight owns the route's reload (`route::flight_outstanding`), so while one is out a pending
+/// withdrawal waits and the watch's clock does not run: the first frame after it clears takes the
+/// withdrawal, at the target read THEN.
+fn dv_start_due(eng: &mut Engine, now: u32) -> Option<super::dv_start::Withdrawal> {
+    use super::dv_start::{Mode, Probe, Step};
+    if eng.dv_start.mode() == Mode::Inert {
+        return None;
+    }
+    let flying = crate::route::flight_outstanding();
+    if !flying {
+        if let Some(w) = eng.dv_start.take_withdrawal() {
+            return Some(w);
+        }
+    }
+    let probe = Probe {
+        now,
+        landed: !eng.rebase_pending,
+        prime_released: !eng.prime_play,
+        accepted_ns: eng.max_fed_video_pts - eng.seek_base_pts,
+        feed_open: TX.feed_allowed(),
+        // The viewer's clock runs (or a paused-seek preroll is open): the `TX.paused && !preroll` test
+        // the Play/pause ladder below uses. A flight holds presentation, so it is not a running clock.
+        clock_running: !flying && (!TX.paused.load(Acquire) || TX.seek_preroll_active()),
+        frames: SHARED.frames.load(Relaxed),
+    };
+    match eng.dv_start.step(&probe) {
+        Step::Quiet => None,
+        Step::Report(r) => {
+            super::log(&r.line());
+            None
+        }
+        Step::Withdraw(w) => Some(w),
+    }
+}
+
+/// Withdraw the route's Dolby Vision declaration for `w` and answer where the reload goes. `None`: the
+/// route refused (it no longer declares what it can take out, a race the arming did not see), the
+/// guard stands down and the held landing feeds.
+///
+/// The target is read NOW, not when the withdrawal was raised: the newest coalesced tap if one is
+/// pending (as the seek stuck-watchdog adopts it, `commit_user_seek` included), else, for an in-place
+/// landing, the seek's own target (as a refused native `Seek` re-posts it), else the target the
+/// Engine was armed with (a resume), else the landed keyframe (a plain start).
+fn withdraw_dolby_vision(ps: &mut crate::route::PlaybackSession, eng: &mut Engine, w: &super::dv_start::Withdrawal) -> Option<i64> {
+    if !crate::route::withdraw_dv_presentation(ps, &w.why()) {
+        super::log("dv: the route no longer declares a Dolby Vision node it can withdraw; nothing changed");
+        eng.dv_start.stand_down();
+        return None;
+    }
+    let tap = TX.seek_to_ns.swap(-1, Relaxed);
+    let target = if tap >= 0 {
+        crate::route::commit_user_seek();
+        tap
+    } else {
+        let in_place = SHARED.seek_target_ns.load(Relaxed);
+        if w.in_place && in_place >= 0 { in_place } else { w.armed_target.unwrap_or(w.kf_pts) }
+    }
+    .max(0);
+    super::log(&w.line(target));
+    Some(target)
 }
 
 /// The Engine fails for good: any flight ends, the viewer gets the read-out, and the Engine's
@@ -1541,6 +1611,10 @@ fn inject_refuse601(ps: &crate::route::PlaybackSession, eng: &Engine) {
 
 pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, now: u32) {
     use super::shared::PlaybackState;
+    if super::accept_server_stop(ps) {
+        super::engine::release_server_stopped_engine(ps, pa);
+        return;
+    }
     // A preroll closed by a path with no adapter in hand (`abandon_seek`) leaves its mute behind;
     // the one place every closer funnels through is the next tick.
     if !TX.seek_preroll_active() {
@@ -1619,6 +1693,23 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
             decode_in_app(ps, pa, offset_ns);
         }
         return;
+    }
+    // ---------- the Dolby Vision landing guard (#1166): a declared landing the firmware's splitter
+    // would skip (the keyframe was held back at the landing) or that no position update follows turns
+    // the declaration off for this play and reloads once. It runs BEFORE the native surround-audio
+    // watchdog below and before the seek stuck-watchdog further down, which yields to a pending
+    // withdrawal (it could neither retry the reopen nor reload with the node still sent). The order
+    // against `native_audio_stall_fired` matters on a tie: a pipeline that took some video and audio in
+    // one frame and then stopped accepting starts BOTH clocks on the next frame, and the audio verdict
+    // writes an install-wide learned refusal for a fault that may be the Dolby Vision splitter's.
+    if let Some(w) = dv_start_due(eng, now) {
+        if let Some(target) = withdraw_dolby_vision(ps, eng, &w) {
+            settle_reload(
+                super::engine::reload_at(ps, pa, target),
+                "Dolby Vision withdrawn at a landing",
+            ); // REPLACES the engine — eng dangles, return
+            return;
+        }
     }
     if !eng.preview_abandon && native_audio_stall_fired(eng, now) {
         // A trailer preview is direct-play only: its stall ends the preview, never the player's
@@ -1988,6 +2079,7 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     if eng.flushed && eng.rebase_pending
         && now.wrapping_sub(eng.seek_armed_at) > SEEK_STUCK_MS
         && !crate::route::flight_outstanding()
+        && !eng.dv_start.landing_held() // the Dolby Vision guard holds this landing and reloads it itself
     {
         // Adopt the NEWEST coalesced target if later taps landed while this seek was resolving
         // (TX.seek_to_ns holds the latest request): retrying/reloading at the original armed
@@ -2179,6 +2271,7 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         // reopened stream supplies fresh post-seek AUs.
         eng.pending_video = None;
         eng.pending_audio = None;
+        eng.dv_start.rearm(Some(t)); // a fresh landing for the Dolby Vision guard (`player::dv_start`)
         eng.prime_play = true; // paused above; Play once PRIME_NS is buffered (no fast-forward)
                                // "no post-seek frame presented yet" — the feed-ahead throttle feeds freely until the first
                                // real presented pts lands, instead of comparing the new fed pts against the STALE pre-seek
@@ -2926,6 +3019,9 @@ mod flight_tests {
             if self.pa.is_live() {
                 suspend_bufferfeed(&mut self.ps, &mut self.pa);
             }
+            if self.pa.has_pending_release() {
+                super::super::engine::finish_release_for_test(&mut self.pa);
+            }
             super::super::claim_hold::clear();
             super::super::ffi_host::reset_native_lifecycle_for_test();
             super::super::ffi_host::force_clocksink_for_test(false);
@@ -3393,6 +3489,106 @@ mod flight_tests {
             f.stopped().iter().any(|s| s.starts_with("rig-logical-abr-"))
         });
         assert!(!rig.flight.stopped().iter().any(|s| s == "rig-1"), "{:?}", rig.flight.stopped());
+    }
+
+    #[test]
+    fn a_stop_from_the_server_ends_the_playback_with_its_reason_and_only_back() {
+        let mut rig = Rig::new(120);
+        SHARED.frames.store(10, Relaxed);
+        crate::player::note_server_stop(&crate::route::sess(&rig.ps), "rig-1", "stopped by the admin", 10_000);
+        rig.frame();
+        assert_eq!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error);
+        rig.frame();
+        assert!(!rig.pa.is_live(), "the Engine is released, with no recovery attempted");
+        let shape = crate::player::error_now(&rig.ps);
+        assert_eq!(shape.kind, crate::player::FailureKind::ServerStopped);
+        assert_eq!(shape.detail, "stopped by the admin");
+        assert_eq!(
+            crate::player::failure_actions(shape.kind, crate::player::failure_context(&rig.ps)),
+            vec![crate::player::FailureAction::Back]
+        );
+    }
+
+    #[test]
+    fn server_stop_releases_a_replacement_engine_before_its_first_picture() {
+        let mut rig = failed_original_trial_rig(40);
+        assert_eq!(SHARED.frames.load(Relaxed), 0);
+        crate::player::request_seek(SEEK_TARGET_NS);
+        crate::player::note_server_stop(&crate::route::sess(&rig.ps), "rig-1", "stopped on reload", 10_000);
+        rig.frame();
+        assert_eq!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error);
+        rig.frame();
+        assert!(!rig.pa.is_live(), "the stopped replacement still owns its engine");
+        assert_eq!(crate::route::unpresented_resume_ns(&rig.ps), 10_000_000_000);
+        assert_eq!(crate::player::error_now(&rig.ps).kind, crate::player::FailureKind::ServerStopped);
+    }
+
+    #[test]
+    fn server_stop_cannot_return_to_the_readout_after_back() {
+        let mut rig = Rig::new(40);
+        let playback = crate::route::sess(&rig.ps);
+        crate::player::note_server_stop(&playback, "rig-1", "stopped by the admin", 10_000);
+        crate::player::stop_bufferfeed(&mut rig.ps, &mut rig.pa);
+        assert_eq!(crate::player::state(&rig.ps), crate::player::PlaybackState::Idle);
+
+        // A reporter detached by a reload can still return after Back.
+        crate::player::note_server_stop(&playback, "rig-1", "another late reply", 10_000);
+        rig.frame();
+        assert_eq!(crate::player::state(&rig.ps), crate::player::PlaybackState::Idle);
+        crate::route::drain_scrobble();
+    }
+
+    #[test]
+    fn server_stop_replaces_the_retry_after_the_engine_is_already_released() {
+        let mut rig = Rig::new(120);
+        SHARED.frames.store(10, Relaxed);
+        SHARED.demux_io_failed.store(true, Release);
+        rig.frame();
+        rig.frame();
+        assert!(!rig.pa.is_live(), "premise: the interrupted engine was released");
+        assert_eq!(crate::player::error_now(&rig.ps).kind, crate::player::FailureKind::PlaybackInterrupted);
+
+        crate::player::note_server_stop(&crate::route::sess(&rig.ps), "rig-1", "late termination", 10_000);
+        let shape = crate::player::error_now(&rig.ps);
+        assert_eq!(shape.kind, crate::player::FailureKind::ServerStopped);
+        assert_eq!(shape.detail, "late termination");
+    }
+
+    #[test]
+    fn a_stop_from_the_server_during_a_recovery_flight_ends_it_and_reloads_nothing() {
+        let mut rig = failed_original_trial_rig(40);
+        let epoch = engine_epoch(&mut rig);
+        rig.flight.hold_answers();
+        SHARED.load_failed.store(true, Release);
+        rig.frame();
+        assert!(crate::route::flight_outstanding(), "sanity: the rollback flies");
+        let stops = replacement_stops(&rig.flight);
+
+        crate::player::note_server_stop(&crate::route::sess(&rig.ps), "rig-1", "stopped by the admin", 10_000);
+        rig.frame();
+        assert_eq!(
+            crate::player::state(&rig.ps),
+            crate::player::PlaybackState::Error,
+            "the stop does not wait for the rollback"
+        );
+        assert!(!crate::route::flight_outstanding(), "the stop ends the rollback's flight");
+        rig.flight.release_answers();
+
+        rig.frames_until("the discarded replacement's stop", |r| replacement_stops(&r.flight) > stops);
+        let now = engine_epoch(&mut rig);
+        assert!(now.is_none() || now == epoch, "the rollback's landing reloads nothing");
+        assert_eq!(crate::player::error_now(&rig.ps).kind, crate::player::FailureKind::ServerStopped);
+    }
+
+    #[test]
+    fn a_stop_the_server_sent_for_another_playback_leaves_this_one_playing() {
+        let mut rig = Rig::new(120);
+        SHARED.frames.store(10, Relaxed);
+        crate::player::note_server_stop("an-earlier-playback", "rig-1", "stopped by the admin", 10_000);
+        rig.frame();
+        rig.frame();
+        assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error);
+        assert!(rig.pa.is_live());
     }
 
     /// **A terminal playback error lets go of the pipeline.** The read-out stands, but the loaded
@@ -5275,18 +5471,18 @@ mod native_seek_pump_tests {
     use crate::player::SeekMode;
     use std::os::raw::c_int;
 
-    const TARGET_NS: i64 = 905_000_000_000;
+    pub(super) const TARGET_NS: i64 = 905_000_000_000;
     const NEXT_NS: i64 = 1_200_000_000_000;
-    const V_STEP_NS: i64 = 41_708_333;
+    pub(super) const V_STEP_NS: i64 = 41_708_333;
 
-    struct Rig {
-        ps: crate::route::PlaybackSession,
-        pa: super::super::adapter::PlayerAdapter,
-        now: u32,
+    pub(super) struct Rig {
+        pub(super) ps: crate::route::PlaybackSession,
+        pub(super) pa: super::super::adapter::PlayerAdapter,
+        pub(super) now: u32,
     }
 
     impl Rig {
-        fn new(force_seek: Option<c_int>) -> Rig {
+        pub(super) fn new(force_seek: Option<c_int>) -> Rig {
             SHARED.reset_session();
             TX.reset();
             super::super::claim_hold::clear();
@@ -5309,13 +5505,13 @@ mod native_seek_pump_tests {
             Rig { ps: crate::route::PlaybackSession::IDLE, pa, now: 1_000 }
         }
 
-        fn frame(&mut self) {
+        pub(super) fn frame(&mut self) {
             let _frame = plx_base::task::FrameScope::enter();
             self.now += 16;
             pump(&mut self.ps, &mut self.pa, self.now);
         }
 
-        fn eng(&mut self) -> &mut Engine {
+        pub(super) fn eng(&mut self) -> &mut Engine {
             self.pa.engine().expect("engine")
         }
 
@@ -5327,17 +5523,24 @@ mod native_seek_pump_tests {
         /// [`Self::land_keyframe`] with `n` AUs: the prime wants `PRIME_VIDEO_MAX_NS` (2.5 s) of
         /// accepted video on an audioless stream, which is 61 of these.
         fn land_keyframe_aus(&mut self, ns: i64, n: i64) {
+            self.land_keyframe_with_key(ns, n, 1);
+        }
+
+        /// [`Self::land_keyframe_aus`] whose first access unit carries `first_key` (the AU's `key`:
+        /// `1` an IDR or any plain keyframe, `21` an HEVC CRA, see `aq::AuNode`).
+        pub(super) fn land_keyframe_with_key(&mut self, ns: i64, n: i64, first_key: c_int) {
             // The demux thread took the av_seek mailbox before it produced the keyframe.
             SHARED.seek_to_ns.store(-1, Release);
             let au = [0u8; 64];
             let qv = &mut **self.eng().aq_video.as_mut().unwrap() as *mut crate::aq::AuQueue;
             for i in 0..n {
-                crate::aq::aq_push(qv, au.as_ptr(), au.len() as c_int, ns + i * V_STEP_NS, c_int::from(i == 0), 1);
+                let key = if i == 0 { first_key } else { 0 };
+                crate::aq::aq_push(qv, au.as_ptr(), au.len() as c_int, ns + i * V_STEP_NS, key, 1);
             }
         }
 
         /// Request a seek and frame until the pump has armed it (flushed, awaiting the keyframe).
-        fn arm(&mut self, ns: i64) {
+        pub(super) fn arm(&mut self, ns: i64) {
             crate::player::request_seek(ns);
             for _ in 0..20 {
                 self.frame();
@@ -5364,7 +5567,7 @@ mod native_seek_pump_tests {
         }
     }
 
-    fn reloads() -> Vec<i64> {
+    pub(super) fn reloads() -> Vec<i64> {
         super::super::engine::RELOAD_AT_LOG.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
@@ -5463,7 +5666,7 @@ mod native_seek_pump_tests {
 
     impl Rig {
         /// The viewer pauses through the real path; the HLS clock is fresh so the Pause is accepted.
-        fn viewer_pause(&mut self) {
+        pub(super) fn viewer_pause(&mut self) {
             SHARED.reset_hls_clock_for_test();
             assert!(crate::player::pause(&mut self.pa), "viewer Pause accepted");
             assert!(TX.paused.load(Acquire));
@@ -5598,7 +5801,7 @@ mod native_seek_pump_tests {
 
     // ---- the paused-seek lifecycle across EVERY route a seek can take, and across a reload ----
 
-    fn preroll_at_reload() -> Vec<bool> {
+    pub(super) fn preroll_at_reload() -> Vec<bool> {
         super::super::engine::RELOAD_PREROLL_LOG.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
@@ -5608,7 +5811,7 @@ mod native_seek_pump_tests {
         /// resets the session and keeps the transport's Pause and preroll, the fresh Engine arms its
         /// Initial hold from those same two inputs (`engine::ClockStartGuard::arm`), and the new
         /// session waits for its first keyframe at `target`.
-        fn complete_reload(&mut self, target: i64) {
+        pub(super) fn complete_reload(&mut self, target: i64) {
             TX.reset_for_reload();
             SHARED.reset_session_for_reload();
             SHARED.reset_hls_clock_for_test();
@@ -6234,6 +6437,10 @@ mod native_seek_pump_tests {
         assert_eq!(pause, 1, "ACB was left PLAYING under a paused pipeline");
     }
 }
+
+#[cfg(all(test, feature = "hostsim"))]
+#[path = "dv_start_pump_tests.rs"]
+mod dv_start_pump_tests;
 
 /// **A film whose audio outlasts its video ends on the host sink too (#865).** The pipeline stops
 /// its clock at the last video frame, so the playhead never comes within [`EOS_TAIL_NS`] of the

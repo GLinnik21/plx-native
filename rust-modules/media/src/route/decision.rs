@@ -451,6 +451,8 @@ pub struct PlaybackSession {
     stream_dovi: plx_data::metadata::Dovi,
     /// Capability and presentation frozen when `stream_dovi` entered this physical route. An
     /// audio switch, reload, Original recovery and rollback all copy this beside the raw record.
+    /// Rewritten only by [`withdraw_dv_presentation`] (#1166), which downgrades the presentation to
+    /// what Dolby Vision Off would have planned and keeps the probed capability.
     stream_dv_decision: plx_data::metadata::DvDecision,
     /// The FILE's own Dolby Vision record and the declaration it would make as a direct play,
     /// frozen at the resolve whatever route was taken. `stream_dovi` above is what is being fed;
@@ -867,6 +869,16 @@ pub fn set_url(ps: &mut PlaybackSession, s: &str) {
 pub fn clear_url(ps: &mut PlaybackSession) {
     ps.url.clear()
 }
+/// A full stop retires the logical playback after capturing its final report. A late timeline
+/// reply can still name that old playback, but can no longer match the foreground session.
+pub(crate) fn retire_stopped_playback(ps: &mut PlaybackSession) {
+    clear_url(ps);
+    ps.sess.clear();
+    if ps.engine_failure == Some(crate::player::RuntimeFailure::ServerStopped) {
+        ps.engine_failure = None;
+    }
+}
+
 pub fn transcode_session(ps: &PlaybackSession) -> String {
     ps.tsession.clone()
 }
@@ -1263,6 +1275,7 @@ struct TimelineSnapshot {
     time_ms: i64,
     duration_ms: i64,
     session: String,
+    playback: String,
     play_queue_id: String,
     play_queue_item_id: String,
     audio_stream_id: i64,
@@ -5436,8 +5449,8 @@ pub fn rollback_original_recovery(ps: &mut PlaybackSession) -> Option<OriginalRo
 /// somebody's server.
 pub fn drop_original_recovery(ps: &PlaybackSession) {
     if let Some(pending) = take_pending_original() {
-        // The only caller is real teardown, immediately after `scrobble_stop` took the active
-        // identity. During a direct handoff that identity is the trial's own session: a live
+        // The caller owns the active session's retirement. During a direct handoff that
+        // identity is the trial's own session: a live
         // hls encoder's id (== `pending.encoder`, so scrobble owns its one full stop/resource
         // close) or, from a remux or burn, a fresh id recorded as `replacement_encoder`. During a
         // remux handoff it is the new replacement. Either way, when `replacement_encoder` is set,
@@ -5447,6 +5460,18 @@ pub fn drop_original_recovery(ps: &PlaybackSession) {
             retire_replaced_encoder(ps, pending.encoder);
         }
     }
+}
+
+/// A termination can name the prior encoder if ABR switched while the report was in flight.
+/// Keep the current identity for the final timeline, but stop its producer now.
+pub(crate) fn retire_server_stopped_resources(ps: &PlaybackSession, wire_session: &str) {
+    let active = PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()).active.id.clone();
+    if active != wire_session && ps.auto_fixture_base.is_empty() {
+        if let Some(client) = cur_client(ps) {
+            stop_encoder_session(client, active);
+        }
+    }
+    drop_original_recovery(ps);
 }
 
 fn retire_replaced_encoder(ps: &PlaybackSession, encoder: String) {
@@ -5519,7 +5544,11 @@ pub(crate) fn engine_failure(ps: &PlaybackSession) -> Option<crate::player::Runt
 pub(crate) fn note_engine_failure(ps: &mut PlaybackSession, cause: crate::player::RuntimeFailure, resume_ns: i64) {
     { let s = &mut *ps; {
         s.engine_failure = Some(cause);
-        s.requested_resume_ns = s.requested_resume_ns.max(resume_ns.max(0));
+        s.requested_resume_ns = if cause == crate::player::RuntimeFailure::ServerStopped {
+            resume_ns.max(0)
+        } else {
+            s.requested_resume_ns.max(resume_ns.max(0))
+        };
     } }
 }
 /// The refusal's own sentence for the read-out to quote — `None` when the server did not refuse,
@@ -5721,7 +5750,11 @@ pub fn cur_part_id(ps: &PlaybackSession) -> i64 {
 }
 /// The stable app-owned playback generation (and the first encoder's PMS session id).
 pub fn sess(ps: &PlaybackSession) -> String {
-    ps.sess.clone()
+    playback_session_id(ps).to_owned()
+}
+
+pub(crate) fn playback_session_id(ps: &PlaybackSession) -> &str {
+    &ps.sess
 }
 pub fn pq_id(ps: &PlaybackSession) -> String {
     ps.pq_id.clone()
@@ -5809,6 +5842,71 @@ pub fn stream_dv_presentation(ps: &PlaybackSession) -> plx_data::metadata::DvPre
 
 pub fn stream_dv_decision(ps: &PlaybackSession) -> plx_data::metadata::DvDecision {
     ps.stream_dv_decision
+}
+
+/// Which first picture the Dolby Vision splitter of the set this play runs on takes: the current
+/// ATTEMPT's caps value ([`PlaybackSession::attempt_caps`]), never the process-wide
+/// `devcaps::caps()`, so a test plants the row with [`begin_attempt_for_test`] and the route reads no
+/// global ([`crate::player`]'s `dv_start` guard asks this when it arms).
+pub fn dv_first_picture(ps: &PlaybackSession) -> plx_platform::devcaps::DvFirstPicture {
+    ps.attempt_caps().dv_first_picture
+}
+
+/// What Dolby Vision Off would have planned for the stream `dovi`/`vcodec` describes, keeping the
+/// probed `capability`: `NotDv` for a usable base layer, a refusal for a Profile 5 or an unconverted
+/// dual layer.
+fn dv_off_decision_for(
+    capability: plx_platform::devcaps::dv::DvCapability,
+    dovi: plx_data::metadata::Dovi,
+    vcodec: &str,
+) -> plx_data::metadata::DvDecision {
+    frozen_dv_decision(plx_plex::plex::session::DolbyVisionMode::Off, capability, dovi, vcodec)
+}
+
+/// [`dv_off_decision_for`] the installed route's stream.
+fn dv_off_decision(ps: &PlaybackSession) -> plx_data::metadata::DvDecision {
+    dv_off_decision_for(ps.stream_dv_decision.capability, ps.stream_dovi, &ps.stream_vcodec)
+}
+
+/// Whether the installed route's Dolby Vision declaration can be withdrawn: it declares a node, and
+/// what Dolby Vision Off would have planned for the same stream is the base layer (a Profile 5, or an
+/// unconverted dual layer, has none, so there is nothing to fall back to).
+pub fn dv_withdrawable(ps: &PlaybackSession) -> bool {
+    stream_dv_presentation(ps).declared().is_some()
+        && dv_off_decision(ps).presentation == plx_data::metadata::DvPresentation::NotDv
+}
+
+/// Withdraw the installed route's Dolby Vision declaration for the rest of this play: rewrite the
+/// stored presentation to exactly what Dolby Vision Off would have planned, keeping the probed
+/// capability, so every later Load of the route (seek, reload, audio switch, recovery, foreground
+/// restore) is a base-layer play. Returns whether anything changed. `why` is the logged reason.
+///
+/// The file's own declaration (`src_dv_decision`) follows, so a rebuild that copies the video and
+/// re-derives the stream's declaration from it ([`copied_video_dv`]) keeps the node off, and so does
+/// the stored Auto Original candidate (`auto_original`): [`recover_original_direct`] installs its
+/// `dv_decision` verbatim, so a play that fell to HLS and came back to Original (Auto's recovery, a
+/// manual Original re-pick, an enhancement release) would otherwise declare the node again and meet
+/// the same landing. The scope is this play request's installed route and what it can return to, not
+/// the next play. The write goes to `ps` directly, the way `set_stream_acodec` does for the audio
+/// switch: it is a mutation of the installed route, not a transaction.
+pub fn withdraw_dv_presentation(ps: &mut PlaybackSession, why: &str) -> bool {
+    if !dv_withdrawable(ps) {
+        return false;
+    }
+    let off = dv_off_decision(ps);
+    ps.stream_dv_decision = off;
+    if ps.src_dv_decision.presentation.declared().is_some() {
+        ps.src_dv_decision = dv_off_decision_for(ps.src_dv_decision.capability, ps.src_dovi, &ps.stream_vcodec);
+    }
+    if let Some(c) = ps.auto_original.as_mut().filter(|c| c.dv_decision.presentation.declared().is_some()) {
+        c.dv_decision = dv_off_decision_for(c.dv_decision.capability, c.dovi, &c.vcodec);
+    }
+    crate::player::log(&format!(
+        "dv: capability={} presentation={} (withdrawn: {why})",
+        off.capability.label(),
+        off.presentation.label(),
+    ));
+    true
 }
 
 /// Is the audio being fed a Dolby Atmos stream? — the Load payload's `contents.immersive` node.
@@ -6310,6 +6408,47 @@ pub fn set_stream_declaration_decided_for_test(
     decision: plx_data::metadata::DvDecision,
 ) -> bool {
     install_stream_declaration(ps, vc, ac, fps, dovi, immersive, decision)
+}
+
+/// Plant the FILE's own Dolby Vision record and the declaration it would make as a direct play
+/// (`src_dovi`, `src_dv_decision`), which a rebuild that copies the video hands on again (tests).
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_source_declaration_for_test(
+    ps: &mut PlaybackSession,
+    dovi: plx_data::metadata::Dovi,
+    decision: plx_data::metadata::DvDecision,
+) {
+    ps.src_dovi = dovi;
+    ps.src_dv_decision = decision;
+}
+
+/// The file's own frozen Dolby Vision declaration ([`set_source_declaration_for_test`]'s other half).
+#[cfg(any(test, feature = "test-support"))]
+pub fn source_dv_for_test(ps: &PlaybackSession) -> (plx_data::metadata::Dovi, plx_data::metadata::DvDecision) {
+    (ps.src_dovi, ps.src_dv_decision)
+}
+
+/// Plant a stored Auto Original candidate (a direct play of `dovi`, declared as `decision`) on `ps`,
+/// the way back [`recover_original_direct`] installs (tests).
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_auto_original_dv_for_test(
+    ps: &mut PlaybackSession,
+    dovi: plx_data::metadata::Dovi,
+    decision: plx_data::metadata::DvDecision,
+) {
+    let mut candidate = test_original_candidate(None);
+    candidate.dovi = dovi;
+    candidate.dv_decision = decision;
+    ps.auto_original = Some(candidate);
+}
+
+/// The stored Auto Original candidate's Dolby Vision record and frozen declaration, if one is stored
+/// ([`set_auto_original_dv_for_test`]'s other half).
+#[cfg(any(test, feature = "test-support"))]
+pub fn auto_original_dv_for_test(
+    ps: &PlaybackSession,
+) -> Option<(plx_data::metadata::Dovi, plx_data::metadata::DvDecision)> {
+    ps.auto_original.as_ref().map(|c| (c.dovi, c.dv_decision))
 }
 
 /// Begin an attempt on `caps`, so [`stream_pcm`] and the planner read that value (tests).
@@ -11734,6 +11873,7 @@ fn timeline_snapshot(
         time_ms,
         duration_ms,
         session,
+        playback: projection.logical_session.clone(),
         play_queue_id: projection.play_queue_id.clone(),
         play_queue_item_id: projection.play_queue_item_id.clone(),
         audio_stream_id: projection.audio_stream_id,
@@ -11767,8 +11907,8 @@ fn note_reported_session(sid: ServerId, rating_key: &str, session: &str) {
 
 /// Take the id item `rating_key` of server `sid` last reported under, to compare with the id the
 /// final `stopped` goes out under. Called with the effect lane held and after the reporter's last
-/// POST ([`ScrobbleWork::run`], or [`scrobble_stop`] when it has no worker). The record is consumed
-/// either way: this playback is over, and another item's entry is stale.
+/// POST ([`ScrobbleWork::run`], or [`scrobble_stop`] when it has no worker). A reporter that
+/// has successfully retired its server-stopped session also consumes the record here.
 fn take_reported_session(sid: ServerId, rating_key: &str) -> Option<String> {
     let mut control = PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner());
     control
@@ -11788,7 +11928,8 @@ fn take_reported_session(sid: ServerId, rating_key: &str) -> Option<String> {
 /// commit, a seek's retranscode, a fallback replaced the encoder in between), the previous id is
 /// first sent a `stopped` with `continuing=1` at this report's position
 /// ([`retired_report_session`]), then this report goes out and its id is recorded
-/// ([`ReportedTimeline`]). Both POSTs sit inside the one `TIMELINE_EFFECT` hold, in that order.
+/// ([`ReportedTimeline`]). On termination the reporter publishes the stop, retires its row,
+/// and exits. All POSTs and their record updates are ordered inside one `TIMELINE_EFFECT` hold.
 pub fn report_timeline(
     lease: &TimelineLease,
     state: plx_plex::plex::TimelineState,
@@ -11803,6 +11944,9 @@ pub fn report_timeline(
     let Some(report) = timeline_snapshot(lease, state, t_ms, d_ms) else {
         return false;
     };
+    if crate::player::server_stop_for(&report.playback) {
+        return false;
+    }
     let c = match plx_plex::plex::client_for(report.sid) {
         Some(c) => c,
         None => return true,
@@ -11819,8 +11963,22 @@ pub fn report_timeline(
             ));
         }
     }
-    let ok = c.timeline(&report.wire(&report.session, report.state, false));
+    let answer = c.timeline_answer(&report.wire(&report.session, report.state, false));
+    let ok = answer.taken;
     note_reported_session(report.sid, &report.rating_key, &report.session);
+    if let Some(stop) = answer.stop {
+        // Playback ends as soon as we know. Dashboard cleanup can wait on the network.
+        crate::player::note_server_stop(&report.playback, &report.session, &stop.reason, report.time_ms);
+        plx_base::eventlog::log(&format!(
+            "timeline: the server ended this session rk={} code={}",
+            report.rating_key, stop.code,
+        ));
+        if c.timeline(&report.wire(&report.session, plx_plex::plex::TimelineState::Stopped, true)) {
+            // The effect lane orders this retirement with a reload's reporter and the final stop.
+            drop(take_reported_session(report.sid, &report.rating_key));
+        }
+        return false;
+    }
     // FAILURES ONLY. The reporter thread logs `timeline <state> t=…s/…s` for every tick whichever
     // way the POST went (`player::threads`), so a report the server never took looks exactly like
     // one it did — for the whole length of a film, ten seconds at a time. The success half is
