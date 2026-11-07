@@ -1,4 +1,5 @@
-//! plx_net: the application core's HTTP and byte-stream transports.
+//! plx_net: the application core's HTTP and byte-stream transports, and `ws`, the sans-IO RFC 6455
+//! codec the WebSocket transport will run over.
 //!
 //! `net` is the blocking HTTPS client over the television's own libcurl (bound at run time by a
 //! SONAME candidate list through `plx_base::dynlib!`, so nothing is linked here), `range_io`
@@ -14,3 +15,4 @@
 pub mod range_io; // interruptible HTTPS byte-range source
 pub mod net; // HTTPS client over the TV's libcurl (plex.tv account/login calls — stream.rs can't do TLS/DNS)
 pub mod stream;
+pub mod ws;

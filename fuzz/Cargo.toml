@@ -1,5 +1,6 @@
 # The `cargo fuzz` package over every parser a HUD package or the registry reaches (PR16 of the
-# player-HUD plugin series; docs/hud-plugins.md, "Trust and safety"). It ships nothing and changes no
+# player-HUD plugin series; docs/hud-plugins.md, "Trust and safety"), and over the WebSocket codec
+# (`plx_net::ws`). It ships nothing and changes no
 # shipped build.
 #
 # WHERE IT LIVES. A top-level `fuzz/`, with a `[workspace]` of its own: it is not a member of the
@@ -9,8 +10,8 @@
 # tree (`ci/check-module-layers.py`, `ci/check-deps.sh`, `ci/check-list-caps.py`) and its binaries
 # would need an `exclude`; here they cannot see it.
 #
-# WHAT IT FUZZES. The parsers of `plx_appkit` (`hud_format`) and `plx_data` (`hudpacks`), built in the
-# host-simulator configuration: `hostsim`, the only one a host executable can link (the television build
+# WHAT IT FUZZES. The parsers of `plx_appkit` (`hud_format`), `plx_data` (`hudpacks`) and `plx_net` (`ws`),
+# built in the host-simulator configuration: `hostsim`, the only one a host executable can link (the television build
 # declares the LS2, glib and ACB symbols only the TV's own libraries define). The parsers have no `cfg`
 # on that feature (`rust-modules/Cargo.toml`, "What it changes, and nothing else"), and nothing here
 # enables `test-support` or `devtriggers`. `fuzz/Cargo.lock` is not committed: `tools/fuzz-hud.py` copies
@@ -24,7 +25,7 @@ name = "plxnative-fuzz"
 version = "0.0.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
-description = "Fuzz targets over the HUD package, bundle, SVG, address and registry-index parsers. Not shipped."
+description = "Fuzz targets over the HUD package, bundle, SVG, address and registry-index parsers and the WebSocket codec. Not shipped."
 repository = "https://github.com/GLinnik21/plx-native"
 publish = false
 build = "build.rs"
@@ -39,6 +40,7 @@ serde_json = { version = "1", default-features = false, features = ["alloc", "st
 plx_base = { path = "../rust-modules/base" }
 plx_appkit = { path = "../rust-modules/appkit" }
 plx_data = { path = "../rust-modules/data" }
+plx_net = { path = "../rust-modules/net" }
 # The registry-index targets sign with TEST ONLY keys (`src/signing.rs`) to reach what follows the signature
 # check. The same version and features as `plx_data`, so the lock gains nothing.
 ed25519-compact = { version = "=2.6.0", default-features = false, features = ["opt_size"] }
@@ -102,6 +104,13 @@ bench = false
 [[bin]]
 name = "catalog_cache"
 path = "fuzz_targets/catalog_cache.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ws_frame"
+path = "fuzz_targets/ws_frame.rs"
 test = false
 doc = false
 bench = false
