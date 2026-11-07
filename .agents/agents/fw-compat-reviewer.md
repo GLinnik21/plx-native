@@ -8,7 +8,8 @@ description: >
   `rust-modules/net/src/net.rs`, `rust-modules/net/src/curlio.rs`,
   `src/starfish.c`, `src/video_plane.c`, `src/starfish.h`, `rust-modules/platform/src/webos/ls2/uri.rs`,
   `rust-modules/play-uri/src`, `ci/expected-dt-needed.txt`,
-  the Makefile's `LIBS_REAL`, or that adds any
+  `ci/expected-dt-needed-uri.txt`, the Makefile's `LIBS_REAL`, `PLAYBACK_BACKENDS` or
+  `PLAYBACK_HAS_FEED`, or that adds any
   `extern "C"` block, `#[link]` directive, `dlopen`, mangled-symbol declaration or new FFmpeg /
   curl / Starfish / ACB call. Also use when a reviewer asks "does this still load on webOS 5?",
   when `ci/check-elf.sh` reports DT_NEEDED drift, or when a `dynlib!` declaration is being added
@@ -54,13 +55,14 @@ In scope if the diff touches any of:
 | `rust-modules/media-codecs/src/venc.rs` | the moved encoder ABI self-check and its FFmpeg calls |
 | `rust-modules/net/src/net.rs` | the libcurl `dynlib!` block — variadic wrappers over two C symbols, plus the candidate list |
 | `rust-modules/net/src/curlio.rs` | the byte-range `curl_multi_*` `dynlib!` table, exposed as `net::range_io` |
-| `src/starfish.c` | 15 mangled C++ externs against real libraries |
+| `src/starfish.c` | 15 mangled C++ externs against real libraries (built only when `PLAYBACK_HAS_FEED`) |
 | `src/video_plane.c`, `src/starfish.h` | the video-plane binding: its own `dlopen` of ACB, the `dlsym` probe for the SDL exported window, and `vp_mode()` choosing between them; the header declares the `acb_*` / `sf_*` seam the Rust externs mirror |
 | `rust-modules/platform/src/webos/ls2/uri.rs` and the `LSCall` declaration in `webos.rs` | the `com.webos.media` LS2 worker; `LSCall` is a hard import of `libluna-service2` in every build with the platform feature `uri-transport`, which the application's `play-uri` feature (in the shipping set) turns on |
 | `rust-modules/play-uri/src` | the URI backend declares no `extern "C"` of its own: it reaches ACB through `DisplaySink` (the platform's `acb_*` externs) and the bus through `tv::uri::UriMedia`; a declaration appearing here is a new undefined symbol and a layer violation |
 | any new `extern "C"` block, `#[link]`, or `__asm__("<mangled>")` declaration | each one adds an undefined symbol, or a whole `DT_NEEDED` entry |
-| `Makefile`'s `LIBS_REAL` / the link line (currently line 256 / 444) | a new `-l` is a new hard `DT_NEEDED` |
-| `ci/expected-dt-needed.txt` | somebody is *recording* drift; the question is whether it is safe drift |
+| `Makefile`'s `LIBS_REAL` and the link rule that uses it | a new `-l` is a new hard `DT_NEEDED` |
+| `Makefile`'s `PLAYBACK_BACKENDS` / `PLAYBACK_HAS_FEED` | they choose whether `src/starfish.c`, `-lplayerAPIs -lpf-1.0` and the `callbackFunctionHook` export are in the binary at all |
+| `ci/expected-dt-needed.txt`, `ci/expected-dt-needed-uri.txt` | somebody is *recording* drift; the question is whether it is safe drift |
 | `ci/build-ffmpeg.sh`, `ci/check-elf.sh`, the CI compat steps | they define what "supported" means |
 
 Out of scope and worth saying so in one line rather than reviewing anyway: UI, the Plex data
@@ -118,8 +120,10 @@ Consequences to check in any FFmpeg-touching diff:
 there is in scope and is read in that file, not in `dynlib.rs`.
 
 **Everything else stays linked, and that is correct.** `LIBS_REAL` is `-lSDL2 -lSDL2_ttf -lGLESv2
--lluna-service2 -lglib-2.0 -lwayland-client -lplayerAPIs -lpf-1.0` (plus `-ldl -lpthread -lm`),
-every one of which carries the same SONAME on every release from 2.2.3 to 11.2.0. Moving a library
+-lluna-service2 -lglib-2.0 -lwayland-client`, plus `-lplayerAPIs -lpf-1.0` only when
+`PLAYBACK_HAS_FEED` is set (a `PLAYBACK_BACKENDS=uri` build links neither, and `ci/check-elf.sh` then
+diffs against `ci/expected-dt-needed-uri.txt`), and `-ldl -lpthread -lm`. Every one of them carries
+the same SONAME on every release from 2.2.3 to 11.2.0. Moving a library
 into `dynlib!` **trades link-time symbol checking away** for version tolerance and is only worth
 it where the version actually varies. If a diff moves a stable library there, push back and ask
 for the `--inventory` output that justifies it. The precedent for the other direction is
@@ -157,7 +161,8 @@ grade an ELF at all.
 git -C <repo> diff --stat HEAD          # or the range under review
 git -C <repo> diff HEAD -- rust-modules/base/src/dynlib.rs rust-modules/media-codecs/src/ffi.rs rust-modules/media-codecs/src/venc.rs \
     rust-modules/net/src/net.rs rust-modules/net/src/curlio.rs src/starfish.c src/video_plane.c src/starfish.h \
-    rust-modules/platform/src/webos.rs rust-modules/platform/src/webos/ls2/uri.rs Makefile ci/expected-dt-needed.txt
+    rust-modules/platform/src/webos.rs rust-modules/platform/src/webos/ls2/uri.rs Makefile \
+    ci/expected-dt-needed.txt ci/expected-dt-needed-uri.txt
 grep -rn '#\[link\|extern "C"\|__asm__("' rust-modules/src rust-modules/media/src rust-modules/play-feed/src rust-modules/play-uri/src rust-modules/platform/src rust-modules/media-codecs/src rust-modules/net/src src   # against the diff, not the tree
 ```
 
@@ -224,7 +229,8 @@ tools/fwcompat.py --lib <soname> --grep '^<symbol>$'   # presence + one symbol, 
 ```
 
 Then the recorded expectation has to move with it — `ci/check-elf.sh` diffs the binary's
-`DT_NEEDED` against `ci/expected-dt-needed.txt` (15 entries today) and fails on any drift.
+`DT_NEEDED` against `ci/expected-dt-needed.txt` (15 entries today; `ci/expected-dt-needed-uri.txt`, 13 entries,
+for a `PLAYBACK_BACKENDS=uri` build) and fails on any drift.
 Regenerate it in **C collation**, not the shell's default: macOS orders case-insensitively and the
 Linux runner puts capitals first, and that pure-ordering diff reads exactly like the ABI drift the
 check exists to catch. That is what `LC_ALL=C` in the check is for.

@@ -37,7 +37,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRUBBED = ("MAKEFLAGS", "MFLAGS", "MAKELEVEL", "RELEASE", "SYMBOLS", "LAB", "FLAVOR", "CI",
-            "GITHUB_ACTIONS", "ARM_PROFILE", "TV")
+            "GITHUB_ACTIONS", "ARM_PROFILE", "TV", "PLAYBACK_BACKENDS")
 
 
 def resolved(*args: str, env: dict[str, str] | None = None) -> dict[str, str]:
@@ -122,6 +122,7 @@ HOST_ONLY_GOALS = (
     # print queries that were missing from QUERY_GOALS: `make -s print-rust-toolchain` is what a script
     # runs to learn the pin, and it deleted a release build as readily as a compile did
     "print-subs-font-files", "print-rust-toolchain", "print-rust-codegen", "print-cargo-env",
+    "print-playback-config",
 )
 # Goals that stay OUT of SIDE_EFFECT_FREE, each with the reason. A goal that builds, reads or ships the ARM
 # artifacts (or writes under pkg/) must reset the stamp: that is how a stale binary is never deployed.
@@ -217,15 +218,74 @@ class ScratchTree(unittest.TestCase):
                                         f"{' to the tvdev configuration' if stamp_is_tvdev else ''}")
 
 
+class PlaybackBackendSelection(ScratchTree):
+    def query(self, backend):
+        proc = subprocess.run(
+            ["make", "-s", "--no-print-directory", "-C", str(self.tree),
+             f"PLAYBACK_BACKENDS={backend}", "RELEASE=1", "print-playback-config"],
+            capture_output=True, text=True, env=self.env, timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return dict(line.split("=", 1) for line in proc.stdout.splitlines() if "=" in line)
+
+    def test_native_backend_objects_and_link_inputs_follow_feature_selection(self):
+        targets = set()
+        for backend in ("both", "uri", "feed", "none"):
+            with self.subTest(backend):
+                cfg = self.query(backend)
+                targets.add(cfg["target"])
+                self.assertIn("--no-default-features", cfg["features"])
+                features = cfg["features"].split("--features ")[-1].split(",") if "--features " in cfg["features"] else []
+                self.assertEqual(set(features), {
+                    "both": {"play-uri", "play-feed"}, "uri": {"play-uri"},
+                    "feed": {"play-feed"}, "none": set(),
+                }[backend])
+                self.assertIn("src/video_plane.c", cfg["native"].split())
+                has_feed = backend in ("both", "feed")
+                self.assertEqual("src/starfish.c" in cfg["native"].split(), has_feed)
+                self.assertEqual("-lplayerAPIs" in cfg["libraries"].split(), has_feed)
+                self.assertEqual("-lpf-1.0" in cfg["libraries"].split(), has_feed)
+                self.assertEqual(bool(cfg["interposer"]), has_feed)
+        self.assertEqual(len(targets), 4, "backend configurations must not share a staticlib cache")
+
+    def test_querying_a_different_backend_preserves_the_cached_build(self):
+        stamp = self.seed_release_build()
+        self.query("uri")
+        self.assertEqual((self.tree / STAMP).read_text(), stamp)
+        self.assertTrue(all((self.tree / rel).exists() for rel in RESET_PATHS))
+
+    def test_missing_query_registration_is_detected(self):
+        makefile = self.tree / "Makefile"
+        text = makefile.read_text()
+        text = text.replace(" print-playback-config", "", 1)
+        makefile.unlink()  # replace the fixture symlink, never mutate the real Makefile
+        makefile.write_text(text)
+        stamp = self.seed_release_build()
+        self.query("uri")
+        self.assertNotEqual((self.tree / STAMP).read_text(), stamp)
+        self.assertFalse((self.tree / "pkg/plxnative").exists())
+
+    def test_no_backend_cannot_produce_a_television_binary(self):
+        self.seed_release_build()
+        proc = subprocess.run(
+            ["make", "-s", "--no-print-directory", "-C", str(self.tree),
+             "PLAYBACK_BACKENDS=none", "pkg/plxnative"],
+            capture_output=True, text=True, env=self.env, timeout=30)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("requires a URI or feed playback backend", proc.stderr)
+        self.assertNotIn("cargo", proc.stdout)
+
+
 class PackageGateDecodesTheStampTheMakefileWrites(ScratchTree):
     """`ci/check-package.py` decodes `pkg/.build-config` into dev / release / none, and every gate that
     grades "a RELEASE build" or "a dev build" rests on the answer.
 
-    The playback backends are explicit features of the application crate, so a release stamp is
-    `features:--no-default-features --features play-uri,play-feed...` rather than the bare `--no-default-features`
-    a decoder written against two literal flag strings still called "release". Here the stamp is the one a
-    real `make` writes into a scratch tree (the reset runs at parse time, so `make -n clean` writes it), so
-    the test cannot agree with a decoder that is wrong in the same way as its table.
+    It once matched two literal flag strings (`""` and `--no-default-features`). When the playback
+    backends became explicit features the Makefile's stamp turned into `features:--no-default-features
+    --features play-uri,play-feed,...`, every build decoded None, CI's nightly job failed with "decoded
+    as None" and the cross-build job's dev-trigger, dev-only-library and reported-version gates SKIPPED.
+    Here the stamp is the one a real `make` writes into a scratch tree (the reset runs at parse time, so
+    `make -n clean` writes it), for every backend the package matrix builds, so the test cannot agree with
+    a decoder that is wrong in the same way as its table.
     """
 
     def decode(self, *make_args: str) -> str:
@@ -236,11 +296,16 @@ class PackageGateDecodesTheStampTheMakefileWrites(ScratchTree):
         self.assertEqual(out.returncode, 0, out.stderr[-300:])
         return out.stdout.strip()
 
-    def test_a_dev_and_a_release_build_decode_as_the_configuration_that_wrote_them(self):
-        for release, want in ((False, "dev"), (True, "release")):
-            for profile in ("tvdev", "release"):  # a plain local build is tvdev; CI and every cut are release
-                with self.subTest(release=release, profile=profile):
-                    self.assertEqual(self.decode(f"ARM_PROFILE={profile}", "RELEASE=1" if release else "RELEASE="), want)
+    def test_every_packaged_backend_decodes_as_the_configuration_that_wrote_it(self):
+        sys.path.insert(0, str(ROOT / "ci"))
+        import rust_toolchain
+        for backend in rust_toolchain.PACKAGED_BACKENDS:
+            for release, want in ((False, "dev"), (True, "release")):
+                for profile in ("tvdev", "release"):  # a plain local build is tvdev; CI and every cut are release
+                    with self.subTest(backend=backend, release=release, profile=profile):
+                        got = self.decode(f"PLAYBACK_BACKENDS={backend}", f"ARM_PROFILE={profile}",
+                                          "RELEASE=1" if release else "RELEASE=")
+                        self.assertEqual(got, want)
 
     def test_the_shipped_cuts_decode_as_release(self):
         for label, args in (
@@ -252,23 +317,52 @@ class PackageGateDecodesTheStampTheMakefileWrites(ScratchTree):
             with self.subTest(label):
                 self.assertEqual(self.decode(*args), "release")
 
+    def test_no_backend_is_refused_in_both_configurations(self):
+        """The Makefile refuses to link a television binary with `PLAYBACK_BACKENDS=none`
+        (`test_no_backend_cannot_produce_a_television_binary`), so its stamp is no configuration to grade.
+        Under `RELEASE=1` it is the bare `--no-default-features` the old decoder called "release"."""
+        for release in ("RELEASE=1", "RELEASE="):
+            with self.subTest(release):
+                self.assertEqual(self.decode("PLAYBACK_BACKENDS=none", release), "none")
+
     def test_lab_and_the_shots_recipe_are_neither_shipped_configuration(self):
         self.assertEqual(self.decode("LAB=1"), "none")
         self.assertEqual(self.decode("LAB=1", "RELEASE=1"), "none")
-        # the recipe in the Makefile's header: only the trigger surface, none of the release's backend
+        # the recipe in the Makefile's header: only the trigger surface, none of the release's backends
         self.assertEqual(self.decode("RUST_FEATFLAGS=--no-default-features --features devtriggers"), "none")
 
-    def test_the_shipping_feature_flags_are_what_a_release_build_passes(self):
-        """`rust_toolchain.shipping_featflags()` is what the budget and notices gates resolve the shipping
-        graph with; it must be the flags `make RELEASE=1` passes cargo, not a restatement of them."""
+    def test_the_packaged_backends_are_the_makefiles_minus_none(self):
+        """`rust_toolchain.PACKAGED_BACKENDS` is the one list the decoder enumerates; a backend the
+        Makefile gains (a `PLAYBACK_FEATURES_<name>`) must be added there or its builds decode None."""
         sys.path.insert(0, str(ROOT / "ci"))
         import rust_toolchain
-        proc = subprocess.run(["make", "-s", "--no-print-directory", "-C", str(ROOT), "RELEASE=1", "print-bench-config"],
-                              capture_output=True, text=True, env=self.env, timeout=60)
-        self.assertEqual(proc.returncode, 0, proc.stderr[-300:])
-        flags = rust_toolchain.shipping_featflags()
-        self.assertEqual(flags[:2], ["--no-default-features", "--features"])
-        self.assertIn("RUST_FEATFLAGS=" + " ".join(flags), proc.stdout)
+        names = set(re.findall(r"^PLAYBACK_FEATURES_(\w+)\s*=", (ROOT / "Makefile").read_text(), flags=re.M))
+        self.assertEqual(names - {"none"}, set(rust_toolchain.PACKAGED_BACKENDS))
+        self.assertIn("none", names)
+
+    def test_the_query_ignores_the_configuration_of_the_make_that_runs_it(self):
+        """`make ipk` runs check-package.py, whose make query inherits that make's variables: a LAB build
+        must not derive a dev set that already carries `lab-diagnostics`, an inherited RC with RELEASE
+        blank must not trip the Makefile's parse-time refusal, and RELEASE=1 must not turn the DEV half
+        of the table into the release flags."""
+        sys.path.insert(0, str(ROOT / "ci"))
+        import rust_toolchain
+        clean = rust_toolchain.featflags(ROOT, release=False, backends="feed")
+        self.assertEqual(clean, ["--no-default-features", "--features", "play-feed,devtools,devtriggers,threadcheck"])
+        inherited = {"RELEASE": "1", "LAB": "1", "RC": "2", "FLAVOR": "stable", "PLAYBACK_BACKENDS": "uri",
+                     "MAKEFLAGS": " -- RELEASE=1 LAB=1", "MAKELEVEL": "1"}
+        saved = {k: os.environ.get(k) for k in inherited}
+        os.environ.update(inherited)
+        try:
+            self.assertEqual(rust_toolchain.featflags(ROOT, release=False, backends="feed"), clean)
+            self.assertEqual(rust_toolchain.featflags(ROOT, release=True, backends="feed"),
+                             ["--no-default-features", "--features", "play-feed"])
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
 
 
 class DeviceControlGoalsKeepTheBuild(ScratchTree):

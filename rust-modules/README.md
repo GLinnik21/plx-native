@@ -26,10 +26,10 @@ side. Its Rust entry points are `plex_run`, `plx_crash_write_image_marker`,
 ## Left as C by design
 
 - **`src/starfish.c`** — LG's `StarfishMediaAPIs` (the mangled C++ methods called
-  via `__asm__`, an `sret` `std::string` return, a 64 KB in-place object buffer). The engine
-  that *drives* it is Rust (`player/` and `plx_play_feed`).
-- **`src/video_plane.c`** — the ACB / exported-window video-plane bind (`vp_*` and `acb_*`),
-  kept apart from the Starfish seam so the display binding is not a Starfish detail.
+  via `__asm__`, an `sret` `std::string` return, a 64 KB in-place object buffer), compiled
+  only with `PLAYBACK_HAS_FEED`. The engine that *drives* it is Rust (`player/` and `plx_play_feed`).
+- **`src/video_plane.c`** — the ACB / exported-window video-plane bind both playback
+  backends share (`vp_*` and `acb_*`).
 - **`src/main.c`** — the boot shim: event-log/stderr setup, process bring-up, native-crash reporter
   re-entry and the fallback image marker; it calls the Rust entry points named above and owns no
   application state.

@@ -167,7 +167,7 @@ placeholder-sentinel = ["plx_ui/placeholder-sentinel"]
 # It is an ADDITIVE feature in the cargo sense only by convention — it makes `plx_play_feed::ffi_host` the
 # installed `VideoSink` instead of the platform webOS native sink rather than adding to it, and it does
 # so only together with `play-feed` (the stand-in is the Feed backend's: a simulator built with
-# `--no-default-features` names `play-feed` again). That is safe here because this crate is a leaf with
+# `--no-default-features` names `play-feed` again, which `ci/test_sim_backend.py` holds). That is safe here because this crate is a leaf with
 # no dependents, so feature unification can never enable it behind someone's back. Do not give it
 # a mutually-exclusive partner feature; the television is the DEFAULT, and the simulator opts in.
 #

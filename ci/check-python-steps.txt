@@ -388,4 +388,5 @@ python3 tests/test_hud_dispatch.py
 python3 tests/test_hud_preview.py
 python3 tests/test_hud_bundle.py
 python3 tests/test_hud_release.py
+python3 ci/test_sim_backend.py
 python3 tests/test_hud_dev.py
