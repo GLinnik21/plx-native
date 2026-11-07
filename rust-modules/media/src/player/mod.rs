@@ -2625,10 +2625,7 @@ fn source_fps_milli(h: &[u8]) -> Option<i64> {
 /// `fr.now` and therefore cannot disagree with the frame it belongs to. The remaining readers are
 /// the pump's silence watchdog and the host clock sink, both inside this module.
 fn vclock_ms() -> u32 {
-    use std::sync::OnceLock;
-    use std::time::Instant;
-    static T0: OnceLock<Instant> = OnceLock::new();
-    T0.get_or_init(Instant::now).elapsed().as_millis() as u32
+    plx_base::clock::vclock_ms()
 }
 
 /// **The pipeline's `FRAMEREADY` cadence since the last call**: ticks received, and the worst gap

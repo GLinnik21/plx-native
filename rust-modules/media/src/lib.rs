@@ -1,12 +1,13 @@
 //! plx_media: the media layer of the PlxNative application core.
 //!
-//! Demux (`ff`, the bundled FFmpeg), the HTTPS media plane (`curlio`), the strict HLS parser (`hls`),
+//! Demux (`ff`, the bundled FFmpeg), the HTTPS media plane (`curlio`: Plex credential authorization over `plx_net::range_io`), the strict HLS parser (`hls`),
 //! the adaptive-bitrate controller (`abr`), the access-unit queues (`aq`), the buffer-feed engine
 //! (`player`) and route selection (`route`). It is the `media` layer of `ci/module-layers.ini`: it
 //! uses `base`, `machine`, `platform`, `gfx`, `net`, `plex`, `telemetry`, `data`, `playback-contract`
 //! and `media-codecs` and nothing above them. The FFmpeg bindings, the PCM decode and the speed
-//! audio DSP live in `plx_media_codecs` below this layer. Its seven members call each other in a
-//! cycle (`abr`, `curlio`, `ff`, `hls`, `player` and `route`), which is why they are one crate.
+//! audio DSP live in `plx_media_codecs` below this layer. Its seven members are one crate because
+//! `abr`, `ff`, `hls`, `player` and `route` call each other in a cycle; `curlio` is the Plex credential facade
+//! over `plx_net::range_io` and depends on none of them.
 //!
 //! The Starfish/ACB surface is declared here and nowhere else: `sf_on_event` and `acb_on_event`
 //! (`player`), which `src/starfish.c` calls, and the externs of `player::ffi`. The crate links nothing itself; the Makefile's final link resolves them.
@@ -17,7 +18,7 @@
 
 pub mod abr; // client-managed fixed-session HLS controller: estimate, propose, prime, then commit
 pub mod aq;
-pub mod curlio; // the HTTPS media plane: a remote file pulled by byte range over libcurl-multi (stream.rs is the plaintext-socket twin)
+pub mod curlio; // the HTTPS media plane's credential facade over `plx_net::range_io` (byte ranges over libcurl-multi; `plx_net::stream` is the plaintext-socket twin)
 pub mod ff_pcm; // FLAC decoded in the app and fed as PCM (libpf has no FLAC input)
 #[macro_use]
 pub mod ff; // THE demuxer -- the FFmpeg 9.0 this app BUNDLES and pins (majors 63/63/61), dlopen'd by absolute path beside the binary, never the television's

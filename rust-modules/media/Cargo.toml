@@ -11,8 +11,8 @@ publish = false
 name = "plx_media"
 # An rlib the application crate links, never an archive of its own: the one staticlib is the
 # application crate's (ci/test_no_host_staticlib.py holds that line for this crate too). It owns no
-# build script and links nothing -- the FFmpeg, libass and libcurl symbols are `dynlib!` tables
-# (dlopen at run time), the Starfish/ACB externs of `player::ffi` are resolved by the final link (the
+# build script and links nothing -- the libass symbols are a `dynlib!` table here (FFmpeg's is in `plx_media_codecs`,
+# libcurl's in `plx_net`; dlopen at run time), the Starfish/ACB externs of `player::ffi` are resolved by the final link (the
 # Makefile's), and the two `#[no_mangle]` callbacks `src/starfish.c` calls (`sf_on_event`,
 # `acb_on_event`) ride the application's staticlib like `plx_telemetry`'s entry points. It reads no
 # `PLX_*` build variable.
