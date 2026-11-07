@@ -368,7 +368,7 @@ pub fn confirm_uri_audio_pick(ps: &mut PlaybackSession, audio: CarriedAudio, mem
     if let Some(memo) = memo { remember_track_pick(ps, TrackPick::Audio(memo)); }
 }
 
-/// The product URI driver renders its selected embedded subtitle. No side reader, burn refresh,
+/// A URI driver renders its selected embedded subtitle itself. No side reader, burn refresh,
 /// or Feed subtitle mailbox may run for this confirmed native selection.
 pub fn confirm_uri_subtitle_pick(ps: &mut PlaybackSession, ordinal: i32, stream_id: i64,
     memo: Option<SubtitleMemo>) {

@@ -34,7 +34,7 @@ impl ProductEvidence {
     }
 
     /// [`unqualified`](Self::unqualified) with the display path composition chose for the
-    /// executor (the URI driver's `product_binding`). The binding configures the executor and
+    /// executor (a URI driver's `product_binding`). The binding configures the executor and
     /// names the display path an offer would use; it certifies nothing. `certified` stays all
     /// false, so `permits` and `could_qualify_pms` offer no source through any binding.
     pub fn unqualified_on(display_mode: i32, binding: Binding) -> Self {
