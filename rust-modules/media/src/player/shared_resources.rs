@@ -3,7 +3,7 @@
 //! to a backend. The Feed backend's native mailbox and transport are `plx_play_feed::shared::
 //! {FEED_SHARED, FEED_TX}`, which `Shared::reset` composes with the caption reset and which a feed
 //! executor is handed as `&'static`.
-use std::sync::{atomic::{AtomicI32, AtomicI64, AtomicU8, AtomicU32, AtomicU64, Ordering}, Mutex};
+use std::sync::{atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU8, AtomicU32, AtomicU64, Ordering}, Mutex};
 
 /// A viewer audio pick names the next rebuild for at most this long.
 pub const AUDIO_PICK_WINDOW_MS: i64 = 30_000;
@@ -47,6 +47,10 @@ pub struct Shared {
     /// full reset. Picked expires if its rebuild never arrives.
     pub audio_switch: AtomicU8,
     pub audio_pick_ms: AtomicI64,
+    /// The server ended this logical playback ([`super::note_server_stop`]). A reload of the same
+    /// playback keeps it; the next session drops it.
+    pub server_stopped: AtomicBool,
+    pub server_stop: Mutex<super::ServerStopNote>,
 }
 
 impl Shared {
@@ -61,6 +65,8 @@ impl Shared {
             bitmap_generation: AtomicU64::new(0),
             audio_switch: AtomicU8::new(AudioSwitch::None as u8),
             audio_pick_ms: AtomicI64::new(0),
+            server_stopped: AtomicBool::new(false),
+            server_stop: Mutex::new(super::ServerStopNote::EMPTY),
         }
     }
 
@@ -75,6 +81,8 @@ impl Shared {
     /// that verb's, not this store's.
     pub fn reset_session(&self) {
         self.reset_captions(false);
+        *self.server_stop.lock().unwrap_or_else(|e| e.into_inner()) = super::ServerStopNote::EMPTY;
+        self.server_stopped.store(false, Ordering::Relaxed);
     }
 
     /// [`Self::reset_session`] for a reload of the same item: an audio pick keeps its meaning and
@@ -118,3 +126,17 @@ impl Transport {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_reload_keeps_the_server_s_stop_and_the_next_session_drops_it() {
+        let s = Shared::new();
+        s.server_stopped.store(true, Ordering::Relaxed);
+        s.reset_session_for_reload();
+        assert!(s.server_stopped.load(Ordering::Relaxed), "a reload is the same playback the server ended");
+        s.reset_session();
+        assert!(!s.server_stopped.load(Ordering::Relaxed));
+    }
+}

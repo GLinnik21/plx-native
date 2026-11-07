@@ -836,6 +836,10 @@ impl Client {
         self.body_2xx(path_no_token, Method::Post, &[]).is_some()
     }
 
+    pub(super) fn post_accepting_json(&self, path_no_token: &str) -> Option<Vec<u8>> {
+        self.body_2xx(path_no_token, Method::Post, &[ACCEPT_JSON])
+    }
+
     /// POST → parse the `{ "MediaContainer": … }` envelope — /playQueues (the returned ids).
     pub(super) fn post_json(&self, path_no_token: &str) -> Option<MediaContainer> {
         let body = self.body_2xx(path_no_token, Method::Post, &[ACCEPT_JSON])?;

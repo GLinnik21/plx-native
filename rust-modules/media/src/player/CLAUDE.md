@@ -99,7 +99,7 @@ and the native feed refuses a source shape it cannot represent.
   2026-10-15 (release build, mock, Guest): `StarfishMediaAPIs::Unload` alone held the frame that
   handled BACK for 113-150 ms on every return (`teardown spans:` line, `sf_unload:`); the sched
   trace put the main thread in D state in `ioctl` (~31 ms), then in `futex` (~74 ms), inside that
-  call. `teardown` (real stop only: `for_reload == false`) now moves the native phase to
+  call. For a real stop or a Plex server termination, `teardown` moves the native phase to
   `Releasing`, hands the Unload to an `sf-unload` worker with an `UnloadTicket`, and parks the
   worker on the adapter. The rest of the release — callback gate, epoch retire, ACB
   `setState(UNLOADED)`, D1 or quarantine, `destroy_window` — stays on the main thread and runs in

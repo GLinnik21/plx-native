@@ -738,15 +738,19 @@ pub(crate) struct NativeStop {
     abandoned_load: Option<std::thread::JoinHandle<()>>,
     unload_th: Option<std::thread::JoinHandle<()>>,
     release_status: plx_playback_contract::ReleaseStatus,
+    /// The logical playback ended under a kept session (`FeedStop::stop_begin`'s `terminal`): a
+    /// Load still in the native call is parked, and the object is released off the frame, as for
+    /// a real stop, though `for_reload` says the session stays.
+    terminal: bool,
 }
 
 impl NativeStop {
-    pub fn take(feed: &mut FeedResources) -> Self {
+    pub fn take(feed: &mut FeedResources, terminal: bool) -> Self {
         let eng = feed.take().expect("main-thread live check and take are one transaction");
         feed.retire_load_attempt(eng.attempt);
         let stream = matches!(eng.source, Source::Stream { .. });
         Self { eng, stream, spans: TeardownSpans::new(), abandoned_load: None, unload_th: None,
-            release_status: plx_playback_contract::ReleaseStatus::Closing }
+            release_status: plx_playback_contract::ReleaseStatus::Closing, terminal }
     }
 
     /// The attempt whose Engine this stop owns.
@@ -777,7 +781,8 @@ impl NativeStop {
         }
         self.spans.mark("join_demux");
         self.abandoned_load = match self.eng.load_th.take() {
-            Some(thread) if !thread.is_finished() && shared.load_timed_out.load(Ordering::Acquire) => Some(thread),
+            Some(thread) if !thread.is_finished()
+                && (shared.load_timed_out.load(Ordering::Acquire) || self.terminal) => Some(thread),
             Some(thread) => {
                 plx_base::task::join("media", thread);
                 None
@@ -826,7 +831,7 @@ impl NativeStop {
                 _payload: std::mem::take(&mut self.eng.payload),
                 abandoned_at: std::time::Instant::now(),
             });
-        } else if !for_reload {
+        } else if !for_reload || self.terminal {
             // A per-owner spawner (a test's, or a composition's) replaces the default task start.
             let hooks = ReleaseHooks {
                 spawn_unload: feed.unload_spawner().unwrap_or(hooks.spawn_unload),

@@ -62,7 +62,7 @@ pub enum FeedCall {
     OpenPrepare { start_paused: bool },
     OpenStage { attempt: AttemptId, key: SourceKey },
     OpenAbort,
-    StopBegin,
+    StopBegin { terminal: bool },
     StopSideReader { for_reload: bool },
     StopUnblock,
     StopReportDispatched,
@@ -300,8 +300,8 @@ impl FeedOpen for FakeFeed {
 }
 
 impl FeedStop for FakeFeed {
-    fn stop_begin(&mut self) -> Option<FeedFacts> {
-        self.answer(FeedCall::StopBegin, |s| s.facts.raw.load.stage.is_some().then_some(s.facts))
+    fn stop_begin(&mut self, terminal: bool) -> Option<FeedFacts> {
+        self.answer(FeedCall::StopBegin { terminal }, |s| s.facts.raw.load.stage.is_some().then_some(s.facts))
     }
     fn stop_side_reader(&mut self, for_reload: bool) {
         self.answer(FeedCall::StopSideReader { for_reload }, |_| ());
@@ -451,7 +451,7 @@ mod tests {
             script.unblock.load_abandoned = true;
         });
         let mut common = 0;
-        assert!(feed.stop_begin().is_some(), "a live session has a last sample");
+        assert!(feed.stop_begin(false).is_some(), "a live session has a last sample");
         feed.stop_side_reader(true);
         assert!(feed.stop_unblock().load_abandoned);
         feed.stop_report_dispatched();
@@ -465,7 +465,7 @@ mod tests {
         feed.leak_for_exit();
         assert_eq!(common, 1, "reset runs the player's stores once");
         assert_eq!(handle.calls(), [
-            FeedCall::StopBegin, FeedCall::StopSideReader { for_reload: true }, FeedCall::StopUnblock,
+            FeedCall::StopBegin { terminal: false }, FeedCall::StopSideReader { for_reload: true }, FeedCall::StopUnblock,
             FeedCall::StopReportDispatched, FeedCall::StopRelease { for_reload: true },
             FeedCall::Reset { scope: ResetScope::Reload }, FeedCall::StopFinish { for_reload: true },
             FeedCall::StopFinish { for_reload: true },

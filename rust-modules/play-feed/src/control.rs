@@ -228,10 +228,10 @@ impl FeedBackend {
 }
 
 impl FeedStop for FeedBackend {
-    fn stop_begin(&mut self) -> Option<FeedFacts> {
+    fn stop_begin(&mut self, terminal: bool) -> Option<FeedFacts> {
         self.resources.shared().stop_hls_clock();
         let last = self.sample();
-        self.stop = Some(NativeStop::take(&mut self.resources));
+        self.stop = Some(NativeStop::take(&mut self.resources, terminal));
         last
     }
 

@@ -161,7 +161,7 @@ impl FeedOpen for SharedFeedSet {
 
 impl FeedStop for SharedFeedSet {
     forward_mut! {
-        stop_begin() -> Option<FeedFacts>;
+        stop_begin(terminal: bool) -> Option<FeedFacts>;
         stop_side_reader(for_reload: bool);
         stop_unblock() -> UnblockFacts;
         stop_report_dispatched();

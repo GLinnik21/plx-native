@@ -96,14 +96,15 @@ in `screens` above it; `media` also draws through `gfx`.
 app        everything below
 screens    appkit  ui  media  session  data  telemetry  plex  net  gfx    + platform machine base
 appkit         ui  media  session  data  telemetry  plex  net  gfx        + platform machine base
-media          data  telemetry  plex  net  gfx                            + platform machine base
+media          data  telemetry  plex  net  gfx  playback_contract         + platform machine base
 session        telemetry  plex  net                                       + platform machine base
-data           telemetry  plex  net                                       + platform machine base
+data           telemetry  plex  net  playback_contract                    + platform machine base
 ui             gfx                                                        + platform machine base
 telemetry      plex  net                                                  + platform machine base
 plex           net                                                        + platform machine base
 net                                                                       + platform base
 gfx                                                                       + platform machine base
+playback_contract                                                         + base
 platform                                                                             machine base
 machine                                                                                      base
 base
@@ -132,6 +133,16 @@ for build time here; they are not measured build times. Today every row would re
 the split has not happened. Of the last 33 commits that touched `rust-modules/src` at baseline, 26
 touched `screens/` or `ui/`, so a screens-only edit dropping from 100% to about 28% is where most
 of the payoff is. L10 took the player widgets out of `ui` (66k lines at baseline, 51k now).
+
+`playback_contract` is a fifteenth layer, declared after the split and not in the table above. Its
+crate is `plx_playback_contract` (`rust-modules/playback-contract/`) and it names only `base`: the
+backend-neutral playback vocabulary (commands and readouts, the time, track and subtitle types, the
+`BackendState` machine, the Feed port traits `FeedSeek`, `FeedLoad`, `FeedOpen`, `FeedStop` and `FeedControl`
+over them, and the adaptive `FeedPort`, with their test fakes), which a backend can implement without naming `media`, `route` or Plex. `data` and
+`media` may name it (`data`'s `TrackNames` and `media`'s `abr::units::MediaTimeMs` are re-exports of
+its types, and the `BackendRunner` and attempt-metrics reducers in `media::player` are written
+against it). `BackendState` is a machine in `ci/machines.ini`, and `ci/check-deps.sh` reads the
+whole crate as machine code.
 
 The Watchlist adds two data modules and no new edge. `watchlist` (rows, match table, `TileState`,
 intent ledger, comparator; with `stores::watchlist`) and `catalog` (the Discover-only item page; with

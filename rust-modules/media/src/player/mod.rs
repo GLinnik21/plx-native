@@ -291,8 +291,8 @@ pub use engine::{
 /// ticks a scripted clock past the release deadline (`dev::uriprobe`'s tests).
 #[cfg(any(test, feature = "test-support"))]
 pub use route_start::exit_native_with;
-pub use route_start::{begin_resume, exit_native, land_resume, stop_bufferfeed,
-    suspend_bufferfeed, BufferfeedStartOutcome, NativeExit, ResumeOutcome, ResumeStart,
+pub use route_start::{begin_resume, exit_native, land_resume, retire_if_server_stopped, stop_bufferfeed,
+    stop_for_replacement, suspend_bufferfeed, BufferfeedStartOutcome, NativeExit, ResumeOutcome, ResumeStart,
     start_playback, start_playback_tracked, suspend_playback_if_attempt};
 pub use route_start::suspend_bufferfeed as suspend_playback;
 pub use route_start::stop_bufferfeed as stop_playback;
@@ -853,7 +853,13 @@ pub fn state(ps: &crate::route::PlaybackSession) -> PlaybackState {
     // the Resolving spinner until it lands. So does every recovery no Engine waits on (the
     // foreground restore's resume, a rollback after a Load that failed before its Engine
     // existed): `route::engineless_flight_outstanding`.
-    if crate::route::play_pending() || crate::route::engineless_flight_outstanding()
+    if crate::route::play_pending() {
+        return PlaybackState::Resolving;
+    }
+    if server_stop_applies(ps) {
+        return PlaybackState::Error;
+    }
+    if crate::route::engineless_flight_outstanding()
         || (ps.backends().feed && ps.readout().start_queued()) {
         return PlaybackState::Resolving;
     }
@@ -1009,6 +1015,7 @@ pub enum FailureKind {
     /// same item resolves the same way again, so unlike [`ResolveFailed`](Self::ResolveFailed) it
     /// is not transient.
     PreviewNotDirect,
+    ServerStopped,
     /// Everything else. Honest rather than tidy — see the type's doc.
     Unspecified,
 }
@@ -1032,6 +1039,7 @@ impl FailureKind {
             FailureKind::ReleaseTimeout => C::ReleaseTimeout,
             FailureKind::ResolveFailed => C::ResolveFailed,
             FailureKind::PreviewNotDirect => C::PreviewNotDirect,
+            FailureKind::ServerStopped => C::ServerStopped,
             FailureKind::Unspecified => C::Unspecified,
         }
     }
@@ -1111,6 +1119,7 @@ pub fn failure_actions(kind: FailureKind, cx: FailureContext) -> Vec<FailureActi
         }
         // The file itself has no picture; no rung and no retry puts one in it.
         K::NoVideoTrack => {}
+        K::ServerStopped => {}
         _ if cx.forced => {
             if cx.can_retry {
                 v.push(A::PlayAutomatically);
@@ -1303,6 +1312,7 @@ fn error_shape(
             detail: std::borrow::Cow::Borrowed(""),
             no_pass: false,
         },
+        RuntimeFailure::ServerStopped => server_stop_shape(String::new()),
         RuntimeFailure::TvPipeline => ErrorShape {
             kind: FailureKind::TvPipeline,
             caption: plx_platform::i18n::msg::widgets_failure_tv_rejected_c(),
@@ -1424,14 +1434,106 @@ pub fn error_now(ps: &crate::route::PlaybackSession) -> ErrorShape {
     if crate::route::play_refused_as_preview(ps) {
         return preview_not_direct_shape();
     }
-    with_forced_playback_context(error_shape(
+    if let Some(reason) = with_server_stop(crate::route::playback_session_id(ps), |note| note.reason.clone()) {
+        return server_stop_shape(reason);
+    }
+    let shape = error_shape(
         ps.attempt_view().facts().no_video.unwrap_or(false),
         crate::route::is_transcoding(ps),
         playing_subscription(&ps),
         crate::route::play_verdict(ps).as_deref(),
         // The cause a released Engine left behind, else the live worker signals.
         crate::route::engine_failure(ps).unwrap_or_else(|| live_runtime_failure(ps)),
-    ), crate::route::forced_direct_play(ps))
+    );
+    if shape.kind == FailureKind::ServerStopped {
+        return shape;
+    }
+    with_forced_playback_context(shape, crate::route::forced_direct_play(ps))
+}
+
+fn server_stop_shape(reason: String) -> ErrorShape {
+    ErrorShape {
+        kind: FailureKind::ServerStopped,
+        caption: plx_platform::i18n::msg::widgets_failure_stopped_c(),
+        panel: plx_platform::i18n::msg::widgets_panel_stopped(),
+        readout: plx_platform::i18n::msg::widgets_reason_stopped(),
+        detail: std::borrow::Cow::Owned(reason),
+        no_pass: false,
+    }
+}
+
+pub struct ServerStopNote {
+    playback: String,
+    wire_session: String,
+    reason: String,
+    position_ms: i64,
+}
+
+impl ServerStopNote {
+    const EMPTY: Self = Self {
+        playback: String::new(),
+        wire_session: String::new(),
+        reason: String::new(),
+        position_ms: 0,
+    };
+}
+
+pub(crate) fn note_server_stop(playback: &str, wire_session: &str, reason: &str, position_ms: i64) {
+    {
+        let mut note = SHARED.server_stop.lock().unwrap_or_else(|e| e.into_inner());
+        *note = ServerStopNote {
+            playback: playback.to_owned(),
+            wire_session: wire_session.to_owned(),
+            reason: reason.to_owned(),
+            position_ms,
+        };
+        SHARED.server_stopped.store(true, std::sync::atomic::Ordering::Release);
+    }
+    plx_machine::idle::invalidate();
+}
+
+fn with_server_stop<T>(playback: &str, read: impl FnOnce(&ServerStopNote) -> T) -> Option<T> {
+    if playback.is_empty() || !SHARED.server_stopped.load(std::sync::atomic::Ordering::Acquire) {
+        return None;
+    }
+    let note = SHARED.server_stop.lock().unwrap_or_else(|e| e.into_inner());
+    (note.playback == playback).then(|| read(&note))
+}
+
+pub(crate) fn server_stop_for(playback: &str) -> bool {
+    with_server_stop(playback, |_| ()).is_some()
+}
+
+pub fn server_stop_applies(ps: &crate::route::PlaybackSession) -> bool {
+    crate::route::engine_failure(ps) == Some(RuntimeFailure::ServerStopped)
+        || server_stop_for(crate::route::playback_session_id(ps))
+}
+
+/// Retire the logical playback even if its Engine has already been parked or released.
+fn accept_server_stop(ps: &mut crate::route::PlaybackSession) -> bool {
+    if crate::route::engine_failure(ps) == Some(RuntimeFailure::ServerStopped) {
+        crate::route::discard_stale_flight_landing();
+        return true;
+    }
+    if !crate::route::has_url(ps) {
+        return false;
+    }
+    let Some((wire_session, position_ms)) = with_server_stop(
+        crate::route::playback_session_id(ps),
+        |note| (note.wire_session.clone(), note.position_ms),
+    ) else {
+        return false;
+    };
+    crate::route::fail_current_engine();
+    // The readout's half of `abandon_seek`; the Feed's half goes out where an adapter is in hand
+    // (`route_start::release_server_stopped_engine`).
+    crate::route::reject_user_seek();
+    ps.step_readout(readout::ReadoutEvent::SeekAbandoned);
+    ps.finished = false;
+    crate::route::note_engine_failure(ps, RuntimeFailure::ServerStopped, position_ms.saturating_mul(1_000_000));
+    crate::route::retire_server_stopped_resources(ps, &wire_session);
+    crate::route::discard_stale_flight_landing();
+    true
 }
 
 /// A sample PMS refusal, for the `verdict` variant of the dev trigger below. Real wording: this is
@@ -2657,7 +2759,8 @@ pub fn every_failure_row() -> Vec<(FailureKind, FailureContext, Vec<FailureActio
     use FailureKind as K;
     let kinds = [K::DecisionRefused, K::PlaybackPolicy, K::NoVideoTranscodeTarget, K::NoVideoTrack,
         K::MediaSource, K::PlaybackInterrupted, K::TvPipeline, K::LoadTimeout,
-        K::ReleaseTimeout, K::JailMissingRtkmem, K::ResolveFailed, K::PreviewNotDirect, K::Unspecified];
+        K::ReleaseTimeout, K::JailMissingRtkmem, K::ResolveFailed, K::PreviewNotDirect, K::ServerStopped,
+        K::Unspecified];
     let mut out = Vec::new();
     for kind in kinds {
         for forced in [false, true] {
@@ -3075,6 +3178,7 @@ mod tests {
             (K::ReleaseTimeout, "release_timeout"),
             (K::ResolveFailed, "resolve_failed"),
             (K::PreviewNotDirect, "preview_not_direct"),
+            (K::ServerStopped, "server_stopped"),
             (K::Unspecified, "unspecified"),
         ];
         for (kind, code) in table {

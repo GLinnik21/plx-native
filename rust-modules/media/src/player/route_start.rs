@@ -49,6 +49,9 @@ pub fn start_playback_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut P
 /// Foreground recovery uses this to wait for the media-thread result instead of treating thread
 /// creation as proof that the television accepted the payload.
 pub fn start_bufferfeed_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) -> BufferfeedStartOutcome {
+    if super::accept_server_stop(ps) {
+        return BufferfeedStartOutcome::Failed;
+    }
     pa.refresh_uri_qualification(ps);
     let uri_chosen = matches!(ps.backend_offer(),
         crate::route::backend_policy::Selection::Open(offer)
@@ -177,6 +180,10 @@ pub(super) fn start_bufferfeed_for(
     pa: &mut super::adapter::PlayerAdapter,
     route_start: crate::route::RouteStartTransaction,
 ) -> BufferfeedStartOutcome {
+    if super::accept_server_stop(ps) {
+        let _ = crate::route::abort_route_start(route_start, crate::route::RouteStartResult::StartFailed);
+        return BufferfeedStartOutcome::Failed;
+    }
     #[cfg(feature = "devtriggers")]
     if pa.uri_live() {
         // Reload/foreground starts reach this seam directly too. The diagnostic probe's
@@ -844,7 +851,40 @@ pub fn reload_transcode_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut
 /// [`poll_release`] (`PendingRelease`), so the object may still exist when this returns; anything
 /// that needs it gone is queued behind it in the release machine (`Deferred`), never waited for.
 pub fn stop_bufferfeed(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) {
+    super::accept_server_stop(ps);
     teardown(ps, pa, false, plx_playback_contract::StopReason::Stop);
+}
+
+/// A retry or queue handoff may replace the outgoing playback only while it owns that decision.
+pub fn stop_for_replacement(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) -> bool {
+    if retire_if_server_stopped(ps, pa) {
+        return false;
+    }
+    teardown(ps, pa, false, plx_playback_contract::StopReason::Stop);
+    true
+}
+
+/// The per-frame door of a server stop, for whichever backend plays: when the server has ended
+/// this logical playback, retire it ([`super::accept_server_stop`]) and release what plays it.
+pub fn retire_if_server_stopped(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) -> bool {
+    if !super::accept_server_stop(ps) {
+        return false;
+    }
+    release_server_stopped_engine(ps, pa);
+    true
+}
+
+/// A server stop can retire a replacement Engine before it ever presents a frame, and a URI
+/// attempt the same. The session stays for the read-out (a reload-shaped teardown), but the
+/// release is the terminal kind: off the frame, with a Load still in the native call parked.
+pub(super) fn release_server_stopped_engine(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut super::adapter::PlayerAdapter,
+) {
+    if pa.is_live() || pa.active_uri_attempt().is_some() || (ps.backends().feed && ps.readout().start_queued()) {
+        super::abandon_seek(ps, pa);
+        teardown(ps, pa, true, plx_playback_contract::StopReason::Replace);
+    }
 }
 
 /// Suspend for an app-switch: tear the pipeline down (webOS reclaims the video plane while we're
@@ -933,6 +973,9 @@ pub fn begin_resume(
     pa: &mut super::adapter::PlayerAdapter,
     resume_ns: i64,
 ) -> ResumeStart {
+    if super::accept_server_stop(ps) {
+        return ResumeStart::Settled(ResumeOutcome::RebuildRejected);
+    }
     match resume_prelude(ps, pa, resume_ns) {
         ResumePrelude::Settled(outcome) => ResumeStart::Settled(outcome),
         ResumePrelude::Rebuild => match crate::route::dispatch_resume_rebase(ps, resume_ns) {
@@ -954,6 +997,9 @@ pub fn land_resume(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut super::adapter::PlayerAdapter,
 ) -> Option<ResumeOutcome> {
+    if super::accept_server_stop(ps) {
+        return None;
+    }
     crate::route::discard_stale_flight_landing();
     if !crate::route::resume_flight_outstanding() {
         return None;
@@ -1259,6 +1305,9 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAd
             at,
         );
     }
+    // The server ended this playback: the stop keeps the session for the read-out (`for_reload`), but
+    // the Feed releases it as a terminal one (off the frame, an in-flight Load parked).
+    let server_stopped = super::server_stop_applies(ps);
     if !begin_teardown(ps, pa, for_reload) { return; }
     {
     // An abandoned preview Load is never joined on the frame while native Load is in flight.
@@ -1269,7 +1318,7 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAd
     let route_attempt = pa.active_feed_attempt().expect("live feed has a route owner");
     // The outgoing attempt's last position, sampled while it is still the addressed one: the stop
     // retires the address and the reset after it idles the readout.
-    pa.stop_begin(ps);
+    pa.stop_begin(ps, server_stopped);
     let final_report = final_report(ps, for_reload);
     pa.stop_side_reader(for_reload);
     let mut report_th = stop_feed_timeline(pa, route_attempt);
@@ -1356,7 +1405,7 @@ pub(super) fn begin_teardown(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
             let mut final_report = None;
             if uri_attempt.is_some() && pa.finalize_uri_once() {
                 let facts = ps.attempt_view().facts();
-                let pos = facts.position_ns.unwrap_or_else(|| crate::route::unpresented_resume_ns(ps));
+                let pos = final_position_ns(ps, facts.position_ns);
                 let dur = facts.duration_ns.unwrap_or(0);
                 crate::player::report::ended(ps, pos, dur);
                 let rk = crate::route::cur_rk(ps);
@@ -1375,7 +1424,7 @@ pub(super) fn begin_teardown(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
             crate::route::scrobble_stop(ps, final_report, uri_report_th.take());
             crate::route::begin_engine_teardown(false);
             crate::route::drop_original_recovery(ps);
-            crate::route::clear_url(ps);
+            crate::route::retire_stopped_playback(ps);
             pa.reset_session(ResetScope::Stop, &mut || SHARED.reset_session());
             stop_transport(ps);
             ps.step_readout(super::readout::ReadoutEvent::SessionReset);
@@ -1404,6 +1453,15 @@ fn mark_attempt_stopped(ps: &mut crate::route::PlaybackSession) {
     let _ = ps.ingest_attempt_facts(attempt, backend, facts);
 }
 
+/// The position a playback's final report names: the one the server's terminating report carried when
+/// the server ended it, else the last sample (`observed`, or where an unpresented attempt resumes).
+fn final_position_ns(ps: &crate::route::PlaybackSession, observed: Option<i64>) -> i64 {
+    if crate::route::engine_failure(ps) == Some(super::RuntimeFailure::ServerStopped) {
+        return crate::route::unpresented_resume_ns(ps);
+    }
+    observed.unwrap_or_else(|| crate::route::unpresented_resume_ns(ps))
+}
+
 /// Capture final reporting facts before native teardown resets position and duration.
 pub(super) fn final_report(ps: &mut crate::route::PlaybackSession, for_reload: bool) -> Option<(String, i64, i64)> {
     // capture the final-position report BEFORE teardown zeroes playpos/duration (a reload is
@@ -1416,7 +1474,7 @@ pub(super) fn final_report(ps: &mut crate::route::PlaybackSession, for_reload: b
     // The duration is the session's last sample of the live attempt (the pump's, taken at the
     // frame's start and end), which is the container's duration for the whole of a playback.
     let dur = super::duration_ns(ps).unwrap_or(0);
-    let pos_ns = ps.readout().raw().playpos_ns;
+    let pos_ns = final_position_ns(ps, Some(ps.readout().raw().playpos_ns));
     if !for_reload {
         crate::player::report::ended(ps, pos_ns, dur);
     }
@@ -1493,7 +1551,7 @@ pub(super) fn finish_feed_teardown(
         // encoder it was holding is still running on the server, which is why this RETIRES rather
         // than forgets — see `route::drop_original_recovery`.
         crate::route::drop_original_recovery(ps);
-        crate::route::clear_url(ps); // the transcode stop rode out with `scrobble_stop` above
+        crate::route::retire_stopped_playback(ps); // the transcode stop rode out with `scrobble_stop` above
     } else if let Some(t) = report_th {
         // A reload posts no `stopped`, so there is nothing to order against: detach. Its own
         // ReportStop is already set, so it exits after its current POST and cannot be revived by

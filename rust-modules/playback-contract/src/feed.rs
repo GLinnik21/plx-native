@@ -898,12 +898,15 @@ pub struct UnblockFacts {
 pub trait FeedStop {
     /// Begin a stop: stop the HLS clock, sample the outgoing attempt's last facts while it is still
     /// installed (`None` with no session) and take the Engine out. The sample is taken after the
-    /// clock stops, as the player published it before this verb existed.
-    fn stop_begin(&mut self) -> Option<FeedFacts>;
+    /// clock stops, as the player published it before this verb existed. `terminal` is the logical
+    /// playback's end under a kept session (the server stopped it, and the read-out stays): the
+    /// release is the off-frame kind of a real stop, though the stop is shaped like a reload.
+    fn stop_begin(&mut self, terminal: bool) -> Option<FeedFacts>;
     /// The side reader stops before the paired demux reader is joined.
     fn stop_side_reader(&mut self, for_reload: bool);
-    /// Wake both transports and queues, join the demux and Load workers (a Load past its budget
-    /// stays parked, unjoined) and close the socket once the demux reader no longer owns its fd.
+    /// Wake both transports and queues, join the demux and Load workers (a Load past its budget, or
+    /// one still in the native call when the stop is terminal, stays parked, unjoined) and close the
+    /// socket once the demux reader no longer owns its fd.
     fn stop_unblock(&mut self) -> UnblockFacts;
     /// The common final report has been handed to its off-frame worker.
     fn stop_report_dispatched(&mut self);
