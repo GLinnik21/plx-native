@@ -244,7 +244,10 @@ jobs:
           # Prove the flags actually took, rather than trusting that they did: the Makefile records
           # the configuration it built, and a stale/ignored RELEASE= is exactly the silent failure
           # the parse-time stamp exists to prevent.
-          grep -q -- '--no-default-features' pkg/.build-config \
+          # Decoded by check-package.py (the Makefile's own flag strings for both configurations), not
+          # grepped: every stamp carries `--no-default-features` since the backends became explicit
+          # features, so the grep that stood here passed for a dev build too.
+          [ "$(python3 ci/check-package.py --print-build-config pkg/.build-config)" = release ] \
             || { echo "::error::RELEASE=1 did not take — pkg/.build-config says [$(cat pkg/.build-config)]"; exit 1; }
           # Same argument for SYMBOLS, and it needs its own check because the failure is silent in
           # the other direction: `make symbols` REFUSES without the flag, but a stamp that lost it

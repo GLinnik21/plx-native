@@ -114,7 +114,7 @@ by `UNLOADED` and a fence on its completion callback
 for that fence instead of needing a relaunch; only a failed fence quarantines the plane until exit.
 The production backend also reports the first picture (`Observation::Presented`) on this binding,
 once the service has played, the firmware has completed the bind's window and PLAYING calls, and the
-service's clock then advances; the probe shares the display step but
+service's clock then advances (`docs/uri-first-migration.md`); the probe shares the display step but
 reports no observation.
 
 ## Driving it: what is settled and what is not

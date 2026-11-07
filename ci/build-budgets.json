@@ -3,13 +3,13 @@
   "how_to_raise": "Edit this file in the SAME pull request that grows the number, set limit to the new ceiling, update measured and measured_on, and justify the growth in the PR body (what was added, why it cannot be smaller, what it cost). A budget is raised by a reviewed decision, never to make a red run green.",
   "budgets": {
     "binary_bytes": {
-      "what": "Size in bytes of the STRIPPED ARM plxnative binary that `make ipk FLAVOR=debug` stages into the package (ipkroot/data/usr/palm/applications/<appid>/plxnative), as the CI cross-build job builds it (default features, dev flavour). The shipped release binary is built with the release feature flags (--no-default-features plus the playback backend) and is smaller; this is the number CI can measure on every PR.",
+      "what": "Size in bytes of the STRIPPED ARM plxnative binary that `make ipk FLAVOR=debug` stages into the package (ipkroot/data/usr/palm/applications/<appid>/plxnative), as the CI cross-build job builds it: `make ipk FLAVOR=debug` with RELEASE unset, so the Makefile's dev feature set (both playback backends plus devtools, devtriggers and threadcheck), the fat-LTO `release` cargo profile (CI selects it by itself) and a stripped binary. The shipped RELEASE=1 binary is built with the shipping feature set (no devtools, devtriggers or threadcheck) and is smaller; this is the number CI can measure on every PR.",
       "unit": "bytes",
       "mode": "fail",
-      "limit": 18750000,
-      "measured": 17041608,
-      "measured_on": "2026-11-06",
-      "headroom": "10%"
+      "limit": 20000000,
+      "measured": 17074920,
+      "measured_on": "2026-11-04",
+      "headroom": "17% (raised from 17,000,000 by the owner on 2026-11-04 for the URI-first backend split: both playback backends are linked, the dormant plx_play_uri backend costs about 250 KB of the 402 KB growth over main)"
     },
     "packages_default": {
       "what": "Third-party (registry/git) packages the app crate compiles for armv7-unknown-linux-gnueabi with its DEFAULT features: normal + build dependencies, dev-dependencies excluded, workspace members excluded.",
@@ -21,7 +21,7 @@
       "headroom": "0 (exact measured graph, including the reviewed STORE ZIP reader/writer and the verify-only ed25519-compact)"
     },
     "packages_no_default_features": {
-      "what": "The same count with the shipping feature flags (--no-default-features plus the playback backend, as `make RELEASE=1` passes them), which is what every shipped binary is built with.",
+      "what": "The same count with the shipping feature set: the Makefile's `RELEASE=1` flags (--no-default-features plus the playback backends, asked of `make print-playback-config`), which is what every shipped binary is built with.",
       "unit": "packages",
       "mode": "fail",
       "limit": 93,
@@ -39,7 +39,7 @@
       "headroom": "+3"
     },
     "duplicate_versions_no_default_features": {
-      "what": "The same count with the shipping feature flags.",
+      "what": "The same count with the shipping feature set (see packages_no_default_features).",
       "unit": "crate names",
       "mode": "fail",
       "limit": 4,
