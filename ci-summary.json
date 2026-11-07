@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-07T01:23:04Z",
+ "generated": "2026-11-07T01:29:23Z",
  "metrics": [
   {
    "change30_pct": 37.0,
@@ -132,9 +132,9 @@
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 62,
+   "n_now": 63,
    "n_prev": 92,
-   "now": 445.0,
+   "now": 445,
    "prev7": 375.5,
    "shown": true,
    "state": "worse",
@@ -144,10 +144,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -46.5,
+   "change30_pct": -46.3,
    "change7_pct": 21.0,
-   "d30": 861,
-   "delta30": -400.0,
+   "d30": 858,
+   "delta30": -397.0,
    "delta7": 80.0,
    "group": "ci",
    "id": "pr_wait",
@@ -390,15 +390,15 @@
    "change30_pct": 24.3,
    "change7_pct": 12.3,
    "d30": 243,
-   "delta30": 59.0,
-   "delta7": 33.0,
+   "delta30": 59,
+   "delta7": 33,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 83,
-   "now": 302.0,
+   "now": 302,
    "prev7": 269,
    "shown": true,
    "state": "flat",
@@ -408,18 +408,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 11.2,
-   "change7_pct": 14.2,
+   "change30_pct": 11.5,
+   "change7_pct": 14.4,
    "d30": 192,
-   "delta30": 21.5,
-   "delta7": 26.5,
+   "delta30": 22,
+   "delta7": 27,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 83,
-   "now": 213.5,
+   "now": 214,
    "prev7": 187,
    "shown": true,
    "state": "flat",
@@ -429,18 +429,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -66.8,
-   "change7_pct": -0.7,
+   "change30_pct": -66.7,
+   "change7_pct": -0.5,
    "d30": 637,
-   "delta30": -425.5,
-   "delta7": -1.5,
+   "delta30": -425,
+   "delta7": -1,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 83,
-   "now": 211.5,
+   "now": 212,
    "prev7": 213,
    "shown": true,
    "state": "flat",
@@ -557,18 +557,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 14.7,
-   "change7_pct": 8.3,
+   "change30_pct": 17.6,
+   "change7_pct": 11.1,
    "d30": 17,
-   "delta30": 2.5,
-   "delta7": 1.5,
+   "delta30": 3,
+   "delta7": 2,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 83,
-   "now": 19.5,
+   "now": 20,
    "prev7": 18,
    "shown": false,
    "state": "flat",
@@ -667,11 +667,6 @@
    "change_pct": 29.9,
    "commits": [
     {
-     "pr": 1252,
-     "sha": "02be3ead1",
-     "title": "Site: add three outlets to Featured in"
-    },
-    {
      "pr": 1253,
      "sha": "c01b5136a",
      "title": "HUD previews: the long-title corpus covers Catalan"
@@ -715,6 +710,11 @@
      "pr": 1265,
      "sha": "96be5e274",
      "title": "Playback: honor Plex server stops"
+    },
+    {
+     "pr": 1268,
+     "sha": "ec0df8cc3",
+     "title": "Playback contract crate, BackendRunner and attempt-metrics reducers (unwired)"
     }
    ],
    "from": 231,
@@ -728,11 +728,6 @@
    "change_pct": 25.2,
    "commits": [
     {
-     "pr": 1252,
-     "sha": "02be3ead1",
-     "title": "Site: add three outlets to Featured in"
-    },
-    {
      "pr": 1253,
      "sha": "c01b5136a",
      "title": "HUD previews: the long-title corpus covers Catalan"
@@ -776,6 +771,11 @@
      "pr": 1265,
      "sha": "96be5e274",
      "title": "Playback: honor Plex server stops"
+    },
+    {
+     "pr": 1268,
+     "sha": "ec0df8cc3",
+     "title": "Playback contract crate, BackendRunner and attempt-metrics reducers (unwired)"
     }
    ],
    "from": 74.8,
@@ -789,11 +789,6 @@
    "change_pct": 23.6,
    "commits": [
     {
-     "pr": 1252,
-     "sha": "02be3ead1",
-     "title": "Site: add three outlets to Featured in"
-    },
-    {
      "pr": 1253,
      "sha": "c01b5136a",
      "title": "HUD previews: the long-title corpus covers Catalan"
@@ -837,6 +832,11 @@
      "pr": 1265,
      "sha": "96be5e274",
      "title": "Playback: honor Plex server stops"
+    },
+    {
+     "pr": 1268,
+     "sha": "ec0df8cc3",
+     "title": "Playback contract crate, BackendRunner and attempt-metrics reducers (unwired)"
     }
    ],
    "from": 313,
@@ -850,11 +850,6 @@
    "change_pct": 18.5,
    "commits": [
     {
-     "pr": 1252,
-     "sha": "02be3ead1",
-     "title": "Site: add three outlets to Featured in"
-    },
-    {
      "pr": 1253,
      "sha": "c01b5136a",
      "title": "HUD previews: the long-title corpus covers Catalan"
@@ -898,14 +893,19 @@
      "pr": 1265,
      "sha": "96be5e274",
      "title": "Playback: honor Plex server stops"
+    },
+    {
+     "pr": 1268,
+     "sha": "ec0df8cc3",
+     "title": "Playback contract crate, BackendRunner and attempt-metrics reducers (unwired)"
     }
    ],
    "from": 375.5,
    "id": "push_wait",
    "label": "Wait after merge",
-   "since": "2026-11-06",
+   "since": "2026-11-07",
    "threshold_pct": 15.0,
-   "to": 445.0
+   "to": 445
   }
  ],
  "schema": 2,
