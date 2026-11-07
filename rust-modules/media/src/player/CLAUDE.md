@@ -41,8 +41,9 @@ poll; refused: a typed failure and a close that does not unload someone else's b
 accepted pause/resume to the plane once the bind has completed. Release is `UNLOADED` and then the
 plane owner's fence on that call's completion callback, pumped from the backend's `poll`
 (`docs/measurements/acb-release-fence-2026-11-04.md`); a quarantine until process exit is only the
-outcome of a failed fence, not the normal one. `uri_preflight::product_binding` selects it at
-composition (ACB display mode, an initialized handle, player type 0). `ProductEvidence::permits` and
+outcome of a failed fence, not the normal one. `plx_play_uri::backend::product_binding` selects it at
+composition (ACB display mode, an initialized handle, player type 0); media's `uri_preflight` only receives the result as
+`ProductEvidence::unqualified_on(.., binding)`. `ProductEvidence::permits` and
 `ResolvePort::could_qualify_pms` accept `Binding::Acb` as an offerable display path beside an exported
 canvas, but only through `certified` capabilities: the production evidence certifies nothing and
 `ProductQualifier` answers `Unknown`, which is what keeps the ACB binding from being offered a source.

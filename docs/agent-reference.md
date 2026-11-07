@@ -929,7 +929,8 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   rather than the only one — it catches the break before the push, and CI does not run in somebody
   else's checkout. It type-checks the bare `--no-default-features` set, which drops `play-uri` and `play-feed` too (a build with
   no playback backend), so it does not replace `make check-nodef`, which passes the Makefile's `RUST_BACKEND_FEATURES`. It type-checks after
-  every edit to a `rust-modules/src/**.rs` or a layer crate's `rust-modules/*/src/**.rs`; it costs well under a second warm, because cargo keys
+  every edit to a `rust-modules/src/**.rs` or one of the thirteen layer crates it lists (it does not watch `playback-contract`, `media-codecs`,
+  `play-feed` or `play-uri`; `make check-nodef` is the only gate that compiles them in the shipping set); it costs well under a second warm, because cargo keys
   fingerprints by feature set and the two configurations coexist in one `target/`. The hazard it
   guards is hand-written `#[cfg(feature = "devtriggers")]` PAIRS, where a spliced-in function
   swallows a neighbour's attribute — `devtrig::latched_flag!` exists to avoid most of them.

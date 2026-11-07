@@ -1,6 +1,6 @@
 //! The URI-mode probe machine (issue #1064, the first test): what to say to `com.webos.media`, in
 //! what order, and what each answer means, as a tested `State + Event -> Effects` machine in the
-//! shape of [`super::lifecycle::ForegroundLifecycle`].
+//! shape of `plx_media::player::lifecycle::ForegroundLifecycle` (not linked: that crate is above this one).
 //!
 //! webOS 5+ plays a URL inside its own media service when asked over the platform bus (`load` with
 //! a `uri`, `subscribe`, `play`, `unload`); the probe asks whether the picture then shows in the
