@@ -112,7 +112,7 @@ base
 | machine | `ui::{machine,present,idle,landgate,landing,motion}` | 4k | 97% |
 | platform | `webos storage keymanager devcaps imgcache i18n labcfg tv` | 11k | 96% |
 | gfx | `gfx egl text rtl img svg gpu_timer hwcnt overdraw dump` | 15k | 68% |
-| net | `net stream` | 6k | 74% |
+| net | `net stream ws` | 6k | 74% |
 | plex | `plex http` | 26k | 72% |
 | telemetry | `telemetry diag` (the event schema) | 16k | 64% |
 | ui | `ui` (the library) | 51k | 47% |
