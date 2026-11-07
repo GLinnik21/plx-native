@@ -763,7 +763,7 @@ jobs:
         env:
           WEBOS_SDK: ${{ steps.ndk.outputs.sdk-dir }}
 
-      - name: Bundled curl stack ELF assertions
+      - name: Bundled curl-stack ELF assertions
         # The seven stack libraries run in the app's process: the same ARMv7 / no-CP15-barrier
         # grading as the binary, and no `exit` import, which RTLD_DEEPBIND would bind past the
         # app's exit interposer (the script's header).
