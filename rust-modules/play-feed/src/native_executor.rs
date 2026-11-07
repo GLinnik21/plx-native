@@ -401,7 +401,6 @@ pub fn launch_native_open(
             // `teardown(true) + start_bufferfeed()` (reload_at / reload_transcode /
             // switch_audio_native), which respawns this thread with the new value.
             let acodec = std::mem::take(&mut open.audio_codec);
-            let force_original = open.feed_payload.force_direct_play;
             let demux_transport = (hooks.demux_transport)();
             let session = open.session.take().expect("one demux session per captured feed open");
             let abr = open.hls_abr.take();
@@ -411,7 +410,7 @@ pub fn launch_native_open(
             // A clock-only reader (a sidecar) reads no subtitle: the demuxer keeps what it enumerates.
             shared.side_subs_owner.store(side_reader.embedded_owner(), Ordering::Release);
             stream_th = plx_base::task::spawn_off_frame_keeping("demux", move |off| {
-                crate::demux(off, origin, path, acodec, force_original, demux_transport, session, abr, auto_original, aqp, aqap, hsp)
+                crate::demux(off, origin, path, acodec, demux_transport, session, abr, auto_original, aqp, aqap, hsp)
             });
             if stream_th.is_none() {
                 shared.side_subs_owner.store(false, Ordering::Release);
@@ -1841,78 +1840,6 @@ pub fn audio_declaration(codec: &str, pcm: bool) -> Option<(&'static str, u8)> {
     crate::audio_payload_codec(codec)
 }
 
-/// Force never declares app PCM even if an older route projection still contains a PCM shape.
-pub fn app_pcm_for_load<T>(
-    force_original: bool, session_rate: i32, pcm: Option<Result<T, String>>,
-) -> Option<Result<T, String>> {
-    if force_original { None } else { crate::app_pcm_for_rate(session_rate, pcm) }
-}
-
-/// A non-normal rate requires app decoding and time stretching, which Force forbids.
-pub fn force_speed_refused(requested_rate: i32) -> bool {
-    requested_rate != crate::shared::RATE_NORMAL
-}
-
-/// A decoder-table omission is only a declaration veto in Auto. Force attempts the exact
-/// known feed format and lets the native Load answer; an unknown format is rejected earlier.
-pub fn video_declaration_refused(
-    video: crate::LoadVideo, caps: &plx_platform::devcaps::Caps, force_original: bool,
-) -> bool {
-    !force_original && crate::load_video_refused(video, caps)
-}
-
-/// A Force Load either declares the source's native audio wire format or refuses it. In
-/// particular, the ordinary PCM fallback for FLAC/ALAC/LPCM cannot represent original bytes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ForceAudioRefusal {
-    AudioSuppressed,
-    NoNativeWire,
-}
-
-impl ForceAudioRefusal {
-    pub fn message(self) -> &'static str {
-        match self {
-            Self::AudioSuppressed => "video-only Load would drop the selected audio",
-            Self::NoNativeWire => "no native buffer-feed declaration for its original wire format",
-        }
-    }
-}
-
-pub fn force_audio_refusal(codec: &str, no_audio: bool) -> Option<ForceAudioRefusal> {
-    if no_audio {
-        return Some(ForceAudioRefusal::AudioSuppressed);
-    }
-    match crate::audio_payload_codec(codec) {
-        Some((name, _)) if name != "PCM" => None,
-        _ => Some(ForceAudioRefusal::NoNativeWire),
-    }
-}
-
-/// One Force preflight decision, using the original source facts captured before native Load.
-pub enum ForceOpenRefusal {
-    Speed,
-    Audio(ForceAudioRefusal),
-    OriginalEnhancementLayer,
-}
-
-pub fn force_open_refusal(
-    requested_rate: i32,
-    audio_codec: &str,
-    no_audio: bool,
-    original_dovi: crate::open::OriginalDvFacts,
-) -> Option<ForceOpenRefusal> {
-    // The payload decision describes the *converted* presentation. Force keeps the source
-    // bytes, so a known Profile 7 or enhancement layer cannot truthfully use that declaration.
-    // This says nothing about what a device could decode through a different, qualified wire.
-    if original_dovi.present && (original_dovi.profile == 7 || original_dovi.el_present) {
-        return Some(ForceOpenRefusal::OriginalEnhancementLayer);
-    }
-    if force_speed_refused(requested_rate) {
-        return Some(ForceOpenRefusal::Speed);
-    }
-    force_audio_refusal(audio_codec, no_audio).map(ForceOpenRefusal::Audio)
-}
-
 
 /// What a Load declares for its audio, and the plan for the sink lead that follows from it: ONE
 /// value, so the payload's `"audio"` name and the Engine's lead cannot disagree. PURE.
@@ -2037,7 +1964,6 @@ pub fn prepare_native_open(
     session_rate: i32,
     side_reader: Box<dyn SideReaderPort>,
     no_audio: bool,
-    requested_rate: i32,
     dv_landing: plx_playback_contract::feed::DvLandingPlan,
     hooks: &PrepareHooks,
 ) -> Result<NativePrepared, PrepareRefusal> {
@@ -2047,26 +1973,6 @@ pub fn prepare_native_open(
     // fixed payloads.)
     // dev A/B: /tmp/plxnative-noaudio feeds video only (needAudio:false + skip es=2) to isolate
     // whether the audio ES (E-AC3/Atmos) is what stalls the sink on 4K HEVC.
-    // Refuse incompatible Force configurations before publishing audio/rate facts to the demuxer.
-    if let Some(open) = open.as_ref().filter(|request| request.feed_payload.force_direct_play) {
-        if let Some(refusal) = force_open_refusal(
-            requested_rate, &open.audio_codec, no_audio, open.original_dv,
-        ) {
-            match refusal {
-                ForceOpenRefusal::Speed => {
-                    plx_base::eventlog::log("start_bufferfeed: Force Direct Play cannot apply playback speed without changing audio");
-                }
-                ForceOpenRefusal::Audio(why) => {
-                    plx_base::eventlog::log(&format!("start_bufferfeed: Force Direct Play refused original audio {}: {}", open.audio_codec, why.message()));
-                }
-                ForceOpenRefusal::OriginalEnhancementLayer => {
-                    plx_base::eventlog::log("start_bufferfeed: Force Direct Play refused original Dolby Vision Profile 7/enhancement-layer wire: no qualified buffer-feed declaration for unchanged bytes");
-                }
-            }
-            shared.fail_demux_latch(hooks.load_refusal_latch);
-            return Err(PrepareRefusal::Refused);
-        }
-    }
     crate::set_feed_audio(!no_audio);
     let stream_payload;
     // Every arm below assigns this — the static payloads through `static_envelope`, the streamed
@@ -2100,7 +2006,7 @@ pub fn prepare_native_open(
             shared.fail_demux_latch(hooks.load_refusal_latch);
             return Err(PrepareRefusal::Refused);
         };
-        if video_declaration_refused(lv, &plx_platform::devcaps::caps(), open.feed_payload.force_direct_play) {
+        if crate::load_video_refused(lv, &plx_platform::devcaps::caps()) {
             plx_base::eventlog::log(&format!(
                 "start_bufferfeed: {} stream but the device table lists no such decoder; refusing the Load",
                 lv.payload_name()
@@ -2131,7 +2037,7 @@ pub fn prepare_native_open(
             let codec = &open.audio_codec;
             // App-decoded audio: the Load must state the PCM shape, and the demuxer must produce
             // exactly that. Missing facts refuse the Load — a guessed rate plays at the wrong pitch.
-            let pcm = match app_pcm_for_load(open.feed_payload.force_direct_play, session_rate, open.feed_payload.pcm.clone()) {
+            let pcm = match crate::app_pcm_for_rate(session_rate, open.feed_payload.pcm.clone()) {
                 Some(Ok(f)) => Some(f),
                 Some(Err(why)) => {
                     plx_base::eventlog::log(&format!("start_bufferfeed: PCM audio refused — {why}"));

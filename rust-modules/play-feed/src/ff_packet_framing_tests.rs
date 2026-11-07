@@ -258,7 +258,7 @@ fn irap_class_h264_av1_vp9_keyframes_are_clean() {
     let mut out = Vec::new();
     let flagged = unsafe {
         let buf = avcc(&[&[0x21, 0x88, 0xAA, 0xBB]]);
-        packet_to_annexb(buf.as_ptr(), buf.len(), 4, false, false, true, true, &[], &mut out)
+        packet_to_annexb(buf.as_ptr(), buf.len(), 4, false, false, true, &[], &mut out)
     };
     assert_eq!((flagged, flagged.au_key()), (Keyframe::Clean, crate::aq::AU_KEY));
     // AV1 and VP9 answer a bool, which the demux loop wraps: a keyframe is always `Clean`.
@@ -483,21 +483,6 @@ fn an_armed_profile_7_feed_drops_the_enhancement_layer() {
     let buf = avcc(&[&bl, &el_wrapped, &el_layer1]);
     let (_, out) = to_annexb_p7(&buf, &[]);
     assert_eq!(out, vec![0, 0, 0, 1, 0x02, 0x01, 0xAA]);
-}
-
-#[test]
-fn force_original_refuses_dual_layer_header_or_late_packet_evidence() {
-    let header = parse_dovi_conf(&dovi_bytes(7, 6, 1, 1, 1, 1)).unwrap();
-    assert!(force_original_dovi_unsupported(&header));
-    let p7_rpu = rpu_fixture_nal(include_bytes!("../../../tests/fixtures/dovi-p7-mel-rpu.bin"));
-    let p81_rpu = rpu_fixture_nal(include_bytes!("../../../tests/fixtures/dovi-p7-mel-to-81-rpu.bin"));
-    let enhancement = [0x7e, 0x01, 0x02, 0x01, 0xbb];
-    let base = [0x02, 0x01, 0xaa];
-    assert!(force_original_hevc_has_unsupported_dv(&avcc(&[&p7_rpu]), 4));
-    assert!(force_original_hevc_has_unsupported_dv(&avcc(&[&base, &enhancement]), 4));
-    assert!(!force_original_hevc_has_unsupported_dv(&avcc(&[&base, &p81_rpu]), 4));
-    assert!(force_original_hevc_has_unsupported_dv(&[0, 0, 0, 8, 0x7e], 4),
-        "a truncated packet cannot silently lose its enhancement layer");
 }
 
 /// The rewrite is `dovi_tool -m 2`'s, byte for byte: dovi_tool's own MEL test RPU comes out as
@@ -976,20 +961,6 @@ fn hdr10plus_is_found_alone_and_behind_another_message() {
     assert!(is_hdr10plus_sei(&sei_nal(&[(4, HDR10PLUS)])));
     // A mastering-display message first: only the first message used to be read.
     assert!(is_hdr10plus_sei(&sei_nal(&[(137, &[0u8; 24]), (4, HDR10PLUS)])));
-}
-
-#[test]
-fn force_original_keeps_hdr10plus_inside_native_annex_b_framing() {
-    let metadata = sei_nal(&[(4, HDR10PLUS)]);
-    let packet = avcc(&[&metadata]);
-    let mut framed = Vec::new();
-    let _ = unsafe { packet_to_annexb(
-        packet.as_ptr(), packet.len(), 4, true, false, false, false,
-        &[], &mut framed,
-    ) };
-    assert_eq!(framed, [&[0, 0, 0, 1][..], metadata.as_slice()].concat());
-    assert!(to_annexb(&packet, true, &[]).1.is_empty(),
-        "ordinary playback still strips unsupported HDR10+ SEI");
 }
 
 #[test]

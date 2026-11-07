@@ -149,7 +149,7 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
             // only while the transport still reads Paused.
             ForegroundClock::Playing => {
                 #[cfg(feature = "play-feed")]
-                if feed_load && viewer_paused_for(ps, self.pa) && !self.pa.is_live() {
+                if feed_load && plx_media::player::transport::paused(ps) && !self.pa.is_live() {
                     plx_media::player::transport::commit_viewer_resume_for_load(ps, self.pa);
                 }
             }
@@ -225,7 +225,7 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
     fn play_clock(&mut self, ps: &mut plx_media::route::PlaybackSession) -> bool {
         // start_bufferfeed has installed the Initial native-clock hold from the transport's Pause. Publish
         // Play through the synchronized reducer so that hold and the feed gate reopen together.
-        !viewer_paused_for(ps, self.pa) || set_transport_paused(ps, self.pa, false)
+        !plx_media::player::transport::paused(ps) || set_transport_paused(ps, self.pa, false)
     }
 }
 

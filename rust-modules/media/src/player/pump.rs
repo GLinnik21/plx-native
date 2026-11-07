@@ -4575,20 +4575,17 @@ mod flight_tests {
         assert!(crate::route::audio_decoded_in_app(&rig.ps, "dca", 6, 0), "the track menu marks it played in stereo");
     }
 
-    /// Force keeps stereo DTS original after a native refusal, just as it keeps surround
-    /// original: the failure cannot silently turn into app PCM or a PMS conversion.
+    /// **P3. Force Direct Play decodes a refused native STEREO DTS in the app and asks the server NOTHING**:
+    /// no `/decision` of any kind (not the conversion, not the probe), the same reload as above. (A
+    /// surround track is not mixed down under Force: `a_forced_refusal_of_native_surround_dts_reads_out`.)
     #[test]
-    fn a_forced_refusal_of_native_stereo_dts_reads_out_without_conversion() {
+    fn a_forced_refusal_of_native_dts_decodes_in_the_app_with_no_server() {
         let mut rig = forced_dts_rig(2);
         assert_eq!(crate::route::stream_pcm(&rig.ps).and_then(Result::ok), None, "native until the pipeline refuses it");
         rig.frame();
         let epoch = engine_epoch(&mut rig);
         let log = refused_601_until_settled(&mut rig);
-        assert!(!log.contains(DECODING), "{log}");
-        assert_eq!(engine_epoch(&mut rig), epoch, "Force must not reload into PCM");
-        assert_eq!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error);
-        assert_eq!(crate::route::stream_pcm(&rig.ps), None);
-        assert!(!rig.ps.open_recovery().attempt().app_lossy_in_force.contains("dts"));
+        assert_decoding_in_the_app(&mut rig, epoch, &log);
         assert!(
             !rig.flight.requests().iter().any(|r| r.contains("/decision")),
             "Force Direct Play converts nothing and asks nothing: {:?}",
@@ -4609,8 +4606,7 @@ mod flight_tests {
             [(AudioStack::Liblxa, true, 400_000_000), (AudioStack::Other, false, 0)]
         {
             let _stack = audio_stack_on_this_thread_for_test(stack);
-            let mut rig = measured_dts_rig_of(Rig::direct(40), 2);
-            rig.flight.refuse_decisions(1);
+            let mut rig = forced_dts_rig(2);
             rig.frame();
             let epoch = engine_epoch(&mut rig);
             let log = refused_601_until_settled(&mut rig);
@@ -4634,7 +4630,7 @@ mod flight_tests {
     /// **P3c. Force Direct Play does NOT mix a surround track down** (owner decision 2026-10-28). The
     /// pipeline refuses the native DTS 5.1 (`601`) on a set whose policy admits DTS in the app, and the
     /// viewer gets the read-out: no app decode, no reload, no `/decision` of any kind. The 2.0 twin is
-    /// `a_forced_refusal_of_native_stereo_dts_reads_out_without_conversion`.
+    /// `a_forced_refusal_of_native_dts_decodes_in_the_app_with_no_server`.
     #[test]
     fn a_forced_refusal_of_native_surround_dts_reads_out() {
         let mut rig = forced_dts_rig(6);
@@ -4699,11 +4695,7 @@ mod flight_tests {
     /// is spent and no facet is left, so the Engine fails, the read-out shows, and nothing reloads again.
     #[test]
     fn a_refused_app_decode_ends_on_the_read_out_once() {
-        // Auto's final app-decoding rung follows its two refused PMS candidates. Once
-        // that PCM open fails, neither the decode nor a spent candidate may run again.
-        let mut rig = measured_dts_rig(Rig::direct(40));
-        FlightRig::declare_video(&mut rig.ps, "h264", 1920, 1080);
-        rig.flight.refuse_decisions(2);
+        let mut rig = forced_dts_rig(2);
         rig.frame();
         let epoch = engine_epoch(&mut rig);
         let first = refused_601_until_settled(&mut rig);

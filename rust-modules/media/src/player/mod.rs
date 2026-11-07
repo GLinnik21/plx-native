@@ -2086,7 +2086,7 @@ plx_base::devtrig::latched_flag!(
 );
 
 /// **The speeds this playback can offer** (Normal included), or none when speed is unavailable:
-/// a trailer preview, Force Direct Play (speed requires PCM conversion), segmented HLS (not wired), audio the bundled FFmpeg cannot decode
+/// a trailer preview, segmented HLS (not wired), audio the bundled FFmpeg cannot decode
 /// (`ff::speed_decoder_available`), a television that has already failed a PCM session
 /// ([`speed_unsupported`]), or a stream whose fed rate would pass the frame rate the Load can
 /// declare ([`feed_open::speed_fps_ceiling_now`]). The menu offers exactly these, and a Load plays
@@ -2110,8 +2110,7 @@ pub fn speed_offer(ps: &crate::route::PlaybackSession) -> Vec<i32> {
 /// Start admission uses this after URI→Feed reconfiguration, while the visible speed menu still
 /// asks [`speed_offer`] about the current executor. It does not certify native application.
 pub(crate) fn feed_speed_offer(ps: &crate::route::PlaybackSession) -> Vec<i32> {
-    if crate::route::forced_direct_play(ps) || crate::route::is_preview(ps)
-        || crate::route::is_segmented_hls(ps) || speed_unsupported(ps) {
+    if crate::route::is_preview(ps) || crate::route::is_segmented_hls(ps) || speed_unsupported(ps) {
         return Vec::new();
     }
     let codec = crate::route::stream_acodec(ps);
@@ -3082,23 +3081,6 @@ mod tests {
     // refusal retiring on route exit) is exercised by
     // `native_failure_regressions::jail_refusal_enters_error_without_engine_and_retires_on_exit`
     // below, against the real `ps.jail_load_blocked`-based gate in `engine.rs` — see that test.
-
-    #[test]
-    fn forced_original_never_offers_or_retains_a_pcm_speed() {
-        let _serial = plx_base::testlock::serial();
-        let mut ps = crate::route::PlaybackSession::IDLE;
-        let mut pa = adapter::PlayerAdapter::new_fed(unsafe { plx_base::task::MainThread::assume() });
-        crate::route::set_direct_play_mode_for_test(&mut ps, crate::route::DirectPlayMode::Forced);
-        assert!(speed_offer(&ps).is_empty());
-        assert!(!set_play_rate(&mut ps, &mut pa, 1250));
-        // A speed retained from a preceding Auto route must not silently decode this Load.
-        ps.accept_requested_rate(1500);
-        ps.step_readout(readout::ReadoutEvent::RateSelected { permille: 1500 });
-        assert_eq!(session_rate_for(&mut ps), RATE_NORMAL);
-        assert_eq!(ps.readout().play_rate_permille(), RATE_NORMAL,
-            "the offer downgrades the OFFERED rate, which is the readout's");
-        assert_eq!(ps.requested_rate_permille(), 1500, "and never the viewer's intent");
-    }
 
     #[test]
     fn forced_runtime_failures_keep_the_cause_and_explain_how_to_leave_force() {

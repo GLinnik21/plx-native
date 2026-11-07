@@ -55,7 +55,7 @@ pub mod ff_test_support {
     pub use crate::ff::{annexb_start, arm_active_stall_guard, candidate_reserve_deadline,
         classify_curl_open_err, classify_hls_avio_facts, classify_hls_deadline,
         classify_plaintext_open_failure, drain_keep_polling,
-        exploration_snapshot, exploration_timeout_is_final, force_original_dovi_unsupported,
+        exploration_snapshot, exploration_timeout_is_final,
         frame_read_failed, hls_acquisition, hls_body_complete, hls_buffer_fact_at, hls_buffer_fact,
         hls_cursor_open, hls_demux_segment, hls_duration_obligation_ms, hls_feed_failure,
         hls_open_source, hls_prefetch_is_fatal, hls_prefetch_same_encoder_with,

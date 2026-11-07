@@ -334,10 +334,9 @@ pub fn remember_accepted_source_subtitle(ps: &PlaybackSession, memo: SubtitleMem
 
 /// **The track menu's audio pick: commit it, and remember it if the route took it.** `memo` is the
 /// descriptor of the picked row ([`memo_of_audio`](super::super::memo_of_audio)); `None` is a commit that is
-/// not a viewer's choice and remembers nothing. The write is made when
-/// [`commit_audio_selection`] accepts the pick. Force accepts and remembers the exact selected
-/// source track; a physical backend may refuse that wire format during its later open. Returns
-/// whether the route accepted the pick.
+/// not a viewer's choice and remembers nothing. The write is made only when
+/// [`commit_audio_selection`] accepted the pick, so the Forced refusal (a track the route will not
+/// play) is never remembered. Returns whether the route accepted it.
 ///
 /// Automatic picks do NOT come through here: the start-of-play auto-pick, a retry, a rescue and
 /// Switch to Auto call [`commit_audio_selection`] or build a plan directly, and write no memory.

@@ -347,17 +347,34 @@ fn profile_for(caps: &plx_platform::devcaps::Caps) -> String {
     profile_for_delivery(caps, TranscodeDelivery::ProgressiveMkv)
 }
 
-/// The forced-direct-play profile: formats the buffer-feed Load can represent natively, with no
-/// device-declaration limits, app-decode codecs, or transcode target. A missing table row does not
-/// veto trying a stream; the native open establishes whether this set accepts it. A codec outside
-/// this vocabulary cannot be declared honestly and receives a direct-play refusal from PMS.
-/// TODO(uri-force): the URI backend can admit original codecs the feed Load cannot represent.
-/// Give this MDE call a typed backend and the selected source codecs before using its verdict for
-/// URI Force; this fixed feed profile must not veto a URI original as if it were a feed Load.
-fn forced_direct_profile_for(_caps: &plx_platform::devcaps::Caps) -> String {
-    let video = "h264,hevc,vp9,av1";
+/// The forced-direct-play profile: the engine's own formats, no device limits, no transcode
+/// target. `vp9` and `av1` join the video list only when the device table lists their rows (issue
+/// #593); a forced start never widens the codec set past what the table says the panel decodes.
+fn forced_direct_profile_for(caps: &plx_platform::devcaps::Caps) -> String {
+    let mut video = "h264,hevc".to_string();
+    if caps.vp9 {
+        video.push_str(",vp9");
+    }
+    if caps.av1 {
+        video.push_str(",av1");
+    }
+    // The pipeline's feed formats, DTS only under the Forced rule (`Caps::forced_admits_dts`):
+    // a profile that offered DTS to a set with no DTS row would have PMS direct-play a Load the
+    // pipeline cannot decode. The lossy app-decoded ids the policy admits follow (those not already
+    // listed: DTS is, where the table has the row): the app decodes them, so a set with no decoder for
+    // one still gets a direct-play answer for it instead of a transcode (`Caps::app_may_decode_lossy`).
     let audio = DP_AUDIO_CODECS
         .split(',')
+        .chain(plx_platform::devcaps::PCM_AUDIO_CODECS.split(','))
+        .chain(plx_platform::devcaps::APP_DECODED.iter().filter(|c| c.lossy).map(|c| c.id))
+        .filter(|c| caps.forced_feeds_audio(c) || caps.app_may_decode_lossy(c))
+        .fold(Vec::<&str>::new(), |mut seen, c| {
+            if !seen.contains(&c) {
+                seen.push(c);
+            }
+            seen
+        })
+        .into_iter()
         .map(profile_codec_name)
         .collect::<Vec<_>>()
         .join(",");
@@ -1344,10 +1361,9 @@ mod tests {
         assert!(!profile.contains("truehd"));
     }
 
-    /// Under Auto, FLAC is decoded in the app and fed as PCM: offered for direct play on a set
+    /// FLAC is decoded in the app and fed as PCM: offered for direct play (and Force) on a set
     /// whose table was read, capped at the PCM path's two channels so PMS still converts a 5.1
     /// FLAC — and never named as a transcode TARGET, which is the server's encoder, not ours.
-    /// Force's feed profile excludes FLAC because it cannot declare its original wire format.
     #[test]
     fn flac_is_offered_for_direct_play_up_to_stereo_and_never_as_a_target() {
         // what `devcaps` makes of a READ table (its own tests pin that half)
@@ -1360,15 +1376,14 @@ mod tests {
         // and with NO rate bound: the app resamples a 96 kHz FLAC to the PCM input's top rate itself
         assert!(!profile.contains("scopeName=flac&type=upperBound&name=audio.samplingRate"), "{profile}");
         assert!(!list_of(target_of(&profile), "audioCodec=").contains(&"flac".into()));
-        assert!(!list_of(&super::forced_direct_profile_for(&caps), "audioCodec=").contains(&"flac".into()),
-            "Force cannot advertise the app's FLAC-to-PCM decoder");
+        assert!(list_of(&super::forced_direct_profile_for(&caps), "audioCodec=").contains(&"flac".into()));
         let assumed = plx_platform::devcaps::Caps::assumed();
         assert!(!super::profile_for(&assumed).contains("flac"));
         assert!(!super::forced_direct_profile_for(&assumed).contains("flac"));
     }
 
     /// ALAC and LPCM are app-decoded like FLAC (S4): the same stereo limit and no rate bound, direct play
-    /// in Auto only, never a transcode target. LPCM is named `pcm` in Auto's profile.
+    /// and Force only, never a transcode target. LPCM is named `pcm` in the profile.
     #[test]
     fn alac_and_pcm_are_offered_like_flac_and_never_as_a_target() {
         let mut caps = plx_platform::devcaps::Caps::assumed();
@@ -1383,7 +1398,7 @@ mod tests {
             assert!(profile.contains(&format!("scope=videoAudioCodec&scopeName={c}&type=upperBound&name=audio.channels&value=2&replace=true")), "{c}: {profile}");
             assert!(!profile.contains(&format!("scopeName={c}&type=upperBound&name=audio.samplingRate")), "{c}: {profile}");
             assert!(!list_of(target_of(&profile), "audioCodec=").contains(&c.into()), "{c} is not a transcode target");
-            assert!(!list_of(&forced, "audioCodec=").contains(&c.into()), "{c}: Force cannot advertise app PCM");
+            assert!(list_of(&forced, "audioCodec=").contains(&c.into()), "{c}: {forced}");
         }
         let assumed = plx_platform::devcaps::Caps::assumed();
         for c in ["alac", "pcm"] {
@@ -1452,39 +1467,45 @@ mod tests {
         assert!(hls_profile_for(&caps).contains(&limit("aac", "audio.samplingRate", 48_000)));
     }
 
-    /// Force Direct Play advertises native DTS even without a DTS row in the table. The native
-    /// open, not a declaration, establishes whether this set accepts it.
+    /// Force Direct Play offers DTS only on the same table evidence the planner asks for
+    /// (`Caps::forced_admits_dts`); without the row the profile cannot invite a Load the
+    /// pipeline cannot decode.
     #[test]
-    fn forced_profile_offers_dca_without_a_dts_row() {
+    fn forced_profile_offers_dca_only_with_a_dts_row() {
         let without = super::forced_direct_profile_for(&Caps::assumed());
-        assert_eq!(list_of(&without, "audioCodec="), ["aac", "ac3", "eac3", "dca", "opus"]);
-        assert!(!without.contains("audioCodec=dts"), "{without}");
+        assert_eq!(list_of(&without, "audioCodec="), ["aac", "ac3", "eac3"]);
+        assert!(!without.contains("dts") && !without.contains("dca"), "{without}");
         let mut caps = Caps::assumed();
         caps.audio.push_str(",dts");
         caps.audio_channels.insert("dts".into(), 6);
         let with = super::forced_direct_profile_for(&caps);
-        assert_eq!(with, without, "device rows cannot rewrite Force's native-wire profile");
+        assert_eq!(list_of(&with, "audioCodec="), ["aac", "ac3", "eac3", "dca"]);
+        assert!(!with.contains("dts"), "{with}");
     }
 
-    /// Auto's lossy decode policy admits DTS; Force advertises native DTS regardless of that
-    /// policy or the device table's declaration.
+    /// **The lossy-decode policy in both profiles** (S4 PR 2). Off (the assumed fallback), the profiles are
+    /// what they were: a set with no DTS row announces no `dca`. On, the app decodes the core
+    /// itself, so `dca` is announced with no table row — up to 8 channels, no rate bound — in the
+    /// Auto direct-play list and its copy lane and in Force Direct Play's; and the lossless set is
+    /// untouched either way.
     #[test]
     fn the_lossy_gate_adds_dca_to_both_profiles_and_off_changes_nothing() {
         let off = Caps::assumed();
         let on = Caps::assumed().with_app_lossy();
-        assert!(!super::profile_for(&off).contains("dca"));
-        assert!(list_of(&super::forced_direct_profile_for(&off), "audioCodec=").contains(&"dca".into()));
+        for (profile, forced) in [(super::profile_for(&off), false), (super::forced_direct_profile_for(&off), true)] {
+            assert!(!profile.contains("dca") && !profile.contains("dts"), "policy off, forced={forced}: {profile}");
+        }
         let auto = super::profile_for(&on);
         assert!(list_of(&auto, "audioCodec=").contains(&"dca".into()), "{auto}");
         assert!(auto.contains("scope=videoAudioCodec&scopeName=dca&type=upperBound&name=audio.channels&value=8&replace=true"), "{auto}");
         assert!(!auto.contains("scopeName=dca&type=upperBound&name=audio.samplingRate"), "no rate bound on the core: {auto}");
         assert!(!auto.contains("dts"), "{auto}");
         let forced = super::forced_direct_profile_for(&on);
-        assert_eq!(list_of(&forced, "audioCodec="), ["aac", "ac3", "eac3", "dca", "opus"], "{forced}");
+        assert_eq!(list_of(&forced, "audioCodec="), ["aac", "ac3", "eac3", "dca", "mp3", "vorbis", "truehd"], "{forced}");
         assert_eq!(super::profile_for(&off), super::profile_for(&Caps::assumed()));
     }
 
-    /// **MP3 and Vorbis in Auto under the gate** (S4-4): announced like `dca` (direct-play
+    /// **MP3 and Vorbis in both profiles under the gate** (S4-4): announced like `dca` (direct-play
     /// list, channel limit, no transcode target), and, unlike a DTS core, held to the 48 kHz
     /// sampling-rate bound, because the app's resampler is not for a 96 kHz Vorbis. Off, the profiles
     /// are what they were.
@@ -1505,11 +1526,11 @@ mod tests {
         }
         assert!(!auto.contains("scopeName=dca&type=upperBound&name=audio.samplingRate"), "a DTS core still is not: {auto}");
         let forced = list_of(&super::forced_direct_profile_for(&on), "audioCodec=");
-        assert_eq!(forced, ["aac", "ac3", "eac3", "dca", "opus"]);
+        assert_eq!(forced, ["aac", "ac3", "eac3", "dca", "mp3", "vorbis", "truehd"]);
     }
 
-    /// **TrueHD in Auto under the gate** (S4-5): announced up to eight channels, in the
-    /// direct-play list, never a transcode target, and with NO sampling-rate
+    /// **TrueHD in both profiles under the gate** (S4-5): announced up to eight channels, in the
+    /// direct-play list and Force Direct Play's, never a transcode target, and with NO sampling-rate
     /// bound (the app's resampler handles 96 and 192 kHz). Off, the profiles are what they were.
     #[test]
     fn the_lossy_gate_adds_truehd_to_both_profiles_with_no_rate_bound() {
@@ -1524,36 +1545,41 @@ mod tests {
         assert!(!auto.contains("scopeName=truehd&type=upperBound&name=audio.samplingRate"), "no rate bound: {auto}");
         assert!(!list_of(target_of(&auto), "audioCodec=").contains(&"truehd".into()), "never a transcode target");
         let forced = list_of(&super::forced_direct_profile_for(&on), "audioCodec=");
-        assert_eq!(forced, ["aac", "ac3", "eac3", "dca", "opus"]);
+        assert_eq!(forced, ["aac", "ac3", "eac3", "dca", "mp3", "vorbis", "truehd"]);
     }
 
-    /// Force advertises only native buffer-feed formats, independent of declaration rows and app
-    /// decode policy. A codec such as TrueHD cannot be represented by the native Load vocabulary.
+    /// **Force Direct Play offers the lossy codec the policy enabled even where the set has no decoder
+    /// for it**, because the app decodes it: a profile without `dca` would have MDE answer that Load with
+    /// a transcode, and the play would end as `ForcedFailure::Unauthorized`. A codec nothing enabled
+    /// (MP3, Vorbis, TrueHD: unmeasured) stays off, `dca` is listed once where the table has the row as
+    /// well, and Auto's profile does not move with the policy at all.
     #[test]
-    fn the_forced_profile_advertises_native_wire_formats_independent_of_declarations() {
+    fn the_forced_profile_offers_an_enabled_lossy_codec_the_set_cannot_decode() {
         use plx_platform::devcaps::AppLossy;
         let rowless = Caps { app_lossy: AppLossy::Measured, ..Caps::assumed() };
         let forced = super::forced_direct_profile_for(&rowless);
-        assert_eq!(list_of(&forced, "audioCodec="), ["aac", "ac3", "eac3", "dca", "opus"], "{forced}");
+        assert_eq!(list_of(&forced, "audioCodec="), ["aac", "ac3", "eac3", "dca"], "{forced}");
         let mut native = rowless.clone();
         native.audio.push_str(",dts");
         native.audio_channels.insert("dts".into(), 6);
-        assert_eq!(super::forced_direct_profile_for(&native), forced, "native row cannot change Force's request");
+        assert_eq!(list_of(&super::forced_direct_profile_for(&native), "audioCodec="), ["aac", "ac3", "eac3", "dca"]);
         assert_eq!(
             list_of(&super::forced_direct_profile_for(&Caps::assumed()), "audioCodec="),
-            ["aac", "ac3", "eac3", "dca", "opus"],
-            "the app-decode setting cannot change Force's request"
+            ["aac", "ac3", "eac3"],
+            "off: what shipped"
         );
         assert_eq!(super::profile_for(&rowless), super::profile_for(&Caps::assumed()), "Auto's profile is unchanged");
     }
 
-    /// Forced mode advertises native buffer-feed formats with no device limits, app decoder, or
-    /// transcode target. Missing codec rows cannot veto an original stream before native open.
+    /// Forced mode advertises the engine's formats with no device limits and no transcode target.
+    /// `av1` joins the video list only when the table lists it (issue #593); on the host the boot
+    /// value is the assumed caps, so it is absent here, and
+    /// `forced_profile_names_av1_only_with_the_row` pins the present case.
     #[test]
     fn force_profile_advertises_engine_formats_without_device_limits_or_transcode() {
         let p = super::forced_direct_profile_for(&Caps::assumed());
-        assert_eq!(list_of(&p, "audioCodec="), ["aac", "ac3", "eac3", "dca", "opus"]);
-        assert_eq!(list_of(&p, "videoCodec="), ["h264", "hevc", "vp9", "av1"]);
+        assert_eq!(list_of(&p, "audioCodec="), ["aac", "ac3", "eac3"], "no DTS row on the assumed caps");
+        assert_eq!(list_of(&p, "videoCodec="), ["h264", "hevc"]);
         assert!(!p.contains("add-limitation"));
         assert!(!p.contains("transcode-target"));
         assert!(!p.contains("truehd"));
@@ -1801,19 +1827,20 @@ mod tests {
         assert!(!target_of(&p).contains("av1"), "{p}");
     }
 
-    /// The forced profile is a stable native-wire list independent of AV1 and audio device rows.
+    /// The forced profile is the engine's own formats with no device limits: its literal is
+    /// the assumed-caps literal (no DTS row, so no DTS), and av1 joins its codec list only when the table lists it.
     #[test]
-    fn forced_profile_names_av1_without_a_device_row() {
+    fn forced_profile_names_av1_only_with_the_row() {
         assert_eq!(
             super::forced_direct_profile_for(&Caps::assumed()),
             format!(
-                "add-direct-play-profile(type=videoProfile&container=mkv,mp4&videoCodec=h264,hevc,vp9,av1&audioCodec={}&subtitleCodec={})",
-                "aac,ac3,eac3,dca,opus",
+                "add-direct-play-profile(type=videoProfile&container=mkv,mp4&videoCodec=h264,hevc&audioCodec={}&subtitleCodec={})",
+                "aac,ac3,eac3",
                 super::DP_SUBTITLE_CODECS,
             )
         );
         let av1 = Caps { av1: true, av1_row: (1920, 1080, 60), ..Caps::assumed() };
-        assert_eq!(super::forced_direct_profile_for(&av1), super::forced_direct_profile_for(&Caps::assumed()));
+        assert!(super::forced_direct_profile_for(&av1).contains("videoCodec=h264,hevc,av1&"));
     }
 
     /// A row with no measured bound on either axis (`0`) bounds nothing: the AV1 scope is left
@@ -1911,12 +1938,12 @@ mod tests {
         assert!(!target_of(&p).contains("vp9"), "{p}");
     }
 
-    /// Forced mode names VP9 even when the table does not list it.
+    /// Forced mode names vp9 only when the table lists it.
     #[test]
-    fn forced_profile_names_vp9_without_a_device_row() {
+    fn forced_profile_names_vp9_only_with_the_row() {
         let vp9 = Caps { vp9: true, vp9_row: (1920, 1080, 60), ..Caps::assumed() };
-        assert_eq!(super::forced_direct_profile_for(&vp9), super::forced_direct_profile_for(&Caps::assumed()));
-        assert!(super::forced_direct_profile_for(&Caps::assumed()).contains("videoCodec=h264,hevc,vp9,av1&"));
+        assert!(super::forced_direct_profile_for(&vp9).contains("videoCodec=h264,hevc,vp9&"));
+        assert!(!super::forced_direct_profile_for(&Caps::assumed()).contains("vp9"));
     }
 
     // ---- Plex Pass audio DSP (issue #266, PR1): boostDialog / normalizeLoudness -----------

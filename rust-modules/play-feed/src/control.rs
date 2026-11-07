@@ -200,7 +200,7 @@ impl FeedOpen for FeedBackend {
         let prepared = prepare_native_open(
             mt, self.resources.shared(), request.start_paused, request.seek_preroll,
             request.stream.map(PhysicalOpen::from), request.sample, request.is_h265,
-            request.session_rate, side_reader, request.no_audio, request.requested_rate,
+            request.session_rate, side_reader, request.no_audio,
             request.dv_landing, hooks,
         ).map_err(|refusal| match refusal {
             PrepareRefusal::ClockBusy | PrepareRefusal::NativeBusy => Failure::Busy,

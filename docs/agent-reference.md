@@ -2119,13 +2119,13 @@ which the app resamples to 48 or 44.1 kHz itself, `devcaps::pcm_load_rate`; a 5.
 DTS row and feeds only the DTS core when an HD extension is present. PMS names DTS `dca`:
 `devcaps::audio_codec_id` folds it (and `ec-3`) onto the pipeline's `dts` at membership and at
 the Load payload, and the profile sends `dca` (`transcoder.rs::profile_codec_name`). Force
-Direct Play keeps the original selected stream despite missing device codec rows or learned
-refusals. Its feed profile advertises native wire formats without device bounds; the physical
-open may still refuse a wire shape it cannot represent. Force neither extracts a DTS-HD core
-nor app-decodes, downmixes, resamples or switches to a sibling track. The implemented Load
-strings are `H264`/`H265`/`AV1`/`VP9` and `AC3`/`AC3 PLUS`/`AAC`/`DTS`/`OPUS`, plus `PCM`
-for FLAC, ALAC and LPCM decoded in the app under Auto (and for lossy rows Auto's failed-open
-ladder puts in force, or a debug build's `/tmp/plxnative-appdecodelossy`); these are not the firmware's whole
+Direct Play admits DTS natively only when the table has a DTS row with channels (`Caps::forced_admits_dts`)
+but skips the channel ceiling; where the set has no native path for a lossy track whose row has TV evidence
+(`devcaps::AppDecoded::measured`: DTS), Force Direct Play decodes it in the app instead, as stereo, for a track
+of at most two channels only: the app never mixes a source of more than two channels down to stereo by default, so a
+surround track there is refused like any unplayable one (`Caps::app_decodes_lossy_track`, `Caps::app_may_mix_down`,
+`devcaps::app_decode_mixes_down`). The implemented Load
+strings are `H264`/`H265`/`AV1`/`VP9` (AV1 and VP9 only on a set whose table lists that decoder; elsewhere the Load is refused) and `AC3`/`AC3 PLUS`/`AAC`/`DTS`, plus `PCM` for FLAC, ALAC and LPCM decoded in the app (and for the lossy rows the attempt decodes in the app: DTS where Force Direct Play has no native path (a stereo track only) or the failed-open ladder's last rung asks for it (a surround track only after the server conversions, the manual encode included, were refused), and every lossy row, MP3, Vorbis and TrueHD included, on a debug build with `/tmp/plxnative-appdecodelossy`; those three have no TV measurement, so a release build does not offer them); these are not the firmware's whole
 vocabulary. The six AC3/EAC3/AAC combinations and H264/DTS are covered
 here, plus DV 8.1, both containers, in-place seek in each, and the FRAME-RATE axis added the same
 day (`pipe_h264_1080p5994` is the only fixture that reaches `fps_rational`'s 1001-denominator
