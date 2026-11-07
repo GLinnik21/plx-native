@@ -1396,8 +1396,9 @@ Three traps this cost, all found by measurement rather than reasoning, all silen
    `RELEASE`, so it rebuilds and ships that. The flag must be on *every* invocation that produces
    or ships the binary (`make RELEASE=1 deploy`). `deploy` and `ipk` now echo which
    configuration they are shipping, and `build-package.yml` (called from `release.yml`'s
-   `build` job) asserts `pkg/.build-config` really says `--no-default-features` rather than
-   trusting that the flag took.
+   `build` job) asserts that `ci/check-package.py --print-build-config pkg/.build-config` decodes as `release` (the
+   Makefile's own flag strings, asked of `make print-playback-config`) rather than trusting that the flag
+   took. A grep for `--no-default-features` is not the test: every stamp carries it, a dev one included.
 
 Verified on the device, not just by binary size: the release build deployed to the TV
 (md5-matched) renders the who's-watching screen with no counter; the dev build renders `62`.

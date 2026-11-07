@@ -357,8 +357,8 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   --no-default-features --features play-uri,play-feed`, which is the configuration `RELEASE=1`
   ships and which `make check` does not cover. The backend features are part of the shipping set:
   both are in the application crate's `default`, so the bare `--no-default-features` would check a
-  build with no playback backend (`PLAYBACK_BACKENDS=uri|feed|none` checks the matching
-  single-backend set, as for `RELEASE=1`). `CARGO_INCREMENTAL=0`, as every one-shot gate. It
+  build with no playback backend (`PLAYBACK_BACKENDS=uri|feed` checks that one
+  backend's set; `none` checks the bare no-backend set, which is not a television package). `CARGO_INCREMENTAL=0`, as every one-shot gate. It
   builds in the checkout's own
   `target/` (or the `CARGO_TARGET_DIR` a lane exports, as `make lint` does) rather than a tree of
   its own, and restores the cargo seed first like `lint`. Sharing is safe because cargo hashes a

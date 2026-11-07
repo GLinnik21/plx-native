@@ -52,8 +52,8 @@ ok "ELF32 / ARM / soft-float / ARMv7"
 
 echo "== Starfish callback interposer =="
 # libplayerAPIs' fixed libpf thunk calls this exact C++ symbol through an R_ARM_JUMP_SLOT. A normal
-# executable-private definition is absent from .dynsym and therefore cannot preempt that slot; the
-# link must export this symbol. Conversely, Load-with-context is resolved and owner-
+# executable-private definition is absent from .dynsym and therefore cannot preempt that slot; a
+# Feed build's link must export this symbol, and a URI build must not (uri mode below). Conversely, Load-with-context is resolved and owner-
 # checked with dlsym so a firmware which lacks the overload refuses playback instead of killing the
 # app in the dynamic loader before main.
 SMP_HOOK='_ZN17StarfishMediaAPIs20callbackFunctionHookEixPKc'
