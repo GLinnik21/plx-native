@@ -827,6 +827,76 @@ fn requests_until_quiet(rx: &std::sync::mpsc::Receiver<String>) -> Vec<String> {
     lines
 }
 
+#[test]
+fn a_termination_on_the_answer_ends_the_reporter_and_keeps_the_server_s_reason() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    drain_scrobble();
+    reset_session(&mut ps);
+    reset_player_control_for_test(&ps);
+    let (port, rx, _server) = recording_pms_answering(
+        8,
+        r#"{"MediaContainer":{"size":0,"terminationCode":2006,"terminationText":"stopped by the admin"}}"#,
+    );
+    let lease = playing_on_port(&mut ps, "logical-stop-abr-1", port);
+    assert!(
+        !report_timeline(&lease, plx_plex::plex::TimelineState::Playing, 10_000, 60_000),
+        "the reporter ends here, so no more `playing` reaches the server"
+    );
+    let lines = requests_until_quiet(&rx);
+    let shape = crate::player::error_now(&ps);
+    leave_recording_pms_case(&mut ps);
+    crate::player::SHARED.reset_session();
+    assert_eq!(lines.len(), 2, "the report, then the stop that clears the row: {lines:#?}");
+    assert!(lines[0].contains("state=playing"), "{}", lines[0]);
+    assert!(lines[1].contains("state=stopped") && lines[1].contains("continuing=1"), "{}", lines[1]);
+    assert_eq!(shape.kind, crate::player::FailureKind::ServerStopped);
+    assert_eq!(shape.detail, "stopped by the admin");
+}
+
+#[test]
+fn server_stop_is_visible_while_dashboard_cleanup_waits_and_retires_the_row_once() {
+    use std::time::Duration;
+
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    drain_scrobble();
+    crate::player::SHARED.reset_session();
+    let (port, rx, release, _server) = held_pms_answering(
+        2,
+        r#"{"MediaContainer":{"terminationCode":2006,"terminationText":"stopped by the admin"}}"#,
+    );
+    let lease = playing_on_port(&mut ps, "logical-1236-abr-1", port);
+    let reporter = std::thread::spawn(move || {
+        report_timeline(&lease, plx_plex::plex::TimelineState::Playing, 10_000, 60_000)
+    });
+    let first = rx.recv_timeout(Duration::from_secs(5)).expect("playing(A)");
+    let parked = rx.recv_timeout(Duration::from_secs(5)).expect("continuing stop(A)");
+    let shape = crate::player::error_now(&ps);
+    commit_hls_encoder("logical-1236-abr-2");
+
+    release.send(()).unwrap();
+    assert!(!reporter.join().unwrap());
+    let replacement = begin_timeline_reporting(&ps).expect("replacement reporter lease");
+    let replacement_sent = report_timeline(&replacement, plx_plex::plex::TimelineState::Playing, 20_000, 60_000);
+    begin_engine_teardown(false);
+    scrobble_stop(&mut ps, Some(("rk-1236".into(), 10_000, 60_000)), None);
+    drain_scrobble();
+    let remaining = requests_until_quiet(&rx);
+    leave_recording_pms_case(&mut ps);
+    crate::player::SHARED.reset_session();
+
+    assert!(first.contains("state=playing"));
+    assert!(parked.contains("state=stopped") && parked.contains("continuing=1"));
+    assert_eq!(shape.kind, crate::player::FailureKind::ServerStopped);
+    assert_eq!(shape.detail, "stopped by the admin");
+    assert!(!replacement_sent, "the replacement reporter must send no playing report");
+    assert_eq!(remaining.len(), 2, "only the final stopped and the encoder stop: {remaining:#?}");
+    assert!(remaining[0].contains("state=stopped") && !remaining[0].contains("continuing=1"));
+    assert!(remaining[0].contains("X-Plex-Session-Identifier=logical-1236-abr-2"));
+    assert!(remaining[1].contains("/transcode/universal/stop"));
+}
+
 fn leave_recording_pms_case(ps: &mut crate::route::PlaybackSession) {
     plx_plex::plex::reset_servers_for_test();
     reset_session(ps);
