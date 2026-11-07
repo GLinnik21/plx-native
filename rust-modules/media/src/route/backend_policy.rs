@@ -131,12 +131,15 @@ impl BackendPolicy {
     pub fn for_request(force_original: bool) -> Self {
         let recipes = [
             (OfferId::URI_ORIGINAL, BackendKind::Uri, Fidelity::Exact, Fidelity::Exact),
-            // Auto's native feed can rewrite an original packet (for example P7 or DTS core),
-            // so only Forced's no-transform path may claim exact wire fidelity here.
+            // Auto's native feed can rewrite an original packet (for example P7 or DTS core) and its
+            // app decode changes the audio, so each is the wire-compatible handoff. Forced converts
+            // nothing on a server (the planner offers it no PMS recipe), so for Forced's policy its
+            // original handoff and the app-decoded audio count as exact: those are the recipes it admits.
             (OfferId::FEED_ORIGINAL, BackendKind::Feed,
                 if force_original { Fidelity::Exact } else { Fidelity::Compatible },
                 if force_original { Fidelity::Exact } else { Fidelity::Compatible }),
-            (OfferId::FEED_APP_AUDIO, BackendKind::Feed, Fidelity::Exact, Fidelity::Compatible),
+            (OfferId::FEED_APP_AUDIO, BackendKind::Feed, Fidelity::Exact,
+                if force_original { Fidelity::Exact } else { Fidelity::Compatible }),
             (OfferId::FEED_PMS_REMUX, BackendKind::Feed, Fidelity::Compatible, Fidelity::Compatible),
             (OfferId::FEED_PMS_ENCODE, BackendKind::Feed, Fidelity::Compatible, Fidelity::Compatible),
             (OfferId::FEED_PMS_HLS, BackendKind::Feed, Fidelity::Compatible, Fidelity::Compatible),
@@ -409,6 +412,18 @@ mod tests {
     }
 
     #[test]
+    fn force_admits_the_app_decoded_audio_recipe_and_no_server_conversion() {
+        let mut forced = BackendPolicy::for_request(true);
+        forced.qualify_planned_feed(OfferId::FEED_APP_AUDIO);
+        assert_eq!(forced.choose(), Selection::Open(forced.offer(BackendKind::Feed, OfferId::FEED_APP_AUDIO)
+            .expect("the catalog lists it")), "main's Force decodes a stereo lossy track in the app");
+        assert!(forced.admitted(BackendKind::Feed, OfferId::FEED_APP_AUDIO));
+        for id in [OfferId::FEED_PMS_REMUX, OfferId::FEED_PMS_ENCODE, OfferId::FEED_PMS_HLS] {
+            assert!(!forced.may_qualify(BackendKind::Feed, id), "Force converts nothing on a server");
+        }
+    }
+
+    #[test]
     fn remaining_feed_prospect_respects_force_spent_recipes_and_one_crossing() {
         let mut forced = BackendPolicy::for_request(true);
         forced.qualify(BackendKind::Uri, OfferId::URI_ORIGINAL, Qualification::Qualified);
@@ -416,6 +431,9 @@ mod tests {
         assert!(forced.has_remaining_backend(BackendKind::Feed),
             "the unknown exact Feed original may be resolved");
         forced.qualify(BackendKind::Feed, OfferId::FEED_ORIGINAL, Qualification::Refused);
+        assert!(forced.has_remaining_backend(BackendKind::Feed),
+            "the app-decoded audio is still Force's own recipe");
+        forced.qualify(BackendKind::Feed, OfferId::FEED_APP_AUDIO, Qualification::Refused);
         assert!(!forced.has_remaining_backend(BackendKind::Feed),
             "Force cannot use a compatible conversion as a rescue");
 

@@ -18,8 +18,8 @@ The declaration is conditional on one boot-time configd answer. Only an exact bo
 `tv.config.supportDolbyHDRContents` is support; a refusal, timeout, malformed answer or an answer
 still pending is `Unknown` and follows the unsupported column.
 
-The seated profile's Settings > Playback > Dolby Vision is the second input. For Auto, `Off` plans
-the feed route as Unsupported (`DolbyVisionMode::gate`, captured in `ResolveEnv` beside the probe), so a
+The seated profile's Settings > Playback > Dolby Vision is the second input. `Off` plans every
+route as Unsupported (`DolbyVisionMode::gate`, captured in `ResolveEnv` beside the probe), so a
 confirmed-support set follows the unsupported column for that profile: no node, the base layer
 for P8/P7, P5 refused direct play and asked of the server, which may refuse it as well (code 2000,
 `docs/pms-api.md`). Only the presentation is gated: the route's `DvDecision` keeps the probe's own
@@ -59,11 +59,6 @@ Dolby Vision from every play on a set, while this keeps it wherever the landing 
 | **Any other enhancement layer** | refuse → transcode | refuse → transcode |
 | **Non-DV / insufficient metadata** | existing behavior | existing behavior |
 
-This table describes **Auto's feed route**. Force Direct Play requests the original selected
-stream and does not permit the feed demuxer to turn Profile 7 into Profile 8.1. A physical backend
-that cannot carry the original dual-layer wire format must refuse that attempt; the optional URI
-backend is not yet a production route.
-
 Historical census taken 2026-08-21 on the dev server by fetching all 540 leaves and reading every
 `streamType: 1` stream: 551 video streams, 34 of them Dolby Vision — one P5, 32 P8.1 and one P7.
 The old unconditional policy declared and direct-played 33 of 34. That census establishes the
@@ -72,7 +67,7 @@ affirmative platform result above. The base-layer predicate accepts more compati
 than the measured 1/2/4 set, but reserved/unknown identifiers are not claimed here as validated
 fallback formats.
 
-**Under Auto, Profile 7 is played by converting it to Profile 8.1 on the feed path, as `dovi_tool -m 2`
+**Profile 7 is played by converting it to Profile 8.1 on the feed path, as `dovi_tool -m 2`
 does.** Its picture is split across a base and an enhancement layer, and BUFFERSTREAM buffer-feed
 hands the pipeline **one** elementary stream; there is no payload key for the second. What the
 feed path can do instead is make the single-layer stream a Profile 8.1 file would have been:
@@ -486,9 +481,8 @@ chain rather than of Dolby Vision alone: **the Profile 7 refusal is confirmed by
 landing on HDR10 exactly as §1 says it should, which no amount of reading our own log could have
 shown. A log line proves what we sent; `dimension.dynamicRange` proves what the panel did with it.
 
-The Profile 7 row is the refusal as it was measured on 2026-08-22. Under Auto, that file now
-takes §1's conversion instead; the conversion has not been measured with this read on the dev
-set. Force preserves the original dual-layer bits or refuses the feed attempt.
+The Profile 7 row is the refusal as it was measured on 2026-08-22. That file now takes §1's
+conversion instead, and the conversion has not been measured with this read on the dev set.
 
 **Why this belongs beside §5's silent instruments.** §5 is about instruments that cannot see the
 thing they are pointed at. This is the opposite failure and worth naming as its own: an instrument
@@ -507,7 +501,7 @@ human at the panel, check whether the platform already publishes it.
   keeps sending them while presenting nothing is not caught (a listed build is covered by its row);
   the panel's Dolby Vision to HDR10 switch on the withdrawing reload and a PMS video-copy remux
   landing on a CRA are unmeasured.
-- **Profile 7 under Auto.** Converted to 8.1 in-app (§1), which plays the base layer and the dynamic metadata
+- **Profile 7.** Converted to 8.1 in-app (§1), which plays the base layer and the dynamic metadata
   and discards a full enhancement layer's residual detail. Playing that detail would need to know
   whether `gst_dvbin_pipeline_dovi_dual` can be fed from a single appsrc, or whether a second one
   can be created — unexamined. Not measured on the dev set: the conversion's panel state
