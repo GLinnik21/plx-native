@@ -35,6 +35,90 @@
     ]
   },
   {
+    "id": "openssl",
+    "group": "curlstack",
+    "bundled": false,
+    "version": "3.5.9",
+    "license": "Apache-2.0",
+    "archive": "openssl-3.5.9.tar.gz",
+    "url": "https://github.com/openssl/openssl/releases/download/openssl-3.5.9/openssl-3.5.9.tar.gz",
+    "sha256": "603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a",
+    "update": {
+      "type": "github-release",
+      "repo": "openssl/openssl",
+      "tag_pattern": "^openssl-(3\\.5\\.\\d+)$",
+      "tag_format": "openssl-{version}"
+    },
+    "patches": []
+  },
+  {
+    "id": "nghttp2",
+    "group": "curlstack",
+    "bundled": false,
+    "version": "1.71.0",
+    "license": "MIT",
+    "archive": "nghttp2-1.71.0.tar.gz",
+    "url": "https://github.com/nghttp2/nghttp2/releases/download/v1.71.0/nghttp2-1.71.0.tar.gz",
+    "sha256": "0cdd35ecec77919b4b7b245f87fe8d2216e3d62da854eb0838c594ff058042fc",
+    "update": {
+      "type": "github-release",
+      "repo": "nghttp2/nghttp2",
+      "tag_pattern": "^v(\\d+\\.\\d+\\.\\d+)$",
+      "tag_format": "v{version}"
+    },
+    "patches": []
+  },
+  {
+    "id": "ngtcp2",
+    "group": "curlstack",
+    "bundled": false,
+    "version": "1.26.0",
+    "license": "MIT",
+    "archive": "ngtcp2-1.26.0.tar.gz",
+    "url": "https://github.com/ngtcp2/ngtcp2/releases/download/v1.26.0/ngtcp2-1.26.0.tar.gz",
+    "sha256": "85174d674e7f8fd911a827c6e483fd417b21b1f54d7853dac464cee446c8d35f",
+    "update": {
+      "type": "github-release",
+      "repo": "ngtcp2/ngtcp2",
+      "tag_pattern": "^v(\\d+\\.\\d+\\.\\d+)$",
+      "tag_format": "v{version}"
+    },
+    "patches": []
+  },
+  {
+    "id": "nghttp3",
+    "group": "curlstack",
+    "bundled": false,
+    "version": "1.19.0",
+    "license": "MIT",
+    "archive": "nghttp3-1.19.0.tar.gz",
+    "url": "https://github.com/ngtcp2/nghttp3/releases/download/v1.19.0/nghttp3-1.19.0.tar.gz",
+    "sha256": "0dc9a55d38ca04c282524bfecdc5e31d393a4bb430200263dd06a87801a150af",
+    "update": {
+      "type": "github-release",
+      "repo": "ngtcp2/nghttp3",
+      "tag_pattern": "^v(\\d+\\.\\d+\\.\\d+)$",
+      "tag_format": "v{version}"
+    },
+    "patches": []
+  },
+  {
+    "id": "curl",
+    "group": "curlstack",
+    "bundled": false,
+    "version": "8.23.0",
+    "license": "curl",
+    "archive": "curl-8.23.0.tar.xz",
+    "url": "https://curl.se/download/curl-8.23.0.tar.xz",
+    "sha256": "8dadd7d2536a314f982ad05a651b713f426bf7d02cc2c76cffb9796f2218e6c5",
+    "update": {
+      "type": "listing",
+      "url": "https://curl.se/download/",
+      "file_pattern": "^curl-(\\d+\\.\\d+\\.\\d+)\\.tar\\.xz$"
+    },
+    "patches": []
+  },
+  {
     "id": "freetype",
     "group": "libass",
     "bundled": true,

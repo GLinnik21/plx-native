@@ -14,7 +14,8 @@ and gets the bytes with
 
     python3 ci/deps.py fetch ffmpeg --into vendor/downloads      # prints the verified path
     python3 ci/deps.py stage nanosvg --into vendor/nanosvg       # fetch, then copy under its file names
-    python3 ci/deps.py fetch-all --exclude webos-ndk             # everything a CI cache entry must hold
+    python3 ci/deps.py fetch-all --exclude webos-ndk --exclude-group curlstack
+                                                                 # everything a CI cache entry must hold
     python3 ci/deps.py cache-dir                                 # where fetched archives live
     (every fetch also reads and fills the machine-wide store under $PLX_BUILD_CACHE/deps)
     python3 ci/deps.py verify sentry-native                      # its patches still match their digests
@@ -327,6 +328,9 @@ def main(argv=None):
     p.add_argument('--into', required=True)
     p = sub.add_parser('fetch-all', help='fetch every asset of every entry, except those named by --exclude')
     p.add_argument('--exclude', action='append', default=[], help='an entry id to skip (repeatable)')
+    p.add_argument('--exclude-group', action='append', default=[],
+                   help='skip every entry of this `group` (repeatable); e.g. curlstack, which only a '
+                        'CURLSTACK=1 build reads')
     p.add_argument('--into', help='cache directory (default: $PLX_DEPS_CACHE or vendor/downloads)')
     sub.add_parser('cache-dir', help='print the directory fetched archives live in')
     p = sub.add_parser('verify', help='check the patches of one entry against their pinned digests (offline)')
@@ -356,10 +360,13 @@ def main(argv=None):
             unknown = set(args.exclude) - {dep['id'] for dep in entries}
             if unknown:
                 raise ValueError('no dependency named ' + ', '.join(sorted(unknown)))
+            unknown = set(args.exclude_group) - {dep.get('group') for dep in entries}
+            if unknown:
+                raise ValueError('no dependency group named ' + ', '.join(sorted(unknown)))
             sys.stdout, real = sys.stderr, sys.stdout
             try:
                 for dep in entries:
-                    if dep['id'] not in args.exclude:
+                    if dep['id'] not in args.exclude and dep.get('group') not in args.exclude_group:
                         fetch(dep, args.into)
             finally:
                 sys.stdout = real

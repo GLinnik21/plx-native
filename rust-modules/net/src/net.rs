@@ -1,6 +1,9 @@
 //! `net` — a small blocking HTTPS client over **whatever libcurl the machine already has**, bound
 //! at runtime by the candidate list below (nothing is linked, and `stub/` — which this line named
-//! for months after it was deleted — is gone). The plain-HTTP socket in [`crate::stream`] can
+//! for months after it was deleted — is gone). A `make CURLSTACK=1` build first tries the bundled
+//! `libcurl-plx.so.4` beside the binary (`net::curlstack`, cargo feature `http3-curlstack`) and falls
+//! back to that candidate list; the choice is made once, in [`global_init`], and `curlio`'s multi
+//! table binds the same library ([`bundled_curl`]). The plain-HTTP socket in [`crate::stream`] can
 //! resolve names now, but it still cannot do TLS; this fills that gap. Every call is
 //! **blocking**, so callers must run it off the SDL main loop (the account and PMS workers).
 //!
@@ -85,6 +88,9 @@ pub struct CurlVersionInfo {
 // It is LAST deliberately — a television never reaches it, so this costs the device nothing but
 // one extra failed `dlopen` in the already-fatal no-curl case, and the candidate list stays
 // ordered by "what the fleet actually answers to" first.
+//
+// The opt-in bundled curl (`BUNDLED_CURL_SONAME`) is deliberately NOT a candidate here: it is
+// opened by absolute path with `RTLD_DEEPBIND` and bound with `curl::load_from` (`load_bundled`).
 plx_base::dynlib! {
     pub curl: ["libcurl.so.4", "libcurl.so.5", "libcurl.4.dylib"] {
     fn curl_global_init(flags: c_long) -> c_int;
@@ -128,6 +134,38 @@ const CURLOPT_FOLLOWLOCATION: c_int = 52;
 const CURLOPT_MAXREDIRS: c_int = 68;
 const CURLOPT_SSL_VERIFYPEER: c_int = 64;
 const CURLOPT_SSL_VERIFYHOST: c_int = 81;
+/// `CURLOPT_ALTSVC_CTRL` (VALUES + 286) and `CURLOPT_ALTSVC` (OBJECTPOINT + 287) — opportunistic
+/// HTTP/3: a strict request is still plain HTTP/2 over TLS the FIRST time it reaches a host (QUIC
+/// does not negotiate over the same TCP/TLS handshake HTTP/1.1 and 2 share, so there is no ALPN
+/// moment to upgrade from), but a reverse proxy that advertises HTTP/3 (e.g. Traefik) sends an
+/// `Alt-Svc: h3=":443"` header in its response, and libcurl
+/// — told to care about one, via `CURLALTSVC_H3` on `_CTRL`, and given a file to remember
+/// it in — uses QUIC on every later request to that host for as long as the entry stays fresh.
+/// Only `CURLALTSVC_H3` is set: H1/H2 upgrades offer nothing new, since ALPN already picks the
+/// best of those on every handshake. Both options present since libcurl 7.64.1; the bundled curl
+/// is 8.23.0, the only curl it is set on ([`bundled`]). Set only in [`TlsCfg::Ca`]'s arm: roots and key
+/// mode are deliberately narrower trust decisions already paying for an extra round trip, and are
+/// not where a transport upgrade should be learned or spent.
+const CURLOPT_ALTSVC_CTRL: c_int = 286;
+const CURLOPT_ALTSVC: c_int = 10287;
+const CURLALTSVC_H3: c_long = 1 << 5;
+/// Where libcurl remembers which hosts offered HTTP/3, across easy handles and across this
+/// process's requests (though not across TV restarts — `in_runtime_dir` is `/tmp`, wiped on
+/// reboot; a cold cache just costs one ordinary HTTP/2 request before the next upgrade). Must be
+/// writable: libcurl reads it at `CURLOPT_ALTSVC` and writes it back on cleanup. `app_dir` (where
+/// `le-roots.pem` lives) is root-owned and read-only on the television, so it cannot hold this.
+pub fn altsvc_cache_path() -> &'static CString {
+    static PATH: OnceLock<CString> = OnceLock::new();
+    PATH.get_or_init(|| {
+        let p = plx_base::paths::in_runtime_dir(ALTSVC_CACHE_FILE);
+        // A path with a NUL in it cannot be handed to libcurl; the empty string is curl's "no cache
+        // file", which costs the upgrade, not the request.
+        CString::new(p.to_string_lossy().into_owned()).unwrap_or_default()
+    })
+}
+/// The Alt-Svc cache's file name in the runtime directory. Not a dev trigger: only the bundled curl
+/// (`bundled()`) reads or writes it, and no test does.
+const ALTSVC_CACHE_FILE: &str = "plxnative-altsvc.cache";
 const CURLOPT_NOSIGNAL: c_int = 99;
 /// `CURLOPT_FRESH_CONNECT` (LONG + 74) and `CURLOPT_FORBID_REUSE` (LONG + 75): never take a cached
 /// connection for this handle, and never leave this handle's connection in the cache. Read off
@@ -228,8 +266,79 @@ static CURL_VERSION_NUM: AtomicU32 = AtomicU32::new(0);
 pub fn curl_version_num() -> u32 {
     CURL_VERSION_NUM.load(Ordering::Acquire)
 }
+
 /// Only used on the abnormal old-OpenSSL/no-callback fallback. Normal devices never take it.
 static CURL_FALLBACK_SERIAL: Mutex<()> = Mutex::new(());
+
+/// The SONAME of the opt-in bundled curl (`make CURLSTACK=1`, cargo feature `http3-curlstack`):
+/// curl 8.23 over OpenSSL 3.5 with nghttp2/nghttp3/ngtcp2, built `-plx`-suffixed beside the binary by
+/// `ci/build-curlstack.sh`. It is NOT in the `curl` table's candidate list above: it is opened only
+/// by absolute path, `RTLD_DEEPBIND`, by `curlstack::open` (see that module's doc), and the table is
+/// then filled from that handle with `curl::load_from`.
+pub const BUNDLED_CURL_SONAME: &str = "libcurl-plx.so.4";
+
+/// The bundled curl's handle, set once by [`global_init_once`] when it bound that library rather
+/// than a system candidate.
+#[cfg(feature = "http3-curlstack")]
+static BUNDLED_CURL: OnceLock<plx_base::dynlib::Handle> = OnceLock::new();
+
+/// The bundled curl, if [`global_init`] bound it; `None` when it bound the system libcurl, before
+/// [`global_init`], and always in a build without the `http3-curlstack` feature.
+///
+/// `curlio.rs`'s multi table binds THIS handle (`curlmulti::load_from`) when it is `Some`, and the
+/// system candidates otherwise: the choice is made exactly once, here, and only read there. An easy
+/// handle from one libcurl handed to another's `curl_multi_add_handle` is an ABI violation, so two
+/// tables deciding independently (a transient filesystem error on one probe and not the other) is
+/// the one outcome that must be impossible.
+pub fn bundled_curl() -> Option<plx_base::dynlib::Handle> {
+    #[cfg(feature = "http3-curlstack")]
+    {
+        BUNDLED_CURL.get().copied()
+    }
+    #[cfg(not(feature = "http3-curlstack"))]
+    {
+        None
+    }
+}
+
+/// Is the bound libcurl the bundled `libcurl-plx.so.4` rather than the television's own? Always
+/// false without the `http3-curlstack` feature, which makes every `if bundled()` branch below dead code the
+/// compiler drops. Only meaningful after [`global_init`].
+pub fn bundled() -> bool {
+    bundled_curl().is_some()
+}
+
+/// Bind the bundled curl into the `curl` table, or `None` to fall back to the system candidates.
+/// `None` also when the bundle is absent or any one of its libraries fails to open or resolve:
+/// `load_from` is all-or-nothing and never publishes a partial table, so the fallback's
+/// `curl::load(None)` starts from empty cells.
+#[cfg(all(feature = "http3-curlstack", target_os = "linux", target_env = "gnu"))]
+fn load_bundled() -> Option<plx_base::dynlib::Loaded> {
+    let handle = curlstack::open(plx_base::paths::app_dir())?;
+    match curl::load_from(handle, BUNDLED_CURL_SONAME) {
+        ok @ plx_base::dynlib::Loaded::Ok(_) => {
+            let _ = BUNDLED_CURL.set(handle);
+            Some(ok)
+        }
+        _ => {
+            plx_base::eventlog::log(&format!(
+                "net: {BUNDLED_CURL_SONAME} opened but is missing curl_easy_* symbols — falling back to the \
+                 system libcurl"
+            ));
+            None
+        }
+    }
+}
+
+/// No bundled loader: the feature is off, or the target has no `RTLD_DEEPBIND` (the host
+/// simulator on macOS), so the system candidates are the only ones.
+#[cfg(not(all(feature = "http3-curlstack", target_os = "linux", target_env = "gnu")))]
+fn load_bundled() -> Option<plx_base::dynlib::Loaded> {
+    None
+}
+
+#[cfg(all(feature = "http3-curlstack", target_os = "linux", target_env = "gnu"))]
+mod curlstack;
 
 // OpenSSL before 1.1 delegates its process-global locks to the application. These symbols remain
 // optional instead of joining curl's all-or-nothing table: modern and non-OpenSSL backends do not
@@ -304,6 +413,38 @@ fn needs_legacy_thread_id(version: &str) -> bool {
         .any(|part| part.starts_with("OpenSSL/0."))
 }
 
+/// Which mapped libcurl's OpenSSL takes the legacy lock callbacks, by SONAME: the bound one when
+/// its own version string names OpenSSL 0.x/1.0.x, else, when the bundle is bound, the
+/// television's own libcurl still resident in the process (`resident`, its SONAME and version
+/// string) when THAT names one. `None`: no OpenSSL in the process needs them.
+fn legacy_lock_target<'a>(bound: (&'a str, &str), resident: Option<(&'a str, &str)>) -> Option<&'a str> {
+    if needs_legacy_crypto_locks(bound.1) {
+        return Some(bound.0);
+    }
+    resident.and_then(|(soname, version)| needs_legacy_crypto_locks(version).then_some(soname))
+}
+
+/// The television's own libcurl when the BUNDLE is bound and the system one is mapped anyway:
+/// `libplayerAPIs.so.1`, which every build links, has a `NEEDED` on it, so it and the firmware's
+/// OpenSSL are in the process before `main`. Its handle comes from `RTLD_NOLOAD` (nothing new is
+/// loaded) with its SONAME and `curl_version()` string, which is all [`legacy_lock_target`] needs.
+/// `None` when the system curl is the bound one (the bound path already covers it) or not mapped.
+fn resident_system_curl() -> Option<(plx_base::dynlib::Handle, &'static str, String)> {
+    if !bundled() {
+        return None;
+    }
+    let (handle, soname) = plx_base::dynlib::Handle::open_loaded(curl::CANDIDATES)?;
+    let version = handle.sym("curl_version").filter(|p| !p.is_null())?;
+    // SAFETY: `curl_version` is `char *curl_version(void)` in every libcurl.
+    let version: unsafe extern "C" fn() -> *const c_char = unsafe { std::mem::transmute(version) };
+    let v = unsafe { version() };
+    if v.is_null() {
+        return None;
+    }
+    let v = unsafe { std::ffi::CStr::from_ptr(v) }.to_string_lossy().into_owned();
+    Some((handle, soname, v))
+}
+
 fn threaded_tls_policy(version: &str, locks: LegacyCrypto) -> bool {
     if needs_legacy_thread_id(version) {
         // 0.9.x defaults to getpid() on Unix, which is not a thread identity. We do not take
@@ -318,8 +459,10 @@ fn threaded_tls_policy(version: &str, locks: LegacyCrypto) -> bool {
 
 /// Install OpenSSL 1.0's process locks, or preserve a callback somebody loaded before us.
 ///
-/// Reopening the selected libcurl SONAME returns its existing loader object, and symbol lookup on
-/// that handle follows its dependency closure to the libcrypto it actually uses. This deliberately
+/// `scope` is a handle to the libcurl whose OpenSSL needs them ([`legacy_lock_target`]): the bound
+/// one reopened by SONAME, or, with the bundle bound, the television's own one already resident
+/// (`RTLD_NOLOAD`). Either returns the existing loader object, and symbol lookup on that handle
+/// follows its dependency closure to the libcrypto it actually uses. This deliberately
 /// costs one permanent reference instead of guessing a moving `libcrypto.so.*` SONAME or asking a
 /// process-global scope that might contain two crypto majors. OpenSSL 1.1+ removes these entry
 /// points; absence is therefore only fatal when curl's version string names a legacy backend.
@@ -327,9 +470,9 @@ fn threaded_tls_policy(version: &str, locks: LegacyCrypto) -> bool {
 /// No ID callback is installed: on the target's glibc, OpenSSL 1.0's documented default uses the
 /// address of thread-local `errno`, which is already a unique thread identity. Overwriting an ID
 /// callback owned by another component would be strictly less safe.
-fn setup_legacy_crypto_locks(soname: &'static str) -> LegacyCrypto {
+fn setup_legacy_crypto_locks(scope: Option<plx_base::dynlib::Handle>) -> LegacyCrypto {
     *LEGACY_CRYPTO_RESULT.get_or_init(|| {
-        let Some((scope, _)) = plx_base::dynlib::Handle::open(&[soname]) else {
+        let Some(scope) = scope else {
             return LegacyCrypto::Missing;
         };
         let (Some(num), Some(get), Some(set)) = (
@@ -519,7 +662,13 @@ pub fn global_init() -> bool {
 }
 
 fn global_init_once() -> bool {
-    match curl::load(None) {
+    // The bundled curl first (only in an `http3-curlstack` build, see `load_bundled`), by absolute
+    // path beside the binary, then the system candidates.
+    let verdict = match load_bundled() {
+        Some(bundled) => bundled,
+        None => curl::load(None),
+    };
+    match verdict {
         plx_base::dynlib::Loaded::Ok(soname) => {
             unsafe { curl_global_init(CURL_GLOBAL_ALL) };
             // The version string carries the TLS backend and its version, which is the fact worth
@@ -533,10 +682,22 @@ fn global_init_once() -> bool {
                     .into_owned()
             };
             let legacy = needs_legacy_crypto_locks(&v);
-            let locks = if legacy {
-                setup_legacy_crypto_locks(soname)
-            } else {
-                LegacyCrypto::NotNeeded
+            // With the bundle bound, the television's own libcurl is still mapped, and with it the
+            // firmware's OpenSSL, which a default build gives its 1.0.x lock callbacks: so does this.
+            let resident = resident_system_curl();
+            let target = legacy_lock_target((soname, &v), resident.as_ref().map(|r| (r.1, r.2.as_str())));
+            let locks = match (target, &resident) {
+                (None, _) => LegacyCrypto::NotNeeded,
+                (Some(t), Some((handle, resident_soname, _))) if t == *resident_soname => {
+                    setup_legacy_crypto_locks(Some(*handle))
+                }
+                (Some(_), _) => setup_legacy_crypto_locks(
+                    plx_base::dynlib::Handle::open(&[soname]).map(|(handle, _)| handle),
+                ),
+            };
+            let on_resident = match (target, &resident) {
+                (Some(t), Some((_, r, _))) if t == *r => format!(" (on the resident {r})"),
+                _ => String::new(),
             };
             let threaded = threaded_tls_policy(&v, locks);
             CURL_THREADED_TLS_OK.store(threaded, Ordering::Release);
@@ -557,7 +718,7 @@ fn global_init_once() -> bool {
             };
             plx_base::eventlog::log(&format!(
                 "net: bound libcurl -> {soname} ({v}; AsynchDNS={async_dns}); \
-                 threaded-tls={threaded} legacy-locks={locks:?}"
+                 threaded-tls={threaded} legacy-locks={locks:?}{on_resident}"
             ));
             if legacy && !threaded {
                 plx_base::eventlog::log(
@@ -2321,7 +2482,22 @@ fn request_tls_sink(
                 // "CA-verified and unpinned" being the DEFAULT is the fact a plan written against this
                 // module got wrong — it called for a new request mode to obtain what `request` had
                 // been doing since it was written.
-                TlsCfg::Ca => {}
+                TlsCfg::Ca => {
+                    if bundled() {
+                        require_setopt!(
+                            curl_easy_setopt_long(easy.0, CURLOPT_ALTSVC_CTRL, CURLALTSVC_H3),
+                            "CURLOPT_ALTSVC_CTRL"
+                        );
+                        require_setopt!(
+                            curl_easy_setopt_ptr(
+                                easy.0,
+                                CURLOPT_ALTSVC,
+                                altsvc_cache_path().as_ptr() as *const c_void,
+                            ),
+                            "CURLOPT_ALTSVC"
+                        );
+                    }
+                }
                 // A bundle we ship. The return code is checked for the same reason the pin's is, but
                 // the failure it guards is milder and worth stating so nobody "simplifies" the pinned
                 // check to match: a REJECTED `CURLOPT_CAINFO` leaves the device's own store in force,
@@ -4942,6 +5118,23 @@ mod legacy_tests {
         assert!(!needs_legacy_crypto_locks("libcurl/8.7 OpenSSL/1.1.1w"));
         assert!(!needs_legacy_crypto_locks("libcurl/8.7 OpenSSL/3.2.1"));
         assert!(!needs_legacy_crypto_locks("libcurl/8.7 SecureTransport"));
+    }
+
+    /// A `CURLSTACK=1` build binds the bundle (OpenSSL 3.5), but the television's own libcurl stays
+    /// mapped for `libplayerAPIs.so.1`, and on webOS 5 and older its OpenSSL is 1.0.x: the locks a
+    /// default build installs there must be installed with the bundle bound too.
+    #[test]
+    fn legacy_locks_go_on_the_televisions_openssl_even_with_the_bundle_bound() {
+        let bundle = ("libcurl-plx.so.4", "libcurl/8.23.0 OpenSSL/3.5.9 zlib/1.2.11 nghttp2/1.71.0");
+        let webos5 = ("libcurl.so.4", "libcurl/7.53.1 OpenSSL/1.0.2p zlib/1.2.11 c-ares/1.12.0");
+        let webos10 = ("libcurl.so.4", "libcurl/7.82.0 OpenSSL/3.0.13 zlib/1.2.11 c-ares/1.19.0");
+        // The default build: the television's libcurl is the bound one.
+        assert_eq!(legacy_lock_target(webos5, None), Some("libcurl.so.4"));
+        assert_eq!(legacy_lock_target(webos10, None), None);
+        // The bundle bound beside a resident firmware libcurl.
+        assert_eq!(legacy_lock_target(bundle, Some(webos5)), Some("libcurl.so.4"));
+        assert_eq!(legacy_lock_target(bundle, Some(webos10)), None);
+        assert_eq!(legacy_lock_target(bundle, None), None);
     }
 
     #[test]

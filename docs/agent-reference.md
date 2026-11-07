@@ -47,7 +47,7 @@ install, `com.beb.plxnative.debug`, can sit beside it on the same set (`FLAVOR`,
 ## Non-Rust dependencies (`ci/dependencies.json`)
 
 Every non-Rust input (FFmpeg, Sentry Native, the libass font stack, nanosvg, jsmpeg, the webOS NDK,
-the webosbrew toolbox) is declared once in `ci/dependencies.json`: version, URLs (plus transport-only
+the webosbrew toolbox, and the `curlstack` group only `make CURLSTACK=1` builds) is declared once in `ci/dependencies.json`: version, URLs (plus transport-only
 mirrors), sha256, pinned patches, licence, and an `update` object saying where its releases come from
 (`github-release`, `github-tags`, `github-commit`, `listing`, `manual`; an optional `hold` string freezes
 the entry and is the reason). `ci/deps.py` reads and fetches it; nothing else writes a version or digest.
@@ -1027,6 +1027,36 @@ around. "Does the TV's FFmpeg have https?" is therefore not
 something to go and probe on a device; it is decided, and the answer is that no FFmpeg in this app
 has any transport of its own.
 
+**An opt-in fourth family: the bundled HTTP/3 curl, `make CURLSTACK=1` only.** Off by default, and a
+default build, package and CI job contain none of it. With the flag, `ci/build-curlstack.sh` builds
+curl 8.23 over **OpenSSL 3.5** (for its run-time-dispatched AArch32 Crypto Extension paths) with
+nghttp2/nghttp3/ngtcp2 (`crypto_ossl`), seven `-plx` libraries
+(`make -s print-curlstack-staged`) shipped beside the binary, and the cargo feature `http3-curlstack`
+compiles the loader, `plx_net::net::curlstack`: every library opened by absolute path with
+**`RTLD_DEEPBIND | RTLD_LOCAL`** (`dynlib::Handle::open_in_deepbind`), because the TV's libcurl
+(`libcurl.so.5` through 4.10.0, `libcurl.so.4` from 5.3.1) is in the global scope before `main`
+(`libplayerAPIs.so.1` needs it) and otherwise wins the bundled curl's own internal PLT calls; LOCAL
+so that none of the stack joins the global scope, where users of the firmware's own OpenSSL
+(`libcrypto.so.1.0.0` through `.so.3` by release) could bind to it. OpenSSL's configuration and module
+directories point at a path no television has, so it never reads the firmware's `openssl.cnf`, and
+curl's trust anchors are its compiled-in CA path, the television's hashed `/etc/ssl/certs`.
+`net::global_init` makes the one bundled-or-system choice and `curlio` binds its
+multi table from the same handle (`net::bundled_curl`, `dynlib!`'s `load_from`); a missing bundle falls
+back to the system libcurl. Behind `net::bundled()` (constant false without the feature, so the code
+compiles and is tested in every build): the Alt-Svc cache that lets a strict request upgrade to
+HTTP/3. Every curl this app binds is OpenSSL (the firmware's 1.0.x to 3.x, the bundle's 3.5), so
+`keypin` reads `CURLINFO_SSL_VERIFYRESULT` as OpenSSL's `X509_V_ERR_*` numbers on either path.
+With the bundle bound, `net::global_init` still installs OpenSSL 1.0's lock callbacks on the
+firmware's own libcrypto when the television's resident libcurl reports one (it stays in the
+process for `libplayerAPIs.so.1`). The flag puts `+curlstack` in
+`pkg/.build-config`, gets its own `target-curlstack` dir, and `ci/check-package.py` grades the
+package both ways against THIRD-PARTY-NOTICES' "(CURLSTACK=1 builds only)" section and
+`licenses/curlstack/`. The five
+pins are the `curlstack` group of `ci/dependencies.json`, not
+`bundled` (no release ships them) and skipped by the shared download cache; `ci.yml`'s
+`cross-build-curlstack` job builds and grades it, caching the script's own keyed output under
+`~/.cache/plxnative/curlstack`, and no required check waits on it.
+
 **This replaced the old stub-`.so` trick, and `stub/` is deleted.** Empty `.so` files carrying the
 TV's SONAMEs got the link to succeed, but in doing so pinned the binary to webOS 4.x: on anything
 newer the loader killed the process at `exec()`, before `main`, before the event log existed. That
@@ -1314,19 +1344,20 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   pages; `metadata` reads go through `MetadataView`, which borrows from the owner (`&'a`), not
   a compatibility global or mailbox.
 - `rust-modules/base/src/dynlib.rs` — the runtime library binder (`dlopen`, by SONAME candidate list or
-  by absolute path). **Six** callers in a lab build and five in every other, each for its own
-  reason: `net.rs` binds **curl** by candidate list because its SONAME moves between releases;
+  by absolute path). Its callers, each for its own reason (`git grep -l 'dynlib! {' --
+  'rust-modules/*.rs' ':!rust-modules/base/src/dynlib.rs'` lists them; no count is kept here): `net.rs` binds **curl** by candidate list because its SONAME moves between releases;
   `ff.rs` binds the **bundled FFmpeg** by absolute path because ours ships beside the binary, on
   no library search path — not because any
   version varies; `player/ass.rs` and `gfx/src/rtl.rs` bind the **bundled libass-plx** the same way,
   the subtitle surface and the UI text surface in two tables, each checking the facade ABI against
   its own `NATIVE_ABI`, so a facade bump edits both;
-  and `curlio.rs` binds **`curl_multi_*` in a SECOND table of its own**, from the
-  same candidate list, because `load_into` is all-or-nothing and a set missing one multi symbol
+  and `curlio.rs` binds **`curl_multi_*` in a SECOND table of its own** (from `net.rs`'s bundled
+  handle when `net.rs` bound the opt-in bundled curl, otherwise from the same system candidate
+  list, in the same order; it never makes the bundled-or-system choice itself), because `load_into` is all-or-nothing and a set missing one multi symbol
   must still be able to SIGN IN. That table is frozen to the oldest supported set:
   `curl_multi_poll`/`curl_multi_wakeup` resolve on the dev Mac, are absent on the dev television,
   and first appear at webOS 7.4.0 — so binding them would have emptied this table on four of the
-  nine gated releases. The sixth is `plx_base::diag::zlib` (`rust-modules/base/src/diag/zlib.rs`), which binds **one** symbol — `compress2` — in
+  nine gated releases. Another is `plx_base::diag::zlib` (`rust-modules/base/src/diag/zlib.rs`), which binds **one** symbol — `compress2` — in
   a table of its own so that a television without libz degrades to an uncompressed upload rather
   than emptying anybody else's table; it exists only in a `lab-diagnostics` build, which is not the
   default set, so an ordinary binary really does have five. (**ACB** is the same idea but not this

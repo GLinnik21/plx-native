@@ -183,7 +183,7 @@ APPPORT      = $(if $(filter stable,$(FLAVOR)),8910,$(if $(filter nightly,$(FLAV
 .DEFAULT_GOAL := all
 
 QUERY_GOALS = print-flavor print-appid print-appdir print-rundir print-eventlog print-appport print-tv \
-              print-simbin print-app-files print-deploy-files print-sentry-handler print-ffmpeg-staged \
+              print-simbin print-app-files print-deploy-files print-sentry-handler print-ffmpeg-staged print-curlstack-staged \
               print-sentry-project print-bench-config print-disk-entries \
               print-subs-font-files print-rust-toolchain print-rust-codegen print-cargo-env
 print-flavor:   ; @echo '$(FLAVOR)'
@@ -208,6 +208,7 @@ print-deploy-files:   ; @echo '$(DEPLOY_FILES)'
 print-subs-font-files: ; @echo '$(SUBS_FONT_FILES)'
 print-sentry-handler: ; @echo '$(SENTRY_HANDLER)'
 print-ffmpeg-staged:  ; @echo '$(FFMPEG_STAGED)'
+print-curlstack-staged: ; @echo '$(CURLSTACK_STAGED)'
 print-sentry-project: ; @echo '$(SENTRY_PROJECT)'
 print-rust-toolchain: ; @echo '$(RUST_TOOLCHAIN)'
 print-rust-codegen: ; @echo '$(RUST_CODEGEN)'
@@ -557,8 +558,8 @@ $(if $(findstring nightly,$(RUST_TOOLCHAIN)),,$(error HOST_THREADS=$(HOST_THREAD
 endif
 HOST_ENV = $(if $(filter-out 0 1,$(HOST_THREADS)),CARGO_BUILD_RUSTFLAGS='-Zthreads=$(HOST_THREADS)')
 
-RUST_FEATFLAGS = $(if $(RELEASE),--no-default-features,)$(if $(LAB), --features lab-diagnostics,)
-RUST_TDIR      = target$(if $(RELEASE),-release,)$(if $(LAB),-lab,)$(if $(SYMBOLS),-sym,)
+RUST_FEATFLAGS = $(if $(RELEASE),--no-default-features,)$(if $(LAB), --features lab-diagnostics,)$(CURLSTACK_FEATFLAG)
+RUST_TDIR      = target$(if $(RELEASE),-release,)$(if $(LAB),-lab,)$(if $(SYMBOLS),-sym,)$(if $(CURLSTACK),-curlstack,)
 # OVERRIDING RUST_FEATFLAGS BY HAND? PASS RUST_TDIR TOO. This dir is keyed on RELEASE, not on the
 # flag set, so `make RUST_FEATFLAGS=...` alone lands in the SAME target/ as an ordinary build:
 # cargo's staticlib looks up to date, the stamp below deletes pkg/plxnative, and make relinks the
@@ -750,7 +751,7 @@ TELEMETRY_CFG  = $(shell printf '%s|%s|%s|%s' '$(PLX_SENTRY_DSN)' '$(PLX_POSTHOG
 # byte-for-byte what it always was. `+rc:<n>` is the same argument for a release candidate: the
 # number is what `ci/check-package.py` grades the binary's `X.Y.Z-rc.<n>` against, and an rc.1 and
 # an rc.2 of one tree must not share a link.
-RUST_CFG       = features:$(RUST_FEATFLAGS)$(if $(filter-out release,$(ARM_PROFILE)),+profile:$(ARM_PROFILE),)$(if $(SYMBOLS),+symbols,)$(if $(filter nightly,$(FLAVOR)),+nightly:$(PLX_NIGHTLY_DATE),)$(if $(PLX_RC),+rc:$(PLX_RC),)+tel:$(TELEMETRY_CFG)
+RUST_CFG       = features:$(RUST_CFG_FEATFLAGS)$(if $(filter-out release,$(ARM_PROFILE)),+profile:$(ARM_PROFILE),)$(if $(SYMBOLS),+symbols,)$(if $(CURLSTACK),+curlstack,)$(if $(filter nightly,$(FLAVOR)),+nightly:$(PLX_NIGHTLY_DATE),)$(if $(PLX_RC),+rc:$(PLX_RC),)+tel:$(TELEMETRY_CFG)
 # Handled by $(shell) during PARSING, and by DELETING the output rather than by timestamps.
 # Both choices are load-bearing, and both were arrived at by measuring the failures:
 #   * A rule cannot do it. macOS ships GNU make 3.81, which decides whether a target is up to date
@@ -904,6 +905,38 @@ FFMPEG_SONAMES = libavutil-plx.so.61 libavcodec-plx.so.63 libavformat-plx.so.63 
                  $(if $(RELEASE),,libswscale-plx.so.10)
 FFMPEG_STAGED = $(addprefix pkg/,$(FFMPEG_SONAMES))
 
+# **CURLSTACK=1: the opt-in bundled HTTP/3 curl.** OFF by default, and every variable below is
+# empty without it, so a plain `make`, `make ipk` or CI's cross-build builds, links and packages
+# exactly what it did before the stack existed. With it: curl 8.23 + its six dependencies (OpenSSL's
+# libcrypto and libssl, nghttp2, nghttp3, ngtcp2 and its OpenSSL crypto glue), built by
+# `ci/build-curlstack.sh` through `ci/arm-cc.py` (so each carries link evidence, like FFmpeg),
+# shipped beside the binary, plus the `http3-curlstack` cargo feature that loads them
+# (`plx_net::net::load_bundled`, which falls back to the television's own libcurl the moment
+# any one of them is missing). The flag and the feature move together: `+curlstack` in the build
+# stamp (RUST_CFG) and its own target dir, for the same reasons LAB has them. OpenSSL 3.5 for its
+# AArch32 Crypto Extension paths; `ci/build-curlstack.sh`'s header has how it coexists with the
+# television's own OpenSSL.
+# Like RELEASE and LAB, any non-empty value turns it on; only `1` is accepted, so `CURLSTACK=0`
+# fails here instead of meaning "on".
+ifneq ($(filter-out 1,$(CURLSTACK)),)
+$(error CURLSTACK=$(CURLSTACK): use CURLSTACK=1 to build the bundled curl stack, or leave it unset)
+endif
+CURLSTACK_FEATFLAG = $(if $(CURLSTACK), --features http3-curlstack,)
+# The stamp's `features:` field without the curlstack feature, which `+curlstack` records instead:
+# `ci/check-package.py` grades that field as exactly the dev or the release flag set, and a
+# CURLSTACK=1 package is still one of the two. A hand-set RUST_FEATFLAGS is recorded as given.
+RUST_CFG_FEATFLAGS = $(if $(CURLSTACK),$(subst $(CURLSTACK_FEATFLAG),,$(RUST_FEATFLAGS)),$(RUST_FEATFLAGS))
+CURLSTACK_PREFIXES = openssl nghttp2 nghttp3 ngtcp2 curl
+CURLSTACK_ALL_SONAMES = libcrypto-plx.so.3 libssl-plx.so.3 libnghttp2-plx.so.14 libnghttp3-plx.so.9 \
+                     libngtcp2-plx.so.16 libngtcp2_crypto_ossl-plx.so.0 libcurl-plx.so.4
+CURLSTACK_SONAMES = $(if $(CURLSTACK),$(CURLSTACK_ALL_SONAMES),)
+CURLSTACK_STAGED = $(addprefix pkg/,$(CURLSTACK_SONAMES))
+# The licence text only the stack needs (curl's own licence; OpenSSL's Apache-2.0 is already in
+# `licenses/`, and nghttp2/nghttp3/ngtcp2 are MIT). In
+# `licenses/curlstack/`, outside `LICENSE_FILES`' `licenses/*.txt` glob, so a default package
+# carries the same licence set it always did; `ipk` copies them in beside the others under the flag.
+CURLSTACK_LICENSE_FILES = $(if $(CURLSTACK),$(wildcard licenses/curlstack/*.txt),)
+
 # nanosvg is not in the repository. It is fetched at the commit pinned in ci/dependencies.json
 # (two header files, one sha256 each) into the gitignored vendor/nanosvg, which CFLAGS puts on the
 # include path. The host build does the same from rust-modules/build_support/host_link.rs.
@@ -958,6 +991,31 @@ $(FFMPEG_STAGED): pkg/%: $(FFMPEG_INC)/libavformat/avformat.h
 	@mkdir -p pkg
 	cp -L $(FFMPEG_PREFIX)/lib/$* $@
 	python3 ci/stage-link-evidence.py $(FFMPEG_PREFIX)/lib/$* $@
+
+# The stamp's prerequisites are the script's inputs; a rebuild after a change to any of them that
+# does not alter the stack (an FFmpeg bump in the manifest) is a copy out of the script's own keyed
+# cache under $(PLX_BUILD_CACHE) (default ~/.cache/plxnative/curlstack), not a recompile.
+CURLSTACK_STAMP = vendor/curlstack-built
+$(CURLSTACK_STAMP): ci/build-curlstack.sh ci/deps.py ci/dependencies.json ci/arm-cc.py ci/check-link-evidence.py
+	WEBOS_SDK=$(WEBOS_SDK) ./ci/build-curlstack.sh
+	@mkdir -p vendor
+	@touch $@
+
+# Each SONAME lives under a different vendor/<name>-prefix/lib (each project is built separately,
+# unlike FFmpeg's single shared prefix) — search them rather than hardcode which prefix owns which
+# file.
+$(CURLSTACK_STAGED): pkg/%: $(CURLSTACK_STAMP)
+	@mkdir -p pkg
+	@for p in $(CURLSTACK_PREFIXES); do \
+	  for libdir in lib lib64; do \
+	    if [ -f vendor/$$p-prefix/$$libdir/$* ]; then \
+	      cp -L vendor/$$p-prefix/$$libdir/$* $@; \
+	      python3 ci/stage-link-evidence.py vendor/$$p-prefix/$$libdir/$* $@; \
+	      exit 0; \
+	    fi; \
+	  done; \
+	done; \
+	echo "$* not found in any vendor/*-prefix/{lib,lib64} — ci/build-curlstack.sh did not stage it" >&2; exit 1
 
 # The FFmpeg ABI gate. ff.rs reads FFmpeg structs at hardcoded offsets; ci/ffabi-assert.c
 # re-derives every one with offsetof against THE HEADERS THE SHIPPED LIBRARIES WERE BUILT FROM, so
@@ -1054,7 +1112,10 @@ SMP_INTERPOSER_LDFLAG = -Wl,--export-dynamic-symbol=$(SMP_CALLBACK_HOOK)
 # executable: it exports `exit` even without this flag, because libc.so (always on the link line)
 # defines it too; the flag keeps the export from depending on that implicit rule, and
 # `ci/check-elf.sh` asserts it on the shipped binary.
-# `check-c-unit` links its host copy of the interposer with this same variable.
+# `check-c-unit` links its host copy of the interposer with this same variable. The CURLSTACK=1
+# libraries are the one exception the export cannot reach: they are opened RTLD_DEEPBIND, which
+# binds a library's own `exit` to libc before the executable, so `ci/check-curlstack-elf.sh` fails
+# the build if any of them imports `exit` (none does).
 EXIT_INTERPOSER_LDFLAG = -Wl,--export-dynamic-symbol=exit
 # --gc-sections: this link is gcc's, not rustc's. rustc passes --gc-sections itself when IT links an
 # executable (which is why pkg/plxnative-storage above never needed the flag), but here the Rust
@@ -1080,7 +1141,7 @@ GC_SECTIONS_LDFLAG = -Wl,--gc-sections
 # call to __aeabi_fadd). With libm.so first, those names are already defined when the archive is
 # scanned and the members are never extracted, so every call (Rust's and svg.c's) binds to glibc's
 # VFP libm. `ci/check-elf.sh` fails if a local definition of one of them comes back.
-pkg/plxnative: $(OBJS) $(RUST_LIB) $(FFMPEG_STAGED) $(LIBASS_STAGED) $(SENTRY_NATIVE_STAMP) Makefile ci/arm-cc.py ci/check-link-evidence.py
+pkg/plxnative: $(OBJS) $(RUST_LIB) $(FFMPEG_STAGED) $(LIBASS_STAGED) $(CURLSTACK_STAGED) $(SENTRY_NATIVE_STAMP) Makefile ci/arm-cc.py ci/check-link-evidence.py
 	$(CC) $(CFLAGS) -Wl,--build-id=sha1 $(GC_SECTIONS_LDFLAG) $(SMP_INTERPOSER_LDFLAG) $(EXIT_INTERPOSER_LDFLAG) \
 	  $(OBJS) -lm $(RUST_LIB) $(SENTRY_NATIVE_LIB) \
 	  $(SENTRY_UNWIND_LIB) $(LIBS_REAL) -ldl -lrt -lpthread -lm -o $@
@@ -1197,7 +1258,7 @@ APP_FILES = pkg/plxnative $(SENTRY_HANDLER) $(APPINFO) $(ICONS) pkg/splash.png \
             pkg/le-roots.pem \
             THIRD-PARTY-NOTICES.md LICENSING.md \
             $(LAB_FILES) \
-            $(FFMPEG_STAGED) $(LIBASS_STAGED)
+            $(FFMPEG_STAGED) $(LIBASS_STAGED) $(CURLSTACK_STAGED)
 
 # Everything `deploy` scp's as a PLAIN file, in one connection — the SAME set `ipk` stages via
 # `cp $(APP_FILES) $(STAGE)/`, minus the three entries that need their own handling for a reason
@@ -1211,7 +1272,7 @@ APP_FILES = pkg/plxnative $(SENTRY_HANDLER) $(APPINFO) $(ICONS) pkg/splash.png \
 # `THIRD-PARTY-NOTICES.md` were in every `.ipk` and in NO deployed app directory, silently, for as
 # long as nobody compared the two by hand. `ci/test_deploy_manifest.py` pins the relationship
 # itself (via `print-app-files`/`print-deploy-files`), not just today's four names.
-DEPLOY_FILES = $(filter-out pkg/plxnative $(SENTRY_HANDLER) $(FFMPEG_STAGED) $(LAB_FILES),$(APP_FILES))
+DEPLOY_FILES = $(filter-out pkg/plxnative $(SENTRY_HANDLER) $(FFMPEG_STAGED) $(CURLSTACK_STAGED) $(LAB_FILES),$(APP_FILES))
 
 # The subtitle faces (tools/cut-noto-subs.py): Noto Sans <script> Bold, one file per script, plus the
 # manifest that names them in add order. They are NOT in `APP_FILES`, because that list is staged
@@ -1243,7 +1304,7 @@ SUBS_FONT_FILES = $(sort $(wildcard pkg/fonts/subs/*.ttf)) pkg/fonts/subs/manife
 # matches LICENSE against known texts by SIMILARITY, and the appended thirty lines pushed the file
 # under the threshold — so the repository advertised "Other" rather than MIT, misrepresenting the
 # terms in the one place most people look. Splitting the file must not un-ship the reservation.
-LICENSE_FILES = LICENSE LICENSING.md TRADEMARKS.md $(wildcard licenses/*.txt)
+LICENSE_FILES = LICENSE LICENSING.md TRADEMARKS.md $(wildcard licenses/*.txt) $(CURLSTACK_LICENSE_FILES)
 
 # The derived descriptor for a flavoured install, written by the SAME transform that packages it
 # (ci/flavor.py, through ci/mkipk.py) so `make deploy`'s scp'd appinfo and the .ipk's staged one
@@ -1278,7 +1339,7 @@ pkg/.flavor/$(FLAVOR)/appinfo.json: pkg/appinfo.json ci/flavor.py ci/install-ide
 # prerequisites run left to right, and a cold `make deploy` spends ~2 minutes building FFmpeg
 # before it touches the television. Taking the lock first would hold the set through a build that
 # needs no television — and, on the short implicit lease, could even let it expire before the scp.
-deploy: pkg/plxnative pkg/plxnative-storage $(FFMPEG_STAGED) $(SENTRY_NATIVE_STAMP) $(APPINFO) release-guard tv-lock-require
+deploy: pkg/plxnative pkg/plxnative-storage $(FFMPEG_STAGED) $(CURLSTACK_STAGED) $(SENTRY_NATIVE_STAMP) $(APPINFO) release-guard tv-lock-require
 	@echo "deploying $(if $(RELEASE),RELEASE,dev) build ($(RUST_CFG)) to $(APPID) [$(FLAVOR)]"
 	@$(SSH) 'test -d $(APPDIR)' || { \
 	  echo "$(APPDIR) does not exist on the TV — the $(FLAVOR) flavour is not installed."; \
@@ -1303,6 +1364,9 @@ deploy: pkg/plxnative pkg/plxnative-storage $(FFMPEG_STAGED) $(SENTRY_NATIVE_STA
 	# that is not fast, and this is ~2.1 MB on every deploy. Unconditional, like the fonts —
 	# a CHANGED library must be able to reach the TV.
 	$(SCP) $(FFMPEG_STAGED) tv:$(APPDIR)/
+	# The bundled curl stack under CURLSTACK=1, same reasoning: net.rs dlopens it by absolute path
+	# and falls back to the television's own libcurl the moment one is missing.
+	$(if $(CURLSTACK),$(SCP) $(CURLSTACK_STAGED) tv:$(APPDIR)/)
 	# The native crash daemon is a separate process so it can read the dying process's stack while
 	# the signal handler keeps that process parked. It has no network transport of its own. Stage
 	# then rename: an already-running app keeps the old daemon executable open, and scp directly to
@@ -1326,6 +1390,11 @@ deploy: pkg/plxnative pkg/plxnative-storage $(FFMPEG_STAGED) $(SENTRY_NATIVE_STA
 	# the .ipk only ever contains the current set. Removal comes AFTER the copy so there is never
 	# a moment with no FFmpeg on the device.
 	$(SSH) 'cd $(APPDIR) && for f in libav*-plx.so.* libswscale-plx.so.*; do case " $(FFMPEG_SONAMES) " in *" $$f "*) ;; *) rm -f "$$f";; esac; done'
+	# ...and, under CURLSTACK=1, any curl-stack library this build no longer carries. A default
+	# deploy leaves a stack an earlier CURLSTACK=1 deploy put there alone: its binary has no loader
+	# for it (the `http3-curlstack` feature is off), so the files are inert, and a default deploy
+	# keeps the ssh round trips it always had.
+	$(if $(CURLSTACK),$(SSH) 'cd $(APPDIR) && for f in libcrypto-plx.so.* libssl-plx.so.* libnghttp2-plx.so.* libnghttp3-plx.so.* libngtcp2-plx.so.* libngtcp2_crypto_*-plx.so.* libcurl-plx.so.*; do case " $(CURLSTACK_SONAMES) " in *" $$f "*) ;; *) rm -f "$$f";; esac; done')
 
 	$(SCP) pkg/plxnative tv:$(APPDIR)/plxnative.new
 	@# The lab session file, under LAB=1 only. Shipped by deploy as well as by the .ipk so the
@@ -2118,7 +2187,7 @@ sentry-symbols: symbols symbols-libs $(filter $(SENTRY_CLI_LOCAL),$(SENTRY_CLI))
 	  $(SENTRY_CLI) debug-files upload $(SO_SYMBOLS)
 
 ipk: pkg/plxnative pkg/plxnative-storage $(APPINFO) release-guard
-	python3 ci/check-link-evidence.py pkg/plxnative pkg/plxnative-storage $(SENTRY_HANDLER) $(FFMPEG_STAGED) $(LIBASS_STAGED)
+	python3 ci/check-link-evidence.py pkg/plxnative pkg/plxnative-storage $(SENTRY_HANDLER) $(FFMPEG_STAGED) $(LIBASS_STAGED) $(CURLSTACK_STAGED)
 	@echo "packaging $(if $(RELEASE),RELEASE,dev) build ($(RUST_CFG)) as $(APPID) [$(FLAVOR)]"
 	rm -rf ipkroot/data/usr && mkdir -p $(STAGE)/licenses
 	cp $(APP_FILES) $(STAGE)/
@@ -2132,7 +2201,7 @@ ipk: pkg/plxnative pkg/plxnative-storage $(APPINFO) release-guard
 	@# release crash report. Deploy ships the unstripped one by design; only the ipk is stripped.
 	$(TOOLPREFIX)strip --strip-unneeded $(STAGE)/plxnative
 	rm -rf pkg/link-evidence/$(FLAVOR)
-	@for source in pkg/plxnative $(SENTRY_HANDLER) $(FFMPEG_STAGED) $(LIBASS_STAGED); do \
+	@for source in pkg/plxnative $(SENTRY_HANDLER) $(FFMPEG_STAGED) $(LIBASS_STAGED) $(CURLSTACK_STAGED); do \
 	  python3 ci/stage-link-evidence.py "$$source" "$(STAGE)/$$(basename "$$source")" --stripped \
 	    --evidence-base "pkg/link-evidence/$(FLAVOR)/$$(basename "$$source")" || exit $$?; \
 	done
@@ -2193,6 +2262,13 @@ release-guard:
 	  echo "  release build:      make FLAVOR=stable RELEASE=1 $(firstword $(MAKECMDGOALS))"; \
 	  echo "  developer install:  make $(firstword $(MAKECMDGOALS))          (FLAVOR=$(FLAVOR) is not the default)"; \
 	  echo "  really meant it:    make FLAVOR=stable ALLOW_DEV_ON_STABLE=1 $(firstword $(MAKECMDGOALS))"; \
+	  exit 1; fi
+	@# CURLSTACK=1 is a developer build: no release ships the bundled stack or has been graded with
+	@# it. Its licences (Apache-2.0, MIT, curl's) carry no source obligation, so this guard is
+	@# about release scope (THIRD-PARTY-NOTICES, the CURLSTACK=1 section).
+	@if [ -n "$(CURLSTACK)" ] && [ "$(FLAVOR)" = stable ] && [ -z "$(ALLOW_DEV_ON_STABLE)" ]; then \
+	  echo "refusing to put a CURLSTACK=1 build on $(APPID_STABLE) — no release ships the bundled curl stack."; \
+	  echo "  developer install:  make CURLSTACK=1 $(firstword $(MAKECMDGOALS))          (FLAVOR=$(FLAVOR) is not the default)"; \
 	  exit 1; fi
 	@# Nightly has no dev-triggers arm at all — unlike the stable guard above, there is no
 	@# ALLOW_DEV_ON_STABLE-shaped hatch here on purpose. A dev build under this id would ship the

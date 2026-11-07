@@ -21,6 +21,9 @@ devtriggers = []
 threadcheck = []
 lab-diagnostics = []
 hostsim = []
+# `dynlib::Handle::open_in_deepbind`, for the opt-in bundled curl stack (the application crate's
+# `http3-curlstack`, which is the only one that sets it).
+http3-curlstack = []
 # The `cfg(test)` fixtures other crates' tests use, plus the test-mode behaviour (disarmed
 # watchdog, no SDL link, the per-process state root) that `cfg(test)` alone cannot give a
 # dependent. Enabled from the application crate's `[dev-dependencies]`; never in a shipped build.
