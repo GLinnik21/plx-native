@@ -7,7 +7,7 @@
 //! four decimal octets parsed by hand into a `sockaddr_in`, which made a hostname and every IPv6
 //! server not "degraded" but impossible — the shape of the gap LG's checklist #43 CASE2 asks about.
 //! What is still missing here is TLS: this arm stays cleartext. [`crate::http`] sends an `https://`
-//! control-plane origin through [`crate::net`], while MEDIA bytes use [`crate::curlio`], a
+//! control-plane origin through [`crate::net`], while MEDIA bytes use [`crate::range_io`], a
 //! libcurl-multi pull source under the same `ff.rs` AVIO that this module serves for `http`.
 //!
 //! Failures the legacy `0`/`-1` return cannot carry are reported to the event log instead: a

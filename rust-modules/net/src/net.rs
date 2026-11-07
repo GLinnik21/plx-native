@@ -1325,7 +1325,7 @@ mod loopback_pms {
     /// A TLS-only loopback double that COUNTS and RECORDS: the latch tests count the handshakes a
     /// request cost, the body test reads what arrived. Answers `body` with `200`, or the tail of it
     /// with `206` and a `Content-Range` when the request carries `Range: bytes=N-`, so a
-    /// [`crate::curlio::CurlSource`] can open, seek and reopen against it. One request per
+    /// [`crate::range_io::CurlSource`] can open, seek and reopen against it. One request per
     /// connection (`Connection: close`); [`spawn_observed_keepalive`] is the persistent twin.
     pub fn spawn_observed(cert: Arc<TestCert>, body: Vec<u8>) -> Observed {
         spawn_observed_conn(cert, body, false)
@@ -2946,7 +2946,7 @@ pub fn refuse_name(host: &str, connect_s: c_long) -> bool {
 /// [`ResolvePin::for_origin`] so that it is a pure function of the hostname (its doc has the
 /// rule). The control plane carries the pin on each `Client` and passes it into
 /// [`request_result`] explicitly. The media plane cannot: `ff::demux` receives a URL string and
-/// `curlio::CurlSource` builds a fresh easy handle on every open and seek, so it asks THIS table
+/// `range_io::CurlSource` builds a fresh easy handle on every open and seek, so it asks THIS table
 /// by the URL's host and port instead.
 ///
 /// **Append-only, process-lifetime, never replaced** (the remembered KEYS, [`keypin`], beside it

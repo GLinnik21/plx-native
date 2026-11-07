@@ -788,7 +788,7 @@ own binary: the suite is 5603 before and after (with Split 4 landed in the same 
 the recipe and Splits 1 to 3:
 
 - **A `dynlib!` table is `pub(crate)` in the crate that expands it, and a layer's callers are in
-  another crate.** `curlio` (in `media`) drives libcurl's easy API through `net`'s own table:
+  another crate.** `curlio` (then in `media`; it has since moved into `net` as `range_io`) drove libcurl's easy API through `net`'s own table:
   `curl_easy_init`, `curl_easy_cleanup`, `curl_easy_setopt_{ptr,long}`, `curl_slist_{append,free_all}`
   and the `curl` module's `curl_easy_init` cell. They cannot be re-exported (E0364: a `pub(crate)`
   item cannot be `pub use`d), and wrapping them would add a second layer of calls to the variadic
