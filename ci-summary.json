@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-07T04:35:51Z",
+ "generated": "2026-11-07T04:44:26Z",
  "metrics": [
   {
    "change30_pct": 45.7,
@@ -123,10 +123,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -1.3,
+   "change30_pct": -0.9,
    "change7_pct": 17.9,
-   "d30": 451.0,
-   "delta30": -6.0,
+   "d30": 449,
+   "delta30": -4,
    "delta7": 67.5,
    "group": "ci",
    "id": "push_wait",
@@ -145,17 +145,17 @@
   },
   {
    "change30_pct": -42.9,
-   "change7_pct": 21.3,
+   "change7_pct": 21.1,
    "d30": 808.5,
-   "delta30": -346.5,
-   "delta7": 81,
+   "delta30": -347.0,
+   "delta7": 80.5,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 181,
+   "n_now": 182,
    "n_prev": 241,
-   "now": 462,
+   "now": 461.5,
    "prev7": 381,
    "shown": true,
    "state": "flat",
@@ -284,7 +284,7 @@
   {
    "change30_pct": 15.0,
    "change7_pct": 12.4,
-   "d30": 2357,
+   "d30": 2357.0,
    "delta30": 353.0,
    "delta7": 298.0,
    "group": "ci",
@@ -387,10 +387,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 27.2,
+   "change30_pct": 26.4,
    "change7_pct": 12.3,
-   "d30": 237.5,
-   "delta30": 64.5,
+   "d30": 239,
+   "delta30": 63.0,
    "delta7": 33.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
@@ -429,10 +429,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -59.4,
+   "change30_pct": -59.2,
    "change7_pct": 0.5,
-   "d30": 526.0,
-   "delta30": -312.5,
+   "d30": 523,
+   "delta30": -309.5,
    "delta7": 1.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
@@ -559,7 +559,7 @@
   {
    "change30_pct": 14.7,
    "change7_pct": 8.3,
-   "d30": 17.0,
+   "d30": 17,
    "delta30": 2.5,
    "delta7": 1.5,
    "group": "ci",
@@ -601,7 +601,7 @@
   {
    "change30_pct": 0.0,
    "change7_pct": 33.3,
-   "d30": 4.0,
+   "d30": 4,
    "delta30": 0.0,
    "delta7": 1.0,
    "group": "ci",
@@ -622,8 +622,8 @@
   {
    "change30_pct": -98.9,
    "change7_pct": 0.0,
-   "d30": 282.0,
-   "delta30": -279.0,
+   "d30": 282,
+   "delta30": -279,
    "delta7": 0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
