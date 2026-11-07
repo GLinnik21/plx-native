@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-07T07:51:15Z",
+ "generated": "2026-11-07T07:56:37Z",
  "metrics": [
   {
    "change30_pct": 45.7,
@@ -123,18 +123,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 6.9,
-   "change7_pct": 18.6,
+   "change30_pct": 6.1,
+   "change7_pct": 17.7,
    "d30": 421,
-   "delta30": 29,
-   "delta7": 70.5,
+   "delta30": 25.5,
+   "delta7": 67.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 59,
+   "n_now": 60,
    "n_prev": 94,
-   "now": 450,
+   "now": 446.5,
    "prev7": 379.5,
    "shown": true,
    "state": "worse",
@@ -387,18 +387,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 26.0,
-   "change7_pct": 12.7,
+   "change30_pct": 26.2,
+   "change7_pct": 12.8,
    "d30": 240,
-   "delta30": 62.5,
-   "delta7": 34.0,
+   "delta30": 63,
+   "delta7": 34.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 56,
+   "n_now": 57,
    "n_prev": 84,
-   "now": 302.5,
+   "now": 303,
    "prev7": 268.5,
    "shown": true,
    "state": "flat",
@@ -408,18 +408,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -57.9,
-   "change7_pct": 1.4,
+   "change30_pct": -58.0,
+   "change7_pct": 1.2,
    "d30": 512,
-   "delta30": -296.5,
-   "delta7": 3.0,
+   "delta30": -297,
+   "delta7": 2.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 56,
+   "n_now": 57,
    "n_prev": 84,
-   "now": 215.5,
+   "now": 215,
    "prev7": 212.5,
    "shown": true,
    "state": "flat",
@@ -432,15 +432,15 @@
    "change30_pct": 35.2,
    "change7_pct": 13.2,
    "d30": 159,
-   "delta30": 56.0,
+   "delta30": 56,
    "delta7": 25.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 56,
+   "n_now": 57,
    "n_prev": 84,
-   "now": 215.0,
+   "now": 215,
    "prev7": 190.0,
    "shown": true,
    "state": "flat",
@@ -560,15 +560,15 @@
    "change30_pct": 17.6,
    "change7_pct": 11.1,
    "d30": 17,
-   "delta30": 3.0,
+   "delta30": 3,
    "delta7": 2.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 56,
+   "n_now": 57,
    "n_prev": 84,
-   "now": 20.0,
+   "now": 20,
    "prev7": 18.0,
    "shown": false,
    "state": "flat",
@@ -667,11 +667,6 @@
    "change_pct": 30.0,
    "commits": [
     {
-     "pr": 1254,
-     "sha": "e5f19d679",
-     "title": "Playback: a retired PMS session gets its stopped timeline"
-    },
-    {
      "pr": 1250,
      "sha": "9cc53ed28",
      "title": "Deps: Bump encoding_rs from 0.8.42 to 0.8.44 in /rust-modules in the rust-minor-patch group"
@@ -715,6 +710,11 @@
      "pr": 1269,
      "sha": "97e43889d",
      "title": "Settings: Under posters takes composable details and the two-poster preview"
+    },
+    {
+     "pr": 1271,
+     "sha": "279b66d9f",
+     "title": "Media codecs crate: the bundled-FFmpeg ABI, PCM decode, speed audio and the encoder leave plx_media"
     }
    ],
    "from": 233,
@@ -728,11 +728,6 @@
    "change_pct": 25.2,
    "commits": [
     {
-     "pr": 1254,
-     "sha": "e5f19d679",
-     "title": "Playback: a retired PMS session gets its stopped timeline"
-    },
-    {
      "pr": 1250,
      "sha": "9cc53ed28",
      "title": "Deps: Bump encoding_rs from 0.8.42 to 0.8.44 in /rust-modules in the rust-minor-patch group"
@@ -776,6 +771,11 @@
      "pr": 1269,
      "sha": "97e43889d",
      "title": "Settings: Under posters takes composable details and the two-poster preview"
+    },
+    {
+     "pr": 1271,
+     "sha": "279b66d9f",
+     "title": "Media codecs crate: the bundled-FFmpeg ABI, PCM decode, speed audio and the encoder leave plx_media"
     }
    ],
    "from": 74.8,
@@ -789,11 +789,6 @@
    "change_pct": 24.1,
    "commits": [
     {
-     "pr": 1254,
-     "sha": "e5f19d679",
-     "title": "Playback: a retired PMS session gets its stopped timeline"
-    },
-    {
      "pr": 1250,
      "sha": "9cc53ed28",
      "title": "Deps: Bump encoding_rs from 0.8.42 to 0.8.44 in /rust-modules in the rust-minor-patch group"
@@ -837,6 +832,11 @@
      "pr": 1269,
      "sha": "97e43889d",
      "title": "Settings: Under posters takes composable details and the two-poster preview"
+    },
+    {
+     "pr": 1271,
+     "sha": "279b66d9f",
+     "title": "Media codecs crate: the bundled-FFmpeg ABI, PCM decode, speed audio and the encoder leave plx_media"
     }
    ],
    "from": 317,
@@ -847,13 +847,8 @@
    "to": 393.5
   },
   {
-   "change_pct": 18.6,
+   "change_pct": 17.7,
    "commits": [
-    {
-     "pr": 1254,
-     "sha": "e5f19d679",
-     "title": "Playback: a retired PMS session gets its stopped timeline"
-    },
     {
      "pr": 1250,
      "sha": "9cc53ed28",
@@ -898,6 +893,11 @@
      "pr": 1269,
      "sha": "97e43889d",
      "title": "Settings: Under posters takes composable details and the two-poster preview"
+    },
+    {
+     "pr": 1271,
+     "sha": "279b66d9f",
+     "title": "Media codecs crate: the bundled-FFmpeg ABI, PCM decode, speed audio and the encoder leave plx_media"
     }
    ],
    "from": 379.5,
@@ -905,7 +905,7 @@
    "label": "Wait after merge",
    "since": "2026-11-07",
    "threshold_pct": 15.0,
-   "to": 450
+   "to": 446.5
   }
  ],
  "schema": 2,
