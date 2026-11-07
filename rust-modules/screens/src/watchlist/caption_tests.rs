@@ -34,22 +34,29 @@ fn the_title_line_follows_the_title_switch_and_defaults_off() {
 }
 
 #[test]
-fn a_state_sentence_takes_the_details_line_unless_the_setting_shows_none() {
+fn a_state_sentence_takes_the_details_line_and_survives_an_empty_set() {
     let _guard = language_on_this_thread_for_test(Preference::En);
     set(false, UnderPostersLadder::YearLength);
     assert_eq!(lines(TileState::NotOnAnyServer).1.as_deref(), Some("Not on your servers"));
     set(false, UnderPostersLadder::Genre);
     assert_eq!(lines(TileState::ServerOffline).1.as_deref(), Some("Server offline"), "the state sentence replaces the genre");
+    // The status lines are the tile's own words (the tile says nothing in words), so no ticked part
+    // is needed for them: with the empty set they still show, and a playable title still shows none.
     set(false, UnderPostersLadder::None);
-    assert_eq!(lines(TileState::ServerOffline), (None, None));
+    assert_eq!(lines(TileState::ServerOffline), (None, Some("Server offline".into())));
+    assert_eq!(lines(TileState::NotOnAnyServer), (None, Some("Not on your servers".into())));
+    assert_eq!(lines(TileState::ComingSoon), (None, Some("Coming soon".into())), "a row with no release date");
+    assert_eq!(lines(TileState::Available), (None, None), "an available title has no state and no ticked part");
+    set(true, UnderPostersLadder::None);
+    assert_eq!(lines(TileState::NotOnAnyServer), (Some("1".into()), Some("Not on your servers".into())));
 }
 
 #[test]
-fn the_focused_band_is_the_settings_0_80_or_112() {
+fn the_focused_band_is_the_settings_80_or_112_and_opens_for_the_status_line_under_an_empty_set() {
     for (title, details, want) in [
-        (false, UnderPostersLadder::None, 0.0),
+        (false, UnderPostersLadder::None, 80.0),
         (false, UnderPostersLadder::YearLength, 80.0),
-        (true, UnderPostersLadder::None, 80.0),
+        (true, UnderPostersLadder::None, 112.0),
         (true, UnderPostersLadder::YearLength, 112.0),
     ] {
         set(title, details);

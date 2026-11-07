@@ -230,7 +230,7 @@ kind; the rest of what a caption words is the matched copy's, as the guid lookup
 (`ListingFacts`, `app/watchlist.rs`), so a playable title reads like any poster ("2001 · 1h 40m",
 "Drama", "4K · HDR", "PG-13 · 7.8", "2019 · 3 seasons") and a title with no copy falls to its year (or,
 under a picker the row has nothing for, to its kind). An unplayable title's state sentence ("Coming soon", "Not on your servers", "Server
-offline") takes the details line whatever the picker shows, except Nothing, which shows no line at all.
+offline") takes the details line whatever the pickers show, an empty set included (the status words are the tile's own; the band opens one line for them under an empty set, and an available title with no ticked part has an empty second line there).
 A focused row below the first rests with its posters at the first row's y, 244 (`GridSpec::resting`,
 `poster_grid::rest_scroll`: the Library's rule, one function for both pages), and the last rows of a
 long list rest lower because the document's end holds them. So the first scrolled rest is a whole row

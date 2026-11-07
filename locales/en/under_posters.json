@@ -4,7 +4,7 @@
     "description": "Settings > Libraries row and page title: the setting for what shows under the focused poster. Row label, short."
   },
   "under_posters.detail": {
-    "value": "Under posters, for movies and TV shows.",
+    "value": "Choose what appears under posters, for movies and TV shows alike.",
     "description": "Detail line under the Under posters row on the Settings root. One short sentence naming the kinds it applies to: movies and TV shows."
   },
   "under_posters.copy": {
@@ -16,7 +16,7 @@
     "description": "Switch row label on the Under posters page: show the item title under the focused poster."
   },
   "under_posters.title_detail": {
-    "value": "The name, in bold.",
+    "value": "Shows each title under its poster.",
     "description": "Detail line under the Title switch on the Under posters page: what the Title switch shows."
   },
   "under_posters.none": {
@@ -28,7 +28,7 @@
     "description": "Button on the Under posters page that restores the default (no title, year and length, sort value on)."
   },
   "under_posters.reset_detail": {
-    "value": "Year and length, sort value on, no title.",
+    "value": "Puts Title, Movie details, TV show details and Sort value back to their defaults.",
     "description": "Detail line under Reset to default on the Under posters page: what the default shows (year and length, sort value on, no title)."
   },
   "under_posters.sample_title": {
@@ -78,11 +78,11 @@
     "description": "Row label on the Under posters page that opens the TV show details picker, and that picker's page title. Its right side reads the chosen line, e.g. Year · Seasons. Short; 'TV show' is the same word the app uses for a series elsewhere."
   },
   "under_posters.movie_details_detail": {
-    "value": "Up to four details under every movie, such as year, length or genre.",
+    "value": "Choose what appears under movie posters.",
     "description": "Sentence beside the Movie details row on the Under posters page while it has focus (rows have no sub-line). Up to four details can be ticked: year, length, genre, video quality, age rating, score."
   },
   "under_posters.show_details_detail": {
-    "value": "Up to four details under every TV show, such as year, seasons or genre.",
+    "value": "Choose what appears under TV show posters.",
     "description": "Sentence beside the TV show details row while it has focus. Up to four details can be ticked: year, seasons, genre, age rating, score (a show has no video quality)."
   },
   "under_posters.part_year": {

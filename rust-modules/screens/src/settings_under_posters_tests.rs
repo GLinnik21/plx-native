@@ -147,6 +147,19 @@ fn the_page_has_a_title_switch_two_details_rows_a_sort_value_switch_and_reset_wi
     assert_eq!(rows, vec![0, 1, 2, 3, 4], "Title, Movie details, TV show details, Sort value, Reset in that order");
 }
 
+/// The left column's sentence for each row of the page, as the design words it.
+#[test]
+fn each_page_row_states_the_designs_sentence() {
+    let _guard = plx_base::testlock::serial();
+    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let said = |id| sentence_for(Some(&id));
+    assert_eq!(said(UpId::Title), "Shows each title under its poster.");
+    assert_eq!(said(UpId::MovieDetails), "Choose what appears under movie posters.");
+    assert_eq!(said(UpId::ShowDetails), "Choose what appears under TV show posters.");
+    assert_eq!(said(UpId::SortValue), "Replaces the details line while a library is sorted.");
+    assert_eq!(said(UpId::Reset), "Puts Title, Movie details, TV show details and Sort value back to their defaults.");
+}
+
 #[test]
 fn no_row_carries_a_sub_line_on_either_page() {
     let _guard = plx_base::testlock::serial();
@@ -707,7 +720,7 @@ fn the_root_row_reads_the_setting() {
     let (value, sub) = read(false, &[P::Year, P::Length]);
     assert_eq!(value.as_deref(), Some("Year \u{b7} Length"), "the default reads its names");
     assert_eq!(sub, "", "Settings v2: the root row has no sub-line");
-    assert_eq!(super::super::sentence_for(Some(&RootId::UnderPosters)), "Under posters, for movies and TV shows.",
+    assert_eq!(super::super::sentence_for(Some(&RootId::UnderPosters)), "Choose what appears under posters, for movies and TV shows alike.",
         "the sentence moved beside the table");
     assert_eq!(read(true, &[P::Year, P::Length]).0.as_deref(), Some("Year \u{b7} Length"), "the title is the page's own row");
     assert_eq!(read(true, &[P::Genre]).0.as_deref(), Some("Genre"));
