@@ -221,8 +221,8 @@ class PackageGateDecodesTheStampTheMakefileWrites(ScratchTree):
     """`ci/check-package.py` decodes `pkg/.build-config` into dev / release / none, and every gate that
     grades "a RELEASE build" or "a dev build" rests on the answer.
 
-    The playback backend is an explicit feature of the application crate, so a release stamp is
-    `features:--no-default-features --features play-feed...` rather than the bare `--no-default-features`
+    The playback backends are explicit features of the application crate, so a release stamp is
+    `features:--no-default-features --features play-uri,play-feed...` rather than the bare `--no-default-features`
     a decoder written against two literal flag strings still called "release". Here the stamp is the one a
     real `make` writes into a scratch tree (the reset runs at parse time, so `make -n clean` writes it), so
     the test cannot agree with a decoder that is wrong in the same way as its table.

@@ -354,7 +354,7 @@ def graph_problems(tree, data, project):
 
 def verify_graph(data, project):
     """The graph is the SHIPPING build's, so its features are the Makefile's (`make RELEASE=1`), never a list of
-    this script's own: a bare `--no-default-features` drops the playback backend and with it plx_play_feed's
+    this script's own: a bare `--no-default-features` drops both playback backends and with them play-feed's
     third-party tree (dolby_vision and its dependencies), which the release links."""
     try:
         featflags = shipping_featflags(ROOT)

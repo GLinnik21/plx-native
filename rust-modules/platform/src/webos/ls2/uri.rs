@@ -1,5 +1,5 @@
-//! The webOS transport for the URI-mode probe (issue #1064): [`crate::tv::uri::UriMedia`] over
-//! `com.webos.media`.
+//! The feature-gated webOS transport for [`crate::tv::uri::UriMedia`] over `com.webos.media`.
+//! The diagnostic probe uses it; compiling this worker does not select URI playback.
 //!
 //! **One worker owns the bus handle.** `open` starts a thread that registers (`Shape::Named` is
 //! `com.webos.media.client.plxprobe`, the name the Developer Mode role file grants outbound
@@ -66,7 +66,7 @@ struct Worker {
 }
 
 /// The transport the port installs. The worker is process state (there is one bus identity and
-/// one probe), so it sits here rather than in the unit struct.
+/// one active URI session), so it sits here rather than in the unit struct.
 pub struct Transport;
 
 static WORKER: Mutex<SessionSlot<Worker>> = Mutex::new(SessionSlot::new());

@@ -1,5 +1,4 @@
-/* Shared native display-plane binding: buffer-feed playback uses it, and the URI backend (a later PR)
- * will bind the same plane through it.
+/* Shared native display-plane binding for URI and buffer-feed playback.
  * See starfish.h for the existing flat display ABI. Feed-specific native objects and
  * callback admission remain in starfish.c. */
 #include "starfish.h"
@@ -248,12 +247,12 @@ long acb_create(const char *appId, int playerType) {
     }
     return g_acb;
 }
-/* The paced ACB bind (the URI backend and the developer probe, both a later PR's) uses the same
- * process-lifetime boot handle and callback as BF. These split the
+/* The URI bind (the production backend and the developer probe, both through play-uri's
+ * `acb_bind`) uses the same process-lifetime boot handle and callback as BF. These split the
  * existing bind solely to preserve observed inter-call delays. */
 /* Same device SHA pinned above: initialize wrapper@0x15c4c forwards core@0xcd5c.
  * Core returns exactly 1 only after valid parameters and callback installation; 0 refuses.
- * The URI backend's gate (a later PR) reads it; normal acb_create still returns its historical handle result. */
+ * The URI gate reads it; normal acb_create still returns its historical handle result. */
 int acb_initialized(void) { return g_acb && acb.probe_initialize_result == 1; }
 int acb_probe_dass_available(void) { return g_acb && acb.connectDass; }
 int acb_media_id(const char *mediaId) {
@@ -354,16 +353,12 @@ int acb_finish(long *displayTask, long *playingTask) {
 int acb_unload(long *taskOut) {
     if (taskOut) *taskOut = 0;
     if (!g_acb) return 0;
-    /* Its own slot, zeroed before the call, not g_taskId: setState writes nothing on -2 (not
-     * registered), and g_taskId would then still hold the pause / resume / video-data task of an
-     * earlier call. Static rather than a stack local so a library build that stored the id after
-     * returning (only the dev set's libAcbAPI is read: docs/measurements/acb-release-fence-2026-11-04.md)
-     * could not write into a dead frame. */
-    static long unload_task;
-    unload_task = 0;
-    int rv = acb.setState(g_acb, APPSTATE_FOREGROUND, PLAYSTATE_UNLOADED, &unload_task);
-    if (elogf) { fprintf(elogf, "acb unloaded rv=%d task=%ld\n", rv, unload_task); fflush(elogf); }
-    if (rv == 1 && taskOut) *taskOut = unload_task;
+    /* A local, not g_taskId: setState writes nothing on -2 (not registered), and g_taskId would
+     * then still hold the pause / resume / video-data task of an earlier call. */
+    long task = 0;
+    int rv = acb.setState(g_acb, APPSTATE_FOREGROUND, PLAYSTATE_UNLOADED, &task);
+    if (elogf) { fprintf(elogf, "acb unloaded rv=%d task=%ld\n", rv, task); fflush(elogf); }
+    if (rv == 1 && taskOut) *taskOut = task;
     return rv;
 }
 /* Kodi-parity: mirror the ACB PLAYSTATE on transport pause/resume (the app owns the sink; the
