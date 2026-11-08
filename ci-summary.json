@@ -57,12 +57,12 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-08T01:39:09Z",
+ "generated": "2026-11-08T02:08:59Z",
  "metrics": [
   {
    "change30_pct": 98.3,
    "change7_pct": 27.6,
-   "d30": 211,
+   "d30": 211.0,
    "delta30": 207.5,
    "delta7": 90.5,
    "group": "ci",
@@ -81,10 +81,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 97.4,
+   "change30_pct": 103.3,
    "change7_pct": 26.4,
-   "d30": 154,
-   "delta30": 150,
+   "d30": 149.5,
+   "delta30": 154.5,
    "delta7": 63.5,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
@@ -123,18 +123,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 29.9,
-   "change7_pct": 19.2,
-   "d30": 354,
-   "delta30": 106,
-   "delta7": 74,
+   "change30_pct": 29.8,
+   "change7_pct": 19.0,
+   "d30": 354.0,
+   "delta30": 105.5,
+   "delta7": 73.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 49,
+   "n_now": 50,
    "n_prev": 87,
-   "now": 460,
+   "now": 459.5,
    "prev7": 386,
    "shown": true,
    "state": "worse",
@@ -144,10 +144,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 27.2,
+   "change30_pct": 28.2,
    "change7_pct": 22.1,
-   "d30": 373.0,
-   "delta30": 101.5,
+   "d30": 370,
+   "delta30": 104.5,
    "delta7": 86.0,
    "group": "ci",
    "id": "pr_wait",
@@ -249,10 +249,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 21.2,
+   "change30_pct": 22.6,
    "change7_pct": 10.2,
-   "d30": 2259,
-   "delta30": 478,
+   "d30": 2232.5,
+   "delta30": 504.5,
    "delta7": 253,
    "group": "ci",
    "id": "minutes",
@@ -270,10 +270,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 23.1,
+   "change30_pct": 23.0,
    "change7_pct": 12.0,
-   "d30": 905.0,
-   "delta30": 209.0,
+   "d30": 906,
+   "delta30": 208,
    "delta7": 119,
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
@@ -291,10 +291,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 67.0,
+   "change30_pct": 67.3,
    "change7_pct": 18.2,
-   "d30": 270,
-   "delta30": 181.0,
+   "d30": 269.5,
+   "delta30": 181.5,
    "delta7": 69.5,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
@@ -354,18 +354,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 30.8,
-   "change7_pct": 10.1,
-   "d30": 234,
-   "delta30": 72,
-   "delta7": 28.0,
+   "change30_pct": 30.1,
+   "change7_pct": 9.7,
+   "d30": 234.5,
+   "delta30": 70.5,
+   "delta7": 27.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 47,
+   "n_now": 48,
    "n_prev": 78,
-   "now": 306,
+   "now": 305.0,
    "prev7": 278.0,
    "shown": true,
    "state": "flat",
@@ -375,18 +375,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -44.8,
-   "change7_pct": 0.5,
-   "d30": 391,
-   "delta30": -175,
-   "delta7": 1.0,
+   "change30_pct": -44.7,
+   "change7_pct": 0.2,
+   "d30": 389.5,
+   "delta30": -174.0,
+   "delta7": 0.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 47,
+   "n_now": 48,
    "n_prev": 78,
-   "now": 216,
+   "now": 215.5,
    "prev7": 215.0,
    "shown": true,
    "state": "flat",
@@ -396,18 +396,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 36.9,
-   "change7_pct": 8.6,
+   "change30_pct": 36.3,
+   "change7_pct": 8.1,
    "d30": 157,
-   "delta30": 58,
-   "delta7": 17.0,
+   "delta30": 57.0,
+   "delta7": 16.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 47,
+   "n_now": 48,
    "n_prev": 78,
-   "now": 215,
+   "now": 214.0,
    "prev7": 198.0,
    "shown": true,
    "state": "flat",
@@ -419,8 +419,8 @@
   {
    "change30_pct": 11.1,
    "change7_pct": 8.0,
-   "d30": 171,
-   "delta30": 19,
+   "d30": 171.0,
+   "delta30": 19.0,
    "delta7": 14.0,
    "group": "ci",
    "id": "ci|host lint + type-checks",
@@ -438,10 +438,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 29.7,
+   "change30_pct": 33.3,
    "change7_pct": -35.1,
-   "d30": 18.5,
-   "delta30": 5.5,
+   "d30": 18,
+   "delta30": 6,
    "delta7": -13,
    "group": "ci",
    "id": "nightly|publish nightly prerelease",
@@ -461,8 +461,8 @@
   {
    "change30_pct": 50.0,
    "change7_pct": 5.0,
-   "d30": 14.0,
-   "delta30": 7.0,
+   "d30": 14,
+   "delta30": 7,
    "delta7": 1,
    "group": "ci",
    "id": "nightly|plan today's nightly",
@@ -480,18 +480,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 17.6,
+   "change30_pct": 21.2,
    "change7_pct": 11.1,
-   "d30": 17,
-   "delta30": 3,
+   "d30": 16.5,
+   "delta30": 3.5,
    "delta7": 2.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 47,
+   "n_now": 48,
    "n_prev": 78,
-   "now": 20,
+   "now": 20.0,
    "prev7": 18.0,
    "shown": false,
    "state": "flat",
@@ -524,7 +524,7 @@
   {
    "change30_pct": 33.3,
    "change7_pct": 33.3,
-   "d30": 3,
+   "d30": 3.0,
    "delta30": 1.0,
    "delta7": 1.0,
    "group": "ci",
@@ -545,8 +545,8 @@
   {
    "change30_pct": -99.0,
    "change7_pct": 0.0,
-   "d30": 294,
-   "delta30": -291,
+   "d30": 294.5,
+   "delta30": -291.5,
    "delta7": 0.0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
@@ -590,11 +590,6 @@
    "change_pct": 27.6,
    "commits": [
     {
-     "pr": null,
-     "sha": "4bf133d57",
-     "title": "Settings: fps scenes for the pages Settings v2 added"
-    },
-    {
      "pr": 1263,
      "sha": "2f5e79630",
      "title": "Playback: a Dolby Vision resume or seek that lands on a CRA plays the HDR10 base layer"
@@ -638,6 +633,11 @@
      "pr": 1246,
      "sha": "8a3569830",
      "title": "Settings: a viewer's Plex Pass grants intro and credits skipping (auto-skip hidden from Pass holders)"
+    },
+    {
+     "pr": 1276,
+     "sha": "3309be023",
+     "title": "The playback build/package matrix: PLAYBACK_BACKENDS selects both, uri, feed or none (P7)"
     }
    ],
    "from": 328.0,
@@ -651,11 +651,6 @@
    "change_pct": 26.4,
    "commits": [
     {
-     "pr": null,
-     "sha": "4bf133d57",
-     "title": "Settings: fps scenes for the pages Settings v2 added"
-    },
-    {
      "pr": 1263,
      "sha": "2f5e79630",
      "title": "Playback: a Dolby Vision resume or seek that lands on a CRA plays the HDR10 base layer"
@@ -699,6 +694,11 @@
      "pr": 1246,
      "sha": "8a3569830",
      "title": "Settings: a viewer's Plex Pass grants intro and credits skipping (auto-skip hidden from Pass holders)"
+    },
+    {
+     "pr": 1276,
+     "sha": "3309be023",
+     "title": "The playback build/package matrix: PLAYBACK_BACKENDS selects both, uri, feed or none (P7)"
     }
    ],
    "from": 240.5,
@@ -712,11 +712,6 @@
    "change_pct": 25.2,
    "commits": [
     {
-     "pr": null,
-     "sha": "4bf133d57",
-     "title": "Settings: fps scenes for the pages Settings v2 added"
-    },
-    {
      "pr": 1263,
      "sha": "2f5e79630",
      "title": "Playback: a Dolby Vision resume or seek that lands on a CRA plays the HDR10 base layer"
@@ -760,6 +755,11 @@
      "pr": 1246,
      "sha": "8a3569830",
      "title": "Settings: a viewer's Plex Pass grants intro and credits skipping (auto-skip hidden from Pass holders)"
+    },
+    {
+     "pr": 1276,
+     "sha": "3309be023",
+     "title": "The playback build/package matrix: PLAYBACK_BACKENDS selects both, uri, feed or none (P7)"
     }
    ],
    "from": 74.8,
@@ -770,23 +770,8 @@
    "to": 93.7
   },
   {
-   "change_pct": 19.2,
+   "change_pct": 19.0,
    "commits": [
-    {
-     "pr": null,
-     "sha": "4bf133d57",
-     "title": "Settings: fps scenes for the pages Settings v2 added"
-    },
-    {
-     "pr": 1263,
-     "sha": "2f5e79630",
-     "title": "Playback: a Dolby Vision resume or seek that lands on a CRA plays the HDR10 base layer"
-    },
-    {
-     "pr": 1265,
-     "sha": "96be5e274",
-     "title": "Playback: honor Plex server stops"
-    },
     {
      "pr": 1268,
      "sha": "ec0df8cc3",
@@ -821,14 +806,19 @@
      "pr": 1246,
      "sha": "8a3569830",
      "title": "Settings: a viewer's Plex Pass grants intro and credits skipping (auto-skip hidden from Pass holders)"
+    },
+    {
+     "pr": 1276,
+     "sha": "3309be023",
+     "title": "The playback build/package matrix: PLAYBACK_BACKENDS selects both, uri, feed or none (P7)"
     }
    ],
    "from": 386,
    "id": "push_wait",
    "label": "Wait after merge",
-   "since": "2026-11-07",
+   "since": "2026-11-08",
    "threshold_pct": 15.0,
-   "to": 460
+   "to": 459.5
   }
  ],
  "schema": 2,
