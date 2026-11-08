@@ -948,9 +948,11 @@ fn tick_of(dt_ms: u32) -> ScreenEvent<InnerHost> {
 /// the cache has no poster of is asked for as the hubs of that kind's library (a read of its shelves
 /// that does not switch the library the user is on), with the store pumped, on every tick until the
 /// poster is there (a landed read is staged and only a later `Hubs` ask commits it, and nothing
-/// lands unpumped). A kind that is cached is not asked for, and the asking is bounded.
+/// lands unpumped). A kind that is cached, or whose library's shelves the store has published, is
+/// not asked for.
 #[test]
-fn a_kind_with_no_cached_poster_is_asked_for_until_it_arrives_then_never() {
+fn a_kind_with_no_cached_poster_is_asked_for_until_it_arrives_or_its_shelves_are_published() {
+    use plx_data::browse::SecKind;
     let _guard = plx_base::testlock::serial();
     let snapshot = movies_only_directory();
     let c = cx_with(None, snapshot.view());
@@ -968,14 +970,44 @@ fn a_kind_with_no_cached_poster_is_asked_for_until_it_arrives_then_never() {
     let tick = step_page(&mut page, tick_of(16), &c2);
     assert!(!pumps_browse(&tick));
     assert!(hub_asks(tick).is_empty());
-    // A library that never yields one is not polled for ever.
-    let mut page = UnderPostersPage::new(EntryId(0));
-    for _ in 0..((ASK_FOR_S * 1000.0 / 100.0) as usize + 1) {
-        step_page(&mut page, tick_of(100), &c);
-    }
-    let late = step_page(&mut page, tick_of(100), &c);
-    assert!(!pumps_browse(&late), "gave up after ASK_FOR_S");
-    assert!(hub_asks(late).is_empty());
+    // A library whose shelves are published and hold no show is answered: no more asking, however
+    // long that took (there is no timer to run out before a slow server answers).
+    let answered = movies_only_directory().with_kind_shelves_published(SecKind::Show);
+    let c3 = cx_with(None, answered.view());
+    let tick = step_page(&mut page, tick_of(16), &c3);
+    assert!(!pumps_browse(&tick));
+    assert!(hub_asks(tick).is_empty());
+}
+
+/// The Settings root draws the same picture while its Under posters row has focus, and asks for the
+/// missing poster then and only then, and only while it is the page on top (the pushed Under
+/// posters page asks for itself, and the store must not be pumped twice a frame).
+#[test]
+fn the_settings_root_asks_for_the_missing_poster_only_on_its_under_posters_row_and_on_top() {
+    use plx_ui::form::FormId;
+    let _guard = plx_base::testlock::serial();
+    // The Libraries section (and the Under posters row in it) is there only for a signed-in account.
+    let _session = multi_user_session("under-posters-root-ask");
+    let snapshot = movies_only_directory();
+    let mut root = RootPage::new(EntryId(0), snapshot.view());
+    let on = |elem: u32| Some(FocusKey { entry: EntryId(0), elem });
+    let tick = |root: &mut RootPage, focus| {
+        let c = cx_with(focus, snapshot.view());
+        let mut out = Vec::new();
+        let mut present = Present::new();
+        root.step(&tick_of(16), &c, &mut Effects::new(&mut out, MachineId::Instance(InstanceId(0)), &mut present));
+        out
+    };
+    let under = RootId::UnderPosters.key().0;
+    form_focus(&mut root.form, RootId::Favourites.key().0);
+    assert!(hub_asks(tick(&mut root, on(RootId::Favourites.key().0))).is_empty(), "another row: nothing asked");
+    form_focus(&mut root.form, under);
+    assert_eq!(root.form.selected_id(), Some(&RootId::UnderPosters), "premise: the row is selected");
+    let asked = tick(&mut root, on(under));
+    assert!(pumps_browse(&asked));
+    assert_eq!(hub_asks(asked), vec![(7, 2)], "the Under posters row asks for the show library's shelves");
+    let buried = tick(&mut root, Some(FocusKey { entry: EntryId(1), elem: 0 }));
+    assert!(hub_asks(buried).is_empty(), "a page pushed over the root asks for itself: the root stays quiet");
 }
 
 #[test]

@@ -540,11 +540,6 @@ pub(super) fn preview_posters<'a>(cx: &Cx<'a, InnerHost>) -> Vec<&'a PmsMovie> {
     [plx_data::pms::KIND_MOVIE, plx_data::pms::KIND_SHOW].into_iter().filter_map(|kind| cx.views.directory.kind_poster(kind)).collect()
 }
 
-/// How long a page keeps asking for a poster it has not received (seconds of ticks). A library
-/// whose shelves hold no title of the kind (a server with one kind of library) never answers, and
-/// the page then stops asking rather than polling for as long as it is open.
-const ASK_FOR_S: f32 = 10.0;
-
 /// **A page that draws the picture asks the Browse store for the kind it has no poster of.** The
 /// store caches only libraries the user has opened, so a show library never opened leaves the show
 /// tile art-less although the library exists. Each kind missing from [`preview_posters`] whose
@@ -556,26 +551,21 @@ const ASK_FOR_S: f32 = 10.0;
 /// starts only on a later step; a landed read is STAGED and committed by the next `Hubs` command
 /// (`may_publish`), never by the landing; and nothing lands until the store is pumped
 /// (`StoreWork::Browse`, what the Library and Recommended pages push every tick). So the page sends
-/// the same idempotent ask and the pump on each tick until the poster is there, for at most
-/// [`ASK_FOR_S`].
+/// the same idempotent ask and the pump on each tick, per kind, until the poster is there or the
+/// store has published that library's shelves ([`DirectoryView::kind_shelves_published`](plx_data::browse::DirectoryView::kind_shelves_published):
+/// a library whose shelves hold no title of the kind is answered, and asked no more).
 #[derive(Default)]
-pub(super) struct PosterAsk {
-    waited_s: f32,
-}
+pub(super) struct PosterAsk;
 
 impl PosterAsk {
-    /// Ask for the kinds still missing; `dt` is the tick's time (0 at mount).
-    pub(super) fn step(&mut self, dt: f32, cx: &Cx<'_, InnerHost>, fx: &mut Effects<'_, InnerHost>) {
+    pub(super) fn step(&mut self, cx: &Cx<'_, InnerHost>, fx: &mut Effects<'_, InnerHost>) {
         use plx_data::browse::SecKind;
         use plx_data::stores::browse::{BrowseCmd, LibraryWork};
         use plx_data::stores::{StoreCmd, StoreId, StoreWork};
-        if self.waited_s >= ASK_FOR_S {
-            return;
-        }
         let have = preview_posters(cx);
         let mut asked = false;
         for (kind, sec) in [(PosterKind::Movie, SecKind::Movie), (PosterKind::Show, SecKind::Show)] {
-            if poster_of(kind, &have).is_some() {
+            if poster_of(kind, &have).is_some() || cx.views.directory.kind_shelves_published(sec) {
                 continue;
             }
             let Some(target) = cx.views.directory.kind_address(sec) else { continue };
@@ -584,7 +574,6 @@ impl PosterAsk {
                 target, work: LibraryWork::Hubs { may_publish: true } }))));
         }
         if asked {
-            self.waited_s += dt;
             fx.push(Fx::App(AppFx::StoreWork(StoreWork::Browse)));
         }
     }
@@ -595,7 +584,7 @@ impl Machine<InnerHost> for UnderPostersPage {
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, InnerHost>, fx: &mut Effects<'_, InnerHost>) -> Handled {
         match ev {
             ScreenEvent::Mount => {
-                self.ask.step(0.0, cx, fx);
+                self.ask.step(cx, fx);
                 // Seat the cursor explicitly, as the Language page does: the generic Enter runs
                 // before queued mount effects.
                 fx.push(Fx::Deliver(
@@ -607,7 +596,7 @@ impl Machine<InnerHost> for UnderPostersPage {
                 Handled::Yes
             }
             ScreenEvent::Tick(t) => {
-                self.ask.step(t.dt(), cx, fx);
+                self.ask.step(cx, fx);
                 if self.poll() {
                     fx.invalidate(Provenance::Input);
                 }

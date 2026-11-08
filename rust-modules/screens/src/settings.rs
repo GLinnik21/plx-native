@@ -1645,8 +1645,11 @@ impl Machine<InnerHost> for RootPage {
                 Handled::Yes
             }
             ScreenEvent::Tick(t) => {
-                if self.form.selected_id() == Some(&RootId::UnderPosters) {
-                    self.under_ask.step(t.dt(), cx, fx);
+                // Only while this page is the one on top: every page of the stack ticks, and the
+                // Under posters page asks for the same posters itself once it is pushed.
+                if self.form.selected_id() == Some(&RootId::UnderPosters)
+                    && cx.focus.current.is_some_and(|key| key.entry == self.entry) {
+                    self.under_ask.step(cx, fx);
                 }
                 let mut landed = self.session_watch.changed();
                 if self.pending_auto.as_ref().is_some_and(|(_, ticket)| !matches!(ticket.try_recv(),
