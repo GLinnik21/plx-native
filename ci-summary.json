@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-08T19:06:12Z",
+ "generated": "2026-11-08T19:08:07Z",
  "metrics": [
   {
    "change30_pct": 99.5,
@@ -123,18 +123,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 32.7,
-   "change7_pct": 19.5,
+   "change30_pct": 32.1,
+   "change7_pct": 19.0,
    "d30": 349,
-   "delta30": 114,
-   "delta7": 75.5,
+   "delta30": 112.0,
+   "delta7": 73.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 49,
+   "n_now": 50,
    "n_prev": 90,
-   "now": 463,
+   "now": 461.0,
    "prev7": 387.5,
    "shown": true,
    "state": "worse",
@@ -354,18 +354,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 34.9,
-   "change7_pct": 13.4,
+   "change30_pct": 33.6,
+   "change7_pct": 12.3,
    "d30": 232,
-   "delta30": 81,
-   "delta7": 37.0,
+   "delta30": 78.0,
+   "delta7": 34.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 47,
+   "n_now": 48,
    "n_prev": 82,
-   "now": 313,
+   "now": 310.0,
    "prev7": 276.0,
    "shown": true,
    "state": "flat",
@@ -375,18 +375,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 42.2,
-   "change7_pct": 10.6,
+   "change30_pct": 40.9,
+   "change7_pct": 9.6,
    "d30": 154,
-   "delta30": 65,
-   "delta7": 21.0,
+   "delta30": 63.0,
+   "delta7": 19.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 47,
+   "n_now": 48,
    "n_prev": 82,
-   "now": 219,
+   "now": 217.0,
    "prev7": 198.0,
    "shown": true,
    "state": "flat",
@@ -396,18 +396,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -40.9,
-   "change7_pct": -1.9,
+   "change30_pct": -40.4,
+   "change7_pct": -0.9,
    "d30": 359,
-   "delta30": -147,
-   "delta7": -4.0,
+   "delta30": -145.0,
+   "delta7": -2.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 47,
+   "n_now": 48,
    "n_prev": 82,
-   "now": 212,
+   "now": 214.0,
    "prev7": 216.0,
    "shown": true,
    "state": "flat",
@@ -483,15 +483,15 @@
    "change30_pct": 17.6,
    "change7_pct": 11.1,
    "d30": 17,
-   "delta30": 3,
+   "delta30": 3.0,
    "delta7": 2.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 47,
+   "n_now": 48,
    "n_prev": 82,
-   "now": 20,
+   "now": 20.0,
    "prev7": 18.0,
    "shown": false,
    "state": "flat",
@@ -590,11 +590,6 @@
    "change_pct": 28.0,
    "commits": [
     {
-     "pr": 1269,
-     "sha": "97e43889d",
-     "title": "Settings: Under posters takes composable details and the two-poster preview"
-    },
-    {
      "pr": 1271,
      "sha": "279b66d9f",
      "title": "Media codecs crate: the bundled-FFmpeg ABI, PCM decode, speed audio and the encoder leave plx_media"
@@ -638,6 +633,11 @@
      "pr": 1273,
      "sha": "630f8c230",
      "title": "Net: add the WebSocket codec for Open Watch Party"
+    },
+    {
+     "pr": 1245,
+     "sha": "6131d5c8d",
+     "title": "Default to a playback version the TV can decode"
     }
    ],
    "from": 329,
@@ -651,11 +651,6 @@
    "change_pct": 25.2,
    "commits": [
     {
-     "pr": 1269,
-     "sha": "97e43889d",
-     "title": "Settings: Under posters takes composable details and the two-poster preview"
-    },
-    {
      "pr": 1271,
      "sha": "279b66d9f",
      "title": "Media codecs crate: the bundled-FFmpeg ABI, PCM decode, speed audio and the encoder leave plx_media"
@@ -699,6 +694,11 @@
      "pr": 1273,
      "sha": "630f8c230",
      "title": "Net: add the WebSocket codec for Open Watch Party"
+    },
+    {
+     "pr": 1245,
+     "sha": "6131d5c8d",
+     "title": "Default to a playback version the TV can decode"
     }
    ],
    "from": 74.8,
@@ -712,11 +712,6 @@
    "change_pct": 25.1,
    "commits": [
     {
-     "pr": 1269,
-     "sha": "97e43889d",
-     "title": "Settings: Under posters takes composable details and the two-poster preview"
-    },
-    {
      "pr": 1271,
      "sha": "279b66d9f",
      "title": "Media codecs crate: the bundled-FFmpeg ABI, PCM decode, speed audio and the encoder leave plx_media"
@@ -760,6 +755,11 @@
      "pr": 1273,
      "sha": "630f8c230",
      "title": "Net: add the WebSocket codec for Open Watch Party"
+    },
+    {
+     "pr": 1245,
+     "sha": "6131d5c8d",
+     "title": "Default to a playback version the TV can decode"
     }
    ],
    "from": 243,
@@ -770,13 +770,8 @@
    "to": 304
   },
   {
-   "change_pct": 19.5,
+   "change_pct": 19.0,
    "commits": [
-    {
-     "pr": 1269,
-     "sha": "97e43889d",
-     "title": "Settings: Under posters takes composable details and the two-poster preview"
-    },
     {
      "pr": 1271,
      "sha": "279b66d9f",
@@ -821,6 +816,11 @@
      "pr": 1273,
      "sha": "630f8c230",
      "title": "Net: add the WebSocket codec for Open Watch Party"
+    },
+    {
+     "pr": 1245,
+     "sha": "6131d5c8d",
+     "title": "Default to a playback version the TV can decode"
     }
    ],
    "from": 387.5,
@@ -828,7 +828,7 @@
    "label": "Wait after merge",
    "since": "2026-11-08",
    "threshold_pct": 15.0,
-   "to": 463
+   "to": 461.0
   }
  ],
  "schema": 2,
