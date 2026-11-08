@@ -127,7 +127,7 @@ before `SDL_Init` (§5).
 
 | Code | Field | `Key` | What it does |
 | --- | --- | --- | --- |
-| `484` (`0x1e4`) | `wcode` | `PointerHidden` | the Magic Remote reporting its pointer auto-hid. The ladder's arm has an empty body — the press is consumed there rather than reaching the arms below. evdev 614, an LG-private code and not a key. |
+| `484` (`0x1e4`) | `wcode` | `PointerHidden` | LG's pointer-hidden notification. It stops edge scrolling and is consumed before fresh-press bookkeeping. Evdev 614 is an LG-private code. |
 
 ### Reachable but deliberately unbound
 
@@ -310,10 +310,12 @@ gate (159–600 px measured between arrowing to a disc and pressing OK), and ove
 the player never leaves D-pad mode. A click that lands on a control after real travel is still
 that control's, so pointing at a button and clicking it keeps working.
 
-When Back dismisses the player transport, movement under four logical pixels from the dismissal
-point leaves the HUD down. The first qualifying motion raises the HUD and restores a transparent
-cursor installed by Back. While that cursor is held, its OK click takes the same paired key path.
-On firmware with the LG visibility API, webOS handles the pointer's return.
+When Back dismisses the player transport, the last delivered pointer position becomes the anchor.
+If there is no position yet, the next motion sets the anchor. The HUD stays down until the sum of
+the horizontal and vertical distances from the anchor reaches four logical pixels. The motion that
+reaches the threshold raises the HUD and restores a transparent cursor installed by Back. While
+that cursor is held, its OK click takes the same paired key path. On firmware with the LG visibility
+API, webOS handles the pointer's return.
 
 **The one place it deliberately over-approximates.** The digits count as bound *everywhere*, because
 the who's-watching PIN keypad types from them, so a number press on Home or during playback still
