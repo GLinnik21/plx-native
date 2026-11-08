@@ -99,15 +99,26 @@ fn resolve_on(
     version: Option<plx_plex::plex::MediaId>,
     caps: Option<plx_platform::devcaps::Caps>,
 ) -> (Plan, Vec<String>) {
+    resolve_with(rk, (part, vcodec, acodec), mde, |env| {
+        env.version = version;
+        if let Some(caps) = caps {
+            env.caps = std::sync::Arc::new(caps);
+        }
+    })
+}
+
+fn resolve_with(
+    rk: &str,
+    (part, vcodec, acodec): (&str, &str, &str),
+    mde: &'static [u8],
+    prepare: impl FnOnce(&mut ResolveEnv),
+) -> (Plan, Vec<String>) {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     let (port, done, server) = versions_pms(mde);
     let sid = plx_plex::plex::register_for_test("versions", "127.0.0.1", port, "token", "versions-client");
     let mut env = ResolveEnv::snapshot(&ps, plx_data::stores::metadata::MetadataStore::default().view(), sid, rk);
-    env.version = version;
-    if let Some(caps) = caps {
-        env.caps = std::sync::Arc::new(caps);
-    }
+    prepare(&mut env);
     let plan = build_stream(&plx_base::task::OffFrame::for_test(), rk, part, vcodec, acodec, &env);
     done.send(()).unwrap();
     let requests = server.join().unwrap();
@@ -154,6 +165,17 @@ fn a_picked_version_wins_over_the_decoder() {
 }
 
 #[test]
+#[cfg(feature = "devtriggers")]
+fn force_direct_play_attempts_the_4k_original_listed_first() {
+    let (plan, _) = resolve_with("rk-4k", FOUR_K_DEFAULT, MDE_DIRECTPLAY, |env| {
+        env.caps = std::sync::Arc::new(full_hd_set());
+        env.direct_play_mode = DirectPlayMode::Forced;
+    });
+    assert_eq!((plan.part_id, plan.media_index), (3130, 0));
+    assert!(plan.url.contains("/library/parts/3130/"), "{}", plan.url);
+}
+
+#[test]
 fn a_page_whose_default_the_set_cannot_decode_gives_up_its_cached_copy() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -187,6 +209,10 @@ fn a_page_whose_default_the_set_cannot_decode_gives_up_its_cached_copy() {
     leave_a_cached_default_the_set_cannot_decode(&mut env, meta.view(), sid, "rk-4k");
     assert!(env.cached_item.is_some(), "a 4K decoder plays the page's own default");
     env.caps = std::sync::Arc::new(full_hd_set());
+    env.direct_play_mode = DirectPlayMode::Forced;
+    leave_a_cached_default_the_set_cannot_decode(&mut env, meta.view(), sid, "rk-4k");
+    assert!(env.cached_item.is_some(), "Force Direct Play attempts the page's own default");
+    env.direct_play_mode = DirectPlayMode::Auto;
     leave_a_cached_default_the_set_cannot_decode(&mut env, meta.view(), sid, "rk-4k");
     assert!(env.cached_item.is_none(), "the page describes the 4K, which this decoder cannot take");
     assert_eq!(env.src_kbps, 2372);

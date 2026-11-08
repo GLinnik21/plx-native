@@ -10010,10 +10010,10 @@ fn request_env(
         env.cached_item = None;
         env.src_kbps = 0;
     }
-    leave_a_cached_default_the_set_cannot_decode(&mut env, meta, request.sid, &request.rk);
     if let Some(retry) = retry {
         apply_retry(&mut env, retry);
     }
+    leave_a_cached_default_the_set_cannot_decode(&mut env, meta, request.sid, &request.rk);
     env
 }
 
@@ -10026,7 +10026,7 @@ fn leave_a_cached_default_the_set_cannot_decode(
     let chosen = meta
         .current()
         .filter(|d| plx_plex::plex::same_item((d.sid, &d.rk), (sid, rk)))
-        .and_then(|d| decodable_version(&d.versions, &env.caps));
+        .and_then(|d| automatic_version(&d.versions, env));
     if let Some(version) = chosen {
         env.cached_item = None;
         env.src_kbps = version.kbps;

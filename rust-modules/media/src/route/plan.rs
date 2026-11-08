@@ -1808,7 +1808,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 None => match env.cached_item.clone() {
                     Some(item) => (Some(item), None),
                     None => match plx_data::metadata::fetch_playing_item_choosing(client, env.sid, rk, |it| {
-                        decodable_version(&plx_data::pms::versions_of(it), &env.caps).map(|v| v.id)
+                        automatic_version(&plx_data::pms::versions_of(it), env).map(|v| v.id)
                     }) {
                         Some((item, played)) => (Some(item), played),
                         None => (None, None),
@@ -4110,6 +4110,16 @@ pub(super) fn video_direct_plays(
     // out of it ([`plx_platform::devcaps::Caps::raster_bound`]).
     let (bw, bh) = caps.raster_bound(vcodec);
     codec_ok && src_w <= bw as i64 && src_h <= bh as i64 && dv.refusal().is_none()
+}
+
+pub(super) fn automatic_version<'a>(
+    versions: &'a [plx_data::pms::MediaVersion],
+    env: &ResolveEnv,
+) -> Option<&'a plx_data::pms::MediaVersion> {
+    match env.direct_play_mode {
+        DirectPlayMode::Forced => None,
+        DirectPlayMode::Auto | DirectPlayMode::Disabled => decodable_version(versions, &env.caps),
+    }
 }
 
 pub(super) fn decodable_version<'a>(
