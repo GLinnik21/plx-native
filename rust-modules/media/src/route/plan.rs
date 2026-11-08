@@ -1782,76 +1782,69 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     // (`plx_base::task::beside`). The scope joins it on EVERY exit of the body, the early returns
     // included, and `land_queue` is the one place its answer joins the plan.
     std::thread::scope(|s| {
-        let mut queue: Option<plx_base::task::Beside<'_, QueueInfo>> = None;
-        let mut plan = (|| -> Plan {
-            // The part id is derived from THIS call's `part`, before anything else runs, and published
-            // here rather than by the caller after we return. It used to be written by play_movie /
-            // play_episode *after* build_stream finished, so `put_selection` — which runs inside this
-            // function — read the PREVIOUS item's part (or 0, and silently skipped, on the first play
-            // of the process). Every non-MKV item takes the remux branch, so that mis-targeted PUT
-            // failed to suppress a server-default subtitle and burned it into the transcode.
-            // The arguments ARE the source codecs, whatever this function goes on to choose — captured
-            // once, here, so no later branch has to remember to.
-            let mut plan = Plan {
-                // carried through every exit below, the failing ones included: a plan without a server is
-                // a plan `apply_plan` cannot install an honest `cur_sid` from.
-                sid: env.sid,
-                direct_play_mode: env.direct_play_mode,
-                part_id: part_id_of(part),
-                src_vcodec: vcodec.to_string(),
-                src_acodec: acodec.to_string(),
-                // **`bool::default()` is `false` and `false` here is a CLAIM** — "this television cannot
-                // decode the source" — which the quality menu turns into a line of copy. The exit two lines
-                // below returns this plan without ever reaching the gate, so an unresolvable playback would
-                // assert something nobody looked at. Every exit therefore carries `true` ("nobody has said
-                // otherwise") until the gate says otherwise.
-                source_decodable: true,
-                ..Default::default()
-            };
-            if env.direct_play_mode == DirectPlayMode::Disabled && rk.is_empty() {
-                plan.verdict = Some(PlayVerdict::DirectPlayDisabled);
-                return plan;
-            }
-            let forced = env.direct_play_mode == DirectPlayMode::Forced;
-            let playback_quality = if forced { Quality::Original } else { env.quality };
-            let client = match plx_plex::plex::client_for(env.sid) {
-                Some(c) => c,
-                None => return plan,
-            };
-            // fresh per-playback session id (BOTH direct-play and transcode report through it) +
-            // a PlayQueue so the server tracks this as a real player with a playQueueItemID.
-            let session = new_sess(rk);
-            plan.sess = session.clone();
-            if !rk.is_empty() && !env.preview {
-                // Asked beside the rest of the plan (the playing item, the server's decision): nothing
-                // below reads the queue, so a playback start waits for the slower of the two, not for both.
-                // `build_stream`'s scope joins it on every exit and lands it in one place.
-                let session = session.clone();
-                queue = Some(plx_base::task::beside(s, "route-queue", move || {
-                    env.queue_continuation.as_ref().filter(|queue| queue.matches(env.sid, rk))
-                        .map(|queue| queue.refreshed(client).resolve()).unwrap_or_else(|| resolve_playqueue(
-                            client, rk, &session, &env.machine_id, !env.omit_queue_continuous,
-                        ))
-                }));
-            }
-            // the playing item's OWN track lists (menu + audio pick + esInfo fps read them) — the
-            // loaded detail can be a different item (show page / straight-from-Home play)
-            // detail already had this item's streams — no GET
-            let (playing, played) = match env.version {
-                None => match env.cached_item.clone() {
-                    Some(item) => (Some(item), None),
-                    None => match plx_data::metadata::fetch_playing_item_choosing(client, env.sid, rk, |it| {
-                        automatic_version(&plx_data::pms::versions_of(it), env).map(|v| v.id)
-                    }) {
-                        Some((item, played)) => (Some(item), played),
-                        None => (None, None),
-                    },
-                },
-                Some(want) => match plx_data::metadata::fetch_playing_item(client, env.sid, rk, Some(want)) {
+        // The caller's Part and codecs are the default candidate. Replace all of them together
+        // for a picked version, including the Part used for track selection requests.
+        let base_plan = || Plan {
+            sid: env.sid,
+            direct_play_mode: env.direct_play_mode,
+            part_id: part_id_of(part),
+            src_vcodec: vcodec.to_string(),
+            src_acodec: acodec.to_string(),
+            // Early failures carry no negative claim about the decoder.
+            source_decodable: true,
+            ..Default::default()
+        };
+        if env.direct_play_mode == DirectPlayMode::Disabled && rk.is_empty() {
+            return Plan { verdict: Some(PlayVerdict::DirectPlayDisabled), ..base_plan() };
+        }
+        let Some(client) = plx_plex::plex::client_for(env.sid) else { return base_plan() };
+        let forced = env.direct_play_mode == DirectPlayMode::Forced;
+        let playback_quality = if forced { Quality::Original } else { env.quality };
+        let session = new_sess(rk);
+        let new_plan = || Plan { sess: session.clone(), ..base_plan() };
+        let queue = if !rk.is_empty() && !env.preview {
+            // Both candidate passes share one PlayQueue and one playback session.
+            let session = session.clone();
+            Some(plx_base::task::beside(s, "route-queue", move || {
+                env.queue_continuation.as_ref().filter(|queue| queue.matches(env.sid, rk))
+                    .map(|queue| queue.refreshed(client).resolve()).unwrap_or_else(|| resolve_playqueue(
+                        client, rk, &session, &env.machine_id, !env.omit_queue_continuous,
+                    ))
+            }))
+        } else {
+            None
+        };
+
+        // The automatic fallback uses Feed's video gate. Give a potentially certified URI
+        // Original its chance on the first Part before substituting a Feed-compatible version.
+        // Both candidates are built from the same metadata response.
+        let mut first_for_uri = None;
+        let (playing, played) = match env.version {
+            None => match env.cached_item.clone() {
+                Some(item) => (Some(item), None),
+                None => match plx_data::metadata::fetch_playing_item_choosing(client, env.sid, rk, |it| {
+                    let versions = plx_data::pms::versions_of(it);
+                    let picked = automatic_version(&versions, env)?;
+                    if env.uri_offers.original && env.uri_preflight_port.as_ref()
+                        .is_some_and(|port| port.evidence().certified.progressive_uri)
+                    {
+                        first_for_uri = Some(plx_data::metadata::playing_version_from(env.sid, rk, Some(it), None).0);
+                    }
+                    Some(picked.id)
+                }) {
                     Some((item, played)) => (Some(item), played),
                     None => (None, None),
                 },
-            };
+            },
+            Some(want) => match plx_data::metadata::fetch_playing_item(client, env.sid, rk, Some(want)) {
+                Some((item, played)) => (Some(item), played),
+                None => (None, None),
+            },
+        };
+        let resolve_candidate = |mut plan: Plan,
+                                 playing: Option<plx_data::metadata::PlayingItem>,
+                                 played: Option<plx_data::metadata::PlayedVersion>,
+                                 uri_original_only: bool| -> Plan {
             if let (Some(want), None) = (env.version, played.as_ref()) {
                 crate::player::log(&format!("route: version {} is gone from the item; playing the default", want.0));
             }
@@ -2089,6 +2082,11 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                     plan.uri_source_ready = true;
                     return plan;
                 }
+            }
+            if uri_original_only {
+                // The first Part was not URI-qualified. Try the alternative before making any
+                // PMS decision, track write, or encoder request for the rejected candidate.
+                return plan;
             }
             let pms_uri_possible = !forced && !env.preview
                 && env.uri_offers.any_pms()
@@ -3097,7 +3095,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             // declaration the direct play would have made rides it ([`copied_video_dv`] is the rule).
             (plan.dovi, plan.dv_decision) = copied_video_dv(decision.as_ref(), &plan.contract, dovi, dv_decision);
             plan.url = client.transcode_start_url(&sp).to_url();
-            plan.tsession = session;
+            plan.tsession = session.clone();
             if !forced && !env.preview {
                 if let (Some(port), Some(selection), Some(recipe), Some((video_codec, audio_output, output_dovi))) = (
                     env.uri_preflight_port.as_ref(), plan.source_selection,
@@ -3148,7 +3146,11 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 plan.verdict = Some(PlayVerdict::NoQualifiedBackend);
             }
             plan
-        })();
+        };
+        let first_original = first_for_uri
+            .map(|item| resolve_candidate(new_plan(), Some(item), None, true))
+            .filter(|plan| plan.uri_original.is_some());
+        let mut plan = first_original.unwrap_or_else(|| resolve_candidate(new_plan(), playing, played, false));
         if let Some(queue) = queue {
             land_queue(&mut plan, queue.finish());
         }

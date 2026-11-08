@@ -364,7 +364,11 @@ const URI_AV1: &[u8] = br#"{"MediaContainer":{"Metadata":[{"ratingKey":"rk-v","t
   {"id":3086,"bitrate":2372,"width":1920,"height":1080,"videoCodec":"av1","audioCodec":"aac","container":"mkv",
    "Part":[{"id":3134,"duration":450000,"key":"/library/parts/3134/1/file.mkv","container":"mkv","Stream":[
      {"id":31341,"streamType":1,"codec":"av1","index":0},
-     {"id":31342,"streamType":2,"codec":"aac","channels":2,"index":1,"languageCode":"eng","default":true,"selected":true}]}]}]}]}}"#;
+     {"id":31342,"streamType":2,"codec":"aac","channels":2,"index":1,"languageCode":"eng","default":true,"selected":true}]}]},
+  {"id":3087,"bitrate":1800,"width":1920,"height":1080,"videoCodec":"h264","audioCodec":"aac","container":"mkv",
+   "Part":[{"id":3135,"duration":450000,"key":"/library/parts/3135/1/file.mkv","container":"mkv","Stream":[
+     {"id":31351,"streamType":1,"codec":"h264","index":0},
+     {"id":31352,"streamType":2,"codec":"aac","channels":2,"index":1,"languageCode":"eng","default":true,"selected":true}]}]}]}]}}"#;
 
 const MDE_PMS_OUTPUT: &[u8] = br#"{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"decision":"transcode","Stream":[{"streamType":1,"decision":"copy","codec":"h264"},{"streamType":2,"decision":"transcode","codec":"ac3"}]}]}]}]}}"#;
 
@@ -749,6 +753,30 @@ fn a_certified_av1_uri_original_does_not_inherit_feeds_video_refusal() {
     assert!(!requests.iter().any(|line| line.contains("/decision?") || line.contains("/transcode/")),
         "URI AV1 must not acquire Feed video conversion: {requests:?}");
     plx_plex::plex::reset_servers_for_test();
+}
+
+#[test]
+#[cfg(feature = "devtriggers")]
+fn an_unqualified_uri_original_still_uses_the_feed_compatible_version() {
+    use crate::route::uri_preflight::{ProductEvidence, ProductQualifier, ResolvePort};
+    use plx_playback_contract::{uri::Binding, Capabilities};
+    let (plan, requests) = resolve_with("rk-4k", FOUR_K_DEFAULT, MDE_DIRECTPLAY, |env| {
+        env.caps = std::sync::Arc::new(full_hd_set());
+        env.quality = Quality::Original;
+        let capabilities = Capabilities {
+            progressive_uri: true, hls_uri: false, packet_feed: false, pause: true, seek: true,
+            audio_track: true, subtitle_track: true, audio_off: false, subtitle_off: false,
+        };
+        env.uri_preflight_port = Some(ResolvePort::new(ProductEvidence {
+            display_exported: true, binding: Binding::Exported { canvas: (1920, 1080) },
+            callable: capabilities, certified: capabilities, preview_rectangle: false,
+        }, std::sync::Arc::new(ProductQualifier)));
+    });
+    assert!(plan.uri_original.is_none());
+    assert_eq!((plan.part_id, plan.media_index), (3134, 1));
+    assert!(plan.url.contains("/library/parts/3134/"), "{}", plan.url);
+    assert_eq!(requests.iter().filter(|line| line.starts_with("GET /library/metadata/rk-4k")).count(), 1);
+    assert_eq!(requests.iter().filter(|line| line.starts_with("POST /playQueues")).count(), 1);
 }
 
 #[test]
