@@ -10,6 +10,7 @@ pub mod acb_drive;
 pub mod picture_gate;
 pub mod uri_protocol;
 pub mod uri_lifecycle;
+pub mod register_ladder;
 #[cfg(feature = "devtriggers")]
 mod event_text;
 #[cfg(feature = "devtriggers")]

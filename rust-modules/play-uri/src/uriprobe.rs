@@ -22,8 +22,9 @@
 //! `Starting` (`play` sent; waits for `playing`), `Playing` (watches `currentTime`), then `Done`.
 //! Back and every failure go to logical `Done` through one `stop`: `unload` once a `mediaId` is
 //! known, `close` requested, the attempt settled exactly once and the summary written once. The
-//! separate ownership reducer retains the registration/window until confirmed release. Named→anon
-//! retry waits in `AwaitingClose`, then arms the new register deadline after `Closed`.
+//! separate ownership reducer retains the registration/window until confirmed release. The named→anon
+//! retry is the product driver's ladder (`register_ladder`, the one decision both call): it waits in
+//! `AwaitingClose`, then arms the new register deadline after `Closed`.
 //!
 //! The ACB arms require an existing boot-created playerType0 handle and a known SDR720p24
 //! fixture unless a validated native sourceInfo envelope arrives. They start service Play at
@@ -223,6 +224,7 @@ use super::uri_protocol::SCRUBBED_TEXT_CHARS;
 // The ACB steps are the shared bind sequence's (`acb_bind`); this machine only reports them.
 pub use super::acb_bind::{AcbRequest, Op as AcbOp};
 use super::acb_bind::{AcbBind, Event as AcbEvent, Failure as AcbFailure, Fx as AcbFx};
+use super::register_ladder::{self, Outcome, Step};
 
 /// What the driver feeds [`UriProbe::step`].
 #[derive(Clone, Debug, PartialEq)]
@@ -486,7 +488,10 @@ impl Default for Facts {
 pub struct UriProbe {
     config: Config,
     phase: Phase,
+    /// The identity this session registers as; the ladder moves it (see `next_shape_or_stop`).
     shape: Shape,
+    /// The identities refused so far: the input of `register_ladder::decide`.
+    refused: Vec<Outcome>,
     started_ms: u64,
     media_id: Option<MediaId>,
     subscribed: bool,
@@ -517,7 +522,8 @@ impl UriProbe {
         UriProbe {
             config,
             phase: Phase::Idle,
-            shape: Shape::Named,
+            shape: register_ladder::first(),
+            refused: Vec::new(),
             started_ms: 0,
             media_id: None,
             subscribed: false,
@@ -555,7 +561,7 @@ impl UriProbe {
             UriEvent::Back => self.stop(now_ms, End::Back, fx),
             UriEvent::Closed if self.phase == Phase::AwaitingClose => {
                 self.phase = Phase::Registering { deadline: now_ms.saturating_add(REGISTER_TIMEOUT_MS) };
-                fx.push(UriEffect::Open(Shape::Anon));
+                fx.push(UriEffect::Open(self.shape));
             }
             UriEvent::Closed => {},
             UriEvent::AcbReleaseTail {..} => {},
@@ -600,13 +606,6 @@ impl UriProbe {
     /// The tail of a call's log line: `ok`, or `err(<why>)`.
     fn said(ok: bool, denied: bool, text: &str) -> String {
         if ok && !denied { "ok".to_owned() } else { format!("err({text})") }
-    }
-
-    fn shape_label(shape: Shape) -> &'static str {
-        match shape {
-            Shape::Named => "named",
-            Shape::Anon => "anon",
-        }
     }
 
     fn tick(&mut self, now_ms: u64, fx: &mut Vec<UriEffect>) {
@@ -688,7 +687,7 @@ impl UriProbe {
         }
         match self.phase {
             Phase::Registering { .. } if method == Method::Register => {
-                let shape = Self::shape_label(self.shape);
+                let shape = register_ladder::label(self.shape);
                 if ok {
                     fx.push(self.line(now_ms, &format!("register shape={shape} ok")));
                     self.phase = Phase::Loading { deadline: now_ms + LOAD_TIMEOUT_MS };
@@ -710,14 +709,16 @@ impl UriProbe {
     /// A refused registration or a denied load: the named client gives way to the anonymous one,
     /// once; a refusal of the anonymous one ends the session.
     fn next_shape_or_stop(&mut self, now_ms: u64, end: End, fx: &mut Vec<UriEffect>) {
-        if self.shape == Shape::Named {
-            self.shape = Shape::Anon;
-            self.media_id = None;
-            self.subscribed = false;
-            fx.push(UriEffect::Close);
-            self.phase = Phase::AwaitingClose;
-        } else {
-            self.stop(now_ms, end, fx);
+        self.refused.push(Outcome::Refused);
+        match register_ladder::decide(&self.refused) {
+            Step::Register(shape) => {
+                self.shape = shape;
+                self.media_id = None;
+                self.subscribed = false;
+                fx.push(UriEffect::Close);
+                self.phase = Phase::AwaitingClose;
+            }
+            Step::Settled(_) | Step::Failed(_) => self.stop(now_ms, end, fx),
         }
     }
 
@@ -1075,7 +1076,7 @@ impl UriProbe {
             if self.config.window_id.is_some() { "exported" } else { "none" },
             self.config.variant.label(),
             self.config.scheme.label(),
-            Self::shape_label(self.shape),
+            register_ladder::label(self.shape),
         );
         if !self.config.transport {
             return summary;

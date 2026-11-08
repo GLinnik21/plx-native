@@ -74,7 +74,12 @@ can log pause, resume, seek, track selection and `setSubtitleEnable` behavior (i
 That probe is `devtriggers`-only and reports nothing to Plex; the product driver is separate and
 uses common attempt reporting. The play-uri crate holds their protocol and driver implementation.
 `play-uri/src/uri_protocol.rs` holds pure builders/strict decoding; `play-uri/src/uri_lifecycle.rs` owns registration
-and request correlation, close deadlines and quarantine. The probe's logical Done does not release
+and request correlation, close deadlines and quarantine. Which bus identity an attempt registers as is
+`play-uri/src/register_ladder.rs`, one pure decision the probe and the product driver both call: the named client
+(`com.webos.media.client.plxprobe`) first, and once the anonymous client when a set refuses the name at register or
+denies the registered name's first Load; the product driver releases the refused registration quietly (no
+notice the player sees) before it registers again, and a refusal of both rungs is the one existing `Failed(Refused)`
+and release, which takes the one URI to Feed handoff. The probe's logical Done does not release
 its adapter slot or exported window: the driver waits for successful bus unregister, keeps polling
 outside the player screen, and blocks reuse through unresolved close. Generic track/seek events and
 method ACKs remain distinct observations; they do not invent confirmation or resume policy.

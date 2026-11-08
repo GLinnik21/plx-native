@@ -62,9 +62,14 @@ mod uri_boot_tests {
         }
     }
 
-    struct Bus(Mutex<(bool, CloseStatus, Vec<(&'static str, RequestId, String)>, Vec<UriReply>)>);
+    /// `.0` a registration is waiting to be answered, `.1` the close status, `.2` the native calls
+    /// queued, `.3` the replies waiting, `.4` the identities registered as, in order, `.5` how many
+    /// of the next registrations the hub refuses (the first rung's, then the second's).
+    struct Bus(Mutex<(bool, CloseStatus, Vec<(&'static str, RequestId, String)>, Vec<UriReply>, Vec<Shape>, usize)>);
     impl Bus {
-        fn new() -> Self { Self(Mutex::new((false, CloseStatus::Open, Vec::new(), Vec::new()))) }
+        fn new() -> Self { Self(Mutex::new((false, CloseStatus::Open, Vec::new(), Vec::new(), Vec::new(), 0))) }
+        /// The identities the driver registered as, in order.
+        fn shapes(&self) -> Vec<Shape> { self.0.lock().unwrap().4.clone() }
         fn load_payload(&self) -> Option<String> {
             self.0.lock().unwrap().2.iter().find(|(method, _, _)| *method == "load")
                 .map(|(_, _, payload)| payload.clone())
@@ -99,8 +104,11 @@ mod uri_boot_tests {
         fn release(&self) { self.0.lock().unwrap().1 = CloseStatus::Released; }
     }
     impl UriMedia for Bus {
-        fn open(&self, _: Shape) -> Result<SessionId, String> {
-            self.0.lock().unwrap().0 = true;
+        fn open(&self, shape: Shape) -> Result<SessionId, String> {
+            let mut state = self.0.lock().unwrap();
+            state.0 = true;
+            state.1 = CloseStatus::Open;
+            state.4.push(shape);
             Ok(SessionId::new(1))
         }
         fn call(&self, _: SessionId, request: RequestId, method: &'static str,
@@ -111,8 +119,16 @@ mod uri_boot_tests {
         fn poll(&self, session: SessionId) -> Result<UriPoll, String> {
             let mut state = self.0.lock().unwrap();
             let mut replies = if std::mem::take(&mut state.0) {
+                let refused = state.5 > 0;
+                if refused {
+                    // The worker's answer to a registration the hub refused: a failed `register`
+                    // reply, and the release it confirms (no live handle was ever made).
+                    state.5 -= 1;
+                    state.1 = CloseStatus::Released;
+                }
                 vec![UriReply { session, request: RequestId::new(0), method: "register",
-                    payload: String::new(), ok: true }]
+                    payload: if refused { "code -1027: Invalid permissions".to_owned() } else { String::new() },
+                    ok: !refused }]
             } else { Vec::new() };
             replies.append(&mut state.3);
             Ok(UriPoll { replies, close: state.1 })
@@ -573,7 +589,19 @@ mod uri_boot_tests {
         };
         frame(&mut rig); // register opens the actual native Load
         bus.say("load", r#"{"returnValue":false}"#);
-        frame(&mut rig); // fatal addressed Load response begins native close
+        // The first rung's denied Load is not yet a failure (`register_ladder`): its registration
+        // closes quietly, and the anonymous client registers once that release is proven.
+        frame(&mut rig);
+        assert!(bus.0.lock().unwrap().1 == CloseStatus::Closing);
+        assert!(!plx_media::route::play_pending(), "a refused rung is no handoff");
+        bus.release();
+        frame(&mut rig); // exact release of the named registration: the anonymous one registers
+        assert_eq!(bus.shapes(), [Shape::Named, Shape::Anon]);
+        assert!(!plx_media::route::play_pending(), "the ladder still has its second rung");
+        frame(&mut rig); // the anonymous registration is granted and opens its own native Load
+        assert_eq!(bus.calls("load"), 2);
+        bus.say("load", r#"{"returnValue":false}"#);
+        frame(&mut rig); // the second rung's denied Load is fatal and begins native close
         assert!(bus.0.lock().unwrap().1 == CloseStatus::Closing);
         assert_eq!(rig.app.player.session.metric_request(), Some(request),
             "Closing is not a handled terminal error while a Feed candidate remains");
@@ -583,9 +611,78 @@ mod uri_boot_tests {
         frame(&mut rig);
         assert!(plx_media::route::play_pending(),
             "an exact Released proof starts the same-episode Feed resolve");
+        assert_eq!(bus.shapes(), [Shape::Named, Shape::Anon], "no third registration");
         assert_eq!(rig.app.player.session.metric_request(), Some(request),
             "automatic handoff retains the logical request identity");
         // The real URI driver's refused Load is ONE typed failed-start record at the Open stage,
+        // its handoff to Feed is ONE record naming the same source attempt, and the clean
+        // release that follows records nothing.
+        use plx_media::player::attempt_metrics::{Backend, Incident, Stage};
+        let records: Vec<_> = rig.app.adapters.player.backend_metric_notices().filter_map(|n| match n {
+            plx_media::player::backend::MetricNotice::Measured(
+                plx_media::player::attempt_metrics::Fx::Incident(record)) => Some(*record),
+            _ => None,
+        }).collect();
+        let failed: Vec<_> = records.iter().filter(|r| matches!(r.incident, Incident::Failed(_))).collect();
+        let handoffs: Vec<_> = records.iter().filter(|r| r.incident == Incident::Handoff).collect();
+        assert_eq!(failed.len(), 1, "{records:?}");
+        assert_eq!((failed[0].backend, failed[0].stage), (Backend::Uri, Stage::Open));
+        assert_eq!(handoffs.len(), 1, "{records:?}");
+        assert_eq!((handoffs[0].backend, handoffs[0].attempt), (Backend::Uri, failed[0].attempt));
+        assert_eq!(records.len(), 2, "no release or rebuffer record for a clean close: {records:?}");
+    }
+
+    #[cfg(feature = "play-feed")]
+    #[test]
+    fn a_hub_that_refuses_both_register_rungs_hands_the_same_request_to_feed() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving(false) else { return };
+        plx_plex::plex::client_for(rig.sid).unwrap()
+            .set_link(plx_plex::plex::probe::Location::Local);
+        let bus: &'static Bus = Box::leak(Box::new(Bus::new()));
+        bus.0.lock().unwrap().5 = 2; // the hub refuses the named client, then the anonymous one
+        let display: &'static Display = Box::leak(Box::new(Display));
+        let caps = Capabilities { progressive_uri: true, hls_uri: false,
+            packet_feed: false, pause: true, seek: true, audio_track: true,
+            subtitle_track: true, audio_off: false, subtitle_off: false };
+        let port = ResolvePort::new(ProductEvidence { display_exported: true,
+            binding: Binding::Exported { canvas: (1920, 1080) },
+            callable: caps, certified: caps, preview_rectangle: false },
+            Arc::new(QualifiedOriginal));
+        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+            &mut rig.app.adapters.player, &mut rig.app.player.session, port, bus, display));
+        rig.request();
+        let request = rig.app.player.session.metric_request().expect("logical request");
+        rig.release.send(()).unwrap();
+        let mut resolved = None;
+        poll_until("qualified URI source did not resolve", || {
+            resolved = plx_media::route::pump_play(&mut rig.app.player.session,
+                rig.app.bridge.metadata_mut());
+            resolved.is_some()
+        });
+        let offer = resolved.unwrap().uri_offer.expect("qualified original source");
+        assert!(rig.app.adapters.player.offer_qualified_uri(&mut rig.app.player.session,
+            offer).is_ok());
+        assert!(matches!(plx_media::player::start_playback_tracked(
+            &mut rig.app.player.session, &mut rig.app.adapters.player),
+            plx_media::player::BufferfeedStartOutcome::Launched(_)));
+        let frame = |rig: &mut Rig| {
+            let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
+            unsafe { playback_tick(&mut rig.app, &mut fr); }
+        };
+        frame(&mut rig); // the named client's registration is refused: released quietly, no Load
+        assert_eq!(bus.shapes(), [Shape::Named, Shape::Anon]);
+        assert_eq!(bus.calls("load"), 0);
+        assert!(!plx_media::route::play_pending(), "a refused rung is no handoff");
+        assert_eq!(rig.app.player.session.metric_request(), Some(request));
+        frame(&mut rig); // the anonymous client is refused too: the one failed start, then its release
+        assert_eq!(bus.shapes(), [Shape::Named, Shape::Anon], "no third registration");
+        assert_eq!(bus.calls("load"), 0, "no Load was ever sent");
+        assert!(plx_media::route::play_pending(),
+            "the confirmed release of the refused registrations starts the same-episode Feed resolve");
+        assert_eq!(rig.app.player.session.metric_request(), Some(request),
+            "automatic handoff retains the logical request identity");
+        // The real URI driver's refusal of both rungs is ONE typed failed-start record at the Open stage,
         // its handoff to Feed is ONE record naming the same source attempt, and the clean
         // release that follows records nothing.
         use plx_media::player::attempt_metrics::{Backend, Incident, Stage};
