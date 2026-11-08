@@ -1071,7 +1071,10 @@ mod backend_offer_session_tests {
         session.cur_contract.remux = true;
         assert_eq!(session.installed_feed_recipe(), OfferId::FEED_PMS_REMUX);
 
-        // The landing of a cold resume asks to reopen a recipe this request never started.
+        // The cold resume's apply_plan staged the recipe as the request's first candidate.
+        assert!(session.qualify_resolved_feed_offer(OfferId::FEED_PMS_REMUX,
+            CandidatePurpose::NewCandidate));
+        // Its landing then asks to reopen a recipe this request never started.
         assert!(session.qualify_installed_feed_offer(CandidatePurpose::ReopenCurrent));
         assert_eq!(session.planned_feed_purpose, CandidatePurpose::NewCandidate,
             "nothing was admitted, so there is nothing to reopen");
@@ -1083,6 +1086,81 @@ mod backend_offer_session_tests {
         assert!(session.qualify_installed_feed_offer(CandidatePurpose::ReopenCurrent));
         assert_eq!(session.planned_feed_purpose, CandidatePurpose::ReopenCurrent);
         assert!(session.backend_planned_feed_allowed());
+    }
+
+    #[test]
+    fn a_landing_over_a_staged_revisit_keeps_its_purpose_and_the_policys_verdict() {
+        let mut session = PlaybackSession::IDLE;
+        session.install_backends(plx_playback_contract::BackendSet::BOTH);
+        // The request played the Original, then the Auto worker moved it to HLS; both are admitted.
+        set_url(&mut session, "https://example.invalid/original.mkv");
+        assert!(session.qualify_installed_feed_offer(CandidatePurpose::NewCandidate));
+        assert!(session.backend_offer_admitted(BackendKind::Feed, OfferId::FEED_ORIGINAL));
+        set_url(&mut session, "https://example.invalid/hls.m3u8");
+        session.tsession = "hls-session".into();
+        session.cur_contract.delivery = plx_plex::plex::TranscodeDelivery::FixedHls {
+            seconds_per_segment: 2,
+        };
+        assert!(session.qualify_installed_feed_offer(CandidatePurpose::NewCandidate));
+        assert!(session.backend_offer_admitted(BackendKind::Feed, OfferId::FEED_PMS_HLS));
+        // The worker's return to the Original stages a Revisit, and the app is suspended before
+        // that reload's Start was admitted.
+        set_url(&mut session, "https://example.invalid/original.mkv");
+        session.tsession.clear();
+        session.cur_contract = Default::default();
+        assert!(session.qualify_transition_feed_offer(OfferId::FEED_ORIGINAL));
+        assert_eq!(session.planned_feed_purpose, CandidatePurpose::Revisit);
+        assert_eq!(session.admitted_feed_offer, Some(OfferId::FEED_PMS_HLS));
+
+        // The foreground restore's landing reinstalls the same route and asks to reopen it.
+        assert!(session.qualify_installed_feed_offer(CandidatePurpose::ReopenCurrent));
+        assert_eq!(session.planned_feed_purpose, CandidatePurpose::Revisit,
+            "the recipe was staged, never admitted: its staged purpose stays");
+        let policy_allows = session.backend_policy.as_ref().is_some_and(|policy|
+            policy.can_revisit(BackendKind::Feed, OfferId::FEED_ORIGINAL));
+        assert!(policy_allows);
+        assert_eq!(session.backend_planned_feed_allowed(), policy_allows);
+        assert!(session.backend_offer_admitted(BackendKind::Feed, OfferId::FEED_ORIGINAL));
+    }
+
+    #[test]
+    fn a_landing_over_a_staged_rollback_keeps_its_purpose_and_the_policys_verdict() {
+        let mut session = PlaybackSession::IDLE;
+        session.install_backends(plx_playback_contract::BackendSet::BOTH);
+        set_url(&mut session, "https://example.invalid/hls.m3u8");
+        session.tsession = "hls-session".into();
+        session.cur_contract.delivery = plx_plex::plex::TranscodeDelivery::FixedHls {
+            seconds_per_segment: 2,
+        };
+        assert!(session.qualify_installed_feed_offer(CandidatePurpose::NewCandidate));
+        assert!(session.backend_offer_admitted(BackendKind::Feed, OfferId::FEED_PMS_HLS));
+        // An Original trial is admitted, then fails.
+        set_url(&mut session, "https://example.invalid/original.mkv");
+        session.tsession.clear();
+        session.cur_contract = Default::default();
+        assert!(session.qualify_installed_feed_offer(CandidatePurpose::NewCandidate));
+        assert!(session.backend_offer_admitted(BackendKind::Feed, OfferId::FEED_ORIGINAL));
+        // The rollback install stages the previous HLS exactly as `rollback_original_recovery` does (its
+        // admission marker cleared, the policy's one allowance not yet spent), and the app is
+        // suspended before its Start was admitted.
+        set_url(&mut session, "https://example.invalid/hls.m3u8");
+        session.tsession = "hls-session".into();
+        session.cur_contract.delivery = plx_plex::plex::TranscodeDelivery::FixedHls {
+            seconds_per_segment: 2,
+        };
+        session.planned_feed_offer = Some(OfferId::FEED_PMS_HLS);
+        session.planned_feed_purpose = CandidatePurpose::RollbackExisting;
+        session.admitted_feed_offer = None;
+
+        assert!(session.qualify_installed_feed_offer(CandidatePurpose::ReopenCurrent));
+        assert_eq!(session.planned_feed_purpose, CandidatePurpose::RollbackExisting,
+            "the recipe was staged, never admitted: its staged purpose stays");
+        let policy_allows = session.backend_policy.as_ref().is_some_and(|policy|
+            policy.can_rollback_existing(BackendKind::Feed, OfferId::FEED_PMS_HLS));
+        assert!(policy_allows);
+        assert_eq!(session.backend_planned_feed_allowed(), policy_allows);
+        assert!(session.backend_offer_admitted(BackendKind::Feed, OfferId::FEED_PMS_HLS));
+        assert_eq!(session.planned_feed_purpose, CandidatePurpose::ReopenCurrent);
     }
 }
 
@@ -1393,11 +1471,14 @@ impl PlaybackSession {
         let purpose = if still_current {
             CandidatePurpose::ReopenCurrent
         } else if purpose == CandidatePurpose::ReopenCurrent
-            && self.admitted_feed_offer != Some(id) {
-            // A cold resume's landing: this request has not started the recipe yet, so there is
-            // nothing to reopen; it is the request's first candidate. (After the first admission
-            // `backend_offer_admitted` switches the purpose to ReopenCurrent itself.)
-            CandidatePurpose::NewCandidate
+            && self.admitted_feed_offer != Some(id) && self.planned_feed_offer == Some(id) {
+            // A landing that reopens a recipe the request has not admitted has nothing to reopen:
+            // the recipe is only STAGED, and its staged purpose (the one `apply_plan` or a rollback
+            // install published, which only `backend_offer_admitted` replaces) says how the door
+            // may admit it. A cold resume's apply_plan staged NewCandidate (it is the request's
+            // first candidate); a suspend between an Auto landing or a rollback install and its
+            // Start leaves Revisit or RollbackExisting.
+            self.planned_feed_purpose
         } else {
             purpose
         };
