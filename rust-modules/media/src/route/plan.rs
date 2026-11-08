@@ -1432,7 +1432,8 @@ pub struct ResolveEnv {
     pub resume_ns: i64,
     /// The SOURCE's whole-stream bitrate in **kbps**, or `0` when nobody has measured it — the
     /// other half of what [`quality_policy`] needs, beside the frame size the playing-item store
-    /// already carries.
+    /// already carries. It measures the first version: when the worker plays another one instead,
+    /// [`build_stream`] measures that version's own `PlayingItem::bitrate`.
     ///
     /// It comes off the LOADED DETAIL (`metadata::current().bitrate`, `Media[0]`) when that detail
     /// is this item, which is the ordinary path: a card's OK opens the detail page and Play is
@@ -1844,6 +1845,10 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             plan.playing = playing;
             plan.src_fps = plan.playing.as_ref().map_or(0.0, |p| p.video_fps);
             plan.playing_fresh = env.cached_item.is_none() && plan.playing.is_some();
+            let src_kbps = match (env.version, played.as_ref()) {
+                (None, Some(_)) => plan.playing.as_ref().map_or(0, |p| p.bitrate),
+                _ => env.src_kbps,
+            };
             if let (Some(id), Some(item)) = (env.subtitle_override, plan.playing.as_mut()) {
                 // The retry's explicit selection owns both embedded and sidecar restoration; a stale
                 // server-side selection must not turn subtitles back on after the viewer chose Off.
@@ -1994,8 +1999,8 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 (env.audio_sid <= 0 || source_audio.is_some())
                     && (env.subtitle_override.unwrap_or(0) <= 0 || source_sub_stream.is_some())
             }) {
-                let source_kbps = plan.playing.as_ref().map_or(env.src_kbps, |p|
-                    if p.bitrate > 0 { p.bitrate } else { env.src_kbps });
+                let source_kbps = plan.playing.as_ref().map_or(src_kbps, |p|
+                    if p.bitrate > 0 { p.bitrate } else { src_kbps });
                 let (width, height) = plan.playing.as_ref().map_or((0, 0), |p| (p.width, p.height));
                 let quality = if forced { Quality::Original } else { env.quality };
                 let request = super::uri_preflight::OriginalRequest {
@@ -2282,7 +2287,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 .as_ref()
                 .map(|p| p.bitrate)
                 .filter(|&v| v > 0)
-                .unwrap_or(env.src_kbps);
+                .unwrap_or(src_kbps);
             // **Does the app draw the picked EMBEDDED subtitle itself, beside a remux?** On a local link
             // with a known, moderate Part bitrate the side reader (`plx_play_feed::side_reader`) reads the track from
             // the film's own Part, so the server neither burns it nor needs a different audio track for
@@ -2359,7 +2364,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             // Auto tentatively admits Original. A direct Remote earns that admission below with an
             // actual-file sample; Local gets it immediately, while Relay is still denied independently
             // by `link`. Fixed rungs retain their ordinary ceiling policy.
-            let tentative_quality = quality_policy(playback_quality, true, env.src_kbps, src_w, src_h);
+            let tentative_quality = quality_policy(playback_quality, true, src_kbps, src_w, src_h);
             let mut allowed = direct_play_policy(env.direct_play_mode, flavors_allowed(link, tentative_quality));
             // MDE verdict for this resolve: Some(original)=Part.decision=directplay, Some(!original)=
             // start.mkv, None=unreachable/unusable OR never asked (gates already refused Original).
@@ -2634,7 +2639,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             if adaptive {
                 allowed = flavors_allowed(
                     link,
-                    quality_policy(playback_quality, false, env.src_kbps, src_w, src_h),
+                    quality_policy(playback_quality, false, src_kbps, src_w, src_h),
                 );
                 directplay = false;
                 plan.contract.delivery = plx_plex::plex::TranscodeDelivery::FixedHls {
@@ -2660,7 +2665,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             }
             // The ceiling and source measurement ride every plan so seeks and track changes rebuild the
             // same flavor instead of silently dropping the user's choice.
-            plan.src_measure = (env.src_kbps, src_w, src_h);
+            plan.src_measure = (src_kbps, src_w, src_h);
             plan.transport_kbps = source_transport_kbps;
             // See `Session::cur_auto_original_watched`: Auto running Original is the whole condition, and
             // the link's tier is not part of it.
@@ -2671,7 +2676,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 crate::player::log(&format!(
                     "route: quality ceiling {:?} — source {}kbps {src_w}x{src_h}; denying direct play + remux, re-encoding",
                     playback_quality,
-                    env.src_kbps
+                    src_kbps
                 ));
             }
             // The codec-preserving remux, decided once for both readers below: the enhancement's family

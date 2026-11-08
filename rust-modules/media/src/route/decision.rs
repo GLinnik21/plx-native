@@ -10023,13 +10023,12 @@ fn leave_a_cached_default_the_set_cannot_decode(
     if env.version.is_some() || env.cached_item.is_none() {
         return;
     }
-    let chosen = meta
+    let replaced = meta
         .current()
         .filter(|d| plx_plex::plex::same_item((d.sid, &d.rk), (sid, rk)))
-        .and_then(|d| automatic_version(&d.versions, env));
-    if let Some(version) = chosen {
+        .is_some_and(|d| automatic_version(&d.versions, env).is_some());
+    if replaced {
         env.cached_item = None;
-        env.src_kbps = version.kbps;
     }
 }
 

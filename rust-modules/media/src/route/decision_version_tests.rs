@@ -166,6 +166,18 @@ fn a_picked_version_wins_over_the_decoder() {
 
 #[test]
 #[cfg(feature = "devtriggers")]
+fn a_fixed_quality_measures_the_1080p_version_it_resolved() {
+    let (plan, requests) = resolve_with("rk-4k", FOUR_K_DEFAULT, MDE_DIRECTPLAY, |env| {
+        env.caps = std::sync::Arc::new(full_hd_set());
+        env.quality = Quality::P1080;
+    });
+    assert_eq!(plan.src_measure, (2372, 1920, 800));
+    assert!(plan.url.contains("/library/parts/3134/"), "{}", plan.url);
+    assert!(!requests.iter().any(|l| l.contains("/transcode/universal/start")), "{requests:?}");
+}
+
+#[test]
+#[cfg(feature = "devtriggers")]
 fn force_direct_play_attempts_the_4k_original_listed_first() {
     let (plan, _) = resolve_with("rk-4k", FOUR_K_DEFAULT, MDE_DIRECTPLAY, |env| {
         env.caps = std::sync::Arc::new(full_hd_set());
@@ -215,7 +227,6 @@ fn a_page_whose_default_the_set_cannot_decode_gives_up_its_cached_copy() {
     env.direct_play_mode = DirectPlayMode::Auto;
     leave_a_cached_default_the_set_cannot_decode(&mut env, meta.view(), sid, "rk-4k");
     assert!(env.cached_item.is_none(), "the page describes the 4K, which this decoder cannot take");
-    assert_eq!(env.src_kbps, 2372);
     plx_data::metadata::set_current_for_test(meta.state_mut(), None);
 }
 
