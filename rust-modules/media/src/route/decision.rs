@@ -1061,6 +1061,29 @@ mod backend_offer_session_tests {
         assert!(!session.backend_planned_feed_allowed(),
             "a new URL or later refusal cannot replenish the spent audio conversion");
     }
+
+    #[test]
+    fn a_cold_resume_landing_is_the_requests_first_candidate_not_a_reopen() {
+        let mut session = PlaybackSession::IDLE;
+        session.install_backends(plx_playback_contract::BackendSet::BOTH);
+        set_url(&mut session, "https://example.invalid/resume-remux.mkv");
+        session.tsession = "pms-resume".into();
+        session.cur_contract.remux = true;
+        assert_eq!(session.installed_feed_recipe(), OfferId::FEED_PMS_REMUX);
+
+        // The landing of a cold resume asks to reopen a recipe this request never started.
+        assert!(session.qualify_installed_feed_offer(CandidatePurpose::ReopenCurrent));
+        assert_eq!(session.planned_feed_purpose, CandidatePurpose::NewCandidate,
+            "nothing was admitted, so there is nothing to reopen");
+        assert!(session.backend_planned_feed_allowed(),
+            "the start door admits the resumed recipe as the request's first candidate");
+        assert!(session.backend_offer_admitted(BackendKind::Feed, OfferId::FEED_PMS_REMUX));
+
+        // Once admitted, the same request is a real reopen and stays one.
+        assert!(session.qualify_installed_feed_offer(CandidatePurpose::ReopenCurrent));
+        assert_eq!(session.planned_feed_purpose, CandidatePurpose::ReopenCurrent);
+        assert!(session.backend_planned_feed_allowed());
+    }
 }
 
 /// What the server actually did with a requested Plex Pass audio enhancement (issue #266) — as
@@ -1367,7 +1390,17 @@ impl PlaybackSession {
         let still_current = purpose == CandidatePurpose::RollbackExisting
             && self.backend_policy.as_ref().is_some_and(|policy|
                 policy.can_reopen(plx_playback_contract::BackendKind::Feed, id));
-        let purpose = if still_current { CandidatePurpose::ReopenCurrent } else { purpose };
+        let purpose = if still_current {
+            CandidatePurpose::ReopenCurrent
+        } else if purpose == CandidatePurpose::ReopenCurrent
+            && self.admitted_feed_offer != Some(id) {
+            // A cold resume's landing: this request has not started the recipe yet, so there is
+            // nothing to reopen; it is the request's first candidate. (After the first admission
+            // `backend_offer_admitted` switches the purpose to ReopenCurrent itself.)
+            CandidatePurpose::NewCandidate
+        } else {
+            purpose
+        };
         if still_current {
             // A failed Original trial may be abandoned before its Start was admitted. The
             // previous HLS is still the last physical recipe, even though staging the trial
