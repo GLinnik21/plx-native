@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-08T16:10:07Z",
+ "generated": "2026-11-08T16:15:18Z",
  "metrics": [
   {
    "change30_pct": 99.1,
@@ -123,18 +123,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 31.9,
-   "change7_pct": 19.3,
+   "change30_pct": 31.3,
+   "change7_pct": 18.8,
    "d30": 351,
-   "delta30": 112,
-   "delta7": 75,
+   "delta30": 110.0,
+   "delta7": 73.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 47,
+   "n_now": 48,
    "n_prev": 89,
-   "now": 463,
+   "now": 461.0,
    "prev7": 388,
    "shown": true,
    "state": "worse",
@@ -354,18 +354,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 31.8,
-   "change7_pct": 11.2,
+   "change30_pct": 33.0,
+   "change7_pct": 12.3,
    "d30": 233.0,
-   "delta30": 74.0,
-   "delta7": 31,
+   "delta30": 77.0,
+   "delta7": 34.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 45,
+   "n_now": 46,
    "n_prev": 81,
-   "now": 307,
+   "now": 310.0,
    "prev7": 276,
    "shown": true,
    "state": "flat",
@@ -375,18 +375,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 38.7,
-   "change7_pct": 8.6,
+   "change30_pct": 40.0,
+   "change7_pct": 9.6,
    "d30": 155.0,
-   "delta30": 60.0,
-   "delta7": 17,
+   "delta30": 62.0,
+   "delta7": 19.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 45,
+   "n_now": 46,
    "n_prev": 81,
-   "now": 215,
+   "now": 217.0,
    "prev7": 198,
    "shown": true,
    "state": "flat",
@@ -396,18 +396,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -41.0,
-   "change7_pct": -1.9,
+   "change30_pct": -40.6,
+   "change7_pct": -1.2,
    "d30": 359.5,
-   "delta30": -147.5,
-   "delta7": -4,
+   "delta30": -146.0,
+   "delta7": -2.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 45,
+   "n_now": 46,
    "n_prev": 81,
-   "now": 212,
+   "now": 213.5,
    "prev7": 216,
    "shown": true,
    "state": "flat",
@@ -484,14 +484,14 @@
    "change7_pct": 11.1,
    "d30": 17.0,
    "delta30": 3.0,
-   "delta7": 2,
+   "delta7": 2.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 45,
+   "n_now": 46,
    "n_prev": 81,
-   "now": 20,
+   "now": 20.0,
    "prev7": 18,
    "shown": false,
    "state": "flat",
@@ -628,6 +628,11 @@
      "pr": 1276,
      "sha": "3309be023",
      "title": "The playback build/package matrix: PLAYBACK_BACKENDS selects both, uri, feed or none (P7)"
+    },
+    {
+     "pr": 1133,
+     "sha": "69bbb7d39",
+     "title": "Preserve baseline audio codecs and size converted Opus on webOS"
     }
    ],
    "from": 328.5,
@@ -640,11 +645,6 @@
   {
    "change_pct": 26.0,
    "commits": [
-    {
-     "pr": 1263,
-     "sha": "2f5e79630",
-     "title": "Playback: a Dolby Vision resume or seek that lands on a CRA plays the HDR10 base layer"
-    },
     {
      "pr": 1265,
      "sha": "96be5e274",
@@ -689,6 +689,11 @@
      "pr": 1276,
      "sha": "3309be023",
      "title": "The playback build/package matrix: PLAYBACK_BACKENDS selects both, uri, feed or none (P7)"
+    },
+    {
+     "pr": 1133,
+     "sha": "69bbb7d39",
+     "title": "Preserve baseline audio codecs and size converted Opus on webOS"
     }
    ],
    "from": 242.0,
@@ -740,6 +745,11 @@
      "pr": 1276,
      "sha": "3309be023",
      "title": "The playback build/package matrix: PLAYBACK_BACKENDS selects both, uri, feed or none (P7)"
+    },
+    {
+     "pr": 1133,
+     "sha": "69bbb7d39",
+     "title": "Preserve baseline audio codecs and size converted Opus on webOS"
     }
    ],
    "from": 74.8,
@@ -750,7 +760,7 @@
    "to": 93.7
   },
   {
-   "change_pct": 19.3,
+   "change_pct": 18.8,
    "commits": [
     {
      "pr": 1268,
@@ -791,6 +801,11 @@
      "pr": 1276,
      "sha": "3309be023",
      "title": "The playback build/package matrix: PLAYBACK_BACKENDS selects both, uri, feed or none (P7)"
+    },
+    {
+     "pr": 1133,
+     "sha": "69bbb7d39",
+     "title": "Preserve baseline audio codecs and size converted Opus on webOS"
     }
    ],
    "from": 388,
@@ -798,7 +813,7 @@
    "label": "Wait after merge",
    "since": "2026-11-08",
    "threshold_pct": 15.0,
-   "to": 463
+   "to": 461.0
   }
  ],
  "schema": 2,
