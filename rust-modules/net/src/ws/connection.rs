@@ -119,6 +119,7 @@ impl<M: FnMut() -> [u8; 4]> Connection<M> {
                 true
             }
             State::Connecting => {
+                self.outgoing.clear();
                 self.state = State::Closed;
                 true
             }
@@ -482,6 +483,14 @@ mod tests {
         }
         assert!(!rig.conn.close(1000, &"r".repeat(124)));
         assert!(rig.conn.close(1000, &"r".repeat(123)));
+    }
+
+    #[test]
+    fn closing_before_the_request_is_taken_withdraws_it() {
+        let mut rig = Rig::new(1024);
+        assert!(rig.conn.close(1000, ""));
+        assert!(rig.conn.is_closed());
+        assert!(rig.conn.take_outgoing().is_empty());
     }
 
     #[test]
