@@ -1857,7 +1857,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             }
             if let (None, Some(v)) = (env.version, played.as_ref()) {
                 crate::player::log(&format!(
-                    "route: the first version cannot play directly; version {} (mediaIndex {}) can",
+                    "route: the first version cannot play directly; playing version {} (mediaIndex {}) instead",
                     v.id.0, v.index
                 ));
             }
