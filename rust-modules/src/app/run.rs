@@ -706,7 +706,7 @@ fn publish_player_model(app: &mut App) {
         app.adapters.player.backend_viewer_paused().unwrap_or(false));
     model.marker_prefs = app.bridge.marker_preferences();
     model.covered = app.pages.surface_up();
-    if let Some(screen) = super::bridge::player_mut(&mut app.pages) { screen.model = model; }
+    if let Some(screen) = super::bridge::player_mut(&mut app.pages) { screen.set_model(model); }
 }
 
 /// **The `Rig`-delegated privileged primitives** (spec §15.2, D4). `Bridge`'s `Rig` impl
@@ -1105,6 +1105,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         // Outside the player guard below on purpose: this is the OS taking the screen from
         // whatever is on it, not a fact about playback.
         super::bridge::background(&mut app.pages);
+        app.ptr.sync_back_cursor(None, None);
         // The notification feed is a live socket the OS will not keep: cancel it at the first edge
         // that says the screen is going (idempotent on the second), reopened by DID foreground.
         app.bridge.notify_suspend();
@@ -1208,6 +1209,12 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         // ones that forward them to a screen's own `move_focus`/`key`, and the modal
         // panels and the CH▲/CH▼ pager, which still spell their own key tests.
         let key = classify(sym, wcode);
+        // LG can report its own pointer hide as a key-shaped SDL event. It is
+        // a notification, so it must not wake the HUD or spend Back's exit latch.
+        if key == Key::PointerHidden {
+            app.ptr.edge.stop();
+            return;
+        }
         if app.boot_initial.is_some() {
             let event = super::bridge::key_input(sym, wcode, state,
                 plx_machine::machine::Tick { ms: clock::now(), dt_us: 0 }, plx_machine::machine::Source::Sdl);
@@ -1298,6 +1305,8 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             return;
         }
         let viewer_paused = viewer_paused_for(&app.player.session, &app.adapters.player);
+        let ordered_player_back = key == Key::Back && tree_owns_key && !app.pages.surface_up()
+            && matches!(app.route(), AppArg::Player);
         begin_fresh_press(&mut app.player.session,
             key,
             sym,
@@ -1305,7 +1314,9 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             app.last_input,
             viewer_paused,
             &mut app.down_sym,
-            super::bridge::player_mut(&mut app.pages).map(|player| &mut player.hud),
+            if ordered_player_back { None } else {
+                super::bridge::player_mut(&mut app.pages).map(|player| &mut player.hud)
+            },
             &mut app.ptr,
             &mut app.ok_armed,
             &mut app.input.press,
@@ -1359,6 +1370,8 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         // it. Nothing is stranded by going to the television's Home — the question is
         // neither answered nor dismissed, and selecting the tile again comes back to it.
         if tree_owns_key {
+            // Ingress already resolved the driver's repeat-marked fresh press.
+            let state = if ordered_player_back { state & !0x100 } else { state };
             app.inputs.push(super::bridge::key_input(sym, wcode, state, tree_tick, plx_machine::machine::Source::Sdl));
             return;
         }
@@ -1497,10 +1510,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
     } else if et == SDL_MOUSEMOTION {
         app.last_input = clock::now();
         app.ptr.last_motion = app.last_input;
-        if app.ptr.cur_hidden {
-            show_cursor_after_motion();
-        }
-        app.ptr.cur_hidden = false;
+        app.ptr.note_cursor_motion();
         let (mx, my) = ptr_xy(&app.ev);
         if app.boot_initial.is_none() {
             app.rec.input(super::recorder::enc_pointer("pointer", mx as i32, my as i32));
@@ -1574,12 +1584,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             let (cx, cy) = ptr_xy(&app.ev);
             app.pages.input.hit.top_at(cx, cy).is_some()
         };
-        let as_ok = super::input::click_is_ok(
-            app.ptr.dpad_mode,
-            app.ptr.mot_accum,
-            on_control,
-            unsafe { super::boot::cursor_is_transparent() },
-        );
+        let as_ok = app.ptr.click_is_ok(on_control, super::boot::cursor_is_transparent());
         if as_ok {
             app.ptr.ok_from_click = true;
             super::events::remote_synth_key_edge(SDLK_RETURN, 0, true);
@@ -3829,7 +3834,7 @@ unsafe fn controlled_key_input(app: &mut App, event: plx_machine::machine::Input
     if matches!(event.kind, InputKind::Pointer{..}|InputKind::Click{..}|InputKind::Drag{..}) {
         app.last_input=event.at.ms;
         app.ptr.last_motion=event.at.ms;
-        app.ptr.cur_hidden=false;
+        app.ptr.note_cursor_motion();
         if matches!(event.kind,InputKind::Click{..}) { app.ptr.button_down=true; }
         plx_machine::idle::invalidate();
         app.inputs.push(event);
@@ -5438,6 +5443,136 @@ mod lifecycle_regression_tests {
         super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
         frame(&mut app, 16);
         assert!(super::super::bridge::owns_input(&app.pages), "the player page owns input");
+    }
+
+    fn back_pointer_test_app() -> (App, Frame) {
+        let mut app = app();
+        super::super::bridge::show_page(&mut app.pages, AppArg::Player);
+        frame(&mut app, 16);
+        clock::set_replay(100);
+        publish_product_frame(&mut app, true);
+        let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
+        fr.now = 100;
+        back_pointer_event(&mut app, &mut fr, SDL_MOUSEMOTION, 500);
+        dispatch_back_pointer_inputs(&mut app, &fr);
+        assert!(super::super::bridge::player(&app.pages).unwrap().hud.until > fr.now);
+        (app, fr)
+    }
+
+    fn back_pointer_event(app: &mut App, fr: &mut Frame, et: u32, x: i32) {
+        app.ev = [0; 128];
+        app.ev[20..24].copy_from_slice(&x.to_ne_bytes());
+        app.ev[24..28].copy_from_slice(&300i32.to_ne_bytes());
+        event(app, fr, et);
+    }
+
+    fn queue_back(app: &mut App, fr: &mut Frame) {
+        for pressed in [true, false] {
+            app.ev = encode_key(0, plx_ui::consts::WCODE_BACK, pressed);
+            event(app, fr, if pressed { SDL_KEYDOWN } else { SDL_KEYUP });
+        }
+    }
+
+    fn dispatch_back_pointer_inputs(app: &mut App, fr: &Frame) {
+        let tick = plx_machine::machine::Tick { ms: fr.now, dt_us: 16_000 };
+        super::super::bridge::frame(&mut app.pages, &mut app.bridge, tick, std::mem::take(&mut app.inputs));
+    }
+
+    #[test]
+    fn back_pointer_drift_in_the_same_sdl_batch_cannot_steal_the_exit() {
+        let _serial = plx_base::testlock::serial();
+        let (mut app, mut fr) = back_pointer_test_app();
+        queue_back(&mut app, &mut fr);
+        back_pointer_event(&mut app, &mut fr, SDL_MOUSEMOTION, 501);
+        app.ev = encode_key(0, WCODE_POINTER_HIDDEN, true);
+        event(&mut app, &mut fr, SDL_KEYDOWN);
+        queue_back(&mut app, &mut fr);
+
+        dispatch_back_pointer_inputs(&mut app, &fr);
+        assert!(!app.refresh_hubs);
+        content_requests(&mut app, &mut fr);
+        assert!(app.refresh_hubs, "the second Back exits even with drift in the same SDL batch");
+        assert!(!app.ptr.cur_hidden, "the exit supersedes the pending hide");
+    }
+
+    #[test]
+    fn back_pointer_drift_and_hidden_notification_keep_the_hud_down_until_four_pixels() {
+        let _serial = plx_base::testlock::serial();
+        let (mut app, mut fr) = back_pointer_test_app();
+        queue_back(&mut app, &mut fr);
+        dispatch_back_pointer_inputs(&mut app, &fr);
+        content_requests(&mut app, &mut fr);
+        assert!(app.ptr.cur_hidden);
+        assert!(app.ptr.click_is_ok(true, true), "a click while legacy transparency is installed is OK");
+        let focus = app.pages.focus();
+        for x in [502, 498, 502] {
+            app.ev = encode_key(0, WCODE_POINTER_HIDDEN, true);
+            event(&mut app, &mut fr, SDL_KEYDOWN);
+            back_pointer_event(&mut app, &mut fr, SDL_MOUSEMOTION, x);
+            dispatch_back_pointer_inputs(&mut app, &fr);
+            content_requests(&mut app, &mut fr);
+            assert!(super::super::bridge::player(&app.pages).unwrap().hud.dismissed);
+            assert!(app.ptr.cur_hidden);
+            assert_eq!(app.pages.focus(), focus);
+        }
+
+        back_pointer_event(&mut app, &mut fr, SDL_MOUSEMOTION, 504);
+        dispatch_back_pointer_inputs(&mut app, &fr);
+        content_requests(&mut app, &mut fr);
+        assert!(!super::super::bridge::player(&app.pages).unwrap().hud.dismissed);
+        assert!(!app.ptr.cur_hidden);
+        assert!(!app.ptr.click_is_ok(true, true));
+    }
+
+    #[test]
+    fn back_pointer_crossing_in_the_same_batch_cancels_the_hide() {
+        let _serial = plx_base::testlock::serial();
+        let (mut app, mut fr) = back_pointer_test_app();
+        queue_back(&mut app, &mut fr);
+        back_pointer_event(&mut app, &mut fr, SDL_MOUSEMOTION, 504);
+        dispatch_back_pointer_inputs(&mut app, &fr);
+        content_requests(&mut app, &mut fr);
+        assert!(!app.ptr.cur_hidden);
+        assert!(!super::super::bridge::player(&app.pages).unwrap().hud.dismissed);
+    }
+
+    #[test]
+    fn back_pointer_click_ignores_the_previous_frames_scrub_target() {
+        use plx_machine::machine::FocusKey;
+        use plx_screens::registry::PlayerReq;
+        use plx_ui::{screen::{Activate, Hover, Stop}, Rect};
+        let _serial = plx_base::testlock::serial();
+        let (mut app, mut fr) = back_pointer_test_app();
+        let key = FocusKey { elem: plx_appkit::player_hud::ELEM_SCRUB,
+            ..app.pages.focus().expect("the player has a scrub seat") };
+        app.pages.input.hit.fill(vec![Stop {
+            key, rect: Rect::FULL, rest_rect: Rect::FULL, clip: Rect::FULL,
+            hover: Hover::Ignore, activate: Activate::Direct,
+        }]);
+        app.pages.input.hit.swap();
+
+        queue_back(&mut app, &mut fr);
+        back_pointer_event(&mut app, &mut fr, SDL_MOUSEBUTTONDOWN, 500);
+        dispatch_back_pointer_inputs(&mut app, &fr);
+        assert!(app.bridge.take_player_reqs().contains(&PlayerReq::Transport(None)));
+        assert!(!super::super::bridge::player(&app.pages).unwrap().scrub.drag);
+    }
+
+    #[test]
+    fn back_pointer_cleanup_preserves_an_existing_hide() {
+        use plx_machine::machine::{InstanceId, MachineId};
+        use plx_screens::registry::BackCursorChange;
+        let target = (MachineId::Instance(InstanceId(1)), 7);
+        let replacement = (target.0, 8);
+        for already_hidden in [false, true] {
+            let mut ptr = Pointer::IDLE;
+            ptr.cur_hidden = already_hidden;
+            ptr.sync_back_cursor(Some(target), Some((target, BackCursorChange::Hide)));
+            assert!(ptr.cur_hidden && ptr.click_is_ok(true, true));
+            ptr.sync_back_cursor(Some(replacement), Some((target, BackCursorChange::Hide)));
+            assert_eq!(ptr.cur_hidden, already_hidden, "cleanup restores only Back's cursor");
+            assert!(!ptr.click_is_ok(true, true), "the previous playback cannot keep the hold");
+        }
     }
 
     #[test]

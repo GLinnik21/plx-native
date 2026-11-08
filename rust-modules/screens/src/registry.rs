@@ -33,7 +33,7 @@ use std::sync::Arc;
 use crate::settings::{Family, RouteSurface};
 use plx_data::stores::{StoreCmd, StoreId, StoreWork};
 use plx_machine::machine::{
-    Canon, Chrome, Cx, Effects, EntryId, Host, InstanceId, LogicalState, ScreenId,
+    Canon, Chrome, Cx, Effects, EntryId, Host, InstanceId, LogicalState, MachineId, ScreenId,
 };
 use plx_ui::screen::{Mounter, ReturnState, Screen};
 
@@ -196,6 +196,14 @@ pub struct ItemMenuReq {
     pub from_home: bool,
 }
 
+/// A change to the cursor hold started when Back dismisses the player transport.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BackCursorChange {
+    Hide,
+    Wake,
+    Release,
+}
+
 /// **What a player overlay asks for**, once its own `step` has decided.
 ///
 /// A panel on the player's page-owned `ModalStack` owns its own state and its own input, but not
@@ -205,6 +213,11 @@ pub struct ItemMenuReq {
 /// So the panel decides and the loop performs, exactly as `LibraryReq` does for the Library.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlayerReq {
+    BackCursor {
+        owner: MachineId,
+        playback: u32,
+        change: BackCursorChange,
+    },
     AutoSkip { id: plx_appkit::skip_policy::OfferId, reply: plx_machine::machine::MachineId },
     CancelAutoSkip(plx_appkit::skip_policy::OfferId),
     /// Accepted only after the owned player confirmation. Never emitted by boot or Play.
@@ -2748,7 +2761,9 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // Incompatible replay anchors are re-recorded through tools/plxnative-rec rerecord.
 // The restored Up Next pair retains a scoped declined segment across timer/grant changes.
 // Previous screen pin: 0x1802_f17e_e583_f977; re-record incompatible replay anchors.
-const SCREEN_SHAPES_PIN: u64 = 0xf852_85cc_f116_356b;
+// The player's Back motion gate keeps its last position and fixed anchor in the canon.
+// Previous pin: 0xf852_85cc_f116_356b. Re-record incompatible replay anchors.
+const SCREEN_SHAPES_PIN: u64 = 0x7e36_4373_746a_c3dc;
 
 #[cfg(test)]
 mod arg_tests {

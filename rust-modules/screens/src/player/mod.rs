@@ -69,7 +69,7 @@ pub const WORD: &str = "player";
 /// The fields [`PlayerScreen::write`] canonicalises, for the recorder's shape pin (§5.4).
 pub const SHAPE: &str =
     "PlayerScreen{hud:{focus:i32,btn:i32,tab:i32,until:u32,dismissed:bool,visible_at_press:bool,\
-     exit_armed:bool,back_leaves_at_press:bool,offer:Option<(u32,i64)>,was_standin:bool},scrub:{dir:i32,hold:bool,reveal:bool,drag:bool,\
+     exit_armed:bool,back_leaves_at_press:bool,offer:Option<(u32,i64)>,was_standin:bool},back_motion:{position:Option<(f32,f32)>,anchor:Option<Option<(f32,f32)>>},scrub:{dir:i32,hold:bool,reveal:bool,drag:bool,\
      ns:i64},seek_burst:Option<(i64,u32)>,auto_skip:{elapsed:u32,consumed:bool,presented:bool,in_flight:bool,offer:Option<(u64,u32,u32,u32,i64,i64,bool)>,drawn:Option<(u64,u32,u32,u32,i64,i64,bool)>,declined_pair:Option<(u64,u32,u32,u32,i64,i64,bool)>},transport_tap:bool,origin:Option<u32>,repair_alert:{open:bool,confirm:bool,scroll:u32}}";
 
 /// **The page this playback was launched from**, as the container's own identity.
@@ -116,11 +116,36 @@ pub enum HudPolicy {
     Hidden,
 }
 
+/// Wait for displacement from the point at which Back dismissed the transport.
+#[derive(Default)]
+struct BackMotion {
+    position: Option<(f32, f32)>,
+    // Outer None is open. Inner None awaits the first sample after a keyboard-only entry.
+    anchor: Option<Option<(f32, f32)>>,
+}
+
+impl BackMotion {
+    const WAKE_DISTANCE: f32 = 4.0;
+
+    fn allows(&mut self, x: f32, y: f32) -> bool {
+        self.position = Some((x, y));
+        match self.anchor {
+            None => true,
+            Some(None) => {
+                self.anchor = Some(self.position);
+                false
+            }
+            Some(Some((ax, ay))) => (x - ax).abs() + (y - ay).abs() >= Self::WAKE_DISTANCE,
+        }
+    }
+}
+
 pub struct PlayerScreen {
     auto_skip: plx_appkit::skip_policy::OfferTimer,
     drawn_watch: Option<plx_appkit::skip_policy::OfferId>,
     declined_pair: Option<plx_appkit::skip_policy::OfferId>,
     entry: EntryId,
+    back_motion: BackMotion,
     /// The transport HUD's timer, cursor, dismissal and control-row edges.
     pub hud: HudState,
     /// The scrub-seek gesture, including its preview position.
@@ -191,6 +216,7 @@ impl PlayerScreen {
     pub fn new(entry: EntryId, compiled: std::sync::Arc<plx_appkit::hud_format::compile::Compiled>) -> Self {
         Self {
             entry,
+            back_motion: BackMotion::default(),
             hud: HudState::IDLE,
             scrub: Scrub::IDLE,
             seek_burst: player_hud::seek_jump::SeekBurst::IDLE,
@@ -216,6 +242,23 @@ impl PlayerScreen {
             model: HudModel::default(),
             compiled,
         }
+    }
+
+    pub fn set_model(&mut self, model: HudModel) {
+        if self.model.playback_id != model.playback_id {
+            self.back_motion = BackMotion::default();
+        }
+        self.model = model;
+    }
+
+    fn back_cursor<H: AppLike>(&mut self, change: crate::registry::BackCursorChange, fx: &mut Effects<'_, H>) {
+        use crate::registry::BackCursorChange;
+        if change == BackCursorChange::Hide {
+            self.back_motion.anchor = Some(self.back_motion.position);
+        } else if self.back_motion.anchor.take().is_none() {
+            return;
+        }
+        Self::ask(fx, PlayerReq::BackCursor { owner: fx.from(), playback: self.model.playback_id, change });
     }
 
     /// **Mirror the two published fields into `player::TX`** (§2.3).
@@ -835,7 +878,13 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
                 self.publish();
                 Handled::Yes
             }
+            ScreenEvent::Cover | ScreenEvent::Suspend | ScreenEvent::WillLeave(_) => {
+                self.back_cursor(crate::registry::BackCursorChange::Release, fx);
+                self.back_motion.position = None;
+                Handled::Yes
+            }
             ScreenEvent::Unmount => {
+                self.back_cursor(crate::registry::BackCursorChange::Release, fx);
                 // The GL names in the subtitle set are OWNED. A static could never be told that a
                 // playback had ended; an instance is told exactly once.
                 self.render.subs.release();
@@ -849,19 +898,35 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
                         // The ENGINE's focus decides what OK means and which group a re-delivered
                         // edge belongs to; `hud.nav` only mirrors it.
                         let focused = cx.focus.current.map(|k| k.elem);
+                        let classified = consts::classify_input(*key, *sym, *wcode);
+                        if *edge == Edge::Down && !at_edge {
+                            if *key == plx_machine::machine::Key::Back {
+                                self.hud.note_fresh_press(ps, input.at.ms, H::transport_paused(cx));
+                            }
+                            if matches!(classified, consts::Key::Up | consts::Key::Down
+                                | consts::Key::Left { alt: false } | consts::Key::Right { alt: false })
+                            {
+                                self.back_cursor(crate::registry::BackCursorChange::Release, fx);
+                            }
+                        }
                         self.handle_key(
-                            ps, consts::classify_input(*key, *sym, *wcode), *edge, *at_edge, input.at.ms,
+                            ps, classified, *edge, *at_edge, input.at.ms,
                             focused, self.focused_command(focused), fx, H::metadata(cx),
                         )
                     }
-                    InputKind::Click { hit, x, .. } => {
+                    InputKind::Click { hit, x, y } => {
+                        self.back_motion.position = Some((*x, *y));
+                        // The front hit map may still be from before a Back in this batch.
+                        let hit = if self.back_motion.anchor.is_some() && self.hud.dismissed { None } else { *hit };
+                        self.back_cursor(crate::registry::BackCursorChange::Wake, fx);
                         self.end_jump_gesture();
-                        self.handle_click(ps, *hit, *x, plx_appkit::chapters_panel::has_chapters(H::metadata(cx)), input.at.ms, fx)
+                        self.handle_click(ps, hit, *x, plx_appkit::chapters_panel::has_chapters(H::metadata(cx)), input.at.ms, fx)
                     }
                     // §7.5: a drag drives its CONTROL. Only the scrubber has one here, and only
                     // once a click has seated the gesture on it — a drag that began anywhere else
                     // must not capture the bar the moment it passes over it.
-                    InputKind::Drag { x, .. } => {
+                    InputKind::Drag { x, y, .. } => {
+                        self.back_motion.position = Some((*x, *y));
                         self.end_jump_gesture();
                         self.handle_drag(H::session(cx), *x,
                             plx_appkit::chapters_panel::has_chapters(H::metadata(cx)), input.at.ms)
@@ -870,7 +935,11 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
                     // dismissal, which is how a Magic Remote user finds the HUD over full-screen
                     // video. `app/run.rs`'s own motion arm did this and then RETURNED, so the page
                     // never saw a pointer event at all.
-                    InputKind::Pointer { .. } => {
+                    InputKind::Pointer { x, y, .. } => {
+                        if !self.back_motion.allows(*x, *y) {
+                            return Handled::Yes;
+                        }
+                        self.back_cursor(crate::registry::BackCursorChange::Wake, fx);
                         self.end_jump_gesture();
                         self.hud.dismissed = false;
                         self.hud.extend(input.at.ms, input::HUD_LINGER_MS);
@@ -1348,6 +1417,7 @@ impl PlayerScreen {
                 self.scrub.ns = -1;
                 self.scrub.disengage();
                 self.hud.hide(plx_media::player::loading(ps));
+                self.back_cursor(crate::registry::BackCursorChange::Hide, fx);
                 self.publish();
                 Handled::Yes
             }
@@ -2506,6 +2576,14 @@ impl LogicalState for PlayerScreen {
         c.option(self.hud.last_offer.as_ref(), |c, (kind, at)| {
             c.u32(*kind as u32).u64(*at as u64);
         });
+        c.option(self.back_motion.position.as_ref(), |c, (x, y)| {
+            c.f32(*x).f32(*y);
+        });
+        c.option(self.back_motion.anchor.as_ref(), |c, anchor| {
+            c.option(anchor.as_ref(), |c, (x, y)| {
+                c.f32(*x).f32(*y);
+            });
+        });
         c.u32(self.scrub.key.dir as u32)
             .bool(self.scrub.key.engaged)
             .bool(self.scrub.reveal)
@@ -3058,6 +3136,11 @@ mod step_ladder_tests {
 
     const ENTRY: EntryId = EntryId(9);
     const INST: InstanceId = InstanceId(3);
+    const BACK_HIDE: [PlayerReq; 1] = [PlayerReq::BackCursor {
+        owner: MachineId::Instance(INST),
+        playback: 0,
+        change: crate::registry::BackCursorChange::Hide,
+    }];
 
     fn cx() -> Cx<'static, TestHost> {
         cx_over(plx_media::route::idle_session_for_test())
@@ -3542,7 +3625,7 @@ mod step_ladder_tests {
         page.hud.nav.focus = GROUP_TABS; // parked on the tabs row, to see the ring come home
         let (handled, reqs) = press(&mut page, 0, WCODE_BACK, Edge::Down);
         assert_eq!(handled, Handled::Yes);
-        assert!(reqs.is_empty(), "the first BACK only hides the transport: {reqs:?}");
+        assert_eq!(reqs, BACK_HIDE, "the first BACK hides the transport and cursor");
         assert!(page.hud.dismissed, "the transport is dismissed");
         assert_eq!(page.hud.nav.focus, GROUP_SCRUB, "ring parked on the scrubber");
         assert_eq!(page.scrub.ns, -1, "no scrub target left behind");
@@ -3649,7 +3732,7 @@ mod step_ladder_tests {
         page.hud.nav.focus = GROUP_SCRUB;
         page.hud.until = 5_000;
         let (_, reqs) = bound_press(&mut page, 0, WCODE_BACK);
-        assert!(reqs.is_empty(), "the first BACK only hides the transport");
+        assert_eq!(reqs, BACK_HIDE, "the first BACK hides the transport and cursor");
         assert!(page.hud.dismissed, "the transport is hidden");
         assert_eq!(page.slot.offer(), Some((MarkerKind::Intro, intro.start_ms)), "it is still offered");
     }
@@ -3670,7 +3753,7 @@ mod step_ladder_tests {
             let latched = (page.hud.dismissed, page.hud.exit_armed);
             let (_, second) = bound_press_over(&ps, &mut page, 0, WCODE_BACK);
             assert_eq!(handled, Handled::Yes);
-            assert_eq!(first, vec![], "the first BACK over a {busy:?} load only hides the transport");
+            assert_eq!(first, BACK_HIDE, "the first BACK over a {busy:?} load only hides");
             assert_eq!(latched, (true, true), "{busy:?}: the hide is latched and arms the exit");
             assert_eq!(second, vec![PlayerReq::Exit], "the second BACK over a {busy:?} load leaves");
         }
@@ -3687,7 +3770,7 @@ mod step_ladder_tests {
         assert!(!page.scrub.is_live(), "the fixture: a committed seek leaves no live scrub");
         let (handled, reqs) = bound_press_over(&ps, &mut page, 0, WCODE_BACK);
         assert_eq!(handled, Handled::Yes);
-        assert_eq!(reqs, vec![], "BACK during a seek must not leave the film");
+        assert_eq!(reqs, BACK_HIDE, "BACK during a seek must not leave the film");
         assert!(page.hud.dismissed, "BACK during a seek latches the hide");
     }
 
@@ -3701,7 +3784,7 @@ mod step_ladder_tests {
         let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
         let (_, first) = bound_press_over(&ps, &mut page, 0, WCODE_BACK);
         let (_, second) = bound_press_over(&ps, &mut page, 0, WCODE_BACK);
-        assert_eq!(first, vec![], "the first BACK only hides");
+        assert_eq!(first, BACK_HIDE, "the first BACK only hides");
         assert_eq!(second, vec![PlayerReq::Exit], "the second BACK leaves");
     }
 
@@ -3720,9 +3803,9 @@ mod step_ladder_tests {
         derive_state(&mut ps, Buffering);
         let (_, one) = bound_press_over(&ps, &mut page, 0, WCODE_BACK);
         let (_, two) = bound_press_over(&ps, &mut page, 0, WCODE_BACK);
-        assert_eq!(hide, vec![], "the first BACK hides the transport");
+        assert_eq!(hide, BACK_HIDE, "the first BACK hides the transport");
         assert_eq!(hidden, (true, false), "…and, with nothing busy, arms nothing");
-        assert_eq!(one, vec![], "one BACK over the rebuffer hides again");
+        assert_eq!(one, BACK_HIDE, "one BACK over the rebuffer hides again");
         assert_eq!(two, vec![PlayerReq::Exit], "the next one leaves");
     }
 
@@ -3747,10 +3830,10 @@ mod step_ladder_tests {
         derive_state(&mut ps, Buffering);
         let (_, one) = bound_press_over(&ps, &mut page, 0, WCODE_BACK);
         let (_, two) = bound_press_over(&ps, &mut page, 0, WCODE_BACK);
-        assert_eq!(hide, vec![], "the first BACK over a Buffering load only hides the transport");
+        assert_eq!(hide, BACK_HIDE, "the first BACK over a Buffering load only hides");
         assert_eq!(armed, (true, true), "the fixture: that busy hide armed the exit");
         assert_eq!(settled, (true, false), "a Tick over a settled pipeline drops the arming, not the hide");
-        assert_eq!(one, vec![], "one BACK over the later rebuffer does not leave");
+        assert_eq!(one, BACK_HIDE, "one BACK over the later rebuffer does not leave");
         assert_eq!(two, vec![PlayerReq::Exit], "the next one leaves");
     }
 
@@ -3771,7 +3854,7 @@ mod step_ladder_tests {
         derive_state(&mut ps, Buffering);
         let (_, one) = bound_press_over(&ps, &mut page, 0, WCODE_BACK);
         assert_eq!(hidden, (true, false), "the fixture: UP hid the transport and armed nothing");
-        assert_eq!(one, vec![], "one BACK over the rebuffer does not leave");
+        assert_eq!(one, BACK_HIDE, "one BACK over the rebuffer does not leave");
     }
 
     /// …and an UP-hide done WHILE the pipeline is busy arms nothing either: only a BACK-hide is the
@@ -3791,7 +3874,7 @@ mod step_ladder_tests {
         let hidden = (page.hud.dismissed, page.hud.exit_armed);
         let (_, one) = bound_press_over(&ps, &mut page, 0, WCODE_BACK);
         assert_eq!(hidden, (true, false), "the fixture: UP hid the transport over a Buffering load and armed nothing");
-        assert_eq!(one, vec![], "one BACK after an UP-hide over a busy load does not leave");
+        assert_eq!(one, BACK_HIDE, "one BACK after an UP-hide over a busy load does not leave");
     }
 
     /// Any other bound press between the two BACKs spends the arming: BACK, DOWN, BACK is a hide, a
@@ -3809,9 +3892,9 @@ mod step_ladder_tests {
         let scrubbing = page.scrub.is_live();
         let (_, third) = bound_press_over(&ps, &mut page, 0, WCODE_BACK);
         let (_, fourth) = bound_press_over(&ps, &mut page, 0, WCODE_BACK);
-        assert_eq!(first, vec![]);
+        assert_eq!(first, BACK_HIDE);
         assert!(!scrubbing, "the fixture: DOWN started no scrub");
-        assert_eq!(third, vec![], "a BACK after another key is a fresh first BACK");
+        assert_eq!(third, BACK_HIDE, "a BACK after another key is a fresh first BACK");
         assert_eq!(fourth, vec![PlayerReq::Exit], "…and it re-arms the exit for the next one");
     }
 
@@ -3826,8 +3909,8 @@ mod step_ladder_tests {
         let (_, first) = bound_press_over(&ps, &mut page, 0, WCODE_BACK);
         page.hud.raise_for_offer(1_000, 1);
         let (_, second) = bound_press_over(&ps, &mut page, 0, WCODE_BACK);
-        assert_eq!(first, vec![]);
-        assert_eq!(second, vec![], "an offer put the transport back: this BACK is a first one");
+        assert_eq!(first, BACK_HIDE);
+        assert_eq!(second, BACK_HIDE, "an offer put the transport back: this BACK is a first one");
     }
 
     /// STOP leaves even with the transport up, and BACK's key-up edge does nothing either way.
@@ -4853,7 +4936,10 @@ mod scrub_ownership_tests {
         back(&f.session, &mut page, 1_100);
         assert!(!page.hud.dismissed);
         let (_, reqs) = back(&f.session, &mut page, 1_200);
-        assert!(reqs.is_empty() && page.hud.dismissed, "hide the transport: {reqs:?}");
+        assert!(page.hud.dismissed);
+        assert!(matches!(reqs.as_slice(), [PlayerReq::BackCursor {
+            change: crate::registry::BackCursorChange::Hide, ..
+        }]));
     }
 
     /// **A commit is final: BACK afterwards is BACK's ordinary meaning** — hide the transport —

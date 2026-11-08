@@ -278,7 +278,9 @@ build anyone can install; `docs/lab-diagnostics.md`). The guarded half lives in
 `app/input.rs::note_global_press`, split
 out so `make check` can grade it — `begin_fresh_press` itself calls `hide_cursor`, which acts on
 whatever pointer calls the process's SDL exports, so a host test that reached it would be grading the
-host's SDL rather than the press.
+host's SDL rather than the press. Back on the bare player samples the HUD in ordered screen
+delivery, so a second Back in the same SDL batch sees the first one's dismissal. The LG
+pointer-hidden notification only stops edge scrolling.
 
 **The digit term reads `sym` and not `wcode`, diverging from `screens::profiles::digit_of`, on purpose.**
 48–57 in the scancode field are `]` `\` `#` `;` `'` `` ` `` `,` `.` `/` and CapsLock (the digits'
@@ -307,6 +309,11 @@ alone: travel is summed since the last arrow press, so a hand holding the remote
 gate (159–600 px measured between arrowing to a disc and pressing OK), and over full-screen video
 the player never leaves D-pad mode. A click that lands on a control after real travel is still
 that control's, so pointing at a button and clicking it keeps working.
+
+When Back dismisses the player transport, movement under four logical pixels from the dismissal
+point leaves the HUD down. The first qualifying motion raises the HUD and restores a transparent
+cursor installed by Back. While that cursor is held, its OK click takes the same paired key path.
+On firmware with the LG visibility API, webOS handles the pointer's return.
 
 **The one place it deliberately over-approximates.** The digits count as bound *everywhere*, because
 the who's-watching PIN keypad types from them, so a number press on Home or during playback still
