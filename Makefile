@@ -582,6 +582,18 @@ PLAYBACK_COMMA := ,
 RUST_BUILD_FEATURES = $(subst $(PLAYBACK_SPACE),$(PLAYBACK_COMMA),$(strip $(subst $(PLAYBACK_COMMA),$(PLAYBACK_SPACE),$(RUST_BACKEND_FEATURES)) $(if $(RELEASE),,devtools devtriggers threadcheck) $(if $(LAB),lab-diagnostics,)))
 RUST_FEATFLAGS = --no-default-features $(if $(RUST_BUILD_FEATURES),--features $(RUST_BUILD_FEATURES),)$(CURLSTACK_FEATFLAG)
 RUST_TDIR = target$(if $(RELEASE),-release,)$(if $(LAB),-lab,)$(if $(SYMBOLS),-sym,)$(if $(filter both,$(PLAYBACK_BACKENDS)),,-$(PLAYBACK_BACKENDS))$(if $(CURLSTACK),-curlstack,)
+# CURLSTACK=1 (the opt-in bundled curl stack; the CURLSTACK block further down has the rest).
+# Like RELEASE and LAB, any non-empty value turns it on; only `1` is accepted, so `CURLSTACK=0`
+# fails here instead of meaning "on".
+ifneq ($(filter-out 1,$(CURLSTACK)),)
+$(error CURLSTACK=$(CURLSTACK): use CURLSTACK=1 to build the bundled curl stack, or leave it unset)
+endif
+CURLSTACK_FEATFLAG = $(if $(CURLSTACK), --features http3-curlstack,)
+# Defined HERE, before the parse-time stamp below reads RUST_CFG: defined after it, the field
+# expanded empty in every build. The stamp's `features:` field without the curlstack feature, which `+curlstack` records instead:
+# `ci/check-package.py` grades that field as exactly the dev or the release flag set, and a
+# CURLSTACK=1 package is still one of the two. A hand-set RUST_FEATFLAGS is recorded as given.
+RUST_CFG_FEATFLAGS = $(if $(CURLSTACK),$(subst $(CURLSTACK_FEATFLAG),,$(RUST_FEATFLAGS)),$(RUST_FEATFLAGS))
 
 # OVERRIDING RUST_FEATFLAGS BY HAND? PASS RUST_TDIR TOO. This dir is keyed on RELEASE, not on the
 # flag set, so `make RUST_FEATFLAGS=...` alone lands in the SAME target/ as an ordinary build:
@@ -954,16 +966,8 @@ FFMPEG_STAGED = $(addprefix pkg/,$(FFMPEG_SONAMES))
 # stamp (RUST_CFG) and its own target dir, for the same reasons LAB has them. OpenSSL 3.5 for its
 # AArch32 Crypto Extension paths; `ci/build-curlstack.sh`'s header has how it coexists with the
 # television's own OpenSSL.
-# Like RELEASE and LAB, any non-empty value turns it on; only `1` is accepted, so `CURLSTACK=0`
-# fails here instead of meaning "on".
-ifneq ($(filter-out 1,$(CURLSTACK)),)
-$(error CURLSTACK=$(CURLSTACK): use CURLSTACK=1 to build the bundled curl stack, or leave it unset)
-endif
-CURLSTACK_FEATFLAG = $(if $(CURLSTACK), --features http3-curlstack,)
-# The stamp's `features:` field without the curlstack feature, which `+curlstack` records instead:
-# `ci/check-package.py` grades that field as exactly the dev or the release flag set, and a
-# CURLSTACK=1 package is still one of the two. A hand-set RUST_FEATFLAGS is recorded as given.
-RUST_CFG_FEATFLAGS = $(if $(CURLSTACK),$(subst $(CURLSTACK_FEATFLAG),,$(RUST_FEATFLAGS)),$(RUST_FEATFLAGS))
+# CURLSTACK's validation, CURLSTACK_FEATFLAG and RUST_CFG_FEATFLAGS sit beside RUST_FEATFLAGS
+# above: the stamp (RUST_CFG) is written while the Makefile is parsed, before this line.
 CURLSTACK_PREFIXES = openssl nghttp2 nghttp3 ngtcp2 curl
 CURLSTACK_ALL_SONAMES = libcrypto-plx.so.3 libssl-plx.so.3 libnghttp2-plx.so.14 libnghttp3-plx.so.9 \
                      libngtcp2-plx.so.16 libngtcp2_crypto_ossl-plx.so.0 libcurl-plx.so.4
