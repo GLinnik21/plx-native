@@ -28,6 +28,7 @@ use plx_platform::tv::plane::{HandleSeat, PlaneHandle};
 #[cfg(feature = "play-uri")]
 use plx_platform::tv::plane::URI_PLAYER_TYPE;
 use plx_platform::tv::sink::{self, DisplaySink, VP_EXPORTED, VP_NONE};
+#[cfg(any(feature = "play-feed", feature = "play-uri"))]
 use std::os::raw::c_int;
 #[cfg(feature = "play-feed")]
 use plx_play_feed::{control::FeedBackend, feed_resources::{FeedResources, LoadReceipt},
@@ -453,7 +454,7 @@ mod tests {
     use plx_base::task::MainThread;
     use plx_platform::tv::plane::DEFAULT_PLAYER_TYPE;
     use plx_platform::tv::sink::{NoSink, VP_ACB};
-    use std::os::raw::{c_char, c_long};
+    use std::os::raw::{c_char, c_int, c_long};
     use std::sync::Mutex;
 
     /// A display sink whose window mode and ACB create answers are scripted (one per create, the
