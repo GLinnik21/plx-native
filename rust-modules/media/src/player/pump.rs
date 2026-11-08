@@ -2338,6 +2338,75 @@ mod flight_tests {
         rig.flight.wait_for("the replaced encoder's stop", |f| f.stopped().iter().any(|s| s == "rig-1"));
     }
 
+    /// Field report (nightly 0.10.0-nightly-20261108, webOS 4, Boost Dialog remux, Segment seek
+    /// mode): a scrub on a PLAYING transcode flies with the claim hold engaged, the landing reloads
+    /// at the target (`reload_transcode: fresh Load`), the hold gives play back while the new Load
+    /// is still in flight (`player: user Resume accepted; physical Play remains fenced`), and the
+    /// fresh stream reaches `SMP loadCompleted`, fills both lanes to BufferFull, and never gets
+    /// `SMP Play`: the clock stays frozen at the target until the viewer backs out.
+    ///
+    /// Graded on the physical sink: once the reloaded Engine reports loadCompleted, a native Play
+    /// must reach the sink (the progressive non-rebased start plays immediately; a primed start
+    /// would at least have the startup Play commanded).
+    #[test]
+    fn a_playing_transcode_seek_landing_issues_play_on_the_reloaded_stream() {
+        // One app frame: the pump, then the common owner's poll that advances startup controls
+        // (including the first Play), in `app::run`'s order.
+        fn app_frame(rig: &mut Rig) {
+            rig.frame();
+            let at = rig.pa.backend_tick();
+            let _ = rig.pa.backend_poll_session_at(&mut rig.ps, at);
+        }
+        let mut rig = Rig::new(60);
+        FEED_SHARED.frames.store(1, Relaxed);
+        assert!(!FEED_TX.paused.load(Acquire), "sanity: the transcode is playing");
+        let old_epoch = engine_epoch(&mut rig);
+
+        crate::player::request_seek(&mut rig.ps, &mut rig.pa, SEEK_TARGET_NS);
+        app_frame(&mut rig);
+        assert!(crate::route::flight_outstanding(), "the scrub must fly as a transcode seek");
+        assert!(super::super::claim_hold::owns_pause(), "a playing stream: the claim hold took the Pause");
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while crate::route::flight_outstanding() {
+            assert!(std::time::Instant::now() < deadline, "timed out waiting for the seek's landing");
+            std::thread::sleep(Duration::from_millis(2));
+            app_frame(&mut rig);
+        }
+        // The hold owed the viewer a Play back; the field's give-back read `player: user Resume
+        // accepted; physical Play remains fenced`. The physical gate may stay shut until the
+        // startup Play; the common runner's startup goal is what decides whether that Play comes.
+        let goal_after_landing = rig.pa.backend_viewer_paused();
+        let plays = plx_play_feed::ffi_host::play_calls_for_test();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let loaded = rig.pa.engine().is_some_and(|eng|
+                Some(eng.native_epoch) != old_epoch && eng.stage >= Stage::Playing);
+            if loaded { break; }
+            assert!(std::time::Instant::now() < deadline,
+                "timed out waiting for the reloaded Engine's loadCompleted: {}", rig.recovery_diag());
+            std::thread::sleep(Duration::from_millis(2));
+            app_frame(&mut rig);
+        }
+        for _ in 0..30 {
+            app_frame(&mut rig);
+        }
+        let (commanded, prime, immediate, user_held) = {
+            let eng = rig.pa.engine().expect("the reloaded Engine");
+            (eng.startup_play_commanded, eng.prime_play, eng.startup_immediate_play,
+                eng.startup_user_held)
+        };
+        assert!(commanded,
+            "the common startup runner never commanded the reloaded stream's first Play \
+             (startup_play_commanded=false, prime_play={prime}, immediate={immediate}, \
+             startup_user_held={user_held}, runner's startup goal after the landing \
+             paused={goal_after_landing:?}, now {:?}): no `SMP Play` can ever follow, and \
+             try_prime returns early forever",
+            rig.pa.backend_viewer_paused());
+        assert!(plx_play_feed::ffi_host::play_calls_for_test() > plays || prime,
+            "the reloaded stream's first Play never reached the sink");
+    }
+
     /// The track-memory write-back is sent from the pump's decoded-frame branch and from nowhere
     /// else (W6): a frame before the first decoded picture leaves it parked, the first frame
     /// with `frames > 0` takes it. The session is the rig's transcode, so the send drops the value
