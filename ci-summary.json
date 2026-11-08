@@ -57,43 +57,22 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-08T18:40:45Z",
+ "generated": "2026-11-08T18:43:26Z",
  "metrics": [
   {
-   "change30_pct": 99.1,
-   "change7_pct": 27.7,
+   "change30_pct": 99.5,
+   "change7_pct": 28.0,
    "d30": 211,
-   "delta30": 209,
-   "delta7": 91,
+   "delta30": 210.0,
+   "delta7": 92.0,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
-   "n_now": 51,
-   "n_prev": 87,
-   "now": 420,
-   "prev7": 329,
-   "shown": true,
-   "state": "worse",
-   "state30": "worse",
-   "threshold_abs": 20.0,
-   "threshold_pct": 20.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": 120.7,
-   "change7_pct": 25.3,
-   "d30": 138,
-   "delta30": 166.5,
-   "delta7": 61.5,
-   "group": "ci",
-   "id": "ci|host python/shell/C gates",
-   "kind": "job",
-   "label": "CI: host python/shell/C gates",
    "n_now": 52,
    "n_prev": 87,
-   "now": 304.5,
-   "prev7": 243,
+   "now": 421.0,
+   "prev7": 329,
    "shown": true,
    "state": "worse",
    "state30": "worse",
@@ -120,6 +99,27 @@
    "state30": "worse",
    "threshold_abs": 5.0,
    "threshold_pct": 25.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": 120.3,
+   "change7_pct": 25.1,
+   "d30": 138,
+   "delta30": 166,
+   "delta7": 61,
+   "group": "ci",
+   "id": "ci|host python/shell/C gates",
+   "kind": "job",
+   "label": "CI: host python/shell/C gates",
+   "n_now": 53,
+   "n_prev": 87,
+   "now": 304,
+   "prev7": 243,
+   "shown": true,
+   "state": "worse",
+   "state30": "worse",
+   "threshold_abs": 20.0,
+   "threshold_pct": 20.0,
    "unit": "s"
   },
   {
@@ -249,18 +249,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 29.8,
+   "change30_pct": 29.9,
    "change7_pct": 10.3,
    "d30": 2113,
-   "delta30": 629.0,
-   "delta7": 255.0,
+   "delta30": 631,
+   "delta7": 257,
    "group": "ci",
    "id": "minutes",
    "kind": "cost",
    "label": "Runner time per push",
-   "n_now": 46,
+   "n_now": 47,
    "n_prev": 75,
-   "now": 2742.0,
+   "now": 2744,
    "prev7": 2487,
    "shown": true,
    "state": "flat",
@@ -291,18 +291,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 67.7,
-   "change7_pct": 17.8,
+   "change30_pct": 67.5,
+   "change7_pct": 17.6,
    "d30": 269,
-   "delta30": 182,
-   "delta7": 68,
+   "delta30": 181.5,
+   "delta7": 67.5,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
-   "n_now": 51,
+   "n_now": 52,
    "n_prev": 87,
-   "now": 451,
+   "now": 450.5,
    "prev7": 383,
    "shown": true,
    "state": "flat",
@@ -312,43 +312,43 @@
    "unit": "s"
   },
   {
-   "change30_pct": null,
-   "change7_pct": 8.8,
-   "d30": null,
-   "delta30": null,
-   "delta7": 29.5,
+   "change30_pct": 162.6,
+   "change7_pct": 12.3,
+   "d30": 139,
+   "delta30": 226,
+   "delta7": 40,
    "group": "ci",
-   "id": "ci|armv7 cross-build and artifact assertions",
+   "id": "ci|host harness tests",
    "kind": "job",
-   "label": "CI: armv7 cross-build and artifact assertions",
-   "n_now": 52,
+   "label": "CI: host harness tests",
+   "n_now": 53,
    "n_prev": 87,
-   "now": 363.5,
-   "prev7": 334,
+   "now": 365,
+   "prev7": 325,
    "shown": true,
    "state": "flat",
-   "state30": "new",
+   "state30": "worse",
    "threshold_abs": 20.0,
    "threshold_pct": 20.0,
    "unit": "s"
   },
   {
-   "change30_pct": 161.2,
-   "change7_pct": 11.7,
-   "d30": 139,
-   "delta30": 224.0,
-   "delta7": 38.0,
+   "change30_pct": null,
+   "change7_pct": 9.0,
+   "d30": null,
+   "delta30": null,
+   "delta7": 30,
    "group": "ci",
-   "id": "ci|host harness tests",
+   "id": "ci|armv7 cross-build and artifact assertions",
    "kind": "job",
-   "label": "CI: host harness tests",
-   "n_now": 52,
+   "label": "CI: armv7 cross-build and artifact assertions",
+   "n_now": 53,
    "n_prev": 87,
-   "now": 363.0,
-   "prev7": 325,
+   "now": 364,
+   "prev7": 334,
    "shown": true,
    "state": "flat",
-   "state30": "worse",
+   "state30": "new",
    "threshold_abs": 20.0,
    "threshold_pct": 20.0,
    "unit": "s"
@@ -417,18 +417,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 12.5,
-   "change7_pct": 9.9,
+   "change30_pct": 14.0,
+   "change7_pct": 11.4,
    "d30": 172,
-   "delta30": 21.5,
-   "delta7": 17.5,
+   "delta30": 24,
+   "delta7": 20,
    "group": "ci",
    "id": "ci|host lint + type-checks",
    "kind": "job",
    "label": "CI: host lint + type-checks",
-   "n_now": 52,
+   "n_now": 53,
    "n_prev": 87,
-   "now": 193.5,
+   "now": 196,
    "prev7": 176,
    "shown": true,
    "state": "flat",
@@ -505,14 +505,14 @@
    "change7_pct": 0.0,
    "d30": null,
    "delta30": null,
-   "delta7": 0.0,
+   "delta7": 0,
    "group": "ci",
    "id": "ci|which gates apply",
    "kind": "job",
    "label": "CI: which gates apply",
-   "n_now": 52,
+   "n_now": 53,
    "n_prev": 87,
-   "now": 5.0,
+   "now": 5,
    "prev7": 5,
    "shown": false,
    "state": "flat",
@@ -525,15 +525,15 @@
    "change30_pct": 33.3,
    "change7_pct": 33.3,
    "d30": 3,
-   "delta30": 1,
-   "delta7": 1,
+   "delta30": 1.0,
+   "delta7": 1.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 51,
+   "n_now": 52,
    "n_prev": 87,
-   "now": 4,
+   "now": 4.0,
    "prev7": 3,
    "shown": false,
    "state": "flat",
@@ -546,15 +546,15 @@
    "change30_pct": -99.0,
    "change7_pct": 0.0,
    "d30": 296,
-   "delta30": -293.0,
-   "delta7": 0.0,
+   "delta30": -293,
+   "delta7": 0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 52,
+   "n_now": 53,
    "n_prev": 87,
-   "now": 3.0,
+   "now": 3,
    "prev7": 3,
    "shown": false,
    "state": "flat",
@@ -587,7 +587,7 @@
  ],
  "regressions": [
   {
-   "change_pct": 27.7,
+   "change_pct": 28.0,
    "commits": [
     {
      "pr": 1269,
@@ -645,68 +645,7 @@
    "label": "CI: host unit tests (hostsim)",
    "since": "2026-11-08",
    "threshold_pct": 20.0,
-   "to": 420
-  },
-  {
-   "change_pct": 25.3,
-   "commits": [
-    {
-     "pr": 1269,
-     "sha": "97e43889d",
-     "title": "Settings: Under posters takes composable details and the two-poster preview"
-    },
-    {
-     "pr": 1271,
-     "sha": "279b66d9f",
-     "title": "Media codecs crate: the bundled-FFmpeg ABI, PCM decode, speed audio and the encoder leave plx_media"
-    },
-    {
-     "pr": 1272,
-     "sha": "dc3d03c20",
-     "title": "Lower-layer prerequisites of the neutral media crate: plx_net::range_io, plx_base::clock, LoadVideo in platform, contrac"
-    },
-    {
-     "pr": 1274,
-     "sha": "5d9c5903b",
-     "title": "Neutral playback orchestration: the Feed becomes plx_play_feed, the app composes backends, the sink/plane seam is split"
-    },
-    {
-     "pr": 1275,
-     "sha": "3ae2ebfbb",
-     "title": "The URI backend returns as plx_play_uri: in the shipping binary, never selected, dev triggers back"
-    },
-    {
-     "pr": 1246,
-     "sha": "8a3569830",
-     "title": "Settings: a viewer's Plex Pass grants intro and credits skipping (auto-skip hidden from Pass holders)"
-    },
-    {
-     "pr": 1276,
-     "sha": "3309be023",
-     "title": "The playback build/package matrix: PLAYBACK_BACKENDS selects both, uri, feed or none (P7)"
-    },
-    {
-     "pr": 1133,
-     "sha": "69bbb7d39",
-     "title": "Preserve baseline audio codecs and size converted Opus on webOS"
-    },
-    {
-     "pr": 1281,
-     "sha": "11d4ef04d",
-     "title": "ACB: a second boot handle (player type 0) for the URI engine"
-    },
-    {
-     "pr": 1273,
-     "sha": "630f8c230",
-     "title": "Net: add the WebSocket codec for Open Watch Party"
-    }
-   ],
-   "from": 243,
-   "id": "ci|host python/shell/C gates",
-   "label": "CI: host python/shell/C gates",
-   "since": "2026-11-08",
-   "threshold_pct": 20.0,
-   "to": 304.5
+   "to": 421.0
   },
   {
    "change_pct": 25.2,
@@ -768,6 +707,67 @@
    "since": "2026-11-08",
    "threshold_pct": 25.0,
    "to": 93.7
+  },
+  {
+   "change_pct": 25.1,
+   "commits": [
+    {
+     "pr": 1269,
+     "sha": "97e43889d",
+     "title": "Settings: Under posters takes composable details and the two-poster preview"
+    },
+    {
+     "pr": 1271,
+     "sha": "279b66d9f",
+     "title": "Media codecs crate: the bundled-FFmpeg ABI, PCM decode, speed audio and the encoder leave plx_media"
+    },
+    {
+     "pr": 1272,
+     "sha": "dc3d03c20",
+     "title": "Lower-layer prerequisites of the neutral media crate: plx_net::range_io, plx_base::clock, LoadVideo in platform, contrac"
+    },
+    {
+     "pr": 1274,
+     "sha": "5d9c5903b",
+     "title": "Neutral playback orchestration: the Feed becomes plx_play_feed, the app composes backends, the sink/plane seam is split"
+    },
+    {
+     "pr": 1275,
+     "sha": "3ae2ebfbb",
+     "title": "The URI backend returns as plx_play_uri: in the shipping binary, never selected, dev triggers back"
+    },
+    {
+     "pr": 1246,
+     "sha": "8a3569830",
+     "title": "Settings: a viewer's Plex Pass grants intro and credits skipping (auto-skip hidden from Pass holders)"
+    },
+    {
+     "pr": 1276,
+     "sha": "3309be023",
+     "title": "The playback build/package matrix: PLAYBACK_BACKENDS selects both, uri, feed or none (P7)"
+    },
+    {
+     "pr": 1133,
+     "sha": "69bbb7d39",
+     "title": "Preserve baseline audio codecs and size converted Opus on webOS"
+    },
+    {
+     "pr": 1281,
+     "sha": "11d4ef04d",
+     "title": "ACB: a second boot handle (player type 0) for the URI engine"
+    },
+    {
+     "pr": 1273,
+     "sha": "630f8c230",
+     "title": "Net: add the WebSocket codec for Open Watch Party"
+    }
+   ],
+   "from": 243,
+   "id": "ci|host python/shell/C gates",
+   "label": "CI: host python/shell/C gates",
+   "since": "2026-11-08",
+   "threshold_pct": 20.0,
+   "to": 304
   },
   {
    "change_pct": 19.5,
@@ -843,25 +843,25 @@
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
-   "now": 451
+   "now": 450.5
   },
   {
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
-   "now": 420
-  },
-  {
-   "group": "ci",
-   "id": "ci|armv7 cross-build and artifact assertions",
-   "label": "CI: armv7 cross-build and artifact assertions",
-   "now": 363.5
+   "now": 421.0
   },
   {
    "group": "ci",
    "id": "ci|host harness tests",
    "label": "CI: host harness tests",
-   "now": 363.0
+   "now": 365
+  },
+  {
+   "group": "ci",
+   "id": "ci|armv7 cross-build and artifact assertions",
+   "label": "CI: armv7 cross-build and artifact assertions",
+   "now": 364
   }
  ],
  "slowest_local": [
