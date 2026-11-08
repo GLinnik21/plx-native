@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-08T11:29:47Z",
+ "generated": "2026-11-08T11:39:20Z",
  "metrics": [
   {
    "change30_pct": 98.6,
@@ -99,6 +99,27 @@
    "state30": "worse",
    "threshold_abs": 20.0,
    "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": 25.2,
+   "d30": null,
+   "delta30": null,
+   "delta7": 18.8,
+   "group": "local",
+   "id": "bench.ui",
+   "kind": "local",
+   "label": "Rebuild after editing plx_ui",
+   "n_now": 6,
+   "n_prev": 7,
+   "now": 93.7,
+   "prev7": 74.8,
+   "shown": true,
+   "state": "worse",
+   "state30": "new",
+   "threshold_abs": 5.0,
+   "threshold_pct": 25.0,
    "unit": "s"
   },
   {
@@ -145,18 +166,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -4.8,
+   "change7_pct": -5.4,
    "d30": null,
    "delta30": null,
-   "delta7": -1.4,
+   "delta7": -1.5,
    "group": "local",
    "id": "bench.app",
    "kind": "local",
    "label": "Rebuild after editing the app crate",
    "n_now": 6,
-   "n_prev": 6,
-   "now": 27.6,
-   "prev7": 29.0,
+   "n_prev": 7,
+   "now": 26.9,
+   "prev7": 28.5,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -166,18 +187,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -0.6,
+   "change7_pct": 4.1,
    "d30": null,
    "delta30": null,
-   "delta7": -0.3,
+   "delta7": 2.2,
    "group": "local",
    "id": "bench.screens",
    "kind": "local",
    "label": "Rebuild after editing plx_screens",
    "n_now": 6,
-   "n_prev": 6,
-   "now": 54.5,
-   "prev7": 54.8,
+   "n_prev": 7,
+   "now": 56.8,
+   "prev7": 54.6,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -187,39 +208,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 24.6,
+   "change7_pct": 24.5,
    "d30": null,
    "delta30": null,
-   "delta7": 18.5,
-   "group": "local",
-   "id": "bench.ui",
-   "kind": "local",
-   "label": "Rebuild after editing plx_ui",
-   "n_now": 6,
-   "n_prev": 6,
-   "now": 93.7,
-   "prev7": 75.2,
-   "shown": true,
-   "state": "flat",
-   "state30": "new",
-   "threshold_abs": 5.0,
-   "threshold_pct": 25.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": null,
-   "change7_pct": 23.5,
-   "d30": null,
-   "delta30": null,
-   "delta7": 40.0,
+   "delta7": 41.3,
    "group": "local",
    "id": "bench.leaf",
    "kind": "local",
    "label": "Rebuild after editing plx_base",
    "n_now": 6,
-   "n_prev": 6,
+   "n_prev": 7,
    "now": 210.3,
-   "prev7": 170.3,
+   "prev7": 168.9,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -229,18 +229,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 16.7,
+   "change7_pct": 15.2,
    "d30": null,
    "delta30": null,
-   "delta7": 26.8,
+   "delta7": 25.0,
    "group": "local",
    "id": "bench.tests",
    "kind": "local",
    "label": "Unit suite",
    "n_now": 6,
-   "n_prev": 6,
-   "now": 187.2,
-   "prev7": 160.4,
+   "n_prev": 7,
+   "now": 188.8,
+   "prev7": 163.8,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -565,17 +565,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 21.7,
+   "change7_pct": 38.2,
    "d30": null,
    "delta30": null,
-   "delta7": 0.1,
+   "delta7": 0.2,
    "group": "local",
    "id": "bench.noop",
    "kind": "local",
    "label": "No-op build",
    "n_now": 6,
-   "n_prev": 6,
-   "now": 0.7,
+   "n_prev": 7,
+   "now": 0.8,
    "prev7": 0.6,
    "shown": false,
    "state": "flat",
@@ -699,6 +699,57 @@
    "to": 304.5
   },
   {
+   "change_pct": 25.2,
+   "commits": [
+    {
+     "pr": 1268,
+     "sha": "ec0df8cc3",
+     "title": "Playback contract crate, BackendRunner and attempt-metrics reducers (unwired)"
+    },
+    {
+     "pr": 1269,
+     "sha": "97e43889d",
+     "title": "Settings: Under posters takes composable details and the two-poster preview"
+    },
+    {
+     "pr": 1271,
+     "sha": "279b66d9f",
+     "title": "Media codecs crate: the bundled-FFmpeg ABI, PCM decode, speed audio and the encoder leave plx_media"
+    },
+    {
+     "pr": 1272,
+     "sha": "dc3d03c20",
+     "title": "Lower-layer prerequisites of the neutral media crate: plx_net::range_io, plx_base::clock, LoadVideo in platform, contrac"
+    },
+    {
+     "pr": 1274,
+     "sha": "5d9c5903b",
+     "title": "Neutral playback orchestration: the Feed becomes plx_play_feed, the app composes backends, the sink/plane seam is split"
+    },
+    {
+     "pr": 1275,
+     "sha": "3ae2ebfbb",
+     "title": "The URI backend returns as plx_play_uri: in the shipping binary, never selected, dev triggers back"
+    },
+    {
+     "pr": 1246,
+     "sha": "8a3569830",
+     "title": "Settings: a viewer's Plex Pass grants intro and credits skipping (auto-skip hidden from Pass holders)"
+    },
+    {
+     "pr": 1276,
+     "sha": "3309be023",
+     "title": "The playback build/package matrix: PLAYBACK_BACKENDS selects both, uri, feed or none (P7)"
+    }
+   ],
+   "from": 74.8,
+   "id": "bench.ui",
+   "label": "Rebuild after editing plx_ui",
+   "since": "2026-11-08",
+   "threshold_pct": 25.0,
+   "to": 93.7
+  },
+  {
    "change_pct": 18.9,
    "commits": [
     {
@@ -794,7 +845,7 @@
    "group": "local",
    "id": "bench.tests",
    "label": "Unit suite",
-   "now": 187.2
+   "now": 188.8
   },
   {
    "group": "local",
@@ -806,13 +857,13 @@
    "group": "local",
    "id": "bench.screens",
    "label": "Rebuild after editing plx_screens",
-   "now": 54.5
+   "now": 56.8
   },
   {
    "group": "local",
    "id": "bench.app",
    "label": "Rebuild after editing the app crate",
-   "now": 27.6
+   "now": 26.9
   }
  ],
  "thresholds": {
