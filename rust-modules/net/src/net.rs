@@ -46,6 +46,8 @@ pub mod origin;
 /// What a caller may add to a request's headers, for both transports (module doc).
 pub mod headers;
 
+pub mod connect_only;
+
 type CURL = c_void;
 pub type curl_slist = c_void;
 
@@ -2914,8 +2916,8 @@ pub fn https_get_public_bounded(url: &str, max_body: usize) -> Result<Resp, Requ
     request_result_evidence(url, &[], "GET", None, API, true, Some(max_body), None, false)
 }
 
-/// The `nowan` gate shared by the three resolver doors ([`request_tls_result`],
-/// [`crate::range_io`] and [`crate::stream`]): `true` when `/tmp/plxnative-nowan` is armed and
+/// The `nowan` gate shared by the four resolver doors ([`request_tls_result`],
+/// [`crate::range_io`], [`crate::stream`] and [`connect_only`]): `true` when `/tmp/plxnative-nowan` is armed and
 /// `host` is a NAME rather than a literal, i.e. when a dead resolver would have refused it. The
 /// `slow` variant first spends `connect_s`, the budget a worker would have lost waiting on that
 /// resolver. `false` without the trigger, and at compile time without `devtriggers`.
