@@ -112,9 +112,18 @@ pub fn take(serial: u64) -> bool {
 
 /// Give play back after the claim settled and its tail ran (a rejection leaves the same Engine
 /// running; an accepted claim has already reloaded, the reload having kept the pause).
+///
+/// Play goes back through the door a viewer press uses (the active attempt's backend control, the
+/// direct [`super::resume`] only when there is no attempt): an accepted claim's reload started
+/// with the hold's pause as the common startup's goal, and since #1274 the common startup runner
+/// owns the reloaded stream's first Play. A direct resume would commit the transport to playing
+/// while the runner's plan still reads paused, so the first Play would never be commanded and the
+/// stream would sit frozen after its loadCompleted. The control turns that goal to Play instead.
 pub fn release(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter,
     restore_play: bool) {
-    if restore_play && !super::resume(ps, pa) {
+    if restore_play
+        && !pa.backend_transport_control(ps, false).unwrap_or_else(|| super::resume(ps, pa))
+    {
         super::log("claim hold: could not give play back after the claim settled");
     }
 }

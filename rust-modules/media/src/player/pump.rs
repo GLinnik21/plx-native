@@ -2237,6 +2237,11 @@ mod flight_tests {
             // an Engine existed. It runs before the physical pump on each app frame.
             drain_engineless_rollback(&mut self.ps, &mut self.pa);
             pump(&mut self.ps, &mut self.pa, self.now);
+            // Then the persistent common owner's poll (`app::run`'s order), which advances exact
+            // startup controls, including the reloaded stream's first Play. Without it a landing's
+            // Play never reaches the sink and the feed gate stays shut.
+            let at = self.pa.backend_tick();
+            let _ = self.pa.backend_poll_session_at(&mut self.ps, at);
         }
 
         /// Frames until `done`, bounded: the worker lands on its own thread.
@@ -2350,20 +2355,13 @@ mod flight_tests {
     /// would at least have the startup Play commanded).
     #[test]
     fn a_playing_transcode_seek_landing_issues_play_on_the_reloaded_stream() {
-        // One app frame: the pump, then the common owner's poll that advances startup controls
-        // (including the first Play), in `app::run`'s order.
-        fn app_frame(rig: &mut Rig) {
-            rig.frame();
-            let at = rig.pa.backend_tick();
-            let _ = rig.pa.backend_poll_session_at(&mut rig.ps, at);
-        }
         let mut rig = Rig::new(60);
         FEED_SHARED.frames.store(1, Relaxed);
         assert!(!FEED_TX.paused.load(Acquire), "sanity: the transcode is playing");
         let old_epoch = engine_epoch(&mut rig);
 
         crate::player::request_seek(&mut rig.ps, &mut rig.pa, SEEK_TARGET_NS);
-        app_frame(&mut rig);
+        rig.frame();
         assert!(crate::route::flight_outstanding(), "the scrub must fly as a transcode seek");
         assert!(super::super::claim_hold::owns_pause(), "a playing stream: the claim hold took the Pause");
 
@@ -2371,7 +2369,7 @@ mod flight_tests {
         while crate::route::flight_outstanding() {
             assert!(std::time::Instant::now() < deadline, "timed out waiting for the seek's landing");
             std::thread::sleep(Duration::from_millis(2));
-            app_frame(&mut rig);
+            rig.frame();
         }
         // The hold owed the viewer a Play back; the field's give-back read `player: user Resume
         // accepted; physical Play remains fenced`. The physical gate may stay shut until the
@@ -2386,10 +2384,10 @@ mod flight_tests {
             assert!(std::time::Instant::now() < deadline,
                 "timed out waiting for the reloaded Engine's loadCompleted: {}", rig.recovery_diag());
             std::thread::sleep(Duration::from_millis(2));
-            app_frame(&mut rig);
+            rig.frame();
         }
         for _ in 0..30 {
-            app_frame(&mut rig);
+            rig.frame();
         }
         let (commanded, prime, immediate, user_held) = {
             let eng = rig.pa.engine().expect("the reloaded Engine");
@@ -2710,6 +2708,10 @@ mod flight_tests {
         assert_eq!(crate::route::transcode_session(&rig.ps), "rig-1", "the retained HLS is still the route");
         assert!(!crate::route::original_recovery_pending());
         assert_ne!(engine_epoch(&mut rig), epoch, "the producer had stopped, so the HLS Engine was reopened");
+        // The reopened Engine's first Play belongs to the common startup runner: the feed gate
+        // opens once its Load completes and the runner's Play is accepted, not at the landing.
+        rig.frames_until("the reopened stream's first Play opens the feed gate",
+            |_| !FEED_TX.paused.load(Acquire));
         assert!(!super::super::claim_hold::active() && !FEED_TX.paused.load(Acquire));
         assert!(!rig.flight.stopped().iter().any(|s| s == "rig-1"));
     }
