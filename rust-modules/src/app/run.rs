@@ -7039,6 +7039,55 @@ mod lifecycle_regression_tests {
     }
 
     #[test]
+    fn auto_advance_describes_the_successor_on_the_playback_server() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving_with(|request| {
+            if request.starts_with("GET /library/metadata/2?") {
+                // The fixture hosts two PMS identities, distinguished by their test tokens.
+                if request.contains("X-Plex-Token=browsed-server") {
+                    return r#"{"MediaContainer":{"size":1,"Metadata":[
+                        {"ratingKey":"2","type":"episode","title":"Unrelated",
+                         "grandparentTitle":"Local Show","parentIndex":1,"index":3}]}}"#.into();
+                }
+                return r#"{"MediaContainer":{"size":1,"Metadata":[
+                    {"ratingKey":"2","type":"episode","title":"Next",
+                     "grandparentTitle":"Remote Show","parentIndex":2,"index":20}]}}"#.into();
+            }
+            queue_body(request, true).to_owned()
+        }) else {
+            eprintln!("SKIPPED auto_advance_describes_the_successor_on_the_playback_server: fixture worker thread could not be spawned");
+            return;
+        };
+        let port = plx_plex::plex::client_for(rig.sid).unwrap().port();
+        let browsed = plx_plex::plex::register_for_test(
+            "browsed-server", "127.0.0.1", port, "browsed-server", "lifecycle-fixture",
+        );
+        assert_ne!(rig.sid, browsed);
+        assert!(plx_plex::plex::set_current(browsed));
+
+        let mut fr = rig.due_up_next();
+        unsafe { playback_tick(&mut rig.app, &mut fr) };
+        poll_until("the successor's playback plan must land", || {
+            plx_media::route::pump_play(&mut rig.app.player.session, rig.app.bridge.metadata_mut())
+                .is_some()
+        });
+        assert_eq!(plx_media::route::cur_rk(&rig.app.player.session), "2");
+        assert_eq!(plx_media::route::cur_sid(&rig.app.player.session), rig.sid);
+
+        let bridge = &mut rig.app.bridge;
+        assert_eq!(bridge.run_held_store_jobs_of_for_test(plx_data::stores::StoreId::Metadata), 1);
+        assert!(bridge.metadata_pump_detail());
+
+        let meta = bridge.metadata_view();
+        let playing = meta.now_playing().expect("the overlay must describe the successor");
+        assert_eq!(
+            (playing.title.as_str(), playing.ep_title.as_str(), playing.season, playing.index),
+            ("Remote Show", "Next", 2, 20),
+        );
+        assert_eq!(meta.current().unwrap().sid, rig.sid);
+    }
+
+    #[test]
     fn server_stop_blocks_an_up_next_action_sampled_before_the_reply() {
         let _serial = plx_base::testlock::serial();
         let Some(mut rig) = Rig::serving_with(|request| {
