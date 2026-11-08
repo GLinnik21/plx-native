@@ -91,8 +91,10 @@ int acb_unload(long *taskOut);
 
 /* ---- library-thread callbacks the seam forwards to (consumer-defined) ---- */
 void sf_on_event(unsigned int epoch, int type, long long num, const char *str);
-/* Completion callback of any ACB call, on the library's thread. `task` is the task id the
- * originating call returned; `ev` is -2 timeout, -1 error, 0 cancel, 1 complete. */
-void acb_on_event(long task, long ev, const char *reply);
+/* Completion callback of any ACB call, on the library's thread. `id` is the handle acb_create
+ * returned for the core that issued the call (the callback's first argument); `task` is the task id
+ * the originating call returned, numbered by that core alone; `ev` is -2 timeout, -1 error, 0 cancel,
+ * 1 complete. */
+void acb_on_event(long id, long task, long ev, const char *reply);
 
 #endif /* PLXNATIVE_STARFISH_H */

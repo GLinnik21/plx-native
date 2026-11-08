@@ -106,11 +106,13 @@ static COMPLETIONS: std::sync::LazyLock<crate::tv::plane::CompletionQueue> =
     std::sync::LazyLock::new(|| crate::tv::plane::CompletionQueue::new(64));
 
 /// The completion callback of `libAcbAPI`, forwarded by `acb_cb` in `src/video_plane.c` on the
-/// LIBRARY'S thread: `task` is the task id the originating call returned, `ev` the event type
-/// (`-2` timeout, `-1` error, `0` cancel, `1` complete). Takes no `MainThread`, touches no
-/// pipeline state: it only records `(task, ev)` for the main thread and keeps today's log line.
+/// LIBRARY'S thread: `id` is the handle `plane_create` returned for the core that issued the call
+/// (the callback's first argument), `task` the task id that core's call returned (each core numbers
+/// its own), `ev` the event type (`-2` timeout, `-1` error, `0` cancel, `1` complete). Takes no
+/// `MainThread`, touches no pipeline state: it only records `(id, task, ev)` for the main thread and
+/// keeps today's log line.
 #[no_mangle]
-pub extern "C" fn acb_on_event(task: c_long, ev: c_long, reply: *const c_char) {
+pub extern "C" fn acb_on_event(id: c_long, task: c_long, ev: c_long, reply: *const c_char) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let (code, binding_error) = if reply.is_null() { (None, false) } else {
             // SAFETY: the C seam passes the library's NUL-terminated reply for the call.
@@ -118,8 +120,8 @@ pub extern "C" fn acb_on_event(task: c_long, ev: c_long, reply: *const c_char) {
             let code = serde_json::from_str::<serde_json::Value>(&text).ok().and_then(|value| value.get("errorCode").and_then(serde_json::Value::as_i64));
             (code, text.contains("ERROR_06"))
         };
-        plx_base::eventlog::log(&format!("acb_cb task={task} ev={ev} errorCode={code:?} ERROR_06={binding_error}"));
-        COMPLETIONS.push(i64::from(task), i32::try_from(ev).unwrap_or(i32::MIN));
+        plx_base::eventlog::log(&format!("acb_cb task={task} ev={ev} errorCode={code:?} ERROR_06={binding_error} id={id}"));
+        COMPLETIONS.push_from(i64::from(id), i64::from(task), i32::try_from(ev).unwrap_or(i32::MIN));
     }));
 }
 

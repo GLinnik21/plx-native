@@ -104,8 +104,10 @@ pub trait DisplaySink: Sync {
     /// binding at a time makes the current handle the bound one. A sink that holds one handle has
     /// nothing to select, and says so.
     unsafe fn plane_select(&self, _mt: &MainThread, _handle: c_long) -> bool { false }
-    /// The library confirmed `AcbAPI_initialize` (its answer was exactly 1). A created handle alone
-    /// is not that; the paced URI bind's gate reads this.
+    /// The library confirmed `AcbAPI_initialize` (its answer was exactly 1) for the CURRENT handle. A
+    /// created handle alone is not that. Only meaningful at the boot, right after that handle's
+    /// create: the boot reads it once per handle into the plane owner (`HandleSeat::initialized`),
+    /// which is what the paced URI bind's gate and the product binding read afterwards.
     unsafe fn plane_initialized(&self, mt: &MainThread) -> bool;
     #[cfg(feature = "devtriggers")]
     unsafe fn plane_probe_dass_available(&self, mt: &MainThread) -> bool;

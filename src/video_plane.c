@@ -196,10 +196,14 @@ static int g_nslots = 0;
 static long g_acb = 0, g_taskId = 0;
 
 static void acb_cb(long a, long t, long ev, long app, long play, const char *reply) {
-    (void)a;
-    if (elogf) { fprintf(elogf, "acb callback task=%ld ev=%ld app=%ld play=%ld\n", t, ev, app, play); fflush(elogf); }
-    /* `t` is the task id the originating call wrote; the Rust mailbox matches the UNLOADED fence on it. */
-    acb_on_event(t, ev, reply);
+    /* `a` is the long `AcbAPI_create` returned for the core that issued `t`: AcbAPI_initialize binds
+     * its own handle argument as the callback's first parameter (libAcbAPI 0x15c4c, the bound
+     * std::function invoker 0x18858; /Volumes/DAS/lgfw/reports/acb-callback-id/report.md). Each core
+     * numbers its tasks from its own counter, so with two handles a task id means something only
+     * together with `a`. The trailing `id=` keeps the line's historical prefix for the harness. */
+    if (elogf) { fprintf(elogf, "acb callback task=%ld ev=%ld app=%ld play=%ld id=%ld\n", t, ev, app, play, a); fflush(elogf); }
+    /* `t` is the task id the originating call wrote; the Rust mailbox matches the UNLOADED fence on (a, t). */
+    acb_on_event(a, t, ev, reply);
 }
 
 /* ---- ACB verbs (the 3-arg taskId ABI is hidden) ----
@@ -225,8 +229,10 @@ long acb_create(const char *appId, int playerType) {
         if (elogf) { fprintf(elogf, "acb create playerType=%d refused: both slots are taken\n", playerType); fflush(elogf); }
         return 0;
     }
-    /* A new handle replaces the current one only once it exists and is initialized: a failed second
-     * create must not take the first's `g_acb` away. */
+    /* A new handle replaces the current one only once it exists (create answered non-zero and an
+     * appId was given): a failed second create must not take the first's `g_acb` away. Whether its
+     * `initialize` was accepted is kept in its slot (`acb_initialized`), as it always was: a created
+     * handle whose initialize answered 0 is still the historical return. */
     long handle = acb.create();
     int init_rv = 0;
     /* NO FALLBACK ID. This used to substitute the shipped app's literal id for a NULL `appId`,
@@ -291,7 +297,9 @@ int acb_select(long handle) {
  * delays. */
 /* Same device SHA pinned above: initialize wrapper@0x15c4c forwards core@0xcd5c.
  * Core returns exactly 1 only after valid parameters and callback installation; 0 refuses.
- * The URI gate reads it; normal acb_create still returns its historical handle result. */
+ * Answers for the CURRENT handle, so it is only meaningful at the boot right after that handle's
+ * acb_create: the boot reads it once per handle into the plane owner, which the URI gate reads
+ * afterwards. normal acb_create still returns its historical handle result. */
 int acb_initialized(void) { return g_acb && acb.probe_initialize_result == 1; }
 int acb_probe_dass_available(void) { return g_acb && acb.connectDass; }
 int acb_media_id(const char *mediaId) {

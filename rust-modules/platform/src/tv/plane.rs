@@ -1,5 +1,5 @@
-//! The ACB video-plane owner: ONE backend-neutral state for the one binding the television's
-//! `libAcbAPI` handle can hold, and a release that waits for the firmware's completion callback.
+//! The ACB video-plane owner: ONE backend-neutral state for the one binding the app allows across
+//! its ACB handles, and a release that waits for the firmware's completion callback.
 //!
 //! **Why.** A handle is created and initialized once per process (`AcbAPI_create` +
 //! `AcbAPI_initialize`; a repeat initialize returns 0). The boot makes up to two, one per backend
@@ -12,7 +12,9 @@
 //! that says so is the completion callback of `AcbAPI_setState(h, FG, UNLOADED, &task)`:
 //! it carries the SAME task id that call returned, event type 1 (`-2` timeout, `-1` error,
 //! `0` cancel, `1` complete). LOADED, PLAYING, window and video-data tasks also complete with
-//! event 1, so the fence is matched on the TASK ID, never on the event alone, and the callback's
+//! event 1, so the fence is matched on the TASK ID of the handle that holds the binding (each core numbers
+//! its own tasks, and the callback's first argument is the id `AcbAPI_create` returned for the issuing core:
+//! `/Volumes/DAS/lgfw/reports/acb-callback-id/report.md`), never on the event alone, and the callback's
 //! playState argument (a cached value) is never read. If `setState` answers `-2` (not registered)
 //! nothing was sent and no callback will come. The evidence for both rules (client and service
 //! addresses, the device log, and what is not determined) is
@@ -215,7 +217,12 @@ pub enum Event {
     /// `setDisplayWindow` + `setState(PLAYING)` were called: the answer (1 only when both were
     /// accepted) and the two task ids, trusted only for `rv == 1`.
     FinishDispatched { rv: i32, display: i64, playing: i64 },
-    Completion { task: i64, ev: i32 },
+    /// A completion callback. `from` is the handle the firmware's callback named (its first argument
+    /// is the id `AcbAPI_create` returned, so the runner can name the handle), `None` for a
+    /// completion that arrived with no handle named. Each core numbers its tasks from its own
+    /// counter, so a task id means something only on the handle that issued it: a completion from
+    /// any handle but the one whose binding is current is not part of this binding's fence or show.
+    Completion { from: Option<PlaneHandle>, task: i64, ev: i32 },
     /// The mailbox lost `count` completions to overflow.
     Dropped { count: u64 },
     Tick { now_ms: u64 },
@@ -234,6 +241,9 @@ pub enum Fx {
     Quarantined { why: Why },
     /// Completions the mailbox dropped. State is unchanged: only an explicit match releases.
     Lost { count: u64 },
+    /// A completion of a handle whose binding is not the current one (the idle core's, or one before
+    /// any bind): its task id is that core's own, so it is neither this binding's fence nor its show.
+    Foreign { handle: PlaneHandle, task: i64, ev: i32 },
 }
 
 pub struct Plane {
@@ -311,7 +321,7 @@ impl Plane {
         self.bound_by
     }
     /// Whether either handle exists: the plane is unavailable only when neither does.
-    fn any_handle(&self) -> bool {
+    pub fn any_handle(&self) -> bool {
         self.facts.handle || self.uri.handle
     }
 
@@ -400,7 +410,10 @@ impl Plane {
                     fx.push(Fx::Quarantined { why: Why::UnloadRefused(rv) });
                 }
             }
-            Event::Completion { task, ev } => {
+            Event::Completion { from: Some(handle), task, ev } if self.bound_by != Some(handle) => {
+                fx.push(Fx::Foreign { handle, task, ev });
+            }
+            Event::Completion { task, ev, .. } => {
                 if self.complete_shown(task, ev) {
                     return;
                 }
@@ -431,17 +444,19 @@ impl Plane {
 /// One item of the sink's completion mailbox.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlaneCompletion {
-    Done { task: i64, ev: i32 },
+    /// `id` is the first argument of the firmware's callback: the id `AcbAPI_create` returned for the
+    /// core that issued `task` (0 = the sink named none).
+    Done { id: i64, task: i64, ev: i32 },
     /// `count` completions did not fit the mailbox.
     Dropped { count: u64 },
 }
 
-/// The mailbox the library thread pushes `(task, ev)` into and the main thread drains, in the
+/// The mailbox the library thread pushes `(id, task, ev)` into and the main thread drains, in the
 /// shape of `uri::ReplyQueue`: bounded, never latest-wins, and a drop is counted and surfaces as a
 /// [`PlaneCompletion::Dropped`] marker on the next drain, never silently.
 pub struct CompletionQueue {
-    sender: SyncSender<(i64, i32)>,
-    receiver: Mutex<Receiver<(i64, i32)>>,
+    sender: SyncSender<(i64, i64, i32)>,
+    receiver: Mutex<Receiver<(i64, i64, i32)>>,
     dropped: std::sync::atomic::AtomicU64,
 }
 
@@ -450,16 +465,20 @@ impl CompletionQueue {
         let (sender, receiver) = sync_channel(depth);
         Self { sender, receiver: Mutex::new(receiver), dropped: std::sync::atomic::AtomicU64::new(0) }
     }
-    /// Library thread: record a completion. Never blocks.
+    /// Library thread: record a completion that names no handle. Never blocks.
     pub fn push(&self, task: i64, ev: i32) {
-        if self.sender.try_send((task, ev)).is_err() {
+        self.push_from(0, task, ev);
+    }
+    /// Library thread: record a completion of the core `id` (the callback's first argument). Never blocks.
+    pub fn push_from(&self, id: i64, task: i64, ev: i32) {
+        if self.sender.try_send((id, task, ev)).is_err() {
             self.dropped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
     }
     /// Main thread: everything that arrived, oldest first, then a marker when any was dropped.
     pub fn drain(&self) -> Vec<PlaneCompletion> {
         let receiver = self.receiver.lock().unwrap_or_else(|p| p.into_inner());
-        let mut out: Vec<_> = receiver.try_iter().map(|(task, ev)| PlaneCompletion::Done { task, ev }).collect();
+        let mut out: Vec<_> = receiver.try_iter().map(|(id, task, ev)| PlaneCompletion::Done { id, task, ev }).collect();
         let dropped = self.dropped.swap(0, std::sync::atomic::Ordering::Relaxed);
         if dropped > 0 {
             out.push(PlaneCompletion::Dropped { count: dropped });
@@ -508,6 +527,16 @@ impl Inner {
         Self { plane: Plane::new(), epoch: None, defer_logged: false, seats: [HandleSeat::NONE; 2],
             selected: None }
     }
+    /// The handle a completion's id names: `Ok(None)` for id 0 (the sink named none: a host sink, a
+    /// handle booted without an id), `Err` for an id that is neither seat.
+    fn handle_of(&self, id: i64) -> Result<Option<PlaneHandle>, ()> {
+        if id == 0 {
+            return Ok(None);
+        }
+        [PlaneHandle::Feed, PlaneHandle::Uri].into_iter()
+            .find(|handle| self.seats[handle.slot()].id != 0 && i64::from(self.seats[handle.slot()].id) == id)
+            .map(Some).ok_or(())
+    }
     /// Make `handle` the one the sink's verbs address (a no-op for a handle with no id, or when it
     /// already is). The owner is the only caller: one binding at a time makes the current handle
     /// the bound one.
@@ -537,6 +566,8 @@ impl Inner {
                 Fx::OverQuarantine(why) => plx_base::eventlog::log(&format!(
                     "plane: binding over an unproven release ({why}); Feed re-binds as it always has")),
                 Fx::Lost { count } => plx_base::eventlog::log(&format!("plane: {count} completion(s) lost to mailbox overflow")),
+                Fx::Foreign { handle, task, ev } => plx_base::eventlog::log(&format!(
+                    "plane: ignored a completion of the {handle} handle, which holds no binding (task={task} ev={ev})")),
                 Fx::Defer if !self.defer_logged => {
                     self.defer_logged = true;
                     plx_base::eventlog::log("plane: a bind waits for the previous release's completion");
@@ -544,7 +575,7 @@ impl Inner {
                 Fx::Defer | Fx::Bind { .. } | Fx::Refuse(_) => {}
             }
         }
-        if fx.iter().any(|effect| !matches!(effect, Fx::Defer | Fx::Lost { .. })) {
+        if fx.iter().any(|effect| !matches!(effect, Fx::Defer | Fx::Lost { .. } | Fx::Foreign { .. })) {
             self.defer_logged = false;
         }
         fx
@@ -611,6 +642,11 @@ impl PlaneOwner {
     pub fn initialized(&self, handle: PlaneHandle) -> bool {
         self.lock().seats[handle.slot()].initialized
     }
+    /// Whether this boot created either ACB handle (Feed's or the URI engine's): the device has an
+    /// ACB plane at all, which a build with only the URI engine has with Feed's handle absent.
+    pub fn any_handle(&self) -> bool {
+        self.lock().plane.any_handle()
+    }
     /// The old `ACB_OK`: this device's video plane is an initialized ACB handle (Feed's).
     pub fn handle(&self) -> bool {
         self.facts().handle
@@ -626,7 +662,14 @@ impl PlaneOwner {
         let mut inner = self.lock();
         for completion in completions {
             let event = match completion {
-                PlaneCompletion::Done { task, ev } => Event::Completion { task, ev },
+                PlaneCompletion::Done { id, task, ev } => match inner.handle_of(id) {
+                    Ok(from) => Event::Completion { from, task, ev },
+                    Err(()) => {
+                        plx_base::eventlog::log(&format!(
+                            "plane: ignored a completion of id={id}, which is not a boot handle (task={task} ev={ev})"));
+                        continue;
+                    }
+                },
                 PlaneCompletion::Dropped { count } => Event::Dropped { count },
             };
             inner.run(event);
@@ -746,10 +789,10 @@ mod tests {
     fn the_completion_of_the_unload_task_releases() {
         let mut m = releasing(5);
         assert_eq!(m.state(), &State::Releasing { task: 5, deadline_ms: 100 + RELEASE_FENCE_MS });
-        assert_eq!(step(&mut m, Event::Completion { task: 5, ev: 1 }), [Fx::Released { task: 5 }]);
+        assert_eq!(step(&mut m, Event::Completion { from: None, task: 5, ev: 1 }), [Fx::Released { task: 5 }]);
         assert_eq!(m.state(), &State::Released);
         // A repeated completion is inert.
-        assert!(step(&mut m, Event::Completion { task: 5, ev: 1 }).is_empty());
+        assert!(step(&mut m, Event::Completion { from: None, task: 5, ev: 1 }).is_empty());
         assert_eq!(m.state(), &State::Released);
     }
 
@@ -757,17 +800,17 @@ mod tests {
     fn a_completion_of_another_task_is_not_the_fence() {
         let mut m = releasing(5);
         for other in [4, 6, 0] {
-            assert!(step(&mut m, Event::Completion { task: other, ev: 1 }).is_empty(), "task {other}");
+            assert!(step(&mut m, Event::Completion { from: None, task: other, ev: 1 }).is_empty(), "task {other}");
             assert!(matches!(m.state(), State::Releasing { task: 5, .. }), "task {other}");
         }
-        assert_eq!(step(&mut m, Event::Completion { task: 5, ev: 1 }), [Fx::Released { task: 5 }]);
+        assert_eq!(step(&mut m, Event::Completion { from: None, task: 5, ev: 1 }), [Fx::Released { task: 5 }]);
     }
 
     #[test]
     fn a_completion_that_is_not_complete_quarantines() {
         for ev in [-2, -1, 0] {
             let mut m = releasing(5);
-            assert_eq!(step(&mut m, Event::Completion { task: 5, ev }),
+            assert_eq!(step(&mut m, Event::Completion { from: None, task: 5, ev }),
                 [Fx::Quarantined { why: Why::Completion(ev) }], "ev {ev}");
             assert_eq!(m.state(), &State::Quarantined { why: Why::Completion(ev) });
         }
@@ -782,7 +825,7 @@ mod tests {
             [Fx::Quarantined { why: Why::Deadline }]);
         assert_eq!(m.state(), &State::Quarantined { why: Why::Deadline });
         // The completion that comes too late does not undo a verdict already given.
-        assert!(step(&mut m, Event::Completion { task: 5, ev: 1 }).is_empty());
+        assert!(step(&mut m, Event::Completion { from: None, task: 5, ev: 1 }).is_empty());
         assert_eq!(m.state(), &State::Quarantined { why: Why::Deadline });
     }
 
@@ -810,13 +853,13 @@ mod tests {
         let mut m = booted();
         bind(&mut m, BindPolicy::Strict);
         // The library thread was quicker than the main thread's bookkeeping.
-        assert!(step(&mut m, Event::Completion { task: 7, ev: 1 }).is_empty());
+        assert!(step(&mut m, Event::Completion { from: None, task: 7, ev: 1 }).is_empty());
         assert_eq!(unload(&mut m, 1, 7, 100), [Fx::Released { task: 7 }]);
         assert_eq!(m.state(), &State::Released);
         // An early FAILED completion is as final as a late one.
         let mut m = booted();
         bind(&mut m, BindPolicy::Strict);
-        step(&mut m, Event::Completion { task: 7, ev: -1 });
+        step(&mut m, Event::Completion { from: None, task: 7, ev: -1 });
         assert_eq!(unload(&mut m, 1, 7, 100), [Fx::Quarantined { why: Why::Completion(-1) }]);
     }
 
@@ -825,7 +868,7 @@ mod tests {
         let mut m = booted();
         bind(&mut m, BindPolicy::Strict);
         for task in 1..=(MAX_EARLY_COMPLETIONS as i64 + 1) {
-            step(&mut m, Event::Completion { task, ev: 1 });
+            step(&mut m, Event::Completion { from: None, task, ev: 1 });
         }
         // Task 1 was pushed out, so its unload waits for a completion that will not come again.
         assert!(unload(&mut m, 1, 1, 100).is_empty());
@@ -838,15 +881,15 @@ mod tests {
         assert_eq!(m.shown(), WAITING_BOTH);
         // Another task (a pause, the video data) is no part of it; neither is a task 0.
         for other in [1, 2, 5, 0] {
-            step(&mut m, Event::Completion { task: other, ev: 1 });
+            step(&mut m, Event::Completion { from: None, task: other, ev: 1 });
             assert_eq!(m.shown(), WAITING_BOTH, "task {other}");
         }
-        step(&mut m, Event::Completion { task: 3, ev: 1 });
+        step(&mut m, Event::Completion { from: None, task: 3, ev: 1 });
         assert_eq!(m.shown(), Shown::Waiting { display: None, playing: Some(4) }, "one of two is not done");
-        step(&mut m, Event::Completion { task: 4, ev: 1 });
+        step(&mut m, Event::Completion { from: None, task: 4, ev: 1 });
         assert_eq!(m.shown(), Shown::Done);
         // A repeat is inert, and the show never touches the release state.
-        step(&mut m, Event::Completion { task: 4, ev: 1 });
+        step(&mut m, Event::Completion { from: None, task: 4, ev: 1 });
         assert_eq!(m.shown(), Shown::Done);
         assert_eq!(m.state(), &State::Bound { media_id: "m1".into() });
     }
@@ -855,9 +898,9 @@ mod tests {
     fn the_order_of_the_two_show_completions_does_not_matter() {
         for order in [[3, 4], [4, 3]] {
             let mut m = showing();
-            step(&mut m, Event::Completion { task: order[0], ev: 1 });
+            step(&mut m, Event::Completion { from: None, task: order[0], ev: 1 });
             assert!(matches!(m.shown(), Shown::Waiting { .. }), "{order:?}");
-            step(&mut m, Event::Completion { task: order[1], ev: 1 });
+            step(&mut m, Event::Completion { from: None, task: order[1], ev: 1 });
             assert_eq!(m.shown(), Shown::Done, "{order:?}");
         }
     }
@@ -866,10 +909,10 @@ mod tests {
     fn a_show_completion_that_is_not_complete_fails_for_good() {
         for (task, ev) in [(3, -2), (3, -1), (3, 0), (4, -2), (4, -1), (4, 0)] {
             let mut m = showing();
-            step(&mut m, Event::Completion { task, ev });
+            step(&mut m, Event::Completion { from: None, task, ev });
             assert_eq!(m.shown(), Shown::Failed { ev }, "task {task} ev {ev}");
             // The other half completing cleanly does not undo it.
-            step(&mut m, Event::Completion { task: 7 - task, ev: 1 });
+            step(&mut m, Event::Completion { from: None, task: 7 - task, ev: 1 });
             assert_eq!(m.shown(), Shown::Failed { ev }, "task {task} ev {ev}");
         }
     }
@@ -878,23 +921,23 @@ mod tests {
     fn show_completions_that_beat_the_dispatch_are_matched_from_the_early_queue() {
         let mut m = booted();
         bind(&mut m, BindPolicy::Strict);
-        step(&mut m, Event::Completion { task: 3, ev: 1 });
-        step(&mut m, Event::Completion { task: 4, ev: 1 });
+        step(&mut m, Event::Completion { from: None, task: 3, ev: 1 });
+        step(&mut m, Event::Completion { from: None, task: 4, ev: 1 });
         assert_eq!(m.shown(), Shown::No, "nothing was waiting yet");
         finish(&mut m, 1, 3, 4);
         assert_eq!(m.shown(), Shown::Done);
         // One early and one late.
         let mut m = booted();
         bind(&mut m, BindPolicy::Strict);
-        step(&mut m, Event::Completion { task: 4, ev: 1 });
+        step(&mut m, Event::Completion { from: None, task: 4, ev: 1 });
         finish(&mut m, 1, 3, 4);
         assert_eq!(m.shown(), Shown::Waiting { display: Some(3), playing: None });
-        step(&mut m, Event::Completion { task: 3, ev: 1 });
+        step(&mut m, Event::Completion { from: None, task: 3, ev: 1 });
         assert_eq!(m.shown(), Shown::Done);
         // An early failure is as final as a late one.
         let mut m = booted();
         bind(&mut m, BindPolicy::Strict);
-        step(&mut m, Event::Completion { task: 3, ev: -1 });
+        step(&mut m, Event::Completion { from: None, task: 3, ev: -1 });
         finish(&mut m, 1, 3, 4);
         assert_eq!(m.shown(), Shown::Failed { ev: -1 });
     }
@@ -904,17 +947,17 @@ mod tests {
         // The previous binding's tasks 3 and 4 sit in the early queue when it is unloaded.
         let mut m = booted();
         bind(&mut m, BindPolicy::Strict);
-        step(&mut m, Event::Completion { task: 3, ev: 1 });
-        step(&mut m, Event::Completion { task: 4, ev: 1 });
+        step(&mut m, Event::Completion { from: None, task: 3, ev: 1 });
+        step(&mut m, Event::Completion { from: None, task: 4, ev: 1 });
         unload(&mut m, 1, 5, 100);
-        step(&mut m, Event::Completion { task: 5, ev: 1 });
+        step(&mut m, Event::Completion { from: None, task: 5, ev: 1 });
         assert_eq!(m.state(), &State::Released);
         // A new binding whose tasks reuse the ids does not inherit those completions.
         bind(&mut m, BindPolicy::Strict);
         finish(&mut m, 1, 3, 4);
         assert_eq!(m.shown(), WAITING_BOTH);
-        step(&mut m, Event::Completion { task: 3, ev: 1 });
-        step(&mut m, Event::Completion { task: 4, ev: 1 });
+        step(&mut m, Event::Completion { from: None, task: 3, ev: 1 });
+        step(&mut m, Event::Completion { from: None, task: 4, ev: 1 });
         assert_eq!(m.shown(), Shown::Done, "its own completions do");
     }
 
@@ -926,8 +969,8 @@ mod tests {
             bind(&mut m, BindPolicy::Strict);
             finish(&mut m, rv, display, playing);
             assert_eq!(m.shown(), Shown::No, "rv {rv} tasks {display}/{playing}");
-            step(&mut m, Event::Completion { task: 3, ev: 1 });
-            step(&mut m, Event::Completion { task: 4, ev: 1 });
+            step(&mut m, Event::Completion { from: None, task: 3, ev: 1 });
+            step(&mut m, Event::Completion { from: None, task: 4, ev: 1 });
             assert_eq!(m.shown(), Shown::No, "rv {rv} tasks {display}/{playing}");
         }
         let mut m = booted();
@@ -938,14 +981,14 @@ mod tests {
     #[test]
     fn an_unload_and_a_new_bind_both_end_the_show() {
         let mut m = showing();
-        step(&mut m, Event::Completion { task: 3, ev: 1 });
+        step(&mut m, Event::Completion { from: None, task: 3, ev: 1 });
         unload(&mut m, 1, 5, 100);
         assert_eq!(m.shown(), Shown::No);
         // The stale half cannot complete anything now, and the unload fence is untouched.
-        step(&mut m, Event::Completion { task: 4, ev: 1 });
+        step(&mut m, Event::Completion { from: None, task: 4, ev: 1 });
         assert_eq!(m.shown(), Shown::No);
         assert!(matches!(m.state(), State::Releasing { task: 5, .. }));
-        assert_eq!(step(&mut m, Event::Completion { task: 5, ev: 1 }), [Fx::Released { task: 5 }]);
+        assert_eq!(step(&mut m, Event::Completion { from: None, task: 5, ev: 1 }), [Fx::Released { task: 5 }]);
         // Feed re-binds over a bound plane without an unload: that is a new binding too.
         let mut m = showing();
         bind(&mut m, BindPolicy::Rebind);
@@ -955,11 +998,11 @@ mod tests {
     #[test]
     fn the_unload_fence_still_releases_after_a_show_consumed_its_tasks() {
         let mut m = showing();
-        step(&mut m, Event::Completion { task: 3, ev: 1 });
-        step(&mut m, Event::Completion { task: 4, ev: 1 });
+        step(&mut m, Event::Completion { from: None, task: 3, ev: 1 });
+        step(&mut m, Event::Completion { from: None, task: 4, ev: 1 });
         assert_eq!(m.shown(), Shown::Done);
         unload(&mut m, 1, 5, 100);
-        assert_eq!(step(&mut m, Event::Completion { task: 5, ev: 1 }), [Fx::Released { task: 5 }]);
+        assert_eq!(step(&mut m, Event::Completion { from: None, task: 5, ev: 1 }), [Fx::Released { task: 5 }]);
         assert_eq!(m.state(), &State::Released);
     }
 
@@ -977,14 +1020,14 @@ mod tests {
         let mut m = releasing(5);
         assert_eq!(bind(&mut m, BindPolicy::Strict), [Fx::Defer]);
         assert!(matches!(m.state(), State::Releasing { .. }));
-        step(&mut m, Event::Completion { task: 5, ev: 1 });
+        step(&mut m, Event::Completion { from: None, task: 5, ev: 1 });
         assert_eq!(bind(&mut m, BindPolicy::Strict), [Fx::Bind { media_id: "m1".into() }]);
         assert_eq!(m.state(), &State::Bound { media_id: "m1".into() });
         // A second binding while one holds the plane is refused.
         assert_eq!(bind(&mut m, BindPolicy::Strict), [Fx::Refuse(Refusal::Bound)]);
         // And a quarantined plane is refused for good.
         let mut m = releasing(5);
-        step(&mut m, Event::Completion { task: 5, ev: -1 });
+        step(&mut m, Event::Completion { from: None, task: 5, ev: -1 });
         assert_eq!(bind(&mut m, BindPolicy::Strict),
             [Fx::Refuse(Refusal::Quarantined(Why::Completion(-1)))]);
     }
@@ -1179,11 +1222,14 @@ mod tests {
         for (handle, policy) in [(PlaneHandle::Uri, BindPolicy::Strict), (PlaneHandle::Feed, BindPolicy::Rebind)] {
             assert_eq!(bind_of(&mut m, handle, policy), [Fx::Defer], "{handle} waits on the other's UNLOADED");
         }
-        assert_eq!(step(&mut m, Event::Completion { task: 5, ev: 1 }), [Fx::Released { task: 5 }]);
+        assert_eq!(step(&mut m, Event::Completion { from: None, task: 5, ev: 1 }), [Fx::Released { task: 5 }]);
         assert_eq!(bind_of(&mut m, PlaneHandle::Uri, BindPolicy::Strict), [Fx::Bind { media_id: "m".into() }]);
         assert_eq!(m.bound_handle(), Some(PlaneHandle::Uri));
     }
 
+    /// Reachable in the app only if a Start were admitted after a quarantined URI release: today the
+    /// playback contract rejects every later Start while the session is not Vacant, so this pins the
+    /// owner's rule, not a route a user can take.
     #[test]
     fn feed_binds_over_an_unproven_release_of_the_uri_handle_and_the_uri_engine_does_not() {
         let mut m = both_booted();
@@ -1245,6 +1291,78 @@ mod tests {
             "plane_unload".to_owned()], "a handle the owner never saw selected is selected again before the unload");
     }
 
+    // ---- completions are matched on (handle, task): each core numbers its own tasks ----
+
+    #[test]
+    fn an_idle_cores_completion_sharing_the_active_tasks_id_does_not_settle_the_fence() {
+        for (active, idle) in [(PlaneHandle::Uri, PlaneHandle::Feed), (PlaneHandle::Feed, PlaneHandle::Uri)] {
+            let mut m = both_booted();
+            bind_of(&mut m, active, BindPolicy::Strict);
+            unload(&mut m, 1, 5, 100);
+            // Both cores issue task 5 (the TV's callbacks showed task=1..4 on each).
+            assert_eq!(step(&mut m, Event::Completion { from: Some(idle), task: 5, ev: 1 }),
+                [Fx::Foreign { handle: idle, task: 5, ev: 1 }], "{idle} while {active} is releasing");
+            assert!(matches!(m.state(), State::Releasing { task: 5, .. }), "the idle core's task 5 is not the fence");
+            assert_eq!(step(&mut m, Event::Completion { from: Some(active), task: 5, ev: 1 }),
+                [Fx::Released { task: 5 }]);
+        }
+    }
+
+    #[test]
+    fn an_idle_cores_completions_do_not_complete_the_active_show() {
+        let mut m = both_booted();
+        bind_of(&mut m, PlaneHandle::Uri, BindPolicy::Strict);
+        finish(&mut m, 1, 3, 4);
+        for task in [3, 4] {
+            assert_eq!(step(&mut m, Event::Completion { from: Some(PlaneHandle::Feed), task, ev: 1 }),
+                [Fx::Foreign { handle: PlaneHandle::Feed, task, ev: 1 }]);
+        }
+        assert_eq!(m.shown(), WAITING_BOTH, "neither of the idle core's tasks counted");
+        step(&mut m, Event::Completion { from: Some(PlaneHandle::Uri), task: 3, ev: 1 });
+        step(&mut m, Event::Completion { from: Some(PlaneHandle::Uri), task: 4, ev: 1 });
+        assert_eq!(m.shown(), Shown::Done);
+    }
+
+    #[test]
+    fn a_completion_of_a_handle_before_any_bind_is_foreign_and_one_naming_none_is_the_bound_ones() {
+        let mut m = both_booted();
+        assert_eq!(step(&mut m, Event::Completion { from: Some(PlaneHandle::Uri), task: 7, ev: 1 }),
+            [Fx::Foreign { handle: PlaneHandle::Uri, task: 7, ev: 1 }]);
+        // Nothing was kept as an early completion either: a dispatch that names task 7 waits.
+        bind_of(&mut m, PlaneHandle::Uri, BindPolicy::Strict);
+        assert!(unload(&mut m, 1, 7, 100).is_empty());
+        assert!(matches!(m.state(), State::Releasing { task: 7, .. }));
+        assert_eq!(step(&mut m, Event::Completion { from: None, task: 7, ev: 1 }), [Fx::Released { task: 7 }]);
+    }
+
+    #[test]
+    fn the_owner_attributes_a_completion_to_its_handle_by_the_id_the_firmware_named() {
+        use super::super::sink::ScriptedPlaneSink;
+        let sink = ScriptedPlaneSink::new(PlaneUnload { rv: 1, task: 5 });
+        let owner = owner_of_two(&sink);
+        let mt = mt();
+        assert_eq!(owner.bind(&sink, &mt, PlaneHandle::Uri, BindPolicy::Strict, "m1"), BindVerdict::Granted);
+        assert_eq!(owner.unload(&sink, &mt), Phase::Releasing);
+        sink.mailbox.push_from(FEED_ID.into(), 5, 1);
+        assert_eq!(owner.pump(&sink, &mt), Phase::Releasing, "the idle Feed core's task 5 is not the fence");
+        sink.mailbox.push_from(99, 5, 1);
+        assert_eq!(owner.pump(&sink, &mt), Phase::Releasing, "an id that is neither boot handle is ignored");
+        sink.mailbox.push_from(URI_ID.into(), 5, 1);
+        assert_eq!(owner.pump(&sink, &mt), Phase::Released);
+    }
+
+    #[test]
+    fn the_owner_reports_an_acb_plane_when_either_handle_exists() {
+        let seat = HandleSeat { id: 1, initialized: true };
+        let facts = |handle| PlaneFacts { handle, player_type: 0 };
+        for (feed, uri, any) in [(false, false, false), (true, false, true), (false, true, true), (true, true, true)] {
+            let owner = PlaneOwner::new();
+            owner.boot_handle(PlaneHandle::Feed, facts(feed), seat);
+            owner.boot_handle(PlaneHandle::Uri, facts(uri), seat);
+            assert_eq!((owner.handle(), owner.any_handle()), (feed, any), "feed {feed}, uri {uri}");
+        }
+    }
+
     #[test]
     fn a_handle_with_no_id_is_never_selected() {
         use super::super::sink::ScriptedPlaneSink;
@@ -1263,12 +1381,12 @@ mod tests {
         q.push(3, 1);
         q.push(4, -1);
         assert_eq!(q.drain(), [
-            PlaneCompletion::Done { task: 1, ev: 1 },
-            PlaneCompletion::Done { task: 2, ev: 1 },
+            PlaneCompletion::Done { id: 0, task: 1, ev: 1 },
+            PlaneCompletion::Done { id: 0, task: 2, ev: 1 },
             PlaneCompletion::Dropped { count: 2 },
         ]);
         assert!(q.drain().is_empty());
         q.push(9, 1);
-        assert_eq!(q.drain(), [PlaneCompletion::Done { task: 9, ev: 1 }]);
+        assert_eq!(q.drain(), [PlaneCompletion::Done { id: 0, task: 9, ev: 1 }]);
     }
 }
