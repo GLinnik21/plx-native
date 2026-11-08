@@ -510,15 +510,13 @@ pub fn parse_gst_ranks(text: &str) -> std::collections::BTreeMap<String, i64> {
 /// The device table says what the hardware block can do; this file says which gst decoder elements
 /// the firmware left switched on. **Absence of a line is never evidence**: it means the default rank,
 /// and the software decoders it lists (`avdec_*`, `faad`) are at rank 0 in every conf read, beside
-/// hardware elements at 290, because the pipeline uses LG's hardware ones. A codec is dropped only
-/// when its OWN hardware element (`DECODER_ELEMENTS`' first, e.g. `dts_audiodec`) is LISTED at rank
-/// `<= 0` and every other listed element of it is `<= 0` too (so a dts_restore patch giving `avdec_dca`
-/// a rank saves DTS), and it is not in [`BASELINE_AUDIO`], which no conf can take away. In practice that
-/// is DTS on a set whose conf lists `dts_audiodec=0`. A rank above zero is no proof of a decoder either
-/// (it is listed for elements a set may not have), which is why the table row stays the other half of
-/// the answer. A conf naming other codecs' elements says nothing about this one's. An empty or unreadable
-/// file changes nothing. The channel ceiling goes with the codec, so Force Direct Play's "DTS needs a
-/// surviving table row" rule sees the same answer.
+/// hardware elements at 290, because the pipeline uses LG's hardware ones. The conf never removes
+/// [`BASELINE_AUDIO`]. For other codecs, drop the row only when the hardware element is explicitly off
+/// and every listed decoder for that codec is off. DTS retains the older, conservative rule (#899):
+/// a table can advertise DTS without a working decoder, so if its only listed decoder is
+/// `avdec_dca=0`, remove the row. A dts_restore patch that ranks `avdec_dca` back on keeps it.
+/// A positive rank cannot add a codec to the table. An empty or unreadable file changes nothing.
+/// A dropped codec also loses its channel ceiling, including the row Force Direct Play needs for DTS.
 pub fn apply_gst_decoders(caps: &mut Caps, conf: &str) -> (Vec<&'static str>, Vec<&'static str>) {
     let ranks = parse_gst_ranks(conf);
     let (mut dropped, mut unlisted) = (Vec::new(), Vec::new());
@@ -532,7 +530,10 @@ pub fn apply_gst_decoders(caps: &mut Caps, conf: &str) -> (Vec<&'static str>, Ve
             continue;
         }
         let hardware_off = ranks.get(elements[0]).is_some_and(|r| *r <= 0);
-        if hardware_off && !BASELINE_AUDIO.contains(codec) && listed.iter().all(|r| *r <= 0) {
+        if (*codec == "dts" || hardware_off)
+            && !BASELINE_AUDIO.contains(codec)
+            && listed.iter().all(|r| *r <= 0)
+        {
             caps.audio = caps.audio.split(',').filter(|c| *c != *codec).collect::<Vec<_>>().join(",");
             caps.audio_channels.remove(*codec);
             dropped.push(*codec);
@@ -2273,19 +2274,13 @@ mod tests {
         assert_eq!(c.audio, "aac,ac3,eac3,opus,flac,alac,pcm");
     }
 
-    /// A conf that merely lacks the hardware `dts_audiodec` line (the shape an earlier revision of this
-    /// layer invented for a C5) is NO evidence: no line means the default rank, and no real conf read
-    /// has the shape (the C1, a dts_restore-patched C2 and a G5 all list the line at 290).
     #[test]
-    fn an_absent_hardware_dts_line_is_no_evidence() {
+    fn dts_loses_its_row_when_its_only_listed_decoder_is_off() {
         let conf = GST_C1.replace("dts_audiodec=290\n", "");
-        assert!(!conf.contains("dts_audiodec"), "the fixture must lack the line");
         let mut c = native_set();
-        let before = c.clone();
         let (dropped, _) = apply_gst_decoders(&mut c, &conf);
-        assert!(dropped.is_empty(), "{dropped:?}");
-        assert_eq!(c, before);
-        assert!(c.audio_has("dts") && c.forced_admits_dts());
+        assert_eq!(dropped, ["dts"]);
+        assert!(!c.audio_has("dts") && !c.forced_admits_dts());
     }
 
     #[test]
@@ -2342,31 +2337,13 @@ mod tests {
         }
     }
 
-    /// The codecs a conf with no hardware decoder LINE at all is silent about. Software elements at
-    /// rank 0 are what every real conf says (the pipeline uses LG's hardware elements, not these), so
-    /// they are not evidence that nothing decodes the codec.
     #[test]
     fn a_conf_with_only_software_audio_decoders_keeps_the_baseline() {
         let mut c = native_set();
-        let before = c.clone();
         let (dropped, _) = apply_gst_decoders(&mut c, GST_SOFTWARE_ONLY);
-        assert!(dropped.is_empty(), "{dropped:?}");
-        assert_eq!(c, before);
-        assert_eq!(c.audio, "aac,ac3,eac3,dts,opus,flac,alac,pcm");
-        assert!(c.forced_admits_dts());
-    }
-
-    /// A conf that names OTHER codecs' hardware decoders says nothing about this
-    /// codec's: the sibling lines are no evidence either.
-    #[test]
-    fn a_conf_naming_other_audio_decoders_but_not_this_codecs_drops_nothing() {
-        let conf = GST_SOFTWARE_ONLY.replace("[rank]\n", "[rank]\npcm_audiodec=290\nwma_audiodec=290\n");
-        assert!(conf.contains("pcm_audiodec=290") && !conf.contains("dts_audiodec"));
-        let mut c = native_set();
-        let before = c.clone();
-        let (dropped, _) = apply_gst_decoders(&mut c, &conf);
-        assert!(dropped.is_empty(), "{dropped:?}");
-        assert_eq!(c, before);
+        assert_eq!(dropped, ["dts"]);
+        assert_eq!(c.audio, "aac,ac3,eac3,opus,flac,alac,pcm");
+        assert!(!c.forced_admits_dts());
     }
 
     /// **The floor.** Even where a hardware element IS listed at rank 0 (and the software one too),

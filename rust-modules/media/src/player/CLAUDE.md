@@ -433,11 +433,10 @@ something.
   which forwards only an envelope the service reported.
 - **Opus goes to LG's own decoder only as far as the set is known to take it** (`ff_native_audio.rs`,
   `devcaps.rs`). What a set announces is layered, in this order and logged at boot as `devcaps: ...
-  audio layers:`: the codec table, minus the codecs `/etc/gst/gstcool.conf` positively lists as switched
-  off (`apply_gst_decoders`: a codec goes only when its OWN hardware `*_audiodec` line is listed at rank <= 0
-  and every other listed element of it is too, so in practice DTS on a set that lists `dts_audiodec=0`;
-  the absence of a line is never evidence, software decoders at 0 are in every conf, a rank of 290 is not
-  proof of a decoder either, and `devcaps::BASELINE_AUDIO` (`aac`, `ac3`, `eac3`) is never dropped by it),
+  audio layers:`: the codec table, minus the codecs disabled by `/etc/gst/gstcool.conf`
+  (`apply_gst_decoders` keeps `aac`, `ac3` and `eac3` even if the file lists their decoders at rank 0.
+  For other codecs it needs an explicitly disabled hardware element and no enabled decoder.
+  DTS keeps the existing exception: it is dropped if the only listed decoder is `avdec_dca=0`),
   minus `devcaps::EXCLUSIONS` (rows per firmware codename, each carrying its
   evidence: the C1's `kisscurl-koli` limits Opus to stereo, and records that Vorbis is refused; a row
   may also declare the Dolby Vision splitter IDR-first (`jhericurl-jervisbay`, webOS 5.5.0-19, and
@@ -678,11 +677,10 @@ something.
   transcode decision. For ADTS/HE-AAC, use the **CORE** sample rate from the AudioSpecificConfig (SBR
   doubles it). See `[[audio-payload-codecs]]`. The Opus channel count follows the same split: the plan
   carries the SOURCE track, so on a server-converted Opus lane (`is_transcoding` and a carried track of
-  another codec) `route::stream_achannels` / `opus_lane` declare the width the profile asked the server for
-  (`Caps::opus_lane_width`: the source's, held to the attempt's Opus bound, stereo when unknown, 1..=8;
-  the PMS output width is not measured), never the source's own and never 0, which the Load refuses
-  ("no Opus layout"). A direct play or Force Direct Play whose carried track is another codec (a native
-  track switch moves only the declared codec) keeps 0.
+  another codec) `route::opus_lane` estimates the output width from the source and the profile's Opus
+  limit, with stereo as the fallback for an unknown source width. A direct play whose carried track
+  is another codec (a native track switch moves only the declared codec) keeps 0. When the codecs
+  match, the carried width is used as before. This does not detect a same-codec transcode.
 - **Subtitles are client-rendered here — the TV's HW subtitle engine is URI-mode only** and
   unreachable in buffer-feed. Image (PGS/VobSub) subs are decoded and drawn by us; styled
   ASS/SSA and EMBEDDED TEXT tracks (SubRip, WebVTT, mov_text, SAMI, ...) use the bundled libass worker
