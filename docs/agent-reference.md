@@ -357,7 +357,8 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   --no-default-features --features play-uri,play-feed`, which is the configuration `RELEASE=1`
   ships and which `make check` does not cover. The backend features are part of the shipping set:
   both are in the application crate's `default`, so the bare `--no-default-features` would check a
-  build with no playback backend. `CARGO_INCREMENTAL=0`, as every one-shot gate. It
+  build with no playback backend (`PLAYBACK_BACKENDS=uri|feed` checks that one
+  backend's set; `none` checks the bare no-backend set, which is not a television package). `CARGO_INCREMENTAL=0`, as every one-shot gate. It
   builds in the checkout's own
   `target/` (or the `CARGO_TARGET_DIR` a lane exports, as `make lint` does) rather than a tree of
   its own, and restores the cargo seed first like `lint`. Sharing is safe because cargo hashes a
@@ -984,6 +985,13 @@ wayland-client, glib-2.0, luna-service2, and LG's proprietary `libplayerAPIs` / 
 bundled in the NDK), so the Starfish C++ calls get real link-time symbol checking. Every one of
 those has the **same SONAME on every webOS release from 2.2.3 to 11.2.0**, which is what makes
 linking them normally the right call — check any of it with `tools/fwcompat.py --inventory`.
+
+`PLAYBACK_BACKENDS=uri` omits the Feed Starfish objects and the `libplayerAPIs` / `libpf-1.0`
+imports. Grade that artifact with `PLAYBACK_BACKENDS=uri ./ci/check-elf.sh pkg/plxnative` (or pass
+`uri` as the script's second argument). The gate requires the Feed callback hook and the full
+`ci/expected-dt-needed.txt` set for the default `both` and explicit `feed` modes; URI mode
+requires the hook and both Feed imports to be absent and matches the exact
+`ci/expected-dt-needed-uri.txt` set. A bare `ci/check-elf.sh` grades the default `both` artifact.
 
 **Two families are deliberately NOT linked because their SONAME MOVES**: `libcurl`
 (`.so.5`→`.so.4`) and `libAcbAPI` (*deleted outright* at webOS 5.0). A `DT_NEEDED` entry is a hard

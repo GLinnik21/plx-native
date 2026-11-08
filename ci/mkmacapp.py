@@ -127,7 +127,7 @@ def build_binary(tdir: Path) -> Path:
 
     `play-feed` is named because `--no-default-features` drops it too, and the simulator's video
     sink (`plx_play_feed::ffi_host`) is the Feed backend's: without it the build selects no backend at
-    all and installs `NoSink`.
+    all and installs `NoSink`. `ci/test_sim_backend.py` holds that for every simulator build.
     """
     print("==> building plxnative-sim (release, no dev features)")
     run("cargo", "+" + pinned(REPO), "build", "--manifest-path", REPO / "rust-modules/Cargo.toml",

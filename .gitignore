@@ -220,3 +220,8 @@ tests/fixtures/softfloat/arm.tbl
 
 # Node tools (tools/package.json): `npm ci --prefix tools`
 tools/node_modules/
+
+# Native backend feature matrices use separate, rebuildable Cargo trees.
+rust-modules/target*-uri/
+rust-modules/target*-feed/
+rust-modules/target*-none/

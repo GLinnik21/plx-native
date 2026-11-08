@@ -182,7 +182,7 @@ APPPORT      = $(if $(filter stable,$(FLAVOR)),8910,$(if $(filter nightly,$(FLAV
 # it here also survives the next block that gets added above `all:`.
 .DEFAULT_GOAL := all
 
-QUERY_GOALS = print-flavor print-appid print-appdir print-rundir print-eventlog print-appport print-tv \
+QUERY_GOALS = print-flavor print-appid print-appdir print-rundir print-eventlog print-appport print-tv print-playback-config \
               print-simbin print-app-files print-deploy-files print-sentry-handler print-ffmpeg-staged \
               print-sentry-project print-bench-config print-disk-entries \
               print-subs-font-files print-rust-toolchain print-rust-codegen print-cargo-env
@@ -210,6 +210,9 @@ print-sentry-handler: ; @echo '$(SENTRY_HANDLER)'
 print-ffmpeg-staged:  ; @echo '$(FFMPEG_STAGED)'
 print-sentry-project: ; @echo '$(SENTRY_PROJECT)'
 print-rust-toolchain: ; @echo '$(RUST_TOOLCHAIN)'
+print-playback-config:
+	@printf '%s\n' 'backends=$(PLAYBACK_BACKENDS)' 'features=$(RUST_FEATFLAGS)' 'target=$(RUST_TDIR)' 'native=$(SRCS)' 'libraries=$(LIBS_REAL)' 'interposer=$(SMP_INTERPOSER_LDFLAG)'
+
 print-rust-codegen: ; @echo '$(RUST_CODEGEN)'
 print-cargo-env: ; @env $(TELEMETRY_ENV) env | grep '^PLX_' | sort || true
 # What `tools/build-bench.py` needs to run the recipes' cargo invocations without restating their
@@ -399,7 +402,7 @@ RUST_ENV = RUSTFLAGS="$(RUST_CODEGEN) $(RUST_DEBUGINFO) $(RUST_CAPLINTS) $(RUST_
 # them normally — with real link-time symbol checking — the right call.
 #   libpf-1.0 carries mediapipeline::CustomPipeline (the webOS<11 seek path).
 LIBS_REAL = -lSDL2 -lSDL2_ttf -lGLESv2 -lluna-service2 -lglib-2.0 \
-            -lwayland-client -lplayerAPIs -lpf-1.0
+            -lwayland-client $(if $(PLAYBACK_HAS_FEED),-lplayerAPIs -lpf-1.0,)
 # NOT LISTED, DELIBERATELY — but for TWO different reasons, and this comment used to give only
 # the first, for all three.
 #
@@ -557,21 +560,37 @@ $(if $(findstring nightly,$(RUST_TOOLCHAIN)),,$(error HOST_THREADS=$(HOST_THREAD
 endif
 HOST_ENV = $(if $(filter-out 0 1,$(HOST_THREADS)),CARGO_BUILD_RUSTFLAGS='-Zthreads=$(HOST_THREADS)')
 
-# `--no-default-features` drops `play-uri` and `play-feed` too (both are in the application crate's
-# `default`), and a build with no playback backend is not a television package (`lib.rs` refuses it),
-# so RELEASE names the backends explicitly. `make check-nodef` passes the same words.
-RUST_BACKEND_FEATURES = play-uri,play-feed
-RUST_FEATFLAGS = $(if $(RELEASE),--no-default-features --features $(RUST_BACKEND_FEATURES),)$(if $(LAB), --features lab-diagnostics,)
-RUST_TDIR      = target$(if $(RELEASE),-release,)$(if $(LAB),-lab,)$(if $(SYMBOLS),-sym,)
+# Backend inclusion is explicit even when RELEASE drops diagnostic defaults. These names also
+# key target directories and native objects, so changing a backend cannot reuse another binary.
+PLAYBACK_BACKENDS ?= both
+ifneq ($(words $(PLAYBACK_BACKENDS)),1)
+$(error PLAYBACK_BACKENDS must name one backend configuration)
+endif
+ifneq ($(filter $(PLAYBACK_BACKENDS),both uri feed none),$(PLAYBACK_BACKENDS))
+$(error PLAYBACK_BACKENDS must be both, uri, feed or none)
+endif
+PLAYBACK_FEATURES_both = play-uri,play-feed
+PLAYBACK_FEATURES_uri = play-uri
+PLAYBACK_FEATURES_feed = play-feed
+PLAYBACK_FEATURES_none =
+RUST_BACKEND_FEATURES = $(PLAYBACK_FEATURES_$(PLAYBACK_BACKENDS))
+PLAYBACK_HAS_FEED = $(filter both feed,$(PLAYBACK_BACKENDS))
+PLAYBACK_EMPTY :=
+PLAYBACK_SPACE := $(PLAYBACK_EMPTY) $(PLAYBACK_EMPTY)
+PLAYBACK_COMMA := ,
+RUST_BUILD_FEATURES = $(subst $(PLAYBACK_SPACE),$(PLAYBACK_COMMA),$(strip $(subst $(PLAYBACK_COMMA),$(PLAYBACK_SPACE),$(RUST_BACKEND_FEATURES)) $(if $(RELEASE),,devtools devtriggers threadcheck) $(if $(LAB),lab-diagnostics,)))
+RUST_FEATFLAGS = --no-default-features $(if $(RUST_BUILD_FEATURES),--features $(RUST_BUILD_FEATURES),)
+RUST_TDIR = target$(if $(RELEASE),-release,)$(if $(LAB),-lab,)$(if $(SYMBOLS),-sym,)$(if $(filter both,$(PLAYBACK_BACKENDS)),,-$(PLAYBACK_BACKENDS))
+
 # OVERRIDING RUST_FEATFLAGS BY HAND? PASS RUST_TDIR TOO. This dir is keyed on RELEASE, not on the
 # flag set, so `make RUST_FEATFLAGS=...` alone lands in the SAME target/ as an ordinary build:
 # cargo's staticlib looks up to date, the stamp below deletes pkg/plxnative, and make relinks the
 # PREVIOUS feature set without a word. Exactly the stale-artifact trap the stamp exists to prevent,
 # one step removed — and it burned two builds while shooting the README screenshots (which want
 # devtriggers ON and devtools OFF, a combination neither RELEASE nor the default gives). The set
-# must name at least one playback backend (`$(RUST_BACKEND_FEATURES)` is the shipping pair; the screenshot
-# recipe needs only `play-feed`): a hand-set RUST_FEATFLAGS replaces everything, and an ARM build with no
-# backend is refused by `lib.rs`. Correct:
+# must name at least one playback backend (`$(RUST_BACKEND_FEATURES)` is the selected set, the shipping
+# pair by default; the screenshot recipe needs only `play-feed`): a hand-set RUST_FEATFLAGS replaces
+# everything, and an ARM build with no backend is refused by `lib.rs`. Correct:
 #   make RUST_FEATFLAGS="--no-default-features --features devtriggers,play-feed" RUST_TDIR=target-shots deploy
 
 # WHICH VERSION THE BINARY REPORTS, which is not always the version it was cut from. A release
@@ -826,6 +845,16 @@ RUST_CFG       = features:$(RUST_FEATFLAGS)$(if $(filter-out release,$(ARM_PROFI
 # and several tests read it that way).
 SIDE_EFFECT_FREE = $(QUERY_GOALS) release-guard lab-guard disk disk-preflight build-bench build-bench-quick test-hostsim check-nodef test-fast test-crate fuzz-hud lint check-cargo-lint check-cargo-unit-hostsim check-localization check-c-unit check-python-harness notices notices-verify setup-rust setup-env disk-watch disk-watch-uninstall fixtures fixtures-quick fixtures-pipeline demo-library sim-token sim-macos-token sim-clean sim-macos-clean kill run run-stream verify-deploy uninstall fetch-profile softfloat-probe tv-lock-require
 PURE_QUERY := $(if $(MAKECMDGOALS),$(if $(filter-out $(SIDE_EFFECT_FREE),$(MAKECMDGOALS)),,yes),)
+# `PLAYBACK_BACKENDS=none` builds no television package. It is refused HERE, at parse time and before
+# the stamp reset below: a recipe-level refusal ran after that reset, so a mistyped
+# `make PLAYBACK_BACKENDS=none [ipk|deploy]` first deleted the last real build's binary and staged
+# libraries. The side-effect-free goals above (`check-nodef`, the queries, the host checks) and `clean`
+# (which deletes those outputs anyway) still take it.
+ifeq ($(PLAYBACK_BACKENDS),none)
+ifneq ($(if $(MAKECMDGOALS),$(if $(filter-out $(SIDE_EFFECT_FREE) clean,$(MAKECMDGOALS)),,yes),),yes)
+$(error A television package requires a URI or feed playback backend; PLAYBACK_BACKENDS=none is for check-nodef, clean and the side-effect-free goals)
+endif
+endif
 ifneq ($(PURE_QUERY),yes)
 ifneq ($(RUST_CFG),$(shell cat $(RUST_STAMP) 2>/dev/null))
   $(shell mkdir -p pkg && printf '%s' '$(RUST_CFG)' > $(RUST_STAMP) && rm -f pkg/plxnative pkg/plxnative-storage \
@@ -852,10 +881,12 @@ endif
 RUST_TARGET = armv7-unknown-linux-gnueabi
 RUST_LIB    = rust-modules/$(RUST_TDIR)/$(RUST_TARGET)/$(ARM_PROFILE)/libplxnative_modules.a
 
-# Every ordinary C translation unit ships; gpdebug remains an opt-in allocator guard.
+# Every ordinary C translation unit ships except `src/gpdebug.c` (an opt-in allocator guard) and, when
+# no Feed backend is built (`PLAYBACK_HAS_FEED` empty: `PLAYBACK_BACKENDS=uri|none`), `src/starfish.c`,
+# whose only callers are the Feed's.
 # ass.c, ass_fonts.c and ass_text.c belong to the privately bundled renderer, never the application
 # ELF (ci/test_renderer_sources.py holds this list to ci/build-libass.py's).
-SRCS = $(filter-out src/gpdebug.c src/ass.c src/ass_fonts.c src/ass_text.c,$(wildcard src/*.c)) src/compat/getauxval.c
+SRCS = $(filter-out src/gpdebug.c src/ass.c src/ass_fonts.c src/ass_text.c $(if $(PLAYBACK_HAS_FEED),,src/starfish.c),$(wildcard src/*.c)) src/compat/getauxval.c
 OBJS = $(SRCS:.c=.o)
 
 all: pkg/plxnative pkg/plxnative-storage
@@ -1053,7 +1084,7 @@ pkg/plxnative-storage: LICENSE $(STORAGE_INPUTS) rust-modules/Cargo.toml rust-mo
 # interposer resolves the firmware implementation with RTLD_NEXT before every Load. Do not widen
 # this to -E/--export-dynamic: no other executable-private symbol is part of the native ABI.
 SMP_CALLBACK_HOOK = _ZN17StarfishMediaAPIs20callbackFunctionHookEixPKc
-SMP_INTERPOSER_LDFLAG = -Wl,--export-dynamic-symbol=$(SMP_CALLBACK_HOOK)
+SMP_INTERPOSER_LDFLAG = $(if $(PLAYBACK_HAS_FEED),-Wl$(PLAYBACK_COMMA)--export-dynamic-symbol=$(SMP_CALLBACK_HOOK),)
 # The second symbol the executable exports: src/exit.c defines libc's `exit`, and this export makes
 # the `exit` of every shared library bind to it (PLX-NATIVE-1P shows one made on SDL's SDLTimer
 # thread), so the process ends through plx_exit_record (src/crashtrace.c), which ends it with the
@@ -1072,13 +1103,15 @@ EXIT_INTERPOSER_LDFLAG = -Wl,--export-dynamic-symbol=exit
 # it DOES use is kept) and 13.2 MB .text, and 62 libc/libm imports (posix_spawn, chroot, splice,
 # sinf, ...) that only dead code used.
 # Roots needed no extra KEEP/--undefined: the entry point and the .init_array/.fini_array
-# constructors are roots by construction, the Starfish interposer and `exit` are roots because
-# --export-dynamic-symbol exports them, and everything else the app needs is reached by a relocation
+# constructors are roots by construction, the Starfish interposer (Feed builds only) and `exit` are
+# roots because --export-dynamic-symbol exports them, and everything else the app needs is reached by a relocation
 # (the ffmpeg/curl/ACB/Starfish entry points are dlsym'd out of OTHER libraries, never out of this
-# executable, whose .dynsym defines only _init, _fini, the Starfish interposer and `exit`).
+# executable, whose .dynsym defines only _init, _fini, the Starfish interposer and `exit`; a
+# `PLAYBACK_BACKENDS=uri` binary has no interposer and no Starfish import, and `ci/check-elf.sh` uri
+# mode asserts the interposer is absent).
 # Nothing here uses `#[used]`/`link_section`/`__attribute__((constructor))`. If a future feature
 # needs a symbol that only `dlsym(RTLD_DEFAULT, ...)` reaches inside this binary, it must be
-# exported or KEEP()ed explicitly. `ci/check-elf.sh` only asserts that the Starfish interposer and
+# exported or KEEP()ed explicitly. `ci/check-elf.sh` only asserts that the Starfish interposer (a Feed build's) and
 # `exit` are exported (and that Load-with-context is not a loader dependency); it does not assert
 # that nothing else is defined.
 GC_SECTIONS_LDFLAG = -Wl,--gc-sections
@@ -1855,20 +1888,21 @@ fuzz-hud:
 # (they are in the application crate's `default`), so the bare flag would type-check a build with
 # no playback backend at all: neither backend crate, none of the `cfg(feature = "play-feed")` code
 # in the application, and not `dolby_vision` and the rest of play-feed's third-party tree, all of
-# which the release ships. `RELEASE=1` passes the backend features explicitly (`RUST_FEATFLAGS`),
-# so this passes the same ones. They cannot change the units shared with `lint`: measured
-# 2026-11-04 with `--unit-graph`, every third-party unit of `--no-default-features --features
-# play-uri,play-feed` (151 of its 181) matches a unit of `check --workspace --all-targets` in
-# package, target kind, mode, features and profile, and the two backend features enable no
-# third-party feature (they reach only workspace crates and make the optional `plx_play_feed` ->
-# `dolby_vision` subtree active, which `lint` already builds with the same features).
-# ci/test_managed_targets.py holds it to `$(RUST_BACKEND_FEATURES)` alone, never `$(RUST_FEATFLAGS)`,
-# whose devtools / devtriggers / threadcheck / LAB words do change them.
+# which the release ships. `RELEASE=1` passes the backend features explicitly (`RUST_BUILD_FEATURES`),
+# so this passes the same ones; `PLAYBACK_BACKENDS=uri|feed` checks that one backend's
+# set (`none` checks the bare no-backend set, which is not a television package). They cannot change
+# the units shared with `lint`: measured 2026-11-04 with `--unit-graph`,
+# every third-party unit of `--no-default-features --features play-uri,play-feed` (151 of its 181)
+# matches a unit of `check --workspace --all-targets` in package, target kind, mode, features and
+# profile, and the two backend features enable no third-party feature (they reach only workspace
+# crates and make the optional `plx_play_feed` -> `dolby_vision` subtree active, which `lint`
+# already builds with the same features). ci/test_managed_targets.py holds it to `$(RUST_BACKEND_FEATURES)`
+# alone, never `$(RUST_FEATFLAGS)`, whose devtools / devtriggers / threadcheck / LAB words do change them.
 .PHONY: check-nodef
 check-nodef:
 	$(CARGO_SEED) restore target rust-modules/target --env-var CARGO_TARGET_DIR --env-base rust-modules
 	@set -e; cd rust-modules && CARGO_INCREMENTAL=0 PATH="$$HOME/.cargo/bin:$$PATH" \
-	  cargo +$(RUST_TOOLCHAIN) check --lib --no-default-features --features $(RUST_BACKEND_FEATURES)
+	  cargo +$(RUST_TOOLCHAIN) check --lib --no-default-features $(if $(RUST_BACKEND_FEATURES),--features $(RUST_BACKEND_FEATURES),)
 
 # `make build-bench [ARGS='--runs 5 --json out.json']` -- the repeatable local build benchmark
 # (tools/build-bench.py; docs/agent-reference.md says what it measures and when a PR must paste its
@@ -2225,6 +2259,13 @@ release-guard:
 	  echo "refusing to build $(APPID) without RELEASE=1 — nightly never ships a dev build."; \
 	  echo "  correct:  make FLAVOR=nightly RELEASE=1 $(firstword $(MAKECMDGOALS))"; \
 	  exit 1; fi
+	@# The user-facing ids ship the full product. `PLAYBACK_BACKENDS ?= both` also reads the environment,
+	@# so a leftover `export PLAYBACK_BACKENDS=uri` must not quietly make a stable package with no Feed.
+	@if [ "$(FLAVOR)" = stable ] || [ "$(FLAVOR)" = nightly ]; then \
+	  if [ "$(PLAYBACK_BACKENDS)" != both ]; then \
+	    echo "refusing to build $(APPID) with PLAYBACK_BACKENDS=$(PLAYBACK_BACKENDS) — the stable and nightly ids ship both playback backends."; \
+	    echo "  correct:  make FLAVOR=$(FLAVOR) RELEASE=1 $(firstword $(MAKECMDGOALS))   (unset PLAYBACK_BACKENDS)"; \
+	    exit 1; fi; fi
 
 # --- installing a flavour on the television ---------------------------------------------------
 #
@@ -2461,7 +2502,7 @@ check-replay: sim-macos
 # Its own simulator build: `--no-default-features` drops `devtools` (the on-screen frame counter is
 # not part of the product), `devtriggers` comes back because scenes are reached through them, and
 # `play-feed` comes back because the simulator's video sink is the Feed backend's (without it the build
-# selects no backend and Play can only reach the failure read-out).
+# selects no backend and Play can only reach the failure read-out; `ci/test_sim_backend.py`).
 # Its own target dir, for this file's feature-set rule. `CARGO_INCREMENTAL=0`: a one-shot build.
 SHOT_TDIR ?= $(SIM_TDIR)-shots
 SHOT_BIN   = $(SHOT_TDIR)/debug/plxnative-sim
@@ -2495,7 +2536,7 @@ sim-linux: $(LIBASS_HOST_STAGED)
 # drives it). Release, because a dump is a render of thousands of 1080p frames; its own target dir,
 # because the feature set differs from every other simulator build; `--no-default-features` because
 # `devtools` draws a frame counter into the picture, `play-feed` because that also drops the Feed
-# backend the simulator's sink belongs to, and `placeholder-sentinel` because the second
+# backend the simulator's sink belongs to (`ci/test_sim_backend.py`), and `placeholder-sentinel` because the second
 # oracle is the sentinel colour. Like `sim-linux` it needs only libass: the storyboard plays no
 # video, so no host FFmpeg (whose staged names are `.dylib`s, which is what keeps
 # `screenshots-sim` macOS-only). It builds on macOS (previews) and on Linux, where

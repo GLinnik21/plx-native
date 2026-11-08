@@ -861,7 +861,7 @@ The gap: an app release can lengthen a translation or add a language, so a packa
 Do the simulator and the TV measure alike? The font FILES are the same: the app bundles `appfont.ttf` and
 `appfont-bold.ttf` (Inter), `appfont-cjk.ttf` and `appfont-emoji.ttf` (`rust-modules/gfx/src/text.rs:32-35`, `:94-104`),
 opened through SDL_ttf's `TTF_OpenFont` with `TTF_HINTING_LIGHT` (`:848`, `:872`). The RASTERIZER builds are not: the
-TV links the firmware's `libSDL2_ttf` (`-lSDL2_ttf` in `LIBS_REAL`, `Makefile:401`, against the sysroot), the simulator
+TV links the firmware's `libSDL2_ttf` (`-lSDL2_ttf` in the Makefile's `LIBS_REAL`, against the sysroot), the simulator
 the host's, found through pkg-config (`rust-modules/build_support/host_link.rs:45`, `:151-159`). `ci/dependencies.json`
 pins FreeType 2.15.0 only in the `libass` group (`:38-44`; static inside libass, `Makefile:916-917`), and has no SDL_ttf
 entry (`grep -n -i '"id": "sdl' ci/dependencies.json` finds nothing). So widths may differ by hinting and advance

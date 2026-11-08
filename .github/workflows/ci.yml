@@ -192,8 +192,10 @@ jobs:
     needs: changes
     if: needs.changes.outputs.gated == 'true'
     runs-on: ubuntu-latest
-    # Measured max 3.8 min over the last 40 successful runs; limit ~2x, rounded up to 5 (unset = 360).
-    timeout-minutes: 10
+    # Measured max 3.8 min over the last 40 successful runs BEFORE the single-backend type-check step
+    # (three more feature-set checks) joined; the limit is raised to 20 until that is re-measured
+    # (unset = 360).
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -230,6 +232,18 @@ jobs:
         # is the one source of the shipping set (`RUST_BACKEND_FEATURES`, which `RELEASE=1` passes
         # explicitly) and the target checks exactly that.
         run: make check-nodef
+
+      - name: Single-backend feature sets type-check (PLAYBACK_BACKENDS=uri, feed, none)
+        # The Makefile's `PLAYBACK_BACKENDS` matrix is only worth having if each value still
+        # compiles: a `cfg(feature = "play-feed")` item that a URI-only build reaches, or the
+        # reverse, breaks a build nobody ships by default, and nothing else here would notice.
+        # `check-nodef` per value type-checks that feature set (cargo keys fingerprints by feature
+        # set, so the configurations share this job's `target/`); `none` checks the host build with
+        # no backend. The ARM link and ELF gate of a variant stay local (docs/agent-reference.md).
+        run: |
+          make check-nodef PLAYBACK_BACKENDS=uri
+          make check-nodef PLAYBACK_BACKENDS=feed
+          make check-nodef PLAYBACK_BACKENDS=none
 
       - name: Soft-float guard (our Rust code must compile to VFP)
         # `-C target-feature=-soft-float` is an UNSTABLE target feature on stable rustc ("its behavior

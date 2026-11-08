@@ -5,6 +5,7 @@ The registry reads metadata straight out of the .ipk (webosbrew's repogen/ipk_fi
 Package/Version/Installed-Size from the control file, then appinfo.json), so any disagreement
 between the three places the version is written is a submission failure rather than a warning.
 """
+import functools
 import io
 import json
 import re
@@ -17,8 +18,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from mkipk import storage_archive_errors
 import deps  # noqa: E402  — ci/deps.py, the manifest reader (ci/dependencies.json pins the FFmpeg tarball)
 import flavor  # noqa: E402  — ci/flavor.py, which DECIDES a flavour's id and title
+import rust_toolchain  # noqa: E402  — ci/rust_toolchain.py, the Makefile's feature flags, asked rather than restated
 import version_rule  # noqa: E402  — ci/version_rule.py, the shared "next X.Y.Z" arithmetic
-from rust_toolchain import shipping_featflags  # noqa: E402  — the Makefile's release feature set
 
 ROOT = Path(__file__).resolve().parent.parent
 FAILURES: list[str] = []
@@ -36,12 +37,25 @@ def lg_maintainer_address(value: str) -> bool:
     return re.fullmatch(r"[^<>]+ <[A-Za-z0-9._-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}>", value) is not None
 
 
-# What the Makefile's `RUST_FEATFLAGS` is under `RELEASE=1`: the playback backends are explicit
-# features of the application crate (`RUST_BACKEND_FEATURES`), so a release build is not a bare
-# `--no-default-features` (that one is no backend at all, which no shipped package is). It is read from
-# the Makefile (`rust_toolchain.shipping_featflags`), not restated; the literal stamps in `--selftest`
-# pin that this still decodes what the Makefile writes, and `ci/test_arm_profile.py` pins the Makefile side.
-RELEASE_FEATFLAGS = " ".join(shipping_featflags())
+@functools.lru_cache(maxsize=None)
+def _stamp_flag_table() -> "dict[tuple[str, ...], str]":
+    """The cargo flags each shipped configuration's stamp carries, asked of the Makefile.
+
+    Both configurations (dev, and `RELEASE=1`) of every backend the package matrix builds
+    (`rust_toolchain.PACKAGED_BACKENDS`), from `make -s print-playback-config` and nothing else, so a
+    feature the Makefile adds or drops (`play-uri`, `devtools`, ...) moves this table with it. `none`
+    is deliberately absent: the Makefile refuses to link a television binary without a backend, so a
+    stamp that says `none` is not a configuration to grade, it is one to refuse.
+
+    Raises ValueError when make cannot answer, and when two configurations spell the same flags (a stamp
+    could then not tell dev from release, and every gate that grades on it would be grading a guess)."""
+    table: dict[tuple[str, ...], str] = {}
+    for backends in rust_toolchain.PACKAGED_BACKENDS:
+        for release, name in ((False, "dev"), (True, "release")):
+            flags = tuple(rust_toolchain.featflags(ROOT, release=release, backends=backends))
+            if table.setdefault(flags, name) != name:
+                raise ValueError(f"the Makefile gives a dev and a release build the same cargo flags {flags!r}")
+    return table
 
 
 def build_configuration(stamp: str) -> "str | None":
@@ -51,32 +65,44 @@ def build_configuration(stamp: str) -> "str | None":
     silently switched every gate that depends on this off. `RUST_CFG` is `features:$(RUST_FEATFLAGS)`,
     then `+symbols` when SYMBOLS=1, then `+nightly:<date>` when FLAVOR=nightly, then always
     `+tel:<hash>` — and `+profile:tvdev` right after the flags when the local ARM profile is in
-    use (the Makefile's ARM_PROFILE; absent for `release`, so every shipped stamp is unchanged) —
-    so the real stamp for an ordinary dev build is `features:+tel:98c4b7d3` under CI and
-    `features:+profile:tvdev+tel:98c4b7d3` for a plain local build, which equals
-    neither of the two literals this was once written against. It matched when it was
-    written; the telemetry field was added later, and from that day the answer was None for EVERY
-    build this project makes. Nothing failed — the callers print "SKIP — neither shipped
-    configuration" and move on — so the dev-trigger gate, the dev-only-library gate and the
-    reported-version gate all graded nothing on every CI run. Exactly the defect class DEV_WITNESS
-    is commented against, a witness that cannot fail, reached by another route. The release cut
-    carries `SYMBOLS=1`, which adds a THIRD field, so repairing the two literals by hand would have
-    left the release job ungraded anyway.
+    use (the Makefile's ARM_PROFILE; absent for `release`, so every shipped stamp is unchanged).
+    The first version of this matched the whole string against two literals and went blind when
+    the telemetry field was added: from that day the answer was None for EVERY build this project
+    makes. Nothing failed — the callers print "SKIP — neither shipped configuration" and move on — so
+    the dev-trigger gate, the dev-only-library gate and the reported-version gate all graded nothing
+    on every CI run. Exactly the defect class DEV_WITNESS is commented against, a witness that cannot
+    fail, reached by another route. The release cut carries `SYMBOLS=1`, which adds a THIRD field, so
+    repairing the literals by hand would have left the release job ungraded anyway.
+
+    THE FLAG STRINGS THEMSELVES ARE THE MAKEFILE'S, NOT THIS FILE'S. The literals (`""` for dev,
+    `--no-default-features` for release) went stale a second way when the playback backends became
+    explicit features: `RUST_FEATFLAGS` is now `--no-default-features --features play-uri,play-feed`
+    under `RELEASE=1` and `--no-default-features --features play-uri,play-feed,devtools,devtriggers,
+    threadcheck` without it (one backend each under `PLAYBACK_BACKENDS=uri|feed`), so every stamp
+    decoded None again, CI's `nightly` package gate failed with "decoded as None" and the cross-build
+    job's gates SKIPPED. The table is therefore asked of `make print-playback-config` for both
+    configurations of every backend (`_stamp_flag_table`); a bare `--no-default-features`, which is what
+    `PLAYBACK_BACKENDS=none RELEASE=1` writes and the one literal this used to call "release", is now
+    None, as the Makefile's own refusal to link that build says.
 
     Only the FEATURE half is decoded, and matched WHOLE rather than by substring: the "shots"
     recipe in the Makefile's header is `--no-default-features --features devtriggers,play-feed`, which a
     substring test would grade as a release build and then fail for carrying exactly the surface it
-    asked for. `+tel:`, `+symbols`, `+nightly:` and `+rc:` are all optional so a stamp written by an older
-    Makefile still decodes, and the feature flags are lazy so they cannot swallow a trailing field.
-    `nightly_stamp_date` and `rc_stamp_number` read the `+nightly:` and `+rc:` fields' VALUES
-    separately — this function only has to not choke on their presence.
+    asked for. `+symbols`, `+nightly:`, `+rc:` and `+tel:` are all optional so a stamp written by an older
+    Makefile still decodes its trailing fields, and the feature flags are lazy so they cannot swallow a
+    trailing field. `nightly_stamp_date` and `rc_stamp_number` read the `+nightly:` and `+rc:` fields'
+    VALUES separately — this function only has to not choke on their presence.
+
+    A stamp that is empty or not a stamp at all returns None without asking make, so the pre-build
+    callers (`prepare`, `guard`), which run before anything is built, need neither the Makefile's toolchain
+    nor a `pkg/`.
     """
     fields = re.fullmatch(
         r"features:(?P<flags>.*?)(?:\+profile:[a-z]+)?(?:\+symbols)?(?:\+nightly:[0-9]{8})?(?:\+rc:[0-9]+)?(?:\+tel:[0-9a-f]+)?",
         stamp.strip())
     if not fields:
         return None
-    return {"": "dev", RELEASE_FEATFLAGS: "release"}.get(fields.group("flags").strip())
+    return _stamp_flag_table().get(tuple(fields.group("flags").split()))
 
 
 def parse_release_line(content: str) -> "tuple[int, int] | None":
@@ -335,34 +361,65 @@ def _selftest() -> int:
     print(f"check-package: lg_maintainer_address "
           f"{len(maintainer_cases) - maintainer_bad}/{len(maintainer_cases)} cases correct")
 
+    # The stamps below are spelled out LITERALLY as the Makefile writes them (`RUST_CFG`), so a decoder
+    # that is wrong in the same way as the table it reads cannot grade itself correct: the first three
+    # are the shapes CI's ARM jobs actually produced when this decoder (which then knew only the two
+    # flag strings `""` and `--no-default-features`) answered None for every one of them and the
+    # package gates graded nothing. `ci/test_arm_profile.py` closes the same loop against the stamp a
+    # real `make` writes for every backend, so a Makefile change cannot leave these behind unnoticed.
+    dev_both = "--no-default-features --features play-uri,play-feed,devtools,devtriggers,threadcheck"
+    dev_feed = "--no-default-features --features play-feed,devtools,devtriggers,threadcheck"
+    rel_both = "--no-default-features --features play-uri,play-feed"
     cases = {
-        # what the Makefile writes today, per documented configuration
-        "features:+tel:98c4b7d37a4c": "dev",
-        "features:--no-default-features --features play-uri,play-feed+tel:98c4b7d37a4c": "release",
-        "features:--no-default-features --features play-uri,play-feed+symbols+tel:98c4b7d37a4c": "release",   # the release cut
-        "features:+symbols+tel:98c4b7d37a4c": "dev",
-        # the local ARM profile (Makefile ARM_PROFILE=tvdev): only a plain dev build ever carries it
-        "features:+profile:tvdev+tel:98c4b7d37a4c": "dev",
-        "features:--no-default-features --features play-uri,play-feed+profile:tvdev+tel:98c4b7d37a4c": "release",
-        # the nightly cut: RELEASE=1 (so --no-default-features --features play-uri,play-feed), SYMBOLS=1, and the dated field
-        "features:--no-default-features --features play-uri,play-feed+symbols+nightly:20260919+tel:98c4b7d37a4c": "release",
-        # a release candidate: the release cut plus the candidate number
-        "features:--no-default-features --features play-uri,play-feed+symbols+rc:2+tel:98c4b7d37a4c": "release",
-        # older stamps, from before the telemetry and symbols fields existed
-        "features:": "dev",
-        "features:--no-default-features --features play-uri,play-feed": "release",
-        # a release build names its backend: a bare `--no-default-features` links no playback at all
+        # a dev build per backend, CI's and a plain local one (the tvdev profile term only a dev build carries)
+        f"features:{dev_both}+tel:98c4b7d37a4c": "dev",
+        f"features:{dev_both}+profile:tvdev+tel:98c4b7d37a4c": "dev",
+        f"features:{dev_both}+symbols+tel:98c4b7d37a4c": "dev",
+        f"features:{dev_feed}+tel:98c4b7d37a4c": "dev",                       # PLAYBACK_BACKENDS=feed
+        "features:--no-default-features --features play-uri,devtools,devtriggers,threadcheck+tel:98c4b7d37a4c": "dev",
+        # the release build per backend, and the cuts built from it
+        f"features:{rel_both}+tel:98c4b7d37a4c": "release",
+        f"features:{rel_both}+symbols+tel:98c4b7d37a4c": "release",           # the release cut
+        f"features:{rel_both}+profile:tvdev+tel:98c4b7d37a4c": "release",
+        f"features:{rel_both}+symbols+nightly:20260919+tel:98c4b7d37a4c": "release",   # the nightly cut
+        f"features:{rel_both}+symbols+rc:2+tel:98c4b7d37a4c": "release",      # a release candidate
+        "features:--no-default-features --features play-feed+tel:98c4b7d37a4c": "release",
+        "features:--no-default-features --features play-uri+symbols+tel:98c4b7d37a4c": "release",
+        # no backend is refused by the Makefile at parse time (`PLAYBACK_BACKENDS=none` and a goal that builds), so it is no shipped configuration
+        # either: `none` under RELEASE=1 is a bare `--no-default-features`, the literal this decoder used
+        # to call "release"
+        "features:--no-default-features +tel:98c4b7d37a4c": None,
         "features:--no-default-features+tel:98c4b7d37a4c": None,
-        "features:--no-default-features+symbols+tel:98c4b7d37a4c": None,
+        "features:--no-default-features+symbols+nightly:20260919+tel:98c4b7d37a4c": None,
+        "features:--no-default-features+symbols+rc:2+tel:98c4b7d37a4c": None,
         "features:--no-default-features": None,
+        "features:--no-default-features --features devtools,devtriggers,threadcheck+tel:98c4b7d37a4c": None,  # none, dev
+        # stamps no current Makefile writes (the empty flag string was a dev build before the backends
+        # became explicit features): not a configuration anyone can ship now
+        "features:": None,
+        "features:+tel:98c4b7d37a4c": None,
         # configurations that are neither shipped one, and must SAY so rather than be graded
-        "features: --features lab-diagnostics+tel:abc123def456": None,          # LAB=1
-        "features:--no-default-features --features lab-diagnostics+tel:abc123def456": None,
-        "features:--no-default-features --features devtriggers+tel:abc123def456": None,  # shots
+        f"features:{dev_both},lab-diagnostics+tel:abc123def456": None,         # LAB=1
+        f"features:{rel_both},lab-diagnostics+tel:abc123def456": None,         # LAB=1 RELEASE=1
+        "features: --features lab-diagnostics+tel:abc123def456": None,
+        "features:--no-default-features --features devtriggers+tel:abc123def456": None,   # shots
+        "features:--no-default-features --features play-uri,play-feed,devtriggers+tel:abc123def456": None,
+        "features:--no-default-features --features play-uri,play-feed,devtools+tel:abc123def456": None,  # half a dev set
+        "features:--features play-uri,play-feed+tel:abc123def456": None,       # default features left on
         # nothing to read
         "": None,
         "garbage": None,
     }
+    # ...and the same matrix DERIVED from the Makefile for every backend the package matrix builds, so a
+    # new feature word in `RUST_FEATFLAGS` cannot leave this decoder behind a second time. `none` is the
+    # refusal: it must not decode for either configuration.
+    for backend in rust_toolchain.PACKAGED_BACKENDS + ("none",):
+        for release, want in ((False, "dev"), (True, "release")):
+            flags = " ".join(rust_toolchain.featflags(ROOT, release=release, backends=backend))
+            if backend == "none":
+                want = None
+            cases[f"features:{flags}+tel:0123456789ab"] = want
+            cases[f"features:{flags}+symbols+nightly:20260919+tel:0123456789ab"] = want
     bad = 0
     for stamp, want in cases.items():
         got = build_configuration(stamp)
@@ -678,18 +735,20 @@ if len(sys.argv) > 2 and sys.argv[1] == "--print-nightly-label":
 # The same entry point onto `rc_stamp_number`, for the same caller and the same reason: the source
 # bundle of a release candidate is named `plxnative-source-X.Y.Z-rc.N`, and the number comes from
 # the stamp. Empty output (exit 0) when the build was not a candidate.
-# `--print-build-config <stamp>`: the same decode as the packaging gate's, for a caller outside this
-# file. Prints `dev`, `release` or `none` (exit 0 whatever the answer: the caller decides what a build
-# that is neither shipped configuration means). `ci/test_arm_profile.py` feeds it the stamp a real
-# `make` writes, so the decoder cannot agree with a table that is wrong in the same way.
-if len(sys.argv) > 2 and sys.argv[1] == "--print-build-config":
-    print(build_configuration(Path(sys.argv[2]).read_text()) or "none")
-    sys.exit(0)
-
 if len(sys.argv) > 2 and sys.argv[1] == "--print-rc":
     rc = rc_stamp_number(Path(sys.argv[2]).read_text())
     if rc is not None:
         print(rc)
+    sys.exit(0)
+
+# `--print-build-config <stamp>`: the same decode as the packaging gate's, for a caller outside this
+# file. Prints `dev`, `release` or `none` (exit 0 whatever the answer: the caller decides what a build
+# that is neither shipped configuration means). `.github/workflows/build-package.yml` asks it whether
+# `RELEASE=1` took instead of grepping the stamp for `--no-default-features`, which every stamp carries
+# now that the backends are explicit features, and `ci/test_arm_profile.py` feeds it the stamp a real
+# `make` writes for each backend.
+if len(sys.argv) > 2 and sys.argv[1] == "--print-build-config":
+    print(build_configuration(Path(sys.argv[2]).read_text()) or "none")
     sys.exit(0)
 
 # ---- the two release documents -----------------------------------------------------------------
