@@ -2176,7 +2176,9 @@ def uri_dev_trigger(part_id, host, port, url):
 
 
 # What a product run must never inherit from the case or the command line: `uriprobe` would divert the
-# route under test, `playurl` would play the Feed, and the rest are written by the runner itself.
+# route under test, `playurl` would play the Feed, and the rest are written by the runner itself, except
+# `ptype`: the runner no longer writes it, a product run boots as production does (the URI engine has
+# its own player type 0 handle), and `ptype` would only retype Feed's handle.
 # `pms-origin` would move the app's primary off the configured address the trigger's `pms=` names.
 URI_PRODUCT_DIVERTING = ("plxnative-uriprobe", "plxnative-playurl", "plxnative-uridev", "plxnative-pms-origin")
 URI_PRODUCT_RESERVED = URI_PRODUCT_DIVERTING + ("plxnative-play", "plxnative-ptype", "plxnative-quality")
@@ -2184,7 +2186,7 @@ URI_PRODUCT_RESERVED = URI_PRODUCT_DIVERTING + ("plxnative-play", "plxnative-pty
 
 def uri_product_files(case, url_base, pms, extra=()):
     """The trigger files of a product case: the integration tier's routing pins (`play=<rk>`,
-    `quality=original`, `audioenh=off`, the case's `ptype`) pointed at the CARRIER clip's ratingKey, plus
+    `quality=original`, `audioenh=off`; no `ptype`: the boot gives the URI engine its own player type 0 handle) pointed at the CARRIER clip's ratingKey, plus
     `plxnative-uridev` carrying the carrier's part, the mock's origin and the fixture URL. `pms` is the
     mock's `(host, port)` as `configured_endpoint` reads it from `src/config.local.h`."""
     for name in (f"plxnative-{k}" for k in (case.get("triggers") or {})):
@@ -2192,6 +2194,9 @@ def uri_product_files(case, url_base, pms, extra=()):
             raise UriProductRefused(f"a product case must not set {name} itself: the runner writes it")
     for name, _ in extra:
         if name in URI_PRODUCT_RESERVED:
+            if name == "plxnative-ptype":
+                raise UriProductRefused("--extra-trigger ptype: a product run boots as production does (the URI "
+                                        "engine has its own player type 0 handle); ptype would only retype Feed's")
             raise UriProductRefused(f"--extra-trigger {name} would replace what the product route pins "
                                     f"(or arm the probe on top of it)")
     carrier = dict(case, rk=str(mock_fps.CARRIER_RK))

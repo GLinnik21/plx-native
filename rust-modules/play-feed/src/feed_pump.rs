@@ -1057,8 +1057,9 @@ pub fn tick_presentation(feed: &mut FeedResources, mt: &MainThread,
         // firmware that never completes still gets its picture. A deferred tick leaves the stage
         // at Playing, exactly as a media id that has not arrived yet does.
         let granted = id.as_ref().is_some_and(|id| {
-            use plx_platform::tv::plane::{BindPolicy, BindVerdict};
-            matches!(hooks.release.plane.bind((hooks.feed.sink)(), mt, BindPolicy::Rebind, &id.to_string_lossy()),
+            use plx_platform::tv::plane::{BindPolicy, BindVerdict, PlaneHandle};
+            matches!(hooks.release.plane.bind((hooks.feed.sink)(), mt, PlaneHandle::Feed, BindPolicy::Rebind,
+                &id.to_string_lossy()),
                 BindVerdict::Granted)
         });
         if let Some(id) = id.filter(|_| granted) {

@@ -6138,7 +6138,7 @@ class UriProductGrading(unittest.TestCase):
     plane and backend lines production already writes. Synthetic logs in those line formats."""
 
     CASE = {"name": "product", "fixture": "pipe_hls_720p24_20m/index.m3u8", "uri_route": "product",
-            "triggers": {"ptype": "0"}, "operations": [{"op": "play"}],
+            "triggers": {}, "operations": [{"op": "play"}],
             "expect": {"no_playing_error": True, "uri_playing": True, "uri_plane_bound": True,
                        "uri_presented": True, "uri_service_playing": True,
                        "uri_clock_past_s": 60, "uri_max_stall_s": 3}}
@@ -6771,8 +6771,9 @@ class UriProductRunner(unittest.TestCase):
         self.assertEqual(len(names), len(set(names)), "a trigger name written twice is read once")
         got = dict(files)
         self.assertEqual(got["plxnative-play"], str(run.mock_fps.CARRIER_RK))
-        self.assertEqual((got["plxnative-quality"], got["plxnative-audioenh"], got["plxnative-ptype"]),
-                         ("original", "off", "0"))
+        self.assertEqual((got["plxnative-quality"], got["plxnative-audioenh"]), ("original", "off"))
+        self.assertNotIn("plxnative-ptype", got,
+                         "a product run boots as production does: the URI engine has its own player type 0 handle")
         self.assertEqual(got["plxnative-uridev"],
                          f"acb part={run.mock_fps.CARRIER_PART_ID} pms={self.HOST}:{self.PORT} "
                          f"url=http://192.0.2.10:8020/pipe_hls_720p24_20m/index.m3u8")
@@ -7361,7 +7362,7 @@ class UriModeGrading(unittest.TestCase):
         of which a manifest knows, so the RUNNER writes it; `uriprobe` would divert the very route under
         test; `playurl` would play the Feed."""
         for case in self._product_cases():
-            self.assertEqual(case["triggers"], {"ptype": "0"}, case["name"])
+            self.assertEqual(case["triggers"], {}, case["name"])
             self.assertNotIn("rk", case, "the runner supplies the carrier's ratingKey")
             self.assertEqual(case["carrier"], "pipe_uri_carrier_720p24.mp4")
 
@@ -7397,7 +7398,7 @@ class UriModeGrading(unittest.TestCase):
                 self.assertEqual(run.uri_route(case), "product")
                 self.assertEqual(case["fixture"], "pipe_hls_720p24_2a/index.m3u8")
                 self.assertEqual(case["carrier"], "pipe_uri_carrier_720p24_2a.mp4")
-                self.assertEqual(case["triggers"], {"ptype": "0"})
+                self.assertEqual(case["triggers"], {})
                 self.assertNotIn("rk", case, "the runner supplies the carrier's ratingKey")
                 for k in ("vcodec", "acodec", "fps"):
                     self.assertEqual(case["declare"][k], stream["declare"][k], f"declare.{k} drifted from the shape")

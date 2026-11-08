@@ -185,13 +185,25 @@ void vp_destroy_window(void) {
 #define PLAYSTATE_PLAYING   2
 #define PLAYSTATE_PAUSED    3
 
+/* `g_acb` is the handle every ACB verb below addresses. The boot may create two (one per backend:
+ * `tv::plane::PlaneHandle`, Feed's and the URI engine's, each created and initialized once and never
+ * destroyed); `acb_select` moves `g_acb` between them and only the plane owner calls it, on the
+ * grant of a bind, so exactly the bound handle is current. A slot keeps the library's answer to its
+ * own `AcbAPI_initialize`, which `acb_initialized` reports for the current handle. */
+#define ACB_SLOTS 2
+static struct { long handle; int init_rv; } g_slots[ACB_SLOTS];
+static int g_nslots = 0;
 static long g_acb = 0, g_taskId = 0;
 
 static void acb_cb(long a, long t, long ev, long app, long play, const char *reply) {
-    (void)a;
-    if (elogf) { fprintf(elogf, "acb callback task=%ld ev=%ld app=%ld play=%ld\n", t, ev, app, play); fflush(elogf); }
-    /* `t` is the task id the originating call wrote; the Rust mailbox matches the UNLOADED fence on it. */
-    acb_on_event(t, ev, reply);
+    /* `a` is the long `AcbAPI_create` returned for the core that issued `t`: AcbAPI_initialize binds
+     * its own handle argument as the callback's first parameter (libAcbAPI 0x15c4c, the bound
+     * std::function invoker 0x18858; /Volumes/DAS/lgfw/reports/acb-callback-id/report.md). Each core
+     * numbers its tasks from its own counter, so with two handles a task id means something only
+     * together with `a`. The trailing `id=` keeps the line's historical prefix for the harness. */
+    if (elogf) { fprintf(elogf, "acb callback task=%ld ev=%ld app=%ld play=%ld id=%ld\n", t, ev, app, play, a); fflush(elogf); }
+    /* `t` is the task id the originating call wrote; the Rust mailbox matches the UNLOADED fence on (a, t). */
+    acb_on_event(a, t, ev, reply);
 }
 
 /* ---- ACB verbs (the 3-arg taskId ABI is hidden) ----
@@ -213,8 +225,16 @@ static void acb_cb(long a, long t, long ev, long app, long play, const char *rep
  * read as true of this block until that is done. */
 long acb_create(const char *appId, int playerType) {
     if (vp_mode() != VP_ACB) return 0;
-    acb.probe_initialize_result = 0;
-    g_acb = acb.create();
+    if (g_nslots >= ACB_SLOTS) {
+        if (elogf) { fprintf(elogf, "acb create playerType=%d refused: both slots are taken\n", playerType); fflush(elogf); }
+        return 0;
+    }
+    /* A new handle replaces the current one only once it exists (create answered non-zero and an
+     * appId was given): a failed second create must not take the first's `g_acb` away. Whether its
+     * `initialize` was accepted is kept in its slot (`acb_initialized`), as it always was: a created
+     * handle whose initialize answered 0 is still the historical return. */
+    long handle = acb.create();
+    int init_rv = 0;
     /* NO FALLBACK ID. This used to substitute the shipped app's literal id for a NULL `appId`,
      * which was the far half of a double fallback: the Rust side read `getenv("APPID")` and passed
      * NULL when SAM had not exported it, and this line then quietly claimed to be the app users
@@ -224,10 +244,10 @@ long acb_create(const char *appId, int playerType) {
      * `src/app/adapters/backends.rs` now passes `paths::app_id()`, read from the install
      * directory, which cannot be absent); refusing here
      * rather than guessing is what keeps the pair readable together. */
-    if (g_acb) {
+    if (handle) {
         if (appId) {
-            acb.probe_initialize_result = acb.initialize(g_acb, playerType, appId, acb_cb);
-            if (elogf) { fprintf(elogf, "acb initialize playerType=%d rv=%d callback_installed=%d\n", playerType, acb.probe_initialize_result, acb.probe_initialize_result == 1); fflush(elogf); }
+            init_rv = acb.initialize(handle, playerType, appId, acb_cb);
+            if (elogf) { fprintf(elogf, "acb initialize playerType=%d rv=%d callback_installed=%d\n", playerType, init_rv, init_rv == 1); fflush(elogf); }
         } else {
             /* AND HAND BACK NOTHING. Returning the live handle here made the refusal half-done:
              * the Rust side stores `ACB_OK = acb != 0`, so `acb_bind`, `acb_send_video_data` and
@@ -242,17 +262,44 @@ long acb_create(const char *appId, int playerType) {
                 fprintf(elogf, "acb: no appId — NOT initialized and NOT returned; video will not bind\n");
                 fflush(elogf);
             }
-            g_acb = 0;
+            handle = 0;
         }
     }
-    return g_acb;
+    if (!handle) {
+        /* The first create keeps the historical answer: no handle at all. A later one leaves the
+         * handle already held alone. */
+        if (g_nslots == 0) { g_acb = 0; acb.probe_initialize_result = 0; }
+        return 0;
+    }
+    g_slots[g_nslots].handle = handle;
+    g_slots[g_nslots].init_rv = init_rv;
+    g_nslots++;
+    g_acb = handle;
+    acb.probe_initialize_result = init_rv;
+    return handle;
+}
+/* Make `handle` (a value `acb_create` returned) the one every verb below addresses. 1 = it is one of
+ * this process's boot handles and now current, 0 = unknown, nothing changed. Only the plane owner
+ * calls it, when it grants a bind: one binding at a time means the current handle IS the bound one. */
+int acb_select(long handle) {
+    for (int i = 0; i < g_nslots; i++) {
+        if (g_slots[i].handle != handle) continue;
+        if (g_acb != handle && elogf) { fprintf(elogf, "acb select handle=%ld\n", handle); fflush(elogf); }
+        g_acb = handle;
+        acb.probe_initialize_result = g_slots[i].init_rv;
+        return 1;
+    }
+    return 0;
 }
 /* The URI bind (the production backend and the developer probe, both through play-uri's
- * `acb_bind`) uses the same process-lifetime boot handle and callback as BF. These split the
- * existing bind solely to preserve observed inter-call delays. */
+ * `acb_bind`) uses its own process-lifetime boot handle (player type 0, selected by the plane owner)
+ * and the same callback as BF. These split the existing bind solely to preserve observed inter-call
+ * delays. */
 /* Same device SHA pinned above: initialize wrapper@0x15c4c forwards core@0xcd5c.
  * Core returns exactly 1 only after valid parameters and callback installation; 0 refuses.
- * The URI gate reads it; normal acb_create still returns its historical handle result. */
+ * Answers for the CURRENT handle, so it is only meaningful at the boot right after that handle's
+ * acb_create: the boot reads it once per handle into the plane owner, which the URI gate reads
+ * afterwards. normal acb_create still returns its historical handle result. */
 int acb_initialized(void) { return g_acb && acb.probe_initialize_result == 1; }
 int acb_probe_dass_available(void) { return g_acb && acb.connectDass; }
 int acb_media_id(const char *mediaId) {
