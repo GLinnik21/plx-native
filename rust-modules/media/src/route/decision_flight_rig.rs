@@ -25,11 +25,18 @@ type RequestLog = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
 /// (`generalDecisionCode 2000`, the same body the route tests' `always_refusing_live` serves).
 const DECISION_REFUSED: &[u8] = br#"{"MediaContainer":{"generalDecisionCode":2000,"transcodeDecisionCode":4020,"transcodeDecisionText":"synthetic refusal","Metadata":[]}}"#;
 
+/// Boost Dialog on, Normalize Loudness off: the field report's enhancement preference.
+const BOOST_DIALOG: plx_plex::plex::AudioEnhancements =
+    plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false };
+
 /// What the rig's playing route is.
 #[derive(Clone, Copy)]
 enum Shape {
     /// A progressive-MKV transcode, the shape of a remux or a re-encode.
     Progressive,
+    /// A direct play that Boost Dialog turned into PMS's enhanced remux: the progressive-MKV remux
+    /// with the audio converted (AC3 to AAC) under the enhancement params, the preference on.
+    EnhancedRemux,
     /// A fixed-rung HLS transcode under an applied Auto contract: the route an automatic
     /// HLS-to-Original recovery leaves.
     Hls,
@@ -62,6 +69,10 @@ pub(crate) struct FlightRig {
     /// The body a live `/decision` is answered with: video copied, audio transcoded, until
     /// [`FlightRig::answer_decisions_with`] says otherwise.
     decision_body: std::sync::Arc<std::sync::Mutex<&'static [u8]>>,
+    /// The route the rig planned, on which server, for [`FlightRig::plan_again_as_new_request`].
+    shape: Shape,
+    port: i32,
+    sid: plx_plex::plex::ServerId,
 }
 
 /// A `/decision` body with BOTH lanes `transcode` ([`FlightRig::answer_decisions_with`]): the server
@@ -78,6 +89,12 @@ impl FlightRig {
     /// `ps`. Holds the crate-wide test serialization lock until dropped.
     pub(crate) fn start(ps: &mut PlaybackSession, delay: std::time::Duration) -> FlightRig {
         Self::start_shaped(ps, delay, Shape::Progressive)
+    }
+
+    /// [`FlightRig::start`] on the enhanced remux Boost Dialog makes of a direct play
+    /// ([`Shape::EnhancedRemux`]). The next rig's `fresh_registry` restores the preference.
+    pub(crate) fn start_enhanced_remux(ps: &mut PlaybackSession, delay: std::time::Duration) -> FlightRig {
+        Self::start_shaped(ps, delay, Shape::EnhancedRemux)
     }
 
     /// [`FlightRig::start`] on a live fixed-rung HLS transcode (`rig-1`) with the quality preference
@@ -171,68 +188,94 @@ impl FlightRig {
         let sid = plx_plex::plex::register_for_test("flight-rig", "127.0.0.1", port, "token", "flight-client");
         plx_plex::plex::client_for(sid).unwrap().set_link(plx_plex::plex::probe::Location::Local);
         plx_plex::plex::serverinfo::store_for_test(sid, Subscription::Yes, "1.43.4");
-        let (url, contract) = match shape {
-            Shape::Progressive => (
-                format!("http://127.0.0.1:{port}/video/:/transcode/universal/start.mkv?session=rig-1"),
-                enhanced_remux_contract(plx_plex::plex::AudioEnhancements::NONE, false),
-            ),
-            Shape::AutoOriginal => {
-                restore_quality(Quality::Auto);
-                (
-                    format!("http://127.0.0.1:{port}/video/:/transcode/universal/start.mkv?session=rig-1"),
-                    enhanced_remux_contract(plx_plex::plex::AudioEnhancements::NONE, false),
-                )
-            }
-            Shape::Direct | Shape::DirectAutoOriginal => {
-                if matches!(shape, Shape::DirectAutoOriginal) {
-                    restore_quality(Quality::Auto);
-                }
-                (format!("http://127.0.0.1:{port}/library/parts/960001/1/file.mkv"), Default::default())
-            }
-            Shape::Hls => {
-                restore_quality(Quality::Auto);
-                (
-                    format!("http://127.0.0.1:{port}/video/:/transcode/universal/start.m3u8?session=rig-1"),
-                    plx_plex::plex::EncodeContract {
-                        delivery: plx_plex::plex::TranscodeDelivery::FixedHls { seconds_per_segment: 2 },
-                        ceiling: Some(crate::abr::Rung::P1080High.ceiling()),
-                        ..Default::default()
-                    },
-                )
-            }
-        };
-        // The play request that planned this route would have begun the attempt on the device's
-        // capability value; `apply_plan` alone begins none, and the session would plan from
-        // `devcaps::assumed_shared()` rather than the table the thread installed. The rig begins
-        // it on this thread's answer, so a rig test plans from the same table it installs
-        // ([`FlightRig::plan_on`] re-begins on another value, for a set installed after the rig).
-        ps.begin_attempt(plx_platform::devcaps::caps());
-        apply_plan(
-            ps,
-            Plan {
-                sid,
-                url,
-                tsession: if matches!(shape, Shape::Direct | Shape::DirectAutoOriginal) { String::new() } else { "rig-1".to_owned() },
-                sess: "rig-logical".into(),
-                part_id: 960001,
-                vcodec: "hevc".into(),
-                acodec: "ac3".into(),
-                src_vcodec: "hevc".into(),
-                src_acodec: "ac3".into(),
-                contract,
-                enhancement: EnhancementOutcome::Off,
-                transport_kbps: 28_000,
-                ..Default::default()
-            },
-            "960001",
-        );
-        if matches!(shape, Shape::AutoOriginal | Shape::DirectAutoOriginal) {
-            ps.cur_auto_original_watched = true;
-            ps.cur_src = (28_000, 1_920, 1_080);
-        }
-        FlightRig { _serial: Some(serial), done, server: Some(server), log, refusals, held, answered, attempt_begun: false, decision_body }
+        install_plan(ps, shape, port, sid);
+        FlightRig { _serial: Some(serial), done, server: Some(server), log, refusals, held, answered, attempt_begun: false, decision_body, shape, port, sid }
     }
 
+    /// A NEW play request for the rig's item, planned onto the same route again: what reopening the
+    /// film from its detail page does after an earlier play of it was torn down. The request
+    /// begins its own attempt (`begin_attempt`: a fresh offer catalog) and `apply_plan` installs
+    /// the rig's plan as the first time.
+    pub(crate) fn plan_again_as_new_request(&self, ps: &mut PlaybackSession) {
+        install_plan(ps, self.shape, self.port, self.sid);
+    }
+}
+
+/// Plan the rig's route of `shape` on the loopback server at `port` as a fresh play request does.
+fn install_plan(ps: &mut PlaybackSession, shape: Shape, port: i32, sid: plx_plex::plex::ServerId) {
+    let (url, contract) = match shape {
+        Shape::Progressive => (
+            format!("http://127.0.0.1:{port}/video/:/transcode/universal/start.mkv?session=rig-1"),
+            enhanced_remux_contract(plx_plex::plex::AudioEnhancements::NONE, false),
+        ),
+        Shape::EnhancedRemux => {
+            crate::player::restore_audio_enhancements(BOOST_DIALOG);
+            (
+                format!("http://127.0.0.1:{port}/video/:/transcode/universal/start.mkv?session=rig-1"),
+                enhanced_remux_contract(BOOST_DIALOG, false),
+            )
+        }
+        Shape::AutoOriginal => {
+            restore_quality(Quality::Auto);
+            (
+                format!("http://127.0.0.1:{port}/video/:/transcode/universal/start.mkv?session=rig-1"),
+                enhanced_remux_contract(plx_plex::plex::AudioEnhancements::NONE, false),
+            )
+        }
+        Shape::Direct | Shape::DirectAutoOriginal => {
+            if matches!(shape, Shape::DirectAutoOriginal) {
+                restore_quality(Quality::Auto);
+            }
+            (format!("http://127.0.0.1:{port}/library/parts/960001/1/file.mkv"), Default::default())
+        }
+        Shape::Hls => {
+            restore_quality(Quality::Auto);
+            (
+                format!("http://127.0.0.1:{port}/video/:/transcode/universal/start.m3u8?session=rig-1"),
+                plx_plex::plex::EncodeContract {
+                    delivery: plx_plex::plex::TranscodeDelivery::FixedHls { seconds_per_segment: 2 },
+                    ceiling: Some(crate::abr::Rung::P1080High.ceiling()),
+                    ..Default::default()
+                },
+            )
+        }
+    };
+    // The play request that planned this route would have begun the attempt on the device's
+    // capability value; `apply_plan` alone begins none, and the session would plan from
+    // `devcaps::assumed_shared()` rather than the table the thread installed. The rig begins
+    // it on this thread's answer, so a rig test plans from the same table it installs
+    // ([`FlightRig::plan_on`] re-begins on another value, for a set installed after the rig).
+    ps.begin_attempt(plx_platform::devcaps::caps());
+    apply_plan(
+        ps,
+        Plan {
+            sid,
+            url,
+            tsession: if matches!(shape, Shape::Direct | Shape::DirectAutoOriginal) { String::new() } else { "rig-1".to_owned() },
+            sess: "rig-logical".into(),
+            part_id: 960001,
+            vcodec: "hevc".into(),
+            acodec: if matches!(shape, Shape::EnhancedRemux) { "aac" } else { "ac3" }.into(),
+            src_vcodec: "hevc".into(),
+            src_acodec: "ac3".into(),
+            contract,
+            enhancement: if matches!(shape, Shape::EnhancedRemux) {
+                EnhancementOutcome::Applied
+            } else {
+                EnhancementOutcome::Off
+            },
+            transport_kbps: 28_000,
+            ..Default::default()
+        },
+        "960001",
+    );
+    if matches!(shape, Shape::AutoOriginal | Shape::DirectAutoOriginal) {
+        ps.cur_auto_original_watched = true;
+        ps.cur_src = (28_000, 1_920, 1_080);
+    }
+}
+
+impl FlightRig {
     /// Begin the report attempt a Play begins ([`crate::player::report::requested`]) and make it the
     /// playback in force, as the Play's landing does. A rig route installed by `apply_plan` alone
     /// belongs to no attempt (trace generation 0), and the ledger ignores a note from generation 0
