@@ -53,12 +53,16 @@ With Experimental on, only a direct play of the original file can go to the TV's
 one Standard would itself direct-play on this television. Standard's own verdicts decide that
 (`StandardDirectPlay`, carried on `OriginalRequest`): a video whose codec or size the set cannot show,
 a Dolby Vision file the set and the Dolby Vision setting refuse (a Profile 5 file on a set without Dolby
-Vision, with the setting on Auto), and an audio track the set's own decoder cannot play (also one this
-app would decode itself) stay in Standard, where the server converts what the TV cannot show or play.
-The TV's pipeline would play such a file with wrong colours or no sound and report no failure, so the
-handoff to Standard would never fire. A video your Plex server converts (remux, transcode or HLS), one
-with a selected subtitle or a burned or client-drawn subtitle, a trailer preview, a non-1x speed, a
-relay link and Auto quality away from the LAN also still play in Standard. An Experimental failure takes at most one handoff per play: the video restarts in Standard
+Vision, with the setting on Auto), an audio track the set's own decoder cannot play (also one this
+app would decode itself) and a container Standard has the server remux (anything but .mkv, .mp4 and .m4v)
+stay in Standard, where the server converts what the TV cannot show or play. The TV's pipeline would play
+such a file with wrong colours or no sound and report no failure, so the handoff to Standard would never
+fire. Those are Standard's verdicts and no more: the server's own decision is not one of them, because the
+URI offer is made before the server is asked, so a file that clears these checks but that the server would
+still convert can go to the TV's pipeline. A video your Plex server converts (remux, transcode or HLS), any file
+that carries a subtitle stream (whether or not a subtitle is switched on) or a burned or client-drawn
+subtitle, a trailer preview, a non-1x speed, a relay link and Auto quality away from the LAN also still
+play in Standard. An Experimental failure takes at most one handoff per play: the video restarts in Standard
 (`route::backend_policy`). On webOS 4.x the Experimental engine binds the screen through ACB and waits for each
 release's completion callback before the next title; when that never arrives the plane stays
 quarantined until the app restarts, the next title's Experimental bind is refused and that title takes the

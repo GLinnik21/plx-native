@@ -55,12 +55,17 @@ The one exception is a viewer who turned on Settings > Video & playback > Playba
 file as a progressive URL carrier (`KnownSource::url_carrier`) and `ResolvePort::qualify` checks it
 against `ProductEvidence::opted_in()`. `ProductQualifier` answers `Unknown` unless Standard would direct-play
 that original: the plan carries its own verdicts in `OriginalRequest::standard` (`StandardDirectPlay`, built in
-`build_stream` from `video_direct_plays` against `env.caps`, the frozen DV decision and
-`audio_natively_plays_with`, never re-derived by the qualifier), and `url_carrier` certifies a DV record only
-where the frozen decision admitted it. So a codec or raster the caps refuse, a Profile 5 file on a set without
-Dolby Vision, and an audio track only the app decodes or the set cannot decode play exactly as in Standard. A
-converted PMS output (`qualify_pms`) and a selected subtitle stay unqualified too, so those play on Feed; a
-URI failure keeps the one handoff to Feed.
+`build_stream` from `video_direct_plays` against `env.caps`, the frozen DV decision,
+`audio_natively_plays_with` and `part_is_streamable`, never re-derived by the qualifier), and `url_carrier`
+certifies a DV record only where the frozen decision admitted it. So a codec or raster the caps refuse, a
+Profile 5 file on a set without Dolby Vision, an audio track only the app decodes or the set cannot decode,
+and a container Standard hands the server to remux (anything but .mkv/.mp4/.m4v) play exactly as in Standard.
+The gate is Standard's own verdicts for the video, Dolby Vision, audio and container, and nothing more: it is
+NOT the server's decision, which the URI offer is made before (no Media Decision Engine round trip), so a
+file that clears these checks but that the server would still convert is offered all the same. A converted PMS output
+(`qualify_pms`) and any file whose Part carries a subtitle stream, whether or not a subtitle is on (the
+plan asks for `TrackChoice::Off`, which the opt-in does not certify), stay unqualified too, so those play on
+Feed; a URI failure keeps the one handoff to Feed.
 
 The sequence's last step (`Op::Display`, the full-screen `setDisplayWindow` and `setState(PLAYING)`)
 goes through `PlaneOwner::show`, not straight to the sink: the C seam (`acb_finish`) returns the task id

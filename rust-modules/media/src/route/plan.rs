@@ -1996,7 +1996,9 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 let quality = if forced { Quality::Original } else { env.quality };
                 // What Standard would decide about this original, from the same rules and the same
                 // frozen inputs it plans from below (the caps, the frozen Dolby Vision decision, the
-                // audio predicate); the qualifier reads the verdicts and derives none of them.
+                // audio predicate, the container test); the qualifier reads the verdicts and derives
+                // none of them. The server's own decision is not among them: it is a round trip, and
+                // this offer is made before it.
                 let dovi = plan.playing.as_ref().map_or(plx_data::metadata::Dovi::NONE, |item| item.dovi);
                 let dv_decision = frozen_dv_decision(env.dolby_vision_mode, env.dv_capability, dovi, vcodec);
                 let source_decodable = video_direct_plays(vcodec, width, height,
@@ -2026,6 +2028,9 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                         video: source_decodable,
                         dolby_vision: dv_decision.presentation.refusal().is_none(),
                         audio: audio_plays,
+                        // The same `streamable` Standard's own gate below reads: a container it has the
+                        // server remux is not an original the pipeline may take whole.
+                        container: streamable,
                     },
                     audio_codec: source_audio.as_ref().map_or_else(|| acodec.to_owned(), |(_, codec, _)| codec.clone()),
                     audio_ordinal: source_audio.as_ref().filter(|(position, _, sid)| *position >= 0 && *sid > 0)

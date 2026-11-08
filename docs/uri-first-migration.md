@@ -5,7 +5,8 @@ This is a staged migration. Boot installs the URI executor and a source qualific
 the production qualifier returns Unknown and certifies no URI controls or release, except for a
 viewer who turned on Settings > Video & playback > Playback engine > Experimental (off by default,
 per profile): that opt-in is the viewer's own qualification of the original file's URL for their
-own playback, for a file Standard would direct-play on that television. Ordinary playback therefore
+own playback, for a file Standard would direct-play on that television (its video, Dolby Vision, audio and
+container verdicts; not the server's own decision, which the offer is made before). Ordinary playback therefore
 still selects buffer-feed. Injected source and firmware evidence exercise the URI route in host tests;
 they do not qualify the production device.
 
@@ -106,8 +107,9 @@ capability refresh preserves that history. At most one cross-executor handoff is
 recovery episode. The route owner builds the catalog for the selected source; the application
 installs an owned qualified URI source against its route ticket before start. The production
 qualifier still returns Unknown for everyone who has not opted in (it answers a progressive
-original-file source for one who has, only for a file Standard would direct-play, never a converted PMS
-output, and a URI failure still takes the one handoff to Feed), and recovery integration remains under
+original-file source for one who has, only for a file Standard would direct-play (video, Dolby Vision, audio
+and container; the server's own decision is not asked first), never a converted PMS output, and a URI failure
+still takes the one handoff to Feed), and recovery integration remains under
 test. This composition does not promote URI.
 
 Each attempt starts with fresh observations. Unknown remains unknown; an acknowledgment or

@@ -2610,13 +2610,34 @@ fn cold_audio_resolve_held(
     acodec: &str,
     tweak: impl FnOnce(&mut ResolveEnv, &mut plx_data::metadata::PlayingItem),
 ) -> (Plan, Vec<String>) {
+    cold_part_resolve_held(ps, COLD_PART, name, expected_requests, mde, audio, subs, acodec, tweak)
+}
+
+/// The Part every cold resolve plays unless it names another: an `.mkv`, a container Standard streams.
+#[cfg(feature = "devtriggers")]
+const COLD_PART: &str = "/library/parts/36013/1/file.mkv";
+
+/// [`cold_audio_resolve_held`] for the Part `part` (its container is part of what Standard decides).
+#[cfg(feature = "devtriggers")]
+#[allow(clippy::too_many_arguments)]
+fn cold_part_resolve_held(
+    ps: &crate::route::PlaybackSession,
+    part: &str,
+    name: &'static str,
+    expected_requests: usize,
+    mde: &'static [u8],
+    audio: Vec<plx_data::metadata::Stream>,
+    subs: Vec<plx_data::metadata::Stream>,
+    acodec: &str,
+    tweak: impl FnOnce(&mut ResolveEnv, &mut plx_data::metadata::PlayingItem),
+) -> (Plan, Vec<String>) {
     let (port, rx, server) = plan_pms(expected_requests, mde);
     let sid = plx_plex::plex::register_for_test(name, "127.0.0.1", port, "token", name);
     let mut env = ResolveEnv::snapshot(ps, plx_data::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
     let mut item = fourk_item_with_subs(sid, audio, subs);
     tweak(&mut env, &mut item);
     env.cached_item = Some(item);
-    let plan = build_stream(&plx_base::task::OffFrame::for_test(), "rk-4k", "/library/parts/36013/1/file.mkv", "hevc", acodec, &env);
+    let plan = build_stream(&plx_base::task::OffFrame::for_test(), "rk-4k", part, "hevc", acodec, &env);
     let requests = rx.recv_timeout(std::time::Duration::from_secs(15)).expect("PMS never saw the resolve");
     server.join().unwrap();
     plx_plex::plex::reset_servers_for_test();
@@ -3302,9 +3323,10 @@ fn the_converted_mark_reads_the_attempt_not_the_boot() {
 // The viewer's opt-in qualifies the original file as a URL carrier for the TV's own pipeline
 // (`ProductQualifier`), and that pipeline plays what the file says: a video the caps cannot show, a
 // Dolby Vision layering the frozen decision refuses, or an audio codec the set cannot decode would play
-// with wrong colours or in silence and report nothing, so the handoff to Standard would never fire.
-// Each case below is one cold resolve, run as Standard and as Experimental through the production
-// qualifier, and the Experimental plan is Standard's.
+// with wrong colours or in silence and report nothing, so the handoff to Standard would never fire; a
+// container Standard has the server remux would skip that remux. Each case below is one cold resolve,
+// run as Standard and as Experimental through the production qualifier, and the Experimental plan is
+// Standard's. (The server's own direct-play decision is not one of the verdicts: the offer precedes it.)
 
 /// The production composition on an ACB display: nothing certified, `ProductQualifier`.
 #[cfg(feature = "devtriggers")]
@@ -3327,7 +3349,25 @@ fn uri_engine_resolve(
     acodec: &str,
     tweak: impl FnOnce(&mut ResolveEnv, &mut plx_data::metadata::PlayingItem),
 ) -> (Plan, Vec<String>) {
-    cold_audio_resolve(name, expected_requests, mde, audio, Vec::new(), acodec, |env, item| {
+    uri_engine_part_resolve(COLD_PART, name, engine, expected_requests, mde, audio, acodec, tweak)
+}
+
+/// [`uri_engine_resolve`] of the Part `part`.
+#[cfg(feature = "devtriggers")]
+#[allow(clippy::too_many_arguments)]
+fn uri_engine_part_resolve(
+    part: &str,
+    name: &'static str,
+    engine: plx_plex::plex::session::UriEngine,
+    expected_requests: usize,
+    mde: &'static [u8],
+    audio: Vec<plx_data::metadata::Stream>,
+    acodec: &str,
+    tweak: impl FnOnce(&mut ResolveEnv, &mut plx_data::metadata::PlayingItem),
+) -> (Plan, Vec<String>) {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    cold_part_resolve_held(&ps, part, name, expected_requests, mde, audio, Vec::new(), acodec, |env, item| {
         env.uri_engine = engine;
         env.uri_preflight_port = Some(production_uri_port());
         item.duration_ms = Some(7_200_000);
@@ -3357,11 +3397,26 @@ fn experimental_plays_as_standard(
     acodec: &str,
     tweak: impl Fn(&mut ResolveEnv, &mut plx_data::metadata::PlayingItem),
 ) -> (Plan, Vec<String>) {
+    experimental_plays_as_standard_in_part(COLD_PART, name, expected_requests, mde, audio, acodec, tweak)
+}
+
+/// [`experimental_plays_as_standard`] for the Part `part`.
+#[cfg(feature = "devtriggers")]
+#[allow(clippy::too_many_arguments)]
+fn experimental_plays_as_standard_in_part(
+    part: &str,
+    name: &'static str,
+    expected_requests: usize,
+    mde: &'static [u8],
+    audio: impl Fn() -> Vec<plx_data::metadata::Stream>,
+    acodec: &str,
+    tweak: impl Fn(&mut ResolveEnv, &mut plx_data::metadata::PlayingItem),
+) -> (Plan, Vec<String>) {
     use plx_plex::plex::session::UriEngine;
-    let (standard, standard_wire) = uri_engine_resolve(name, UriEngine::Off, expected_requests,
-        mde, audio(), acodec, &tweak);
-    let (experimental, experimental_wire) = uri_engine_resolve(name, UriEngine::On, expected_requests,
-        mde, audio(), acodec, &tweak);
+    let (standard, standard_wire) = uri_engine_part_resolve(part, name, UriEngine::Off,
+        expected_requests, mde, audio(), acodec, &tweak);
+    let (experimental, experimental_wire) = uri_engine_part_resolve(part, name, UriEngine::On,
+        expected_requests, mde, audio(), acodec, &tweak);
     assert!(standard.uri_original.is_none() && !standard.uri_source_ready,
         "Standard never carries a URI source");
     assert!(experimental.uri_original.is_none() && !experimental.uri_source_ready,
@@ -3478,4 +3533,29 @@ fn experimental_keeps_audio_only_the_app_decodes_in_standard() {
         });
     assert!(standard.url.contains("/library/parts/36013/"),
         "the premise: Standard direct-plays it by decoding in the app: {}", standard.url);
+}
+
+/// A container Standard does not stream (anything but .mkv/.mp4/.m4v): `part_is_streamable` sends it to
+/// a server remux into progressive MKV, and a file the pipeline would take whole as the original never
+/// goes through that. Here an `.avi` whose video, Dolby Vision and audio all direct-play: the container
+/// is the only refusal.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn experimental_keeps_a_container_standard_does_not_stream_in_standard() {
+    let (standard, _) = experimental_plays_as_standard_in_part("/library/parts/36013/1/file.avi",
+        "uri-optin-avi", 1, MDE_DIRECTPLAY, || vec![cold_track(1, "ac3", "eng", true, "")], "ac3", |_, _| {});
+    assert!(standard.source_decodable, "the premise: the video is fine, the container is the refusal");
+    assert!(standard.url.contains("/video/:/transcode/"),
+        "the premise: Standard has the server remux the .avi: {}", standard.url);
+}
+
+/// The container control: an `.mp4` is one Standard streams, so the opt-in carries it.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn experimental_offers_an_mp4_original_that_standard_streams() {
+    use plx_plex::plex::session::UriEngine;
+    let (plan, _) = uri_engine_part_resolve("/library/parts/36013/1/file.mp4", "uri-optin-mp4",
+        UriEngine::On, 1, MDE_DIRECTPLAY, vec![cold_track(1, "ac3", "eng", true, "")], "ac3", |_, _| {});
+    assert!(plan.uri_original.is_some() && plan.uri_source_ready,
+        "a streamable container is the one the opt-in carries");
 }

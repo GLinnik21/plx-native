@@ -4,8 +4,9 @@
 //!
 //! **What it is.** Production certifies no source: its evidence is `ProductEvidence::unqualified_on`
 //! (nothing certified) and its qualifier is `ProductQualifier` (`Unknown` unless the viewer opted in to
-//! the URI engine in Settings, and then only for a file Standard would direct-play), so a real resolve of a viewer who has not opted in never offers the
-//! URI backend. This module is the one place that composes the other
+//! the URI engine in Settings, and then only for a file Standard would direct-play: its video, Dolby Vision, audio
+//! and container verdicts, not the server's own decision), so a real resolve of a viewer who has not opted in never
+//! offers the URI backend. This module is the one place that composes the other
 //! answer for a test run: [`compose`] swaps in dev evidence (the four capabilities a URL carrier
 //! needs, certified) and a dev [`OriginalQualifier`] that answers a certified `ProgressiveUri`
 //! verdict whose source is the trigger's URL. Everything else is the real route: the resolve
@@ -518,7 +519,8 @@ mod tests {
             video_codec: "h264".to_owned(),
             dolby_vision: plx_data::metadata::Dovi::NONE,
             dolby_vision_mode: plx_plex::plex::session::DolbyVisionMode::Auto, uri_opt_in: false,
-            standard: StandardDirectPlay { video: true, dolby_vision: true, audio: true },
+            standard: StandardDirectPlay { video: true, dolby_vision: true, audio: true,
+                container: true },
             audio_codec: "aac".to_owned(), audio_ordinal,
             subtitle_source: None,
             subtitle_choice: TrackChoice::Unspecified,
@@ -624,14 +626,17 @@ mod tests {
     }
 
     /// A test run forces the trigger's URL for its Part whatever Standard would do with the file (the
-    /// production opt-in answers only for what Standard direct-plays): the dev qualifier reads none of
-    /// the plan's video, Dolby Vision or audio verdicts, so a fixture Standard converts still plays here.
+    /// production opt-in answers only for what Standard direct-plays): the dev qualifier itself reads none
+    /// of the plan's verdicts, and `url_carrier` reads only the Dolby Vision one (it certifies a DV record
+    /// only where `standard.dolby_vision`), so a fixture Standard converts for its video, audio or
+    /// container still plays here, while a Dolby Vision record the frozen decision refused is not forced.
     #[test]
     fn the_dev_qualifier_forces_the_url_whatever_standard_would_do_with_the_file() {
         let (_, qualifier) = armed_pair();
         let off = plx_base::task::OffFrame::for_test();
         let mut req = request(991001, &mock_origin(), 42);
-        req.standard = StandardDirectPlay { video: false, dolby_vision: false, audio: false };
+        req.standard = StandardDirectPlay { video: false, dolby_vision: false, audio: false,
+            container: false };
         let Verdict::Known(known) = qualifier.qualify(&off, req)
             else { panic!("the dev route did not force the pinned part") };
         assert_eq!(known.source.into_parts().0, URL);

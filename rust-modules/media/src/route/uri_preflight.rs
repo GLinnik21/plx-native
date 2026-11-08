@@ -92,10 +92,12 @@ impl ProductEvidence {
 }
 
 /// What Standard, this app's own direct play, decided about an original file: the plan's own verdicts,
-/// carried to the qualifier so that no qualifier re-derives a codec or Dolby Vision rule of its own. The
-/// TV's pipeline plays what the file says and never reports a wrong picture or a silent track as a
-/// failure, so an original Standard would not direct-play (the server converts it) is never one a
-/// viewer's opt-in may hand to URI.
+/// carried to the qualifier so that no qualifier re-derives a codec, Dolby Vision or container rule of
+/// its own. The TV's pipeline plays what the file says and never reports a wrong picture or a silent
+/// track as a failure, so an original Standard would not direct-play (the server converts it) is never
+/// one a viewer's opt-in may hand to URI. These four verdicts are everything the gate asks: it is NOT
+/// the server's own direct-play decision (the Media Decision Engine round trip), which the URI offer is
+/// made before, so a file that clears all four is offered even where the server would still convert it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StandardDirectPlay {
     /// `video_direct_plays` against the attempt's caps: the codec, the raster bound and the frozen
@@ -109,11 +111,16 @@ pub struct StandardDirectPlay {
     /// table's row, the Load's channel and rate limits, the direct-play mode). Standard may also decode
     /// a codec in the app, which the TV's pipeline cannot, so that is not enough here.
     pub audio: bool,
+    /// The Part's container is one Standard streams (`part_is_streamable`: .mkv, .mp4, .m4v). Any other
+    /// (.avi, .mov, .ts, ...) Standard hands to the server to remux into progressive MKV, which an
+    /// original handed to the TV's pipeline whole would skip.
+    pub container: bool,
 }
 
 impl StandardDirectPlay {
-    /// Standard would direct-play this original, and the TV's own pipeline can show and play it.
-    pub fn plays(self) -> bool { self.video && self.dolby_vision && self.audio }
+    /// Standard would direct-play this original (as far as the plan's own verdicts go, not the server's
+    /// decision), and the TV's own pipeline can show and play it.
+    pub fn plays(self) -> bool { self.video && self.dolby_vision && self.audio && self.container }
 }
 
 /// URI source facts gathered from the selected PMS Part before Feed picks a sibling or encoder.
@@ -137,8 +144,9 @@ pub struct OriginalRequest {
     /// the viewer's own qualification of a URI source for their own playback and nobody else's: a
     /// qualifier answers for it, never without it, and never past [`standard`](Self::standard).
     pub uri_opt_in: bool,
-    /// Whether Standard would direct-play this original (the plan's verdicts, not the qualifier's).
-    /// The viewer's opt-in carries only an original it says yes to.
+    /// Whether Standard would direct-play this original (the plan's video, Dolby Vision, audio and
+    /// container verdicts, not the qualifier's and not the server's decision). The viewer's opt-in
+    /// carries only an original it says yes to.
     pub standard: StandardDirectPlay,
     pub audio_codec: String,
     /// The selected audio stream's 0-based position among the Part's audio streams, in container
@@ -587,9 +595,10 @@ impl KnownSource {
 /// Native product source evidence is unqualified for everyone but a viewer who turned on the URI
 /// engine in Settings ([`OriginalRequest::uri_opt_in`]): that choice is their own qualification of
 /// the URL carrier, so the answer is Unknown without it. Even then it covers only an original Standard
-/// would direct-play ([`OriginalRequest::standard`]: the plan's own video, Dolby Vision and audio
-/// verdicts, which this qualifier reads and never re-derives): every other file plays exactly as it does
-/// in Standard, where the server converts what the set cannot show or decode. The same port is run by
+/// would direct-play ([`OriginalRequest::standard`]: the plan's own video, Dolby Vision, audio and
+/// container verdicts, which this qualifier reads and never re-derives; not the server's own decision,
+/// which the offer is made before): every other file plays exactly as it does in Standard, where the
+/// server converts what the set cannot show or decode and remuxes a container Standard does not stream. The same port is run by
 /// every real resolve and can consume a future certified provider without changing route policy.
 pub struct ProductQualifier;
 impl OriginalQualifier for ProductQualifier {
@@ -934,8 +943,9 @@ mod tests {
             requires_subtitle_burn: false, requires_client_subtitle: false, preview: false }
     }
 
-    /// Standard direct-plays the request: the plan's three verdicts all say yes.
-    const PLAYS: StandardDirectPlay = StandardDirectPlay { video: true, dolby_vision: true, audio: true };
+    /// Standard direct-plays the request: the plan's four verdicts all say yes.
+    const PLAYS: StandardDirectPlay = StandardDirectPlay { video: true, dolby_vision: true, audio: true,
+        container: true };
 
     /// The production composition on an ACB set: nothing certified, `ProductQualifier`.
     fn production_port(binding: Binding) -> ResolvePort {
@@ -977,6 +987,8 @@ mod tests {
                 StandardDirectPlay { dolby_vision: false, ..PLAYS }),
             ("an audio track the set's own decoder does not play",
                 StandardDirectPlay { audio: false, ..PLAYS }),
+            ("a container Standard has the server remux",
+                StandardDirectPlay { container: false, ..PLAYS }),
         ] {
             let mut request = opt_in_request(true);
             request.standard = standard;
@@ -1015,7 +1027,8 @@ mod tests {
         let mut request = opt_in_request(true);
         request.video_codec = "hevc".to_owned();
         request.dolby_vision = dovi;
-        request.standard = StandardDirectPlay { video: false, dolby_vision: false, audio: true };
+        request.standard = StandardDirectPlay { video: false, dolby_vision: false, audio: true,
+            container: true };
         let capabilities = Capabilities { progressive_uri: true, hls_uri: false, packet_feed: false,
             pause: true, seek: true, audio_track: true, subtitle_track: false,
             audio_off: false, subtitle_off: false };
