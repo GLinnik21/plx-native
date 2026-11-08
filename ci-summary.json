@@ -57,22 +57,22 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-08T00:01:54Z",
+ "generated": "2026-11-08T00:02:40Z",
  "metrics": [
   {
-   "change30_pct": 76.7,
+   "change30_pct": 96.7,
    "change7_pct": 27.7,
-   "d30": 172.0,
-   "delta30": 132.0,
-   "delta7": 66.0,
+   "d30": 213,
+   "delta30": 206,
+   "delta7": 91.0,
    "group": "ci",
-   "id": "ci|host python/shell/C gates",
+   "id": "ci|host unit tests (hostsim)",
    "kind": "job",
-   "label": "CI: host python/shell/C gates",
-   "n_now": 54,
-   "n_prev": 83,
-   "now": 304.0,
-   "prev7": 238,
+   "label": "CI: host unit tests (hostsim)",
+   "n_now": 53,
+   "n_prev": 82,
+   "now": 419,
+   "prev7": 328.0,
    "shown": true,
    "state": "worse",
    "state30": "worse",
@@ -81,19 +81,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 96.7,
-   "change7_pct": 27.7,
-   "d30": 213.0,
-   "delta30": 206.0,
-   "delta7": 91,
+   "change30_pct": 77.8,
+   "change7_pct": 27.2,
+   "d30": 171,
+   "delta30": 133.0,
+   "delta7": 65.0,
    "group": "ci",
-   "id": "ci|host unit tests (hostsim)",
+   "id": "ci|host python/shell/C gates",
    "kind": "job",
-   "label": "CI: host unit tests (hostsim)",
-   "n_now": 53,
-   "n_prev": 83,
-   "now": 419,
-   "prev7": 328,
+   "label": "CI: host python/shell/C gates",
+   "n_now": 54,
+   "n_prev": 82,
+   "now": 304.0,
+   "prev7": 239.0,
    "shown": true,
    "state": "worse",
    "state30": "worse",
@@ -123,19 +123,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 28.8,
-   "change7_pct": 18.9,
-   "d30": 356.5,
-   "delta30": 102.5,
-   "delta7": 73,
+   "change30_pct": 28.4,
+   "change7_pct": 18.2,
+   "d30": 356,
+   "delta30": 101.0,
+   "delta7": 70.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 51,
-   "n_prev": 85,
-   "now": 459,
-   "prev7": 386,
+   "n_now": 52,
+   "n_prev": 84,
+   "now": 457.0,
+   "prev7": 386.5,
    "shown": true,
    "state": "worse",
    "state30": "worse",
@@ -250,18 +250,18 @@
   },
   {
    "change30_pct": 21.2,
-   "change7_pct": 10.8,
-   "d30": 2261,
-   "delta30": 479,
-   "delta7": 267,
+   "change7_pct": 10.6,
+   "d30": 2260.0,
+   "delta30": 480.0,
+   "delta7": 261.5,
    "group": "ci",
    "id": "minutes",
    "kind": "cost",
    "label": "Runner time per push",
    "n_now": 47,
-   "n_prev": 71,
+   "n_prev": 70,
    "now": 2740,
-   "prev7": 2473,
+   "prev7": 2478.5,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -291,19 +291,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 65.5,
+   "change30_pct": 66.4,
    "change7_pct": 17.8,
-   "d30": 272.5,
-   "delta30": 178.5,
-   "delta7": 68,
+   "d30": 271,
+   "delta30": 180,
+   "delta7": 68.0,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
    "n_now": 53,
-   "n_prev": 83,
+   "n_prev": 82,
    "now": 451,
-   "prev7": 383,
+   "prev7": 383.0,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -313,18 +313,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 9.3,
+   "change7_pct": 9.2,
    "d30": null,
    "delta30": null,
-   "delta7": 31.0,
+   "delta7": 30.5,
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "kind": "job",
    "label": "CI: armv7 cross-build and artifact assertions",
    "n_now": 54,
-   "n_prev": 83,
+   "n_prev": 82,
    "now": 363.0,
-   "prev7": 332,
+   "prev7": 332.5,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -334,18 +334,18 @@
   },
   {
    "change30_pct": 161.2,
-   "change7_pct": 11.7,
+   "change7_pct": 11.3,
    "d30": 139,
    "delta30": 224.0,
-   "delta7": 38.0,
+   "delta7": 37.0,
    "group": "ci",
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
    "n_now": 54,
-   "n_prev": 83,
+   "n_prev": 82,
    "now": 363.0,
-   "prev7": 325,
+   "prev7": 326.0,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -354,19 +354,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 30.4,
-   "change7_pct": 11.1,
-   "d30": 235.0,
-   "delta30": 71.5,
-   "delta7": 30.5,
+   "change30_pct": 30.6,
+   "change7_pct": 11.2,
+   "d30": 235,
+   "delta30": 72,
+   "delta7": 31.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 48,
-   "n_prev": 77,
-   "now": 306.5,
-   "prev7": 276,
+   "n_now": 49,
+   "n_prev": 76,
+   "now": 307,
+   "prev7": 276.0,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -375,19 +375,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": -50.1,
-   "change7_pct": 1.2,
-   "d30": 433.5,
-   "delta30": -217.0,
-   "delta7": 2.5,
+   "change30_pct": -49.2,
+   "change7_pct": 0.5,
+   "d30": 425,
+   "delta30": -209,
+   "delta7": 1.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 48,
-   "n_prev": 77,
-   "now": 216.5,
-   "prev7": 214,
+   "n_now": 49,
+   "n_prev": 76,
+   "now": 216,
+   "prev7": 215.0,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -405,10 +405,10 @@
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 48,
-   "n_prev": 77,
-   "now": 215.0,
-   "prev7": 198,
+   "n_now": 49,
+   "n_prev": 76,
+   "now": 215,
+   "prev7": 198.0,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -419,7 +419,7 @@
   {
    "change30_pct": 10.1,
    "change7_pct": 8.2,
-   "d30": 173.0,
+   "d30": 173,
    "delta30": 17.5,
    "delta7": 14.5,
    "group": "ci",
@@ -427,9 +427,9 @@
    "kind": "job",
    "label": "CI: host lint + type-checks",
    "n_now": 54,
-   "n_prev": 83,
+   "n_prev": 82,
    "now": 190.5,
-   "prev7": 176,
+   "prev7": 176.0,
    "shown": true,
    "state": "flat",
    "state30": "flat",
@@ -482,17 +482,17 @@
   {
    "change30_pct": 25.0,
    "change7_pct": 11.1,
-   "d30": 16.0,
-   "delta30": 4.0,
+   "d30": 16,
+   "delta30": 4,
    "delta7": 2.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 48,
-   "n_prev": 77,
-   "now": 20.0,
-   "prev7": 18,
+   "n_now": 49,
+   "n_prev": 76,
+   "now": 20,
+   "prev7": 18.0,
    "shown": false,
    "state": "flat",
    "state30": "flat",
@@ -511,9 +511,9 @@
    "kind": "job",
    "label": "CI: which gates apply",
    "n_now": 54,
-   "n_prev": 83,
+   "n_prev": 82,
    "now": 5.0,
-   "prev7": 5,
+   "prev7": 5.0,
    "shown": false,
    "state": "flat",
    "state30": "new",
@@ -524,17 +524,17 @@
   {
    "change30_pct": 33.3,
    "change7_pct": 33.3,
-   "d30": 3.0,
-   "delta30": 1.0,
-   "delta7": 1,
+   "d30": 3,
+   "delta30": 1,
+   "delta7": 1.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
    "n_now": 53,
-   "n_prev": 83,
+   "n_prev": 82,
    "now": 4,
-   "prev7": 3,
+   "prev7": 3.0,
    "shown": false,
    "state": "flat",
    "state30": "flat",
@@ -545,7 +545,7 @@
   {
    "change30_pct": -99.0,
    "change7_pct": 0.0,
-   "d30": 293.0,
+   "d30": 293,
    "delta30": -290.0,
    "delta7": 0.0,
    "group": "ci",
@@ -553,9 +553,9 @@
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
    "n_now": 54,
-   "n_prev": 83,
+   "n_prev": 82,
    "now": 3.0,
-   "prev7": 3,
+   "prev7": 3.0,
    "shown": false,
    "state": "flat",
    "state30": "better",
@@ -591,11 +591,6 @@
    "commits": [
     {
      "pr": null,
-     "sha": "5b9ff4a0a",
-     "title": "Settings: a pushed page's text is made resident before it moves"
-    },
-    {
-     "pr": null,
      "sha": "4bf133d57",
      "title": "Settings: fps scenes for the pages Settings v2 added"
     },
@@ -638,70 +633,14 @@
      "pr": 1275,
      "sha": "3ae2ebfbb",
      "title": "The URI backend returns as plx_play_uri: in the shipping binary, never selected, dev triggers back"
+    },
+    {
+     "pr": 1246,
+     "sha": "8a3569830",
+     "title": "Settings: a viewer's Plex Pass grants intro and credits skipping (auto-skip hidden from Pass holders)"
     }
    ],
-   "from": 238,
-   "id": "ci|host python/shell/C gates",
-   "label": "CI: host python/shell/C gates",
-   "since": "2026-11-07",
-   "threshold_pct": 20.0,
-   "to": 304.0
-  },
-  {
-   "change_pct": 27.7,
-   "commits": [
-    {
-     "pr": null,
-     "sha": "5b9ff4a0a",
-     "title": "Settings: a pushed page's text is made resident before it moves"
-    },
-    {
-     "pr": null,
-     "sha": "4bf133d57",
-     "title": "Settings: fps scenes for the pages Settings v2 added"
-    },
-    {
-     "pr": 1263,
-     "sha": "2f5e79630",
-     "title": "Playback: a Dolby Vision resume or seek that lands on a CRA plays the HDR10 base layer"
-    },
-    {
-     "pr": 1265,
-     "sha": "96be5e274",
-     "title": "Playback: honor Plex server stops"
-    },
-    {
-     "pr": 1268,
-     "sha": "ec0df8cc3",
-     "title": "Playback contract crate, BackendRunner and attempt-metrics reducers (unwired)"
-    },
-    {
-     "pr": 1269,
-     "sha": "97e43889d",
-     "title": "Settings: Under posters takes composable details and the two-poster preview"
-    },
-    {
-     "pr": 1271,
-     "sha": "279b66d9f",
-     "title": "Media codecs crate: the bundled-FFmpeg ABI, PCM decode, speed audio and the encoder leave plx_media"
-    },
-    {
-     "pr": 1272,
-     "sha": "dc3d03c20",
-     "title": "Lower-layer prerequisites of the neutral media crate: plx_net::range_io, plx_base::clock, LoadVideo in platform, contrac"
-    },
-    {
-     "pr": 1274,
-     "sha": "5d9c5903b",
-     "title": "Neutral playback orchestration: the Feed becomes plx_play_feed, the app composes backends, the sink/plane seam is split"
-    },
-    {
-     "pr": 1275,
-     "sha": "3ae2ebfbb",
-     "title": "The URI backend returns as plx_play_uri: in the shipping binary, never selected, dev triggers back"
-    }
-   ],
-   "from": 328,
+   "from": 328.0,
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
    "since": "2026-11-07",
@@ -709,13 +648,8 @@
    "to": 419
   },
   {
-   "change_pct": 25.2,
+   "change_pct": 27.2,
    "commits": [
-    {
-     "pr": null,
-     "sha": "5b9ff4a0a",
-     "title": "Settings: a pushed page's text is made resident before it moves"
-    },
     {
      "pr": null,
      "sha": "4bf133d57",
@@ -760,6 +694,72 @@
      "pr": 1275,
      "sha": "3ae2ebfbb",
      "title": "The URI backend returns as plx_play_uri: in the shipping binary, never selected, dev triggers back"
+    },
+    {
+     "pr": 1246,
+     "sha": "8a3569830",
+     "title": "Settings: a viewer's Plex Pass grants intro and credits skipping (auto-skip hidden from Pass holders)"
+    }
+   ],
+   "from": 239.0,
+   "id": "ci|host python/shell/C gates",
+   "label": "CI: host python/shell/C gates",
+   "since": "2026-11-07",
+   "threshold_pct": 20.0,
+   "to": 304.0
+  },
+  {
+   "change_pct": 25.2,
+   "commits": [
+    {
+     "pr": null,
+     "sha": "4bf133d57",
+     "title": "Settings: fps scenes for the pages Settings v2 added"
+    },
+    {
+     "pr": 1263,
+     "sha": "2f5e79630",
+     "title": "Playback: a Dolby Vision resume or seek that lands on a CRA plays the HDR10 base layer"
+    },
+    {
+     "pr": 1265,
+     "sha": "96be5e274",
+     "title": "Playback: honor Plex server stops"
+    },
+    {
+     "pr": 1268,
+     "sha": "ec0df8cc3",
+     "title": "Playback contract crate, BackendRunner and attempt-metrics reducers (unwired)"
+    },
+    {
+     "pr": 1269,
+     "sha": "97e43889d",
+     "title": "Settings: Under posters takes composable details and the two-poster preview"
+    },
+    {
+     "pr": 1271,
+     "sha": "279b66d9f",
+     "title": "Media codecs crate: the bundled-FFmpeg ABI, PCM decode, speed audio and the encoder leave plx_media"
+    },
+    {
+     "pr": 1272,
+     "sha": "dc3d03c20",
+     "title": "Lower-layer prerequisites of the neutral media crate: plx_net::range_io, plx_base::clock, LoadVideo in platform, contrac"
+    },
+    {
+     "pr": 1274,
+     "sha": "5d9c5903b",
+     "title": "Neutral playback orchestration: the Feed becomes plx_play_feed, the app composes backends, the sink/plane seam is split"
+    },
+    {
+     "pr": 1275,
+     "sha": "3ae2ebfbb",
+     "title": "The URI backend returns as plx_play_uri: in the shipping binary, never selected, dev triggers back"
+    },
+    {
+     "pr": 1246,
+     "sha": "8a3569830",
+     "title": "Settings: a viewer's Plex Pass grants intro and credits skipping (auto-skip hidden from Pass holders)"
     }
    ],
    "from": 74.8,
@@ -770,13 +770,8 @@
    "to": 93.7
   },
   {
-   "change_pct": 18.9,
+   "change_pct": 18.2,
    "commits": [
-    {
-     "pr": null,
-     "sha": "5b9ff4a0a",
-     "title": "Settings: a pushed page's text is made resident before it moves"
-    },
     {
      "pr": null,
      "sha": "4bf133d57",
@@ -821,14 +816,19 @@
      "pr": 1275,
      "sha": "3ae2ebfbb",
      "title": "The URI backend returns as plx_play_uri: in the shipping binary, never selected, dev triggers back"
+    },
+    {
+     "pr": 1246,
+     "sha": "8a3569830",
+     "title": "Settings: a viewer's Plex Pass grants intro and credits skipping (auto-skip hidden from Pass holders)"
     }
    ],
-   "from": 386,
+   "from": 386.5,
    "id": "push_wait",
    "label": "Wait after merge",
    "since": "2026-11-07",
    "threshold_pct": 15.0,
-   "to": 459
+   "to": 457.0
   }
  ],
  "schema": 2,
