@@ -900,7 +900,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
                         let focused = cx.focus.current.map(|k| k.elem);
                         let classified = consts::classify_input(*key, *sym, *wcode);
                         if *edge == Edge::Down && !at_edge {
-                            if *key == plx_machine::machine::Key::Back {
+                            if *key != plx_machine::machine::Key::Other || consts::is_remote_bound(*sym, *wcode) {
                                 self.hud.note_fresh_press(ps, input.at.ms, H::transport_paused(cx));
                             }
                             if matches!(classified, consts::Key::Up | consts::Key::Down
@@ -3238,25 +3238,21 @@ mod step_ladder_tests {
     }
 
     fn fresh(page: &mut PlayerScreen) {
-        page.hud.visible_at_press = true;
+        page.hud.until = 5_000;
     }
 
-    /// One BOUND key press as the app delivers it: `note_global_press` samples the fresh-press
-    /// state (`HudState::note_fresh_press`) and only then does the page's `key` arm run. [`fresh`]
-    /// skips that sample, which is right for a test of one arm's body and wrong for anything about
-    /// what the PREVIOUS press left behind — the two-press BACK reads exactly that.
+    /// One fresh bound key as the dispatcher delivers it.
     fn bound_press(page: &mut PlayerScreen, sym: u32, wcode: u32) -> (Handled, Vec<PlayerReq>) {
         bound_press_over(plx_media::route::idle_session_for_test(), page, sym, wcode)
     }
 
-    /// [`bound_press`] over the session `ps`: the sample and the press read the SAME derived state.
+    /// [`bound_press`] over the session `ps`.
     fn bound_press_over(
         ps: &plx_media::route::PlaybackSession,
         page: &mut PlayerScreen,
         sym: u32,
         wcode: u32,
     ) -> (Handled, Vec<PlayerReq>) {
-        page.hud.note_fresh_press(ps, 1_000, false);
         press_over(ps, page, sym, wcode, Edge::Down)
     }
 
@@ -3264,7 +3260,6 @@ mod step_ladder_tests {
     /// through the dispatcher's own order ([`travel_rig`]), so the travel under test is the page's
     /// declared links and edge rules and nothing a test wrote.
     fn bound_travel(rig: &mut Rig, page: &mut PlayerScreen, sym: u32) -> (Handled, Vec<PlayerReq>) {
-        page.hud.note_fresh_press(TestHost::session(&rig.cx()), 1_000, false);
         rig.key(page, sym, 0, Edge::Down, 1_000)
     }
 
@@ -3631,9 +3626,8 @@ mod step_ladder_tests {
         assert_eq!(page.scrub.ns, -1, "no scrub target left behind");
         // A bound key un-dismisses; BACK itself is bound, so the second press must sample the
         // dismissed state BEFORE that, which is what `visible_at_press` is for.
-        page.hud.note_fresh_press(TestHost::session(&cx()), 1_000, false);
-        assert!(!page.hud.visible_at_press, "a hand-hidden transport is not on screen at the press");
         let (_, reqs) = press(&mut page, 0, WCODE_BACK, Edge::Down);
+        assert!(!page.hud.visible_at_press, "a hand-hidden transport is not on screen at the press");
         assert_eq!(reqs, vec![PlayerReq::Exit], "the second BACK leaves");
     }
 
@@ -3703,7 +3697,6 @@ mod step_ladder_tests {
         let mut rig = Rig::on(&page, ENTRY);
         rig.reseat(&mut page, GROUP_ROW);
         rig.seat_on(player_hud::control_elem(page.slot.primary_btn()));
-        page.hud.note_fresh_press(TestHost::session(&cx()), 1_000, false);
         let (handled, reqs) = rig.key(&mut page, 0, WCODE_BACK, Edge::Down, 1_000);
         assert_eq!(handled, Handled::Yes);
         assert_eq!(reqs, vec![PlayerReq::DismissOffer(credits)]);
@@ -4222,7 +4215,7 @@ mod scrub_ownership_tests {
     /// below begins from.
     fn page_on_the_bar() -> PlayerScreen {
         let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
-        page.hud.visible_at_press = true;
+        page.hud.until = 5_000;
         page.hud.nav.focus = GROUP_SCRUB;
         page
     }
@@ -4993,7 +4986,7 @@ mod scrub_ownership_tests {
         f.playhead(50 * S);
         let mut page = page_on_the_bar();
         let (at, _) = tap_and_commit(&f.session, &mut page, 1_000);
-        page.hud.visible_at_press = false; // the transport is not on screen at the press
+        page.hud.dismissed = true; // the transport is not on screen at the press
         let (_, reqs) = back(&f.session, &mut page, at + 500);
         assert_eq!(reqs, vec![PlayerReq::Exit], "an ordinary BACK over a bare picture: {reqs:?}");
     }

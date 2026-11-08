@@ -1305,8 +1305,10 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             return;
         }
         let viewer_paused = viewer_paused_for(&app.player.session, &app.adapters.player);
-        let ordered_player_back = key == Key::Back && tree_owns_key && !app.pages.surface_up()
-            && matches!(app.route(), AppArg::Player);
+        // The bare player samples its HUD in delivery order. The lab trigger is
+        // consumed here, so it keeps the loop's fresh-press bookkeeping.
+        let ordered_player_key = tree_owns_key && !app.pages.surface_up()
+            && matches!(app.route(), AppArg::Player) && !plx_platform::labcfg::is_trigger_key(sym, wcode);
         begin_fresh_press(&mut app.player.session,
             key,
             sym,
@@ -1314,7 +1316,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             app.last_input,
             viewer_paused,
             &mut app.down_sym,
-            if ordered_player_back { None } else {
+            if ordered_player_key { None } else {
                 super::bridge::player_mut(&mut app.pages).map(|player| &mut player.hud)
             },
             &mut app.ptr,
@@ -1371,7 +1373,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         // neither answered nor dismissed, and selecting the tile again comes back to it.
         if tree_owns_key {
             // Ingress already resolved the driver's repeat-marked fresh press.
-            let state = if ordered_player_back { state & !0x100 } else { state };
+            let state = if ordered_player_key { state & !0x100 } else { state };
             app.inputs.push(super::bridge::key_input(sym, wcode, state, tree_tick, plx_machine::machine::Source::Sdl));
             return;
         }
@@ -5491,6 +5493,40 @@ mod lifecycle_regression_tests {
         content_requests(&mut app, &mut fr);
         assert!(app.refresh_hubs, "the second Back exits even with drift in the same SDL batch");
         assert!(!app.ptr.cur_hidden, "the exit supersedes the pending hide");
+    }
+
+    #[test]
+    fn back_pointer_exit_sees_the_dismissal_before_a_later_play_press() {
+        let _serial = plx_base::testlock::serial();
+        let (mut app, mut fr) = back_pointer_test_app();
+        queue_back(&mut app, &mut fr);
+        dispatch_back_pointer_inputs(&mut app, &fr);
+        content_requests(&mut app, &mut fr);
+        assert!(super::super::bridge::player(&app.pages).unwrap().hud.dismissed);
+
+        queue_back(&mut app, &mut fr);
+        app.ev = encode_key(0, plx_ui::consts::WCODE_PLAY, true);
+        event(&mut app, &mut fr, SDL_KEYDOWN);
+        dispatch_back_pointer_inputs(&mut app, &fr);
+        content_requests(&mut app, &mut fr);
+        assert!(app.refresh_hubs, "the later Play cannot un-dismiss the HUD before Back");
+    }
+
+    #[test]
+    fn back_pointer_exit_latch_is_spent_by_a_bound_press_in_the_same_batch() {
+        let _serial = plx_base::testlock::serial();
+        let (mut app, mut fr) = back_pointer_test_app();
+        plx_media::player::swap_state_for_test(&mut app.player.session, plx_media::player::PlaybackState::Buffering);
+        publish_product_frame(&mut app, true);
+        queue_back(&mut app, &mut fr);
+        app.ev = encode_key(b'1' as u32, 0, true);
+        event(&mut app, &mut fr, SDL_KEYDOWN);
+        queue_back(&mut app, &mut fr);
+
+        dispatch_back_pointer_inputs(&mut app, &fr);
+        content_requests(&mut app, &mut fr);
+        assert!(!app.refresh_hubs, "the intervening bound press disarms Back's exit");
+        assert!(super::super::bridge::player(&app.pages).unwrap().hud.exit_armed);
     }
 
     #[test]

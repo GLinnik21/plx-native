@@ -278,9 +278,9 @@ build anyone can install; `docs/lab-diagnostics.md`). The guarded half lives in
 `app/input.rs::note_global_press`, split
 out so `make check` can grade it — `begin_fresh_press` itself calls `hide_cursor`, which acts on
 whatever pointer calls the process's SDL exports, so a host test that reached it would be grading the
-host's SDL rather than the press. Back on the bare player samples the HUD in ordered screen
-delivery, so a second Back in the same SDL batch sees the first one's dismissal. The LG
-pointer-hidden notification only stops edge scrolling.
+host's SDL rather than the press. The bare player samples the HUD for bound keys in ordered screen
+delivery. A second Back in the same SDL batch sees the first one's dismissal, and an intervening
+bound press spends any exit arming. The LG pointer-hidden notification only stops edge scrolling.
 
 **The digit term reads `sym` and not `wcode`, diverging from `screens::profiles::digit_of`, on purpose.**
 48–57 in the scancode field are `]` `\` `#` `;` `'` `` ` `` `,` `.` `/` and CapsLock (the digits'

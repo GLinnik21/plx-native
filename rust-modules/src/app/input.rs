@@ -1311,9 +1311,8 @@ pub(crate) fn note_global_press(
         return; // an unsupported key is not input the app acted on — see `begin_fresh_press`
     }
     // What the user could SEE, and only then the un-dismiss — one operation, because the order is
-    // load-bearing (`HudState::note_fresh_press`). Taken for every BOUND key on every screen: it is
-    // one cheap predicate, and the alternative is each player arm remembering to ask first, which
-    // is exactly the ordering the pointer path had to be fixed for once already.
+    // load-bearing (`HudState::note_fresh_press`). The bare player takes its own sample in
+    // delivery order and passes no HUD here.
     if let Some(hud) = hud {
         hud.note_fresh_press(ps, now, viewer_paused);
     }

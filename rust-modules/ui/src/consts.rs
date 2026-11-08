@@ -440,7 +440,7 @@ pub fn page_dir(sym: c_uint, wcode: c_uint) -> Option<c_int> {
 
 /// **Is this press one the app binds ANYWHERE — the whole key map, as one predicate.**
 ///
-/// It exists for a single caller and a single rule: `app.rs`'s `begin_fresh_press` runs for EVERY
+/// The app's `begin_fresh_press` runs for EVERY
 /// fresh press, *before* the ladder has decided whether anything takes it, and two of the things it
 /// does are global — it un-dismisses the player HUD and it aborts an armed tvOS click. So an
 /// unsupported key (LG checklist item 40: the colour buttons, GUIDE, INFO, the number pad on a
@@ -479,13 +479,12 @@ pub fn page_dir(sym: c_uint, wcode: c_uint) -> Option<c_int> {
 /// order — the exact duplication [`page_dir`] was written to end. A number key is also, unlike a
 /// colour button, a key this app really does bind, so calling it bound is honest.
 pub fn is_bound(sym: c_uint, wcode: c_uint) -> bool {
+    is_remote_bound(sym, wcode) || plx_platform::labcfg::is_trigger_key(sym, wcode)
+}
+
+/// The fixed key map, independent of a lab build's runtime diagnostics configuration.
+pub fn is_remote_bound(sym: c_uint, wcode: c_uint) -> bool {
     classify(sym, wcode) != Key::Other
-        // A LAB build binds one more key — the diagnostics trigger, which is configuration rather
-        // than a constant (`plx_platform::labcfg::config`). It has to be here or pressing it would also wake
-        // the player HUD and abort an armed click, which is precisely the effect this predicate
-        // exists to withhold from keys the app does not act on. Always `false` in every other
-        // build, at compile time.
-        || plx_platform::labcfg::is_trigger_key(sym, wcode)
         || page_dir(sym, wcode).is_some()
         || sym == SDLK_BACKSPACE
         || sym == SDLK_CLEAR
