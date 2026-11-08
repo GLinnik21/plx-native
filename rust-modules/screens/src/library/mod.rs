@@ -1305,7 +1305,11 @@ impl LibraryScreen {
                 let first_row = self.grid_position(focus).and_then(|(_, col)|
                     self.pair.detail.elem_for(cx, &mut self.keys, col, self.layout.cols()));
                 match first_row {
-                    Some(elem) => self.reseat(FocusTarget::Elem(self.key(elem)), fx),
+                    Some(elem) => {
+                        // the first-row card rises from rest as on UP, never lifted in one frame
+                        self.pair.detail.arrive();
+                        self.reseat(FocusTarget::Elem(self.key(elem)), fx);
+                    }
                     None => self.reseat_first(fx),
                 }
             }

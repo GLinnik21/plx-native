@@ -272,6 +272,25 @@ fn effects_of(page: &mut LibraryScreen, engine: &mut FocusEngine<u32>, fixture: 
     output
 }
 
+/// BACK as the app delivers it: the screen steps the key, and the reseat it asks for reaches the
+/// engine and comes back as a `FocusMoved` (after a frame's tick when `tick_between` names one, as
+/// the app delivers it on the frame after the key).
+fn press_back(page: &mut LibraryScreen, engine: &mut FocusEngine<u32>, fixture: &Fixture, tick_between: Option<u32>) {
+    let back = ScreenEvent::Input(plx_machine::machine::InputEvent {
+        at: Tick::default(),
+        source: plx_machine::machine::Source::Script,
+        kind: InputKind::Key { key: Key::Back, sym: 0, wcode: 0, edge: Edge::Down, at_edge: false },
+    });
+    let out = effects_of(page, engine, fixture, back);
+    if let Some(ms) = tick_between { frame(page, engine, fixture, ms); }
+    for effect in out {
+        let Fx::Deliver(_, Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus }))) = effect.fx else { continue };
+        if let Outcome::Moved { from, to, by } = engine.enter(OWNER, &*page, focus, None, &fixture.cx(engine.current(OWNER))) {
+            deliver(page, engine, fixture, ScreenEvent::FocusMoved { from, to, by });
+        }
+    }
+}
+
 fn saved_cursors(effects: &[plx_machine::machine::Stamped<HostFixture>]) -> Vec<plx_data::browse::CursorAt> {
     effects.iter().filter_map(|effect| match &effect.fx {
         Fx::App(AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::Addressed {
@@ -600,4 +619,39 @@ fn relist_regression_reenabling_after_a_query_cut_adopts_current_rows() {
     frame(&mut page, &mut engine, &fixture, 9016);
     assert_eq!(page.pair.detail.relist_probe().1, [Some("10".to_string())],
         "the new answer still plays against the current query's rows");
+}
+
+/// BACK from deep in the grid: the first-row card focus lands on rises from rest on the lift spring,
+/// as it does when UP walks onto it, instead of appearing lifted in one frame, though the app
+/// delivers the reseat a frame after the key, behind a tick.
+#[test]
+fn back_to_the_top_raises_the_new_card_over_frames() {
+    let _guard = plx_base::testlock::serial();
+    let fixture = Fixture::new();
+    let mut page = fixture.screen();
+    page.initial = false;
+    let mut engine = FocusEngine::new();
+    let elem = deep(&mut page, &fixture, 20);
+    let deep_key = page.key(elem);
+    page.relayout(Some(deep_key));
+    page.scroll_target = page.target_layout.row_reveal(20 / page.layout.cols());
+    page.scroll.jump(page.scroll_target);
+    page.relayout(Some(deep_key));
+    engine.set(OWNER, deep_key, Some(page.pair.groups_config().detail), By::Restore);
+    deliver(&mut page, &mut engine, &fixture, ScreenEvent::FocusMoved { from: None, to: deep_key, by: By::Restore });
+    settle(&mut page, &mut engine, &fixture, 0);
+    let full = page.pair.detail.rect_at(&fixture.cx(engine.current(OWNER)), page.pair.detail.index_of(elem).unwrap()).w;
+    // the app delivers the reseat's FocusMoved on the frame after the key, behind that frame's tick
+    press_back(&mut page, &mut engine, &fixture, Some(2984));
+    let landed = engine.current(OWNER).and_then(|key| page.pair.detail.index_of(key.elem)).expect("focus is on a grid card");
+    assert!(landed < page.layout.cols(), "focus is on the first row");
+    // the frame that delivers the move draws before its next tick: the new card is not lifted there
+    let first_draw = page.pair.detail.rect_at(&fixture.cx(engine.current(OWNER)), landed).w;
+    assert!(first_draw < full - 1.0e-3, "the new card is not drawn lifted before the tick: {first_draw} against {full}");
+    let series: Vec<f32> = (0..12).map(|i| {
+        frame(&mut page, &mut engine, &fixture, 3000 + i * 16);
+        page.pair.detail.rect_at(&fixture.cx(engine.current(OWNER)), landed).w
+    }).collect();
+    assert!(series[0] < full - 1.0e-3, "the new card is not lifted whole on the first frame: {series:?}");
+    assert!(series.windows(2).all(|w| w[1] >= w[0] - 1.0e-3), "and only ever grows: {series:?}");
 }
