@@ -719,11 +719,6 @@ pub(crate) fn commit_track(
     }
 }
 
-/// **Perform what a player overlay decided** (§14): the panel owns its own state and its own
-/// input, but not the playback — seeking, pausing, applying a quality rung and leaving for a
-/// detail page all need the player adapter, the route or the trail, none of which a screen may
-/// name. Drained once per frame, after the dispatcher's, exactly as the Library's requests are.
-#[allow(clippy::too_many_arguments)]
 #[derive(Default)]
 pub(crate) struct PlayerRequestOutcome {
     pub slot_refresh: bool,
@@ -742,6 +737,11 @@ pub(crate) fn back_cursor_target(pages: &plx_ui::dispatch::Dispatcher<super::bri
     Some((plx_machine::machine::MachineId::Instance(instance), plx_media::route::playback_trace_generation()))
 }
 
+/// **Perform what a player overlay decided** (§14): the panel owns its own state and its own
+/// input, but not the playback — seeking, pausing, applying a quality rung and leaving for a
+/// detail page all need the player adapter, the route or the trail, none of which a screen may
+/// name. Drained once per frame, after the dispatcher's, exactly as the Library's requests are.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn player_requests(
     player: &mut plx_media::player::machine::Player,
     pa: &mut plx_media::player::adapter::PlayerAdapter,
