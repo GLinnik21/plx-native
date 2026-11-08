@@ -953,8 +953,10 @@ fn q_top_b_a_refused_enhancement_falls_back_to_a_direct_play_with_no_burn() {
         r.requests[after_refusal + 1..].iter().all(|l| !l.contains("subtitles=burn")),
         "nothing after the refusal burns: {:?}", r.requests,
     );
-    let fallback_mde = r.requests.last().expect("requests");
-    assert!(fallback_mde.contains("hasMDE=1"), "the direct play's own MDE closes the resolve: {fallback_mde}");
+    // The parallel PlayQueue request may arrive after the route's last decision.
+    let fallback_mde = r.requests[after_refusal + 1..].iter().rfind(|l| l.contains("/decision?"))
+        .expect("the fallback makes its own decision request");
+    assert!(fallback_mde.contains("hasMDE=1"), "the last decision must be for direct play: {fallback_mde}");
     assert_eq!(query_param(fallback_mde, "subtitles"), Some("none"), "{fallback_mde}");
     assert_eq!((r.plan.sub_sid, r.plan.sub_render_ordinal, r.plan.memory_note), (9, Some(0), false));
     plx_plex::plex::reset_servers_for_test();
