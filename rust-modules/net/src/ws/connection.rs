@@ -233,10 +233,7 @@ fn close_code_allowed(code: u16) -> bool {
 fn http_authority(text: &str) -> bool {
     let (host_valid, port) = match text.strip_prefix('[') {
         Some(bracketed) => match bracketed.split_once(']') {
-            Some((literal, rest)) => (
-                !literal.is_empty() && literal.bytes().all(|b| b.is_ascii_hexdigit() || b == b':' || b == b'.'),
-                rest,
-            ),
+            Some((literal, rest)) => (literal.parse::<std::net::Ipv6Addr>().is_ok(), rest),
             None => return false,
         },
         None => {
@@ -388,6 +385,7 @@ mod tests {
             ("user@relay.example", "/v1/ws"),
             ("relay.example:44a", "/v1/ws"),
             ("[::1", "/v1/ws"),
+            ("[:]", "/v1/ws"),
             ("::1", "/v1/ws"),
             ("relay.example", "/v1/ws%zz"),
         ] {
