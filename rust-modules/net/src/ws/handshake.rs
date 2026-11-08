@@ -88,9 +88,8 @@ impl Handshake {
                 connection |= value.split(',').any(|token| token.trim().eq_ignore_ascii_case("upgrade"));
             } else if name.eq_ignore_ascii_case("sec-websocket-accept") {
                 accepts.push(value);
-            } else if (name.eq_ignore_ascii_case("sec-websocket-extensions")
-                || name.eq_ignore_ascii_case("sec-websocket-protocol"))
-                && !value.is_empty()
+            } else if name.eq_ignore_ascii_case("sec-websocket-extensions")
+                || name.eq_ignore_ascii_case("sec-websocket-protocol")
             {
                 return Err(HandshakeFault::Unrequested);
             }
@@ -192,6 +191,8 @@ mod tests {
             Err(HandshakeFault::Unrequested)
         );
         assert_eq!(verdict(&response(good, "Sec-WebSocket-Protocol: chat\r\n")), Err(HandshakeFault::Unrequested));
+        assert_eq!(verdict(&response(good, "Sec-WebSocket-Extensions:\r\n")), Err(HandshakeFault::Unrequested));
+        assert_eq!(verdict(&response(good, "Sec-WebSocket-Protocol: \r\n")), Err(HandshakeFault::Unrequested));
         assert_eq!(verdict(&response(good, "no colon here\r\n")), Err(HandshakeFault::Malformed));
     }
 
