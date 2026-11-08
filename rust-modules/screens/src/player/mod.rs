@@ -3935,6 +3935,8 @@ mod step_ladder_tests {
         assert_eq!(page.hud.nav.focus, GROUP_SCRUB, "control row has nothing above: hides+reparks");
         assert_eq!(rig.current(), Some(player_hud::ELEM_SCRUB), "…and the engine is home too");
         rig.key(&mut page, SDLK_DOWN, 0, Edge::Down, 1_000);
+        assert_eq!(page.hud.nav.focus, GROUP_SCRUB, "the first Down reveals the hidden HUD");
+        rig.key(&mut page, SDLK_DOWN, 0, Edge::Down, 1_000);
         assert_eq!(page.hud.nav.focus, GROUP_TABS, "scrubber -> tabs");
         rig.key(&mut page, SDLK_DOWN, 0, Edge::Down, 1_000);
         assert_eq!(page.hud.nav.focus, GROUP_TABS, "tabs has nothing below: stays");
@@ -5005,7 +5007,7 @@ mod scrub_ownership_tests {
             key(&f.session, &mut page, SDLK_RIGHT, Edge::Down, 1_000);
             key(&f.session, &mut page, SDLK_RIGHT, Edge::Up, 1_020);
             let mut all = Vec::new();
-            for t in [1_020 + plx_appkit::player_hud::TAP_COMMIT_MS + 1, 3_000, 20_000, 120_000] {
+            for t in [1_020 + plx_appkit::player_hud::TAP_COMMIT_MS + 1, 3_000, 20_000, 129_999] {
                 all.extend(seeks(tick(&f.session, &mut page, t).1));
             }
             assert!(all.is_empty(), "paused {paused}: no timer commits a target: {all:?}");
