@@ -33,9 +33,11 @@ pub use plx_playback_contract::uri::Binding;
 
 /// The display path composition chooses for the executor: the ACB plane when the display is in ACB
 /// mode and the same gate the executor re-checks at every Start holds (a handle the library
-/// confirmed initialized, player type 0; `connectDass` is a developer arm and is not asked for);
+/// confirmed initialized, player type 0 (the URI engine's own boot handle); `connectDass` is a developer arm and is not asked for);
 /// otherwise nothing: the exported window is not selected here because no source is certified for
-/// it either. `initialized` is the sink's `plane_initialized`, read by the caller at the IO boundary.
+/// it either. `plane` and `initialized` are the URI engine's own handle's (player type 0, the plane
+/// owner's `facts_of(PlaneHandle::Uri)` and `initialized(PlaneHandle::Uri)`), never Feed's: a normal
+/// boot initializes Feed's handle as player type 10 and the URI engine's as 0.
 pub fn product_binding(display_mode: i32, plane: plx_platform::tv::plane::PlaneFacts, initialized: bool) -> Binding {
     let gate = crate::acb_bind::gate(false, display_mode, plane.handle, plane.player_type, false, initialized);
     if gate.ready { Binding::Acb } else { Binding::Unbound }
@@ -1088,14 +1090,18 @@ mod tests {
             Self::with(Binding::Unbound, Box::leak(Box::new(NoSink)),
                 Box::leak(Box::new(plx_platform::tv::plane::PlaneOwner::new())))
         }
-        /// An ACB-bound backend over a scripted sink and its own plane owner (booted as the
-        /// measured sequence needs: a handle, player type 0).
+        /// An ACB-bound backend over a scripted sink and its own plane owner, booted as a normal boot
+        /// boots it: Feed's handle (player type 10) and the URI engine's (player type 0, the
+        /// measured sequence), each confirmed initialized.
         fn acb() -> (Self, &'static ScriptedPlaneSink, &'static plx_platform::tv::plane::PlaneOwner) {
             let sink: &'static ScriptedPlaneSink =
                 Box::leak(Box::new(ScriptedPlaneSink::new(PlaneUnload { rv: 1, task: 5 })));
             let plane: &'static plx_platform::tv::plane::PlaneOwner =
                 Box::leak(Box::new(plx_platform::tv::plane::PlaneOwner::new()));
-            plane.boot(plx_platform::tv::plane::PlaneFacts { handle: true, player_type: 0 });
+            plane.boot(plx_platform::tv::plane::PlaneFacts { handle: true, player_type: 10 });
+            plane.boot_handle(plx_platform::tv::plane::PlaneHandle::Uri,
+                plx_platform::tv::plane::PlaneFacts { handle: true, player_type: 0 },
+                plx_platform::tv::plane::HandleSeat { id: 0, initialized: true });
             (Self::with(Binding::Acb, sink, plane), sink, plane)
         }
         fn with(binding: Binding, display: &'static dyn DisplaySink,
@@ -2127,22 +2133,23 @@ mod tests {
 
     #[test]
     fn acb_start_refuses_unless_every_gate_fact_holds() {
-        let boot = |handle, player_type| -> &'static plx_platform::tv::plane::PlaneOwner {
+        // The URI engine's handle as the boot recorded it; Feed's is irrelevant to this gate.
+        let boot = |handle, player_type, initialized| -> &'static plx_platform::tv::plane::PlaneOwner {
             let plane = Box::leak(Box::new(plx_platform::tv::plane::PlaneOwner::new()));
-            plane.boot(plx_platform::tv::plane::PlaneFacts { handle, player_type });
+            plane.boot_handle(plx_platform::tv::plane::PlaneHandle::Uri,
+                plx_platform::tv::plane::PlaneFacts { handle, player_type },
+                plx_platform::tv::plane::HandleSeat { id: 0, initialized });
             plane
         };
         let scripted = || -> &'static ScriptedPlaneSink {
             Box::leak(Box::new(ScriptedPlaneSink::new(PlaneUnload { rv: 1, task: 5 })))
         };
-        let unconfirmed = scripted();
-        unconfirmed.initialized.store(false, Ordering::Relaxed);
         let cases: [(&str, &'static ScriptedPlaneSink, &'static dyn DisplaySink, &'static plx_platform::tv::plane::PlaneOwner); 4] = {
-            let (a, b, c) = (scripted(), scripted(), scripted());
-            [("a created handle is not an initialized one", unconfirmed, unconfirmed, boot(true, 0)),
-             ("the measured sequence initialized player type 0", a, a, boot(true, 10)),
-             ("no handle", b, b, boot(false, 0)),
-             ("not the ACB display", c, Box::leak(Box::new(NoSink)), boot(true, 0))]
+            let (a, b, c, d) = (scripted(), scripted(), scripted(), scripted());
+            [("a created handle is not an initialized one", a, a, boot(true, 0, false)),
+             ("the measured sequence initialized player type 0", b, b, boot(true, 10, true)),
+             ("no handle", c, c, boot(false, 0, true)),
+             ("not the ACB display", d, Box::leak(Box::new(NoSink)), boot(true, 0, true))]
         };
         for (case, sink, display, plane) in cases {
             let mut rig = Rig::with(Binding::Acb, display, plane);
@@ -2342,8 +2349,9 @@ mod tests {
     #[test]
     fn acb_a_refused_bind_is_a_typed_failure_that_unloads_nothing() {
         let (mut rig, sink, plane) = Rig::acb();
-        // Another backend already holds the plane.
-        assert_eq!(plane.bind(sink, &rig.mt, plx_platform::tv::plane::BindPolicy::Strict, "other"),
+        // Another backend (Feed, over its own handle) already holds the plane.
+        assert_eq!(plane.bind(sink, &rig.mt, plx_platform::tv::plane::PlaneHandle::Feed,
+            plx_platform::tv::plane::BindPolicy::Rebind, "other"),
             plx_platform::tv::plane::BindVerdict::Granted);
         rig.acb_loading();
         rig.bus.say("subscribe", ENVELOPE);
@@ -2358,7 +2366,10 @@ mod tests {
     #[test]
     fn acb_a_bind_during_a_release_is_retried_on_a_later_tick() {
         let (mut rig, sink, plane) = Rig::acb();
-        plane.bind(sink, &rig.mt, plx_platform::tv::plane::BindPolicy::Strict, "previous");
+        // Feed's handle held the plane and is being released: the URI engine's bind waits for that
+        // handle's UNLOADED.
+        plane.bind(sink, &rig.mt, plx_platform::tv::plane::PlaneHandle::Feed,
+            plx_platform::tv::plane::BindPolicy::Rebind, "previous");
         plane.unload(sink, &rig.mt);
         rig.acb_loading();
         rig.bus.say("subscribe", ENVELOPE);

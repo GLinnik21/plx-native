@@ -65,7 +65,8 @@ void vp_destroy_window(void);
 
 /* ACB (App Common Binding) — VP_ACB only; every verb is a no-op in the other modes, so callers
  * need not branch. On webOS 5 this whole sequence has no replacement: it is deleted outright. */
-long acb_create(const char *appId, int playerType);        /* create+initialize; 0 = failed */
+long acb_create(const char *appId, int playerType);        /* create+initialize; 0 = failed. At most two per process (one per backend), none ever destroyed; the newest is current */
+int acb_select(long handle);                               /* make a handle acb_create returned the one every verb below addresses; 1 = done, 0 = not ours */
 /* The paced URI bind (play-uri `acb_bind`): the same calls acb_bind() makes, split so the caller can
  * pace them. 1 = the library confirmed AcbAPI_initialize (a created handle alone is not that), 0 not. */
 int acb_initialized(void);
@@ -90,8 +91,10 @@ int acb_unload(long *taskOut);
 
 /* ---- library-thread callbacks the seam forwards to (consumer-defined) ---- */
 void sf_on_event(unsigned int epoch, int type, long long num, const char *str);
-/* Completion callback of any ACB call, on the library's thread. `task` is the task id the
- * originating call returned; `ev` is -2 timeout, -1 error, 0 cancel, 1 complete. */
-void acb_on_event(long task, long ev, const char *reply);
+/* Completion callback of any ACB call, on the library's thread. `id` is the handle acb_create
+ * returned for the core that issued the call (the callback's first argument); `task` is the task id
+ * the originating call returned, numbered by that core alone; `ev` is -2 timeout, -1 error, 0 cancel,
+ * 1 complete. */
+void acb_on_event(long id, long task, long ev, const char *reply);
 
 #endif /* PLXNATIVE_STARFISH_H */

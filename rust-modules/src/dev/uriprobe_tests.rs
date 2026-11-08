@@ -724,11 +724,12 @@ mod hostsim {
     /// Closed through `stop` and one `drive`, as the engine's teardown does; the transport
     /// releases the bus at once.
     fn acb_plane_closed(complete_at_once: bool) -> (Rig, &'static plx_platform::tv::sink::ScriptedPlaneSink, &'static plx_platform::tv::plane::PlaneOwner) {
-        use plx_platform::tv::{plane::{PlaneFacts, PlaneOwner}, sink::{PlaneUnload, ScriptedPlaneSink}};
+        use plx_platform::tv::{plane::{HandleSeat, PlaneFacts, PlaneHandle, PlaneOwner}, sink::{PlaneUnload, ScriptedPlaneSink}};
         let sink: &'static ScriptedPlaneSink = Box::leak(Box::new(ScriptedPlaneSink::new(PlaneUnload { rv: 1, task: 5 })));
         sink.complete_at_once.store(complete_at_once, Ordering::SeqCst);
         let plane: &'static PlaneOwner = Box::leak(Box::new(PlaneOwner::new()));
-        plane.boot(PlaneFacts { handle: true, player_type: 0 });
+        plane.boot_handle(PlaneHandle::Uri, PlaneFacts { handle: true, player_type: 0 },
+            HandleSeat { id: 0, initialized: true });
         let mut rig = Rig::on_plane(Variant::AtLoad, sink, plane);
         rig.load_answered();
         let mut session = rig.session.take().unwrap();

@@ -8,7 +8,7 @@
 use crate::acb_bind::{gate, Op};
 use crate::uri_protocol::{MediaId, VideoFacts};
 use plx_base::task::MainThread;
-use plx_platform::tv::plane::{BindPolicy, BindVerdict, PlaneOwner, Refusal};
+use plx_platform::tv::plane::{BindPolicy, BindVerdict, PlaneHandle, PlaneOwner, Refusal};
 use plx_platform::tv::sink::DisplaySink;
 
 /// How the caller dresses a log line: `Timed` lines carry the caller's own `t=` stamp.
@@ -48,13 +48,15 @@ pub fn execute(op: &Op, mt: &MainThread, sink: &dyn DisplaySink, plane: &PlaneOw
     // and each pointer argument is a NUL-terminated string that outlives the call.
     match op {
         Op::Check { dass } => {
-            let facts = plane.facts();
+            // The URI engine's own handle (player type 0), booted beside Feed's: its facts and the
+            // library's confirmation of its `AcbAPI_initialize` are boot facts the owner holds.
+            let facts = plane.facts_of(PlaneHandle::Uri);
             #[cfg(feature = "devtriggers")]
             let dass_available = unsafe { sink.plane_probe_dass_available(mt) };
             #[cfg(not(feature = "devtriggers"))]
             let dass_available = false;
             let check = gate(*dass, sink.window_mode(), facts.handle, facts.player_type, dass_available,
-                unsafe { sink.plane_initialized(mt) });
+                plane.initialized(PlaneHandle::Uri));
             log(Stamp::Timed, &format!("acb gate mode={} boot_handle={} actual_ptype={} dass_available={} initialized={}",
                 check.mode, check.boot_handle, check.ptype, check.dass_available, check.initialized));
             Executed::invoked(check.ready)
@@ -63,7 +65,7 @@ pub fn execute(op: &Op, mt: &MainThread, sink: &dyn DisplaySink, plane: &PlaneOw
             let Ok(id) = std::ffi::CString::new(&**media_id) else { return Executed::invoked(false) };
             // One binding at a time: the plane owner grants the bind only once the previous
             // binding's release (either backend's) is proven.
-            match plane.bind(sink, mt, BindPolicy::Strict, media_id) {
+            match plane.bind(sink, mt, PlaneHandle::Uri, BindPolicy::Strict, media_id) {
                 BindVerdict::Granted => {}
                 BindVerdict::Deferred => return Executed { verdict: Verdict::Deferred, touched: false },
                 BindVerdict::Refused(why) => return Executed { verdict: Verdict::Refused(why), touched: false },
@@ -106,7 +108,7 @@ pub fn execute(op: &Op, mt: &MainThread, sink: &dyn DisplaySink, plane: &PlaneOw
 #[cfg(test)]
 mod tests {
     use super::*;
-    use plx_platform::tv::plane::PlaneFacts;
+    use plx_platform::tv::plane::{HandleSeat, PlaneFacts};
     use plx_platform::tv::sink::{PlaneUnload, ScriptedPlaneSink, VP_ACB};
 
     const VIDEO: VideoFacts = VideoFacts { width: 1280, height: 720, frame_rate: 24.0, bit_rate: None };
@@ -114,8 +116,14 @@ mod tests {
     struct World { sink: ScriptedPlaneSink, plane: PlaneOwner, mt: MainThread, lines: Vec<(Stamp, String)> }
     impl World {
         fn new(player_type: i32) -> Self {
+            Self::booted(player_type, true)
+        }
+        /// The URI handle booted with this player type, and the library's confirmation of its
+        /// initialize as `initialized`.
+        fn booted(player_type: i32, initialized: bool) -> Self {
             let plane = PlaneOwner::new();
-            plane.boot(PlaneFacts { handle: true, player_type });
+            plane.boot_handle(PlaneHandle::Uri, PlaneFacts { handle: true, player_type },
+                HandleSeat { id: 0, initialized });
             Self { sink: ScriptedPlaneSink::new(PlaneUnload { rv: 1, task: 5 }), plane,
                 // SAFETY: a test thread stands in for the main thread.
                 mt: unsafe { MainThread::assume() }, lines: Vec::new() }
@@ -132,15 +140,26 @@ mod tests {
     fn fixture() -> Result<Descriptor, &'static str> { Ok(Descriptor { text: "{}".into(), label: "test-envelope" }) }
 
     #[test]
-    fn the_gate_is_stamped_and_reads_the_sink_and_the_owner() {
+    fn the_gate_is_stamped_and_reads_the_uri_handle_the_owner_holds() {
         let mut world = World::new(0);
         assert_eq!(world.run(&Op::Check { dass: false }, fixture()).verdict, Verdict::Invoked(true));
         assert_eq!(world.lines, [(Stamp::Timed, format!("acb gate mode={VP_ACB} boot_handle=true actual_ptype=0 dass_available=false initialized=true"))]);
-        world.sink.initialized.store(false, std::sync::atomic::Ordering::Relaxed);
-        assert_eq!(world.run(&Op::Check { dass: false }, fixture()).verdict, Verdict::Invoked(false));
+        let mut world = World::booted(0, false);
+        assert_eq!(world.run(&Op::Check { dass: false }, fixture()).verdict, Verdict::Invoked(false),
+            "a created handle is not an initialized one");
         let mut world = World::new(10);
         assert_eq!(world.run(&Op::Check { dass: false }, fixture()).verdict, Verdict::Invoked(false));
         assert!(world.sink.calls().is_empty(), "the gate calls no ACB verb that changes the plane");
+    }
+
+    #[test]
+    fn the_gate_reads_the_uri_handle_and_not_feeds() {
+        let mut world = World::new(0);
+        // Feed's handle booted beside it with player type 10 (every normal boot): the gate is the
+        // URI handle's, so Feed's type does not fail it.
+        world.plane.boot(PlaneFacts { handle: true, player_type: 10 });
+        assert_eq!(world.run(&Op::Check { dass: false }, fixture()).verdict, Verdict::Invoked(true));
+        assert!(world.lines[0].1.contains("actual_ptype=0"), "{:?}", world.lines);
     }
 
     #[test]
