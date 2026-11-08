@@ -7,9 +7,9 @@
       "unit": "bytes",
       "mode": "fail",
       "limit": 20000000,
-      "measured": 17074920,
-      "measured_on": "2026-11-04",
-      "headroom": "17% (raised from 17,000,000 by the owner on 2026-11-04 for the URI-first backend split: both playback backends are linked, the dormant plx_play_uri backend costs about 250 KB of the 402 KB growth over main)"
+      "measured": 17570496,
+      "measured_on": "2026-11-08",
+      "headroom": "14% (limit raised from 18,750,000 to 20,000,000 by the owner for the URI-first playback build/package matrix series; the dev binary links both playback backends)"
     },
     "packages_default": {
       "what": "Third-party (registry/git) packages the app crate compiles for armv7-unknown-linux-gnueabi with its DEFAULT features: normal + build dependencies, dev-dependencies excluded, workspace members excluded.",
