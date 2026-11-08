@@ -6447,56 +6447,58 @@ pub fn demux(
                     free_avio(avio);
                     break;
                 };
-                if declared != 0 && declared != framing.load_video().diag_code() {
+                // BOTH halves of the same check in one pass. A stale PMS declaration (a file
+                // replaced under the server, never re-analyzed) can lie on BOTH axes at once:
+                // Casablanca 4K arrives declared H264/AC3 while the file carries HEVC/AAC. If the
+                // open refused axis-by-axis, the first axis hit would break before the second was
+                // ever probed, the one-shot retry would reload with the corrected video, get
+                // refused again on the audio the first pass never saw, and exhaust its budget
+                // without having played a frame. Probe both, refuse once, and hand the pump every
+                // axis the file really carries so ONE retry reload fixes them together.
+                //
+                // The audio half matters on its own too: a declared audio codec no track in the
+                // file carries makes `ai` land on the track that IS there and feed it into an
+                // elementary stream configured for the declared codec — the audio clock stalls
+                // and the video, which syncs to it, wedges at t=0 with no error at all.
+                let mismatch_v = declared != 0 && declared != framing.load_video().diag_code();
+                let declared_a = session.observer().declared_audio_code().unwrap_or(0);
+                let (actual_a, a_name) = if declared_a != 0 && ai >= 0 {
+                    let acp = stream_codecpar(*streams.add(ai as usize));
+                    let aname = std::ffi::CStr::from_ptr(avcodec_get_name((*acp).codec_id));
+                    (
+                        match aname.to_bytes() {
+                            b"ac3" => 1,
+                            b"eac3" => 2,
+                            b"aac" => 3,
+                            b"dts" => 4,
+                            _ => 0,
+                        },
+                        aname.to_string_lossy().into_owned(),
+                    )
+                } else {
+                    (0, String::new())
+                };
+                let mismatch_a = actual_a != 0 && declared_a != actual_a;
+                if mismatch_v || mismatch_a {
                     // The conditional probe's answer: what the file REALLY is, in the Load's own
-                    // code space. The pump's one-shot retry reloads with this declaration; the
-                    // happy path never reaches this line.
+                    // code space, for every axis that lied. The pump's one-shot retry reloads with
+                    // this declaration; the happy path never reaches this line.
                     session.media().publish(DemuxEffect::ProbeActual {
-                        video: Some(framing.load_video().diag_code()),
-                        audio: None,
+                        video: mismatch_v.then(|| framing.load_video().diag_code()),
+                        audio: mismatch_a.then_some(actual_a),
                     });
                     session.media().record(&format!(
-                        "ff: the Load declared {} but the file is {cname}; refusing the stream",
-                        crate::LoadVideo::from_diag_code(declared)
-                            .map_or("—", crate::LoadVideo::payload_name)
+                        "ff: the Load declared {dv} / audio {da} but the file is {av} / {aa}; refusing the stream",
+                        dv = crate::LoadVideo::from_diag_code(declared)
+                            .map_or("—", crate::LoadVideo::payload_name),
+                        da = if declared_a != 0 { acodec.as_str() } else { "—" },
+                        av = cname,
+                        aa = if a_name.is_empty() { "—" } else { a_name.as_str() }
                     ));
                     session.media().publish(DemuxEffect::FailFault(DemuxFault::LoadMismatch));
                     avformat_close_input(&mut fmt);
                     free_avio(avio);
                     break;
-                }
-                // The AUDIO half of the same check: a stale PMS track list (a file replaced under
-                // the server, never re-analyzed) can declare an audio codec no track in the file
-                // carries. `ai` then lands on the track that IS there and feeds it into an
-                // elementary stream configured for the declared codec — the audio clock stalls and
-                // the video, which syncs to it, wedges at t=0 with no error at all. Refuse it the
-                // way the video guard above does, recording the track the file really has so the
-                // pump's one-shot probe retry can reload with it.
-                let declared_a = session.observer().declared_audio_code().unwrap_or(0);
-                if declared_a != 0 && ai >= 0 {
-                    let acp = stream_codecpar(*streams.add(ai as usize));
-                    let aname = std::ffi::CStr::from_ptr(avcodec_get_name((*acp).codec_id));
-                    let actual_a = match aname.to_bytes() {
-                        b"ac3" => 1,
-                        b"eac3" => 2,
-                        b"aac" => 3,
-                        b"dts" => 4,
-                        _ => 0,
-                    };
-                    if actual_a != 0 && declared_a != actual_a {
-                        session.media().publish(DemuxEffect::ProbeActual {
-                            video: None,
-                            audio: Some(actual_a),
-                        });
-                        session.media().record(&format!(
-                            "ff: the Load declared audio {acodec} but the file's track is {}; refusing the stream",
-                            aname.to_string_lossy()
-                        ));
-                        session.media().publish(DemuxEffect::FailFault(DemuxFault::LoadMismatch));
-                        avformat_close_input(&mut fmt);
-                        free_avio(avio);
-                        break;
-                    }
                 }
                 // WHAT THE STREAM ACTUALLY IS, not just what it is called. `codec=hevc` is the same
                 // four letters for an SDR file, an HDR10 file, a Dolby Vision Profile 8.1 file whose
