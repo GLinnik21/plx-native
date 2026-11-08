@@ -1377,6 +1377,13 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
             // back only once the tail has run: a rejection left the same Engine playing, and an
             // accepted claim's reload has kept the pause, so the Play lands on the NEW stream.
             let hold = super::claim_hold::take(action.serial());
+            // The hold paused a PLAYING stream iff `hold`. Record the viewer's real transport
+            // goal now, before the tail starts the fresh stream, so the landing's Feed start
+            // reflects what the viewer wants (play) rather than the pause the hold itself imposed
+            // for the flight. Without this the landing reads the hold's own pause as the viewer's
+            // goal and starts the fresh stream paused: no Play op, no `startup_play_commanded`,
+            // and the Initial prime's gate never opens — the 4K->480p retranscode stall.
+            ps.set_reconfigure_pause_goal(!hold);
             let replaced = if matches!(
                 action.intent,
                 crate::route::RouteIntent::Automatic(crate::route::AutomaticRouteIntent::HlsToOriginal { .. })
@@ -1394,6 +1401,10 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
             // encoder it replaced safe to stop.
             crate::route::retire_superseded_encoder();
             super::claim_hold::release(ps, pa, hold);
+            // A tail that started a fresh Feed already consumed and cleared the goal; one that
+            // didn't (a rejection, or a landing onto the original) must not leak it into a later
+            // start, where it would override that start's own transport state.
+            ps.clear_reconfigure_pause_goal();
             if replaced {
                 return;
             }
