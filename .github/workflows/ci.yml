@@ -231,6 +231,18 @@ jobs:
         # explicitly) and the target checks exactly that.
         run: make check-nodef
 
+      - name: Single-backend feature sets type-check (PLAYBACK_BACKENDS=uri, feed, none)
+        # The Makefile's `PLAYBACK_BACKENDS` matrix is only worth having if each value still
+        # compiles: a `cfg(feature = "play-feed")` item that a URI-only build reaches, or the
+        # reverse, breaks a build nobody ships by default, and nothing else here would notice.
+        # `check-nodef` per value type-checks that feature set (cargo keys fingerprints by feature
+        # set, so the configurations share this job's `target/`); `none` checks the host build with
+        # no backend. The ARM link and ELF gate of a variant stay local (docs/agent-reference.md).
+        run: |
+          make check-nodef PLAYBACK_BACKENDS=uri
+          make check-nodef PLAYBACK_BACKENDS=feed
+          make check-nodef PLAYBACK_BACKENDS=none
+
       - name: Soft-float guard (our Rust code must compile to VFP)
         # `-C target-feature=-soft-float` is an UNSTABLE target feature on stable rustc ("its behavior
         # can change in the future"): a release that stops honouring it leaves a binary that links
