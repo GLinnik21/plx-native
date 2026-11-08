@@ -457,8 +457,11 @@ something.
   which forwards only an envelope the service reported.
 - **Opus goes to LG's own decoder only as far as the set is known to take it** (`ff_native_audio.rs`,
   `devcaps.rs`). What a set announces is layered, in this order and logged at boot as `devcaps: ...
-  audio layers:`: the codec table, minus the codecs `/etc/gst/gstcool.conf` shows nothing can decode
-  (`apply_gst_decoders`), minus `devcaps::EXCLUSIONS` (rows per firmware codename, each carrying its
+  audio layers:`: the codec table, minus the codecs disabled by `/etc/gst/gstcool.conf`
+  (`apply_gst_decoders` keeps `aac`, `ac3` and `eac3` even if the file lists their decoders at rank 0.
+  For other codecs it needs an explicitly disabled hardware element and no enabled decoder.
+  DTS keeps the existing exception: it is dropped if the only listed decoder is `avdec_dca=0`),
+  minus `devcaps::EXCLUSIONS` (rows per firmware codename, each carrying its
   evidence: the C1's `kisscurl-koli` limits Opus to stereo, and records that Vorbis is refused; a row
   may also declare the Dolby Vision splitter IDR-first (`jhericurl-jervisbay`, webOS 5.5.0-19, and
   the C1's `kisscurl-koli`, webOS 6.5.3-47, whose row is read from the image and not observed), which
@@ -696,7 +699,12 @@ something.
   transcode changes the codec/rate; building the Starfish Load config from the *source* metadata gives
   the decoder the wrong description → **silent audio / glitches**. Read the output codecs from the
   transcode decision. For ADTS/HE-AAC, use the **CORE** sample rate from the AudioSpecificConfig (SBR
-  doubles it). See `[[audio-payload-codecs]]`.
+  doubles it). See `[[audio-payload-codecs]]`. The Opus channel count follows the same split: the plan
+  carries the SOURCE track, so on a server-converted Opus lane (`is_transcoding` and a carried track of
+  another codec) `route::opus_lane` estimates the output width from the source and the profile's Opus
+  limit, with stereo as the fallback for an unknown source width. A direct play whose carried track
+  is another codec (a native track switch moves only the declared codec) keeps 0. When the codecs
+  match, the carried width is used as before. This does not detect a same-codec transcode.
 - **Subtitles are client-rendered here — the TV's HW subtitle engine is URI-mode only** and
   unreachable in buffer-feed. Image (PGS/VobSub) subs are decoded and drawn by us; styled
   ASS/SSA and EMBEDDED TEXT tracks (SubRip, WebVTT, mov_text, SAMI, ...) use the bundled libass worker

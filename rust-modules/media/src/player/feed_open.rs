@@ -101,6 +101,18 @@ impl FeedOpenRequest {
         let feed_payload = payload.to_feed();
         let payload_options = payload_options(&feed_payload);
         let original_dv = original_dv(payload.dovi);
+        let audio_codec = route::stream_acodec(ps);
+        let audio_channels = if audio_codec.eq_ignore_ascii_case("opus") {
+            let lane = route::opus_lane(ps);
+            let kind = if lane.converted { "converted" } else { "copy" };
+            plx_base::eventlog::log(&format!(
+                "route: Opus Load channels={} lane={kind} source={} bound={}",
+                lane.width, lane.source, lane.bound
+            ));
+            lane.width
+        } else {
+            route::stream_achannels(ps)
+        };
         let source = plx_plex::plex::StreamUrl::parse(&url);
         let (video_bytes, audio_bytes) = super::aq_caps();
         let (video_lead_ms, audio_lead_ms) = super::feed_leads_ms();
@@ -119,9 +131,9 @@ impl FeedOpenRequest {
                 },
                 path: source.path,
                 video_codec: route::stream_vcodec(ps),
-                audio_codec: route::stream_acodec(ps),
+                audio_codec,
                 pcm_is_lossy: route::stream_pcm_is_lossy(ps),
-                audio_channels: route::stream_achannels(ps),
+                audio_channels,
                 feed_payload,
                 payload_options,
                 original_dv,
