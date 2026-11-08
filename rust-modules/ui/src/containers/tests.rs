@@ -2277,6 +2277,38 @@ fn every_dip_frame_gives_the_bar_glass_the_page_it_shows_at_its_alpha() {
     assert_eq!(d.top_arg(), Some(&FixtureArg::Page(7)));
 }
 
+/// **The replacement capture draws the page's own glass into the image it takes.** At quiescence
+/// the dispatcher captures the page live once more and shows that image for a frame before going
+/// live. Its layer published the image as BLOCKING, as for a held frame, so every glass on the page
+/// (the Library's scroll capsule) was refused inside the very capture that stands for it: the
+/// television showed the capsule's text over bare posters for that frame, a one-frame blink on
+/// every return to a scrolled grid. The capture frame's layer, like the floor's, must not block.
+#[test]
+fn the_replacement_capture_frame_does_not_block_the_page_it_captures() {
+    let _guard = plx_base::testlock::serial();
+    use crate::frame::backdrop::Z;
+    let (mut d, mut rig) = frozen_fixture();
+    let begins = std::rc::Rc::new(std::cell::Cell::new(0));
+    d.page_snapshot = Box::new(CountingSnapshot { begins: begins.clone(), ..Default::default() });
+    d.request(MachineId::Nav, NavOp::Push(FixtureArg::Page(7)));
+    let mut ms = 0;
+    let mut captures_after_dip = 0;
+    for _ in 0..120 {
+        plx_machine::idle::frame_begin(1.0 / 60.0);
+        d.frame_with(&mut rig, tick(ms), vec![], vec![], &mut NoTap, false);
+        let in_flight = d.nav.tabs.stack.transition.in_flight();
+        let blocks = d.backdrop_layers(1.0).into_iter().any(|layer| layer.z < Z::CHROME && layer.blocks);
+        let before = begins.get();
+        d.draw(&mut rig, true);
+        if !in_flight && begins.get() != before {
+            captures_after_dip += 1;
+            assert!(!blocks, "the replacement capture published a blocking image over the page it captures");
+        }
+        ms += 16;
+    }
+    assert!(captures_after_dip >= 1, "premise: a replacement capture ran");
+}
+
 #[test]
 fn frozen_dispatch_source_and_surfaces_passes_preserve_the_image() {
     let _guard = plx_base::testlock::serial();
