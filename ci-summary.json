@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-08T18:35:11Z",
+ "generated": "2026-11-08T18:40:45Z",
  "metrics": [
   {
    "change30_pct": 99.1,
@@ -126,15 +126,15 @@
    "change30_pct": 32.7,
    "change7_pct": 19.5,
    "d30": 349,
-   "delta30": 114.0,
+   "delta30": 114,
    "delta7": 75.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 48,
+   "n_now": 49,
    "n_prev": 90,
-   "now": 463.0,
+   "now": 463,
    "prev7": 387.5,
    "shown": true,
    "state": "worse",
@@ -354,18 +354,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 35.3,
-   "change7_pct": 13.8,
+   "change30_pct": 34.9,
+   "change7_pct": 13.4,
    "d30": 232,
-   "delta30": 82.0,
-   "delta7": 38.0,
+   "delta30": 81,
+   "delta7": 37.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 46,
+   "n_now": 47,
    "n_prev": 82,
-   "now": 314.0,
+   "now": 313,
    "prev7": 276.0,
    "shown": true,
    "state": "flat",
@@ -375,18 +375,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 43.2,
-   "change7_pct": 11.4,
+   "change30_pct": 42.2,
+   "change7_pct": 10.6,
    "d30": 154,
-   "delta30": 66.5,
-   "delta7": 22.5,
+   "delta30": 65,
+   "delta7": 21.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 46,
+   "n_now": 47,
    "n_prev": 82,
-   "now": 220.5,
+   "now": 219,
    "prev7": 198.0,
    "shown": true,
    "state": "flat",
@@ -396,18 +396,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -41.2,
-   "change7_pct": -2.3,
+   "change30_pct": -40.9,
+   "change7_pct": -1.9,
    "d30": 359,
-   "delta30": -148.0,
-   "delta7": -5.0,
+   "delta30": -147,
+   "delta7": -4.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 46,
+   "n_now": 47,
    "n_prev": 82,
-   "now": 211.0,
+   "now": 212,
    "prev7": 216.0,
    "shown": true,
    "state": "flat",
@@ -483,15 +483,15 @@
    "change30_pct": 17.6,
    "change7_pct": 11.1,
    "d30": 17,
-   "delta30": 3.0,
+   "delta30": 3,
    "delta7": 2.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 46,
+   "n_now": 47,
    "n_prev": 82,
-   "now": 20.0,
+   "now": 20,
    "prev7": 18.0,
    "shown": false,
    "state": "flat",
@@ -590,11 +590,6 @@
    "change_pct": 27.7,
    "commits": [
     {
-     "pr": 1268,
-     "sha": "ec0df8cc3",
-     "title": "Playback contract crate, BackendRunner and attempt-metrics reducers (unwired)"
-    },
-    {
      "pr": 1269,
      "sha": "97e43889d",
      "title": "Settings: Under posters takes composable details and the two-poster preview"
@@ -638,6 +633,11 @@
      "pr": 1281,
      "sha": "11d4ef04d",
      "title": "ACB: a second boot handle (player type 0) for the URI engine"
+    },
+    {
+     "pr": 1273,
+     "sha": "630f8c230",
+     "title": "Net: add the WebSocket codec for Open Watch Party"
     }
    ],
    "from": 329,
@@ -651,11 +651,6 @@
    "change_pct": 25.3,
    "commits": [
     {
-     "pr": 1268,
-     "sha": "ec0df8cc3",
-     "title": "Playback contract crate, BackendRunner and attempt-metrics reducers (unwired)"
-    },
-    {
      "pr": 1269,
      "sha": "97e43889d",
      "title": "Settings: Under posters takes composable details and the two-poster preview"
@@ -699,6 +694,11 @@
      "pr": 1281,
      "sha": "11d4ef04d",
      "title": "ACB: a second boot handle (player type 0) for the URI engine"
+    },
+    {
+     "pr": 1273,
+     "sha": "630f8c230",
+     "title": "Net: add the WebSocket codec for Open Watch Party"
     }
    ],
    "from": 243,
@@ -712,11 +712,6 @@
    "change_pct": 25.2,
    "commits": [
     {
-     "pr": 1268,
-     "sha": "ec0df8cc3",
-     "title": "Playback contract crate, BackendRunner and attempt-metrics reducers (unwired)"
-    },
-    {
      "pr": 1269,
      "sha": "97e43889d",
      "title": "Settings: Under posters takes composable details and the two-poster preview"
@@ -760,6 +755,11 @@
      "pr": 1281,
      "sha": "11d4ef04d",
      "title": "ACB: a second boot handle (player type 0) for the URI engine"
+    },
+    {
+     "pr": 1273,
+     "sha": "630f8c230",
+     "title": "Net: add the WebSocket codec for Open Watch Party"
     }
    ],
    "from": 74.8,
@@ -773,11 +773,6 @@
    "change_pct": 19.5,
    "commits": [
     {
-     "pr": 1268,
-     "sha": "ec0df8cc3",
-     "title": "Playback contract crate, BackendRunner and attempt-metrics reducers (unwired)"
-    },
-    {
      "pr": 1269,
      "sha": "97e43889d",
      "title": "Settings: Under posters takes composable details and the two-poster preview"
@@ -821,6 +816,11 @@
      "pr": 1281,
      "sha": "11d4ef04d",
      "title": "ACB: a second boot handle (player type 0) for the URI engine"
+    },
+    {
+     "pr": 1273,
+     "sha": "630f8c230",
+     "title": "Net: add the WebSocket codec for Open Watch Party"
     }
    ],
    "from": 387.5,
@@ -828,7 +828,7 @@
    "label": "Wait after merge",
    "since": "2026-11-08",
    "threshold_pct": 15.0,
-   "to": 463.0
+   "to": 463
   }
  ],
  "schema": 2,
