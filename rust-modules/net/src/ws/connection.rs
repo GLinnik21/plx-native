@@ -437,8 +437,9 @@ mod tests {
 
     #[test]
     fn a_protocol_violation_fails_the_connection_with_1002() {
-        let cases: [(Vec<u8>, Fault); 6] = [
+        let cases: [(Vec<u8>, Fault); 7] = [
             (vec![0x83, 0x00], Fault::Frame(FrameError::UnknownOpcode)),
+            (vec![0x81, 0x7e, 0x00, 0x01, 0x61], Fault::Frame(FrameError::NonMinimalLength)),
             (server(Opcode::Continuation, true, b"x"), Fault::Fragmentation),
             (
                 [server(Opcode::Text, false, b"a"), server(Opcode::Binary, true, b"b")].concat(),

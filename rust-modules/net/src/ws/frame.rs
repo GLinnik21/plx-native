@@ -59,6 +59,7 @@ pub enum FrameError {
     WrongMasking,
     FragmentedControl,
     LongControl,
+    NonMinimalLength,
     LengthOverflow,
     TooBig,
 }
@@ -163,7 +164,10 @@ impl FrameParser {
         }
         let (len, length_end): (usize, usize) = match short {
             126 => match bytes.get(2..4) {
-                Some(&[hi, lo]) => (usize::from(u16::from_be_bytes([hi, lo])), 4),
+                Some(&[hi, lo]) => match usize::from(u16::from_be_bytes([hi, lo])) {
+                    0..=125 => return Err(FrameError::NonMinimalLength),
+                    n => (n, 4),
+                },
                 _ => return Ok(None),
             },
             127 => match bytes.get(2..10) {
@@ -171,6 +175,9 @@ impl FrameParser {
                     let n = u64::from_be_bytes(wide.try_into().expect("eight length bytes"));
                     if n >> 63 != 0 {
                         return Err(FrameError::LengthOverflow);
+                    }
+                    if n <= 0xffff {
+                        return Err(FrameError::NonMinimalLength);
                     }
                     (usize::try_from(n).unwrap_or(usize::MAX), 10)
                 }
@@ -302,6 +309,29 @@ mod tests {
             assert_eq!(all(Sender::Server, 1024, &[bytes]), [Err(error)], "{bytes:02x?}");
         }
         assert_eq!(all(Sender::Client, 1024, &[&HELLO]), [Err(FrameError::WrongMasking)]);
+    }
+
+    #[test]
+    fn a_length_written_wider_than_it_needs_is_refused() {
+        let cases: [&[u8]; 4] = [
+            &[0x81, 0x7e, 0x00, 0x01, 0x61],
+            &[0x81, 0x7f, 0, 0, 0, 0, 0, 0, 0x00, 0x01, 0x61],
+            &[0x82, 0x7e, 0x00, 0x7d],
+            &[0x82, 0x7f, 0, 0, 0, 0, 0, 0, 0xff, 0xff],
+        ];
+        for bytes in cases {
+            assert_eq!(all(Sender::Server, 1 << 20, &[bytes]), [Err(FrameError::NonMinimalLength)], "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn each_length_width_starts_where_the_narrower_one_ends() {
+        for (len, second) in [(125, 0x7d), (126, 0x7e), (65535, 0x7e), (65536, 0x7f)] {
+            let mut bytes = Vec::new();
+            encode(Opcode::Binary, true, &binary(len), None, &mut bytes);
+            assert_eq!(bytes[1], second, "{len}");
+            assert_eq!(all(Sender::Server, 1 << 20, &[&bytes]), [Ok(frame(true, Opcode::Binary, &binary(len)))], "{len}");
+        }
     }
 
     #[test]
