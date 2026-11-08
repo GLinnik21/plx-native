@@ -4996,9 +4996,7 @@
         "acodec": "aac",
         "fps": 24.0
       },
-      "triggers": {
-        "ptype": "0"
-      },
+      "triggers": {},
       "run_secs": 75,
       "operations": [
         {
@@ -5034,9 +5032,7 @@
         "acodec": "aac",
         "fps": 24.0
       },
-      "triggers": {
-        "ptype": "0"
-      },
+      "triggers": {},
       "network_profile": [
         {
           "until_s": 25.0,
@@ -5082,9 +5078,7 @@
         "acodec": "aac",
         "fps": 24.0
       },
-      "triggers": {
-        "ptype": "0"
-      },
+      "triggers": {},
       "run_secs": 45,
       "operations": [
         {
@@ -5124,9 +5118,7 @@
         "acodec": "aac",
         "fps": 24.0
       },
-      "triggers": {
-        "ptype": "0"
-      },
+      "triggers": {},
       "run_secs": 45,
       "operations": [
         {

@@ -1046,7 +1046,7 @@ its production URI backend, bound through ACB, via the debug-only dev route `plx
 harness's own mock PMS is the plan carrier: it starts on the configured `PMS_HOST:PMS_PORT` with the
 `pipe_uri_carrier_720p24.mp4` clip (a 90 s 720p24 progressive twin; one audio stream, no subtitles; built
 by `make fixtures-pipeline`) as ratingKey 990001, the app signs in as the synthetic guest and opens that
-item (`plxnative-play=990001`, with `quality=original`, `audioenh=off`, `ptype=0` pinned), and the runner
+item (`plxnative-play=990001`, with `quality=original`, `audioenh=off` pinned; no `ptype`, since the boot gives the URI engine its own player type 0 handle), and the runner
 writes `plxnative-uridev` as `acb part=991001 pms=<PMS_HOST>:<PMS_PORT> url=<fixture server>/<fixture>`,
 so the app's qualifier answers with the fixture's URL and the TV fetches the HLS stream from the fixture
 server (shaper and wire counters keep working). `pms=` pins the server by ORIGIN, not by machine

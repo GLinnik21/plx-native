@@ -98,6 +98,12 @@ pub trait DisplaySink: Sync {
         dst_y: c_int, dst_w: c_int, dst_h: c_int) -> c_int;
     unsafe fn destroy_window(&self, mt: &MainThread);
     unsafe fn plane_create(&self, mt: &MainThread, app_id: *const c_char, player_type: c_int) -> c_long;
+    /// Make `handle` (a value [`plane_create`](Self::plane_create) returned) the one every other
+    /// `plane_*` verb addresses; true when the sink knows it. The boot creates up to two handles
+    /// (`tv::plane::PlaneHandle`), and only the plane owner calls this, when it grants a bind: one
+    /// binding at a time makes the current handle the bound one. A sink that holds one handle has
+    /// nothing to select, and says so.
+    unsafe fn plane_select(&self, _mt: &MainThread, _handle: c_long) -> bool { false }
     /// The library confirmed `AcbAPI_initialize` (its answer was exactly 1). A created handle alone
     /// is not that; the paced URI bind's gate reads this.
     unsafe fn plane_initialized(&self, mt: &MainThread) -> bool;
@@ -368,6 +374,9 @@ impl DisplaySink for ScriptedPlaneSink {
     fn window_id(&self) -> &'static CStr { c"" }
     unsafe fn plane_initialized(&self, _mt: &MainThread) -> bool {
         self.initialized.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    unsafe fn plane_select(&self, _mt: &MainThread, handle: c_long) -> bool {
+        self.answer("plane_select", handle.to_string()) == 1
     }
     unsafe fn plane_media_id(&self, _mt: &MainThread, media_id: *const c_char) -> c_int {
         self.answer("plane_media_id", unsafe { CStr::from_ptr(media_id) }.to_string_lossy().into_owned())

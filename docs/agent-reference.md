@@ -2541,7 +2541,7 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   `/tmp/plxnative-autoplay` (auto-press OK for headless capture), `/tmp/plxnative-autoseek` (empty =
   one seek to 140s; else a seek script: optional `gap=<ms>` + comma steps, absolute `120` or
   tap-relative `+10`/`-10` — rapid-burst seek testing), `/tmp/plxnative-ptype` (ACB playerType
-  bisect knob), `/tmp/plxnative-holdload[=ms]` (sleep `ms` — default 30000 for a bare/empty
+  bisect knob for Feed's handle; the URI engine's handle is always player type 0), `/tmp/plxnative-holdload[=ms]` (sleep `ms` — default 30000 for a bare/empty
   trigger — on `native_load::load_thread` right after the real `sf_load` call returns and BEFORE the
   Load-returned flag publishes, making issue #74 D.1's budget observable on demand: the pump's
   `deferring` line, then, past `NATIVE_LOAD_BUDGET`, the failure read-out; NOT `DIAG`, since it

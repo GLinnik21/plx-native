@@ -80,6 +80,7 @@ mod sys {
         pub(super) fn vp_destroy_window();
 
         pub(super) fn acb_create(app_id: *const c_char, player_type: c_int) -> c_long;
+        pub(super) fn acb_select(handle: c_long) -> c_int;
         pub(super) fn acb_initialized() -> c_int;
         #[cfg(feature = "devtriggers")]
         pub(super) fn acb_probe_dass_available() -> c_int;
@@ -276,6 +277,8 @@ impl crate::tv::sink::DisplaySink for StarfishSink {
     ) -> c_long {
         sys::acb_create(app_id, player_type)
     }
+    #[inline]
+    unsafe fn plane_select(&self, _: &MainThread, handle: c_long) -> bool { sys::acb_select(handle) != 0 }
     #[inline]
     unsafe fn plane_initialized(&self, _: &MainThread) -> bool { sys::acb_initialized() != 0 }
     #[cfg(feature = "devtriggers")]

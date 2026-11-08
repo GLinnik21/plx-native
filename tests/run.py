@@ -2184,7 +2184,7 @@ URI_PRODUCT_RESERVED = URI_PRODUCT_DIVERTING + ("plxnative-play", "plxnative-pty
 
 def uri_product_files(case, url_base, pms, extra=()):
     """The trigger files of a product case: the integration tier's routing pins (`play=<rk>`,
-    `quality=original`, `audioenh=off`, the case's `ptype`) pointed at the CARRIER clip's ratingKey, plus
+    `quality=original`, `audioenh=off`; no `ptype`: the boot gives the URI engine its own player type 0 handle) pointed at the CARRIER clip's ratingKey, plus
     `plxnative-uridev` carrying the carrier's part, the mock's origin and the fixture URL. `pms` is the
     mock's `(host, port)` as `configured_endpoint` reads it from `src/config.local.h`."""
     for name in (f"plxnative-{k}" for k in (case.get("triggers") or {})):
