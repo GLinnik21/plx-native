@@ -385,7 +385,7 @@ def _selftest() -> int:
         f"features:{rel_both}+symbols+rc:2+tel:98c4b7d37a4c": "release",      # a release candidate
         "features:--no-default-features --features play-feed+tel:98c4b7d37a4c": "release",
         "features:--no-default-features --features play-uri+symbols+tel:98c4b7d37a4c": "release",
-        # no backend is refused by the Makefile (`playback-no-backend`), so it is no shipped configuration
+        # no backend is refused by the Makefile at parse time (`PLAYBACK_BACKENDS=none` and a goal that builds), so it is no shipped configuration
         # either: `none` under RELEASE=1 is a bare `--no-default-features`, the literal this decoder used
         # to call "release"
         "features:--no-default-features +tel:98c4b7d37a4c": None,

@@ -845,6 +845,16 @@ RUST_CFG       = features:$(RUST_FEATFLAGS)$(if $(filter-out release,$(ARM_PROFI
 # and several tests read it that way).
 SIDE_EFFECT_FREE = $(QUERY_GOALS) release-guard lab-guard disk disk-preflight build-bench build-bench-quick test-hostsim check-nodef test-fast test-crate fuzz-hud lint check-cargo-lint check-cargo-unit-hostsim check-localization check-c-unit check-python-harness notices notices-verify setup-rust setup-env disk-watch disk-watch-uninstall fixtures fixtures-quick fixtures-pipeline demo-library sim-token sim-macos-token sim-clean sim-macos-clean kill run run-stream verify-deploy uninstall fetch-profile softfloat-probe tv-lock-require
 PURE_QUERY := $(if $(MAKECMDGOALS),$(if $(filter-out $(SIDE_EFFECT_FREE),$(MAKECMDGOALS)),,yes),)
+# `PLAYBACK_BACKENDS=none` builds no television package. It is refused HERE, at parse time and before
+# the stamp reset below: a recipe-level refusal ran after that reset, so a mistyped
+# `make PLAYBACK_BACKENDS=none [ipk|deploy]` first deleted the last real build's binary and staged
+# libraries. The side-effect-free goals above (`check-nodef`, the queries, the host checks) and `clean`
+# (which deletes those outputs anyway) still take it.
+ifeq ($(PLAYBACK_BACKENDS),none)
+ifneq ($(if $(MAKECMDGOALS),$(if $(filter-out $(SIDE_EFFECT_FREE) clean,$(MAKECMDGOALS)),,yes),),yes)
+$(error A television package requires a URI or feed playback backend; PLAYBACK_BACKENDS=none is for check-nodef, clean and the side-effect-free goals)
+endif
+endif
 ifneq ($(PURE_QUERY),yes)
 ifneq ($(RUST_CFG),$(shell cat $(RUST_STAMP) 2>/dev/null))
   $(shell mkdir -p pkg && printf '%s' '$(RUST_CFG)' > $(RUST_STAMP) && rm -f pkg/plxnative pkg/plxnative-storage \
@@ -1110,19 +1120,10 @@ GC_SECTIONS_LDFLAG = -Wl,--gc-sections
 # call to __aeabi_fadd). With libm.so first, those names are already defined when the archive is
 # scanned and the members are never extracted, so every call (Rust's and svg.c's) binds to glibc's
 # VFP libm. `ci/check-elf.sh` fails if a local definition of one of them comes back.
-ifeq ($(PLAYBACK_BACKENDS),none)
-.PHONY: playback-no-backend
-playback-no-backend:
-	@echo 'A television package requires a URI or feed playback backend.' >&2
-	@exit 1
-pkg/plxnative: playback-no-backend
-else
 pkg/plxnative: $(OBJS) $(RUST_LIB) $(FFMPEG_STAGED) $(LIBASS_STAGED) $(SENTRY_NATIVE_STAMP) Makefile ci/arm-cc.py ci/check-link-evidence.py
 	$(CC) $(CFLAGS) -Wl,--build-id=sha1 $(GC_SECTIONS_LDFLAG) $(SMP_INTERPOSER_LDFLAG) $(EXIT_INTERPOSER_LDFLAG) \
 	  $(OBJS) -lm $(RUST_LIB) $(SENTRY_NATIVE_LIB) \
 	  $(SENTRY_UNWIND_LIB) $(LIBS_REAL) -ldl -lrt -lpthread -lm -o $@
-
-endif
 
 # --- NDK bootstrap -----------------------------------------------------------
 # Download + extract + relocate the webosbrew native-toolchain into $(WEBOS_SDK).
