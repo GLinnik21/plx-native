@@ -30,7 +30,7 @@ and the lines are compared to the tree as an exact multiset.
 | Rule | A site is | Key |
 |---|---|---|
 | `workers` | a production call that starts a worker in a machine: `task::spawn(`, `spawn_small(`, `spawn_small_keeping(`, `spawn_small_or_inline(`, `spawn_off_frame(`, `spawn_off_frame_keeping(`, `storage_worker::submit(`, `submit_retained(`, the command worker's `.submit_ticket(` | `<path>::<enclosing fn>::<spelling>` |
-| `globals` | a production read of a process-global registry in a machine: `client_for`, `current_server`, `current_snapshot`, `keypin::revision`, `keypin::blocked_for`, `session::peek`, `grant::offers`, the session cache's `session::peek_settled` and `session::current_gen`, the server registry's roster readers (`server_ids`, `server_roster_gen`, `server_facts_gen`, `server_probe_result`), the controlled-run switch `tape::active`, the player's transport-pause readers (`transport::paused`, `transport::viewer_paused`, `preview::paused`), the device's capability answer (`devcaps::caps`, and the zero-argument `is_dp_audio` / `is_dp_audio_track` that used to read it), and `player::TX` in the player's lifecycle (at zero) | `<path>::<enclosing fn>::<spelling>` |
+| `globals` | a production read of a process-global registry in a machine: `client_for`, `current_server`, `current_snapshot`, `keypin::revision`, `keypin::blocked_for`, `session::peek`, `grant::offers`, the session cache's `session::peek_settled` and `session::current_gen`, the server registry's roster readers (`server_ids`, `server_roster_gen`, `server_facts_gen`, `server_probe_result`), the controlled-run switch `tape::active`, the player's pause readers (`transport::viewer_paused`, `preview::paused`: each takes the session but also reads process-global state, the claim hold's slot and the preview machine's phase; `transport::paused` reads only the session's readout and is no longer a spelling), the device's capability answer (`devcaps::caps`, and the zero-argument `is_dp_audio` / `is_dp_audio_track` that used to read it), and `player::TX` in the player's lifecycle (at zero) | `<path>::<enclosing fn>::<spelling>` |
 | `forks` | a production test/production fork whose predicate reads `test` or `feature = "test-support"`: a `#[cfg(..)]` attribute that a production build can satisfy (`not(test)`, `not(any(test, feature = "test-support"))`, `all(target_os = .., not(test))`, ...), or an inline `cfg!(..)` of any value | `<path>::<item name>`, or `<path>::<enclosing fn>` for a statement or an inline `cfg!`, or `<path>::<struct>` for a field |
 | `fxlanes` | an `AppFx::<Variant>` arm of `Bridge::app_effect` that does not push `Fx::Deliver(`: one site for each variant on its head, and one for an arm that names no variant (`other => ..`, `_ => ..`) | `<path>::AppFx::<Variant>`, or `<path>::AppFx::_` |
 
@@ -44,10 +44,10 @@ dropped.
 **Scope.** `workers` and `globals` read the machines: everything under `rust-modules/data/src`,
 `session/src`, `screens/src`, `ui/src`, `appkit/src` and `machine/src`, plus
 `plex/src/plex/session.rs` (the session owner's state), the player's `lifecycle.rs`, `recovery.rs`
-(the failed-open ladder machine), `release.rs` (the native object's release machine) and `uriprobe.rs` (the developer URI-mode probe's machine) and the route planners `route/plan.rs` and `route/plan_memory.rs`. The IO layers (the rest of `plex/`, `media/`,
+(the failed-open ladder machine), `release.rs` (the native object's release machine) and the route planners `route/plan.rs` and `route/plan_memory.rs`. The IO layers (the rest of `plex/`, `media/`,
 `net/`, `platform/`) are where those calls belong, so they are not scanned. `forks` reads the whole
-of every crate that holds a machine (`FORK_SCOPE`): `data/`, `plex/`, `media/`, `session/`, `screens/`,
-`ui/`, `appkit/` and `machine/`, because a fork anywhere in them is a test that does not run the
+of every crate that holds a machine (`FORK_SCOPE` in `ci/check-deps.sh` names them: `data/`, `plex/`, `media/`,
+`play-feed/`, `session/`, `screens/`, `ui/`, `appkit/` and `machine/` among them), because a fork anywhere in them is a test that does not run the
 product's code. It read only the first four until the scope was widened to the rest; the
 widening recorded the 17 forks that were already there (three in `screens/`: `legal.rs`
 `build_sha`, `library/lookahead.rs` `rows` and `login.rs` `harness_driven`; thirteen in `ui/`; one in
@@ -88,13 +88,17 @@ widening recorded the 17 forks that were already there (three in `screens/`: `le
 - The command worker's `.submit(` is not covered: it is `#[cfg(any(test, feature = "test-support"))]`
   in `base/src/storage_worker.rs`, so no production line can call it. `.submit_ticket(` is covered
   although no machine calls it today: a machine that did would be starting a worker.
-- The transport-pause atomic (`player::TX`) is reached by a machine through three readers,
-  `transport::paused`, `transport::viewer_paused` and `preview::paused` (each is `TX.paused` behind
-  a function), so those spellings are sites, qualified or bare after an import; a `use ... as`
-  rename of any of them fails outright. The spellings of `TX` itself (`crate::player::TX`,
-  `player::TX`, `super::TX`, a bare `TX`) stay pinned to `lifecycle.rs`, the machine, which now reads
+- The transport Pause is the session's readout (`PlayerReadout::paused`), stepped at every writer, and the Feed keeps its own
+  gate copy (`FEED_TX.paused`, in `plx_play_feed::shared`) written by commands only. A machine reaches it through three readers,
+  `transport::paused`, `transport::viewer_paused` and `preview::paused`, each taking the session. `transport::paused` reads only
+  the readout and is not a spelling any more. The other two stay sites, qualified or bare after an import, because each
+  still reads process-global state behind the session argument: `viewer_paused` the claim hold's slot and serial
+  (`claim_hold::owns_pause`), `preview::paused` the preview machine's phase (`preview::occupies`). A `use ... as`
+  rename of any of the three still fails outright. The spellings of the owners themselves (`crate::player::TX`,
+  `player::TX`, `super::TX`, a bare `TX`, and the Feed owners `shared::FEED_TX`, `shared::FEED_SHARED`
+  and a bare `FEED_TX` / `FEED_SHARED`) stay pinned to `lifecycle.rs`, the machine, which now reads
   none: that pin is a zero-guard (the machine takes the pause as a value on its event). The HUD's
-  direct `TX.paused` reads are not a machine's, and a writer (`set_paused`, `set_transport_paused`) is
+  direct `FEED_TX.paused` reads are not a machine's, and a writer (`set_paused`, `set_transport_paused`) is
   an IO call, not a registry read. Moving the contract out of `lifecycle.rs` deleted its three `TX`
   lines from `ci/allow/globals/media.txt`; the same change widened the rule to the readers above and
   seeded the three `preview::paused` reads the screens already had (`screens/src/detail/mod.rs`) as a

@@ -362,7 +362,7 @@ stated; election does not alter your rights under the other arms.
 | bitvec | 1.1.1 | Copyright (c) 2018 myrrlyn (Alexander Payne) |
 | bitvec_helpers | 4.0.2 | Copyright (c) 2026 quietvoid |
 | core_maths | 0.1.1 | Copyright (c) 2024 Robert Bastian |
-| dolby_vision | 3.4.0 | Copyright (c) 2026 quietvoid. Parses and rewrites Dolby Vision RPUs for the Profile 7 to 8.1 conversion (`plx_media`'s `ff.rs`); used unmodified, with no optional features |
+| dolby_vision | 3.4.0 | Copyright (c) 2026 quietvoid. Parses and rewrites Dolby Vision RPUs for the Profile 7 to 8.1 conversion (`plx_play_feed`'s `ff.rs`); used unmodified, with no optional features |
 | funty | 2.0.0 | Copyright (c) 2020 myrrlyn (Alexander Payne) |
 | libm | 0.2.16 | Copyright (c) 2018 Jorge Aparicio and the third-party copyright notices preserved verbatim in `licenses/libm.txt` |
 | qrcodegen | 1.8.0 | Copyright (c) Project Nayuki. The complete upstream MIT notice is preserved in `licenses/qrcodegen.txt` |

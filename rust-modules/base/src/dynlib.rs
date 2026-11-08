@@ -133,7 +133,8 @@ impl Handle {
     /// Only for the opt-in bundled curl stack (`make CURLSTACK=1`, cargo feature
     /// `http3-curlstack`; `plx_net::net`'s `load_bundled`), and only on glibc, the one libc this
     /// flag exists in. The reason it is needed at all: the television's `libplayerAPIs.so.1`,
-    /// linked by every build of this app, has a real `NEEDED` entry on the TV's libcurl
+    /// linked by every build with the Feed backend (`PLAYBACK_BACKENDS=both|feed`), has a real
+    /// `NEEDED` entry on the TV's libcurl
     /// (`libcurl.so.5` through 4.10.0, `libcurl.so.4` from 5.3.1), so that library and its
     /// `nghttp2` are in the GLOBAL scope before `main` runs. A same-named bundled copy opened the ordinary way binds its OWN internal calls
     /// between its own exported functions through the PLT, and the system copy, first in the

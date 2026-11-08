@@ -192,8 +192,10 @@ jobs:
     needs: changes
     if: needs.changes.outputs.gated == 'true'
     runs-on: ubuntu-latest
-    # Measured max 3.8 min over the last 40 successful runs; limit ~2x, rounded up to 5 (unset = 360).
-    timeout-minutes: 10
+    # Measured max 3.8 min over the last 40 successful runs BEFORE the single-backend type-check step
+    # (three more feature-set checks) joined; the limit is raised to 20 until that is re-measured
+    # (unset = 360).
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -210,18 +212,38 @@ jobs:
 
       - name: Type-check the RELEASE feature set
         # **`make check` cannot see a break in this configuration, and neither could this gate
-        # until now.** Both build the DEFAULT feature set, and `--no-default-features` — what every
-        # shipped binary is — was first compiled during a release cut, i.e. after the change had
-        # been merged. The hazard is specific: hand-written `#[cfg(feature = "devtriggers")]` PAIRS,
+        # until now.** Both build the DEFAULT feature set, and the shipping one (`RELEASE=1`:
+        # `--no-default-features` plus the playback backends) was first compiled during a release
+        # cut, i.e. after the change had been merged. The hazard is specific: hand-written
+        # `#[cfg(feature = "devtriggers")]` PAIRS,
         # where a spliced-in function swallows its neighbour's attribute and takes a call site out
         # of the release build with it.
         #
-        # A `PostToolUse` hook does this locally after every edit to `rust-modules/src/**.rs`, and a
+        # A `PostToolUse` hook does the bare-`--no-default-features` half of this locally after every edit to
+        # `rust-modules/src/**.rs` (it omits the backend, see below), and a
         # local hook is a backstop, not a gate: it runs in one person's checkout and not on a fork's
         # pull request. Cheap here for the same reason it is cheap there — cargo keys fingerprints
         # by feature set, so the two configurations coexist in one `target/` and this is a warm
         # incremental check rather than a second build.
-        run: cd rust-modules && cargo "+$RUST_TOOLCHAIN" check --lib --no-default-features
+        #
+        # `make check-nodef`, never the bare cargo line: `--no-default-features` ALSO drops `play-uri`
+        # and `play-feed` (both are in the application crate's `default`), so a bare flag type-checks
+        # a build with no playback backend at all, which is not what any package ships. The Makefile
+        # is the one source of the shipping set (`RUST_BACKEND_FEATURES`, which `RELEASE=1` passes
+        # explicitly) and the target checks exactly that.
+        run: make check-nodef
+
+      - name: Single-backend feature sets type-check (PLAYBACK_BACKENDS=uri, feed, none)
+        # The Makefile's `PLAYBACK_BACKENDS` matrix is only worth having if each value still
+        # compiles: a `cfg(feature = "play-feed")` item that a URI-only build reaches, or the
+        # reverse, breaks a build nobody ships by default, and nothing else here would notice.
+        # `check-nodef` per value type-checks that feature set (cargo keys fingerprints by feature
+        # set, so the configurations share this job's `target/`); `none` checks the host build with
+        # no backend. The ARM link and ELF gate of a variant stay local (docs/agent-reference.md).
+        run: |
+          make check-nodef PLAYBACK_BACKENDS=uri
+          make check-nodef PLAYBACK_BACKENDS=feed
+          make check-nodef PLAYBACK_BACKENDS=none
 
       - name: Soft-float guard (our Rust code must compile to VFP)
         # `-C target-feature=-soft-float` is an UNSTABLE target feature on stable rustc ("its behavior
@@ -237,7 +259,7 @@ jobs:
         # (`cargo metadata` resolves; it compiles nothing), plus an informational line count.
         # The binary-size budget runs in cross-build, where the binary exists. Limits and how to
         # raise one deliberately: ci/build-budgets.json, docs/agent-reference.md.
-        run: python3 ci/check-build-budgets.py --graph --src rust-modules/src --src rust-modules/base/src --src rust-modules/machine/src --src rust-modules/net/src --src rust-modules/platform/src --src rust-modules/gfx/src --src rust-modules/ui/src --src rust-modules/plex/src --src rust-modules/telemetry/src --src rust-modules/data/src --src rust-modules/session/src --src rust-modules/media/src --src rust-modules/appkit/src --src rust-modules/screens/src
+        run: python3 ci/check-build-budgets.py --graph --src rust-modules/src --src rust-modules/base/src --src rust-modules/machine/src --src rust-modules/net/src --src rust-modules/platform/src --src rust-modules/gfx/src --src rust-modules/ui/src --src rust-modules/plex/src --src rust-modules/telemetry/src --src rust-modules/data/src --src rust-modules/session/src --src rust-modules/media/src --src rust-modules/playback-contract/src --src rust-modules/media-codecs/src --src rust-modules/play-feed/src --src rust-modules/play-uri/src --src rust-modules/appkit/src --src rust-modules/screens/src
 
       - name: Third-party notices vs the ARM runtime graph
         # `make check` runs only the OFFLINE half of this (ci/gen-third-party-notices.py --check), which
@@ -250,13 +272,13 @@ jobs:
 
       - name: Type-check the simulator feature set
         # The host simulator is a real build configuration with real users (the `ui-sim` skill, and
-        # `make macapp`, which ships `--release --no-default-features --features hostsim` to
+        # `make macapp`, which ships `--release --no-default-features --features hostsim,play-feed` to
         # somebody who has none of this installed). Nothing else in CI compiles it, so a change that
         # only breaks the Mac side merges green and is found by a person trying to demo the app.
         run: |
           cd rust-modules
           cargo "+$RUST_TOOLCHAIN" check --lib --features hostsim
-          cargo "+$RUST_TOOLCHAIN" check --lib --no-default-features --features hostsim
+          cargo "+$RUST_TOOLCHAIN" check --lib --no-default-features --features hostsim,play-feed
 
   host-unit-default:
     name: host unit tests (default features)
@@ -287,7 +309,7 @@ jobs:
         # for plxnative-modules both ways), so the `cargo test --lib` below finds everything built
         # and this step is where the compile happens, not an extra one. The upload below carries it.
         shell: bash
-        run: cd rust-modules && cargo "+$RUST_TOOLCHAIN" test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens --no-run --timings
+        run: cd rust-modules && cargo "+$RUST_TOOLCHAIN" test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens --no-run --timings
 
       - name: make check-cargo-unit-default
         # Teed to a file so the size step below can read the `test result:` lines this run already
@@ -354,7 +376,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      # `--features hostsim` is the configuration `player/ffi_host.rs` exists in — the
+      # `--features hostsim` is the configuration `play-feed/src/ffi_host.rs` exists in — the
       # prime-livelock regression lives there and cannot fail the default pass. The test binary
       # LINKS, so it needs the real desktop libraries.
       - uses: ./.github/actions/host-rust

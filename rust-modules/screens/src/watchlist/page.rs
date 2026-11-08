@@ -695,7 +695,7 @@ impl<H: ContentLike> StackPage<H> for Page {
 
     /// The grid's focused band follows the Under posters setting, as the Library's does.
     fn caption_policy(&self, k: Sec) -> Option<plx_ui::caption_policy::CaptionPolicy> {
-        (k == Sec::Items).then(caption::policy)
+        (k == Sec::Items).then(caption::band_policy)
     }
 
     /// The header section's group is the shared row's (`HeaderFocus::group_spec`: a Control row,

@@ -390,10 +390,10 @@ pub(crate) fn libmenu_arm(app: &mut App, fr: &Frame) {
 /// `/tmp/plxnative-clockstop=<ms>` — simulator only: stop the clock sink at that movie position
 /// and leave the transport PLAYING, so the player holds a moment of playback that pausing would
 /// change (the Up Next tile, which exists only while playing). Logs once when the playhead is
-/// there. The stop is a stall of the sink's own making (`ffi_host.rs::stop_clock_at`), re-armed
+/// there. The stop is a stall of the sink's own making (`HostSink::stop_clock_at`), re-armed
 /// every frame because a Load (a seek) starts a fresh fed timeline.
 pub(crate) fn clockstop_arm(app: &mut App, fr: &Frame) {
-    #[cfg(feature = "hostsim")]
+    #[cfg(all(feature = "hostsim", feature = "play-feed"))]
     {
         let arms = &mut app.scenarios.shots;
         if arms.clockstop.is_none() {
@@ -410,12 +410,12 @@ pub(crate) fn clockstop_arm(app: &mut App, fr: &Frame) {
             return;
         }
         let at = i64::from(ms) * 1_000_000;
-        plx_media::player::stop_sim_clock_at(Some(at));
+        crate::app::adapters::hostsim::stop_sim_clock_at(Some(at));
         let arms = &mut app.scenarios.shots;
         if arms.clockstop_reached {
             return;
         }
-        if crate::app::playback::playpos() >= at {
+        if crate::app::playback::playpos(&app.player.session).is_some_and(|pos| pos >= at) {
             arms.clockstop_reached = true;
             plx_base::eventlog::log(&format!("clockstop: clock held at {ms} ms, still playing"));
         } else if fr.now.wrapping_sub(app.t0) > CLOCKSTOP_CEILING_MS {
@@ -424,16 +424,22 @@ pub(crate) fn clockstop_arm(app: &mut App, fr: &Frame) {
             plx_base::eventlog::log(&format!("clockstop: gave up; the playhead never reached {ms} ms"));
         }
     }
-    #[cfg(not(feature = "hostsim"))]
+    #[cfg(not(all(feature = "hostsim", feature = "play-feed")))]
     {
         let _ = fr;
-        app.scenarios.shots.clockstop = Some(None);
+        if app.scenarios.shots.clockstop.is_none() {
+            #[cfg(all(feature = "hostsim", not(feature = "play-feed")))]
+            if plx_base::devtrig::read("clockstop").is_some() {
+                plx_base::eventlog::log("clockstop: unavailable without Feed simulator clock");
+            }
+            app.scenarios.shots.clockstop = Some(None);
+        }
     }
 }
 
 /// How long `clockstop` waits for the playhead. Longer than [`CEILING_MS`]: its position is
 /// usually reached through `autoseek`, which only fires 12 s into a run.
-#[cfg(feature = "hostsim")]
+#[cfg(all(feature = "hostsim", feature = "play-feed"))]
 const CLOCKSTOP_CEILING_MS: u32 = 60_000;
 
 #[cfg(test)]

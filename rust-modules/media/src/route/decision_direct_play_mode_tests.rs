@@ -175,11 +175,11 @@ fn a_96_khz_aac_is_converted_not_reloaded_natively_by_the_paths_that_skip_the_de
     ps.cur_audio = Some(aac(96_000));
     assert_eq!(legacy_action(&ps), LegacyAction::Retranscode);
     // a mid-play pick: the 48 kHz track is a native reload of its ordinal, the 96 kHz one is not
-    crate::player::reset_audio_track();
+    crate::player::reset_audio_track(&mut ps);
     assert!(commit_audio_selection(&mut ps, aac(96_000)));
-    assert_eq!(desired_audio_idx(), -1, "a 96 kHz AAC must not be staged for a native reload");
+    assert_eq!(desired_audio_idx(&ps), -1, "a 96 kHz AAC must not be staged for a native reload");
     assert!(commit_audio_selection(&mut ps, aac(48_000)));
-    assert_eq!(desired_audio_idx(), 2, "a 48 kHz AAC reloads natively");
+    assert_eq!(desired_audio_idx(&ps), 2, "a 48 kHz AAC reloads natively");
     // Force Direct Play refuses it, as it refuses a 5.1 FLAC (a 96 kHz stereo one is resampled by the app and plays), rather than failing at the Load
     ps.direct_play_mode = DirectPlayMode::Forced;
     restore_direct_play_mode(DirectPlayMode::Forced);
@@ -187,7 +187,7 @@ fn a_96_khz_aac_is_converted_not_reloaded_natively_by_the_paths_that_skip_the_de
     assert!(play_verdict(&ps).unwrap().contains("Force Direct Play is on"));
     restore_direct_play_mode(DirectPlayMode::Auto);
     crate::player::reset_route_requests_for_test(&mut ps);
-    crate::player::reset_audio_track();
+    crate::player::reset_audio_track(&mut ps);
 }
 
 /// **A mid-play pick under Force Direct Play accepts a STEREO track the app decodes, and refuses a
@@ -206,7 +206,7 @@ fn a_forced_pick_of_an_app_decodable_track_is_accepted() {
     };
     ps.direct_play_mode = DirectPlayMode::Forced;
     restore_direct_play_mode(DirectPlayMode::Forced);
-    crate::player::reset_audio_track();
+    crate::player::reset_audio_track(&mut ps);
     assert!(!audio_track_direct_plays(&ps, "dca", 2, 48_000), "sanity: no DTS row, no policy");
     assert!(!commit_audio_selection(&mut ps, dts(2)), "with no policy the pick is refused");
     assert!(play_verdict(&ps).is_some());
@@ -226,8 +226,8 @@ fn a_forced_pick_of_an_app_decodable_track_is_accepted() {
     ps.play_verdict = None;
     assert!(commit_audio_selection(&mut ps, dts(2)), "the app decodes a stereo one");
     assert!(play_verdict(&ps).is_none(), "{:?}", play_verdict(&ps));
-    assert_eq!(desired_audio_idx(), 3, "staged for a native reload of its ordinal");
+    assert_eq!(desired_audio_idx(&ps), 3, "staged for a native reload of its ordinal");
     restore_direct_play_mode(DirectPlayMode::Auto);
     crate::player::reset_route_requests_for_test(&mut ps);
-    crate::player::reset_audio_track();
+    crate::player::reset_audio_track(&mut ps);
 }

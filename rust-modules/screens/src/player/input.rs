@@ -579,22 +579,23 @@ mod failed_player_input_tests {
 /// diagnostics overlay its whole reason for existing and the Up Next tile its auto-advance.
 ///
 /// Moved here from `app/playback.rs` with its name in phase 9 (§11). Its `with_state` helper still
-/// holds `testlock::serial()`: `hud_visible`'s `loading()` term reads the crate-global playback
-/// state, which is what these cases drive — the HUD's own timer is a screen field now and needs no
-/// lock, but that global has not moved and will not until the `Player` machine lands.
+/// holds `testlock::serial()`: `hud_visible`'s `loading()` term reads `player::state`, whose derived
+/// state is the session's own readout (the case hands it a session that derived the state it
+/// drives) but which also reads crate-global flags (`seeking`, the resolve window) other modules'
+/// tests set — the HUD's own timer is a screen field now and needs no lock.
 #[cfg(test)]
 mod hud_visibility_tests {
     use super::*;
     use plx_media::player::PlaybackState;
 
-    /// Drive the derived playback state through the field the pump owns. Crate-global, so the whole
-    /// body holds `testlock::serial()` — `state()` is read by other modules' tests too.
-    fn with_state<T>(s: PlaybackState, f: impl FnOnce() -> T) -> T {
+    /// Run `f` over a session whose readout derived `s`: the event the pump delivers, stepped on a
+    /// session this case owns rather than written into a global. `state()` also reads crate-global
+    /// flags other modules' tests set, so the whole body holds `testlock::serial()`.
+    fn with_state<T>(s: PlaybackState, f: impl FnOnce(&plx_media::route::PlaybackSession) -> T) -> T {
         let _g = plx_base::testlock::serial();
-        let prev = plx_media::player::swap_state_for_test(s);
-        let out = f();
-        plx_media::player::restore_state_for_test(prev);
-        out
+        let mut ps = plx_media::route::PlaybackSession::IDLE;
+        crate::player::overlay_tests::derive_state(&mut ps, s);
+        f(&ps)
     }
 
     /// THE regression. Stuck in `Buffering` with the linger long expired and nothing paused, the
@@ -603,12 +604,11 @@ mod hud_visibility_tests {
     /// the `…` disc cannot be reached in the one state worth reporting.
     #[test]
     fn a_stalled_pipeline_keeps_the_transport_reachable_after_the_linger_expires() {
-        let ps = plx_media::route::PlaybackSession::IDLE;
-        with_state(PlaybackState::Buffering, || {
+        with_state(PlaybackState::Buffering, |ps| {
             // the timer alone would say hidden — 9 s past the linger, nothing paused
             let (now, expired) = (10_000u32, 1_000u32);
             assert!(
-                hud_visible(&ps, now, expired, false, false),
+                hud_visible(ps, now, expired, false, false),
                 "on screen, so keys must reach it"
             );
         });
@@ -618,11 +618,10 @@ mod hud_visibility_tests {
     /// would never auto-hide at all.
     #[test]
     fn a_healthy_playing_pipeline_still_auto_hides() {
-        let ps = plx_media::route::PlaybackSession::IDLE;
-        with_state(PlaybackState::Playing, || {
-            assert!(!hud_visible(&ps, 10_000, 1_000, false, false));
-            assert!(hud_visible(&ps, 500, 1_000, false, false), "inside the linger");
-            assert!(hud_visible(&ps, 10_000, 1_000, true, false), "paused pins it up");
+        with_state(PlaybackState::Playing, |ps| {
+            assert!(!hud_visible(ps, 10_000, 1_000, false, false));
+            assert!(hud_visible(ps, 500, 1_000, false, false), "inside the linger");
+            assert!(hud_visible(ps, 10_000, 1_000, true, false), "paused pins it up");
         });
     }
 
@@ -660,10 +659,9 @@ mod hud_visibility_tests {
     /// hidden geometry while an otherwise-live linger timer is still counting down.
     #[test]
     fn a_hand_hidden_hud_still_takes_the_press_that_wakes_it() {
-        let ps = plx_media::route::PlaybackSession::IDLE;
-        with_state(PlaybackState::Playing, || {
+        with_state(PlaybackState::Playing, |ps| {
             let mut hud = HudState { until: 20_000, dismissed: true, ..HudState::IDLE };
-            hud.note_fresh_press(&ps, 10_000, false);
+            hud.note_fresh_press(ps, 10_000, false);
             assert!(!hud.visible_at_press, "the press found a hand-hidden HUD");
             assert!(!hud.dismissed, "the same bound press wakes it for the next decision");
         });
@@ -674,28 +672,27 @@ mod hud_visibility_tests {
     /// stands. A hide done in normal play, or any other writer of `dismissed`, arms nothing.
     #[test]
     fn the_exit_arming_is_sampled_before_the_clear_and_spent_by_the_next_press() {
-        let ps = plx_media::route::PlaybackSession::IDLE;
-        with_state(PlaybackState::Buffering, || {
+        with_state(PlaybackState::Buffering, |ps| {
             let mut hud = HudState::IDLE;
             hud.hide(true);
-            hud.note_fresh_press(&ps, 10_000, false);
+            hud.note_fresh_press(ps, 10_000, false);
             assert!(hud.back_leaves_at_press, "the press after a busy hide may leave");
             assert!(!hud.dismissed && !hud.exit_armed, "…and the same press spends the arming");
-            hud.note_fresh_press(&ps, 10_000, false);
+            hud.note_fresh_press(ps, 10_000, false);
             assert!(!hud.back_leaves_at_press, "the press after that is a first press again");
 
             hud.hide(false);
-            hud.note_fresh_press(&ps, 10_000, false);
+            hud.note_fresh_press(ps, 10_000, false);
             assert!(!hud.back_leaves_at_press, "a hide that was not done while busy arms nothing");
 
             hud.hide(true);
             hud.raise_for_offer(10_000, 1);
-            hud.note_fresh_press(&ps, 10_000, false);
+            hud.note_fresh_press(ps, 10_000, false);
             assert!(!hud.back_leaves_at_press, "an un-dismiss between the presses disarms it");
 
             hud.hide(true);
             hud.hide(false);
-            hud.note_fresh_press(&ps, 10_000, false);
+            hud.note_fresh_press(ps, 10_000, false);
             assert!(!hud.back_leaves_at_press, "a later hide that is not an arming one replaces it");
         });
     }
@@ -722,12 +719,11 @@ mod hud_visibility_tests {
     /// Dismissal outranks healthy playback, but never the stalled pipeline read-out.
     #[test]
     fn dismiss_wins_while_healthy_and_loses_while_stalled() {
-        let ps = plx_media::route::PlaybackSession::IDLE;
-        with_state(PlaybackState::Playing, || {
-            assert!(!hud_visible(&ps, 10_000, 20_000, true, true));
+        with_state(PlaybackState::Playing, |ps| {
+            assert!(!hud_visible(ps, 10_000, 20_000, true, true));
         });
-        with_state(PlaybackState::Buffering, || {
-            assert!(hud_visible(&ps, 10_000, 1_000, false, true));
+        with_state(PlaybackState::Buffering, |ps| {
+            assert!(hud_visible(ps, 10_000, 1_000, false, true));
         });
     }
 
@@ -748,13 +744,12 @@ mod hud_visibility_tests {
     /// screen", which is the half that was missing.
     #[test]
     fn a_fresh_offer_puts_the_transport_up_and_parks_the_ring_on_the_primary() {
-        let ps = plx_media::route::PlaybackSession::IDLE;
-        with_state(PlaybackState::Playing, || {
+        with_state(PlaybackState::Playing, |ps| {
             let now = 10_000u32;
             let mut hud = HudState::IDLE;
             hud.dismissed = true; // UP-hidden mid-episode, exactly as reported
             hud.raise_for_offer(now, plx_appkit::up_next::PRIMARY_BTN);
-            assert!(hud.visible(&ps, now, false), "an offer clears a hand dismissal");
+            assert!(hud.visible(ps, now, false), "an offer clears a hand dismissal");
             assert_eq!(
                 hud.nav.focus, GROUP_ROW,
                 "on the control row, so the auto-hide re-park leaves it"
@@ -772,8 +767,7 @@ mod hud_visibility_tests {
     /// countdown, since the cancel rule reads the ring as a steady state rather than as an edge.
     #[test]
     fn an_offer_leaves_a_user_who_walked_off_the_scrubber_where_they_are() {
-        let ps = plx_media::route::PlaybackSession::IDLE;
-        with_state(PlaybackState::Playing, || {
+        with_state(PlaybackState::Playing, |ps| {
             let now = 10_000u32;
             // parked on the Chapters tab, which is only reachable by pressing DOWN twice
             let mut hud = HudState {
@@ -785,7 +779,7 @@ mod hud_visibility_tests {
                 ..HudState::IDLE
             };
             hud.raise_for_offer(now, plx_appkit::up_next::PRIMARY_BTN);
-            assert!(hud.visible(&ps, now, false), "the offer is still shown");
+            assert!(hud.visible(ps, now, false), "the offer is still shown");
             assert_eq!((hud.nav.focus, hud.nav.tab), (GROUP_TABS, 1), "their spot is theirs");
             assert!(
                 !plx_appkit::up_next::countdown_may_run(true, hud.nav.focus == GROUP_ROW, hud.nav.btn == plx_appkit::up_next::BTN_NEXT),

@@ -1,5 +1,5 @@
 # A cargo workspace with this package as its ROOT; the other members are the storage helper and the
-# layer crates split out of the application so far (base/, machine/, net/, platform/, gfx/, ui/, plex/, telemetry/, data/, session/, media/, appkit/, screens/;
+# layer crates split out of the application (everything under `rust-modules/*/` with a `[package.metadata.plx] mount`: base/, machine/, net/, platform/, gfx/, ui/, plex/, telemetry/, data/, session/, media/, play-feed/, appkit/, screens/ and the contract and codec crates;
 # docs/module-layers.md).
 # The root keeps the literal `version` below (release tooling reads it), `make`/CI run their usual
 # commands from this directory against this package (a bare `cargo test`/`check`/`build` here still
@@ -8,6 +8,7 @@
 [workspace]
 members = [
     "base",
+    "playback-contract",
     "machine",
     "net",
     "platform",
@@ -18,6 +19,10 @@ members = [
     "data",
     "session",
     "media",
+    "playback-contract",
+    "play-uri",
+    "play-feed",
+    "media-codecs",
     "appkit",
     "screens",
     "storage",
@@ -68,9 +73,13 @@ required-features = ["hostsim"]
 
 [features]
 # On by default, so every ordinary `make`, every `make test` and every on-device harness run
-# behaves exactly as it always has. `make RELEASE=1` passes --no-default-features, which is what
-# CI's release job builds with.
-default = ["devtools", "devtriggers", "threadcheck"]
+# retains both backend implementations. `make RELEASE=1` drops diagnostic defaults and passes
+# the selected backend features explicitly. Inclusion does not qualify or promote URI playback.
+default = ["play-uri", "play-feed", "devtools", "devtriggers", "threadcheck"]
+# Explicit production URI transport/driver inclusion. The buffer-feed route remains the default;
+# this feature does not qualify, select or promote a URI playback attempt.
+play-uri = ["dep:plx_play_uri", "plx_platform/uri-transport"]
+play-feed = ["dep:plx_play_feed", "plx_platform/feed-sink"]
 # Developer-facing chrome that must not reach a public build. Currently: the on-screen
 # seven-segment counter. Everything gated here must be DRAW-ONLY or otherwise inert — the device
 # is the only test this project has, so a release build must not differ from the tested one in
@@ -97,6 +106,9 @@ devtriggers = [
     "plx_data/devtriggers",
     "plx_session/devtriggers",
     "plx_media/devtriggers",
+    "plx_play_uri?/devtriggers",
+    "plx_play_feed?/devtriggers",
+    "plx_media_codecs/devtriggers",
     "plx_appkit/devtriggers",
     "plx_screens/devtriggers",
 ]
@@ -163,8 +175,10 @@ http3-curlstack = ["plx_base/http3-curlstack", "plx_net/http3-curlstack"]
 # The desktop UI simulator. OFF by default, so no ordinary `make`, `make check` or harness run is
 # affected in any way; `cargo build --features hostsim` selects it.
 #
-# It is an ADDITIVE feature in the cargo sense only by convention — it makes `player::ffi_host` the
-# installed `VideoSink` instead of `player::ffi` rather than adding to it. That is safe here because this crate is a leaf with
+# It is an ADDITIVE feature in the cargo sense only by convention — it makes `plx_play_feed::ffi_host` the
+# installed `VideoSink` instead of the platform webOS native sink rather than adding to it, and it does
+# so only together with `play-feed` (the stand-in is the Feed backend's: a simulator built with
+# `--no-default-features` names `play-feed` again, which `ci/test_sim_backend.py` holds). That is safe here because this crate is a leaf with
 # no dependents, so feature unification can never enable it behind someone's back. Do not give it
 # a mutually-exclusive partner feature; the television is the DEFAULT, and the simulator opts in.
 #
@@ -173,7 +187,7 @@ http3-curlstack = ["plx_base/http3-curlstack", "plx_net/http3-curlstack"]
 # (LG's SDL fork shifts SDL_KeyboardEvent; stock SDL2 does not), and the wayland/glib calls that
 # have no host equivalent. Everything else — all of `ui/`, the whole Plex data layer, the demux
 # orchestration — is compiled identically for both.
-hostsim = ["dep:xxhash-rust", "plx_base/hostsim", "plx_machine/hostsim", "plx_platform/hostsim", "plx_gfx/hostsim", "plx_plex/hostsim", "plx_telemetry/hostsim", "plx_data/hostsim", "plx_session/hostsim", "plx_media/hostsim"]
+hostsim = ["dep:xxhash-rust", "plx_base/hostsim", "plx_machine/hostsim", "plx_platform/hostsim", "plx_gfx/hostsim", "plx_plex/hostsim", "plx_telemetry/hostsim", "plx_data/hostsim", "plx_session/hostsim", "plx_media/hostsim", "plx_play_feed?/hostsim"]
 
 # Warnings are ERRORS, for both workspace packages, in every cargo invocation — build, check, test, clippy, the
 # ARM cross-build and the simulator alike. The tree reached zero warnings in all four
@@ -252,10 +266,16 @@ plx_data = { path = "data" }
 # who's-watching picker and the install of the chosen profile's credentials, and the owner machine
 # that holds them. It reads no build variable: the version it reports is `plx_plex`'s.
 plx_session = { path = "session" }
-# The media layer (ci/module-layers.ini `[media]`): the bundled-FFmpeg demuxer, the HTTPS media plane,
-# HLS, adaptive bitrate, the buffer-feed player engine and route selection. It declares the Starfish/ACB
-# externs and the two C callbacks `src/starfish.c` calls, and links nothing on the television.
-plx_media = { path = "media" }
+# The media layer (ci/module-layers.ini `[media]`): neutral orchestration over the backend seam: the HTTPS
+# media plane, adaptive bitrate, the player engine and route selection. The demuxer, HLS and the buffer-feed
+# engine are `plx_play_feed`'s, and the two C callbacks `src/starfish.c` calls are `plx_play_feed::sf_event`'s and
+# `plx_platform`'s (`webos::video_sink`); it links nothing on the television.
+plx_media = { path = "media", default-features = false }
+plx_playback_contract = { path = "playback-contract" }
+plx_play_uri = { path = "play-uri", optional = true }
+# The buffer-feed backend the application composes into the player's physical set (`app::adapters::backends`).
+plx_play_feed = { path = "play-feed", optional = true }
+plx_media_codecs = { path = "media-codecs" }
 # The appkit layer (ci/module-layers.ini `[appkit]`): the widgets several screens share, composed from
 # the ui library over application types (the player HUD, the track menus, the info panel, the Sources row
 # model). It links nothing on the television; its build script is for the host test binary.
@@ -335,8 +355,14 @@ plx_telemetry = { path = "telemetry", features = ["test-support"] }
 plx_data = { path = "data", features = ["test-support"] }
 # Likewise the session layer's test fixtures (`auth::test_support`, `auth::owner::scenarios`, ...).
 plx_session = { path = "session", features = ["test-support"] }
+# Likewise the play-uri layer's seams (`uriprobe_drive::UriSession::touch_acb_for_test`), for the probe's tests.
+plx_play_uri = { path = "play-uri", features = ["test-support"] }
+# Likewise the play-feed layer's test composition (`physical::probe`, the scoped reset).
+plx_play_feed = { path = "play-feed", features = ["test-support"] }
 # Likewise the media layer's seams (`player::preview`, `player::restore_state_for_test`, ...).
-plx_media = { path = "media", features = ["test-support"] }
+plx_media = { path = "media", default-features = false, features = ["test-support"] }
+# Likewise the codec layer's seams (`ffi::force_speed_decoder_for_test`: a host test loads no FFmpeg).
+plx_media_codecs = { path = "media-codecs", features = ["test-support"] }
 # Likewise the appkit layer's seams (`player_hud::SkipIntervalGuard`, the `overscan_rects` audits, ...).
 plx_appkit = { path = "appkit", features = ["test-support"] }
 # Likewise the screens layer's seams (`account_menu::overscan_rects`, `registry::every_surface_arg`, ...).

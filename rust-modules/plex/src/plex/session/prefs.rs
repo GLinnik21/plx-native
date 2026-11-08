@@ -141,7 +141,7 @@ pub struct Preferences {
     pub deck_press: DeckPress,
     /// **What sits under the focused poster** — see [`UnderPosters`]. A frozen fallback like
     /// [`Preferences::deck_press`]: each profile keeps its own pick in `profile_prefs`. Absence is no
-    /// title and the year and length. Skipped at the default so a session predating this field —
+    /// title, the year and length of a movie and the year and seasons of a show. Skipped at the default so a session predating this field —
     /// committed replay fixtures included — serializes exactly as it did before.
     #[serde(default, deserialize_with = "de_soft_under_posters", skip_serializing_if = "is_default_under_posters")]
     pub under_posters: UnderPosters,

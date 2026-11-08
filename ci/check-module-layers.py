@@ -37,6 +37,7 @@ import argparse
 import collections
 import configparser
 import sys
+import tomllib
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import module_graph  # noqa: E402
@@ -165,6 +166,106 @@ def config_errors(crate, layers):
         if layers.member_of(module) is None:
             errors.append(f'module {member_name(module)} belongs to no layer: add it (or its top-level module) to ci/module-layers.ini')
     return errors
+
+
+def cargo_package(doc):
+    """The package's name, not a dependency alias or feature name."""
+    return doc.get('package', {}).get('name')
+
+
+def cargo_mount(doc):
+    mount = doc.get('package', {}).get('metadata', {}).get('plx', {}).get('mount')
+    return tuple(mount.split('::')) if isinstance(mount, str) else None
+
+
+def cargo_declarations(doc):
+    """(alias, spec) for normal/build/dev and target-specific dependencies."""
+    kinds = ('dependencies', 'build-dependencies', 'dev-dependencies')
+    tables = [doc.get(kind, {}) for kind in kinds]
+    for target in doc.get('target', {}).values():
+        tables.extend(target.get(kind, {}) for kind in kinds)
+    for table in tables:
+        for alias, spec in table.items():
+            yield alias, spec if isinstance(spec, dict) else {}
+
+
+def cargo_edge_errors(src, layers):
+    """Declared local layer edges must be permitted by the same `uses` graph as Rust names.
+
+    The application root is the graph's top layer; split crates and the root package are checked
+    here even when a dependency is optional, test-only, target-specific or currently unused in
+    source. Workspace-inherited paths resolve from the workspace root. Fixtures without manifests
+    keep using the Rust-only pass.
+    """
+    workspace = Path(src).resolve().parent
+    root_manifest = workspace / 'Cargo.toml'
+    manifests = ([root_manifest] if root_manifest.is_file() else []) + sorted(workspace.glob('*/Cargo.toml'))
+    packages = {}
+    errors = []
+    workspace_deps = {}
+    if root_manifest.is_file():
+        try:
+            workspace_doc = tomllib.loads(root_manifest.read_text(encoding='utf-8'))
+            workspace_deps = workspace_doc.get('workspace', {}).get('dependencies', {})
+        except (OSError, ValueError) as error:
+            errors.append(f'{root_manifest}: invalid Cargo.toml: {error}')
+    for manifest in manifests:
+        if not (manifest.parent / 'src/lib.rs').is_file(): continue
+        try:
+            doc = tomllib.loads(manifest.read_text(encoding='utf-8'))
+        except (OSError, ValueError) as error:
+            errors.append(f'{manifest}: invalid Cargo.toml: {error}')
+            continue
+        package = cargo_package(doc)
+        if package == 'plxnative-modules':
+            layer = 'app'
+        elif package and package.startswith('plx_'):
+            mount = cargo_mount(doc)
+            layer = layers.members.get(layers.member_of(mount)) if mount is not None else package.removeprefix('plx_')
+        else:
+            continue
+        if layer not in layers.uses:
+            errors.append(f'{manifest}: package {package} has no recognized layer')
+        else:
+            packages[package] = (manifest, doc, layer)
+    edges = 0
+    for package, (manifest, doc, source) in packages.items():
+        for alias, spec in cargo_declarations(doc):
+            inherited = spec.get('workspace') is True
+            if inherited:
+                inherited_spec = workspace_deps.get(alias)
+                if inherited_spec is None:
+                    errors.append(f'{manifest}: {alias} inherits a missing [workspace.dependencies] entry')
+                    continue
+                spec = inherited_spec if isinstance(inherited_spec, dict) else {}
+            override, path = spec.get('package'), spec.get('path')
+            target_package = override or alias
+            if path:
+                base = workspace if inherited else manifest.parent
+                target_manifest = (base / path / 'Cargo.toml').resolve()
+                if not target_manifest.is_file():
+                    errors.append(f'{manifest}: {alias} path {path!r} has no Cargo.toml')
+                    continue
+                try:
+                    actual = cargo_package(tomllib.loads(target_manifest.read_text(encoding='utf-8')))
+                except (OSError, ValueError) as error:
+                    errors.append(f'{target_manifest}: invalid Cargo.toml: {error}')
+                    continue
+                if override and actual != override:
+                    errors.append(f'{manifest}: {alias} names package {override}, but path {path!r} holds {actual}')
+                    continue
+                target_package = actual
+            if target_package == package: continue  # a crate's test-support self dependency
+            if target_package not in packages:
+                if path and target_package and target_package.startswith('plx_'):
+                    errors.append(f'{manifest}: {alias} path {path!r} names unknown local layer package {target_package}')
+                continue  # crates.io / sysroot dependency
+            target = packages[target_package][2]
+            edges += 1
+            if target != source and target not in layers.uses[source]:
+                errors.append(f'{manifest}: {alias} declares [{source}] -> [{target}], '
+                              f'which [{source}] may not use in ci/module-layers.ini')
+    return errors, edges
 
 
 def read_allowlist(path):
@@ -306,7 +407,8 @@ def main(argv=None):
         print(f'check-module-layers: pruned {len(allow) - len(kept)} stale entr(y/ies), {len(kept)} remain')
         return 0
 
-    errors = config_errors(crate, layers) + malformed
+    cargo_errors, cargo_edges = cargo_edge_errors(args.src, layers)
+    errors = config_errors(crate, layers) + malformed + cargo_errors
     for key, refs in sorted(found.items()):
         if key not in allow:
             file, member = key
@@ -337,6 +439,7 @@ def main(argv=None):
     ports = ''.join(f', {sum(1 for key in ported if key[1] in {member_name(m) for m in members})} of them '
                     f'into [port {port}]' for port, members in layers.ports.items())
     print(f'check-module-layers: green — {len(layers.order)} layers, {len(crate.modules)} modules, '
+          f'{cargo_edges} Cargo layer declarations, '
           f'{len(allow)} migration entries left in {where}{ports}; '
           f'{sum(len(labels) for labels in support.values())} cfg(test) items still named across layers (--report)')
     return 0

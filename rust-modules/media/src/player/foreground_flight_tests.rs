@@ -6,6 +6,7 @@
 //! (`ForegroundState::PreparePending`, drained by `poll_foreground_flight`). These tests run every
 //! frame-thread half inside a `FrameScope`, against the loopback server of `route::flight_rig`.
 
+use plx_play_feed::shared::{FEED_SHARED, FEED_TX};
 use super::foreground::*;
 use super::lifecycle::*;
 use super::*;
@@ -25,11 +26,15 @@ impl ForegroundActuator for RigActuator {
     type Attempt = u64;
 
     fn prepare_resume(&mut self, ps: &mut crate::route::PlaybackSession, resume_ns: i64) -> ResumeStart {
-        begin_resume(ps, resume_ns)
+        // The rig's adapter belongs to the `Rig`; `ArmOpen` reaches the same process mailboxes
+        // through any adapter of this composition.
+        let mut pa = adapter::PlayerAdapter::new_fed(unsafe { plx_base::task::MainThread::assume() });
+        begin_resume(ps, &mut pa, resume_ns)
     }
 
     fn land_prepare(&mut self, ps: &mut crate::route::PlaybackSession) -> FlightLanding<ResumeOutcome> {
-        match land_resume(ps) {
+        let mut pa = adapter::PlayerAdapter::new_fed(unsafe { plx_base::task::MainThread::assume() });
+        match land_resume(ps, &mut pa) {
             Some(outcome) => FlightLanding::Landed(outcome),
             None if crate::route::resume_flight_outstanding() => FlightLanding::Waiting,
             None => FlightLanding::Stale,
@@ -40,10 +45,11 @@ impl ForegroundActuator for RigActuator {
         unreachable!("no rollback in this rig")
     }
 
-    fn before_load(&mut self, _resume_ns: i64, _clock: ForegroundClock) {}
+    fn before_load(&mut self, _ps: &mut crate::route::PlaybackSession, _resume_ns: i64,
+        _clock: ForegroundClock) {}
 
     fn start_load(&mut self, ps: &mut crate::route::PlaybackSession) -> ForegroundLoadStart<u64> {
-        self.loads.push((SHARED.disp_base.load(Relaxed), crate::route::url(ps)));
+        self.loads.push((FEED_SHARED.disp_base.load(Relaxed), crate::route::url(ps)));
         ForegroundLoadStart::Launched(7)
     }
 
@@ -53,7 +59,7 @@ impl ForegroundActuator for RigActuator {
 
     fn after_load(&mut self, _ps: &mut crate::route::PlaybackSession, _a: Option<u64>, _c: ForegroundClock, _s: bool) {}
 
-    fn play_clock(&mut self) -> bool {
+    fn play_clock(&mut self, _ps: &mut crate::route::PlaybackSession) -> bool {
         true
     }
 }
@@ -73,10 +79,10 @@ impl Rig {
     fn new(delay_ms: u64) -> Rig {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let flight = FlightRig::start(&mut ps, Duration::from_millis(delay_ms));
-        SHARED.reset_session();
-        TX.reset();
+        crate::player::reset_session_for_test();
+        FEED_TX.reset();
         claim_hold::clear();
-        let pa = adapter::PlayerAdapter::new(unsafe { MainThread::assume() });
+        let pa = adapter::PlayerAdapter::new_fed(unsafe { MainThread::assume() });
         let mut lifecycle = ForegroundLifecycle::<u64>::IDLE;
         lifecycle.step(
             &ForegroundEvent::Park { saved_ns: RESUME_NS, viewer_paused: true },
@@ -120,8 +126,8 @@ impl Rig {
 impl Drop for Rig {
     fn drop(&mut self) {
         claim_hold::clear();
-        SHARED.reset_session();
-        TX.reset();
+        crate::player::reset_session_for_test();
+        FEED_TX.reset();
         crate::route::reset_player_control_for_test(crate::route::idle_session_for_test());
     }
 }
@@ -168,6 +174,31 @@ fn a_foreground_resume_frame_makes_no_pms_call_and_the_worker_lands_the_load_at_
     assert!(url.contains("offset=1800"), "{url}");
     assert_ne!(crate::route::transcode_session(&rig.ps), "rig-1", "the replacement is the route's now");
     rig.flight.wait_for("the offset-0 encoder's retirement", |f| f.stopped().iter().any(|s| s == "rig-1"));
+}
+
+#[test]
+fn server_stop_retires_a_parked_resume_and_cancels_an_outstanding_rebuild() {
+    for pending in [false, true] {
+        let mut rig = Rig::new(40);
+        rig.flight.hold_answers();
+        if pending {
+            assert_eq!(rig.did_foreground(), ForegroundActivation::Handled);
+            assert!(rig.lifecycle.flight_pending());
+        }
+
+        note_server_stop(&crate::route::sess(&rig.ps), "retired-encoder", "stopped while parked", 10_000);
+        if pending {
+            assert_eq!(rig.poll_frame(), ForegroundActivation::Handled);
+        } else {
+            assert_eq!(rig.did_foreground(), ForegroundActivation::Handled);
+        }
+        assert!(!rig.lifecycle.awaiting_load());
+        assert!(!crate::route::resume_flight_outstanding());
+        assert!(rig.actuator.loads.is_empty());
+        assert_eq!(state(&rig.ps), PlaybackState::Error);
+        rig.flight.release_answers();
+        rig.flight.wait_for("the active encoder's stop", |f| f.stopped().iter().any(|s| s == "rig-1"));
+    }
 }
 
 /// **(iii) A refused rebuild ends exactly as the inline `None` did**: the machine re-arms the exact
@@ -260,7 +291,7 @@ fn a_resume_from_idle_never_reaches_the_rebuild_because_a_completed_stop_clears_
     assert!(crate::route::control_phase_label().contains("Idle"), "{}", crate::route::control_phase_label());
     assert!(crate::route::url(&rig.ps).is_empty(), "a completed stop clears the URL");
     assert!(crate::route::transcode_session(&rig.ps).is_empty(), "and the transcode session");
-    assert_eq!(begin_resume(&mut rig.ps, RESUME_NS), ResumeStart::Settled(ResumeOutcome::NoRoute));
+    assert_eq!(begin_resume(&mut rig.ps, &mut rig.pa, RESUME_NS), ResumeStart::Settled(ResumeOutcome::NoRoute));
     assert!(!crate::route::engineless_flight_outstanding());
     assert_eq!(rig.flight.decisions(), 0);
 }

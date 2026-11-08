@@ -1,10 +1,12 @@
 //! The Dolby Vision landing guard driven through the real `pump()` (#1166): a declared landing the
 //! firmware's splitter would skip (the row), or that no position update follows (the watch), is one
 //! `reload_at` without the node. A sibling of `native_seek_pump_tests` and built on its `Rig`; every
-//! case builds the guard through `engine::dv_start_for`, the only constructor production uses, and
-//! plants the firmware row the way production reaches it: through the ATTEMPT's caps
-//! (`begin_attempt_for_test`), never the per-thread firmware override, which applies no rows.
-//! `reload_at` has no route in a unit rig, so each call is read off `engine::RELOAD_AT_LOG`.
+//! case builds the guard the way production does, from the route's plan (`feed_open::dv_landing_plan`)
+//! through the Feed's constructor (`Guard::from_plan`), and plants the firmware row the way production
+//! reaches it: through the ATTEMPT's caps (`begin_attempt_for_test`), never the per-thread firmware
+//! override, which applies no rows. The pump reaches the guard only through `FeedLoad::dv_landing_due`
+//! and `FeedCommand::DvStandDown`. `reload_at` has no route in a unit rig, so each call is read off
+//! `engine::RELOAD_AT_LOG`.
 //!
 //! The last group is the guard beside the native surround-audio watchdog (`native_stall`): both read the
 //! same silence (a pipeline that accepts nothing and shows no picture), and only the Dolby Vision guard
@@ -13,17 +15,18 @@
 
 use super::native_seek_pump_tests::{preroll_at_reload, reloads, Rig, TARGET_NS, V_STEP_NS};
 use super::*;
-use crate::ff::native_audio::{self, Kind};
-use crate::player::dv_start::Mode;
-use crate::player::ffi_host;
-use crate::player::native_stall::{Watch, NATIVE_AUDIO_STALL_MS, WATCH};
 use plx_data::metadata::Dovi;
 use plx_platform::devcaps::{apply_exclusions, dv::DvCapability, Caps, EXCLUSIONS};
+use plx_play_feed::dv_start::{Guard, Mode};
+use plx_play_feed::native_audio::{self, Kind};
+use plx_play_feed::native_stall::{Watch, NATIVE_AUDIO_STALL_MS, WATCH};
+use plx_play_feed::{aq, ffi_host};
 use std::os::raw::c_int;
+use std::sync::atomic::Ordering::Relaxed;
 
 /// An HEVC CRA as an access unit's `key` (`aq::AuNode::key`).
 const CRA: c_int = 21;
-const IDR: c_int = crate::aq::AU_KEY;
+const IDR: c_int = aq::AU_KEY;
 /// A tap taken while a flight is out, later than the seek that was armed.
 const TAP_NS: i64 = 1_200_000_000_000;
 
@@ -42,9 +45,10 @@ fn row_caps() -> std::sync::Arc<Caps> {
     std::sync::Arc::new(c)
 }
 
-/// Build the Engine's guard the way `start_bufferfeed` does, from the rig's route.
+/// Build the Engine's guard the way `start_bufferfeed` and the Feed's Engine constructor do: the route's
+/// plan, then the Feed's guard from it, armed with the seek armed for the open.
 fn arm_guard(rig: &mut Rig, armed: Option<i64>) {
-    let guard = super::super::engine::dv_start_for(&rig.ps, armed);
+    let guard = Guard::from_plan(super::super::feed_open::dv_landing_plan(&rig.ps), armed);
     rig.eng().dv_start = guard;
 }
 
@@ -109,7 +113,7 @@ fn a_native_seek_landing_on_a_cra_under_the_cx_row_reloads_once_without_dolby_vi
     assert!(ffi_host::seek_log_for_test().is_empty(), "the keyframe the splitter would skip is not fed, so no native Seek");
     assert_eq!(reloads(), vec![TARGET_NS], "one reload at the seek's target");
     assert_eq!(crate::route::stream_dv_presentation(&rig.ps), plx_data::metadata::DvPresentation::NotDv);
-    // The guard `dv_start_for` built for this route (checked last: the behaviour above is the symptom).
+    // The guard `dv_landing_plan` built for this route (checked last: the behaviour above is the symptom).
     assert_eq!(rig.eng().dv_start.mode(), Mode::Act);
 }
 
@@ -121,7 +125,7 @@ fn the_same_landing_on_an_idr_seeks_in_place_as_before() {
     assert_eq!(ffi_host::seek_log_for_test(), vec![TARGET_NS / 1_000_000], "one native Seek, at the keyframe");
     assert!(reloads().is_empty());
     assert!(is_declared(&rig), "an IDR is what the splitter takes: Dolby Vision stays");
-    // The guard `dv_start_for` built for this route (checked last: the behaviour above is the symptom).
+    // The guard `dv_landing_plan` built for this route (checked last: the behaviour above is the symptom).
     assert_eq!(rig.eng().dv_start.mode(), Mode::Act);
 }
 
@@ -131,14 +135,14 @@ fn a_resume_landing_on_a_cra_reloads_once_at_the_armed_target() {
     let mut rig = declared(p81(), true);
     // A fresh Engine with a seek armed for its first open (a resume), not flushed.
     rig.complete_reload(TARGET_NS);
-    let armed = SHARED.seek_to_ns.load(Relaxed);
+    let armed = FEED_SHARED.seek_to_ns.load(Relaxed);
     arm_guard(&mut rig, (armed >= 0).then_some(armed));
     rig.land_keyframe_with_key(TARGET_NS, 60, CRA);
     frames(&mut rig, 12);
     assert_eq!(reloads(), vec![TARGET_NS], "one reload, at the armed target");
     assert!(ffi_host::seek_log_for_test().is_empty());
     assert!(!is_declared(&rig));
-    // The guard `dv_start_for` built for this route (checked last: the behaviour above is the symptom).
+    // The guard `dv_landing_plan` built for this route (checked last: the behaviour above is the symptom).
     assert_eq!(rig.eng().dv_start.mode(), Mode::Act);
 }
 
@@ -153,7 +157,7 @@ fn with_no_row_a_declared_landing_with_no_position_update_reloads_without_dolby_
     advance(&mut rig, 7_000);
     assert_eq!(reloads(), vec![TARGET_NS], "one reload, after 10 s of frames");
     assert!(!is_declared(&rig));
-    // The guard `dv_start_for` built for this route (checked last: the behaviour above is the symptom).
+    // The guard `dv_landing_plan` built for this route (checked last: the behaviour above is the symptom).
     assert_eq!(rig.eng().dv_start.mode(), Mode::Act);
 }
 
@@ -163,11 +167,11 @@ fn a_position_update_before_4_s_keeps_dolby_vision() {
     let mut rig = declared(p81(), false);
     seek_and_land(&mut rig, CRA);
     advance(&mut rig, 2_000);
-    SHARED.frames.store(1, Relaxed);
+    FEED_SHARED.frames.store(1, Relaxed);
     advance(&mut rig, 12_000);
     assert!(reloads().is_empty());
     assert!(is_declared(&rig));
-    // The guard `dv_start_for` built for this route (checked last: the behaviour above is the symptom).
+    // The guard `dv_landing_plan` built for this route (checked last: the behaviour above is the symptom).
     assert_eq!(rig.eng().dv_start.mode(), Mode::Act);
 }
 
@@ -180,7 +184,7 @@ fn a_paused_viewer_never_trips_the_watch() {
     advance(&mut rig, 10_000);
     assert!(reloads().is_empty(), "a paused viewer is not a silent pipeline");
     assert!(is_declared(&rig));
-    // The guard `dv_start_for` built for this route (checked last: the behaviour above is the symptom).
+    // The guard `dv_landing_plan` built for this route (checked last: the behaviour above is the symptom).
     assert_eq!(rig.eng().dv_start.mode(), Mode::Act);
 }
 
@@ -195,7 +199,7 @@ fn a_profile_5_landing_on_a_cra_is_fed_as_before() {
     assert!(is_declared(&rig));
     assert_eq!(log.matches("dv: landing keyframe").count(), 1, "one report line: {log}");
     assert!(!log.contains("dv: withdrawn"), "{log}");
-    // The guard `dv_start_for` built for this route (checked last: the behaviour above is the symptom).
+    // The guard `dv_landing_plan` built for this route (checked last: the behaviour above is the symptom).
     assert_eq!(rig.eng().dv_start.mode(), Mode::ReportOnly);
 }
 
@@ -227,7 +231,7 @@ fn a_declared_remux_landing_on_a_cra_is_reported_and_fed_as_before() {
     assert!(!log.contains("dv: withdrawn"), "{log}");
     assert!(rig.eng().max_fed_video_pts > 0, "the access units were fed");
     assert!(is_declared(&rig));
-    // The guard `dv_start_for` built for this route (checked last: the behaviour above is the symptom).
+    // The guard `dv_landing_plan` built for this route (checked last: the behaviour above is the symptom).
     assert_eq!(rig.eng().dv_start.mode(), Mode::ReportOnly);
 }
 
@@ -255,7 +259,7 @@ fn a_withdrawal_deferred_by_a_flight_reloads_once_at_the_tap_taken_during_it() {
         assert!(crate::route::flight_outstanding());
         rig.land_keyframe_with_key(TARGET_NS, 60, CRA);
         frames(&mut rig, 6);
-        crate::player::request_seek(TAP_NS); // a tap during the flight
+        crate::player::request_seek(&mut rig.ps, &mut rig.pa, TAP_NS); // a tap during the flight
         frames(&mut rig, 4);
         assert!(reloads().is_empty(), "nothing reloads while the flight is out");
         rig.now += 5_000; // far past SEEK_STUCK_MS: the stuck watchdog must yield to the withdrawal
@@ -267,7 +271,7 @@ fn a_withdrawal_deferred_by_a_flight_reloads_once_at_the_tap_taken_during_it() {
     assert_eq!(reloads(), vec![TAP_NS], "exactly one reload, at the tap taken during the flight");
     assert!(!log.contains("seek: in-place stuck"), "{log}");
     assert!(!is_declared(&rig));
-    // The guard `dv_start_for` built for this route (checked last: the behaviour above is the symptom).
+    // The guard `dv_landing_plan` built for this route (checked last: the behaviour above is the symptom).
     assert_eq!(rig.eng().dv_start.mode(), Mode::Act);
 }
 
@@ -281,8 +285,25 @@ fn a_paused_seek_landing_reloads_with_the_preroll_kept() {
     frames(&mut rig, 12);
     assert_eq!(reloads(), vec![TARGET_NS]);
     assert_eq!(preroll_at_reload(), vec![true], "the paused seek's preroll is carried across the reload");
-    // The guard `dv_start_for` built for this route (checked last: the behaviour above is the symptom).
+    // The guard `dv_landing_plan` built for this route (checked last: the behaviour above is the symptom).
     assert_eq!(rig.eng().dv_start.mode(), Mode::Act);
+}
+
+#[test]
+fn a_route_that_refuses_the_withdrawal_stands_the_guard_down_and_the_landing_feeds() {
+    let _serial = plx_base::testlock::serial();
+    let mut rig = declared(p81(), true);
+    // The guard was armed from a route that declared a node, which the route has since lost: a race the
+    // arming did not see. The pump's withdrawal is refused and answers `FeedCommand::DvStandDown`.
+    assert!(crate::route::withdraw_dv_presentation(&mut rig.ps, "test"));
+    assert_eq!(rig.eng().dv_start.mode(), Mode::Act, "PRECONDITION: the guard still believes in its node");
+    let log = logged(|| seek_and_land(&mut rig, CRA));
+    assert!(log.contains("dv: the route no longer declares a Dolby Vision node it can withdraw"), "{log}");
+    assert!(!log.contains("dv: withdrawn"), "{log}");
+    assert_eq!(rig.eng().dv_start.mode(), Mode::Inert, "the guard stood down");
+    assert!(!rig.eng().dv_start.landing_held(), "the held landing is released");
+    assert_eq!(ffi_host::seek_log_for_test(), vec![TARGET_NS / 1_000_000], "the landing fed: one native Seek");
+    assert!(reloads().is_empty());
 }
 
 // -- beside the native surround-audio watchdog -------------------------------------------------------
@@ -300,7 +321,7 @@ impl NativeOpus51 {
         *WATCH.lock().unwrap_or_else(|e| e.into_inner()) = Watch::new();
         native_audio::publish_fed(Kind::Opus, 6);
         let epoch = rig.eng().native_epoch;
-        assert!(SHARED.mark_native_load_returned(epoch, None).is_some(), "the Load returned: the watchdog's precondition");
+        assert!(FEED_SHARED.mark_native_load_returned(epoch, None).is_some(), "the Load returned: the watchdog's precondition");
         NativeOpus51
     }
 }
@@ -309,25 +330,25 @@ impl Drop for NativeOpus51 {
     fn drop(&mut self) {
         native_audio::reset();
         *WATCH.lock().unwrap_or_else(|e| e.into_inner()) = Watch::new();
-        SHARED.native_audio_refused.store(false, Release);
+        FEED_SHARED.native_audio_refusals.store(0, Release);
     }
 }
 
 /// `n` video access units from `ns` (the demux thread's non-key frames after a landing).
 fn push_video(rig: &mut Rig, ns: i64, n: i64) {
     let au = [0u8; 64];
-    let q = &mut **rig.eng().aq_video.as_mut().expect("the video queue") as *mut crate::aq::AuQueue;
+    let q = &mut **rig.eng().aq_video.as_mut().expect("the video queue") as *mut aq::AuQueue;
     for i in 0..n {
-        crate::aq::aq_push(q, au.as_ptr(), au.len() as c_int, ns + i * V_STEP_NS, 0, 1);
+        aq::aq_push(q, au.as_ptr(), au.len() as c_int, ns + i * V_STEP_NS, 0, 1);
     }
 }
 
 /// `n` audio access units from `ns`.
 fn push_audio(rig: &mut Rig, ns: i64, n: i64) {
     let au = [0u8; 64];
-    let q = &mut **rig.eng().aq_audio.as_mut().expect("the audio queue") as *mut crate::aq::AuQueue;
+    let q = &mut **rig.eng().aq_audio.as_mut().expect("the audio queue") as *mut aq::AuQueue;
     for i in 0..n {
-        crate::aq::aq_push(q, au.as_ptr(), au.len() as c_int, ns + i * A_STEP_NS, 1, 0);
+        aq::aq_push(q, au.as_ptr(), au.len() as c_int, ns + i * A_STEP_NS, 1, 0);
     }
 }
 
@@ -344,7 +365,7 @@ fn a_dv_and_surround_opus_stall_withdraws_dolby_vision_first() {
         rig.arm(TARGET_NS);
         // The presented position the feed-ahead throttle measures from: once the prime has released
         // Play, video stops 1.6 s ahead of it and audio 3.6 s, whatever the queues hold.
-        SHARED.pres_fed.store(TARGET_NS, Relaxed);
+        FEED_SHARED.pres_fed.store(TARGET_NS, Relaxed);
         rig.land_keyframe_with_key(TARGET_NS, 70, CRA);
         push_audio(&mut rig, TARGET_NS, 30); // 600 ms: the prime wants 300 ms of audio beside the video
         frames(&mut rig, 12);
@@ -368,7 +389,7 @@ fn a_dv_and_surround_opus_stall_withdraws_dolby_vision_first() {
     assert!(log.contains("dv: withdrawn for this play: no position update"), "the withdrawal came from the watch:\n{log}");
     assert!(!is_declared(&rig));
     assert!(!log.contains("native audio: STALL"), "the audio watchdog spoke before the Dolby Vision watch:\n{log}");
-    assert!(!SHARED.native_audio_refused.load(Relaxed), "no install-wide Opus refusal is raised for the Dolby Vision splitter's silence");
+    assert_eq!(FEED_SHARED.native_audio_refusals.load(Relaxed), 0, "no install-wide Opus refusal is raised for the Dolby Vision splitter's silence");
 }
 
 #[test]
@@ -411,5 +432,5 @@ fn a_held_landing_is_not_a_native_stall() {
     });
     assert_eq!(reloads(), vec![TARGET_NS], "the row's reload, once");
     assert!(!log.contains("native audio:"), "the audio watchdog neither armed nor fired on a held feed:\n{log}");
-    assert!(!SHARED.native_audio_refused.load(Relaxed));
+    assert_eq!(FEED_SHARED.native_audio_refusals.load(Relaxed), 0);
 }

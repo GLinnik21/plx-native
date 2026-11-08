@@ -362,9 +362,11 @@ Report these ONLY from the device, via the **`tv-session`** skill (and `wake-tv`
   render-set ceiling in a debug build refuses by panicking).
 - **Anything about LG's DECODER** — resource-allocation refusals, the Load payload's Dolby
   declaration, `SOUND_ERROR_019`, frame pacing, which codecs the panel takes. The 29-symbol
-  Starfish/ACB seam does not exist off-device, so by default `player::ffi`'s host arm reports the
-  seam's own "no video path" failure and pressing Play lands on the app's real failure read-out —
-  correct behaviour, not a bug, and a convenient way to look at that screen.
+  Starfish/ACB seam does not exist off-device, so by default the simulator's stand-in
+  (`plx_play_feed::ffi_host::HostSink`; a simulator built without `play-feed` installs `NoSink`,
+  see `ci/test_sim_backend.py`) reports the seam's own "no video path" failure and pressing Play
+  lands on the app's real failure read-out — correct behaviour, not a bug, and a convenient way to
+  look at that screen.
 - ~~**Anything about video.**~~ **Narrowed twice, and the second time is recent.** Arm
   **`plxnative-clocksink`** in the instance root and the seam becomes a plant: access units are
   accepted and discarded and a presentation clock advances at real time, clamped to the last fed
@@ -419,14 +421,14 @@ device-verified" is a useful, honest status. "Verified" without a TV is not.
   read-out and the HUD's busy states. With it there is a real one, driven by a real stream — but
   the video PLANE is empty, because the app decodes nothing and the wayland overlay is webOS-only:
   the HUD sits over black. Arm `plxnative-simvideo` as well and a system `ffmpeg` child decodes
-  the stream the clock sink accepts and composites it UNDER the UI (`player/sim_video.rs`). That
+  the stream the clock sink accepts and composites it UNDER the UI (`src/app/adapters/hostsim/sim_video.rs`). That
   is a screenshot facility for the documentation's player figure; it says nothing about LG's
   decoder, the video plane or picture timing on the television.
 
 ## The frame dump (the demo video's renderer)
 
 `make site-video-sim` builds the simulator for the demo-video pipeline (`--no-default-features
---features hostsim,devtriggers,placeholder-sentinel`, release, its own target dir, libass only), and
+--features hostsim,play-feed,devtriggers,placeholder-sentinel`, release, its own target dir, libass only), and
 `python3 tools/site_video.py render --out DIR --storyboard` plays `tests/video/feel.json` (positions and durations, compiled to the driver's key schedule: Home hero, hero paged to the second page and back, down to the Continue Watching shelf, the third card's Detail opened with OK and scrolled with five downs past its Cast & Crew row to the About section, back, the Movies library walked down with arrows only to its All poster grid and across it, walked back up and left with one back, about 30 s; nothing opened from Detail, no modal; shot with the hold hint taught, so card rests and the card OK are not capped: `render --storyboard` sets the `plxnative-hintoff` trigger (`devtriggers` builds only; it calls `hold_hint::teach_all_for_dev`, once, at boot) because the capsule is a one-time teaching overlay and a film has no viewer to teach) and records its sha256, `--extra-holds`, `--trigger`, how far each beat still moved at its end (`storyboard.rest`) and which titles it opened and `hold_hint: suppressed` in `render.json`. Before the film boots the launcher signs the simulator in to the mock's Demo account through the app's own QR sign-in (a prep boot with the `plxnative-login` trigger), so the profile chip, one `left` from the Home pill that `up` from the hero lands on, reads "Demo" and never "Sign in" should a beat press `left` there. A pushed page is filmed LIVE under the dip, never as a held image (`plx_gfx::dump`'s one page rule: every dip frame re-captures the page, `PageImage::step_filmed`), so a page that mounts hidden and fades in (an `Xfade` mount, the Library's) fades in as it does in the product, with its entrance springs playing, and nothing cuts when the dip ends. Either way `render` runs the simulator headless against the mock catalog (without `--storyboard` it holds Home for `--frames`, 180 by default) and leaves
 `master.mkv`, `frames.tsv`, `dump.json` and `render.json`. The simulator side is
 `rust-modules/src/dev/framedump.rs`, armed by `PLXNATIVE_DUMP=<dir>` (its module doc lists the

@@ -17,8 +17,9 @@ matters, that neither can put a cargo tree outside the checkout:
   reads exactly like a green run);
 * `check-nodef` sets no target dir of its own (so cargo's default, `rust-modules/target`, or the
   `CARGO_TARGET_DIR` a fleet lane exports for `make check` too), runs the non-incremental
-  `check --lib --no-default-features` and never carries HOST_ENV or the telemetry words (they would
-  change the third-party units it shares with `make lint`);
+  `check --lib --no-default-features --features <the PLAYBACK_BACKENDS features>` (the shipping set:
+  `--no-default-features` alone would also drop both playback backends) and never carries HOST_ENV
+  or the telemetry words (they would change the third-party units it shares with `make lint`);
 * neither is part of `make check`, and both sit in SIDE_EFFECT_FREE so a dry run or a call from
   another configuration cannot delete a built release binary;
 * the new dir is gitignored (`git add -A` cannot commit it), swept by `tools/build-gc.sh`, and the
@@ -177,7 +178,9 @@ class TestCheckNodef(unittest.TestCase):
             (call,) = fake.calls()
             self.assertEqual(call["incremental"], "0")
             self.assertTrue(call["cwd"].endswith("rust-modules"), call["cwd"])
-            self.assertRegex(call["args"], r"^\+\S+ check --lib --no-default-features$")
+            # The release set is `--no-default-features` PLUS the backends: both are in the app
+            # crate's `default`, so the bare flag would check a build with no playback backend.
+            self.assertRegex(call["args"], r"^\+\S+ check --lib --no-default-features --features play-uri,play-feed$")
             # No target dir of its own: cargo's default, <workspace>/target, is inside the checkout.
             self.assertIn(call["target_dir"], ("None", "", None))
             self.assertEqual(inside_checkout(call), Path("target"))
@@ -189,11 +192,32 @@ class TestCheckNodef(unittest.TestCase):
             self.assertEqual(call["target_dir"], "/somewhere/else")
             self.assertEqual(call["incremental"], "0")
 
+    def test_the_backend_features_follow_playback_backends(self):
+        # `RELEASE=1` passes the selected backends explicitly; check-nodef checks what it ships.
+        for backends, features in (("uri", "play-uri"), ("feed", "play-feed")):
+            with self.subTest(backends), FakeCargoHome() as fake:
+                out = fake.run("check-nodef", f"PLAYBACK_BACKENDS={backends}", env={"PLX_CARGO_SEED": "off"})
+                self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+                (call,) = fake.calls()
+                self.assertRegex(call["args"], rf"^\+\S+ check --lib --no-default-features --features {features}$")
+        with FakeCargoHome() as fake:
+            out = fake.run("check-nodef", "PLAYBACK_BACKENDS=none", env={"PLX_CARGO_SEED": "off"})
+            self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+            (call,) = fake.calls()
+            self.assertRegex(call["args"], r"^\+\S+ check --lib --no-default-features$")
+
     def test_it_shares_make_lints_third_party_units_so_it_must_not_change_their_inputs(self):
         text = recipe_body("check-nodef")
         for banned in ("$(HOST_ENV)", "$(TELEMETRY_ENV)", "RUSTFLAGS", "CARGO_TARGET_DIR=", "--target-dir",
-                       "--features", "$(RUST_FEATFLAGS)"):
+                       "$(RUST_FEATFLAGS)", "$(RUST_BUILD_FEATURES)"):
             self.assertNotIn(banned, text)
+        # `--features` may carry the backend features and nothing else. They enable no third-party
+        # feature (measured with `--unit-graph`; the Makefile comment above the recipe has the
+        # numbers), unlike the devtools / devtriggers / threadcheck / LAB words behind the banned
+        # variables, which change the workspace crates' features and the build-script inputs.
+        backends = "$(if $(RUST_BACKEND_FEATURES),--features $(RUST_BACKEND_FEATURES),)"
+        self.assertIn(backends, text)
+        self.assertNotIn("--features", text.replace(backends, ""))
         # The seed restore is the one `lint` starts with: a fresh lane's first cargo call must not
         # create an unseeded `target` for every later `make check` to inherit.
         self.assertIn("$(CARGO_SEED) restore target rust-modules/target --env-var CARGO_TARGET_DIR", text)

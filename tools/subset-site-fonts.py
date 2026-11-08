@@ -61,6 +61,9 @@ BASE_RANGES = [
     (0x0100, 0x017F),  # Latin Extended-A — headroom for future accented names/text
     (0x2000, 0x206F),  # General Punctuation — en/em dash, curly quotes, ellipsis, nbsp variants
     (0x2190, 0x21FF),  # Arrows — the header's back-arrow (&larr;) and friends
+    (0x01A0, 0x01A1),  # Latin Extended-B: Vietnamese horn O (Ơ, ơ)
+    (0x01AF, 0x01B0),  # Latin Extended-B: Vietnamese horn U (Ư, ư)
+    (0x1EA0, 0x1EF9),  # Latin Extended Additional — the whole Vietnamese block, for press headlines
     (0x20AC, 0x20AC),  # Euro sign
     (0x2122, 0x2122),  # Trade mark sign
     (0x2212, 0x2212),  # Minus sign

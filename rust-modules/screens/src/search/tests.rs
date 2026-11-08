@@ -1604,7 +1604,7 @@ fn a_poster_result_is_worded_by_the_under_posters_builder() {
     use crate::registry::captions::TEST_UNDER_POSTERS;
     use plx_data::pms::PmsMovie;
     use plx_data::search::scope::ScopeSource;
-    use plx_plex::plex::session::{UnderPosters, UnderPostersDetails as Details};
+    use plx_plex::plex::session::{UnderPosters, UnderPostersLadder as Details};
     let lines = |l: &plx_ui::cards::TileLabel| {
         let text = |c: &Option<std::ffi::CString>| c.as_ref().map(|c| c.to_string_lossy().into_owned());
         [text(&l.title), text(&l.caption)]
@@ -1619,8 +1619,8 @@ fn a_poster_result_is_worded_by_the_under_posters_builder() {
         plx_ui::cards::CardSource::<HostFixture>::label(&cards, 0)
     };
     let heat = || Item::Media(PmsMovie { title: "Heat".into(), year: 1995, genre: Some("Crime".into()), ..Default::default() });
-    let at = |title, details, sources: &[ScopeSource]| {
-        TEST_UNDER_POSTERS.with(|cell| cell.set(Some(UnderPosters { title, details, show_details: details.for_shows(), sort_value: false })));
+    let at = |title: bool, details: Details, sources: &[ScopeSource]| {
+        TEST_UNDER_POSTERS.with(|cell| cell.set(Some(UnderPosters { title, details: details.movie_parts(), show_details: details.show_parts(), sort_value: false })));
         let label = lines(&label_of(Kind::Movie, heat(), sources));
         TEST_UNDER_POSTERS.with(|cell| cell.set(None));
         label
@@ -1632,7 +1632,7 @@ fn a_poster_result_is_worded_by_the_under_posters_builder() {
     assert_eq!(at(true, Details::None, &friend), [Some("Heat".into()), None], "Nothing credits no line");
     assert_eq!(at(false, Details::None, &friend), [None, None]);
 
-    TEST_UNDER_POSTERS.with(|cell| cell.set(Some(UnderPosters { title: true, details: Details::Genre, show_details: Details::Genre.for_shows(), sort_value: false })));
+    TEST_UNDER_POSTERS.with(|cell| cell.set(Some(UnderPosters { title: true, details: Details::Genre.movie_parts(), show_details: Details::Genre.show_parts(), sort_value: false })));
     let still = Item::Media(PmsMovie { kind: 3, title: "A Grand Day Out".into(), aired: "1989-11-04".into(), ..Default::default() });
     let episode = lines(&label_of(Kind::Episode, still, &friend));
     TEST_UNDER_POSTERS.with(|cell| cell.set(None));

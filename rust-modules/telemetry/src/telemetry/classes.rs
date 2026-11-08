@@ -363,6 +363,8 @@ pub enum AttemptOrigin {
     /// The viewer chose a quality, from the menu or from the failure screen, and the open follows
     /// from that choice (including an Original they asked for).
     QualityChange,
+    /// The viewer changed playback speed or audio processing, requiring a new route.
+    ViewerReconfigure,
     /// The app changed the delivery on its own: a link fallback or an automatic Original attempt.
     AutoHandoff,
     /// The app reopened a route after a failed open: the rollback from Original, or the HLS that
@@ -377,10 +379,11 @@ pub enum AttemptOrigin {
 }
 
 impl AttemptOrigin {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Fresh,
         Self::UserRetry,
         Self::QualityChange,
+        Self::ViewerReconfigure,
         Self::AutoHandoff,
         Self::Recovery,
         Self::Resume,
@@ -392,6 +395,7 @@ impl AttemptOrigin {
             Self::Fresh => "fresh",
             Self::UserRetry => "user_retry",
             Self::QualityChange => "quality_change",
+            Self::ViewerReconfigure => "viewer_reconfigure",
             Self::AutoHandoff => "auto_handoff",
             Self::Recovery => "recovery",
             Self::Resume => "resume",
@@ -498,7 +502,7 @@ impl TraceOutcome {
 
 /// **How long a native Load spent in flight, as a bucket — never the millisecond count.**
 ///
-/// Recorded once per attempt, either when `player::threads::load_thread`'s Load-returned gate
+/// Recorded once per attempt, either when `plx_play_feed::native_load::load_thread`'s Load-returned gate
 /// opens (the ordinary case) or when issue #74 D.1.4's `player::pump::NATIVE_LOAD_BUDGET` fires
 /// first (the k5lp hang this bucket exists to make visible on a dashboard rather than only in a
 /// device log). A duration is exactly the kind of measurement `PlaybackErrorContext`'s other
@@ -926,8 +930,37 @@ impl TransferAgeClass {
     }
 }
 
+/// Physical executor that owned the terminal attempt. A PMS delivery such as Original can run
+/// through either executor, so delivery alone cannot answer this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorBackendClass { Unknown, Feed, Uri }
+impl ErrorBackendClass {
+    pub const ALL: [Self; 3] = [Self::Unknown, Self::Feed, Self::Uri];
+    pub const fn code(self) -> &'static str {
+        match self { Self::Unknown => "unknown", Self::Feed => "feed", Self::Uri => "uri" }
+    }
+}
+
+/// Stage of the terminal failure, only from the addressed current attempt or a known plan
+/// refusal. A source switch's prior failure never labels the new attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalStageClass { Unknown, Planning, Open, Decode, Presentation, Release }
+impl TerminalStageClass {
+    pub const ALL: [Self; 6] = [Self::Unknown, Self::Planning, Self::Open,
+        Self::Decode, Self::Presentation, Self::Release];
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown", Self::Planning => "planning", Self::Open => "open",
+            Self::Decode => "decode", Self::Presentation => "presentation",
+            Self::Release => "release",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlaybackErrorContext {
+    pub backend: ErrorBackendClass,
+    pub terminal_stage: TerminalStageClass,
     pub delivery: DeliveryClass,
     pub selected: QualityClass,
     pub requested: QualityClass,
@@ -1122,6 +1155,7 @@ pub enum FailureClass {
     ResolveFailed,
     /// A hero/trailer preview refused because its route was not a direct play.
     PreviewNotDirect,
+    ServerStopped,
     /// Everything else. Honest rather than tidy.
     Unspecified,
 }
@@ -1130,7 +1164,7 @@ impl FailureClass {
     /// Every class, so a test can hold the declared `playback.failed` domain to the enum it is
     /// built from.
     #[cfg(any(test, feature = "test-support"))]
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::DecisionRefused,
         Self::PlaybackPolicy,
         Self::NoVideoTranscodeTarget,
@@ -1144,6 +1178,7 @@ impl FailureClass {
         Self::ReleaseTimeout,
         Self::ResolveFailed,
         Self::PreviewNotDirect,
+        Self::ServerStopped,
         Self::Unspecified,
     ];
 
@@ -1164,6 +1199,7 @@ impl FailureClass {
             Self::ReleaseTimeout => "release_timeout",
             Self::ResolveFailed => "resolve_failed",
             Self::PreviewNotDirect => "preview_not_direct",
+            Self::ServerStopped => "server_stopped",
             Self::Unspecified => "unspecified",
         }
     }

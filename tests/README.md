@@ -18,11 +18,11 @@ how a green run means nothing.
 | what it needs | a TV address and `make fixtures-pipeline` | a Plex server, a token, a `manifest.local.json`, and a library holding the shapes the matrix names |
 | media | generated clips, served off your Mac | real items on your PMS |
 | who can run it | **anyone** | whoever owns that library |
-| cost | ~0.9 GB, a few minutes to build; seconds per case | ~3 GB, ~20 minutes to build; ten to twenty minutes to run |
+| cost | ~1.1 GB, a few minutes to build; seconds per case (a URI-gate case runs its 75 s cap) | ~3 GB, ~20 minutes to build; ten to twenty minutes to run |
 
 ```sh
-./tests/run.py                  # the synthetic tier — 20 cases, ~7 min, needs nothing
-./tests/run.py --server         # the library-backed 21, through the whole Plex chain
+./tests/run.py                  # the synthetic tier — `--list` is the census; needs nothing
+./tests/run.py --server         # the library-backed tier (`--list --server`), through the whole Plex chain
 ```
 
 **The synthetic tier is the default**, and that inversion (2026-08-22) is about what a bare
@@ -86,7 +86,7 @@ implemented format set, not the complete vocabulary accepted by LG's firmware.
 
 The tier also covers Dolby Vision 8.1 (`pipe_hevc_eac3_4k_dovi_p8`), both containers, in-place seek in each of
 them, the **frame-rate axis** — `pipe_h264_1080p5994` is the only fixture in the repo that reaches
-`engine::fps_rational`'s 1001-denominator branch (`esInfo: videoFps 60000/1001`), and
+`plx_play_feed::fps_rational`'s 1001-denominator branch (`esInfo: videoFps 60000/1001`), and
 `pipe_hevc_4k_60fps` is 4K60 HEVC, the most demanding thing the device table claims; every other
 fixture in both packs is 24p — the **resolution × codec matrix** (SD/HD/FHD/UHD × h264/hevc, eight
 cells, §*The resolution × codec matrix* below), and clips played to their **end**
@@ -100,7 +100,7 @@ one below — a Play control on a detail page is server-tier by construction), a
 item transcodes because the dev set's codec table lists no AV1 decoder; see `transcode_av1_no_dp_audio`
 below for what a set that lists one would do with it). One of
 those is an app gap rather than a test gap: `devcaps` now reads `maxFrameRate` into per-codec rows,
-but only the Starfish Load's `adaptiveStreaming` ceiling clamps against it (`engine::sink_envelope`,
+but only the Starfish Load's `adaptiveStreaming` ceiling clamps against it (`plx_play_feed::sink_envelope`,
 since 2026-09-03) — the profile sent to PMS still carries no frame-rate limitation at all.
 
 - `manifest.json` — the test matrix, and **installation-independent**: the triggers each case
@@ -846,7 +846,8 @@ Operation cases (each also re-checks not-stuck / no-error afterward):
   3840×1920, so the harness asserts a **width floor**, not an exact size).
 - **video plane bound:** `setMediaVideoData sent`
 - **not stuck:** ≥2 `timeline playing t=<S>s/` reports whose `<S>` climbs; and **no**
-  `smp_cb type=18` / **no** `Playing error`.
+  `smp_cb type=18` / **no** `Playing error`, and no URI probe summary ending in
+  `error:`, `timeout:`, or `refused:`. A terminal URI error settles a failed case early.
 - **seek:** `seek(in-place)` / `in-place seek: ... sendSegment=1` / `seek(transcode)` /
   `reload_at: fresh Load at 140s`.
 - **audio switch:** `route transition: native audio idx=` / `route transition: user retranscode` + `reload_transcode:` (older logs: `audio switch (native)` / `re-transcode:`; both spellings grade).
@@ -918,6 +919,10 @@ Append an entry to `manifest.json` → `cases`:
     // or: {"op":"resume","mode":"directplay"|"transcode","offset_s":600}
     // or: {"op":"pause_resume","delay_ms":25000,"hold_ms":6000,
     //      "min_climb_after_s":20}
+    // or, the same with a seek taken UNDER the Pause (`seek_delay_ms` counts from the autoseek
+    //  gate, 12 s into the player route; the Pause's gate is 6 s):
+    //      {"op":"pause_resume","delay_ms":10000,"hold_ms":18000,"seek_s":30,
+    //       "seek_delay_ms":14000,"min_climb_after_s":12}
   ],
   "expect": {
     "decision": "directplay",       // or "transcode"
@@ -933,7 +938,9 @@ Append an entry to `manifest.json` → `cases`:
 `run.py` derives the triggers from `operations` (`play`→`plxnative-play`, `seek`→`plxnative-autoseek`
 — for `"mode":"rapid"` the op's `script` becomes the trigger content: optional `gap=<ms>` +
 comma-separated steps, absolute `120` or tap-relative `+10`/`-10`, fired one per gap;
-`pause_resume`→one `plxnative-autopause=delay=<ms>,hold=<ms>` script;
+`pause_resume`→one `plxnative-autopause=delay=<ms>,hold=<ms>` script, plus a `plxnative-autoseek`
+when it carries `seek_s` (graded by `op_paused_seek`, which reads the log's own edge order:
+Pause, `autoseek: step`, `seek: paused frame restored`, Resume);
 `audio_switch`/`subtitle`→`plxnative-menupick`) and picks the
 per-op assertions from the `op`/`mode`. Track-menu row semantics: **audio tab** row = the
 metadata audio index (0-based, file order); **subtitles tab** row 0 = *Off*, row 1 = *Forced only*
@@ -986,10 +993,199 @@ needs a fixture short enough to actually run out.
 ## The synthetic tier (the default) — the player, with no Plex behind it
 
 ```sh
-make fixtures-pipeline          # ~0.9 GB into $FIXTURES_OUT/pipeline; ~4 min, once
+make fixtures-pipeline          # ~1.1 GB into $FIXTURES_OUT/pipeline; ~4 min, once
 ./tests/run.py                  # runs them on the TV
 ./tests/run.py --list           # offline: what would run, at what resolution, what is missing
 ```
+
+`--extra-trigger NAME[=CONTENT]` also applies to every synthetic case. For example,
+`./tests/run.py --extra-trigger plxnative-uriprobe=load --save-logs /tmp/uri-suite`
+runs the original assertions with the developer URI probe armed. It does not translate the
+buffer-feed assertions or control scripts into a URI backend: inspect each saved log for
+`uriprobe: ... armed variant=at-load` before attributing its result to URI. The controlled ACB
+probe variants are restricted to their known SDR720p24 fixture and must not be applied to this
+mixed-codec matrix.
+
+Five synthetic cases arm the URI probe themselves, through the case's `triggers`, so they take no
+`--extra-trigger` (one for the same name would replace their tokens); see *URI mode* below for how
+they are graded. Three are R-ABR-2 **instruments**, on an UNBOUND probe arm (`window=none`, no ACB
+video plane), and two are the regression **gates**, on a bound plane. The `pipe_uri_product_*` cases
+(below) play the stream through the PRODUCTION URI backend instead of the probe.
+
+The instruments. Two play the fixture server's own `/__abr/ladder/master.m3u8`, which lists the
+rungs as variants (all of them, or only those up to `?top=<rung>`) and so needs those rungs' clips
+from `make fixtures-pipeline`: `pipe_abr_uri_ladder_collapse` (`pipe_abr_down_collapse`'s 40 Mbit/s
+then 0.5 Mbit/s link, probe `load`, `top=6000`) and `pipe_abr_uri_ladder_capped` (an unshaped link,
+the whole ladder, probe `load bpsmax=720000`, the second-lowest rung). The third,
+`pipe_abr_uri_continuous_20000`, plays the one-rung master `/__abr/20000/master.m3u8?continuous=1` on
+an unshaped link. A native player places segments by their timestamps, and the pack's parts each
+restart theirs at 1.48 s, so the ladder master always serves `continuous=1` segments (a per-rung
+master takes the flag in its query): the server moves each segment's PCR, PTS and DTS forward by the
+measured duration of every earlier one (`tests/serve_fixtures.py`, "Continuous timestamps").
+Continuity counters (which restart at every segment) and the audio cut (the audio steps back about
+11 ms where the six-part cycle wraps, every sixth segment) are not rewritten. Run
+`./tests/run.py --filter pipe_abr_uri_ --save-logs DIR`. An unbound arm cannot carry a stream of about
+20 Mbit/s past about 40 MB, by construction (the clock stops near 14 s, no `bufferingStart` fires,
+and `bufferRange` keeps claiming 12 s ahead), so these cases assert only `uri_playing`: the evidence
+is `DIR/<case>.log` (`uriprobe:` lines) and `DIR/<case>.rungs`, the segments the TV fetched per
+requested rung (also printed as `segments fetched by rung (kbps)`).
+
+The gates. `pipe_uri_hls_720p24_20m_bound` plays `pipe_hls_720p24_20m/index.m3u8` (below) with
+`uriprobe=acb-control` and `ptype=0` (each case `triggers` entry `NAME: CONTENT` is written as
+`plxnative-NAME=CONTENT`, so those are the two files `plxnative-uriprobe` and `plxnative-ptype`): the
+plane is ACB-bound, and the same 20 Mbit/s stream that stalls an unbound arm plays through the
+75 s cap. `pipe_uri_hls_720p24_20m_bound_collapse` is that arm through the collapse link, where the
+bound plane's buffered lead drains in plain sight before a mid-playback `bufferingStart`. The ACB
+arm accepts only a stream whose `videoInfo` is exactly 1280x720 at 24 fps, which is why the fixture
+is that and not a 1080p one. Both skip with a reason when the pack lacks the stream or any of its
+segments (a build that stopped half way); `make fixtures-pipeline` builds it (about 230 MB, ~10 s).
+
+The product route. `pipe_uri_product_hls_720p24_20m_bound` and `..._bound_collapse` (`"uri_route":
+"product"`) have the same fixture, link and 75 s cap as the gate pair, but the app plays the stream with
+its production URI backend, bound through ACB, via the debug-only dev route `plxnative-uridev`. The
+harness's own mock PMS is the plan carrier: it starts on the configured `PMS_HOST:PMS_PORT` with the
+`pipe_uri_carrier_720p24.mp4` clip (a 90 s 720p24 progressive twin; one audio stream, no subtitles; built
+by `make fixtures-pipeline`) as ratingKey 990001, the app signs in as the synthetic guest and opens that
+item (`plxnative-play=990001`, with `quality=original`, `audioenh=off`, `ptype=0` pinned), and the runner
+writes `plxnative-uridev` as `acb part=991001 pms=<PMS_HOST>:<PMS_PORT> url=<fixture server>/<fixture>`,
+so the app's qualifier answers with the fixture's URL and the TV fetches the HLS stream from the fixture
+server (shaper and wire counters keep working). `pms=` pins the server by ORIGIN, not by machine
+identifier: a `--guest --mock` boot registers its primary by address only (nothing learns the id before the
+first play), as `http://PMS_HOST:PMS_PORT` from the same `src/config.local.h` the mock listens on, so the
+runner writes that exact address (a canonical dotted quad; a hostname, a leading-zero spelling or the real
+PMS's port 32400 is refused before anything starts), and `plxnative-pms-origin` is never armed in this mode
+(it would move the primary off that address). A log that has `uri-dev: armed` and never `uri: service
+playing` fails the case (`uri_dev_offer`), and the message says which way: `dev route armed but no product
+offer (pin mismatch?)` when the log has no `uri-acb:` line at all (the qualifier never offered the
+backend the stream), `offer made but the ACB bind never completed ...` when the backend started its
+ACB sequence and stopped before the picture (the log has `uri-acb: waiting for the service's source
+envelope` when the service sent no usable video facts). A product case also fails by name, as
+`uri_route_held`, when the route fell back to the Feed: the URI session ended (`ls2uri: released` or
+`quarantined`) and a line only the Feed route writes follows (`decision: part=... ->`, `load: v=...`,
+`stream: ... path=`). A fallback plays the same stream and writes every plane line the URI backend does,
+so without this grade it reads as a pass. `uriprobe` is never armed in this mode
+(`--extra-trigger` for it, `playurl`, `uridev`, `play`, `ptype` or `quality` is refused), the runner
+deletes `plxnative-uridev` when the case ends however it ends, and a log that does not show the
+synthetic mock (`check_synthetic_identity`) is not graded. A case skips with a reason when the install is
+not `debug`, `src/config.local.h` has no `PMS_HOST`/`PMS_PORT`, or the carrier is missing. The probe
+pair stays as the instrument baseline to compare against.
+
+A product case starts at 0 because the runner closes the previous case's app BEFORE it starts the mock
+(`run_uri_product_case`): every case's mock listens on the same address, the previous app is still playing
+when the next case starts, and its close reports `stopped` at its position, which a mock that is already up
+stores as the carrier's `viewOffset` (the collapse case then resumed at 76.8 s of its 90 s clip and ran to
+the end of stream instead of draining). The resume point is server state, not the app's.
+
+The audio pair. `pipe_uri_product_hls_720p24_2a_audio2` and `..._audio1` play `pipe_hls_720p24_2a` (60 s of
+1280x720 at 24 fps, 4 Mbit/s CBR, about 33 MB, two mono AAC streams in the TS: `eng` at 440 Hz first, `ger` at
+880 Hz second) through its carrier `pipe_uri_carrier_720p24_2a.mp4` (the same two tags in the same order, no
+subtitles, about 10 MB); `make fixtures-pipeline` builds both. They measure what the 4.5 service does when the
+backend's startup audio choice is NOT the track it loaded on. `audio2` sets `carrier_audio: 2`
+(`mock_pms.py --extra-media-audio 2`: the mock reports the second stream `selected` and not default, which the
+app's own audio ladder takes once track memory is cleared), and `uri_audio_selected` `{"path": "select",
+"index": 1}` passes only when the backend SENT a native `selectTrack` to that index (`uri: selectTrack sent
+kind=audio index=1 stream=SID`: the native index and the Plex stream id it stands for) and the service
+confirmed it before the first Play (`uri-trace: ... ev=trackSelected`, which names `type=audio index=N` when the
+service does and then must name index 1, or an `ev=audioInfo ... track=` that moved off the load-time track,
+then `uri: service playing`): a refusal fails quoting the `uri: control SelectTrack ... refused (TimedOut)`
+line together with the sent line and any track the service named, a send to another index fails quoting the sent line, no sent line at all fails as "never sent", and `uri:
+audio index=N is already selected (audioInfo); no selectTrack sent` fails it as "nothing was sent". The native
+index the app asks for is the selected stream's 0-based position among the Part's audio streams in container
+order (`OriginalRequest::audio_ordinal`, mapped by `dev::uri_product::DevQualifier`), the numbering
+`audioInfo.track` is taken to use; that numbering is part of what the case tests. `audio1` is the control: no
+`carrier_audio`, the first stream is the pick, and `{"path": "already", "index": 0}` wants that
+already-selected line and no sent line.
+
+The mock route. `pipe_side_reader_srt` (`"pms_route": "mock"`) is the one synthetic case that plays an item of the
+harness's mock PMS on the ordinary Feed route, to start the subtitle side reader (`player::subside`) with no real
+account behind it. Same preconditions and order as the product route (debug install, `--guest --mock`, the mock on the
+`src/config.local.h` address, a log that does not show the synthetic version is not graded), but no `plxnative-uridev`
+and no fixture-server stream: `carrier` (`pipe_side_reader_srt.mkv`, one embedded SubRip track) is the mock's only item,
+`carrier_subtitle: 1` makes that track the SERVER-selected one (`mock_pms.py --extra-media-subtitle 1`, so no selection
+is ever written to a server), `audio_enhancements_boot: loudness` makes the cold start the enhanced remux, and `fixture`
+(`pipe_side_reader_remux.mkv`, the same picture without the subtitle) is what the mock serves for it
+(`--transcode-fixture`). It grades the app's log: `op_audio_enhancement_subtitle` (`server-selected subtitle`,
+`subside: open` on that ordinal, no `subside: failed`, a `sub cue .. len=N>0`) plus a `subside: anchor` line after the open.
+Run it with `./tests/run.py --filter pipe_side_reader_srt` (take the TV lock first).
+
+### URI mode — how a URI case is graded
+
+A case whose own `triggers` include `uriprobe` (the probe route), or that says `"uri_route": "product"`
+(the product route, below), plays through the TV's native player, which writes
+none of the buffer-feed lines the other assertions read (`stream: ... path=`, `load:`, media-position
+samples). Grading it on them fails by construction, so `evaluate_pipeline` runs the URI branch
+INSTEAD: `no_error` and `server_wire` are kept, `stream_path`, `load_decl`, `codec`, `video_bound`,
+`pos_climb`, `presented_rate` and the operation assertions are not, and the case never exits early
+(the saved `uriprobe:` window is the evidence, and a stall can come late). `--extra-trigger
+plxnative-uriprobe=...` does not switch a case into this mode: it runs the Feed assertions with the
+probe armed on top.
+
+On the probe route every line the grader reads starts `uriprobe: t=<ms since arm> ...`, on the probe's
+own clock; the plane lines (`videoplane: BOUND`, `acb callback task=N ev=1 ...`) carry no `t=`. The probe does not
+end on its own, so a healthy run has NO terminal `summary` line (the harness stops at the cap); a run
+whose clock stops ends 10 s later with `summary ... end=timeout:currentTime`.
+
+`no_error` reads the summary instead of matching it: a `load=` that is not `ok`, an `end=refused:*`,
+an `end=error:*` or a `timeout:` before playback (`register`, `acb`, `acb-video`, `load`, `play`) is an
+error; `eos`, `back`, `script` and `timeout:currentTime` are not. A stopped clock is graded by
+`uri_max_stall_s`, and a collapse case ends that way on purpose.
+
+The URI expectations, all in `expect` and all optional:
+
+- **`uri_playing`** (`true`): the native player played. The terminal `summary` (the last one) must say
+  `playing=yes` and `currentTime_advanced=yes`; with no summary, the log must show an `ev=playing`
+  and a `currentTime` that strictly advanced after it.
+- **`uri_plane_bound`** (`true`): the ACB video plane was bound. A `videoplane: BOUND` line (matched
+  case-sensitively, so `videoplane: unbound` never counts), and `acb callback task=N ev=1` for each
+  of tasks 1-4, none answering another `ev`. Task 5 is the release and is ignored. On the product
+  route the task ids are read from the log instead: `acb display fullscreen=1 rv=1 task=N` and
+  `acb playing rv=1 task=M` (both `rv=1`) each need an `acb callback task=<id> ev=1`, no callback may
+  answer another `ev` except the id in an `acb unloaded ... task=K` line, and line order is not graded.
+  Those plane lines are written through the display sink by the Feed route too, so a product case
+  reads them only after the URI backend's OWN lines: `uri-acb: bound` and `uri-acb: display/PLAYING
+  completed` (a `uri-acb: display/PLAYING completion failed` line fails it).
+- **`uri_clock_past_s: N`**: the largest `ev=currentTime value=<ms>` is at least N seconds. It also
+  counts as the depth the pack must have (`_resolve_fixtures` skips a pack shorter than 0.8 x N).
+- **`uri_max_stall_s: S`**: while playing, the media clock never stood still for more than S seconds
+  of probe time. The unit is the gap between successive strictly increasing `currentTime` samples,
+  from the first `ev=playing`, PLUS the stretch from the last advance to the end of what the probe
+  observed (the last `currentTime`, `bufferRange` or `streamingInfo`, or the `summary`, whichever is
+  last). The trailing stretch is the one that catches a stream that simply stops, because every gap
+  between samples then stays at a second. A gap that overlaps a pause (`drive pause`/`call pause`
+  to the `ev=playing` after `drive resume`) or a seek (`drive seek`/`call seek` to `ev=seekDone`) is
+  not a stall. A rebuffer is: a mid-playback `bufferingStart` stops the clock.
+- **`uri_drain_warning_s: W`**, for collapse cases: a collapse is warned of. There is a
+  `bufferingStart` after the first `ev=playing` (the one before it is the initial fill), and before
+  it the buffered lead fell without once rising for at least W seconds, counted from the last
+  sample at the run's peak to the `bufferingStart`. Equal consecutive readings are allowed (the
+  lead is whole seconds and repeats); a buffer that sat full and then stopped is not a warning,
+  however long it sat. The lead is `bufferRange.remainingTime` where the line carries it and
+  `endTime - beginTime` where it does not, sample by sample. The field is NOT reliably present on the
+  4.5 set: the same binary printed it on every `bufferRange` line in one session and on none in the
+  next (cause not determined), and a bound plane reports a real `endTime` either way, so the window
+  is the same drain (12, 11, 10, 8, 7, 5, 4, 3 ahead of the `bufferingStart` on the TV capture
+  without the field).
+
+- **`uri_service_playing`** and **`uri_presented`** (`true`, product route only): the production
+  backend wrote its own `uri: service playing` line (the words inside the `uri: presented (service
+  playing; ...` line do not count), and `uri: presented (... from P to N ms)` with N > P, i.e. the clock
+  advanced under the claimed picture.
+
+The product route reads the same event text under another prefix: `uri-trace: t=<ms> ev=<name> <detail>`
+(byte-identical to the probe's `ev=` text), so `uri_playing` (from the events only: it has no
+`summary`), `uri_clock_past_s`, `uri_max_stall_s` and `uri_drain_warning_s` run unchanged. Its
+`no_error` also fails on `uri-acb: the bind failed`, `uri-acb: bind not granted`, `uri: product driver
+installation refused` and a `uri-dev: ... ignored` line (the dev route refused its trigger).
+
+A key starting `uri_` that is not in this list fails the case (`uri_expect`) instead of grading
+nothing (the two product-only keys are unknown on a probe case), and `test_harness.py` pins that every
+such key sits on a case that arms the probe or says `"uri_route": "product"`.
+
+If the TV cannot reach the fixture server over the LAN, `--fixtures-loopback --fixtures-port PORT`
+advertises the fixtures through the TV's loopback interface. Hold the TV lease and keep
+`tools/tv-ssh ssh -o ExitOnForwardFailure=yes -R PORT:127.0.0.1:PORT -N tv` running for that
+case or suite, then stop that forward when the run ends. The harness still owns and grades its
+fixture server; this option changes the advertised interface only.
 
 Nothing else is required — no `manifest.local.json`, no PMS, no token, no ratingKey, no library, no
 sharing. The TV address comes from the overlay's `tv` if you have one, else from `tools/tv-config.sh`
@@ -1165,7 +1361,7 @@ plays the same clip, lets it end, and restarts it. That needed an app change and
 one that works: `/tmp/plxnative-replay[=N]` re-arms `app.rs`'s one-shot `auto_tried` latch N times
 when a `plxnative-playurl` playback reaches EOS, so the next frame goes back through the entry it
 booted through. `teardown` clears the URL and the `ended` flag on a real stop, and
-`engine::start_bufferfeed` re-reads `player::playurl::playurl()` whenever `route::url()` is empty. One more
+`route_start::start_bufferfeed` re-reads `player::playurl::playurl()` whenever `route::url()` is empty. One more
 piece was NOT in place until 2026-09-02: the fixture entry asks the route reducer for a start
 owner directly (no `begin_playback_request` resolve in front of it), and a completed stop used to
 leave the reducer latched in `Stopping`, which refused it — one Load where the case needs two. The

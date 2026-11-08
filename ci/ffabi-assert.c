@@ -1,4 +1,4 @@
-/* Compile-time proof that rust-modules/media/src/ff.rs's FFmpeg ABI constants match the FFmpeg the app
+/* Compile-time proof that rust-modules/media-codecs/src/ffi.rs's FFmpeg ABI constants match the FFmpeg the app
  * SHIPS — compiled against the very headers those libraries were built from.
  *
  * WHAT CHANGED. This file used to check offsets against the TELEVISION's FFmpeg, re-derived from
@@ -16,7 +16,7 @@
  * of the Rust staticlib, so no binary is produced if a constant is wrong.
  *
  * If the bundled version is ever bumped: `tools/ffabi-dump.sh` prints the new table, paste it into
- * ff.rs, and this file fails on every constant that moved until you do.
+ * media-codecs/src/ffi.rs, and this file fails on every constant that moved until you do.
  */
 #include <stddef.h>
 #include <libavformat/avformat.h>
@@ -44,7 +44,7 @@
  * VERSIONS at run time on a device whose libraries we could not inspect; this picks between two
  * ABIs of ONE version at COMPILE time, on evidence the compiler has in front of it.
  *
- * **It has already earned its keep.** `AVSubtitleRect` was modelled in ff.rs with `flags` last
+ * **It has already earned its keep.** `AVSubtitleRect` was modelled in ff.rs (now media-codecs/src/ffi.rs) with `flags` last
  * when the header puts it before `type` — latent, because nothing reads those four fields, and
  * invisible to the 32-bit assertions because they never asserted `flags` at all. Deriving the
  * table a second time at a different width is what surfaced it: on the host the model's `flags`
@@ -56,11 +56,11 @@
 #define SAME32(expr, want, what)
 #define SAME64(expr, want, what) SAME(expr, want, what)
 #else
-#error "ff.rs has an ABI table for 32- and 64-bit pointers and no other width"
+#error "media-codecs/src/ffi.rs has an ABI table for 32- and 64-bit pointers and no other width"
 #endif
 
-/* --- the version ff.rs's constants describe, and the version boot() demands at runtime. --- */
-SAME(LIBAVFORMAT_VERSION_MAJOR, 63, "bundled libavformat is not 63 — ff.rs's table is for 9.0");
+/* --- the version media-codecs/src/ffi.rs's constants describe, and the version boot() demands at runtime. --- */
+SAME(LIBAVFORMAT_VERSION_MAJOR, 63, "bundled libavformat is not 63 — media-codecs/src/ffi.rs's table is for 9.0");
 SAME(LIBAVCODEC_VERSION_MAJOR, 63, "bundled libavcodec is not 63");
 SAME(LIBAVUTIL_VERSION_MAJOR, 61, "bundled libavutil is not 61");
 
@@ -72,7 +72,7 @@ SAME64(offsetof(AVStream, codecpar), 16, "OFF_STREAM_CODECPAR != 12 [host]");
 SAME32(offsetof(AVStream, time_base), 20, "OFF_STREAM_TIME_BASE != 20");
 SAME64(offsetof(AVStream, time_base), 32, "OFF_STREAM_TIME_BASE != 20 [host]");
 /* The container's per-track tags — where a track's NAME is, and the only place it is for an MP4
-   (PMS sends Stream.title for Matroska and nothing at all for MP4; see ff.rs's stream_name). The
+   (PMS sends Stream.title for Matroska and nothing at all for MP4; see play-feed/src/ff.rs's stream_name). The
    int64 start_time/duration/nb_frames ahead of it are 8-ALIGNED on ARM EABI, so there is a 4-byte
    pad after time_base that a 64-bit reading of the struct does not show — the same trap
    AVFrame.pts carries below. */
@@ -113,7 +113,7 @@ SAME64(offsetof(AVFrame, format), 116, "OFF_FRAME_FORMAT != 80 [host]");
    likely to be got wrong by reading a struct definition on a 64-bit machine. This assertion is
    the reason the FFmpeg 9 bump did not ship a wrong PTS: it fired here, on a desk. */
 SAME32(offsetof(AVFrame, pts), 96, "OFF_FRAME_PTS != 96 (ARM EABI int64 alignment)");
-/* The audio half, read by ff.rs's SpeedDecoder (playback speed) and ff_pcm.rs's PcmDecoder (FLAC, ALAC, LPCM). */
+/* The audio half, read by media-codecs/src/speed_decoder.rs's SpeedDecoder (playback speed) and ff_pcm.rs's PcmDecoder (FLAC, ALAC, LPCM). */
 SAME32(offsetof(AVFrame, extended_data), 64, "OFF_AFRAME_EXTENDED_DATA != 64");
 SAME64(offsetof(AVFrame, extended_data), 96, "OFF_AFRAME_EXTENDED_DATA != 96 [host]");
 SAME32(offsetof(AVFrame, nb_samples), 76, "OFF_AFRAME_NB_SAMPLES != 76");
@@ -146,7 +146,7 @@ SAME(AV_SAMPLE_FMT_FLTP, 8, "speed_audio::SampleFormat::from_av FLTP");
 SAME(AV_SAMPLE_FMT_DBLP, 9, "speed_audio::SampleFormat::from_av DBLP");
 SAME64(offsetof(AVFrame, pts), 136, "OFF_FRAME_PTS != 96 (ARM EABI int64 alignment) [host]");
 
-/* --- AVPacket: modelled field-by-field in ff.rs. Never allocated by us (av_packet_alloc does),
+/* --- AVPacket: modelled field-by-field in media-codecs/src/ffi.rs. Never allocated by us (av_packet_alloc does),
        but a short model would be a silent overread. sizeof went 72 -> 80 at FFmpeg 5.0:
        convergence_duration left with FF_API_CONVERGENCE_DURATION, opaque/opaque_ref/time_base
        arrived. --- */
@@ -166,13 +166,13 @@ SAME64(offsetof(AVPacket, duration), 64, "AVPacket.duration moved [host]");
 SAME32(offsetof(AVPacket, time_base), 72, "AVPacket.time_base moved");
 SAME64(offsetof(AVPacket, time_base), 96, "AVPacket.time_base moved [host]");
 
-/* --- AVCodecParameters: ff.rs models a read-only PREFIX and must NEVER allocate one. sizeof is
+/* --- AVCodecParameters: media-codecs/src/ffi.rs models a read-only PREFIX and must NEVER allocate one. sizeof is
        168 against the bundled FFmpeg 9.0 headers — the number the assertion below demands, and the
        one that compiles — and avcodec_parameters_from_context memsets the full size, so a stack
        copy sized by our model is a stack smash. venc allocates through the library.
        (This prose said 176 while the assertion three lines down said 168. This file is the
        authority on the ABI table, so a wrong figure in its own comment is the one place it gets
-       believed: the next person bumping FFmpeg reads it and edits ff.rs's model to match.) --- */
+       believed: the next person bumping FFmpeg reads it and edits media-codecs/src/ffi.rs's model to match.) --- */
 SAME32(sizeof(AVCodecParameters), 168, "sizeof(AVCodecParameters) != 168 — do not stack-allocate it");
 SAME64(sizeof(AVCodecParameters), 184, "sizeof(AVCodecParameters) != 168 — do not stack-allocate it [host]");
 SAME(offsetof(AVCodecParameters, codec_type), 0, "AVCodecParameters.codec_type moved");
@@ -188,7 +188,7 @@ SAME64(offsetof(AVCodecParameters, width), 72, "AVCodecParameters.width moved [h
 SAME32(offsetof(AVCodecParameters, height), 60, "AVCodecParameters.height moved");
 SAME64(offsetof(AVCodecParameters, height), 76, "AVCodecParameters.height moved [host]");
 /* The stream-level side-data list, walked for the Dolby Vision configuration record, and the
-   three colour fields logged beside it. All five were modelled in ff.rs long before anything
+   three colour fields logged beside it. All five were modelled in media-codecs/src/ffi.rs long before anything
    read them, which is exactly why they are asserted now rather than then. */
 SAME32(offsetof(AVCodecParameters, coded_side_data), 20, "AVCodecParameters.coded_side_data moved");
 SAME64(offsetof(AVCodecParameters, coded_side_data), 32, "AVCodecParameters.coded_side_data moved [host]");
@@ -209,7 +209,7 @@ SAME64(offsetof(AVCodecParameters, ch_layout), 128, "AVCodecParameters.ch_layout
 SAME(offsetof(AVChannelLayout, nb_channels), 4, "AVChannelLayout.nb_channels moved");
 
 /* --- AVPacketSideData: one entry of the list above. `size` is a size_t, so the whole struct is
-       12 bytes on 32-bit ARM and 24 on the 64-bit host — ff.rs spells that field `usize` so the
+       12 bytes on 32-bit ARM and 24 on the 64-bit host — media-codecs/src/ffi.rs spells that field `usize` so the
        model is right on both. --- */
 SAME32(sizeof(AVPacketSideData), 12, "sizeof(AVPacketSideData) != 12");
 SAME64(sizeof(AVPacketSideData), 24, "sizeof(AVPacketSideData) != 12 [host]");
@@ -235,9 +235,9 @@ SAME(offsetof(AVDOVIDecoderConfigurationRecord, dv_bl_signal_compatibility_id), 
 SAME(offsetof(AVDOVIDecoderConfigurationRecord, dv_md_compression), 8, "DOVI dv_md_compression moved");
 SAME(AV_PKT_DATA_DOVI_CONF, 29, "AV_PKT_DATA_DOVI_CONF != 29 — the side-data enum shifted");
 
-/* --- AVSubtitle: avcodec_decode_subtitle2 writes into ff.rs's stack copy, so this size IS
+/* --- AVSubtitle: avcodec_decode_subtitle2 writes into media-codecs/src/ffi.rs's stack copy, so this size IS
        load-bearing. Unchanged from n3.3. --- */
-SAME(sizeof(AVSubtitle), 32, "sizeof(AVSubtitle) != 32 — ff.rs stack-allocates this one");
+SAME(sizeof(AVSubtitle), 32, "sizeof(AVSubtitle) != 32 — media-codecs/src/ffi.rs stack-allocates this one");
 SAME(offsetof(AVSubtitle, num_rects), 12, "AVSubtitle.num_rects moved");
 SAME(offsetof(AVSubtitle, rects), 16, "AVSubtitle.rects moved");
 SAME(offsetof(AVSubtitle, pts), 24, "AVSubtitle.pts moved");
@@ -252,7 +252,7 @@ SAME32(offsetof(AVSubtitleRect, data), 20, "AVSubtitleRect.data != 20 (the AVPic
 SAME64(offsetof(AVSubtitleRect, data), 24, "AVSubtitleRect.data != 20 (the AVPicture is gone) [host]");
 SAME32(offsetof(AVSubtitleRect, linesize), 36, "AVSubtitleRect.linesize moved");
 SAME64(offsetof(AVSubtitleRect, linesize), 56, "AVSubtitleRect.linesize moved [host]");
-/* `flags` sits BETWEEN linesize and type, and ff.rs modelled it last until 2026-08-28. Nothing
+/* `flags` sits BETWEEN linesize and type, and ff.rs (now media-codecs/src/ffi.rs) modelled it last until 2026-08-28. Nothing
    reads these four, so it was latent — and it was invisible here because `flags`, `text` and
    `ass` were never asserted. They are now: an ORDER is only pinned by asserting every member of
    it, and the three that were missing are exactly the three that were wrong. */
@@ -271,13 +271,13 @@ SAME64(offsetof(AVBSFContext, par_in), 24, "AVBSFContext.par_in moved [host]");
 SAME32(offsetof(AVBSFContext, time_base_in), 20, "AVBSFContext.time_base_in moved");
 SAME64(offsetof(AVBSFContext, time_base_in), 40, "AVBSFContext.time_base_in moved [host]");
 
-/* --- enum constants ff.rs hardcodes. H264/HEVC/E-AC3 all shifted down when FF_API_XVMC and
+/* --- enum constants media-codecs/src/ffi.rs hardcodes. H264/HEVC/E-AC3 all shifted down when FF_API_XVMC and
        FF_API_VOXWARE were removed; the n3.3 values are 28 / 174 / 0x15029. --- */
 SAME(AV_CODEC_ID_H264, 27, "AV_CODEC_ID_H264 != 27");
 SAME(AV_CODEC_ID_HEVC, 172, "AV_CODEC_ID_HEVC != 172 (173 on FFmpeg 6 — the enum shifts again)");
 SAME(AV_PKT_DATA_MASTERING_DISPLAY_METADATA, 20, "AV_PKT_DATA_MASTERING_DISPLAY_METADATA != 20");
 SAME(AV_PKT_DATA_CONTENT_LIGHT_LEVEL, 22, "AV_PKT_DATA_CONTENT_LIGHT_LEVEL != 22");
-/* `player/vp9_hdr.rs` parses these two structs out of raw bytes at hard-coded offsets, so a size
+/* `play-feed/src/vp9_hdr.rs` parses these two structs out of raw bytes at hard-coded offsets, so a size
    alone cannot pin them: a reorder that keeps 88 bytes would swap fields silently. Every member is
    4-byte aligned, so the offsets are the same at both pointer widths. */
 SAME(sizeof(AVMasteringDisplayMetadata), 88, "AVMasteringDisplayMetadata size moved");

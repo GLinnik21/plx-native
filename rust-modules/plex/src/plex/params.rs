@@ -337,6 +337,18 @@ pub struct TimelineReport<'a> {
     pub continuing: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ServerStop {
+    pub code: i64,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TimelineAnswer {
+    pub taken: bool,
+    pub stop: Option<ServerStop>,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum TimelineState {
     Playing,

@@ -1,5 +1,30 @@
 use super::*;
 
+/// The closed-loop plant keeps these values independently of the live Feed adapter. Its parity
+/// test compares them with the physical queue and throttle declarations when Feed is present.
+fn test_plant_geometry() -> PlantGeometry {
+    PlantGeometry {
+        video_queue_bytes: sim::VIDEO_QUEUE_BYTES,
+        audio_queue_bytes: sim::AUDIO_QUEUE_BYTES,
+        video_lead_ms: sim::VIDEO_LEAD_MS,
+        audio_lead_ms: sim::AUDIO_LEAD_MS,
+    }
+}
+
+fn measured_catalog() -> HlsActuatorCatalog {
+    HlsActuatorCatalog::measured().with_plant_geometry(Some(test_plant_geometry()))
+}
+
+#[test]
+fn missing_physical_geometry_cannot_certify_a_modeled_reserve() {
+    let catalog = HlsActuatorCatalog::measured();
+    let policy = AbrPolicy::measured();
+    let candidate = catalog.candidate(Rung::P720);
+    assert!(!catalog.modeled_sustainable(candidate, 120_000, &policy, 90_000));
+    assert!(catalog.best_sustainable(120_000, &policy, 90_000).is_none());
+    assert!(PlantGeometry::from_feed(0, 1_048_576, 1_600, 3_600).is_none());
+}
+
 /// The [`candidate_warmup_budget`] floor, absent. Named rather than written out at each site so a
 /// test that is grading the RESERVE bound says so — `predicted_transfer` returns exactly this
 /// whenever the link is unmeasured, so it is also the real value on a cold transaction.
@@ -113,13 +138,13 @@ fn sample_of(media_ms: u32, network_kbps: u32, ratio_pm: u32, buffered_ms: i64) 
 /// because a catalog that reaches 4K reaches it only when the SOURCE does — and asserting on
 /// an unbounded catalog would grade a configuration no real playback has.
 fn hd_catalog() -> HlsActuatorCatalog {
-    HlsActuatorCatalog::measured().limited_to((3840, 2176), (1920, 1080))
+    measured_catalog().limited_to((3840, 2176), (1920, 1080))
 }
 
 /// A UHD source on the dev set's own decode bound, which is what makes the 4K actuator
 /// feasible at all.
 fn uhd_catalog() -> HlsActuatorCatalog {
-    HlsActuatorCatalog::measured().limited_to((3840, 2176), (3840, 2160))
+    measured_catalog().limited_to((3840, 2176), (3840, 2160))
 }
 
 fn controller_at(rung: Rung) -> Controller {
@@ -1151,7 +1176,7 @@ fn a_long_pause_turns_the_estimate_into_a_weak_prior() {
 #[test]
 fn an_unopened_original_whose_carried_rung_was_narrowed_away_keeps_the_best_rung_under_it() {
     let policy = AbrPolicy::measured();
-    let hd_only = HlsActuatorCatalog::measured().limited_to((1920, 1088), (3840, 2160));
+    let hd_only = measured_catalog().limited_to((1920, 1088), (3840, 2160));
     assert!(hd_only.feasible().all(|c| c.rung != Rung::Uhd), "sanity: the narrowed catalog has no Uhd");
     assert_eq!(original_open_fallback_rung(Some(Rung::Uhd), &hd_only, &policy), Rung::P1080High);
     assert_eq!(
@@ -1441,7 +1466,7 @@ fn idle_server() -> ProductionEstimate {
 /// reading at twice what that rung needs. Nothing here is chosen — the factor is the cap, and the
 /// rate is the candidate.
 fn healthy_hls() -> CapacityEstimate {
-    let top = HlsActuatorCatalog::measured()
+    let top = measured_catalog()
         .candidate(Rung::P1080High)
         .expected_wire_kbps;
     CapacityEstimate::from_prior(top.saturating_mul(4))
@@ -2392,19 +2417,19 @@ fn an_infeasible_raster_is_removed_before_any_scoring() {
         Some(Rung::P1080High),
         "a 1080p source must not make PMS upscale — 2.1x the server work for no picture",
     );
-    let hd_only_device = HlsActuatorCatalog::measured().limited_to((1920, 1088), (3840, 2160));
+    let hd_only_device = measured_catalog().limited_to((1920, 1088), (3840, 2160));
     assert_eq!(
         hd_only_device.best_for_budget(huge_budget).map(|c| c.rung),
         Some(Rung::P1080High),
         "a 1080p-limited decoder cannot be talked into 4K by a fast link",
     );
     // A zero on either axis is "nobody said", not a forbidden zero-pixel picture.
-    let unmeasured = HlsActuatorCatalog::measured().limited_to((3840, 2176), (0, 0));
+    let unmeasured = measured_catalog().limited_to((3840, 2176), (0, 0));
     assert_eq!(
         unmeasured.best_for_budget(huge_budget).map(|c| c.rung),
         Some(Rung::Uhd)
     );
-    assert!(HlsActuatorCatalog::measured()
+    assert!(measured_catalog()
         .limited_to((0, 0), (0, 0))
         .best_for_budget(320)
         .is_some());
@@ -2416,7 +2441,7 @@ fn an_infeasible_raster_is_removed_before_any_scoring() {
 /// are wider than 16:9.
 #[test]
 fn a_scope_source_keeps_every_rung_that_would_not_scale_it() {
-    let scope = HlsActuatorCatalog::measured().limited_to((3840, 2176), (1918, 802));
+    let scope = measured_catalog().limited_to((3840, 2176), (1918, 802));
     let rungs: Vec<Rung> = scope.feasible().map(|c| c.rung).collect();
     assert!(
         rungs.contains(&Rung::P1080High) && rungs.contains(&Rung::P1080M12),
@@ -2437,10 +2462,10 @@ fn a_scope_source_keeps_every_rung_that_would_not_scale_it() {
     );
 
     // The same rule on a 4K source keeps the 4K point, because nothing smaller covers it.
-    let uhd = HlsActuatorCatalog::measured().limited_to((3840, 2176), (3840, 2160));
+    let uhd = measured_catalog().limited_to((3840, 2176), (3840, 2160));
     assert_eq!(uhd.best_for_budget(60_000).map(|c| c.rung), Some(Rung::Uhd));
     // ...and on a scope 4K master, where the box matches on width alone.
-    let uhd_scope = HlsActuatorCatalog::measured().limited_to((3840, 2176), (3840, 1600));
+    let uhd_scope = measured_catalog().limited_to((3840, 2176), (3840, 1600));
     assert_eq!(
         uhd_scope.best_for_budget(60_000).map(|c| c.rung),
         Some(Rung::Uhd)
@@ -2935,7 +2960,7 @@ fn starvation_horizon_distinguishes_harmless_deficit_from_emergency() {
     // A 12x shortfall against ten seconds is ten seconds away.
     let severe = starvation_horizon(10_000, 60_000, 5_000);
     assert_eq!(severe.seconds, Some(10));
-    let current = HlsActuatorCatalog::measured().candidate(Rung::P1080High);
+    let current = measured_catalog().candidate(Rung::P1080High);
     assert!(
         candidate_risk(
             current,
@@ -4561,7 +4586,7 @@ fn an_upshift_pin_still_waits_for_the_full_reserve() {
 /// what the player must rely on after returning to the old cursor.
 #[test]
 fn a_rejected_candidate_preserves_the_current_operating_points_bag() {
-    let mut controller = Controller::starting_at(Rung::P1080, None, HlsActuatorCatalog::measured());
+    let mut controller = Controller::starting_at(Rung::P1080, None, measured_catalog());
     let Decision::Prime(proposal) =
         controller.observe_next(sample_bytes(250_000, 300_000, 300, 20_000))
     else {
@@ -4579,7 +4604,7 @@ fn a_rejected_candidate_preserves_the_current_operating_points_bag() {
 /// exact evidence the excitation just bought.
 #[test]
 fn a_committed_candidate_replaces_the_smaller_operating_points_bag() {
-    let mut controller = Controller::starting_at(Rung::P1080, None, HlsActuatorCatalog::measured());
+    let mut controller = Controller::starting_at(Rung::P1080, None, measured_catalog());
     let Decision::Prime(proposal) =
         controller.observe_next(sample_bytes(250_000, 300_000, 300, 20_000))
     else {
@@ -4849,10 +4874,11 @@ fn the_refill_filter_admits_a_prefix_of_the_ladder() {
             let admitted: Vec<bool> = LADDER
                 .iter()
                 .map(|rung| {
-                    let wire = HlsActuatorCatalog::measured()
+                    let wire = measured_catalog()
                         .candidate(*rung)
                         .expected_wire_kbps;
                     plant::refill_admits(
+                        test_plant_geometry(),
                         wire,
                         wire.saturating_sub(policy.assumed_audio_kbps),
                         policy.assumed_audio_kbps,
@@ -4919,10 +4945,11 @@ fn the_refill_filter_binds_at_a_low_reserve_and_is_shadowed_at_the_gate() {
     // reserve that clears the gate also zeroes the deficit.
     let segment = 2_000i64;
     for rung in LADDER {
-        let wire = HlsActuatorCatalog::measured()
+        let wire = measured_catalog()
             .candidate(rung)
             .expected_wire_kbps;
         let reachable = plant::b_max_est_ms(
+            test_plant_geometry(),
             wire.saturating_sub(policy.assumed_audio_kbps),
             policy.assumed_audio_kbps,
         ) * i64::from(policy.buffer_reserve_fraction_pm)
@@ -4951,10 +4978,11 @@ fn no_reserve_gate_asks_for_more_than_the_queues_can_hold() {
     let policy = AbrPolicy::measured();
     let segment = 2_000i64;
     for rung in LADDER {
-        let wire = HlsActuatorCatalog::measured()
+        let wire = measured_catalog()
             .candidate(rung)
             .expected_wire_kbps;
         let ceiling = plant::b_max_est_ms(
+            test_plant_geometry(),
             wire.saturating_sub(policy.assumed_audio_kbps),
             policy.assumed_audio_kbps,
         );
@@ -4975,10 +5003,11 @@ fn no_reserve_gate_asks_for_more_than_the_queues_can_hold() {
     }
     // The loosening is confined to the top, which is what `min` is for: at the bottom of the
     // ladder the ceiling term is tens of seconds and the constant still binds, unchanged.
-    let bottom = HlsActuatorCatalog::measured()
+    let bottom = measured_catalog()
         .candidate(Rung::P240)
         .expected_wire_kbps;
     let bottom_ceiling = plant::b_max_est_ms(
+        test_plant_geometry(),
         bottom.saturating_sub(policy.assumed_audio_kbps),
         policy.assumed_audio_kbps,
     ) * i64::from(policy.buffer_reserve_fraction_pm)
@@ -5727,7 +5756,7 @@ fn the_controller_rebases_its_reserve_when_it_commits() {
 #[test]
 fn a_rendition_cannot_score_above_the_master_it_encodes() {
     let policy = AbrPolicy::measured();
-    let catalog = HlsActuatorCatalog::measured();
+    let catalog = measured_catalog();
     let rich = catalog.candidate(Rung::P1080M18);
     let source_kbps = 8_000;
 
@@ -7642,7 +7671,7 @@ fn the_two_quality_curves_agree_at_every_band_boundary() {
     // The property the rung gate needs and the banded form cannot give: every ladder step is a
     // strict increase. `LADDER` is walked rather than a chosen pair, so a rung added inside a band
     // is covered the day it lands.
-    let catalog = HlsActuatorCatalog::measured();
+    let catalog = measured_catalog();
     for pair in LADDER.windows(2) {
         let (lower, upper) = (pair[0], pair[1]);
         assert!(

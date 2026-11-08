@@ -65,6 +65,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use std::sync::Mutex;
 use std::collections::BTreeMap;
 use serde_json::Value;
+pub use plx_base::detail_parts::{DetailPart, DetailParts};
 
 /// The signed-in profile, in-memory for the UI (the Home profile chip reads this). Set by the boot
 /// gate (from the stored session) and on every profile switch, so it survives an offline boot.
@@ -1232,12 +1233,13 @@ impl DeckPress {
     }
 }
 
-/// Which fact the details line under a focused poster carries (Settings > Libraries > Under
-/// posters > Details). plex's own enum, because plex does not name `ui`: `screens` maps it to the
-/// caption policy's `DetailsKind`. Absence, and any spelling this build does not know, is
-/// `YearLength`.
+/// **The retired single-choice ladder** the Details setting was before it became a set of parts
+/// (Under posters v3): kept only to READ an older profile's record and to WRITE the nearest rung
+/// beside the parts, so a build that predates the parts reads something sensible instead of losing
+/// the choice. plex's own enum, because plex does not name `ui`. Absence, and any spelling this
+/// build does not know, is `YearLength`.
 #[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
-pub enum UnderPostersDetails {
+pub enum UnderPostersLadder {
     /// "2019 · 2h 14m" (the default).
     #[default]
     #[serde(rename = "year_length")]
@@ -1255,97 +1257,151 @@ pub enum UnderPostersDetails {
     None,
 }
 
-impl UnderPostersDetails {
-    /// Every option, the order the picker lists them in.
-    pub const LADDER: [UnderPostersDetails; 5] = [
-        UnderPostersDetails::YearLength,
-        UnderPostersDetails::Genre,
-        UnderPostersDetails::Video,
-        UnderPostersDetails::AgeRatingScore,
-        UnderPostersDetails::None,
+impl UnderPostersLadder {
+    /// Every rung the old picker listed.
+    pub const LADDER: [UnderPostersLadder; 5] = [
+        UnderPostersLadder::YearLength,
+        UnderPostersLadder::Genre,
+        UnderPostersLadder::Video,
+        UnderPostersLadder::AgeRatingScore,
+        UnderPostersLadder::None,
     ];
 
-    /// An in-memory index back to an option — out of range is the default, for the reason
-    /// [`SubtitleTone::from_index`] gives: the ladder can grow or shrink.
-    pub fn from_index(i: u8) -> UnderPostersDetails {
-        Self::LADDER.get(i as usize).copied().unwrap_or_default()
+    /// **The movie parts an old rung stands for** (the migration): Year · Length, Genre, Video
+    /// quality, Age rating · Score, Nothing.
+    pub fn movie_parts(self) -> DetailParts {
+        match self {
+            UnderPostersLadder::YearLength => DetailParts::MOVIE_DEFAULT,
+            UnderPostersLadder::Genre => DetailParts::of(&[DetailPart::Genre]),
+            UnderPostersLadder::Video => DetailParts::of(&[DetailPart::VideoQuality]),
+            UnderPostersLadder::AgeRatingScore => DetailParts::of(&[DetailPart::AgeRating, DetailPart::Score]),
+            UnderPostersLadder::None => DetailParts::NONE,
+        }
     }
 
-    pub fn index(self) -> u8 {
-        Self::LADDER.iter().position(|&m| m == self).unwrap_or(0) as u8
+    /// **The TV show parts an old rung stands for**: the same, except that a show has no video
+    /// quality, so the rung that was never a show's own (a stored `video`, which the old picker
+    /// could not write for a show and a pre-split profile could hold for both) reads as the show's
+    /// default, Year · Seasons, exactly as the old `for_shows` did.
+    pub fn show_parts(self) -> DetailParts {
+        match self {
+            UnderPostersLadder::YearLength | UnderPostersLadder::Video => DetailParts::SHOW_DEFAULT,
+            other => other.movie_parts().for_shows(),
+        }
     }
 
-    /// The options a TV show's details picker lists, in the picker's order: the whole ladder less
-    /// [`Video`](Self::Video), because a show has no single video quality (Settings v2, board 3.3).
-    pub const SHOW_LADDER: [UnderPostersDetails; 4] = [
-        UnderPostersDetails::YearLength,
-        UnderPostersDetails::Genre,
-        UnderPostersDetails::AgeRatingScore,
-        UnderPostersDetails::None,
-    ];
-
-    /// **The TV show details a movie details value stands for**: the value itself, except that
-    /// Video quality (a movie-only line) reads as Year and Seasons. This is both the migration of
-    /// the single `details` setting that served both kinds before Settings v2 (a profile that never
-    /// chose a show line reads its old one through it, [`UnderPosters::show_details`]) and the
-    /// guard that a show can never hold a movie-only value.
-    pub fn for_shows(self) -> UnderPostersDetails {
-        if self == UnderPostersDetails::Video { UnderPostersDetails::YearLength } else { self }
+    /// **The nearest rung to a set of parts**, written beside the parts for a build that predates
+    /// them: no parts is Nothing, otherwise the first rung (in the old ladder's order) that any
+    /// ticked part belongs to.
+    pub fn nearest(parts: DetailParts) -> UnderPostersLadder {
+        let has = |ps: &[DetailPart]| ps.iter().any(|p| parts.contains(*p));
+        if parts.is_empty() {
+            UnderPostersLadder::None
+        } else if has(&[DetailPart::Year, DetailPart::Length, DetailPart::Seasons]) {
+            UnderPostersLadder::YearLength
+        } else if has(&[DetailPart::Genre]) {
+            UnderPostersLadder::Genre
+        } else if has(&[DetailPart::VideoQuality]) {
+            UnderPostersLadder::Video
+        } else {
+            UnderPostersLadder::AgeRatingScore
+        }
     }
 }
 
 /// **What sits under the focused poster** — one setting for every poster grid and row (Library,
-/// Collections, Home, Search, Watchlist): whether the title shows, which fact the details line
-/// carries, and whether a library grid sorted by something other than Title or Random shows the
-/// value it is sorted by on one line under every poster (`sort_value`). Per profile, like
-/// [`DeckPress`]. The default is no title, the year and length, and the sort value On.
+/// Collections, Home, Search, Watchlist): whether the title shows, which facts the details line
+/// carries (a SET of parts per kind of title, [`DetailParts`]), and whether a library grid sorted by
+/// something other than Title or Random shows the value it is sorted by on one line under every
+/// poster (`sort_value`). Per profile, like [`DeckPress`]. The default is no title, the year and
+/// length of a movie and the year and seasons of a show, and the sort value On.
 ///
-/// Each field is soft-parsed on its own, so a spelling a later build wrote for `details` costs the
-/// details alone and never the title. `sort_value` is stored as its OFF state only (the key is
-/// absent while it is On), so a profile that never chose it, and one that persisted the retired
-/// `show_sort_info` key of the earlier sort-information switch (ignored, never written), reads On.
+/// **Stored** as `title`, the two part lists (`detail_parts` for movies, `show_detail_parts` for
+/// shows: arrays of [`DetailPart::name`]) and `sort_value_off`, plus the nearest old rung under the
+/// old keys `details` / `show_details` ([`UnderPostersLadder::nearest`]) so an older build still
+/// reads a choice. **Read**: a part list that is present wins (unknown names and parts a kind does
+/// not offer are dropped, more than [`DetailParts::MAX`] keep the first four); one that is absent is
+/// migrated from the old key ([`UnderPostersLadder::movie_parts`] / [`UnderPostersLadder::show_parts`]),
+/// and a show list absent beside the movie's old key is that key read for shows.
+///
+/// Each field is soft-parsed on its own, so a spelling a later build wrote for one costs that one
+/// alone and never the title. `sort_value` is stored as its OFF state only (the key is absent while
+/// it is On), so a profile that never chose it, and one that persisted the retired `show_sort_info`
+/// key of the earlier sort-information switch (ignored, never written), reads On.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
-#[serde(from = "UnderPostersWire")]
+#[serde(from = "UnderPostersWire", into = "UnderPostersWire")]
 pub struct UnderPosters {
     pub title: bool,
-    /// The details line under a MOVIE (and under a season or an episode, which have always followed
-    /// it). Settings v2 splits what was one setting into this and [`show_details`](Self::show_details);
-    /// this keeps the old key, so an older build reads the movie value as the one it knows.
-    pub details: UnderPostersDetails,
-    /// The details line under a TV SHOW: never [`UnderPostersDetails::Video`]. Written as its own
-    /// key. A profile whose stored setting has none (every one saved before the split) reads its
-    /// `details` through [`UnderPostersDetails::for_shows`] until it chooses.
-    pub show_details: UnderPostersDetails,
+    /// The parts of the details line under a MOVIE (and under a season or an episode, which have
+    /// always followed it), held to what a movie offers ([`DetailPart::MOVIE`]).
+    pub details: DetailParts,
+    /// The parts of the details line under a TV SHOW, held to what a show offers ([`DetailPart::SHOW`]).
+    pub show_details: DetailParts,
     /// A library grid sorted by something other than Title or Random shows the sort's value under
     /// every card (the Movies, TV Shows, Seasons and Episodes grids; the Library's `registry::sort_info`). On by default.
-    #[serde(rename = "sort_value_off", serialize_with = "sort_value_off::serialize", skip_serializing_if = "sort_value_off::is_on")]
     pub sort_value: bool,
 }
 
-/// What [`UnderPosters`] is read from: each field soft-parsed on its own, and `show_details` kept
-/// optional so its absence (a setting saved before the split) can be told from a choice.
-#[derive(Deserialize)]
+/// What [`UnderPosters`] is read from and written as: each field soft-parsed on its own, and the
+/// fields a record may lack kept optional so absence can be told from a choice.
+#[derive(Serialize, Deserialize)]
 #[serde(default)]
 struct UnderPostersWire {
     #[serde(deserialize_with = "de_soft_under_posters_title")]
     title: bool,
-    #[serde(deserialize_with = "de_soft_under_posters_details")]
-    details: UnderPostersDetails,
-    #[serde(deserialize_with = "de_soft_show_details")]
-    show_details: Option<UnderPostersDetails>,
-    #[serde(rename = "sort_value_off", with = "sort_value_off")]
+    /// The old single choice (movies): read when `detail_parts` is absent, written as the nearest rung.
+    #[serde(deserialize_with = "de_soft_under_posters_ladder")]
+    details: UnderPostersLadder,
+    #[serde(deserialize_with = "de_soft_show_ladder", skip_serializing_if = "Option::is_none")]
+    show_details: Option<UnderPostersLadder>,
+    #[serde(deserialize_with = "de_soft_parts", skip_serializing_if = "Option::is_none")]
+    detail_parts: Option<Vec<String>>,
+    #[serde(deserialize_with = "de_soft_parts", skip_serializing_if = "Option::is_none")]
+    show_detail_parts: Option<Vec<String>>,
+    #[serde(rename = "sort_value_off", with = "sort_value_off", skip_serializing_if = "sort_value_off::is_on")]
     sort_value: bool,
 }
 
 impl Default for UnderPostersWire {
     fn default() -> Self {
-        Self { title: false, details: UnderPostersDetails::default(), show_details: None, sort_value: true }
+        Self { title: false, details: UnderPostersLadder::default(), show_details: None, detail_parts: None, show_detail_parts: None, sort_value: true }
     }
+}
+
+/// The parts a stored list names: unknown spellings are dropped.
+fn parts_named(names: &[String]) -> DetailParts {
+    DetailParts::of(&names.iter().filter_map(|n| DetailPart::from_name(n)).collect::<Vec<_>>())
+}
+
+fn names_of(parts: DetailParts) -> Vec<String> {
+    parts.iter().map(|p| p.name().to_owned()).collect()
 }
 
 impl From<UnderPostersWire> for UnderPosters {
     fn from(w: UnderPostersWire) -> Self {
-        UnderPosters { title: w.title, details: w.details, show_details: w.show_details.unwrap_or_else(|| w.details.for_shows()), sort_value: w.sort_value }
+        let details = match &w.detail_parts {
+            Some(names) => parts_named(names).for_movies(),
+            None => w.details.movie_parts(),
+        };
+        let show_details = match (&w.show_detail_parts, w.show_details) {
+            (Some(names), _) => parts_named(names).for_shows(),
+            (None, Some(rung)) => rung.show_parts(),
+            (None, None) => w.details.show_parts(),
+        };
+        UnderPosters { title: w.title, details, show_details, sort_value: w.sort_value }
+    }
+}
+
+impl From<UnderPosters> for UnderPostersWire {
+    fn from(v: UnderPosters) -> Self {
+        UnderPostersWire {
+            title: v.title,
+            details: UnderPostersLadder::nearest(v.details),
+            show_details: Some(UnderPostersLadder::nearest(v.show_details)),
+            detail_parts: Some(names_of(v.details)),
+            show_detail_parts: Some(names_of(v.show_details)),
+            sort_value: v.sort_value,
+        }
     }
 }
 
@@ -1373,36 +1429,44 @@ fn de_soft_under_posters_title<'de, D: Deserializer<'de>>(d: D) -> Result<bool, 
     Ok(v.as_bool().unwrap_or(false))
 }
 
-fn de_soft_under_posters_details<'de, D: Deserializer<'de>>(d: D) -> Result<UnderPostersDetails, D::Error> {
-    let Ok(v) = Value::deserialize(d) else { return Ok(UnderPostersDetails::default()) };
-    Ok(serde_json::from_value::<UnderPostersDetails>(v).unwrap_or_default())
+fn de_soft_under_posters_ladder<'de, D: Deserializer<'de>>(d: D) -> Result<UnderPostersLadder, D::Error> {
+    let Ok(v) = Value::deserialize(d) else { return Ok(UnderPostersLadder::default()) };
+    Ok(serde_json::from_value::<UnderPostersLadder>(v).unwrap_or_default())
 }
 
-/// `show_details`: a spelling this build knows is a choice (a movie-only one is held to what a show
-/// can have), anything else reads as absent, so the movie value seeds it.
-fn de_soft_show_details<'de, D: Deserializer<'de>>(d: D) -> Result<Option<UnderPostersDetails>, D::Error> {
+/// `show_details`: a spelling this build knows is a choice, anything else reads as absent, so the
+/// movie value seeds it.
+fn de_soft_show_ladder<'de, D: Deserializer<'de>>(d: D) -> Result<Option<UnderPostersLadder>, D::Error> {
     let Ok(v) = Value::deserialize(d) else { return Ok(None) };
-    Ok(serde_json::from_value::<UnderPostersDetails>(v).ok().map(UnderPostersDetails::for_shows))
+    Ok(serde_json::from_value::<UnderPostersLadder>(v).ok())
+}
+
+/// A part list: an array reads as the names in it (a non-string entry is skipped), anything else
+/// as absent, so the old key stands in.
+fn de_soft_parts<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Vec<String>>, D::Error> {
+    let Ok(Value::Array(items)) = Value::deserialize(d) else { return Ok(None) };
+    Ok(Some(items.into_iter().filter_map(|i| i.as_str().map(str::to_owned)).collect()))
 }
 
 impl UnderPosters {
     /// The defaults, as a `const` for callers that compare against them.
-    pub const DEFAULT: UnderPosters = UnderPosters { title: false, details: UnderPostersDetails::YearLength, show_details: UnderPostersDetails::YearLength, sort_value: true };
+    pub const DEFAULT: UnderPosters =
+        UnderPosters { title: false, details: DetailParts::MOVIE_DEFAULT, show_details: DetailParts::SHOW_DEFAULT, sort_value: true };
 
-    /// One byte for the live cell: title in bit 0, movie details in bits 1-3, "sort value Off" in
-    /// bit 4 (so a zero byte is the default's On), TV show details in bits 5-7.
-    pub fn pack(self) -> u8 {
-        u8::from(self.title) | (self.details.index() << 1) | (u8::from(!self.sort_value) << 4) | (self.show_details.index() << 5)
+    /// Two bytes for the live cell: title in bit 0, "sort value Off" in bit 1, the movie parts in
+    /// bits 2-8 and the TV show parts in bits 9-15 (one bit per [`DetailPart`]).
+    pub const fn pack(self) -> u16 {
+        self.title as u16 | ((!self.sort_value as u16) << 1) | ((self.details.bits() as u16) << 2) | ((self.show_details.bits() as u16) << 9)
     }
 
-    /// The inverse of [`UnderPosters::pack`]; an out-of-range details index is the default, and a
-    /// show value a show cannot have is held to one it can ([`UnderPostersDetails::for_shows`]).
-    pub fn unpack(b: u8) -> UnderPosters {
+    /// The inverse of [`UnderPosters::pack`]; each side is held to what its kind offers and to the
+    /// maximum ([`DetailParts::kept`]).
+    pub fn unpack(b: u16) -> UnderPosters {
         UnderPosters {
             title: b & 1 != 0,
-            details: UnderPostersDetails::from_index((b >> 1) & 0b111),
-            show_details: UnderPostersDetails::from_index((b >> 5) & 0b111).for_shows(),
-            sort_value: b & 16 == 0,
+            sort_value: b & 2 == 0,
+            details: DetailParts::from_bits(((b >> 2) & 0x7F) as u8).for_movies(),
+            show_details: DetailParts::from_bits(((b >> 9) & 0x7F) as u8).for_shows(),
         }
     }
 }

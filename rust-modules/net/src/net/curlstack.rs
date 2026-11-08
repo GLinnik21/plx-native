@@ -19,7 +19,8 @@
 //! directories at a path no television has, so it reads none of the firmware's OpenSSL files.
 //!
 //! WHY `RTLD_DEEPBIND` on every one of the seven (`dynlib::Handle::open_in_deepbind`'s doc has the
-//! mechanism): the television's `libplayerAPIs.so.1`, linked by every build of this app, has a
+//! mechanism): the television's `libplayerAPIs.so.1`, linked by every build with the Feed backend
+//! (`PLAYBACK_BACKENDS=both|feed`, the shipping set; a URI-only build does not link it), has a
 //! real `NEEDED` entry on the TV's libcurl (`libcurl.so.5` through 4.10.0, `libcurl.so.4` from
 //! 5.3.1), which is therefore in the GLOBAL scope before `main` runs, together with its own `nghttp2` (its version string names `nghttp2/1.26.0`). Opened
 //! the ordinary way, the bundled curl's internal calls between its own exported functions resolved

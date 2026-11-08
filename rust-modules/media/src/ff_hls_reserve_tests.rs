@@ -1,10 +1,27 @@
 //! HLS reserve-deadline and transport-liveness classification: pause/rebuffer
 //! projections, quality-trial gating, and candidate transition disposition.
 
+use plx_play_feed::shared::{FEED_SHARED, FEED_TX};
 use super::*;
 #[allow(unused_imports)]
 use super::test_support::*;
 use crate::abr::Direction;
+
+// These fixtures exercise the native generation fence directly. Production
+// ownership lives in the Feed's demux session (`plx_play_feed::demux_clock`) and is reached through
+// DemuxSession.
+struct HlsCandidateTransition(u64);
+
+impl HlsCandidateTransition {
+    fn arm_unowned_for_test() -> Result<Self, plx_play_feed::shared::HlsClockFenceError> {
+        FEED_SHARED.begin_hls_candidate_transition(None).map(Self)
+    }
+
+    fn settle(self) {
+        let settled = FEED_SHARED.settle_hls_candidate_transition(self.0);
+        assert!(settled, "candidate generation changed inside its sole writer");
+    }
+}
 
 /// A transport-liveness budget these tests never reach. `TransportWatchdog` is WALL-clock inactivity
 /// by design (a pause or a frozen playhead must not renew or spend it), so any budget a test could
@@ -33,11 +50,11 @@ fn a_terminal_floor_response_cannot_loop_only_because_pms_exceeded_its_box() {
         rung: crate::abr::Rung::P240,
         direction: Direction::Down,
     };
-    assert!(!hls_candidate_requires_rung_box(
+    assert!(!crate::adaptive::hls_candidate_requires_rung_box(
         floor,
         crate::abr::ReservePolicy::TerminalFloor,
     ));
-    assert!(hls_candidate_requires_rung_box(
+    assert!(crate::adaptive::hls_candidate_requires_rung_box(
         floor,
         crate::abr::ReservePolicy::Preserve,
     ));
@@ -45,25 +62,25 @@ fn a_terminal_floor_response_cannot_loop_only_because_pms_exceeded_its_box() {
 
 #[test]
 fn a_quality_trial_never_extends_an_active_rebuffer_hold() {
-    assert!(hls_quality_trial_may_start(
+    assert!(crate::adaptive::hls_quality_trial_may_start(
         Direction::Up,
         false,
         false,
         false
     ));
-    assert!(!hls_quality_trial_may_start(
+    assert!(!crate::adaptive::hls_quality_trial_may_start(
         Direction::Up,
         true,
         false,
         false
     ));
-    assert!(!hls_quality_trial_may_start(
+    assert!(!crate::adaptive::hls_quality_trial_may_start(
         Direction::Up,
         false,
         true,
         false
     ));
-    assert!(!hls_quality_trial_may_start(
+    assert!(!crate::adaptive::hls_quality_trial_may_start(
         Direction::Up,
         true,
         true,
@@ -73,8 +90,8 @@ fn a_quality_trial_never_extends_an_active_rebuffer_hold() {
 
 #[test]
 fn an_abort_at_the_exact_wait_boundary_wins_over_reserve_expiry() {
-    let mut aq = crate::aq::aq_new(1 << 20);
-    crate::aq::aq_abort(&mut *aq);
+    let mut aq = plx_play_feed::aq::aq_new(1 << 20);
+    plx_play_feed::aq::aq_abort(&mut *aq);
     let result = hls_wait(
         &mut *aq,
         std::time::Duration::ZERO,
@@ -82,12 +99,12 @@ fn an_abort_at_the_exact_wait_boundary_wins_over_reserve_expiry() {
         &mut plx_base::checkpoint::NoCheckpoint,
     );
     assert!(matches!(result, Err(HlsExit::Aborted)));
-    crate::aq::aq_destroy(&mut *aq);
+    plx_play_feed::aq::aq_destroy(&mut *aq);
 }
 
 #[test]
 fn a_downshift_remains_available_because_it_is_the_recovery_edge() {
-    assert!(hls_quality_trial_may_start(
+    assert!(crate::adaptive::hls_quality_trial_may_start(
         Direction::Down,
         true,
         true,
@@ -105,30 +122,31 @@ fn teardown_wins_over_an_expired_plaintext_open_snapshot() {
 
 #[test]
 fn classify_curl_open_err_matches_its_plaintext_sibling() {
+    let observer = super::test_support::demux_observer();
     assert!(matches!(
-        classify_curl_open_err(crate::curlio::OpenErr::Deadline),
+        classify_curl_open_err(crate::curlio::OpenErr::Deadline, observer.as_ref()),
         HlsExit::PrimeExpired
     ));
     assert!(matches!(
-        classify_curl_open_err(crate::curlio::OpenErr::Aborted),
+        classify_curl_open_err(crate::curlio::OpenErr::Aborted, observer.as_ref()),
         HlsExit::Aborted
     ));
     assert!(matches!(
-        classify_curl_open_err(crate::curlio::OpenErr::Status(404)),
+        classify_curl_open_err(crate::curlio::OpenErr::Status(404), observer.as_ref()),
         HlsExit::NotReady
     ));
-    SHARED.dg_http_status.store(0, Ordering::Relaxed);
+    FEED_SHARED.dg_http_status.store(0, Ordering::Relaxed);
     assert!(matches!(
-        classify_curl_open_err(crate::curlio::OpenErr::Status(500)),
+        classify_curl_open_err(crate::curlio::OpenErr::Status(500), observer.as_ref()),
         HlsExit::Failed(_)
     ));
     assert_eq!(
-        SHARED.dg_http_status.load(Ordering::Relaxed),
+        FEED_SHARED.dg_http_status.load(Ordering::Relaxed),
         500,
         "a non-404 status is still recorded for diagnostics"
     );
     assert!(matches!(
-        classify_curl_open_err(crate::curlio::OpenErr::Local),
+        classify_curl_open_err(crate::curlio::OpenErr::Local, observer.as_ref()),
         HlsExit::Failed(_)
     ));
 }
@@ -162,27 +180,27 @@ fn every_ffmpeg_phase_reduces_callback_facts_with_one_priority_table() {
 #[test]
 fn rejected_candidate_media_has_only_the_discard_transition() {
     assert_eq!(
-        hls_candidate_disposition(true, true, crate::abr::CandidateVerdict::Unfunded,),
-        HlsCandidateDisposition::Discard {
+        crate::adaptive::hls_candidate_disposition(true, true, crate::abr::CandidateVerdict::Unfunded,),
+        crate::adaptive::HlsCandidateDisposition::Discard {
             cause: crate::abr::RejectCause::Candidate,
             outcome: "not_ready_discarded",
         },
     );
     assert_eq!(
-        hls_candidate_disposition(true, true, crate::abr::CandidateVerdict::Ready),
-        HlsCandidateDisposition::Commit,
+        crate::adaptive::hls_candidate_disposition(true, true, crate::abr::CandidateVerdict::Ready),
+        crate::adaptive::HlsCandidateDisposition::Commit,
     );
 }
 
 #[test]
 fn a_user_pause_fills_the_active_queues_without_starting_a_private_trial() {
-    assert!(!hls_quality_trial_may_start(
+    assert!(!crate::adaptive::hls_quality_trial_may_start(
         Direction::Up,
         false,
         false,
         true
     ));
-    assert!(!hls_quality_trial_may_start(
+    assert!(!crate::adaptive::hls_quality_trial_may_start(
         Direction::Down,
         false,
         false,
@@ -197,7 +215,7 @@ fn a_latched_original_switch_preempts_an_unstarted_hls_prime() {
         direction: Direction::Up,
     };
     assert_eq!(
-        latched_original_recovery(
+        crate::adaptive::latched_original_recovery(
             24_000,
             None,
             crate::abr::Decision::Prime(proposal),
@@ -205,13 +223,13 @@ fn a_latched_original_switch_preempts_an_unstarted_hls_prime() {
             Some(2_000),
             2_000,
         ),
-        LatchedOriginalRecovery::Switch {
+        crate::adaptive::LatchedOriginalRecovery::Switch {
             kbps: 24_000,
             cancel: Some(proposal),
         },
     );
     assert_eq!(
-        latched_original_recovery(
+        crate::adaptive::latched_original_recovery(
             24_000,
             None,
             crate::abr::Decision::Prime(proposal),
@@ -219,7 +237,7 @@ fn a_latched_original_switch_preempts_an_unstarted_hls_prime() {
             Some(2_000),
             2_000,
         ),
-        LatchedOriginalRecovery::Wait,
+        crate::adaptive::LatchedOriginalRecovery::Wait,
         "a live cleanup obligation still keeps both actuator transitions quiescent",
     );
 }
@@ -232,7 +250,7 @@ fn a_latched_original_switch_preempts_an_unstarted_hls_prime() {
 #[test]
 fn a_fresh_original_probe_switches_on_its_own_media_boundary() {
     assert_eq!(
-        latched_original_recovery(
+        crate::adaptive::latched_original_recovery(
             0,
             Some(49_041),
             crate::abr::Decision::Stay,
@@ -240,7 +258,7 @@ fn a_fresh_original_probe_switches_on_its_own_media_boundary() {
             Some(4_000),
             2_000,
         ),
-        LatchedOriginalRecovery::Switch {
+        crate::adaptive::LatchedOriginalRecovery::Switch {
             kbps: 49_041,
             cancel: None,
         },
@@ -250,14 +268,14 @@ fn a_fresh_original_probe_switches_on_its_own_media_boundary() {
 #[test]
 fn a_post_feed_transition_defaults_to_fenced_until_teardown() {
     let _guard = plx_base::testlock::serial();
-    let stable = SHARED
+    let stable = FEED_SHARED
         .hls_candidate_generation
         .load(std::sync::atomic::Ordering::Acquire);
     assert_eq!(stable & 1, 0, "test starts outside a transition");
     struct Restore(u64);
     impl Drop for Restore {
         fn drop(&mut self) {
-            SHARED
+            FEED_SHARED
                 .hls_candidate_generation
                 .store(self.0, std::sync::atomic::Ordering::Release);
         }
@@ -266,7 +284,7 @@ fn a_post_feed_transition_defaults_to_fenced_until_teardown() {
 
     drop(HlsCandidateTransition::arm_unowned_for_test().expect("single transition"));
     assert!(
-        SHARED
+        FEED_SHARED
             .hls_candidate_generation
             .load(std::sync::atomic::Ordering::Acquire)
             & 1
@@ -278,14 +296,14 @@ fn a_post_feed_transition_defaults_to_fenced_until_teardown() {
 #[test]
 fn proven_candidate_transition_settlement_reopens_generation() {
     let _guard = plx_base::testlock::serial();
-    let stable = SHARED
+    let stable = FEED_SHARED
         .hls_candidate_generation
         .load(std::sync::atomic::Ordering::Acquire);
     assert_eq!(stable & 1, 0, "test starts outside a transition");
     struct Restore(u64);
     impl Drop for Restore {
         fn drop(&mut self) {
-            SHARED
+            FEED_SHARED
                 .hls_candidate_generation
                 .store(self.0, std::sync::atomic::Ordering::Release);
         }
@@ -296,7 +314,7 @@ fn proven_candidate_transition_settlement_reopens_generation() {
         .expect("single transition")
         .settle();
     assert_eq!(
-        SHARED
+        FEED_SHARED
             .hls_candidate_generation
             .load(std::sync::atomic::Ordering::Acquire),
         stable.wrapping_add(2),
@@ -307,14 +325,14 @@ fn proven_candidate_transition_settlement_reopens_generation() {
 #[test]
 fn unwind_after_candidate_media_publication_stays_fenced_until_teardown() {
     let _guard = plx_base::testlock::serial();
-    let stable = SHARED
+    let stable = FEED_SHARED
         .hls_candidate_generation
         .load(std::sync::atomic::Ordering::Acquire);
     assert_eq!(stable & 1, 0, "test starts outside a transition");
     struct Restore(u64);
     impl Drop for Restore {
         fn drop(&mut self) {
-            SHARED
+            FEED_SHARED
                 .hls_candidate_generation
                 .store(self.0, std::sync::atomic::Ordering::Release);
         }
@@ -328,7 +346,7 @@ fn unwind_after_candidate_media_publication_stays_fenced_until_teardown() {
     });
     assert!(unwind.is_err());
     assert!(
-        SHARED
+        FEED_SHARED
             .hls_candidate_generation
             .load(std::sync::atomic::Ordering::Acquire)
             & 1
@@ -340,7 +358,7 @@ fn unwind_after_candidate_media_publication_stays_fenced_until_teardown() {
 #[test]
 fn a_floor_deadline_can_only_promote_while_the_fetch_is_in_flight() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
-    let mut floor = ReserveDeadlineState::new(Some(deadline), true);
+    let mut floor = ReserveDeadlineState::new(Some(deadline), true, super::test_support::demux_observer());
     assert_eq!(
         floor.active(false),
         Some(deadline),
@@ -357,7 +375,7 @@ fn a_floor_deadline_can_only_promote_while_the_fetch_is_in_flight() {
         "a later Resume cannot resurrect reserve already released by this transaction",
     );
 
-    let mut ordinary = ReserveDeadlineState::new(Some(deadline), false);
+    let mut ordinary = ReserveDeadlineState::new(Some(deadline), false, super::test_support::demux_observer());
     assert_eq!(
         ordinary.active(true),
         Some(deadline),
@@ -368,7 +386,7 @@ fn a_floor_deadline_can_only_promote_while_the_fetch_is_in_flight() {
 #[test]
 fn a_hold_racing_a_blocking_timeout_releases_instead_of_expiring_the_floor() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
-    let mut floor = ReserveDeadlineState::new(Some(deadline), true);
+    let mut floor = ReserveDeadlineState::new(Some(deadline), true, super::test_support::demux_observer());
     let attempted_deadline = floor.active(false);
 
     assert!(attempted_deadline.is_some());
@@ -384,7 +402,7 @@ fn a_hold_racing_a_blocking_timeout_releases_instead_of_expiring_the_floor() {
     );
 
     let expired_at = std::time::Instant::now();
-    let mut ordinary = ReserveDeadlineState::new(Some(expired_at), false);
+    let mut ordinary = ReserveDeadlineState::new(Some(expired_at), false, super::test_support::demux_observer());
     assert!(ordinary.note_transport_deadline(Some(expired_at), true));
     assert!(
         ordinary.expired,
@@ -396,10 +414,10 @@ fn a_hold_racing_a_blocking_timeout_releases_instead_of_expiring_the_floor() {
 fn a_user_pause_does_not_spend_media_reserve_but_the_playhead_does() {
     let _guard = plx_base::testlock::serial();
     let start_ns = 40_000_000_000;
-    let old = SHARED
+    let old = FEED_SHARED
         .playpos_ns
         .swap(start_ns, std::sync::atomic::Ordering::AcqRel);
-    let old_paused = crate::player::TX
+    let old_paused = FEED_TX
         .paused
         .swap(false, std::sync::atomic::Ordering::AcqRel);
     struct Restore {
@@ -408,10 +426,10 @@ fn a_user_pause_does_not_spend_media_reserve_but_the_playhead_does() {
     }
     impl Drop for Restore {
         fn drop(&mut self) {
-            SHARED
+            FEED_SHARED
                 .playpos_ns
                 .store(self.playpos_ns, std::sync::atomic::Ordering::Release);
-            crate::player::TX
+            FEED_TX
                 .paused
                 .store(self.paused, std::sync::atomic::Ordering::Release);
         }
@@ -425,11 +443,12 @@ fn a_user_pause_does_not_spend_media_reserve_but_the_playhead_does() {
         Some(std::time::Duration::from_millis(1)),
         false,
         start_ns,
-        Direction::Up,
+        TrialClock::Playhead,
+        super::test_support::demux_observer(),
     );
     let attempted_deadline = reserve.active(false).expect("one millisecond reserve");
 
-    crate::player::TX
+    FEED_TX
         .paused
         .store(true, std::sync::atomic::Ordering::Release);
     std::thread::sleep(std::time::Duration::from_millis(5));
@@ -438,7 +457,7 @@ fn a_user_pause_does_not_spend_media_reserve_but_the_playhead_does() {
         "elapsed wall time cannot spend reserve while the presentation clock is frozen",
     );
     assert!(!reserve.expired);
-    crate::player::TX
+    FEED_TX
         .paused
         .store(false, std::sync::atomic::Ordering::Release);
     assert!(
@@ -446,7 +465,7 @@ fn a_user_pause_does_not_spend_media_reserve_but_the_playhead_does() {
         "Resume restores the same unspent playhead balance",
     );
 
-    SHARED
+    FEED_SHARED
         .playpos_ns
         .store(start_ns + 1_000_000, std::sync::atomic::Ordering::Release);
     assert!(
@@ -459,10 +478,10 @@ fn a_user_pause_does_not_spend_media_reserve_but_the_playhead_does() {
 fn a_pause_cannot_revive_reserve_already_spent_by_the_playhead() {
     let _guard = plx_base::testlock::serial();
     let start_ns = 50_000_000_000;
-    let old = SHARED
+    let old = FEED_SHARED
         .playpos_ns
         .swap(start_ns, std::sync::atomic::Ordering::AcqRel);
-    let old_paused = crate::player::TX
+    let old_paused = FEED_TX
         .paused
         .swap(false, std::sync::atomic::Ordering::AcqRel);
     struct Restore {
@@ -471,10 +490,10 @@ fn a_pause_cannot_revive_reserve_already_spent_by_the_playhead() {
     }
     impl Drop for Restore {
         fn drop(&mut self) {
-            SHARED
+            FEED_SHARED
                 .playpos_ns
                 .store(self.playpos_ns, std::sync::atomic::Ordering::Release);
-            crate::player::TX
+            FEED_TX
                 .paused
                 .store(self.paused, std::sync::atomic::Ordering::Release);
         }
@@ -485,14 +504,14 @@ fn a_pause_cannot_revive_reserve_already_spent_by_the_playhead() {
     };
 
     let budget = std::time::Duration::from_millis(1);
-    let mut polled = ReserveDeadlineState::from_playhead(budget, false);
-    let mut blocked = ReserveDeadlineState::from_playhead(budget, false);
+    let mut polled = ReserveDeadlineState::from_playhead(budget, false, super::test_support::demux_observer());
+    let mut blocked = ReserveDeadlineState::from_playhead(budget, false, super::test_support::demux_observer());
     let attempted_deadline = blocked.active(false).expect("running reserve snapshot");
 
-    SHARED
+    FEED_SHARED
         .playpos_ns
         .store(start_ns + 1_000_000, std::sync::atomic::Ordering::Release);
-    crate::player::TX
+    FEED_TX
         .paused
         .store(true, std::sync::atomic::Ordering::Release);
 
@@ -511,10 +530,10 @@ fn a_pause_cannot_revive_reserve_already_spent_by_the_playhead() {
 fn wall_time_between_projection_and_classification_cannot_spend_playhead_reserve() {
     let _guard = plx_base::testlock::serial();
     let start_ns = 60_000_000_000;
-    let old = SHARED
+    let old = FEED_SHARED
         .playpos_ns
         .swap(start_ns, std::sync::atomic::Ordering::AcqRel);
-    let old_paused = crate::player::TX
+    let old_paused = FEED_TX
         .paused
         .swap(false, std::sync::atomic::Ordering::AcqRel);
     struct Restore {
@@ -523,10 +542,10 @@ fn wall_time_between_projection_and_classification_cannot_spend_playhead_reserve
     }
     impl Drop for Restore {
         fn drop(&mut self) {
-            SHARED
+            FEED_SHARED
                 .playpos_ns
                 .store(self.playpos_ns, std::sync::atomic::Ordering::Release);
-            crate::player::TX
+            FEED_TX
                 .paused
                 .store(self.paused, std::sync::atomic::Ordering::Release);
         }
@@ -537,7 +556,7 @@ fn wall_time_between_projection_and_classification_cannot_spend_playhead_reserve
     };
 
     let mut reserve =
-        ReserveDeadlineState::from_playhead(std::time::Duration::from_nanos(1), false);
+        ReserveDeadlineState::from_playhead(std::time::Duration::from_nanos(1), false, super::test_support::demux_observer());
     let attempted_deadline = reserve
         .active(false)
         .expect("positive balance projects a wake");
@@ -553,10 +572,10 @@ fn wall_time_between_projection_and_classification_cannot_spend_playhead_reserve
 fn stale_reserve_wakes_cannot_renew_transport_liveness() {
     let _guard = plx_base::testlock::serial();
     let start_ns = 65_000_000_000;
-    let old = SHARED
+    let old = FEED_SHARED
         .playpos_ns
         .swap(start_ns, std::sync::atomic::Ordering::AcqRel);
-    let old_paused = crate::player::TX
+    let old_paused = FEED_TX
         .paused
         .swap(false, std::sync::atomic::Ordering::AcqRel);
     struct Restore {
@@ -565,10 +584,10 @@ fn stale_reserve_wakes_cannot_renew_transport_liveness() {
     }
     impl Drop for Restore {
         fn drop(&mut self) {
-            SHARED
+            FEED_SHARED
                 .playpos_ns
                 .store(self.playpos_ns, std::sync::atomic::Ordering::Release);
-            crate::player::TX
+            FEED_TX
                 .paused
                 .store(self.paused, std::sync::atomic::Ordering::Release);
         }
@@ -582,6 +601,7 @@ fn stale_reserve_wakes_cannot_renew_transport_liveness() {
         start_ns,
         std::time::Duration::from_millis(2),
         false,
+        super::test_support::demux_observer(),
     );
     // The liveness boundary is placed by hand instead of being measured against wall sleeps. The
     // first version of this test armed an 18 ms watchdog and slept 3 + 3 + 15 ms, so it only held
@@ -631,13 +651,13 @@ fn stale_reserve_wakes_cannot_renew_transport_liveness() {
 fn spent_playhead_reserve_wins_before_live_transport_watchdog() {
     let _guard = plx_base::testlock::serial();
     let start_ns = 66_000_000_000;
-    let old = SHARED
+    let old = FEED_SHARED
         .playpos_ns
         .swap(start_ns, std::sync::atomic::Ordering::AcqRel);
     struct Restore(i64);
     impl Drop for Restore {
         fn drop(&mut self) {
-            SHARED
+            FEED_SHARED
                 .playpos_ns
                 .store(self.0, std::sync::atomic::Ordering::Release);
         }
@@ -647,10 +667,11 @@ fn spent_playhead_reserve_wins_before_live_transport_watchdog() {
         start_ns,
         std::time::Duration::from_millis(1),
         false,
+        super::test_support::demux_observer(),
     );
     let watchdog = TransportWatchdog::with_inactivity(LIVENESS_NEVER_DUE);
     let attempted = watchdog.effective(reserve.active(false));
-    SHARED
+    FEED_SHARED
         .playpos_ns
         .store(start_ns + 1_000_000, std::sync::atomic::Ordering::Release);
     let wake = observe_hls_deadline(Some(&mut reserve), attempted, &watchdog, false);
@@ -666,13 +687,13 @@ fn spent_playhead_reserve_wins_before_live_transport_watchdog() {
 fn an_earlier_liveness_boundary_stays_transport_even_if_reserve_spends_before_classification() {
     let _guard = plx_base::testlock::serial();
     let start_ns = 67_000_000_000;
-    let old = SHARED
+    let old = FEED_SHARED
         .playpos_ns
         .swap(start_ns, std::sync::atomic::Ordering::AcqRel);
     struct Restore(i64);
     impl Drop for Restore {
         fn drop(&mut self) {
-            SHARED
+            FEED_SHARED
                 .playpos_ns
                 .store(self.0, std::sync::atomic::Ordering::Release);
         }
@@ -682,13 +703,14 @@ fn an_earlier_liveness_boundary_stays_transport_even_if_reserve_spends_before_cl
         start_ns,
         std::time::Duration::from_millis(20),
         false,
+        super::test_support::demux_observer(),
     );
     let watchdog = TransportWatchdog::with_inactivity(std::time::Duration::from_millis(1));
     let attempted = watchdog.effective(reserve.active(false));
 
     std::thread::sleep(std::time::Duration::from_millis(2));
     let wake = observe_hls_deadline(Some(&mut reserve), attempted, &watchdog, false);
-    SHARED
+    FEED_SHARED
         .playpos_ns
         .store(start_ns + 20_000_000, std::sync::atomic::Ordering::Release);
     assert!(matches!(
@@ -708,15 +730,15 @@ fn an_earlier_liveness_boundary_stays_transport_even_if_reserve_spends_before_cl
 #[test]
 fn bounded_downshift_spends_internal_hold_but_excludes_a_hidden_user_pause_cycle() {
     let _guard = plx_base::testlock::serial();
-    let old_paused = crate::player::TX
+    let old_paused = FEED_TX
         .paused
         .load(std::sync::atomic::Ordering::Acquire);
     let clock = crate::player::pinned_pause_clock::Pinned::now();
-    crate::player::TX.commit_paused(false);
+    FEED_TX.commit_paused(false);
     struct Restore(bool);
     impl Drop for Restore {
         fn drop(&mut self) {
-            crate::player::TX.commit_paused(self.0);
+            FEED_TX.commit_paused(self.0);
         }
     }
     let _restore = Restore(old_paused);
@@ -724,12 +746,13 @@ fn bounded_downshift_spends_internal_hold_but_excludes_a_hidden_user_pause_cycle
     let mut reserve = ReserveDeadlineState::from_unpaused_elapsed(
         std::time::Duration::from_millis(80),
         false,
+        super::test_support::demux_observer(),
     );
     let attempted = reserve.active(false).expect("bounded recovery deadline");
     clock.advance(std::time::Duration::from_millis(20));
-    crate::player::TX.commit_paused(true);
+    FEED_TX.commit_paused(true);
     clock.advance(std::time::Duration::from_millis(80));
-    crate::player::TX.commit_paused(false);
+    FEED_TX.commit_paused(false);
 
     assert!(
         !reserve.note_transport_deadline(Some(attempted), true),
@@ -752,10 +775,10 @@ fn bounded_downshift_spends_internal_hold_but_excludes_a_hidden_user_pause_cycle
 fn a_pause_cannot_turn_an_upshift_control_snapshot_into_a_media_deadline() {
     let _guard = plx_base::testlock::serial();
     let start_ns = 70_000_000_000;
-    let old = SHARED
+    let old = FEED_SHARED
         .playpos_ns
         .swap(start_ns, std::sync::atomic::Ordering::AcqRel);
-    let old_paused = crate::player::TX
+    let old_paused = FEED_TX
         .paused
         .swap(false, std::sync::atomic::Ordering::AcqRel);
     struct Restore {
@@ -764,10 +787,10 @@ fn a_pause_cannot_turn_an_upshift_control_snapshot_into_a_media_deadline() {
     }
     impl Drop for Restore {
         fn drop(&mut self) {
-            SHARED
+            FEED_SHARED
                 .playpos_ns
                 .store(self.playpos_ns, std::sync::atomic::Ordering::Release);
-            crate::player::TX
+            FEED_TX
                 .paused
                 .store(self.paused, std::sync::atomic::Ordering::Release);
         }
@@ -780,9 +803,10 @@ fn a_pause_cannot_turn_an_upshift_control_snapshot_into_a_media_deadline() {
     let mut exploration = Some(ReserveDeadlineState::from_playhead(
         std::time::Duration::from_millis(1),
         false,
+        super::test_support::demux_observer(),
     ));
     let control_snapshot = exploration_snapshot(&mut exploration).expect("running clock");
-    crate::player::TX
+    FEED_TX
         .paused
         .store(true, std::sync::atomic::Ordering::Release);
     std::thread::sleep(std::time::Duration::from_millis(5));
@@ -798,21 +822,22 @@ fn a_pause_cannot_turn_an_upshift_control_snapshot_into_a_media_deadline() {
         Some(std::time::Duration::ZERO),
         false,
         start_ns,
-        Direction::Up,
+        TrialClock::Playhead,
+        super::test_support::demux_observer(),
     );
     assert!(!media.expired);
     assert!(
         media.active(false).is_some(),
         "Pause retains a scheduled re-check for a Resume that races the blocked read"
     );
-    crate::player::TX
+    FEED_TX
         .paused
         .store(false, std::sync::atomic::Ordering::Release);
     assert!(
         media.active(false).is_some(),
         "Resume restores the original balance"
     );
-    SHARED
+    FEED_SHARED
         .playpos_ns
         .store(start_ns + 1_000_000, std::sync::atomic::Ordering::Release);
     assert!(
@@ -825,10 +850,10 @@ fn a_pause_cannot_turn_an_upshift_control_snapshot_into_a_media_deadline() {
 fn resume_during_a_blocked_pause_projection_cannot_overspend_reserve() {
     let _guard = plx_base::testlock::serial();
     let start_ns = 71_000_000_000;
-    let old_pos = SHARED
+    let old_pos = FEED_SHARED
         .playpos_ns
         .swap(start_ns, std::sync::atomic::Ordering::AcqRel);
-    let old_paused = crate::player::TX
+    let old_paused = FEED_TX
         .paused
         .swap(true, std::sync::atomic::Ordering::AcqRel);
     struct Restore {
@@ -837,10 +862,10 @@ fn resume_during_a_blocked_pause_projection_cannot_overspend_reserve() {
     }
     impl Drop for Restore {
         fn drop(&mut self) {
-            SHARED
+            FEED_SHARED
                 .playpos_ns
                 .store(self.playpos_ns, std::sync::atomic::Ordering::Release);
-            crate::player::TX
+            FEED_TX
                 .paused
                 .store(self.paused, std::sync::atomic::Ordering::Release);
         }
@@ -854,6 +879,7 @@ fn resume_during_a_blocked_pause_projection_cannot_overspend_reserve() {
         start_ns,
         std::time::Duration::from_millis(100),
         false,
+        super::test_support::demux_observer(),
     );
     let watchdog = TransportWatchdog::with_inactivity(LIVENESS_NEVER_DUE);
     let attempted = reserve
@@ -861,10 +887,10 @@ fn resume_during_a_blocked_pause_projection_cannot_overspend_reserve() {
         .expect("a paused issue still schedules the unchanged reserve boundary");
     let attempted = watchdog.effective(Some(attempted));
 
-    crate::player::TX
+    FEED_TX
         .paused
         .store(false, std::sync::atomic::Ordering::Release);
-    SHARED
+    FEED_SHARED
         .playpos_ns
         .store(start_ns + 100_000_000, std::sync::atomic::Ordering::Release);
     let wake = observe_hls_deadline(Some(&mut reserve), attempted, &watchdog, false);
@@ -888,10 +914,10 @@ fn a_scheduler_stall_between_a_pause_projection_and_its_classification_spends_no
 fn pause_projection_verdict_after(stall: std::time::Duration) {
     let _guard = plx_base::testlock::serial();
     let start_ns = 72_000_000_000;
-    let old_pos = SHARED
+    let old_pos = FEED_SHARED
         .playpos_ns
         .swap(start_ns, std::sync::atomic::Ordering::AcqRel);
-    let old_paused = crate::player::TX
+    let old_paused = FEED_TX
         .paused
         .swap(true, std::sync::atomic::Ordering::AcqRel);
     struct Restore {
@@ -900,10 +926,10 @@ fn pause_projection_verdict_after(stall: std::time::Duration) {
     }
     impl Drop for Restore {
         fn drop(&mut self) {
-            SHARED
+            FEED_SHARED
                 .playpos_ns
                 .store(self.playpos_ns, std::sync::atomic::Ordering::Release);
-            crate::player::TX
+            FEED_TX
                 .paused
                 .store(self.paused, std::sync::atomic::Ordering::Release);
         }
@@ -917,6 +943,7 @@ fn pause_projection_verdict_after(stall: std::time::Duration) {
         start_ns,
         std::time::Duration::from_millis(1),
         false,
+        super::test_support::demux_observer(),
     );
     let watchdog = TransportWatchdog::with_inactivity(LIVENESS_NEVER_DUE);
     let liveness_deadline = watchdog.deadline;
@@ -930,4 +957,32 @@ fn pause_projection_verdict_after(stall: std::time::Duration) {
     );
     assert!(!reserve.expired);
     assert_eq!(watchdog.deadline, liveness_deadline);
+}
+
+#[test]
+fn retired_reserve_does_not_sample_successor_playhead() {
+    let _serial = plx_base::testlock::serial();
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) { crate::player::reset_session_for_test(); }
+    }
+    let _reset = Reset;
+    crate::player::reset_session_for_test();
+    let first_epoch = FEED_SHARED.begin_native_session().expect("first native epoch");
+    let first = crate::player::demux_session::capture(
+        plx_playback_contract::AttemptId::new(8, 1), first_epoch,
+    );
+    let mut reserve = ReserveDeadlineState::from_playhead_at(
+        40_000_000_000, std::time::Duration::from_millis(500), false,
+        first.observer(),
+    );
+    FEED_SHARED.playpos_ns.store(40_000_000_000, Ordering::Release);
+    assert_eq!(reserve.remaining(), Some(std::time::Duration::from_millis(500)));
+
+    crate::player::reset_session_for_test();
+    let _next_epoch = FEED_SHARED.begin_native_session().expect("successor native epoch");
+    FEED_SHARED.playpos_ns.store(40_100_000_000, Ordering::Release);
+    assert_eq!(reserve.remaining(), None);
+    assert!(reserve.clock_is_spent());
+    assert!(reserve.active(false).is_some(), "retired reserve fails closed");
 }

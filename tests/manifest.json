@@ -1440,7 +1440,7 @@
         "plxnative-settings": "under-posters",
         "plxnative-settingsosc": true
       },
-      "comment": "The Under posters page (Settings v2: Title, Movie details, TV show details, Sort value, Reset) with the shared picture slot of two poster tiles. settingsosc alternates its first two rows. The heartbeat word is the page's own (`under-posters`), which only this page prints. The hyphen matters: tests/run.py's overlay capture group is `[\\w-]+` for exactly this reason."
+      "comment": "The Under posters page (Settings v2: Title, Movie details, TV show details, Sort value, Reset) with the shared picture slot of two poster tiles (a movie and a TV show, each under its kind). settingsosc alternates its first two rows. The heartbeat word is the page's own (`under-posters`), which only this page prints. The hyphen matters: tests/run.py's overlay capture group is `[\\w-]+` for exactly this reason."
     },
     {
       "name": "settings-under-posters-movie",
@@ -1455,7 +1455,7 @@
         "plxnative-settings": "under-posters-movie",
         "plxnative-settingsosc": true
       },
-      "comment": "The Movie details picker, booted over Under posters over the Settings root (`SettingsPage::boot_trail`). settingsosc sweeps UP/DOWN through its options (Nothing first, a sample on each row). The heartbeat word is the page's own PER KIND (`DetailsPage::name`), so neither the TV show picker (`under-posters-show`), the parent page (`under-posters`) nor the root (`settings`) can satisfy it."
+      "comment": "The Movie details picker, booted over Under posters over the Settings root (`SettingsPage::boot_trail`). settingsosc sweeps UP/DOWN through its six parts (Year, Length, Genre, Video quality, Age rating, Score; a sample on each row). The heartbeat word is the page's own PER KIND (`DetailsPage::name`), so neither the TV show picker (`under-posters-show`), the parent page (`under-posters`) nor the root (`settings`) can satisfy it."
     },
     {
       "name": "settings-under-posters-show",
@@ -1470,7 +1470,7 @@
         "plxnative-settings": "under-posters-show",
         "plxnative-settingsosc": true
       },
-      "comment": "The TV show details picker: the same `DetailsPage` as settings-under-posters-movie with PosterKind::Show (its list never offers Video quality, so it has one row fewer). Its heartbeat word is its own (`under-posters-show`), distinct from the Movie picker's (`under-posters-movie`), so a boot target that opened the wrong kind cannot satisfy either scene."
+      "comment": "The TV show details picker: the same `DetailsPage` as settings-under-posters-movie with PosterKind::Show (it lists five parts, Seasons in place of Length and no Video quality, against the Movie picker's six). Its heartbeat word is its own (`under-posters-show`), distinct from the Movie picker's (`under-posters-movie`), so a boot target that opened the wrong kind cannot satisfy either scene."
     },
     {
       "name": "settings-player-hud",
@@ -4807,6 +4807,348 @@
       "_collapse_note": "Measures E_tx_down under collapse -- the plan's 5th-ranked device case, and the one that matters most because it is where the descent is priced. It was written when DOWNSHIFTS HAD NO DEADLINE AT ALL (`candidate_prime_budget` and `candidate_warmup_budget` both returned None for Direction::Down), and it is the case that produced the evidence: one warm-up fetch of 36 156 ms against a 5 793 ms reserve, which is 6.2x the reserve it was spending. Since J3b (2026-08-27) a candidate transfer is bounded by that reserve in both directions while a picture remains; after observed B=0, a floor downshift keeps the only available response instead of re-requesting it. The case therefore measures descent with the reserve bound in place, and `warmup_dl=` on each ordinary `abr: tx` line states that bound. The 500 kbps floor is derived rather than picked: at that rate only rung 320 is sustainable (A/D 0.90 from the measured fixed cost and rung 320's own 380 kbps of media), while 720 is at 1.74 and 2000 at 4.58 -- so the controller has to walk the WHOLE ladder down from the top rung an unshaped start puts it on, which is what makes the descent cost observable rather than inferred. Distinct from `pipe_abr_brief_dropout`, which dips for 3 s and grades the RECOVERY: this one holds the floor for the rest of the run and grades the descent. `settle_max_kbps: 720` is deliberately one rung looser than the arithmetic demands -- the assertion is that the full descent happens, not that it lands on exactly the rung a model predicts, since a model that also chose the leg rate would be marking its own work. No `max_stall_s`: a collapse from the ladder top through a ~4.9 s reserve may legitimately stall, and asserting it must not would be asserting a result nobody has measured."
     },
     {
+      "name": "pipe_abr_uri_ladder_collapse",
+      "fixture": "__abr/ladder/master.m3u8?top=6000",
+      "title": "URI mode, no Plex: a multi-variant ladder master through a sustained link collapse",
+      "covers": [
+        "uri-mode",
+        "abr-ladder",
+        "collapse"
+      ],
+      "declare": {
+        "vcodec": "h264",
+        "acodec": "aac",
+        "fps": 24.0
+      },
+      "triggers": {
+        "uriprobe": "load"
+      },
+      "network_profile": [
+        {
+          "until_s": 25.0,
+          "kbps": 40000
+        },
+        {
+          "until_s": 300.0,
+          "kbps": 500
+        }
+      ],
+      "run_secs": 120,
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
+      "expect": {
+        "no_playing_error": true,
+        "uri_playing": true
+      },
+      "_uri_note": "R-ABR-2 INSTRUMENT. Does the TV's own HLS controller switch between the ladder's variants (/__abr/ladder/master.m3u8?top=6000 lists the rungs from 320 up to 6000, lowest first, with timestamps that run on across segments) when the link collapses, and what do streamingInfo/customizedStreamingInfo/bufferRange/videoInfo say while it does? The ladder stops at 6000 so the largest segment in flight when the link collapses is a 6000 one (1.4-1.7 MB in this pack, 23-28 s at 0.5 Mbit/s) rather than a 20000 or 22000 one (4.3-5.5 MB, 68-87 s). The link is pipe_abr_down_collapse's: 40 Mbit/s for 25 s, then 0.5 Mbit/s. The probe is UNBOUND (`window=none`, no ACB video plane). On that arm the TV's native player cannot carry a stream of about 20 Mbit/s past about 40 MB by construction: the clock stops near 14 s, no bufferingStart fires, and bufferRange keeps claiming 12 s ahead. So this case is an instrument and not a gate: the harness grades `uri_playing` only (the stream started and the media clock advanced) and `no_error` (no refusal, no failed load), and runs none of the buffer-feed checks (stream_path, load_decl, pos_climb, presented_rate), which a native player never writes lines for. The regression gates are pipe_uri_hls_720p24_20m_bound and pipe_uri_hls_720p24_20m_bound_collapse, which bind the plane (`uriprobe=acb-control`, `ptype=0`). The evidence is the saved `uriprobe:` log lines (--save-logs) and the `<case>.rungs` file beside them, which counts the segments the TV fetched per rung. The armed line reads kind=direct for this entry. Do not pass --extra-trigger plxnative-uriprobe: it is written after the case's own and would replace its tokens."
+    },
+    {
+      "name": "pipe_abr_uri_ladder_capped",
+      "fixture": "__abr/ladder/master.m3u8",
+      "title": "URI mode, no Plex: a multi-variant ladder master on a fast link with a native bit-rate cap",
+      "covers": [
+        "uri-mode",
+        "abr-ladder",
+        "bps-cap"
+      ],
+      "declare": {
+        "vcodec": "h264",
+        "acodec": "aac",
+        "fps": 24.0
+      },
+      "triggers": {
+        "uriprobe": "load bpsmax=720000"
+      },
+      "run_secs": 60,
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
+      "expect": {
+        "no_playing_error": true,
+        "uri_playing": true
+      },
+      "_uri_note": "R-ABR-2 INSTRUMENT. Does option.adaptiveStreaming.bps.maximum hold? The link is unshaped and the master lists every rung, so an uncapped controller climbs to the top; the cap is the second-lowest rung's BANDWIDTH (720 kbit/s, bit/s in the trigger), so a cap that holds keeps the `<case>.rungs` count on 320 and 720 and nothing above, and the `armed` line ends in bpsmax=720000. The probe is UNBOUND (`window=none`, no ACB video plane). On that arm the TV's native player cannot carry a stream of about 20 Mbit/s past about 40 MB by construction: the clock stops near 14 s, no bufferingStart fires, and bufferRange keeps claiming 12 s ahead. So this case is an instrument and not a gate: the harness grades `uri_playing` only (the stream started and the media clock advanced) and `no_error` (no refusal, no failed load), and runs none of the buffer-feed checks (stream_path, load_decl, pos_climb, presented_rate), which a native player never writes lines for. The regression gates are pipe_uri_hls_720p24_20m_bound and pipe_uri_hls_720p24_20m_bound_collapse, which bind the plane (`uriprobe=acb-control`, `ptype=0`). The saved log and `<case>.rungs` are the evidence."
+    },
+    {
+      "name": "pipe_abr_uri_continuous_20000",
+      "fixture": "__abr/20000/master.m3u8?continuous=1",
+      "title": "URI mode, no Plex: one 1080p 20 Mbit/s rung with timestamps that run on across segments",
+      "covers": [
+        "uri-mode",
+        "continuous-timestamps",
+        "high-bitrate"
+      ],
+      "declare": {
+        "vcodec": "h264",
+        "acodec": "aac",
+        "fps": 24.0
+      },
+      "triggers": {
+        "uriprobe": "load"
+      },
+      "run_secs": 60,
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
+      "expect": {
+        "no_playing_error": true,
+        "uri_playing": true
+      },
+      "_uri_note": "R-ABR-2 INSTRUMENT. Separates a fixture artefact from a pipeline limit at high bitrate. The native HLS player stalled after about 40 MB on the 20000 and 22000 rungs of the ladder, where every segment is an independent MPEG-TS program whose video restarts at PTS 1.483 s, with no #EXT-X-DISCONTINUITY. This case plays only the 20000 rung (a single-variant master, no ladder to switch on) and `continuous=1` rides master -> media -> segment URIs, so the server shifts each segment's PCR, PTS and DTS by the measured duration of every earlier one (tests/serve_fixtures.py, 'Continuous timestamps'). Measured since: with continuous timestamps the unbound arm still stops at about 13.5 s, a clean ffmpeg HLS stream of the same rate stops the same way, and that rate plays on once the ACB plane is bound, so the stall is the unbound arm and neither the timestamps nor the fixture. Not rewritten here: continuity counters, which still restart at every segment, and the audio cut: the audio abuts the previous segment's inside a cycle but steps back about 11 ms (about 32 ms of overlap) where the six-part cycle wraps, every sixth segment. The link is unshaped and the probe is armed with plain `load`. The probe is UNBOUND (`window=none`, no ACB video plane). On that arm the TV's native player cannot carry a stream of about 20 Mbit/s past about 40 MB by construction: the clock stops near 14 s, no bufferingStart fires, and bufferRange keeps claiming 12 s ahead. So this case is an instrument and not a gate: the harness grades `uri_playing` only (the stream started and the media clock advanced) and `no_error` (no refusal, no failed load), and runs none of the buffer-feed checks (stream_path, load_decl, pos_climb, presented_rate), which a native player never writes lines for. The regression gates are pipe_uri_hls_720p24_20m_bound and pipe_uri_hls_720p24_20m_bound_collapse, which bind the plane (`uriprobe=acb-control`, `ptype=0`). The saved log, with `<case>.rungs`, is the evidence."
+    },
+    {
+      "name": "pipe_uri_hls_720p24_20m_bound",
+      "fixture": "pipe_hls_720p24_20m/index.m3u8",
+      "title": "URI mode, no Plex, plane bound: a 20 Mbit/s 720p24 HLS stream plays for a minute",
+      "covers": [
+        "uri-mode",
+        "high-bitrate",
+        "acb-bound"
+      ],
+      "declare": {
+        "vcodec": "h264",
+        "acodec": "aac",
+        "fps": 24.0
+      },
+      "triggers": {
+        "uriprobe": "acb-control",
+        "ptype": "0"
+      },
+      "run_secs": 75,
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
+      "expect": {
+        "no_playing_error": true,
+        "uri_playing": true,
+        "uri_plane_bound": true,
+        "uri_clock_past_s": 60,
+        "uri_max_stall_s": 3
+      },
+      "_uri_note": "R-ABR-2 REGRESSION GATE. The same 20 Mbit/s stream that stalls an UNBOUND arm after about 40 MB (the clock stops near 14 s) plays on a plane the app has bound through ACB (`uriprobe=acb-control`, `ptype=0`: the plane is bound once the ACB callbacks for tasks 1-4 all answer ev=1). The fixture is a clean ffmpeg HLS VOD stream (tests/fixtures/make_fixtures.py, pipe_hls_720p24_20m: 1280x720 at 24 fps, 2 s segments, CBR) because the ACB arm accepts only a stream whose videoInfo is exactly 1280x720 at 24 fps. Graded from the `uriprobe:` lines: the clock advanced (`uri_playing`), the plane is bound (`uri_plane_bound`), the clock passed 60 s (`uri_clock_past_s`) and never stood still for more than 3 s of wall time (`uri_max_stall_s`, the trailing stretch to the end of the log included). The probe does not end on its own, so a run has no `summary` line unless the clock stops. The buffer-feed checks are not run. Do not pass --extra-trigger plxnative-uriprobe: it is written after the case's own and would replace its tokens."
+    },
+    {
+      "name": "pipe_uri_hls_720p24_20m_bound_collapse",
+      "fixture": "pipe_hls_720p24_20m/index.m3u8",
+      "title": "URI mode, no Plex, plane bound: the same stream through a sustained link collapse",
+      "covers": [
+        "uri-mode",
+        "high-bitrate",
+        "acb-bound",
+        "collapse"
+      ],
+      "declare": {
+        "vcodec": "h264",
+        "acodec": "aac",
+        "fps": 24.0
+      },
+      "triggers": {
+        "uriprobe": "acb-control",
+        "ptype": "0"
+      },
+      "network_profile": [
+        {
+          "until_s": 25.0,
+          "kbps": 40000
+        },
+        {
+          "until_s": 300.0,
+          "kbps": 500
+        }
+      ],
+      "run_secs": 75,
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
+      "expect": {
+        "no_playing_error": true,
+        "uri_playing": true,
+        "uri_plane_bound": true,
+        "uri_drain_warning_s": 5
+      },
+      "_uri_note": "R-ABR-2 REGRESSION GATE. The bound case's stream and arm through pipe_abr_down_collapse's link (40 Mbit/s for 25 s, then 0.5 Mbit/s). On a bound plane the buffer the player reports drains in plain sight: the lead (bufferRange remainingTime, or endTime minus beginTime when the line has no remainingTime, which the 4.5 set does not print reliably) falls about a second per second (12 s down to 2 s) and a mid-playback bufferingStart fires at about 2 s remaining, so the viewer is warned before the picture freezes. `uri_drain_warning_s` 5 requires that decline to have lasted at least 5 s (counted from the last sample at the peak, no rise in between) before the first bufferingStart after the first `ev=playing`; a buffer that sat full and then stopped, with no slope or no bufferingStart, fails it. The probe's own watchdog ends the run about 10 s after the clock stops (`end=timeout:currentTime`), which is the expected ending here and not an error."
+    },
+    {
+      "name": "pipe_uri_product_hls_720p24_20m_bound",
+      "fixture": "pipe_hls_720p24_20m/index.m3u8",
+      "title": "URI product route, plane bound: the production backend plays a 20 Mbit/s 720p24 HLS stream for a minute",
+      "covers": [
+        "uri-mode",
+        "uri-product",
+        "high-bitrate",
+        "acb-bound"
+      ],
+      "uri_route": "product",
+      "carrier": "pipe_uri_carrier_720p24.mp4",
+      "declare": {
+        "vcodec": "h264",
+        "acodec": "aac",
+        "fps": 24.0
+      },
+      "triggers": {
+        "ptype": "0"
+      },
+      "run_secs": 75,
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
+      "expect": {
+        "no_playing_error": true,
+        "uri_playing": true,
+        "uri_plane_bound": true,
+        "uri_clock_past_s": 60,
+        "uri_max_stall_s": 3,
+        "uri_presented": true,
+        "uri_service_playing": true
+      },
+      "_uri_note": "PRODUCTION ROUTE (debug builds, `--guest --mock`). The same 20 Mbit/s HLS stream as pipe_uri_hls_720p24_20m_bound, but played by the PRODUCTION URI backend instead of the developer probe: the app resolves the carrier clip (`carrier`, a 90 s 720p24 progressive twin on the harness's own mock PMS, ratingKey 990001), the dev route (`plxnative-uridev`, written by the runner) answers the qualification with the fixture's URL, and the backend binds the ACB plane (`ptype=0`) and plays it. The runner writes `part=` from the carrier, `pms=` from the configured mock address (the origin the app's own client holds), `url=` from the fixture server, pins `quality=original` and `audioenh=off`, never arms `uriprobe`, and deletes `plxnative-uridev` afterwards. Graded from `uri-trace:` lines (the probe's event text under a new prefix) and the lines production writes: `uri: service playing`, `uri: presented (... from P to N ms)` with N > P, `videoplane: BOUND`, and the display and PLAYING ACB tasks read from the log, each with an `acb callback ... ev=1`. The probe pair stays as the instrument baseline; compare the two on the same stream."
+    },
+    {
+      "name": "pipe_uri_product_hls_720p24_20m_bound_collapse",
+      "fixture": "pipe_hls_720p24_20m/index.m3u8",
+      "title": "URI product route, plane bound: the same stream through a sustained link collapse",
+      "covers": [
+        "uri-mode",
+        "uri-product",
+        "high-bitrate",
+        "acb-bound",
+        "collapse"
+      ],
+      "uri_route": "product",
+      "carrier": "pipe_uri_carrier_720p24.mp4",
+      "declare": {
+        "vcodec": "h264",
+        "acodec": "aac",
+        "fps": 24.0
+      },
+      "triggers": {
+        "ptype": "0"
+      },
+      "network_profile": [
+        {
+          "until_s": 25.0,
+          "kbps": 40000
+        },
+        {
+          "until_s": 300.0,
+          "kbps": 500
+        }
+      ],
+      "run_secs": 75,
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
+      "expect": {
+        "no_playing_error": true,
+        "uri_playing": true,
+        "uri_plane_bound": true,
+        "uri_drain_warning_s": 5,
+        "uri_presented": true,
+        "uri_service_playing": true
+      },
+      "_uri_note": "PRODUCTION ROUTE (debug builds, `--guest --mock`). The same 20 Mbit/s HLS stream as pipe_uri_hls_720p24_20m_bound_collapse, but played by the PRODUCTION URI backend instead of the developer probe: the app resolves the carrier clip (`carrier`, a 90 s 720p24 progressive twin on the harness's own mock PMS, ratingKey 990001), the dev route (`plxnative-uridev`, written by the runner) answers the qualification with the fixture's URL, and the backend binds the ACB plane (`ptype=0`) and plays it. The runner writes `part=` from the carrier, `pms=` from the configured mock address (the origin the app's own client holds), `url=` from the fixture server, pins `quality=original` and `audioenh=off`, never arms `uriprobe`, and deletes `plxnative-uridev` afterwards. Graded from `uri-trace:` lines (the probe's event text under a new prefix) and the lines production writes: `uri: service playing`, `uri: presented (... from P to N ms)` with N > P, `videoplane: BOUND`, and the display and PLAYING ACB tasks read from the log, each with an `acb callback ... ev=1`. The probe pair stays as the instrument baseline; compare the two on the same stream."
+    },
+    {
+      "name": "pipe_uri_product_hls_720p24_2a_audio2",
+      "fixture": "pipe_hls_720p24_2a/index.m3u8",
+      "title": "URI product route: the app's startup audio choice is the SECOND stream, so the backend must select a non-default track before play",
+      "covers": [
+        "uri-mode",
+        "uri-product",
+        "acb-bound",
+        "audio-track",
+        "non-default-audio"
+      ],
+      "uri_route": "product",
+      "carrier": "pipe_uri_carrier_720p24_2a.mp4",
+      "carrier_audio": 2,
+      "declare": {
+        "vcodec": "h264",
+        "acodec": "aac",
+        "fps": 24.0
+      },
+      "triggers": {
+        "ptype": "0"
+      },
+      "run_secs": 45,
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
+      "expect": {
+        "no_playing_error": true,
+        "uri_playing": true,
+        "uri_plane_bound": true,
+        "uri_clock_past_s": 30,
+        "uri_max_stall_s": 3,
+        "uri_presented": true,
+        "uri_service_playing": true,
+        "uri_audio_selected": {
+          "path": "select",
+          "index": 1
+        }
+      },
+      "_uri_note": "PRODUCTION ROUTE (debug builds, `--guest --mock`), the W6 pair. The stream is `pipe_hls_720p24_2a` (1280x720 at 24 fps, 4 Mbit/s CBR, TWO mono AAC streams in the TS: `eng` at 440 Hz first, `ger` at 880 Hz second) and the carrier its twin `pipe_uri_carrier_720p24_2a.mp4` (same tags, same order, the first the file's default, no subtitles). Both are built by `make fixtures-pipeline`. The mock PMS reports the carrier's second audio stream as the server's own pick (`carrier_audio: 2` is `tests/mock_pms.py --extra-media-audio 2`: selected, not default), the runner clears track memory (`plxnative-trackmemory=clear`, as for every case), and the app's own audio ladder (`audio_intents`: a selected non-default stream) picks it, so the app's startup plan asks the backend for it before the first Play. `uri_audio_selected` `select`, index 1 (the native index is the stream's 0-based position among the Part's audio streams in container order, which `dev::uri_product::DevQualifier` maps and which is taken to be the numbering `audioInfo.track` uses): no `uri: audio index=N is already selected` line, the line the backend writes for the select it SENDS (`uri: selectTrack sent kind=audio index=1 stream=SID`), a confirmation (`uri-trace: ... ev=trackSelected`, which must name `type=audio index=1` when it names anything, or an `ev=audioInfo ... track=` that moved off the track the service loaded on), no `uri: control SelectTrack ... refused (TimedOut)` and `uri: service playing`. It measures what the 4.5 service does with a `selectTrack` to another track before `play`: a settle is a PASS, a refusal or a timeout is a FAIL that names its line. If the position is not the service's numbering, the sent line quotes the index that went out and the failure is the service's answer to it (a refusal, a timeout, or an `audioInfo` on another track), not a flake."
+    },
+    {
+      "name": "pipe_uri_product_hls_720p24_2a_audio1",
+      "fixture": "pipe_hls_720p24_2a/index.m3u8",
+      "title": "URI product route: the default (first) audio stream is selected, so the backend settles without a native select (the control)",
+      "covers": [
+        "uri-mode",
+        "uri-product",
+        "acb-bound",
+        "audio-track",
+        "control"
+      ],
+      "uri_route": "product",
+      "carrier": "pipe_uri_carrier_720p24_2a.mp4",
+      "declare": {
+        "vcodec": "h264",
+        "acodec": "aac",
+        "fps": 24.0
+      },
+      "triggers": {
+        "ptype": "0"
+      },
+      "run_secs": 45,
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
+      "expect": {
+        "no_playing_error": true,
+        "uri_playing": true,
+        "uri_plane_bound": true,
+        "uri_clock_past_s": 30,
+        "uri_max_stall_s": 3,
+        "uri_presented": true,
+        "uri_service_playing": true,
+        "uri_audio_selected": {
+          "path": "already",
+          "index": 0
+        }
+      },
+      "_uri_note": "PRODUCTION ROUTE (debug builds, `--guest --mock`), the W6 pair. The stream is `pipe_hls_720p24_2a` (1280x720 at 24 fps, 4 Mbit/s CBR, TWO mono AAC streams in the TS: `eng` at 440 Hz first, `ger` at 880 Hz second) and the carrier its twin `pipe_uri_carrier_720p24_2a.mp4` (same tags, same order, the first the file's default, no subtitles). Both are built by `make fixtures-pipeline`. The control of `pipe_uri_product_hls_720p24_2a_audio2`: the same files, the mock keeps the file's own default (the first stream) as the selected one. `uri_audio_selected` `already`, index 0: `uri: audio index=0 is already selected (audioInfo); no selectTrack sent`, the last `ev=audioInfo track=` before it naming that very track, no `uri: selectTrack sent` line, and `uri: service playing`. Everything else, the stream, the carrier, the grades and the 45 s cap, is the same, so a difference between the two cases is the audio selection and nothing else."
+    },
+    {
       "name": "pipe_abr_down_staircase",
       "fixture": "pipe_h264_aac_mp4.mp4",
       "title": "no-Plex Auto: a TWO-STEP collapse, the shape that outruns a downshift",
@@ -4948,6 +5290,85 @@
         "abr_shape": {}
       },
       "_pause_note": "The reported failure is specifically a hidden Pause -> Resume interval while the demux worker may be blocked: after enough media accumulates, video initially moves, audio trails, then both become intermittent. This case expresses the two user edges as one app-owned script, so SSH timing cannot create a different race. The operation requires both synchronized transitions to be accepted, observes a stationary integer playhead during the authored hold, and then requires at least 20 s of post-Resume climb. `abr_shape: {}` records stall/rate/lumpiness for the post-change device baseline without inventing a threshold before that run; visual A/V synchrony still requires the television tier."
+    },
+    {
+      "name": "pipe_original_pause_resume",
+      "fixture": "pipe_h264_aac_mp4.mp4",
+      "title": "direct-play (Original): a user Pause holds the playhead and Resume recovers both A/V lanes",
+      "covers": [
+        "pause-resume",
+        "user-clock-authority",
+        "audio-video-recovery",
+        "direct-play"
+      ],
+      "declare": {
+        "vcodec": "h264",
+        "acodec": "aac",
+        "fps": 24.0
+      },
+      "run_secs": 70,
+      "operations": [
+        {
+          "op": "play"
+        },
+        {
+          "op": "pause_resume",
+          "delay_ms": 20000,
+          "hold_ms": 6000,
+          "min_climb_after_s": 20
+        }
+      ],
+      "expect": {
+        "codec": "h264",
+        "load_video": "H264",
+        "load_audio": "AAC",
+        "min_pos_climb_s": 35,
+        "require_video_bound": true,
+        "no_playing_error": true
+      },
+      "_note": "The ORIGINAL (direct-play, Feed) twin of `pipe_auto_pause_fill_resume`, which is the only device case that pauses and runs on HLS. Same clip and the same authored Pause -> Resume script, with no `auto_network`: the case never enters Auto or HLS, and `stream_path` requires the demuxer to open `pipe_h264_aac_mp4.mp4` itself, so an HLS entry fails it instead of being graded as a pause. It exists because the viewer's Pause/Resume handshake moved into the Feed for every session in W3e L3b-2a (0907e7b71) and the player's readout takes the pause state in L3b-2c, and until this case no device run drove that handshake on the direct-play path. `pause_resume` grades the accepted Pause and Resume edges (`dev/scenarios.rs` logs them on any route), a playhead that stays put through the hold, a climb of `min_climb_after_s` after the Resume, and an accepted video and audio feed after it; nothing in it is HLS-specific, so it is unchanged here. Dropped from the HLS twin: `abr_shape`, which has no controller to read. The pause fires 20 s after its 6 s gate rather than the HLS case's 25 s so that 20 s of post-Resume climb ends before this 60 s clip does."
+    },
+    {
+      "name": "pipe_original_paused_seek",
+      "fixture": "pipe_h264_aac_mp4.mp4",
+      "title": "direct-play (Original): a seek taken UNDER the viewer's Pause lands paused, then Resume plays on from it",
+      "covers": [
+        "pause-resume",
+        "paused-seek",
+        "seek-preroll",
+        "seek-inplace",
+        "direct-play"
+      ],
+      "declare": {
+        "vcodec": "h264",
+        "acodec": "aac",
+        "fps": 24.0
+      },
+      "run_secs": 60,
+      "operations": [
+        {
+          "op": "play"
+        },
+        {
+          "op": "pause_resume",
+          "delay_ms": 10000,
+          "hold_ms": 18000,
+          "seek_s": 30,
+          "seek_delay_ms": 14000,
+          "min_climb_after_s": 12
+        }
+      ],
+      "expect": {
+        "codec": "h264",
+        "load_video": "H264",
+        "load_audio": "AAC",
+        "min_pos_climb_s": 35,
+        "require_video_bound": true,
+        "no_playing_error": true,
+        "server_opens_min": 2,
+        "server_range_opens_min": 1
+      },
+      "_note": "The Feed's seek preroll under a Paused transport, on the Original path: with the viewer Paused a seek opens a one-frame preroll, presents the landed frame, and `player::finish_paused_seek` re-holds it (`seek: paused frame restored ns=`, logged once). The script is the app's own pair of dev triggers: `plxnative-autopause=delay=10000,hold=18000` and `plxnative-autoseek=delay=14000,30`, both written by the one `pause_resume` op that carries `seek_s`. They arm at different gates (autopause 6 s into the player route, autoseek 12 s plus a known playhead), so the seek lands between 4 s and 10 s into the hold depending on how fast the boot was, and the 18 s hold leaves at least 6 s of paused landing before the Resume. `paused_seek` (`run.op_paused_seek`) reads the order of the log's own edges instead of trusting those numbers: Pause accepted, `autoseek: step`, `seek(in-place): av_seek`, the receipt within 6 s of the target, stationary `pos=` samples from the receipt to the Resume, then a climb of 12 s and an accepted video and audio feed after the Resume. A seek that fires outside the hold fails by name rather than passing as a different case. The 30 s target is 20 s past where the 10 s pause lands (~8-12 s) and leaves 30 s of the 60 s clip, so 12 s of post-Resume climb ends before the clip does. `server_range_opens_min: 1` is the Range reopen a direct-play seek makes (the same floor `pipe_seek_mp4` measured on this fixture), so a landing served from the AVIO buffer without a seek cannot pass. Not yet run on the device: the timing above is arithmetic on the two gates, and the first run is what confirms it."
     },
     {
       "name": "pipe_abr_seek_flat",
@@ -5202,6 +5623,28 @@
         "server_range_opens_min": 1
       },
       "_wire_note": "MEASURED 2026-08-22 on the dev TV: a play-only case on this same clip is 1 open / 0 ranged, and this case is 4 / 3. So the ranged floor is a real assertion and not something container probing satisfies for free — which was the worry, since Matroska cues live at the end of the file. It corroborates `seek_inplace` rather than replacing it: an autoseek past EOF (the bug this case caught) still produced ranged opens while the in-place path never ran."
+    },
+    {
+      "name": "pipe_side_reader_srt",
+      "fixture": "pipe_side_reader_remux.mkv",
+      "title": "mock PMS: server-selected embedded SRT drawn by the app's side reader over the enhanced remux",
+      "covers": ["subtitle-side-reader", "audio-enhancement-side-reader", "mock-pms"],
+      "pms_route": "mock",
+      "carrier": "pipe_side_reader_srt.mkv",
+      "carrier_subtitle": 1,
+      "audio_enhancements_boot": "loudness",
+      "declare": {"vcodec": "h264", "acodec": "ac3", "fps": 24.0},
+      "run_secs": 60,
+      "operations": [
+        {"op": "play"},
+        {"op": "audio_enhancement_subtitle", "presenter": "client"}
+      ],
+      "expect": {
+        "no_playing_error": true,
+        "require_video_bound": true,
+        "min_pos_climb_s": 8
+      },
+      "_mock_note": "The one device case that starts the subtitle side reader (`player::subside`, behind `ReadoutEvent::SideReaderWanted` -> `FeedCommand::SyncSideReader`) WITHOUT a real account: the logic-suite cases that do (`subtitle_text_srt`'s enhanced twin `audio_enhancement_draws_server_selected_subtitle`, `audio_enhancement_draws_embedded_subtitle`) PUT a subtitle selection on the server `manifest.local.json` maps. Here the server is the harness's own mock PMS (`pms_route: \"mock\"`: `--guest --mock`, debug install, the mock on the PMS_HOST/PMS_PORT of src/config.local.h): `carrier` (`pipe_side_reader_srt.mkv`: 720p24 h264, AAC stereo, ONE embedded SubRip track cued every 10 s from t=0, about 1.4 Mbit/s) is its only item, and `carrier_subtitle: 1` makes that track the SERVER-selected one in the mock's own metadata (`mock_pms.py --extra-media-subtitle 1`), so no selection is ever written to any server (there is none but the mock, and the mock is also what the PUT would reach). `audio_enhancements_boot: loudness` forces Normalize Loudness on at boot, so the cold start is the enhanced remux (the mock's decision answers a transcode of the audio and a copy of the video, as PMS 1.43 does) and `fixture` (`pipe_side_reader_remux.mkv`, the same picture with AC-3 stereo and no subtitle) is what the mock serves for `start.mkv` (`--transcode-fixture`). The route then admits the reader: the mock link is local, the Part is a `/library/parts/` key at about 1400 kbps (`side_reader_inputs_admit`, bound 30000), and the pick is an embedded track the remux does not carry. Graded from the app's log alone, as `audio_enhancement_draws_server_selected_subtitle` is (`op_audio_enhancement_subtitle`: `enhancement: applied`, the remux's `stream:` path without `subtitles=burn`, `server-selected subtitle: .. render_idx=K`, `subside: open .. ordinal=K`, no `subside: failed`, a `sub cue [..] len=N>0`), plus `subside: anchor match=exact|assumed` after the open line. Playback starts at 0, where the synthetic track already cues every 10 s (the 843 s start of the real-library twins exists because a real film's first minute holds no dialogue). Debug install only; a log that does not show the synthetic mock's version is not graded."
     }
   ],
   "library_gaps": {

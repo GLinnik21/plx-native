@@ -58,7 +58,7 @@ use plx_ui::{hero_alpha, theme, Env, Painter, Rect, Spring, View};
 use std::borrow::Cow;
 use std::cell::Cell;
 
-use super::registry::{AppFx, AppMsg, ContentArg, ContentLike, ContentReq, PageMemory, DetailIdentity, DetailKey, DetailMemory, ContentPanel, DetailRefreshPhase};
+use super::registry::{AppFx, AppMsg, ContentArg, ContentLike, ContentReq, PageMemory, DetailIdentity, DetailKey, DetailMemory, ContentPanel, DetailRefreshPhase, PlayerLike};
 
 /// Each section's local element ids are a block of its own, 2^24 wide, so a list can grow to any
 /// length the server sends without running into the next section's ids. Episodes sit alone at the
@@ -898,7 +898,7 @@ impl DetailScreen {
         }
     }
 
-    pub fn focused_rect<H: ContentLike + crate::registry::MetadataLike>(
+    pub fn focused_rect<H: ContentLike + crate::registry::MetadataLike + PlayerLike>(
         &self,
         focus: Option<FocusKey<u32>>,
         cx: &Cx<'_, H>,
@@ -1447,7 +1447,7 @@ impl DetailScreen {
     }
 }
 
-impl<H: ContentLike + crate::registry::MetadataLike> Focusable<H> for DetailScreen {
+impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> for DetailScreen {
     fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
         let meta = H::metadata(cx);
         let measure = cx.measure;
@@ -2026,7 +2026,7 @@ fn row_move(index: usize, len: usize, dir: Dir) -> Option<usize> {
     }
 }
 
-impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen {
+impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Machine<H> for DetailScreen {
     type Ev = ScreenEvent<H>;
 
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
@@ -2227,7 +2227,9 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
                 if self.full_trailer() {
                     if let InputKind::Key { key, sym, wcode, edge, .. } = input.kind {
                         if let Some(act) = trailer::trailer_key(key, sym, wcode) {
-                            self.trailer_act(act, edge, input.at.ms, fx);
+                            let ps = H::session(cx);
+                            self.trailer_act(act, edge, input.at.ms, plx_media::player::playpos_ns(ps), plx_media::player::duration_ns(ps),
+                                plx_media::route::is_preview(ps) && H::transport_paused(cx), fx);
                             return Handled::Yes;
                         }
                     }
@@ -2304,7 +2306,8 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
                         ..
                     }
                 ) {
-                    if self.collapse_full_trailer(fx) {
+                    if self.collapse_full_trailer(
+                        plx_media::route::is_preview(H::session(cx)) && H::transport_paused(cx), fx) {
                         return Handled::Yes;
                     }
                     if self.collapse_background_preview(fx) {
@@ -2325,7 +2328,8 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
                         edge: Edge::Down,
                         ..
                     }
-                ) && self.collapse_full_trailer(fx)
+                ) && self.collapse_full_trailer(
+                        plx_media::route::is_preview(H::session(cx)) && H::transport_paused(cx), fx)
                 {
                     return Handled::Yes;
                 }
@@ -2499,7 +2503,7 @@ impl DetailScreen {
     }
 }
 
-impl<H: ContentLike + crate::registry::MetadataLike> Screen<H> for DetailScreen {
+impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Screen<H> for DetailScreen {
     /// The Related / collection shelf card only; a season tab or an episode is not a catalog item.
     fn focused_card<'a>(&self, cx: &Cx<'a, H>, focus: Option<plx_machine::machine::FocusKey<u32>>, at: Option<At>) -> Option<plx_ui::screen::FocusedCard<'a>> {
         let item = self.focused_related(focus, <H as crate::registry::MetadataLike>::metadata(cx))?;
@@ -2692,7 +2696,9 @@ impl<H: ContentLike + crate::registry::MetadataLike> Screen<H> for DetailScreen 
                 .or_else(|| self.selected().map(|m| m.title.as_str()))
                 .unwrap_or_default(),
             self.preview_extra(meta).map(|e| e.title.as_str()).unwrap_or_default(),
-            plx_media::player::preview::paused(),
+            plx_media::route::is_preview(H::session(f.cx)) && H::transport_paused(f.cx),
+            plx_media::player::playpos_ns(H::session(f.cx)),
+            plx_media::player::duration_ns(H::session(f.cx)),
             measure,
         );
 
@@ -3168,7 +3174,7 @@ impl DetailScreen {
             );
     }
 
-    fn record_stops<H: ContentLike + crate::registry::MetadataLike>(&self, f: &mut DrawFrame<'_, '_, H>) {
+    fn record_stops<H: ContentLike + crate::registry::MetadataLike + PlayerLike>(&self, f: &mut DrawFrame<'_, '_, H>) {
         if !f.records_stops() { return; }
         let meta = H::metadata(f.cx);
         // Two placements per episode, each reading the section flow: one validation for all.
@@ -3782,7 +3788,7 @@ impl DetailScreen {
         self.strip_seat.done = done;
     }
 
-    fn tick<H: ContentLike + crate::registry::MetadataLike>(&mut self, t: Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+    fn tick<H: ContentLike + crate::registry::MetadataLike + PlayerLike>(&mut self, t: Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         let meta = H::metadata(cx);
         self.refresh_spot_facts(meta);
         self.layout.set(None);
@@ -3939,7 +3945,8 @@ impl DetailScreen {
         if moving || meta.season_loading() {
             fx.note(PresentEvent::Motion);
         }
-        self.preview_tick(t.ms, dt, focused, fx, meta);
+        self.preview_tick(t.ms, dt, focused, plx_media::player::duration_ns(H::session(cx)),
+            plx_media::route::is_preview(H::session(cx)) && H::transport_paused(cx), fx, meta);
         let hint = self.hint_input(cx, focused);
         self.hold_hint.step(hint, t.ms, dt, &mut |ev| fx.note(ev));
     }
@@ -3950,7 +3957,7 @@ impl DetailScreen {
     /// `focused_episode` says its menu can open; the episode text stop, Extras, Cast, the hero,
     /// headings and the about rows have no hold action), never while full-trailer mode has taken the page off screen;
     /// and whether it has arrived (the page scroll and the card's own glide).
-    fn hint_input<H: ContentLike + crate::registry::MetadataLike>(
+    fn hint_input<H: ContentLike + crate::registry::MetadataLike + PlayerLike>(
         &self,
         cx: &Cx<'_, H>,
         focused: Option<Located>,
@@ -4023,6 +4030,8 @@ impl DetailScreen {
         now: u32,
         dt: f32,
         focused: Option<Located>,
+        duration_ns: Option<i64>,
+        preview_paused: bool,
         fx: &mut Effects<'_, H>,
         meta: plx_data::metadata::MetadataView<'_>,
     ) {
@@ -4093,7 +4102,7 @@ impl DetailScreen {
         // hand back a commit target on any given tick, which reaches `player::preview::seek`
         // through `ContentReq::PreviewSeek` — never `route::request_seek`'s user-intent
         // bookkeeping, per the watch-state promise `player/preview.rs`'s module doc restates.
-        if let Some(target_ns) = self.trailer_ctl.step_scrub_hold(now, plx_media::player::duration_ns()) {
+        if let Some(target_ns) = duration_ns.and_then(|duration_ns| self.trailer_ctl.step_scrub_hold(now, duration_ns)) {
             self.content(fx, ContentReq::PreviewSeek(target_ns));
         }
         if let Some(target_ns) = self.trailer_ctl.step_tap_commit(now) {
@@ -4106,7 +4115,7 @@ impl DetailScreen {
             now,
             dt,
             full_trailer,
-            plx_media::player::preview::paused(),
+            preview_paused,
             trailer::hint_shown(view.picture, self.preview_promoted, hero_active),
         ) {
             fx.note(PresentEvent::Motion);
@@ -4201,7 +4210,7 @@ impl DetailScreen {
     /// Un-promotes full-trailer mode if it was active — shared by the BACK and DOWN key arms and
     /// by the mode's own key ladder ([`Self::trailer_act`]), so the collapse itself has exactly one
     /// body. Returns whether it fired, so a caller can decide whether to also consume the key.
-    fn collapse_full_trailer<H: ContentLike>(&mut self, fx: &mut Effects<'_, H>) -> bool {
+    fn collapse_full_trailer<H: ContentLike>(&mut self, preview_paused: bool, fx: &mut Effects<'_, H>) -> bool {
         if !self.preview_promoted {
             return false;
         }
@@ -4210,7 +4219,7 @@ impl DetailScreen {
         // out: background autoplay has no control that could ever start it again, so leaving the
         // pause behind would strand a frozen picture under the restored chrome.
         self.trailer_ctl.dismiss();
-        if plx_media::player::preview::paused() {
+        if preview_paused {
             self.content(fx, ContentReq::PreviewTransport(Some(true)));
         }
         fx.invalidate(Provenance::Input);
@@ -4234,17 +4243,17 @@ impl DetailScreen {
         act: trailer::TrailerKey,
         edge: Edge,
         now: u32,
+        live_ns: Option<i64>,
+        duration_ns: Option<i64>,
+        preview_paused: bool,
         fx: &mut Effects<'_, H>,
     ) {
         use trailer::TrailerKey;
         if let TrailerKey::Scrub(fwd) = act {
             let commit = match edge {
-                Edge::Down => self.trailer_ctl.scrub_fresh(
-                    fwd,
-                    now,
-                    plx_media::player::duration_ns(),
-                    plx_media::player::playpos_ns(),
-                ),
+                Edge::Down => duration_ns.zip(live_ns).and_then(|(duration_ns, live_ns)| {
+                    self.trailer_ctl.scrub_fresh(fwd, now, duration_ns, live_ns)
+                }),
                 Edge::Repeat => {
                     self.trailer_ctl.scrub_repeat(now);
                     None
@@ -4268,7 +4277,7 @@ impl DetailScreen {
             // Both collapse keys go through the one collapse body, exactly as the BACK/DOWN arms
             // do outside the mode.
             TrailerKey::Collapse => {
-                self.collapse_full_trailer(fx);
+                self.collapse_full_trailer(preview_paused, fx);
                 return;
             }
             TrailerKey::Toggle => self.content(fx, ContentReq::PreviewTransport(None)),

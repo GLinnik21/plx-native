@@ -10,7 +10,7 @@
 use super::*;
 use super::test_support::{Drawn, World};
 use super::under_posters_shelf_route_tests::{describe_cards, set, Cell};
-use plx_plex::plex::session::UnderPostersDetails as Details;
+use plx_plex::plex::session::UnderPostersLadder as Details;
 use plx_ui::widgets::{CHIP_FRAME, TAB_TRACK_PAD, TOP_BAR_BOTTOM, TOP_BAR_Y};
 use plx_ui::Rect;
 

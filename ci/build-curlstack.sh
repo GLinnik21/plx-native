@@ -29,7 +29,8 @@
 # ARMv8 Crypto Extension paths (AES, PMULL/GHASH, SHA-1, SHA-256) for AArch32, dispatched at run
 # time: on a set with a Cortex-A55 that is the difference between table AES and the hardware's own
 # instructions for every TLS byte. The television's own OpenSSL (1.0.x to 3.x by firmware) is in the
-# process too, brought in by the system libcurl that `libplayerAPIs.so.1` needs, so this one is
+# process too, brought in by the system libcurl that `libplayerAPIs.so.1` (every Feed build links
+# it) needs, so this one is
 # kept apart from it at every level: its own SONAMEs and symbol-version file names
 # (`shlib_variant`, build_openssl), no configuration or module directory any television has
 # (build_openssl), and every library opened `RTLD_DEEPBIND | RTLD_LOCAL` (`net::curlstack`'s

@@ -1,15 +1,16 @@
-# player/ — the buffer-feed video engine
+# player/ — buffer-feed engine and backend integration
 
 This is the in-process **buffer-feed** playback engine (was `src/playback.c`): it pulls the part
 stream, demuxes it to access units, and `Feed()`s them to LG's StarfishMediaAPIs while `libAcbAPI`
-binds the decoded sink to the hardware video plane. The Starfish/ACB calls cross into C at the seam
-`src/starfish.c` (outside this dir — edits there almost always pair with edits here); the **ABI and
-bind-order gotchas for that seam live in THIS file**, below. `docs/agent-reference.md` carries only the
+binds the decoded sink to the hardware video plane. The Starfish calls cross into C at the seam
+`src/starfish.c` and the ACB / exported-window display binding is `src/video_plane.c` (both outside
+this dir — edits there almost always pair with edits here); the **ABI and bind-order gotchas for
+those seams live in THIS file**, below. `docs/agent-reference.md` carries only the
 one-paragraph playback summary.
 
 ## Sans-IO
 
-`lifecycle.rs`, `recovery.rs`, `release.rs` and the route planners `route/plan.rs` and
+`lifecycle.rs`, `attempt_metrics.rs`, `attempt_view.rs`, `readout.rs`, `recovery.rs`, `release.rs` and the route planners `route/plan.rs` and
 `plan_memory.rs` are machines: a step starts no worker, reads no registry and has no `cfg(test)`
 fork. The engine, the pump and the drivers beside them execute their effects.
 
@@ -17,33 +18,68 @@ fork. The engine, the pump and the drivers beside them execute their effects.
 
 ## Pipeline
 
-Normal playback uses in-process buffer-feed. Earlier URI/out-of-process experiments
-(`com.webos.media/load`) failed to bind, prompting the pivot recorded in `docs/buffer-feed-plan.md`
+Ordinary production playback still uses in-process buffer-feed. Earlier experiments with URI
+playback (`com.webos.media/load`) failed to bind, prompting the pivot recorded in `docs/buffer-feed-plan.md`
 (history, not spec). The controlled 2026-11-02 experiment later displayed its SDR720p24 fixture
 through ACB on the webOS 4.5 dev set, both with and without `connectDass`; see
-`docs/measurements/uri-acb-dass-2026-11-02.md`. URI mode exists in the tree only as a
-developer probe: `uriprobe.rs` (the pure machine) and `uriprobe_drive.rs` (its driver, forked to
-from `engine::start_bufferfeed_inner` by the `plxnative-uriprobe` trigger) play one stream through
-`com.webos.media` with no Engine behind it, to learn what webOS 5+ does with the exported window id
-(issue #1064). Its `drive` variant goes one step further and drives the transport the way a real
-URI backend would have to — pause, resume, a seek, a text and an audio `selectTrack`, and
-`setSubtitleEnable` — logging the position around each call, because the binding question is
-settled and the remaining question is whether the pipeline can be controlled. It is
-`devtriggers`-only, so a release build carries none of it, and it reports nothing to Plex.
-`uri_protocol.rs` holds shared pure builders/strict decoding; `uri_lifecycle.rs` owns registration
+`docs/measurements/uri-acb-dass-2026-11-02.md`. That proves this fixture's display path on one
+set, not production source, control or release coverage. Boot now installs a product URI driver
+and source qualification port. Its production qualifier returns Unknown and its certified
+capabilities are empty, so ordinary routes still choose Feed. Host fixtures inject qualified source
+and firmware evidence to exercise source, control and release logic.
+
+The product driver also carries the ACB plane binding the probe proved (`Binding::Acb` in
+`play-uri/src/backend.rs`): present and not routed. The paced sequence (gate, `setMediaId`, LOADED,
+the `connectDass` slot left empty, video data, full-screen display and PLAYING) is ONE pure machine,
+`play-uri/src/acb_bind.rs`, stepped by both the probe and the backend and performed through the sink by
+`play-uri/src/acb_drive.rs`; neither keeps a private copy. The backend starts it at `loadCompleted`
+from the envelope the service sent in the ACB schema, else the one the firmware itself makes of the
+service's `videoInfo` (`play-uri/src/acb_envelope.rs`, a fail-closed map; no fixture descriptor outside
+the probe, and nothing is built from video facts that lack the members the firmware writes),
+grants the bind through `PlaneOwner::bind(.., BindPolicy::Strict, ..)` (deferred: retried on a later
+poll; refused: a typed failure and a close that does not unload someone else's binding), and mirrors
+accepted pause/resume to the plane once the bind has completed. Release is `UNLOADED` and then the
+plane owner's fence on that call's completion callback, pumped from the backend's `poll`
+(`docs/measurements/acb-release-fence-2026-11-04.md`); a quarantine until process exit is only the
+outcome of a failed fence, not the normal one. `plx_play_uri::backend::product_binding` selects it at
+composition (ACB display mode, an initialized handle, player type 0); media's `uri_preflight` only receives the result as
+`ProductEvidence::unqualified_on(.., binding)`. `ProductEvidence::permits` and
+`ResolvePort::could_qualify_pms` accept `Binding::Acb` as an offerable display path beside an exported
+canvas, but only through `certified` capabilities: the production evidence certifies nothing and
+`ProductQualifier` answers `Unknown`, which is what keeps the ACB binding from being offered a source.
+
+The sequence's last step (`Op::Display`, the full-screen `setDisplayWindow` and `setState(PLAYING)`)
+goes through `PlaneOwner::show`, not straight to the sink: the C seam (`acb_finish`) returns the task id
+of each call and the owner's `Plane` keeps a `Shown` state, `Done` only when BOTH tasks have completed
+with event 1 (matched on the ids, like the `UNLOADED` fence; reset by a granted bind and by an unload).
+That fence is what `Observation::Presented` waits for on this binding: with the service's `playing`
+and a later `currentTime` advance (`play-uri/src/picture_gate.rs`, fed by `UriBackend`, ACB only; the
+backend asks `PlaneOwner::shown` from `poll` until it has an answer) the URI driver reports the first
+picture. `acb_finish` / `PlaneFinish` are the only change to the C seam's shape; Feed's `acb_start` is
+the same two calls and does not use the ids.
+
+The separate developer probe is invoked by the
+`plxnative-uriprobe` trigger. Media owns its route half and its port (`player/uriprobe_drive.rs`:
+the claimed start attempt, the settle, the adapter's one slot); the probe itself, the play-uri
+crate's driver over the URI transport, is the application's (`dev/uriprobe.rs`), installed at boot
+behind `UriProbeSession`, so media names no play-uri item. It plays one stream through `com.webos.media` with no Engine and
+can log pause, resume, seek, track selection and `setSubtitleEnable` behavior (issue #1064).
+That probe is `devtriggers`-only and reports nothing to Plex; the product driver is separate and
+uses common attempt reporting. The play-uri crate holds their protocol and driver implementation.
+`play-uri/src/uri_protocol.rs` holds pure builders/strict decoding; `play-uri/src/uri_lifecycle.rs` owns registration
 and request correlation, close deadlines and quarantine. The probe's logical Done does not release
 its adapter slot or exported window: the driver waits for successful bus unregister, keeps polling
 outside the player screen, and blocks reuse through unresolved close. Generic track/seek events and
 method ACKs remain distinct observations; they do not invent confirmation or resume policy.
 The stream side: `PMS HTTP GET` → demux → per-lane access-unit
-queues with byte-cap backpressure (`aq.rs`) → the pump `Feed()`s each AU to the Starfish pipeline.
-The demuxer is **`ff.rs` — the libavformat the app BUNDLES (not the TV's), over a custom AVIO on
+queues with byte-cap backpressure (`play-feed/src/aq.rs`) → the pump `Feed()`s each AU to the Starfish pipeline.
+The demuxer is **`play-feed/src/ff.rs` — the libavformat the app BUNDLES (not the TV's), over a custom AVIO on
 one of TWO transports** (design record: `docs/ffmpeg-demuxer-plan.md`; the hand-rolled `mkv.rs`
-fallback is retired/deleted). **Which transport is decided in `ff::demux` from the part URL's
+fallback is retired/deleted). The demuxer's application entry points are `plx_play_feed`'s (`plx_play_feed::{demux, DemuxTransport}`); `media/src/ff.rs` keeps `plx_media_codecs`' bindings and the integration fixtures. **Which transport is decided in `ff::demux` from the part URL's
 scheme, or by a plaintext open's redirect to https (`stream::redirect` hands that hop to curl)** —
-`AvioState` holds a source enum and `read_cb`/`seek_cb` dispatch: `http` → `stream.rs`'s raw socket, `https` → `crate::curlio`. That matters *here* because teardown is a
-different mechanism per arm: `engine::teardown` fires `stream::http_shutdown` at the socket **and**
-`curlio::abort_active()` at the curl source's wake pipe, since a thread parked in `curl_multi_wait`
+`AvioState` holds a source enum and `read_cb`/`seek_cb` dispatch: `http` → `stream.rs`'s raw socket, `https` → media's `curlio` credential facade over `plx_net::range_io`. That matters *here* because teardown is a
+different mechanism per arm: `route_start::teardown` (through `FeedStop::stop_unblock`) fires `stream::http_shutdown` at the socket **and**
+`curlio::abort_active()` through `net::range_io` at the curl source's wake pipe, since a thread parked in `curl_multi_wait`
 is not one any `shutdown(2)` of ours can reach. Exactly one of the two ever has anything to do. Ours ships beside the binary as `libav*-plx.so.*`, is `dlopen`'d by absolute path
 and pinned to majors 63/63/61, and is built `--disable-network` with `file` as its only protocol —
 so the AVIO is not merely how bytes reach it today, it is the only way they *can*. See the root
@@ -53,22 +89,24 @@ and seeks by time via `av_seek_frame` (libavformat's own Cues index).
 
 ## Threading model (this is the whole ballgame)
 
-- `engine.rs` — the **main-thread-confined** session object. Every ACB/Starfish *control* call
+- The session object (`plx_play_feed::feed_state::Engine`, driven by `plx_play_feed::native_executor`
+  and `plx_play_feed::feed_driver`) is **main-thread-confined**. Every ACB/Starfish *control* call
   happens on the main thread except two Starfish verbs: `Load` (on `load_thread`) and a real stop's
-  `Unload` (on the `sf-unload` worker, below). `engine` spawns the workers below.
-- **A real stop's `Unload` runs off the frame (`engine::PendingRelease`).** Measured on the dev set
+  `Unload` (on the `sf-unload` worker, below). `launch_native_open` spawns the workers below.
+- **A real stop's `Unload` runs off the frame (`plx_play_feed::feed_state::PendingRelease`).** Measured on the dev set
   2026-10-15 (release build, mock, Guest): `StarfishMediaAPIs::Unload` alone held the frame that
   handled BACK for 113-150 ms on every return (`teardown spans:` line, `sf_unload:`); the sched
   trace put the main thread in D state in `ioctl` (~31 ms), then in `futex` (~74 ms), inside that
-  call. `teardown` (real stop only: `for_reload == false`) now moves the native phase to
+  call. For a real stop or a Plex server termination, `teardown` moves the native phase to
   `Releasing`, hands the Unload to an `sf-unload` worker with an `UnloadTicket`, and parks the
   worker on the adapter. The rest of the release — callback gate, epoch retire, ACB
   `setState(UNLOADED)`, D1 or quarantine, `destroy_window` — stays on the main thread and runs in
-  `engine::poll_release` (a pure machine, `release.rs`, decides): on the first frame after the Unload
+  `route_start::poll_release` (a pure machine, `release.rs`, decides): on the first frame after the Unload
   returns (`run.rs` → `poll_release_frame`). Nothing blocks on the worker: a start over a running
   Unload returns `BufferfeedStartOutcome::Deferred` (the player reads Connecting) and runs the frame
-  the tail has run; `pa.mt()`/`pa.split()` hand out the token at once while `player::sink()` answers
-  `RefusingSink` (`player::FENCE`: every verb refused, the memoized queries real) for the `Releasing` phase; `shutdown` waits via
+  the tail has run; `pa.mt()`/`pa.split()` hand out the token at once while the sink the composition handed the adapter
+  (`PlayerAdapter::display_sink`; the Feed's `plx_play_feed::sink_fence::SinkFence`) answers `RefusingSink` (every verb refused, the memoized
+  queries real) for the `Releasing` phase; `shutdown` waits via
   `exit_native`, bounded by `RELEASE_DEADLINE` (10 s), and skips `SDL_Quit` when a worker is still in
   firmware. Past the deadline a start is refused with `FailureKind::ReleaseTimeout` (Try Again), and the
   object is leaked, never destroyed under the worker, until the Unload returns. The foreground restore
@@ -82,21 +120,58 @@ and seeks by time via `av_seek_frame` (libavformat's own Cues index).
   X ms after the stop`.
 - `pump.rs` — the **main-thread pump** (was `bufferfeed_pump`): each frame it drives bind → Play →
   feed and services seeks.
-- `threads.rs` — the workers beside the demuxer: **`load_thread`** (construct Starfish + `Load()`,
-  which owns its own GMainContext) and **`timeline_thread`** (the ~10 s `/:/timeline` progress
-  reporter). The **demux thread body is `ff::demux`** (spawned by `engine::start_bufferfeed`): open
+- `timeline.rs` owns the adapter's periodic PMS
+  reporter: it consumes fresh normalized samples, never backend globals. Its stopped handle
+  joins off-frame before the final stopped report. The **demux thread body is `plx_play_feed::ff::demux`**
+  (spawned by `plx_play_feed::native_executor::launch_native_open`): open
   the part URL, read+convert packets, push AUs to the two lanes; **and service seeks** — it
-  `av_seek_frame`s on `seek_to_ns` between two `av_read_frame` calls, which is the whole seek
-  mechanism (nothing interrupts it; see the seek gotcha below).
-- `shared.rs` — the engine's cross-thread transport, callback and clock state (each field replaces a
-  C `volatile` global — `g_*`). Route ownership and route-changing intents are the separate
-  process-wide authority in `route::PLAYER_CONTROL`. Put new state under the owner whose invariant
-  it belongs to; never smuggle it through a raw static.
+  `av_seek_frame`s on `FEED_SHARED.seek_to_ns` (the demuxer's target, not the pending-seek slot
+  below) between two `av_read_frame` calls, which is the whole seek mechanism (nothing interrupts
+  it; see the seek gotcha below).
+- The Feed backend's cross-thread transport, callback and clock state (each field replaces a
+  C `volatile` global — `g_*`) is owned by `plx_play_feed::shared`: the statics `FEED_SHARED` (the
+  native mailbox and gate) and `FEED_TX` (the pause transport, and the Feed's own copy of the
+  pending seek). They are statics because
+  `sf_on_event` is a firmware callback with no user-data pointer and the demux, Load and subtitle
+  workers reach them off-thread; the executor types (`native_executor` and the Feed backend the
+  application composes) are handed `&'static` references instead of naming them. Media's `player::shared` re-exports nothing any more,
+  and media code that still names the owners spells `plx_play_feed::shared::{FEED_SHARED, FEED_TX}` (so `grep` finds every
+  user; the application and `screens`' tests name them the same way). `SHARED` and `TX` in `shared_resources.rs` hold only what is common to a
+  backend (captions, container track names, the audio-pick reason, `hud_until`, `scrub_ns`), and
+  `FeedStop::reset` runs `SHARED.reset_session` inside the feed's reset barrier. Route ownership
+  and route-changing intents are the separate process-wide authority in `route::PLAYER_CONTROL`.
+- **The pending seek is the session readout's, not a mailbox media writes.** A request is
+  `ReadoutEvent::SeekRequested` plus `FeedCommand::Seek` (`player::request_seek`, the one place);
+  the pump reads `ps.readout().pending_seek()` and TAKES it through `player::take_pending_seek`
+  (the `SeekTaken` event and command in one call, at every take site), or puts it back with
+  `player::requeue_seek` (`SeekRequeued`, not a request). `FEED_TX.seek_to_ns` is the Feed's private
+  copy that gates feeding while a seek waits (no AU is fed with it armed), written only by those
+  commands and by the Feed's own native-`Seek`-refused downgrade, which also publishes
+  `FeedRaw.seek_requeue { epoch, target_ns }`: the readout turns a NEW epoch into one pending seek.
+  A take that cleared only one copy would leave the gate shut through a transcode seek flight (the
+  take is a frame ahead of the landing). The next open's target is `FeedCommand::ArmOpen`
+  (`player::arm_open`, from `reload_at` and a direct-play resume); the transcode `disp_base` /
+  `playpos_ns` stores beside it are the Rebase intent, still raw writes.
+  Put new state under the owner whose invariant it belongs to; never smuggle it through a raw
+  static.
+- **The Feed's failure facts are read from the readout, taken through it, and noted by command.**
+  `load_failed`, `load_timed_out`, `demux_failed` and `demux_io_failed` ride `FeedRaw.flags`, with
+  their companion codes (`cb_err_num`, `http_status`) from the SAME sample: the Feed loads the flags
+  (Acquire) before the codes its writers published ahead of them, so a flag is never read without its
+  code (`feed_pump::failure_sample`). Media sets one only through `FeedCommand::NoteFailure`. The
+  one-shot edges (`decoder_revoked`, `native_audio_refused`) are monotonic Feed counters in `FeedRaw`;
+  the readout holds how many it has TAKEN (`ReadoutEvent::Taken`, `player::take_decoder_revoked` /
+  `confirm_refusal`), an edge is pending while the counts differ, and a session reset zeroes both.
+  The pump samples at its start and end, so a reader between them sees up to a frame of lag: a
+  media-side write inside the frame (the native-audio stall watchdog, the `refuse601` probe) samples again
+  before the branches that read it. `native_load_abandoned` is the Feed's native phase and outlives
+  the session reset the readout does not: the teardown records it as the terminal
+  `AttemptFacts::load_abandoned`.
 
 **The main-thread rule is compiler-enforced.** The seam is the `VideoSink` trait in `plx_platform::tv::sink` (`rust-modules/platform/src/tv/sink.rs`)
-(Starfish-shaped: one method per verb, reached through `player::sink()`). `ffi.rs`'s `extern "C"`
+(Starfish-shaped: one method per verb, reached through `PlayerAdapter::display_sink`). `platform/src/webos/video_sink.rs`'s `extern "C"`
 declarations are private to that module and only `StarfishSink` there implements the trait on the
-television; `ffi_host.rs`'s `HostSink` is the simulator's. Every verb but `load` and `unload`
+television; `HostSink` (`play-feed/src/ffi_host.rs`, `plx_play_feed::ffi_host`) is the simulator's. Every verb but `load` and `unload`
 takes a `task::MainThread` (the constant queries `feed_abi_is_cow`, `window_mode` and `window_id`
 take nothing); `unload` takes an `UnloadTicket`, which only a `&MainThread` can issue and which is
 `Send`, so the main thread decides when an Unload happens and a worker may carry it out.
@@ -130,14 +205,14 @@ something.
   probe's own capability (for read-outs) + that gated presentation decision, and every
   Load/reload/recovery consumes the
   stored presentation rather than re-reading the later cache; `dvnonode` is the logged diagnostic
-  exception, and `player/dv_start.rs` is the one mid-play change (#1166): at a landing the firmware's
+  exception, and the Feed's `dv_start` guard (`play-feed/src/dv_start.rs`, reached only through `FeedLoad::dv_landing_due`) is the one mid-play change (#1166): at a landing the firmware's
   Dolby Vision splitter would skip, or after 4 s with no position update, it takes the declaration
   out of the route for the rest of that play request (`route::withdraw_dv_presentation`: what DV Off
   would have planned, the probed capability kept, on the installed route, the file's own declaration
   and the stored Auto Original candidate, so a trip to HLS and back to Original stays base-layer)
   and reloads once. Atmos routing and ACB forwarding are independent and unchanged. The payload evidence,
   Profile 5 one-tick fix and instrument traps live in that document.
-- **The Load's `adaptiveStreaming` ceiling is derived per session (`engine::sink_envelope`), and
+- **The Load's `adaptiveStreaming` ceiling is derived per session (`plx_play_feed::sink_envelope`), and
   it was a 4K60 constant for EVERY codec until 2026-09-03 — which on webOS 10 refused every H.264
   stream: `docs/webos10-resource-allocation.md`.** Lab-measured 2026-08-27 on release 10.3.1: the
   pipeline allocates against the DECLARED ceiling rather than the bitstream, so the Load came back
@@ -154,8 +229,9 @@ something.
   read-out instead of parking the player in Connecting on a black screen (lab report §3.5).
   **After a picture, one number acts too (2026-10-13): `type=18 num=600`, "VDEC resource is
   released by policy action".** A paused direct play left until the screensaver came on got it with
-  no `LIFECYCLE: background`, and the dead pipeline refused every Play after it. It raises
-  `decoder_revoked`; the app loop parks the session exactly as an app switch does
+  no `LIFECYCLE: background`, and the dead pipeline refused every Play after it. The feed counts it
+  (`FeedRaw::decoder_revocations`); the app loop reads that count from the readout, spends it with
+  `ReadoutEvent::Taken` (`player::take_decoder_revoked`) and parks the session exactly as an app switch does
   (`run::park_on_decoder_release`) and the viewer's next key or click is spent on the foreground
   claim that rebuilds it at the saved spot. The claiming press chooses the clock (`run::wake_input`,
   whose doc is the table): PLAY, and a play/pause TOGGLE (PLAYPAUSE, or a pointer click on no control — on the
@@ -166,7 +242,7 @@ something.
   was Playing is spent as a wake (the machine has no claim that restores a Playing save Paused).
   A Playing restore of a Paused save also clears the pause the park left standing BEFORE the Load
   (`PlayerForegroundActuator::before_load` → `transport::commit_viewer_resume_for_load`):
-  `ClockStartGuard` arms the Load's initial hold from `TX.paused` (only with no live Engine: over one, `before_load` leaves the pause for `PlayClock`), and under the stale pause that
+  `ClockStartGuard` arms the Load's initial hold from `FEED_TX.paused` (only with no live Engine: over one, `before_load` leaves the pause for `PlayClock`), and under the stale pause that
   hold was the viewer's, which fenced the first Play behind a prime (`SMP Play fenced; priming
   before retry`) and left the actual Play to the late `PlayClock`. That cleared pause, not the
   order of `playback_tick`, is also what keeps the paused-seek preroll shut. The app-switch PLAY
@@ -209,11 +285,12 @@ something.
   20-second issued→return and return→loadCompleted budgets. Timeout has code `load_timeout`;
   firmware refusal remains `tv_pipeline`. Teardown after that timeout does NOT join a media
   thread still inside `sf_load` (that froze the SDL thread on BACK): the thread, payload and
-  epoch are parked as `engine::AbandonedLoad` (Rust phase `Abandoned`), native starts are
+  epoch are parked as `plx_play_feed::feed_state::AbandonedLoad` (Rust phase `Abandoned`), native starts are
   refused, and `reap_abandoned_load` runs the ordinary Unload → gate → retire → D1 release on the
   main thread once Load returns; a Load that never returns leaks its object. A refusal says why:
-  a reload refused for the parked Load (`pump::settle_reload`) republishes `load_timed_out`, and a
-  refused FRESH start sets `ps.native_start_refused` (`Option<StartRefusal>`), which `player::state` derives `Error` from,
+  a reload refused for the parked Load (`pump::settle_reload`) records the same cause in `ps.native_start_refused`, read from the
+  torn-down attempt's terminal `AttemptFacts::load_abandoned` (the teardown's own ingestion, before the session reset that clears
+  `load_timed_out`), and a refused FRESH start sets `ps.native_start_refused` (`Option<StartRefusal>`), which `player::state` derives `Error` from,
   because no Engine exists to publish it: cause `load_timeout` when a timed-out Load is still parked, `release_timeout` when the previous object's off-frame Unload outlived `RELEASE_DEADLINE`. Both offer Try Again; the first start that is not refused (`start_bufferfeed_for`, which every reload shares) clears it. A Load that has not
   timed out is still joined. The host concurrent tests model this boundary, not
   the firmware's native initialization. ACB dispatch is additionally constrained by stage/bind
@@ -243,12 +320,12 @@ something.
   seek, no frame yet), whichever route reloaded, so the stream presents one frame and re-pauses
   instead of showing "Buffering…" over a blank plane. Where the preroll cannot open (the clock is
   not held yet), the pump ladder still never publishes Buffering for a paused, idle player with no
-  picture (`pump::paused_and_idle`): Buffering means work is happening, and Playing means a frame
+  picture (the readout's `Presented` rule: its own Pause with no preroll open, plus `pump::nothing_in_flight`): Buffering means work is happening, and Playing means a frame
   is presented, so that state is `PlaybackState::Paused` (not busy, not `is_playing`, no
   `PlaybackStarted`). The preroll opens only while the prime is still owed (`Engine::prime_play`)
   and is owned at 0: `frames` is per-session, so the first presented frame is the landing.
   **On the ACB route (webOS 4) the landing also needs the video plane BOUND**
-  (`pump::plane_shows_the_picture`): the plane connects only through `setMediaVideoData` +
+  (`plx_play_feed::feed_pump::plane_shows_the_picture`): the plane connects only through `setMediaVideoData` +
   `acb_start` (`Stage::Streaming`), and a tick counted before that is a picture the panel never
   showed. A preroll re-paused on the first tick left the panel black ("no signal" on a VIDEO-only
   capture) until Resume, because the pause stops the ticks the bind waits on and
@@ -261,7 +338,7 @@ something.
   restored to the pipeline default 100 (`preroll: volume set 100 (restored; no readback)`) by `restore_preroll_volume` from `resume`
   (before its Play), the accepted re-pause in `finish_paused_seek`, and the pump's per-tick sweep
   for a preroll closed with no adapter in hand (`abandon_seek`). A stop or reload needs none: the
-  volume is per pipeline and `TX.reset` forgets the mute. Never `setAudioMute` (absent on 4.4.2 /
+  volume is per pipeline and `FEED_TX.reset` forgets the mute. Never `setAudioMute` (absent on 4.4.2 /
   4.10.0), `AcbAPI_startMute` or the system mute). An `acb_start` that runs under a really-paused pipeline (no preroll
   open) is followed by the ACB pause, so ACB is never left PLAYING over a paused pipeline. The
   `seek: paused frame restored` line therefore means the plane was bound when the pause landed.
@@ -280,7 +357,7 @@ something.
     commit, a seek's rebuild or a new playback changes the route — no timer, no re-ask loop. The
     Original-to-HLS fallback (`route::execute_auto_hls_claim`) never holds, though its worker reaches
     PMS: the Original plays until the landing replaces it, and a refusal (`pump::land_automatic_hls`)
-    raises `demux_io_failed`. A user pick made during an automatic flight WAITS in `pending_user` and
+    notes `demux_io_failed` (`FeedCommand::NoteFailure`). A user pick made during an automatic flight WAITS in `pending_user` and
     is claimed after the landing.
   - **FAILURE-path recoveries are `FlightOwner::Recovery` flights** owned by the failed start
     (`Preparing(serial)`): the rollback's rebase after a failed Original trial
@@ -339,7 +416,7 @@ something.
   `setState(LOADED)` → *wait for decoded frames* → `setMediaVideoData(<sourceInfo envelope
   as captured; a PQ VP9 gets its HDR keys written in first, see below>)` → `setDisplayWindow` → `setState(PLAYING)`. In normal buffer-feed playback, the payload passed to
   `setMediaVideoData` is the **whole `sourceInfo` envelope** captured verbatim from the pipeline's
-  callback (`sourceInfoRaw`), not a reconstructed one — with ONE exception: a VP9 stream whose container says PQ gets `hdrType` / `mediaVui` / `mediaSei` written in first (`player/vp9_hdr.rs`), because a VP9 bitstream cannot carry the transfer function, so the pipeline's own envelope says `"hdrType":"none"` and the panel stays SDR (device-measured on the dev set, whose ACB path is the only one that sends the envelope: the TV's `picture.dynamicRange` flips to HDR with the rewrite and stays SDR with `/tmp/plxnative-novp9hdr`; webOS 5+ has no ACB, so nothing is sent there and its VP9 HDR behaviour is unknown). The envelope is otherwise untouched, and an envelope that already names an HDR type is never overridden. Audio is owned by the pipeline — **never feed
+  callback (`sourceInfoRaw`), not a reconstructed one — with ONE exception: a VP9 stream whose container says PQ gets `hdrType` / `mediaVui` / `mediaSei` written in first (`play-feed/src/vp9_hdr.rs`), because a VP9 bitstream cannot carry the transfer function, so the pipeline's own envelope says `"hdrType":"none"` and the panel stays SDR (device-measured on the dev set, whose ACB path is the only one that sends the envelope: the TV's `picture.dynamicRange` flips to HDR with the rewrite and stays SDR with `/tmp/plxnative-novp9hdr`; webOS 5+ has no ACB, so nothing is sent there and its VP9 HDR behaviour is unknown). The envelope is otherwise untouched, and an envelope that already names an HDR type is never overridden. Audio is owned by the pipeline — **never feed
   ACB an audio SINK or elementary stream**. That half is real and unchanged. Its long-stated
   consequence is not: `SOUND_ERROR_019` is a literal that exists in **no library on this
   television** (swept across ~70 harvested libraries including 92 MB of Chromium), and the clause
@@ -348,11 +425,12 @@ something.
   right after `acb_bind`, which is exactly where LG's own client fires it. Device-measured
   2026-08-21: `rv=1`, audio untouched (1600 AUs, `reply=O`, no error), and the set's own
   "Dolby Vision / Dolby Atmos" read-out captured on screen. Details and addresses:
-  `acb_send_atmos` in `src/starfish.c`. `AcbAPI_setMediaVideoData`/`setState`/
+  `acb_send_atmos` in `src/video_plane.c`. `AcbAPI_setMediaVideoData`/`setState`/
   `setDisplayWindow` take a `long *taskId` out-param as their last arg — the 3-arg ABI is required
   (2-arg calls corrupt memory / segfault). The developer-only `acb-control`/`acb-dass` URI
   experiment separately permits a reconstructed descriptor for its known SDR720p24 fixture;
-  that exception does not apply to normal buffer-feed playback.
+  that exception applies neither to normal buffer-feed playback nor to the production URI backend,
+  which forwards only an envelope the service reported.
 - **Opus goes to LG's own decoder only as far as the set is known to take it** (`ff_native_audio.rs`,
   `devcaps.rs`). What a set announces is layered, in this order and logged at boot as `devcaps: ...
   audio layers:`: the codec table, minus the codecs `/etc/gst/gstcool.conf` shows nothing can decode
@@ -430,8 +508,8 @@ something.
   decoded names no audio facet in the failed-open ladder (`StreamAudio::app_decoded_lossy`): the pipeline was fed PCM, and a
   facet keyed `dts` would be stored as a refusal of the set's NATIVE decoder.
   A named refusal comes from a native Load that ends
-  in `type=18 num=200 Audio Codec Not Supported` before any picture (`mod.rs`'s callback sets
-  `native_audio_refused` only while `native_audio::fed()` says the audio was fed natively; the
+  in `type=18 num=200 Audio Codec Not Supported` before any picture (`sf_event.rs`'s callback counts
+  `FeedRaw::native_audio_refusals` only while `native_audio::fed()` says the audio was fed natively; the
   machine turns it into `RecoveryEffect::ConfirmRefusal { Evidence::Named }`, which the pump runs as
   `session::record_named_refusal`: one write to the install-scope `native_audio_refused` preference,
   stamped with the firmware `devcaps::learning_firmware()` reads). That preference is the ONE list of
@@ -521,7 +599,7 @@ something.
   applied after the facets, with the refused video raster given back since the reload feeds the same source video), and
   `pump::decode_in_app` reloads the same direct play (`reload_at`, logged `open recovery: decoding dts in the app (stereo)
   after type=18 num=601`), whose Load declares the PCM and so is planned the audio stack's PCM lead like any other PCM Load
-  (`engine::load_audio`); a surround track it takes is labelled "played in stereo" in the track menu. It never proves a facet, and a flight after an app-decoded refusal
+  (`plx_play_feed::native_executor::load_audio`); a surround track it takes is labelled "played in stereo" in the track menu. It never proves a facet, and a flight after an app-decoded refusal
   never does either (`unprovable`); it flies no flight and so has no rescue to report (`ReportRecovered` names a flight's
   rung). A remux or transcode route and a refused app decode go on to (5) or the read-out. A rebuild rung for a refused remux or
   transcode, and a resolve-time `PlayVerdict::Server` refusal, are not covered;
@@ -541,7 +619,7 @@ something.
   error-report consent and no other. A play that was never refused, a ladder that read out, an app decode, a
   source failure and a flight Home abandoned send nothing. **A Load the machine did not
   ask for re-opens the ladder:** `RecoveryEvent::LoadStarted`, raised by
-  `engine::start_bufferfeed_for` (which every Engine start passes: a fresh play, a reload, the
+  `route_start::start_bufferfeed_for` (which every Engine start passes: a fresh play, a reload, the
   foreground restore), takes a machine left in `Flight` (Home cleared the flight with the Engine)
   or `Failed` (the read-out was up) back to `Opening` with its spent flights and excluded facet
   kept; the recovery landing's own reload finds the machine already moved by `FlightLanded` (a
@@ -555,12 +633,12 @@ something.
   observes it:** the machine owns a
   refusal the pump sees AFTER a Load call returned (`type=18` once `route_start_status` read `Started`,
   a Load budget, a stall, a source failure). The Load CALL's own synchronous refusal (`StartFailed`
-  with `load_failed`) of a Load the foreground lifecycle follows (`Engine::foreground_follows_load`,
+  with `load_failed`) of a Load the foreground lifecycle follows (the adapter's bound-attempt record, `PlayerAdapter::foreground_follows_feed_load`,
   marked by `app/lifecycle.rs` wherever it starts following an attempt) is the lifecycle's alone:
   `pump` returns before the ladder (`settled_by_foreground`) and `ForegroundLifecycle` settles it as
   #1018's retry (`Prepared`, the Engine retired). A fresh play's synchronous refusal has no
   lifecycle behind it and stays the ladder's. A
-  silent stall is learned too, for surround only (`native_stall.rs`, checked in the pump): a native
+  silent stall is learned too, for surround only (`play-feed/src/native_stall.rs`, checked in the pump): a native
   Opus track with more than two channels, Load returned, no picture, both AU queues holding data and no
   AU accepted for `NATIVE_AUDIO_STALL_MS` (4 s; a slow server has empty queues) is learned and
   recovered the same way, and never after the first picture. The stall is a refusal of the same class
@@ -606,9 +684,9 @@ something.
   The old caption path is gone: there is no `SHARED.sub_cues`, no `active_subtitle*` and no appkit
   `draw_subtitles`/`caption_page`; every text cue lives in `ass_source`. Sidecar ASS keeps the complete script rather than requesting a SubRip conversion. Don't expect the pipeline to burn or overlay them. See `[[tv-subtitle-engine]]` and the `plex/`
   soft-subs note. An image sub's rect coords are in **the subtitle stream's own authoring canvas** —
-  1920×1080 for Blu-ray PGS but 720×480/576 for a DVD VobSub rip — so `ff::sub_canvas` reads that
-  canvas off the decoder (via `avcodec_parameters_from_context`, no raw struct offset; the ABI proof
-  is in its doc comment) and `appkit::player_hud::sub_screen_rect` scales the whole display set into the
+  1920×1080 for Blu-ray PGS but 720×480/576 for a DVD VobSub rip — so `plx_media_codecs::subtitle`'s `sub_canvas` reads that
+  canvas off the decoder (via `avcodec_parameters_from_context`, no raw struct offset; its layout is
+  asserted in `ci/ffabi-assert.c`) and `appkit::player_hud::sub_screen_rect` scales the whole display set into the
   video rect. Assuming 1080p unconditionally is what made VobSub render as a corner postage stamp.
   **An EXTERNAL text subtitle (the `.srt` beside the film) is a third producer, `sidecar.rs`:** the
   demuxer never sees it, so it is fetched whole from PMS and kept in its OWN store — not
@@ -624,14 +702,14 @@ something.
   player screen with `draw_subtitle_message` (and `notice_shown()` is a term of its `clock_fingerprint`, so
   the expiry owes a frame). It is silent where the server burns the selection (a re-encode, or a remux whose embedded
   track the app may not read itself); over a plain remux the app draws it, and draws an embedded
-  track too (`subside.rs`) when the link is local and the Part is 1..=30000 kbps. A sidecar is in
+  track too (`plx_play_feed::side_reader`; `subside.rs` is its media half) when the link is local and the Part is 1..=30000 kbps. A sidecar is in
   the Part's FILE time while a remux starts on a Part keyframe EARLIER than or at the requested
   offset — not always the last one (a 917 s request started on 914.914 s while 916.916 s existed;
   see `ff_subside`'s `sidecar_clock_at_917…` test) — and the app labels that frame with the
   requested offset, so under the same local-link and bitrate gate the side
-  reader also runs CLOCK-ONLY for it (`subside::CLOCK_ONLY`: no track, no store, no
+  reader also runs CLOCK-ONLY for it (`SIDE_READER_CLOCK_ONLY`: no track, no store, no
   `side_subs_owner`, never the burn) to find that keyframe by the byte-exact anchor match;
-  `player::sidecar_clock_ns` adds the published delta (`subside::exact_delta_ns`) to the sidecar's
+  `player::sidecar_clock_ns` adds the published delta (`side_reader::exact_delta_ns`) to the sidecar's
   playhead, for a sidecar over a remux only (embedded cues were shifted by the reader already) and
   never from the assumed mapping (2.002 s wrong at 917 s on one file). That delta is known a moment
   after each remux start (the scan reads the Part up to the anchor); until then — and off the gate,
@@ -641,7 +719,7 @@ something.
   starts is `sidecar::restore_selection`'s one answer: the server's selected one, else the one the
   track memory chose for this episode (`Plan::memory_sidecar`, its key and codec read from the
   playing item).
-- **A seek NEVER interrupts the demuxer.** The pump publishes the target in `seek_to_ns` and the
+- **A seek NEVER interrupts the demuxer.** The pump publishes the target in `FEED_SHARED.seek_to_ns` and the
   demux thread — the only thread that touches the `AVFormatContext` — `av_seek_frame`s on it
   between two reads. Do not reintroduce an interrupt: the pump used to `shutdown(2)` the socket to
   break the read so the outer loop would reopen and seek, and it could not work, because our AVIO
@@ -656,16 +734,17 @@ something.
   seek is reset to 1x by the buffer-feed source's next SEGMENT, a mid-play call freezes the pipeline,
   and libpf mutes audio off 1x), so a speed session declares PCM audio, `ff::SpeedDecoder` decodes and
   `speed_audio` time-stretches the sound, and every timestamp to the pipeline is divided by the speed
-  (`player::to_sink_ns`, inverted on the presented-frame callback by `from_sink_ns`; an audio AU's
+  (`plx_play_feed::shared::to_sink_ns`, inverted on the presented-frame callback by `from_sink_ns`; an audio AU's
   sink pts also carries the PCM lead of the next bullet, added after the division).
-  A speed change is a seek to the viewer's own position marked `rate_reload`, and while the speed is not
-  1x every direct-play seek reloads in every mode (`pump::seek_must_reload`). `play_rate_permille` is the
-  viewer's choice and persists across reloads; `applied_rate_permille` is the current pipeline's and is
-  reset by `reset_session`. The feed throttle's run-on reads the applied one (`FeedPace::reference_at`).
+  A speed change is a seek to the viewer's own position marked with the readout's `rate_reload`, and while the speed is not
+  1x every direct-play seek reloads in every mode (`pump::seek_must_reload`). The readout's `play_rate_permille` is
+  the rate the session OFFERS its next Load (`session_rate_for` lowers it to 1x when the playback does not offer
+  the pick; the viewer's intent is the session's `requested_rate_permille` and survives that) and persists across
+  reloads; `applied_rate_permille` is the current pipeline's and is reset by `reset_session`. The feed throttle's run-on reads the applied one (`FeedPace::reference_at`).
 - **A Load that declares `"audio":"PCM"` on one of LG's audio stacks has its audio fed later than the
   picture it belongs with, by an amount the stack decides; a set with no lead (`adecsink` on 2016/2017, not
   determined; Realtek; MStar; an unknown stack) gets none at all** (#1086, #1088, #1092, #1093; FLAC and every other app-decoded codec (a DTS the app decodes under the lossy gate
-  included: `engine::load_audio` plans the lead from the name the Load declares, which is PCM for it), and a speed
+  included: `plx_play_feed::native_executor::load_audio` plans the lead from the name the Load declares, which is PCM for it), and a speed
   session at any speed other than 1x; a compressed Load, DTS the set decodes itself included, gets none).
   App-decoded DTS, TrueHD, MP3 and Vorbis get the lead of the set's stack exactly as FLAC does, but none of them
   was FILMED (the measurements below are FLAC on `liblxa`); the converter's own clock corrects the filter's lookahead
@@ -688,7 +767,7 @@ something.
   `liblxa.so.2` plays through `lgaudiosink`, and reading it as `Liblxa` would give Bluetooth 250 instead of
   400, a needless bus read and a log naming the wrong stack.
 
-  | Stack (label) | Present | Sets | The lead (`engine::pcm_output_lead`) | Evidence |
+  | Stack (label) | Present | Sets | The lead (`plx_play_feed::pcm_lead::pcm_output_lead`) | Evidence |
   |---|---|---|---|---|
   | `Liblxa` (`liblxa`) | `libgstlxaudiosink.so` (first), or `/usr/lib/liblxa.so.2` (third, after `libgstlgaudiosink.so`) | 2019-2021 LG chips (dev set W19H 4.10.2), 2022/23 OLEDs before webOS 11 (INFERRED from the `tools/fwcompat.py` inventories, which carry `liblxa.so.2.0.0` for W22O 7.4.0 and W23O 8.3.0 / 9.2.0 and hold no plugin; no such image was unpacked) | `tv_speaker` 400 and `bt_soundbar` 250 (both MEASURED), any other output or none 400 (not measured) | dev set 505 with +105 = 400; W21O 6.5.3: template 400 raw, no +105, effective 400 by the same convention, its per-output walk still there |
   | `LgAudioSink` (`lgaudiosink`) | `libgstlgaudiosink.so` | 2022/23 OLEDs on webOS 11 (W22O 11.2.0-74, W23O 11.2.0-3711), 2024 OLED (W24G 9.2.4), 2025 OLED (W25G 10.3.1) | 400 on every output, no read (not measured) | template `{150,150,400,5000,5000}`, 400 raw, no bias |
@@ -748,12 +827,12 @@ something.
   -0.02. Bluetooth headphones (`soundOutput` read `bt_soundbar`, phone microphone against an earcup): 400 ms
   +0.13 to +0.19 s, late; 250 ms (`pcmavoffset=250`) +0.017 s, three of three; the set's own DTS decoder
   -0.028 s.
-  *The ONE correction* is `engine::audio_sink_pts`, at the audio lane's single Feed: the Load's
+  *The ONE correction* is `plx_play_feed::native_executor::audio_sink_pts`, at the audio lane's single Feed: the Load's
   `Engine::pcm_sink_lead_ns` is added to the SINK pts AFTER `to_sink_ns`, because it is real time and must
-  not be divided by the speed. `engine::load_audio` yields the declared audio name and a `PcmLead` plan as
+  not be divided by the speed. `plx_play_feed::native_executor::load_audio` yields the declared audio name and a `PcmLead` plan as
   one value (`Off` for a compressed Load; a speed override makes any codec declare PCM, so it plans a lead);
   `PcmLead::resolve` settles the plan against the output with the table `PCM_LEAD_BY_OUTPUT`, and
-  `engine::pcm_output_lead(stack, output)` is the whole table (the stack table above): `liblxa` +
+  `plx_play_feed::pcm_lead::pcm_output_lead(stack, output)` is the whole table (the stack table above): `liblxa` +
   `tv_speaker` 400, `liblxa` + `bt_soundbar` 250, `liblxa` + any other output or no answer
   `PCM_SINK_LEAD_NS` = 400 (not measured); `audiosink_new` the same three answers, none measured (its plan
   is `PcmLead::FromOutput(stack)`, as `liblxa`'s, so the stack the log names is the one that was read for);
@@ -765,7 +844,7 @@ something.
   untouched, so no producer of PCM stamps its own offset.
   *Where the output is read:* `start_bufferfeed_inner` runs on the FRAME thread (the Engine is
   main-thread-confined and the frame may not wait on the bus), so it cannot ask. A plan that follows the
-  output goes to `threads::load_thread` (the `media` worker, which blocks in `Load` anyway), which reads
+  output goes to `native_load::load_thread` (the `media` worker, which blocks in `Load` anyway), which reads
   `tv::sound::output` BEFORE `Load` (a `getSystemSettings {"category":"sound","keys":["soundOutput"]}` call
   through the `tv` port, 300 ms budget, `NoPlatform` on hosts), logs `pcm: audio sink pts +<N>ms (stack
   <liblxa|audiosink_new>, output <name|unknown>, default 400ms[, not measured])` once per Load (the
@@ -785,7 +864,7 @@ something.
   that registers and then stays silent costs the 300 ms and keeps 400. The answer moves the lead by at
   most 150 ms (400 to 250), which is why the call's budget is short. *Timing figures:* `native: Load
   returned after Nms`, `LoadElapsedClass` telemetry and `native_load_elapsed_ms` measure Starfish `Load`
-  alone (`threads::load_alone` takes the Load thread's read out of them); `NATIVE_LOAD_BUDGET` still runs
+  alone (`plx_play_feed::native_load::load_alone` takes the Load thread's read out of them); `NATIVE_LOAD_BUDGET` still runs
   on the wall clock from `begin_native_session`, so it counts the read, on purpose (a wedged registration
   must fail, not park Connecting).
   *Seek (firmware, not filmed):* LG's audio sink hands each buffer's pts to the driver unchanged and
@@ -808,13 +887,13 @@ something.
   "AV Sync Adjust" menu, whose effect on a mixer channel is not known; a Bluetooth device whose own latency
   differs from the filmed one; another sample rate, chip or firmware. Also unfilmed: a seek, and the speed
   path (it takes the same lead from the same code).
-- **Seeks are in-place**, in one of three per-session modes (`player::SeekMode`, chosen by
-  `engine::select_seek_mode` in `start_bufferfeed`, the `/tmp/plxnative-seekmode` dev trigger
+- **Seeks are in-place**, in one of three per-session modes (`plx_playback_contract::feed::SeekMode`, chosen by
+  `plx_play_feed::seek::select_seek_mode_for_load` at every Load, the `/tmp/plxnative-seekmode` dev trigger
   `native|segment|reload` wins): the demuxer is `av_seek_frame`d to the target, then on the first
   post-seek keyframe `feed_stream` re-anchors the pipeline — no reload/decoder re-init.
   `Segment` (webOS 4.x) is Kodi-style: pump `flush()`, then `setTimeToDecode` + `sendSegmentEvent`
   through decompile-derived private offsets. `NativeSeek` (`VP_EXPORTED`, webOS 5+, issue #568; and a
-  known webOS 3 release on the ACB plane, `engine::old_abi_seek_tested`) is
+  known webOS 3 release on the ACB plane, `plx_play_feed::seek::old_abi_seek_tested`) is
   LG's PUBLIC `StarfishMediaAPIs::Seek(millis)` (`sink().seek`, `sf_seek_ms`): it flushes itself, so
   the pump does NOT `flush()` and nothing may flush after it (a `flush()` is a seek to 0 and re-creates
   the stale-segment stall); it re-anchors the segment AT the millis passed, so `feed_stream` feeds
@@ -849,22 +928,30 @@ something.
   `route::discard_stale_flight_landing`, which `playback_tick` runs every frame since there is no
   pump. `route::transcode_seek` is a test-only composition. The
   rebase machinery
-  (`pts_shift`/`rebase_pending` in `shared.rs`) keeps Starfish from ever seeing a PTS jump.
+  (`FEED_SHARED.pts_shift` in `plx_play_feed::shared` and the Feed engine's `rebase_pending`) keeps Starfish from ever seeing a PTS jump.
   **One landing is not anchored at all (#1166), and a second trigger follows one that was:** a
   landing keyframe that is a non-IDR HEVC IRAP (`aq::hevc_irap_not_idr`, read on the demux thread) on
   a firmware whose Dolby Vision splitter takes only an IDR first (`Caps::dv_first_picture`, the
   ROW) is not fed and gets no native `Seek`: `dv_start::Guard::land` answers `Step::Withdraw`, the
-  keyframe stays `pending` (`landing_held()`, which both feeders and the stuck-watchdog yield to),
-  and the pump's driver withdraws the route's declaration and calls `reload_at` once, at the newest
-  tap else the seek's target. The other trigger, the 4 s WATCH (a declared direct play with no
+  keyframe stays `pending` (`landing_held()`, which both feeders, the stuck-watchdog
+  (`FeedSeek::stuck_seek_due`) and the native-audio watchdog yield to), and the pump, which asks the
+  Feed once per frame through `FeedLoad::dv_landing_due(now, route_flight)` (before
+  `native_audio_stall_fired`, and not while a flight is out), takes the `DvWithdrawal` it hands back,
+  withdraws the route's declaration (`pump::withdraw_dolby_vision`) and calls `reload_at` once, at the
+  newest tap else the seek's target (`FeedRaw::seek_target_ns`), else the target the Engine was armed
+  with, else the landed keyframe. A route that refuses the withdrawal answers
+  `FeedCommand::DvStandDown` and the held landing feeds. The guard's mode and firmware row reach the
+  Feed in `OpenRequest::dv_landing` (`feed_open::dv_landing_plan`, route facts only), and the Feed's
+  Engine constructor builds the guard from it (`Guard::from_plan`). The other trigger, the 4 s WATCH (a declared direct play with no
   position update 4 s after a landing, for a build nobody has read), fires AFTER the landing was fed
   and anchored (its clock needs `landed = !eng.rebase_pending`, `prime_released` and 700 ms of video
-  accepted), so nothing is held and the reload is simply handed over. The reloaded Load carries no
+  accepted), so nothing is held and the reload is simply handed over (the Feed builds its `Probe` from its own
+  Engine and mailboxes inside `dv_landing_due`). The reloaded Load carries no
   `DolbyHdrInfo` node, so every later seek of the play is in place as above.
-- **`frames` is SEEK-scoped, `seen_frame` is SESSION-scoped.** `pump` zeroes `SHARED.frames` as
+- **`frames` is SEEK-scoped, `seen_frame` is SESSION-scoped.** `pump` zeroes `FEED_SHARED.frames` as
   *part of applying* an in-place seek (it counts only post-seek frames, for the rebind + resume
   re-pause gate), so `frames == 0` does **not** mean "we have never shown a picture" — it is true
-  for the whole of every seek. `SHARED.seen_frame` is the bit that answers that question: set beside
+  for the whole of every seek. `FEED_SHARED.seen_frame` is the bit that answers that question: set beside
   `frames` in the presented callback, cleared **only** in `reset_session`. The HUD divides its two
   busy indicators on it (`appkit::player_hud::busy_surface`); anything else asking "has this session put
   a picture on the panel" wants `player::seen_frame()`, not `frames() > 0`. `frames` counts libpf's
@@ -905,11 +992,11 @@ something.
   `player/lifecycle.rs`, its drivers (`drive_foreground` and the `poll_`/`park_` fns) are
   `player/foreground.rs`, and the transport-pause contract is `player/transport.rs`; `app::lifecycle`
   re-exports all three; details in the `docs/agent-reference.md` gotchas): OS
-  background suspends the buffer-feed preserving the session. Foreground tracks one exact Load
+  background suspends the active backend preserving the session. Foreground tracks one exact start
   attempt at a time, follows reducer-approved superseding or rollback attempts, retries an exact
-  failure without repeating route preparation, and issues the clock's native Play only after
-  `Started` (a Playing restore over a standing pause publishes the viewer's resume BEFORE the
-  Load, `before_load`, so the Load is not armed under it).
+  failure without repeating route preparation, and sends the addressed Play goal after readiness.
+  Feed additionally arms its native hold before a paused restore Load and opens that hold after
+  its exact start settles (`before_load` and `play_clock`).
   The opposite edge is `ForegroundInput::Superseded(Successor)`: `exit_player` sends
   `Superseded(Exit)` FIRST, retiring whatever a restore parked (a refused Load's `Prepared`, a
   `Suspended`, a pending Load, via the `Retire` effect), and the accepted-resolve boundary in the
@@ -925,17 +1012,17 @@ something.
 
 **Start with `make check`** — the host unit suite (`cargo test --lib`, ~28 s for 3,639 tests,
 measured 2026-09-17; do not re-quote that number, `time` it) covers a real
-slice of this pipeline's pure logic: `ff.rs`'s `nal_end` bounds guard and AVCC→Annex-B conversion,
+slice of this pipeline's pure logic: `play-feed/src/ff.rs`'s `nal_end` bounds guard and AVCC→Annex-B conversion,
 the AVIO abort guards (a seek after teardown must not open a second connection — graded on an accept
 count), `stream.rs`'s socket lifecycle, `route/plan.rs`'s direct-play-vs-transcode selection, and
 `task.rs`'s `MainThread` token being genuinely `!Send`. Cheap enough that there is no reason to skip
 it before a deploy.
 
-But there is **no host *runtime*** — nothing above decodes a frame or touches Starfish/ACB (`ff.rs`
-once gated `#[link]` directives out of `cfg(test)` to keep the pure logic host-testable; with
-everything on `dynlib!` those are gone, so a test that actually calls FFmpeg now fails by taking
-`dlopen`'s `None` branch on Darwin rather than by failing to link), and the host is Darwin while the TV is
-Linux, which is why `tools/sockprobe.c` exists. So anything about *playback behaviour* is only
-observable on device: deploy and read `/tmp/plxnative-events.log` (feed stats, bind steps,
-seek/rebase, `RECEIVE_GOOD_VIDEO`). The `tests/` harness drives real playback per case — see the root
-`docs/agent-reference.md` testing section (run as GUEST by default; never run two harness jobs at once).
+Host tests run the Feed sink simulator and fake URI transport/display ports, so they can grade
+attempt ownership, control correlation, source handoff and release ordering. They do not decode
+a frame through the television's Starfish/ACB pipeline or prove URI picture presentation and
+reusable release on firmware. The host is Darwin while the TV is Linux, which is why
+`tools/sockprobe.c` exists. For device playback behavior, deploy and read
+`/tmp/plxnative-events.log` (feed stats, bind steps, seek/rebase, `RECEIVE_GOOD_VIDEO`). The
+`tests/` harness drives real playback per case — see the root `docs/agent-reference.md` testing
+section (run as GUEST by default; never run two harness jobs at once).

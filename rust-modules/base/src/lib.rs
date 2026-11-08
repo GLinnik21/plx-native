@@ -14,6 +14,7 @@
 pub mod eventlog; // THE event log: `eventlog::log` is the one sink every module writes through
 pub mod paths; // where the app's own files live — /proc/self/exe, not a hardcoded install prefix
 pub mod process; // `exit_now`: the one way the app's own exits end the process (`_exit`, never libc `exit`, #1115)
+pub mod clock; // `vclock_ms`/`vclock_us`: the one monotonic clock for stamps that are only differenced
 pub mod task; // the one spawn: a refused thread is a return value, not a panic that kills the app
 pub mod cbuf; // fixed NUL-terminated C-string buffer read/write
 pub mod sha256; // SHA-256 / HMAC / PBKDF2, hand-written: the offline PIN verifier's hash
@@ -25,6 +26,7 @@ pub mod storage_worker; // a bounded FIFO for blocking persistence work
 pub mod fontcov; // which codepoints a font file can draw, read from its cmap
 pub mod surface; // what we are actually drawing into: drawable vs the 1920x1080 logical canvas
 pub mod tile; // `Tile`: the shelf-tile trait the data layer implements and `ui` draws through
+pub mod detail_parts; // `DetailPart`, `DetailParts`: the facts a details line under a poster carries, which the profile's setting keeps and the caption policy words
 pub mod hold; // `HOLD_ROWS`, `clamp_hold`: the rows a paged store keeps, which the store and `ui::cards::HoldBand` both apply
 pub mod devtrig; // the /tmp trigger PRIMITIVES (`flag`, `read`, `latched_flag!`, `no_wan`...)
 pub mod diag; // the frame instruments (`heartbeat`, `spans`) and the zlib helper

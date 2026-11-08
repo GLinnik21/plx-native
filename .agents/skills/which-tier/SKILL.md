@@ -80,7 +80,7 @@ but a photograph could show it (`gfx.rs`, at the `glBlendFuncSeparate` call).
 
 ### Tier 1 — `make check`
 
-`cargo +$(RUST_TOOLCHAIN) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens`, preceded by `make lint` (three **named** clippy lints —
+`cargo +$(RUST_TOOLCHAIN) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens`, preceded by `make lint` (three **named** clippy lints —
 `ifs_same_cond`, `same_functions_in_if_condition`, `if_same_then_else` — the shadowed-branch gate),
 and followed by **three** host checks that are easy to forget are in here: `python3 ci/flavor.py
 --selftest` (the flavour transform, whose central assertion is that the STABLE transform is the
@@ -91,7 +91,7 @@ whole of what that tool exposes to the public internet, and the only gate it has
 cargo can see a python file).
 
 **It is not sub-second, and the figure that circulates is one of its five parts.** The ~0.3 s
-everybody quotes is `cargo test --lib` alone, and that part is itself tens of seconds now (the 14 per-crate test binaries run side by side through
+everybody quotes is `cargo test --lib` alone, and that part is itself tens of seconds now (the per-crate test binaries, `UNIT_SUITE` in the Makefile, run side by side through
 `tools/cargo-test-parallel.py`; `make test-crate C=<crate>` runs just the one you touched); end to end the
 gate runs in MINUTES warm. The bulk of it is `python3 tests/test_harness.py`, which shells out to
 `ci/check-deps.sh` (11 s a run) once or more per self-test to prove each structure gate still
@@ -106,7 +106,7 @@ lock.) Do not write a new number here: measure it if you need one — this file 
 Count it yourself if you need the number:
 
 ```sh
-cd rust-modules && cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens -- --list | grep -c ': test'
+cd rust-modules && cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens -- --list | grep -c ': test'
 ```
 
 **Run it on the pinned toolchain.** `make check` uses `cargo +$(RUST_TOOLCHAIN)`, the `channel` of
@@ -229,7 +229,7 @@ knows the set is theirs.
 | **player pipeline, demux, Starfish/ACB, the Load payload, `route/decision.rs`** | `make check` (pure `ff.rs` logic) → `./tests/run.py` (synthetic) → `--server` if selection is involved | the synthetic tier bypasses `metadata → plan → apply_plan` and false-PASSes an unread trigger via `engine`'s `_ =>` arm |
 | **track selection, resume, markers, Up Next, `/:/timeline`** | `./tests/run.py --server` — **only** | the synthetic tier reaches none of these; a bare `./tests/run.py` is not evidence about any of them |
 | **FFI / linkage / `dynlib!`** | `tools/fwcompat.py` → `make check` → **`make sim` or `make macapp`** → device | **there is no link error any more**; and the device cannot see an Apple-ABI variadic bug — see below |
-| **the release feature configuration** | `make check-nodef` (`cargo check --lib --no-default-features`) → `make RELEASE=1` | `make check`, `make` and `make sim` all build DEV features; a broken `RELEASE=1` is invisible to every one of them |
+| **the release feature configuration** | `make check-nodef` (`cargo check --lib --no-default-features --features play-uri,play-feed`, the Makefile's `RUST_BACKEND_FEATURES`) → `make RELEASE=1` | `make check`, `make` and `make sim` all build DEV features; a broken `RELEASE=1` is invisible to every one of them |
 | **the Makefile, packaging, the `.ipk`** | `make check` (flavour selftest) → `make ipk` (runs `ci/check-package.py`) → a real `make FLAVOR=… install` | the dev loop is `make deploy`, which scp's into an already-registered app dir and **never exercises the package** |
 
 ### The rows that carry a trap
@@ -285,7 +285,7 @@ green. Verified 2026-08-21: inserting a new `#[cfg(feature = "devtriggers")]`-ga
 existing gated pair's attribute and its `fn` orphaned the attribute onto the new function's doc
 comment, and `density_max_sweep`'s two arms collided — `error[E0428]`, only under
 `--no-default-features`, with the whole host suite green throughout. A PostToolUse hook,
-**`.claude/hooks/release-config-check.py`**, now runs exactly that `cargo check` after a Rust edit
+**`.claude/hooks/release-config-check.py`**, now runs that `cargo check` (the bare `--no-default-features`, which also drops `play-uri` and `play-feed`, so `make check-nodef` is still the shipping set) after a Rust edit
 — 0.55 s warm, because cargo keys unit fingerprints by feature set and the two configurations
 coexist in one tree — so the usual case is caught for you. That tree is **`$TMPDIR`**, not the
 crate's own `target/`: this checkout can live on a network mount, and cargo cannot take its

@@ -168,8 +168,8 @@ floors live in `tests/manifest.json`. This tier is opt-in and runs on a real tel
 grade frame rate, so a green CI run says nothing about pacing.
 
 **Two checks CI runs that `make check` does not**, and which are easy to break locally: the shipping
-feature set (`cargo +$(make -s print-rust-toolchain) check --manifest-path rust-modules/Cargo.toml --lib
---no-default-features`) after any `rust-modules/src/**.rs` or `rust-modules/*/src/**.rs` edit, and a firmware-compatibility review
+feature set (`make check-nodef`, which is `cargo +$(make -s print-rust-toolchain) check --manifest-path rust-modules/Cargo.toml --lib
+--no-default-features --features play-uri,play-feed`, the Makefile's `RUST_BACKEND_FEATURES`; run the make goal rather than retyping it) after any `rust-modules/src/**.rs` or `rust-modules/*/src/**.rs` edit, and a firmware-compatibility review
 of anything touching FFI, linkage, `dynlib!`, Starfish, ACB, curl or the bundled FFmpeg —
 `tools/fwcompat.py` grades the binary against 14 real firmware images in under a second.
 

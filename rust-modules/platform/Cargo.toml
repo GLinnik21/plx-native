@@ -16,9 +16,13 @@ crate-type = ["rlib"]
 
 [features]
 default = []
+# Native packet-feed bindings; display binding is independently available.
+feed-sink = []
 # Forwarded from the application crate, which is the only one that sets them. Each is named here
 # only because some code in this crate has a `cfg` on it.
 devtriggers = ["plx_base/devtriggers", "plx_machine/devtriggers"]
+# The real com.webos.media LS2 worker. The URI interface and NoUriMedia remain available without it.
+uri-transport = []
 hostsim = ["plx_base/hostsim", "plx_machine/hostsim"]
 lab-diagnostics = ["plx_base/lab-diagnostics"]
 # The `cfg(test)` seams other crates' tests use (see lib.rs) plus the test-mode behaviour that

@@ -1,6 +1,6 @@
-//! **The native object's release lifecycle** — a pure machine (`ci/check-deps.sh` `MACHINES`).
+//! **The shared native release/start queue** — a pure machine (`ci/check-deps.sh` `MACHINES`).
 //!
-//! A real stop hands the constructed native object to an off-frame `Unload` (`engine::PendingRelease`).
+//! A real stop hands the constructed native object to an off-frame `Unload` (`plx_play_feed::feed_state::PendingRelease`).
 //! `StarfishMediaAPIs::Unload` takes 110-150 ms on the dev set, and on a set where it never returns
 //! (PLX-NATIVE-1Q, webOS 4.9.6) the UI thread used to block in the `JoinHandle::join` of the next
 //! start, the token accessors and the exit, without a bound. This machine owns what those callers
@@ -18,8 +18,12 @@
 //! machine only compares them. **`Overdue` never destroys the object**: the worker may still be
 //! inside firmware, so the object, its payload and the Engine it belonged to are leaked until the
 //! `Unload` returns (or until the process ends by `_exit` on a firmware exit), exactly as an `AbandonedLoad` is.
+//! A URI registration uses the same single queued route transaction. Its release event carries
+//! the exact playback attempt rather than a Feed epoch, and only its addressed `Released`
+//! verdict runs the successor; Closing and quarantine retain native ownership.
 
 use std::time::{Duration, Instant};
+use plx_playback_contract::AttemptId;
 
 /// How long an off-frame `Unload` may run before a start over it is refused with a typed failure.
 /// The device `Unload` is 110-150 ms and `NATIVE_LOAD_BUDGET` for a Load is 20 s; this is the same
@@ -27,8 +31,8 @@ use std::time::{Duration, Instant};
 /// is the reference.
 pub const RELEASE_DEADLINE: Duration = Duration::from_secs(10);
 
-/// A play that arrived while the previous object was still inside `Unload`: the prepared route
-/// transaction the runner starts the moment the tail has run.
+/// A play that arrived while the previous Feed object or URI registration was still releasing:
+/// the prepared route transaction the runner starts after exact native release.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct QueuedStart {
     pub route_start: crate::route::RouteStartTransaction,
@@ -38,8 +42,10 @@ pub struct QueuedStart {
 enum ReleaseState {
     Idle,
     Releasing { epoch: u32, since: Instant, queued: Option<QueuedStart> },
+    UriReleasing { attempt: AttemptId, since: Instant, queued: Option<QueuedStart> },
     /// The deadline passed. The worker may be live; nothing is destroyed.
     Overdue { epoch: u32 },
+    UriOverdue { attempt: AttemptId },
 }
 
 /// One IO's result, delivered by the runner.
@@ -51,6 +57,10 @@ pub enum ReleaseEvent {
     StartRequested(QueuedStart),
     /// The per-frame poll saw the worker finished and joined it (that join cannot block).
     UnloadReturned { epoch: u32 },
+    /// The common backend owner accepted Stop for this exact URI registration.
+    UriReleaseStarted { attempt: AttemptId, at: Instant },
+    /// Only an addressed `Released` verdict frees the URI slot; Closing and quarantine do not.
+    UriReleased { attempt: AttemptId },
     /// The per-frame poll's clock.
     Tick { now: Instant },
     /// The process is ending.
@@ -99,12 +109,13 @@ impl NativeRelease {
 
     /// A start is queued behind the running `Unload`.
     pub fn has_queued(&self) -> bool {
-        matches!(self.state, ReleaseState::Releasing { queued: Some(_), .. })
+        matches!(self.state, ReleaseState::Releasing { queued: Some(_), .. }
+            | ReleaseState::UriReleasing { queued: Some(_), .. })
     }
 
     /// The deadline passed and the worker has not returned.
     pub fn is_overdue(&self) -> bool {
-        matches!(self.state, ReleaseState::Overdue { .. })
+        matches!(self.state, ReleaseState::Overdue { .. } | ReleaseState::UriOverdue { .. })
     }
 
     pub fn step(&mut self, event: &ReleaseEvent, fx: &mut Vec<ReleaseEffect>) {
@@ -115,6 +126,10 @@ impl NativeRelease {
             (S::Idle, V::UnloadHandedOff { epoch, at }) => {
                 self.state = S::Releasing { epoch, since: at, queued: None };
             }
+            (S::Idle, V::UriReleaseStarted { attempt, at }) => {
+                self.state = S::UriReleasing { attempt, since: at, queued: None };
+            }
+            (_, V::UriReleaseStarted { .. }) => {}
             // A second hand-off cannot exist (the slot holds one release); ignore rather than
             // lose the first.
             (_, V::UnloadHandedOff { .. }) => {}
@@ -128,7 +143,14 @@ impl NativeRelease {
                 }
                 self.state = S::Releasing { epoch, since, queued: Some(q) };
             }
+            (S::UriReleasing { attempt, since, queued }, V::StartRequested(q)) => {
+                if let Some(old) = queued {
+                    if old != q { fx.push(E::AbortSuperseded(old)); }
+                }
+                self.state = S::UriReleasing { attempt, since, queued: Some(q) };
+            }
             (S::Overdue { .. }, V::StartRequested(q)) => fx.push(E::RefuseStart(q)),
+            (S::UriOverdue { .. }, V::StartRequested(q)) => fx.push(E::RefuseStart(q)),
             (S::Releasing { epoch, queued, .. }, V::UnloadReturned { epoch: e }) if e == epoch => {
                 fx.push(E::RunTail { epoch });
                 if let Some(q) = queued {
@@ -141,6 +163,14 @@ impl NativeRelease {
                 self.state = S::Idle;
             }
             (_, V::UnloadReturned { .. }) => {}
+            (S::UriReleasing { attempt, queued, .. }, V::UriReleased { attempt: released })
+                if released == attempt => {
+                if let Some(q) = queued { fx.push(E::Start(q)); }
+                self.state = S::Idle;
+            }
+            (S::UriOverdue { attempt }, V::UriReleased { attempt: released })
+                if released == attempt => self.state = S::Idle,
+            (_, V::UriReleased { .. }) => {}
             (S::Releasing { epoch, since, queued }, V::Tick { now }) => {
                 if now.saturating_duration_since(since) >= RELEASE_DEADLINE {
                     if let Some(q) = queued {
@@ -149,9 +179,19 @@ impl NativeRelease {
                     self.state = S::Overdue { epoch };
                 }
             }
+            (S::UriReleasing { attempt, since, queued }, V::Tick { now }) => {
+                if now.saturating_duration_since(since) >= RELEASE_DEADLINE {
+                    if let Some(q) = queued { fx.push(E::RefuseStart(q)); }
+                    self.state = S::UriOverdue { attempt };
+                }
+            }
             (_, V::Tick { .. }) => {}
             (S::Releasing { epoch, since, queued: Some(q) }, V::CancelQueued) => {
                 self.state = S::Releasing { epoch, since, queued: None };
+                fx.push(E::AbortSuperseded(q));
+            }
+            (S::UriReleasing { attempt, since, queued: Some(q) }, V::CancelQueued) => {
+                self.state = S::UriReleasing { attempt, since, queued: None };
                 fx.push(E::AbortSuperseded(q));
             }
             (_, V::CancelQueued) => {}
@@ -167,7 +207,18 @@ impl NativeRelease {
                     fx.push(E::ExitWaiting);
                 }
             }
+            (S::UriReleasing { attempt, since, queued }, V::Exit { now }) => {
+                if let Some(q) = queued { fx.push(E::AbortSuperseded(q)); }
+                if now.saturating_duration_since(since) >= RELEASE_DEADLINE {
+                    self.state = S::UriOverdue { attempt };
+                    fx.push(E::ExitWorkerInFirmware);
+                } else {
+                    self.state = S::UriReleasing { attempt, since, queued: None };
+                    fx.push(E::ExitWaiting);
+                }
+            }
             (S::Overdue { .. }, V::Exit { .. }) => fx.push(E::ExitWorkerInFirmware),
+            (S::UriOverdue { .. }, V::Exit { .. }) => fx.push(E::ExitWorkerInFirmware),
         }
     }
 }
@@ -291,5 +342,44 @@ mod tests {
         let mut m = releasing(t0);
         let _ = run(&mut m, ReleaseEvent::UnloadReturned { epoch: 7 });
         assert_eq!(run(&mut m, ReleaseEvent::Exit { now: t0 }), vec![ReleaseEffect::ExitClean]);
+    }
+
+    #[test]
+    fn uri_successor_waits_for_exact_release_and_never_runs_after_cancel() {
+        let t0 = Instant::now();
+        let first = AttemptId::new(9, 1);
+        let stale = AttemptId::new(8, 1);
+        let mut m = NativeRelease::new();
+        assert!(run(&mut m, ReleaseEvent::UriReleaseStarted { attempt: first, at: t0 }).is_empty());
+        assert!(run(&mut m, ReleaseEvent::StartRequested(q(1))).is_empty());
+        assert_eq!(run(&mut m, ReleaseEvent::UriReleased { attempt: stale }), vec![]);
+        assert!(m.has_queued(), "a stale release cannot free the successor");
+        assert_eq!(run(&mut m, ReleaseEvent::StartRequested(q(2))),
+            vec![ReleaseEffect::AbortSuperseded(q(1))]);
+        assert_eq!(run(&mut m, ReleaseEvent::UriReleased { attempt: first }),
+            vec![ReleaseEffect::Start(q(2))]);
+        assert!(!m.is_busy());
+
+        assert!(run(&mut m, ReleaseEvent::UriReleaseStarted { attempt: AttemptId::new(9, 2), at: t0 }).is_empty());
+        assert!(run(&mut m, ReleaseEvent::StartRequested(q(3))).is_empty());
+        assert_eq!(run(&mut m, ReleaseEvent::CancelQueued),
+            vec![ReleaseEffect::AbortSuperseded(q(3))]);
+        assert!(run(&mut m, ReleaseEvent::UriReleased { attempt: AttemptId::new(9, 2) }).is_empty());
+    }
+
+    #[test]
+    fn uri_release_timeout_refuses_one_queued_start_and_keeps_native_owner() {
+        let t0 = Instant::now();
+        let attempt = AttemptId::new(11, 1);
+        let mut m = NativeRelease::new();
+        assert!(run(&mut m, ReleaseEvent::UriReleaseStarted { attempt, at: t0 }).is_empty());
+        assert!(run(&mut m, ReleaseEvent::StartRequested(q(1))).is_empty());
+        assert_eq!(run(&mut m, ReleaseEvent::Tick { now: t0 + RELEASE_DEADLINE }),
+            vec![ReleaseEffect::RefuseStart(q(1))]);
+        assert!(m.is_busy() && m.is_overdue());
+        assert_eq!(run(&mut m, ReleaseEvent::StartRequested(q(2))),
+            vec![ReleaseEffect::RefuseStart(q(2))]);
+        assert!(run(&mut m, ReleaseEvent::UriReleased { attempt }).is_empty());
+        assert!(!m.is_busy(), "late exact release frees the slot without replaying refused starts");
     }
 }

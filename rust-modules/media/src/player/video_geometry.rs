@@ -44,33 +44,16 @@ impl Aspect {
     }
 }
 
-/// Parse only the sourceInfo video object, never a similarly named nested field.
-/// Observed on the TV as `video:{width,height,pixelAspectRatio:{width,height}}`.
-/// This runs only on metadata callbacks, not on the frame/position callback path.
-pub(super) fn source_aspect(bytes: &[u8]) -> Option<Aspect> {
-    let root: serde_json::Value = serde_json::from_slice(bytes).ok()?;
-    let video = root.get("video")?;
-    let positive = |v: &serde_json::Value| v.as_u64().filter(|&n| n > 0 && n <= 65_536);
-    let w = positive(video.get("width")?)?;
-    let h = positive(video.get("height")?)?;
-    let (pw, ph) = match video.get("pixelAspectRatio") {
-        Some(par) => (positive(par.get("width")?)?, positive(par.get("height")?)?),
-        None => (1, 1),
-    };
-    let (num, den) = (w * pw, h * ph);
-    let (mut a, mut b) = (num, den);
-    while b != 0 {
-        (a, b) = (b, a % b);
-    }
-    Some(Aspect(
-        u32::try_from(num / a).ok()?,
-        u32::try_from(den / a).ok()?,
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The parse lives with the callback that reads sourceInfo (`plx_play_feed::sf_event`); the
+    /// reduced pair it returns is what the mailbox publishes and `video_viewport` unpacks.
+    fn source_aspect(json: &[u8]) -> Option<Aspect> {
+        let (num, den) = plx_play_feed::sf_event::source_aspect(json)?;
+        Aspect::unpack((u64::from(num) << 32) | u64::from(den))
+    }
 
     #[test]
     fn picture_fit_covers_pillarbox_letterbox_and_anamorphic_sources() {
@@ -100,16 +83,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_or_invalid_geometry_does_not_publish_an_aspect() {
-        for value in [
-            br#"{}"#.as_slice(),
-            br#"{"video":{"width":0,"height":1080}}"#,
-            br#"{"video":{"width":1920,"height":1080,"pixelAspectRatio":{"width":0,"height":1}}}"#,
-            br#"{"video":{"width":-1,"height":1080}}"#,
-            br#"{"video":{"width":4294967295,"height":1080}}"#,
-        ] {
-            assert_eq!(source_aspect(value), None);
-        }
+    fn the_published_pair_round_trips_through_the_aspect() {
         assert_eq!(Aspect::unpack(0), None);
         let aspect = source_aspect(br#"{"video":{"width":1440,"height":1080}}"#).unwrap();
         assert_eq!(Aspect::unpack(aspect.pack()), Some(aspect));

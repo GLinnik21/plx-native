@@ -11,7 +11,7 @@
 //! `state=stopped` and `continuing=1` ([`TimelineReport::continuing`]) retires the row of an id
 //! the playback has moved off (issue #1236).
 use super::client::{Client, QueryBuilder};
-use super::params::TimelineReport;
+use super::params::{ServerStop, TimelineAnswer, TimelineReport};
 use super::servers::ServerId;
 
 impl Client {
@@ -25,6 +25,13 @@ impl Client {
     /// only has to stop throwing the answer away.
     pub fn timeline(&self, r: &TimelineReport) -> bool {
         self.post_ok(&self.timeline_query(r))
+    }
+
+    pub fn timeline_answer(&self, r: &TimelineReport) -> TimelineAnswer {
+        match self.post_accepting_json(&self.timeline_query(r)) {
+            Some(body) => TimelineAnswer { taken: true, stop: server_stop_of(&body) },
+            None => TimelineAnswer::default(),
+        }
     }
 
     /// The request path and query of one report, without the token. Its own function so the wire
@@ -227,6 +234,49 @@ fn next_after<'a>(
     rating_key: &str,
 ) -> Option<&'a QueueRow> {
     items.get(queue_index_of(items, selected_item_id, sid, rating_key)? + 1)
+}
+
+fn server_stop_of(body: &[u8]) -> Option<ServerStop> {
+    let reply: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let container = reply.get("MediaContainer")?;
+    let code = container.get("terminationCode")?;
+    let code = code.as_i64().or_else(|| code.as_str()?.trim().parse().ok())?;
+    let reason = container.get("terminationText").and_then(serde_json::Value::as_str).unwrap_or_default();
+    Some(ServerStop { code, reason: reason.to_owned() })
+}
+
+#[cfg(test)]
+mod server_stop_tests {
+    use super::{server_stop_of, ServerStop};
+
+    #[test]
+    fn a_termination_on_the_answer_is_read_with_its_reason() {
+        let stop = |code, reason: &str| Some(ServerStop { code, reason: reason.to_owned() });
+        assert_eq!(
+            server_stop_of(br#"{"MediaContainer":{"size":0,"terminationCode":2006,"terminationText":"stopped"}}"#),
+            stop(2006, "stopped")
+        );
+        assert_eq!(
+            server_stop_of(br#"{"MediaContainer":{"terminationCode":"2006","terminationText":"stopped"}}"#),
+            stop(2006, "stopped")
+        );
+        assert_eq!(server_stop_of(br#"{"MediaContainer":{"terminationCode":2006}}"#), stop(2006, ""));
+    }
+
+    #[test]
+    fn an_ordinary_or_unreadable_answer_stops_nothing() {
+        let bodies: [&[u8]; 6] = [
+            b"",
+            b"<MediaContainer size=\"0\"/>",
+            br#"{"MediaContainer":{"size":0}}"#,
+            br#"{"MediaContainer":{"terminationCode":null}}"#,
+            br#"{"MediaContainer":{"terminationCode":"soon"}}"#,
+            br#"{}"#,
+        ];
+        for body in bodies {
+            assert_eq!(server_stop_of(body), None, "{}", String::from_utf8_lossy(body));
+        }
+    }
 }
 
 #[cfg(test)]

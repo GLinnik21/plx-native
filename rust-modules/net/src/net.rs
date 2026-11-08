@@ -19,7 +19,7 @@
 //! unpinned, bounded sink. **This list has stood here while becoming untrue before**, which is why
 //! it is worth checking rather than trusting; that is twice.
 //!
-//! Only the curl *easy* API is used here; [`crate::curlio`] binds the multi API separately for the
+//! Only the curl *easy* API is used here; [`crate::range_io`] binds the multi API separately for the
 //! media plane. This module owns their shared process init, including the mutex callbacks required
 //! when the TV's libcurl uses OpenSSL 1.0. The option/info integer constants are curl's stable
 //! public ABI values (kept here so we do not need the header). TLS peer+host verification is ON
@@ -425,8 +425,9 @@ fn legacy_lock_target<'a>(bound: (&'a str, &str), resident: Option<(&'a str, &st
 }
 
 /// The television's own libcurl when the BUNDLE is bound and the system one is mapped anyway:
-/// `libplayerAPIs.so.1`, which every build links, has a `NEEDED` on it, so it and the firmware's
-/// OpenSSL are in the process before `main`. Its handle comes from `RTLD_NOLOAD` (nothing new is
+/// `libplayerAPIs.so.1`, which every Feed build links (`PLAYBACK_BACKENDS=both|feed`), has a
+/// `NEEDED` on it, so it and the firmware's OpenSSL are in the process before `main`; a URI-only
+/// build usually finds none mapped, and then there is nothing to lock. Its handle comes from `RTLD_NOLOAD` (nothing new is
 /// loaded) with its SONAME and `curl_version()` string, which is all [`legacy_lock_target`] needs.
 /// `None` when the system curl is the bound one (the bound path already covers it) or not mapped.
 fn resident_system_curl() -> Option<(plx_base::dynlib::Handle, &'static str, String)> {
@@ -1486,7 +1487,7 @@ mod loopback_pms {
     /// A TLS-only loopback double that COUNTS and RECORDS: the latch tests count the handshakes a
     /// request cost, the body test reads what arrived. Answers `body` with `200`, or the tail of it
     /// with `206` and a `Content-Range` when the request carries `Range: bytes=N-`, so a
-    /// [`crate::curlio::CurlSource`] can open, seek and reopen against it. One request per
+    /// [`crate::range_io::CurlSource`] can open, seek and reopen against it. One request per
     /// connection (`Connection: close`); [`spawn_observed_keepalive`] is the persistent twin.
     pub fn spawn_observed(cert: Arc<TestCert>, body: Vec<u8>) -> Observed {
         spawn_observed_conn(cert, body, false)
@@ -3091,7 +3092,7 @@ pub fn https_get_public_bounded(url: &str, max_body: usize) -> Result<Resp, Requ
 }
 
 /// The `nowan` gate shared by the three resolver doors ([`request_tls_result`],
-/// [`crate::curlio`] and [`crate::stream`]): `true` when `/tmp/plxnative-nowan` is armed and
+/// [`crate::range_io`] and [`crate::stream`]): `true` when `/tmp/plxnative-nowan` is armed and
 /// `host` is a NAME rather than a literal, i.e. when a dead resolver would have refused it. The
 /// `slow` variant first spends `connect_s`, the budget a worker would have lost waiting on that
 /// resolver. `false` without the trigger, and at compile time without `devtriggers`.
@@ -3122,7 +3123,7 @@ pub fn refuse_name(host: &str, connect_s: c_long) -> bool {
 /// [`ResolvePin::for_origin`] so that it is a pure function of the hostname (its doc has the
 /// rule). The control plane carries the pin on each `Client` and passes it into
 /// [`request_result`] explicitly. The media plane cannot: `ff::demux` receives a URL string and
-/// `curlio::CurlSource` builds a fresh easy handle on every open and seek, so it asks THIS table
+/// `range_io::CurlSource` builds a fresh easy handle on every open and seek, so it asks THIS table
 /// by the URL's host and port instead.
 ///
 /// **Append-only, process-lifetime, never replaced** (the remembered KEYS, [`keypin`], beside it
