@@ -58,7 +58,7 @@ pub struct Connection<M> {
 
 impl<M: FnMut() -> [u8; 4]> Connection<M> {
     pub fn open(host: &str, path: &str, nonce: [u8; 16], limit: usize, masks: M) -> Option<Connection<M>> {
-        if !request_target(host) || !path.starts_with('/') || !request_target(path) {
+        if !http_authority(host) || !origin_form(path) {
             return None;
         }
         let handshake = Handshake::new(nonce);
@@ -229,8 +229,51 @@ fn close_code_allowed(code: u16) -> bool {
     matches!(code, 1000..=1003 | 1007..=1014 | 3000..=4999)
 }
 
-fn request_target(text: &str) -> bool {
-    !text.is_empty() && text.bytes().all(|b| b.is_ascii_graphic())
+fn http_authority(text: &str) -> bool {
+    let (host_valid, port) = match text.strip_prefix('[') {
+        Some(bracketed) => match bracketed.split_once(']') {
+            Some((literal, rest)) => (
+                !literal.is_empty() && literal.bytes().all(|b| b.is_ascii_hexdigit() || b == b':' || b == b'.'),
+                rest,
+            ),
+            None => return false,
+        },
+        None => {
+            let end = text.find(':').unwrap_or(text.len());
+            (!text[..end].is_empty() && uri_chars(&text[..end], unreserved_or_sub_delim), &text[end..])
+        }
+    };
+    host_valid && (port.is_empty() || port.strip_prefix(':').is_some_and(|digits| digits.bytes().all(|b| b.is_ascii_digit())))
+}
+
+fn origin_form(target: &str) -> bool {
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    path.starts_with('/')
+        && uri_chars(path, |b| path_char(b) || b == b'/')
+        && uri_chars(query, |b| path_char(b) || b == b'/' || b == b'?')
+}
+
+fn unreserved_or_sub_delim(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || b"-._~!$&'()*+,;=".contains(&byte)
+}
+
+fn path_char(byte: u8) -> bool {
+    unreserved_or_sub_delim(byte) || byte == b':' || byte == b'@'
+}
+
+fn uri_chars(text: &str, allowed: impl Fn(u8) -> bool) -> bool {
+    let mut bytes = text.bytes();
+    while let Some(byte) = bytes.next() {
+        let valid = if byte == b'%' {
+            bytes.next().is_some_and(|b| b.is_ascii_hexdigit()) && bytes.next().is_some_and(|b| b.is_ascii_hexdigit())
+        } else {
+            allowed(byte)
+        };
+        if !valid {
+            return false;
+        }
+    }
+    true
 }
 
 #[cfg(test)]
@@ -323,6 +366,32 @@ mod tests {
         assert!(Connection::open("relay.example\r\nX: y", "/v1/ws", NONCE, 1024, masks).is_none());
         assert!(Connection::open("relay.example", "v1/ws", NONCE, 1024, masks).is_none());
         assert!(Connection::open("relay.example", "/v1/ws HTTP/1.0", NONCE, 1024, masks).is_none());
+    }
+
+    #[test]
+    fn the_host_is_an_http_authority_and_the_path_has_no_fragment() {
+        let opens = |host: &str, path: &str| Connection::open(host, path, NONCE, 1024, || [0u8; 4]).is_some();
+        for (host, path) in [
+            ("relay.example", "/v1/ws?room=AB12CD&v=1"),
+            ("relay.example:443", "/v1/ws"),
+            ("127.0.0.1", "/"),
+            ("[::1]:8080", "/v1/ws"),
+            ("relay.example", "/a%20b/c:d@e"),
+        ] {
+            assert!(opens(host, path), "{host} {path}");
+        }
+        for (host, path) in [
+            ("relay.example", "/v1/ws#fragment"),
+            ("relay.example", "/v1/ws?room=a#b"),
+            ("relay.example/path", "/v1/ws"),
+            ("user@relay.example", "/v1/ws"),
+            ("relay.example:44a", "/v1/ws"),
+            ("[::1", "/v1/ws"),
+            ("::1", "/v1/ws"),
+            ("relay.example", "/v1/ws%zz"),
+        ] {
+            assert!(!opens(host, path), "{host} {path}");
+        }
     }
 
     #[test]
