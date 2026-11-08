@@ -69,17 +69,24 @@ struct PlaybackRequest {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct HeldSelection {
+    part_id: i64,
+    audio_sid: i64,
+    sub_sid: i64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct RetryContext {
     resume_ns: i64,
     candidate_purpose: CandidatePurpose,
-    /// `(audio_sid, sub_sid)` the session HELD when this retry was built, `Some` only when that
+    /// [`HeldSelection`] the session HELD when this retry was built, `Some` only when that
     /// selection was KNOWN ([`PlaybackSession::selection_known`]): a playable plan landed, or the
     /// viewer picked a track. `0` is both "subtitles Off" and "nothing landed yet", so the pair
     /// cannot be told apart from the cleared defaults by value; `None` says that nothing landed
     /// (a quality change or contract bump while loading, a retry of a refused plan) and leaves the
     /// fresh defaults (the account / show / server rules) in charge instead of forcing the
     /// subtitle Off. Applied by [`apply_retry`].
-    selection: Option<(i64, i64)>,
+    selection: Option<HeldSelection>,
     sub_offset_ms: i64,
     direct_play_mode: DirectPlayMode,
     /// Issue #266: resolve this retry WITHOUT the audio enhancement. Set only by a start-failure
@@ -389,14 +396,14 @@ pub struct PlaybackSession {
     /// [`commit_subtitle_selection`]); cleared with the selection by [`clear_track_selection`].
     /// [`RetryContext::selection`] is `Some` exactly when this held at capture time.
     selection_known: bool,
-    /// The `(audio_sid, sub_sid)` a RETRY carried into the request now loading, kept while no
+    /// The [`HeldSelection`] a RETRY carried into the request now loading, kept while no
     /// playable plan has landed: the request clears the live selection ([`Self::selection_known`]
     /// goes false), so a second retry built before this one lands (a contract bump in flight, or
     /// *Switch to Auto and play* after a refusal) would otherwise find nothing to carry and lose
     /// the viewer's choice, an explicit subtitles Off included. Set by [`begin_track_selection`],
     /// kept across a refused landing, dropped by a playable one ([`apply_plan`]).
     /// [`current_retry_context`] reads it only while the selection is unknown.
-    carried_selection: Option<(i64, i64)>,
+    carried_selection: Option<HeldSelection>,
     /// Is [`Self::cur_sub_sid`] an external sidecar (`metadata::Stream::sidecar_renderable`) rather
     /// than an embedded (in-container) track? Meaningless when `cur_sub_sid == 0`. Issue #266 I6:
     /// this is what tells `route::decision::facts`'s [`super::plan::SubtitleEffect::Sidecar`]
@@ -926,7 +933,7 @@ mod backend_offer_session_tests {
         });
         session.cur_sub_sid = 81;
         let retry = current_retry_context(&session, 5_000_000_000);
-        assert_eq!(retry.selection, Some((71, 81)),
+        assert_eq!(retry.selection, Some(HeldSelection { part_id: 7, audio_sid: 71, sub_sid: 81 }),
             "the next executor must receive the source-selected track, not Feed's substitution");
         assert_eq!(retry.resume_ns, 5_000_000_000);
     }
@@ -9785,6 +9792,7 @@ impl ResolveEnv {
             memory: recalled_track_memory(sid),
             // Set in exactly one place, `request_env`: nothing else may default it on.
             fresh_play: false,
+            selection_before_retry: None,
             #[cfg(any(test, feature = "test-support"))]
             account_subtitles: None,
         }
@@ -10157,7 +10165,23 @@ fn request_env(
     if let Some(retry) = retry {
         apply_retry(&mut env, retry);
     }
+    leave_a_cached_default_the_set_cannot_decode(&mut env, meta, request.sid, &request.rk);
     env
+}
+
+fn leave_a_cached_default_the_set_cannot_decode(
+    env: &mut ResolveEnv, meta: plx_data::metadata::MetadataView<'_>, sid: ServerId, rk: &str,
+) {
+    if env.version.is_some() || env.cached_item.is_none() {
+        return;
+    }
+    let replaced = meta
+        .current()
+        .filter(|d| plx_plex::plex::same_item((d.sid, &d.rk), (sid, rk)))
+        .is_some_and(|d| automatic_version(&d.versions, env).is_some());
+    if replaced {
+        env.cached_item = None;
+    }
 }
 
 /// Common async request transaction. A retry waits for the real stop's PMS work on THIS worker
@@ -10218,7 +10242,8 @@ pub fn request_viewer_reconfigure(ps: &mut PlaybackSession,
                 || *sid <= 0 || *sid == source.audio_sid
                 || !meta.view().playing().is_some_and(|item|
                     item.audio.iter().any(|track| track.id == *sid)) { return false; }
-            retry.selection = Some((*sid, source.subtitle_sid));
+            retry.selection = Some(HeldSelection {
+                part_id: source.part_id, audio_sid: *sid, sub_sid: source.subtitle_sid });
         }
         ViewerReconfigure::SourceSubtitle { sid, mode, forced_lang } => {
             let Some(source) = ps.source_selection else { return false };
@@ -10231,7 +10256,8 @@ pub fn request_viewer_reconfigure(ps: &mut PlaybackSession,
             if (*mode == SubMode::Off && *sid != 0)
                 || (*mode == SubMode::Track && *sid == 0)
                 || (*mode == SubMode::ForcedOnly) != forced_lang.is_some() { return false; }
-            retry.selection = Some((source.audio_sid, *sid));
+            retry.selection = Some(HeldSelection {
+                part_id: source.part_id, audio_sid: source.audio_sid, sub_sid: *sid });
             retry.sub_mode = *mode;
         }
         ViewerReconfigure::SourceTracks { audio_sid, subtitle_sid } => {
@@ -10244,7 +10270,8 @@ pub fn request_viewer_reconfigure(ps: &mut PlaybackSession,
                     && item.subs.iter().any(|track| track.id == *subtitle_sid)) {
                 return false;
             }
-            retry.selection = Some((*audio_sid, *subtitle_sid));
+            retry.selection = Some(HeldSelection {
+                part_id: source.part_id, audio_sid: *audio_sid, sub_sid: *subtitle_sid });
             retry.sub_mode = SubMode::Track;
         }
     }
@@ -10528,8 +10555,9 @@ fn begin_track_selection(s: &mut PlaybackSession, retry: Option<RetryContext>) {
 
 /// Clear the outgoing item's live track selection for a play request. A retry is the SAME item
 /// resolved again with the subtitle it had when that was known (`RetryContext::selection`, applied
-/// to the resolve env by [`apply_retry`]), so the timing offset tuned against that subtitle is
-/// carried with it. A genuinely NEW request (no retry) instead resumes whatever this profile last tuned for THIS item, if anything
+/// to the resolve env by [`apply_retry`] while the resolve stays on that Part), so the timing
+/// offset tuned against that subtitle is carried with it.
+/// A genuinely NEW request (no retry) instead resumes whatever this profile last tuned for THIS item, if anything
 /// ([`recall`] of the subtitle-offset memory, keyed by machine id + ratingKey, never by track — a track
 /// CHANGE within one playback already zeros it, `commit_subtitle_selection`'s own doc). Either way
 /// the landing re-clamps it once the subtitle is re-selected (`player::reclamp_subtitle_offset`),
@@ -10574,9 +10602,12 @@ fn current_retry_context(ps: &PlaybackSession, resume_ns: i64) -> RetryContext {
     RetryContext {
         resume_ns: resume_ns.max(0),
         candidate_purpose: CandidatePurpose::ReopenCurrent,
-        selection: ps.source_selection.map(|selection|
-            (selection.audio_sid, selection.subtitle_sid)).or_else(|| {
-            if ps.selection_known { Some((cur_audio_sid(ps), cur_sub_sid(ps))) }
+        selection: ps.source_selection.map(|selection| HeldSelection {
+            part_id: selection.part_id, audio_sid: selection.audio_sid, sub_sid: selection.subtitle_sid,
+        }).or_else(|| {
+            if ps.selection_known {
+                Some(HeldSelection { part_id: cur_part_id(ps), audio_sid: cur_audio_sid(ps), sub_sid: cur_sub_sid(ps) })
+            }
             else { ps.carried_selection }
         }),
         sub_offset_ms: crate::player::subtitle_offset_ms(),
@@ -10680,10 +10711,18 @@ fn apply_retry(env: &mut ResolveEnv, retry: RetryContext) {
     // that reset so a rescue does not silently turn subtitles/audio back to server default.
     // Only a KNOWN selection is carried: with nothing landed the captured pair is the cleared `0`
     // sentinel, and applying it would force subtitles Off over the account's own rule.
-    if let Some((audio_sid, sub_sid)) = retry.selection {
-        env.audio_sid = audio_sid;
-        env.sub_sid = sub_sid;
-        env.subtitle_override = Some(sub_sid);
+    if let Some(held) = retry.selection {
+        env.selection_before_retry = Some(SelectionBeforeRetry {
+            retry_part_id: held.part_id,
+            audio_sid: env.audio_sid,
+            sub_sid: env.sub_sid,
+            subtitle_override: env.subtitle_override,
+            sub_mode: env.sub_mode,
+            memory: env.memory.clone(),
+        });
+        env.audio_sid = held.audio_sid;
+        env.sub_sid = held.sub_sid;
+        env.subtitle_override = Some(held.sub_sid);
         env.sub_mode = retry.sub_mode;
         // That selection is the viewer's own pick of THIS playback and outranks anything the
         // profile remembered for the show.

@@ -1707,7 +1707,7 @@ fn a_forced_only_landing_holds_the_mode_and_a_retry_carries_it() {
 
     // The retry names the stream by id; the mode rides it through the same `RetryContext`.
     let retry = current_retry_context(&ps, 0);
-    assert_eq!((retry.selection.map(|s| s.1), retry.sub_mode), (Some(55003), SubMode::ForcedOnly));
+    assert_eq!((retry.selection.map(|s| s.sub_sid), retry.sub_mode), (Some(55003), SubMode::ForcedOnly));
     let sid = cur_sid(&ps);
     let env = env_of(&ps, &request(sid, false), Some(retry));
     assert_eq!((env.subtitle_override, env.sub_mode), (Some(55003), SubMode::ForcedOnly));

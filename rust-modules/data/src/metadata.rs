@@ -2740,10 +2740,20 @@ pub fn fetch_playing_item(
     rk: &str,
     want: Option<plx_plex::plex::MediaId>,
 ) -> Option<(PlayingItem, Option<PlayedVersion>)> {
+    fetch_playing_item_choosing(client, sid, rk, |_| want)
+}
+
+pub fn fetch_playing_item_choosing(
+    client: &'static plx_plex::plex::Client,
+    sid: plx_plex::plex::ServerId,
+    rk: &str,
+    choose: impl FnOnce(&plx_plex::plex::Metadata) -> Option<plx_plex::plex::MediaId>,
+) -> Option<(PlayingItem, Option<PlayedVersion>)> {
     if rk.is_empty() {
         return None;
     }
     let it = client.metadata(rk);
+    let want = it.as_ref().and_then(choose);
     Some(playing_version_from(sid, rk, it.as_ref(), want))
 }
 

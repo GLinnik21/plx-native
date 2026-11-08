@@ -171,7 +171,7 @@ fn an_explicit_off_survives_a_contract_bump_during_a_retry() {
 
     let retry = current_retry_context(&ps, 0);
 
-    assert_eq!(retry.selection, Some((17, 0)), "the retry's own pair is carried on");
+    assert_eq!(retry.selection.map(|s| (s.audio_sid, s.sub_sid)), Some((17, 0)), "the retry's own pair is carried on");
     assert_eq!(env_after(&ps, retry).subtitle_override, Some(0), "the explicit Off holds");
     reset_session(&mut ps);
 }
