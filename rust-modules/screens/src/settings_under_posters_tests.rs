@@ -907,6 +907,109 @@ fn both_kinds_are_sourced_when_the_last_opened_library_lists_only_one() {
     assert_eq!(titles, vec!["Other film", "Sitcom"]);
 }
 
+/// Both libraries listed, a show library never opened: the cache holds a movie and no show.
+fn movies_only_directory() -> plx_data::stores::browse::DirectorySnapshot {
+    use plx_data::browse::SecKind;
+    use plx_data::stores::browse::{SectionView, SrcRow};
+    let sid = plx_plex::plex::ServerId::from_raw(0);
+    let section = |key, kind| SectionView { sid: Some(sid), key, kind, row: SrcRow { pinned: true, ..Default::default() } };
+    plx_data::stores::browse::DirectorySnapshot::fixture(7, 0, vec![section(1, SecKind::Movie), section(2, SecKind::Show)])
+        .with_sample([poster("Alpha", 2000, "Noir")].into())
+}
+
+/// The Browse hub reads `effects` asks for, as the `(epoch, section key)` of each.
+fn hub_asks(effects: Vec<Stamped<InnerHost>>) -> Vec<(u32, i64)> {
+    use plx_data::stores::{StoreCmd, StoreId};
+    use plx_data::stores::browse::{BrowseCmd, LibraryWork};
+    effects.into_iter().filter_map(|e| match e.fx {
+        Fx::App(AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::Addressed {
+            target, work: LibraryWork::Hubs { may_publish: true } }))) => Some((target.epoch, target.section)),
+        _ => None,
+    }).collect()
+}
+
+fn step_page(page: &mut UnderPostersPage, ev: ScreenEvent<InnerHost>, c: &Cx<'_, InnerHost>) -> Vec<Stamped<InnerHost>> {
+    let mut out = Vec::new();
+    let mut present = Present::new();
+    page.step(&ev, c, &mut Effects::new(&mut out, MachineId::Instance(InstanceId(0)), &mut present));
+    out
+}
+
+/// Does `effects` pump the Browse store (`StoreWork::Browse`)?
+fn pumps_browse(effects: &[Stamped<InnerHost>]) -> bool {
+    effects.iter().any(|e| matches!(&e.fx, Fx::App(AppFx::StoreWork(plx_data::stores::StoreWork::Browse))))
+}
+
+fn tick_of(dt_ms: u32) -> ScreenEvent<InnerHost> {
+    ScreenEvent::Tick(Tick { ms: 0, dt_us: dt_ms * 1000 })
+}
+
+/// **A show tile is never left art-less only because the show library was not opened yet**: a kind
+/// the cache has no poster of is asked for as the hubs of that kind's library (a read of its shelves
+/// that does not switch the library the user is on), with the store pumped, on every tick until the
+/// poster is there (a landed read is staged and only a later `Hubs` ask commits it, and nothing
+/// lands unpumped). A kind that is cached, or whose library's shelves the store has published, is
+/// not asked for.
+#[test]
+fn a_kind_with_no_cached_poster_is_asked_for_until_it_arrives_or_its_shelves_are_published() {
+    use plx_data::browse::SecKind;
+    let _guard = plx_base::testlock::serial();
+    let snapshot = movies_only_directory();
+    let c = cx_with(None, snapshot.view());
+    assert_eq!(preview_posters(&c).len(), 1, "premise: a movie and no show is cached");
+    let mut page = UnderPostersPage::new(EntryId(0));
+    let mount = step_page(&mut page, ScreenEvent::Mount, &c);
+    assert!(pumps_browse(&mount), "nothing lands unless the store is pumped");
+    assert_eq!(hub_asks(mount), vec![(7, 2)], "the show library's shelves, and only that kind");
+    let tick = step_page(&mut page, tick_of(16), &c);
+    assert_eq!(hub_asks(tick), vec![(7, 2)], "asked again: the landed read is committed by the next ask");
+    // Once the show is cached: nothing asked, nothing pumped.
+    let full = movies_only_directory().with_shelf_sample([show("Sitcom", 2011, "Comedy")].into());
+    let c2 = cx_with(None, full.view());
+    assert_eq!(preview_posters(&c2).len(), 2);
+    let tick = step_page(&mut page, tick_of(16), &c2);
+    assert!(!pumps_browse(&tick));
+    assert!(hub_asks(tick).is_empty());
+    // A library whose shelves are published and hold no show is answered: no more asking, however
+    // long that took (there is no timer to run out before a slow server answers).
+    let answered = movies_only_directory().with_kind_shelves_published(SecKind::Show);
+    let c3 = cx_with(None, answered.view());
+    let tick = step_page(&mut page, tick_of(16), &c3);
+    assert!(!pumps_browse(&tick));
+    assert!(hub_asks(tick).is_empty());
+}
+
+/// The Settings root draws the same picture while its Under posters row has focus, and asks for the
+/// missing poster then and only then, and only while it is the page on top (the pushed Under
+/// posters page asks for itself, and the store must not be pumped twice a frame).
+#[test]
+fn the_settings_root_asks_for_the_missing_poster_only_on_its_under_posters_row_and_on_top() {
+    use plx_ui::form::FormId;
+    let _guard = plx_base::testlock::serial();
+    // The Libraries section (and the Under posters row in it) is there only for a signed-in account.
+    let _session = multi_user_session("under-posters-root-ask");
+    let snapshot = movies_only_directory();
+    let mut root = RootPage::new(EntryId(0), snapshot.view());
+    let on = |elem: u32| Some(FocusKey { entry: EntryId(0), elem });
+    let tick = |root: &mut RootPage, focus| {
+        let c = cx_with(focus, snapshot.view());
+        let mut out = Vec::new();
+        let mut present = Present::new();
+        root.step(&tick_of(16), &c, &mut Effects::new(&mut out, MachineId::Instance(InstanceId(0)), &mut present));
+        out
+    };
+    let under = RootId::UnderPosters.key().0;
+    form_focus(&mut root.form, RootId::Favourites.key().0);
+    assert!(hub_asks(tick(&mut root, on(RootId::Favourites.key().0))).is_empty(), "another row: nothing asked");
+    form_focus(&mut root.form, under);
+    assert_eq!(root.form.selected_id(), Some(&RootId::UnderPosters), "premise: the row is selected");
+    let asked = tick(&mut root, on(under));
+    assert!(pumps_browse(&asked));
+    assert_eq!(hub_asks(asked), vec![(7, 2)], "the Under posters row asks for the show library's shelves");
+    let buried = tick(&mut root, Some(FocusKey { entry: EntryId(1), elem: 0 }));
+    assert!(hub_asks(buried).is_empty(), "a page pushed over the root asks for itself: the root stays quiet");
+}
+
 #[test]
 fn a_title_with_no_poster_path_is_not_art_and_never_a_sample() {
     let _guard = plx_base::testlock::serial();
