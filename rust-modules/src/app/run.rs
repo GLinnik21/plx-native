@@ -4759,9 +4759,7 @@ mod lifecycle_regression_tests {
             let player = super::super::bridge::player_mut(&mut rig.app.pages).expect("the player page is mounted");
             assert!(matches!(player.slot, ControlSlot::UpNext(_)), "the credits offer is up");
             assert_eq!(player.hud.nav.focus, GROUP_ROW, "the offer parked the ring on the row");
-            // This harness injects a key straight into the dispatcher, so it stands in for
-            // `note_global_press`, which the real input path runs before the page sees the press.
-            player.hud.visible_at_press = true;
+            player.hud.extend(t, HUD_LINGER_MS);
         }
         let back = back_key(t);
         step(&mut rig.app, &mut t, vec![back]);
@@ -7984,6 +7982,15 @@ mod lifecycle_regression_tests {
         event
     }
 
+    /// The return-navigation tests start with the dismissal already latched.
+    fn back_from_dismissed_transport(app: &mut App, ms: u32) -> plx_machine::machine::InputEvent<u32> {
+        let loading = plx_media::player::loading(&app.player.session);
+        super::super::bridge::player_mut(&mut app.pages)
+            .expect("the player is on top before Back")
+            .hud.hide(loading);
+        back_key(ms)
+    }
+
     fn detail_arg(sid: plx_plex::plex::ServerId) -> AppArg {
         AppArg::Content(plx_screens::registry::ContentArg::Detail { sid, rk: "1".into() })
     }
@@ -8003,7 +8010,7 @@ mod lifecycle_regression_tests {
         super::super::bridge::open_detail(&mut rig.app.pages, &mut rig.app.bridge, rig.sid, "1", None, None);
         settle(&mut rig.app, &mut t);
         let origin = play_with_a_landing_inside_the_dip(&mut rig, &mut t);
-        let back = back_key(t + 16);
+        let back = back_from_dismissed_transport(&mut rig.app, t + 16);
         step(&mut rig.app, &mut t, vec![back]);
         settle(&mut rig.app, &mut t);
         assert!(
@@ -8033,7 +8040,7 @@ mod lifecycle_regression_tests {
         settle(&mut rig.app, &mut t);
         play_with_a_landing_inside_the_dip(&mut rig, &mut t);
         let reads_before = plx_data::metadata::detail_generation_for_test(rig.app.bridge.metadata_mut().adapter_ref());
-        let back = back_key(t + 16);
+        let back = back_from_dismissed_transport(&mut rig.app, t + 16);
         step(&mut rig.app, &mut t, vec![back]);
         settle(&mut rig.app, &mut t);
         assert!(super::super::bridge::player(&rig.app.pages).is_none(), "premise: BACK left the player");
@@ -8293,7 +8300,7 @@ mod lifecycle_regression_tests {
         settle(&mut rig.app, &mut t);
         play_with_a_landing_inside_the_dip(&mut rig, &mut t);
         let before = rig.app.bridge.hub_refetches_for_test();
-        let back = back_key(t + 16);
+        let back = back_from_dismissed_transport(&mut rig.app, t + 16);
         step(&mut rig.app, &mut t, vec![back]);
         // The rig has no native engine, so teardown posts no `stopped` report. The engine makes
         // exactly this call (`engine.rs`, `route::scrobble_stop`); it is made here, once BACK's own
@@ -8346,7 +8353,7 @@ mod lifecycle_regression_tests {
         settle(&mut rig.app, &mut t);
         play_with_a_landing_inside_the_dip(&mut rig, &mut t);
         let before = rig.app.bridge.hub_refetches_for_test();
-        let back = back_key(t + 16);
+        let back = back_from_dismissed_transport(&mut rig.app, t + 16);
         step(&mut rig.app, &mut t, vec![back]);
         // As in `hubs_are_refetched_after_the_stop_lands_not_after_a_timer`: the engine's own
         // `scrobble_stop` call, made once BACK's stop has drained. The encoder is registered
@@ -8508,7 +8515,7 @@ mod lifecycle_regression_tests {
     /// sampled after each), stopping there.
     fn back_out_to_the_floor(rig: &mut Rig, t: &mut u32) {
         play_with_a_landing_inside_the_dip(rig, t);
-        let back = back_key(*t + 16);
+        let back = back_from_dismissed_transport(&mut rig.app, *t + 16);
         step(&mut rig.app, t, vec![back]);
         plx_media::route::scrobble_stop(&mut rig.app.player.session, Some(("1".into(), 30_000, 60_000)), None);
         for _ in 0..40 {
@@ -8621,7 +8628,7 @@ mod lifecycle_regression_tests {
         // server taking the stop and the app issuing the refetch it owes (the fixture serves one
         // request at a time, so the parked read must come after the stop).
         play_with_a_landing_inside_the_dip(&mut rig, &mut t);
-        let back = back_key(t + 16);
+        let back = back_from_dismissed_transport(&mut rig.app, t + 16);
         step(&mut rig.app, &mut t, vec![back]);
         plx_media::route::scrobble_stop(&mut rig.app.player.session, Some(("1".into(), 30_000, 60_000)), None);
         poll_until("the server never took the stop", || server.stopped.load(Ordering::SeqCst));
@@ -8714,7 +8721,7 @@ mod lifecycle_regression_tests {
         home_with_continue_watching(&mut rig, &mut t);
         server.hold_hubs.store(true, Ordering::SeqCst);
         play_with_a_landing_inside_the_dip(&mut rig, &mut t);
-        let back = back_key(t + 16);
+        let back = back_from_dismissed_transport(&mut rig.app, t + 16);
         step(&mut rig.app, &mut t, vec![back]);
         plx_media::route::scrobble_stop(&mut rig.app.player.session, Some(("1".into(), 30_000, 60_000)), None);
         step(&mut rig.app, &mut t, vec![]);
@@ -8744,7 +8751,7 @@ mod lifecycle_regression_tests {
         home_with_continue_watching(&mut rig, &mut t);
         server.hold_hubs.store(true, Ordering::SeqCst);
         play_with_a_landing_inside_the_dip(&mut rig, &mut t);
-        let back = back_key(t + 16);
+        let back = back_from_dismissed_transport(&mut rig.app, t + 16);
         step(&mut rig.app, &mut t, vec![back]);
         // The stop this exit announced is accounted for, as an exit that announces none leaves it.
         rig.app.return_hold.refetch_issued();
@@ -9280,7 +9287,7 @@ mod lifecycle_regression_tests {
         library_with_grid(&mut rig, &mut t, 1);
         play_from_here(&mut rig, &mut t);
         server.hold_reads.store(true, Ordering::SeqCst); // the play's own reads are done
-        let back = back_key(t + 16);
+        let back = back_from_dismissed_transport(&mut rig.app, t + 16);
         step(&mut rig.app, &mut t, vec![back]);
         plx_media::route::scrobble_stop(&mut rig.app.player.session, Some(("1".into(), 150_000, 600_000)), None);
         plx_media::route::drain_scrobble();
@@ -9305,7 +9312,7 @@ mod lifecycle_regression_tests {
         settle(&mut rig.app, &mut t);
         library_with_grid(&mut rig, &mut t, 1);
         play_from_here(&mut rig, &mut t);
-        let back = back_key(t + 16);
+        let back = back_from_dismissed_transport(&mut rig.app, t + 16);
         step(&mut rig.app, &mut t, vec![back]);
         let from = rig.requests.lock().unwrap().len();
         server.hold_stop.store(true, Ordering::SeqCst);
@@ -9344,7 +9351,7 @@ mod lifecycle_regression_tests {
         assert_eq!(resume(&rig), Some(("1".into(), 0)), "premise: the Detail page is loaded, unplayed");
         play_from_here(&mut rig, &mut t);
         server.refuse_stop.store(true, Ordering::SeqCst);
-        let back = back_key(t + 16);
+        let back = back_from_dismissed_transport(&mut rig.app, t + 16);
         step(&mut rig.app, &mut t, vec![back]);
         settle(&mut rig.app, &mut t);
         assert!(rig.app.route().same_instance(&detail_arg(rig.sid)), "premise: Back returned to the Detail page");
@@ -9391,7 +9398,7 @@ mod lifecycle_regression_tests {
         assert!(super::super::bridge::player(&rig.app.pages).is_some(), "premise: still under the player");
         assert_eq!(requests_matching(&rig, "GET /library/metadata/", reads_from), 0, "a read-back went out under the player");
         assert_eq!(rig.app.bridge.hub_refetches_for_test(), refetches, "a hubs refetch started under the player");
-        let back = back_key(t + 16);
+        let back = back_from_dismissed_transport(&mut rig.app, t + 16);
         step(&mut rig.app, &mut t, vec![back]);
         poll_until("the read-back never went out after the player left", || {
             step_and_run_jobs(&mut rig, &mut t);
@@ -9464,7 +9471,7 @@ mod lifecycle_regression_tests {
         let mut t = product_transition(&mut rig.app);
         settle(&mut rig.app, &mut t);
         let origin = play_with_a_landing_inside_the_dip(&mut rig, &mut t);
-        let back = back_key(t + 16);
+        let back = back_from_dismissed_transport(&mut rig.app, t + 16);
         step(&mut rig.app, &mut t, vec![back]);
         settle_after_back(&mut rig.app, &mut t);
         assert!(matches!(rig.app.route(), AppArg::Home));
