@@ -16,8 +16,9 @@
 //! press that reaches `player::transport::set_transport_paused` calls [`note_user_transport`], which
 //! keeps the spinner (the claim is still flying) but forgets the restore, so a Pause the viewer
 //! pressed during the flight stays paused after the landing and a Play they pressed keeps playing.
-//! The hold's own pause and resume call [`super::pause`]/[`super::resume`] directly and so never
-//! count as a viewer press.
+//! The hold's pause uses [`super::pause`]; its give-back uses the attempt's backend control (falling
+//! back to [`super::resume`] when there is no attempt). Neither goes through `set_transport_paused`,
+//! so neither counts as a viewer press.
 
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::Mutex;
@@ -214,12 +215,16 @@ mod tests {
         assert!(FEED_TX.paused.load(Acquire), "the feed gate is the viewer's Pause gate");
     }
 
-    /// The accepted landing exactly as production runs it: the reload tears the clock down and
-    /// `start_bufferfeed` re-arms it through `arm_initial_clock_hold(user_held = FEED_TX.paused)`, which
-    /// leaves `Held{Initial}` with the viewer-hold flag set. The give-back is then the DEFERRED
-    /// resume — `FEED_TX` reopens, the physical Play stays fenced — and the new stream's Initial prime
-    /// is what finally issues Play. (`FEED_TX.reset_for_reload()` alone leaves the clock in `Held{User}`,
-    /// which is the immediate-Play path and NOT what a landing produces.)
+    /// The accepted landing's clock states with NO common attempt on the adapter (`PlaybackSession::IDLE`
+    /// plus `new_fed`), so `release` takes its no-attempt fallback, the direct `player::resume`. The
+    /// reload tears the clock down and `start_bufferfeed` re-arms it through
+    /// `arm_initial_clock_hold(user_held = FEED_TX.paused)`, which leaves `Held{Initial}` with the
+    /// viewer-hold flag set. The give-back is then the DEFERRED resume — `FEED_TX` reopens, the
+    /// physical Play stays fenced — and the new stream's Initial prime is what finally issues Play.
+    /// (`FEED_TX.reset_for_reload()` alone leaves the clock in `Held{User}`, which is the
+    /// immediate-Play path and NOT what a landing produces.) The production path, where the common
+    /// startup runner owns the reloaded stream's first Play, is the flight test
+    /// `pump::flight_tests::a_playing_transcode_seek_landing_issues_play_on_the_reloaded_stream`.
     #[test]
     fn an_accepted_claim_gives_play_back_after_the_reload() {
         let mut rig = Rig::playing();

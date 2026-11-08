@@ -2350,15 +2350,13 @@ mod flight_tests {
     /// fresh stream reaches `SMP loadCompleted`, fills both lanes to BufferFull, and never gets
     /// `SMP Play`: the clock stays frozen at the target until the viewer backs out.
     ///
-    /// Graded on the physical sink: once the reloaded Engine reports loadCompleted, a native Play
-    /// must reach the sink (the progressive non-rebased start plays immediately; a primed start
-    /// would at least have the startup Play commanded).
-    #[test]
-    fn a_playing_transcode_seek_landing_issues_play_on_the_reloaded_stream() {
-        let mut rig = Rig::new(60);
+    /// Scrubs `rig`'s PLAYING transcode to its landing, then until the RELOADED Engine reports
+    /// loadCompleted. Answers the common runner's startup goal right after the landing (for the
+    /// failure message) and the sink's Play count at that point.
+    fn scrub_until_reloaded(rig: &mut Rig) -> (Option<bool>, u64) {
         FEED_SHARED.frames.store(1, Relaxed);
         assert!(!FEED_TX.paused.load(Acquire), "sanity: the transcode is playing");
-        let old_epoch = engine_epoch(&mut rig);
+        let old_epoch = engine_epoch(rig);
 
         crate::player::request_seek(&mut rig.ps, &mut rig.pa, SEEK_TARGET_NS);
         rig.frame();
@@ -2386,23 +2384,87 @@ mod flight_tests {
             std::thread::sleep(Duration::from_millis(2));
             rig.frame();
         }
-        for _ in 0..30 {
+        (goal_after_landing, plays)
+    }
+
+    /// Both lanes of the reloaded Engine filled past the prime thresholds (`PRIME_NS` of video,
+    /// `PRIME_AUDIO_NS` of audio): what the field's "both AU lanes full" was, pushed into the
+    /// queues the pump's feed lanes drain.
+    fn fill_both_lanes(rig: &mut Rig) {
+        const V_STEP_NS: i64 = 41_708_333; // 23.976 fps
+        const A_STEP_NS: i64 = 32_000_000; // 1536 samples at 48 kHz
+        let mut eng = rig.pa.engine().expect("the reloaded Engine");
+        let base = eng.seek_base_pts;
+        let au = [0u8; 64];
+        let video = &mut **eng.aq_video.as_mut().expect("the video lane") as *mut plx_play_feed::aq::AuQueue;
+        for i in 0..48i64 {
+            plx_play_feed::aq::aq_push(video, au.as_ptr(), au.len() as std::ffi::c_int,
+                base + i * V_STEP_NS, std::ffi::c_int::from(i == 0), 1);
+        }
+        let audio = &mut **eng.aq_audio.as_mut().expect("the audio lane") as *mut plx_play_feed::aq::AuQueue;
+        for i in 0..64i64 {
+            plx_play_feed::aq::aq_push(audio, au.as_ptr(), au.len() as std::ffi::c_int,
+                base + i * A_STEP_NS, 1, 2);
+        }
+    }
+
+    /// The post-scrub landing's whole contract, graded on the physical sink: the common startup
+    /// runner commands the reloaded stream's first Play (`primed` is whether that Play waits for
+    /// the prime proof or goes at once), it reaches the sink, the feed gate is open and the
+    /// clock runs and advances.
+    fn assert_scrub_reload_plays(rig: &mut Rig, primed: bool) {
+        let (goal_after_landing, plays) = scrub_until_reloaded(rig);
+        {
+            let eng = rig.pa.engine().expect("the reloaded Engine");
+            assert_eq!(eng.startup_immediate_play, !primed,
+                "PRECONDITION: the reloaded start is {} (startup_immediate_play={}, prime_play={}, rebase_pending={})",
+                if primed { "primed before Play" } else { "an immediate-Play start" },
+                eng.startup_immediate_play, eng.prime_play, eng.rebase_pending);
+        }
+        fill_both_lanes(rig);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while plx_play_feed::ffi_host::play_calls_for_test() <= plays {
+            let (commanded, prime, immediate, user_held) = {
+                let eng = rig.pa.engine().expect("the reloaded Engine");
+                (eng.startup_play_commanded, eng.prime_play, eng.startup_immediate_play,
+                    eng.startup_user_held)
+            };
+            assert!(std::time::Instant::now() < deadline,
+                "the reloaded stream's first Play never reached the sink (startup_play_commanded={commanded}, \
+                 prime_play={prime}, immediate={immediate}, startup_user_held={user_held}, runner's startup \
+                 goal after the landing paused={goal_after_landing:?}, now {:?}): no `SMP Play` can ever \
+                 follow, and try_prime returns early forever",
+                rig.pa.backend_viewer_paused());
+            std::thread::sleep(Duration::from_millis(2));
             rig.frame();
         }
-        let (commanded, prime, immediate, user_held) = {
-            let eng = rig.pa.engine().expect("the reloaded Engine");
-            (eng.startup_play_commanded, eng.prime_play, eng.startup_immediate_play,
-                eng.startup_user_held)
-        };
-        assert!(commanded,
-            "the common startup runner never commanded the reloaded stream's first Play \
-             (startup_play_commanded=false, prime_play={prime}, immediate={immediate}, \
-             startup_user_held={user_held}, runner's startup goal after the landing \
-             paused={goal_after_landing:?}, now {:?}): no `SMP Play` can ever follow, and \
-             try_prime returns early forever",
-            rig.pa.backend_viewer_paused());
-        assert!(plx_play_feed::ffi_host::play_calls_for_test() > plays || prime,
-            "the reloaded stream's first Play never reached the sink");
+        assert!(!FEED_TX.paused.load(Acquire), "the feed gate is open once the stream plays");
+        let (before, running) = plx_play_feed::ffi_host::clock_state_for_test();
+        assert!(running, "the sink clock runs after the first Play");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            rig.frame();
+            if plx_play_feed::ffi_host::clock_state_for_test().0 > before { break; }
+            assert!(std::time::Instant::now() < deadline,
+                "the sink clock never advanced past {before}ns after the first Play");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    /// The progressive (non-rebased) transcode: the first Play is an immediate one.
+    #[test]
+    fn a_playing_transcode_seek_landing_issues_play_on_the_reloaded_stream() {
+        let mut rig = Rig::new(60);
+        assert_scrub_reload_plays(&mut rig, false);
+    }
+
+    /// The same scrub when the reloaded start must prime before Play (`prime_before_play`: a
+    /// rebased or segmented-HLS start), where the runner's Play goes through
+    /// `FeedTransportAction::ResumeInitial` and the prime proof releases the sink's Play.
+    #[test]
+    fn a_playing_primed_transcode_seek_landing_issues_play_on_the_reloaded_stream() {
+        let mut rig = hls_rig(60);
+        assert_scrub_reload_plays(&mut rig, true);
     }
 
     /// The track-memory write-back is sent from the pump's decoded-frame branch and from nowhere
