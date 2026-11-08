@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-08T23:51:49Z",
+ "generated": "2026-11-08T23:56:08Z",
  "metrics": [
   {
    "change30_pct": 101.0,
@@ -144,18 +144,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 34.5,
-   "change7_pct": 19.1,
+   "change30_pct": 34.3,
+   "change7_pct": 19.0,
    "d30": 345.0,
-   "delta30": 119.0,
-   "delta7": 74.5,
+   "delta30": 118.5,
+   "delta7": 74.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 49,
+   "n_now": 50,
    "n_prev": 90,
-   "now": 464,
+   "now": 463.5,
    "prev7": 389.5,
    "shown": true,
    "state": "worse",
@@ -354,18 +354,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 36.7,
-   "change7_pct": 14.1,
+   "change30_pct": 36.2,
+   "change7_pct": 13.8,
    "d30": 230.5,
-   "delta30": 84.5,
-   "delta7": 39.0,
+   "delta30": 83.5,
+   "delta7": 38.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 47,
+   "n_now": 48,
    "n_prev": 82,
-   "now": 315,
+   "now": 314.0,
    "prev7": 276.0,
    "shown": true,
    "state": "flat",
@@ -375,43 +375,43 @@
    "unit": "s"
   },
   {
-   "change30_pct": 45.2,
-   "change7_pct": 9.0,
-   "d30": 149.5,
-   "delta30": 67.5,
-   "delta7": 18.0,
+   "change30_pct": -39.4,
+   "change7_pct": 0.2,
+   "d30": 357.5,
+   "delta30": -141.0,
+   "delta7": 0.5,
    "group": "ci",
-   "id": "sim|macOS tests against bundled FFmpeg and ASS",
+   "id": "sim|macOS simulator build + launch",
    "kind": "job",
-   "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 47,
+   "label": "Simulator CI: macOS simulator build + launch",
+   "n_now": 48,
    "n_prev": 82,
-   "now": 217,
-   "prev7": 199.0,
+   "now": 216.5,
+   "prev7": 216.0,
    "shown": true,
    "state": "flat",
-   "state30": "worse",
+   "state30": "better",
    "threshold_abs": 30.0,
    "threshold_pct": 20.0,
    "unit": "s"
   },
   {
-   "change30_pct": -39.6,
-   "change7_pct": 0.0,
-   "d30": 357.5,
-   "delta30": -141.5,
-   "delta7": 0.0,
+   "change30_pct": 44.5,
+   "change7_pct": 8.5,
+   "d30": 149.5,
+   "delta30": 66.5,
+   "delta7": 17.0,
    "group": "ci",
-   "id": "sim|macOS simulator build + launch",
+   "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
-   "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 47,
+   "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
+   "n_now": 48,
    "n_prev": 82,
-   "now": 216,
-   "prev7": 216.0,
+   "now": 216.0,
+   "prev7": 199.0,
    "shown": true,
    "state": "flat",
-   "state30": "better",
+   "state30": "worse",
    "threshold_abs": 30.0,
    "threshold_pct": 20.0,
    "unit": "s"
@@ -489,9 +489,9 @@
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 47,
+   "n_now": 48,
    "n_prev": 82,
-   "now": 20,
+   "now": 20.0,
    "prev7": 18.0,
    "shown": false,
    "state": "flat",
@@ -590,11 +590,6 @@
    "change_pct": 27.0,
    "commits": [
     {
-     "pr": 1272,
-     "sha": "dc3d03c20",
-     "title": "Lower-layer prerequisites of the neutral media crate: plx_net::range_io, plx_base::clock, LoadVideo in platform, contrac"
-    },
-    {
      "pr": 1274,
      "sha": "5d9c5903b",
      "title": "Neutral playback orchestration: the Feed becomes plx_play_feed, the app composes backends, the sink/plane seam is split"
@@ -638,6 +633,11 @@
      "pr": 1282,
      "sha": "0f6512a0a",
      "title": "Test Plex server identity during automatic episode advance"
+    },
+    {
+     "pr": 1287,
+     "sha": "2fe9e9fc6",
+     "title": "Settings: ask for a poster of a kind the Under posters preview lacks"
     }
    ],
    "from": 333,
@@ -651,11 +651,6 @@
    "change_pct": 25.2,
    "commits": [
     {
-     "pr": 1272,
-     "sha": "dc3d03c20",
-     "title": "Lower-layer prerequisites of the neutral media crate: plx_net::range_io, plx_base::clock, LoadVideo in platform, contrac"
-    },
-    {
      "pr": 1274,
      "sha": "5d9c5903b",
      "title": "Neutral playback orchestration: the Feed becomes plx_play_feed, the app composes backends, the sink/plane seam is split"
@@ -699,6 +694,11 @@
      "pr": 1282,
      "sha": "0f6512a0a",
      "title": "Test Plex server identity during automatic episode advance"
+    },
+    {
+     "pr": 1287,
+     "sha": "2fe9e9fc6",
+     "title": "Settings: ask for a poster of a kind the Under posters preview lacks"
     }
    ],
    "from": 74.8,
@@ -712,11 +712,6 @@
    "change_pct": 24.1,
    "commits": [
     {
-     "pr": 1272,
-     "sha": "dc3d03c20",
-     "title": "Lower-layer prerequisites of the neutral media crate: plx_net::range_io, plx_base::clock, LoadVideo in platform, contrac"
-    },
-    {
      "pr": 1274,
      "sha": "5d9c5903b",
      "title": "Neutral playback orchestration: the Feed becomes plx_play_feed, the app composes backends, the sink/plane seam is split"
@@ -760,6 +755,11 @@
      "pr": 1282,
      "sha": "0f6512a0a",
      "title": "Test Plex server identity during automatic episode advance"
+    },
+    {
+     "pr": 1287,
+     "sha": "2fe9e9fc6",
+     "title": "Settings: ask for a poster of a kind the Under posters preview lacks"
     }
    ],
    "from": 245,
@@ -773,11 +773,6 @@
    "change_pct": 20.4,
    "commits": [
     {
-     "pr": 1272,
-     "sha": "dc3d03c20",
-     "title": "Lower-layer prerequisites of the neutral media crate: plx_net::range_io, plx_base::clock, LoadVideo in platform, contrac"
-    },
-    {
      "pr": 1274,
      "sha": "5d9c5903b",
      "title": "Neutral playback orchestration: the Feed becomes plx_play_feed, the app composes backends, the sink/plane seam is split"
@@ -821,6 +816,11 @@
      "pr": 1282,
      "sha": "0f6512a0a",
      "title": "Test Plex server identity during automatic episode advance"
+    },
+    {
+     "pr": 1287,
+     "sha": "2fe9e9fc6",
+     "title": "Settings: ask for a poster of a kind the Under posters preview lacks"
     }
    ],
    "from": 383,
@@ -831,13 +831,8 @@
    "to": 461.0
   },
   {
-   "change_pct": 19.1,
+   "change_pct": 19.0,
    "commits": [
-    {
-     "pr": 1272,
-     "sha": "dc3d03c20",
-     "title": "Lower-layer prerequisites of the neutral media crate: plx_net::range_io, plx_base::clock, LoadVideo in platform, contrac"
-    },
     {
      "pr": 1274,
      "sha": "5d9c5903b",
@@ -882,6 +877,11 @@
      "pr": 1282,
      "sha": "0f6512a0a",
      "title": "Test Plex server identity during automatic episode advance"
+    },
+    {
+     "pr": 1287,
+     "sha": "2fe9e9fc6",
+     "title": "Settings: ask for a poster of a kind the Under posters preview lacks"
     }
    ],
    "from": 389.5,
@@ -889,7 +889,7 @@
    "label": "Wait after merge",
    "since": "2026-11-08",
    "threshold_pct": 15.0,
-   "to": 464
+   "to": 463.5
   }
  ],
  "schema": 2,
