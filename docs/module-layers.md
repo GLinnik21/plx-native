@@ -177,8 +177,8 @@ only the contract's traits and the `UriProbe` port, and the application composes
 (`app/adapters/backends.rs`, behind the application crate's `play-uri` feature, which the release build passes
 explicitly) and the probe (`dev/uriprobe.rs`). The driver is compiled into every build that has the feature.
 Production offers it a source only for a viewer who turned on Settings > Video & playback > Playback engine >
-Experimental: `media::route::uri_preflight::ProductQualifier` answers `Unknown` for everyone else, and never
-qualifies a converted PMS output. `ci/check-deps.sh` reads the whole crate for the same IO and clock gates as every other layer.
+Experimental: `media::route::uri_preflight::ProductQualifier` answers `Unknown` for everyone else, for an original
+Standard would not direct-play (the plan's own `StandardDirectPlay` verdicts), and for a converted PMS output. `ci/check-deps.sh` reads the whole crate for the same IO and clock gates as every other layer.
 
 The Watchlist adds two data modules and no new edge. `watchlist` (rows, match table, `TileState`,
 intent ledger, comparator; with `stores::watchlist`) and `catalog` (the Discover-only item page; with

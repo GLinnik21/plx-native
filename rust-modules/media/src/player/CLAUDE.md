@@ -53,8 +53,14 @@ The one exception is a viewer who turned on Settings > Video & playback > Playba
 (`UriEngine::On`, per profile, off by default): the route snapshots it into `ResolveEnv::uri_engine`,
 `OriginalRequest::uri_opt_in` carries it to the worker, `ProductQualifier` then answers the original
 file as a progressive URL carrier (`KnownSource::url_carrier`) and `ResolvePort::qualify` checks it
-against `ProductEvidence::opted_in()`. A converted PMS output (`qualify_pms`) and a selected subtitle
-stay unqualified, so those play on Feed; a URI failure keeps the one handoff to Feed.
+against `ProductEvidence::opted_in()`. `ProductQualifier` answers `Unknown` unless Standard would direct-play
+that original: the plan carries its own verdicts in `OriginalRequest::standard` (`StandardDirectPlay`, built in
+`build_stream` from `video_direct_plays` against `env.caps`, the frozen DV decision and
+`audio_natively_plays_with`, never re-derived by the qualifier), and `url_carrier` certifies a DV record only
+where the frozen decision admitted it. So a codec or raster the caps refuse, a Profile 5 file on a set without
+Dolby Vision, and an audio track only the app decodes or the set cannot decode play exactly as in Standard. A
+converted PMS output (`qualify_pms`) and a selected subtitle stay unqualified too, so those play on Feed; a
+URI failure keeps the one handoff to Feed.
 
 The sequence's last step (`Op::Display`, the full-screen `setDisplayWindow` and `setState(PLAYING)`)
 goes through `PlaneOwner::show`, not straight to the sink: the C seam (`acb_finish`) returns the task id

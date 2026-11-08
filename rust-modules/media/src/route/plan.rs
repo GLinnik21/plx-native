@@ -1994,15 +1994,39 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                     if p.bitrate > 0 { p.bitrate } else { env.src_kbps });
                 let (width, height) = plan.playing.as_ref().map_or((0, 0), |p| (p.width, p.height));
                 let quality = if forced { Quality::Original } else { env.quality };
+                // What Standard would decide about this original, from the same rules and the same
+                // frozen inputs it plans from below (the caps, the frozen Dolby Vision decision, the
+                // audio predicate); the qualifier reads the verdicts and derives none of them.
+                let dovi = plan.playing.as_ref().map_or(plx_data::metadata::Dovi::NONE, |item| item.dovi);
+                let dv_decision = frozen_dv_decision(env.dolby_vision_mode, env.dv_capability, dovi, vcodec);
+                let source_decodable = video_direct_plays(vcodec, width, height,
+                    dv_decision.presentation, &env.caps);
+                // The track the URI source would play is the intended one, with no sibling stand-in, and
+                // only the set's own decoder reaches it: the app's lossy decode is Standard's alone.
+                let audio_plays = source_audio.as_ref().is_some_and(|(position, codec, _)| {
+                    match usize::try_from(*position).ok().and_then(|i| tracks.get(i)) {
+                        Some(track) => audio_natively_plays_with(&env.caps, env.direct_play_mode,
+                            &track.codec, track.channels, track.sampling_rate),
+                        // No track list: the Media-level codec stands in, as the direct-play decision
+                        // reads it, and no codec at all is a file with no audio.
+                        None => codec.is_empty() || audio_natively_plays_with(&env.caps,
+                            env.direct_play_mode, codec, 0, 0),
+                    }
+                });
                 let request = super::uri_preflight::OriginalRequest {
                     selection: source_selection,
                     server_origin: client.origin().clone(),
                     source_url: client.direct_play_url(part, &session).to_url(),
                     duration_ms: plan.playing.as_ref().and_then(|p| p.duration_ms),
                     video_codec: vcodec.to_owned(),
-                    dolby_vision: plan.playing.as_ref().map_or(plx_data::metadata::Dovi::NONE, |p| p.dovi),
+                    dolby_vision: dovi,
                     dolby_vision_mode: env.dolby_vision_mode,
                     uri_opt_in: env.uri_engine == plx_plex::plex::session::UriEngine::On,
+                    standard: super::uri_preflight::StandardDirectPlay {
+                        video: source_decodable,
+                        dolby_vision: dv_decision.presentation.refusal().is_none(),
+                        audio: audio_plays,
+                    },
                     audio_codec: source_audio.as_ref().map_or_else(|| acodec.to_owned(), |(_, codec, _)| codec.clone()),
                     audio_ordinal: source_audio.as_ref().filter(|(position, _, sid)| *position >= 0 && *sid > 0)
                         .map(|(position, _, _)| i64::from(plx_data::metadata::audio_ordinal(tracks, *position as usize))),
@@ -2025,14 +2049,9 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 };
                 if let super::uri_preflight::Verdict::Known(known) = port.qualify(off, request) {
                     // These describe the *source* for a possible later viewer-requested Feed
-                    // conversion. They are not URI admission gates: the native certificate has
-                    // already qualified the original bytes independently of Feed declarations.
-                    let dovi = plan.playing.as_ref().map_or(plx_data::metadata::Dovi::NONE,
-                        |item| item.dovi);
-                    let dv_decision = frozen_dv_decision(env.dolby_vision_mode,
-                        env.dv_capability, dovi, vcodec);
-                    plan.source_decodable = video_direct_plays(vcodec, width, height,
-                        dv_decision.presentation, &env.caps);
+                    // conversion, from the verdicts computed above for the request. The certificate
+                    // is the qualifier's: nothing here re-judges it.
+                    plan.source_decodable = source_decodable;
                     plan.src_dovi = dovi;
                     plan.src_dv_decision = dv_decision;
                     plan.vcodec = vcodec.to_owned();

@@ -91,6 +91,31 @@ impl ProductEvidence {
     }
 }
 
+/// What Standard, this app's own direct play, decided about an original file: the plan's own verdicts,
+/// carried to the qualifier so that no qualifier re-derives a codec or Dolby Vision rule of its own. The
+/// TV's pipeline plays what the file says and never reports a wrong picture or a silent track as a
+/// failure, so an original Standard would not direct-play (the server converts it) is never one a
+/// viewer's opt-in may hand to URI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StandardDirectPlay {
+    /// `video_direct_plays` against the attempt's caps: the codec, the raster bound and the frozen
+    /// Dolby Vision decision's presentation (a refused one fails it).
+    pub video: bool,
+    /// The frozen Dolby Vision decision (`frozen_dv_decision`: the set's own answer through the
+    /// profile's setting) admits this source's layering: it has none, or it plays as a base layer or as a
+    /// declared stream. A Profile 5 file on a set without Dolby Vision is the refusal.
+    pub dolby_vision: bool,
+    /// The selected audio track plays on the SET'S OWN decoder (`audio_natively_plays_with`: the
+    /// table's row, the Load's channel and rate limits, the direct-play mode). Standard may also decode
+    /// a codec in the app, which the TV's pipeline cannot, so that is not enough here.
+    pub audio: bool,
+}
+
+impl StandardDirectPlay {
+    /// Standard would direct-play this original, and the TV's own pipeline can show and play it.
+    pub fn plays(self) -> bool { self.video && self.dolby_vision && self.audio }
+}
+
 /// URI source facts gathered from the selected PMS Part before Feed picks a sibling or encoder.
 /// The Part URL and stream identifiers are intentionally absent from Debug/log output.
 pub struct OriginalRequest {
@@ -110,8 +135,11 @@ pub struct OriginalRequest {
     pub dolby_vision_mode: plx_plex::plex::session::DolbyVisionMode,
     /// The viewer turned on Settings > Playback > Playback engine (`UriEngine::On`). That choice is
     /// the viewer's own qualification of a URI source for their own playback and nobody else's: a
-    /// qualifier answers for it, never without it.
+    /// qualifier answers for it, never without it, and never past [`standard`](Self::standard).
     pub uri_opt_in: bool,
+    /// Whether Standard would direct-play this original (the plan's verdicts, not the qualifier's).
+    /// The viewer's opt-in carries only an original it says yes to.
+    pub standard: StandardDirectPlay,
     pub audio_codec: String,
     /// The selected audio stream's 0-based position among the Part's audio streams, in container
     /// order ([`plx_data::metadata::audio_ordinal`], the numbering the Feed demuxer's nth-of-type
@@ -327,7 +355,8 @@ pub enum PmsDecline {
 
 /// The caller supplies the actual Part URL and selected source tracks. An implementation may
 /// perform bounded IO only with the worker's OffFrame proof; it must not infer a URI certificate
-/// from Feed's codec table, MDE answer or native ACK.
+/// from Feed's codec table, MDE answer or native ACK. [`OriginalRequest::standard`] is no certificate
+/// either: it is Standard's own verdict, which can only narrow what a qualifier carries.
 pub trait OriginalQualifier: Send + Sync + std::panic::RefUnwindSafe {
     fn qualify(&self, off: &OffFrame, request: OriginalRequest) -> Verdict;
 
@@ -530,7 +559,8 @@ impl KnownSource {
     /// position in it is its native index ([`OriginalRequest::audio_ordinal`], a hypothesis the 4.5
     /// service has not yet confirmed). A stream whose position the plan could not name maps to
     /// nothing: the source then cannot supply the selection and the route plays the Feed, instead of
-    /// the service silently staying on track 0. No subtitle source is certified.
+    /// the service silently staying on track 0. No subtitle source is certified, and a Dolby Vision
+    /// record is certified only where the frozen decision admitted it ([`StandardDirectPlay::dolby_vision`]).
     pub fn url_carrier(request: &OriginalRequest, url: String, ttl: Duration) -> KnownSource {
         let selected_audio = u64::try_from(request.selection.audio_sid).ok().filter(|sid| *sid > 0);
         let tracks = selected_audio.zip(request.audio_ordinal).map(|(id, index)| NativeTrackIndex {
@@ -543,7 +573,11 @@ impl KnownSource {
                 video: Fidelity::Exact, audio: Fidelity::Exact,
                 audio_track: selected_audio.map_or(TrackChoice::Unspecified, TrackChoice::Selected),
                 subtitle_track: request.subtitle_choice },
-            certified_dolby_vision: request.dolby_vision.present.then_some(request.dolby_vision),
+            // Only the layering the frozen Dolby Vision decision admitted: a refused one (Profile 5 on
+            // a set without Dolby Vision) is no source this carrier can show correctly, and the DV
+            // check of `ResolvePort::qualify` then declines it.
+            certified_dolby_vision: (request.dolby_vision.present && request.standard.dolby_vision)
+                .then_some(request.dolby_vision),
             certified_subtitle_source: None,
             expires_at: crate::player::adapter::uri_source_expiry_after(ttl),
         }
@@ -552,12 +586,15 @@ impl KnownSource {
 
 /// Native product source evidence is unqualified for everyone but a viewer who turned on the URI
 /// engine in Settings ([`OriginalRequest::uri_opt_in`]): that choice is their own qualification of
-/// the URL carrier, so the answer is Unknown without it. The same port is run by every real resolve
-/// and can consume a future certified provider without changing route policy.
+/// the URL carrier, so the answer is Unknown without it. Even then it covers only an original Standard
+/// would direct-play ([`OriginalRequest::standard`]: the plan's own video, Dolby Vision and audio
+/// verdicts, which this qualifier reads and never re-derives): every other file plays exactly as it does
+/// in Standard, where the server converts what the set cannot show or decode. The same port is run by
+/// every real resolve and can consume a future certified provider without changing route policy.
 pub struct ProductQualifier;
 impl OriginalQualifier for ProductQualifier {
     fn qualify(&self, _off: &OffFrame, request: OriginalRequest) -> Verdict {
-        if !request.uri_opt_in { return Verdict::Unknown; }
+        if !request.uri_opt_in || !request.standard.plays() { return Verdict::Unknown; }
         let url = request.source_url.clone();
         Verdict::Known(KnownSource::url_carrier(&request, url, SOURCE_VERDICT_TTL))
     }
@@ -889,13 +926,16 @@ mod tests {
             source_url: "https://example.invalid/part.mkv".to_owned(), duration_ms: Some(60_000),
             video_codec: "h264".to_owned(), dolby_vision: plx_data::metadata::Dovi::NONE,
             dolby_vision_mode: plx_plex::plex::session::DolbyVisionMode::Auto, uri_opt_in,
-            audio_codec: "aac".to_owned(), audio_ordinal: Some(1),
+            standard: PLAYS, audio_codec: "aac".to_owned(), audio_ordinal: Some(1),
             subtitle_source: None, subtitle_choice: TrackChoice::Unspecified,
             source_kbps: Some(4000), raster: Some((1280, 720)),
             requested_rate_permille: plx_playback_contract::RATE_NORMAL, resume_ns: 0,
             quality_allows_original: true, link_allows_original: true, auto_allows_original: true,
             requires_subtitle_burn: false, requires_client_subtitle: false, preview: false }
     }
+
+    /// Standard direct-plays the request: the plan's three verdicts all say yes.
+    const PLAYS: StandardDirectPlay = StandardDirectPlay { video: true, dolby_vision: true, audio: true };
 
     /// The production composition on an ACB set: nothing certified, `ProductQualifier`.
     fn production_port(binding: Binding) -> ResolvePort {
@@ -923,6 +963,73 @@ mod tests {
         assert!(!evidence.certified.progressive_uri && !evidence.certified.pause
             && !evidence.certified.seek && !evidence.certified.audio_track);
         assert!(!port.could_qualify_pms(), "a converted PMS output has no opt-in");
+    }
+
+    #[test]
+    fn the_opt_in_carries_only_an_original_standard_would_direct_play() {
+        let off = OffFrame::for_test();
+        let port = production_port(Binding::Acb);
+        assert!(matches!(port.qualify(&off, opt_in_request(true)), Verdict::Known(_)), "the control");
+        for (what, standard) in [
+            ("a video the caps do not direct-play",
+                StandardDirectPlay { video: false, ..PLAYS }),
+            ("a Dolby Vision layering the frozen decision refuses",
+                StandardDirectPlay { dolby_vision: false, ..PLAYS }),
+            ("an audio track the set's own decoder does not play",
+                StandardDirectPlay { audio: false, ..PLAYS }),
+        ] {
+            let mut request = opt_in_request(true);
+            request.standard = standard;
+            assert!(matches!(port.qualify(&off, request), Verdict::Unknown),
+                "{what} stays in Standard, whatever the opt-in");
+        }
+    }
+
+    #[test]
+    fn a_url_carrier_certifies_only_the_dolby_vision_the_frozen_decision_admitted() {
+        let dovi = plx_data::metadata::Dovi { present: true, profile: 8, bl_compat: 1,
+            ..plx_data::metadata::Dovi::NONE };
+        let carry = |standard: StandardDirectPlay| {
+            let mut request = opt_in_request(true);
+            request.dolby_vision = dovi;
+            request.standard = standard;
+            KnownSource::url_carrier(&request, "https://example.invalid/part.mkv".to_owned(),
+                SOURCE_VERDICT_TTL).certified_dolby_vision
+        };
+        assert_eq!(carry(PLAYS), Some(dovi), "an admitted layering is certified as the record itself");
+        assert_eq!(carry(StandardDirectPlay { dolby_vision: false, ..PLAYS }), None,
+            "a refused one is not, so ResolvePort::qualify's Dolby Vision check declines it");
+        let mut plain = opt_in_request(true);
+        plain.standard = StandardDirectPlay { dolby_vision: false, ..PLAYS };
+        assert_eq!(KnownSource::url_carrier(&plain, "https://example.invalid/part.mkv".to_owned(),
+            SOURCE_VERDICT_TTL).certified_dolby_vision, None, "a file with no Dolby Vision certifies none");
+    }
+
+    /// A qualifier that certifies Dolby Vision it was never admitted (here the carrier, handed a
+    /// refusal) is still stopped by the exact-record check, so no path around the route's refusal.
+    #[test]
+    fn a_refused_dolby_vision_record_never_reaches_a_known_url_source() {
+        let off = OffFrame::for_test();
+        let dovi = plx_data::metadata::Dovi { present: true, profile: 5, bl_compat: 0,
+            ..plx_data::metadata::Dovi::NONE };
+        let mut request = opt_in_request(true);
+        request.video_codec = "hevc".to_owned();
+        request.dolby_vision = dovi;
+        request.standard = StandardDirectPlay { video: false, dolby_vision: false, audio: true };
+        let capabilities = Capabilities { progressive_uri: true, hls_uri: false, packet_feed: false,
+            pause: true, seek: true, audio_track: true, subtitle_track: false,
+            audio_off: false, subtitle_off: false };
+        struct Carrier;
+        impl OriginalQualifier for Carrier {
+            fn qualify(&self, _off: &OffFrame, request: OriginalRequest) -> Verdict {
+                let url = request.source_url.clone();
+                Verdict::Known(KnownSource::url_carrier(&request, url, SOURCE_VERDICT_TTL))
+            }
+        }
+        let port = ResolvePort::new(ProductEvidence { display_exported: false, binding: Binding::Acb,
+            callable: capabilities, certified: capabilities, preview_rectangle: false },
+            Arc::new(Carrier));
+        assert!(matches!(port.qualify(&off, request), Verdict::Unknown));
     }
 
     #[test]
@@ -972,7 +1079,7 @@ mod tests {
             source_url: "https://example.invalid/part.mkv".to_owned(), duration_ms: Some(60_000),
             video_codec: "hevc".to_owned(), dolby_vision: dovi,
             dolby_vision_mode: plx_plex::plex::session::DolbyVisionMode::Auto, uri_opt_in: false,
-            audio_codec: "ac3".to_owned(), audio_ordinal: Some(0),
+            standard: PLAYS, audio_codec: "ac3".to_owned(), audio_ordinal: Some(0),
             subtitle_source: None,
             subtitle_choice: TrackChoice::Unspecified,
             source_kbps: Some(4000), raster: Some((1920, 1080)),
