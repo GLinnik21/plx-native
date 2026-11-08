@@ -1,4 +1,4 @@
-{"updated":"2026-11-08T22:42:27Z",
+{"updated":"2026-11-08T23:03:35Z",
 "ci":[
 {"id":31403633733,"at":"2026-08-10T15:26:54Z","sha":"8827d32c0","title":"release: 0.2.1, and a fourth witness for the version","jobs":{"cross-build (armv7) + artifact assertions":88,"host checks (NOT a device gate)":69},"pr":null,"conclusion":"success","attempt":1},
 {"id":31430674609,"at":"2026-08-10T20:46:39Z","sha":"af6044c82","title":"ci: a tag push publishes again, instead of silently doing nothing","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":76},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -4816,7 +4816,8 @@
 {"id":42513039005,"at":"2026-11-08T19:03:10Z","sha":"6131d5c8d","title":"Default to a playback version the TV can decode","pr":1245,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":239,"Linux simulator build + launch":271,"Windows launcher syntax":19,"macOS tests against bundled FFmpeg and ASS":116}},
 {"id":42514117550,"at":"2026-11-08T19:15:31Z","sha":"0f6512a0a","title":"Test Plex server identity during automatic episode advance","pr":1282,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":217,"Linux simulator build + launch":356,"Windows launcher syntax":20,"macOS simulator build + launch":195}},
 {"id":42521410367,"at":"2026-11-08T20:41:34Z","sha":"81b74f19e","title":"WebSocket transport: RFC 6455 over the CONNECT_ONLY socket","pr":1283,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":323,"macOS simulator build + launch":167,"macOS tests against bundled FFmpeg and ASS":164,"Windows launcher syntax":15}},
-{"id":42529533356,"at":"2026-11-08T22:17:56Z","sha":"4693d047e","title":"Cover the primed first Play after a transcode seek; fix two stale claim_hold docs","pr":1285,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":211,"Windows launcher syntax":20,"macOS simulator build + launch":197,"Linux simulator build + launch":1457}}
+{"id":42529533356,"at":"2026-11-08T22:17:56Z","sha":"4693d047e","title":"Cover the primed first Play after a transcode seek; fix two stale claim_hold docs","pr":1285,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":211,"Windows launcher syntax":20,"macOS simulator build + launch":197,"Linux simulator build + launch":1457}},
+{"id":42532865395,"at":"2026-11-08T22:58:41Z","sha":"471efa0e5","title":"Keep a staged offer purpose when a landing re-qualifies an unadmitted recipe","pr":1286,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":281,"macOS tests against bundled FFmpeg and ASS":231,"macOS simulator build + launch":184,"Windows launcher syntax":19}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
