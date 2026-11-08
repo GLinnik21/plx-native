@@ -33,7 +33,7 @@ ROOT = Path(__file__).resolve().parent.parent
 TOOLCHAIN_FILE = ROOT / "rust-modules" / "rust-toolchain.toml"
 TARGET = "armv7-unknown-linux-gnueabi"
 # The `PLAYBACK_BACKENDS` values a television package can be built with: the Makefile's other value,
-# `none`, is refused at link time (`playback-no-backend`), as is `ci/check-elf.sh`'s artifact mode.
+# `none`, is refused by the Makefile at parse time for any goal that builds, as is `ci/check-elf.sh`'s artifact mode.
 # `ci/test_arm_profile.py` fails when the Makefile gains or loses a `PLAYBACK_FEATURES_<name>`.
 PACKAGED_BACKENDS = ("both", "uri", "feed")
 

@@ -4,6 +4,10 @@ This is the record of a delete-and-restore drill on the URI-first integration br
 the read-only source audit of `308b0f92a` (2026-11-04), whose deletion tests were still unpassed
 when it was written. The drill ran them.
 
+The commits this record names (`869ff76e2`, `308b0f92a`, `e391d89bf`) are on the `integ/uri-first` branch, which `main` took as a
+series of squash merges, so they are not ancestors of `main`; the boundary counts below are as measured at those commits (at the
+landing tree, for example, `feature = "play-uri"` appears on 30 lines under `rust-modules/src`, one more than at `e391d89bf`).
+
 Base: `869ff76e2` ("W3f: items only play-feed names leave the playback contract"). Two detached,
 disposable worktrees were cut from it, one local commit each, never pushed and never merged:
 

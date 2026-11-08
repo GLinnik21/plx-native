@@ -265,14 +265,20 @@ class PlaybackBackendSelection(ScratchTree):
         self.assertFalse((self.tree / "pkg/plxnative").exists())
 
     def test_no_backend_cannot_produce_a_television_binary(self):
-        self.seed_release_build()
-        proc = subprocess.run(
-            ["make", "-s", "--no-print-directory", "-C", str(self.tree),
-             "PLAYBACK_BACKENDS=none", "pkg/plxnative"],
-            capture_output=True, text=True, env=self.env, timeout=30)
-        self.assertNotEqual(proc.returncode, 0)
-        self.assertIn("requires a URI or feed playback backend", proc.stderr)
-        self.assertNotIn("cargo", proc.stdout)
+        stamp = self.seed_release_build()
+        for goal in ("pkg/plxnative", "ipk", "deploy"):
+            proc = subprocess.run(
+                ["make", "-s", "--no-print-directory", "-C", str(self.tree),
+                 "PLAYBACK_BACKENDS=none", goal],
+                capture_output=True, text=True, env=self.env, timeout=30)
+            self.assertNotEqual(proc.returncode, 0, goal)
+            self.assertIn("requires a URI or feed playback backend", proc.stderr, goal)
+            self.assertNotIn("cargo", proc.stdout, goal)
+            # The refusal comes before the stamp reset: a mistyped `none` must not delete the last
+            # real build's binary and staged libraries (the next real build would re-stage FFmpeg).
+            self.assertEqual((self.tree / STAMP).read_text(), stamp, goal)
+            for rel in RESET_PATHS:
+                self.assertTrue((self.tree / rel).exists(), f"{goal}: {rel} was deleted by a refused build")
 
 
 class PackageGateDecodesTheStampTheMakefileWrites(ScratchTree):
@@ -318,8 +324,9 @@ class PackageGateDecodesTheStampTheMakefileWrites(ScratchTree):
                 self.assertEqual(self.decode(*args), "release")
 
     def test_no_backend_is_refused_in_both_configurations(self):
-        """The Makefile refuses to link a television binary with `PLAYBACK_BACKENDS=none`
-        (`test_no_backend_cannot_produce_a_television_binary`), so its stamp is no configuration to grade.
+        """The Makefile refuses every building goal with `PLAYBACK_BACKENDS=none`
+        (`test_no_backend_cannot_produce_a_television_binary`); only `clean` and the side-effect-free goals
+        take it, so its stamp (written here by `clean`) is no configuration to grade.
         Under `RELEASE=1` it is the bare `--no-default-features` the old decoder called "release"."""
         for release in ("RELEASE=1", "RELEASE="):
             with self.subTest(release):
