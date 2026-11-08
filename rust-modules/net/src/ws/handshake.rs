@@ -65,31 +65,36 @@ impl Handshake {
     }
 
     fn verify(&self, head: &[u8]) -> Result<(), HandshakeFault> {
-        let text = std::str::from_utf8(head).map_err(|_| HandshakeFault::Malformed)?;
-        let mut lines = text.split("\r\n");
-        let mut status = lines.next().unwrap_or_default().splitn(3, ' ');
-        let (Some("HTTP/1.1"), Some(code)) = (status.next(), status.next()) else {
-            return Err(HandshakeFault::Malformed);
-        };
-        if code.len() != 3 || !code.bytes().all(|b| b.is_ascii_digit()) {
-            return Err(HandshakeFault::Malformed);
-        }
-        let code: u16 = code.parse().map_err(|_| HandshakeFault::Malformed)?;
+        let mut lines = head.split(|&b| b == b'\n').map(|line| line.strip_suffix(b"\r").unwrap_or(line));
+        let code = lines
+            .next()
+            .and_then(|status| status.strip_prefix(b"HTTP/1.1 "))
+            .filter(|rest| matches!(rest.get(3), None | Some(b' ')))
+            .and_then(|rest| rest.get(..3))
+            .filter(|digits| digits.iter().all(u8::is_ascii_digit))
+            .ok_or(HandshakeFault::Malformed)?;
+        let code = code.iter().fold(0, |n, digit| n * 10 + u16::from(digit - b'0'));
         if code != 101 {
             return Err(HandshakeFault::Refused(code));
         }
         let (mut upgrade, mut connection, mut accepts) = (false, false, Vec::new());
         for line in lines.filter(|line| !line.is_empty()) {
-            let (name, value) = line.split_once(':').ok_or(HandshakeFault::Malformed)?;
-            let value = value.trim();
-            if name.eq_ignore_ascii_case("upgrade") {
-                upgrade |= value.eq_ignore_ascii_case("websocket");
-            } else if name.eq_ignore_ascii_case("connection") {
-                connection |= value.split(',').any(|token| token.trim().eq_ignore_ascii_case("upgrade"));
-            } else if name.eq_ignore_ascii_case("sec-websocket-accept") {
+            let colon = line.iter().position(|&b| b == b':').ok_or(HandshakeFault::Malformed)?;
+            let (name, value) = (&line[..colon], &line[colon + 1..]);
+            if name.is_empty() || !name.iter().all(|&b| is_token_byte(b)) || value.iter().any(|&b| b == b'\r' || b == 0) {
+                return Err(HandshakeFault::Malformed);
+            }
+            let value = trim_whitespace(value);
+            if name.eq_ignore_ascii_case(b"upgrade") {
+                upgrade |= value.eq_ignore_ascii_case(b"websocket");
+            } else if name.eq_ignore_ascii_case(b"connection") {
+                connection |= value
+                    .split(|&b| b == b',')
+                    .any(|token| trim_whitespace(token).eq_ignore_ascii_case(b"upgrade"));
+            } else if name.eq_ignore_ascii_case(b"sec-websocket-accept") {
                 accepts.push(value);
-            } else if name.eq_ignore_ascii_case("sec-websocket-extensions")
-                || name.eq_ignore_ascii_case("sec-websocket-protocol")
+            } else if name.eq_ignore_ascii_case(b"sec-websocket-extensions")
+                || name.eq_ignore_ascii_case(b"sec-websocket-protocol")
             {
                 return Err(HandshakeFault::Unrequested);
             }
@@ -98,10 +103,21 @@ impl Handshake {
             return Err(HandshakeFault::NotUpgraded);
         }
         match accepts.as_slice() {
-            [accept] if *accept == accept_key(&self.key) => Ok(()),
+            [accept] if *accept == accept_key(&self.key).as_bytes() => Ok(()),
             _ => Err(HandshakeFault::WrongAccept),
         }
     }
+}
+
+fn is_token_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte)
+}
+
+fn trim_whitespace(bytes: &[u8]) -> &[u8] {
+    let blank = |b: &u8| matches!(b, b' ' | b'\t');
+    let start = bytes.iter().position(|b| !blank(b)).unwrap_or(bytes.len());
+    let end = bytes.iter().rposition(|b| !blank(b)).map_or(start, |last| last + 1);
+    &bytes[start..end]
 }
 
 #[cfg(test)]
@@ -116,11 +132,12 @@ mod tests {
         )
     }
 
-    fn verdict(text: &str) -> Result<usize, HandshakeFault> {
-        match Handshake::new(SAMPLE_NONCE).read(text.as_bytes()) {
+    fn verdict(head: impl AsRef<[u8]>) -> Result<usize, HandshakeFault> {
+        let head = head.as_ref();
+        match Handshake::new(SAMPLE_NONCE).read(head) {
             HeadRead::Accepted(used) => Ok(used),
             HeadRead::Failed(fault) => Err(fault),
-            HeadRead::Pending => panic!("the head did not end: {text:?}"),
+            HeadRead::Pending => panic!("the head did not end: {:?}", String::from_utf8_lossy(head)),
         }
     }
 
@@ -194,6 +211,20 @@ mod tests {
         assert_eq!(verdict(&response(good, "Sec-WebSocket-Extensions:\r\n")), Err(HandshakeFault::Unrequested));
         assert_eq!(verdict(&response(good, "Sec-WebSocket-Protocol: \r\n")), Err(HandshakeFault::Unrequested));
         assert_eq!(verdict(&response(good, "no colon here\r\n")), Err(HandshakeFault::Malformed));
+    }
+
+    #[test]
+    fn a_field_value_is_opaque_bytes_and_a_field_name_is_a_token() {
+        let good = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=";
+        let latin = [
+            format!("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {good}\r\n").as_bytes(),
+            b"X-Label: caf\xe9\r\n\r\n",
+        ]
+        .concat();
+        assert_eq!(verdict(&latin), Ok(latin.len()));
+        for field in ["Not A Field: y\r\n", " Folded: y\r\n", ": no name\r\n", "Bare\rReturn: y\r\n", "X-Value: a\rb\r\n"] {
+            assert_eq!(verdict(response(good, field)), Err(HandshakeFault::Malformed), "{field:?}");
+        }
     }
 
     #[test]
