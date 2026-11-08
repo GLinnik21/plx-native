@@ -2259,6 +2259,13 @@ release-guard:
 	  echo "refusing to build $(APPID) without RELEASE=1 — nightly never ships a dev build."; \
 	  echo "  correct:  make FLAVOR=nightly RELEASE=1 $(firstword $(MAKECMDGOALS))"; \
 	  exit 1; fi
+	@# The user-facing ids ship the full product. `PLAYBACK_BACKENDS ?= both` also reads the environment,
+	@# so a leftover `export PLAYBACK_BACKENDS=uri` must not quietly make a stable package with no Feed.
+	@if [ "$(FLAVOR)" = stable ] || [ "$(FLAVOR)" = nightly ]; then \
+	  if [ "$(PLAYBACK_BACKENDS)" != both ]; then \
+	    echo "refusing to build $(APPID) with PLAYBACK_BACKENDS=$(PLAYBACK_BACKENDS) — the stable and nightly ids ship both playback backends."; \
+	    echo "  correct:  make FLAVOR=$(FLAVOR) RELEASE=1 $(firstword $(MAKECMDGOALS))   (unset PLAYBACK_BACKENDS)"; \
+	    exit 1; fi; fi
 
 # --- installing a flavour on the television ---------------------------------------------------
 #

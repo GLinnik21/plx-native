@@ -264,6 +264,25 @@ class PlaybackBackendSelection(ScratchTree):
         self.assertNotEqual((self.tree / STAMP).read_text(), stamp)
         self.assertFalse((self.tree / "pkg/plxnative").exists())
 
+    def test_a_user_facing_flavour_ships_both_backends(self):
+        """`PLAYBACK_BACKENDS ?= both` also takes its value from the environment, so a leftover
+        `export PLAYBACK_BACKENDS=uri` would otherwise turn `make FLAVOR=stable RELEASE=1 ipk` into a
+        stable package with no Feed backend. `release-guard` (a prerequisite of `ipk` and `deploy`)
+        refuses any single-backend build for the stable and nightly ids; debug takes every value."""
+        def guard(*args):
+            return subprocess.run(["make", "-s", "--no-print-directory", "-C", str(self.tree), *args, "release-guard"],
+                                  capture_output=True, text=True, env=self.env, timeout=30)
+        for flavor in ("stable", "nightly"):
+            for backend in ("uri", "feed"):
+                with self.subTest(flavor=flavor, backend=backend):
+                    proc = guard(f"FLAVOR={flavor}", "RELEASE=1", f"PLAYBACK_BACKENDS={backend}")
+                    self.assertNotEqual(proc.returncode, 0)
+                    self.assertIn("both playback backends", proc.stdout + proc.stderr)
+            with self.subTest(flavor=flavor, backend="both"):
+                self.assertEqual(guard(f"FLAVOR={flavor}", "RELEASE=1").returncode, 0)
+        with self.subTest(flavor="debug"):
+            self.assertEqual(guard("FLAVOR=debug", "PLAYBACK_BACKENDS=uri").returncode, 0)
+
     def test_no_backend_cannot_produce_a_television_binary(self):
         stamp = self.seed_release_build()
         for goal in ("pkg/plxnative", "ipk", "deploy"):
