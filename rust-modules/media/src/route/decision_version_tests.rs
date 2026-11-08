@@ -176,6 +176,55 @@ fn a_fixed_quality_measures_the_1080p_version_it_resolved() {
     assert!(!requests.iter().any(|l| l.contains("/transcode/universal/start")), "{requests:?}");
 }
 
+fn retry_holding(part_id: i64, audio_sid: i64, sub_sid: i64) -> RetryContext {
+    RetryContext {
+        direct_play_mode: DirectPlayMode::Auto,
+        resume_ns: 0,
+        candidate_purpose: CandidatePurpose::ReopenCurrent,
+        selection: Some(HeldSelection { part_id, audio_sid, sub_sid }),
+        sub_offset_ms: 0,
+        suppress_enhancement: false,
+        sub_mode: SubMode::Track,
+    }
+}
+
+#[test]
+fn a_retry_keeps_its_tracks_on_their_own_part_and_lets_another_part_choose_again() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let meta = plx_data::stores::metadata::MetadataStore::default();
+    let fresh_env = ResolveEnv::snapshot(&ps, meta.view(), ServerId::from_raw(0), "rk-4k");
+    let fresh = (fresh_env.audio_sid, fresh_env.sub_sid, fresh_env.subtitle_override, fresh_env.sub_mode);
+
+    let mut env = fresh_env.clone();
+    apply_retry(&mut env, retry_holding(3130, 31302, 31303));
+    assert!(env.with_selection_for_part(3130).is_none(), "the same part keeps the retry's ids");
+    let moved = env.with_selection_for_part(3134).expect("another part chooses its own tracks");
+    assert_eq!((moved.audio_sid, moved.sub_sid, moved.subtitle_override, moved.sub_mode), fresh);
+
+    let mut unknown = fresh_env;
+    apply_retry(&mut unknown, retry_holding(0, 31302, 31303));
+    assert!(unknown.with_selection_for_part(3134).is_none(), "ids of an unknown part are kept as before");
+}
+
+#[test]
+#[cfg(feature = "devtriggers")]
+fn a_retry_that_moves_to_the_1080p_version_does_not_carry_the_4k_tracks() {
+    let retry = retry_holding(3130, 31302, 0);
+    let (plan, requests) = resolve_with("rk-4k", FOUR_K_DEFAULT, MDE_TRANSCODE_VIDEO, |env| {
+        env.caps = std::sync::Arc::new(full_hd_set());
+        apply_retry(env, retry);
+    });
+    assert_eq!(plan.part_id, 3134);
+    for line in requests.iter().chain(std::iter::once(&plan.url)) {
+        assert!(!line.contains("31302"), "{line}");
+    }
+    assert!(
+        requests.iter().any(|l| l.contains("/decision?") && query_param(l, "audioStreamID") == Some("31342")),
+        "{requests:?}"
+    );
+}
+
 #[test]
 #[cfg(feature = "devtriggers")]
 fn force_direct_play_attempts_the_4k_original_listed_first() {

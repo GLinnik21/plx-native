@@ -1382,7 +1382,9 @@ pub struct ResolveEnv {
     /// server has nothing to burn — instead of carrying the id as a burn.
     pub sub_drawn: Option<i32>,
     /// A retry whose selection was KNOWN (`RetryContext::selection`) carries the viewer's explicit
-    /// Off as well as a positive subtitle id; a retry with nothing landed leaves this `None`.
+    /// Off as well as a positive subtitle id; a retry with nothing landed leaves this `None`. Both
+    /// hold while the resolve stays on the Part that selection came from
+    /// ([`ResolveEnv::with_selection_for_part`]).
     pub subtitle_override: Option<i64>,
     /// The subtitle MODE the retry's selection was in ([`SubMode`]), so a re-resolve of Forced only
     /// stays Forced only: `subtitle_override` alone is a stream id, which cannot say so. `Track`
@@ -1460,18 +1462,48 @@ pub struct ResolveEnv {
     /// **What this profile remembered on this server** (`track_memory`, the whole list for the
     /// profile and server: a play raised off a shelf does not know its show until the item is
     /// fetched, so the worker picks the entry by `playing.show_rk`). Captured on the main thread
-    /// like everything here, and EMPTY for a known retry: that selection is the viewer's own
-    /// pick of this playback and outranks any memory (`apply_retry`). Read only for an episode.
+    /// like everything here, and EMPTY for a known retry that stays on its Part: that selection is
+    /// the viewer's own pick of this playback and outranks any memory (`apply_retry`). Read only
+    /// for an episode.
     pub memory: Vec<TrackMemoryEntry>,
     /// This resolve is a viewer's fresh play of an item, as against a retry, a rescue, an in-flight
     /// re-resolve or a preview (W4). Only a fresh play may carry a [`Plan::write_back`]. Defaults to
     /// `false` and is set in exactly one place, `request_env` (which `request_play_inner` builds
     /// every environment through), so nothing can default it on.
     pub fresh_play: bool,
+    pub selection_before_retry: Option<SelectionBeforeRetry>,
     /// Test-only account subtitle preferences `(language, mode, forced)`, standing in for the
     /// plex.tv call a unit test cannot make.
     #[cfg(any(test, feature = "test-support"))]
     pub(super) account_subtitles: Option<(Option<String>, i64, i64)>,
+}
+
+#[derive(Clone)]
+pub struct SelectionBeforeRetry {
+    pub retry_part_id: i64,
+    pub audio_sid: i64,
+    pub sub_sid: i64,
+    pub subtitle_override: Option<i64>,
+    pub sub_mode: SubMode,
+    pub memory: Vec<TrackMemoryEntry>,
+}
+
+impl ResolveEnv {
+    pub(super) fn with_selection_for_part(&self, part_id: i64) -> Option<ResolveEnv> {
+        let before = self
+            .selection_before_retry
+            .as_ref()
+            .filter(|before| before.retry_part_id > 0 && before.retry_part_id != part_id)?;
+        Some(ResolveEnv {
+            audio_sid: before.audio_sid,
+            sub_sid: before.sub_sid,
+            subtitle_override: before.subtitle_override,
+            sub_mode: before.sub_mode,
+            memory: before.memory.clone(),
+            selection_before_retry: None,
+            ..self.clone()
+        })
+    }
 }
 
 
@@ -1849,6 +1881,8 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 (None, Some(_)) => plan.playing.as_ref().map_or(0, |p| p.bitrate),
                 _ => env.src_kbps,
             };
+            let reselected = env.with_selection_for_part(plan.part_id);
+            let env = reselected.as_ref().unwrap_or(env);
             if let (Some(id), Some(item)) = (env.subtitle_override, plan.playing.as_mut()) {
                 // The retry's explicit selection owns both embedded and sidecar restoration; a stale
                 // server-side selection must not turn subtitles back on after the viewer chose Off.
@@ -1942,7 +1976,8 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 account_subtitles = Some(forced);
             }
             // **What this profile remembered for the show** (track memory, the read path): only an episode
-            // of a known show has any, and the env of a known retry carries none (`apply_retry`).
+            // of a known show has any, and the env of a known retry that stays on its Part carries none
+            // (`apply_retry`).
             let memory_entry = plan.playing.as_ref().and_then(|p| show_memory(&env.memory, p));
             let memory_sub = memory_entry.and_then(|e| e.subtitle.as_ref());
             let audio_memory = memory_entry
