@@ -1,4 +1,4 @@
-{"updated":"2026-11-08T16:16:55Z",
+{"updated":"2026-11-08T16:40:31Z",
 "ci":[
 {"id":31403633733,"at":"2026-08-10T15:26:54Z","sha":"8827d32c0","title":"release: 0.2.1, and a fourth witness for the version","jobs":{"cross-build (armv7) + artifact assertions":88,"host checks (NOT a device gate)":69},"pr":null,"conclusion":"success","attempt":1},
 {"id":31430674609,"at":"2026-08-10T20:46:39Z","sha":"af6044c82","title":"ci: a tag push publishes again, instead of silently doing nothing","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":76},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -4782,7 +4782,8 @@
 {"id":42475422212,"at":"2026-11-08T11:21:55Z","sha":"a3f475c47","title":"WebSocket codec: closing before the upgrade is sent withdraws the request","pr":1273,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":232,"macOS tests against bundled FFmpeg and ASS":245,"Linux simulator build + launch":352,"Windows launcher syntax":26}},
 {"id":42480264458,"at":"2026-11-08T12:26:28Z","sha":"123075179","title":"URI opt-in: Experimental also takes only a container Standard streams","pr":1279,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":226,"Windows launcher syntax":19,"macOS simulator build + launch":176,"Linux simulator build + launch":344}},
 {"id":42493109980,"at":"2026-11-08T15:06:34Z","sha":"7ef9caa14","title":"Grade the final playback decision independently of PlayQueue timing","pr":1133,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":18,"Linux simulator build + launch":313,"macOS simulator build + launch":209,"macOS tests against bundled FFmpeg and ASS":197}},
-{"id":42498429529,"at":"2026-11-08T16:09:23Z","sha":"69bbb7d39","title":"Preserve baseline audio codecs and size converted Opus on webOS","pr":1133,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":298,"Linux simulator build + launch":322,"Windows launcher syntax":19,"macOS tests against bundled FFmpeg and ASS":271}}
+{"id":42498429529,"at":"2026-11-08T16:09:23Z","sha":"69bbb7d39","title":"Preserve baseline audio codecs and size converted Opus on webOS","pr":1133,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":298,"Linux simulator build + launch":322,"Windows launcher syntax":19,"macOS tests against bundled FFmpeg and ASS":271}},
+{"id":42500552828,"at":"2026-11-08T16:34:07Z","sha":"63d5c28bf","title":"ACB: match completions on (handle, task); review round 1 fixes","pr":1281,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":21,"Linux simulator build + launch":371,"macOS tests against bundled FFmpeg and ASS":145,"macOS simulator build + launch":213}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
