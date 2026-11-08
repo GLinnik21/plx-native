@@ -1136,6 +1136,8 @@ pub struct RootPage {
     alert: PlaintextAlert,
     /// `plex::grant::revision` as last read — an offer or an answer landing rebuilds the rows.
     grant_seen: u64,
+    /// The libraries whose shelves the Under posters picture is owed, asked once the row has focus.
+    under_ask: under_posters::PosterAsk,
     /// The sentence beside the table: the focused row's own, else the page's (Settings v2). A pure
     /// function of the focused row ([`sentence_for`]); this only fades between its answers.
     follow: plx_ui::follow_copy::FollowCopy,
@@ -1405,6 +1407,7 @@ impl RootPage {
             session_watch: Default::default(),
             session_snapshot: Default::default(),
             pending_auto: None, pending_trailer: None,
+            under_ask: Default::default(),
             plaintext_rows: Vec::new(),
             pending_plaintext: None,
             alert: PlaintextAlert::new(ALERT_GROUP, super::registry::ALERT, super::registry::ALERT + 1),
@@ -1642,6 +1645,9 @@ impl Machine<InnerHost> for RootPage {
                 Handled::Yes
             }
             ScreenEvent::Tick(t) => {
+                if self.form.selected_id() == Some(&RootId::UnderPosters) {
+                    self.under_ask.step(t.dt(), cx, fx);
+                }
                 let mut landed = self.session_watch.changed();
                 if self.pending_auto.as_ref().is_some_and(|(_, ticket)| !matches!(ticket.try_recv(),
                     Err(std::sync::mpsc::TryRecvError::Empty))) {
