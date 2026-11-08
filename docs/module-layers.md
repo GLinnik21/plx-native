@@ -175,9 +175,10 @@ and the product driver `UriBackend`, which implements the contract's `UriDriver`
 and driver (`uriprobe`, `uriprobe_drive`, `devtriggers` builds only). `plx_media` does not name it: the route planner and the player adapter see
 only the contract's traits and the `UriProbe` port, and the application composes the driver
 (`app/adapters/backends.rs`, behind the application crate's `play-uri` feature, which the release build passes
-explicitly) and the probe (`dev/uriprobe.rs`). The driver is compiled into every build that has the feature and
-is never offered a source: production evidence certifies nothing (`media::route::uri_preflight::ProductQualifier`
-answers `Unknown`). `ci/check-deps.sh` reads the whole crate for the same IO and clock gates as every other layer.
+explicitly) and the probe (`dev/uriprobe.rs`). The driver is compiled into every build that has the feature.
+Production offers it a source only for a viewer who turned on Settings > Video & playback > Playback engine >
+Experimental: `media::route::uri_preflight::ProductQualifier` answers `Unknown` for everyone else, and never
+qualifies a converted PMS output. `ci/check-deps.sh` reads the whole crate for the same IO and clock gates as every other layer.
 
 The Watchlist adds two data modules and no new edge. `watchlist` (rows, match table, `TileState`,
 intent ledger, comparator; with `stores::watchlist`) and `catalog` (the Discover-only item page; with

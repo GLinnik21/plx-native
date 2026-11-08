@@ -337,8 +337,9 @@ pub(crate) fn install_uri_product(adapter: &mut PlayerAdapter, session: &mut Pla
     install_uri_product_with_ports(adapter, session, port, plx_platform::tv::uri::installed(), display)
 }
 
-/// One boot composition for both real and injected ports. The exact evidence configures the
-/// driver and is handed to the resolver only after physical installation succeeds.
+/// One boot composition for both real and injected ports. The driver is configured with the binding
+/// and the capabilities an opted-in viewer certifies (`ProductEvidence::opted_in`), and the resolver
+/// receives the exact evidence, only after physical installation succeeds.
 #[cfg(feature = "play-uri")]
 pub(crate) fn install_uri_product_with_ports(adapter: &mut PlayerAdapter,
     session: &mut PlaybackSession, port: ResolvePort,

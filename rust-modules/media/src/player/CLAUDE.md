@@ -24,9 +24,10 @@ playback (`com.webos.media/load`) failed to bind, prompting the pivot recorded i
 through ACB on the webOS 4.5 dev set, both with and without `connectDass`; see
 `docs/measurements/uri-acb-dass-2026-11-02.md`. That proves this fixture's display path on one
 set, not production source, control or release coverage. Boot now installs a product URI driver
-and source qualification port. Its production qualifier returns Unknown (but for a viewer's own
-Playback engine opt-in, `OriginalRequest::uri_opt_in`, below) and its certified
-capabilities are empty, so ordinary routes still choose Feed. Host fixtures inject qualified source
+and source qualification port. The port's production qualifier returns Unknown (but for a viewer's own
+Playback engine opt-in, `OriginalRequest::uri_opt_in`, below) and the evidence it reports has no certified
+capabilities, so ordinary routes still choose Feed. The driver itself is configured with what an opted-in
+viewer certifies (`ProductEvidence::opted_in`), and only a qualification ever offers it a source. Host fixtures inject qualified source
 and firmware evidence to exercise source, control and release logic.
 
 The product driver also carries the ACB plane binding the probe proved (`Binding::Acb` in
