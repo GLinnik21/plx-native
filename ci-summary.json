@@ -57,13 +57,13 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-08T19:13:27Z",
+ "generated": "2026-11-08T19:21:54Z",
  "metrics": [
   {
-   "change30_pct": 100.0,
+   "change30_pct": 100.5,
    "change7_pct": 28.3,
-   "d30": 211,
-   "delta30": 211,
+   "d30": 210.5,
+   "delta30": 211.5,
    "delta7": 93,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
@@ -104,7 +104,7 @@
   {
    "change30_pct": 120.3,
    "change7_pct": 25.1,
-   "d30": 138,
+   "d30": 138.0,
    "delta30": 166.0,
    "delta7": 61.0,
    "group": "ci",
@@ -123,18 +123,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 32.7,
+   "change30_pct": 33.4,
    "change7_pct": 19.5,
-   "d30": 349,
-   "delta30": 114.0,
+   "d30": 347.0,
+   "delta30": 116.0,
    "delta7": 75.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 50,
+   "n_now": 51,
    "n_prev": 90,
-   "now": 463.0,
+   "now": 463,
    "prev7": 387.5,
    "shown": true,
    "state": "worse",
@@ -144,19 +144,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 34.4,
-   "change7_pct": 23.1,
+   "change30_pct": 34.5,
+   "change7_pct": 23.2,
    "d30": 359,
-   "delta30": 123.5,
-   "delta7": 90.5,
+   "delta30": 124,
+   "delta7": 91.0,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 146,
-   "n_prev": 247,
-   "now": 482.5,
-   "prev7": 392,
+   "n_now": 145,
+   "n_prev": 248,
+   "now": 483,
+   "prev7": 392.0,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -249,10 +249,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 29.9,
+   "change30_pct": 30.6,
    "change7_pct": 10.4,
-   "d30": 2113,
-   "delta30": 632.5,
+   "d30": 2103.0,
+   "delta30": 642.5,
    "delta7": 258.5,
    "group": "ci",
    "id": "minutes",
@@ -291,10 +291,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 67.7,
+   "change30_pct": 68.0,
    "change7_pct": 17.8,
-   "d30": 269,
-   "delta30": 182,
+   "d30": 268.5,
+   "delta30": 182.5,
    "delta7": 68,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
@@ -335,7 +335,7 @@
   {
    "change30_pct": 161.2,
    "change7_pct": 11.7,
-   "d30": 139,
+   "d30": 139.0,
    "delta30": 224.0,
    "delta7": 38.0,
    "group": "ci",
@@ -354,18 +354,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 33.6,
-   "change7_pct": 12.3,
-   "d30": 232,
-   "delta30": 78.0,
-   "delta7": 34.0,
+   "change30_pct": 35.2,
+   "change7_pct": 13.4,
+   "d30": 231.5,
+   "delta30": 81.5,
+   "delta7": 37.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 48,
+   "n_now": 49,
    "n_prev": 82,
-   "now": 310.0,
+   "now": 313,
    "prev7": 276.0,
    "shown": true,
    "state": "flat",
@@ -375,18 +375,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 40.9,
+   "change30_pct": 42.8,
    "change7_pct": 9.6,
-   "d30": 154,
-   "delta30": 63.0,
+   "d30": 152.0,
+   "delta30": 65.0,
    "delta7": 19.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 48,
+   "n_now": 49,
    "n_prev": 82,
-   "now": 217.0,
+   "now": 217,
    "prev7": 198.0,
    "shown": true,
    "state": "flat",
@@ -396,18 +396,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -40.4,
-   "change7_pct": -0.9,
-   "d30": 359,
-   "delta30": -145.0,
-   "delta7": -2.0,
+   "change30_pct": -40.9,
+   "change7_pct": -1.9,
+   "d30": 358.5,
+   "delta30": -146.5,
+   "delta7": -4.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 48,
+   "n_now": 49,
    "n_prev": 82,
-   "now": 214.0,
+   "now": 212,
    "prev7": 216.0,
    "shown": true,
    "state": "flat",
@@ -417,10 +417,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 15.7,
+   "change30_pct": 16.0,
    "change7_pct": 13.1,
-   "d30": 172,
-   "delta30": 27.0,
+   "d30": 171.5,
+   "delta30": 27.5,
    "delta7": 23.0,
    "group": "ci",
    "id": "ci|host lint + type-checks",
@@ -482,16 +482,16 @@
   {
    "change30_pct": 17.6,
    "change7_pct": 11.1,
-   "d30": 17,
+   "d30": 17.0,
    "delta30": 3.0,
    "delta7": 2.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 48,
+   "n_now": 49,
    "n_prev": 82,
-   "now": 20.0,
+   "now": 20,
    "prev7": 18.0,
    "shown": false,
    "state": "flat",
@@ -524,8 +524,8 @@
   {
    "change30_pct": 33.3,
    "change7_pct": 33.3,
-   "d30": 3,
-   "delta30": 1,
+   "d30": 3.0,
+   "delta30": 1.0,
    "delta7": 1,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
@@ -545,7 +545,7 @@
   {
    "change30_pct": -99.0,
    "change7_pct": 0.0,
-   "d30": 296,
+   "d30": 296.0,
    "delta30": -293.0,
    "delta7": 0.0,
    "group": "ci",
@@ -590,11 +590,6 @@
    "change_pct": 28.3,
    "commits": [
     {
-     "pr": 1271,
-     "sha": "279b66d9f",
-     "title": "Media codecs crate: the bundled-FFmpeg ABI, PCM decode, speed audio and the encoder leave plx_media"
-    },
-    {
      "pr": 1272,
      "sha": "dc3d03c20",
      "title": "Lower-layer prerequisites of the neutral media crate: plx_net::range_io, plx_base::clock, LoadVideo in platform, contrac"
@@ -638,6 +633,11 @@
      "pr": 1245,
      "sha": "6131d5c8d",
      "title": "Default to a playback version the TV can decode"
+    },
+    {
+     "pr": 1282,
+     "sha": "0f6512a0a",
+     "title": "Test Plex server identity during automatic episode advance"
     }
    ],
    "from": 329,
@@ -651,11 +651,6 @@
    "change_pct": 25.2,
    "commits": [
     {
-     "pr": 1271,
-     "sha": "279b66d9f",
-     "title": "Media codecs crate: the bundled-FFmpeg ABI, PCM decode, speed audio and the encoder leave plx_media"
-    },
-    {
      "pr": 1272,
      "sha": "dc3d03c20",
      "title": "Lower-layer prerequisites of the neutral media crate: plx_net::range_io, plx_base::clock, LoadVideo in platform, contrac"
@@ -699,6 +694,11 @@
      "pr": 1245,
      "sha": "6131d5c8d",
      "title": "Default to a playback version the TV can decode"
+    },
+    {
+     "pr": 1282,
+     "sha": "0f6512a0a",
+     "title": "Test Plex server identity during automatic episode advance"
     }
    ],
    "from": 74.8,
@@ -712,11 +712,6 @@
    "change_pct": 25.1,
    "commits": [
     {
-     "pr": 1271,
-     "sha": "279b66d9f",
-     "title": "Media codecs crate: the bundled-FFmpeg ABI, PCM decode, speed audio and the encoder leave plx_media"
-    },
-    {
      "pr": 1272,
      "sha": "dc3d03c20",
      "title": "Lower-layer prerequisites of the neutral media crate: plx_net::range_io, plx_base::clock, LoadVideo in platform, contrac"
@@ -760,6 +755,11 @@
      "pr": 1245,
      "sha": "6131d5c8d",
      "title": "Default to a playback version the TV can decode"
+    },
+    {
+     "pr": 1282,
+     "sha": "0f6512a0a",
+     "title": "Test Plex server identity during automatic episode advance"
     }
    ],
    "from": 243,
@@ -773,11 +773,6 @@
    "change_pct": 19.5,
    "commits": [
     {
-     "pr": 1271,
-     "sha": "279b66d9f",
-     "title": "Media codecs crate: the bundled-FFmpeg ABI, PCM decode, speed audio and the encoder leave plx_media"
-    },
-    {
      "pr": 1272,
      "sha": "dc3d03c20",
      "title": "Lower-layer prerequisites of the neutral media crate: plx_net::range_io, plx_base::clock, LoadVideo in platform, contrac"
@@ -821,6 +816,11 @@
      "pr": 1245,
      "sha": "6131d5c8d",
      "title": "Default to a playback version the TV can decode"
+    },
+    {
+     "pr": 1282,
+     "sha": "0f6512a0a",
+     "title": "Test Plex server identity during automatic episode advance"
     }
    ],
    "from": 387.5,
@@ -828,7 +828,7 @@
    "label": "Wait after merge",
    "since": "2026-11-08",
    "threshold_pct": 15.0,
-   "to": 463.0
+   "to": 463
   }
  ],
  "schema": 2,
