@@ -52,6 +52,33 @@ fn an_all_grid_tile_and_its_rows_animate_back_when_focus_leaves() {
     assert!(strictly_between(page.layout.row_expansion(3), 0.0, 1.0), "leaving the grid closes its band over frames");
 }
 
+/// Focus leaving the grid's cards for the header: the frame that handles the key draws before any
+/// tick, and still shows the card lifted. It eases down from there, never at rest for one frame and
+/// lifted again.
+#[test]
+fn the_card_focus_leaves_for_the_header_keeps_its_lift_on_the_key_frame() {
+    let _guard = plx_base::testlock::serial();
+    let fixture = Fixture::new();
+    let mut page = fixture.screen();
+    page.initial = false;
+    let mut engine = FocusEngine::new();
+    let first = page.key(page.pair.detail.elem_at(0).unwrap());
+    engine.set(OWNER, first, Some(page.pair.groups_config().detail), By::Restore);
+    deliver(&mut page, &mut engine, &fixture, ScreenEvent::FocusMoved { from: None, to: first, by: By::Restore });
+    settle(&mut page, &mut engine, &fixture, 0);
+    let lifted = page.pair.detail.rect_at(&fixture.cx(engine.current(OWNER)), 0).w;
+    direction(&mut page, &mut engine, &fixture, Dir::Up);
+    assert!(engine.current(OWNER).is_some_and(|key| page.pair.detail.index_of(key.elem).is_none()), "focus left the grid");
+    let left = page.pair.detail.rect_at(&fixture.cx(engine.current(OWNER)), 0).w;
+    assert!((left - lifted).abs() < 1.0e-3, "the card keeps its lift until a tick eases it: {left} against {lifted}");
+    let series: Vec<f32> = (0..12).map(|i| {
+        frame(&mut page, &mut engine, &fixture, 3000 + i * 16);
+        page.pair.detail.rect_at(&fixture.cx(engine.current(OWNER)), 0).w
+    }).collect();
+    assert!(series.windows(2).all(|w| w[1] <= w[0] + 1.0e-3), "and only ever shrinks: {series:?}");
+    assert!(series[0] < lifted - 1.0e-3, "and is under way on the first tick: {series:?}");
+}
+
 /// Owner report items 8 and 9: switching TYPE (Shows / Seasons / Episodes) in an All grid
 /// scrolled to its heading. The grid fades out, the store empties on the commit, and the answer
 /// lands some frames later. Across that wait the chrome around the dark grid — heading,

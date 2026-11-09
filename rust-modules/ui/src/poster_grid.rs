@@ -250,6 +250,13 @@ impl GridPop {
         }
     }
 
+    /// The focused card is let go without another taking its place: it eases back to rest from
+    /// where its spring is, and the pop belongs to no card until one is armed or adopted.
+    pub fn let_go(&mut self) {
+        self.release();
+        self.vacate();
+    }
+
     /// Take the let-go of the element `key` out of the running, if it has one: its spring.
     fn take(&mut self, key: u64) -> Option<Spring> {
         let at = self.let_gos.iter().position(|l| l.card.key == key)?;
