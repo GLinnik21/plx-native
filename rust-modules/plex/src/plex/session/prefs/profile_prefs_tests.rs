@@ -6,7 +6,7 @@ use super::super::{
     DolbyVisionMode, InstantDpadSeeking, UriEngine, current_seat, AudioEnhancementsPref, CurrentProfile, DeckPress, DeckPressPref, UnderPosters, DetailPart, DetailParts, DirectPlayMode, DirectPlayModePref,
     HdrOverlayBrightness, HdrOverlayBrightnessPref, NextEpisodeMode, NextEpisodeModePref, PlaybackQuality, QualityPref, Seat, Session, SkipInterval, SkipIntervalPref,
     SubtitlePosition, SubtitlePositionPref, SubtitleSize, SubtitleSizePref, SubtitleTone, SubtitleTonePref, TempSession,
-    TrailerAutoplayPref, UserRef,
+    TrailerAutoplayPref, HudEndTimePref, UserRef,
 };
 use super::profile_prefs::*;
 use super::{Fallback, Parse, Preferences, Scope, Setting, DESCRIPTORS};
