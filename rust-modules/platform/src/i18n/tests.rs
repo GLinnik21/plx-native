@@ -927,6 +927,15 @@ fn today_is_a_calendar_date_from_the_wall_clock() {
 }
 
 #[test]
+fn local_clock_time_uses_the_os_timezone_and_checks_time_t_range() {
+    // 2026-11-09 10:19:04 UTC; Europe/Madrid is 11:19 at this instant.
+    assert_eq!(local_clock_time(1_794_219_544), Some([11, 19]));
+    assert_eq!(local_clock_time(0), None);
+    assert_eq!(local_clock_time(-1), None);
+    assert_eq!(local_clock_time(i64::MAX), None);
+}
+
+#[test]
 fn dutch_month_day_captions_cover_every_month_at_both_widths() {
     const MEDIUM: [&str; 12] =
         ["jan", "feb", "mrt", "apr", "mei", "jun", "jul", "aug", "sep", "okt", "nov", "dec"];
