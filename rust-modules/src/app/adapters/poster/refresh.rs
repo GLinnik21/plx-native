@@ -119,6 +119,19 @@ fn grant_is_current(job: &Job) -> bool {
         std::ptr::eq(live, job.client) && live.token_gen() == job.token_gen)
 }
 
+/// Arm the lane without its worker: `enqueue` queues, nothing runs. Callers hold
+/// `plx_base::testlock::serial()` (the queue is a process global).
+#[cfg(test)]
+pub(super) fn arm_for_test() {
+    *QUEUE.lock().unwrap_or_else(|e| e.into_inner()) = Some(Queue { running: true, ..Default::default() });
+}
+
+/// Take down what `enqueue` queued since `arm_for_test`, as the request paths, and disarm.
+#[cfg(test)]
+pub(super) fn take_queued_for_test() -> Vec<String> {
+    QUEUE.lock().unwrap_or_else(|e| e.into_inner()).take().map_or_else(Vec::new, |q| q.jobs.into_iter().map(|j| j.path).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -2135,6 +2135,7 @@ fn poster_worker() {
         let mut px = std::ptr::null_mut();
         let mut stale = None;
         let mut transient = false;
+        let mut baked_final = false;
         // Revoked servers cannot use disk as a route around sign-out. Keep this client snapshot
         // for both identity and transport; a later registry repoint must not mix the two.
         if let Some(sha) = (srv == ServerId::UNSET).then(|| content_png(&key_s)).flatten() {
@@ -2170,6 +2171,7 @@ fn poster_worker() {
                     fan::Got::Final => {
                         miss::note(srv, &key_s, miss::Currency { cache_gen, grant_epoch, token_gen });
                         log_baked_miss(hex.is_some());
+                        baked_final = true;
                         // A stale marker is revalidated like any stale entry.
                         if bake.stale {
                             stale = disk.map(|k| (client, k));
@@ -2228,10 +2230,26 @@ fn poster_worker() {
             } else { false }
         };
         if !accepted && !px.is_null() { img::img_free(px); }
-        if accepted {
-            if let Some((client, key)) = stale {
-                refresh::enqueue(client, key_s, key, cache_gen, token_gen);
-            }
+        queue_refresh(accepted, baked_final, stale, key_s, cache_gen, token_gen);
+    }
+}
+
+/// Queue the stale source this load was served from for revalidation, once its answer is out: a
+/// decode the store took (`accepted`), or a baked kind's settled `Final` (`baked_final`: a "no
+/// cover" marker older than the disk tier's `REFRESH_AFTER` answers without dialling and decodes
+/// nothing, so no pixels are ever accepted for it, yet the title may have gained a cover since).
+/// A load that ended before any answer (a transient failure) is the store's retry, not a refresh.
+fn queue_refresh(
+    accepted: bool,
+    baked_final: bool,
+    stale: Option<(&'static plx_plex::plex::Client, plx_platform::imgcache::DiskKey)>,
+    key_s: String,
+    cache_gen: u64,
+    token_gen: u32,
+) {
+    if accepted || baked_final {
+        if let Some((client, key)) = stale {
+            refresh::enqueue(client, key_s, key, cache_gen, token_gen);
         }
     }
 }

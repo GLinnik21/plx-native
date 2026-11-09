@@ -288,3 +288,37 @@ fn a_refetched_source_is_written_back_only_when_it_decodes_and_the_bake_is_curre
         assert_eq!(r, (None, None));
     }
 }
+
+// ── a stale "no cover" marker is revalidated ────────────────────────────────────────────────────
+
+/// A cover whose bake answered `Final` from a "no cover" marker older than `REFRESH_AFTER` decoded
+/// nothing, so the store takes no pixels, and the marker must still reach the refresh lane: the
+/// title may have gained a cover, and the privacy statement promises the saved answer is asked
+/// again once it is more than a day old. Only a settled answer queues it (a load that failed
+/// before any answer is the store's retry, not a revalidation).
+#[test]
+fn a_stale_no_cover_marker_reaches_the_refresh_lane_though_nothing_decoded() {
+    let (_g, sid, _) = one_server();
+    let client = plx_plex::plex::client_for(sid).unwrap();
+    let marker_key = || {
+        plx_platform::imgcache::classify_baked(
+            &cover::namespace("en"),
+            cover::COVER_KIND,
+            HEX,
+            cover::COVER_STAMP,
+            1,
+            1,
+        )
+        .unwrap()
+    };
+    let queued = |accepted: bool, baked_final: bool, stale: bool| {
+        refresh::arm_for_test();
+        let gen = plx_platform::imgcache::generation();
+        queue_refresh(accepted, baked_final, stale.then(|| (client, marker_key())), cover_key(), gen, client.token_gen());
+        refresh::take_queued_for_test()
+    };
+    assert_eq!(queued(false, true, true), [cover_key()], "a baked kind's Final from a stale marker");
+    assert_eq!(queued(true, false, true), [cover_key()], "a decode served from a stale entry (as before)");
+    assert!(queued(false, true, false).is_empty(), "a fresh marker has nothing to revalidate");
+    assert!(queued(false, false, true).is_empty(), "no answer was settled: the store's retry, not a refresh");
+}
