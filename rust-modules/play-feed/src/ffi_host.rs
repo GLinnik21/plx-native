@@ -206,6 +206,59 @@ fn note_verb(verb: String) {
     VERB_ORDER_LOG.lock().unwrap_or_else(|e| e.into_inner()).push(verb);
 }
 
+/// The exported-window instrument: what the television's ONE window slot (`src/video_plane.c`'s
+/// `g_window_id`) would hold if every `vp_create_window` / `vp_destroy_window` of this process
+/// reached the firmware. The C seam overwrites the slot on every create and never destroys the
+/// window it held, and its destroy addresses only what the slot names, so a create over an
+/// occupied slot leaves TWO live windows and a destroy afterwards ends one of them. The host seam
+/// keeps no windows; this counts what they would be, which is all a test needs to say "never two".
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WindowCounts {
+    /// `vp_create_window` calls that made a window (the armed sink only: unarmed, it returns NULL).
+    pub creates: u32,
+    /// `vp_destroy_window` calls, whether or not the slot held a window.
+    pub destroys: u32,
+    /// Windows created and not yet destroyed. A window the slot was overwritten off stays live.
+    pub live: u32,
+    /// The most `live` ever was since the last reset: "at most one at any time" is `peak <= 1`.
+    pub peak: u32,
+    /// The slot names a window now, so the next destroy ends one.
+    pub slot: bool,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl WindowCounts {
+    const ZERO: Self = Self { creates: 0, destroys: 0, live: 0, peak: 0, slot: false };
+    fn created(&mut self) {
+        self.creates += 1;
+        self.live += 1;
+        self.peak = self.peak.max(self.live);
+        self.slot = true;
+    }
+    fn destroyed(&mut self) {
+        self.destroys += 1;
+        if std::mem::take(&mut self.slot) {
+            self.live -= 1;
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+static WINDOWS: Mutex<WindowCounts> = Mutex::new(WindowCounts::ZERO);
+
+/// The exported-window counts since the last [`reset_windows_for_test`]. Test-only.
+#[cfg(any(test, feature = "test-support"))]
+pub fn window_counts_for_test() -> WindowCounts {
+    *WINDOWS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Zero the exported-window counts (and empty the slot). Test-only; the lifecycle reset calls it.
+#[cfg(any(test, feature = "test-support"))]
+pub fn reset_windows_for_test() {
+    *WINDOWS.lock().unwrap_or_else(|e| e.into_inner()) = WindowCounts::ZERO;
+}
+
 /// ACB seam probes (host has no libAcbAPI): `setMediaVideoData` answers -1 (rejected) unless a
 /// test arms [`ACB_VIDEO_DATA_ACCEPT`], and every `acb_start`/`acb_pause`/`acb_resume` is counted,
 /// so a test can read the order and number of plane verbs the pump issued.
@@ -687,6 +740,7 @@ pub fn reset_native_lifecycle_for_test() {
     HOLD_LOAD.1.notify_all();
     UNLOAD_DELAY_MS.store(0, Relaxed);
     release_unload_for_test();
+    reset_windows_for_test();
     Clock::rewind();
 }
 
@@ -1192,6 +1246,8 @@ unsafe fn vp_mode() -> c_int {
 }
 unsafe fn vp_create_window() -> *const c_char {
     if enabled() {
+        #[cfg(any(test, feature = "test-support"))]
+        WINDOWS.lock().unwrap_or_else(|e| e.into_inner()).created();
         c"clocksink-window".as_ptr()
     } else {
         std::ptr::null()
@@ -1216,7 +1272,10 @@ unsafe fn vp_place(
 ) -> c_int {
     c_int::from(enabled())
 }
-unsafe fn vp_destroy_window() {}
+unsafe fn vp_destroy_window() {
+    #[cfg(any(test, feature = "test-support"))]
+    WINDOWS.lock().unwrap_or_else(|e| e.into_inner()).destroyed();
+}
 
 unsafe fn acb_create(_app_id: *const c_char, _player_type: c_int) -> c_long {
     #[cfg(any(test, feature = "test-support"))]
@@ -1736,5 +1795,31 @@ mod tests {
             *IN_FLIGHT_VERB.lock().unwrap_or_else(|e| e.into_inner()),
             Some("sf_unload")
         );
+    }
+
+    /// The exported-window instrument's own contract, read off the C seam's one slot
+    /// (`src/video_plane.c`): a create over an occupied slot leaves TWO live windows (`peak` keeps
+    /// it), and the destroy that follows ends only the one the slot names. An unarmed seam makes no
+    /// window, and a destroy over an empty slot ends nothing, as the C seam's does.
+    #[test]
+    fn the_window_instrument_counts_a_create_over_an_occupied_slot_as_two_live_windows() {
+        let _g = lock();
+        disarm();
+        let counts = |creates, destroys, live, peak, slot| WindowCounts { creates, destroys, live, peak, slot };
+        unsafe {
+            assert!(vp_create_window().is_null(), "an unarmed seam makes no window");
+            assert_eq!(window_counts_for_test(), counts(0, 0, 0, 0, false));
+            force_clocksink_for_test(true);
+            assert!(!vp_create_window().is_null());
+            assert_eq!(window_counts_for_test(), counts(1, 0, 1, 1, true));
+            assert!(!vp_create_window().is_null(), "the slot is overwritten, not refused");
+            assert_eq!(window_counts_for_test(), counts(2, 0, 2, 2, true), "the first window is orphaned, still live");
+            vp_destroy_window();
+            assert_eq!(window_counts_for_test(), counts(2, 1, 1, 2, false), "one destroy ends one window");
+            vp_destroy_window();
+            assert_eq!(window_counts_for_test(), counts(2, 2, 1, 2, false), "an empty slot destroys nothing");
+        }
+        disarm();
+        assert_eq!(window_counts_for_test(), WindowCounts::default(), "the lifecycle reset zeroes it");
     }
 }
