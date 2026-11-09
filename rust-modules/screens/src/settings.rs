@@ -1166,7 +1166,8 @@ struct RootState {
 
 impl LogicalState for RootState {
     fn write(&self, w: &mut Canon) {
-        w.u32(self.sel.0).bool(self.auto_sign_in).bool(self.trailer_autoplay).bool(self.hud_end_time).str(self.language.tag());
+        w.u32(self.sel.0).bool(self.auto_sign_in).bool(self.trailer_autoplay).str(self.language.tag());
+        if !self.hud_end_time { w.u8(0xd2); }
         if self.under_posters != plx_plex::plex::session::UnderPosters::DEFAULT {
             w.u32(u32::from(self.under_posters.pack()));
         }
