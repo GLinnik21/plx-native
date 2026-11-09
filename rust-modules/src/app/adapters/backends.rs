@@ -362,9 +362,11 @@ impl MonotonicClock for ProductUriClock {
 /// its initialize, read there. `firmware_major` (`device::info().major`, read by the caller at the
 /// IO side, 0 when unknown) and `strata` (production's `EXPORTED_STRATA`) are parameters, never a
 /// global read here, so a test passes its own. The line ends `major=<n> evidence=table|none`:
-/// `table` when `strata` admitted that major's exported window, `none` otherwise (an ACB set and a
-/// release with no entry both read `none`; the debug override logs its own `evidence=override`
-/// line after this one).
+/// `table` when `strata` admitted that major's exported window, `none` otherwise. `none` says only
+/// that the table admitted nothing, not that the play is Standard: an ACB set reads `none` and
+/// still plays URI through `Acb` for a viewer who opted in, while a webOS 5+ release with no entry
+/// reads `none` and plays Standard. The debug override logs its own `evidence=override` line after
+/// this one.
 #[cfg(feature = "play-uri")]
 fn uri_product_binding(display: &dyn DisplaySink, owner: &PlaneOwner, firmware_major: u32,
     strata: &[u32]) -> UriBinding {
@@ -662,7 +664,7 @@ mod tests {
     }
 
     /// The exported window follows the firmware major through the composition: production's empty
-    /// table binds no major (a release without an entry plays Standard), and a table that lists the
+    /// table binds no major (a webOS 5+ release without an entry plays Standard), and a table that lists the
     /// major binds it, on a display in the exported-window mode only. The URI engine's own handle
     /// is not asked for: a 5+ set has none.
     #[cfg(feature = "play-uri")]
@@ -672,7 +674,7 @@ mod tests {
         let exported = UriBinding::Exported { canvas: EXPORTED_CANVAS };
         let sink = BootSink::answering(VP_EXPORTED, vec![7, 8]);
         let owner = booted(&sink);
-        // Production's table is empty: every release, known or not, composes Unbound. An entry
+        // Production's table is empty: every release, known or not, composes Unbound on this display. An entry
         // lands with its Results row and the change to this test.
         for major in 0..=30 {
             assert_eq!(uri_product_binding(&sink, &owner, major, EXPORTED_STRATA), UriBinding::Unbound,

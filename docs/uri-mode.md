@@ -189,15 +189,24 @@ not determined, so the first frames may be placed from the canvas source rectang
 
 Production selects the exported window per firmware major, from the table `EXPORTED_STRATA`
 (`rust-modules/play-uri/src/backend.rs`), which is empty today: no release is admitted, so every
-release plays Standard (its boot line reads `major=<n> evidence=none`; a major the table admits reads
-`evidence=table`). An entry is a webOS firmware major as the set reports it, and needs three things
-in this file's Results table, each with the tester log's decisive lines: the major's own image has the
-`parseLoadMessage` `option.windowId` path; a tester's run on that major shows a moving picture with
-sound, with placement and aspect reported right, from the product path or a build whose product
-placement equals the probe's; and a tester's `drive` run passes the drive gate. One exception: a major
-with the image evidence but no tester run is admitted when both neighbouring majors are admitted on
-tester evidence, and its row then says "bracketed, no tester run". Nothing else is inferred from a
-neighbouring major, and a release without an entry plays Standard, with no handoff.
+webOS 5+ release plays Standard (its boot line reads `major=<n> evidence=none`; a major the table
+admits reads `evidence=table`; a 4.x set reads `none` too and keeps its ACB path). An entry is a
+webOS firmware major as the set reports it, and needs three things in this file's Results table, each
+with the tester log's decisive lines. A release is never admitted on the probe's evidence alone: a run
+of the product backend is required.
+
+- (a) the major's own firmware image reads `option.windowId` at load (decompile);
+- (b) picture: a tester's PRODUCT-path run on a debug build (the boot log shows `evidence=override`)
+  shows a moving picture with sound, placed and proportioned right, supported by the probe's summary
+  tokens `load=ok`, `playing=yes`, `currentTime_advanced=yes` and `window=exported`;
+- (c) controls: the probe's `drive` tokens (`pause=froze`, `resume=sent` with `resume_from=` at or
+  after the paused position minus 1000 ms, `seek=hit`, and `audio=ok` or an `audio_at_load=`) AND the
+  product run's pause, seek and audio doing what the viewer asked.
+
+One exception: a major with the image evidence but no tester run is admitted when both neighbouring
+majors are admitted on tester evidence, and its row then says "bracketed, no tester run". Nothing else
+is inferred from a neighbouring major. Each entry names its Results row, and a webOS 5+ release without
+an entry plays Standard, with no handoff.
 
 ## Reproducing it
 

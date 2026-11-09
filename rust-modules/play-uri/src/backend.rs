@@ -44,7 +44,7 @@ pub use plx_playback_contract::uri::Binding;
 ///     parameter (never a `cfg(test)` constant) so a test passes its own. A major of 0, the
 ///     unknown answer, is never admitted, whatever the table lists, and nothing is inferred from a
 ///     neighbouring major;
-///   - otherwise nothing: a firmware without an entry plays Standard.
+///   - otherwise nothing: a webOS 5+ release without an entry plays Standard.
 ///
 /// `plane` and `initialized` are the URI engine's own handle's (player type 0, the plane owner's
 /// `facts_of(PlaneHandle::Uri)` and `initialized(PlaneHandle::Uri)`), never Feed's: a normal boot
@@ -65,18 +65,22 @@ pub fn product_binding(display_mode: i32, plane: plx_platform::tv::plane::PlaneF
 /// The firmware majors on which the product backend selects the exported window
 /// ([`product_binding`]): the only way production ever composes [`Binding::Exported`]. An entry is
 /// a webOS firmware major as `device::info().major` reports it (5 for 5.x, 11 for 11.x). The table
-/// is empty, so every release plays Standard until a major earns an entry.
+/// is empty, so every webOS 5+ release plays Standard until a major earns an entry (a webOS 4.x set
+/// takes the ACB plane, which this table does not touch).
 ///
 /// A major is admitted only with all three parts of the evidence in `docs/uri-mode.md`'s Results
-/// table, each recorded there with the tester log's decisive lines:
+/// table, each recorded there with the tester log's decisive lines. A release is never admitted on
+/// the developer probe's evidence alone: a run of the product backend is required.
 ///
-///   - (a) decompile: that major's own firmware image has the `parseLoadMessage` `option.windowId`
-///     path;
-///   - (b) picture: a tester's run on that major shows a moving picture with sound, reports the
-///     placement and the aspect as right, and ends `summary load=ok playing=yes
-///     currentTime_advanced=yes window=exported`, from the product path or from a build whose
-///     product placement equals the probe's (so the run speaks for the product);
-///   - (c) controls: a tester's `drive` run on that major passes the drive gate.
+///   - (a) decompile: that major's own firmware image reads `option.windowId` at load
+///     (`parseLoadMessage`);
+///   - (b) picture: a tester's PRODUCT-path run on a debug build (the boot log shows
+///     `evidence=override`) shows a moving picture with sound, placed and proportioned right,
+///     supported by the probe's summary tokens `load=ok`, `playing=yes`,
+///     `currentTime_advanced=yes` and `window=exported`;
+///   - (c) controls: the probe's `drive` tokens (`pause=froze`, `resume=sent` with `resume_from=`
+///     at or after the paused position minus 1000 ms, `seek=hit`, and `audio=ok` or an
+///     `audio_at_load=`) AND the product run's pause, seek and audio doing what the viewer asked.
 ///
 /// One exception: a major with (a) but no tester run is admitted when BOTH neighbouring majors
 /// (`major - 1` and `major + 1`) are already admitted on tester evidence, and its own image shows
