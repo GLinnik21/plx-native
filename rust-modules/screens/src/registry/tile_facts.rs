@@ -110,6 +110,8 @@ pub fn of(m: &PmsMovie) -> TileFacts<'_> {
         leaf_count: m.leaf_count,
         viewed_leaf_count: m.viewed_leaf_count,
         added_at: m.added_at,
+        // No surface opts in here: a deck builds its own keys and sets this itself.
+        deck: None,
     }
 }
 
