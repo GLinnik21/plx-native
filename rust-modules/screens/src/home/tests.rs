@@ -1426,6 +1426,7 @@ fn down_from_the_first_shelf_chooses_the_next_shelf_not_the_folded_hero() {
         link: None,
         title: String::new(),
         cards: Vec::new(),
+        deck: Vec::new(),
         stale: false,
     });
     s.elem_at.insert(second_elem, (1, 0));
@@ -5843,6 +5844,37 @@ fn the_continue_watching_row_is_a_row_of_420_by_236_stills_under_no_label_block(
         "the poster shelf below follows by the stills' own pitch, not a poster row's");
     assert!(below < ui_cards::ROW_PITCH_FIXED + ui_cards::LABEL_BAND_COLLAPSED);
     assert_eq!(drawn_rect(&s, view, None, 1, 0).w, CARD_W, "poster shelves are unchanged");
+}
+
+/// **Only the Continue Watching deck opts in to the deck's art walk**, with the keys its projection
+/// built once beside its cards; a poster shelf builds none, and a card the projection did not build
+/// the keys for (another item at that place) draws the old chain.
+#[test]
+fn only_the_continue_watching_deck_opts_in_to_the_deck_art_walk() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_named_hubs_for_test(&mut state, &adapter, 3, &[
+        ("home.continue", "", "Continue Watching"), ("home.movies.recent", "/hubs/recent", "Recent")]);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let view = snapshot.view();
+    let s = screen(view);
+    assert_eq!(s.rows[0].identity, HomeHubIdentity::ContinueWatching);
+    assert_eq!(s.rows[0].deck.len(), s.rows[0].cards.len(), "one key pair per card of the deck");
+    assert!(s.rows[0].deck.len() > 0 && s.rows[1].deck.is_empty(), "a poster shelf holds none");
+    for col in 0..s.rows[0].cards.len() {
+        let facts = s.cards(view, 0).facts(col).expect("a card");
+        assert!(facts.deck.is_some(), "deck card {col} opts in");
+        assert_eq!(facts.deck.map(|d| (d.cover.to_owned(), d.card.to_owned())),
+            Some((s.rows[0].deck[col].cover.clone(), s.rows[0].deck[col].card.clone())));
+        assert!(matches!(CardSource::<TestHost>::art(&s.cards(view, 0), col), Art::Still(Some(f)) if f.deck.is_some()));
+    }
+    let poster = s.cards(view, 1).facts(0).expect("a card");
+    assert!(poster.deck.is_none(), "a poster shelf's card never opts in");
+    // a projection older than the view: the card at that place is another item, so no keys
+    let mut stale = screen(view);
+    stale.rows[0].cards.swap(0, 1);
+    assert!(stale.cards(view, 0).facts(0).expect("a card").deck.is_none(), "never another title's cover");
 }
 
 /// **A focused still pops to 1.09 where it stands and each neighbour eases 10 px away from it**, on

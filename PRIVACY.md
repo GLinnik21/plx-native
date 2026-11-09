@@ -1,6 +1,6 @@
 # PlxNative Privacy Policy
 
-Applies to PlxNative 0.6.0. Last updated 4 September 2026.
+Applies to PlxNative 0.6.0. Last updated 9 November 2026.
 
 ## Who is responsible for PlxNative data
 
@@ -14,6 +14,18 @@ account features, the app communicates directly with Plex services. Plex process
 received by those services under [Plex’s own Privacy
 Policy](https://www.plex.tv/about/privacy-legal/). PlxNative’s developer does not receive that
 information.
+
+Continue Watching artwork. For each title in a Continue Watching row, PlxNative asks Plex’s catalog
+(discover.provider.plex.tv) for the title’s own cover artwork. The request carries the title’s Plex
+catalog identifier (which your Plex Media Server lists with the title), the language of the app, the
+app’s client identifier and, only when the profile has one, its Plex account token, so it tells
+Plex which titles are in the Continue Watching row of the profile in use. Your Plex Media Server then fetches
+the picture itself from the image host that Plex’s answer names. The request is made when a
+title’s card is first shown and this television has no saved answer for it; again when the saved
+answer is more than a day old and the card is shown; again on a later start or after a profile
+switch when an earlier attempt saved nothing (while Plex’s catalog cannot be reached, at most once
+every 45 seconds); and again after the saved artwork was removed to make room, by signing out, or
+by changing the app’s language. PlxNative’s developer does not receive these requests.
 
 ## Plex Media Servers
 

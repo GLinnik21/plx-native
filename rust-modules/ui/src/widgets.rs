@@ -710,7 +710,9 @@ pub enum StillFooter {
     /// The Continue Watching card's one-line footer ([`crate::still_footer`]): `S2 E4 · 38m left`
     /// and the amber bar, with the focus cue of what OK does — `cue` — opening with the card's focus
     /// pop `pop` (`cards::Tile::pop`). The show's name stands above it only while the card's title
-    /// is not on its art, which is every caller of this variant today.
+    /// is not on its art: a card that did not opt in to the deck's art walk ([`TileFacts::deck`]).
+    /// An opted-in card carries its title in its cover, its composite or, with neither, in type
+    /// ([`crate::card_art::needs_type_title`], drawn by [`still_overlay`]), and the footer never repeats it.
     Continue { cue: crate::still_footer::Cue, pop: f32 },
 }
 
@@ -739,7 +741,10 @@ pub enum StillFooter {
 /// silhouette than the artwork under it at 1.09.
 ///
 /// The label is the SHOW's name, falling back to the item's own title when the server sent none —
-/// see [`still_line`] for why a shelf surface names the show rather than the episode.
+/// see [`still_line`] for why a shelf surface names the show rather than the episode. **Except on a
+/// card that opted in to the deck's art walk** ([`TileFacts::deck`]): its title is in its art (the
+/// cover, the composite, or in type at the logo slot when neither exists: drawn here, once, by
+/// [`crate::hero_logo::draw_title`]) and both footers carry only the address, the status and the bar.
 pub fn still_overlay(
     p: Painter,
     m: &TileFacts<'_>,
@@ -753,6 +758,17 @@ pub fn still_overlay(
     } else {
         m.show_title
     };
+    // **A deck card's title is drawn ONCE, and in its art.** Plex's cover and our composite carry
+    // it in the picture; with neither (the Type rung) it is drawn here in type, at the slot a logo
+    // would stand in, and never by a live logo. Either way the footer below carries no title of its
+    // own: only a card that did not opt in (a bare still or poster) keeps the show's name above it.
+    let label = if m.deck.is_some() { "" } else { show };
+    if crate::card_art::needs_type_title(m, &crate::card_art::TexProbe) {
+        let inset = STILL_LINE_INSET;
+        let band_h = crate::hero_logo::band_h(crate::hero_logo::LogoRung::Card);
+        let slot = Rect::new(card.x + inset, card.y + card.h - theme::logo::CARD_BOTTOM_INSET - band_h, card.w - 2.0 * inset, band_h);
+        crate::hero_logo::draw_title(p, crate::hero_logo::LogoRung::Card, show, slot, crate::label::HAlign::Center, measure);
+    }
     match footer {
         StillFooter::Shelf => {
             let bar = m.resume.map(|r| r.frac);
@@ -760,7 +776,7 @@ pub fn still_overlay(
                 p,
                 card,
                 poster_mark(m),
-                show,
+                label,
                 &crate::fmt::episode_address(m.season_index as i64, m.ep_index as i64),
                 bar.is_some(),
                 measure,
@@ -792,7 +808,7 @@ pub fn still_overlay(
             crate::still_footer::draw_footer(
                 p,
                 card,
-                show,
+                label,
                 &crate::still_footer::Footer { tag: &tag, status: &status, right, cue: Some(cue), focus: pop },
                 measure,
             );

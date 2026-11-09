@@ -116,7 +116,7 @@ impl Row {
 /// row itself, and only the rows the store holds cards for (the hold band, 16 at most) have cards
 /// to compare.
 #[derive(Clone, Debug, Default)]
-struct Basis {
+pub(super) struct Basis {
     landscape: bool,
     linked: bool,
     slots: usize,
@@ -126,6 +126,12 @@ struct Basis {
     /// The window's cards, each as the identity its key was minted from (an empty `rk` is a
     /// placeholder). Empty for a row the store gave its cards up to.
     items: Vec<(plx_plex::plex::ServerId, String)>,
+    /// The artwork keys of a landscape Continue Watching deck's cards, one per card of `items`
+    /// ([`tile_facts::DeckKeys`]): built once with the row, so a frame builds no string. Part of what
+    /// the row was built FROM because a key names the card's background (a new art path is a new
+    /// key) and its catalog id, which the `(sid, rk)` identity above does not change with. Empty
+    /// for every other row: a poster shelf and a library grid never opt in.
+    deck: Vec<tile_facts::DeckKeys>,
 }
 
 impl Basis {
@@ -135,6 +141,7 @@ impl Basis {
             slot_form: shelf.items.is_empty() || shelf.items.iter().any(|item| item.rk.is_empty()),
             query,
             items: shelf.items.iter().map(|item| (item.sid, item.rk.clone())).collect(),
+            deck: deck_keys_of(shelf),
         }
     }
 
@@ -143,6 +150,28 @@ impl Basis {
             && (!self.slot_form || self.query == query)
             && self.items.len() == shelf.items.len()
             && self.items.iter().zip(&shelf.items).all(|((sid, rk), item)| item.sid == *sid && item.rk == *rk)
+            && self.deck == deck_keys_of(shelf)
+    }
+
+    /// The deck keys of the card `item` stands at, `i`, if this basis is the one the card was
+    /// built from: the same `(sid, rk)` at the same place. A frame between a publication and the
+    /// sync that follows it holds a basis of the previous one, and a position alone would hand a
+    /// card another title's keys (a cover asked of plex.tv for the wrong title).
+    fn deck_keys(&self, i: usize, item: &plx_data::pms::PmsMovie) -> Option<&tile_facts::DeckKeys> {
+        let (sid, rk) = self.items.get(i)?;
+        (*sid == item.sid && *rk == item.rk).then(|| self.deck.get(i)).flatten()
+    }
+}
+
+/// **The artwork keys of a hub's cards if it is a landscape Continue Watching deck**, else none: the
+/// one rule for which Recommended rows opt in to the deck's art walk (Plex's cover, our composite,
+/// then the title in type). One per item, in order, so a key is read by the card's position; a
+/// placeholder (no rating key, no art) gets empty keys, which is what its card is.
+fn deck_keys_of(shelf: &HubShelf) -> Vec<tile_facts::DeckKeys> {
+    if shelf.is_continue && shelf.landscape {
+        tile_facts::DeckKeys::of_all(shelf.items.iter())
+    } else {
+        Vec::new()
     }
 }
 
@@ -773,7 +802,7 @@ impl RecommendedScreen {
             let shelf = hubs.shelves().get(index);
             let at = focus.and_then(|elem| row.elems.iter().position(|key| *key == elem));
             let paging = at.is_some_and(|col| col.saturating_add(ui_cards::PAGE_EDGE_CARDS) >= row.elems.len());
-            let src = HubSrc { elems: &row.elems, shelf, paging };
+            let src = HubSrc { elems: &row.elems, shelf, paging, deck: Some(&row.basis) };
             row.cards.dormant(unseen);
             let want = row.cards.on(ev, cx, &src, fx);
             if !ticking && at.is_none() { row.cards.reset_page_requests(); }
@@ -1068,7 +1097,8 @@ impl RecommendedScreen {
 
     /// Row `index`'s content, read off the published hub (borrows only).
     pub(super) fn hub_src<'a, 'v: 'a, H: LibraryLike>(&'a self, index: usize, cx: &Cx<'v, H>) -> HubSrc<'a> {
-        HubSrc { elems: &self.shelves[index].elems, shelf: H::section_hubs(cx).shelves().get(index), paging: false }
+        let row = &self.shelves[index];
+        HubSrc { elems: &row.elems, shelf: H::section_hubs(cx).shelves().get(index), paging: false, deck: Some(&row.basis) }
     }
 
     /// The card `elem` of row `index` as drawn now: the component's placement (pop and press
@@ -1384,10 +1414,25 @@ pub(super) struct HubSrc<'a> {
     pub(super) shelf: Option<&'a plx_data::browse::section_hubs::Shelf>,
     /// Focus is near the row's trailing edge on a visible row: only then does the row ask for more.
     pub(super) paging: bool,
+    /// What the row was built from, for the Continue Watching deck's artwork keys
+    /// ([`Basis::deck_keys`]); `None` for a source with no row behind it.
+    pub(super) deck: Option<&'a Basis>,
 }
 
 impl HubSrc<'_> {
     fn item(&self, i: usize) -> Option<&plx_data::pms::PmsMovie> { self.shelf?.items.get(i) }
+
+    /// **The facts card `i` draws from**: a landscape Continue Watching deck's card opts in to the
+    /// deck's art walk (Plex's cover, our composite, then its title in type) with the keys its row
+    /// was built with; every other card, and a deck card whose row is not the one its item was
+    /// published for, is [`tile_facts::of`], the old chain.
+    fn facts(&self, i: usize) -> Option<plx_ui::tile::TileFacts<'_>> {
+        let item = self.item(i)?;
+        Some(match self.deck.and_then(|basis| basis.deck_keys(i, item)) {
+            Some(keys) => tile_facts::for_deck(item, keys),
+            None => tile_facts::of(item),
+        })
+    }
 }
 
 impl<H: plx_machine::machine::Host<Elem = u32>> CardSource<H> for HubSrc<'_> {
@@ -1406,7 +1451,7 @@ impl<H: plx_machine::machine::Host<Elem = u32>> CardSource<H> for HubSrc<'_> {
     fn more_before(&self) -> bool { self.shelf.is_some_and(|shelf| shelf.offset > 0) }
     fn art(&self, i: usize) -> Art<'_> {
         match (self.item(i), self.shelf) {
-            (Some(item), Some(shelf)) if shelf.landscape => Art::Still(Some(tile_facts::of(item))),
+            (Some(_), Some(shelf)) if shelf.landscape => Art::Still(self.facts(i)),
             (Some(item), _) => Art::Poster(Some(tile_facts::of(item))),
             _ => Art::Poster(None),
         }
@@ -1421,9 +1466,9 @@ impl<H: plx_machine::machine::Host<Elem = u32>> CardSource<H> for HubSrc<'_> {
     /// this shelf keeps the caption under the focused still (`shelf_label`: the title and the time
     /// left), so the one-line footer (`StillFooter::Continue`, Home's deck) would say the time twice.
     fn overlay(&self, p: plx_ui::Painter, i: usize, tile: &Tile, measure: &dyn plx_machine::machine::Measure) {
-        let (Some(shelf), Some(item)) = (self.shelf, self.item(i)) else { return };
+        let (Some(shelf), Some(facts)) = (self.shelf, self.facts(i)) else { return };
         if shelf.landscape {
-            plx_ui::widgets::still_overlay(p, &tile_facts::of(item), tile.rect, tile.radius, plx_ui::widgets::StillFooter::Shelf, measure);
+            plx_ui::widgets::still_overlay(p, &facts, tile.rect, tile.radius, plx_ui::widgets::StillFooter::Shelf, measure);
         }
     }
 }

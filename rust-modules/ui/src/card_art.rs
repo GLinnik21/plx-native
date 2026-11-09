@@ -12,8 +12,10 @@
 //! cards must not each hold a 1.1 MB clearLogo texture and a per-frame blend. So everything in this
 //! file is a pure function over values: no GL, no worker, no clock, no global registry (the one
 //! `tex` peek is behind [`ArtProbe`], which a host test replaces with a table). The Type rung's
-//! title is set live, never baked, through [`crate::hero_logo::title_text`] and NEVER through
-//! `HeroLogo::draw`, which paints a live logo texture whenever one resolves.
+//! title is set live, never baked, by [`crate::widgets::still_overlay`] through
+//! [`crate::hero_logo::draw_title`] (the text half of `HeroLogo::draw`, built on
+//! [`crate::hero_logo::title_text`]) and NEVER through `HeroLogo::draw`, which paints a live logo
+//! texture whenever one resolves.
 //!
 //! **Bounds of the composite.** The logo is sized by the same constant-area rule as the heroes
 //! ([`crate::hero_logo::fit`] at [`LogoRung::Card`]), centred, its bottom edge at
