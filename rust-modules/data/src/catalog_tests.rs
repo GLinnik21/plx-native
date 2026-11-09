@@ -45,6 +45,7 @@ fn item(title: &str, date: Option<&str>) -> CatalogItem {
         genres: vec!["Drama".into(), "Thriller".into()],
         content_rating: None,
         duration_ms: None,
+        cover_art: None,
     }
 }
 
@@ -184,6 +185,18 @@ fn a_found_title_loads_with_its_record() {
     assert_eq!(rec.release_date.as_deref(), Some("2027-03-12"));
     assert_eq!(rec.status, CatalogStatus::ComingSoon);
     assert_eq!(*fake.fetched.lock().unwrap(), [HEX], "the 24-digit id the service takes");
+}
+
+/// The service's cover is for the deck cards, which read it themselves: the catalog page's record
+/// does not carry it, and does not change for it.
+#[test]
+fn the_record_ignores_the_cover_art() {
+    let bare = item("Cover", Some("2027-03-12"));
+    let covered = CatalogItem {
+        cover_art: Some("https://metadata-static.plex.tv/a/plex/cover.jpg".into()),
+        ..bare.clone()
+    };
+    assert_eq!(record_of(&covered, Some("2026-10-15")), record_of(&bare, Some("2026-10-15")));
 }
 
 #[test]
