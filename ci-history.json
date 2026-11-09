@@ -1,4 +1,4 @@
-{"updated":"2026-11-09T13:30:17Z",
+{"updated":"2026-11-09T13:34:34Z",
 "ci":[
 {"id":31449221132,"at":"2026-08-11T01:24:54Z","sha":"983ce5419","title":"docs: bring v0.1.0 and v0.2.0 up to the standard, as errata rather than edits","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":71},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":31453350821,"at":"2026-08-11T02:45:54Z","sha":"ae756c93f","title":"docs: rewrite v0.1.0 and v0.2.0 to the template, and change the rule to match","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":74},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -4864,7 +4864,8 @@
 {"id":42623716226,"at":"2026-11-09T13:14:26Z","sha":"be8495d5b","title":"Key mode never resumes a TLS session","pr":1297,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":250,"Windows launcher syntax":30,"macOS tests against bundled FFmpeg and ASS":144,"Linux simulator build + launch":475}},
 {"id":42623753723,"at":"2026-11-09T13:14:41Z","sha":"02b29f8d7","title":"Merge remote-tracking branch 'origin/main' into fleet/cw-redesign","pr":1290,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":19,"macOS simulator build + launch":211,"Linux simulator build + launch":444,"macOS tests against bundled FFmpeg and ASS":246}},
 {"id":42624239710,"at":"2026-11-09T13:17:55Z","sha":"673cec829","title":"Merge main and use its key-mode TLS fix","pr":1296,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":18,"Linux simulator build + launch":296,"macOS simulator build + launch":206,"macOS tests against bundled FFmpeg and ASS":232}},
-{"id":42624587896,"at":"2026-11-09T13:20:19Z","sha":"5cd3533f5","title":"Merge main and use its key-mode TLS fix","pr":1295,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":364,"macOS tests against bundled FFmpeg and ASS":206,"Windows launcher syntax":23,"macOS simulator build + launch":203}}
+{"id":42624587896,"at":"2026-11-09T13:20:19Z","sha":"5cd3533f5","title":"Merge main and use its key-mode TLS fix","pr":1295,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":364,"macOS tests against bundled FFmpeg and ASS":206,"Windows launcher syntax":23,"macOS simulator build + launch":203}},
+{"id":42625804090,"at":"2026-11-09T13:28:37Z","sha":"af607d8cd","title":"Continue Watching as a row of stills: cover art, one-line footer, Home scroll","pr":1290,"conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":346,"macOS tests against bundled FFmpeg and ASS":287,"macOS simulator build + launch":210,"Windows launcher syntax":18}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},

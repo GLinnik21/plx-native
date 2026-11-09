@@ -85,7 +85,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-09T13:30:34Z",
+ "generated": "2026-11-09T13:34:51Z",
  "metrics": [
   {
    "change30_pct": 100.9,
@@ -151,18 +151,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 39.3,
-   "change7_pct": 15.3,
+   "change30_pct": 39.1,
+   "change7_pct": 15.1,
    "d30": 333.5,
-   "delta30": 131.0,
-   "delta7": 61.5,
+   "delta30": 130.5,
+   "delta7": 61,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 50,
+   "n_now": 51,
    "n_prev": 83,
-   "now": 464.5,
+   "now": 464,
    "prev7": 403,
    "shown": true,
    "state": "worse",
@@ -382,18 +382,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 37.4,
-   "change7_pct": 12.7,
+   "change30_pct": 37.8,
+   "change7_pct": 13.0,
    "d30": 230,
-   "delta30": 86,
-   "delta7": 35.5,
+   "delta30": 87.0,
+   "delta7": 36.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 49,
+   "n_now": 50,
    "n_prev": 76,
-   "now": 316,
+   "now": 317.0,
    "prev7": 280.5,
    "shown": true,
    "state": "flat",
@@ -403,18 +403,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 45.3,
-   "change7_pct": 6.4,
+   "change30_pct": 45.9,
+   "change7_pct": 6.9,
    "d30": 148.0,
-   "delta30": 67.0,
-   "delta7": 13.0,
+   "delta30": 68.0,
+   "delta7": 14.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 49,
+   "n_now": 50,
    "n_prev": 76,
-   "now": 215,
+   "now": 216.0,
    "prev7": 202.0,
    "shown": true,
    "state": "flat",
@@ -424,18 +424,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -39.6,
-   "change7_pct": -2.3,
+   "change30_pct": -39.9,
+   "change7_pct": -2.8,
    "d30": 351,
-   "delta30": -139,
-   "delta7": -5.0,
+   "delta30": -140.0,
+   "delta7": -6.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 49,
+   "n_now": 50,
    "n_prev": 76,
-   "now": 212,
+   "now": 211.0,
    "prev7": 217.0,
    "shown": true,
    "state": "flat",
@@ -511,15 +511,15 @@
    "change30_pct": 17.6,
    "change7_pct": 11.1,
    "d30": 17,
-   "delta30": 3,
+   "delta30": 3.0,
    "delta7": 2.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 49,
+   "n_now": 50,
    "n_prev": 76,
-   "now": 20,
+   "now": 20.0,
    "prev7": 18.0,
    "shown": false,
    "state": "flat",
@@ -618,11 +618,6 @@
    "change_pct": 26.6,
    "commits": [
     {
-     "pr": 1276,
-     "sha": "3309be023",
-     "title": "The playback build/package matrix: PLAYBACK_BACKENDS selects both, uri, feed or none (P7)"
-    },
-    {
      "pr": 1133,
      "sha": "69bbb7d39",
      "title": "Preserve baseline audio codecs and size converted Opus on webOS"
@@ -666,6 +661,11 @@
      "pr": 1297,
      "sha": "be8495d5b",
      "title": "Key mode never resumes a TLS session"
+    },
+    {
+     "pr": 1290,
+     "sha": "af607d8cd",
+     "title": "Continue Watching as a row of stills: cover art, one-line footer, Home scroll"
     }
    ],
    "from": 335.0,
@@ -679,11 +679,6 @@
    "change_pct": 25.8,
    "commits": [
     {
-     "pr": 1276,
-     "sha": "3309be023",
-     "title": "The playback build/package matrix: PLAYBACK_BACKENDS selects both, uri, feed or none (P7)"
-    },
-    {
      "pr": 1133,
      "sha": "69bbb7d39",
      "title": "Preserve baseline audio codecs and size converted Opus on webOS"
@@ -727,6 +722,11 @@
      "pr": 1297,
      "sha": "be8495d5b",
      "title": "Key mode never resumes a TLS session"
+    },
+    {
+     "pr": 1290,
+     "sha": "af607d8cd",
+     "title": "Continue Watching as a row of stills: cover art, one-line footer, Home scroll"
     }
    ],
    "from": 74.8,
@@ -740,11 +740,6 @@
    "change_pct": 22.8,
    "commits": [
     {
-     "pr": 1276,
-     "sha": "3309be023",
-     "title": "The playback build/package matrix: PLAYBACK_BACKENDS selects both, uri, feed or none (P7)"
-    },
-    {
      "pr": 1133,
      "sha": "69bbb7d39",
      "title": "Preserve baseline audio codecs and size converted Opus on webOS"
@@ -788,6 +783,11 @@
      "pr": 1297,
      "sha": "be8495d5b",
      "title": "Key mode never resumes a TLS session"
+    },
+    {
+     "pr": 1290,
+     "sha": "af607d8cd",
+     "title": "Continue Watching as a row of stills: cover art, one-line footer, Home scroll"
     }
    ],
    "from": 247.5,
@@ -798,13 +798,8 @@
    "to": 304.0
   },
   {
-   "change_pct": 15.3,
+   "change_pct": 15.1,
    "commits": [
-    {
-     "pr": 1276,
-     "sha": "3309be023",
-     "title": "The playback build/package matrix: PLAYBACK_BACKENDS selects both, uri, feed or none (P7)"
-    },
     {
      "pr": 1133,
      "sha": "69bbb7d39",
@@ -849,6 +844,11 @@
      "pr": 1297,
      "sha": "be8495d5b",
      "title": "Key mode never resumes a TLS session"
+    },
+    {
+     "pr": 1290,
+     "sha": "af607d8cd",
+     "title": "Continue Watching as a row of stills: cover art, one-line footer, Home scroll"
     }
    ],
    "from": 403,
@@ -856,7 +856,7 @@
    "label": "Wait after merge",
    "since": "2026-11-09",
    "threshold_pct": 15.0,
-   "to": 464.5
+   "to": 464
   }
  ],
  "schema": 2,
