@@ -1693,22 +1693,19 @@ impl Machine<InnerHost> for RootPage {
                         landed = true;
                     }
                 }
-                if self.pending_trailer.as_ref().is_some_and(|(_, receipt)| !matches!(receipt.try_recv(),
-                    Err(std::sync::mpsc::TryRecvError::Empty))) {
-                    // Answered (saved, refused or dropped): the row reads the stored value again,
-                    // which holds the pick only if the write was durable. Same wait for a settled
-                    // session as above.
+                let trailer_answered = self.pending_trailer.as_ref().is_some_and(|(_, receipt)| !matches!(
+                    receipt.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)
+                ));
+                let end_time_answered = self.pending_hud_end_time.as_ref().is_some_and(|(_, receipt)| !matches!(
+                    receipt.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)
+                ));
+                if trailer_answered || end_time_answered {
+                    // Both profile switches share the existing settled-session read. Each row
+                    // re-reads its stored value only after its own write has answered.
                     if let Some(snapshot) = plx_plex::plex::session::peek_settled() {
                         self.session_snapshot = snapshot;
-                        self.pending_trailer = None;
-                        landed = true;
-                    }
-                }
-                if self.pending_hud_end_time.as_ref().is_some_and(|(_, receipt)| !matches!(receipt.try_recv(),
-                    Err(std::sync::mpsc::TryRecvError::Empty))) {
-                    if let Some(snapshot) = plx_plex::plex::session::peek_settled() {
-                        self.session_snapshot = snapshot;
-                        self.pending_hud_end_time = None;
+                        if trailer_answered { self.pending_trailer = None; }
+                        if end_time_answered { self.pending_hud_end_time = None; }
                         landed = true;
                     }
                 }
