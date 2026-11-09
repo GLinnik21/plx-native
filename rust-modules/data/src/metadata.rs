@@ -1784,10 +1784,10 @@ impl Detail {
     ///
     /// dev: **`/tmp/plxnative-shared` WINS WHEN ARMED** — the precedence every trigger in this app
     /// has (`crate::dev`'s module doc: `plxnative-token` beats the signed-in session), and the
-    /// phrase to grep for, because the same stand-in is read by the owned Home's hero run and
-    /// the two must agree. (The owned `screens::search::render`'s owner annotation reads the real
-    /// registry unconditionally and does not consult this trigger — a gap the cutover left open,
-    /// not a third agreement point.) A trigger exists to FORCE
+    /// phrase to grep for. (Home's hero draws no credit since board CW-13 v2, so the Detail page's
+    /// facts row is the one presentation of the phrase; the owned `screens::search::render`'s owner
+    /// annotation reads the real registry unconditionally and does not consult this trigger — a gap
+    /// the cutover left open.) A trigger exists to FORCE
     /// a state, so an armed one outranks the real answer, and an armed EMPTY file forces the
     /// absence of a handle rather than doing nothing. It stamps one handle onto every item this
     /// session loads, which is what a fully-borrowed library looks like. Read ONCE (see

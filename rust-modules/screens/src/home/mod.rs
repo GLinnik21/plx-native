@@ -4164,8 +4164,9 @@ impl<H: HomeLike> CardSource<H> for HomeCards<'_> {
         self.item(i).and_then(PmsMovie::resume_frac)
     }
 
-    /// The deck's still carries its one-line footer and scrim (`widgets::still_overlay`): the status
-    /// text and bar, and on the focused card the cue for what OK does (a play glyph while the
+    /// The deck's still carries its one-line footer BELOW the art, with no scrim behind it
+    /// (`tile_facts::deck_overlay`; the shade stands behind the band, `continue_footer_band`): the
+    /// status text and bar, and on the focused card the cue for what OK does (a play glyph while the
     /// Playback setting says OK plays, an info glyph while it opens the page), opening with the
     /// card's own focus pop (`Tile::pop`).
     fn overlay(&self, p: Painter, i: usize, tile: &ui_cards::Tile, measure: &dyn plx_machine::machine::Measure) {

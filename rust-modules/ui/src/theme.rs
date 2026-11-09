@@ -220,7 +220,8 @@ pub mod layout {
 pub mod hero {
     /// Both full-bleed heroes use the same reading column in the proposal.
     pub const TEXT_W: f32 = 943.0;
-    /// Edition, kind, genres and content rating in both heroes: regular 24 px, as in the PDF.
+    /// Edition, kind, genres and content rating on the Detail hero: regular 24 px, as in the PDF.
+    /// Home's hero draws no identity line (board CW-13 v2).
     pub const IDENTITY_SIZE: i32 = super::size::CAPTION;
     /// Long titles without a clearLogo wrap over at most two DISPLAY lines.
     pub const TITLE_LINES: usize = 2;
@@ -235,15 +236,16 @@ pub mod hero {
     /// People-column corner weight: four wrapped credit lines retain the 2.5:1 pure-white
     /// contrast floor under the lighter atmosphere; its feather starts higher for the raised credits.
     pub const SCRIM_RIGHT_A: f32 = 0.78;
-    /// Opacity at the atmospheric midpoint. The corner wedges supply local contrast.
+    /// Opacity at the atmospheric midpoint. The shade ([`super::shade`]) supplies local contrast.
     pub const SCRIM_MID_A: f32 = 0.55;
     /// Opacity at the foot: retain the artwork's colour under the action row.
     pub const SCRIM_FOOT_A: f32 = 0.86;
 
     // ---- Home's hero (owner's board CW-13, v2). Detail's ladder and scrim are NOT these. ----
 
-    /// Top of Home's action row: Play, the Watchlist disc, Info, the pager. Everything above it on
-    /// Home is one ladder that grows up from this line (`landing_hero::home_rows`).
+    /// Top of Home's action row: Play, the Watchlist disc, Info (the pager stands at the right margin
+    /// on the row's centre line). Everything above it on Home is one ladder that grows up from this
+    /// line (`landing_hero::home_rows`).
     pub const HOME_ACTIONS_Y: f32 = 668.0;
     /// The block above the action row (a one-line episode label, or the synopsis) ends this far
     /// above [`HOME_ACTIONS_Y`]: 638, the board's own number (it is not a rung of `space`).
@@ -261,8 +263,8 @@ pub mod hero {
 /// by that content's own alpha and the hero's fade). It follows the content: the blocks come from the
 /// rects the screen is drawing this frame (`hero_shade::HeroShade`), so a logo that rises into
 /// the trailer corner carries its shade up with it. Both heroes use it (Home, Detail); the
-/// evaluator is `hero_shade::shade_a` and the one-pass ground carries the same numbers to the GPU
-/// (`gfx::scrim::GroundShade`).
+/// evaluator is `hero_shade::HeroShade::at` and the one-pass ground carries the same numbers to the
+/// GPU (`gfx::scrim::GroundShade`).
 pub mod shade {
     /// How far a block's darkness falls away beyond the edge of the content's rounded box, in px:
     /// it holds its full alpha inside the box and reaches exactly nothing this far out (a smoothstep,
@@ -744,8 +746,10 @@ pub const SCRIM_BLACK_INK: [f32; 3] = [BLACK[0], BLACK[1], BLACK[2]];
 ///
 /// MEASURED, not chosen. The panel is plain 888 with no sRGB framebuffer anywhere in the tree, so a
 /// token value IS an sRGB code and GL's blend is a straight lerp in that space — which makes the
-/// whole derivation arithmetic. It lives on [`crate::widgets::hero_scrim`] and is asserted by
-/// that component's anchor table, so brightening a text token and re-deriving this stay one edit.
+/// whole derivation arithmetic. It is the peak of the left wedge ([`crate::widgets::hero_scrim`], asserted
+/// by that component's anchor table; only the catalog still draws it). The heroes hold the same floors
+/// with the shade's [`shade::COPY_A`] behind the copy, graded by `widgets_hero_shade_tests` (Home) and
+/// `widgets_hero_scrim_tests` (Detail), so brightening a text token and re-deriving these stay one edit.
 /// The binding case is a `TEXT_SECONDARY` BODY line where the hero's bottom-up ramp supplies only
 /// ~0.29: it needs 0.655 total, so the wedge must carry ~0.51 there and rather more at the title.
 ///

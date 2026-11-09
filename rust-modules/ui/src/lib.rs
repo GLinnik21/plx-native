@@ -1612,8 +1612,9 @@ impl Painter {
             self.c(theme::with_a(theme::CARD_SHADOW, sa)), band, self.c(scrim), f, dy,
         )
     }
-    /// THE HERO GROUND IN ONE PASS: the backdrop art with both scrim fields evaluated on it,
-    /// instead of the art and then four blended gradient quads over the same 2.78M fragments.
+    /// THE HERO GROUND IN ONE PASS (RETIRED: no hero calls it; the heroes' pass is `ambient_inked`): the
+    /// backdrop art with both scrim fields evaluated on it, instead of the art and then four blended
+    /// gradient quads over the same 2.78M fragments.
     /// [`crate::widgets::hero_ground`] is the component — reach for that, not for this — and
     /// `fs_hero.frag` carries the algebra that makes it the same picture rather than a cheaper one.
     ///

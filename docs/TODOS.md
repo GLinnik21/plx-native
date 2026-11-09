@@ -2,10 +2,10 @@
 
 ## Player / trailer preview
 
-### Grade `hero_scrim_a`'s legibility contract against synopsis text over live trailer video
+### Grade the hero shade's legibility contract against synopsis text over live trailer video
 
-**What:** Add a row to `widgets::hero_scrim_a`'s anchor table for "synopsis-weight (`LABEL` 26px)
-text over a bound video plane at `field=1.35`" and grade it against a real device capture, real
+**What:** Add a row to the hero shade's grading table (`widgets_hero_scrim_tests.rs`, graded over
+`HeroShade::at`) for "synopsis-weight (`LABEL` 26px) text over a bound video plane at `field=1.35`" and grade it against a real device capture, real
 trailer content. *(The `landing_hero::PROMOTED_FIELD` half of this item is GONE as of 2026-09-17:
 full-trailer mode draws no page chrome at all, so the wedge eases to 0.0 and the constant was
 deleted.)*

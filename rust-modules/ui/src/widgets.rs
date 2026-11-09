@@ -2700,14 +2700,14 @@ const HERO_SCRIM_R_W: f32 = 700.0;
 const HERO_SCRIM_R_TOP: f32 = 0.28 * crate::consts::SCR_H; // four-line credits above actions
 const HERO_SCRIM_R_A: f32 = theme::hero::SCRIM_RIGHT_A;
 
-/// Where the frame-wide ATMOSPHERIC ramp starts — the treatment's other half, which both heroes
-/// paint under this wedge (`screens::home`'s `Backdrop::draw` / `detail::draw_backdrop`): nothing above this
-/// line, running to the foot of the panel. It sits here with the wedge's own stops because it is
-/// one treatment's first stop, and it was declared verbatim, under the same name, in two screens.
+/// Where the frame-wide ATMOSPHERIC ramp starts: nothing above this line, running to the foot of the
+/// panel. Detail paints it under its hero shade (`detail::draw_backdrop`); Home paints none (board
+/// CW-13 v2: Home's art stands unramped and the shade carries the legibility). It sits here with the
+/// wedge's own stops because it was one treatment's first stop.
 ///
-/// Both screens share the three-stop curve in `landing_hero::base_scrim_ramp`: zero at this
-/// origin, .55 at 62% of the remaining height, .86 at the foot. Fused ground and layered
-/// drawing use those same stops; `detail_layout::base_scrim_a` delegates to the same curve.
+/// The three-stop curve is `landing_hero::base_scrim_ramp`: zero at this origin, .55 at 62% of the
+/// remaining height, .86 at the foot. Fused ground and layered drawing use those same stops;
+/// `detail_layout::base_scrim_a` delegates to the same curve.
 pub const HERO_BASE_SCRIM_Y0: f32 = 0.34 * crate::consts::SCR_H; // 367.2
 
 /// The hero wedge's alpha at `x`, at or below [`HERO_SCRIM_KNEE`] — which is where every hero text
@@ -2804,7 +2804,11 @@ pub fn hero_scrim_quads(strength: f32, right: bool) -> ([(Rect, [[f32; 4]; 4]); 
 /// Draw the hero corner scrim: the darkening for copy that sits directly on a full-bleed backdrop,
 /// along the one axis a bottom-up ramp has nothing to say about.
 ///
-/// Both heroes already paint a frame-wide atmospheric ramp, and both bottom-anchor their text
+/// **RETIRED from the heroes.** Neither Home nor Detail draws this wedge now: both stand on the
+/// content-following [`crate::hero_shade::HeroShade`], and only `screens::catalog` still calls it.
+/// The rest of this note is what the wedge was designed for.
+///
+/// Both heroes already painted a frame-wide atmospheric ramp, and both bottom-anchor their text
 /// column well ABOVE the band where that ramp reaches strength — the HERO-72 title's cap top gets
 /// ~0.11 of it. The ramp cannot simply be raised, because at any given y it is uniform across all
 /// 1920px: enough alpha to rescue the title would put 60% black over the whole picture at the
@@ -2828,8 +2832,10 @@ pub fn hero_scrim(p: Painter, strength: f32, right: bool) {
 
 /// Is the one-pass hero ground armed? `/tmp/plxnative-heroground`, read once at boot.
 ///
-/// EXPERIMENT, not a default. The shipped path is the four blended quads, and it stays reachable
-/// on one binary so the two are an A/B rather than a replacement.
+/// **RETIRED.** Nothing reads [`hero_ground_armed`] any more: the heroes' shipped ground is the shade
+/// carried in `AmbientWash::draw_ground`'s one pass, and the four-quad path this flag was an A/B
+/// against no longer exists, so arming the trigger changes no pixel. The trigger, [`hero_ground`] and
+/// `fs_hero.frag` stay only until one follow-up deletes them together.
 static HERO_GROUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Arm the one-pass hero ground (`app.rs`, from the dev trigger).
@@ -2877,6 +2883,10 @@ pub fn hero_ground_wedge(strength: f32) -> [f32; 4] {
 
 /// THE HERO GROUND IN ONE PASS — the backdrop art carrying both scrim fields, instead of the art
 /// plus [`hero_scrim`]'s two quads plus the screen's own two atmospheric-ramp bands.
+///
+/// **RETIRED** (see [`set_hero_ground`]): no hero calls it. The one pass the heroes draw is
+/// `AmbientWash::draw_ground`, whose per-vertex field carries the hero shade; what follows is the
+/// wedge-and-ramp experiment's own account.
 ///
 /// **This is the same picture by construction, not a cheaper approximation of it.** Both fields are
 /// closed forms of the authored pixel position, both are [`theme::SCRIM_INK`], and two straight-alpha
@@ -4311,8 +4321,9 @@ impl WashScrim {
 
 /// The widest and tallest a scrimmed ground draws as ONE mesh (a 16 x 16 grid of triangles):
 /// 480 x 270 is the panel in a 4 x 4. The vertex-evaluated field is linear inside a triangle, so
-/// this is what bounds its distance from the closed form: `the_painted_field_stays_within_...`
-/// holds the bound for the hero shade's own field.
+/// this is what bounds its distance from the closed form:
+/// `the_painted_field_is_the_closed_form_under_content_and_close_elsewhere` holds the bound for the hero
+/// shade's own field.
 pub const SCRIM_CELL_W: f32 = 480.0;
 pub const SCRIM_CELL_H: f32 = 270.0;
 

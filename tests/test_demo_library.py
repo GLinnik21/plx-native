@@ -528,14 +528,15 @@ class HeroGeometry(unittest.TestCase):
         self.assertIn("overlap:home shelf row", v["reasons"])
 
     def test_a_subject_in_the_starring_column_fails(self):
-        v = self.verdict(3840, 2160, [3000, 1420, 3400, 1500])  # frame (1500,710)-(1700,770)
-        self.assertEqual(v["reasons"], ["overlap:detail starring column"])  # y 770 is above the shelf row
+        v = self.verdict(3840, 2160, [3000, 1406, 3400, 1414])  # frame (1500,703)-(1700,707)
+        self.assertEqual(v["reasons"], ["overlap:detail starring column"])  # y 707 is above the shelf row (708)
 
     def test_a_subject_over_the_detail_synopsis_or_facts_fails(self):
         v = self.verdict(3840, 2160, [1800, 700, 2000, 900])  # frame (900,350)-(1000,450)
         self.assertIn("overlap:detail text column", v["reasons"])
         v = self.verdict(3840, 2160, [2100, 1420, 2500, 1500])  # frame (1050,710)-(1250,750)
-        self.assertEqual(v["reasons"], ["centre-left", "overlap:detail facts row"])
+        # the facts row stands inside the Home shelf row's band (from y 708), so both are named
+        self.assertEqual(v["reasons"], ["centre-left", "overlap:home shelf row", "overlap:detail facts row"])
 
     def test_touching_a_zone_is_not_overlapping_it(self):
         # frame (1039,350)-(1400,500): its left edge is the detail text column's right edge
@@ -658,8 +659,8 @@ class HeroGeometry(unittest.TestCase):
                          ["home text column", "home shelf row", "detail text column",
                           "detail facts row", "detail starring column"])
         by = {z["name"]: z["rect"] for z in zones}
-        self.assertEqual(by["home text column"], [96, 206, 1039, 776])
-        self.assertEqual(by["home shelf row"], [0, 757, 1920, 1080])
+        self.assertEqual(by["home text column"], [96, 206, 1039, 728])
+        self.assertEqual(by["home shelf row"], [0, 708, 1920, 1080])
         self.assertEqual(by["detail text column"], [96, 326, 1039, 1080])
         self.assertEqual(by["detail facts row"], [1039, 714, 1264, 842])
         self.assertEqual(by["detail starring column"], [1264, 702, 1824, 1080])

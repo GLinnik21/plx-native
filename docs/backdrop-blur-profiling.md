@@ -605,6 +605,13 @@ submits**. The card composites everyone assumes are the expensive part are 5%.
 
 ### The experiment: fold the hero's whole ground into one pass
 
+> **RETIRED (2026-11).** Neither hero draws the wedge and ramp this experiment folded any more: both
+> stand on the content-following hero shade, which the heroes' one-pass ground
+> (`AmbientWash::draw_ground`) carries per vertex. Nothing reads `hero_ground_armed()`, so arming
+> `/tmp/plxnative-heroground` changes no pixel and the four-quad A/B no longer exists. The account
+> below is the 2026-10 measurement of the old pair of fields, kept as the record of it; the shade's own
+> GPU cost has not been measured on the television.
+
 `/tmp/plxnative-heroground` (`ui::widgets::hero_ground` + `shaders/fs_hero.frag`) draws the
 photograph and BOTH scrim fields in **one** quad instead of the art plus four blended gradient
 quads over it. Both fields are closed forms of the authored pixel position — `home::base_scrim_a`
@@ -684,7 +691,7 @@ remove ARITHMETIC, not fragments.
 4. **`plx_gfx::overdraw` is worth keeping** whichever way the fold goes. It is compiled out of a release
    build entirely, it runs in the simulator, and it is the only instrument here that can attribute a
    fragment to a draw class — the counters cannot, because they are GPU-global.
-5. The fold itself is **worth having in the tree behind its flag and not worth switching on**: 0.81%
+5. The fold itself (retired since, see the note on the experiment) was **worth having in the tree behind its flag and not worth switching on**: 0.81%
    does not pay for a GLSL copy of two design curves that `theme.rs` and two screens own, and every
    future retune of either curve would have to be made in both places. It becomes interesting the
    day the surface is not 1080p — at 4K the fragment and load/store work scale by four while the

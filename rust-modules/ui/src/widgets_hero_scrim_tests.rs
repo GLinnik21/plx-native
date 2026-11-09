@@ -1,4 +1,5 @@
-//! The hero corner scrim (`hero_scrim`, Detail's) wedge shape/seam and its legibility contract.
+//! Detail's hero legibility contract (the atmospheric base ramp plus the content-following shade,
+//! `hero_shade`), and the retired corner wedge's (`hero_scrim`) shape and seam.
 
 use super::*;
 #[allow(unused_imports)]

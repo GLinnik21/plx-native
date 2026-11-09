@@ -649,12 +649,11 @@ HERO_PINS = {
     "SCR_W": ["rust-modules/base/src/surface.rs", "const", "LOGICAL_W", 1920.0],
     "SCR_H": ["rust-modules/base/src/surface.rs", "const", "LOGICAL_H", 1080.0],
     "MARGIN_X": ["rust-modules/ui/src/consts.rs", "const", "MARGIN_X", 96.0],
-    "PEEK_Y": ["rust-modules/ui/src/consts.rs", "const", "PEEK_Y", 791.0],
+    "PEEK_Y": ["rust-modules/ui/src/consts.rs", "const", "PEEK_Y", 742.0],
     "TITLE_DY": ["rust-modules/ui/src/consts.rs", "const", "TITLE_DY", 34.0],
     "TEXT_W": ["rust-modules/ui/src/theme.rs", "const", "hero::TEXT_W", 943.0],
     "COL_W": ["rust-modules/ui/src/landing_hero.rs", "const", "COL_W", 943.0],
-    "TEXT_BOTTOM": ["rust-modules/ui/src/landing_hero.rs", "const", "TEXT_BOTTOM", 692.0],
-    "SPACE_MD": ["rust-modules/ui/src/theme.rs", "const", "space::MD", 24.0],
+    "HOME_ACTIONS_Y": ["rust-modules/ui/src/theme.rs", "const", "hero::HOME_ACTIONS_Y", 668.0],
     "CTRL_H": ["rust-modules/ui/src/widgets.rs", "const", "CTRL_H", 60.0],
     "HERO_SCRIM_W": ["rust-modules/ui/src/widgets.rs", "const", "HERO_SCRIM_W", 1920.0],
     "HERO_SCRIM_TOP": ["rust-modules/ui/src/widgets.rs", "const", "HERO_SCRIM_TOP", 162.0],
@@ -669,7 +668,7 @@ HERO_PINS = {
     "PEOPLE_MAX_LINES": ["rust-modules/ui/src/detail_layout.rs", "const", "PEOPLE_MAX_LINES", 4.0],
     # The formulas the zones rebuild from those numbers:
     "HOME_ROW_RULE": ["rust-modules/screens/src/home/mod.rs", "text",
-                      "const HERO_ROW_Y: f32 = HERO_TEXT_BOTTOM + theme::space::MD;", None],
+                      "const HERO_ROW_Y: f32 = theme::hero::HOME_ACTIONS_Y;", None],
     "HOME_CTRL_RULE": ["rust-modules/screens/src/home/mod.rs", "text",
                        "const HERO_CTRL_D: f32 = StatusOverlay::CTRL_H;", None],
     "HOME_SHELF_HEADING_RULE": ["rust-modules/screens/src/home/mod.rs", "text", "row_y - TITLE_DY - lift", None],
@@ -773,11 +772,12 @@ def hero_zones(pins=None):
     def zone(name, rect, uses, **extra):
         return dict(name=name, rect=rect, uses=uses, **extra)
     return [
-        # Home: the logo (paints up from the band to y 178), title, meta, synopsis and the CTA row
-        # (HERO_ROW_Y = TEXT_BOTTOM + MD, CTRL_H tall), all in the COL_W column from the margin.
+        # Home: the logo, title, the one block above the actions (an episode's label or the synopsis)
+        # and the CTA row (HERO_ROW_Y = HOME_ACTIONS_Y, CTRL_H tall), all in the COL_W column from
+        # the margin; the logo paints up from the ladder's title band to at most HERO_LOGO_TOP_HOME.
         zone("home text column", [v["MARGIN_X"], v["HERO_LOGO_TOP_HOME"], v["MARGIN_X"] + v["COL_W"],
-                                  v["TEXT_BOTTOM"] + v["SPACE_MD"] + v["CTRL_H"]],
-             ["MARGIN_X", "HERO_LOGO_TOP_HOME", "TEXT_W", "COL_W", "TEXT_BOTTOM", "SPACE_MD", "CTRL_H"]),
+                                  v["HOME_ACTIONS_Y"] + v["CTRL_H"]],
+             ["MARGIN_X", "HERO_LOGO_TOP_HOME", "TEXT_W", "COL_W", "HOME_ACTIONS_Y", "CTRL_H"]),
         # The peek shelf: its heading draws TITLE_DY above the row origin PEEK_Y, its cards below.
         zone("home shelf row", [0.0, v["PEEK_Y"] - v["TITLE_DY"], w, h], ["PEEK_Y", "TITLE_DY", "SCR_H", "SCR_W"]),
         # Detail: logo, identity line, synopsis and buttons, to the synopsis' wrap edge. The chain
@@ -792,7 +792,8 @@ def hero_zones(pins=None):
         # The existing lower-right art-selection reserve, independent of variable People text.
         zone("detail starring column", [people_l, HERO_SUBJECT_FOOT, w - v["MARGIN_X"], h],
              ["SCR_W", "MARGIN_X", "PEOPLE_W", "SCR_H"]),
-        # The left wedge's scrim: it darkens, it does not hide, so its share is only printed.
+        # The retired left wedge's scrim (neither hero draws it now; `hero_shade` follows the content
+        # instead): it darkens, it does not hide, so its share is only printed.
         zone("hero scrim", [0.0, v["HERO_SCRIM_TOP"], v["HERO_SCRIM_W"], h],
              ["HERO_SCRIM_TOP", "HERO_SCRIM_W", "SCR_H"], advisory=True),
         zone("right scrim feather", [people_l, v["HERO_SCRIM_R_TOP"], w, h],

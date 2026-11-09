@@ -1,23 +1,27 @@
-//! Shared landing-page geometry and the atmospheric curve used by both full-bleed heroes. Keeping these
-//! pure lets the renderer, route narrative and legibility tests use one definition.
+//! Landing-page geometry: Detail's hero ladder ([`hero_rows`]) and its atmospheric curve
+//! ([`base_scrim_ramp`], which Home no longer paints), and Home's own ladder ([`home_rows`]). Keeping
+//! these pure lets the renderer, route narrative and legibility tests use one definition. What stands
+//! behind the text is not here: both heroes read it from [`crate::hero_shade`].
 
 use super::hstack::Item;
 use super::vstack::{Anchor, VSpan, VStack};
 use super::{consts::SCR_H, theme, widgets::HERO_BASE_SCRIM_Y0};
 
-pub const TEXT_BOTTOM: f32 = 692.0;
 pub const COL_W: f32 = theme::hero::TEXT_W;
 pub const KNEE_Y: f32 = theme::hero::SCRIM_MID_Y;
 pub const MID_WEIGHT: f32 = theme::hero::SCRIM_MID_A / theme::hero::SCRIM_FOOT_A;
-/// How much a bound preview multiplies the hero scrim curve. The shape stays the wedge, the
-/// bottom ramp and the feathered corner. 1.35 is the video-bound row the legibility table grades.
+/// How much a bound preview multiplies the hero's darkening: Detail's atmospheric ramp
+/// ([`base_scrim_ramp`]) and the shade ([`crate::hero_shade::HeroShade::scrim`], which clamps its
+/// strength to this). 1.35 is the video-bound row the legibility table grades.
 ///
 /// The player publishes the same number as `player::preview::PREVIEW_FIELD` (its `View::field` once
 /// a picture is up). `player` may not name `ui` and `ui` may not name `player`, so each owns a copy
 /// and `screens::detail`'s `preview_plane_tests` pin them equal.
 pub const PREVIEW_FIELD: f32 = 1.35;
 
-/// The shared ladder. Home pins its actions; Detail pins the foot of its title.
+/// Where [`hero_rows`]' ladder is pinned: Detail pins the foot of its title ([`HeroAnchor::TitleBottom`]);
+/// [`HeroAnchor::Actions`] grows the same rows up from an action row. Home no longer stacks these rows (it
+/// has [`home_rows`]), so only the tests build the second form.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum HeroAnchor {
     Actions(f32),
@@ -34,8 +38,8 @@ pub struct HeroStack {
     pub actions: VSpan,
 }
 
-/// One measured ladder for both screens. Identity and ratings form a tight group; prose and
-/// facts get block air, and facts stand close to their action. Absent rows leave no phantom gap.
+/// Detail's measured ladder. Identity and ratings form a tight group; prose and facts get block
+/// air, and facts stand close to their action. Absent rows leave no phantom gap.
 pub fn hero_rows(title_h: f32, meta_h: f32, ratings_h: Option<f32>, synopsis_h: Option<f32>, anchor: HeroAnchor) -> HeroStack {
     let items = [
         Item::new(title_h),
@@ -57,11 +61,6 @@ pub fn hero_rows(title_h: f32, meta_h: f32, ratings_h: Option<f32>, synopsis_h: 
         title: span(0).unwrap(), meta: span(1).unwrap(), ratings: span(2),
         synopsis: span(3), facts: span(4).unwrap(), actions: span(5).unwrap(),
     }
-}
-
-/// Home's shared ladder grows up from the same action anchor, independently of its synopsis.
-pub fn hero_stack(title_h: f32, meta_h: f32, synopsis_h: Option<f32>) -> HeroStack {
-    hero_rows(title_h, meta_h, None, synopsis_h, HeroAnchor::Actions(TEXT_BOTTOM + theme::space::MD))
 }
 
 /// Home's hero ladder (owner's board CW-13 v2): the title, ONE block under it, and the action row,
@@ -122,6 +121,11 @@ pub fn base_scrim_a(y: f32, hero_a: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The bottom-up form of the shared rows, from an action row at 716 (what Home's pre-CW-13 stack was).
+    fn hero_stack(title_h: f32, meta_h: f32, synopsis_h: Option<f32>) -> HeroStack {
+        hero_rows(title_h, meta_h, None, synopsis_h, HeroAnchor::Actions(716.0))
+    }
 
     #[test]
     fn the_hero_text_is_one_ladder_with_an_absent_synopsis() {

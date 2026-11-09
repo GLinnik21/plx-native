@@ -1035,10 +1035,10 @@ fn the_ground_is_skipped_only_when_opaque_art_covers_it() {
 
 #[test]
 fn the_home_hero_logo_never_reaches_the_top_bar() {
-    const META_H: f32 = 28.0 * 1.32;
-    let synopsis = plx_ui::hero_syn_h(plx_ui::HERO_SYN_MAXLINES);
+    // the tallest ladder Home draws: the title over a synopsis at its full line count
+    let block = plx_ui::hero_syn_h(theme::hero::HOME_SYNOPSIS_LINES);
     let band = hero_logo::band_h(LogoRung::Hero);
-    let top = plx_ui::landing_hero::hero_stack(band, META_H, Some(synopsis)).title.y;
+    let top = home_rows(band, Some(block)).title.y;
     assert!(top - (theme::logo::HERO_H_MAX - band) > plx_ui::widgets::TOP_BAR_BOTTOM);
 }
 
@@ -6069,8 +6069,8 @@ fn only_the_continue_watching_deck_opts_in_to_the_deck_art_walk() {
 
 /// **A focused still only pops (1.09, in place); the tiles beside it stand exactly where they rest**,
 /// at every point of the pop (owner, 2026-11: focusing a still must not change the spacing between
-/// tiles). At 1.09 a 420 px tile grows about 19 px a side, inside the 28 px gap, so nothing needs to
-/// step aside. The check runs along the pop's whole spring, not only at its end.
+/// tiles). At 1.09 a 420 px tile grows about 19 px a side, inside the 40 px gap (`STILL_GAP`), so
+/// nothing needs to step aside. The check runs along the pop's whole spring, not only at its end.
 #[test]
 fn a_focused_still_pops_in_place_and_every_other_tile_stands_at_its_rest_x() {
     let _guard = plx_base::testlock::serial();

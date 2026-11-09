@@ -848,8 +848,9 @@ static mut PLAIN_IMAGE: Option<(c_uint, PlainUniforms)> = None;
 // ---- hero-ground program: the backdrop art with both scrim fields folded into it (fs_hero.frag).
 // Its own program because it is the SAME quad the art already draws, only carrying two more
 // closed-form fields — nothing else in the app wants them, and the card composite must not pay for
-// them. Off unless `ui::widgets::hero_ground` is armed; `HPROG == 0` falls the caller back to the
-// four-quad path, which is the shipped picture.
+// them. RETIRED: no hero calls `ui::widgets::hero_ground` any more (the heroes' one pass is
+// `draw_ambient_inked`, which carries the hero shade), so this program is never linked in the product;
+// `HPROG == 0` was the caller's fall-back to the four-quad path, which no longer exists either.
 static mut HPROG: c_uint = 0;
 /// Has [`init_hero`] already run? The link is LAZY — see that function for why.
 static mut HERO_TRIED: bool = false;
@@ -2417,8 +2418,8 @@ pub fn init_image() {
     }
 }
 
-/// Link the hero-ground program. A failure is not fatal and is not a hole in the picture: the
-/// caller keeps the four-quad path, which is what every build has always drawn.
+/// Link the hero-ground program. RETIRED with its caller (see `HPROG`): nothing in the product links it.
+/// A failure was never fatal: the caller kept the four-quad path that every build had drawn.
 ///
 /// **LAZY, called from [`draw_hero_ground`]'s first draw rather than from [`init_image`].** This
 /// program serves ONE experiment behind one dev trigger, and `devtriggers` is compiled out of a
