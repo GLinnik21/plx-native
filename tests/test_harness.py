@@ -10683,7 +10683,7 @@ class FpsMock(unittest.TestCase):
             runnable, skipped = self.mf.partition_mock(list(self.scenes.values()), True)
         names = {s["name"] for s in runnable}
         self.assertEqual(names, {"home-grid", "home-grid-deep", "home-recent-paging", "home-recent-paging-held", "home-recent-paging-held-3g",
-                                 "home-recent-paging-held-remote-wan", "home-hint",
+                                 "home-recent-paging-held-remote-wan", "home-hint", "home-cw-row-walk",
                                  *self.PAGING_SURFACES,
                                  "library-shelves-deep", "library-burst", "library-hold",
                                  "library-recommended",
@@ -10700,7 +10700,7 @@ class FpsMock(unittest.TestCase):
     def test_without_mock_a_mock_only_scene_is_skipped_and_the_rest_unchanged(self):
         runnable, skipped = self.mf.partition_mock(list(self.scenes.values()), False)
         self.assertEqual([n for n, _ in skipped], ["home-grid-deep", "home-recent-paging",
-                                                   "home-recent-paging-held",
+                                                   "home-cw-row-walk", "home-recent-paging-held",
                                                    "home-recent-paging-held-3g",
                                                    "home-recent-paging-held-remote-wan",
                                                    *self.PAGING_SURFACES,
@@ -10710,7 +10710,7 @@ class FpsMock(unittest.TestCase):
                                                    "boost-remux-declares-source-rate"])
         self.assertIn("--mock", skipped[0][1])
         self.assertIn("home-grid", {s["name"] for s in runnable})
-        self.assertEqual(len(runnable), len(self.scenes) - 10 - len(self.PAGING_SURFACES))
+        self.assertEqual(len(runnable), len(self.scenes) - 11 - len(self.PAGING_SURFACES))
 
     def test_a_mock_scene_naming_a_library_item_carries_its_own_rating_key(self):
         # the overlay's ratingKey is the real server's; under --mock the scene opens `mock.rk`
@@ -11003,6 +11003,31 @@ class FpsMock(unittest.TestCase):
         self.assertEqual((sc["walk"]["row_down"], sc["walk"]["cards"]), (1, 96))
         self.assertEqual((sc["loop_floor"], sc["fps_floor"]), (deep["loop_floor"], deep["fps_floor"]))
         self.assertIn("./tests/run.py --fps --mock --filter home-recent-paging", sc["comment"])
+
+    def test_cw_row_walk_scene_is_a_mock_only_sideways_walk_of_the_continue_watching_row(self):
+        sc = self.scenes["home-cw-row-walk"]
+        self.assertEqual((sc["tier"], sc["route"]), ("ui", "home"))
+        self.assertEqual(sc["mock"], {"cw_art_fixture": True, "only": True})
+        self.assertEqual(self.mf.mock_server_args(sc), ["--cw-art-fixture"])
+        # `plxnative-grid` seats row 0, the Continue Watching row; the walk never leaves it
+        self.assertTrue(sc["triggers"]["plxnative-grid"])
+        self.assertTrue(self.mf.is_row_walk(sc["walk"]))
+        plan = self.mf.row_walk_plan(sc["walk"])
+        self.assertEqual(plan, ["right"] * 12 + ["left"] * 12)
+        for banned in ("ok", "enter", "back", "down", "up"):
+            self.assertNotIn(banned, plan)
+        # the row does not page, so the page-landing grade must not fail it; the reach grade does
+        self.assertEqual(sc["walk"]["min_page_landings"], 0)
+        self.assertEqual(sc["walk"]["reach"], {"route": "home", "min_global": 10})
+        self.assertIn("plxnative-focusx", sc["triggers"])
+        self.assertLessEqual(sc["walk"]["reach"]["min_global"], sc["walk"]["cards"])
+        self.assertLessEqual(self.mf.walk_secs_needed(sc), sc["run_secs"])
+        self.assertIn("./tests/run.py --fps --mock --filter home-cw-row-walk", sc["comment"])
+
+    def test_cw_art_fixture_key_is_only_ever_the_one_mock_flag(self):
+        self.assertEqual(self.mf.mock_server_args({"mock": {"cw_art_fixture": True}}), ["--cw-art-fixture"])
+        self.assertEqual(self.mf.mock_server_args({"mock": {"cw_art_fixture": False}}), [])
+        self.assertEqual(self.mf.mock_server_args({"mock": {}}), [])
 
     def test_row_walk_plan_is_down_right_left_and_nothing_else(self):
         walk = self.scenes["home-recent-paging"]["walk"]
