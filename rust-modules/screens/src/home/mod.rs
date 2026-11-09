@@ -587,7 +587,7 @@ pub struct HomeScreen {
     /// The cards the Continue Watching row removed, by [`ui_cards::elem_key`], kept while its
     /// landing is pending (a later publication adds to them and cannot change one) and let go
     /// once nothing fades. Not canon.
-    ghost_cards: HashMap<u64, (u32, Arc<PmsMovie>)>,
+    ghost_cards: HashMap<u64, (u32, Arc<PmsMovie>, tile_facts::DeckKeys)>,
     restored_scroll: Vec<(u32, f32)>,
     restore_reveal: bool,
     /// The rows held in the store (`HubsCmd::Hold`): the command goes out only when the rows in
@@ -1150,7 +1150,7 @@ impl HomeScreen {
     /// another card of the same show on the same server, that tile is where focus goes.
     /// `rebind_shows` covers the other case, where the next episode is new and inherits the element.
     fn next_episode_of(&self, gone: u32) -> Option<u32> {
-        let (_, card) = self.ghost_cards.values().find(|(elem, _)| *elem == gone)?;
+        let (_, card, _) = self.ghost_cards.values().find(|(elem, ..)| *elem == gone)?;
         let show = show_of(card)?;
         let row = self.rows.iter().find(|r| r.identity == HomeHubIdentity::ContinueWatching)?;
         row.elems.iter().copied().find(|elem| self.cw_cards.get(elem)
@@ -1207,7 +1207,10 @@ impl HomeScreen {
             .unwrap_or_default();
         for (elem, movie) in std::mem::take(&mut self.cw_cards) {
             if !now.contains_key(&elem) {
-                self.ghost_cards.insert(ui_cards::elem_key(&elem), (elem, movie));
+                // the deck's art keys are a pure function of the card, so a ghost fades in the
+                // art the live card wore (`HomeCards::facts`)
+                let keys = tile_facts::DeckKeys::of(&movie);
+                self.ghost_cards.insert(ui_cards::elem_key(&elem), (elem, movie, keys));
             }
         }
         self.cw_cards = now;
@@ -3891,12 +3894,19 @@ pub(crate) mod cards_harness; // Tier 2 card conformance (cards_conformance_test
 /// The cards a landing removed, each under the element it had, in the order the shelf names them
 /// (`Shelf::ghost_keys`); a card the screen did not keep is `None` and is not drawn.
 struct GhostCards<'a> {
-    cards: Vec<Option<&'a (u32, Arc<PmsMovie>)>>,
+    cards: Vec<Option<&'a (u32, Arc<PmsMovie>, tile_facts::DeckKeys)>>,
 }
 
 impl GhostCards<'_> {
     fn item(&self, i: usize) -> Option<&PmsMovie> {
-        self.cards.get(i).copied().flatten().map(|(_, movie)| &**movie)
+        self.cards.get(i).copied().flatten().map(|(_, movie, _)| &**movie)
+    }
+
+    /// **The facts a ghost draws from**: only the Continue Watching row ever leaves ghosts, so each
+    /// is a deck card, opted in to the deck's art walk with the keys it was stashed with, as the
+    /// live row's ([`HomeCards::facts`]) is.
+    fn facts(&self, i: usize) -> Option<plx_ui::tile::TileFacts<'_>> {
+        self.cards.get(i).copied().flatten().map(|(_, movie, keys)| tile_facts::for_deck(movie, keys))
     }
 }
 
@@ -3906,23 +3916,36 @@ impl<H: HomeLike> CardSource<H> for GhostCards<'_> {
     }
     /// The card's own element; a ghost is never focused, pressed or registered, so nothing asks.
     fn elem(&self, i: usize) -> u32 {
-        self.cards.get(i).copied().flatten().map_or(0, |(elem, _)| *elem)
+        self.cards.get(i).copied().flatten().map_or(0, |(elem, ..)| *elem)
     }
     fn index_of(&self, e: &u32) -> Option<usize> {
-        self.cards.iter().position(|c| c.is_some_and(|(elem, _)| elem == e))
+        self.cards.iter().position(|c| c.is_some_and(|(elem, ..)| elem == e))
     }
     fn art(&self, i: usize) -> Art<'_> {
-        Art::Poster(self.item(i).map(tile_facts::of))
+        Art::Still(self.facts(i))
     }
     fn label(&self, _i: usize) -> ui_cards::TileLabel {
         ui_cards::TileLabel::default()
     }
-    fn progress(&self, i: usize) -> Option<f32> {
-        self.item(i).and_then(PmsMovie::resume_frac)
+    /// A still draws its own bar in its footer ([`Self::overlay`]), as the live row's does.
+    fn progress(&self, _i: usize) -> Option<f32> {
+        None
+    }
+    /// The fading still keeps the footer it had ([`deck_overlay`]).
+    fn overlay(&self, p: Painter, i: usize, tile: &ui_cards::Tile, measure: &dyn plx_machine::machine::Measure) {
+        if let Some(facts) = self.facts(i) { deck_overlay(p, &facts, tile, measure) }
     }
     fn loaded(&self, i: usize) -> bool {
         self.item(i).is_some_and(|item| !item.rk.is_empty())
     }
+}
+
+/// A Continue Watching still's footer and scrim on `tile`: the one drawing both the live row's card
+/// and a ghost fading out of it use.
+fn deck_overlay(p: Painter, facts: &plx_ui::tile::TileFacts<'_>, tile: &ui_cards::Tile, measure: &dyn plx_machine::machine::Measure) {
+    let cue = if plx_media::route::deck_press().press_plays() { plx_ui::still_footer::Cue::Play } else { plx_ui::still_footer::Cue::Info };
+    plx_ui::widgets::still_overlay(p, facts, tile.rect, tile.radius,
+        plx_ui::widgets::StillFooter::Continue { cue, pop: tile.pop }, measure);
 }
 
 /// One row's cards, as `cards::Shelf` reads them: the published hub's items under the elements
@@ -4038,9 +4061,7 @@ impl<H: HomeLike> CardSource<H> for HomeCards<'_> {
     fn overlay(&self, p: Painter, i: usize, tile: &ui_cards::Tile, measure: &dyn plx_machine::machine::Measure) {
         if !self.deck() { return }
         let Some(facts) = self.facts(i) else { return };
-        let cue = if plx_media::route::deck_press().press_plays() { plx_ui::still_footer::Cue::Play } else { plx_ui::still_footer::Cue::Info };
-        plx_ui::widgets::still_overlay(p, &facts, tile.rect, tile.radius,
-            plx_ui::widgets::StillFooter::Continue { cue, pop: tile.pop }, measure);
+        deck_overlay(p, &facts, tile, measure);
     }
 
     /// A card has landed once it has a rating key; the ring's placeholder slot is an empty movie.

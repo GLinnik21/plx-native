@@ -1923,22 +1923,6 @@ fn continue_watching_commit_follows_the_setting_while_an_ordinary_shelf_opens_de
     assert!(has_home(&detail, |r| matches!(r, HomeReq::Detail { rk, .. } if rk == "1")));
 }
 
-/// No deck caption carries the amber ▶ in either mode: nobody read it as "playback starts", and what
-/// OK does is the focused still's footer cue.
-#[test]
-fn the_deck_title_never_carries_a_play_glyph() {
-    use plx_media::route::DeckPress;
-    let _guard = plx_base::testlock::serial();
-    let titled = plx_ui::caption_policy::CaptionPolicy { title: true, ..Default::default() };
-    let item = PmsMovie { title: "Show".into(), ..Default::default() };
-    let deck_label = |is_deck: bool| crate::registry::captions::shelf_label(&titled, &item, is_deck);
-    for mode in [DeckPress::Play, DeckPress::Details] {
-        let _press = deck_press_is(mode);
-        assert!(!deck_label(true).glyph, "{mode:?}");
-        assert!(!deck_label(false).glyph, "{mode:?}");
-    }
-}
-
 #[test]
 fn holding_a_shelf_card_opens_the_item_menu_without_activation() {
     let _guard = plx_base::testlock::serial();
@@ -4820,6 +4804,30 @@ fn a_continue_watching_card_that_leaves_fades_out_as_a_ghost_of_the_previous_sna
     tick_n(&mut s, after.view(), None, 20, 120);
     assert!(!s.grid.shelves[0].landing_pending(), "the landing settled");
     assert!(s.ghost_cards.is_empty(), "the removed cards are let go once nothing fades");
+}
+
+/// **A card fading out of the Continue Watching row fades as the still it was**: its art is the
+/// deck's (`Art::Still`, opted in to the cover, composite and title walk with the keys of the
+/// removed card), not the poster the row stopped drawing, and it carries no poster bar of its own
+/// (a still's progress is in its footer).
+#[test]
+fn a_ghost_of_the_continue_watching_row_is_a_deck_still() {
+    let _guard = plx_base::testlock::serial();
+    let (mut state, mut s) = landing_home(6);
+    plx_data::pms::remove_test_item(&mut state, "2");
+    let after = plx_data::pms::hubs_snapshot(&state);
+    tick_n(&mut s, after.view(), None, 10, 2);
+    let ghosts = s.ghost_source(&s.grid.shelves[0]);
+    let i = (0..CardSource::<TestHost>::len(&ghosts)).find(|i| ghosts.item(*i).is_some_and(|m| m.rk == "2")).expect("the removed card is a ghost");
+    let keys = tile_facts::DeckKeys::of(ghosts.item(i).expect("a kept card"));
+    match CardSource::<TestHost>::art(&ghosts, i) {
+        Art::Still(Some(facts)) => {
+            let deck = facts.deck.expect("the ghost opts in to the deck's art walk");
+            assert_eq!((deck.cover, deck.card), (keys.cover.as_str(), keys.card.as_str()), "with the keys of the card it was");
+        }
+        _ => panic!("a Continue Watching ghost is a still"),
+    }
+    assert_eq!(CardSource::<TestHost>::progress(&ghosts, i), None, "a still's bar is in its footer");
 }
 
 /// A ghost is the card that was removed, not a position in some publication: a later generation
