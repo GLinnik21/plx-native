@@ -69,17 +69,24 @@ struct PlaybackRequest {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct HeldSelection {
+    part_id: i64,
+    audio_sid: i64,
+    sub_sid: i64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct RetryContext {
     resume_ns: i64,
     candidate_purpose: CandidatePurpose,
-    /// `(audio_sid, sub_sid)` the session HELD when this retry was built, `Some` only when that
+    /// [`HeldSelection`] the session HELD when this retry was built, `Some` only when that
     /// selection was KNOWN ([`PlaybackSession::selection_known`]): a playable plan landed, or the
     /// viewer picked a track. `0` is both "subtitles Off" and "nothing landed yet", so the pair
     /// cannot be told apart from the cleared defaults by value; `None` says that nothing landed
     /// (a quality change or contract bump while loading, a retry of a refused plan) and leaves the
     /// fresh defaults (the account / show / server rules) in charge instead of forcing the
     /// subtitle Off. Applied by [`apply_retry`].
-    selection: Option<(i64, i64)>,
+    selection: Option<HeldSelection>,
     sub_offset_ms: i64,
     direct_play_mode: DirectPlayMode,
     /// Issue #266: resolve this retry WITHOUT the audio enhancement. Set only by a start-failure
@@ -389,14 +396,14 @@ pub struct PlaybackSession {
     /// [`commit_subtitle_selection`]); cleared with the selection by [`clear_track_selection`].
     /// [`RetryContext::selection`] is `Some` exactly when this held at capture time.
     selection_known: bool,
-    /// The `(audio_sid, sub_sid)` a RETRY carried into the request now loading, kept while no
+    /// The [`HeldSelection`] a RETRY carried into the request now loading, kept while no
     /// playable plan has landed: the request clears the live selection ([`Self::selection_known`]
     /// goes false), so a second retry built before this one lands (a contract bump in flight, or
     /// *Switch to Auto and play* after a refusal) would otherwise find nothing to carry and lose
     /// the viewer's choice, an explicit subtitles Off included. Set by [`begin_track_selection`],
     /// kept across a refused landing, dropped by a playable one ([`apply_plan`]).
     /// [`current_retry_context`] reads it only while the selection is unknown.
-    carried_selection: Option<(i64, i64)>,
+    carried_selection: Option<HeldSelection>,
     /// Is [`Self::cur_sub_sid`] an external sidecar (`metadata::Stream::sidecar_renderable`) rather
     /// than an embedded (in-container) track? Meaningless when `cur_sub_sid == 0`. Issue #266 I6:
     /// this is what tells `route::decision::facts`'s [`super::plan::SubtitleEffect::Sidecar`]
@@ -926,7 +933,7 @@ mod backend_offer_session_tests {
         });
         session.cur_sub_sid = 81;
         let retry = current_retry_context(&session, 5_000_000_000);
-        assert_eq!(retry.selection, Some((71, 81)),
+        assert_eq!(retry.selection, Some(HeldSelection { part_id: 7, audio_sid: 71, sub_sid: 81 }),
             "the next executor must receive the source-selected track, not Feed's substitution");
         assert_eq!(retry.resume_ns, 5_000_000_000);
     }
@@ -1053,6 +1060,107 @@ mod backend_offer_session_tests {
             CandidatePurpose::NewCandidate));
         assert!(!session.backend_planned_feed_allowed(),
             "a new URL or later refusal cannot replenish the spent audio conversion");
+    }
+
+    #[test]
+    fn a_cold_resume_landing_is_the_requests_first_candidate_not_a_reopen() {
+        let mut session = PlaybackSession::IDLE;
+        session.install_backends(plx_playback_contract::BackendSet::BOTH);
+        set_url(&mut session, "https://example.invalid/resume-remux.mkv");
+        session.tsession = "pms-resume".into();
+        session.cur_contract.remux = true;
+        assert_eq!(session.installed_feed_recipe(), OfferId::FEED_PMS_REMUX);
+
+        // The cold resume's apply_plan staged the recipe as the request's first candidate.
+        assert!(session.qualify_resolved_feed_offer(OfferId::FEED_PMS_REMUX,
+            CandidatePurpose::NewCandidate));
+        // Its landing then asks to reopen a recipe this request never started.
+        assert!(session.qualify_installed_feed_offer(CandidatePurpose::ReopenCurrent));
+        assert_eq!(session.planned_feed_purpose, CandidatePurpose::NewCandidate,
+            "nothing was admitted, so there is nothing to reopen");
+        assert!(session.backend_planned_feed_allowed(),
+            "the start door admits the resumed recipe as the request's first candidate");
+        assert!(session.backend_offer_admitted(BackendKind::Feed, OfferId::FEED_PMS_REMUX));
+
+        // Once admitted, the same request is a real reopen and stays one.
+        assert!(session.qualify_installed_feed_offer(CandidatePurpose::ReopenCurrent));
+        assert_eq!(session.planned_feed_purpose, CandidatePurpose::ReopenCurrent);
+        assert!(session.backend_planned_feed_allowed());
+    }
+
+    #[test]
+    fn a_landing_over_a_staged_revisit_keeps_its_purpose_and_the_policys_verdict() {
+        let mut session = PlaybackSession::IDLE;
+        session.install_backends(plx_playback_contract::BackendSet::BOTH);
+        // The request played the Original, then the Auto worker moved it to HLS; both are admitted.
+        set_url(&mut session, "https://example.invalid/original.mkv");
+        assert!(session.qualify_installed_feed_offer(CandidatePurpose::NewCandidate));
+        assert!(session.backend_offer_admitted(BackendKind::Feed, OfferId::FEED_ORIGINAL));
+        set_url(&mut session, "https://example.invalid/hls.m3u8");
+        session.tsession = "hls-session".into();
+        session.cur_contract.delivery = plx_plex::plex::TranscodeDelivery::FixedHls {
+            seconds_per_segment: 2,
+        };
+        assert!(session.qualify_installed_feed_offer(CandidatePurpose::NewCandidate));
+        assert!(session.backend_offer_admitted(BackendKind::Feed, OfferId::FEED_PMS_HLS));
+        // The worker's return to the Original stages a Revisit, and the app is suspended before
+        // that reload's Start was admitted.
+        set_url(&mut session, "https://example.invalid/original.mkv");
+        session.tsession.clear();
+        session.cur_contract = Default::default();
+        assert!(session.qualify_transition_feed_offer(OfferId::FEED_ORIGINAL));
+        assert_eq!(session.planned_feed_purpose, CandidatePurpose::Revisit);
+        assert_eq!(session.admitted_feed_offer, Some(OfferId::FEED_PMS_HLS));
+
+        // The foreground restore's landing reinstalls the same route and asks to reopen it.
+        assert!(session.qualify_installed_feed_offer(CandidatePurpose::ReopenCurrent));
+        assert_eq!(session.planned_feed_purpose, CandidatePurpose::Revisit,
+            "the recipe was staged, never admitted: its staged purpose stays");
+        let policy_allows = session.backend_policy.as_ref().is_some_and(|policy|
+            policy.can_revisit(BackendKind::Feed, OfferId::FEED_ORIGINAL));
+        assert!(policy_allows);
+        assert_eq!(session.backend_planned_feed_allowed(), policy_allows);
+        assert!(session.backend_offer_admitted(BackendKind::Feed, OfferId::FEED_ORIGINAL));
+    }
+
+    #[test]
+    fn a_landing_over_a_staged_rollback_keeps_its_purpose_and_the_policys_verdict() {
+        let mut session = PlaybackSession::IDLE;
+        session.install_backends(plx_playback_contract::BackendSet::BOTH);
+        set_url(&mut session, "https://example.invalid/hls.m3u8");
+        session.tsession = "hls-session".into();
+        session.cur_contract.delivery = plx_plex::plex::TranscodeDelivery::FixedHls {
+            seconds_per_segment: 2,
+        };
+        assert!(session.qualify_installed_feed_offer(CandidatePurpose::NewCandidate));
+        assert!(session.backend_offer_admitted(BackendKind::Feed, OfferId::FEED_PMS_HLS));
+        // An Original trial is admitted, then fails.
+        set_url(&mut session, "https://example.invalid/original.mkv");
+        session.tsession.clear();
+        session.cur_contract = Default::default();
+        assert!(session.qualify_installed_feed_offer(CandidatePurpose::NewCandidate));
+        assert!(session.backend_offer_admitted(BackendKind::Feed, OfferId::FEED_ORIGINAL));
+        // The rollback install stages the previous HLS exactly as `rollback_original_recovery` does (its
+        // admission marker cleared, the policy's one allowance not yet spent), and the app is
+        // suspended before its Start was admitted.
+        set_url(&mut session, "https://example.invalid/hls.m3u8");
+        session.tsession = "hls-session".into();
+        session.cur_contract.delivery = plx_plex::plex::TranscodeDelivery::FixedHls {
+            seconds_per_segment: 2,
+        };
+        session.planned_feed_offer = Some(OfferId::FEED_PMS_HLS);
+        session.planned_feed_purpose = CandidatePurpose::RollbackExisting;
+        session.admitted_feed_offer = None;
+
+        assert!(session.qualify_installed_feed_offer(CandidatePurpose::ReopenCurrent));
+        assert_eq!(session.planned_feed_purpose, CandidatePurpose::RollbackExisting,
+            "the recipe was staged, never admitted: its staged purpose stays");
+        let policy_allows = session.backend_policy.as_ref().is_some_and(|policy|
+            policy.can_rollback_existing(BackendKind::Feed, OfferId::FEED_PMS_HLS));
+        assert!(policy_allows);
+        assert_eq!(session.backend_planned_feed_allowed(), policy_allows);
+        assert!(session.backend_offer_admitted(BackendKind::Feed, OfferId::FEED_PMS_HLS));
+        assert_eq!(session.planned_feed_purpose, CandidatePurpose::ReopenCurrent);
     }
 }
 
@@ -1360,7 +1468,20 @@ impl PlaybackSession {
         let still_current = purpose == CandidatePurpose::RollbackExisting
             && self.backend_policy.as_ref().is_some_and(|policy|
                 policy.can_reopen(plx_playback_contract::BackendKind::Feed, id));
-        let purpose = if still_current { CandidatePurpose::ReopenCurrent } else { purpose };
+        let purpose = if still_current {
+            CandidatePurpose::ReopenCurrent
+        } else if purpose == CandidatePurpose::ReopenCurrent
+            && self.admitted_feed_offer != Some(id) && self.planned_feed_offer == Some(id) {
+            // A landing that reopens a recipe the request has not admitted has nothing to reopen:
+            // the recipe is only STAGED, and its staged purpose (the one `apply_plan` or a rollback
+            // install published, which only `backend_offer_admitted` replaces) says how the door
+            // may admit it. A cold resume's apply_plan staged NewCandidate (it is the request's
+            // first candidate); a suspend between an Auto landing or a rollback install and its
+            // Start leaves Revisit or RollbackExisting.
+            self.planned_feed_purpose
+        } else {
+            purpose
+        };
         if still_current {
             // A failed Original trial may be abandoned before its Start was admitted. The
             // previous HLS is still the last physical recipe, even though staging the trial
@@ -6965,15 +7086,61 @@ fn carried_audio_of_stream(ps: &PlaybackSession) -> Option<&CarriedAudio> {
     let declared = plx_platform::devcaps::audio_codec_id(&ps.stream_acodec);
     ps.cur_audio.as_ref().filter(|a| plx_platform::devcaps::audio_codec_id(&a.codec) == declared)
 }
-/// The carried audio track's channel count when it is the codec the stream declares, else 0.
-/// An Opus Load needs it (`opusInfo`), and the no-downmix rule reads it
+/// What an Opus Load declares about its audio, and where each fact comes from: the ONE derivation
+/// [`stream_achannels`] and the Load's `opusInfo` log line both read ([`opus_lane`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OpusLane {
+    /// The channel count the Load declares (`contents.opusInfo.channels`); 0 is not a layout, and the
+    /// Load is refused.
+    pub width: i64,
+    /// The server converted the audio to the declared codec (a live transcode whose carried track is
+    /// another codec), so the carried width is the SOURCE's and `width` is the one asked for.
+    pub converted: bool,
+    /// The carried track's channel count, whatever its codec (0: no track, or an unstated count).
+    pub source: i64,
+    /// The Opus bound the profile asked the server for ([`plx_platform::devcaps::Caps::opus_lane_bound`]).
+    pub bound: u32,
+}
+
+/// The width an Opus Load declares and why ([`OpusLane`]); read only while the stream declares Opus.
+///
+/// * The carried track is Opus (a direct play, or a server remux that kept the codec): its own width.
+/// * A **server conversion** to Opus (`is_transcoding`, and the carried track is another codec): the plan
+///   carries the SOURCE track while the stream declares the `/decision` OUTPUT codec, so the carried
+///   width is not the output's. The Load declares the width the profile asked the server for
+///   ([`plx_platform::devcaps::Caps::opus_lane_width`]: the source's, held to the attempt's Opus bound,
+///   stereo when unknown). The PMS output width itself is not measured.
+/// * Anything else with a mismatching track (a native track switch in a direct play or Force Direct Play
+///   moves only the declared codec): 0, never a guessed stereo header over another track's packets
+///   (#917, #918).
+pub fn opus_lane(ps: &PlaybackSession) -> OpusLane {
+    let carried = ps.cur_audio.as_ref();
+    let source = carried.map_or(0, |a| a.channels);
+    let caps = ps.attempt_caps();
+    let bound = caps.opus_lane_bound();
+    let converted = is_transcoding(ps) && carried_audio_of_stream(ps).is_none();
+    let width = if converted {
+        i64::from(caps.opus_lane_width(source))
+    } else {
+        carried_audio_of_stream(ps).map_or(0, |a| a.channels)
+    };
+    OpusLane { width, converted, source, bound }
+}
+/// The channel count the stream's Load declares: the carried audio track's when it is the codec the
+/// stream declares, else 0, except that a server-converted Opus lane declares the width the server was
+/// asked for ([`opus_lane`]). An Opus Load needs it (`opusInfo`), and the no-downmix rule reads it
 /// ([`plx_platform::devcaps::app_decode_mixes_down`]: 0 is unknown, which counts as a downmix).
 pub fn stream_achannels(ps: &PlaybackSession) -> i64 {
-    carried_audio_of_stream(ps).map_or(0, |a| a.channels)
+    if plx_platform::devcaps::audio_codec_id(&ps.stream_acodec) == "opus" {
+        opus_lane(ps).width
+    } else {
+        carried_audio_of_stream(ps).map_or(0, |a| a.channels)
+    }
 }
 /// What the pipeline was fed, for the failed-open ladder ([`crate::player::recovery::OpenFacts`]):
-/// the stream's audio codec and the carried track's channel count ([`stream_achannels`]: 0 when
-/// that track is not the declared codec). `None` while no audio codec is declared. Beside
+/// the stream's audio codec and the channel count the Load declares for it ([`stream_achannels`]: the
+/// carried track's, 0 when that track is not the declared codec, except that an Opus lane the server
+/// converted declares the width it was asked for, [`opus_lane`]). `None` while no audio codec is declared. Beside
 /// [`stream_achannels`] so the session keeps its fields private.
 pub fn stream_audio(ps: &PlaybackSession) -> Option<crate::player::recovery::StreamAudio> {
     let codec = stream_acodec(ps);
@@ -7367,6 +7534,104 @@ mod pcm_format_tests {
                 assert_eq!(stream_audio(&ps).unwrap().channels, channels as u32, "{what}: the ladder's fact");
             }
         }
+    }
+
+    /// A session whose attempt announces Opus at `bound` channels (`None`: no stated bound), declaring
+    /// `opus`, carrying `carried` (`None`: no track), on a server transcode or not.
+    fn opus_session(bound: Option<u32>, carried: Option<(&str, i64)>, transcoding: bool) -> PlaybackSession {
+        use plx_platform::devcaps::Caps;
+        let caps = Caps {
+            audio: "aac,ac3,eac3,opus".into(),
+            audio_channels: bound.map(|b| [("opus".to_string(), b)].into()).unwrap_or_default(),
+            ..Caps::assumed()
+        };
+        let mut ps = PlaybackSession::IDLE;
+        ps.begin_attempt(std::sync::Arc::new(caps));
+        set_stream_codecs(&mut ps, "h264", "opus");
+        if let Some((codec, channels)) = carried {
+            set_carried_audio_for_test(&mut ps, CarriedAudio { codec: codec.into(), ..flac(channels, 48_000, 0) });
+        }
+        if transcoding {
+            install_transcode_for_test(&mut ps, true, false);
+        }
+        ps
+    }
+
+    /// **A server-converted Opus lane declares the width the server was asked for.** The plan carries the
+    /// SOURCE track while the stream declares the `/decision` OUTPUT codec, so the declared codec differs
+    /// from the carried one and the carried width is the source's, which the converted stream need not
+    /// have (#1096: a 0 refused the Load with "no Opus layout for 0 channel(s)"). The profile asks the
+    /// server for at most the attempt's Opus bound; the PMS output width itself is not measured.
+    #[test]
+    fn a_server_converted_opus_lane_declares_the_width_the_server_was_asked_for() {
+        // (carried, bound, width)
+        let rows: [(Option<(&str, i64)>, Option<u32>, i64); 10] = [
+            (Some(("aac", 6)), Some(2), 2),
+            (Some(("aac", 1)), Some(2), 1),
+            (Some(("aac", 2)), Some(2), 2),
+            (Some(("aac", 0)), Some(2), 2),
+            (None, Some(2), 2),
+            (Some(("eac3", 8)), Some(2), 2),
+            (Some(("aac", 6)), Some(6), 6),
+            (Some(("aac", 10)), Some(8), 8),
+            (Some(("aac", 6)), None, 2),
+            (Some(("dca", 6)), Some(2), 2),
+        ];
+        for (carried, bound, width) in rows {
+            let ps = opus_session(bound, carried, true);
+            let what = format!("carried {carried:?}, bound {bound:?}");
+            assert_eq!(stream_achannels(&ps), width, "{what}");
+            assert_eq!(i64::from(stream_audio(&ps).unwrap().channels), width, "{what}: the ladder's fact");
+        }
+        // A copy of an Opus track (the carried codec is the declared one) keeps its own width, converted
+        // session or not.
+        for transcoding in [false, true] {
+            let ps = opus_session(Some(2), Some(("opus", 6)), transcoding);
+            assert_eq!(stream_achannels(&ps), 6, "copy, transcoding={transcoding}");
+        }
+    }
+
+    /// The lane the Load logs is the lane it declares from: one derivation, `stream_achannels` reads its width.
+    #[test]
+    fn the_opus_lane_names_where_the_declared_width_came_from() {
+        let converted = opus_session(Some(2), Some(("aac", 6)), true);
+        assert_eq!(opus_lane(&converted), OpusLane { width: 2, converted: true, source: 6, bound: 2 });
+        let copy = opus_session(Some(2), Some(("opus", 6)), true);
+        assert_eq!(opus_lane(&copy), OpusLane { width: 6, converted: false, source: 6, bound: 2 });
+        let nothing = opus_session(None, None, true);
+        assert_eq!(opus_lane(&nothing), OpusLane { width: 2, converted: true, source: 0, bound: 2 });
+        let switched = opus_session(Some(2), Some(("aac", 6)), false);
+        assert_eq!(opus_lane(&switched), OpusLane { width: 0, converted: false, source: 6, bound: 2 });
+        for ps in [&converted, &copy, &nothing, &switched] {
+            assert_eq!(stream_achannels(ps), opus_lane(ps).width);
+        }
+    }
+
+    /// **The converted-lane width is Opus's alone.** Any other declared codec on a server transcode whose
+    /// carried track is another codec keeps today's 0: the Load of AC-3, DTS or AAC declares no channel
+    /// count, and the ladder's facet for them is unchanged.
+    #[test]
+    fn a_converted_lane_of_another_codec_keeps_its_zero_width() {
+        for (declared, carried) in [("ac3", "dca"), ("aac", "eac3"), ("dts", "aac"), ("eac3", "opus")] {
+            let mut ps = opus_session(Some(2), Some((carried, 6)), true);
+            set_stream_codecs(&mut ps, "h264", declared);
+            assert_eq!(stream_achannels(&ps), 0, "{declared} converted from {carried}");
+            assert_eq!(stream_audio(&ps).unwrap().channels, 0, "{declared} from {carried}: the ladder's fact");
+        }
+    }
+
+    /// **Only a server conversion earns the declared stereo.** A direct play (or Force) whose carried
+    /// track is another codec than the declared one is a native track switch, which moves the declared
+    /// codec alone (`flight::stage_native_audio`): the packets are the new track's, so a stereo header over
+    /// 5.1 packets (#917, #918) must not be declared. The width stays 0, and the Load stays refused.
+    #[test]
+    fn a_mismatched_track_in_direct_play_keeps_a_zero_width() {
+        let ps = opus_session(Some(2), Some(("aac", 6)), false);
+        assert_eq!(stream_achannels(&ps), 0, "direct play");
+        let mut forced = opus_session(Some(2), Some(("aac", 2)), false);
+        forced.direct_play_mode = DirectPlayMode::Forced;
+        assert_eq!(stream_achannels(&forced), 0, "Force Direct Play after a native switch to an Opus track");
+        assert_eq!(stream_audio(&forced).unwrap().channels, 0);
     }
 
     /// **MP3 and Vorbis in force** (S4-4) declare the same one shape as DTS, only on an attempt
@@ -9624,6 +9889,7 @@ impl ResolveEnv {
             quality: quality(),
             direct_play_mode: direct_play_mode(),
             dolby_vision_mode: dolby_vision_mode(),
+            uri_engine: uri_engine(),
             dv_capability: plx_platform::devcaps::dv::capability(),
             caps: ps.attempt_caps(),
             backends: ps.backends,
@@ -9641,6 +9907,7 @@ impl ResolveEnv {
             memory: recalled_track_memory(sid),
             // Set in exactly one place, `request_env`: nothing else may default it on.
             fresh_play: false,
+            selection_before_retry: None,
             #[cfg(any(test, feature = "test-support"))]
             account_subtitles: None,
         }
@@ -10013,7 +10280,23 @@ fn request_env(
     if let Some(retry) = retry {
         apply_retry(&mut env, retry);
     }
+    leave_a_cached_default_the_set_cannot_decode(&mut env, meta, request.sid, &request.rk);
     env
+}
+
+fn leave_a_cached_default_the_set_cannot_decode(
+    env: &mut ResolveEnv, meta: plx_data::metadata::MetadataView<'_>, sid: ServerId, rk: &str,
+) {
+    if env.version.is_some() || env.cached_item.is_none() {
+        return;
+    }
+    let replaced = meta
+        .current()
+        .filter(|d| plx_plex::plex::same_item((d.sid, &d.rk), (sid, rk)))
+        .is_some_and(|d| automatic_version(&d.versions, env).is_some());
+    if replaced {
+        env.cached_item = None;
+    }
 }
 
 /// Common async request transaction. A retry waits for the real stop's PMS work on THIS worker
@@ -10074,7 +10357,8 @@ pub fn request_viewer_reconfigure(ps: &mut PlaybackSession,
                 || *sid <= 0 || *sid == source.audio_sid
                 || !meta.view().playing().is_some_and(|item|
                     item.audio.iter().any(|track| track.id == *sid)) { return false; }
-            retry.selection = Some((*sid, source.subtitle_sid));
+            retry.selection = Some(HeldSelection {
+                part_id: source.part_id, audio_sid: *sid, sub_sid: source.subtitle_sid });
         }
         ViewerReconfigure::SourceSubtitle { sid, mode, forced_lang } => {
             let Some(source) = ps.source_selection else { return false };
@@ -10087,7 +10371,8 @@ pub fn request_viewer_reconfigure(ps: &mut PlaybackSession,
             if (*mode == SubMode::Off && *sid != 0)
                 || (*mode == SubMode::Track && *sid == 0)
                 || (*mode == SubMode::ForcedOnly) != forced_lang.is_some() { return false; }
-            retry.selection = Some((source.audio_sid, *sid));
+            retry.selection = Some(HeldSelection {
+                part_id: source.part_id, audio_sid: source.audio_sid, sub_sid: *sid });
             retry.sub_mode = *mode;
         }
         ViewerReconfigure::SourceTracks { audio_sid, subtitle_sid } => {
@@ -10100,7 +10385,8 @@ pub fn request_viewer_reconfigure(ps: &mut PlaybackSession,
                     && item.subs.iter().any(|track| track.id == *subtitle_sid)) {
                 return false;
             }
-            retry.selection = Some((*audio_sid, *subtitle_sid));
+            retry.selection = Some(HeldSelection {
+                part_id: source.part_id, audio_sid: *audio_sid, sub_sid: *subtitle_sid });
             retry.sub_mode = SubMode::Track;
         }
     }
@@ -10384,8 +10670,9 @@ fn begin_track_selection(s: &mut PlaybackSession, retry: Option<RetryContext>) {
 
 /// Clear the outgoing item's live track selection for a play request. A retry is the SAME item
 /// resolved again with the subtitle it had when that was known (`RetryContext::selection`, applied
-/// to the resolve env by [`apply_retry`]), so the timing offset tuned against that subtitle is
-/// carried with it. A genuinely NEW request (no retry) instead resumes whatever this profile last tuned for THIS item, if anything
+/// to the resolve env by [`apply_retry`] while the resolve stays on that Part), so the timing
+/// offset tuned against that subtitle is carried with it.
+/// A genuinely NEW request (no retry) instead resumes whatever this profile last tuned for THIS item, if anything
 /// ([`recall`] of the subtitle-offset memory, keyed by machine id + ratingKey, never by track — a track
 /// CHANGE within one playback already zeros it, `commit_subtitle_selection`'s own doc). Either way
 /// the landing re-clamps it once the subtitle is re-selected (`player::reclamp_subtitle_offset`),
@@ -10430,9 +10717,12 @@ fn current_retry_context(ps: &PlaybackSession, resume_ns: i64) -> RetryContext {
     RetryContext {
         resume_ns: resume_ns.max(0),
         candidate_purpose: CandidatePurpose::ReopenCurrent,
-        selection: ps.source_selection.map(|selection|
-            (selection.audio_sid, selection.subtitle_sid)).or_else(|| {
-            if ps.selection_known { Some((cur_audio_sid(ps), cur_sub_sid(ps))) }
+        selection: ps.source_selection.map(|selection| HeldSelection {
+            part_id: selection.part_id, audio_sid: selection.audio_sid, sub_sid: selection.subtitle_sid,
+        }).or_else(|| {
+            if ps.selection_known {
+                Some(HeldSelection { part_id: cur_part_id(ps), audio_sid: cur_audio_sid(ps), sub_sid: cur_sub_sid(ps) })
+            }
             else { ps.carried_selection }
         }),
         sub_offset_ms: crate::player::subtitle_offset_ms(),
@@ -10536,10 +10826,18 @@ fn apply_retry(env: &mut ResolveEnv, retry: RetryContext) {
     // that reset so a rescue does not silently turn subtitles/audio back to server default.
     // Only a KNOWN selection is carried: with nothing landed the captured pair is the cleared `0`
     // sentinel, and applying it would force subtitles Off over the account's own rule.
-    if let Some((audio_sid, sub_sid)) = retry.selection {
-        env.audio_sid = audio_sid;
-        env.sub_sid = sub_sid;
-        env.subtitle_override = Some(sub_sid);
+    if let Some(held) = retry.selection {
+        env.selection_before_retry = Some(SelectionBeforeRetry {
+            retry_part_id: held.part_id,
+            audio_sid: env.audio_sid,
+            sub_sid: env.sub_sid,
+            subtitle_override: env.subtitle_override,
+            sub_mode: env.sub_mode,
+            memory: env.memory.clone(),
+        });
+        env.audio_sid = held.audio_sid;
+        env.sub_sid = held.sub_sid;
+        env.subtitle_override = Some(held.sub_sid);
         env.sub_mode = retry.sub_mode;
         // That selection is the viewer's own pick of THIS playback and outranks anything the
         // profile remembered for the show.

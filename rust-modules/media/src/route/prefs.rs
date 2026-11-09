@@ -36,7 +36,7 @@
 //! frozen top-level keys: no pick in this module ever writes one.
 use super::plan::{supported_quality, Quality, QUALITY_LADDER};
 use plx_plex::plex::session::{
-    MarkerSkipMode, IntroSkipPref, CreditsSkipPref, DolbyVisionMode, DolbyVisionModePref, InstantDpadSeeking, InstantDpadSeekingPref, effective, own_prefs, persist_profile_pref, AudioEnhancementsPref, DeckPress, DeckPressPref, DirectPlayMode,
+    MarkerSkipMode, IntroSkipPref, CreditsSkipPref, DolbyVisionMode, DolbyVisionModePref, InstantDpadSeeking, InstantDpadSeekingPref, UriEngine, UriEnginePref, effective, own_prefs, persist_profile_pref, AudioEnhancementsPref, DeckPress, DeckPressPref, DirectPlayMode,
     DirectPlayModePref, HdrOverlayBrightness, HdrOverlayBrightnessPref, NextEpisodeMode, NextEpisodeModePref, Preferences, ProfilePrefs, ProfilePrefsRecord,
     ProfileSetting, ProfileWrite, QualityPref, Row, Setting, SkipInterval, SkipIntervalPref, SubtitlePosition,
     SubtitlePositionPref, SubtitleSize, SubtitleSizePref, SubtitleTone, SubtitleTonePref, TrailerAutoplayPref, UnderPosters,
@@ -143,7 +143,7 @@ macro_rules! packed_by_index {
         }
     )*};
 }
-packed_by_index!(MarkerSkipMode = 1, DolbyVisionMode = 0, InstantDpadSeeking = 0, NextEpisodeMode = 0, SkipInterval = 1, DeckPress = 0, SubtitleSize = 1, SubtitlePosition = 0, SubtitleTone = 0, HdrOverlayBrightness = 1);
+packed_by_index!(MarkerSkipMode = 1, DolbyVisionMode = 0, InstantDpadSeeking = 0, UriEngine = 0, NextEpisodeMode = 0, SkipInterval = 1, DeckPress = 0, SubtitleSize = 1, SubtitlePosition = 0, SubtitleTone = 0, HdrOverlayBrightness = 1);
 
 impl Packed for DirectPlayMode {
     const SEED: u16 = 0;
@@ -233,6 +233,7 @@ impl Packed for AudioEnhancements {
 }
 
 live_cell!(pub(super) INSTANT_DPAD_SEEKING: InstantDpadSeeking, "instant D-pad seeking");
+live_cell!(pub(super) URI_ENGINE: UriEngine, "playback engine");
 live_cell!(pub(super) INTRO_SKIP: MarkerSkipMode, "intro skip");
 live_cell!(pub(super) CREDITS_SKIP: MarkerSkipMode, "credits skip");
 live_cell!(pub(super) DOLBY_VISION_MODE: DolbyVisionMode, "Dolby Vision mode");
@@ -330,6 +331,7 @@ macro_rules! live_setting {
 
 live_setting!(DirectPlayModePref, DIRECT_PLAY_MODE, "direct play mode");
 live_setting!(InstantDpadSeekingPref, INSTANT_DPAD_SEEKING, "instant D-pad seeking");
+live_setting!(UriEnginePref, URI_ENGINE, "playback engine");
 live_setting!(IntroSkipPref, INTRO_SKIP, "intro skip");
 live_setting!(CreditsSkipPref, CREDITS_SKIP, "credits skip");
 live_setting!(DolbyVisionModePref, DOLBY_VISION_MODE, "Dolby Vision mode");
@@ -393,6 +395,7 @@ pub const LIVE_ROWS: &[LiveRow] = &[
     LiveRow::of::<NextEpisodeModePref>(),
     LiveRow::of::<SkipIntervalPref>(),
     LiveRow::of::<InstantDpadSeekingPref>(),
+    LiveRow::of::<UriEnginePref>(),
     LiveRow::of::<DolbyVisionModePref>(),
     LiveRow::of::<IntroSkipPref>(),
     LiveRow::of::<CreditsSkipPref>(),
@@ -780,6 +783,7 @@ choices! {
     NextEpisode => NextEpisodeModePref,
     SkipInterval => SkipIntervalPref,
     InstantDpadSeeking => InstantDpadSeekingPref,
+    UriEngine => UriEnginePref,
     DolbyVision => DolbyVisionModePref,
     IntroSkip => IntroSkipPref,
     CreditsSkip => CreditsSkipPref,
@@ -904,6 +908,11 @@ pub fn set_next_episode_mode(mode: NextEpisodeMode) -> bool { confirm::<NextEpis
 
 pub fn instant_dpad_seeking() -> InstantDpadSeeking { InstantDpadSeekingPref::live() }
 pub fn restore_instant_dpad_seeking(seeking: InstantDpadSeeking) { restore_live::<InstantDpadSeekingPref>(seeking) }
+
+/// The seated profile's playback engine: `On` is the viewer's opt-in to the URI engine. The route
+/// owner snapshots it into `ResolveEnv` at the press, as the quality and the direct-play mode.
+pub fn uri_engine() -> UriEngine { UriEnginePref::live() }
+pub fn restore_uri_engine(engine: UriEngine) { restore_live::<UriEnginePref>(engine) }
 
 pub fn dolby_vision_mode() -> DolbyVisionMode { DolbyVisionModePref::live() }
 pub fn restore_dolby_vision_mode(mode: DolbyVisionMode) { restore_live::<DolbyVisionModePref>(mode) }

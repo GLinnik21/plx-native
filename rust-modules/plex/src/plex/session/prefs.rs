@@ -36,7 +36,7 @@
 //! assignment. `subtitle_offsets` is the other tenant of the door and is declared the same way
 //! ([`SubtitleOffsetsPref`]).
 use super::{
-    MarkerSkipMode, DolbyVisionMode, InstantDpadSeeking, DeckPress, DirectPlayMode, HdrOverlayBrightness, LastLibrary, LibraryViews, NativeAudioRefusal, NextEpisodeMode, OpaqueExtensions,
+    MarkerSkipMode, DolbyVisionMode, InstantDpadSeeking, UriEngine, DeckPress, DirectPlayMode, HdrOverlayBrightness, LastLibrary, LibraryViews, NativeAudioRefusal, NextEpisodeMode, OpaqueExtensions,
     PlaintextConsent, HoldHintTaught, PlaybackQuality, ServerKeyPin, Session, SkipInterval, SubtitleOffsetEntry, SubtitleOffsets, SubtitlePosition,
     SubtitleSize, SubtitleTone, UiResolution, UnderPosters,
 };
@@ -125,6 +125,9 @@ pub struct Preferences {
     /// Hidden-HUD D-pad jumps; off by default.
     #[serde(default, deserialize_with = "de_soft_instant_dpad_seeking", skip_serializing_if = "InstantDpadSeeking::is_default")]
     pub instant_dpad_seeking: InstantDpadSeeking,
+    /// Opt-in to the URI engine (`On`); `Off` by default, the Feed engine every build had.
+    #[serde(default, deserialize_with = "de_soft_uri_engine", skip_serializing_if = "UriEngine::is_default")]
+    pub uri_engine: UriEngine,
     /// Dolby Vision override (`Auto` or `Off`); `Auto` by default.
     #[serde(default, deserialize_with = "de_soft_dolby_vision_mode", skip_serializing_if = "DolbyVisionMode::is_default")]
     pub dolby_vision_mode: DolbyVisionMode,
@@ -543,6 +546,8 @@ setting!(NextEpisodeModePref: NextEpisodeMode = next_episode_mode, "next_episode
     account false, live true, settings Some(SettingsWrite::Confirm), parse Soft);
 setting!(InstantDpadSeekingPref: InstantDpadSeeking = instant_dpad_seeking, "instant_dpad_seeking", Profile fallback LegacyInstallKey,
     account false, live true, settings Some(SettingsWrite::Confirm), parse Soft);
+setting!(UriEnginePref: UriEngine = uri_engine, "uri_engine", Profile fallback LegacyInstallKey,
+    account false, live true, settings Some(SettingsWrite::Confirm), parse Soft);
 setting!(IntroSkipPref: MarkerSkipMode = intro_skip, "intro_skip", Profile fallback LegacyInstallKey,
     account false, live true, settings Some(SettingsWrite::Confirm), parse Soft);
 setting!(CreditsSkipPref: MarkerSkipMode = credits_skip, "credits_skip", Profile fallback LegacyInstallKey,
@@ -683,6 +688,7 @@ pub const DESCRIPTORS: &[Descriptor] = &[
     Descriptor::of::<NextEpisodeModePref>(),
     Descriptor::of::<SkipIntervalPref>(),
     Descriptor::of::<InstantDpadSeekingPref>(),
+    Descriptor::of::<UriEnginePref>(),
     Descriptor::of::<DolbyVisionModePref>(),
     Descriptor::of::<IntroSkipPref>(),
     Descriptor::of::<CreditsSkipPref>(),
@@ -1401,6 +1407,17 @@ where
         return Ok(InstantDpadSeeking::default());
     };
     Ok(serde_json::from_value::<InstantDpadSeeking>(v).unwrap_or_default())
+}
+
+/// The playback engine is a preference too: a spelling this build does not know degrades to Off.
+fn de_soft_uri_engine<'de, D>(d: D) -> Result<UriEngine, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Ok(v) = serde_json::Value::deserialize(d) else {
+        return Ok(UriEngine::default());
+    };
+    Ok(serde_json::from_value::<UriEngine>(v).unwrap_or_default())
 }
 
 /// Dolby Vision mode is a preference too: a spelling this build does not know degrades to Auto.

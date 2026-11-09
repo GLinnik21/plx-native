@@ -352,7 +352,7 @@ pub fn audio_payload_codec(codec: &str) -> Option<(&'static str, u8)> {
 /// available here; a 5.1 Opus track of a real library carries exactly this header (see the test).
 pub fn opus_head(channels: i64) -> Option<Vec<u8>> {
     // (streams, coupled streams, channel mapping) for 3..=8 channels — libopus `vorbis_mappings`.
-    const FAMILY1: [(u8, u8, &[u8]); 6] = [
+    const FAMILY1: [(u8, u8, &[u8]); plx_platform::devcaps::OPUS_LOAD_CHANNELS as usize - 2] = [
         (2, 1, &[0, 2, 1]),
         (2, 2, &[0, 1, 2, 3]),
         (3, 2, &[0, 4, 1, 2, 3]),
@@ -360,7 +360,9 @@ pub fn opus_head(channels: i64) -> Option<Vec<u8>> {
         (4, 3, &[0, 4, 1, 2, 3, 5, 6]),
         (5, 3, &[0, 6, 1, 2, 3, 4, 5, 7]),
     ];
-    let ch = u8::try_from(channels).ok().filter(|c| (1..=8).contains(c))?;
+    let ch = u8::try_from(channels).ok().filter(|c| {
+        (1..=plx_platform::devcaps::OPUS_LOAD_CHANNELS).contains(&u32::from(*c))
+    })?;
     let mut head = b"OpusHead".to_vec();
     head.extend_from_slice(&[1, ch]);
     head.extend_from_slice(&312u16.to_le_bytes());

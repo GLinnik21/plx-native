@@ -115,11 +115,11 @@ base
 
 | layer | members | prod lines | an edit there recompiles |
 |---|---|---:|---:|
-| base | `eventlog paths task cbuf sha256 b64 spki dynlib checkpoint storage_worker fontcov surface tile hold detail_parts devtrig diag::{zlib,spans,heartbeat} testlock testnet testscratch testrace` | 9k | everything |
+| base | `eventlog paths task cbuf sha256 sha1 b64 spki dynlib checkpoint storage_worker fontcov surface tile hold detail_parts devtrig diag::{zlib,spans,heartbeat} testlock testnet testscratch testrace` | 9k | everything |
 | machine | `ui::{machine,present,idle,landgate,landing,motion}` | 4k | 97% |
 | platform | `webos storage keymanager devcaps imgcache i18n labcfg tv` | 11k | 96% |
 | gfx | `gfx egl text rtl img svg gpu_timer hwcnt overdraw dump` | 15k | 68% |
-| net | `net stream` | 6k | 74% |
+| net | `net stream ws` | 6k | 74% |
 | plex | `plex http` | 26k | 72% |
 | telemetry | `telemetry diag` (the event schema) | 16k | 64% |
 | ui | `ui` (the library) | 51k | 47% |
@@ -175,9 +175,11 @@ and the product driver `UriBackend`, which implements the contract's `UriDriver`
 and driver (`uriprobe`, `uriprobe_drive`, `devtriggers` builds only). `plx_media` does not name it: the route planner and the player adapter see
 only the contract's traits and the `UriProbe` port, and the application composes the driver
 (`app/adapters/backends.rs`, behind the application crate's `play-uri` feature, which the release build passes
-explicitly) and the probe (`dev/uriprobe.rs`). The driver is compiled into every build that has the feature and
-is never offered a source: production evidence certifies nothing (`media::route::uri_preflight::ProductQualifier`
-answers `Unknown`). `ci/check-deps.sh` reads the whole crate for the same IO and clock gates as every other layer.
+explicitly) and the probe (`dev/uriprobe.rs`). The driver is compiled into every build that has the feature.
+Production offers it a source only for a viewer who turned on Settings > Video & playback > Playback engine >
+Experimental: `media::route::uri_preflight::ProductQualifier` answers `Unknown` for everyone else, for an original
+Standard would not direct-play (the plan's own `StandardDirectPlay` verdicts for the video, Dolby Vision, audio and
+container, not the server's decision, which the offer precedes), and for a converted PMS output. `ci/check-deps.sh` reads the whole crate for the same IO and clock gates as every other layer.
 
 The Watchlist adds two data modules and no new edge. `watchlist` (rows, match table, `TileState`,
 intent ledger, comparator; with `stores::watchlist`) and `catalog` (the Discover-only item page; with

@@ -3,6 +3,7 @@
 use crate::acb_bind::{AcbBind, Event as AcbEvent, Failure as AcbFailure, Fx as AcbFx};
 use crate::acb_drive::{self, Descriptor, Executed, Verdict};
 use crate::picture_gate::{Event as PictureEvent, Fx as PictureFx, PictureGate};
+use crate::register_ladder::{self, Outcome, Step};
 use crate::session_io;
 use crate::uri_lifecycle::{Event as LifeEvent, Fx as LifeFx, Lifecycle, Phase};
 use crate::acb_envelope::Ls2VideoInfo;
@@ -24,17 +25,19 @@ pub trait MonotonicClock { fn now_ms(&self) -> u64; }
 /// is the webOS 4.x plane: the paced bind sequence of `acb_bind` through the one plane owner,
 /// released by `UNLOADED` and its completion fence. The executor refuses to start on it unless the
 /// display is in ACB mode and the gate (`acb_bind::gate`) passes, and it forwards only a descriptor
-/// the service itself reported. Present, and not routed in production: the product composition certifies
-/// no source for it, so no offer reaches it. A `devtriggers` build can compose a dev qualifier and
+/// the service itself reported. Routed in production only for a viewer who turned on Settings > Playback
+/// engine > Experimental: nothing else is offered to it. A `devtriggers` build can compose a dev qualifier and
 /// certified capabilities for it (the app's `dev::uri_product`); its attempt then also writes the
 /// `uri-trace:` stream (`uri_trace`).
 pub use plx_playback_contract::uri::Binding;
 
 /// The display path composition chooses for the executor: the ACB plane when the display is in ACB
 /// mode and the same gate the executor re-checks at every Start holds (a handle the library
-/// confirmed initialized, player type 0; `connectDass` is a developer arm and is not asked for);
+/// confirmed initialized, player type 0 (the URI engine's own boot handle); `connectDass` is a developer arm and is not asked for);
 /// otherwise nothing: the exported window is not selected here because no source is certified for
-/// it either. `initialized` is the sink's `plane_initialized`, read by the caller at the IO boundary.
+/// it either. `plane` and `initialized` are the URI engine's own handle's (player type 0, the plane
+/// owner's `facts_of(PlaneHandle::Uri)` and `initialized(PlaneHandle::Uri)`), never Feed's: a normal
+/// boot initializes Feed's handle as player type 10 and the URI engine's as 0.
 pub fn product_binding(display_mode: i32, plane: plx_platform::tv::plane::PlaneFacts, initialized: bool) -> Binding {
     let gate = crate::acb_bind::gate(false, display_mode, plane.handle, plane.player_type, false, initialized);
     if gate.ready { Binding::Acb } else { Binding::Unbound }
@@ -96,6 +99,12 @@ pub struct UriBackend {
     pending: VecDeque<DriverEvent>,
     close_reported: bool,
     quarantine_reported: bool,
+    /// The identities this attempt has had refused, one `Outcome` per rung tried
+    /// (`register_ladder`): the one input of the decision that picks the next registration.
+    ladder: Vec<Outcome>,
+    /// The identity to register as once the refused registration's release is confirmed. Set
+    /// while that quiet close runs; a Stop, a fault or the release itself clears it.
+    reopen: Option<Shape>,
     acb: AcbBind,
     /// The envelope for the loaded media that an ACB bind sends: the one the service sent in the ACB
     /// schema, else the one derived from its `videoInfo`. Never anything else.
@@ -127,6 +136,7 @@ impl UriBackend {
             subscribed: false,
             dispatching: None, controls: BTreeMap::new(),
             pending: VecDeque::new(), close_reported: false, quarantine_reported: false,
+            ladder: Vec::new(), reopen: None,
             acb: AcbBind::new(false), acb_source: None, foreground_sent: false, acb_refusal: None,
             transport_paused: false, plane_paused: false, picture: PictureGate::new(),
             #[cfg(feature = "devtriggers")]
@@ -258,6 +268,8 @@ impl UriBackend {
         self.controls.clear();
         self.close_reported = false;
         self.quarantine_reported = false;
+        self.ladder.clear();
+        self.reopen = None;
         self.acb_source = None;
         self.foreground_sent = false;
         self.acb_refusal = None;
@@ -267,11 +279,13 @@ impl UriBackend {
         #[cfg(feature = "devtriggers")]
         { self.trace = crate::uri_trace::Trace::new(self.config.clock.now_ms()); }
         self.lifecycle = Lifecycle::new();
-        self.feed(LifeEvent::Open(Shape::Named), mt, self.config.clock.now_ms());
+        self.feed(LifeEvent::Open(register_ladder::first()), mt, self.config.clock.now_ms());
         DispatchResult::Queued
     }
 
     fn begin_close(&mut self, mt: &MainThread, now_ms: u64) {
+        // A close the player or a failure asks for outranks the ladder's pending retry.
+        self.reopen = None;
         // No ACB verb may run after UNLOADED has been asked for: a stray display step would send
         // PLAYING over a release in flight.
         self.acb.step(AcbEvent::Cancel, now_ms, &mut Vec::new());
@@ -287,6 +301,27 @@ impl UriBackend {
             self.feed(LifeEvent::Call(UriCall::Unload { media_id }), mt, now_ms);
         }
         self.feed(LifeEvent::Close { now_ms, allowance_ms: self.config.release_allowance_ms }, mt, now_ms);
+    }
+
+    /// Whether a denied `method` is the refusal of the registered identity itself: the registration,
+    /// or the Load that is its first call (before any media exists). Anything later is the media's.
+    fn identity_refused(&self, method: Method) -> bool {
+        matches!(method, Method::Register | Method::Load) && self.lifecycle.media_id().is_none()
+    }
+
+    /// The identity just tried was refused: when the ladder has a rung left, release its
+    /// registration quietly (no notice the player sees, the locator kept) and register as the next
+    /// once that release is confirmed (`LifeFx::Released`). False when every rung is spent, and
+    /// the caller then takes the one existing failure path.
+    fn climb_ladder(&mut self, mt: &MainThread, now_ms: u64) -> bool {
+        self.ladder.push(Outcome::Refused);
+        let Step::Register(next) = register_ladder::decide(&self.ladder) else { return false };
+        let tried = register_ladder::RUNGS.get(self.ladder.len() - 1).copied().map_or("?", register_ladder::label);
+        plx_base::eventlog::log(&format!("uri: register shape={tried} refused; retrying as {}",
+            register_ladder::label(next)));
+        self.reopen = Some(next);
+        self.feed(LifeEvent::Close { now_ms, allowance_ms: self.config.release_allowance_ms }, mt, now_ms);
+        true
     }
 
     /// A Seek has been dispatched and has not landed (or timed out).
@@ -459,6 +494,7 @@ impl UriBackend {
                 if refused_control && method == Method::Play { self.play_sent = false; }
                 return;
             }
+            if self.identity_refused(method) && self.climb_ladder(mt, now_ms) { return; }
             self.observe(Observation::Failed(Failure::Refused));
             if matches!(method, Method::Register | Method::Load | Method::Subscribe)
                 || (method == Method::NotifyForeground && self.config.binding == Binding::Acb) {
@@ -717,6 +753,10 @@ impl UriBackend {
                 }
                 match effect {
                     LifeFx::Deliver { method, ok, message } => self.delivered(method, ok, message, mt, now_ms),
+                    // The refused identity's registration is released: the ladder's next rung registers.
+                    LifeFx::Released if self.reopen.is_some() => {
+                        if let Some(next) = self.reopen.take() { queue.push_back(LifeEvent::Open(next)); }
+                    }
                     LifeFx::Released => {
                         self.release_notice(ReleaseStatus::Released);
                         if self.window { session_io::destroy_exported_window(self.config.display, mt); }
@@ -735,6 +775,12 @@ impl UriBackend {
                         self.subscribed = false;
                     }
                     LifeFx::Fault => {
+                        // A quiet close that never completed is now the attempt's release: the player
+                        // hears it began, as it would for any close, before it hears it is stuck.
+                        if self.reopen.take().is_some() && !self.close_reported {
+                            self.close_reported = true;
+                            self.release_notice(ReleaseStatus::Closing);
+                        }
                         self.observe(Observation::Failed(Failure::ReleaseUncertain));
                     }
                     LifeFx::UnloadAcb { session } => {
@@ -750,7 +796,7 @@ impl UriBackend {
                 }
             }
             if self.active.is_some() {
-                if self.lifecycle.phase() == Phase::Closing && !self.close_reported {
+                if self.lifecycle.phase() == Phase::Closing && !self.close_reported && self.reopen.is_none() {
                     self.close_reported = true;
                     self.release_notice(ReleaseStatus::Closing);
                 }
@@ -974,12 +1020,13 @@ mod tests {
     impl MonotonicClock for Clock { fn now_ms(&self) -> u64 { self.0.load(Ordering::Relaxed) } }
     struct BusState { session: SessionId, serial: u64,
         calls: Vec<(&'static str, RequestId, String)>, replies: VecDeque<UriReply>,
-        close: CloseStatus, hold: bool, refuse_open: bool, fail_poll: bool }
+        close: CloseStatus, hold: bool, refuse_open: bool, fail_poll: bool, shapes: Vec<Shape> }
     struct Bus(Mutex<BusState>);
     impl Bus {
         fn new() -> Self { Self(Mutex::new(BusState { session: SessionId::new(0),
             serial: 0, calls: Vec::new(), replies: VecDeque::new(),
-            close: CloseStatus::Released, hold: false, refuse_open: false, fail_poll: false })) }
+            close: CloseStatus::Released, hold: false, refuse_open: false, fail_poll: false,
+            shapes: Vec::new() })) }
         fn say(&self, method: &'static str, payload: &str) {
             let mut state = self.0.lock().unwrap();
             let request = if method == "register" { RequestId::new(0) } else {
@@ -992,10 +1039,23 @@ mod tests {
         fn calls(&self, method: &str) -> usize {
             self.0.lock().unwrap().calls.iter().filter(|(name, _, _)| *name == method).count()
         }
+        /// The identities the driver asked to register as, in order.
+        fn shapes(&self) -> Vec<Shape> { self.0.lock().unwrap().shapes.clone() }
+        /// The worker's answer to a registration the hub refused: a failed `register` reply, and
+        /// the release the worker confirms because no live handle was ever made.
+        fn refuse_register(&self) {
+            let mut state = self.0.lock().unwrap();
+            let session = state.session;
+            state.replies.push_back(UriReply { session, request: RequestId::new(0), method: "register",
+                payload: "code -1027: Invalid permissions for com.webos.media.client.plxprobe".into(),
+                ok: false });
+            state.close = CloseStatus::Released;
+        }
     }
     impl UriMedia for Bus {
-        fn open(&self, _shape: Shape) -> Result<SessionId, String> {
+        fn open(&self, shape: Shape) -> Result<SessionId, String> {
             let mut state = self.0.lock().unwrap();
+            state.shapes.push(shape);
             if state.refuse_open { return Err("refused".into()); }
             state.serial += 1;
             state.session = SessionId::new(state.serial);
@@ -1030,14 +1090,18 @@ mod tests {
             Self::with(Binding::Unbound, Box::leak(Box::new(NoSink)),
                 Box::leak(Box::new(plx_platform::tv::plane::PlaneOwner::new())))
         }
-        /// An ACB-bound backend over a scripted sink and its own plane owner (booted as the
-        /// measured sequence needs: a handle, player type 0).
+        /// An ACB-bound backend over a scripted sink and its own plane owner, booted as a normal boot
+        /// boots it: Feed's handle (player type 10) and the URI engine's (player type 0, the
+        /// measured sequence), each confirmed initialized.
         fn acb() -> (Self, &'static ScriptedPlaneSink, &'static plx_platform::tv::plane::PlaneOwner) {
             let sink: &'static ScriptedPlaneSink =
                 Box::leak(Box::new(ScriptedPlaneSink::new(PlaneUnload { rv: 1, task: 5 })));
             let plane: &'static plx_platform::tv::plane::PlaneOwner =
                 Box::leak(Box::new(plx_platform::tv::plane::PlaneOwner::new()));
-            plane.boot(plx_platform::tv::plane::PlaneFacts { handle: true, player_type: 0 });
+            plane.boot(plx_platform::tv::plane::PlaneFacts { handle: true, player_type: 10 });
+            plane.boot_handle(plx_platform::tv::plane::PlaneHandle::Uri,
+                plx_platform::tv::plane::PlaneFacts { handle: true, player_type: 0 },
+                plx_platform::tv::plane::HandleSeat { id: 0, initialized: true });
             (Self::with(Binding::Acb, sink, plane), sink, plane)
         }
         fn with(binding: Binding, display: &'static dyn DisplaySink,
@@ -1318,6 +1382,117 @@ mod tests {
             DriverEvent::Observation { attempt: A, observation: Observation::Failed(Failure::Refused) },
             DriverEvent::Release { attempt: A, status: ReleaseStatus::Released },
         ]);
+    }
+
+    /// The bus-identity ladder (`register_ladder`): the named client the Developer Mode role file
+    /// grants may be refused at register on a set that does not grant it. The attempt then goes
+    /// on as the anonymous client instead of failing (RED against the driver that registered as
+    /// the named client only: it reported `Failed(Refused)` and released).
+    #[test]
+    fn a_named_registration_the_hub_refuses_goes_on_as_the_anonymous_client() {
+        let mut rig = Rig::new();
+        assert_eq!(rig.start(A), DispatchResult::Queued);
+        assert_eq!(rig.bus.shapes(), [Shape::Named], "the first rung is the named client");
+        rig.bus.refuse_register();
+        assert!(rig.driver.poll(&rig.mt).is_empty(),
+            "a refused first rung is neither a failure nor a release the player may see");
+        assert_eq!(rig.bus.shapes(), [Shape::Named, Shape::Anon],
+            "the refused registration is released, then the anonymous client registers");
+        assert!(!rig.driver.lifecycle.released() && rig.driver.active == Some(A));
+        rig.finish_open();
+        assert_eq!(rig.bus.calls("load"), 1, "only the anonymous registration reached a Load");
+    }
+
+    /// The first call a registered identity makes is the second place a name that is not granted
+    /// shows: the hub answers the Load "Denied method call". The same ladder moves on, and the
+    /// locator that Load needs survives the quiet close of the refused registration.
+    #[test]
+    fn a_load_the_named_identity_is_denied_goes_on_as_the_anonymous_client_with_the_same_locator() {
+        let mut rig = Rig::new();
+        assert_eq!(rig.start(A), DispatchResult::Queued);
+        rig.bus.say("register", "");
+        assert!(rig.driver.poll(&rig.mt).is_empty());
+        assert_eq!(rig.bus.calls("load"), 1);
+        rig.bus.say("load", r#"{"returnValue":false,"errorText":"Denied method call load for com.webos.media.client.plxprobe"}"#);
+        assert!(rig.driver.poll(&rig.mt).is_empty(), "a denied first Load on the named client is not a failure");
+        assert!(rig.driver.poll(&rig.mt).is_empty());
+        assert_eq!(rig.bus.shapes(), [Shape::Named, Shape::Anon]);
+        rig.bus.say("register", "");
+        assert!(rig.driver.poll(&rig.mt).is_empty());
+        assert_eq!(rig.bus.calls("load"), 2);
+        assert!(rig.bus.0.lock().unwrap().calls.last().unwrap().2.contains("private.invalid/file"),
+            "the second Load carries the same authorized locator");
+        rig.bus.say("load", r#"{"returnValue":true,"mediaId":"m1","loadCompleted":true}"#);
+        assert_eq!(rig.driver.poll(&rig.mt), [DriverEvent::Observation { attempt: A,
+            observation: Observation::Playback(Observed { value: Playback::ReadyAwaitPlay,
+                from: EvidenceSource::BackendReport }) }]);
+    }
+
+    /// A refusal of BOTH rungs takes the one existing path: the same `Failed(Refused)` and release
+    /// notices a single refused registration gave before the ladder (the player's URI failure
+    /// handling, `adapter::note_uri_failure`, is keyed on that observation, and its handoff to Feed
+    /// is pinned by the app's `refused_product_uri_load_recovers_the_same_request_only_after_native_release`
+    /// and `a_hub_that_refuses_both_register_rungs_hands_the_same_request_to_feed`). Exactly one
+    /// anonymous retry is made, never a third registration.
+    #[test]
+    fn a_refusal_of_both_rungs_is_the_one_failed_refused_and_a_release_and_no_third_registration() {
+        let mut rig = Rig::new();
+        assert_eq!(rig.start(A), DispatchResult::Queued);
+        rig.bus.refuse_register();
+        assert!(rig.driver.poll(&rig.mt).is_empty());
+        rig.bus.refuse_register();
+        assert_eq!(rig.driver.poll(&rig.mt), [
+            DriverEvent::Observation { attempt: A, observation: Observation::Failed(Failure::Refused) },
+            DriverEvent::Release { attempt: A, status: ReleaseStatus::Closing },
+            DriverEvent::Release { attempt: A, status: ReleaseStatus::Released },
+        ]);
+        assert_eq!(rig.bus.shapes(), [Shape::Named, Shape::Anon]);
+        assert_eq!(rig.bus.calls("load"), 0);
+        assert!(rig.driver.poll(&rig.mt).is_empty());
+        assert_eq!(rig.bus.shapes().len(), 2, "no third registration");
+        assert_eq!(rig.driver.exit_disposition(), ExitDisposition::Clean);
+    }
+
+    /// The refused registration's quiet close is bounded by the same release allowance as any
+    /// close: when the hub never confirms it the attempt is quarantined and fails, announcing the
+    /// close first, and the retry never registers.
+    #[test]
+    fn a_quiet_close_the_hub_never_confirms_quarantines_and_never_registers_again() {
+        let mut rig = Rig::new();
+        rig.bus.0.lock().unwrap().hold = true;
+        assert_eq!(rig.start(A), DispatchResult::Queued);
+        rig.bus.refuse_register();
+        rig.bus.0.lock().unwrap().close = CloseStatus::Closing;
+        assert!(rig.driver.poll(&rig.mt).is_empty());
+        rig.clock.store(101, Ordering::Relaxed);
+        assert_eq!(rig.driver.poll(&rig.mt), [
+            DriverEvent::Release { attempt: A, status: ReleaseStatus::Closing },
+            DriverEvent::Observation { attempt: A, observation: Observation::Failed(Failure::ReleaseUncertain) },
+            DriverEvent::Release { attempt: A, status: ReleaseStatus::Quarantined },
+        ]);
+        rig.bus.0.lock().unwrap().close = CloseStatus::Released;
+        let notices = rig.driver.poll(&rig.mt);
+        assert!(notices.contains(&DriverEvent::Release { attempt: A, status: ReleaseStatus::Released }), "{notices:?}");
+        assert_eq!(rig.bus.shapes(), [Shape::Named], "a late release of a quarantined close is not a retry");
+    }
+
+    /// A Stop while the refused registration is still closing ends the attempt: the ladder's
+    /// pending retry must not reopen a registration the player has asked to release.
+    #[test]
+    fn a_stop_during_the_quiet_close_of_a_refused_rung_does_not_register_again() {
+        let mut rig = Rig::new();
+        rig.bus.0.lock().unwrap().hold = true;
+        assert_eq!(rig.start(A), DispatchResult::Queued);
+        rig.bus.refuse_register();
+        rig.bus.0.lock().unwrap().close = CloseStatus::Closing;
+        assert!(rig.driver.poll(&rig.mt).is_empty());
+        assert_eq!(rig.bus.shapes(), [Shape::Named], "the refused registration is still closing");
+        assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command, Operation::Stop(StopReason::Stop)),
+            DispatchResult::Queued);
+        rig.bus.0.lock().unwrap().close = CloseStatus::Released;
+        let notices = rig.driver.poll(&rig.mt);
+        assert!(notices.contains(&DriverEvent::Release { attempt: A, status: ReleaseStatus::Released }), "{notices:?}");
+        assert_eq!(rig.bus.shapes(), [Shape::Named], "a released registration the player stopped is not retried");
     }
 
     #[test]
@@ -1958,22 +2133,23 @@ mod tests {
 
     #[test]
     fn acb_start_refuses_unless_every_gate_fact_holds() {
-        let boot = |handle, player_type| -> &'static plx_platform::tv::plane::PlaneOwner {
+        // The URI engine's handle as the boot recorded it; Feed's is irrelevant to this gate.
+        let boot = |handle, player_type, initialized| -> &'static plx_platform::tv::plane::PlaneOwner {
             let plane = Box::leak(Box::new(plx_platform::tv::plane::PlaneOwner::new()));
-            plane.boot(plx_platform::tv::plane::PlaneFacts { handle, player_type });
+            plane.boot_handle(plx_platform::tv::plane::PlaneHandle::Uri,
+                plx_platform::tv::plane::PlaneFacts { handle, player_type },
+                plx_platform::tv::plane::HandleSeat { id: 0, initialized });
             plane
         };
         let scripted = || -> &'static ScriptedPlaneSink {
             Box::leak(Box::new(ScriptedPlaneSink::new(PlaneUnload { rv: 1, task: 5 })))
         };
-        let unconfirmed = scripted();
-        unconfirmed.initialized.store(false, Ordering::Relaxed);
         let cases: [(&str, &'static ScriptedPlaneSink, &'static dyn DisplaySink, &'static plx_platform::tv::plane::PlaneOwner); 4] = {
-            let (a, b, c) = (scripted(), scripted(), scripted());
-            [("a created handle is not an initialized one", unconfirmed, unconfirmed, boot(true, 0)),
-             ("the measured sequence initialized player type 0", a, a, boot(true, 10)),
-             ("no handle", b, b, boot(false, 0)),
-             ("not the ACB display", c, Box::leak(Box::new(NoSink)), boot(true, 0))]
+            let (a, b, c, d) = (scripted(), scripted(), scripted(), scripted());
+            [("a created handle is not an initialized one", a, a, boot(true, 0, false)),
+             ("the measured sequence initialized player type 0", b, b, boot(true, 10, true)),
+             ("no handle", c, c, boot(false, 0, true)),
+             ("not the ACB display", d, Box::leak(Box::new(NoSink)), boot(true, 0, true))]
         };
         for (case, sink, display, plane) in cases {
             let mut rig = Rig::with(Binding::Acb, display, plane);
@@ -2173,8 +2349,9 @@ mod tests {
     #[test]
     fn acb_a_refused_bind_is_a_typed_failure_that_unloads_nothing() {
         let (mut rig, sink, plane) = Rig::acb();
-        // Another backend already holds the plane.
-        assert_eq!(plane.bind(sink, &rig.mt, plx_platform::tv::plane::BindPolicy::Strict, "other"),
+        // Another backend (Feed, over its own handle) already holds the plane.
+        assert_eq!(plane.bind(sink, &rig.mt, plx_platform::tv::plane::PlaneHandle::Feed,
+            plx_platform::tv::plane::BindPolicy::Rebind, "other"),
             plx_platform::tv::plane::BindVerdict::Granted);
         rig.acb_loading();
         rig.bus.say("subscribe", ENVELOPE);
@@ -2189,7 +2366,10 @@ mod tests {
     #[test]
     fn acb_a_bind_during_a_release_is_retried_on_a_later_tick() {
         let (mut rig, sink, plane) = Rig::acb();
-        plane.bind(sink, &rig.mt, plx_platform::tv::plane::BindPolicy::Strict, "previous");
+        // Feed's handle held the plane and is being released: the URI engine's bind waits for that
+        // handle's UNLOADED.
+        plane.bind(sink, &rig.mt, plx_platform::tv::plane::PlaneHandle::Feed,
+            plx_platform::tv::plane::BindPolicy::Rebind, "previous");
         plane.unload(sink, &rig.mt);
         rig.acb_loading();
         rig.bus.say("subscribe", ENVELOPE);

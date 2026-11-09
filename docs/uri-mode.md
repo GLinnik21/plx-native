@@ -96,7 +96,7 @@ changes remains undetermined. Neither arm created an SDL exported window; `windo
 therefore does not determine whether an ACB arm can display its picture.
 
 That sequence is now one shared machine (`rust-modules/play-uri/src/acb_bind.rs`) that the probe and
-the production URI backend (`Binding::Acb`, present and not routed) both step. The production
+the production URI backend (`Binding::Acb`, routed only for the Playback engine opt-in) both step. The production
 backend never uses the fixture descriptor that the controlled arms fell back to (a developer-probe
 exception). It sends the video-data envelope the service itself reported in the ACB schema (a
 `sourceInfo` with a string `context` and a decodable `video`) when there is one, and otherwise an
@@ -175,8 +175,11 @@ landing line says whether the reply had been acknowledged.
 1. Deploy a debug build carrying the probe (devtriggers; no `RELEASE=1` package contains it).
 2. Arm a variant in the install's runtime root:
    `echo load > /tmp/com.beb.plxnative.debug/plxnative-uriprobe` (empty, `load`, `late`, `none`, or
-   `drive`). The separate controlled `acb-control` and `acb-dass` arms require `ptype=0` (the ACB handle
-   is initialized once per process, so the boot must have been given player type 0) and the fixture
+   `drive`). The separate controlled `acb-control` and `acb-dass` arms need no `ptype` trigger since the
+   boot gave the URI engine its own ACB handle (player type 0, created beside Feed's player type 10;
+   the boot log names both: `acb handle=uri ptype=0 create=.. initialized=true`, and `uri: product
+   binding=Acb ..` at composition), but the harness cases keep arming `ptype=0` as the
+   2026-11-02 measurements did (it now sets Feed's handle type, which those arms do not bind), and the fixture
    constraints in the measurement linked above. The 2026-11-02 pair each ran in a fresh process; a second
    arm in the same process binds only after the previous release's fence is proven. A `plex.direct` URL needs
    working name resolution on the set; a plain `http://` URL to

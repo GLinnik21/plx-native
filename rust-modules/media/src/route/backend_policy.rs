@@ -257,6 +257,31 @@ mod tests {
     }
 
     #[test]
+    fn a_viewers_opt_in_qualifies_the_uri_original_and_off_keeps_the_feed_order() {
+        let uri_original = |policy: &BackendPolicy| policy.offer(BackendKind::Uri, OfferId::URI_ORIGINAL).unwrap();
+        // Off: the resolve qualifies only the Feed recipe it prepared; the URI offer stays Unknown.
+        let mut off = BackendPolicy::for_request(false);
+        off.qualify_planned_feed(OfferId::FEED_ORIGINAL);
+        assert_eq!(uri_original(&off).qualification, Qualification::Unknown);
+        let Selection::Open(chosen) = off.choose() else { panic!("Feed is the only qualified offer") };
+        assert_eq!((chosen.backend, chosen.id), (BackendKind::Feed, OfferId::FEED_ORIGINAL));
+        // On: the production qualifier's verdict qualifies the URI original, which then wins its tier.
+        let mut on = BackendPolicy::for_request(false);
+        on.qualify_planned_feed(OfferId::FEED_ORIGINAL);
+        on.qualify(BackendKind::Uri, OfferId::URI_ORIGINAL, Qualification::Qualified);
+        let Selection::Open(chosen) = on.choose() else { panic!("a qualified offer is open") };
+        assert_eq!((chosen.backend, chosen.id), (BackendKind::Uri, OfferId::URI_ORIGINAL));
+        assert!(on.admitted(BackendKind::Uri, OfferId::URI_ORIGINAL));
+        // A URI failure takes the one handoff to Feed, and the opt-in buys no second crossing.
+        on.qualify(BackendKind::Uri, OfferId::URI_ORIGINAL, Qualification::Refused);
+        let Selection::Open(chosen) = on.choose() else { panic!("the handoff is open") };
+        assert_eq!((chosen.backend, chosen.id), (BackendKind::Feed, OfferId::FEED_ORIGINAL));
+        assert!(on.admitted(BackendKind::Feed, OfferId::FEED_ORIGINAL));
+        on.qualify(BackendKind::Uri, OfferId::URI_PMS_REMUX, Qualification::Qualified);
+        assert!(!matches!(on.choose(), Selection::Open(_)), "no second crossing");
+    }
+
+    #[test]
     fn original_handoff_precedes_conversion_and_uri_wins_within_each_fidelity() {
         let (uri, feed) = (BackendKind::Uri, BackendKind::Feed);
         let mut policy = BackendPolicy::new(vec![offer(1, uri, false), offer(2, feed, true),

@@ -1692,6 +1692,8 @@ pub struct Diag {
     pub feed_composed: bool,
     pub vp_mode: c_int,
     pub window_id: String,
+    /// This boot created an ACB handle (either backend's): a URI-only build has the URI engine's with
+    /// Feed's absent, and its diagnostics must not read that as a missing video plane.
     pub acb_ok: bool,
     pub place_rv: i32,
     pub placed_w: i32,
@@ -1849,7 +1851,7 @@ pub(crate) fn diag_on(ps: &crate::route::PlaybackSession, display: &dyn plx_plat
         feed_composed: ps.backends().feed,
         vp_mode: display.window_mode(),
         window_id,
-        acb_ok: plane().handle(),
+        acb_ok: plane().any_handle(),
         place_rv: fd.place_rv,
         placed_w: fd.placed_w,
         placed_h: fd.placed_h,

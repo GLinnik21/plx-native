@@ -248,7 +248,7 @@ pub struct Gate {
     pub ready: bool,
 }
 
-/// The ACB binding needs the television's ACB display mode, the boot's handle, a handle the library
+/// The ACB binding needs the television's ACB display mode, the URI engine's own boot handle, a handle the library
 /// confirmed initialized (a created handle and `playerType 0` alone do not prove it), player type
 /// 0 (what the measured sequence initialized), and, for the `connectDass` arm, the entry point.
 pub fn gate(dass: bool, mode: i32, boot_handle: bool, ptype: i32, dass_available: bool, initialized: bool) -> Gate {

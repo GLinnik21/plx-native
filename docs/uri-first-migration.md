@@ -2,9 +2,13 @@
 
 The target is a URI-first player with independently removable URI and buffer-feed executors.
 This is a staged migration. Boot installs the URI executor and a source qualification port, but
-the production qualifier currently returns Unknown and certifies no URI controls or release.
-Ordinary playback therefore still selects buffer-feed. Injected source and firmware evidence
-exercise the URI route in host tests; they do not qualify the production device.
+the production qualifier returns Unknown and certifies no URI controls or release, except for a
+viewer who turned on Settings > Video & playback > Playback engine > Experimental (off by default,
+per profile): that opt-in is the viewer's own qualification of the original file's URL for their
+own playback, for a file Standard would direct-play on that television (its video, Dolby Vision, audio and
+container verdicts; not the server's own decision, which the offer is made before). Ordinary playback therefore
+still selects buffer-feed. Injected source and firmware evidence exercise the URI route in host tests;
+they do not qualify the production device.
 
 ## Dependency boundary
 
@@ -82,7 +86,7 @@ The ACB plane is released through the plane owner (`platform/src/tv/plane.rs`): 
 fence on that call's completion callback (`docs/measurements/acb-release-fence-2026-11-04.md`), so a
 released plane is reusable in the same process. Only a failed fence (a refused unload, a completion
 that is not "complete", no completion within `RELEASE_FENCE_MS`) quarantines it until process exit.
-The production URI backend has the binding (`Binding::Acb`) and no qualifier routes to it yet.
+The production URI backend has the binding (`Binding::Acb`); only a viewer's own Playback engine opt-in qualifier routes to it.
 
 ## Routing and evidence requirements
 
@@ -102,8 +106,11 @@ candidate. Selection does not acquire a resource lease. Admission spends a recip
 capability refresh preserves that history. At most one cross-executor handoff is permitted per
 recovery episode. The route owner builds the catalog for the selected source; the application
 installs an owned qualified URI source against its route ticket before start. The production
-qualifier still returns Unknown, and recovery integration remains under test. This composition
-does not promote URI.
+qualifier still returns Unknown for everyone who has not opted in (it answers a progressive
+original-file source for one who has, only for a file Standard would direct-play (video, Dolby Vision, audio
+and container; the server's own decision is not asked first), never a converted PMS output, and a URI failure
+still takes the one handoff to Feed), and recovery integration remains under
+test. This composition does not promote URI.
 
 Each attempt starts with fresh observations. Unknown remains unknown; an acknowledgment or
 advancing clock is not picture evidence. Separate logical-request metrics from backend attempts,

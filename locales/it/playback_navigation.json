@@ -5,5 +5,9 @@
   "settings.playback.instant_dpad_seeking.on": "Attivati",
   "settings.playback.dolby_vision": "Dolby Vision",
   "settings.playback.dolby_vision.copy": "Automatico usa Dolby Vision se la TV lo supporta. Disattivato riproduce il livello HDR10. Il server Plex converte i file senza livello HDR10, che potrebbero non essere riprodotti.",
-  "settings.playback.dolby_vision.off": "Disattivato"
+  "settings.playback.dolby_vision.off": "Disattivato",
+  "settings.playback.uri_engine": "Motore di riproduzione",
+  "settings.playback.uri_engine.copy": "Sperimentale lascia che la TV riceva il file in streaming da sola. I controlli restano gli stessi. Se fallisce, il video riparte in Standard. Alcuni video usano sempre Standard.",
+  "settings.playback.uri_engine.off": "Standard",
+  "settings.playback.uri_engine.on": "Sperimentale"
 }

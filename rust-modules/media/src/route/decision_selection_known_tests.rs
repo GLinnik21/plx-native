@@ -171,7 +171,7 @@ fn an_explicit_off_survives_a_contract_bump_during_a_retry() {
 
     let retry = current_retry_context(&ps, 0);
 
-    assert_eq!(retry.selection, Some((17, 0)), "the retry's own pair is carried on");
+    assert_eq!(retry.selection.map(|s| (s.audio_sid, s.sub_sid)), Some((17, 0)), "the retry's own pair is carried on");
     assert_eq!(env_after(&ps, retry).subtitle_override, Some(0), "the explicit Off holds");
     reset_session(&mut ps);
 }
@@ -214,4 +214,26 @@ fn a_new_item_request_carries_no_selection() {
 
     assert_eq!(current_retry_context(&ps, 0).selection, None);
     reset_session(&mut ps);
+}
+
+/// The route reads the viewer's playback engine the way it reads their quality and direct-play
+/// mode: the main thread snapshots the seated profile's cell into the environment a resolve worker
+/// is handed, and the worker only ever sees that value.
+#[test]
+fn the_resolve_snapshot_carries_the_viewers_playback_engine() {
+    use plx_plex::plex::session::UriEngine;
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let before = uri_engine();
+    let engine = |ps: &PlaybackSession| ResolveEnv::snapshot(
+        ps,
+        plx_data::stores::metadata::MetadataStore::default().view(),
+        unregistered_sid(),
+        "rk-engine",
+    ).uri_engine;
+    restore_uri_engine(UriEngine::Off);
+    assert_eq!(engine(&ps), UriEngine::Off, "nobody has opted in");
+    restore_uri_engine(UriEngine::On);
+    assert_eq!(engine(&ps), UriEngine::On);
+    restore_uri_engine(before);
 }

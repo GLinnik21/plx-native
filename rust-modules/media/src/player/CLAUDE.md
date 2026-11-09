@@ -24,12 +24,14 @@ playback (`com.webos.media/load`) failed to bind, prompting the pivot recorded i
 through ACB on the webOS 4.5 dev set, both with and without `connectDass`; see
 `docs/measurements/uri-acb-dass-2026-11-02.md`. That proves this fixture's display path on one
 set, not production source, control or release coverage. Boot now installs a product URI driver
-and source qualification port. Its production qualifier returns Unknown and its certified
-capabilities are empty, so ordinary routes still choose Feed. Host fixtures inject qualified source
+and source qualification port. The port's production qualifier returns Unknown (but for a viewer's own
+Playback engine opt-in, `OriginalRequest::uri_opt_in`, below) and the evidence it reports has no certified
+capabilities, so ordinary routes still choose Feed. The driver itself is configured with what an opted-in
+viewer certifies (`ProductEvidence::opted_in`), and only a qualification ever offers it a source. Host fixtures inject qualified source
 and firmware evidence to exercise source, control and release logic.
 
 The product driver also carries the ACB plane binding the probe proved (`Binding::Acb` in
-`play-uri/src/backend.rs`): present and not routed. The paced sequence (gate, `setMediaId`, LOADED,
+`play-uri/src/backend.rs`): routed only for a viewer's own Playback engine opt-in, never otherwise. The paced sequence (gate, `setMediaId`, LOADED,
 the `connectDass` slot left empty, video data, full-screen display and PLAYING) is ONE pure machine,
 `play-uri/src/acb_bind.rs`, stepped by both the probe and the backend and performed through the sink by
 `play-uri/src/acb_drive.rs`; neither keeps a private copy. The backend starts it at `loadCompleted`
@@ -42,11 +44,28 @@ accepted pause/resume to the plane once the bind has completed. Release is `UNLO
 plane owner's fence on that call's completion callback, pumped from the backend's `poll`
 (`docs/measurements/acb-release-fence-2026-11-04.md`); a quarantine until process exit is only the
 outcome of a failed fence, not the normal one. `plx_play_uri::backend::product_binding` selects it at
-composition (ACB display mode, an initialized handle, player type 0); media's `uri_preflight` only receives the result as
+composition (ACB display mode and the URI engine's own boot handle, initialized, player type 0: the boot creates it beside Feed's player type 10 handle, each once and never destroyed, and the plane owner binds one at a time across both); media's `uri_preflight` only receives the result as
 `ProductEvidence::unqualified_on(.., binding)`. `ProductEvidence::permits` and
 `ResolvePort::could_qualify_pms` accept `Binding::Acb` as an offerable display path beside an exported
 canvas, but only through `certified` capabilities: the production evidence certifies nothing and
 `ProductQualifier` answers `Unknown`, which is what keeps the ACB binding from being offered a source.
+The one exception is a viewer who turned on Settings > Video & playback > Playback engine > Experimental
+(`UriEngine::On`, per profile, off by default): the route snapshots it into `ResolveEnv::uri_engine`,
+`OriginalRequest::uri_opt_in` carries it to the worker, `ProductQualifier` then answers the original
+file as a progressive URL carrier (`KnownSource::url_carrier`) and `ResolvePort::qualify` checks it
+against `ProductEvidence::opted_in()`. `ProductQualifier` answers `Unknown` unless Standard would direct-play
+that original: the plan carries its own verdicts in `OriginalRequest::standard` (`StandardDirectPlay`, built in
+`build_stream` from `video_direct_plays` against `env.caps`, the frozen DV decision,
+`audio_natively_plays_with` and `part_is_streamable`, never re-derived by the qualifier), and `url_carrier`
+certifies a DV record only where the frozen decision admitted it. So a codec or raster the caps refuse, a
+Profile 5 file on a set without Dolby Vision, an audio track only the app decodes or the set cannot decode,
+and a container Standard hands the server to remux (anything but .mkv/.mp4/.m4v) play exactly as in Standard.
+The gate is Standard's own verdicts for the video, Dolby Vision, audio and container, and nothing more: it is
+NOT the server's decision, which the URI offer is made before (no Media Decision Engine round trip), so a
+file that clears these checks but that the server would still convert is offered all the same. A converted PMS output
+(`qualify_pms`) and any file whose Part carries a subtitle stream, whether or not a subtitle is on (the
+plan asks for `TrackChoice::Off`, which the opt-in does not certify), stay unqualified too, so those play on
+Feed; a URI failure keeps the one handoff to Feed.
 
 The sequence's last step (`Op::Display`, the full-screen `setDisplayWindow` and `setState(PLAYING)`)
 goes through `PlaneOwner::show`, not straight to the sink: the C seam (`acb_finish`) returns the task id
@@ -67,7 +86,12 @@ can log pause, resume, seek, track selection and `setSubtitleEnable` behavior (i
 That probe is `devtriggers`-only and reports nothing to Plex; the product driver is separate and
 uses common attempt reporting. The play-uri crate holds their protocol and driver implementation.
 `play-uri/src/uri_protocol.rs` holds pure builders/strict decoding; `play-uri/src/uri_lifecycle.rs` owns registration
-and request correlation, close deadlines and quarantine. The probe's logical Done does not release
+and request correlation, close deadlines and quarantine. Which bus identity an attempt registers as is
+`play-uri/src/register_ladder.rs`, one pure decision the probe and the product driver both call: the named client
+(`com.webos.media.client.plxprobe`) first, and once the anonymous client when a set refuses the name at register or
+denies the registered name's first Load; the product driver releases the refused registration quietly (no
+notice the player sees) before it registers again, and a refusal of both rungs is the one existing `Failed(Refused)`
+and release, which takes the one URI to Feed handoff. The probe's logical Done does not release
 its adapter slot or exported window: the driver waits for successful bus unregister, keeps polling
 outside the player screen, and blocks reuse through unresolved close. Generic track/seek events and
 method ACKs remain distinct observations; they do not invent confirmation or resume policy.
@@ -433,8 +457,11 @@ something.
   which forwards only an envelope the service reported.
 - **Opus goes to LG's own decoder only as far as the set is known to take it** (`ff_native_audio.rs`,
   `devcaps.rs`). What a set announces is layered, in this order and logged at boot as `devcaps: ...
-  audio layers:`: the codec table, minus the codecs `/etc/gst/gstcool.conf` shows nothing can decode
-  (`apply_gst_decoders`), minus `devcaps::EXCLUSIONS` (rows per firmware codename, each carrying its
+  audio layers:`: the codec table, minus the codecs disabled by `/etc/gst/gstcool.conf`
+  (`apply_gst_decoders` keeps `aac`, `ac3` and `eac3` even if the file lists their decoders at rank 0.
+  For other codecs it needs an explicitly disabled hardware element and no enabled decoder.
+  DTS keeps the existing exception: it is dropped if the only listed decoder is `avdec_dca=0`),
+  minus `devcaps::EXCLUSIONS` (rows per firmware codename, each carrying its
   evidence: the C1's `kisscurl-koli` limits Opus to stereo, and records that Vorbis is refused; a row
   may also declare the Dolby Vision splitter IDR-first (`jhericurl-jervisbay`, webOS 5.5.0-19, and
   the C1's `kisscurl-koli`, webOS 6.5.3-47, whose row is read from the image and not observed), which
@@ -672,7 +699,12 @@ something.
   transcode changes the codec/rate; building the Starfish Load config from the *source* metadata gives
   the decoder the wrong description → **silent audio / glitches**. Read the output codecs from the
   transcode decision. For ADTS/HE-AAC, use the **CORE** sample rate from the AudioSpecificConfig (SBR
-  doubles it). See `[[audio-payload-codecs]]`.
+  doubles it). See `[[audio-payload-codecs]]`. The Opus channel count follows the same split: the plan
+  carries the SOURCE track, so on a server-converted Opus lane (`is_transcoding` and a carried track of
+  another codec) `route::opus_lane` estimates the output width from the source and the profile's Opus
+  limit, with stereo as the fallback for an unknown source width. A direct play whose carried track
+  is another codec (a native track switch moves only the declared codec) keeps 0. When the codecs
+  match, the carried width is used as before. This does not detect a same-codec transcode.
 - **Subtitles are client-rendered here — the TV's HW subtitle engine is URI-mode only** and
   unreachable in buffer-feed. Image (PGS/VobSub) subs are decoded and drawn by us; styled
   ASS/SSA and EMBEDDED TEXT tracks (SubRip, WebVTT, mov_text, SAMI, ...) use the bundled libass worker

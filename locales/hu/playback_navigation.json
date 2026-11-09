@@ -5,5 +5,9 @@
   "settings.playback.instant_dpad_seeking.on": "Be",
   "settings.playback.dolby_vision": "Dolby Vision",
   "settings.playback.dolby_vision.copy": "Az Automatikus a Dolby Visiont használja, ha a TV támogatja. A Ki a HDR10 réteget játssza le. A HDR10 réteg nélküli fájlokat a Plex-szerver konvertálja, és lehet, hogy nem játszhatók le.",
-  "settings.playback.dolby_vision.off": "Ki"
+  "settings.playback.dolby_vision.off": "Ki",
+  "settings.playback.uri_engine": "Lejátszómotor",
+  "settings.playback.uri_engine.copy": "A Kísérleti mód a TV-re bízza a fájl streamelését. A vezérlők ugyanazok maradnak. Hiba esetén a videó Normál módban indul újra. Egyes videók mindig Normál módban játszódnak le.",
+  "settings.playback.uri_engine.off": "Normál",
+  "settings.playback.uri_engine.on": "Kísérleti"
 }
