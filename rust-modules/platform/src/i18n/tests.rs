@@ -1064,3 +1064,18 @@ fn local_midnight_follows_the_zone_and_the_clock_change_of_each_date() {
             "local midnight failed (or ran nothing) under {zone}:\n{stdout}\n{}", String::from_utf8_lossy(&out.stderr));
     }
 }
+
+
+#[cfg(test)]
+mod unix_timestamp_tests {
+    use super::super::unix_seconds_from_elapsed;
+    use std::time::Duration;
+
+    #[test]
+    fn wall_clock_seconds_are_rounded_up_not_backwards() {
+        assert_eq!(unix_seconds_from_elapsed(Duration::from_secs(10)), Some(10));
+        assert_eq!(unix_seconds_from_elapsed(Duration::new(10, 1)), Some(11));
+        assert_eq!(unix_seconds_from_elapsed(Duration::new(10, 999_999_999)), Some(11));
+        assert_eq!(unix_seconds_from_elapsed(Duration::ZERO), None);
+    }
+}
