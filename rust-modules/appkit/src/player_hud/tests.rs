@@ -1506,6 +1506,18 @@ mod playbar_options {
     }
 
     #[test]
+    fn remaining_end_time_hides_with_the_remaining_clock_when_the_labels_would_overlap() {
+        let mut b = bar(Knob::Tick, TransportMark::None);
+        b.pos_ns = b.dur_ns - 1_000_000_000;
+        b.end_time = Some([22, 35]);
+        let drawn = runs(b, PlaybarLook::default());
+        assert!(
+            !drawn.iter().any(|r| r.text.contains("22:35")),
+            "the end-time suffix must not survive when the remaining label is suppressed: {drawn:?}",
+        );
+    }
+
+    #[test]
     fn an_always_knob_replaces_the_tick_at_rest() {
         let tick = census(bar(Knob::Tick, TransportMark::None), PlaybarLook::default());
         let always = census(bar(Knob::Tick, TransportMark::None), PlaybarLook { knob: KnobMode::Always, ..PlaybarLook::default() });
