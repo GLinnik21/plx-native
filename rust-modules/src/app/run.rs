@@ -653,22 +653,49 @@ fn hud_model(
     meta: plx_data::metadata::MetadataView<'_>,
     viewer_paused: bool,
 ) -> plx_appkit::player_hud::model::HudModel {
-    let playpos_ns = plx_media::player::playpos_ns(ps).unwrap_or(0);
+    let position_ns = plx_media::player::playpos_ns(ps);
+    let playpos_ns = position_ns.unwrap_or(0);
+    let duration_ns = plx_media::player::duration_ns(ps);
+    let loading = plx_media::player::loading(ps);
+    let seeking = plx_media::player::state(ps) == plx_media::player::PlaybackState::Seeking
+        || plx_media::player::seek_pending(ps).is_some();
+    let scrub_ns = plx_media::player::TX.scrub_ns.load(Relaxed);
+    let advancing = plx_media::player::state(ps) == plx_media::player::PlaybackState::Playing;
+    let (is_episode, is_movie) = meta.now_playing().map_or((false, false), |n| (n.is_real_episode, n.is_movie));
+    let projected_end_time = if plx_media::route::hud_end_time()
+        && (is_episode || is_movie)
+        && !plx_media::route::is_preview(ps)
+        && advancing
+        && !viewer_paused
+        && !seeking
+        && !loading
+        && scrub_ns < 0
+    {
+        let rate = plx_media::player::applied_rate(ps).unwrap_or(plx_media::player::RATE_NORMAL);
+        clock::unix_seconds()
+            .and_then(|now| plx_appkit::player_hud::model::projected_end_unix_seconds(
+                now, position_ns?, duration_ns?, rate,
+            ))
+            .and_then(plx_platform::i18n::local_clock_time)
+    } else {
+        None
+    };
     plx_appkit::player_hud::model::HudModel {
         paused: viewer_paused,
         marker_prefs: Default::default(),
         playback_id: plx_media::route::playback_trace_generation(),
-        advancing: plx_media::player::state(ps) == plx_media::player::PlaybackState::Playing,
-        seeking: plx_media::player::state(ps) == plx_media::player::PlaybackState::Seeking
-            || plx_media::player::seek_pending(ps).is_some(),
+        advancing,
+        seeking,
         covered: false,
         skip_progress: None,
-        is_episode: meta.now_playing().is_some_and(|n| n.is_real_episode),
-        scrub_ns: plx_media::player::TX.scrub_ns.load(Relaxed),
+        is_episode,
+        is_movie,
+        end_time: projected_end_time,
+        scrub_ns,
         playpos_ns,
         seek_display_ns: plx_media::player::seek_display_ns(ps).unwrap_or(-1),
-        duration_ns: plx_media::player::duration_ns(ps).unwrap_or(0),
-        loading: plx_media::player::loading(ps),
+        duration_ns: duration_ns.unwrap_or(0),
+        loading,
         sub_size: plx_media::route::subtitle_size(),
         sub_position: plx_media::route::subtitle_position(),
         sub_tone: plx_media::player::subtitle_tone(),
