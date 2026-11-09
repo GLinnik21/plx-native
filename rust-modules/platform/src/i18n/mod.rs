@@ -737,6 +737,19 @@ pub fn local_calendar_date(seconds: i64) -> Option<[i32; 3]> {
     civil_date_of(libc::time_t::try_from(seconds).ok()?)
 }
 
+/// The local wall-clock hour and minute for a Unix timestamp, using the operating system's
+/// timezone rules (including daylight-saving transitions). A value outside this television's
+/// `time_t` range, or a timestamp the C library cannot convert, remains unknown.
+pub fn local_clock_time(seconds: i64) -> Option<[i32; 2]> {
+    if seconds <= 0 { return None; }
+    let stamp = libc::time_t::try_from(seconds).ok()?;
+    let mut out = std::mem::MaybeUninit::<libc::tm>::uninit();
+    // SAFETY: both pointers are valid for localtime_r; the result is read only on success.
+    if unsafe { libc::localtime_r(&stamp, out.as_mut_ptr()) }.is_null() { return None; }
+    let local = unsafe { out.assume_init() };
+    Some([local.tm_hour, local.tm_min])
+}
+
 /// The civil date `stamp` falls on in the operating system's timezone, for any `time_t` (a stamp
 /// before 1970 included, which [`local_calendar_date`] refuses).
 fn civil_date_of(stamp: libc::time_t) -> Option<[i32; 3]> {
