@@ -54,7 +54,7 @@ impl<H: SearchLike> CardSource<H> for RowCards<'_> {
                 // result from a server that is not the household's own is credited after its details
                 let mut facts = tile_facts::caption_facts(row);
                 facts.source = Some(self.handle(item)).filter(|handle| !handle.is_empty()).map(str::to_owned);
-                crate::registry::captions::label(&crate::registry::captions::policy(), &facts, None, false)
+                crate::registry::captions::label(&crate::registry::captions::policy(), &facts, None)
             }
             // a still (an episode) is worded by the one landscape builder, like every other still; a
             // headshot is not a poster either and keeps its block, the server it came from last

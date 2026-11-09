@@ -343,6 +343,11 @@ pub struct Tile {
     pub scale: f32,
     pub radius: f32,
     pub focused: bool,
+    /// The focus pop as the 0..1 factor [`crate::widgets::pop_factor`] reads off `scale` against the
+    /// style's `focus_scale`: exactly 0.0 at rest, 1.0 fully lifted. It is the card's own pop spring
+    /// read as a progress, so a mark that opens with focus (the still footer's cue slot) rides the
+    /// same motion as the pop and never needs a timer.
+    pub pop: f32,
 }
 
 /// What a section reports back from [`Shelf::on`] / [`Grid::on`]. One at most per call.

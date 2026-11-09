@@ -1919,22 +1919,20 @@ fn continue_watching_commit_follows_the_setting_while_an_ordinary_shelf_opens_de
     assert!(has_home(&detail, |r| matches!(r, HomeReq::Detail { rk, .. } if rk == "1")));
 }
 
-/// The amber ▶ promises the press plays, so the deck's title line carries it in Play mode only.
+/// No deck caption carries the amber ▶ in either mode: nobody read it as "playback starts", and what
+/// OK does is the focused still's footer cue.
 #[test]
-fn the_deck_title_carries_the_play_glyph_only_while_the_press_plays() {
+fn the_deck_title_never_carries_a_play_glyph() {
     use plx_media::route::DeckPress;
     let _guard = plx_base::testlock::serial();
     let titled = plx_ui::caption_policy::CaptionPolicy { title: true, ..Default::default() };
     let item = PmsMovie { title: "Show".into(), ..Default::default() };
     let deck_label = |is_deck: bool| crate::registry::captions::shelf_label(&titled, &item, is_deck);
-    {
-        let _press = deck_press_is(DeckPress::Play);
-        assert!(deck_label(true).glyph);
-        assert!(!deck_label(false).glyph, "a shelf that navigates never carries it");
+    for mode in [DeckPress::Play, DeckPress::Details] {
+        let _press = deck_press_is(mode);
+        assert!(!deck_label(true).glyph, "{mode:?}");
+        assert!(!deck_label(false).glyph, "{mode:?}");
     }
-    let _press = deck_press_is(DeckPress::Details);
-    assert!(!deck_label(true).glyph);
-    assert!(!deck_label(false).glyph);
 }
 
 #[test]

@@ -97,12 +97,11 @@ fn a_continue_watching_tile_on_home_keeps_its_time_left_line() {
     }
 }
 
-/// **The amber play mark leads the FIRST line drawn whenever OK plays the deck card**, read off the
-/// frame the page draws (`Drawn::marks`, since a host paints no icon): the title when the Title switch
-/// is on, else the time-left line; Title Off with Details Nothing draws no line and so no mark; and a
-/// deck whose OK opens the page (the default) draws none under any setting.
+/// **No deck caption draws a play mark in either press mode**, read off the frame the page draws
+/// (`Drawn::marks`, since a host paints no icon): the amber triangle that led the first line while OK
+/// played the deck is gone, under every Under posters setting.
 #[test]
-fn the_play_mark_leads_the_first_line_drawn_whenever_ok_plays_the_deck_card() {
+fn no_deck_caption_draws_a_play_mark_in_either_press_mode() {
     use plx_media::route::{deck_press, restore_deck_press, DeckPress};
     struct Back(DeckPress);
     impl Drop for Back {
@@ -118,16 +117,7 @@ fn the_play_mark_leads_the_first_line_drawn_whenever_ok_plays_the_deck_card() {
             let drawn = w.drawn();
             let lines = drawn.caption_lines();
             let setting = format!("{press:?}, title {title}, details {details:?}");
-            let marked = press == DeckPress::Play && !lines.is_empty();
-            assert_eq!(drawn.marks.len(), usize::from(marked), "{setting}: the mark is drawn exactly when OK plays and a line is: {lines:?}");
-            let Some(mark) = drawn.marks.first() else { continue };
-            // the first line drawn is the block's topmost run; the mark hangs left of it, on its line
-            let first = drawn.runs.iter().filter(|run| run.label)
-                .min_by(|a, b| a.at.y.total_cmp(&b.at.y)).expect("a block with a mark has a line");
-            assert_eq!(first.text, lines[0], "{setting}");
-            assert!(mark.x + mark.w <= first.at.x + 1.0, "{setting}: the mark {mark:?} hangs left of {:?} {:?}", first.text, first.at);
-            let line_mid = first.at.y + first.at.h.max(first.size as f32) * 0.5;
-            assert!((mark.cy() - line_mid).abs() < first.size as f32, "{setting}: the mark {mark:?} stands on its line (y {line_mid})");
+            assert!(drawn.marks.is_empty(), "{setting}: no mark is drawn: {lines:?}");
         }
     }
 }

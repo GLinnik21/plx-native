@@ -5609,7 +5609,7 @@ fn a_shelf_holds_a_style_built_at_runtime() {
 #[test]
 fn default_shelf_composition_keeps_the_label_before_the_source_overlay() {
     let src = Cards::new(vec![1], false);
-    let tile = super::Tile { rect: Rect::new(100.0, 200.0, 200.0, 100.0), scale: 1.0, radius: 10.0, focused: true };
+    let tile = super::Tile { rect: Rect::new(100.0, 200.0, 200.0, 100.0), scale: 1.0, radius: 10.0, focused: true, pop: 0.0 };
     let label = TileLabel::default();
     let draws = crate::draw_census::capture(|| src.compose(Painter::recording(), 0, &tile, &FixtureMeasure,
         Some(&label), |_, given| {

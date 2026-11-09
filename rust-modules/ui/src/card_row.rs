@@ -1088,10 +1088,12 @@ pub struct TileLabel {
     /// ONE line such a grid draws under every poster, in place of the title and details block
     /// ([`draw_sort_value`]). `None` for every other label.
     pub value: Option<SortValue>,
-    /// lead the FIRST line drawn with the amber play triangle (Continue Watching's tile has no play
-    /// disc): the title when the block has one, else the details line. The mark hangs to the left of
-    /// the line, which is centred as if it were not there. Set only while a press on the tile plays
-    /// — see `widgets::still_line`'s `press_plays`
+    /// lead the FIRST line drawn with the amber play triangle: the title when the block has one, else
+    /// the details line. The mark hangs to the left of the line, which is centred as if it were not
+    /// there. **No caption sets it any more** (`registry::captions` stopped: the triangle was never read
+    /// as "playback starts", and what OK does is a focused still's footer cue, `ui::still_footer`); the
+    /// draw path stays until a follow-up removes the field, `glyph_lead`, `play_icon_size`,
+    /// `draw_play_mark` and their tests together.
     pub glyph: bool,
     /// **How far the band this block hangs in has opened**, the band's height, its expansion and
     /// the rise of what stands below it ([`TileLabel::revealed`]); each LINE of the block is on

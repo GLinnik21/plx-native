@@ -605,49 +605,16 @@ fn the_bands_face_carries_no_promise_about_the_chips_own_ground() {
     );
 }
 
-/// **The play indicator is a biconditional, and this grades every cell of it.**
-///
-/// The owner's rule, 2026-09-05: *"visual play indicators mean immediate playback, progress
-/// bars mean viewing progress, and cards without a play indicator navigate to details."* Two of
-/// those three clauses are about what is ABSENT, which is why an exhaustive table is the only
-/// honest test — the defect this was written for was a cell nobody looked at (in-progress on a
-/// shelf that plays), and it was invisible to every screen test because it is a missing draw
-/// call rather than a wrong one.
+/// **No still draws the amber triangle any more** (owner, 2026-11: nobody read it as "playback
+/// starts"). What is left of the leading slot of a two-line still is the watched TICK, a state in the
+/// secondary ink; every other mark leaves it empty. The cue that OK plays is the Continue Watching
+/// footer's white play glyph (`still_footer`), drawn only on the focused card.
 #[test]
-fn the_play_glyph_appears_exactly_where_the_press_plays() {
+fn a_still_line_has_no_play_glyph_and_the_watched_tick_is_secondary_ink() {
     use crate::icons::Icon;
-    let g = |m, plays| still_glyph(m, plays).map(|(i, _)| i);
-
-    // navigating shelves: never a play indicator, whatever the watch state
-    assert_eq!(g(PosterMark::None, false), None);
-    assert_eq!(g(PosterMark::InProgress, false), None);
-    assert_eq!(
-        g(PosterMark::Watched, false),
-        Some(Icon::Check),
-        "a tick is a statement about the past, not a promise about the press",
-    );
-
-    // shelves that play: the action takes the slot, IN PROGRESS INCLUDED
-    assert_eq!(g(PosterMark::None, true), Some(Icon::Play));
-    assert_eq!(
-        g(PosterMark::InProgress, true),
-        Some(Icon::Play),
-        "the Continue Watching deck is almost entirely in-progress tiles — this is the cell \
-         that made the whole deck announce nothing and then play",
-    );
-    assert_eq!(
-        g(PosterMark::Watched, true),
-        Some(Icon::Check),
-        "the bounded exception: the tick is the only carrier of watched-ness, and the one \
-         surface it is reachable on draws no navigating card beside it",
-    );
-
-    // the amber is the action's and nothing else's
-    assert_eq!(still_glyph(PosterMark::None, true).map(|(_, c)| c), Some(theme::RESUME_FILL));
-    assert_eq!(
-        still_glyph(PosterMark::Watched, false).map(|(_, c)| c),
-        Some(theme::TEXT_SECONDARY),
-    );
+    assert_eq!(still_glyph(PosterMark::None), None);
+    assert_eq!(still_glyph(PosterMark::InProgress), None);
+    assert_eq!(still_glyph(PosterMark::Watched), Some((Icon::Check, theme::TEXT_SECONDARY)));
 }
 
 // ---- ink by the capsule's drawn edge ---------------------------------------------------------

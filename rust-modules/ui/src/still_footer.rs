@@ -109,16 +109,125 @@ pub struct FooterGeo {
     pub bar_w: f32,
 }
 
+/// The widths [`footer_geometry`] decides from, measured the way the draw lays the line out: the
+/// status run in the regular `size::CAPTION` face, and the tag as the advance it adds IN FRONT of the
+/// status (`"S2 E4 · 38m left"` less `"38m left"`, so the space after the dot is included and a
+/// kerned pair is not double counted). `cue_w` is the slot the line may open.
+pub fn fit_of(tag: &str, status: &str, cue_w: f32, measure: &dyn Measure) -> FooterFit {
+    let sz = theme::size::CAPTION;
+    let status_w = measure.width_str(status, sz, false);
+    let tag_w = if tag.is_empty() {
+        0.0
+    } else if status.is_empty() {
+        measure.width_str(tag, sz, false)
+    } else {
+        measure.width_str(&format!("{tag} {status}"), sz, false) - status_w
+    };
+    FooterFit { tag_w, status_w, cue_w }
+}
+
 /// **The fit rule**, pure: where the text goes, whether the tag shows and how wide the bar is, for
 /// an inner width `inner_w`, the measured `fit` and the focus progress `focus` (0 rest, 1 open).
-pub fn footer_geometry(_inner_w: f32, _fit: FooterFit, _focus: f32) -> FooterGeo {
-    FooterGeo { text_dx: 0.0, tag_alpha: 1.0, tag_dx: 0.0, bar_w: FOOTER_BAR_W }
+///
+/// The room the bar can take is `inner - cue - (tag shown + status) - 12`. The tag is KEPT while that
+/// room is at least 64 (`FOOTER_BAR_MIN_W`): judged at rest, and again with the cue slot fully open.
+/// Kept at both: it stays. Gone at rest: it never shows. Kept at rest but not with the cue open:
+/// it fades with the focus progress, so the same transition that opens the cue closes the tag up
+/// (the room is linear in `focus` between two ends that both clear 64, so the bar never drops below
+/// it on the way). Whatever the tag does, the bar is `clamp(room, 0, 100)`, which is what holds the
+/// 12 px gap at every progress value.
+pub fn footer_geometry(inner_w: f32, fit: FooterFit, focus: f32) -> FooterGeo {
+    let t = focus.clamp(0.0, 1.0);
+    let full = fit.tag_w + fit.status_w;
+    let keeps = |cue: f32| inner_w - cue - full - FOOTER_GAP >= FOOTER_BAR_MIN_W;
+    let tag_alpha = if fit.tag_w <= 0.0 || !keeps(0.0) {
+        0.0
+    } else if keeps(fit.cue_w) {
+        1.0
+    } else {
+        1.0 - t
+    };
+    let text_dx = fit.cue_w * t;
+    let room = inner_w - text_dx - (fit.tag_w * tag_alpha + fit.status_w) - FOOTER_GAP;
+    FooterGeo { text_dx, tag_alpha, tag_dx: -fit.tag_w * (1.0 - tag_alpha), bar_w: room.clamp(0.0, FOOTER_BAR_W) }
 }
 
 /// Draw `footer` on the line at the bottom of `card` (the DRAWN rect, so the line rides the focus
 /// pop). `label` is the optional show name that stands above the line (a card whose title is not on
 /// its art); see [`crate::widgets::still_overlay`].
-pub fn draw_footer(_p: Painter, _card: Rect, _label: &str, _f: &Footer<'_>, _measure: &dyn Measure) {}
+pub fn draw_footer(p: Painter, card: Rect, label: &str, f: &Footer<'_>, measure: &dyn Measure) {
+    let sz = theme::size::CAPTION;
+    let (sct, scb) = plx_gfx::text::text_cap_band(sz, 0);
+    let cy = card.y + card.h - FOOTER_RISE - FOOTER_LINE_H * 0.5;
+    let sy = cy - (sct + scb) * 0.5;
+    if !label.is_empty() {
+        crate::widgets::still_label_over(p, card, label, cy + (scb - sct) * 0.5, measure);
+    }
+    let inset = crate::widgets::STILL_LINE_INSET;
+    let (left, right) = (card.x + inset, card.x + card.w - inset);
+    let cue_w = if f.cue.is_some() { FOOTER_CUE_SLOT } else { 0.0 };
+    let t = if f.cue.is_some() { f.focus.clamp(0.0, 1.0) } else { 0.0 };
+
+    // The cue stands at the leading edge and fades in; the text group makes room for it.
+    if let (Some(cue), true) = (f.cue, t > 0.0) {
+        let d = crate::widgets::STILL_GLYPH_D;
+        let icon = match cue {
+            Cue::Play => crate::icons::Icon::Play,
+            Cue::Info => crate::icons::Icon::Info,
+        };
+        crate::icons::draw(p.alpha(t), icon, Rect::new(left, cy - d * 0.5, d, d), theme::TEXT_PRIMARY);
+    }
+
+    let fit = fit_of(f.tag, f.status, cue_w, measure);
+    let geo = match f.right {
+        Right::Bar(_) => footer_geometry(FOOTER_INNER_W, fit, t),
+        // a mark that does not flex: the tag, if there is one, is simply shown
+        Right::Tick | Right::None => FooterGeo { text_dx: cue_w * t, tag_alpha: 1.0, tag_dx: 0.0, bar_w: 0.0 },
+    };
+    let x_l = left + geo.text_dx;
+    let right_limit = match f.right {
+        Right::Bar(_) if geo.bar_w > 0.0 => right - geo.bar_w - FOOTER_GAP,
+        Right::Tick => right - FOOTER_TICK_D - FOOTER_GAP,
+        _ => right,
+    };
+
+    if !f.tag.is_empty() && geo.tag_alpha > 0.0 {
+        if let Ok(tag) = std::ffi::CString::new(f.tag) {
+            let whole = geo.tag_alpha >= 1.0;
+            if !whole {
+                // the part of the tag that has slid out is cut at the text group's own edge, so it
+                // never runs under the cue
+                p.clip(Rect::new(x_l, card.y, card.w, card.h));
+            }
+            p.alpha(geo.tag_alpha).text(tag.as_ptr(), x_l + geo.tag_dx, sy, sz, theme::TEXT_SECONDARY, 0, 0);
+            if !whole {
+                p.clip_clear();
+            }
+        }
+    }
+    if !f.status.is_empty() {
+        let x = x_l + fit.tag_w * geo.tag_alpha;
+        let run = measure.fit_line(f.status, (right_limit - x).max(0.0), sz, false);
+        p.text(run.as_ptr(), x, sy, sz, theme::TEXT_SECONDARY, 0, 0);
+    }
+
+    match f.right {
+        Right::Bar(frac) if geo.bar_w > 0.0 => crate::widgets::progress_bar(
+            p,
+            Rect::new(right - geo.bar_w, cy - FOOTER_BAR_H * 0.5, geo.bar_w, FOOTER_BAR_H),
+            FOOTER_BAR_RAD,
+            FOOTER_BAR_H,
+            frac,
+        ),
+        Right::Tick => crate::icons::draw(
+            p,
+            crate::icons::Icon::Check,
+            Rect::new(right - FOOTER_TICK_D, cy - FOOTER_TICK_D * 0.5, FOOTER_TICK_D, FOOTER_TICK_D),
+            theme::TEXT_SECONDARY,
+        ),
+        _ => {}
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -212,6 +321,198 @@ mod tests {
                 assert!(gap(FOOTER_INNER_W, f, g) >= FOOTER_GAP - EPS, "{f:?} {g:?}: gap {}", gap(FOOTER_INNER_W, f, g));
             }
         }
+    }
+
+    // ---- every shipped language, measured with the TV's own advances ---------------------------
+
+    use plx_base::fontcov::advances::ShippedMeasure;
+    use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
+
+    /// The board's drafts for the usual line (S2 E4, 38 min left), by language tag: the whole line,
+    /// or for a language whose tag the board drops, the status alone. `ca` and `hu` are not on the
+    /// board (drafts of ours, unreviewed) and so carry no expectation.
+    const BOARD_USUAL: [(&str, &str); 10] = [
+        ("en", "S2 E4 · 38m left"),
+        ("de", "S2 E4 · noch 38 Min."),
+        ("fr", "S2 E4 · 38 min restantes"),
+        ("es", "T2 E4 · quedan 38 min"),
+        ("it", "S2 E4 · 38 min rimasti"),
+        ("pt", "T2 E4 · faltam 38 min"),
+        ("nl", "S2 A4 · nog 38 min"),
+        ("pl", "S2 O4 · zostało 38 min"),
+        ("ru", "S2 E4 · осталось 38 мин"),
+        ("be", "С2 Э4 · засталося 38 хв"),
+    ];
+
+    /// The board's measured widths (board fonts), usual / worst case S12 E24 1h 12m.
+    const BOARD_WIDTHS: [(&str, f32, f32); 10] = [
+        ("en", 180.0, 248.0),
+        ("de", 234.0, 338.0),
+        ("fr", 275.0, 349.0),
+        ("es", 255.0, 329.0),
+        ("it", 246.0, 320.0),
+        ("pt", 241.0, 315.0),
+        ("nl", 216.0, 290.0),
+        ("pl", 256.0, 378.0),
+        ("ru", 289.0, 363.0),
+        ("be", 280.0, 389.0),
+    ];
+
+    /// `(tag, status)` of the usual line and of the worst case, in the thread's language.
+    fn cases() -> [(&'static str, String, String); 2] {
+        let cx = plx_platform::i18n::current();
+        [
+            ("usual", crate::fmt::footer_tag_in(cx, 2, 4), crate::fmt::footer_left_minutes_in(cx, 38)),
+            ("worst", crate::fmt::footer_tag_in(cx, 12, 24), crate::fmt::footer_left_minutes_in(cx, 72)),
+        ]
+    }
+
+    #[test]
+    fn the_usual_line_reads_as_the_boards_draft_in_every_board_language() {
+        for (tag, want) in BOARD_USUAL {
+            let language = SHIPPED.into_iter().find(|l| l.tag() == tag).expect(tag);
+            let _g = language_on_this_thread_for_test(language);
+            let [(_, t, s), _] = cases();
+            assert_eq!(format!("{t} {s}"), want, "{tag}");
+        }
+    }
+
+    /// **The rule holds for every shipped language, at the usual line and the worst case, at every
+    /// progress of the focus transition**: the bar never leaves its 64..100 band and the 12 px gap
+    /// between the text and the bar never closes. A language added to `SHIPPED` is covered here with
+    /// no edit. Run with `--nocapture` for the per-language fit table.
+    #[test]
+    fn every_shipped_language_fits_at_every_focus_progress() {
+        let mut table = String::from("lang case  label_w  tag@rest tag@open  bar@rest bar@open  board_w\n");
+        for language in SHIPPED {
+            let tag = language.tag();
+            let _g = language_on_this_thread_for_test(language);
+            for (case, t, s) in cases() {
+                let f = fit_of(&t, &s, FOOTER_CUE_SLOT, &ShippedMeasure);
+                assert!(
+                    FOOTER_INNER_W - FOOTER_CUE_SLOT - f.status_w - FOOTER_GAP >= FOOTER_BAR_MIN_W,
+                    "{tag} {case}: even with no tag the time text {:.0} px leaves the bar under 64 px with the cue open",
+                    f.status_w
+                );
+                for i in 0..=40 {
+                    let g = footer_geometry(FOOTER_INNER_W, f, i as f32 / 40.0);
+                    assert!(gap(FOOTER_INNER_W, f, g) >= FOOTER_GAP - EPS, "{tag} {case} {i}/40: {g:?}");
+                    assert!(g.bar_w >= FOOTER_BAR_MIN_W - EPS && g.bar_w <= FOOTER_BAR_W + EPS, "{tag} {case} {i}/40: {g:?}");
+                    assert!((g.text_dx - FOOTER_CUE_SLOT * i as f32 / 40.0).abs() < EPS, "{tag} {case}: the text moves by the cue slot");
+                }
+                let (rest, open) = (footer_geometry(FOOTER_INNER_W, f, 0.0), footer_geometry(FOOTER_INNER_W, f, 1.0));
+                let board = BOARD_WIDTHS.iter().find(|(l, _, _)| *l == tag).map(|(_, u, w)| if case == "usual" { *u } else { *w });
+                table += &format!(
+                    "{tag:<4} {case:<6} {:>7.0}  {:<8} {:<8}  {:>8.0} {:>8.0}  {}\n",
+                    f.tag_w + f.status_w,
+                    if rest.tag_alpha > 0.0 { "kept" } else { "off" },
+                    if open.tag_alpha >= 1.0 { "kept" } else { "off" },
+                    rest.bar_w,
+                    open.bar_w,
+                    board.map_or("-".into(), |b| format!("{b:.0}")),
+                );
+                // the real font and the board's agree to within the board's own rounding of fonts
+                if let Some(b) = board {
+                    let w = f.tag_w + f.status_w;
+                    assert!((w / b - 1.0).abs() < 0.3, "{tag} {case}: measured {w:.0} px vs the board's {b:.0}");
+                }
+            }
+        }
+        eprintln!("{table}");
+    }
+
+    // ---- the draw, through the census -----------------------------------------------------------
+
+    fn runs_at(focus: f32, status: &str, tag: &str) -> Vec<crate::draw_census::Run> {
+        let card = Rect::new(0.0, 0.0, 420.0, 236.0);
+        let m = crate::fixture::FixtureMeasure;
+        crate::draw_census::capture_runs(|| {
+            draw_footer(
+                Painter::recording(),
+                card,
+                "",
+                &Footer { tag, status, right: Right::Bar(0.4), cue: Some(Cue::Play), focus },
+                &m,
+            )
+        })
+    }
+
+    #[test]
+    fn the_text_moves_right_by_exactly_the_cue_slot_as_focus_rises() {
+        let _g = plx_base::testlock::serial();
+        let x = |focus| runs_at(focus, "38m left", "")[0].at.x;
+        assert_eq!(x(0.0), crate::widgets::STILL_LINE_INSET);
+        assert!((x(1.0) - x(0.0) - FOOTER_CUE_SLOT).abs() < EPS);
+        assert!((x(0.5) - x(0.0) - FOOTER_CUE_SLOT * 0.5).abs() < EPS);
+    }
+
+    #[test]
+    fn a_tag_the_open_cue_pushes_out_fades_and_the_time_closes_up_behind_it() {
+        let _g = plx_base::testlock::serial();
+        // FixtureMeasure is 12 px a character: this status leaves 76 px of room at rest with the
+        // tag and 48 with the cue open
+        let status = "abcdefghijklmno";
+        let rest = runs_at(0.0, status, "S2 E4 \u{b7}");
+        assert_eq!(rest.len(), 2, "tag and status");
+        let (tag_w, left) = (rest[1].at.x - rest[0].at.x, rest[0].at.x);
+        assert!(tag_w > 0.0);
+        let mid = runs_at(0.5, status, "S2 E4 \u{b7}");
+        assert_eq!(mid.len(), 2);
+        assert!(mid[0].clip.is_some(), "the sliding tag is cut at the text group's edge");
+        assert_eq!(mid[0].clip.unwrap().x, left + FOOTER_CUE_SLOT * 0.5);
+        let open = runs_at(1.0, status, "S2 E4 \u{b7}");
+        assert_eq!(open.len(), 1, "the tag is gone");
+        assert_eq!(open[0].at.x, left + FOOTER_CUE_SLOT, "the time stands where the tag's slot closed up");
+    }
+
+    /// **What a Continue Watching still says** through the one `still_overlay` door: the show above,
+    /// then `S2 E4 · 38m left`, and for a card nobody has started its address and no time.
+    #[test]
+    fn a_continue_watching_still_says_the_show_the_tag_and_the_time_left() {
+        use crate::tile::{Resume, TileFacts};
+        let _g = plx_base::testlock::serial();
+        let card = Rect::new(0.0, 0.0, 420.0, 236.0);
+        let m = crate::fixture::FixtureMeasure;
+        let footer = crate::widgets::StillFooter::Continue { cue: Cue::Info, pop: 0.0 };
+        let words = |facts: TileFacts<'_>| {
+            crate::draw_census::capture_runs(|| {
+                crate::widgets::still_overlay(Painter::recording(), &facts, card, 12.0, footer, &m)
+            })
+            .into_iter()
+            .map(|r| r.text)
+            .collect::<Vec<_>>()
+        };
+        let started = TileFacts {
+            show_title: "Severance",
+            season_index: 2,
+            ep_index: 4,
+            resume: Some(Resume { frac: 0.3, left_ms: 38 * 60_000 }),
+            ..Default::default()
+        };
+        assert_eq!(words(started), ["Severance", "S2 E4 \u{b7}", "38m left"]);
+        let film = TileFacts { title: "Heat", resume: Some(Resume { frac: 0.3, left_ms: 38 * 60_000 }), ..Default::default() };
+        assert_eq!(words(film), ["Heat", "38m left"], "a film has no tag");
+        let next_up = TileFacts { show_title: "Severance", season_index: 2, ep_index: 5, unwatched: true, ..Default::default() };
+        assert_eq!(words(next_up), ["Severance", "S2 \u{b7} E5"], "nothing to count down: the address, no bar");
+    }
+
+    #[test]
+    fn a_card_with_a_tick_keeps_its_text_clear_of_the_tick() {
+        let _g = plx_base::testlock::serial();
+        let card = Rect::new(0.0, 0.0, 420.0, 236.0);
+        let m = crate::fixture::FixtureMeasure;
+        let long = "x".repeat(60);
+        let runs = crate::draw_census::capture_runs(|| {
+            draw_footer(
+                Painter::recording(),
+                card,
+                "",
+                &Footer { tag: "", status: &long, right: Right::Tick, cue: None, focus: 0.0 },
+                &m,
+            )
+        });
+        let r = &runs[0];
+        assert!(r.at.x + r.at.w <= 420.0 - 16.0 - FOOTER_TICK_D - FOOTER_GAP + EPS, "{:?}", r.at);
     }
 
     #[test]

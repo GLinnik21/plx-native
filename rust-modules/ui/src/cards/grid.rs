@@ -1122,7 +1122,8 @@ impl Grid {
         } else {
             card_row::draw_tile(p, src.art(i), rect, s, &self.spec.style, src.progress(i));
         }
-        src.overlay(p, i, &Tile { rect, scale: s, radius: self.spec.style.tile_radius(rect, s), focused }, f.measure);
+        let pop = crate::widgets::pop_factor(s, self.spec.style.focus_scale);
+        src.overlay(p, i, &Tile { rect, scale: s, radius: self.spec.style.tile_radius(rect, s), focused, pop }, f.measure);
     }
 
     /// Test support: the captions [`draw`](Self::draw) puts on screen now, `(card index, alpha of its
@@ -1200,7 +1201,7 @@ impl Grid {
             }
             let pr = p.alpha(a);
             card_row::draw_tile(pr, src.art(i), rect, 1.0, &self.spec.style, src.progress(i));
-            src.overlay(pr, i, &Tile { rect, scale: 1.0, radius: self.spec.style.tile_radius(rect, 1.0), focused: false }, f.measure);
+            src.overlay(pr, i, &Tile { rect, scale: 1.0, radius: self.spec.style.tile_radius(rect, 1.0), focused: false, pop: 0.0 }, f.measure);
         }
     }
 
@@ -1321,7 +1322,7 @@ impl Grid {
             }
             let pr = p.alpha(a);
             card_row::draw_tile(pr, ghosts.art(j), rect, s, &self.spec.style, ghosts.progress(j));
-            let tile = Tile { rect, scale: s, radius: self.spec.style.tile_radius(rect, s), focused: g.focused };
+            let tile = Tile { rect, scale: s, radius: self.spec.style.tile_radius(rect, s), focused: g.focused, pop: crate::widgets::pop_factor(s, self.spec.style.focus_scale) };
             ghosts.overlay(pr, j, &tile, f.measure);
             // In value-line mode every ghost keeps its own value line while it fades.
             if self.spec.value_line {

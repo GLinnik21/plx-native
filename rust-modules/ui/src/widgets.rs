@@ -581,98 +581,55 @@ pub fn still_key<'a>(m: &TileFacts<'a>) -> &'a str {
     }
 }
 
-/// **The state label a landscape STILL wears on its scrim** — up to TWO lines, drawn directly on
-/// the artwork with no capsule behind it. Draw [`art_scrim`] first; that is what makes text on a
-/// picture safe.
+/// **The two-line state label a landscape STILL wears on its scrim** — the SHELF shape: up to TWO
+/// lines, drawn directly on the artwork with no capsule behind it. Draw [`art_scrim`] first; that is
+/// what makes text on a picture safe.
 ///
 /// `label` is the upper line (`size::LABEL` bold, primary) and `sub` the lower one
-/// (`size::CAPTION`, `TEXT_SECONDARY`) with the action glyph at its head. **The hierarchy is size
+/// (`size::CAPTION`, `TEXT_SECONDARY`), with the watched tick at its head. **The hierarchy is size
 /// and ink rather than position**, which is what makes the pair read as one label instead of two
 /// things — `Library Screens.dc.html` E, revised 2026-09-05, and secondary rather than tertiary
 /// because 24px at ten feet needs the contrast.
 ///
-/// An empty `label` collapses the pair to the sub line alone, which is not a degenerate case but
-/// the detail filmstrip's own shape: it is inside one season of one show, in order, under the
-/// show's name in 72px type, so it has nothing to disambiguate and prints only its runtime.
+/// An empty `label` collapses the pair to the sub line alone.
 ///
-/// `has_bar` lifts the whole block from 14px off the bottom to 22 so a resume bar keeps its own
-/// band clear. It is a parameter and not a look at the item, because [`still_overlay`] is the one
-/// place that knows whether a bar is about to be drawn.
+/// `has_bar` lifts the whole block from 14px off the bottom to 22 so a full-bleed resume bar keeps
+/// its own band clear. It is a parameter and not a look at the item, because [`still_overlay`] is the
+/// one place that knows whether a bar is about to be drawn.
 ///
-/// It was `detail::ep_state_line`, private to the episode filmstrip, until the Library grew a shelf
-/// of the same object. Promoted rather than copied — `ui/CLAUDE.md`'s improve-don't-fork rule, and
-/// the same reasoning that made the resume bar `card_row::resume_bar`'s: two screens drawing "how
-/// far into this am I" as two different objects is exactly the drift this system exists to kill.
-///
-/// **The callers pass different LABELS by SURFACE and that is the design, not drift** — name the
-/// rule rather than counting them, because the count has already gone stale once. The detail
-/// filmstrip's line carries the runtime (`▶ 48 min`), because on a page that already names the show
-/// in 72px type the missing fact is how long the episode is. Every SHELF surface — the Library's
-/// episode shelves and Search's episode tiles — carries the SHOW NAME instead, because there a
-/// still is the one tile in the app with no title of its own: a poster prints its show's name inside
-/// the artwork, so the still must too, or the shelf is a row of anonymous frames of television
-/// (`Library Screens.dc.html` E).
+/// **Who draws this shape and who draws the one-line footer** ([`crate::still_footer`]): this pair is
+/// what every SHELF surface wears, because there a still is the one tile in the app with no title of
+/// its own — the Library's episode shelves and Search's episode tiles carry the SHOW NAME above the
+/// episode's address (`Library Screens.dc.html` E). The Continue Watching deck and the detail page's
+/// episode strip wear the one-line footer instead; [`StillFooter`] is how [`still_overlay`] chooses.
+/// A shelf's tile NAVIGATES to the episode, so it draws no play indicator at all, and no still
+/// anywhere draws the amber triangle any more (nobody read it as "playback starts"): the cue that
+/// OK plays is the footer's white play glyph on the focused Continue Watching card.
 ///
 /// `card` is the rect actually DRAWN — the scaled one while the tile is popped — so the line rides
 /// the focus pop without resizing.
 ///
-/// **`press_plays` is the whole of the app's play-indicator rule, at this one draw**, and
-/// [`still_glyph`] is the rule itself: the amber ▶ is a PROMISE — this press starts the video — so
-/// it is drawn on a surface whose press does that and on no other. The detail page's episode
-/// filmstrip always plays, and a Continue Watching deck plays only while the Playback setting says
-/// OK plays it (`DeckPress::Play`; by default OK opens the page and the deck draws no triangle,
-/// so its caller passes `press_plays = false`); a discovery shelf ("Recently Released Episodes", "Recently
-/// Added…") and a Search result NAVIGATE to the episode, so they draw no triangle and the line is
-/// the show's name alone.
-///
-/// The other two marks are not promises. `✓` is a STATE — this episode is finished — and the resume
-/// BAR is a fact about how far in you are, drawn wherever there is progress to report, on a shelf
-/// that plays and a shelf that does not: hiding it would hide something true, and it was never the
-/// thing that read as "this will play". The triangle beside it was. Which is exactly why the bar
-/// cannot stand IN for the triangle either — see [`still_glyph`] for the cell where it tried to.
-/// The leading glyph on a [`still_line`], as a pure decision — one slot, two things that want it.
-///
-/// Both are plain masks in ONE box, and the tick takes the line's own ink rather than a hue:
-/// a watched line is a statement about the past while an unstarted one is an invitation, and only
-/// the invitation earns the amber.
-///
-/// **The ACTION wins the slot when there is one**, which is the rule the owner asked for on
-/// 2026-09-05 stated as a biconditional: *a play indicator means the press plays, a progress bar
-/// means progress, and a card with no play indicator navigates.* This function used to hand the
-/// slot to `PosterMark` first and consult `press_plays` only in the `None` arm — so an IN-PROGRESS
-/// tile drew no glyph at all, and on a shelf that plays (the Library's Continue Watching deck,
-/// where nearly every tile is in progress) that is a card announcing nothing and then playing. The
-/// resume bar under it is not the announcement: that bar is drawn on shelves that navigate too,
-/// which is exactly the conflation being removed.
-///
-/// **`Watched` is the one exception and it is bounded rather than forgotten.** The tick is the only
-/// carrier of "you have seen this" — the bar is absent by definition and the dimmed run is a hint,
-/// not a statement — so it keeps the slot even where the press plays. The residual is a watched
-/// tile on a playing shelf showing no ▶, and it is reachable on exactly one surface: the detail /
-/// season episode filmstrip, where EVERY row plays and no navigating card is drawn beside it, so
-/// there is no pair for a viewer to confuse. On the surface that does mix the two kinds — the
-/// Library, deck shelf above discovery shelf — a watched item in Continue Watching is not a state
-/// the server produces.
-fn still_glyph(mark: PosterMark, press_plays: bool) -> Option<(crate::icons::Icon, [f32; 4])> {
+/// **The watched tick is a STATE, not a promise**: this episode is finished. The resume BAR is a fact
+/// about how far in you are, drawn wherever there is progress to report.
+fn still_glyph(mark: PosterMark) -> Option<(crate::icons::Icon, [f32; 4])> {
     match mark {
-        // the bounded exception, above the action: see the note above
         PosterMark::Watched => Some((crate::icons::Icon::Check, theme::TEXT_SECONDARY)),
-        // the invitation, wherever the press accepts it — progress does not withdraw it
-        _ if press_plays => Some((crate::icons::Icon::Play, theme::RESUME_FILL)),
         PosterMark::None | PosterMark::InProgress => None,
     }
 }
 
-pub fn still_line(
+/// **The label stack of a still's line**: the show's name (`size::LABEL`, bold, primary, elided to
+/// the tile's own right inset) standing one pair gap above the line whose cap band ends at `bottom`.
+/// Returns the TEXT ORIGIN y of the line under it (its cap band's top less `sct`), which the caller
+/// draws at. The one placement both [`still_line`] and [`crate::still_footer::draw_footer`] use, so
+/// the show's name sits the same distance over either line.
+pub(crate) fn still_label_over(
     p: Painter,
     card: Rect,
-    mark: PosterMark,
     label: &str,
-    sub: &str,
-    press_plays: bool,
-    has_bar: bool,
+    bottom: f32,
     measure: &dyn plx_machine::machine::Measure,
-) {
+) -> f32 {
     // The pair is one bottom-anchored VStack of cap bands, because that is what the two insets are
     // about: the sub line's baseline sits at the tile's own bottom inset and the label stacks above
     // it. The band heights come from the cap bands (a font swap cannot silently close the pair up); a
@@ -683,32 +640,46 @@ pub fn still_line(
     let (lsz, ssz) = (theme::size::LABEL, theme::size::CAPTION);
     let (sct, scb) = plx_gfx::text::text_cap_band(ssz, 0);
     let (lct, lcb) = plx_gfx::text::text_cap_band(lsz, 1);
+    let pair = [
+        if label.is_empty() { HItem::absent() } else { HItem::new(lcb - lct) },
+        HItem::new(scb - sct).before(STILL_PAIR_GAP + 2.0 * sct),
+    ];
+    let pair = VStack::new(&pair, STILL_PAIR_GAP, VAnchor::Bottom(bottom));
+    let sy = pair.span(1).map_or(0.0, |(y, _)| y) - sct;
+    // The SHOW, above: LABEL bold in primary ink, elided to the tile's own right inset.
+    if let Some((y, _)) = pair.span(0) {
+        let x0 = card.x + STILL_LINE_INSET;
+        let run = measure.fit_line(label, card.x + card.w - STILL_LINE_INSET - x0, lsz, true);
+        p.text(run.as_ptr(), x0, y - lct, lsz, theme::TEXT_PRIMARY, 0, 1);
+    }
+    sy
+}
+
+pub fn still_line(
+    p: Painter,
+    card: Rect,
+    mark: PosterMark,
+    label: &str,
+    sub: &str,
+    has_bar: bool,
+    measure: &dyn plx_machine::machine::Measure,
+) {
+    let ssz = theme::size::CAPTION;
+    let (sct, scb) = plx_gfx::text::text_cap_band(ssz, 0);
     let bot = if has_bar {
         STILL_LINE_BOT_BAR
     } else {
         STILL_LINE_BOT
     };
-    let pair = [
-        if label.is_empty() { HItem::absent() } else { HItem::new(lcb - lct) },
-        HItem::new(scb - sct).before(STILL_PAIR_GAP + 2.0 * sct),
-    ];
-    let pair = VStack::new(&pair, STILL_PAIR_GAP, VAnchor::Bottom(card.y + card.h - bot));
-    let sy = pair.span(1).map_or(0.0, |(y, _)| y) - sct;
+    let sy = still_label_over(p, card, label, card.y + card.h - bot, measure);
     let x0 = card.x + STILL_LINE_INSET;
     let right = card.x + card.w - STILL_LINE_INSET;
 
-    // The SHOW, above: LABEL bold in primary ink, elided to the tile's own right inset.
-    if let Some((y, _)) = pair.span(0) {
-        let ly = y - lct;
-        let run = measure.fit_line(label, right - x0, lsz, true);
-        p.text(run.as_ptr(), x0, ly, lsz, theme::TEXT_PRIMARY, 0, 1);
-    }
-
-    // …and the IDENTIFIER under it, with the action glyph at its head. One flow: the glyph stands
+    // …and the IDENTIFIER under it, with the watched tick at its head. One flow: the glyph stands
     // by its INK (so STILL_LINE_GAP is the gap the eye reads, not the gap to the asset's empty
     // margin), and the sub line one gap after it. The sub's own width is not needed to place it.
     let mut flow = crate::hstack::Flow::new(x0, STILL_LINE_GAP);
-    let glyph = still_glyph(mark, press_plays);
+    let glyph = still_glyph(mark);
     let glyph_span =
         flow.push(glyph.map_or(crate::hstack::Item::absent(), |(icon, _)| crate::hstack::Item::glyph(icon, STILL_GLYPH_D)));
     if let (Some((icon, tint)), Some(span)) = (glyph, glyph_span) {
@@ -721,6 +692,19 @@ pub fn still_line(
     let lx = flow.push(crate::hstack::Item::new(0.0)).map_or(x0, |s| s.x);
     let run = measure.fit_line(sub, right - lx, ssz, false);
     p.text(run.as_ptr(), lx, sy, ssz, theme::TEXT_SECONDARY, 0, 0);
+}
+
+/// **Which footer a landscape still wears** ([`still_overlay`]'s choice).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StillFooter {
+    /// The two-line shelf shape ([`still_line`]): the show's name over the episode's address, and a
+    /// full-bleed resume bar. The Library's episode shelves and Search's episode tiles.
+    Shelf,
+    /// The Continue Watching card's one-line footer ([`crate::still_footer`]): `S2 E4 · 38m left`
+    /// and the amber bar, with the focus cue of what OK does — `cue` — opening with the card's focus
+    /// pop `pop` (`cards::Tile::pop`). The show's name stands above it only while the card's title
+    /// is not on its art, which is every caller of this variant today.
+    Continue { cue: crate::still_footer::Cue, pop: f32 },
 }
 
 /// A landscape still's labels and resume bar. [`Art::Still`] supplies their ground as part of the
@@ -751,7 +735,7 @@ pub fn still_overlay(
     m: &TileFacts<'_>,
     card: Rect,
     rad: f32,
-    press_plays: bool,
+    footer: StillFooter,
     measure: &dyn plx_machine::machine::Measure,
 ) {
     let show = if m.show_title.is_empty() {
@@ -759,19 +743,50 @@ pub fn still_overlay(
     } else {
         m.show_title
     };
-    let bar = m.resume.map(|r| r.frac);
-    still_line(
-        p,
-        card,
-        poster_mark(m),
-        show,
-        &crate::fmt::episode_address(m.season_index as i64, m.ep_index as i64),
-        press_plays,
-        bar.is_some(),
-        measure,
-    );
-    if let Some(frac) = bar {
-        crate::card_row::resume_bar(p, card, frac, rad);
+    match footer {
+        StillFooter::Shelf => {
+            let bar = m.resume.map(|r| r.frac);
+            still_line(
+                p,
+                card,
+                poster_mark(m),
+                show,
+                &crate::fmt::episode_address(m.season_index as i64, m.ep_index as i64),
+                bar.is_some(),
+                measure,
+            );
+            if let Some(frac) = bar {
+                crate::card_row::resume_bar(p, card, frac, rad);
+            }
+        }
+        StillFooter::Continue { cue, pop } => {
+            // In progress: the episode tag and the time left, with the bar on the right. Anything
+            // else on a deck card (an on-deck episode nobody has started) has no time to tell, so it
+            // keeps the address the shelf shape prints and no bar.
+            let (tag, status, right) = match m.resume {
+                Some(r) => (
+                    crate::fmt::footer_tag(m.season_index as i64, m.ep_index as i64),
+                    crate::fmt::footer_left(r.left_ms),
+                    crate::still_footer::Right::Bar(r.frac),
+                ),
+                None => (
+                    String::new(),
+                    crate::fmt::episode_address(m.season_index as i64, m.ep_index as i64),
+                    if poster_mark(m) == PosterMark::Watched {
+                        crate::still_footer::Right::Tick
+                    } else {
+                        crate::still_footer::Right::None
+                    },
+                ),
+            };
+            crate::still_footer::draw_footer(
+                p,
+                card,
+                show,
+                &crate::still_footer::Footer { tag: &tag, status: &status, right, cue: Some(cue), focus: pop },
+                measure,
+            );
+        }
     }
 }
 
@@ -9589,14 +9604,14 @@ fn a_painted_rating_group_keeps_each_token_gap_between_its_runs() {
 
 #[cfg(test)]
 #[test]
-fn a_painted_still_line_stands_its_sub_line_one_gap_from_the_glyphs_ink() {
+fn a_painted_still_line_stands_its_sub_line_one_gap_from_the_watched_ticks_ink() {
     let _serial = plx_base::testlock::serial();
     let m = LegacyMeasure;
     let card = Rect::new(100.0, 100.0, 300.0, 170.0);
     let mut icons = Vec::new();
     let runs = crate::draw_census::capture_runs(|| {
         icons = crate::draw_census::capture_icons(|| {
-            still_line(Painter::recording(), card, PosterMark::None, "Show", "S1 E2", true, false, &m);
+            still_line(Painter::recording(), card, PosterMark::Watched, "Show", "S1 E2", false, &m);
         });
     });
     let sub = runs.iter().find(|r| r.text == "S1 E2").expect("the sub line");
@@ -9606,7 +9621,7 @@ fn a_painted_still_line_stands_its_sub_line_one_gap_from_the_glyphs_ink() {
     assert!((sub.at.x - (boxr.x + r * boxr.w) - STILL_LINE_GAP).abs() < 0.5, "ink -> sub line is the token");
     // no glyph, no gap: the sub line stands at the inset
     let bare = crate::draw_census::capture_runs(|| {
-        still_line(Painter::recording(), card, PosterMark::None, "Show", "S1 E2", false, false, &m);
+        still_line(Painter::recording(), card, PosterMark::None, "Show", "S1 E2", false, &m);
     });
     assert_eq!(bare.iter().find(|r| r.text == "S1 E2").unwrap().at.x, card.x + STILL_LINE_INSET);
 }

@@ -360,7 +360,7 @@ impl<H: ContentLike> CardSource<H> for ShelfCards<'_> {
         match self.person.shelf(self.kind).get(i) {
             Some(m) => {
                 let role = Some(self.person.role(self.kind, i)).filter(|role| !role.is_empty()).map(str::to_owned);
-                crate::registry::captions::label(&crate::registry::captions::policy(), &tile_facts::caption_facts(m), role, false)
+                crate::registry::captions::label(&crate::registry::captions::policy(), &tile_facts::caption_facts(m), role)
             }
             None => TileLabel::default(),
         }

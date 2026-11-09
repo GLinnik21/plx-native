@@ -177,7 +177,7 @@ fn the_deck_title_carries_the_play_glyph_only_while_the_press_plays() {
     );
     plx_media::route::restore_deck_press(prior);
     crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.set(None));
-    assert_eq!(seen, (true, false, false, false));
+    assert_eq!(seen, (false, false, false, false), "no mode carries an amber play mark on a caption");
 }
 
 #[test]

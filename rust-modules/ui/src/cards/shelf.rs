@@ -916,7 +916,7 @@ impl Shelf {
             let pr = pr.alpha(a);
             let rect = Rect::new(x, at.y - pr.dy(), self.style.w, self.style.h).scaled(s);
             card_row::draw_tile(pr, ghosts.art(j), rect, s, &self.style, ghosts.progress(j));
-            let tile = Tile { rect, scale: s, radius: self.style.tile_radius(rect, s), focused: g.focused };
+            let tile = Tile { rect, scale: s, radius: self.style.tile_radius(rect, s), focused: g.focused, pop: crate::widgets::pop_factor(s, self.style.focus_scale) };
             ghosts.overlay(pr, j, &tile, f.measure);
         }
     }
@@ -1015,7 +1015,7 @@ impl Shelf {
         } else {
             card_row::draw_tile(pr, src.art(i), rect, s, &self.style, src.progress(i));
         }
-        let tile = Tile { rect, scale: s, radius: self.style.tile_radius(rect, s), focused };
+        let tile = Tile { rect, scale: s, radius: self.style.tile_radius(rect, s), focused, pop: crate::widgets::pop_factor(s, self.style.focus_scale) };
         src.compose(pr, i, &tile, f.measure, label.as_ref(), |paint, label| {
             if focused { card_row::draw_label(paint, rect, s, &self.style, label, f.measure); }
         });
