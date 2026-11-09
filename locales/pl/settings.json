@@ -10,6 +10,8 @@
   "settings.system.section": "System",
   "settings.auto_sign_in.title": "Automatyczne logowanie",
   "settings.auto_sign_in.detail": "Pomiń listę profili przy uruchamianiu aplikacji.",
+  "settings.hud_end_time.title": "Przewidywany czas końca",
+  "settings.hud_end_time.detail": "Pokazuje lokalny przewidywany czas zakończenia filmu lub odcinka.",
   "settings.trailers.title": "Automatyczne zwiastuny",
   "settings.trailers.detail": "Po chwili na stronie tytułu włącz zwiastun z dźwiękiem.",
   "settings.resolution.title": "Rozdzielczość interfejsu",
