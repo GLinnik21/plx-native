@@ -5666,3 +5666,6 @@ fn only_an_episode_page_gets_a_go_to_show_disc() {
         clear();
     }
 }
+
+#[path = "hero_shade_tests.rs"]
+mod hero_shade;

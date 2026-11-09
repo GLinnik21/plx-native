@@ -28,7 +28,7 @@
 // `ui/mod.rs` blankets its whole tree with this attribute, which is what kept the walk's accessors
 // that only one configuration or one test calls from being dead code while this lived there.
 #![allow(dead_code)]
-use crate::gfx::scrim::GroundScrim;
+use crate::gfx::scrim::GroundShade;
 use crate::gfx::Rect;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
@@ -208,15 +208,15 @@ pub struct Ground {
     /// `[x, y, w, h]`, authored px.
     pub rect: [f32; 4],
     /// The ink ramp's colour and its alpha at the rect's top and bottom edge. With a `scrim` the
-    /// alphas are the whole ink's at those edges AS A ROW (the ramp and the scrim's two bands, the
-    /// radial left out: it is the one term that is not a function of y), which is what the delta's
-    /// weight is read from.
+    /// alphas are the whole ink's at those edges down the rect's centre column (the ramp and the
+    /// shade there: a shade is a function of x as well, which a ramp is not), which is what the
+    /// delta's weight is read from.
     pub ink: [f32; 3],
     pub ink_a: [f32; 2],
-    /// The ground scrim laid over the field with the same ink ([`GroundScrim::NONE`] for none), in
+    /// The ground scrim laid over the field with the same ink ([`GroundShade::NONE`] for none), in
     /// the device frame the rect is in. It is part of WHICH ground this is: a scrim that moved is a
     /// different source, never a delta.
-    pub scrim: GroundScrim,
+    pub scrim: GroundShade,
 }
 
 /// The command word the wash is recorded under in a glass's signature while that glass takes it as

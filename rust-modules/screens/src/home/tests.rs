@@ -961,7 +961,12 @@ fn the_ground_goes_flat_only_once_the_hero_is_culled() {
         let env = env_at(sp);
         let mut drawn = Vec::new();
         let grounds = draw_census::capture_grounds(|| {
-            drawn = draw_census::capture(|| b.draw(Painter::recording(), &env, slide));
+            // a shade with one block in it, as a hero frame hands over (`draw` drops it once the hero
+            // has faded: `env.hero_a`)
+            let shade = plx_ui::hero_shade::HeroShade::new()
+                .add(Rect::new(96.0, 500.0, 600.0, 60.0), plx_ui::hero_shade::Role::Copy, 1.0)
+                .scrim(env.hero_a);
+            drawn = draw_census::capture(|| b.draw(Painter::recording(), &env, slide, Some(shade)));
         });
         let [ground] = grounds[..] else { panic!("sp {sp}: {} grounds, want one", grounds.len()) };
         let flat = ground[1..].iter().all(|c| *c == ground[0]);
@@ -985,8 +990,9 @@ fn the_ground_goes_flat_only_once_the_hero_is_culled() {
 }
 
 /// **Home has no scrim once the hero is culled** - the premise the flat ground rests on
-/// (`AmbientWash::draw_flat_ground` draws none). `Backdrop::draw` builds its scrim only while
-/// `hero_a > 0.01`, and `HomeScreen::env` fades the hero out by `sp = 0.55`, long before
+/// (`AmbientWash::draw_flat_ground` draws none). `Backdrop::draw` takes the hero's shade only while
+/// `hero_a > 0.01` (and `draw_page` builds none past it), and `HomeScreen::env` fades the hero out by
+/// `sp = 0.55`, long before
 /// `HERO_ART_CULL`; a later fade end would lay a scrim over the flat ground here, so it fails this
 /// test first rather than layering one unannounced.
 #[test]
@@ -5586,6 +5592,9 @@ fn a_next_episode_that_jumps_to_column_zero_keeps_the_element_and_the_focus() {
 #[path = "hero_watchlist_tests.rs"]
 mod hero_watchlist;
 
+#[path = "hero_shade_tests.rs"]
+mod hero_shade;
+
 /// The billboard as it is on screen: how much of the page the hero art covers, from the
 /// selected art and any art held beneath it while the selection changes. `0` is the bare wash.
 fn billboard_cover(s: &HomeScreen) -> f32 {
@@ -6162,7 +6171,12 @@ fn the_page_rests_at_the_hero_or_the_grid_and_moves_only_when_a_move_leaves_the_
     tick_n(&mut s, view, Some(poster), 0, 120);
     assert_eq!(s.snap_target, 1.0, "Down reaches the grid");
     assert!(s.snap.pos > 0.99);
-    assert_eq!(s.grid.scroll_target, 0.0, "the stills stay the top row, the next shelf under them");
+    // the stills stay the top row, the next shelf under them: it rests at the LEAST scroll that keeps
+    // its focused two-line label block inside the bottom overscan edge (the stills' footers make the
+    // row 40 px taller, so the block would otherwise cross it), not at the poster shelves' own line
+    let rest = s.column().block_overrun(1);
+    assert!(rest > 0.0 && rest < 60.0, "the premise: a small, real overrun ({rest})");
+    assert_eq!(s.grid.scroll_target, rest, "the stills stay the top row, the next shelf under them");
     // Up from the shelf: back on the stills, and the page stays where it was
     moved(&mut s, view, Some(poster), still, By::Dir);
     tick_n(&mut s, view, Some(still), 120, 120);
@@ -6238,7 +6252,7 @@ fn a_hero_backdrop_that_has_dissolved_in_is_drawn_at_one_exact_alpha_from_then_o
     // The alphas of the backdrop-sized quads one frame of the page's ground draws.
     let alphas = |s: &mut HomeScreen| {
         let env = s.env(0.0);
-        plx_ui::draw_census::capture_tex(|| s.backdrop.draw(Painter::recording(), &env, None))
+        plx_ui::draw_census::capture_tex(|| s.backdrop.draw(Painter::recording(), &env, None, None))
             .into_iter()
             .filter(|(_, r, a)| r.w >= SCR_W && *a > 0.01)
             .map(|(_, _, a)| a)

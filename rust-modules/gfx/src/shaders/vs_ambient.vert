@@ -9,15 +9,16 @@
 // field (`gfx.rs`'s mesh test), so the fragment reads ONE varying and does no colour arithmetic:
 // ~0.4M fewer cycles a frame for Home's full-screen wash (2026-09-19).
 //
-// THE GROUND SCRIM (`PLX_SCRIM`, `gfx/scrim.rs`): three piecewise-linear alpha terms of one ink — a
-// top band and a bottom band over y, an elliptical radial over the normalised distance from a
-// centre — evaluated HERE, per vertex, and stacked `1 - (1-t)(1-r)(1-b)` into the ink alpha the
-// wash already carries. It is the ramp's own move for a field no straight ramp describes, so the
-// fragment still reads one varying and does no colour arithmetic. A curve is
-// `a0 + sum_i da_i * clamp((x - x_i) * inv_i, 0, 1)`: segment i is `(x_i, inv_i, da_i, a0)` (a0 in
-// segment 0's w), seven segments a curve, unrolled; the unused ones are zero and add nothing. With
-// every uniform zero the stack is exactly 0.0 and `mix(inka, 1.0, 0.0)` is the ramp's alpha to the
-// bit, so a screen that has no scrim draws what it always drew.
+// THE GROUND SHADE (`PLX_SCRIM`, `gfx/scrim.rs`): up to six soft rounded blocks of one ink, one per
+// piece of content a hero draws on the art, each evaluated HERE, per vertex, and stacked
+// `1 - prod(1 - a_i)` into the ink alpha the wash already carries. It is the ramp's own move for a
+// field no straight ramp describes, so the fragment still reads one varying and does no colour
+// arithmetic. A block is a rounded rectangle's signed distance `sd` (centre and the half extents of
+// the rectangle its corner arcs are centred on in the first vec4, the radius, 1/feather and peak in
+// the second) and the alpha `peak * (1 - smoothstep(0, feather, sd))`; an unused block has peak 0
+// and adds exactly nothing. With every uniform zero the stack is exactly 0.0 and
+// `mix(inka, 1.0, 0.0)` is the ramp's alpha to the bit, so a screen that has no shade draws what it
+// always drew.
 attribute vec2 a_pos;
 uniform vec4 u_rect;
 uniform vec2 u_screen;
@@ -41,16 +42,16 @@ uniform vec3 u_ink;
 uniform vec2 u_inka;
 #endif
 #ifdef PLX_SCRIM
-// 7 segments top, 7 radial, 7 bottom, then the radial's (cx, cy, 1/rx, 1/ry), in device pixels.
-uniform vec4 u_sc[22];
-#define SC_TERM(I, X) (u_sc[I].z * clamp(((X) - u_sc[I].x) * u_sc[I].y, 0.0, 1.0))
-#define SC_CURVE(B, X) (u_sc[B].w + SC_TERM(B, X) + SC_TERM(B + 1, X) + SC_TERM(B + 2, X) + SC_TERM(B + 3, X) + SC_TERM(B + 4, X) + SC_TERM(B + 5, X) + SC_TERM(B + 6, X))
+// Six blocks, two vec4 each: (cx, cy, hx - r, hy - r) and (r, 1/feather, peak, 0), in device pixels.
+uniform vec4 u_sc[12];
+float shade_block(int i, vec2 px) {
+  vec2 d = max(abs(px - u_sc[i].xy) - u_sc[i].zw, 0.0);
+  float t = clamp((length(d) - u_sc[i + 1].x) * u_sc[i + 1].y, 0.0, 1.0);
+  return u_sc[i + 1].z * (1.0 - t * t * (3.0 - 2.0 * t));
+}
 float scrim_alpha(vec2 px) {
-  vec2 q = (px - u_sc[21].xy) * u_sc[21].zw;
-  float t = SC_CURVE(0, px.y);
-  float r = SC_CURVE(7, length(q));
-  float b = SC_CURVE(14, px.y);
-  return 1.0 - (1.0 - t) * (1.0 - r) * (1.0 - b);
+  return 1.0 - (1.0 - shade_block(0, px)) * (1.0 - shade_block(2, px)) * (1.0 - shade_block(4, px))
+             * (1.0 - shade_block(6, px)) * (1.0 - shade_block(8, px)) * (1.0 - shade_block(10, px));
 }
 #endif
 #ifdef PLX_SCRIM_LAYER

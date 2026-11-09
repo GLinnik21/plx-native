@@ -1033,7 +1033,7 @@ fn the_wash_term_follows_the_ink_ramp_laid_over_the_wash() {
         rect: [0.0, 100.0, 1920.0, 400.0],
         ink: [0.0, 0.0, 0.0],
         ink_a,
-        scrim: plx_gfx::gfx::scrim::GroundScrim::NONE,
+        scrim: plx_gfx::gfx::scrim::GroundShade::NONE,
     };
     assert!(g(0.0, [0.0; 2]).delta(&g(0.0, [0.0; 2])).is_none(), "same wash, no term");
     assert!(g(3.0, [0.25; 2]).delta(&g(0.0, [0.0; 2])).is_none(), "another ink is another source");

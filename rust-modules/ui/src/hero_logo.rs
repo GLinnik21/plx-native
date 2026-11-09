@@ -215,6 +215,21 @@ impl<'a> HeroLogo<'a> {
         self
     }
 
+    /// **The rect [`draw`](Self::draw) paints in `band`**: the logo art's own box where it has
+    /// resolved, else the title's text run bottom-anchored on the band (the column wide). The hero
+    /// shade stands behind exactly this ([`crate::hero_shade`]), so a screen asks the logo what it
+    /// is painting rather than guessing from the band, and it moves with the logo.
+    pub fn painted(&self, band: Rect, measure: &dyn Measure) -> Rect {
+        let align = self.align.resolve(self.title);
+        if let Some((_, sw, sh)) = crate::tex::logo_src(self.sid, self.rk) {
+            let (w, h) = fit(self.rung, sw, sh, band.w);
+            return place(band, w, h, align);
+        }
+        let fallback = title_text(self.rung, self.title).h(align).with_measure(measure);
+        let h = title_paint_h(&fallback, self.rung, band.w, measure);
+        Rect::new(band.x, band.y + band.h - h, band.w, h)
+    }
+
     /// Draw into `band` — `band.w` is the column the logo is contained to, `band.y + band.h` the
     /// anchor line, and `band.h` should be [`band_h`] of the same rung. Ink is [`theme::TEXT_PRIMARY`]
     /// for both the logo tint and the fallback text (the value all three sites passed already).

@@ -127,12 +127,12 @@ const HERO_WASH_W: [f32; 4] = [0.55, 0.55, 0.40, 0.40];
 
 const HERO_ROW_Y: f32 = theme::hero::HOME_ACTIONS_Y;
 const HERO_CTRL_D: f32 = StatusOverlay::CTRL_H;
-const HERO_CTRL_GAP: f32 = plx_ui::widgets::CONTROL_GAP;
 #[cfg(test)]
 const SOURCE_PAD: f32 = theme::space::XS;
 const HERO_PAGER_D: f32 = HERO_CTRL_D * plx_ui::widgets::DISC_ICON_RATIO;
-const HERO_PAGER_BEARING: f32 =
-    HERO_PAGER_D * plx_ui::icons::ink_x(plx_ui::icons::Icon::Chevron).0;
+/// The pager's centre line: the action row's own (y 698), so the dots and the chevron read as one
+/// line with the controls at the other end of it.
+const HERO_PAGER_CY: f32 = HERO_ROW_Y + HERO_CTRL_D * 0.5;
 
 /// Each row's `motion` bytes are its `Shelf`'s (`Shelf::write`), the L0 row's motion write unchanged
 /// (`base_y` included), so the text, `SCREEN_SHAPES_PIN` and the replay anchors stay what they were;
@@ -427,15 +427,18 @@ impl Backdrop {
         });
     }
 
-    fn draw(&self, p: Painter, env: &Env, slide: Option<(f32, f32)>) {
+    /// Paint the ground. `scrim` is the hero's shade over the content it draws this frame
+    /// ([`HomeScreen::hero_shade`]), carried in the ground's pass where the ground can, else laid over
+    /// the art as a layer: `None` once the hero has faded (`env.hero_a`).
+    fn draw(&self, p: Painter, env: &Env, slide: Option<(f32, f32)>, scrim: Option<plx_ui::widgets::WashScrim>) {
         if !self.pending_art.is_empty() && env.hero_a > 0.01 && env.sp < HERO_ART_CULL {
             plx_ui::placeholder::note(p, plx_ui::placeholder::Reason::HomeBackdrop, &self.pending_art);
         }
         let incoming_a = reveal(self.tex.0, &self.art);
         let outgoing_a = reveal(self.outgoing_tex.0, &self.outgoing_art);
         // THE GROUND: the wash, the one art layer dissolving over it (the snap dive, or the art
-        // fading in) and the hero scrim over both (`widgets::home_scrim`: a top band, a radial behind
-        // the copy and a bottom band, the owner's CW-13 v2 board), as ONE pass per pixel
+        // fading in) and the hero shade over both (`hero_shade`: a soft block behind each piece of copy
+        // the hero draws, from this frame's live layout), as ONE pass per pixel
         // (`AmbientWash::draw_ground`). A hero FLIP slides two art layers, which one pass cannot
         // carry, so there the art and the scrim stay layers of their own.
         // Art held beneath a replaced hero (`held`) is the un-sliding outgoing layer: the new art
@@ -445,7 +448,7 @@ impl Backdrop {
         let wash = !wash_hidden(env.sp, art_a, slide.map(|_| outgoing_a))
             && !self.wash.is_flat(theme::SURFACE_APP, AmbientWash::FLAT_EPS);
         let art_in_ground = wash && slide.is_none() && !held && env.sp < HERO_ART_CULL;
-        let scrim = (env.hero_a > 0.01).then(|| plx_ui::widgets::home_scrim(env.hero_a));
+        let scrim = scrim.filter(|_| env.hero_a > 0.01);
         // Once the hero is culled NO art is drawn at all, a slide or held layer notwithstanding, and
         // the shelves and grid stand on the wash alone: ONE colour, which the renderer clears
         // rather than shades (`AmbientWash::draw_flat_ground`). Every earlier frame — a hero slide,
@@ -2148,7 +2151,8 @@ impl HomeScreen {
             self.carousel.as_ref(),
             self.snap.pos,
         );
-        plx_ui::profile::phase("hm.backdrop", || self.backdrop.draw(p, &env, slide));
+        let shade = (env.hero_a > 0.01).then(|| self.hero_shade(view, f.measure).scrim(env.hero_a));
+        plx_ui::profile::phase("hm.backdrop", || self.backdrop.draw(p, &env, slide, shade));
         if env.hero_a > 0.01 {
             plx_ui::profile::phase("hm.hero", || {
                 self.draw_hero(
@@ -2178,6 +2182,62 @@ impl HomeScreen {
         self.plaintext_alert.draw(f, self.entry);
     }
 
+    /// **The hero shade of THIS frame**: a soft block behind each piece of content the page draws on
+    /// the art, from the live layout, so a block that moves takes its shade with it
+    /// ([`plx_ui::hero_shade`]). Per hero on screen (two while a flip slides) the copy column
+    /// ([`hero_copy_rect`]) and the action row (Play, the disc, Info: [`hero_rects`]) at that hero's
+    /// slide offset; the pager at its fixed place ([`hero_pager`]); and under the Continue Watching
+    /// row the band its footer lines stand
+    /// in, which stands on the backdrop now that the footer has left the art. The caller scales it by
+    /// the hero's fade.
+    fn hero_shade(&self, view: HubsView<'_>, measure: &dyn Measure) -> plx_ui::hero_shade::HeroShade {
+        use plx_ui::hero_shade::Role;
+        let mut shade = plx_ui::hero_shade::HeroShade::new();
+        let hero_blocks = |shade: plx_ui::hero_shade::HeroShade, hero: &PmsMovie, dx: f32| {
+            let at = |r: Rect| Rect::new(r.x + dx, r.y, r.w, r.h);
+            let resumes = plx_data::metadata::resume_ns(hero.resume_ms, hero.dur_ns / 1_000_000) > 0;
+            let controls = hero_rects(measure, hero, plx_appkit::hero_layout::play_label(resumes));
+            let row = Rect::new(controls.play.x, HERO_ROW_Y, controls.info.x + controls.info.w - controls.play.x, HERO_CTRL_D);
+            shade.add(at(hero_copy_rect(hero, measure)), Role::Copy, 1.0).add(at(row), Role::Controls, 1.0)
+        };
+        match (self.slide_offsets(), self.selected_hero(view)) {
+            (Some((out_x, in_x)), Some(hero)) => {
+                if let Some(old) = self.outgoing_hero(view) {
+                    shade = hero_blocks(shade, old.item, out_x);
+                }
+                shade = hero_blocks(shade, hero.item, in_x);
+            }
+            (None, Some(hero)) => shade = hero_blocks(shade, hero.item, 0.0),
+            _ => {}
+        }
+        if view.hero_count() > 1 {
+            let dots = PageDots::new(view.hero_count()).active(self.carousel_index(view));
+            let pager = hero_pager(dots.width());
+            let right = SCR_W - MARGIN_X;
+            shade = shade.add(Rect::new(pager.dots_x, HERO_ROW_Y, right - pager.dots_x, HERO_CTRL_D), Role::Controls, 1.0);
+        }
+        if let Some(footer) = self.continue_footer_band(view) {
+            shade = shade.add(footer, Role::Footer, 1.0);
+        }
+        shade
+    }
+
+    /// The band the Continue Watching row's footer lines stand in, in screen space: from its first
+    /// card's left edge to its last card's right one (as far as the screen shows), one footer line
+    /// tall, a drop under the tiles ([`theme::STILL_FOOTER_DROP`]). `None` when the first row is not
+    /// that row, or it has no card on screen.
+    fn continue_footer_band(&self, view: HubsView<'_>) -> Option<Rect> {
+        let row = self.rows.first().filter(|r| r.identity == HomeHubIdentity::ContinueWatching)?;
+        let (style, shelf) = (self.row_style(0), self.grid.shelves.first()?);
+        let _ = view;
+        let n = row.cards.len();
+        let scroll = shelf.scroll();
+        let left = card_x(style, 0, scroll).max(0.0);
+        let right = (card_x(style, n.checked_sub(1)?, scroll) + style.w).min(SCR_W);
+        let y = self.grid.base_y(0) + CARD_DY + style.h + theme::STILL_FOOTER_DROP;
+        (right > left).then(|| Rect::new(left, y, right - left, plx_ui::still_footer::FOOTER_LINE_H))
+    }
+
     fn draw_hero(
         &self,
         view: HubsView<'_>,
@@ -2205,18 +2265,10 @@ impl HomeScreen {
             self.draw_hero_actions(hero.item, env, p, 0.0, true, page_alpha, focus, measure, press_scale);
         }
         if view.hero_count() > 1 {
-            let resumes = plx_data::metadata::resume_ns(hero.item.resume_ms, hero.item.dur_ns / 1_000_000) > 0;
-            let info = hero_rects(measure, hero.item, plx_appkit::hero_layout::play_label(resumes)).info;
             let dots = PageDots::new(view.hero_count()).active(self.carousel_index(view));
-            let items = [Item::new(dots.width()), Item::glyph(Icon::Chevron, HERO_PAGER_D)];
-            let row = plx_ui::hstack::HStack::new(&items, HERO_CTRL_GAP,
-                plx_ui::hstack::Align::Leading(info.x + info.w + theme::space::LG));
-            let (x, _) = row.span(0).unwrap();
-            dots.centered_y(x, HERO_ROW_Y + HERO_CTRL_D * 0.5).draw(env, p);
-            let (x, _) = row.span(1).unwrap();
-            plx_ui::icons::draw(p, Icon::Chevron,
-                Rect::new(x - HERO_PAGER_BEARING, HERO_ROW_Y + (HERO_CTRL_D - HERO_PAGER_D) * 0.5,
-                    HERO_PAGER_D, HERO_PAGER_D), theme::TEXT_SECONDARY);
+            let pager = hero_pager(dots.width());
+            dots.centered_y(pager.dots_x, HERO_PAGER_CY).draw(env, p);
+            plx_ui::icons::draw(p, Icon::Chevron, pager.chevron, theme::TEXT_SECONDARY);
         }
     }
 
@@ -3634,17 +3686,51 @@ struct HeroRects {
     info: Rect,
 }
 
-fn hero_rects(measure: &dyn Measure, item: &PmsMovie, label: &std::ffi::CStr) -> HeroRects {
-    // One row: Play, the watchlist disc when the title has one (absent: no room, no gap), Info.
-    let has_disc = disc_hex(item).is_some();
-    let widths = [plx_appkit::hero_layout::play_width(measure, label), HERO_CTRL_D, HERO_CTRL_D];
-    let row = &widths[..if has_disc { 3 } else { 2 }];
-    let at = |i| plx_appkit::hero_layout::flat_row_rect(row, i, HERO_ROW_Y);
-    HeroRects {
-        play: at(0),
-        disc: has_disc.then(|| at(1)),
-        info: at(if has_disc { 2 } else { 1 }),
+/// **The billboard's pager: the page dots and the next chevron, ONE group at a fixed place.** The
+/// chevron's INK ends at the right margin (`SCR_W - MARGIN_X`, 1824), the dots stand one
+/// [`plx_ui::widgets::CONTROL_GAP`] before it (between their ink: the dots are exactly as wide as the
+/// dots they draw, and the chevron is placed by its glyph's ink, [`Item::glyph`]), and the group is
+/// centred on the action row's centre line ([`HERO_PAGER_CY`]). Nothing in it reads the buttons, so
+/// the group stands in the same place whatever the Play label's width is, in any language.
+struct PagerRects {
+    /// The page dots' left edge.
+    dots_x: f32,
+    /// The chevron's box (drawn there so its ink ends at the margin).
+    chevron: Rect,
+}
+
+fn hero_pager(dots_w: f32) -> PagerRects {
+    let items = [Item::new(dots_w), Item::glyph(Icon::Chevron, HERO_PAGER_D)];
+    let row = plx_ui::hstack::HStack::new(
+        &items,
+        plx_ui::widgets::CONTROL_GAP,
+        plx_ui::hstack::Align::Trailing(SCR_W - MARGIN_X),
+    );
+    let mut spans = row.placed();
+    let dots = spans.next().expect("the dots are present");
+    let chevron = spans.next().expect("the chevron is present");
+    PagerRects {
+        dots_x: dots.x,
+        chevron: Rect::new(chevron.box_x, HERO_PAGER_CY - HERO_PAGER_D * 0.5, HERO_PAGER_D, HERO_PAGER_D),
     }
+}
+
+fn hero_rects(measure: &dyn Measure, item: &PmsMovie, label: &std::ffi::CStr) -> HeroRects {
+    // One row: Play, the watchlist disc when the title has one (absent: no room, no gap), Info —
+    // each exactly one gap after the one before it, measured between the visible marks
+    // ([`plx_appkit::hero_layout::flat_row`]).
+    let has_disc = disc_hex(item).is_some();
+    let items = [
+        Item::new(plx_appkit::hero_layout::play_width(measure, label)),
+        if has_disc { Item::new(HERO_CTRL_D) } else { Item::absent() },
+        Item::new(HERO_CTRL_D),
+    ];
+    let row = plx_appkit::hero_layout::flat_row(&items);
+    let at = |i: usize| {
+        let (x, w) = row.span(i).expect("a control of the row is present");
+        Rect::new(x, HERO_ROW_Y, w, HERO_CTRL_D)
+    };
+    HeroRects { play: at(0), disc: has_disc.then(|| at(1)), info: at(2) }
 }
 
 fn card_x(style: &RowStyle, col: usize, scroll: f32) -> f32 {
@@ -3852,27 +3938,9 @@ fn hero_content(hero: &PmsMovie, p: Painter, dx: f32, measure: &dyn Measure) {
     ) {
         return;
     }
-    let episode = hero.kind == 3;
-    let title = if episode && !hero.show_title.is_empty() {
-        &hero.show_title
-    } else {
-        &hero.title
-    };
-    let title_h = hero_logo::band_h(LogoRung::Hero);
-    let label = if episode {
-        plx_ui::fmt::episode_kicker(i64::from(hero.season_index), i64::from(hero.ep_index), &hero.title)
-    } else {
-        String::new()
-    };
-    let synopsis = (label.is_empty() && !hero.summary.is_empty()).then(|| home_synopsis(&hero.summary));
-    let block_h = if !label.is_empty() {
-        Some(HOME_LABEL_H)
-    } else {
-        synopsis.as_ref().map(|v| v.measure_h(theme::hero::HOME_SYNOPSIS_W))
-    };
-    let stack = home_rows(title_h, block_h);
-    HeroLogo::new(hero.sid.raw(), hero_logo_rk(hero), title, LogoRung::Hero)
-        .draw(p, Rect::new(MARGIN_X, stack.title.y, HERO_COL_W, title_h), measure);
+    let (stack, label) = hero_ladder(hero);
+    HeroLogo::new(hero.sid.raw(), hero_logo_rk(hero), hero_title(hero), LogoRung::Hero)
+        .draw(p, hero_title_band(&stack), measure);
     let Some(block) = stack.block else { return };
     if !label.is_empty() {
         let run = measure.fit_line(&label, HERO_COL_W, theme::size::LABEL, true);
@@ -3880,9 +3948,58 @@ fn hero_content(hero: &PmsMovie, p: Painter, dx: f32, measure: &dyn Measure) {
             .bold()
             .v(VAlign::CapTop)
             .draw(p, Rect::new(MARGIN_X, block.y, HERO_COL_W, measure.cap_h(theme::size::LABEL)));
-    } else if let Some(view) = synopsis {
-        view.draw(p, Rect::new(MARGIN_X, block.y, theme::hero::HOME_SYNOPSIS_W, 0.0));
+    } else if !hero.summary.is_empty() {
+        home_synopsis(&hero.summary).draw(p, Rect::new(MARGIN_X, block.y, theme::hero::HOME_SYNOPSIS_W, 0.0));
     }
+}
+
+/// The title Home's hero shows: an episode's SHOW (the clearLogo is the show's), else the item's own.
+fn hero_title(hero: &PmsMovie) -> &str {
+    if hero.kind == 3 && !hero.show_title.is_empty() { &hero.show_title } else { &hero.title }
+}
+
+/// **Home's hero ladder for one hero** and the episode label it stands on (`""` for any other kind,
+/// or an episode with no label to name it): the one place the block's height is decided, which
+/// [`hero_content`] draws on and [`hero_copy_rect`] shades.
+fn hero_ladder(hero: &PmsMovie) -> (plx_ui::landing_hero::HomeStack, String) {
+    let label = if hero.kind == 3 {
+        plx_ui::fmt::episode_kicker(i64::from(hero.season_index), i64::from(hero.ep_index), &hero.title)
+    } else {
+        String::new()
+    };
+    let block_h = if !label.is_empty() {
+        Some(HOME_LABEL_H)
+    } else if !hero.summary.is_empty() {
+        Some(home_synopsis(&hero.summary).measure_h(theme::hero::HOME_SYNOPSIS_W))
+    } else {
+        None
+    };
+    (home_rows(hero_logo::band_h(LogoRung::Hero), block_h), label)
+}
+
+/// The column the title (clearLogo or typed) is bottom-anchored in, on [`hero_ladder`]'s rung.
+fn hero_title_band(stack: &plx_ui::landing_hero::HomeStack) -> Rect {
+    Rect::new(MARGIN_X, stack.title.y, HERO_COL_W, stack.title.h)
+}
+
+/// **The rect Home's hero copy occupies this frame**, which the hero shade stands behind
+/// ([`HomeScreen::hero_shade`]): the title as the logo paints it (its art, or its typed run), the
+/// block under it, and the gap between, as one column. Read off the same ladder [`hero_content`]
+/// draws on, so it moves with the copy (a synopsis that wraps to one line instead of two brings
+/// the whole column down a line).
+fn hero_copy_rect(hero: &PmsMovie, measure: &dyn Measure) -> Rect {
+    let (stack, label) = hero_ladder(hero);
+    let title = HeroLogo::new(hero.sid.raw(), hero_logo_rk(hero), hero_title(hero), LogoRung::Hero)
+        .painted(hero_title_band(&stack), measure);
+    let Some(block) = stack.block else { return title };
+    let block_w = if label.is_empty() { theme::hero::HOME_SYNOPSIS_W } else { HERO_COL_W };
+    union_rect(title, Rect::new(MARGIN_X, block.y, block_w, block.h))
+}
+
+/// The smallest rect holding both.
+fn union_rect(a: Rect, b: Rect) -> Rect {
+    let (x, y) = (a.x.min(b.x), a.y.min(b.y));
+    Rect::new(x, y, (a.x + a.w).max(b.x + b.w) - x, (a.y + a.h).max(b.y + b.h) - y)
 }
 
 #[cfg(test)]

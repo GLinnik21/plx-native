@@ -256,31 +256,33 @@ pub mod hero {
     pub const HOME_SYNOPSIS_LINES: usize = 2;
 }
 
-/// **Home's hero scrim, as three stacked terms of one ink** ([`SCRIM_INK`], composed
-/// `1 - (1-a)(1-b)(1-c)`, each scaled by the hero's own fade) — the owner's CW-13 v2 board. It
-/// replaces the left wedge, the feathered mask and the bottom ramp Home used to share with Detail
-/// (which keeps all three). Every table is `(t, alpha)` with `t` in the unit its term names; the
-/// evaluator is `widgets::home_scrim_a` and the one-pass ground carries the same numbers to the
-/// GPU (`gfx::GroundScrim`).
-pub mod home_scrim {
-    /// The top band: from the panel's top to [`TOP_H`] px, alpha by `t = y / TOP_H`. It keeps the
-    /// top navigation and the profile chip readable over any backdrop.
-    pub const TOP_H: f32 = 240.0;
-    /// `(t, alpha)` of the top band: .50 at the panel's top fading out to nothing at [`TOP_H`].
-    pub const TOP: [(f32, f32); 6] = [(0.0, 0.50), (0.18, 0.40), (0.40, 0.26), (0.65, 0.12), (0.85, 0.03), (1.0, 0.0)];
-    /// The radial term's centre, in authored pixels: behind the title, synopsis and the actions.
-    pub const RADIAL_CENTRE: (f32, f32) = (560.0, 590.0);
-    /// The radial term's radii (x, y): an ellipse, so `r` below is the normalised elliptical distance.
-    pub const RADIAL_RADII: (f32, f32) = (1020.0, 460.0);
-    /// `(r, alpha)` of the radial term: the heaviest ink is behind the copy, gone at `r = 1`.
-    pub const RADIAL: [(f32, f32); 6] = [(0.0, 0.78), (0.30, 0.70), (0.55, 0.48), (0.78, 0.22), (0.92, 0.06), (1.0, 0.0)];
-    /// The bottom band starts at this y and runs to the panel's foot (`t = (y - BOTTOM_Y) / BOTTOM_H`).
-    pub const BOTTOM_Y: f32 = 640.0;
-    /// The bottom band's height, to the foot of the 1080 panel.
-    pub const BOTTOM_H: f32 = crate::consts::SCR_H - BOTTOM_Y;
-    /// `(t, alpha)` of the bottom band: nothing at its top, .93 at the foot (the shelves' ground).
-    pub const BOTTOM: [(f32, f32); 8] =
-        [(0.0, 0.0), (0.12, 0.02), (0.25, 0.08), (0.40, 0.24), (0.55, 0.46), (0.70, 0.68), (0.85, 0.84), (1.0, 0.93)];
+/// **The hero shade: a soft, feathered darkening of the art around what a hero draws on it**
+/// ([`SCRIM_INK`], one rounded block per piece of content, stacked `1 - prod(1 - a_i)`, each scaled
+/// by that content's own alpha and the hero's fade). It follows the content: the blocks come from the
+/// rects the screen is drawing this frame (`hero_shade::HeroShade`), so a logo that rises into
+/// the trailer corner carries its shade up with it. Both heroes use it (Home, Detail); the
+/// evaluator is `hero_shade::shade_a` and the one-pass ground carries the same numbers to the GPU
+/// (`gfx::scrim::GroundShade`).
+pub mod shade {
+    /// How far a block's darkness falls away beyond the edge of the content's rounded box, in px:
+    /// it holds its full alpha inside the box and reaches exactly nothing this far out (a smoothstep,
+    /// so neither end has a visible edge). Generous on purpose: the shade should read as a soft
+    /// weather behind the copy, never as a plate with an outline.
+    pub const FEATHER: f32 = 140.0;
+    /// The corner radius of the box the shade holds its full alpha inside, in px.
+    pub const RADIUS: f32 = 32.0;
+    /// How far that box stands out past the content's own rect on every side, in px, so a glyph at
+    /// the content's edge still sits inside the held alpha, never on the feather.
+    pub const PAD: f32 = 24.0;
+    /// The darkness held behind copy and a logo or typed title (text over an unknown photograph):
+    /// the value `widgets_hero_scrim_tests`' legibility contract is graded at, on every line.
+    pub const COPY_A: f32 = 0.60;
+    /// The darkness held behind the action row: its pills carry their own glass, so the shade only
+    /// settles the ground the discs and the pager stand on.
+    pub const CONTROLS_A: f32 = 0.45;
+    /// The darkness held behind the Continue Watching row's footer band, which stands on the
+    /// backdrop now that it has left the art: small secondary-ink type, so a little more than copy.
+    pub const FOOTER_A: f32 = 0.64;
 }
 
 /// Shared logo presence: target bounding-box area, with independent width/height limits.

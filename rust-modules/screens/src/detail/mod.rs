@@ -2829,6 +2829,9 @@ impl DetailScreen {
             tint: theme::with_a(theme::dim(theme::TINT_WHITE, 1.0 - sf * 0.55), art_alpha),
         };
         let visible = hero_alpha(self.scroll.pos, HERO_FADE);
+        // The hero's shade over the copy it draws, at the hero's own fade and the preview field
+        // (`hero_shade`): carried by the ground's pass where the ground can, else laid over it.
+        let shade = (visible > 0.01).then(|| self.hero_shade(d, measure, meta).scrim(visible * self.preview_field));
         // Both heroes use the proposal's three-stop atmosphere, including the preview fade.
         let ramp = (visible > 0.01).then(|| {
             let [y0, knee, mid, foot] = plx_ui::landing_hero::base_scrim_ramp(visible);
@@ -2841,7 +2844,7 @@ impl DetailScreen {
         // The still dissolves over its ground while the page scrolls, so where the ground is drawn
         // the ground, the still and the ramp are one pass (`AmbientWash::draw_ground`).
         let ramp_in_ground = if keyed_ground_over_plane(preview.picture, texture, art_alpha, ground_flat) {
-            self.ground.draw_ground(p, Rect::FULL, Some(art), ramp, None)
+            self.ground.draw_ground(p, Rect::FULL, Some(art), ramp, shade)
         } else {
             if texture != 0 {
                 p.tex_uv(art.tex, art.uv, art.rect, 0.0, art.tint);
@@ -2858,12 +2861,9 @@ impl DetailScreen {
             }
         }
 
-        if visible > 0.01 {
-            plx_ui::widgets::hero_scrim(
-                p,
-                visible * self.preview_field,
-                d.is_some_and(hero::has_people),
-            );
+        // A ground that did not carry the shade lays it over all of this as a layer of its own.
+        if let Some(shade) = shade.filter(|_| !ramp_in_ground) {
+            plx_ui::widgets::scrim_layer(p, shade);
         }
         if self.scroll.pos > 0.0 && preview.picture {
             let a = (self.scroll.pos / plx_media::player::preview::COVER_SCROLL).clamp(0.0, 1.0);
@@ -2875,17 +2875,14 @@ impl DetailScreen {
     fn draw_hero<H: ContentLike + crate::registry::MetadataLike>(&self, p: Painter, cx: &Cx<'_, H>, d: Option<&Detail>, nav_page_alpha: f32) {
         let meta = H::metadata(cx);
         let measure = cx.measure;
-        use plx_ui::detail_layout::{HERO_TEXT_W, TITLE_BOTTOM};
+        use plx_ui::detail_layout::HERO_TEXT_W;
 
         let (_, rk, _) = self.art_identity(d);
-        let title = d
-            .map(|d| d.title.as_str())
-            .or_else(|| self.selected().map(|m| m.title.as_str()))
-            .unwrap_or_else(|| {
-                // No item has landed: the hero's title IS the "Loading" message (counted at the draw).
-                plx_ui::placeholder::note(p, plx_ui::placeholder::Reason::DetailTitle, &self.rk);
-                plx_platform::i18n::msg::browse_library_loading()
-            });
+        let title = self.hero_title(d).unwrap_or_else(|| {
+            // No item has landed: the hero's title IS the "Loading" message (counted at the draw).
+            plx_ui::placeholder::note(p, plx_ui::placeholder::Reason::DetailTitle, &self.rk);
+            plx_platform::i18n::msg::browse_library_loading()
+        });
         let chrome = p.alpha(self.preview_chrome);
         // NOT `self.preview_chrome * self.preview_synopsis`: synopsis_target already tracks
         // chrome_target exactly (both states — background autoplay, full-trailer — target the
@@ -2893,35 +2890,9 @@ impl DetailScreen {
         // along the SQUARE of the intended curve instead of the same rate as the logo/title.
         let synopsis_alpha = p.alpha(self.preview_synopsis);
 
-        // Interpolate continuously between the hero position/size and the top-left compact spot a
-        // trailer's background autoplay shrinks the logo into — `preview_logo.pos` is the spring's
-        // live 0..1 progress (see `preview_tick`). `LogoRung::lerp` keeps `HeroLogo::fit`'s
-        // constant-area solve continuous across the whole travel instead of snapping partway
-        // through it (`ui/hero_logo.rs`'s own module doc: sizing is area-based, not a height clamp).
-        let hero_band = plx_ui::hero_logo::band_h(LogoRung::Hero);
+        let spot = self.logo_spot(measure, meta);
         let compact_band = plx_ui::hero_logo::band_h(LogoRung::Compact);
-        let t = self.preview_logo.pos;
-        let lerp = |a: f32, b: f32| a + (b - a) * t;
-        let band = Rect::new(
-            lerp(plx_ui::consts::MARGIN_X, plx_ui::detail_layout::PREVIEW_LOGO_X),
-            lerp(TITLE_BOTTOM - hero_band, plx_ui::detail_layout::PREVIEW_LOGO_Y),
-            lerp(HERO_TEXT_W, plx_ui::detail_layout::PREVIEW_LOGO_MAX_W),
-            lerp(hero_band, compact_band),
-        );
-        // The pinned corner spot (`t` near 1) sits well inside the below-hero flow's own reach:
-        // `content_top(measure)` — the first section's top — is under a screen height away, so the
-        // caller's `hero_alpha`/`HERO_FADE` window (400px) was still fading the mark, semi-visible,
-        // while a section (Extras, depending on order) had already scrolled up underneath it. Ties
-        // the logo's OWN extra fade to the same "how far into the below-hero flow" fraction
-        // `draw_backdrop`'s `sf` already computes, so it is fully gone by the time the flow starts
-        // and back once scrolled to the top — and only while shrunk (`t`), so a normal hero (no
-        // preview) is untouched.
-        let hero_extent = (self.content_top(measure, meta) - plx_ui::detail_layout::TOP_MARGIN).max(1.0);
-        let logo_alpha = p.alpha(
-            self.preview_chrome * preview_logo_scroll_alpha(self.scroll.pos, hero_extent, t),
-        );
-        HeroLogo::new(self.sid.raw(), &rk, title, LogoRung::lerp(LogoRung::Hero, LogoRung::Compact, t))
-            .draw(logo_alpha, band, cx.measure);
+        HeroLogo::new(self.sid.raw(), &rk, title, spot.rung).draw(p.alpha(spot.alpha), spot.band, cx.measure);
 
         let (lead, synopsis) = hero_blurb(d, self.selected());
         let synopsis_view = plx_ui::hero_synopsis(&synopsis, &lead).with_measure(measure);
@@ -2965,6 +2936,84 @@ impl DetailScreen {
             trailer::hint_cy(plx_ui::detail_layout::PREVIEW_LOGO_Y, compact_band),
             measure,
         );
+    }
+
+    /// The title the hero shows (a logo's fallback text): the item's own, else the selection's;
+    /// `None` while no item has landed (the caller names that "Loading").
+    fn hero_title<'a>(&'a self, d: Option<&'a Detail>) -> Option<&'a str> {
+        d.map(|d| d.title.as_str()).or_else(|| self.selected().map(|m| m.title.as_str()))
+    }
+
+    /// **Where the hero's logo stands this frame**, in page coordinates: interpolated continuously
+    /// between the hero position/size and the top-left compact spot a trailer's background autoplay
+    /// shrinks the logo into — `preview_logo.pos` is the spring's live 0..1 progress (see
+    /// `preview_tick`). `LogoRung::lerp` keeps `HeroLogo::fit`'s constant-area solve continuous
+    /// across the whole travel instead of snapping partway through it (`ui/hero_logo.rs`'s own
+    /// module doc: sizing is area-based, not a height clamp). The draw and the hero shade
+    /// ([`Self::hero_shade`]) both read this, so the shade rises with the logo.
+    ///
+    /// The pinned corner spot (`t` near 1) sits well inside the below-hero flow's own reach:
+    /// `content_top(measure)` — the first section's top — is under a screen height away, so the
+    /// caller's `hero_alpha`/`HERO_FADE` window (400px) was still fading the mark, semi-visible,
+    /// while a section (Extras, depending on order) had already scrolled up underneath it. Ties
+    /// the logo's OWN extra fade to the same "how far into the below-hero flow" fraction
+    /// `draw_backdrop`'s `sf` already computes, so it is fully gone by the time the flow starts
+    /// and back once scrolled to the top — and only while shrunk (`t`), so a normal hero (no
+    /// preview) is untouched.
+    fn logo_spot(&self, measure: &dyn plx_machine::machine::Measure, meta: plx_data::metadata::MetadataView<'_>) -> LogoSpot {
+        use plx_ui::detail_layout::{HERO_TEXT_W, TITLE_BOTTOM};
+        let hero_band = plx_ui::hero_logo::band_h(LogoRung::Hero);
+        let compact_band = plx_ui::hero_logo::band_h(LogoRung::Compact);
+        let t = self.preview_logo.pos;
+        let lerp = |a: f32, b: f32| a + (b - a) * t;
+        let band = Rect::new(
+            lerp(plx_ui::consts::MARGIN_X, plx_ui::detail_layout::PREVIEW_LOGO_X),
+            lerp(TITLE_BOTTOM - hero_band, plx_ui::detail_layout::PREVIEW_LOGO_Y),
+            lerp(HERO_TEXT_W, plx_ui::detail_layout::PREVIEW_LOGO_MAX_W),
+            lerp(hero_band, compact_band),
+        );
+        let hero_extent = (self.content_top(measure, meta) - plx_ui::detail_layout::TOP_MARGIN).max(1.0);
+        LogoSpot {
+            band,
+            rung: LogoRung::lerp(LogoRung::Hero, LogoRung::Compact, t),
+            alpha: self.preview_chrome * preview_logo_scroll_alpha(self.scroll.pos, hero_extent, t),
+        }
+    }
+
+    /// **The hero shade of THIS frame**: a soft block behind each piece of copy the hero draws on
+    /// the art, from the live layout, so a block that moves takes its shade with it
+    /// ([`plx_ui::hero_shade`]) — the logo rising into the trailer corner above all. Each block
+    /// fades with the content it stands behind: the logo with its own alpha, the identity, ratings
+    /// and synopsis column with whichever of them is still up, and the facts line, the credits and
+    /// the action row with the chrome. Page coordinates become screen ones (the hero scrolls).
+    /// The caller scales it by the hero's own fade and the preview field.
+    fn hero_shade(
+        &self,
+        d: Option<&Detail>,
+        measure: &dyn plx_machine::machine::Measure,
+        meta: plx_data::metadata::MetadataView<'_>,
+    ) -> plx_ui::hero_shade::HeroShade {
+        use plx_ui::hero_shade::{HeroShade, Role};
+        let chain = self.hero_chain(measure, meta);
+        let at = |r: Rect| Rect::new(r.x, r.y - self.scroll.pos, r.w, r.h);
+        let spot = self.logo_spot(measure, meta);
+        let (_, rk, _) = self.art_identity(d);
+        let logo = HeroLogo::new(self.sid.raw(), &rk, self.hero_title(d).unwrap_or(""), spot.rung).painted(spot.band, measure);
+        let prose = Rect::new(plx_ui::consts::MARGIN_X, chain.meta_y, plx_ui::detail_layout::HERO_TEXT_W, chain.facts_y - chain.meta_y);
+        let facts = Rect::new(plx_ui::consts::MARGIN_X, chain.facts_y, plx_appkit::hero_layout::FACTS_R - plx_ui::consts::MARGIN_X, theme::hero::FACTS_H);
+        let set = self.hero_set(meta);
+        let widths = hero::hero_widths(measure, set, set.restart, self.disc_unfurl.map(|s| s.pos), self.named_episode(meta));
+        let row = hero::hero_row_rect(set, chain.btn_y, widths);
+        let chrome = self.preview_chrome;
+        let mut shade = HeroShade::new()
+            .add(at(logo), Role::Copy, spot.alpha)
+            .add(at(prose), Role::Copy, self.preview_synopsis.max(chrome * self.preview_prose))
+            .add(at(facts), Role::Copy, chrome)
+            .add(at(row), Role::Controls, chrome);
+        if let Some(people) = d.and_then(|d| hero::people_rect(d, chain.btn_y, measure)) {
+            shade = shade.add(at(people), Role::Copy, chrome);
+        }
+        shade
     }
 
     fn draw_identity_line(&self, p: Painter, d: &Detail, y: f32, measure: &dyn plx_machine::machine::Measure) {
@@ -3053,13 +3102,8 @@ impl DetailScreen {
         // fades every button through `chrome`'s `preview_chrome` alpha (`draw_hero`), and cutting
         // four of the five pills here a frame early defeats that fade before it can be seen.
         let (controls, n) = hero::hero_ctls(set);
-        let last = hero::hero_btn_rect_at(set, n.saturating_sub(1), y, widths);
-        let row = [
-            plx_ui::consts::MARGIN_X,
-            y - self.scroll.pos,
-            last.x + last.w - plx_ui::consts::MARGIN_X,
-            hero::CD,
-        ];
+        let row = hero::hero_row_rect(set, y, widths);
+        let row = [row.x, row.y - self.scroll.pos, row.w, row.h];
         let picture = plx_media::player::preview::view().picture;
         // A text-recording pass (the transition's prewarm, or a headless sweep) drew no pixels
         // under this row, so a read-back there would sample some other page's ground.
@@ -3272,6 +3316,14 @@ fn preview_already_played(played_for: Option<&str>, current_cache_rk: &str) -> b
 /// `scroll_pos` rises and reappears the same way on the way back up, and it changes nothing at
 /// `t=0`: a normal (non-preview) hero already has its own `hero_alpha` fade from the caller and
 /// this must not double it.
+/// Where the hero's logo stands this frame ([`DetailScreen::logo_spot`]): its band in page
+/// coordinates, the rung it is sized at, and the alpha it is drawn with.
+struct LogoSpot {
+    band: Rect,
+    rung: LogoRung,
+    alpha: f32,
+}
+
 fn preview_logo_scroll_alpha(scroll_pos: f32, hero_extent: f32, t: f32) -> f32 {
     let past_hero = (scroll_pos / hero_extent.max(1.0)).clamp(0.0, 1.0);
     1.0 - t * past_hero

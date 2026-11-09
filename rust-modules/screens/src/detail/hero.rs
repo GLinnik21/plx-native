@@ -450,6 +450,15 @@ fn control_widths(set: HeroSet, cw: HeroWidths) -> ([f32; MAX_CTLS], usize) {
     (widths, n)
 }
 
+/// The rect the whole action row occupies from `y` (page coordinates): from the left margin to the
+/// last control's right edge. What the control ground is sampled over, and what the hero shade
+/// stands behind.
+pub fn hero_row_rect(set: HeroSet, y: f32, cw: HeroWidths) -> Rect {
+    let (_, n) = hero_ctls(set);
+    let last = hero_btn_rect_at(set, n.saturating_sub(1), y, cw);
+    Rect::new(plx_ui::consts::MARGIN_X, y, last.x + last.w - plx_ui::consts::MARGIN_X, CD)
+}
+
 /// The drawn frame of control `i`, using the shared row spacing and measured widths.
 pub fn hero_btn_rect_at(set: HeroSet, i: usize, y: f32, cw: HeroWidths) -> Rect {
     let (widths, n) = control_widths(set, cw);
@@ -530,11 +539,26 @@ pub fn hero_credit(d: &Detail) -> Option<(&'static str, Vec<&str>)> {
     (!names.is_empty()).then_some((plx_platform::i18n::msg::browse_detail_directed_by(), names))
 }
 
-pub fn has_people(d: &Detail) -> bool {
-    !d.cast.is_empty() || hero_credit(d).is_some()
+pub fn draw_people(p: Painter, d: &Detail, button_y: f32, measure: &dyn Measure) {
+    people_blocks(d, button_y, measure, |view, at| { view.draw(p, Rect::new(at.x, at.y, at.w, 0.0)); });
 }
 
-pub fn draw_people(p: Painter, d: &Detail, button_y: f32, measure: &dyn Measure) {
+/// **The rect the credits column occupies** (page coordinates): the union of the blocks
+/// [`draw_people`] draws, at their true heights. `None` when there is no credit to draw.
+pub fn people_rect(d: &Detail, button_y: f32, measure: &dyn Measure) -> Option<Rect> {
+    let mut union: Option<Rect> = None;
+    people_blocks(d, button_y, measure, |_, at| {
+        union = Some(union.map_or(at, |u| {
+            let (x, y) = (u.x.min(at.x), u.y.min(at.y));
+            Rect::new(x, y, (u.x + u.w).max(at.x + at.w) - x, (u.y + u.h).max(at.y + at.h) - y)
+        }));
+    });
+    union
+}
+
+/// Walk the credits' blocks as they stand: `f(view, rect)` for each, bottom-anchored on the facts'
+/// cap band. The ONE layout of the column, which [`draw_people`] paints and [`people_rect`] reports.
+fn people_blocks(d: &Detail, button_y: f32, measure: &dyn Measure, mut f: impl FnMut(&TextView<'_>, Rect)) {
     use plx_ui::detail_layout::PEOPLE_W;
     let x = plx_ui::consts::SCR_W - plx_ui::consts::MARGIN_X - PEOPLE_W;
     let cast_names: Vec<&str> = d
@@ -562,7 +586,7 @@ pub fn draw_people(p: Painter, d: &Detail, button_y: f32, measure: &dyn Measure)
     for span in stack.placed() {
         let view = if span.i == 0 { credit_view.as_ref() } else { cast.as_ref() };
         if let Some(view) = view {
-            view.draw(p, Rect::new(x, span.y, PEOPLE_W, 0.0));
+            f(view, Rect::new(x, span.y, PEOPLE_W, span.h));
         }
     }
 }

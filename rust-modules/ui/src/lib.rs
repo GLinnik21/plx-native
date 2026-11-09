@@ -55,6 +55,7 @@ pub mod placeholder; // placeholder accounting: a per-frame count at every place
 pub mod card_art; // the Continue Watching card's art: the pure composite (background + logo baked once), the cover/composite/type walk
 pub mod hero_logo; // the ONE clearLogo sizing rule + its fallback-to-title band (both heroes, the compact title)
 pub mod landing_hero; // shared landing hero geometry and scrim curve, also read by route/legibility checks
+pub mod hero_shade; // the hero's soft shade over the content rects it draws: one mechanism for Home and Detail
 pub mod icons;
 pub mod form; // declared, ordered rows with stable keys: Form / FormTable (docs/settings-form.md)
 #[cfg(test)]
@@ -694,25 +695,25 @@ enum Deferrable {
     /// The page's wash: its corners as the GPU receives them and the ink ramp laid over it in the
     /// same pass, taken as a delta (`frame::backdrop::Ground`), and whether the wash's own springs
     /// are at rest (`frame::backdrop::paint_ground`'s `resting`).
-    Ground { corners: [[f32; 3]; 4], ink: ([f32; 3], [f32; 2]), scrim: plx_gfx::gfx::scrim::GroundScrim, resting: bool },
+    Ground { corners: [[f32; 3]; 4], ink: ([f32; 3], [f32; 2]), scrim: plx_gfx::gfx::scrim::GroundShade, resting: bool },
 }
 
 /// **What a ground pass lays over its field in the same pass** ([`Painter::ambient_inked`],
 /// [`Painter::ambient_art`]): one ink (`ink`'s rgb; its alpha is ignored), at the vertical ramp's
 /// two alphas (`ramp`: the alpha at the rect's top and at its bottom) and, over that, the
-/// [`GroundScrim`](plx_gfx::gfx::scrim::GroundScrim) field in authored pixels. A screen with no ramp
-/// passes zero alphas, one with no scrim [`GroundScrim::NONE`](plx_gfx::gfx::scrim::GroundScrim::NONE).
+/// [`GroundShade`](plx_gfx::gfx::scrim::GroundShade) field in authored pixels. A screen with no ramp
+/// passes zero alphas, one with no scrim [`GroundShade::NONE`](plx_gfx::gfx::scrim::GroundShade::NONE).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GroundInk {
     pub ink: [f32; 4],
     pub ramp: [f32; 2],
-    pub scrim: plx_gfx::gfx::scrim::GroundScrim,
+    pub scrim: plx_gfx::gfx::scrim::GroundShade,
 }
 
 impl GroundInk {
     /// A ramp and no scrim: what a ground carried before the scrim existed.
     pub const fn ramp(ink: [f32; 4], ramp: [f32; 2]) -> Self {
-        Self { ink, ramp, scrim: plx_gfx::gfx::scrim::GroundScrim::NONE }
+        Self { ink, ramp, scrim: plx_gfx::gfx::scrim::GroundShade::NONE }
     }
     /// No ink at all.
     pub const NONE: Self = Self::ramp([0.0; 4], [0.0; 2]);
@@ -788,10 +789,11 @@ impl Painter {
                     rect: [m.x, m.y, m.w, m.h],
                     ink,
                     // A glass takes the ground's ink as a ramp over y: the ramp's own alpha with the
-                    // scrim's two bands (never its radial, which is not a function of y) over it.
+                    // shade's alpha down the rect's centre column over it (a shade is a function of x
+                    // as well, which a ramp is not: the centre column is the bounded stand-in).
                     ink_a: [
-                        ink_a[0] + (1.0 - ink_a[0]) * scrim.bands_at(m.y),
-                        ink_a[1] + (1.0 - ink_a[1]) * scrim.bands_at(m.y + m.h),
+                        ink_a[0] + (1.0 - ink_a[0]) * scrim.at(m.x + m.w * 0.5, m.y),
+                        ink_a[1] + (1.0 - ink_a[1]) * scrim.at(m.x + m.w * 0.5, m.y + m.h),
                     ],
                     scrim,
                 },
@@ -1676,7 +1678,7 @@ impl Painter {
         if self.records() {
             draw_census::note_ground(drawn);
         }
-        if self.declare_as(r, 16, Some(Deferrable::Ground { corners: drawn, ink: ([0.0; 3], [0.0; 2]), scrim: plx_gfx::gfx::scrim::GroundScrim::NONE, resting }), |data| {
+        if self.declare_as(r, 16, Some(Deferrable::Ground { corners: drawn, ink: ([0.0; 3], [0.0; 2]), scrim: plx_gfx::gfx::scrim::GroundShade::NONE, resting }), |data| {
             use frame::backdrop::Value;
             dim.record(data);
             k.record(data);
@@ -1774,7 +1776,7 @@ impl Painter {
     /// through [`Self::c`]: rgb by the gain, every alpha (the ramp's two and each of the scrim's
     /// terms) by the painter's alpha, and the scrim's field moved to where this painter places the
     /// rects it is drawn into (its translate, and the zoom's scale).
-    fn ink(self, g: GroundInk) -> ([f32; 3], [f32; 2], plx_gfx::gfx::scrim::GroundScrim) {
+    fn ink(self, g: GroundInk) -> ([f32; 3], [f32; 2], plx_gfx::gfx::scrim::GroundShade) {
         let c = self.c(g.ink);
         let at = self.place(Rect::new(0.0, 0.0, 1.0, 1.0));
         (
@@ -1788,7 +1790,7 @@ impl Painter {
     /// ([`ambient_inked`](Self::ambient_inked) carries the same field in its one pass; this is for
     /// the frames that pass cannot take it, a hero slide's two art layers). Check
     /// `gfx::scrim_layer_ok` first ([`widgets::scrim_layer`] does).
-    pub fn scrim_layer(self, r: Rect, ink: [f32; 4], scrim: plx_gfx::gfx::scrim::GroundScrim) {
+    pub fn scrim_layer(self, r: Rect, ink: [f32; 4], scrim: plx_gfx::gfx::scrim::GroundShade) {
         let g = GroundInk { ink, ramp: [0.0; 2], scrim };
         if self.declare(r, 26, |data| g.record(data)) { return; }
         if self.records() { return; }

@@ -4144,12 +4144,13 @@ impl AmbientWash {
     /// this — which is also the answer whenever the ramp would have had to go UNDER an art that
     /// stayed a layer of its own. Every fallback is the layered picture, never a different one.
     ///
-    /// **The `scrim`** ([`WashScrim`]: Home's hero scrim, a field a ramp cannot describe) is carried
-    /// the same way and on the same conditions, evaluated per vertex of the one pass. Because a
-    /// vertex-evaluated field is linear inside a mesh triangle, a ground that carries one is cut into
-    /// cells of at most [`SCRIM_CELL_W`] x [`SCRIM_CELL_H`] (the mesh is 16 x 16 a cell), which is
-    /// what bounds how far the painted field stands from the closed form the legibility contract is
-    /// graded on ([`home_scrim_a`]). Returns whether it took the ramp and the scrim — both or
+    /// **The `scrim`** ([`WashScrim`]: a hero's shade over its content rects, a field a ramp cannot
+    /// describe) is carried the same way and on the same conditions, evaluated per vertex of the one
+    /// pass. Because a vertex-evaluated field is linear inside a mesh triangle, a ground that carries
+    /// one is cut into cells of at most [`SCRIM_CELL_W`] x [`SCRIM_CELL_H`] (the mesh is 16 x 16 a
+    /// cell), which is what bounds how far the painted field stands from the closed form the
+    /// legibility contract is graded on ([`HeroShade::at`](crate::hero_shade::HeroShade::at)).
+    /// Returns whether it took the ramp and the scrim — both or
     /// neither: they ride the same pass under the same conditions — and a caller that gets `false`
     /// with either given draws it over all of this ([`scrim_layer`] for the scrim).
     pub fn draw_ground(
@@ -4187,7 +4188,7 @@ impl AmbientWash {
         let ink = |b: Rect| GroundInk {
             ink: scrim.map(|s| s.ink).or(ramp.map(|q| q.ink)).unwrap_or([0.0; 4]),
             ramp: ramp.map_or([0.0; 2], |q| [q.alpha(b.y), q.alpha(b.y + b.h)]),
-            scrim: scrim.map_or(plx_gfx::gfx::scrim::GroundScrim::NONE, |s| s.field),
+            scrim: scrim.map_or(plx_gfx::gfx::scrim::GroundShade::NONE, |s| s.field),
         };
         for band in bands.into_iter().flatten() {
             for b in pieces(band) {
@@ -4291,13 +4292,14 @@ pub fn cut_at(r: Rect, knees: [Option<f32>; 2]) -> impl Iterator<Item = Rect> {
 }
 
 /// A screen's SCRIM as [`AmbientWash::draw_ground`] carries it: `ink` (a scrim colour; its alpha is
-/// ignored) at the stacked alpha of `field` ([`home_scrim`] is Home's), a two-dimensional field no
-/// [`WashRamp`] can describe. The ground evaluates it per vertex in its one pass; [`scrim_layer`]
-/// draws the same field as a layer of its own.
+/// ignored) at the stacked alpha of `field` (the hero shade, [`HeroShade`](crate::hero_shade::HeroShade)
+/// builds it from the content rects a screen draws), a two-dimensional field no [`WashRamp`] can
+/// describe. The ground evaluates it per vertex in its one pass; [`scrim_layer`] draws the same
+/// field as a layer of its own.
 #[derive(Clone, Copy)]
 pub struct WashScrim {
     pub ink: [f32; 4],
-    pub field: plx_gfx::gfx::scrim::GroundScrim,
+    pub field: plx_gfx::gfx::scrim::GroundShade,
 }
 
 impl WashScrim {
@@ -4309,8 +4311,8 @@ impl WashScrim {
 
 /// The widest and tallest a scrimmed ground draws as ONE mesh (a 16 x 16 grid of triangles):
 /// 480 x 270 is the panel in a 4 x 4. The vertex-evaluated field is linear inside a triangle, so
-/// this is what bounds its distance from the closed form: `home_scrim_is_carried_within_...` holds
-/// the bound for Home's own field.
+/// this is what bounds its distance from the closed form: `the_painted_field_stays_within_...`
+/// holds the bound for the hero shade's own field.
 pub const SCRIM_CELL_W: f32 = 480.0;
 pub const SCRIM_CELL_H: f32 = 270.0;
 
@@ -4328,31 +4330,6 @@ pub fn cut_cells(r: Rect, cell_w: f32, cell_h: f32) -> impl Iterator<Item = Rect
             Rect::new(x0, y0, x1 - x0, y1 - y0)
         })
     })
-}
-
-/// **Home's hero scrim** at hero fade `strength` (0..1; it scales every term, then they stack):
-/// the owner's CW-13 v2 board, the three terms of [`theme::home_scrim`] as a
-/// [`GroundScrim`](plx_gfx::gfx::scrim::GroundScrim) in authored pixels.
-pub fn home_scrim(strength: f32) -> WashScrim {
-    use theme::home_scrim as h;
-    use plx_gfx::gfx::scrim::{Curve, GroundScrim};
-    let k = strength.clamp(0.0, 1.0);
-    WashScrim {
-        ink: theme::scrim(1.0),
-        field: GroundScrim {
-            top: Curve::from_stops(&h::TOP, 0.0, h::TOP_H, k),
-            radial: Curve::from_stops(&h::RADIAL, 0.0, 1.0, k),
-            bottom: Curve::from_stops(&h::BOTTOM, h::BOTTOM_Y, h::BOTTOM_H, k),
-            centre: [h::RADIAL_CENTRE.0, h::RADIAL_CENTRE.1],
-            inv_radii: [1.0 / h::RADIAL_RADII.0, 1.0 / h::RADIAL_RADII.1],
-        },
-    }
-}
-
-/// Home's scrim alpha at the authored point `(x, y)`: the closed form the legibility contract is
-/// graded on, and the one the GPU's per-vertex field is held to. Pure.
-pub fn home_scrim_a(x: f32, y: f32, strength: f32) -> f32 {
-    home_scrim(strength).alpha(x, y)
 }
 
 /// **A scrim drawn as a layer of its own**, over whatever is already drawn: the frames a ground
@@ -9697,8 +9674,8 @@ mod ambient_ground_tests;
 mod ground_tests;
 
 #[cfg(test)]
-#[path = "widgets_home_scrim_tests.rs"]
-mod home_scrim_tests;
+#[path = "widgets_hero_shade_tests.rs"]
+mod hero_shade_tests;
 
 #[cfg(test)]
 #[path = "widgets_hero_scrim_tests.rs"]

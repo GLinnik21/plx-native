@@ -153,9 +153,16 @@ pub fn flat_row_rect(widths: &[f32], i: usize, y: f32) -> Rect {
         *slot = Item::new(*w);
     }
     items[n] = Item::new(0.0);
-    let stack = HStack::new(&items[..=n], CGAP, Align::Leading(plx_ui::consts::MARGIN_X));
-    let (x, _) = stack.span(i.min(n)).unwrap_or((plx_ui::consts::MARGIN_X, 0.0));
+    let (x, _) = flat_row(&items[..=n]).span(i.min(n)).unwrap_or((plx_ui::consts::MARGIN_X, 0.0));
     Rect::new(x, y, widths.get(i).or(widths.last()).copied().unwrap_or(0.0), CD)
+}
+
+/// **Home's action row as ONE stack**: `items` from the left margin, each exactly [`CGAP`] after the
+/// one before it, between VISIBLE marks. A control is its box (a pill, a disc), so the one gap is
+/// the gap the eye reads between every pair, whatever follows what. (The billboard's pager is not in
+/// this run: it stands at a fixed place at the right margin, `screens::home::hero_pager`.)
+pub fn flat_row(items: &[Item]) -> HStack<'_> {
+    HStack::new(items, CGAP, Align::Leading(plx_ui::consts::MARGIN_X))
 }
 
 /// Reserved right edge, including a capsule's focus expansion, for the unfurl budget.

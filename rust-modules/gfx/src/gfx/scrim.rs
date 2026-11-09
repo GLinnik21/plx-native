@@ -1,181 +1,174 @@
-//! **The ground scrim: three piecewise-linear alpha terms of ONE ink, evaluated per vertex.**
+//! **The ground shade: soft rounded blocks of ONE ink, evaluated per vertex.**
 //!
-//! A hero's scrim is a darkening of the photograph under its copy, and Home's is two-dimensional
-//! (a top band, an ELLIPTICAL radial behind the text, a bottom band: owner's CW-13 v2 board). The
-//! ground's one pass ([`super::draw_ambient_inked`], [`super::draw_art_wash`]) already carries a
-//! vertical ink ramp per VERTEX so its fragment does no colour arithmetic (the Mali-T820 is
-//! arithmetic-bound; `vs_ambient.vert` records the measurements). This is the same move for a
-//! field no straight ramp can describe: the vertex shader evaluates the three terms at each vertex
-//! of the field mesh and stacks them, `1 - (1-top)(1-radial)(1-bottom)`, into the alpha the
-//! fragment already reads. No new pass, no new fragment arithmetic.
+//! A hero's shade is a darkening of the photograph under its copy, and it follows the copy: one
+//! soft block per piece of content drawn on the art (the logo, a text column, the action row, a
+//! footer band), each a rounded rectangle whose darkness holds inside it and feathers to nothing
+//! over a stated distance outside it. The ground's one pass ([`super::draw_ambient_inked`],
+//! [`super::draw_art_wash`]) already carries a vertical ink ramp per VERTEX so its fragment does no
+//! colour arithmetic (the Mali-T820 is arithmetic-bound; `vs_ambient.vert` records the
+//! measurements). This is the same move for a field no straight ramp can describe: the vertex
+//! shader evaluates every block at each vertex of the field mesh and stacks them,
+//! `1 - prod(1 - a_i)`, into the alpha the fragment already reads. No new pass, no new fragment
+//! arithmetic, no full-screen quad.
 //!
-//! **A curve is `a0 + sum_i da_i * clamp((x - x_i) * inv_i, 0, 1)`** — the sum of clamped ramps,
-//! which is exactly a piecewise-linear table (flat before its first stop and after its last) and
-//! needs no search in a shader: [`SEGS`] unrolled terms. A segment is the four floats the shader
-//! reads (`x_i`, `inv_i = 1 / (x_{i+1} - x_i)`, `da_i`, and `a0` in segment 0's `w`); an unused
-//! segment is all zeros and adds nothing. [`Curve::at`] and [`GroundScrim::at`] are the SAME
+//! **A block is the rounded-rect signed distance** `sd = |max(|p - c| - (h - r), 0)| - r` (centre
+//! `c`, half extents `h`, corner radius `r`) and the alpha `peak * (1 - smoothstep(0, feather,
+//! sd))`: `peak` anywhere inside the rounded rect, falling smoothly (zero slope at both ends) to
+//! exactly 0 at `feather` px outside it. [`Block::at`] and [`GroundShade::at`] are the SAME
 //! arithmetic on the CPU: the legibility contract is graded on them, and the tests walk the real
-//! field mesh against them (`the_mesh_carries_the_scrim_...`), which is what bounds what the
-//! vertex-evaluated field can differ from the closed form by.
+//! field mesh against them (`mesh_error`), which is what bounds what the vertex-evaluated field can
+//! differ from the closed form by.
 //!
-//! **Zero is exact.** A [`GroundScrim::NONE`] is all zeros and the shader's stack is then exactly
-//! `0.0` (`1 - 1*1*1`), and it is folded into the ink with `mix(inka, 1.0, s)`, which for `s == 0`
-//! is `inka * 1.0 + 0.0` — the ramp's own alpha to the bit. So a screen with no scrim (Detail) is
-//! drawn by the very same programs as before and gets the very same pixels.
+//! The blocks come from the screen's LIVE layout every frame, so a block that moves (Detail's logo
+//! rising into the trailer corner) carries its shade with it: the screen builds a new
+//! [`GroundShade`] from the rects it is drawing, and the upload cache below sends it whenever it
+//! changed. [`MAX_BLOCKS`] is the size of the uniform array, a limit of the shader and not of any
+//! screen's content (`ui::hero_shade` folds an overflowing block into its neighbour).
+//!
+//! **Zero is exact.** An unused block is all zeros: its `peak` is 0, so its alpha is exactly `0.0`
+//! (`0 * (1 - t)` for a finite `t`), and the stack of nothing is exactly `0.0` (`1 - 1*1*...`). It
+//! is folded into the ink with `mix(inka, 1.0, s)`, which for `s == 0` is `inka * 1.0 + 0.0` — the
+//! ramp's own alpha to the bit. So a screen with no shade is drawn by the very same programs as
+//! before and gets the very same pixels.
 
-/// Segments a curve carries (a table of `SEGS + 1` stops at most).
-pub const SEGS: usize = 7;
-/// `vec4`s the three curves and the radial's frame take in `u_sc`.
-pub const VEC4S: usize = 3 * SEGS + 1;
+/// Blocks the shader's uniform array holds. A limit of the program (two `vec4`s a block), sized for
+/// the busiest hero: Detail's logo, text column, facts line, action row and credits column.
+pub const MAX_BLOCKS: usize = 6;
+/// `vec4`s the blocks take in `u_sc`: `(cx, cy, hx - r, hy - r)` then `(r, 1/feather, peak, 0)`, in
+/// device pixels.
+pub const VEC4S: usize = 2 * MAX_BLOCKS;
 
-/// One piecewise-linear curve of alpha over a scalar `x` (pixels for the two bands, a normalised
-/// elliptical distance for the radial). See the module doc for the encoding.
+/// One soft rounded block of shade.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Curve {
-    seg: [[f32; 4]; SEGS],
+pub struct Block {
+    /// `(cx, cy, hx - r, hy - r)`: the rounded rect's centre and the half extents of the rectangle
+    /// its corner arcs are centred on.
+    frame: [f32; 4],
+    /// `(r, 1 / feather, peak, 0)`.
+    shape: [f32; 4],
 }
 
-impl Curve {
-    /// No alpha anywhere.
-    pub const NONE: Curve = Curve { seg: [[0.0; 4]; SEGS] };
+impl Block {
+    /// No shade anywhere: all zeros, which the shader evaluates to exactly `0.0` (module doc).
+    pub const NONE: Block = Block { frame: [0.0; 4], shape: [0.0; 4] };
 
-    /// The curve through `stops` (`(t, alpha)`, `t` ascending), with `t` placed at
-    /// `x = origin + t * span` and every alpha times `k`. Flat before the first stop and after the
-    /// last. At most `SEGS + 1` stops (a longer table is a bug in the table, not a case to clip).
-    pub fn from_stops(stops: &[(f32, f32)], origin: f32, span: f32, k: f32) -> Curve {
-        assert!(stops.len() <= SEGS + 1, "a scrim curve carries at most {} stops", SEGS + 1);
-        let mut seg = [[0.0f32; 4]; SEGS];
-        if let Some(&(_, a0)) = stops.first() {
-            seg[0][3] = a0 * k;
+    /// The block over `rect = (x, y, w, h)`: alpha `peak` inside it (corners rounded to `radius`,
+    /// which is held to half its shorter side), falling to 0 over `feather` px beyond its edge.
+    pub fn new(rect: [f32; 4], radius: f32, feather: f32, peak: f32) -> Block {
+        let [x, y, w, h] = rect;
+        let (hx, hy) = (w.max(0.0) * 0.5, h.max(0.0) * 0.5);
+        let r = radius.clamp(0.0, hx.min(hy));
+        Block {
+            frame: [x + hx, y + hy, hx - r, hy - r],
+            shape: [r, 1.0 / feather.max(f32::MIN_POSITIVE), peak, 0.0],
         }
-        for (i, pair) in stops.windows(2).enumerate() {
-            let ((t0, a0), (t1, a1)) = (pair[0], pair[1]);
-            let (x0, x1) = (origin + t0 * span, origin + t1 * span);
-            assert!(x1 > x0, "scrim stops must ascend");
-            seg[i][0] = x0;
-            seg[i][1] = 1.0 / (x1 - x0);
-            seg[i][2] = (a1 - a0) * k;
-        }
-        Curve { seg }
     }
 
-    /// The alpha at `x`: the shader's expression, term for term.
-    pub fn at(&self, x: f32) -> f32 {
-        let mut a = self.seg[0][3];
-        for s in &self.seg {
-            a += s[2] * ((x - s[0]) * s[1]).clamp(0.0, 1.0);
-        }
-        a
-    }
-
-    /// Every alpha times `k`.
-    fn scaled(mut self, k: f32) -> Curve {
-        for s in &mut self.seg {
-            s[2] *= k;
-            s[3] *= k;
-        }
-        self
-    }
-
-    /// The curve moved to a device frame where `x_dev = x * s + o`.
-    fn placed(mut self, o: f32, s: f32) -> Curve {
-        for g in &mut self.seg {
-            g[0] = g[0] * s + o;
-            g[1] /= s;
-        }
-        self
-    }
-
-    /// The `x` of every stop that is a knee of the curve (where its slope changes), for a caller
-    /// that wants to cut a rect there.
-    pub fn knees(&self) -> impl Iterator<Item = f32> + '_ {
-        self.seg.iter().filter(|g| g[1] > 0.0).map(|g| g[0])
-    }
-}
-
-/// The three terms of a hero scrim, in the frame a draw is made in: `top` and `bottom` are alphas
-/// over y, `radial` over the normalised elliptical distance from `centre` (radii `1 / inv_radii`).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct GroundScrim {
-    pub top: Curve,
-    pub radial: Curve,
-    pub bottom: Curve,
-    pub centre: [f32; 2],
-    pub inv_radii: [f32; 2],
-}
-
-impl GroundScrim {
-    /// No scrim: all zeros, which the shader evaluates to exactly `0.0` (module doc).
-    pub const NONE: GroundScrim = GroundScrim {
-        top: Curve::NONE,
-        radial: Curve::NONE,
-        bottom: Curve::NONE,
-        centre: [0.0; 2],
-        inv_radii: [0.0; 2],
-    };
-
-    /// The normalised elliptical distance of `(x, y)` from the radial's centre.
+    /// The signed distance from `(x, y)` to the rounded rect's edge: negative inside it (clamped to
+    /// the corner arcs' own inset), the shader's expression term for term.
     fn distance(&self, x: f32, y: f32) -> f32 {
-        let (qx, qy) = ((x - self.centre[0]) * self.inv_radii[0], (y - self.centre[1]) * self.inv_radii[1]);
-        (qx * qx + qy * qy).sqrt()
+        let (dx, dy) = (((x - self.frame[0]).abs() - self.frame[2]).max(0.0), ((y - self.frame[1]).abs() - self.frame[3]).max(0.0));
+        (dx * dx + dy * dy).sqrt() - self.shape[0]
     }
 
-    /// The stacked alpha at `(x, y)`: `1 - (1-top)(1-radial)(1-bottom)`, as the vertex shader
-    /// computes it.
+    /// The block's alpha at `(x, y)`.
     pub fn at(&self, x: f32, y: f32) -> f32 {
-        1.0 - (1.0 - self.top.at(y)) * (1.0 - self.radial.at(self.distance(x, y))) * (1.0 - self.bottom.at(y))
+        let t = (self.distance(x, y) * self.shape[1]).clamp(0.0, 1.0);
+        self.shape[2] * (1.0 - t * t * (3.0 - 2.0 * t))
     }
 
-    /// The alpha of the two bands alone at `y`: what a row of the field carries whatever its x
-    /// (the glass-over-ground delta takes the ground's ink as a ramp over y).
-    pub fn bands_at(&self, y: f32) -> f32 {
-        1.0 - (1.0 - self.top.at(y)) * (1.0 - self.bottom.at(y))
+    /// The block's peak alpha (0 for an unused one).
+    pub fn peak(&self) -> f32 {
+        self.shape[2]
     }
 
-    /// Every term's alpha times `k` (a hero fade, a painter's alpha): each term, then stacked —
-    /// not the stack times `k`.
-    pub fn scaled(self, k: f32) -> GroundScrim {
-        GroundScrim { top: self.top.scaled(k), radial: self.radial.scaled(k), bottom: self.bottom.scaled(k), ..self }
+    /// The block's rounded rect as `(x, y, w, h)` and its corner radius.
+    pub fn rect(&self) -> ([f32; 4], f32) {
+        let r = self.shape[0];
+        let (hx, hy) = (self.frame[2] + r, self.frame[3] + r);
+        ([self.frame[0] - hx, self.frame[1] - hy, 2.0 * hx, 2.0 * hy], r)
     }
 
-    /// The scrim moved to the device frame a draw lands in, where an authored point `p` is at
+    /// The block's feather in px.
+    pub fn feather(&self) -> f32 {
+        1.0 / self.shape[1]
+    }
+
+    /// The peak times `k`.
+    fn scaled(mut self, k: f32) -> Block {
+        self.shape[2] *= k;
+        self
+    }
+
+    /// The block moved to a device frame where `x_dev = x * s + o`.
+    fn placed(mut self, ox: f32, oy: f32, s: f32) -> Block {
+        self.frame = [self.frame[0] * s + ox, self.frame[1] * s + oy, self.frame[2] * s, self.frame[3] * s];
+        self.shape[0] *= s;
+        self.shape[1] /= s;
+        self
+    }
+}
+
+/// The blocks of a hero's shade, in the frame a draw is made in. Built by `ui::hero_shade` from the
+/// rects a screen is drawing this frame; a screen with no shade passes [`GroundShade::NONE`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GroundShade {
+    blocks: [Block; MAX_BLOCKS],
+}
+
+impl GroundShade {
+    /// No shade: all zeros, which the shader evaluates to exactly `0.0` (module doc).
+    pub const NONE: GroundShade = GroundShade { blocks: [Block::NONE; MAX_BLOCKS] };
+
+    /// The shade of `blocks` (at most [`MAX_BLOCKS`]; a longer list is a bug in the caller, not a
+    /// case to clip).
+    pub fn from_blocks(blocks: &[Block]) -> GroundShade {
+        assert!(blocks.len() <= MAX_BLOCKS, "a ground shade carries at most {MAX_BLOCKS} blocks");
+        let mut s = GroundShade::NONE;
+        s.blocks[..blocks.len()].copy_from_slice(blocks);
+        s
+    }
+
+    /// The live blocks (peak above 0).
+    pub fn blocks(&self) -> impl Iterator<Item = &Block> {
+        self.blocks.iter().filter(|b| b.peak() > 0.0)
+    }
+
+    /// The stacked alpha at `(x, y)`: `1 - prod(1 - a_i)`, as the vertex shader computes it.
+    pub fn at(&self, x: f32, y: f32) -> f32 {
+        1.0 - self.blocks.iter().fold(1.0, |keep, b| keep * (1.0 - b.at(x, y)))
+    }
+
+    /// Every block's peak times `k` (a hero fade, a painter's alpha): each block, then stacked — not
+    /// the stack times `k`.
+    pub fn scaled(self, k: f32) -> GroundShade {
+        GroundShade { blocks: self.blocks.map(|b| b.scaled(k)) }
+    }
+
+    /// The shade moved to the device frame a draw lands in, where an authored point `p` is at
     /// `p * s + (ox, oy)` (a painter's translate, and its zoom's scale).
-    pub fn placed(self, ox: f32, oy: f32, s: f32) -> GroundScrim {
-        // No scrim stays NONE exactly (not "zeros at an offset"): the draw's upload cache and the
+    pub fn placed(self, ox: f32, oy: f32, s: f32) -> GroundShade {
+        // No shade stays NONE exactly (not "zeros at an offset"): the draw's upload cache and the
         // glass's source identity both compare the whole value.
-        if self == GroundScrim::NONE {
+        if self == GroundShade::NONE {
             return self;
         }
-        GroundScrim {
-            top: self.top.placed(oy, s),
-            radial: self.radial,
-            bottom: self.bottom.placed(oy, s),
-            centre: [self.centre[0] * s + ox, self.centre[1] * s + oy],
-            inv_radii: [self.inv_radii[0] / s, self.inv_radii[1] / s],
-        }
+        GroundShade { blocks: self.blocks.map(|b| if b.peak() > 0.0 { b.placed(ox, oy, s) } else { b }) }
     }
 
-    /// The `u_sc` upload: the three curves, then `(cx, cy, 1/rx, 1/ry)`.
+    /// The `u_sc` upload: per block `(cx, cy, hx - r, hy - r)` then `(r, 1/feather, peak, 0)`.
     pub fn uniforms(&self) -> [[f32; 4]; VEC4S] {
         let mut u = [[0.0; 4]; VEC4S];
-        u[..SEGS].copy_from_slice(&self.top.seg);
-        u[SEGS..2 * SEGS].copy_from_slice(&self.radial.seg);
-        u[2 * SEGS..3 * SEGS].copy_from_slice(&self.bottom.seg);
-        u[3 * SEGS] = [self.centre[0], self.centre[1], self.inv_radii[0], self.inv_radii[1]];
+        for (i, b) in self.blocks.iter().enumerate() {
+            u[2 * i] = b.frame;
+            u[2 * i + 1] = b.shape;
+        }
         u
-    }
-
-    /// The y of every knee of the two bands, ascending.
-    pub fn y_knees(&self) -> Vec<f32> {
-        let mut v: Vec<f32> = self.top.knees().chain(self.bottom.knees()).collect();
-        v.sort_by(f32::total_cmp);
-        v.dedup();
-        v
     }
 }
 
 #[cfg(any(test, feature = "test-support"))]
-impl GroundScrim {
+impl GroundShade {
     /// **The vertex shader's field over the REAL mesh**, for a test: each vertex of
     /// [`super::field_mesh`] carries the closed form [`at`](Self::at) and the rasterizer
     /// interpolates linearly inside a triangle. Returns the worst `|mesh - closed form|` over
@@ -207,92 +200,127 @@ impl GroundScrim {
         }
         worst
     }
+
+    /// **The field the rasterizer paints at the authored point `(x, y)`** when `rect` is drawn as
+    /// `cols x rows` mesh draws: the closed form at the three vertices of the mesh triangle the
+    /// point is in, interpolated linearly (the triangles are [`super::field_mesh`]'s: a square's
+    /// lower-left half, then its upper-right half). What a screen's content actually stands on.
+    pub fn painted_at(&self, rect: [f32; 4], cols: usize, rows: usize, x: f32, y: f32) -> f32 {
+        let [rx, ry, rw, rh] = rect;
+        let (cw, ch) = (rw / cols as f32, rh / rows as f32);
+        let cell = |p: f32, o: f32, len: f32, n: usize| (((p - o) / len).floor().max(0.0) as usize).min(n - 1);
+        let (ci, cj) = (cell(x, rx, cw, cols), cell(y, ry, ch, rows));
+        let (cx, cy) = (rx + cw * ci as f32, ry + ch * cj as f32);
+        let n = super::FIELD_N as f32;
+        let (u, v) = (((x - cx) / cw * n).clamp(0.0, n), ((y - cy) / ch * n).clamp(0.0, n));
+        let (i, j) = (u.floor().min(n - 1.0), v.floor().min(n - 1.0));
+        let (s, t) = (u - i, v - j);
+        let at = |di: f32, dj: f32| self.at(cx + (i + di) / n * cw, cy + (j + dj) / n * ch);
+        if s + t <= 1.0 {
+            let f00 = at(0.0, 0.0);
+            f00 + (at(1.0, 0.0) - f00) * s + (at(0.0, 1.0) - f00) * t
+        } else {
+            at(1.0, 0.0) * (1.0 - t) + at(1.0, 1.0) * (s + t - 1.0) + at(0.0, 1.0) * (1.0 - s)
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const STOPS: [(f32, f32); 4] = [(0.0, 0.5), (0.25, 0.2), (0.6, 0.2), (1.0, 0.0)];
+    fn card() -> Block {
+        Block::new([200.0, 300.0, 400.0, 100.0], 24.0, 120.0, 0.6)
+    }
 
     #[test]
-    fn a_curve_is_its_table_flat_outside_it() {
-        let c = Curve::from_stops(&STOPS, 100.0, 400.0, 1.0);
-        for (t, a) in STOPS {
-            assert!((c.at(100.0 + t * 400.0) - a).abs() < 1e-6, "t={t}");
+    fn a_block_holds_its_peak_inside_and_feathers_to_exactly_nothing() {
+        let b = card();
+        assert_eq!(b.at(400.0, 350.0), 0.6, "the centre");
+        assert_eq!(b.at(200.0, 300.0 + 100.0 * 0.5), 0.6, "an edge midpoint is still inside");
+        assert_eq!(b.at(200.0 + 24.0 * 0.3, 300.0 + 24.0 * 0.3), 0.6, "inside the rounded corner's arc");
+        assert!((b.at(200.0 - 60.0, 350.0) - 0.3).abs() < 1e-6, "half the feather out is half the peak");
+        assert_eq!(b.at(200.0 - 120.0, 350.0), 0.0, "the feather's end");
+        assert_eq!(b.at(0.0, 0.0), 0.0, "far away");
+        // monotone non-increasing away from the edge, in every direction
+        for dir in [(1.0f32, 0.0f32), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0), (0.7, 0.7)] {
+            let mut prev = f32::INFINITY;
+            for i in 0..=140 {
+                let a = b.at(400.0 + dir.0 * (200.0 + i as f32), 350.0 + dir.1 * (50.0 + i as f32));
+                assert!(a <= prev + 1e-7, "{dir:?} step {i}: {prev} -> {a}");
+                prev = a;
+            }
         }
-        assert_eq!(c.at(-50.0), 0.5, "flat before the first stop");
-        // the sum of ramps lands on the last stop to float rounding, not bit for bit
-        assert!(c.at(9_999.0).abs() < 1e-6, "flat after the last: {}", c.at(9_999.0));
-        assert!((c.at(100.0 + 0.125 * 400.0) - 0.35).abs() < 1e-6, "linear between stops");
+    }
+
+    #[test]
+    fn a_corner_is_rounded_not_square() {
+        let b = card();
+        // the square corner's own point is outside the rounded rect, so it has begun to fall
+        assert!(b.at(200.0, 300.0) < 0.6, "the sharp corner is cut by its radius");
+        assert_eq!(b.at(200.0, 300.0 + 24.0), 0.6, "…and the arc's tangent point is not");
     }
 
     #[test]
     fn none_is_exactly_zero_everywhere() {
         for (x, y) in [(0.0, 0.0), (560.0, 590.0), (1919.0, 1079.0), (-30.0, 5000.0)] {
-            assert_eq!(GroundScrim::NONE.at(x, y), 0.0);
+            assert_eq!(GroundShade::NONE.at(x, y), 0.0);
         }
-        assert_eq!(GroundScrim::NONE.uniforms(), [[0.0; 4]; VEC4S]);
+        assert_eq!(GroundShade::NONE.uniforms(), [[0.0; 4]; VEC4S]);
     }
 
-    /// **A screen with no scrim is drawn to the bit as it always was.** The vertex shader folds the
+    /// **A screen with no shade is drawn to the bit as it always was.** The vertex shader folds the
     /// stack into the ramp's alpha as `mix(inka, 1.0, s)` = `inka * (1.0 - s) + 1.0 * s`; with
     /// every uniform zero `s` is exactly `0.0`, and that expression is `inka` unchanged for every
-    /// float (Detail's ramp rides this program with no scrim). Both halves are held here: the
-    /// stack of nothing is `0.0`, and `x * 1.0 + 1.0 * 0.0` is `x`.
+    /// float. Both halves are held here: the stack of nothing is `0.0`, and `x * 1.0 + 1.0 * 0.0`
+    /// is `x`.
     #[test]
-    fn no_scrim_leaves_the_ramps_alpha_to_the_bit() {
-        let u = GroundScrim::NONE.uniforms();
+    fn no_shade_leaves_the_ramps_alpha_to_the_bit() {
+        let u = GroundShade::NONE.uniforms();
         let s = {
             // the shader's own arithmetic over the all-zero uniforms, term for term
-            let curve = |base: usize, x: f32| {
-                let mut a = u[base][3];
-                for i in 0..SEGS {
-                    a += u[base + i][2] * ((x - u[base + i][0]) * u[base + i][1]).clamp(0.0, 1.0);
-                }
-                a
+            let term = |i: usize, px: [f32; 2]| {
+                let (dx, dy) = (((px[0] - u[2 * i][0]).abs() - u[2 * i][2]).max(0.0), ((px[1] - u[2 * i][1]).abs() - u[2 * i][3]).max(0.0));
+                let t = (((dx * dx + dy * dy).sqrt() - u[2 * i + 1][0]) * u[2 * i + 1][1]).clamp(0.0, 1.0);
+                u[2 * i + 1][2] * (1.0 - t * t * (3.0 - 2.0 * t))
             };
-            1.0 - (1.0 - curve(0, 540.0)) * (1.0 - curve(SEGS, 0.5)) * (1.0 - curve(2 * SEGS, 540.0))
+            (0..MAX_BLOCKS).fold(1.0f32, |keep, i| keep * (1.0 - term(i, [960.0, 540.0])))
         };
-        assert_eq!(s.to_bits(), 0.0f32.to_bits());
+        assert_eq!((1.0 - s).to_bits(), 0.0f32.to_bits());
+        let s = 1.0 - s;
         for i in 0..=1000 {
             let inka = i as f32 / 1000.0;
             assert_eq!((inka * (1.0 - s) + 1.0 * s).to_bits(), inka.to_bits(), "inka={inka}");
         }
     }
 
-    fn sample() -> GroundScrim {
-        GroundScrim {
-            top: Curve::from_stops(&STOPS, 0.0, 240.0, 1.0),
-            radial: Curve::from_stops(&[(0.0, 0.8), (0.5, 0.4), (1.0, 0.0)], 0.0, 1.0, 1.0),
-            bottom: Curve::from_stops(&[(0.0, 0.0), (1.0, 0.9)], 640.0, 440.0, 1.0),
-            centre: [560.0, 590.0],
-            inv_radii: [1.0 / 1020.0, 1.0 / 460.0],
-        }
+    fn sample() -> GroundShade {
+        GroundShade::from_blocks(&[
+            Block::new([96.0, 500.0, 943.0, 120.0], 28.0, 140.0, 0.6),
+            Block::new([96.0, 668.0, 420.0, 60.0], 30.0, 140.0, 0.5),
+        ])
     }
 
     #[test]
-    fn the_terms_stack_as_independent_layers_of_one_ink() {
+    fn blocks_stack_as_independent_layers_of_one_ink() {
         let s = sample();
-        let (x, y) = (700.0, 700.0);
-        let (t, r, b) = (s.top.at(y), s.radial.at(s.distance(x, y)), s.bottom.at(y));
-        let layered = 1.0 - (1.0 - t) * (1.0 - r) * (1.0 - b);
-        assert!((s.at(x, y) - layered).abs() < 1e-7);
-        assert!(r > 0.0 && b > 0.0, "a point where two terms overlap");
+        let (x, y) = (300.0, 640.0);
+        let (a, b) = (s.blocks[0].at(x, y), s.blocks[1].at(x, y));
+        assert!((s.at(x, y) - (1.0 - (1.0 - a) * (1.0 - b))).abs() < 1e-7);
+        assert!(a > 0.0 && b > 0.0, "a point where two blocks overlap");
     }
 
     #[test]
-    fn scaling_scales_each_term_then_stacks() {
+    fn scaling_scales_each_block_then_stacks() {
         let s = sample();
         for k in [0.0, 0.3, 1.0] {
             let ks = s.scaled(k);
-            for (x, y) in [(10.0, 10.0), (560.0, 590.0), (900.0, 800.0)] {
-                let (t, r, b) = (k * s.top.at(y), k * s.radial.at(s.distance(x, y)), k * s.bottom.at(y));
-                let want = 1.0 - (1.0 - t) * (1.0 - r) * (1.0 - b);
+            for (x, y) in [(10.0, 10.0), (300.0, 640.0), (600.0, 700.0)] {
+                let want = 1.0 - (1.0 - k * s.blocks[0].at(x, y)) * (1.0 - k * s.blocks[1].at(x, y));
                 assert!((ks.at(x, y) - want).abs() < 1e-6, "k={k} ({x},{y})");
             }
         }
-        assert_eq!(s.scaled(0.0).at(560.0, 590.0), 0.0);
+        assert_eq!(s.scaled(0.0).at(300.0, 540.0), 0.0);
     }
 
     #[test]
@@ -300,9 +328,51 @@ mod tests {
         let s = sample();
         let (ox, oy, k) = (30.0, -40.0, 1.5);
         let p = s.placed(ox, oy, k);
-        for (x, y) in [(0.0, 0.0), (560.0, 590.0), (900.0, 800.0), (1500.0, 200.0)] {
+        for (x, y) in [(0.0, 0.0), (300.0, 540.0), (600.0, 700.0), (1500.0, 200.0), (96.0 - 60.0, 560.0)] {
             assert!((p.at(x * k + ox, y * k + oy) - s.at(x, y)).abs() < 1e-5, "({x},{y})");
         }
+        assert_eq!(GroundShade::NONE.placed(ox, oy, k), GroundShade::NONE, "no shade stays no shade");
+    }
+
+    #[test]
+    fn a_block_reads_back_the_rect_it_was_made_from() {
+        let (r, rad) = card().rect();
+        assert_eq!((r, rad), ([200.0, 300.0, 400.0, 100.0], 24.0));
+        // the feather is carried as its reciprocal (one multiply a vertex), so it reads back to a ulp
+        assert!((card().feather() - 120.0).abs() < 1e-3);
+    }
+
+    /// A radius past half the shorter side is held there (a stadium), never an inverted corner.
+    #[test]
+    fn the_radius_is_held_to_half_the_shorter_side() {
+        let b = Block::new([0.0, 0.0, 200.0, 40.0], 500.0, 50.0, 0.5);
+        assert_eq!(b.rect().1, 20.0);
+        assert_eq!(b.at(100.0, 20.0), 0.5);
+    }
+
+    /// The painted point is the closed form at the mesh's own vertices, and nowhere farther from it
+    /// than `mesh_error` says (it is the same interpolation, sampled at the point asked for).
+    #[test]
+    fn the_painted_point_is_the_closed_form_at_vertices_and_inside_the_mesh_error_elsewhere() {
+        let s = sample();
+        let panel = [0.0, 0.0, 1920.0, 1080.0];
+        let n = super::super::FIELD_N as f32;
+        for (ci, cj) in [(0usize, 0usize), (1, 2), (3, 3)] {
+            for (i, j) in [(0.0f32, 0.0f32), (5.0, 7.0), (16.0, 16.0)] {
+                let (x, y) = ((ci as f32 + i / n) * 480.0, (cj as f32 + j / n) * 270.0);
+                assert!((s.painted_at(panel, 4, 4, x, y) - s.at(x, y)).abs() < 1e-5, "vertex ({x},{y})");
+            }
+        }
+        let bound = s.mesh_error(panel, 4, 4);
+        let mut worst = 0.0f32;
+        for iy in 0..=108 {
+            for ix in 0..=192 {
+                let (x, y) = (ix as f32 * 10.0, iy as f32 * 10.0);
+                worst = worst.max((s.painted_at(panel, 4, 4, x, y) - s.at(x, y)).abs());
+            }
+        }
+        assert!(worst <= bound + 1e-5, "{worst} vs the mesh error {bound}");
+        assert!(worst > 0.0, "the premise: the mesh is not exact between vertices");
     }
 
     #[test]

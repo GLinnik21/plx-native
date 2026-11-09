@@ -222,36 +222,75 @@ fn the_wedge_leaves_with_the_hero() {
     assert_eq!(hero_scrim_right_a(1920.0, 1080.0, 0.0), 0.0);
 }
 
+/// The worst contrast `ink` gets over `art` across the run `x0..=x1` and the span `y0..=y1` of a
+/// text box on the Detail hero: the page's atmospheric base ramp (`base_scrim_a`, a function of `y`)
+/// under the hero shade at `strength`, stacked.
+fn detail_worst(
+    shade: &crate::hero_shade::HeroShade,
+    strength: f32,
+    ink: [f32; 4],
+    art: f32,
+    (x0, x1): (f32, f32),
+    (y0, y1): (f32, f32),
+) -> (f32, f32, f32, f32) {
+    let mut worst = (f32::INFINITY, x0, y0, 0.0);
+    for ix in 0..=16 {
+        for iy in 0..=4 {
+            let (x, y) = (x0 + (x1 - x0) * ix as f32 / 16.0, y0 + (y1 - y0) * iy as f32 / 4.0);
+            let total = 1.0 - (1.0 - crate::detail_layout::base_scrim_a(y, 1.0)) * (1.0 - shade.at(x, y, strength));
+            let c = contrast_over_art(ink, art, total);
+            if c < worst.0 {
+                worst = (c, x, y, total);
+            }
+        }
+    }
+    worst
+}
+
+/// The blocks Detail's hero shade is built from, in the SAME shapes `DetailScreen::hero_shade` feeds
+/// (`screens/src/detail/mod.rs`): the title's band at its resting spot, the identity / ratings /
+/// synopsis column from `meta_y` down to the facts line, the facts line, the credits column
+/// (conservatively, at its tallest) and the action row. The positions are read from
+/// `detail_layout::hero_chain`, so a layout change updates the contract rather than invalidating it;
+/// that Detail's screen builds exactly these rects is held where the screen is
+/// (`detail::tests::the_detail_hero_shade_stands_behind_its_own_content`).
+fn detail_shade(hc: &crate::detail_layout::HeroChain) -> crate::hero_shade::HeroShade {
+    use crate::consts::{MARGIN_X, SCR_W};
+    use crate::detail_layout as dl;
+    use crate::hero_shade::{HeroShade, Role};
+    // the facts line and the controls stop at the credits column's left edge less one small gap
+    // (`appkit::hero_layout::FACTS_R`, which this layer may not name)
+    let facts_r = SCR_W - MARGIN_X - dl::PEOPLE_W - theme::space::SM;
+    let people_top = dl::people_top(hc.btn_y, dl::PEOPLE_MAX_LINES, theme::size::CAPTION as f32);
+    HeroShade::new()
+        .add(Rect::new(MARGIN_X, detail_title_cap_top(), dl::HERO_TEXT_W, HERO_CAP_H), Role::Copy, 1.0)
+        .add(Rect::new(MARGIN_X, hc.meta_y, dl::HERO_TEXT_W, hc.facts_y - hc.meta_y), Role::Copy, 1.0)
+        .add(Rect::new(MARGIN_X, hc.facts_y, facts_r - MARGIN_X, theme::hero::FACTS_H), Role::Copy, 1.0)
+        .add(Rect::new(SCR_W - MARGIN_X - dl::PEOPLE_W, people_top, dl::PEOPLE_W, dl::PEOPLE_MAX_LINES as f32 * dl::PEOPLE_LEAD), Role::Copy, 1.0)
+        .add(Rect::new(MARGIN_X, hc.btn_y, facts_r - MARGIN_X, 60.0), Role::Controls, 1.0)
+}
+
 /// **The prize: "is the hero readable" as an assertion instead of a judgement on a television** —
-/// DETAIL's half (Home's own scrim, and its copy at the new ladder's positions, is graded in
-/// `widgets_home_scrim_tests.rs`).
+/// DETAIL's half (Home's own shade, and its copy at the new ladder's positions, is graded in
+/// `widgets_hero_shade_tests.rs`).
 ///
-/// Every line of hero copy Detail draws over artwork, at the WORST point of its run (the right end,
-/// where the wedge is weakest), graded as
-/// `1 − (1 − base_scrim_a) · (1 − hero_scrim_a) · (1 − hero_scrim_right_a)` against two
-/// backdrops: a bright one (encoded 0.85 — a blown highlight, brighter than essentially any
-/// fanart pixel) and a blown-white one (1.0, the degenerate case the design only promises a
-/// floor for).
+/// Every line of hero copy Detail draws over artwork, at the WORST point of its run, graded as
+/// `1 − (1 − base_scrim_a(y)) · (1 − shade(x, y))`: the page's atmospheric ramp under the content
+/// shade ([`crate::hero_shade`]) built from Detail's own blocks ([`detail_shade`]), against two
+/// backdrops: a bright one (encoded 0.85, a blown highlight, brighter than essentially any fanart
+/// pixel) and a blown-white one (1.0, the degenerate case the design only promises a floor for).
 ///
-/// The ys are READ from the page's own layout arithmetic — `hero_chain` — so a layout change
-/// updates this contract rather than silently invalidating it. The floors are the measured achieved
-/// ratios: the point is that this fires the day someone brightens `SCRIM_INK`, dims a text token,
-/// moves `HERO_TEXT_BOTTOM` or trims `HERO_SCRIM_W`, none of which is visible in a diff.
+/// The ys are READ from the page's own layout arithmetic (`hero_chain`) so a layout change updates
+/// this contract rather than silently invalidating it. The floors are the design's: 3:1 over bright
+/// art, 2.5:1 over blown white. **They are not lowered to fit the shade**: a position that falls
+/// under one is fixed with the shade's own parameters ([`theme::shade`]).
 ///
-/// The TITLE row grades the TEXT fallback, at its cap top — a clearLogo occupies that band instead
-/// on most items and paints higher than the knee, which is art riding the feather rather than an
-/// anchor this closed form can speak for (see [`HERO_SCRIM_KNEE`]).
+/// The TITLE row grades the TEXT fallback, across its cap box; a clearLogo occupies that band
+/// instead on most items and paints inside the block the shade is built from (the block is the
+/// painted rect itself, [`crate::hero_logo::HeroLogo::painted`]).
 ///
-/// The design floor is 3:1 over bright art. Detail's **facts line** was `TEXT_TERTIARY` (L=0.317),
-/// which needs α≈0.79 for 4.5:1 — an essentially black corner; that was an INK decision and is now
-/// taken (`detail::FACTS_INK`), so the row meets the ordinary floor like the rest.
-///
-/// The people column was a second such row for exactly one day. Bottom-anchoring it moved its
-/// worst case 74px up the frame, where the composite ground is ≈0.59 instead of ≈0.71, and at
-/// tertiary that is 2.37:1 — so the row's floor was written down as 2.35 to match. **A contract
-/// is not a measurement**: the entry below asserts the ordinary 3.0/2.5 again, and
-/// `detail::PEOPLE_INK` is what meets it (one ink step, no scrim retune — the arithmetic for
-/// why that is the cheap half of the trade is on that const).
+/// The people column grades at its tallest (four wrapped lines with the shortest reserved synopsis:
+/// the highest People paint), and is shaded by its own block rather than by the left column's.
 #[test]
 fn the_hero_text_reads_over_bright_artwork() {
     use crate::consts::{MARGIN_X, SCR_W};
@@ -260,107 +299,63 @@ fn the_hero_text_reads_over_bright_artwork() {
         // thing the host cannot do, so the height is quoted, not computed.
         34.0, true, &crate::fixture::FixtureMeasure,
     );
-    let det_col_r = MARGIN_X + crate::detail_layout::HERO_TEXT_W; // the synopsis' wrap edge,
-                                                               // and since nit 2 the title band's column too: a very wide wordmark runs the same 990.
-    let people_r = SCR_W - MARGIN_X; // 1830 — the right-aligned people column's own edge
+    let det_col_r = MARGIN_X + crate::detail_layout::HERO_TEXT_W; // the synopsis' wrap edge
+    let people_l = SCR_W - MARGIN_X - crate::detail_layout::PEOPLE_W;
+    let people_top = crate::detail_layout::people_top(hc.btn_y, crate::detail_layout::PEOPLE_MAX_LINES, theme::size::CAPTION as f32);
+    let shade = detail_shade(&hc);
 
-    // (label, x, y, ink, right wedge?, floor over BRIGHT art, floor over BLOWN WHITE)
-    let rows: [(&str, f32, f32, [f32; 4], bool, f32, f32); 5] = [
-        (
-            "detail title",
-            det_col_r,
-            detail_title_cap_top(),
-            theme::TEXT_PRIMARY,
-            true,
-            3.0,
-            2.5,
-        ),
-        (
-            "detail meta",
-            700.0,
-            hc.meta_y,
-            theme::TEXT_SECONDARY,
-            true,
-            3.0,
-            2.5,
-        ),
-        (
-            "detail synopsis",
-            det_col_r,
-            hc.syn_y,
-            theme::TEXT_READING,
-            true,
-            3.0,
-            2.5,
-        ),
-        // The deferred ink decision, now taken — `detail::FACTS_INK`, and with it the ordinary
-        // floor. What came due was the hero rhythm: the atmospheric ramp is linear in `y`, so
-        // every rung this row moves up sits in less of it, and at tertiary the row had no
-        // headroom left to spend (2.63 against a lowered 2.6).
-        (
-            "detail facts",
-            1270.0,
-            hc.facts_y,
-            crate::detail_layout::FACTS_INK,
-            true,
-            3.0,
-            2.5,
-        ),
-        // Four wrapped credit lines with the shortest reserved synopsis: the highest People paint.
+    // (label, x run, y span, ink, floor over BRIGHT art, floor over BLOWN WHITE)
+    let rows: [(&str, (f32, f32), (f32, f32), [f32; 4], f32, f32); 5] = [
+        ("detail title", (MARGIN_X, det_col_r), (detail_title_cap_top(), crate::detail_layout::TITLE_BOTTOM), theme::TEXT_PRIMARY, 3.0, 2.5),
+        ("detail meta", (MARGIN_X, 700.0), (hc.meta_y, hc.meta_y + BADGE_H), theme::TEXT_SECONDARY, 3.0, 2.5),
+        ("detail synopsis", (MARGIN_X, det_col_r), (hc.syn_y, hc.syn_y + 34.0), theme::TEXT_READING, 3.0, 2.5),
+        ("detail facts", (MARGIN_X, 1270.0), (hc.facts_y, hc.facts_y + theme::hero::FACTS_H), crate::detail_layout::FACTS_INK, 3.0, 2.5),
         (
             "detail people (top line)",
-            people_r,
-            crate::detail_layout::people_top(hc.btn_y, crate::detail_layout::PEOPLE_MAX_LINES,
-                theme::size::CAPTION as f32), // conservative full-size cap band
+            (people_l, SCR_W - MARGIN_X),
+            (people_top, people_top + crate::detail_layout::PEOPLE_LEAD),
             crate::detail_layout::PEOPLE_INK,
-            true,
             3.0,
             2.5,
         ),
     ];
-
-    for (label, x, y, ink, right, min_bright, min_white) in rows {
-        let base = crate::detail_layout::base_scrim_a(y, 1.0);
-        let wedge = hero_scrim_a(x, 1.0);
-        let rw = if right {
-            hero_scrim_right_a(x, y, 1.0)
-        } else {
-            0.0
-        };
-        let total = 1.0 - (1.0 - base) * (1.0 - wedge) * (1.0 - rw);
+    for (label, xs, ys, ink, min_bright, min_white) in rows {
         for (art, floor) in [(0.85f32, min_bright), (1.0, min_white)] {
-            let before = contrast_over_art(ink, art, base);
-            let after = contrast_over_art(ink, art, total);
+            let (after, x, y, total) = detail_worst(&shade, 1.0, ink, art, xs, ys);
+            let before = contrast_over_art(ink, art, crate::detail_layout::base_scrim_a(y, 1.0));
+            eprintln!("{label:<26} art {art:.2}: {after:5.2}:1 (floor {floor}) at ({x:.0},{y:.0}) total alpha {total:.3}; ramp alone {before:.2}:1");
             assert!(
                 after >= floor,
-                "{label} at ({x},{y}) over art {art}: {after:.2}:1, under its {floor}:1 floor (base {base:.3} + wedge {wedge:.3} + right {rw:.3})"
+                "{label} at ({x:.0},{y:.0}) over art {art}: {after:.2}:1, under its {floor}:1 floor (total alpha {total:.3})"
             );
-            assert!(
-                after > before,
-                "{label} over art {art}: the wedge made it WORSE ({before:.2} → {after:.2})"
-            );
+            assert!(after >= before, "{label} over art {art}: the shade made it WORSE ({before:.2} → {after:.2})");
         }
     }
-    // Video-bound row. The title stays; prose has receded. Same curve, raised strength.
-    {
-        let x = det_col_r;
-        let y = detail_title_cap_top();
-        let strength = crate::landing_hero::PREVIEW_FIELD;
-        let base = crate::detail_layout::base_scrim_a(y, 1.0);
-        let wedge = hero_scrim_a(x, strength);
-        let rw = hero_scrim_right_a(x, y, strength);
-        let still = 1.0
-            - (1.0 - base) * (1.0 - hero_scrim_a(x, 1.0)) * (1.0 - hero_scrim_right_a(x, y, 1.0));
-        let total = 1.0 - (1.0 - base) * (1.0 - wedge) * (1.0 - rw);
-        let after = contrast_over_art(theme::TEXT_PRIMARY, 0.85, total);
-        let still_after = contrast_over_art(theme::TEXT_PRIMARY, 0.85, still);
-        assert!(
-            after >= 3.0,
-            "detail title (video-bound) over bright art: {after:.2}:1, under 3:1"
-        );
-        assert!(
-            after >= still_after,
-            "the raised field must not weaken the title ({still_after:.2} → {after:.2})"
-        );
+    // Video-bound rows. The title stays (at rest, prose receded) and the logo shrinks to the corner:
+    // the same shade at the raised strength must not weaken either.
+    let ceiling = crate::landing_hero::PREVIEW_FIELD;
+    let title = (MARGIN_X, det_col_r);
+    let spans = (detail_title_cap_top(), crate::detail_layout::TITLE_BOTTOM);
+    let (still, ..) = detail_worst(&shade, 1.0, theme::TEXT_PRIMARY, 0.85, title, spans);
+    let (bound, ..) = detail_worst(&shade, ceiling, theme::TEXT_PRIMARY, 0.85, title, spans);
+    assert!(bound >= 3.0, "detail title (video-bound) over bright art: {bound:.2}:1, under 3:1");
+    assert!(bound >= still, "the raised field must not weaken the title ({still:.2} → {bound:.2})");
+    // …and the logo risen into the trailer corner, where the ramp is nothing and the shade is all there is
+    let corner = crate::hero_shade::HeroShade::new().add(
+        Rect::new(
+            crate::detail_layout::PREVIEW_LOGO_X,
+            crate::detail_layout::PREVIEW_LOGO_Y,
+            crate::detail_layout::PREVIEW_LOGO_MAX_W,
+            crate::hero_logo::band_h(crate::hero_logo::LogoRung::Compact),
+        ),
+        crate::hero_shade::Role::Copy,
+        1.0,
+    );
+    let corner_run = (crate::detail_layout::PREVIEW_LOGO_X, crate::detail_layout::PREVIEW_LOGO_X + crate::detail_layout::PREVIEW_LOGO_MAX_W);
+    let corner_span = (crate::detail_layout::PREVIEW_LOGO_Y, crate::detail_layout::PREVIEW_LOGO_Y + crate::hero_logo::band_h(crate::hero_logo::LogoRung::Compact));
+    for (art, floor) in [(0.85f32, 3.0f32), (1.0, 2.5)] {
+        let (c, x, y, total) = detail_worst(&corner, ceiling, theme::TEXT_PRIMARY, art, corner_run, corner_span);
+        eprintln!("detail logo in the trailer corner art {art:.2}: {c:5.2}:1 (floor {floor}) at ({x:.0},{y:.0}) total alpha {total:.3}");
+        assert!(c >= floor, "the risen logo over art {art}: {c:.2}:1, under its {floor}:1 floor");
     }
 }
