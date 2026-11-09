@@ -158,9 +158,9 @@ pub fn end_time_is_eligible(state: EndTimeEligibility) -> bool {
 /// Project an item's end timestamp from the current wall clock, content position and the
 /// playback pipeline's APPLIED rate (per mille). Invalid or unrepresentable inputs stay unknown.
 ///
-/// The remaining wall time is rounded UP to a whole second, so a projected end is never shown
-/// early. Use the OS timezone conversion only after this calculation: local calendar rules,
-/// including DST transitions, are applied at the projected instant rather than at the start.
+/// The remaining wall time is rounded UP to a whole second, so fractional media time is never
+/// truncated downward. Use the OS timezone conversion only after this calculation: local calendar
+/// rules, including DST transitions, are applied at the projected instant rather than at the start.
 pub fn projected_end_unix_seconds(
     now_utc: i64,
     position_ns: i64,
