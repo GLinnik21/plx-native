@@ -282,7 +282,7 @@ fn the_transport_clocks_are_rasterised_before_the_draw_and_one_second_ahead() {
     while plx_gfx::text::prewarm_pending() {
         plx_ui::panel_motion::PanelMotion::drain_queued_text_for_test();
     }
-    for text in [b"-0:36 · 22:35".as_slice(), b"-0:35 · 22:35".as_slice()] {
+    for text in ["-0:36 · 22:35".as_bytes(), "-0:35 · 22:35".as_bytes()] {
         assert!(
             plx_gfx::text::prewarm_resident_for_test(text, sz, 0),
             "{} was not prewarmed",
