@@ -202,7 +202,7 @@
   "settings.playback.subtitle_position.copy": "A quina altura apareixen els subtítols a la imatge. Els subtítols d'imatge i els que tenen estil propi conserven la seva posició. També es troba a Estil, dins del menú Subtítols del reproductor.",
   "settings.playback.hdr_overlay.copy": "La brillantor dels controls i dels subtítols del reproductor amb HDR i Dolby Vision, quan el televisor els mostra molt més brillants. Redueix-la si enlluernem. El 100 % els deixa tal com estan.",
   "settings.playback.next_episode.copy": "Compte enrere de A continuació mostra un botó d'Episodi següent quan comencen els crèdits. Després dels crèdits els deixa acabar i inicia l'episodi següent. Desactivat tanca el reproductor.",
-  "settings.playback.deck_press.copy": "Obre els detalls obre la pel·lícula o, si és un episodi, la sèrie quan prems OK en una targeta de Continua mirant. Reprodueix la inicia o la reprèn immediatament. El menú de la targeta, que s'obre mantenint premut OK, sempre ofereix l'altra opció.",
+  "settings.playback.deck_press.copy": "Amb «Obre els detalls», en prémer OK en una targeta de Continua mirant s'obre la fitxa de la pel·lícula o, si és un episodi, la de la sèrie. «Reprodueix» inicia la reproducció o la reprèn immediatament. El menú de la targeta, que s'obre mantenint premut OK, sempre ofereix l'altra opció.",
   "settings.playback.skip_interval.copy": "Quant salta el reproductor amb cada pulsació d'Esquerra o Dreta.",
   "settings.playback.enable_force": "Forçar",
   "settings.playback.force_question": "Vols forçar la reproducció directa?",
