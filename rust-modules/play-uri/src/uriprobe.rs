@@ -54,6 +54,9 @@ const DRIVE_STEP_MS: u64 = 2_500;
 const DRIVE_SEEK_MS: i64 = 20_000;
 /// How close to the requested position a following `currentTime` counts as landing on it.
 const DRIVE_SEEK_TOLERANCE_MS: i64 = 5_000;
+/// The longest firmware release or build the `armed` line prints, in characters (a longer one is
+/// not a version and prints as `-`).
+const FIRMWARE_WORD_CHARS: usize = 32;
 /// The longest an error text is kept after [`scrub_text`], in characters.
 
 // ---------------------------------------------------------------------------------------------
@@ -183,11 +186,31 @@ impl Scheme {
     }
 }
 
+/// A firmware release or build as the `armed` line prints it: the platform's own text when it is
+/// plain version text (ASCII letters, digits and `.` `-` `_` `+`, at most [`FIRMWARE_WORD_CHARS`]),
+/// `-` when it is empty or anything else. Nothing else the platform's file held reaches a log a
+/// tester posts.
+fn firmware_word(text: &str) -> &str {
+    let plain = !text.is_empty()
+        && text.len() <= FIRMWARE_WORD_CHARS
+        && text.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_' | b'+'));
+    if plain { text } else { "-" }
+}
+
 /// What kind of play the route chose (logged, nothing of the URL).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Direct,
     Hls,
+}
+
+/// The firmware the probe runs on, as the platform reported it at boot (`tv::device::Info`): the
+/// release (`5.4.2`) and the exact build (`5.4.2-47`), each empty when unknown. The IO side reads
+/// them and hands them in; the machine reads no global and only prints them on the `armed` line.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Firmware {
+    pub release: String,
+    pub build: String,
 }
 
 /// Everything the machine is armed with. A value, not state: the driver builds it once.
@@ -201,6 +224,8 @@ pub struct Config {
     pub window_id: Option<String>,
     /// The app id the `load` payload names (not a secret).
     pub app_id: String,
+    /// The set's firmware, for the `armed` line (a tester's log says which release it is).
+    pub firmware: Firmware,
     /// Run the transport script after `playing` ([`Variant::Drive`]).
     pub transport: bool,
     /// The native adaptive-streaming rates the `load` payload carries (usually none).
@@ -424,6 +449,36 @@ impl PauseSamples {
     }
 }
 
+/// How often the service reports `currentTime`: the gap between each report and the one before it,
+/// counted by value, so the median is exact in space bounded by the distinct gaps and not by the
+/// length of the session. Time is the driver's frame clock: a gap is a whole number of frames.
+#[derive(Debug, Default)]
+struct ReportClock {
+    last_ms: Option<u64>,
+    gaps: std::collections::BTreeMap<u64, u64>,
+}
+
+impl ReportClock {
+    fn observe(&mut self, now_ms: u64) {
+        if let Some(last) = self.last_ms {
+            *self.gaps.entry(now_ms.saturating_sub(last)).or_insert(0) += 1;
+        }
+        self.last_ms = Some(now_ms);
+    }
+
+    /// The median gap; for an even count the smaller of the two middle gaps, so the answer is a
+    /// gap that happened. `None` before the second report.
+    fn median_ms(&self) -> Option<u64> {
+        let total: u64 = self.gaps.values().sum();
+        let rank = total.checked_sub(1)? / 2;
+        let mut below = 0;
+        self.gaps.iter().find_map(|(gap, count)| {
+            below += count;
+            (below > rank).then_some(*gap)
+        })
+    }
+}
+
 /// What the summary reports: milliseconds since the start at which each thing was first seen.
 #[derive(Debug)]
 struct Facts {
@@ -443,13 +498,25 @@ struct Facts {
     audio: CallResult,
     subs: CallResult,
     paused_ev: bool,
+    /// A `seekDone` arrived after the script's Seek call was sent (one from before it is not that
+    /// call's).
     seek_done_ev: bool,
     seek_seen: Option<i64>,
     eos_ev: bool,
     pause_pos: Option<i64>,
     resume_pos: Option<i64>,
+    /// The Resume call has been sent, and the first position the service reported after it.
+    resume_sent: bool,
+    resume_first: Option<i64>,
     pause_samples: PauseSamples,
     seek_target: Option<i64>,
+    /// The first `audioInfo` that named a track: when (ms since the start) and which.
+    audio_track: Option<(u64, i64)>,
+    /// The script's text `selectTrack` has been sent, and a text `trackSelected` came after it.
+    text_select_sent: bool,
+    text_ev: bool,
+    /// The gaps between `currentTime` reports.
+    clock: ReportClock,
     /// The diagnostic machine's fallback when no addressed dispatch context was supplied.
     track_pending: Option<&'static str>,
 }
@@ -477,8 +544,14 @@ impl Default for Facts {
             eos_ev: false,
             pause_pos: None,
             resume_pos: None,
+            resume_sent: false,
+            resume_first: None,
             pause_samples: PauseSamples::default(),
             seek_target: None,
+            audio_track: None,
+            text_select_sent: false,
+            text_ev: false,
+            clock: ReportClock::default(),
             track_pending: None,
         }
     }
@@ -587,7 +660,15 @@ impl UriProbe {
             Kind::Direct => "direct",
             Kind::Hls => "hls",
         };
-        let armed = format!("armed variant={} scheme={} kind={kind} window={window} app={}{}", c.variant.label(), c.scheme.label(), c.app_id, c.bps.label());
+        let armed = format!(
+            "armed variant={} scheme={} kind={kind} window={window} app={} fw={} build={}{}",
+            c.variant.label(),
+            c.scheme.label(),
+            c.app_id,
+            firmware_word(&c.firmware.release),
+            firmware_word(&c.firmware.build),
+            c.bps.label(),
+        );
         fx.push(self.line(now_ms, &armed));
         if self.config.variant.acb() { self.acb_event(AcbEvent::Start, now_ms, fx); }
         else {
@@ -646,6 +727,7 @@ impl UriProbe {
             1 => {
                 self.facts.pause_samples.ended_ms = Some(now_ms);
                 self.facts.resume_pos = self.last_time;
+                self.facts.resume_sent = true;
                 self.facts.resume = CallResult::Unconfirmed;
                 fx.push(self.line(now_ms, &format!("drive resume pos={}", position(self.facts.resume_pos))));
                 fx.push(UriEffect::Call(UriCall::Play { media_id }));
@@ -657,6 +739,7 @@ impl UriProbe {
                 fx.push(UriEffect::Call(UriCall::Seek { media_id, position: target }));
             }
             3 => {
+                self.facts.text_select_sent = true;
                 self.facts.track_pending = Some("text");
                 fx.push(self.line(now_ms, "drive selectTrack type=text index=0"));
                 fx.push(UriEffect::Call(UriCall::SelectTrack { media_id, kind: "text", index: 0 }));
@@ -871,10 +954,14 @@ impl UriProbe {
                 }
             }
             Ev::SeekDone => {
-                self.facts.seek_done_ev = true;
-                // The subscription's request ID is not the seek command's identity.
+                // The subscription's request ID is not the seek command's identity, so only the
+                // order says whose it is: one from before the script's Seek call is not its.
+                self.facts.seek_done_ev |= self.facts.seek_target.is_some();
             }
             Ev::TrackSelected => {
+                if self.facts.text_select_sent && message.selected_track.is_some_and(|(kind, _)| kind == "text") {
+                    self.facts.text_ev = true;
+                }
                 // A generic subscription event cannot name a text or audio command.
                 match message.confirmed_track {
                     Some("text") if self.facts.text == CallResult::Unconfirmed => self.facts.text = CallResult::Ok,
@@ -899,7 +986,11 @@ impl UriProbe {
                 }
             }
             Ev::AudioInfo => {
-                self.facts.audio_seen.get_or_insert(now_ms.saturating_sub(self.started_ms));
+                let at = now_ms.saturating_sub(self.started_ms);
+                self.facts.audio_seen.get_or_insert(at);
+                if let Some(track) = message.audio_track {
+                    self.facts.audio_track.get_or_insert((at, track));
+                }
             }
             _ => {}
         }
@@ -993,6 +1084,10 @@ impl UriProbe {
         };
         // Every valid report is fresh evidence, including an unchanged position.
         self.facts.pause_samples.observe(now_ms, value);
+        self.facts.clock.observe(now_ms);
+        if self.facts.resume_sent && self.facts.resume_first.is_none() {
+            self.facts.resume_first = Some(value);
+        }
         let moved = self.last_time.is_some_and(|last| last != value);
         self.last_time = Some(value);
         if self.facts.seek_target.is_some() && self.facts.seek_seen.is_none() {
@@ -1064,9 +1159,15 @@ impl UriProbe {
             Some(End::Timeout(phase)) => format!("timeout:{phase}"),
             Some(End::Refused(phase)) => format!("refused:{phase}"),
         };
+        // `audioInfo` named a track by `loadCompleted` (the same message counts): the service had
+        // already selected one at load.
+        let audio_at_load = match (self.facts.audio_track, self.facts.loaded_ms) {
+            (Some((at, track)), Some(loaded)) if at <= loaded => track.to_string(),
+            _ => "none".to_owned(),
+        };
         let summary = format!(
             "summary load={load} playing={} t_load={} t_playing={} currentTime_advanced={} videoInfo={} audioInfo={} window={} \
-             setWindowId={window_call} variant={} scheme={} shape={} end={end}",
+             setWindowId={window_call} variant={} scheme={} shape={} end={end} audio_at_load={audio_at_load} clock_period_ms={}",
             if self.facts.playing_ms.is_some() { "yes" } else { "no" },
             ms(self.facts.loaded_ms),
             ms(self.facts.playing_ms),
@@ -1077,6 +1178,7 @@ impl UriProbe {
             self.config.variant.label(),
             self.config.scheme.label(),
             register_ladder::label(self.shape),
+            ms(self.facts.clock.median_ms()),
         );
         if !self.config.transport {
             return summary;
@@ -1111,7 +1213,7 @@ impl UriProbe {
         };
         format!(
             "{summary} pause={paused} pause_delta={} resume={} seek={seek_landed} seek_delta={} text={} audio={} subs={} eos={} \
-             pause_basis=reported_positions pause_samples={} pause_span_ms={} pause_end_fresh={} paused_event={}",
+             pause_basis=reported_positions pause_samples={} pause_span_ms={} pause_end_fresh={} paused_event={} seekdone={} resume_from={} text_ev={}",
             self.facts.pause_samples.delta(),
             call(self.facts.resume),
             delta(self.facts.seek_target, self.facts.seek_seen),
@@ -1123,6 +1225,9 @@ impl UriProbe {
             self.facts.pause_samples.span_ms().map_or_else(|| "-".to_owned(), |span| span.to_string()),
             if self.facts.pause_samples.end_fresh() { "yes" } else { "no" },
             if self.facts.paused_ev { "yes" } else { "no" },
+            if self.facts.seek_done_ev { "yes" } else { "no" },
+            self.facts.resume_first.map_or_else(|| "-".to_owned(), |position| position.to_string()),
+            if self.facts.text_ev { "yes" } else { "no" },
         )
     }
 }
@@ -1147,6 +1252,7 @@ mod tests {
             kind: Kind::Direct,
             window_id: window.map(str::to_owned),
             app_id: "com.test.app".to_owned(),
+            firmware: Firmware { release: "5.4.2".to_owned(), build: "5.4.2-12".to_owned() },
             transport: variant.drives(),
             bps: AbrBps::default(),
         }
@@ -1236,7 +1342,7 @@ mod tests {
     fn at_load_happy_path_in_order() {
         let mut rig = Rig::new(Variant::AtLoad, Some(WINDOW));
         let fx = rig.start();
-        assert_eq!(logs(&fx), ["uriprobe: t=0 armed variant=at-load scheme=https kind=direct window=exported app=com.test.app"]);
+        assert_eq!(logs(&fx), ["uriprobe: t=0 armed variant=at-load scheme=https kind=direct window=exported app=com.test.app fw=5.4.2 build=5.4.2-12"]);
         assert_eq!(fx[1], UriEffect::Open(Shape::Named));
 
         let fx = rig.after(40, UriEvent::Reply { method: Method::Register, ok: true, message: Message::default() });
@@ -1279,7 +1385,7 @@ mod tests {
         assert_eq!(
             summary_of(&fx),
             "uriprobe: t=1400 summary load=ok playing=yes t_load=400 t_playing=500 currentTime_advanced=no videoInfo=seen audioInfo=none \
-             window=exported setWindowId=n/a variant=at-load scheme=https shape=named end=back"
+             window=exported setWindowId=n/a variant=at-load scheme=https shape=named end=back audio_at_load=none clock_period_ms=-"
         );
         assert!(logs(&fx).last().unwrap().ends_with("tester: report picture yes/no and sound yes/no"));
         assert!(rig.probe.is_done() && !rig.probe.plane_open());
@@ -1347,7 +1453,7 @@ mod tests {
         let mut probe = UriProbe::new(Config { scheme: Scheme::Http, kind: Kind::Hls, ..config(Variant::AtLoad, None) });
         let mut fx = Vec::new();
         probe.step(UriEvent::Start, 0, &mut fx);
-        assert_eq!(logs(&fx), ["uriprobe: t=0 armed variant=at-load scheme=http kind=hls window=none app=com.test.app"]);
+        assert_eq!(logs(&fx), ["uriprobe: t=0 armed variant=at-load scheme=http kind=hls window=none app=com.test.app fw=5.4.2 build=5.4.2-12"]);
     }
 
     #[test]
@@ -1984,7 +2090,7 @@ mod tests {
         let bps = AbrBps { start: Some(320_000), maximum: Some(720_000), minimum: None };
         let mut rig = Rig { probe: UriProbe::new(Config { bps, ..config(Variant::AtLoad, Some(WINDOW)) }), now: 1_000 };
         let fx = rig.start();
-        assert_eq!(logs(&fx), ["uriprobe: t=0 armed variant=at-load scheme=https kind=direct window=exported app=com.test.app bpsstart=320000 bpsmax=720000"]);
+        assert_eq!(logs(&fx), ["uriprobe: t=0 armed variant=at-load scheme=https kind=direct window=exported app=com.test.app fw=5.4.2 build=5.4.2-12 bpsstart=320000 bpsmax=720000"]);
         let fx = rig.msg("register", "");
         assert!(fx.contains(&call(UriCall::Load { window_id: Some(WINDOW.to_owned()), bps })), "{fx:?}");
     }
@@ -2329,10 +2435,12 @@ mod tests {
         assert_eq!(acb_transcript(), include_str!("uriprobe_acb_transcript.txt"));
     }
 
-    fn drive_pause_rig() -> Rig {
+    fn drive_pause_rig() -> Rig { drive_pause_rig_at(1000) }
+    /// A drive session whose Pause has been sent and answered, the position at the call `position`.
+    fn drive_pause_rig_at(position: i64) -> Rig {
         let mut rig=Rig::new(Variant::Drive,Some(WINDOW));
         rig.playing();
-        rig.msg("subscribe",r#"{"mediaId":"_m1","currentTime":1000}"#);
+        rig.msg("subscribe",&format!(r#"{{"mediaId":"_m1","currentTime":{position}}}"#));
         let fx=rig.tick(DRIVE_FIRST_MS);
         assert!(fx.iter().any(|fx|matches!(fx,UriEffect::Call(UriCall::Pause{..}))));
         rig.msg("pause",r#"{"returnValue":true}"#);
@@ -2431,6 +2539,252 @@ mod tests {
         assert!(!fx.iter().any(|fx|matches!(fx,UriEffect::Call(UriCall::Pause{..}))));
         let fx=rig.tick(PLAY_TIMEOUT_MS);
         assert!(rig.probe.is_done()); assert!(summary_of(&fx).contains("end=timeout:play"));
+    }
+
+    // ------------------------------------------------------------------ the fields a tester's run reads (D2)
+
+    /// A drive session from Pause (the position `position` at the call) to the end of the Resume
+    /// step: the dwell's reports are `position` too, then the resume call is sent.
+    fn drive_resumed_rig(position: i64) -> Rig {
+        let mut rig = drive_pause_rig_at(position);
+        drive_report_after(&mut rig, 250, position);
+        drive_report_after(&mut rig, 2_000, position);
+        let fx = rig.tick(250);
+        assert!(has_log(&fx, &format!("drive resume pos={position}")), "{fx:?}");
+        assert!(fx.contains(&call(UriCall::Play { media_id: media("_m1") })));
+        rig
+    }
+    /// The same session one step on: the seek 20 s past `position + 200` is sent and answered, and
+    /// the first position after it is `landed`.
+    fn drive_seeked_rig(position: i64, landed: i64) -> Rig {
+        let mut rig = drive_resumed_rig(position);
+        drive_report_after(&mut rig, 100, position + 200);
+        let fx = rig.tick(DRIVE_STEP_MS);
+        assert!(has_log(&fx, &format!("drive seek target={}", position + 200 + DRIVE_SEEK_MS)), "{fx:?}");
+        rig.msg("seek", r#"{"returnValue":true}"#);
+        drive_report_after(&mut rig, 100, landed);
+        rig
+    }
+    fn summary_after_back(rig: &mut Rig) -> String {
+        let fx = rig.feed(UriEvent::Back);
+        summary_of(&fx).to_owned()
+    }
+
+    #[test]
+    fn the_armed_line_names_the_firmware_the_driver_read() {
+        let mut rig = Rig::new(Variant::Drive, Some(WINDOW));
+        let fx = rig.start();
+        assert!(logs(&fx)[0].ends_with("app=com.test.app fw=5.4.2 build=5.4.2-12"), "{:?}", logs(&fx));
+    }
+
+    #[test]
+    fn an_unknown_or_unusual_firmware_prints_a_dash_and_never_the_text() {
+        let long = "1".repeat(FIRMWARE_WORD_CHARS + 1);
+        for (release, build, want) in [
+            ("", "", "fw=- build=-"),
+            ("6.5.3", "", "fw=6.5.3 build=-"),
+            ("11.1.0", "11.1.0-3701", "fw=11.1.0 build=11.1.0-3701"),
+            ("5.4.2 token=abc", "http://192.168.1.5/x?X-Plex-Token=SECRET", "fw=- build=-"),
+            ("5.4.2\n", "5.4.2/47", "fw=- build=-"),
+            (long.as_str(), "ok_1+2", "fw=- build=ok_1+2"),
+        ] {
+            let mut c = config(Variant::AtLoad, Some(WINDOW));
+            c.firmware = Firmware { release: release.to_owned(), build: build.to_owned() };
+            let mut rig = Rig { probe: UriProbe::new(c), now: 1_000 };
+            let fx = rig.start();
+            assert!(logs(&fx)[0].ends_with(&format!("app=com.test.app {want}")), "{release:?} {build:?}: {:?}", logs(&fx));
+        }
+    }
+
+    #[test]
+    fn a_resume_that_restarts_the_clock_reads_where_it_restarted() {
+        let mut rig = drive_resumed_rig(5_000);
+        assert_eq!(rig.probe.facts.pause_pos, Some(5_000));
+        // The dwell's reports (5000, before the resume call) are not the first position after it.
+        drive_report_after(&mut rig, 120, 333);
+        drive_report_after(&mut rig, 250, 583);
+        let summary = summary_after_back(&mut rig);
+        assert!(summary.contains(" resume=sent "), "{summary}");
+        assert!(summary.contains(" resume_from=333 "), "{summary}");
+    }
+
+    #[test]
+    fn a_resume_that_carries_on_reads_a_position_at_or_after_the_paused_one() {
+        let mut rig = drive_resumed_rig(5_000);
+        drive_report_after(&mut rig, 120, 5_120);
+        drive_report_after(&mut rig, 250, 5_370);
+        let summary = summary_after_back(&mut rig);
+        assert!(summary.contains(" resume_from=5120 "), "{summary}");
+    }
+
+    #[test]
+    fn no_position_after_the_resume_reads_a_dash() {
+        let mut rig = drive_resumed_rig(5_000);
+        let summary = summary_after_back(&mut rig);
+        assert!(summary.contains(" resume_from=- "), "{summary}");
+        // A session that never got as far as the resume has none either.
+        let mut rig = drive_pause_rig();
+        let summary = summary_after_back(&mut rig);
+        assert!(summary.contains(" resume_from=- "), "{summary}");
+    }
+
+    #[test]
+    fn a_seek_that_lands_without_a_seekdone_reads_seekdone_no() {
+        let mut rig = drive_seeked_rig(5_000, 25_300);
+        let summary = summary_after_back(&mut rig);
+        assert!(summary.contains(" seek=hit "), "{summary}");
+        assert!(summary.contains(" seekdone=no "), "{summary}");
+    }
+
+    #[test]
+    fn a_seekdone_after_the_seek_reads_seekdone_yes() {
+        let mut rig = drive_seeked_rig(5_000, 25_300);
+        rig.msg("subscribe", r#"{"mediaId":"_m1","seekDone":true}"#);
+        let summary = summary_after_back(&mut rig);
+        assert!(summary.contains(" seek=hit "), "{summary}");
+        assert!(summary.contains(" seekdone=yes "), "{summary}");
+    }
+
+    #[test]
+    fn a_seekdone_from_before_the_seek_call_is_not_the_seeks() {
+        let mut rig = drive_resumed_rig(5_000);
+        rig.msg("subscribe", r#"{"mediaId":"_m1","seekDone":true}"#);
+        drive_report_after(&mut rig, 100, 5_200);
+        rig.tick(DRIVE_STEP_MS);
+        rig.msg("seek", r#"{"returnValue":true}"#);
+        drive_report_after(&mut rig, 100, 25_300);
+        let summary = summary_after_back(&mut rig);
+        assert!(summary.contains(" seek=hit "), "{summary}");
+        assert!(summary.contains(" seekdone=no "), "{summary}");
+    }
+
+    #[test]
+    fn an_audioinfo_naming_a_track_before_loadcompleted_reads_that_track() {
+        let mut rig = Rig::new(Variant::AtLoad, Some(WINDOW));
+        rig.loading();
+        rig.msg("subscribe", r#"{"mediaId":"_m1","audioInfo":{"codec":"AAC","channels":2,"track":1}}"#);
+        rig.msg("subscribe", r#"{"mediaId":"_m1","loadCompleted":true}"#);
+        let summary = summary_after_back(&mut rig);
+        assert!(summary.contains(" audioInfo=seen "), "{summary}");
+        assert!(summary.contains(" audio_at_load=1 "), "{summary}");
+    }
+
+    #[test]
+    fn an_audioinfo_in_the_loadcompleted_message_counts_as_at_load() {
+        let mut rig = Rig::new(Variant::AtLoad, Some(WINDOW));
+        rig.loading();
+        rig.msg("subscribe", r#"{"mediaId":"_m1","audioInfo":{"track":0},"loadCompleted":true}"#);
+        let summary = summary_after_back(&mut rig);
+        assert!(summary.contains(" audio_at_load=0 "), "{summary}");
+    }
+
+    #[test]
+    fn an_audioinfo_after_loadcompleted_or_naming_no_track_reads_none() {
+        let mut late = Rig::new(Variant::AtLoad, Some(WINDOW));
+        late.loaded();
+        late.after(200, UriEvent::Tick);
+        late.msg("subscribe", r#"{"mediaId":"_m1","audioInfo":{"track":0}}"#);
+        let summary = summary_after_back(&mut late);
+        assert!(summary.contains(" audioInfo=seen ") && summary.contains(" audio_at_load=none "), "{summary}");
+
+        let mut untracked = Rig::new(Variant::AtLoad, Some(WINDOW));
+        untracked.loading();
+        untracked.msg("subscribe", r#"{"mediaId":"_m1","audioInfo":{"codec":"AAC","channels":2}}"#);
+        untracked.msg("subscribe", r#"{"mediaId":"_m1","loadCompleted":true}"#);
+        let summary = summary_after_back(&mut untracked);
+        assert!(summary.contains(" audioInfo=seen ") && summary.contains(" audio_at_load=none "), "{summary}");
+
+        let mut silent = Rig::new(Variant::AtLoad, Some(WINDOW));
+        silent.loaded();
+        let summary = summary_after_back(&mut silent);
+        assert!(summary.contains(" audioInfo=none ") && summary.contains(" audio_at_load=none "), "{summary}");
+    }
+
+    /// The drive session at the text call: pause, resume, seek (answered, landed) behind it, the
+    /// `selectTrack text` sent and answered.
+    fn drive_text_selected_rig() -> Rig {
+        let mut rig = drive_seeked_rig(5_000, 25_300);
+        let fx = rig.tick(DRIVE_STEP_MS);
+        assert!(has_log(&fx, "drive selectTrack type=text index=0"), "{fx:?}");
+        rig.msg("selectTrack", r#"{"returnValue":true}"#);
+        rig
+    }
+
+    #[test]
+    fn a_typed_text_trackselected_after_the_text_call_reads_text_ev_yes() {
+        let mut rig = drive_text_selected_rig();
+        rig.msg("subscribe", r#"{"mediaId":"_m1","trackSelected":{"type":"text","index":0}}"#);
+        let summary = summary_after_back(&mut rig);
+        assert!(summary.contains(" text_ev=yes"), "{summary}");
+    }
+
+    #[test]
+    fn only_a_typed_text_trackselected_after_the_text_call_counts() {
+        // Before the call: the firmware chose a subtitle at load.
+        let mut early = Rig::new(Variant::Drive, Some(WINDOW));
+        early.playing();
+        early.msg("subscribe", r#"{"mediaId":"_m1","trackSelected":{"type":"text","index":0}}"#);
+        let mut all = early.tick(DRIVE_FIRST_MS);
+        for _ in 0..3 { all.extend(early.tick(DRIVE_STEP_MS)); }
+        assert!(has_log(&all, "drive selectTrack type=text index=0"), "{all:?}");
+        assert!(summary_after_back(&mut early).contains(" text_ev=no"));
+
+        // An audio selection, an untyped event and a selection of another kind are not a text one.
+        let mut rig = drive_text_selected_rig();
+        rig.msg("subscribe", r#"{"mediaId":"_m1","trackSelected":{"type":"audio","index":1}}"#);
+        rig.msg("subscribe", r#"{"mediaId":"_m1","trackSelected":true}"#);
+        rig.msg("subscribe", r#"{"mediaId":"_m1","trackSelected":{"type":"video","index":0}}"#);
+        let summary = summary_after_back(&mut rig);
+        assert!(summary.contains(" text_ev=no"), "{summary}");
+        assert!(summary.contains(" text=sent "), "the call's own answer is graded separately: {summary}");
+    }
+
+    fn clock_rig(gaps_ms: &[u64]) -> Rig {
+        let mut rig = Rig::new(Variant::AtLoad, Some(WINDOW));
+        rig.playing();
+        for (n, gap) in std::iter::once(&0).chain(gaps_ms).enumerate() {
+            rig.now += gap;
+            rig.msg("subscribe", &format!(r#"{{"mediaId":"_m1","currentTime":{}}}"#, 1_000 + 7 * n));
+        }
+        rig
+    }
+
+    #[test]
+    fn the_clock_period_is_the_median_gap_between_position_reports() {
+        let mut rig = clock_rig(&[250, 250, 300, 1_000, 200]);
+        let summary = summary_after_back(&mut rig);
+        assert!(summary.contains(" clock_period_ms=250"), "{summary}");
+        // Not the mean (400), not the first gap, not the last one.
+        let mut rig = clock_rig(&[1_000, 1_000, 1_000, 40, 40]);
+        assert!(summary_after_back(&mut rig).contains(" clock_period_ms=1000"));
+    }
+
+    #[test]
+    fn an_even_number_of_gaps_reads_the_lower_middle_one() {
+        let mut rig = clock_rig(&[500, 250]);
+        assert!(summary_after_back(&mut rig).contains(" clock_period_ms=250"));
+        let mut rig = clock_rig(&[250, 500, 500, 250]);
+        assert!(summary_after_back(&mut rig).contains(" clock_period_ms=250"));
+    }
+
+    #[test]
+    fn fewer_than_two_position_reports_read_a_dash() {
+        let mut none = Rig::new(Variant::AtLoad, Some(WINDOW));
+        none.playing();
+        assert!(summary_after_back(&mut none).contains(" clock_period_ms=-"));
+        let mut one = clock_rig(&[]);
+        assert!(summary_after_back(&mut one).contains(" clock_period_ms=-"));
+    }
+
+    #[test]
+    fn a_drive_summary_carries_every_field_the_gate_reads_in_one_line() {
+        let mut rig = drive_text_selected_rig();
+        rig.msg("subscribe", r#"{"mediaId":"_m1","seekDone":true}"#);
+        let summary = summary_after_back(&mut rig);
+        for key in ["pause=", "resume=", "resume_from=", "seek=", "seekdone=", "audio=", "audio_at_load=", "text_ev=", "paused_event=", "clock_period_ms=", "end="] {
+            assert_eq!(summary.matches(&format!(" {key}")).count(), 1, "{key} must appear exactly once in {summary}");
+        }
+        assert!(!summary.contains('\n'));
     }
 
 }
