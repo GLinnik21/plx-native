@@ -36,6 +36,8 @@ thread_local! {
     static REPLAY: Cell<Option<u32>> = const { Cell::new(None) };
     /// The last read of the platform's calendar date and the minute (of the frame clock) it was read in.
     static TODAY: Cell<Option<(u32, Option<[i32; 3]>)>> = const { Cell::new(None) };
+    /// A wall-clock Unix sample and its monotonic frame tick; advanced between five-second refreshes.
+    static UNIX: Cell<Option<(u32, i64)>> = const { Cell::new(None) };
 }
 
 /// The date every replay frame answers: a recording has no calendar of its own, and a fixed one keeps
@@ -56,17 +58,36 @@ pub(crate) fn now() -> u32 {
 /// ([`REPLAY_DATE`]).
 pub(crate) fn set_replay(ms: u32) {
     REPLAY.with(|c| c.set(Some(ms)));
+    UNIX.with(|c| c.set(None));
 }
 
 /// Unix wall-clock seconds for live player estimates. Replays deliberately have no wall clock:
-/// inventing today's date for a historical frame would make the HUD nondeterministic.
-/// The live Unix wall clock for playback estimates. Historical replay frames have no
-/// corresponding present-day finish time, so they deliberately return unknown.
+/// inventing today's date for a historical frame would make the HUD nondeterministic. The platform
+/// clock is sampled at most every five seconds and advanced with monotonic frame ticks between samples.
 pub(crate) fn unix_seconds() -> Option<i64> {
     if REPLAY.with(|c| c.get().is_some()) {
+        UNIX.with(|c| c.set(None));
         return None;
     }
-    plx_platform::i18n::unix_timestamp_now()
+    let tick = now();
+    if let Some((at, sampled)) = UNIX.with(|c| c.get()) {
+        if let Some(current) = advance_unix_seconds(at, sampled, tick) {
+            return Some(current);
+        }
+    }
+    let sampled = plx_platform::i18n::unix_timestamp_now()?;
+    UNIX.with(|c| c.set(Some((tick, sampled))));
+    Some(sampled)
+}
+
+/// Advance a sampled wall-clock second by monotonic frame time, or ask for a fresh sample once
+/// the cache is five seconds old. Wrapping subtraction keeps SDL's 32-bit tick rollover safe.
+fn advance_unix_seconds(sampled_at: u32, sampled: i64, tick: u32) -> Option<i64> {
+    let elapsed_ms = tick.wrapping_sub(sampled_at);
+    if elapsed_ms >= 5_000 {
+        return None;
+    }
+    sampled.checked_add(i64::from(elapsed_ms / 1_000))
 }
 
 /// **Today's calendar date** in the OS time zone, `[year, month, day]`: read from the platform at
@@ -99,6 +120,19 @@ mod tests {
         super::set_replay(4242);
         assert_eq!(super::now(), 4242);
         super::REPLAY.with(|c| c.set(None));
+    }
+
+    #[test]
+    fn unix_wall_time_advances_from_a_monotonic_sample_and_expires() {
+        assert_eq!(super::advance_unix_seconds(1_000, 10_000, 1_999), Some(10_000));
+        assert_eq!(super::advance_unix_seconds(1_000, 10_000, 2_000), Some(10_001));
+        assert_eq!(super::advance_unix_seconds(1_000, 10_000, 5_999), Some(10_004));
+        assert_eq!(super::advance_unix_seconds(1_000, 10_000, 6_000), None);
+        assert_eq!(
+            super::advance_unix_seconds(u32::MAX - 10, 10_000, 5),
+            Some(10_000),
+            "the monotonic frame clock may wrap"
+        );
     }
 
     #[test]
