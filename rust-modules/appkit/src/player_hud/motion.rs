@@ -42,8 +42,8 @@ use std::sync::atomic::Ordering::Relaxed;
 /// it (`ui::dispatch`) and an offer for a resident string is one cache probe.
 #[derive(Default)]
 pub struct ClockWarm {
-    /// The (elapsed, remaining) seconds `strings` were formatted for.
-    key: Option<(i64, i64)>,
+    /// The (elapsed, remaining) seconds and end-time suffix `strings` were formatted for.
+    key: Option<(i64, i64, Option<[i32; 2]>)>,
     /// `(text, bold, size)` exactly as [`draw_playbar`] hands them to `Painter::text`.
     strings: Vec<(CString, c_int, c_int)>,
 }
@@ -54,29 +54,33 @@ impl ClockWarm {
     /// position from, so the prewarm and the draw agree.
     pub fn queue(&mut self, model: &HudModel) {
         let pos = display_pos_ns(model.loading, model.seek_display_ns, model.scrub_ns, model.playpos_ns);
-        self.queue_at(pos, model.duration_ns);
+        self.queue_at(pos, model.duration_ns, model.end_time);
     }
 
     /// The (elapsed, remaining) seconds the last queue was formatted for.
     #[cfg(any(test, feature = "test-support"))]
     pub fn warmed_for_test(&self) -> Option<(i64, i64)> {
-        self.key
+        self.key.map(|(elapsed, remaining, _)| (elapsed, remaining))
     }
 
     /// Queue the clocks [`draw_playbar`](super::classic::draw_playbar) draws at `pos_ns` of
-    /// `dur_ns`, and one second on.
-    fn queue_at(&mut self, pos_ns: i64, dur_ns: i64) {
+    /// `dur_ns`, and one second on. A changed local end minute invalidates the label as well.
+    fn queue_at(&mut self, pos_ns: i64, dur_ns: i64, end_time: Option<[i32; 2]>) {
         const SEC_NS: i64 = 1_000_000_000;
         // `fmt::clock` floors to whole seconds and clamps at zero; the key is that same second.
-        let key = ((pos_ns / SEC_NS).max(0), ((dur_ns - pos_ns) / SEC_NS).max(0));
+        let key = ((pos_ns / SEC_NS).max(0), ((dur_ns - pos_ns) / SEC_NS).max(0), end_time);
         if self.key != Some(key) {
             self.key = Some(key);
             self.strings.clear();
-            let (el, rem) = key;
+            let (el, rem, end_time) = key;
             let (cap, grown) = (theme::size::CAPTION, crate::scrub_preview::CLOCK_GROWN_SZ);
             let clocks = [
                 (fmt_time(el * SEC_NS, false), 1, cap),
                 (fmt_time(rem * SEC_NS, true), 0, cap),
+                (end_time.map_or_else(
+                    || fmt_time(rem * SEC_NS, true),
+                    |[hour, minute]| format!("{} · {hour:02}:{minute:02}", fmt_time(rem * SEC_NS, true)),
+                ), 0, cap),
                 (fmt_time((el + 1) * SEC_NS, false), 1, cap),
                 (fmt_time((rem - 1).max(0) * SEC_NS, true), 0, cap),
                 // the elapsed clock also draws at the size it grows to during a scrub with no card
