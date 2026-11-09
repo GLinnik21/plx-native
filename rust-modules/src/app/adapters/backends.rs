@@ -359,13 +359,25 @@ impl MonotonicClock for ProductUriClock {
 /// The display path the product URI driver is composed with, and the boot log line that names it
 /// and the gate's inputs (so the television shows it without a trigger). It reads the URI engine's
 /// own handle (player type 0), booted beside Feed's by `acb_init`, and the library's confirmation of
-/// its initialize, read there.
+/// its initialize, read there. `firmware_major` (`device::info().major`, read by the caller at the
+/// IO side, 0 when unknown) and `strata` (production's `EXPORTED_STRATA`) are parameters, never a
+/// global read here, so a test passes its own. The line ends `major=<n> evidence=table|none`:
+/// `table` when `strata` admitted that major's exported window, `none` otherwise. `none` says only
+/// that the table admitted nothing, not that the play is Standard: an ACB set reads `none` and
+/// still plays URI through `Acb` for a viewer who opted in, while a webOS 5+ release with no entry
+/// reads `none` and plays Standard. The debug override logs its own `evidence=override` line after
+/// this one.
 #[cfg(feature = "play-uri")]
-fn uri_product_binding(display: &dyn DisplaySink, owner: &PlaneOwner) -> UriBinding {
+fn uri_product_binding(display: &dyn DisplaySink, owner: &PlaneOwner, firmware_major: u32,
+    strata: &[u32]) -> UriBinding {
     let facts = owner.facts_of(PlaneHandle::Uri);
     let initialized = owner.initialized(PlaneHandle::Uri);
-    let binding = plx_play_uri::backend::product_binding(display.window_mode(), facts, initialized);
-    log(&format!("uri: product binding={binding:?} mode={} handle={} ptype={} initialized={initialized}",
+    let binding = plx_play_uri::backend::product_binding(display.window_mode(), facts, initialized,
+        firmware_major, strata);
+    // Only the table composes the exported window here, so an exported binding IS table evidence.
+    let evidence = if matches!(binding, UriBinding::Exported { .. }) { "table" } else { "none" };
+    log(&format!("uri: product binding={binding:?} mode={} handle={} ptype={} initialized={initialized} \
+        major={firmware_major} evidence={evidence}",
         display.window_mode(), facts.handle, facts.player_type));
     binding
 }
@@ -379,7 +391,8 @@ fn uri_product_binding(display: &dyn DisplaySink, owner: &PlaneOwner) -> UriBind
 #[cfg(feature = "play-uri")]
 pub(crate) fn install_uri_product(adapter: &mut PlayerAdapter, session: &mut PlaybackSession) -> bool {
     let display = sink::display_installed();
-    let binding = uri_product_binding(display, plane::installed());
+    let binding = uri_product_binding(display, plane::installed(), plx_platform::tv::device::info().major,
+        plx_play_uri::backend::EXPORTED_STRATA);
     // The exported-window override (`dev::uri_exported`): a debug build armed with its trigger, on a
     // display in `VP_EXPORTED` mode, composes the exported window; otherwise the binding is returned
     // as built.
@@ -630,7 +643,7 @@ mod tests {
     fn a_normal_boot_composes_the_uri_product_binding_acb_while_feed_keeps_player_type_10() {
         let sink = BootSink::answering(VP_ACB, vec![7, 8]);
         let owner = booted(&sink);
-        assert_eq!(uri_product_binding(&sink, &owner), UriBinding::Acb);
+        assert_eq!(uri_product_binding(&sink, &owner, 4, &[]), UriBinding::Acb);
         #[cfg(feature = "play-feed")]
         assert_eq!(owner.facts().player_type, DEFAULT_PLAYER_TYPE, "Feed's handle is still type 10");
     }
@@ -644,11 +657,57 @@ mod tests {
         #[cfg(feature = "play-feed")]
         assert_eq!(owner.facts(), PlaneFacts { handle: true, player_type: DEFAULT_PLAYER_TYPE });
         #[cfg(feature = "play-feed")]
-        assert_eq!(uri_product_binding(&sink, &owner), UriBinding::Unbound);
-        for mode in [VP_EXPORTED, VP_NONE] {
-            let sink = BootSink::answering(mode, vec![7, 8]);
-            assert_eq!(uri_product_binding(&sink, &booted(&sink)), UriBinding::Unbound, "mode {mode}");
+        assert_eq!(uri_product_binding(&sink, &owner, 4, &[]), UriBinding::Unbound);
+        // No window path: not even a table that lists the major binds it.
+        let sink = BootSink::answering(VP_NONE, vec![7, 8]);
+        assert_eq!(uri_product_binding(&sink, &booted(&sink), 11, &[11]), UriBinding::Unbound);
+    }
+
+    /// The exported window follows the firmware major through the composition: production's empty
+    /// table binds no major (a webOS 5+ release without an entry plays Standard), and a table that lists the
+    /// major binds it, on a display in the exported-window mode only. The URI engine's own handle
+    /// is not asked for: a 5+ set has none.
+    #[cfg(feature = "play-uri")]
+    #[test]
+    fn the_exported_window_is_composed_only_for_a_major_the_table_lists() {
+        use plx_play_uri::backend::{EXPORTED_CANVAS, EXPORTED_STRATA};
+        let exported = UriBinding::Exported { canvas: EXPORTED_CANVAS };
+        let sink = BootSink::answering(VP_EXPORTED, vec![7, 8]);
+        let owner = booted(&sink);
+        // Production's table is empty: every release, known or not, composes Unbound on this display. An entry
+        // lands with its Results row and the change to this test.
+        for major in 0..=30 {
+            assert_eq!(uri_product_binding(&sink, &owner, major, EXPORTED_STRATA), UriBinding::Unbound,
+                "major {major}");
         }
+        assert_eq!(uri_product_binding(&sink, &owner, 11, &[11]), exported);
+        assert_eq!(uri_product_binding(&sink, &owner, 10, &[11]), UriBinding::Unbound, "an unlisted major");
+        assert_eq!(uri_product_binding(&sink, &owner, 0, &[11]), UriBinding::Unbound, "unknown firmware");
+        // The same table on a display that is not in the exported-window mode.
+        for mode in [VP_NONE, plx_platform::tv::sink::VP_ACB] {
+            let sink = BootSink::answering(mode, vec![7, 8]);
+            assert_ne!(uri_product_binding(&sink, &booted(&sink), 11, &[11]), exported, "mode {mode}");
+        }
+    }
+
+    /// The boot line names the major and where the binding's evidence came from, so a television's
+    /// log shows both without a trigger: `evidence=table` only for a binding the table composed.
+    #[cfg(feature = "play-uri")]
+    #[test]
+    fn the_product_binding_boot_line_names_the_major_and_its_evidence() {
+        let line = |mode, major, strata: &[u32]| plx_base::eventlog::with_private_log(|| {
+            let sink = BootSink::answering(mode, vec![7, 8]);
+            uri_product_binding(&sink, &booted(&sink), major, strata);
+            std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default()
+        });
+        let listed = line(VP_EXPORTED, 11, &[11]);
+        assert!(listed.contains("uri: product binding=Exported { canvas: (1920, 1080) } mode=2 "), "{listed}");
+        assert!(listed.contains(" major=11 evidence=table\n"), "{listed}");
+        let unlisted = line(VP_EXPORTED, 11, &[]);
+        assert!(unlisted.contains("uri: product binding=Unbound mode=2 "), "{unlisted}");
+        assert!(unlisted.contains(" major=11 evidence=none\n"), "{unlisted}");
+        let acb = line(plx_platform::tv::sink::VP_ACB, 4, &[]);
+        assert!(acb.contains("uri: product binding=Acb ") && acb.contains(" major=4 evidence=none\n"), "{acb}");
     }
 
     #[test]

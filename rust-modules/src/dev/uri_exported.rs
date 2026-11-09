@@ -7,8 +7,9 @@
 //! **What it changes.** Only the display path the composition hands the driver
 //! (`adapters::backends::install_uri_product` passes [`armed`] to [`compose`], applied to
 //! `uri_product_binding`'s answer): with the trigger present and a display in `VP_EXPORTED` mode,
-//! `Exported` on the full 1920x1080 canvas instead of `Unbound`. Nothing else: the viewer still has to opt in to the URI engine in Settings, the
-//! qualifier is still `ProductQualifier`, and a display in any other mode composes as it always
+//! `Exported` on the full 1920x1080 canvas instead of `Unbound` (what production composes for a major
+//! the evidence table, `EXPORTED_STRATA`, has not admitted). Nothing else: the viewer still has to
+//! opt in to the URI engine in Settings, the qualifier is still `ProductQualifier`, and a display in any other mode composes as it always
 //! did (an ACB set keeps ACB, a set with no window path stays unbound).
 //!
 //! **Arming.** The file is read ONCE, at boot (`install_uri_product`), unlike the probe's per-Play

@@ -682,6 +682,25 @@ mod tests {
         }
     }
 
+    /// The composition's exported-window answer for a viewer who opted in: production evidence
+    /// certifies nothing, and the opt-in certifies the URL carrier, so an exact progressive original
+    /// is permitted through the exported window (and through nothing else: not an unbound executor,
+    /// not a display that is not in the exported-window mode, not the preview rectangle).
+    #[test]
+    fn an_opted_in_viewer_is_permitted_exact_progressive_through_the_exported_window_only() {
+        use plx_platform::tv::sink::{VP_ACB, VP_EXPORTED};
+        let exported = Binding::Exported { canvas: (1920, 1080) };
+        let production = ProductEvidence::unqualified_on(VP_EXPORTED, exported);
+        assert!(!production.permits(PROGRESSIVE_EXACT, false), "without the opt-in nothing is certified");
+        let opted_in = production.opted_in();
+        assert!(opted_in.permits(PROGRESSIVE_EXACT, false));
+        assert!(!opted_in.permits(PROGRESSIVE_EXACT, true), "the preview rectangle is its own certificate");
+        assert!(!ProductEvidence::unqualified_on(VP_EXPORTED, Binding::Unbound).opted_in()
+            .permits(PROGRESSIVE_EXACT, false), "an unbound executor offers nothing");
+        assert!(!ProductEvidence::unqualified_on(VP_ACB, exported).opted_in()
+            .permits(PROGRESSIVE_EXACT, false), "the exported window needs the display mode that exports it");
+    }
+
     const MASTER: &[u8] = b"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\nlow/index.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=3000000\nhigh/index.m3u8\n";
 
     #[derive(Clone, Copy)]
