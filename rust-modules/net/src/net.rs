@@ -2213,13 +2213,8 @@ fn request_tls_sink(
         unsafe {
             macro_rules! require_setopt {
                 ($call:expr, $name:literal) => {{
-                    let rc = $call;
-                    if rc != 0 {
-                        plx_base::eventlog::log(&format!(
-                            "net: libcurl refused security option {} (rc={rc}); request cancelled",
-                            $name
-                        ));
-                        return Err(RequestError::Transport.into());
+                    if let Err(error) = require_option($call, $name) {
+                        return Err(error.into());
                     }
                 }};
             }
@@ -2331,10 +2326,8 @@ fn request_tls_sink(
                 // Refusing here is a deliberate over-reaction — if we could not select the roots we
                 // meant to, the honest report is that the send did not happen.
                 TlsCfg::CaBundle(p) => {
-                    let rc = curl_easy_setopt_ptr(easy.0, CURLOPT_CAINFO, p.as_ptr() as *const c_void);
-                    if rc != 0 {
-                        plx_base::eventlog::log(&format!("net: this libcurl refuses CURLOPT_CAINFO (rc={rc}) — refusing to send against an unknown trust store"));
-                        return Err(RequestError::Transport.into());
+                    if let Err(error) = require_trust_store(curl_easy_setopt_ptr(easy.0, CURLOPT_CAINFO, p.as_ptr() as *const c_void)) {
+                        return Err(error.into());
                     }
                 }
                 TlsCfg::Pinned(p) => {
@@ -2914,6 +2907,24 @@ pub fn https_get_public(url: &str) -> Option<Resp> {
 /// `Ok` whatever its status, so a `404` is a value here, not an error.
 pub fn https_get_public_bounded(url: &str, max_body: usize) -> Result<Resp, RequestFailure> {
     request_result_evidence(url, &[], "GET", None, API, true, Some(max_body), None, false)
+}
+
+fn require_option(rc: c_int, option: &str) -> Result<(), RequestError> {
+    if rc == 0 {
+        return Ok(());
+    }
+    plx_base::eventlog::log(&format!("net: libcurl refused security option {option} (rc={rc}); request cancelled"));
+    Err(RequestError::Transport)
+}
+
+fn require_trust_store(rc: c_int) -> Result<(), RequestError> {
+    if rc == 0 {
+        return Ok(());
+    }
+    plx_base::eventlog::log(&format!(
+        "net: this libcurl refuses CURLOPT_CAINFO (rc={rc}) — refusing to send against an unknown trust store"
+    ));
+    Err(RequestError::Transport)
 }
 
 /// The `nowan` gate shared by the four resolver doors ([`request_tls_result`],

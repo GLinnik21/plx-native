@@ -1,7 +1,8 @@
 use super::{
     apply_user_agent, available, curl_easy_init, curl_easy_perform, curl_easy_setopt_long, curl_easy_setopt_ptr,
-    refuse_name, threaded_tls_ready, tls_failure_reason, Easy, Tls, CURL, CURLOPT_CAINFO, CURLOPT_CONNECTTIMEOUT, CURLOPT_NOSIGNAL,
-    CURLOPT_PROTOCOLS, CURLOPT_SSL_VERIFYHOST, CURLOPT_SSL_VERIFYPEER, CURLOPT_URL, CURLPROTO_HTTP, CURLPROTO_HTTPS,
+    origin, refuse_name, require_option, require_trust_store, threaded_tls_ready, tls_failure_reason, Easy, Tls, CURL,
+    CURLOPT_CAINFO, CURLOPT_CONNECTTIMEOUT, CURLOPT_NOSIGNAL, CURLOPT_PROTOCOLS, CURLOPT_SSL_VERIFYHOST,
+    CURLOPT_SSL_VERIFYPEER, CURLOPT_URL, CURLPROTO_HTTP, CURLPROTO_HTTPS,
 };
 use std::ffi::CString;
 use std::os::raw::{c_int, c_long, c_void};
@@ -55,12 +56,12 @@ pub fn open(
     if !threaded_tls_ready() {
         return Err(OpenError::SerialTls);
     }
-    if refuse_name(host_of(authority), connect_timeout_s) {
+    let tls = secure.is_some();
+    let address = format!("{}://{authority}/", if tls { "https" } else { "http" });
+    if refuse_name(origin::url_host(&address), connect_timeout_s) {
         return Err(OpenError::Connect { rc: CURLE_COULDNT_RESOLVE_HOST, why: None });
     }
-    let tls = secure.is_some();
-    let scheme = if tls { "https" } else { "http" };
-    let url = CString::new(format!("{scheme}://{authority}/")).map_err(|_| OpenError::Address)?;
+    let url = CString::new(address).map_err(|_| OpenError::Address)?;
     let bundle = match &secure {
         Some(Tls::CaBundle(path)) => Some(CString::new(*path).map_err(|_| OpenError::Address)?),
         Some(Tls::Pinned(_)) => return Err(OpenError::Refused("CURLOPT_PINNEDPUBLICKEY")),
@@ -73,16 +74,18 @@ pub fn open(
         }
         let easy = Easy(handle);
         let protocols = if tls { CURLPROTO_HTTPS } else { CURLPROTO_HTTP };
+        let require = |rc: c_int, option: &'static str| require_option(rc, option).map_err(|_| OpenError::Refused(option));
         require(curl_easy_setopt_long(easy.0, CURLOPT_PROTOCOLS, protocols), "CURLOPT_PROTOCOLS")?;
         if tls {
             require(curl_easy_setopt_long(easy.0, CURLOPT_SSL_VERIFYPEER, 1), "CURLOPT_SSL_VERIFYPEER")?;
             require(curl_easy_setopt_long(easy.0, CURLOPT_SSL_VERIFYHOST, 2), "CURLOPT_SSL_VERIFYHOST")?;
         }
         if let Some(bundle) = &bundle {
-            require(curl_easy_setopt_ptr(easy.0, CURLOPT_CAINFO, bundle.as_ptr() as *const c_void), "CURLOPT_CAINFO")?;
+            require_trust_store(curl_easy_setopt_ptr(easy.0, CURLOPT_CAINFO, bundle.as_ptr() as *const c_void))
+                .map_err(|_| OpenError::Refused("CURLOPT_CAINFO"))?;
         }
         require(curl_easy_setopt_long(easy.0, CURLOPT_CONNECT_ONLY, 1), "CURLOPT_CONNECT_ONLY")?;
-        require(curl_easy_setopt_ptr(easy.0, CURLOPT_URL, url.as_ptr() as *const c_void), "CURLOPT_URL")?;
+        curl_easy_setopt_ptr(easy.0, CURLOPT_URL, url.as_ptr() as *const c_void);
         curl_easy_setopt_long(easy.0, CURLOPT_NOSIGNAL, 1);
         curl_easy_setopt_long(easy.0, CURLOPT_CONNECTTIMEOUT, connect_timeout_s);
         apply_user_agent(easy.0);
@@ -136,17 +139,3 @@ fn bound() -> bool {
     })
 }
 
-fn host_of(authority: &str) -> &str {
-    match authority.find(']') {
-        Some(end) if authority.starts_with('[') => &authority[..=end],
-        _ => authority.split(':').next().unwrap_or(authority),
-    }
-}
-
-fn require(rc: c_int, option: &'static str) -> Result<(), OpenError> {
-    if rc == CURLE_OK {
-        return Ok(());
-    }
-    plx_base::eventlog::log(&format!("net: libcurl refused {option} (rc={rc}); the WebSocket is not opened"));
-    Err(OpenError::Refused(option))
-}
