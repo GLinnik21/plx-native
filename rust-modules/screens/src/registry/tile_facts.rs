@@ -168,6 +168,20 @@ pub fn for_deck<'a>(m: &'a PmsMovie, keys: &'a DeckKeys) -> TileFacts<'a> {
     TileFacts { deck: Some(DeckArt { cover: &keys.cover, card: &keys.card }), ..of(m) }
 }
 
+/// **A Continue Watching still's footer and scrim on `tile`: the one drawing every surface of the
+/// deck uses** (Home's row, its fading ghosts, the Library's Recommended Continue Watching row).
+/// The cue is what OK does, from the one deck-press rule: a play glyph while the Playback setting
+/// says OK plays, an info glyph while it opens the page; it opens with the card's own pop.
+pub fn deck_overlay(
+    p: plx_ui::Painter,
+    facts: &TileFacts<'_>,
+    tile: &plx_ui::cards::Tile,
+    measure: &dyn plx_machine::machine::Measure,
+) {
+    let cue = if plx_media::route::deck_press().press_plays() { plx_ui::still_footer::Cue::Play } else { plx_ui::still_footer::Cue::Info };
+    plx_ui::widgets::still_overlay(p, facts, tile.rect, tile.radius, plx_ui::widgets::StillFooter::Continue { cue, pop: tile.pop }, measure);
+}
+
 /// Whether `thumb` is the server's generated composite of a collection
 /// (`/library/collections/{rk}/composite/{stamp}`), the thumb the poster store bakes into our fan
 /// and whose collection name the card then sets live. A custom poster, or no art at all, is not.

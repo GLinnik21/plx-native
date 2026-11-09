@@ -249,20 +249,18 @@ fn a_focused_poster_tile_always_fills_the_caption_rung_it_reserves() {
              of one show differ only by number, so the number cannot be the thing behind focus"
         );
 
-        // **Continue Watching trails time left instead**, because for a part-watched episode that
-        // is the fact you came for. The shelf decides and not the item.
+        // **The Continue Watching deck hangs no block under its stills** (it is Home's deck: the
+        // time left is its footer line, on the tile), however far an episode has been watched.
         let mut deck = shelf(vec![PmsMovie {
             dur_ns: 30 * 60 * 1_000_000_000,
             resume_ms: 6 * 60 * 1000,
             ..dated(ep(3, 4, "Violet", "The Bear"))
         }]);
         deck.is_continue = true;
-        assert_eq!(caption(&shelf_label(&deck, 0)), "24m left");
-        // …and a deck tile never started has no time to report, so it falls back to the date
-        // rather than to an empty rung.
+        assert_eq!((title(&shelf_label(&deck, 0)).as_str(), caption(&shelf_label(&deck, 0)).as_str()), ("", ""));
         let mut next_up = shelf(vec![dated(ep(3, 5, "Ice Chips", "The Bear"))]);
         next_up.is_continue = true;
-        assert_eq!(caption(&shelf_label(&next_up, 0)), "9/11/2026");
+        assert_eq!((title(&shelf_label(&next_up, 0)).as_str(), caption(&shelf_label(&next_up, 0)).as_str()), ("", ""));
 
         // …an episode the server dated to nothing at all draws ONE rung, not an empty second one
         let sh = shelf(vec![ep(3, 4, "Violet", "The Bear")]);

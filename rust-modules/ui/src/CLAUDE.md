@@ -759,7 +759,7 @@ of stacked shelves hands each one the lift of the next shelf's heading (`Section
 Live and target geometry include these bands, so painting, paging, scrolling and restored
 viewports agree. Episode rows use landscape stills; the Continue Watching row's is `RowStyle::STILL`
 (the episode cell at `theme::STILL_RADIUS`, each neighbour easing `theme::STILL_EASE` clear of the pop,
-`RowStyle::neighbour_ease`), with no caption band under it (Home's `DECK_POLICY`). A tile's focus pop
+`RowStyle::neighbour_ease`), with no caption band under it (`captions::NOTHING_UNDER_STILLS`, Home's and Recommended's landscape deck alike). A tile's focus pop
 reaches a mark that must ride it as `cards::Tile::pop` (0..1, the pop spring read as progress), never
 as a timer of the mark's own. The deck card's artwork (Plex's cover, then the baked composite, then the
 title in type) is `card_art::pick` over `tile_facts::for_deck`; the composite is a bitmap baked once by

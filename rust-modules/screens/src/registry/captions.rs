@@ -6,8 +6,10 @@
 //! the person page's filmography, Detail's Related and collection shelves and the Collection screen's
 //! members. (A landscape still or a headshot is not a poster and is not on the policy: the Library's
 //! Episodes listing, Search's Episode and Person rows, Detail's Extras and Cast and Recommended's
-//! landscape rows keep the legacy block, [`still_label`] / [`still_block`], except while the
-//! Library's Episodes view shows its sort value, which reads `sort_info::label` instead.)
+//! landscape episode rows keep the legacy block, [`still_label`] / [`still_block`], except while the
+//! Library's Episodes view shows its sort value, which reads `sort_info::label` instead. The ONE
+//! landscape row off both is the Continue Watching STILL deck, Home's and Recommended's alike: its
+//! footer stands on the tile and nothing hangs under it, [`NOTHING_UNDER_STILLS`].)
 //!
 //! - [`policy`] is the stored setting as the ui's [`CaptionPolicy`], read through
 //!   `plx_media::route::under_posters()`. A test pins one setting for its thread with
@@ -111,6 +113,19 @@ pub fn deck_policy(policy: &CaptionPolicy) -> CaptionPolicy {
         ..*policy
     }
 }
+
+/// **The Continue Watching still deck's caption policy: nothing under the stills** (the one object,
+/// Home's deck and the Library's Recommended Continue Watching row alike). The deck is a row of
+/// landscape stills ([`plx_ui::cards::RowStyle::STILL`]) whose status and bar are the still's own
+/// footer line (`plx_ui::widgets::StillFooter::Continue`), so no label block hangs under a still and
+/// no band opens for one ([`plx_ui::caption_policy::band_h`] 0): the row below is not carried down
+/// when a still takes focus, whatever the Under posters setting says. Not [`deck_policy`], which is
+/// the POSTER deck's (its band keeps a line for the progress text).
+pub const NOTHING_UNDER_STILLS: CaptionPolicy = CaptionPolicy {
+    title: false,
+    details: DetailParts::NONE,
+    show_details: DetailParts::NONE,
+};
 
 /// The focused block of one poster under `policy`: `[title, details]` as the setting words them
 /// from `facts`, the details line being `state` when the tile has one. No line carries a mark. With no detail part ticked for

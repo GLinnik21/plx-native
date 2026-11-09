@@ -3689,19 +3689,11 @@ fn heading_y(row_y: f32, lift: f32) -> f32 {
     row_y - TITLE_DY - lift
 }
 /// The caption policy a shelf here follows: the stored Under posters setting, and for the Continue
-/// Watching deck (`deck`) [`DECK_POLICY`] (nothing under the stills: the status and bar are the still's own footer line).
+/// Watching deck (`deck`) [`NOTHING_UNDER_STILLS`](crate::registry::captions::NOTHING_UNDER_STILLS) (nothing under the stills: the status and bar are the still's own footer line).
 fn shelf_policy(deck: bool) -> plx_ui::caption_policy::CaptionPolicy {
-    if deck { return DECK_POLICY }
+    if deck { return crate::registry::captions::NOTHING_UNDER_STILLS }
     crate::registry::captions::policy()
 }
-/// **The Continue Watching row's caption policy: nothing.** The deck is a row of landscape stills
-/// whose footer stands ON the tile, so no label block hangs under it and no band opens for one
-/// (`band_h` 0): the row below is not carried down when a still takes focus.
-const DECK_POLICY: plx_ui::caption_policy::CaptionPolicy = plx_ui::caption_policy::CaptionPolicy {
-    title: false,
-    details: plx_ui::caption_policy::DetailParts::NONE,
-    show_details: plx_ui::caption_policy::DetailParts::NONE,
-};
 /// The focused shelf's caption band (0 / 80 / 112 px) under [`shelf_policy`]: the height the shelf
 /// reserves, opens and reveals by (`Shelf::set_caption_policy`).
 fn band_h_of(deck: bool) -> f32 {
@@ -3931,21 +3923,13 @@ impl<H: HomeLike> CardSource<H> for GhostCards<'_> {
     fn progress(&self, _i: usize) -> Option<f32> {
         None
     }
-    /// The fading still keeps the footer it had ([`deck_overlay`]).
+    /// The fading still keeps the footer it had ([`tile_facts::deck_overlay`](crate::registry::tile_facts::deck_overlay)).
     fn overlay(&self, p: Painter, i: usize, tile: &ui_cards::Tile, measure: &dyn plx_machine::machine::Measure) {
-        if let Some(facts) = self.facts(i) { deck_overlay(p, &facts, tile, measure) }
+        if let Some(facts) = self.facts(i) { crate::registry::tile_facts::deck_overlay(p, &facts, tile, measure) }
     }
     fn loaded(&self, i: usize) -> bool {
         self.item(i).is_some_and(|item| !item.rk.is_empty())
     }
-}
-
-/// A Continue Watching still's footer and scrim on `tile`: the one drawing both the live row's card
-/// and a ghost fading out of it use.
-fn deck_overlay(p: Painter, facts: &plx_ui::tile::TileFacts<'_>, tile: &ui_cards::Tile, measure: &dyn plx_machine::machine::Measure) {
-    let cue = if plx_media::route::deck_press().press_plays() { plx_ui::still_footer::Cue::Play } else { plx_ui::still_footer::Cue::Info };
-    plx_ui::widgets::still_overlay(p, facts, tile.rect, tile.radius,
-        plx_ui::widgets::StillFooter::Continue { cue, pop: tile.pop }, measure);
 }
 
 /// One row's cards, as `cards::Shelf` reads them: the published hub's items under the elements
@@ -4061,7 +4045,7 @@ impl<H: HomeLike> CardSource<H> for HomeCards<'_> {
     fn overlay(&self, p: Painter, i: usize, tile: &ui_cards::Tile, measure: &dyn plx_machine::machine::Measure) {
         if !self.deck() { return }
         let Some(facts) = self.facts(i) else { return };
-        deck_overlay(p, &facts, tile, measure);
+        crate::registry::tile_facts::deck_overlay(p, &facts, tile, measure);
     }
 
     /// A card has landed once it has a rating key; the ring's placeholder slot is an empty movie.

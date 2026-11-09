@@ -121,8 +121,13 @@ of widely spaced circles needs a bigger pop than a tight poster shelf to read as
 
 ### The Continue Watching still
 
-Home's Continue Watching row is a row of `RowStyle::STILL` stills with **no label block under them**
-(`DECK_POLICY` in `screens/src/home/mod.rs`, band 0): everything a still says it says on itself.
+A Continue Watching deck is ONE object, so it has one look wherever it appears: Home's row and the
+Library > Recommended page's landscape Continue Watching row are both a row of `RowStyle::STILL` stills
+with **no label block under them** (`captions::NOTHING_UNDER_STILLS`, band 0, one policy both screens
+hand their shelf; Recommended's `Row::still_deck` picks it, `hub_style` the style and `shelf_pitch` the
+pitch from it, `tile_facts::deck_overlay` draws the footer for both): everything a still says it says on
+itself. The Recommended page's other landscape rows (Recently Released Episodes) are not decks and keep
+the episode strip's `EPISODE` look, its caption band and `StillFooter::Shelf`.
 
 - **One scrim, one footer line.** `widgets::art_scrim` darkens the bottom `STILL_SCRIM_H` (112 px) of
   the card; the footer is one `still_footer::FOOTER_LINE_H` (24 px) line standing `FOOTER_RISE` (12 px)
