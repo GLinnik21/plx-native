@@ -18,6 +18,7 @@ const CONNECT_TIMEOUT_S: c_long = 10;
 const UPGRADE_WAIT: Duration = Duration::from_secs(10);
 const CLOSE_WAIT: Duration = Duration::from_secs(5);
 const LINGER: Duration = Duration::from_secs(2);
+const GOING_AWAY_WAIT: Duration = Duration::from_millis(300);
 const POLL_CAP: Duration = Duration::from_millis(250);
 const READ_CHUNK: usize = if cfg!(test) { 512 } else { 16 * 1024 };
 const PASS_BUDGET: usize = 1 << 20;
@@ -59,11 +60,13 @@ enum Outgoing {
 pub struct Outbox {
     queue: mpsc::Sender<Outgoing>,
     wake: Arc<UnixStream>,
+    live: Arc<AtomicBool>,
 }
 
 pub struct Inbox {
     queue: mpsc::Receiver<Outgoing>,
     wake: UnixStream,
+    live: Arc<AtomicBool>,
     _writer: Arc<UnixStream>,
 }
 
@@ -73,9 +76,10 @@ pub fn channel() -> Option<(Outbox, Inbox)> {
     writer.set_nonblocking(true).ok()?;
     let (sender, receiver) = mpsc::channel();
     let writer = Arc::new(writer);
+    let live = Arc::new(AtomicBool::new(true));
     Some((
-        Outbox { queue: sender, wake: Arc::clone(&writer) },
-        Inbox { queue: receiver, wake: reader, _writer: writer },
+        Outbox { queue: sender, wake: Arc::clone(&writer), live: Arc::clone(&live) },
+        Inbox { queue: receiver, wake: reader, live, _writer: writer },
     ))
 }
 
@@ -89,11 +93,15 @@ impl Outbox {
     }
 
     pub fn close(&self, code: u16, reason: String) -> bool {
-        close_code_allowed(code) && 2 + reason.len() <= CONTROL_PAYLOAD && self.push(Outgoing::Close(code, reason))
+        if !close_code_allowed(code) || 2 + reason.len() > CONTROL_PAYLOAD || !self.push(Outgoing::Close(code, reason)) {
+            return false;
+        }
+        self.live.store(false, Ordering::Release);
+        true
     }
 
     fn push(&self, message: Outgoing) -> bool {
-        if self.queue.send(message).is_err() {
+        if !self.live.load(Ordering::Acquire) || self.queue.send(message).is_err() {
             return false;
         }
         let _ = (&*self.wake).write(&[1]);
@@ -106,13 +114,23 @@ impl Inbox {
         let mut sink = [0u8; 64];
         while matches!((&self.wake).read(&mut sink), Ok(n) if n > 0) {}
     }
+
+    fn shut(&self) {
+        self.live.store(false, Ordering::Release);
+    }
+}
+
+impl Drop for Inbox {
+    fn drop(&mut self) {
+        self.shut();
+    }
 }
 
 pub fn run(
     off: &plx_base::task::OffFrame,
     dial: Dial<'_>,
     cancel: &AtomicBool,
-    inbox: &Inbox,
+    inbox: Inbox,
     on: &mut dyn FnMut(Event),
 ) -> End {
     let Some((secure, authority, path)) = split(dial.url) else {
@@ -145,7 +163,7 @@ pub fn run(
         Err(OpenError::Cancelled) => return End::Cancelled,
         Err(error) => return End::Refused(Refusal::Open(error)),
     };
-    Session { socket, codec, wire: Wire::default(), short, idle: dial.idle }.drive(cancel, inbox, on)
+    Session { socket, codec, wire: Wire::default(), short, idle: dial.idle }.drive(cancel, &inbox, on)
 }
 
 struct Session<M> {
@@ -165,11 +183,8 @@ impl<M: FnMut() -> [u8; 4]> Session<M> {
         let mut buffer = vec![0u8; READ_CHUNK];
         loop {
             if cancel.load(Ordering::Acquire) {
-                if self.codec.close(GOING_AWAY, "") {
-                    self.wire.push(self.codec.take_outgoing());
-                    self.wire.flush(&mut self.socket);
-                }
-                return End::Cancelled;
+                inbox.shut();
+                return self.going_away();
             }
             if opened && closing.is_none() {
                 while let Ok(message) = inbox.queue.try_recv() {
@@ -189,12 +204,8 @@ impl<M: FnMut() -> [u8; 4]> Session<M> {
                     }
                 }
             }
-            if self.short.get() {
-                return End::NoEntropy;
-            }
-            self.wire.push(self.codec.take_outgoing());
-            if !self.wire.flush(&mut self.socket) {
-                return End::Lost;
+            if let Some(end) = self.send_out() {
+                return end;
             }
             let mut fresh = false;
             let mut ended = None;
@@ -223,17 +234,14 @@ impl<M: FnMut() -> [u8; 4]> Session<M> {
                 }
             }
             if let Some(end) = ended {
+                inbox.shut();
                 return if matches!(end, End::Failed(Fault::Handshake(_))) { end } else { self.finish(end, cancel) };
             }
             if eof {
                 return End::Lost;
             }
-            if self.short.get() {
-                return End::NoEntropy;
-            }
-            self.wire.push(self.codec.take_outgoing());
-            if !self.wire.flush(&mut self.socket) {
-                return End::Lost;
+            if let Some(end) = self.send_out() {
+                return end;
             }
             opened |= fresh;
             let deadline = match (opened, closing) {
@@ -254,8 +262,18 @@ impl<M: FnMut() -> [u8; 4]> Session<M> {
         }
     }
 
-    fn finish(mut self, end: End, cancel: &AtomicBool) -> End {
+    fn send_out(&mut self) -> Option<End> {
+        if self.short.get() {
+            return Some(End::NoEntropy);
+        }
         self.wire.push(self.codec.take_outgoing());
+        (!self.wire.flush(&mut self.socket)).then_some(End::Lost)
+    }
+
+    fn finish(mut self, end: End, cancel: &AtomicBool) -> End {
+        if let Some(stop) = self.send_out() {
+            return if stop == End::NoEntropy { stop } else { end };
+        }
         let until = Instant::now() + LINGER;
         let mut buffer = [0u8; 512];
         loop {
@@ -269,6 +287,23 @@ impl<M: FnMut() -> [u8; 4]> Session<M> {
                 Io::Again => {}
             }
             wait(self.socket.fd(), None, !self.wire.is_empty(), (until - now).min(POLL_CAP));
+        }
+    }
+
+    fn going_away(mut self) -> End {
+        if !self.codec.close(GOING_AWAY, "") {
+            return End::Cancelled;
+        }
+        if let Some(end) = self.send_out() {
+            return if end == End::NoEntropy { end } else { End::Cancelled };
+        }
+        let until = Instant::now() + GOING_AWAY_WAIT;
+        loop {
+            let now = Instant::now();
+            if self.wire.is_empty() || now >= until || !self.wire.flush(&mut self.socket) {
+                return End::Cancelled;
+            }
+            wait(self.socket.fd(), None, true, until - now);
         }
     }
 }

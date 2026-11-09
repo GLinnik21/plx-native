@@ -146,7 +146,7 @@ fn trusting<'a>(url: &'a str, pem: &'a Pem) -> Dial<'a> {
     Dial { url, trust: Tls::CaBundle(pem.0.to_str().unwrap()), limit: LIMIT, idle: Duration::from_secs(5) }
 }
 
-fn go(dial: Dial<'_>, inbox: &Inbox, on: &mut dyn FnMut(Event)) -> End {
+fn go(dial: Dial<'_>, inbox: Inbox, on: &mut dyn FnMut(Event)) -> End {
     run(&OffFrame::for_test(), dial, &AtomicBool::new(false), inbox, on)
 }
 
@@ -172,7 +172,7 @@ fn a_text_message_goes_out_and_its_echo_comes_back_before_a_clean_close() {
     });
     let (outbox, inbox) = channel().unwrap();
     let mut texts = Vec::new();
-    let end = go(plain(&url), &inbox, &mut |event| match event {
+    let end = go(plain(&url), inbox, &mut |event| match event {
         Event::Opened => assert!(outbox.text("hello".to_owned())),
         Event::Text(text) => {
             texts.push(text);
@@ -183,6 +183,7 @@ fn a_text_message_goes_out_and_its_echo_comes_back_before_a_clean_close() {
     server.join().unwrap();
     assert_eq!(texts, ["hello"]);
     assert_eq!(end, End::Closed { code: Some(1000), reason: String::new() });
+    assert!(!outbox.text("late".to_owned()));
 }
 
 #[test]
@@ -199,7 +200,7 @@ fn a_message_queued_before_the_upgrade_is_sent_once_the_connection_opens() {
     });
     let (outbox, inbox) = channel().unwrap();
     assert!(outbox.binary(vec![0, 255, 7]));
-    let end = go(plain(&url), &inbox, &mut |_| {});
+    let end = go(plain(&url), inbox, &mut |_| {});
     server.join().unwrap();
     assert_eq!(end, End::Closed { code: Some(1000), reason: String::new() });
 }
@@ -218,7 +219,7 @@ fn a_server_ping_is_answered_with_its_payload() {
         assert_eq!(close_code(&peer.next().unwrap()), 1000);
     });
     let (_outbox, inbox) = channel().unwrap();
-    let end = go(plain(&url), &inbox, &mut |_| {});
+    let end = go(plain(&url), inbox, &mut |_| {});
     server.join().unwrap();
     assert_eq!(end, End::Closed { code: Some(1000), reason: "done".to_owned() });
 }
@@ -235,7 +236,7 @@ fn after_the_server_closes_the_client_waits_for_its_tcp_close_and_no_longer() {
     });
     let (_outbox, inbox) = channel().unwrap();
     let started = Instant::now();
-    let end = go(plain(&url), &inbox, &mut |_| {});
+    let end = go(plain(&url), inbox, &mut |_| {});
     server.join().unwrap();
     assert_eq!(end, End::Closed { code: Some(1001), reason: String::new() });
     assert!(started.elapsed() < LINGER, "{:?}", started.elapsed());
@@ -262,7 +263,7 @@ fn every_frame_of_a_tls_burst_arrives_without_waiting_on_the_socket() {
     let (outbox, inbox) = channel().unwrap();
     let mut texts = Vec::new();
     let mut opened_at = None;
-    let end = go(trusting(&url, &pem), &inbox, &mut |event| match event {
+    let end = go(trusting(&url, &pem), inbox, &mut |event| match event {
         Event::Opened => opened_at = Some(Instant::now()),
         Event::Text(text) => {
             texts.push(text);
@@ -288,7 +289,7 @@ fn a_certificate_outside_the_bundle_is_refused() {
     let (url, _served, server) = serve_wss(|_| {});
     let (_, other) = certificate(&[]);
     let (_outbox, inbox) = channel().unwrap();
-    let end = go(trusting(&url, &other), &inbox, &mut |event| panic!("{event:?}"));
+    let end = go(trusting(&url, &other), inbox, &mut |event| panic!("{event:?}"));
     let _ = server.join();
     assert!(matches!(end, End::Refused(Refusal::Open(OpenError::Connect { .. }))), "{end:?}");
 }
@@ -302,10 +303,10 @@ fn nothing_is_dialled_where_only_serial_tls_is_safe() {
     let _guard = SerialTlsGuard::force();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
-    let (_outbox, inbox) = channel().unwrap();
     for scheme in ["wss", "ws"] {
+        let (_outbox, inbox) = channel().unwrap();
         let url = format!("{scheme}://127.0.0.1:{}/v1/ws", listener.local_addr().unwrap().port());
-        let end = go(plain(&url), &inbox, &mut |event| panic!("{event:?}"));
+        let end = go(plain(&url), inbox, &mut |event| panic!("{event:?}"));
         assert_eq!(end, End::Refused(Refusal::Open(OpenError::SerialTls)), "{scheme}");
         assert!(listener.accept().is_err(), "the client dialled over {scheme}");
     }
@@ -324,7 +325,7 @@ fn cancelling_sends_going_away_and_returns() {
     let cancel = AtomicBool::new(false);
     let (_outbox, inbox) = channel().unwrap();
     let started = Instant::now();
-    let end = run(&OffFrame::for_test(), plain(&url), &cancel, &inbox, &mut |event| {
+    let end = run(&OffFrame::for_test(), plain(&url), &cancel, inbox, &mut |event| {
         assert_eq!(event, Event::Opened);
         cancel.store(true, Ordering::Release);
     });
@@ -345,7 +346,7 @@ fn a_silent_server_ends_the_connection_as_idle() {
     let (_outbox, inbox) = channel().unwrap();
     let dial = Dial { idle: Duration::from_millis(300), ..plain(&url) };
     let started = Instant::now();
-    let end = go(dial, &inbox, &mut |_| {});
+    let end = go(dial, inbox, &mut |_| {});
     server.join().unwrap();
     assert_eq!(end, End::Idle);
     assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
@@ -359,7 +360,7 @@ fn a_dropped_connection_without_a_close_is_lost() {
     }
     let (url, server) = serve_ws(|peer, _| drop(peer));
     let (_outbox, inbox) = channel().unwrap();
-    let end = go(plain(&url), &inbox, &mut |_| {});
+    let end = go(plain(&url), inbox, &mut |_| {});
     server.join().unwrap();
     assert_eq!(end, End::Lost);
 }
@@ -379,7 +380,7 @@ fn an_answer_that_is_not_an_upgrade_fails_the_handshake() {
     let url = format!("ws://127.0.0.1:{port}/v1/ws");
     let (_outbox, inbox) = channel().unwrap();
     let started = Instant::now();
-    let end = go(plain(&url), &inbox, &mut |event| panic!("{event:?}"));
+    let end = go(plain(&url), inbox, &mut |event| panic!("{event:?}"));
     server.join().unwrap();
     assert!(matches!(end, End::Failed(Fault::Handshake(_))), "{end:?}");
     assert!(started.elapsed() < LINGER, "{:?}", started.elapsed());
@@ -393,15 +394,15 @@ fn a_refused_connection_is_reported_with_curls_code() {
     }
     let url = format!("ws://127.0.0.1:{}/v1/ws", dead_port());
     let (_outbox, inbox) = channel().unwrap();
-    let end = go(plain(&url), &inbox, &mut |event| panic!("{event:?}"));
+    let end = go(plain(&url), inbox, &mut |event| panic!("{event:?}"));
     assert!(matches!(end, End::Refused(Refusal::Open(OpenError::Connect { rc: 7, .. }))), "{end:?}");
 }
 
 #[test]
 fn an_address_that_is_not_a_websocket_url_is_refused_before_dialling() {
-    let (_outbox, inbox) = channel().unwrap();
     for url in ["http://127.0.0.1/v1/ws", "ws://127.0.0.1/v1/ws#part", "ws://user@127.0.0.1/", "ws:///v1/ws", "wss://"] {
-        assert_eq!(go(plain(url), &inbox, &mut |event| panic!("{event:?}")), End::Refused(Refusal::Url), "{url}");
+        let (_outbox, inbox) = channel().unwrap();
+        assert_eq!(go(plain(url), inbox, &mut |event| panic!("{event:?}")), End::Refused(Refusal::Url), "{url}");
     }
 }
 
@@ -429,7 +430,7 @@ fn a_peer_that_never_pauses_cannot_hold_off_a_cancel() {
     let cancel = AtomicBool::new(false);
     let (_outbox, inbox) = channel().unwrap();
     let mut first = None;
-    let end = run(&OffFrame::for_test(), plain(&url), &cancel, &inbox, &mut |event| {
+    let end = run(&OffFrame::for_test(), plain(&url), &cancel, inbox, &mut |event| {
         if matches!(event, Event::Text(_)) {
             thread::sleep(Duration::from_micros(200));
             if first.is_none() {
@@ -456,7 +457,7 @@ fn a_server_that_offers_h2_still_gets_the_http_1_1_upgrade() {
     });
     let (_outbox, inbox) = channel().unwrap();
     let mut opened = false;
-    let end = go(trusting(&url, &pem), &inbox, &mut |event| opened |= event == Event::Opened);
+    let end = go(trusting(&url, &pem), inbox, &mut |event| opened |= event == Event::Opened);
     let _ = server.join();
     assert!(opened, "{end:?}");
     assert_eq!(end, End::Closed { code: Some(1000), reason: String::new() });
@@ -482,7 +483,7 @@ fn a_cancel_during_the_tls_handshake_ends_the_dial() {
             thread::sleep(Duration::from_millis(300));
             cancel.store(true, Ordering::Release);
         });
-        run(&OffFrame::for_test(), trusting(&url, &pem), &cancel, &inbox, &mut |event| panic!("{event:?}"))
+        run(&OffFrame::for_test(), trusting(&url, &pem), &cancel, inbox, &mut |event| panic!("{event:?}"))
     });
     let took = started.elapsed();
     server.join().unwrap();
@@ -509,12 +510,21 @@ fn a_cancel_during_the_close_linger_returns_at_once() {
             thread::sleep(Duration::from_millis(300));
             cancel.store(true, Ordering::Release);
         });
-        run(&OffFrame::for_test(), plain(&url), &cancel, &inbox, &mut |_| {})
+        run(&OffFrame::for_test(), plain(&url), &cancel, inbox, &mut |_| {})
     });
     let took = started.elapsed();
     server.join().unwrap();
     assert_eq!(end, End::Closed { code: Some(1000), reason: String::new() });
     assert!(took < Duration::from_secs(1), "{took:?}");
+}
+
+#[test]
+fn an_outbox_takes_nothing_after_its_close() {
+    let (outbox, _inbox) = channel().unwrap();
+    assert!(outbox.text("before".to_owned()));
+    assert!(outbox.close(1000, String::new()));
+    assert!(!outbox.text("after".to_owned()));
+    assert!(!outbox.close(1000, String::new()));
 }
 
 #[test]
@@ -549,7 +559,7 @@ fn autobahn_client_cases() {
     let agent = "plxnative";
     let cases = AtomicUsize::new(0);
     let (_outbox, inbox) = channel().unwrap();
-    let end = go(plain(&format!("{base}/getCaseCount")), &inbox, &mut |event| {
+    let end = go(plain(&format!("{base}/getCaseCount")), inbox, &mut |event| {
         if let Event::Text(text) = event {
             cases.store(text.trim().parse().expect("a case count"), Ordering::Release);
         }
@@ -560,7 +570,7 @@ fn autobahn_client_cases() {
         let url = format!("{base}/runCase?case={case}&agent={agent}");
         let (outbox, inbox) = channel().unwrap();
         let dial = Dial { url: &url, trust: Tls::Ca, limit: 64 << 20, idle: Duration::from_secs(60) };
-        let end = go(dial, &inbox, &mut |event| match event {
+        let end = go(dial, inbox, &mut |event| match event {
             Event::Text(text) => {
                 outbox.text(text);
             }
@@ -572,6 +582,6 @@ fn autobahn_client_cases() {
         eprintln!("case {case}: {end:?}");
     }
     let (_outbox, inbox) = channel().unwrap();
-    let end = go(plain(&format!("{base}/updateReports?agent={agent}")), &inbox, &mut |_| {});
+    let end = go(plain(&format!("{base}/updateReports?agent={agent}")), inbox, &mut |_| {});
     eprintln!("updateReports: {end:?}");
 }
