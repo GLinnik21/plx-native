@@ -932,6 +932,12 @@ fn local_clock_time_uses_the_os_timezone_and_checks_time_t_range() {
     if std::env::var(CHILD).is_ok() {
         // 2026-11-09 10:19:04 UTC; Europe/Madrid is 11:19 at this instant.
         assert_eq!(local_clock_time(1_794_219_544), Some([11, 19]));
+        // Spring-forward: 01:59:59 CET is followed by 03:00 CEST.
+        assert_eq!(local_clock_time(1_774_745_999), Some([1, 59]));
+        assert_eq!(local_clock_time(1_774_746_000), Some([3, 0]));
+        // Fall-back: 02:59:59 CEST is followed by 02:00 CET.
+        assert_eq!(local_clock_time(1_792_889_999), Some([2, 59]));
+        assert_eq!(local_clock_time(1_792_890_000), Some([2, 0]));
         assert_eq!(local_clock_time(0), None);
         assert_eq!(local_clock_time(-1), None);
         assert_eq!(local_clock_time(i64::MAX), None);
