@@ -1343,6 +1343,7 @@ pub static CELL_PLAYBAR: Node = Node {
         )
         .default("\"follow_head\""),
         Field::req("clock_size", Ty::Enum(BODY_SIZES), "The clocks' type-scale rung."),
+        Field::opt("end_time_width", PX_W, "Width in px reserved at the right edge for the remaining clock, separator and estimated finish time. Omit to show only the remaining clock."),
         Field::opt(
             "mark",
             Ty::Enum(&["after_elapsed", "busy_only"]),
@@ -2469,6 +2470,7 @@ mod tests {
                 "knob",
                 "clocks",
                 "clock_size",
+                "end_time_width",
                 "mark",
                 "grab"
             ]

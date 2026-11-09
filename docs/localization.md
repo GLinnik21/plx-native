@@ -74,7 +74,10 @@ the wording; do not abbreviate it past readability.
 
 Review the affected screens with the desktop simulator. `PLXNATIVE_LOCALE=es`, `fr`, `it`, `pt`, `de`, `hu`, `ru`, `pl`, `nl`, `be` or `en`
 selects a language for a simulator launch; `PLXNATIVE_FORMAT_LOCALE=de-DE` exercises separate
-regional formatting. `PLXNATIVE_LOCALE=qps-ploc` expands and accents text to reveal cramped
+regional formatting. Set `PLXNATIVE_CLOCK` to `12`, `24` or `locale` to exercise the player HUD clock.
+Time-of-day formatting uses ICU hour-minute patterns and day periods for the format locale. The
+formatter requires only time data and reuses the existing decimal data. It adds no calendar or
+time-zone tables. `PLXNATIVE_LOCALE=qps-ploc` expands and accents text to reveal cramped
 layouts; English-only diagnostics text is not expanded. These environment overrides do not operate in the shipping TV build.
 
 Open a pull request describing which language and screens changed, and how you checked the

@@ -36,6 +36,7 @@ pub struct LocaleContext {
     language: Language,
     format_locale: String,
     clock: Clock,
+    time: icu_datetime::NoCalendarFormatter<icu_datetime::fieldsets::T>,
     plural: PluralRules,
     decimal: DecimalFormatter,
     date: icu_datetime::FixedCalendarDateTimeFormatter<
@@ -80,6 +81,28 @@ impl LocaleContext {
             })
             .unwrap_or_else(|| language.regional().into());
         let locale = format_locale.parse::<Locale>().expect("validated locale");
+        let clock = match clock {
+            Some("12") => Clock::H12,
+            Some("24") => Clock::H24,
+            _ => Clock::Locale,
+        };
+        use icu_datetime::preferences::HourCycle;
+        let hour_cycle = match clock {
+            Clock::H12 => Some(HourCycle::H12),
+            Clock::H24 => Some(HourCycle::H23),
+            Clock::Locale => None,
+        };
+        let mut time_prefs = icu_datetime::DateTimeFormatterPreferences::from(locale.clone());
+        if hour_cycle.is_some() {
+            time_prefs.hour_cycle = hour_cycle;
+        }
+        let time = icu_datetime::NoCalendarFormatter::try_new(time_prefs, icu_datetime::fieldsets::T::hm())
+            .unwrap_or_else(|_| {
+                let mut fallback = icu_datetime::DateTimeFormatterPreferences::default();
+                fallback.hour_cycle = time_prefs.hour_cycle;
+                icu_datetime::NoCalendarFormatter::try_new(fallback, icu_datetime::fieldsets::T::hm())
+                    .expect("compiled English time data")
+            });
         let decimal = DecimalFormatter::try_new(locale.clone().into(), Default::default())
             .unwrap_or_else(|_| {
                 DecimalFormatter::try_new(Default::default(), Default::default())
@@ -126,11 +149,8 @@ impl LocaleContext {
             preference,
             language,
             format_locale,
-            clock: match clock {
-                Some("12") => Clock::H12,
-                Some("24") => Clock::H24,
-                _ => Clock::Locale,
-            },
+            clock,
+            time,
             plural,
             decimal,
             date,
@@ -160,6 +180,11 @@ impl LocaleContext {
         d.multiply_pow10(-scale);
         d.pad_end(-scale);
         self.decimal.format(&d).to_string()
+    }
+    /// Format an already-local civil hour and minute using the TV clock and format locale.
+    pub fn time_of_day(&self, [hour, minute]: [i32; 2]) -> Option<String> {
+        let time = icu_datetime::input::Time::try_new(hour.try_into().ok()?, minute.try_into().ok()?, 0, 0).ok()?;
+        Some(self.time.format(&time).to_string())
     }
     pub fn date(&self, year: i32, month: u8, day: u8) -> Option<String> {
         let d = icu_calendar::Date::try_new_gregorian(year, month, day).ok()?;
@@ -632,6 +657,10 @@ pub fn initialize(preference: Preference, controlled: bool) {
     let simulated_format = std::env::var("PLXNATIVE_FORMAT_LOCALE").ok();
     #[cfg(feature = "hostsim")]
     let fmt = simulated_format.as_deref().or(fmt);
+    #[cfg(feature = "hostsim")]
+    let simulated_clock = std::env::var("PLXNATIVE_CLOCK").ok();
+    #[cfg(feature = "hostsim")]
+    let clock = simulated_clock.as_deref().filter(|v| matches!(*v, "12" | "24" | "locale")).or(clock);
     #[allow(unused_mut)]
     let mut cx = LocaleContext::resolve(preference, ui, fmt, clock, env.as_deref());
     #[cfg(feature = "hostsim")]

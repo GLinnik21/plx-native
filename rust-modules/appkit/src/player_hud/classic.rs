@@ -14,6 +14,7 @@
 //! preview, the one that needs the frame's playhead and picks, takes the per-frame
 //! [`HudModel`](super::model::HudModel) snapshot), so this file names no player global. The logic it draws
 //! ([`super::state`]) and the animation state it reads ([`super::motion`]) are separate modules.
+use crate::hud_format::clocks::{end_time_run, EndTimeLane};
 use crate::hud_format::compile::{ClockMode, KnobMode, MarkMode};
 use super::geometry::{RowAnchor, GROUP_SCRUB, GROUP_TABS, HUD_TABS};
 use super::model::HudModel;
@@ -313,10 +314,7 @@ fn draw_clock(
     hi: f32,
     measure: &dyn plx_machine::machine::Measure,
 ) -> (f32, f32) {
-    let template: String = text
-        .chars()
-        .map(|c| if c.is_ascii_digit() { '0' } else { c })
-        .collect();
+    let template = clock_template(text, '0');
     let w = measure.width_str(&template, sz, true);
     let half = w * 0.5;
     let cx = cx.clamp(lo + half, (hi - half).max(lo + half));
@@ -324,6 +322,10 @@ fn draw_clock(
         p.text(cs.as_ptr(), cx, y, sz, col, 1, 1);
     }
     (cx - half, cx + half)
+}
+
+fn clock_template(text: &str, digit: char) -> String {
+    text.chars().map(|c| if c.is_ascii_digit() { digit } else { c }).collect()
 }
 
 /// An open Info/Chapters panel owns input; its retained HUD tab indicates mode only.
@@ -564,8 +566,8 @@ pub struct PlaybarLook {
     pub clocks: ClockMode,
     /// `after_elapsed`: the state glyph beside the elapsed clock. `busy_only`: the spinner alone.
     pub mark: MarkMode,
-    /// A package's existing remaining-clock lane. The built-in layout may use the free track width.
-    pub end_time_width: Option<f32>,
+    /// The package's declared lane for the combined clock, when enabled.
+    pub end_time_lane: Option<EndTimeLane>,
 }
 
 impl Default for PlaybarLook {
@@ -578,7 +580,7 @@ impl Default for PlaybarLook {
             knob: KnobMode::Tick,
             clocks: ClockMode::FollowHead,
             mark: MarkMode::AfterElapsed,
-            end_time_width: None,
+            end_time_lane: None,
         }
     }
 }
@@ -667,15 +669,23 @@ pub fn draw_playbar_look(p: Painter, bar: Playbar, look: PlaybarLook, measure: &
     let remaining = fmt_time(dur - dispos, true);
     let width = |s: &str| measure.width_str(s, look.clock_size, false);
     let available = (sx + sw - el_r - 20.0).min(sw);
-    let end_width = available.min(look.end_time_width.unwrap_or(sw));
-    let rem = bar.end_time.and_then(|time| remaining_with_end_time(&remaining, time))
-        .filter(|label| width(label) < end_width)
-        .unwrap_or(remaining);
-    let rem_w = width(&rem);
+    let run = end_time_run(look.clock_size).measured(measure);
+    let end = look.end_time_lane.zip(bar.end_time).and_then(|(lane, time)| {
+        let time = plx_platform::i18n::current().time_of_day(time)?;
+        let parts = [remaining.as_str(), time.as_str()];
+        let actual = run.width(measure, &parts);
+        // Keep the fit decision stable while duration digits tick, including proportional faces.
+        let template = clock_template(&remaining, lane.widest_digit);
+        let reserved = run.width(measure, &[template.as_str(), time.as_str()]).max(actual);
+        (reserved <= lane.rect.w && reserved < available).then_some((time, actual))
+    });
+    let rem_w = end.as_ref().map_or_else(|| width(&remaining), |(_, w)| *w);
     let rem_l = sx + sw - rem_w;
-    let rem_shown = el_r + 20.0 < rem_l;
+    let rem_shown = rem_w < available;
     if rem_shown {
-        if let Ok(cs) = CString::new(rem.as_str()) {
+        if let Some((time, _)) = end {
+            run.draw(p, &[remaining.as_str(), time.as_str()], rem_l, ty);
+        } else if let Ok(cs) = CString::new(remaining) {
             p.text(cs.as_ptr(), sx + sw, ty, look.clock_size, dim, 2, 0);
         }
     }
@@ -749,15 +759,6 @@ pub fn draw_playbar_look(p: Painter, bar: Playbar, look: PlaybarLook, measure: &
                 .draw(&e, p),
         }
     }
-}
-
-pub(super) fn remaining_with_end_time(remaining: &str, [hour, minute]: [i32; 2]) -> Option<String> {
-    if !(0..=23).contains(&hour) || !(0..=59).contains(&minute) {
-        return None;
-    }
-    let time = format!("{hour:02}:{minute:02}");
-    let end = plx_platform::i18n::msg::player_hud_ends_at(&time);
-    Some(format!("{remaining} · {end}"))
 }
 
 /// The bar's x for a position `pos_ns` of `dur_ns`, clamped to the bar's ends.

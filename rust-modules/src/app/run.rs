@@ -652,6 +652,7 @@ fn hud_model(
     ps: &plx_media::route::PlaybackSession,
     meta: plx_data::metadata::MetadataView<'_>,
     viewer_paused: bool,
+    live_clock: bool,
 ) -> plx_appkit::player_hud::model::HudModel {
     let position_ns = plx_media::player::playpos_ns(ps);
     let playpos_ns = position_ns.unwrap_or(0);
@@ -664,7 +665,7 @@ fn hud_model(
     let (is_episode, is_movie) = meta.now_playing().map_or((false, false), |n| (n.is_real_episode, n.is_movie));
     let projected_end_time = if plx_appkit::player_hud::model::end_time_is_eligible(
         plx_appkit::player_hud::model::EndTimeEligibility {
-            enabled: plx_media::route::hud_end_time(),
+            enabled: live_clock && plx_media::route::hud_end_time(),
             is_movie_or_episode: is_episode || is_movie,
             is_preview: plx_media::route::is_preview(ps),
             advancing,
@@ -732,7 +733,8 @@ fn begin_product_frame(app: &mut App) -> Frame {
 /// Current transport/marker facts before the dispatcher's input/Tick, refreshed again for draw.
 fn publish_player_model(app: &mut App) {
     let mut model = hud_model(&app.player.session, app.bridge.metadata_view(),
-        app.adapters.player.backend_viewer_paused().unwrap_or(false));
+        app.adapters.player.backend_viewer_paused().unwrap_or(false),
+        matches!(app.rec, super::recorder::Recplay::Off) && !app.bridge.is_controlled_replay());
     model.marker_prefs = app.bridge.marker_preferences();
     model.covered = app.pages.surface_up();
     if let Some(screen) = super::bridge::player_mut(&mut app.pages) { screen.set_model(model); }
@@ -4725,7 +4727,7 @@ mod lifecycle_regression_tests {
         }
         // A projected attempt alone does not install a common backend runner.
         // Supply the viewer goal explicitly, opposite to the idle physical mailbox.
-        let mut model = hud_model(&app.player.session, app.bridge.metadata_view(), true);
+        let mut model = hud_model(&app.player.session, app.bridge.metadata_view(), true, false);
         model.marker_prefs = app.bridge.marker_preferences();
         model.covered = app.pages.surface_up();
         // restore before grading: a failed assertion must not leak a scrub target into the next test

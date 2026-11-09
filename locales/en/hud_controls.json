@@ -1,11 +1,4 @@
 {
-  "player.hud.ends_at": {
-    "value": "Ends at {time}",
-    "description": "Compact predicted local finish time, next to the remaining playback duration.",
-    "args": {
-      "time": "str"
-    }
-  },
   "player.hud.play_pause": {
     "value": "Play / Pause",
     "description": "Label for a declared player HUD pill or button that toggles playback; stable wording so its measured width does not change when paused."

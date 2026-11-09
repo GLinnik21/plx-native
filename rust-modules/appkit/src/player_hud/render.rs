@@ -641,7 +641,7 @@ fn walk<H: Host>(
                         knob: *knob,
                         clocks: *clocks,
                         mark: *mark,
-                        end_time_width: (!compiled.builtin_classic).then_some(clock_rects.remaining.w),
+                        end_time_lane: clock_rects.end_time,
                     };
                     draw_playbar_look(q, live, look, f.measure);
                     bar = Some((live, *track));

@@ -934,13 +934,13 @@ pub fn restore_deck_press(mode: DeckPress) { restore_live::<DeckPressPref>(mode)
 /// Blocking persistence seam, as [`set_next_episode_mode`].
 pub fn set_deck_press(mode: DeckPress) -> bool { confirm::<DeckPressPref>(mode) }
 
-/// What sits under the focused poster, for the seated profile. Safe from any thread; a reader takes
-/// no lock.
 /// Whether the seated profile shows the projected end time in the player HUD.
 pub fn hud_end_time() -> bool { HudEndTimePref::live() }
 /// Restore the end-time cell from the active profile without writing it back.
 pub fn restore_hud_end_time(v: bool) { restore_live::<HudEndTimePref>(v) }
 
+/// What sits under the focused poster, for the seated profile. Safe from any thread; a reader takes
+/// no lock.
 pub fn under_posters() -> UnderPosters { UnderPostersPref::live() }
 pub fn restore_under_posters(v: UnderPosters) { restore_live::<UnderPostersPref>(v) }
 /// Blocking persistence seam, as [`set_next_episode_mode`].

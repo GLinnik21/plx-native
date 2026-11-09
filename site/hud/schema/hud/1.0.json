@@ -2818,6 +2818,12 @@
           ],
           "type": "string"
         },
+        "end_time_width": {
+          "description": "Width in px reserved at the right edge for the remaining clock, separator and estimated finish time. Omit to show only the remaining clock.",
+          "maximum": 1920,
+          "minimum": 1,
+          "type": "integer"
+        },
         "fill": {
           "$ref": "#/$defs/keyed_ink",
           "description": "The elapsed part's ink: a theme token or a palette name."
