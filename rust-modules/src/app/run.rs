@@ -672,7 +672,7 @@ fn hud_model(
         loading,
         scrub_ns >= 0,
     ) {
-        let rate = plx_media::player::applied_rate(ps).unwrap_or(plx_media::player::RATE_NORMAL);
+        let rate = plx_media::player::applied_rate(ps);
         clock::unix_seconds()
             .and_then(|now| plx_appkit::player_hud::model::projected_end_unix_seconds(
                 now, position_ns?, duration_ns?, rate,
