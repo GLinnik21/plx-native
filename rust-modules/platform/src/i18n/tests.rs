@@ -1068,7 +1068,7 @@ fn local_midnight_follows_the_zone_and_the_clock_change_of_each_date() {
 
 #[cfg(test)]
 mod unix_timestamp_tests {
-    use super::unix_seconds_from_elapsed;
+    use super::super::unix_seconds_from_elapsed;
     use std::time::Duration;
 
     #[test]
