@@ -1,7 +1,5 @@
-{"updated":"2026-11-08T23:58:40Z",
+{"updated":"2026-11-09T00:20:14Z",
 "ci":[
-{"id":31403633733,"at":"2026-08-10T15:26:54Z","sha":"8827d32c0","title":"release: 0.2.1, and a fourth witness for the version","jobs":{"cross-build (armv7) + artifact assertions":88,"host checks (NOT a device gate)":69},"pr":null,"conclusion":"success","attempt":1},
-{"id":31430674609,"at":"2026-08-10T20:46:39Z","sha":"af6044c82","title":"ci: a tag push publishes again, instead of silently doing nothing","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":76},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":31449221132,"at":"2026-08-11T01:24:54Z","sha":"983ce5419","title":"docs: bring v0.1.0 and v0.2.0 up to the standard, as errata rather than edits","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":71},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":31453350821,"at":"2026-08-11T02:45:54Z","sha":"ae756c93f","title":"docs: rewrite v0.1.0 and v0.2.0 to the template, and change the rule to match","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":74},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":31584219333,"at":"2026-08-12T09:43:35Z","sha":"84ff93289","title":"design: Plex Pass Awareness, second revision \u2014 and the post-play Up Next card","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":82},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -4822,7 +4820,8 @@
 {"id":42529533356,"at":"2026-11-08T22:17:56Z","sha":"4693d047e","title":"Cover the primed first Play after a transcode seek; fix two stale claim_hold docs","pr":1285,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":211,"Windows launcher syntax":20,"macOS simulator build + launch":197,"Linux simulator build + launch":1457}},
 {"id":42532865395,"at":"2026-11-08T22:58:41Z","sha":"471efa0e5","title":"Keep a staged offer purpose when a landing re-qualifies an unadmitted recipe","pr":1286,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":281,"macOS tests against bundled FFmpeg and ASS":231,"macOS simulator build + launch":184,"Windows launcher syntax":19}},
 {"id":42536249400,"at":"2026-11-08T23:39:55Z","sha":"4ddc54aef","title":"Under posters preview: stop asking when the library's shelves are published","pr":1287,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":210,"macOS tests against bundled FFmpeg and ASS":203,"Windows launcher syntax":16,"Linux simulator build + launch":298}},
-{"id":42537115887,"at":"2026-11-08T23:50:46Z","sha":"2fe9e9fc6","title":"Settings: ask for a poster of a kind the Under posters preview lacks","pr":1287,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":116,"macOS simulator build + launch":242,"Windows launcher syntax":19,"Linux simulator build + launch":275}}
+{"id":42537115887,"at":"2026-11-08T23:50:46Z","sha":"2fe9e9fc6","title":"Settings: ask for a poster of a kind the Under posters preview lacks","pr":1287,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":116,"macOS simulator build + launch":242,"Windows launcher syntax":19,"Linux simulator build + launch":275}},
+{"id":42539244817,"at":"2026-11-09T00:16:00Z","sha":"6934bffe0","title":"Merge remote-tracking branch 'origin/main' into codex/fix-811","pr":1288,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":17,"macOS simulator build + launch":158,"macOS tests against bundled FFmpeg and ASS":222,"Linux simulator build + launch":243}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
@@ -5075,7 +5074,8 @@
 {"day":"2026-08-05","wf":"ci","event":"push","runs":1,"failed":0,"jobs":{"cross-build (armv7) + artifact assertions":86,"host checks (NOT a device gate)":64},"longest":86},
 {"day":"2026-08-06","wf":"ci","event":"push","runs":4,"failed":0,"jobs":{"cross-build (armv7) + artifact assertions":106,"host checks (NOT a device gate)":76},"longest":106},
 {"day":"2026-08-07","wf":"ci","event":"push","runs":1,"failed":0,"jobs":{"cross-build (armv7) + artifact assertions":95,"host checks (NOT a device gate)":81},"longest":95},
-{"day":"2026-08-09","wf":"ci","event":"push","runs":4,"failed":0,"jobs":{"cross-build (armv7) + artifact assertions":85,"host checks (NOT a device gate)":73},"longest":85}
+{"day":"2026-08-09","wf":"ci","event":"push","runs":4,"failed":0,"jobs":{"cross-build (armv7) + artifact assertions":85,"host checks (NOT a device gate)":73},"longest":85},
+{"day":"2026-08-10","wf":"ci","event":"push","runs":2,"failed":1,"jobs":{"cross-build (armv7) + artifact assertions":88,"host checks (NOT a device gate)":72},"longest":82}
 ],
 "flaky":[
 {"run":40071490036,"at":"2026-10-24T06:58:17Z","sha":"f596f952d","pr":977,"job":"host unit tests (default features)","test":"plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once","fail":[1],"pass":[2]},
