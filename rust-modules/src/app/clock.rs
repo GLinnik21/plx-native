@@ -74,7 +74,7 @@ pub(crate) fn unix_seconds() -> Option<i64> {
     let tick = now();
     if let Some((at, sampled)) = UNIX.with(|c| c.get()) {
         if let Some(current) = advance_unix_seconds(at, sampled, tick) {
-            return Some(current);
+            return current;
         }
     }
     let sampled = plx_platform::i18n::unix_timestamp_now();
