@@ -74,7 +74,8 @@ pub(crate) fn unix_seconds() -> Option<i64> {
 /// rounding the current instant backwards. The remaining media time is rounded up separately by
 /// the projection, so an exact-second finish cannot be displayed early by one second.
 fn ceil_unix_seconds(elapsed: std::time::Duration) -> Option<i64> {
-    let seconds = elapsed.as_secs().checked_add(u64::from(elapsed.subsec_nanos() != 0))?;
+    let fractional_second = if elapsed.subsec_nanos() == 0 { 0 } else { 1 };
+    let seconds = elapsed.as_secs().checked_add(fractional_second)?;
     i64::try_from(seconds).ok().filter(|seconds| *seconds > 0)
 }
 
