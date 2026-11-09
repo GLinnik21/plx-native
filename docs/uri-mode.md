@@ -23,9 +23,9 @@ displayed its URI fixture on the 4.5 dev set, as recorded below.
 | firmware | set | result |
 |---|---|---|
 | webOS 4.10.0 / 4.4.2 | unpacked images + this project's 4.5 set | No `AVProxy` or `SDL_webOS*ExportedWindow`; the window option is ignored. Earlier probe loads decoded without a visible picture, and earlier ACB attempts returned `ERROR_06`. The controlled 2026-11-02 ACB pair later displayed moving SDR720p24 H.264/AAC URI video on the 4.5 dev set, both with and without `connectDass`; this does not establish other 4.x sets or formats. |
-| webOS 5.4.2 | LG 65UN80006LA (issue #1064) | `windowId` in `load` → picture, moving, with sound. `late` (`setWindowId` after `loadCompleted`) and `none` → `error code=104 "fail to create AVProxy"`. Both a `plex.direct` HTTPS direct play and an HLS transcode played. |
+| webOS 5.4.2 | LG 65UN80006LA (issue #1064) | `windowId` in `load` → picture, moving, with sound. `late` (`setWindowId` after `loadCompleted`) and `none` → `error code=104 "fail to create AVProxy"`. Both a `plex.direct` HTTPS direct play and an HLS transcode played. Where the picture sat and its aspect were not reported (the tester's report names picture and sound only), and the registration ladder ended on the named client (`shape=named`). |
 | webOS 9.2.4 / 10.3.1 (33.31.68) | unpacked images | same mechanism as 5.5 and later (below); not yet confirmed on a device. |
-| webOS 26 (11.2.0) | LG G4 (issue #1064) | `windowId` in `load` → 4K picture, Dolby Vision and Atmos through the TV's pipeline, our overlays composited over it, correct size and place. |
+| webOS 26: set on 11.1.0-3701, mechanism read on the 11.2.0 image | LG G4 (issue #1064) | `windowId` in `load` → 4K picture, Dolby Vision and Atmos through the TV's pipeline, our overlays composited over it, correct size and place. The set runs 11.1.0-3701; 11.2.0 is the unpacked image the mechanism above was read from, not the set. |
 | webOS 3.x | unpacked images | no `libSDL2` at all; out of scope. |
 
 ## What the 5+ firmware actually does with the load
@@ -224,6 +224,104 @@ source rectangle.
 On firmware where the app's `/tmp` is jailed separately from a root shell's (reported on webOS 26),
 arm the trigger through the app's own view:
 `echo drive > /proc/$(pidof plxnative)/root/tmp/com.beb.plxnative.debug/plxnative-uriprobe`.
+
+## webOS 5+ tester run
+
+One run of the `drive` probe on a 5+ set answers whether the TV's pipeline plays a stream into the exported
+window and whether its controls (pause, resume, seek, tracks) answer, in one `summary` line, without reading
+the `ev=` lines. It needs a developer build (`devtriggers`; no `RELEASE=1` package carries the probe). The probe
+plays one stream through `com.webos.media` with no Engine and reports nothing to Plex. Play from your own
+server, with a title that direct-plays (`kind=direct` on the `armed` line) and is at least a minute long (the
+script seeks 20 s ahead and runs about 18 s from `playing`).
+
+### Arming the trigger
+
+The trigger is a file named `plxnative-uriprobe` in the app's runtime root, `/tmp/com.beb.plxnative.debug/` for
+the debug install (`<app id>` below). Most dev triggers are read once at boot; this one is read **at each Play**,
+so it can be armed while the app runs. Pick the route that matches the set:
+
+1. **Plain `/tmp`** (the app's `/tmp` is the one a root shell sees):
+   `echo drive > /tmp/com.beb.plxnative.debug/plxnative-uriprobe`
+2. **Jailed `/tmp`, app running** (reported on webOS 26): through the running process's own root,
+   `echo drive > /proc/$(pidof plxnative)/root/tmp/com.beb.plxnative.debug/plxnative-uriprobe`.
+   This needs the process, so launch the app first.
+3. **The jail's persistent path.** `find /var/palm/jail -type d -path '*/tmp/com.beb.plxnative.debug' 2>/dev/null`
+   prints the directory when the set keeps one, `/var/palm/jail/<jail>/tmp/com.beb.plxnative.debug/`; write
+   `plxnative-uriprobe` there. Not established: whether that directory exists before the app's first launch, and
+   whether it survives the app exiting.
+
+`drive` binds the window exactly as `load` does and then runs the transport script, so one `drive` run also
+answers the `load` question. Then play the title and let the script finish (about 18 s after `playing`) before
+pressing Back. A run is only evidence if the log has the line
+`uriprobe: t=0 armed variant=drive ... window=exported ...`; with no `armed` line the trigger was not read and
+the run shows nothing, so say so in the report. Remove the trigger file afterwards, or the next Play probes
+again.
+
+### Copying the log
+
+The probe writes to `plxnative-events.log` in the same runtime root. The app truncates that file at each
+launch, so copy it before relaunching, and on a jailed set copy it **while the app is still running** (the
+`/proc/<pid>/root` route disappears with the process):
+
+```
+grep 'uriprobe:' /proc/$(pidof plxnative)/root/tmp/com.beb.plxnative.debug/plxnative-events.log > /tmp/uriprobe-run.txt
+```
+
+(on an unjailed set, or through the jail's persistent path, read `plxnative-events.log` from that directory
+instead). The `uriprobe:` lines carry no URL, host or token; the rest of the event log is scrubbed but is
+not needed. Post the lines and say what the screen showed: the probe cannot see the video plane, so picture
+yes/no, sound yes/no, where the picture sat and whether its aspect was right are the tester's to report.
+
+### What the lines say
+
+The `armed` line names the set:
+
+```
+uriprobe: t=0 armed variant=drive scheme=<http|https> kind=<direct|hls> window=<exported|none> app=<app id> fw=<release|-> build=<build|->
+```
+
+`fw=` and `build=` are the release (`5.4.2`) and the exact firmware build (`5.4.2-47`) the set reported at boot,
+`-` when it reported none. They are printed only when they are plain version text (letters, digits and `. - _ +`,
+up to 32 characters).
+
+The terminal line, which follows the last event, is (a `load` run prints the first group only):
+
+```
+uriprobe: t=<ms> summary load=<ok|fail(<phase>)> playing=<yes|no> t_load=<ms|-> t_playing=<ms|-> currentTime_advanced=<yes|no> videoInfo=<seen|none> audioInfo=<seen|none> window=<exported|none> setWindowId=<n/a|ok|refused|noreply> variant=<variant> scheme=<http|https> shape=<named|anon> end=<end> audio_at_load=<n|none> clock_period_ms=<ms|->
+    pause=<..> pause_delta=<ms|-> resume=<..> seek=<..> seek_delta=<ms|-> text=<..> audio=<..> subs=<..> eos=<yes|no> pause_basis=reported_positions pause_samples=<n> pause_span_ms=<ms|-> pause_end_fresh=<yes|no> paused_event=<yes|no> seekdone=<yes|no> resume_from=<ms|-> text_ev=<yes|no>
+```
+
+(one line; wrapped here). The tokens a run is read by:
+
+| token | value | reads as |
+|---|---|---|
+| `load=`, `playing=`, `currentTime_advanced=`, `window=` | `ok`, `yes`, `yes`, `exported` | the service loaded the stream into our exported window, said it plays, and its clock advanced. With the tester's report of a moving picture and sound, correctly placed and proportioned, this is a pass for the picture. `load=fail(<phase>)`, `end=refused:<phase>` and `end=error:<code>` name where it stopped (`error:104` is the AVProxy failure above) |
+| `shape=` | `named`, `anon` | the registration identity the service accepted: the named client first, then the anonymous one. A set that refuses both ends `end=refused:register` |
+| `pause=` | `froze` | after Pause the reported position stopped (fresh, equal reports over at least half the dwell, one in the Resume frame). The only value that certifies pause |
+| | `moved` | Pause was accepted but the position kept running |
+| | `unconfirmed` | too few or too stale reports to say: rerun, this is not a pass |
+| | `refused`, `none` | the call was refused, or the script never reached it |
+| `resume=` | `sent` | the Resume `play` call was sent and not refused; a reply is not required. It is the best this probe prints (nothing but the position shows whether playback continued; read `resume_from=`); `refused` if the service refused it |
+| `resume_from=` | `<ms>` | the first `currentTime` the service reported after the Resume call was sent. Compare it with `pos=` on the `drive pause pos=<ms>` line above it: a value at or after that position minus 1000 ms is a resume; a value near 0 is a restart from the beginning (the 4.5 set's first position after resume was 333 ms). A report already in flight when Resume was sent can still read the paused position, so an equal value next to a picture that restarted is worth a rerun |
+| | `-` | no position arrived after the call, or the script did not reach it |
+| `seek=` | `hit` | the first position after Seek was within 5 s of the target (`seek_delta=` is how far off) |
+| | `miss`, `refused` | it was not, or the call was refused |
+| | `sent`, `none` | `sent`: the service answered the call ok but no position arrived after it. `none`: the call was not answered and no position arrived after it, or the script never reached it |
+| `seekdone=` | `yes`, `no` | a `seekDone` event arrived on the subscription after the Seek call was sent. A `seekDone` from before the call does not count. `seek=hit` with `seekdone=no` means the position moved but the service never said the seek finished |
+| `audio_at_load=` | `<n>` | an `audioInfo` that named track `n` arrived before (or in the same message as) `loadCompleted`: the service had already selected an audio track at load. `none`: no `audioInfo` named a track by then |
+| `audio=` | `ok`, `sent`, `refused`, `none` | the `selectTrack` for audio index 1 (the script's second audio track). `ok` needs the call acknowledged and a `trackSelected` or an `audioInfo` naming index 1 (in either order); `sent` is a call the service answered without refusing it, with no such event; a one-track title may refuse it |
+| `text_ev=` | `yes`, `no` | a `trackSelected` event of type `text` arrived after the script's text `selectTrack` was sent. A bare `trackSelected`, an audio one, or one from before the call is `no` |
+| `text=`, `subs=` | as `audio=` | the text `selectTrack` (index 0) and `setSubtitleEnable` calls; recorded, they say nothing about rendering |
+| `paused_event=` | `yes`, `no` | a `paused` event arrived at all (open on 5+, above) |
+| `clock_period_ms=` | `<ms>`, `-` | the median gap between successive `currentTime` reports over the whole run (for an even count, the smaller of the two middle gaps), on the app's frame clock, so one frame (about 16 ms at 60 fps) is its resolution. `-` for fewer than two reports. It says how closely a subtitle clock could follow the service's |
+| `eos=` | `yes`, `no` | an `endOfStream` event arrived |
+| `end=` | `script` | the script ran to its last step and the probe stopped itself. A complete `drive` run ends here |
+| | `back` | Back was pressed before the script finished: the later calls may not have run, so rerun and wait |
+| | `eos`, `error:<code>`, `timeout:<phase>`, `refused:<phase>` | the stream ended, the service errored, a wait ran out, or a call was refused: not a pass for the controls |
+
+Everything else on the line is the raw material for the rest: `t_load=` and `t_playing=` are the milliseconds
+from `armed` to `loadCompleted` and to `playing`, `videoInfo=` and `audioInfo=` say whether the service reported
+the stream at all, and `pause_*` give the position samples behind the `pause=` grade.
 
 ## Open questions
 

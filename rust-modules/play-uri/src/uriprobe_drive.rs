@@ -23,7 +23,7 @@
 //! The caller decides whether to enable the probe.
 
 use super::uri_lifecycle::{Event as LifeEvent, Fx as LifeFx, Lifecycle};
-use super::uriprobe::{AbrBps, Config, Kind, Scheme, Settle, UriCall, UriEffect, UriEvent, UriProbe, Variant, AcbOp};
+use super::uriprobe::{AbrBps, Config, Firmware, Kind, Scheme, Settle, UriCall, UriEffect, UriEvent, UriProbe, Variant, AcbOp};
 use plx_base::task::MainThread;
 use plx_platform::tv::plane::PlaneOwner;
 use plx_platform::tv::sink::{DisplaySink, VP_EXPORTED};
@@ -46,6 +46,8 @@ pub struct DriverConfig<A: Copy> {
     pub kind: Kind,
     pub url: String,
     pub app_id: String,
+    /// The set's firmware, read by the caller from the platform (the machine reads no global).
+    pub firmware: Firmware,
     pub transport: &'static dyn UriMedia,
     pub sink: &'static dyn DisplaySink,
     pub log: fn(&str),
@@ -85,7 +87,7 @@ impl<A: Copy> UriSession<A> {
     /// Create the exported window for the variants which use one, build the machine and take its
     /// first step (`Start`: the `armed` line and the first registration).
     pub fn open(input: DriverConfig<A>, mt: &MainThread) -> UriSession<A> {
-        let DriverConfig { attempt, variant, bps, kind, url, app_id, transport, sink, log, plane, release_allowance_ms } = input;
+        let DriverConfig { attempt, variant, bps, kind, url, app_id, firmware, transport, sink, log, plane, release_allowance_ms } = input;
         let clock = Instant::now();
         let mut window_id = None;
         let mut created = false;
@@ -103,6 +105,7 @@ impl<A: Copy> UriSession<A> {
             kind,
             window_id: window_id.clone(),
             app_id: app_id.clone(),
+            firmware,
             transport: variant.drives(),
             bps,
         };
@@ -490,7 +493,7 @@ mod tests {
             *transport.refuse_open.lock().unwrap() = refuse_open.map(str::to_owned);
             let session = UriSession::open(DriverConfig {
                 attempt, variant, bps, kind: Kind::Direct, url: URL.to_owned(),
-                app_id: "com.example.plxnative".to_owned(), transport, sink: &NO_SINK,
+                app_id: "com.example.plxnative".to_owned(), firmware: Firmware::default(), transport, sink: &NO_SINK,
                 log: plx_base::eventlog::log, plane: no_acb(), release_allowance_ms: 10_000,
             }, &mt);
             Rig { mt, transport, attempt, status: Status::Pending, session: Some(session), now: 0 }
