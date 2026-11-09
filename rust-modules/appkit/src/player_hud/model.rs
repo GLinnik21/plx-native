@@ -148,7 +148,11 @@ mod end_time_tests {
         let thirty_five_minutes = 35 * 60 * 1_000_000_000i64;
         assert_eq!(projected_end_unix_seconds(now, 0, thirty_five_minutes, 1000), Some(now + 2100));
         assert_eq!(projected_end_unix_seconds(now, 0, thirty_five_minutes, 2000), Some(now + 1050));
+        assert_eq!(projected_end_unix_seconds(now, 0, thirty_five_minutes, 500), Some(now + 4200));
+        assert_eq!(projected_end_unix_seconds(now, 0, thirty_five_minutes, 1250), Some(now + 1680));
         assert_eq!(projected_end_unix_seconds(now, 10 * 60 * 1_000_000_000, 45 * 60 * 1_000_000_000, 1500), Some(now + 1400));
+        assert_eq!(projected_end_unix_seconds(86_390, 0, 20_000_000_000, 1000), Some(86_410),
+            "the projection crosses midnight as a Unix timestamp, not a local clock arithmetic");
     }
 
     #[test]
