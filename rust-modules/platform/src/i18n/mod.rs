@@ -730,20 +730,12 @@ pub fn local_calendar_today() -> Option<[i32; 3]> {
 }
 
 /// The current Unix wall-clock timestamp for the application's playback clock. Only
-/// app::clock::unix_seconds should call this; machines and screens receive time as frame data.
-/// The value is rounded up to a whole second so a projected finish is not rounded backwards.
-pub fn unix_timestamp_now() -> Option<i64> {
+/// app::clock::unix_ms should call this; machines and screens receive time as frame data.
+pub fn unix_timestamp_ms() -> Option<i64> {
     let elapsed = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .ok()?;
-    unix_seconds_from_elapsed(elapsed)
-}
-
-/// Convert elapsed wall-clock time to a positive Unix timestamp, rounding fractional seconds up.
-fn unix_seconds_from_elapsed(elapsed: std::time::Duration) -> Option<i64> {
-    let fractional_second = if elapsed.subsec_nanos() == 0 { 0 } else { 1 };
-    let seconds = elapsed.as_secs().checked_add(fractional_second)?;
-    i64::try_from(seconds).ok().filter(|seconds| *seconds > 0)
+    i64::try_from(elapsed.as_millis()).ok().filter(|ms| *ms > 0)
 }
 
 /// A Unix timestamp as a calendar date in the operating system's timezone. Called while building

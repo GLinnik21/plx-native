@@ -564,6 +564,8 @@ pub struct PlaybarLook {
     pub clocks: ClockMode,
     /// `after_elapsed`: the state glyph beside the elapsed clock. `busy_only`: the spinner alone.
     pub mark: MarkMode,
+    /// A package's existing remaining-clock lane. The built-in layout may use the free track width.
+    pub end_time_width: Option<f32>,
 }
 
 impl Default for PlaybarLook {
@@ -576,6 +578,7 @@ impl Default for PlaybarLook {
             knob: KnobMode::Tick,
             clocks: ClockMode::FollowHead,
             mark: MarkMode::AfterElapsed,
+            end_time_width: None,
         }
     }
 }
@@ -662,25 +665,13 @@ pub fn draw_playbar_look(p: Painter, bar: Playbar, look: PlaybarLook, measure: &
         el_r = el_r.max(r);
     }
     let remaining = fmt_time(dur - dispos, true);
-    let rem = match bar.end_time {
-        Some([hour, minute]) if (0..=23).contains(&hour) && (0..=59).contains(&minute) =>
-            format!("{remaining} · {hour:02}:{minute:02}"),
-        _ => remaining,
-    };
-    // MEASURE the label, never estimate it. `chars * CAPTION * 0.52` was an Arial-calibrated
-    // constant guarding a real behaviour — the remaining clock hides before the moving elapsed
-    // clock can reach it — and it only ever worked because it over-estimated: under Arial it
-    // returned ~99.8px against a true ~85px. Under the shipped Inter that margin had already
-    // halved, and freezing tabular figures (which the clock's own template idiom requires, see
-    // `draw_clock`) widens numerals further, leaving about a pixel of slack. At that point the
-    // guard stops guarding and the two clocks can overlap near the end of a long item.
-    // Same '0'-template `draw_clock` uses, so the two agree by construction: with tabular figures
-    // the template's width IS the real string's width at every tick.
-    let rem_tmpl: String = rem
-        .chars()
-        .map(|c| if c.is_ascii_digit() { '0' } else { c })
-        .collect();
-    let rem_w = measure.width_str(&rem_tmpl, look.clock_size, true);
+    let width = |s: &str| measure.width_str(s, look.clock_size, false);
+    let available = (sx + sw - el_r - 20.0).min(sw);
+    let end_width = available.min(look.end_time_width.unwrap_or(sw));
+    let rem = bar.end_time.and_then(|time| remaining_with_end_time(&remaining, time))
+        .filter(|label| width(label) < end_width)
+        .unwrap_or(remaining);
+    let rem_w = width(&rem);
     let rem_l = sx + sw - rem_w;
     let rem_shown = el_r + 20.0 < rem_l;
     if rem_shown {
@@ -758,6 +749,15 @@ pub fn draw_playbar_look(p: Painter, bar: Playbar, look: PlaybarLook, measure: &
                 .draw(&e, p),
         }
     }
+}
+
+pub(super) fn remaining_with_end_time(remaining: &str, [hour, minute]: [i32; 2]) -> Option<String> {
+    if !(0..=23).contains(&hour) || !(0..=59).contains(&minute) {
+        return None;
+    }
+    let time = format!("{hour:02}:{minute:02}");
+    let end = plx_platform::i18n::msg::player_hud_ends_at(&time);
+    Some(format!("{remaining} · {end}"))
 }
 
 /// The bar's x for a position `pos_ns` of `dur_ns`, clamped to the bar's ends.

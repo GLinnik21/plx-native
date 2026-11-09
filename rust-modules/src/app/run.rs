@@ -674,12 +674,12 @@ fn hud_model(
             scrubbing: scrub_ns >= 0,
         },
     ) {
-        let rate = plx_media::player::applied_rate(ps);
-        clock::unix_seconds()
+        let rate = plx_media::player::effective_playback_rate(ps);
+        clock::unix_ms()
             .and_then(|now| plx_appkit::player_hud::model::projected_end_unix_seconds(
                 now, position_ns?, duration_ns?, rate,
             ))
-            .and_then(plx_platform::i18n::local_clock_time)
+            .and_then(clock::local_end_time)
     } else {
         None
     };
@@ -692,7 +692,6 @@ fn hud_model(
         covered: false,
         skip_progress: None,
         is_episode,
-        is_movie,
         end_time: projected_end_time,
         scrub_ns,
         playpos_ns,

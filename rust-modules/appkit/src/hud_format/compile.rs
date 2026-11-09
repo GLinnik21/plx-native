@@ -863,6 +863,7 @@ fn bar_extent(track: Rect, pointer: &str) -> BandExtent<'_> {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Compiled {
     states: Vec<CompiledState>,
+    pub(crate) builtin_classic: bool,
     /// which of `chapters.present`, `title.is_episode` and `transport.paused` the package names (placing
     /// `previous` or `next` names `title.is_episode`); one it does not name has a single value (`true`,
     /// `true`, `false`)
@@ -902,6 +903,7 @@ impl Default for Compiled {
     fn default() -> Self {
         Self {
             states: Vec::new(),
+            builtin_classic: false,
             named: Named { chapters: false, episode: false, real_episode: false, paused: false },
             band: HudBand::CLASSIC,
             block: false,
@@ -1041,6 +1043,7 @@ pub fn compile(package: &Package, measure: &dyn Measure, ctx: CompileCtx) -> Com
     }
     let mut compiled = Compiled {
         states,
+        builtin_classic: package.id == super::schema::BUILTIN_CLASSIC_ID,
         named: Named { chapters: layout.named_chapters, episode: layout.named_pair, real_episode: layout.named_episode, paused: frame.paused },
         band: HudBand::CLASSIC,
         block: package.layout.get("band").and_then(Val::as_str) == Some("block"),

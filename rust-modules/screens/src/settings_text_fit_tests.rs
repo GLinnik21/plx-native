@@ -33,7 +33,7 @@ fn base_root_inputs() -> RootInputs {
     RootInputs {
         trace: plx_platform::playback_trace::Status::Off,
         signed_in: true, multi_user: false, library_count: 0,
-        auto_sign_in: false, trailer_autoplay: true, hud_end_time: true, resolution: UiResolution::Auto, resolution_offered: true,
+        auto_sign_in: false, trailer_autoplay: true, resolution: UiResolution::Auto, resolution_offered: true,
         language: plx_platform::i18n::Preference::System,
         under_posters: plx_plex::plex::session::UnderPosters::DEFAULT, plaintext: Vec::new(),
     }
@@ -87,10 +87,6 @@ fn every_settings_row_fits_its_column_in_every_language() {
         for trailer_autoplay in [true, false] {
             overflowing_root(&format!("{tag} trailer_autoplay={trailer_autoplay}"),
                 &RootInputs { trailer_autoplay, ..base_root_inputs() }, &mut out);
-        }
-        for hud_end_time in [true, false] {
-            overflowing_root(&format!("{tag} hud_end_time={hud_end_time}"),
-                &RootInputs { hud_end_time, ..base_root_inputs() }, &mut out);
         }
         overflowing_root(&format!("{tag} resolution row hidden"),
             &RootInputs { resolution_offered: false, ..base_root_inputs() }, &mut out);

@@ -37,8 +37,6 @@ pub struct HudModel {
     pub skip_progress: Option<f32>,
     /// The playing metadata is a genuine episode, independent of queue neighbours.
     pub is_episode: bool,
-    /// The playing metadata is a genuine movie leaf (not a trailer or extra).
-    pub is_movie: bool,
     /// The projected local wall-clock finish time, supplied by the app for this frame.
     pub end_time: Option<[i32; 2]>,
     /// `plx_media::player::TX.scrub_ns.load(Relaxed)`: the live scrub preview's target, -1 when no
@@ -97,7 +95,6 @@ impl Default for HudModel {
             paused: false,
             marker_prefs: Default::default(), playback_id: 0, advancing: false, seeking: false, covered: false, skip_progress: None,
             is_episode: false,
-            is_movie: false,
             end_time: None,
             scrub_ns: -1,
             playpos_ns: 0,
@@ -158,25 +155,23 @@ pub fn end_time_is_eligible(state: EndTimeEligibility) -> bool {
 /// Project an item's end timestamp from the current wall clock, content position and the
 /// playback pipeline's APPLIED rate (per mille). Invalid or unrepresentable inputs stay unknown.
 ///
-/// The remaining wall time is rounded UP to a whole second, so fractional media time is never
-/// truncated downward. Use the OS timezone conversion only after this calculation: local calendar
-/// rules, including DST transitions, are applied at the projected instant rather than at the start.
+/// Keep the wall clock and remaining media time at subsecond precision until they have been added.
+/// Apply timezone rules at the projected instant, including any DST transition before the end.
 pub fn projected_end_unix_seconds(
-    now_utc: i64,
+    now_utc_ms: i64,
     position_ns: i64,
     duration_ns: i64,
     rate_permille: Option<i32>,
 ) -> Option<i64> {
     let rate_permille = rate_permille?;
-    if now_utc <= 0 || position_ns < 0 || duration_ns <= position_ns || rate_permille <= 0 {
+    if now_utc_ms <= 0 || position_ns < 0 || duration_ns <= position_ns || rate_permille <= 0 {
         return None;
     }
     let remaining_ns = i128::from(duration_ns) - i128::from(position_ns);
-    let numerator = remaining_ns.checked_mul(1000)?;
-    let denominator = i128::from(rate_permille).checked_mul(1_000_000_000)?;
-    let remaining_seconds = numerator.checked_add(denominator - 1)? / denominator;
-    let end = i128::from(now_utc).checked_add(remaining_seconds)?;
-    i64::try_from(end).ok().filter(|end| *end > now_utc)
+    let wall_ns = remaining_ns * 1_000 / i128::from(rate_permille);
+    let end_ns = i128::from(now_utc_ms) * 1_000_000 + wall_ns;
+    let end_ms = i64::try_from(end_ns / 1_000_000).ok()?;
+    Some(end_ms / 1_000)
 }
 
 #[cfg(test)]
@@ -200,12 +195,12 @@ mod end_time_tests {
 
     #[test]
     fn projected_finish_uses_remaining_content_time_and_applied_speed() {
-        let now = 1_794_219_544;
+        let now = 1_794_219_544_000;
         let thirty_five_minutes = 35 * 60 * 1_000_000_000i64;
-        assert_eq!(projected_end_unix_seconds(now, 0, thirty_five_minutes, Some(1000)), Some(now + 2100));
-        assert_eq!(projected_end_unix_seconds(now, 0, thirty_five_minutes, Some(2000)), Some(now + 1050));
-        assert_eq!(projected_end_unix_seconds(now, 0, thirty_five_minutes, Some(500)), Some(now + 4200));
-        assert_eq!(projected_end_unix_seconds(now, 0, thirty_five_minutes, Some(1250)), Some(now + 1680));
+        assert_eq!(projected_end_unix_seconds(now, 0, thirty_five_minutes, Some(1000)), Some(now / 1_000 + 2100));
+        assert_eq!(projected_end_unix_seconds(now, 0, thirty_five_minutes, Some(2000)), Some(now / 1_000 + 1050));
+        assert_eq!(projected_end_unix_seconds(now, 0, thirty_five_minutes, Some(500)), Some(now / 1_000 + 4200));
+        assert_eq!(projected_end_unix_seconds(now, 0, thirty_five_minutes, Some(1250)), Some(now / 1_000 + 1680));
         assert_eq!(
             projected_end_unix_seconds(
                 now,
@@ -213,10 +208,10 @@ mod end_time_tests {
                 45 * 60 * 1_000_000_000,
                 Some(1500),
             ),
-            Some(now + 1400)
+            Some(now / 1_000 + 1400)
         );
         assert_eq!(
-            projected_end_unix_seconds(86_390, 0, 20_000_000_000, Some(1000)),
+            projected_end_unix_seconds(86_390_000, 0, 20_000_000_000, Some(1000)),
             Some(86_410),
             "the projection crosses midnight as a Unix timestamp, not local clock arithmetic"
         );
@@ -224,7 +219,7 @@ mod end_time_tests {
 
     #[test]
     fn projected_finish_rejects_unknown_invalid_and_overflowing_inputs() {
-        let now = 1_794_219_544;
+        let now = 1_794_219_544_000;
         assert_eq!(projected_end_unix_seconds(now, -1, 100, Some(1000)), None);
         assert_eq!(projected_end_unix_seconds(now, 0, 0, Some(1000)), None);
         assert_eq!(projected_end_unix_seconds(now, 10, 10, Some(1000)), None);
@@ -239,7 +234,11 @@ mod end_time_tests {
     }
 
     #[test]
-    fn finish_time_rounds_up_to_a_whole_second() {
-        assert_eq!(projected_end_unix_seconds(100, 0, 1, Some(1000)), Some(101));
+    fn finish_time_is_stable_near_a_minute_boundary() {
+        let duration = 78_300_000_000;
+        for elapsed_ms in [0, 500, 1000, 1500] {
+            assert_eq!(projected_end_unix_seconds(1_000_200 + elapsed_ms, elapsed_ms * 1_000_000, duration, Some(1000)), Some(1078));
+        }
+        assert_eq!(projected_end_unix_seconds(1_079_999, 0, 1_000_000, Some(1000)), Some(1080));
     }
 }

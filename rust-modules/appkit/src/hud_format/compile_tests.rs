@@ -1112,8 +1112,7 @@ fn widest_printed(measure: &dyn Measure, size: i32, bold: bool, remaining: bool)
 /// **The clocks have rects, and they are where `draw_playbar_look` puts the clocks**: on the line `CLOCK_TOP`
 /// under the track's top, as tall as the measurer's line at the clock's rung. Under `ends` the elapsed clock
 /// starts at the bar's start, the remaining one ends at its end, and each is as wide as the widest string the
-/// app can print in its drawn weight (the elapsed bold, the remaining regular and minus-led with
-/// room for the local finish time). Under
+/// app can print in its drawn weight (the elapsed bold, the remaining regular and minus-led). Under
 /// `follow_head` the elapsed clock travels the whole bar, so its rect is the track's width.
 #[test]
 fn the_playbars_clocks_stand_where_the_playbar_draws_them_as_wide_as_the_widest_clock() {
@@ -1121,14 +1120,7 @@ fn the_playbars_clocks_stand_where_the_playbar_draws_them_as_wide_as_the_widest_
     for (measure_name, measure) in measures {
         let size = theme::size::CAPTION;
         let elapsed_w = widest_printed(measure, size, super::clocks::ELAPSED_BOLD, false);
-        let remaining_bold = super::clocks::REMAINING_BOLD;
-        // Both fixture measures add per-glyph advances, so the widest remaining clock and
-        // the widest valid finish-time suffix can be measured independently.
-        let suffix_w = (0..24)
-            .flat_map(|hour| (0..60).map(move |minute| format!(" · {hour:02}:{minute:02}")))
-            .map(|suffix| measure.width_str(&suffix, size, remaining_bold))
-            .fold(0.0, f32::max);
-        let remaining_w = widest_printed(measure, size, remaining_bold, true) + suffix_w;
+        let remaining_w = widest_printed(measure, size, super::clocks::REMAINING_BOLD, true);
         for (name, text, mode) in [("reference", REFERENCE, ClockMode::Ends), ("classic", CLASSIC, ClockMode::FollowHead)] {
             let c = build(text, measure);
             let (track, clocks, got_mode, got_size) = bar_of(compact(&c, Slot::Discs));

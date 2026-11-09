@@ -1,4 +1,5 @@
 {
+  "player.hud.ends_at": "Канец у {time}",
   "player.hud.play_pause": "Прайграванне / Паўза",
   "player.hud.skip_back": "Назад",
   "player.hud.skip_forward": "Наперад",

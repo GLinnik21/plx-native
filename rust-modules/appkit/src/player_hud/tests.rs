@@ -223,6 +223,7 @@ const FM: plx_ui::fixture::FixtureMeasure = plx_ui::fixture::FixtureMeasure;
 /// the presenting side's (`app::run::prepare_window`), ahead of the clear.
 #[test]
 fn the_transport_clocks_are_rasterised_before_the_draw_and_one_second_ahead() {
+    let _locale = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
     let _g = plx_base::testlock::serial();
     plx_gfx::text::reset_prewarm_for_test();
     let sz = theme::size::CAPTION;
@@ -282,7 +283,7 @@ fn the_transport_clocks_are_rasterised_before_the_draw_and_one_second_ahead() {
     while plx_gfx::text::prewarm_pending() {
         plx_ui::panel_motion::PanelMotion::drain_queued_text_for_test();
     }
-    for text in ["-0:36 · 22:35".as_bytes(), "-0:35 · 22:35".as_bytes()] {
+    for text in ["-0:36 · Ends at 22:35".as_bytes(), "-0:35 · Ends at 22:35".as_bytes()] {
         assert!(
             plx_gfx::text::prewarm_resident_for_test(text, sz, 0),
             "{} was not prewarmed",
@@ -1517,13 +1518,29 @@ mod playbar_options {
 
     #[test]
     fn the_remaining_clock_can_include_a_local_end_time() {
+        let _locale = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
         let mut b = bar(Knob::Tick, TransportMark::None);
         let plain = runs(b, PlaybarLook::default());
         assert!(plain.iter().any(|r| r.text == "-10:00"));
         b.end_time = Some([22, 35]);
         let with_end = runs(b, PlaybarLook::default());
-        assert!(with_end.iter().any(|r| r.text == "-10:00 · 22:35"), "{with_end:?}");
+        assert!(with_end.iter().any(|r| r.text == "-10:00 · Ends at 22:35"), "{with_end:?}");
         assert!(!with_end.iter().any(|r| r.text == "-10:00"), "the combined label replaces the plain remaining clock");
+    }
+
+    #[test]
+    fn the_remaining_duration_survives_when_the_end_time_cannot_fit() {
+        let mut b = bar(Knob::Tick, TransportMark::None);
+        b.end_time = Some([22, 35]);
+        let default = PlaybarLook::default();
+        for look in [
+            PlaybarLook { track: Rect::new(default.track.x, default.track.y, 360.0, default.track.h), ..default },
+            PlaybarLook { end_time_width: Some(80.0), ..default },
+        ] {
+            let drawn = runs(b, look);
+            assert!(drawn.iter().any(|r| r.text == "-10:00"), "{drawn:?}");
+            assert!(!drawn.iter().any(|r| r.text.contains("22:35")), "{drawn:?}");
+        }
     }
 
     #[test]

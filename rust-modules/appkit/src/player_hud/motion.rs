@@ -9,7 +9,7 @@
 //! the model; the page's `prepare` refreshes the model's scrub target from its own scrub first,
 //! because the app's snapshot is a frame old by then.
 use super::caption_rise::CaptionRise;
-use super::classic::fmt_time;
+use super::classic::{fmt_time, remaining_with_end_time};
 use super::geometry::{GROUP_ROW, GROUP_SECTION, GROUP_STRIP, MAX_ROW_ITEMS};
 use super::model::HudModel;
 use super::state::*;
@@ -74,31 +74,30 @@ impl ClockWarm {
             self.strings.clear();
             let (el, rem, end_time) = key;
             let (cap, grown) = (theme::size::CAPTION, crate::scrub_preview::CLOCK_GROWN_SZ);
-            let mut clocks = vec![
+            let next_remaining = (rem - 1).max(0);
+            let clocks = [
                 (fmt_time(el * SEC_NS, false), 1, cap),
                 (fmt_time(rem * SEC_NS, true), 0, cap),
                 (fmt_time((el + 1) * SEC_NS, false), 1, cap),
-                (fmt_time((rem - 1).max(0) * SEC_NS, true), 0, cap),
+                (fmt_time(next_remaining * SEC_NS, true), 0, cap),
             ];
-            if let Some([hour, minute]) = end_time {
-                for remaining in [rem, (rem - 1).max(0)] {
-                    clocks.push((
-                        format!("{} · {hour:02}:{minute:02}", fmt_time(remaining * SEC_NS, true)),
-                        0,
-                        cap,
-                    ));
-                }
-            }
+            let ends = end_time.into_iter().flat_map(|time| {
+                [rem, next_remaining].into_iter().filter_map(move |remaining| {
+                    remaining_with_end_time(&fmt_time(remaining * SEC_NS, true), time)
+                        .map(|label| (label, 0, cap))
+                })
+            });
             // the elapsed clock also draws at the size it grows to during a scrub with no card
             // (`scrub_preview::clock_faces`); cold, that is a font open and a rasterisation in
             // the middle of a hold. Last, so the resting sizes are never starved of the frame's
             // budget.
-            clocks.extend([
+            let grown_clocks = [
                 (fmt_time(el * SEC_NS, false), 1, grown),
                 (fmt_time((el + 1) * SEC_NS, false), 1, grown),
-            ]);
+            ];
             self.strings
-                .extend(clocks.into_iter().filter_map(|(s, bold, sz)| Some((CString::new(s).ok()?, bold, sz))));
+                .extend(clocks.into_iter().chain(ends).chain(grown_clocks)
+                    .filter_map(|(s, bold, sz)| Some((CString::new(s).ok()?, bold, sz))));
         }
         for (s, bold, sz) in &self.strings {
             plx_gfx::text::queue_prewarm(s.as_ptr(), *sz, *bold);

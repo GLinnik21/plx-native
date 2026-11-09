@@ -2046,6 +2046,14 @@ pub fn applied_rate(ps: &crate::route::PlaybackSession) -> Option<i32> {
     Some(ps.readout().raw().applied_rate_permille)
 }
 
+/// Effective speed of the active transport. URI only admits normal-speed playback.
+pub fn effective_playback_rate(ps: &crate::route::PlaybackSession) -> Option<i32> {
+    match ps.attempt_view().backend()? {
+        attempt_view::Backend::Feed => applied_rate(ps),
+        attempt_view::Backend::Uri => Some(RATE_NORMAL),
+    }
+}
+
 /// **Change the playback speed of the item on screen.**
 ///
 /// The speed is done in the APP, not the pipeline (LG's own `SetPlayRate` cannot work on a

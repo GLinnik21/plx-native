@@ -11,7 +11,7 @@ use plx_platform::playback_trace::{Command, Status};
 fn inputs(signed_in: bool) -> RootInputs {
     RootInputs {
         trace: Status::Off,
-        signed_in, multi_user: false, library_count: 3, auto_sign_in: false, trailer_autoplay: true, hud_end_time: true,
+        signed_in, multi_user: false, library_count: 3, auto_sign_in: false, trailer_autoplay: true,
         resolution: UiResolution::Auto, resolution_offered: false,
         language: plx_platform::i18n::Preference::System,
         under_posters: plx_plex::plex::session::UnderPosters::DEFAULT, plaintext: Vec::new(),
@@ -32,7 +32,7 @@ fn the_root_is_four_groups_of_rows_without_sub_lines() {
     assert_eq!(ids(&inputs), vec![
         RootId::Favourites, RootId::UnderPosters,
         RootId::Playback, RootId::AudioSubtitles,
-        RootId::Language, RootId::AutoSignIn, RootId::TrailerAutoplay, RootId::HudEndTime,
+        RootId::Language, RootId::AutoSignIn, RootId::TrailerAutoplay,
         RootId::Privacy, RootId::Diagnostics, RootId::Legal, RootId::About,
     ]);
     let mut form = FormTable::<RootId, Action, SettingsPage>::new(super::super::registry::BAND);
@@ -60,7 +60,7 @@ fn the_signed_out_root_drops_every_signed_in_row() {
 /// metrics, in the Settings layout's own table frame), and how far it may drift before this test
 /// says the row heights or the section break moved. It is a pin of our geometry, not a number
 /// read off the board.
-const ALL_ROWS_SCROLL: f32 = 304.0;
+const ALL_ROWS_SCROLL: f32 = 244.0;
 const ALL_ROWS_SCROLL_TOLERANCE: f32 = 6.0;
 
 /// Sv2s-R2: every conditional row at once is the board's longest root, and it scrolls.
@@ -94,7 +94,6 @@ fn the_root_with_every_conditional_row_scrolls_with_focus() {
 fn the_sentence_follows_the_focused_row_and_falls_back_to_the_pages() {
     assert_eq!(sentence_for(Some(&RootId::Language)), msg::settings_language_detail());
     assert_eq!(sentence_for(Some(&RootId::TrailerAutoplay)), msg::settings_trailers_detail());
-    assert_eq!(sentence_for(Some(&RootId::HudEndTime)), msg::settings_hud_end_time_detail());
     assert_eq!(sentence_for(Some(&RootId::Diagnostics)), msg::settings_diagnostics_detail());
     assert_eq!(sentence_for(None), msg::settings_root_copy(), "no focused row, the page sentence");
     assert_eq!(sentence_for(Some(&RootId::Plaintext(ServerMachineId("m".into())))), msg::settings_root_copy(),
@@ -141,7 +140,7 @@ fn every_followed_sentence_fits_five_lines_in_every_language() {
         // `Header::paint` hangs the sentence its CSS box's cap drop (~7px) below the frame's top
         let drop = layout.copy_cap_drop(theme::size::LABEL, &ShippedMeasure);
         let mut all: Vec<RootId> = vec![RootId::Favourites, RootId::UnderPosters, RootId::Playback, RootId::AudioSubtitles,
-            RootId::Language, RootId::AutoSignIn, RootId::TrailerAutoplay, RootId::HudEndTime, RootId::Resolution, RootId::Privacy,
+            RootId::Language, RootId::AutoSignIn, RootId::TrailerAutoplay, RootId::Resolution, RootId::Privacy,
             RootId::Diagnostics, RootId::Legal, RootId::About];
         all.push(RootId::Plaintext(ServerMachineId("m".into())));
         for id in all {

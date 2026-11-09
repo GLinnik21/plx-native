@@ -593,7 +593,7 @@ fn hud_preview_world(name: &str) -> World {
     assert_eq!(overlay_word(&world.d), Some("hud-detail"));
     world.press(Key::Ok);
     assert_eq!(world.bridge.huds_pages.len(), 2);
-    for (page, _) in &world.bridge.huds_pages { page.send(list.clone()).unwrap(); }
+    for (page, ..) in &world.bridge.huds_pages { page.send(list.clone()).unwrap(); }
     // Let the shared route spring settle: during a push both pages register drawn stops.
     world.settle(60);
     assert_eq!(overlay_word(&world.d), Some("hud-preview"));

@@ -1,4 +1,5 @@
 {
+  "player.hud.ends_at": "Fine alle {time}",
   "player.hud.play_pause": "Riproduci / Pausa",
   "player.hud.skip_back": "Salta indietro",
   "player.hud.skip_forward": "Salta avanti",
