@@ -757,7 +757,14 @@ of stacked shelves hands each one the lift of the next shelf's heading (`Section
 `Stack`, Home, Recommended and Detail do; a `Stack` page keeps its shelves adjacent, the air under one its
 `StackPage::shelf_foot`, never a `Custom` gap section between two); `GridBands::closing` names the card a closing band's caption belongs to.
 Live and target geometry include these bands, so painting, paging, scrolling and restored
-viewports agree. Episode rows use landscape stills. `Art::Still` supplies the label ground;
+viewports agree. Episode rows use landscape stills; the Continue Watching row's is `RowStyle::STILL`
+(the episode cell at `theme::STILL_RADIUS`, each neighbour easing `theme::STILL_EASE` clear of the pop,
+`RowStyle::neighbour_ease`), with no caption band under it (Home's `DECK_POLICY`). A tile's focus pop
+reaches a mark that must ride it as `cards::Tile::pop` (0..1, the pop spring read as progress), never
+as a timer of the mark's own. The deck card's artwork (Plex's cover, then the baked composite, then the
+title in type) is `card_art::pick` over `tile_facts::for_deck`; the composite is a bitmap baked once by
+the poster worker (`card_art::compose`), never a live logo. The footer's one-line fit rule is
+`still_footer::footer_geometry`, the one place its widths are decided. `Art::Still` supplies the label ground;
 `widgets::still_overlay` draws its labels afterward (a `StillFooter::Shelf` still also its full-bleed resume bar; a
 `StillFooter::Continue` still its one footer line, bar included). Both the artwork and
 its ground participate in backdrop discovery, including texture changes and UV cropping.
@@ -768,7 +775,8 @@ its ground participate in backdrop discovery, including texture changes and UV c
   default). The cue sits in a 28 px slot that is collapsed at rest and opens with the card's own
   focus-pop (`cards::Tile::pop`), so the footer text moves by exactly the slot and the bar shrinks
   toward it, never below 64 px. The detail page's episode strip has no cue (OK there always opens or
-  plays the episode, and the strip is not a deck). `TileLabel::glyph` is set by no caption any more.
+  plays the episode, and the strip is not a deck). The caption mark is gone from the code too
+  (`TileLabel::glyph`, its draw path and the census that read it were removed), so no caption can bring it back.
 - An **amber resume BAR** means **how far in you already are**. It is a fact about the item, not a
   promise about the press, so it is drawn wherever there is progress to report, including on a
   shelf that navigates. Hiding it there would hide something true. On a Continue Watching still
