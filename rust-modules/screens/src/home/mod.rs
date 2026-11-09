@@ -107,6 +107,8 @@ const MAX_ITEMS: usize = plx_data::pms::MAX_SHELF_ITEMS;
 const POINTER_REACH: f32 = 0.5;
 
 const HERO_FLIP_CD: f32 = 0.35;
+/// Seconds the billboard rests before it advances. It counts only while the page stands at the hero
+/// and focus is on the hero or nothing: [`HomeScreen::row_holds_focus`] says when a shelf holds it still.
 const HERO_AUTO_S: f32 = 8.0;
 /// How near its target (px) a shelf's horizontal glide and the page's vertical reveal have to be
 /// before the focused tile counts as RESTED for the hold hint's dwell.
@@ -615,7 +617,8 @@ pub struct HomeScreen {
     /// operation sequence that measurably diverges the hash. `tick`'s own comment explains why
     /// the timer deliberately reports no `Motion` while it counts.
     hero_auto: f32,
-    /// `HomeCmd::PinHero` holds the billboard: the countdown above stops for the life of the page.
+    /// The countdown above counts only while the page stands at the hero and no shelf holds focus
+    /// ([`HomeScreen::row_holds_focus`]); `HomeCmd::PinHero` holds the billboard: the countdown above stops for the life of the page.
     /// A screenshot pin only, never set by the product, and not logical state (no replay sets it).
     hero_pinned: bool,
     /// The container says this page is covered. For modals, `Navigation` emits `Cover` for the
@@ -1500,6 +1503,17 @@ impl HomeScreen {
         row == 0 && self.rows.first().is_some_and(|r| r.identity == HomeHubIdentity::ContinueWatching)
     }
 
+    /// **Does a shelf (or its heading) hold the focus?** The billboard's auto-advance counts only
+    /// while it does not: a row that holds focus holds the hero still. Before the Continue Watching
+    /// row stopped scrolling the page ([`Self::holds_page`]) this was the page's own position, since
+    /// any focus on a row moved the page off the hero and the countdown only ran at the hero; now the
+    /// row stands in view on the hero's page and the position says nothing, so the rule is stated
+    /// by where focus is. Focus on the hero, or on nothing, counts as it always did, and the
+    /// countdown restarts at its full length when focus returns to the hero.
+    fn row_holds_focus(&self, focus: Option<FocusKey<u32>>) -> bool {
+        matches!(self.focused_loc(focus), Some(Located::Item(..) | Located::Heading(_)))
+    }
+
     /// **Is `loc` on the grid's page** (the page the shelves rest on) rather than the hero's? A
     /// shelf is; the hero is not; the Continue Watching row ([`Self::holds_page`]) is on whichever
     /// page the screen is resting at (`snap_target`), so a key's move between it and the hero, or
@@ -1772,7 +1786,7 @@ impl HomeScreen {
             // countdown here and restart it exactly once when the last surface is dismissed.
         } else if self.hero_pinned {
             // Held by `HomeCmd::PinHero`: no countdown, no flip.
-        } else if self.snap.pos < 0.05 && view.hero_count() > 1 {
+        } else if self.snap.pos < 0.05 && !self.row_holds_focus(cx.focus.current) && view.hero_count() > 1 {
             // Spelled as an assignment, not `-= dt`: bit-for-bit identical arithmetic to the
             // pre-D4 accumulator, deliberately UNCHANGED — `hero_auto` is HASHED `LogicalState`
             // (`SHAPE`'s `hero_auto:f32`) across three committed replay fixtures, and a

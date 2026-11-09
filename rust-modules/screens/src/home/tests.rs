@@ -2503,6 +2503,96 @@ fn a_settled_hero_counting_down_lets_the_gate_close_and_still_flips() {
     );
 }
 
+/// Step `s` through `ticks` 16 ms frames with `focus` held, on one shared gate (`take` at tick ms 0
+/// keeps the keepalive term out: this counts only what the screen itself asks for). Returns the frame
+/// the hero first began a slide on (if it did) and how many frames before that asked to present.
+fn run_hero_frames(s: &mut HomeScreen, view: HubsView<'_>, focus: Option<FocusKey<u32>>, ticks: u32) -> (Option<u32>, u32) {
+    let context = cx(view, focus);
+    let mut present = plx_machine::present::Present::new();
+    present.take(0);
+    let (mut flipped_at, mut asked_before) = (None, 0u32);
+    for frame in 1..=ticks {
+        let mut out = Vec::new();
+        {
+            let mut fx = Effects::new(&mut out, plx_machine::machine::MachineId::Instance(InstanceId(9)), &mut present);
+            let tick = ScreenEvent::Tick(Tick { ms: frame * 16, dt_us: 16_000 });
+            Machine::<TestHost>::step(s, &tick, &context, &mut fx);
+        }
+        let asked = present.take(0);
+        if s.outgoing.is_some() {
+            flipped_at.get_or_insert(frame);
+        } else if flipped_at.is_none() && asked {
+            asked_before += 1;
+        }
+    }
+    (flipped_at, asked_before)
+}
+
+/// **The hero auto-advances only while the page is the billboard's and focus is not on a shelf**
+/// (main's rule, kept exactly: the countdown ran while the page stood at the hero, and any focus on
+/// a row moved the page off it). Focus on the Continue Watching row no longer scrolls the page
+/// (`holds_page`), so the page's position alone says nothing about it: a row that holds focus holds
+/// the billboard still, the countdown rests at its full length (it restarts when focus returns to
+/// the hero), the hero does not rotate under a focused card, and a settled page presents nothing
+/// (the `home-idle` scene's gate, which the rotating hero's crossfade failed at ~58 fps every 8 s).
+#[test]
+fn the_hero_does_not_count_down_while_focus_is_on_the_continue_watching_row() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_continue_window_for_test(&mut state, &adapter, 12, false);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let view = snapshot.view();
+    assert!(view.hero_count() > 1, "premise: the auto-advance arms with more than one hero slot");
+    let mut s = screen(view);
+    assert_eq!(s.rows[0].identity, HomeHubIdentity::ContinueWatching, "premise: the deck is the head row");
+    assert!(s.snap.pos < 0.05, "premise: the page rests at the hero");
+    let (selected, elem) = (s.carousel.clone(), s.rows[0].elems[0]);
+    let on_row = Some(FocusKey { entry: s.entry, elem });
+    s.hero_auto = 3.0; // part-way through a countdown the focus move must discard
+    let (flipped, asked) = run_hero_frames(&mut s, view, on_row, 1250);
+    assert_eq!(flipped, None, "the hero began a slide under a focused Continue Watching card");
+    assert_eq!(s.carousel, selected, "the billboard rotated under a focused card");
+    assert_eq!(s.hero_auto, HERO_AUTO_S, "the countdown rests at its full length while a row holds focus");
+    assert_eq!(asked, 0, "a settled page with focus on the row asked to present {asked} frames");
+    // the focused heading of the row holds it the same way
+    let heading = s.rows.iter().find(|row| row.link.is_some()).map(|row| FocusKey { entry: s.entry, elem: heading_elem(row.group) });
+    if let Some(heading) = heading {
+        let (flipped, _) = run_hero_frames(&mut s, view, Some(heading), 1250);
+        assert_eq!(flipped, None, "a focused row heading holds the billboard too");
+    }
+}
+
+/// And focus on the hero (or on nothing: the pointer parked, a fresh page) is unchanged: the countdown
+/// runs and ends in one flip after `HERO_AUTO_S`, whichever hero control holds focus; a row's hold is
+/// released when focus returns, and the countdown restarts from its full length.
+#[test]
+fn the_hero_counts_down_while_focus_is_on_the_hero_and_restarts_when_it_returns() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_continue_window_for_test(&mut state, &adapter, 12, false);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let view = snapshot.view();
+    assert!(view.hero_count() > 1);
+    for elem in [HERO_PLAY_ELEM, HERO_INFO_ELEM, HERO_WATCHLIST_ELEM] {
+        let mut s = screen(view);
+        let key = Some(FocusKey { entry: s.entry, elem });
+        let (flipped, asked) = run_hero_frames(&mut s, view, key, 625);
+        let flipped = flipped.unwrap_or_else(|| panic!("focus on hero control {elem}: the countdown must still end in a flip"));
+        assert!((flipped as f32 * 0.016 - HERO_AUTO_S).abs() < 0.05, "hero control {elem}: flipped after {flipped} ticks");
+        assert_eq!(asked, 0, "hero control {elem}: the countdown alone asked to present {asked} frames");
+    }
+    // a row held the billboard for a while; focus comes back to the hero: a FULL countdown, not the remainder
+    let mut s = screen(view);
+    let row = Some(FocusKey { entry: s.entry, elem: s.rows[0].elems[0] });
+    run_hero_frames(&mut s, view, row, 400);
+    let hero = Some(FocusKey { entry: s.entry, elem: HERO_PLAY_ELEM });
+    let (flipped, _) = run_hero_frames(&mut s, view, hero, 625);
+    let flipped = flipped.expect("back on the hero the countdown runs");
+    assert!((flipped as f32 * 0.016 - HERO_AUTO_S).abs() < 0.05, "restarted at full length, flipped after {flipped} ticks");
+}
+
 #[test]
 fn the_hero_does_not_advance_while_a_modal_covers_home() {
     let _guard = plx_base::testlock::serial();

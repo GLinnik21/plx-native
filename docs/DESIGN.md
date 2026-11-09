@@ -165,7 +165,12 @@ the episode strip's `EPISODE` look, its caption band and `StillFooter::Shelf`.
   Down from the row reaches the grid with the stills still on top, and the grid's shelves rest as every
   shelf does (`ui_cards::grid_rest_scroll`, `consts::GRID_TOP_Y`). The pointer's edge-glide bands are
   `app::input::EDGE_BAND` (= `consts::MARGIN_Y`, 54 px), and one wheel notch is one Up/Down key
-  (`app::bridge::wheel_input`).
+  (`app::bridge::wheel_input`). **The billboard rotates only while focus is on the hero** (or on nothing):
+  the 8 s countdown (`HERO_AUTO_S`) counts while the page rests at the hero and no shelf or shelf heading
+  holds focus (`HomeScreen::row_holds_focus`), and it restarts at its full length when focus returns to the
+  hero. A page that rests at the hero while a Continue Watching card is focused (the row scrolls nothing)
+  therefore keeps its billboard still and presents nothing once settled, as it always did when focus on a
+  row scrolled the page off the hero (the `home-idle` scene grades it).
 
 Tile text is `TileLabel::title(t)` or `TileLabel::titled(t, caption)`, with the focused-label band
 driven by `line_reveal_for` and `under_band` (a line shows once the room under its card holds its
