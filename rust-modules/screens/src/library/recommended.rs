@@ -1417,13 +1417,19 @@ impl<H: plx_machine::machine::Host<Elem = u32>> CardSource<H> for HubSrc<'_> {
     fn progress(&self, i: usize) -> Option<f32> {
         self.shelf.filter(|shelf| !shelf.landscape).and_then(|_| self.item(i)).and_then(|item| item.resume_frac())
     }
-    /// A landscape row's episode still carries its show line, and the Continue Watching deck its
-    /// play mark when a press plays.
+    /// A landscape row's episode still carries its show line; the Continue Watching deck's is the
+    /// one-line footer (status text, progress bar, and on the focused card the cue for what OK does:
+    /// play while the Playback setting says OK plays, info while it opens the page).
     fn overlay(&self, p: plx_ui::Painter, i: usize, tile: &Tile, measure: &dyn plx_machine::machine::Measure) {
         let (Some(shelf), Some(item)) = (self.shelf, self.item(i)) else { return };
         if shelf.landscape {
-            plx_ui::widgets::still_overlay(p, &tile_facts::of(item), tile.rect, tile.radius,
-                shelf.is_continue && plx_media::route::deck_press().press_plays(), measure);
+            let footer = if shelf.is_continue {
+                let cue = if plx_media::route::deck_press().press_plays() { plx_ui::still_footer::Cue::Play } else { plx_ui::still_footer::Cue::Info };
+                plx_ui::widgets::StillFooter::Continue { cue, pop: tile.pop }
+            } else {
+                plx_ui::widgets::StillFooter::Shelf
+            };
+            plx_ui::widgets::still_overlay(p, &tile_facts::of(item), tile.rect, tile.radius, footer, measure);
         }
     }
 }

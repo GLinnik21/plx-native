@@ -9,6 +9,7 @@ use std::ffi::CString;
 use plx_data::metadata::{Detail, Episode};
 use plx_machine::machine::GroupId;
 use plx_ui::hstack::{Align, HStack, Item};
+use plx_ui::still_footer::{self, Footer, Right};
 use plx_ui::text_lift::{TextLift, TOP_CENTRE};
 use plx_ui::text_view::TextView;
 use plx_ui::vstack::{Anchor, VStack};
@@ -269,7 +270,7 @@ fn state(ep: &Episode) -> State {
     if in_progress {
         return State {
             glyph: Glyph::None,
-            label: plx_ui::fmt::time_left(ep.dur_ms - ep.resume_ms),
+            label: plx_ui::fmt::footer_left(ep.dur_ms - ep.resume_ms),
             progress: Some((ep.resume_ms as f32 / ep.dur_ms as f32).clamp(0.0, 1.0)),
         };
     }
@@ -463,19 +464,26 @@ fn draw_cell(
         widgets::STILL_SCRIM_H_1,
         widgets::STILL_SCRIM_A,
     );
-    widgets::still_line(
+    // The strip's footer: no show name (the page is inside one season of one show), no episode tag,
+    // and no focus cue (every cell plays, and the focus pop is the cue). Watched = the length and a
+    // muted tick; in progress = "Nm left" and the amber bar; not started = the length alone.
+    still_footer::draw_footer(
         p,
         drawn,
-        watch_state(ep),
         "",
-        &st.label,
-        true,
-        st.progress.is_some(),
+        &Footer {
+            tag: "",
+            status: &st.label,
+            right: match (st.progress, st.glyph) {
+                (Some(frac), _) => Right::Bar(frac),
+                (None, Glyph::Watched) => Right::Tick,
+                (None, _) => Right::None,
+            },
+            cue: None,
+            focus: 0.0,
+        },
         measure,
     );
-    if let Some(frac) = st.progress {
-        widgets::progress_bar(p, drawn, CARD_RADIUS, 5.0, frac);
-    }
 
     // Every episode's label block draws in the same ink; focus is marked by the shared
     // `ui::text_lift` treatment. The plate shows while the still pops or the text is lifted; the

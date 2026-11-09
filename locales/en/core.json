@@ -38,6 +38,29 @@
     },
     "description": "Time remaining under an hour, in the one duration form (core.duration_minutes) plus 'left': 8m left. Continue Watching captions."
   },
+  "core.footer_tag": {
+    "value": "S{season} E{episode} ·",
+    "args": {
+      "season": "i64",
+      "episode": "i64"
+    },
+    "description": "The episode tag that leads a still's footer line, with its trailing middle dot: 'S2 E4 ·'. The time-left text follows it after one space (so 'S2 E4 · 38m left'). Where a language's footer is too long the tag is dropped, never the time unit. DRAFT per language until a native reviewer has read it."
+  },
+  "core.footer_left_minutes": {
+    "value": "{minutes}m left",
+    "args": {
+      "minutes": "i64"
+    },
+    "description": "Time remaining under an hour in a still's one-line footer, in the shortest form the language has: '38m left'. Not capitalised in languages that follow a lower-case tag, since it usually follows 'S2 E4 ·'. DRAFT per language until a native reviewer has read it."
+  },
+  "core.footer_left_hours": {
+    "value": "{hours}h {minutes}m left",
+    "args": {
+      "hours": "i64",
+      "minutes": "i64"
+    },
+    "description": "Time remaining of an hour or more in a still's one-line footer, shortest form: '1h 12m left'. See core.footer_left_minutes. DRAFT per language until a native reviewer has read it."
+  },
   "core.seconds": {
     "value": "{seconds} s",
     "args": {

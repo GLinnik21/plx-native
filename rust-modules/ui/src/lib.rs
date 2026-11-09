@@ -94,6 +94,7 @@ pub mod route_screen;
 pub mod rec; // RESTRUCTURE (spec §5.3): the recorder — format, bounded writer, loader, TableMeasure
 pub mod replay; // RESTRUCTURE (spec §5.5): `--targets` replay of a recording over the dispatcher
 pub mod screen; // RESTRUCTURE spike (spec §6.1, §7.1): Screen, Focusable, Composed/Part, DrawFrame
+pub mod still_footer; // a landscape still's one-line footer: status text, a mark, the focus cue, and the pure fit rule between them
 pub mod table;
 pub mod table_screen; // Header / TableScreen / DocumentScreen — the route family's screens as components (phase 5a)
 pub mod tex; // RESTRUCTURE spike (spec §10): TexCache — the render-resource half of image caching
