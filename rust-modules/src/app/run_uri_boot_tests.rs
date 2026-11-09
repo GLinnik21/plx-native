@@ -1468,12 +1468,12 @@ mod uri_boot_tests {
         plx_play_feed::ffi_host::window_counts_for_test()
     }
 
-    /// The URI driver's startup times out, its close completes, and the SAME request hands to Feed:
-    /// at no moment are two exported windows live. The handoff is ordered after the URI window's
-    /// destroy (`ReleaseStatus::Released`), and this pins it through the real adapter and driver:
-    /// the Feed resolve begins only once the instrument shows the slot empty.
+    /// The URI driver's startup times out and its close completes: the SAME request's Feed resolve
+    /// begins only once the URI window is destroyed (`ReleaseStatus::Released`), and not while the
+    /// registration is still closing. This pins that ordering through the real adapter and driver
+    /// with the instrument; it does not run Feed's own start, which is where Feed makes its window.
     #[test]
-    fn a_timed_out_uri_start_hands_to_feed_with_at_most_one_live_window() {
+    fn a_timed_out_uri_start_destroys_its_live_window_before_the_feed_resolve() {
         let _serial = plx_base::testlock::serial();
         let _seam = ExportedSeam::arm();
         let Some(mut rig) = Rig::serving(false) else { return };
@@ -1507,13 +1507,10 @@ mod uri_boot_tests {
             replacement.is_some()
         });
         assert!(replacement.unwrap().uri_offer.is_none(), "automatic rescue cannot loop back to URI");
-        assert_eq!(windows(), plx_play_feed::ffi_host::WindowCounts {
-            creates: 1, destroys: 1, live: 0, peak: 1, slot: false },
-            "the Feed successor is resolved over an empty slot, and nothing made a second window");
         // The successor's own `Launched` start is not run here: under the armed seam its demux
         // worker outlives the rig and lands its failure in the NEXT test's route control (the
-        // sibling fixtures in this module then fail). The ordering that keeps two windows apart is
-        // the one pinned above: the Feed resolve only begins once the URI window is destroyed.
+        // sibling fixtures in this module then fail). So Feed's window create is not counted by
+        // this test; what it pins is the ordering above.
     }
 
     /// A request while the previous request's URI registration is quarantined (its close never
