@@ -74,22 +74,23 @@ impl ClockWarm {
             self.strings.clear();
             let (el, rem, end_time) = key;
             let (cap, grown) = (theme::size::CAPTION, crate::scrub_preview::CLOCK_GROWN_SZ);
-            let clocks = [
+            let mut clocks = vec![
                 (fmt_time(el * SEC_NS, false), 1, cap),
                 (fmt_time(rem * SEC_NS, true), 0, cap),
-                (end_time.map_or_else(
-                    || fmt_time(rem * SEC_NS, true),
-                    |[hour, minute]| format!("{} · {hour:02}:{minute:02}", fmt_time(rem * SEC_NS, true)),
-                ), 0, cap),
                 (fmt_time((el + 1) * SEC_NS, false), 1, cap),
                 (fmt_time((rem - 1).max(0) * SEC_NS, true), 0, cap),
-                // the elapsed clock also draws at the size it grows to during a scrub with no card
-                // (`scrub_preview::clock_faces`); cold, that is a font open and a rasterisation in
-                // the middle of a hold. Last, so the resting sizes are never starved of the frame's
-                // budget.
+            ];
+            if let Some([hour, minute]) = end_time {
+                clocks.push((format!("{} · {hour:02}:{minute:02}", fmt_time(rem * SEC_NS, true)), 0, cap));
+            }
+            // the elapsed clock also draws at the size it grows to during a scrub with no card
+            // (`scrub_preview::clock_faces`); cold, that is a font open and a rasterisation in
+            // the middle of a hold. Last, so the resting sizes are never starved of the frame's
+            // budget.
+            clocks.extend([
                 (fmt_time(el * SEC_NS, false), 1, grown),
                 (fmt_time((el + 1) * SEC_NS, false), 1, grown),
-            ];
+            ]);
             self.strings
                 .extend(clocks.into_iter().filter_map(|(s, bold, sz)| Some((CString::new(s).ok()?, bold, sz))));
         }
