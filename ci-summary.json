@@ -85,7 +85,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-09T17:45:55Z",
+ "generated": "2026-11-09T17:52:53Z",
  "metrics": [
   {
    "change30_pct": 100.9,
@@ -151,18 +151,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 41.2,
-   "change7_pct": 14.3,
+   "change30_pct": 41.1,
+   "change7_pct": 14.2,
    "d30": 328.5,
-   "delta30": 135.5,
-   "delta7": 58,
+   "delta30": 135.0,
+   "delta7": 57.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 53,
+   "n_now": 54,
    "n_prev": 83,
-   "now": 464,
+   "now": 463.5,
    "prev7": 406,
    "shown": true,
    "state": "flat",
@@ -361,18 +361,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 38.3,
-   "change7_pct": 13.2,
+   "change30_pct": 38.7,
+   "change7_pct": 13.5,
    "d30": 230,
-   "delta30": 88,
-   "delta7": 37.0,
+   "delta30": 89.0,
+   "delta7": 38.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 51,
+   "n_now": 52,
    "n_prev": 76,
-   "now": 318,
+   "now": 319.0,
    "prev7": 281.0,
    "shown": true,
    "state": "flat",
@@ -403,18 +403,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 47.6,
-   "change7_pct": 7.4,
+   "change30_pct": 48.3,
+   "change7_pct": 7.9,
    "d30": 147,
-   "delta30": 70,
-   "delta7": 15.0,
+   "delta30": 71.0,
+   "delta7": 16.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 51,
+   "n_now": 52,
    "n_prev": 76,
-   "now": 217,
+   "now": 218.0,
    "prev7": 202.0,
    "shown": true,
    "state": "flat",
@@ -424,18 +424,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -37.6,
-   "change7_pct": -0.2,
+   "change30_pct": -37.4,
+   "change7_pct": 0.0,
    "d30": 346,
-   "delta30": -130,
-   "delta7": -0.5,
+   "delta30": -129.5,
+   "delta7": 0.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 51,
+   "n_now": 52,
    "n_prev": 76,
-   "now": 216,
+   "now": 216.5,
    "prev7": 216.5,
    "shown": true,
    "state": "flat",
@@ -508,18 +508,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 17.6,
-   "change7_pct": 11.1,
+   "change30_pct": 14.7,
+   "change7_pct": 8.3,
    "d30": 17,
-   "delta30": 3,
-   "delta7": 2.0,
+   "delta30": 2.5,
+   "delta7": 1.5,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 51,
+   "n_now": 52,
    "n_prev": 76,
-   "now": 20,
+   "now": 19.5,
    "prev7": 18.0,
    "shown": false,
    "state": "flat",
@@ -618,11 +618,6 @@
    "change_pct": 26.2,
    "commits": [
     {
-     "pr": 1282,
-     "sha": "0f6512a0a",
-     "title": "Test Plex server identity during automatic episode advance"
-    },
-    {
      "pr": 1287,
      "sha": "2fe9e9fc6",
      "title": "Settings: ask for a poster of a kind the Under posters preview lacks"
@@ -666,6 +661,11 @@
      "pr": 1306,
      "sha": "711c6cbde",
      "title": "URI exported window: the product places it like the probe, and a debug override lets a tester run the product path on we"
+    },
+    {
+     "pr": 1307,
+     "sha": "1c4d4f51f",
+     "title": "URI exported window: selected per firmware major from an evidence table, empty today"
     }
    ],
    "from": 336,
@@ -679,11 +679,6 @@
    "change_pct": 25.8,
    "commits": [
     {
-     "pr": 1282,
-     "sha": "0f6512a0a",
-     "title": "Test Plex server identity during automatic episode advance"
-    },
-    {
      "pr": 1287,
      "sha": "2fe9e9fc6",
      "title": "Settings: ask for a poster of a kind the Under posters preview lacks"
@@ -727,6 +722,11 @@
      "pr": 1306,
      "sha": "711c6cbde",
      "title": "URI exported window: the product places it like the probe, and a debug override lets a tester run the product path on we"
+    },
+    {
+     "pr": 1307,
+     "sha": "1c4d4f51f",
+     "title": "URI exported window: selected per firmware major from an evidence table, empty today"
     }
    ],
    "from": 74.8,
