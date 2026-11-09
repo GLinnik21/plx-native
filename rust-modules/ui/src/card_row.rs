@@ -1097,7 +1097,7 @@ pub struct LabelFace {
 }
 
 /// The metadata block under a FOCUSED tile: a centred title, optionally a second caption line
-/// ("S1 · E8", a year, a character name), optionally led by the Continue-Watching play glyph. Only
+/// ("S1 · E8", a year, a character name), (the lead glyph is dead: no caption sets it). Only
 /// the focused tile carries it, so a row builds exactly one of these per frame.
 ///
 /// It is a type rather than three parameters because the block's height is a fact the SCREEN needs:
@@ -2318,9 +2318,10 @@ pub fn draw_credit_label(
     }
 }
 
-/// Full-bleed resume bar: the bottom band of the card itself (Continue Watching). Delegates to
-/// [`crate::widgets::progress_bar`], which is the ONE bar the whole app draws — a poster shelf and
-/// the detail page's episode filmstrip now make the identical call, and its doc carries the two
+/// Full-bleed resume bar: the bottom band of the card itself (a poster, and a
+/// `StillFooter::Shelf` still; a Continue Watching still and a strip card bar inside
+/// [`crate::still_footer`] instead). Delegates to
+/// [`crate::widgets::progress_bar`], which is the ONE bar the whole app draws, and its doc carries the two
 /// pixel-level rules (snapped band, disjoint track/fill) that a hand-rolled copy here kept getting
 /// subtly wrong. Only the HEIGHT is local, because it is poster-relative.
 pub fn resume_bar(p: Painter, r: Rect, frac: f32, rad: f32) {

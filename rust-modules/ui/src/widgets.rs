@@ -724,6 +724,9 @@ pub enum StillFooter {
 /// nor to an FPS scene, which never opens the popover. One function is the fix that generalises;
 /// remembering harder is not.
 ///
+/// The bar belongs to the card's own bottom EDGE and goes LAST only for [`StillFooter::Shelf`]; a
+/// [`StillFooter::Continue`] still draws its bar inside its one footer line (`still_footer`).
+///
 /// `rad` is the tile's OWN radius at its current scale (`RowStyle::tile_radius`), not a constant:
 /// `card_row` scales the corner with the focus pop, so a fixed 14 clips the scrim to a different
 /// silhouette than the artwork under it at 1.09.
@@ -823,7 +826,7 @@ pub fn poster_label(
 /// still a gradient, still full width, still never a pill.
 ///
 /// [`STILL_SCRIM_H_1`] is the one-line band, kept rather than folded into the bigger number: the
-/// detail filmstrip prints its runtime alone, and giving it the pair's gradient would darken a
+/// detail filmstrip's footer shows the length alone for an unstarted episode, and giving it the pair's gradient would darken a
 /// third of every still to clear a line that is not there. [`Art::Still`] chooses the band from
 /// the same show/title fallback as [`still_overlay`].
 pub const STILL_SCRIM_H: f32 = 112.0;

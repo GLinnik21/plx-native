@@ -3676,8 +3676,7 @@ fn heading_y(row_y: f32, lift: f32) -> f32 {
     row_y - TITLE_DY - lift
 }
 /// The caption policy a shelf here follows: the stored Under posters setting, and for the Continue
-/// Watching deck (`deck`) [`DECK_POLICY`] (nothing under the stills)
-/// (the progress line is always shown, so the deck's band keeps a line under Nothing).
+/// Watching deck (`deck`) [`DECK_POLICY`] (nothing under the stills: the status and bar are the still's own footer line).
 fn shelf_policy(deck: bool) -> plx_ui::caption_policy::CaptionPolicy {
     if deck { return DECK_POLICY }
     crate::registry::captions::policy()

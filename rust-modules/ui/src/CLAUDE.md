@@ -758,37 +758,28 @@ of stacked shelves hands each one the lift of the next shelf's heading (`Section
 `StackPage::shelf_foot`, never a `Custom` gap section between two); `GridBands::closing` names the card a closing band's caption belongs to.
 Live and target geometry include these bands, so painting, paging, scrolling and restored
 viewports agree. Episode rows use landscape stills. `Art::Still` supplies the label ground;
-`widgets::still_overlay` draws its labels and resume bar afterward. Both the artwork and
+`widgets::still_overlay` draws its labels afterward (a `StillFooter::Shelf` still also its full-bleed resume bar; a
+`StillFooter::Continue` still its one footer line, bar included). Both the artwork and
 its ground participate in backdrop discovery, including texture changes and UV cropping.
 
-- An **amber ▶** means **this press starts the video**. It is drawn where that is true and nowhere
-  else: the detail page's episode filmstrip always, and a Continue Watching deck only while
-  Settings > Playback > Continue Watching is "Play" (`DeckPress::Play`; the default opens the page
-  and draws none). On a poster deck (Home's, Recommended's) the mark leads the FIRST line the Under
-  posters setting draws (`registry::captions::label`): the title when Title is On, else the details
-  line ("8m left"), hanging to the left of a line that is centred as if it were not there; with the
-  title and the details both off (Nothing) no line is drawn and so no mark, EXCEPT on the deck: its
-  progress line ("S3 · E4 · 18m left") is the tile's state and is always shown, Nothing included (the
-  owner's 2026-10-22 call; `captions::deck_policy`), so the deck's band keeps one line (two with the
-  Title On) and the mark leads that line. The band is per shelf, so it never changes as focus walks
-  the row. Watch state does not
-  withdraw it — `widgets::still_glyph` is the whole rule, graded by an exhaustive table, because
-  the clause that failed first was the absent one: the glyph used to be decided by `PosterMark`
-  FIRST, so an in-progress tile drew nothing and a Continue Watching deck — almost entirely
-  in-progress tiles — announced nothing and then played.
+- **No card draws an amber ▶.** Nobody read it as "playback starts", and what OK does is now said by the
+  focused Continue Watching still's footer cue (`ui::still_footer`): a white play glyph when the
+  Playback setting makes OK play (`DeckPress::Play`), an info glyph when it opens the page (the
+  default). The cue sits in a 28 px slot that is collapsed at rest and opens with the card's own
+  focus-pop (`cards::Tile::pop`), so the footer text moves by exactly the slot and the bar shrinks
+  toward it, never below 64 px. The detail page's episode strip has no cue (OK there always opens or
+  plays the episode, and the strip is not a deck). `TileLabel::glyph` is set by no caption any more.
 - An **amber resume BAR** means **how far in you already are**. It is a fact about the item, not a
   promise about the press, so it is drawn wherever there is progress to report, including on a
-  shelf that navigates. Hiding it there would hide something true; the triangle beside it was
-  always the mark that read as "this will play".
+  shelf that navigates. Hiding it there would hide something true. On a Continue Watching still
+  and a strip card it is the footer's own 4 px bar on the right (100 px, shrinking to 64);
+  `resume_bar` (the full-bleed band) is for posters and `StillFooter::Shelf` stills.
 - A **`✓`** means **finished** — likewise a state, not a promise.
 
-**A card with no play indicator NAVIGATES** (a poster deck set to Play with the title and details both Off draws no
-line to carry the mark, the one exception), and an episode navigates to its own detail page —
+**What a press does is a fact of the route, not of a mark**: an episode navigates to its own detail page,
 except on Continue Watching, where it opens the SHOW on the card's season
-(`app::input::activate_deck_card`; the card menu's Go to Episode is the way to the episode).
-Until 2026-09-05 `want_play` was `from_deck || kind == 3` on both Home and the Library, so an
-episode played immediately from ANY shelf and every landscape tile drew the triangle whatever its
-press did. Behaviour and mark both read `is_continue && route::deck_press().press_plays()`
+(`app::input::activate_deck_card`; the card menu's Go to Episode is the way to the episode), or resumes
+when `route::deck_press().press_plays()`. The footer cue reads the same `press_plays()`
 (`Shelf::is_continue` / `pms::hub_is_continue` alone is no longer the answer to either), so they
 cannot disagree. A poster wears nothing at all when it has never
 been started — most of a server is unstarted, so a clean shelf is the common case and a mark is

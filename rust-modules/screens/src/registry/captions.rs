@@ -114,8 +114,7 @@ pub fn deck_policy(policy: &CaptionPolicy) -> CaptionPolicy {
 }
 
 /// The focused block of one poster under `policy`: `[title, details]` as the setting words them
-/// from `facts`, the details line being `state` when the tile has one, and the first line drawn led by
-/// the play mark when `plays` (a press on this tile starts playback). With no detail part ticked for
+/// from `facts`, the details line being `state` when the tile has one. No line carries a mark. With no detail part ticked for
 /// the tile's kind the state is dropped with the details line (the Continue Watching deck is the
 /// exception, through [`deck_policy`]).
 pub fn label(policy: &CaptionPolicy, facts: &CaptionFacts, state: Option<String>) -> TileLabel {
@@ -233,8 +232,8 @@ mod tests {
         assert!(extra.shadowed && still_label(&ep, false, "").shadowed, "one look for every landscape block");
     }
 
-    /// A tile's state is its details line under every kind but Nothing, the play mark leads the first
-    /// line drawn, and an episode's default details line is its address.
+    /// A tile's state is its details line under every kind but Nothing, no line carries a play mark,
+    /// and an episode's default details line is its address.
     #[test]
     fn a_state_line_replaces_the_details_line_and_no_line_carries_a_play_mark() {
         let facts = CaptionFacts { title: Some("Heat".into()), year: Some(1995), genre: Some("Crime".into()), ..Default::default() };
