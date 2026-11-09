@@ -129,9 +129,11 @@ impl Pointer {
 }
 
 /// How far from the top or bottom of the screen the pointer scrolls the page ([`EdgeScroll`]).
-/// 80 px: at 120 the glide started too readily while the pointer was only on its way to the top
-/// or bottom row (tried on an LG C2 and C3).
-pub(crate) const EDGE_BAND: f32 = 80.0;
+/// 54 px, the safe margin ([`plx_ui::consts::MARGIN_Y`]) and the handoff board's band (top band
+/// 0..54, bottom band 1026..1080): at 120 the glide started too readily while the pointer was only
+/// on its way to the top or bottom row, and 80 still covered a third of a card (tried on an LG C2
+/// and C3).
+pub(crate) const EDGE_BAND: f32 = plx_ui::consts::MARGIN_Y;
 /// How far from the left or right edge the pointer glides the row under it ([`EdgeScroll::pan`]).
 pub(crate) const EDGE_SIDE_BAND: f32 = 120.0;
 /// How long the pointer rests in an edge band before the page starts to move.
@@ -1930,6 +1932,21 @@ mod edge_scroll_tests {
         (0..=ms / 16).filter_map(|i| e.step(on_control, t0 + i * 16).map(|d| (t0 + i * 16, d))).collect()
     }
 
+    /// **The edge glide bands are 54 px tall** (the handoff board's: 0..54 at the top, 1026..1080 at
+    /// the bottom of the 1080 screen), not the 80 px that covered a third of a card.
+    #[test]
+    fn the_edge_bands_are_54_px_tall_at_the_top_and_the_bottom_of_the_screen() {
+        assert_eq!(EDGE_BAND, 54.0);
+        assert_eq!((EdgeScroll::band(0.0), EdgeScroll::band(53.9)), (Some(1), Some(1)));
+        assert_eq!((EdgeScroll::band(54.0), EdgeScroll::band(SCR_H - 54.1)), (None, None), "the band ends at 54 px");
+        assert_eq!((EdgeScroll::band(SCR_H - 54.0), EdgeScroll::band(SCR_H - 0.1)), (Some(-1), Some(-1)));
+        assert_eq!(SCR_H - EDGE_BAND, 1026.0, "the bottom band's top on the 1080 board");
+        // a pointer 70 px from the top (inside the old band) no longer glides
+        let mut e = EdgeScroll::IDLE;
+        e.moved(960.0, 70.0, false);
+        assert!(run(&mut e, false, 1000, 2000).is_empty());
+    }
+
     /// The pointer near the TOP of a scrolled page moved nothing (a page rests its focused row at
     /// the top, so nothing hoverable is left above it). Resting in the
     /// top band over no control glides the page up after the dwell, on EVERY frame (continuous,
@@ -2000,11 +2017,11 @@ mod edge_scroll_tests {
         let mut e = EdgeScroll::IDLE;
         e.moved(960.0, 40.0, false);
         assert!(!run(&mut e, false, 0, 600).is_empty());
-        assert!(e.moved(900.0, 60.0, false), "a move inside the band while gliding is not hover");
+        assert!(e.moved(900.0, 50.0, false), "a move inside the band while gliding is not hover");
         assert!(e.step(false, 616).is_some(), "a card sliding under the pointer does not stop it");
         assert!(!e.moved(900.0, 400.0, false), "leaving the band ends the glide");
         assert!(e.step(false, 632).is_none());
-        e.moved(900.0, 60.0, false);
+        e.moved(900.0, 50.0, false);
         assert!(run(&mut e, false, 648, EDGE_DWELL_MS - 20).is_empty(), "coming back starts the dwell again");
     }
 

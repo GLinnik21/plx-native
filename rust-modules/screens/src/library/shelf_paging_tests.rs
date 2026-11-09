@@ -252,7 +252,7 @@ fn a_row_the_store_gave_its_cards_up_is_laid_out_as_placeholders_and_keeps_its_l
     let page = fixture.screen();
     assert!(fixture.hubs.view().shelves()[0].released(), "a row left behind gave its cards up");
     assert_eq!(page.shelves[0].elems.len(), 12, "and still lays out its twelve slots");
-    let src = HubSrc { elems: &page.shelves[0].elems, shelf: fixture.hubs.view().shelves().first(), paging: false };
+    let src = HubSrc { elems: &page.shelves[0].elems, shelf: fixture.hubs.view().shelves().first(), paging: false, deck: None };
     assert!(!<HubSrc as plx_ui::cards::CardSource<HostFixture>>::loaded(&src, 0), "a slot draws nothing");
 }
 
@@ -277,7 +277,7 @@ fn holding_down_onto_a_row_whose_cards_have_not_landed_keeps_row_and_column_when
     let slot = engine.current(OWNER).unwrap();
     assert_eq!(shelf_cell(&page, slot.elem), Some((target, col)), "the key reached the row and kept its column");
     assert!(fixture.hubs.view().shelves()[target].released(), "its cards have not landed");
-    let src = HubSrc { elems: &page.shelves[target].elems, shelf: fixture.hubs.view().shelves().get(target), paging: false };
+    let src = HubSrc { elems: &page.shelves[target].elems, shelf: fixture.hubs.view().shelves().get(target), paging: false, deck: None };
     assert!(!<HubSrc as plx_ui::cards::CardSource<HostFixture>>::loaded(&src, col), "the card is a placeholder");
     // OK on a placeholder opens nothing
     let mut out = Vec::new();
@@ -321,8 +321,8 @@ fn a_slid_hub_window_names_its_cards_by_listing_position() {
     let mut shelf = plx_data::browse::section_hubs::Shelf::default();
     shelf.offset = 12;
     shelf.positions = (12..24).collect();
-    assert_eq!(global(&HubSrc { elems: &[], shelf: Some(&shelf), paging: false }, 11), 23);
+    assert_eq!(global(&HubSrc { elems: &[], shelf: Some(&shelf), paging: false, deck: None }, 11), 23);
     shelf.positions.clear();
-    assert_eq!(global(&HubSrc { elems: &[], shelf: Some(&shelf), paging: false }, 11), 23, "offset plus slot");
-    assert_eq!(global(&HubSrc { elems: &[], shelf: None, paging: false }, 11), 11);
+    assert_eq!(global(&HubSrc { elems: &[], shelf: Some(&shelf), paging: false, deck: None }, 11), 23, "offset plus slot");
+    assert_eq!(global(&HubSrc { elems: &[], shelf: None, paging: false, deck: None }, 11), 11);
 }

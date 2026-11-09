@@ -28,6 +28,7 @@ pub mod fontcov; // which codepoints a font file can draw, read from its cmap
 pub mod surface; // what we are actually drawing into: drawable vs the 1920x1080 logical canvas
 pub mod tile; // `Tile`: the shelf-tile trait the data layer implements and `ui` draws through
 pub mod detail_parts; // `DetailPart`, `DetailParts`: the facts a details line under a poster carries, which the profile's setting keeps and the caption policy words
+pub mod window; // `Window`: a stamp that is open for a span (the reachability memos, an expiring miss), so a layer holds a value and reads no clock
 pub mod hold; // `HOLD_ROWS`, `clamp_hold`: the rows a paged store keeps, which the store and `ui::cards::HoldBand` both apply
 pub mod devtrig; // the /tmp trigger PRIMITIVES (`flag`, `read`, `latched_flag!`, `no_wan`...)
 pub mod diag; // the frame instruments (`heartbeat`, `spans`) and the zlib helper

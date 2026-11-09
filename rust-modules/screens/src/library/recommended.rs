@@ -34,7 +34,7 @@ use plx_machine::machine::{
 };
 use plx_machine::present::Provenance;
 use plx_ui::cards::{self as ui_cards, CardSource, RowStyle, SectionFrame, Tile};
-use plx_ui::consts::{CARD_DY, CARD_H, K_SCROLL, MARGIN_X, MARGIN_Y, SCR_H, SCR_W, TITLE_DY, UNDER_LABEL_AIR};
+use plx_ui::consts::{CARD_DY, K_SCROLL, MARGIN_X, MARGIN_Y, SCR_H, SCR_W, TITLE_DY, UNDER_LABEL_AIR};
 use plx_ui::frame::Budget;
 use plx_ui::screen::{
     At, DrawFrame, ElemKind, Enter, FocusTarget, Focusable,
@@ -90,6 +90,10 @@ pub(super) struct Row {
     /// `registry::captions::deck_policy` (its progress line is always shown). Derived from the
     /// publication; not canon.
     deck: bool,
+    /// **The landscape Continue Watching deck: Home's deck** ([`RowStyle::STILL`], one-line footer
+    /// on the tile, nothing under the stills: `registry::captions::NOTHING_UNDER_STILLS`), so its
+    /// band is 0. Derived from the publication; not canon.
+    still_deck: bool,
     pub(super) cards: ui_cards::Shelf,
     /// What the row's keys were registered from, to tell a publication that changed the row from
     /// one that did not ([`Basis`]). Derived; not canon.
@@ -116,7 +120,7 @@ impl Row {
 /// row itself, and only the rows the store holds cards for (the hold band, 16 at most) have cards
 /// to compare.
 #[derive(Clone, Debug, Default)]
-struct Basis {
+pub(super) struct Basis {
     landscape: bool,
     linked: bool,
     slots: usize,
@@ -126,6 +130,12 @@ struct Basis {
     /// The window's cards, each as the identity its key was minted from (an empty `rk` is a
     /// placeholder). Empty for a row the store gave its cards up to.
     items: Vec<(plx_plex::plex::ServerId, String)>,
+    /// The artwork keys of a landscape Continue Watching deck's cards, one per card of `items`
+    /// ([`tile_facts::DeckKeys`]): built once with the row, so a frame builds no string. Part of what
+    /// the row was built FROM because a key names the card's background (a new art path is a new
+    /// key) and its catalog id, which the `(sid, rk)` identity above does not change with. Empty
+    /// for every other row: a poster shelf and a library grid never opt in.
+    deck: Vec<tile_facts::DeckKeys>,
 }
 
 impl Basis {
@@ -135,6 +145,7 @@ impl Basis {
             slot_form: shelf.items.is_empty() || shelf.items.iter().any(|item| item.rk.is_empty()),
             query,
             items: shelf.items.iter().map(|item| (item.sid, item.rk.clone())).collect(),
+            deck: deck_keys_of(shelf),
         }
     }
 
@@ -143,6 +154,28 @@ impl Basis {
             && (!self.slot_form || self.query == query)
             && self.items.len() == shelf.items.len()
             && self.items.iter().zip(&shelf.items).all(|((sid, rk), item)| item.sid == *sid && item.rk == *rk)
+            && self.deck == deck_keys_of(shelf)
+    }
+
+    /// The deck keys of the card `item` stands at, `i`, if this basis is the one the card was
+    /// built from: the same `(sid, rk)` at the same place. A frame between a publication and the
+    /// sync that follows it holds a basis of the previous one, and a position alone would hand a
+    /// card another title's keys (a cover asked of plex.tv for the wrong title).
+    fn deck_keys(&self, i: usize, item: &plx_data::pms::PmsMovie) -> Option<&tile_facts::DeckKeys> {
+        let (sid, rk) = self.items.get(i)?;
+        (*sid == item.sid && *rk == item.rk).then(|| self.deck.get(i)).flatten()
+    }
+}
+
+/// **The artwork keys of a hub's cards if it is a landscape Continue Watching deck**, else none: the
+/// one rule for which Recommended rows opt in to the deck's art walk (Plex's cover, our composite,
+/// then the title in type). One per item, in order, so a key is read by the card's position; a
+/// placeholder (no rating key, no art) gets empty keys, which is what its card is.
+fn deck_keys_of(shelf: &HubShelf) -> Vec<tile_facts::DeckKeys> {
+    if shelf.is_continue && shelf.landscape {
+        tile_facts::DeckKeys::of_all(shelf.items.iter())
+    } else {
+        Vec::new()
     }
 }
 
@@ -282,21 +315,32 @@ impl ShelfRun {
     }
 }
 
-/// The height of a row of `landscape` cards whose caption band, `band_h` tall when it is open, is
-/// `expanded` (0..1) open.
-pub(super) fn shelf_pitch(landscape: bool, band_h: f32, expanded: f32) -> f32 {
-    let art = if landscape { RowStyle::EPISODE.h } else { CARD_H };
-    TITLE_DY + CARD_DY + art + ui_cards::under_band_for(band_h, expanded) + UNDER_LABEL_AIR
+/// The height of a row of `style`'s cards whose caption band, `band_h` tall when it is open, is
+/// `expanded` (0..1) open. The still deck's band is 0 (`captions::NOTHING_UNDER_STILLS`), so its
+/// pitch is Home's: [`RowStyle::pitch_fixed`] and the collapsed gap.
+pub(super) fn shelf_pitch(style: &RowStyle, band_h: f32, expanded: f32) -> f32 {
+    TITLE_DY + CARD_DY + style.h + ui_cards::under_band_for(band_h, expanded) + UNDER_LABEL_AIR
 }
 
-fn hub_style(landscape: bool) -> &'static RowStyle { if landscape { &RowStyle::EPISODE } else { &RowStyle::HOME } }
+/// The style a hub's row is drawn in: poster cards ([`RowStyle::HOME`]), the Continue Watching still
+/// deck Home's stills ([`RowStyle::STILL`]), any other landscape (episode) row the episode strip's.
+fn hub_style(landscape: bool, still_deck: bool) -> &'static RowStyle {
+    match (landscape, still_deck) {
+        (false, _) => &RowStyle::HOME,
+        (true, true) => &RowStyle::STILL,
+        (true, false) => &RowStyle::EPISODE,
+    }
+}
 
-fn row_style(row: &Row) -> &'static RowStyle { hub_style(row.landscape) }
+fn row_style(row: &Row) -> &'static RowStyle { hub_style(row.landscape, row.still_deck) }
+
+/// Is `shelf` the landscape Continue Watching deck: the one object Home also draws.
+fn is_still_deck(shelf: &HubShelf) -> bool { shelf.is_continue && shelf.landscape }
 
 /// A hub row's card section. Cards a screen's width off to either side still paint: a popped
 /// card's shadow reaches onto the screen from beyond its edge.
-fn hub_cards(entry: EntryId, landscape: bool) -> ui_cards::Shelf {
-    ui_cards::Shelf::new(entry, *hub_style(landscape)).cull_margin(32.0)
+fn hub_cards(entry: EntryId, landscape: bool, still_deck: bool) -> ui_cards::Shelf {
+    ui_cards::Shelf::new(entry, *hub_style(landscape, still_deck)).cull_margin(32.0)
 }
 
 /// The panel the rows' cards are placed and hit-tested in: everything under the top bar.
@@ -512,14 +556,15 @@ impl RecommendedScreen {
             self.keys.register(identity, group, col)
         }).collect();
         let cards = cards.unwrap_or_else(|| {
-            let mut cards = hub_cards(self.entry, shelf.landscape);
+            let mut cards = hub_cards(self.entry, shelf.landscape, is_still_deck(shelf));
             let saved = self.viewports.iter().find(|view| Some(view.epoch) == epoch && view.section == *section)
                 .and_then(|view| view.shelves.iter().find(|(id, _)| *id == shelf.id));
             if let Some((_, x)) = saved { cards.restore_scroll(*x, shelf.slots()); }
             cards
         });
         let heading = self.seat_heading(section, shelf, index);
-        Row { id: shelf.id.clone(), group, heading, elems, landscape: shelf.landscape, deck: shelf.is_continue && !shelf.landscape, cards, basis: Basis::of(shelf, query) }
+        Row { id: shelf.id.clone(), group, heading, elems, landscape: shelf.landscape, deck: shelf.is_continue && !shelf.landscape,
+            still_deck: is_still_deck(shelf), cards, basis: Basis::of(shelf, query) }
     }
 
     /// A kept row that stands at another index now: its group and heading keys remember the index
@@ -546,15 +591,17 @@ impl RecommendedScreen {
     }
 
     fn relayout(&mut self, focus: Option<FocusKey<u32>>) {
-        // The poster rows follow the Under posters setting; a landscape row (an episode still) is
-        // not a poster and keeps its own two-line block and band.
+        // The poster rows follow the Under posters setting; a landscape episode row is not a poster
+        // and keeps its own two-line block and band; the landscape Continue Watching deck is Home's
+        // still deck, which hangs nothing under its stills.
         let policy = crate::registry::captions::policy();
         for row in &mut self.shelves {
             let policy = if row.deck { crate::registry::captions::deck_policy(&policy) } else { policy };
-            row.cards.set_caption_policy(Some(policy).filter(|_| !row.landscape));
+            let policy = if row.still_deck { Some(crate::registry::captions::NOTHING_UNDER_STILLS) } else { Some(policy).filter(|_| !row.landscape) };
+            row.cards.set_caption_policy(policy);
         }
-        self.run.set(self.shelves.iter().map(|row| shelf_pitch(row.landscape, row.cards.band_h(), row.cards.band_expand())));
-        self.target_run.set(self.shelves.iter().map(|row| shelf_pitch(row.landscape, row.cards.band_h(),
+        self.run.set(self.shelves.iter().map(|row| shelf_pitch(row_style(row), row.cards.band_h(), row.cards.band_expand())));
+        self.target_run.set(self.shelves.iter().map(|row| shelf_pitch(row_style(row), row.cards.band_h(),
             f32::from(focus.is_some_and(|key| row.elems.contains(&key.elem))))));
         self.scroll_target = self.scroll_target.clamp(0.0, max_scroll(&self.target_run));
     }
@@ -773,7 +820,7 @@ impl RecommendedScreen {
             let shelf = hubs.shelves().get(index);
             let at = focus.and_then(|elem| row.elems.iter().position(|key| *key == elem));
             let paging = at.is_some_and(|col| col.saturating_add(ui_cards::PAGE_EDGE_CARDS) >= row.elems.len());
-            let src = HubSrc { elems: &row.elems, shelf, paging };
+            let src = HubSrc { elems: &row.elems, shelf, paging, deck: Some(&row.basis) };
             row.cards.dormant(unseen);
             let want = row.cards.on(ev, cx, &src, fx);
             if !ticking && at.is_none() { row.cards.reset_page_requests(); }
@@ -1018,7 +1065,7 @@ impl RecommendedScreen {
                     return Handled::Yes;
                 }
                 if let InputKind::Wheel { dy } = input.kind {
-                    self.scroll_target = (self.scroll_target - dy * shelf_pitch(false, ui_cards::LEGACY_BAND_H, 0.0))
+                    self.scroll_target = (self.scroll_target - dy * shelf_pitch(&RowStyle::HOME, ui_cards::LEGACY_BAND_H, 0.0))
                         .clamp(0.0, max_scroll(&self.target_run));
                     fx.invalidate(Provenance::Input);
                     return Handled::Yes;
@@ -1068,7 +1115,8 @@ impl RecommendedScreen {
 
     /// Row `index`'s content, read off the published hub (borrows only).
     pub(super) fn hub_src<'a, 'v: 'a, H: LibraryLike>(&'a self, index: usize, cx: &Cx<'v, H>) -> HubSrc<'a> {
-        HubSrc { elems: &self.shelves[index].elems, shelf: H::section_hubs(cx).shelves().get(index), paging: false }
+        let row = &self.shelves[index];
+        HubSrc { elems: &row.elems, shelf: H::section_hubs(cx).shelves().get(index), paging: false, deck: Some(&row.basis) }
     }
 
     /// The card `elem` of row `index` as drawn now: the component's placement (pop and press
@@ -1108,7 +1156,9 @@ impl RecommendedScreen {
         let focused = cx.focus.current.is_some_and(|key| key.entry == self.entry && Some(key.elem) == row.heading_elem());
         let y = match at {
             At::Drawn => shelf_y(&self.run, index, self.scroll.pos) - TITLE_DY - row.cards.heading_lift(),
-            At::SpringTarget => shelf_y(&self.target_run, index, self.scroll_target) - TITLE_DY,
+            At::SpringTarget => {
+                shelf_y(&self.target_run, index, self.scroll_target) - TITLE_DY - row.cards.style().heading_rise
+            }
         };
         Some(heading.face_rect(MARGIN_X, y, f32::from(focused), &heading.measure(cx.measure)))
     }
@@ -1359,7 +1409,7 @@ impl LogicalState for RecommendedScreen {
         c.seq(self.shelves.len());
         for row in &self.shelves {
             // `basis` is what the keys were registered from: derived from the publication, not canon.
-            let Row { id, group, heading, elems, landscape, deck: _, cards, basis: _ } = row;
+            let Row { id, group, heading, elems, landscape, deck: _, still_deck: _, cards, basis: _ } = row;
             c.str(id).u32(group.0);
             c.option(*heading, |c, (group, elem)| { c.u32(group.0).u32(elem); });
             c.bool(*landscape).seq(elems.len());
@@ -1384,10 +1434,25 @@ pub(super) struct HubSrc<'a> {
     pub(super) shelf: Option<&'a plx_data::browse::section_hubs::Shelf>,
     /// Focus is near the row's trailing edge on a visible row: only then does the row ask for more.
     pub(super) paging: bool,
+    /// What the row was built from, for the Continue Watching deck's artwork keys
+    /// ([`Basis::deck_keys`]); `None` for a source with no row behind it.
+    pub(super) deck: Option<&'a Basis>,
 }
 
 impl HubSrc<'_> {
     fn item(&self, i: usize) -> Option<&plx_data::pms::PmsMovie> { self.shelf?.items.get(i) }
+
+    /// **The facts card `i` draws from**: a landscape Continue Watching deck's card opts in to the
+    /// deck's art walk (Plex's cover, our composite, then its title in type) with the keys its row
+    /// was built with; every other card, and a deck card whose row is not the one its item was
+    /// published for, is [`tile_facts::of`], the old chain.
+    fn facts(&self, i: usize) -> Option<plx_ui::tile::TileFacts<'_>> {
+        let item = self.item(i)?;
+        Some(match self.deck.and_then(|basis| basis.deck_keys(i, item)) {
+            Some(keys) => tile_facts::for_deck(item, keys),
+            None => tile_facts::of(item),
+        })
+    }
 }
 
 impl<H: plx_machine::machine::Host<Elem = u32>> CardSource<H> for HubSrc<'_> {
@@ -1406,7 +1471,7 @@ impl<H: plx_machine::machine::Host<Elem = u32>> CardSource<H> for HubSrc<'_> {
     fn more_before(&self) -> bool { self.shelf.is_some_and(|shelf| shelf.offset > 0) }
     fn art(&self, i: usize) -> Art<'_> {
         match (self.item(i), self.shelf) {
-            (Some(item), Some(shelf)) if shelf.landscape => Art::Still(Some(tile_facts::of(item))),
+            (Some(_), Some(shelf)) if shelf.landscape => Art::Still(self.facts(i)),
             (Some(item), _) => Art::Poster(Some(tile_facts::of(item))),
             _ => Art::Poster(None),
         }
@@ -1417,20 +1482,25 @@ impl<H: plx_machine::machine::Host<Elem = u32>> CardSource<H> for HubSrc<'_> {
     fn progress(&self, i: usize) -> Option<f32> {
         self.shelf.filter(|shelf| !shelf.landscape).and_then(|_| self.item(i)).and_then(|item| item.resume_frac())
     }
-    /// A landscape row's episode still carries its show line, and the Continue Watching deck its
-    /// play mark when a press plays.
+    /// A landscape row's episode still carries its show line (`StillFooter::Shelf`) and keeps the
+    /// caption under the focused still (`shelf_label`: its title and one fact). The Continue Watching
+    /// deck is Home's: the one-line footer on the tile with the cue the deck-press rule picks
+    /// (`tile_facts::deck_overlay`), and no label under it.
     fn overlay(&self, p: plx_ui::Painter, i: usize, tile: &Tile, measure: &dyn plx_machine::machine::Measure) {
-        let (Some(shelf), Some(item)) = (self.shelf, self.item(i)) else { return };
-        if shelf.landscape {
-            plx_ui::widgets::still_overlay(p, &tile_facts::of(item), tile.rect, tile.radius,
-                shelf.is_continue && plx_media::route::deck_press().press_plays(), measure);
+        let (Some(shelf), Some(facts)) = (self.shelf, self.facts(i)) else { return };
+        if is_still_deck(shelf) {
+            tile_facts::deck_overlay(p, &facts, tile, measure);
+        } else if shelf.landscape {
+            plx_ui::widgets::still_overlay(p, &facts, tile.rect, tile.radius, plx_ui::widgets::StillFooter::Shelf, measure);
         }
     }
 }
 
 pub(super) fn shelf_label(shelf: &plx_data::browse::section_hubs::Shelf, col: usize) -> ui_cards::TileLabel {
     let Some(item) = shelf.items.get(col) else { return ui_cards::TileLabel::default() };
-    if shelf.landscape { return crate::registry::captions::still_label(item, shelf.is_continue, ""); }
+    // The still deck's footer is on the tile (`HubSrc::overlay`): nothing hangs under it.
+    if is_still_deck(shelf) { return ui_cards::TileLabel::default(); }
+    if shelf.landscape { return crate::registry::captions::still_label(item, ""); }
     crate::registry::captions::shelf_label(&crate::registry::captions::policy(), item, shelf.is_continue)
 }
 

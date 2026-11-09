@@ -27,6 +27,11 @@ Scene fields (tests/manifest.json, `fps_scenes`):
   "mock": {"rk": 50002}         a scene that names a library `item` on a real server opens THIS
                                 ratingKey of the synthetic library instead (`$rk` in its triggers);
                                 an `item` scene with no `mock.rk` is not runnable under --mock
+  "mock": {"cw_art_fixture": true}
+                                ... `--cw-art-fixture`: five dedicated Continue Watching items (one per
+                                art path a stills card can take: Plex cover, background + clearLogo
+                                composite, title in type) head the row, whose art the mock draws at
+                                request time, so the card art is a cold read on a fresh install
   "mock": {"link": ["remote-wan"]}
                                 ... `--link remote-wan` (tests/link_conditioner.py): the mock answers
                                 like a slow remote server; a spec is `[class=]profile[:k=v,...]`, and
@@ -156,6 +161,8 @@ def mock_server_args(scene):
             args += ["--section-hubs-linked", str(linked)]
     elif block.get("section_hubs_linked"):
         raise ValueError(f"{scene.get('name')}: mock.section_hubs_linked needs mock.section_hubs")
+    if block.get("cw_art_fixture"):
+        args += ["--cw-art-fixture"]
     for spec in block.get("link") or []:
         args += ["--link", str(spec)]  # tests/link_conditioner.py; mock_pms validates it at start
     for key in ("shows", "seasons", "episodes"):

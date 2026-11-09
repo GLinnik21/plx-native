@@ -916,7 +916,7 @@ impl Shelf {
             let pr = pr.alpha(a);
             let rect = Rect::new(x, at.y - pr.dy(), self.style.w, self.style.h).scaled(s);
             card_row::draw_tile(pr, ghosts.art(j), rect, s, &self.style, ghosts.progress(j));
-            let tile = Tile { rect, scale: s, radius: self.style.tile_radius(rect, s), focused: g.focused };
+            let tile = Tile { rect, scale: s, radius: self.style.tile_radius(rect, s), focused: g.focused, pop: crate::widgets::pop_factor(s, self.style.focus_scale) };
             ghosts.overlay(pr, j, &tile, f.measure);
         }
     }
@@ -1015,7 +1015,7 @@ impl Shelf {
         } else {
             card_row::draw_tile(pr, src.art(i), rect, s, &self.style, src.progress(i));
         }
-        let tile = Tile { rect, scale: s, radius: self.style.tile_radius(rect, s), focused };
+        let tile = Tile { rect, scale: s, radius: self.style.tile_radius(rect, s), focused, pop: super::pop_progress(s, i, self.entry, src, f.cx, self.style.focus_scale) };
         src.compose(pr, i, &tile, f.measure, label.as_ref(), |paint, label| {
             if focused { card_row::draw_label(paint, rect, s, &self.style, label, f.measure); }
         });
@@ -1126,9 +1126,11 @@ impl Shelf {
         self.row.restore_scroll(scroll, n, &self.style);
     }
 
-    /// How far the shelf's heading must rise, live, to clear the focused tile.
+    /// How far the shelf's heading stands above its resting place: the live rise that clears the
+    /// focused tile, or the style's fixed [`RowStyle::heading_rise`] when that is larger
+    /// ([`heading_lift_of`](crate::card_row::heading_lift_of)).
     pub fn heading_lift(&self) -> f32 {
-        self.row.lift()
+        crate::card_row::heading_lift_of(&self.style, self.row.lift())
     }
 
     /// The caption band the shelf reserves under its tiles right now, for the caller's layout.

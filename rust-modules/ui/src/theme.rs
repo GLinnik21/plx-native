@@ -260,6 +260,19 @@ pub mod logo {
     pub const COMPACT_W_MAX: f32 = HERO_W_MAX * COMPACT_BAND_H / HERO_BAND_H;
     /// The compact strip's overscan and following content use this height limit too.
     pub const COMPACT_H_MAX: f32 = 72.0;
+    /// The Continue Watching deck card's logo (`card_art::compose`'s baked composite, 420x236). The
+    /// area is chosen so an ordinary wordmark lands where the covers Plex bakes put theirs (a 5.7:1
+    /// mark 232x41, a 6.7:1 one 253x38, a 3.7:1 one 189x51); tall marks clamp at [`CARD_H_MAX`].
+    pub const CARD_AREA: f32 = 9_600.0;
+    /// The card's logo slot is this tall, and no mark is taller.
+    pub const CARD_BAND_H: f32 = CARD_H_MAX;
+    /// Tall and square marks stop here instead of growing into the card's subject.
+    pub const CARD_H_MAX: f32 = 56.0;
+    /// Wide wordmarks stop here, well inside the 420 px card.
+    pub const CARD_W_MAX: f32 = 270.0;
+    /// The logo's BOTTOM edge sits this far above the card's bottom edge: 12 px clear of the 24 px
+    /// footer text line that rides 12 px above the card bottom.
+    pub const CARD_BOTTOM_INSET: f32 = 48.0;
 }
 
 // ── Accent / control ─────────────────────────────────────────────────────────
@@ -1296,6 +1309,22 @@ pub const CARD_RING_RAD: f32 = 14.0;
 /// (1.07): on a 420×236 still that overlaps the neighbouring slot, and 1.04 reads as a lift rather
 /// than a zoom.
 pub const EP_CARD_FOCUS_SCALE: f32 = 1.04;
+
+/// Corner radius of the Continue Watching row's landscape tile (the handoff's `still-radius`); the
+/// tile's size and gap are the episode strip's own ([`crate::card_row::RowStyle::EPISODE`]).
+pub const STILL_RADIUS: f32 = 12.0;
+
+/// How much higher the Continue Watching row's heading stands over its tiles than a poster shelf's
+/// does, in px ([`crate::card_row::RowStyle::heading_rise`]): the owner's boards (CW-12/13) put the
+/// stills heading well above the poster line (centre ~60 px over the card tops, the poster shelf's
+/// ~42). It rests ON the page header's line ([`crate::page_header::TOP`]), the highest a
+/// page-riding row stands WHOLE under the shown chrome (`scroll_chrome::CLEARANCE_RAMP` above that
+/// line a heading is partly faded, and Home draws every heading through that rule), so the rise is
+/// derived from it, not a literal: 12 px with today's constants, the heading's top 18 px under the
+/// nav pill's bottom edge. The tiles' tops, the row's pitch and every rest place stay where they
+/// were; only the heading rises. Taller than this the heading would rest faded, or the chrome's
+/// rule would have to judge the heading's ink instead of its top.
+pub const STILL_HEADING_RISE: f32 = crate::consts::GRID_TOP_Y - crate::consts::TITLE_DY - crate::page_header::TOP;
 
 /// How far the focused episode still rises, in px, at full focus — with [`EP_CARD_FOCUS_SCALE`] it
 /// separates the focused card from the row instead of merely enlarging it in place.

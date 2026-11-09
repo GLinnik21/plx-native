@@ -93,6 +93,10 @@ pub mod discover;
 // The plex.tv Watchlist (discover provider): `impl AccountClient`, contract frozen in watchlist.rs.
 pub mod watchlist;
 
+// The store keys of the two app-baked deck-card images (Plex's cover, our composite): pure
+// builders and parsers, so the screen that names a key and the worker that bakes it share one shape.
+pub mod artwork;
+
 // The hub fetch's backoff ladder and the advisory "re-discover this server's endpoint" request —
 // shared by `grant`'s upgrade retry here and by the data layer (`pms`, `stores`), which re-export
 // them under their historical names.

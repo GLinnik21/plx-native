@@ -44,62 +44,26 @@ pub(super) fn parse_fan_key(key: &str) -> Option<(&str, &str)> {
     (!rk.is_empty() && !stamp.is_empty() && !stamp.contains('/')).then_some((rk, stamp))
 }
 
-/// Owned RGBA, row-major, `w * h * 4` bytes.
-pub(super) struct Rgba {
-    pub w: u32,
-    pub h: u32,
-    pub px: Vec<u8>,
-}
+/// Owned RGBA, row-major, `w * h * 4` bytes. Shared with the card composite, so it lives in `ui`
+/// beside that compositor ([`plx_ui::card_art::Rgba`]: `texel`, `put` and `sample`).
+pub(super) use plx_ui::card_art::Rgba;
 
-impl Rgba {
-    fn texel(&self, x: u32, y: u32) -> [f32; 4] {
-        let i = ((y * self.w + x) * 4) as usize;
-        let p = &self.px[i..i + 4];
-        [p[0] as f32, p[1] as f32, p[2] as f32, p[3] as f32]
-    }
-
-    /// Store an opaque colour (0–255 per channel, rounded and clamped).
-    fn put(&mut self, x: u32, y: u32, c: [f32; 3]) {
-        let i = ((y * self.w + x) * 4) as usize;
-        for k in 0..3 {
-            self.px[i + k] = c[k].round().clamp(0.0, 255.0) as u8;
-        }
-        self.px[i + 3] = 255;
-    }
-
-    /// Bilinear sample at a continuous texel coordinate, clamped to the edge.
-    fn sample(&self, u: f32, v: f32) -> [f32; 4] {
-        let u = (u - 0.5).clamp(0.0, (self.w - 1) as f32);
-        let v = (v - 0.5).clamp(0.0, (self.h - 1) as f32);
-        let (x0, y0) = (u as u32, v as u32);
-        let (x1, y1) = ((x0 + 1).min(self.w - 1), (y0 + 1).min(self.h - 1));
-        let (fx, fy) = (u - x0 as f32, v - y0 as f32);
-        let (a, b) = (self.texel(x0, y0), self.texel(x1, y0));
-        let (c, d) = (self.texel(x0, y1), self.texel(x1, y1));
-        std::array::from_fn(|k| {
-            let top = a[k] + (b[k] - a[k]) * fx;
-            let bot = c[k] + (d[k] - c[k]) * fx;
-            top + (bot - top) * fy
-        })
-    }
-
-    /// Mean colour (0–255) of the quarter-size patch at ring corner `i` (TL, TR, BR, BL).
-    fn corner_mean(&self, i: usize) -> [f32; 3] {
-        let (pw, ph) = ((self.w / 4).max(1), (self.h / 4).max(1));
-        let x0 = if matches!(i, 1 | 2) { self.w - pw } else { 0 };
-        let y0 = if matches!(i, 2 | 3) { self.h - ph } else { 0 };
-        let mut sum = [0f64; 3];
-        for y in y0..y0 + ph {
-            for x in x0..x0 + pw {
-                let t = self.texel(x, y);
-                for k in 0..3 {
-                    sum[k] += t[k] as f64;
-                }
+/// Mean colour (0–255) of the quarter-size patch of `img` at ring corner `i` (TL, TR, BR, BL).
+fn corner_mean(img: &Rgba, i: usize) -> [f32; 3] {
+    let (pw, ph) = ((img.w / 4).max(1), (img.h / 4).max(1));
+    let x0 = if matches!(i, 1 | 2) { img.w - pw } else { 0 };
+    let y0 = if matches!(i, 2 | 3) { img.h - ph } else { 0 };
+    let mut sum = [0f64; 3];
+    for y in y0..y0 + ph {
+        for x in x0..x0 + pw {
+            let t = img.texel(x, y);
+            for k in 0..3 {
+                sum[k] += t[k] as f64;
             }
         }
-        let n = (pw * ph) as f64;
-        sum.map(|s| (s / n) as f32)
     }
+    let n = (pw * ph) as f64;
+    sum.map(|s| (s / n) as f32)
 }
 
 /// One fanned member: its decoded poster and, when the server sent a non-black one, its
@@ -115,7 +79,7 @@ impl Member {
     fn corner(&self, i: usize) -> [f32; 3] {
         match self.blur {
             Some(c) => c[i].map(|v| v * 255.0),
-            None => self.poster.corner_mean(i),
+            None => corner_mean(&self.poster, i),
         }
     }
 }

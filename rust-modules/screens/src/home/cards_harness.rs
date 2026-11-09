@@ -67,6 +67,12 @@ impl Harness {
         let mem = Screen::<HomeHost>::memory_at(&*self.screen.borrow(), None);
         self.step(ScreenEvent::RestoreMemory(mem));
         self.focus(first, By::Restore);
+        // The Continue Watching row stands on the hero's page too, so a restore onto it no longer
+        // opens the grid: the harness puts the page on the grid itself (the page this harness
+        // exercises the shelf's card mechanisms on).
+        let screen = self.screen.get_mut();
+        screen.snap_target = 1.0;
+        screen.snap.jump(1.0);
         self.tick(30);
         self.focus = None;
         self.tick(240);

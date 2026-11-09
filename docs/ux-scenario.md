@@ -191,22 +191,21 @@ just the page.
 
 DOWN from the hero enters the shelves; DOWN again steps between them; LEFT/RIGHT walks the cards.
 The focused card grows, and what Settings → Libraries → Under posters asks for appears
-beneath it (a title line when its Title switch is On; a line the setting turns on is never left empty, so a season, which has no length, says *"Season 6"* under its show's name, and a film the server told us nothing about says *"Movie"*; the setting is the same under every poster in the app: Search results, a person's filmography, a title's Related and collection shelves and a collection's members, though not under a landscape still or a cast headshot) — a Continue Watching card always shows its status line, under every Details setting, Nothing included, here *"S3 · E4 · 8m
-left"* (*"8m left"* for a film), which is the resume state. A watched item carries a check mark in its corner. In a library whose grid is sorted by something that has a value (Settings → Libraries → Under posters → Sort value, on by default), every card of its movies, shows, seasons or episodes shows that value on one line instead, in place of the title and details line: a score beside its provider's mark, a length, a count of plays, a date as *"Today"*, *"Yesterday"*, *"27 Oct"* or *"Oct 2024"*; the Episodes view's wide cards say the same thing under each still (sorted by Audience score, *"TMDB 84%"*). A sort with no value to show, such as the Show order Seasons and Episodes default to, keeps the usual captions.
+beneath it (a title line when its Title switch is On; a line the setting turns on is never left empty, so a season, which has no length, says *"Season 6"* under its show's name, and a film the server told us nothing about says *"Movie"*; the setting is the same under every poster in the app: Search results, a person's filmography, a title's Related and collection shelves and a collection's members, though not under a landscape still or a cast headshot) — a Continue Watching card on Home always shows its status, under every Details setting, Nothing included, as one line inside the still (not under it), here *"S3 E4 · 8m left"* (*"8m left"* for a film) with a bar on the right, which is the resume state. A watched item carries a check mark in its corner. In a library whose grid is sorted by something that has a value (Settings → Libraries → Under posters → Sort value, on by default), every card of its movies, shows, seasons or episodes shows that value on one line instead, in place of the title and details line: a score beside its provider's mark, a length, a count of plays, a date as *"Today"*, *"Yesterday"*, *"27 Oct"* or *"Oct 2024"*; the Episodes view's wide cards say the same thing under each still (sorted by Audience score, *"TMDB 84%"*). A sort with no value to show, such as the Show order Seasons and Episodes default to, keeps the usual captions.
 
 **OK on a card in *Continue Watching* opens its page by default** (Settings → Playback →
-Continue Watching: *Open details*); set to *Play*, OK plays it directly and the amber ▶ before the first line the card draws is
-what announces that (the title when Under posters → Title is On, otherwise the status line) — the ▶ is drawn only in that mode, and in the default the card's menu leads
-with Play instead; an *episode* card there opens its **show** on that episode's season (the card's menu
+Continue Watching: *Open details*); set to *Play*, OK plays it directly and the white play glyph that opens at the leading edge of the focused card's footer line
+announces that (in the default that glyph is an *info* mark, and the card's menu leads
+with Play instead); an *episode* card there opens its **show** on that episode's season (the card's menu
 offers *Go to Episode*). **Every other card opens a page, an episode included**: an episode tile on a
 discovery shelf ("Recently Released Episodes", "Recently Added…") opens that EPISODE's own page and
-carries no ▶, precisely so nothing on it promises playback. The one-press resume is *Play* mode: there the deck is a list of things already in progress and one
+carries no play glyph, precisely so nothing on it promises playback. The one-press resume is *Play* mode: there the deck is a list of things already in progress and one
 press is the whole point of it. In the default the deck behaves like every other shelf — a press is
 a question rather than a commitment — and the resume is the first row of the card's hold menu (§5.6),
 which opens on it. A card's resume bar is a fact about how far in you
 are and appears on both kinds, so it is never the thing that says a press will play; that is the
-triangle's job alone. (Until 2026-09-05 an episode played from wherever it sat, which put the
-triangle on cards that navigated.)
+footer cue's job alone. (Until 2026-09-05 an episode played from wherever it sat, which put an
+amber triangle on cards that navigated; the triangle is gone everywhere now.)
 
 One refinement inside the deck rule: a **show** or **season** card has no single stream to
 start, so where the deck plays it (OK in *Play* mode, or the menu's Play row in the default) it
