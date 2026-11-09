@@ -1065,6 +1065,7 @@ enum RootId {
     Language,
     AutoSignIn,
     TrailerAutoplay,
+    HudEndTime,
     Resolution,
     /// One server's switch. Its key is [`PLAINTEXT_KEY_BASE`] plus its position in the section
     /// ([`root_form`] assigns it); its identity is the machine, so a rebuild keeps the row.
@@ -1095,6 +1096,7 @@ impl FormId for RootId {
             RootId::Resolution => 10,
             RootId::UnderPosters => 11,
             RootId::Diagnostics => 12,
+            RootId::HudEndTime => 13,
             // the base; `root_form` adds the position (`item_keyed`)
             RootId::Plaintext(_) => PLAINTEXT_KEY_BASE,
         })
@@ -1109,6 +1111,7 @@ enum Action {
     Door,
     AutoSignIn,
     TrailerAutoplay,
+    HudEndTime,
     /// A server's "connect without encryption" switch.
     Plaintext(ServerMachineId),
 }
@@ -1125,6 +1128,8 @@ pub struct RootPage {
     /// and the receipt of its `route::choose` (Confirm) write. A `false` (or dropped) receipt means
     /// the pick was not saved, and the row goes back to the stored value.
     pending_trailer: Option<(bool, std::sync::mpsc::Receiver<bool>)>,
+    /// The projected end-time switch picked here and not yet answered by its profile preference write.
+    pending_hud_end_time: Option<(bool, std::sync::mpsc::Receiver<bool>)>,
     /// The servers the signed-in account answered plx_platform::i18n::msg::settings_plaintext_question() for, then the
     /// ones discovery offers it for and nobody has answered, by row — the `(machine_id, allowed)`
     /// each switch shows.
@@ -1148,6 +1153,7 @@ struct RootState {
     sel: RowKey,
     auto_sign_in: bool,
     trailer_autoplay: bool,
+    hud_end_time: bool,
     language: plx_platform::i18n::Preference,
     /// What shows under a poster, as the Under posters row summarises it. Written to the canon only
     /// when it is not the default, so every default root's digest is unchanged.
@@ -1160,7 +1166,7 @@ struct RootState {
 
 impl LogicalState for RootState {
     fn write(&self, w: &mut Canon) {
-        w.u32(self.sel.0).bool(self.auto_sign_in).bool(self.trailer_autoplay).str(self.language.tag());
+        w.u32(self.sel.0).bool(self.auto_sign_in).bool(self.trailer_autoplay).bool(self.hud_end_time).str(self.language.tag());
         if self.under_posters != plx_plex::plex::session::UnderPosters::DEFAULT {
             w.u32(u32::from(self.under_posters.pack()));
         }
@@ -1174,8 +1180,8 @@ impl LogicalState for RootState {
     }
     fn probe(&self, out: &mut String) {
         out.push_str(&format!(
-            "root sel={} auto_sign_in={} trailer_autoplay={} language={}",
-            self.sel.0, self.auto_sign_in, self.trailer_autoplay, self.language.tag()
+            "root sel={} auto_sign_in={} trailer_autoplay={} hud_end_time={} language={}",
+            self.sel.0, self.auto_sign_in, self.trailer_autoplay, self.hud_end_time, self.language.tag()
         ));
         out.push_str(&format!(" trace={:?}", self.trace));
         if !self.plaintext.is_empty() {
@@ -1211,6 +1217,7 @@ struct RootInputs {
     library_count: i64,
     auto_sign_in: bool,
     trailer_autoplay: bool,
+    hud_end_time: bool,
     resolution: UiResolution,
     /// Whether this set is offered the Interface resolution row at all: webOS 1-3 only
     /// (`plx_platform::tv::device::ui_resolution_offered`). A plain flag, like the others, so the
@@ -1257,6 +1264,7 @@ fn sentence_for(id: Option<&RootId>) -> Cow<'static, str> {
         Some(RootId::Language) => Cow::Borrowed(msg::settings_language_detail()),
         Some(RootId::AutoSignIn) => Cow::Borrowed(msg::settings_auto_sign_in_detail()),
         Some(RootId::TrailerAutoplay) => Cow::Borrowed(msg::settings_trailers_detail()),
+        Some(RootId::HudEndTime) => Cow::Borrowed(msg::settings_hud_end_time_detail()),
         Some(RootId::Resolution) => Cow::Borrowed(msg::settings_resolution_detail()),
         Some(RootId::Privacy) => Cow::Borrowed(msg::settings_privacy_detail()),
         Some(RootId::Diagnostics) => Cow::Borrowed(msg::settings_diagnostics_detail()),
@@ -1330,6 +1338,13 @@ fn root_form(inputs: &RootInputs) -> Form<RootId, Action, SettingsPage> {
             RowKind::Toggle,
             Action::TrailerAutoplay,
             Row::new(plx_platform::i18n::msg::settings_trailers_title()).toggle(inputs.trailer_autoplay),
+        )
+        .item_if(
+            signed_in,
+            RootId::HudEndTime,
+            RowKind::Toggle,
+            Action::HudEndTime,
+            Row::new(plx_platform::i18n::msg::settings_hud_end_time_title()).toggle(inputs.hud_end_time),
         )
         // Signed in AND on webOS 1-3 only (`resolution_offered`), like the switches above for the
         // first: the signed-out root is the sign-in path's own short list. On webOS 4+ the root is
@@ -1406,7 +1421,7 @@ impl RootPage {
             form: FormTable::new(super::registry::BAND),
             session_watch: Default::default(),
             session_snapshot: Default::default(),
-            pending_auto: None, pending_trailer: None,
+            pending_auto: None, pending_trailer: None, pending_hud_end_time: None,
             under_ask: Default::default(),
             plaintext_rows: Vec::new(),
             pending_plaintext: None,
@@ -1418,6 +1433,7 @@ impl RootPage {
                 sel: RowKey(0),
                 auto_sign_in: false,
                 trailer_autoplay: true,
+                hud_end_time: true,
                 language: plx_platform::i18n::Preference::System,
                 under_posters: plx_plex::plex::session::UnderPosters::DEFAULT,
                 plaintext: Vec::new(),
@@ -1446,18 +1462,23 @@ impl RootPage {
             plx_plex::plex::session::stored_effective::<plx_plex::plex::session::TrailerAutoplayPref>(
                 sess, &plx_plex::plex::session::current_seat())
         }, |(value, _)| *value);
+        let hud_end_time = self.pending_hud_end_time.as_ref().map_or_else(|| {
+            plx_plex::plex::session::stored_effective::<plx_plex::plex::session::HudEndTimePref>(
+                sess, &plx_plex::plex::session::current_seat())
+        }, |(value, _)| *value);
         let resolution = sess.ui_resolution();
         let resolution_offered = plx_platform::tv::device::ui_resolution_offered();
         let multi_user = sess.home_users.len() > 1;
         self.state.auto_sign_in = auto_sign_in;
         self.state.trailer_autoplay = trailer_autoplay;
+        self.state.hud_end_time = hud_end_time;
         self.state.language = plx_platform::i18n::saved_preference();
         self.state.under_posters = plx_media::route::under_posters();
         let plaintext = if signed_in { self.plaintext_inputs() } else { Vec::new() };
         let form = root_form(&RootInputs {
             trace: self.state.trace,
             signed_in, multi_user, library_count: directory.pinned_count() as i64,
-            auto_sign_in, trailer_autoplay, resolution, resolution_offered, language: self.state.language,
+            auto_sign_in, trailer_autoplay, hud_end_time, resolution, resolution_offered, language: self.state.language,
             under_posters: self.state.under_posters, plaintext,
         });
         let keep = self.form.selected_id().cloned();
@@ -1568,6 +1589,14 @@ impl RootPage {
                 self.pending_trailer = Some((on, receipt));
                 self.rebuild(directory);
             }
+            Action::HudEndTime => {
+                let on = !self.state.hud_end_time;
+                let (reply, receipt) = std::sync::mpsc::channel();
+                fx.push(Fx::App(AppFx::Preferences(super::registry::PreferenceCmd::Choose(
+                    plx_media::route::Choice::HudEndTime(on), reply))));
+                self.pending_hud_end_time = Some((on, receipt));
+                self.rebuild(directory);
+            }
             Action::Plaintext(ServerMachineId(machine)) => {
                 use plx_plex::plex::session::PlaintextChoice;
                 let Some(on) = self.plaintext_rows.iter().find(|(m, _)| *m == machine).map(|(_, on)| *on) else {
@@ -1671,6 +1700,14 @@ impl Machine<InnerHost> for RootPage {
                     if let Some(snapshot) = plx_plex::plex::session::peek_settled() {
                         self.session_snapshot = snapshot;
                         self.pending_trailer = None;
+                        landed = true;
+                    }
+                }
+                if self.pending_hud_end_time.as_ref().is_some_and(|(_, receipt)| !matches!(receipt.try_recv(),
+                    Err(std::sync::mpsc::TryRecvError::Empty))) {
+                    if let Some(snapshot) = plx_plex::plex::session::peek_settled() {
+                        self.session_snapshot = snapshot;
+                        self.pending_hud_end_time = None;
                         landed = true;
                     }
                 }
