@@ -120,27 +120,31 @@ impl Default for HudModel {
 }
 
 
+/// The playback facts that must all be known before the HUD can show a projected finish.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EndTimeEligibility {
+    pub enabled: bool,
+    pub is_movie_or_episode: bool,
+    pub is_preview: bool,
+    pub advancing: bool,
+    pub viewer_paused: bool,
+    pub seeking: bool,
+    pub loading: bool,
+    pub scrubbing: bool,
+}
+
 /// Whether the projected finish is meaningful for the current playback frame.
 /// Scrubbing, seeking, loading and pauses deliberately suppress the estimate rather than
 /// presenting a prediction based on a position or transport state that is not advancing.
-pub fn end_time_is_eligible(
-    enabled: bool,
-    is_movie_or_episode: bool,
-    is_preview: bool,
-    advancing: bool,
-    viewer_paused: bool,
-    seeking: bool,
-    loading: bool,
-    scrubbing: bool,
-) -> bool {
-    enabled
-        && is_movie_or_episode
-        && !is_preview
-        && advancing
-        && !viewer_paused
-        && !seeking
-        && !loading
-        && !scrubbing
+pub fn end_time_is_eligible(state: EndTimeEligibility) -> bool {
+    state.enabled
+        && state.is_movie_or_episode
+        && !state.is_preview
+        && state.advancing
+        && !state.viewer_paused
+        && !state.seeking
+        && !state.loading
+        && !state.scrubbing
 }
 
 /// Project an item's end timestamp from the current wall clock, content position and the
@@ -168,18 +172,17 @@ mod end_time_tests {
 
     #[test]
     fn end_time_visibility_requires_a_reliable_movie_or_episode_playback() {
-        let eligible = |enabled, media, preview, advancing, paused, seeking, loading, scrubbing| {
-            end_time_is_eligible(enabled, media, preview, advancing, paused, seeking, loading, scrubbing)
-        };
-        assert!(eligible(true, true, false, true, false, false, false, false));
-        assert!(!eligible(false, true, false, true, false, false, false, false), "preference off");
-        assert!(!eligible(true, false, false, true, false, false, false, false), "other content");
-        assert!(!eligible(true, true, true, true, false, false, false, false), "preview/trailer");
-        assert!(!eligible(true, true, false, false, false, false, false, false), "not advancing");
-        assert!(!eligible(true, true, false, true, true, false, false, false), "viewer pause");
-        assert!(!eligible(true, true, false, true, false, true, false, false), "seek");
-        assert!(!eligible(true, true, false, true, false, false, true, false), "loading");
-        assert!(!eligible(true, true, false, true, false, false, false, true), "scrub");
+        use super::EndTimeEligibility as E;
+        let playing = E { enabled: true, is_movie_or_episode: true, advancing: true, ..E::default() };
+        assert!(end_time_is_eligible(playing));
+        assert!(!end_time_is_eligible(E { enabled: false, ..playing }), "preference off");
+        assert!(!end_time_is_eligible(E { is_movie_or_episode: false, ..playing }), "other content");
+        assert!(!end_time_is_eligible(E { is_preview: true, ..playing }), "preview/trailer");
+        assert!(!end_time_is_eligible(E { advancing: false, ..playing }), "not advancing");
+        assert!(!end_time_is_eligible(E { viewer_paused: true, ..playing }), "viewer pause");
+        assert!(!end_time_is_eligible(E { seeking: true, ..playing }), "seek");
+        assert!(!end_time_is_eligible(E { loading: true, ..playing }), "loading");
+        assert!(!end_time_is_eligible(E { scrubbing: true, ..playing }), "scrub");
     }
 
     #[test]
