@@ -134,6 +134,8 @@ const CURLOPT_NOSIGNAL: c_int = 99;
 /// `curl/curl.h`; both have existed since libcurl 7.7. Set only by [`keypin::apply`].
 const CURLOPT_FRESH_CONNECT: c_int = 74;
 const CURLOPT_FORBID_REUSE: c_int = 75;
+/// `CURLOPT_SSL_SESSIONID_CACHE` (LONG + 150, since libcurl 7.16.0).
+const CURLOPT_SSL_SESSIONID_CACHE: c_int = 150;
 const CURLOPT_CONNECTTIMEOUT: c_int = 78;
 const CURLOPT_TIMEOUT: c_int = 13;
 const CURLOPT_TIMEOUT_MS: c_int = 155;
@@ -3115,7 +3117,7 @@ pub mod keypin {
     use super::{
         c_int, c_long, curl_easy_setopt_long, curl_easy_setopt_ptr, peer_leaf_pin, tls_verify_why,
         wall_clock_year, CURL, CURLOPT_CAINFO, CURLOPT_CERTINFO, CURLOPT_FORBID_REUSE,
-        CURLOPT_FRESH_CONNECT, CURLOPT_PINNEDPUBLICKEY, CURLOPT_SSL_VERIFYHOST,
+        CURLOPT_FRESH_CONNECT, CURLOPT_PINNEDPUBLICKEY, CURLOPT_SSL_SESSIONID_CACHE, CURLOPT_SSL_VERIFYHOST,
         CURLOPT_SSL_VERIFYPEER,
     };
     use std::collections::HashMap;
@@ -3832,9 +3834,9 @@ pub mod keypin {
     ///
     /// **Every key-mode handle does its own handshake.** `CURLOPT_FRESH_CONNECT` and
     /// `CURLOPT_FORBID_REUSE` are set before `VERIFYPEER` goes to 0, so the handle never takes a
-    /// cached connection and leaves none behind. A reused connection performs no handshake: there
-    /// would be no certificate for [`confirm`] to read (the open would be refused as a pin
-    /// mismatch), and the pin and the name would not have been checked for this request at all. It
+    /// cached connection and leaves none behind. A new connection can still resume a cached TLS
+    /// session, so disable the session cache too. Each transfer needs a full handshake with a
+    /// certificate for [`confirm`] to read, including a seek on the same multi handle. This
     /// also covers libcurl 7.53.1, where the pinned key is not part of the connection-reuse match,
     /// so a key-mode handle could otherwise ride a connection set up under different rules. The cost
     /// is one TLS handshake per key-mode request, accepted because key mode is a degraded state
@@ -3853,6 +3855,7 @@ pub mod keypin {
             (CURLOPT_CERTINFO, 1),
             (CURLOPT_FRESH_CONNECT, 1),
             (CURLOPT_FORBID_REUSE, 1),
+            (CURLOPT_SSL_SESSIONID_CACHE, 0),
             (CURLOPT_SSL_VERIFYHOST, 2),
             (CURLOPT_SSL_VERIFYPEER, 0),
         ] {

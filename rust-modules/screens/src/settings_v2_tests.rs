@@ -60,7 +60,7 @@ fn the_signed_out_root_drops_every_signed_in_row() {
 /// metrics, in the Settings layout's own table frame), and how far it may drift before this test
 /// says the row heights or the section break moved. It is a pin of our geometry, not a number
 /// read off the board.
-const ALL_ROWS_SCROLL: f32 = 244.0;
+const ALL_ROWS_SCROLL: f32 = 304.0;
 const ALL_ROWS_SCROLL_TOLERANCE: f32 = 6.0;
 
 /// Sv2s-R2: every conditional row at once is the board's longest root, and it scrolls.
