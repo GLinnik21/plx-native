@@ -3880,8 +3880,10 @@ pub mod keypin {
     /// could otherwise ride a connection set up under different rules. The cost is one full TLS
     /// handshake per key-mode request, accepted because key mode is a degraded state (a wrong
     /// clock) that the first strict success ends. Strict and roots-mode handles keep their session
-    /// cache: they never read a certificate back, and libcurl keys a session by the verification
-    /// settings and the pin, so a key-mode session is never offered to one that verifies.
+    /// cache: a `CurlSource`'s read no certificate chain back, and the control plane's one that does
+    /// (to learn a key) is a fresh easy handle per request, which shares no cache. Key mode stores no
+    /// session at all, so none can be offered to a handle that verifies (libcurl 7.53.1 matches a
+    /// session on `verifypeer`, `verifyhost` and the CA settings, not on the pin; 8.12+ adds the pin).
     ///
     /// # Safety
     /// `easy` is a live curl easy handle; `pin` outlives the transfer (libcurl 7.17+ copies it,
