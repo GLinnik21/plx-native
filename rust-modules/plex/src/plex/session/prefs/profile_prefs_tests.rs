@@ -65,6 +65,7 @@ fn the_record_has_one_field_for_each_setting_with_a_legacy_fallback() {
         under_posters: Some(UnderPosters { title: true, details: DetailParts::of(&[DetailPart::VideoQuality]), show_details: DetailParts::SHOW_DEFAULT, sort_value: false }),
         audio_enhancements: Some(AudioEnhancements { boost_dialog: true, normalize_loudness: true }),
         trailer_autoplay: Some(false),
+        hud_end_time: Some(false),
         hud_selection: Some("com.example.hud".into()),
     };
     let fields: BTreeSet<String> = serde_json::to_value(&full).unwrap().as_object().unwrap().keys().cloned().collect();
@@ -73,8 +74,10 @@ fn the_record_has_one_field_for_each_setting_with_a_legacy_fallback() {
         .filter(|d| d.fallback == Fallback::LegacyInstallKey)
         .map(|d| d.key.to_string())
         .collect();
-    assert_eq!(rows.len(), 18, "every per-profile setting has a legacy fallback");
+    assert_eq!(rows.len(), 19, "every per-profile setting has a legacy fallback");
     assert_eq!(fields, rows, "ProfilePrefs and the rows with a legacy fallback drifted");
+    assert!(effective::<HudEndTimePref>(&Preferences::default(), None), "a profile with no pick defaults the end-time label on");
+    assert!(!effective::<HudEndTimePref>(&Preferences::default(), Some(&full)), "a profile's explicit OFF overrides the default");
     assert!(DESCRIPTORS.iter().filter(|d| d.fallback == Fallback::LegacyInstallKey).all(|d| d.scope == Scope::Profile));
 }
 
