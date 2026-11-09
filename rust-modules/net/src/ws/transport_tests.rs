@@ -151,6 +151,7 @@ fn close_code(frame: &Frame) -> u16 {
 
 #[test]
 fn a_text_message_goes_out_and_its_echo_comes_back_before_a_clean_close() {
+    let _serial = plx_base::testlock::serial();
     if !curl_ready() {
         return;
     }
@@ -181,6 +182,7 @@ fn a_text_message_goes_out_and_its_echo_comes_back_before_a_clean_close() {
 
 #[test]
 fn a_message_queued_before_the_upgrade_is_sent_once_the_connection_opens() {
+    let _serial = plx_base::testlock::serial();
     if !curl_ready() {
         return;
     }
@@ -199,6 +201,7 @@ fn a_message_queued_before_the_upgrade_is_sent_once_the_connection_opens() {
 
 #[test]
 fn a_server_ping_is_answered_with_its_payload() {
+    let _serial = plx_base::testlock::serial();
     if !curl_ready() {
         return;
     }
@@ -217,6 +220,7 @@ fn a_server_ping_is_answered_with_its_payload() {
 
 #[test]
 fn after_the_server_closes_the_client_waits_for_its_tcp_close_and_no_longer() {
+    let _serial = plx_base::testlock::serial();
     if !curl_ready() {
         return;
     }
@@ -304,6 +308,7 @@ fn nothing_is_dialled_where_only_serial_tls_is_safe() {
 
 #[test]
 fn cancelling_sends_going_away_and_returns() {
+    let _serial = plx_base::testlock::serial();
     if !curl_ready() {
         return;
     }
@@ -325,6 +330,7 @@ fn cancelling_sends_going_away_and_returns() {
 
 #[test]
 fn a_silent_server_ends_the_connection_as_idle() {
+    let _serial = plx_base::testlock::serial();
     if !curl_ready() {
         return;
     }
@@ -342,6 +348,7 @@ fn a_silent_server_ends_the_connection_as_idle() {
 
 #[test]
 fn a_dropped_connection_without_a_close_is_lost() {
+    let _serial = plx_base::testlock::serial();
     if !curl_ready() {
         return;
     }
@@ -354,6 +361,7 @@ fn a_dropped_connection_without_a_close_is_lost() {
 
 #[test]
 fn an_answer_that_is_not_an_upgrade_fails_the_handshake() {
+    let _serial = plx_base::testlock::serial();
     if !curl_ready() {
         return;
     }
@@ -374,6 +382,7 @@ fn an_answer_that_is_not_an_upgrade_fails_the_handshake() {
 
 #[test]
 fn a_refused_connection_is_reported_with_curls_code() {
+    let _serial = plx_base::testlock::serial();
     if !curl_ready() {
         return;
     }
@@ -400,6 +409,7 @@ fn an_address_keeps_its_query_and_gains_a_root_path() {
 
 #[test]
 fn a_peer_that_never_pauses_cannot_hold_off_a_cancel() {
+    let _serial = plx_base::testlock::serial();
     if !curl_ready() {
         return;
     }
@@ -455,6 +465,7 @@ fn an_outbox_whose_connection_is_gone_says_so() {
 #[test]
 #[ignore = "needs the Autobahn fuzzing server, AUTOBAHN=ws://127.0.0.1:9001"]
 fn autobahn_client_cases() {
+    let _serial = plx_base::testlock::serial();
     assert!(curl_ready(), "libcurl did not load");
     let base = std::env::var("AUTOBAHN").expect("AUTOBAHN=ws://host:port");
     let agent = "plxnative";
