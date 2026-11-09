@@ -1,7 +1,7 @@
 # Playback settings
 
 Settings has **Video & playback** and **Audio & subtitles** pages. **Video & playback** holds
-Video (quality, Direct Play, Dolby Vision), Player (skip interval, D-pad seeking, HDR overlay,
+Video (quality, Direct Play, Dolby Vision, Playback engine), Player (skip interval, D-pad seeking, HDR overlay,
 intro and credits skip, Player HUD) and Up next (next episode, Continue Watching). Subtitle size and
 position live in the Look group of **Audio & subtitles**: this app's own settings, kept per profile
 and never sent to the account. These settings are saved on this television, **per profile**: each
@@ -38,6 +38,35 @@ quality is overridden. Returning to Auto or
 Disabled needs no confirmation.
 
 Audio passthrough remains the television's Digital Sound Output setting.
+
+## Playback engine
+
+**Playback engine** (Video group) chooses which engine fetches and decodes direct-play videos, per
+profile: **Standard** (the default) is this app's own player, which feeds the stream to the TV;
+**Experimental** is an opt-in that hands the file's URL to the TV's own media pipeline (the URI engine,
+`docs/uri-first-migration.md`). This app's own player screen and controls stay in both: only fetching
+and decoding move. The opt-in is the viewer's own qualification of a URI source for that profile only:
+nobody who has not turned it on is routed to URI, and the row is visible to everyone in every shipped
+language.
+
+With Experimental on, only a direct play of the original file can go to the TV's pipeline, and only
+one Standard would itself direct-play on this television. Standard's own verdicts decide that
+(`StandardDirectPlay`, carried on `OriginalRequest`): a video whose codec or size the set cannot show,
+a Dolby Vision file the set and the Dolby Vision setting refuse (a Profile 5 file on a set without Dolby
+Vision, with the setting on Auto), an audio track the set's own decoder cannot play (also one this
+app would decode itself) and a container Standard has the server remux (anything but .mkv, .mp4 and .m4v)
+stay in Standard, where the server converts what the TV cannot show or play. The TV's pipeline would play
+such a file with wrong colours or no sound and report no failure, so the handoff to Standard would never
+fire. Those are Standard's verdicts and no more: the server's own decision is not one of them, because the
+URI offer is made before the server is asked, so a file that clears these checks but that the server would
+still convert can go to the TV's pipeline. A video your Plex server converts (remux, transcode or HLS), any file
+that carries a subtitle stream (whether or not a subtitle is switched on) or a burned or client-drawn
+subtitle, a trailer preview, a non-1x speed, a relay link and Auto quality away from the LAN also still
+play in Standard. An Experimental failure takes at most one handoff per play: the video restarts in Standard
+(`route::backend_policy`). On webOS 4.x the Experimental engine binds the screen through ACB and waits for each
+release's completion callback before the next title; when that never arrives the plane stays
+quarantined until the app restarts, the next title's Experimental bind is refused and that title takes the
+handoff to Standard. Nothing about this setting is sent to telemetry or diagnostics.
 
 ## Plex account preferences
 

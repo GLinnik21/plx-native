@@ -3,8 +3,10 @@
 //! `devtriggers` and `play-uri` (see `dev.rs`), so a release binary carries none of it.
 //!
 //! **What it is.** Production certifies no source: its evidence is `ProductEvidence::unqualified_on`
-//! (nothing certified) and its qualifier is `ProductQualifier` (always `Unknown`), so a real
-//! resolve never offers the URI backend. This module is the one place that composes the other
+//! (nothing certified) and its qualifier is `ProductQualifier` (`Unknown` unless the viewer opted in to
+//! the URI engine in Settings, and then only for a file Standard would direct-play: its video, Dolby Vision, audio
+//! and container verdicts, not the server's own decision), so a real resolve of a viewer who has not opted in never
+//! offers the URI backend. This module is the one place that composes the other
 //! answer for a test run: [`compose`] swaps in dev evidence (the four capabilities a URL carrier
 //! needs, certified) and a dev [`OriginalQualifier`] that answers a certified `ProgressiveUri`
 //! verdict whose source is the trigger's URL. Everything else is the real route: the resolve
@@ -43,9 +45,8 @@
 use plx_media::route::uri_preflight::{KnownSource, OriginalQualifier, OriginalRequest,
     ProductEvidence, Verdict};
 use plx_plex::plex::Origin;
-use plx_play_uri::backend::{Binding, NativeTrackIndex, UriSource};
-use plx_playback_contract::{Capabilities, Fidelity, Requirements, SourceKind, TrackChoice,
-    TrackKind, TrackSelection};
+use plx_play_uri::backend::Binding;
+use plx_playback_contract::Capabilities;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -259,33 +260,16 @@ impl OriginalQualifier for DevQualifier {
         if request.selection.part_id != self.trigger.part || request.server_origin != self.trigger.pms {
             return Verdict::Unknown;
         }
-        let selected_audio = u64::try_from(request.selection.audio_sid).ok().filter(|sid| *sid > 0);
-        // The carrier lists its audio in the Part's order, so the stream's position in the Part is
-        // its native index (`OriginalRequest::audio_ordinal`, a hypothesis the 4.5 service has not
-        // yet confirmed). A stream whose position the plan could not name maps to nothing: the
-        // source then cannot supply the selection and the route plays the Feed, instead of the
-        // service silently staying on track 0.
-        let tracks = selected_audio.zip(request.audio_ordinal).map(|(id, index)| NativeTrackIndex {
-            selection: TrackSelection { kind: TrackKind::Audio, id }, index,
-        });
-        Verdict::Known(KnownSource {
-            selection: request.selection,
-            source: UriSource::new(self.trigger.url.clone(), tracks.into_iter().collect()),
-            requirements: Requirements { source: SourceKind::ProgressiveUri,
-                video: Fidelity::Exact, audio: Fidelity::Exact,
-                audio_track: selected_audio.map_or(TrackChoice::Unspecified, TrackChoice::Selected),
-                subtitle_track: request.subtitle_choice },
-            certified_dolby_vision: request.dolby_vision.present.then_some(request.dolby_vision),
-            certified_subtitle_source: None,
-            expires_at: plx_media::player::adapter::uri_source_expiry_after(VERDICT_TTL),
-        })
+        Verdict::Known(KnownSource::url_carrier(&request, self.trigger.url.clone(), VERDICT_TTL))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use plx_media::route::uri_preflight::{ProductQualifier, ResolvePort};
+    use plx_play_uri::backend::NativeTrackIndex;
+    use plx_playback_contract::{Fidelity, SourceKind, TrackChoice, TrackKind, TrackSelection};
+    use plx_media::route::uri_preflight::{ProductQualifier, ResolvePort, StandardDirectPlay};
     use plx_media::route::SourceSelection;
     use plx_platform::tv::sink::VP_ACB;
 
@@ -534,7 +518,9 @@ mod tests {
             duration_ms: Some(90_000),
             video_codec: "h264".to_owned(),
             dolby_vision: plx_data::metadata::Dovi::NONE,
-            dolby_vision_mode: plx_plex::plex::session::DolbyVisionMode::Auto,
+            dolby_vision_mode: plx_plex::plex::session::DolbyVisionMode::Auto, uri_opt_in: false,
+            standard: StandardDirectPlay { video: true, dolby_vision: true, audio: true,
+                container: true },
             audio_codec: "aac".to_owned(), audio_ordinal,
             subtitle_source: None,
             subtitle_choice: TrackChoice::Unspecified,
@@ -637,6 +623,23 @@ mod tests {
             assert!(matches!(qualifier.qualify(&off, request(991001, &other, 42)),
                 Verdict::Unknown), "origin {}", other.base());
         }
+    }
+
+    /// A test run forces the trigger's URL for its Part whatever Standard would do with the file (the
+    /// production opt-in answers only for what Standard direct-plays): the dev qualifier itself reads none
+    /// of the plan's verdicts, and `url_carrier` reads only the Dolby Vision one (it certifies a DV record
+    /// only where `standard.dolby_vision`), so a fixture Standard converts for its video, audio or
+    /// container still plays here, while a Dolby Vision record the frozen decision refused is not forced.
+    #[test]
+    fn the_dev_qualifier_forces_the_url_whatever_standard_would_do_with_the_file() {
+        let (_, qualifier) = armed_pair();
+        let off = plx_base::task::OffFrame::for_test();
+        let mut req = request(991001, &mock_origin(), 42);
+        req.standard = StandardDirectPlay { video: false, dolby_vision: false, audio: false,
+            container: false };
+        let Verdict::Known(known) = qualifier.qualify(&off, req)
+            else { panic!("the dev route did not force the pinned part") };
+        assert_eq!(known.source.into_parts().0, URL);
     }
 
     #[test]

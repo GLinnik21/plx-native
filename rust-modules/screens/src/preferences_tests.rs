@@ -109,7 +109,7 @@ fn every_field_row_pushes_its_picker_and_nothing_else() {
     let mut playback = PreferencesPage::new(EntryId(0), Kind::Playback);
     let mut audio = loaded_audio_page(&account);
     for (page, fields) in [
-        (&mut playback, vec![PickerKind::Quality, PickerKind::DirectPlay, PickerKind::HdrOverlay, PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval, PickerKind::InstantDpadSeeking, PickerKind::DolbyVision]),
+        (&mut playback, vec![PickerKind::Quality, PickerKind::DirectPlay, PickerKind::HdrOverlay, PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval, PickerKind::InstantDpadSeeking, PickerKind::DolbyVision, PickerKind::UriEngine]),
         (&mut audio, vec![PickerKind::AudioLanguage, PickerKind::SubtitleMode, PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles, PickerKind::SubtitleSize, PickerKind::SubtitlePosition]),
     ] {
         for field in fields {
@@ -234,6 +234,43 @@ fn the_continue_watching_row_defaults_to_open_details_and_its_picker_saves_the_p
     assert_eq!(saved, Some(DeckPress::Play));
 }
 
+/// The Playback engine row: the shipped default is Standard (the opt-in is off), the picker lists
+/// the two options with the live one checked, and choosing Experimental asks the app to save exactly
+/// that. The row's value is its readout, not its sentence.
+#[test]
+fn the_playback_engine_row_defaults_to_standard_and_its_picker_saves_the_opt_in() {
+    use plx_plex::plex::session::UriEngine;
+    let _serial = plx_base::testlock::serial();
+    let _en = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _session = plx_plex::plex::session::TempSession::new("pref-uri-engine");
+    let prior = plx_media::route::uri_engine();
+    plx_media::route::restore_uri_engine(UriEngine::Off);
+
+    let prefs = AudioPreferences::default();
+    let readout = field_readout(PickerKind::UriEngine, Quality::Original, DirectPlayMode::Auto, Some(&prefs));
+    let options = field_options(PickerKind::UriEngine, Quality::Original, DirectPlayMode::Auto, Some(&prefs));
+    let current = resolve_value(PickerKind::UriEngine, Quality::Original, DirectPlayMode::Auto, Some(&prefs));
+    assert_eq!(readout, "Standard");
+    assert_eq!(current, Value::UriEngine(UriEngine::Off));
+    assert_eq!(options, [("Standard".to_string(), Value::UriEngine(UriEngine::Off)),
+        ("Experimental".to_string(), Value::UriEngine(UriEngine::On))]);
+    assert_eq!(PickerKind::UriEngine.title(), "Playback engine");
+    assert_eq!(PickerKind::UriEngine.parent(), SettingsPage::Playback);
+
+    let mut picker = PickerPage::new(EntryId(0), PickerKind::UriEngine);
+    let emitted = drive(&mut picker, ScreenEvent::Activate(1), 1);
+    plx_media::route::restore_uri_engine(prior);
+    let saved = emitted.into_iter().find_map(|e| match e.fx {
+        Fx::App(AppFx::Preferences(PreferenceCmd::Choose(plx_media::route::Choice::UriEngine(engine), _))) => Some(engine),
+        _ => None,
+    });
+    assert_eq!(saved, Some(UriEngine::On));
+    // Opting in is visible on the row the picker returns to.
+    plx_media::route::restore_uri_engine(UriEngine::On);
+    assert_eq!(field_readout(PickerKind::UriEngine, Quality::Original, DirectPlayMode::Auto, Some(&prefs)), "Experimental");
+    plx_media::route::restore_uri_engine(prior);
+}
+
 /// Seat a Plex Home profile called `title` on the fixture session. The caller holds
 /// `testlock::serial()`.
 fn seat_named(session: &plx_plex::plex::session::TempSession, uuid: &str, title: &str) {
@@ -265,7 +302,7 @@ fn playback_rows_are_read_only_while_no_profile_is_seated() {
     let mut page = PreferencesPage::new(EntryId(0), Kind::Playback);
     assert_eq!(page.copy, plx_platform::i18n::msg::settings_playback_unseated(), "the page says to choose a profile");
     for field in [PickerKind::Quality, PickerKind::DirectPlay, PickerKind::HdrOverlay,
-        PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval, PickerKind::InstantDpadSeeking, PickerKind::DolbyVision] {
+        PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval, PickerKind::InstantDpadSeeking, PickerKind::DolbyVision, PickerKind::UriEngine] {
         let key = RowId::Field(field).key().0;
         let row = page.form.index_of(&RowId::Field(field)).expect("the row is still listed");
         assert!(disabled_rows(&page)[row], "{field:?}: disabled");
@@ -396,7 +433,7 @@ fn video_and_playback_lists_video_player_and_up_next() {
     let granted = MarkerPrefsView { scope: 1, intro_granted: true, credits_granted: true, ..Default::default() };
     let all = FieldListInputs { marker_prefs: granted, ..inputs_of(Kind::Playback, None) };
     assert_eq!(fields_of(&all), vec![
-        PickerKind::Quality, PickerKind::DirectPlay, PickerKind::DolbyVision,
+        PickerKind::Quality, PickerKind::DirectPlay, PickerKind::DolbyVision, PickerKind::UriEngine,
         PickerKind::SkipInterval, PickerKind::InstantDpadSeeking, PickerKind::HdrOverlay, PickerKind::IntroSkip, PickerKind::CreditsSkip,
         PickerKind::NextEpisode, PickerKind::DeckPress,
     ]);
@@ -416,7 +453,7 @@ fn intro_and_credits_skip_rows_follow_their_grants_in_the_player_group() {
     let _serial = plx_base::testlock::serial();
     let none = inputs_of(Kind::Playback, None);
     assert_eq!(fields_of(&none), vec![
-        PickerKind::Quality, PickerKind::DirectPlay, PickerKind::DolbyVision,
+        PickerKind::Quality, PickerKind::DirectPlay, PickerKind::DolbyVision, PickerKind::UriEngine,
         PickerKind::SkipInterval, PickerKind::InstantDpadSeeking, PickerKind::HdrOverlay, PickerKind::NextEpisode, PickerKind::DeckPress]);
     let intro = FieldListInputs { marker_prefs: MarkerPrefsView { scope: 2, intro_granted: true, ..Default::default() }, ..inputs_of(Kind::Playback, None) };
     assert_eq!(fields_of(&intro).iter().filter(|f| matches!(f, PickerKind::IntroSkip | PickerKind::CreditsSkip)).collect::<Vec<_>>(), [&PickerKind::IntroSkip]);
@@ -489,7 +526,7 @@ fn every_field_list_row_states_its_own_sentence() {
     let seated = Whose::Profile("Maya".into());
     let sentence = |kind, id: Option<&RowId>, status, force, whose: &Whose|
         row_sentence(kind, id, page, status, if force { DirectPlayMode::Forced } else { DirectPlayMode::Auto }, whose).into_owned();
-    for field in [PickerKind::Quality, PickerKind::DirectPlay, PickerKind::DolbyVision, PickerKind::SkipInterval, PickerKind::InstantDpadSeeking,
+    for field in [PickerKind::Quality, PickerKind::DirectPlay, PickerKind::DolbyVision, PickerKind::UriEngine, PickerKind::SkipInterval, PickerKind::InstantDpadSeeking,
         PickerKind::HdrOverlay, PickerKind::IntroSkip, PickerKind::CreditsSkip, PickerKind::NextEpisode, PickerKind::DeckPress] {
         assert_eq!(sentence(Kind::Playback, Some(&RowId::Field(field)), false, false, &seated), field.copy(), "{field:?}");
     }

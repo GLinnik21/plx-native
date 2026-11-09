@@ -5,5 +5,9 @@
   "settings.playback.instant_dpad_seeking.on": "Activat",
   "settings.playback.dolby_vision": "Dolby Vision",
   "settings.playback.dolby_vision.copy": "En mode automàtic, s'utilitza Dolby Vision si el televisor és compatible. Si està desactivat, es reprodueix la capa HDR10. El servidor Plex converteix els fitxers que no tenen capa HDR10, i és possible que no es puguin reproduir.",
-  "settings.playback.dolby_vision.off": "Desactivat"
+  "settings.playback.dolby_vision.off": "Desactivat",
+  "settings.playback.uri_engine": "Motor de reproducció",
+  "settings.playback.uri_engine.copy": "Experimental deixa que el televisor rebi el fitxer en streaming. Els controls continuen igual. Si falla, el vídeo es reinicia en Estàndard. Alguns vídeos sempre usen Estàndard.",
+  "settings.playback.uri_engine.off": "Estàndard",
+  "settings.playback.uri_engine.on": "Experimental"
 }
