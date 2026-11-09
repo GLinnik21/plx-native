@@ -295,6 +295,47 @@ fn the_key_table_stays_bounded_over_many_rotating_refreshes() {
     assert_eq!(snapshot(&page), snapshot(&fixture.screen()), "and the page is the one a full build makes");
 }
 
+#[test]
+fn rotating_linked_shelves_bound_control_keys_and_keep_focus_seats() {
+    let _guard = plx_base::testlock::serial();
+    let collections = |start| {
+        [0, start + 1, start + 2].map(|id| (
+            format!("custom.collection.1.{id}"),
+            format!("/library/collections/{id}/children"),
+            format!("Collection {id}"),
+        ))
+    };
+    let mut fixture = Fixture::named_shelves(&collections(1), 4);
+    let mut page = fixture.screen();
+    let stable = page.shelves[0].heading.expect("linked heading");
+    let (focused_group, focused_elem) = page.shelves[1].heading.expect("linked heading");
+    let focus = Some(FocusKey { entry: page.entry, elem: focused_elem });
+    let bound = key_cap(3 * (3 + 3)) + KEY_PRUNE_BATCH;
+    let mut swept = false;
+    for step in 1..=120 {
+        let previous: Vec<_> = page.shelves.iter().flat_map(Row::control_keys).collect();
+        let before = page.keys.count(KeyRegion::Control);
+        reseed(&mut fixture, &collections(2 * step + 1), 4);
+        fixture.republish();
+        page.sync(&fixture.cx(focus));
+        let after = page.keys.count(KeyRegion::Control);
+        assert!(after <= bound, "rotation {step}: {after} controls exceed {bound}");
+        swept |= after < before;
+        assert_eq!(page.shelves[0].heading, Some(stable));
+        assert_eq!(page.keys.last_place(focused_elem), Some((focused_group, 0)));
+        assert!(page.keys.key(focused_group.0).is_some());
+        assert!(previous.into_iter().all(|elem| page.keys.key(elem).is_some()));
+    }
+    assert!(swept, "the fixture must cross the sweep threshold");
+
+    let memory = page.page_memory();
+    let mut restored = fixture.screen();
+    restored.restore(&memory);
+    restored.sync(&fixture.cx(focus));
+    assert_eq!(restored.shelves[0].heading, Some(stable));
+    assert_eq!(snapshot(&restored), snapshot(&page));
+}
+
 /// **`KeyRegistry::count` is the table's count**: the per-region numbers the sweep's bound is read
 /// from equal a scan of the table after any mix of minting, pruning and remounting from memory.
 #[test]

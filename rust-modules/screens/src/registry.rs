@@ -830,7 +830,7 @@ const KEY_SLACK: usize = 256;
 pub(crate) fn key_cap(live: usize) -> usize { 2 * live + KEY_SLACK }
 
 /// How many keys may leave the page before a table that drops its keys sweeps them: Home's
-/// placeholder slots, and the Recommended page's item and slot keys (`RecommendedScreen::rebuild`,
+/// placeholder slots, and the Recommended page's card and control keys (`RecommendedScreen::rebuild`,
 /// off `KeyRegistry::count`). Closing the gap a key at a time moves every key behind it in the
 /// table and in the indexes that name positions, so a page that changes a few keys per publication
 /// paid for the whole table on each one; the sweep is batched instead. What waits on Home is a key

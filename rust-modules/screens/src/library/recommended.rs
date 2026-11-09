@@ -99,6 +99,10 @@ pub(super) struct Row {
 impl Row {
     fn heading_elem(&self) -> Option<u32> { self.heading.map(|(_, elem)| elem) }
 
+    fn control_keys(&self) -> impl Iterator<Item = u32> {
+        std::iter::once(self.group.0).chain(self.heading.into_iter().flat_map(|(group, elem)| [group.0, elem]))
+    }
+
     /// Is this the row `shelf` publishes: the same hub, drawn the same way?
     fn is(&self, shelf: &HubShelf) -> bool { self.id == shelf.id && self.landscape == shelf.landscape }
 }
@@ -453,9 +457,11 @@ impl RecommendedScreen {
         let query = self.query.unwrap_or(0);
         let incremental = !std::mem::take(&mut self.rows_stale) && ids_distinct(shelves);
         let before = self.cards_held();
+        let before_rows = self.shelves.len();
         let mut seats: RowSeats<Row, (String, bool)> = RowSeats::new(std::mem::take(&mut self.shelves), shelves.len());
         // What changed rows gave up: the previous publication's keys that this one may not hold.
         let mut departed: Vec<u32> = Vec::new();
+        let mut departed_controls = Vec::new();
         let mut rows: Vec<Row> = Vec::with_capacity(shelves.len());
         if let Some(section) = identity {
             for (index, shelf) in shelves.iter().enumerate() {
@@ -469,11 +475,18 @@ impl RecommendedScreen {
                     continue;
                 }
                 seats.rebuilt(from);
-                let cards = from.and_then(|at| seats.take(at)).map(|old| { departed.extend(old.elems); old.cards });
+                let cards = from.and_then(|at| seats.take(at)).map(|old| {
+                    departed_controls.extend(old.control_keys());
+                    departed.extend(old.elems);
+                    old.cards
+                });
                 rows.push(self.build_row(section, shelf, index, epoch, query, cards));
             }
         }
-        for (_, old) in seats.finish().unclaimed { departed.extend(old.elems); }
+        for (_, old) in seats.finish().unclaimed {
+            departed_controls.extend(old.control_keys());
+            departed.extend(old.elems);
+        }
         self.shelves = rows;
         // A publication answers an ask a row's latch may be holding, kept row or built: the store
         // refuses an ask computed from a window the publication replaced, and nothing else would
@@ -485,12 +498,24 @@ impl RecommendedScreen {
         // plus 256, and a batch more, the oldest others go.
         let live = self.cards_held();
         let cap = key_cap(live + before);
+        let focus = cx.focus.current.filter(|key| key.entry == self.entry).map(|key| key.elem);
         if self.keys.count(KeyRegion::Shelf) > cap + KEY_PRUNE_BATCH {
             let mut keep: HashSet<u32> = HashSet::with_capacity(live + departed.len() + 1);
             keep.extend(self.shelves.iter().flat_map(|row| row.elems.iter().copied()));
             keep.extend(departed);
-            keep.extend(cx.focus.current.filter(|key| key.entry == self.entry).map(|key| key.elem));
+            keep.extend(focus);
             self.keys.prune(KeyRegion::Shelf, cap, |elem| keep.contains(&elem));
+        }
+        // A shelf can own a row group, a heading group and a heading element. Budget these
+        // separately: rotating empty shelves can mint controls without minting any card keys.
+        let control_cap = key_cap(3 * (self.shelves.len() + before_rows));
+        if self.keys.count(KeyRegion::Control) > control_cap + KEY_PRUNE_BATCH {
+            let focused_group = focus.and_then(|elem| self.keys.last_place(elem)).map(|(group, _)| group.0);
+            let mut keep: HashSet<u32> = self.shelves.iter().flat_map(Row::control_keys).collect();
+            keep.extend(departed_controls);
+            keep.extend(focus);
+            keep.extend(focused_group);
+            self.keys.prune(KeyRegion::Control, control_cap, |elem| keep.contains(&elem));
         }
     }
 
