@@ -694,7 +694,36 @@ enum Deferrable {
     /// The page's wash: its corners as the GPU receives them and the ink ramp laid over it in the
     /// same pass, taken as a delta (`frame::backdrop::Ground`), and whether the wash's own springs
     /// are at rest (`frame::backdrop::paint_ground`'s `resting`).
-    Ground { corners: [[f32; 3]; 4], ink: ([f32; 3], [f32; 2]), resting: bool },
+    Ground { corners: [[f32; 3]; 4], ink: ([f32; 3], [f32; 2]), scrim: plx_gfx::gfx::scrim::GroundScrim, resting: bool },
+}
+
+/// **What a ground pass lays over its field in the same pass** ([`Painter::ambient_inked`],
+/// [`Painter::ambient_art`]): one ink (`ink`'s rgb; its alpha is ignored), at the vertical ramp's
+/// two alphas (`ramp`: the alpha at the rect's top and at its bottom) and, over that, the
+/// [`GroundScrim`](plx_gfx::gfx::scrim::GroundScrim) field in authored pixels. A screen with no ramp
+/// passes zero alphas, one with no scrim [`GroundScrim::NONE`](plx_gfx::gfx::scrim::GroundScrim::NONE).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GroundInk {
+    pub ink: [f32; 4],
+    pub ramp: [f32; 2],
+    pub scrim: plx_gfx::gfx::scrim::GroundScrim,
+}
+
+impl GroundInk {
+    /// A ramp and no scrim: what a ground carried before the scrim existed.
+    pub const fn ramp(ink: [f32; 4], ramp: [f32; 2]) -> Self {
+        Self { ink, ramp, scrim: plx_gfx::gfx::scrim::GroundScrim::NONE }
+    }
+    /// No ink at all.
+    pub const NONE: Self = Self::ramp([0.0; 4], [0.0; 2]);
+    pub(crate) fn record(&self, data: &mut Vec<u64>) {
+        use frame::backdrop::Value;
+        self.ink.record(data);
+        self.ramp.record(data);
+        for v in self.scrim.uniforms() {
+            v.record(data);
+        }
+    }
 }
 
 impl Painter {
@@ -751,10 +780,21 @@ impl Painter {
         let bounds=Rect::new(m.x-4.0,m.y-4.0,m.w+8.0,m.h+8.0);
         match mark {
             Some(Deferrable::Dim(dim)) => frame::backdrop::paint_dim(bounds, data, dim),
-            Some(Deferrable::Ground { corners, ink: (ink, ink_a), resting }) => frame::backdrop::paint_ground(
+            Some(Deferrable::Ground { corners, ink: (ink, ink_a), scrim, resting }) => frame::backdrop::paint_ground(
                 bounds,
                 data,
-                frame::backdrop::Ground { corners, rect: [m.x, m.y, m.w, m.h], ink, ink_a },
+                frame::backdrop::Ground {
+                    corners,
+                    rect: [m.x, m.y, m.w, m.h],
+                    ink,
+                    // A glass takes the ground's ink as a ramp over y: the ramp's own alpha with the
+                    // scrim's two bands (never its radial, which is not a function of y) over it.
+                    ink_a: [
+                        ink_a[0] + (1.0 - ink_a[0]) * scrim.bands_at(m.y),
+                        ink_a[1] + (1.0 - ink_a[1]) * scrim.bands_at(m.y + m.h),
+                    ],
+                    scrim,
+                },
                 resting,
             ),
             None => frame::backdrop::paint(bounds, data),
@@ -1636,7 +1676,7 @@ impl Painter {
         if self.records() {
             draw_census::note_ground(drawn);
         }
-        if self.declare_as(r, 16, Some(Deferrable::Ground { corners: drawn, ink: ([0.0; 3], [0.0; 2]), resting }), |data| {
+        if self.declare_as(r, 16, Some(Deferrable::Ground { corners: drawn, ink: ([0.0; 3], [0.0; 2]), scrim: plx_gfx::gfx::scrim::GroundScrim::NONE, resting }), |data| {
             use frame::backdrop::Value;
             dim.record(data);
             k.record(data);
@@ -1660,8 +1700,8 @@ impl Painter {
     ///
     /// [`AmbientWash::draw_ground`]: crate::widgets::AmbientWash::draw_ground
     ///
-    /// `ink` is the screen's ramp over both, exactly as [`ambient_inked`](Self::ambient_inked) takes
-    /// it (zero alphas for none).
+    /// `ink` is the screen's ramp and scrim over both, exactly as [`ambient_inked`](Self::ambient_inked)
+    /// takes it ([`GroundInk::NONE`] for none).
     #[allow(clippy::too_many_arguments)]
     pub fn ambient_art(
         self,
@@ -1671,7 +1711,7 @@ impl Painter {
         art: Rect,
         uv: [f32; 4],
         tint: [f32; 4],
-        ink: ([f32; 4], [f32; 2]),
+        ink: GroundInk,
     ) {
         if self.declare(r, 22, |data| {
             use frame::backdrop::Value;
@@ -1682,12 +1722,11 @@ impl Painter {
             [am.x, am.y, am.w, am.h].record(data);
             uv.record(data);
             tint.record(data);
-            ink.0.record(data);
-            ink.1.record(data);
+            ink.record(data);
         }) { return; }
         if self.records() { return; }
         let t = self.c(tint);
-        let (ink, inka) = self.ink(ink);
+        let (ink, inka, scrim) = self.ink(ink);
         let (m, am) = (self.place(r), self.place(art));
         plx_gfx::gfx::draw_art_wash(
             (m.x, m.y, m.w, m.h),
@@ -1698,26 +1737,27 @@ impl Painter {
             t.as_ptr(),
             ink,
             inka,
+            &scrim,
         );
     }
-    /// [`ambient`](Self::ambient) over `r` with a vertical INK RAMP in the same pass: `ink.0`'s rgb at
-    /// an alpha running linearly from `ink.1[0]` at `r`'s top to `ink.1[1]` at its bottom — the same
-    /// picture as `ambient(r, 1.0, k)` then a full-width `rect` of that ink over it, and the pair it
-    /// replaces. Callers must check `gfx::wash_ink_ok` ([`AmbientWash::draw_ground`] does).
+    /// [`ambient`](Self::ambient) over `r` with a vertical INK RAMP in the same pass: `ink.ink`'s rgb at
+    /// an alpha running linearly from `ink.ramp[0]` at `r`'s top to `ink.ramp[1]` at its bottom — the
+    /// same picture as `ambient(r, 1.0, k)` then a full-width `rect` of that ink over it, and the pair
+    /// it replaces — and, over the ramp, `ink.scrim`'s field of the same ink. Callers must check
+    /// `gfx::wash_ink_ok` ([`AmbientWash::draw_ground`] does).
     ///
     /// [`AmbientWash::draw_ground`]: crate::widgets::AmbientWash::draw_ground
     ///
     /// `resting` is [`ambient`](Self::ambient)'s: the wash's own springs have landed.
-    pub fn ambient_inked(self, r: Rect, k: [[f32; 3]; 4], ink: ([f32; 4], [f32; 2]), resting: bool) {
+    pub fn ambient_inked(self, r: Rect, k: [[f32; 3]; 4], ink: GroundInk, resting: bool) {
         let (k_raw, ink_raw) = (k, ink);
         let resting = resting && self.wash_rests();
         let k = self.wash_corners(k);
-        let (ink, inka) = self.ink(ink);
-        if self.declare_as(r, 23, Some(Deferrable::Ground { corners: k, ink: (ink, inka), resting }), |data| {
+        let (ink, inka, scrim) = self.ink(ink);
+        if self.declare_as(r, 23, Some(Deferrable::Ground { corners: k, ink: (ink, inka), scrim, resting }), |data| {
             use frame::backdrop::Value;
             k_raw.record(data);
-            ink_raw.0.record(data);
-            ink_raw.1.record(data);
+            ink_raw.record(data);
         }) { return; }
         if self.records() { return; }
         let m = self.place(r);
@@ -1727,13 +1767,34 @@ impl Painter {
             [k[0].as_ptr(), k[1].as_ptr(), k[2].as_ptr(), k[3].as_ptr()],
             ink,
             inka,
+            &scrim,
         );
     }
-    /// An ink ramp through the cascade, exactly as the `rect` it stands in for took its two stops
-    /// through [`Self::c`]: rgb by the gain, both alphas by the painter's alpha.
-    fn ink(self, (ink, a): ([f32; 4], [f32; 2])) -> ([f32; 3], [f32; 2]) {
-        let c = self.c(ink);
-        ([c[0], c[1], c[2]], [a[0] * self.a, a[1] * self.a])
+    /// A ground's ink through the cascade, exactly as the `rect` it stands in for took its stops
+    /// through [`Self::c`]: rgb by the gain, every alpha (the ramp's two and each of the scrim's
+    /// terms) by the painter's alpha, and the scrim's field moved to where this painter places the
+    /// rects it is drawn into (its translate, and the zoom's scale).
+    fn ink(self, g: GroundInk) -> ([f32; 3], [f32; 2], plx_gfx::gfx::scrim::GroundScrim) {
+        let c = self.c(g.ink);
+        let at = self.place(Rect::new(0.0, 0.0, 1.0, 1.0));
+        (
+            [c[0], c[1], c[2]],
+            [g.ramp[0] * self.a, g.ramp[1] * self.a],
+            g.scrim.scaled(self.a).placed(at.x, at.y, at.w),
+        )
+    }
+    /// **The ground scrim ALONE, blended over what is already drawn** — `ink`'s rgb at the stacked
+    /// alpha of `scrim` over `r`, evaluated per vertex like the ground's own
+    /// ([`ambient_inked`](Self::ambient_inked) carries the same field in its one pass; this is for
+    /// the frames that pass cannot take it, a hero slide's two art layers). Check
+    /// `gfx::scrim_layer_ok` first ([`widgets::scrim_layer`] does).
+    pub fn scrim_layer(self, r: Rect, ink: [f32; 4], scrim: plx_gfx::gfx::scrim::GroundScrim) {
+        let g = GroundInk { ink, ramp: [0.0; 2], scrim };
+        if self.declare(r, 26, |data| g.record(data)) { return; }
+        if self.records() { return; }
+        let (ink, _, scrim) = self.ink(g);
+        let m = self.place(r);
+        plx_gfx::gfx::draw_scrim_layer(m.x, m.y, m.w, m.h, ink, &scrim);
     }
     /// Does the cascade hand a wash's corners to the GPU as they are: no alpha mixing them toward
     /// [`theme::SURFACE_APP`] (a page dipping for [`ui::nav`](crate::nav)'s route transition moves

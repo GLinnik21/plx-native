@@ -2841,7 +2841,7 @@ impl DetailScreen {
         // The still dissolves over its ground while the page scrolls, so where the ground is drawn
         // the ground, the still and the ramp are one pass (`AmbientWash::draw_ground`).
         let ramp_in_ground = if keyed_ground_over_plane(preview.picture, texture, art_alpha, ground_flat) {
-            self.ground.draw_ground(p, Rect::FULL, Some(art), ramp)
+            self.ground.draw_ground(p, Rect::FULL, Some(art), ramp, None)
         } else {
             if texture != 0 {
                 p.tex_uv(art.tex, art.uv, art.rect, 0.0, art.tint);

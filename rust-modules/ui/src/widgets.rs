@@ -8,7 +8,7 @@ use crate::label::{HAlign, Label, VAlign};
 use crate::text_view::TextView;
 use crate::theme;
 use crate::tile::{TileFacts, TileKind};
-use crate::{Env, Painter, Rect, Spring, View};
+use crate::{Env, GroundInk, Painter, Rect, Spring, View};
 use plx_gfx::text::{InkClip, InkShape, Keep};
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
@@ -4143,19 +4143,36 @@ impl AmbientWash {
     /// TOOK THE RAMP: when it did not, the ramp is the caller's to draw as before, over all of
     /// this — which is also the answer whenever the ramp would have had to go UNDER an art that
     /// stayed a layer of its own. Every fallback is the layered picture, never a different one.
+    ///
+    /// **The `scrim`** ([`WashScrim`]: Home's hero scrim, a field a ramp cannot describe) is carried
+    /// the same way and on the same conditions, evaluated per vertex of the one pass. Because a
+    /// vertex-evaluated field is linear inside a mesh triangle, a ground that carries one is cut into
+    /// cells of at most [`SCRIM_CELL_W`] x [`SCRIM_CELL_H`] (the mesh is 16 x 16 a cell), which is
+    /// what bounds how far the painted field stands from the closed form the legibility contract is
+    /// graded on ([`home_scrim_a`]). Returns whether it took the ramp and the scrim — both or
+    /// neither: they ride the same pass under the same conditions — and a caller that gets `false`
+    /// with either given draws it over all of this ([`scrim_layer`] for the scrim).
     pub fn draw_ground(
         &self,
         p: Painter,
         r: Rect,
         art: Option<WashArt>,
         ramp: Option<WashRamp>,
+        scrim: Option<WashScrim>,
     ) -> bool {
         let art = art.filter(|a| a.tex != 0);
         let split = art.and_then(|a| art_wash_split(r, a.rect)).filter(|_| plx_gfx::gfx::art_wash_ok());
         let art_taken = split.is_some();
         let resting = self.at_rest();
-        // The ramp sits over the art: it can only join the wash if the art did (or there is none).
-        let ramp = ramp.filter(|_| plx_gfx::gfx::wash_ink_ok() && (art.is_none() || art_taken));
+        // The ink sits over the art: it can only join the wash if the art did (or there is none).
+        let carries = plx_gfx::gfx::wash_ink_ok() && (art.is_none() || art_taken);
+        let ramp = ramp.filter(|_| carries);
+        let scrim = scrim.filter(|_| carries);
+        let inked = ramp.is_some() || scrim.is_some();
+        debug_assert!(
+            ramp.zip(scrim).is_none_or(|(q, s)| q.ink == s.ink),
+            "a ramp and a scrim in one pass are one ink"
+        );
         let (over, bands) = match split {
             Some((over, bands)) => (Some(over), bands),
             None => (None, [Some(r), None, None, None]),
@@ -4165,12 +4182,16 @@ impl AmbientWash {
                 .map(|(x, y)| self.sample(r, x, y).map(code))
         };
         let knees = ramp.map_or([None, None], |q| [Some(q.stops[0].0), Some(q.stops[1].0)]);
-        let ink = |b: Rect| {
-            ramp.map_or(([0.0; 4], [0.0; 2]), |q| (q.ink, [q.alpha(b.y), q.alpha(b.y + b.h)]))
+        let (cell_w, cell_h) = if scrim.is_some() { (SCRIM_CELL_W, SCRIM_CELL_H) } else { (f32::INFINITY, f32::INFINITY) };
+        let pieces = |band: Rect| cut_at(band, knees).flat_map(move |b| cut_cells(b, cell_w, cell_h));
+        let ink = |b: Rect| GroundInk {
+            ink: scrim.map(|s| s.ink).or(ramp.map(|q| q.ink)).unwrap_or([0.0; 4]),
+            ramp: ramp.map_or([0.0; 2], |q| [q.alpha(b.y), q.alpha(b.y + b.h)]),
+            scrim: scrim.map_or(plx_gfx::gfx::scrim::GroundScrim::NONE, |s| s.field),
         };
         for band in bands.into_iter().flatten() {
-            for b in cut_at(band, knees) {
-                if ramp.is_some() {
+            for b in pieces(band) {
+                if inked {
                     p.ambient_inked(b, corners(b), ink(b), resting);
                 } else {
                     p.ambient(b, 1.0, corners(b), resting);
@@ -4178,7 +4199,7 @@ impl AmbientWash {
             }
         }
         if let (Some(over), Some(a)) = (over, art) {
-            for b in cut_at(over, knees) {
+            for b in pieces(over) {
                 p.ambient_art(b, corners(b), a.tex, a.rect, a.uv, a.tint, ink(b));
             }
         }
@@ -4187,7 +4208,7 @@ impl AmbientWash {
                 p.tex_uv(a.tex, a.uv, a.rect, 0.0, a.tint);
             }
         }
-        ramp.is_some()
+        inked
     }
 
     /// **Paint a ground that has NO photograph at all as ONE flat colour** over `r`
@@ -4267,6 +4288,80 @@ pub fn cut_at(r: Rect, knees: [Option<f32>; 2]) -> impl Iterator<Item = Rect> {
     (0..3).filter_map(move |i| {
         (ys[i + 1] > ys[i]).then(|| Rect::new(r.x, ys[i], r.w, ys[i + 1] - ys[i]))
     })
+}
+
+/// A screen's SCRIM as [`AmbientWash::draw_ground`] carries it: `ink` (a scrim colour; its alpha is
+/// ignored) at the stacked alpha of `field` ([`home_scrim`] is Home's), a two-dimensional field no
+/// [`WashRamp`] can describe. The ground evaluates it per vertex in its one pass; [`scrim_layer`]
+/// draws the same field as a layer of its own.
+#[derive(Clone, Copy)]
+pub struct WashScrim {
+    pub ink: [f32; 4],
+    pub field: plx_gfx::gfx::scrim::GroundScrim,
+}
+
+impl WashScrim {
+    /// The scrim's alpha at the authored point `(x, y)`.
+    pub fn alpha(&self, x: f32, y: f32) -> f32 {
+        self.field.at(x, y)
+    }
+}
+
+/// The widest and tallest a scrimmed ground draws as ONE mesh (a 16 x 16 grid of triangles):
+/// 480 x 270 is the panel in a 4 x 4. The vertex-evaluated field is linear inside a triangle, so
+/// this is what bounds its distance from the closed form: `home_scrim_is_carried_within_...` holds
+/// the bound for Home's own field.
+pub const SCRIM_CELL_W: f32 = 480.0;
+pub const SCRIM_CELL_H: f32 = 270.0;
+
+/// `r` cut into a grid of at most `cell_w` x `cell_h` cells (one cell when either bound is no
+/// smaller than `r`), every edge computed from `r` and the cell index so two neighbours share the
+/// same float and the grid tiles `r` with no crack and no overlap.
+pub fn cut_cells(r: Rect, cell_w: f32, cell_h: f32) -> impl Iterator<Item = Rect> {
+    let n = |len: f32, cell: f32| ((len / cell).ceil() as usize).max(1);
+    let (nx, ny) = (n(r.w, cell_w), n(r.h, cell_h));
+    let edge = move |o: f32, len: f32, i: usize, n: usize| if i == n { o + len } else { o + len * i as f32 / n as f32 };
+    (0..ny).flat_map(move |j| {
+        (0..nx).map(move |i| {
+            let (x0, x1) = (edge(r.x, r.w, i, nx), edge(r.x, r.w, i + 1, nx));
+            let (y0, y1) = (edge(r.y, r.h, j, ny), edge(r.y, r.h, j + 1, ny));
+            Rect::new(x0, y0, x1 - x0, y1 - y0)
+        })
+    })
+}
+
+/// **Home's hero scrim** at hero fade `strength` (0..1; it scales every term, then they stack):
+/// the owner's CW-13 v2 board, the three terms of [`theme::home_scrim`] as a
+/// [`GroundScrim`](plx_gfx::gfx::scrim::GroundScrim) in authored pixels.
+pub fn home_scrim(strength: f32) -> WashScrim {
+    use theme::home_scrim as h;
+    use plx_gfx::gfx::scrim::{Curve, GroundScrim};
+    let k = strength.clamp(0.0, 1.0);
+    WashScrim {
+        ink: theme::scrim(1.0),
+        field: GroundScrim {
+            top: Curve::from_stops(&h::TOP, 0.0, h::TOP_H, k),
+            radial: Curve::from_stops(&h::RADIAL, 0.0, 1.0, k),
+            bottom: Curve::from_stops(&h::BOTTOM, h::BOTTOM_Y, h::BOTTOM_H, k),
+            centre: [h::RADIAL_CENTRE.0, h::RADIAL_CENTRE.1],
+            inv_radii: [1.0 / h::RADIAL_RADII.0, 1.0 / h::RADIAL_RADII.1],
+        },
+    }
+}
+
+/// Home's scrim alpha at the authored point `(x, y)`: the closed form the legibility contract is
+/// graded on, and the one the GPU's per-vertex field is held to. Pure.
+pub fn home_scrim_a(x: f32, y: f32, strength: f32) -> f32 {
+    home_scrim(strength).alpha(x, y)
+}
+
+/// **A scrim drawn as a layer of its own**, over whatever is already drawn: the frames a ground
+/// cannot carry it in its pass (a hero slide, with two art layers it must go OVER). The same field,
+/// in the same cells ([`SCRIM_CELL_W`]), as [`AmbientWash::draw_ground`] would have carried.
+pub fn scrim_layer(p: Painter, s: WashScrim) {
+    for cell in cut_cells(Rect::FULL, SCRIM_CELL_W, SCRIM_CELL_H) {
+        p.scrim_layer(cell, s.ink, s.field);
+    }
 }
 
 /// The photograph [`AmbientWash::draw_ground`] lays over its wash: exactly the arguments the
@@ -9600,6 +9695,10 @@ mod ambient_ground_tests;
 #[cfg(test)]
 #[path = "widgets_ground_tests.rs"]
 mod ground_tests;
+
+#[cfg(test)]
+#[path = "widgets_home_scrim_tests.rs"]
+mod home_scrim_tests;
 
 #[cfg(test)]
 #[path = "widgets_hero_scrim_tests.rs"]

@@ -173,11 +173,11 @@ fn a_ground_with_no_art_is_still_the_layered_picture() {
     for art in [None, Some(pending)] {
         // No ramp: one plain wash pass over the rect, and nothing taken.
         let mut took = true;
-        assert_eq!(handed(|p| took = w.draw_ground(p, Rect::FULL, art, None)), [(16, Rect::FULL)]);
+        assert_eq!(handed(|p| took = w.draw_ground(p, Rect::FULL, art, None, None)), [(16, Rect::FULL)]);
         assert!(!took, "no ramp to take");
         // A ramp: carried per band (tag 23) only where the driver has the program, else the caller's.
         let mut took = !inked;
-        let got = handed(|p| took = w.draw_ground(p, Rect::FULL, art, Some(ramp)));
+        let got = handed(|p| took = w.draw_ground(p, Rect::FULL, art, Some(ramp), None));
         let want: Vec<(u64, Rect)> = if inked {
             cut_at(Rect::FULL, [Some(300.0), Some(700.0)]).map(|b| (23, b)).collect()
         } else {

@@ -18,6 +18,7 @@ use crate::overdraw::{
 /// The live-backdrop walk: layer/damage algebra, the discovery pass and the retained glass sources.
 pub mod backdrop;
 mod geom;
+pub mod scrim;
 /// Draw-phase instrumentation (`phase`, the GPU timer / HWCNT / CPU profilers) and the LOAD DIAL's
 /// published state.
 pub mod profile;
@@ -149,7 +150,12 @@ const VS_IMG: &CStr = glsl!("shaders/vs_img.vert");
 /// The wash's vertex shader: the dithered twin, and the only one carrying the INK RAMP
 /// ([`draw_ambient_inked`]) — the plain twin behind `draw_grad4` has real corner alpha and no ramp.
 const VS_AMBIENT_DITHERED: &CStr =
-    glsl!("shaders/vs_ambient.vert", "#define PLX_DITHER_NC\n#define PLX_WASH_INK\n");
+    glsl!("shaders/vs_ambient.vert", "#define PLX_DITHER_NC\n#define PLX_WASH_INK\n#define PLX_SCRIM\n");
+/// The ground scrim drawn ALONE as a blended layer ([`draw_scrim_layer`]): `vs_ambient.vert`'s scrim
+/// field as the colour the plain, undithered fragment blends. For the frames the ground cannot carry
+/// the scrim in its own pass (a hero slide's two art layers).
+const VS_SCRIM_LAYER: &CStr =
+    glsl!("shaders/vs_ambient.vert", "#define PLX_SCRIM\n#define PLX_SCRIM_LAYER\n");
 const VS_IMG_DITHERED: &CStr = glsl_vs_dithered!("shaders/vs_img.vert");
 const VS_SRC_DITHERED: &CStr = glsl_vs_dithered!("shaders/vs_src.vert");
 const FS_IMG: &CStr = glsl!("shaders/fs_img.frag");
@@ -177,7 +183,7 @@ const FS_HERO: &CStr = glsl!("shaders/fs_hero.frag");
 const FS_ART_WASH: &CStr = glsl_dithered!("shaders/fs_art_wash.frag");
 const VS_ART_WASH: &CStr = glsl!(
     "shaders/vs_ambient.vert",
-    "#define PLX_DITHER_NC\n#define PLX_WASH_INK\n#define PLX_ART_WASH\n"
+    "#define PLX_DITHER_NC\n#define PLX_WASH_INK\n#define PLX_SCRIM\n#define PLX_ART_WASH\n"
 );
 const FS_BLUR: &CStr = glsl!("shaders/fs_blur.frag");
 const FS_GLASS: &CStr = glsl_dithered!("shaders/fs_glass.frag");
@@ -664,6 +670,17 @@ static mut AL_DITHER: c_int = 0;
 /// The dithered wash program's ink-ramp uniforms (`u_ink`, `u_inka`) — see [`draw_ambient_inked`].
 static mut AL_INK: c_int = -1;
 static mut AL_INKA: c_int = -1;
+/// ...and its scrim field (`u_sc`, [`scrim::GroundScrim`]).
+static mut AL_SC: c_int = -1;
+/// The scrim LAYER program ([`draw_scrim_layer`]) and its uniforms; 0 when the link failed.
+static mut SCRIM_PROG: c_uint = 0;
+static mut SCL_RECT: c_int = -1;
+static mut SCL_INK: c_int = -1;
+static mut SCL_SC: c_int = -1;
+/// What each of the three programs that carry a scrim field (`APROG`, the art wash, the layer) was
+/// last given, so a frame's dozen cells upload it once. A fresh program's uniforms are zero, which
+/// is [`scrim::GroundScrim::NONE`], so that is what an unwritten slot holds; `init_*` resets them.
+static mut SCRIM_SENT: [scrim::GroundScrim; 3] = [scrim::GroundScrim::NONE; 3];
 /// The ambient field's PLAIN program (`FS_AMBIENT_PLAIN`) — the hero scrim's (`draw_grad4`), never
 /// the wash's — and its uniforms; 0 when the link failed, in which case `APROG` serves the scrim
 /// with `u_dither` at 0.
@@ -863,6 +880,7 @@ struct ArtWashProgram {
     tint: c_int,
     ink: c_int,
     inka: c_int,
+    sc: c_int,
     dither: c_int,
 }
 
@@ -1158,6 +1176,19 @@ pub fn init_gl() {
             AL_DITHER = dither_uniforms(APROG);
             AL_INK = glGetUniformLocation(APROG, c"u_ink".as_ptr());
             AL_INKA = glGetUniformLocation(APROG, c"u_inka".as_ptr());
+            AL_SC = glGetUniformLocation(APROG, c"u_sc".as_ptr());
+        }
+        SCRIM_SENT = [scrim::GroundScrim::NONE; 3];
+        SCRIM_PROG = link_program(VS_SCRIM_LAYER.as_ptr(), FS_AMBIENT_PLAIN.as_ptr()).unwrap_or_else(|| {
+            log("scrim layer prog link failed — a hero slide draws no scrim over its art");
+            0
+        });
+        if SCRIM_PROG != 0 {
+            SCL_RECT = glGetUniformLocation(SCRIM_PROG, c"u_rect".as_ptr());
+            SCL_INK = glGetUniformLocation(SCRIM_PROG, c"u_ink".as_ptr());
+            SCL_SC = glGetUniformLocation(SCRIM_PROG, c"u_sc".as_ptr());
+            use_prog(SCRIM_PROG);
+            glUniform2f(glGetUniformLocation(SCRIM_PROG, c"u_screen".as_ptr()), SCR_W, SCR_H);
         }
         bind_dither_tile();
 
@@ -1666,7 +1697,7 @@ pub fn draw_ambient(
     br: *const f32,
     bl: *const f32,
 ) {
-    draw_ambient_impl(x, y, w, h, dim, tl, tr, br, bl, None);
+    draw_ambient_impl(x, y, w, h, dim, tl, tr, br, bl, None, &scrim::GroundScrim::NONE);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1681,6 +1712,7 @@ fn draw_ambient_impl(
     br: *const f32,
     bl: *const f32,
     ink: Option<([f32; 3], [f32; 2])>,
+    scrim: &scrim::GroundScrim,
 ) {
     if culled(x, y, w, h) || gate(Class::Ambient, x, y, w, h) {
         return;
@@ -1722,6 +1754,7 @@ fn draw_ambient_impl(
             let (ink, inka) = ink.unwrap_or(([0.0; 3], [0.0; 2]));
             glUniform3f(AL_INK, ink[0], ink[1], ink[2]);
             glUniform2f(AL_INKA, inka[0], inka[1]);
+            send_scrim(0, AL_SC, scrim);
         }
         draw_field_mesh();
     }
@@ -1821,6 +1854,20 @@ pub fn wash_ink_ok() -> bool {
     unsafe { APROG != 0 }
 }
 
+/// Give the program in use its scrim field if it does not hold it already (`slot`: 0 the wash, 1 the
+/// art wash, 2 the layer). One `glUniform4fv` of [`scrim::VEC4S`] vectors, and none at all for the
+/// next cell of the same frame — nor, for a screen with no scrim, on any frame after the first.
+#[inline]
+unsafe fn send_scrim(slot: usize, loc: c_int, want: &scrim::GroundScrim) {
+    let sent = &mut *std::ptr::addr_of_mut!(SCRIM_SENT[slot]);
+    if loc < 0 || *sent == *want {
+        return;
+    }
+    let u = want.uniforms();
+    glUniform4fv(loc, scrim::VEC4S as c_int, u.as_ptr().cast());
+    *sent = *want;
+}
+
 /// [`draw_ambient`] with a vertical INK RAMP laid over the field in the same pass: `ink` (rgb) at an
 /// alpha running linearly from `inka[0]` at the rect's top edge to `inka[1]` at its bottom — the
 /// screen's atmospheric scrim, cut by the caller at its knees so each rect is one straight segment.
@@ -1833,6 +1880,10 @@ pub fn wash_ink_ok() -> bool {
 /// passes were most of what still carried the frame over budget once the art had joined the wash
 /// (`draw_art_wash`). Callers must check [`wash_ink_ok`] first — without the dithered program
 /// there is no ramp to carry, and this draws the wash alone.
+///
+/// `scrim` is the ground scrim ([`scrim::GroundScrim`]) laid over the field in the same pass, with
+/// the same ink and the ramp folded in: [`scrim::GroundScrim::NONE`] for none, which the shader
+/// evaluates to exactly zero.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_ambient_inked(
     x: f32,
@@ -1843,9 +1894,39 @@ pub fn draw_ambient_inked(
     corners: [*const f32; 4],
     ink: [f32; 3],
     inka: [f32; 2],
+    scrim: &scrim::GroundScrim,
 ) {
     let [tl, tr, br, bl] = corners;
-    draw_ambient_impl(x, y, w, h, dim, tl, tr, br, bl, Some((ink, inka)));
+    draw_ambient_impl(x, y, w, h, dim, tl, tr, br, bl, Some((ink, inka)), scrim);
+}
+
+/// Can the scrim be drawn as a layer of its own ([`draw_scrim_layer`])?
+#[inline]
+pub fn scrim_layer_ok() -> bool {
+    // SAFETY: written once at init on the render thread, read on the render thread.
+    unsafe { SCRIM_PROG != 0 }
+}
+
+/// **The ground scrim alone, blended over whatever is under it**: `ink` (rgb) at the stacked alpha
+/// of `scrim` ([`scrim::GroundScrim::at`]) over `(x, y, w, h)`, evaluated per vertex of the field
+/// mesh like the ground's own. It is the same field the ground carries in its one pass
+/// ([`draw_ambient_inked`], [`draw_art_wash`]), for the frames that pass cannot take it — a hero
+/// slide, which has two art layers and needs the scrim OVER both. Not dithered (a translucent scrim
+/// over a photograph has nothing to band, as [`draw_grad4`]'s). Check [`scrim_layer_ok`] first.
+pub fn draw_scrim_layer(x: f32, y: f32, w: f32, h: f32, ink: [f32; 3], scrim: &scrim::GroundScrim) {
+    if culled(x, y, w, h) || gate(Class::Grad, x, y, w, h) {
+        return;
+    }
+    unsafe {
+        if SCRIM_PROG == 0 {
+            return;
+        }
+        use_prog(SCRIM_PROG);
+        glUniform4f(SCL_RECT, x, y, w, h);
+        glUniform3f(SCL_INK, ink[0], ink[1], ink[2]);
+        send_scrim(2, SCL_SC, scrim);
+        draw_field_mesh();
+    }
 }
 
 /// Issue the field mesh (see [`field_mesh`]) — every four-corner draw goes through this.
@@ -2324,6 +2405,7 @@ pub fn init_image() {
                 tint: loc(c"u_tint"),
                 ink: loc(c"u_ink"),
                 inka: loc(c"u_inka"),
+                sc: loc(c"u_sc"),
                 dither,
             }
         });
@@ -2475,7 +2557,8 @@ pub fn art_wash_ok() -> bool {
 /// values at its own corners — the field is bilinear, so that is exact), already through the
 /// painter's cascade exactly as [`draw_ambient`] takes them; `tint` is the art's, likewise; and
 /// `ink`/`inka` the screen's ramp over both, exactly as [`draw_ambient_inked`] takes it (zero
-/// alphas for none).
+/// alphas for none), and `scrim` the ground scrim over both with the same ink
+/// ([`scrim::GroundScrim::NONE`] for none).
 #[allow(clippy::too_many_arguments)]
 pub fn draw_art_wash(
     (x, y, w, h): (f32, f32, f32, f32),
@@ -2486,6 +2569,7 @@ pub fn draw_art_wash(
     tint: *const f32,
     ink: [f32; 3],
     inka: [f32; 2],
+    scrim: &scrim::GroundScrim,
 ) {
     // SAFETY: render thread; see `art_wash_ok`.
     let Some(g) = (unsafe { std::ptr::addr_of!(ART_WASH).read() }) else { return };
@@ -2505,6 +2589,7 @@ pub fn draw_art_wash(
         glUniform4fv(g.tint, 1, tint);
         glUniform3f(g.ink, ink[0], ink[1], ink[2]);
         glUniform2f(g.inka, inka[0], inka[1]);
+        send_scrim(1, g.sc, scrim);
         glBindTexture(GL_TEXTURE_2D, tex);
         draw_field_mesh();
     }

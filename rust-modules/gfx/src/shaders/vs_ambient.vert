@@ -8,6 +8,16 @@
 // per fragment. On the mesh a triangle's linear interpolation is within half an 8-bit code of the
 // field (`gfx.rs`'s mesh test), so the fragment reads ONE varying and does no colour arithmetic:
 // ~0.4M fewer cycles a frame for Home's full-screen wash (2026-09-19).
+//
+// THE GROUND SCRIM (`PLX_SCRIM`, `gfx/scrim.rs`): three piecewise-linear alpha terms of one ink — a
+// top band and a bottom band over y, an elliptical radial over the normalised distance from a
+// centre — evaluated HERE, per vertex, and stacked `1 - (1-t)(1-r)(1-b)` into the ink alpha the
+// wash already carries. It is the ramp's own move for a field no straight ramp describes, so the
+// fragment still reads one varying and does no colour arithmetic. A curve is
+// `a0 + sum_i da_i * clamp((x - x_i) * inv_i, 0, 1)`: segment i is `(x_i, inv_i, da_i, a0)` (a0 in
+// segment 0's w), seven segments a curve, unrolled; the unused ones are zero and add nothing. With
+// every uniform zero the stack is exactly 0.0 and `mix(inka, 1.0, 0.0)` is the ramp's alpha to the
+// bit, so a screen that has no scrim draws what it always drew.
 attribute vec2 a_pos;
 uniform vec4 u_rect;
 uniform vec2 u_screen;
@@ -30,6 +40,24 @@ uniform vec3 u_ink;
 #endif
 uniform vec2 u_inka;
 #endif
+#ifdef PLX_SCRIM
+// 7 segments top, 7 radial, 7 bottom, then the radial's (cx, cy, 1/rx, 1/ry), in device pixels.
+uniform vec4 u_sc[22];
+#define SC_TERM(I, X) (u_sc[I].z * clamp(((X) - u_sc[I].x) * u_sc[I].y, 0.0, 1.0))
+#define SC_CURVE(B, X) (u_sc[B].w + SC_TERM(B, X) + SC_TERM(B + 1, X) + SC_TERM(B + 2, X) + SC_TERM(B + 3, X) + SC_TERM(B + 4, X) + SC_TERM(B + 5, X) + SC_TERM(B + 6, X))
+float scrim_alpha(vec2 px) {
+  vec2 q = (px - u_sc[21].xy) * u_sc[21].zw;
+  float t = SC_CURVE(0, px.y);
+  float r = SC_CURVE(7, length(q));
+  float b = SC_CURVE(14, px.y);
+  return 1.0 - (1.0 - t) * (1.0 - r) * (1.0 - b);
+}
+#endif
+#ifdef PLX_SCRIM_LAYER
+// The scrim drawn ALONE over what is under it (the layered frames: a hero slide's two art layers):
+// the ink and its stacked alpha, as the colour the plain program blends.
+uniform vec3 u_ink;
+#endif
 #ifdef PLX_ART_WASH
 // The ramp goes OVER the art, so the art-wash fragment applies it: hand it the alpha.
 varying float v_inka;
@@ -42,13 +70,20 @@ uniform highp vec4 u_uvrect; // the texture window the quad samples: (u, v, du, 
 varying highp vec2 v_cuv;
 #endif
 void main(){
-  v_col = mix(mix(u_atl, u_atr, a_pos.x), mix(u_abl, u_abr, a_pos.x), a_pos.y);
   vec2 px = u_rect.xy + a_pos * u_rect.zw;
+#ifdef PLX_SCRIM_LAYER
+  v_col = vec4(u_ink, scrim_alpha(px));
+#else
+  v_col = mix(mix(u_atl, u_atr, a_pos.x), mix(u_abl, u_abr, a_pos.x), a_pos.y);
+#endif
 #ifdef PLX_DITHER_NC
   v_dither_nc = px * (1.0 / 256.0);
 #endif
 #ifdef PLX_WASH_INK
   float inka = mix(u_inka.x, u_inka.y, a_pos.y);
+#ifdef PLX_SCRIM
+  inka = mix(inka, 1.0, scrim_alpha(px));
+#endif
 #ifdef PLX_ART_WASH
   v_inka = inka;
 #else

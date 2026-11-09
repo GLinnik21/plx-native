@@ -26,9 +26,7 @@ use plx_ui::label::{Label, VAlign};
 use plx_ui::hold_hint::{HintInput, HoldHint};
 use plx_ui::icons::Icon;
 use plx_ui::linked_heading::{self, LinkedHeading};
-use plx_ui::landing_hero::{
-    base_scrim_ramp, home_rows, home_synopsis, COL_W as HERO_COL_W, HOME_LABEL_H,
-};
+use plx_ui::landing_hero::{home_rows, home_synopsis, COL_W as HERO_COL_W, HOME_LABEL_H};
 use plx_machine::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputEvent,
     InputKind, InstanceId, Key, LogicalState, Machine, MachineId, Measure, Tick,
@@ -436,9 +434,10 @@ impl Backdrop {
         let incoming_a = reveal(self.tex.0, &self.art);
         let outgoing_a = reveal(self.outgoing_tex.0, &self.outgoing_art);
         // THE GROUND: the wash, the one art layer dissolving over it (the snap dive, or the art
-        // fading in) and the atmospheric ramp over both, as ONE pass per pixel
+        // fading in) and the hero scrim over both (`widgets::home_scrim`: a top band, a radial behind
+        // the copy and a bottom band, the owner's CW-13 v2 board), as ONE pass per pixel
         // (`AmbientWash::draw_ground`). A hero FLIP slides two art layers, which one pass cannot
-        // carry, so there the art and the ramp stay layers of their own.
+        // carry, so there the art and the scrim stay layers of their own.
         // Art held beneath a replaced hero (`held`) is the un-sliding outgoing layer: the new art
         // dissolves in over it, so the two cannot ride the ground's single art layer.
         let held = slide.is_none() && self.outgoing_tex.0 != 0;
@@ -446,17 +445,17 @@ impl Backdrop {
         let wash = !wash_hidden(env.sp, art_a, slide.map(|_| outgoing_a))
             && !self.wash.is_flat(theme::SURFACE_APP, AmbientWash::FLAT_EPS);
         let art_in_ground = wash && slide.is_none() && !held && env.sp < HERO_ART_CULL;
-        let ramp = (env.hero_a > 0.01 && slide.is_none()).then(|| hero_ramp(env.hero_a));
+        let scrim = (env.hero_a > 0.01).then(|| plx_ui::widgets::home_scrim(env.hero_a));
         // Once the hero is culled NO art is drawn at all, a slide or held layer notwithstanding, and
         // the shelves and grid stand on the wash alone: ONE colour, which the renderer clears
         // rather than shades (`AmbientWash::draw_flat_ground`). Every earlier frame — a hero slide,
         // art held beneath a replacement, a texture still pending, the dive itself — is the
         // layered gradient exactly as it always was: those frames have a photograph, or are about
         // to, and flattening them would jump the whole page between gradient and one colour. The
-        // flat ground carries no ramp, and there is none to carry: `hero_a` is 0 from `sp = 0.55`
-        // (`HomeScreen::env`), so `ramp` is `None` at the cull and the layered ramp rects below
-        // are skipped for the same reason.
-        let ramp_in_ground = wash
+        // flat ground carries no scrim, and there is none to carry: `hero_a` is 0 from `sp = 0.55`
+        // (`HomeScreen::env`), so `scrim` is `None` at the cull and the layered scrim below is
+        // skipped for the same reason.
+        let scrim_in_ground = wash
             && if env.sp >= HERO_ART_CULL {
                 self.wash.draw_flat_ground(p, Rect::FULL);
                 false
@@ -465,29 +464,12 @@ impl Backdrop {
                     p,
                     Rect::FULL,
                     art_in_ground.then(|| hero_art(self.tex, env.sp, incoming_a)),
-                    ramp,
+                    None,
+                    scrim.filter(|_| slide.is_none()),
                 )
             };
 
-        let folded = !wash
-            && env.hero_a > 0.01
-            && env.sp < 0.001
-            && slide.is_none()
-            && !held
-            && self.tex.0 != 0
-            && incoming_a > 0.01
-            && plx_ui::widgets::hero_ground_armed();
-        if folded {
-            plx_ui::widgets::hero_ground(
-                p,
-                self.tex.0,
-                art_rect(self.tex, env.sp, 0.0),
-                incoming_a * (1.0 - env.sp),
-                base_scrim_ramp(env.hero_a),
-                env.hero_a,
-            );
-        }
-        if !folded && !art_in_ground && env.sp < HERO_ART_CULL {
+        if !art_in_ground && env.sp < HERO_ART_CULL {
             if let Some((out_x, in_x)) = slide {
                 backdrop_art(p, self.outgoing_tex, env.sp, out_x, outgoing_a);
                 backdrop_art(p, self.tex, env.sp, in_x, incoming_a);
@@ -498,25 +480,11 @@ impl Backdrop {
                 backdrop_art(p, self.tex, env.sp, 0.0, incoming_a);
             }
         }
-        if !folded && env.hero_a > 0.01 {
-            if !ramp_in_ground {
-                let [y0, knee, mid, foot] = base_scrim_ramp(env.hero_a);
-                p.rect(
-                    Rect::new(0.0, y0, SCR_W, knee - y0),
-                    0.0,
-                    theme::scrim(0.0),
-                    theme::scrim(mid),
-                    0.0,
-                );
-                p.rect(
-                    Rect::new(0.0, knee, SCR_W, SCR_H - knee),
-                    0.0,
-                    theme::scrim(mid),
-                    theme::scrim(foot),
-                    0.0,
-                );
-            }
-            plx_ui::widgets::hero_scrim(p, env.hero_a, false);
+        // The scrim goes over the art, so a ground that did not carry it (a hero slide's two art
+        // layers, a driver without the program) lays it over all of this as a layer of its own:
+        // the same field in the same cells.
+        if let Some(scrim) = scrim.filter(|_| !scrim_in_ground) {
+            plx_ui::widgets::scrim_layer(p, scrim);
         }
     }
 }
@@ -3807,15 +3775,6 @@ fn backdrop_art(p: Painter, tex: (u32, f32, f32), snap: f32, dx: f32, alpha: f32
         0.0,
         theme::with_a(theme::TINT_WHITE, alpha * (1.0 - snap)),
     );
-}
-/// The hero's atmospheric ramp as the ground carries it — the two `rect`s the layered path draws
-/// (`base_scrim_ramp`: nothing above `y0`, `mid` at the knee, `foot` at the panel's foot).
-fn hero_ramp(hero_a: f32) -> plx_ui::widgets::WashRamp {
-    let [y0, knee, mid, foot] = base_scrim_ramp(hero_a);
-    plx_ui::widgets::WashRamp {
-        ink: theme::scrim(1.0),
-        stops: [(y0, 0.0), (knee, mid), (SCR_H, foot)],
-    }
 }
 /// The un-sliding hero art as the layer [`AmbientWash::draw_ground`] carries — exactly what
 /// [`backdrop_art`] would have drawn at `dx = 0`, down to its skip (a texture of 0 draws no art).

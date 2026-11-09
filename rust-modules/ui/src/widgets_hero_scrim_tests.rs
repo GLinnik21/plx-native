@@ -1,4 +1,4 @@
-//! The hero corner scrim (`hero_scrim`) wedge shape/seam and its legibility contract.
+//! The hero corner scrim (`hero_scrim`, Detail's) wedge shape/seam and its legibility contract.
 
 use super::*;
 #[allow(unused_imports)]
@@ -149,7 +149,7 @@ fn the_wedge_leaves_the_top_chrome_alone() {
     // `hero_scrim_a` be a function of x alone (see `HERO_SCRIM_KNEE`) and is what makes the
     // legibility table below sound — every row it grades is at or below this line. A clearLogo
     // paints higher than any of them, but that is ART riding the feather, not a graded anchor.
-    let highest = detail_title_cap_top().min(home_title_cap_top());
+    let highest = detail_title_cap_top();
     assert!(
         HERO_SCRIM_KNEE <= highest,
         "the knee ({HERO_SCRIM_KNEE}) must be at or above the topmost hero line ({highest})"
@@ -222,32 +222,31 @@ fn the_wedge_leaves_with_the_hero() {
     assert_eq!(hero_scrim_right_a(1920.0, 1080.0, 0.0), 0.0);
 }
 
-/// **The prize: "is the hero readable" as an assertion instead of a judgement on a television.**
+/// **The prize: "is the hero readable" as an assertion instead of a judgement on a television** —
+/// DETAIL's half (Home's own scrim, and its copy at the new ladder's positions, is graded in
+/// `widgets_home_scrim_tests.rs`).
 ///
-/// Every line of hero copy either screen draws over artwork, at the WORST point of its run (the
-/// right end, where the wedge is weakest), graded as
+/// Every line of hero copy Detail draws over artwork, at the WORST point of its run (the right end,
+/// where the wedge is weakest), graded as
 /// `1 − (1 − base_scrim_a) · (1 − hero_scrim_a) · (1 − hero_scrim_right_a)` against two
 /// backdrops: a bright one (encoded 0.85 — a blown highlight, brighter than essentially any
 /// fanart pixel) and a blown-white one (1.0, the degenerate case the design only promises a
 /// floor for).
 ///
-/// The ys are READ from the screens' own layout arithmetic — `hero_chain` for detail, the
-/// bottom-anchored stack for home — so a layout change updates this contract rather than
-/// silently invalidating it. The floors are the measured achieved ratios: the point is that
-/// this fires the day someone brightens `SCRIM_INK`, dims a text token, moves
-/// `HERO_TEXT_BOTTOM` or trims `HERO_SCRIM_W`, none of which is visible in a diff.
+/// The ys are READ from the page's own layout arithmetic — `hero_chain` — so a layout change
+/// updates this contract rather than silently invalidating it. The floors are the measured achieved
+/// ratios: the point is that this fires the day someone brightens `SCRIM_INK`, dims a text token,
+/// moves `HERO_TEXT_BOTTOM` or trims `HERO_SCRIM_W`, none of which is visible in a diff.
 ///
-/// The two TITLE rows grade the TEXT fallback, at its cap top — a clearLogo occupies that band
-/// instead on most items and paints higher than the knee, which is art riding the feather rather
-/// than an anchor this closed form can speak for (see [`HERO_SCRIM_KNEE`]).
+/// The TITLE row grades the TEXT fallback, at its cap top — a clearLogo occupies that band instead
+/// on most items and paints higher than the knee, which is art riding the feather rather than an
+/// anchor this closed form can speak for (see [`HERO_SCRIM_KNEE`]).
 ///
-/// The design floor is 3:1 over bright art. ONE row misses it and is listed anyway rather than
-/// hidden: detail's **facts line** is `TEXT_TERTIARY` (L=0.317), which needs α≈0.79 for 4.5:1 —
-/// an essentially black corner. That is an INK decision, not a scrim one, and is deliberately
-/// deferred; when the facts line moves to `TEXT_SECONDARY` over artwork its floor becomes 3.0
-/// like the rest.
+/// The design floor is 3:1 over bright art. Detail's **facts line** was `TEXT_TERTIARY` (L=0.317),
+/// which needs α≈0.79 for 4.5:1 — an essentially black corner; that was an INK decision and is now
+/// taken (`detail::FACTS_INK`), so the row meets the ordinary floor like the rest.
 ///
-/// The people column was the second such row for exactly one day. Bottom-anchoring it moved its
+/// The people column was a second such row for exactly one day. Bottom-anchoring it moved its
 /// worst case 74px up the frame, where the composite ground is ≈0.59 instead of ≈0.71, and at
 /// tertiary that is 2.37:1 — so the row's floor was written down as 2.35 to match. **A contract
 /// is not a measurement**: the entry below asserts the ordinary 3.0/2.5 again, and
@@ -261,52 +260,12 @@ fn the_hero_text_reads_over_bright_artwork() {
         // thing the host cannot do, so the height is quoted, not computed.
         34.0, true, &crate::fixture::FixtureMeasure,
     );
-    let band = crate::hero_logo::band_h(crate::hero_logo::LogoRung::Hero);
-    let home_col_r = MARGIN_X + crate::landing_hero::COL_W; // the shared column's right end
     let det_col_r = MARGIN_X + crate::detail_layout::HERO_TEXT_W; // the synopsis' wrap edge,
                                                                // and since nit 2 the title band's column too: a very wide wordmark runs the same 990.
     let people_r = SCR_W - MARGIN_X; // 1830 — the right-aligned people column's own edge
 
     // (label, x, y, ink, right wedge?, floor over BRIGHT art, floor over BLOWN WHITE)
-    let rows: [(&str, f32, f32, [f32; 4], bool, f32, f32); 9] = [
-        (
-            "home title (right end)",
-            home_col_r,
-            home_title_cap_top(),
-            theme::TEXT_PRIMARY,
-            false,
-            3.0,
-            2.5,
-        ),
-        (
-            "home title (at the margin)",
-            MARGIN_X,
-            home_title_cap_top(),
-            theme::TEXT_PRIMARY,
-            false,
-            7.0,
-            6.0,
-        ),
-        (
-            "home kicker",
-            500.0,
-            home_title_band_top() + band + theme::space::SM,
-            theme::TEXT_SECONDARY,
-            false,
-            3.0,
-            2.5,
-        ),
-        // the blurb's FIRST line, at the top of its block — the weakest ground the run sees.
-        // Both its ink and its block height are read from the shared hero synopsis.
-        (
-            "home synopsis",
-            home_col_r,
-            crate::landing_hero::hero_stack(band, BADGE_H, Some(home_syn_h())).synopsis.unwrap().y,
-            theme::TEXT_READING,
-            false,
-            3.0,
-            2.5,
-        ),
+    let rows: [(&str, f32, f32, [f32; 4], bool, f32, f32); 5] = [
         (
             "detail title",
             det_col_r,
@@ -361,11 +320,7 @@ fn the_hero_text_reads_over_bright_artwork() {
     ];
 
     for (label, x, y, ink, right, min_bright, min_white) in rows {
-        let base = if label.starts_with("home") {
-            crate::landing_hero::base_scrim_a(y, 1.0)
-        } else {
-            crate::detail_layout::base_scrim_a(y, 1.0)
-        };
+        let base = crate::detail_layout::base_scrim_a(y, 1.0);
         let wedge = hero_scrim_a(x, 1.0);
         let rw = if right {
             hero_scrim_right_a(x, y, 1.0)

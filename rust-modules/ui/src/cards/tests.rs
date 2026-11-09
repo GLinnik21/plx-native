@@ -5655,7 +5655,37 @@ fn the_stills_heading_stands_a_fixed_rise_higher_over_its_cards_than_a_posters()
         crate::theme::STILL_HEADING_RISE,
         "the stills row's heading stands one named rise higher, at rest, before any tile has focus"
     );
-    assert_eq!(RowStyle::STILL.pitch_fixed(), RowStyle::EPISODE.pitch_fixed(), "the rise moves the heading, never the cards under it");
+    assert_eq!(
+        RowStyle::STILL.pitch_fixed(),
+        RowStyle::EPISODE.pitch_fixed() + crate::still_footer::FOOTER_UNDER_TILE,
+        "the rise moves the heading, never the cards under it: the row's pitch is the strip's plus the footer line that stands under the tile"
+    );
+}
+
+/// **The Continue Watching row's geometry on the owner's CW-13 v2 board**: the tiles stand 40 px
+/// apart (a 460 px pitch for a 420 px tile) where the detail episode strip keeps its 28, the footer
+/// line stands OFF the art (so the row spends 40 px more under its tiles than a poster shelf's
+/// standard air), and with the dive's own scroll the next shelf's heading lands 48 px under the
+/// footer's foot.
+#[test]
+fn the_stills_row_is_spaced_40_apart_and_its_footer_stands_below_the_art() {
+    use crate::consts::{CARD_DY, PEEK_Y, TITLE_DY};
+    assert_eq!(RowStyle::STILL.gap, 40.0);
+    assert_eq!(RowStyle::EPISODE.gap, 28.0, "the detail episode strip keeps its own gap");
+    assert_eq!(RowStyle::STILL.w + RowStyle::STILL.gap, 460.0);
+    assert_eq!(RowStyle::STILL.w, RowStyle::EPISODE.w, "the same tile, only the air between them differs");
+    assert_eq!(RowStyle::EPISODE.under_tile, 0.0);
+    assert_eq!(RowStyle::HOME.under_tile, 0.0, "a poster shelf spends nothing under its tiles");
+    assert_eq!(RowStyle::STILL.under_tile, 40.0);
+    // the tile top on the board's Home at rest is 768; the footer's foot is the line's top + 24
+    assert_eq!(PEEK_Y + CARD_DY, 768.0);
+    let foot = PEEK_Y + CARD_DY + RowStyle::STILL.h;
+    let footer_foot = foot + crate::theme::STILL_FOOTER_DROP + crate::still_footer::FOOTER_LINE_H;
+    // the heading of the NEXT shelf: one pitch under this row's own, `TITLE_DY` over its tiles
+    let pitch = RowStyle::STILL.pitch_fixed() + crate::card_row::LABEL_BAND_COLLAPSED;
+    let next_heading_y = (PEEK_Y + pitch) - TITLE_DY;
+    assert_eq!(next_heading_y - footer_foot, crate::theme::STILL_FOOTER_AIR, "the next heading stands the board's 48 under the footer");
+    assert_eq!(next_heading_y, 1084.0, "the board's heading top for a row at 768");
 }
 
 /// The rise and the focus lift do not stack: a focused tile's glow spills up to `heading_lift_max`,
@@ -5674,7 +5704,7 @@ fn the_stills_heading_never_stands_lower_than_its_rise_whatever_the_focus_lift()
 /// **Focusing a tile never changes the spacing between tiles** (owner, 2026-11, the Continue Watching
 /// stills): with focus on card `i`, every OTHER card stands at its rest rect at every point of the pop,
 /// for the stills style as for a poster shelf; only the focused card grows, and at 1.09 a 420 px tile's
-/// ~19 px a side stays inside the 28 px gap, so it never overlaps a neighbour.
+/// ~19 px a side stays inside the gap (40 px on the stills row, 28 on the strip), so it never overlaps a neighbour.
 #[test]
 fn focusing_a_tile_moves_no_other_tile_at_any_pop_progress() {
     for style in [RowStyle::STILL, RowStyle::HOME, RowStyle::EPISODE] {
