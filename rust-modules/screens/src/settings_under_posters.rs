@@ -21,7 +21,7 @@
 //! ([`RootPicture`], also drawn on the Settings root and on both pickers): a movie poster on the left
 //! and a TV show poster on the right, each under its KIND ("MOVIE", "TV SHOW") and over the lines the
 //! stored setting gives it. Each tile's art is the first poster of its kind from the widest cache the
-//! Browse store holds ([`preview_posters`]); a kind with none anywhere is a finished art-less face
+//! Browse store holds ([`preview_posters`]; a kind it has none of is asked for as its library's shelves, [`PosterAsk`]); a kind with none anywhere is a finished art-less face
 //! (`plx_ui::widgets::absent_card`), never a skeleton. The lines are worded by the SAME policy the
 //! Library, Collections, the Watchlist, Home and Recommended read ([`crate::registry::captions`],
 //! [`plx_ui::caption_policy`]); a face with no artwork carries no word, and a tile whose kind the
@@ -247,6 +247,8 @@ pub(super) struct UnderPostersPage {
     dims: ColumnDims<2>,
     /// A pick not yet answered: the value the rows show meanwhile, and the receipt of its write.
     pending: Option<(UnderPosters, std::sync::mpsc::Receiver<bool>)>,
+    /// The libraries whose shelves the picture is owed ([`PosterAsk`]).
+    ask: PosterAsk,
 }
 
 struct UpState {
@@ -279,6 +281,7 @@ impl UnderPostersPage {
             follow: FollowCopy::new(""),
             dims: ColumnDims::at([false, false]),
             pending: None,
+            ask: PosterAsk::default(),
         };
         page.rebuild();
         // A page opens on its first row's sentence at once, with nothing fading.
@@ -537,11 +540,51 @@ pub(super) fn preview_posters<'a>(cx: &Cx<'a, InnerHost>) -> Vec<&'a PmsMovie> {
     [plx_data::pms::KIND_MOVIE, plx_data::pms::KIND_SHOW].into_iter().filter_map(|kind| cx.views.directory.kind_poster(kind)).collect()
 }
 
+/// **A page that draws the picture asks the Browse store for the kind it has no poster of.** The
+/// store caches only libraries the user has opened, so a show library never opened leaves the show
+/// tile art-less although the library exists. Each kind missing from [`preview_posters`] whose
+/// library the directory lists is asked for as that library's hubs (`LibraryWork::Hubs`: a read of
+/// its shelves into the section's own cache that does not switch the library the user is on), and
+/// the poster then arrives through `preview_posters` like any cached one. Three things make that
+/// work from a page that is not a Library, and each is the store's own rule, not a shortcut: the
+/// store reads one library's shelves at a time (the shared hubs claim), so the second kind's read
+/// starts only on a later step; a landed read is STAGED and committed by the next `Hubs` command
+/// (`may_publish`), never by the landing; and nothing lands until the store is pumped
+/// (`StoreWork::Browse`, what the Library and Recommended pages push every tick). So the page sends
+/// the same idempotent ask and the pump on each tick, per kind, until the poster is there or the
+/// store has published that library's shelves ([`DirectoryView::kind_shelves_published`](plx_data::browse::DirectoryView::kind_shelves_published):
+/// a library whose shelves hold no title of the kind is answered, and asked no more).
+#[derive(Default)]
+pub(super) struct PosterAsk;
+
+impl PosterAsk {
+    pub(super) fn step(&mut self, cx: &Cx<'_, InnerHost>, fx: &mut Effects<'_, InnerHost>) {
+        use plx_data::browse::SecKind;
+        use plx_data::stores::browse::{BrowseCmd, LibraryWork};
+        use plx_data::stores::{StoreCmd, StoreId, StoreWork};
+        let have = preview_posters(cx);
+        let mut asked = false;
+        for (kind, sec) in [(PosterKind::Movie, SecKind::Movie), (PosterKind::Show, SecKind::Show)] {
+            if poster_of(kind, &have).is_some() || cx.views.directory.kind_shelves_published(sec) {
+                continue;
+            }
+            let Some(target) = cx.views.directory.kind_address(sec) else { continue };
+            asked = true;
+            fx.push(Fx::App(AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::Addressed {
+                target, work: LibraryWork::Hubs { may_publish: true } }))));
+        }
+        if asked {
+            fx.push(Fx::App(AppFx::StoreWork(StoreWork::Browse)));
+        }
+    }
+}
+
 impl Machine<InnerHost> for UnderPostersPage {
     type Ev = ScreenEvent<InnerHost>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, InnerHost>, fx: &mut Effects<'_, InnerHost>) -> Handled {
         match ev {
             ScreenEvent::Mount => {
+                self.ask.step(cx, fx);
                 // Seat the cursor explicitly, as the Language page does: the generic Enter runs
                 // before queued mount effects.
                 fx.push(Fx::Deliver(
@@ -553,6 +596,7 @@ impl Machine<InnerHost> for UnderPostersPage {
                 Handled::Yes
             }
             ScreenEvent::Tick(t) => {
+                self.ask.step(cx, fx);
                 if self.poll() {
                     fx.invalidate(Provenance::Input);
                 }
