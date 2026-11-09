@@ -1495,6 +1495,17 @@ mod playbar_options {
     }
 
     #[test]
+    fn the_remaining_clock_can_include_a_local_end_time() {
+        let mut b = bar(Knob::Tick, TransportMark::None);
+        let plain = runs(b, PlaybarLook::default());
+        assert!(plain.iter().any(|r| r.text == "-10:00"));
+        b.end_time = Some([22, 35]);
+        let with_end = runs(b, PlaybarLook::default());
+        assert!(with_end.iter().any(|r| r.text == "-10:00 · 22:35"), "{with_end:?}");
+        assert!(!with_end.iter().any(|r| r.text == "-10:00"), "the combined label replaces the plain remaining clock");
+    }
+
+    #[test]
     fn an_always_knob_replaces_the_tick_at_rest() {
         let tick = census(bar(Knob::Tick, TransportMark::None), PlaybarLook::default());
         let always = census(bar(Knob::Tick, TransportMark::None), PlaybarLook { knob: KnobMode::Always, ..PlaybarLook::default() });
