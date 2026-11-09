@@ -255,20 +255,5 @@
   "widgets.region.latin_america": "Amèrica Llatina",
   "widgets.failure.play_auto": "Canvia a Automàtic i reprodueix",
   "widgets.failure.change_quality": "Canvia la qualitat",
-  "widgets.watch.intro": "Mira la introducció",
-  "widgets.diagnostics.uploading": "S'estan enviant els diagnòstics…",
-  "widgets.diagnostics.uploaded": "Diagnòstics enviats",
-  "widgets.diagnostics.failed": "No s'han pogut enviar els diagnòstics",
-  "widgets.panel.jail": "L'entorn aïllat d'aquesta instal·lació bloqueja l'accés a /dev/rtkmem; PlxNative et pot oferir una reparació confirmada mitjançant l'accés root de Homebrew Channel",
-  "widgets.panel.refused": "el servidor ha rebutjat aquest element a /decision: no el pot reproduir directament ni convertir",
-  "widgets.panel.audio_only_no_pass": "el servidor només ha enviat àudio: no ha trobat cap destinació de conversió de vídeo compatible (no té Plex Pass)",
-  "widgets.panel.audio_only": "el servidor només ha enviat àudio: no ha trobat cap destinació de conversió de vídeo compatible",
-  "widgets.panel.no_video": "el flux no conté cap pista de vídeo",
-  "widgets.panel.open": "no s'ha pogut obrir ni llegir el flux multimèdia",
-  "widgets.panel.stopped": "el productor multimèdia s'ha aturat abans d'acabar la reproducció",
-  "widgets.panel.tv_rejected": "el sistema multimèdia del televisor ha rebutjat el flux",
-  "widgets.panel.unknown": "el reproductor s'ha aturat sense indicar-ne el motiu",
-  "widgets.panel.load_timeout": "el sistema multimèdia del televisor no ha acabat d'iniciar el flux a temps",
-  "widgets.panel.forced_playback": "Forçar la reproducció directa no ha pogut utilitzar el flux original; la recuperació automàtica està desactivada",
-  "widgets.runtime.main_thread": "FIL PRINCIPAL {kind} {milliseconds}ms · {label}"
+  "widgets.watch.intro": "Mira la introducció"
 }
