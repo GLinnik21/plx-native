@@ -866,8 +866,9 @@ impl Painter {
     /// thins the art over it, [`Painter::ambient`]), which is not the group's blend of the whole, and
     /// a quad at a translate is not the live draw's pixels. So the ground is cached only through a
     /// painter that carries NONE of them ([`is_plain`](Self::is_plain): a page at rest, not dipping,
-    /// not sliding); through any other it is drawn live, with `paint` handed this painter, exactly as
-    /// a call with no key.
+    /// not sliding); through any other it is drawn live, with `paint` handed this painter. That frame
+    /// does not ask the region cache at all (unlike a call with no key, which does), so the texture
+    /// goes back for it and the first plain frame after fills it again.
     ///
     /// Everything else is `cached_region`'s: `key` names the picture and must change with everything
     /// `paint` draws (`None`: it is not settled, draw it live), `paint` draws no glass and no blur, a

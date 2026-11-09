@@ -734,7 +734,8 @@ tried first. None of it is reconstructable from the code without repeating the m
   a Continue Watching focus move redraws the shelf over a ground that did not, and the live ground
   was 2.6M of a 9.5M-cycle frame. The name (`Backdrop::ground_key`) is every input by value, and the
   picture has NO name while any spring easing it is unlanded (`AmbientWash::at_rest`, the reveal
-  springs' exact-zero velocity, the dive), because a name that moved every frame would fill the
+  springs' exact-zero velocity, the dive, which `update` lands on its target: a bare `step` parks it
+  one ulp off and never reaches 0), because a name that moved every frame would fill the
   texture every frame, which is the live shading plus a full-screen write. The glass is untouched by
   construction: its discovery walk and every source pass are `backdrop::discovering()` /
   `blur_source_pass()` frames, where `region_paint` declines, so the ground still declares and draws

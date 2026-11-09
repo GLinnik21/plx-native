@@ -6347,6 +6347,8 @@ fn a_moving_backdrop_has_no_name_and_a_landed_one_has_it_again() {
     assert_eq!(c.ground_key(&env, None, true), None, "the photograph is still dissolving in");
     let mut c = settled_backdrop();
     c.outgoing_art.vel = 0.5;
+    assert!(c.ground_key(&env, None, true).is_some(), "a layer with no texture draws nothing: its spring says nothing");
+    c.outgoing_tex = (7, 16.0, 9.0);
     assert_eq!(c.ground_key(&env, None, true), None, "the layer beneath a replaced hero is still dissolving");
 
     // the wash eases toward another colour: unnamed for every frame of the ease, named once it lands
@@ -6440,4 +6442,46 @@ fn a_focus_move_along_the_parked_hero_keeps_the_backdrops_name() {
         }
     }
     assert_eq!(s.snap.pos, 0.0, "the page stayed at the hero throughout");
+}
+
+/// **A return from the grid to the hero gives the backdrop its name back.** The dive is the one
+/// spring `Backdrop` does not own, and a bare `step` never parks it: it settles one ulp off its
+/// target with a velocity of about 1e-6 and stays at that fixed point (`Spring::land`), so a dive
+/// that was merely stepped would leave `dive_rests` false for the rest of the page's life and the
+/// parked hero would be shaded live ever after its first trip to the shelves.
+#[test]
+fn the_backdrop_has_its_name_back_after_a_trip_to_the_grid() {
+    let _guard = plx_base::testlock::serial();
+    plx_ui::tex::install(&HeroArtSpy);
+    plx_ui::tex::reset_for_test(64 << 20);
+    HERO_ART.with(|a| *a.borrow_mut() = HeroArtState::default());
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_continue_window_for_test(&mut state, &adapter, 12, false);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let view = snapshot.view();
+    let mut s = screen(view);
+    let focus = Some(FocusKey { entry: s.entry, elem: s.rows[0].elems[0] });
+    let name = |s: &HomeScreen| s.backdrop.ground_key(&s.env(0.0), s.slide_offsets(), s.dive_rests());
+    let mut ms = 0u32;
+    let mut run = |s: &mut HomeScreen, frames: u32| {
+        for _ in 0..frames {
+            ms += 17;
+            let _ = step(s, view, focus, &ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }));
+        }
+    };
+    run(&mut s, 5);
+    for h in 0..view.hero_count() {
+        deliver_hero_art(&view.hero(h).unwrap().item.art);
+    }
+    run(&mut s, 400);
+    let parked = name(&s).expect("the page parked at the hero with its picture up has a name");
+    s.snap_target = 1.0;
+    run(&mut s, 300);
+    assert!(s.snap.pos > 0.99, "the premise: the page dove to the shelves ({})", s.snap.pos);
+    assert_ne!(name(&s), Some(parked), "at the grid the backdrop is not the picture it was");
+    s.snap_target = 0.0;
+    run(&mut s, 900);
+    assert_eq!((s.snap.pos, s.snap.vel), (0.0, 0.0), "the dive has parked on the hero, position and velocity");
+    assert_eq!(name(&s), Some(parked), "back at the hero the backdrop is the picture it was, with its name");
 }

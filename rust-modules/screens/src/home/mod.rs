@@ -471,16 +471,17 @@ impl Backdrop {
     /// over it, which is dearer than not caching. So the picture is named only once every spring
     /// that eases it has landed on its target (`AmbientWash::at_rest`, which the wash lands on
     /// exactly, and a reveal spring's own velocity of exactly 0, which `update` lands it on) and the
-    /// page says the dive is over; any frame short of that is drawn live and fills nothing. The one
-    /// spring nothing lands is the dive's own, whose critically damped tail is not exactly 0 for a
-    /// few seconds after a return to the hero: those frames are drawn live too.
+    /// page says the dive is over (`HomeScreen::dive_rests`: the dive is landed on its target too);
+    /// any frame short of that is drawn live and fills nothing. A layer with no texture draws
+    /// nothing, so its reveal spring (which `update` only steps and lands while it has one) says
+    /// nothing.
     fn ground_key(&self, env: &Env, slide: Option<(f32, f32)>, rests: bool) -> Option<u64> {
         use std::hash::{Hash, Hasher};
         if slide.is_some()
             || !rests
             || !self.wash.at_rest()
-            || self.art.vel != 0.0
-            || self.outgoing_art.vel != 0.0
+            || (self.tex.0 != 0 && self.art.vel != 0.0)
+            || (self.outgoing_tex.0 != 0 && self.outgoing_art.vel != 0.0)
         {
             return None;
         }
@@ -1681,8 +1682,9 @@ impl HomeScreen {
     }
 
     /// Has the snap dive landed: the one input of the backdrop's picture that the backdrop does not
-    /// own (`Backdrop::draw`). Exactly 0 only once the spring has parked on its target, which the
-    /// first frame of a page does and a return from the grid takes a few seconds to.
+    /// own (`Backdrop::draw`). Exactly 0 only once the spring has parked on its target:
+    /// `update` lands the dive (`Spring::land`) once it is within a hair of it, which a bare `step`
+    /// never does.
     fn dive_rests(&self) -> bool {
         self.snap.vel == 0.0
     }
@@ -1896,8 +1898,12 @@ impl HomeScreen {
         } else {
             self.hero_auto = HERO_AUTO_S;
         }
-        self.snap
-            .step(pinned_snap(self.snap_target, self.rows.len()), K_SNAP, dt);
+        let snap_to = pinned_snap(self.snap_target, self.rows.len());
+        self.snap.step(snap_to, K_SNAP, dt);
+        // A dive that has arrived is LANDED on its target (`Spring::land`), as the art and the wash
+        // are: `step` parks it one ulp off with a velocity of ~1e-44 and keeps it there, and the
+        // backdrop is named (`Backdrop::ground_key`) only while the dive's velocity is exactly 0.
+        self.snap.land(snap_to, dt);
         // ONE answer for "is the dive still running", read by the present gate below. See
         // `SNAP_REST_POS`/`SNAP_REST_VEL` for why both terms are needed.
         let snap_moving = (self.snap.pos - self.snap_target).abs() > SNAP_REST_POS
