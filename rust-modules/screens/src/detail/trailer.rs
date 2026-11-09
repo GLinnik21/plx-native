@@ -480,6 +480,7 @@ impl Transport {
                 knob: Knob::Tick,
                 mark: self.mark(paused, live_ns),
                 now: self.now_ms,
+                end_time: None,
                 clock_grow: 0.0,
             },
             measure,
