@@ -123,13 +123,21 @@ impl Default for HudModel {
 /// The playback facts that must all be known before the HUD can show a projected finish.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EndTimeEligibility {
+    /// The seated profile has enabled the end-time display.
     pub enabled: bool,
+    /// The playing metadata is a genuine movie or episode.
     pub is_movie_or_episode: bool,
+    /// The player is showing a preview/trailer transport.
     pub is_preview: bool,
+    /// The playback state reports that media time is advancing.
     pub advancing: bool,
+    /// The viewer's pause goal is active.
     pub viewer_paused: bool,
+    /// A seek is pending or resolving.
     pub seeking: bool,
+    /// The player is loading or rebuilding the current item.
     pub loading: bool,
+    /// The viewer is dragging the scrubber.
     pub scrubbing: bool,
 }
 
@@ -153,7 +161,12 @@ pub fn end_time_is_eligible(state: EndTimeEligibility) -> bool {
 /// The remaining wall time is rounded UP to a whole second, so a projected end is never shown
 /// early. Use the OS timezone conversion only after this calculation: local calendar rules,
 /// including DST transitions, are applied at the projected instant rather than at the start.
-pub fn projected_end_unix_seconds(now_utc: i64, position_ns: i64, duration_ns: i64, rate_permille: Option<i32>) -> Option<i64> {
+pub fn projected_end_unix_seconds(
+    now_utc: i64,
+    position_ns: i64,
+    duration_ns: i64,
+    rate_permille: Option<i32>,
+) -> Option<i64> {
     let rate_permille = rate_permille?;
     if now_utc <= 0 || position_ns < 0 || duration_ns <= position_ns || rate_permille <= 0 {
         return None;
@@ -193,9 +206,20 @@ mod end_time_tests {
         assert_eq!(projected_end_unix_seconds(now, 0, thirty_five_minutes, Some(2000)), Some(now + 1050));
         assert_eq!(projected_end_unix_seconds(now, 0, thirty_five_minutes, Some(500)), Some(now + 4200));
         assert_eq!(projected_end_unix_seconds(now, 0, thirty_five_minutes, Some(1250)), Some(now + 1680));
-        assert_eq!(projected_end_unix_seconds(now, 10 * 60 * 1_000_000_000, 45 * 60 * 1_000_000_000, Some(1500)), Some(now + 1400));
-        assert_eq!(projected_end_unix_seconds(86_390, 0, 20_000_000_000, Some(1000)), Some(86_410),
-            "the projection crosses midnight as a Unix timestamp, not a local clock arithmetic");
+        assert_eq!(
+            projected_end_unix_seconds(
+                now,
+                10 * 60 * 1_000_000_000,
+                45 * 60 * 1_000_000_000,
+                Some(1500),
+            ),
+            Some(now + 1400)
+        );
+        assert_eq!(
+            projected_end_unix_seconds(86_390, 0, 20_000_000_000, Some(1000)),
+            Some(86_410),
+            "the projection crosses midnight as a Unix timestamp, not local clock arithmetic"
+        );
     }
 
     #[test]
@@ -205,7 +229,11 @@ mod end_time_tests {
         assert_eq!(projected_end_unix_seconds(now, 0, 0, Some(1000)), None);
         assert_eq!(projected_end_unix_seconds(now, 10, 10, Some(1000)), None);
         assert_eq!(projected_end_unix_seconds(now, 0, 100, Some(0)), None);
-        assert_eq!(projected_end_unix_seconds(now, 0, 100, None), None, "unknown applied rate is not assumed to be 1x");
+        assert_eq!(
+            projected_end_unix_seconds(now, 0, 100, None),
+            None,
+            "unknown applied rate is not assumed to be 1x"
+        );
         assert_eq!(projected_end_unix_seconds(0, 0, 100, Some(1000)), None);
         assert_eq!(projected_end_unix_seconds(i64::MAX, 0, i64::MAX, Some(1)), None);
     }
