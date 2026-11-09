@@ -1206,7 +1206,7 @@ impl Screen<InnerHost> for HudPage {
 #[cfg(test)]
 fn rows_for_test(list: &HudList) -> Vec<(u32, HudId)> {
     let mut form: FormTable<HudId, HudAction, SettingsPage> = FormTable::new(BAND);
-    form.set(hud_form(list, None).0, None);
+    form.set(hud_form(list, None, false).0, None);
     (0..form.table.n_rows() as usize).filter_map(|i| Some((form.key_at(i)?.0, form.binding_at(i)?.id.clone()))).collect()
 }
 
