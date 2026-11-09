@@ -170,6 +170,22 @@ loaded media's id, only when exactly one Seek is pending, and never after a refu
 whether a `seek` sent before `play` is answered at all (the capture's came after `play`); the
 landing line says whether the reply had been acknowledged.
 
+On the exported window (webOS 5+) the production backend places the window as the probe and Feed do:
+it creates it at the start and places it with the 1920x1080 canvas as the source, then, when the
+service's `videoInfo` reports the coded size, again with that size as the source; the destination is
+always the whole canvas (`uri: exported window placed src=WxH rv=N`). Production never selects that
+binding yet. A debug build composes it for one boot when the file `plxnative-uriexported` exists in the
+install's runtime root (content ignored). Unlike `plxnative-uriprobe`, which is read at each Play, this
+trigger is read once, at boot, so it can be armed only by writing the file BEFORE the app launches: on
+plain `/tmp`, or at the jail's persistent path (routes 1 and 3 under "Arming the trigger" in the tester
+run below). Route 2, through `/proc/<pid>/root` while the app runs, cannot arm it: that write comes after
+the boot read and the override stays off. The line that confirms it is
+`uri: product binding=Exported { canvas: (1920, 1080) } mode=2 evidence=override`, which follows the
+production `uri: product binding=Unbound ..` line. A log without it proves nothing about the product
+backend. The viewer still has to opt in to the URI engine, and the override does nothing on a display
+whose mode is not the exported window. Whether the service sends `videoInfo` before the first frame is
+not determined, so the first frames may be placed from the canvas source rectangle.
+
 ## Reproducing it
 
 1. Deploy a debug build carrying the probe (devtriggers; no `RELEASE=1` package contains it).

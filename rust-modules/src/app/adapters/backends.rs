@@ -374,12 +374,19 @@ fn uri_product_binding(display: &dyn DisplaySink, owner: &PlaneOwner) -> UriBind
 /// evidence remains unqualified for everyone but a viewer who opted in to the URI engine in
 /// Settings; returning a port never certifies a source by itself. (A debug
 /// build's URI dev route, armed by a trigger read once here, is the other thing that changes that:
-/// `dev::uri_product`.)
+/// `dev::uri_product`. A debug build's exported-window override, `dev::uri_exported`, is read here
+/// too but certifies nothing: it only composes the display path.)
 #[cfg(feature = "play-uri")]
 pub(crate) fn install_uri_product(adapter: &mut PlayerAdapter, session: &mut PlaybackSession) -> bool {
     let display = sink::display_installed();
-    let evidence = ProductEvidence::unqualified_on(display.window_mode(),
-        uri_product_binding(display, plane::installed()));
+    let binding = uri_product_binding(display, plane::installed());
+    // The exported-window override (`dev::uri_exported`): a debug build armed with its trigger, on a
+    // display in `VP_EXPORTED` mode, composes the exported window; otherwise the binding is returned
+    // as built.
+    #[cfg(feature = "devtriggers")]
+    let binding = crate::dev::uri_exported::compose(binding, display.window_mode(),
+        crate::dev::uri_exported::armed());
+    let evidence = ProductEvidence::unqualified_on(display.window_mode(), binding);
     let qualifier: std::sync::Arc<dyn OriginalQualifier> = std::sync::Arc::new(ProductQualifier);
     // The URI dev route (`dev::uri_product`): a debug build armed with its trigger, on an ACB-bound
     // display, swaps in evidence and a qualifier for the one Part it names; otherwise this pair is
