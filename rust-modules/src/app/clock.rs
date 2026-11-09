@@ -75,9 +75,9 @@ pub(crate) fn unix_seconds() -> Option<i64> {
             return Some(current);
         }
     }
-    let sampled = plx_platform::i18n::unix_timestamp_now()?;
+    let sampled = plx_platform::i18n::unix_timestamp_now();
     UNIX.with(|c| c.set(Some((tick, sampled))));
-    Some(sampled)
+    sampled
 }
 
 /// Advance a sampled wall-clock second by monotonic frame time, or ask for a fresh sample once
