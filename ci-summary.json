@@ -85,7 +85,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-09T13:17:41Z",
+ "generated": "2026-11-09T13:17:50Z",
  "metrics": [
   {
    "change30_pct": 101.2,
@@ -106,6 +106,27 @@
    "state30": "worse",
    "threshold_abs": 20.0,
    "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": 100.4,
+   "change7_pct": 25.8,
+   "d30": 47.0,
+   "delta30": 47.2,
+   "delta7": 19.3,
+   "group": "local",
+   "id": "bench.ui",
+   "kind": "local",
+   "label": "Rebuild after editing plx_ui",
+   "n_now": 6,
+   "n_prev": 7,
+   "now": 94.1,
+   "prev7": 74.8,
+   "shown": true,
+   "state": "worse",
+   "state30": "worse",
+   "threshold_abs": 5.0,
+   "threshold_pct": 25.0,
    "unit": "s"
   },
   {
@@ -172,18 +193,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 49.3,
-   "change7_pct": 16.1,
+   "change30_pct": 53.4,
+   "change7_pct": 19.3,
    "d30": 19.9,
-   "delta30": 9.8,
-   "delta7": 4.1,
+   "delta30": 10.6,
+   "delta7": 4.9,
    "group": "local",
    "id": "bench.app",
    "kind": "local",
    "label": "Rebuild after editing the app crate",
-   "n_now": 5,
+   "n_now": 6,
    "n_prev": 7,
-   "now": 29.7,
+   "now": 30.5,
    "prev7": 25.6,
    "shown": true,
    "state": "flat",
@@ -193,18 +214,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 55.7,
-   "change7_pct": 12.8,
+   "change30_pct": 63.5,
+   "change7_pct": 18.4,
    "d30": 37.1,
-   "delta30": 20.7,
-   "delta7": 6.5,
+   "delta30": 23.6,
+   "delta7": 9.4,
    "group": "local",
    "id": "bench.screens",
    "kind": "local",
    "label": "Rebuild after editing plx_screens",
-   "n_now": 5,
+   "n_now": 6,
    "n_prev": 7,
-   "now": 57.8,
+   "now": 60.7,
    "prev7": 51.2,
    "shown": true,
    "state": "flat",
@@ -214,39 +235,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 98.6,
-   "change7_pct": 24.7,
-   "d30": 47.0,
-   "delta30": 46.3,
-   "delta7": 18.5,
-   "group": "local",
-   "id": "bench.ui",
-   "kind": "local",
-   "label": "Rebuild after editing plx_ui",
-   "n_now": 5,
-   "n_prev": 7,
-   "now": 93.3,
-   "prev7": 74.8,
-   "shown": true,
-   "state": "flat",
-   "state30": "worse",
-   "threshold_abs": 5.0,
-   "threshold_pct": 25.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": 93.2,
-   "change7_pct": 24.3,
+   "change30_pct": 93.4,
+   "change7_pct": 24.5,
    "d30": 108.7,
-   "delta30": 101.3,
-   "delta7": 41.1,
+   "delta30": 101.5,
+   "delta7": 41.3,
    "group": "local",
    "id": "bench.leaf",
    "kind": "local",
    "label": "Rebuild after editing plx_base",
-   "n_now": 5,
+   "n_now": 6,
    "n_prev": 7,
-   "now": 210.0,
+   "now": 210.3,
    "prev7": 168.9,
    "shown": true,
    "state": "flat",
@@ -256,18 +256,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 245.8,
-   "change7_pct": 20.5,
+   "change30_pct": 249.1,
+   "change7_pct": 21.6,
    "d30": 54.7,
-   "delta30": 134.5,
-   "delta7": 32.2,
+   "delta30": 136.3,
+   "delta7": 34.0,
    "group": "local",
    "id": "bench.tests",
    "kind": "local",
    "label": "Unit suite",
-   "n_now": 5,
+   "n_now": 6,
    "n_prev": 7,
-   "now": 189.3,
+   "now": 191.1,
    "prev7": 157.1,
    "shown": true,
    "state": "flat",
@@ -592,16 +592,16 @@
    "unit": "s"
   },
   {
-   "change30_pct": 71.7,
-   "change7_pct": 43.6,
+   "change30_pct": 75.0,
+   "change7_pct": 46.4,
    "d30": 0.5,
    "delta30": 0.3,
-   "delta7": 0.2,
+   "delta7": 0.3,
    "group": "local",
    "id": "bench.noop",
    "kind": "local",
    "label": "No-op build",
-   "n_now": 5,
+   "n_now": 6,
    "n_prev": 7,
    "now": 0.8,
    "prev7": 0.6,
@@ -674,6 +674,62 @@
    "since": "2026-11-08",
    "threshold_pct": 20.0,
    "to": 424.5
+  },
+  {
+   "change_pct": 25.8,
+   "commits": [
+    {
+     "pr": 1276,
+     "sha": "3309be023",
+     "title": "The playback build/package matrix: PLAYBACK_BACKENDS selects both, uri, feed or none (P7)"
+    },
+    {
+     "pr": 1133,
+     "sha": "69bbb7d39",
+     "title": "Preserve baseline audio codecs and size converted Opus on webOS"
+    },
+    {
+     "pr": 1281,
+     "sha": "11d4ef04d",
+     "title": "ACB: a second boot handle (player type 0) for the URI engine"
+    },
+    {
+     "pr": 1273,
+     "sha": "630f8c230",
+     "title": "Net: add the WebSocket codec for Open Watch Party"
+    },
+    {
+     "pr": 1245,
+     "sha": "6131d5c8d",
+     "title": "Default to a playback version the TV can decode"
+    },
+    {
+     "pr": 1282,
+     "sha": "0f6512a0a",
+     "title": "Test Plex server identity during automatic episode advance"
+    },
+    {
+     "pr": 1287,
+     "sha": "2fe9e9fc6",
+     "title": "Settings: ask for a poster of a kind the Under posters preview lacks"
+    },
+    {
+     "pr": 1288,
+     "sha": "c9470f20f",
+     "title": "Fix Magic Remote Back and cursor recovery"
+    },
+    {
+     "pr": 1279,
+     "sha": "8e486d1a2",
+     "title": "Settings > Video & playback > Playback engine: a per-profile opt-in to the URI engine"
+    }
+   ],
+   "from": 74.8,
+   "id": "bench.ui",
+   "label": "Rebuild after editing plx_ui",
+   "since": "2026-11-09",
+   "threshold_pct": 25.0,
+   "to": 94.1
   },
   {
    "change_pct": 22.8,
@@ -826,31 +882,31 @@
    "group": "local",
    "id": "bench.leaf",
    "label": "Rebuild after editing plx_base",
-   "now": 210.0
+   "now": 210.3
   },
   {
    "group": "local",
    "id": "bench.tests",
    "label": "Unit suite",
-   "now": 189.3
+   "now": 191.1
   },
   {
    "group": "local",
    "id": "bench.ui",
    "label": "Rebuild after editing plx_ui",
-   "now": 93.3
+   "now": 94.1
   },
   {
    "group": "local",
    "id": "bench.screens",
    "label": "Rebuild after editing plx_screens",
-   "now": 57.8
+   "now": 60.7
   },
   {
    "group": "local",
    "id": "bench.app",
    "label": "Rebuild after editing the app crate",
-   "now": 29.7
+   "now": 30.5
   }
  ],
  "thresholds": {
