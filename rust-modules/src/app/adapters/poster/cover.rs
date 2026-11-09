@@ -15,11 +15,15 @@
 //!
 //! **A definitive "no cover"** (a 200 without `coverArt`, a `NotFound`, or the transcoder's own 4xx)
 //! is persisted as a short fixed marker under a sibling identity, read before dialling, so a boot
-//! does not re-read Discover for a title that has none. Everything else that fails (no identity, an
-//! unreachable Discover, a refused or unauthorised read, a 5xx, bytes that do not decode) persists
-//! NOTHING and is answered [`Got::Final`] for this session only: the poster store latches it in the
-//! miss set (`super::miss`), because a parked retry would read as "pending" and leave the card on a
-//! skeleton while the next rung waits.
+//! does not re-read Discover for a title that has none. Everything else that fails persists
+//! NOTHING and is answered [`Got::Final`]: the poster store records it in the miss set
+//! (`super::miss`), because a parked retry would read as "pending" and leave the card on a skeleton
+//! while the next rung waits. How long the miss counts follows its cause ([`Bake::lasting`]): one
+//! that came from a read that did not answer (no identity, an unreachable Discover, a refused or
+//! unauthorised read, a 5xx, no response: [`Bake::unanswered`]) says nothing about the title and
+//! is forgotten once the Discover memo's window (45 s) has passed, so the next time the card is
+//! shown it asks again and moves up to its cover; one that is a verdict on the bytes (a picture that
+//! does not decode, or is smaller than the box) holds for the session.
 //!
 //! **Size.** The request is `minSize=1`, so the transcoder returns an image at least the box in
 //! both axes (COVER, not fit). A cached or fetched cover SMALLER than the box in either axis is
@@ -125,16 +129,16 @@ fn run(io: &mut dyn CoverIo, min: (u32, u32), force: bool) -> Bake {
     if !force {
         if let Some(c) = io.cached() {
             match usable(&c.bytes, min) {
-                Some(img) => return Bake { got: Got::Ok(img), stale: c.stale },
+                Some(img) => return Bake { got: Got::Ok(img), stale: c.stale, lasting: true },
                 None => io.discard(),
             }
         }
         if let Some(stale) = io.marker() {
-            return Bake { got: Got::Final, stale };
+            return Bake { got: Got::Final, stale, lasting: true };
         }
     }
     if !io.identified() || io.discover_unreachable() {
-        return Bake::fresh(Got::Final);
+        return Bake::unanswered();
     }
     let url = match verdict(io.read()) {
         Verdict::Fetch(url) => url,
@@ -146,7 +150,7 @@ fn run(io: &mut dyn CoverIo, min: (u32, u32), force: bool) -> Bake {
             io.persist_marker(NO_COVER_MARKER);
             return Bake::fresh(Got::Final);
         }
-        Verdict::Skip => return Bake::fresh(Got::Final),
+        Verdict::Skip => return Bake::unanswered(),
     };
     match io.fetch(&url) {
         ArtFetch::Bytes(bytes) if !bytes.is_empty() => match usable(&bytes, min) {
@@ -160,7 +164,7 @@ fn run(io: &mut dyn CoverIo, min: (u32, u32), force: bool) -> Bake {
             io.persist_marker(NO_COVER_MARKER);
             Bake::fresh(Got::Final)
         }
-        ArtFetch::Bytes(_) | ArtFetch::Status(_) | ArtFetch::NoResponse => Bake::fresh(Got::Final),
+        ArtFetch::Bytes(_) | ArtFetch::Status(_) | ArtFetch::NoResponse => Bake::unanswered(),
     }
 }
 

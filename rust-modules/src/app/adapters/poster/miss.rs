@@ -15,12 +15,20 @@
 //! `token_gen`, so a miss recorded under one profile is asked again under the next. A newer disk
 //! epoch empties the set.
 //!
+//! **A miss is only as lasting as its cause.** A definitive answer (the title has no cover, the
+//! transcoder refused it, the bytes are unusable) holds for the identity. A miss that came from a
+//! read that did not answer (Discover unreachable, a refusal, a 5xx, no response) says nothing about
+//! the title: it expires with the Discover memo's window ([`UNANSWERED_FOR`]), so a card that was
+//! drawn during a network blip asks for its cover again the next time it is shown, instead of
+//! wearing its fallback for as long as the app runs.
+//!
 //! Bounded ([`MISS_CAP`], oldest out): its natural size is the number of distinct deck titles seen
 //! in a session, and an eviction only means one more ask, never missing art.
 
 use plx_plex::plex::ServerId;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 /// Misses kept. Far above a session's deck titles; precedent: `refresh.rs`'s `RECENT_CAP`.
 pub(super) const MISS_CAP: usize = 1024;
@@ -43,17 +51,36 @@ impl Currency {
     }
 }
 
+/// How long a miss that came from a read that did not answer is kept: the Discover reachability
+/// memo's own window (`plex::account::discover_recently_unreachable`), the span in which the same
+/// read would not even be dialled. After it the card asks again.
+pub(super) const UNANSWERED_FOR: Duration = plx_plex::plex::account::UNREACHABLE_MEMO;
+
+/// One recorded miss: the identity it was recorded under, and, for a miss that was not a verdict
+/// about the title, the instant it stops counting.
+#[derive(Clone, Copy, Debug)]
+struct Entry {
+    cur: Currency,
+    until: Option<Instant>,
+}
+
 /// The bounded set. Nested by server so a hit borrows the key (no allocation on the per-frame
 /// path, the reason `KeyMemo` nests too).
 #[derive(Default)]
 pub(super) struct MissSet {
-    by_server: HashMap<u16, HashMap<String, Currency>>,
+    by_server: HashMap<u16, HashMap<String, Entry>>,
     order: VecDeque<(u16, String)>,
     epoch: u64,
 }
 
 impl MissSet {
+    /// Record a definitive miss: kept for the whole identity.
     pub(super) fn insert(&mut self, srv: u16, key: &str, cur: Currency) {
+        self.insert_until(srv, key, cur, None);
+    }
+
+    /// Record a miss that stops counting at `until` (`None`: never).
+    pub(super) fn insert_until(&mut self, srv: u16, key: &str, cur: Currency, until: Option<Instant>) {
         if cur.cache_gen < self.epoch {
             return; // a late answer of a signed-out account
         }
@@ -62,7 +89,7 @@ impl MissSet {
             self.order.clear();
             self.epoch = cur.cache_gen;
         }
-        let known = self.by_server.entry(srv).or_default().insert(key.to_owned(), cur).is_some();
+        let known = self.by_server.entry(srv).or_default().insert(key.to_owned(), Entry { cur, until }).is_some();
         if known {
             return;
         }
@@ -76,9 +103,15 @@ impl MissSet {
         }
     }
 
+    /// Does the set hold a miss of `key` under `cur` that has not expired? The clock is read only
+    /// for an entry that carries an expiry.
     pub(super) fn contains(&self, srv: u16, key: &str, cur: Currency) -> bool {
         cur.cache_gen == self.epoch
-            && self.by_server.get(&srv).and_then(|m| m.get(key)) == Some(&cur)
+            && self
+                .by_server
+                .get(&srv)
+                .and_then(|m| m.get(key))
+                .is_some_and(|e| e.cur == cur && e.until.is_none_or(|t| Instant::now() < t))
     }
 
     #[cfg(test)]
@@ -99,9 +132,25 @@ pub(super) fn note(srv: ServerId, key: &str, cur: Currency) {
     with(|m| m.insert(srv.raw(), key, cur));
 }
 
+/// Record a miss that was not a verdict about the title (a read that did not answer): it counts for
+/// [`UNANSWERED_FOR`], then the key reads as never requested again.
+pub(super) fn note_for(srv: ServerId, key: &str, cur: Currency, window: Duration) {
+    with(|m| m.insert_until(srv.raw(), key, cur, Some(Instant::now() + window)));
+}
+
 /// Has `key` on `srv` settled as a miss this session, under the identity in force NOW?
 pub(super) fn known(srv: ServerId, key: &str, cur: Currency) -> bool {
     with(|m| m.contains(srv.raw(), key, cur))
+}
+
+/// Record the miss of a bake that answered `Final`: for the whole identity when `lasting` (a
+/// definitive answer), else for [`UNANSWERED_FOR`] ([`super::baked::Bake::lasting`]).
+pub(super) fn settle(srv: ServerId, key: &str, cur: Currency, lasting: bool) {
+    if lasting {
+        note(srv, key, cur);
+    } else {
+        note_for(srv, key, cur, UNANSWERED_FOR);
+    }
 }
 
 /// Forget every miss. Callers hold `plx_base::testlock::serial()`: this is a process global.

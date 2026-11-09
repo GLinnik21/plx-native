@@ -2169,7 +2169,7 @@ fn poster_worker() {
                         }
                     }
                     fan::Got::Final => {
-                        miss::note(srv, &key_s, miss::Currency { cache_gen, grant_epoch, token_gen });
+                        miss::settle(srv, &key_s, miss::Currency { cache_gen, grant_epoch, token_gen }, bake.lasting);
                         log_baked_miss(hex.is_some());
                         baked_final = true;
                         // A stale marker is revalidated like any stale entry.

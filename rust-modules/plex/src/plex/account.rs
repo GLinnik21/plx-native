@@ -944,7 +944,7 @@ mod evidence_tests {
 /// has its own memo ([`discover_recently_unreachable`]).
 static LAST_UNREACHABLE: Mutex<Option<Instant>> = Mutex::new(None);
 static LAST_REACHABLE: Mutex<Option<Instant>> = Mutex::new(None);
-const UNREACHABLE_MEMO: Duration = Duration::from_secs(45);
+pub const UNREACHABLE_MEMO: Duration = Duration::from_secs(45);
 /// The positive memo lives longer: it answers "is a network round trip worth starting" for work
 /// that is optional (an avatar refresh), and a link that answered within the last few minutes
 /// is a link.

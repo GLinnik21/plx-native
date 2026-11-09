@@ -194,6 +194,34 @@ fn the_miss_set_is_bounded_and_evicts_the_oldest() {
     assert_eq!(set.len(), miss::MISS_CAP);
 }
 
+/// **A miss is only as lasting as its cause.** A definitive answer holds for the identity; a miss a
+/// read that did not answer produced (Discover unreachable for 45 s) stops counting with the memo's
+/// window, so the card asks for its cover again instead of wearing its composite for days.
+#[test]
+fn an_unanswered_miss_expires_with_the_discover_memo_and_a_verdict_does_not() {
+    let (_g, sid, _) = one_server();
+    miss::reset_for_test();
+    clear_store();
+    let blip = key_for(sid, &cover_key(), 420, 236, 0);
+    let verdict = key_for(sid, &card_key(), 420, 236, 0);
+    let cur = Currency::live(sid);
+
+    miss::settle(sid, &blip, cur, false);
+    miss::settle(sid, &verdict, cur, true);
+    assert!(settled_failed(sid, &blip) && settled_failed(sid, &verdict), "both hold inside the window");
+    assert_eq!(miss::UNANSWERED_FOR, plx_plex::plex::account::UNREACHABLE_MEMO, "the Discover memo's own window");
+
+    // The window passes (a zero window is already over): the blip's key is asked for again.
+    miss::note_for(sid, &blip, cur, std::time::Duration::ZERO);
+    assert!(!settled_failed(sid, &blip), "an expired miss reads as never requested");
+    assert!(settled_failed(sid, &verdict), "a verdict is not affected");
+
+    // A verdict that follows an unanswered miss replaces it (the retry found the title has no cover).
+    miss::settle(sid, &blip, cur, true);
+    assert!(settled_failed(sid, &blip));
+    miss::reset_for_test();
+}
+
 // ── the worker I/O's currency ───────────────────────────────────────────────────────────────────
 
 /// A bake that straddles a sign-out, a retoken or a profile switch is delivered but never filed: the

@@ -71,7 +71,7 @@ pub(super) fn bake(io: &mut dyn CardIo, spec: &CardSpec) -> Bake {
     if let Some(c) = io.cached() {
         match plx_gfx::img::img_decode_owned(&c.bytes) {
             Some((w, h, px)) if (w, h) == (spec.w, spec.h) => {
-                return Bake { got: Got::Ok(Rgba { w, h, px }), stale: c.stale };
+                return Bake { got: Got::Ok(Rgba { w, h, px }), stale: c.stale, lasting: true };
             }
             _ => io.discard(),
         }

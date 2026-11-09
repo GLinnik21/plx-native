@@ -95,6 +95,11 @@ impl CoverIo for Fake {
 fn is_final(b: &Bake) -> bool {
     matches!(b.got, Got::Final)
 }
+/// A `Final` the miss set keeps for the whole identity (a verdict), as against one that expires
+/// with the Discover memo (a read that did not answer).
+fn is_lasting_final(b: &Bake) -> bool {
+    is_final(b) && b.lasting
+}
 fn image(b: Bake) -> Rgba {
     match b.got {
         Got::Ok(img) => img,
@@ -157,14 +162,14 @@ fn a_marker_hit_is_final_with_no_read_and_no_fetch() {
     let mut io = Fake::new();
     io.tier.insert("marker", NO_COVER_MARKER.to_vec());
     let b = bake(&mut io, MIN);
-    assert!(is_final(&b) && !b.stale);
+    assert!(is_lasting_final(&b) && !b.stale, "the marker is a verdict, fresh or not");
     assert!(io.reads == 0 && io.fetches.is_empty() && io.persisted.is_empty());
 
     let mut io = Fake::new();
     io.tier.insert("marker", NO_COVER_MARKER.to_vec());
     io.marker_stale = true;
     let b = bake(&mut io, MIN);
-    assert!(is_final(&b) && b.stale);
+    assert!(is_lasting_final(&b) && b.stale);
     assert_eq!(io.reads, 0);
 }
 
@@ -206,7 +211,8 @@ fn a_title_with_a_cover_is_fetched_persisted_once_and_delivered() {
 #[test]
 fn every_discover_answer_maps_to_the_row_the_plan_names() {
     use WatchlistError as E;
-    // (answer, writes the marker?)
+    // (answer, writes the marker?) A marker is a verdict, so it is also the lasting miss; every
+    // other answer is a read that did not answer, whose miss expires with the Discover memo.
     let rows: Vec<(&str, Result<CatalogItem, WatchlistError>, bool)> = vec![
         ("200 without coverArt", Ok(item(None)), true),
         ("NotFound", Err(E::NotFound), true),
@@ -221,7 +227,9 @@ fn every_discover_answer_maps_to_the_row_the_plan_names() {
     ];
     for (what, answer, marker) in rows {
         let mut io = Fake::answering(answer, None);
-        assert!(is_final(&bake(&mut io, MIN)), "{what}: a miss for this session");
+        let b = bake(&mut io, MIN);
+        assert!(is_final(&b), "{what}: a miss for this session");
+        assert_eq!(b.lasting, marker, "{what}: only a definitive 'no cover' is a lasting miss");
         assert_eq!(io.reads, 1, "{what}");
         assert!(io.fetches.is_empty(), "{what}: no image is fetched without a cover URL");
         assert!(io.persisted.is_empty(), "{what}: no image bytes");
@@ -231,25 +239,28 @@ fn every_discover_answer_maps_to_the_row_the_plan_names() {
 
 #[test]
 fn every_transcoder_answer_maps_to_the_row_the_plan_names() {
-    // (answer, writes the marker?)
-    let rows: Vec<(&str, ArtFetch, bool)> = vec![
-        ("404", ArtFetch::Status(404), true),
-        ("400", ArtFetch::Status(400), true),
-        ("410", ArtFetch::Status(410), true),
-        ("401 (a refused grant)", ArtFetch::Status(401), false),
-        ("403", ArtFetch::Status(403), false),
-        ("408", ArtFetch::Status(408), false),
-        ("429", ArtFetch::Status(429), false),
-        ("500", ArtFetch::Status(500), false),
-        ("502", ArtFetch::Status(502), false),
-        ("no response", ArtFetch::NoResponse, false),
-        ("an empty body", ArtFetch::Bytes(Vec::new()), false),
-        ("bytes that do not decode", ArtFetch::Bytes(b"<html>".to_vec()), false),
-        ("a picture smaller than the box", ArtFetch::Bytes(png(419, 236)), false),
+    // (answer, writes the marker?, lasting miss?) A picture that cannot be used is the same picture
+    // next time, so it is a verdict; a refused grant, a timeout, a 5xx and a silent line are not.
+    let rows: Vec<(&str, ArtFetch, bool, bool)> = vec![
+        ("404", ArtFetch::Status(404), true, true),
+        ("400", ArtFetch::Status(400), true, true),
+        ("410", ArtFetch::Status(410), true, true),
+        ("401 (a refused grant)", ArtFetch::Status(401), false, false),
+        ("403", ArtFetch::Status(403), false, false),
+        ("408", ArtFetch::Status(408), false, false),
+        ("429", ArtFetch::Status(429), false, false),
+        ("500", ArtFetch::Status(500), false, false),
+        ("502", ArtFetch::Status(502), false, false),
+        ("no response", ArtFetch::NoResponse, false, false),
+        ("an empty body", ArtFetch::Bytes(Vec::new()), false, false),
+        ("bytes that do not decode", ArtFetch::Bytes(b"<html>".to_vec()), false, true),
+        ("a picture smaller than the box", ArtFetch::Bytes(png(419, 236)), false, true),
     ];
-    for (what, answer, marker) in rows {
+    for (what, answer, marker, lasting) in rows {
         let mut io = Fake::answering(Ok(item(Some(URL))), Some(answer));
-        assert!(is_final(&bake(&mut io, MIN)), "{what}: a miss for this session");
+        let b = bake(&mut io, MIN);
+        assert!(is_final(&b), "{what}: a miss for this session");
+        assert_eq!(b.lasting, lasting, "{what}: lasting only when the answer is a verdict");
         assert!(io.persisted.is_empty(), "{what}: no image bytes");
         assert_eq!(io.markers(), usize::from(marker), "{what}");
     }
@@ -271,7 +282,8 @@ fn verdict_and_the_status_rule_are_pure() {
 fn without_an_identity_nothing_is_read_or_written() {
     let mut io = Fake::new();
     io.identified = false;
-    assert!(is_final(&bake(&mut io, MIN)));
+    let b = bake(&mut io, MIN);
+    assert!(is_final(&b) && !b.lasting, "nothing was asked, so nothing is known about the title");
     assert!(io.untouched());
 }
 
@@ -281,7 +293,8 @@ fn without_an_identity_nothing_is_read_or_written() {
 fn a_recently_unreachable_discover_settles_a_cover_without_a_dial() {
     let mut io = Fake::new();
     io.unreachable = true;
-    assert!(is_final(&bake(&mut io, MIN)));
+    let b = bake(&mut io, MIN);
+    assert!(is_final(&b) && !b.lasting, "an unreachable Discover says nothing about the title: the miss expires with the memo");
     assert!(io.untouched());
 }
 
