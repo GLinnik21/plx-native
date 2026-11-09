@@ -95,6 +95,11 @@ fn run() {
             }
         };
         if job.epoch != plx_platform::imgcache::generation() || !grant_is_current(&job) { continue; }
+        // A deck card's cover or composite is not a transcode: it is re-BAKED, which fetches its
+        // sources from the server again (a re-bake never reads the cached logo, so a replaced one
+        // reaches the card) and writes only what came back whole. Anything else is refreshed as the
+        // one transcode it is.
+        if super::workers::rebake(job.client, &job.path, job.epoch, job.token_gen) { continue; }
         // Failed refresh leaves both the cached file and already-published texture untouched.
         if let Some(bytes) = super::fetch_image(job.client, &job.path) {
             let (mut w, mut h) = (0, 0);
