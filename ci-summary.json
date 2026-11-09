@@ -85,7 +85,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-09T23:01:57Z",
+ "generated": "2026-11-09T23:11:06Z",
  "metrics": [
   {
    "change30_pct": 101.0,
@@ -140,9 +140,9 @@
    "kind": "wait",
    "label": "PR CI wait",
    "n_now": 150,
-   "n_prev": 209,
+   "n_prev": 208,
    "now": 485.0,
-   "prev7": 414,
+   "prev7": 414.0,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -151,18 +151,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 41.2,
-   "change7_pct": 13.7,
+   "change30_pct": 41.1,
+   "change7_pct": 13.6,
    "d30": 328.5,
-   "delta30": 135.5,
-   "delta7": 56,
+   "delta30": 135.0,
+   "delta7": 55.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 55,
+   "n_now": 56,
    "n_prev": 83,
-   "now": 464,
+   "now": 463.5,
    "prev7": 408,
    "shown": true,
    "state": "flat",
@@ -340,18 +340,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 39.2,
-   "change7_pct": 11.6,
+   "change30_pct": 39.6,
+   "change7_pct": 11.9,
    "d30": 228.5,
-   "delta30": 89.5,
-   "delta7": 33,
+   "delta30": 90.5,
+   "delta7": 34.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 53,
+   "n_now": 54,
    "n_prev": 75,
-   "now": 318,
+   "now": 319.0,
    "prev7": 285,
    "shown": true,
    "state": "flat",
@@ -403,18 +403,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 50.0,
-   "change7_pct": 8.4,
+   "change30_pct": 51.0,
+   "change7_pct": 9.2,
    "d30": 146,
-   "delta30": 73,
-   "delta7": 17,
+   "delta30": 74.5,
+   "delta7": 18.5,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 53,
+   "n_now": 54,
    "n_prev": 75,
-   "now": 219,
+   "now": 220.5,
    "prev7": 202,
    "shown": true,
    "state": "flat",
@@ -424,18 +424,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -36.9,
-   "change7_pct": 0.5,
+   "change30_pct": -36.5,
+   "change7_pct": 1.2,
    "d30": 344.0,
-   "delta30": -127.0,
-   "delta7": 1,
+   "delta30": -125.5,
+   "delta7": 2.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 53,
+   "n_now": 54,
    "n_prev": 75,
-   "now": 217,
+   "now": 218.5,
    "prev7": 216,
    "shown": true,
    "state": "flat",
@@ -512,14 +512,14 @@
    "change7_pct": 5.6,
    "d30": 17.0,
    "delta30": 2.0,
-   "delta7": 1,
+   "delta7": 1.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 53,
+   "n_now": 54,
    "n_prev": 75,
-   "now": 19,
+   "now": 19.0,
    "prev7": 18,
    "shown": false,
    "state": "flat",
@@ -618,11 +618,6 @@
    "change_pct": 25.9,
    "commits": [
     {
-     "pr": 1297,
-     "sha": "be8495d5b",
-     "title": "Key mode never resumes a TLS session"
-    },
-    {
      "pr": 1290,
      "sha": "af607d8cd",
      "title": "Continue Watching as a row of stills: cover art, one-line footer, Home scroll"
@@ -666,6 +661,11 @@
      "pr": 1294,
      "sha": "583722c8c",
      "title": "Grid: BACK to the top raises the first-row card from rest, as UP does"
+    },
+    {
+     "pr": 1298,
+     "sha": "69615d782",
+     "title": "Dependencies: sentry-native -> 0.17.6"
     }
    ],
    "from": 336,
@@ -679,11 +679,6 @@
    "change_pct": 25.8,
    "commits": [
     {
-     "pr": 1297,
-     "sha": "be8495d5b",
-     "title": "Key mode never resumes a TLS session"
-    },
-    {
      "pr": 1290,
      "sha": "af607d8cd",
      "title": "Continue Watching as a row of stills: cover art, one-line footer, Home scroll"
@@ -727,6 +722,11 @@
      "pr": 1294,
      "sha": "583722c8c",
      "title": "Grid: BACK to the top raises the first-row card from rest, as UP does"
+    },
+    {
+     "pr": 1298,
+     "sha": "69615d782",
+     "title": "Dependencies: sentry-native -> 0.17.6"
     }
    ],
    "from": 74.8,
@@ -767,7 +767,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 318
+   "now": 319.0
   }
  ],
  "slowest_local": [
