@@ -161,7 +161,7 @@ fn db8_signout_keeps_install_keys_but_not_pins_recents_or_account_bound_keys() {
 /// read and the next sign-in's write drops it.** `ClearTenure` keeps every Install key, so the
 /// stored preferences still say `http3_experimental: true` after a sign-out. The signed-out read
 /// (`Cleared`) is built from `Retained`, which does not carry it, so the launch after a sign-out
-/// binds the system libcurl; and a sign-in writes from that session, whose preferences omit the
+/// sets no Alt-Svc; and a sign-in writes from that session, whose preferences omit the
 /// (off, unserialized) key, which `preserve_unknown_preferences` does not copy back because this
 /// build models it. (A `PublicOnly` `UpdatePreferences` from the Cleared state is refused, so the
 /// sign-in's `ReplaceAuth` is that next write.)

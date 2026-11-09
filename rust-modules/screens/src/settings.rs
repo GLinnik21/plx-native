@@ -1066,8 +1066,8 @@ enum RootId {
     AutoSignIn,
     TrailerAutoplay,
     Resolution,
-    /// HTTP/3 (experimental): which libcurl the next launch binds. Only in a build that ships the
-    /// bundled curl stack ([`RootInputs::http3_offered`]).
+    /// HTTP/3 (experimental): whether the next launch's bundled curl may use HTTP/3 (Alt-Svc). Only
+    /// in a build that ships the bundled curl stack ([`RootInputs::http3_offered`]).
     Http3,
     /// One server's switch. Its key is [`PLAINTEXT_KEY_BASE`] plus its position in the section
     /// ([`root_form`] assigns it); its identity is the machine, so a rebuild keeps the row.

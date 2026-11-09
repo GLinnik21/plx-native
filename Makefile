@@ -960,8 +960,8 @@ FFMPEG_STAGED = $(addprefix pkg/,$(FFMPEG_SONAMES))
 # exactly what it did before the stack existed. With it: curl 8.23 + its six dependencies (OpenSSL's
 # libcrypto and libssl, nghttp2, nghttp3, ngtcp2 and its OpenSSL crypto glue), built by
 # `ci/build-curlstack.sh` through `ci/arm-cc.py` (so each carries link evidence, like FFmpeg),
-# shipped beside the binary, plus the `http3-curlstack` cargo feature that loads them when the
-# HTTP/3 (experimental) setting is on (`plx_net::net::load_bundled`, which falls back to the television's own libcurl the moment
+# shipped beside the binary, plus the `http3-curlstack` cargo feature that loads them
+# (`plx_net::net::load_bundled`, which falls back to the television's own libcurl the moment
 # any one of them is missing). The flag and the feature move together: `+curlstack` in the build
 # stamp (RUST_CFG) and its own target dir, for the same reasons LAB has them. OpenSSL 3.5 for its
 # AArch32 Crypto Extension paths; `ci/build-curlstack.sh`'s header has how it coexists with the

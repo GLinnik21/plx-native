@@ -698,7 +698,7 @@ fn the_file_backend_keeps_only_the_language_and_resolution_at_sign_out() {
 
     assert_eq!(fresh.language, Preference::Be, "language is kept");
     assert_eq!(fresh.ui_resolution(), UiResolution::Hd720, "and so is the Interface resolution");
-    assert!(!fresh.http3_experimental(), "HTTP/3 (experimental) is not kept: the next launch binds the system libcurl");
+    assert!(!fresh.http3_experimental(), "HTTP/3 (experimental) is not kept: the next launch sets no Alt-Svc");
     // A session minted after sign-out is a FRESH one, not `Session::default()`: it writes the
     // explicit fresh quality (`auto`) and has trailer autoplay on. Neither is a kept preference.
     let mut expected = legacy(&Session::default());

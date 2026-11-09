@@ -139,7 +139,7 @@ pub enum PreferenceCmd {
     /// The Interface resolution picked in its picker: install-wide, applied at the next launch. The
     /// app writes it through the session; `reply` learns whether the write was durable.
     UiResolution { mode: plx_plex::plex::session::UiResolution, reply: std::sync::mpsc::Sender<bool> },
-    /// The HTTP/3 (experimental) switch: install-wide, applied at the next launch (boot binds curl
+    /// The HTTP/3 (experimental) switch: install-wide, applied at the next launch (boot installs it
     /// once). The app writes it through the session; `reply` learns whether the write was durable.
     Http3 { on: bool, reply: std::sync::mpsc::Sender<bool> },
 }

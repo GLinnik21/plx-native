@@ -199,17 +199,17 @@ pub struct Preferences {
     /// never the credentials.
     #[serde(default, deserialize_with = "de_soft_hold_hint_taught", skip_serializing_if = "is_default_hold_hint_taught")]
     pub hold_hint_taught: HoldHintTaught,
-    /// **HTTP/3 (experimental)**: whether the NEXT launch binds the bundled HTTP/3-capable curl
-    /// stack (`plx_net::net::CurlStack::from_setting`) instead of the television's own libcurl.
-    /// Install-wide, not per profile: `app::boot::construct` reads it before `net::global_init_with`,
-    /// before anyone is seated, and the process never rebinds curl, so a change applies at the next
-    /// launch. Offered by Settings only in a build that carries the stack
-    /// (`plx_net::net::BUNDLED_STACK_BUILT`); in any other build it is stored and unused. Absence is
-    /// **off**, today's system libcurl; skipped while off so every session written before the field
+    /// **HTTP/3 (experimental)**: whether the NEXT launch lets the bundled curl (bound in every
+    /// `CURLSTACK=1` build) learn and use HTTP/3 through Alt-Svc (`plx_net::net::alt_svc`). It does
+    /// not choose the libcurl. Install-wide, not per profile: `app::boot::construct` hands it to
+    /// `net::set_http3` before `net::global_init`, before anyone is seated, and the process installs
+    /// it once, so a change applies at the next launch. Offered by Settings only in a build that
+    /// carries the stack (`plx_net::net::BUNDLED_STACK_BUILT`); in any other build it is stored and
+    /// unused. Absence is **off**, no Alt-Svc; skipped while off so every session written before the field
     /// serializes exactly as it did. **An Install row that a sign-out does not carry over**
     /// ([`Scope::Install`] has the general rule): a signed-out read keeps only what
     /// `install_preferences::Retained` holds (the language and the resolution), so the launch after
-    /// a sign-out binds the system libcurl. On the DB8 backend `ClearTenure` leaves the key in the
+    /// a sign-out sets no Alt-Svc. On the DB8 backend `ClearTenure` leaves the key in the
     /// stored preferences, but nothing reads it there and the next write of the preferences (a
     /// sign-in) omits it. Soft-parsed: garbage reads off and costs only the switch.
     #[serde(default, deserialize_with = "super::de_soft_bool", skip_serializing_if = "std::ops::Not::not")]
@@ -599,7 +599,7 @@ setting!(UiResolutionPref: UiResolution = ui_resolution, "ui_resolution", Instal
 setting!(HoldHintTaughtPref: HoldHintTaught = hold_hint_taught, "hold_hint_taught", Install,
     account false, live false, settings None, parse Soft);
 // Written by the Settings root's switch through `PreferenceCmd::Http3` (`session::set_http3_experimental`),
-// read once at boot by `net::global_init_with`.
+// installed once at boot by `net::set_http3`.
 setting!(Http3Pref: bool = http3_experimental, "http3_experimental", Install,
     account false, live false, settings None, parse BoolOff);
 setting!(LastHeroBlurPref: Option<[[f32; 3]; 4]> = last_hero_blur, "last_hero_blur", Install,

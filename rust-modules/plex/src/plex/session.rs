@@ -2579,7 +2579,7 @@ impl Session {
         self.prefs.ui_resolution
     }
 
-    /// Whether the NEXT launch binds the bundled HTTP/3 curl stack; see
+    /// Whether the NEXT launch lets the bundled curl use HTTP/3 (Alt-Svc); see
     /// [`Preferences::http3_experimental`].
     pub fn http3_experimental(&self) -> bool {
         self.prefs.http3_experimental
@@ -4457,7 +4457,7 @@ pub fn set_ui_resolution(mode: UiResolution) -> bool {
 
 /// Blocking persistence seam for the Settings HTTP/3 (experimental) switch, dispatched on the
 /// storage worker like [`set_ui_resolution`]. It applies at the NEXT launch
-/// (`net::global_init_with` binds once per process), so a pick is only claimed once it is durable.
+/// (`net::set_http3` installs it once per process), so a pick is only claimed once it is durable.
 pub fn set_http3_experimental(on: bool) -> bool {
     let mut already = false;
     let write = update_with_outcome(|current| {
@@ -6100,7 +6100,7 @@ mod http3_experimental_tests {
                 .unwrap_or_else(|e| panic!("{value}: a bad preference must not fail the session: {e}"));
             assert!(!session.http3_experimental(), "{value}");
         }
-        assert!(!Session::default().http3_experimental(), "a fresh install binds the system libcurl");
+        assert!(!Session::default().http3_experimental(), "a fresh install sets no Alt-Svc");
     }
 
     #[test]
@@ -6125,7 +6125,7 @@ mod http3_experimental_tests {
     }
 
     /// A signed-out read keeps only the language and the resolution: the switch is not retained,
-    /// so the launch after a sign-out binds the system libcurl.
+    /// so the launch after a sign-out sets no Alt-Svc.
     #[test]
     fn a_signed_out_read_is_off() {
         let kept = Retained { language: plx_platform::i18n::Preference::Be, ui_resolution: UiResolution::Sd540 };
