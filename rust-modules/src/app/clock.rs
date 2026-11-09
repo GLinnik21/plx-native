@@ -58,6 +58,19 @@ pub(crate) fn set_replay(ms: u32) {
     REPLAY.with(|c| c.set(Some(ms)));
 }
 
+/// Unix wall-clock seconds for live player estimates. Replays deliberately have no wall clock:
+/// inventing today's date for a historical frame would make the HUD nondeterministic.
+pub(crate) fn unix_seconds() -> Option<i64> {
+    if REPLAY.with(|c| c.get().is_some()) {
+        return None;
+    }
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    i64::try_from(seconds).ok().filter(|seconds| *seconds > 0)
+}
+
 /// **Today's calendar date** in the OS time zone, `[year, month, day]`: read from the platform at
 /// most once a minute of the frame clock ([`now`]), so a midnight is noticed within a minute and a
 /// frame pays one thread-local read. Under a replay (or a test that set one) it is the pinned date.
