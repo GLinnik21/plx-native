@@ -81,7 +81,13 @@ impl ClockWarm {
                 (fmt_time((rem - 1).max(0) * SEC_NS, true), 0, cap),
             ];
             if let Some([hour, minute]) = end_time {
-                clocks.push((format!("{} · {hour:02}:{minute:02}", fmt_time(rem * SEC_NS, true)), 0, cap));
+                for remaining in [rem, (rem - 1).max(0)] {
+                    clocks.push((
+                        format!("{} · {hour:02}:{minute:02}", fmt_time(remaining * SEC_NS, true)),
+                        0,
+                        cap,
+                    ));
+                }
             }
             // the elapsed clock also draws at the size it grows to during a scrub with no card
             // (`scrub_preview::clock_faces`); cold, that is a font open and a rasterisation in
