@@ -85,7 +85,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-09T16:36:53Z",
+ "generated": "2026-11-09T16:41:53Z",
  "metrics": [
   {
    "change30_pct": 101.4,
@@ -130,30 +130,9 @@
    "unit": "s"
   },
   {
-   "change30_pct": 40.9,
-   "change7_pct": 15.0,
-   "d30": 329,
-   "delta30": 134.5,
-   "delta7": 60.5,
-   "group": "ci",
-   "id": "push_wait",
-   "kind": "wait",
-   "label": "Wait after merge",
-   "n_now": 52,
-   "n_prev": 83,
-   "now": 463.5,
-   "prev7": 403,
-   "shown": true,
-   "state": "worse",
-   "state30": "worse",
-   "threshold_abs": 60.0,
-   "threshold_pct": 15.0,
-   "unit": "s"
-  },
-  {
    "change30_pct": 37.6,
    "change7_pct": 19.0,
-   "d30": 351.0,
+   "d30": 351,
    "delta30": 132.0,
    "delta7": 77.0,
    "group": "ci",
@@ -169,6 +148,27 @@
    "state30": "worse",
    "threshold_abs": 90.0,
    "threshold_pct": 25.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": 40.7,
+   "change7_pct": 14.9,
+   "d30": 329,
+   "delta30": 134,
+   "delta7": 60,
+   "group": "ci",
+   "id": "push_wait",
+   "kind": "wait",
+   "label": "Wait after merge",
+   "n_now": 53,
+   "n_prev": 83,
+   "now": 463,
+   "prev7": 403,
+   "shown": true,
+   "state": "flat",
+   "state30": "worse",
+   "threshold_abs": 60.0,
+   "threshold_pct": 15.0,
    "unit": "s"
   },
   {
@@ -277,10 +277,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 23.0,
+   "change30_pct": 22.9,
    "change7_pct": null,
-   "d30": 906,
-   "delta30": 208,
+   "d30": 906.5,
+   "delta30": 207.5,
    "delta7": null,
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
@@ -361,18 +361,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 39.6,
-   "change7_pct": 13.5,
+   "change30_pct": 39.2,
+   "change7_pct": 13.2,
    "d30": 228.5,
-   "delta30": 90.5,
-   "delta7": 38.0,
+   "delta30": 89.5,
+   "delta7": 37.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 50,
+   "n_now": 51,
    "n_prev": 76,
-   "now": 319.0,
+   "now": 318,
    "prev7": 281.0,
    "shown": true,
    "state": "flat",
@@ -403,18 +403,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 46.9,
-   "change7_pct": 6.9,
+   "change30_pct": 47.6,
+   "change7_pct": 7.4,
    "d30": 147,
-   "delta30": 69.0,
-   "delta7": 14.0,
+   "delta30": 70,
+   "delta7": 15.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 50,
+   "n_now": 51,
    "n_prev": 76,
-   "now": 216.0,
+   "now": 217,
    "prev7": 202.0,
    "shown": true,
    "state": "flat",
@@ -424,18 +424,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -38.6,
-   "change7_pct": -1.4,
+   "change30_pct": -38.0,
+   "change7_pct": -0.5,
    "d30": 348.5,
-   "delta30": -134.5,
-   "delta7": -3.0,
+   "delta30": -132.5,
+   "delta7": -1.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 50,
+   "n_now": 51,
    "n_prev": 76,
-   "now": 214.0,
+   "now": 216,
    "prev7": 217.0,
    "shown": true,
    "state": "flat",
@@ -468,8 +468,8 @@
   {
    "change30_pct": 33.3,
    "change7_pct": null,
-   "d30": 18,
-   "delta30": 6,
+   "d30": 18.0,
+   "delta30": 6.0,
    "delta7": null,
    "group": "ci",
    "id": "nightly|publish nightly prerelease",
@@ -489,8 +489,8 @@
   {
    "change30_pct": 50.0,
    "change7_pct": null,
-   "d30": 14,
-   "delta30": 7,
+   "d30": 14.0,
+   "delta30": 7.0,
    "delta7": null,
    "group": "ci",
    "id": "nightly|plan today's nightly",
@@ -517,9 +517,9 @@
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 50,
+   "n_now": 51,
    "n_prev": 76,
-   "now": 20.0,
+   "now": 20,
    "prev7": 18.0,
    "shown": false,
    "state": "flat",
@@ -618,11 +618,6 @@
    "change_pct": 27.1,
    "commits": [
     {
-     "pr": 1273,
-     "sha": "630f8c230",
-     "title": "Net: add the WebSocket codec for Open Watch Party"
-    },
-    {
      "pr": 1245,
      "sha": "6131d5c8d",
      "title": "Default to a playback version the TV can decode"
@@ -666,6 +661,11 @@
      "pr": 1304,
      "sha": "c7c15f45f",
      "title": "URI probe: the summary answers the drive gate, and a webOS 5+ tester protocol"
+    },
+    {
+     "pr": 1305,
+     "sha": "c5ea5d35b",
+     "title": "Exported window: a live-window instrument in the host seam, and the handoff and quarantine cases it pins"
     }
    ],
    "from": 334.5,
@@ -679,11 +679,6 @@
    "change_pct": 25.8,
    "commits": [
     {
-     "pr": 1273,
-     "sha": "630f8c230",
-     "title": "Net: add the WebSocket codec for Open Watch Party"
-    },
-    {
      "pr": 1245,
      "sha": "6131d5c8d",
      "title": "Default to a playback version the TV can decode"
@@ -727,6 +722,11 @@
      "pr": 1304,
      "sha": "c7c15f45f",
      "title": "URI probe: the summary answers the drive gate, and a webOS 5+ tester protocol"
+    },
+    {
+     "pr": 1305,
+     "sha": "c5ea5d35b",
+     "title": "Exported window: a live-window instrument in the host seam, and the handoff and quarantine cases it pins"
     }
    ],
    "from": 74.8,
@@ -735,67 +735,6 @@
    "since": "2026-11-09",
    "threshold_pct": 25.0,
    "to": 94.1
-  },
-  {
-   "change_pct": 15.0,
-   "commits": [
-    {
-     "pr": 1273,
-     "sha": "630f8c230",
-     "title": "Net: add the WebSocket codec for Open Watch Party"
-    },
-    {
-     "pr": 1245,
-     "sha": "6131d5c8d",
-     "title": "Default to a playback version the TV can decode"
-    },
-    {
-     "pr": 1282,
-     "sha": "0f6512a0a",
-     "title": "Test Plex server identity during automatic episode advance"
-    },
-    {
-     "pr": 1287,
-     "sha": "2fe9e9fc6",
-     "title": "Settings: ask for a poster of a kind the Under posters preview lacks"
-    },
-    {
-     "pr": 1288,
-     "sha": "c9470f20f",
-     "title": "Fix Magic Remote Back and cursor recovery"
-    },
-    {
-     "pr": 1279,
-     "sha": "8e486d1a2",
-     "title": "Settings > Video & playback > Playback engine: a per-profile opt-in to the URI engine"
-    },
-    {
-     "pr": 1297,
-     "sha": "be8495d5b",
-     "title": "Key mode never resumes a TLS session"
-    },
-    {
-     "pr": 1290,
-     "sha": "af607d8cd",
-     "title": "Continue Watching as a row of stills: cover art, one-line footer, Home scroll"
-    },
-    {
-     "pr": 1291,
-     "sha": "d542c2ef5",
-     "title": "Catalan review: more natural expressions and consistent informal address"
-    },
-    {
-     "pr": 1304,
-     "sha": "c7c15f45f",
-     "title": "URI probe: the summary answers the drive gate, and a webOS 5+ tester protocol"
-    }
-   ],
-   "from": 403,
-   "id": "push_wait",
-   "label": "Wait after merge",
-   "since": "2026-11-09",
-   "threshold_pct": 15.0,
-   "to": 463.5
   }
  ],
  "schema": 2,
