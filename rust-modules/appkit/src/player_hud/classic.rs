@@ -496,6 +496,8 @@ pub struct Playbar {
     pub knob: Knob,
     /// the state read-out beside the elapsed clock, from [`transport_mark`]
     pub mark: TransportMark,
+    /// The local wall-clock end estimate (hour, minute); never set for trailer transports.
+    pub end_time: Option<[i32; 2]>,
     /// drives the inline spinner's rotation
     pub now: u32,
     /// how far the knob clock has grown, 0 (resting, [`theme::size::CAPTION`]) to 1
@@ -539,6 +541,7 @@ impl Playbar {
             dur_ns: model.duration_ns,
             knob,
             mark: transport_mark(paused, busy, scrub >= 0, dispos, livepos, since_play_ms),
+            end_time: model.end_time,
             now,
             clock_grow: 0.0,
         }
@@ -658,7 +661,12 @@ pub fn draw_playbar_look(p: Painter, bar: Playbar, look: PlaybarLook, measure: &
         el_l = el_l.min(l);
         el_r = el_r.max(r);
     }
-    let rem = fmt_time(dur - dispos, true);
+    let remaining = fmt_time(dur - dispos, true);
+    let rem = match bar.end_time {
+        Some([hour, minute]) if (0..=23).contains(&hour) && (0..=59).contains(&minute) =>
+            format!("{remaining} · {hour:02}:{minute:02}"),
+        _ => remaining,
+    };
     // MEASURE the label, never estimate it. `chars * CAPTION * 0.52` was an Arial-calibrated
     // constant guarding a real behaviour — the remaining clock hides before the moving elapsed
     // clock can reach it — and it only ever worked because it over-estimated: under Arial it
