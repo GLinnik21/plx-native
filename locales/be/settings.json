@@ -10,6 +10,8 @@
   "settings.system.section": "Сістэма",
   "settings.auto_sign_in.title": "Аўтаматычны ўваход",
   "settings.auto_sign_in.detail": "Прапускаць спіс карыстальнікаў пры запуску праграмы.",
+  "settings.hud_end_time.title": "Разліковы час заканчэння",
+  "settings.hud_end_time.detail": "Паказвае мясцовы час, калі фільм або серыя павінны скончыцца.",
   "settings.trailers.title": "Аўтаматычна паказваць трэйлеры",
   "settings.trailers.detail": "Прайграваць трэйлер з гукам на старонцы твора.",
   "settings.resolution.title": "Раздзяляльнасць інтэрфейсу",
