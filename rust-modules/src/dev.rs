@@ -112,8 +112,9 @@ const DIAG: [&str; 49] = [
     "plxnative-overdraw",
     "plxnative-drawmask",
     "plxnative-nocardsplit",
-    // The Under posters preview's texture cache ([`plx_gfx::gfx::region_paint`]): off draws the
-    // preview live every frame again, snap puts the cached quad on whole pixels. The same A/B
+    // The region texture cache ([`plx_gfx::gfx::region_paint`]: the Under posters preview and Home's
+    // parked backdrop): off draws them live every frame again, snap puts the cached quad on whole
+    // pixels. The same A/B
     // control-leg argument as the card split above: both legs must boot to the SAME screen.
     "plxnative-nopreviewcache",
     "plxnative-previewsnap",

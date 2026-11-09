@@ -31,8 +31,9 @@
 //!    five GL draws); this can, and it is how a stalled spring that kept every visited card on the
 //!    focus program was found. `/tmp/plxnative-nocardsplit` ([`set_card_split`]) switches the split
 //!    off for a leg, so one binary measures it on and off interleaved. A region drawn once into a
-//!    texture (`gfx::region_paint`, the Under posters preview) has two switches of its own:
-//!    `/tmp/plxnative-nopreviewcache` ([`set_region_cache`]) draws it live again, and
+//!    texture (`gfx::region_paint`: the Under posters preview and Home's parked backdrop) has two
+//!    switches of its own: `/tmp/plxnative-nopreviewcache` ([`set_region_cache`]) draws every such
+//!    region live again (the name is the first user's), and
 //!    `/tmp/plxnative-previewsnap` ([`set_region_snap`]) puts its quad on whole pixels.
 //!
 //! A masked leg is deliberately a BROKEN PICTURE. This is a measurement knob, not a feature — the
@@ -173,7 +174,7 @@ mod imp {
         static PATH_DRAWS: [Cell<u32>; NPATH] = const { [const { Cell::new(0) }; NPATH] };
         /// Is the resting-card split allowed? On unless a leg switched it off.
         static SPLIT: Cell<bool> = const { Cell::new(true) };
-        /// Is a region (the Under posters preview) allowed to be served from its texture? On unless a leg switched it off.
+        /// Is a region (the Under posters preview, Home's parked backdrop) allowed to be served from its texture? On unless a leg switched it off.
         static REGION_CACHE: Cell<bool> = const { Cell::new(true) };
         /// Is a cached region's quad put on whole pixels? Off unless a leg switched it on.
         static REGION_SNAP: Cell<bool> = const { Cell::new(false) };

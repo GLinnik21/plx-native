@@ -3879,6 +3879,12 @@ impl Drop for RegionTarget {
 /// the picture the texture holds. Both Under posters pages ask for the SAME picture (a page whose art
 /// is still dissolving has no key and draws live, it never asks for a different one), so one slot
 /// serves a push and a pop; a picture that changes is a new key and one fill.
+///
+/// **One slot means one picture on screen at a time, by design.** The two callers never stand on the
+/// same frame: the Under posters preview (a 668x564 rect, 1.4 MiB) is Settings', and Home's parked
+/// backdrop (the whole canvas, 1928x1088, 8.0 MiB: `Painter::cached_ground`) is Home's, drawn under
+/// nothing that asks for the preview. A page that did ask for both in one frame would refill the
+/// texture, at its other size, on each ask: correct, and dearer than drawing live.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RegionSlot {
     key: Option<u64>,
@@ -4037,7 +4043,8 @@ pub fn region_paint(
 }
 
 /// A frame ended: if no page asked for the region during it, the texture goes back to the driver
-/// (1.4 MiB that nothing is showing), and the next ask fills again. Called once per presented frame,
+/// (1.4 MiB for the Under posters preview, 8.0 MiB for Home's backdrop, that nothing is showing), and
+/// the next ask fills again. Called once per presented frame,
 /// beside the other frame-end hooks. A push, a pop and a transition between the two pages ask on every
 /// frame (one page or the other always draws), so it never frees mid-transition.
 pub fn region_frame_end() {

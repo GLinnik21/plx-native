@@ -305,8 +305,9 @@ pub(crate) fn arm_cardsplit() {
     if plx_base::devtrig::flag("nocardsplit") {
         plx_gfx::overdraw::set_card_split(false);
     }
-    // `/tmp/plxnative-nopreviewcache` draws the Under posters preview live every frame (as before
-    // `gfx::region_paint`); `/tmp/plxnative-previewsnap` puts the cached quad on whole pixels.
+    // `/tmp/plxnative-nopreviewcache` draws every cached region live every frame (the Under posters
+    // preview and Home's parked backdrop, as before `gfx::region_paint`); `/tmp/plxnative-previewsnap`
+    // puts the cached quad on whole pixels.
     if plx_base::devtrig::flag("nopreviewcache") {
         plx_gfx::overdraw::set_region_cache(false);
     }

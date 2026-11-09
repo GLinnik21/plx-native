@@ -856,6 +856,41 @@ impl Painter {
         self.cached_region_in(plx_gfx::gfx::region_paint, key, r, paint)
     }
 
+    /// **[`cached_region`](Self::cached_region) for a GROUND**: an OPAQUE picture that stands in for
+    /// the frame's clear (a page's wash, its photograph and its scrims, `HomeScreen`'s backdrop), whose
+    /// cached frame must be the very pixels the live draw leaves.
+    ///
+    /// The difference is the cascade. `cached_region` serves a picture as a GROUP, so an alpha, a gain
+    /// or a translate on the painter is applied to the texture. A ground does not take them that way:
+    /// its primitives take the alpha one by one (an alpha mixes the wash toward the app ground and
+    /// thins the art over it, [`Painter::ambient`]), which is not the group's blend of the whole, and
+    /// a quad at a translate is not the live draw's pixels. So the ground is cached only through a
+    /// painter that carries NONE of them ([`is_plain`](Self::is_plain): a page at rest, not dipping,
+    /// not sliding); through any other it is drawn live, with `paint` handed this painter. That frame
+    /// does not ask the region cache at all (unlike a call with no key, which does), so the texture
+    /// goes back for it and the first plain frame after fills it again.
+    ///
+    /// Everything else is `cached_region`'s: `key` names the picture and must change with everything
+    /// `paint` draws (`None`: it is not settled, draw it live), `paint` draws no glass and no blur, a
+    /// frame whose page never asks gives the texture back, and the host and the glass's discovery and
+    /// source passes draw it live, so the chrome glass over it sees the primitives it always saw.
+    pub fn cached_ground(self, key: Option<u64>, r: Rect, paint: impl FnOnce(Painter)) {
+        self.cached_in(plx_gfx::gfx::region_paint, key, r, true, paint)
+    }
+
+    /// Does this painter carry nothing the picture would have to take through the cascade: no alpha
+    /// below 1, no gain, no translate, no pop, no zoom and no clip? What a [`cached_ground`](
+    /// Self::cached_ground) requires of the painter it is handed.
+    pub fn is_plain(self) -> bool {
+        self.a >= 1.0
+            && self.rgb == 1.0
+            && self.dx == 0.0
+            && self.dy == 0.0
+            && self.scale == 1.0
+            && self.zoom.is_none()
+            && self.clip == Rect::FULL
+    }
+
     /// [`cached_region`](Self::cached_region) over the region `serve` stands for (the renderer's
     /// `region_paint`, or a table-driven stand-in a host test hands it: no GL is linked there).
     fn cached_region_in(
@@ -863,6 +898,20 @@ impl Painter {
         serve: impl FnOnce(Option<u64>, [f32; 4], [f32; 2], [f32; 4], &mut dyn FnMut()) -> bool,
         key: Option<u64>,
         r: Rect,
+        paint: impl FnOnce(Painter),
+    ) {
+        self.cached_in(serve, key, r, false, paint)
+    }
+
+    /// The one body behind [`cached_region`](Self::cached_region) and [`cached_ground`](
+    /// Self::cached_ground): `exact` asks that the painter be [`is_plain`](Self::is_plain) for the
+    /// picture to be served at all.
+    fn cached_in(
+        self,
+        serve: impl FnOnce(Option<u64>, [f32; 4], [f32; 2], [f32; 4], &mut dyn FnMut()) -> bool,
+        key: Option<u64>,
+        r: Rect,
+        exact: bool,
         paint: impl FnOnce(Painter),
     ) {
         let mut paint = Some(paint);
@@ -875,6 +924,7 @@ impl Painter {
             && self.scale == 1.0
             && self.a > 0.0
             && self.clip == Rect::FULL
+            && (!exact || self.is_plain())
             && screen::ClipScope::current().is_none()
         {
             let g = self.rgb * self.a;
@@ -2617,6 +2667,54 @@ mod tests {
         assert!(p.tex_carded_still(71, [0.1, 0.0, 0.8, 1.0], r, 14.0, 0.0, 80.0, theme::scrim(0.7)));
         assert!(!p.tex_carded_still(0, plx_gfx::gfx::UV_FULL, r, 14.0, 0.0, 80.0, theme::scrim(0.7)),
             "missing artwork must still traverse the placeholder path");
+    }
+
+    /// **A ground is cached only through a painter that carries nothing** (`Painter::cached_ground`): an
+    /// alpha, a gain, a translate, a pop, a zoom or a clip is applied to the picture's primitives one by
+    /// one on the live path (an alpha mixes a wash toward the app ground), and a group blend of the texture
+    /// is not the same pixels. Through such a painter the picture is drawn live with THAT painter, exactly
+    /// once, and the renderer is not asked. A region (`cached_region`) takes the cascade as a group and is
+    /// still served through an alpha or a translate.
+    #[test]
+    fn a_ground_is_served_only_through_a_plain_painter_and_a_region_through_any() {
+        let r = Rect::new(0.0, 0.0, 1920.0, 1080.0);
+        // `(times the table was asked, times the picture was drawn, the painter's own alpha / dx at the draw)`
+        let drive = |p: Painter, exact: bool| {
+            let (mut asked, mut drawn, mut seen) = (0, 0, None);
+            p.cached_in(
+                |key, _, _, _, paint| {
+                    asked += 1;
+                    paint();
+                    key.is_some()
+                },
+                Some(3),
+                r,
+                exact,
+                |q| {
+                    drawn += 1;
+                    seen = Some((q.opacity(), q.dx()));
+                },
+            );
+            (asked, drawn, seen)
+        };
+        let plain = Painter::root();
+        assert!(plain.is_plain());
+        assert_eq!(drive(plain, true), (1, 1, Some((1.0, 0.0))), "plain: served, and filled with the identity painter");
+        for (what, p) in [
+            ("an alpha", plain.alpha(0.5)),
+            ("a gain", plain.rgb(0.5)),
+            ("a translate", plain.translate(40.0, 0.0)),
+            ("a pop", plain.scaled(1.05)),
+            ("a clip", plain.clipped(Rect::new(0.0, 0.0, 100.0, 100.0))),
+        ] {
+            assert!(!p.is_plain(), "{what}: not plain");
+            let (asked, drawn, seen) = drive(p, true);
+            assert_eq!((asked, drawn), (0, 1), "{what}: a ground is drawn live, once, and the renderer is not asked");
+            assert_eq!(seen, Some((p.opacity(), p.dx())), "{what}: with the caller's own painter");
+        }
+        // the group form takes an alpha and a translate through the cascade, as it always has
+        assert_eq!(drive(plain.alpha(0.5), false).0, 1, "a region is served through an alpha");
+        assert_eq!(drive(plain.translate(40.0, 0.0), false).0, 1, "and through a translate");
     }
 
     /// The zoom is ONE transform: a plain rect and every flavour of text land exactly where
