@@ -359,14 +359,25 @@ impl MonotonicClock for ProductUriClock {
 /// The display path the product URI driver is composed with, and the boot log line that names it
 /// and the gate's inputs (so the television shows it without a trigger). It reads the URI engine's
 /// own handle (player type 0), booted beside Feed's by `acb_init`, and the library's confirmation of
-/// its initialize, read there.
+/// its initialize, read there. `exported_override` is the debug-only arm of `dev::uri_exported`
+/// (always false in a release build): on a display in `VP_EXPORTED` mode it composes the exported
+/// window on the full canvas whatever the firmware release, and the line ends `evidence=override`;
+/// on any other display it changes nothing.
 #[cfg(feature = "play-uri")]
-fn uri_product_binding(display: &dyn DisplaySink, owner: &PlaneOwner) -> UriBinding {
+pub(crate) fn uri_product_binding(display: &dyn DisplaySink, owner: &PlaneOwner,
+    exported_override: bool) -> UriBinding {
     let facts = owner.facts_of(PlaneHandle::Uri);
     let initialized = owner.initialized(PlaneHandle::Uri);
-    let binding = plx_play_uri::backend::product_binding(display.window_mode(), facts, initialized);
-    log(&format!("uri: product binding={binding:?} mode={} handle={} ptype={} initialized={initialized}",
-        display.window_mode(), facts.handle, facts.player_type));
+    let mode = display.window_mode();
+    let overridden = exported_override && mode == VP_EXPORTED;
+    let binding = if overridden {
+        UriBinding::Exported { canvas: plx_play_uri::backend::EXPORTED_CANVAS }
+    } else {
+        plx_play_uri::backend::product_binding(mode, facts, initialized)
+    };
+    let evidence = if overridden { " evidence=override" } else { "" };
+    log(&format!("uri: product binding={binding:?} mode={mode} handle={} ptype={} initialized={initialized}{evidence}",
+        facts.handle, facts.player_type));
     binding
 }
 
@@ -374,12 +385,19 @@ fn uri_product_binding(display: &dyn DisplaySink, owner: &PlaneOwner) -> UriBind
 /// evidence remains unqualified for everyone but a viewer who opted in to the URI engine in
 /// Settings; returning a port never certifies a source by itself. (A debug
 /// build's URI dev route, armed by a trigger read once here, is the other thing that changes that:
-/// `dev::uri_product`.)
+/// `dev::uri_product`. A debug build's exported-window override, `dev::uri_exported`, is read here
+/// too but certifies nothing: it only composes the display path.)
 #[cfg(feature = "play-uri")]
 pub(crate) fn install_uri_product(adapter: &mut PlayerAdapter, session: &mut PlaybackSession) -> bool {
     let display = sink::display_installed();
+    // The debug-only exported-window override, read once here (`dev::uri_exported`); a release
+    // build has no such read.
+    #[cfg(feature = "devtriggers")]
+    let exported_override = crate::dev::uri_exported::armed();
+    #[cfg(not(feature = "devtriggers"))]
+    let exported_override = false;
     let evidence = ProductEvidence::unqualified_on(display.window_mode(),
-        uri_product_binding(display, plane::installed()));
+        uri_product_binding(display, plane::installed(), exported_override));
     let qualifier: std::sync::Arc<dyn OriginalQualifier> = std::sync::Arc::new(ProductQualifier);
     // The URI dev route (`dev::uri_product`): a debug build armed with its trigger, on an ACB-bound
     // display, swaps in evidence and a qualifier for the one Part it names; otherwise this pair is
@@ -623,7 +641,7 @@ mod tests {
     fn a_normal_boot_composes_the_uri_product_binding_acb_while_feed_keeps_player_type_10() {
         let sink = BootSink::answering(VP_ACB, vec![7, 8]);
         let owner = booted(&sink);
-        assert_eq!(uri_product_binding(&sink, &owner), UriBinding::Acb);
+        assert_eq!(uri_product_binding(&sink, &owner, false), UriBinding::Acb);
         #[cfg(feature = "play-feed")]
         assert_eq!(owner.facts().player_type, DEFAULT_PLAYER_TYPE, "Feed's handle is still type 10");
     }
@@ -637,11 +655,44 @@ mod tests {
         #[cfg(feature = "play-feed")]
         assert_eq!(owner.facts(), PlaneFacts { handle: true, player_type: DEFAULT_PLAYER_TYPE });
         #[cfg(feature = "play-feed")]
-        assert_eq!(uri_product_binding(&sink, &owner), UriBinding::Unbound);
+        assert_eq!(uri_product_binding(&sink, &owner, false), UriBinding::Unbound);
         for mode in [VP_EXPORTED, VP_NONE] {
             let sink = BootSink::answering(mode, vec![7, 8]);
-            assert_eq!(uri_product_binding(&sink, &booted(&sink)), UriBinding::Unbound, "mode {mode}");
+            assert_eq!(uri_product_binding(&sink, &booted(&sink), false), UriBinding::Unbound, "mode {mode}");
         }
+    }
+
+    /// The exported-window override (`dev::uri_exported`) composes the exported
+    /// window on a display in `VP_EXPORTED` mode and nowhere else, and says so in the boot line the
+    /// tester reads. Without it the same display composes `Unbound`, as it always did.
+    #[cfg(feature = "play-uri")]
+    #[test]
+    fn the_exported_override_composes_the_exported_window_only_on_an_exported_window_display() {
+        /// The binding the composition yields for `mode` (its URI handle booted as a normal ACB boot
+        /// boots it) and the boot line it logged.
+        fn compose(mode: c_int, exported_override: bool) -> (UriBinding, String) {
+            plx_base::eventlog::with_private_log(|| {
+                let sink = BootSink::answering(mode, vec![7, 8]);
+                let binding = uri_product_binding(&sink, &booted(&sink), exported_override);
+                (binding, std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default())
+            })
+        }
+        let exported = UriBinding::Exported { canvas: (1920, 1080) };
+        let (binding, line) = compose(VP_EXPORTED, true);
+        assert_eq!(binding, exported);
+        assert!(line.contains("uri: product binding=Exported { canvas: (1920, 1080) } mode=2 ")
+            && line.trim_end().ends_with(" evidence=override"), "{line}");
+        // Never without the flag, and never on a display that is not an exported window.
+        let (binding, line) = compose(VP_EXPORTED, false);
+        assert_eq!(binding, UriBinding::Unbound);
+        assert!(line.contains("uri: product binding=Unbound mode=2 ") && !line.contains("evidence="), "{line}");
+        let (binding, line) = compose(VP_NONE, true);
+        assert_eq!(binding, UriBinding::Unbound, "no window path: nothing to override");
+        assert!(!line.contains("evidence="), "{line}");
+        let (binding, line) = compose(VP_ACB, true);
+        assert_eq!(binding, UriBinding::Acb, "an ACB set keeps its own binding");
+        assert!(line.contains("uri: product binding=Acb ") && !line.contains("evidence="), "{line}");
+        assert_eq!(compose(VP_ACB, false).0, UriBinding::Acb);
     }
 
     #[test]

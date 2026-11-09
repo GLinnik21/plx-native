@@ -17,6 +17,7 @@ use plx_playback_contract::{AttemptId, BackendEvent, BackendKind, Capabilities, 
     Failure, Observation, Observed, Operation, Playback, ReleaseStatus, SourceKey, SourceKind,
     TrackChoice, TrackKind, TrackSelection, UriDriver};
 use std::collections::{BTreeMap, VecDeque};
+use std::os::raw::c_int;
 
 /// A monotonic clock supplied by the runner. The ownership reducer only receives its value.
 pub trait MonotonicClock { fn now_ms(&self) -> u64; }
@@ -42,6 +43,12 @@ pub fn product_binding(display_mode: i32, plane: plx_platform::tv::plane::PlaneF
     let gate = crate::acb_bind::gate(false, display_mode, plane.handle, plane.player_type, false, initialized);
     if gate.ready { Binding::Acb } else { Binding::Unbound }
 }
+
+/// The canvas the exported window is placed over: the destination of EVERY placement, the whole
+/// 1920x1080 canvas, as Feed (`feed_pump`) and the developer probe (`uriprobe_drive`) place it. Only
+/// the SOURCE rectangle varies: the canvas at the start, then the coded size the service reports in
+/// `videoInfo`.
+pub const EXPORTED_CANVAS: (c_int, c_int) = (1_920, 1_080);
 
 /// No firmware capability is inferred from the display mode or transport response.
 pub struct Config {
@@ -89,6 +96,9 @@ pub struct UriBackend {
     audio_current: Option<i64>,
     window: bool,
     window_id: Option<String>,
+    /// The coded size the window was last re-placed for (`videoInfo`): the same size is not placed
+    /// twice. `None` until the service reports one, so the start's canvas placement is not it.
+    window_coded: Option<(u32, u32)>,
     start_deadline_ms: Option<u64>,
     loaded: bool,
     play_sent: bool,
@@ -131,7 +141,7 @@ impl UriBackend {
             "URI transport has no confirmed track-disable operation");
         Self { config, lifecycle: Lifecycle::new(), staged: None, active: None,
             last_started: None, url: None, tracks: Vec::new(), audio_current: None,
-            window: false, window_id: None,
+            window: false, window_id: None, window_coded: None,
             start_deadline_ms: None, loaded: false, play_sent: false, played_once: false,
             subscribed: false,
             dispatching: None, controls: BTreeMap::new(),
@@ -245,7 +255,8 @@ impl UriBackend {
                     return self.refuse_before_open(attempt, Failure::Backend);
                 };
                 self.window = true;
-                session_io::place_exported_window(self.config.display, mt, canvas, canvas);
+                self.window_coded = None;
+                self.place_window(mt, canvas, canvas);
                 Some(id)
             }
             // 4.x ignores the window option; the service wants the key present (measured sequence).
@@ -322,6 +333,28 @@ impl UriBackend {
         self.reopen = Some(next);
         self.feed(LifeEvent::Close { now_ms, allowance_ms: self.config.release_allowance_ms }, mt, now_ms);
         true
+    }
+
+    /// Place the exported window with `source` as the SOURCE rectangle over the whole `canvas` (the
+    /// destination is always the canvas, as Feed and the probe place it), and log it: the source
+    /// and the seam's answer, never a window id.
+    fn place_window(&self, mt: &MainThread, source: (c_int, c_int), canvas: (c_int, c_int)) {
+        let rv = session_io::place_exported_window(self.config.display, mt, source, canvas);
+        plx_base::eventlog::log(&format!("uri: exported window placed src={}x{} rv={rv}", source.0, source.1));
+    }
+
+    /// The service reported the coded size of the picture (`videoInfo` with a width and a height):
+    /// re-place the window with it as the source rectangle, as the probe does, so a source that is
+    /// not 1920x1080 is not stretched from the canvas. Only a live exported window is placed, and the
+    /// same size is not placed twice. A closing or quarantined attempt is never delivered a reply, so
+    /// no placement follows a release request, and none follows the destroy.
+    fn replace_window(&mut self, dims: Option<(u32, u32)>, mt: &MainThread) {
+        let (Binding::Exported { canvas }, true, Some(coded)) = (self.config.binding, self.window, dims)
+            else { return };
+        if self.window_coded == Some(coded) { return; }
+        let (Ok(width), Ok(height)) = (c_int::try_from(coded.0), c_int::try_from(coded.1)) else { return };
+        self.window_coded = Some(coded);
+        self.place_window(mt, (width, height), canvas);
     }
 
     /// A Seek has been dispatched and has not landed (or timed out).
@@ -583,6 +616,10 @@ impl UriBackend {
                     None
                 }
                 Ev::TrackSelected => None,
+                Ev::VideoInfo => {
+                    self.replace_window(message.dims, mt);
+                    None
+                }
                 _ => None,
             };
             if let Some(value) = playback {
@@ -762,6 +799,7 @@ impl UriBackend {
                         if self.window { session_io::destroy_exported_window(self.config.display, mt); }
                         self.window = false;
                         self.window_id = None;
+                        self.window_coded = None;
                         self.active = None;
                         self.url = None;
                         self.acb_source = None;
@@ -998,7 +1036,7 @@ mod tests {
     }
 
     use super::*;
-    use plx_platform::tv::sink::{NoSink, PlaneUnload, ScriptedPlaneSink};
+    use plx_platform::tv::sink::{NoSink, PlaneUnload, ScriptedPlaneSink, ScriptedWindowSink, WindowCall};
     use plx_platform::tv::uri::{CloseStatus, RequestId, SessionId, UriPoll, UriReply};
     use plx_playback_contract::{BackendState, Event as ContractEvent, Fidelity,
         Fx as ContractFx, InitialPlayback, Intent, Requirements, SourceKind, StopReason};
@@ -2484,5 +2522,109 @@ mod tests {
         assert!(!sink.calls().iter().any(|call| call == "plane_pause" || call == "plane_resume"), "{:?}", sink.calls());
         for t in [200, 400, 600, 900] { rig.at(t); rig.driver.poll(&rig.mt); }
         assert_eq!(sink.calls().last().map(String::as_str), Some("plane_pause"), "{:?}", sink.calls());
+    }
+
+    // ---- the exported window (webOS 5+): placed as Feed and the probe place it ----
+
+    /// The full canvas, as the tests spell it: the destination of every placement.
+    const FULL: (std::os::raw::c_int, std::os::raw::c_int) = (1920, 1080);
+    /// A placement with `src` as the source rectangle over the whole canvas.
+    fn placed(src: (std::os::raw::c_int, std::os::raw::c_int)) -> WindowCall {
+        WindowCall::Place { src, dst: (0, 0, FULL.0, FULL.1) }
+    }
+    /// The captured `videoInfo` with another coded size.
+    fn video_info_of(width: u32, height: u32) -> String {
+        CAPTURED_VIDEO_INFO.replace(r#""width":1280,"height":720"#, &format!(r#""width":{width},"height":{height}"#))
+    }
+
+    impl Rig {
+        /// An exported-window backend (`Binding::Exported` on the full canvas, the display in
+        /// `VP_EXPORTED`) over a sink that records every window verb and accepts every placement.
+        fn exported() -> (Self, &'static ScriptedWindowSink) {
+            let sink: &'static ScriptedWindowSink = Box::leak(Box::new(ScriptedWindowSink::new(1)));
+            let plane = Box::leak(Box::new(plx_platform::tv::plane::PlaneOwner::new()));
+            (Self::with(Binding::Exported { canvas: FULL }, sink, plane), sink)
+        }
+    }
+
+    #[test]
+    fn an_exported_start_creates_one_window_and_places_the_canvas_as_its_source() {
+        let (mut rig, sink) = Rig::exported();
+        rig.opened();
+        assert_eq!(sink.calls(), [WindowCall::Create, placed(FULL)]);
+        let load = rig.bus.0.lock().unwrap().calls.iter().find(|(method, _, _)| *method == "load")
+            .map(|(_, _, payload)| payload.clone()).expect("the load was sent");
+        assert!(load.contains("scripted-window"), "the window id rides the load: {load}");
+    }
+
+    #[test]
+    fn a_video_info_re_places_the_window_with_the_coded_size_and_the_destination_stays_the_canvas() {
+        plx_base::eventlog::with_private_log(|| {
+            let (mut rig, sink) = Rig::exported();
+            rig.opened();
+            rig.subscription_says(CAPTURED_VIDEO_INFO);
+            assert_eq!(sink.calls(), [WindowCall::Create, placed(FULL), placed((1280, 720))]);
+            // A coded size that did not change places nothing again; a new one places again.
+            rig.subscription_says(CAPTURED_VIDEO_INFO);
+            assert_eq!(sink.calls().len(), 3, "the same coded size is not placed twice");
+            rig.subscription_says(&video_info_of(3840, 2160));
+            assert_eq!(sink.calls(), [WindowCall::Create, placed(FULL), placed((1280, 720)), placed((3840, 2160))]);
+            let log = std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default();
+            assert!(log.contains("uri: exported window placed src=1920x1080 rv=1"), "{log}");
+            assert!(log.contains("uri: exported window placed src=1280x720 rv=1"), "{log}");
+            assert!(log.contains("uri: exported window placed src=3840x2160 rv=1"), "{log}");
+        });
+    }
+
+    #[test]
+    fn a_video_info_with_no_size_places_nothing() {
+        let (mut rig, sink) = Rig::exported();
+        rig.opened();
+        for info in [r#"{"videoInfo":{"frameRate":24,"mediaId":"m1"}}"#,
+            r#"{"videoInfo":{"width":0,"height":720,"mediaId":"m1"}}"#,
+            r#"{"videoInfo":{"width":1280,"mediaId":"m1"}}"#] {
+            rig.subscription_says(info);
+        }
+        assert_eq!(sink.calls(), [WindowCall::Create, placed(FULL)]);
+    }
+
+    #[test]
+    fn the_window_is_never_re_placed_while_it_closes_or_after_it_is_destroyed_and_is_destroyed_once() {
+        let (mut rig, sink) = Rig::exported();
+        rig.opened();
+        rig.subscription_says(CAPTURED_VIDEO_INFO);
+        assert_eq!(sink.calls(), [WindowCall::Create, placed(FULL), placed((1280, 720))]);
+        let before = sink.calls();
+        rig.bus.0.lock().unwrap().hold = true;
+        assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command, Operation::Stop(StopReason::Stop)),
+            DispatchResult::Queued);
+        assert_eq!(rig.driver.poll(&rig.mt), [DriverEvent::Release { attempt: A, status: ReleaseStatus::Closing }]);
+        rig.subscription_says(&video_info_of(3840, 2160));
+        assert_eq!(sink.calls(), before, "no placement while the close runs");
+        // The close is not confirmed in time: quarantined, the window still held and never destroyed.
+        rig.at(101);
+        assert!(rig.driver.poll(&rig.mt).contains(&DriverEvent::Release { attempt: A,
+            status: ReleaseStatus::Quarantined }));
+        rig.subscription_says(&video_info_of(3840, 2160));
+        assert_eq!(sink.calls(), before, "no placement while quarantined");
+        assert_eq!(sink.destroys(), 0, "a quarantined window is not destroyed");
+        // The release the hub confirms late destroys it, exactly once.
+        rig.bus.0.lock().unwrap().close = CloseStatus::Released;
+        assert!(rig.driver.poll(&rig.mt).contains(&DriverEvent::Release { attempt: A,
+            status: ReleaseStatus::Released }));
+        assert_eq!(sink.destroys(), 1);
+        rig.subscription_says(&video_info_of(3840, 2160));
+        rig.driver.poll(&rig.mt);
+        assert_eq!(sink.calls(), [before, vec![WindowCall::Destroy]].concat(), "nothing after the destroy");
+    }
+
+    #[test]
+    fn only_the_exported_binding_creates_or_places_a_window() {
+        let sink: &'static ScriptedWindowSink = Box::leak(Box::new(ScriptedWindowSink::new(1)));
+        let plane = Box::leak(Box::new(plx_platform::tv::plane::PlaneOwner::new()));
+        let mut rig = Rig::with(Binding::Unbound, sink, plane);
+        rig.opened();
+        rig.subscription_says(CAPTURED_VIDEO_INFO);
+        assert!(sink.calls().is_empty(), "{:?}", sink.calls());
     }
 }

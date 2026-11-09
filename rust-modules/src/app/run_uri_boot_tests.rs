@@ -251,6 +251,82 @@ mod uri_boot_tests {
             request.contains("/decision?")), "qualified original bypassed Feed MDE");
     }
 
+    /// The port the product composition builds for a viewer who opted in to the URI engine, over the
+    /// exported-window `Display` and a private plane owner: the binding is `uri_product_binding`'s own
+    /// answer for `exported_override` (the debug-only `dev::uri_exported` arm), the evidence the
+    /// production one (`unqualified_on` the display's mode, which an opted-in request certifies).
+    fn composed_port(exported_override: bool, display: &Display) -> ResolvePort {
+        let binding = crate::app::adapters::backends::uri_product_binding(display,
+            &plx_platform::tv::plane::PlaneOwner::new(), exported_override);
+        ResolvePort::new(ProductEvidence::unqualified_on(display.window_mode(), binding).opted_in(),
+            Arc::new(QualifiedOriginal))
+    }
+
+    /// With the exported-window override the composition binds the exported window on a `VP_EXPORTED`
+    /// display, so the opted-in viewer's original is offered to the URI backend, and its `load` carries
+    /// the exported window's id (webOS 5+: the window is created at the start and named in the load).
+    #[test]
+    fn the_exported_override_offers_the_uri_backend_and_loads_with_the_exported_window() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving(false) else { return };
+        plx_plex::plex::client_for(rig.sid).unwrap()
+            .set_link(plx_plex::plex::probe::Location::Local);
+        let bus: &'static Bus = Box::leak(Box::new(Bus::new()));
+        let display: &'static Display = Box::leak(Box::new(Display));
+        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+            &mut rig.app.adapters.player, &mut rig.app.player.session,
+            composed_port(true, display), bus, display));
+        rig.request();
+        rig.release.send(()).unwrap();
+        let mut resolved = None;
+        poll_until("the override's URI resolve did not land", || {
+            resolved = plx_media::route::pump_play(&mut rig.app.player.session,
+                rig.app.bridge.metadata_mut());
+            resolved.is_some()
+        });
+        let offer = resolved.unwrap().uri_offer.expect("an exported display bound by the override offers the original");
+        assert!(rig.app.adapters.player.offer_qualified_uri(&mut rig.app.player.session, offer).is_ok());
+        assert!(matches!(rig.app.player.session.backend_offer(),
+            plx_media::route::backend_policy::Selection::Open(choice)
+                if choice.backend == BackendKind::Uri));
+        assert!(matches!(plx_media::player::start_playback_tracked(
+            &mut rig.app.player.session, &mut rig.app.adapters.player),
+            plx_media::player::BufferfeedStartOutcome::Launched(_)));
+        let at = rig.app.adapters.player.backend_tick();
+        let _ = rig.app.adapters.player.backend_poll_session_at(&mut rig.app.player.session, at);
+        let load: serde_json::Value = serde_json::from_str(
+            &bus.load_payload().expect("the offered URI reached the native transport")).unwrap();
+        assert_eq!(load["payload"]["option"]["windowId"], "uri-boot-window");
+    }
+
+    /// Without the override the same exported display composes `Unbound`: nothing is offered, Feed
+    /// plays, and no URI `load` is ever sent (production is unchanged).
+    #[test]
+    fn without_the_exported_override_the_same_display_keeps_the_feed_offer() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving(false) else { return };
+        plx_plex::plex::client_for(rig.sid).unwrap()
+            .set_link(plx_plex::plex::probe::Location::Local);
+        let bus: &'static Bus = Box::leak(Box::new(Bus::new()));
+        let display: &'static Display = Box::leak(Box::new(Display));
+        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+            &mut rig.app.adapters.player, &mut rig.app.player.session,
+            composed_port(false, display), bus, display));
+        rig.request();
+        rig.release.send(()).unwrap();
+        let mut resolved = None;
+        poll_until("the unarmed URI resolve did not land", || {
+            resolved = plx_media::route::pump_play(&mut rig.app.player.session,
+                rig.app.bridge.metadata_mut());
+            resolved.is_some()
+        });
+        assert!(resolved.unwrap().uri_offer.is_none(), "an unbound display offers nothing");
+        assert!(matches!(rig.app.player.session.backend_offer(),
+            plx_media::route::backend_policy::Selection::Open(choice)
+                if choice.backend == BackendKind::Feed));
+        assert!(bus.load_payload().is_none());
+    }
+
     #[test]
     fn boot_without_source_certificate_keeps_feed_offer() {
         let _serial = plx_base::testlock::serial();
