@@ -10,6 +10,8 @@
   "settings.system.section": "Sistema",
   "settings.auto_sign_in.title": "Iniciar sessão automaticamente",
   "settings.auto_sign_in.detail": "Saltar a lista de perfis quando a app abre.",
+  "settings.hud_end_time.title": "Hora de fim estimada",
+  "settings.hud_end_time.detail": "Mostra a hora local prevista para o fim de filmes e episódios.",
   "settings.trailers.title": "Reproduzir trailers automaticamente",
   "settings.trailers.detail": "Ao parar num título, reproduzir o trailer com som.",
   "settings.resolution.title": "Resolução da interface",
