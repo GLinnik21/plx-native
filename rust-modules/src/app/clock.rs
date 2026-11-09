@@ -60,6 +60,8 @@ pub(crate) fn set_replay(ms: u32) {
 
 /// Unix wall-clock seconds for live player estimates. Replays deliberately have no wall clock:
 /// inventing today's date for a historical frame would make the HUD nondeterministic.
+/// The live Unix wall clock for playback estimates. Historical replay frames have no
+/// corresponding present-day finish time, so they deliberately return unknown.
 pub(crate) fn unix_seconds() -> Option<i64> {
     if REPLAY.with(|c| c.get().is_some()) {
         return None;
@@ -142,6 +144,7 @@ mod tests {
         // A replay frame pins the date, whatever the wall clock says.
         super::set_replay(100);
         assert_eq!(super::today(), Some(super::REPLAY_DATE));
+        assert_eq!(super::unix_seconds(), None, "a replay has no present-day wall-clock finish");
         super::REPLAY.with(|c| c.set(None));
         super::TODAY.with(|c| c.set(None));
     }
