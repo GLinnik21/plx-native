@@ -786,24 +786,28 @@ pub fn still_overlay(
             }
         }
         StillFooter::Continue { cue, pop } => {
-            // In progress: the episode tag and the time left, with the bar on the right. Anything
-            // else on a deck card (an on-deck episode nobody has started) has no time to tell, so it
-            // keeps the address the shelf shape prints and no bar.
-            let (tag, status, right) = match m.resume {
-                Some(r) => (
-                    crate::fmt::footer_tag(m.season_index as i64, m.ep_index as i64),
+            // In progress: the episode tag and the time left, with the bar on the right. A finished
+            // episode keeps the address and the tick. Anything else on a deck card (an on-deck
+            // episode nobody has started) has no time to tell: it wears the SAME tag a started one
+            // does, then the catalogue's "New episode", and no bar (nothing is played yet). An
+            // unstarted card with no address to tag has nothing to say.
+            let tag_of = || crate::fmt::footer_tag(m.season_index as i64, m.ep_index as i64);
+            let (tag, status, right) = match (m.resume, poster_mark(m)) {
+                (Some(r), _) => (
+                    tag_of(),
                     crate::fmt::footer_left(r.left_ms),
                     crate::still_footer::Right::Bar(r.frac),
                 ),
-                None => (
+                (None, PosterMark::Watched) => (
                     String::new(),
                     crate::fmt::episode_address(m.season_index as i64, m.ep_index as i64),
-                    if poster_mark(m) == PosterMark::Watched {
-                        crate::still_footer::Right::Tick
-                    } else {
-                        crate::still_footer::Right::None
-                    },
+                    crate::still_footer::Right::Tick,
                 ),
+                (None, _) => {
+                    let tag = tag_of();
+                    let status = if tag.is_empty() { String::new() } else { plx_platform::i18n::msg::widgets_card_new_episode().to_owned() };
+                    (tag, status, crate::still_footer::Right::None)
+                }
             };
             crate::still_footer::draw_footer(
                 p,

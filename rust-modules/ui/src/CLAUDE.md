@@ -764,7 +764,7 @@ reaches a mark that must ride it as `cards::Tile::pop` (0..1, the pop spring rea
 as a timer of the mark's own. The deck card's artwork (Plex's cover, then the baked composite, then the
 title in type) is `card_art::pick` over `tile_facts::for_deck`; the composite is a bitmap baked once by
 the poster worker (`card_art::compose`), never a live logo. The footer's one-line fit rule is
-`still_footer::footer_geometry`, the one place its widths are decided. `Art::Still` supplies the label ground;
+`still_footer::footer_geometry`, the one place its widths are decided (a started episode: `S2 E4 · 38m left` and a bar; an unstarted one: `S2 E1 · New episode` and no bar, the tag kept while the whole text fits). The stills row's heading stands `RowStyle::heading_rise` (`theme::STILL_HEADING_RISE`) above a poster shelf's, joined with the focus lift by `card_row::heading_lift_of`, which `Shelf::heading_lift()` reports to Home and Recommended alike. `Art::Still` supplies the label ground;
 `widgets::still_overlay` draws its labels afterward (a `StillFooter::Shelf` still also its full-bleed resume bar; a
 `StillFooter::Continue` still its one footer line, bar included). Both the artwork and
 its ground participate in backdrop discovery, including texture changes and UV cropping.

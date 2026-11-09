@@ -11,7 +11,8 @@
 //! * **In progress**: `S2 E4 · 38m left` (a film: `38m left`) on the left, the amber progress bar
 //!   (100 px, shrinking to a 64 px minimum, 4 px high, radius 2) on the right.
 //! * **Watched** (the strip): the length on the left, a muted 22 px tick on the right.
-//! * **Not started**: the length alone.
+//! * **Not started**: on the strip the length alone; on a Continue Watching card an episode nobody
+//!   has played reads `S2 E1 · New episode` (the started line's tag, then `widgets.card.new_episode`), no bar.
 //! * **The focus cue**, Continue Watching only: a white play glyph when OK plays, an info glyph when
 //!   OK opens details, at the LEFT of the line on the focused card. Its 28 px slot is collapsed at
 //!   rest and opens with the card's own focus pop (`Tile::pop`, the pop spring's factor, never a
@@ -94,6 +95,10 @@ pub struct FooterFit {
     pub status_w: f32,
     /// The cue slot the line may open: [`FOOTER_CUE_SLOT`], or 0 on a card with no cue.
     pub cue_w: f32,
+    /// Whether a progress bar stands at the line's right end. With one, the tag is kept only while
+    /// the bar keeps its 64 px and the [`FOOTER_GAP`]; with none (an unstarted episode's
+    /// "S2 E1 · New episode") it is kept while the whole text fits the line.
+    pub bar: bool,
 }
 
 /// The draw geometry of one footer, in offsets from the line's leading inset.
@@ -114,8 +119,9 @@ pub struct FooterGeo {
 /// The widths [`footer_geometry`] decides from, measured the way the draw lays the line out: the
 /// status run in the regular `size::CAPTION` face, and the tag as the advance it adds IN FRONT of the
 /// status (`"S2 E4 · 38m left"` less `"38m left"`, so the space after the dot is included and a
-/// kerned pair is not double counted). `cue_w` is the slot the line may open.
-pub fn fit_of(tag: &str, status: &str, cue_w: f32, measure: &dyn Measure) -> FooterFit {
+/// kerned pair is not double counted). `cue_w` is the slot the line may open, `bar` whether a bar
+/// stands at the right end.
+pub fn fit_of(tag: &str, status: &str, cue_w: f32, bar: bool, measure: &dyn Measure) -> FooterFit {
     let sz = theme::size::CAPTION;
     let status_w = measure.width_str(status, sz, false);
     let tag_w = if tag.is_empty() {
@@ -125,7 +131,7 @@ pub fn fit_of(tag: &str, status: &str, cue_w: f32, measure: &dyn Measure) -> Foo
     } else {
         measure.width_str(&format!("{tag} {status}"), sz, false) - status_w
     };
-    FooterFit { tag_w, status_w, cue_w }
+    FooterFit { tag_w, status_w, cue_w, bar }
 }
 
 /// **The fit rule**, pure: where the text goes, whether the tag shows and how wide the bar is, for
@@ -141,7 +147,9 @@ pub fn fit_of(tag: &str, status: &str, cue_w: f32, measure: &dyn Measure) -> Foo
 pub fn footer_geometry(inner_w: f32, fit: FooterFit, focus: f32) -> FooterGeo {
     let t = focus.clamp(0.0, 1.0);
     let full = fit.tag_w + fit.status_w;
-    let keeps = |cue: f32| inner_w - cue - full - FOOTER_GAP >= FOOTER_BAR_MIN_W;
+    // What the right end must keep: the bar's least width and the air before it, or nothing.
+    let right_min = if fit.bar { FOOTER_GAP + FOOTER_BAR_MIN_W } else { 0.0 };
+    let keeps = |cue: f32| inner_w - cue - full >= right_min;
     let tag_alpha = if fit.tag_w <= 0.0 || !keeps(0.0) {
         0.0
     } else if keeps(fit.cue_w) {
@@ -151,7 +159,8 @@ pub fn footer_geometry(inner_w: f32, fit: FooterFit, focus: f32) -> FooterGeo {
     };
     let text_dx = fit.cue_w * t;
     let room = inner_w - text_dx - (fit.tag_w * tag_alpha + fit.status_w) - FOOTER_GAP;
-    FooterGeo { text_dx, tag_alpha, tag_dx: -fit.tag_w * (1.0 - tag_alpha), bar_w: room.clamp(0.0, FOOTER_BAR_W) }
+    let bar_w = if fit.bar { room.clamp(0.0, FOOTER_BAR_W) } else { 0.0 };
+    FooterGeo { text_dx, tag_alpha, tag_dx: -fit.tag_w * (1.0 - tag_alpha), bar_w }
 }
 
 /// Draw `footer` on the line at the bottom of `card` (the DRAWN rect, so the line rides the focus
@@ -180,11 +189,11 @@ pub fn draw_footer(p: Painter, card: Rect, label: &str, f: &Footer<'_>, measure:
         crate::icons::draw(p.alpha(t), icon, Rect::new(left, cy - d * 0.5, d, d), theme::TEXT_PRIMARY);
     }
 
-    let fit = fit_of(f.tag, f.status, cue_w, measure);
+    let fit = fit_of(f.tag, f.status, cue_w, matches!(f.right, Right::Bar(_)), measure);
     let geo = match f.right {
-        Right::Bar(_) => footer_geometry(FOOTER_INNER_W, fit, t),
+        Right::Bar(_) | Right::None => footer_geometry(FOOTER_INNER_W, fit, t),
         // a mark that does not flex: the tag, if there is one, is simply shown
-        Right::Tick | Right::None => FooterGeo { text_dx: cue_w * t, tag_alpha: 1.0, tag_dx: 0.0, bar_w: 0.0 },
+        Right::Tick => FooterGeo { text_dx: cue_w * t, tag_alpha: 1.0, tag_dx: 0.0, bar_w: 0.0 },
     };
     let x_l = left + geo.text_dx;
     let right_limit = match f.right {
@@ -236,7 +245,7 @@ mod tests {
     const EPS: f32 = 0.001;
 
     fn fit(tag_w: f32, status_w: f32, cue: bool) -> FooterFit {
-        FooterFit { tag_w, status_w, cue_w: if cue { FOOTER_CUE_SLOT } else { 0.0 } }
+        FooterFit { tag_w, status_w, cue_w: if cue { FOOTER_CUE_SLOT } else { 0.0 }, bar: true }
     }
 
     /// The text group's end and the bar's start, from the geometry.
@@ -390,7 +399,7 @@ mod tests {
             let tag = language.tag();
             let _g = language_on_this_thread_for_test(language);
             for (case, t, s) in cases() {
-                let f = fit_of(&t, &s, FOOTER_CUE_SLOT, &ShippedMeasure);
+                let f = fit_of(&t, &s, FOOTER_CUE_SLOT, true, &ShippedMeasure);
                 assert!(
                     FOOTER_INNER_W - FOOTER_CUE_SLOT - f.status_w - FOOTER_GAP >= FOOTER_BAR_MIN_W,
                     "{tag} {case}: even with no tag the time text {:.0} px leaves the bar under 64 px with the cue open",
@@ -421,6 +430,64 @@ mod tests {
             }
         }
         eprintln!("{table}");
+    }
+
+    /// **An unstarted episode's `S12 E24 · New episode`, in every shipped language, at every progress
+    /// of the focus transition**: no bar stands at the right end, so the rule is that nothing is
+    /// cut. The text group (cue slot opened by the focus, tag if kept, "New episode") is never wider
+    /// than the line, the tag goes before the words do (`New episode` is the catalogue's own
+    /// `widgets.card.new_episode`, the line's meaning: it is never elided or dropped), and a language
+    /// whose words alone do not fit the line with the cue open fails here. Run with `--nocapture` for
+    /// which languages keep the tag at rest and with the cue open.
+    #[test]
+    fn every_shipped_language_fits_a_new_episode_line_at_every_focus_progress() {
+        let mut table = String::from("lang  line_w  words_w  tag@rest tag@open  room@rest room@open\n");
+        for language in SHIPPED {
+            let tag = language.tag();
+            let _g = language_on_this_thread_for_test(language);
+            let cx = plx_platform::i18n::current();
+            let (t, s) = (crate::fmt::footer_tag_in(cx, 12, 24), plx_platform::i18n::msg::widgets_card_new_episode_in(cx).to_owned());
+            let f = fit_of(&t, &s, FOOTER_CUE_SLOT, false, &ShippedMeasure);
+            assert!(
+                FOOTER_INNER_W - FOOTER_CUE_SLOT - f.status_w >= 0.0,
+                "{tag}: 'New episode' ({:.0} px) does not fit the line with the cue open even with the tag gone",
+                f.status_w
+            );
+            for i in 0..=40 {
+                let g = footer_geometry(FOOTER_INNER_W, f, i as f32 / 40.0);
+                let end = g.text_dx + f.tag_w * g.tag_alpha + f.status_w;
+                assert!(end <= FOOTER_INNER_W + EPS, "{tag} {i}/40: the text ends at {end:.1} of {FOOTER_INNER_W}: {g:?}");
+                assert_eq!(g.bar_w, 0.0, "{tag}: no bar stands on an unstarted card");
+                assert!((g.text_dx - FOOTER_CUE_SLOT * i as f32 / 40.0).abs() < EPS, "{tag}: the text moves by the cue slot");
+                assert!(g.tag_alpha == 0.0 || g.tag_alpha == 1.0 || (g.tag_alpha - (1.0 - i as f32 / 40.0)).abs() < EPS, "{tag} {i}/40: {g:?}");
+            }
+            let (rest, open) = (footer_geometry(FOOTER_INNER_W, f, 0.0), footer_geometry(FOOTER_INNER_W, f, 1.0));
+            table += &format!(
+                "{tag:<5} {:>6.0} {:>8.0}  {:<8} {:<8}  {:>9.0} {:>9.0}\n",
+                f.tag_w + f.status_w,
+                f.status_w,
+                if rest.tag_alpha > 0.0 { "kept" } else { "off" },
+                if open.tag_alpha >= 1.0 { "kept" } else { "off" },
+                FOOTER_INNER_W - (f.tag_w * rest.tag_alpha + f.status_w),
+                FOOTER_INNER_W - FOOTER_CUE_SLOT - (f.tag_w * open.tag_alpha + f.status_w),
+            );
+        }
+        eprintln!("{table}");
+    }
+
+    /// Without a bar the tag is kept while the whole text fits the line (cue included) and is judged
+    /// the way the bar's rule is: at rest, then with the cue open.
+    #[test]
+    fn with_no_bar_the_tag_is_kept_while_the_text_fits_the_line() {
+        let f = |tag_w: f32, status_w: f32| FooterFit { tag_w, status_w, cue_w: FOOTER_CUE_SLOT, bar: false };
+        let kept = footer_geometry(FOOTER_INNER_W, f(70.0, 200.0), 1.0);
+        assert_eq!((kept.tag_alpha, kept.bar_w), (1.0, 0.0), "270 + the cue 28 < 388: kept with the cue open");
+        // 100 + 270 = 370 fits at rest but not with the 28 px cue open: the tag fades with the focus
+        let fades = footer_geometry(FOOTER_INNER_W, f(100.0, 270.0), 0.5);
+        assert_eq!(fades.tag_alpha, 0.5);
+        assert_eq!(footer_geometry(FOOTER_INNER_W, f(100.0, 270.0), 1.0).tag_alpha, 0.0);
+        // 130 + 270 = 400 > 388 even at rest: the tag never shows
+        assert_eq!(footer_geometry(FOOTER_INNER_W, f(130.0, 270.0), 0.0).tag_alpha, 0.0);
     }
 
     // ---- the draw, through the census -----------------------------------------------------------
@@ -468,7 +535,7 @@ mod tests {
     }
 
     /// **What a Continue Watching still says** through the one `still_overlay` door: the show above,
-    /// then `S2 E4 · 38m left`, and for a card nobody has started its address and no time.
+    /// then `S2 E4 · 38m left`, and for a card nobody has started the same tag and `New episode`, no bar.
     #[test]
     fn a_continue_watching_still_says_the_show_the_tag_and_the_time_left() {
         use crate::tile::{Resume, TileFacts};
@@ -495,7 +562,13 @@ mod tests {
         let film = TileFacts { title: "Heat", resume: Some(Resume { frac: 0.3, left_ms: 38 * 60_000 }), ..Default::default() };
         assert_eq!(words(film), ["Heat", "38m left"], "a film has no tag");
         let next_up = TileFacts { show_title: "Severance", season_index: 2, ep_index: 5, unwatched: true, ..Default::default() };
-        assert_eq!(words(next_up), ["Severance", "S2 \u{b7} E5"], "nothing to count down: the address, no bar");
+        assert_eq!(
+            words(next_up),
+            ["Severance", "S2 E5 \u{b7}", "New episode"],
+            "nothing to count down: the same tag a started episode wears, then the catalogue's New episode, no bar"
+        );
+        let unnumbered = TileFacts { show_title: "Severance", unwatched: true, ..Default::default() };
+        assert_eq!(words(unnumbered), ["Severance"], "an unstarted card with no address has nothing to say");
     }
 
     /// **A deck card's title is drawn ONCE, and in the art**: Plex's cover and our composite carry

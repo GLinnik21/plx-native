@@ -134,9 +134,18 @@ the episode strip's `EPISODE` look, its caption band and `StillFooter::Shelf`.
   above the card's bottom edge, inset `widgets::STILL_LINE_INSET` (16 px) each side, the text group and
   the mark at its right `FOOTER_GAP` (12 px) apart.
 - **What the line says**: `S2 E4 · 38m left` and the amber bar `FOOTER_BAR_W` (100 px) high
-  `FOOTER_BAR_H` (4 px); an unstarted episode its address alone. The fit rule is one pure function,
+  `FOOTER_BAR_H` (4 px); an unstarted episode `S2 E1 · New episode` (the same `S2 E1` tag a started
+  one wears, `core.footer_tag`, then the catalogue's `widgets.card.new_episode`) and no bar, since nothing is
+  played yet. The fit rule is one pure function,
   `still_footer::footer_geometry`: the bar shrinks from 100 toward `FOOTER_BAR_MIN_W` (64 px) before
-  anything is cut, and the tag fades only when even 64 px does not fit; the time unit is never cut.
+  anything is cut, and the tag fades only when even 64 px does not fit; the time unit is never cut. With no
+  bar the tag is kept while the whole text fits the line, cue included; `New episode` is never cut or dropped
+  (a test fits the worst tag, S12 E24, in every shipped language: all keep the tag, at rest and with the cue open).
+- **The row's heading** stands `theme::STILL_HEADING_RISE` higher over its cards than a poster shelf's
+  (`RowStyle::heading_rise`, the shared row style, so Home and Recommended both get it): the boards put it
+  well above the poster line. It rests on the page header's line, the highest a heading stands whole under
+  the nav chrome (`scroll_chrome::clearance_under_shown_chrome`); card tops, pitch and rest scrolls are the
+  episode strip's own. The focus lift does not stack on it (`card_row::heading_lift_of` takes the larger).
 - **The focus cue** is a white play glyph (OK plays, `DeckPress::Play`) or an info glyph (OK opens the
   page) at the left of the focused card's line, in a `FOOTER_CUE_SLOT` (28 px) that is collapsed at rest
   and opened by the card's own pop progress (`cards::Tile::pop`, never a timer of its own): the text
