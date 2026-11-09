@@ -67,6 +67,11 @@ pub struct RowStyle {
     /// focus because a row stands under it that the band makes room for. A strip over the video plane has
     /// nothing under it for a band to open for, and its name stands where the strip's persistent labels do.
     pub label_drop: Option<f32>,
+    /// **How far a focused tile's neighbours step AWAY from it, in px at full pop** (0 = they stand
+    /// still and the popped tile overlaps them): each neighbour moves this far from the focused tile
+    /// along the row, on the focus pop's own spring, so the gap the pop closes stays open
+    /// ([`RowStyle::STILL`]). A tile's own pop and the lift are untouched.
+    pub neighbour_ease: f32,
 }
 
 /// Where a label block starts under its tile: [`RowStyle::label_start`].
@@ -142,6 +147,7 @@ impl RowStyle {
         rim: None,
         seat_grows: false,
         label_drop: None,
+        neighbour_ease: 0.0,
     };
     /// **A shelf of EPISODES: landscape stills.** Same motion as HOME — the spring magnification,
     /// the scroll, the glow ring and the heading lift are all one vocabulary — and a different
@@ -172,7 +178,24 @@ impl RowStyle {
         rim: None,
         seat_grows: false,
         label_drop: None,
+        neighbour_ease: 0.0,
     };
+    /// **The Continue Watching row's landscape tile** (the owner's 2026-11 handoff, "Continue
+    /// Watching and episode footer"): the episode strip's own cell (420x236, gap 28 -- [`RowStyle::EPISODE`])
+    /// at [`theme::STILL_RADIUS`], popped to HOME's 1.09 with no vertical travel, and each neighbour
+    /// easing [`theme::STILL_EASE`] px away so the gap the pop closes stays open (28 - 18.9 + 10 = ~19,
+    /// as beside a focused poster).
+    pub const STILL: RowStyle = RowStyle {
+        radius: theme::STILL_RADIUS,
+        neighbour_ease: theme::STILL_EASE,
+        ..RowStyle::EPISODE
+    };
+    /// The fixed part of this row's pitch -- everything a shelf of these tiles is made of except
+    /// the caption band: heading, air above the tile, the tile, air below. For [`RowStyle::HOME`]
+    /// it is [`ROW_PITCH_FIXED`]; add [`under_band`] to it.
+    pub const fn pitch_fixed(&self) -> f32 {
+        crate::consts::TITLE_DY + crate::consts::CARD_DY + self.h + crate::consts::UNDER_LABEL_AIR
+    }
     /// Detail "Cast & Crew": circular headshots, the tight strip ring. Same motion as HOME (spring
     /// magnification + scroll), so cast animates like the poster shelves.
     ///
@@ -197,6 +220,7 @@ impl RowStyle {
         rim: None,
         seat_grows: false,
         label_drop: None,
+        neighbour_ease: 0.0,
     };
     /// "Who's watching" profile pictures: big circular avatars with a clear pop. Centered by the
     /// caller (a short roster), so the scroll spring stays put unless the row overflows.
@@ -221,6 +245,7 @@ impl RowStyle {
         rim: None,
         seat_grows: false,
         label_drop: None,
+        neighbour_ease: 0.0,
     };
     /// Corner radius for a tile of size `rect` at radius-scale `s`: half-width for a circle, else the
     /// style's fixed radius scaled with the focus pop. A style with a [`rim`](Self::rim) keeps its radius

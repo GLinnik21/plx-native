@@ -779,10 +779,23 @@ impl Shelf {
         self.style.w + self.style.gap
     }
 
+    /// How far card `i` has stepped away from the focused card ([`RowStyle::neighbour_ease`]): along
+    /// the row, by the focused card's pop progress, so it rides the pop's own spring. 0 for the
+    /// focused card itself, for a row with no ease and for a row nothing holds focus in.
+    fn ease_of(&self, i: usize) -> f32 {
+        let focus = self.row.focus();
+        if self.style.neighbour_ease == 0.0 || focus < 0 || focus as usize == i {
+            return 0.0;
+        }
+        let pop = ((self.row.scale(focus as usize) - 1.0) / (self.style.focus_scale - 1.0)).clamp(0.0, 1.0);
+        let away = if (i as i32) > focus { 1.0 } else { -1.0 };
+        away * self.style.neighbour_ease * pop
+    }
+
     /// Card `i`'s settled (unpopped) rect in SCREEN space, a landing's slide folded in (`n` cards).
     fn slot(&self, i: usize, n: usize, at: SectionFrame, sx: f32) -> Rect {
         let r = card_row::tile_rect(i, self.style.margin_x, self.pitch(), sx, at.y, (self.style.w, self.style.h));
-        Rect::new(r.x + self.landing.offset(n, i), r.y, r.w, r.h)
+        Rect::new(r.x + self.landing.offset(n, i) + self.ease_of(i), r.y, r.w, r.h)
     }
 
     /// The settled, unpopped rect of the shelf's first card in SCREEN space: where the strip
