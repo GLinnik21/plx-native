@@ -37,7 +37,7 @@ thread_local! {
     /// The last read of the platform's calendar date and the minute (of the frame clock) it was read in.
     static TODAY: Cell<Option<(u32, Option<[i32; 3]>)>> = const { Cell::new(None) };
     /// A wall-clock Unix sample and its monotonic frame tick; advanced between five-second refreshes.
-    static UNIX: Cell<Option<(u32, i64)>> = const { Cell::new(None) };
+    static UNIX: Cell<Option<(u32, Option<i64>)>> = const { Cell::new(None) };
 }
 
 /// The date every replay frame answers: a recording has no calendar of its own, and a fixed one keeps
@@ -82,12 +82,15 @@ pub(crate) fn unix_seconds() -> Option<i64> {
 
 /// Advance a sampled wall-clock second by monotonic frame time, or ask for a fresh sample once
 /// the cache is five seconds old. Wrapping subtraction keeps SDL's 32-bit tick rollover safe.
-fn advance_unix_seconds(sampled_at: u32, sampled: i64, tick: u32) -> Option<i64> {
+fn advance_unix_seconds(sampled_at: u32, sampled: Option<i64>, tick: u32) -> Option<Option<i64>> {
     let elapsed_ms = tick.wrapping_sub(sampled_at);
     if elapsed_ms >= 5_000 {
         return None;
     }
-    sampled.checked_add(i64::from(elapsed_ms / 1_000))
+    Some(match sampled {
+        Some(sampled) => Some(sampled.checked_add(i64::from(elapsed_ms / 1_000))?),
+        None => None,
+    })
 }
 
 /// **Today's calendar date** in the OS time zone, `[year, month, day]`: read from the platform at
@@ -124,13 +127,14 @@ mod tests {
 
     #[test]
     fn unix_wall_time_advances_from_a_monotonic_sample_and_expires() {
-        assert_eq!(super::advance_unix_seconds(1_000, 10_000, 1_999), Some(10_000));
-        assert_eq!(super::advance_unix_seconds(1_000, 10_000, 2_000), Some(10_001));
-        assert_eq!(super::advance_unix_seconds(1_000, 10_000, 5_999), Some(10_004));
-        assert_eq!(super::advance_unix_seconds(1_000, 10_000, 6_000), None);
+        assert_eq!(super::advance_unix_seconds(1_000, Some(10_000), 1_999), Some(Some(10_000)));
+        assert_eq!(super::advance_unix_seconds(1_000, Some(10_000), 2_000), Some(Some(10_001)));
+        assert_eq!(super::advance_unix_seconds(1_000, Some(10_000), 5_999), Some(Some(10_004)));
+        assert_eq!(super::advance_unix_seconds(1_000, Some(10_000), 6_000), None);
+        assert_eq!(super::advance_unix_seconds(1_000, None, 1_999), Some(None));
         assert_eq!(
-            super::advance_unix_seconds(u32::MAX - 10, 10_000, 5),
-            Some(10_000),
+            super::advance_unix_seconds(u32::MAX - 10, Some(10_000), 5),
+            Some(Some(10_000)),
             "the monotonic frame clock may wrap"
         );
     }
