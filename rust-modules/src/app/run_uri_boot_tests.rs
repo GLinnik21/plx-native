@@ -252,12 +252,14 @@ mod uri_boot_tests {
     }
 
     /// The port the product composition builds for a viewer who opted in to the URI engine, over the
-    /// exported-window `Display` and a private plane owner: the binding is `uri_product_binding`'s own
-    /// answer for `exported_override` (the debug-only `dev::uri_exported` arm), the evidence the
-    /// production one (`unqualified_on` the display's mode, which an opted-in request certifies).
+    /// exported-window `Display`: production's binding for it (`Unbound`: the host has no handle, and
+    /// the product never selects the exported window) handed through the debug-only override's
+    /// `compose` (`dev::uri_exported`) as `install_uri_product` does, and the production evidence
+    /// (`unqualified_on` the display's mode, which an opted-in request certifies).
+    #[cfg(feature = "devtriggers")]
     fn composed_port(exported_override: bool, display: &Display) -> ResolvePort {
-        let binding = crate::app::adapters::backends::uri_product_binding(display,
-            &plx_platform::tv::plane::PlaneOwner::new(), exported_override);
+        let binding = crate::dev::uri_exported::compose(Binding::Unbound, display.window_mode(),
+            exported_override);
         ResolvePort::new(ProductEvidence::unqualified_on(display.window_mode(), binding).opted_in(),
             Arc::new(QualifiedOriginal))
     }
@@ -265,6 +267,7 @@ mod uri_boot_tests {
     /// With the exported-window override the composition binds the exported window on a `VP_EXPORTED`
     /// display, so the opted-in viewer's original is offered to the URI backend, and its `load` carries
     /// the exported window's id (webOS 5+: the window is created at the start and named in the load).
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn the_exported_override_offers_the_uri_backend_and_loads_with_the_exported_window() {
         let _serial = plx_base::testlock::serial();
@@ -301,6 +304,7 @@ mod uri_boot_tests {
 
     /// Without the override the same exported display composes `Unbound`: nothing is offered, Feed
     /// plays, and no URI `load` is ever sent (production is unchanged).
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn without_the_exported_override_the_same_display_keeps_the_feed_offer() {
         let _serial = plx_base::testlock::serial();
