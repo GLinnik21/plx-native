@@ -99,7 +99,7 @@ pub const STRIP_WATCHLIST_ELEM: u32 = plx_ui::dispatch::STRIP_BASE + 5;
 const MAX_ITEMS: usize = plx_data::pms::MAX_SHELF_ITEMS;
 /// **How much of a resting shelf's posters must stand above the bottom margin for the pointer to take
 /// focus onto them**, from the poster's top (0..1). The page rests the focused shelf at one fixed
-/// line (`rest_scroll`), so the shelf below it stands cut by the bottom margin by a few tens of px
+/// line (`ShelfColumn::rest`), so the shelf below it stands cut by the bottom margin by a few tens of px
 /// and the shelf above it is off the top: a rule that wanted a shelf WHOLE on screen
 /// left the pointer nothing it could take focus onto (a shelf cut by the TOP still never takes it,
 /// so one passing under the pointer on its way off does not steal focus). The wheel moves the
@@ -1511,35 +1511,25 @@ impl HomeScreen {
         }
     }
 
-    /// **The SETTLED top of shelf `row`**: [`ui_cards::settled_top_for`]'s closed form, over the
-    /// rows' OWN pitches (the Continue Watching row of stills is shorter than a poster shelf),
-    /// with `band_row`'s band open by `open` and every other shelf collapsed. A scroll target
-    /// and a settled rect are computed from this, never from the live band.
+    /// The shelf column's geometry over this page's rows ([`ShelfColumn`]).
+    fn column(&self) -> ShelfColumn<impl Fn(usize) -> bool + '_> {
+        ShelfColumn { rows: self.rows.len(), is_deck: move |i| self.rows.get(i).is_some_and(|r| r.identity == HomeHubIdentity::ContinueWatching) }
+    }
+
+    /// **The SETTLED top of shelf `row`** ([`ShelfColumn::top`]). A scroll target and a settled rect
+    /// are computed from this, never from the live band.
     fn shelf_top(&self, row: usize, band_row: Option<usize>, open: f32) -> f32 {
-        let above: f32 = (0..row)
-            .map(|i| self.row_style(i).pitch_fixed() + ui_cards::LABEL_BAND_COLLAPSED)
-            .sum();
-        above + if band_row.is_some_and(|f| f < row) { open } else { 0.0 }
+        self.column().top(row, band_row, open)
     }
 
-    /// The scroll a focused shelf RESTS at ([`rest_scroll`]'s rule, over the rows' own pitches).
-    ///
-    /// The shelf under the Continue Watching row rests with that row still standing above it (the
-    /// grid's resting place of the handoff's board: the stills on top, the next shelf below), so
-    /// the move down from the stills to it, and back up, scroll nothing.
+    /// The scroll a focused shelf RESTS at ([`ShelfColumn::rest`]).
     fn rest_scroll_of(&self, row: usize) -> f32 {
-        if row == 1 && self.holds_page(0) {
-            return 0.0;
-        }
-        self.shelf_top(row, None, 0.0).min(self.max_scroll())
+        self.column().rest(row)
     }
 
-    /// The document's end ([`grid_max_scroll`], over the rows' own pitches).
+    /// The document's end ([`ShelfColumn::max_scroll`]).
     fn max_scroll(&self) -> f32 {
-        let n = self.rows.len().max(1);
-        let last_open = self.band_open_at(self.rows.len().checked_sub(1));
-        let h = self.shelf_top(n, Some(n - 1), last_open);
-        (h - (SCR_H - CONTENT_Y) + 60.0).max(0.0)
+        self.column().max_scroll()
     }
 
     /// The row whose label band is open (or opening) for `focus` — the focused card's row, `None`
@@ -3683,7 +3673,11 @@ fn col_at(x: f32, scroll: f32, count: usize) -> Option<usize> {
 /// stills ([`RowStyle::STILL`], the episode strip's cell), every other hub a poster shelf
 /// ([`RowStyle::HOME`]).
 fn style_of(identity: &HomeHubIdentity) -> &'static RowStyle {
-    if *identity == HomeHubIdentity::ContinueWatching { &RowStyle::STILL } else { &RowStyle::HOME }
+    deck_style(*identity == HomeHubIdentity::ContinueWatching)
+}
+/// The style of the Continue Watching deck (`deck`) or of a poster shelf.
+fn deck_style(deck: bool) -> &'static RowStyle {
+    if deck { &RowStyle::STILL } else { &RowStyle::HOME }
 }
 fn heading_y(row_y: f32, lift: f32) -> f32 {
     row_y - TITLE_DY - lift
@@ -3704,39 +3698,62 @@ fn band_h_of(deck: bool) -> f32 {
 fn band_open_of(deck: bool) -> f32 {
     ui_cards::band_open_for(band_h_of(deck))
 }
-/// **The scroll a focused shelf RESTS at: the Library's rest rule** (`poster_grid::rest_scroll`,
-/// `ui_cards::grid_rest_scroll`): the shelf's top comes to `GRID_TOP_Y`, the first shelf's own
-/// resting line, and the document's end holds the last shelves lower. Every shelf above it has
-/// scrolled off, so no heading but the focused one stands in the top band.
-///
-/// It was the NEAREST scroll that showed the focused shelf with its caption band open
-/// (`ui_cards::reveal` between a `lo` and the shelf's top): Down came to rest at `lo`, which is
-/// the caption's reach short of the bottom margin, so the focused shelf's y followed the Under
-/// posters band (531 / 563 / 603 for 112 / 80 / 0) and the heading of the shelf above rested at
-/// 22 / 54 / 94 with it, under the account chip at the two smaller bands, while Up came to rest at
-/// the shelf's top. A rest that depends on the band and on the direction of the last move is not a
-/// rest a heading can be kept out of the chrome by.
-#[cfg(test)]
-fn rest_scroll(row: usize, rows: usize, last_open: f32) -> f32 {
-    ui_cards::grid_rest_scroll(row, ui_cards::ROW_PITCH_FIXED + ui_cards::LABEL_BAND_COLLAPSED, 0.0, grid_max_scroll(rows, last_open))
+/// How far the document runs on under the last shelf's band, past the bottom margin
+/// ([`ShelfColumn::max_scroll`]).
+const DOCUMENT_END_PAD: f32 = 60.0;
+
+/// **Home's shelf column: the page's rows stacked, each at its OWN pitch** (the Continue Watching
+/// row of stills is shorter than a poster shelf, [`RowStyle::pitch_fixed`]). `is_deck(i)` says
+/// whether row `i` is that deck. Every number here is the shared rule over those pitches
+/// ([`ui_cards::settled_top_by`], [`ui_cards::grid_rest_scroll_at`]); the page and its tests read
+/// this one type, never a uniform-pitch copy of it.
+struct ShelfColumn<D: Fn(usize) -> bool> {
+    rows: usize,
+    is_deck: D,
 }
-/// The document's end, with `last_open` the band the LAST shelf opens when focused.
-#[cfg(test)]
-fn grid_max_scroll(rows: usize, last_open: f32) -> f32 {
-    let n = rows.max(1);
-    let h = ui_cards::settled_top_for(n, Some(n - 1), ui_cards::ROW_PITCH_FIXED, last_open);
-    (h - (SCR_H - CONTENT_Y) + 60.0).max(0.0)
-}
-#[cfg(test)]
-fn shelf_top_settled(row: usize, focus_row: usize, open: f32) -> f32 {
-    shelf_top_banded(row, Some(focus_row), open)
-}
-/// [`shelf_top_settled`] with the open label band named explicitly: `None` while a linked heading
-/// holds focus, which opens no row's band.
-/// `open` is the band the focused shelf opens ([`HomeScreen::band_open_at`]).
-#[cfg(test)]
-fn shelf_top_banded(row: usize, band_row: Option<usize>, open: f32) -> f32 {
-    ui_cards::settled_top_for(row, band_row, ui_cards::ROW_PITCH_FIXED, open)
+
+impl<D: Fn(usize) -> bool> ShelfColumn<D> {
+    /// The row style row `row`'s shelf is drawn in ([`style_of`]).
+    fn style(&self, row: usize) -> &'static RowStyle {
+        deck_style((self.is_deck)(row))
+    }
+
+    /// **The SETTLED top of shelf `row`**, with `band_row`'s band open by `open` and every other
+    /// shelf collapsed.
+    fn top(&self, row: usize, band_row: Option<usize>, open: f32) -> f32 {
+        ui_cards::settled_top_by(row, band_row, open, |i| self.style(i).pitch_fixed())
+    }
+
+    /// **The scroll a focused shelf RESTS at: the Library's rest rule** (`poster_grid::rest_scroll`,
+    /// `ui_cards::grid_rest_scroll_at`): the shelf's top comes to `GRID_TOP_Y`, the first shelf's
+    /// own resting line, and the document's end holds the last shelves lower. Every shelf above it
+    /// has scrolled off, so no heading but the focused one stands in the top band.
+    ///
+    /// It was the NEAREST scroll that showed the focused shelf with its caption band open
+    /// (`ui_cards::reveal` between a `lo` and the shelf's top): Down came to rest at `lo`, which is
+    /// the caption's reach short of the bottom margin, so the focused shelf's y followed the Under
+    /// posters band (531 / 563 / 603 for 112 / 80 / 0) and the heading of the shelf above rested at
+    /// 22 / 54 / 94 with it, under the account chip at the two smaller bands, while Up came to rest
+    /// at the shelf's top. A rest that depends on the band and on the direction of the last move is
+    /// not a rest a heading can be kept out of the chrome by.
+    ///
+    /// The shelf under the Continue Watching row rests with that row still standing above it (the
+    /// grid's resting place of the handoff's board: the stills on top, the next shelf below), so
+    /// the move down from the stills to it, and back up, scroll nothing.
+    fn rest(&self, row: usize) -> f32 {
+        if row == 1 && (self.is_deck)(0) {
+            return 0.0;
+        }
+        ui_cards::grid_rest_scroll_at(row, self.top(row, None, 0.0), self.max_scroll())
+    }
+
+    /// The document's end, with the LAST shelf's band open ([`band_open_of`]).
+    fn max_scroll(&self) -> f32 {
+        let n = self.rows.max(1);
+        let last_open = band_open_of((self.is_deck)(n - 1));
+        let h = self.top(n, Some(n - 1), last_open);
+        (h - (SCR_H - CONTENT_Y) + DOCUMENT_END_PAD).max(0.0)
+    }
 }
 
 fn wash_corners(hero: Option<&PmsMovie>, grid: [[f32; 4]; 4], snap: f32) -> [[f32; 4]; 4] {

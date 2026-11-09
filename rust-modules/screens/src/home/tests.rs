@@ -1134,45 +1134,59 @@ fn top_band_bottom() -> f32 {
         "the chip capsule and the tab track are one band");
     chip.y + chip.h
 }
-fn heading_top(row: usize, focus_row: usize, scroll: f32) -> f32 {
+/// The shelf column of a page of `rows` shelves: poster shelves all the way down, or (`deck_first`)
+/// with the Continue Watching deck of stills on top, which has a pitch of its own. PRODUCTION's
+/// own geometry (`ShelfColumn`), never a copy of it.
+fn column(rows: usize, deck_first: bool) -> ShelfColumn<impl Fn(usize) -> bool> {
+    ShelfColumn { rows, is_deck: move |i| deck_first && i == 0 }
+}
+fn rest_scroll(row: usize, rows: usize) -> f32 {
+    column(rows, false).rest(row)
+}
+fn shelf_top_settled(row: usize, focus_row: usize, open: f32) -> f32 {
+    column(row + 1, false).top(row, Some(focus_row), open)
+}
+fn heading_top(col: &ShelfColumn<impl Fn(usize) -> bool>, row: usize, focus_row: usize, scroll: f32) -> f32 {
     let lift = if row == focus_row {
-        ui_cards::heading_lift_max(&RowStyle::HOME)
+        ui_cards::heading_lift_max(col.style(row))
     } else {
         0.0
     };
-    heading_y(
-        GRID_TOP_Y + shelf_top_settled(row, focus_row, band_open_of(false)) - scroll,
-        lift,
-    )
+    heading_y(GRID_TOP_Y + col.top(row, Some(focus_row), band_open_of((col.is_deck)(focus_row))) - scroll, lift)
 }
 /// The heading's place on the page without the focus pop's lift: what the chrome's clearance rule
 /// judges it at (`draw_grid`).
-fn heading_place(row: usize, focus_row: usize, scroll: f32) -> f32 {
-    heading_y(GRID_TOP_Y + shelf_top_settled(row, focus_row, band_open_of(false)) - scroll, 0.0)
+fn heading_place(col: &ShelfColumn<impl Fn(usize) -> bool>, row: usize, focus_row: usize, scroll: f32) -> f32 {
+    heading_y(GRID_TOP_Y + col.top(row, Some(focus_row), band_open_of((col.is_deck)(focus_row))) - scroll, 0.0)
 }
 
 #[test]
 fn the_first_shelfs_raised_heading_settles_clear_of_the_profile_chip() {
-    assert!(heading_top(0, 0, rest_scroll(0, 5, band_open_of(false))) >= top_band_bottom());
+    let col = column(5, false);
+    assert!(heading_top(&col, 0, 0, col.rest(0)) >= top_band_bottom());
 }
 
 /// **At rest a heading is whole or it is gone, never half under the chrome**, for every focused
-/// shelf of every column height: the rest is ONE scroll per focused shelf (no history, and no
-/// Under posters band in it), a heading below the chrome is drawn whole, and any other is faded to
-/// nothing by where it stands (`scroll_chrome`'s clearance). The old check graded a heading against
-/// the band's BOTTOM edge only, so a heading standing in the band (54..130) under the chip passed.
+/// shelf of every column height, with and without the Continue Watching deck on top: the rest is
+/// ONE scroll per focused shelf (no history, and no Under posters band in it), a heading below the
+/// chrome is drawn whole, and any other is faded to nothing by where it stands (`scroll_chrome`'s
+/// clearance). The old check graded a heading against the band's BOTTOM edge only, so a heading
+/// standing in the band (54..130) under the chip passed.
 #[test]
 fn no_shelf_heading_settles_inside_the_shared_top_band() {
-    for rows in 1..=SWEEP_ROWS {
-        for focus_row in 0..rows {
-            let scroll = rest_scroll(focus_row, rows, band_open_of(false));
-            for row in 0..rows {
-                let place = heading_place(row, focus_row, scroll);
-                let clear = plx_ui::scroll_chrome::clearance_under_shown_chrome(place);
-                assert!(clear == 0.0 || clear == 1.0,
-                    "rows {rows}, focus {focus_row}: shelf {row}'s heading rests at {place}, {clear} clear of the chrome");
-                if clear == 1.0 {
-                    assert!(heading_top(row, focus_row, scroll) >= top_band_bottom(), "rows {rows}, focus {focus_row}: shelf {row}");
+    for deck_first in [false, true] {
+        for rows in 1..=SWEEP_ROWS {
+            let col = column(rows, deck_first);
+            for focus_row in 0..rows {
+                let scroll = col.rest(focus_row);
+                for row in 0..rows {
+                    let place = heading_place(&col, row, focus_row, scroll);
+                    let clear = plx_ui::scroll_chrome::clearance_under_shown_chrome(place);
+                    assert!(clear == 0.0 || clear == 1.0,
+                        "deck {deck_first}, rows {rows}, focus {focus_row}: shelf {row}'s heading rests at {place}, {clear} clear of the chrome");
+                    if clear == 1.0 {
+                        assert!(heading_top(&col, row, focus_row, scroll) >= top_band_bottom(), "deck {deck_first}, rows {rows}, focus {focus_row}: shelf {row}");
+                    }
                 }
             }
         }
@@ -1180,17 +1194,25 @@ fn no_shelf_heading_settles_inside_the_shared_top_band() {
 }
 
 /// The focused shelf's heading rests where the first shelf's does, at every focus the column's end
-/// does not hold lower, and the Under posters band is not in that rest.
+/// does not hold lower, and the Under posters band is not in that rest. With the deck of stills on
+/// top, the shelf under it is the one exception (it rests with the stills still above it, at scroll
+/// 0, so the move between the two scrolls nothing).
 #[test]
 fn the_focused_shelfs_heading_rests_at_one_y_whatever_the_band() {
-    let rows = SWEEP_ROWS;
-    let at_top = heading_place(0, 0, rest_scroll(0, rows, band_open_of(false)));
-    for focus_row in 0..rows {
-        let scroll = rest_scroll(focus_row, rows, band_open_of(false));
-        if scroll < grid_max_scroll(rows, band_open_of(false)) {
-            assert_eq!(heading_place(focus_row, focus_row, scroll), at_top, "focus {focus_row}");
-        } else {
-            assert!(heading_place(focus_row, focus_row, scroll) >= at_top, "focus {focus_row}: the end holds it lower, never higher");
+    for deck_first in [false, true] {
+        let col = column(SWEEP_ROWS, deck_first);
+        let line = heading_place(&col, 0, 0, col.rest(0));
+        assert_eq!(line, GRID_TOP_Y - TITLE_DY);
+        for focus_row in 0..SWEEP_ROWS {
+            let scroll = col.rest(focus_row);
+            let place = heading_place(&col, focus_row, focus_row, scroll);
+            if deck_first && focus_row == 1 {
+                assert_eq!((scroll, place > line), (0.0, true), "the shelf under the stills rests below the line, the stills above it");
+            } else if scroll < col.max_scroll() {
+                assert_eq!(place, line, "deck {deck_first}, focus {focus_row}");
+            } else {
+                assert!(place >= line, "deck {deck_first}, focus {focus_row}: the end holds it lower, never higher");
+            }
         }
     }
 }
@@ -1204,21 +1226,44 @@ fn every_settled_row_keeps_its_focused_label_block_above_the_overscan_bottom() {
         let lines = crate::registry::captions::policy().max_lines();
         crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.set(None));
         let block = if lines == 0 { 0.0 } else { ui_cards::TileLabel::height(lines == 2) };
-        for rows in 1..=SWEEP_ROWS {
-            for focus_row in 0..rows {
-                let row_y = GRID_TOP_Y + shelf_top_settled(focus_row, focus_row, band_open_of(false)) - rest_scroll(focus_row, rows, band_open_of(false));
-                assert!(row_y + CARD_DY + CARD_H + block <= SCR_H - MARGIN_Y,
-                    "title {title}, {details:?}: row {focus_row} of {rows} ends its {lines}-line block at {}", row_y + CARD_DY + CARD_H + block);
+        for deck_first in [false, true] {
+            for rows in 1..=SWEEP_ROWS {
+                let col = column(rows, deck_first);
+                // The deck's own block is the status line and bar inside the still: nothing under it.
+                for focus_row in usize::from(deck_first)..rows {
+                    let row_y = GRID_TOP_Y + col.top(focus_row, Some(focus_row), band_open_of(false)) - col.rest(focus_row);
+                    assert!(row_y + CARD_DY + CARD_H + block <= SCR_H - MARGIN_Y,
+                        "deck {deck_first}, title {title}, {details:?}: row {focus_row} of {rows} ends its {lines}-line block at {}", row_y + CARD_DY + CARD_H + block);
+                }
             }
         }
     }
 }
 
+/// **The worst case of the stills-on-top page**: the poster shelf under the Continue Watching deck
+/// rests at scroll 0 (its row at 194 + 318 + 18 = 530), the deck standing above it, so its two-line
+/// focused label block ends at 1023, 3 px short of the bottom overscan edge (1026). It must never
+/// cross it, whatever the shelf count, and the row must really be the one that rests at 0.
+#[test]
+fn the_poster_shelf_under_the_stills_ends_its_two_line_block_inside_the_bottom_overscan_edge() {
+    let two_lines = ui_cards::TileLabel::height(true);
+    for rows in 2..=SWEEP_ROWS {
+        let col = column(rows, true);
+        assert_eq!(col.rest(1), 0.0, "rows {rows}: the shelf under the stills rests with the stills above it");
+        let row_y = GRID_TOP_Y + col.top(1, Some(1), band_open_of(false)) - col.rest(1);
+        let end = row_y + CARD_DY + CARD_H + two_lines;
+        assert_eq!(row_y, 530.0, "rows {rows}: the stills row (194) and its pitch put the shelf at 530");
+        assert_eq!(end, 1023.0, "rows {rows}: the focused block's end");
+        assert!(end <= SCR_H - MARGIN_Y, "rows {rows}: the block crosses the bottom overscan edge ({end} > {})", SCR_H - MARGIN_Y);
+    }
+}
+
 #[test]
 fn the_grids_resting_top_is_the_highest_a_shelf_may_settle() {
-    assert_eq!(rest_scroll(0, 8, band_open_of(false)), 0.0);
-    assert_eq!(rest_scroll(3, 8, band_open_of(false)), shelf_top_settled(3, 3, band_open_of(false)));
-    assert!(heading_top(0, 0, 0.0) - top_band_bottom() >= theme::space::XS);
+    assert_eq!(rest_scroll(0, 8), 0.0);
+    assert_eq!(rest_scroll(3, 8), shelf_top_settled(3, 3, band_open_of(false)));
+    let col = column(8, false);
+    assert!(heading_top(&col, 0, 0, 0.0) - top_band_bottom() >= theme::space::XS);
 }
 
 /// **The page rests by the ENGINE's focus, not by what the picture still shows.** BACK (or Up) from a
@@ -1240,7 +1285,7 @@ fn the_page_rests_by_the_engines_focus_while_the_picture_still_shows_the_deep_sh
     let rows = s.rows.len();
     assert!(rows >= 3, "premise: the catalog has shelves below the first two ({rows})");
     let deep = rows - 1;
-    assert!(rest_scroll(deep, rows, band_open_of(false)) > 0.0, "premise: the last shelf rests the page below the first");
+    assert!(rest_scroll(deep, rows) > 0.0, "premise: the last shelf rests the page below the first");
     let card = FocusKey { entry: s.entry, elem: s.rows[deep].elems[0] };
     let hero = FocusKey { entry: s.entry, elem: HERO_PLAY_ELEM };
     // the dive has reached the last shelf and the page rests there
@@ -1248,20 +1293,20 @@ fn the_page_rests_by_the_engines_focus_while_the_picture_still_shows_the_deep_sh
     s.snap_target = 1.0;
     step(&mut s, view, Some(card), &ScreenEvent::FocusMoved { from: Some(hero), to: card, by: By::Dir });
     tick(&mut s, card);
-    assert_eq!(s.grid.scroll_target, rest_scroll(deep, rows, band_open_of(false)), "a card's focus rests its own row");
+    assert_eq!(s.grid.scroll_target, rest_scroll(deep, rows), "a card's focus rests its own row");
 
     // the fold: the engine is on the billboard, and the picture is still on the shelves
     step(&mut s, view, Some(hero), &ScreenEvent::FocusMoved { from: Some(card), to: hero, by: By::Dir });
     tick(&mut s, hero);
     assert!(s.snap.pos > 0.5, "premise: the picture still shows the shelves ({})", s.snap.pos);
-    assert_eq!(s.grid.scroll_target, rest_scroll(0, rows, band_open_of(false)), "a billboard focus rests the first shelf at once");
+    assert_eq!(s.grid.scroll_target, rest_scroll(0, rows), "a billboard focus rests the first shelf at once");
 
     // a linked heading rests its row by the engine's focus as well
     let row = (1..rows).find(|row| s.rows[*row].link.is_some()).expect("premise: a collection shelf has a linked heading");
     let heading = heading_key(&s, row);
     step(&mut s, view, Some(heading), &ScreenEvent::FocusMoved { from: Some(hero), to: heading, by: By::Dir });
     tick(&mut s, heading);
-    assert_eq!(s.grid.scroll_target, rest_scroll(row, rows, band_open_of(false)), "a heading's focus rests its row");
+    assert_eq!(s.grid.scroll_target, rest_scroll(row, rows), "a heading's focus rests its row");
 }
 
 struct Run {
@@ -5751,7 +5796,7 @@ fn the_edge_glide_moves_home_a_hover_does_not_and_a_click_rests_its_card() {
     let view = snapshot.view();
     let mut s = screen(view);
     let rows = s.rows.len();
-    assert!(rows >= 3 && rest_scroll(rows - 1, rows, band_open_of(false)) > 0.0, "premise: the shelves scroll");
+    assert!(rows >= 3 && rest_scroll(rows - 1, rows) > 0.0, "premise: the shelves scroll");
     let hero = FocusKey { entry: s.entry, elem: HERO_PLAY_ELEM };
     let card = |s: &HomeScreen, row: usize| FocusKey { entry: s.entry, elem: s.rows[row].elems[0] };
     let tick = |s: &mut HomeScreen, focus: FocusKey<u32>| {
@@ -5773,7 +5818,7 @@ fn the_edge_glide_moves_home_a_hover_does_not_and_a_click_rests_its_card() {
     // a click brings the page to its card
     step(&mut s, view, Some(near), &input(InputKind::Click { x: 0.0, y: 0.0, hit: Some(near.elem) }));
     tick(&mut s, near);
-    assert_eq!(s.grid.scroll_target, rest_scroll(1, rows, band_open_of(false)), "a click rests its card's row");
+    assert_eq!(s.grid.scroll_target, rest_scroll(1, rows), "a click rests its card's row");
     // the glide up goes back through the shelves to the hero
     for _ in 0..400 { step(&mut s, view, Some(near), &input(InputKind::Wheel { dy: 0.05 })); }
     assert_eq!((s.grid.scroll_target, s.snap_target), (0.0, 0.0), "up through the shelves to the hero");
@@ -5781,7 +5826,7 @@ fn the_edge_glide_moves_home_a_hover_does_not_and_a_click_rests_its_card() {
     let deep = card(&s, rows - 1);
     step(&mut s, view, Some(deep), &ScreenEvent::FocusMoved { from: Some(near), to: deep, by: By::Dir });
     tick(&mut s, deep);
-    assert_eq!((s.grid.scroll_target, s.snap_target), (rest_scroll(rows - 1, rows, band_open_of(false)), 1.0));
+    assert_eq!((s.grid.scroll_target, s.snap_target), (rest_scroll(rows - 1, rows), 1.0));
 }
 
 /// **The pointer's sideways glide moves the shelf under it, and the shelf stays there.** A shelf

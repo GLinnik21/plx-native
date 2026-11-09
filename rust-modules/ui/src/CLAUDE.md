@@ -181,7 +181,7 @@ default a spec is built with and no screen runs it, so a scroll fault on a stack
 snapping grid (`GridSpec::new`; a grid built with `GridSpec::resting` is read through
 `rest_target(end)` instead, because `reveal_target()` has no document end in it and `Stack::wanted`
 passes its own; the Library applies the same rule through `Layout::row_reveal` ->
-`poster_grid::rest_scroll`, and Home's shelf grid through `home::rest_scroll` -> `cards::grid_rest_scroll`,
+`poster_grid::rest_scroll`, and Home's shelf grid through `home::ShelfColumn::rest` -> `cards::grid_rest_scroll_at` over `cards::settled_top_by` (one rule over the rows' OWN pitches: the stills deck is shorter than a poster shelf; `rest_scroll` is the uniform-pitch case),
 so the focused shelf rests with its heading at `GRID_TOP_Y - TITLE_DY` whatever the Under posters band
 and whichever way focus arrived) and applies the document
 shift a content landing needs, `landed_shift()`, to its scroll and scroll target; the grid does

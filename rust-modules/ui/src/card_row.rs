@@ -1685,12 +1685,17 @@ pub fn settled_top(r: usize, focus: Option<usize>, pitch_fixed: f32) -> f32 {
 /// [`settled_top`] for a focused row that opens by `band_open` (40 px for a one-line band of 80,
 /// 72 for two lines of 112, 0 for none: `under_band_for(band_h, 1.0) - LABEL_BAND_COLLAPSED`).
 pub fn settled_top_for(r: usize, focus: Option<usize>, pitch_fixed: f32, band_open: f32) -> f32 {
-    r as f32 * (pitch_fixed + LABEL_BAND_COLLAPSED)
-        + if focus.is_some_and(|f| f < r) {
-            band_open
-        } else {
-            0.0
-        }
+    settled_top_by(r, focus, band_open, |_| pitch_fixed)
+}
+
+/// [`settled_top_for`] for a column whose shelves have pitches of their OWN: `pitch_fixed(i)` is
+/// shelf `i`'s fixed pitch ([`RowStyle::pitch_fixed`]; a row of stills is shorter than a poster
+/// shelf). Every shelf above `r` adds its fixed pitch and the collapsed band, and the focused shelf's
+/// open band (`band_open`) carries every shelf below it down. This is the one rule: the uniform
+/// [`settled_top_for`] is this with one pitch for every row.
+pub fn settled_top_by(r: usize, focus: Option<usize>, band_open: f32, pitch_fixed: impl Fn(usize) -> f32) -> f32 {
+    let above: f32 = (0..r).map(|i| pitch_fixed(i) + LABEL_BAND_COLLAPSED).sum();
+    above + if focus.is_some_and(|f| f < r) { band_open } else { 0.0 }
 }
 
 // ---- The focused single-line title's marquee (item 10) ---------------------------------------
@@ -2253,6 +2258,29 @@ pub fn resume_bar(p: Painter, r: Rect, frac: f32, rad: f32) {
 // ---------------------------------------------------------------------------------------
 #[cfg(test)]
 mod tests {
+    /// The per-row rule is the uniform one when every row has the same pitch, and a row of its own
+    /// pitch moves only the shelves below it.
+    #[test]
+    fn the_settled_top_by_row_pitches_is_the_uniform_rule_for_one_pitch() {
+        for r in 0..6 {
+            for focus in [None, Some(0), Some(3), Some(9)] {
+                assert_eq!(
+                    super::settled_top_by(r, focus, BAND_OPEN, |_| ROW_PITCH_FIXED),
+                    super::settled_top(r, focus, ROW_PITCH_FIXED),
+                    "row {r}, focus {focus:?}"
+                );
+            }
+        }
+        let short = |i: usize| if i == 0 { RowStyle::STILL.pitch_fixed() } else { ROW_PITCH_FIXED };
+        assert_eq!(super::settled_top_by(0, None, 0.0, short), 0.0);
+        assert_eq!(super::settled_top_by(1, None, 0.0, short), RowStyle::STILL.pitch_fixed() + LABEL_BAND_COLLAPSED);
+        assert_eq!(
+            super::settled_top_by(2, Some(0), BAND_OPEN, short) - super::settled_top_by(2, None, 0.0, short),
+            BAND_OPEN,
+            "an open band above carries the shelf down"
+        );
+    }
+
     /// A card draw takes its press from the frame: an idle `PressRead` (scale 0.0 before any press
     /// machine read) dips by 1.0, not to nothing.
     #[test]
