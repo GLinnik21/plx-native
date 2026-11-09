@@ -85,7 +85,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-09T13:17:50Z",
+ "generated": "2026-11-09T13:22:56Z",
  "metrics": [
   {
    "change30_pct": 101.2,
@@ -151,18 +151,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 39.1,
-   "change7_pct": 15.1,
+   "change30_pct": 39.3,
+   "change7_pct": 15.3,
    "d30": 333.5,
-   "delta30": 130.5,
-   "delta7": 61,
+   "delta30": 131.0,
+   "delta7": 61.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 49,
+   "n_now": 50,
    "n_prev": 83,
-   "now": 464,
+   "now": 464.5,
    "prev7": 403,
    "shown": true,
    "state": "worse",
@@ -382,18 +382,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 37.2,
-   "change7_pct": 12.5,
+   "change30_pct": 37.4,
+   "change7_pct": 12.7,
    "d30": 230,
-   "delta30": 85.5,
-   "delta7": 35.0,
+   "delta30": 86,
+   "delta7": 35.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 48,
+   "n_now": 49,
    "n_prev": 76,
-   "now": 315.5,
+   "now": 316,
    "prev7": 280.5,
    "shown": true,
    "state": "flat",
@@ -403,18 +403,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 45.9,
-   "change7_pct": 6.9,
+   "change30_pct": 45.3,
+   "change7_pct": 6.4,
    "d30": 148.0,
-   "delta30": 68.0,
-   "delta7": 14.0,
+   "delta30": 67.0,
+   "delta7": 13.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 48,
+   "n_now": 49,
    "n_prev": 76,
-   "now": 216.0,
+   "now": 215,
    "prev7": 202.0,
    "shown": true,
    "state": "flat",
@@ -424,18 +424,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -40.2,
-   "change7_pct": -3.2,
+   "change30_pct": -39.6,
+   "change7_pct": -2.3,
    "d30": 351,
-   "delta30": -141.0,
-   "delta7": -7.0,
+   "delta30": -139,
+   "delta7": -5.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 48,
+   "n_now": 49,
    "n_prev": 76,
-   "now": 210.0,
+   "now": 212,
    "prev7": 217.0,
    "shown": true,
    "state": "flat",
@@ -511,15 +511,15 @@
    "change30_pct": 17.6,
    "change7_pct": 11.1,
    "d30": 17,
-   "delta30": 3.0,
+   "delta30": 3,
    "delta7": 2.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 48,
+   "n_now": 49,
    "n_prev": 76,
-   "now": 20.0,
+   "now": 20,
    "prev7": 18.0,
    "shown": false,
    "state": "flat",
@@ -618,11 +618,6 @@
    "change_pct": 26.7,
    "commits": [
     {
-     "pr": 1246,
-     "sha": "8a3569830",
-     "title": "Settings: a viewer's Plex Pass grants intro and credits skipping (auto-skip hidden from Pass holders)"
-    },
-    {
      "pr": 1276,
      "sha": "3309be023",
      "title": "The playback build/package matrix: PLAYBACK_BACKENDS selects both, uri, feed or none (P7)"
@@ -666,6 +661,11 @@
      "pr": 1279,
      "sha": "8e486d1a2",
      "title": "Settings > Video & playback > Playback engine: a per-profile opt-in to the URI engine"
+    },
+    {
+     "pr": 1297,
+     "sha": "be8495d5b",
+     "title": "Key mode never resumes a TLS session"
     }
    ],
    "from": 335.0,
@@ -722,6 +722,11 @@
      "pr": 1279,
      "sha": "8e486d1a2",
      "title": "Settings > Video & playback > Playback engine: a per-profile opt-in to the URI engine"
+    },
+    {
+     "pr": 1297,
+     "sha": "be8495d5b",
+     "title": "Key mode never resumes a TLS session"
     }
    ],
    "from": 74.8,
@@ -778,6 +783,11 @@
      "pr": 1279,
      "sha": "8e486d1a2",
      "title": "Settings > Video & playback > Playback engine: a per-profile opt-in to the URI engine"
+    },
+    {
+     "pr": 1297,
+     "sha": "be8495d5b",
+     "title": "Key mode never resumes a TLS session"
     }
    ],
    "from": 247.5,
@@ -788,7 +798,7 @@
    "to": 304
   },
   {
-   "change_pct": 15.1,
+   "change_pct": 15.3,
    "commits": [
     {
      "pr": 1276,
@@ -834,6 +844,11 @@
      "pr": 1279,
      "sha": "8e486d1a2",
      "title": "Settings > Video & playback > Playback engine: a per-profile opt-in to the URI engine"
+    },
+    {
+     "pr": 1297,
+     "sha": "be8495d5b",
+     "title": "Key mode never resumes a TLS session"
     }
    ],
    "from": 403,
@@ -841,7 +856,7 @@
    "label": "Wait after merge",
    "since": "2026-11-09",
    "threshold_pct": 15.0,
-   "to": 464
+   "to": 464.5
   }
  ],
  "schema": 2,

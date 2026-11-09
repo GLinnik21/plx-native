@@ -1,4 +1,4 @@
-{"updated":"2026-11-09T13:17:21Z",
+{"updated":"2026-11-09T13:22:37Z",
 "ci":[
 {"id":31449221132,"at":"2026-08-11T01:24:54Z","sha":"983ce5419","title":"docs: bring v0.1.0 and v0.2.0 up to the standard, as errata rather than edits","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":71},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":31453350821,"at":"2026-08-11T02:45:54Z","sha":"ae756c93f","title":"docs: rewrite v0.1.0 and v0.2.0 to the template, and change the rule to match","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":74},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -4856,7 +4856,8 @@
 {"id":42618375727,"at":"2026-11-09T12:36:09Z","sha":"2495ea4b6","title":"Update the HUD layout test helper for the finish-time switch","pr":1295,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":261,"macOS simulator build + launch":267,"Linux simulator build + launch":279,"Windows launcher syntax":18}},
 {"id":42621481608,"at":"2026-11-09T12:58:54Z","sha":"1598a6413","title":"Bound Recommended shelf control keys across rotating publications","pr":1296,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":207,"Linux simulator build + launch":374,"Windows launcher syntax":20,"macOS simulator build + launch":228}},
 {"id":42621727945,"at":"2026-11-09T13:00:41Z","sha":"1980abfef","title":"keypin::apply: say why strict and roots-mode handles keep their session cache","pr":1297,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":21,"macOS simulator build + launch":218,"Linux simulator build + launch":318,"macOS tests against bundled FFmpeg and ASS":249}},
-{"id":42622934597,"at":"2026-11-09T13:09:04Z","sha":"66434f286","title":"Require a full TLS handshake for each key-mode transfer","pr":1296,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":266,"Windows launcher syntax":48,"macOS tests against bundled FFmpeg and ASS":124,"macOS simulator build + launch":174}}
+{"id":42622934597,"at":"2026-11-09T13:09:04Z","sha":"66434f286","title":"Require a full TLS handshake for each key-mode transfer","pr":1296,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":266,"Windows launcher syntax":48,"macOS tests against bundled FFmpeg and ASS":124,"macOS simulator build + launch":174}},
+{"id":42623716226,"at":"2026-11-09T13:14:26Z","sha":"be8495d5b","title":"Key mode never resumes a TLS session","pr":1297,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":250,"Windows launcher syntax":30,"macOS tests against bundled FFmpeg and ASS":144,"Linux simulator build + launch":475}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
