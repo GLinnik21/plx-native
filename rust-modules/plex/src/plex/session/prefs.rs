@@ -208,8 +208,9 @@ pub struct Preferences {
     /// unused. Absence is **off**, no Alt-Svc; skipped while off so every session written before the field
     /// serializes exactly as it did. **An Install row that a sign-out does not carry over**
     /// ([`Scope::Install`] has the general rule): a signed-out read keeps only what
-    /// `install_preferences::Retained` holds (the language and the resolution), so the launch after
-    /// a sign-out sets no Alt-Svc. On the DB8 backend `ClearTenure` leaves the key in the
+    /// `install_preferences::Retained` holds (the language and the resolution), so the NEXT launch
+    /// after a sign-out sets no Alt-Svc (a running process keeps the switch it started with until it
+    /// restarts). On the DB8 backend `ClearTenure` leaves the key in the
     /// stored preferences, but nothing reads it there and the next write of the preferences (a
     /// sign-in) omits it. Soft-parsed: garbage reads off and costs only the switch.
     #[serde(default, deserialize_with = "super::de_soft_bool", skip_serializing_if = "std::ops::Not::not")]

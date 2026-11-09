@@ -5167,22 +5167,200 @@ mod http3_switch_tests {
         assert!(!alt_svc_wanted(false, false));
     }
 
-    /// Both planes ask [`alt_svc`], and nothing sets the Alt-Svc options on `bundled()` alone; the
-    /// bind is the build's, bundle first, with no mention of the switch. Source scans, like boot.rs's
-    /// ordering tests (needles split with `concat!` so this text never matches itself).
+    /// A Rust source with its comments and string/char literals blanked (newlines kept), so a
+    /// token scan sees code only. Raw strings are not handled: none of the scanned code uses one
+    /// around an Alt-Svc mention, and a literal is never a site anyway.
+    fn code_only(src: &str) -> String {
+        let b = src.as_bytes();
+        let mut out = String::with_capacity(src.len());
+        let mut i = 0;
+        while i < b.len() {
+            if b[i] == b'/' && b.get(i + 1) == Some(&b'/') {
+                while i < b.len() && b[i] != b'\n' { i += 1; }
+            } else if b[i] == b'/' && b.get(i + 1) == Some(&b'*') {
+                i += 2;
+                while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
+                    if b[i] == b'\n' { out.push('\n'); }
+                    i += 1;
+                }
+                i += 2;
+            } else if b[i] == b'"' {
+                i += 1;
+                while i < b.len() && b[i] != b'"' {
+                    if b[i] == b'\\' { i += 1; }
+                    if i < b.len() && b[i] == b'\n' { out.push('\n'); }
+                    i += 1;
+                }
+                i += 1;
+                out.push_str("\"\"");
+            } else if b[i] == b'\'' && b.get(i + 2) == Some(&b'\'') {
+                out.push_str("' '");
+                i += 3;
+            } else if b[i] == b'\'' && b.get(i + 1) == Some(&b'\\') {
+                i += 2;
+                while i < b.len() && b[i] != b'\'' { i += 1; }
+                i += 1;
+                out.push_str("' '");
+            } else {
+                out.push(b[i] as char);
+                i += 1;
+            }
+        }
+        out
+    }
+
+    /// `code` (already [`code_only`]) with every `#[cfg(test)]` item cut out: from the attribute
+    /// through the item's `;` or its matching `}`. Test-support items (`cfg(any(test, ...))`) are
+    /// kept, which is stricter.
+    fn without_test_items(code: &str) -> String {
+        const ATTR: &str = "#[cfg(test)]";
+        let mut out = String::with_capacity(code.len());
+        let mut rest = code;
+        while let Some(at) = rest.find(ATTR) {
+            out.push_str(&rest[..at]);
+            let item = &rest[at + ATTR.len()..];
+            let bytes = item.as_bytes();
+            // An item ends at its `;`, its matching `}`, or (a field, an arm) a `,` outside any
+            // bracket; a `}` with nothing open is the enclosing block's and ends the item before it.
+            let (mut depth, mut parens, mut end) = (0usize, 0usize, item.len());
+            for (i, &c) in bytes.iter().enumerate() {
+                match c {
+                    b'(' | b'[' => parens += 1,
+                    b')' | b']' => parens = parens.saturating_sub(1),
+                    b';' | b',' if depth == 0 && parens == 0 => { end = i + 1; break; }
+                    b'{' => depth += 1,
+                    b'}' if depth == 0 => { end = i; break; }
+                    b'}' => {
+                        depth -= 1;
+                        if depth == 0 { end = i + 1; break; }
+                    }
+                    _ => {}
+                }
+            }
+            out.extend(item[..end].chars().filter(|&c| c == '\n'));
+            rest = &item[end..];
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// The Alt-Svc option tokens (`CURLOPT_ALTSVC`, `CURLOPT_ALTSVC_CTRL`) a file's production code
+    /// USES, newline-insensitive: every `#[cfg(test)]` item is cut, comments and literals are
+    /// blanked, and a `const` definition of the token is not a
+    /// use. Each use is checked against its guard: the innermost `if` whose block holds it must
+    /// have a condition that is `alt_svc()` itself or ends in `&& <path>alt_svc()`. Anything
+    /// else (no guard, `!alt_svc()`, `bundled()`) is a violation. Returns (uses, violations).
+    fn alt_svc_uses(src: &str) -> (usize, Vec<String>) {
+        let code = without_test_items(&code_only(src));
+        let bytes = code.as_bytes();
+        let is_ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+        // (byte offset where an `if` block opened, the normalised condition)
+        let mut stack: Vec<Option<String>> = Vec::new();
+        let mut pending_if: Option<usize> = None;
+        let (mut uses, mut violations) = (0, Vec::new());
+        let mut i = 0;
+        while i < bytes.len() {
+            let c = bytes[i];
+            if is_ident(c) && (i == 0 || !is_ident(bytes[i - 1])) {
+                let start = i;
+                while i < bytes.len() && is_ident(bytes[i]) { i += 1; }
+                let word = &code[start..i];
+                if word == "if" {
+                    pending_if = Some(i);
+                } else if word == "CURLOPT_ALTSVC" || word == "CURLOPT_ALTSVC_CTRL" {
+                    let before = code[..start].trim_end();
+                    if !before.ends_with("const") {
+                        uses += 1;
+                        let line = code[..start].matches('\n').count() + 1;
+                        let guard = stack.iter().rev().find_map(|g| g.clone());
+                        let ok = guard.as_deref().is_some_and(|g| {
+                            let path = g.rsplit("&&").next().unwrap_or(g);
+                            let bare = path.trim_start_matches("crate::net::");
+                            (bare == "alt_svc()") && (g == path || g.ends_with(&format!("&&{path}")))
+                        });
+                        if !ok {
+                            violations.push(format!("line {line}: {word} guarded by {guard:?}"));
+                        }
+                    }
+                }
+                continue;
+            }
+            match c {
+                b'{' => {
+                    let cond = pending_if.take().map(|at| code[at..i].split_whitespace().collect::<String>());
+                    stack.push(cond);
+                }
+                b'}' => { stack.pop(); }
+                b';' => { pending_if = None; }
+                _ => {}
+            }
+            i += 1;
+        }
+        (uses, violations)
+    }
+
+    /// The scanner itself, by mutation: the two real shapes pass, wrapped or not; an unguarded
+    /// `CURLOPT_ALTSVC` (which alone enables h3: curl's `Curl_altsvc_init` defaults to H1|H2|H3),
+    /// an inverted guard, a `bundled()` guard and a guard that only encloses an unrelated `if`
+    /// each fail.
     #[test]
-    fn both_planes_read_the_one_alt_svc_answer_and_the_bind_ignores_the_switch() {
+    fn the_alt_svc_scanner_catches_unguarded_and_inverted_sites() {
+        let real_net = "if alt_svc() {\n setopt(e, CURLOPT_ALTSVC_CTRL, H3);\n setopt(\n e,\n CURLOPT_ALTSVC,\n p);\n}";
+        let real_curlio = "if matches!(mode, keypin::Mode::Strict) && crate::net::alt_svc() {\n setopt(e,\n CURLOPT_ALTSVC_CTRL, H3);\n}";
+        assert_eq!(alt_svc_uses(real_net), (2, vec![]));
+        assert_eq!(alt_svc_uses(real_curlio), (1, vec![]));
+        for (name, bad) in [
+            ("unguarded", "fn f() {\n setopt(e,\n CURLOPT_ALTSVC, p);\n}"),
+            ("inverted", "if !alt_svc() {\n setopt(e, CURLOPT_ALTSVC, p);\n}"),
+            ("inverted after &&", "if strict && !crate::net::alt_svc() {\n setopt(e, CURLOPT_ALTSVC_CTRL, H3);\n}"),
+            ("bundled only", "if bundled() {\n setopt(e, CURLOPT_ALTSVC, p);\n}"),
+            ("or", "if strict || alt_svc() {\n setopt(e, CURLOPT_ALTSVC, p);\n}"),
+            ("guard closed before the site", "if alt_svc() { x(); }\nsetopt(e, CURLOPT_ALTSVC, p);"),
+        ] {
+            let (uses, violations) = alt_svc_uses(bad);
+            assert_eq!(uses, 1, "{name}");
+            assert_eq!(violations.len(), 1, "{name}: {violations:?}");
+        }
+        // a test item is not production code; the code after it is
+        assert_eq!(alt_svc_uses("#[cfg(test)]\nmod t {\n fn f() { setopt(e, CURLOPT_ALTSVC, p); }\n}\nfn g() { setopt(e, CURLOPT_ALTSVC, p); }"), (1, vec!["line 5: CURLOPT_ALTSVC guarded by None".to_string()]));
+        // comments, strings and the constants are not uses
+        assert_eq!(alt_svc_uses("// CURLOPT_ALTSVC\nconst CURLOPT_ALTSVC: c_int = 1;\nlet s = \"CURLOPT_ALTSVC\";"), (0, vec![]));
+    }
+
+    /// **Every Alt-Svc option use in the tree is one of the two known sites, guarded by
+    /// `alt_svc()`.** The whole `rust-modules` tree is scanned (build output skipped), not just this
+    /// crate, so a third site anywhere, or one that drops or inverts the guard, fails here; and
+    /// the bind is the build's, bundle first, with no mention of the switch.
+    #[test]
+    fn every_alt_svc_use_is_a_known_site_behind_alt_svc_and_the_bind_ignores_the_switch() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).expect("read_dir").flatten() {
+                let path = entry.path();
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if path.is_dir() {
+                    if !name.starts_with("target") && !name.starts_with('.') { walk(&path, out); }
+                } else if name.ends_with(".rs") && !name.ends_with("_tests.rs") {
+                    out.push(path);
+                }
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("rust-modules");
+        let mut files = Vec::new();
+        walk(root, &mut files);
+        let mut found = Vec::new();
+        for file in &files {
+            let src = std::fs::read_to_string(file).expect("read");
+            let (uses, violations) = alt_svc_uses(&src);
+            assert!(violations.is_empty(), "{}: {violations:?}", file.display());
+            if uses > 0 {
+                found.push((file.strip_prefix(root).unwrap().to_string_lossy().into_owned(), uses));
+            }
+        }
+        found.sort();
+        assert_eq!(found, vec![("net/src/curlio.rs".to_string(), 2), ("net/src/net.rs".to_string(), 2)],
+            "exactly the control-plane and media-plane sites, CTRL and the cache file each");
+
         let net = include_str!("net.rs");
-        let curlio = include_str!("curlio.rs");
-        let guarded = |src: &str, guard: &str| {
-            let sites: Vec<usize> = src.match_indices(concat!("CURLOPT_ALTSVC_", "CTRL, CURLALTSVC_H3")).map(|(i, _)| i).collect();
-            assert_eq!(sites.len(), 1, "one Alt-Svc site per plane");
-            let before = &src[..sites[0]];
-            let line = before.rfind(concat!("if ", "")).expect("a guard");
-            assert!(before[line..].contains(guard), "the Alt-Svc site is guarded by {guard}");
-        };
-        guarded(net, concat!("alt_svc", "()"));
-        guarded(curlio, concat!("crate::net::alt_svc", "()"));
         let body = net.split_once(concat!("fn global_init_", "once() -> bool {")).expect("global_init_once").1;
         let body = &body[..body.find("\n}\n").expect("its end")];
         let bind = &body[..body.find(concat!("plx_base::dynlib::Loaded::", "Ok(soname) =>")).expect("the bind")];
@@ -5190,17 +5368,15 @@ mod http3_switch_tests {
         assert!(!bind.contains(concat!("http3", "_switch")) && !bind.contains(concat!("HTTP", "3.")), "the switch does not choose the library");
     }
 
-    /// Nothing installed reads off; the first install wins, so the process keeps the switch it
-    /// started with.
+    /// The first install wins: a later [`set_http3`] changes nothing. **Process-wide effect:** if
+    /// nothing had installed the switch yet, this installs the default (off), so the rest of the
+    /// test process reads off, exactly as an uninstalled switch would.
     #[test]
-    fn the_switch_is_installed_once_and_defaults_off() {
-        // A host test process may already have installed it; this only proves the first call wins.
-        let first = HTTP3.get().copied();
-        set_http3(true);
+    fn a_later_install_changes_nothing() {
+        set_http3(false);
         let now = http3_switch();
         set_http3(!now);
         assert_eq!(http3_switch(), now, "a later install changes nothing");
-        assert_eq!(first.unwrap_or(true), now, "the value is the first install's");
     }
 
     #[test]

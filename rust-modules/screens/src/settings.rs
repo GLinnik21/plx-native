@@ -1134,8 +1134,9 @@ pub struct RootPage {
     /// `PreferenceCmd::Http3` write, which applies at the next launch.
     pending_http3: Option<(bool, std::sync::mpsc::Receiver<bool>)>,
     /// Whether this build offers the HTTP/3 row: `plx_net::net::BUNDLED_STACK_BUILT`, a
-    /// compile-time fact, held as a field so a host test (which never carries the loader) can drive
-    /// the offered shape. Gates both the row and the switch's canonical state.
+    /// compile-time fact, held as a field so a test can drive either shape whatever the build it runs
+    /// in (the macOS host never carries the loader; a Linux glibc host with `http3-curlstack` does).
+    /// Gates both the row and the switch's canonical state.
     offers_http3: bool,
     /// The servers the signed-in account answered plx_platform::i18n::msg::settings_plaintext_question() for, then the
     /// ones discovery offers it for and nobody has answered, by row — the `(machine_id, allowed)`

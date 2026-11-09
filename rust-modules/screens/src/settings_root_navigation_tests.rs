@@ -851,7 +851,7 @@ fn flipping_the_http3_switch_writes_it_through_the_app_and_shows_the_pick() {
     let _sess = multi_user_session("root-http3-flip");
     let mut page = RootPage::new(EntryId(0), cx(None).views.directory);
     assert!(!page.state.http3, "off by default");
-    // drive the offered shape (a host build never carries the stack's loader)
+    // drive the offered shape whatever this test build carries (the macOS host never has the loader)
     page.offers_http3 = true;
     page.rebuild(cx(None).views.directory);
     assert!(page.form.index_of(&RootId::Http3).is_some(), "premise: the row is offered");
