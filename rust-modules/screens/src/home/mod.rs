@@ -3727,12 +3727,24 @@ impl<D: Fn(usize) -> bool> ShelfColumn<D> {
     ///
     /// The shelf under the Continue Watching row rests with that row still standing above it (the
     /// grid's resting place of the handoff's board: the stills on top, the next shelf below), so
-    /// the move down from the stills to it, and back up, scroll nothing.
+    /// the move down from the stills to it scrolls as little as it can: nothing while the shelf's
+    /// focused two-line label block (the worst the Under posters setting draws) still ends above
+    /// the bottom overscan edge, and otherwise just enough to bring it there
+    /// ([`Self::block_overrun`]). The footer under a still ([`theme::STILL_FOOTER_DROP`]) makes that
+    /// row 40 px taller than it was, which carried the shelf below it that much lower.
     fn rest(&self, row: usize) -> f32 {
+        let rule = ui_cards::grid_rest_scroll_at(row, self.top(row, None, 0.0), self.max_scroll());
         if row == 1 && (self.is_deck)(0) {
-            return 0.0;
+            return self.block_overrun(row).min(rule);
         }
-        ui_cards::grid_rest_scroll_at(row, self.top(row, None, 0.0), self.max_scroll())
+        rule
+    }
+
+    /// How far below the bottom overscan edge shelf `row`'s focused two-line label block would end
+    /// if the page stood at scroll 0 (never negative): the least scroll that keeps it inside.
+    fn block_overrun(&self, row: usize) -> f32 {
+        let end = GRID_TOP_Y + self.top(row, None, 0.0) + CARD_DY + CARD_H + ui_cards::TileLabel::height(true);
+        (end - (SCR_H - MARGIN_Y)).max(0.0)
     }
 
     /// The document's end, with the LAST shelf's band open ([`band_open_of`]).
