@@ -248,15 +248,15 @@ fn a_landscape_deck_is_homes_deck_and_other_episode_rows_keep_the_legacy_band() 
     let page = fixture.screen();
     let (deck, other) = (&page.shelves[0], &page.shelves[1]);
     assert!(fixture.hubs.view().shelves()[0].is_continue && fixture.hubs.view().shelves()[0].landscape, "premise: a landscape deck");
-    let look = |row: &Row| { let style = row_style(row); (style.radius, style.neighbour_ease, style.h) };
+    let look = |row: &Row| { let style = row_style(row); (style.radius, style.h) };
     let still = RowStyle::STILL;
-    assert_eq!(look(deck), (still.radius, still.neighbour_ease, still.h), "the deck wears Home's still");
+    assert_eq!(look(deck), (still.radius, still.h), "the deck wears Home's still");
     assert_eq!(deck.cards.band_h(), 0.0, "no caption band under a deck still");
     let nothing_open = still.pitch_fixed() + ui_cards::LABEL_BAND_COLLAPSED;
     assert_eq!(page.run.pitch(0), nothing_open, "so the deck's pitch is Home's");
     assert_eq!(page.target_run.pitch(0), nothing_open, "focused or not");
     let episode = RowStyle::EPISODE;
-    assert_eq!(look(other), (episode.radius, episode.neighbour_ease, episode.h), "another episode row keeps the strip's look");
+    assert_eq!(look(other), (episode.radius, episode.h), "another episode row keeps the strip's look");
     assert_eq!(other.cards.band_h(), ui_cards::LEGACY_BAND_H, "…and its legacy band");
     // The heading is the shared row style's: the deck's stands its rise higher over the same tiles, the other row's does not.
     assert_eq!((deck.cards.heading_lift(), other.cards.heading_lift()), (plx_ui::theme::STILL_HEADING_RISE, 0.0));

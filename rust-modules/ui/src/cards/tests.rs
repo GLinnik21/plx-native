@@ -5670,3 +5670,40 @@ fn the_stills_heading_never_stands_lower_than_its_rise_whatever_the_focus_lift()
     }
     assert_eq!(heading_lift_of(&RowStyle::HOME, 4.0), 4.0, "a poster shelf has no rise: its live lift stands");
 }
+
+/// **Focusing a tile never changes the spacing between tiles** (owner, 2026-11, the Continue Watching
+/// stills): with focus on card `i`, every OTHER card stands at its rest rect at every point of the pop,
+/// for the stills style as for a poster shelf; only the focused card grows, and at 1.09 a 420 px tile's
+/// ~19 px a side stays inside the 28 px gap, so it never overlaps a neighbour.
+#[test]
+fn focusing_a_tile_moves_no_other_tile_at_any_pop_progress() {
+    for style in [RowStyle::STILL, RowStyle::HOME, RowStyle::EPISODE] {
+        let mut r = Rig::<Shelf> {
+            sect: Shelf::new(ENTRY, style),
+            src: Cards::new((0..8u32).map(|i| 100 + i).collect(), false),
+            view: FixtureView::default(),
+            focus: None,
+            press: 1.0,
+            pressed: None,
+            ms: 0,
+        };
+        r.run(2);
+        let rest: Vec<Rect> = (100..108u32).map(|e| Section::place(&r.sect, &r.cx(), &r.src, e, At::Drawn).expect("a card").rect).collect();
+        r.land_focus(102, By::Dir);
+        let (mut mid, mut frames) = (false, 0);
+        while frames < 120 {
+            r.run(1);
+            frames += 1;
+            let pop = r.scale(102).expect("the focused card");
+            mid |= pop > 1.02 && pop < style.focus_scale - 0.02;
+            for (k, e) in (100..108u32).enumerate().filter(|(_, e)| *e != 102) {
+                let now = Section::place(&r.sect, &r.cx(), &r.src, e, At::Drawn).expect("a card").rect;
+                assert_eq!((now.x, now.y, now.w, now.h), (rest[k].x, rest[k].y, rest[k].w, rest[k].h),
+                    "style w={} frame {frames} (pop {pop}): card {e} moved while 102 held focus", style.w);
+            }
+        }
+        assert!(mid, "the premise: the pop was sampled part-way (style w={})", style.w);
+        let popped = Section::place(&r.sect, &r.cx(), &r.src, 102, At::Drawn).expect("the focused card").rect;
+        assert!(popped.w > rest[2].w * 1.05, "the focused card did grow (style w={})", style.w);
+    }
+}

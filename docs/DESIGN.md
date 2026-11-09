@@ -109,9 +109,9 @@ Card rows come from `plx_ui::cards::Shelf` with a named `RowStyle`:
 
 - `HOME` for poster shelves, and the single source of shelf motion
 - `EPISODE` 420x236, gap 28, `focus_scale` 1.09, the 16:9 landscape still
-- `STILL` is `EPISODE` at `theme::STILL_RADIUS` (12), each neighbour easing `theme::STILL_EASE` (10) px
-  clear of the focused tile (`RowStyle::neighbour_ease`, on the pop's own spring) so the gap the 1.09
-  pop closes stays open: the Continue Watching row's tile. Its slot pitch is `STILL.w + gap` (448)
+- `STILL` is `EPISODE` at `theme::STILL_RADIUS` (12): the Continue Watching row's tile. The focused
+  tile only pops (1.09, in place); no neighbour moves, so the spacing between tiles never changes (the
+  pop grows a 420 px tile ~19 px a side, inside the 28 px gap). Its slot pitch is `STILL.w + gap` (448)
   and the row stands whole at `consts::PEEK_Y` + `consts::CARD_DY` (817) on the hero's page
 - `CAST` 190 circles, gap 40, `focus_scale` 1.13
 - `PROFILES` big circles, `focus_scale` 1.18

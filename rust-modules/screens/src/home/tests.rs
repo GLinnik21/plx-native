@@ -6050,11 +6050,12 @@ fn only_the_continue_watching_deck_opts_in_to_the_deck_art_walk() {
     assert!(stale.cards(view, 0).facts(0).expect("a card").deck.is_none(), "never another title's cover");
 }
 
-/// **A focused still pops to 1.09 where it stands and each neighbour eases 10 px away from it**, on
-/// the pop's own spring: the gap the pop closes (28 - 18.9) opens to about 19. A poster shelf's
-/// neighbours do not move.
+/// **A focused still only pops (1.09, in place); the tiles beside it stand exactly where they rest**,
+/// at every point of the pop (owner, 2026-11: focusing a still must not change the spacing between
+/// tiles). At 1.09 a 420 px tile grows about 19 px a side, inside the 28 px gap, so nothing needs to
+/// step aside. The check runs along the pop's whole spring, not only at its end.
 #[test]
-fn a_focused_still_pops_in_place_and_its_neighbours_ease_away() {
+fn a_focused_still_pops_in_place_and_every_other_tile_stands_at_its_rest_x() {
     let _guard = plx_base::testlock::serial();
     let mut state = plx_data::pms::PmsState::default();
     let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
@@ -6067,15 +6068,23 @@ fn a_focused_still_pops_in_place_and_its_neighbours_ease_away() {
     s.layout_grid();
     let key = FocusKey { entry: s.entry, elem: s.rows[0].elems[1] };
     let rest: Vec<Rect> = (0..4).map(|c| drawn_rect(&s, view, None, 0, c)).collect();
-    pop_card(&mut s, view, key, 120);
+    let mut seen_mid_pop = false;
+    pop_card(&mut s, view, key, 0);
+    for frame in 0..120u32 {
+        step(&mut s, view, Some(key), &ScreenEvent::Tick(Tick { ms: frame * 16, dt_us: 16_667 }));
+        let popped: Vec<Rect> = (0..4).map(|c| drawn_rect(&s, view, Some(key), 0, c)).collect();
+        let pop = pop_of(&s, view, Some(key), 0, 1);
+        seen_mid_pop |= pop > 1.02 && pop < RowStyle::STILL.focus_scale - 0.02;
+        for c in [0, 2, 3] {
+            assert_eq!((popped[c].x, popped[c].y, popped[c].w), (rest[c].x, rest[c].y, rest[c].w), "frame {frame} (pop {pop}): tile {c} beside the focused still moved");
+        }
+    }
+    assert!(seen_mid_pop, "the premise: the pop was sampled part-way");
     let popped: Vec<Rect> = (0..4).map(|c| drawn_rect(&s, view, Some(key), 0, c)).collect();
     let scale = RowStyle::STILL.focus_scale;
     assert!((popped[1].w - 420.0 * scale).abs() < 0.5 && (popped[1].cy() - rest[1].cy()).abs() < 0.01, "pops in place, no vertical lift");
-    assert!((popped[0].x - (rest[0].x - 10.0)).abs() < 0.5, "the tile before steps back 10 px");
-    assert!((popped[2].x - (rest[2].x + 10.0)).abs() < 0.5 && (popped[3].x - (rest[3].x + 10.0)).abs() < 0.5, "those after step on 10 px");
     let gap = popped[2].x - (popped[1].x + popped[1].w);
-    assert!((gap - 19.1).abs() < 0.7, "the gap beside a focused still is about 19 px: {gap}");
-    assert_eq!(popped[0].y, rest[0].y, "a neighbour moves along the row only");
+    assert!(gap > 8.0, "the popped tile still stands clear of its neighbour: {gap}");
 }
 
 // ---- The page rests at the hero or the grid, never in between (the 2026-11 handoff, PR "Scroll") ----

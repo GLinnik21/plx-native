@@ -1326,10 +1326,6 @@ pub const STILL_RADIUS: f32 = 12.0;
 /// rule would have to judge the heading's ink instead of its top.
 pub const STILL_HEADING_RISE: f32 = crate::consts::GRID_TOP_Y - crate::consts::TITLE_DY - crate::page_header::TOP;
 
-/// How far each neighbour of a focused Continue Watching tile steps away from it, in px (the
-/// handoff's `still-ease`; [`crate::card_row::RowStyle::neighbour_ease`]).
-pub const STILL_EASE: f32 = 10.0;
-
 /// How far the focused episode still rises, in px, at full focus — with [`EP_CARD_FOCUS_SCALE`] it
 /// separates the focused card from the row instead of merely enlarging it in place.
 pub const EP_CARD_FOCUS_LIFT: f32 = 6.0;
