@@ -2262,6 +2262,30 @@ class CwArtFixture(unittest.TestCase):
         self.assertEqual(transcode(pms, brass["art"], 420, 236)[0], 200)
         self.assertEqual(transcode(pms, brass["grandparentThumb"], 250, 375)[0], 200)
 
+    def test_a_cover_is_a_gradient_and_its_title_wordmark_and_no_stray_strip_above_it(self):
+        """The fixture's cover once also carried a thin light strip near its top-left corner: on a
+        card it read as a UI element (a dash at the corner of the first Continue Watching tile) that
+        the owner's boards do not have. The title is baked into the lower part; nothing above it is
+        lighter than the gradient can be."""
+        pms = self.make()
+        deck = self.deck(pms)
+        hx = deck["North Ridge"]["grandparentGuid"].rsplit("/", 1)[1]
+        pms.discover.art_base = "http://127.0.0.1:41999"
+        data = pms.handle("GET", f"/_mock/art/{hx}/coverArt.png?width=420&height=236")[2]
+        w, h, channels = png_info(data)
+        self.assertEqual((w, h, channels), (420, 236, 2))
+        idat, at = b"", 8
+        while at < len(data):
+            n, tag = struct.unpack(">I4s", data[at:at + 8])
+            if tag == b"IDAT":
+                idat += data[at + 8:at + 8 + n]
+            at += 12 + n
+        raw = zlib.decompress(idat)
+        stride = 1 + w * 3
+        rows = [raw[y * stride + 1:(y + 1) * stride] for y in range(h)]  # filter 0 rows, RGB
+        top = max(max(row) for row in rows[: h * 2 // 5])
+        self.assertLess(top, 200, "a near-white pixel above the title wordmark: a stray strip on the cover")
+
     def test_discover_answers_a_cover_for_the_cover_title_at_an_absolute_url_the_mock_serves(self):
         pms = self.make()
         pms.discover.art_base = "http://127.0.0.1:41999"

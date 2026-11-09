@@ -2417,7 +2417,6 @@ def _cw_art_png(kind, slug, title, w, h):
     if kind == "snapshot":
         img.rect(w // 3, h // 4, w * 2 // 3, h * 3 // 4, _cw_tint(slug, 0.85))
     if kind == "coverArt":
-        img.rect(w // 20, h // 12, w // 20 + w // 6, h // 12 + max(2, h // 40), (235, 235, 235))
         img.wordmark(title, w // 20, h * 11 // 20, w * 11 // 20, h * 17 // 20, (245, 245, 245))
     if kind == "poster":
         img.wordmark(title, w // 10, h * 3 // 5, w * 9 // 10, h * 4 // 5, (245, 245, 245))
@@ -2427,7 +2426,7 @@ def _cw_art_png(kind, slug, title, w, h):
 def cw_art_png(kind, slug, title, width=None, height=None):
     """One fixture image as PNG bytes, sized by `cw_art_dims` for the box asked. `background`,
     `snapshot` and `coverArt` are opaque 16:9 gradients (a `coverArt` also carries its title baked
-    into the lower third and a thin banner strip, as a cover's does); `poster` a 2:3 gradient with
+    into the lower part: nothing above it, so no stray mark reads as a UI element on a card); `poster` a 2:3 gradient with
     the title wordmark; `clearLogo` a transparent 5:1 PNG-alpha wordmark."""
     w, h = cw_art_dims(kind, width, height)
     return _cw_art_png(kind, slug, title, w, h)
