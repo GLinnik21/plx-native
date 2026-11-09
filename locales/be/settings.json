@@ -14,6 +14,8 @@
   "settings.trailers.detail": "Прайграваць трэйлер з гукам на старонцы твора.",
   "settings.resolution.title": "Раздзяляльнасць інтэрфейсу",
   "settings.resolution.detail": "Меншая — плаўней. Пасля перазапуску.",
+  "settings.http3.title": "HTTP/3 (эксперыментальна)",
+  "settings.http3.detail": "Падключацца па HTTP/3 да сервераў, якія яго падтрымліваюць. Эксперыментальна: у нестабільных сетках можа працаваць павольней. Дзейнічае пасля перазапуску PlxNative.",
   "settings.resolution.auto": "Аўтаматычна",
   "settings.about.title": "Пра PlxNative",
   "settings.about.detail": "Версія, аўтарскія правы і звесткі пра праект.",

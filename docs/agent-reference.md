@@ -1057,9 +1057,16 @@ so that none of the stack joins the global scope, where users of the firmware's 
 (`libcrypto.so.1.0.0` through `.so.3` by release) could bind to it. OpenSSL's configuration and module
 directories point at a path no television has, so it never reads the firmware's `openssl.cnf`, and
 curl's trust anchors are its compiled-in CA path, the television's hashed `/etc/ssl/certs`.
-`net::global_init` makes the one bundled-or-system choice and `net::range_io` binds its
+`net::global_init_with` makes the one bundled-or-system choice and `net::range_io` binds its
 multi table from the same handle (`net::bundled_curl`, `dynlib!`'s `load_from`); a missing bundle falls
-back to the system libcurl. Behind `net::bundled()` (constant false without the feature, so the code
+back to the system libcurl. **The bundle is also opt-in at run time:** Settings > System > HTTP/3
+(experimental), the install-wide `http3_experimental` preference, default off and shown only in a
+build that carries the loader (`net::BUNDLED_STACK_BUILT`). Boot reads it from the session it already
+loads for the window and hands it to `net::global_init_with(CurlStack::from_setting(..))`. Off, the
+bundle is never looked for (no `stat`, no `dlopen`; the log says `net: HTTP/3 (experimental) is off`)
+and the television's own libcurl binds exactly as in a default build, so no request moves to curl
+8.23's HTTP/2 default. On, the bundle binds first. The process binds once, so a change applies at
+the next launch; a sign-out does not retain it (`install_preferences::Retained`). Behind `net::bundled()` (constant false without the feature, so the code
 compiles and is tested in every build): the Alt-Svc cache that lets a strict request upgrade to
 HTTP/3. Every curl this app binds is OpenSSL (the firmware's 1.0.x to 3.x, the bundle's 3.5), so
 `keypin` reads `CURLINFO_SSL_VERIFYRESULT` as OpenSSL's `X509_V_ERR_*` numbers on either path.

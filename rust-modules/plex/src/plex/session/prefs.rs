@@ -199,6 +199,18 @@ pub struct Preferences {
     /// never the credentials.
     #[serde(default, deserialize_with = "de_soft_hold_hint_taught", skip_serializing_if = "is_default_hold_hint_taught")]
     pub hold_hint_taught: HoldHintTaught,
+    /// **HTTP/3 (experimental)**: whether the NEXT launch binds the bundled HTTP/3-capable curl
+    /// stack (`plx_net::net::CurlStack::from_setting`) instead of the television's own libcurl.
+    /// Install-wide, not per profile: `app::boot::construct` reads it before `net::global_init_with`,
+    /// before anyone is seated, and the process never rebinds curl, so a change applies at the next
+    /// launch. Offered by Settings only in a build that carries the stack
+    /// (`plx_net::net::BUNDLED_STACK_BUILT`); in any other build it is stored and unused. Absence is
+    /// **off**, today's system libcurl; skipped while off so every session written before the field
+    /// serializes exactly as it did. Not retained across sign-out (`install_preferences::Retained`
+    /// keeps only the language and the resolution), so a sign-out returns the next launch to the
+    /// system libcurl. Soft-parsed: garbage reads off and costs only the switch.
+    #[serde(default, deserialize_with = "super::de_soft_bool", skip_serializing_if = "std::ops::Not::not")]
+    pub http3_experimental: bool,
     /// **Hero trailer autoplay** — the install-wide FALLBACK every profile reads until it picks its
     /// own (per profile in `profile_prefs`; this top-level key is frozen, which a build with
     /// per-profile settings never writes, except that session creation sets it on, as it always
@@ -374,7 +386,7 @@ pub struct Preferences {
 }
 
 /// How long a setting's value lives, and who owns the write. `auto_sign_in`, `ui_resolution`,
-/// `hold_hint_taught` and `last_hero_blur` are `Install`; the two lists sign-out clears are `Account`; the ten player
+/// `hold_hint_taught`, `http3_experimental` and `last_hero_blur` are `Install`; the two lists sign-out clears are `Account`; the ten player
 /// scalars, the hero trailer autoplay switch, the chosen HUD's package id ([`HudSelectionPref`], a `String` row) (each
 /// with its install-wide key as the [`Fallback`]) and the library lists are `Profile`;
 /// `track_memory` is `PerShow` and `subtitle_offsets` is `PerItem`. Sign-out clears every row that
@@ -578,6 +590,10 @@ setting!(UiResolutionPref: UiResolution = ui_resolution, "ui_resolution", Instal
     account false, live false, settings None, parse Soft);
 setting!(HoldHintTaughtPref: HoldHintTaught = hold_hint_taught, "hold_hint_taught", Install,
     account false, live false, settings None, parse Soft);
+// Written by the Settings root's switch through `PreferenceCmd::Http3` (`session::set_http3_experimental`),
+// read once at boot by `net::global_init_with`.
+setting!(Http3Pref: bool = http3_experimental, "http3_experimental", Install,
+    account false, live false, settings None, parse BoolOff);
 setting!(LastHeroBlurPref: Option<[[f32; 3]; 4]> = last_hero_blur, "last_hero_blur", Install,
     account false, live false, settings None, parse OptionalSoft);
 
@@ -671,6 +687,7 @@ pub const DESCRIPTORS: &[Descriptor] = &[
     Descriptor::of::<LastHeroBlurPref>(),
     Descriptor::of::<UiResolutionPref>(),
     Descriptor::of::<HoldHintTaughtPref>(),
+    Descriptor::of::<Http3Pref>(),
     Descriptor::of::<PlaintextConsentRow>(),
     Descriptor::of::<ServerKeyPinsRow>(),
     Descriptor::of::<NativeAudioRefusedRow>(),

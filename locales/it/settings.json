@@ -14,6 +14,8 @@
   "settings.trailers.detail": "Soffermati su un titolo per avviarne il trailer con audio.",
   "settings.resolution.title": "Risoluzione dell’interfaccia",
   "settings.resolution.detail": "Più bassa, più fluida. Si applica al riavvio.",
+  "settings.http3.title": "HTTP/3 (sperimentale)",
+  "settings.http3.detail": "Si connette in HTTP/3 ai server che lo offrono. Sperimentale: può essere più lento su reti instabili. Si applica al riavvio di PlxNative.",
   "settings.resolution.auto": "Automatica",
   "settings.about.title": "Informazioni su PlxNative",
   "settings.about.detail": "Versione, copyright e informazioni sul progetto.",

@@ -141,7 +141,9 @@ placeholder-sentinel = ["plx_ui/placeholder-sentinel"]
 # libraries (`ci/build-curlstack.sh`) and packages them beside the binary under the same flag. A
 # build with the feature and without the libraries is the clean fallback, not a broken one: the
 # loader finds no `libcurl-plx.so.4` beside the binary, logs it, and binds the television's own
-# libcurl exactly as a build without the feature does. What it compiles in: `plx_net::net`'s
+# libcurl exactly as a build without the feature does. Even with the libraries, the bundle is
+# loaded only while Settings > System > HTTP/3 (experimental) is on (`net::CurlStack`, read at boot;
+# default off, which binds the television's libcurl and never looks for the bundle). What it compiles in: `plx_net::net`'s
 # bundled loader (`net::curlstack`, glibc only, `RTLD_DEEPBIND`) and `dynlib::open_in_deepbind`.
 # What it does NOT gate: the Alt-Svc options, which sit behind `net::bundled()` (constant false
 # without the feature), so their tests run in every build.

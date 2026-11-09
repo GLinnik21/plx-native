@@ -1,8 +1,9 @@
 //! `net` — a small blocking HTTPS client over **whatever libcurl the machine already has**, bound
 //! at runtime by the candidate list below (nothing is linked, and `stub/` — which this line named
-//! for months after it was deleted — is gone). A `make CURLSTACK=1` build first tries the bundled
+//! for months after it was deleted — is gone). A `make CURLSTACK=1` build with the Settings switch
+//! HTTP/3 (experimental) on ([`CurlStack`]) first tries the bundled
 //! `libcurl-plx.so.4` beside the binary (`net::curlstack`, cargo feature `http3-curlstack`) and falls
-//! back to that candidate list; the choice is made once, in [`global_init`], and `curlio`'s multi
+//! back to that candidate list; the choice is made once, in [`global_init_with`], and `curlio`'s multi
 //! table binds the same library ([`bundled_curl`]). The plain-HTTP socket in [`crate::stream`] can
 //! resolve names now, but it still cannot do TLS; this fills that gap. Every call is
 //! **blocking**, so callers must run it off the SDL main loop (the account and PMS workers).
@@ -340,6 +341,56 @@ fn load_bundled() -> Option<plx_base::dynlib::Loaded> {
 #[cfg(all(feature = "http3-curlstack", target_os = "linux", target_env = "gnu"))]
 mod curlstack;
 
+/// Does this build carry the bundled stack's loader: the `http3-curlstack` feature on a glibc
+/// target (`make CURLSTACK=1`, whose package `ci/check-package.py` refuses unless it ships all
+/// seven libraries)? Everywhere else [`CurlStack::BundledFirst`] binds exactly what
+/// [`CurlStack::System`] does. A `const`, not a probe: Settings offers its HTTP/3 switch on this
+/// alone, so the screen reads no registry and no file, and with the switch off nothing looks for
+/// the bundle at all.
+pub const BUNDLED_STACK_BUILT: bool = cfg!(all(feature = "http3-curlstack", target_os = "linux", target_env = "gnu"));
+
+/// Which libcurl [`global_init_with`] may bind. It is the stored answer of Settings > System >
+/// HTTP/3 (experimental) at the moment the process started, which the application reads from the
+/// session before boot binds curl ([`CurlStack::from_setting`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CurlStack {
+    /// The television's own libcurl, through the candidate list: `main`'s behaviour and the default.
+    /// The bundle is not looked for at all (no `stat`, no `dlopen`), so [`bundled`] stays false and
+    /// no request sets Alt-Svc. It is NOT "the bundled curl with HTTP/3 turned off": curl 8.23
+    /// defaults to HTTP/2, which would move a television whose own libcurl speaks HTTP/1.1 onto
+    /// HTTP/2 as well.
+    System,
+    /// The bundled `libcurl-plx.so.4` beside the binary first, then the system candidates (a missing
+    /// or partial bundle falls back). The same as [`CurlStack::System`] in a build without
+    /// [`BUNDLED_STACK_BUILT`].
+    BundledFirst,
+}
+
+impl CurlStack {
+    /// The stack the stored HTTP/3 switch asks for: on is [`CurlStack::BundledFirst`].
+    pub fn from_setting(http3: bool) -> CurlStack {
+        if http3 {
+            CurlStack::BundledFirst
+        } else {
+            CurlStack::System
+        }
+    }
+}
+
+/// The one bind decision, with both binders handed in so a host test can see which of them ran:
+/// `bundled` is called only for [`CurlStack::BundledFirst`], and `system` whenever the bundle did
+/// not bind.
+fn bind_curl(
+    stack: CurlStack,
+    bundled: impl FnOnce() -> Option<plx_base::dynlib::Loaded>,
+    system: impl FnOnce() -> plx_base::dynlib::Loaded,
+) -> plx_base::dynlib::Loaded {
+    match stack {
+        CurlStack::BundledFirst => bundled().unwrap_or_else(system),
+        CurlStack::System => system(),
+    }
+}
+
 // OpenSSL before 1.1 delegates its process-global locks to the application. These symbols remain
 // optional instead of joining curl's all-or-nothing table: modern and non-OpenSSL backends do not
 // export them. The lock array is process-lifetime storage because the callback is process-global
@@ -657,18 +708,30 @@ pub fn user_agent_header_line() -> String {
 /// returns a pointer into a buffer libcurl REWRITES on every call, and the body reads it through
 /// `CStr::from_ptr`; two host-test rigs each calling this concurrently read a half-written string
 /// (`c_str.rs` UB panic). Production calls it once at boot, so nothing there changes.
+///
+/// This binds the system libcurl ([`CurlStack::System`]); boot calls [`global_init_with`] with the
+/// stored HTTP/3 switch instead.
 pub fn global_init() -> bool {
-    static INIT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *INIT.get_or_init(global_init_once)
+    global_init_with(CurlStack::System)
 }
 
-fn global_init_once() -> bool {
-    // The bundled curl first (only in an `http3-curlstack` build, see `load_bundled`), by absolute
-    // path beside the binary, then the system candidates.
-    let verdict = match load_bundled() {
-        Some(bundled) => bundled,
-        None => curl::load(None),
-    };
+/// [`global_init`], binding the libcurl `stack` names. **The FIRST call in the process decides**:
+/// a later call, whatever its `stack`, returns that first answer and binds nothing, so the HTTP/3
+/// switch flipped in Settings takes effect at the next launch and never rebinds curl under a
+/// running session (an easy handle from one libcurl must never meet another's multi handle).
+pub fn global_init_with(stack: CurlStack) -> bool {
+    static INIT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *INIT.get_or_init(|| global_init_once(stack))
+}
+
+fn global_init_once(stack: CurlStack) -> bool {
+    // With the switch on, the bundled curl first (only in an `http3-curlstack` build, see
+    // `load_bundled`), by absolute path beside the binary, then the system candidates. With it off
+    // only the system candidates, as in a build without the bundle.
+    if BUNDLED_STACK_BUILT && stack == CurlStack::System {
+        plx_base::eventlog::log("net: HTTP/3 (experimental) is off — the bundled curl stack is not loaded");
+    }
+    let verdict = bind_curl(stack, load_bundled, || curl::load(None));
     match verdict {
         plx_base::dynlib::Loaded::Ok(soname) => {
             unsafe { curl_global_init(CURL_GLOBAL_ALL) };
@@ -5103,6 +5166,64 @@ mod tls_verify_why_tests {
         assert_eq!(civil_date(0), (1970, 1, 1));
         assert_eq!(civil_date(951_782_400), (2000, 2, 29));
         assert_eq!(civil_date(-1), (1969, 12, 31));
+    }
+}
+
+#[cfg(test)]
+mod curl_stack_tests {
+    use super::*;
+    use plx_base::dynlib::Loaded;
+    use std::cell::Cell;
+
+    /// **HTTP/3 off binds exactly what `main` binds.** The bundled loader is never called (it would
+    /// `stat` and `dlopen` the stack beside the binary), and the system candidates' verdict is the
+    /// answer, so `bundled()` stays false and no request sets Alt-Svc.
+    #[test]
+    fn with_http3_off_the_bundle_is_never_tried_and_the_system_libcurl_binds() {
+        let tried = Cell::new(false);
+        let verdict = bind_curl(
+            CurlStack::from_setting(false),
+            || {
+                tried.set(true);
+                Some(Loaded::Ok(BUNDLED_CURL_SONAME))
+            },
+            || Loaded::Ok("libcurl.so.4"),
+        );
+        assert!(!tried.get(), "HTTP/3 off must not look for the bundled stack at all");
+        assert!(matches!(verdict, Loaded::Ok("libcurl.so.4")), "the system libcurl is the one bound");
+    }
+
+    /// HTTP/3 on is the bundle first, and the system libcurl only when the bundle did not bind.
+    #[test]
+    fn with_http3_on_the_bundle_binds_first_and_a_missing_one_falls_back() {
+        let system_ran = Cell::new(false);
+        let verdict = bind_curl(
+            CurlStack::from_setting(true),
+            || Some(Loaded::Ok(BUNDLED_CURL_SONAME)),
+            || {
+                system_ran.set(true);
+                Loaded::Ok("libcurl.so.4")
+            },
+        );
+        assert!(matches!(verdict, Loaded::Ok(BUNDLED_CURL_SONAME)), "the bundle is the one bound");
+        assert!(!system_ran.get(), "a bound bundle leaves the system candidates alone");
+        let verdict = bind_curl(CurlStack::BundledFirst, || None, || Loaded::Ok("libcurl.so.4"));
+        assert!(matches!(verdict, Loaded::Ok("libcurl.so.4")), "the system libcurl is the one bound");
+    }
+
+    /// The process binds once: whatever a later call asks for, the first call's answer stands, so
+    /// turning HTTP/3 on in Settings never rebinds curl under a running session.
+    #[test]
+    fn global_init_binds_once_whatever_a_later_call_asks_for() {
+        let first = global_init();
+        let bundled_before = bundled();
+        assert_eq!(global_init_with(CurlStack::BundledFirst), first);
+        assert_eq!(bundled(), bundled_before, "a later BundledFirst call rebinds nothing");
+    }
+
+    #[test]
+    fn the_build_flag_is_the_loaders_own_cfg() {
+        assert_eq!(BUNDLED_STACK_BUILT, cfg!(all(feature = "http3-curlstack", target_os = "linux", target_env = "gnu")));
     }
 }
 
