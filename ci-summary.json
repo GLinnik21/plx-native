@@ -57,13 +57,13 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-09T00:24:19Z",
+ "generated": "2026-11-09T00:31:09Z",
  "metrics": [
   {
-   "change30_pct": 101.4,
+   "change30_pct": 100.9,
    "change7_pct": 27.3,
-   "d30": 210.5,
-   "delta30": 213.5,
+   "d30": 211,
+   "delta30": 213,
    "delta7": 91,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
@@ -104,7 +104,7 @@
   {
    "change30_pct": 120.7,
    "change7_pct": 24.3,
-   "d30": 138.0,
+   "d30": 138,
    "delta30": 166.5,
    "delta7": 59.5,
    "group": "ci",
@@ -123,18 +123,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 34.3,
-   "change7_pct": 19.0,
-   "d30": 345.0,
-   "delta30": 118.5,
-   "delta7": 74.0,
+   "change30_pct": 34.2,
+   "change7_pct": 18.9,
+   "d30": 345,
+   "delta30": 118,
+   "delta7": 73.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 50,
+   "n_now": 51,
    "n_prev": 90,
-   "now": 463.5,
+   "now": 463,
    "prev7": 389.5,
    "shown": true,
    "state": "worse",
@@ -145,18 +145,18 @@
   },
   {
    "change30_pct": 35.6,
-   "change7_pct": 22.6,
+   "change7_pct": 22.5,
    "d30": 355.5,
    "delta30": 126.5,
-   "delta7": 89,
+   "delta7": 88.5,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
    "n_now": 149,
-   "n_prev": 241,
+   "n_prev": 240,
    "now": 482,
-   "prev7": 393,
+   "prev7": 393.5,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -249,10 +249,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 31.9,
+   "change30_pct": 32.2,
    "change7_pct": 10.6,
-   "d30": 2087.5,
-   "delta30": 665.0,
+   "d30": 2082,
+   "delta30": 670.5,
    "delta7": 263.5,
    "group": "ci",
    "id": "minutes",
@@ -291,10 +291,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 70.9,
+   "change30_pct": 70.6,
    "change7_pct": 19.8,
-   "d30": 268.5,
-   "delta30": 190.5,
+   "d30": 269,
+   "delta30": 190,
    "delta7": 76,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
@@ -335,7 +335,7 @@
   {
    "change30_pct": 157.9,
    "change7_pct": 9.6,
-   "d30": 139.0,
+   "d30": 139,
    "delta30": 219.5,
    "delta7": 31.5,
    "group": "ci",
@@ -354,18 +354,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 36.2,
-   "change7_pct": 13.8,
-   "d30": 230.5,
-   "delta30": 83.5,
-   "delta7": 38.0,
+   "change30_pct": 37.0,
+   "change7_pct": 14.1,
+   "d30": 230,
+   "delta30": 85,
+   "delta7": 39.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 48,
+   "n_now": 49,
    "n_prev": 82,
-   "now": 314.0,
+   "now": 315,
    "prev7": 276.0,
    "shown": true,
    "state": "flat",
@@ -375,18 +375,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -39.4,
-   "change7_pct": 0.2,
-   "d30": 357.5,
-   "delta30": -141.0,
-   "delta7": 0.5,
+   "change30_pct": -39.5,
+   "change7_pct": 0.0,
+   "d30": 357,
+   "delta30": -141,
+   "delta7": 0.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 48,
+   "n_now": 49,
    "n_prev": 82,
-   "now": 216.5,
+   "now": 216,
    "prev7": 216.0,
    "shown": true,
    "state": "flat",
@@ -396,18 +396,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 44.5,
-   "change7_pct": 8.5,
-   "d30": 149.5,
-   "delta30": 66.5,
-   "delta7": 17.0,
+   "change30_pct": 44.3,
+   "change7_pct": 8.0,
+   "d30": 149,
+   "delta30": 66,
+   "delta7": 16.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 48,
+   "n_now": 49,
    "n_prev": 82,
-   "now": 216.0,
+   "now": 215,
    "prev7": 199.0,
    "shown": true,
    "state": "flat",
@@ -419,7 +419,7 @@
   {
    "change30_pct": 17.4,
    "change7_pct": 14.8,
-   "d30": 172.0,
+   "d30": 172,
    "delta30": 30.0,
    "delta7": 26.0,
    "group": "ci",
@@ -482,16 +482,16 @@
   {
    "change30_pct": 17.6,
    "change7_pct": 11.1,
-   "d30": 17.0,
-   "delta30": 3.0,
+   "d30": 17,
+   "delta30": 3,
    "delta7": 2.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 48,
+   "n_now": 49,
    "n_prev": 82,
-   "now": 20.0,
+   "now": 20,
    "prev7": 18.0,
    "shown": false,
    "state": "flat",
@@ -524,8 +524,8 @@
   {
    "change30_pct": 33.3,
    "change7_pct": 33.3,
-   "d30": 3.0,
-   "delta30": 1.0,
+   "d30": 3,
+   "delta30": 1,
    "delta7": 1,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
@@ -545,7 +545,7 @@
   {
    "change30_pct": -99.0,
    "change7_pct": 0.0,
-   "d30": 296.0,
+   "d30": 296,
    "delta30": -293.0,
    "delta7": 0.0,
    "group": "ci",
@@ -590,11 +590,6 @@
    "change_pct": 27.3,
    "commits": [
     {
-     "pr": 1274,
-     "sha": "5d9c5903b",
-     "title": "Neutral playback orchestration: the Feed becomes plx_play_feed, the app composes backends, the sink/plane seam is split"
-    },
-    {
      "pr": 1275,
      "sha": "3ae2ebfbb",
      "title": "The URI backend returns as plx_play_uri: in the shipping binary, never selected, dev triggers back"
@@ -638,6 +633,11 @@
      "pr": 1287,
      "sha": "2fe9e9fc6",
      "title": "Settings: ask for a poster of a kind the Under posters preview lacks"
+    },
+    {
+     "pr": 1288,
+     "sha": "c9470f20f",
+     "title": "Fix Magic Remote Back and cursor recovery"
     }
    ],
    "from": 333,
@@ -651,11 +651,6 @@
    "change_pct": 25.2,
    "commits": [
     {
-     "pr": 1274,
-     "sha": "5d9c5903b",
-     "title": "Neutral playback orchestration: the Feed becomes plx_play_feed, the app composes backends, the sink/plane seam is split"
-    },
-    {
      "pr": 1275,
      "sha": "3ae2ebfbb",
      "title": "The URI backend returns as plx_play_uri: in the shipping binary, never selected, dev triggers back"
@@ -699,6 +694,11 @@
      "pr": 1287,
      "sha": "2fe9e9fc6",
      "title": "Settings: ask for a poster of a kind the Under posters preview lacks"
+    },
+    {
+     "pr": 1288,
+     "sha": "c9470f20f",
+     "title": "Fix Magic Remote Back and cursor recovery"
     }
    ],
    "from": 74.8,
@@ -712,11 +712,6 @@
    "change_pct": 24.3,
    "commits": [
     {
-     "pr": 1274,
-     "sha": "5d9c5903b",
-     "title": "Neutral playback orchestration: the Feed becomes plx_play_feed, the app composes backends, the sink/plane seam is split"
-    },
-    {
      "pr": 1275,
      "sha": "3ae2ebfbb",
      "title": "The URI backend returns as plx_play_uri: in the shipping binary, never selected, dev triggers back"
@@ -760,6 +755,11 @@
      "pr": 1287,
      "sha": "2fe9e9fc6",
      "title": "Settings: ask for a poster of a kind the Under posters preview lacks"
+    },
+    {
+     "pr": 1288,
+     "sha": "c9470f20f",
+     "title": "Fix Magic Remote Back and cursor recovery"
     }
    ],
    "from": 245,
@@ -770,23 +770,8 @@
    "to": 304.5
   },
   {
-   "change_pct": 19.0,
+   "change_pct": 18.9,
    "commits": [
-    {
-     "pr": 1274,
-     "sha": "5d9c5903b",
-     "title": "Neutral playback orchestration: the Feed becomes plx_play_feed, the app composes backends, the sink/plane seam is split"
-    },
-    {
-     "pr": 1275,
-     "sha": "3ae2ebfbb",
-     "title": "The URI backend returns as plx_play_uri: in the shipping binary, never selected, dev triggers back"
-    },
-    {
-     "pr": 1246,
-     "sha": "8a3569830",
-     "title": "Settings: a viewer's Plex Pass grants intro and credits skipping (auto-skip hidden from Pass holders)"
-    },
     {
      "pr": 1276,
      "sha": "3309be023",
@@ -821,14 +806,19 @@
      "pr": 1287,
      "sha": "2fe9e9fc6",
      "title": "Settings: ask for a poster of a kind the Under posters preview lacks"
+    },
+    {
+     "pr": 1288,
+     "sha": "c9470f20f",
+     "title": "Fix Magic Remote Back and cursor recovery"
     }
    ],
    "from": 389.5,
    "id": "push_wait",
    "label": "Wait after merge",
-   "since": "2026-11-08",
+   "since": "2026-11-09",
    "threshold_pct": 15.0,
-   "to": 463.5
+   "to": 463
   }
  ],
  "schema": 2,
