@@ -1,11 +1,13 @@
 use super::{
     apply_user_agent, available, curl_easy_init, curl_easy_perform, curl_easy_setopt_long, curl_easy_setopt_ptr,
-    origin, refuse_name, require_option, require_trust_store, threaded_tls_ready, tls_failure_reason, Easy, Tls, CURL,
-    CURLOPT_CAINFO, CURLOPT_CONNECTTIMEOUT, CURLOPT_NOSIGNAL, CURLOPT_PROTOCOLS, CURLOPT_SSL_VERIFYHOST,
-    CURLOPT_SSL_VERIFYPEER, CURLOPT_URL, CURLPROTO_HTTP, CURLPROTO_HTTPS,
+    curl_version_num, origin, refuse_name, require_option, require_trust_store, threaded_tls_ready,
+    tls_failure_reason, Easy, Tls, CURL, CURLOPT_CAINFO, CURLOPT_CONNECTTIMEOUT, CURLOPT_NOPROGRESS, CURLOPT_NOSIGNAL,
+    CURLOPT_PROGRESSFUNCTION, CURLOPT_PROTOCOLS, CURLOPT_SSL_VERIFYHOST, CURLOPT_SSL_VERIFYPEER, CURLOPT_URL,
+    CURLOPT_XFERINFODATA, CURLOPT_XFERINFOFUNCTION, CURLPROTO_HTTP, CURLPROTO_HTTPS, CURL_XFERINFO_MIN_VERSION,
 };
 use std::ffi::CString;
 use std::os::raw::{c_int, c_long, c_void};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
 plx_base::dynlib! {
@@ -21,6 +23,7 @@ const CURL_HTTP_VERSION_1_1: c_long = 2;
 const CURLINFO_ACTIVESOCKET: c_int = 0x50_0000 + 44;
 const CURLE_OK: c_int = 0;
 const CURLE_COULDNT_RESOLVE_HOST: c_int = 6;
+const CURLE_ABORTED_BY_CALLBACK: c_int = 42;
 const CURLE_AGAIN: c_int = 81;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -31,6 +34,7 @@ pub enum OpenError {
     Refused(&'static str),
     Connect { rc: c_int, why: Option<String> },
     NoSocket,
+    Cancelled,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,6 +55,7 @@ pub fn open(
     authority: &str,
     secure: Option<Tls<'_>>,
     connect_timeout_s: c_long,
+    cancel: &AtomicBool,
 ) -> Result<Socket, OpenError> {
     if !available() || !bound() {
         return Err(OpenError::Unavailable);
@@ -92,7 +97,14 @@ pub fn open(
         curl_easy_setopt_long(easy.0, CURLOPT_NOSIGNAL, 1);
         curl_easy_setopt_long(easy.0, CURLOPT_CONNECTTIMEOUT, connect_timeout_s);
         apply_user_agent(easy.0);
+        let watching = watch_cancel(easy.0, cancel);
         let rc = curl_easy_perform(easy.0);
+        if watching {
+            curl_easy_setopt_long(easy.0, CURLOPT_NOPROGRESS, 1);
+        }
+        if rc == CURLE_ABORTED_BY_CALLBACK && cancel.load(Ordering::Acquire) {
+            return Err(OpenError::Cancelled);
+        }
         if rc != CURLE_OK {
             return Err(OpenError::Connect { rc, why: tls_failure_reason(easy.0, rc) });
         }
@@ -142,3 +154,34 @@ fn bound() -> bool {
     })
 }
 
+unsafe fn watch_cancel(easy: *mut CURL, cancel: &AtomicBool) -> bool {
+    let data = (cancel as *const AtomicBool) as *const c_void;
+    let version = curl_version_num();
+    if curl_easy_setopt_long(easy, CURLOPT_NOPROGRESS, 0) != CURLE_OK {
+        return false;
+    }
+    let xferinfo = (version == 0 || version >= CURL_XFERINFO_MIN_VERSION)
+        && curl_easy_setopt_ptr(easy, CURLOPT_XFERINFOFUNCTION, cancel_xferinfo_cb as *const c_void) == CURLE_OK;
+    let installed = (xferinfo
+        || curl_easy_setopt_ptr(easy, CURLOPT_PROGRESSFUNCTION, cancel_progress_cb as *const c_void) == CURLE_OK)
+        && curl_easy_setopt_ptr(easy, CURLOPT_XFERINFODATA, data) == CURLE_OK;
+    if !installed {
+        curl_easy_setopt_long(easy, CURLOPT_NOPROGRESS, 1);
+    }
+    installed
+}
+
+extern "C" fn cancel_xferinfo_cb(clientp: *mut c_void, _dltotal: i64, _dlnow: i64, _ultotal: i64, _ulnow: i64) -> c_int {
+    cancelled(clientp)
+}
+
+extern "C" fn cancel_progress_cb(clientp: *mut c_void, _dltotal: f64, _dlnow: f64, _ultotal: f64, _ulnow: f64) -> c_int {
+    cancelled(clientp)
+}
+
+fn cancelled(clientp: *mut c_void) -> c_int {
+    if clientp.is_null() {
+        return 1;
+    }
+    c_int::from(unsafe { &*(clientp as *const AtomicBool) }.load(Ordering::Acquire))
+}

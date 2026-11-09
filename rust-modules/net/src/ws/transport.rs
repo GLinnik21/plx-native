@@ -140,8 +140,9 @@ pub fn run(
     if cancel.load(Ordering::Acquire) {
         return End::Cancelled;
     }
-    let socket = match connect_only::open(off, authority, secure.then_some(dial.trust), CONNECT_TIMEOUT_S) {
+    let socket = match connect_only::open(off, authority, secure.then_some(dial.trust), CONNECT_TIMEOUT_S, cancel) {
         Ok(socket) => socket,
+        Err(OpenError::Cancelled) => return End::Cancelled,
         Err(error) => return End::Refused(Refusal::Open(error)),
     };
     Session { socket, codec, wire: Wire::default(), short, idle: dial.idle }.drive(cancel, inbox, on)
@@ -222,7 +223,7 @@ impl<M: FnMut() -> [u8; 4]> Session<M> {
                 }
             }
             if let Some(end) = ended {
-                return if matches!(end, End::Failed(Fault::Handshake(_))) { end } else { self.finish(end) };
+                return if matches!(end, End::Failed(Fault::Handshake(_))) { end } else { self.finish(end, cancel) };
             }
             if eof {
                 return End::Lost;
@@ -253,13 +254,13 @@ impl<M: FnMut() -> [u8; 4]> Session<M> {
         }
     }
 
-    fn finish(mut self, end: End) -> End {
+    fn finish(mut self, end: End, cancel: &AtomicBool) -> End {
         self.wire.push(self.codec.take_outgoing());
         let until = Instant::now() + LINGER;
         let mut buffer = [0u8; 512];
         loop {
             let now = Instant::now();
-            if now >= until || !self.wire.flush(&mut self.socket) {
+            if now >= until || cancel.load(Ordering::Acquire) || !self.wire.flush(&mut self.socket) {
                 return end;
             }
             match self.socket.recv(&mut buffer) {
@@ -267,7 +268,7 @@ impl<M: FnMut() -> [u8; 4]> Session<M> {
                 Io::Closed | Io::Failed(_) => return end,
                 Io::Again => {}
             }
-            wait(self.socket.fd(), None, !self.wire.is_empty(), until - now);
+            wait(self.socket.fd(), None, !self.wire.is_empty(), (until - now).min(POLL_CAP));
         }
     }
 }

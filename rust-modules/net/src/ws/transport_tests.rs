@@ -463,6 +463,61 @@ fn a_server_that_offers_h2_still_gets_the_http_1_1_upgrade() {
 }
 
 #[test]
+fn a_cancel_during_the_tls_handshake_ends_the_dial() {
+    let _serial = plx_base::testlock::serial();
+    if !curl_ready() {
+        return;
+    }
+    let (_, pem) = certificate(&[]);
+    let (port, server) = serve(|mut stream| {
+        let mut sink = Vec::new();
+        let _ = stream.read_to_end(&mut sink);
+    });
+    let url = format!("wss://127.0.0.1:{port}/v1/ws");
+    let cancel = AtomicBool::new(false);
+    let (_outbox, inbox) = channel().unwrap();
+    let started = Instant::now();
+    let end = thread::scope(|scope| {
+        scope.spawn(|| {
+            thread::sleep(Duration::from_millis(300));
+            cancel.store(true, Ordering::Release);
+        });
+        run(&OffFrame::for_test(), trusting(&url, &pem), &cancel, &inbox, &mut |event| panic!("{event:?}"))
+    });
+    let took = started.elapsed();
+    server.join().unwrap();
+    assert_eq!(end, End::Cancelled);
+    assert!(took < Duration::from_millis(1800), "{took:?}");
+}
+
+#[test]
+fn a_cancel_during_the_close_linger_returns_at_once() {
+    let _serial = plx_base::testlock::serial();
+    if !curl_ready() {
+        return;
+    }
+    let (url, server) = serve_ws(|mut peer, _| {
+        peer.send(Opcode::Close, &1000u16.to_be_bytes());
+        assert_eq!(close_code(&peer.next().unwrap()), 1000);
+        peer.until_eof();
+    });
+    let cancel = AtomicBool::new(false);
+    let (_outbox, inbox) = channel().unwrap();
+    let started = Instant::now();
+    let end = thread::scope(|scope| {
+        scope.spawn(|| {
+            thread::sleep(Duration::from_millis(300));
+            cancel.store(true, Ordering::Release);
+        });
+        run(&OffFrame::for_test(), plain(&url), &cancel, &inbox, &mut |_| {})
+    });
+    let took = started.elapsed();
+    server.join().unwrap();
+    assert_eq!(end, End::Closed { code: Some(1000), reason: String::new() });
+    assert!(took < Duration::from_secs(1), "{took:?}");
+}
+
+#[test]
 fn an_outbox_refuses_a_close_the_protocol_does_not_allow() {
     let (outbox, _inbox) = channel().unwrap();
     assert!(!outbox.close(1005, String::new()));
