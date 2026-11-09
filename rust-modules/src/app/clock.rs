@@ -64,19 +64,7 @@ pub(crate) fn unix_seconds() -> Option<i64> {
     if REPLAY.with(|c| c.get().is_some()) {
         return None;
     }
-    let elapsed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?;
-    ceil_unix_seconds(elapsed)
-}
-
-/// Convert a wall-clock duration since the Unix epoch to a whole-second timestamp without
-/// rounding the current instant backwards. The remaining media time is rounded up separately by
-/// the projection, so an exact-second finish cannot be displayed early by one second.
-fn ceil_unix_seconds(elapsed: std::time::Duration) -> Option<i64> {
-    let fractional_second = if elapsed.subsec_nanos() == 0 { 0 } else { 1 };
-    let seconds = elapsed.as_secs().checked_add(fractional_second)?;
-    i64::try_from(seconds).ok().filter(|seconds| *seconds > 0)
+    plx_platform::i18n::unix_timestamp_now()
 }
 
 /// **Today's calendar date** in the OS time zone, `[year, month, day]`: read from the platform at
@@ -160,16 +148,3 @@ mod tests {
 }
 
 
-#[cfg(test)]
-mod end_time_clock_tests {
-    use super::ceil_unix_seconds;
-    use std::time::Duration;
-
-    #[test]
-    fn wall_clock_seconds_are_rounded_up_not_backwards() {
-        assert_eq!(ceil_unix_seconds(Duration::from_secs(10)), Some(10));
-        assert_eq!(ceil_unix_seconds(Duration::new(10, 1)), Some(11));
-        assert_eq!(ceil_unix_seconds(Duration::new(10, 999_999_999)), Some(11));
-        assert_eq!(ceil_unix_seconds(Duration::ZERO), None);
-    }
-}
