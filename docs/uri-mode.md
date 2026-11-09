@@ -287,15 +287,15 @@ uriprobe: t=<ms> summary load=<ok|fail(<phase>)> playing=<yes|no> t_load=<ms|-> 
 | | `moved` | Pause was accepted but the position kept running |
 | | `unconfirmed` | too few or too stale reports to say: rerun, this is not a pass |
 | | `refused`, `none` | the call was refused, or the script never reached it |
-| `resume=` | `sent` | the Resume `play` call was accepted. It is the best this probe prints (nothing but the position shows whether playback continued; read `resume_from=`); `refused` if it was refused |
+| `resume=` | `sent` | the Resume `play` call was sent and not refused; a reply is not required. It is the best this probe prints (nothing but the position shows whether playback continued; read `resume_from=`); `refused` if the service refused it |
 | `resume_from=` | `<ms>` | the first `currentTime` the service reported after the Resume call was sent. Compare it with `pos=` on the `drive pause pos=<ms>` line above it: a value at or after that position minus 1000 ms is a resume; a value near 0 is a restart from the beginning (the 4.5 set's first position after resume was 333 ms). A report already in flight when Resume was sent can still read the paused position, so an equal value next to a picture that restarted is worth a rerun |
 | | `-` | no position arrived after the call, or the script did not reach it |
 | `seek=` | `hit` | the first position after Seek was within 5 s of the target (`seek_delta=` is how far off) |
 | | `miss`, `refused` | it was not, or the call was refused |
-| | `sent`, `none` | the call was accepted but no position arrived after it, or the script never reached it |
+| | `sent`, `none` | `sent`: the service answered the call ok but no position arrived after it. `none`: the call was not answered and no position arrived after it, or the script never reached it |
 | `seekdone=` | `yes`, `no` | a `seekDone` event arrived on the subscription after the Seek call was sent. A `seekDone` from before the call does not count. `seek=hit` with `seekdone=no` means the position moved but the service never said the seek finished |
 | `audio_at_load=` | `<n>` | an `audioInfo` that named track `n` arrived before (or in the same message as) `loadCompleted`: the service had already selected an audio track at load. `none`: no `audioInfo` named a track by then |
-| `audio=` | `ok`, `sent`, `refused`, `none` | the `selectTrack` for audio index 1 (the script's second audio track). `ok` needs a `trackSelected` that names it; `sent` is an accepted call with no confirming event; a one-track title may refuse it |
+| `audio=` | `ok`, `sent`, `refused`, `none` | the `selectTrack` for audio index 1 (the script's second audio track). `ok` needs the call acknowledged and a `trackSelected` or an `audioInfo` naming index 1 (in either order); `sent` is a call the service answered without refusing it, with no such event; a one-track title may refuse it |
 | `text_ev=` | `yes`, `no` | a `trackSelected` event of type `text` arrived after the script's text `selectTrack` was sent. A bare `trackSelected`, an audio one, or one from before the call is `no` |
 | `text=`, `subs=` | as `audio=` | the text `selectTrack` (index 0) and `setSubtitleEnable` calls; recorded, they say nothing about rendering |
 | `paused_event=` | `yes`, `no` | a `paused` event arrived at all (open on 5+, above) |
