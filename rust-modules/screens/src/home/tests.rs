@@ -6194,3 +6194,62 @@ fn hovering_a_still_changes_focus_but_not_the_page() {
         source: plx_machine::machine::Source::Script, kind: InputKind::Click { x: 700.0, y: 900.0, hit: Some(b.elem) } }));
     assert_eq!(s.snap_target, 0.0, "a click on a still does not dive the page either");
 }
+
+/// **A hero backdrop that has finished dissolving in is drawn at ONE alpha for as long as it stays:
+/// the reveal spring lands on 1.0 (TV pong benches, 2026-11-09).** `Spring::step` parks a released
+/// spring one ulp off its target (here 0.9999998, velocity ~7.7e-7) and walks it the last ulp seconds
+/// later, so the art's tint alpha - an argument of the backdrop primitive the chrome glass keys its
+/// source on (`GLASSDIFF ... tex_uv ... arg=21 0.9999998>0.9999999`, frame 554 of `grid-pong`) -
+/// changed again long after the picture was up, and re-took the glass source for nothing. The page's
+/// wash lands its own springs (`AmbientWash::step`); the art layers did not.
+///
+/// The art arrives AFTER the first frame, as it does on the television (a resident one is placed at
+/// 1.0 by `bind`, which hides the bug), and the frames run at the TV's 16.667 ms.
+#[test]
+fn a_hero_backdrop_that_has_dissolved_in_is_drawn_at_one_exact_alpha_from_then_on() {
+    let _guard = plx_base::testlock::serial();
+    plx_ui::tex::install(&HeroArtSpy);
+    plx_ui::tex::reset_for_test(64 << 20);
+    HERO_ART.with(|a| *a.borrow_mut() = HeroArtState::default());
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_continue_window_for_test(&mut state, &adapter, 12, false);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let view = snapshot.view();
+    let mut s = screen(view);
+    let focus = Some(FocusKey { entry: s.entry, elem: s.rows[0].elems[0] });
+    // The alphas of the backdrop-sized quads one frame of the page's ground draws.
+    let alphas = |s: &mut HomeScreen| {
+        let env = s.env(0.0);
+        plx_ui::draw_census::capture_tex(|| s.backdrop.draw(Painter::recording(), &env, None))
+            .into_iter()
+            .filter(|(_, r, a)| r.w >= SCR_W && *a > 0.01)
+            .map(|(_, _, a)| a)
+            .collect::<Vec<_>>()
+    };
+    let mut ms = 0u32;
+    let mut settled = Vec::new();
+    for frame in 0..700u32 {
+        if frame == 5 {
+            for h in 0..view.hero_count() {
+                deliver_hero_art(&view.hero(h).unwrap().item.art);
+            }
+        }
+        ms += 17;
+        let _ = step(&mut s, view, focus, &ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }));
+        if frame >= 200 {
+            settled.push(alphas(&mut s));
+        }
+    }
+    assert!(!settled[0].is_empty(), "the premise: the hero backdrop is drawn");
+    let first = &settled[0];
+    for (i, now) in settled.iter().enumerate() {
+        assert_eq!(
+            now, first,
+            "frame {}: the settled backdrop's drawn alpha moved ({first:?} -> {now:?}), which re-keys a glass over it",
+            200 + i
+        );
+    }
+    assert!(first.iter().all(|a| *a == 1.0), "a finished dissolve is drawn at exactly 1.0, not {first:?}");
+    assert_eq!((s.backdrop.art.pos, s.backdrop.art.vel), (1.0, 0.0), "the reveal spring landed");
+}

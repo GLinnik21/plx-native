@@ -395,11 +395,17 @@ impl Backdrop {
         self.bind(hero, outgoing, selected, snap);
         // decorative hero-art reveal dissolve (same reason as the wash below)
         plx_machine::idle::decorative(|| {
+            // A layer that has arrived is LANDED on 1.0 (`Spring::land`), as the wash below lands its
+            // own springs: `step` parks one ulp short (0.9999998, a velocity of ~7.7e-7) and walks that
+            // last ulp seconds later on a jittering frame time, and the art's tint alpha is an argument
+            // the chrome glass over the page keys its source on, so each walk re-took it for nothing.
             if self.tex.0 != 0 {
                 self.art.step(1.0, AmbientWash::K, dt);
+                self.art.land(1.0, dt);
             }
             if self.outgoing_tex.0 != 0 {
                 self.outgoing_art.step(1.0, AmbientWash::K, dt);
+                self.outgoing_art.land(1.0, dt);
             }
         });
         // The held art is let go once the picture over it is up — or once it is no longer
