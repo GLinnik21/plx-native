@@ -1028,7 +1028,7 @@ impl Shelf {
         } else {
             card_row::draw_tile(pr, src.art(i), rect, s, &self.style, src.progress(i));
         }
-        let tile = Tile { rect, scale: s, radius: self.style.tile_radius(rect, s), focused, pop: crate::widgets::pop_factor(s, self.style.focus_scale) };
+        let tile = Tile { rect, scale: s, radius: self.style.tile_radius(rect, s), focused, pop: super::pop_progress(s, i, self.entry, src, f.cx, self.style.focus_scale) };
         src.compose(pr, i, &tile, f.measure, label.as_ref(), |paint, label| {
             if focused { card_row::draw_label(paint, rect, s, &self.style, label, f.measure); }
         });

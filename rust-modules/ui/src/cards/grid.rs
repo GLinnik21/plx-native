@@ -1122,7 +1122,7 @@ impl Grid {
         } else {
             card_row::draw_tile(p, src.art(i), rect, s, &self.spec.style, src.progress(i));
         }
-        let pop = crate::widgets::pop_factor(s, self.spec.style.focus_scale);
+        let pop = super::pop_progress(s, i, self.entry, src, f.cx, self.spec.style.focus_scale);
         src.overlay(p, i, &Tile { rect, scale: s, radius: self.spec.style.tile_radius(rect, s), focused, pop }, f.measure);
     }
 

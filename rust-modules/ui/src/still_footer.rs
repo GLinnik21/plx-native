@@ -1,10 +1,11 @@
 //! **A landscape still's one-line footer**: status text on the left, a mark on the right, on the
 //! 24 px line 12 px above the card's bottom edge (`Continue watching and episode footer` handoff).
 //!
-//! It replaces the two-line `label` / `sub` pair where a card has no show name to carry (the
-//! Continue Watching card, whose title is on its art, and the detail page's episode strip, which is
-//! inside one season of one show). The pair stays as [`crate::widgets::still_line`] for the shelves
-//! that need the show's name; [`crate::widgets::still_overlay`] chooses between them.
+//! It replaces the two-line `label` / `sub` pair on the Continue Watching card and the detail page's
+//! episode strip (which is inside one season of one show). The pair stays as
+//! [`crate::widgets::still_line`] for the shelves that carry the show's name;
+//! [`crate::widgets::still_overlay`] chooses between them (a `Continue` card keeps the show name on a
+//! line above the footer when it is handed one; Home's deck draws its title on the art instead).
 //!
 //! * **In progress**: `S2 E4 · 38m left` (a film: `38m left`) on the left, the amber progress bar
 //!   (100 px, shrinking to a 64 px minimum, 4 px high, radius 2) on the right.
@@ -193,21 +194,19 @@ pub fn draw_footer(p: Painter, card: Rect, label: &str, f: &Footer<'_>, measure:
 
     if !f.tag.is_empty() && geo.tag_alpha > 0.0 {
         if let Ok(tag) = std::ffi::CString::new(f.tag) {
-            let whole = geo.tag_alpha >= 1.0;
-            if !whole {
-                // the part of the tag that has slid out is cut at the text group's own edge, so it
-                // never runs under the cue
-                p.clip(Rect::new(x_l, card.y, card.w, card.h));
-            }
+            // the part of the tag that has slid out is cut at the text group's own edge, so it
+            // never runs under the cue. The scope INTERSECTS with a scissor the page already holds
+            // (Home's `ClipScope` under its top bar); the bare `p.clip` pair would replace it. A
+            // recording painter opens nothing, so the slide is graded by position and alpha.
+            let _cut = (geo.tag_alpha < 1.0).then(|| crate::screen::ClipScope::open_in(p, Rect::new(x_l, card.y, card.w, card.h)));
             p.alpha(geo.tag_alpha).text(tag.as_ptr(), x_l + geo.tag_dx, sy, sz, theme::TEXT_SECONDARY, 0, 0);
-            if !whole {
-                p.clip_clear();
-            }
         }
     }
     if !f.status.is_empty() {
         let x = x_l + fit.tag_w * geo.tag_alpha;
-        let run = measure.fit_line(f.status, (right_limit - x).max(0.0), sz, false);
+        // half a pixel of tolerance: `footer_geometry` made the bar yield exactly this room, and a
+        // card at a fractional x must not shave the time's last glyph for an ulp
+        let run = measure.fit_line(f.status, (right_limit - x + 0.5).max(0.0), sz, false);
         p.text(run.as_ptr(), x, sy, sz, theme::TEXT_SECONDARY, 0, 0);
     }
 
@@ -330,7 +329,9 @@ mod tests {
 
     /// The board's drafts for the usual line (S2 E4, 38 min left), by language tag: the whole line,
     /// or for a language whose tag the board drops, the status alone. `ca` and `hu` are not on the
-    /// board (drafts of ours, unreviewed) and so carry no expectation.
+    /// board (drafts of ours, unreviewed) and so carry no expectation. The board's Polish draft
+    /// spells the episode `O`; the app's one address spelling (`core.episode`) is `E`, so `pl` here
+    /// is `E` and the draft's letter is a native-review question.
     const BOARD_USUAL: [(&str, &str); 10] = [
         ("en", "S2 E4 · 38m left"),
         ("de", "S2 E4 · noch 38 Min."),
@@ -339,7 +340,7 @@ mod tests {
         ("it", "S2 E4 · 38 min rimasti"),
         ("pt", "T2 E4 · faltam 38 min"),
         ("nl", "S2 A4 · nog 38 min"),
-        ("pl", "S2 O4 · zostało 38 min"),
+        ("pl", "S2 E4 · zostało 38 min"),
         ("ru", "S2 E4 · осталось 38 мин"),
         ("be", "С2 Э4 · засталося 38 хв"),
     ];
@@ -458,8 +459,8 @@ mod tests {
         assert!(tag_w > 0.0);
         let mid = runs_at(0.5, status, "S2 E4 \u{b7}");
         assert_eq!(mid.len(), 2);
-        assert!(mid[0].clip.is_some(), "the sliding tag is cut at the text group's edge");
-        assert_eq!(mid[0].clip.unwrap().x, left + FOOTER_CUE_SLOT * 0.5);
+        assert_eq!(mid[0].at.x, left + FOOTER_CUE_SLOT * 0.5 - tag_w * 0.5, "the tag slides out as it fades");
+        assert!(mid[0].ink[3] < rest[0].ink[3] && mid[0].ink[3] > 0.0, "and fades");
         let open = runs_at(1.0, status, "S2 E4 \u{b7}");
         assert_eq!(open.len(), 1, "the tag is gone");
         assert_eq!(open[0].at.x, left + FOOTER_CUE_SLOT, "the time stands where the tag's slot closed up");

@@ -345,7 +345,7 @@ pub struct Tile {
     pub focused: bool,
     /// The focus pop as the 0..1 factor [`crate::widgets::pop_factor`] reads off `scale` against the
     /// style's `focus_scale`: exactly 0.0 at rest, 1.0 fully lifted. It is the card's own pop spring
-    /// read as a progress, so a mark that opens with focus (the still footer's cue slot) rides the
+    /// read as a progress (the press dip taken back out: [`pop_progress`]), so a mark that opens with focus (the still footer's cue slot) rides the
     /// same motion as the pop and never needs a timer.
     pub pop: f32,
 }
@@ -528,6 +528,18 @@ pub(crate) fn pressed_index<H: Host, S: CardSource<H>>(cx: &Cx<'_, H>, entry: En
 #[inline]
 pub(crate) fn press_scale<H: Host>(pop: f32, i: usize, pressed: Option<usize>, cx: &Cx<'_, H>) -> f32 {
     pop * if pressed == Some(i) { cx.press.dip() } else { 1.0 }
+}
+
+/// The focus pop of card `i` as [`Tile::pop`] reads it: [`crate::widgets::pop_factor`] of the scale
+/// painted at, with the press dip taken back out for the pressed card. A held OK dips the card
+/// from its pop to about 1.0 (`press_scale`), and a mark that opens with the pop (the still
+/// footer's cue slot) must not close under the thumb at the moment of the press.
+pub(crate) fn pop_progress<H: Host, S: CardSource<H>>(
+    s: f32, i: usize, entry: EntryId, src: &S, cx: &Cx<'_, H>, focus_scale: f32,
+) -> f32 {
+    let dip = cx.press.dip();
+    let popped = if dip > 0.0 && pressed_index(cx, entry, src) == Some(i) { s / dip } else { s };
+    crate::widgets::pop_factor(popped, focus_scale)
 }
 
 /// `r` (screen space) in painter `p`'s space: the painter's own translate undone, so a rect drawn

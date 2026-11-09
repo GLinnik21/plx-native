@@ -4039,6 +4039,27 @@ fn grid_header_press_dips_no_unindexed_member() {
     a_header_press_dips_no_unindexed_member::<Grid>();
 }
 
+/// **A held OK does not close what the pop opened.** `Tile::pop` is the card's pop spring as a
+/// 0..1 progress ([`super::pop_progress`]); the press dip multiplies the painted scale (1.09 x
+/// 0.918 is about 1.0, which `pop_factor` alone reads as "no pop") and must be taken back out for
+/// the pressed card, or the still footer's cue slot shuts at the moment of the press.
+#[test]
+fn a_pressed_cards_pop_progress_ignores_the_press_dip() {
+    let focus_scale = 1.09;
+    let view = FixtureView::default();
+    let src = Cards::new(vec![100, 101], false);
+    let key = FocusKey { entry: ENTRY, elem: 100 };
+    let popped = focus_scale;
+    for dip in [0.9, 0.918, 1.0] {
+        let cx = cx9_pressed(&view, 0, dip, Some(key), Some(key));
+        let s = super::press_scale(popped, 0, Some(0), &cx);
+        let p = super::pop_progress(s, 0, ENTRY, &src, &cx, focus_scale);
+        assert!((p - 1.0).abs() < 1e-4, "pressed at dip {dip}: the pop stays fully open, got {p}");
+        let other = super::pop_progress(1.0, 1, ENTRY, &src, &cx, focus_scale);
+        assert_eq!(other, 0.0, "a card the press does not own is untouched");
+    }
+}
+
 /// The focus read-out of a shelf that holds a slid window names the card by its place in the
 /// whole listing (`cdg`), not by its slot in the window (`cdi`): the two were the same number
 /// on every shelf once, and a reach graded on it could never pass the window length.
