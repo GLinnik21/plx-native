@@ -3388,6 +3388,10 @@ fn wire_shape(requests: &[String]) -> Vec<String> {
 /// Resolve the same file as Standard (`UriEngine::Off`) and as Experimental (`On`) and require the two
 /// plans to be one: no URI source, the same route, the same wire. Returns Standard's plan and requests
 /// for the caller to say what Standard did.
+///
+/// `expected_requests` is the WHOLE wire Standard makes: the mock PMS stops at that many, so a smaller
+/// count compares only whichever requests raced in first (the PlayQueue POST is asked beside the
+/// selection PUT), and the same file then passes or fails at random.
 #[cfg(feature = "devtriggers")]
 fn experimental_plays_as_standard(
     name: &'static str,
@@ -3543,7 +3547,7 @@ fn experimental_keeps_audio_only_the_app_decodes_in_standard() {
 #[cfg(feature = "devtriggers")]
 fn experimental_keeps_a_container_standard_does_not_stream_in_standard() {
     let (standard, _) = experimental_plays_as_standard_in_part("/library/parts/36013/1/file.avi",
-        "uri-optin-avi", 1, MDE_DIRECTPLAY, || vec![cold_track(1, "ac3", "eng", true, "")], "ac3", |_, _| {});
+        "uri-optin-avi", 3, MDE_DIRECTPLAY, || vec![cold_track(1, "ac3", "eng", true, "")], "ac3", |_, _| {});
     assert!(standard.source_decodable, "the premise: the video is fine, the container is the refusal");
     assert!(standard.url.contains("/video/:/transcode/"),
         "the premise: Standard has the server remux the .avi: {}", standard.url);
