@@ -60,7 +60,7 @@ impl<H: SearchLike> CardSource<H> for RowCards<'_> {
             // headshot is not a poster either and keeps its block, the server it came from last
             None => match item {
                 Item::Media(row) if self.kind == Kind::Episode =>
-                    crate::registry::captions::still_label(row, false, self.handle(item)),
+                    crate::registry::captions::still_label(row, self.handle(item)),
                 _ => TileLabel::titled(item.title(), self.handle(item)),
             },
         }

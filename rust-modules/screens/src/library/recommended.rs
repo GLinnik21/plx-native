@@ -1498,7 +1498,7 @@ pub(super) fn shelf_label(shelf: &plx_data::browse::section_hubs::Shelf, col: us
     let Some(item) = shelf.items.get(col) else { return ui_cards::TileLabel::default() };
     // The still deck's footer is on the tile (`HubSrc::overlay`): nothing hangs under it.
     if is_still_deck(shelf) { return ui_cards::TileLabel::default(); }
-    if shelf.landscape { return crate::registry::captions::still_label(item, false, ""); }
+    if shelf.landscape { return crate::registry::captions::still_label(item, ""); }
     crate::registry::captions::shelf_label(&crate::registry::captions::policy(), item, shelf.is_continue)
 }
 

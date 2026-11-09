@@ -185,20 +185,19 @@ pub fn shelf_label(policy: &CaptionPolicy, item: &plx_data::pms::PmsMovie, is_co
 /// posters policy, in its own legacy band (114 px, [`plx_ui::cards::LEGACY_BAND_H`]: this 92 px
 /// block and its air), under every setting except while the Library's Episodes view shows its sort
 /// value, which reads `sort_info::label` instead: the episode's own title (its address when it has none,
-/// or when it only repeats the show's name) over one fact, the time it has left on the Continue
-/// Watching deck (`is_continue`), else its release date. `credit` is the server a result is borrowed
-/// from (Search's results), named after the fact. The Library's Episodes listing, the Recommended
-/// page's landscape rows and Search's Episode row read this ONE builder, which makes the block with
-/// [`still_block`]; a line the row has nothing for is absent, never drawn empty.
-pub fn still_label(item: &plx_data::pms::PmsMovie, is_continue: bool, credit: &str) -> TileLabel {
+/// or when it only repeats the show's name) over one fact, its release date. `credit` is the server
+/// a result is borrowed from (Search's results), named after the fact. The Library's Episodes
+/// listing, the Recommended page's landscape episode rows and Search's Episode row read this ONE
+/// builder, which makes the block with [`still_block`]; a line the row has nothing for is absent,
+/// never drawn empty. The Continue Watching deck does not read it: its status is the footer on the
+/// still ([`NOTHING_UNDER_STILLS`]).
+pub fn still_label(item: &plx_data::pms::PmsMovie, credit: &str) -> TileLabel {
     let name = if item.title.is_empty() || item.title == item.show_title {
         plx_ui::fmt::episode_address(i64::from(item.season_index), i64::from(item.ep_index))
     } else {
         item.title.clone()
     };
-    let fact = if is_continue && item.resume_frac().is_some() {
-        plx_ui::fmt::time_left(item.dur_ns / 1_000_000 - item.resume_ms)
-    } else if item.aired.is_empty() && item.year <= 0 {
+    let fact = if item.aired.is_empty() && item.year <= 0 {
         String::new()
     } else {
         plx_ui::fmt::pretty_date(&item.aired, i64::from(item.year))
@@ -234,15 +233,15 @@ mod tests {
         let ep = plx_data::pms::PmsMovie { kind: 3, title: "Pilot".into(), show_title: "Show".into(), season_index: 1, ep_index: 8,
             aired: "2016-04-21".into(), ..Default::default() };
         let date = plx_ui::fmt::pretty_date("2016-04-21", 0);
-        assert_eq!(lines(&still_label(&ep, false, "")), [Some("Pilot".into()), Some(date.clone())]);
-        assert_eq!(lines(&still_label(&ep, false, "pal")), [Some("Pilot".into()), Some(format!("{date} \u{b7} pal"))]);
+        assert_eq!(lines(&still_label(&ep, "")), [Some("Pilot".into()), Some(date.clone())]);
+        assert_eq!(lines(&still_label(&ep, "pal")), [Some("Pilot".into()), Some(format!("{date} \u{b7} pal"))]);
         let untitled = plx_data::pms::PmsMovie { title: "Show".into(), ..ep.clone() };
-        assert_eq!(lines(&still_label(&untitled, false, ""))[0].as_deref(), Some("S1 \u{b7} E8"),
+        assert_eq!(lines(&still_label(&untitled, ""))[0].as_deref(), Some("S1 \u{b7} E8"),
             "a title that only repeats the show reads the address");
         let extra = still_block("Making of", "Featurette");
         assert_eq!(lines(&extra), [Some("Making of".into()), Some("Featurette".into())]);
         assert_eq!(lines(&still_block("", "Featurette")), [None, Some("Featurette".into())], "no title, no empty line");
-        assert!(extra.shadowed && still_label(&ep, false, "").shadowed, "one look for every landscape block");
+        assert!(extra.shadowed && still_label(&ep, "").shadowed, "one look for every landscape block");
     }
 
     /// A tile's state is its details line under every kind but Nothing, and an episode's default details line is its address.
