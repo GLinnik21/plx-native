@@ -18,6 +18,7 @@ pub mod clock; // `vclock_ms`/`vclock_us`: the one monotonic clock for stamps th
 pub mod task; // the one spawn: a refused thread is a return value, not a panic that kills the app
 pub mod cbuf; // fixed NUL-terminated C-string buffer read/write
 pub mod sha256; // SHA-256 / HMAC / PBKDF2, hand-written: the offline PIN verifier's hash
+pub mod sha1;
 pub mod b64; // standard base64 encode/decode
 pub mod spki; // a PEM certificate -> its CURLOPT_PINNEDPUBLICKEY string
 pub mod dynlib; // dlopen-by-SONAME-candidate: the libraries whose major moves between webOS releases

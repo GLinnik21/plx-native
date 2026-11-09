@@ -469,6 +469,9 @@ pub struct DirectorySnapshot {
     /// The first poster of each kind (movie, show) anywhere the Browse store holds rows, for a page
     /// that illustrates a kind without being on a library of it ([`DirectoryView::kind_poster`]).
     kind_posters: [Option<PosterAt>; 2],
+    /// Whether each kind's preferred library has had its shelves read and committed
+    /// ([`DirectoryView::kind_shelves_published`]).
+    kind_shelves: [bool; 2],
     source: Option<usize>,
     source_fetch: SecFetch,
     discovery: SecFetch,
@@ -561,6 +564,7 @@ impl Default for DirectorySnapshot {
             data: Arc::default(),
             items: super::SecItems::default(),
             kind_posters: [None, None],
+            kind_shelves: [false; 2],
             source: None,
             source_fetch: SecFetch::Loading,
             discovery: SecFetch::Loading,
@@ -603,6 +607,9 @@ impl DirectorySnapshot {
         for (i, kind) in [super::SecKind::Movie, super::SecKind::Show].into_iter().enumerate() {
             self.preferred[i] = state.tab_of_kind(kind).and_then(|tab| state.tab_section(tab));
             self.kind_fetch[i] = state.kind_state(kind);
+            self.kind_shelves[i] = self.preferred[i]
+                .and_then(|section| state.states().get(section))
+                .is_some_and(|st| st.hubs.is_published());
         }
     }
 
@@ -624,6 +631,7 @@ impl DirectorySnapshot {
             }),
             items: super::SecItems::default(),
             kind_posters: [None, None],
+            kind_shelves: [false; 2],
             source: Some(0),
             source_fetch: fetch,
             discovery: fetch,
@@ -631,6 +639,13 @@ impl DirectorySnapshot {
             sections_gen: 0,
             tabs_gen: 0,
         }
+    }
+
+    /// This directory with `kind`'s library's shelves read and committed.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_kind_shelves_published(mut self, kind: super::SecKind) -> Self {
+        self.kind_shelves[if kind == super::SecKind::Show { 1 } else { 0 }] = true;
+        self
     }
 
     /// This directory with `items` as the current library's listing (what [`DirectoryView::sample`] reads).
@@ -697,6 +712,7 @@ impl DirectorySnapshot {
             }),
             items: super::SecItems::default(),
             kind_posters: [None, None],
+            kind_shelves: [false; 2],
             source: None,
             source_fetch: SecFetch::Ready,
             discovery: SecFetch::Ready,
@@ -744,6 +760,17 @@ impl<'a> DirectoryView<'a> {
     /// Reads what the store already holds and starts no fetch.
     pub fn kind_poster(self, kind: std::os::raw::c_int) -> Option<&'a PmsMovie> {
         self.0.kind_posters.get(kind_slot(kind)?)?.as_ref()?.get()
+    }
+    /// **Has the library a page would show for `kind` had its shelves read and committed?** True once
+    /// the store has published that library's hubs, even when they hold no title of the kind, so a
+    /// page that asked for the shelves to find a poster (Settings > Under posters) knows the answer
+    /// is in and stops asking. False while the read is out, staged or has failed, and for a kind with
+    /// no library.
+    pub fn kind_shelves_published(self, kind: super::SecKind) -> bool {
+        self.0.kind_shelves[match kind {
+            super::SecKind::Movie => 0,
+            super::SecKind::Show => 1,
+        }]
     }
     #[allow(dead_code)]
     pub fn source_list_gen(self) -> u32 { self.0.stamp.map_or(0, |stamp| stamp.1) }
@@ -885,6 +912,28 @@ mod tests {
         let title = |kind| snapshot.view().kind_poster(kind).map(|m| m.title.clone());
         assert_eq!(title(crate::pms::KIND_MOVIE).as_deref(), Some("Alpha"), "the current library still wins its kind");
         assert_eq!(title(crate::pms::KIND_SHOW).as_deref(), Some("Sitcom"), "the show comes from the other library's rows");
+    }
+
+    /// **A page waiting for a library's shelves can tell when the answer is in**: false until the
+    /// store has committed that library's hubs (staged is not published), then true, even when the
+    /// hubs hold nothing; and false for a kind with no library.
+    #[test]
+    fn kind_shelves_are_published_only_once_the_libraries_hubs_are_committed() {
+        let _g = plx_base::testlock::serial();
+        let mut state = super::super::BrowseState::default();
+        super::super::seed_two_source_table_for_owner_test(&mut state);
+        let mut snapshot = DirectorySnapshot::default();
+        snapshot.capture_from(&mut state);
+        let kind = [super::super::SecKind::Movie, super::super::SecKind::Show].into_iter()
+            .find(|kind| snapshot.view().preferred(*kind).is_some()).expect("the seeded table lists a library of some kind");
+        let section = snapshot.view().preferred(kind).unwrap();
+        assert!(!snapshot.view().kind_shelves_published(kind), "nothing read yet");
+        state.state_mut(section).unwrap().hubs.stage_for_test(Vec::new());
+        snapshot.capture_from(&mut state);
+        assert!(!snapshot.view().kind_shelves_published(kind), "a landed read is only staged");
+        state.state_mut(section).unwrap().hubs.commit_staged(true);
+        snapshot.capture_from(&mut state);
+        assert!(snapshot.view().kind_shelves_published(kind), "committed, even with no shelf in it");
     }
 
     use super::*;

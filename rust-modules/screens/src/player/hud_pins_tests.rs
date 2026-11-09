@@ -309,16 +309,6 @@ impl Run {
             .expect("the mounted page is the player")
     }
 
-    fn note_fresh_press(&mut self, now: u32) {
-        let ps = &self.rig.session;
-        let screen = self.d.nav.entry_mut(self.id)
-            .and_then(|entry| entry.inst.as_mut())
-            .and_then(|inst| inst.screen.as_any_mut())
-            .and_then(|any| any.downcast_mut::<PlayerScreen>())
-            .expect("the mounted page is the player");
-        screen.hud.note_fresh_press(ps, now, false);
-    }
-
     fn frame(&mut self, ms: u32, inputs: Vec<InputEvent<u32>>) {
         self.d.frame_with(&mut self.rig, tick(ms), inputs, vec![], &mut NoTap, false);
     }
@@ -355,8 +345,6 @@ impl Run {
             e
         };
         let now = self.now;
-        // the app's per-key preamble, before the key-down frame
-        self.note_fresh_press(now);
         self.frame(now, vec![coded(key(k, tick(now)))]);
         self.frame(now + 16, vec![]);
         self.frame(now + 112, vec![coded(key_up(k, tick(now + 112)))]);
@@ -367,7 +355,6 @@ impl Run {
     /// roughly 50 ms), then the release.
     fn press_held(&mut self, k: Key, repeat_at: &[u32]) {
         let now = self.now;
-        self.note_fresh_press(now);
         let with = |edge: plx_machine::machine::Edge, at: u32| {
             let mut e = key(k, tick(at));
             if let plx_machine::machine::InputKind::Key { edge: ed, .. } = &mut e.kind {
@@ -2807,8 +2794,6 @@ mod sections {
         // lands on moves neither the section nor the limit, the next frame moves both
         let now = run.now + 16;
         run.now = now;
-        let ps = plx_media::route::idle_session_for_test();
-        run.screen().hud.note_fresh_press(ps, now, false);
         run.frame(now, vec![key(Key::Back, tick(now))]);
         assert!(run.open_sections().is_empty(), "BACK closed it");
         assert_eq!((run.appear(Section::Info), limit(&mut run)), (1.0, 656.0), "the dismissal frame moves nothing");
@@ -2868,8 +2853,6 @@ mod sections {
             assert_eq!(run.appear(section), 1.0);
             let now = run.now + 16;
             run.now = now;
-            let ps = plx_media::route::idle_session_for_test();
-            run.screen().hud.note_fresh_press(ps, now, false);
             run.frame(now, vec![key(Key::Back, tick(now))]);
             assert!(run.open_sections().is_empty(), "{section:?}: BACK closed it");
             assert_eq!(run.appear(section), 1.0, "{section:?}: the frame BACK landed on draws it whole");

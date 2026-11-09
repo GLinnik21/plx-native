@@ -3,7 +3,7 @@ name = "plx_net"
 version = "0.0.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
-description = "PlxNative net layer: the two transports, libcurl HTTPS (bound at run time, nothing linked) and the plaintext socket stream."
+description = "PlxNative net layer: the two transports, libcurl HTTPS (bound at run time, nothing linked) and the plaintext socket stream, and the RFC 6455 WebSocket codec."
 repository = "https://github.com/GLinnik21/plx-native"
 publish = false
 

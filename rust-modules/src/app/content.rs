@@ -498,9 +498,10 @@ pub(crate) fn content_requests(app: &mut App, fr: &mut Frame) {
         matches!(app.rec, super::recorder::Recplay::Replaying(_)), app.bridge.is_controlled_replay()) {
         app.rec.refuse("replay cannot authorize sandbox repair");
     }
-    let mut slot_refresh = false;
-    if !player_reqs.is_empty() {
-        slot_refresh = super::playback::player_requests(&mut app.player,
+    let player_outcome = if player_reqs.is_empty() {
+        super::playback::PlayerRequestOutcome::default()
+    } else {
+        super::playback::player_requests(&mut app.player,
             &mut app.adapters.player,
             &mut app.repause_at,
             player_reqs,
@@ -510,8 +511,8 @@ pub(crate) fn content_requests(app: &mut App, fr: &mut Frame) {
             &mut app.bridge,
             &mut app.ok_armed,
             &mut app.input.press,
-        );
-    }
+        )
+    };
     // …and the item context menu's committed row, for the same reason and at the same moment: it
     // is a surface on the shared stack, so what it decides reaches the loop as a request. The
     // dispatch asks the container for a navigation and takes the playback session's `&mut`,
@@ -654,7 +655,16 @@ pub(crate) fn content_requests(app: &mut App, fr: &mut Frame) {
             }
         }
     }
-    if slot_refresh {
+    // A later input in the same batch may have opened the gate or exited.
+    if player_outcome.back_cursor.is_some() || app.ptr.back_cursor_active() {
+        let cursor_target = if player_outcome.exiting {
+            None
+        } else {
+            super::playback::back_cursor_target(&app.pages)
+        };
+        app.ptr.sync_back_cursor(cursor_target, player_outcome.back_cursor);
+    }
+    if player_outcome.slot_refresh {
         if let Some(player) = super::bridge::player_mut(&mut app.pages) {
             fr.ctrl = plx_appkit::player_hud::slot_with_preferences(&app.player.session, app.bridge.metadata_view(), app.bridge.marker_preferences());
             // Hand the page the row it will draw and park the ring on THAT row's primary; the

@@ -1,7 +1,8 @@
 name: Fuzz the HUD parsers
 
 # The `cargo fuzz` package in `fuzz/` (docs/hud-plugins.md, "Fuzzing"): one libFuzzer target over each parser
-# a HUD package or the registry reaches. It is not part of the rust-modules workspace, so nothing in `ci.yml`
+# a HUD package or the registry reaches, and one over the WebSocket codec (`plx_net::ws`). It is not part of
+# the rust-modules workspace, so nothing in `ci.yml`
 # compiles it; this workflow is what keeps it from rotting, and the only place it is fuzzed for longer than
 # a smoke test.
 #
@@ -17,7 +18,7 @@ name: Fuzz the HUD parsers
 #   workflow_dispatch   the same, with the time per target and an optional target chosen by hand.
 #
 # WHY NOT ON EVERY PR. A cold build of the instrumented binaries takes minutes on a hosted runner and the long
-# run takes ~45; neither belongs behind a documentation edit. The path filter below is the list of files whose
+# run takes ~50; neither belongs behind a documentation edit. The path filter below is the list of files whose
 # change can alter what a target sees or whether the package compiles.
 #
 # WHY A DATED NIGHTLY. `cargo fuzz` needs the sanitizer and coverage flags only a nightly accepts. `nightly`
@@ -45,6 +46,10 @@ on:
       - 'rust-modules/data/src/hudpacks.rs'
       - 'rust-modules/data/src/hudpacks/**'
       - 'rust-modules/ui/src/rec/strict_json.rs'
+      - 'rust-modules/net/src/ws.rs'
+      - 'rust-modules/net/src/ws/**'
+      - 'rust-modules/base/src/sha1.rs'
+      - 'rust-modules/base/src/b64.rs'
       - 'rust-modules/build_support/host_link.rs'
       - 'rust-modules/Cargo.lock'
       - 'site/hud/schema/**'
@@ -54,11 +59,11 @@ on:
   workflow_dispatch:
     inputs:
       secs:
-        description: 'Seconds per target (8 targets run one after another; the step stops at 100 minutes)'
+        description: 'Seconds per target (9 targets run one after another; the step stops at 100 minutes)'
         type: string
         default: '300'
       target:
-        description: 'One target (admit, bundle_read, archive_read, svg_check, address_parse, catalog_parse, catalog_verify, catalog_cache); empty runs all'
+        description: 'One target (admit, bundle_read, archive_read, svg_check, address_parse, catalog_parse, catalog_verify, catalog_cache, ws_frame); empty runs all'
         type: string
         default: ''
 
