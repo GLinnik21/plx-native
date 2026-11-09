@@ -645,3 +645,18 @@ anchor was recorded afresh (`tests/focusfp.sh --rec --only 6`, old fixture remov
 import`, `anchor: true` restored, manifest byte-identical) and replayed SAME in Targets and Resolve
 on three consecutive runs. The closed alphabet adds `Legal`, `Privacy` and `Privacy &` (the page
 titles, measured word by word; `_sources.settings_v2`).
+
+The Continue Watching redesign (the stills row, the page that stays on the hero while a Continue Watching
+tile holds focus, the one-line still footer with the episode tag) changed recorded behaviour without moving the shape
+(`state_fp` 5612583773909772043): all three committed anchors were observed diverging on frame 3, where the
+hubs land (`replay: diverge f=3 ...`), then refusing (`replay: REFUSED — replay measurement table miss`), in both
+modes, on CI's macOS simulator job and locally (`make check-replay`, six failures). The `hero_auto` gate was ruled
+out by replaying against a build with it disabled (the same `got` hash on all three); the measurement delta
+is exactly ten new Width keys, the footer's started lines (`32m left`, `S2 E2 · 32m left` and four more pairs; the old
+`S2 · E2 · 32m left` is gone), and the row's geometry is hashed shelf state. The recordings' input key
+sequences are unchanged. The anchors were recorded afresh on the unchanged shape (`tests/focusfp.sh --rec --only 1,6,12`, 350 ms
+keys, 1 s boot settle, 1.5 s final settle), checked, and only each recording segment replaced (the manifests are
+byte-identical, `anchor: true` kept), then replayed SAME in Targets and Resolve on three consecutive runs and at the
+CI window (960x540). `focusfp_check.py` flow 1 now expects the first shelf, Continue Watching, to hold the page
+(`snapt=0 row=0`) and the second shelf to dive (`snapt=1 row=1`). The closed alphabet gains `[0-9]+m left` and
+`S[0-9]+ E[0-9]+ · [0-9]+m left` (`_sources.cw_stills_footer`).

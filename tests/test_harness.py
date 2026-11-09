@@ -110,12 +110,17 @@ class ContentFocusFlows(unittest.TestCase):
     def test_home_down_must_reach_the_second_shelf_not_bounce_to_the_hero(self):
         log = ["focus route=home snapt=0 hf=-1 row=-1 col=-1",
                "focus route=home snapt=0 hf=0 row=-1 col=-1",
-               "focus route=home snapt=1 hf=-1 row=0 col=0",
+               "focus route=home snapt=0 hf=-1 row=0 col=0",
                "focus route=home snapt=0 hf=0 row=-1 col=-1"]
         self.assertIsNotNone(focusfp_check.check(1, log))
         log[-1] = "focus route=home snapt=1 hf=-1 row=1 col=0"
         self.assertIsNone(focusfp_check.check(1, log))
         self.assertIsNotNone(focusfp_check.check(1, log[1:]))
+        # The first shelf is Continue Watching, which HOLDS the page (`HomeScreen::holds_page`): focus
+        # onto it never scrolls (snapt stays 0); only the second shelf dives to the grid page. A
+        # first shelf that scrolls the page is the old walk, and is refused.
+        scrolled = [line.replace("snapt=0 hf=-1 row=0", "snapt=1 hf=-1 row=0") for line in log]
+        self.assertIsNotNone(focusfp_check.check(1, scrolled))
 
     def test_settings_family_must_visit_privacy_as_well_as_legal(self):
         log = ["hb route=home overlay=settings", "hb route=home overlay=legal",

@@ -16,7 +16,9 @@ def check(flow, lines):
         home = [r for r in records if r.get("route") == "home"]
         wanted = [lambda r: r.get("snapt") == "0" and r.get("hf") == "-1",
                   lambda r: r.get("snapt") == "0" and r.get("hf") == "0",
-                  lambda r: r.get("snapt") == "1" and r.get("row") == "0",
+                  # the first shelf is Continue Watching, which holds the page: focus onto it never
+                  # scrolls (`HomeScreen::holds_page`); the second shelf is the one that dives
+                  lambda r: r.get("snapt") == "0" and r.get("row") == "0",
                   lambda r: r.get("snapt") == "1" and r.get("row") == "1"]
         stage = 0
         for record in home:
