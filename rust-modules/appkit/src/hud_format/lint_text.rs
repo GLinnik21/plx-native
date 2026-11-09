@@ -771,7 +771,11 @@ impl Scan<'_, '_> {
             if !ends && !is_remaining {
                 continue;
             }
-            let string = clocks::widest_clock(self.cx.measure, size, bold, is_remaining);
+            let string = if is_remaining {
+                clocks::widest_remaining_label(self.cx.measure, size, bold)
+            } else {
+                clocks::widest_clock(self.cx.measure, size, bold, is_remaining)
+            };
             let measured = self.cx.measure.width_str(&string, size, bold);
             let limits = clock_limits(rect, grows, obstacles, ends.then_some(other));
             let op = TextOp {
