@@ -85,7 +85,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-09T16:16:01Z",
+ "generated": "2026-11-09T16:27:14Z",
  "metrics": [
   {
    "change30_pct": 101.2,
@@ -130,18 +130,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 41.0,
-   "change7_pct": 15.1,
+   "change30_pct": 40.9,
+   "change7_pct": 15.0,
    "d30": 329,
-   "delta30": 135,
-   "delta7": 61,
+   "delta30": 134.5,
+   "delta7": 60.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 51,
+   "n_now": 52,
    "n_prev": 83,
-   "now": 464,
+   "now": 463.5,
    "prev7": 403,
    "shown": true,
    "state": "worse",
@@ -152,18 +152,18 @@
   },
   {
    "change30_pct": 37.6,
-   "change7_pct": 19.3,
+   "change7_pct": 19.0,
    "d30": 351.0,
    "delta30": 132.0,
-   "delta7": 78,
+   "delta7": 77.0,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 155,
-   "n_prev": 211,
+   "n_now": 153,
+   "n_prev": 212,
    "now": 483,
-   "prev7": 405,
+   "prev7": 406.0,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -361,18 +361,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 39.2,
-   "change7_pct": 13.2,
+   "change30_pct": 39.6,
+   "change7_pct": 13.5,
    "d30": 228.5,
-   "delta30": 89.5,
-   "delta7": 37.0,
+   "delta30": 90.5,
+   "delta7": 38.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 49,
+   "n_now": 50,
    "n_prev": 76,
-   "now": 318,
+   "now": 319.0,
    "prev7": 281.0,
    "shown": true,
    "state": "flat",
@@ -403,18 +403,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 46.3,
-   "change7_pct": 6.4,
+   "change30_pct": 46.9,
+   "change7_pct": 6.9,
    "d30": 147,
-   "delta30": 68,
-   "delta7": 13.0,
+   "delta30": 69.0,
+   "delta7": 14.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 49,
+   "n_now": 50,
    "n_prev": 76,
-   "now": 215,
+   "now": 216.0,
    "prev7": 202.0,
    "shown": true,
    "state": "flat",
@@ -424,18 +424,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -39.2,
-   "change7_pct": -2.3,
+   "change30_pct": -38.6,
+   "change7_pct": -1.4,
    "d30": 348.5,
-   "delta30": -136.5,
-   "delta7": -5.0,
+   "delta30": -134.5,
+   "delta7": -3.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 49,
+   "n_now": 50,
    "n_prev": 76,
-   "now": 212,
+   "now": 214.0,
    "prev7": 217.0,
    "shown": true,
    "state": "flat",
@@ -517,9 +517,9 @@
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 49,
+   "n_now": 50,
    "n_prev": 76,
-   "now": 20,
+   "now": 20.0,
    "prev7": 18.0,
    "shown": false,
    "state": "flat",
@@ -618,11 +618,6 @@
    "change_pct": 26.9,
    "commits": [
     {
-     "pr": 1281,
-     "sha": "11d4ef04d",
-     "title": "ACB: a second boot handle (player type 0) for the URI engine"
-    },
-    {
      "pr": 1273,
      "sha": "630f8c230",
      "title": "Net: add the WebSocket codec for Open Watch Party"
@@ -666,6 +661,11 @@
      "pr": 1291,
      "sha": "d542c2ef5",
      "title": "Catalan review: more natural expressions and consistent informal address"
+    },
+    {
+     "pr": 1304,
+     "sha": "c7c15f45f",
+     "title": "URI probe: the summary answers the drive gate, and a webOS 5+ tester protocol"
     }
    ],
    "from": 334.5,
@@ -679,11 +679,6 @@
    "change_pct": 25.8,
    "commits": [
     {
-     "pr": 1281,
-     "sha": "11d4ef04d",
-     "title": "ACB: a second boot handle (player type 0) for the URI engine"
-    },
-    {
      "pr": 1273,
      "sha": "630f8c230",
      "title": "Net: add the WebSocket codec for Open Watch Party"
@@ -727,6 +722,11 @@
      "pr": 1291,
      "sha": "d542c2ef5",
      "title": "Catalan review: more natural expressions and consistent informal address"
+    },
+    {
+     "pr": 1304,
+     "sha": "c7c15f45f",
+     "title": "URI probe: the summary answers the drive gate, and a webOS 5+ tester protocol"
     }
    ],
    "from": 74.8,
@@ -737,13 +737,8 @@
    "to": 94.1
   },
   {
-   "change_pct": 15.1,
+   "change_pct": 15.0,
    "commits": [
-    {
-     "pr": 1281,
-     "sha": "11d4ef04d",
-     "title": "ACB: a second boot handle (player type 0) for the URI engine"
-    },
     {
      "pr": 1273,
      "sha": "630f8c230",
@@ -788,6 +783,11 @@
      "pr": 1291,
      "sha": "d542c2ef5",
      "title": "Catalan review: more natural expressions and consistent informal address"
+    },
+    {
+     "pr": 1304,
+     "sha": "c7c15f45f",
+     "title": "URI probe: the summary answers the drive gate, and a webOS 5+ tester protocol"
     }
    ],
    "from": 403,
@@ -795,7 +795,7 @@
    "label": "Wait after merge",
    "since": "2026-11-09",
    "threshold_pct": 15.0,
-   "to": 464
+   "to": 463.5
   }
  ],
  "schema": 2,
