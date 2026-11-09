@@ -741,7 +741,10 @@ pub enum StillFooter {
 /// silhouette than the artwork under it at 1.09.
 ///
 /// The label is the SHOW's name, falling back to the item's own title when the server sent none —
-/// see [`still_line`] for why a shelf surface names the show rather than the episode.
+/// see [`still_line`] for why a shelf surface names the show rather than the episode. **Except on a
+/// card that opted in to the deck's art walk** ([`TileFacts::deck`]): its title is in its art (the
+/// cover, the composite, or in type at the logo slot when neither exists: drawn here, once, by
+/// [`crate::hero_logo::draw_title`]) and both footers carry only the address, the status and the bar.
 pub fn still_overlay(
     p: Painter,
     m: &TileFacts<'_>,
