@@ -94,3 +94,46 @@ Verified: start.mkv bytes are `V_MPEG4/ISO/AVC`(H264) + `A_AC3` (6ch). The `Clie
 3. Section grid: `GET /library/sections/{id}/all?type=1&sort=titleSort:asc` (+ `/photo/:/transcode` posters).
 4. Detail: `GET /library/metadata/{rk}` (+ `/children` for shows).
 5. Play: decide direct-play vs `start.mkv` transcode from `Media[0]` codecs; on stop call transcode `stop` + `/:/timeline?state=stopped`.
+
+## plex.tv Discover item artwork (`Image[]`; measured 2026-11-09, read-only GETs, Guest profile)
+
+`GET https://discover.provider.plex.tv/library/metadata/<24 hex>` (the catalog read,
+`AccountClient::catalog_item`) answers `MediaContainer.Metadata[0]` for a catalog id (the last segment
+of a `plex://movie/<hex>` or `plex://show/<hex>` guid). Besides the flat `art`, `thumb` and `banner`
+fields it carries an `Image[]` of `{type, url, alt}`. **Every `url` here is ABSOLUTE**, unlike a PMS
+row's server-relative path, and its host varies per entry. Measured on four movies and one show:
+
+| `type` | url shape (ids and hashes elided) | note |
+|---|---|---|
+| `coverArt` | `https://metadata-static.plex.tv/a/plex/<uuid>.jpg` or `.../<n>/gracenote/<24 hex><8 hex>.jpg`; 79 to 80 chars | 16:9; the title is baked into the picture. 5 of 5 titles had one. Raw sources were 1920x1080 and 3840x2160 |
+| `coverPoster` | `metadata-static.plex.tv/.../gracenote/...jpg`, or `https://image.tmdb.org/t/p/original/<id>.jpg` (the show) | 2:3 poster |
+| `coverSquare` | `metadata-static.plex.tv/<n>/gracenote/...jpg` | square |
+| `background` | `metadata-static.plex.tv/.../gracenote/...jpg`, or `image.tmdb.org/t/p/original/...` (the show) | 16:9, no title |
+| `backgroundSquare` | `metadata-static.plex.tv/<n>/gracenote/...jpg` | |
+| `clearLogo`, `clearLogoWide` | `metadata-static.plex.tv/<n>/683a142553/<24 hex><8 hex>.png` | the SAME url for both |
+| `banner` | `https://assets.fanart.tv/fanart/<slug>-<id>.jpg`, or `https://artworks.thetvdb.com/banners/v4/series/<id>/banners/<id>.jpg` | absent on one of the five movies |
+| `snapshot` | `metadata-static.plex.tv/<n>/gracenote/...jpg` | absent on the show |
+
+An entry may be absent, so a reader treats "no `coverArt`" as "none", never as a failure. The
+flat `art`, `thumb` and `banner` fields restate some of these.
+
+- **PMS renders them.** The urlencoded absolute `coverArt` passed as `url=` to the local PMS's
+  `/photo/:/transcode` answered 200 at exactly the requested 420x236 (`docs/pms-api.md`, "An
+  absolute Discover image URL through the transcoder").
+- **Language.** `X-Plex-Language` localizes the item, `coverArt` included. For one movie, `en` gave
+  the English title and a `metadata-static.plex.tv` cover; `de` and `fr` gave the translated title,
+  summary and tagline and a DIFFERENT `coverArt`, on `https://image.tmdb.org/t/p/original/<id>.jpg`
+  (67 chars), and dropped `clearLogoWide`. So a cached cover is per language (`clearLogo` kept its
+  entry). Only `en`, `de` and `fr` were probed; whether a language with no localized artwork falls
+  back to the English cover was not.
+- **Auth.** The Discover metadata read answered **200 with the same body (14756 bytes) with the
+  Guest profile's plex.tv token, with NO token, and with a bogus token.** The app sends the active
+  profile's token anyway (`AccountClient::headers`); nothing here depends on it. This was probed on
+  one id with three headers, so whether a different title or a restricted profile's content ratings
+  change the answer was not determined. An unknown 24-hex id answers `404
+  {"Error":{"statusCode":404,...}}`, and a non-hex id answers 404 as well (`"Invalid value
+  provided for metadataId!"`), so a 404 is "no such catalog item".
+- **Restricted profile.** The Guest profile (a restricted Home user) was answered like any other;
+  how another restricted profile with a rating limit is answered was not probed.
+- **PMS hub rows** (`/hubs/continueWatching`, `/hubs/sections/{id}`) carry `Image[]` with a stamped
+  `clearLogo` and no `coverArt` (`docs/pms-api.md`, "Hub rows carry `Image[]`").
