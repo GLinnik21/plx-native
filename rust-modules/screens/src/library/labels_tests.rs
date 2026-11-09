@@ -1,6 +1,5 @@
 //! Meaningful legacy caption and landscape assertions, on the owned production helpers.
 use plx_data::pms::PmsMovie;
-use plx_media::route::DeckPress;
 use plx_ui::cards::{self as ui_cards, RowStyle};
 use plx_ui::consts::{self, CARD_H, CARD_W, MARGIN_X};
 use plx_ui::fixture::FixtureMeasure;
@@ -152,32 +151,6 @@ fn owned_library_overscan_probe_covers_every_legacy_edge() {
             rect.h,
         );
     }
-}
-
-/// The deck's focused title carries the amber ▶ only while OK on the deck plays.
-#[test]
-fn the_deck_title_carries_the_play_glyph_only_while_the_press_plays() {
-    let _guard = plx_base::testlock::serial();
-    let prior = plx_media::route::deck_press();
-    // The play mark leads the title line, so the Title switch is on for this test's thread.
-    crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.set(Some(
-        plx_plex::plex::session::UnderPosters { title: true, details: plx_plex::plex::session::UnderPostersLadder::YearLength.movie_parts(), show_details: plx_plex::plex::session::UnderPostersLadder::YearLength.show_parts(), sort_value: false })));
-    let glyph = |mode, is_continue| {
-        plx_media::route::restore_deck_press(mode);
-        let shelf = plx_data::browse::section_hubs::Shelf {
-            id: "x".into(), key: String::new(), link: None, total: 0, title: "On Deck".into(), is_continue,
-            landscape: false, items: vec![PmsMovie { kind: 0, title: "Stardust".into(), ..Default::default() }],
-            ..Default::default()
-        };
-        shelf_label(&shelf, 0).glyph
-    };
-    let seen = (
-        glyph(DeckPress::Play, true), glyph(DeckPress::Details, true),
-        glyph(DeckPress::Play, false), glyph(DeckPress::Details, false),
-    );
-    plx_media::route::restore_deck_press(prior);
-    crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.set(None));
-    assert_eq!(seen, (false, false, false, false), "no mode carries an amber play mark on a caption");
 }
 
 #[test]

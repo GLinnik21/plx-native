@@ -22,8 +22,7 @@
 //!   band the setting opens is never open over nothing. A tile that carries a STATE
 //!   keeps it (a filmography poster's character is one, as a Continue Watching tile's time left is): its `state` line REPLACES the details line whenever the setting shows one (a
 //!   Continue Watching tile's time left, a Watchlist title's release date or "Server offline"), and
-//!   no line carries a play mark (the amber triangle is gone from every surface; a still's focus cue is
-//!   `ui::still_footer`'s). With
+//!   no line carries a mark (a still's focus cue is `ui::still_footer`'s). With
 //!   Title Off and no detail part ticked for either kind no band is opened ([`plx_ui::caption_policy::band_h`]); with no part ticked the state line is dropped with the details line, so
 //!   only the title (if on) shows (a started movie's time left and a collection's size are the
 //!   details line's, as they always were), **except on the Continue Watching deck** (the owner's
@@ -139,9 +138,8 @@ pub fn status_policy(policy: &CaptionPolicy) -> CaptionPolicy {
 fn build(policy: &CaptionPolicy, facts: &CaptionFacts, state: Option<String>, states_survive: bool) -> TileLabel {
     let [title, details] = caption_lines(policy, facts, plx_platform::i18n::current());
     let details = if policy.details_for(facts.is_show).is_empty() { if states_survive { state } else { None } } else { state.or(details) };
-    // No line carries a mark: the amber play triangle that used to lead the first line while OK
-    // played the deck was never read as "playback starts" and is gone from every surface. What OK
-    // does is the focused still's footer cue (`ui::still_footer`), not a caption's.
+    // No line carries a mark: what OK does is the focused still's footer cue (`ui::still_footer`),
+    // not a caption's.
     let label = TileLabel::from_lines([title, details]);
     // A name the face cut rides the details line (`caption_lines`): it stays under its own tile
     // (never under the next column) and glides there when it is longer than the tile.
@@ -232,10 +230,9 @@ mod tests {
         assert!(extra.shadowed && still_label(&ep, false, "").shadowed, "one look for every landscape block");
     }
 
-    /// A tile's state is its details line under every kind but Nothing, no line carries a play mark,
-    /// and an episode's default details line is its address.
+    /// A tile's state is its details line under every kind but Nothing, and an episode's default details line is its address.
     #[test]
-    fn a_state_line_replaces_the_details_line_and_no_line_carries_a_play_mark() {
+    fn a_state_line_replaces_the_details_line() {
         let facts = CaptionFacts { title: Some("Heat".into()), year: Some(1995), genre: Some("Crime".into()), ..Default::default() };
         let state = || Some("8m left".to_owned());
         let with = |title, details| label(&CaptionPolicy::same(title, details), &facts, state());
@@ -243,9 +240,6 @@ mod tests {
             assert_eq!(lines(&with(true, details)), [Some("Heat".into()), Some("8m left".into())], "{details:?}");
         }
         assert_eq!(lines(&with(true, DetailParts::NONE)), [Some("Heat".into()), None], "Nothing shows no state either");
-        for (title, details) in [(true, DetailParts::of(&[DetailPart::Genre])), (false, DetailParts::of(&[DetailPart::Genre])), (true, DetailParts::NONE), (false, DetailParts::NONE)] {
-            assert!(!with(title, details).glyph, "no line leads with a play mark: title {title}, {details:?}");
-        }
         let episode = CaptionFacts { title: Some("Pilot".into()), episode: Some((1, 8)), ..Default::default() };
         let p = CaptionPolicy::same(false, DetailParts::MOVIE_DEFAULT);
         assert_eq!(lines(&label(&p, &episode, None)), [None, Some("S1 \u{b7} E8".into())]);

@@ -417,26 +417,6 @@ pub mod draw_census {
     }
 
     thread_local! {
-        static MARKS: RefCell<Option<Vec<Rect>>> = const { RefCell::new(None) };
-    }
-    /// A recording painter was asked for the amber play mark that leads a caption line
-    /// (`card_row::draw_play_mark`): it paints no pixel, so this is how a test reads WHETHER the
-    /// mark was drawn and where.
-    pub fn note_play_mark(r: Rect) {
-        MARKS.with(|l| {
-            if let Some(v) = l.borrow_mut().as_mut() {
-                v.push(r);
-            }
-        });
-    }
-    /// Every play mark a recording painter is handed while `f` runs, as screen rects.
-    pub fn capture_play_marks(f: impl FnOnce()) -> Vec<Rect> {
-        MARKS.with(|l| *l.borrow_mut() = Some(Vec::new()));
-        f();
-        MARKS.with(|l| l.borrow_mut().take()).unwrap_or_default()
-    }
-
-    thread_local! {
         static ICONS: RefCell<Option<Vec<(crate::icons::Icon, Rect)>>> = const { RefCell::new(None) };
     }
     /// A recording painter was asked for glyph `id` in `r` (`icons::draw_raster`): it paints no

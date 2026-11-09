@@ -1097,8 +1097,8 @@ pub struct LabelFace {
 }
 
 /// The metadata block under a FOCUSED tile: a centred title, optionally a second caption line
-/// ("S1 · E8", a year, a character name), (the lead glyph is dead: no caption sets it). Only
-/// the focused tile carries it, so a row builds exactly one of these per frame.
+/// ("S1 · E8", a year, a character name). Only the focused tile carries it, so a row builds exactly
+/// one of these per frame.
 ///
 /// It is a type rather than three parameters because the block's height is a fact the SCREEN needs:
 /// every shelf must reserve room for it in its own flow, and `reveal`/`scroll_into_view` only keep
@@ -1113,13 +1113,6 @@ pub struct TileLabel {
     /// ONE line such a grid draws under every poster, in place of the title and details block
     /// ([`draw_sort_value`]). `None` for every other label.
     pub value: Option<SortValue>,
-    /// lead the FIRST line drawn with the amber play triangle: the title when the block has one, else
-    /// the details line. The mark hangs to the left of the line, which is centred as if it were not
-    /// there. **No caption sets it any more** (`registry::captions` stopped: the triangle was never read
-    /// as "playback starts", and what OK does is a focused still's footer cue, `ui::still_footer`); the
-    /// draw path stays until a follow-up removes the field, `glyph_lead`, `play_icon_size`,
-    /// `draw_play_mark` and their tests together.
-    pub glyph: bool,
     /// **How far the band this block hangs in has opened**, the band's height, its expansion and
     /// the rise of what stands below it ([`TileLabel::revealed`]); each LINE of the block is on
     /// screen only once the room under the card holds its box ([`line_reveal_for`]). `None` for every caller whose band does not
@@ -1730,46 +1723,6 @@ thread_local! {
 /// instead of being sliced by it.
 const MARQUEE_AIR: f32 = 6.0;
 
-
-/// Air between Continue-Watching's play glyph and the name that follows it.
-const PLAY_ICON_GAP: f32 = 10.0;
-
-/// The Continue-Watching glyph's pixel size at `sz` — 72% of the title's own size, rounded (Home
-/// Screen.dc's play-triangle proportion). Pure so both branches of [`title_marquee`] read the
-/// same number rather than each rounding it themselves.
-#[inline]
-fn play_icon_size(sz: std::os::raw::c_int) -> f32 {
-    (sz as f32 * 0.72).round()
-}
-
-/// How much of the marquee's window a glyph-led title gives up to the icon + its gap — `0.0` for a
-/// plain title. Pulled out to its own pure function so a host test can pin the arithmetic
-/// [`title_marquee`]'s overflow and fitting branches both depend on,
-/// without a `Painter` to draw through.
-#[inline]
-fn glyph_lead(sz: std::os::raw::c_int, glyph: bool) -> f32 {
-    if glyph {
-        play_icon_size(sz) + PLAY_ICON_GAP
-    } else {
-        0.0
-    }
-}
-
-/// **The amber play mark that leads a label line**, `isz` ([`play_icon_size`]) square at `x`, centred
-/// on the cap band of the line of size `sz` / weight `bold` whose cap top is `y`. The one drawing of
-/// it, whichever line (title or details) the block leads with.
-fn draw_play_mark(p: Painter, x: f32, y: f32, sz: std::os::raw::c_int, bold: std::os::raw::c_int) {
-    let isz = play_icon_size(sz);
-    let (ct, cb) = plx_gfx::text::text_cap_band(sz, bold);
-    let icy = y + (ct + cb) * 0.5;
-    let mark = Rect::new(x, icy - isz * 0.5, isz, isz);
-    #[cfg(any(test, feature = "test-support"))]
-    if p.is_recording() || crate::frame::backdrop::discovering() {
-        crate::draw_census::note_play_mark(p.place(mark));
-    }
-    crate::icons::draw(p, crate::icons::Icon::Play, mark, theme::RESUME_FILL);
-}
-
 /// How the lines of a label block sit in its window — the one alignment every line shares.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LabelAlign {
@@ -1783,7 +1736,7 @@ pub enum LabelAlign {
 }
 
 /// Where a focused tile's label block lands and how it aligns — the ONE placement every line
-/// under the tile (title, Continue-Watching glyph + name, caption) is drawn through, so the lines
+/// under the tile (title, caption) is drawn through, so the lines
 /// always read as one unit: all centred on the card, all sharing its leading edge, or all sharing
 /// its trailing edge.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -2008,14 +1961,6 @@ pub fn place_label_wide(p: Painter, rect: Rect, sty: &RowStyle, w: f32, want: f3
 /// [`plx_machine::idle`] only on a frame the marquee is actually gliding, so a screen full of short
 /// (or resting) titles costs the present gate nothing.
 ///
-/// `glyph` leads the line with Continue-Watching's amber play triangle — the SAME clock and the
-/// SAME budget arithmetic as the plain title, just with the icon's width plus its gap subtracted
-/// from the window before anything is measured against it, so a played title that overflows
-/// marquees exactly like any other. This is ONE implementation with a glyph parameter rather than a
-/// fourth title path: before it, the glyph line was a dead end that never fell through to a
-/// marquee at all, so a long Continue-Watching title elided instead of animating like every other
-/// shelf's focused label.
-///
 /// `fade` (a block held to its tile, [`TileLabel::within_tile`]) dissolves the gliding run at both
 /// edges of its window instead of cutting it there ([`block_text`]).
 fn title_marquee(
@@ -2023,7 +1968,6 @@ fn title_marquee(
     at: LabelPlace,
     text: *const c_char,
     y: f32,
-    glyph: bool,
     w: f32,
     block: Option<&marquee::Block>,
     shadowed: bool,
@@ -2032,15 +1976,9 @@ fn title_marquee(
     height: f32,
 ) {
     let (sz, bold, ink) = face.map_or((theme::size::LABEL, 1, theme::TEXT_PRIMARY), |f| (f.size, i32::from(f.bold), f.ink));
-    let lead = glyph_lead(sz, glyph);
-    let budget = (at.w - lead).max(0.0);
+    let budget = at.w.max(0.0);
     if w <= budget {
-        // The text is placed as if the mark were not there (centred under the card, like the line
-        // below it); the mark hangs to its left, kept inside the block's window.
-        let tx = at.run_x(w).max(at.x + lead);
-        if glyph {
-            draw_play_mark(p, tx - lead, y, sz, bold);
-        }
+        let tx = at.run_x(w).max(at.x);
         if shadowed {
             p.text(text, tx, y + crate::caption_policy::CAPTION_SHADOW_DY, sz, crate::caption_policy::CAPTION_SHADOW, 0, bold);
         }
@@ -2048,14 +1986,10 @@ fn title_marquee(
         return;
     }
     let Some(block) = block else { return };
-    // An overflowing run fills the whole block, so the window IS the block; the glyph, when
-    // present, sits fixed at its left edge and only the text window after it scrolls. An
-    // overflowing focused title never lets the screen rest (`Marquee::report`) — which is what
-    // "marquee while focused" means, and why a fitting title must never reach this branch.
-    if glyph {
-        draw_play_mark(p, at.x, y, sz, bold);
-    }
-    let text_x0 = at.x + lead;
+    // An overflowing run fills the whole block, so the window IS the block. An overflowing focused
+    // title never lets the screen rest (`Marquee::report`) — which is what "marquee while focused"
+    // means, and why a fitting title must never reach this branch.
+    let text_x0 = at.x;
     // an Arabic or Hebrew title glides mirrored, from its first words at the window's right edge
     let rtl = !text.is_null() && plx_gfx::text::is_rtl_paragraph(&unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy());
     TITLE_CLOCK.with(|clock| {
@@ -2116,7 +2050,7 @@ pub fn label_band(p: Painter, rect: Rect, sty: &RowStyle) -> (f32, f32) {
     (at.x, at.w)
 }
 
-/// The focused tile's whole label block — title (with its optional Continue-Watching glyph) and
+/// The focused tile's whole label block — title and
 /// caption — placed ONCE by [`place_label_wide`] from the wider of its two runs (plus the uncapped
 /// `want`), so both lines share one alignment: centred together, starting together at the card's
 /// leading edge, or ending together at its trailing edge when the room to the right is too small.
@@ -2140,20 +2074,13 @@ fn draw_label_block(
     // is asked to be and (unchanged) how title_marquee decides plain vs. looping.
     let title_w_val = label.title.as_ref().map(|t| measure.fit_line_measured(
         &t.to_string_lossy(), f32::INFINITY, title_size, title_bold).1);
-    // The play mark leads the FIRST line drawn: the title, or the details line of a block with none.
-    let title_mark = label.glyph && label.title.is_some();
-    let caption_mark = label.glyph && label.title.is_none() && label.caption.is_some();
-    let lead = glyph_lead(title_size, title_mark);
-    let caption_lead = glyph_lead(csz, caption_mark);
-    // The mark HANGS left of a line that is centred as if it were not there, so the window keeps its
-    // room on both sides of the text (`2 * lead`): the line stays on the block's centre.
-    let title_run = title_w_val.map_or(0.0, |w| (w + 2.0 * lead).min(full));
+    let title_run = title_w_val.map_or(0.0, |w| w.min(full));
     let caption_str = label.caption.as_ref().map(|c| c.to_string_lossy());
     let caption_w = caption_str.as_ref().map_or(0.0, |s| measure.fit_line_measured(s, f32::INFINITY, csz, false).1);
-    let caption_run = caption_w + 2.0 * caption_lead;
+    let caption_run = caption_w;
     // …and the UNCAPPED widest run, which only a block that reaches left of its card may use
     // ([`anchor_label`]).
-    let want = title_w_val.map_or(0.0, |w| w + 2.0 * lead).max(caption_run);
+    let want = title_w_val.unwrap_or(0.0).max(caption_run);
     let at = if within_tile {
         tile_window_from(sty.label_start, rect.cx() - sty.w * 0.5 + label.title_face.map_or(0.0, |f| f.offset_x), label.title_face.map_or(sty.w, |f| f.width), want)
     } else {
@@ -2168,8 +2095,8 @@ fn draw_label_block(
     // Which lines of the block do not fit it? They glide together on ONE clock and ONE cycle (the
     // longest's); when none does, the clock is released so an overflowing block focused again
     // later starts from its rest beat rather than resuming mid-glide.
-    let title_over = title_w_val.is_some_and(|w| w > (at.w - lead).max(0.0));
-    let caption_over = caption_w > (at.w - caption_lead).max(0.0);
+    let title_over = title_w_val.is_some_and(|w| w > at.w.max(0.0));
+    let caption_over = caption_w > at.w.max(0.0);
     let title_text = label.title.as_ref().map_or(std::borrow::Cow::Borrowed(""), |t| t.to_string_lossy());
     let block = marquee::Block::of(
         (&title_text, title_over.then_some(title_w_val.unwrap_or(0.0))),
@@ -2183,19 +2110,14 @@ fn draw_label_block(
     // not made room for yet is not drawn at all.
     let [title_line, caption_line] = lines.map(|line| line.filter(|l| l.alpha > 0.0));
     if let (Some(t), Some(line)) = (&label.title, title_line) {
-        title_marquee(p.alpha(line.alpha), at, t.as_ptr(), bottom + line.top + label.title_face.map_or(0.0, |f| f.offset_y), title_mark, title_w_val.unwrap_or(0.0),
+        title_marquee(p.alpha(line.alpha), at, t.as_ptr(), bottom + line.top + label.title_face.map_or(0.0, |f| f.offset_y), title_w_val.unwrap_or(0.0),
             block.as_ref(), label.shadowed, within_tile, label.title_face,
             label.title_face.filter(|f| f.size != theme::size::LABEL).map_or(UNDER_LINE_H, |f| measure.line_h(f.size)));
     }
     if let (Some(tc), Some(line)) = (&label.caption, caption_line) {
         let (p, y) = (p.alpha(line.alpha), bottom + line.top);
-        // The mark hangs left of the text; a gliding line keeps it fixed at the window's left edge
-        // and glides inside the window after it (the title's rule, `title_marquee`).
         if let Some(block) = block.as_ref().filter(|_| caption_over) {
-            if caption_mark {
-                draw_play_mark(p, at.x, y, csz, 0);
-            }
-            let x0 = at.x + caption_lead;
+            let x0 = at.x;
             let caption_rtl = plx_gfx::text::is_rtl_paragraph(&tc.to_string_lossy());
             TITLE_CLOCK.with(|clock| {
                 MARQUEE.glide_in(
@@ -2204,7 +2126,7 @@ fn draw_label_block(
                     &block.key,
                     caption_w,
                     block.cycle_w,
-                    Rect::new(x0, y - MARQUEE_AIR, (at.w - caption_lead).max(0.0), UNDER_CAPTION_H + 2.0 * MARQUEE_AIR),
+                    Rect::new(x0, y - MARQUEE_AIR, at.w.max(0.0), UNDER_CAPTION_H + 2.0 * MARQUEE_AIR),
                     caption_rtl,
                     |dx| {
                         let window = within_tile.then_some((x0, at.x + at.w));
@@ -2218,10 +2140,7 @@ fn draw_label_block(
                 )
             });
         } else {
-            let tx = at.run_x(caption_w).max(at.x + caption_lead);
-            if caption_mark {
-                draw_play_mark(p, tx - caption_lead, y, csz, 0);
-            }
+            let tx = at.run_x(caption_w).max(at.x);
             if label.shadowed {
                 p.text(tc.as_ptr(), tx, y + crate::caption_policy::CAPTION_SHADOW_DY, csz,
                     crate::caption_policy::CAPTION_SHADOW, 0, 0);
@@ -3257,48 +3176,6 @@ mod tests {
         );
     }
 
-    // ---- the glyph variant shares the marquee's clock and budget arithmetic -----------------
-
-    /// A plain title gives up nothing to a glyph it does not have.
-    #[test]
-    fn a_plain_title_has_no_glyph_lead() {
-        assert_eq!(glyph_lead(theme::size::LABEL, false), 0.0);
-    }
-
-    /// A glyph-led title's window is narrower by exactly the icon's size plus its gap — the same
-    /// number [`title_marquee`]'s fitting and overflow branches both
-    /// read, pinned once here instead of through a draw.
-    #[test]
-    fn a_glyph_led_title_gives_up_the_icon_plus_its_gap() {
-        let sz = theme::size::LABEL;
-        let lead = glyph_lead(sz, true);
-        assert!(lead > 0.0, "a glyph must cost the window something");
-        assert_eq!(lead, play_icon_size(sz) + PLAY_ICON_GAP);
-    }
-
-    /// The whole point of item 10 §b: a title that fits the PLAIN budget can still overflow the
-    /// GLYPH-reduced one, so a Continue-Watching name that is merely long enough to have needed
-    /// eliding before now marquees instead — the defect the owner reported ("the text does not
-    /// animate" on a long Continue Watching title).
-    #[test]
-    fn a_title_that_fits_the_plain_budget_can_overflow_the_glyph_budget() {
-        let sz = theme::size::LABEL;
-        let lead = glyph_lead(sz, true);
-        let full_budget = 300.0;
-        let glyph_budget = full_budget - lead;
-        let w = full_budget - lead * 0.5; // fits the plain window, not the glyph-reduced one
-        assert!(w <= full_budget, "sanity: fits the plain budget");
-        assert!(
-            w > glyph_budget,
-            "sanity: must overflow the glyph-reduced budget for this test to mean anything"
-        );
-        assert!(!MARQUEE.moving(0.0, w, full_budget), "plain: still resting, not overflowing");
-        assert!(
-            MARQUEE.moving(MARQUEE.hold_ms + 1.0, w, glyph_budget),
-            "glyph: the same run overflows the narrower window and must glide"
-        );
-    }
-
     // ---- word-wrap is gone: the focused title is always exactly one line ---------------------
 
     /// [`TileLabel::height`] no longer varies with the row style at all — a shelf of long titles
@@ -3506,25 +3383,6 @@ mod tests {
         xs.iter().copied().fold(f32::MAX, f32::min)
     }
 
-    /// One focused tile's block as drawn: the text runs and the amber play marks, top to bottom.
-    fn block_of(label: &TileLabel) -> (Vec<crate::draw_census::Run>, Vec<Rect>) {
-        let sty = RowStyle::HOME;
-        let rect = Rect::new(700.0, 300.0, sty.w, sty.h);
-        let mut runs = Vec::new();
-        let marks = crate::draw_census::capture_play_marks(|| {
-            runs = crate::draw_census::capture_runs(|| {
-                draw_focused(Painter::recording(), Art::Poster(None), rect, 1.0, &sty, None, label,
-                    &crate::fixture::FixtureMeasure);
-            });
-        });
-        runs.retain(|run| run.at.y >= rect.y + rect.h);
-        runs.sort_by(|a, b| a.at.y.total_cmp(&b.at.y));
-        (runs, marks)
-    }
-
-    /// **The amber mark leads the FIRST line drawn and hangs left of it**: with a title it leads the
-    /// title, and the title is centred as if the mark were not there, on the same centre as the line
-    /// below it (a group centred WITH the mark sat half a mark off the line below it).
     /// **The census reads a focused block's lines whatever their ink**: a shadowed Under posters
     /// block, a stray UNSHADOWED legacy block (it would hide from a style whitelist), a line that
     /// reads like its neighbour (two lines, not one) and a gliding line (its follower is the same
@@ -3548,59 +3406,6 @@ mod tests {
         let gliding = TileLabel::from_lines([None, Some("A details line far too long for the card it sits under to hold in one go".into())]).within_tile();
         assert_eq!(lines_of(&gliding).len(), 1, "a gliding line and its follower are one line");
         assert!(lines_of(&TileLabel::default()).is_empty(), "no block, no line");
-    }
-
-    #[test]
-    fn the_play_mark_hangs_left_of_a_title_centred_with_the_line_below() {
-        let _serial = plx_base::testlock::serial();
-        TITLE_CLOCK.with(|c| c.release());
-        let label = TileLabel { glyph: true, ..TileLabel::titled("Sintel", "8m left") };
-        let (runs, marks) = block_of(&label);
-        assert_eq!(marks.len(), 1, "one mark: {marks:?}");
-        let (title, caption) = (&runs[0], &runs[1]);
-        assert_eq!((title.text.as_str(), caption.text.as_str()), ("Sintel", "8m left"));
-        let centre = |run: &crate::draw_census::Run| run.at.x + run.at.w * 0.5;
-        assert!((centre(title) - centre(caption)).abs() < 0.5,
-            "the title is centred like the line below it: {} vs {}", centre(title), centre(caption));
-        let mark = marks[0];
-        assert!((mark.x + mark.w + PLAY_ICON_GAP - title.at.x).abs() < 0.5, "the mark hangs left of the title: {mark:?} {:?}", title.at);
-        assert!(mark.y < title.at.y + UNDER_LINE_H && mark.y + mark.h > title.at.y, "on the title's line: {mark:?} {:?}", title.at);
-    }
-
-    /// With no title the mark leads the details line, centred the same way; with no line at all
-    /// (a label with no lines) there is nothing to lead and no mark.
-    #[test]
-    fn the_play_mark_leads_the_details_line_when_there_is_no_title() {
-        let _serial = plx_base::testlock::serial();
-        TITLE_CLOCK.with(|c| c.release());
-        let label = TileLabel { glyph: true, caption: std::ffi::CString::new("8m left").ok(), ..TileLabel::default() };
-        let (runs, marks) = block_of(&label);
-        assert_eq!((runs.len(), marks.len()), (1, 1), "{runs:?} {marks:?}");
-        let (line, mark) = (&runs[0], marks[0]);
-        assert!((line.at.x + line.at.w * 0.5 - (700.0 + RowStyle::HOME.w * 0.5)).abs() < 0.5, "centred on the card: {:?}", line.at);
-        assert!((mark.x + mark.w + PLAY_ICON_GAP - line.at.x).abs() < 0.5, "the mark hangs left of the line: {mark:?} {:?}", line.at);
-        assert!(mark.y < line.at.y + UNDER_CAPTION_H && mark.y + mark.h > line.at.y, "on the line: {mark:?} {:?}", line.at);
-        let (runs, marks) = block_of(&TileLabel { glyph: true, ..TileLabel::default() });
-        assert!(runs.is_empty() && marks.is_empty(), "a block with no line draws no mark: {runs:?} {marks:?}");
-        let (_, marks) = block_of(&TileLabel { glyph: false, ..TileLabel::titled("Sintel", "8m left") });
-        assert!(marks.is_empty(), "a press that does not play draws none");
-    }
-
-    /// A details line the block cannot hold glides after a mark that stays at the window's left edge.
-    #[test]
-    fn a_gliding_details_line_keeps_the_play_mark_at_the_window_edge() {
-        let _serial = plx_base::testlock::serial();
-        TITLE_CLOCK.with(|c| c.release());
-        plx_machine::idle::frame_begin(1.0 / 60.0);
-        let label = TileLabel { glyph: true, caption: std::ffi::CString::new(LONG_CAPTION).ok(), ..TileLabel::default() };
-        let (rest, rest_marks) = block_of(&label);
-        plx_machine::idle::frame_begin((MARQUEE.hold_ms + 500.0) / 1000.0);
-        let (gliding, marks) = block_of(&label);
-        assert_eq!((rest_marks.len(), marks.len()), (1, 1));
-        assert_eq!(rest_marks[0].x, marks[0].x, "the mark does not glide");
-        let leftmost_run = |runs: &[crate::draw_census::Run]| runs.iter().map(|r| r.at.x).fold(f32::MAX, f32::min);
-        assert!(leftmost_run(&gliding) < leftmost_run(&rest), "the line has moved left of its rest");
-        assert!((marks[0].x + marks[0].w + PLAY_ICON_GAP - leftmost_run(&rest)).abs() < 0.5, "at rest the text starts after the mark");
     }
 
     /// A focused tile's caption — a year, a character, an episode address — is read like its
