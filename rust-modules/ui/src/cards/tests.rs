@@ -5639,3 +5639,34 @@ fn default_shelf_composition_keeps_the_label_before_the_source_overlay() {
         }));
     assert_eq!(draws.iter().map(|(kind, _)| *kind).collect::<Vec<_>>(), [7777, TILE_PAINTED]);
 }
+
+/// The Continue Watching stills row's heading stands higher over its cards than a poster shelf's:
+/// the owner's boards (CW-12/13) put the heading's centre ~60 px above the card tops against the
+/// poster shelf's ~42, so [`theme::STILL_HEADING_RISE`] is a fact of the shared row style, not of
+/// the screen that mounts it. The pitch, and with it every card top, is the strip's own.
+#[test]
+fn the_stills_heading_stands_a_fixed_rise_higher_over_its_cards_than_a_posters() {
+    use crate::consts::{CARD_DY, TITLE_DY};
+    // The heading draws at `row_y - TITLE_DY - lift`, the cards at `row_y + CARD_DY`.
+    let over_cards = |style: RowStyle| CARD_DY + TITLE_DY + Shelf::new(ENTRY, style).heading_lift();
+    assert_eq!(over_cards(RowStyle::HOME), CARD_DY + TITLE_DY, "a poster shelf's heading stands at rest where it always did");
+    assert_eq!(
+        over_cards(RowStyle::STILL) - over_cards(RowStyle::HOME),
+        crate::theme::STILL_HEADING_RISE,
+        "the stills row's heading stands one named rise higher, at rest, before any tile has focus"
+    );
+    assert_eq!(RowStyle::STILL.pitch_fixed(), RowStyle::EPISODE.pitch_fixed(), "the rise moves the heading, never the cards under it");
+}
+
+/// The rise and the focus lift do not stack: a focused tile's glow spills up to `heading_lift_max`,
+/// and a heading already standing higher than that has cleared it.
+#[test]
+fn the_stills_heading_never_stands_lower_than_its_rise_whatever_the_focus_lift() {
+    use crate::card_row::{heading_lift_max, heading_lift_of};
+    let sty = RowStyle::STILL;
+    assert!(heading_lift_max(&sty) < crate::theme::STILL_HEADING_RISE, "the glow lift is already inside the rise");
+    for live in [0.0, 1.0, heading_lift_max(&sty)] {
+        assert_eq!(heading_lift_of(&sty, live), crate::theme::STILL_HEADING_RISE, "live lift {live}");
+    }
+    assert_eq!(heading_lift_of(&RowStyle::HOME, 4.0), 4.0, "a poster shelf has no rise: its live lift stands");
+}

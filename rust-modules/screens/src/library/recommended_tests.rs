@@ -258,6 +258,8 @@ fn a_landscape_deck_is_homes_deck_and_other_episode_rows_keep_the_legacy_band() 
     let episode = RowStyle::EPISODE;
     assert_eq!(look(other), (episode.radius, episode.neighbour_ease, episode.h), "another episode row keeps the strip's look");
     assert_eq!(other.cards.band_h(), ui_cards::LEGACY_BAND_H, "…and its legacy band");
+    // The heading is the shared row style's: the deck's stands its rise higher over the same tiles, the other row's does not.
+    assert_eq!((deck.cards.heading_lift(), other.cards.heading_lift()), (plx_ui::theme::STILL_HEADING_RISE, 0.0));
     let label = |row: usize, col: usize| shelf_label(&fixture.hubs.view().shelves()[row], col);
     assert!(label(0, 0).title.is_none() && label(0, 0).caption.is_none(), "a deck still carries no label block: its footer says it");
     assert!(label(1, 0).title.is_some(), "an episode row's still keeps its block");

@@ -1147,17 +1147,19 @@ fn shelf_top_settled(row: usize, focus_row: usize, open: f32) -> f32 {
     column(row + 1, false).top(row, Some(focus_row), open)
 }
 fn heading_top(col: &ShelfColumn<impl Fn(usize) -> bool>, row: usize, focus_row: usize, scroll: f32) -> f32 {
-    let lift = if row == focus_row {
+    let live = if row == focus_row {
         ui_cards::heading_lift_max(col.style(row))
     } else {
         0.0
     };
+    let lift = ui_cards::heading_lift_of(col.style(row), live);
     heading_y(GRID_TOP_Y + col.top(row, Some(focus_row), band_open_of((col.is_deck)(focus_row))) - scroll, lift)
 }
-/// The heading's place on the page without the focus pop's lift: what the chrome's clearance rule
+/// The heading's place on the page without the focus pop's lift (a style's fixed rise stands in it): what the chrome's clearance rule
 /// judges it at (`draw_grid`).
 fn heading_place(col: &ShelfColumn<impl Fn(usize) -> bool>, row: usize, focus_row: usize, scroll: f32) -> f32 {
-    heading_y(GRID_TOP_Y + col.top(row, Some(focus_row), band_open_of((col.is_deck)(focus_row))) - scroll, 0.0)
+    let lift = ui_cards::heading_lift_of(col.style(row), 0.0);
+    heading_y(GRID_TOP_Y + col.top(row, Some(focus_row), band_open_of((col.is_deck)(focus_row))) - scroll, lift)
 }
 
 #[test]
@@ -1201,11 +1203,12 @@ fn no_shelf_heading_settles_inside_the_shared_top_band() {
 fn the_focused_shelfs_heading_rests_at_one_y_whatever_the_band() {
     for deck_first in [false, true] {
         let col = column(SWEEP_ROWS, deck_first);
-        let line = heading_place(&col, 0, 0, col.rest(0));
-        assert_eq!(line, GRID_TOP_Y - TITLE_DY);
+        // The poster shelf's line; the stills' heading stands its style's rise above it, at every rest.
+        let line = GRID_TOP_Y - TITLE_DY;
+        assert_eq!(heading_place(&col, 0, 0, col.rest(0)) + col.style(0).heading_rise, line);
         for focus_row in 0..SWEEP_ROWS {
             let scroll = col.rest(focus_row);
-            let place = heading_place(&col, focus_row, focus_row, scroll);
+            let place = heading_place(&col, focus_row, focus_row, scroll) + col.style(focus_row).heading_rise;
             if deck_first && focus_row == 1 {
                 assert_eq!((scroll, place > line), (0.0, true), "the shelf under the stills rests below the line, the stills above it");
             } else if scroll < col.max_scroll() {
@@ -1214,6 +1217,31 @@ fn the_focused_shelfs_heading_rests_at_one_y_whatever_the_band() {
                 assert!(place >= line, "deck {deck_first}, focus {focus_row}: the end holds it lower, never higher");
             }
         }
+    }
+}
+
+/// **The stills row's heading stands where the owner's boards put it** (CW-12/13): the shared row
+/// style's rise ([`theme::STILL_HEADING_RISE`]) above the poster shelf's line, the distance to the
+/// cards under it the poster shelf's plus that rise, and, even so, a gap to the nav pill's bottom
+/// edge at every rest of every column height (the heading is whole under the chrome's rule, which
+/// `no_shelf_heading_settles_inside_the_shared_top_band` also sweeps).
+#[test]
+fn the_stills_heading_stands_its_rise_above_the_poster_line_and_clear_of_the_nav_pill() {
+    for rows in 1..=SWEEP_ROWS {
+        let col = column(rows, true);
+        let rest = col.rest(0);
+        let top = heading_top(&col, 0, 0, rest);
+        assert_eq!(top, GRID_TOP_Y - TITLE_DY - theme::STILL_HEADING_RISE - rest, "rows {rows}: the stills heading's rest");
+        assert_eq!(plx_ui::scroll_chrome::clearance_under_shown_chrome(heading_place(&col, 0, 0, rest)), 1.0,
+            "rows {rows}: the stills heading rests whole under the chrome, not faded");
+        assert!(top - top_band_bottom() >= theme::space::XS,
+            "rows {rows}: the stills heading rests at {top}, {} under the nav pill's bottom edge ({})", top - top_band_bottom(), top_band_bottom());
+        // Cards stay where they were: the heading-to-card distance is the rise more than a poster shelf's.
+        let card_top = GRID_TOP_Y + col.top(0, Some(0), band_open_of(true)) - rest + CARD_DY;
+        assert_eq!(GRID_TOP_Y + col.top(0, Some(0), band_open_of(true)) - rest, GRID_TOP_Y - rest, "the deck sits at the grid's top");
+        assert_eq!(card_top - top, CARD_DY + TITLE_DY + theme::STILL_HEADING_RISE, "rows {rows}: heading to card tops");
+        // A focus on a card of the deck lifts the heading no higher than its rise (the two never stack).
+        assert_eq!(heading_top(&col, 0, 0, rest), heading_place(&col, 0, 0, rest));
     }
 }
 
@@ -2881,7 +2909,9 @@ fn a_shelf_heading_on_screen_is_drawn_while_its_cards_are_still_below_the_edge()
     assert!(heading_y(s.grid.base_y(0), s.grid.lift(0)) < SCR_H - 20.0);
     assert!(drawn(&s), "the heading above an off-screen card row must still be drawn");
     // …and a shelf whose heading has not reached the edge yet is still culled.
-    s.grid.shelves[0].set_base_y(SCR_H + TITLE_DY + 4.0);
+    // (the Continue Watching row's heading stands its style's rise higher: its line is what reaches the edge)
+    let rise = s.grid.lift(0);
+    s.grid.shelves[0].set_base_y(SCR_H + TITLE_DY + rise + 4.0);
     assert!(!drawn(&s), "a shelf entirely below the screen draws nothing");
 }
 

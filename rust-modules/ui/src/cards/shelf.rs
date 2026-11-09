@@ -1139,9 +1139,11 @@ impl Shelf {
         self.row.restore_scroll(scroll, n, &self.style);
     }
 
-    /// How far the shelf's heading must rise, live, to clear the focused tile.
+    /// How far the shelf's heading stands above its resting place: the live rise that clears the
+    /// focused tile, or the style's fixed [`RowStyle::heading_rise`] when that is larger
+    /// ([`heading_lift_of`](crate::card_row::heading_lift_of)).
     pub fn heading_lift(&self) -> f32 {
-        self.row.lift()
+        crate::card_row::heading_lift_of(&self.style, self.row.lift())
     }
 
     /// The caption band the shelf reserves under its tiles right now, for the caller's layout.

@@ -72,6 +72,11 @@ pub struct RowStyle {
     /// along the row, on the focus pop's own spring, so the gap the pop closes stays open
     /// ([`RowStyle::STILL`]). A tile's own pop and the lift are untouched.
     pub neighbour_ease: f32,
+    /// **A fixed rise of the row's heading above where a poster shelf's stands, in px at rest** (0 for
+    /// every row but [`RowStyle::STILL`]): the heading is lifted by the LARGER of this and the focused
+    /// tile's live clearance ([`heading_lift_of`]), so the two never stack. Card tops and the row's
+    /// pitch are untouched; only the label band's heading y moves.
+    pub heading_rise: f32,
 }
 
 /// Where a label block starts under its tile: [`RowStyle::label_start`].
@@ -148,6 +153,7 @@ impl RowStyle {
         seat_grows: false,
         label_drop: None,
         neighbour_ease: 0.0,
+        heading_rise: 0.0,
     };
     /// **A shelf of EPISODES: landscape stills.** Same motion as HOME — the spring magnification,
     /// the scroll, the glow ring and the heading lift are all one vocabulary — and a different
@@ -179,6 +185,7 @@ impl RowStyle {
         seat_grows: false,
         label_drop: None,
         neighbour_ease: 0.0,
+        heading_rise: 0.0,
     };
     /// **The Continue Watching row's landscape tile** (the owner's 2026-11 handoff, "Continue
     /// Watching and episode footer"): the episode strip's own cell (420x236, gap 28 -- [`RowStyle::EPISODE`])
@@ -188,6 +195,7 @@ impl RowStyle {
     pub const STILL: RowStyle = RowStyle {
         radius: theme::STILL_RADIUS,
         neighbour_ease: theme::STILL_EASE,
+        heading_rise: theme::STILL_HEADING_RISE,
         ..RowStyle::EPISODE
     };
     /// The fixed part of this row's pitch -- everything a shelf of these tiles is made of except
@@ -221,6 +229,7 @@ impl RowStyle {
         seat_grows: false,
         label_drop: None,
         neighbour_ease: 0.0,
+        heading_rise: 0.0,
     };
     /// "Who's watching" profile pictures: big circular avatars with a clear pop. Centered by the
     /// caller (a short roster), so the scroll spring stays put unless the row overflows.
@@ -246,6 +255,7 @@ impl RowStyle {
         seat_grows: false,
         label_drop: None,
         neighbour_ease: 0.0,
+        heading_rise: 0.0,
     };
     /// Corner radius for a tile of size `rect` at radius-scale `s`: half-width for a circle, else the
     /// style's fixed radius scaled with the focus pop. A style with a [`rim`](Self::rim) keeps its radius
@@ -784,6 +794,15 @@ pub fn heading_clearance(focused: Option<usize>, sty: &RowStyle, scroll: f32) ->
     let x = sty.margin_x + c as f32 * (sty.w + sty.gap) - scroll;
     let near = ((sty.margin_x + sty.w * 2.5 + sty.gap - x) / sty.w).clamp(0.0, 1.0);
     heading_lift_max(sty) * near
+}
+
+/// The lift a row's heading stands at: the focused tile's live clearance (`live`, [`CardRow::lift`])
+/// or the style's fixed [`RowStyle::heading_rise`], whichever is larger. A heading that already
+/// stands higher than the glow spills has cleared it, so the two never add; a style with no rise
+/// (every shelf but the Continue Watching stills) is exactly `live`.
+#[inline]
+pub fn heading_lift_of(sty: &RowStyle, live: f32) -> f32 {
+    live.max(sty.heading_rise)
 }
 // ---- the shelf HEADING, shared by every screen that draws a shelf --------------------------
 //

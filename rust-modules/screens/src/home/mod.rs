@@ -1571,7 +1571,7 @@ impl HomeScreen {
         let y = match at {
             At::Drawn => heading_y(self.grid.base_y(row), self.grid.lift(row)),
             At::SpringTarget => GRID_TOP_Y + self.shelf_top(row, self.band_row(focus, row), self.band_open_at(self.band_row(focus, row)))
-                - self.grid.scroll_target - TITLE_DY,
+                - self.grid.scroll_target - TITLE_DY - self.row_style(row).heading_rise,
         };
         Some(heading.face_rect(MARGIN_X, y, f32::from(focused), &m))
     }

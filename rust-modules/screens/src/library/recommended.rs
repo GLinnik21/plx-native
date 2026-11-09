@@ -1156,7 +1156,9 @@ impl RecommendedScreen {
         let focused = cx.focus.current.is_some_and(|key| key.entry == self.entry && Some(key.elem) == row.heading_elem());
         let y = match at {
             At::Drawn => shelf_y(&self.run, index, self.scroll.pos) - TITLE_DY - row.cards.heading_lift(),
-            At::SpringTarget => shelf_y(&self.target_run, index, self.scroll_target) - TITLE_DY,
+            At::SpringTarget => {
+                shelf_y(&self.target_run, index, self.scroll_target) - TITLE_DY - row.cards.style().heading_rise
+            }
         };
         Some(heading.face_rect(MARGIN_X, y, f32::from(focused), &heading.measure(cx.measure)))
     }

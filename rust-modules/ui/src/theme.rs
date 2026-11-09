@@ -1314,6 +1314,18 @@ pub const EP_CARD_FOCUS_SCALE: f32 = 1.04;
 /// tile's size and gap are the episode strip's own ([`crate::card_row::RowStyle::EPISODE`]).
 pub const STILL_RADIUS: f32 = 12.0;
 
+/// How much higher the Continue Watching row's heading stands over its tiles than a poster shelf's
+/// does, in px ([`crate::card_row::RowStyle::heading_rise`]): the owner's boards (CW-12/13) put the
+/// stills heading well above the poster line (centre ~60 px over the card tops, the poster shelf's
+/// ~42). It rests ON the page header's line ([`crate::page_header::TOP`]), the highest a
+/// page-riding row stands WHOLE under the shown chrome (`scroll_chrome::CLEARANCE_RAMP` above that
+/// line a heading is partly faded, and Home draws every heading through that rule), so the rise is
+/// derived from it, not a literal: 12 px with today's constants, the heading's top 18 px under the
+/// nav pill's bottom edge. The tiles' tops, the row's pitch and every rest place stay where they
+/// were; only the heading rises. Taller than this the heading would rest faded, or the chrome's
+/// rule would have to judge the heading's ink instead of its top.
+pub const STILL_HEADING_RISE: f32 = crate::consts::GRID_TOP_Y - crate::consts::TITLE_DY - crate::page_header::TOP;
+
 /// How far each neighbour of a focused Continue Watching tile steps away from it, in px (the
 /// handoff's `still-ease`; [`crate::card_row::RowStyle::neighbour_ease`]).
 pub const STILL_EASE: f32 = 10.0;
