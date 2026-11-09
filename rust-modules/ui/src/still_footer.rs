@@ -5,7 +5,8 @@
 //! episode strip (which is inside one season of one show). The pair stays as
 //! [`crate::widgets::still_line`] for the shelves that carry the show's name;
 //! [`crate::widgets::still_overlay`] chooses between them (a `Continue` card keeps the show name on a
-//! line above the footer when it is handed one; Home's deck draws its title on the art instead).
+//! line above the footer only for a card whose art carries no title and that did not opt in to the
+//! deck's art walk; a deck card's title is in its art: the cover, the composite or, with neither, type).
 //!
 //! * **In progress**: `S2 E4 · 38m left` (a film: `38m left`) on the left, the amber progress bar
 //!   (100 px, shrinking to a 64 px minimum, 4 px high, radius 2) on the right.
@@ -495,6 +496,53 @@ mod tests {
         assert_eq!(words(film), ["Heat", "38m left"], "a film has no tag");
         let next_up = TileFacts { show_title: "Severance", season_index: 2, ep_index: 5, unwatched: true, ..Default::default() };
         assert_eq!(words(next_up), ["Severance", "S2 \u{b7} E5"], "nothing to count down: the address, no bar");
+    }
+
+    /// **A deck card's title is drawn ONCE, and in the art**: Plex's cover and our composite carry
+    /// it in the picture, so the card draws no title of its own; with neither, the Type rung draws it
+    /// in type at the logo slot, and the footer never carries it. A card that did not opt in (its
+    /// art is a bare still or poster) keeps the show's name above its footer.
+    #[test]
+    fn an_opted_in_card_draws_its_title_once_in_type_and_only_when_the_art_carries_none() {
+        use crate::tile::{DeckArt, Resume, TileFacts};
+        let _g = plx_base::testlock::serial();
+        let card = Rect::new(0.0, 0.0, 420.0, 236.0);
+        let m = crate::fixture::FixtureMeasure;
+        let runs = |facts: TileFacts<'_>, footer: crate::widgets::StillFooter| {
+            crate::draw_census::capture_runs(|| crate::widgets::still_overlay(Painter::recording(), &facts, card, 12.0, footer, &m))
+        };
+        let cont = crate::widgets::StillFooter::Continue { cue: Cue::Info, pop: 0.0 };
+        let started = TileFacts {
+            show_title: "Severance",
+            season_index: 2,
+            ep_index: 4,
+            resume: Some(Resume { frac: 0.3, left_ms: 38 * 60_000 }),
+            ..Default::default()
+        };
+        // neither a cover nor a composite exists: the title, once, in type, above the footer line
+        let bare = TileFacts { deck: Some(DeckArt::default()), ..started };
+        let r = runs(bare, cont);
+        let titles: Vec<_> = r.iter().filter(|run| run.text == "Severance").collect();
+        assert_eq!(titles.len(), 1, "{r:?}");
+        assert_eq!(titles[0].size, theme::size::HEADLINE, "set at the Card rung's type size");
+        assert!(titles[0].bold);
+        assert!(titles[0].at.y + 1.0 < 236.0 - crate::theme::logo::CARD_BOTTOM_INSET + 1.0, "at the logo slot: {:?}", titles[0].at);
+        let words: Vec<_> = r.iter().map(|run| run.text.as_str()).collect();
+        assert_eq!(&words[1..], ["S2 E4 \u{b7}", "38m left"], "the footer carries the tag and the status only");
+        // a cover (or a composite) names the title in the art: the card draws none
+        let covered = TileFacts { deck: Some(DeckArt { cover: "/plx/cover/x", card: "" }), ..started };
+        let words: Vec<_> = runs(covered, cont).into_iter().map(|run| run.text).collect();
+        assert_eq!(words, ["S2 E4 \u{b7}", "38m left"]);
+        let composed = TileFacts { deck: Some(DeckArt { cover: "", card: "/plx/card/1/a" }), ..started };
+        assert_eq!(runs(composed, cont).len(), 2);
+        // the shelf footer follows the same rule: the address, and no show line above it
+        let shelf = |facts| runs(facts, crate::widgets::StillFooter::Shelf).into_iter().map(|run| run.text).collect::<Vec<_>>();
+        assert_eq!(shelf(covered), ["S2 \u{b7} E4"], "a cover carries the title");
+        assert_eq!(shelf(bare), ["Severance", "S2 \u{b7} E4"], "type carries it once");
+        assert_eq!(shelf(TileFacts { deck: None, ..started }), ["Severance", "S2 \u{b7} E4"], "a plain still keeps its show line");
+        // a film names itself by its own title
+        let film = TileFacts { title: "Heat", deck: Some(DeckArt::default()), ..Default::default() };
+        assert_eq!(runs(film, cont).iter().filter(|run| run.text == "Heat").count(), 1);
     }
 
     #[test]

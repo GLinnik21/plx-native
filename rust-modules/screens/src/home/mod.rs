@@ -168,6 +168,10 @@ struct HubProjection {
     /// same cards (`Arc::ptr_eq`) in the same order. A pointer, not a rating key: a card the
     /// server answered again is a new card even when it reads alike.
     cards: Vec<Arc<PmsMovie>>,
+    /// The Continue Watching deck's artwork keys, one per card of `cards` and built with it (a row
+    /// kept while its cards are the same cards keeps them too): empty for every other row, whose
+    /// cards never opt in to the deck's art walk, so a poster shelf pays for none.
+    deck: Vec<tile_facts::DeckKeys>,
     /// The key table was edited from outside a projection (a restore, an adopted show) since this
     /// row was projected, so its `elems` and the places its keys remember may no longer be the
     /// table's: the row is projected again, whatever the next publication holds. Only
@@ -949,6 +953,7 @@ impl HomeScreen {
                 continue;
             }
             let identity = Self::hub_identity(view, row, hub);
+            let is_deck = identity == HomeHubIdentity::ContinueWatching;
             let old_index = seats.locate(row, same_place, hub.identity.is_some().then_some(&identity),
                 |old| old.identity.clone());
             let group = self.group_for(&identity);
@@ -991,6 +996,11 @@ impl HomeScreen {
                 link,
                 title: hub.title.to_owned(),
                 cards: if placeholders { Vec::new() } else { hub.items.iter().take(MAX_ITEMS).cloned().collect() },
+                deck: if is_deck && !placeholders {
+                    tile_facts::DeckKeys::of_all(hub.items.iter().take(MAX_ITEMS).map(|item| &**item))
+                } else {
+                    Vec::new()
+                },
                 stale: false,
             });
         }
@@ -3933,10 +3943,27 @@ impl<'a> HomeCards<'a> {
     }
 }
 
-impl HomeCards<'_> {
+impl<'a> HomeCards<'a> {
     /// Is this row the Continue Watching deck of landscape stills?
     fn deck(&self) -> bool {
         self.home.rows.get(self.row).is_some_and(|r| r.identity == HomeHubIdentity::ContinueWatching)
+    }
+
+    /// **The facts card `i` draws from.** A deck card opts in to the deck's art walk (Plex's cover,
+    /// our composite, then its title in type) with the keys the row was projected with; every other
+    /// card, and a deck card whose keys are not the projection's (a frame between a publication and
+    /// its projection, a card past the projected window), is [`tile_facts::of`]: no deck, the old
+    /// chain. The pointer test is what makes the keys safe to read by position.
+    fn facts(&self, i: usize) -> Option<plx_ui::tile::TileFacts<'a>> {
+        let item = self.item(i)?;
+        let home: &'a HomeScreen = self.home;
+        let keys = home.rows.get(self.row).filter(|_| self.deck())
+            .filter(|r| r.cards.get(i).is_some_and(|card| std::ptr::eq(&**card, item)))
+            .and_then(|r| r.deck.get(i));
+        Some(match keys {
+            Some(keys) => tile_facts::for_deck(item, keys),
+            None => tile_facts::of(item),
+        })
     }
 }
 
@@ -3986,7 +4013,7 @@ impl<H: HomeLike> CardSource<H> for HomeCards<'_> {
     }
 
     fn art(&self, i: usize) -> Art<'_> {
-        let facts = self.item(i).map(tile_facts::of);
+        let facts = self.facts(i);
         if self.deck() { Art::Still(facts) } else { Art::Poster(facts) }
     }
 
@@ -4010,9 +4037,9 @@ impl<H: HomeLike> CardSource<H> for HomeCards<'_> {
     /// card's own focus pop (`Tile::pop`).
     fn overlay(&self, p: Painter, i: usize, tile: &ui_cards::Tile, measure: &dyn plx_machine::machine::Measure) {
         if !self.deck() { return }
-        let Some(item) = self.item(i) else { return };
+        let Some(facts) = self.facts(i) else { return };
         let cue = if plx_media::route::deck_press().press_plays() { plx_ui::still_footer::Cue::Play } else { plx_ui::still_footer::Cue::Info };
-        plx_ui::widgets::still_overlay(p, &tile_facts::of(item), tile.rect, tile.radius,
+        plx_ui::widgets::still_overlay(p, &facts, tile.rect, tile.radius,
             plx_ui::widgets::StillFooter::Continue { cue, pop: tile.pop }, measure);
     }
 

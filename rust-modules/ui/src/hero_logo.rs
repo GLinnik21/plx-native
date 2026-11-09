@@ -161,6 +161,25 @@ fn title_text_inked(rung: LogoRung, title: &str, ink: [f32; 4]) -> TextView<'_> 
         .bold().leading(sz as f32 * theme::hero::TITLE_LEAD / theme::size::DISPLAY as f32).max_lines(lines)
 }
 
+/// The height the title run `tv` paints at in a column `band_w` wide: its measured height less the
+/// leading under its last line, plus the cap band, so the run's LAST BASELINE is what a bottom
+/// anchor lands on. Shared by [`HeroLogo::draw`]'s fallback and [`draw_title`].
+fn title_paint_h(tv: &TextView<'_>, rung: LogoRung, band_w: f32, measure: &dyn Measure) -> f32 {
+    let (_, _, _, _, sz) = rung.bounds();
+    tv.measure_h(band_w) - (sz as f32 * theme::hero::TITLE_LEAD / theme::size::DISPLAY as f32) + measure.cap_h(sz)
+}
+
+/// **Draw a title in type in the slot a logo of `rung` would stand in** (`band`: its column, with
+/// `band.y + band.h` the anchor line the run's last baseline lands on), at `align`. It is the
+/// fallback of [`HeroLogo::draw`] and NOTHING else: no logo texture is looked up, so it is what a
+/// Continue Watching card draws when neither Plex's cover nor our composite exists (`Card`'s Type
+/// rung, `card_art::needs_type_title`), where a live logo must never go up.
+pub fn draw_title(p: Painter, rung: LogoRung, title: &str, band: Rect, align: HAlign, measure: &dyn Measure) {
+    let tv = title_text(rung, title).h(align.resolve(title)).with_measure(measure);
+    let h = title_paint_h(&tv, rung, band.w, measure);
+    tv.draw(p, Rect::new(band.x, band.y + band.h - h, band.w, h));
+}
+
 /// The title band itself: the item's clearLogo if it has resolved, else its title as text. Owning
 /// both halves here is what makes the swap consistent across the three sites — and is why the two
 /// fallbacks that used to paint an unbounded run now elide like home's always did.
@@ -204,11 +223,9 @@ impl<'a> HeroLogo<'a> {
         // Resolve the fallback before consulting the asynchronous texture cache. A recording and
         // its replay need the same measurement census even when the logo happened to be resident
         // in only one run; texture residency is paint state, not logical replay state.
-        let (_, _, _, _, sz) = self.rung.bounds();
         let align = self.align.resolve(self.title);
         let fallback = title_text(self.rung, self.title).h(align).with_measure(measure);
-        let fallback_h = fallback.measure_h(band.w)
-            - (sz as f32 * theme::hero::TITLE_LEAD / theme::size::DISPLAY as f32) + measure.cap_h(sz);
+        let fallback_h = title_paint_h(&fallback, self.rung, band.w, measure);
         // The hero draws the item the shelf under it has focused, and that shelf is the server
         // being browsed — so its clearLogo is asked of the current server. An item that came from
         // somewhere else (a merged Continue Watching row) names its own, once items carry one.
@@ -521,6 +538,25 @@ mod tests {
                 assert_eq!(drawn, direct, "{rung:?} {title}");
             }
         }
+    }
+
+    /// `draw_title` is the hero logo's text fallback, run for run, and it looks no logo up.
+    #[test]
+    fn draw_title_is_the_fallback_and_never_a_logo() {
+        install_store(false);
+        let measure = crate::fixture::FixtureMeasure;
+        for rung in [Hero, Compact, Card] {
+            let band = Rect::new(96.0, 446.0, 400.0, band_h(rung));
+            let drawn = |f: &dyn Fn()| crate::draw_census::capture_runs(f);
+            let fallback = drawn(&|| HeroLogo::new(0, "", "A Title", rung).draw(Painter::recording(), band, &measure));
+            let title = drawn(&|| draw_title(Painter::recording(), rung, "A Title", band, HAlign::Left, &measure));
+            assert!(!title.is_empty(), "{rung:?}: nothing drawn");
+            assert_eq!(title, fallback, "{rung:?}");
+        }
+        let band = Rect::new(0.0, 0.0, 400.0, band_h(Card));
+        let runs = crate::draw_census::capture_runs(|| draw_title(Painter::recording(), Card, "A Title", band, HAlign::Center, &measure));
+        assert_eq!(runs.len(), 1, "one title");
+        assert_eq!(runs[0].text, "A Title");
     }
 
     // ---- the placeholder count of the text fallback -------------------------------------------
