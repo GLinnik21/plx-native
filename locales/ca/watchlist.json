@@ -12,7 +12,7 @@
   "watchlist.action.on_list": "A la llista per veure",
   "watchlist.action.remove": "Treu de la llista per veure",
   "watchlist.action.remove_show": "Treu la sèrie…",
-  "watchlist.state.coming_on": "S'estrena el {date}",
+  "watchlist.state.coming_on": "Estrena el {date}",
   "watchlist.state.coming_soon": "Properament",
   "watchlist.state.on_no_server": "No és als teus servidors",
   "watchlist.state.server_offline": "Servidor desconnectat",

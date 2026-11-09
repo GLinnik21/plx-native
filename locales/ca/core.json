@@ -1,4 +1,3 @@
-
 {
   "core.system_default": "Per defecte del sistema",
   "core.converts_on_server": "Es converteix al servidor",
@@ -35,7 +34,7 @@
   "core.preview_domain_http": "HTTP",
   "core.preview_domain_buffer": "memòria intermèdia",
   "core.preview_domain_transport": "error de transport",
-  "core.preview_domain_transfer_age": "temps de transferència fins a l'error",
+  "core.preview_domain_transfer_age": "temps de transmissió fins a l'error",
   "core.preview_domain_demux_exit": "pas de desmultiplexació del flux multimèdia en què s'ha produït l'error",
   "core.preview_domain_recovered_rung": "pas de recuperació que s'ha reproduït",
   "core.preview_domain_recovered_stream": "flux rebutjat",
