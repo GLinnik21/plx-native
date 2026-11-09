@@ -72,10 +72,25 @@ fn home(resume: bool, name: &str) -> World {
     w
 }
 
+/// Home as a library has it: the Continue Watching deck (row 0, a row of stills) above a Recently
+/// Added poster shelf (row 1, `r1`..`r3`), focus on the shelf's first poster, which is "Heat" and
+/// carries the facts of [`facts`]. The captions the Under posters setting words are the POSTER
+/// shelf's: the deck above it draws none of its own (its footer stands on the still).
+fn home_poster(name: &str) -> World {
+    let mut w = World::home_with_disc(name, [7; 12]);
+    w.bridge.stores.hubs.seed_deck_home_for_test(1);
+    w.frames(30);
+    plx_data::pms::edit_test_item(w.bridge.stores.hubs.state_mut(), "r1", &|m| { facts(false)(m); m.title = "Heat".into(); });
+    w.frames(30);
+    w.press(Key::Down);
+    w.press(Key::Down);
+    w.frames(60);
+    w
+}
+
 #[test]
-#[ignore = "carried a poster shelf by the Continue Watching deck, which is now a row of stills with no caption block (2026-11 handoff, PR Row): re-seed a poster shelf below the deck and focus it"]
 fn home_shelves_caption_the_focused_poster_per_the_stored_setting() {
-    let mut w = home(false, "cap-home");
+    let mut w = home_poster("cap-home");
     let _cell = Cell::default();
     for (title, details, line) in TABLE {
         set(&mut w, title, details);
@@ -96,36 +111,10 @@ fn a_continue_watching_still_on_home_carries_no_caption_block() {
     }
 }
 
-/// **No deck caption draws a play mark in either press mode**, read off the frame the page draws
-/// (`Drawn::marks`, since a host paints no icon): the amber triangle that led the first line while OK
-/// played the deck is gone, under every Under posters setting.
-#[test]
-fn no_deck_caption_draws_a_play_mark_in_either_press_mode() {
-    use plx_media::route::{deck_press, restore_deck_press, DeckPress};
-    struct Back(DeckPress);
-    impl Drop for Back {
-        fn drop(&mut self) { restore_deck_press(self.0); }
-    }
-    let mut w = home(true, "cap-home-mark");
-    let _cell = Cell::default();
-    let _back = Back(deck_press());
-    for press in [DeckPress::Play, DeckPress::Details] {
-        restore_deck_press(press);
-        for (title, details, _) in TABLE {
-            set(&mut w, title, details);
-            let drawn = w.drawn();
-            let lines = drawn.caption_lines();
-            let setting = format!("{press:?}, title {title}, details {details:?}");
-            assert!(drawn.marks.is_empty(), "{setting}: no mark is drawn: {lines:?}");
-        }
-    }
-}
-
 /// **The focused title is drawn in ONE ink on every poster surface** (CONFIRM-4: the Watchlist and
 /// Collections page titles read a step dimmer than Home's): the ink of the title line's run, the
 /// cascade's alpha folded in, is the same on Home, the Collections page and the Watchlist, so a dimmer page is the ground behind the title and not the title.
 #[test]
-#[ignore = "carried a poster shelf by the Continue Watching deck, which is now a row of stills with no caption block (2026-11 handoff, PR Row): re-seed a poster shelf below the deck and focus it"]
 fn the_focused_title_is_one_ink_on_every_poster_surface() {
     let title_ink = |w: &mut World, surface: &str| {
         super::under_posters_band_route_tests::focus_first_poster(w, surface);
@@ -139,7 +128,7 @@ fn the_focused_title_is_one_ink_on_every_poster_surface() {
         (first, ink)
     };
     // each world holds the process-global lock the setting needs, so the setting is restored before it drops
-    let on_home = { let mut w = home(false, "ink-home"); let _cell = Cell::default(); title_ink(&mut w, "Home").1 };
+    let on_home = { let mut w = home_poster("ink-home"); let _cell = Cell::default(); title_ink(&mut w, "Home").1 };
     let on_collections = { let mut w = World::collections("ink-collections", false); let _cell = Cell::default(); title_ink(&mut w, "Collections").1 };
     let on_watchlist = { let mut w = World::watchlist("ink-watchlist"); let _cell = Cell::default(); title_ink(&mut w, "Watchlist").1 };
     // (the cascade folds alpha in float: one 8-bit step is 0.004)
@@ -347,9 +336,8 @@ pub(super) fn describe_cards(w: &mut World, cols: usize, edit: &dyn Fn(&mut plx_
 /// publication, so the kept rows were not projected again), and the poster is captioned from the NEW
 /// setting. (The number of rows a sync projects has no app-tier reader: the FIX test counts them.)
 #[test]
-#[ignore = "carried a poster shelf by the Continue Watching deck, which is now a row of stills with no caption block (2026-11 handoff, PR Row): re-seed a poster shelf below the deck and focus it"]
 fn a_setting_changed_under_a_kept_home_reaches_the_card_after_back() {
-    let mut w = home(false, "cap-home-kept");
+    let mut w = home_poster("cap-home-kept");
     let _cell = Cell::default();
     let published = |w: &World| plx_data::pms::hubs_snapshot(w.bridge.stores.hubs.state()).view().generation;
     let (focus, generation, entry) = (w.focus(), published(&w), w.d.nav.top_page().map(|page| page.id));
