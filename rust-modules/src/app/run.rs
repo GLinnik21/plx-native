@@ -5254,6 +5254,7 @@ mod lifecycle_regression_tests {
         assert!(app.bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::SetNowPlaying(Some(plx_data::metadata::NowPlaying {
             is_episode: false,
             is_real_episode: false,
+            is_movie: false,
             title: String::new(),
             ep_title: String::new(),
             season: 0,
