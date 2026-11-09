@@ -65,8 +65,9 @@ pub(super) fn hub_source(state: &PmsState, i: usize) -> &str {
     hubs(state).get(i).map(|h| h.source.as_str()).unwrap_or("")
 }
 
-/// whether hub `i` is the merged Continue Watching shelf (its tiles play on OK and wear the ▶ only
-/// under `DeckPress::Play`). Matched on the locale-independent hubIdentifier, through the one identity function the publication itself uses.
+/// whether hub `i` is the merged Continue Watching shelf (its tiles play on OK under `DeckPress::Play`,
+/// which the focused still's footer cue shows as a play glyph; the default opens the page and shows an
+/// info glyph). Matched on the locale-independent hubIdentifier, through the one identity function the publication itself uses.
 pub(super) fn hub_is_continue(state: &PmsState, i: usize) -> bool {
     hubs(state)
         .get(i)

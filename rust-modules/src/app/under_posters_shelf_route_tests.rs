@@ -4,8 +4,10 @@
 //! The setting is published the way the write door ends (`restore_under_posters`, the cell's own
 //! door: the storage worker's publish is refused a process global by the test lock), and the grade
 //! is what the product DRAWS for the focused poster (`World::drawn`, text read off the recording
-//! painter): the title line follows the Title switch, the second line the Details picker, and a
-//! Continue Watching tile keeps its time-left line under every details kind but Nothing.
+//! painter): the title line follows the Title switch, the second line the Details picker. The
+//! Continue Watching deck is the exception, in two shapes: Recommended's poster deck keeps its
+//! time-left line under every details kind, Nothing included, and Home's deck is a row of stills
+//! (`captions::NOTHING_UNDER_STILLS`) that carries no caption block under any setting.
 
 use super::*;
 use super::home_chrome_route_tests::{home_shelves_of, TITLES};
