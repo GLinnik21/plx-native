@@ -56,6 +56,18 @@ pub(crate) fn widest_clock(measure: &dyn Measure, size: i32, bold: bool, remaini
     fmt_time(((hours * 60 + minutes) * 60 + seconds) * 1_000_000_000, remaining)
 }
 
+/// The remaining clock plus the widest possible local end-time suffix (` · 23:59`), measured
+/// per digit rather than by assuming tabular numerals. The HUD's lint and geometry reserve this
+/// full label even though the end-time setting can hide the suffix on a given frame.
+pub(crate) fn widest_remaining_label(measure: &dyn Measure, size: i32, bold: bool) -> String {
+    let remaining = widest_clock(measure, size, bold, true);
+    let hour_tens = widest_digit(measure, size, bold, 0..=2);
+    let hour_ones = widest_digit(measure, size, bold, 0..=9);
+    let minute_tens = widest_digit(measure, size, bold, 0..=5);
+    let minute_ones = widest_digit(measure, size, bold, 0..=9);
+    format!("{remaining} · {hour_tens}{hour_ones}:{minute_tens}{minute_ones}")
+}
+
 /// The digit of `digits` that is widest at `size` and `bold`; the lowest of equals.
 pub(crate) fn widest_digit(measure: &dyn Measure, size: i32, bold: bool, digits: RangeInclusive<u32>) -> u32 {
     let mut widest = (*digits.start(), f32::NEG_INFINITY);
@@ -73,8 +85,8 @@ pub(crate) fn widest_digit(measure: &dyn Measure, size: i32, bold: bool, digits:
 pub(crate) fn rects(track: Rect, size: i32, mode: ClockMode, measure: &dyn Measure) -> ClockRects {
     let y = track.y + CLOCK_TOP;
     let h = measure.line_h(size);
-    let width = |bold, remaining| measure.width_str(&widest_clock(measure, size, bold, remaining), size, bold);
-    let (elapsed_w, remaining_w) = (width(ELAPSED_BOLD, false), width(REMAINING_BOLD, true));
+    let elapsed_w = measure.width_str(&widest_clock(measure, size, ELAPSED_BOLD, false), size, ELAPSED_BOLD);
+    let remaining_w = measure.width_str(&widest_remaining_label(measure, size, REMAINING_BOLD), size, REMAINING_BOLD);
     let elapsed = match mode {
         ClockMode::Ends => Rect::new(track.x, y, elapsed_w.min(track.w), h),
         ClockMode::FollowHead => Rect::new(track.x, y, track.w, h),
