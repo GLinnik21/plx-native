@@ -2300,9 +2300,11 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
 - **The once/sec `loop=` heartbeat carries `pos=<s>` while frames are presenting** — the same
   `FEED_SHARED.playpos_ns` the 10s `/:/timeline` reporter posts, sampled at 1 Hz. The harness grades
   playback progress from it (`progress_secs`), because observing a 15s climb through 10s samples
-  costs ~30s of playback. It is gated on `player::is_playing()`, not `is_started()`: a direct-play
-  resume does not seed `playpos_ns` (only the transcode branch does), so the pre-roll would log a
-  0 and a 0→600 step reads as 600s of "climb" in one second — a false PASS.
+  costs ~30s of playback. It is gated on `player::is_playing()`, not `is_started()`: both resume
+  paths seed the playhead with their target before the first frame (`arm_open` for direct play,
+  `Rebase` for a transcode), so the pre-roll reads the target, and only a presented frame vouches
+  that playback got there; ungated, a resume or seek that never lands would read as playback that
+  climbed — a false PASS.
   **Beside it since 2026-08-27 is `play=<pm>`: media time advanced per WALL millisecond, in per
   mille — 1000 is the film running at speed and 670 is it crawling — and it is the ONLY field on
   that line that can see a slow film.** `fps=` counts our GL swaps and sits at 60 through a stream
