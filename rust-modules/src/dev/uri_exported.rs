@@ -11,8 +11,10 @@
 //! qualifier is still `ProductQualifier`, and a display in any other mode composes as it always
 //! did (an ACB set keeps ACB, a set with no window path stays unbound).
 //!
-//! **Arming.** The file is read ONCE, at boot (`install_uri_product`), like every dev trigger, so it
-//! has to be in place before the app launches; `docs/uri-mode.md` carries the tester steps. The
+//! **Arming.** The file is read ONCE, at boot (`install_uri_product`), unlike the probe's per-Play
+//! trigger, so it can be armed only by writing it before the app launches (plain `/tmp`, or the
+//! jail's persistent path): a write through `/proc/<pid>/root` while the app runs comes after the
+//! read and arms nothing. `docs/uri-mode.md` says so, next to the tester's arming routes. The
 //! boot line that confirms it is `uri: product binding=Exported { canvas: (1920, 1080) } mode=2
 //! evidence=override`, which [`compose`] logs after the production `uri: product binding=..` line; a
 //! run whose log lacks it proves nothing about the product backend on the exported window.
