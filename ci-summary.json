@@ -85,7 +85,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-09T23:27:34Z",
+ "generated": "2026-11-09T23:33:53Z",
  "metrics": [
   {
    "change30_pct": 100.4,
@@ -109,18 +109,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 100.5,
-   "change7_pct": 25.6,
+   "change30_pct": 100.0,
+   "change7_pct": 25.3,
    "d30": 210.5,
-   "delta30": 211.5,
-   "delta7": 86,
+   "delta30": 210.5,
+   "delta7": 85.0,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
-   "n_now": 57,
+   "n_now": 58,
    "n_prev": 83,
-   "now": 422,
+   "now": 421.0,
    "prev7": 336,
    "shown": true,
    "state": "worse",
@@ -130,10 +130,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 38.6,
+   "change30_pct": 38.8,
    "change7_pct": 17.1,
-   "d30": 350,
-   "delta30": 135.0,
+   "d30": 349.5,
+   "delta30": 135.5,
    "delta7": 71.0,
    "group": "ci",
    "id": "pr_wait",
@@ -151,18 +151,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 41.2,
-   "change7_pct": 13.7,
+   "change30_pct": 41.1,
+   "change7_pct": 13.6,
    "d30": 328.5,
-   "delta30": 135.5,
-   "delta7": 56,
+   "delta30": 135.0,
+   "delta7": 55.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 57,
+   "n_now": 58,
    "n_prev": 83,
-   "now": 464,
+   "now": 463.5,
    "prev7": 408,
    "shown": true,
    "state": "flat",
@@ -279,7 +279,7 @@
   {
    "change30_pct": 22.7,
    "change7_pct": null,
-   "d30": 908.0,
+   "d30": 908,
    "delta30": 206.5,
    "delta7": null,
    "group": "ci",
@@ -298,18 +298,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 68.3,
-   "change7_pct": 12.5,
+   "change30_pct": 65.3,
+   "change7_pct": 10.5,
    "d30": 268.0,
-   "delta30": 183.0,
-   "delta7": 50,
+   "delta30": 175.0,
+   "delta7": 42.0,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
-   "n_now": 57,
+   "n_now": 58,
    "n_prev": 83,
-   "now": 451,
+   "now": 443.0,
    "prev7": 401,
    "shown": true,
    "state": "flat",
@@ -320,17 +320,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 10.6,
+   "change7_pct": 10.7,
    "d30": null,
    "delta30": null,
-   "delta7": 35.5,
+   "delta7": 36,
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "kind": "job",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 83,
-   "now": 371.5,
+   "now": 372,
    "prev7": 336,
    "shown": true,
    "state": "flat",
@@ -361,18 +361,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 119.1,
-   "change7_pct": -7.4,
+   "change30_pct": 122.3,
+   "change7_pct": -6.1,
    "d30": 139,
-   "delta30": 165.5,
-   "delta7": -24.5,
+   "delta30": 170,
+   "delta7": -20,
    "group": "ci",
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 83,
-   "now": 304.5,
+   "now": 309,
    "prev7": 329,
    "shown": true,
    "state": "flat",
@@ -382,18 +382,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 105.1,
-   "change7_pct": -1.1,
+   "change30_pct": 98.5,
+   "change7_pct": -4.2,
    "d30": 137.5,
-   "delta30": 144.5,
-   "delta7": -3.0,
+   "delta30": 135.5,
+   "delta7": -12,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
    "kind": "job",
    "label": "CI: host python/shell/C gates",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 83,
-   "now": 282.0,
+   "now": 273,
    "prev7": 285,
    "shown": true,
    "state": "flat",
@@ -424,6 +424,27 @@
    "unit": "s"
   },
   {
+   "change30_pct": 28.2,
+   "change7_pct": 18.5,
+   "d30": 170.0,
+   "delta30": 48.0,
+   "delta7": 34,
+   "group": "ci",
+   "id": "ci|host lint + type-checks",
+   "kind": "job",
+   "label": "CI: host lint + type-checks",
+   "n_now": 59,
+   "n_prev": 83,
+   "now": 218,
+   "prev7": 184,
+   "shown": true,
+   "state": "flat",
+   "state30": "worse",
+   "threshold_abs": 20.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
    "change30_pct": -36.9,
    "change7_pct": 0.5,
    "d30": 344.0,
@@ -445,31 +466,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 26.5,
-   "change7_pct": 16.8,
-   "d30": 170.0,
-   "delta30": 45.0,
-   "delta7": 31.0,
-   "group": "ci",
-   "id": "ci|host lint + type-checks",
-   "kind": "job",
-   "label": "CI: host lint + type-checks",
-   "n_now": 58,
-   "n_prev": 83,
-   "now": 215.0,
-   "prev7": 184,
-   "shown": true,
-   "state": "flat",
-   "state30": "worse",
-   "threshold_abs": 20.0,
-   "threshold_pct": 20.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": 29.7,
+   "change30_pct": 26.3,
    "change7_pct": null,
-   "d30": 18.5,
-   "delta30": 5.5,
+   "d30": 19,
+   "delta30": 5.0,
    "delta7": null,
    "group": "ci",
    "id": "nightly|publish nightly prerelease",
@@ -489,7 +489,7 @@
   {
    "change30_pct": 46.4,
    "change7_pct": null,
-   "d30": 14.0,
+   "d30": 14,
    "delta30": 6.5,
    "delta7": null,
    "group": "ci",
@@ -533,14 +533,14 @@
    "change7_pct": 0.0,
    "d30": null,
    "delta30": null,
-   "delta7": 0.0,
+   "delta7": 0,
    "group": "ci",
    "id": "ci|which gates apply",
    "kind": "job",
    "label": "CI: which gates apply",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 83,
-   "now": 5.0,
+   "now": 5,
    "prev7": 5,
    "shown": false,
    "state": "flat",
@@ -554,14 +554,14 @@
    "change7_pct": 33.3,
    "d30": 3.0,
    "delta30": 1.0,
-   "delta7": 1,
+   "delta7": 1.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 57,
+   "n_now": 58,
    "n_prev": 83,
-   "now": 4,
+   "now": 4.0,
    "prev7": 3,
    "shown": false,
    "state": "flat",
@@ -575,14 +575,14 @@
    "change7_pct": 0.0,
    "d30": 298.0,
    "delta30": -295.0,
-   "delta7": 0.0,
+   "delta7": 0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 83,
-   "now": 3.0,
+   "now": 3,
    "prev7": 3,
    "shown": false,
    "state": "flat",
@@ -618,11 +618,6 @@
    "change_pct": 25.8,
    "commits": [
     {
-     "pr": 1291,
-     "sha": "d542c2ef5",
-     "title": "Catalan review: more natural expressions and consistent informal address"
-    },
-    {
      "pr": 1304,
      "sha": "c7c15f45f",
      "title": "URI probe: the summary answers the drive gate, and a webOS 5+ tester protocol"
@@ -666,6 +661,11 @@
      "pr": 1296,
      "sha": "04489893e",
      "title": "Bound Recommended shelf navigation keys across refreshes"
+    },
+    {
+     "pr": 1300,
+     "sha": "d06ed4f5c",
+     "title": "build-bench: reject failed test runners with passing summaries"
     }
    ],
    "from": 74.8,
@@ -676,13 +676,8 @@
    "to": 94.1
   },
   {
-   "change_pct": 25.6,
+   "change_pct": 25.3,
    "commits": [
-    {
-     "pr": 1291,
-     "sha": "d542c2ef5",
-     "title": "Catalan review: more natural expressions and consistent informal address"
-    },
     {
      "pr": 1304,
      "sha": "c7c15f45f",
@@ -727,6 +722,11 @@
      "pr": 1296,
      "sha": "04489893e",
      "title": "Bound Recommended shelf navigation keys across refreshes"
+    },
+    {
+     "pr": 1300,
+     "sha": "d06ed4f5c",
+     "title": "build-bench: reject failed test runners with passing summaries"
     }
    ],
    "from": 336,
@@ -734,7 +734,7 @@
    "label": "CI: host unit tests (hostsim)",
    "since": "2026-11-09",
    "threshold_pct": 20.0,
-   "to": 422
+   "to": 421.0
   }
  ],
  "schema": 2,
@@ -749,19 +749,19 @@
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
-   "now": 451
+   "now": 443.0
   },
   {
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
-   "now": 422
+   "now": 421.0
   },
   {
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "now": 371.5
+   "now": 372
   },
   {
    "group": "ci",
