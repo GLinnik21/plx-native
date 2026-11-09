@@ -23,8 +23,8 @@ Plex which titles are in the Continue Watching row of the profile in use. Your P
 the picture itself from the image host that Plex’s answer names. The request is made when a
 title’s card is first shown and this television has no saved answer for it; again when the saved
 answer is more than a day old and the card is shown; again on a later start or after a profile
-switch when an earlier attempt saved nothing (while Plex’s catalog cannot be reached, at most once
-every 45 seconds); and again after the saved artwork was removed to make room, by signing out, or
+switch when an earlier attempt saved nothing, and when the card is shown again after Plex’s catalog
+could not be reached (at most once every 45 seconds while it cannot be reached); and again after the saved artwork was removed to make room, by signing out, or
 by changing the app’s language. PlxNative’s developer does not receive these requests.
 
 ## Plex Media Servers
