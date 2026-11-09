@@ -4,7 +4,9 @@
 //! minute. Its one caller is the LOOP, which publishes the answer once per iteration
 //! (`run::publish_frame` -> `Bridge::publish_today`); a screen that words a date ("Today",
 //! "Yesterday") RECEIVES it as `AppViews::today` (`LibraryLike::today`) and reads no clock, the way
-//! a frame's time arrives on a `Tick`. `now()` reads `SDL_GetTicks` — the only call site of it in `app/`
+//! a frame's time arrives on a `Tick`. `unix_seconds()` is the playback estimate's wall-clock input: it
+//! samples the platform at most every five seconds and advances from monotonic frame ticks. `now()` reads
+//! `SDL_GetTicks` — the only call site of it in `app/`
 //! (the §15.2 gate: `SDL_GetTicks(` only in the clock and the instruments) — unless a replay has
 //! set the frame's recorded tick, in which case every read in the frame answers that tick: the
 //! ingest stamp, each press arm, the HUD linger, a script delay.
