@@ -158,7 +158,8 @@ pub type CURLM = c_void;
 //
 // An `http3-curlstack` build may bind the bundled `libcurl-plx.so.4` instead, but WHICH library
 // binds is never decided here: `ensure_loaded` reads `crate::net::bundled_curl()`, the handle
-// `net::global_init` chose, and binds THIS table from that same handle (`load_from`). Two tables
+// the process's first `net::global_init_with` call chose (bundled only while Settings > System >
+// HTTP/3 (experimental) is on), and binds THIS table from that same handle (`load_from`). Two tables
 // probing "is the bundle here" independently could disagree, and an easy handle `net.rs` created
 // against one libcurl, handed to this table's `curl_multi_add_handle` from another, is an ABI
 // violation, not a compatibility question.
@@ -460,7 +461,8 @@ static LOAD_ONCE: Once = Once::new();
 fn ensure_loaded() {
     LOAD_ONCE.call_once(|| {
         // Mirror `net.rs`'s choice, never re-decide it — see the table's doc above.
-        // `net::bundled_curl` is only meaningful after `net::global_init`, which the app's boot
+        // `net::bundled_curl` is only meaningful after the process's first `net::global_init_with`
+        // call (`net::global_init` is the same with the system stack), which the app's boot
         // runs before any media-plane use (the Feed's `ff::boot` calls this module's `boot`
         // after it; any other first use is later still).
         let verdict = match crate::net::bundled_curl() {

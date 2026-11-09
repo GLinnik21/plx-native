@@ -15,7 +15,7 @@
   "settings.resolution.title": "Resolución de la interfaz",
   "settings.resolution.detail": "Más baja, más fluida. Se aplica al reiniciar.",
   "settings.http3.title": "HTTP/3 (experimental)",
-  "settings.http3.detail": "Conecta por HTTP/3 con los servidores que lo ofrecen. Experimental: puede ir más lento en redes inestables. Se aplica al reiniciar PlxNative.",
+  "settings.http3.detail": "Conecta por HTTP/3 con los servidores que lo ofrecen. Experimental: puede ir más lento en redes con pérdida de paquetes. Se aplica al reiniciar.",
   "settings.resolution.auto": "Automática",
   "settings.about.title": "Acerca de PlxNative",
   "settings.about.detail": "Versión, derechos de autor e información del proyecto.",

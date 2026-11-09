@@ -1133,6 +1133,10 @@ pub struct RootPage {
     /// The HTTP/3 switch picked here and not yet answered, as `pending_trailer`: the receipt of its
     /// `PreferenceCmd::Http3` write, which applies at the next launch.
     pending_http3: Option<(bool, std::sync::mpsc::Receiver<bool>)>,
+    /// Whether this build offers the HTTP/3 row: `plx_net::net::BUNDLED_STACK_BUILT`, a
+    /// compile-time fact, held as a field so a host test (which never carries the loader) can drive
+    /// the offered shape. Gates both the row and the switch's canonical state.
+    offers_http3: bool,
     /// The servers the signed-in account answered plx_platform::i18n::msg::settings_plaintext_question() for, then the
     /// ones discovery offers it for and nobody has answered, by row — the `(machine_id, allowed)`
     /// each switch shows.
@@ -1154,8 +1158,10 @@ struct RootState {
     sel: RowKey,
     auto_sign_in: bool,
     trailer_autoplay: bool,
-    /// The HTTP/3 (experimental) switch as the row shows it. Written to the canon only when on, so
-    /// every root's digest is unchanged while it is off (and in every build that does not offer it).
+    /// The HTTP/3 (experimental) switch as the row shows it, and false whenever the row is not
+    /// offered (a stored on in a build without the stack included). Written to the canon only when
+    /// on, so every root's digest is unchanged while it is off and in every build that does not
+    /// offer it.
     http3: bool,
     language: plx_platform::i18n::Preference,
     /// What shows under a poster, as the Under posters row summarises it. Written to the canon only
@@ -1434,6 +1440,7 @@ impl RootPage {
             session_watch: Default::default(),
             session_snapshot: Default::default(),
             pending_auto: None, pending_trailer: None, pending_http3: None,
+            offers_http3: plx_net::net::BUNDLED_STACK_BUILT,
             plaintext_rows: Vec::new(),
             pending_plaintext: None,
             alert: PlaintextAlert::new(ALERT_GROUP, super::registry::ALERT, super::registry::ALERT + 1),
@@ -1475,8 +1482,11 @@ impl RootPage {
         }, |(value, _)| *value);
         let resolution = sess.ui_resolution();
         let resolution_offered = plx_platform::tv::device::ui_resolution_offered();
-        let http3 = self.pending_http3.as_ref().map_or_else(|| sess.http3_experimental(), |(value, _)| *value);
-        let http3_offered = plx_net::net::BUNDLED_STACK_BUILT;
+        let http3_offered = self.offers_http3;
+        // Not offered, the switch is not part of this page at all: a stored on (a session from a
+        // stack build) must not reach the row, the action or the canon.
+        let http3 = http3_offered
+            && self.pending_http3.as_ref().map_or_else(|| sess.http3_experimental(), |(value, _)| *value);
         let multi_user = sess.home_users.len() > 1;
         self.state.auto_sign_in = auto_sign_in;
         self.state.trailer_autoplay = trailer_autoplay;

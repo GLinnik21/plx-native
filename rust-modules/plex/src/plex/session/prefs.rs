@@ -206,9 +206,12 @@ pub struct Preferences {
     /// launch. Offered by Settings only in a build that carries the stack
     /// (`plx_net::net::BUNDLED_STACK_BUILT`); in any other build it is stored and unused. Absence is
     /// **off**, today's system libcurl; skipped while off so every session written before the field
-    /// serializes exactly as it did. Not retained across sign-out (`install_preferences::Retained`
-    /// keeps only the language and the resolution), so a sign-out returns the next launch to the
-    /// system libcurl. Soft-parsed: garbage reads off and costs only the switch.
+    /// serializes exactly as it did. **An Install row that a sign-out does not carry over**
+    /// ([`Scope::Install`] has the general rule): a signed-out read keeps only what
+    /// `install_preferences::Retained` holds (the language and the resolution), so the launch after
+    /// a sign-out binds the system libcurl. On the DB8 backend `ClearTenure` leaves the key in the
+    /// stored preferences, but nothing reads it there and the next write of the preferences (a
+    /// sign-in) omits it. Soft-parsed: garbage reads off and costs only the switch.
     #[serde(default, deserialize_with = "super::de_soft_bool", skip_serializing_if = "std::ops::Not::not")]
     pub http3_experimental: bool,
     /// **Hero trailer autoplay** — the install-wide FALLBACK every profile reads until it picks its
@@ -393,7 +396,12 @@ pub struct Preferences {
 /// is account-bound, whatever its scope.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scope {
-    /// The television: shared by every profile, kept across sign-out, never account-bound.
+    /// The television: shared by every profile and never account-bound, so a sign-out never clears
+    /// it as an account key (DB8's `ClearTenure` keeps it in the stored preferences). That is not
+    /// the same as the launch after a sign-out READING it: a signed-out read is built from
+    /// `install_preferences::Retained`, which holds only the language and `ui_resolution`, so every
+    /// other Install row (`auto_sign_in`, `hold_hint_taught`, `http3_experimental`, ...) reads its
+    /// default until the next sign-in writes the preferences again.
     Install,
     /// The signed-in account: cleared with the credentials on sign-out.
     Account,

@@ -1070,7 +1070,7 @@ the next launch; a sign-out does not retain it (`install_preferences::Retained`)
 compiles and is tested in every build): the Alt-Svc cache that lets a strict request upgrade to
 HTTP/3. Every curl this app binds is OpenSSL (the firmware's 1.0.x to 3.x, the bundle's 3.5), so
 `keypin` reads `CURLINFO_SSL_VERIFYRESULT` as OpenSSL's `X509_V_ERR_*` numbers on either path.
-With the bundle bound, `net::global_init` still installs OpenSSL 1.0's lock callbacks on the
+With the bundle bound, `net::global_init_with` (its body, `global_init_once`) still installs OpenSSL 1.0's lock callbacks on the
 firmware's own libcrypto when the television's resident libcurl reports one (it stays in the
 process for `libplayerAPIs.so.1`). The flag puts `+curlstack` in
 `pkg/.build-config`, gets its own `target-curlstack` dir, and `ci/check-package.py` grades the

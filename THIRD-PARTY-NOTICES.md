@@ -540,8 +540,9 @@ file only if its target is itself a `*.plex.direct` name that fails the same way
 
 **A default PlxNative package does not contain anything in this section**, and no published
 release does. It applies only to a package built with `make CURLSTACK=1`, which ships its own build
-of curl beside the binary and prefers it to the television's libcurl (7.53.1 on the oldest
-firmware; HTTP/1.1 and HTTP/2 only, no QUIC). `net.rs` falls back to the television's copy,
+of curl beside the binary and uses it instead of the television's libcurl (7.53.1 on the oldest
+firmware; HTTP/1.1 and HTTP/2 only, no QUIC) only while Settings > System > HTTP/3 (experimental)
+is on; with it off, the default, the app never loads it. `net.rs` falls back to the television's copy,
 unchanged, the moment any file below is missing or fails to load. `ci/check-package.py` grades a
 package against this section: a CURLSTACK=1 package must carry every file in the table, and any
 other package none of them.

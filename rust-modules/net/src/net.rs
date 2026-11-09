@@ -283,8 +283,9 @@ pub const BUNDLED_CURL_SONAME: &str = "libcurl-plx.so.4";
 #[cfg(feature = "http3-curlstack")]
 static BUNDLED_CURL: OnceLock<plx_base::dynlib::Handle> = OnceLock::new();
 
-/// The bundled curl, if [`global_init`] bound it; `None` when it bound the system libcurl, before
-/// [`global_init`], and always in a build without the `http3-curlstack` feature.
+/// The bundled curl, if the process's first [`global_init_with`] call bound it; `None` when it bound
+/// the system libcurl (always with HTTP/3 (experimental) off), before that call, and always in a
+/// build without the `http3-curlstack` feature.
 ///
 /// `curlio.rs`'s multi table binds THIS handle (`curlmulti::load_from`) when it is `Some`, and the
 /// system candidates otherwise: the choice is made exactly once, here, and only read there. An easy
@@ -304,7 +305,8 @@ pub fn bundled_curl() -> Option<plx_base::dynlib::Handle> {
 
 /// Is the bound libcurl the bundled `libcurl-plx.so.4` rather than the television's own? Always
 /// false without the `http3-curlstack` feature, which makes every `if bundled()` branch below dead code the
-/// compiler drops. Only meaningful after [`global_init`].
+/// compiler drops. Only meaningful after the process's first [`global_init_with`] (or
+/// [`global_init`]) call.
 pub fn bundled() -> bool {
     bundled_curl().is_some()
 }
@@ -709,8 +711,9 @@ pub fn user_agent_header_line() -> String {
 /// `CStr::from_ptr`; two host-test rigs each calling this concurrently read a half-written string
 /// (`c_str.rs` UB panic). Production calls it once at boot, so nothing there changes.
 ///
-/// This binds the system libcurl ([`CurlStack::System`]); boot calls [`global_init_with`] with the
-/// stored HTTP/3 switch instead.
+/// As the FIRST call in the process it binds the system libcurl ([`CurlStack::System`]); after an
+/// earlier [`global_init_with`] it binds nothing and returns that call's answer. Boot calls
+/// [`global_init_with`] with the stored HTTP/3 switch.
 pub fn global_init() -> bool {
     global_init_with(CurlStack::System)
 }
@@ -731,6 +734,8 @@ fn global_init_once(stack: CurlStack) -> bool {
     if BUNDLED_STACK_BUILT && stack == CurlStack::System {
         plx_base::eventlog::log("net: HTTP/3 (experimental) is off — the bundled curl stack is not loaded");
     }
+    // `curl_stack_tests::global_init_once_hands_the_loader_to_bind_curl_uncalled` pins this exact
+    // line: the loader is passed, never called here, so only `bind_curl` decides whether it runs.
     let verdict = bind_curl(stack, load_bundled, || curl::load(None));
     match verdict {
         plx_base::dynlib::Loaded::Ok(soname) => {
@@ -5219,6 +5224,28 @@ mod curl_stack_tests {
         let bundled_before = bundled();
         assert_eq!(global_init_with(CurlStack::BundledFirst), first);
         assert_eq!(bundled(), bundled_before, "a later BundledFirst call rebinds nothing");
+    }
+
+    /// `bind_curl`'s rule is only the guarantee if `global_init_once` goes through it with the real
+    /// loaders: the bundle loader handed over uncalled, and called nowhere else in the body. A
+    /// source scan, like boot.rs's ordering tests: the needles are split with `concat!` so this
+    /// test's own text can never be what they match.
+    #[test]
+    fn global_init_once_hands_the_loader_to_bind_curl_uncalled() {
+        let source = include_str!("net.rs");
+        let body = source
+            .split_once(concat!("fn global_init_", "once(stack: CurlStack) -> bool {"))
+            .expect("global_init_once")
+            .1;
+        let body = &body[..body.find("\n}\n").expect("the end of global_init_once")];
+        assert!(
+            body.contains(concat!("bind_curl(stack, load_", "bundled, || curl::load(None))")),
+            "global_init_once binds through bind_curl with the real loaders"
+        );
+        assert_eq!(body.matches(concat!("load_", "bundled")).count(), 2,
+            "one mention in the comment above the call, one as bind_curl's argument");
+        assert!(!body.contains(concat!("load_", "bundled(")), "the bundle loader is never called here");
+        assert_eq!(body.matches(concat!("curl::", "load(")).count(), 1, "the system loader only inside bind_curl's closure");
     }
 
     #[test]

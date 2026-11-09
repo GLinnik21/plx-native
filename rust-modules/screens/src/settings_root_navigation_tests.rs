@@ -806,6 +806,42 @@ fn the_http3_switch_is_offered_only_in_a_build_that_ships_the_stack() {
     assert_eq!(page.form.index_of(&RootId::Http3).is_some(), plx_net::net::BUNDLED_STACK_BUILT);
 }
 
+/// **A stored HTTP/3 on is not part of a page that does not offer the switch**: a session written
+/// by a stack build and read by a build without one leaves the row, the switch state and the
+/// canonical digest exactly as an off would; offered, the same session shows it on.
+#[test]
+fn a_stored_http3_on_reaches_the_root_only_where_the_switch_is_offered() {
+    let _g = plx_base::testlock::serial();
+    let _sess = multi_user_session("root-http3-unoffered");
+    let stored = plx_plex::plex::session::peek();
+    plx_plex::plex::session::save(&stored.with_http3_experimental(true));
+    let digest = |page: &RootPage| {
+        let mut w = Canon::new();
+        page.state.write(&mut w);
+        let mut probe = String::new();
+        page.state.probe(&mut probe);
+        (w.finish(), probe)
+    };
+    let mut page = RootPage::new(EntryId(0), cx(None).views.directory);
+    page.offers_http3 = false;
+    page.rebuild(cx(None).views.directory);
+    assert!(!page.state.http3, "not offered: the stored on does not reach the switch state");
+    assert_eq!(page.form.index_of(&RootId::Http3), None);
+    let (unoffered, probe) = digest(&page);
+    assert!(!probe.contains("http3"), "{probe}");
+    plx_plex::plex::session::save(&stored);
+    page.rebuild(cx(None).views.directory);
+    assert_eq!(digest(&page).0, unoffered, "the digest is the one a stored off gives");
+
+    plx_plex::plex::session::save(&stored.with_http3_experimental(true));
+    page.offers_http3 = true;
+    page.rebuild(cx(None).views.directory);
+    assert!(page.state.http3, "offered: the row reads the stored on");
+    assert!(digest(&page).1.contains("http3=true"));
+    assert_ne!(digest(&page).0, unoffered);
+    plx_plex::plex::session::save(&stored);
+}
+
 /// **Flipping the HTTP/3 switch asks the app to write it** (`PreferenceCmd::Http3`), shows the
 /// pick at once, and the row returns to the stored value once the write answers; nothing here
 /// touches curl, which binds once per launch.
@@ -815,9 +851,10 @@ fn flipping_the_http3_switch_writes_it_through_the_app_and_shows_the_pick() {
     let _sess = multi_user_session("root-http3-flip");
     let mut page = RootPage::new(EntryId(0), cx(None).views.directory);
     assert!(!page.state.http3, "off by default");
-    // the page answers an Activate on the row's key whether or not this build draws the row; drive
-    // the action through a form that offers it
-    page.form.set(root_form(&RootInputs { http3_offered: true, ..inputs_for(true) }), None);
+    // drive the offered shape (a host build never carries the stack's loader)
+    page.offers_http3 = true;
+    page.rebuild(cx(None).views.directory);
+    assert!(page.form.index_of(&RootId::Http3).is_some(), "premise: the row is offered");
     let mut present = Present::new();
     let mut out = Vec::new();
     let mut fx = Effects::new(&mut out, MachineId::Session, &mut present);
