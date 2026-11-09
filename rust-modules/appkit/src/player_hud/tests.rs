@@ -268,6 +268,27 @@ fn the_transport_clocks_are_rasterised_before_the_draw_and_one_second_ahead() {
     plx_ui::panel_motion::PanelMotion::drain_queued_text_for_test();
     assert!(plx_gfx::text::prewarm_resident_for_test(b"-0:00", sz, 0));
     assert!(plx_gfx::text::prewarm_resident_for_test(b"2:05", sz, 1));
+
+    // The combined remaining label must also be warm for the NEXT displayed second. Warming
+    // only the current suffix would leave one cold rasterisation on every subsequent tick.
+    plx_gfx::text::reset_prewarm_for_test();
+    let with_end = HudModel {
+        playpos_ns: pos,
+        duration_ns: dur,
+        end_time: Some([22, 35]),
+        ..HudModel::default()
+    };
+    warm.queue(&with_end);
+    while plx_gfx::text::prewarm_pending() {
+        plx_ui::panel_motion::PanelMotion::drain_queued_text_for_test();
+    }
+    for text in [b"-0:36 · 22:35".as_slice(), b"-0:35 · 22:35".as_slice()] {
+        assert!(
+            plx_gfx::text::prewarm_resident_for_test(text, sz, 0),
+            "{} was not prewarmed",
+            String::from_utf8_lossy(text),
+        );
+    }
     plx_gfx::text::reset_prewarm_for_test();
 }
 
