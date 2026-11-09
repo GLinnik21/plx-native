@@ -173,9 +173,10 @@ landing line says whether the reply had been acknowledged.
 On the exported window (webOS 5+) the production backend places the window as the probe and Feed do:
 it creates it at the start and places it with the 1920x1080 canvas as the source, then, when the
 service's `videoInfo` reports the coded size, again with that size as the source; the destination is
-always the whole canvas (`uri: exported window placed src=WxH rv=N`). Production never selects that
-binding yet. A debug build composes it for one boot when the file `plxnative-uriexported` exists in the
-install's runtime root (content ignored). Unlike `plxnative-uriprobe`, which is read at each Play, this
+always the whole canvas (`uri: exported window placed src=WxH rv=N`). Production selects that binding
+only for a firmware major in the evidence table described below, which is empty today. A debug build
+composes it for one boot when the file `plxnative-uriexported` exists in the install's runtime root
+(content ignored). Unlike `plxnative-uriprobe`, which is read at each Play, this
 trigger is read once, at boot, so it can be armed only by writing the file BEFORE the app launches: on
 plain `/tmp`, or at the jail's persistent path (routes 1 and 3 under "Arming the trigger" in the tester
 run below). Route 2, through `/proc/<pid>/root` while the app runs, cannot arm it: that write comes after
@@ -185,6 +186,18 @@ production `uri: product binding=Unbound ..` line. A log without it proves nothi
 backend. The viewer still has to opt in to the URI engine, and the override does nothing on a display
 whose mode is not the exported window. Whether the service sends `videoInfo` before the first frame is
 not determined, so the first frames may be placed from the canvas source rectangle.
+
+Production selects the exported window per firmware major, from the table `EXPORTED_STRATA`
+(`rust-modules/play-uri/src/backend.rs`), which is empty today: no release is admitted, so every
+release plays Standard (its boot line reads `major=<n> evidence=none`; a major the table admits reads
+`evidence=table`). An entry is a webOS firmware major as the set reports it, and needs three things
+in this file's Results table, each with the tester log's decisive lines: the major's own image has the
+`parseLoadMessage` `option.windowId` path; a tester's run on that major shows a moving picture with
+sound, with placement and aspect reported right, from the product path or a build whose product
+placement equals the probe's; and a tester's `drive` run passes the drive gate. One exception: a major
+with the image evidence but no tester run is admitted when both neighbouring majors are admitted on
+tester evidence, and its row then says "bracketed, no tester run". Nothing else is inferred from a
+neighbouring major, and a release without an entry plays Standard, with no handoff.
 
 ## Reproducing it
 

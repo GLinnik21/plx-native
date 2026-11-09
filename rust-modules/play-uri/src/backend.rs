@@ -32,17 +32,60 @@ pub trait MonotonicClock { fn now_ms(&self) -> u64; }
 /// `uri-trace:` stream (`uri_trace`).
 pub use plx_playback_contract::uri::Binding;
 
-/// The display path composition chooses for the executor: the ACB plane when the display is in ACB
-/// mode and the same gate the executor re-checks at every Start holds (a handle the library
-/// confirmed initialized, player type 0 (the URI engine's own boot handle); `connectDass` is a developer arm and is not asked for);
-/// otherwise nothing: the exported window is not selected here because no source is certified for
-/// it either. `plane` and `initialized` are the URI engine's own handle's (player type 0, the plane
-/// owner's `facts_of(PlaneHandle::Uri)` and `initialized(PlaneHandle::Uri)`), never Feed's: a normal
-/// boot initializes Feed's handle as player type 10 and the URI engine's as 0.
-pub fn product_binding(display_mode: i32, plane: plx_platform::tv::plane::PlaneFacts, initialized: bool) -> Binding {
+/// The display path composition chooses for the executor, a pure function of what the set and the
+/// boot report:
+///
+///   - the ACB plane when the display is in ACB mode and the same gate the executor re-checks at
+///     every Start holds (a handle the library confirmed initialized, player type 0 (the URI
+///     engine's own boot handle); `connectDass` is a developer arm and is not asked for);
+///   - the exported window ([`Binding::Exported`] on [`EXPORTED_CANVAS`]) when the display is in
+///     `VP_EXPORTED` mode and `firmware_major` is one the table `strata` lists. Production passes
+///     [`EXPORTED_STRATA`], whose doc comment is the evidence rule for an entry; the table is a
+///     parameter (never a `cfg(test)` constant) so a test passes its own. A major of 0, the
+///     unknown answer, is never admitted, whatever the table lists, and nothing is inferred from a
+///     neighbouring major;
+///   - otherwise nothing: a firmware without an entry plays Standard.
+///
+/// `plane` and `initialized` are the URI engine's own handle's (player type 0, the plane owner's
+/// `facts_of(PlaneHandle::Uri)` and `initialized(PlaneHandle::Uri)`), never Feed's: a normal boot
+/// initializes Feed's handle as player type 10 and the URI engine's as 0. A 5+ set has no ACB
+/// handle, so the exported window's answer does not read them.
+pub fn product_binding(display_mode: i32, plane: plx_platform::tv::plane::PlaneFacts, initialized: bool,
+    firmware_major: u32, strata: &[u32]) -> Binding {
     let gate = crate::acb_bind::gate(false, display_mode, plane.handle, plane.player_type, false, initialized);
-    if gate.ready { Binding::Acb } else { Binding::Unbound }
+    if gate.ready {
+        Binding::Acb
+    } else if display_mode == VP_EXPORTED && firmware_major != 0 && strata.contains(&firmware_major) {
+        Binding::Exported { canvas: EXPORTED_CANVAS }
+    } else {
+        Binding::Unbound
+    }
 }
+
+/// The firmware majors on which the product backend selects the exported window
+/// ([`product_binding`]): the only way production ever composes [`Binding::Exported`]. An entry is
+/// a webOS firmware major as `device::info().major` reports it (5 for 5.x, 11 for 11.x). The table
+/// is empty, so every release plays Standard until a major earns an entry.
+///
+/// A major is admitted only with all three parts of the evidence in `docs/uri-mode.md`'s Results
+/// table, each recorded there with the tester log's decisive lines:
+///
+///   - (a) decompile: that major's own firmware image has the `parseLoadMessage` `option.windowId`
+///     path;
+///   - (b) picture: a tester's run on that major shows a moving picture with sound, reports the
+///     placement and the aspect as right, and ends `summary load=ok playing=yes
+///     currentTime_advanced=yes window=exported`, from the product path or from a build whose
+///     product placement equals the probe's (so the run speaks for the product);
+///   - (c) controls: a tester's `drive` run on that major passes the drive gate.
+///
+/// One exception: a major with (a) but no tester run is admitted when BOTH neighbouring majors
+/// (`major - 1` and `major + 1`) are already admitted on tester evidence, and its own image shows
+/// the same `windowId` path. Its Results row then says "bracketed, no tester run". One admitted
+/// neighbour is not a bracket, and a major with no image to read has no (a).
+///
+/// Each entry carries a comment naming its Results row. `0` is never an entry: it is the unknown
+/// answer.
+pub const EXPORTED_STRATA: &[u32] = &[];
 
 /// The canvas the exported window is placed over: the destination of EVERY placement, the whole
 /// 1920x1080 canvas, as Feed (`feed_pump`) and the developer probe (`uriprobe_drive`) place it. Only
@@ -1025,14 +1068,43 @@ mod tests {
     #[test]
     fn composition_selects_the_acb_plane_only_when_the_gate_holds() {
         use plx_platform::tv::plane::PlaneFacts;
-        use plx_platform::tv::sink::{VP_ACB, VP_EXPORTED, VP_NONE};
+        use plx_platform::tv::sink::{VP_ACB, VP_NONE};
         let facts = PlaneFacts { handle: true, player_type: 0 };
-        assert_eq!(product_binding(VP_ACB, facts, true), Binding::Acb);
-        assert_eq!(product_binding(VP_ACB, facts, false), Binding::Unbound, "a created handle is not an initialized one");
-        assert_eq!(product_binding(VP_ACB, PlaneFacts { handle: true, player_type: 10 }, true), Binding::Unbound);
-        assert_eq!(product_binding(VP_ACB, PlaneFacts::ABSENT, true), Binding::Unbound);
-        assert_eq!(product_binding(VP_EXPORTED, facts, true), Binding::Unbound);
-        assert_eq!(product_binding(VP_NONE, facts, true), Binding::Unbound);
+        // The exported-window table has no say on an ACB display: not even a listed major changes
+        // the ACB answer, and a failed gate stays Unbound rather than falling to the exported window.
+        for (major, strata) in [(0, &[][..]), (4, &[][..]), (11, &[11][..]), (11, &[][..])] {
+            let at = |mode, plane, initialized| product_binding(mode, plane, initialized, major, strata);
+            assert_eq!(at(VP_ACB, facts, true), Binding::Acb, "major {major}");
+            assert_eq!(at(VP_ACB, facts, false), Binding::Unbound, "a created handle is not an initialized one");
+            assert_eq!(at(VP_ACB, PlaneFacts { handle: true, player_type: 10 }, true), Binding::Unbound);
+            assert_eq!(at(VP_ACB, PlaneFacts::ABSENT, true), Binding::Unbound);
+            assert_eq!(at(VP_NONE, facts, true), Binding::Unbound);
+        }
+    }
+
+    /// The exported window is selected per firmware major, from the table the caller passes
+    /// (production's is `EXPORTED_STRATA`; a test passes its own, so no table forks the build).
+    #[test]
+    fn the_exported_window_is_selected_only_for_a_listed_firmware_major() {
+        use plx_platform::tv::plane::PlaneFacts;
+        use plx_platform::tv::sink::{VP_ACB, VP_NONE};
+        let exported = Binding::Exported { canvas: EXPORTED_CANVAS };
+        assert_eq!(EXPORTED_CANVAS, (1_920, 1_080));
+        // A 5+ set has no ACB handle; a handle that exists must not change the answer either.
+        for plane in [PlaneFacts::ABSENT, PlaneFacts { handle: true, player_type: 0 }] {
+            for initialized in [false, true] {
+                let at = |mode, major, strata: &[u32]| product_binding(mode, plane, initialized, major, strata);
+                assert_eq!(at(VP_EXPORTED, 11, &[11]), exported, "a listed major");
+                assert_eq!(at(VP_EXPORTED, 5, &[5, 11]), exported, "one of several");
+                assert_eq!(at(VP_EXPORTED, 10, &[11]), Binding::Unbound, "an unlisted major");
+                assert_eq!(at(VP_EXPORTED, 12, &[11]), Binding::Unbound, "nothing is inferred from a neighbour");
+                assert_eq!(at(VP_EXPORTED, 0, &[11]), Binding::Unbound, "unknown firmware");
+                assert_eq!(at(VP_EXPORTED, 0, &[0, 11]), Binding::Unbound, "0 is never admitted, even if listed");
+                assert_eq!(at(VP_EXPORTED, 11, &[]), Binding::Unbound, "an empty table admits nothing");
+                assert_eq!(at(VP_NONE, 11, &[11]), Binding::Unbound, "no window path to bind");
+                assert_ne!(at(VP_ACB, 11, &[11]), exported, "the table is for the exported window only");
+            }
+        }
     }
 
     use super::*;
