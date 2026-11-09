@@ -511,4 +511,35 @@ mod tests {
             assert_eq!(row_watch_state(&f), poster_mark(&f), "a leaf must not answer twice");
         }
     }
+
+    /// **The deck's footer cue says what OK does**, read from the one deck-press rule
+    /// (`deck_press().press_plays()`): the Play glyph while OK plays, the Info glyph while it opens
+    /// the page (the default). Drawn at full pop, the cue's slot is open and the glyph is painted;
+    /// swapping the two arms fails.
+    #[test]
+    fn the_deck_footer_cue_is_the_play_glyph_under_play_and_the_info_glyph_under_details() {
+        use plx_media::route::{deck_press, restore_deck_press, DeckPress};
+        use plx_ui::icons::Icon;
+        struct Restore(DeckPress);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                restore_deck_press(self.0);
+            }
+        }
+        let _g = plx_base::testlock::serial();
+        let _restore = Restore(deck_press());
+        let m = row(false, 30 * 60 * 1000);
+        let facts = of(&m);
+        let tile = plx_ui::cards::Tile { rect: plx_ui::Rect::new(0.0, 0.0, 420.0, 236.0), scale: 1.0, radius: 12.0, focused: true, pop: 1.0 };
+        let measure = plx_ui::fixture::FixtureMeasure;
+        for (mode, shown, absent) in [(DeckPress::Play, Icon::Play, Icon::Info), (DeckPress::Details, Icon::Info, Icon::Play)] {
+            restore_deck_press(mode);
+            let icons: Vec<Icon> = plx_ui::draw_census::capture_icons(|| deck_overlay(plx_ui::Painter::recording(), &facts, &tile, &measure))
+                .into_iter()
+                .map(|(icon, _)| icon)
+                .collect();
+            assert!(icons.contains(&shown), "{mode:?}: the footer cue is {shown:?}, drew {icons:?}");
+            assert!(!icons.contains(&absent), "{mode:?}: no {absent:?} cue beside it, drew {icons:?}");
+        }
+    }
 }
