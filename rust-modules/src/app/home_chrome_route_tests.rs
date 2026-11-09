@@ -173,6 +173,22 @@ fn present_home_stops(w: &mut World) {
     w.d.input.hit.swap();
 }
 
+/// **One wheel notch is one directional step**, whatever its size: the notch becomes a single Down
+/// (away from you) or Up key, press and release, and never a run of them or a continuous scroll.
+#[test]
+fn one_wheel_notch_is_one_directional_step() {
+    use plx_machine::machine::{Edge, InputKind, Key};
+    for (dy, key) in [(-1, Key::Down), (-6, Key::Down), (1, Key::Up), (9, Key::Up)] {
+        let events = super::wheel_input(dy, super::test_support::tick(1));
+        let keys: Vec<_> = events.iter().filter_map(|e| match e.kind {
+            InputKind::Key { key, edge, .. } => Some((key, edge)),
+            _ => None,
+        }).collect();
+        assert_eq!(keys, [(key, Edge::Down), (key, Edge::Up)], "wheel {dy}: one press of one key");
+        assert_eq!(events.len(), 2, "wheel {dy}: nothing but that press");
+    }
+}
+
 /// **A Magic Remote user can reach the shelves either side of the one the page rests on.** The page
 /// rests the focused shelf at one fixed line, so the shelf above it stands off the top and the one
 /// below it stands cut by the bottom margin. The wheel is the direction key it stands for

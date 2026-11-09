@@ -562,7 +562,7 @@ fn pointer_hit_column_matches_the_drawn_card_at_every_scroll() {
     for scroll in [0.0, 415.0, 830.0] {
         for col in 0..24 {
             assert_eq!(
-                col_at(card_x(col, scroll) + CARD_W * 0.5, scroll, 24),
+                col_at(card_x(&RowStyle::HOME, col, scroll) + CARD_W * 0.5, scroll, 24),
                 Some(col)
             );
         }
@@ -647,11 +647,12 @@ fn drawn_card_geometry_includes_press_but_its_rest_anchor_does_not() {
         context.press.scale = press;
         context.press.owner = Some(key);
         let placed = Focusable::<TestHost>::place(&s, &key.elem, &context, At::Drawn).unwrap();
-        assert!((placed.rect.w - CARD_W * pop_of(&s, snapshot.view(), Some(key), 0, 0) * press).abs() < 0.01);
-        assert!((placed.rest_rect.w - CARD_W * RowStyle::HOME.focus_scale).abs() < 0.01);
+        let w = s.row_style(0).w;
+        assert!((placed.rect.w - w * pop_of(&s, snapshot.view(), Some(key), 0, 0) * press).abs() < 0.01);
+        assert!((placed.rest_rect.w - w * s.row_style(0).focus_scale).abs() < 0.01);
         context.press = PressRead::default();
         let opener = s.focused_rect(Some(key), &context, At::Drawn).unwrap();
-        assert!((opener.w - CARD_W * pop_of(&s, snapshot.view(), Some(key), 0, 0)).abs() < 0.01);
+        assert!((opener.w - w * pop_of(&s, snapshot.view(), Some(key), 0, 0)).abs() < 0.01);
     }
 }
 
@@ -662,7 +663,7 @@ fn the_card_anchor_rect_tracks_the_drawn_card_through_scroll_and_snap() {
             let es = scroll * sp;
             for c in 0..8usize {
                 for &focus in &[1.0f32, RowStyle::HOME.focus_scale] {
-                    let base = Rect::new(card_x(c, es), 176.0 + CARD_DY, CARD_W, CARD_H);
+                    let base = Rect::new(card_x(&RowStyle::HOME, c, es), 176.0 + CARD_DY, CARD_W, CARD_H);
                     let r = base.scaled(focus);
                     // magnification is about the card's CENTRE — the anchor must not slide
                     assert!(
@@ -1648,7 +1649,8 @@ fn restore_after_n_idle_ticks_at_the_hero_arrives_popped() {
     let _guard = plx_base::testlock::serial();
     let mut state = plx_data::pms::PmsState::default();
     let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
-    plx_data::pms::seed_for_test(&mut state, &adapter, 3, plx_data::pms::HubState::Ready);
+    // a poster shelf first (the Continue Watching row is in view on the hero's page, so no door)
+    plx_data::pms::seed_grid_for_test(&mut state, &adapter, 1, 3);
     let snapshot = plx_data::pms::hubs_snapshot(&state);
     let view = snapshot.view();
     let full = RowStyle::HOME.focus_scale;
@@ -1676,7 +1678,8 @@ fn a_deliberate_dive_after_idle_ticks_at_the_hero_grows_from_rest() {
     let _guard = plx_base::testlock::serial();
     let mut state = plx_data::pms::PmsState::default();
     let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
-    plx_data::pms::seed_for_test(&mut state, &adapter, 3, plx_data::pms::HubState::Ready);
+    // a poster shelf first (the Continue Watching row is in view on the hero's page, so no door)
+    plx_data::pms::seed_grid_for_test(&mut state, &adapter, 1, 3);
     let snapshot = plx_data::pms::hubs_snapshot(&state);
     let view = snapshot.view();
     let full = RowStyle::HOME.focus_scale;
@@ -1967,7 +1970,8 @@ fn a_partially_visible_focused_row_allows_hover_to_its_neighbors_only() {
     let _guard = plx_base::testlock::serial();
     let mut state = plx_data::pms::PmsState::default();
     let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
-    plx_data::pms::seed_for_test(&mut state, &adapter, 2, plx_data::pms::HubState::Ready);
+    // a poster shelf first (the Continue Watching row is in view on the hero's page, so no door)
+    plx_data::pms::seed_grid_for_test(&mut state, &adapter, 1, 2);
     let snapshot = plx_data::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     s.snap.jump(1.0);
@@ -2022,7 +2026,9 @@ fn quick_down_then_ok_activates_the_hero_still_visible_before_the_snap_midpoint(
     let _press = deck_press_is(plx_media::route::DeckPress::Play);
     let mut state = plx_data::pms::PmsState::default();
     let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
-    plx_data::pms::seed_for_test(&mut state, &adapter, 2, plx_data::pms::HubState::Ready);
+    // the door is the shelf under the Continue Watching row (the row itself is in view on the hero's page)
+    plx_data::pms::seed_named_hubs_for_test(&mut state, &adapter, 2, &[
+        ("home.continue", "", "Continue Watching"), ("home.movies.recent", "/hubs/recent", "Recent")]);
     let snapshot = plx_data::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     s.carousel = Some((plx_plex::plex::ServerId::UNSET, "2".into()));
@@ -2030,7 +2036,7 @@ fn quick_down_then_ok_activates_the_hero_still_visible_before_the_snap_midpoint(
         entry: s.entry,
         elem: HERO_PLAY_ELEM,
     };
-    let card = first_card(&s);
+    let card = FocusKey { entry: s.entry, elem: s.rows[1].elems[0] };
     let move_event = ScreenEvent::FocusMoved {
         from: Some(hero),
         to: card,
@@ -3199,7 +3205,7 @@ fn assert_shelves_laid_out(s: &HomeScreen) {
     for (row, shelf) in s.grid.shelves.iter().enumerate() {
         let want = top + flow - s.grid.scroll_y.pos * s.snap.pos;
         assert_eq!(shelf.base_y(), want, "row {row} is not where the layout puts it");
-        flow += ui_cards::ROW_PITCH_FIXED + shelf.under_band();
+        flow += style_of(&s.rows[row].identity).pitch_fixed() + shelf.under_band();
     }
 }
 
@@ -4839,19 +4845,21 @@ fn a_ghost_keeps_its_own_card_when_another_publication_lands_mid_fade() {
 #[test]
 fn a_continue_watching_card_that_arrives_fades_in() {
     let _guard = plx_base::testlock::serial();
-    let (mut state, mut s) = landing_home(5);
+    // Three stills and a fourth arriving: the deck's stills are 420 wide, so the fourth lands on
+    // screen (a sixth would arrive past the right edge, where there is nothing to fade in).
+    let (mut state, mut s) = landing_home(3);
     let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
-    plx_data::pms::seed_for_test(&mut state, &adapter, 6, plx_data::pms::HubState::Ready);
+    plx_data::pms::seed_for_test(&mut state, &adapter, 4, plx_data::pms::HubState::Ready);
     let after = plx_data::pms::hubs_snapshot(&state);
     tick_n(&mut s, after.view(), None, 10, 2);
-    assert_eq!(s.rows[0].elems.len(), 6);
+    assert_eq!(s.rows[0].elems.len(), 4);
     assert!(s.grid.shelves[0].landing_pending(), "the arrival is playing");
     tick_n(&mut s, after.view(), None, 20, 120);
     assert!(!s.grid.shelves[0].landing_pending());
 }
 
 #[test]
-fn a_dormant_home_adopts_a_landing_without_playing_it() {
+fn a_landing_on_the_continue_watching_row_plays_on_the_heros_page_where_the_row_is_in_view() {
     let _guard = plx_base::testlock::serial();
     let (mut state, mut s) = landing_home(6);
     s.snap.jump(0.0);
@@ -4859,8 +4867,8 @@ fn a_dormant_home_adopts_a_landing_without_playing_it() {
     plx_data::pms::remove_test_item(&mut state, "2");
     let after = plx_data::pms::hubs_snapshot(&state);
     tick_n(&mut s, after.view(), None, 10, 3);
-    assert!(!s.grid.shelves[0].landing_pending());
-    assert!(!s.grid.shelves[0].has_ghosts());
+    assert!(s.grid.shelves[0].landing_pending(), "the row stands whole under the billboard, so a card leaving it plays");
+    assert!(s.grid.shelves[0].has_ghosts());
 }
 
 #[test]
@@ -5615,8 +5623,9 @@ fn home_hands_the_continue_watching_shelf_the_deck_policy_under_nothing() {
         TEST_UNDER_POSTERS.with(|cell| cell.set(Some(UnderPosters { title, details: UnderPostersLadder::None.movie_parts(), show_details: UnderPostersLadder::None.show_parts(), sort_value: false })));
         let s = screen(snapshot.view());
         assert_eq!(s.rows[0].identity, HomeHubIdentity::ContinueWatching);
-        assert_eq!(s.grid.shelves[0].band_h(), tall, "title {title}: the deck keeps its progress line's band");
-        assert_eq!(band_open_of(true), ui_cards::band_open_for(tall), "title {title}");
+        let _ = tall;
+        assert_eq!(s.grid.shelves[0].band_h(), 0.0, "title {title}: no label block hangs under the deck's stills");
+        assert_eq!(band_open_of(true), ui_cards::band_open_for(0.0), "title {title}: and no band opens for one");
         s.grid.shelves.iter().zip(&s.rows).filter(|(_, row)| row.identity != HomeHubIdentity::ContinueWatching)
             .for_each(|(shelf, _)| assert_eq!(shelf.band_h(), if title { plx_ui::caption_policy::BAND_ONE_LINE } else { 0.0 },
                 "title {title}: an ordinary shelf follows the setting"));
@@ -5766,50 +5775,6 @@ fn the_edge_glide_moves_home_a_hover_does_not_and_a_click_rests_its_card() {
     assert_eq!((s.grid.scroll_target, s.snap_target), (rest_scroll(rows - 1, rows, band_open_of(false)), 1.0));
 }
 
-/// **The shelf peeking under the hero is clickable, and its click brings it into view.** On the
-/// top of Home the first shelf's posters show at the bottom of the screen, but nothing could be
-/// clicked there until the page was scrolled (the shelves registered no stops
-/// while the hero was up). Now its cards are stops (hovering them takes no focus from the hero), a
-/// click on one scrolls the page down to it, and that click does not open it; once in view, a click
-/// opens it as usual.
-#[test]
-fn a_card_peeking_under_the_hero_is_clickable_and_its_click_brings_it_into_view() {
-    let _guard = plx_base::testlock::serial();
-    let mut state = plx_data::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
-    plx_data::pms::seed_for_test(&mut state, &adapter, 2, plx_data::pms::HubState::Ready);
-    let snapshot = plx_data::pms::hubs_snapshot(&state);
-    let view = snapshot.view();
-    let mut s = screen(view);
-    s.layout_grid();
-    assert!(s.snap.pos < 0.5, "premise: the hero is up");
-    let hero = FocusKey { entry: s.entry, elem: HERO_PLAY_ELEM };
-    let card = first_card(&s);
-    let context = cx(view, Some(hero));
-    let mut frame = DrawFrame::new(&context, Painter::root());
-    s.record_stops(&mut frame, view);
-    let stops = frame.into_stops();
-    let stop = *stops.iter().find(|stop| stop.key == card).expect("the peeking card is a stop");
-    assert!(stop.rect.y < SCR_H && stop.rect.y + stop.rect.h > SCR_H, "premise: the card peeks, cut by the bottom: {:?}", stop.rect);
-    assert_eq!(stop.hover, Hover::OnlyIfFocused, "a hover there takes no focus from the hero");
-    let mut map = HitMap::new();
-    map.fill(stops);
-    map.swap();
-    let (x, y) = (stop.rect.cx(), (stop.rect.y + SCR_H) / 2.0);
-    let hit = map.resolve(Some(card.entry), PointerKind::Click, x, y, Some(hero));
-    assert_eq!((hit.focus, hit.activate), (Some(card), Some((card, Activate::Press))), "its visible part takes the click");
-    // the click as the dispatcher delivers it: focus by the pointer, then the click itself
-    step(&mut s, view, Some(card), &ScreenEvent::FocusMoved { from: Some(hero), to: card, by: By::Pointer });
-    step(&mut s, view, Some(card), &ScreenEvent::Input(InputEvent { at: Tick::default(),
-        source: plx_machine::machine::Source::Script, kind: InputKind::Click { x, y, hit: Some(card.elem) } }));
-    assert_eq!(s.snap_target, 1.0, "the click brings the page down to the shelf");
-    let commit = |s: &mut HomeScreen, id| step(s, view, Some(card), &ScreenEvent::PressCommit(plx_machine::machine::PressId(id))).1;
-    assert!(!has_home(&commit(&mut s, 1), |r| matches!(r, HomeReq::Detail { .. })), "that click does not open the card");
-    for i in 1..=90 { step(&mut s, view, Some(card), &ScreenEvent::Tick(Tick { ms: i * 16, dt_us: 16_667 })); }
-    assert!(s.snap.pos > 0.99, "the page has come down to the shelf: {}", s.snap.pos);
-    assert!(has_home(&commit(&mut s, 2), |r| matches!(r, HomeReq::Detail { .. })), "a click once it is in view opens it");
-}
-
 /// **The pointer's sideways glide moves the shelf under it, and the shelf stays there.** A shelf
 /// wider than the screen glides by the `Pan` the application sends while the pointer rests at a
 /// side edge; neither its focus nor a hover pulls it back, and a click on one of its cards brings
@@ -5848,4 +5813,179 @@ fn the_sideways_glide_moves_the_shelf_under_the_pointer_and_a_click_brings_it_ba
     tick(&mut s, first);
     tick(&mut s, first);
     assert!(s.grid.shelves[0].scroll() < 1.0, "a click on its first card brings the shelf back to it: {}", s.grid.shelves[0].scroll());
+}
+
+// ---- The Continue Watching row of stills (the 2026-11 handoff, PR "Row") ------------------------
+
+/// **The Continue Watching row is a row of 420 x 236 stills** at the shared still radius, 28 apart,
+/// with no label block under them: the shelf below it follows by the row's own (shorter) pitch.
+#[test]
+fn the_continue_watching_row_is_a_row_of_420_by_236_stills_under_no_label_block() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_named_hubs_for_test(&mut state, &adapter, 3, &[
+        ("home.continue", "", "Continue Watching"), ("home.movies.recent", "/hubs/recent", "Recent")]);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let view = snapshot.view();
+    let mut s = screen(view);
+    s.snap.jump(1.0);
+    s.layout_grid();
+    assert_eq!(s.rows[0].identity, HomeHubIdentity::ContinueWatching);
+    assert!(s.rows.len() > 1, "premise: a poster shelf follows");
+    let style = s.row_style(0);
+    assert_eq!((style.w, style.h, style.gap, style.radius), (420.0, 236.0, 28.0, plx_ui::theme::STILL_RADIUS));
+    let (a, b) = (drawn_rect(&s, view, None, 0, 0), drawn_rect(&s, view, None, 0, 1));
+    assert_eq!((a.w, a.h, b.x - a.x), (420.0, 236.0, 448.0), "420 x 236 tiles on a pitch of 448");
+    assert_eq!(s.grid.shelves[0].band_h(), 0.0, "no label block under the stills");
+    let below = s.grid.base_y(1) - s.grid.base_y(0);
+    assert_eq!(below, RowStyle::STILL.pitch_fixed() + ui_cards::LABEL_BAND_COLLAPSED,
+        "the poster shelf below follows by the stills' own pitch, not a poster row's");
+    assert!(below < ui_cards::ROW_PITCH_FIXED + ui_cards::LABEL_BAND_COLLAPSED);
+    assert_eq!(drawn_rect(&s, view, None, 1, 0).w, CARD_W, "poster shelves are unchanged");
+}
+
+/// **A focused still pops to 1.09 where it stands and each neighbour eases 10 px away from it**, on
+/// the pop's own spring: the gap the pop closes (28 - 18.9) opens to about 19. A poster shelf's
+/// neighbours do not move.
+#[test]
+fn a_focused_still_pops_in_place_and_its_neighbours_ease_away() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 4, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let view = snapshot.view();
+    let mut s = screen(view);
+    s.snap.jump(1.0);
+    s.snap_target = 1.0;
+    s.layout_grid();
+    let key = FocusKey { entry: s.entry, elem: s.rows[0].elems[1] };
+    let rest: Vec<Rect> = (0..4).map(|c| drawn_rect(&s, view, None, 0, c)).collect();
+    pop_card(&mut s, view, key, 120);
+    let popped: Vec<Rect> = (0..4).map(|c| drawn_rect(&s, view, Some(key), 0, c)).collect();
+    let scale = RowStyle::STILL.focus_scale;
+    assert!((popped[1].w - 420.0 * scale).abs() < 0.5 && (popped[1].cy() - rest[1].cy()).abs() < 0.01, "pops in place, no vertical lift");
+    assert!((popped[0].x - (rest[0].x - 10.0)).abs() < 0.5, "the tile before steps back 10 px");
+    assert!((popped[2].x - (rest[2].x + 10.0)).abs() < 0.5 && (popped[3].x - (rest[3].x + 10.0)).abs() < 0.5, "those after step on 10 px");
+    let gap = popped[2].x - (popped[1].x + popped[1].w);
+    assert!((gap - 19.1).abs() < 0.7, "the gap beside a focused still is about 19 px: {gap}");
+    assert_eq!(popped[0].y, rest[0].y, "a neighbour moves along the row only");
+}
+
+// ---- The page rests at the hero or the grid, never in between (the 2026-11 handoff, PR "Scroll") ----
+
+/// A Home with the Continue Watching row and two poster shelves, on the hero's page (`snap` 0).
+fn scroll_home() -> (plx_data::pms::PmsState, plx_data::pms::HubsSnapshot, HomeScreen) {
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_named_hubs_for_test(&mut state, &adapter, 5, &[
+        ("home.continue", "", "Continue Watching"), ("home.movies.recent", "/hubs/recent", "Recent"),
+        ("home.movies.genre", "/hubs/genre", "Genre")]);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let mut s = screen(snapshot.view());
+    assert_eq!(s.rows[0].identity, HomeHubIdentity::ContinueWatching);
+    s.snap.jump(0.0);
+    s.snap_target = 0.0;
+    s.layout_grid();
+    (state, snapshot, s)
+}
+
+fn card_key(s: &HomeScreen, row: usize, col: usize) -> FocusKey<u32> {
+    FocusKey { entry: s.entry, elem: s.rows[row].elems[col] }
+}
+
+fn moved(s: &mut HomeScreen, view: HubsView<'_>, from: Option<FocusKey<u32>>, to: FocusKey<u32>, by: By) {
+    step(s, view, Some(to), &ScreenEvent::FocusMoved { from, to, by });
+}
+
+/// **Focus coming onto the Continue Watching row never scrolls the page**: the row already stands
+/// whole at the hero's resting place, so Down from the billboard moves focus onto its first still
+/// and the page stays on the hero (`snap` 0, the rest scroll untouched), and the still pops there.
+#[test]
+fn focus_entering_the_continue_watching_row_leaves_the_page_where_it_is() {
+    let _guard = plx_base::testlock::serial();
+    let (_state, snapshot, mut s) = scroll_home();
+    let view = snapshot.view();
+    let hero = FocusKey { entry: s.entry, elem: HERO_PLAY_ELEM };
+    let first = card_key(&s, 0, 0);
+    let before = s.grid.scroll_target;
+    moved(&mut s, view, Some(hero), first, By::Dir);
+    tick_n(&mut s, view, Some(first), 0, 90);
+    assert_eq!(s.snap_target, 0.0, "the page stays on the hero");
+    assert!(s.snap.pos < 0.01, "and does not dive: {}", s.snap.pos);
+    assert_eq!(s.grid.scroll_target, before, "the rest scroll is untouched");
+    assert!(!s.free, "a key's move is not a pointer's");
+    assert!(pop_of(&s, view, Some(first), 0, 0) > 1.05, "the still pops where it stands: {}", pop_of(&s, view, Some(first), 0, 0));
+    assert!((drawn_rect(&s, view, Some(first), 0, 0).cy() - (PEEK_Y + CARD_DY + 118.0)).abs() < 0.5, "at the row's place under the billboard");
+    // sideways along the row is no door either
+    let second = card_key(&s, 0, 1);
+    moved(&mut s, view, Some(first), second, By::Dir);
+    assert_eq!((s.snap_target, s.grid.scroll_target), (0.0, before));
+}
+
+/// **Down from the row reaches the grid, Up from the shelf under it comes back and the page
+/// stays, and Up from the row reaches the hero.** The page rests at one of two places and moves
+/// only when a vertical move leaves the row.
+#[test]
+fn the_page_rests_at_the_hero_or_the_grid_and_moves_only_when_a_move_leaves_the_row() {
+    let _guard = plx_base::testlock::serial();
+    let (_state, snapshot, mut s) = scroll_home();
+    let view = snapshot.view();
+    let (still, poster, deep) = (card_key(&s, 0, 0), card_key(&s, 1, 0), card_key(&s, 2, 0));
+    let hero = FocusKey { entry: s.entry, elem: HERO_PLAY_ELEM };
+    moved(&mut s, view, Some(hero), still, By::Dir);
+    // Down: the next shelf takes focus and the page goes to the grid, the stills staying on top
+    moved(&mut s, view, Some(still), poster, By::Dir);
+    tick_n(&mut s, view, Some(poster), 0, 120);
+    assert_eq!(s.snap_target, 1.0, "Down reaches the grid");
+    assert!(s.snap.pos > 0.99);
+    assert_eq!(s.grid.scroll_target, 0.0, "the stills stay the top row, the next shelf under them");
+    // Up from the shelf: back on the stills, and the page stays where it was
+    moved(&mut s, view, Some(poster), still, By::Dir);
+    tick_n(&mut s, view, Some(still), 120, 120);
+    assert_eq!((s.snap_target, s.grid.scroll_target), (1.0, 0.0), "the page stays on the grid");
+    assert!(s.snap.pos > 0.99, "no snap back to the hero when focus returns to the row");
+    // deeper shelves rest by the ordinary rule
+    moved(&mut s, view, Some(still), deep, By::Dir);
+    assert_eq!(s.grid.scroll_target, 0.0, "(the settle itself waits for the tick)");
+    tick_n(&mut s, view, Some(deep), 240, 2);
+    assert!(s.grid.scroll_target > 0.0, "the third row rests below the first two");
+    moved(&mut s, view, Some(deep), still, By::Dir);
+    tick_n(&mut s, view, Some(still), 242, 2);
+    assert_eq!(s.grid.scroll_target, 0.0);
+    // Up from the row: the hero's page
+    moved(&mut s, view, Some(still), hero, By::Dir);
+    tick_n(&mut s, view, Some(hero), 244, 120);
+    assert_eq!((s.snap_target, s.grid.scroll_target), (0.0, 0.0), "Up reaches the hero");
+    assert!(s.snap.pos < 0.01);
+}
+
+/// **Hover never moves the page**: a pointer taking a still on the hero's page changes focus, and
+/// neither the page's resting place nor its scroll; a click on a still leaves it where it is too.
+#[test]
+fn hovering_a_still_changes_focus_but_not_the_page() {
+    let _guard = plx_base::testlock::serial();
+    let (_state, snapshot, mut s) = scroll_home();
+    let view = snapshot.view();
+    let (a, b) = (card_key(&s, 0, 0), card_key(&s, 0, 2));
+    let hero = FocusKey { entry: s.entry, elem: HERO_PLAY_ELEM };
+    // the row's stills are hoverable on the hero's page, where a poster shelf is not
+    let context = cx(view, Some(hero));
+    let mut frame = DrawFrame::new(&context, Painter::root());
+    s.record_stops(&mut frame, view);
+    let stops = frame.into_stops();
+    let stop = stops.iter().find(|stop| stop.key == a).expect("a still is a stop");
+    assert_eq!(stop.hover, Hover::Focus, "the pointer takes a still on the hero's page");
+    assert!(stops.iter().filter(|stop| stop.key.elem != HERO_PLAY_ELEM && s.locate(stop.key.elem) .is_some_and(|l| matches!(l, Located::Item(row, _) if row > 0)))
+        .all(|stop| stop.hover == Hover::OnlyIfFocused), "a shelf under the row does not take it");
+    let before = (s.snap_target, s.grid.scroll_target);
+    moved(&mut s, view, Some(hero), a, By::Pointer);
+    moved(&mut s, view, Some(a), b, By::Pointer);
+    tick_n(&mut s, view, Some(b), 0, 60);
+    assert_eq!((s.snap_target, s.grid.scroll_target), before, "a hover scrolls nothing");
+    assert!(s.free, "the pointer holds the page where it is");
+    step(&mut s, view, Some(b), &ScreenEvent::Input(InputEvent { at: Tick::default(),
+        source: plx_machine::machine::Source::Script, kind: InputKind::Click { x: 700.0, y: 900.0, hit: Some(b.elem) } }));
+    assert_eq!(s.snap_target, 0.0, "a click on a still does not dive the page either");
 }

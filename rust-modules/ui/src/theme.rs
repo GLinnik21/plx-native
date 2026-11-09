@@ -1297,6 +1297,14 @@ pub const CARD_RING_RAD: f32 = 14.0;
 /// than a zoom.
 pub const EP_CARD_FOCUS_SCALE: f32 = 1.04;
 
+/// Corner radius of the Continue Watching row's landscape tile (the handoff's `still-radius`); the
+/// tile's size and gap are the episode strip's own ([`crate::card_row::RowStyle::EPISODE`]).
+pub const STILL_RADIUS: f32 = 12.0;
+
+/// How far each neighbour of a focused Continue Watching tile steps away from it, in px (the
+/// handoff's `still-ease`; [`crate::card_row::RowStyle::neighbour_ease`]).
+pub const STILL_EASE: f32 = 10.0;
+
 /// How far the focused episode still rises, in px, at full focus — with [`EP_CARD_FOCUS_SCALE`] it
 /// separates the focused card from the row instead of merely enlarging it in place.
 pub const EP_CARD_FOCUS_LIFT: f32 = 6.0;
