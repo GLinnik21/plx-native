@@ -662,15 +662,16 @@ fn hud_model(
     let scrub_ns = plx_media::player::TX.scrub_ns.load(Relaxed);
     let advancing = plx_media::player::state(ps) == plx_media::player::PlaybackState::Playing;
     let (is_episode, is_movie) = meta.now_playing().map_or((false, false), |n| (n.is_real_episode, n.is_movie));
-    let projected_end_time = if plx_media::route::hud_end_time()
-        && (is_episode || is_movie)
-        && !plx_media::route::is_preview(ps)
-        && advancing
-        && !viewer_paused
-        && !seeking
-        && !loading
-        && scrub_ns < 0
-    {
+    let projected_end_time = if plx_appkit::player_hud::model::end_time_is_eligible(
+        plx_media::route::hud_end_time(),
+        is_episode || is_movie,
+        plx_media::route::is_preview(ps),
+        advancing,
+        viewer_paused,
+        seeking,
+        loading,
+        scrub_ns >= 0,
+    ) {
         let rate = plx_media::player::applied_rate(ps).unwrap_or(plx_media::player::RATE_NORMAL);
         clock::unix_seconds()
             .and_then(|now| plx_appkit::player_hud::model::projected_end_unix_seconds(
