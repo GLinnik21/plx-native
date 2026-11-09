@@ -10,6 +10,8 @@
   "settings.system.section": "Systeem",
   "settings.auto_sign_in.title": "Automatisch inloggen",
   "settings.auto_sign_in.detail": "Profielkeuze overslaan bij het starten van de app.",
+  "settings.hud_end_time.title": "Geschatte eindtijd",
+  "settings.hud_end_time.detail": "Toont de verwachte lokale eindtijd van films en afleveringen.",
   "settings.trailers.title": "Trailers automatisch afspelen",
   "settings.trailers.detail": "Speel na een moment op een titel de trailer met geluid af.",
   "settings.resolution.title": "Resolutie interface",
