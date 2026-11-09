@@ -16,6 +16,8 @@ plx_base::dynlib! {
 }}
 
 const CURLOPT_CONNECT_ONLY: c_int = 141;
+const CURLOPT_HTTP_VERSION: c_int = 84;
+const CURL_HTTP_VERSION_1_1: c_long = 2;
 const CURLINFO_ACTIVESOCKET: c_int = 0x50_0000 + 44;
 const CURLE_OK: c_int = 0;
 const CURLE_COULDNT_RESOLVE_HOST: c_int = 6;
@@ -84,6 +86,7 @@ pub fn open(
             require_trust_store(curl_easy_setopt_ptr(easy.0, CURLOPT_CAINFO, bundle.as_ptr() as *const c_void))
                 .map_err(|_| OpenError::Refused("CURLOPT_CAINFO"))?;
         }
+        require(curl_easy_setopt_long(easy.0, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1), "CURLOPT_HTTP_VERSION")?;
         require(curl_easy_setopt_long(easy.0, CURLOPT_CONNECT_ONLY, 1), "CURLOPT_CONNECT_ONLY")?;
         curl_easy_setopt_ptr(easy.0, CURLOPT_URL, url.as_ptr() as *const c_void);
         curl_easy_setopt_long(easy.0, CURLOPT_NOSIGNAL, 1);

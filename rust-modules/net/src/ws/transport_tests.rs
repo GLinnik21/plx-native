@@ -105,14 +105,15 @@ impl Drop for Pem {
     }
 }
 
-fn certificate() -> (Arc<rustls::ServerConfig>, Pem) {
+fn certificate(alpn: &[&[u8]]) -> (Arc<rustls::ServerConfig>, Pem) {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let rcgen::CertifiedKey { cert, signing_key } =
         rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_owned()]).unwrap();
-    let config = rustls::ServerConfig::builder()
+    let mut config = rustls::ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(vec![cert.der().clone()], rustls::pki_types::PrivateKeyDer::from(signing_key))
         .unwrap();
+    config.alpn_protocols = alpn.iter().map(|protocol| protocol.to_vec()).collect();
     let path = std::env::temp_dir().join(format!(
         "plxnative-ws-{}-{:?}.pem",
         std::process::id(),
@@ -125,7 +126,11 @@ fn certificate() -> (Arc<rustls::ServerConfig>, Pem) {
 type TlsStream = rustls::StreamOwned<rustls::ServerConnection, TcpStream>;
 
 fn serve_wss(script: impl FnOnce(Peer<TlsStream>) + Send + 'static) -> (String, Pem, JoinHandle<()>) {
-    let (config, pem) = certificate();
+    serve_wss_offering(&[], script)
+}
+
+fn serve_wss_offering(alpn: &[&[u8]], script: impl FnOnce(Peer<TlsStream>) + Send + 'static) -> (String, Pem, JoinHandle<()>) {
+    let (config, pem) = certificate(alpn);
     let (port, server) = serve(move |stream| {
         let tls = rustls::StreamOwned::new(rustls::ServerConnection::new(config).unwrap(), stream);
         script(Peer::upgrade(tls).0);
@@ -281,7 +286,7 @@ fn a_certificate_outside_the_bundle_is_refused() {
         return;
     }
     let (url, _served, server) = serve_wss(|_| {});
-    let (_, other) = certificate();
+    let (_, other) = certificate(&[]);
     let (_outbox, inbox) = channel().unwrap();
     let end = go(trusting(&url, &other), &inbox, &mut |event| panic!("{event:?}"));
     let _ = server.join();
@@ -437,6 +442,24 @@ fn a_peer_that_never_pauses_cannot_hold_off_a_cancel() {
     server.join().unwrap();
     assert_eq!(end, End::Cancelled);
     assert!(took < Duration::from_secs(1), "{took:?}");
+}
+
+#[test]
+fn a_server_that_offers_h2_still_gets_the_http_1_1_upgrade() {
+    let _serial = plx_base::testlock::serial();
+    if !curl_ready() {
+        return;
+    }
+    let (url, pem, server) = serve_wss_offering(&[b"h2", b"http/1.1"], |mut peer| {
+        peer.send(Opcode::Close, &1000u16.to_be_bytes());
+        assert_eq!(close_code(&peer.next().unwrap()), 1000);
+    });
+    let (_outbox, inbox) = channel().unwrap();
+    let mut opened = false;
+    let end = go(trusting(&url, &pem), &inbox, &mut |event| opened |= event == Event::Opened);
+    let _ = server.join();
+    assert!(opened, "{end:?}");
+    assert_eq!(end, End::Closed { code: Some(1000), reason: String::new() });
 }
 
 #[test]
