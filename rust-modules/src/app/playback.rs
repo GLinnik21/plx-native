@@ -719,6 +719,24 @@ pub(crate) fn commit_track(
     }
 }
 
+#[derive(Default)]
+pub(crate) struct PlayerRequestOutcome {
+    pub slot_refresh: bool,
+    pub exiting: bool,
+    pub back_cursor: Option<(super::input::BackCursorTarget, plx_screens::registry::BackCursorChange)>,
+}
+
+pub(crate) fn back_cursor_target(pages: &plx_ui::dispatch::Dispatcher<super::bridge::AppHost>)
+    -> Option<super::input::BackCursorTarget>
+{
+    if pages.nav.suspended || pages.surface_up() {
+        return None;
+    }
+    super::bridge::player(pages)?;
+    let instance = pages.nav.top_page()?.inst.as_ref()?.id;
+    Some((plx_machine::machine::MachineId::Instance(instance), plx_media::route::playback_trace_generation()))
+}
+
 /// **Perform what a player overlay decided** (§14): the panel owns its own state and its own
 /// input, but not the playback — seeking, pausing, applying a quality rung and leaving for a
 /// detail page all need the player adapter, the route or the trail, none of which a screen may
@@ -735,21 +753,27 @@ pub(crate) fn player_requests(
     bridge: &mut super::bridge::Bridge,
     ok_armed: &mut bool,
     press: &mut plx_ui::press::Press,
-) -> bool {
+) -> PlayerRequestOutcome {
     use plx_screens::registry::PlayerReq;
-    let mut slot_refresh = false;
+    let mut performed = PlayerRequestOutcome::default();
+    let cursor_target = back_cursor_target(pages);
     // Accepted user intent always wins the frame, even if its terminal effect was queued later.
     let auto_retired = reqs.iter().any(|r| matches!(r, PlayerReq::Exit | PlayerReq::CancelAutoSkip(_)));
     let auto_blocked = reqs.iter().any(|r| matches!(r, PlayerReq::Exit | PlayerReq::SeekTo(_)
         | PlayerReq::Transport(_) | PlayerReq::Command(_) | PlayerReq::ArmControlRow | PlayerReq::StandIn | PlayerReq::CancelAutoSkip(_)));
     for req in reqs {
         match req {
+            PlayerReq::BackCursor { owner, playback, change } => {
+                if Some((owner, playback)) == cursor_target {
+                    performed.back_cursor = Some(((owner, playback), change));
+                }
+            }
             PlayerReq::CancelAutoSkip(id) => {
                 bridge.publish_marker_preferences(now);
                 if bridge.marker_preferences().scope == id.scope && plx_media::route::playback_trace_generation() == id.playback
                     && super::bridge::player(pages).is_some_and(|screen| screen.auto_skip_entry() == id.entry) {
                     bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::MarkSkipped(id.marker));
-                    slot_refresh = true;
+                    performed.slot_refresh = true;
                 }
             }
             PlayerReq::AutoSkip { id, reply } => {
@@ -777,7 +801,7 @@ pub(crate) fn player_requests(
                     && plx_media::player::is_playing(&player.session)
                     && super::bridge::player(pages).is_some_and(|screen| screen.accepts_auto_skip(id)) {
                     perform_skip_prompt(player, pa, repause_at, plx_appkit::skip_pill::prompt_for(id.marker), refresh_hubs, pages, bridge);
-                    slot_refresh = true;
+                    performed.slot_refresh = true;
                     outcome = OfferOutcome::Applied;
                 }
                 pages.emit(plx_machine::machine::MachineId::Nav, plx_machine::machine::Fx::Deliver(reply,
@@ -844,16 +868,17 @@ pub(crate) fn player_requests(
             // the row becomes the discs on the next resolve.
             PlayerReq::DismissOffer(marker) => {
                 bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::MarkSkipped(marker));
-                slot_refresh = true;
+                performed.slot_refresh = true;
             }
             // The STOP key, a BACK with nothing else open and the failure read-out's own BACK
             // escape all reach the same ritual.
             PlayerReq::Exit => {
+                performed.exiting = true;
                 exit_player(player, pa, repause_at, refresh_hubs, pages);
             }
         }
     }
-    slot_refresh
+    performed
 }
 
 // (`reveal_played_episode` stood here. It answered one question — "is the page this session was

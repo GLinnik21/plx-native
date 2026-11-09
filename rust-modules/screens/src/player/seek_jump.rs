@@ -278,7 +278,7 @@ mod tests {
         ] {
             page.slot = ControlSlot::Discs(controls);
             page.hud.nav.focus = GROUP_SCRUB;
-            page.hud.visible_at_press = true;
+            page.hud.until = 5_000;
             // UP from the scrubber is the engine's: the declared link lands the row's own seat.
             let mut travel = Rig::on_session(&page, EntryId(9), &playback.session);
             travel.key(&mut page, consts::SDLK_UP, 0, Edge::Down, 1_000);
@@ -350,15 +350,15 @@ mod tests {
         );
         key(&playback.session, &mut page, consts::SDLK_UP, Edge::Down, 2_550);
         // UP raises or moves the HUD; simulate dismissing it again without moving the playhead.
-        page.hud.visible_at_press = false;
+        page.hud.dismissed = true;
         assert_eq!(
             key(&playback.session, &mut page, right, Edge::Down, 2_600),
             vec![PlayerReq::CommitSeek(53_000_000_000)]
         );
-        page.hud.visible_at_press = true;
+        page.hud.dismissed = false;
         key(&playback.session, &mut page, right, Edge::Down, 2_650);
         page.scrub.cancel();
-        page.hud.visible_at_press = false;
+        page.hud.dismissed = true;
         assert_eq!(
             key(&playback.session, &mut page, right, Edge::Down, 2_700),
             vec![PlayerReq::CommitSeek(53_000_000_000)]
@@ -421,7 +421,7 @@ mod tests {
         let _interval =
             player_hud::SkipIntervalGuard::set(plx_media::route::SkipInterval::Seconds10);
         let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
-        page.hud.visible_at_press = true;
+        page.hud.until = 5_000;
         assert!(key(&playback.session, &mut page, consts::SDLK_RIGHT, Edge::Down, 1_000).is_empty());
         assert_eq!(page.scrub.ns, 50_000_000_000);
         assert!(key(&playback.session, &mut page, consts::SDLK_RIGHT, Edge::Up, 1_020).is_empty());

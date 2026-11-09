@@ -31,6 +31,7 @@ use super::*;
 pub(crate) struct Pointer {
     pub(crate) dpad_mode: bool,  // D-pad input owns focus; pointer motion below the gate is ignored
     pub(crate) cur_hidden: bool, // the pointer is hidden right now (LG's hide or the transparent cursor)
+    back_cursor: Option<BackCursorOwner>,
     pub(crate) mot_accum: f32,   // motion accumulated since D-pad mode was entered, in logical px
     pub(crate) prev_mx: f32,     // last motion's position, for that accumulation (-1 = none yet)
     pub(crate) prev_my: f32,
@@ -52,11 +53,21 @@ pub(crate) struct Pointer {
     /// The pointer resting in the top or bottom edge band scrolls the page ([`EdgeScroll`]).
     pub(crate) edge: EdgeScroll,
 }
+/// The mounted player and its playback generation.
+pub(crate) type BackCursorTarget = (plx_machine::machine::MachineId, u32);
+
+struct BackCursorOwner {
+    target: BackCursorTarget,
+    // Back may take over a hide already installed by the idle or D-pad path.
+    installed: bool,
+}
+
 impl Pointer {
     /// Pointer mode, cursor shown, nothing held or dragging — where the loop starts.
     pub(crate) const IDLE: Pointer = Pointer {
         dpad_mode: false,
         cur_hidden: false,
+        back_cursor: None,
         mot_accum: 0.0,
         prev_mx: -1.0,
         prev_my: -1.0,
@@ -66,6 +77,55 @@ impl Pointer {
         ok_from_click: false,
         edge: EdgeScroll::IDLE,
     };
+
+    pub(crate) fn back_cursor_active(&self) -> bool {
+        self.back_cursor.is_some()
+    }
+
+    pub(crate) fn note_cursor_motion(&mut self) {
+        if self.cur_hidden && !self.back_cursor_active() {
+            unsafe { super::boot::show_cursor_after_motion(); }
+            self.cur_hidden = false;
+        }
+    }
+
+    pub(crate) fn click_is_ok(&self, on_control: bool, transparent: bool) -> bool {
+        (transparent && self.back_cursor_active())
+            || click_is_ok(self.dpad_mode, self.mot_accum, on_control, transparent)
+    }
+
+    pub(crate) fn sync_back_cursor(
+        &mut self,
+        current: Option<BackCursorTarget>,
+        request: Option<(BackCursorTarget, plx_screens::registry::BackCursorChange)>,
+    ) {
+        use plx_screens::registry::BackCursorChange;
+        if self.back_cursor.as_ref().is_some_and(|owner| Some(owner.target) != current) {
+            self.release_back_cursor(false);
+        }
+        let Some((target, change)) = request.filter(|(target, _)| Some(*target) == current) else {
+            return;
+        };
+        match change {
+            BackCursorChange::Hide => {
+                let installed = !self.cur_hidden || self.back_cursor.as_ref().is_some_and(|owner| owner.installed);
+                unsafe { hide_cursor(); }
+                self.cur_hidden = true;
+                self.back_cursor = Some(BackCursorOwner { target, installed });
+            }
+            BackCursorChange::Wake => self.release_back_cursor(true),
+            BackCursorChange::Release => self.release_back_cursor(false),
+        }
+    }
+
+    fn release_back_cursor(&mut self, motion: bool) {
+        if self.back_cursor.take().is_some_and(|owner| motion || owner.installed) {
+            // On LG's backend this is a no-op. Only a blank cursor installed by
+            // this app can be restored here.
+            unsafe { super::boot::show_cursor_after_motion(); }
+            self.cur_hidden = false;
+        }
+    }
 }
 
 /// How far from the top or bottom of the screen the pointer scrolls the page ([`EdgeScroll`]).
@@ -1224,6 +1284,7 @@ pub(crate) unsafe fn begin_fresh_press(
         }
         ptr.dpad_mode = true;
         ptr.cur_hidden = true;
+        ptr.back_cursor = None;
         ptr.mot_accum = 0.0;
         ptr.edge.stop();
     }
@@ -1250,9 +1311,8 @@ pub(crate) fn note_global_press(
         return; // an unsupported key is not input the app acted on — see `begin_fresh_press`
     }
     // What the user could SEE, and only then the un-dismiss — one operation, because the order is
-    // load-bearing (`HudState::note_fresh_press`). Taken for every BOUND key on every screen: it is
-    // one cheap predicate, and the alternative is each player arm remembering to ask first, which
-    // is exactly the ordering the pointer path had to be fixed for once already.
+    // load-bearing (`HudState::note_fresh_press`). The bare player takes its own sample in
+    // delivery order and passes no HUD here.
     if let Some(hud) = hud {
         hud.note_fresh_press(ps, now, viewer_paused);
     }

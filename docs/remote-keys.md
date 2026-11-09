@@ -127,7 +127,7 @@ before `SDL_Init` (§5).
 
 | Code | Field | `Key` | What it does |
 | --- | --- | --- | --- |
-| `484` (`0x1e4`) | `wcode` | `PointerHidden` | the Magic Remote reporting its pointer auto-hid. The ladder's arm has an empty body — the press is consumed there rather than reaching the arms below. evdev 614, an LG-private code and not a key. |
+| `484` (`0x1e4`) | `wcode` | `PointerHidden` | LG's pointer-hidden notification. It stops edge scrolling and is consumed before fresh-press bookkeeping. Evdev 614 is an LG-private code. |
 
 ### Reachable but deliberately unbound
 
@@ -278,7 +278,9 @@ build anyone can install; `docs/lab-diagnostics.md`). The guarded half lives in
 `app/input.rs::note_global_press`, split
 out so `make check` can grade it — `begin_fresh_press` itself calls `hide_cursor`, which acts on
 whatever pointer calls the process's SDL exports, so a host test that reached it would be grading the
-host's SDL rather than the press.
+host's SDL rather than the press. The bare player samples the HUD for bound keys in ordered screen
+delivery. A second Back in the same SDL batch sees the first one's dismissal, and an intervening
+bound press spends any exit arming. The LG pointer-hidden notification only stops edge scrolling.
 
 **The digit term reads `sym` and not `wcode`, diverging from `screens::profiles::digit_of`, on purpose.**
 48–57 in the scancode field are `]` `\` `#` `;` `'` `` ` `` `,` `.` `/` and CapsLock (the digits'
@@ -307,6 +309,13 @@ alone: travel is summed since the last arrow press, so a hand holding the remote
 gate (159–600 px measured between arrowing to a disc and pressing OK), and over full-screen video
 the player never leaves D-pad mode. A click that lands on a control after real travel is still
 that control's, so pointing at a button and clicking it keeps working.
+
+When Back dismisses the player transport, the last delivered pointer position becomes the anchor.
+If there is no position yet, the next motion sets the anchor. The HUD stays down until the sum of
+the horizontal and vertical distances from the anchor reaches four logical pixels. The motion that
+reaches the threshold raises the HUD and restores a transparent cursor installed by Back. While
+that cursor is held, its OK click takes the same paired key path. On firmware with the LG visibility
+API, webOS handles the pointer's return.
 
 **The one place it deliberately over-approximates.** The digits count as bound *everywhere*, because
 the who's-watching PIN keypad types from them, so a number press on Home or during playback still
