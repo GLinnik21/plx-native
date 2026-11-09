@@ -5,5 +5,9 @@
   "settings.playback.instant_dpad_seeking.on": "Уключана",
   "settings.playback.dolby_vision": "Dolby Vision",
   "settings.playback.dolby_vision.copy": "«Аўтаматычна» выкарыстоўвае Dolby Vision, калі тэлевізар яго падтрымлівае. «Выкл.» прайгравае слой HDR10. Файлы без слоя HDR10 канвертуе сервер Plex, і яны могуць не прайгравацца.",
-  "settings.playback.dolby_vision.off": "Выкл."
+  "settings.playback.dolby_vision.off": "Выкл.",
+  "settings.playback.uri_engine": "Рухавік прайгравання",
+  "settings.playback.uri_engine.copy": "Рэжым «Эксперыментальны» дазваляе тэлевізару самастойна атрымліваць файл. Кіраванне застаецца ранейшым. Калі не атрымаецца, відэа пачнецца нанова ў «Стандартным». Некаторыя відэа заўсёды ідуць у ім.",
+  "settings.playback.uri_engine.off": "Стандартны",
+  "settings.playback.uri_engine.on": "Эксперыментальны"
 }

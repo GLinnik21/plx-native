@@ -688,3 +688,65 @@ fn dolby_vision_mode_is_picked_into_the_seated_profiles_record_and_follows_the_s
     restore_profile_rows(&session::peek(), &seat("u1"), Overrides::default());
     assert_eq!(dolby_vision_mode(), DolbyVisionMode::Off, "u1 seated again restores Off");
 }
+
+/// Puts the playback engine's cell and the mirrors back on drop; declared AFTER `serial()`.
+struct EngineBack(plx_plex::plex::session::UriEngine);
+impl Drop for EngineBack {
+    fn drop(&mut self) {
+        unseed_profile_prefs_for_test();
+        restore_uri_engine(self.0);
+    }
+}
+
+/// **The opt-in to the URI engine is the seated profile's own pick and nobody else's.** A profile
+/// that chose `On` reads it; a second profile, an unseated process and a record that chose nothing
+/// read the default `Off`, so the production qualifier answers Unknown for them.
+#[test]
+fn the_uri_engine_opt_in_follows_the_seated_profile_only() {
+    use plx_plex::plex::session::UriEngine;
+    let _g = plx_base::testlock::serial();
+    let _session = session::TempSession::new("restore-uri-engine");
+    let _back = EngineBack(uri_engine());
+    let own = vec![picked("u1", &stamp(), serde_json::json!({"uri_engine": "on"}))];
+    let rec = record(Preferences::default(), own);
+
+    restore(&rec, &seat("u1"), Overrides::default());
+    assert_eq!(uri_engine(), UriEngine::On, "the profile that chose it");
+    restore(&rec, &seat("u2"), Overrides::default());
+    assert_eq!(uri_engine(), UriEngine::Off, "another profile on the same account");
+    restore_uri_engine(UriEngine::On);
+    restore(&rec, &Seat::Unseated, Overrides::default());
+    assert_eq!(uri_engine(), UriEngine::Off, "an unseated process reads the install key, which is the default");
+    restore_uri_engine(UriEngine::On);
+    restore(&record(Preferences::default(), vec![]), &seat("u1"), Overrides::default());
+    assert_eq!(uri_engine(), UriEngine::Off, "a record that chose nothing");
+}
+
+/// **A Settings pick of the playback engine is durable first, then live, and the profile's own.**
+/// It is a Confirm row like its neighbours (`How::settings`), lands in the picking
+/// profile's record only, and a profile seated afterwards still reads the default.
+#[test]
+fn a_confirmed_opt_in_is_stored_as_the_picking_profiles_own_and_no_ones_else() {
+    use plx_plex::plex::session::UriEngine;
+    let _g = plx_base::testlock::serial();
+    let session = session::TempSession::new("pick-uri-engine");
+    let _back = EngineBack(uri_engine());
+    let mut legacy = record(Preferences::default(), vec![]);
+    legacy.client_id = "cid-test".into();
+    session.seated("u1", TOKEN);
+    session::save(&legacy);
+    seed_profile_prefs_for_test(&session::peek());
+    restore_profile_rows(&session::peek(), &seat("u1"), Overrides::default());
+    assert_eq!(uri_engine(), UriEngine::Off, "setup: nobody has opted in");
+    assert!(matches!(How::settings::<UriEnginePref>(std::sync::mpsc::channel().0), How::Confirm(_)));
+
+    assert!(confirm::<UriEnginePref>(UriEngine::On), "the write was durable");
+    assert_eq!(uri_engine(), UriEngine::On, "and only then live");
+    let records = session::load().prefs.profile_prefs;
+    assert_eq!(own_of::<UriEnginePref>(&records, "u1"), Some(UriEngine::On));
+    assert_eq!(own_of::<UriEnginePref>(&records, "u2"), None);
+
+    session.seated("u2", TOKEN);
+    restore_profile_rows(&session::peek(), &seat("u2"), Overrides::default());
+    assert_eq!(uri_engine(), UriEngine::Off, "u2 is not opted in by u1's pick");
+}

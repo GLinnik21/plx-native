@@ -5,5 +5,9 @@
   "settings.playback.instant_dpad_seeking.on": "Włączone",
   "settings.playback.dolby_vision": "Dolby Vision",
   "settings.playback.dolby_vision.copy": "Auto używa Dolby Vision, gdy telewizor go obsługuje. „Wył.” odtwarza warstwę HDR10. Pliki bez warstwy HDR10 konwertuje Twój serwer Plex i mogą się nie odtworzyć.",
-  "settings.playback.dolby_vision.off": "Wył."
+  "settings.playback.dolby_vision.off": "Wył.",
+  "settings.playback.uri_engine": "Silnik odtwarzania",
+  "settings.playback.uri_engine.copy": "Tryb eksperymentalny pozwala telewizorowi samodzielnie strumieniować plik. Sterowanie się nie zmienia. Po błędzie film uruchomi się ponownie w trybie standardowym. Niektóre filmy zawsze go używają.",
+  "settings.playback.uri_engine.off": "Standardowy",
+  "settings.playback.uri_engine.on": "Eksperymentalny"
 }

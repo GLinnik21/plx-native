@@ -595,8 +595,9 @@ pub const URI_MEDIA: &dyn crate::tv::uri::UriMedia = &crate::tv::uri::NoUriMedia
 /// | **`LSRegister(NULL)`** | registered, and `com.webos.applicationManager/getForegroundAppInfo` answered it |
 ///
 /// Ordinary frame-thread callers register as plain anonymous clients, [`register`]. The
-/// feature-gated URI worker (`ls2::uri`) owns its own handle and thread and tries the named
-/// shape `com.webos.media.client.plxprobe` first, preserving the probe's measured identity.
+/// feature-gated URI worker (`ls2::uri`) owns its own handle and thread and registers as the shape its
+/// caller gives it: `com.webos.media.client.plxprobe` first, preserving the probe's measured identity, then
+/// the anonymous client (`play-uri`'s `register_ladder`, which both the probe and the product driver ask).
 /// The role file still decides what such a client may
 /// CALL — the probe proves SAM's read-only method; `launch_home` grades the reply of the one that
 /// matters — and the hub's refusal, when there is one, travels in [`RegisterFail`] to the
@@ -785,8 +786,9 @@ pub mod ls2 {
         register_as(None)
     }
 
-    /// [`register`] under `name`, or anonymously for `None`. The named shape is the developer
-    /// probe's (`uri`): a name the Developer Mode role file grants outbound permission to.
+    /// [`register`] under `name`, or anonymously for `None`. The named shape is the URI
+    /// transport's first rung (`uri`; the order is `play-uri`'s `register_ladder`): a name the Developer
+    /// Mode role file grants outbound permission to.
     pub fn register_as(name: Option<&CStr>) -> Result<Registration, RegisterFail> {
         let mut error: LSError = unsafe { std::mem::zeroed() };
         unsafe { LSErrorInit(&mut error) };

@@ -1412,6 +1412,11 @@ pub struct ResolveEnv {
     /// cross-compatible base layer plays that layer, and one without (Profile 5) is refused
     /// direct play.
     pub dolby_vision_mode: plx_plex::plex::session::DolbyVisionMode,
+    /// The seated profile's playback engine, captured with the modes above for the same reason.
+    /// `On` is the viewer's opt-in to the URI engine: it reaches the qualifier as
+    /// [`OriginalRequest::uri_opt_in`](super::uri_preflight::OriginalRequest::uri_opt_in), so a
+    /// viewer who has not turned it on is never routed to URI.
+    pub uri_engine: plx_plex::plex::session::UriEngine,
     /// The set's Dolby Vision answer (`devcaps::dv::capability`), read once at the request beside
     /// the mode so the worker never reads the process cache. A regression sets it directly: no
     /// test mutates the production `OnceLock` or makes the whole host a DV set.
@@ -2031,14 +2036,44 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                     if p.bitrate > 0 { p.bitrate } else { src_kbps });
                 let (width, height) = plan.playing.as_ref().map_or((0, 0), |p| (p.width, p.height));
                 let quality = if forced { Quality::Original } else { env.quality };
+                // What Standard would decide about this original, from the same rules and the same
+                // frozen inputs it plans from below (the caps, the frozen Dolby Vision decision, the
+                // audio predicate, the container test); the qualifier reads the verdicts and derives
+                // none of them. The server's own decision is not among them: it is a round trip, and
+                // this offer is made before it.
+                let dovi = plan.playing.as_ref().map_or(plx_data::metadata::Dovi::NONE, |item| item.dovi);
+                let dv_decision = frozen_dv_decision(env.dolby_vision_mode, env.dv_capability, dovi, vcodec);
+                let source_decodable = video_direct_plays(vcodec, width, height,
+                    dv_decision.presentation, &env.caps);
+                // The track the URI source would play is the intended one, with no sibling stand-in, and
+                // only the set's own decoder reaches it: the app's lossy decode is Standard's alone.
+                let audio_plays = source_audio.as_ref().is_some_and(|(position, codec, _)| {
+                    match usize::try_from(*position).ok().and_then(|i| tracks.get(i)) {
+                        Some(track) => audio_natively_plays_with(&env.caps, env.direct_play_mode,
+                            &track.codec, track.channels, track.sampling_rate),
+                        // No track list: the Media-level codec stands in, as the direct-play decision
+                        // reads it, and no codec at all is a file with no audio.
+                        None => codec.is_empty() || audio_natively_plays_with(&env.caps,
+                            env.direct_play_mode, codec, 0, 0),
+                    }
+                });
                 let request = super::uri_preflight::OriginalRequest {
                     selection: source_selection,
                     server_origin: client.origin().clone(),
                     source_url: client.direct_play_url(part, &session).to_url(),
                     duration_ms: plan.playing.as_ref().and_then(|p| p.duration_ms),
                     video_codec: vcodec.to_owned(),
-                    dolby_vision: plan.playing.as_ref().map_or(plx_data::metadata::Dovi::NONE, |p| p.dovi),
+                    dolby_vision: dovi,
                     dolby_vision_mode: env.dolby_vision_mode,
+                    uri_opt_in: env.uri_engine == plx_plex::plex::session::UriEngine::On,
+                    standard: super::uri_preflight::StandardDirectPlay {
+                        video: source_decodable,
+                        dolby_vision: dv_decision.presentation.refusal().is_none(),
+                        audio: audio_plays,
+                        // The same `streamable` Standard's own gate below reads: a container it has the
+                        // server remux is not an original the pipeline may take whole.
+                        container: streamable,
+                    },
                     audio_codec: source_audio.as_ref().map_or_else(|| acodec.to_owned(), |(_, codec, _)| codec.clone()),
                     audio_ordinal: source_audio.as_ref().filter(|(position, _, sid)| *position >= 0 && *sid > 0)
                         .map(|(position, _, _)| i64::from(plx_data::metadata::audio_ordinal(tracks, *position as usize))),
@@ -2061,14 +2096,9 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 };
                 if let super::uri_preflight::Verdict::Known(known) = port.qualify(off, request) {
                     // These describe the *source* for a possible later viewer-requested Feed
-                    // conversion. They are not URI admission gates: the native certificate has
-                    // already qualified the original bytes independently of Feed declarations.
-                    let dovi = plan.playing.as_ref().map_or(plx_data::metadata::Dovi::NONE,
-                        |item| item.dovi);
-                    let dv_decision = frozen_dv_decision(env.dolby_vision_mode,
-                        env.dv_capability, dovi, vcodec);
-                    plan.source_decodable = video_direct_plays(vcodec, width, height,
-                        dv_decision.presentation, &env.caps);
+                    // conversion, from the verdicts computed above for the request. The certificate
+                    // is the qualifier's: nothing here re-judges it.
+                    plan.source_decodable = source_decodable;
                     plan.src_dovi = dovi;
                     plan.src_dv_decision = dv_decision;
                     plan.vcodec = vcodec.to_owned();

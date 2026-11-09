@@ -5,5 +5,9 @@
   "settings.playback.instant_dpad_seeking.on": "Вкл.",
   "settings.playback.dolby_vision": "Dolby Vision",
   "settings.playback.dolby_vision.copy": "«Авто» использует Dolby Vision, если телевизор его поддерживает. «Выкл.» воспроизводит слой HDR10. Файлы без слоя HDR10 преобразует сервер Plex, и они могут не воспроизвестись.",
-  "settings.playback.dolby_vision.off": "Выкл."
+  "settings.playback.dolby_vision.off": "Выкл.",
+  "settings.playback.uri_engine": "Механизм воспроизведения",
+  "settings.playback.uri_engine.copy": "Режим «Экспериментальный» позволяет телевизору самому получать файл потоком. Управление остаётся прежним. При сбое видео перезапустится в «Стандартном». Некоторые видео всегда идут в нём.",
+  "settings.playback.uri_engine.off": "Стандартный",
+  "settings.playback.uri_engine.on": "Экспериментальный"
 }
