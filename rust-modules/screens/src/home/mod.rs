@@ -4005,13 +4005,16 @@ impl<H: HomeLike> CardSource<H> for HomeCards<'_> {
         self.item(i).and_then(PmsMovie::resume_frac)
     }
 
-    /// The deck's still carries its footer and scrim (`widgets::still_overlay`, the episode strip's
-    /// cell), and the play mark when a press plays.
+    /// The deck's still carries its one-line footer and scrim (`widgets::still_overlay`): the status
+    /// text and bar, and on the focused card the cue for what OK does (a play glyph while the
+    /// Playback setting says OK plays, an info glyph while it opens the page), opening with the
+    /// card's own focus pop (`Tile::pop`).
     fn overlay(&self, p: Painter, i: usize, tile: &ui_cards::Tile, measure: &dyn plx_machine::machine::Measure) {
         if !self.deck() { return }
         let Some(item) = self.item(i) else { return };
+        let cue = if plx_media::route::deck_press().press_plays() { plx_ui::still_footer::Cue::Play } else { plx_ui::still_footer::Cue::Info };
         plx_ui::widgets::still_overlay(p, &tile_facts::of(item), tile.rect, tile.radius,
-            plx_media::route::deck_press().press_plays(), measure);
+            plx_ui::widgets::StillFooter::Continue { cue, pop: tile.pop }, measure);
     }
 
     /// A card has landed once it has a rating key; the ring's placeholder slot is an empty movie.
