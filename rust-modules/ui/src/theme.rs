@@ -260,6 +260,19 @@ pub mod logo {
     pub const COMPACT_W_MAX: f32 = HERO_W_MAX * COMPACT_BAND_H / HERO_BAND_H;
     /// The compact strip's overscan and following content use this height limit too.
     pub const COMPACT_H_MAX: f32 = 72.0;
+    /// The Continue Watching deck card's logo (`card_art::compose`'s baked composite, 420x236). The
+    /// area is chosen so an ordinary wordmark lands where the covers Plex bakes put theirs (a 5.7:1
+    /// mark 232x41, a 6.7:1 one 253x38, a 3.7:1 one 189x51); tall marks clamp at [`CARD_H_MAX`].
+    pub const CARD_AREA: f32 = 9_600.0;
+    /// The card's logo slot is this tall, and no mark is taller.
+    pub const CARD_BAND_H: f32 = CARD_H_MAX;
+    /// Tall and square marks stop here instead of growing into the card's subject.
+    pub const CARD_H_MAX: f32 = 56.0;
+    /// Wide wordmarks stop here, well inside the 420 px card.
+    pub const CARD_W_MAX: f32 = 270.0;
+    /// The logo's BOTTOM edge sits this far above the card's bottom edge: 12 px clear of the 24 px
+    /// footer text line that rides 12 px above the card bottom.
+    pub const CARD_BOTTOM_INSET: f32 = 48.0;
 }
 
 // ── Accent / control ─────────────────────────────────────────────────────────

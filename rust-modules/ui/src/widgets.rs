@@ -551,7 +551,7 @@ mod art_cycle_tests {
 /// `f` (the shelves compute it from their per-cell spring; the episode/chapters strips from `scale`).
 /// The size a landscape still is transcoded at — [`crate::card_row::RowStyle::EPISODE`]'s tile,
 /// so the server scales once and the texture is 1:1 on the panel.
-const STILL_RES: (c_int, c_int) = (420, 236);
+pub const STILL_RES: (c_int, c_int) = (420, 236);
 /// The box a portrait poster card asks the transcoder for. The collection fan baker requests its
 /// members at this box too, so a member already fetched for a card is a disk hit, not a refetch.
 pub const POSTER_RES: (c_int, c_int) = (250, 375);
@@ -565,7 +565,14 @@ pub const POSTER_RES: (c_int, c_int) = (250, 375);
 /// whole tile exists to replace. Falling back to it at all is still right for the last resort: a
 /// poster, cover-cropped to the tile ([`art_uv`]), answers "which show" even when it cannot answer
 /// "which episode".
+///
+/// **A facts value that opted in to the deck card's artwork** ([`TileFacts::deck`] is `Some`) is
+/// walked by [`crate::card_art::pick`] instead: Plex's cover, our composite, then the Type rung's
+/// plain art in the deck order. The chain above is what every other card draws, unchanged.
 pub fn still_key<'a>(m: &TileFacts<'a>) -> &'a str {
+    if let Some(art) = crate::card_art::pick(m, &crate::card_art::TexProbe) {
+        return art.path;
+    }
     if !m.still.is_empty() {
         m.still
     } else if !m.thumb.is_empty() {

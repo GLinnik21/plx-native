@@ -37,6 +37,9 @@ pub enum LogoRung {
     Hero,
     /// The detail page's pinned compact title, the strip the hero scrolls up into.
     Compact,
+    /// A Continue Watching deck card's logo (420x236): baked into the card's composite
+    /// (`card_art::compose`) and, when there is no logo, its title in type (`title_text`).
+    Card,
     /// A continuous point between two named rungs, at `t` (0 = the first, 1 = the second) — never
     /// authored as a constant, always the live output of [`LogoRung::lerp`] driven by a spring or
     /// other per-frame progress value (the detail hero's trailer-preview logo, shrinking from
@@ -70,6 +73,13 @@ impl LogoRung {
                 theme::logo::COMPACT_H_MAX,
                 theme::logo::COMPACT_W_MAX,
                 theme::size::TITLE,
+            ),
+            LogoRung::Card => (
+                theme::logo::CARD_AREA,
+                theme::logo::CARD_BAND_H,
+                theme::logo::CARD_H_MAX,
+                theme::logo::CARD_W_MAX,
+                theme::size::HEADLINE,
             ),
             LogoRung::Custom { area, band_h, h_max, w_max, fallback_sz } => (area, band_h, h_max, w_max, fallback_sz),
         }
@@ -134,6 +144,23 @@ pub fn place(band: Rect, w: f32, h: f32, align: HAlign) -> Rect {
     Rect::new(x, band.y + band.h - h, w, h)
 }
 
+/// The title in type at `rung`: the run a band draws when its logo is absent, ink
+/// [`theme::TEXT_PRIMARY`]. THE one place the text fallback's size, weight, leading and line count
+/// are decided, so [`HeroLogo::draw`] and a deck card that never draws a live logo (`Card`'s Type
+/// rung, `card_art::needs_type_title`) cannot set the same title two ways. The caller adds the
+/// alignment and the measure (`.h(..)`, `.with_measure(..)`) and places it, bottom-anchored.
+pub fn title_text(rung: LogoRung, title: &str) -> TextView<'_> {
+    title_text_inked(rung, title, theme::TEXT_PRIMARY)
+}
+
+/// [`title_text`] in another ink — the placeholder accounting's sentinel ink in [`HeroLogo::draw`].
+fn title_text_inked(rung: LogoRung, title: &str, ink: [f32; 4]) -> TextView<'_> {
+    let (_, _, _, _, sz) = rung.bounds();
+    let lines = if sz > theme::size::TITLE { theme::hero::TITLE_LINES } else { 1 };
+    TextView::new(title, sz, ink)
+        .bold().leading(sz as f32 * theme::hero::TITLE_LEAD / theme::size::DISPLAY as f32).max_lines(lines)
+}
+
 /// The title band itself: the item's clearLogo if it has resolved, else its title as text. Owning
 /// both halves here is what makes the swap consistent across the three sites — and is why the two
 /// fallbacks that used to paint an unbounded run now elide like home's always did.
@@ -179,9 +206,7 @@ impl<'a> HeroLogo<'a> {
         // in only one run; texture residency is paint state, not logical replay state.
         let (_, _, _, _, sz) = self.rung.bounds();
         let align = self.align.resolve(self.title);
-        let lines = if sz > theme::size::TITLE { theme::hero::TITLE_LINES } else { 1 };
-        let fallback = TextView::new(self.title, sz, theme::TEXT_PRIMARY)
-            .bold().leading(sz as f32 * theme::hero::TITLE_LEAD / theme::size::DISPLAY as f32).max_lines(lines).h(align).with_measure(measure);
+        let fallback = title_text(self.rung, self.title).h(align).with_measure(measure);
         let fallback_h = fallback.measure_h(band.w)
             - (sz as f32 * theme::hero::TITLE_LEAD / theme::size::DISPLAY as f32) + measure.cap_h(sz);
         // The hero draws the item the shelf under it has focused, and that shelf is the server
@@ -213,8 +238,7 @@ impl<'a> HeroLogo<'a> {
         } else {
             crate::placeholder::ink(p, crate::placeholder::Reason::HeroLogoText, self.rk, theme::TEXT_PRIMARY)
         };
-        TextView::new(self.title, sz, ink).bold().leading(sz as f32 * theme::hero::TITLE_LEAD / theme::size::DISPLAY as f32)
-            .max_lines(lines).h(align).with_measure(measure)
+        title_text_inked(self.rung, self.title, ink).h(align).with_measure(measure)
             .draw(p, Rect::new(band.x, band.y + band.h - fallback_h, band.w, fallback_h));
     }
 }
@@ -230,7 +254,7 @@ mod tests {
         assert!(h < band_h(LogoRung::Hero), "paint must be free to be shorter than the title band");
         assert!(w * h <= 60_000.0 + 0.01, "the height floor must not inflate the area");
     }
-    use LogoRung::{Compact, Hero};
+    use LogoRung::{Card, Compact, Hero};
 
     // `fit`/`place`/`band_h` are pure f32 arithmetic over their arguments — no GL, no SDL_ttf, no
     // crate globals — so unlike the catalog-backed Home tests these are ordinary parallel ones, needing
@@ -285,7 +309,7 @@ mod tests {
     /// the mark — which no visual review would reliably catch on an unfamiliar logo.
     #[test]
     fn nothing_overflows_its_column_or_its_ceiling_and_aspect_is_preserved() {
-        for rung in [Hero, Compact] {
+        for rung in [Hero, Compact, Card] {
             let (_, _, h_max, w_max, _) = rung.bounds();
             for a in [
                 0.25f32, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 12.0, 20.0,
@@ -463,6 +487,40 @@ mod tests {
         let above = fit(LogoRung::lerp(Hero, Compact, 1.5), src_w, src_h, col_w);
         let at_1 = fit(LogoRung::lerp(Hero, Compact, 1.0), src_w, src_h, col_w);
         assert_eq!(above, at_1, "t>1 must clamp to t=1");
+    }
+
+    /// The card rung's slot is its own height ceiling, and its logo is the constant-area rule's.
+    #[test]
+    fn the_card_rung_is_a_constant_area_inside_its_slot() {
+        assert_eq!(band_h(Card), theme::logo::CARD_H_MAX);
+        let (w, h) = fit(Card, 1500.0, 300.0, 420.0);
+        assert!((w * h - theme::logo::CARD_AREA).abs() < 0.02, "{w}x{h}");
+        assert!(h <= band_h(Card), "an ordinary wordmark sits inside the slot");
+        assert_eq!(fit(Card, 100.0, 100.0, 420.0), (theme::logo::CARD_H_MAX, theme::logo::CARD_H_MAX), "a square clamps at the ceiling");
+    }
+
+    /// The deck card's Type rung sets its title with `title_text`; it must be, run for run, what
+    /// `HeroLogo::draw` falls back to, at every rung that has a fallback.
+    #[test]
+    fn title_text_is_what_the_hero_logo_falls_back_to() {
+        install_store(true);
+        let measure = crate::fixture::FixtureMeasure;
+        for rung in [Hero, Compact, Card] {
+            for title in ["A Title", "The Unbearably Long Name of the Last House at the Edge of the World"] {
+                let band = Rect::new(96.0, 446.0, 400.0, band_h(rung));
+                let drawn = crate::draw_census::capture_runs(|| {
+                    HeroLogo::new(0, "", title, rung).draw(Painter::recording(), band, &measure);
+                });
+                let tv = title_text(rung, title).h(HAlign::Left.resolve(title)).with_measure(&measure);
+                let (_, _, _, _, sz) = rung.bounds();
+                let h = tv.measure_h(band.w) - tv.line_h() + measure.cap_h(sz);
+                let direct = crate::draw_census::capture_runs(|| {
+                    tv.draw(Painter::recording(), Rect::new(band.x, band.y + band.h - h, band.w, h));
+                });
+                assert!(!drawn.is_empty(), "{rung:?}: nothing drawn");
+                assert_eq!(drawn, direct, "{rung:?} {title}");
+            }
+        }
     }
 
     // ---- the placeholder count of the text fallback -------------------------------------------

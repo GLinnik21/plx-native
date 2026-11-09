@@ -39,6 +39,18 @@ pub struct Resume {
     pub left_ms: i64,
 }
 
+/// The two baked artworks of a Continue Watching deck card, as the keys the poster source knows
+/// them by (`card_art::pick` walks them in order). An empty string is "this source has no key for
+/// the row" (a guid-less item has no `cover`), which is not the same as the card not being a deck
+/// card: that is [`TileFacts::deck`] being `None`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct DeckArt<'a> {
+    /// Plex's own 16:9 cover (title baked in), keyed by the title's catalog id.
+    pub cover: &'a str,
+    /// Our composite: the server's background with its clearLogo baked in once.
+    pub card: &'a str,
+}
+
 /// Everything a poster or a still tile reads of one catalog row, as plain values borrowed from it.
 ///
 /// The application fills this (a screen, from its `PmsMovie`); the widgets take it where they used
@@ -101,6 +113,11 @@ pub struct TileFacts<'a> {
     pub viewed_leaf_count: Option<u32>,
     /// Seconds since the epoch.
     pub added_at: Option<i64>,
+    /// `Some` only on a surface that opted in to the deck card's artwork order (`card_art::pick`:
+    /// Plex's cover, then our composite, then the type rung's art). `None` keeps
+    /// `widgets::still_key`'s chain exactly, so a surface that did not opt in draws what it did
+    /// before. An opted-in card whose keys are both empty is still `Some`.
+    pub deck: Option<DeckArt<'a>>,
 }
 
 impl Tile for TileFacts<'_> {
