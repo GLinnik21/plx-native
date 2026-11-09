@@ -4109,6 +4109,17 @@ impl AmbientWash {
     pub fn drawn_corners(&self) -> [[f32; 3]; 4] {
         self.corners.map(|c| [code(c[0].pos), code(c[1].pos), code(c[2].pos)])
     }
+    /// **Everything [`draw`](Self::draw) and [`draw_ground`](Self::draw_ground) read of the wash**, as
+    /// the exact bits of its twelve positions in corner order, for a caller that has to NAME the
+    /// picture it paints ([`Painter::cached_ground`]).
+    ///
+    /// Not [`drawn_corners`](Self::drawn_corners): those are the corner codes, but `draw_ground` also
+    /// samples the wash's INTERIOR at the corners of each band it cuts (`sample`, then `code`), and
+    /// two washes with the same corner codes can code an interior point one apart. The positions
+    /// decide every pixel, so they are the name.
+    pub fn paint_bits(&self) -> [u32; 12] {
+        std::array::from_fn(|i| self.corners[i / 3][i % 3].pos.to_bits())
+    }
     /// Paint it over `r`. Opaque — this REPLACES what is under it (see the type docs), so it belongs
     /// at the bottom of a screen's draw, standing in for the flat clear.
     ///

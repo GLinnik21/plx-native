@@ -728,6 +728,19 @@ tried first. None of it is reconstructable from the code without repeating the m
   texture uploads are untouched and only the fill goes away. An owned surface asks for it through
   its `Style` instead.
 
+- **A page ground that is not moving is served as ONE quad, and the glass over it never knows.** Home
+  parked at the hero paints its backdrop (wash, photograph, ramp, wedge) once into the region texture
+  (`Painter::cached_ground`, over `gfx::region_paint`) and serves it from there until an input changes:
+  a Continue Watching focus move redraws the shelf over a ground that did not, and the live ground
+  was 2.6M of a 9.5M-cycle frame. The name (`Backdrop::ground_key`) is every input by value, and the
+  picture has NO name while any spring easing it is unlanded (`AmbientWash::at_rest`, the reveal
+  springs' exact-zero velocity, the dive), because a name that moved every frame would fill the
+  texture every frame, which is the live shading plus a full-screen write. The glass is untouched by
+  construction: its discovery walk and every source pass are `backdrop::discovering()` /
+  `blur_source_pass()` frames, where `region_paint` declines, so the ground still declares and draws
+  its primitives there exactly as before and `GLASSDIFF` keys on the same arguments. A ground takes
+  no cascade as a group (`Painter::is_plain`): through a dip, a gain or a translate it is live.
+
 - **Every slow FIELD takes ONE dither whenever it is drawn, and it is not a per-shader decision.**
   An 8-bit framebuffer quantises: Settings over Home measured a 700-row column spanning luma 55.7
   to 59.1 in FOUR levels, treads of 158, 157 and 146 rows. `shaders/dither.glsl` is the answer and
@@ -830,7 +843,7 @@ each blur source job, the visible pass) and each walk ticks. **A page shown as a
 recorded (`placeholder::since`) and re-noted on every frame the image is painted; the pixel oracle
 cannot see a placeholder inside a blended image, so the counter alone vouches for those frames
 (`Dispatcher::held_page_image`). A picture drawn once into the region texture and then served as one
-quad (`Painter::cached_region`, the Settings Under posters preview) keeps the same books itself: it records
+quad (`Painter::cached_region`, the Settings Under posters preview; `Painter::cached_ground`, Home's parked backdrop) keeps the same books itself: it records
 the fill's debt with the key and re-notes it on every frame the texture is served, so its caller books nothing. A frame dump holds no image (every dip frame re-captures the page
 live, `PageImage::step_filmed`), so there the capture's own draw is the debt.
 
