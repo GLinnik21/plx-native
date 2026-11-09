@@ -334,6 +334,12 @@ impl Grid {
                     self.seen = if arrival { Seen::Deliberate(a) } else { Seen::of(by, a) };
                 }
                 self.focus_band(arrived.map(|i| i / self.spec.cols), deliberate);
+                // Focus left the grid's cards: the card it left lets go now, from where its pop is,
+                // as a deliberate move's does on `arm`. Left to the tick, the frame that handles the
+                // key (drawn before its tick) read the card at rest, and it jumped back to its lift.
+                if arrived.is_none() && left.is_some() {
+                    self.pop.let_go();
+                }
                 if let Some(cell) = arrived.filter(|_| deliberate) {
                     // the element is the one the key named, whatever index it has: the card focus
                     // left lets go as its own, and a let-go of the card named is taken up by
