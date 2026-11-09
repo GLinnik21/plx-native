@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-09T04:28:18Z",
+ "generated": "2026-11-09T04:37:24Z",
  "metrics": [
   {
    "change30_pct": 100.9,
@@ -123,18 +123,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 35.1,
-   "change7_pct": 17.6,
+   "change30_pct": 35.0,
+   "change7_pct": 17.5,
    "d30": 343,
-   "delta30": 120.5,
-   "delta7": 69.5,
+   "delta30": 120,
+   "delta7": 69.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 50,
+   "n_now": 51,
    "n_prev": 90,
-   "now": 463.5,
+   "now": 463,
    "prev7": 394.0,
    "shown": true,
    "state": "worse",
@@ -354,18 +354,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 37.2,
-   "change7_pct": 14.3,
+   "change30_pct": 37.4,
+   "change7_pct": 14.5,
    "d30": 230.0,
-   "delta30": 85.5,
-   "delta7": 39.5,
+   "delta30": 86.0,
+   "delta7": 40.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 48,
+   "n_now": 49,
    "n_prev": 82,
-   "now": 315.5,
+   "now": 316,
    "prev7": 276.0,
    "shown": true,
    "state": "flat",
@@ -375,18 +375,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 45.0,
-   "change7_pct": 8.5,
+   "change30_pct": 44.3,
+   "change7_pct": 8.0,
    "d30": 149.0,
-   "delta30": 67.0,
-   "delta7": 17.0,
+   "delta30": 66.0,
+   "delta7": 16.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 48,
+   "n_now": 49,
    "n_prev": 82,
-   "now": 216.0,
+   "now": 215,
    "prev7": 199.0,
    "shown": true,
    "state": "flat",
@@ -396,18 +396,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -39.8,
-   "change7_pct": -1.2,
+   "change30_pct": -40.4,
+   "change7_pct": -2.1,
    "d30": 355.5,
-   "delta30": -141.5,
-   "delta7": -2.5,
+   "delta30": -143.5,
+   "delta7": -4.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 48,
+   "n_now": 49,
    "n_prev": 82,
-   "now": 214.0,
+   "now": 212,
    "prev7": 216.5,
    "shown": true,
    "state": "flat",
@@ -489,9 +489,9 @@
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 48,
+   "n_now": 49,
    "n_prev": 82,
-   "now": 20.0,
+   "now": 20,
    "prev7": 18.0,
    "shown": false,
    "state": "flat",
@@ -590,11 +590,6 @@
    "change_pct": 27.3,
    "commits": [
     {
-     "pr": 1275,
-     "sha": "3ae2ebfbb",
-     "title": "The URI backend returns as plx_play_uri: in the shipping binary, never selected, dev triggers back"
-    },
-    {
      "pr": 1246,
      "sha": "8a3569830",
      "title": "Settings: a viewer's Plex Pass grants intro and credits skipping (auto-skip hidden from Pass holders)"
@@ -638,6 +633,11 @@
      "pr": 1288,
      "sha": "c9470f20f",
      "title": "Fix Magic Remote Back and cursor recovery"
+    },
+    {
+     "pr": 1279,
+     "sha": "8e486d1a2",
+     "title": "Settings > Video & playback > Playback engine: a per-profile opt-in to the URI engine"
     }
    ],
    "from": 333,
@@ -651,11 +651,6 @@
    "change_pct": 25.2,
    "commits": [
     {
-     "pr": 1275,
-     "sha": "3ae2ebfbb",
-     "title": "The URI backend returns as plx_play_uri: in the shipping binary, never selected, dev triggers back"
-    },
-    {
      "pr": 1246,
      "sha": "8a3569830",
      "title": "Settings: a viewer's Plex Pass grants intro and credits skipping (auto-skip hidden from Pass holders)"
@@ -699,6 +694,11 @@
      "pr": 1288,
      "sha": "c9470f20f",
      "title": "Fix Magic Remote Back and cursor recovery"
+    },
+    {
+     "pr": 1279,
+     "sha": "8e486d1a2",
+     "title": "Settings > Video & playback > Playback engine: a per-profile opt-in to the URI engine"
     }
    ],
    "from": 74.8,
@@ -750,6 +750,11 @@
      "pr": 1288,
      "sha": "c9470f20f",
      "title": "Fix Magic Remote Back and cursor recovery"
+    },
+    {
+     "pr": 1279,
+     "sha": "8e486d1a2",
+     "title": "Settings > Video & playback > Playback engine: a per-profile opt-in to the URI engine"
     }
    ],
    "from": 246,
@@ -760,7 +765,7 @@
    "to": 304.0
   },
   {
-   "change_pct": 17.6,
+   "change_pct": 17.5,
    "commits": [
     {
      "pr": 1276,
@@ -801,6 +806,11 @@
      "pr": 1288,
      "sha": "c9470f20f",
      "title": "Fix Magic Remote Back and cursor recovery"
+    },
+    {
+     "pr": 1279,
+     "sha": "8e486d1a2",
+     "title": "Settings > Video & playback > Playback engine: a per-profile opt-in to the URI engine"
     }
    ],
    "from": 394.0,
@@ -808,7 +818,7 @@
    "label": "Wait after merge",
    "since": "2026-11-09",
    "threshold_pct": 15.0,
-   "to": 463.5
+   "to": 463
   }
  ],
  "schema": 2,
