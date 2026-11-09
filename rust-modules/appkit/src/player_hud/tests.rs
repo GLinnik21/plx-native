@@ -1474,7 +1474,7 @@ mod playbar_options {
     use crate::hud_format::compile::{ClockMode, KnobMode, MarkMode};
 
     fn bar(knob: Knob, mark: TransportMark) -> Playbar {
-        Playbar { pos_ns: 600_000_000_000, dur_ns: 1_200_000_000_000, knob, mark, now: 0, clock_grow: 0.0 }
+        Playbar { pos_ns: 600_000_000_000, dur_ns: 1_200_000_000_000, knob, mark, now: 0, end_time: None, clock_grow: 0.0 }
     }
     fn census(b: Playbar, look: PlaybarLook) -> Vec<(u64, Rect)> {
         plx_ui::draw_census::capture(|| draw_playbar_look(Painter::recording(), b, look, &FM))
