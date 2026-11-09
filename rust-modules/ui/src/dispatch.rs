@@ -1420,8 +1420,11 @@ where
                     transition.page_alpha(), self.last_tick.ms, valid,
                     self.page_quiescent);
                 if let Some(alpha) = paint.frozen_alpha() {
+                    // Only a held image blocks: the replacement capture walks the page live to take
+                    // the image it shows, and a blocking layer there refuses the page's own glass in
+                    // that walk, so the image held the glass's text over bare art for its one frame.
                     layers.push(Layer { z: Z(Z::CHROME.0 - 1), rect: canvas(),
-                        blocks: !paint.draws_live(),
+                        blocks: !paint.captures_page(),
                         revision: self.page_snapshot.revision(), composite_alpha: Some(alpha) });
                 } else if eligible && paint == super::containers::transition::PagePaint::Capture {
                     // A capture frame: the source walk draws the page live at full alpha and the
