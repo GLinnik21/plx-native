@@ -615,7 +615,7 @@ fn metadata_reset_rotates_the_adapter_and_fences_a_late_old_worker() {
         guid: "plex://movie/old".into(), ..Default::default()
     }));
     assert!(bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::SetNowPlaying(Some(plx_data::metadata::NowPlaying {
-        is_episode: false, is_real_episode: false, title: "Old Playing".into(), ep_title: String::new(),
+        is_episode: false, is_real_episode: false, is_movie: true, title: "Old Playing".into(), ep_title: String::new(),
         season: 0, index: 0, summary: String::new(), year: 0, dur_ms: 0, rating: String::new(),
         thumb: String::new(), detail_rk: "old-rk".into(),
     }))));
