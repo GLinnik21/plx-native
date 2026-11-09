@@ -928,11 +928,23 @@ fn today_is_a_calendar_date_from_the_wall_clock() {
 
 #[test]
 fn local_clock_time_uses_the_os_timezone_and_checks_time_t_range() {
-    // 2026-11-09 10:19:04 UTC; Europe/Madrid is 11:19 at this instant.
-    assert_eq!(local_clock_time(1_794_219_544), Some([11, 19]));
-    assert_eq!(local_clock_time(0), None);
-    assert_eq!(local_clock_time(-1), None);
-    assert_eq!(local_clock_time(i64::MAX), None);
+    const CHILD: &str = "PLX_LOCAL_CLOCK_TIME_CASE";
+    if std::env::var(CHILD).is_ok() {
+        // 2026-11-09 10:19:04 UTC; Europe/Madrid is 11:19 at this instant.
+        assert_eq!(local_clock_time(1_794_219_544), Some([11, 19]));
+        assert_eq!(local_clock_time(0), None);
+        assert_eq!(local_clock_time(-1), None);
+        assert_eq!(local_clock_time(i64::MAX), None);
+        return;
+    }
+    let name = format!("{}::local_clock_time_uses_the_os_timezone_and_checks_time_t_range",
+        module_path!().split_once("::").unwrap().1);
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", &name, "--test-threads=1"])
+        .env("TZ", "Europe/Madrid").env(CHILD, "1").output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success() && stdout.contains("1 passed"),
+        "local clock time failed under Europe/Madrid:\n{stdout}\n{}", String::from_utf8_lossy(&out.stderr));
 }
 
 #[test]
