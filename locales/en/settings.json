@@ -43,6 +43,14 @@
     "value": "Skip the profile list when the app starts.",
     "description": "Settings, account, onboarding or privacy UI: settings.auto_sign_in.detail"
   },
+  "settings.hud_end_time.title": {
+    "value": "Estimated end time",
+    "description": "Settings, account, onboarding or privacy UI: settings.hud_end_time.title"
+  },
+  "settings.hud_end_time.detail": {
+    "value": "Show the expected local finish time for movies and episodes.",
+    "description": "Settings, account, onboarding or privacy UI: settings.hud_end_time.detail"
+  },
   "settings.trailers.title": {
     "value": "Play trailers automatically",
     "description": "Settings, account, onboarding or privacy UI: settings.trailers.title"
