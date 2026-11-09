@@ -4653,6 +4653,7 @@ impl DetailScreen {
         let now_playing = plx_data::metadata::NowPlaying {
             is_episode: true,
             is_real_episode: true,
+            is_movie: false,
             title: d.title.clone(),
             ep_title: ep.title.clone(),
             season: ep.season,
