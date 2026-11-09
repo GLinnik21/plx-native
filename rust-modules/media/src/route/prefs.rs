@@ -938,6 +938,8 @@ pub fn set_deck_press(mode: DeckPress) -> bool { confirm::<DeckPressPref>(mode) 
 /// no lock.
 /// Whether the seated profile shows the projected end time in the player HUD.
 pub fn hud_end_time() -> bool { HudEndTimePref::live() }
+/// Restore the end-time cell from the active profile without writing it back.
+pub fn restore_hud_end_time(v: bool) { restore_live::<HudEndTimePref>(v) }
 
 pub fn under_posters() -> UnderPosters { UnderPostersPref::live() }
 pub fn restore_under_posters(v: UnderPosters) { restore_live::<UnderPostersPref>(v) }
