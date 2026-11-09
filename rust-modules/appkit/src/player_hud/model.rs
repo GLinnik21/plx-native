@@ -126,7 +126,8 @@ impl Default for HudModel {
 /// The remaining wall time is rounded UP to a whole second, so a projected end is never shown
 /// early. Use the OS timezone conversion only after this calculation: local calendar rules,
 /// including DST transitions, are applied at the projected instant rather than at the start.
-pub fn projected_end_unix_seconds(now_utc: i64, position_ns: i64, duration_ns: i64, rate_permille: i32) -> Option<i64> {
+pub fn projected_end_unix_seconds(now_utc: i64, position_ns: i64, duration_ns: i64, rate_permille: Option<i32>) -> Option<i64> {
+    let rate_permille = rate_permille?;
     if now_utc <= 0 || position_ns < 0 || duration_ns <= position_ns || rate_permille <= 0 {
         return None;
     }
@@ -146,28 +147,29 @@ mod end_time_tests {
     fn projected_finish_uses_remaining_content_time_and_applied_speed() {
         let now = 1_794_219_544;
         let thirty_five_minutes = 35 * 60 * 1_000_000_000i64;
-        assert_eq!(projected_end_unix_seconds(now, 0, thirty_five_minutes, 1000), Some(now + 2100));
-        assert_eq!(projected_end_unix_seconds(now, 0, thirty_five_minutes, 2000), Some(now + 1050));
-        assert_eq!(projected_end_unix_seconds(now, 0, thirty_five_minutes, 500), Some(now + 4200));
-        assert_eq!(projected_end_unix_seconds(now, 0, thirty_five_minutes, 1250), Some(now + 1680));
-        assert_eq!(projected_end_unix_seconds(now, 10 * 60 * 1_000_000_000, 45 * 60 * 1_000_000_000, 1500), Some(now + 1400));
-        assert_eq!(projected_end_unix_seconds(86_390, 0, 20_000_000_000, 1000), Some(86_410),
+        assert_eq!(projected_end_unix_seconds(now, 0, thirty_five_minutes, Some(1000)), Some(now + 2100));
+        assert_eq!(projected_end_unix_seconds(now, 0, thirty_five_minutes, Some(2000)), Some(now + 1050));
+        assert_eq!(projected_end_unix_seconds(now, 0, thirty_five_minutes, Some(500)), Some(now + 4200));
+        assert_eq!(projected_end_unix_seconds(now, 0, thirty_five_minutes, Some(1250)), Some(now + 1680));
+        assert_eq!(projected_end_unix_seconds(now, 10 * 60 * 1_000_000_000, 45 * 60 * 1_000_000_000, Some(1500)), Some(now + 1400));
+        assert_eq!(projected_end_unix_seconds(86_390, 0, 20_000_000_000, Some(1000)), Some(86_410),
             "the projection crosses midnight as a Unix timestamp, not a local clock arithmetic");
     }
 
     #[test]
     fn projected_finish_rejects_unknown_invalid_and_overflowing_inputs() {
         let now = 1_794_219_544;
-        assert_eq!(projected_end_unix_seconds(now, -1, 100, 1000), None);
-        assert_eq!(projected_end_unix_seconds(now, 0, 0, 1000), None);
-        assert_eq!(projected_end_unix_seconds(now, 10, 10, 1000), None);
-        assert_eq!(projected_end_unix_seconds(now, 0, 100, 0), None);
-        assert_eq!(projected_end_unix_seconds(0, 0, 100, 1000), None);
-        assert_eq!(projected_end_unix_seconds(i64::MAX, 0, i64::MAX, 1), None);
+        assert_eq!(projected_end_unix_seconds(now, -1, 100, Some(1000)), None);
+        assert_eq!(projected_end_unix_seconds(now, 0, 0, Some(1000)), None);
+        assert_eq!(projected_end_unix_seconds(now, 10, 10, Some(1000)), None);
+        assert_eq!(projected_end_unix_seconds(now, 0, 100, Some(0)), None);
+        assert_eq!(projected_end_unix_seconds(now, 0, 100, None), None, "unknown applied rate is not assumed to be 1x");
+        assert_eq!(projected_end_unix_seconds(0, 0, 100, Some(1000)), None);
+        assert_eq!(projected_end_unix_seconds(i64::MAX, 0, i64::MAX, Some(1)), None);
     }
 
     #[test]
     fn finish_time_rounds_up_to_a_whole_second() {
-        assert_eq!(projected_end_unix_seconds(100, 0, 1, 1000), Some(101));
+        assert_eq!(projected_end_unix_seconds(100, 0, 1, Some(1000)), Some(101));
     }
 }
