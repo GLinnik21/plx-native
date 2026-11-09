@@ -4616,45 +4616,22 @@ mod lifecycle_regression_tests {
             "the row under the pointer glides to show more on the right: {pans:?}");
     }
 
-    /// **The glide stops on the top bar's buttons and goes on off them, through the real loop**
-    /// with Home's bar presented in the hit map, a pointer resting
-    /// on a tab sends no glide, and moved off it, still at the edge, the page glides again.
+    /// **The top bar's buttons stand clear of the 54 px edge band**, so the glide never has a bar
+    /// button to stop on in the band: Home's bar presented in the hit map reaches no higher than the
+    /// band's bottom edge (at 80 px a tab's top sat inside the band, which is what the glide's
+    /// "stops on a bar button and goes on off it" rule was for; that rule stays for a taller bar).
     #[test]
-    fn the_edge_glide_stops_on_a_bar_button_and_goes_on_off_it_through_the_real_loop() {
+    fn the_top_bars_buttons_stand_clear_of_the_edge_band() {
         let _serial=plx_base::testlock::serial();
         let mut app=app();
         super::super::bridge::nav_root(&mut app.pages, AppArg::Home);
         frame(&mut app,0);
         app.pages.present_bar_stops(&app.bridge);
         let band=super::super::input::EDGE_BAND;
-        let tab=app.pages.input.hit.front().iter()
-            .find(|stop| stop.key.elem >= plx_ui::dispatch::STRIP_BASE && stop.rect.y < band - 10.0)
-            .map(|stop| stop.rect).expect("premise: the bar has a button reaching into the top band");
-        // a height inside both the band and the button
-        let row=(tab.y.max(0.0) + band) / 2.0;
-        let off=(5..1900).step_by(5).map(|x| x as f32)
-            .find(|&x| app.pages.input.hit.top_at(x, row).is_none()).expect("premise: the band has room off the buttons");
-        let mut t=1_000u32;
-        let mut glide=|app: &mut App, x: f32, y: f32| {
-            app.ev=[0;128];
-            app.ev[20..24].copy_from_slice(&(x as i32).to_ne_bytes());
-            app.ev[24..28].copy_from_slice(&(y as i32).to_ne_bytes());
-            let mut fr=Frame::begin(&app.player.session, app.bridge.metadata_view());
-            event(app,&mut fr,SDL_MOUSEMOTION);
-            app.inputs.retain(|e| matches!(e.kind, plx_machine::machine::InputKind::Wheel { .. }));
-            let mut wheels=0;
-            for _ in 0..60 {
-                t+=16;
-                let mut fr=Frame::begin(&app.player.session, app.bridge.metadata_view());
-                fr.now=t;
-                unsafe { playback_tick(app,&mut fr); }
-                wheels+=app.inputs.drain(..).filter(|e| matches!(e.kind, plx_machine::machine::InputKind::Wheel { .. })).count();
-            }
-            wheels
-        };
-        assert!(glide(&mut app, off, row) > 30, "off the buttons, at the edge, the page glides");
-        assert_eq!(glide(&mut app, tab.cx(), row), 0, "on a bar button the glide stops");
-        assert!(glide(&mut app, off, row) > 30, "off it again the glide goes on");
+        let bar: Vec<_> = app.pages.input.hit.front().iter()
+            .filter(|stop| stop.key.elem >= plx_ui::dispatch::STRIP_BASE).map(|stop| stop.rect).collect();
+        assert!(!bar.is_empty(), "premise: the bar is in the hit map");
+        assert!(bar.iter().all(|r| r.y >= band), "a bar button reaches into the {band} px band: {bar:?}");
     }
 
     /// The HUD samples addressed attempt clock facts and the viewer's control settings once per

@@ -1479,6 +1479,25 @@ impl HomeScreen {
         self.rows.get(row).map_or(&RowStyle::HOME, |r| style_of(&r.identity))
     }
 
+    /// **Is `row` the Continue Watching row standing at the head of the page?** Its stills are in
+    /// view on BOTH pages: at the hero's resting place (the row stands at [`PEEK_Y`], whole, under
+    /// the billboard) and at the grid's (the top row, under the top bar). Focus coming onto it
+    /// therefore never moves the page ([`Self::on_grid_page`]).
+    fn holds_page(&self, row: usize) -> bool {
+        row == 0 && self.rows.first().is_some_and(|r| r.identity == HomeHubIdentity::ContinueWatching)
+    }
+
+    /// **Is `loc` on the grid's page** (the page the shelves rest on) rather than the hero's? A
+    /// shelf is; the hero is not; the Continue Watching row ([`Self::holds_page`]) is on whichever
+    /// page the screen is resting at (`snap_target`), so a key's move between it and the hero, or
+    /// between it and the shelf under it from the grid, crosses no door and leaves the page where it is.
+    fn on_grid_page(&self, loc: Located) -> bool {
+        match loc {
+            Located::Hero(_) => false,
+            Located::Item(row, _) | Located::Heading(row) => !self.holds_page(row) || self.snap_target >= 0.5,
+        }
+    }
+
     /// **The SETTLED top of shelf `row`**: [`ui_cards::settled_top_for`]'s closed form, over the
     /// rows' OWN pitches (the Continue Watching row of stills is shorter than a poster shelf),
     /// with `band_row`'s band open by `open` and every other shelf collapsed. A scroll target
@@ -1491,7 +1510,14 @@ impl HomeScreen {
     }
 
     /// The scroll a focused shelf RESTS at ([`rest_scroll`]'s rule, over the rows' own pitches).
+    ///
+    /// The shelf under the Continue Watching row rests with that row still standing above it (the
+    /// grid's resting place of the handoff's board: the stills on top, the next shelf below), so
+    /// the move down from the stills to it, and back up, scroll nothing.
     fn rest_scroll_of(&self, row: usize) -> f32 {
+        if row == 1 && self.holds_page(0) {
+            return 0.0;
+        }
         self.shelf_top(row, None, 0.0).min(self.max_scroll())
     }
 
@@ -1603,10 +1629,12 @@ impl HomeScreen {
         let mut shelves = std::mem::take(&mut self.grid.shelves);
         let mut on_screen: Option<(usize, usize)> = focused.map(|(row, _)| (row, row));
         for (row, shelf) in shelves.iter_mut().enumerate() {
-            shelf.dormant(dormant);
+            // the Continue Watching row stands in view on the hero's page: it is live there
+            let asleep = dormant && !self.holds_page(row);
+            shelf.dormant(asleep);
             let top = heading_y(shelf.base_y(), shelf.heading_lift());
             let bottom = shelf.base_y() + self.row_style(row).h + shelf.under_band();
-            let visible = !dormant && on_axis(top, bottom - top, SCR_H, 0.0);
+            let visible = !asleep && on_axis(top, bottom - top, SCR_H, 0.0);
             if visible {
                 on_screen = Some(on_screen.map_or((row, row), |(lo, hi)| (lo.min(row), hi.max(row))));
             }
@@ -1677,7 +1705,7 @@ impl HomeScreen {
         // is input, not a clock, so it is not pinned.
         let settled = !snap_moving
             && !plx_machine::motion::phase_clocks_held()
-            && self.snap.pos >= 0.5
+            && (self.snap.pos >= 0.5 || self.holds_page(row))
             && self.visible_activation.is_none()
             && glide.abs() < HINT_REST_PX
             && (self.grid.scroll_y.pos - self.grid.scroll_target).abs() < HINT_REST_PX;
@@ -1775,7 +1803,7 @@ impl HomeScreen {
         // `SNAP_REST_POS`/`SNAP_REST_VEL` for why both terms are needed.
         let snap_moving = (self.snap.pos - self.snap_target).abs() > SNAP_REST_POS
             || self.snap.vel.abs() > SNAP_REST_VEL;
-        let engine_on_grid = self.focused_loc(cx.focus.current).is_some_and(Located::on_grid);
+        let engine_on_grid = self.focused_loc(cx.focus.current).is_some_and(|loc| self.on_grid_page(loc));
         let picture_is_grid = self.snap.pos >= 0.5;
         if engine_on_grid == picture_is_grid {
             self.visible_activation = None;
@@ -2403,7 +2431,7 @@ impl HomeScreen {
                 let style = self.row_style(row_index);
                 let rest = Rect::new(0.0, self.grid.base_y(row_index) + CARD_DY, style.w, style.h)
                     .scaled(style.focus_scale);
-                let pointable = !hero_up && rest.y >= 40.0 && rest.y + rest.h * POINTER_REACH <= SCR_H - 20.0;
+                let pointable = (!hero_up || self.holds_page(row_index)) && rest.y >= 40.0 && rest.y + rest.h * POINTER_REACH <= SCR_H - 20.0;
                 let src = HomeCards {
                     hover: if pointable || row_focused { Hover::Focus } else { Hover::OnlyIfFocused },
                     ..self.cards(view, row_index)
@@ -2970,7 +2998,7 @@ impl HomeScreen {
     }
 
     fn activation_elem(&self, engine_elem: u32) -> u32 {
-        let engine_grid = self.locate(engine_elem).is_some_and(Located::on_grid);
+        let engine_grid = self.locate(engine_elem).is_some_and(|loc| self.on_grid_page(loc));
         let picture_grid = self.snap.pos >= 0.5;
         if engine_grid != picture_grid {
             self.visible_activation.unwrap_or(engine_elem)
@@ -3072,7 +3100,10 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                     .filter(|placed| placed.rect.y < 0.0 || placed.rect.y + placed.rect.h > SCR_H)
                     .map(|_| *elem);
                 self.free = false;
-                self.snap_target = if loc.on_grid() { 1.0 } else { 0.0 };
+                // a click on the Continue Watching row leaves the page where it is: the row is in view
+                if !matches!(loc, Located::Item(row, _) | Located::Heading(row) if self.holds_page(row)) {
+                    self.snap_target = if loc.on_grid() { 1.0 } else { 0.0 };
+                }
                 if let Located::Item(row, _) = loc {
                     if let Some(shelf) = self.grid.shelves.get_mut(row) { shelf.unfree(); }
                 }
@@ -3176,7 +3207,7 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                 let from_loc = from.and_then(|key| self.locate(key.elem));
                 let to_loc = self.locate(to.elem);
                 if let (Some(a), Some(b)) = (from_loc, to_loc) {
-                    if a.on_grid() != b.on_grid() {
+                    if self.on_grid_page(a) != self.on_grid_page(b) {
                         self.visible_activation = from.map(|key| key.elem);
                     }
                 }
@@ -3188,6 +3219,8 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                     self.free = false;
                     match to_loc {
                         Some(Located::Hero(_)) => self.snap_target = 0.0,
+                        // the Continue Watching row is in view on either page: it does not move it
+                        Some(Located::Item(row, _) | Located::Heading(row)) if self.holds_page(row) => {}
                         Some(Located::Item(_, _) | Located::Heading(_)) => self.snap_target = 1.0,
                         None => {}
                     }
@@ -3947,7 +3980,7 @@ impl<H: HomeLike> CardSource<H> for HomeCards<'_> {
     /// The card the PICTURE shows focused: none until the dive has made the shelves the picture,
     /// and the card the page came from while the dive back to the billboard still shows them.
     fn focus_index(&self, e: &u32) -> Option<usize> {
-        if self.home.snap.pos <= 0.5 {
+        if self.home.snap.pos <= 0.5 && !self.home.holds_page(self.row) {
             return None;
         }
         self.home.item_col(self.row, self.home.activation_elem(*e))
