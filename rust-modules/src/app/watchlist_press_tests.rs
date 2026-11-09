@@ -150,6 +150,7 @@ impl CatalogIo for Discover {
             genres: vec!["Drama".into()],
             content_rating: None,
             duration_ms: None,
+            cover_art: None,
         })
     }
     fn today(&self) -> Option<String> {

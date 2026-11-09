@@ -179,6 +179,7 @@ fn media_seeks_and_reopens_in_key_mode_each_do_their_own_handshake() {
         .expect("a reopen in key mode");
     assert_eq!(served.accepted(), 4, "exactly one handshake");
     assert_eq!(read_n(&mut src, 16), media_body()[..16]);
+    assert_eq!(served.resumed(), 0, "a full handshake each time: a resumed session presents no certificate to confirm");
 
     // The remembered key stops being the server's: the next seek fails closed with rc 90 and the
     // host is out of key mode.
@@ -193,6 +194,8 @@ fn media_seeks_and_reopens_in_key_mode_each_do_their_own_handshake() {
 /// handshake, so there would be no certificate to confirm and the open would be refused as a pin
 /// mismatch — which every HLS segment after the first and every seek after a read to EOF would hit.
 /// The `Connection: close` double used above cannot see that, so this one keeps connections alive.
+/// (The multi keeps the TLS session cache too, from libcurl 8.12: `keypin::apply` turns it off for
+/// the handle, and the double counts the handshakes it was asked to resume.)
 #[test]
 fn media_key_mode_never_reuses_a_kept_alive_connection() {
     let _serial = plx_base::testlock::serial();
@@ -229,6 +232,7 @@ fn media_key_mode_never_reuses_a_kept_alive_connection() {
         .expect("a reopen in key mode");
     assert_eq!(served.accepted(), 4, "its own handshake, not the cached connection");
     assert_eq!(read_n(&mut src, 16), media_body()[..16]);
+    assert_eq!(served.resumed(), 0, "and not a resumed TLS session, which presents no certificate to confirm");
 
     assert!(
         plx_net::net::keypin::is_latched(&key),

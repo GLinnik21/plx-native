@@ -1160,9 +1160,9 @@ mod tests {
             aired: "1989-11-04".into(),
             ..Default::default()
         };
-        assert_eq!(lines(&still_label(&ep, false, "")), [Some("A Grand Day Out".into()), Some("11/4/1989".into())]);
+        assert_eq!(lines(&still_label(&ep, "")), [Some("A Grand Day Out".into()), Some("11/4/1989".into())]);
         assert_eq!(
-            lines(&still_label(&ep, false, "friend")),
+            lines(&still_label(&ep, "friend")),
             [Some("A Grand Day Out".into()), Some("11/4/1989 \u{b7} friend".into())]
         );
         let undated = plx_data::pms::PmsMovie {
@@ -1171,10 +1171,10 @@ mod tests {
             ep_index: 3,
             ..Default::default()
         };
-        assert_eq!(lines(&still_label(&undated, false, "")), [Some("S1 \u{b7} E3".into()), None],
+        assert_eq!(lines(&still_label(&undated, "")), [Some("S1 \u{b7} E3".into()), None],
             "an untitled, undated episode says its address alone");
-        assert_eq!(lines(&still_label(&undated, false, "friend")), [Some("S1 \u{b7} E3".into()), Some("friend".into())]);
-        assert!(still_label(&ep, false, "").shadowed, "a still is shadowed like every other landscape block");
+        assert_eq!(lines(&still_label(&undated, "friend")), [Some("S1 \u{b7} E3".into()), Some("friend".into())]);
+        assert!(still_label(&ep, "").shadowed, "a still is shadowed like every other landscape block");
     }
 
     /// Every collection result reaches the shared card as `Art::Poster` with a kind-4 row, which

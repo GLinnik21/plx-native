@@ -599,7 +599,7 @@ fn still_line_label_baseline_is_where_it_always_stood() {
     let card = Rect::new(0.0, 0.0, 400.0, 225.0);
     let draw = |label: &str| {
         crate::draw_census::capture_runs(|| {
-            still_line(Painter::recording(), card, PosterMark::None, label, "S1 · E2", false, false, &LegacyMeasure)
+            still_line(Painter::recording(), card, PosterMark::None, label, "S1 · E2", false, &LegacyMeasure)
         })
     };
     let (_, lcb) = plx_gfx::text::text_cap_band(theme::size::LABEL, 1);

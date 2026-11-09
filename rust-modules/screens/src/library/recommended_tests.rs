@@ -225,12 +225,75 @@ fn shelf_pitch_keeps_the_shared_air() {
     for band in [ui_cards::LEGACY_BAND_H, 0.0, 80.0, 112.0] {
         for expanded in [0.0, 0.5, 1.0] {
             let want = ui_cards::ROW_PITCH_FIXED + ui_cards::under_band_for(band, expanded);
-            assert!((shelf_pitch(false, band, expanded) - want).abs() < 1e-3, "band {band} expanded {expanded}");
-            let shorter = RowStyle::HOME.h - RowStyle::EPISODE.h;
-            assert!((shelf_pitch(true, band, expanded) - (want - shorter)).abs() < 1e-3, "landscape, band {band} expanded {expanded}");
+            assert!((shelf_pitch(&RowStyle::HOME, band, expanded) - want).abs() < 1e-3, "band {band} expanded {expanded}");
+            for style in [&RowStyle::EPISODE, &RowStyle::STILL] {
+                let shorter = RowStyle::HOME.h - style.h;
+                assert!((shelf_pitch(style, band, expanded) - (want - shorter)).abs() < 1e-3, "landscape, band {band} expanded {expanded}");
+            }
         }
     }
-    assert_eq!(shelf_pitch(false, ui_cards::LEGACY_BAND_H, 1.0), plx_ui::consts::ROW_PITCH);
+    assert_eq!(shelf_pitch(&RowStyle::HOME, ui_cards::LEGACY_BAND_H, 1.0), plx_ui::consts::ROW_PITCH);
+}
+
+/// **A landscape Continue Watching deck is Home's deck**: the same stills ([`RowStyle::STILL`]), no
+/// caption band under the focused one (its footer stands on the tile), no label block, so the row
+/// is `STILL.pitch_fixed()` tall whatever focus does; a landscape row that is NOT the deck (Recently
+/// Released Episodes) keeps the episode strip's look and its legacy band.
+#[test]
+fn a_landscape_deck_is_homes_deck_and_other_episode_rows_keep_the_legacy_band() {
+    let _guard = plx_base::testlock::serial();
+    let mut fixture = Fixture::shelves(&["movie.inprogress.1", "tv.recentlyreleased.1"], 4);
+    fixture.stores.as_ref().expect("stores").browse.borrow_mut().seed_landscape_for_test(0, "Synthetic show");
+    fixture.republish();
+    let page = fixture.screen();
+    let (deck, other) = (&page.shelves[0], &page.shelves[1]);
+    assert!(fixture.hubs.view().shelves()[0].is_continue && fixture.hubs.view().shelves()[0].landscape, "premise: a landscape deck");
+    let look = |row: &Row| { let style = row_style(row); (style.radius, style.h) };
+    let still = RowStyle::STILL;
+    assert_eq!(look(deck), (still.radius, still.h), "the deck wears Home's still");
+    assert_eq!(deck.cards.band_h(), 0.0, "no caption band under a deck still");
+    let nothing_open = still.pitch_fixed() + ui_cards::LABEL_BAND_COLLAPSED;
+    assert_eq!(page.run.pitch(0), nothing_open, "so the deck's pitch is Home's");
+    assert_eq!(page.target_run.pitch(0), nothing_open, "focused or not");
+    let episode = RowStyle::EPISODE;
+    assert_eq!(look(other), (episode.radius, episode.h), "another episode row keeps the strip's look");
+    assert_eq!(other.cards.band_h(), ui_cards::LEGACY_BAND_H, "…and its legacy band");
+    // The heading is the shared row style's: the deck's stands its rise higher over the same tiles, the other row's does not.
+    assert_eq!((deck.cards.heading_lift(), other.cards.heading_lift()), (plx_ui::theme::STILL_HEADING_RISE, 0.0));
+    let label = |row: usize, col: usize| shelf_label(&fixture.hubs.view().shelves()[row], col);
+    assert!(label(0, 0).title.is_none() && label(0, 0).caption.is_none(), "a deck still carries no label block: its footer says it");
+    assert!(label(1, 0).title.is_some(), "an episode row's still keeps its block");
+}
+
+/// **A deck still's overlay is Home's footer**: the one-line `StillFooter::Continue` with the cue
+/// the Playback setting picks, not the shelf footer that names the show above its address.
+#[test]
+fn a_landscape_deck_card_draws_the_continue_footer() {
+    use plx_ui::widgets::{still_overlay, StillFooter};
+    let _guard = plx_base::testlock::serial();
+    let mut fixture = Fixture::shelves(&["movie.inprogress.1", "tv.recentlyreleased.1"], 4);
+    fixture.stores.as_ref().expect("stores").browse.borrow_mut().seed_landscape_for_test(0, "Synthetic show");
+    fixture.stores.as_ref().expect("stores").browse.borrow_mut().edit_shelf_items_for_test(0, &|item| {
+        item.dur_ns = 40 * 60 * 1_000_000_000;
+        item.resume_ms = 10 * 60 * 1000;
+    });
+    fixture.republish();
+    let hubs = fixture.hubs.view();
+    let tile = Tile { rect: Rect::new(0.0, 0.0, 420.0, 236.0), scale: 1.0, radius: 12.0, focused: true, pop: 1.0 };
+    let m = plx_ui::fixture::FixtureMeasure;
+    for (row, deck) in [(0, true), (1, false)] {
+        let src = HubSrc { elems: &[1, 2, 3, 4], shelf: hubs.shelves().get(row), paging: false, deck: None };
+        let words = |draw: &dyn Fn(plx_ui::Painter)| -> Vec<String> {
+            plx_ui::draw_census::capture_runs(|| draw(plx_ui::Painter::recording())).into_iter().map(|run| run.text).collect()
+        };
+        let drawn = words(&|p| CardSource::<HostFixture>::overlay(&src, p, 0, &tile, &m));
+        let facts = src.facts(0).expect("a card");
+        let cue = if plx_media::route::deck_press().press_plays() { plx_ui::still_footer::Cue::Play } else { plx_ui::still_footer::Cue::Info };
+        let continues = words(&|p| still_overlay(p, &facts, tile.rect, tile.radius, StillFooter::Continue { cue, pop: tile.pop }, &m));
+        let shelf = words(&|p| still_overlay(p, &facts, tile.rect, tile.radius, StillFooter::Shelf, &m));
+        assert_ne!(continues, shelf, "premise: the two footers read differently");
+        assert_eq!(drawn, if deck { continues } else { shelf }, "row {row}: the deck wears the one-line footer, an episode row the shelf's");
+    }
 }
 
 #[test]

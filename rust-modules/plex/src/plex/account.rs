@@ -939,17 +939,25 @@ mod evidence_tests {
 /// the minute, and a stale "unreachable" can only ever route one pick through credentials that a
 /// successful switch had already vouched for.
 ///
-/// Only the plex.tv host is recorded. `discover.provider.plex.tv` shares this transport and is
-/// a different service on a different name; its silence says nothing about the account API.
+/// Only the plex.tv host is recorded here. `discover.provider.plex.tv` shares this transport and is
+/// a different service on a different name; its silence says nothing about the account API, so it
+/// has its own memo ([`discover_recently_unreachable`]).
 static LAST_UNREACHABLE: Mutex<Option<Instant>> = Mutex::new(None);
 static LAST_REACHABLE: Mutex<Option<Instant>> = Mutex::new(None);
-const UNREACHABLE_MEMO: Duration = Duration::from_secs(45);
+pub const UNREACHABLE_MEMO: Duration = Duration::from_secs(45);
 /// The positive memo lives longer: it answers "is a network round trip worth starting" for work
 /// that is optional (an avatar refresh), and a link that answered within the last few minutes
 /// is a link.
 const REACHABLE_MEMO: Duration = Duration::from_secs(300);
 
+/// Record one contact outcome against the host it was for: plex.tv feeds the account memos, the
+/// Discover provider its own ([`DISCOVER_LAST_UNREACHABLE`]), any other URL nothing. A dev stand-in
+/// serves both on one origin, so a URL there feeds both.
 fn note_contact(url: &str, answered: bool) {
+    if url.starts_with(discover().as_str()) {
+        let mut g = DISCOVER_LAST_UNREACHABLE.lock().unwrap_or_else(|e| e.into_inner());
+        *g = if answered { None } else { Some(plx_base::window::Window::start(UNREACHABLE_MEMO)) };
+    }
     if !url.starts_with(plex_tv()) {
         return;
     }
@@ -978,6 +986,28 @@ pub fn plex_tv_recently_reachable() -> bool {
 pub fn plex_tv_recently_unreachable() -> bool {
     let g = LAST_UNREACHABLE.lock().unwrap_or_else(|e| e.into_inner());
     g.is_some_and(|t| t.elapsed() < UNREACHABLE_MEMO)
+}
+
+/// The same question for the Discover provider ([`discover`]), asked by optional reads that would
+/// each pay the connect budget alone (the cover of a deck card): with Discover silent moments ago,
+/// they settle without dialling. Its own memo, fed by [`note_contact`] from every Discover read
+/// (the catalog page and the covers share one transport), with the plex.tv memo's window
+/// ([`UNREACHABLE_MEMO`]) and no positive twin: nothing asks "is Discover up".
+static DISCOVER_LAST_UNREACHABLE: Mutex<Option<plx_base::window::Window>> = Mutex::new(None);
+
+/// Did the Discover provider fail to answer within the last [`UNREACHABLE_MEMO`], with nothing
+/// answering since? Independent of [`plex_tv_recently_unreachable`]: a name resolving or timing out
+/// for one host says nothing about the other.
+pub fn discover_recently_unreachable() -> bool {
+    let g = DISCOVER_LAST_UNREACHABLE.lock().unwrap_or_else(|e| e.into_inner());
+    g.is_some_and(|w| w.is_open())
+}
+
+/// Seed the Discover memo. Callers hold `plx_base::testlock::serial()`: this is a process global.
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_discover_unreachable_for_test(unreachable: bool) {
+    let mut g = DISCOVER_LAST_UNREACHABLE.lock().unwrap_or_else(|e| e.into_inner());
+    *g = unreachable.then(|| plx_base::window::Window::start(UNREACHABLE_MEMO));
 }
 
 /// Seed the memo. Callers hold `plx_base::testlock::serial()`: this is a process global.
@@ -1028,6 +1058,46 @@ mod reachability_tests {
         assert!(plex_tv_recently_unreachable(), "another host says nothing about plex.tv");
         *LAST_UNREACHABLE.lock().unwrap() = None;
         *LAST_REACHABLE.lock().unwrap() = None;
+    }
+
+    /// Discover is a different service on a different name: its memo is fed by a Discover contact
+    /// and by nothing else, and a Discover contact feeds nothing else. A plex.tv failure must not
+    /// make the cover bake skip a Discover read, nor the profile switch go to its cache because
+    /// Discover was down.
+    #[test]
+    fn the_discover_memo_is_separate_from_the_plex_tv_one() {
+        let _g = plx_base::testlock::serial();
+        *LAST_UNREACHABLE.lock().unwrap() = None;
+        *LAST_REACHABLE.lock().unwrap() = None;
+        *DISCOVER_LAST_UNREACHABLE.lock().unwrap() = None;
+        let discover_url = format!("{}/library/metadata/5d776824999c4a001f9a1b2c", discover());
+        assert!(!discover_recently_unreachable(), "nothing is known at boot");
+
+        note_contact(&discover_url, false);
+        assert!(discover_recently_unreachable(), "a Discover failure sets the Discover memo");
+        assert!(!plex_tv_recently_unreachable(), "and not the plex.tv one");
+        assert!(!plex_tv_recently_reachable());
+
+        note_contact(&discover_url, true);
+        assert!(!discover_recently_unreachable(), "an answer since clears it");
+        assert!(!plex_tv_recently_reachable(), "a Discover answer is not a plex.tv answer either");
+
+        note_contact(PLEX_TV, false);
+        assert!(plex_tv_recently_unreachable(), "a plex.tv failure sets the plex.tv memo");
+        assert!(!discover_recently_unreachable(), "and not the Discover one");
+
+        note_contact(&discover_url, false);
+        note_contact(PLEX_TV, true);
+        assert!(discover_recently_unreachable(), "a plex.tv answer does not clear a Discover failure");
+        assert!(!plex_tv_recently_unreachable());
+
+        set_discover_unreachable_for_test(false);
+        assert!(!discover_recently_unreachable());
+        set_discover_unreachable_for_test(true);
+        assert!(discover_recently_unreachable());
+        *LAST_UNREACHABLE.lock().unwrap() = None;
+        *LAST_REACHABLE.lock().unwrap() = None;
+        *DISCOVER_LAST_UNREACHABLE.lock().unwrap() = None;
     }
 }
 

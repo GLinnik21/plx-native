@@ -116,6 +116,46 @@ fn a_rows_basis_tells_a_changed_row_from_the_one_it_was_built_from() {
     assert!(!Basis::of(&held, 7).matches(&released, 7), "a row that gave them up");
 }
 
+/// **Only a landscape Continue Watching deck opts in to the deck's art walk**, with keys built once
+/// with the row; a changed background or catalog id is a changed row, and a card is handed keys only
+/// by the basis its own item was published for.
+#[test]
+fn only_a_landscape_continue_watching_deck_holds_artwork_keys_and_a_new_background_rebuilds_it() {
+    use plx_data::browse::section_hubs::Shelf;
+    use plx_plex::plex::ServerId;
+    const HEX: &str = "5d9c086c46115600200aa2fe";
+    let episode = |rk: &str, art: &str| plx_data::pms::PmsMovie {
+        rk: rk.into(), kind: 3, sid: ServerId::from_raw(1), show_rk: "77".into(), art: art.into(),
+        show_guid: plx_data::watchlist::decode_hex(HEX), ..Default::default()
+    };
+    let deck = |art: &str| Shelf {
+        id: "continueWatching".into(), is_continue: true, landscape: true,
+        items: vec![episode("9001", art), episode("9002", art)], ..Default::default()
+    };
+    let held = deck("/library/metadata/77/art/5");
+    let basis = Basis::of(&held, 7);
+    assert_eq!(basis.deck.len(), 2, "one key pair per card");
+    assert_eq!(basis.deck[0].cover, format!("/plx/cover/{HEX}"), "the show's cover");
+    assert_eq!(basis.deck[0].card, "/plx/card/77/library/metadata/77/art/5", "the show's composite");
+    assert!(basis.matches(&held, 7));
+    assert!(!basis.matches(&deck("/library/metadata/77/art/6"), 7), "a new background is a new key, so a new row");
+    // a poster deck, a landscape episode shelf that is not Continue Watching, any other hub: none
+    for (is_continue, landscape) in [(true, false), (false, true), (false, false)] {
+        let other = Shelf { is_continue, landscape, ..held.clone() };
+        assert!(Basis::of(&other, 7).deck.is_empty(), "continue={is_continue} landscape={landscape}");
+    }
+    // the card reads its keys by position, and only through the basis its item was published for
+    let src = HubSrc { elems: &[1, 2], shelf: Some(&held), paging: false, deck: Some(&basis) };
+    let facts = src.facts(1).expect("a card");
+    assert_eq!(facts.deck.map(|d| d.cover), Some(basis.deck[1].cover.as_str()), "opted in");
+    let stale = Shelf { items: vec![episode("9002", "/library/metadata/77/art/5"), episode("9001", "/library/metadata/77/art/5")], ..held.clone() };
+    let src = HubSrc { elems: &[1, 2], shelf: Some(&stale), paging: false, deck: Some(&basis) };
+    assert!(src.facts(0).expect("a card").deck.is_none(), "another title at that place: the old chain, never another title's cover");
+    let poster = Shelf { is_continue: false, ..held.clone() };
+    let src = HubSrc { elems: &[1, 2], shelf: Some(&poster), paging: false, deck: Some(&Basis::of(&poster, 7)) };
+    assert!(src.facts(0).expect("a card").deck.is_none(), "a shelf that is not the deck never opts in");
+}
+
 // ---- the incremental page is the page a full build makes --------------------------------------------
 
 /// One row of a page in the names that do not depend on how many keys were minted before it.

@@ -11,7 +11,8 @@ import urllib.parse
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
-from mock_pms import DiscoverFixture, Library, MockPms, discover_stand_in_problem  # noqa: E402
+from mock_pms import (  # noqa: E402
+    DiscoverFixture, Library, MockPms, add_cw_art_fixture, discover_stand_in_problem)
 
 LIST = "/library/sections/watchlist/all?includeCollections=1&includeExternalMedia=1&sort=watchlistedAt:desc"
 
@@ -288,6 +289,35 @@ class DiscoverMock(unittest.TestCase):
         pms = make()
         self.assertGreater(len(jcall(pms, "GET", "/library/sections/1/all")["Metadata"]), 0)
         self.assertEqual(len(DiscoverFixture.TITLES), 16)
+
+
+class CwArtDiscover(unittest.TestCase):
+    """`--cw-art-fixture`'s half of the stand-in: Continue Watching titles it knows by catalog id, off the
+    list, with a `coverArt` where the fixture says so. Without the flag nothing is added."""
+
+    def test_the_fixture_titles_are_known_but_never_listed_and_the_list_does_not_move(self):
+        plain, pms = make(), make()
+        add_cw_art_fixture(pms)
+        self.assertEqual(len(plain.discover.catalog), 16)
+        self.assertEqual(len(pms.discover.catalog), 16 + 4)  # the guid-less item has no record
+        self.assertEqual(page(pms), page(plain))
+        self.assertEqual(pms.discover.order, plain.discover.order)
+        for c in pms.discover.catalog[16:]:
+            self.assertEqual(len(c["hex"]), 24)
+            self.assertEqual(c["guid"], f"plex://{c['kind']}/{c['hex']}")
+            self.assertNotIn(c["hex"], [h for h, _ in pms.discover.order])
+            self.assertEqual(jcall(pms, "GET", f"/library/metadata/{c['hex']}")["Metadata"][0]["title"], c["title"])
+
+    def test_only_the_cover_titles_carry_a_cover_art_url(self):
+        pms = make()
+        add_cw_art_fixture(pms)
+        pms.discover.art_base = "http://127.0.0.1:1"
+        shapes = {}
+        for c in pms.discover.catalog[16:]:
+            record = jcall(pms, "GET", f"/library/metadata/{c['hex']}")["Metadata"][0]
+            shapes[c["title"]] = sorted(i["type"] for i in record["Image"]) if "Image" in record else None
+        self.assertEqual(shapes, {"North Ridge": ["coverArt", "coverPoster"], "Lumen Drift": ["coverArt", "coverPoster"],
+                                  "The Quiet Harbour": ["coverPoster"], "Brass Hours": None})
 
 
 if __name__ == "__main__":
