@@ -1403,5 +1403,244 @@ mod uri_boot_tests {
         assert_eq!(rig.app.player.session.metric_request(), request);
         assert_eq!(rig.app.player.session.source_selection().expect("source intent").audio_sid, 2);
     }
-}
 
+    // ---- the exported window: never two live at once (the webOS 5+ plan, PR 2) -----------------
+
+    /// The display the URI driver is given in the window rig. Its window verbs go to the host
+    /// seam's `HOST_SINK`, the sink Feed's hooks run over in this rig (`backends::TEST_HOOKS`), so
+    /// ONE instrument (`plx_play_feed::ffi_host::window_counts_for_test`, the C seam's single window
+    /// slot) counts the windows the URI driver makes and the windows Feed makes. Its plane verbs are
+    /// `Display`'s: refused.
+    struct CountingDisplay;
+    impl DisplaySink for CountingDisplay {
+        fn window_mode(&self) -> c_int { crate::app::adapters::hostsim::HOST_SINK.window_mode() }
+        fn window_id(&self) -> &'static CStr { crate::app::adapters::hostsim::HOST_SINK.window_id() }
+        unsafe fn create_window(&self, mt: &plx_base::task::MainThread) -> *const c_char {
+            crate::app::adapters::hostsim::HOST_SINK.create_window(mt)
+        }
+        unsafe fn place_window(&self, mt: &plx_base::task::MainThread, src_w: c_int, src_h: c_int,
+            dst_x: c_int, dst_y: c_int, dst_w: c_int, dst_h: c_int) -> c_int {
+            crate::app::adapters::hostsim::HOST_SINK
+                .place_window(mt, src_w, src_h, dst_x, dst_y, dst_w, dst_h)
+        }
+        unsafe fn destroy_window(&self, mt: &plx_base::task::MainThread) {
+            crate::app::adapters::hostsim::HOST_SINK.destroy_window(mt)
+        }
+        unsafe fn plane_create(&self, mt: &plx_base::task::MainThread,
+            app_id: *const c_char, player_type: c_int) -> c_long {
+            NoSink.plane_create(mt, app_id, player_type)
+        }
+        unsafe fn plane_initialized(&self, mt: &plx_base::task::MainThread) -> bool {
+            NoSink.plane_initialized(mt)
+        }
+        #[cfg(feature = "devtriggers")]
+        unsafe fn plane_probe_dass_available(&self, mt: &plx_base::task::MainThread) -> bool {
+            NoSink.plane_probe_dass_available(mt)
+        }
+        unsafe fn plane_media_id(&self, mt: &plx_base::task::MainThread,
+            id: *const c_char) -> c_int { NoSink.plane_media_id(mt, id) }
+        unsafe fn plane_loaded(&self, mt: &plx_base::task::MainThread) -> c_int {
+            NoSink.plane_loaded(mt)
+        }
+        #[cfg(feature = "devtriggers")]
+        unsafe fn plane_probe_connect_dass(&self, mt: &plx_base::task::MainThread) -> c_int {
+            NoSink.plane_probe_connect_dass(mt)
+        }
+        unsafe fn plane_finish(&self, mt: &plx_base::task::MainThread)
+            -> plx_platform::tv::sink::PlaneFinish { NoSink.plane_finish(mt) }
+        unsafe fn plane_bind(&self, mt: &plx_base::task::MainThread, id: *const c_char) {
+            NoSink.plane_bind(mt, id)
+        }
+        unsafe fn plane_send_video_data(&self, mt: &plx_base::task::MainThread,
+            info: *const c_char) -> c_int { NoSink.plane_send_video_data(mt, info) }
+        unsafe fn plane_send_atmos(&self, mt: &plx_base::task::MainThread,
+            id: *const c_char) -> c_int { NoSink.plane_send_atmos(mt, id) }
+        unsafe fn plane_start(&self, mt: &plx_base::task::MainThread,
+            x: c_long, y: c_long, w: c_long, h: c_long) {
+            NoSink.plane_start(mt, x, y, w, h)
+        }
+        unsafe fn plane_unload(&self, mt: &plx_base::task::MainThread)
+            -> plx_platform::tv::sink::PlaneUnload { NoSink.plane_unload(mt) }
+        fn plane_completions(&self, mt: &plx_base::task::MainThread)
+            -> Vec<plx_platform::tv::sink::PlaneCompletion> { NoSink.plane_completions(mt) }
+        unsafe fn plane_pause(&self, mt: &plx_base::task::MainThread) { NoSink.plane_pause(mt) }
+        unsafe fn plane_resume(&self, mt: &plx_base::task::MainThread) { NoSink.plane_resume(mt) }
+    }
+
+    /// Arms the host seam's exported-window path (`VP_EXPORTED`, `vp_create_window` answering) and
+    /// zeroes the window instrument; disarms and zeroes it again on drop, panic or not. Declare it
+    /// BEFORE the rig so the rig's own teardown still sees the armed seam.
+    struct ExportedSeam;
+    impl ExportedSeam {
+        fn arm() -> Self {
+            plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+            plx_play_feed::ffi_host::force_clocksink_for_test(true);
+            Self
+        }
+    }
+    impl Drop for ExportedSeam {
+        fn drop(&mut self) {
+            plx_play_feed::ffi_host::force_clocksink_for_test(false);
+            plx_play_feed::ffi_host::reset_native_lifecycle_for_test();
+        }
+    }
+
+    /// The URI driver's clock in the window rig, advanced by the test.
+    struct StepClock(Arc<std::sync::atomic::AtomicU64>);
+    impl plx_play_uri::backend::MonotonicClock for StepClock {
+        fn now_ms(&self) -> u64 { self.0.load(Ordering::Relaxed) }
+    }
+
+    /// The driver's startup and release allowances in the window rig.
+    const WINDOW_STARTUP_MS: u64 = 1_000;
+    const WINDOW_RELEASE_MS: u64 = 500;
+
+    /// Compose the URI driver as the boot does (`install_uri_product_with_ports`: the opted-in
+    /// viewer's capabilities over an exported canvas), but on `clock` with short allowances, over
+    /// `display`, so a startup timeout and an unreleased close are reachable by moving the clock.
+    fn install_exported_uri(rig: &mut Rig, bus: &'static Bus, display: &'static CountingDisplay,
+        clock: Arc<std::sync::atomic::AtomicU64>) {
+        let caps = Capabilities { progressive_uri: true, hls_uri: false,
+            packet_feed: false, pause: true, seek: true, audio_track: true,
+            subtitle_track: true, audio_off: false, subtitle_off: false };
+        let port = ResolvePort::new(ProductEvidence { display_exported: true,
+            binding: Binding::Exported { canvas: (1920, 1080) },
+            callable: caps, certified: caps, preview_rectangle: false },
+            Arc::new(QualifiedOriginal));
+        let evidence = port.evidence();
+        let settings = crate::app::adapters::backends::UriDriverSettings {
+            clock: Box::new(StepClock(clock)),
+            app_id: plx_base::paths::app_id().to_owned(),
+            binding: evidence.binding,
+            capabilities: evidence.opted_in().certified,
+            startup_timeout_ms: WINDOW_STARTUP_MS,
+            release_allowance_ms: WINDOW_RELEASE_MS,
+            source_ttl_ms: 30_000,
+        };
+        assert!(crate::app::adapters::backends::install_uri_backend_with_ports(
+            &mut rig.app.adapters.player, settings, bus, display));
+        rig.app.player.session.install_uri_preflight_port(port);
+    }
+
+    /// One frame of the app loop's playback half, as the other URI fixtures run it.
+    fn window_frame(rig: &mut Rig) {
+        let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
+        unsafe { playback_tick(&mut rig.app, &mut fr); }
+    }
+
+    /// Resolve the rig's pending request to its URI offer and start it on the URI driver.
+    fn launch_uri(rig: &mut Rig) {
+        rig.release.send(()).unwrap();
+        let mut resolved = None;
+        poll_until("qualified URI source did not resolve", || {
+            resolved = plx_media::route::pump_play(&mut rig.app.player.session,
+                rig.app.bridge.metadata_mut());
+            resolved.is_some()
+        });
+        assert!(rig.app.adapters.player.offer_qualified_uri(&mut rig.app.player.session,
+            resolved.unwrap().uri_offer.expect("qualified original source")).is_ok());
+        assert!(matches!(plx_media::player::start_playback_tracked(
+            &mut rig.app.player.session, &mut rig.app.adapters.player),
+            plx_media::player::BufferfeedStartOutcome::Launched(_)));
+    }
+
+    fn windows() -> plx_play_feed::ffi_host::WindowCounts {
+        plx_play_feed::ffi_host::window_counts_for_test()
+    }
+
+    /// The URI driver's startup times out and its close completes: the SAME request's Feed resolve
+    /// begins only once the URI window is destroyed (`ReleaseStatus::Released`), and not while the
+    /// registration is still closing. This pins that ordering through the real adapter and driver
+    /// with the instrument; it does not run Feed's own start, which is where Feed makes its window.
+    #[test]
+    fn a_timed_out_uri_start_destroys_its_live_window_before_the_feed_resolve() {
+        let _serial = plx_base::testlock::serial();
+        let _seam = ExportedSeam::arm();
+        let Some(mut rig) = Rig::serving(false) else { return };
+        plx_plex::plex::client_for(rig.sid).unwrap()
+            .set_link(plx_plex::plex::probe::Location::Local);
+        let bus: &'static Bus = Box::leak(Box::new(Bus::new()));
+        let display: &'static CountingDisplay = Box::leak(Box::new(CountingDisplay));
+        let clock = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        install_exported_uri(&mut rig, bus, display, clock.clone());
+        rig.request();
+        launch_uri(&mut rig);
+        window_frame(&mut rig); // registration opens
+        let one = plx_play_feed::ffi_host::WindowCounts { creates: 1, destroys: 0, live: 1, peak: 1, slot: true };
+        assert_eq!(windows(), one, "the URI driver made its window at its start");
+        // The service never answers `load`: past the startup budget the attempt fails and closes.
+        clock.store(WINDOW_STARTUP_MS, Ordering::Relaxed);
+        window_frame(&mut rig);
+        assert!(bus.0.lock().unwrap().1 == CloseStatus::Closing, "the timed-out attempt closes");
+        assert_eq!(windows(), one, "a closing registration still holds its window");
+        assert!(!plx_media::route::play_pending(), "no handoff before the exact release");
+        bus.release();
+        window_frame(&mut rig);
+        assert_eq!(windows(), plx_play_feed::ffi_host::WindowCounts {
+            creates: 1, destroys: 1, live: 0, peak: 1, slot: false },
+            "the confirmed release destroyed the URI window");
+        assert!(plx_media::route::play_pending(), "the release starts the same-episode Feed resolve");
+        let mut replacement = None;
+        poll_until("automatic Feed rescue did not resolve", || {
+            replacement = plx_media::route::pump_play(&mut rig.app.player.session,
+                rig.app.bridge.metadata_mut());
+            replacement.is_some()
+        });
+        assert!(replacement.unwrap().uri_offer.is_none(), "automatic rescue cannot loop back to URI");
+        // The successor's own `Launched` start is not run here: under the armed seam its demux
+        // worker outlives the rig and lands its failure in the NEXT test's route control (the
+        // sibling fixtures in this module then fail). So Feed's window create is not counted by
+        // this test; what it pins is the ordering above.
+    }
+
+    /// A request while the previous request's URI registration is quarantined (its close never
+    /// completed inside the allowance), so the driver still holds its exported window: the new
+    /// request must not be handed to Feed or to the URI driver again, because either would create a
+    /// second window over the one the quarantined driver cannot destroy. The C seam's single slot
+    /// would be overwritten and the first window orphaned (`src/video_plane.c`), so the instrument's
+    /// peak must stay at one whatever the player does with the request.
+    #[test]
+    fn a_new_request_over_a_quarantined_uri_driver_makes_no_second_live_window() {
+        let _serial = plx_base::testlock::serial();
+        let _seam = ExportedSeam::arm();
+        let Some(mut rig) = Rig::serving(false) else { return };
+        plx_plex::plex::client_for(rig.sid).unwrap()
+            .set_link(plx_plex::plex::probe::Location::Local);
+        let bus: &'static Bus = Box::leak(Box::new(Bus::new()));
+        let display: &'static CountingDisplay = Box::leak(Box::new(CountingDisplay));
+        let clock = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        install_exported_uri(&mut rig, bus, display, clock.clone());
+        rig.request();
+        launch_uri(&mut rig);
+        window_frame(&mut rig); // registration opens: the URI driver owns its window
+        clock.store(WINDOW_STARTUP_MS, Ordering::Relaxed);
+        window_frame(&mut rig); // startup timed out: the close begins and is never confirmed
+        assert!(bus.0.lock().unwrap().1 == CloseStatus::Closing);
+        clock.store(WINDOW_STARTUP_MS + WINDOW_RELEASE_MS, Ordering::Relaxed);
+        window_frame(&mut rig); // the allowance ran out: the registration is quarantined
+        assert_eq!(rig.app.adapters.player.backend_snapshot().phase,
+            plx_playback_contract::Phase::Quarantined, "premise: the URI release is quarantined");
+        let held = plx_play_feed::ffi_host::WindowCounts { creates: 1, destroys: 0, live: 1, peak: 1, slot: true };
+        assert_eq!(windows(), held, "premise: the quarantined driver still holds its window");
+        // The viewer asks for the title again.
+        assert!(plx_media::route::request_play(&mut rig.app.player.session,
+            rig.app.bridge.metadata_mut(), plx_platform::devcaps::caps(), rig.sid, "1",
+            "/library/parts/1/file.mkv", "h264", "aac", "First", "", None));
+        let mut resolved = None;
+        poll_until("the new request did not resolve", || {
+            resolved = plx_media::route::pump_play(&mut rig.app.player.session,
+                rig.app.bridge.metadata_mut());
+            resolved.is_some()
+        });
+        if let Some(offer) = resolved.unwrap().uri_offer {
+            let _ = rig.app.adapters.player.offer_qualified_uri(&mut rig.app.player.session, offer);
+        }
+        let started = plx_media::player::start_playback_tracked(
+            &mut rig.app.player.session, &mut rig.app.adapters.player);
+        window_frame(&mut rig);
+        window_frame(&mut rig);
+        assert_eq!(windows(), held, "the new request made another window (start outcome {started:?})");
+        assert!(matches!(started, plx_media::player::BufferfeedStartOutcome::Failed),
+            "the start over the quarantined registration is refused, not launched: {started:?}");
+    }
+}
