@@ -956,7 +956,7 @@ const REACHABLE_MEMO: Duration = Duration::from_secs(300);
 fn note_contact(url: &str, answered: bool) {
     if url.starts_with(discover().as_str()) {
         let mut g = DISCOVER_LAST_UNREACHABLE.lock().unwrap_or_else(|e| e.into_inner());
-        *g = if answered { None } else { Some(Instant::now()) };
+        *g = if answered { None } else { Some(plx_base::window::Window::start(UNREACHABLE_MEMO)) };
     }
     if !url.starts_with(plex_tv()) {
         return;
@@ -993,21 +993,21 @@ pub fn plex_tv_recently_unreachable() -> bool {
 /// they settle without dialling. Its own memo, fed by [`note_contact`] from every Discover read
 /// (the catalog page and the covers share one transport), with the plex.tv memo's window
 /// ([`UNREACHABLE_MEMO`]) and no positive twin: nothing asks "is Discover up".
-static DISCOVER_LAST_UNREACHABLE: Mutex<Option<Instant>> = Mutex::new(None);
+static DISCOVER_LAST_UNREACHABLE: Mutex<Option<plx_base::window::Window>> = Mutex::new(None);
 
 /// Did the Discover provider fail to answer within the last [`UNREACHABLE_MEMO`], with nothing
 /// answering since? Independent of [`plex_tv_recently_unreachable`]: a name resolving or timing out
 /// for one host says nothing about the other.
 pub fn discover_recently_unreachable() -> bool {
     let g = DISCOVER_LAST_UNREACHABLE.lock().unwrap_or_else(|e| e.into_inner());
-    g.is_some_and(|t| t.elapsed() < UNREACHABLE_MEMO)
+    g.is_some_and(|w| w.is_open())
 }
 
 /// Seed the Discover memo. Callers hold `plx_base::testlock::serial()`: this is a process global.
 #[cfg(any(test, feature = "test-support"))]
 pub fn set_discover_unreachable_for_test(unreachable: bool) {
     let mut g = DISCOVER_LAST_UNREACHABLE.lock().unwrap_or_else(|e| e.into_inner());
-    *g = unreachable.then(Instant::now);
+    *g = unreachable.then(|| plx_base::window::Window::start(UNREACHABLE_MEMO));
 }
 
 /// Seed the memo. Callers hold `plx_base::testlock::serial()`: this is a process global.

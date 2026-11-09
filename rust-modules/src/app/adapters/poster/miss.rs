@@ -28,7 +28,8 @@
 use plx_plex::plex::ServerId;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use plx_base::window::Window;
+use std::time::Duration;
 
 /// Misses kept. Far above a session's deck titles; precedent: `refresh.rs`'s `RECENT_CAP`.
 pub(super) const MISS_CAP: usize = 1024;
@@ -61,7 +62,7 @@ pub(super) const UNANSWERED_FOR: Duration = plx_plex::plex::account::UNREACHABLE
 #[derive(Clone, Copy, Debug)]
 struct Entry {
     cur: Currency,
-    until: Option<Instant>,
+    until: Option<Window>,
 }
 
 /// The bounded set. Nested by server so a hit borrows the key (no allocation on the per-frame
@@ -80,7 +81,7 @@ impl MissSet {
     }
 
     /// Record a miss that stops counting at `until` (`None`: never).
-    pub(super) fn insert_until(&mut self, srv: u16, key: &str, cur: Currency, until: Option<Instant>) {
+    pub(super) fn insert_until(&mut self, srv: u16, key: &str, cur: Currency, until: Option<Window>) {
         if cur.cache_gen < self.epoch {
             return; // a late answer of a signed-out account
         }
@@ -103,15 +104,15 @@ impl MissSet {
         }
     }
 
-    /// Does the set hold a miss of `key` under `cur` that has not expired? The clock is read only
-    /// for an entry that carries an expiry.
+    /// Does the set hold a miss of `key` under `cur` that has not expired? An entry that carries an
+    /// expiry asks its [`Window`]; this module reads no clock.
     pub(super) fn contains(&self, srv: u16, key: &str, cur: Currency) -> bool {
         cur.cache_gen == self.epoch
             && self
                 .by_server
                 .get(&srv)
                 .and_then(|m| m.get(key))
-                .is_some_and(|e| e.cur == cur && e.until.is_none_or(|t| Instant::now() < t))
+                .is_some_and(|e| e.cur == cur && e.until.is_none_or(|w| w.is_open()))
     }
 
     #[cfg(test)]
@@ -135,7 +136,7 @@ pub(super) fn note(srv: ServerId, key: &str, cur: Currency) {
 /// Record a miss that was not a verdict about the title (a read that did not answer): it counts for
 /// [`UNANSWERED_FOR`], then the key reads as never requested again.
 pub(super) fn note_for(srv: ServerId, key: &str, cur: Currency, window: Duration) {
-    with(|m| m.insert_until(srv.raw(), key, cur, Some(Instant::now() + window)));
+    with(|m| m.insert_until(srv.raw(), key, cur, Some(Window::start(window))));
 }
 
 /// Has `key` on `srv` settled as a miss this session, under the identity in force NOW?
