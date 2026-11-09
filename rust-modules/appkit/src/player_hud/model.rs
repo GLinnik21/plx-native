@@ -120,6 +120,29 @@ impl Default for HudModel {
 }
 
 
+/// Whether the projected finish is meaningful for the current playback frame.
+/// Scrubbing, seeking, loading and pauses deliberately suppress the estimate rather than
+/// presenting a prediction based on a position or transport state that is not advancing.
+pub fn end_time_is_eligible(
+    enabled: bool,
+    is_movie_or_episode: bool,
+    is_preview: bool,
+    advancing: bool,
+    viewer_paused: bool,
+    seeking: bool,
+    loading: bool,
+    scrubbing: bool,
+) -> bool {
+    enabled
+        && is_movie_or_episode
+        && !is_preview
+        && advancing
+        && !viewer_paused
+        && !seeking
+        && !loading
+        && !scrubbing
+}
+
 /// Project an item's end timestamp from the current wall clock, content position and the
 /// playback pipeline's APPLIED rate (per mille). Invalid or unrepresentable inputs stay unknown.
 ///
@@ -141,7 +164,23 @@ pub fn projected_end_unix_seconds(now_utc: i64, position_ns: i64, duration_ns: i
 
 #[cfg(test)]
 mod end_time_tests {
-    use super::projected_end_unix_seconds;
+    use super::{end_time_is_eligible, projected_end_unix_seconds};
+
+    #[test]
+    fn end_time_visibility_requires_a_reliable_movie_or_episode_playback() {
+        let eligible = |enabled, media, preview, advancing, paused, seeking, loading, scrubbing| {
+            end_time_is_eligible(enabled, media, preview, advancing, paused, seeking, loading, scrubbing)
+        };
+        assert!(eligible(true, true, false, true, false, false, false, false));
+        assert!(!eligible(false, true, false, true, false, false, false, false), "preference off");
+        assert!(!eligible(true, false, false, true, false, false, false, false), "other content");
+        assert!(!eligible(true, true, true, true, false, false, false, false), "preview/trailer");
+        assert!(!eligible(true, true, false, false, false, false, false, false), "not advancing");
+        assert!(!eligible(true, true, false, true, true, false, false, false), "viewer pause");
+        assert!(!eligible(true, true, false, true, false, true, false, false), "seek");
+        assert!(!eligible(true, true, false, true, false, false, true, false), "loading");
+        assert!(!eligible(true, true, false, true, false, false, false, true), "scrub");
+    }
 
     #[test]
     fn projected_finish_uses_remaining_content_time_and_applied_speed() {
