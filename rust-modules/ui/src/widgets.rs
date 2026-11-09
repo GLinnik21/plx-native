@@ -709,9 +709,9 @@ pub enum StillFooter {
     Shelf,
     /// The Continue Watching card's one-line footer ([`crate::still_footer`]): `S2 E4 · 38m left`
     /// and the amber bar, with the focus cue of what OK does — `cue` — opening with the card's focus
-    /// pop `pop` (`cards::Tile::pop`). The show's name stands above it only while the card's title
-    /// is not on its art: a card that did not opt in to the deck's art walk ([`TileFacts::deck`]).
-    /// An opted-in card carries its title in its cover, its composite or, with neither, in type
+    /// pop `pop` (`cards::Tile::pop`). **It stands BELOW the art** ([`crate::still_footer::Place::Below`]:
+    /// the art above it is clean, four rounded corners, no scrim) and carries no show name: a deck
+    /// card ([`TileFacts::deck`]) has its title in its cover, its composite or, with neither, in type
     /// ([`crate::card_art::needs_type_title`], drawn by [`still_overlay`]), and the footer never repeats it.
     Continue { cue: crate::still_footer::Cue, pop: f32 },
 }
@@ -813,7 +813,7 @@ pub fn still_overlay(
                 p,
                 card,
                 label,
-                &crate::still_footer::Footer { tag: &tag, status: &status, right, cue: Some(cue), focus: pop },
+                &crate::still_footer::Footer { tag: &tag, status: &status, right, cue: Some(cue), focus: pop, place: crate::still_footer::Place::Below },
                 measure,
             );
         }
@@ -1094,7 +1094,13 @@ pub fn card_named_led(p: Painter, frame: Rect, art: Art, fan_name: Option<&str>,
                 if m.show_title.is_empty() && m.title.is_empty() { STILL_SCRIM_H_1 } else { STILL_SCRIM_H }
             });
             if t != 0 && shown < 1.0 { crate::placeholder::skeleton_under(p, r, rad); }
-            let fused = !tile_glass_armed()
+            // **A deck card's art is clean.** Its footer line stands BELOW the tile
+            // ([`crate::still_footer::Place::Below`], owner's board CW-13 v2), so there is no text on
+            // the art for a bottom scrim to keep legible: the picture, four rounded corners, nothing
+            // over it. (Its title, in the cover or in type, is the art's own business.)
+            let clean = m.is_some_and(|m| m.deck.is_some());
+            let fused = !clean
+                && !tile_glass_armed()
                 && pa.tex_carded_still(t, art_uv(&art, tw, th, r), r, rad, f, band, theme::scrim(STILL_SCRIM_A));
             if !fused {
                 if t != 0 {
@@ -1106,7 +1112,7 @@ pub fn card_named_led(p: Painter, frame: Rect, art: Art, fan_name: Option<&str>,
                     crate::placeholder::skeleton(p, crate::placeholder::Reason::CardSkeleton,
                         m.map_or("", |m| still_key(&m)), r, rad);
                 }
-                if m.is_some() { still_ground(pa, r, rad, band, STILL_SCRIM_A); }
+                if m.is_some() && !clean { still_ground(pa, r, rad, band, STILL_SCRIM_A); }
             }
             // **No watched DISC.** `Library Screens.dc.html` E: "the watched disc is suppressed
             // whenever a stateLine is present — one mark per tile, and the line is it." Every

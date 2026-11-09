@@ -26,7 +26,13 @@
 //! during the same focus transition (it slides out under the cue slot's edge, fading, as the text
 //! group closes up) and back in when focus leaves.
 //!
-//! The geometry is judged on the card's RESTING inner width (`388` = 420 - 2 x 16): the drawn rect
+//! **Where the line stands is [`Place`]**: [`Place::InArt`] (the detail page's episode strip) on the
+//! art's own bottom, 12 px above its edge, and [`Place::Below`] (the Continue Watching row, owner's
+//! board CW-13 v2) OFF the art: the line's top [`theme::STILL_FOOTER_DROP`] under the tile's foot, 4 px
+//! inset each side, its bar 6 px tall (radius 3), the art above it clean (no scrim, four rounded
+//! corners). The fit rule is the same function; only the inner width it is judged on differs.
+//!
+//! The geometry is judged on the card's RESTING inner width (`388` = 420 - 2 x 16, in the art; 412 below): the drawn rect
 //! is larger while the card is popped, which only ever adds air, and a rule that read the drawn width
 //! would flip the tag's decision mid-transition.
 //!
@@ -52,10 +58,61 @@ pub const FOOTER_BAR_W: f32 = 100.0;
 pub const FOOTER_BAR_MIN_W: f32 = 64.0;
 pub const FOOTER_BAR_H: f32 = 4.0;
 pub const FOOTER_BAR_RAD: f32 = 2.0;
+/// The bar and its radius on the line BELOW the art ([`Place::Below`]).
+pub const FOOTER_BELOW_BAR_H: f32 = 6.0;
+pub const FOOTER_BELOW_BAR_RAD: f32 = 3.0;
+/// The line BELOW the art stands this far in from the tile's own edges.
+pub const FOOTER_BELOW_INSET: f32 = 4.0;
+/// The room a [`Place::Below`] row spends under its tiles past a poster shelf's standard air
+/// ([`crate::card_row::RowStyle::under_tile`]): the line's drop and height, and the heading air under
+/// it ([`theme::STILL_FOOTER_AIR`]) less the `space::LG` a poster shelf already leaves.
+pub const FOOTER_UNDER_TILE: f32 = theme::STILL_FOOTER_DROP + FOOTER_LINE_H + theme::STILL_FOOTER_AIR - theme::space::LG;
 /// The watched tick's box.
 pub const FOOTER_TICK_D: f32 = 22.0;
 /// The resting inner width the fit rule is judged on: the episode tile's 420 less both insets.
 pub const FOOTER_INNER_W: f32 = crate::card_row::RowStyle::EPISODE.w - 2.0 * crate::widgets::STILL_LINE_INSET;
+/// The same, for a line BELOW the art: the tile's 420 less its 4 px insets.
+pub const FOOTER_BELOW_INNER_W: f32 = crate::card_row::RowStyle::STILL.w - 2.0 * FOOTER_BELOW_INSET;
+
+/// Where a footer line stands against its tile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Place {
+    /// On the art's own bottom (`12 px above its edge`), inset 16: the episode strip.
+    InArt,
+    /// Under the art, [`theme::STILL_FOOTER_DROP`] below its foot, inset 4: the Continue Watching row.
+    Below,
+}
+
+impl Place {
+    /// The line's inset from the tile's left and right edges.
+    pub const fn inset(self) -> f32 {
+        match self {
+            Place::InArt => crate::widgets::STILL_LINE_INSET,
+            Place::Below => FOOTER_BELOW_INSET,
+        }
+    }
+    /// The resting inner width the fit rule is judged on.
+    pub const fn inner_w(self) -> f32 {
+        match self {
+            Place::InArt => FOOTER_INNER_W,
+            Place::Below => FOOTER_BELOW_INNER_W,
+        }
+    }
+    /// The progress bar's height and corner radius.
+    pub const fn bar(self) -> (f32, f32) {
+        match self {
+            Place::InArt => (FOOTER_BAR_H, FOOTER_BAR_RAD),
+            Place::Below => (FOOTER_BELOW_BAR_H, FOOTER_BELOW_BAR_RAD),
+        }
+    }
+    /// The line's top edge for a tile drawn at `card` (the DRAWN rect, so the line rides the pop).
+    pub fn line_top(self, card: Rect) -> f32 {
+        match self {
+            Place::InArt => card.y + card.h - FOOTER_RISE - FOOTER_LINE_H,
+            Place::Below => card.y + card.h + theme::STILL_FOOTER_DROP,
+        }
+    }
+}
 
 /// What OK does on a Continue Watching card, as the cue that promises it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -85,6 +142,7 @@ pub struct Footer<'a> {
     pub right: Right,
     pub cue: Option<Cue>,
     pub focus: f32,
+    pub place: Place,
 }
 
 /// The measured widths [`footer_geometry`] decides from. `tag_w` includes the space after the tag
@@ -169,12 +227,14 @@ pub fn footer_geometry(inner_w: f32, fit: FooterFit, focus: f32) -> FooterGeo {
 pub fn draw_footer(p: Painter, card: Rect, label: &str, f: &Footer<'_>, measure: &dyn Measure) {
     let sz = theme::size::CAPTION;
     let (sct, scb) = plx_gfx::text::text_cap_band(sz, 0);
-    let cy = card.y + card.h - FOOTER_RISE - FOOTER_LINE_H * 0.5;
+    let place = f.place;
+    let cy = place.line_top(card) + FOOTER_LINE_H * 0.5;
     let sy = cy - (sct + scb) * 0.5;
-    if !label.is_empty() {
+    // The show's name stands over the line ON the art: a line below the art has no ground for it.
+    if !label.is_empty() && place == Place::InArt {
         crate::widgets::still_label_over(p, card, label, cy + (scb - sct) * 0.5, measure);
     }
-    let inset = crate::widgets::STILL_LINE_INSET;
+    let inset = place.inset();
     let (left, right) = (card.x + inset, card.x + card.w - inset);
     let cue_w = if f.cue.is_some() { FOOTER_CUE_SLOT } else { 0.0 };
     let t = if f.cue.is_some() { f.focus.clamp(0.0, 1.0) } else { 0.0 };
@@ -191,7 +251,7 @@ pub fn draw_footer(p: Painter, card: Rect, label: &str, f: &Footer<'_>, measure:
 
     let fit = fit_of(f.tag, f.status, cue_w, matches!(f.right, Right::Bar(_)), measure);
     let geo = match f.right {
-        Right::Bar(_) | Right::None => footer_geometry(FOOTER_INNER_W, fit, t),
+        Right::Bar(_) | Right::None => footer_geometry(place.inner_w(), fit, t),
         // a mark that does not flex: the tag, if there is one, is simply shown
         Right::Tick => FooterGeo { text_dx: cue_w * t, tag_alpha: 1.0, tag_dx: 0.0, bar_w: 0.0 },
     };
@@ -221,13 +281,10 @@ pub fn draw_footer(p: Painter, card: Rect, label: &str, f: &Footer<'_>, measure:
     }
 
     match f.right {
-        Right::Bar(frac) if geo.bar_w > 0.0 => crate::widgets::progress_bar(
-            p,
-            Rect::new(right - geo.bar_w, cy - FOOTER_BAR_H * 0.5, geo.bar_w, FOOTER_BAR_H),
-            FOOTER_BAR_RAD,
-            FOOTER_BAR_H,
-            frac,
-        ),
+        Right::Bar(frac) if geo.bar_w > 0.0 => {
+            let (bar_h, bar_rad) = place.bar();
+            crate::widgets::progress_bar(p, Rect::new(right - geo.bar_w, cy - bar_h * 0.5, geo.bar_w, bar_h), bar_rad, bar_h, frac)
+        }
         Right::Tick => crate::icons::draw(
             p,
             crate::icons::Icon::Check,
@@ -493,6 +550,10 @@ mod tests {
     // ---- the draw, through the census -----------------------------------------------------------
 
     fn runs_at(focus: f32, status: &str, tag: &str) -> Vec<crate::draw_census::Run> {
+        runs_in(Place::InArt, focus, status, tag)
+    }
+
+    fn runs_in(place: Place, focus: f32, status: &str, tag: &str) -> Vec<crate::draw_census::Run> {
         let card = Rect::new(0.0, 0.0, 420.0, 236.0);
         let m = crate::fixture::FixtureMeasure;
         crate::draw_census::capture_runs(|| {
@@ -500,10 +561,73 @@ mod tests {
                 Painter::recording(),
                 card,
                 "",
-                &Footer { tag, status, right: Right::Bar(0.4), cue: Some(Cue::Play), focus },
+                &Footer { tag, status, right: Right::Bar(0.4), cue: Some(Cue::Play), focus, place },
                 &m,
             )
         })
+    }
+
+    /// **The line BELOW the art** (owner's board CW-13 v2): its top [`theme::STILL_FOOTER_DROP`] under
+    /// the tile's foot, the line 24 tall, 4 px in from both edges, the bar 6 px tall with radius 3 and
+    /// at its 100 px width. The art keeps its own bottom: nothing of the line is inside the card.
+    #[test]
+    fn the_line_below_the_art_stands_off_it_with_a_six_px_bar() {
+        let _g = plx_base::testlock::serial();
+        let card = Rect::new(100.0, 50.0, 420.0, 236.0);
+        let foot = card.y + card.h;
+        let m = crate::fixture::FixtureMeasure;
+        let f = Footer { tag: "", status: "38m left", right: Right::Bar(0.4), cue: None, focus: 0.0, place: Place::Below };
+        let bars: Vec<_> = crate::draw_census::capture_inks(|| draw_footer(Painter::recording(), card, "", &f, &m))
+            .into_iter()
+            .filter(|(tag, r, _)| *tag == 2 && r.h < 20.0)
+            .collect();
+        assert!(!bars.is_empty(), "the bar was drawn");
+        for (_, r, _) in &bars {
+            assert_eq!(r.h, 6.0, "6 px tall");
+            assert_eq!(r.w, FOOTER_BAR_W, "100 px wide at rest");
+            assert_eq!(r.x + r.w, card.x + card.w - 4.0, "its right end stands on the 4 px inset");
+            assert_eq!(r.y + r.h * 0.5, foot + theme::STILL_FOOTER_DROP + FOOTER_LINE_H * 0.5, "centred on the line");
+            assert!(r.y > foot, "all of it OFF the art: {r:?}");
+        }
+        assert_eq!(Place::Below.bar(), (6.0, 3.0));
+        assert_eq!(Place::Below.line_top(card), foot + 8.0);
+        let line = runs_in(Place::Below, 0.0, "38m left", "");
+        assert_eq!(line[0].at.x, 4.0, "the text starts on the 4 px inset");
+        // and the in-art line is where it always was: 12 px up from the edge, inset 16, a 4 px bar
+        assert_eq!(Place::InArt.line_top(card), foot - FOOTER_RISE - FOOTER_LINE_H);
+        assert_eq!(Place::InArt.bar(), (4.0, 2.0));
+        assert_eq!(runs_in(Place::InArt, 0.0, "38m left", "")[0].at.x, crate::widgets::STILL_LINE_INSET);
+        // the room a row spends under its tiles is exactly the line, its drop and the heading's air
+        assert_eq!(FOOTER_UNDER_TILE + theme::space::LG, theme::STILL_FOOTER_DROP + FOOTER_LINE_H + theme::STILL_FOOTER_AIR);
+        assert_eq!(FOOTER_BELOW_INNER_W, 412.0);
+    }
+
+    /// The rule holds on the BELOW line's 412 px for every shipped language, as it does on the 388 px
+    /// in-art line: the bar stays in its 64..100 band, the 12 px gap holds, and the unstarted line's
+    /// words are never cut, at every progress of the focus transition.
+    #[test]
+    fn the_line_below_the_art_fits_every_shipped_language_at_every_focus_progress() {
+        let inner = Place::Below.inner_w();
+        for language in SHIPPED {
+            let tag = language.tag();
+            let _g = language_on_this_thread_for_test(language);
+            for (case, t, s) in cases() {
+                let f = fit_of(&t, &s, FOOTER_CUE_SLOT, true, &ShippedMeasure);
+                for i in 0..=40 {
+                    let g = footer_geometry(inner, f, i as f32 / 40.0);
+                    assert!(gap(inner, f, g) >= FOOTER_GAP - EPS, "{tag} {case} {i}/40: {g:?}");
+                    assert!(g.bar_w >= FOOTER_BAR_MIN_W - EPS && g.bar_w <= FOOTER_BAR_W + EPS, "{tag} {case} {i}/40: {g:?}");
+                }
+            }
+            let cx = plx_platform::i18n::current();
+            let (t, s) = (crate::fmt::footer_tag_in(cx, 12, 24), plx_platform::i18n::msg::widgets_card_new_episode_in(cx).to_owned());
+            let f = fit_of(&t, &s, FOOTER_CUE_SLOT, false, &ShippedMeasure);
+            for i in 0..=40 {
+                let g = footer_geometry(inner, f, i as f32 / 40.0);
+                let end = g.text_dx + f.tag_w * g.tag_alpha + f.status_w;
+                assert!(end <= inner + EPS, "{tag} {i}/40: the text ends at {end:.1} of {inner}: {g:?}");
+            }
+        }
     }
 
     #[test]
@@ -534,8 +658,9 @@ mod tests {
         assert_eq!(open[0].at.x, left + FOOTER_CUE_SLOT, "the time stands where the tag's slot closed up");
     }
 
-    /// **What a Continue Watching still says** through the one `still_overlay` door: the show above,
-    /// then `S2 E4 · 38m left`, and for a card nobody has started the same tag and `New episode`, no bar.
+    /// **What a Continue Watching still says** through the one `still_overlay` door: `S2 E4 · 38m left`
+    /// and, for a card nobody has started, the same tag and `New episode`, no bar. It carries no show
+    /// name: the line stands under the art, whose title is the art's own (a deck card is always one).
     #[test]
     fn a_continue_watching_still_says_the_show_the_tag_and_the_time_left() {
         use crate::tile::{Resume, TileFacts};
@@ -558,17 +683,17 @@ mod tests {
             resume: Some(Resume { frac: 0.3, left_ms: 38 * 60_000 }),
             ..Default::default()
         };
-        assert_eq!(words(started), ["Severance", "S2 E4 \u{b7}", "38m left"]);
+        assert_eq!(words(started), ["S2 E4 \u{b7}", "38m left"]);
         let film = TileFacts { title: "Heat", resume: Some(Resume { frac: 0.3, left_ms: 38 * 60_000 }), ..Default::default() };
-        assert_eq!(words(film), ["Heat", "38m left"], "a film has no tag");
+        assert_eq!(words(film), ["38m left"], "a film has no tag");
         let next_up = TileFacts { show_title: "Severance", season_index: 2, ep_index: 5, unwatched: true, ..Default::default() };
         assert_eq!(
             words(next_up),
-            ["Severance", "S2 E5 \u{b7}", "New episode"],
+            ["S2 E5 \u{b7}", "New episode"],
             "nothing to count down: the same tag a started episode wears, then the catalogue's New episode, no bar"
         );
         let unnumbered = TileFacts { show_title: "Severance", unwatched: true, ..Default::default() };
-        assert_eq!(words(unnumbered), ["Severance"], "an unstarted card with no address has nothing to say");
+        assert!(words(unnumbered).is_empty(), "an unstarted card with no address has nothing to say");
     }
 
     /// **A deck card's title is drawn ONCE, and in the art**: Plex's cover and our composite carry
@@ -629,7 +754,7 @@ mod tests {
                 Painter::recording(),
                 card,
                 "",
-                &Footer { tag: "", status: &long, right: Right::Tick, cue: None, focus: 0.0 },
+                &Footer { tag: "", status: &long, right: Right::Tick, cue: None, focus: 0.0, place: Place::InArt },
                 &m,
             )
         });

@@ -31,6 +31,20 @@ fn row_rect_steps_by_width_plus_gap_from_the_margin() {
     assert_eq!(r2.w, 90.0);
 }
 
+/// Home's row: Play, the disc and Info are one gap apart, the Play capsule's pop carries no air in
+/// the row (Detail's [`row_rect`] keeps it), and a control past the end lands one gap after the last.
+#[test]
+fn flat_row_rect_spaces_every_control_one_gap_apart() {
+    let widths = [224.0, CD, CD];
+    let r: Vec<Rect> = (0..3).map(|i| flat_row_rect(&widths, i, 668.0)).collect();
+    assert_eq!((r[0].x, r[0].y, r[0].w, r[0].h), (plx_ui::consts::MARGIN_X, 668.0, 224.0, CD));
+    assert_eq!(r[1].x, r[0].x + 224.0 + CGAP);
+    assert_eq!(r[2].x, r[1].x + CD + CGAP);
+    assert_eq!(flat_row_rect(&widths, 3, 668.0).x, r[2].x + CD + CGAP);
+    assert!(r[1].x < row_rect(&widths, 1, 668.0).x, "Detail's row spends the capsule's focus air first");
+    assert_eq!(flat_row_rect(&[], 0, 3.0).w, 0.0);
+}
+
 #[test]
 fn row_rect_past_the_end_lands_one_gap_after_the_last_control() {
     let widths = [200.0, 90.0];

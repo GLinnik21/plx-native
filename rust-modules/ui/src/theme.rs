@@ -239,6 +239,48 @@ pub mod hero {
     pub const SCRIM_MID_A: f32 = 0.55;
     /// Opacity at the foot: retain the artwork's colour under the action row.
     pub const SCRIM_FOOT_A: f32 = 0.86;
+
+    // ---- Home's hero (owner's board CW-13, v2). Detail's ladder and scrim are NOT these. ----
+
+    /// Top of Home's action row: Play, the Watchlist disc, Info, the pager. Everything above it on
+    /// Home is one ladder that grows up from this line (`landing_hero::home_rows`).
+    pub const HOME_ACTIONS_Y: f32 = 668.0;
+    /// The block above the action row (a one-line episode label, or the synopsis) ends this far
+    /// above [`HOME_ACTIONS_Y`]: 638, the board's own number (it is not a rung of `space`).
+    pub const HOME_ACTIONS_GAP: f32 = 30.0;
+    /// The title's foot stands this far above the block under it.
+    pub const HOME_TITLE_GAP: f32 = super::space::SM;
+    /// Home's synopsis wraps to this column, narrower than the shared [`TEXT_W`] reading column.
+    pub const HOME_SYNOPSIS_W: f32 = 700.0;
+    /// ...and to at most this many lines (a third would climb into the title's band).
+    pub const HOME_SYNOPSIS_LINES: usize = 2;
+}
+
+/// **Home's hero scrim, as three stacked terms of one ink** ([`SCRIM_INK`], composed
+/// `1 - (1-a)(1-b)(1-c)`, each scaled by the hero's own fade) — the owner's CW-13 v2 board. It
+/// replaces the left wedge, the feathered mask and the bottom ramp Home used to share with Detail
+/// (which keeps all three). Every table is `(t, alpha)` with `t` in the unit its term names; the
+/// evaluator is `widgets::home_scrim_a` and the one-pass ground carries the same numbers to the
+/// GPU (`gfx::GroundScrim`).
+pub mod home_scrim {
+    /// The top band: from the panel's top to [`TOP_H`] px, alpha by `t = y / TOP_H`. It keeps the
+    /// top navigation and the profile chip readable over any backdrop.
+    pub const TOP_H: f32 = 240.0;
+    /// `(t, alpha)` of the top band: .50 at the panel's top fading out to nothing at [`TOP_H`].
+    pub const TOP: [(f32, f32); 6] = [(0.0, 0.50), (0.18, 0.40), (0.40, 0.26), (0.65, 0.12), (0.85, 0.03), (1.0, 0.0)];
+    /// The radial term's centre, in authored pixels: behind the title, synopsis and the actions.
+    pub const RADIAL_CENTRE: (f32, f32) = (560.0, 590.0);
+    /// The radial term's radii (x, y): an ellipse, so `r` below is the normalised elliptical distance.
+    pub const RADIAL_RADII: (f32, f32) = (1020.0, 460.0);
+    /// `(r, alpha)` of the radial term: the heaviest ink is behind the copy, gone at `r = 1`.
+    pub const RADIAL: [(f32, f32); 6] = [(0.0, 0.78), (0.30, 0.70), (0.55, 0.48), (0.78, 0.22), (0.92, 0.06), (1.0, 0.0)];
+    /// The bottom band starts at this y and runs to the panel's foot (`t = (y - BOTTOM_Y) / BOTTOM_H`).
+    pub const BOTTOM_Y: f32 = 640.0;
+    /// The bottom band's height, to the foot of the 1080 panel.
+    pub const BOTTOM_H: f32 = crate::consts::SCR_H - BOTTOM_Y;
+    /// `(t, alpha)` of the bottom band: nothing at its top, .93 at the foot (the shelves' ground).
+    pub const BOTTOM: [(f32, f32); 8] =
+        [(0.0, 0.0), (0.12, 0.02), (0.25, 0.08), (0.40, 0.24), (0.55, 0.46), (0.70, 0.68), (0.85, 0.84), (1.0, 0.93)];
 }
 
 /// Shared logo presence: target bounding-box area, with independent width/height limits.
@@ -1313,6 +1355,18 @@ pub const EP_CARD_FOCUS_SCALE: f32 = 1.04;
 /// Corner radius of the Continue Watching row's landscape tile (the handoff's `still-radius`); the
 /// tile's size and gap are the episode strip's own ([`crate::card_row::RowStyle::EPISODE`]).
 pub const STILL_RADIUS: f32 = 12.0;
+
+/// The gap between two Continue Watching stills (owner's board CW-13 v2: pitch 460 with the 420 tile).
+/// The Detail episode strip keeps [`crate::card_row::RowStyle::EPISODE`]'s 28.
+pub const STILL_GAP: f32 = 40.0;
+
+/// The Continue Watching footer line's top stands this far under the tile's foot (the board's 244 for
+/// a 236 tile): the line is OFF the art, which carries no scrim and keeps four rounded corners.
+pub const STILL_FOOTER_DROP: f32 = 8.0;
+
+/// The next shelf's heading stands this far under the Continue Watching footer line's foot (the
+/// board's 1084 for a footer foot at 1036).
+pub const STILL_FOOTER_AIR: f32 = 48.0;
 
 /// How much higher the Continue Watching row's heading stands over its tiles than a poster shelf's
 /// does, in px ([`crate::card_row::RowStyle::heading_rise`]): the owner's boards (CW-12/13) put the

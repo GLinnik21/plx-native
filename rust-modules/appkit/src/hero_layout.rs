@@ -140,6 +140,24 @@ pub fn row_rect(widths: &[f32], i: usize, y: f32) -> Rect {
     Rect::new(x + leading_air, y, w, CD)
 }
 
+/// **Home's action row**: the same controls as [`row_rect`], every one exactly [`CGAP`] after the
+/// one before it and none carrying focus air. Detail's row keeps the Play capsule's pop in its
+/// width ([`row_rect`]), which opens a wider first gap; Home's board spaces Play, the Watchlist disc
+/// and Info alike, and the pill's own pop closes on that gap instead. `i` past the end lands one
+/// gap after the last control. Never allocates, and never reads a screen's state.
+pub fn flat_row_rect(widths: &[f32], i: usize, y: f32) -> Rect {
+    debug_assert!(widths.len() <= MAX_CTLS);
+    let n = widths.len().min(MAX_CTLS);
+    let mut items = [Item::absent(); MAX_CTLS + 1];
+    for (slot, w) in items.iter_mut().zip(&widths[..n]) {
+        *slot = Item::new(*w);
+    }
+    items[n] = Item::new(0.0);
+    let stack = HStack::new(&items[..=n], CGAP, Align::Leading(plx_ui::consts::MARGIN_X));
+    let (x, _) = stack.span(i.min(n)).unwrap_or((plx_ui::consts::MARGIN_X, 0.0));
+    Rect::new(x, y, widths.get(i).or(widths.last()).copied().unwrap_or(0.0), CD)
+}
+
 /// Reserved right edge, including a capsule's focus expansion, for the unfurl budget.
 pub fn row_right(widths: &[f32]) -> f32 {
     row_rect(widths, widths.len(), 0.0).x - if widths.is_empty() { 0.0 } else { CGAP }

@@ -118,8 +118,10 @@ pub fn inside_safe(r: crate::Rect) -> bool {
 }
 
 // hero <-> grid continuum
-/// Shelf origin in hero view: the card's 26 px inset places its top at the proposal's 817 px.
-pub const PEEK_Y: f32 = 791.0;
+/// Shelf origin in hero view: the card's 26 px inset places its top at 768, which stands 40 px under
+/// the hero's action row (top 668, 60 tall: `theme::hero::HOME_ACTIONS_Y`; owner's board CW-13 v2).
+/// The dive from here to [`GRID_TOP_Y`] is 548 px: the board's grid scroll.
+pub const PEEK_Y: f32 = 742.0;
 // shelf top in grid view, and the rest of the FOCUSED shelf on every scroll (`ui_cards::grid_rest_scroll`
 // pins it here whatever the Under posters band): leaves the hub title (row_y − TITLE_DY, lifted up to
 // ~17 more when its leftmost card magnifies) a clear space::MD under the profile chip (bottom edge 126).

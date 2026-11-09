@@ -22,12 +22,12 @@ use plx_ui::consts::*;
 use plx_ui::hstack::Item;
 use plx_ui::frame::Budget;
 use plx_ui::hero_logo::{self, HeroLogo, LogoRung};
+use plx_ui::label::{Label, VAlign};
 use plx_ui::hold_hint::{HintInput, HoldHint};
 use plx_ui::icons::Icon;
 use plx_ui::linked_heading::{self, LinkedHeading};
 use plx_ui::landing_hero::{
-    base_scrim_ramp, hero_stack, COL_W as HERO_COL_W,
-    TEXT_BOTTOM as HERO_TEXT_BOTTOM,
+    base_scrim_ramp, home_rows, home_synopsis, COL_W as HERO_COL_W, HOME_LABEL_H,
 };
 use plx_machine::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputEvent,
@@ -127,7 +127,7 @@ const HERO_PREFETCH: usize = 1;
 const HERO_ART_CULL: f32 = 0.996;
 const HERO_WASH_W: [f32; 4] = [0.55, 0.55, 0.40, 0.40];
 
-const HERO_ROW_Y: f32 = HERO_TEXT_BOTTOM + theme::space::MD;
+const HERO_ROW_Y: f32 = theme::hero::HOME_ACTIONS_Y;
 const HERO_CTRL_D: f32 = StatusOverlay::CTRL_H;
 const HERO_CTRL_GAP: f32 = plx_ui::widgets::CONTROL_GAP;
 #[cfg(test)]
@@ -2226,14 +2226,14 @@ impl HomeScreen {
         if let Some((out_x, in_x)) = self.slide_offsets() {
             if let Some(old) = self.outgoing_hero(view) {
                 let po = p.translate(out_x, 0.0);
-                hero_content(old.item, display_source(old.source), po, out_x, measure);
+                hero_content(old.item, po, out_x, measure);
                 self.draw_hero_actions(old.item, env, po, out_x, false, page_alpha, focus, measure, press_scale);
             }
             let pi = p.translate(in_x, 0.0);
-            hero_content(hero.item, display_source(hero.source), pi, in_x, measure);
+            hero_content(hero.item, pi, in_x, measure);
             self.draw_hero_actions(hero.item, env, pi, in_x, true, page_alpha, focus, measure, press_scale);
         } else {
-            hero_content(hero.item, display_source(hero.source), p, 0.0, measure);
+            hero_content(hero.item, p, 0.0, measure);
             self.draw_hero_actions(hero.item, env, p, 0.0, true, page_alpha, focus, measure, press_scale);
         }
         if view.hero_count() > 1 {
@@ -3671,7 +3671,7 @@ fn hero_rects(measure: &dyn Measure, item: &PmsMovie, label: &std::ffi::CStr) ->
     let has_disc = disc_hex(item).is_some();
     let widths = [plx_appkit::hero_layout::play_width(measure, label), HERO_CTRL_D, HERO_CTRL_D];
     let row = &widths[..if has_disc { 3 } else { 2 }];
-    let at = |i| plx_appkit::hero_layout::row_rect(row, i, HERO_ROW_Y);
+    let at = |i| plx_appkit::hero_layout::flat_row_rect(row, i, HERO_ROW_Y);
     HeroRects {
         play: at(0),
         disc: has_disc.then(|| at(1)),
@@ -3865,15 +3865,14 @@ fn prefetch_armed(snap: f32, sliding: bool) -> bool {
     neighbours_armed(snap) && !sliding
 }
 
-fn display_source(real: &str) -> &str {
-    static OVERRIDE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-    OVERRIDE
-        .get_or_init(|| plx_base::devtrig::read("shared"))
-        .as_deref()
-        .unwrap_or(real)
-}
-
-fn hero_content(hero: &PmsMovie, source: &str, p: Painter, dx: f32, measure: &dyn Measure) {
+/// **Home's hero text** (owner's board CW-13 v2): the title (clearLogo, or its typed fallback) and ONE
+/// block under it, standing on [`home_rows`]' ladder above the action row. An EPISODE's block is its
+/// one-line label (`S2, E4 · The Night Crossing`: bold `LABEL`, primary ink, the column wide, elided
+/// when it does not fit); a movie's or a show's is its synopsis (`LABEL` on a 36 px leading in reading
+/// ink, 700 wide, at most two lines). The identity line, the ratings row and the facts line Home used
+/// to share with Detail are not drawn here. An episode with no label to name it falls back to its
+/// synopsis, so the block is never empty while the item has words.
+fn hero_content(hero: &PmsMovie, p: Painter, dx: f32, measure: &dyn Measure) {
     if !on_axis(
         MARGIN_X + dx,
         HERO_COL_W,
@@ -3889,28 +3888,30 @@ fn hero_content(hero: &PmsMovie, source: &str, p: Painter, dx: f32, measure: &dy
         &hero.title
     };
     let title_h = hero_logo::band_h(LogoRung::Hero);
-    let lead = if episode {
-        plx_appkit::hero_layout::episode_lead(i64::from(hero.season_index), i64::from(hero.ep_index), &hero.title)
-    } else { String::new() };
-    let synopsis = (!hero.summary.is_empty() || !lead.is_empty())
-        .then(|| plx_ui::hero_synopsis(&hero.summary, &lead));
-    let stack = hero_stack(title_h, plx_ui::widgets::BADGE_H, synopsis.as_ref().map(|v| v.measure_h(HERO_COL_W)));
+    let label = if episode {
+        plx_ui::fmt::episode_kicker(i64::from(hero.season_index), i64::from(hero.ep_index), &hero.title)
+    } else {
+        String::new()
+    };
+    let synopsis = (label.is_empty() && !hero.summary.is_empty()).then(|| home_synopsis(&hero.summary));
+    let block_h = if !label.is_empty() {
+        Some(HOME_LABEL_H)
+    } else {
+        synopsis.as_ref().map(|v| v.measure_h(theme::hero::HOME_SYNOPSIS_W))
+    };
+    let stack = home_rows(title_h, block_h);
     HeroLogo::new(hero.sid.raw(), hero_logo_rk(hero), title, LogoRung::Hero)
         .draw(p, Rect::new(MARGIN_X, stack.title.y, HERO_COL_W, title_h), measure);
-    let kind = if episode || hero.kind == 1 { plx_platform::i18n::msg::browse_kind_tv_show() }
-        else { plx_platform::i18n::msg::browse_kind_movie() };
-    let parts = [hero.edition.as_str(), kind, hero.genre.as_deref().unwrap_or(""), hero.rating.as_str()];
-    let parts: Vec<&str> = parts.into_iter().filter(|s| !s.is_empty()).collect();
-    let resolution = plx_ui::fmt::resolution(hero.video_resolution.as_deref().unwrap_or(""), 0, 0);
-    plx_ui::widgets::hero_identity(p, Rect::new(MARGIN_X, stack.meta.y, HERO_COL_W, stack.meta.h),
-        &parts, resolution.as_deref(), &[], measure);
-    if let (Some(view), Some(span)) = (synopsis, stack.synopsis) {
-        view.draw(p, Rect::new(MARGIN_X, span.y, HERO_COL_W, 0.0));
+    let Some(block) = stack.block else { return };
+    if !label.is_empty() {
+        let run = measure.fit_line(&label, HERO_COL_W, theme::size::LABEL, true);
+        Label::new(run.as_ptr(), theme::size::LABEL, theme::TEXT_PRIMARY)
+            .bold()
+            .v(VAlign::CapTop)
+            .draw(p, Rect::new(MARGIN_X, block.y, HERO_COL_W, measure.cap_h(theme::size::LABEL)));
+    } else if let Some(view) = synopsis {
+        view.draw(p, Rect::new(MARGIN_X, block.y, theme::hero::HOME_SYNOPSIS_W, 0.0));
     }
-    let (date, length) = plx_appkit::hero_layout::listing_facts(hero);
-    let credit = plx_ui::fmt::shared_by(source).unwrap_or_default();
-    plx_ui::widgets::hero_facts(p, Rect::new(MARGIN_X, stack.facts.y, HERO_COL_W, stack.facts.h),
-        &date, length.as_deref().unwrap_or(""), plx_data::metadata::resume_ns(hero.resume_ms, hero.dur_ns / 1_000_000) > 0, &credit, measure);
 }
 
 #[cfg(test)]

@@ -481,6 +481,7 @@ fn draw_cell(
             },
             cue: None,
             focus: 0.0,
+            place: still_footer::Place::InArt,
         },
         measure,
     );
