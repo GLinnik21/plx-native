@@ -244,6 +244,8 @@ pub mod hero {
     /// centre line). Everything above it on Home is one ladder that grows up from this
     /// line (`landing_hero::home_rows`).
     pub const HOME_ACTIONS_Y: f32 = 668.0;
+    /// The Home pager recedes as the Continue Watching shelf gains focus.
+    pub const HOME_PAGER_SHELF_ALPHA: f32 = 0.60;
     /// The block above the action row (the hero's one line: an episode label, a resumed movie's
     /// time left, or an introduced hero's premise) ends this far above [`HOME_ACTIONS_Y`]: 638, the
     /// board's own number (it is not a rung of `space`).

@@ -2278,6 +2278,13 @@ impl HomeScreen {
             self.draw_hero_actions(hero.item, env, p, 0.0, true, page_alpha, focus, measure, press_scale);
         }
         if let Some((dots, pager)) = self.pager(view, hero.item, measure) {
+            // Follow the shelf's focus motion so the pager recedes and returns with the card.
+            let p = if self.holds_page(0) {
+                let focus_mix = self.grid.shelves.first().map_or(0.0, |shelf| shelf.band_expand().clamp(0.0, 1.0));
+                p.alpha(1.0 - (1.0 - theme::hero::HOME_PAGER_SHELF_ALPHA) * focus_mix)
+            } else {
+                p
+            };
             dots.centered_y(pager.dots_x, HERO_PAGER_CY).draw(env, p);
             plx_ui::icons::draw(p, Icon::Chevron, pager.chevron, theme::TEXT_SECONDARY);
         }
