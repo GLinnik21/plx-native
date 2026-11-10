@@ -56,11 +56,13 @@ pub struct ClientFacts {
     pub described: Option<&'static super::ServerFacts>,
     /// None rejects an incoherent observation; Some((None, tier)) means not probed.
     pub source: Option<(Option<super::probe::Outcome>, Option<super::probe::Location>)>,
+    pub stream_allowed: bool,
 }
 
 impl PartialEq for ClientFacts {
     fn eq(&self, other: &Self) -> bool {
         self.machine_id == other.machine_id && self.source == other.source
+                    && self.stream_allowed == other.stream_allowed
             && match (self.described, other.described) {
                 (None, None) => true,
                 (Some(a), Some(b)) => a.name == b.name && a.handle == b.handle
@@ -73,7 +75,8 @@ impl Eq for ClientFacts {}
 impl std::fmt::Debug for ClientFacts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ClientFacts").field("machine_id", &self.machine_id)
-            .field("described", &self.described.is_some()).field("source", &self.source).finish()
+            .field("described", &self.described.is_some()).field("source", &self.source)
+                        .field("stream_allowed", &self.stream_allowed).finish()
     }
 }
 impl Default for ClientKeys {
@@ -122,9 +125,24 @@ impl ClientKeys {
     pub fn refill_roster(
         &mut self, current: ServerId, roster_gen: u32, facts_gen: u32,
         slots: impl IntoIterator<Item = ServerId>,
+        lookup: impl FnMut(ServerId) -> Option<&'static Client>,
+        describe: impl FnMut(ServerId) -> Option<&'static super::ServerFacts>,
+        probe: impl FnMut(ServerId) -> Option<super::probe::Outcome>,
+    ) {
+        self.refill_roster_with_stream_policy(current, roster_gen, facts_gen, slots, lookup, describe, probe, |_| false);
+    }
+
+    pub fn stream_allowed(&self, sid: ServerId) -> bool {
+        self.key(sid).is_some() && self.facts(sid).is_some_and(|f| f.stream_allowed)
+    }
+
+    pub fn refill_roster_with_stream_policy(
+        &mut self, current: ServerId, roster_gen: u32, facts_gen: u32,
+        slots: impl IntoIterator<Item = ServerId>,
         mut lookup: impl FnMut(ServerId) -> Option<&'static Client>,
         mut describe: impl FnMut(ServerId) -> Option<&'static super::ServerFacts>,
         mut probe: impl FnMut(ServerId) -> Option<super::probe::Outcome>,
+        mut stream_allowed: impl FnMut(&Client) -> bool,
     ) {
         self.0.clear();
         self.2 = current;
@@ -133,7 +151,7 @@ impl ClientKeys {
         let mut count = 0;
         for sid in slots {
             if count == self.1.len() {
-                self.1.push((sid, ClientFacts { machine_id: String::new(), described: None, source: None }));
+                self.1.push((sid, ClientFacts { machine_id: String::new(), described: None, source: None, stream_allowed: false }));
             }
             let row = &mut self.1[count];
             row.0 = sid;
@@ -146,10 +164,12 @@ impl ClientKeys {
             };
             if !unchanged { row.1.described = described; }
             row.1.source = None;
+            row.1.stream_allowed = false;
             if let Some(client) = lookup(sid) {
                 let key = ClientKey::of(client);
                 let outcome = probe(sid);
                 let tier = client.link();
+                let allowed = stream_allowed(client);
                 if lookup(sid).is_some_and(|now| ClientKey::of(now) == key)
                     && ClientKey::of(client) == key {
                     self.0.push((sid, key));
@@ -158,6 +178,7 @@ impl ClientKeys {
                         row.1.machine_id.push_str(client.machine_id());
                     }
                     row.1.source = Some((outcome, tier));
+                    row.1.stream_allowed = allowed;
                 } else {
                     row.1.machine_id.clear();
                 }

@@ -46,6 +46,10 @@ mod metadata_alt_sources_bridge_tests;
 #[path = "browse_roster_bridge_tests.rs"]
 mod browse_roster_bridge_tests;
 
+#[cfg(test)]
+#[path = "notify_bridge_tests.rs"]
+mod notify_bridge_tests;
+
 use plx_screens::family::SettingsPage;
 use plx_screens::player::HudPolicy;
 use plx_screens::registry::{AppArg, AppFx, AppMounter, AppMsg, ConsentCmd, ContentArg, ContentReq, HomeCmd, HomeLike, HomeReq, HomeTab, ItemMenuKind, LibraryReq, LoopReq, PageMemory};
@@ -1955,10 +1959,31 @@ impl Bridge {
     /// and the endpoint refreshes the map's quiet refetches settled, for the caller to carry.
     pub(crate) fn notify_pump(&mut self, pages: &[ContentArg], shown: plx_data::stores::notify_map::Shown)
         -> (bool, plx_data::stores::EndpointRefreshSet) {
-        let out = self.stores.notify_pump();
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
+        self.notify_pump_captured(pages, shown)
+    }
+
+    /// One captured input, one frame, and a runner boundary for EACH connection. This
+    /// helper is also the explicit-value test port; it never reads ambient keys.
+    fn notify_pump_captured(&mut self, pages: &[ContentArg], shown: plx_data::stores::notify_map::Shown)
+        -> (bool, plx_data::stores::EndpointRefreshSet) {
+        let input = plx_data::stores::notify::NotifyInput {
+            keys: &self.client_keys, armed: self.stores.landgate.is_armed(),
+        };
+        let mut pass = self.stores.notify_begin(&input);
+        while let Some(mut turn) = self.stores.notify_prepare_next(&mut pass, &input) {
+            // No Stores borrow survives the IO boundary. Earlier connections have
+            // already drained before any later connection is prepared or launched.
+            for job in self.stores.take_jobs_of(StoreId::Notify) {
+                self.store_runner.start(job);
+            }
+            self.stores.notify_settle_admission(&mut pass, &mut turn);
+            self.stores.notify_finish_turn(&mut pass, turn, &input);
+        }
+        let out = self.stores.notify_end(pass);
         let mut spent = self.stores.notify_map(&out, pages, shown, self.directory.view(), &self.client_keys);
         self.start_store_jobs_in(plx_data::stores::Stores::NOTIFY_FILLS);
+        self.start_store_jobs_of(StoreId::Notify);
         if !spent.refetched.is_empty() || !spent.invalidated.is_empty() {
             plx_base::eventlog::log(&format!(
                 "notify: refetched {} source(s) invalidated {} server(s)", spent.refetched.len(), spent.invalidated.len()));
