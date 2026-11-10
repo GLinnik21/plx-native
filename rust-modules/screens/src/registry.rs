@@ -2763,7 +2763,9 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // Previous screen pin: 0x1802_f17e_e583_f977; re-record incompatible replay anchors.
 // The player's Back motion gate keeps its last position and fixed anchor in the canon.
 // Previous pin: 0xf852_85cc_f116_356b. Re-record incompatible replay anchors.
-const SCREEN_SHAPES_PIN: u64 = 0x7e36_4373_746a_c3dc;
+// The Library menu retains its parent scroll across a Genre drill-in and the selected library
+// through its closing morph. Previous pin: 0x7e36_4373_746a_c3dc.
+const SCREEN_SHAPES_PIN: u64 = 0x1427_1d82_bf6b_e04c;
 
 #[cfg(test)]
 mod arg_tests {

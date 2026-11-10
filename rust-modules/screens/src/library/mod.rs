@@ -228,7 +228,7 @@ pub struct LibraryScreen {
     keys: KeyRegistry,
     pair: MasterDetail<RailPart, GridPart, Regions>,
     /// The visible favorite names, the current library when outside those shortcuts, and the
-    /// persistent `MORE` action last. A single library retains its name and the options action.
+    /// persistent `MORE` action after the favorites, followed by any temporary visit.
     libraries: Vec<(u32, usize)>,
     /// The directory sections the fold hid behind Library options (what the Sources list shows).
     folded: Vec<u32>,
@@ -956,8 +956,8 @@ impl LibraryScreen {
         (region, -1, -1, 0.0, self.scroll.pos)
     }
 
-    /// Choose a library: ONLY the grid fades out and back in, under a header that does not move;
-    /// the plate lands on the new name at once and focus stays on the name that was pressed.
+    /// Choose a library: the grid fades out and back in while the header marks the new name.
+    /// A visit appends a temporary pill beside the fixed shortcuts and their menu.
     fn switch_library<H: LibraryLike>(&mut self, target: SectionTarget, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         self.save_cursor(cx, fx);
         self.pending.request_section(target);
@@ -1405,6 +1405,9 @@ impl LibraryScreen {
                 if directory.epoch() == Some(target.epoch) {
                     if let Some(index) = directory.sections().iter().position(|section| section.sid == Some(target.sid) && section.key == target.section) {
                         self.switch_library(SectionTarget { epoch: target.epoch, index, identity: LibrarySectionIdentity { sid: target.sid, key: target.section }, kind: directory.sections()[index].kind }, cx, fx);
+                        // The Sources panel has closed. Move focus as the row changes, before the
+                        // asynchronous listing lands and the grid reappears.
+                        self.seat_on(LIBRARY_GROUP, cx, fx);
                     }
                 }
             }

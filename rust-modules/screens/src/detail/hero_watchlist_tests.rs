@@ -40,10 +40,10 @@ fn the_disc_is_second_after_play_in_every_row() {
         if s.go_show { want.push(HeroCtl::GoToShow); }
         if s.restart { want.push(HeroCtl::Restart); }
         if s.trailer { want.push(HeroCtl::Trailer); }
-        if s.alt { want.push(HeroCtl::Alt); }
         want.push(if s.mark == PosterMark::Watched { HeroCtl::MarkUnwatched } else { HeroCtl::MarkWatched });
         if s.version { want.push(HeroCtl::Version); }
         if s.more { want.push(HeroCtl::More); }
+        if s.alt { want.push(HeroCtl::Alt); }
         assert_eq!(rest, want, "{s:?}");
         assert!(n <= MAX_CTLS);
     }

@@ -1339,7 +1339,7 @@ fn hero_focus_follows_its_control_when_the_set_grows_under_it() {
 }
 
 #[test]
-fn hero_focus_survives_a_control_appearing_in_the_middle_of_the_row() {
+fn hero_focus_stays_in_place_when_also_available_lands() {
     let before = hero::HeroSet { more: false,
         watchlist: true,
         go_show: false,
@@ -1360,13 +1360,13 @@ fn hero_focus_survives_a_control_appearing_in_the_middle_of_the_row() {
     let after_index = hero::watch_index(after).unwrap();
     assert_eq!(
         after_index,
-        before_index + 1,
-        "Alt was inserted before the tail"
+        before_index,
+        "the trailing Alt pill leaves the watched control in place"
     );
     assert_eq!(
         hero::ctl_at(before, before_index).unwrap().elem(),
         hero::ctl_at(after, after_index).unwrap().elem(),
-        "the engine key follows the watch control rather than its shifted position"
+        "the engine keeps the same watched control key"
     );
 }
 
@@ -3535,7 +3535,7 @@ const LEGACY_TEST_MAP: &[(&str, &str)] = &[
         "screens/detail/mod.rs",
     ),
     (
-        "hero_focus_survives_a_control_appearing_in_the_middle_of_the_row",
+        "hero_focus_stays_in_place_when_also_available_lands",
         "screens/detail/mod.rs",
     ),
     (

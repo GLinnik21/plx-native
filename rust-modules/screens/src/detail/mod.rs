@@ -3060,7 +3060,7 @@ impl DetailScreen {
                 .unwrap_or_default()
         };
         let ground = if picture {
-            ControlGround::Unkeyed
+            ControlGround::VideoPreview
         } else {
             ControlGround::Keyed
         };
