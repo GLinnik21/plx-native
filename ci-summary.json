@@ -85,7 +85,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-10T23:25:56Z",
+ "generated": "2026-11-10T23:29:30Z",
  "metrics": [
   {
    "change30_pct": 47.7,
@@ -153,8 +153,8 @@
   {
    "change30_pct": 46.4,
    "change7_pct": 17.3,
-   "d30": 334,
-   "delta30": 155,
+   "d30": 334.0,
+   "delta30": 155.0,
    "delta7": 72,
    "group": "ci",
    "id": "pr_wait",
