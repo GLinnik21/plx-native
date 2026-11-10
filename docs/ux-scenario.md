@@ -155,7 +155,7 @@ is what keeps stems and bars at their intended weight on a 1080p panel.
 
 ![Home, hero](screenshots/ux-home-hero.jpg)
 
-Home opens on a **hero** — one item, full-bleed backdrop, with its logo or title, an action row and a line for episode identity, time remaining, a movie genre or a short premise. The hero rotates through a set of
+Home opens on a **hero** — one item, full-bleed backdrop, with its logo or title, an action row and a line for episode identity, time remaining, movie or show metadata, or a short premise. The hero rotates through a set of
 promoted items. The dots beside Info show the position.
 
 **Controls on the hero row**, left to right:

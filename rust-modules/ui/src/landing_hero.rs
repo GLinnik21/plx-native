@@ -155,7 +155,7 @@ fn edge_wash(ramp: WashRamp, horizontal: [f32; 2], vertical: [f32; 2], peak: f32
     crate::widgets::WashScrim { ink: ramp.ink, field }
 }
 
-/// **A hero's premise: the first sentence of its summary** (Home's fallback line for non-movies).
+/// **A hero's premise: the first sentence of its summary** (Home's fallback line when identity and progress do not apply).
 /// The sentence ends at the first `.`, `!`, `?` or `…` that is followed by whitespace
 /// and a letter that starts one (an uppercase letter, or a letter of a script that has no case), or
 /// by the end of the text, and at a CJK full stop `。` `！` `？` wherever it stands. Closing quotes

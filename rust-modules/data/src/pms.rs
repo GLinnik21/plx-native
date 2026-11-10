@@ -160,6 +160,9 @@ pub struct PmsMovie {
     /// The first `Genre` tag, or `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub genre: Option<String>,
+    /// The next distinct nonblank Genre tag for movie and show hero metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secondary_genre: Option<String>,
     /// The first media's `videoResolution` (`4k`, `1080`, `720`, `sd` …), or `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub video_resolution: Option<String>,
@@ -558,6 +561,11 @@ fn fill_caption_facts(m: &mut PmsMovie, it: &plx_plex::plex::Metadata) {
     // The wire half is `Metadata::listing_facts`, the one rule the Watchlist's matched copies read too.
     let facts = it.listing_facts();
     m.genre = facts.genre;
+    if matches!(m.kind, KIND_MOVIE | KIND_SHOW) {
+        m.secondary_genre = it.genre.iter().skip(1).map(|tag| tag.tag.trim())
+            .find(|tag| !tag.is_empty() && m.genre.as_deref() != Some(*tag))
+            .map(str::to_owned);
+    }
     m.video_resolution = facts.video_resolution;
     m.hdr = facts.hdr;
     m.audience_rating = facts.audience_rating;
@@ -4534,6 +4542,7 @@ mod caption_fact_tests {
                 {"streamType":1,"colorTrc":"smpte2084"},{"streamType":2}]}]}]}"#);
         assert_eq!(m.edition, "Director’s Cut");
         assert_eq!(m.genre.as_deref(), Some("Drama"), "the FIRST genre");
+        assert_eq!(m.secondary_genre.as_deref(), Some("Crime"));
         assert_eq!(m.video_resolution.as_deref(), Some("4k"));
         assert!(m.hdr);
         assert_eq!(m.audience_rating, Some(7.8));

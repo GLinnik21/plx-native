@@ -3902,8 +3902,8 @@ enum HeroLine<'a> {
     /// The premise of a hero nothing has been watched of: the first sentence of its summary
     /// ([`first_sentence`]) in reading ink on [`theme::hero::HOME_SYNOPSIS_W`], at most two lines.
     Premise(&'a str),
-    /// The genre supplied by the server for a movie that has not been played.
-    Genre(&'a str),
+    /// One compact identity band for an unplayed movie or show.
+    Metadata { kind: &'static str, year: String, length: String, genres: String, rating: &'a str },
 }
 
 /// Does the Play button of `hero` say Resume (the one resume rule, [`plx_data::metadata::resume_ns`])?
@@ -3914,8 +3914,8 @@ fn hero_resumes(hero: &PmsMovie) -> bool {
 /// **The line Home's hero reads by its state.** An EPISODE (resumed, or the next one on deck and not
 /// started) names itself: its label. A hero being RESUMED says how much is left, with the footer's
 /// own formatter ([`plx_ui::fmt::footer_left`], over the footer's own derivation of the time left,
-/// [`tile_facts::of`]). An unplayed movie shows its primary genre when the server supplies one.
-/// Other heroes fall back to the first sentence of the synopsis.
+/// [`tile_facts::of`]). An unplayed movie or show gets an identity band. Other heroes
+/// fall back to the first sentence of the synopsis.
 fn hero_line(hero: &PmsMovie) -> Option<HeroLine<'_>> {
     let label = if hero.kind == 3 {
         plx_ui::fmt::episode_kicker(i64::from(hero.season_index), i64::from(hero.ep_index), &hero.title)
@@ -3929,17 +3929,29 @@ fn hero_line(hero: &PmsMovie) -> Option<HeroLine<'_>> {
     if let Some(left) = left {
         return Some(HeroLine::Label(plx_ui::fmt::footer_left(left)));
     }
-    if hero.kind == plx_data::pms::KIND_MOVIE && !hero.watched && !hero_resumes(hero) {
-        return hero.genre.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(HeroLine::Genre);
+    let is_show = hero.kind == plx_data::pms::KIND_SHOW;
+    if (is_show || hero.kind == plx_data::pms::KIND_MOVIE)
+        && !hero.watched && !hero_resumes(hero) && hero.viewed_leaf_count.unwrap_or(0) == 0
+    {
+        use plx_platform::i18n::msg;
+        let kind = if is_show { msg::browse_kind_tv_show() } else { msg::browse_kind_movie() };
+        let year = (hero.year > 0).then(|| hero.year.to_string()).unwrap_or_default();
+        let length = if is_show {
+            (hero.child_count > 0).then(|| msg::browse_detail_seasons(hero.child_count)).unwrap_or_default()
+        } else {
+            let ms = hero.dur_ns / 1_000_000;
+            (ms >= 60_000).then(|| plx_ui::fmt::duration(ms)).unwrap_or_default()
+        };
+        let genres = [hero.genre.as_deref(), hero.secondary_genre.as_deref()].into_iter()
+            .flatten().map(str::trim).filter(|s| !s.is_empty()).collect::<Vec<_>>().join(", ");
+        return Some(HeroLine::Metadata { kind, year, length, genres, rating: hero.rating.trim() });
     }
     Some(first_sentence(&hero.summary)).filter(|s| !s.is_empty()).map(HeroLine::Premise)
 }
 
 /// **Home's hero text** (owner's board CW-13 v2): the title (clearLogo, or its typed fallback) and ONE
-/// metadata beneath it, standing on [`home_rows`]' ladder above the action row. A label is bold
-/// `LABEL` in primary ink, a genre is regular `LABEL` in reading ink, and a premise uses 36 px leading,
-/// 700 wide, at most two lines. The identity line, the ratings row and the facts line Home used to
-/// share with Detail are not drawn here.
+/// metadata block beneath it, standing on the shared ladder above the action row. A label is bold
+/// in primary ink, an identity band is one line in reading ink, and a premise wraps to two lines.
 fn hero_content(hero: &PmsMovie, p: Painter, dx: f32, measure: &dyn Measure) {
     if !on_axis(
         MARGIN_X + dx,
@@ -3961,11 +3973,9 @@ fn hero_content(hero: &PmsMovie, p: Painter, dx: f32, measure: &dyn Measure) {
                 .v(VAlign::CapTop)
                 .draw(p, Rect::new(MARGIN_X, block.y, HERO_COL_W, measure.cap_h(theme::size::LABEL)));
         }
-        Some(HeroLine::Genre(genre)) => {
-            let run = measure.fit_line(genre, HERO_COL_W, theme::size::LABEL, false);
-            Label::new(run.as_ptr(), theme::size::LABEL, theme::TEXT_READING)
-                .v(VAlign::CapTop)
-                .draw(p, Rect::new(MARGIN_X, block.y, HERO_COL_W, measure.cap_h(theme::size::LABEL)));
+        Some(HeroLine::Metadata { kind, year, length, genres, rating }) => {
+            let r = Rect::new(MARGIN_X, block.y, HERO_COL_W, block.h);
+            plx_ui::widgets::hero_metadata(p, r, &[kind, &year, &length, &genres], rating, measure);
         }
         Some(HeroLine::Premise(premise)) => {
             home_synopsis(premise).draw(p, Rect::new(MARGIN_X, block.y, theme::hero::HOME_SYNOPSIS_W, 0.0));
@@ -3986,7 +3996,7 @@ fn hero_title(hero: &PmsMovie) -> &str {
 fn hero_ladder(hero: &PmsMovie) -> (plx_ui::landing_hero::HomeStack, Option<HeroLine<'_>>) {
     let line = hero_line(hero);
     let block_h = match &line {
-        Some(HeroLine::Label(_) | HeroLine::Genre(_)) => Some(HOME_LABEL_H),
+        Some(HeroLine::Label(_) | HeroLine::Metadata { .. }) => Some(HOME_LABEL_H),
         Some(HeroLine::Premise(premise)) => Some(home_synopsis(premise).measure_h(theme::hero::HOME_SYNOPSIS_W)),
         None => None,
     };
