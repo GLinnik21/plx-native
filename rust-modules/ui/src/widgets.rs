@@ -6348,6 +6348,11 @@ impl TabStrip {
             foc: Capsule::new(),
         }
     }
+    /// Re-enter the selected plate at its new layout position on the next update.
+    pub(crate) fn restart_selection(&mut self) {
+        self.sel = Capsule::new();
+    }
+
     /// Whether either capsule is still travelling, resizing or fading: the strip's own statement of
     /// motion, for an owner that waits for the strip to arrive (the Detail season pill's hold hint).
     pub fn moving(&self) -> bool {
@@ -8205,25 +8210,25 @@ pub enum ControlStyle {
 /// The design system states this as a CSS scope (`[data-ground="unkeyed"]`, `tokens/colors.css`):
 /// a surface standing on video sets it and every control inside switches. There is no scope to
 /// inherit through here, so it rides the widget as a builder — [`Button::ground`],
-/// [`CircleButton::ground`], [`TransportButton::ground`] — and the player HUD is the only caller
-/// that sets it.
+/// [`CircleButton::ground`], [`TransportButton::ground`].
 ///
 /// It changes the parts that require KNOWING the ground: `Keyed` accepts a [`ControlPalette`] for
 /// both face levels, while `Unkeyed` drops that palette, uses the HUD's light film and stronger
 /// idle edge at rest, flattens focus back to [`theme::ACCENT`] and raises its rim to pure white.
-/// Focus still means the same
-/// thing on both grounds — bright face, dark ink, pop and cast — but video cannot borrow a hue from
-/// pixels this process never sees.
+/// `VideoPreview` uses the same video fills with the quieter content-page rim. Focus on all
+/// three grounds uses a bright face, dark ink, pop and cast.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ControlGround {
-    /// The app's own pages — a ground we drew and can therefore answer to. Every control that is
-    /// not in the player HUD, and the default.
+    /// The app's own artwork — a ground we drew and can therefore sample. The default.
     Keyed,
     /// The VIDEO PLANE, under the HUD's own ramp: ambient tint is disabled, idle becomes the light
     /// film ([`theme::CONTROL_IDLE_FILL_UNKEYED`]) with its visible idle edge
     /// ([`theme::CONTROL_RIM_IDLE_UNKEYED`]); focus is flat [`theme::ACCENT`] and its edge is the
     /// pure-white line ([`theme::CONTROL_RIM_FOCUS_UNKEYED`]).
     Unkeyed,
+    /// Content-page chrome over a preview. The video fills preserve the picture under the row,
+    /// and the standard card sheen keeps its edge consistent with the poster-backed controls.
+    VideoPreview,
 }
 
 /// The colours a keyed control derives from its page's local ground sample.
@@ -8233,7 +8238,7 @@ pub enum ControlGround {
 /// only OKLCH hue and a fraction of chroma. That is the difference between a white object catching
 /// the scene's light and a white chip averaged toward a dark photograph (which turns muddy). A
 /// screen computes this once for its control row and copies it into every face; the player may
-/// receive one accidentally, but [`ControlGround::Unkeyed`] ignores it by construction.
+/// receive one accidentally, but video grounds ignore it by construction.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ControlPalette {
     focus_top: [f32; 4],
@@ -8362,12 +8367,17 @@ fn oklab_to_srgb(c: [f32; 3], alpha: f32) -> [f32; 4] {
 }
 
 impl ControlGround {
+    fn is_video(self) -> bool {
+        matches!(self, Self::Unkeyed | Self::VideoPreview)
+    }
+
     /// The idle control face on this ground. The ONE place the two fills are chosen between, so a
     /// widget can never hand-pick the wrong one.
     fn idle_fill(self) -> [f32; 4] {
-        match self {
-            ControlGround::Keyed => theme::CONTROL_IDLE_FILL,
-            ControlGround::Unkeyed => theme::CONTROL_IDLE_FILL_UNKEYED,
+        if self.is_video() {
+            theme::CONTROL_IDLE_FILL_UNKEYED
+        } else {
+            theme::CONTROL_IDLE_FILL
         }
     }
 }
@@ -8411,11 +8421,11 @@ struct ControlFace {
 /// invisible by construction, which is the sign it is an edge and not a fill.
 ///
 /// **[`ControlGround::Unkeyed`] is the one exception, and it is the ground asking, not the state.**
-/// Over the video plane both states use the 1.25px unkeyed geometry. Idle takes
+/// Over the player's video plane both states use the 1.25px unkeyed geometry. Idle takes
 /// [`theme::CONTROL_RIM_IDLE_UNKEYED`] because the keyed 1px/.22 card edge disappeared between the
 /// light film and the panel's video composition; focus raises that same geometry to
 /// [`theme::CONTROL_RIM_FOCUS_UNKEYED`] — pure white, with no top boost because nothing is brighter
-/// than white. Keyed controls keep the same card edge in both states.
+/// than white. Content-page controls keep the same card edge over artwork and preview video.
 fn control_rim(
     p: Painter,
     r: Rect,
@@ -8539,7 +8549,7 @@ fn control_rim_spec(focused: bool, ground: ControlGround) -> ([f32; 4], f32, f32
 
 impl ControlStyle {
     /// Full face material for this style and ground. A keyed Accent has two focused stops and a
-    /// palette-derived idle stop; an unkeyed Accent deliberately flattens back to the fixed video
+    /// palette-derived idle stop; a video-ground Accent deliberately flattens to the fixed video
     /// treatment because no colour can be sampled from that plane.
     fn face(self, focused: bool, ground: ControlGround, palette: ControlPalette) -> ControlFace {
         let flat = |fill, ink, spent| ControlFace {
@@ -8549,11 +8559,11 @@ impl ControlStyle {
             spent,
         };
         match self {
-            ControlStyle::Accent if ground == ControlGround::Unkeyed && focused => {
+            ControlStyle::Accent if ground.is_video() && focused => {
                 flat(theme::ACCENT, theme::ACCENT_INK, theme::CONTROL_SPENT_FILL)
             }
-            ControlStyle::Accent if ground == ControlGround::Unkeyed => flat(
-                theme::CONTROL_IDLE_FILL_UNKEYED,
+            ControlStyle::Accent if ground.is_video() => flat(
+                ground.idle_fill(),
                 theme::CONTROL_IDLE_INK,
                 theme::CONTROL_SPENT_FILL,
             ),

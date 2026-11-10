@@ -90,14 +90,15 @@ pub trait Source {
     fn warm_ahead(&self, srv: u16, path: &str, w: i32, h: i32, png: bool) -> Warm {
         self.warm(srv, path, w, h, png)
     }
-    /// An item's clearLogo, at the source's one logo request box.
-    fn logo(&self, srv: u16, rk: &str) -> Option<PosterKey>;
-    fn logo_warm(&self, srv: u16, rk: &str) -> Warm;
+    /// An item's clearLogo, at the source's one logo request box. `logo` is a stamped path
+    /// or a legacy rating key.
+    fn logo(&self, srv: u16, logo: &str) -> Option<PosterKey>;
+    fn logo_warm(&self, srv: u16, logo: &str) -> Warm;
     /// Has this item's clearLogo SETTLED as a miss (a 404 for an item with no logo, an undecodable
     /// body)? A pure peek that starts nothing. `false` for everything that can still change
     /// (unrequested, in flight, parked for a retry) and for a logo that arrived. The default is
     /// "never settled": a source that cannot tell keeps the pending reading.
-    fn logo_failed(&self, _srv: u16, _rk: &str) -> bool {
+    fn logo_failed(&self, _srv: u16, _logo: &str) -> bool {
         false
     }
     /// [`logo_failed`](Self::logo_failed) for any keyed art at an explicit size: has
@@ -320,15 +321,15 @@ pub fn warm_ahead_on(srv: u16, path: &str, w: i32, h: i32, png: bool) -> Warm {
 }
 
 /// An item's clearLogo as a texture plus its TRUE pixel size; `None` while pending or absent.
-pub fn logo_src(srv: u16, rk: &str) -> Option<(u32, f32, f32)> {
-    let key = with_source(|s| s.logo(srv, rk), None)?;
+pub fn logo_src(srv: u16, logo: &str) -> Option<(u32, f32, f32)> {
+    let key = with_source(|s| s.logo(srv, logo), None)?;
     let (id, w, h) = resolve_key(key);
     (id != 0 && w > 0.0 && h > 0.0).then_some((id, w, h))
 }
 
 /// An item's clearLogo has settled as a miss: it will never arrive (see [`Source::logo_failed`]).
-pub fn logo_failed(srv: u16, rk: &str) -> bool {
-    with_source(|s| s.logo_failed(srv, rk), false)
+pub fn logo_failed(srv: u16, logo: &str) -> bool {
+    with_source(|s| s.logo_failed(srv, logo), false)
 }
 
 /// Keyed art has settled as a miss: it will never arrive (see [`Source::failed`]). What lets a
@@ -338,8 +339,8 @@ pub fn failed_on(srv: u16, path: &str, w: i32, h: i32, png: bool) -> bool {
     !path.is_empty() && with_source(|s| s.failed(srv, path, w, h, png), false)
 }
 
-pub fn logo_warm(srv: u16, rk: &str) -> Warm {
-    with_source(|s| s.logo_warm(srv, rk), Warm::Known)
+pub fn logo_warm(srv: u16, logo: &str) -> Warm {
+    with_source(|s| s.logo_warm(srv, logo), Warm::Known)
 }
 
 /// The prefetch gate: the source is quiet AND nothing is waiting for upload.

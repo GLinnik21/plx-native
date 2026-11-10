@@ -147,7 +147,7 @@ pub(super) fn bake_cover(client: &Client, hex: &str, cache_gen: u64, token_gen: 
 pub(super) struct WorkerCardIo<'a> {
     pub(super) client: &'a Client,
     pub(super) srv: plx_plex::plex::ServerId,
-    pub(super) rk: &'a str,
+    pub(super) logo: &'a str,
     pub(super) art: &'a str,
     pub(super) cache_gen: u64,
     pub(super) token_gen: u32,
@@ -155,12 +155,12 @@ pub(super) struct WorkerCardIo<'a> {
 }
 
 impl<'a> WorkerCardIo<'a> {
-    pub(super) fn new(client: &'a Client, rk: &'a str, art: &'a str, cache_gen: u64, token_gen: u32) -> Self {
+    pub(super) fn new(client: &'a Client, logo: &'a str, art: &'a str, cache_gen: u64, token_gen: u32) -> Self {
         let (w, h) = box_px();
         let disk = disk_or_none(plx_platform::imgcache::classify_baked(
-            &super::disk_namespace(client), card::CARD_KIND, rk, art, w, h,
+            &super::disk_namespace(client), card::CARD_KIND, logo, art, w, h,
         ));
-        WorkerCardIo { client, srv: client.id(), rk, art, cache_gen, token_gen, disk }
+        WorkerCardIo { client, srv: client.id(), logo, art, cache_gen, token_gen, disk }
     }
 
     /// The built request of one source: the background at the card box (the key a still of this art
@@ -174,7 +174,7 @@ impl<'a> WorkerCardIo<'a> {
             }
             Part::Logo => super::transcode_request(
                 self.client,
-                &format!("/library/metadata/{}/clearLogo", self.rk),
+                &plx_plex::plex::artwork::logo_path(self.logo).expect("validated by card_parts"),
                 super::LOGO_REQ_W,
                 super::LOGO_REQ_H,
                 true,
@@ -218,8 +218,8 @@ impl CardIo for WorkerCardIo<'_> {
 }
 
 /// Bake (or reload) one composite, and the baked identity it is filed under.
-pub(super) fn bake_card(client: &Client, rk: &str, art: &str, cache_gen: u64, token_gen: u32) -> (Bake, Option<DiskKey>) {
-    let mut io = WorkerCardIo::new(client, rk, art, cache_gen, token_gen);
+pub(super) fn bake_card(client: &Client, logo: &str, art: &str, cache_gen: u64, token_gen: u32) -> (Bake, Option<DiskKey>) {
+    let mut io = WorkerCardIo::new(client, logo, art, cache_gen, token_gen);
     let bake = card::bake(&mut io, &CardSpec::deck(plx_base::surface::render_scale()));
     (bake, io.disk)
 }
@@ -233,8 +233,8 @@ pub(super) fn rebake(client: &Client, key: &str, cache_gen: u64, token_gen: u32)
     if let Some(hex) = cover_parts(key) {
         let mut io = WorkerCoverIo::new(client, hex, cache_gen, token_gen);
         cover::rebake(&mut io, box_px());
-    } else if let Some((rk, art)) = card_parts(key) {
-        let mut io = WorkerCardIo::new(client, rk, art, cache_gen, token_gen);
+    } else if let Some((logo, art)) = card_parts(key) {
+        let mut io = WorkerCardIo::new(client, logo, art, cache_gen, token_gen);
         card::rebake(&mut io, &CardSpec::deck(plx_base::surface::render_scale()));
     } else {
         return false;
