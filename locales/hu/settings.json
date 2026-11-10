@@ -10,6 +10,8 @@
   "settings.system.section": "Rendszer",
   "settings.auto_sign_in.title": "Automatikus bejelentkezés",
   "settings.auto_sign_in.detail": "Indításkor a profillista kihagyása.",
+  "settings.hud_end_time.title": "Becsült befejezési idő",
+  "settings.hud_end_time.detail": "Megjeleníti a filmek és epizódok várható helyi befejezési idejét.",
   "settings.trailers.title": "Előzetesek automatikus lejátszása",
   "settings.trailers.detail": "Ha egy címnél időzik, kis idő múlva hanggal indul az előzetes.",
   "settings.resolution.title": "Felület felbontása",

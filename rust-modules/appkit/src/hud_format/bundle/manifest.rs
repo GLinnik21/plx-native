@@ -48,7 +48,7 @@ pub(super) fn at(mut finding: Finding) -> Finding {
     finding
 }
 
-fn gate(value: Option<&Ordered>, pointer: &str, supported: schema::Since) -> Result<schema::Since, Finding> {
+fn gate(value: Option<&Ordered>, pointer: &str, supported: schema::Since, min_minor: u8) -> Result<schema::Since, Finding> {
     let Some(value) = value else {
         return Err(at(Finding::new(
             &codes::E0401,
@@ -65,7 +65,8 @@ fn gate(value: Option<&Ordered>, pointer: &str, supported: schema::Since) -> Res
             "write a version such as 1.0",
         )));
     };
-    if version != (u64::from(supported.0), u64::from(supported.1)) {
+    let (major, max_minor) = (u64::from(supported.0), u64::from(supported.1));
+    if version.0 != major || !(u64::from(min_minor)..=max_minor).contains(&version.1) {
         let newer = version > (u64::from(supported.0), u64::from(supported.1));
         return Err(at(Finding::new(
             if version.0 == u64::from(supported.0) {
@@ -78,7 +79,7 @@ fn gate(value: Option<&Ordered>, pointer: &str, supported: schema::Since) -> Res
             format!("this app supports {}.{} for this document", supported.0, supported.1),
         )));
     }
-    Ok(supported)
+    Ok((supported.0, version.1 as u8))
 }
 
 /// Read a manifest without IO. The caller retains this budget for the HUD document.
@@ -107,8 +108,8 @@ pub fn read(bytes: &[u8], budget: &Budget) -> Result<Manifest, Vec<Finding>> {
             "write the manifest as one JSON object",
         ))]);
     }
-    let package_format = gate(root.get("package_format"), "/package_format", CURRENT).map_err(|f| vec![f])?;
-    let hud_format = gate(root.get("hud").and_then(|hud| hud.get("format")), "/hud/format", schema::CURRENT).map_err(|f| vec![f])?;
+    let package_format = gate(root.get("package_format"), "/package_format", CURRENT, CURRENT.1).map_err(|f| vec![f])?;
+    let hud_format = gate(root.get("hud").and_then(|hud| hud.get("format")), "/hud/format", schema::CURRENT, 0).map_err(|f| vec![f])?;
     let (object, findings) = parse::walk_fragment(&schema::MANIFEST, &root, "", &Ctx::v1());
     let Some(object) = object else {
         return Err(findings.into_iter().map(at).collect());

@@ -6,7 +6,7 @@
   "name": "Minimal",
   "version": "1.0.0",
   "hud": {
-    "format": "1.1",
+    "format": "1.2",
     "entry": "hud.json"
   }
 }

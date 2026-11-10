@@ -10,6 +10,8 @@
   "settings.system.section": "Sistema",
   "settings.auto_sign_in.title": "Inici de sessió automàtic",
   "settings.auto_sign_in.detail": "Omet la llista de perfils en iniciar l'aplicació.",
+  "settings.hud_end_time.title": "Hora de finalització",
+  "settings.hud_end_time.detail": "Mostra l'hora local prevista en què acabaran les pel·lícules i els episodis.",
   "settings.trailers.title": "Tràilers automàtics",
   "settings.trailers.detail": "Reprodueix el tràiler amb so al cap d'un moment.",
   "settings.resolution.title": "Resolució de la interfície",

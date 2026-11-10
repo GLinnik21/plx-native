@@ -118,6 +118,31 @@ fn page_with(list: HudList) -> (HudPage, mpsc::Sender<HudList>) {
     (page, tx)
 }
 
+#[test]
+fn finish_time_switch_waits_for_a_profile_write_and_the_published_value() {
+    let (mut page, tx) = page_with(HudList { end_time: Some(true), ..list() });
+    assert_eq!(row_of(&page, &HudId::EndTime).toggle, Some(true));
+    let effects = drive(&mut page, ScreenEvent::Activate(END_TIME_KEY), END_TIME_KEY);
+    let [effect] = effects.as_slice() else { panic!("one preference write") };
+    let Fx::App(AppFx::Preferences(super::super::registry::PreferenceCmd::Choose(
+        plx_media::route::Choice::HudEndTime(false), reply,
+    ))) = &effect.fx else { panic!("the switch writes the profile preference") };
+    assert!(drive(&mut page, ScreenEvent::Activate(END_TIME_KEY), END_TIME_KEY).is_empty());
+    reply.send(false).unwrap();
+    drive(&mut page, tick(), END_TIME_KEY);
+    assert_eq!(row_of(&page, &HudId::EndTime).toggle, Some(true), "refused write");
+    let effects = drive(&mut page, ScreenEvent::Activate(END_TIME_KEY), END_TIME_KEY);
+    let Fx::App(AppFx::Preferences(super::super::registry::PreferenceCmd::Choose(_, reply))) = &effects[0].fx
+        else { panic!("the switch can retry a refused write") };
+    reply.send(true).unwrap();
+    tx.send(HudList { end_time: Some(false), ..list() }).unwrap();
+    drive(&mut page, tick(), END_TIME_KEY);
+    assert_eq!(row_of(&page, &HudId::EndTime).toggle, Some(false));
+    tx.send(list()).unwrap();
+    drive(&mut page, tick(), END_TIME_KEY);
+    assert!(page.form.index_of(&HudId::EndTime).is_none(), "signed out");
+}
+
 fn key_of(page: &HudPage, id: &HudId) -> u32 {
     page.form.key_at(page.form.index_of(id).expect("row present")).unwrap().0
 }
@@ -360,6 +385,7 @@ fn every_row_fits_its_column_in_every_language() {
     for language in SHIPPED {
         let _guard = language_on_this_thread_for_test(language);
         let mut every = list();
+        every.end_time = Some(true);
         let mut volatile = pack("com.example.b", "Beta", 2, false);
         volatile.until_restart = true;
         let mut unfit = pack("com.example.c", "Gamma", 3, false);
@@ -379,7 +405,7 @@ fn every_row_fits_its_column_in_every_language() {
         let mut form: FormTable<HudId, HudAction, SettingsPage> = FormTable::new(BAND);
         form.table.compact = false;
         form.table.board_metrics(true); // as `hud_settings.rs` draws it
-        form.set(hud_form(&every, None).0, None);
+        form.set(hud_form(&every, None, false).0, None);
         for e in form.table.app_fit_failures(RouteLayout::settings_page().sectioned_table().w, language.tag()) {
             out.push(e);
         }
@@ -392,7 +418,7 @@ fn every_row_fits_its_column_in_every_language() {
             form.table.compact = false;
             form.table.board_metrics(true);
             let draft = draft.map(|text| TextBuffer::new(text.to_owned(), text.len()));
-            form.set(hud_form(&busy, draft.as_ref()).0, None);
+            form.set(hud_form(&busy, draft.as_ref(), false).0, None);
             out.extend(form.table.app_fit_failures(RouteLayout::settings_page().sectioned_table().w, language.tag()));
         }
     }
@@ -1268,6 +1294,7 @@ fn every_sentence_beside_the_table_fits_five_lines_in_every_language() {
         let tag = language.tag();
         let mut every = list();
         every.language = SHIPPED.iter().map(|l| plx_platform::i18n::Preference::SHIPPED.into_iter().find(|p| p.tag() == l.tag()).map_or("", |p| p.native_name())).max_by_key(|n| n.chars().count()).unwrap_or("").to_owned();
+        every.end_time = Some(true);
         every.unfit = vec![Sha::of(&[3])];
         let mut unfit = pack("com.example.c", "Gamma", 3, false);
         unfit.until_restart = true;
@@ -1278,7 +1305,7 @@ fn every_sentence_beside_the_table_fits_five_lines_in_every_language() {
             every.entries.push(gone);
         }
         every.drops = every_refusal().iter().enumerate().map(|(i, r)| drop_file(&format!("f{i}.plxhud"), 20 + i as u8, Err(*r))).collect();
-        let mut sentences: Vec<(String, String)> = hud_form(&every, None).1.into_iter().map(|(id, says)| (format!("{id:?}"), says)).collect();
+        let mut sentences: Vec<(String, String)> = hud_form(&every, None, false).1.into_iter().map(|(id, says)| (format!("{id:?}"), says)).collect();
         // the package and gallery pages: each state of Install, the offline and the empty gallery
         let gallery = gallery_list();
         let sha = gallery.catalog.index.as_ref().unwrap().entries[0].sha();

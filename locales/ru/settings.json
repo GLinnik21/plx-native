@@ -10,6 +10,8 @@
   "settings.system.section": "Система",
   "settings.auto_sign_in.title": "Автоматический вход",
   "settings.auto_sign_in.detail": "Не показывать список профилей при запуске.",
+  "settings.hud_end_time.title": "Расчётное время окончания",
+  "settings.hud_end_time.detail": "Показывает местное время, когда фильм или серия должны закончиться.",
   "settings.trailers.title": "Автозапуск трейлеров",
   "settings.trailers.detail": "Пауза на карточке запускает трейлер со звуком.",
   "settings.resolution.title": "Разрешение интерфейса",

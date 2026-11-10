@@ -71,7 +71,7 @@
 //! catalog through a `LocaleContext` built from its tag (the way `LintLang` builds its labels), never from
 //! `i18n::current()`.
 
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
 
@@ -223,6 +223,7 @@ struct Texts<'a> {
     tag: &'static str,
     measure: &'a dyn Measure,
     locale: OnceCell<Option<LocaleContext>>,
+    end_times: RefCell<BTreeMap<i32, (String, f32)>>,
 }
 
 impl<'a> Texts<'a> {
@@ -232,6 +233,7 @@ impl<'a> Texts<'a> {
             tag: cx.lang.tag,
             measure: cx.measure,
             locale: OnceCell::new(),
+            end_times: RefCell::new(BTreeMap::new()),
         }
     }
 
@@ -239,6 +241,33 @@ impl<'a> Texts<'a> {
     /// hand): its numbered strings are then not checked.
     fn locale(&self) -> Option<&LocaleContext> {
         self.locale.get_or_init(|| locale_of(self.tag)).as_ref()
+    }
+
+    /// Widest combined clock for this language, checking both TV clock settings.
+    fn widest_end_time(&self, size: i32) -> Option<(String, f32)> {
+        if let Some(sample) = self.end_times.borrow().get(&size) {
+            return Some(sample.clone());
+        }
+        let preference = self.locale()?.preference();
+        let measure = self.measure;
+        let bold = clocks::REMAINING_BOLD;
+        let remaining = clocks::widest_clock(measure, size, bold, true);
+        let minute = 10 * clocks::widest_digit(measure, size, bold, 0..=5)
+            + clocks::widest_digit(measure, size, bold, 0..=9);
+        let run = clocks::end_time_run(size);
+        let mut widest = (String::new(), 0.0);
+        for clock in ["12", "24"] {
+            let locale = LocaleContext::resolve(preference, None, None, Some(clock), None);
+            for hour in 0..24 {
+                let time = locale.time_of_day([hour, minute as i32]).expect("valid civil time");
+                let width = run.width(measure, &[remaining.as_str(), time.as_str()]);
+                if width > widest.1 {
+                    widest = (format!("{remaining} \u{b7} {time}"), width);
+                }
+            }
+        }
+        self.end_times.borrow_mut().insert(size, widest.clone());
+        Some(widest)
     }
 
     /// The widest string `kind` can show for `bind`, at `size` in any weight of `bolds`, and its width.
@@ -781,6 +810,15 @@ impl Scan<'_, '_> {
                 size,
                 site: Site::Band,
             };
+            self.judge_text(&op, string, measured, limits, skip, found);
+        }
+        if let Some((lane, (string, measured))) = rects.end_time.and_then(|lane| {
+            self.texts.widest_end_time(size).map(|sample| (lane, sample))
+        }) {
+            let rect = lane.rect;
+            let mut limits = clock_limits(rect, Grows::Left, obstacles, ends.then_some((elapsed, rects.elapsed)));
+            limits.push(Limit { room: rect.w, bound: Bound::Box });
+            let op = TextOp { pointer, rect, bind: "playbar end time", size, site: Site::Band };
             self.judge_text(&op, string, measured, limits, skip, found);
         }
     }
@@ -1526,6 +1564,7 @@ mod tests {
             tag: lang.tag,
             measure,
             locale: OnceCell::new(),
+            end_times: RefCell::new(BTreeMap::new()),
         }
     }
 
