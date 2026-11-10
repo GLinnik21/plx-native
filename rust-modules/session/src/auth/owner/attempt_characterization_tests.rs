@@ -389,6 +389,12 @@ fn v5_boot_roundtrip_and_frozen_canonical_field_order() {
         emit_legacy_v5_artifact(case, &init);
         eprintln!("LEGACY_V5_BOOT {} HASH={}", authority_label, init.hash());
         let bytes = serde_json::to_vec(&init).unwrap();
+        let expected: &[u8] = match case {
+            "boot-account" => include_bytes!("fixtures/legacy-v5/boot-account.json"),
+            "boot-devpms" => include_bytes!("fixtures/legacy-v5/boot-devpms.json"),
+            _ => unreachable!(),
+        };
+        assert!(bytes.as_slice() == expected, "legacy V5 bytes differ for {case}");
         let decoded: SessionInit = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(bytes, serde_json::to_vec(&decoded).unwrap());
         assert_eq!(init.hash(), decoded.hash());
@@ -507,6 +513,8 @@ fn discovery_retry_is_live_restorable_but_epoch_advance_clears_it() {
     step(&mut restored, SessionEvent::Erased { epoch: 3, leftovers: 0 });
     assert_eq!(restored.read().0.phase, Phase::Deleted);
     assert!(restored.state.discovery_retry.is_none());
+    assert!(serde_json::to_vec(&init).unwrap().as_slice() == include_bytes!("fixtures/legacy-v5/live.json"),
+        "legacy V5 bytes differ for live");
     assert_eq!(init.hash(), 18001482832323156010);
     emit_legacy_v5_artifact("live", &init);
     eprintln!("LEGACY_V5_LIVE HASH={}", init.hash());
@@ -592,6 +600,8 @@ fn nested_v5_prior_writer_golden_probe() {
     assert!(!init.persisted.sources.is_empty());
     assert!(!init.persisted.profiles.is_empty());
     let bytes = serde_json::to_vec(&init).unwrap();
+    assert!(bytes.as_slice() == include_bytes!("fixtures/legacy-v5/nested.json"),
+        "legacy V5 bytes differ for nested");
     let decoded: SessionInit = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(init.hash(), decoded.hash());
     assert_eq!(bytes, serde_json::to_vec(&decoded).unwrap());
