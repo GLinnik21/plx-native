@@ -128,7 +128,7 @@ base
 | media | `ff` (a facade over `play_feed`'s demuxer) `abr curlio player route speed_audio`; `aq` and `hls` moved to `play_feed` | 56k | 49% |
 | appkit | `appkit` (the player panels and the Sources row several screens draw) | 13k | 32% |
 | screens | `screens` | 54k | 28% |
-| app | `crate app dev lab capture remote focusprobe shot coldstart textinput system release_line port` | 42k | 12% |
+| app | `crate app api dev lab capture remote focusprobe shot coldstart textinput system release_line port` | 42k | 12% |
 
 "Prod lines" counts files that are not wholly `cfg(test)`, measured after L14. The last column is
 the share of all production lines in that layer plus every layer above it. Line counts stand in

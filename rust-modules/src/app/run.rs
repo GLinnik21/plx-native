@@ -814,7 +814,6 @@ unsafe fn present_and_swap(
         // A finished underlay-field reduction is read HERE, before framebuffer 0 holds anything
         // of this frame — a read between the page and the surfaces splits its render pass.
         plx_gfx::gfx::field_frame_begin();
-        #[cfg(feature = "hostsim")]
         let shot_last_change = app.pages.present.last_change_ms();
         let (_vx, _vy, _vw, _vh) = draw(app, fr);
         app.bridge.observe_plex_visual_inputs(&mut app.pages.present);
@@ -863,12 +862,26 @@ unsafe fn present_and_swap(
         let screenshot_seam = !dumping;
         #[cfg(all(feature = "hostsim", not(feature = "devtriggers")))]
         let screenshot_seam = true;
+        // The seam is NOT hostsim-only: on the television the command API (debug build, the
+        // `shot` verb) is the on-demand door and needs the same before-swap readback. The TV
+        // never arms the automatic paths (no `PLXNATIVE_SHOT*` in its environment), so a
+        // presented frame costs the atomics and nothing more.
+        #[cfg(not(feature = "hostsim"))]
+        let screenshot_seam = true;
+        // The settled-capture's arm-wait is simulator-only (the arms never run on the television),
+        // so the term is a constant `false` there.
         #[cfg(feature = "hostsim")]
+        let scenarios_pending = app.scenarios.shots.pending();
+        #[cfg(not(feature = "hostsim"))]
+        let scenarios_pending = false;
         if screenshot_seam && crate::shot::maybe_capture(fr.now, app.pages.present.changed_after_admission()
             || app.pages.budget.has_queued_work() || plx_gfx::gfx::snapshot_pending()
-            || app.scenarios.shots.pending(), shot_last_change, _vx, _vy, _vw, _vh) {
+            || scenarios_pending, shot_last_change, _vx, _vy, _vw, _vh) {
             // The headless one-shot is done: finish this frame, then leave through the ordinary
             // shutdown rather than exiting from inside the frame (see `shot::maybe_capture`).
+            // The television never arms the one-shot (no PLXNATIVE_SHOT_EXIT), so this only
+            // ever fires in hostsim — but the statement itself is not cfg-gated (attributes on
+            // expressions are not stable), it is simply dead on the television.
             app.running = false;
         }
         {
@@ -961,6 +974,12 @@ pub(crate) unsafe fn ingest(app: &mut App, fr: &mut Frame) {
             let ok = !supplied && ingress_token(app, fr, &command.token);
             crate::lab::command_done(command.id, ok);
         }
+        // The command API's internal stage (api.rs): the roster auto-default and the
+        // play-staging worker post their tokens here; the same single input path as the
+        // FIFO and the lab channel (the FIFO's own tokens are drained below).
+        for tok in crate::api::take_pending() {
+            if !supplied { let _ = ingress_token(app, fr, &tok); }
+        }
         // The FIFO's tokens are collected first so the recorder (a field beside `remote`) can
         // be written per token; a token that pushes SDL events is recorded where they are
         // polled, a DIRECT one (`pat:`, `shot`, `txt:`) here — `token_is_direct` is the split.
@@ -989,6 +1008,11 @@ unsafe fn ingress_token(app: &mut App, fr: &mut Frame, token: &str) -> bool {
         app.rec.input(super::recorder::enc_token(token));
         probe.run();
         return true;
+    }
+    // The command API's own verbs (`api:play` / `api:seek` / `api:audio` / `api:sub`) need
+    // the whole App and drive no SDL: they perform here, where the `&mut` is.
+    if let Some(spec) = token.strip_prefix("api:") {
+        return crate::api::handle(app, fr, spec);
     }
     // Keys and clicks use SDL's existing synthesis while coexistence lasts. Consume those
     // before a following direct text token, rather than moving all text ahead of all keys.
@@ -3316,6 +3340,9 @@ pub(crate) fn end_route_visit(app: &mut App, transition: bool) {
 /// The iteration's report: the route word (on change), the lab route note, the focus probe
 /// and the FRAMEDROP line.
 pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
+        // The command API's read half: republish this frame's snapshot for GET /state
+        // (api.rs — frame thread builds the string, the API thread only serves it).
+        crate::api::publish(app, fr);
         // dev: the stress-bench oscillators' own frame-time accumulator — right after Swap is
         // stamped (`present_and_swap`, just above this call in `run()`), the earliest point this
         // iteration's total is known. See `crate::dev::scenarios::bench_frame_tick`'s doc.

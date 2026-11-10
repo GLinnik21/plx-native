@@ -335,10 +335,12 @@ pub(crate) fn token_is_direct(tok: &str) -> bool {
         return true;
     }
     tok == "shot"
+        || tok == "state" // the command API's snapshot dump (api.rs)
         || tok == "diag"
         || tok == "diagnostics"
         || tok.starts_with("pat:")
         || tok.starts_with("txt:")
+        || tok.starts_with("api:") // the command API's verbs perform on the spot (api.rs)
 }
 
 /// Synthesize a full remote-key press (key-down then key-up) and push both onto SDL's
@@ -494,14 +496,21 @@ pub(crate) fn dispatch_remote_token(tok: &str, ps: &plx_media::route::PlaybackSe
             RemotePointer::Up => remote_synth_pointer(SDL_MOUSEBUTTONUP, x, y),
         }
         true
-    } else if cfg!(feature = "hostsim") && tok == "shot" {
-        // Simulator only. Screenshotting has to be a TOKEN rather than a launch option, because
-        // the interesting frame is the one AFTER driving, and `PLXNATIVE_SHOT_FRAME` is fixed
-        // before the app starts — worse, presented frames only accrue when something repaints
-        // (the idle gate), so no frame number can be predicted from outside. This makes
-        // `down down right ok shot` a single composable line.
-        #[cfg(feature = "hostsim")]
+    } else if tok == "shot" && (cfg!(feature = "hostsim") || plx_base::devtrig::ENABLED) {
+        // The command API's screenshot door (simulator + every devtrig build — the FIFO's own
+        // gate; the stable build has no FIFO, hence no shot). Screenshotting has to be a TOKEN
+        // rather than a launch option, because the interesting frame is the one AFTER driving,
+        // and `PLXNATIVE_SHOT_FRAME` is fixed before the app starts — worse, presented frames
+        // only accrue when something repaints (the idle gate), so no frame number can be
+        // predicted from outside. This makes `down down right ok shot` a single composable
+        // line, and the same token works on the television. `shot.rs` writes `shot-<N>.png`
+        // in the instance root for the agent to fetch.
         crate::shot::request();
+        true
+    } else if tok == "state" && plx_base::devtrig::ENABLED {
+        // The command API's snapshot door (api.rs): the last frame's JSON snapshot, written to
+        // `state.json` in the instance root for the agent to read back over SSH.
+        crate::api::state_file();
         true
     } else if tok == "okdown" || tok == "okup" {
         // The two halves of OK let a driver hold it past press::LONG_MS and reach the item menu.

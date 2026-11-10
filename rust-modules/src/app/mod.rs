@@ -295,7 +295,10 @@ pub(crate) struct App {
     /// through. One so far: the Player's, which holds the native session that was
     /// `player::engine::ENGINE` together with the main-thread token that confines it.
     pub(crate) adapters: Adapters,
-    repause_at: i64,
+    /// The foreground restore target (ns) retained by the app for the duration of a paused
+    /// foreground Load attempt (`lifecycle::before_load`); the exit ritual reads it back so a
+    /// paused spot is not lost to the exit.
+    pub(crate) repause_at: i64,
     /// The playing session is parked because the pipeline took its video decoder back, not
     /// because the app left the screen; the next press restores it (`run::park_on_decoder_release`).
     decoder_parked: bool,
