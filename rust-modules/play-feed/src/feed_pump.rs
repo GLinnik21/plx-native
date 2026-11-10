@@ -348,8 +348,32 @@ pub fn user_resume(feed: &mut FeedResources, mt: &MainThread) -> UserResumeOutco
     };
     match FEED_SHARED.prepare_hls_user_resume(queued_stream) {
         Some(HlsUserResume::Deferred) => {
+            // The retranscode's fresh Load arms the initial prime (a non-User clock hold,
+            // prime_play latched) but nothing else will fire it: the landing issues this
+            // Resume, never the runner's Operation::Play, so startup_play_commanded stays
+            // false and try_prime's startup gate would block the post-Load retry forever
+            // (observed live: BufferFull at the native cap, pos_ms=0).
+            // prepare_hls_user_resume just cleared user_held and set resume_acb_pending; this
+            // Resume IS the session's startup play command — mark it as commanded, then fire
+            // the initial prime. If the physical Play lands before the Load worker has called
+            // Starfish's Load it is Refused and the prime stays armed (Held{Initial});
+            // try_prime is now un-gated and issues the Play once loadCompleted has passed
+            // and both lanes are primed. Only the Fresh-kind holds (Initial, Seek) accept
+            // play_initial_now; Rebuffer/ResumePrime falls through to Fenced.
+            let hooks = feed.hooks();
+            let fired = feed.engine().is_some_and(|eng| {
+                eng.startup_play_commanded = true;
+                matches!(
+                    crate::native_executor::play_initial_now(mt, eng, &hooks.feed),
+                    Some(true)
+                )
+            });
             close_preroll_and_commit();
-            UserResumeOutcome::Fenced
+            if fired {
+                UserResumeOutcome::Played { resume_acb: true }
+            } else {
+                UserResumeOutcome::Fenced
+            }
         }
         Some(HlsUserResume::Prime) => {
             let Some(engine) = feed.engine() else { return UserResumeOutcome::PrimeLost };
@@ -1283,6 +1307,8 @@ struct FailureSample {
     flags: FailureFlags,
     cb_err_num: i32,
     http_status: i32,
+    probe_actual_video: u8,
+    probe_actual_audio: u8,
     native_audio_refusals: u32,
 }
 
@@ -1297,6 +1323,8 @@ fn failure_sample() -> FailureSample {
         flags,
         cb_err_num: FEED_SHARED.dg_cb_err_num.load(Relaxed),
         http_status: FEED_SHARED.dg_http_status.load(Relaxed),
+        probe_actual_video: FEED_SHARED.probe_actual_v.load(Relaxed),
+        probe_actual_audio: FEED_SHARED.probe_actual_a.load(Relaxed),
         native_audio_refusals: FEED_SHARED.native_audio_refusals.load(Acquire),
     }
 }
@@ -1330,6 +1358,8 @@ fn native_feed_raw(failure: FailureSample) -> FeedRaw {
         },
         cb_err_num: failure.cb_err_num,
         http_status: failure.http_status,
+        probe_actual_video: failure.probe_actual_video,
+        probe_actual_audio: failure.probe_actual_audio,
         diag: native_feed_diag(),
         vpres_gap_sum_ms: FEED_SHARED.dg_vpres_gap_sum.load(Relaxed),
         vpres_gap_count: FEED_SHARED.dg_vpres_gap_ct.load(Relaxed),

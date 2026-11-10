@@ -34,6 +34,9 @@ impl DemuxObserver for FixtureDemuxObserver {
     fn declared_video_code(&self) -> Option<u8> {
         Some(FEED_SHARED.dg_load_v.load(Ordering::Relaxed))
     }
+    fn declared_audio_code(&self) -> Option<u8> {
+        Some(FEED_SHARED.dg_load_a.load(Ordering::Relaxed))
+    }
     fn paused(&self) -> Option<bool> { Some(FEED_TX.paused.load(Ordering::Acquire)) }
     fn pause_clock(&self) -> Option<plx_playback_contract::demux::PauseClock> {
         let (at, elapsed) = FEED_TX.pause_clock_sample();

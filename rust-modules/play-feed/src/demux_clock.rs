@@ -126,6 +126,10 @@ impl DemuxObserver for FeedDemuxObserver {
         FEED_SHARED.with_active_demux_epoch(self.native_epoch, ||
             FEED_SHARED.dg_load_v.load(Ordering::Relaxed))
     }
+    fn declared_audio_code(&self) -> Option<u8> {
+        FEED_SHARED.with_active_demux_epoch(self.native_epoch, ||
+            FEED_SHARED.dg_load_a.load(Ordering::Relaxed))
+    }
     fn paused(&self) -> Option<bool> {
         FEED_SHARED.with_active_demux_epoch(self.native_epoch, || FEED_TX.paused.load(Ordering::Acquire))
     }
@@ -403,6 +407,14 @@ impl DemuxMedia for FeedDemuxMedia {
             DemuxEffect::IoFailed => FEED_SHARED.demux_io_failed.store(true, Ordering::Release),
             DemuxEffect::Failed => FEED_SHARED.demux_failed.store(true, Ordering::Release),
             DemuxEffect::NoVideo => FEED_SHARED.demux_no_video.store(true, Ordering::Release),
+            DemuxEffect::ProbeActual { video, audio } => {
+                if let Some(v) = video {
+                    if v != 0 { FEED_SHARED.probe_actual_v.store(v, Ordering::Release); }
+                }
+                if let Some(a) = audio {
+                    if a != 0 { FEED_SHARED.probe_actual_a.store(a, Ordering::Release); }
+                }
+            }
             DemuxEffect::HttpStatus(status) => FEED_SHARED.dg_http_status.store(status, Ordering::Relaxed),
             DemuxEffect::TrackNames { audio, subs } => {
                 previous_names = Some((self.hooks.replace_track_names)(TrackNames { audio, subs }));

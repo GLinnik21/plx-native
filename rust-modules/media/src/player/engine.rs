@@ -653,6 +653,81 @@ mod payload_tests {
         }
     }
 
+    /// The full audio/video declaration matrix, as the Load payload actually composes it.
+    ///
+    /// The 7.1 "kill" class: the LG pipeline is told the audio codec by a single string
+    /// (`"AC3"`/`"AC3 PLUS"`/`"AAC"`/`"DTS"`) with NO channel-count field, and `audioSync:true`
+    /// makes the audio ES the master clock. A declaration that is (a) the wrong string for the
+    /// codec, (b) carries a stale `immersive:ATMOS` node for a non-JOC track, or (c) is built for
+    /// a channel layout the sink can't configure, leaves the audio ES unconfigured — and with
+    /// audioSync the video sink slaves to the dead audio clock and stalls. That is the "playback
+    /// dies on this title" signature, and it is content- and codec-specific, which is why it
+    /// reproduced on one film and not the eight hero titles.
+    ///
+    /// Each cell asserts the composed payload is internally consistent for its (video, audio,
+    /// immersive) triple: the codec string is the one LG's Load vocabulary accepts, the immersive
+    /// node is present IFF (audio == AC3 PLUS && immersive), the envelope is well-formed, and no
+    /// placeholder survived. A cell that fails here is a declaration the television would
+    /// misconfigure — the exact defect the 7.1 track exposes.
+    #[test]
+    fn audio_video_declaration_matrix_is_well_formed() {
+        // (source codec name as the route records it, the LG Load string, the expected immersive gate)
+        let audio: &[(&str, &str)] = &[
+            ("ac3", "AC3"),
+            ("eac3", "AC3 PLUS"),
+            ("aac", "AAC"),
+            ("dts", "DTS"),
+        ];
+        let video: &[(&str, &str, plx_platform::devcaps::dv::DvCapability)] = &[
+            ("h264", "H264", plx_platform::devcaps::dv::DvCapability::Unsupported),
+            ("hevc", "H265", plx_platform::devcaps::dv::DvCapability::Unsupported),
+        ];
+        // The 1080p60 direct-play envelope — the shape a 5.1/7.1 Bluray direct play carries.
+        let env = SinkEnvelope { w: 1920, h: 1080, fps: 60 };
+
+        for &(vc, vdecl, cap) in video {
+            for &(ac, adecl) in audio {
+                for &immersive in &[false, true] {
+                    let mut ps = crate::route::PlaybackSession::IDLE;
+                    assert!(
+                        crate::route::set_stream_declaration_for_test(
+                            &mut ps, vc, ac, 23.976, Dovi::NONE, immersive, cap
+                        ),
+                        "declaration for ({vc},{ac},imm={immersive})"
+                    );
+                    let payload = build_av_payload(&ps, vdecl, adecl, env);
+
+                    // 1. The codec strings LG's Load vocabulary accepts — nothing else.
+                    assert!(payload.contains(&format!(r#""video":"{vdecl}""#)), "video decl ({vc})");
+                    assert!(payload.contains(&format!(r#""audio":"{adecl}""#)), "audio decl ({ac})");
+
+                    // (The @APPID@/windowId placeholders are spliced at the single call-site AFTER
+                    // build_av_payload — with_window_id/with_app_id — so they are correctly still
+                    // present here; the appId splice is exercised by the start-bufferfeed path, not
+                    // by the payload composer.)
+
+                    // 3. The immersive node is present IFF (AC3 PLUS && immersive).  A stale
+                    //    `immersive:ATMOS` on an AAC/AC3/DTS track, or a missing one on a true
+                    //    E-AC3 JOC track, is exactly the misconfiguration that wedges the audio ES.
+                    let want_imm = adecl == "AC3 PLUS" && immersive;
+                    let has_imm = payload.contains(r#""immersive":"ATMOS""#);
+                    assert_eq!(
+                        has_imm, want_imm,
+                        "immersive node mismatch for audio={ac} immersive={immersive}: {payload}"
+                    );
+
+                    // 4. The envelope is the direct-play dims, not the static default.
+                    assert!(payload.contains(r#""maxWidth":1920"#), "env.w ({vc},{ac})");
+                    assert!(payload.contains(r#""maxHeight":1080"#), "env.h ({vc},{ac})");
+                    assert!(payload.contains(r#""maxFrameRate":60"#), "env.fps ({vc},{ac})");
+
+                    // 5. audioSync stays the master clock on every AV payload (the design).
+                    assert!(payload.contains(r#""audioSync":true"#), "audioSync ({vc},{ac})");
+                }
+            }
+        }
+    }
+
     #[test]
     fn dv_payload_matches_frozen_route_decision() {
         let mut ps = crate::route::PlaybackSession::IDLE;

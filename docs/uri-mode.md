@@ -312,7 +312,7 @@ The terminal line, which follows the last event, is (a `load` run prints the fir
 
 ```
 uriprobe: t=<ms> summary load=<ok|fail(<phase>)> playing=<yes|no> t_load=<ms|-> t_playing=<ms|-> currentTime_advanced=<yes|no> videoInfo=<seen|none> audioInfo=<seen|none> window=<exported|none> setWindowId=<n/a|ok|refused|noreply> variant=<variant> scheme=<http|https> shape=<named|anon> end=<end> audio_at_load=<n|none> clock_period_ms=<ms|->
-    pause=<..> pause_delta=<ms|-> resume=<..> seek=<..> seek_delta=<ms|-> text=<..> audio=<..> subs=<..> eos=<yes|no> pause_basis=reported_positions pause_samples=<n> pause_span_ms=<ms|-> pause_end_fresh=<yes|no> paused_event=<yes|no> seekdone=<yes|no> resume_from=<ms|-> text_ev=<yes|no>
+    pause=<..> pause_delta=<ms|-> resume=<..> seek=<..> seek_delta=<ms|-> text=<..> audio=<..> subs=<..> eos=<yes|no> pause_basis=<reported_positions|paused_event_and_resume> pause_samples=<n> pause_span_ms=<ms|-> pause_end_fresh=<yes|no> paused_event=<yes|no> seekdone=<yes|no> resume_from=<ms|-> text_ev=<yes|no>
 ```
 
 (one line; wrapped here). The tokens a run is read by:
@@ -321,7 +321,7 @@ uriprobe: t=<ms> summary load=<ok|fail(<phase>)> playing=<yes|no> t_load=<ms|-> 
 |---|---|---|
 | `load=`, `playing=`, `currentTime_advanced=`, `window=` | `ok`, `yes`, `yes`, `exported` | the service loaded the stream into our exported window, said it plays, and its clock advanced. With the tester's report of a moving picture and sound, correctly placed and proportioned, this is a pass for the picture. `load=fail(<phase>)`, `end=refused:<phase>` and `end=error:<code>` name where it stopped (`error:104` is the AVProxy failure above) |
 | `shape=` | `named`, `anon` | the registration identity the service accepted: the named client first, then the anonymous one. A set that refuses both ends `end=refused:register` |
-| `pause=` | `froze` | after Pause the reported position stopped (fresh, equal reports over at least half the dwell, one in the Resume frame). The only value that certifies pause |
+| `pause=` | `froze` | fresh, equal positions span at least half the pause dwell and reach the Resume frame, or the service emits `paused` during the dwell, reports no position until Resume, and the first pre-seek position is within 1 s of the position at Pause. `pause_basis` names the evidence |
 | | `moved` | Pause was accepted but the position kept running |
 | | `unconfirmed` | too few or too stale reports to say: rerun, this is not a pass |
 | | `refused`, `none` | the call was refused, or the script never reached it |
@@ -336,7 +336,7 @@ uriprobe: t=<ms> summary load=<ok|fail(<phase>)> playing=<yes|no> t_load=<ms|-> 
 | `audio=` | `ok`, `sent`, `refused`, `none` | the `selectTrack` for audio index 1 (the script's second audio track). `ok` needs the call acknowledged and a `trackSelected` or an `audioInfo` naming index 1 (in either order); `sent` is a call the service answered without refusing it, with no such event; a one-track title may refuse it |
 | `text_ev=` | `yes`, `no` | a `trackSelected` event of type `text` arrived after the script's text `selectTrack` was sent. A bare `trackSelected`, an audio one, or one from before the call is `no` |
 | `text=`, `subs=` | as `audio=` | the text `selectTrack` (index 0) and `setSubtitleEnable` calls; recorded, they say nothing about rendering |
-| `paused_event=` | `yes`, `no` | a `paused` event arrived at all (open on 5+, above) |
+| `paused_event=` | `yes`, `no` | a `paused` event arrived during the scripted pause dwell |
 | `clock_period_ms=` | `<ms>`, `-` | the median gap between successive `currentTime` reports over the whole run (for an even count, the smaller of the two middle gaps), on the app's frame clock, so one frame (about 16 ms at 60 fps) is its resolution. `-` for fewer than two reports. It says how closely a subtitle clock could follow the service's |
 | `eos=` | `yes`, `no` | an `endOfStream` event arrived |
 | `end=` | `script` | the script ran to its last step and the probe stopped itself. A complete `drive` run ends here |
