@@ -728,7 +728,10 @@ impl<H: LibraryLike> Machine<H> for LibraryMenu {
                 if let Some(target) = self.selected_library.take() {
                     fx.push(Fx::Deliver(
                         MachineId::Instance(self.arg.host),
-                        Delivery::Screen(ScreenEvent::App(AppMsg::LibrarySelect(target))),
+                        Delivery::Screen(ScreenEvent::App(AppMsg::LibraryMenuSelect {
+                            origin: self.arg.target,
+                            target,
+                        })),
                     ));
                 }
             }
@@ -819,15 +822,15 @@ impl<H: LibraryLike> Focusable<H> for LibraryMenu {
                 })
             })
     }
-    fn place(&self, elem: &u32, cx: &Cx<'_, H>, _: At) -> Option<Placed> {
+    fn place(&self, elem: &u32, cx: &Cx<'_, H>, at: At) -> Option<Placed> {
         let index = self.form.index_of_key(RowKey(*elem))?;
-        let rect = self.form.table.row_frame(self.frame(cx.measure), index as i32)?;
-        Some(Placed {
-            rect,
-            rest_rect: rect,
-            clip: self.frame(cx.measure),
-            index: Some(index as u32),
-        })
+        let frame = self.frame(cx.measure);
+        let row = self.form.table.row_frame(frame, index as i32)?;
+        let (clip, dx) = match at {
+            At::Drawn => (self.motion.shown(frame), self.motion.live_dx()),
+            At::SpringTarget => (frame, 0.0),
+        };
+        Some(page_stack::panel_stop(row, clip, dx, Some(index as u32)))
     }
     fn reconcile(&self, want: FocusKey<u32>, cx: &Cx<'_, H>) -> FocusKey<u32> {
         if self.group_of(&want.elem, cx).is_some() {
@@ -1427,6 +1430,12 @@ mod tests {
             assert_eq!(menu.form.selected_key(), Some(key));
             assert_eq!(menu.form.table.scroll_pos(), scroll);
             let frame = menu.frame(cx.measure);
+            menu.motion.step(0.016, frame);
+            let live = menu.place(&key.0, &cx, At::Drawn).unwrap();
+            let settled = menu.place(&key.0, &cx, At::SpringTarget).unwrap();
+            assert_ne!(live.rect.x, settled.rect.x);
+            assert_eq!(live.rest_rect, settled.rect);
+            assert_eq!(live.clip, menu.motion.shown(frame));
             for _ in 0..90 { menu.motion.step(0.016, frame); }
             assert!(!menu.motion.sliding());
         });

@@ -1447,6 +1447,11 @@ pub enum AppMsg {
     Library(LibraryCmd),
     LibraryEdit { target: plx_data::stores::browse::SectionAddress, edit: plx_data::stores::browse::QueryEdit },
     LibrarySelect(plx_data::stores::browse::SectionAddress),
+    /// A Sources menu pick delivered after the close animation, still tied to its opening page.
+    LibraryMenuSelect {
+        origin: plx_data::stores::browse::SectionAddress,
+        target: plx_data::stores::browse::SectionAddress,
+    },
     DetailRestore {
         spot: plx_data::metadata::Spot,
         episode: Option<String>,
@@ -1459,7 +1464,7 @@ pub enum AppMsg {
     /// `Deferred` for a covered one; `None` is ignored.
     DetailReconcile { refresh: DetailRefreshPhase },
     /// The *Also available* surface committed a row: open that copy's own page. The SURFACE names
-    /// the destination and the PAGE navigates, which is `LibraryMenu`'s shape (`LibrarySelect`) and
+    /// the destination and the PAGE navigates, which is `LibraryMenu`'s shape (`LibraryMenuSelect`) and
     /// what keeps "what a press means on the Detail page" in one place instead of two.
     AltSourceOpen(ContentArg),
     /// The *Play Version* surface committed a row: play that version of the page's item, as its

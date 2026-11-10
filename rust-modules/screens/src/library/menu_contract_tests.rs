@@ -174,9 +174,10 @@ fn menu_side_actions_keep_source_sort_and_filter_row_identity() {
         assert_eq!(output.len(), 1);
         assert!(output.iter().any(|effect| matches!(
             &effect.fx,
-            Fx::Deliver(_, Delivery::Screen(ScreenEvent::App(AppMsg::LibrarySelect(
-                SectionAddress { sid, section: 7, .. }
-            )))) if sid == &ServerId::from_raw(2)
+            Fx::Deliver(_, Delivery::Screen(ScreenEvent::App(AppMsg::LibraryMenuSelect {
+                origin,
+                target: SectionAddress { sid, section: 7, .. },
+            }))) if *origin == sources.arg.target && sid == &ServerId::from_raw(2)
         )));
     });
 }

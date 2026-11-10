@@ -1400,7 +1400,14 @@ impl LibraryScreen {
                 self.pending.request_grid(GridTarget { epoch: target.epoch, sid: target.sid, section: target.section, query: self.query.unwrap_or(0) }, action);
                 self.grid_fade.reload();
             }
-            ScreenEvent::App(AppMsg::LibrarySelect(target)) => {
+            ScreenEvent::App(AppMsg::LibrarySelect(target) | AppMsg::LibraryMenuSelect { target, .. }) => {
+                if let ScreenEvent::App(AppMsg::LibraryMenuSelect { origin, .. }) = ev {
+                    // The modal hands input back before it unmounts. A newer shortcut
+                    // selection can already be pending or committed by the time we hear this.
+                    if self.requested_address(cx) != Some(*origin) {
+                        return Handled::No;
+                    }
+                }
                 let directory = H::directory(cx);
                 if directory.epoch() == Some(target.epoch) {
                     if let Some(index) = directory.sections().iter().position(|section| section.sid == Some(target.sid) && section.key == target.section) {
