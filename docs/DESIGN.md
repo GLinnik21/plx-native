@@ -79,9 +79,10 @@ their positions change.
   shelf ramp with a soft maximum to keep the crossing from darkening like two overlays.
   The shelf ramp follows the first tile's live top and reaches `SHELF_FOOT_A` at the
   Continue Watching caption line. The whole field fades with the hero.
-- Home's unplayed movies and shows show their type, year, runtime or season count, up to two genres,
-  and an outlined content rating when available. Movies in progress show time remaining, and
-  episodes keep their episode label. The full synopsis stays in Detail.
+- Home's movie row shows type, year, runtime, up to two genres, quality, and the content rating.
+  Episodes show their season and episode number, air date, runtime, quality, and rating. Unplayed
+  shows use the series runtime or season count when runtime is missing, plus year, genres, and rating.
+  The Resume pill shows the play glyph, progress rail, and localized time remaining.
 - Detail uses the same continuous renderer. Its wider left fade supports the synopsis and the
   full-width lower ramp supports the credits. The left fade shifts up with the preview logo and
   both strengths ease out for the full-screen trailer.

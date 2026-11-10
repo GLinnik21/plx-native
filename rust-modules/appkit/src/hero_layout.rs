@@ -68,9 +68,7 @@ pub fn pill_w(measure: &dyn Measure, label: &CStr, sz: i32, icon: bool, trailing
 }
 
 /// **The one verb for the Play control: "Resume" when the title has a resume point, else "Play".**
-/// The Home hero's pill, the Detail hero's pill and the card menu's first row all say it through
-/// this function (and [`play_text`]), so one resume point can never be called "Continue" on one
-/// page and "Resume" on the next.
+/// Shared by the Detail hero and card menu, and by Home when it has no resume duration to show.
 pub fn play_label(resumes: bool) -> &'static CStr {
     if resumes {
         plx_platform::i18n::msg::browse_detail_resume_c()
@@ -79,7 +77,7 @@ pub fn play_label(resumes: bool) -> &'static CStr {
     }
 }
 
-/// Play/Resume geometry for both heroes. Labels grow naturally beyond the design minimum.
+/// Geometry for the text-only Play/Resume pills. Labels grow naturally beyond the design minimum.
 pub fn play_width(measure: &dyn Measure, label: &CStr) -> f32 {
     pill_w(measure, label, theme::size::BODY, true, None).max(PW)
 }

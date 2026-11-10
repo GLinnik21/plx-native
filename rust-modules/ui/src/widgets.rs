@@ -1805,9 +1805,10 @@ pub fn hero_identity_w(r: Rect, parts: &[&str], resolution: Option<&str>, chips:
 }
 
 /// Home's metadata band uses brighter reading ink over the hero art and reserves room for the rating.
-pub fn hero_metadata(p: Painter, r: Rect, parts: &[&str], rating: &str, measure: &dyn plx_machine::machine::Measure) {
+pub fn hero_metadata(p: Painter, r: Rect, parts: &[&str], quality: Option<&str>, rating: &str, measure: &dyn plx_machine::machine::Measure) {
     let rating = (!rating.is_empty() && keyline_chip_w(rating, measure) <= r.w * 0.5).then_some(rating);
-    identity_row(Some(p), r, parts, rating, &[], theme::TEXT_READING, measure);
+    let chips = rating.as_ref().map_or(&[][..], std::slice::from_ref);
+    identity_row(Some(p), r, parts, quality, chips, theme::TEXT_READING, measure);
 }
 
 /// The one layout of the identity band, painted with `paint` or only measured without it.
@@ -8683,12 +8684,15 @@ pub struct Button<'a> {
     /// 0..1 countdown progress, in the face selected by the progress builder; None = an ordinary button.
     pub progress: Option<f32>,
     progress_face: ButtonProgress,
+    inline_progress: Option<f32>,
 }
 /// [`Button`]'s icon box, as a multiple of its type size, and the icon→label gap. Named because
 /// [`Button::pill_w`] measures the same run `Button::draw` lays out — a literal in each would let
 /// the two drift.
 const BTN_ICON_RATIO: f32 = 1.15;
 const BTN_ICON_GAP: f32 = 12.0;
+const BTN_RAIL_W: f32 = 64.0;
+const BTN_RAIL_H: f32 = 6.0;
 /// Total horizontal air a pill carries around its icon+label run.
 pub const BTN_PILL_AIR: f32 = 68.0;
 /// [`ControlStyle::Keyline`]'s stroke width (the design's 1.5 — same weight as [`keyline_chip`]'s).
@@ -8714,6 +8718,7 @@ impl<'a> Button<'a> {
             scale: 1.0,
             progress: None,
             progress_face: ButtonProgress::FillSweep,
+            inline_progress: None,
         }
     }
     /// The [FOCUS POP](CTRL_FOCUS_SCALE), about the capsule's centre — normally [`CtlPop::scale`],
@@ -8842,20 +8847,33 @@ impl<'a> Button<'a> {
     }
 
     fn pill_w_from_advance(advance: f32, sz: c_int, icon: bool, trailing: Option<crate::icons::Icon>) -> f32 {
-        HStack::new(&Self::run_items(advance, sz, icon, trailing), BTN_ICON_GAP, StackAlign::Leading(0.0)).width()
+        HStack::new(&Self::run_items(advance, sz, icon, trailing, false), BTN_ICON_GAP, StackAlign::Leading(0.0)).width()
             + BTN_PILL_AIR
     }
 
     /// The pill's one run, which `draw` places and `pill_w_*` sizes: the leading icon's box, the
     /// label, and the trailing accessory standing by its INK. An accessory the pill does not carry
     /// is ABSENT, so it leaves neither its width nor its gap.
-    fn run_items(advance: f32, sz: c_int, icon: bool, trailing: Option<crate::icons::Icon>) -> [HItem; 3] {
+    fn run_items(advance: f32, sz: c_int, icon: bool, trailing: Option<crate::icons::Icon>, rail: bool) -> [HItem; 4] {
         let box_w = sz as f32 * BTN_ICON_RATIO;
         [
             if icon { HItem::new(box_w) } else { HItem::absent() },
+            if rail { HItem::new(BTN_RAIL_W) } else { HItem::absent() },
             HItem::new(advance),
             trailing.map_or_else(HItem::absent, |acc| HItem::glyph(acc, box_w)),
         ]
+    }
+
+    /// Width of the Play glyph, inline progress rail, and duration at this type size.
+    pub fn progress_pill_width(measure: &dyn plx_machine::machine::Measure, label: &std::ffi::CStr, sz: c_int) -> f32 {
+        let items = Self::run_items(measure.width(label, sz, true), sz, true, None, true);
+        HStack::new(&items, BTN_ICON_GAP, StackAlign::Leading(0.0)).width() + BTN_PILL_AIR
+    }
+
+    /// Place a playback progress rail between the leading glyph and the label.
+    pub fn inline_progress(mut self, frac: f32) -> Self {
+        self.inline_progress = Some(frac.clamp(0.0, 1.0));
+        self
     }
 
     /// Turn the pill into its own countdown: `frac` of its width is filled with
@@ -9033,7 +9051,7 @@ impl View for Button<'_> {
         // sizing the pill without the chevron and then drawing one would push the label off-centre.
         // The accessory stands by its INK, so the pill's right pad is measured to the mark itself.
         let isz = self.sz as f32 * BTN_ICON_RATIO;
-        let items = Self::run_items(tw, self.sz, self.icon.is_some() || self.svg.is_some(), self.trailing);
+        let items = Self::run_items(tw, self.sz, self.icon.is_some() || self.svg.is_some(), self.trailing, self.inline_progress.is_some());
         for span in HStack::new(&items, BTN_ICON_GAP, StackAlign::Centre(r.cx())).placed() {
             match span.i {
                 0 => {
@@ -9045,6 +9063,17 @@ impl View for Button<'_> {
                     }
                 }
                 1 => {
+                    let rail = Rect::new(span.x, r.cy() - BTN_RAIL_H * 0.5, BTN_RAIL_W, BTN_RAIL_H);
+                    let rad = BTN_RAIL_H * 0.5;
+                    p.rrect(rail, rad, rad, theme::with_a(ink, 0.22));
+                    let w = rail.w * self.inline_progress.unwrap_or_default();
+                    if w > 0.0 {
+                        let fill = if self.accent_focus() { ink } else { theme::RESUME_FILL };
+                        let rad = rad.min(w * 0.5);
+                        p.rrect(Rect::new(rail.x, rail.y, w, rail.h), rad, rad, fill);
+                    }
+                }
+                2 => {
                     p.text(self.label, span.x, ty, self.sz, ink, 0, 1); // left-aligned after the icon
                 }
                 _ => {
