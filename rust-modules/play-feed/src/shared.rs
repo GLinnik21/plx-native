@@ -261,6 +261,8 @@ pub struct Shared {
     /// Feed driver's `Observation::Presented` waits for); unlike the `dg_*` mirrors, a decision
     /// branches on it.
     sink_displayed_live: AtomicBool,
+    // A positive callback sequence, so an in-place seek can exclude callbacks before Play.
+    pub(crate) sink_displayed_sequence: AtomicU32,
     /// **The raw pts of the first audio AU the demuxer pushed since its last open or seek**.
     /// Written by `ff::demux` BEFORE that push, so the feed thread that pops the AU
     /// sees it. The audio lane uses it to tell the real start of a late audio track (an MKV
@@ -695,6 +697,7 @@ impl Shared {
             frames: AtomicI32::new(0),
             seen_frame: AtomicBool::new(false),
             sink_displayed_live: AtomicBool::new(false),
+            sink_displayed_sequence: AtomicU32::new(0),
             first_audio_pts: AtomicI64::new(i64::MIN),
             load_completed: AtomicBool::new(false),
             media_id: Mutex::new(None),
@@ -900,6 +903,7 @@ impl Shared {
     pub fn note_displayed_frames(&self, num: i64) {
         if num > 0 {
             self.sink_displayed_live.store(true, Ordering::Relaxed);
+            self.sink_displayed_sequence.fetch_add(1, Ordering::Release);
         }
     }
 
