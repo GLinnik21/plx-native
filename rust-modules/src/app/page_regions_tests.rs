@@ -220,13 +220,19 @@ impl Rig {
     }
 }
 
-/// A fresh Movies grid over Home. Each table cell starts on the requested page regardless of
-/// what the previous cell left open in the shared scratch session.
+/// The Movies grid, reached by its strip pill from Home. Give each table cell its own profile
+/// so the saved pages in the shared scratch session do not carry across cells.
 fn movies_library() -> Rig {
+    use plx_plex::plex::session;
+    let scope = session::current_gen().wrapping_add(1);
+    session::publish_profile_for_test(Some(session::UserRef {
+        uuid: format!("u-page-regions-{scope}"),
+        ..Default::default()
+    }), scope);
     let mut r = Rig::new();
     super::show_page(&mut r.d, AppArg::Home);
     r.frames(40);
-    super::nav_select_tab(&mut r.d, AppArg::Library);
+    super::nav_tab(&mut r.d, &mut r.bridge, HomeTab::Movies, None, None);
     r.frames(90);
     assert!(r.on(&AppArg::Library), "premise: the library is on top");
     r
