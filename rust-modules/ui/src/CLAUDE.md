@@ -50,7 +50,7 @@ arguments, and its time is the `dt` it is handed.
    matter more than couch-copy scale, and it must never migrate into chrome or prose. The hero
    SYNOPSIS is the case that proves
    the rule and it is no longer here: a blurb is the longest run of prose on its page, so it is
-   reading copy, and Detail draws it at `LABEL` 26 through `ui::hero_synopsis`. Home has a separate line for episode identity, remaining time, movie genre or a short premise. (The hero
+   reading copy, and Detail draws it at `LABEL` 26 through `ui::hero_synopsis`. Home has a separate line for episode identity, remaining time, movie or show metadata, or a short premise. (The hero
    identity line uses `theme::hero::IDENTITY_SIZE`, regular `CAPTION` 24, matching the latest PDF.) Pass a rung to `Painter::text`/`Label`/`TextView`/`text::elide` instead of a bare
    `24`/`28`/… — a size is a role, not a magic number; pick the nearest rung, and if no rung fits a
    genuinely new role, **add a documented rung to `pub mod size` in `gfx/tokens.rs`** (`theme::size`

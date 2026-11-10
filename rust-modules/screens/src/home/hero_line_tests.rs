@@ -1,4 +1,4 @@
-//! Home metadata chooses genre, time remaining, episode label or premise by hero state.
+//! Home metadata chooses identity, time remaining, episode label or premise by hero state.
 use super::*;
 use plx_ui::landing_hero::{home_synopsis, HOME_LABEL_H};
 
@@ -8,7 +8,7 @@ const MIN: i64 = 60_000;
 
 /// A 15-minute film with a summary of two sentences, not started.
 fn movie() -> PmsMovie {
-    PmsMovie { kind: 0, title: "Sintel".into(), summary: PREMISE.into(), genre: Some("Fantasy".into()), dur_ns: 15 * MIN * 1_000_000, ..Default::default() }
+    PmsMovie { kind: 0, title: "Sintel".into(), summary: PREMISE.into(), genre: Some("Fantasy".into()), secondary_genre: Some("Adventure".into()), dur_ns: 15 * MIN * 1_000_000, ..Default::default() }
 }
 
 /// An episode: season 2, episode 4, "The Night Crossing".
@@ -76,13 +76,17 @@ fn an_episode_reads_its_label_whether_resumed_or_on_deck() {
 }
 
 #[test]
-fn an_unplayed_movie_reads_its_genre() {
+fn unplayed_movies_and_shows_get_the_identity_band() {
     for hero in [movie(), PmsMovie { resume_ms: 9_000, ..movie() }] {
-        assert!(matches!(hero_line(&hero), Some(HeroLine::Genre("Fantasy"))));
+        assert!(matches!(hero_line(&hero), Some(HeroLine::Metadata { .. })));
     }
-    assert_eq!(premise(&PmsMovie { kind: 1, ..movie() }), FIRST);
+    let show = PmsMovie { kind: plx_data::pms::KIND_SHOW, child_count: 2, ..movie() };
+    assert!(matches!(hero_line(&show), Some(HeroLine::Metadata { .. })));
+    assert_eq!(premise(&PmsMovie { viewed_leaf_count: Some(1), ..show }), FIRST);
     assert_eq!(premise(&PmsMovie { watched: true, ..movie() }), FIRST);
-    assert!(hero_line(&PmsMovie { genre: None, ..movie() }).is_none());
+    let bare = PmsMovie::default();
+    assert!(matches!(hero_line(&bare), Some(HeroLine::Metadata { year, length, genres, rating, .. })
+        if year.is_empty() && length.is_empty() && genres.is_empty() && rating.is_empty()));
 }
 
 /// **A line with nothing to say falls to the next**: an episode with nothing to name it is a resumed
@@ -93,9 +97,9 @@ fn a_line_with_nothing_to_say_falls_to_the_next() {
     assert_eq!(premise(&nameless), FIRST, "no label, not started: the premise");
     let resumed = PmsMovie { resume_ms: 7 * MIN, ..nameless };
     assert_eq!(label(&resumed), plx_ui::fmt::footer_left(8 * MIN), "no label, resumed: the time left");
-    let mute = PmsMovie { summary: String::new(), genre: None, ..movie() };
+    let mute = PmsMovie { summary: String::new(), kind: plx_data::pms::KIND_SHOW, watched: true, ..movie() };
     assert!(hero_line(&mute).is_none(), "no summary, nothing started: no line");
-    let blank = PmsMovie { summary: "  \n ".into(), genre: None, ..movie() };
+    let blank = PmsMovie { summary: "  \n ".into(), kind: plx_data::pms::KIND_SHOW, watched: true, ..movie() };
     assert!(hero_line(&blank).is_none(), "a blank summary is no summary");
     let resumed_mute = PmsMovie { resume_ms: 7 * MIN, ..mute };
     assert_eq!(label(&resumed_mute), plx_ui::fmt::footer_left(8 * MIN), "the time left needs no summary");
@@ -112,9 +116,10 @@ fn the_ladder_keeps_its_anchor_for_every_line() {
                   carrying everything she still owns, and nothing she wants to keep"
             .into(),
         kind: 1,
+        watched: true,
         ..movie()
     };
-    let one = PmsMovie { kind: 1, ..movie() };
+    let one = PmsMovie { kind: 1, watched: true, ..movie() };
     let resumed = PmsMovie { resume_ms: 7 * MIN, ..movie() };
     let long_label = episode();
     assert_eq!(home_synopsis(FIRST).measure_h(theme::hero::HOME_SYNOPSIS_W), HOME_LABEL_H, "the premise: the first sentence is one line");
@@ -136,7 +141,7 @@ fn the_ladder_keeps_its_anchor_for_every_line() {
     assert_eq!(s_one.title.y - s_two.title.y, HOME_LABEL_H, "a one-line block brings the title down a line");
     assert_eq!((s_resumed.title.y, s_resumed.block), (s_label.title.y, s_label.block), "a label is a label");
     // no line: the title stands alone over the actions
-    let mute = PmsMovie { summary: String::new(), genre: None, ..movie() };
+    let mute = PmsMovie { summary: String::new(), kind: plx_data::pms::KIND_SHOW, watched: true, ..movie() };
     assert!(stack(&mute).block.is_none());
 }
 
@@ -152,8 +157,19 @@ fn the_page_draws_the_line_the_state_names() {
     let resumed = drawn(&PmsMovie { resume_ms: 7 * MIN, ..movie() });
     assert!(resumed.contains(&plx_ui::fmt::footer_left(8 * MIN)), "{resumed:?}");
     assert!(!resumed.contains("woman"), "a resumed film does not recite its summary: {resumed:?}");
-    let fresh = drawn(&movie());
-    assert!(fresh.contains("Fantasy"), "{fresh:?}");
+    let fresh = drawn(&PmsMovie { year: 2010, rating: "PG-13".into(), ..movie() });
+    assert!(fresh.contains("2010"), "{fresh:?}");
+    assert!(fresh.contains(&plx_ui::fmt::duration(15 * MIN)), "{fresh:?}");
+    assert!(fresh.contains("PG-13"), "{fresh:?}");
+    assert!(fresh.contains("Movie"), "{fresh:?}");
+    assert!(fresh.contains("Fantasy, Adventure"), "{fresh:?}");
+    let show = drawn(&PmsMovie {
+        kind: plx_data::pms::KIND_SHOW, year: 2025, child_count: 2, rating: "TV-14".into(), ..movie()
+    });
+    for word in ["TV Show", "2025", "2 seasons", "Fantasy, Adventure", "TV-14"] {
+        assert!(show.contains(word), "{show:?}");
+    }
+    assert!(!show.contains(&plx_ui::fmt::duration(15 * MIN)), "{show:?}");
     assert!(!fresh.contains("woman crosses"), "{fresh:?}");
     assert!(!fresh.contains("Years later"), "the second sentence stays on the Details page: {fresh:?}");
     let ep = drawn(&PmsMovie { resume_ms: 7 * MIN, ..episode() });
