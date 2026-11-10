@@ -9,7 +9,7 @@ use super::{consts::SCR_H, theme, Rect};
 pub const COL_W: f32 = theme::hero::TEXT_W;
 pub const KNEE_Y: f32 = theme::hero::SCRIM_MID_Y;
 pub const MID_WEIGHT: f32 = theme::hero::SCRIM_MID_A / theme::hero::SCRIM_FOOT_A;
-/// How much a bound preview raises the side shade. Detail's bottom ramp uses its own
+/// How much a bound preview raises the shade behind the title. Detail's bottom ramp uses its own
 /// `preview_base_scrim` strength. 1.35 is the video-bound row the legibility table grades.
 ///
 /// The player publishes the same number as `player::preview::PREVIEW_FIELD` (its `View::field` once
@@ -131,11 +131,11 @@ pub fn home_shade(shelf: WashRamp, hero_a: f32) -> crate::widgets::WashScrim {
         theme::shade::HOME_SIDE_A * k, k)
 }
 
-/// Detail's continuous left and bottom shade. The left fade follows the preview logo into the
-/// corner and the bottom fade follows the remaining copy, clearing the space between them.
+/// Detail's continuous edge shade. During the logo's move the left fade gives way to a shallow
+/// full-width top fade, and the bottom ramp moves down to the remaining copy.
 pub fn detail_shade(visible: f32, preview_field: f32, preview_base: f32, logo_progress: f32) -> crate::widgets::WashScrim {
     let base = (visible * preview_base).clamp(0.0, 1.0);
-    let side = (visible * preview_field).clamp(0.0, PREVIEW_FIELD);
+    let field = (visible * preview_field).clamp(0.0, PREVIEW_FIELD);
     let [top, knee, mid, foot] = base_scrim_ramp(base);
     let t = logo_progress.clamp(0.0, 1.0);
     let lerp = |from, to| from + (to - from) * t;
@@ -143,19 +143,18 @@ pub fn detail_shade(visible: f32, preview_field: f32, preview_base: f32, logo_pr
     let (top, knee) = (lerp(top, preview_top), lerp(knee, preview_knee));
     let ramp = WashRamp { ink: theme::scrim(1.0), stops: [(top, 0.0), (knee, mid), (SCR_H, foot)] };
     let rise = theme::shade::DETAIL_PREVIEW_RISE * t;
-    let [left, right] = theme::shade::DETAIL_SIDE_X;
-    let [exit_start, exit_end] = theme::shade::DETAIL_PREVIEW_SIDE_EXIT_Y;
-    let exit = (t > 0.0).then(|| [lerp(SCR_H, exit_start), lerp(SCR_H + exit_end - exit_start, exit_end)]);
-    edge_wash(ramp, [left, lerp(right, theme::shade::DETAIL_PREVIEW_SIDE_END_X)],
-        theme::shade::DETAIL_SIDE_Y.map(|y| y - rise), exit,
-        theme::shade::DETAIL_SIDE_A * side, base.max(side.min(1.0)))
+    let top_peak = theme::shade::DETAIL_PREVIEW_TOP_A * field * t;
+    let top_fade = (top_peak > 0.0).then_some((theme::shade::DETAIL_PREVIEW_TOP_Y, top_peak));
+    edge_wash(ramp, theme::shade::DETAIL_SIDE_X,
+        theme::shade::DETAIL_SIDE_Y.map(|y| y - rise), top_fade,
+        theme::shade::DETAIL_SIDE_A * field * (1.0 - t), base.max(field.min(1.0)))
 }
 
-fn edge_wash(ramp: WashRamp, horizontal: [f32; 2], vertical: [f32; 2], exit: Option<[f32; 2]>,
+fn edge_wash(ramp: WashRamp, horizontal: [f32; 2], vertical: [f32; 2], top: Option<([f32; 2], f32)>,
     peak: f32, strength: f32) -> crate::widgets::WashScrim {
     use plx_gfx::gfx::scrim::{EdgeShade, GroundShade};
     let field = if strength > 0.0 {
-        GroundShade::from_edge(EdgeShade::new(horizontal, vertical, exit, ramp.stops,
+        GroundShade::from_edge(EdgeShade::new(horizontal, vertical, top, ramp.stops,
             peak, theme::shade::EDGE_JOIN * strength))
     } else {
         GroundShade::NONE

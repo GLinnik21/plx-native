@@ -20,8 +20,12 @@ fn the_trailer_shade_clears_the_space_left_by_the_title() {
     for y in [260.0, 360.0, 480.0, 520.0] {
         assert_eq!(preview.alpha(400.0, y), 0.0, "the gap under the compact logo at y={y}");
     }
-    assert!(preview.alpha(300.0, 85.0) > 0.5, "the compact logo still has contrast");
-    assert_eq!(preview.alpha(960.0, 85.0), 0.0, "the shade is confined to the logo's corner");
+    let logo_shade = preview.alpha(300.0, 85.0);
+    for x in [0.0, 576.0, 960.0, 1920.0] {
+        assert_eq!(preview.alpha(x, 85.0), logo_shade, "the top fade has no patch behind the logo");
+    }
+    assert!((0.4..0.55).contains(&logo_shade), "the shade supports the compact logo without a dark patch");
+    assert!(preview.alpha(300.0, 175.0) < logo_shade);
     assert!(preview.alpha(1200.0, 700.0) > 0.6, "the lower text keeps its shade");
 }
 

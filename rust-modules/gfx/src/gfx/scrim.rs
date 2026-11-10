@@ -155,46 +155,54 @@ impl ShadeBlock {
 pub struct EdgeShade {
     horizontal: [f32; 2],
     vertical: [f32; 2],
-    vertical_exit: Option<[f32; 2]>,
+    top: Option<([f32; 2], f32)>,
     shelf: [(f32, f32); 3],
     peak: f32,
     join: f32,
 }
 
 impl EdgeShade {
-    /// The optional exit eases the side shade back to zero below its content.
-    pub fn new(horizontal: [f32; 2], vertical: [f32; 2], vertical_exit: Option<[f32; 2]>,
+    /// An optional full-width top fade, given as its vertical bounds and peak alpha. Its
+    /// alpha and the side alpha can crossfade before the lower ramp joins them.
+    pub fn new(horizontal: [f32; 2], vertical: [f32; 2], top: Option<([f32; 2], f32)>,
         shelf: [(f32, f32); 3], peak: f32, join: f32) -> Self {
-        Self { horizontal, vertical, vertical_exit, shelf, peak, join }
+        Self { horizontal, vertical, top, shelf, peak, join }
     }
 
     fn at(self, x: f32, y: f32) -> f32 {
         let progress = |v: f32, lo: f32, hi: f32| ((v - lo) / (hi - lo)).clamp(0.0, 1.0);
         let smooth = |t: f32| t * t * (3.0 - 2.0 * t);
-        let exit = self.vertical_exit.map_or(1.0, |[start, end]| 1.0 - smooth(progress(y, start, end)));
         let side = self.peak
             * (1.0 - smooth(progress(x, self.horizontal[0], self.horizontal[1])))
-            * smooth(progress(y, self.vertical[0], self.vertical[1]))
-            * exit;
+            * smooth(progress(y, self.vertical[0], self.vertical[1]));
+        let upper = side + self.top.map_or(0.0, |([start, end], peak)| {
+            peak * (1.0 - smooth(progress(y, start, end)))
+        });
         let [(top, a), (mid, b), (foot, c)] = self.shelf;
         let shelf = if y < mid {
             a + (b - a) * progress(y, top, mid)
         } else {
             b + (c - b) * progress(y, mid, foot)
         };
-        let mix = (self.join - (side - shelf).abs()).max(0.0);
-        (side.max(shelf) + mix * mix * 0.25 / self.join).min(side + shelf)
+        let mix = (self.join - (upper - shelf).abs()).max(0.0);
+        (upper.max(shelf) + mix * mix * 0.25 / self.join).min(upper + shelf)
     }
 
     fn scaled(self, k: f32) -> Self {
-        Self { shelf: self.shelf.map(|(y, a)| (y, a * k)), peak: self.peak * k, join: self.join * k, ..self }
+        Self {
+            shelf: self.shelf.map(|(y, a)| (y, a * k)),
+            top: self.top.map(|(bounds, peak)| (bounds, peak * k)),
+            peak: self.peak * k,
+            join: self.join * k,
+            ..self
+        }
     }
 
     fn placed(self, ox: f32, oy: f32, s: f32) -> Self {
         Self {
             horizontal: self.horizontal.map(|x| x * s + ox),
             vertical: self.vertical.map(|y| y * s + oy),
-            vertical_exit: self.vertical_exit.map(|exit| exit.map(|y| y * s + oy)),
+            top: self.top.map(|(bounds, peak)| (bounds.map(|y| y * s + oy), peak)),
             shelf: self.shelf.map(|(y, a)| (y * s + oy, a)),
             ..self
         }
@@ -270,8 +278,8 @@ impl GroundShade {
         if let Some(edge) = self.edge {
             let [x, y, _, h] = rect;
             return y + h > edge.shelf[0].0
-                || (edge.peak > 0.0 && x < edge.horizontal[1] && y + h > edge.vertical[0]
-                    && edge.vertical_exit.is_none_or(|[_, end]| y < end));
+                || (edge.peak > 0.0 && x < edge.horizontal[1] && y + h > edge.vertical[0])
+                || edge.top.is_some_and(|([_, end], peak)| peak > 0.0 && y < end);
         }
         self.blocks.iter().any(|b| b.reaches(rect))
     }
@@ -323,8 +331,8 @@ impl GroundShade {
             u[0] = [left, right, start, full];
             u[1] = [top, mid, foot, a];
             u[2] = [b, c, edge.peak, edge.join];
-            if let Some([start, end]) = edge.vertical_exit {
-                u[3] = [start, end, 0.0, 0.0];
+            if let Some(([start, end], peak)) = edge.top {
+                u[3] = [start, end, peak, 0.0];
             }
             return u;
         }
@@ -432,18 +440,18 @@ mod tests {
 
     #[test]
     fn edge_shade_translates_and_scales_with_its_painter() {
-        let edge = EdgeShade::new([280.0, 960.0], [110.0, 405.0], Some([530.0, 660.0]),
+        let edge = EdgeShade::new([280.0, 960.0], [110.0, 405.0], Some(([20.0, 260.0], 0.32)),
             [(768.0, 0.0), (886.0, 0.25), (1012.0, 0.93)], 0.59, 0.10);
         let shade = GroundShade::from_edge(edge);
         assert_eq!(shade.shader_count(), -1.0);
         let moved = shade.scaled(0.5).placed(13.0, -40.0, 0.75);
-        for (x, y) in [(0.0, 0.0), (500.0, 450.0), (250.0, 580.0), (250.0, 950.0), (1900.0, 1040.0)] {
+        for (x, y) in [(0.0, 0.0), (500.0, 190.0), (250.0, 580.0), (250.0, 950.0), (1900.0, 1040.0)] {
             assert!((moved.at(x * 0.75 + 13.0, y * 0.75 - 40.0) - shade.at(x, y) * 0.5).abs() < 1e-6);
         }
         assert_eq!(shade.scaled(0.0), GroundShade::NONE);
-        assert!(!shade.reaches([1000.0, 0.0, 500.0, 600.0]));
-        assert!(!shade.reaches([0.0, 660.0, 500.0, 100.0]));
-        assert_eq!(moved.uniforms()[3], [357.5, 455.0, 0.0, 0.0]);
+        assert!(shade.reaches([1000.0, 150.0, 500.0, 100.0]));
+        assert!(!shade.reaches([1000.0, 260.0, 500.0, 500.0]));
+        assert_eq!(moved.uniforms()[3], [-25.0, 155.0, 0.16, 0.0]);
         assert!(shade.reaches([1000.0, 770.0, 500.0, 100.0]));
     }
 
