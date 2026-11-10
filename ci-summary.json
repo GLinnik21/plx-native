@@ -85,7 +85,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-10T16:02:32Z",
+ "generated": "2026-11-10T16:03:03Z",
  "metrics": [
   {
    "change30_pct": 47.7,
@@ -133,15 +133,15 @@
    "change30_pct": 103.8,
    "change7_pct": 27.3,
    "d30": 208,
-   "delta30": 216,
-   "delta7": 91,
+   "delta30": 216.0,
+   "delta7": 91.0,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
-   "n_now": 57,
+   "n_now": 58,
    "n_prev": 85,
-   "now": 424,
+   "now": 424.0,
    "prev7": 333,
    "shown": true,
    "state": "worse",
@@ -172,18 +172,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 43.9,
-   "change7_pct": 12.6,
+   "change30_pct": 44.7,
+   "change7_pct": 13.2,
    "d30": 320.0,
-   "delta30": 140.5,
-   "delta7": 51.5,
+   "delta30": 143.0,
+   "delta7": 54,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 85,
-   "now": 460.5,
+   "now": 463,
    "prev7": 409,
    "shown": true,
    "state": "flat",
@@ -298,18 +298,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 69.2,
-   "change7_pct": 9.3,
+   "change30_pct": 70.3,
+   "change7_pct": 10.1,
    "d30": 263,
-   "delta30": 182,
-   "delta7": 38,
+   "delta30": 185.0,
+   "delta7": 41.0,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
-   "n_now": 57,
+   "n_now": 58,
    "n_prev": 85,
-   "now": 445,
+   "now": 448.0,
    "prev7": 407,
    "shown": true,
    "state": "flat",
@@ -320,17 +320,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 11.2,
+   "change7_pct": 11.0,
    "d30": null,
    "delta30": null,
-   "delta7": 37.5,
+   "delta7": 37,
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "kind": "job",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 85,
-   "now": 373.5,
+   "now": 373,
    "prev7": 336,
    "shown": true,
    "state": "flat",
@@ -361,18 +361,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 119.1,
-   "change7_pct": -7.7,
+   "change30_pct": 122.3,
+   "change7_pct": -6.4,
    "d30": 139,
-   "delta30": 165.5,
-   "delta7": -25.5,
+   "delta30": 170,
+   "delta7": -21,
    "group": "ci",
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 85,
-   "now": 304.5,
+   "now": 309,
    "prev7": 330,
    "shown": true,
    "state": "flat",
@@ -385,15 +385,15 @@
    "change30_pct": 98.5,
    "change7_pct": -9.3,
    "d30": 132,
-   "delta30": 130.0,
-   "delta7": -27.0,
+   "delta30": 130,
+   "delta7": -27,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
    "kind": "job",
    "label": "CI: host python/shell/C gates",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 85,
-   "now": 262.0,
+   "now": 262,
    "prev7": 289,
    "shown": true,
    "state": "flat",
@@ -424,27 +424,6 @@
    "unit": "s"
   },
   {
-   "change30_pct": 30.5,
-   "change7_pct": 17.9,
-   "d30": 169,
-   "delta30": 51.5,
-   "delta7": 33.5,
-   "group": "ci",
-   "id": "ci|host lint + type-checks",
-   "kind": "job",
-   "label": "CI: host lint + type-checks",
-   "n_now": 58,
-   "n_prev": 85,
-   "now": 220.5,
-   "prev7": 187,
-   "shown": true,
-   "state": "flat",
-   "state30": "worse",
-   "threshold_abs": 20.0,
-   "threshold_pct": 20.0,
-   "unit": "s"
-  },
-  {
    "change30_pct": -31.6,
    "change7_pct": 1.9,
    "d30": 321.5,
@@ -462,6 +441,27 @@
    "state": "flat",
    "state30": "better",
    "threshold_abs": 30.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": 29.0,
+   "change7_pct": 16.6,
+   "d30": 169,
+   "delta30": 49,
+   "delta7": 31,
+   "group": "ci",
+   "id": "ci|host lint + type-checks",
+   "kind": "job",
+   "label": "CI: host lint + type-checks",
+   "n_now": 59,
+   "n_prev": 85,
+   "now": 218,
+   "prev7": 187,
+   "shown": true,
+   "state": "flat",
+   "state30": "worse",
+   "threshold_abs": 20.0,
    "threshold_pct": 20.0,
    "unit": "s"
   },
@@ -533,14 +533,14 @@
    "change7_pct": 0.0,
    "d30": null,
    "delta30": null,
-   "delta7": 0.0,
+   "delta7": 0,
    "group": "ci",
    "id": "ci|which gates apply",
    "kind": "job",
    "label": "CI: which gates apply",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 85,
-   "now": 5.0,
+   "now": 5,
    "prev7": 5,
    "shown": false,
    "state": "flat",
@@ -553,15 +553,15 @@
    "change30_pct": 0.0,
    "change7_pct": 33.3,
    "d30": 4,
-   "delta30": 0,
-   "delta7": 1,
+   "delta30": 0.0,
+   "delta7": 1.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 57,
+   "n_now": 58,
    "n_prev": 85,
-   "now": 4,
+   "now": 4.0,
    "prev7": 3,
    "shown": false,
    "state": "flat",
@@ -574,15 +574,15 @@
    "change30_pct": -99.0,
    "change7_pct": 0.0,
    "d30": 300,
-   "delta30": -297.0,
-   "delta7": 0.0,
+   "delta30": -297,
+   "delta7": 0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 85,
-   "now": 3.0,
+   "now": 3,
    "prev7": 3,
    "shown": false,
    "state": "flat",
@@ -618,11 +618,6 @@
    "change_pct": 32.1,
    "commits": [
     {
-     "pr": 1283,
-     "sha": "75765b3d0",
-     "title": "Net: the WebSocket transport over libcurl CONNECT_ONLY"
-    },
-    {
      "pr": 1293,
      "sha": "612fc8cf0",
      "title": "Grid: the card focus leaves lets go from its lift on the move, not on the next tick"
@@ -666,6 +661,11 @@
      "pr": 1313,
      "sha": "9be7a43f6",
      "title": "Recover Segment seeks that never reach the video sink"
+    },
+    {
+     "pr": 1310,
+     "sha": "660893fbd",
+     "title": "Polish the Home hero, Continue Watching, and Detail shading"
     }
    ],
    "from": 23.7,
@@ -679,11 +679,6 @@
    "change_pct": 29.7,
    "commits": [
     {
-     "pr": 1283,
-     "sha": "75765b3d0",
-     "title": "Net: the WebSocket transport over libcurl CONNECT_ONLY"
-    },
-    {
      "pr": 1293,
      "sha": "612fc8cf0",
      "title": "Grid: the card focus leaves lets go from its lift on the move, not on the next tick"
@@ -727,6 +722,11 @@
      "pr": 1313,
      "sha": "9be7a43f6",
      "title": "Recover Segment seeks that never reach the video sink"
+    },
+    {
+     "pr": 1310,
+     "sha": "660893fbd",
+     "title": "Polish the Home hero, Continue Watching, and Detail shading"
     }
    ],
    "from": 49.0,
@@ -740,11 +740,6 @@
    "change_pct": 27.3,
    "commits": [
     {
-     "pr": 1283,
-     "sha": "75765b3d0",
-     "title": "Net: the WebSocket transport over libcurl CONNECT_ONLY"
-    },
-    {
      "pr": 1293,
      "sha": "612fc8cf0",
      "title": "Grid: the card focus leaves lets go from its lift on the move, not on the next tick"
@@ -788,6 +783,11 @@
      "pr": 1313,
      "sha": "9be7a43f6",
      "title": "Recover Segment seeks that never reach the video sink"
+    },
+    {
+     "pr": 1310,
+     "sha": "660893fbd",
+     "title": "Polish the Home hero, Continue Watching, and Detail shading"
     }
    ],
    "from": 333,
@@ -795,7 +795,7 @@
    "label": "CI: host unit tests (hostsim)",
    "since": "2026-11-10",
    "threshold_pct": 20.0,
-   "to": 424
+   "to": 424.0
   }
  ],
  "schema": 2,
@@ -810,19 +810,19 @@
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
-   "now": 445
+   "now": 448.0
   },
   {
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
-   "now": 424
+   "now": 424.0
   },
   {
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "now": 373.5
+   "now": 373
   },
   {
    "group": "ci",
