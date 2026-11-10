@@ -451,7 +451,15 @@ fn start_bufferfeed_prepared(
     // the original Load path. A refusal here remains a Prepared transaction until the caller
     // aborts it; a later supersession drops both guards without launching a worker.
     let session_rate = if stream { feed_start_rate(ps)? } else { super::RATE_NORMAL };
+    // The viewer's goal: a reconfigure or a claim landing records it, else the transport's own
+    // state. The readout commit and the plan's Play decision follow this, so a claim landing of a
+    // playing viewer starts the fresh stream unpaused (the plan issues Play, which is the
+    // `ResumeInitial` that opens the feed gate and lets the Initial prime fire).
     let start_paused = feed_start_paused(ps);
+    // The physical hold: the feed gate's state before this start (captured before the commit
+    // below mutates it). A claim landing paused the transport for its flight, so even a playing
+    // viewer's fresh stream is held here for its Initial prime, though its goal is to play.
+    let physical_hold = ps.readout().paused();
     // Publish the session's offered rate and the pause goal to the native Load. A refused start
     // puts both back (the wrappers around this fn): a failed candidate cannot change the outgoing
     // attempt's offer or its Feed mailbox.
@@ -463,7 +471,7 @@ fn start_bufferfeed_prepared(
     // A native refusal is mapped here, by the common owner: the executor logs why, and the route
     // only learns that the start failed.
     let native_epoch = pa.open_prepare(plx_playback_contract::feed::OpenRequest {
-        start_paused,
+        start_paused: physical_hold,
         seek_preroll: ps.readout().seek_preroll(),
         stream: open.map(super::feed_open::FeedOpenRequest::into_stream),
         sample,
