@@ -85,7 +85,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-10T23:47:39Z",
+ "generated": "2026-11-10T23:49:50Z",
  "metrics": [
   {
    "change30_pct": 47.7,
@@ -152,18 +152,18 @@
   },
   {
    "change30_pct": 46.4,
-   "change7_pct": 17.3,
+   "change7_pct": 17.1,
    "d30": 334,
    "delta30": 155,
-   "delta7": 72,
+   "delta7": 71.5,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
    "n_now": 165,
-   "n_prev": 203,
+   "n_prev": 202,
    "now": 489,
-   "prev7": 417,
+   "prev7": 417.5,
    "shown": true,
    "state": "flat",
    "state30": "worse",
