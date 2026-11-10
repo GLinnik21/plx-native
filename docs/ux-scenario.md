@@ -282,6 +282,10 @@ Reached from any library pill in the top strip. A poster grid, four-way navigabl
 - an **A–Z rail** down the right edge, which jumps the grid to a letter, or on a value sort (Score, Duration, Unplayed, Plays, Date added, Date viewed, Release date, and Last episode added when sorted newest first) to a band: a date sort's bands are `Today`, the months of this year, then each earlier year, and Release date's are the year then the decades;
 - watched check marks on the cards.
 
+When you leave a library with Collections or Recommended open, its top-strip pill reopens that
+page next time. The app saves the open page per profile and library. Back or the breadcrumb
+closes the page and returns to the grid.
+
 **CH ▲ / CH ▼ page the grid**, which is the fast way through a large library.
 
 **BACK here climbs one region a press, and from the bar it leaves for Home.** From the A–Z rail (or a

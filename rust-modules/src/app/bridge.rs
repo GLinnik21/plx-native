@@ -42,6 +42,7 @@ use plx_screens::family::SettingsPage;
 use plx_screens::player::HudPolicy;
 use plx_screens::registry::{AppArg, AppFx, AppMounter, AppMsg, ConsentCmd, ContentArg, ContentReq, HomeCmd, HomeLike, HomeReq, HomeTab, ItemMenuKind, LibraryReq, LoopReq, PageMemory};
 use plx_data::stores::{StoreCmd, StoreId};
+use plx_plex::plex::session::{LibraryPage, LibraryViews};
 use plx_ui::containers::modal::{HostRender, HostUpdate, Phase, Style};
 use plx_ui::dispatch::{CxParts, Dispatcher, FrameReport, Rig, Split};
 #[cfg(test)]
@@ -464,6 +465,7 @@ pub(crate) struct Bridge {
     strip: plx_ui::widgets::StripRender,
     home_commands: std::collections::VecDeque<HomeCmd>,
     library_commands: std::collections::VecDeque<plx_screens::registry::LibraryCmd>,
+    library_pages: Option<(u32, LibraryViews)>,
     consent: ConsentMachine,
     /// Requests the owned screens made of the loop this frame (§14), drained by [`frame`]'s caller.
     reqs: Vec<LoopReq>,
@@ -712,6 +714,7 @@ impl Bridge {
             strip: plx_ui::widgets::StripRender::new(),
             home_commands: std::collections::VecDeque::new(),
             library_commands: std::collections::VecDeque::new(),
+            library_pages: None,
             consent: ConsentMachine::from_initial(consent),
             reqs: Vec::new(),
             content_reqs: Vec::new(),
@@ -935,6 +938,57 @@ impl Bridge {
     fn deliver_library_commands(&mut self, d: &mut Dispatcher<AppHost>) {
         if d.nav.top_page().is_none_or(|page| page.arg != AppArg::Library || page.inst.is_none()) { return; }
         while let Some(command) = self.library_commands.pop_front() { Self::library_command(d, command); }
+    }
+
+    fn library_identity(&self, index: usize) -> Option<(&'static str, i64)> {
+        let section = self.directory.view().sections().get(index)?;
+        let machine = plx_plex::plex::client_for(section.sid?)?.machine_id();
+        (!machine.is_empty()).then_some((machine, section.key))
+    }
+
+    /// Cache this profile's page choices so an immediate round trip sees a change while the
+    /// preference worker is still saving it. The worker merges the page into the latest record.
+    fn library_pages(&mut self) -> &mut LibraryViews {
+        use plx_plex::plex::session;
+        let scope = Self::profile_scope();
+        if self.library_pages.as_ref().is_none_or(|(cached, _)| *cached != scope) {
+            let session = session::peek();
+            let views = session.views_for(&session::current_profile_key()).cloned().unwrap_or_default();
+            self.library_pages = Some((scope, views));
+        }
+        &mut self.library_pages.as_mut().expect("initialized for this profile").1
+    }
+
+    fn remember_library_page(&mut self, section: usize, page: LibraryPage) {
+        use plx_plex::plex::session::{self, LibraryView};
+        let Some((machine, key)) = self.library_identity(section) else { return };
+        let views = self.library_pages();
+        let mut view = views.get(machine, key).cloned()
+            .unwrap_or_else(|| LibraryView { machine_id: machine.into(), key, ..Default::default() });
+        if view.page == page { return; }
+        view.page = page;
+        views.set(view);
+        let user = session::current_profile_key();
+        session::queue_update(move |current| {
+            let mut view = current.views_for(&user).and_then(|views| views.get(machine, key)).cloned()
+                .unwrap_or_else(|| LibraryView { machine_id: machine.into(), key, ..Default::default() });
+            if view.page == page { return None; }
+            view.page = page;
+            let mut next = current.clone();
+            next.set_view_for(&user, view);
+            Some(next)
+        });
+    }
+
+    fn remembered_library_child(&mut self, kind: plx_data::browse::SecKind) -> Option<AppArg> {
+        let index = self.directory.view().preferred(kind)?;
+        let (machine, key) = self.library_identity(index)?;
+        let section = u32::try_from(index).ok()?;
+        match self.library_pages().get(machine, key)?.page {
+            LibraryPage::Grid => None,
+            LibraryPage::Collections => Some(AppArg::LibraryCollections { section }),
+            LibraryPage::Recommended => Some(AppArg::LibraryRecommended { section }),
+        }
     }
 
     pub(crate) fn home_opener(&self, d: &Dispatcher<AppHost>, entry: EntryId,
@@ -3015,7 +3069,19 @@ fn frame_ingest(
     }).collect();
     rig.session_adapter.validate_supplied(&session_records)
         .expect("Session ingest requires an exactly addressed, admitted transfer batch");
+    // Record committed navigation. Back can cancel a pending push, and a tab switch can
+    // supersede a pending pop. Neither should change the remembered page before the floor.
+    let previous = d.nav.top_page().map(|entry| entry.id);
+    let open_library = library_child(d);
     let report = plx_base::diag::spans::span("dframe", || d.frame_with(rig, tick, inputs, results, tap, false));
+    let top = d.nav.top_page().map(|entry| entry.id);
+    if previous != top {
+        if let Some((_, section, _)) = open_library.filter(|(parent, _, _)| Some(*parent) == top) {
+            rig.remember_library_page(section, LibraryPage::Grid);
+        } else if let Some((_, section, page)) = library_child(d) {
+            rig.remember_library_page(section, page);
+        }
+    }
     d.prune(&report.unmounted);
     plx_base::diag::spans::span("dsync", || rig.sync_host(d, tick.dt()));
     // On the simulator, a frame the video plane alone presented is not reported as damage: the
@@ -3946,6 +4012,18 @@ fn pill_of_arg(arg: &AppArg, directory: plx_data::stores::browse::DirectoryView<
     }
 }
 
+/// A Library child with its actual Back destination. A tab switch retires that parent too,
+/// while Back uncovers the same entry. Only the latter clears the open-page preference.
+fn library_child(d: &Dispatcher<AppHost>) -> Option<(EntryId, usize, LibraryPage)> {
+    let (section, page) = match d.top_arg()? {
+        AppArg::LibraryCollections { section } => (*section, LibraryPage::Collections),
+        AppArg::LibraryRecommended { section } => (*section, LibraryPage::Recommended),
+        _ => return None,
+    };
+    let parent = d.nav.tabs.stack.under_top().filter(|entry| entry.arg == AppArg::Library)?;
+    Some((parent.id, section as usize, page))
+}
+
 /// **A press on the shared top strip** — the door for the Search / Movies / Shows destinations and
 /// for BACK-to-Home (`focus_pill`), so the seed or command each one carries cannot be forgotten at
 /// one of the pages that wear the bar. A press on the HOME pill goes through
@@ -3956,10 +4034,10 @@ fn pill_of_arg(arg: &AppArg, directory: plx_data::stores::browse::DirectoryView<
 /// spent when the page comes up — which is where the fade floor used to run it, at alpha 0.
 ///
 /// **`nav_peer`, not `nav_root`**, and the difference is the Library: the three pills are peers
-/// that stand on Home, but a Movies→Shows press is not a navigation at all, it is a TELEPORT
+/// that stand on Home, but a Movies→Shows press between grids is a TELEPORT
 /// inside one page (`LibraryCmd::Enter`, the store swap and `restore_view`'s scroll jump). Rooting
 /// there would retire the entry and remount the screen, throwing away the viewport memory the
-/// teleport exists to restore.
+/// teleport exists to restore. A remembered child uses a tab transition with its grid underneath.
 pub(crate) fn nav_tab(
     d: &mut Dispatcher<AppHost>, rig: &mut Bridge, tab: HomeTab,
     focus_pill: Option<crate::app::chrome::Pill>,
@@ -3985,6 +4063,21 @@ pub(crate) fn nav_tab(
         }
         HomeTab::Movies | HomeTab::Shows => {
             let kind = if tab == HomeTab::Movies { plx_data::browse::SecKind::Movie } else { plx_data::browse::SecKind::Show };
+            if let Some(child) = rig.remembered_library_child(kind) {
+                let op = if d.top_arg() == Some(&child) && library_child(d).is_some() {
+                    // Reselecting the current library still goes to its grid.
+                    NavOp::Pop
+                } else {
+                    rig.enter_library(kind);
+                    rig.aim_library(kind);
+                    NavOp::SelectTabWithChild { tab: AppArg::Library, child }
+                };
+                match ret {
+                    Some(ret) => d.request_with_return(MachineId::Nav, op, ret),
+                    None => d.request(MachineId::Nav, op),
+                }
+                return;
+            }
             rig.enter_library(kind);
             if d.top_arg() != Some(&AppArg::Library) { rig.aim_library(kind); }
             AppArg::Library

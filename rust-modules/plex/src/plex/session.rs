@@ -2203,8 +2203,22 @@ pub struct LibraryViews {
     pub extensions: OpaqueExtensions,
 }
 
-/// Everything one person chose in one library's view: the section, and what the Library screen's
-/// toolbar changed about it.
+/// A page left open above the library grid.
+#[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LibraryPage {
+    Collections,
+    Recommended,
+    #[default]
+    #[serde(other)]
+    Grid,
+}
+
+impl LibraryPage {
+    fn is_grid(&self) -> bool { *self == Self::Grid }
+}
+
+/// Everything one person chose in one library's view: the section, its open page and toolbar choices.
 ///
 /// `machine_id`, `key`, `sort` and `desc` are the entry's ORIGINAL fields, always written, so an
 /// older build reads the sort back from a file this one wrote; every field added since is omitted
@@ -2244,6 +2258,8 @@ pub struct LibraryView {
     /// The direction of `listing_sort`.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub listing_desc: bool,
+    #[serde(skip_serializing_if = "LibraryPage::is_grid")]
+    pub page: LibraryPage,
     #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
     pub extensions: OpaqueExtensions,
 }
@@ -2268,6 +2284,7 @@ impl LibraryView {
     pub fn is_default(&self) -> bool {
         self.sort.is_empty() && !self.desc && !self.unwatched && self.genre.is_empty()
             && self.listing.is_empty() && self.listing_sort.is_empty() && !self.listing_desc
+            && self.page.is_grid()
             && self.extensions.is_empty()
     }
     /// This view with every field a record may not carry dropped back to its default: a sort

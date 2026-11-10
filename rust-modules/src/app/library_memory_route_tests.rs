@@ -23,6 +23,54 @@ use super::*;
 use super::test_support::{World, FILM_CLUB};
 use plx_data::browse::LibraryType;
 
+#[test]
+fn switching_libraries_restores_an_open_page_until_back_closes_it() {
+    let mut w = World::movies_library("remember-open-library-page", false);
+    let recommended = AppArg::LibraryRecommended { section: 0 };
+    w.open_from_header(9, recommended.clone());
+
+    let switch = |w: &mut World, tab| {
+        super::nav_tab(&mut w.d, &mut w.bridge, tab, None, None);
+        w.frames(90);
+    };
+    switch(&mut w, plx_screens::registry::HomeTab::Shows);
+    assert!(w.on(&AppArg::Library), "a different library has its own page");
+    switch(&mut w, plx_screens::registry::HomeTab::Movies);
+    assert!(w.on(&recommended), "Movies reopens the page it was left on");
+
+    w.press(Key::Back);
+    assert!(w.on(&AppArg::Library), "Back returns to the Movies grid");
+    switch(&mut w, plx_screens::registry::HomeTab::Shows);
+    switch(&mut w, plx_screens::registry::HomeTab::Movies);
+    assert!(w.on(&AppArg::Library), "a closed page stays closed");
+}
+
+#[test]
+fn collections_restores_from_saved_preferences_for_the_same_profile() {
+    use plx_plex::plex::session::{self, LibraryPage};
+    use plx_screens::registry::HomeTab;
+
+    let mut w = World::movies_library("persist-collections-page", false);
+    let collections = AppArg::LibraryCollections { section: 0 };
+    let key = w.bridge.directory.view().sections()[0].key;
+    w.open_from_header(8, collections.clone());
+    super::nav_tab(&mut w.d, &mut w.bridge, HomeTab::Shows, None, None);
+    w.frames(90);
+    plx_base::storage_worker::drain_for_test();
+
+    let saved = session::load();
+    let user = session::current_profile_key();
+    assert_eq!(saved.views_for(&user).and_then(|views| views.get("route-own", key)).map(|view| view.page),
+        Some(LibraryPage::Collections));
+    assert!(saved.views_for("another-profile").is_none());
+
+    w.bridge.library_pages = None;
+    super::nav_tab(&mut w.d, &mut w.bridge, HomeTab::Movies, None, None);
+    w.frames(90);
+    assert!(w.on(&collections), "the durable preference restores the Collections route");
+    assert!(w.d.nav.tabs.stack.under_top().is_some_and(|entry| entry.arg == AppArg::Library));
+}
+
 /// What the store's one query is listing now: its type, and the section key it belongs to.
 fn listed(w: &World) -> (LibraryType, Option<i64>) {
     let snapshot = w.bridge.stores.browse.borrow_mut().listing_snapshot();
