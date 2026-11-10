@@ -254,7 +254,7 @@ fn the_shelf_fade_starts_at_the_first_shelfs_live_tile_top() {
 
 /// **The shade layer draws the cells under the copy, not the panel.** A resting hero's shade is the
 /// layer over its opaque art (`Backdrop::draw`: no ground pass is drawn once the art covers the wash),
-/// 16 cells of 1536 vertices each running the six-block distance; the renderer drops a cell the
+/// 16 cells of 1536 vertices each running one distance per live block; the renderer drops a cell the
 /// shade cannot reach and, of one it reaches, the mesh rows above and below the part it does
 /// (`gfx::draw_scrim_layer`). This counts what a RESUMING hero's real blocks (copy column, action row
 /// with the Watchlist disc, pager) leave drawn at full strength, and holds that everything left out is

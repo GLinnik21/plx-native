@@ -671,13 +671,13 @@ static mut AL_DITHER: c_int = 0;
 /// The dithered wash program's ink-ramp uniforms (`u_ink`, `u_inka`) — see [`draw_ambient_inked`].
 static mut AL_INK: c_int = -1;
 static mut AL_INKA: c_int = -1;
-/// ...and its scrim field (`u_sc`, [`scrim::GroundShade`]).
-static mut AL_SC: c_int = -1;
+/// ...and its scrim field (`u_sc`, `u_scn`: [`scrim::GroundShade`]).
+static mut AL_SCRIM: ScrimLoc = ScrimLoc::NONE;
 /// The scrim LAYER program ([`draw_scrim_layer`]) and its uniforms; 0 when the link failed.
 static mut SCRIM_PROG: c_uint = 0;
 static mut SCL_RECT: c_int = -1;
 static mut SCL_INK: c_int = -1;
-static mut SCL_SC: c_int = -1;
+static mut SCL_SCRIM: ScrimLoc = ScrimLoc::NONE;
 /// What each of the three programs that carry a scrim field (`APROG`, the art wash, the layer) was
 /// last given, so a frame's dozen cells upload it once. A fresh program's uniforms are zero, which
 /// is [`scrim::GroundShade::NONE`], so that is what an unwritten slot holds; `init_*` resets them.
@@ -882,8 +882,30 @@ struct ArtWashProgram {
     tint: c_int,
     ink: c_int,
     inka: c_int,
-    sc: c_int,
+    scrim: ScrimLoc,
     dither: c_int,
+}
+
+/// Where a program built from `vs_ambient.vert` with `PLX_SCRIM` keeps the ground shade: its blocks
+/// (`u_sc`, [`scrim::VEC4S`] vectors) and how many of them are live (`u_scn`), which is what lets
+/// the vertex shader stop at the last live block instead of running all six
+/// ([`scrim::GroundShade::live`]). `-1` where the program has neither.
+#[derive(Clone, Copy)]
+struct ScrimLoc {
+    sc: c_int,
+    scn: c_int,
+}
+
+impl ScrimLoc {
+    const NONE: ScrimLoc = ScrimLoc { sc: -1, scn: -1 };
+
+    /// The locations in `prog`, which need not be the program in use.
+    unsafe fn of(prog: c_uint) -> ScrimLoc {
+        ScrimLoc {
+            sc: glGetUniformLocation(prog, c"u_sc".as_ptr()),
+            scn: glGetUniformLocation(prog, c"u_scn".as_ptr()),
+        }
+    }
 }
 
 /// The `#version` + compatibility preamble prepended to every shader, chosen by the DRIVER's GLSL
@@ -1178,7 +1200,7 @@ pub fn init_gl() {
             AL_DITHER = dither_uniforms(APROG);
             AL_INK = glGetUniformLocation(APROG, c"u_ink".as_ptr());
             AL_INKA = glGetUniformLocation(APROG, c"u_inka".as_ptr());
-            AL_SC = glGetUniformLocation(APROG, c"u_sc".as_ptr());
+            AL_SCRIM = ScrimLoc::of(APROG);
         }
         SCRIM_SENT = [scrim::GroundShade::NONE; 3];
         SCRIM_PROG = link_program(VS_SCRIM_LAYER.as_ptr(), FS_AMBIENT_PLAIN.as_ptr()).unwrap_or_else(|| {
@@ -1188,7 +1210,7 @@ pub fn init_gl() {
         if SCRIM_PROG != 0 {
             SCL_RECT = glGetUniformLocation(SCRIM_PROG, c"u_rect".as_ptr());
             SCL_INK = glGetUniformLocation(SCRIM_PROG, c"u_ink".as_ptr());
-            SCL_SC = glGetUniformLocation(SCRIM_PROG, c"u_sc".as_ptr());
+            SCL_SCRIM = ScrimLoc::of(SCRIM_PROG);
             use_prog(SCRIM_PROG);
             glUniform2f(glGetUniformLocation(SCRIM_PROG, c"u_screen".as_ptr()), SCR_W, SCR_H);
         }
@@ -1756,7 +1778,7 @@ fn draw_ambient_impl(
             let (ink, inka) = ink.unwrap_or(([0.0; 3], [0.0; 2]));
             glUniform3f(AL_INK, ink[0], ink[1], ink[2]);
             glUniform2f(AL_INKA, inka[0], inka[1]);
-            send_scrim(0, AL_SC, scrim);
+            send_scrim(0, AL_SCRIM, scrim);
         }
         draw_field_mesh();
     }
@@ -1857,16 +1879,20 @@ pub fn wash_ink_ok() -> bool {
 }
 
 /// Give the program in use its scrim field if it does not hold it already (`slot`: 0 the wash, 1 the
-/// art wash, 2 the layer). One `glUniform4fv` of [`scrim::VEC4S`] vectors, and none at all for the
-/// next cell of the same frame — nor, for a screen with no scrim, on any frame after the first.
+/// art wash, 2 the layer): one `glUniform4fv` of [`scrim::VEC4S`] vectors and the live-block count
+/// (`u_scn`), and none at all for the next cell of the same frame — nor, for a screen with no scrim,
+/// on any frame after the first. The cache compares the whole shade, which fixes the count with it,
+/// so the two uniforms are never out of step; a fresh program holds a count of 0, which is
+/// [`scrim::GroundShade::NONE`]'s.
 #[inline]
-unsafe fn send_scrim(slot: usize, loc: c_int, want: &scrim::GroundShade) {
+unsafe fn send_scrim(slot: usize, loc: ScrimLoc, want: &scrim::GroundShade) {
     let sent = &mut *std::ptr::addr_of_mut!(SCRIM_SENT[slot]);
-    if loc < 0 || *sent == *want {
+    if loc.sc < 0 || *sent == *want {
         return;
     }
     let u = want.uniforms();
-    glUniform4fv(loc, scrim::VEC4S as c_int, u.as_ptr().cast());
+    glUniform4fv(loc.sc, scrim::VEC4S as c_int, u.as_ptr().cast());
+    glUniform1f(loc.scn, want.live() as f32);
     *sent = *want;
 }
 
@@ -1918,9 +1944,9 @@ pub fn scrim_layer_ok() -> bool {
 /// (Home's `wash_hidden`). Not dithered (a translucent scrim over a photograph has nothing to
 /// band, as [`draw_grad4`]'s). Check [`scrim_layer_ok`] first.
 ///
-/// **It draws only where the shade is.** The field mesh is 1536 vertices a call, each running the
-/// six-block rounded-rect distance, and a hero's shade is a few soft blocks: most of the panel's
-/// cells hold nothing but zeros. A rect the shade cannot reach ([`scrim::GroundShade::reaches`]:
+/// **It draws only where the shade is.** The field mesh is 1536 vertices a call, each running one
+/// rounded-rect distance per live block (`u_scn`, [`scrim::GroundShade::live`]), and a hero's shade
+/// is a few soft blocks: most of the panel's cells hold nothing but zeros. A rect the shade cannot reach ([`scrim::GroundShade::reaches`]:
 /// exact where it says no, so every vertex would have been alpha 0) is dropped before any GL state
 /// is touched, and of one it reaches only the mesh rows from the first strip the shade reaches to
 /// the last are drawn ([`scrim::GroundShade::reached_rows`]; the rows left out are all zeros too).
@@ -1946,7 +1972,7 @@ pub fn draw_scrim_layer(x: f32, y: f32, w: f32, h: f32, ink: [f32; 3], scrim: &s
         use_prog(SCRIM_PROG);
         glUniform4f(SCL_RECT, x, y, w, h);
         glUniform3f(SCL_INK, ink[0], ink[1], ink[2]);
-        send_scrim(2, SCL_SC, scrim);
+        send_scrim(2, SCL_SCRIM, scrim);
         draw_field_mesh_rows(rows);
     }
 }
@@ -2436,7 +2462,7 @@ pub fn init_image() {
                 tint: loc(c"u_tint"),
                 ink: loc(c"u_ink"),
                 inka: loc(c"u_inka"),
-                sc: loc(c"u_sc"),
+                scrim: ScrimLoc::of(prog),
                 dither,
             }
         });
@@ -2620,7 +2646,7 @@ pub fn draw_art_wash(
         glUniform4fv(g.tint, 1, tint);
         glUniform3f(g.ink, ink[0], ink[1], ink[2]);
         glUniform2f(g.inka, inka[0], inka[1]);
-        send_scrim(1, g.sc, scrim);
+        send_scrim(1, g.scrim, scrim);
         glBindTexture(GL_TEXTURE_2D, tex);
         draw_field_mesh();
     }
@@ -8855,6 +8881,26 @@ mod tests {
         assert!(fs.contains("mix(g, u_ink, v_inka)"), "the ink goes over the art, not under it");
         assert!(fs.contains("c.a * u_tint.a"), "the art's own alpha times the dissolve");
         assert!(fs.contains(", 1.0);"), "one opaque fragment: nothing below it is read");
+    }
+
+    /// **Every program that carries the ground shade stops at its live blocks.** The three vertex
+    /// programs built with `PLX_SCRIM` (the wash, the art wash, the layer) declare the block array at
+    /// the size the Rust side uploads ([`scrim::VEC4S`]), take the live count as `u_scn`, and loop over
+    /// at most [`scrim::MAX_BLOCKS`] blocks, leaving at the count. The programs without it carry none
+    /// of it (the plain twin behind `draw_grad4`).
+    #[test]
+    fn the_scrim_programs_stop_at_the_live_block_count() {
+        let blocks = scrim::MAX_BLOCKS;
+        for (name, src) in [("wash", VS_AMBIENT_DITHERED), ("art wash", VS_ART_WASH), ("layer", VS_SCRIM_LAYER)] {
+            let code = shader_code(src);
+            assert!(code.contains("#define PLX_SCRIM\n"), "{name}: built with the scrim");
+            assert!(code.contains(&format!("uniform vec4 u_sc[{}];", scrim::VEC4S)), "{name}: the array is the one uploaded");
+            assert!(code.contains("uniform float u_scn;"), "{name}: the live count");
+            assert!(code.contains(&format!("for (int i = 0; i < {blocks}; i++)")), "{name}: a constant bound, as GLSL ES 1.00 wants");
+            assert!(code.contains("if (float(i) >= u_scn) break;"), "{name}: leaves at the count");
+            assert!(code.contains("shade_block(2 * i, px)"), "{name}: two vectors a block");
+        }
+        assert!(!shader_code(VS_AMBIENT).contains("#define PLX_SCRIM"), "plain twin: no scrim");
     }
 
     /// **The card composite's box test is an exact subset of its SDF early-out.** `fs_img.frag`

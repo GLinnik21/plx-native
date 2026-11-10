@@ -18,7 +18,10 @@
 // the second) and the alpha `peak * (1 - smoothstep(0, feather, sd))`; an unused block has peak 0
 // and adds exactly nothing. With every uniform zero the stack is exactly 0.0 and
 // `mix(inka, 1.0, 0.0)` is the ramp's alpha to the bit, so a screen that has no shade draws what it
-// always drew.
+// always drew. The live blocks are the FIRST `u_scn` of the six (`GroundShade::live`), and the stack
+// stops there: a ground with no shade pays one compare a vertex instead of six distances, a hero
+// with three blocks pays three. A block past the count is a factor of exactly 1.0, so stopping
+// changes no bit of the product.
 attribute vec2 a_pos;
 uniform vec4 u_rect;
 uniform vec2 u_screen;
@@ -44,14 +47,20 @@ uniform vec2 u_inka;
 #ifdef PLX_SCRIM
 // Six blocks, two vec4 each: (cx, cy, hx - r, hy - r) and (r, 1/feather, peak, 0), in device pixels.
 uniform vec4 u_sc[12];
+// How many of them are live, from the first: 0 for no shade at all.
+uniform float u_scn;
 float shade_block(int i, vec2 px) {
   vec2 d = max(abs(px - u_sc[i].xy) - u_sc[i].zw, 0.0);
   float t = clamp((length(d) - u_sc[i + 1].x) * u_sc[i + 1].y, 0.0, 1.0);
   return u_sc[i + 1].z * (1.0 - t * t * (3.0 - 2.0 * t));
 }
 float scrim_alpha(vec2 px) {
-  return 1.0 - (1.0 - shade_block(0, px)) * (1.0 - shade_block(2, px)) * (1.0 - shade_block(4, px))
-             * (1.0 - shade_block(6, px)) * (1.0 - shade_block(8, px)) * (1.0 - shade_block(10, px));
+  float keep = 1.0;
+  for (int i = 0; i < 6; i++) {
+    if (float(i) >= u_scn) break;
+    keep *= 1.0 - shade_block(2 * i, px);
+  }
+  return 1.0 - keep;
 }
 #endif
 #ifdef PLX_SCRIM_LAYER

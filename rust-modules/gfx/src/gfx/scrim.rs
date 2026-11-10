@@ -29,7 +29,10 @@
 //! (`0 * (1 - t)` for a finite `t`), and the stack of nothing is exactly `0.0` (`1 - 1*1*...`). It
 //! is folded into the ink with `mix(inka, 1.0, s)`, which for `s == 0` is `inka * 1.0 + 0.0` — the
 //! ramp's own alpha to the bit. So a screen with no shade is drawn by the very same programs as
-//! before and gets the very same pixels.
+//! before and gets the very same pixels. And an unused block is a factor of exactly `1.0`, so the
+//! shader runs only the first [`GroundShade::live`] blocks (a uniform count; the live blocks are a
+//! prefix): the stack stops there without changing a bit of it, a ground with no shade pays one
+//! compare a vertex, a hero with three blocks pays three.
 //!
 //! **Zero is also local.** A block is exactly 0 from `feather` px beyond its rounded rect on, so the
 //! shade has a SUPPORT, and [`GroundShade::reaches`] asks whether a rect meets it. The layer that
@@ -158,12 +161,28 @@ impl GroundShade {
     pub const NONE: GroundShade = GroundShade { blocks: [ShadeBlock::NONE; MAX_BLOCKS] };
 
     /// The shade of `blocks` (at most [`MAX_BLOCKS`]; a longer list is a bug in the caller, not a
-    /// case to clip).
+    /// case to clip). The live blocks come FIRST, in the order given, and any unused one after them
+    /// (a stable partition, which changes nothing for a list of live blocks): that is what makes
+    /// [`live`](Self::live) a prefix the shader can stop at.
     pub fn from_blocks(blocks: &[ShadeBlock]) -> GroundShade {
         assert!(blocks.len() <= MAX_BLOCKS, "a ground shade carries at most {MAX_BLOCKS} blocks");
         let mut s = GroundShade::NONE;
-        s.blocks[..blocks.len()].copy_from_slice(blocks);
+        let live = blocks.iter().filter(|b| b.peak() > 0.0);
+        let unused = blocks.iter().filter(|b| !(b.peak() > 0.0));
+        for (slot, b) in s.blocks.iter_mut().zip(live.chain(unused)) {
+            *slot = *b;
+        }
         s
+    }
+
+    /// **How many blocks the vertex shader has to run** (`u_scn`): the live ones, counted to the last
+    /// of them, so that a block past it is a factor of exactly 1.0 in the stack and stopping there
+    /// changes no bit. 0 for [`GroundShade::NONE`] and for a shade scaled to nothing. For a shade
+    /// built by [`from_blocks`](Self::from_blocks) it is simply the number of live blocks (they are
+    /// a prefix); counting to the last keeps it right for any other order, at worst running a
+    /// dead block.
+    pub fn live(&self) -> usize {
+        self.blocks.iter().rposition(|b| b.peak() > 0.0).map_or(0, |i| i + 1)
     }
 
     /// The live blocks (peak above 0).
@@ -217,7 +236,8 @@ impl GroundShade {
         GroundShade { blocks: self.blocks.map(|b| if b.peak() > 0.0 { b.placed(ox, oy, s) } else { b }) }
     }
 
-    /// The `u_sc` upload: per block `(cx, cy, hx - r, hy - r)` then `(r, 1/feather, peak, 0)`.
+    /// The `u_sc` upload: per block `(cx, cy, hx - r, hy - r)` then `(r, 1/feather, peak, 0)`. How
+    /// many of them the shader runs is [`live`](Self::live), a uniform of its own.
     pub fn uniforms(&self) -> [[f32; 4]; VEC4S] {
         let mut u = [[0.0; 4]; VEC4S];
         for (i, b) in self.blocks.iter().enumerate() {
@@ -434,6 +454,82 @@ mod tests {
         }
         assert!(worst <= bound + 1e-5, "{worst} vs the mesh error {bound}");
         assert!(worst > 0.0, "the premise: the mesh is not exact between vertices");
+    }
+
+    /// The shader's stack, term for term, over `s`'s uniforms: the first `s.live()` blocks, as
+    /// `vs_ambient.vert`'s `scrim_alpha` loops over them.
+    fn shader_alpha(s: &GroundShade, px: [f32; 2]) -> f32 {
+        let u = s.uniforms();
+        let term = |i: usize| {
+            let (dx, dy) = (((px[0] - u[2 * i][0]).abs() - u[2 * i][2]).max(0.0), ((px[1] - u[2 * i][1]).abs() - u[2 * i][3]).max(0.0));
+            let t = (((dx * dx + dy * dy).sqrt() - u[2 * i + 1][0]) * u[2 * i + 1][1]).clamp(0.0, 1.0);
+            u[2 * i + 1][2] * (1.0 - t * t * (3.0 - 2.0 * t))
+        };
+        let n = s.live() as f32;
+        let mut keep = 1.0f32;
+        for i in 0..MAX_BLOCKS {
+            if i as f32 >= n {
+                break;
+            }
+            keep *= 1.0 - term(i);
+        }
+        1.0 - keep
+    }
+
+    /// **The count is the live blocks, as a prefix.** No shade and a shade scaled to nothing run none
+    /// of the six; the shades Home and Detail build run exactly theirs; and a list with unused blocks
+    /// among the live ones comes out with the live ones first, in order (so `uniforms` packs them
+    /// where the shader's loop reads), the unused ones after, all zero or not.
+    #[test]
+    fn the_shader_runs_exactly_the_live_blocks_which_are_a_prefix() {
+        assert_eq!(GroundShade::NONE.live(), 0);
+        assert_eq!(GroundShade::NONE.uniforms(), [[0.0; 4]; VEC4S], "and packs nothing");
+        assert_eq!(sample().live(), 2);
+        assert_eq!(sample().scaled(0.0).live(), 0, "a hero faded to nothing");
+        assert_eq!(sample().scaled(0.5).live(), 2);
+        assert_eq!(sample().placed(30.0, -40.0, 1.5).live(), 2);
+        assert_eq!(GroundShade::from_blocks(&[card(); MAX_BLOCKS]).live(), MAX_BLOCKS);
+        for s in shades() {
+            assert_eq!(s.live(), s.blocks().count());
+        }
+        let (a, b) = (card(), ShadeBlock::new([900.0, 100.0, 300.0, 80.0], 20.0, 90.0, 0.3));
+        let gap = ShadeBlock::new([10.0, 10.0, 10.0, 10.0], 2.0, 50.0, 0.0);
+        let s = GroundShade::from_blocks(&[ShadeBlock::NONE, a, gap, b, ShadeBlock::NONE]);
+        assert_eq!(s.live(), 2, "the unused blocks are not run");
+        assert_eq!(s.blocks().copied().collect::<Vec<_>>(), [a, b], "…and the live ones keep their order");
+        let u = s.uniforms();
+        assert_eq!((u[0], u[1]), (a.frame, a.shape), "the first live block is packed first");
+        assert_eq!((u[2], u[3]), (b.frame, b.shape));
+        assert!(u[4..].iter().all(|v| v[2] == 0.0 || v == &gap.frame || v == &gap.shape), "nothing live follows");
+        // a list of live blocks is packed exactly as it was given
+        let all = [a, b, a];
+        let u = GroundShade::from_blocks(&all).uniforms();
+        for (i, blk) in all.iter().enumerate() {
+            assert_eq!((u[2 * i], u[2 * i + 1]), (blk.frame, blk.shape));
+        }
+    }
+
+    /// **Stopping at the live count is not a different field.** The shader's loop over the first
+    /// `live()` blocks equals the closed form [`GroundShade::at`] (which runs all six) to the bit, at
+    /// every sampled point, for every probe shade at full strength, faded, and with unused blocks mixed
+    /// in: an unused block is a factor of exactly 1.0.
+    #[test]
+    fn stopping_at_the_live_count_is_the_closed_form_to_the_bit() {
+        let mixed = GroundShade::from_blocks(&[ShadeBlock::NONE, card(), ShadeBlock::new([5.0, 5.0, 4.0, 4.0], 1.0, 9.0, 0.0), sample().blocks[0]]);
+        let mut cases = shades();
+        cases.push(mixed);
+        cases.push(GroundShade::NONE);
+        for (k, s) in cases.into_iter().enumerate() {
+            for strength in [1.0f32, 0.37, 0.0] {
+                let s = s.scaled(strength);
+                for iy in 0..=27 {
+                    for ix in 0..=48 {
+                        let (x, y) = (-60.0 + ix as f32 * 41.3, -40.0 + iy as f32 * 43.7);
+                        assert_eq!(shader_alpha(&s, [x, y]).to_bits(), s.at(x, y).to_bits(), "shade {k} x{strength} at ({x},{y})");
+                    }
+                }
+            }
+        }
     }
 
     /// The shades the support tests walk: a hero's two blocks, one rounded card, a square-cornered
