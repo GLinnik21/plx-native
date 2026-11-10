@@ -399,3 +399,139 @@ fn the_hero_stack_keeps_its_rungs_when_rows_are_absent() {
     assert!((bare.summary - (bare.meta + meta_h)).abs() < 0.01, "an empty summary takes no gap");
     assert!((bare.pill - (bare.summary + lg)).abs() < 0.01);
 }
+
+/// **The hero shade stands behind exactly what the page draws**: one block behind the title (what the
+/// logo painted), one behind the copy from the Coming line (or the meta line) down to the summary's
+/// foot, and one behind the pill, in whichever of the optional rows the status gives the page. The
+/// copy's block is as wide as the widest line the page draws in it, worked out here from the measure
+/// row by row, and not as wide as the 943 px column the lines are laid into.
+#[test]
+fn the_hero_shade_stands_behind_the_copy_the_page_draws() {
+    let _g = language_on_this_thread_for_test(Preference::En);
+    let m = FixtureMeasure;
+    let x = plx_ui::consts::MARGIN_X;
+    for (status, release) in [(Status::ComingSoon, Some("2027-03-12")), (Status::NotOnAnyServer, None), (Status::None, None)] {
+        let load = loaded(status, release);
+        let s = page(load.clone(), Membership::Off);
+        let stack = s.stack(&m).unwrap();
+        let shade = s.hero_shade(&m).expect("a loaded page has a shade");
+        let blocks = shade.blocks();
+        assert_eq!(blocks.len(), 3, "{status:?}: the title, the copy and the pill");
+        let title = HeroLogo::new(0, "", "Hollow Coast", LogoRung::Hero).painted(title_band(), &m);
+        assert_eq!(blocks[0], (title, theme::shade::COPY_A), "{status:?}: the title is what the logo painted");
+        assert!(title.w < detail_layout::HERO_TEXT_W * 0.8, "{status:?}: a typed title is its own width, not the column's ({})", title.w);
+        let top = stack.coming.unwrap_or(stack.meta);
+        let foot = stack.summary + stack.summary_h;
+        // the widest line, row by row, as the page draws them
+        let Load::Loaded { year, kind, genres, summary, .. } = &load else { unreachable!() };
+        let words: Vec<String> = meta_parts(*kind, genres, *year);
+        let dot = m.width_str("\u{b7}", theme::size::BODY, false);
+        let meta_w = words.iter().map(|w| m.width_str(w, theme::size::BODY, false)).sum::<f32>()
+            + (words.len() - 1) as f32 * (dot + 2.0 * theme::space::SM);
+        let mut rows = vec![meta_w, m.width_str(summary, theme::size::LABEL, false)];
+        if let Some(line) = coming_line(status, release) {
+            rows.push(m.width_str(&line, theme::size::HEADLINE, true));
+        }
+        if let (Some(_), Some(text)) = (status_icon(status, release), status_text(status, release)) {
+            rows.push(STATUS_ICON_D + theme::space::SM + m.width_str(text, theme::size::LABEL, false));
+        }
+        let widest = rows.iter().copied().fold(0.0, f32::max);
+        assert!(widest < detail_layout::HERO_TEXT_W * 0.8, "{status:?}: the premise: these lines are well inside the column ({widest})");
+        let copy = Rect::new(x, top, widest, foot - top);
+        let got = blocks[1].0;
+        assert_eq!((got.x, got.y, got.h), (copy.x, copy.y, copy.h), "{status:?}: the copy runs from its first row to the summary's foot");
+        assert!((got.w - copy.w).abs() < 0.01, "{status:?}: the copy is as wide as its widest line ({widest}), not {}", got.w);
+        assert_eq!(blocks[1].1, theme::shade::COPY_A);
+        // every row the page draws between them is inside that block
+        let drawn = [
+            Some((stack.meta, stack.meta + m.cap_h(theme::size::BODY))),
+            stack.coming.map(|y| (y, y + m.cap_h(theme::size::HEADLINE))),
+            stack.status.map(|y| (y, y + STATUS_ICON_D)),
+        ];
+        for (y0, y1) in drawn.into_iter().flatten() {
+            assert!(top <= y0 && y1 <= foot, "{status:?}: the row {y0}..{y1} is outside the copy's block {top}..{foot}");
+        }
+        assert_eq!(blocks[2], (s.pill_rect(&m).unwrap(), theme::shade::CONTROLS_A), "{status:?}: the pill's block is its own rect");
+    }
+}
+
+/// **A summary that wraps is as wide as its widest wrapped line**, the catalog's own column (943 px)
+/// being only the room it wrapped into.
+#[test]
+fn a_wrapped_summary_shades_to_its_widest_line() {
+    let _g = language_on_this_thread_for_test(Preference::En);
+    let m = FixtureMeasure;
+    let mut load = loaded(Status::None, None);
+    let Load::Loaded { summary, .. } = &mut load else { unreachable!() };
+    *summary = "A long enough synopsis that it has to wrap onto a second line inside the hero column, \
+                with plenty of words so the first line fills the column and the last one is short."
+        .into();
+    let s = page(load, Membership::Off);
+    let stack = s.stack(&m).unwrap();
+    assert!(stack.summary_h > m.line_h(theme::size::LABEL) * 1.5, "the premise: the summary wraps ({})", stack.summary_h);
+    let ink = s.copy_ink(&stack, &m);
+    let (left, right) = *ink.last().expect("the summary is the last row");
+    assert_eq!(left, plx_ui::consts::MARGIN_X);
+    assert!(right > plx_ui::consts::MARGIN_X + detail_layout::HERO_TEXT_W * 0.6, "the first line fills most of the column ({right})");
+    assert!(right <= plx_ui::consts::MARGIN_X + detail_layout::HERO_TEXT_W, "…and no line leaves it ({right})");
+}
+
+/// The shade is held on the copy and the pill and is exactly nothing away from them: the old corner
+/// wedge darkened the whole left of the art, from the top chrome to the foot, and this does not. Nor
+/// does it reach past the last letter: right of the widest line (and the feather) is bare art.
+#[test]
+fn the_hero_shade_is_nothing_away_from_the_copy() {
+    let _g = language_on_this_thread_for_test(Preference::En);
+    let m = FixtureMeasure;
+    let s = page(loaded(Status::ComingSoon, Some("2027-03-12")), Membership::Off);
+    let stack = s.stack(&m).unwrap();
+    let shade = s.hero_shade(&m).unwrap();
+    let mid = |y0: f32, h: f32| (plx_ui::consts::MARGIN_X + 200.0, y0 + h * 0.5);
+    for (what, (x, y), floor) in [
+        ("the meta line", mid(stack.meta, m.cap_h(theme::size::BODY)), theme::shade::COPY_A),
+        ("the summary", mid(stack.summary, stack.summary_h), theme::shade::COPY_A),
+        ("the pill", {
+            let r = s.pill_rect(&m).unwrap();
+            (r.x + r.w * 0.5, r.y + r.h * 0.5)
+        }, theme::shade::CONTROLS_A),
+    ] {
+        assert!(shade.at(x, y, 1.0) >= floor - 1e-4, "{what} at ({x:.0},{y:.0}) is under its shade's {floor}");
+    }
+    let copy = shade.blocks()[1].0;
+    let past_the_text = copy.x + copy.w + theme::shade::PAD + theme::shade::FEATHER + 4.0;
+    assert!(past_the_text < plx_ui::consts::MARGIN_X + detail_layout::HERO_TEXT_W, "the premise: that is still inside the old column box");
+    for (what, (x, y)) in [
+        ("the top chrome", (960.0, 60.0)),
+        ("the top left, where the wedge began", (96.0, 170.0)),
+        ("the right of the art", (1700.0, 800.0)),
+        ("the foot of the panel", (300.0, 1060.0)),
+        ("the summary's row, past its last letter", (past_the_text, stack.summary + stack.summary_h * 0.5)),
+    ] {
+        assert_eq!(shade.at(x, y, 1.0), 0.0, "{what} at ({x:.0},{y:.0}) is bare art");
+    }
+}
+
+/// A page with a record lays the shade over its art as the scrim layer's cells (this page has no
+/// ground pass to carry it in); a page with none has no copy on the art and lays nothing.
+#[test]
+fn a_loaded_page_lays_the_shade_over_its_art_and_a_bare_page_lays_none() {
+    use plx_ui::screen::{DrawFrame, Screen};
+    use plx_ui::widgets::{cut_cells, SCRIM_CELL_H, SCRIM_CELL_W};
+    let _g = language_on_this_thread_for_test(Preference::En);
+    let cells = cut_cells(Rect::FULL, SCRIM_CELL_W, SCRIM_CELL_H).count();
+    let layers = |load: Load| {
+        let mut s = page(load, Membership::Off);
+        let c = cx(None);
+        let mut f = DrawFrame::new(&c, plx_ui::Painter::recording());
+        let drawn = plx_ui::draw_census::capture(|| {
+            plx_ui::screen::record_stops_while_recording(|| {
+                plx_gfx::gfx::without_frame_clear(|| Screen::<CatHost>::draw(&mut s, &mut f))
+            })
+        });
+        drawn.iter().filter(|(tag, _)| *tag == 26).count()
+    };
+    assert_eq!(layers(loaded(Status::None, None)), cells, "the shade, one layer a cell");
+    for load in [Load::Loading, Load::NotFound, Load::Unreachable] {
+        assert_eq!(layers(load.clone()), 0, "{load:?} draws no copy on the art, so no shade");
+    }
+}

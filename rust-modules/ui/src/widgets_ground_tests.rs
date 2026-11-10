@@ -72,7 +72,7 @@ fn mid_dive_the_art_keeps_the_top_and_the_wash_alone_has_the_foot() {
     assert_eq!(bands.map(q), [None, Some((0.0, 600.0, SCR_W, SCR_H - 600.0)), None, None]);
 }
 
-/// Home's ramp as the ground carries it is `base_scrim_a` — the curve the two layered `rect`s
+/// Detail's lower ramp as the ground carries it is `base_scrim_a` — the curve the two layered `rect`s
 /// drew and the legibility table is graded on — at both stops, either side of each, and beyond.
 #[test]
 fn the_grounds_ramp_is_the_hero_scrim_curve() {
@@ -92,25 +92,36 @@ fn the_grounds_ramp_is_the_hero_scrim_curve() {
 }
 
 /// **The ramp is carried per VERTEX, so it must be one straight segment inside every strip.** The
-/// strips `cut_at` makes tile their rect, cut on whole rows at the knees, and within each the
+/// strips `cut_at` makes tile their rect, cut on whole rows at the stops, and within each the
 /// ramp at every pixel centre is the linear interpolation of its two edge values — which is what
-/// the vertex shader's `mix(u_inka.x, u_inka.y, a_pos.y)` interpolates to.
+/// the vertex shader's `mix(u_inka.x, u_inka.y, a_pos.y)` interpolates to. Detail's lower ramp (a foot
+/// on the panel's), and the shelf fade, whose foot stands at the caption line with its alpha held
+/// below.
 #[test]
 fn the_ramp_is_straight_inside_every_strip_the_ground_draws() {
     let [y0, knee, mid, foot] = crate::landing_hero::base_scrim_ramp(1.0);
-    let ramp = WashRamp { ink: theme::scrim(1.0), stops: [(y0, 0.0), (knee, mid), (SCR_H, foot)] };
-    for band in [Rect::FULL, Rect::new(0.0, 600.0, SCR_W, 480.0), Rect::new(0.0, 0.0, SCR_W, 300.0)] {
-        let strips: Vec<Rect> = cut_at(band, [Some(y0), Some(knee)]).collect();
-        let covered: f32 = strips.iter().map(|s| s.h).sum();
-        assert_eq!(covered, band.h, "{band:?}: strips {strips:?} must tile it");
-        for s in &strips {
-            let (a0, a1) = (ramp.alpha(s.y), ramp.alpha(s.y + s.h));
-            for y in rows(s.y, s.h) {
-                let c = y as f32 + 0.5;
-                let lerp = a0 + (a1 - a0) * (c - s.y) / s.h;
-                // A knee snapped to its row moves the kink by at most half a pixel.
-                assert!((lerp - ramp.alpha(c)).abs() < 2e-3, "{band:?} strip {s:?} y {c}: {lerp} vs {}",
-                    ramp.alpha(c));
+    let ramps = [
+        WashRamp { ink: theme::scrim(1.0), stops: [(y0, 0.0), (knee, mid), (SCR_H, foot)] },
+        crate::landing_hero::shelf_fade(crate::landing_hero::SHELF_TOP, 1.0),
+        crate::landing_hero::shelf_fade(crate::landing_hero::SHELF_TOP, 0.4),
+        crate::landing_hero::shelf_fade(300.0, 1.0),
+        crate::landing_hero::shelf_fade(-120.0, 0.7),
+    ];
+    for ramp in ramps {
+        let knees = ramp.stops.map(|(y, _)| Some(y));
+        for band in [Rect::FULL, Rect::new(0.0, 600.0, SCR_W, 480.0), Rect::new(0.0, 0.0, SCR_W, 300.0)] {
+            let strips: Vec<Rect> = cut_at(band, knees).collect();
+            let covered: f32 = strips.iter().map(|s| s.h).sum();
+            assert_eq!(covered, band.h, "{band:?}: strips {strips:?} must tile it");
+            for s in &strips {
+                let (a0, a1) = (ramp.alpha(s.y), ramp.alpha(s.y + s.h));
+                for y in rows(s.y, s.h) {
+                    let c = y as f32 + 0.5;
+                    let lerp = a0 + (a1 - a0) * (c - s.y) / s.h;
+                    // A knee snapped to its row moves the kink by at most half a pixel.
+                    assert!((lerp - ramp.alpha(c)).abs() < 2e-3, "{band:?} strip {s:?} y {c}: {lerp} vs {}",
+                        ramp.alpha(c));
+                }
             }
         }
     }
@@ -173,13 +184,13 @@ fn a_ground_with_no_art_is_still_the_layered_picture() {
     for art in [None, Some(pending)] {
         // No ramp: one plain wash pass over the rect, and nothing taken.
         let mut took = true;
-        assert_eq!(handed(|p| took = w.draw_ground(p, Rect::FULL, art, None)), [(16, Rect::FULL)]);
+        assert_eq!(handed(|p| took = w.draw_ground(p, Rect::FULL, art, None, None)), [(16, Rect::FULL)]);
         assert!(!took, "no ramp to take");
         // A ramp: carried per band (tag 23) only where the driver has the program, else the caller's.
         let mut took = !inked;
-        let got = handed(|p| took = w.draw_ground(p, Rect::FULL, art, Some(ramp)));
+        let got = handed(|p| took = w.draw_ground(p, Rect::FULL, art, Some(ramp), None));
         let want: Vec<(u64, Rect)> = if inked {
-            cut_at(Rect::FULL, [Some(300.0), Some(700.0)]).map(|b| (23, b)).collect()
+            cut_at(Rect::FULL, [Some(300.0), Some(700.0), Some(SCR_H)]).map(|b| (23, b)).collect()
         } else {
             vec![(16, Rect::FULL)]
         };

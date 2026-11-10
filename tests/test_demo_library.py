@@ -528,14 +528,15 @@ class HeroGeometry(unittest.TestCase):
         self.assertIn("overlap:home shelf row", v["reasons"])
 
     def test_a_subject_in_the_starring_column_fails(self):
-        v = self.verdict(3840, 2160, [3000, 1420, 3400, 1500])  # frame (1500,710)-(1700,770)
-        self.assertEqual(v["reasons"], ["overlap:detail starring column"])  # y 770 is above the shelf row
+        v = self.verdict(3840, 2160, [3000, 1406, 3400, 1414])  # frame (1500,703)-(1700,707)
+        self.assertEqual(v["reasons"], ["overlap:detail starring column"])  # y 707 is above the shelf row (708)
 
     def test_a_subject_over_the_detail_synopsis_or_facts_fails(self):
         v = self.verdict(3840, 2160, [1800, 700, 2000, 900])  # frame (900,350)-(1000,450)
         self.assertIn("overlap:detail text column", v["reasons"])
         v = self.verdict(3840, 2160, [2100, 1420, 2500, 1500])  # frame (1050,710)-(1250,750)
-        self.assertEqual(v["reasons"], ["centre-left", "overlap:detail facts row"])
+        # the facts row stands inside the Home shelf row's band (from y 708), so both are named
+        self.assertEqual(v["reasons"], ["centre-left", "overlap:home shelf row", "overlap:detail facts row"])
 
     def test_touching_a_zone_is_not_overlapping_it(self):
         # frame (1039,350)-(1400,500): its left edge is the detail text column's right edge
@@ -552,8 +553,6 @@ class HeroGeometry(unittest.TestCase):
     def test_a_right_weighted_subject_clear_of_every_zone_passes(self):
         v = self.verdict(2048, 872, [1500, 100, 1900, 500], anchor="right")
         self.assertEqual((v["verdict"], v["reasons"]), ("pass", []), v)
-        # the scrim is advisory: the share of the box under it is reported, never gated
-        self.assertGreater(v["scrim_share"], 0)
 
     # ---- eligibility and the gate ------------------------------------------------------------
 
@@ -658,18 +657,17 @@ class HeroGeometry(unittest.TestCase):
                          ["home text column", "home shelf row", "detail text column",
                           "detail facts row", "detail starring column"])
         by = {z["name"]: z["rect"] for z in zones}
-        self.assertEqual(by["home text column"], [96, 206, 1039, 776])
-        self.assertEqual(by["home shelf row"], [0, 757, 1920, 1080])
+        self.assertEqual(by["home text column"], [96, 206, 1039, 728])
+        self.assertEqual(by["home shelf row"], [0, 708, 1920, 1080])
         self.assertEqual(by["detail text column"], [96, 326, 1039, 1080])
         self.assertEqual(by["detail facts row"], [1039, 714, 1264, 842])
         self.assertEqual(by["detail starring column"], [1264, 702, 1824, 1080])
-        self.assertEqual(by["hero scrim"], [0, 162, 1920, 1080])
         used = {n for z in zones for n in z["uses"]}
         self.assertEqual(used, set(tool.HERO_PINS) - {n for n, p in tool.HERO_PINS.items() if p[1] == "text"})
 
     def test_a_drifted_python_copy_fails_naming_the_constant_and_its_file(self):
         for name, wrong in (("MARGIN_X", 90.0), ("COL_W", 600.0), ("PEEK_Y", 828.0), ("HERO_TEXT_W", 990.0),
-                            ("HERO_LOGO_TOP_HOME", 300.0), ("HERO_SCRIM_W", 1500.0)):
+                            ("HERO_LOGO_TOP_HOME", 300.0), ("DETAIL_TITLE_BOTTOM", 500.0)):
             with self.subTest(name=name):
                 pins = {k: list(v) for k, v in tool.HERO_PINS.items()}
                 pins[name][-1] = wrong

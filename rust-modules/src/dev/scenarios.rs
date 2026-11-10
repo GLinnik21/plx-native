@@ -315,15 +315,6 @@ pub(crate) fn arm_cardsplit() {
     }
 }
 
-/// `/tmp/plxnative-heroground` — the one-pass hero ground A/B.
-pub(crate) fn arm_heroground() {
-    if plx_base::devtrig::flag("heroground") {
-        plx_ui::widgets::set_hero_ground(true);
-        #[cfg(feature = "devtriggers")]
-        plx_base::eventlog::log("hero: one-pass ground ENABLED by /tmp/plxnative-heroground");
-    }
-}
-
 /// `/tmp/plxnative-profile` / `/tmp/plxnative-hwcnt` — the two GPU-time profilers. Both present
 /// is refused; either alone arms its mode.
 ///

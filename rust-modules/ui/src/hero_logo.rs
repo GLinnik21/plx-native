@@ -215,6 +215,23 @@ impl<'a> HeroLogo<'a> {
         self
     }
 
+    /// **The rect [`draw`](Self::draw) paints in `band`**: the logo art's own box where it has
+    /// resolved, else the title's text run bottom-anchored on the band and as wide as its widest
+    /// line ([`TextView::ink_span`]), not the column the run was wrapped into. The hero shade stands
+    /// behind exactly this ([`crate::hero_shade`]), so a screen asks the logo what it is painting
+    /// rather than guessing from the band, and it moves with the logo.
+    pub fn painted(&self, band: Rect, measure: &dyn Measure) -> Rect {
+        let align = self.align.resolve(self.title);
+        if let Some((_, sw, sh)) = crate::tex::logo_src(self.sid, self.rk) {
+            let (w, h) = fit(self.rung, sw, sh, band.w);
+            return place(band, w, h, align);
+        }
+        let fallback = title_text(self.rung, self.title).h(align).with_measure(measure);
+        let h = title_paint_h(&fallback, self.rung, band.w, measure);
+        let (left, right) = fallback.ink_span(band);
+        Rect::new(left, band.y + band.h - h, right - left, h)
+    }
+
     /// Draw into `band` — `band.w` is the column the logo is contained to, `band.y + band.h` the
     /// anchor line, and `band.h` should be [`band_h`] of the same rung. Ink is [`theme::TEXT_PRIMARY`]
     /// for both the logo tint and the fallback text (the value all three sites passed already).
@@ -647,6 +664,29 @@ mod tests {
             assert!(run.at.x + run.at.w <= band.x + band.w + 0.01);
         }
         assert!(runs[1].at.y > runs[0].at.y);
+    }
+
+    /// **A typed title is painted as wide as its widest line**, not as wide as the column it wraps
+    /// into: the shade stands behind this rect, and a column-wide one would be a slab. It starts where
+    /// the title's alignment starts it, and a title that wraps still fits its column.
+    #[test]
+    fn a_typed_title_is_painted_as_wide_as_its_widest_line() {
+        use plx_machine::machine::Measure;
+        install_store(true);
+        let m = crate::fixture::FixtureMeasure;
+        let band = Rect::new(96.0, 446.0, theme::hero::TEXT_W, band_h(Hero));
+        let (_, _, _, _, sz) = Hero.bounds();
+        let width = m.width_str("Hollow Coast", sz, true);
+        assert!(width < band.w * 0.8, "the premise: this title is well inside its column ({width})");
+        let left = HeroLogo::new(0, "", "Hollow Coast", Hero).painted(band, &m);
+        assert_eq!((left.x, left.w), (band.x, width), "left-aligned: from the column edge, its own width");
+        let right = HeroLogo::new(0, "", "Hollow Coast", Hero).align(HAlign::Right).painted(band, &m);
+        assert_eq!((right.w, right.x + right.w), (width, band.x + band.w), "right-aligned: ending at the column's edge");
+        assert_eq!((left.y, left.h), (right.y, right.h), "the alignment moves it sideways only");
+        let long = HeroLogo::new(0, "", "The Unbearably Long Name of the Last House at the Edge of the World", Hero)
+            .painted(band, &m);
+        assert!(long.x >= band.x && long.x + long.w <= band.x + band.w + 0.01, "a wrapped title stays in its column: {long:?}");
+        assert!(long.h > left.h, "…and is taller than the one-line title");
     }
 
     /// The logo is on its way: the hero shows its title as text in the meantime, and that is a wait.

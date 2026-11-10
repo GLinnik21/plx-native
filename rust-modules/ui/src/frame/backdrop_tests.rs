@@ -1033,6 +1033,7 @@ fn the_wash_term_follows_the_ink_ramp_laid_over_the_wash() {
         rect: [0.0, 100.0, 1920.0, 400.0],
         ink: [0.0, 0.0, 0.0],
         ink_a,
+        scrim: plx_gfx::gfx::scrim::GroundShade::NONE,
     };
     assert!(g(0.0, [0.0; 2]).delta(&g(0.0, [0.0; 2])).is_none(), "same wash, no term");
     assert!(g(3.0, [0.25; 2]).delta(&g(0.0, [0.0; 2])).is_none(), "another ink is another source");
@@ -1067,8 +1068,8 @@ fn an_inked_wash_strip_is_deferred_and_its_ramp_keys_the_source() {
     let strips = |step: f32, foot: f32| {
         move |p: crate::Painter| {
             let ink = [0.02, 0.02, 0.03, 1.0];
-            p.ambient_inked(Rect::new(0.0, 0.0, 1920.0, 400.0), wash_at(step), (ink, [0.0, foot]), false);
-            p.ambient_inked(Rect::new(0.0, 400.0, 1920.0, 680.0), wash_at(step), (ink, [foot, 0.6]), false);
+            p.ambient_inked(Rect::new(0.0, 0.0, 1920.0, 400.0), wash_at(step), crate::GroundInk::ramp(ink, [0.0, foot]), false);
+            p.ambient_inked(Rect::new(0.0, 400.0, 1920.0, 680.0), wash_at(step), crate::GroundInk::ramp(ink, [foot, 0.6]), false);
         }
     };
     let sources = Rc::new(RefCell::new(Sources::default()));
@@ -1118,7 +1119,7 @@ fn an_art_ground_under_the_chrome_is_never_deferred() {
                 Rect::new(0.0, 0.0, 1920.0, 800.0),
                 plx_gfx::gfx::UV_FULL,
                 [1.0; 4],
-                ([0.0; 4], [0.0; 2]),
+                crate::GroundInk::NONE,
             )
         }
     };

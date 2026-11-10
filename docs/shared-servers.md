@@ -890,7 +890,7 @@ Two further measurements decide how the household is identified:
 Everything else draws nothing at all: our own server, the household's server whichever profile is
 watching, and a share whose owner plex.tv has not named. **Absence is the safe direction**, and the
 rule is written to fall that way — a late credit costs one quiet line of attribution, a wrong one
-is a false statement about who owns what, drawn on the hero, the detail facts row, the Library
+is a false statement about who owns what, drawn on the detail facts row, the Library
 read-out, the search results and the "Also available" rows at once.
 
 A second server owned by *another member of the same Plex Home* is not credited either. That is a
@@ -919,10 +919,11 @@ what lets a re-derived roster take a wrong name back off. It does not repair a s
 itself: for the managed-profile case the persisted row still says `owned:false`, so the correction
 has to come from the ingest re-grading it — see "What is NOT fixed" below.
 
-**Nothing downstream decides who is CREDITED.** All seven presentations take
+**Nothing downstream decides who is CREDITED.** All six presentations take
 `ServerFacts::handle` and nothing else; what differs between them is only the wording around it.
-Two say the whole phrase through `ui::fmt::shared_by`, which is words and not policy — the Home
-hero's meta run and the detail page's facts row. The Library read-out, the Sources panel and
+One says the whole phrase through `ui::fmt::shared_by`, which is words and not policy — the detail
+page's facts row (Home's hero carried it in its meta run until board CW-13 v2 dropped that line,
+so `/tmp/plxnative-shared` no longer touches Home's hero). The Library read-out, the Sources panel and
 Search's owner annotation draw the bare handle in their own sentence. The "Also available" rows
 carry it as `AltCopy::owner`, naming a row's source rather than captioning an item. And the
 first-run onboarding copy (`screens::onboard`'s `OnboardScreen::body_copy` method — a free function

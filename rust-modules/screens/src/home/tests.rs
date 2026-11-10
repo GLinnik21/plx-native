@@ -933,14 +933,15 @@ fn env_at(sp: f32) -> Env {
 /// **The ground is ONE flat colour only once the hero is culled** (`sp >= HERO_ART_CULL`); every
 /// earlier frame is the layered gradient. The tell is the corners the wash is handed
 /// (`draw_census::capture_grounds`): four equal codes are the flat colour, which the renderer
-/// clears; a lit wash's own four are the gradient. The ramp rects are the second tell, for the layered
-/// ramp that stays the only ramp drawer: on a host (no ink program: `gfx::wash_ink_ok`) the layered
-/// ground hands the ramp back and the two `rect`s `base_scrim_ramp` describes follow it, for as long
-/// as the hero is visible (`hero_a > 0.01`); the flat ground takes none, and has none to take. A
-/// hero SLIDE is the layered gradient up to the cull and flat from it, like any other frame.
+/// clears; a lit wash's own four are the gradient. The scrim cells are the second tell, for the
+/// layered scrim that stays the only scrim drawer on a host (no ink program: `gfx::wash_ink_ok`):
+/// the layered ground hands the scrim back and the cells of the scrim layer (`widgets::scrim_layer`,
+/// tag 26) follow it, for as long as the hero is visible (`hero_a > 0.01`); the flat ground takes
+/// none, and has none to take. The side and shelf fade share those cells.
 #[test]
 fn the_ground_goes_flat_only_once_the_hero_is_culled() {
     use plx_ui::draw_census;
+    use plx_ui::widgets::{cut_cells, SCRIM_CELL_H, SCRIM_CELL_W};
     let mut b = Backdrop::new();
     b.wash.jump([
         [0.30, 0.10, 0.10, 1.0],
@@ -950,46 +951,37 @@ fn the_ground_goes_flat_only_once_the_hero_is_culled() {
     ]);
     assert!(!b.wash.is_flat(theme::SURFACE_APP, AmbientWash::FLAT_EPS), "the premise: a lit wash");
     // The premise: no host test links GL, so there is no ink program and the layered ground hands
-    // the ramp back for the caller to draw as rects. (With one, a layered frame would carry the
-    // ramp in the wash and the ramp rects would not be a tell.)
+    // the scrim back for the caller to draw as its layer. (With one, a layered frame would carry
+    // the scrim in the wash and the scrim cells would not be a tell.)
     assert!(!plx_gfx::gfx::wash_ink_ok(), "a host build has no wash ink program");
-    // `(is the ground one colour, how many ramp rects follow it)` for one frame at `sp`.
+    let cells = cut_cells(Rect::FULL, SCRIM_CELL_W, SCRIM_CELL_H).count();
     let frame = |sp: f32, slide: Option<(f32, f32)>| {
         let env = env_at(sp);
-        let [y0, knee, ..] = base_scrim_ramp(env.hero_a);
-        let ramp = [Rect::new(0.0, y0, SCR_W, knee - y0), Rect::new(0.0, knee, SCR_W, SCR_H - knee)];
+        let shade = (env.hero_a > 0.01).then(|| home_shade(shelf_fade(SHELF_TOP, env.hero_a), env.hero_a));
         let mut drawn = Vec::new();
         let grounds = draw_census::capture_grounds(|| {
-            drawn = draw_census::capture(|| b.draw(Painter::recording(), &env, slide));
+            drawn = draw_census::capture(|| b.draw(Painter::recording(), &env, slide, shade));
         });
         let [ground] = grounds[..] else { panic!("sp {sp}: {} grounds, want one", grounds.len()) };
         let flat = ground[1..].iter().all(|c| *c == ground[0]);
-        (flat, ramp.into_iter().filter(|r| drawn.contains(&(1, *r))).count())
+        (flat, drawn.iter().filter(|(tag, _)| *tag == 26).count())
     };
-    // Pending texture (nothing resident: `tex` is 0), the dive in flight, and its last frame: the
-    // layered gradient. The ramp is laid over it as rects while the hero is visible (`hero_a` is
-    // 0 from `sp = 0.55`, so the dive's last frames have none).
-    for (sp, ramp_rects) in [(0.0, 2), (0.4, 2), (HERO_ART_CULL - 0.001, 0)] {
-        assert_eq!(frame(sp, None), (false, ramp_rects), "sp {sp}: the layered ground");
-    }
-    // A hero slide before the cull is the layered gradient too, with no ramp in the ground, so the
-    // ramp is drawn as its two rects.
-    assert_eq!(frame(0.0, Some((-SCR_W, 0.0))), (false, 2), "a slide stays layered");
-    assert_eq!(frame(HERO_ART_CULL - 0.001, Some((-SCR_W, 0.0))), (false, 0), "…to its last frame");
-    // Culled: ONE colour, no ramp to draw (a slide or held layer notwithstanding: no art is drawn).
-    for sp in [HERO_ART_CULL, 1.0] {
-        assert_eq!(frame(sp, None), (true, 0), "sp {sp}: the flat ground, and no ramp");
-        assert_eq!(frame(sp, Some((-SCR_W, 0.0))), (true, 0), "sp {sp}: a culled slide is flat too");
+    for slide in [None, Some((-SCR_W, 0.0))] {
+        for (sp, expected) in [(0.0, (false, cells)), (0.4, (false, cells)),
+            (HERO_ART_CULL - 0.001, (false, 0)), (HERO_ART_CULL, (true, 0)), (1.0, (true, 0))] {
+            assert_eq!(frame(sp, slide), expected, "sp {sp}, slide {slide:?}");
+        }
     }
 }
 
-/// **Home has no atmospheric ramp once the hero is culled** - the premise the flat ground rests on
-/// (`AmbientWash::draw_flat_ground` draws none). `Backdrop::draw` builds its ramp only while
-/// `hero_a > 0.01`, and `HomeScreen::env` fades the hero out by `sp = 0.55`, long before
-/// `HERO_ART_CULL`; a later fade end would lay a ramp over the flat ground here, so it fails this
+/// **Home has no scrim once the hero is culled** - the premise the flat ground rests on
+/// (`AmbientWash::draw_flat_ground` draws none). `Backdrop::draw` takes the hero's shade only while
+/// `hero_a > 0.01` (and `draw_page` builds none past it), and `HomeScreen::env` fades the hero out by
+/// `sp = 0.55`, long before
+/// `HERO_ART_CULL`; a later fade end would lay a scrim over the flat ground here, so it fails this
 /// test first rather than layering one unannounced.
 #[test]
-fn home_has_no_ramp_at_the_cull() {
+fn home_has_no_scrim_at_the_cull() {
     for sp in [HERO_ART_CULL, 1.0] {
         assert_eq!(env_at(sp).hero_a, 0.0, "sp {sp}: the hero has faded out");
     }
@@ -1028,10 +1020,10 @@ fn the_ground_is_skipped_only_when_opaque_art_covers_it() {
 
 #[test]
 fn the_home_hero_logo_never_reaches_the_top_bar() {
-    const META_H: f32 = 28.0 * 1.32;
-    let synopsis = plx_ui::hero_syn_h(plx_ui::HERO_SYN_MAXLINES);
+    // the tallest ladder Home draws: the title over a synopsis at its full line count
+    let block = plx_ui::hero_syn_h(theme::hero::HOME_SYNOPSIS_LINES);
     let band = hero_logo::band_h(LogoRung::Hero);
-    let top = plx_ui::landing_hero::hero_stack(band, META_H, Some(synopsis)).title.y;
+    let top = home_rows(band, Some(block)).title.y;
     assert!(top - (theme::logo::HERO_H_MAX - band) > plx_ui::widgets::TOP_BAR_BOTTOM);
 }
 
@@ -1197,8 +1189,8 @@ fn no_shelf_heading_settles_inside_the_shared_top_band() {
 
 /// The focused shelf's heading rests where the first shelf's does, at every focus the column's end
 /// does not hold lower, and the Under posters band is not in that rest. With the deck of stills on
-/// top, the shelf under it is the one exception (it rests with the stills still above it, at scroll
-/// 0, so the move between the two scrolls nothing).
+/// top, the shelf under it is the one exception (it rests with the stills still above it, at the
+/// least scroll that keeps its focused block inside the bottom overscan edge).
 #[test]
 fn the_focused_shelfs_heading_rests_at_one_y_whatever_the_band() {
     for deck_first in [false, true] {
@@ -1210,7 +1202,7 @@ fn the_focused_shelfs_heading_rests_at_one_y_whatever_the_band() {
             let scroll = col.rest(focus_row);
             let place = heading_place(&col, focus_row, focus_row, scroll) + col.style(focus_row).heading_rise;
             if deck_first && focus_row == 1 {
-                assert_eq!((scroll, place > line), (0.0, true), "the shelf under the stills rests below the line, the stills above it");
+                assert_eq!((scroll, place > line), (col.block_overrun(1), true), "the shelf under the stills rests below the line, the stills above it");
             } else if scroll < col.max_scroll() {
                 assert_eq!(place, line, "deck {deck_first}, focus {focus_row}");
             } else {
@@ -1220,17 +1212,14 @@ fn the_focused_shelfs_heading_rests_at_one_y_whatever_the_band() {
     }
 }
 
-/// **The stills row's heading stands where the owner's boards put it** (CW-12/13): the shared row
-/// style's rise ([`theme::STILL_HEADING_RISE`]) above the poster shelf's line, the distance to the
-/// cards under it the poster shelf's plus that rise, and, even so, a gap to the nav pill's bottom
-/// edge at every rest of every column height (the heading is whole under the chrome's rule, which
-/// `no_shelf_heading_settles_inside_the_shared_top_band` also sweeps).
+/// The stills heading rests above the poster shelf's line and lifts when a nearby card takes
+/// focus. Both positions clear the navigation chrome.
 #[test]
 fn the_stills_heading_stands_its_rise_above_the_poster_line_and_clear_of_the_nav_pill() {
     for rows in 1..=SWEEP_ROWS {
         let col = column(rows, true);
         let rest = col.rest(0);
-        let top = heading_top(&col, 0, 0, rest);
+        let top = heading_place(&col, 0, 0, rest);
         assert_eq!(top, GRID_TOP_Y - TITLE_DY - theme::STILL_HEADING_RISE - rest, "rows {rows}: the stills heading's rest");
         assert_eq!(plx_ui::scroll_chrome::clearance_under_shown_chrome(heading_place(&col, 0, 0, rest)), 1.0,
             "rows {rows}: the stills heading rests whole under the chrome, not faded");
@@ -1240,8 +1229,9 @@ fn the_stills_heading_stands_its_rise_above_the_poster_line_and_clear_of_the_nav
         let card_top = GRID_TOP_Y + col.top(0, Some(0), band_open_of(true)) - rest + CARD_DY;
         assert_eq!(GRID_TOP_Y + col.top(0, Some(0), band_open_of(true)) - rest, GRID_TOP_Y - rest, "the deck sits at the grid's top");
         assert_eq!(card_top - top, CARD_DY + TITLE_DY + theme::STILL_HEADING_RISE, "rows {rows}: heading to card tops");
-        // A focus on a card of the deck lifts the heading no higher than its rise (the two never stack).
-        assert_eq!(heading_top(&col, 0, 0, rest), heading_place(&col, 0, 0, rest));
+        let focused_top = heading_top(&col, 0, 0, rest);
+        assert!(focused_top < top);
+        assert_eq!(plx_ui::scroll_chrome::clearance_under_shown_chrome(focused_top), 1.0);
     }
 }
 
@@ -1268,21 +1258,20 @@ fn every_settled_row_keeps_its_focused_label_block_above_the_overscan_bottom() {
     }
 }
 
-/// **The worst case of the stills-on-top page**: the poster shelf under the Continue Watching deck
-/// rests at scroll 0 (its row at 194 + 318 + 18 = 530), the deck standing above it, so its two-line
-/// focused label block ends at 1023, 3 px short of the bottom overscan edge (1026). It must never
-/// cross it, whatever the shelf count, and the row must really be the one that rests at 0.
+/// The second shelf scrolls only far enough to keep the worst-case focused caption inside
+/// bottom overscan. The Continue Watching heading remains visible above it.
 #[test]
 fn the_poster_shelf_under_the_stills_ends_its_two_line_block_inside_the_bottom_overscan_edge() {
     let two_lines = ui_cards::TileLabel::height(true);
     for rows in 2..=SWEEP_ROWS {
         let col = column(rows, true);
-        assert_eq!(col.rest(1), 0.0, "rows {rows}: the shelf under the stills rests with the stills above it");
-        let row_y = GRID_TOP_Y + col.top(1, Some(1), band_open_of(false)) - col.rest(1);
+        let at_zero = GRID_TOP_Y + col.top(1, Some(1), band_open_of(false));
+        let overrun = at_zero + CARD_DY + CARD_H + two_lines - (SCR_H - MARGIN_Y);
+        assert!(overrun > 0.0);
+        assert_eq!(col.rest(1), overrun, "rows {rows}: the shelf scrolls just what its block overruns");
+        let row_y = at_zero - col.rest(1);
         let end = row_y + CARD_DY + CARD_H + two_lines;
-        assert_eq!(row_y, 530.0, "rows {rows}: the stills row (194) and its pitch put the shelf at 530");
-        assert_eq!(end, 1023.0, "rows {rows}: the focused block's end");
-        assert!(end <= SCR_H - MARGIN_Y, "rows {rows}: the block crosses the bottom overscan edge ({end} > {})", SCR_H - MARGIN_Y);
+        assert_eq!(end, SCR_H - MARGIN_Y, "rows {rows}: the focused block ends on the bottom overscan edge");
     }
 }
 
@@ -1994,6 +1983,39 @@ fn continue_watching_commit_follows_the_setting_while_an_ordinary_shelf_opens_de
     };
     let detail = commit(&mut s, 3);
     assert!(has_home(&detail, |r| matches!(r, HomeReq::Detail { rk, .. } if rk == "1")));
+}
+
+#[test]
+fn continue_watching_regression_hold_on_the_hero_page() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_continue_window_for_test(&mut state, &adapter, 12, false);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let view = snapshot.view();
+    let mut s = screen(view);
+    assert!(s.holds_page(0));
+    assert_eq!(s.snap.pos, 0.0);
+    let card = first_card(&s);
+    let rk = s.item_at(view, 0, 0).unwrap().rk.clone();
+    let (_, out, _) = step(
+        &mut s,
+        view,
+        Some(card),
+        &ScreenEvent::PressHold(plx_machine::machine::PressId(1)),
+    );
+    assert!(has_home(&out, |r| matches!(r, HomeReq::ItemMenu { rk: key, .. } if *key == rk)));
+    assert!(!has_home(&out, |r| matches!(r, HomeReq::Play { .. } | HomeReq::Detail { .. })));
+}
+
+#[test]
+fn continue_watching_regression_heading_moves_and_stays_clear_on_second_row() {
+    let col = column(3, true);
+    assert!(heading_top(&col, 0, 0, col.rest(0)) < heading_place(&col, 0, 0, col.rest(0)),
+        "the heading should rise when a nearby card takes focus");
+    let top = heading_top(&col, 0, 1, col.rest(1));
+    assert_eq!(plx_ui::scroll_chrome::clearance_under_shown_chrome(top), 1.0,
+        "Continue Watching heading at {top} should remain readable on the second row");
 }
 
 #[test]
@@ -5582,6 +5604,12 @@ fn a_next_episode_that_jumps_to_column_zero_keeps_the_element_and_the_focus() {
 #[path = "hero_watchlist_tests.rs"]
 mod hero_watchlist;
 
+#[path = "hero_shade_tests.rs"]
+mod hero_shade;
+
+#[path = "hero_line_tests.rs"]
+mod hero_line;
+
 /// The billboard as it is on screen: how much of the page the hero art covers, from the
 /// selected art and any art held beneath it while the selection changes. `0` is the bare wash.
 fn billboard_cover(s: &HomeScreen) -> f32 {
@@ -5991,8 +6019,10 @@ fn the_sideways_glide_moves_the_shelf_under_the_pointer_and_a_click_brings_it_ba
 
 // ---- The Continue Watching row of stills (the 2026-11 handoff, PR "Row") ------------------------
 
-/// **The Continue Watching row is a row of 420 x 236 stills** at the shared still radius, 28 apart,
-/// with no label block under them: the shelf below it follows by the row's own (shorter) pitch.
+/// **The Continue Watching row is a row of 420 x 236 stills** at the shared still radius, 40 apart
+/// (CW-13 v2: [`theme::STILL_GAP`], where the Detail strip keeps 28), with no label block under
+/// them: the footer is a line under each still ([`theme::STILL_FOOTER_DROP`]), and the shelf below it
+/// follows by the row's own pitch, which carries it.
 #[test]
 fn the_continue_watching_row_is_a_row_of_420_by_236_stills_under_no_label_block() {
     let _guard = plx_base::testlock::serial();
@@ -6008,9 +6038,11 @@ fn the_continue_watching_row_is_a_row_of_420_by_236_stills_under_no_label_block(
     assert_eq!(s.rows[0].identity, HomeHubIdentity::ContinueWatching);
     assert!(s.rows.len() > 1, "premise: a poster shelf follows");
     let style = s.row_style(0);
-    assert_eq!((style.w, style.h, style.gap, style.radius), (420.0, 236.0, 28.0, plx_ui::theme::STILL_RADIUS));
+    assert_eq!((style.w, style.h, style.gap, style.radius), (420.0, 236.0, 40.0, plx_ui::theme::STILL_RADIUS));
+    assert_eq!(plx_ui::theme::STILL_GAP, 40.0, "the board's gap");
+    assert_eq!(RowStyle::EPISODE.gap, 28.0, "the Detail strip keeps its 28");
     let (a, b) = (drawn_rect(&s, view, None, 0, 0), drawn_rect(&s, view, None, 0, 1));
-    assert_eq!((a.w, a.h, b.x - a.x), (420.0, 236.0, 448.0), "420 x 236 tiles on a pitch of 448");
+    assert_eq!((a.w, a.h, b.x - a.x), (420.0, 236.0, 460.0), "420 x 236 tiles on a pitch of 460");
     assert_eq!(s.grid.shelves[0].band_h(), 0.0, "no label block under the stills");
     let below = s.grid.base_y(1) - s.grid.base_y(0);
     assert_eq!(below, RowStyle::STILL.pitch_fixed() + ui_cards::LABEL_BAND_COLLAPSED,
@@ -6052,8 +6084,8 @@ fn only_the_continue_watching_deck_opts_in_to_the_deck_art_walk() {
 
 /// **A focused still only pops (1.09, in place); the tiles beside it stand exactly where they rest**,
 /// at every point of the pop (owner, 2026-11: focusing a still must not change the spacing between
-/// tiles). At 1.09 a 420 px tile grows about 19 px a side, inside the 28 px gap, so nothing needs to
-/// step aside. The check runs along the pop's whole spring, not only at its end.
+/// tiles). At 1.09 a 420 px tile grows about 19 px a side, inside the 40 px gap (`STILL_GAP`), so
+/// nothing needs to step aside. The check runs along the pop's whole spring, not only at its end.
 #[test]
 fn a_focused_still_pops_in_place_and_every_other_tile_stands_at_its_rest_x() {
     let _guard = plx_base::testlock::serial();
@@ -6154,7 +6186,12 @@ fn the_page_rests_at_the_hero_or_the_grid_and_moves_only_when_a_move_leaves_the_
     tick_n(&mut s, view, Some(poster), 0, 120);
     assert_eq!(s.snap_target, 1.0, "Down reaches the grid");
     assert!(s.snap.pos > 0.99);
-    assert_eq!(s.grid.scroll_target, 0.0, "the stills stay the top row, the next shelf under them");
+    // the stills stay the top row, the next shelf under them: it rests at the LEAST scroll that keeps
+    // its focused two-line label block inside the bottom overscan edge (the stills' footers make the
+    // row taller, so the block would otherwise cross it), not at the poster shelves' own line
+    let rest = s.column().block_overrun(1);
+    assert!(rest > 0.0 && rest < 60.0, "the premise: a small, real overrun ({rest})");
+    assert_eq!(s.grid.scroll_target, rest, "the stills stay the top row, the next shelf under them");
     // Up from the shelf: back on the stills, and the page stays where it was
     moved(&mut s, view, Some(poster), still, By::Dir);
     tick_n(&mut s, view, Some(still), 120, 120);
@@ -6230,7 +6267,7 @@ fn a_hero_backdrop_that_has_dissolved_in_is_drawn_at_one_exact_alpha_from_then_o
     // The alphas of the backdrop-sized quads one frame of the page's ground draws.
     let alphas = |s: &mut HomeScreen| {
         let env = s.env(0.0);
-        plx_ui::draw_census::capture_tex(|| s.backdrop.draw(Painter::recording(), &env, None))
+        plx_ui::draw_census::capture_tex(|| s.backdrop.draw(Painter::recording(), &env, None, None))
             .into_iter()
             .filter(|(_, r, a)| r.w >= SCR_W && *a > 0.01)
             .map(|(_, _, a)| a)

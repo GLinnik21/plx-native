@@ -227,8 +227,9 @@ fn shelf_pitch_keeps_the_shared_air() {
             let want = ui_cards::ROW_PITCH_FIXED + ui_cards::under_band_for(band, expanded);
             assert!((shelf_pitch(&RowStyle::HOME, band, expanded) - want).abs() < 1e-3, "band {band} expanded {expanded}");
             for style in [&RowStyle::EPISODE, &RowStyle::STILL] {
+                // …under a shorter tile, and under the footer line a still carries below its art
                 let shorter = RowStyle::HOME.h - style.h;
-                assert!((shelf_pitch(style, band, expanded) - (want - shorter)).abs() < 1e-3, "landscape, band {band} expanded {expanded}");
+                assert!((shelf_pitch(style, band, expanded) - (want - shorter + style.under_tile)).abs() < 1e-3, "landscape, band {band} expanded {expanded}");
             }
         }
     }

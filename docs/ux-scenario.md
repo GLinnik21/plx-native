@@ -155,9 +155,8 @@ is what keeps stems and bars at their intended weight on a 1080p panel.
 
 ![Home, hero](screenshots/ux-home-hero.jpg)
 
-Home opens on a **hero** — one item, full-bleed backdrop, with its logo or title, a one-line fact
-row (kind · year · rating), a truncated summary and an action row. The hero rotates through a set of
-promoted items; the dots under the action row show the position.
+Home opens on a **hero** — one item, full-bleed backdrop, with its logo or title, an action row and a line for episode identity, time remaining, a movie genre or a short premise. The hero rotates through a set of
+promoted items. The dots beside Info show the position.
 
 **Controls on the hero row**, left to right:
 
@@ -167,10 +166,8 @@ promoted items; the dots under the action row show the position.
 | **🔖** (bookmark) | adds the title to the Watchlist (an episode's or season's show), or removes it when it is already on it; outline off the list, filled on it. Present only when the hero row names a title with a known catalog id |
 | **ⓘ** (info) | opens that item's detail page |
 
-Those are the only three, in that order (the bookmark disc is absent for a row with no catalog id), and none of the circles carries a name, focused or not. **The `›` beside them is an indicator, not a third button** — it is drawn,
-it never takes focus and it has no hit rect. The hero is paged by **RIGHT past the info disc** or
-**LEFT off the Play pill**, and it also advances itself every **8 s** while the row sits idle. The
-dots under the row show the position.
+Those are the only three, in that order (the bookmark disc is absent for a row with no catalog id), and none of the circles carries a name, focused or not. The hero is paged by **RIGHT past the info disc** or
+**LEFT off the Play pill**, and it also advances itself every **8 s** while the row sits idle.
 
 **Above it**, the top tab strip: **Home**, then **one pill per library section the server reports**
 (here *Movies* and *TV Shows*), then the **Search** pill — drawn as a magnifier mark, not a word.
@@ -191,7 +188,7 @@ just the page.
 
 DOWN from the hero enters the shelves; DOWN again steps between them; LEFT/RIGHT walks the cards.
 The focused card grows, and what Settings → Libraries → Under posters asks for appears
-beneath it (a title line when its Title switch is On; a line the setting turns on is never left empty, so a season, which has no length, says *"Season 6"* under its show's name, and a film the server told us nothing about says *"Movie"*; the setting is the same under every poster in the app: Search results, a person's filmography, a title's Related and collection shelves and a collection's members, though not under a landscape still or a cast headshot) — a Continue Watching card on Home always shows its status, under every Details setting, Nothing included, as one line inside the still (not under it), here *"S3 E4 · 8m left"* (*"8m left"* for a film) with a bar on the right, which is the resume state. A watched item carries a check mark in its corner. In a library whose grid is sorted by something that has a value (Settings → Libraries → Under posters → Sort value, on by default), every card of its movies, shows, seasons or episodes shows that value on one line instead, in place of the title and details line: a score beside its provider's mark, a length, a count of plays, a date as *"Today"*, *"Yesterday"*, *"27 Oct"* or *"Oct 2024"*; the Episodes view's wide cards say the same thing under each still (sorted by Audience score, *"TMDB 84%"*). A sort with no value to show, such as the Show order Seasons and Episodes default to, keeps the usual captions.
+beneath it (a title line when its Title switch is On; a line the setting turns on is never left empty, so a season, which has no length, says *"Season 6"* under its show's name, and a film the server told us nothing about says *"Movie"*; the setting is the same under every poster in the app: Search results, a person's filmography, a title's Related and collection shelves and a collection's members, though not under a landscape still or a cast headshot) — a Continue Watching card on Home always shows its status, under every Details setting, Nothing included, as one line below the still, here *"S3 E4 · 8m left"* (*"8m left"* for a film) with a bar on the right, which is the resume state. A watched item carries a check mark in its corner. In a library whose grid is sorted by something that has a value (Settings → Libraries → Under posters → Sort value, on by default), every card of its movies, shows, seasons or episodes shows that value on one line instead, in place of the title and details line: a score beside its provider's mark, a length, a count of plays, a date as *"Today"*, *"Yesterday"*, *"27 Oct"* or *"Oct 2024"*; the Episodes view's wide cards say the same thing under each still (sorted by Audience score, *"TMDB 84%"*). A sort with no value to show, such as the Show order Seasons and Episodes default to, keeps the usual captions.
 
 **OK on a card in *Continue Watching* opens its page by default** (Settings → Playback →
 Continue Watching: *Open details*); set to *Play*, OK plays it directly and the white play glyph that opens at the leading edge of the focused card's footer line

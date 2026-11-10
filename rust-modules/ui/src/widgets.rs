@@ -8,7 +8,7 @@ use crate::label::{HAlign, Label, VAlign};
 use crate::text_view::TextView;
 use crate::theme;
 use crate::tile::{TileFacts, TileKind};
-use crate::{Env, Painter, Rect, Spring, View};
+use crate::{Env, GroundInk, Painter, Rect, Spring, View};
 use plx_gfx::text::{InkClip, InkShape, Keep};
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
@@ -709,9 +709,9 @@ pub enum StillFooter {
     Shelf,
     /// The Continue Watching card's one-line footer ([`crate::still_footer`]): `S2 E4 · 38m left`
     /// and the amber bar, with the focus cue of what OK does — `cue` — opening with the card's focus
-    /// pop `pop` (`cards::Tile::pop`). The show's name stands above it only while the card's title
-    /// is not on its art: a card that did not opt in to the deck's art walk ([`TileFacts::deck`]).
-    /// An opted-in card carries its title in its cover, its composite or, with neither, in type
+    /// pop `pop` (`cards::Tile::pop`). **It stands BELOW the art** ([`crate::still_footer::Place::Below`]:
+    /// the art above it is clean, four rounded corners, no scrim) and carries no show name: a deck
+    /// card ([`TileFacts::deck`]) has its title in its cover, its composite or, with neither, in type
     /// ([`crate::card_art::needs_type_title`], drawn by [`still_overlay`]), and the footer never repeats it.
     Continue { cue: crate::still_footer::Cue, pop: f32 },
 }
@@ -762,8 +762,12 @@ pub fn still_overlay(
     // it in the picture; with neither (the Type rung) it is drawn here in type, at the slot a logo
     // would stand in, and never by a live logo. Either way the footer below carries no title of its
     // own: only a card that did not opt in (a bare still or poster) keeps the show's name above it.
+    // A Continue card that did not opt in (a frame between a publication and its projection) has
+    // neither a deck's art nor a footer line on the art to hold its name, so the name is set in type
+    // at the same slot, on the scrim that card's art keeps ([`crate::card_art::art_is_clean`]).
     let label = if m.deck.is_some() { "" } else { show };
-    if crate::card_art::needs_type_title(m, &crate::card_art::TexProbe) {
+    let continue_without_deck = matches!(footer, StillFooter::Continue { .. }) && m.deck.is_none();
+    if continue_without_deck || crate::card_art::needs_type_title(m, &crate::card_art::TexProbe) {
         let inset = STILL_LINE_INSET;
         let band_h = crate::hero_logo::band_h(crate::hero_logo::LogoRung::Card);
         let slot = Rect::new(card.x + inset, card.y + card.h - theme::logo::CARD_BOTTOM_INSET - band_h, card.w - 2.0 * inset, band_h);
@@ -813,7 +817,7 @@ pub fn still_overlay(
                 p,
                 card,
                 label,
-                &crate::still_footer::Footer { tag: &tag, status: &status, right, cue: Some(cue), focus: pop },
+                &crate::still_footer::Footer { tag: &tag, status: &status, right, cue: Some(cue), focus: pop, place: crate::still_footer::Place::Below },
                 measure,
             );
         }
@@ -1094,7 +1098,14 @@ pub fn card_named_led(p: Painter, frame: Rect, art: Art, fan_name: Option<&str>,
                 if m.show_title.is_empty() && m.title.is_empty() { STILL_SCRIM_H_1 } else { STILL_SCRIM_H }
             });
             if t != 0 && shown < 1.0 { crate::placeholder::skeleton_under(p, r, rad); }
-            let fused = !tile_glass_armed()
+            // **A deck card's art is clean.** Its footer line stands BELOW the tile
+            // ([`crate::still_footer::Place::Below`], owner's board CW-13 v2), so there is no footer
+            // text on the art for a bottom scrim to keep legible: the picture, four rounded corners,
+            // nothing over it. The exception is a title set in live type on the art (the Type rung,
+            // [`crate::card_art::art_is_clean`]): that keeps the scrim it stood on before.
+            let clean = m.is_some_and(|m| crate::card_art::art_is_clean(&m, &crate::card_art::TexProbe));
+            let fused = !clean
+                && !tile_glass_armed()
                 && pa.tex_carded_still(t, art_uv(&art, tw, th, r), r, rad, f, band, theme::scrim(STILL_SCRIM_A));
             if !fused {
                 if t != 0 {
@@ -1106,7 +1117,7 @@ pub fn card_named_led(p: Painter, frame: Rect, art: Art, fan_name: Option<&str>,
                     crate::placeholder::skeleton(p, crate::placeholder::Reason::CardSkeleton,
                         m.map_or("", |m| still_key(&m)), r, rad);
                 }
-                if m.is_some() { still_ground(pa, r, rad, band, STILL_SCRIM_A); }
+                if m.is_some() && !clean { still_ground(pa, r, rad, band, STILL_SCRIM_A); }
             }
             // **No watched DISC.** `Library Screens.dc.html` E: "the watched disc is suppressed
             // whenever a stateLine is present — one mark per tile, and the line is it." Every
@@ -1312,8 +1323,8 @@ static VEIL_TEX: AtomicU32 = AtomicU32::new(0);
 /// renderer has no radial gradient, and the two alternatives both fail on this shape: a `grad4` quad
 /// is bilinear and, worse, square — it would spill past the tile's 14px corner ARC onto the shelf at
 /// full strength, exactly where the mark is strongest; and stepping it as N rounded-rect bands (the
-/// `art_scrim` fallback) is what `hero_scrim`'s doc already rejected for a field this wide, at a visible
-/// alpha staircase with `GL_DITHER` off. `Painter::tex` takes a corner radius, so ONE draw of this
+/// `art_scrim` fallback) is what the retired hero wedge's doc rejected for a field this wide, at a
+/// visible alpha staircase with `GL_DITHER` off. `Painter::tex` takes a corner radius, so ONE draw of this
 /// gets the tile's own silhouette for free — the veil's other three corners live in fully
 /// transparent territory, so rounding them changes nothing.
 fn veil_tex() -> std::os::raw::c_uint {
@@ -1782,7 +1793,19 @@ pub fn keyline_chip(p: Painter, x: f32, cy: f32, text: &str, col: [f32; 4], meas
 
 /// The identity band shared by both full-bleed heroes. The text run yields room to the
 /// outlined resolution/accessibility chips, and overlong metadata elides within its column.
+/// Returns the width drawn, from `r.x` to the last chip's edge.
 pub fn hero_identity(p: Painter, r: Rect, parts: &[&str], resolution: Option<&str>, chips: &[&str], measure: &dyn plx_machine::machine::Measure) -> f32 {
+    identity_row(Some(p), r, parts, resolution, chips, measure)
+}
+
+/// The width [`hero_identity`] draws in `r`, asking the same measurements and drawing nothing: the
+/// extent the hero shade stands behind ([`crate::hero_shade::HeroShade::add_ink`]).
+pub fn hero_identity_w(r: Rect, parts: &[&str], resolution: Option<&str>, chips: &[&str], measure: &dyn plx_machine::machine::Measure) -> f32 {
+    identity_row(None, r, parts, resolution, chips, measure)
+}
+
+/// The one layout of the identity band, painted with `paint` or only measured without it.
+fn identity_row(paint: Option<Painter>, r: Rect, parts: &[&str], resolution: Option<&str>, chips: &[&str], measure: &dyn plx_machine::machine::Measure) -> f32 {
     use crate::hstack::{Flow, Item};
     let labels: Vec<&str> = resolution.into_iter().chain(chips.iter().copied()).collect();
     let widths: Vec<Item> = labels.iter().map(|s| Item::new(keyline_chip_w(s, measure))).collect();
@@ -1796,15 +1819,22 @@ pub fn hero_identity(p: Painter, r: Rect, parts: &[&str], resolution: Option<&st
         let joined = parts.iter().filter(|s| !s.is_empty()).copied().collect::<Vec<_>>().join(" \u{b7} ");
         let elided = plx_gfx::text::elide_by(&joined, budget, false,
             |text| measure.width_str(text, theme::hero::IDENTITY_SIZE, false));
-        if let Ok(text) = CString::new(elided.as_str()) {
+        if let (Some(p), Ok(text)) = (paint, CString::new(elided.as_str())) {
             p.text(text.as_ptr(), r.x, y, theme::hero::IDENTITY_SIZE, theme::TEXT_SECONDARY, 0, 0);
         }
         measure.width_str(&elided, theme::hero::IDENTITY_SIZE, false)
-    } else { run.draw(p, parts, r.x, y) };
+    } else if let Some(p) = paint {
+        run.draw(p, parts, r.x, y)
+    } else {
+        natural
+    };
     let mut flow = Flow::new(r.x, theme::space::XS);
     flow.push(if text_w > 0.0 { Item::new(text_w).after(theme::space::SM) } else { Item::absent() });
     for label in labels {
-        flow.place(|x| Item::new(keyline_chip(p, x, cy, label, theme::TEXT_SECONDARY, measure)));
+        flow.place(|x| Item::new(match paint {
+            Some(p) => keyline_chip(p, x, cy, label, theme::TEXT_SECONDARY, measure),
+            None => keyline_chip_w(label, measure),
+        }));
     }
     flow.end() - r.x
 }
@@ -1815,11 +1845,15 @@ fn pdf_proposal_identity_uses_regular_caption_for_fitting_and_elided_metadata() 
     let measure = crate::fixture::FixtureMeasure;
     for (width, parts) in [(943.0, vec!["Movie", "Drama", "PG"]),
         (260.0, vec!["An exceptionally long edition name that must be elided", "Movie", "Drama", "PG"])] {
+        let r = Rect::new(96.0, 582.0, width, BADGE_H);
+        let mut drawn = 0.0;
         let runs = crate::draw_census::capture_runs(|| {
-            hero_identity(Painter::recording(), Rect::new(96.0, 582.0, width, BADGE_H),
-                &parts, Some("4K"), &["CC"], &measure);
+            drawn = hero_identity(Painter::recording(), r, &parts, Some("4K"), &["CC"], &measure);
         });
         assert!(!runs.is_empty());
+        assert!(drawn > 0.0);
+        assert_eq!(hero_identity_w(r, &parts, Some("4K"), &["CC"], &measure), drawn,
+            "the measured-only width is the width the draw gives, elided or not");
         for run in runs {
             assert_eq!(run.size, theme::size::CAPTION, "PDF identity is 24 px, including {:?}", run.text);
             assert!(!run.bold, "PDF metadata and chips use regular weight");
@@ -1829,7 +1863,19 @@ fn pdf_proposal_identity_uses_regular_caption_for_fitting_and_elided_metadata() 
 
 /// The year/episode date and length/remaining-time band, with source attribution last.
 /// Resuming time is primary ink; the surrounding facts remain secondary. Every run is bounded.
-pub fn hero_facts(p: Painter, r: Rect, date: &str, length: &str, resumes: bool, source: &str, measure: &dyn plx_machine::machine::Measure) {
+/// Returns the width drawn, from `r.x` to the last run's edge.
+pub fn hero_facts(p: Painter, r: Rect, date: &str, length: &str, resumes: bool, source: &str, measure: &dyn plx_machine::machine::Measure) -> f32 {
+    facts_row(Some(p), r, date, length, resumes, source, measure)
+}
+
+/// The width [`hero_facts`] draws in `r`, asking the same measurements and drawing nothing: the
+/// extent the hero shade stands behind ([`crate::hero_shade::HeroShade::add_ink`]).
+pub fn hero_facts_w(r: Rect, date: &str, length: &str, resumes: bool, source: &str, measure: &dyn plx_machine::machine::Measure) -> f32 {
+    facts_row(None, r, date, length, resumes, source, measure)
+}
+
+/// The one layout of the facts band, painted with `paint` or only measured without it.
+fn facts_row(paint: Option<Painter>, r: Rect, date: &str, length: &str, resumes: bool, source: &str, measure: &dyn plx_machine::machine::Measure) -> f32 {
     use crate::hstack::{Flow, Item};
     let cy = r.y + r.h * 0.5;
     let y = plx_gfx::text::text_vcenter_y(theme::size::CAPTION, 0, cy);
@@ -1843,18 +1889,27 @@ pub fn hero_facts(p: Painter, r: Rect, date: &str, length: &str, resumes: bool, 
         let text = plx_gfx::text::elide_by(text, budget, false, |s| measure.width_str(s, theme::size::CAPTION, false));
         let run = DottedRun::new(theme::size::CAPTION, ink, theme::space::SM).measured(measure);
         let run = if any { run.lead_dot() } else { run };
-        flow.place(|x| Item::new(run.draw(p, &[text.as_str()], x, y)));
+        flow.place(|x| Item::new(match paint {
+            Some(p) => run.draw(p, &[text.as_str()], x, y),
+            None => run.width(measure, &[text.as_str()]),
+        }));
         any = true;
     }
+    flow.end() - r.x
 }
 
 #[cfg(test)]
 #[test]
 fn pdf_proposal_facts_keep_air_on_both_sides_of_each_dot() {
     let m = crate::fixture::FixtureMeasure;
-    let runs = crate::draw_census::capture_runs(|| hero_facts(Painter::recording(),
-        Rect::new(96.0, 668.0, theme::hero::TEXT_W, theme::hero::FACTS_H),
-        "2024", "38 min left", true, "Shared by friend", &m));
+    let r = Rect::new(96.0, 668.0, theme::hero::TEXT_W, theme::hero::FACTS_H);
+    let mut drawn = 0.0;
+    let runs = crate::draw_census::capture_runs(|| {
+        drawn = hero_facts(Painter::recording(), r, "2024", "38 min left", true, "Shared by friend", &m);
+    });
+    assert!(drawn > 0.0);
+    assert_eq!(hero_facts_w(r, "2024", "38 min left", true, "Shared by friend", &m), drawn,
+        "the measured-only width is the width the draw gives");
     assert_eq!(runs.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
         ["2024", "·", "38 min left", "·", "Shared by friend"]);
     use plx_machine::machine::Measure;
@@ -2661,251 +2716,17 @@ pub fn art_scrim(p: Painter, card: Rect, rad: f32, h: f32, a: f32) {
     p.clip_clear();
 }
 
-// ---- The hero corner scrim: the wedge that makes hero copy legible over ARTWORK ---------------
+// ---- The hero's atmospheric ramp ----------------------------------------------------------------
 //
-// A **sibling** of `art_scrim`, deliberately not a direction flag on it: the rounded card's
-// bottom band and the full-bleed hero have different geometry and axes. What they share is
-// the rule: a label sits directly on
-// artwork only where something has bought it the contrast to.
+// What stands behind a hero's copy is the content-following shade ([`crate::hero_shade`]); the ramp
+// below is the frame-wide mood under it that Detail still paints.
 
-/// How far the hero wedge reaches before it is gone entirely: it peaks at x=0 and is exactly 0
-/// here. Four fifths of the panel, because it has to still be carrying weight under the RIGHT END
-/// of the longest lines, not just at the margin — detail's synopsis column runs to x=990
-/// (`MARGIN_X` + its `HERO_TEXT_W`) and its facts line to ~1270. A tighter falloff strands exactly
-/// the ends of the lines a long title or blurb produces. The last fifth of the frame is left
-/// completely alone: that is the side of the picture the composition is usually about.
-const HERO_SCRIM_W: f32 = crate::consts::SCR_W; // covers the shared 943 px title column
-
-/// Where the wedge starts feathering in. Clears the tab track's own band ([`TOP_BAR_Y`] 62 +
-/// [`TAB_PILL_H`] 60 + [`TAB_TRACK_PAD`] 8 = 130) by 32px: the top chrome owns its legibility with
-/// its own dark capsule (`draw_tab_row`) and must not get a second treatment stacked under it.
-const HERO_SCRIM_TOP: f32 = 0.15 * crate::consts::SCR_H; // 162
-/// Full strength begins above the highest two-line fallback in Home's three-line synopsis case.
-/// A clearLogo can paint higher as art; the feather stays clear of the top navigation.
-const HERO_SCRIM_KNEE: f32 = 0.32 * crate::consts::SCR_H;
-
-/// The mirrored RIGHT wedge — for a hero with a right-aligned column, which today means detail's
-/// "Starring" block at x 1270..1830, the one piece of hero copy the left wedge by definition cannot
-/// reach. Shorter than the left one, feathered across both axes; its corner weight preserves
-/// contrast at the top of a wrapped credits block under the shared atmospheric ramp. It is also the component's banding
-/// risk (`GL_DITHER` is deliberately off) — ~1 8-bit code per 4–5px near its origin. If it bands,
-/// make these SMALLER (steeper = fewer codes per pixel); never re-enable dithering.
-const HERO_SCRIM_R_W: f32 = 700.0;
-const HERO_SCRIM_R_TOP: f32 = 0.28 * crate::consts::SCR_H; // four-line credits above actions
-const HERO_SCRIM_R_A: f32 = theme::hero::SCRIM_RIGHT_A;
-
-/// Where the frame-wide ATMOSPHERIC ramp starts — the treatment's other half, which both heroes
-/// paint under this wedge (`screens::home`'s `Backdrop::draw` / `detail::draw_backdrop`): nothing above this
-/// line, running to the foot of the panel. It sits here with the wedge's own stops because it is
-/// one treatment's first stop, and it was declared verbatim, under the same name, in two screens.
+/// Where the frame-wide ATMOSPHERIC ramp starts: nothing above this line, running to the foot of the
+/// panel. Detail paints it under its hero shade (`detail::draw_backdrop`); Home paints none (board
+/// CW-13 v2: Home's art stands unramped and the shade carries the legibility).
 ///
-/// Both screens share the three-stop curve in `landing_hero::base_scrim_ramp`: zero at this
-/// origin, .55 at 62% of the remaining height, .86 at the foot. Fused ground and layered
-/// drawing use those same stops; `detail_layout::base_scrim_a` delegates to the same curve.
-pub const HERO_BASE_SCRIM_Y0: f32 = 0.34 * crate::consts::SCR_H; // 367.2
-
-/// The hero wedge's alpha at `x`, at or below [`HERO_SCRIM_KNEE`] — which is where every hero text
-/// anchor sits, by construction (see that const). Pure, because the legibility contract is graded
-/// on it: this is the arithmetic the anchor table in this module's tests reads, so the promise and
-/// the paint cannot come from two different curves.
-///
-/// `strength` is the screen's own hero fade (home's `env.hero_a`, detail's
-/// `hero_alpha(scroll, HERO_FADE)`), multiplied by [`crate::landing_hero::PREVIEW_FIELD`]
-/// while a preview picture is bound. Everything scales by it, so the wedge leaves with the hero
-/// rather than lingering over the shelves. The clamp is that video-bound ceiling, not 1, so the
-/// raised row stays on this curve.
-pub fn hero_scrim_a(x: f32, strength: f32) -> f32 {
-    let u = (x.max(0.0) / HERO_SCRIM_W).min(1.0);
-    theme::SCRIM_TEXT_A
-        * (1.0 - u)
-        * strength.clamp(0.0, crate::landing_hero::PREVIEW_FIELD)
-}
-
-/// The mirrored right wedge's alpha at `(x, y)` — [`hero_scrim_a`]'s sibling, and the only part of
-/// the field that is two-dimensional, since it feathers in from its left edge AND from its top and
-/// peaks only in the bottom-right corner. Pure for the same reason.
-pub fn hero_scrim_right_a(x: f32, y: f32, strength: f32) -> f32 {
-    let u = ((x - (crate::consts::SCR_W - HERO_SCRIM_R_W)).max(0.0) / HERO_SCRIM_R_W).min(1.0);
-    let v =
-        ((y - HERO_SCRIM_R_TOP).max(0.0) / (crate::consts::SCR_H - HERO_SCRIM_R_TOP)).min(1.0);
-    HERO_SCRIM_R_A * strength.clamp(0.0, crate::landing_hero::PREVIEW_FIELD) * u * v
-}
-
-/// The wedge's quads as `(rect, [tl, tr, br, bl])`, built pure so the seam between quad 0 and
-/// quad 1 — the one structural bug this component can have — is host-gradeable. `n` is how many
-/// entries are live: 2, or 3 when `right`.
-///
-/// The whole field is **one ink at four alphas** ([`theme::scrim`]), which is [`Painter::grad4`]'s
-/// stated precondition: straight (non-premultiplied) rgba only interpolates exactly across a quad
-/// when the corners share an rgb.
-///
-/// | # | rect | field it produces |
-/// |---|---|---|
-/// | 0 | `(0, TOP, W, KNEE−TOP)` | feather-in: 0 along the whole top edge, the full wedge along the bottom |
-/// | 1 | `(0, KNEE, W, SCR_H−KNEE)` | constant in y → a pure horizontal ramp to the frame's foot |
-/// | 2 | `(SCR_W−R_W, R_TOP, R_W, SCR_H−R_TOP)` | feathers in from the top AND the left, peaking bottom-right |
-///
-/// **Quad 0 and quad 1 abut exactly**, and must keep doing so: quad 0's bottom pair (`bl→br` =
-/// edge→none) is identical to quad 1's top pair (`tl→tr` = edge→none) at every x, and the two share
-/// one float y. The reflex here is to reach for [`plx_gfx::gfx::snap`] — don't. [`art_scrim`]'s fallback snaps
-/// because an integer-truncated *scissor* meets a float *fill*; these are fill-to-fill quads
-/// sharing an edge, where the rasterizer's own fill rule already guarantees neither a gap (one row
-/// of unscrimmed BRIGHT artwork) nor a double-cover (one row of doubled scrim). Snapping would be
-/// cargo cult, and it would move the seam off the shared float.
-///
-/// **The corners are the closed forms EVALUATED AT THE CORNERS**, not a second hand-written copy of
-/// them: a quad's corner alpha is exactly what [`hero_scrim_a`] / [`hero_scrim_right_a`] say at that
-/// `(x, y)`, so at the corners the field the legibility contract is graded on and the field that is
-/// painted cannot drift — the tests below no longer assert that agreement, only the part
-/// construction cannot pin (that the closed forms are affine / bilinear in BETWEEN the corners,
-/// which is the shape `grad4` can actually interpolate). It also gives the two closed forms the
-/// production caller they otherwise lacked. Both clamp `strength` themselves, so it is passed raw.
-pub fn hero_scrim_quads(strength: f32, right: bool) -> ([(Rect, [[f32; 4]; 4]); 3], usize) {
-    let (sw, sh) = (crate::consts::SCR_W, crate::consts::SCR_H);
-    // the wedge peaks at its left margin and is gone by `HERO_SCRIM_W`; the right one peaks in the
-    // bottom-right corner of the panel, which is the corner it is anchored to
-    let none = theme::scrim(hero_scrim_a(HERO_SCRIM_W, strength));
-    let edge = theme::scrim(hero_scrim_a(0.0, strength));
-    let redge = theme::scrim(hero_scrim_right_a(sw, sh, strength));
-    let mut q = [(Rect::new(0.0, 0.0, 0.0, 0.0), [none; 4]); 3];
-    q[0] = (
-        Rect::new(
-            0.0,
-            HERO_SCRIM_TOP,
-            HERO_SCRIM_W,
-            HERO_SCRIM_KNEE - HERO_SCRIM_TOP,
-        ),
-        [none, none, none, edge],
-    );
-    q[1] = (
-        Rect::new(0.0, HERO_SCRIM_KNEE, HERO_SCRIM_W, sh - HERO_SCRIM_KNEE),
-        [edge, none, none, edge],
-    );
-    if right {
-        q[2] = (
-            Rect::new(
-                sw - HERO_SCRIM_R_W,
-                HERO_SCRIM_R_TOP,
-                HERO_SCRIM_R_W,
-                sh - HERO_SCRIM_R_TOP,
-            ),
-            [none, none, redge, none],
-        );
-    }
-    (q, if right { 3 } else { 2 })
-}
-
-/// Draw the hero corner scrim: the darkening for copy that sits directly on a full-bleed backdrop,
-/// along the one axis a bottom-up ramp has nothing to say about.
-///
-/// Both heroes already paint a frame-wide atmospheric ramp, and both bottom-anchor their text
-/// column well ABOVE the band where that ramp reaches strength — the HERO-72 title's cap top gets
-/// ~0.11 of it. The ramp cannot simply be raised, because at any given y it is uniform across all
-/// 1920px: enough alpha to rescue the title would put 60% black over the whole picture at the
-/// title's y. So the corner the text is IN gets its own field instead, and the ramp goes on doing
-/// the job it is good at (mood, and the depth under the shelf line).
-///
-/// `strength` is the screen's own hero fade — see [`hero_scrim_a`]. `right` adds the mirrored wedge
-/// for a hero with a RIGHT-aligned column (detail's "Starring"); home has none and passes `false`.
-///
-/// Call it INSIDE the backdrop, before any hero content is drawn: it exists to darken artwork, and
-/// a wedge over the text would be a dimmer, not a scrim.
-pub fn hero_scrim(p: Painter, strength: f32, right: bool) {
-    if strength <= 0.0 {
-        return;
-    }
-    let (q, n) = hero_scrim_quads(strength, right);
-    for (r, k) in q.iter().take(n) {
-        p.grad4(*r, *k);
-    }
-}
-
-/// Is the one-pass hero ground armed? `/tmp/plxnative-heroground`, read once at boot.
-///
-/// EXPERIMENT, not a default. The shipped path is the four blended quads, and it stays reachable
-/// on one binary so the two are an A/B rather than a replacement.
-static HERO_GROUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Arm the one-pass hero ground (`app.rs`, from the dev trigger).
-pub fn set_hero_ground(on: bool) {
-    HERO_GROUND.store(on, std::sync::atomic::Ordering::Relaxed);
-}
-
-/// May a hero draw its ground in one pass? Both halves must hold: the trigger, and a program that
-/// actually linked (`gfx::hero_ground_ok`) — a driver that refused it keeps the shipped picture.
-pub fn hero_ground_armed() -> bool {
-    HERO_GROUND.load(std::sync::atomic::Ordering::Relaxed) && plx_gfx::gfx::hero_ground_ok()
-}
-
-/// The one-pass ground's WEDGE field, exactly as `fs_hero.frag` evaluates it from the same four
-/// numbers. Pure, and written twice on purpose: a GLSL expression cannot be graded by `make check`,
-/// so this is the copy the tests pin against [`hero_scrim_quads`] — the shipped picture — at every
-/// corner of both its quads. If the shader and this ever disagree, the test is the one that is
-/// right and the shader is the bug.
-pub fn hero_ground_wedge_a(wedge: [f32; 4], x: f32, y: f32) -> f32 {
-    let u = (x / wedge[1]).clamp(0.0, 1.0);
-    let v = ((y - wedge[2]) / (wedge[3] - wedge[2])).clamp(0.0, 1.0);
-    wedge[0] * (1.0 - u) * v
-}
-
-/// The one-pass ground's atmospheric RAMP field, as `fs_hero.frag` evaluates it — two linear
-/// segments meeting at `ramp[1]`, from `(ramp[0], 0)` through `(ramp[1], ramp[2])` to
-/// `(SCR_H, ramp[3])`. Same contract as [`hero_ground_wedge_a`]: the tests pin it against the
-/// screen's own curve.
-pub fn hero_ground_ramp_a(ramp: [f32; 4], y: f32) -> f32 {
-    let t0 = ((y - ramp[0]) / (ramp[1] - ramp[0])).clamp(0.0, 1.0);
-    let t1 = ((y - ramp[1]) / (crate::consts::SCR_H - ramp[1])).clamp(0.0, 1.0);
-    ramp[2] * t0 + (ramp[3] - ramp[2]) * t1
-}
-
-/// The wedge's four shader parameters for a hero at `strength` — the ONE place they are derived,
-/// so the draw and the test cannot read two different geometries.
-pub fn hero_ground_wedge(strength: f32) -> [f32; 4] {
-    [
-        hero_scrim_a(0.0, strength),
-        HERO_SCRIM_W,
-        HERO_SCRIM_TOP,
-        HERO_SCRIM_KNEE,
-    ]
-}
-
-/// THE HERO GROUND IN ONE PASS — the backdrop art carrying both scrim fields, instead of the art
-/// plus [`hero_scrim`]'s two quads plus the screen's own two atmospheric-ramp bands.
-///
-/// **This is the same picture by construction, not a cheaper approximation of it.** Both fields are
-/// closed forms of the authored pixel position, both are [`theme::SCRIM_INK`], and two straight-alpha
-/// layers of one ink compose exactly as `a1 + a2 - a1*a2`; `fs_hero.frag` carries the algebra and
-/// the one thing that does differ (the shipped path quantises the framebuffer three times where
-/// this quantises once).
-///
-/// **Why it is worth a program of its own.** Measured on the dev television with
-/// `/tmp/plxnative-overdraw`: Home's hero submits 5.39M authored pixels against a 2.07M-pixel panel
-/// — 2.60x — and the ramp (1,368,576 px) plus the wedge (1,410,048 px) are 52% of it, for fields
-/// that are three ALU operations each. Their cost is not their shading, it is that they are 2.78M
-/// more fragments through the blender landing on pixels the art has already written.
-///
-/// `art` is the resolved texture and the rect `crate::screens::home` would have drawn it at; `art_a`
-/// its tint alpha; `ramp` is the screen's atmospheric curve as `(y0, knee, a_knee, a_foot)` —
-/// **the screen's, not this module's**, because home's is a two-stop curve with a midpoint knee and
-/// detail's a single linear stop, and unifying them is a design decision nobody has taken.
-/// `strength` is the hero fade the wedge scales with, exactly as [`hero_scrim`] takes it.
-///
-/// The CALLER owns the preconditions, because they are all facts about the screen's own state: the
-/// art must be there and be the only layer (a hero FLIP slides two of them, and one quad cannot
-/// carry a scrim over both), and the wedge must actually be wanted. Anything else falls back.
-pub fn hero_ground(
-    p: Painter,
-    tex: u32,
-    r: Rect,
-    art_a: f32,
-    ramp: [f32; 4],
-    strength: f32,
-) {
-    // The wedge's own geometry, in the same authored units [`hero_scrim_quads`] builds its corners
-    // from — and its peak through the very function the legibility table is graded on, so the one
-    // pass and the four quads cannot be two different curves.
-    p.hero_ground(tex, r, art_a, ramp, hero_ground_wedge(strength));
-}
+/// The start of Detail's three-stop bottom shade (`landing_hero::base_scrim_ramp`).
+pub const HERO_BASE_SCRIM_Y0: f32 = 300.0;
 
 /// The profile chip's diameter: ONE control height with the tab pills and the circle-button
 /// family, so the focused chip's capsule — the avatar plus [`TAB_TRACK_PAD`] all round — is
@@ -3764,7 +3585,7 @@ impl View for PageDots {
                 // tokens, not a raw literal: full-strength white for the current page, dimmed for the rest
                 let col = crate::theme::with_a(
                     crate::theme::TEXT_PRIMARY,
-                    if d == self.active { 1.0 } else { 0.35 },
+                    if d == self.active { 1.0 } else { crate::theme::shade::PAGER_IDLE_A },
                 );
                 let w = if span.i == 1 { span.w } else { Self::DOT };
                 p.rect(
@@ -4137,19 +3958,37 @@ impl AmbientWash {
     /// TOOK THE RAMP: when it did not, the ramp is the caller's to draw as before, over all of
     /// this — which is also the answer whenever the ramp would have had to go UNDER an art that
     /// stayed a layer of its own. Every fallback is the layered picture, never a different one.
+    ///
+    /// **The `scrim`** ([`WashScrim`]: a hero's shade over its content rects, a field a ramp cannot
+    /// describe) is carried the same way and on the same conditions, evaluated per vertex of the one
+    /// pass. Because a vertex-evaluated field is linear inside a mesh triangle, a ground that carries
+    /// one is cut into cells of at most [`SCRIM_CELL_W`] x [`SCRIM_CELL_H`] (the mesh is 16 x 16 a
+    /// cell), which is what bounds how far the painted field stands from the closed form the
+    /// legibility contract is graded on ([`HeroShade::at`](crate::hero_shade::HeroShade::at)).
+    /// Returns whether it took the ramp and the scrim — both or
+    /// neither: they ride the same pass under the same conditions — and a caller that gets `false`
+    /// with either given draws it over all of this ([`scrim_layer`] for the scrim).
     pub fn draw_ground(
         &self,
         p: Painter,
         r: Rect,
         art: Option<WashArt>,
         ramp: Option<WashRamp>,
+        scrim: Option<WashScrim>,
     ) -> bool {
         let art = art.filter(|a| a.tex != 0);
         let split = art.and_then(|a| art_wash_split(r, a.rect)).filter(|_| plx_gfx::gfx::art_wash_ok());
         let art_taken = split.is_some();
         let resting = self.at_rest();
-        // The ramp sits over the art: it can only join the wash if the art did (or there is none).
-        let ramp = ramp.filter(|_| plx_gfx::gfx::wash_ink_ok() && (art.is_none() || art_taken));
+        // The ink sits over the art: it can only join the wash if the art did (or there is none).
+        let carries = plx_gfx::gfx::wash_ink_ok() && (art.is_none() || art_taken);
+        let ramp = ramp.filter(|_| carries);
+        let scrim = scrim.filter(|_| carries);
+        let inked = ramp.is_some() || scrim.is_some();
+        debug_assert!(
+            ramp.zip(scrim).is_none_or(|(q, s)| q.ink == s.ink),
+            "a ramp and a scrim in one pass are one ink"
+        );
         let (over, bands) = match split {
             Some((over, bands)) => (Some(over), bands),
             None => (None, [Some(r), None, None, None]),
@@ -4158,13 +3997,17 @@ impl AmbientWash {
             [(b.x, b.y), (b.x + b.w, b.y), (b.x + b.w, b.y + b.h), (b.x, b.y + b.h)]
                 .map(|(x, y)| self.sample(r, x, y).map(code))
         };
-        let knees = ramp.map_or([None, None], |q| [Some(q.stops[0].0), Some(q.stops[1].0)]);
-        let ink = |b: Rect| {
-            ramp.map_or(([0.0; 4], [0.0; 2]), |q| (q.ink, [q.alpha(b.y), q.alpha(b.y + b.h)]))
+        let knees = ramp.map_or([None; 3], |q| q.stops.map(|(y, _)| Some(y)));
+        let (cell_w, cell_h) = if scrim.is_some() { (SCRIM_CELL_W, SCRIM_CELL_H) } else { (f32::INFINITY, f32::INFINITY) };
+        let pieces = |band: Rect| cut_at(band, knees).flat_map(move |b| cut_cells(b, cell_w, cell_h));
+        let ink = |b: Rect| GroundInk {
+            ink: scrim.map(|s| s.ink).or(ramp.map(|q| q.ink)).unwrap_or([0.0; 4]),
+            ramp: ramp.map_or([0.0; 2], |q| [q.alpha(b.y), q.alpha(b.y + b.h)]),
+            scrim: scrim.map_or(plx_gfx::gfx::scrim::GroundShade::NONE, |s| s.field),
         };
         for band in bands.into_iter().flatten() {
-            for b in cut_at(band, knees) {
-                if ramp.is_some() {
+            for b in pieces(band) {
+                if inked {
                     p.ambient_inked(b, corners(b), ink(b), resting);
                 } else {
                     p.ambient(b, 1.0, corners(b), resting);
@@ -4172,7 +4015,7 @@ impl AmbientWash {
             }
         }
         if let (Some(over), Some(a)) = (over, art) {
-            for b in cut_at(over, knees) {
+            for b in pieces(over) {
                 p.ambient_art(b, corners(b), a.tex, a.rect, a.uv, a.tint, ink(b));
             }
         }
@@ -4181,7 +4024,7 @@ impl AmbientWash {
                 p.tex_uv(a.tex, a.uv, a.rect, 0.0, a.tint);
             }
         }
-        ramp.is_some()
+        inked
     }
 
     /// **Paint a ground that has NO photograph at all as ONE flat colour** over `r`
@@ -4220,8 +4063,10 @@ impl AmbientWash {
 
 /// A screen's ATMOSPHERIC RAMP as [`AmbientWash::draw_ground`] carries it: `ink` (a scrim colour;
 /// its alpha is ignored) at no alpha above `stops[0].0`, then linear through the three
-/// `(y, alpha)` stops, holding the last below it. Home's is two segments with a midpoint knee;
-/// Detail's is one, which it writes by repeating its foot.
+/// `(y, alpha)` stops, holding the last below it. Home's shelf fade
+/// ([`shelf_fade`](crate::landing_hero::shelf_fade)) is two segments and a held foot, its last
+/// stop above the panel's; Detail's is one segment, which it writes by repeating its foot on the
+/// panel's.
 #[derive(Clone, Copy)]
 pub struct WashRamp {
     pub ink: [f32; 4],
@@ -4229,6 +4074,21 @@ pub struct WashRamp {
 }
 
 impl WashRamp {
+    /// **The ramp as layers of its own**, over whatever is already drawn: for a ground that did not
+    /// carry it (a hero slide's two art layers, a driver without the program). One full-width
+    /// gradient rect a segment, nothing above the first stop, and the last stop's alpha held to the
+    /// panel's foot: the same curve [`alpha`](Self::alpha) gives and the ground draws per vertex.
+    pub fn layer(&self, p: Painter) {
+        for pair in self.stops.windows(2) {
+            let [(top, a), (bottom, b)] = pair else { unreachable!() };
+            p.rect(Rect::new(0.0, *top, crate::consts::SCR_W, bottom - top), 0.0, theme::scrim(*a), theme::scrim(*b), 0.0);
+        }
+        let (last, a) = self.stops[2];
+        if last < crate::consts::SCR_H {
+            p.rect(Rect::new(0.0, last, crate::consts::SCR_W, crate::consts::SCR_H - last), 0.0, theme::scrim(a), theme::scrim(a), 0.0);
+        }
+    }
+
     /// The ramp's alpha at `y` — the curve the layered `rect`s drew, stop to stop.
     pub fn alpha(&self, y: f32) -> f32 {
         let [s0, s1, s2] = self.stops;
@@ -4245,22 +4105,87 @@ impl WashRamp {
     }
 }
 
-/// `r` cut into horizontal strips at the ramp's knees, each on a pixel row (the same
-/// `ceil(y - 0.5)` rule as [`art_wash_split`]), so the ramp is ONE straight segment within every
-/// strip — which is what lets a strip carry it per vertex exactly.
-pub fn cut_at(r: Rect, knees: [Option<f32>; 2]) -> impl Iterator<Item = Rect> {
+/// `r` cut into horizontal strips at the ramp's three stops (its knees, and the foot it holds
+/// below), each on a pixel row (the same `ceil(y - 0.5)` rule as [`art_wash_split`]), so the ramp is
+/// ONE straight segment within every strip, or held flat — which is what lets a strip carry it per
+/// vertex exactly. A stop on the panel's foot (Detail's, Home's old one) or past `r` cuts nothing.
+pub fn cut_at(r: Rect, knees: [Option<f32>; 3]) -> impl Iterator<Item = Rect> {
     let (top, bottom) = (r.y, r.y + r.h);
-    let mut ys = [top, bottom, bottom, bottom];
+    let mut ys = [top, bottom, bottom, bottom, bottom];
     for (i, k) in knees.into_iter().enumerate() {
         if let Some(k) = k {
             ys[i + 1] = (k - 0.5).ceil().clamp(top, bottom);
         }
     }
-    ys[3] = bottom;
     ys.sort_by(f32::total_cmp);
-    (0..3).filter_map(move |i| {
+    (0..4).filter_map(move |i| {
         (ys[i + 1] > ys[i]).then(|| Rect::new(r.x, ys[i], r.w, ys[i + 1] - ys[i]))
     })
+}
+
+/// A screen's SCRIM as [`AmbientWash::draw_ground`] carries it: `ink` (a scrim colour; its alpha is
+/// ignored) at the stacked alpha of `field` (the hero shade, [`HeroShade`](crate::hero_shade::HeroShade)
+/// builds it from the content rects a screen draws), a two-dimensional field no [`WashRamp`] can
+/// describe. The ground evaluates it per vertex in its one pass; [`scrim_layer`] draws the same
+/// field as a layer of its own.
+#[derive(Clone, Copy)]
+pub struct WashScrim {
+    pub ink: [f32; 4],
+    pub field: plx_gfx::gfx::scrim::GroundShade,
+}
+
+impl WashScrim {
+    /// The scrim's alpha at the authored point `(x, y)`.
+    pub fn alpha(&self, x: f32, y: f32) -> f32 {
+        self.field.at(x, y)
+    }
+}
+
+/// The widest and tallest a scrimmed ground draws as ONE mesh (a 16 x 16 grid of triangles):
+/// 480 x 270 is the panel in a 4 x 4. The vertex-evaluated field is linear inside a triangle, so
+/// this is what bounds its distance from the closed form:
+/// `the_painted_field_is_the_closed_form_under_content_and_close_elsewhere` holds the bound for the hero
+/// shade's own field.
+pub const SCRIM_CELL_W: f32 = 480.0;
+pub const SCRIM_CELL_H: f32 = 270.0;
+
+/// `r` cut into a grid of at most `cell_w` x `cell_h` cells (one cell when either bound is no
+/// smaller than `r`), every edge computed from `r` and the cell index so two neighbours share the
+/// same float and the grid tiles `r` with no crack and no overlap.
+pub fn cut_cells(r: Rect, cell_w: f32, cell_h: f32) -> impl Iterator<Item = Rect> {
+    let n = |len: f32, cell: f32| ((len / cell).ceil() as usize).max(1);
+    let (nx, ny) = (n(r.w, cell_w), n(r.h, cell_h));
+    let edge = move |o: f32, len: f32, i: usize, n: usize| if i == n { o + len } else { o + len * i as f32 / n as f32 };
+    (0..ny).flat_map(move |j| {
+        (0..nx).map(move |i| {
+            let (x0, x1) = (edge(r.x, r.w, i, nx), edge(r.x, r.w, i + 1, nx));
+            let (y0, y1) = (edge(r.y, r.h, j, ny), edge(r.y, r.h, j + 1, ny));
+            Rect::new(x0, y0, x1 - x0, y1 - y0)
+        })
+    })
+}
+
+/// **A scrim drawn as a layer of its own**, over whatever is already drawn: the frames a ground
+/// cannot carry it in its pass — a hero slide (two art layers it must go OVER), and a resting hero
+/// whose opaque photograph covers the wash, so that no ground pass is drawn at all. The same field,
+/// in the same cells ([`SCRIM_CELL_W`]), as [`AmbientWash::draw_ground`] would have carried.
+///
+/// **Every cell is declared, and only the cells the shade reaches are drawn.** A hero's shade is a few
+/// soft blocks and most of the panel's 16 cells hold nothing but zeros; the renderer drops a cell the
+/// field cannot reach (`gfx::draw_scrim_layer`, [`GroundShade::reaches`](plx_gfx::gfx::scrim::GroundShade::reaches):
+/// exact where it says no), so the layer costs the vertices of the cells under the copy, not of the
+/// panel, and a frame with no shade costs none. The skip sits below the declaration on purpose: the
+/// recorded stream (the draw census, the replay anchors) is the same 16 cells whatever the shade is.
+///
+/// **There is no `gfx::scrim_layer_ok` check here, on purpose.** A layer whose program did not link
+/// draws nothing, and the renderer (`gfx::draw_scrim_layer`) already returns for it, below the
+/// declaration like the skip above; a check up here would stop declaring the cells on a GPU without
+/// the program, so the same frame would record differently on a host (no GL, no program) than on the
+/// set, and the replay anchors would diverge between them.
+pub fn scrim_layer(p: Painter, s: WashScrim) {
+    for cell in cut_cells(Rect::FULL, SCRIM_CELL_W, SCRIM_CELL_H) {
+        p.scrim_layer(cell, s.ink, s.field);
+    }
 }
 
 /// The photograph [`AmbientWash::draw_ground`] lays over its wash: exactly the arguments the
@@ -7126,9 +7051,7 @@ impl Default for StripRender {
 /// | the flat capsule this replaced (`TAB_TRACK_A_TOP` .72) | L\* 27.5 | **9.74:1** |
 /// | the band's face, solved for a dark track | L\* 75.4 | **1.86:1** |
 ///
-/// At L\* 80 it is 2.54:1. Nothing in the app darkens the top band before this — `home`'s
-/// atmospheric ramp starts at `HERO_BASE_SCRIM_Y0` (367) and the hero wedge at `HERO_SCRIM_TOP`
-/// (162) — so those are raw backdrop pixels, and `gfx::sample_ground`'s own note records a census
+/// At L\* 80 it is 2.54:1. Nothing in the app darkens the top band before this — Detail's resting shade leaves the navigation band clear, so those are raw backdrop pixels, and `gfx::sample_ground`'s own note records a census
 /// finding a MEDIAN 26.8 L\* span across five taps of the track alone, a third of heroes over 40.
 /// The band is half again as wide as the track.
 ///
@@ -9594,6 +9517,10 @@ mod ambient_ground_tests;
 #[cfg(test)]
 #[path = "widgets_ground_tests.rs"]
 mod ground_tests;
+
+#[cfg(test)]
+#[path = "widgets_hero_shade_tests.rs"]
+mod hero_shade_tests;
 
 #[cfg(test)]
 #[path = "widgets_hero_scrim_tests.rs"]

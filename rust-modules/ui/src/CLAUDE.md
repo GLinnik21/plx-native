@@ -50,7 +50,7 @@ arguments, and its time is the `dt` it is handed.
    matter more than couch-copy scale, and it must never migrate into chrome or prose. The hero
    SYNOPSIS is the case that proves
    the rule and it is no longer here: a blurb is the longest run of prose on its page, so it is
-   reading copy, and both heroes now draw it at `LABEL` 26 through `ui::hero_synopsis`. (The hero
+   reading copy, and Detail draws it at `LABEL` 26 through `ui::hero_synopsis`. Home has a separate line for episode identity, remaining time, movie genre or a short premise. (The hero
    identity line uses `theme::hero::IDENTITY_SIZE`, regular `CAPTION` 24, matching the latest PDF.) Pass a rung to `Painter::text`/`Label`/`TextView`/`text::elide` instead of a bare
    `24`/`28`/… — a size is a role, not a magic number; pick the nearest rung, and if no rung fits a
    genuinely new role, **add a documented rung to `pub mod size` in `gfx/tokens.rs`** (`theme::size`
@@ -759,14 +759,15 @@ of stacked shelves hands each one the lift of the next shelf's heading (`Section
 Live and target geometry include these bands, so painting, paging, scrolling and restored
 viewports agree. Episode rows use landscape stills; the Continue Watching row's is `RowStyle::STILL`
 (the episode cell at `theme::STILL_RADIUS`; the focused still only pops, and every other tile stands at its
-rest x at any pop progress: the 1.09 pop grows a tile ~19 px a side inside the 28 px gap), with no caption band under it (`captions::NOTHING_UNDER_STILLS`, Home's and Recommended's landscape deck alike). A tile's focus pop
+rest x at any pop progress: the 1.09 pop grows a tile ~19 px a side inside the 40 px gap, `theme::STILL_GAP`, pitch 460; the Detail strip's `EPISODE` style keeps 28), with no caption band under it (`captions::NOTHING_UNDER_STILLS`, Home's and Recommended's landscape deck alike). A tile's focus pop
 reaches a mark that must ride it as `cards::Tile::pop` (0..1, the pop spring read as progress), never
 as a timer of the mark's own. The deck card's artwork (Plex's cover, then the baked composite, then the
 title in type) is `card_art::pick` over `tile_facts::for_deck`; the composite is a bitmap baked once by
 the poster worker (`card_art::compose`), never a live logo. The footer's one-line fit rule is
 `still_footer::footer_geometry`, the one place its widths are decided (a started episode: `S2 E4 · 38m left` and a bar; an unstarted one: `S2 E1 · New episode` and no bar, the tag kept while the whole text fits). The stills row's heading stands `RowStyle::heading_rise` (`theme::STILL_HEADING_RISE`) above a poster shelf's, joined with the focus lift by `card_row::heading_lift_of`, which `Shelf::heading_lift()` reports to Home and Recommended alike. `Art::Still` supplies the label ground;
 `widgets::still_overlay` draws its labels afterward (a `StillFooter::Shelf` still also its full-bleed resume bar; a
-`StillFooter::Continue` still its one footer line, bar included). Both the artwork and
+`StillFooter::Continue` still its one footer line, bar included: on the deck that line stands BELOW the art with no scrim,
+`still_footer::Place::Below`, 8 px under the tile; the Detail strip's stays in the art, `Place::InArt`). Both the artwork and
 its ground participate in backdrop discovery, including texture changes and UV cropping.
 
 - **No card draws an amber ▶.** Nobody read it as "playback starts", and what OK does is now said by the
@@ -780,7 +781,8 @@ its ground participate in backdrop discovery, including texture changes and UV c
 - An **amber resume BAR** means **how far in you already are**. It is a fact about the item, not a
   promise about the press, so it is drawn wherever there is progress to report, including on a
   shelf that navigates. Hiding it there would hide something true. On a Continue Watching still
-  and a strip card it is the footer's own 4 px bar on the right (100 px, shrinking to 64);
+  it is the footer's own 6 px bar (radius 3) on the right, under the art, and on a strip card a 4 px bar inside it (each
+  100 px, shrinking to 64);
   `resume_bar` (the full-bleed band) is for posters and `StillFooter::Shelf` stills.
 - A **`✓`** means **finished** — likewise a state, not a promise.
 

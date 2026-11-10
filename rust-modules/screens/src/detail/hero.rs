@@ -450,6 +450,15 @@ fn control_widths(set: HeroSet, cw: HeroWidths) -> ([f32; MAX_CTLS], usize) {
     (widths, n)
 }
 
+/// The rect the whole action row occupies from `y` (page coordinates): from the left margin to the
+/// last control's right edge. What the control ground is sampled over, and what the hero shade
+/// stands behind.
+pub fn hero_row_rect(set: HeroSet, y: f32, cw: HeroWidths) -> Rect {
+    let (_, n) = hero_ctls(set);
+    let last = hero_btn_rect_at(set, n.saturating_sub(1), y, cw);
+    Rect::new(plx_ui::consts::MARGIN_X, y, last.x + last.w - plx_ui::consts::MARGIN_X, CD)
+}
+
 /// The drawn frame of control `i`, using the shared row spacing and measured widths.
 pub fn hero_btn_rect_at(set: HeroSet, i: usize, y: f32, cw: HeroWidths) -> Rect {
     let (widths, n) = control_widths(set, cw);
@@ -530,11 +539,12 @@ pub fn hero_credit(d: &Detail) -> Option<(&'static str, Vec<&str>)> {
     (!names.is_empty()).then_some((plx_platform::i18n::msg::browse_detail_directed_by(), names))
 }
 
-pub fn has_people(d: &Detail) -> bool {
-    !d.cast.is_empty() || hero_credit(d).is_some()
+pub fn draw_people(p: Painter, d: &Detail, button_y: f32, measure: &dyn Measure) {
+    people_blocks(d, button_y, measure, |view, at| { view.draw(p, Rect::new(at.x, at.y, at.w, 0.0)); });
 }
 
-pub fn draw_people(p: Painter, d: &Detail, button_y: f32, measure: &dyn Measure) {
+/// Walk the credits' blocks as they stand, bottom-anchored on the facts' cap band.
+fn people_blocks(d: &Detail, button_y: f32, measure: &dyn Measure, mut f: impl FnMut(&TextView<'_>, Rect)) {
     use plx_ui::detail_layout::PEOPLE_W;
     let x = plx_ui::consts::SCR_W - plx_ui::consts::MARGIN_X - PEOPLE_W;
     let cast_names: Vec<&str> = d
@@ -562,7 +572,7 @@ pub fn draw_people(p: Painter, d: &Detail, button_y: f32, measure: &dyn Measure)
     for span in stack.placed() {
         let view = if span.i == 0 { credit_view.as_ref() } else { cast.as_ref() };
         if let Some(view) = view {
-            view.draw(p, Rect::new(x, span.y, PEOPLE_W, 0.0));
+            f(view, Rect::new(x, span.y, PEOPLE_W, span.h));
         }
     }
 }
@@ -832,15 +842,15 @@ fn facts_flow(
     flow.end()
 }
 
-pub fn draw_facts(p: Painter, d: &Detail, y: f32, measure: &dyn plx_machine::machine::Measure) {
+/// Draw the facts line at `y`; the width it draws from the margin.
+pub fn draw_facts(p: Painter, d: &Detail, y: f32, measure: &dyn plx_machine::machine::Measure) -> f32 {
     let (date, extent) = hero_facts(d);
     let extent = extent.as_deref().unwrap_or("");
     let credit = plx_ui::fmt::shared_by(&d.source()).unwrap_or_default();
+    let column = Rect::new(plx_ui::consts::MARGIN_X, y, FACTS_R - plx_ui::consts::MARGIN_X, theme::hero::FACTS_H);
     if play_mode_w(d, false, measure) == 0.0 {
-        plx_ui::widgets::hero_facts(p, Rect::new(plx_ui::consts::MARGIN_X, y,
-            FACTS_R - plx_ui::consts::MARGIN_X, theme::hero::FACTS_H),
-            &date, extent, hero_resume_ns(d) > 0, &credit, measure);
-        return;
+        let resumes = hero_resume_ns(d) > 0;
+        return plx_ui::widgets::hero_facts(p, column, &date, extent, resumes, &credit, measure);
     }
     let width = |fit: FactsFit| {
         facts_flow(
@@ -852,12 +862,12 @@ pub fn draw_facts(p: Painter, d: &Detail, y: f32, measure: &dyn plx_machine::mac
     };
     let fit = facts_fit(
         !credit.is_empty(),
-        FACTS_R - plx_ui::consts::MARGIN_X,
+        column.w,
         width,
     );
     let elided;
     let date = if fit.elide {
-        let budget = (FACTS_R - plx_ui::consts::MARGIN_X - play_mode_w(d, true, measure)).max(0.0);
+        let budget = (column.w - play_mode_w(d, true, measure)).max(0.0);
         elided = plx_gfx::text::elide_by(&date, budget, false, |t| {
             measure.width_str(t, theme::size::CAPTION, false)
         });
@@ -885,7 +895,7 @@ pub fn draw_facts(p: Painter, d: &Detail, y: f32, measure: &dyn plx_machine::mac
                 .unwrap_or(0.0)
         },
         |dx, after| draw_play_mode(p, d, plx_ui::consts::MARGIN_X + dx, y, after, measure),
-    );
+    )
 }
 
 #[cfg(test)]

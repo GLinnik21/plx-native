@@ -628,6 +628,36 @@ impl<'a> TextView<'a> {
             .unwrap_or(0.0)
     }
 
+    /// **The horizontal extent of the ink [`draw`](Self::draw) puts into `frame`**, as `(left, right)`
+    /// in the frame's coordinates: the widest wrapped line placed by the block's own alignment
+    /// ([`line_x`](Self::line_x), the rule every draw path uses), with the bold lead run included in
+    /// line 0 and a trailing "MORE" run left out. `frame.w` is the wrap width, as for `draw`; only
+    /// `frame.x` and `frame.w` are read. It shares the memoised wrap, so asked beside the draw (or
+    /// the [`measure_h`](Self::measure_h) that sized the frame) it measures nothing new. An empty
+    /// block has no ink: `(frame.x, frame.x)`.
+    ///
+    /// A hero's shade stands behind exactly this ([`crate::hero_shade::HeroShade::add_ink`]): the
+    /// text's own extent, not the max-width box the paragraph was wrapped into.
+    pub fn ink_span(&self, frame: Rect) -> (f32, f32) {
+        let wrapped = self.wrap(frame.w);
+        let lead_w = self.lead_w();
+        let align = self.drawn_align();
+        let mut span: Option<(f32, f32)> = None;
+        for (i, &text_w) in wrapped.widths.iter().enumerate() {
+            let dx = if i == 0 { lead_w } else { 0.0 };
+            let lx = self.line_x(frame, dx, text_w);
+            // Line 0's lead stands at the column edge, or just left of the text when right-aligned.
+            let left = if i == 0 && lead_w > 0.0 {
+                if align == HAlign::Right { lx - lead_w } else { frame.x }
+            } else {
+                lx
+            };
+            let right = lx + text_w;
+            span = Some(span.map_or((left, right), |(l, r)| (l.min(left), r.max(right))));
+        }
+        span.unwrap_or((frame.x, frame.x))
+    }
+
     /// Draw into `frame`: `frame.w` is the wrap width, `frame.x/y` the top-left. Line 0's cap band
     /// sits at `frame.y`, each subsequent line one `leading` below. Returns the consumed height.
     ///
@@ -1211,6 +1241,43 @@ mod tests {
         assert_eq!(at("سلام", HAlign::Right), 180.0);
         assert_eq!(at("سلام", HAlign::Center), 105.0);
     }
+    /// **The ink span is the widest wrapped line, placed as the draw places it** (`line_x`): not the
+    /// column the paragraph was wrapped into. 10 px a character: "aaaa bbbb" (90) and "cc dd" (50)
+    /// in a 100 px column.
+    #[test]
+    fn the_ink_span_is_the_widest_line_placed_by_the_blocks_alignment() {
+        let _guard = ForbidLive::enter();
+        let frame = Rect::new(30.0, 10.0, 100.0, 0.0);
+        let view = |align| {
+            TextView::new("aaaa bbbb cc dd", theme::size::BODY, theme::TEXT_PRIMARY).with_measure(&TenPx).h(align)
+        };
+        assert_eq!(lines_of(&view(HAlign::Left), 100.0), ["aaaa bbbb", "cc dd"], "the premise: two lines, 90 and 50");
+        assert_eq!(view(HAlign::Left).ink_span(frame), (30.0, 120.0), "left: from the column edge to the widest line's end");
+        assert_eq!(view(HAlign::Right).ink_span(frame), (40.0, 130.0), "right: the widest line ends at the column's right edge");
+        assert_eq!(view(HAlign::Center).ink_span(frame), (35.0, 125.0), "centre: the widest line, centred");
+        let one = TextView::new("aaaa", theme::size::BODY, theme::TEXT_PRIMARY).with_measure(&TenPx);
+        assert_eq!(one.ink_span(frame), (30.0, 70.0), "a short line is its own width, not the column's");
+        let none = TextView::new("", theme::size::BODY, theme::TEXT_PRIMARY).with_measure(&TenPx);
+        assert_eq!(none.ink_span(frame), (30.0, 30.0), "no text, no ink");
+        let rtl = TextView::new("سلام عليكم", theme::size::BODY, theme::TEXT_PRIMARY).with_measure(&TenPx);
+        assert_eq!(rtl.ink_span(frame).1, 130.0, "a right-to-left paragraph ends at the column's right edge");
+    }
+
+    /// The lead run is ink: line 0 starts at the column edge with it and ends after its text.
+    #[test]
+    fn the_ink_span_includes_the_lead_run() {
+        let _guard = ForbidLive::enter();
+        let frame = Rect::new(30.0, 10.0, 100.0, 0.0);
+        let led = TextView::new("aaaa bbbb", theme::size::BODY, theme::TEXT_PRIMARY)
+            .with_measure(&TenPx).lead("Lead:", theme::TEXT_PRIMARY);
+        // the lead is 50 px plus a 10 px space, so line 0 holds "aaaa" (40) after it and "bbbb" wraps
+        assert_eq!(lines_of(&led, 100.0), ["aaaa", "bbbb"]);
+        assert_eq!(led.ink_span(frame), (30.0, 130.0));
+        let short = TextView::new("aa", theme::size::BODY, theme::TEXT_PRIMARY)
+            .with_measure(&TenPx).lead("Lead:", theme::TEXT_PRIMARY);
+        assert_eq!(short.ink_span(frame), (30.0, 110.0), "the lead and the text after it, no further");
+    }
+
     /// Tracking is part of the MEASURE, not only of the draw: a word that fits its column only
     /// because the gaps are tightened must wrap as one line, and the same word untracked must not.
     #[test]

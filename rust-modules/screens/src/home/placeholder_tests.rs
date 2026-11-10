@@ -24,7 +24,7 @@ fn env(sp: f32, hero_a: f32) -> Env {
 }
 
 fn drawn(b: &Backdrop, env: &Env) -> placeholder::Frame {
-    placeholder::capture_declared(|| b.draw(Painter::root(), env, None)).1
+    placeholder::capture_declared(|| b.draw(Painter::root(), env, None, None)).1
 }
 
 #[test]
@@ -64,6 +64,6 @@ fn a_hero_layer_that_is_not_on_screen_counts_nothing() {
 #[test]
 fn a_recording_pass_over_the_backdrop_counts_nothing() {
     let b = bound("/library/metadata/5/art/1", 0.0);
-    let f = placeholder::capture_declared(|| b.draw(Painter::recording(), &env(0.0, 1.0), None)).1;
+    let f = placeholder::capture_declared(|| b.draw(Painter::recording(), &env(0.0, 1.0), None, None)).1;
     assert_eq!(f.count, 0, "{f:?}");
 }

@@ -72,6 +72,12 @@ pub struct RowStyle {
     /// tile's live clearance ([`heading_lift_of`]), so the two never stack. Card tops and the row's
     /// pitch are untouched; only the label band's heading y moves.
     pub heading_rise: f32,
+    /// **A band the tile's own furniture hangs under it, in px beyond the standard air** (0 for every
+    /// row but [`RowStyle::STILL`]): the Continue Watching footer line stands below its art
+    /// ([`theme::STILL_FOOTER_DROP`] under the tile, [`crate::still_footer::FOOTER_LINE_H`] tall) and the
+    /// next shelf's heading stands [`theme::STILL_FOOTER_AIR`] under that line's foot. It is part of
+    /// [`RowStyle::pitch_fixed`], so the shelf column, the rest scroll and every settled top follow it.
+    pub under_tile: f32,
 }
 
 /// Where a label block starts under its tile: [`RowStyle::label_start`].
@@ -148,6 +154,7 @@ impl RowStyle {
         seat_grows: false,
         label_drop: None,
         heading_rise: 0.0,
+        under_tile: 0.0,
     };
     /// **A shelf of EPISODES: landscape stills.** Same motion as HOME — the spring magnification,
     /// the scroll, the glow ring and the heading lift are all one vocabulary — and a different
@@ -179,22 +186,26 @@ impl RowStyle {
         seat_grows: false,
         label_drop: None,
         heading_rise: 0.0,
+        under_tile: 0.0,
     };
     /// **The Continue Watching row's landscape tile** (the owner's 2026-11 handoff, "Continue
-    /// Watching and episode footer"): the episode strip's own cell (420x236, gap 28 -- [`RowStyle::EPISODE`])
-    /// at [`theme::STILL_RADIUS`], popped to HOME's 1.09 with no vertical travel. The neighbours stand
-    /// where they rest: the pop grows a 420 px tile ~19 px a side, inside the 28 px gap, so the gap
-    /// narrows to ~9 and no tile steps aside.
+    /// Watching and episode footer"): the episode strip's own cell (420x236, [`RowStyle::EPISODE`])
+    /// at [`theme::STILL_RADIUS`] and [`theme::STILL_GAP`] (40: pitch 460; the strip keeps its 28),
+    /// popped to HOME's 1.09 with no vertical travel. The neighbours stand where they rest: the pop
+    /// grows a 420 px tile ~19 px a side, inside the gap, so the gap narrows to ~21 and no tile steps
+    /// aside. Its footer line stands under the art ([`RowStyle::under_tile`]).
     pub const STILL: RowStyle = RowStyle {
         radius: theme::STILL_RADIUS,
+        gap: theme::STILL_GAP,
         heading_rise: theme::STILL_HEADING_RISE,
+        under_tile: crate::still_footer::FOOTER_UNDER_TILE,
         ..RowStyle::EPISODE
     };
     /// The fixed part of this row's pitch -- everything a shelf of these tiles is made of except
     /// the caption band: heading, air above the tile, the tile, air below. For [`RowStyle::HOME`]
     /// it is [`ROW_PITCH_FIXED`]; add [`under_band`] to it.
     pub const fn pitch_fixed(&self) -> f32 {
-        crate::consts::TITLE_DY + crate::consts::CARD_DY + self.h + crate::consts::UNDER_LABEL_AIR
+        crate::consts::TITLE_DY + crate::consts::CARD_DY + self.h + self.under_tile + crate::consts::UNDER_LABEL_AIR
     }
     /// Detail "Cast & Crew": circular headshots, the tight strip ring. Same motion as HOME (spring
     /// magnification + scroll), so cast animates like the poster shelves.
@@ -221,6 +232,7 @@ impl RowStyle {
         seat_grows: false,
         label_drop: None,
         heading_rise: 0.0,
+        under_tile: 0.0,
     };
     /// "Who's watching" profile pictures: big circular avatars with a clear pop. Centered by the
     /// caller (a short roster), so the scroll spring stays put unless the row overflows.
@@ -246,6 +258,7 @@ impl RowStyle {
         seat_grows: false,
         label_drop: None,
         heading_rise: 0.0,
+        under_tile: 0.0,
     };
     /// Corner radius for a tile of size `rect` at radius-scale `s`: half-width for a circle, else the
     /// style's fixed radius scaled with the focus pop. A style with a [`rim`](Self::rim) keeps its radius

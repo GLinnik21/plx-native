@@ -144,7 +144,8 @@ pub fn time_left_minutes_in(cx: &LocaleContext, mins: i64) -> String {
 /// **Time left as a still's one-line footer says it** — "38m left", "1h 12m left", the SHORTEST
 /// form each language has (`core.footer_left_*`, not [`time_left`]'s caption wording: a footer line
 /// shares 388 px with an episode tag and a progress bar). Rounded up to the next whole minute and
-/// never zero, as [`time_left`] is. The hero's own line still reads [`time_left`].
+/// never zero, as [`time_left`] is. Home's hero reads this too, for the movie it is resuming, so the
+/// hero and the card under it say the time left alike; the captions elsewhere read [`time_left`].
 pub fn footer_left(remaining_ms: i64) -> String {
     footer_left_minutes_in(plx_platform::i18n::current(), (remaining_ms + 59_999) / 60_000)
 }

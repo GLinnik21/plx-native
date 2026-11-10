@@ -9,7 +9,9 @@
 //! the screen is drawn and tested without a store.
 //!
 //! **What it draws.** The art ground (the discover art through a reachable server's photo proxy,
-//! else the neutral app ground), the title (a text title: a discover item has no clearLogo), the
+//! else the neutral app ground) under the hero shade (`plx_ui::hero_shade`: a soft block behind the
+//! title, one behind the copy under it and one behind the pill, from the rects the page draws, so the
+//! art stays bare everywhere else), the title (a text title: a discover item has no clearLogo), the
 //! meta line (kind, up to two genres, year), the status line with its icon (clock / circle-slash / server-slash /
 //! none), the *Coming 12 March* line, the line-clamped summary and the primary pill, *Add to
 //! Watchlist* with the outline bookmark / *On Watchlist* with the filled one. The hero's rung
@@ -45,6 +47,7 @@ use plx_machine::machine::{
 use plx_machine::present::Provenance;
 use plx_plex::plex::ServerId;
 use plx_ui::hero_logo::{HeroLogo, LogoRung};
+use plx_ui::hero_shade::{HeroShade, Role};
 use plx_ui::hstack::{Align, HStack, Item};
 use plx_ui::icons::Icon;
 use plx_ui::label::{HAlign, Label, VAlign};
@@ -255,6 +258,19 @@ pub fn meta_parts(kind: Kind, genres: &[String], year: Option<i32>) -> Vec<Strin
 /// The status icon's box: the status line's own rung, as the board's 26 px glyph.
 const STATUS_ICON_D: f32 = theme::size::LABEL as f32;
 
+/// The hero shade's strength on this page. Home and Detail scale their shade by the hero's own fade
+/// (it leaves as the page scrolls or the hero is paged away); the catalog page is one still screen with
+/// no hero fade, so its shade stands at full strength.
+const SHADE_STRENGTH: f32 = 1.0;
+
+/// The title's band: the hero logo rung's own height, standing on [`detail_layout::TITLE_BOTTOM`] in the
+/// hero column. [`CatalogScreen::draw_record`] draws the title in it and [`CatalogScreen::hero_shade`]
+/// asks the same logo what it painted there.
+fn title_band() -> Rect {
+    let band_h = plx_ui::hero_logo::band_h(LogoRung::Hero);
+    Rect::new(plx_ui::consts::MARGIN_X, detail_layout::TITLE_BOTTOM - band_h, detail_layout::HERO_TEXT_W, band_h)
+}
+
 /// The rows of the hero, top to bottom, each placed a named rung under the last one's measured
 /// bottom (`detail_layout::hero_chain`'s grammar): `SM` inside the identity group, `MD` into the
 /// prose, `LG` into the action row.
@@ -386,7 +402,63 @@ impl CatalogScreen {
                 }
             }
         }
-        plx_ui::widgets::hero_scrim(p, 1.0, false);
+    }
+
+    /// **The hero shade of THIS frame** ([`plx_ui::hero_shade`]), built from what
+    /// [`draw_record`](Self::draw_record) paints: a block behind the title (what the logo painted, the
+    /// typed title here), one behind the copy under it (the Coming line, or the meta line, down to the
+    /// summary's last line, as wide as the widest of those lines is: [`Self::copy_ink`]) and one behind
+    /// the pill. `None` for a page with no record, which draws no copy on the art. The caller takes it
+    /// at [`SHADE_STRENGTH`].
+    fn hero_shade(&self, measure: &dyn Measure) -> Option<HeroShade> {
+        let Load::Loaded { title, .. } = &self.vm.load else { return None };
+        let stack = self.stack(measure)?;
+        let title = HeroLogo::new(0, "", title, LogoRung::Hero).painted(title_band(), measure);
+        // An empty summary is a zero-high row standing where the last row ends, so the copy's foot is
+        // the summary's own foot whichever rows are present.
+        let top = stack.coming.unwrap_or(stack.meta);
+        let column = Rect::new(plx_ui::consts::MARGIN_X, top, detail_layout::HERO_TEXT_W, stack.summary + stack.summary_h - top);
+        let shade = HeroShade::new()
+            .add(title, Role::Copy, 1.0)
+            .add_ink(column, self.copy_ink(&stack, measure), Role::Copy, 1.0);
+        Some(match self.pill_rect(measure) {
+            Some(pill) => shade.add(pill, Role::Controls, 1.0),
+            None => shade,
+        })
+    }
+
+    /// **The `(left, right)` extent of each line [`draw_record`](Self::draw_record) draws under the
+    /// title**: the Coming line, the meta line, the status row (icon, gap, label) and the summary's
+    /// wrapped lines, each as the text measures, not the hero column they were laid into. The shade's
+    /// copy block is as wide as the widest of them.
+    fn copy_ink(&self, stack: &Stack, measure: &dyn Measure) -> Vec<(f32, f32)> {
+        let Load::Loaded { year, kind, genres, release_date, status, summary, .. } = &self.vm.load else {
+            return Vec::new();
+        };
+        let x = plx_ui::consts::MARGIN_X;
+        let release = release_date.as_deref();
+        let mut ink = Vec::with_capacity(4);
+        if let (Some(_), Some(line)) = (stack.coming, coming_line(*status, release)) {
+            ink.push((x, x + measure.width_str(&line, theme::size::HEADLINE, true)));
+        }
+        let parts = meta_parts(*kind, genres, *year);
+        let meta = plx_ui::widgets::DottedRun::new(theme::size::BODY, theme::TEXT_SECONDARY, theme::space::SM);
+        ink.push((x, x + meta.width(measure, &parts)));
+        if let (Some(_), Some(_), Some(text)) = (stack.status, status_icon(*status, release), status_text(*status, release)) {
+            ink.push((x, x + STATUS_ICON_D + theme::space::SM + measure.width_str(text, theme::size::LABEL, false)));
+        }
+        if !summary.is_empty() {
+            let frame = Rect::new(x, stack.summary, detail_layout::HERO_TEXT_W, 0.0);
+            ink.push(plx_ui::hero_synopsis(summary, "").with_measure(measure).ink_span(frame));
+        }
+        ink
+    }
+
+    /// The shade over the art, as a layer of its own: this page has no ground pass to carry it in.
+    fn draw_shade(&self, p: Painter, measure: &dyn Measure) {
+        if let Some(shade) = self.hero_shade(measure) {
+            plx_ui::widgets::scrim_layer(p, shade.scrim(SHADE_STRENGTH));
+        }
     }
 
     fn draw_record<H: ContentLike>(&self, f: &mut DrawFrame<'_, '_, H>, p: Painter) {
@@ -398,12 +470,7 @@ impl CatalogScreen {
         let x = plx_ui::consts::MARGIN_X;
         let release = release_date.as_deref();
 
-        let band_h = plx_ui::hero_logo::band_h(LogoRung::Hero);
-        HeroLogo::new(0, "", title, LogoRung::Hero).draw(
-            p,
-            Rect::new(x, detail_layout::TITLE_BOTTOM - band_h, detail_layout::HERO_TEXT_W, band_h),
-            measure,
-        );
+        HeroLogo::new(0, "", title, LogoRung::Hero).draw(p, title_band(), measure);
 
         if let (Some(y), Some(line)) = (stack.coming, coming_line(*status, release)) {
             if let Ok(line) = CString::new(line) {
@@ -598,7 +665,10 @@ impl<H: ContentLike> Screen<H> for CatalogScreen {
         let p = f.painter.alpha(f.page_alpha);
         self.draw_ground(p);
         match &self.vm.load {
-            Load::Loaded { .. } => self.draw_record(f, p),
+            Load::Loaded { .. } => {
+                self.draw_shade(p, f.measure);
+                self.draw_record(f, p);
+            }
             Load::Loading => {}
             load => {
                 if let Some(text) = verdict_text(load) {
