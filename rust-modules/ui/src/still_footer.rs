@@ -1,5 +1,5 @@
 //! **A landscape still's one-line footer**: status text on the left, a mark on the right, on the
-//! 24 px line 12 px above the card's bottom edge (`Continue watching and episode footer` handoff).
+//! 24 px line. The deck places it 8 px below the art and the episode strip insets it 12 px.
 //!
 //! It replaces the two-line `label` / `sub` pair on the Continue Watching card and the detail page's
 //! episode strip (which is inside one season of one show). The pair stays as
@@ -9,7 +9,7 @@
 //! deck's art walk; a deck card's title is in its art: the cover, the composite or, with neither, type).
 //!
 //! * **In progress**: `S2 E4 · 38m left` (a film: `38m left`) on the left, the amber progress bar
-//!   (100 px, shrinking to a 64 px minimum, 4 px high, radius 2) on the right.
+//!   (100 px, shrinking to a 64 px minimum, 6 px high below the art or 4 px high in the strip) on the right.
 //! * **Watched** (the strip): the length on the left, a muted 22 px tick on the right.
 //! * **Not started**: on the strip the length alone; on a Continue Watching card an episode nobody
 //!   has played reads `S2 E1 · New episode` (the started line's tag, then `widgets.card.new_episode`), no bar.

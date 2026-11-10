@@ -9,8 +9,7 @@ use super::{consts::SCR_H, theme, Rect};
 pub const COL_W: f32 = theme::hero::TEXT_W;
 pub const KNEE_Y: f32 = theme::hero::SCRIM_MID_Y;
 pub const MID_WEIGHT: f32 = theme::hero::SCRIM_MID_A / theme::hero::SCRIM_FOOT_A;
-/// How much a bound preview raises the hero shade ([`crate::hero_shade::HeroShade::scrim`] saturates
-/// its strength at this). Detail's atmospheric ramp ([`base_scrim_ramp`]) does not take it: that
+/// How much a bound preview raises the hero shade. [`detail_shade`] caps the side field at this. Detail's atmospheric ramp ([`base_scrim_ramp`]) does not take it: that
 /// follows the hero fade and the screen's own `preview_base_scrim`. 1.35 is the video-bound row the
 /// legibility table grades.
 ///
@@ -156,8 +155,8 @@ fn edge_wash(ramp: WashRamp, horizontal: [f32; 2], vertical: [f32; 2], peak: f32
     crate::widgets::WashScrim { ink: ramp.ink, field }
 }
 
-/// **A hero's premise: the first sentence of its summary** (Home's line for a hero nothing has been
-/// watched of). The sentence ends at the first `.`, `!`, `?` or `…` that is followed by whitespace
+/// **A hero's premise: the first sentence of its summary** (Home's fallback line for non-movies).
+/// The sentence ends at the first `.`, `!`, `?` or `…` that is followed by whitespace
 /// and a letter that starts one (an uppercase letter, or a letter of a script that has no case), or
 /// by the end of the text, and at a CJK full stop `。` `！` `？` wherever it stands. Closing quotes
 /// and brackets after the mark, and a run of marks (`...`, `?!`), belong to the sentence. The

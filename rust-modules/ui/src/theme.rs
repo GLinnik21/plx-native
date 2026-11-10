@@ -259,13 +259,8 @@ pub mod hero {
     pub const HOME_SYNOPSIS_LINES: usize = 2;
 }
 
-/// **The hero shade: a soft, feathered darkening of the art around what a hero draws on it**
-/// ([`SCRIM_INK`], one rounded block per piece of content, stacked `1 - prod(1 - a_i)`, each scaled
-/// by that content's own alpha and the hero's fade). It follows the content: the blocks come from the
-/// rects the screen is drawing this frame (`hero_shade::HeroShade`), so a logo that rises into
-/// the trailer corner carries its shade up with it. Both heroes use it (Home, Detail); the
-/// evaluator is `hero_shade::HeroShade::at` and the one-pass ground carries the same numbers to the
-/// GPU (`gfx::scrim::GroundShade`).
+/// Shared ink and geometry for the continuous Home and Detail edge fields and Catalog's
+/// feathered content blocks. Both field types use `gfx::scrim::GroundShade`.
 pub mod shade {
     /// Detail needs legibility farther into the art for its wider title and synopsis.
     pub const DETAIL_SIDE_X: [f32; 2] = [600.0, 1700.0];
@@ -278,8 +273,8 @@ pub mod shade {
     /// Inactive pagination dots still need contrast against the art.
     pub const PAGER_IDLE_A: f32 = 0.50;
 
-    /// Where Home's edge shade leaves full strength and reaches clear artwork.
-    pub const HOME_SIDE_X: [f32; 2] = [320.0, 960.0];
+    /// Home starts feathering inside the copy column and keeps its right edge legible.
+    pub const HOME_SIDE_X: [f32; 2] = [850.0, 1650.0];
     /// Where the edge shade begins and reaches full strength down the screen.
     pub const HOME_SIDE_Y: [f32; 2] = [110.0, 405.0];
     /// Strength at the left under the logo, metadata and actions.
@@ -774,13 +769,8 @@ pub const SCRIM_BLACK_INK: [f32; 3] = [BLACK[0], BLACK[1], BLACK[2]];
 ///
 /// MEASURED, not chosen. The panel is plain 888 with no sRGB framebuffer anywhere in the tree, so a
 /// token value IS an sRGB code and GL's blend is a straight lerp in that space — which makes the
-/// whole derivation arithmetic. It was the peak of the hero's left wedge (deleted: every hero, the catalog
-/// page included, stands on the content-following shade now). The heroes hold the same floors with the
-/// shade's [`shade::COPY_A`] behind the copy, graded by `widgets_hero_shade_tests` (Home) and
-/// `widgets_hero_scrim_tests` (Detail), so brightening a text token and re-deriving these stay one edit.
-/// The binding case is a `TEXT_SECONDARY` BODY line where the hero's bottom-up ramp supplies only
-/// ~0.29: it needs 0.655 total, so whatever stands behind the line must carry ~0.51 there and rather
-/// more at the title.
+/// whole derivation arithmetic. Home and Detail grade their continuous fields separately in
+/// `widgets_hero_shade_tests` and `widgets_hero_scrim_tests`.
 pub const SCRIM_TEXT_A: f32 = 0.84;
 
 /// **White overlay at alpha `a`** — the ramp every overlay on this palette rides.

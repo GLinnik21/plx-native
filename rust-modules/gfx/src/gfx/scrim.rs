@@ -19,8 +19,8 @@
 //! field mesh against them (`mesh_error`), which is what bounds what the vertex-evaluated field can
 //! differ from the closed form by.
 //!
-//! The blocks come from the screen's LIVE layout every frame, so a block that moves (Detail's logo
-//! rising into the trailer corner) carries its shade with it: the screen builds a new
+//! The blocks come from Catalog's live layout every frame, so a moving block carries its shade.
+//! The screen builds a new
 //! [`GroundShade`] from the rects it is drawing, and the upload cache below sends it whenever it
 //! changed. [`MAX_BLOCKS`] is the size of the uniform array, a limit of the shader and not of any
 //! screen's content (`ui::hero_shade` folds an overflowing block into its neighbour).

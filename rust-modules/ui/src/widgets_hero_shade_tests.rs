@@ -264,11 +264,10 @@ fn draw_ground_carries_the_shade_in_cells_or_hands_it_back() {
 
 // ── Legibility at the positions Home's ladder puts its copy ─────────────────────────────────────
 
-/// Grade the ink near the left anchor, plus the full Continue Watching caption strip. The
-/// field intentionally gives way to the artwork toward the center of the hero.
+/// Grade the furthest right the hero copy can reach and the full shelf caption strip.
 #[test]
 fn home_hero_and_shelf_copy_read_over_white_artwork() {
-    use crate::landing_hero::{home_rows, home_shade, shelf_fade, SHELF_TOP};
+    use crate::landing_hero::{home_rows, home_shade, shelf_fade, COL_W, SHELF_TOP};
     let shelf = shelf_fade(SHELF_TOP, 1.0);
     let shade = home_shade(shelf, 1.0);
     let stack = home_rows(crate::hero_logo::band_h(crate::hero_logo::LogoRung::Hero),
@@ -278,9 +277,9 @@ fn home_hero_and_shelf_copy_read_over_white_artwork() {
     let footer_y = crate::still_footer::Place::Below.line_top(
         Rect::new(0.0, SHELF_TOP, SCR_W, crate::card_row::RowStyle::STILL.h));
     for (ink, x, y) in [
-        (theme::TEXT_PRIMARY, 480.0, title_bottom - HERO_CAP_H),
-        (theme::TEXT_PRIMARY, 480.0, line.y),
-        (theme::TEXT_READING, 480.0, line.y),
+        (theme::TEXT_PRIMARY, MARGIN_X + COL_W, title_bottom - HERO_CAP_H),
+        (theme::TEXT_PRIMARY, MARGIN_X + COL_W, line.y),
+        (theme::TEXT_READING, MARGIN_X + COL_W, line.y),
         (theme::TEXT_SECONDARY, SCR_W, footer_y),
     ] {
         let alpha = shade.alpha(x, y);

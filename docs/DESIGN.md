@@ -225,7 +225,7 @@ Its contextual answer verbs share one horizontal row, separated from BODY-sized 
 | adding a screen | `docs/ui-system-migration.md` section (E) |
 | a colour | `rust-modules/ui/src/theme.rs` |
 | a size | `rust-modules/gfx/src/gfx/tokens.rs` (`mod size`, re-exported as `theme::size`) |
-| anything behind hero text | `rust-modules/ui/src/hero_shade.rs`, `theme::shade` and `gfx/scrim.rs`, then re-grade `widgets_hero_shade_tests.rs` and `widgets_hero_scrim_tests.rs` |
+| anything behind hero text | `rust-modules/ui/src/landing_hero.rs` (Home and Detail), `hero_shade.rs` (Catalog), `theme::shade` and `gfx/scrim.rs`, then re-grade `widgets_hero_shade_tests.rs` and `widgets_hero_scrim_tests.rs` |
 | a horizontal row | `rust-modules/ui/src/card_row.rs` |
 | playback UI | `rust-modules/media/src/player/CLAUDE.md` |
 | Plex data feeding UI | `rust-modules/plex/src/plex/CLAUDE.md` and `docs/pms-api.md` |

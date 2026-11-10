@@ -1,4 +1,4 @@
-//! **The hero shade over content rects: ONE mechanism for every hero's legibility.**
+//! **Catalog's hero shade over content rects.**
 //!
 //! A hero draws copy, a logo and controls straight on a photograph, and the photograph can be
 //! anything. The shade is a soft, feathered darkening of exactly the places the content stands: one
@@ -6,12 +6,10 @@
 //! action row, the pager), holding [`theme::shade`]'s darkness inside the
 //! content's box and feathering to nothing [`theme::shade::FEATHER`] px beyond it. Away from any
 //! content it is exactly zero, and a block that moves takes its shade with it, because the screen
-//! hands this builder the rects of THIS frame's layout (Detail's logo rising into the trailer
-//! corner).
+//! hands this builder the rects of the current layout.
 //!
-//! It is evaluated in the hero ground's existing one-pass shader (`gfx::scrim::GroundShade`, per
-//! vertex, `ui::widgets::AmbientWash::draw_ground`): the rects are uniforms, the dither is the
-//! field's own, and there is no extra pass or quad. [`MAX_BLOCKS`] is that shader's array size; a
+//! Catalog draws it as a separate scrim layer. The vertex shader evaluates
+//! `gfx::scrim::GroundShade` from the rect uniforms and dithers the field. [`MAX_BLOCKS`] is that shader's array size; a
 //! hero that offers more rects than fit has the surplus folded into the last block (its box widened
 //! to hold both, the darker peak kept), which no screen in the tree reaches.
 //!

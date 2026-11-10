@@ -607,7 +607,7 @@ submits**. The card composites everyone assumes are the expensive part are 5%.
 ### The experiment: fold the hero's whole ground into one pass
 
 > **RETIRED (2026-11).** Neither hero draws the wedge and ramp this experiment folded any more: both
-> stand on the content-following hero shade, which the heroes' one-pass ground
+> use a continuous edge shade, which the heroes' one-pass ground
 > (`AmbientWash::draw_ground`) carries per vertex. The experiment's code is deleted
 > (`ui::widgets::hero_ground`, `Painter::hero_ground`, `gfx::draw_hero_ground`, `shaders/fs_hero.frag`
 > and the `/tmp/plxnative-heroground` trigger), and so is the wedge it folded (`hero_scrim_a`); the
