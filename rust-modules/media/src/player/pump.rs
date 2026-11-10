@@ -1322,6 +1322,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
         // demuxer publishes it before that flag — so a flag without its probe is impossible.
         let probe_v = raw.probe_actual_video;
         let probe_a = raw.probe_actual_audio;
+        let retry_position = raw.seek_target_ns.unwrap_or(raw.playpos_ns);
         if (probe_v != 0 || probe_a != 0) && crate::route::take_codec_probe_retry(ps) {
             if probe_v != 0 {
                 let v = match probe_v {
@@ -1350,7 +1351,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
             // `demux_failed`, so this hook cannot re-fire for the attempt it is correcting;
             // if the corrected Load is refused too, the one-shot guard hands the next
             // mismatch to the ordinary failure read-out instead of a loop.
-            let _ = settle_reload(super::engine::reload_at(ps, pa, 0), "probe retry reload", ps);
+            let _ = settle_reload(super::engine::reload_at(ps, pa, retry_position), "probe retry reload", ps);
         } else {
             let run = recover_failed_open(ps, loading, super::recovery::LoadRefusal::SourceFailed, None, "");
             if let OpenRecoveryRun::DecodeInApp { offset_ns } = run {

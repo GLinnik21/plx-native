@@ -18,6 +18,22 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 pub use plx_media_codecs::ffi::*;
 
+fn audio_declaration_mismatch(declared: u8, actual: u8) -> bool {
+    // PCM describes decoded output; the container still carries the compressed input.
+    declared != 0 && declared != 5 && actual != 0 && declared != actual
+}
+
+#[test]
+fn pcm_output_does_not_mismatch_the_compressed_source() {
+    for codec in ["ac3", "eac3", "aac", "dts"] {
+        let actual = crate::audio_payload_codec(codec).unwrap().1;
+        assert!(!audio_declaration_mismatch(5, actual), "{codec} is decoded before PCM is fed");
+        assert!(!audio_declaration_mismatch(actual, actual));
+    }
+    assert!(audio_declaration_mismatch(2, 3));
+    assert!(!audio_declaration_mismatch(0, 3));
+}
+
 /// Captured by the media composition and moved into one demux worker. Authorization is checked
 /// afresh on every request by the injected range factory and plaintext redirect gate.
 pub struct DemuxTransport {
@@ -6478,7 +6494,7 @@ pub fn demux(
                 } else {
                     (0, String::new())
                 };
-                let mismatch_a = actual_a != 0 && declared_a != actual_a;
+                let mismatch_a = audio_declaration_mismatch(declared_a, actual_a);
                 if mismatch_v || mismatch_a {
                     // The conditional probe's answer: what the file REALLY is, in the Load's own
                     // code space, for every axis that lied. The pump's one-shot retry reloads with
