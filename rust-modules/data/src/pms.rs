@@ -157,7 +157,7 @@ pub struct PmsMovie {
     /// A SMART collection (`smart="1"`): a saved filter, not a hand-picked set.
     #[serde(default, skip_serializing_if = "is_false")]
     pub smart: bool,
-    /// The first `Genre` tag, or `None`.
+    /// The primary genre, or `None`. Movies and shows skip blank tags.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub genre: Option<String>,
     /// The next distinct nonblank Genre tag for movie and show hero metadata.
@@ -562,9 +562,11 @@ fn fill_caption_facts(m: &mut PmsMovie, it: &plx_plex::plex::Metadata) {
     let facts = it.listing_facts();
     m.genre = facts.genre;
     if matches!(m.kind, KIND_MOVIE | KIND_SHOW) {
-        m.secondary_genre = it.genre.iter().skip(1).map(|tag| tag.tag.trim())
-            .find(|tag| !tag.is_empty() && m.genre.as_deref() != Some(*tag))
-            .map(str::to_owned);
+        let mut genres = it.genre.iter().map(|tag| tag.tag.trim()).filter(|tag| !tag.is_empty());
+        if m.genre.is_none() {
+            m.genre = genres.next().map(str::to_owned);
+        }
+        m.secondary_genre = genres.find(|tag| m.genre.as_deref() != Some(*tag)).map(str::to_owned);
     }
     m.video_resolution = facts.video_resolution;
     m.hdr = facts.hdr;
@@ -4548,6 +4550,17 @@ mod caption_fact_tests {
         assert_eq!(m.audience_rating, Some(7.8));
         assert_eq!(m.added_at, Some(1_700_000_000));
         assert!(!m.smart && m.leaf_count.is_none() && m.child_count == 0);
+    }
+
+    #[test]
+    fn movie_and_show_genres_skip_blank_and_duplicate_tags() {
+        for kind in ["movie", "show"] {
+            let m = row(&format!(r#"{{"type":"{kind}","Genre":[
+                {{"tag":null}},{{"tag":" Drama "}},{{"tag":"Drama"}},{{"tag":" "}},{{"tag":"Crime"}}
+            ]}}"#));
+            assert_eq!(m.genre.as_deref(), Some("Drama"));
+            assert_eq!(m.secondary_genre.as_deref(), Some("Crime"));
+        }
     }
 
     #[test]
