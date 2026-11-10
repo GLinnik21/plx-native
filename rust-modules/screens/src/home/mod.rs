@@ -27,7 +27,7 @@ use plx_ui::hold_hint::{HintInput, HoldHint};
 use plx_ui::icons::Icon;
 use plx_ui::linked_heading::{self, LinkedHeading};
 use plx_ui::landing_hero::{
-    first_sentence, home_rows, home_synopsis, shelf_fade, COL_W as HERO_COL_W, HOME_LABEL_H, SHELF_TOP,
+    first_sentence, home_rows, home_shade, home_synopsis, shelf_fade, COL_W as HERO_COL_W, HOME_LABEL_H, SHELF_TOP,
 };
 use plx_machine::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputEvent,
@@ -429,34 +429,20 @@ impl Backdrop {
         });
     }
 
-    /// Paint the ground. `scrim` is the hero's shade over the content it draws this frame
-    /// ([`HomeScreen::hero_shade`]) and `ramp` the shelf fade under the Continue Watching row's
-    /// captions ([`HomeScreen::shelf_fade`]), both carried in the ground's pass where the ground can,
-    /// else laid over the art as layers: `None` once the hero has faded (`env.hero_a`).
+    /// Paint the ground, photograph and the shared side and shelf shade. A slide or opaque art
+    /// draws the shade separately over the art.
     fn draw(
         &self,
         p: Painter,
         env: &Env,
         slide: Option<(f32, f32)>,
         scrim: Option<plx_ui::widgets::WashScrim>,
-        ramp: Option<plx_ui::widgets::WashRamp>,
     ) {
         if !self.pending_art.is_empty() && env.hero_a > 0.01 && env.sp < HERO_ART_CULL {
             plx_ui::placeholder::note(p, plx_ui::placeholder::Reason::HomeBackdrop, &self.pending_art);
         }
         let incoming_a = reveal(self.tex.0, &self.art);
         let outgoing_a = reveal(self.outgoing_tex.0, &self.outgoing_art);
-        // THE GROUND: the wash, the one art layer dissolving over it (the snap dive, or the art
-        // fading in), the shelf fade (the photograph darkened across the shelf to the caption line)
-        // and the hero shade over both (`hero_shade`: a soft block behind each piece of copy the hero
-        // draws, from this frame's live layout), as ONE pass per pixel (`AmbientWash::draw_ground`).
-        // A hero FLIP slides two art layers, which one pass cannot carry, so there the art, the
-        // fade and the scrim stay layers of their own. So they do for a hero AT REST once its art has
-        // covered the wash (`wash_hidden`): no ground pass is drawn then, the art is its own quad,
-        // and the shade is the layer over it — the steady state of the page, not only a slide. (The
-        // ground carrying them there would draw the hidden wash under every pixel of an opaque
-        // photograph, and its cells would run the same per-vertex field: no vertex saved.) The layer
-        // draws only the cells the shade reaches (`gfx::draw_scrim_layer`).
         // Art held beneath a replaced hero (`held`) is the un-sliding outgoing layer: the new art
         // dissolves in over it, so the two cannot ride the ground's single art layer.
         let held = slide.is_none() && self.outgoing_tex.0 != 0;
@@ -464,16 +450,7 @@ impl Backdrop {
         let wash = !wash_hidden(env.sp, art_a, slide.map(|_| outgoing_a))
             && !self.wash.is_flat(theme::SURFACE_APP, AmbientWash::FLAT_EPS);
         let art_in_ground = wash && slide.is_none() && !held && env.sp < HERO_ART_CULL;
-        let (scrim, ramp) = (scrim.filter(|_| env.hero_a > 0.01), ramp.filter(|_| env.hero_a > 0.01));
-        // Once the hero is culled NO art is drawn at all, a slide or held layer notwithstanding, and
-        // the shelves and grid stand on the wash alone: ONE colour, which the renderer clears
-        // rather than shades (`AmbientWash::draw_flat_ground`). Every earlier frame — a hero slide,
-        // art held beneath a replacement, a texture still pending, the dive itself — is the
-        // layered gradient exactly as it always was: those frames have a photograph, or are about
-        // to, and flattening them would jump the whole page between gradient and one colour. The
-        // flat ground carries no scrim, and there is none to carry: `hero_a` is 0 from `sp = 0.55`
-        // (`HomeScreen::env`), so `scrim` and `ramp` are `None` at the cull and the layers below are
-        // skipped for the same reason.
+        // Once the hero is culled the grid stands on a flat wash alone.
         let ink_in_ground = wash
             && if env.sp >= HERO_ART_CULL {
                 self.wash.draw_flat_ground(p, Rect::FULL);
@@ -486,7 +463,7 @@ impl Backdrop {
                     // the fade and the shade ride the ground only when the ground carries the art
                     // too: layers painted over it (a slide's two, the held art under a replacement)
                     // would cover them
-                    ramp.filter(|_| art_in_ground),
+                    None,
                     scrim.filter(|_| art_in_ground),
                 )
             };
@@ -502,14 +479,7 @@ impl Backdrop {
                 backdrop_art(p, self.tex, env.sp, 0.0, incoming_a);
             }
         }
-        // The fade and the scrim go over the art, so a ground that did not carry them (a hero
-        // slide's two art layers, a resting hero's opaque art that hides the wash, a driver without
-        // the program) lays them over all of this as layers of their own: the same curve, and the
-        // same field in the same cells.
         if !ink_in_ground {
-            if let Some(ramp) = ramp {
-                ramp.layer(p);
-            }
             if let Some(scrim) = scrim {
                 plx_ui::widgets::scrim_layer(p, scrim);
             }
@@ -2176,9 +2146,8 @@ impl HomeScreen {
             self.carousel.as_ref(),
             self.snap.pos,
         );
-        let shade = (env.hero_a > 0.01).then(|| self.hero_shade(view, f.measure).scrim(env.hero_a));
-        let fade = (env.hero_a > 0.01).then(|| self.shelf_fade(env.hero_a));
-        plx_ui::profile::phase("hm.backdrop", || self.backdrop.draw(p, &env, slide, shade, fade));
+        let shade = (env.hero_a > 0.01).then(|| home_shade(self.shelf_fade(env.hero_a), env.hero_a));
+        plx_ui::profile::phase("hm.backdrop", || self.backdrop.draw(p, &env, slide, shade));
         if env.hero_a > 0.01 {
             plx_ui::profile::phase("hm.hero", || {
                 self.draw_hero(
@@ -2206,39 +2175,6 @@ impl HomeScreen {
             self.record_stops(f, view);
         }
         self.plaintext_alert.draw(f, self.entry);
-    }
-
-    /// **The hero shade of THIS frame**: a soft block behind each piece of content the page draws on
-    /// the art, from the live layout, so a block that moves takes its shade with it
-    /// ([`plx_ui::hero_shade`]). Per hero on screen (two while a flip slides) the copy column
-    /// ([`hero_copy_rect`]) and the action row (Play, the disc, Info: [`hero_rects`]) at that hero's
-    /// slide offset, and the pager after the selected hero's Info ([`HomeScreen::pager`]). The
-    /// Continue Watching row's captions have no block: they stand on the shelf fade
-    /// ([`HomeScreen::shelf_fade`]). The caller scales it by the hero's fade.
-    fn hero_shade(&self, view: HubsView<'_>, measure: &dyn Measure) -> plx_ui::hero_shade::HeroShade {
-        use plx_ui::hero_shade::Role;
-        let mut shade = plx_ui::hero_shade::HeroShade::new();
-        let hero_blocks = |shade: plx_ui::hero_shade::HeroShade, hero: &PmsMovie, dx: f32| {
-            let at = |r: Rect| Rect::new(r.x + dx, r.y, r.w, r.h);
-            let resumes = hero_resumes(hero);
-            let controls = hero_rects(measure, hero, plx_appkit::hero_layout::play_label(resumes));
-            let row = Rect::new(controls.play.x, HERO_ROW_Y, controls.info.x + controls.info.w - controls.play.x, HERO_CTRL_D);
-            shade.add(at(hero_copy_rect(hero, measure)), Role::Copy, 1.0).add(at(row), Role::Controls, 1.0)
-        };
-        match (self.slide_offsets(), self.selected_hero(view)) {
-            (Some((out_x, in_x)), Some(hero)) => {
-                if let Some(old) = self.outgoing_hero(view) {
-                    shade = hero_blocks(shade, old.item, out_x);
-                }
-                shade = hero_blocks(shade, hero.item, in_x);
-            }
-            (None, Some(hero)) => shade = hero_blocks(shade, hero.item, 0.0),
-            _ => {}
-        }
-        if let Some((_, pager)) = self.selected_hero(view).and_then(|hero| self.pager(view, hero.item, measure)) {
-            shade = shade.add(pager.band(), Role::Controls, 1.0);
-        }
-        shade
     }
 
     /// **The shelf fade of THIS frame** (owner's board CW-13 v2): the hero photograph darkened across
@@ -3732,14 +3668,6 @@ struct PagerRects {
     chevron: Rect,
 }
 
-impl PagerRects {
-    /// The group's own rect, ink to ink, one control tall: what the hero shade stands behind.
-    fn band(&self) -> Rect {
-        let ink_right = self.chevron.x + plx_ui::icons::ink_x(Icon::Chevron).1 * self.chevron.w;
-        Rect::new(self.dots_x, HERO_ROW_Y, ink_right - self.dots_x, HERO_CTRL_D)
-    }
-}
-
 /// The pager after an Info disc whose right edge is `info_right`, for dots `dots_w` wide.
 fn hero_pager(info_right: f32, dots_w: f32) -> PagerRects {
     let items = [Item::new(dots_w), Item::glyph(Icon::Chevron, HERO_PAGER_D)];
@@ -3974,6 +3902,8 @@ enum HeroLine<'a> {
     /// The premise of a hero nothing has been watched of: the first sentence of its summary
     /// ([`first_sentence`]) in reading ink on [`theme::hero::HOME_SYNOPSIS_W`], at most two lines.
     Premise(&'a str),
+    /// The genre supplied by the server for a movie that has not been played.
+    Genre(&'a str),
 }
 
 /// Does the Play button of `hero` say Resume (the one resume rule, [`plx_data::metadata::resume_ns`])?
@@ -3984,10 +3914,8 @@ fn hero_resumes(hero: &PmsMovie) -> bool {
 /// **The line Home's hero reads by its state.** An EPISODE (resumed, or the next one on deck and not
 /// started) names itself: its label. A hero being RESUMED says how much is left, with the footer's
 /// own formatter ([`plx_ui::fmt::footer_left`], over the footer's own derivation of the time left,
-/// [`tile_facts::of`]); a hero nothing has been watched of is INTRODUCED by its premise, the first
-/// sentence of its summary, and the whole synopsis is the Details page's. A line with nothing to say
-/// (an episode with no label, a resume with no time left, a summary that is empty) falls to the
-/// next, so the block is never empty while the item has words, and `None` when it has none.
+/// [`tile_facts::of`]). An unplayed movie shows its primary genre when the server supplies one.
+/// Other heroes fall back to the first sentence of the synopsis.
 fn hero_line(hero: &PmsMovie) -> Option<HeroLine<'_>> {
     let label = if hero.kind == 3 {
         plx_ui::fmt::episode_kicker(i64::from(hero.season_index), i64::from(hero.ep_index), &hero.title)
@@ -4001,13 +3929,15 @@ fn hero_line(hero: &PmsMovie) -> Option<HeroLine<'_>> {
     if let Some(left) = left {
         return Some(HeroLine::Label(plx_ui::fmt::footer_left(left)));
     }
+    if hero.kind == plx_data::pms::KIND_MOVIE && !hero.watched && !hero_resumes(hero) {
+        return hero.genre.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(HeroLine::Genre);
+    }
     Some(first_sentence(&hero.summary)).filter(|s| !s.is_empty()).map(HeroLine::Premise)
 }
 
 /// **Home's hero text** (owner's board CW-13 v2): the title (clearLogo, or its typed fallback) and ONE
-/// line under it ([`hero_line`]: the episode's label, a resumed movie's time left, or an introduced
-/// hero's premise), standing on [`home_rows`]' ladder above the action row. A label is bold `LABEL`
-/// in primary ink, one line, the column wide; a premise is `LABEL` on a 36 px leading in reading ink,
+/// metadata beneath it, standing on [`home_rows`]' ladder above the action row. A label is bold
+/// `LABEL` in primary ink, a genre is regular `LABEL` in reading ink, and a premise uses 36 px leading,
 /// 700 wide, at most two lines. The identity line, the ratings row and the facts line Home used to
 /// share with Detail are not drawn here.
 fn hero_content(hero: &PmsMovie, p: Painter, dx: f32, measure: &dyn Measure) {
@@ -4031,6 +3961,12 @@ fn hero_content(hero: &PmsMovie, p: Painter, dx: f32, measure: &dyn Measure) {
                 .v(VAlign::CapTop)
                 .draw(p, Rect::new(MARGIN_X, block.y, HERO_COL_W, measure.cap_h(theme::size::LABEL)));
         }
+        Some(HeroLine::Genre(genre)) => {
+            let run = measure.fit_line(genre, HERO_COL_W, theme::size::LABEL, false);
+            Label::new(run.as_ptr(), theme::size::LABEL, theme::TEXT_READING)
+                .v(VAlign::CapTop)
+                .draw(p, Rect::new(MARGIN_X, block.y, HERO_COL_W, measure.cap_h(theme::size::LABEL)));
+        }
         Some(HeroLine::Premise(premise)) => {
             home_synopsis(premise).draw(p, Rect::new(MARGIN_X, block.y, theme::hero::HOME_SYNOPSIS_W, 0.0));
         }
@@ -4044,13 +3980,13 @@ fn hero_title(hero: &PmsMovie) -> &str {
 }
 
 /// **Home's hero ladder for one hero** and the line it stands on ([`hero_line`]): the one place the
-/// block's height is decided, which [`hero_content`] draws on and [`hero_copy_rect`] shades. A label
+/// block's height is decided, which [`hero_content`] draws on. A label
 /// is one [`HOME_LABEL_H`]; a premise is as tall as its lines (one or two), so a one-line premise
 /// brings the title down a line.
 fn hero_ladder(hero: &PmsMovie) -> (plx_ui::landing_hero::HomeStack, Option<HeroLine<'_>>) {
     let line = hero_line(hero);
     let block_h = match &line {
-        Some(HeroLine::Label(_)) => Some(HOME_LABEL_H),
+        Some(HeroLine::Label(_) | HeroLine::Genre(_)) => Some(HOME_LABEL_H),
         Some(HeroLine::Premise(premise)) => Some(home_synopsis(premise).measure_h(theme::hero::HOME_SYNOPSIS_W)),
         None => None,
     };
@@ -4060,31 +3996,6 @@ fn hero_ladder(hero: &PmsMovie) -> (plx_ui::landing_hero::HomeStack, Option<Hero
 /// The column the title (clearLogo or typed) is bottom-anchored in, on [`hero_ladder`]'s rung.
 fn hero_title_band(stack: &plx_ui::landing_hero::HomeStack) -> Rect {
     Rect::new(MARGIN_X, stack.title.y, HERO_COL_W, stack.title.h)
-}
-
-/// **The rect Home's hero copy occupies this frame**, which the hero shade stands behind
-/// ([`HomeScreen::hero_shade`]): the title as the logo paints it (its art, or its typed run), the
-/// block under it, and the gap between, as one column. Read off the same ladder [`hero_content`]
-/// draws on, so it moves with the copy (a synopsis that wraps to one line instead of two brings
-/// the whole column down a line). Each piece is as wide as it is DRAWN, not as wide as the box it was
-/// laid into: the label is its fitted run, the premise its widest wrapped line
-/// ([`plx_ui::text_view::TextView::ink_span`]), the typed title its widest line.
-fn hero_copy_rect(hero: &PmsMovie, measure: &dyn Measure) -> Rect {
-    let (stack, line) = hero_ladder(hero);
-    let title = HeroLogo::new(hero.sid.raw(), hero_logo_rk(hero), hero_title(hero), LogoRung::Hero)
-        .painted(hero_title_band(&stack), measure);
-    let Some(block) = stack.block else { return title };
-    let (left, right) = match line {
-        Some(HeroLine::Label(label)) => {
-            let (_, w) = measure.fit_line_measured(&label, HERO_COL_W, theme::size::LABEL, true);
-            (MARGIN_X, MARGIN_X + w)
-        }
-        Some(HeroLine::Premise(premise)) => {
-            home_synopsis(premise).ink_span(Rect::new(MARGIN_X, block.y, theme::hero::HOME_SYNOPSIS_W, 0.0))
-        }
-        None => return title,
-    };
-    title.union(Rect::new(left, block.y, right - left, block.h))
 }
 
 #[cfg(test)]

@@ -149,16 +149,73 @@ impl ShadeBlock {
     }
 }
 
+/// Edge-anchored shade and shelf ramp sharing one ink. The overlap is a soft maximum,
+/// so it cannot produce the dark seam of two independently blended overlays.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EdgeShade {
+    horizontal: [f32; 2],
+    vertical: [f32; 2],
+    shelf: [(f32, f32); 3],
+    peak: f32,
+    join: f32,
+}
+
+impl EdgeShade {
+    pub fn new(horizontal: [f32; 2], vertical: [f32; 2], shelf: [(f32, f32); 3], peak: f32, join: f32) -> Self {
+        Self { horizontal, vertical, shelf, peak, join }
+    }
+
+    fn at(self, x: f32, y: f32) -> f32 {
+        let progress = |v: f32, lo: f32, hi: f32| ((v - lo) / (hi - lo)).clamp(0.0, 1.0);
+        let smooth = |t: f32| t * t * (3.0 - 2.0 * t);
+        let side = self.peak
+            * (1.0 - smooth(progress(x, self.horizontal[0], self.horizontal[1])))
+            * smooth(progress(y, self.vertical[0], self.vertical[1]));
+        let [(top, a), (mid, b), (foot, c)] = self.shelf;
+        let shelf = if y < mid {
+            a + (b - a) * progress(y, top, mid)
+        } else {
+            b + (c - b) * progress(y, mid, foot)
+        };
+        let mix = (self.join - (side - shelf).abs()).max(0.0);
+        (side.max(shelf) + mix * mix * 0.25 / self.join).min(side + shelf)
+    }
+
+    fn scaled(self, k: f32) -> Self {
+        Self { shelf: self.shelf.map(|(y, a)| (y, a * k)), peak: self.peak * k, join: self.join * k, ..self }
+    }
+
+    fn placed(self, ox: f32, oy: f32, s: f32) -> Self {
+        Self {
+            horizontal: self.horizontal.map(|x| x * s + ox),
+            vertical: self.vertical.map(|y| y * s + oy),
+            shelf: self.shelf.map(|(y, a)| (y * s + oy, a)),
+            ..self
+        }
+    }
+}
+
 /// The blocks of a hero's shade, in the frame a draw is made in. Built by `ui::hero_shade` from the
 /// rects a screen is drawing this frame; a screen with no shade passes [`GroundShade::NONE`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GroundShade {
     blocks: [ShadeBlock; MAX_BLOCKS],
+    edge: Option<EdgeShade>,
 }
 
 impl GroundShade {
     /// No shade: all zeros, which the shader evaluates to exactly `0.0` (module doc).
-    pub const NONE: GroundShade = GroundShade { blocks: [ShadeBlock::NONE; MAX_BLOCKS] };
+    pub const NONE: GroundShade = GroundShade { blocks: [ShadeBlock::NONE; MAX_BLOCKS], edge: None };
+
+    /// A continuous field in place of the content blocks.
+    pub fn from_edge(edge: EdgeShade) -> Self {
+        Self { edge: Some(edge), ..Self::NONE }
+    }
+
+    /// The shader's mode/count uniform. The edge field has its own three-vector layout.
+    pub fn shader_count(&self) -> f32 {
+        if self.edge.is_some() { -1.0 } else { self.live() as f32 }
+    }
 
     /// The shade of `blocks` (at most [`MAX_BLOCKS`]; a longer list is a bug in the caller, not a
     /// case to clip). The live blocks come FIRST, in the order given, and any unused one after them
@@ -192,6 +249,9 @@ impl GroundShade {
 
     /// The stacked alpha at `(x, y)`: `1 - prod(1 - a_i)`, as the vertex shader computes it.
     pub fn at(&self, x: f32, y: f32) -> f32 {
+        if let Some(edge) = self.edge {
+            return edge.at(x, y);
+        }
         1.0 - self.blocks.iter().fold(1.0, |keep, b| keep * (1.0 - b.at(x, y)))
     }
 
@@ -201,6 +261,11 @@ impl GroundShade {
     /// scrim layer far from any copy) is skipped, which changes no pixel. [`GroundShade::NONE`]
     /// reaches nowhere.
     pub fn reaches(&self, rect: [f32; 4]) -> bool {
+        if let Some(edge) = self.edge {
+            let [x, y, _, h] = rect;
+            return y + h > edge.shelf[0].0
+                || (x < edge.horizontal[1] && y + h > edge.vertical[0]);
+        }
         self.blocks.iter().any(|b| b.reaches(rect))
     }
 
@@ -222,7 +287,8 @@ impl GroundShade {
     /// Every block's peak times `k` (a hero fade, a painter's alpha): each block, then stacked — not
     /// the stack times `k`.
     pub fn scaled(self, k: f32) -> GroundShade {
-        GroundShade { blocks: self.blocks.map(|b| b.scaled(k)) }
+        if k <= 0.0 { return Self::NONE; }
+        GroundShade { blocks: self.blocks.map(|b| b.scaled(k)), edge: self.edge.map(|edge| edge.scaled(k)) }
     }
 
     /// The shade moved to the device frame a draw lands in, where an authored point `p` is at
@@ -233,13 +299,25 @@ impl GroundShade {
         if self == GroundShade::NONE {
             return self;
         }
-        GroundShade { blocks: self.blocks.map(|b| if b.peak() > 0.0 { b.placed(ox, oy, s) } else { b }) }
+        GroundShade {
+            blocks: self.blocks.map(|b| if b.peak() > 0.0 { b.placed(ox, oy, s) } else { b }),
+            edge: self.edge.map(|edge| edge.placed(ox, oy, s)),
+        }
     }
 
     /// The `u_sc` upload: per block `(cx, cy, hx - r, hy - r)` then `(r, 1/feather, peak, 0)`. How
     /// many of them the shader runs is [`live`](Self::live), a uniform of its own.
     pub fn uniforms(&self) -> [[f32; 4]; VEC4S] {
         let mut u = [[0.0; 4]; VEC4S];
+        if let Some(edge) = self.edge {
+            let [left, right] = edge.horizontal;
+            let [start, full] = edge.vertical;
+            let [(top, a), (mid, b), (foot, c)] = edge.shelf;
+            u[0] = [left, right, start, full];
+            u[1] = [top, mid, foot, a];
+            u[2] = [b, c, edge.peak, edge.join];
+            return u;
+        }
         for (i, b) in self.blocks.iter().enumerate() {
             u[2 * i] = b.frame;
             u[2 * i + 1] = b.shape;
@@ -340,6 +418,21 @@ mod tests {
         // the square corner's own point is outside the rounded rect, so it has begun to fall
         assert!(b.at(200.0, 300.0) < 0.6, "the sharp corner is cut by its radius");
         assert_eq!(b.at(200.0, 300.0 + 24.0), 0.6, "…and the arc's tangent point is not");
+    }
+
+    #[test]
+    fn edge_shade_translates_and_scales_with_its_painter() {
+        let edge = EdgeShade::new([280.0, 960.0], [110.0, 405.0],
+            [(768.0, 0.0), (886.0, 0.25), (1012.0, 0.93)], 0.59, 0.10);
+        let shade = GroundShade::from_edge(edge);
+        assert_eq!(shade.shader_count(), -1.0);
+        let moved = shade.scaled(0.5).placed(13.0, -40.0, 0.75);
+        for (x, y) in [(0.0, 0.0), (500.0, 450.0), (250.0, 950.0), (1900.0, 1040.0)] {
+            assert!((moved.at(x * 0.75 + 13.0, y * 0.75 - 40.0) - shade.at(x, y) * 0.5).abs() < 1e-6);
+        }
+        assert_eq!(shade.scaled(0.0), GroundShade::NONE);
+        assert!(!shade.reaches([1000.0, 0.0, 500.0, 600.0]));
+        assert!(shade.reaches([1000.0, 770.0, 500.0, 100.0]));
     }
 
     #[test]
@@ -477,7 +570,7 @@ mod tests {
     }
 
     /// **The count is the live blocks, as a prefix.** No shade and a shade scaled to nothing run none
-    /// of the six; the shades Home and Detail build run exactly theirs; and a list with unused blocks
+    /// of the six; content-block shades run exactly theirs; and a list with unused blocks
     /// among the live ones comes out with the live ones first, in order (so `uniforms` packs them
     /// where the shader's loop reads), the unused ones after, all zero or not.
     #[test]

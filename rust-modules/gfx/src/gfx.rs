@@ -1871,7 +1871,7 @@ unsafe fn send_scrim(slot: usize, loc: ScrimLoc, want: &scrim::GroundShade) {
     }
     let u = want.uniforms();
     glUniform4fv(loc.sc, scrim::VEC4S as c_int, u.as_ptr().cast());
-    glUniform1f(loc.scn, want.live() as f32);
+    glUniform1f(loc.scn, want.shader_count());
     *sent = *want;
 }
 

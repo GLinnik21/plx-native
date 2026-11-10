@@ -1,8 +1,5 @@
-//! Landing-page geometry: Detail's hero ladder ([`hero_rows`]) and its atmospheric curve
-//! ([`base_scrim_ramp`], which Home no longer paints), and Home's own ladder ([`home_rows`]), its
-//! premise line ([`first_sentence`]) and its shelf fade ([`shelf_fade`]). Keeping these pure lets the
-//! renderer, route narrative and legibility tests use one definition. What stands behind the hero's
-//! own text is not here: both heroes read it from [`crate::hero_shade`].
+//! Landing-page geometry and shade: Detail's ladder and atmospheric ramp, and Home's ladder,
+//! metadata helpers and combined edge and shelf field.
 
 use super::hstack::Item;
 use super::vstack::{Anchor, VSpan, VStack};
@@ -113,8 +110,8 @@ pub const SHELF_TOP: f32 = crate::consts::PEEK_Y + crate::consts::CARD_DY;
 /// ([`crate::still_footer::Place::Below`], 1012), held from there to the panel's foot. It is the hero's,
 /// so it fades with the hero (`hero_a`, which is 0 once the page has scrolled to the shelves) and
 /// never touches Detail, which has no such shelf. `tiles_top` is the live top of the first shelf's
-/// tiles ([`SHELF_TOP`] at rest), so the fade rides the page as the dive moves the shelf. The hero's
-/// own copy is still graded on [`crate::hero_shade`]; this stands under the shelf.
+/// tiles ([`SHELF_TOP`] at rest), so the fade rides the page as the dive moves the shelf. [`home_shade`] joins it
+/// with the side shade before either reaches the renderer.
 pub fn shelf_fade(tiles_top: f32, hero_a: f32) -> WashRamp {
     let k = hero_a.clamp(0.0, 1.0);
     let tiles = Rect::new(0.0, tiles_top, crate::consts::SCR_W, crate::card_row::RowStyle::STILL.h);
@@ -126,6 +123,26 @@ pub fn shelf_fade(tiles_top: f32, hero_a: f32) -> WashRamp {
             (crate::still_footer::Place::Below.line_top(tiles), theme::shade::SHELF_FOOT_A * k),
         ],
     }
+}
+
+/// Home's fixed left shade and live shelf ramp use a single ink field, across both carousel art
+/// layers when the hero slides. The field stays put while title and controls move across it.
+pub fn home_shade(shelf: WashRamp, hero_a: f32) -> crate::widgets::WashScrim {
+    use plx_gfx::gfx::scrim::{EdgeShade, GroundShade};
+
+    let k = hero_a.clamp(0.0, 1.0);
+    let field = if k > 0.0 {
+        GroundShade::from_edge(EdgeShade::new(
+            theme::shade::HOME_SIDE_X,
+            theme::shade::HOME_SIDE_Y,
+            shelf.stops,
+            theme::shade::HOME_SIDE_A * k,
+            theme::shade::HOME_SIDE_JOIN * k,
+        ))
+    } else {
+        GroundShade::NONE
+    };
+    crate::widgets::WashScrim { ink: shelf.ink, field }
 }
 
 /// **A hero's premise: the first sentence of its summary** (Home's line for a hero nothing has been

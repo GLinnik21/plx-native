@@ -1,8 +1,4 @@
-//! The line Home's hero reads under its title, by the hero's state (owner's board CW-13 v2): a hero
-//! being resumed says how much is left (the string the Continue Watching footer reads), an episode
-//! names itself, a hero nothing has been watched of is introduced by the first sentence of its
-//! summary; and the ladder it stands on keeps its anchor whatever the line is.
-
+//! Home metadata chooses genre, time remaining, episode label or premise by hero state.
 use super::*;
 use plx_ui::landing_hero::{home_synopsis, HOME_LABEL_H};
 
@@ -12,7 +8,7 @@ const MIN: i64 = 60_000;
 
 /// A 15-minute film with a summary of two sentences, not started.
 fn movie() -> PmsMovie {
-    PmsMovie { kind: 0, title: "Sintel".into(), summary: PREMISE.into(), dur_ns: 15 * MIN * 1_000_000, ..Default::default() }
+    PmsMovie { kind: 0, title: "Sintel".into(), summary: PREMISE.into(), genre: Some("Fantasy".into()), dur_ns: 15 * MIN * 1_000_000, ..Default::default() }
 }
 
 /// An episode: season 2, episode 4, "The Night Crossing".
@@ -31,7 +27,7 @@ fn label(hero: &PmsMovie) -> String {
     match hero_line(hero) {
         Some(HeroLine::Label(label)) => label,
         Some(HeroLine::Premise(premise)) => panic!("a label was expected, not the premise {premise:?}"),
-        None => panic!("a label was expected, not nothing"),
+        _ => panic!("a label was expected"),
     }
 }
 
@@ -39,7 +35,7 @@ fn premise(hero: &PmsMovie) -> &str {
     match hero_line(hero) {
         Some(HeroLine::Premise(premise)) => premise,
         Some(HeroLine::Label(label)) => panic!("the premise was expected, not the label {label:?}"),
-        None => panic!("the premise was expected, not nothing"),
+        _ => panic!("the premise was expected"),
     }
 }
 
@@ -79,21 +75,14 @@ fn an_episode_reads_its_label_whether_resumed_or_on_deck() {
     assert_eq!(label(&resumed), want, "resumed: the label, not the time left");
 }
 
-/// **A hero nothing has been watched of is introduced by its premise**: the first sentence of its
-/// summary, never the whole of it. A film, a show, a film resumed within its first ten seconds (the
-/// Play button says Play), a finished one whose resume point the server never cleared, and one with
-/// no known duration all read it.
 #[test]
-fn a_hero_nothing_has_been_watched_of_is_introduced_by_its_first_sentence() {
-    for (what, hero) in [
-        ("a film, not started", movie()),
-        ("a show", PmsMovie { kind: 1, ..movie() }),
-        ("a film nine seconds in", PmsMovie { resume_ms: 9_000, ..movie() }),
-        ("a film past 95 percent", PmsMovie { resume_ms: 15 * MIN - 10_000, ..movie() }),
-        ("a film of no known length", PmsMovie { dur_ns: 0, resume_ms: 7 * MIN, ..movie() }),
-    ] {
-        assert_eq!(premise(&hero), FIRST, "{what}");
+fn an_unplayed_movie_reads_its_genre() {
+    for hero in [movie(), PmsMovie { resume_ms: 9_000, ..movie() }] {
+        assert!(matches!(hero_line(&hero), Some(HeroLine::Genre("Fantasy"))));
     }
+    assert_eq!(premise(&PmsMovie { kind: 1, ..movie() }), FIRST);
+    assert_eq!(premise(&PmsMovie { watched: true, ..movie() }), FIRST);
+    assert!(hero_line(&PmsMovie { genre: None, ..movie() }).is_none());
 }
 
 /// **A line with nothing to say falls to the next**: an episode with nothing to name it is a resumed
@@ -104,9 +93,9 @@ fn a_line_with_nothing_to_say_falls_to_the_next() {
     assert_eq!(premise(&nameless), FIRST, "no label, not started: the premise");
     let resumed = PmsMovie { resume_ms: 7 * MIN, ..nameless };
     assert_eq!(label(&resumed), plx_ui::fmt::footer_left(8 * MIN), "no label, resumed: the time left");
-    let mute = PmsMovie { summary: String::new(), ..movie() };
+    let mute = PmsMovie { summary: String::new(), genre: None, ..movie() };
     assert!(hero_line(&mute).is_none(), "no summary, nothing started: no line");
-    let blank = PmsMovie { summary: "  \n ".into(), ..movie() };
+    let blank = PmsMovie { summary: "  \n ".into(), genre: None, ..movie() };
     assert!(hero_line(&blank).is_none(), "a blank summary is no summary");
     let resumed_mute = PmsMovie { resume_ms: 7 * MIN, ..mute };
     assert_eq!(label(&resumed_mute), plx_ui::fmt::footer_left(8 * MIN), "the time left needs no summary");
@@ -122,9 +111,10 @@ fn the_ladder_keeps_its_anchor_for_every_line() {
                   remembers, a woman crosses the frozen wastes, hunting the dragon she raised, \
                   carrying everything she still owns, and nothing she wants to keep"
             .into(),
+        kind: 1,
         ..movie()
     };
-    let one = movie();
+    let one = PmsMovie { kind: 1, ..movie() };
     let resumed = PmsMovie { resume_ms: 7 * MIN, ..movie() };
     let long_label = episode();
     assert_eq!(home_synopsis(FIRST).measure_h(theme::hero::HOME_SYNOPSIS_W), HOME_LABEL_H, "the premise: the first sentence is one line");
@@ -146,23 +136,8 @@ fn the_ladder_keeps_its_anchor_for_every_line() {
     assert_eq!(s_one.title.y - s_two.title.y, HOME_LABEL_H, "a one-line block brings the title down a line");
     assert_eq!((s_resumed.title.y, s_resumed.block), (s_label.title.y, s_label.block), "a label is a label");
     // no line: the title stands alone over the actions
-    let mute = PmsMovie { summary: String::new(), ..movie() };
+    let mute = PmsMovie { summary: String::new(), genre: None, ..movie() };
     assert!(stack(&mute).block.is_none());
-}
-
-/// **The shade's copy column follows the line**: its foot is the block's foot, 638, for every state,
-/// so the copy block the shade stands behind is the one the page draws.
-#[test]
-fn the_copy_column_the_shade_stands_behind_ends_where_the_line_does() {
-    let m = &plx_ui::fixture::FixtureMeasure;
-    for (what, hero) in [
-        ("time left", PmsMovie { resume_ms: 7 * MIN, ..movie() }),
-        ("episode", episode()),
-        ("premise", movie()),
-    ] {
-        let rect = hero_copy_rect(&hero, m);
-        assert_eq!(rect.y + rect.h, 638.0, "{what}: {rect:?}");
-    }
 }
 
 /// **The page draws the line the state names**: a resumed film draws its time left and none of its
@@ -178,7 +153,8 @@ fn the_page_draws_the_line_the_state_names() {
     assert!(resumed.contains(&plx_ui::fmt::footer_left(8 * MIN)), "{resumed:?}");
     assert!(!resumed.contains("woman"), "a resumed film does not recite its summary: {resumed:?}");
     let fresh = drawn(&movie());
-    assert!(fresh.contains("woman crosses"), "{fresh:?}");
+    assert!(fresh.contains("Fantasy"), "{fresh:?}");
+    assert!(!fresh.contains("woman crosses"), "{fresh:?}");
     assert!(!fresh.contains("Years later"), "the second sentence stays on the Details page: {fresh:?}");
     let ep = drawn(&PmsMovie { resume_ms: 7 * MIN, ..episode() });
     assert!(ep.contains("The Night Crossing"), "{ep:?}");

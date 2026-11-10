@@ -69,29 +69,19 @@ keep their control-specific alignment; centering the panel does not center its p
 This is the part most easily broken by accident, so it is the part worth knowing before you change a
 backdrop.
 
-Hero text is protected by a SHADE that follows the content, and the arithmetic is deliberately pure so
-a test can grade it. [rust-modules/ui/src/hero_shade.rs](rust-modules/ui/src/hero_shade.rs): `HeroShade`
-holds one rounded block per piece of content the screen draws on the art (Home: the copy column, the
-action row and the pager; Detail: the title or logo, the synopsis column, the facts, the credits and
-the action row; the catalog page: the title, the copy and the pill), each feathered by `theme::shade::{FEATHER, RADIUS, PAD}` and held at its role's
-darkness (`COPY_A`, `CONTROLS_A`). `HeroShade::at(x, y,
-strength)` is the closed form the legibility tests read, so the promise and the paint cannot come from
-two different curves; `gfx/scrim.rs`'s `GroundShade` evaluates the same numbers in the one-pass ground
-shader. The blocks come from the rects the screen draws THIS frame, so they move with the content: the
-logo that rises into the trailer corner carries its shade up with it. Each block is as wide as the text
-drawn in it, not the column the text was laid into: a block of copy takes the widest of its lines'
-measured extents (`HeroShade::add_ink`, over `TextView::ink_span` and the rows' own measured widths), and
-a typed title is as wide as its widest line (`HeroLogo::painted`), so the shade reads as a darkening
-around the words and never as a slab of the art.
+Detail and Catalog protect hero text with a shade that follows the content.
+[`HeroShade`](../rust-modules/ui/src/hero_shade.rs) builds a feathered block from each piece of
+drawn content, using its measured ink width. The blocks follow the title, copy and controls as
+their positions change.
 
-- Home's text stack builds upward from `theme::hero::HOME_ACTIONS_Y` (668) in a column of `COL_W`
-  (943), and the shade is all that stands behind it. The shelf under it has its own ramp, the
-  **shelf fade** (`landing_hero::shelf_fade`): the photograph darkened across the whole width of the
-  shelf, nothing at the tiles' top (768 at rest), `theme::shade::SHELF_MID_A` at their mid-line and
-  near-black, `SHELF_FOOT_A` (0.93 of the scrim ink), at the Continue Watching row's caption line (1012),
-  held below it, so the captions, which stand on the backdrop with no plate behind them, read over any
-  photograph. It rides the first shelf's live tile top, fades with the hero (`hero_a`) and is carried
-  in the same one-pass ground as the shade; Detail has none.
+- Home uses one edge-anchored field that stays still through a carousel flip. It eases in from
+  the upper left and fades toward the center of the artwork. The field joins the full-width
+  shelf ramp with a soft maximum to keep the crossing from darkening like two overlays.
+  The shelf ramp follows the first tile's live top and reaches `SHELF_FOOT_A` at the
+  Continue Watching caption line. The whole field fades with the hero.
+- Home's metadata line shows the server's primary genre for an unplayed movie, time remaining
+  for a movie in progress, and the episode label for an episode. Genre uses the reading ink
+  at the same single-line anchor. The full synopsis stays in Detail.
 - Detail keeps the vertical ramp, [rust-modules/ui/src/landing_hero.rs](rust-modules/ui/src/landing_hero.rs):
   zero above `HERO_BASE_SCRIM_Y0` (0.34 of the screen, 367), `foot * MID_WEIGHT` at `KNEE_Y` (0.65
   of the screen, 702), and `foot = SCRIM_FOOT_A * hero_a` at the bottom, with the shade over it.
@@ -104,7 +94,7 @@ The shade scales by the screen's own hero fade, so it leaves with the hero inste
 the shelves.
 
 **Anything that changes what sits behind hero text must re-grade the legibility tables**
-(`widgets_hero_shade_tests.rs` for Home, `widgets_hero_scrim_tests.rs` for Detail). Still artwork
+(`screens/src/home/hero_shade_tests.rs` for Home, `widgets_hero_scrim_tests.rs` for Detail). Still artwork
 has a knowable worst case, which is what the PMS `blur` hash is for. Video does not.
 
 For text sitting directly on a piece of artwork, the answer is `art_scrim`: `STILL_SCRIM_H` 112 px

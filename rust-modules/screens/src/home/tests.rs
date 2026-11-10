@@ -937,9 +937,7 @@ fn env_at(sp: f32) -> Env {
 /// layered scrim that stays the only scrim drawer on a host (no ink program: `gfx::wash_ink_ok`):
 /// the layered ground hands the scrim back and the cells of the scrim layer (`widgets::scrim_layer`,
 /// tag 26) follow it, for as long as the hero is visible (`hero_a > 0.01`); the flat ground takes
-/// none, and has none to take. The shelf fade is the third: its layers (`WashRamp::layer`, two
-/// gradient segments and the held foot) follow it on the same frames. A hero SLIDE is the layered
-/// gradient up to the cull and flat from it, like any other frame.
+/// none, and has none to take. The side and shelf fade share those cells.
 #[test]
 fn the_ground_goes_flat_only_once_the_hero_is_culled() {
     use plx_ui::draw_census;
@@ -957,40 +955,22 @@ fn the_ground_goes_flat_only_once_the_hero_is_culled() {
     // the scrim in the wash and the scrim cells would not be a tell.)
     assert!(!plx_gfx::gfx::wash_ink_ok(), "a host build has no wash ink program");
     let cells = cut_cells(Rect::FULL, SCRIM_CELL_W, SCRIM_CELL_H).count();
-    // `(is the ground one colour, how many scrim cells follow it, how many layers the shelf fade
-    // adds)` for one frame at `sp`.
     let frame = |sp: f32, slide: Option<(f32, f32)>| {
         let env = env_at(sp);
+        let shade = (env.hero_a > 0.01).then(|| home_shade(shelf_fade(SHELF_TOP, env.hero_a), env.hero_a));
         let mut drawn = Vec::new();
-        // a shade with one block in it, as a hero frame hands over (`draw` drops it once the hero
-        // has faded: `env.hero_a`), and the shelf fade at rest
-        let shade = plx_ui::hero_shade::HeroShade::new()
-            .add(Rect::new(96.0, 500.0, 600.0, 60.0), plx_ui::hero_shade::Role::Copy, 1.0)
-            .scrim(env.hero_a);
-        let fade = plx_ui::landing_hero::shelf_fade(plx_ui::landing_hero::SHELF_TOP, env.hero_a);
         let grounds = draw_census::capture_grounds(|| {
-            drawn = draw_census::capture(|| b.draw(Painter::recording(), &env, slide, Some(shade), Some(fade)));
+            drawn = draw_census::capture(|| b.draw(Painter::recording(), &env, slide, shade));
         });
-        let bare = draw_census::capture(|| b.draw(Painter::recording(), &env, slide, Some(shade), None));
         let [ground] = grounds[..] else { panic!("sp {sp}: {} grounds, want one", grounds.len()) };
         let flat = ground[1..].iter().all(|c| *c == ground[0]);
-        (flat, drawn.iter().filter(|(tag, _)| *tag == 26).count(), drawn.len() - bare.len())
+        (flat, drawn.iter().filter(|(tag, _)| *tag == 26).count())
     };
-    let fade_layers = 3; // two gradient segments and the held foot (`WashRamp::layer`)
-    // Pending texture (nothing resident: `tex` is 0), the dive in flight, and its last frame: the
-    // layered gradient. The scrim and the shelf fade are laid over it as cells and layers while the
-    // hero is visible (`hero_a` is 0 from `sp = 0.55`, so the dive's last frames have none).
-    for (sp, scrim_cells, layers) in [(0.0, cells, fade_layers), (0.4, cells, fade_layers), (HERO_ART_CULL - 0.001, 0, 0)] {
-        assert_eq!(frame(sp, None), (false, scrim_cells, layers), "sp {sp}: the layered ground");
-    }
-    // A hero slide before the cull is the layered gradient too, with no scrim in the ground, so the
-    // scrim and the fade are drawn as layers over both art layers.
-    assert_eq!(frame(0.0, Some((-SCR_W, 0.0))), (false, cells, fade_layers), "a slide stays layered");
-    assert_eq!(frame(HERO_ART_CULL - 0.001, Some((-SCR_W, 0.0))), (false, 0, 0), "…to its last frame");
-    // Culled: ONE colour, no scrim or fade to draw (a slide or held layer notwithstanding: no art is drawn).
-    for sp in [HERO_ART_CULL, 1.0] {
-        assert_eq!(frame(sp, None), (true, 0, 0), "sp {sp}: the flat ground, and no scrim");
-        assert_eq!(frame(sp, Some((-SCR_W, 0.0))), (true, 0, 0), "sp {sp}: a culled slide is flat too");
+    for slide in [None, Some((-SCR_W, 0.0))] {
+        for (sp, expected) in [(0.0, (false, cells)), (0.4, (false, cells)),
+            (HERO_ART_CULL - 0.001, (false, 0)), (HERO_ART_CULL, (true, 0)), (1.0, (true, 0))] {
+            assert_eq!(frame(sp, slide), expected, "sp {sp}, slide {slide:?}");
+        }
     }
 }
 
@@ -6287,7 +6267,7 @@ fn a_hero_backdrop_that_has_dissolved_in_is_drawn_at_one_exact_alpha_from_then_o
     // The alphas of the backdrop-sized quads one frame of the page's ground draws.
     let alphas = |s: &mut HomeScreen| {
         let env = s.env(0.0);
-        plx_ui::draw_census::capture_tex(|| s.backdrop.draw(Painter::recording(), &env, None, None, None))
+        plx_ui::draw_census::capture_tex(|| s.backdrop.draw(Painter::recording(), &env, None, None))
             .into_iter()
             .filter(|(_, r, a)| r.w >= SCR_W && *a > 0.01)
             .map(|(_, _, a)| a)

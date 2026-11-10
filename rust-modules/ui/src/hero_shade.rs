@@ -7,7 +7,7 @@
 //! content's box and feathering to nothing [`theme::shade::FEATHER`] px beyond it. Away from any
 //! content it is exactly zero, and a block that moves takes its shade with it, because the screen
 //! hands this builder the rects of THIS frame's layout (Detail's logo rising into the trailer
-//! corner; Home's rows when the synopsis wraps to one line instead of two).
+//! corner).
 //!
 //! It is evaluated in the hero ground's existing one-pass shader (`gfx::scrim::GroundShade`, per
 //! vertex, `ui::widgets::AmbientWash::draw_ground`): the rects are uniforms, the dither is the

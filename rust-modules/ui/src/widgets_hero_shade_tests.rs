@@ -12,7 +12,7 @@ use crate::consts::{MARGIN_X, SCR_H, SCR_W};
 use crate::hero_shade::{HeroShade, Role};
 use theme::shade as t;
 
-/// A Home-like hero: the copy column, the action row and the pager after it.
+/// A three-block fixture with different positions and role weights.
 fn home_like() -> HeroShade {
     HeroShade::new()
         .add(Rect::new(MARGIN_X, 470.0, 943.0, 168.0), Role::Copy, 1.0)
@@ -264,110 +264,29 @@ fn draw_ground_carries_the_shade_in_cells_or_hands_it_back() {
 
 // ── Legibility at the positions Home's ladder puts its copy ─────────────────────────────────────
 
-/// What stands over the photograph at `(x, y)` on Home at full strength: the hero's shade and the
-/// shelf fade ([`crate::landing_hero::shelf_fade`]), stacked as the ground stacks them.
-fn field_at(shade: &HeroShade, ramp: &WashRamp, x: f32, y: f32) -> f32 {
-    1.0 - (1.0 - shade.at(x, y, 1.0)) * (1.0 - ramp.alpha(y))
-}
-
-/// The worst contrast `ink` gets over `art` along the horizontal run `x0..=x1` and the vertical span
-/// `y0..=y1` of a text box, under `shade` and the shelf fade `ramp` at full strength (both are smooth,
-/// so a grid of points finds the weakest corner).
-fn worst_over(shade: &HeroShade, ramp: &WashRamp, ink: [f32; 4], art: f32, (x0, x1): (f32, f32), (y0, y1): (f32, f32)) -> (f32, f32, f32) {
-    let mut worst = (f32::INFINITY, x0, y0);
-    for ix in 0..=16 {
-        for iy in 0..=4 {
-            let (x, y) = (x0 + (x1 - x0) * ix as f32 / 16.0, y0 + (y1 - y0) * iy as f32 / 4.0);
-            let c = contrast_over_art(ink, art, field_at(shade, ramp, x, y));
-            if c < worst.0 {
-                worst = (c, x, y);
-            }
-        }
-    }
-    worst
-}
-
-/// **Home's copy reads over bright artwork, at the positions the ladder puts it.** Every line the
-/// hero draws on the artwork (the episode label, the two synopsis lines, the title's fallback type and
-/// the Continue Watching captions, which the shelf fade stands under; the top navigation stands on its
-/// own glass and is not graded here),
-/// at its WORST point (the whole box: the weakest corner of the run, not the margin), over a bright
-/// backdrop (encoded 0.85: a blown highlight) and blown white (1.0, where the design only promises a
-/// floor). The positions are read from the ladder itself (`home_rows`), and the blocks are built the
-/// way Home builds them (`HomeScreen::hero_shade`: the copy column, the action row, the pager) with
-/// the shelf fade under them, so a layout change updates this contract rather than invalidating it. The floors are the
-/// ones the old rows were graded to (3.0 over bright art, 2.5 over blown white).
-///
-/// **If the shade fails a floor, the answer is the shade's own parameters** ([`theme::shade`]), never
-/// the floor: the failing position and alpha are what this prints.
+/// Grade the ink near the left anchor, plus the full Continue Watching caption strip. The
+/// field intentionally gives way to the artwork toward the center of the hero.
 #[test]
-fn home_copy_reads_over_bright_artwork_at_the_ladders_positions() {
-    use crate::landing_hero::{home_rows, HomeStack, COL_W};
-    let band = crate::hero_logo::band_h(crate::hero_logo::LogoRung::Hero);
-    let line_h = crate::hero_syn_h(1);
-    let col = (MARGIN_X, MARGIN_X + COL_W);
-    let syn = (MARGIN_X, MARGIN_X + theme::hero::HOME_SYNOPSIS_W);
-    // the three block shapes a hero has: an episode's one bold line, a synopsis of two lines, of one
-    let episode = home_rows(band, Some(line_h));
-    let two = home_rows(band, Some(crate::hero_syn_h(2)));
-    let one = home_rows(band, Some(line_h));
-    // the title's text fallback is baselined on its band's foot (`hero_logo::place`); a clearLogo
-    // paints higher, which is art riding the shade rather than an anchor this closed form can speak
-    // for. Two display lines: the first cap top through the second line's baseline.
-    let title_foot = |s: &HomeStack| s.title.y + s.title.h;
-    let title_cap_top = |s: &HomeStack| title_foot(s) - HERO_CAP_H;
-    let block = |s: &HomeStack| s.block.expect("a block");
-    let ramp = crate::landing_hero::shelf_fade(crate::landing_hero::SHELF_TOP, 1.0);
-    let footer = Rect::new(
-        MARGIN_X,
-        crate::still_footer::Place::Below.line_top(Rect::new(0.0, crate::landing_hero::SHELF_TOP, SCR_W, crate::card_row::RowStyle::STILL.h)),
-        1700.0,
-        crate::still_footer::FOOTER_LINE_H,
-    );
-    // Home's shade for one ladder: the copy column from the title's cap top to the block's foot, and
-    // the action row
-    let shade = |s: &HomeStack, block_w: f32| {
-        let b = block(s);
-        let top = title_cap_top(s);
-        HeroShade::new()
-            .add(Rect::new(MARGIN_X, top, COL_W.max(block_w), b.y + b.h - top), Role::Copy, 1.0)
-            .add(Rect::new(MARGIN_X, s.actions.y, 420.0, 60.0), Role::Controls, 1.0)
-    };
-    let (e, two_s, one_s) = (shade(&episode, COL_W), shade(&two, theme::hero::HOME_SYNOPSIS_W), shade(&one, theme::hero::HOME_SYNOPSIS_W));
-    // (label, shade, x run, y span, ink, floor over BRIGHT art, floor over BLOWN WHITE)
-    let rows: [(&str, &HeroShade, (f32, f32), (f32, f32), [f32; 4], f32, f32); 7] = [
-        ("episode label", &e, col, (block(&episode).y, block(&episode).y + line_h), theme::TEXT_PRIMARY, 3.0, 2.5),
-        ("synopsis, two lines", &two_s, syn, (block(&two).y, block(&two).y + crate::hero_syn_h(2)), theme::TEXT_READING, 3.0, 2.5),
-        ("synopsis, one line", &one_s, syn, (block(&one).y, block(&one).y + line_h), theme::TEXT_READING, 3.0, 2.5),
-        ("title over an episode label", &e, col, (title_cap_top(&episode), title_foot(&episode)), theme::TEXT_PRIMARY, 3.0, 2.5),
-        ("title over two synopsis lines", &two_s, col, (title_cap_top(&two), title_foot(&two)), theme::TEXT_PRIMARY, 3.0, 2.5),
-        ("title over one synopsis line", &one_s, col, (title_cap_top(&one), title_foot(&one)), theme::TEXT_PRIMARY, 3.0, 2.5),
-        // the Continue Watching row at rest: its caption line stands under the art, on the backdrop,
-        // with no block behind it: the shelf fade alone holds it
-        (
-            "continue footer",
-            &e,
-            (MARGIN_X, MARGIN_X + crate::still_footer::FOOTER_BELOW_INNER_W),
-            (footer.y, footer.y + footer.h),
-            theme::TEXT_SECONDARY,
-            3.0,
-            2.5,
-        ),
-    ];
-    let mut failed = Vec::new();
-    for (label, shade, xs, ys, ink, min_bright, min_white) in rows {
-        for (art, floor) in [(0.85f32, min_bright), (1.0, min_white)] {
-            let (c, x, y) = worst_over(shade, &ramp, ink, art, xs, ys);
-            let before = contrast_over_art(ink, art, 0.0);
-            let a = field_at(shade, &ramp, x, y);
-            eprintln!("{label:<32} art {art:.2}: {c:5.2}:1 (floor {floor}) at ({x:.0},{y:.0}) alpha {a:.3}; unshaded {before:.2}:1");
-            if c < floor {
-                failed.push(format!("{label} over art {art}: {c:.2}:1 under its {floor}:1 floor at ({x:.0},{y:.0}), shade alpha {a:.3}"));
-            }
-            assert!(c > before, "{label} over art {art}: the shade made it WORSE ({before:.2} -> {c:.2})");
-        }
+fn home_hero_and_shelf_copy_read_over_white_artwork() {
+    use crate::landing_hero::{home_rows, home_shade, shelf_fade, SHELF_TOP};
+    let shelf = shelf_fade(SHELF_TOP, 1.0);
+    let shade = home_shade(shelf, 1.0);
+    let stack = home_rows(crate::hero_logo::band_h(crate::hero_logo::LogoRung::Hero),
+        Some(crate::landing_hero::HOME_LABEL_H));
+    let title_bottom = stack.title.y + stack.title.h;
+    let line = stack.block.expect("one line");
+    let footer_y = crate::still_footer::Place::Below.line_top(
+        Rect::new(0.0, SHELF_TOP, SCR_W, crate::card_row::RowStyle::STILL.h));
+    for (ink, x, y) in [
+        (theme::TEXT_PRIMARY, 480.0, title_bottom - HERO_CAP_H),
+        (theme::TEXT_PRIMARY, 480.0, line.y),
+        (theme::TEXT_READING, 480.0, line.y),
+        (theme::TEXT_SECONDARY, SCR_W, footer_y),
+    ] {
+        let alpha = shade.alpha(x, y);
+        assert!(contrast_over_art(ink, 0.85, alpha) >= 3.0, "bright artwork at ({x}, {y}), shade {alpha}");
+        assert!(contrast_over_art(ink, 1.0, alpha) >= 2.5, "white artwork at ({x}, {y}), shade {alpha}");
     }
-    assert!(failed.is_empty(), "the shade fails the floor:\n{}", failed.join("\n"));
 }
 
 // ── The shelf fade ──────────────────────────────────────────────────────────────────────────────

@@ -267,6 +267,15 @@ pub mod hero {
 /// evaluator is `hero_shade::HeroShade::at` and the one-pass ground carries the same numbers to the
 /// GPU (`gfx::scrim::GroundShade`).
 pub mod shade {
+    /// Where Home's edge shade leaves full strength and reaches clear artwork.
+    pub const HOME_SIDE_X: [f32; 2] = [280.0, 960.0];
+    /// Where the edge shade begins and reaches full strength down the screen.
+    pub const HOME_SIDE_Y: [f32; 2] = [110.0, 405.0];
+    /// Strength at the left under the logo, metadata and actions.
+    pub const HOME_SIDE_A: f32 = 0.59;
+    /// Opacity difference over which the side and shelf shades softly join.
+    pub const HOME_SIDE_JOIN: f32 = 0.10;
+
     /// How far a block's darkness falls away beyond the edge of the content's rounded box, in px:
     /// it holds its full alpha inside the box and reaches exactly nothing this far out (a smoothstep,
     /// so neither end has a visible edge). Generous on purpose: the shade should read as a soft
