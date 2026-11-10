@@ -12,7 +12,7 @@ fn bookmark_commands_are_addressed_and_identical_snapshots_are_quiet() {
     let stores = plx_data::stores::Stores::default();
     stores.browse.borrow_mut().seed_two_source_table_for_test();
     let mut directory = plx_data::stores::browse::DirectorySnapshot::default();
-    stores.capture_browse(&mut directory);
+    stores.capture_seeded_browse_for_test(&mut directory, plx_plex::plex::current_server());
     let section = &directory.view().sections()[0];
     let target = SectionAddress {
         epoch: directory.view().epoch().unwrap(),

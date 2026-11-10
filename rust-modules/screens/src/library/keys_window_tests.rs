@@ -253,7 +253,7 @@ fn shelf_keys_stay_bounded_over_rotating_refetches() {
         // A refetch that returns different items under the same shelf.
         let rks: Vec<String> = (0..12).map(|i| format!("rot-{round}-{i}")).collect();
         stores.browse.borrow_mut().seed_first_shelf_items_for_test(0, &rks);
-        let publication = stores.capture_browse(&mut fixture.directory);
+        let publication = stores.capture_seeded_browse_for_test(&mut fixture.directory, plx_plex::plex::current_server());
         fixture.hubs = publication.section_hubs;
         fixture.listing = publication.listing;
         page.sync(&fixture.cx(None));

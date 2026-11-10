@@ -23,7 +23,12 @@ impl Default for TestBrowse {
 impl TestBrowse {
     /// The registry's answer as of NOW, as the Bridge fills it immediately before each step.
     pub(super) fn refill(&mut self) {
-        self.keys = crate::pms::registry_keys_for_test();
+        self.keys.refill_roster(
+            plx_plex::plex::current_server(), plx_plex::plex::server_roster_gen(),
+            plx_plex::plex::server_facts_gen(), plx_plex::plex::server_ids(),
+            plx_plex::plex::client_for, plx_plex::plex::server_facts,
+            plx_plex::plex::server_probe_result,
+        );
     }
 
     /// `hubs_kick` on the registry as of now: the section's read leaves on `jobs`.
@@ -107,11 +112,19 @@ impl TestBrowse {
     pub(super) fn pump(&mut self) -> crate::stores::StoreOutcome {
         self.observe_pin_write();
         let session = plx_plex::plex::session::peek();
-        let roster = self.state.sync_roster_owned();
+        self.refill();
+        let profile_key = plx_plex::plex::session::current_profile_key();
+        let input = BrowseRosterInput {
+            keys: &self.keys, session: &session,
+            visible_generation: plx_plex::plex::session::visible_generation(),
+            settled: plx_plex::plex::session::peek_settled().is_some(),
+            profile_key: &profile_key,
+        };
+        let roster = self.state.sync_roster_owned(&input);
         if roster.retire_adapter {
             self.adapter = Arc::new(BrowseAdapter::default());
         }
-        self.refill();
+
         let mut outcome = self.state.pump_owned_with_gate(&self.adapter, plx_machine::landgate::fixture_gate(),
             &self.keys, &session, &mut self.jobs);
         outcome.changed |= roster.changed;
@@ -161,7 +174,17 @@ impl TestBrowse {
     }
 
     pub(super) fn sync_roster(&mut self) {
-        if self.state.sync_roster_owned().retire_adapter {
+        self.observe_pin_write();
+        self.refill();
+        let session = plx_plex::plex::session::peek();
+        let profile_key = plx_plex::plex::session::current_profile_key();
+        let input = BrowseRosterInput {
+            keys: &self.keys, session: &session,
+            visible_generation: plx_plex::plex::session::visible_generation(),
+            settled: plx_plex::plex::session::peek_settled().is_some(),
+            profile_key: &profile_key,
+        };
+        if self.state.sync_roster_owned(&input).retire_adapter {
             self.adapter = Arc::new(BrowseAdapter::default());
         }
     }
@@ -245,11 +268,13 @@ impl TestBrowse {
 
     /// The first-run gate on `session`.
     pub(super) fn first_run_asks_with(&self, session: &plx_plex::plex::session::Session) -> bool {
-        crate::stores::browse::onboard::asks_for_sources(self.state.sources.len(), session)
+        crate::stores::browse::onboard::asks_for_sources(self.state.sources.len(), session,
+            &plx_plex::plex::session::current_profile_key())
     }
 
     /// The editor's commit, stepped with `session`.
     pub(super) fn apply_pins_with(&mut self, answers: &[(usize, bool)], session: &plx_plex::plex::session::Session) {
+        self.state.profile_key = plx_plex::plex::session::current_profile_key();
         self.state.apply_pins_from(answers, session);
     }
 
@@ -266,7 +291,8 @@ impl TestBrowse {
 
     pub(super) fn first_run_asks(&self) -> bool {
         crate::stores::browse::onboard::asks_for_sources(
-            self.state.sources.len(), &plx_plex::plex::session::peek())
+            self.state.sources.len(), &plx_plex::plex::session::peek(),
+            &plx_plex::plex::session::current_profile_key())
     }
 }
 pub(super) struct RegisteredCleanup;
@@ -488,8 +514,7 @@ pub(super) fn seed_one_source(
     // is registered here. It makes `cur_source_idx`'s empty-table fallback resolve to this row.
     browse.seed_sources(vec![BrowseSource {
         sid: plx_plex::plex::current_server(),
-        client_addr: 0,
-        token_gen: 0,
+        client_key: None,
         machine_id: "mach-0".into(),
         owned: true,
         home: false,

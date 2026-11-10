@@ -98,13 +98,13 @@ fn a_source_that_did_not_answer_is_observable_rather_than_an_eternal_spinner() {
     let mut browse = TestBrowse::default();
     seed_one_source(&mut browse, true, false);
     assert_eq!(
-        browse.state.cur_source_state(),
+        browse.state.cur_source_state(browse.state.sources()[0].sid),
         SecFetch::Loading,
         "nobody has asked it anything yet"
     );
     browse.state.source_mut(0).unwrap().set_reachable(false);
     assert_eq!(
-        browse.state.cur_source_state(),
+        browse.state.cur_source_state(browse.state.sources()[0].sid),
         SecFetch::Failed,
         "the screen must be able to see this"
     );
@@ -118,7 +118,7 @@ fn a_source_with_no_browsable_library_answered_and_did_not_fail() {
     let mut browse = TestBrowse::default();
     seed_one_source(&mut browse, true, true);
     assert_eq!(
-        browse.state.cur_source_state(),
+        browse.state.cur_source_state(browse.state.sources()[0].sid),
         SecFetch::Ready,
         "an empty answer is an answer"
     );
@@ -131,7 +131,7 @@ fn a_served_table_clears_the_failure_and_seeds_its_states() {
     let _g = plx_base::testlock::serial();
     let mut browse = TestBrowse::default();
     seed_one_source(&mut browse, false, false);
-    assert_eq!(browse.state.cur_source_state(), SecFetch::Failed);
+    assert_eq!(browse.state.cur_source_state(browse.state.sources()[0].sid), SecFetch::Failed);
     {
         let s = browse.state.source_mut(0).unwrap();
         s.set_reachable(true);
@@ -144,7 +144,7 @@ fn a_served_table_clears_the_failure_and_seeds_its_states() {
             (2, "Film Club".into(), SecKind::Movie),
         ],
     );
-    assert_eq!(browse.state.cur_source_state(), SecFetch::Ready);
+    assert_eq!(browse.state.cur_source_state(browse.state.sources()[0].sid), SecFetch::Ready);
     assert_eq!(browse.section_count(), 2);
     assert!(browse.loading_initial(), "a fresh section has not answered yet");
 }

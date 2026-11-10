@@ -147,7 +147,7 @@ fn a_section_switch_settles(items: usize, restore: Option<f32>) -> LibraryScreen
     stores.browse_run_for_test(BrowseCmd::SetCur(1));
     let publish = |fixture: &mut Fixture, grid: bool| {
         if grid { stores.browse.borrow_mut().seed_items_for_test(items); }
-        let publication = stores.capture_browse(&mut fixture.directory);
+        let publication = stores.capture_seeded_browse_for_test(&mut fixture.directory, plx_plex::plex::current_server());
         fixture.listing = publication.listing;
         if !grid { fixture.listing = fixture.listing.clone().with_fetch(SecFetch::Loading, -1).with_total(0); }
         if let Some(scroll) = restore {

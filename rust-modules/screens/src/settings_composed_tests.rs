@@ -115,7 +115,7 @@ impl Rig<InnerHost> for SurfaceRig {
         self.keyboard.push(up);
     }
     fn split(&mut self) -> Split<'_, InnerHost> {
-        self.stores.capture_browse(&mut self.directory);
+        self.stores.capture_seeded_browse_for_test(&mut self.directory, plx_plex::plex::current_server());
         Split {
             mounter: &mut self.mounter,
             views: self.directory.view().into(),
@@ -337,7 +337,7 @@ fn composed_owner_favourites_footer_survives_left_down_and_idle_frames() {
     // the real Onboard Tick can poll discovery without spawning network work.
     let mut rig = SurfaceRig::new();
     rig.stores.browse.borrow_mut().seed_registered_table_for_test([a, b]);
-    rig.stores.capture_browse(&mut rig.directory);
+    rig.stores.capture_seeded_browse_for_test(&mut rig.directory, a);
     let pins = rig.directory.view().favorite_sections().to_vec();
     let (mut d, mut rig, id) = consent_opened_on(SettingsPage::Favourites, rig);
     seat(&mut d, id, 0);
@@ -356,7 +356,7 @@ fn composed_owner_favourites_footer_survives_left_down_and_idle_frames() {
         frame(&mut d, &mut rig, ms + 16, vec![]);
         assert_eq!(d.focus().unwrap().elem, registry::BAND);
     }
-    rig.stores.capture_browse(&mut rig.directory);
+    rig.stores.capture_seeded_browse_for_test(&mut rig.directory, a);
     assert_eq!(rig.directory.view().favorite_sections(), pins,
         "draft navigation cannot persist pins");
     assert_eq!(d.nav.input_owner(), Some(InputOwner::Entry(id)));

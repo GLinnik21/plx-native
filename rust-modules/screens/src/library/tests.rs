@@ -1067,14 +1067,14 @@ impl Fixture {
         let mut fixture = Self::new();
         let stores = plx_data::stores::Stores::default();
         stores.browse.borrow_mut().seed_two_source_table_for_test();
-        stores.capture_browse(&mut fixture.directory);
+        stores.capture_seeded_browse_for_test(&mut fixture.directory, plx_plex::plex::current_server());
         stores.browse_run_for_test(BrowseCmd::SetCur(0));
         {
             let mut browse = stores.browse.borrow_mut();
             browse.seed_items_for_test(120);
             browse.seed_shelves_for_test(0, titles, count);
         }
-        let publication = stores.capture_browse(&mut fixture.directory);
+        let publication = stores.capture_seeded_browse_for_test(&mut fixture.directory, plx_plex::plex::current_server());
         fixture.listing = publication.listing;
         fixture.hubs = publication.section_hubs;
         fixture.stores = Some(stores);
