@@ -4,6 +4,37 @@ use super::*;
 use plx_data::stores::tape;
 use crate::app::adapters::stores::StoreRunner;
 
+// Probe only until the coordinator captures and installs literal bytes and hashes.
+#[test]
+fn session_app_initial_probe_only() {
+    let initial = Initial::synthetic_home(17, 32517, None).unwrap();
+    let value = serde_json::to_value(&initial).unwrap();
+    let bytes = serde_json::to_vec(&initial).unwrap();
+    let mut canon = Canon::new();
+    initial.write(&mut canon);
+    let outer_hash = initial.hash();
+    assert_eq!(canon.finish(), outer_hash);
+    assert_eq!(initial.version, 1);
+    assert_eq!(Initial::decode(value.clone(), outer_hash).unwrap().hash(), outer_hash);
+    assert!(Initial::decode(value.clone(), outer_hash ^ 1).is_err());
+    let mut unknown = value.clone();
+    unknown["unexpected"] = serde_json::json!(true);
+    assert!(Initial::from_value(unknown).is_err());
+    let mut nested_unknown = value.clone();
+    nested_unknown["session"]["signin_account"] = serde_json::json!("injected");
+    assert!(Initial::from_value(nested_unknown).is_err());
+    let mut missing = value;
+    missing.as_object_mut().unwrap().remove("settings");
+    assert!(Initial::from_value(missing).is_err());
+    if let Some(dir) = std::env::var_os("PLX_SESSION_APP_V5_GOLDEN_OUT") {
+        let dir = std::path::Path::new(&dir);
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("session-app-initial-v5.json"), bytes).unwrap();
+        std::fs::write(dir.join("session-app-initial-hashes.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({"canon_finish": canon.finish(), "outer_hash": outer_hash})).unwrap()).unwrap();
+    }
+}
+
 /// One controlled Hubs step as the Bridge's controlled arm runs it: the store's step against an
 /// empty Browse directory and the registry's keys (`cmd: None` is the tick), then every job it
 /// emitted started through the run's admission ledger.

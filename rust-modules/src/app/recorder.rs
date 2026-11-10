@@ -217,6 +217,53 @@ pub(crate) fn state_fp() -> u64 {
     plx_ui::rec::state_fp(&shapes)
 }
 
+// Probe only: install complete vector and numeric literals after the production probe run.
+#[cfg(test)]
+fn session_app_prior_vector() -> Vec<&'static str> {
+    let mut shapes = APP_SHAPES.to_vec();
+    shapes.push(super::bootstrap::CONTENT_SHAPE);
+    shapes.push(RESOLUTION_SHAPE);
+    shapes.push("CaptureReadinessV2{before_dispatch:pending:bool,text:bool}");
+    shapes.push("MeasurementV1{query:Width(text:bytes,sz:i32,bold:bool)|Cap(sz:i32)|Line(sz:i32),answer:f32bits:u32}");
+    shapes.extend_from_slice(plx_screens::registry::SCREEN_SHAPES);
+    shapes
+}
+
+#[cfg(test)]
+#[test]
+fn session_app_fingerprint_probe_only() {
+    let prior = session_app_prior_vector();
+    let fp_prior = state_fp();
+    assert_eq!(plx_ui::rec::state_fp(&prior), fp_prior);
+    let mut prospective = prior.clone();
+    let indices: Vec<_> = prior.iter().enumerate().filter(|(_, shape)| **shape == super::bootstrap::SHAPE).map(|(i, _)| i).collect();
+    assert_eq!(indices.len(), 1);
+    let outer = super::bootstrap::SHAPE;
+    assert_eq!(outer.matches("ControlledHomeInitV6{").count(), 1);
+    assert_eq!(outer.matches("session:SessionInitV5").count(), 1);
+    let new_outer = outer.replacen("ControlledHomeInitV6{", "ControlledHomeInitV7{", 1)
+        .replacen("session:SessionInitV5", "session:SessionInitV6", 1);
+    prospective[indices[0]] = &new_outer;
+    let prospective_fp_v6 = plx_ui::rec::state_fp(&prospective);
+    assert_ne!(fp_prior, prospective_fp_v6);
+    for manifest in [
+        include_str!("../../../tests/fixtures/replay/1-boot-home-chip-grid/manifest.json"),
+        include_str!("../../../tests/fixtures/replay/6-settings-family/manifest.json"),
+        include_str!("../../../tests/fixtures/replay/12-filmography-detail-return/manifest.json"),
+    ] {
+        let header: Value = serde_json::from_str(manifest).unwrap();
+        assert_eq!(header["schema"].as_u64(), Some(3));
+        assert_eq!(header["state_fp"].as_u64(), Some(fp_prior));
+    }
+    if let Some(dir) = std::env::var_os("PLX_SESSION_APP_V5_GOLDEN_OUT") {
+        let dir = std::path::Path::new(&dir);
+        std::fs::create_dir_all(dir).unwrap();
+        let data = json!({"prior_vector": prior, "prospective_vector": prospective,
+            "fp_prior": fp_prior, "prospective_fp_v6": prospective_fp_v6});
+        std::fs::write(dir.join("session-app-fingerprint-probe.json"), serde_json::to_vec_pretty(&data).unwrap()).unwrap();
+    }
+}
+
 /// The hash of the frame's currently covered logical state (spec §5.4).
 ///
 /// `tree` is `Dispatcher::state_hash` — every live instance's `LogicalState`, the tree's shape and
