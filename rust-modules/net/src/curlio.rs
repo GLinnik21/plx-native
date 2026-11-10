@@ -119,7 +119,9 @@
 //! everything the server had already put in its kernel send buffer for the cancelled stream
 //! (2.7-3.4 MB not yet sent at the seek in a reproduction; time to new data about that over the
 //! link rate). So once a detached unfinished (or failed) HTTP/2 transfer has left a connection busy, every request this source
-//! makes to that origin for the next [`BUSY_FOR`] sets `CURLOPT_FRESH_CONNECT` ([`left_backlog`],
+//! makes to that origin sets `CURLOPT_FRESH_CONNECT` until [`BUSY_FOR`] runs out or the origin
+//! first answers over HTTP/3 (Alt-Svc has moved it to QUIC, whose connections never match the busy
+//! one; an HTTP/1.1 answer does not end the mark) ([`left_backlog`],
 //! [`ConnLedger`]): libcurl hands a request the oldest matching idle connection, so a busy one
 //! stays choosable until libcurl itself refuses it as idle too long (`CURLOPT_MAXAGE_CONN`, 118 s
 //! by default in 7.82 and 8.23 alike). HTTP/3 cancels per stream and is left alone, as is a
@@ -327,7 +329,8 @@ fn never_connected(rc: c_int) -> bool {
 
 /// **How long a busy origin keeps dialling fresh.** Every request to it in this window sets
 /// `CURLOPT_FRESH_CONNECT`, because libcurl hands a request the oldest matching idle connection, so
-/// the busy one would be chosen by the next request that did not. The window ends when libcurl
+/// the busy one would be chosen by the next request that did not. The window ends early when the
+/// origin answers over HTTP/3 ([`ConnLedger::saw_version`]), and otherwise when libcurl
 /// stops offering that connection on its own: one idle longer than `CURLOPT_MAXAGE_CONN` (default
 /// 118 s: `set->maxage_conn = 118` in 7.82, `conn_max_idle_ms = 118 * 1000` in 8.23) is closed at the
 /// next lookup instead of being reused, and the busy connection is idle from the moment its stream
