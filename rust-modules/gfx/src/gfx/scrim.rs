@@ -1,8 +1,8 @@
 //! **The ground shade: soft rounded blocks of ONE ink, evaluated per vertex.**
 //!
 //! A hero's shade is a darkening of the photograph under its copy, and it follows the copy: one
-//! soft block per piece of content drawn on the art (the logo, a text column, the action row, a
-//! footer band), each a rounded rectangle whose darkness holds inside it and feathers to nothing
+//! soft block per piece of content drawn on the art (the logo, a text column, the action row, the
+//! pager), each a rounded rectangle whose darkness holds inside it and feathers to nothing
 //! over a stated distance outside it. The ground's one pass ([`super::draw_ambient_inked`],
 //! [`super::draw_art_wash`]) already carries a vertical ink ramp per VERTEX so its fragment does no
 //! colour arithmetic (the Mali-T820 is arithmetic-bound; `vs_ambient.vert` records the

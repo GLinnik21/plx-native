@@ -72,16 +72,22 @@ backdrop.
 Hero text is protected by a SHADE that follows the content, and the arithmetic is deliberately pure so
 a test can grade it. [rust-modules/ui/src/hero_shade.rs](rust-modules/ui/src/hero_shade.rs): `HeroShade`
 holds one rounded block per piece of content the screen draws on the art (Home: the copy column, the
-action row, the pager and the Continue Watching footers' band; Detail: the title or logo, the synopsis
-column, the facts, the credits and the action row), each feathered by `theme::shade::{FEATHER, RADIUS,
-PAD}` and held at its role's darkness (`COPY_A`, `CONTROLS_A`, `FOOTER_A`). `HeroShade::at(x, y,
+action row and the pager; Detail: the title or logo, the synopsis column, the facts, the credits and
+the action row), each feathered by `theme::shade::{FEATHER, RADIUS, PAD}` and held at its role's
+darkness (`COPY_A`, `CONTROLS_A`). `HeroShade::at(x, y,
 strength)` is the closed form the legibility tests read, so the promise and the paint cannot come from
 two different curves; `gfx/scrim.rs`'s `GroundShade` evaluates the same numbers in the one-pass ground
 shader. The blocks come from the rects the screen draws THIS frame, so they move with the content: the
 logo that rises into the trailer corner carries its shade up with it.
 
-- Home paints no vertical ramp: its text stack builds upward from `theme::hero::HOME_ACTIONS_Y` (668)
-  in a column of `COL_W` (943), and the shade is all that stands behind it.
+- Home's text stack builds upward from `theme::hero::HOME_ACTIONS_Y` (668) in a column of `COL_W`
+  (943), and the shade is all that stands behind it. The shelf under it has its own ramp, the
+  **shelf fade** (`landing_hero::shelf_fade`): the photograph darkened across the whole width of the
+  shelf, nothing at the tiles' top (768 at rest), `theme::shade::SHELF_MID_A` at their mid-line and
+  near-black, `SHELF_FOOT_A` (0.93 of the scrim ink), at the Continue Watching row's caption line (1012),
+  held below it, so the captions, which stand on the backdrop with no plate behind them, read over any
+  photograph. It rides the first shelf's live tile top, fades with the hero (`hero_a`) and is carried
+  in the same one-pass ground as the shade; Detail has none.
 - Detail keeps the vertical ramp, [rust-modules/ui/src/landing_hero.rs](rust-modules/ui/src/landing_hero.rs):
   zero above `HERO_BASE_SCRIM_Y0` (0.34 of the screen, 367), `foot * MID_WEIGHT` at `KNEE_Y` (0.65
   of the screen, 702), and `foot = SCRIM_FOOT_A * hero_a` at the bottom, with the shade over it.
@@ -141,7 +147,8 @@ the episode strip's `EPISODE` look, its caption band and `StillFooter::Shelf`.
   `still_ground` for a clean tile); the footer is one `still_footer::FOOTER_LINE_H` (24 px) line UNDER
   the tile (`Place::Below`): its top `theme::STILL_FOOTER_DROP` (8 px) below the tile's foot, inset
   `FOOTER_BELOW_INSET` (4 px) each side, the text group and the mark at its right `FOOTER_GAP` (12 px)
-  apart, with the hero shade's footer block behind it. The Detail strip's footer keeps the old place in
+  apart, standing on the backdrop with the shelf fade darkening it to near-black behind (no plate, no
+  block). The Detail strip's footer keeps the old place in
   the art (`Place::InArt`): `widgets::art_scrim` darkens the bottom `STILL_SCRIM_H` (112 px), and the line
   stands `FOOTER_RISE` (12 px) above the card's bottom edge, inset `widgets::STILL_LINE_INSET` (16 px).
 - **What the line says**: `S2 E4 · 38m left` and the amber bar `FOOTER_BAR_W` (100 px) wide,

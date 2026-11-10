@@ -2,8 +2,8 @@
 //!
 //! A hero draws copy, a logo and controls straight on a photograph, and the photograph can be
 //! anything. The shade is a soft, feathered darkening of exactly the places the content stands: one
-//! rounded block per rect a screen is drawing (the logo or typed title, the episode line or
-//! synopsis column, the action row, a footer band), holding [`theme::shade`]'s darkness inside the
+//! rounded block per rect a screen is drawing (the logo or typed title, the copy column, the
+//! action row, the pager), holding [`theme::shade`]'s darkness inside the
 //! content's box and feathering to nothing [`theme::shade::FEATHER`] px beyond it. Away from any
 //! content it is exactly zero, and a block that moves takes its shade with it, because the screen
 //! hands this builder the rects of THIS frame's layout (Detail's logo rising into the trailer
@@ -30,10 +30,8 @@ use plx_gfx::gfx::scrim::{GroundShade, ShadeBlock, MAX_BLOCKS};
 pub enum Role {
     /// Text and the logo or typed title: [`theme::shade::COPY_A`].
     Copy,
-    /// The action row: [`theme::shade::CONTROLS_A`].
+    /// The action row and the pager after it: [`theme::shade::CONTROLS_A`].
     Controls,
-    /// A footer band standing on the backdrop: [`theme::shade::FOOTER_A`].
-    Footer,
 }
 
 impl Role {
@@ -42,7 +40,6 @@ impl Role {
         match self {
             Role::Copy => theme::shade::COPY_A,
             Role::Controls => theme::shade::CONTROLS_A,
-            Role::Footer => theme::shade::FOOTER_A,
         }
     }
 }

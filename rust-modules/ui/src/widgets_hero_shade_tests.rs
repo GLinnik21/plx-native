@@ -12,12 +12,12 @@ use crate::consts::{MARGIN_X, SCR_H, SCR_W};
 use crate::hero_shade::{HeroShade, Role};
 use theme::shade as t;
 
-/// A Home-like hero: the copy column, the action row and a footer band under the stills.
+/// A Home-like hero: the copy column, the action row and the pager after it.
 fn home_like() -> HeroShade {
     HeroShade::new()
         .add(Rect::new(MARGIN_X, 470.0, 943.0, 168.0), Role::Copy, 1.0)
         .add(Rect::new(MARGIN_X, 668.0, 420.0, 60.0), Role::Controls, 1.0)
-        .add(Rect::new(MARGIN_X, 1012.0, 1700.0, 24.0), Role::Footer, 1.0)
+        .add(Rect::new(MARGIN_X + 460.0, 668.0, 215.0, 60.0), Role::Controls, 1.0)
 }
 
 /// **A block holds its role's darkness behind its content and feathers to exactly nothing**
@@ -25,7 +25,7 @@ fn home_like() -> HeroShade {
 #[test]
 fn a_block_holds_its_darkness_behind_content_and_feathers_to_nothing() {
     let r = Rect::new(400.0, 300.0, 500.0, 100.0);
-    for (role, peak) in [(Role::Copy, t::COPY_A), (Role::Controls, t::CONTROLS_A), (Role::Footer, t::FOOTER_A)] {
+    for (role, peak) in [(Role::Copy, t::COPY_A), (Role::Controls, t::CONTROLS_A)] {
         let s = HeroShade::new().add(r, role, 1.0);
         assert_eq!(role.peak(), peak);
         assert_eq!(s.at(650.0, 350.0, 1.0), peak, "the content's centre");
@@ -246,15 +246,21 @@ fn draw_ground_carries_the_shade_in_cells_or_hands_it_back() {
 
 // ── Legibility at the positions Home's ladder puts its copy ─────────────────────────────────────
 
+/// What stands over the photograph at `(x, y)` on Home at full strength: the hero's shade and the
+/// shelf fade ([`crate::landing_hero::shelf_fade`]), stacked as the ground stacks them.
+fn field_at(shade: &HeroShade, ramp: &WashRamp, x: f32, y: f32) -> f32 {
+    1.0 - (1.0 - shade.at(x, y, 1.0)) * (1.0 - ramp.alpha(y))
+}
+
 /// The worst contrast `ink` gets over `art` along the horizontal run `x0..=x1` and the vertical span
-/// `y0..=y1` of a text box, under `shade` at full strength (the shade is smooth, so a grid of points
-/// finds its weakest corner).
-fn worst_over(shade: &HeroShade, ink: [f32; 4], art: f32, (x0, x1): (f32, f32), (y0, y1): (f32, f32)) -> (f32, f32, f32) {
+/// `y0..=y1` of a text box, under `shade` and the shelf fade `ramp` at full strength (both are smooth,
+/// so a grid of points finds the weakest corner).
+fn worst_over(shade: &HeroShade, ramp: &WashRamp, ink: [f32; 4], art: f32, (x0, x1): (f32, f32), (y0, y1): (f32, f32)) -> (f32, f32, f32) {
     let mut worst = (f32::INFINITY, x0, y0);
     for ix in 0..=16 {
         for iy in 0..=4 {
             let (x, y) = (x0 + (x1 - x0) * ix as f32 / 16.0, y0 + (y1 - y0) * iy as f32 / 4.0);
-            let c = contrast_over_art(ink, art, shade.at(x, y, 1.0));
+            let c = contrast_over_art(ink, art, field_at(shade, ramp, x, y));
             if c < worst.0 {
                 worst = (c, x, y);
             }
@@ -265,12 +271,13 @@ fn worst_over(shade: &HeroShade, ink: [f32; 4], art: f32, (x0, x1): (f32, f32), 
 
 /// **Home's copy reads over bright artwork, at the positions the ladder puts it.** Every line the
 /// hero draws on the artwork (the episode label, the two synopsis lines, the title's fallback type and
-/// the Continue Watching footer; the top navigation stands on its own glass and is not graded here),
+/// the Continue Watching captions, which the shelf fade stands under; the top navigation stands on its
+/// own glass and is not graded here),
 /// at its WORST point (the whole box: the weakest corner of the run, not the margin), over a bright
 /// backdrop (encoded 0.85: a blown highlight) and blown white (1.0, where the design only promises a
 /// floor). The positions are read from the ladder itself (`home_rows`), and the blocks are built the
-/// way Home builds them (`HomeScreen::hero_shade`: the copy column, the action row, the footer
-/// band), so a layout change updates this contract rather than invalidating it. The floors are the
+/// way Home builds them (`HomeScreen::hero_shade`: the copy column, the action row, the pager) with
+/// the shelf fade under them, so a layout change updates this contract rather than invalidating it. The floors are the
 /// ones the old rows were graded to (3.0 over bright art, 2.5 over blown white).
 ///
 /// **If the shade fails a floor, the answer is the shade's own parameters** ([`theme::shade`]), never
@@ -292,17 +299,21 @@ fn home_copy_reads_over_bright_artwork_at_the_ladders_positions() {
     let title_foot = |s: &HomeStack| s.title.y + s.title.h;
     let title_cap_top = |s: &HomeStack| title_foot(s) - HERO_CAP_H;
     let block = |s: &HomeStack| s.block.expect("a block");
-    let tile_foot = crate::consts::PEEK_Y + crate::consts::CARD_DY + crate::card_row::RowStyle::STILL.h;
-    let footer = Rect::new(MARGIN_X, tile_foot + theme::STILL_FOOTER_DROP, 1700.0, crate::still_footer::FOOTER_LINE_H);
-    // Home's shade for one ladder: the copy column from the title's cap top to the block's foot, the
-    // action row, and the footer band
+    let ramp = crate::landing_hero::shelf_fade(crate::landing_hero::SHELF_TOP, 1.0);
+    let footer = Rect::new(
+        MARGIN_X,
+        crate::still_footer::Place::Below.line_top(Rect::new(0.0, crate::landing_hero::SHELF_TOP, SCR_W, crate::card_row::RowStyle::STILL.h)),
+        1700.0,
+        crate::still_footer::FOOTER_LINE_H,
+    );
+    // Home's shade for one ladder: the copy column from the title's cap top to the block's foot, and
+    // the action row
     let shade = |s: &HomeStack, block_w: f32| {
         let b = block(s);
         let top = title_cap_top(s);
         HeroShade::new()
             .add(Rect::new(MARGIN_X, top, COL_W.max(block_w), b.y + b.h - top), Role::Copy, 1.0)
             .add(Rect::new(MARGIN_X, s.actions.y, 420.0, 60.0), Role::Controls, 1.0)
-            .add(footer, Role::Footer, 1.0)
     };
     let (e, two_s, one_s) = (shade(&episode, COL_W), shade(&two, theme::hero::HOME_SYNOPSIS_W), shade(&one, theme::hero::HOME_SYNOPSIS_W));
     // (label, shade, x run, y span, ink, floor over BRIGHT art, floor over BLOWN WHITE)
@@ -313,7 +324,8 @@ fn home_copy_reads_over_bright_artwork_at_the_ladders_positions() {
         ("title over an episode label", &e, col, (title_cap_top(&episode), title_foot(&episode)), theme::TEXT_PRIMARY, 3.0, 2.5),
         ("title over two synopsis lines", &two_s, col, (title_cap_top(&two), title_foot(&two)), theme::TEXT_PRIMARY, 3.0, 2.5),
         ("title over one synopsis line", &one_s, col, (title_cap_top(&one), title_foot(&one)), theme::TEXT_PRIMARY, 3.0, 2.5),
-        // the Continue Watching row at rest: its footer line stands under the art, on the backdrop
+        // the Continue Watching row at rest: its caption line stands under the art, on the backdrop,
+        // with no block behind it: the shelf fade alone holds it
         (
             "continue footer",
             &e,
@@ -327,14 +339,75 @@ fn home_copy_reads_over_bright_artwork_at_the_ladders_positions() {
     let mut failed = Vec::new();
     for (label, shade, xs, ys, ink, min_bright, min_white) in rows {
         for (art, floor) in [(0.85f32, min_bright), (1.0, min_white)] {
-            let (c, x, y) = worst_over(shade, ink, art, xs, ys);
+            let (c, x, y) = worst_over(shade, &ramp, ink, art, xs, ys);
             let before = contrast_over_art(ink, art, 0.0);
-            eprintln!("{label:<32} art {art:.2}: {c:5.2}:1 (floor {floor}) at ({x:.0},{y:.0}) alpha {:.3}; unshaded {before:.2}:1", shade.at(x, y, 1.0));
+            let a = field_at(shade, &ramp, x, y);
+            eprintln!("{label:<32} art {art:.2}: {c:5.2}:1 (floor {floor}) at ({x:.0},{y:.0}) alpha {a:.3}; unshaded {before:.2}:1");
             if c < floor {
-                failed.push(format!("{label} over art {art}: {c:.2}:1 under its {floor}:1 floor at ({x:.0},{y:.0}), shade alpha {:.3}", shade.at(x, y, 1.0)));
+                failed.push(format!("{label} over art {art}: {c:.2}:1 under its {floor}:1 floor at ({x:.0},{y:.0}), shade alpha {a:.3}"));
             }
             assert!(c > before, "{label} over art {art}: the shade made it WORSE ({before:.2} -> {c:.2})");
         }
     }
     assert!(failed.is_empty(), "the shade fails the floor:\n{}", failed.join("\n"));
+}
+
+// ── The shelf fade ──────────────────────────────────────────────────────────────────────────────
+
+/// **The shelf fade reaches near-black at the caption line and starts at the tiles' top.** Nothing at
+/// the top of the tiles (and nothing above), its named foot ([`theme::shade::SHELF_FOOT_A`], 0.92 to
+/// 0.95 of the ink) at the caption line's top and all along the line to the panel's foot, the ease in
+/// between (the knee [`theme::shade::SHELF_MID_A`] at the tiles' mid-line), never decreasing, and
+/// never stepping by more than two 8-bit codes from one pixel row to the next: no visible band edge.
+#[test]
+fn the_shelf_fade_reaches_near_black_at_the_caption_line() {
+    use crate::landing_hero::{shelf_fade, SHELF_TOP};
+    let ramp = shelf_fade(SHELF_TOP, 1.0);
+    let tiles = Rect::new(0.0, SHELF_TOP, SCR_W, crate::card_row::RowStyle::STILL.h);
+    let line = crate::still_footer::Place::Below.line_top(tiles);
+    assert_eq!((SHELF_TOP, line), (768.0, 1012.0), "the tiles' top and the caption line of the board");
+    assert!((0.92..=0.95).contains(&t::SHELF_FOOT_A), "near-black: 0.92 to 0.95 of the ink, not {}", t::SHELF_FOOT_A);
+    assert_eq!(ramp.alpha(0.0), 0.0, "nothing up in the hero");
+    assert_eq!(ramp.alpha(SHELF_TOP), 0.0, "nothing at the tiles' top");
+    assert_eq!(ramp.alpha(tiles.y + tiles.h * 0.5), t::SHELF_MID_A, "the knee, at the tiles' mid-line");
+    assert_eq!(ramp.alpha(line), t::SHELF_FOOT_A, "the caption line's top");
+    assert_eq!(ramp.alpha(line + crate::still_footer::FOOTER_LINE_H), t::SHELF_FOOT_A, "…and its foot");
+    assert_eq!(ramp.alpha(SCR_H), t::SHELF_FOOT_A, "…held to the panel's foot");
+    let mut last = 0.0;
+    for row in 0..=SCR_H as usize {
+        let a = ramp.alpha(row as f32);
+        assert!(a >= last, "row {row}: the fade never lightens ({last} -> {a})");
+        assert!(a - last <= 2.0 / 255.0, "row {row}: a step of {:.2} codes is a visible edge", (a - last) * 255.0);
+        last = a;
+    }
+    // it is the hero's: it fades with the hero, and never exceeds the foot
+    assert!((shelf_fade(SHELF_TOP, 0.5).alpha(line) - t::SHELF_FOOT_A * 0.5).abs() < 1e-6, "half a hero, half the fade");
+    assert_eq!(shelf_fade(SHELF_TOP, 0.0).alpha(line), 0.0, "no hero, no fade");
+    assert_eq!(shelf_fade(SHELF_TOP, 7.0).alpha(line), t::SHELF_FOOT_A, "an excess fade saturates at the foot");
+    // it rides the page: the shelf scrolled up 300 px takes the fade with it, curve unchanged
+    let up = shelf_fade(SHELF_TOP - 300.0, 1.0);
+    for y in [SHELF_TOP, 800.0, 900.0, line, SCR_H] {
+        assert!((up.alpha(y - 300.0) - ramp.alpha(y)).abs() < 1e-6, "y {y}: the fade is the same curve, 300 px up");
+    }
+    // the ground carries it with the shade in ONE ink (`draw_ground` asserts it)
+    assert_eq!(ramp.ink, home_like().scrim(1.0).ink);
+}
+
+/// **The ramp's layered form is the curve the ground carries**: the frames a ground cannot carry it in
+/// (a hero slide) draw one full-width rect a segment from the first stop down, with the last stop's
+/// alpha held to the panel's foot, so the strips tile `first stop..SCR_H` with no gap.
+#[test]
+fn a_ramp_drawn_as_layers_tiles_from_its_first_stop_to_the_panels_foot() {
+    let ramp = crate::landing_hero::shelf_fade(crate::landing_hero::SHELF_TOP, 1.0);
+    let got = handed(|p| ramp.layer(p));
+    assert_eq!(got.len(), 3, "two segments and the held foot");
+    let mut y = ramp.stops[0].0;
+    for (_, r) in &got {
+        assert_eq!((r.x, r.w, r.y), (0.0, SCR_W, y), "full width, strip to strip");
+        y = r.y + r.h;
+    }
+    assert_eq!(y, SCR_H);
+    // Detail's ramp ends on the panel's foot: no held strip
+    let detail = WashRamp { ink: theme::scrim(1.0), stops: [(367.2, 0.0), (700.0, 0.4), (SCR_H, 0.8)] };
+    assert_eq!(handed(|p| detail.layer(p)).len(), 2);
 }

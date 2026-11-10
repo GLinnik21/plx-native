@@ -1,6 +1,7 @@
-//! Home's hero shade and the billboard's pager: that the shade stands behind the rects the page
-//! really draws (and moves with them), and that the pager stands in the action row after the Info
-//! disc, at the spacing of the owner's board (CW-13), whatever the buttons before it are.
+//! Home's hero shade, the shelf fade and the billboard's pager: that the shade stands behind the
+//! rects the page really draws (and moves with them), that the Continue Watching captions have no
+//! block of it but the shelf fade under them, and that the pager stands in the action row after the
+//! Info disc, at the spacing of the owner's board (CW-13), whatever the buttons before it are.
 
 use super::*;
 use plx_ui::hero_shade::Role;
@@ -46,11 +47,9 @@ fn row_rect(c: &HeroRects) -> Rect {
     Rect::new(c.play.x, HERO_ROW_Y, c.info.x + c.info.w - c.play.x, HERO_CTRL_D)
 }
 
-/// What the page's shade is built from beyond the heroes: the pager of the selected hero `hero`, then
-/// the footer band of the Continue Watching row.
-fn tail(s: &HomeScreen, view: HubsView<'_>, m: &dyn Measure, hero: &PmsMovie) -> [(Rect, f32); 2] {
-    let footer = s.continue_footer_band(view).expect("the seed's first row is the deck");
-    [(pager_block(view.hero_count(), info_right(m, hero)), Role::Controls.peak()), (footer, Role::Footer.peak())]
+/// What the page's shade is built from beyond the heroes: the pager of the selected hero `hero`.
+fn tail(view: HubsView<'_>, m: &dyn Measure, hero: &PmsMovie) -> (Rect, f32) {
+    (pager_block(view.hero_count(), info_right(m, hero)), Role::Controls.peak())
 }
 
 /// Where a hero's Info disc ends, as the page lays its row out.
@@ -125,7 +124,7 @@ fn the_shades_pager_block_follows_the_row_it_stands_in() {
     tick(&mut b, without.view(), 1);
     let (sa, sb) = (a.hero_shade(with.view(), m), b.hero_shade(without.view(), m));
     let (ba, bb) = (sa.blocks(), sb.blocks());
-    assert_eq!((ba.len(), bb.len()), (4, 4), "copy, action row, pager, footer");
+    assert_eq!((ba.len(), bb.len()), (3, 3), "copy, action row, pager: nothing under the captions");
     assert!(ba[1].0.w > bb[1].0.w, "the premise: the disc makes the row wider ({} vs {})", ba[1].0.w, bb[1].0.w);
     let (ha, hb) = (a.selected_hero(with.view()).unwrap().item, b.selected_hero(without.view()).unwrap().item);
     assert_eq!(ba[2], (pager_block(with.view().hero_count(), info_right(m, ha)), Role::Controls.peak()));
@@ -136,7 +135,7 @@ fn the_shades_pager_block_follows_the_row_it_stands_in() {
 
 /// **Home's shade stands behind exactly the rects the page draws**: the copy column
 /// ([`hero_copy_rect`]), the action row Play-to-Info ([`hero_rects`]) and the pager
-/// ([`hero_pager`]) and the Continue Watching footers' band, each at its role's darkness, in that order.
+/// ([`hero_pager`]), each at its role's darkness, in that order.
 #[test]
 fn the_home_hero_shade_stands_behind_the_content_it_draws() {
     let _guard = plx_base::testlock::serial();
@@ -148,12 +147,10 @@ fn the_home_hero_shade_stands_behind_the_content_it_draws() {
     assert!(s.slide_offsets().is_none(), "the premise: a hero at rest");
     let hero = s.selected_hero(view).expect("a hero").item;
     let controls = hero_rects(m, hero, plx_appkit::hero_layout::play_label(false));
-    let [pager, footer] = tail(&s, view, m, hero);
     let want = [
         (hero_copy_rect(hero, m), Role::Copy.peak()),
         (row_rect(&controls), Role::Controls.peak()),
-        pager,
-        footer,
+        tail(view, m, hero),
     ];
     assert_eq!(s.hero_shade(view, m).blocks(), want);
     // and a hero with another kind of copy shades its own column: the episode's one bold line is
@@ -186,36 +183,63 @@ fn the_home_hero_shade_follows_a_slide() {
         let resumes = plx_data::metadata::resume_ns(h.resume_ms, h.dur_ns / 1_000_000) > 0;
         row_rect(&hero_rects(m, h, plx_appkit::hero_layout::play_label(resumes)))
     };
-    let [pager, footer] = tail(&s, view, m, new);
+    let pager = tail(view, m, new);
     let want = [
         (at(hero_copy_rect(old, m), out_x), Role::Copy.peak()),
         (at(row(old), out_x), Role::Controls.peak()),
         (at(hero_copy_rect(new, m), in_x), Role::Copy.peak()),
         (at(row(new), in_x), Role::Controls.peak()),
         pager,
-        footer,
     ];
     let got = s.hero_shade(view, m);
     assert_eq!(got.blocks(), want, "each hero's blocks ride its own page");
     assert_eq!(got.blocks()[4], pager, "the pager does not slide, whatever the heroes' offsets");
-    assert_eq!(got.blocks().len(), plx_gfx::gfx::scrim::MAX_BLOCKS, "the busiest frame fills the uniform array exactly");
+    assert!(got.blocks().len() <= plx_gfx::gfx::scrim::MAX_BLOCKS, "the busiest frame fits the uniform array");
 }
 
-/// **Under the Continue Watching row the shade stands behind the footer band**, in screen space, one
-/// footer line tall, a drop under the tiles (the geometry the row's footers are drawn at), and
-/// it is the LAST block (the budget: two heroes' copy and row, the pager, then this one).
+/// **The Continue Watching captions have no block behind them: the shelf fade stands under them.**
+/// The shade's blocks are the hero's own (copy, action row, pager), every one of them above the tiles'
+/// foot, and the fade the ground carries ([`HomeScreen::shelf_fade`]) is the full-width ramp from the
+/// tiles' top to near-black at the caption line's top, scaled by the hero's fade.
 #[test]
-fn the_shade_stands_behind_the_continue_watching_footers() {
+fn the_continue_watching_captions_stand_on_the_shelf_fade_not_on_a_block() {
     let _guard = plx_base::testlock::serial();
     let (_state, snapshot, s) = scroll_home();
     let view = snapshot.view();
     let m = &plx_ui::fixture::FixtureMeasure;
-    let band = s.continue_footer_band(view).expect("the first row is the deck");
-    let tile_foot = PEEK_Y + CARD_DY + RowStyle::STILL.h;
-    assert_eq!((band.y, band.h), (tile_foot + theme::STILL_FOOTER_DROP, plx_ui::still_footer::FOOTER_LINE_H));
-    assert!(band.w > 0.0 && band.x >= 0.0 && band.x + band.w <= SCR_W, "the band is on the panel: {band:?}");
-    let shade = s.hero_shade(view, m);
-    let last = *shade.blocks().last().expect("a footer block");
-    assert_eq!(last, (band, Role::Footer.peak()));
-    assert!(shade.blocks().len() <= plx_gfx::gfx::scrim::MAX_BLOCKS);
+    let tiles = Rect::new(0.0, PEEK_Y + CARD_DY, SCR_W, RowStyle::STILL.h);
+    let line = plx_ui::still_footer::Place::Below.line_top(tiles);
+    let caption = Rect::new(0.0, line, SCR_W, plx_ui::still_footer::FOOTER_LINE_H);
+    for (rect, _) in s.hero_shade(view, m).blocks() {
+        assert!(rect.y + rect.h <= tiles.y + tiles.h, "{rect:?}: no block reaches the Continue Watching footer line");
+    }
+    // the shade's own darkness over the caption line is the feather's tail at most: none of its
+    // blocks is near enough to darken it (the fade does that)
+    let shade = s.hero_shade(view, m).scrim(1.0);
+    assert_eq!(shade.alpha(SCR_W * 0.5, caption.y + caption.h * 0.5), 0.0, "the shade does not reach the caption line");
+    let fade = s.shelf_fade(1.0);
+    assert_eq!(fade.stops[0].0, tiles.y, "it begins at the tiles' top, 768 at rest");
+    assert_eq!((tiles.y, line), (768.0, 1012.0));
+    assert_eq!(fade.alpha(tiles.y), 0.0);
+    assert_eq!(fade.alpha(caption.y), theme::shade::SHELF_FOOT_A, "near-black at the caption line");
+    assert_eq!(fade.alpha(caption.y + caption.h), theme::shade::SHELF_FOOT_A, "…the whole line, to its foot");
+    assert_eq!(s.shelf_fade(0.5).alpha(caption.y), theme::shade::SHELF_FOOT_A * 0.5, "it fades with the hero");
+}
+
+/// **The shelf fade rides the page**: it starts at the FIRST shelf's live tile top, so a page that
+/// has scrolled the shelf up (the dive) takes the fade with it, and a page with no shelf yet
+/// stands it at the rest place.
+#[test]
+fn the_shelf_fade_starts_at_the_first_shelfs_live_tile_top() {
+    let _guard = plx_base::testlock::serial();
+    let (_state, snapshot, mut s) = scroll_home();
+    let _ = snapshot;
+    assert_eq!(s.shelf_fade(1.0).stops[0].0, plx_ui::landing_hero::SHELF_TOP, "at rest");
+    s.snap.jump(0.5);
+    s.layout_grid();
+    let tiles_top = s.grid.base_y(0) + CARD_DY;
+    assert!(tiles_top < plx_ui::landing_hero::SHELF_TOP, "the premise: the dive has lifted the shelf");
+    assert_eq!(s.shelf_fade(1.0).stops[0].0, tiles_top, "the fade is where the shelf is");
+    s.grid.shelves.clear();
+    assert_eq!(s.shelf_fade(1.0).stops[0].0, plx_ui::landing_hero::SHELF_TOP, "no shelf: the rest place");
 }

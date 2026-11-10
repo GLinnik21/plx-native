@@ -2852,13 +2852,7 @@ impl DetailScreen {
             false
         };
         if let Some(ramp) = ramp.filter(|_| !ramp_in_ground) {
-            for pair in ramp.stops.windows(2) {
-                let [(top, a), (bottom, b)] = pair else { unreachable!() };
-                p.rect(
-                    Rect::new(0.0, *top, plx_ui::consts::SCR_W, bottom - top),
-                    0.0, theme::scrim(*a), theme::scrim(*b), 0.0,
-                );
-            }
+            ramp.layer(p);
         }
 
         // A ground that did not carry the shade lays it over all of this as a layer of its own.

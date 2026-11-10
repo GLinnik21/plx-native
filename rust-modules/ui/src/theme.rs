@@ -282,9 +282,16 @@ pub mod shade {
     /// The darkness held behind the action row: its pills carry their own glass, so the shade only
     /// settles the ground the discs and the pager stand on.
     pub const CONTROLS_A: f32 = 0.45;
-    /// The darkness held behind the Continue Watching row's footer band, which stands on the
-    /// backdrop now that it has left the art: small secondary-ink type, so a little more than copy.
-    pub const FOOTER_A: f32 = 0.64;
+    /// **The shelf fade's foot**: how dark the hero photograph is held at the Continue Watching
+    /// row's caption line (`landing_hero::shelf_fade`), as a fraction of [`SCRIM_INK`]. Near-black on
+    /// purpose, 0.93 (the board asks for 0.92 to 0.95): the captions are small secondary-ink type
+    /// standing straight on the backdrop with no plate behind them, and a bright rock behind a bar
+    /// or a "5m left" competes with them at any lower value.
+    pub const SHELF_FOOT_A: f32 = 0.93;
+    /// The shelf fade's darkness at the tiles' own mid-line, the knee of its two segments: the ease
+    /// in. Low on purpose, so the fade starts at the tiles' top without a visible edge and does its
+    /// work in the lower half of the tiles, where the captions are.
+    pub const SHELF_MID_A: f32 = 0.25;
 }
 
 /// Shared logo presence: target bounding-box area, with independent width/height limits.

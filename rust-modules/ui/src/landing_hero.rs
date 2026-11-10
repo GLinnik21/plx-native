@@ -1,11 +1,13 @@
 //! Landing-page geometry: Detail's hero ladder ([`hero_rows`]) and its atmospheric curve
-//! ([`base_scrim_ramp`], which Home no longer paints), and Home's own ladder ([`home_rows`]). Keeping
-//! these pure lets the renderer, route narrative and legibility tests use one definition. What stands
-//! behind the text is not here: both heroes read it from [`crate::hero_shade`].
+//! ([`base_scrim_ramp`], which Home no longer paints), and Home's own ladder ([`home_rows`]), its
+//! premise line ([`first_sentence`]) and its shelf fade ([`shelf_fade`]). Keeping these pure lets the
+//! renderer, route narrative and legibility tests use one definition. What stands behind the hero's
+//! own text is not here: both heroes read it from [`crate::hero_shade`].
 
 use super::hstack::Item;
 use super::vstack::{Anchor, VSpan, VStack};
-use super::{consts::SCR_H, theme, widgets::HERO_BASE_SCRIM_Y0};
+use super::widgets::{WashRamp, HERO_BASE_SCRIM_Y0};
+use super::{consts::SCR_H, theme, Rect};
 
 pub const COL_W: f32 = theme::hero::TEXT_W;
 pub const KNEE_Y: f32 = theme::hero::SCRIM_MID_Y;
@@ -101,6 +103,107 @@ pub fn home_rows(title_h: f32, block_h: Option<f32>) -> HomeStack {
 /// [`theme::hero::HOME_SYNOPSIS_W`] wide.
 pub fn home_synopsis(summary: &str) -> crate::text_view::TextView<'_> {
     crate::hero_synopsis(summary, "").max_lines(theme::hero::HOME_SYNOPSIS_LINES)
+}
+
+/// The top of the tiles of the shelf under Home's hero at rest ([`crate::consts::PEEK_Y`] and the
+/// card's own drop): 768, where [`shelf_fade`] begins until the page scrolls.
+pub const SHELF_TOP: f32 = crate::consts::PEEK_Y + crate::consts::CARD_DY;
+
+/// **Home's shelf fade** (owner's board CW-13 v2): the hero photograph, darkened across the WHOLE
+/// width of the shelf under it so it reaches near-black at the Continue Watching row's caption line.
+/// The captions stand straight on the backdrop with no plate behind them, so whatever bright thing
+/// the photograph holds behind them (a rock behind a progress bar, behind "5m left") has to be gone
+/// there, on every card, at every width, with no block to place behind each one.
+///
+/// A full-width vertical ramp of [`theme::SCRIM_INK`], the same [`WashRamp`] the ground has always
+/// carried per vertex in its one pass (`AmbientWash::draw_ground`), in two segments: nothing at the
+/// tiles' top ([`SHELF_TOP`]), [`theme::shade::SHELF_MID_A`] at the tiles' mid-line (an ease in, so the
+/// start has no visible edge), and [`theme::shade::SHELF_FOOT_A`] at the caption line's top
+/// ([`crate::still_footer::Place::Below`], 1012), held from there to the panel's foot. It is the hero's,
+/// so it fades with the hero (`hero_a`, which is 0 once the page has scrolled to the shelves) and
+/// never touches Detail, which has no such shelf. `tiles_top` is the live top of the first shelf's
+/// tiles ([`SHELF_TOP`] at rest), so the fade rides the page as the dive moves the shelf. The hero's
+/// own copy is still graded on [`crate::hero_shade`]; this stands under the shelf.
+pub fn shelf_fade(tiles_top: f32, hero_a: f32) -> WashRamp {
+    let k = hero_a.clamp(0.0, 1.0);
+    let tiles = Rect::new(0.0, tiles_top, crate::consts::SCR_W, crate::card_row::RowStyle::STILL.h);
+    WashRamp {
+        ink: theme::scrim(1.0),
+        stops: [
+            (tiles.y, 0.0),
+            (tiles.y + tiles.h * 0.5, theme::shade::SHELF_MID_A * k),
+            (crate::still_footer::Place::Below.line_top(tiles), theme::shade::SHELF_FOOT_A * k),
+        ],
+    }
+}
+
+/// **A hero's premise: the first sentence of its summary** (Home's line for a hero nothing has been
+/// watched of). The sentence ends at the first `.`, `!`, `?` or `…` that is followed by whitespace
+/// and a letter that starts one (an uppercase letter, or a letter of a script that has no case), or
+/// by the end of the text, and at a CJK full stop `。` `！` `？` wherever it stands. Closing quotes
+/// and brackets after the mark, and a run of marks (`...`, `?!`), belong to the sentence. The
+/// sentence is returned as a slice of `text` with its end mark, trimmed; the text of no sentence end
+/// is returned whole (the caller elides it at its own line count).
+///
+/// What is NOT an end, because cutting there would break the sentence: a period after a title or
+/// another common abbreviation (`Dr.`, `Mr.`, `St.`, `vs.`), after a single initial (`J. K.`), or
+/// inside a dotted abbreviation (`U.S.`, `e.g.`, `a.m.`); a mark followed by a lowercase letter, a
+/// digit or no space (`7.5`, `No. 5`); and any mark inside an open bracket or quotation. The rule
+/// errs toward NOT cutting: a sentence that stays long is elided at two lines, a sentence cut in the
+/// middle is wrong.
+pub fn first_sentence(text: &str) -> &str {
+    let text = text.trim();
+    // Bracket and quote depth, so a mark inside `(...)` or a quotation does not end the sentence.
+    let (mut depth, mut straight) = (0i32, false);
+    let stop = |c: char| matches!(c, '.' | '!' | '?' | '\u{2026}' | '\u{3002}' | '\u{ff01}' | '\u{ff1f}');
+    let cjk = |c: char| matches!(c, '\u{3002}' | '\u{ff01}' | '\u{ff1f}');
+    let closer = |c: char| matches!(c, '"' | '\'' | '\u{201d}' | '\u{2019}' | '\u{bb}' | ')' | ']' | '\u{300d}' | '\u{300f}' | '\u{ff09}' | '\u{3011}');
+    let opener = |c: char| matches!(c, '"' | '\'' | '\u{201c}' | '\u{2018}' | '\u{ab}' | '(' | '[' | '\u{bf}' | '\u{a1}' | '\u{300c}' | '\u{300e}' | '\u{ff08}' | '\u{3010}');
+    for (i, c) in text.char_indices() {
+        match c {
+            '(' | '[' | '\u{201c}' | '\u{ab}' | '\u{300c}' | '\u{300e}' | '\u{ff08}' | '\u{3010}' => depth += 1,
+            ')' | ']' | '\u{201d}' | '\u{bb}' | '\u{300d}' | '\u{300f}' | '\u{ff09}' | '\u{3011}' => depth = (depth - 1).max(0),
+            '"' => straight = !straight,
+            _ => {}
+        }
+        if !stop(c) || depth > 0 || straight {
+            continue;
+        }
+        // the whole run of marks and closing quotes after this one is part of the sentence
+        let end = i + text[i..].find(|c: char| !(stop(c) || closer(c))).unwrap_or(text.len() - i);
+        if cjk(c) {
+            return &text[..end];
+        }
+        let rest = &text[end..];
+        let starts_one = |s: &str| {
+            let s = s.trim_start_matches(opener);
+            s.chars().next().is_some_and(|c| c.is_alphabetic() && !c.is_lowercase())
+        };
+        let boundary = rest.is_empty() || (rest.starts_with(char::is_whitespace) && starts_one(rest.trim_start()));
+        // a single `.` can be an abbreviation's own; a run (`...`) or any other mark cannot
+        let single = c == '.' && !text[..i].ends_with(stop) && !text[i + c.len_utf8()..].starts_with(stop);
+        if boundary && !(single && ends_in_abbreviation(&text[..i])) {
+            return &text[..end];
+        }
+    }
+    text
+}
+
+/// Does `before`, the text up to a period, end in an abbreviation or an initial that period belongs to?
+fn ends_in_abbreviation(before: &str) -> bool {
+    /// Titles and common abbreviations that are followed by a name or a noun (lowercase, no period).
+    const ABBREVIATIONS: &[&str] = &[
+        "mr", "mrs", "ms", "mx", "dr", "prof", "sr", "jr", "st", "mt", "ft", "gen", "col", "capt", "cpt", "lt", "sgt", "cmdr",
+        "maj", "adm", "gov", "sen", "rep", "rev", "hon", "pres", "vs", "fig", "inc", "ltd", "corp", "mme", "mlle",
+    ];
+    let word = before.rsplit(char::is_whitespace).next().unwrap_or("");
+    let word = word.trim_start_matches(|c: char| !c.is_alphanumeric());
+    // `U.S`, `Ph.D`, `e.g`, `a.m`: short runs of letters between periods (a decimal, `7.5`, is not one)
+    let dotted = word.contains('.')
+        && word.split('.').all(|part| (1..=3).contains(&part.chars().count()) && part.chars().all(char::is_alphabetic));
+    dotted
+        || (word.chars().count() == 1 && word.chars().all(char::is_alphabetic))
+        || ABBREVIATIONS.contains(&word.to_lowercase().as_str())
 }
 
 pub fn base_scrim_bottom_a(hero_a: f32) -> f32 { theme::hero::SCRIM_FOOT_A * hero_a.clamp(0.0, 1.0) }
@@ -224,4 +327,92 @@ fn proposal_atmosphere_has_identical_stops_on_both_heroes() {
 #[test]
 fn pdf_proposal_home_and_detail_use_the_same_column() {
     assert_eq!(COL_W, crate::detail_layout::HERO_TEXT_W);
+}
+
+#[cfg(test)]
+mod premise_tests {
+    use super::first_sentence;
+
+    /// **The first sentence ends at the first `.`, `!`, `?` or `…` followed by a space and a capital**,
+    /// keeping its mark (and a run of marks, and the quotes and brackets that close after it).
+    #[test]
+    fn the_first_sentence_ends_at_the_first_stop_before_a_capital() {
+        let cases = [
+            ("A lone woman crosses frozen wastes. She finds a dragon. It follows.", "A lone woman crosses frozen wastes."),
+            ("Who is she? Nobody knows.", "Who is she?"),
+            ("Run! Now.", "Run!"),
+            ("She waits\u{2026} Then he falls. End.", "She waits\u{2026}"),
+            ("Wait... What now? Nothing.", "Wait..."),
+            ("Really?! Yes.", "Really?!"),
+            ("Stop. \"Go,\" she said.", "Stop."),
+            ("One sentence only.", "One sentence only."),
+            ("  Padded.  Two.  ", "Padded."),
+        ];
+        for (text, want) in cases {
+            assert_eq!(first_sentence(text), want, "{text:?}");
+        }
+    }
+
+    /// **A mark that is not a sentence end is not cut on**: abbreviations, initials, dotted
+    /// abbreviations, a lowercase or digit after the mark, no space after it, and a mark inside an
+    /// open bracket or quotation. (A decimal is none of these: `3.5` is not an abbreviation.)
+    #[test]
+    fn a_mark_that_does_not_end_a_sentence_is_not_cut_on() {
+        let cases = [
+            ("Dr. Jones searches for the idol. He finds it.", "Dr. Jones searches for the idol."),
+            ("Mr. and Mrs. Smith hunt each other. Then they marry.", "Mr. and Mrs. Smith hunt each other."),
+            ("A tour of St. Louis begins. It ends.", "A tour of St. Louis begins."),
+            ("Prof. Xavier and Capt. America meet. Tea follows.", "Prof. Xavier and Capt. America meet."),
+            ("J. K. Rowling reads aloud. The crowd listens.", "J. K. Rowling reads aloud."),
+            ("U.S. agents chase a thief. He escapes.", "U.S. agents chase a thief."),
+            ("They meet at 9 a.m. in Paris. Then it rains.", "They meet at 9 a.m. in Paris."),
+            ("Pets (cats, dogs, etc.) run wild. The end.", "Pets (cats, dogs, etc.) run wild."),
+            ("Rated 7.5 by critics. More follow.", "Rated 7.5 by critics."),
+            ("Rated 3.5. Then it fell.", "Rated 3.5."),
+            ("It is No. 5 on the list. Fine.", "It is No. 5 on the list."),
+            ("Nothing here e.g. a cat.", "Nothing here e.g. a cat."),
+            ("He said (loudly. Very.) and left. Done.", "He said (loudly. Very.) and left."),
+            ("\u{201c}Run. Now.\u{201d} she said. Fine.", "\u{201c}Run. Now.\u{201d} she said."),
+            ("Visit example.com for more. Thanks.", "Visit example.com for more."),
+            ("It ends. then it goes on. Fine.", "It ends. then it goes on."),
+            ("It was called \"Sintel.\" Nobody knew why.", "It was called \"Sintel.\" Nobody knew why."),
+        ];
+        for (text, want) in cases {
+            assert_eq!(first_sentence(text), want, "{text:?}");
+        }
+    }
+
+    /// **CJK full stops end a sentence wherever they stand**, but not inside a quotation; a caseless
+    /// script's sentences end before a letter that has no case, as a cased script's end before a capital.
+    #[test]
+    fn cjk_full_stops_and_caseless_scripts_end_a_sentence() {
+        let cases = [
+            ("一个年轻的女人穿越荒原。她找到了龙。", "一个年轻的女人穿越荒原。"),
+            ("你是谁？没有人知道。", "你是谁？"),
+            ("走！现在。", "走！"),
+            ("「行こう。」と言った。次の文。", "「行こう。」と言った。"),
+            ("한 여자가 얼음의 세계를 찾는다. 그녀는 용을 찾는다.", "한 여자가 얼음의 세계를 찾는다."),
+            ("Привет. Как дела?", "Привет."),
+        ];
+        for (text, want) in cases {
+            assert_eq!(first_sentence(text), want, "{text:?}");
+        }
+    }
+
+    /// With no sentence end the whole text comes back (the caller elides it at its two lines), empty
+    /// and blank text have no sentence, and the answer is always a prefix of the trimmed text.
+    #[test]
+    fn with_no_end_the_whole_text_comes_back() {
+        assert_eq!(first_sentence("A summary with no end mark at all"), "A summary with no end mark at all");
+        assert_eq!(first_sentence("It trails off, mid-thought and then more words"), "It trails off, mid-thought and then more words");
+        assert_eq!(first_sentence(""), "");
+        assert_eq!(first_sentence("   \n "), "");
+        assert_eq!(first_sentence("."), ".");
+        assert_eq!(first_sentence("Dr."), "Dr.");
+        assert_eq!(first_sentence("Line one.\nLine two."), "Line one.", "a newline is whitespace");
+        for text in ["Fin.", "Ok! Ok?", "。", "a. B", "\"unclosed. Next. Then", "Line one.\nLine two."] {
+            let got = first_sentence(text);
+            assert!(text.trim().starts_with(got) && !got.is_empty(), "{text:?} -> {got:?}");
+        }
+    }
 }

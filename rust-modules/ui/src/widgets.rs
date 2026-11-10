@@ -4197,7 +4197,7 @@ impl AmbientWash {
             [(b.x, b.y), (b.x + b.w, b.y), (b.x + b.w, b.y + b.h), (b.x, b.y + b.h)]
                 .map(|(x, y)| self.sample(r, x, y).map(code))
         };
-        let knees = ramp.map_or([None, None], |q| [Some(q.stops[0].0), Some(q.stops[1].0)]);
+        let knees = ramp.map_or([None; 3], |q| q.stops.map(|(y, _)| Some(y)));
         let (cell_w, cell_h) = if scrim.is_some() { (SCRIM_CELL_W, SCRIM_CELL_H) } else { (f32::INFINITY, f32::INFINITY) };
         let pieces = |band: Rect| cut_at(band, knees).flat_map(move |b| cut_cells(b, cell_w, cell_h));
         let ink = |b: Rect| GroundInk {
@@ -4263,8 +4263,10 @@ impl AmbientWash {
 
 /// A screen's ATMOSPHERIC RAMP as [`AmbientWash::draw_ground`] carries it: `ink` (a scrim colour;
 /// its alpha is ignored) at no alpha above `stops[0].0`, then linear through the three
-/// `(y, alpha)` stops, holding the last below it. Home's is two segments with a midpoint knee;
-/// Detail's is one, which it writes by repeating its foot.
+/// `(y, alpha)` stops, holding the last below it. Home's shelf fade
+/// ([`shelf_fade`](crate::landing_hero::shelf_fade)) is two segments and a held foot, its last
+/// stop above the panel's; Detail's is one segment, which it writes by repeating its foot on the
+/// panel's.
 #[derive(Clone, Copy)]
 pub struct WashRamp {
     pub ink: [f32; 4],
@@ -4272,6 +4274,21 @@ pub struct WashRamp {
 }
 
 impl WashRamp {
+    /// **The ramp as layers of its own**, over whatever is already drawn: for a ground that did not
+    /// carry it (a hero slide's two art layers, a driver without the program). One full-width
+    /// gradient rect a segment, nothing above the first stop, and the last stop's alpha held to the
+    /// panel's foot: the same curve [`alpha`](Self::alpha) gives and the ground draws per vertex.
+    pub fn layer(&self, p: Painter) {
+        for pair in self.stops.windows(2) {
+            let [(top, a), (bottom, b)] = pair else { unreachable!() };
+            p.rect(Rect::new(0.0, *top, crate::consts::SCR_W, bottom - top), 0.0, theme::scrim(*a), theme::scrim(*b), 0.0);
+        }
+        let (last, a) = self.stops[2];
+        if last < crate::consts::SCR_H {
+            p.rect(Rect::new(0.0, last, crate::consts::SCR_W, crate::consts::SCR_H - last), 0.0, theme::scrim(a), theme::scrim(a), 0.0);
+        }
+    }
+
     /// The ramp's alpha at `y` — the curve the layered `rect`s drew, stop to stop.
     pub fn alpha(&self, y: f32) -> f32 {
         let [s0, s1, s2] = self.stops;
@@ -4288,20 +4305,20 @@ impl WashRamp {
     }
 }
 
-/// `r` cut into horizontal strips at the ramp's knees, each on a pixel row (the same
-/// `ceil(y - 0.5)` rule as [`art_wash_split`]), so the ramp is ONE straight segment within every
-/// strip — which is what lets a strip carry it per vertex exactly.
-pub fn cut_at(r: Rect, knees: [Option<f32>; 2]) -> impl Iterator<Item = Rect> {
+/// `r` cut into horizontal strips at the ramp's three stops (its knees, and the foot it holds
+/// below), each on a pixel row (the same `ceil(y - 0.5)` rule as [`art_wash_split`]), so the ramp is
+/// ONE straight segment within every strip, or held flat — which is what lets a strip carry it per
+/// vertex exactly. A stop on the panel's foot (Detail's, Home's old one) or past `r` cuts nothing.
+pub fn cut_at(r: Rect, knees: [Option<f32>; 3]) -> impl Iterator<Item = Rect> {
     let (top, bottom) = (r.y, r.y + r.h);
-    let mut ys = [top, bottom, bottom, bottom];
+    let mut ys = [top, bottom, bottom, bottom, bottom];
     for (i, k) in knees.into_iter().enumerate() {
         if let Some(k) = k {
             ys[i + 1] = (k - 0.5).ceil().clamp(top, bottom);
         }
     }
-    ys[3] = bottom;
     ys.sort_by(f32::total_cmp);
-    (0..3).filter_map(move |i| {
+    (0..4).filter_map(move |i| {
         (ys[i + 1] > ys[i]).then(|| Rect::new(r.x, ys[i], r.w, ys[i + 1] - ys[i]))
     })
 }
