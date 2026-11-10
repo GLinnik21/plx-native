@@ -1393,7 +1393,9 @@ fn attempt_facts(failure_sample: FailureSample) -> plx_playback_contract::readou
         refusal_path: Some(FEED_SHARED.refusal_path()),
         runtime_failure: (failure != RuntimeFailure::Unknown).then_some(failure),
         no_video: FEED_SHARED.demux_no_video.load(Relaxed).then_some(true),
-        position_ns: reported_frame.then_some(position.max(0)),
+        // a reset zeroes the playhead; before the first frame only a seeded open (`arm_open`,
+        // `rebase`) or a seek moves it, so a non-zero value is a target the HUD should show
+        position_ns: (reported_frame || position > 0).then_some(position.max(0)),
         duration_ns: (duration > 0).then_some(duration),
         playable_buffer_ms: playable_buffer_ms(
             FEED_SHARED.hls_video_tail_ns.load(Relaxed),
@@ -1424,4 +1426,29 @@ fn attempt_facts(failure_sample: FailureSample) -> plx_playback_contract::readou
         load_abandoned: None,
     };
     facts
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A reload's seeded target is the attempt's position until its first frame; the HUD drew
+    /// none as 0:00.
+    #[test]
+    fn a_seeded_open_reports_its_target_before_the_first_frame() {
+        let _serial = plx_base::testlock::serial();
+        FEED_SHARED.reset_session();
+        assert_eq!(native_attempt_facts().position_ns, None, "a fresh session has no position yet");
+
+        rebase(120_000_000_000, 120_000_000_000);
+        assert_eq!(native_attempt_facts().position_ns, Some(120_000_000_000),
+            "a transcode restarted at 120 s reads 120 s until its first frame");
+
+        FEED_SHARED.reset_session_for_reload();
+        assert_eq!(native_attempt_facts().position_ns, None, "a reload forgets the old seed");
+        arm_open(90_000_000_000, 0, 90_000_000_000);
+        assert_eq!(native_attempt_facts().position_ns, Some(90_000_000_000),
+            "a reload armed at 90 s reads 90 s until its first frame");
+        FEED_SHARED.reset_session();
+    }
 }

@@ -141,9 +141,10 @@ or a plaintext URL. `net::keypin::apply` sets the pin FIRST and checks it: `VERI
 only after libcurl accepted the pin, so a libcurl that refuses the option leaves the request strict
 and failed, and `confirm` then compares the presented leaf's key itself (via `CERTINFO`) in case a TLS
 backend accepts the option and never enforces it. Every key-mode handle also sets
-`CURLOPT_FRESH_CONNECT` and `CURLOPT_FORBID_REUSE`, so it always does its own handshake (a reused
-keep-alive connection has no certificate to confirm) at the price of one handshake per key-mode
-request. A key-mode answer is never learned from (`peer_pin` is never read), so key mode cannot
+`CURLOPT_FRESH_CONNECT`, `CURLOPT_FORBID_REUSE` and `CURLOPT_SSL_SESSIONID_CACHE` = 0, so it always
+does its own FULL handshake (a reused keep-alive connection and a resumed TLS session both present no
+certificate to confirm; libcurl 8.12+ keeps the session cache on the multi, so a media source's next
+attempt would resume the last one's) at the price of one full handshake per key-mode request. A key-mode answer is never learned from (`peer_pin` is never read), so key mode cannot
 rewrite what it is checking against.
 **One table, filled once:** `net::keypin` is process-wide, keyed by lowercase `host:port`, with
 replace semantics. `session::replace_cache` is the single choke point that projects the session

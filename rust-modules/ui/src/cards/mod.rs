@@ -108,12 +108,12 @@ pub use avatars::AvatarRow;
 // Geometry and painters a screen's own layout reads (L0 `card_row` / `poster_grid`, re-exported so
 // those modules can stay `pub(crate)`).
 pub use crate::card_row::{
-    column_near_x, credit_role_dy, draw_credit_label, draw_heading, draw_heading_c, draw_label, cw_caption, heading_flow, heading_parts, HeadingPart, HEADING_SOURCE_PAD, heading_lift_max, label_band, paint_visible,
-    most_painted_at_rest, resume_bar, reveal, scroll_into_view, settled_top, settled_top_for, tile_rect, under_band, under_band_for, LabelFace, Rim, RowStyle, SortValue, TileLabel,
+    column_near_x, credit_role_dy, draw_credit_label, draw_heading, draw_heading_c, draw_label, cw_caption, heading_flow, heading_parts, HeadingPart, HEADING_SOURCE_PAD, heading_lift_max, heading_lift_of, label_band, paint_visible,
+    most_painted_at_rest, resume_bar, reveal, scroll_into_view, settled_top, settled_top_by, settled_top_for, tile_rect, under_band, under_band_for, LabelFace, Rim, RowStyle, SortValue, TileLabel,
     band_open_for, BAND_OPEN, CREDIT_ROLE_LEADING, LABEL_BAND_COLLAPSED, LABEL_EDGE_FADE, LEGACY_BAND_H, MAX_ROW_ITEMS, ROW_PITCH_FIXED, SORT_VALUE_BAND_H, SORT_VALUE_PLUS, SORT_VALUE_REACH, SORT_VALUE_ROW_GAP, UNDER_LABEL_H,
 };
 pub use crate::poster_grid::{
-    growth_before as grid_growth_before, growth_before_for as grid_growth_before_for, rest_scroll as grid_rest_scroll, settled as grid_settled, GridBand, COLS as GRID_COLS, MAX_GRID_BANDS,
+    growth_before as grid_growth_before, growth_before_for as grid_growth_before_for, rest_scroll as grid_rest_scroll, rest_scroll_at as grid_rest_scroll_at, settled as grid_settled, GridBand, COLS as GRID_COLS, MAX_GRID_BANDS,
     STYLE as GRID_STYLE,
 };
 pub use grid::{DrawRole, Grid, GridSpec, ScrollMode};
@@ -343,6 +343,11 @@ pub struct Tile {
     pub scale: f32,
     pub radius: f32,
     pub focused: bool,
+    /// The focus pop as the 0..1 factor [`crate::widgets::pop_factor`] reads off `scale` against the
+    /// style's `focus_scale`: exactly 0.0 at rest, 1.0 fully lifted. It is the card's own pop spring
+    /// read as a progress (the press dip taken back out: [`pop_progress`]), so a mark that opens with focus (the still footer's cue slot) rides the
+    /// same motion as the pop and never needs a timer.
+    pub pop: f32,
 }
 
 /// What a section reports back from [`Shelf::on`] / [`Grid::on`]. One at most per call.
@@ -523,6 +528,18 @@ pub(crate) fn pressed_index<H: Host, S: CardSource<H>>(cx: &Cx<'_, H>, entry: En
 #[inline]
 pub(crate) fn press_scale<H: Host>(pop: f32, i: usize, pressed: Option<usize>, cx: &Cx<'_, H>) -> f32 {
     pop * if pressed == Some(i) { cx.press.dip() } else { 1.0 }
+}
+
+/// The focus pop of card `i` as [`Tile::pop`] reads it: [`crate::widgets::pop_factor`] of the scale
+/// painted at, with the press dip taken back out for the pressed card. A held OK dips the card
+/// from its pop to about 1.0 (`press_scale`), and a mark that opens with the pop (the still
+/// footer's cue slot) must not close under the thumb at the moment of the press.
+pub(crate) fn pop_progress<H: Host, S: CardSource<H>>(
+    s: f32, i: usize, entry: EntryId, src: &S, cx: &Cx<'_, H>, focus_scale: f32,
+) -> f32 {
+    let dip = cx.press.dip();
+    let popped = if dip > 0.0 && pressed_index(cx, entry, src) == Some(i) { s / dip } else { s };
+    crate::widgets::pop_factor(popped, focus_scale)
 }
 
 /// `r` (screen space) in painter `p`'s space: the painter's own translate undone, so a rect drawn

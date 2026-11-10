@@ -178,7 +178,7 @@ fn member_caption(item: &PmsMovie) -> TileLabel {
         address_on_art: item.kind == 3 || (item.kind == 2 && item.season_index > 0),
         ..tile_facts::caption_facts(item)
     };
-    crate::registry::captions::label(&crate::registry::captions::policy(), &facts, None, false)
+    crate::registry::captions::label(&crate::registry::captions::policy(), &facts, None)
 }
 
 /// One run of consecutive slots with a key and a label projected: slot `first + n` is `elems[n]`.

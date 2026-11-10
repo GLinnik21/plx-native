@@ -1147,6 +1147,51 @@ Verified live:
 | `width=420&height=236&url=/library/metadata/1/art/...` | 200, `image/jpeg`, 420×236, 29 KB |
 | `width=300&height=450&url=/library/metadata/1/thumb/...` | 200, `image/jpeg`, 300×450, 36 KB |
 
+### Hub rows carry `Image[]`, with a stamped clearLogo (measured 2026-11-09, PMS 1.43.5.11079, Guest)
+
+`GET /hubs/continueWatching` and `GET /hubs/sections/{id}` (the `movie.inprogress.N` and
+`tv.inprogress.N` hubs) put the same `Image[]` on every row that `GET /library/metadata/{rk}`
+does (see `docs/plex-api.md`, "Artwork"). Each entry is `{type, url, alt}`; `alt` is the title.
+Every url is a server-relative path with the item's **update stamp** as its last segment:
+
+```
+coverPoster       /library/metadata/<rk>/thumb/<ts>
+background        /library/metadata/<rk>/art/<ts>
+clearLogo         /library/metadata/<rk>/clearLogo/<ts>
+backgroundSquare  /library/metadata/<rk>/squareArt/<ts>
+snapshot          /library/metadata/<episode rk>/thumb/<ts>      (episodes only)
+```
+
+So a clearLogo in a hub row IS stamped (a replaced logo is a new path), unlike the bare
+`/library/metadata/{rk}/clearLogo` the app requests today. **An episode's `Image[]` names its SHOW's
+rating key** for `coverPoster`, `background`, `clearLogo` and `backgroundSquare` (the row's own
+`ratingKey` 732, the show's 605, in the probe), and only `snapshot` is the episode's own: the
+episode's `thumb` still. A movie row has no `snapshot`. Every row of the probe (4 movies and 1
+episode in Continue Watching) had `clearLogo`, `background` and `coverPoster`; none had a
+`coverArt` (that type exists only on the Discover provider, which PMS does not serve). Whether a
+title without a logo omits the entry or carries an empty url was not observed. A parser must
+treat an absent entry as "none".
+
+The row's `guid` is `plex://movie/<24 hex>` for a movie and `plex://episode/<24 hex>` for an
+episode; the episode's `grandparentGuid` is `plex://show/<24 hex>` (the catalog id of its show).
+
+### An absolute Discover image URL through the transcoder (measured 2026-11-09, PMS 1.43.5.11079, Guest)
+
+A Discover `coverArt` is an absolute URL on `https://metadata-static.plex.tv` (or, for a localized
+cover, `https://image.tmdb.org`; `docs/plex-api.md`). The PMS photo transcoder takes it as `url=` like
+a headshot and fetches it server-side:
+
+| request (`minSize=1`, `url=` the urlencoded absolute coverArt) | result |
+|---|---|
+| `width=420&height=236`, source 1920x1080 | 200, `image/jpeg`, **420x236**, 22 KB (source 263 KB) |
+| `width=420&height=236`, source 3840x2160 (three titles) | 200, `image/jpeg`, **420x236**, 12 to 28 KB (source 0.5 to 1.5 MB) |
+| the same without `minSize` | 200, identical bytes (a 16:9 source at a 16:9 box) |
+
+All four were 16:9 sources, so the box was filled exactly; whether a non-16:9 cover overshoots
+(`minSize=1`, above) was not probed. The request carries the PMS token only, never the Discover
+token. A raw GET of the same absolute URL from the dev Mac also answered 200 with no credential,
+at the full source size.
+
 ### Raw (no transcode wrapper) — verified, do NOT use for grids
 
 ```

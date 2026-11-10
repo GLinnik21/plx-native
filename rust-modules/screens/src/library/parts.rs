@@ -43,8 +43,8 @@ pub(super) fn caption_policy() -> CaptionPolicy { crate::registry::captions::pol
 /// a season on Home; a collection's details line is its size, and a name its face cuts rides it). An episode is a landscape still, not a poster, and keeps its own block in the
 /// legacy band ([`captions::still_label`](crate::registry::captions::still_label)).
 pub(super) fn grid_label(item: &plx_data::pms::PmsMovie, policy: &CaptionPolicy) -> ui_cards::TileLabel {
-    if item.kind == 3 { return crate::registry::captions::still_label(item, false, ""); }
-    crate::registry::captions::label(policy, &tile_facts::caption_facts(item), None, false)
+    if item.kind == 3 { return crate::registry::captions::still_label(item, ""); }
+    crate::registry::captions::label(policy, &tile_facts::caption_facts(item), None)
 }
 
 #[derive(Default)]
@@ -655,7 +655,7 @@ impl<H: Host<Elem = u32>> CardSource<H> for GridSrc<'_, '_> {
     fn overlay(&self, p: Painter, i: usize, tile: &Tile, measure: &dyn Measure) {
         #[cfg(test)] OVERLAID.with(|seen| seen.borrow_mut().push((i, tile.scale)));
         if let Some(item) = self.view.item(i).filter(|item| item.kind == 3) {
-            plx_ui::widgets::still_overlay(p, &tile_facts::of(item), tile.rect, tile.radius, false, measure);
+            plx_ui::widgets::still_overlay(p, &tile_facts::of(item), tile.rect, tile.radius, plx_ui::widgets::StillFooter::Shelf, measure);
         }
         // A smart collection wears its mark, focused or not, on the popped tile's rect.
         if self.collections() && self.view.item(i).is_some_and(|item| item.smart) {
@@ -890,7 +890,7 @@ impl<H: Host<Elem = u32>> CardSource<H> for GhostSrc<'_> {
     }
     fn overlay(&self, p: Painter, i: usize, tile: &Tile, measure: &dyn Measure) {
         if let Some(item) = self.item(i).filter(|item| item.kind == 3) {
-            plx_ui::widgets::still_overlay(p, &tile_facts::of(item), tile.rect, tile.radius, false, measure);
+            plx_ui::widgets::still_overlay(p, &tile_facts::of(item), tile.rect, tile.radius, plx_ui::widgets::StillFooter::Shelf, measure);
         }
     }
     fn loaded(&self, i: usize) -> bool { self.item(i).is_some() }

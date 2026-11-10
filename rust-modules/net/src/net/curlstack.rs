@@ -5,8 +5,9 @@
 //! system libcurl is the only one.
 //!
 //! This module only OPENS the libraries. `net::load_bundled` binds the `curl` table from the
-//! handle it returns, and `curlio` binds its multi table from the same handle
-//! (`net::bundled_curl`), so the choice between bundled and system curl is made once.
+//! handle it returns, and `curlio` binds its multi table and `net::connect_only` its
+//! `curl_easy_send`/`curl_easy_recv` table from the same handle (`net::bundled_curl`), so the
+//! choice between bundled and system curl is made once.
 //!
 //! TLS BACKEND IS OpenSSL 3.5 (`libcrypto-plx.so.3`, `libssl-plx.so.3`), for its AArch32 ARMv8
 //! Crypto Extension paths (AES, PMULL/GHASH, SHA-1, SHA-256), chosen at run time, so a CPU that has

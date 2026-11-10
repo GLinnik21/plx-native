@@ -131,14 +131,15 @@ impl KeyRegistry {
         elem
     }
 
-    /// Drop the oldest keys of `region` that `live` does not hold until at most `cap` remain;
-    /// true when any went. Ordinals only grow, so a dropped number is never minted again.
+    /// Drop the oldest unheld keys of `region` toward `cap`; true when any went.
+    /// Keep its newest key so restoration can recover the next ordinal from the saved keys.
     pub(super) fn prune(&mut self, region: KeyRegion, cap: usize, live: impl Fn(u32) -> bool) -> bool {
         let count = self.count(region);
         if count <= cap { return false; }
+        let newest = self.next[region_index(region)].checked_sub(1).map(|ordinal| region_base(region) | ordinal);
         let drop = unlive_excess(
             self.keys.iter().filter(|key| identity_region(&key.identity) == region).map(|key| key.elem),
-            live,
+            |elem| Some(elem) == newest || live(elem),
             count - cap,
             EvictOrder::Elem,
         );
@@ -282,6 +283,20 @@ mod tests {
         let mut restored = KeyRegistry::restore(&memory);
         assert_eq!(restored.register(identity, GroupId(11), 17), elem);
         assert_eq!(restored.last_place(elem), Some((GroupId(11), 17)));
+    }
+
+    #[test]
+    fn pruning_keeps_the_highest_ordinal_across_restore() {
+        let mut keys = KeyRegistry::default();
+        let live = keys.register(grid(1, "live"), GroupId(9), 0);
+        let other_live = keys.register(grid(1, "other live"), GroupId(9), 1);
+        let stale = keys.register(grid(1, "stale"), GroupId(9), 2);
+        let newest = keys.register(grid(1, "newest"), GroupId(9), 3);
+        assert!(keys.prune(KeyRegion::Grid, 2, |elem| elem == live || elem == other_live));
+        assert!(keys.key(stale).is_none());
+        let mut restored = KeyRegistry::restore(&keys.remember(None, 0.0, Vec::new()));
+        assert_eq!(restored.register(grid(1, "live"), GroupId(9), 0), live);
+        assert!(restored.register(grid(1, "new"), GroupId(9), 1) > newest);
     }
 
     #[test]

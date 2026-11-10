@@ -23,7 +23,8 @@ use std::os::raw::c_int;
 
 use plx_data::pms::{PmsMovie, KIND_COLLECTION};
 use plx_ui::caption_policy::CaptionFacts;
-use plx_ui::tile::{Resume, TileFacts, TileKind};
+use plx_plex::plex::artwork;
+use plx_ui::tile::{DeckArt, Resume, TileFacts, TileKind};
 
 /// The facts of a catalog row a caption policy words its lines from: every poster shelf's captions
 /// (Home, Recommended, the Library grid, the Watchlist) and the Under posters preview's tiles read
@@ -110,7 +111,75 @@ pub fn of(m: &PmsMovie) -> TileFacts<'_> {
         leaf_count: m.leaf_count,
         viewed_leaf_count: m.viewed_leaf_count,
         added_at: m.added_at,
+        // No surface opts in here: a deck builds its own keys and sets this itself.
+        deck: None,
     }
+}
+
+/// **The two store keys a Continue Watching deck card's artwork is asked by**, built ONCE per deck
+/// row (by the screen that owns the deck, when its publication lands) and held beside the row, so a
+/// frame builds no string: the deck's cards read them through [`for_deck`] and a library grid, which
+/// never opts in, pays for none.
+///
+/// * `cover`: [`artwork::cover_path`] of the title's CATALOG id, by the Watchlist's own rule
+///   ([`PmsMovie::watchlist_subject`]): a movie or a show is itself, an episode (or a season) is its
+///   SHOW, so every episode of a show asks for the show's cover. EMPTY when the row has no catalog
+///   id (a local agent, personal media, a guid that is not `plex://movie|show` with 24 hex digits,
+///   an episode whose listing lacks `grandparentGuid`): such a card has no cover to ask for and goes
+///   straight to the composite.
+/// * `card`: [`artwork::card_path`], the composite of the row's background `art` and the clearLogo
+///   of the title: its own rating key for a movie or a show, the SHOW's for an episode or a season
+///   (neither has a clearLogo of its own, and an episode's backdrop is its show's). EMPTY when there
+///   is no background to compose onto or no rating key to ask the logo of.
+///
+/// A cover is server-independent (one catalog id: the same title held by two servers asks for one
+/// cover) and a composite is server-local (its key names a path on `TileFacts::src`'s server), so a
+/// merged deck's two copies of one title share a cover and keep two composites.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DeckKeys {
+    pub cover: String,
+    pub card: String,
+}
+
+impl DeckKeys {
+    /// The keys of one row. Pure: a function of the row's guids, rating keys and art path.
+    pub fn of(item: &PmsMovie) -> Self {
+        let cover = item
+            .watchlist_subject()
+            .and_then(|(_, hex, _)| hex)
+            .and_then(|hex| artwork::cover_path(&plx_data::watchlist::encode_hex(&hex)))
+            .unwrap_or_default();
+        // The logo is the TITLE's: an episode or a season carries no clearLogo of its own.
+        let logo_rk = if matches!(item.kind, 2 | 3) { item.show_rk.as_str() } else { item.rk.as_str() };
+        let card = artwork::card_path(logo_rk, &item.art).unwrap_or_default();
+        Self { cover, card }
+    }
+
+    /// The keys of a deck's cards, in the deck's order.
+    pub fn of_all<'a>(items: impl IntoIterator<Item = &'a PmsMovie>) -> Vec<Self> {
+        items.into_iter().map(Self::of).collect()
+    }
+}
+
+/// What `ui` reads of a Continue Watching deck card: [`of`]'s facts, opted in to the deck card's
+/// artwork walk (Plex's cover, our composite, then the title in type: `plx_ui::card_art`) with the
+/// keys the deck built for the row ([`DeckKeys`]). The one place a surface opts in.
+pub fn for_deck<'a>(m: &'a PmsMovie, keys: &'a DeckKeys) -> TileFacts<'a> {
+    TileFacts { deck: Some(DeckArt { cover: &keys.cover, card: &keys.card }), ..of(m) }
+}
+
+/// **A Continue Watching still's footer and scrim on `tile`: the one drawing every surface of the
+/// deck uses** (Home's row, its fading ghosts, the Library's Recommended Continue Watching row).
+/// The cue is what OK does, from the one deck-press rule: a play glyph while the Playback setting
+/// says OK plays, an info glyph while it opens the page; it opens with the card's own pop.
+pub fn deck_overlay(
+    p: plx_ui::Painter,
+    facts: &TileFacts<'_>,
+    tile: &plx_ui::cards::Tile,
+    measure: &dyn plx_machine::machine::Measure,
+) {
+    let cue = if plx_media::route::deck_press().press_plays() { plx_ui::still_footer::Cue::Play } else { plx_ui::still_footer::Cue::Info };
+    plx_ui::widgets::still_overlay(p, facts, tile.rect, tile.radius, plx_ui::widgets::StillFooter::Continue { cue, pop: tile.pop }, measure);
 }
 
 /// Whether `thumb` is the server's generated composite of a collection
@@ -278,6 +347,154 @@ mod tests {
         assert_eq!(poster_mark(&of(&m)), PosterMark::None);
     }
 
+    // ---- the Continue Watching deck's keys (`DeckKeys`, `for_deck`) -------------------------------
+
+    use plx_plex::plex::ServerId;
+    use plx_ui::card_art::{needs_type_title, pick, ArtProbe, CardRung};
+
+    const MOVIE_HEX: &str = "5d776824999c4a001f9a1b2c";
+    const SHOW_HEX: &str = "5d9c086c46115600200aa2fe";
+
+    fn bytes(hex: &str) -> [u8; 12] {
+        plx_data::watchlist::decode_hex(hex).expect("24 hex digits")
+    }
+
+    fn movie() -> PmsMovie {
+        PmsMovie {
+            kind: 0, sid: ServerId::from_raw(1), rk: "605".into(), title: "Heat".into(),
+            art: "/library/metadata/605/art/1778546279".into(), thumb: "/library/metadata/605/thumb/1".into(),
+            guid: Some(bytes(MOVIE_HEX)), ..Default::default()
+        }
+    }
+
+    /// An episode: its OWN guid and rating key are not its show's, and its `art` is the show's.
+    fn episode() -> PmsMovie {
+        PmsMovie {
+            kind: 3, sid: ServerId::from_raw(1), rk: "9001".into(), title: "Pilot".into(), show_title: "Severance".into(),
+            show_rk: "77".into(), guid: Some([9; 12]), show_guid: Some(bytes(SHOW_HEX)),
+            art: "/library/metadata/77/art/5".into(), still: "/library/metadata/9001/thumb/2".into(),
+            thumb: "/library/metadata/77/thumb/3".into(), ..Default::default()
+        }
+    }
+
+    /// A probe answering from a table of settled misses.
+    struct Missed(&'static [&'static str]);
+    impl ArtProbe for Missed {
+        fn failed(&self, _srv: u16, path: &str) -> bool { self.0.contains(&path) }
+    }
+
+    #[test]
+    fn a_movies_keys_are_its_own_catalog_id_and_its_own_background_and_logo() {
+        let keys = DeckKeys::of(&movie());
+        assert_eq!(keys.cover, format!("/plx/cover/{MOVIE_HEX}"));
+        assert_eq!(keys.card, "/plx/card/605/library/metadata/605/art/1778546279");
+    }
+
+    /// An episode asks for its SHOW: the show's catalog id (`grandparentGuid`, never the episode's
+    /// own guid) and the show's clearLogo (`show_rk`, never the episode's rating key), over the
+    /// background the episode carries, which is the show's.
+    #[test]
+    fn an_episodes_keys_are_its_shows() {
+        let keys = DeckKeys::of(&episode());
+        assert_eq!(keys.cover, format!("/plx/cover/{SHOW_HEX}"));
+        assert_eq!(keys.card, "/plx/card/77/library/metadata/77/art/5");
+        let a_show = PmsMovie { kind: 1, rk: "77".into(), show_rk: String::new(), guid: Some(bytes(SHOW_HEX)),
+            art: "/library/metadata/77/art/5".into(), ..Default::default() };
+        assert_eq!(DeckKeys::of(&a_show), keys, "a show row and its episode ask for the same two pictures");
+    }
+
+    /// A guid-less item (a local agent, personal media: `guid` is `None` when it is not a 24-hex
+    /// `plex://movie|show`) has no cover to ask for and goes straight to the composite; an item with
+    /// no background or nothing to ask the logo of has no composite either.
+    #[test]
+    fn an_item_with_no_catalog_id_has_no_cover_and_still_has_a_composite() {
+        let local = PmsMovie { guid: None, ..movie() };
+        let keys = DeckKeys::of(&local);
+        assert_eq!(keys.cover, "");
+        assert_eq!(keys.card, "/plx/card/605/library/metadata/605/art/1778546279");
+        let orphan = PmsMovie { show_guid: None, ..episode() };
+        assert_eq!(DeckKeys::of(&orphan).cover, "", "an episode whose listing lacks grandparentGuid");
+        assert_eq!(DeckKeys::of(&orphan).card, "/plx/card/77/library/metadata/77/art/5");
+        assert_eq!(DeckKeys::of(&PmsMovie { art: String::new(), ..movie() }).card, "", "no background");
+        assert_eq!(DeckKeys::of(&PmsMovie { show_rk: String::new(), ..episode() }).card, "", "no show to ask the logo of");
+        assert_eq!(DeckKeys::of(&PmsMovie { art: "/a?X-Plex-Token=SECRET".into(), ..movie() }).card, "",
+            "a key never carries a query");
+    }
+
+    /// The same title held by two servers (a merged deck): one catalog id, so one cover; each
+    /// server's composite names its own paths, and each card draws through its own server.
+    #[test]
+    fn the_same_title_on_two_servers_shares_a_cover_and_keeps_two_composites() {
+        let a = movie();
+        let b = PmsMovie { sid: ServerId::from_raw(2), rk: "88".into(), art: "/library/metadata/88/art/2".into(), ..movie() };
+        let (ka, kb) = (DeckKeys::of(&a), DeckKeys::of(&b));
+        assert_eq!(ka.cover, kb.cover);
+        assert_ne!(ka.card, kb.card);
+        assert_eq!(kb.card, "/plx/card/88/library/metadata/88/art/2");
+        let (fa, fb) = (for_deck(&a, &ka), for_deck(&b, &kb));
+        assert_ne!(fa.src, fb.src, "each copy asks its own server's transcoder");
+        assert_eq!(fa.deck.unwrap().cover, fb.deck.unwrap().cover);
+    }
+
+    /// The keys are what the store keys parse back to, and no key carries a credential or a query.
+    #[test]
+    fn the_keys_are_the_ones_the_poster_source_parses() {
+        for item in [movie(), episode()] {
+            let keys = DeckKeys::of(&item);
+            assert!(artwork::cover_parts(&keys.cover).is_some() && artwork::card_parts(&keys.card).is_some());
+            assert!(!keys.cover.contains('?') && !keys.card.contains('?'));
+        }
+        assert_eq!(DeckKeys::of_all([&movie(), &episode()]).len(), 2);
+    }
+
+    /// A surface that did not opt in keeps its old answers: `of` carries no deck, and `for_deck` is
+    /// `of` plus exactly the two keys.
+    #[test]
+    fn only_for_deck_opts_in_and_changes_nothing_else() {
+        let m = episode();
+        let keys = DeckKeys::of(&m);
+        assert_eq!(of(&m).deck, None);
+        let deck = for_deck(&m, &keys);
+        assert_eq!(deck.deck, Some(DeckArt { cover: &keys.cover, card: &keys.card }));
+        assert_eq!(format!("{:?}", TileFacts { deck: None, ..deck }), format!("{:?}", of(&m)));
+        // An opted-in card whose keys are both empty is still opted in.
+        let bare = DeckKeys::default();
+        assert_eq!(for_deck(&m, &bare).deck, Some(DeckArt::default()));
+    }
+
+    /// **An episode in Continue Watching draws its SHOW's art**: the cover, then the show composite,
+    /// then (both settled as misses) type on the show's background, then the episode's still, then
+    /// the poster. The detail page's strip, which does not opt in, keeps the still.
+    #[test]
+    fn a_continue_watching_episode_walks_the_show_art_order() {
+        let m = episode();
+        let keys = DeckKeys::of(&m);
+        let f = for_deck(&m, &keys);
+        let got = |missed: &'static [&'static str]| pick(&f, &Missed(missed)).map(|a| (a.path, a.rung)).unwrap();
+        let (cover, card) = (keys.cover.as_str(), keys.card.as_str());
+        assert_eq!(got(&[]), (cover, CardRung::Cover));
+        // `Missed` wants 'static strings; the keys here are fixed
+        let cover_miss: &'static [&'static str] = &["/plx/cover/5d9c086c46115600200aa2fe"];
+        assert_eq!(cover, cover_miss[0]);
+        assert_eq!(got(cover_miss), (card, CardRung::Composite));
+        let both: &'static [&'static str] = &["/plx/cover/5d9c086c46115600200aa2fe", "/plx/card/77/library/metadata/77/art/5"];
+        assert_eq!(got(both), ("/library/metadata/77/art/5", CardRung::Type), "the show's background, not the still");
+        assert!(needs_type_title(&f, &Missed(both)));
+        assert!(!needs_type_title(&f, &Missed(&[])), "a cover names itself");
+        // no show background: the still, then the show poster
+        let no_art = PmsMovie { art: String::new(), ..m.clone() };
+        let k = DeckKeys::of(&no_art);
+        assert_eq!(k.card, "");
+        let f = for_deck(&no_art, &k);
+        assert_eq!(pick(&f, &Missed(cover_miss)).map(|a| (a.path, a.rung)), Some(("/library/metadata/9001/thumb/2", CardRung::Type)));
+        let no_still = PmsMovie { still: String::new(), ..no_art };
+        let f = for_deck(&no_still, &k);
+        assert_eq!(pick(&f, &Missed(cover_miss)).map(|a| a.path), Some("/library/metadata/77/thumb/3"));
+        // the strip's facts did not opt in
+        assert_eq!(of(&m).deck, None);
+        assert!(!needs_type_title(&of(&m), &Missed(both)));
+    }
+
     /// A LEAF is delegated whole, so every resume-point edge `poster_mark` keeps — an offset past
     /// the end is finished, a row with no runtime cannot be in progress — holds for the menu too
     /// without being restated.
@@ -292,6 +509,37 @@ mod tests {
         ] {
             let f = of(&m);
             assert_eq!(row_watch_state(&f), poster_mark(&f), "a leaf must not answer twice");
+        }
+    }
+
+    /// **The deck's footer cue says what OK does**, read from the one deck-press rule
+    /// (`deck_press().press_plays()`): the Play glyph while OK plays, the Info glyph while it opens
+    /// the page (the default). Drawn at full pop, the cue's slot is open and the glyph is painted;
+    /// swapping the two arms fails.
+    #[test]
+    fn the_deck_footer_cue_is_the_play_glyph_under_play_and_the_info_glyph_under_details() {
+        use plx_media::route::{deck_press, restore_deck_press, DeckPress};
+        use plx_ui::icons::Icon;
+        struct Restore(DeckPress);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                restore_deck_press(self.0);
+            }
+        }
+        let _g = plx_base::testlock::serial();
+        let _restore = Restore(deck_press());
+        let m = row(false, 30 * 60 * 1000);
+        let facts = of(&m);
+        let tile = plx_ui::cards::Tile { rect: plx_ui::Rect::new(0.0, 0.0, 420.0, 236.0), scale: 1.0, radius: 12.0, focused: true, pop: 1.0 };
+        let measure = plx_ui::fixture::FixtureMeasure;
+        for (mode, shown, absent) in [(DeckPress::Play, Icon::Play, Icon::Info), (DeckPress::Details, Icon::Info, Icon::Play)] {
+            restore_deck_press(mode);
+            let icons: Vec<Icon> = plx_ui::draw_census::capture_icons(|| deck_overlay(plx_ui::Painter::recording(), &facts, &tile, &measure))
+                .into_iter()
+                .map(|(icon, _)| icon)
+                .collect();
+            assert!(icons.contains(&shown), "{mode:?}: the footer cue is {shown:?}, drew {icons:?}");
+            assert!(!icons.contains(&absent), "{mode:?}: no {absent:?} cue beside it, drew {icons:?}");
         }
     }
 }

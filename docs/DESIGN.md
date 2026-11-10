@@ -109,11 +109,68 @@ Card rows come from `plx_ui::cards::Shelf` with a named `RowStyle`:
 
 - `HOME` for poster shelves, and the single source of shelf motion
 - `EPISODE` 420x236, gap 28, `focus_scale` 1.09, the 16:9 landscape still
+- `STILL` is `EPISODE` at `theme::STILL_RADIUS` (12): the Continue Watching row's tile. The focused
+  tile only pops (1.09, in place); no neighbour moves, so the spacing between tiles never changes (the
+  pop grows a 420 px tile ~19 px a side, inside the 28 px gap). Its slot pitch is `STILL.w + gap` (448)
+  and the row stands whole at `consts::PEEK_Y` + `consts::CARD_DY` (817) on the hero's page
 - `CAST` 190 circles, gap 40, `focus_scale` 1.13
 - `PROFILES` big circles, `focus_scale` 1.18
 
 The focus pop values differ on purpose and each carries the reasoning at its definition: a lone row
 of widely spaced circles needs a bigger pop than a tight poster shelf to read as selected at all.
+
+### The Continue Watching still
+
+A Continue Watching deck is ONE object, so it has one look wherever it appears: Home's row and the
+Library > Recommended page's landscape Continue Watching row are both a row of `RowStyle::STILL` stills
+with **no label block under them** (`captions::NOTHING_UNDER_STILLS`, band 0, one policy both screens
+hand their shelf; Recommended's `Row::still_deck` picks it, `hub_style` the style and `shelf_pitch` the
+pitch from it, `tile_facts::deck_overlay` draws the footer for both): everything a still says it says on
+itself. The Recommended page's other landscape rows (Recently Released Episodes) are not decks and keep
+the episode strip's `EPISODE` look, its caption band and `StillFooter::Shelf`.
+
+- **One scrim, one footer line.** `widgets::art_scrim` darkens the bottom `STILL_SCRIM_H` (112 px) of
+  the card; the footer is one `still_footer::FOOTER_LINE_H` (24 px) line standing `FOOTER_RISE` (12 px)
+  above the card's bottom edge, inset `widgets::STILL_LINE_INSET` (16 px) each side, the text group and
+  the mark at its right `FOOTER_GAP` (12 px) apart.
+- **What the line says**: `S2 E4 · 38m left` and the amber bar `FOOTER_BAR_W` (100 px) high
+  `FOOTER_BAR_H` (4 px); an unstarted episode `S2 E1 · New episode` (the same `S2 E1` tag a started
+  one wears, `core.footer_tag`, then the catalogue's `widgets.card.new_episode`) and no bar, since nothing is
+  played yet. The fit rule is one pure function,
+  `still_footer::footer_geometry`: the bar shrinks from 100 toward `FOOTER_BAR_MIN_W` (64 px) before
+  anything is cut, and the tag fades only when even 64 px does not fit; the time unit is never cut. With no
+  bar the tag is kept while the whole text fits the line, cue included; `New episode` is never cut or dropped
+  (a test fits the worst tag, S12 E24, in every shipped language: all keep the tag, at rest and with the cue open).
+- **The row's heading** stands `theme::STILL_HEADING_RISE` higher over its cards than a poster shelf's
+  (`RowStyle::heading_rise`, the shared row style, so Home and Recommended both get it): the boards put it
+  well above the poster line. It rests on the page header's line, the highest a heading stands whole under
+  the nav chrome (`scroll_chrome::clearance_under_shown_chrome`); card tops, pitch and rest scrolls are the
+  episode strip's own. The focus lift does not stack on it (`card_row::heading_lift_of` takes the larger).
+- **The focus cue** is a white play glyph (OK plays, `DeckPress::Play`) or an info glyph (OK opens the
+  page) at the left of the focused card's line, in a `FOOTER_CUE_SLOT` (28 px) that is collapsed at rest
+  and opened by the card's own pop progress (`cards::Tile::pop`, never a timer of its own): the text
+  moves right by exactly the slot and the bar shrinks toward 64. The Detail episode strip's footer has
+  no cue (its OK always opens or plays the episode). **There is no amber triangle anywhere**: the old
+  caption mark was removed from the code (`TileLabel::glyph` and its draw path), not only from the
+  captions.
+- **The art falls back cover -> baked composite -> title in type** (`card_art::pick`). Plex's own 16:9
+  cover has the title baked in; our composite is the server's background with its clearLogo baked in
+  once by the poster worker; with neither, the title is set in type at the logo slot
+  (`card_art::needs_type_title`, drawn by `still_overlay` through `hero_logo::draw_title`). Baked card
+  art is a bitmap drawn as an ordinary still, **never a live logo** (twenty cards would each hold a
+  clearLogo texture and a per-frame blend). An opted-in card (`tile_facts::for_deck`) carries its title
+  in its art, so the footer repeats none.
+- **Home's page scroll.** Home rests at the hero's page or the grid's (`HomeScreen::on_grid_page`,
+  `holds_page`): focus coming onto the Continue Watching row, by key, hover or click, scrolls nothing;
+  Down from the row reaches the grid with the stills still on top, and the grid's shelves rest as every
+  shelf does (`ui_cards::grid_rest_scroll`, `consts::GRID_TOP_Y`). The pointer's edge-glide bands are
+  `app::input::EDGE_BAND` (= `consts::MARGIN_Y`, 54 px), and one wheel notch is one Up/Down key
+  (`app::bridge::wheel_input`). **The billboard rotates only while focus is on the hero** (or on nothing):
+  the 8 s countdown (`HERO_AUTO_S`) counts while the page rests at the hero and no shelf or shelf heading
+  holds focus (`HomeScreen::row_holds_focus`), and it restarts at its full length when focus returns to the
+  hero. A page that rests at the hero while a Continue Watching card is focused (the row scrolls nothing)
+  therefore keeps its billboard still and presents nothing once settled, as it always did when focus on a
+  row scrolled the page off the hero (the `home-idle` scene grades it).
 
 Tile text is `TileLabel::title(t)` or `TileLabel::titled(t, caption)`, with the focused-label band
 driven by `line_reveal_for` and `under_band` (a line shows once the room under its card holds its

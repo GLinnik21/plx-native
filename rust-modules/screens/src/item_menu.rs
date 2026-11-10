@@ -8,7 +8,7 @@
 //! full-screen sheet; that is deliberately not what this is.
 //!
 //! It exists because OK on a Continue Watching tile can **resume immediately** (the Playback
-//! setting [`DeckPress::Play`]; the amber play badge on the card is the affordance that says so).
+//! setting [`DeckPress::Play`]; the play glyph in the focused still's footer is the affordance that says so).
 //! The hold is the *other* half of that interaction, and until it existed Go-to-Show, per-item
 //! Mark-as-Watched and Play-from-Start had nowhere to live (`docs/parity-gaps.md` §1.2/§1.3, §5a).
 //! Under the default, [`DeckPress::Details`], OK opens the page instead and the deck card's menu

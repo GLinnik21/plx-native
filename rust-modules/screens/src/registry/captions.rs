@@ -6,8 +6,10 @@
 //! the person page's filmography, Detail's Related and collection shelves and the Collection screen's
 //! members. (A landscape still or a headshot is not a poster and is not on the policy: the Library's
 //! Episodes listing, Search's Episode and Person rows, Detail's Extras and Cast and Recommended's
-//! landscape rows keep the legacy block, [`still_label`] / [`still_block`], except while the
-//! Library's Episodes view shows its sort value, which reads `sort_info::label` instead.)
+//! landscape episode rows keep the legacy block, [`still_label`] / [`still_block`], except while the
+//! Library's Episodes view shows its sort value, which reads `sort_info::label` instead. The ONE
+//! landscape row off both is the Continue Watching STILL deck, Home's and Recommended's alike: its
+//! footer stands on the tile and nothing hangs under it, [`NOTHING_UNDER_STILLS`].)
 //!
 //! - [`policy`] is the stored setting as the ui's [`CaptionPolicy`], read through
 //!   `plx_media::route::under_posters()`. A test pins one setting for its thread with
@@ -22,14 +24,12 @@
 //!   band the setting opens is never open over nothing. A tile that carries a STATE
 //!   keeps it (a filmography poster's character is one, as a Continue Watching tile's time left is): its `state` line REPLACES the details line whenever the setting shows one (a
 //!   Continue Watching tile's time left, a Watchlist title's release date or "Server offline"), and
-//!   its amber play mark leads the FIRST line drawn whenever a press plays (the title, else the
-//!   details line: a deck that plays on OK announces it under every setting that draws a line). With
-//!   Title Off and no detail part ticked for either kind no band is opened ([`plx_ui::caption_policy::band_h`]) and
-//!   no line carries a mark; with no part ticked the state line is dropped with the details line, so
+//!   no line carries a mark (a still's focus cue is `ui::still_footer`'s). With
+//!   Title Off and no detail part ticked for either kind no band is opened ([`plx_ui::caption_policy::band_h`]); with no part ticked the state line is dropped with the details line, so
 //!   only the title (if on) shows (a started movie's time left and a collection's size are the
 //!   details line's, as they always were), **except on the Continue Watching deck** (the owner's
 //!   2026-10-22 call): there the progress line is the tile's state and is ALWAYS shown, Nothing
-//!   included ([`deck_policy`]), and the mark leads it when the deck plays, **and on the Watchlist**,
+//!   included ([`deck_policy`]), **and on the Watchlist**,
 //!   whose tiles' status words ("Coming 12 Mar", "Not on your servers", "Server offline") are the only
 //!   words the tile has: [`label_with_states`] shows them with no part ticked, and the band opens for
 //!   them ([`status_policy`]). The deck's band is per SHELF, so
@@ -114,21 +114,33 @@ pub fn deck_policy(policy: &CaptionPolicy) -> CaptionPolicy {
     }
 }
 
+/// **The Continue Watching still deck's caption policy: nothing under the stills** (the one object,
+/// Home's deck and the Library's Recommended Continue Watching row alike). The deck is a row of
+/// landscape stills ([`plx_ui::cards::RowStyle::STILL`]) whose status and bar are the still's own
+/// footer line (`plx_ui::widgets::StillFooter::Continue`), so no label block hangs under a still and
+/// no band opens for one ([`plx_ui::caption_policy::band_h`] 0): the row below is not carried down
+/// when a still takes focus, whatever the Under posters setting says. Not [`deck_policy`], which is
+/// the POSTER deck's (its band keeps a line for the progress text).
+pub const NOTHING_UNDER_STILLS: CaptionPolicy = CaptionPolicy {
+    title: false,
+    details: DetailParts::NONE,
+    show_details: DetailParts::NONE,
+};
+
 /// The focused block of one poster under `policy`: `[title, details]` as the setting words them
-/// from `facts`, the details line being `state` when the tile has one, and the first line drawn led by
-/// the play mark when `plays` (a press on this tile starts playback). With no detail part ticked for
+/// from `facts`, the details line being `state` when the tile has one. No line carries a mark. With no detail part ticked for
 /// the tile's kind the state is dropped with the details line (the Continue Watching deck is the
 /// exception, through [`deck_policy`]).
-pub fn label(policy: &CaptionPolicy, facts: &CaptionFacts, state: Option<String>, plays: bool) -> TileLabel {
-    build(policy, facts, state, plays, false)
+pub fn label(policy: &CaptionPolicy, facts: &CaptionFacts, state: Option<String>) -> TileLabel {
+    build(policy, facts, state, false)
 }
 
 /// [`label`] for a tile whose status words are its own, the Watchlist's "Coming 12 Mar", "Not on
 /// your servers" and "Server offline": the tile says nothing in words, so the status shows even
 /// when no detail part is ticked for its kind (a title with no status and no part has no line).
 /// The band that holds it opens for it ([`status_policy`]).
-pub fn label_with_states(policy: &CaptionPolicy, facts: &CaptionFacts, state: Option<String>, plays: bool) -> TileLabel {
-    build(policy, facts, state, plays, true)
+pub fn label_with_states(policy: &CaptionPolicy, facts: &CaptionFacts, state: Option<String>) -> TileLabel {
+    build(policy, facts, state, true)
 }
 
 /// The policy a surface whose tiles carry their own status words ([`label_with_states`]) reserves
@@ -138,13 +150,12 @@ pub fn status_policy(policy: &CaptionPolicy) -> CaptionPolicy {
     deck_policy(policy)
 }
 
-fn build(policy: &CaptionPolicy, facts: &CaptionFacts, state: Option<String>, plays: bool, states_survive: bool) -> TileLabel {
+fn build(policy: &CaptionPolicy, facts: &CaptionFacts, state: Option<String>, states_survive: bool) -> TileLabel {
     let [title, details] = caption_lines(policy, facts, plx_platform::i18n::current());
     let details = if policy.details_for(facts.is_show).is_empty() { if states_survive { state } else { None } } else { state.or(details) };
-    // The mark leads the FIRST line drawn (the title, else the details line), so a press that plays
-    // is announced under every setting that draws a line; Nothing with the title off draws none.
-    let glyph = plays && (title.is_some() || details.is_some());
-    let label = TileLabel { glyph, ..TileLabel::from_lines([title, details]) };
+    // No line carries a mark: what OK does is the focused still's footer cue (`ui::still_footer`),
+    // not a caption's.
+    let label = TileLabel::from_lines([title, details]);
     // A name the face cut rides the details line (`caption_lines`): it stays under its own tile
     // (never under the next column) and glides there when it is longer than the tile.
     if facts.name_cut { label.within_tile() } else { label }
@@ -154,7 +165,7 @@ fn build(policy: &CaptionPolicy, facts: &CaptionFacts, state: Option<String>, pl
 /// shelves. The tile keeps what its caption carries as a STATE: on the Continue Watching deck
 /// (`is_continue`) its time left ("8m left", "S3 · E4 · 8m left", or "S2 · E1 · New episode" for a
 /// next-up episode; an unnumbered episode leads with its show's name instead of the address) is the details line
-/// whatever kind the setting asks for, and the amber play mark leads the first line drawn while OK on the deck plays (`DeckPress::Play`). An
+/// whatever kind the setting asks for. An
 /// episode's default details line is its address ("S1 · E8"), as it was on a shelf. On the deck that
 /// line is shown under Nothing too ([`deck_policy`]); a deck tile with no state to show draws no
 /// fallback line under Nothing (the shelf's band stays open, per shelf).
@@ -167,27 +178,26 @@ pub fn shelf_label(policy: &CaptionPolicy, item: &plx_data::pms::PmsMovie, is_co
     // A deck tile with a state is worded by the deck's policy (its progress line shows under
     // Nothing); one with no state to show has nothing to say under Nothing, only the shelf's band.
     let policy = &if state.is_some() { deck_policy(policy) } else { *policy };
-    label(policy, &facts, state, is_continue && plx_media::route::deck_press().press_plays())
+    label(policy, &facts, state)
 }
 
 /// **A landscape STILL's focused block** (an episode's 16:9 art): NOT a poster and so off the Under
 /// posters policy, in its own legacy band (114 px, [`plx_ui::cards::LEGACY_BAND_H`]: this 92 px
 /// block and its air), under every setting except while the Library's Episodes view shows its sort
 /// value, which reads `sort_info::label` instead: the episode's own title (its address when it has none,
-/// or when it only repeats the show's name) over one fact, the time it has left on the Continue
-/// Watching deck (`is_continue`), else its release date. `credit` is the server a result is borrowed
-/// from (Search's results), named after the fact. The Library's Episodes listing, the Recommended
-/// page's landscape rows and Search's Episode row read this ONE builder, which makes the block with
-/// [`still_block`]; a line the row has nothing for is absent, never drawn empty.
-pub fn still_label(item: &plx_data::pms::PmsMovie, is_continue: bool, credit: &str) -> TileLabel {
+/// or when it only repeats the show's name) over one fact, its release date. `credit` is the server
+/// a result is borrowed from (Search's results), named after the fact. The Library's Episodes
+/// listing, the Recommended page's landscape episode rows and Search's Episode row read this ONE
+/// builder, which makes the block with [`still_block`]; a line the row has nothing for is absent,
+/// never drawn empty. The Continue Watching deck does not read it: its status is the footer on the
+/// still ([`NOTHING_UNDER_STILLS`]).
+pub fn still_label(item: &plx_data::pms::PmsMovie, credit: &str) -> TileLabel {
     let name = if item.title.is_empty() || item.title == item.show_title {
         plx_ui::fmt::episode_address(i64::from(item.season_index), i64::from(item.ep_index))
     } else {
         item.title.clone()
     };
-    let fact = if is_continue && item.resume_frac().is_some() {
-        plx_ui::fmt::time_left(item.dur_ns / 1_000_000 - item.resume_ms)
-    } else if item.aired.is_empty() && item.year <= 0 {
+    let fact = if item.aired.is_empty() && item.year <= 0 {
         String::new()
     } else {
         plx_ui::fmt::pretty_date(&item.aired, i64::from(item.year))
@@ -223,35 +233,30 @@ mod tests {
         let ep = plx_data::pms::PmsMovie { kind: 3, title: "Pilot".into(), show_title: "Show".into(), season_index: 1, ep_index: 8,
             aired: "2016-04-21".into(), ..Default::default() };
         let date = plx_ui::fmt::pretty_date("2016-04-21", 0);
-        assert_eq!(lines(&still_label(&ep, false, "")), [Some("Pilot".into()), Some(date.clone())]);
-        assert_eq!(lines(&still_label(&ep, false, "pal")), [Some("Pilot".into()), Some(format!("{date} \u{b7} pal"))]);
+        assert_eq!(lines(&still_label(&ep, "")), [Some("Pilot".into()), Some(date.clone())]);
+        assert_eq!(lines(&still_label(&ep, "pal")), [Some("Pilot".into()), Some(format!("{date} \u{b7} pal"))]);
         let untitled = plx_data::pms::PmsMovie { title: "Show".into(), ..ep.clone() };
-        assert_eq!(lines(&still_label(&untitled, false, ""))[0].as_deref(), Some("S1 \u{b7} E8"),
+        assert_eq!(lines(&still_label(&untitled, ""))[0].as_deref(), Some("S1 \u{b7} E8"),
             "a title that only repeats the show reads the address");
         let extra = still_block("Making of", "Featurette");
         assert_eq!(lines(&extra), [Some("Making of".into()), Some("Featurette".into())]);
         assert_eq!(lines(&still_block("", "Featurette")), [None, Some("Featurette".into())], "no title, no empty line");
-        assert!(extra.shadowed && still_label(&ep, false, "").shadowed, "one look for every landscape block");
+        assert!(extra.shadowed && still_label(&ep, "").shadowed, "one look for every landscape block");
     }
 
-    /// A tile's state is its details line under every kind but Nothing, the play mark leads the first
-    /// line drawn, and an episode's default details line is its address.
+    /// A tile's state is its details line under every kind but Nothing, and an episode's default details line is its address.
     #[test]
-    fn a_state_line_replaces_the_details_line_and_the_play_mark_needs_a_title() {
+    fn a_state_line_replaces_the_details_line() {
         let facts = CaptionFacts { title: Some("Heat".into()), year: Some(1995), genre: Some("Crime".into()), ..Default::default() };
         let state = || Some("8m left".to_owned());
-        let with = |title, details, plays| label(&CaptionPolicy::same(title, details), &facts, state(), plays);
+        let with = |title, details| label(&CaptionPolicy::same(title, details), &facts, state());
         for details in [DetailParts::MOVIE_DEFAULT, DetailParts::of(&[DetailPart::Genre]), DetailParts::of(&[DetailPart::VideoQuality]), DetailParts::of(&[DetailPart::AgeRating, DetailPart::Score])] {
-            assert_eq!(lines(&with(true, details, true)), [Some("Heat".into()), Some("8m left".into())], "{details:?}");
+            assert_eq!(lines(&with(true, details)), [Some("Heat".into()), Some("8m left".into())], "{details:?}");
         }
-        assert_eq!(lines(&with(true, DetailParts::NONE, false)), [Some("Heat".into()), None], "Nothing shows no state either");
-        assert!(with(true, DetailParts::of(&[DetailPart::Genre]), true).glyph && !with(true, DetailParts::of(&[DetailPart::Genre]), false).glyph);
-        assert!(with(false, DetailParts::of(&[DetailPart::Genre]), true).glyph, "Title Off: the details line carries the mark");
-        assert!(with(true, DetailParts::NONE, true).glyph, "Title On + Nothing: the title carries it");
-        assert!(!with(false, DetailParts::NONE, true).glyph, "no line drawn, nothing to lead");
+        assert_eq!(lines(&with(true, DetailParts::NONE)), [Some("Heat".into()), None], "Nothing shows no state either");
         let episode = CaptionFacts { title: Some("Pilot".into()), episode: Some((1, 8)), ..Default::default() };
         let p = CaptionPolicy::same(false, DetailParts::MOVIE_DEFAULT);
-        assert_eq!(lines(&label(&p, &episode, None, false)), [None, Some("S1 \u{b7} E8".into())]);
+        assert_eq!(lines(&label(&p, &episode, None)), [None, Some("S1 \u{b7} E8".into())]);
     }
 
     fn deck_episode() -> plx_data::pms::PmsMovie {
@@ -296,23 +301,23 @@ mod tests {
     fn a_status_line_survives_the_empty_set_and_the_details_governed_ones_do_not() {
         let none = CaptionPolicy::same(false, DetailParts::NONE);
         let facts = CaptionFacts { title: Some("Heat".into()), ..Default::default() };
-        assert_eq!(lines(&label_with_states(&none, &facts, Some("Coming 12 Mar".into()), false)), [None, Some("Coming 12 Mar".into())]);
+        assert_eq!(lines(&label_with_states(&none, &facts, Some("Coming 12 Mar".into()))), [None, Some("Coming 12 Mar".into())]);
         let titled = CaptionPolicy::same(true, DetailParts::NONE);
-        assert_eq!(lines(&label_with_states(&titled, &facts, Some("Server offline".into()), false)), [Some("Heat".into()), Some("Server offline".into())]);
-        assert_eq!(lines(&label_with_states(&none, &facts, None, false)), [None, None], "no status, no part: no line");
+        assert_eq!(lines(&label_with_states(&titled, &facts, Some("Server offline".into()))), [Some("Heat".into()), Some("Server offline".into())]);
+        assert_eq!(lines(&label_with_states(&none, &facts, None)), [None, None], "no status, no part: no line");
         let started = CaptionFacts { title: Some("Heat".into()), duration_min: Some(45), view_offset_min: Some(20), ..Default::default() };
-        assert_eq!(lines(&label(&none, &started, None, false)), [None, None], "time left is the details line's: unchanged");
+        assert_eq!(lines(&label(&none, &started, None)), [None, None], "time left is the details line's: unchanged");
         let collection = CaptionFacts { title: Some("Heat".into()), subtype: Some("movie".into()), child_count: Some(7), ..Default::default() };
-        assert_eq!(lines(&label(&none, &collection, None, false)), [None, None], "a collection's size is the details line's: unchanged");
+        assert_eq!(lines(&label(&none, &collection, None)), [None, None], "a collection's size is the details line's: unchanged");
         let some = CaptionPolicy::same(false, DetailParts::MOVIE_DEFAULT);
-        assert_eq!(lines(&label(&some, &started, None, false)), [None, Some("25m left".into())]);
+        assert_eq!(lines(&label(&some, &started, None)), [None, Some("25m left".into())]);
     }
 
     #[test]
     fn a_non_deck_state_line_still_drops_under_nothing() {
         let facts = CaptionFacts { title: Some("Heat".into()), ..Default::default() };
         let p = CaptionPolicy::same(false, DetailParts::NONE);
-        assert_eq!(lines(&label(&p, &facts, Some("Server offline".into()), true)), [None, None]);
+        assert_eq!(lines(&label(&p, &facts, Some("Server offline".into()))), [None, None]);
     }
 
     /// A SEASON on a shelf (Recently Added TV) is named by its show and, with no fact the picked

@@ -1191,8 +1191,9 @@ once, in `ff::demux`: `http` reads through `stream.rs`'s raw socket, `https` thr
 **`net::range_io`** (through media's credential facade) — libcurl's *multi* interface behind a `read`/`seek`/`size`/`status`/`abort` pull
 source, so `ff.rs` never learns curl-multi mechanics. It exists because LG's reviewers have no PMS
 on their LAN and stream from the public internet, which `stream.rs` cannot reach: it speaks
-cleartext. So **libcurl is used by two modules for two jobs** — `net.rs` for plex.tv plus HTTPS PMS
-control calls, `net::range_io` for the media bytes — and each binds its own `dynlib!` table,
+cleartext. So **libcurl is used by three modules for three jobs** — `net.rs` for plex.tv plus HTTPS PMS
+control calls, `net::range_io` for the media bytes, `net::connect_only` for the WebSocket's socket —
+and each binds its own `dynlib!` table,
 which the linking section explains is load-bearing rather than tidy.
 
 **Subtitles (summary — `docs/ass-subtitles.md` is the deep-dive; `rust-modules/media/src/player/CLAUDE.md`
@@ -1387,10 +1388,13 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   must still be able to SIGN IN. That table is frozen to the oldest supported set:
   `curl_multi_poll`/`curl_multi_wakeup` resolve on the dev Mac, are absent on the dev television,
   and first appear at webOS 7.4.0 — so binding them would have emptied this table on four of the
-  nine gated releases. Another is `plx_base::diag::zlib` (`rust-modules/base/src/diag/zlib.rs`), which binds **one** symbol — `compress2` — in
+  nine gated releases. `net::connect_only` binds `curl_easy_send`/`curl_easy_recv`/`curl_easy_getinfo` in a
+  THIRD libcurl table, from the same candidate list (or, in a `CURLSTACK=1` build, the bundled handle
+  `global_init` chose, as `curlio`'s does), so a libcurl without them loses only the WebSocket.
+  Another is `plx_base::diag::zlib` (`rust-modules/base/src/diag/zlib.rs`), which binds **one** symbol — `compress2` — in
   a table of its own so that a television without libz degrades to an uncompressed upload rather
   than emptying anybody else's table; it exists only in a `lab-diagnostics` build, which is not the
-  default set, so an ordinary binary really does have five. (**ACB** is the same idea but not this
+  default set. (**ACB** is the same idea but not this
   module: `src/video_plane.c` is C and does its own `dlopen`.) Replaced `stub/`, which is deleted.
   `tools/fwcompat.py` grades the result;
   `docs/webos5-port.md` is the full account.
@@ -2339,9 +2343,11 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
 - **The once/sec `loop=` heartbeat carries `pos=<s>` while frames are presenting** — the same
   `FEED_SHARED.playpos_ns` the 10s `/:/timeline` reporter posts, sampled at 1 Hz. The harness grades
   playback progress from it (`progress_secs`), because observing a 15s climb through 10s samples
-  costs ~30s of playback. It is gated on `player::is_playing()`, not `is_started()`: a direct-play
-  resume does not seed `playpos_ns` (only the transcode branch does), so the pre-roll would log a
-  0 and a 0→600 step reads as 600s of "climb" in one second — a false PASS.
+  costs ~30s of playback. It is gated on `player::is_playing()`, not `is_started()`: both resume
+  paths seed the playhead with their target before the first frame (`arm_open` for direct play,
+  `Rebase` for a transcode), so the pre-roll reads the target, and only a presented frame vouches
+  that playback got there; ungated, a resume or seek that never lands would read as playback that
+  climbed — a false PASS.
   **Beside it since 2026-08-27 is `play=<pm>`: media time advanced per WALL millisecond, in per
   mille — 1000 is the film running at speed and 670 is it crawling — and it is the ONLY field on
   that line that can see a slow film.** `fps=` counts our GL swaps and sits at 60 through a stream

@@ -412,3 +412,54 @@ impl DisplaySink for ScriptedPlaneSink {
     }
     fn plane_completions(&self, _mt: &MainThread) -> Vec<PlaneCompletion> { self.mailbox.drain() }
 }
+
+/// One exported-window verb [`ScriptedWindowSink`] was asked for, in the order it was asked.
+/// `Place` carries the source size and the whole destination rectangle `(x, y, w, h)`.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WindowCall {
+    Create,
+    Place { src: (c_int, c_int), dst: (c_int, c_int, c_int, c_int) },
+    Destroy,
+}
+
+/// A display sink in `VP_EXPORTED` mode for tests of a backend that owns an exported window (webOS
+/// 5+): it hands out one window id, answers every placement with `place_rv`, and records each
+/// window verb in `calls`. Every other verb is refused as `NoSink` does.
+#[cfg(any(test, feature = "test-support"))]
+pub struct ScriptedWindowSink {
+    /// What `place_window` answers.
+    pub place_rv: c_int,
+    /// Every window verb called, in order.
+    pub calls: std::sync::Mutex<Vec<WindowCall>>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl ScriptedWindowSink {
+    pub fn new(place_rv: c_int) -> Self { Self { place_rv, calls: std::sync::Mutex::new(Vec::new()) } }
+    /// The window verbs called so far, in order.
+    pub fn calls(&self) -> Vec<WindowCall> { self.calls.lock().unwrap().clone() }
+    /// How many times a window was destroyed.
+    pub fn destroys(&self) -> usize { self.calls().iter().filter(|call| **call == WindowCall::Destroy).count() }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl DisplaySink for ScriptedWindowSink {
+    refuse_dev_plane_verbs!();
+    refuse_plane_verbs!();
+    refuse_plane_unload!();
+    fn window_mode(&self) -> c_int { VP_EXPORTED }
+    fn window_id(&self) -> &'static CStr { c"scripted-window" }
+    unsafe fn create_window(&self, _mt: &MainThread) -> *const c_char {
+        self.calls.lock().unwrap().push(WindowCall::Create);
+        c"scripted-window".as_ptr()
+    }
+    unsafe fn place_window(&self, _mt: &MainThread, src_w: c_int, src_h: c_int, dst_x: c_int,
+        dst_y: c_int, dst_w: c_int, dst_h: c_int) -> c_int {
+        self.calls.lock().unwrap().push(WindowCall::Place {
+            src: (src_w, src_h), dst: (dst_x, dst_y, dst_w, dst_h) });
+        self.place_rv
+    }
+    unsafe fn destroy_window(&self, _mt: &MainThread) { self.calls.lock().unwrap().push(WindowCall::Destroy); }
+    unsafe fn plane_create(&self, _mt: &MainThread, _app_id: *const c_char, _player_type: c_int) -> c_long { 0 }
+}

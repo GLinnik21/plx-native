@@ -3,8 +3,8 @@
 //! Settings > Libraries > Under posters: a Title switch (default Off) and, per kind of title, a SET
 //! of detail parts ([`DetailParts`]: year, length, seasons, genre, video quality, age rating, score;
 //! at most four, shown in a fixed order and joined with " · "). Only the FOCUSED row opens its band: 80 px for one line, 112 px for two,
-//! nothing when the policy shows nothing; non-focused rows keep their 40 px spacing. (The Continue Watching
-//! deck is one shelf handed a different policy: its progress line is always shown, so under Nothing
+//! nothing when the policy shows nothing; non-focused rows keep their 40 px spacing. (Recommended's Continue Watching
+//! poster deck is one shelf handed a different policy: its progress line is always shown, so under Nothing
 //! it is handed `registry::captions::deck_policy` and keeps its one line; the Watchlist is the other:
 //! its tiles' own status words show with no part ticked, so its band is reserved by
 //! `registry::captions::status_policy` and opens 80 px under an empty set.)

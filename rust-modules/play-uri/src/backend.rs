@@ -17,6 +17,7 @@ use plx_playback_contract::{AttemptId, BackendEvent, BackendKind, Capabilities, 
     Failure, Observation, Observed, Operation, Playback, ReleaseStatus, SourceKey, SourceKind,
     TrackChoice, TrackKind, TrackSelection, UriDriver};
 use std::collections::{BTreeMap, VecDeque};
+use std::os::raw::c_int;
 
 /// A monotonic clock supplied by the runner. The ownership reducer only receives its value.
 pub trait MonotonicClock { fn now_ms(&self) -> u64; }
@@ -31,17 +32,70 @@ pub trait MonotonicClock { fn now_ms(&self) -> u64; }
 /// `uri-trace:` stream (`uri_trace`).
 pub use plx_playback_contract::uri::Binding;
 
-/// The display path composition chooses for the executor: the ACB plane when the display is in ACB
-/// mode and the same gate the executor re-checks at every Start holds (a handle the library
-/// confirmed initialized, player type 0 (the URI engine's own boot handle); `connectDass` is a developer arm and is not asked for);
-/// otherwise nothing: the exported window is not selected here because no source is certified for
-/// it either. `plane` and `initialized` are the URI engine's own handle's (player type 0, the plane
-/// owner's `facts_of(PlaneHandle::Uri)` and `initialized(PlaneHandle::Uri)`), never Feed's: a normal
-/// boot initializes Feed's handle as player type 10 and the URI engine's as 0.
-pub fn product_binding(display_mode: i32, plane: plx_platform::tv::plane::PlaneFacts, initialized: bool) -> Binding {
+/// The display path composition chooses for the executor, a pure function of what the set and the
+/// boot report:
+///
+///   - the ACB plane when the display is in ACB mode and the same gate the executor re-checks at
+///     every Start holds (a handle the library confirmed initialized, player type 0 (the URI
+///     engine's own boot handle); `connectDass` is a developer arm and is not asked for);
+///   - the exported window ([`Binding::Exported`] on [`EXPORTED_CANVAS`]) when the display is in
+///     `VP_EXPORTED` mode and `firmware_major` is one the table `strata` lists. Production passes
+///     [`EXPORTED_STRATA`], whose doc comment is the evidence rule for an entry; the table is a
+///     parameter (never a `cfg(test)` constant) so a test passes its own. A major of 0, the
+///     unknown answer, is never admitted, whatever the table lists, and nothing is inferred from a
+///     neighbouring major;
+///   - otherwise nothing: a webOS 5+ release without an entry plays Standard.
+///
+/// `plane` and `initialized` are the URI engine's own handle's (player type 0, the plane owner's
+/// `facts_of(PlaneHandle::Uri)` and `initialized(PlaneHandle::Uri)`), never Feed's: a normal boot
+/// initializes Feed's handle as player type 10 and the URI engine's as 0. A 5+ set has no ACB
+/// handle, so the exported window's answer does not read them.
+pub fn product_binding(display_mode: i32, plane: plx_platform::tv::plane::PlaneFacts, initialized: bool,
+    firmware_major: u32, strata: &[u32]) -> Binding {
     let gate = crate::acb_bind::gate(false, display_mode, plane.handle, plane.player_type, false, initialized);
-    if gate.ready { Binding::Acb } else { Binding::Unbound }
+    if gate.ready {
+        Binding::Acb
+    } else if display_mode == VP_EXPORTED && firmware_major != 0 && strata.contains(&firmware_major) {
+        Binding::Exported { canvas: EXPORTED_CANVAS }
+    } else {
+        Binding::Unbound
+    }
 }
+
+/// The firmware majors on which the product backend selects the exported window
+/// ([`product_binding`]): the only way production ever composes [`Binding::Exported`]. An entry is
+/// a webOS firmware major as `device::info().major` reports it (5 for 5.x, 11 for 11.x). The table
+/// is empty, so every webOS 5+ release plays Standard until a major earns an entry (a webOS 4.x set
+/// takes the ACB plane, which this table does not touch).
+///
+/// A major is admitted only with all three parts of the evidence in `docs/uri-mode.md`'s Results
+/// table, each recorded there with the tester log's decisive lines. A release is never admitted on
+/// the developer probe's evidence alone: a run of the product backend is required.
+///
+///   - (a) decompile: that major's own firmware image reads `option.windowId` at load
+///     (`parseLoadMessage`);
+///   - (b) picture: a tester's PRODUCT-path run on a debug build (the boot log shows
+///     `evidence=override`) shows a moving picture with sound, placed and proportioned right,
+///     supported by the probe's summary tokens `load=ok`, `playing=yes`,
+///     `currentTime_advanced=yes` and `window=exported`;
+///   - (c) controls: the probe's `drive` tokens (`pause=froze`, `resume=sent` with `resume_from=`
+///     at or after the paused position minus 1000 ms, `seek=hit`, and `audio=ok` or an
+///     `audio_at_load=`) AND the product run's pause, seek and audio doing what the viewer asked.
+///
+/// One exception: a major with (a) but no tester run is admitted when BOTH neighbouring majors
+/// (`major - 1` and `major + 1`) are already admitted on tester evidence, and its own image shows
+/// the same `windowId` path. Its Results row then says "bracketed, no tester run". One admitted
+/// neighbour is not a bracket, and a major with no image to read has no (a).
+///
+/// Each entry carries a comment naming its Results row. `0` is never an entry: it is the unknown
+/// answer.
+pub const EXPORTED_STRATA: &[u32] = &[];
+
+/// The canvas the exported window is placed over: the destination of EVERY placement, the whole
+/// 1920x1080 canvas, as Feed (`feed_pump`) and the developer probe (`uriprobe_drive`) place it. Only
+/// the SOURCE rectangle varies: the canvas at the start, then the coded size the service reports in
+/// `videoInfo`.
+pub const EXPORTED_CANVAS: (c_int, c_int) = (1_920, 1_080);
 
 /// No firmware capability is inferred from the display mode or transport response.
 pub struct Config {
@@ -89,6 +143,9 @@ pub struct UriBackend {
     audio_current: Option<i64>,
     window: bool,
     window_id: Option<String>,
+    /// The coded size the window was last re-placed for (`videoInfo`): the same size is not placed
+    /// twice. `None` until the service reports one, so the start's canvas placement is not it.
+    window_coded: Option<(u32, u32)>,
     start_deadline_ms: Option<u64>,
     loaded: bool,
     play_sent: bool,
@@ -131,7 +188,7 @@ impl UriBackend {
             "URI transport has no confirmed track-disable operation");
         Self { config, lifecycle: Lifecycle::new(), staged: None, active: None,
             last_started: None, url: None, tracks: Vec::new(), audio_current: None,
-            window: false, window_id: None,
+            window: false, window_id: None, window_coded: None,
             start_deadline_ms: None, loaded: false, play_sent: false, played_once: false,
             subscribed: false,
             dispatching: None, controls: BTreeMap::new(),
@@ -245,7 +302,8 @@ impl UriBackend {
                     return self.refuse_before_open(attempt, Failure::Backend);
                 };
                 self.window = true;
-                session_io::place_exported_window(self.config.display, mt, canvas, canvas);
+                self.window_coded = None;
+                self.place_window(mt, canvas, canvas);
                 Some(id)
             }
             // 4.x ignores the window option; the service wants the key present (measured sequence).
@@ -322,6 +380,28 @@ impl UriBackend {
         self.reopen = Some(next);
         self.feed(LifeEvent::Close { now_ms, allowance_ms: self.config.release_allowance_ms }, mt, now_ms);
         true
+    }
+
+    /// Place the exported window with `source` as the SOURCE rectangle over the whole `canvas` (the
+    /// destination is always the canvas, as Feed and the probe place it), and log it: the source
+    /// and the seam's answer, never a window id.
+    fn place_window(&self, mt: &MainThread, source: (c_int, c_int), canvas: (c_int, c_int)) {
+        let rv = session_io::place_exported_window(self.config.display, mt, source, canvas);
+        plx_base::eventlog::log(&format!("uri: exported window placed src={}x{} rv={rv}", source.0, source.1));
+    }
+
+    /// The service reported the coded size of the picture (`videoInfo` with a width and a height):
+    /// re-place the window with it as the source rectangle, as the probe does, so a source that is
+    /// not 1920x1080 is not stretched from the canvas. Only a live exported window is placed, and the
+    /// same size is not placed twice. A closing or quarantined attempt is never delivered a reply, so
+    /// no placement follows a release request, and none follows the destroy.
+    fn replace_window(&mut self, dims: Option<(u32, u32)>, mt: &MainThread) {
+        let (Binding::Exported { canvas }, true, Some(coded)) = (self.config.binding, self.window, dims)
+            else { return };
+        if self.window_coded == Some(coded) { return; }
+        let (Ok(width), Ok(height)) = (c_int::try_from(coded.0), c_int::try_from(coded.1)) else { return };
+        self.window_coded = Some(coded);
+        self.place_window(mt, (width, height), canvas);
     }
 
     /// A Seek has been dispatched and has not landed (or timed out).
@@ -583,6 +663,10 @@ impl UriBackend {
                     None
                 }
                 Ev::TrackSelected => None,
+                Ev::VideoInfo => {
+                    self.replace_window(message.dims, mt);
+                    None
+                }
                 _ => None,
             };
             if let Some(value) = playback {
@@ -762,6 +846,7 @@ impl UriBackend {
                         if self.window { session_io::destroy_exported_window(self.config.display, mt); }
                         self.window = false;
                         self.window_id = None;
+                        self.window_coded = None;
                         self.active = None;
                         self.url = None;
                         self.acb_source = None;
@@ -987,18 +1072,47 @@ mod tests {
     #[test]
     fn composition_selects_the_acb_plane_only_when_the_gate_holds() {
         use plx_platform::tv::plane::PlaneFacts;
-        use plx_platform::tv::sink::{VP_ACB, VP_EXPORTED, VP_NONE};
+        use plx_platform::tv::sink::{VP_ACB, VP_NONE};
         let facts = PlaneFacts { handle: true, player_type: 0 };
-        assert_eq!(product_binding(VP_ACB, facts, true), Binding::Acb);
-        assert_eq!(product_binding(VP_ACB, facts, false), Binding::Unbound, "a created handle is not an initialized one");
-        assert_eq!(product_binding(VP_ACB, PlaneFacts { handle: true, player_type: 10 }, true), Binding::Unbound);
-        assert_eq!(product_binding(VP_ACB, PlaneFacts::ABSENT, true), Binding::Unbound);
-        assert_eq!(product_binding(VP_EXPORTED, facts, true), Binding::Unbound);
-        assert_eq!(product_binding(VP_NONE, facts, true), Binding::Unbound);
+        // The exported-window table has no say on an ACB display: not even a listed major changes
+        // the ACB answer, and a failed gate stays Unbound rather than falling to the exported window.
+        for (major, strata) in [(0, &[][..]), (4, &[][..]), (11, &[11][..]), (11, &[][..])] {
+            let at = |mode, plane, initialized| product_binding(mode, plane, initialized, major, strata);
+            assert_eq!(at(VP_ACB, facts, true), Binding::Acb, "major {major}");
+            assert_eq!(at(VP_ACB, facts, false), Binding::Unbound, "a created handle is not an initialized one");
+            assert_eq!(at(VP_ACB, PlaneFacts { handle: true, player_type: 10 }, true), Binding::Unbound);
+            assert_eq!(at(VP_ACB, PlaneFacts::ABSENT, true), Binding::Unbound);
+            assert_eq!(at(VP_NONE, facts, true), Binding::Unbound);
+        }
+    }
+
+    /// The exported window is selected per firmware major, from the table the caller passes
+    /// (production's is `EXPORTED_STRATA`; a test passes its own, so no table forks the build).
+    #[test]
+    fn the_exported_window_is_selected_only_for_a_listed_firmware_major() {
+        use plx_platform::tv::plane::PlaneFacts;
+        use plx_platform::tv::sink::{VP_ACB, VP_NONE};
+        let exported = Binding::Exported { canvas: EXPORTED_CANVAS };
+        assert_eq!(EXPORTED_CANVAS, (1_920, 1_080));
+        // A 5+ set has no ACB handle; a handle that exists must not change the answer either.
+        for plane in [PlaneFacts::ABSENT, PlaneFacts { handle: true, player_type: 0 }] {
+            for initialized in [false, true] {
+                let at = |mode, major, strata: &[u32]| product_binding(mode, plane, initialized, major, strata);
+                assert_eq!(at(VP_EXPORTED, 11, &[11]), exported, "a listed major");
+                assert_eq!(at(VP_EXPORTED, 5, &[5, 11]), exported, "one of several");
+                assert_eq!(at(VP_EXPORTED, 10, &[11]), Binding::Unbound, "an unlisted major");
+                assert_eq!(at(VP_EXPORTED, 12, &[11]), Binding::Unbound, "nothing is inferred from a neighbour");
+                assert_eq!(at(VP_EXPORTED, 0, &[11]), Binding::Unbound, "unknown firmware");
+                assert_eq!(at(VP_EXPORTED, 0, &[0, 11]), Binding::Unbound, "0 is never admitted, even if listed");
+                assert_eq!(at(VP_EXPORTED, 11, &[]), Binding::Unbound, "an empty table admits nothing");
+                assert_eq!(at(VP_NONE, 11, &[11]), Binding::Unbound, "no window path to bind");
+                assert_ne!(at(VP_ACB, 11, &[11]), exported, "the table is for the exported window only");
+            }
+        }
     }
 
     use super::*;
-    use plx_platform::tv::sink::{NoSink, PlaneUnload, ScriptedPlaneSink};
+    use plx_platform::tv::sink::{NoSink, PlaneUnload, ScriptedPlaneSink, ScriptedWindowSink, WindowCall};
     use plx_platform::tv::uri::{CloseStatus, RequestId, SessionId, UriPoll, UriReply};
     use plx_playback_contract::{BackendState, Event as ContractEvent, Fidelity,
         Fx as ContractFx, InitialPlayback, Intent, Requirements, SourceKind, StopReason};
@@ -2484,5 +2598,109 @@ mod tests {
         assert!(!sink.calls().iter().any(|call| call == "plane_pause" || call == "plane_resume"), "{:?}", sink.calls());
         for t in [200, 400, 600, 900] { rig.at(t); rig.driver.poll(&rig.mt); }
         assert_eq!(sink.calls().last().map(String::as_str), Some("plane_pause"), "{:?}", sink.calls());
+    }
+
+    // ---- the exported window (webOS 5+): placed as Feed and the probe place it ----
+
+    /// The full canvas, as the tests spell it: the destination of every placement.
+    const FULL: (std::os::raw::c_int, std::os::raw::c_int) = (1920, 1080);
+    /// A placement with `src` as the source rectangle over the whole canvas.
+    fn placed(src: (std::os::raw::c_int, std::os::raw::c_int)) -> WindowCall {
+        WindowCall::Place { src, dst: (0, 0, FULL.0, FULL.1) }
+    }
+    /// The captured `videoInfo` with another coded size.
+    fn video_info_of(width: u32, height: u32) -> String {
+        CAPTURED_VIDEO_INFO.replace(r#""width":1280,"height":720"#, &format!(r#""width":{width},"height":{height}"#))
+    }
+
+    impl Rig {
+        /// An exported-window backend (`Binding::Exported` on the full canvas, the display in
+        /// `VP_EXPORTED`) over a sink that records every window verb and accepts every placement.
+        fn exported() -> (Self, &'static ScriptedWindowSink) {
+            let sink: &'static ScriptedWindowSink = Box::leak(Box::new(ScriptedWindowSink::new(1)));
+            let plane = Box::leak(Box::new(plx_platform::tv::plane::PlaneOwner::new()));
+            (Self::with(Binding::Exported { canvas: FULL }, sink, plane), sink)
+        }
+    }
+
+    #[test]
+    fn an_exported_start_creates_one_window_and_places_the_canvas_as_its_source() {
+        let (mut rig, sink) = Rig::exported();
+        rig.opened();
+        assert_eq!(sink.calls(), [WindowCall::Create, placed(FULL)]);
+        let load = rig.bus.0.lock().unwrap().calls.iter().find(|(method, _, _)| *method == "load")
+            .map(|(_, _, payload)| payload.clone()).expect("the load was sent");
+        assert!(load.contains("scripted-window"), "the window id rides the load: {load}");
+    }
+
+    #[test]
+    fn a_video_info_re_places_the_window_with_the_coded_size_and_the_destination_stays_the_canvas() {
+        plx_base::eventlog::with_private_log(|| {
+            let (mut rig, sink) = Rig::exported();
+            rig.opened();
+            rig.subscription_says(CAPTURED_VIDEO_INFO);
+            assert_eq!(sink.calls(), [WindowCall::Create, placed(FULL), placed((1280, 720))]);
+            // A coded size that did not change places nothing again; a new one places again.
+            rig.subscription_says(CAPTURED_VIDEO_INFO);
+            assert_eq!(sink.calls().len(), 3, "the same coded size is not placed twice");
+            rig.subscription_says(&video_info_of(3840, 2160));
+            assert_eq!(sink.calls(), [WindowCall::Create, placed(FULL), placed((1280, 720)), placed((3840, 2160))]);
+            let log = std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default();
+            assert!(log.contains("uri: exported window placed src=1920x1080 rv=1"), "{log}");
+            assert!(log.contains("uri: exported window placed src=1280x720 rv=1"), "{log}");
+            assert!(log.contains("uri: exported window placed src=3840x2160 rv=1"), "{log}");
+        });
+    }
+
+    #[test]
+    fn a_video_info_with_no_size_places_nothing() {
+        let (mut rig, sink) = Rig::exported();
+        rig.opened();
+        for info in [r#"{"videoInfo":{"frameRate":24,"mediaId":"m1"}}"#,
+            r#"{"videoInfo":{"width":0,"height":720,"mediaId":"m1"}}"#,
+            r#"{"videoInfo":{"width":1280,"mediaId":"m1"}}"#] {
+            rig.subscription_says(info);
+        }
+        assert_eq!(sink.calls(), [WindowCall::Create, placed(FULL)]);
+    }
+
+    #[test]
+    fn the_window_is_never_re_placed_while_it_closes_or_after_it_is_destroyed_and_is_destroyed_once() {
+        let (mut rig, sink) = Rig::exported();
+        rig.opened();
+        rig.subscription_says(CAPTURED_VIDEO_INFO);
+        assert_eq!(sink.calls(), [WindowCall::Create, placed(FULL), placed((1280, 720))]);
+        let before = sink.calls();
+        rig.bus.0.lock().unwrap().hold = true;
+        assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command, Operation::Stop(StopReason::Stop)),
+            DispatchResult::Queued);
+        assert_eq!(rig.driver.poll(&rig.mt), [DriverEvent::Release { attempt: A, status: ReleaseStatus::Closing }]);
+        rig.subscription_says(&video_info_of(3840, 2160));
+        assert_eq!(sink.calls(), before, "no placement while the close runs");
+        // The close is not confirmed in time: quarantined, the window still held and never destroyed.
+        rig.at(101);
+        assert!(rig.driver.poll(&rig.mt).contains(&DriverEvent::Release { attempt: A,
+            status: ReleaseStatus::Quarantined }));
+        rig.subscription_says(&video_info_of(3840, 2160));
+        assert_eq!(sink.calls(), before, "no placement while quarantined");
+        assert_eq!(sink.destroys(), 0, "a quarantined window is not destroyed");
+        // The release the hub confirms late destroys it, exactly once.
+        rig.bus.0.lock().unwrap().close = CloseStatus::Released;
+        assert!(rig.driver.poll(&rig.mt).contains(&DriverEvent::Release { attempt: A,
+            status: ReleaseStatus::Released }));
+        assert_eq!(sink.destroys(), 1);
+        rig.subscription_says(&video_info_of(3840, 2160));
+        rig.driver.poll(&rig.mt);
+        assert_eq!(sink.calls(), [before, vec![WindowCall::Destroy]].concat(), "nothing after the destroy");
+    }
+
+    #[test]
+    fn only_the_exported_binding_creates_or_places_a_window() {
+        let sink: &'static ScriptedWindowSink = Box::leak(Box::new(ScriptedWindowSink::new(1)));
+        let plane = Box::leak(Box::new(plx_platform::tv::plane::PlaneOwner::new()));
+        let mut rig = Rig::with(Binding::Unbound, sink, plane);
+        rig.opened();
+        rig.subscription_says(CAPTURED_VIDEO_INFO);
+        assert!(sink.calls().is_empty(), "{:?}", sink.calls());
     }
 }
