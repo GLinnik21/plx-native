@@ -1793,7 +1793,19 @@ pub fn keyline_chip(p: Painter, x: f32, cy: f32, text: &str, col: [f32; 4], meas
 
 /// The identity band shared by both full-bleed heroes. The text run yields room to the
 /// outlined resolution/accessibility chips, and overlong metadata elides within its column.
+/// Returns the width drawn, from `r.x` to the last chip's edge.
 pub fn hero_identity(p: Painter, r: Rect, parts: &[&str], resolution: Option<&str>, chips: &[&str], measure: &dyn plx_machine::machine::Measure) -> f32 {
+    identity_row(Some(p), r, parts, resolution, chips, measure)
+}
+
+/// The width [`hero_identity`] draws in `r`, asking the same measurements and drawing nothing: the
+/// extent the hero shade stands behind ([`crate::hero_shade::HeroShade::add_ink`]).
+pub fn hero_identity_w(r: Rect, parts: &[&str], resolution: Option<&str>, chips: &[&str], measure: &dyn plx_machine::machine::Measure) -> f32 {
+    identity_row(None, r, parts, resolution, chips, measure)
+}
+
+/// The one layout of the identity band, painted with `paint` or only measured without it.
+fn identity_row(paint: Option<Painter>, r: Rect, parts: &[&str], resolution: Option<&str>, chips: &[&str], measure: &dyn plx_machine::machine::Measure) -> f32 {
     use crate::hstack::{Flow, Item};
     let labels: Vec<&str> = resolution.into_iter().chain(chips.iter().copied()).collect();
     let widths: Vec<Item> = labels.iter().map(|s| Item::new(keyline_chip_w(s, measure))).collect();
@@ -1807,15 +1819,22 @@ pub fn hero_identity(p: Painter, r: Rect, parts: &[&str], resolution: Option<&st
         let joined = parts.iter().filter(|s| !s.is_empty()).copied().collect::<Vec<_>>().join(" \u{b7} ");
         let elided = plx_gfx::text::elide_by(&joined, budget, false,
             |text| measure.width_str(text, theme::hero::IDENTITY_SIZE, false));
-        if let Ok(text) = CString::new(elided.as_str()) {
+        if let (Some(p), Ok(text)) = (paint, CString::new(elided.as_str())) {
             p.text(text.as_ptr(), r.x, y, theme::hero::IDENTITY_SIZE, theme::TEXT_SECONDARY, 0, 0);
         }
         measure.width_str(&elided, theme::hero::IDENTITY_SIZE, false)
-    } else { run.draw(p, parts, r.x, y) };
+    } else if let Some(p) = paint {
+        run.draw(p, parts, r.x, y)
+    } else {
+        natural
+    };
     let mut flow = Flow::new(r.x, theme::space::XS);
     flow.push(if text_w > 0.0 { Item::new(text_w).after(theme::space::SM) } else { Item::absent() });
     for label in labels {
-        flow.place(|x| Item::new(keyline_chip(p, x, cy, label, theme::TEXT_SECONDARY, measure)));
+        flow.place(|x| Item::new(match paint {
+            Some(p) => keyline_chip(p, x, cy, label, theme::TEXT_SECONDARY, measure),
+            None => keyline_chip_w(label, measure),
+        }));
     }
     flow.end() - r.x
 }
@@ -1826,11 +1845,15 @@ fn pdf_proposal_identity_uses_regular_caption_for_fitting_and_elided_metadata() 
     let measure = crate::fixture::FixtureMeasure;
     for (width, parts) in [(943.0, vec!["Movie", "Drama", "PG"]),
         (260.0, vec!["An exceptionally long edition name that must be elided", "Movie", "Drama", "PG"])] {
+        let r = Rect::new(96.0, 582.0, width, BADGE_H);
+        let mut drawn = 0.0;
         let runs = crate::draw_census::capture_runs(|| {
-            hero_identity(Painter::recording(), Rect::new(96.0, 582.0, width, BADGE_H),
-                &parts, Some("4K"), &["CC"], &measure);
+            drawn = hero_identity(Painter::recording(), r, &parts, Some("4K"), &["CC"], &measure);
         });
         assert!(!runs.is_empty());
+        assert!(drawn > 0.0);
+        assert_eq!(hero_identity_w(r, &parts, Some("4K"), &["CC"], &measure), drawn,
+            "the measured-only width is the width the draw gives, elided or not");
         for run in runs {
             assert_eq!(run.size, theme::size::CAPTION, "PDF identity is 24 px, including {:?}", run.text);
             assert!(!run.bold, "PDF metadata and chips use regular weight");
@@ -1840,7 +1863,19 @@ fn pdf_proposal_identity_uses_regular_caption_for_fitting_and_elided_metadata() 
 
 /// The year/episode date and length/remaining-time band, with source attribution last.
 /// Resuming time is primary ink; the surrounding facts remain secondary. Every run is bounded.
-pub fn hero_facts(p: Painter, r: Rect, date: &str, length: &str, resumes: bool, source: &str, measure: &dyn plx_machine::machine::Measure) {
+/// Returns the width drawn, from `r.x` to the last run's edge.
+pub fn hero_facts(p: Painter, r: Rect, date: &str, length: &str, resumes: bool, source: &str, measure: &dyn plx_machine::machine::Measure) -> f32 {
+    facts_row(Some(p), r, date, length, resumes, source, measure)
+}
+
+/// The width [`hero_facts`] draws in `r`, asking the same measurements and drawing nothing: the
+/// extent the hero shade stands behind ([`crate::hero_shade::HeroShade::add_ink`]).
+pub fn hero_facts_w(r: Rect, date: &str, length: &str, resumes: bool, source: &str, measure: &dyn plx_machine::machine::Measure) -> f32 {
+    facts_row(None, r, date, length, resumes, source, measure)
+}
+
+/// The one layout of the facts band, painted with `paint` or only measured without it.
+fn facts_row(paint: Option<Painter>, r: Rect, date: &str, length: &str, resumes: bool, source: &str, measure: &dyn plx_machine::machine::Measure) -> f32 {
     use crate::hstack::{Flow, Item};
     let cy = r.y + r.h * 0.5;
     let y = plx_gfx::text::text_vcenter_y(theme::size::CAPTION, 0, cy);
@@ -1854,18 +1889,27 @@ pub fn hero_facts(p: Painter, r: Rect, date: &str, length: &str, resumes: bool, 
         let text = plx_gfx::text::elide_by(text, budget, false, |s| measure.width_str(s, theme::size::CAPTION, false));
         let run = DottedRun::new(theme::size::CAPTION, ink, theme::space::SM).measured(measure);
         let run = if any { run.lead_dot() } else { run };
-        flow.place(|x| Item::new(run.draw(p, &[text.as_str()], x, y)));
+        flow.place(|x| Item::new(match paint {
+            Some(p) => run.draw(p, &[text.as_str()], x, y),
+            None => run.width(measure, &[text.as_str()]),
+        }));
         any = true;
     }
+    flow.end() - r.x
 }
 
 #[cfg(test)]
 #[test]
 fn pdf_proposal_facts_keep_air_on_both_sides_of_each_dot() {
     let m = crate::fixture::FixtureMeasure;
-    let runs = crate::draw_census::capture_runs(|| hero_facts(Painter::recording(),
-        Rect::new(96.0, 668.0, theme::hero::TEXT_W, theme::hero::FACTS_H),
-        "2024", "38 min left", true, "Shared by friend", &m));
+    let r = Rect::new(96.0, 668.0, theme::hero::TEXT_W, theme::hero::FACTS_H);
+    let mut drawn = 0.0;
+    let runs = crate::draw_census::capture_runs(|| {
+        drawn = hero_facts(Painter::recording(), r, "2024", "38 min left", true, "Shared by friend", &m);
+    });
+    assert!(drawn > 0.0);
+    assert_eq!(hero_facts_w(r, "2024", "38 min left", true, "Shared by friend", &m), drawn,
+        "the measured-only width is the width the draw gives");
     assert_eq!(runs.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
         ["2024", "·", "38 min left", "·", "Shared by friend"]);
     use plx_machine::machine::Measure;

@@ -78,7 +78,11 @@ darkness (`COPY_A`, `CONTROLS_A`). `HeroShade::at(x, y,
 strength)` is the closed form the legibility tests read, so the promise and the paint cannot come from
 two different curves; `gfx/scrim.rs`'s `GroundShade` evaluates the same numbers in the one-pass ground
 shader. The blocks come from the rects the screen draws THIS frame, so they move with the content: the
-logo that rises into the trailer corner carries its shade up with it.
+logo that rises into the trailer corner carries its shade up with it. Each block is as wide as the text
+drawn in it, not the column the text was laid into: a block of copy takes the widest of its lines'
+measured extents (`HeroShade::add_ink`, over `TextView::ink_span` and the rows' own measured widths), and
+a typed title is as wide as its widest line (`HeroLogo::painted`), so the shade reads as a darkening
+around the words and never as a slab of the art.
 
 - Home's text stack builds upward from `theme::hero::HOME_ACTIONS_Y` (668) in a column of `COL_W`
   (943), and the shade is all that stands behind it. The shelf under it has its own ramp, the

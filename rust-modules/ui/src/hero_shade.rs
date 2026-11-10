@@ -15,6 +15,12 @@
 //! hero that offers more rects than fit has the surplus folded into the last block (its box widened
 //! to hold both, the darker peak kept), which no screen in the tree reaches.
 //!
+//! **A block is as wide as the text drawn in it, not the column it is laid into.** A paragraph
+//! wrapped into 943 px that ends at 600 shades to 600 (plus the feather): the shade reads as a
+//! darkening around the words, never as a slab of the art. A block of copy takes its width from the
+//! measured extent of each line drawn there ([`HeroShade::add_ink`]); the typed title takes its own
+//! ([`HeroLogo::painted`](crate::hero_logo::HeroLogo::painted)).
+//!
 //! **How a screen uses it.** Build a [`HeroShade`] from this frame's content rects, each with the
 //! role it plays ([`Role`]) and its own alpha (a block fades with the content it stands behind, not
 //! with the hero as a whole), then hand [`HeroShade::scrim`] to `AmbientWash::draw_ground` at the
@@ -82,6 +88,21 @@ impl HeroShade {
             *last_peak = last_peak.max(peak);
         }
         self
+    }
+
+    /// Add the block behind copy drawn in the column `col` (the column as the page lays it out: its
+    /// top, its height and the room it wraps into), as wide as the copy actually is: `ink` is the
+    /// `(left, right)` x-extent of each line drawn there, the measured text extents
+    /// ([`TextView::ink_span`](crate::text_view::TextView::ink_span), a measured run's width), never
+    /// the column's own width. A column wider than its widest line (a paragraph wrapped into 943 px
+    /// that ends at 600) would otherwise darken the art past the last letter and read as a slab, not a
+    /// shade around the text. The block spans the widest of the lines, in the same screen coordinates
+    /// as `col`, and is held inside the column; with no ink at all (nothing drawn) it adds nothing.
+    pub fn add_ink(self, col: Rect, ink: impl IntoIterator<Item = (f32, f32)>, role: Role, alpha: f32) -> Self {
+        let span = ink.into_iter().filter(|&(l, r)| r > l).reduce(|(l0, r0), (l, r)| (l0.min(l), r0.max(r)));
+        let Some((left, right)) = span else { return self };
+        let (left, right) = (left.max(col.x), right.min(col.x + col.w));
+        self.add(Rect::new(left, col.y, right - left, col.h), role, alpha)
     }
 
     /// The live blocks' content rects with their peaks, in the order they were added.

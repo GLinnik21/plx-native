@@ -20,6 +20,24 @@ fn home_like() -> HeroShade {
         .add(Rect::new(MARGIN_X + 460.0, 668.0, 215.0, 60.0), Role::Controls, 1.0)
 }
 
+/// **A copy block is as wide as the widest line drawn in its column, not as wide as the column**: a
+/// 943 px column holding lines that end at 300, 720 and 410 shades to 720 and is bare art a feather
+/// past it; a line wider than the column is held inside it, and nothing drawn adds nothing.
+#[test]
+fn a_copy_block_stands_behind_the_widest_line_and_not_the_column() {
+    let column = Rect::new(MARGIN_X, 500.0, 943.0, 120.0);
+    let at = |w: f32| (MARGIN_X, MARGIN_X + w);
+    let shade = HeroShade::new().add_ink(column, [at(300.0), at(720.0), at(410.0)], Role::Copy, 1.0);
+    assert_eq!(shade.blocks(), [(Rect::new(MARGIN_X, 500.0, 720.0, 120.0), t::COPY_A)]);
+    let ink_foot = MARGIN_X + 720.0;
+    assert!(shade.at(ink_foot, 560.0, 1.0) >= t::COPY_A - 1e-4, "the last letter stands on the full darkness");
+    assert_eq!(shade.at(ink_foot + t::PAD + t::FEATHER + 4.0, 560.0, 1.0), 0.0, "past the feather is bare art, not a slab");
+    let held = HeroShade::new().add_ink(column, [(0.0, 5000.0)], Role::Copy, 1.0);
+    assert_eq!(held.blocks()[0].0, column, "a line cannot widen its column's block");
+    assert!(HeroShade::new().add_ink(column, [], Role::Copy, 1.0).blocks().is_empty(), "nothing drawn, nothing shaded");
+    assert!(HeroShade::new().add_ink(column, [at(0.0)], Role::Copy, 1.0).blocks().is_empty(), "an empty line is not ink");
+}
+
 /// **A block holds its role's darkness behind its content and feathers to exactly nothing**
 /// [`theme::shade::FEATHER`] px beyond the box ([`theme::shade::PAD`] past the content).
 #[test]

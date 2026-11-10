@@ -37,12 +37,15 @@ fn detail_worst(
     worst
 }
 
-/// The blocks Detail's hero shade is built from, in the SAME shapes `DetailScreen::hero_shade` feeds
-/// (`screens/src/detail/mod.rs`): the title's band at its resting spot, the identity / ratings /
+/// The blocks Detail's hero shade is built from, at their WIDEST (`DetailScreen::hero_shade` in
+/// `screens/src/detail/mod.rs`): the title's band at its resting spot, the identity / ratings /
 /// synopsis column from `meta_y` down to the facts line, the facts line, the credits column
-/// (conservatively, at its tallest) and the action row. The positions are read from
+/// (conservatively, at its tallest) and the action row, each as wide as the box its content is laid
+/// into. The screen's own blocks are as wide as the widest line drawn in each box (`add_ink`), so they
+/// are never wider than these and stand exactly behind the text; grading the text at the widest it can
+/// stand, in the widest box, is the contract's worst case. The positions are read from
 /// `detail_layout::hero_chain`, so a layout change updates the contract rather than invalidating it;
-/// that Detail's screen builds exactly these rects is held where the screen is
+/// that Detail's screen builds blocks of exactly the drawn width is held where the screen is
 /// (`detail::tests::the_detail_hero_shade_stands_behind_its_own_content`).
 fn detail_shade(hc: &crate::detail_layout::HeroChain) -> crate::hero_shade::HeroShade {
     use crate::consts::{MARGIN_X, SCR_W};
