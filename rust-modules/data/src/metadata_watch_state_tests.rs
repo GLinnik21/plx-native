@@ -465,7 +465,7 @@ fn the_playing_item_cache_is_not_trusted_once_the_item_has_played() {
     // a fresh landing of the played item is a fresh read
     set_current_for_test(test_state(), Some(page(vec![embedded.clone()])));
     install_playing(test_state(), cached_playing(test_state(), SRV_A, "42"));
-    assert!(install_landed_detail(test_state(), test_adapter(), Some(page(vec![embedded]))));
+    assert!(install_landed_detail(test_state(), test_adapter(), Some(page(vec![embedded])), &plx_plex::plex::ClientKeys::default(), false));
     assert!(cached_playing(test_state(), SRV_A, "42").is_some(), "read after the playback: trusted again");
     clear(test_state(), test_adapter());
 }
@@ -587,13 +587,13 @@ fn a_detail_read_in_flight_across_a_watched_edit_installs_with_it_made_again() {
     state.ledger.landed(older);
     assert!(run(&mut state, adapter, MetadataCmd::RequestDetail { sid, rk: "42".into() })); // the read goes out…
     let pressed = state.ledger.record(&at, crate::viewstate::ViewEdit::Watched(true)); // …then the press
-    assert!(install_landed_detail(&mut state, adapter, Some(fresh())));
+    assert!(install_landed_detail(&mut state, adapter, Some(fresh()), &plx_plex::plex::ClientKeys::default(), false));
     assert_eq!(tile_state(&state), Some((true, 0)));
 
     // a read requested after the press's write LANDED: the server has it, its answer stands
     state.ledger.landed(pressed);
     assert!(run(&mut state, adapter, MetadataCmd::RequestDetail { sid, rk: "42".into() }));
-    assert!(install_landed_detail(&mut state, adapter, Some(fresh())));
+    assert!(install_landed_detail(&mut state, adapter, Some(fresh()), &plx_plex::plex::ClientKeys::default(), false));
     assert_eq!(tile_state(&state), Some((false, 4)), "the server's answer stands");
 }
 
@@ -629,7 +629,7 @@ fn a_single_episode_flip_steps_the_season_count_and_the_re_read_overwrites_it_wi
     // the server says two of three are watched (one of them elsewhere), after the optimistic step
     set_watched_local(test_state(), &ep, true);
     assert_eq!(count(), 1);
-    assert!(install_landed_detail(test_state(), test_adapter(), Some(show(2))));
+    assert!(install_landed_detail(test_state(), test_adapter(), Some(show(2)), &plx_plex::plex::ClientKeys::default(), false));
     assert_eq!(count(), 2, "the re-read overwrites the optimistic count with the server's number");
     clear(test_state(), test_adapter());
 }

@@ -31,6 +31,10 @@
 //! [`rec_trigger`] / [`recplay_trigger`] below, for the same reason every other read in this crate
 //! goes through one door. The DIAG list itself stays in `dev.rs`.
 
+//! Metadata M4 is an intentional later exception to the historical PURE MOVE above: its source
+//! trigger is captured at Detail execution rather than first draw; its extracted stand-in host
+//! preserves the full TLS origin, resolve pin and connection facts during fallback registration.
+
 use crate::app::App;
 use crate::app::run::Frame;
 use plx_screens::registry::AppArg;
@@ -38,6 +42,9 @@ use plx_screens::registry::HomeCmd;
 use plx_machine::machine::{Key, Tick};
 use std::os::raw::c_int;
 
+mod metadata;
+#[allow(unused_imports)]
+pub(crate) use metadata::{metadata_alt_stand_in, metadata_source, metadata_source_scripted, with_metadata_source};
 pub(crate) mod bench;
 pub(crate) mod screenshot;
 #[cfg(feature = "devtriggers")]

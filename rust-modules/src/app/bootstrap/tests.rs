@@ -253,7 +253,7 @@ fn controlled_home_arms_the_detail_tracker_when_content_initial_is_present() {
     {
         let store = bridge.metadata_mut();
         let (state, adapter) = store.split_for_test();
-        plx_data::metadata::land_detail_for_test(state, adapter, sid, "show", gen,
+        plx_data::metadata::land_detail_for_test(&plx_plex::plex::ClientKeys::default(), true, state, adapter, sid, "show", gen,
             Some(plx_data::metadata::Detail { sid, rk: "show".into(), ..Default::default() }));
     }
     let results = plx_data::stores::tape::take_results();
