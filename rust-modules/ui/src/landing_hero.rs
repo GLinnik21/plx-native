@@ -21,15 +21,6 @@ pub const MID_WEIGHT: f32 = theme::hero::SCRIM_MID_A / theme::hero::SCRIM_FOOT_A
 /// and `screens::detail`'s `preview_plane_tests` pin them equal.
 pub const PREVIEW_FIELD: f32 = 1.35;
 
-/// Where [`hero_rows`]' ladder is pinned: Detail pins the foot of its title ([`HeroAnchor::TitleBottom`]);
-/// [`HeroAnchor::Actions`] grows the same rows up from an action row. Home no longer stacks these rows (it
-/// has [`home_rows`]), so only the tests build the second form.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum HeroAnchor {
-    Actions(f32),
-    TitleBottom(f32),
-}
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HeroStack {
     pub title: VSpan,
@@ -40,9 +31,11 @@ pub struct HeroStack {
     pub actions: VSpan,
 }
 
-/// Detail's measured ladder. Identity and ratings form a tight group; prose and facts get block
-/// air, and facts stand close to their action. Absent rows leave no phantom gap.
-pub fn hero_rows(title_h: f32, meta_h: f32, ratings_h: Option<f32>, synopsis_h: Option<f32>, anchor: HeroAnchor) -> HeroStack {
+/// Detail's measured ladder, pinned at the foot of its title (`title_bottom`) and growing down from
+/// there. Identity and ratings form a tight group; prose and facts get block air, and facts stand
+/// close to their action. Absent rows leave no phantom gap. Home does not stack these rows (it has
+/// [`home_rows`]).
+pub fn hero_rows(title_h: f32, meta_h: f32, ratings_h: Option<f32>, synopsis_h: Option<f32>, title_bottom: f32) -> HeroStack {
     let items = [
         Item::new(title_h),
         Item::new(meta_h).before(theme::space::SM),
@@ -53,11 +46,7 @@ pub fn hero_rows(title_h: f32, meta_h: f32, ratings_h: Option<f32>, synopsis_h: 
         Item::new(theme::hero::FACTS_H).before(if synopsis_h.is_some() { theme::space::MD } else { theme::space::LG }),
         Item::new(0.0).before(theme::space::MD),
     ];
-    let anchor = match anchor {
-        HeroAnchor::Actions(y) => Anchor::Bottom(y),
-        HeroAnchor::TitleBottom(y) => Anchor::Top(y - title_h),
-    };
-    let stack = VStack::new(&items, 0.0, anchor);
+    let stack = VStack::new(&items, 0.0, Anchor::Top(title_bottom - title_h));
     let span = |i| stack.span(i).map(|(y, h)| VSpan { i, y, h, box_y: y });
     HeroStack {
         title: span(0).unwrap(), meta: span(1).unwrap(), ratings: span(2),
@@ -226,22 +215,23 @@ pub fn base_scrim_a(y: f32, hero_a: f32) -> f32 {
 mod tests {
     use super::*;
 
-    /// The bottom-up form of the shared rows, from an action row at 716 (what Home's pre-CW-13 stack was).
+    /// Detail's ladder with no ratings row, the title's foot at 566.
     fn hero_stack(title_h: f32, meta_h: f32, synopsis_h: Option<f32>) -> HeroStack {
-        hero_rows(title_h, meta_h, None, synopsis_h, HeroAnchor::Actions(716.0))
+        hero_rows(title_h, meta_h, None, synopsis_h, 566.0)
     }
 
     #[test]
     fn the_hero_text_is_one_ladder_with_an_absent_synopsis() {
         let with = hero_stack(120.0, 34.0, Some(72.0));
-        assert_eq!(with.actions.y, 716.0);
-        assert_eq!(with.meta.y, 498.0);
-        assert_eq!(with.synopsis.unwrap().y, 572.0);
-        assert_eq!(with.facts.y, 668.0);
+        assert_eq!(with.title.y + with.title.h, 566.0);
+        assert_eq!(with.meta.y, 582.0);
+        assert_eq!(with.synopsis.unwrap().y, 656.0);
+        assert_eq!(with.facts.y, 752.0);
+        assert_eq!(with.actions.y, 800.0);
         let bare = hero_stack(120.0, 34.0, None);
         assert!(bare.synopsis.is_none());
-        assert_eq!(bare.facts.y, with.facts.y);
         assert_eq!(bare.facts.y - (bare.meta.y + bare.meta.h), theme::space::LG);
+        assert_eq!(with.facts.y - bare.facts.y, 72.0 + theme::space::MD, "the synopsis block and its air are all an absent one gives back");
     }
 
     /// The owner's v2 ladder, pixel for pixel: an episode's one-line label tops out at 602 with the
@@ -265,46 +255,29 @@ mod tests {
         assert_eq!(bare.title.y + bare.title.h, 638.0, "no block: the title stands the 30 above the actions");
     }
 
-    /// Detail is untouched by Home's ladder: its rows and its anchors are the ones the shared test
-    /// above pins, and Home's actions no longer stand where the shared ladder put them.
+    /// Detail is untouched by Home's ladder: its title stands at 446 over a 566 foot and its action
+    /// row at 838, nowhere near Home's.
     #[test]
     fn detail_ladder_is_not_home_ladder() {
-        let detail = hero_rows(120.0, 34.0, Some(30.0), Some(72.0), HeroAnchor::TitleBottom(566.0));
+        let detail = hero_rows(120.0, 34.0, Some(30.0), Some(72.0), 566.0);
         assert_eq!((detail.title.y, detail.actions.y), (446.0, 838.0));
-        assert_ne!(home_rows(120.0, Some(72.0)).actions.y, hero_stack(120.0, 34.0, Some(72.0)).actions.y);
-    }
-
-    #[test]
-    fn home_and_detail_share_rows_and_differ_only_in_the_anchor() {
-        let home = hero_rows(120.0, 34.0, Some(30.0), Some(72.0), HeroAnchor::Actions(716.0));
-        let detail = hero_rows(120.0, 34.0, Some(30.0), Some(72.0), HeroAnchor::TitleBottom(566.0));
-        let shift = detail.title.y - home.title.y;
-        for (a,b) in [(home.meta,detail.meta),(home.ratings.unwrap(),detail.ratings.unwrap()),(home.synopsis.unwrap(),detail.synopsis.unwrap()),(home.facts,detail.facts),(home.actions,detail.actions)] {
-            assert_eq!(b.y-a.y,shift);
-        }
+        assert_ne!(home_rows(120.0, Some(72.0)).actions.y, detail.actions.y);
     }
 
     #[test]
     fn pdf_synopsis_padding_preserves_the_facts_and_action_anchors() {
         for ratings in [None, Some(30.0)] {
-            for anchor in [HeroAnchor::Actions(716.0), HeroAnchor::TitleBottom(566.0)] {
-                let rows = hero_rows(120.0, 34.0, ratings, Some(72.0), anchor);
-                let previous = rows.ratings.unwrap_or(rows.meta);
-                let synopsis = rows.synopsis.unwrap();
-                assert_eq!(synopsis.y - (previous.y + previous.h), 40.0,
-                    "the proposal gives prose a full block gap above it");
-                assert_eq!(rows.facts.y - (synopsis.y + synopsis.h), 24.0,
-                    "the synopsis line boxes already include trailing leading");
-                assert_eq!(rows.actions.y - (rows.facts.y + rows.facts.h), 24.0);
-                match anchor {
-                    HeroAnchor::Actions(y) => assert_eq!(rows.actions.y, y),
-                    HeroAnchor::TitleBottom(y) => {
-                        assert_eq!(rows.title.y + rows.title.h, y);
-                        assert_eq!(rows.facts.y, if ratings.is_some() { 790.0 } else { 752.0 });
-                        assert_eq!(rows.actions.y, if ratings.is_some() { 838.0 } else { 800.0 });
-                    }
-                }
-            }
+            let rows = hero_rows(120.0, 34.0, ratings, Some(72.0), 566.0);
+            let previous = rows.ratings.unwrap_or(rows.meta);
+            let synopsis = rows.synopsis.unwrap();
+            assert_eq!(synopsis.y - (previous.y + previous.h), 40.0,
+                "the proposal gives prose a full block gap above it");
+            assert_eq!(rows.facts.y - (synopsis.y + synopsis.h), 24.0,
+                "the synopsis line boxes already include trailing leading");
+            assert_eq!(rows.actions.y - (rows.facts.y + rows.facts.h), 24.0);
+            assert_eq!(rows.title.y + rows.title.h, 566.0);
+            assert_eq!(rows.facts.y, if ratings.is_some() { 790.0 } else { 752.0 });
+            assert_eq!(rows.actions.y, if ratings.is_some() { 838.0 } else { 800.0 });
         }
     }
 }

@@ -1612,38 +1612,6 @@ impl Painter {
             self.c(theme::with_a(theme::CARD_SHADOW, sa)), band, self.c(scrim), f, dy,
         )
     }
-    /// THE HERO GROUND IN ONE PASS (RETIRED: no hero calls it; the heroes' pass is `ambient_inked`): the
-    /// backdrop art with both scrim fields evaluated on it, instead of the art and then four blended
-    /// gradient quads over the same 2.78M fragments.
-    /// [`crate::widgets::hero_ground`] is the component — reach for that, not for this — and
-    /// `fs_hero.frag` carries the algebra that makes it the same picture rather than a cheaper one.
-    ///
-    /// `ramp` is `(y0, knee, alpha_at_knee, alpha_at_foot)` and `wedge` is
-    /// `(peak, width, feather_top, feather_knee)`, both in authored pixels. The two fields' alphas
-    /// take the cascade here, exactly as the layers they replace took it through [`Self::c`] — the
-    /// composite is not linear in them, so folding it anywhere else would quietly change the mix.
-    pub fn hero_ground(self, tex: u32, r: Rect, art_a: f32, ramp: [f32; 4], wedge: [f32; 4]) {
-        if self.declare(r, 15, |data| {
-            use frame::backdrop::Value;
-            tex.record(data);
-            plx_gfx::gfx::tex_ledger::revision(tex).record(data);
-            art_a.record(data);
-            ramp.record(data);
-            wedge.record(data);
-        }) { return; }
-        if self.records() { return; }
-        let tint = self.c(theme::with_a(theme::TINT_WHITE, art_a));
-        let ink = self.c(theme::scrim(1.0));
-        let m = self.place(r);
-        plx_gfx::gfx::draw_hero_ground(
-            tex,
-            m.x, m.y, m.w, m.h,
-            tint.as_ptr(),
-            ink.as_ptr(),
-            [ramp[0], ramp[1], ramp[2] * self.a, ramp[3] * self.a],
-            [wedge[0] * self.a, wedge[1], wedge[2], wedge[3]],
-        );
-    }
     /// Bilinear 4-corner gradient. The written pixels stay OPAQUE — this primitive REPLACES what is
     /// under it (see [`AmbientWash`](crate::widgets::AmbientWash)) — but it is no longer blind
     /// to the cascade: an alpha below 1 mixes every corner toward [`theme::SURFACE_APP`] instead of

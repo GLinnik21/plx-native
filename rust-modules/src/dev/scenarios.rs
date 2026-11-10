@@ -315,16 +315,6 @@ pub(crate) fn arm_cardsplit() {
     }
 }
 
-/// `/tmp/plxnative-heroground` — RETIRED: the one-pass wedge-and-ramp hero ground A/B, whose flag
-/// nothing reads since the heroes stand on the hero shade; arming it changes no pixel.
-pub(crate) fn arm_heroground() {
-    if plx_base::devtrig::flag("heroground") {
-        plx_ui::widgets::set_hero_ground(true);
-        #[cfg(feature = "devtriggers")]
-        plx_base::eventlog::log("hero: one-pass ground ENABLED by /tmp/plxnative-heroground");
-    }
-}
-
 /// `/tmp/plxnative-profile` / `/tmp/plxnative-hwcnt` — the two GPU-time profilers. Both present
 /// is refused; either alone arms its mode.
 ///

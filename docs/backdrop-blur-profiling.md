@@ -392,9 +392,10 @@ rougher, because the Kawase tap offsets scale with the source while the bilinear
 
 ## Part 5 — the other 88.6%: what the MAIN UI submits, and why removing 37% of it bought 0.8%
 
-> **The instruments this part describes ARE in the tree now** — `plx_gfx::overdraw`,
-> `/tmp/plxnative-overdraw`, `/tmp/plxnative-drawmask` and `/tmp/plxnative-heroground`. They were
-> hand-transplanted from `blur/e4-overdraw` rather than merged: that branch's history was rewritten
+> **The instruments this part describes are in the tree** — `plx_gfx::overdraw`,
+> `/tmp/plxnative-overdraw` and `/tmp/plxnative-drawmask` — except the third, `/tmp/plxnative-heroground`,
+> which was deleted with the one-pass ground it armed (2026-11; see the RETIRED note under "The
+> experiment" below). They were hand-transplanted from `blur/e4-overdraw` rather than merged: that branch's history was rewritten
 > with `filter-branch`, so it shares no ancestry with the baseline commits here, and a direct merge
 > conflicts in fifteen files while sitting ~24,000 lines behind — resolving it in the branch's
 > favour would delete the deliberately-kept nav-glass code among much else. Only the ledger, the
@@ -607,12 +608,13 @@ submits**. The card composites everyone assumes are the expensive part are 5%.
 
 > **RETIRED (2026-11).** Neither hero draws the wedge and ramp this experiment folded any more: both
 > stand on the content-following hero shade, which the heroes' one-pass ground
-> (`AmbientWash::draw_ground`) carries per vertex. Nothing reads `hero_ground_armed()`, so arming
-> `/tmp/plxnative-heroground` changes no pixel and the four-quad A/B no longer exists. The account
-> below is the 2026-10 measurement of the old pair of fields, kept as the record of it; the shade's own
-> GPU cost has not been measured on the television.
+> (`AmbientWash::draw_ground`) carries per vertex. The experiment's code is deleted
+> (`ui::widgets::hero_ground`, `Painter::hero_ground`, `gfx::draw_hero_ground`, `shaders/fs_hero.frag`
+> and the `/tmp/plxnative-heroground` trigger), and so is the wedge it folded (`hero_scrim_a`); the
+> four-quad A/B no longer exists. The account below is the 2026-10 measurement of the old pair of
+> fields, kept as the record of it, and its names are the names of what ran then.
 
-`/tmp/plxnative-heroground` (`ui::widgets::hero_ground` + `shaders/fs_hero.frag`) draws the
+`/tmp/plxnative-heroground` (`ui::widgets::hero_ground` + `shaders/fs_hero.frag`) drew the
 photograph and BOTH scrim fields in **one** quad instead of the art plus four blended gradient
 quads over it. Both fields are closed forms of the authored pixel position — `home::base_scrim_a`
 and `hero_scrim_a` feathered over `[HERO_SCRIM_TOP, HERO_SCRIM_KNEE]` — and both are

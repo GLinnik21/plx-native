@@ -208,10 +208,6 @@ pub fn time_facts(year: i64, aired: &str, episode: bool, dur_ms: i64, resume_ms:
     (date, length)
 }
 
-pub fn listing_facts(item: &plx_data::pms::PmsMovie) -> (String, Option<String>) {
-    time_facts(i64::from(item.year), &item.aired, item.kind == 3, item.dur_ns / 1_000_000, item.resume_ms)
-}
-
 /// An on-deck episode supplies its own date and runtime; an unstarted show keeps its extent.
 pub fn meta_facts(d: &Detail, episode: Option<&Episode>) -> (String, Option<String>) {
     if let Some(ep) = episode {

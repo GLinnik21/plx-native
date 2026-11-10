@@ -2079,9 +2079,6 @@ pub(crate) unsafe fn construct(
         crate::dev::scenarios::arm_drawmask();
         crate::dev::scenarios::arm_cardsplit();
     }
-    // dev: /tmp/plxnative-heroground — RETIRED: it armed a one-pass wedge-and-ramp ground that no hero
-    // draws now (both stand on the hero shade's one pass), so arming it changes no pixel.
-    if !controlled { crate::dev::scenarios::arm_heroground(); }
     // dev: /tmp/plxnative-nobudget — the frame budget's A/B CONTROL leg (spec §8.1). Read here
     // with the other boot triggers; applied to the one `Budget` below, once the tree exists.
     let nobudget = !controlled && crate::dev::scenarios::nobudget_armed();
