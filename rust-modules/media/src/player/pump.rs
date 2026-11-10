@@ -1377,13 +1377,19 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
             // back only once the tail has run: a rejection left the same Engine playing, and an
             // accepted claim's reload has kept the pause, so the Play lands on the NEW stream.
             let hold = super::claim_hold::take(action.serial());
-            // The hold paused a PLAYING stream iff `hold`. Record the viewer's real transport
-            // goal now, before the tail starts the fresh stream, so the landing's Feed start
-            // reflects what the viewer wants (play) rather than the pause the hold itself imposed
-            // for the flight. Without this the landing reads the hold's own pause as the viewer's
-            // goal and starts the fresh stream paused: no Play op, no `startup_play_commanded`,
-            // and the Initial prime's gate never opens — the 4K->480p retranscode stall.
-            ps.set_reconfigure_pause_goal(!hold);
+            // The hold paused a PLAYING stream iff `hold`. When it did, record the viewer's real
+            // transport goal (play) now, before the tail starts the fresh stream, so the
+            // landing's Feed start reflects what the viewer wants rather than the pause the hold
+            // itself imposed for the flight. Without this the landing reads the hold's own pause
+            // as the viewer's goal and starts the fresh stream paused: no Play op, no
+            // `startup_play_commanded`, and the Initial prime's gate never opens — the 4K->480p
+            // retranscode stall. A hold-less flight (a direct Original) left the transport
+            // untouched, so it records no goal and the landing falls back to the stream's own
+            // transport state — a goal written for the no-hold case would start that recovery
+            // paused and interrupt an automatic upgrade.
+            if hold {
+                ps.set_reconfigure_pause_goal(false);
+            }
             let replaced = if matches!(
                 action.intent,
                 crate::route::RouteIntent::Automatic(crate::route::AutomaticRouteIntent::HlsToOriginal { .. })
