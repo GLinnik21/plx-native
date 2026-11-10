@@ -140,27 +140,13 @@ pub fn row_rect(widths: &[f32], i: usize, y: f32) -> Rect {
     Rect::new(x + leading_air, y, w, CD)
 }
 
-/// **Home's action row**: the same controls as [`row_rect`], every one exactly [`CGAP`] after the
-/// one before it and none carrying focus air. Detail's row keeps the Play capsule's pop in its
-/// width ([`row_rect`]), which opens a wider first gap; Home's board spaces Play, the Watchlist disc
-/// and Info alike, and the pill's own pop closes on that gap instead. `i` past the end lands one
-/// gap after the last control. Never allocates, and never reads a screen's state.
-pub fn flat_row_rect(widths: &[f32], i: usize, y: f32) -> Rect {
-    debug_assert!(widths.len() <= MAX_CTLS);
-    let n = widths.len().min(MAX_CTLS);
-    let mut items = [Item::absent(); MAX_CTLS + 1];
-    for (slot, w) in items.iter_mut().zip(&widths[..n]) {
-        *slot = Item::new(*w);
-    }
-    items[n] = Item::new(0.0);
-    let (x, _) = flat_row(&items[..=n]).span(i.min(n)).unwrap_or((plx_ui::consts::MARGIN_X, 0.0));
-    Rect::new(x, y, widths.get(i).or(widths.last()).copied().unwrap_or(0.0), CD)
-}
-
 /// **Home's action row as ONE stack**: `items` from the left margin, each exactly [`CGAP`] after the
-/// one before it, between VISIBLE marks. A control is its box (a pill, a disc), so the one gap is
-/// the gap the eye reads between every pair, whatever follows what. (The billboard's pager is not in
-/// this run: it stands at a fixed place at the right margin, `screens::home::hero_pager`.)
+/// one before it, between VISIBLE marks, none carrying focus air. Detail's row ([`row_rect`]) keeps
+/// the Play capsule's pop in its width, which opens a wider first gap; Home's board spaces Play, the
+/// Watchlist disc and Info alike, and the pill's own pop closes on that gap instead. A control is its
+/// box (a pill, a disc), so the one gap is the gap the eye reads between every pair, whatever follows
+/// what. (The billboard's pager is not in this run: it stands at a fixed place at the right margin,
+/// `screens::home::hero_pager`.)
 pub fn flat_row(items: &[Item]) -> HStack<'_> {
     HStack::new(items, CGAP, Align::Leading(plx_ui::consts::MARGIN_X))
 }

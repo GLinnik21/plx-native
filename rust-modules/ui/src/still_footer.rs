@@ -658,9 +658,11 @@ mod tests {
         assert_eq!(open[0].at.x, left + FOOTER_CUE_SLOT, "the time stands where the tag's slot closed up");
     }
 
-    /// **What a Continue Watching still says** through the one `still_overlay` door: `S2 E4 · 38m left`
-    /// and, for a card nobody has started, the same tag and `New episode`, no bar. It carries no show
-    /// name: the line stands under the art, whose title is the art's own (a deck card is always one).
+    /// **What a Continue Watching still says** through the one `still_overlay` door: the show's name, then
+    /// `S2 E4 · 38m left` and, for a card nobody has started, the same tag and `New episode`, no bar.
+    /// These are cards that did not opt in to the deck's art (a frame between a publication and its
+    /// projection): the line stands under the art, so the name is set in type on the art instead,
+    /// and an opted-in card's own title is the art's (the next test).
     #[test]
     fn a_continue_watching_still_says_the_show_the_tag_and_the_time_left() {
         use crate::tile::{Resume, TileFacts};
@@ -683,17 +685,17 @@ mod tests {
             resume: Some(Resume { frac: 0.3, left_ms: 38 * 60_000 }),
             ..Default::default()
         };
-        assert_eq!(words(started), ["S2 E4 \u{b7}", "38m left"]);
+        assert_eq!(words(started), ["Severance", "S2 E4 \u{b7}", "38m left"]);
         let film = TileFacts { title: "Heat", resume: Some(Resume { frac: 0.3, left_ms: 38 * 60_000 }), ..Default::default() };
-        assert_eq!(words(film), ["38m left"], "a film has no tag");
+        assert_eq!(words(film), ["Heat", "38m left"], "a film has no tag");
         let next_up = TileFacts { show_title: "Severance", season_index: 2, ep_index: 5, unwatched: true, ..Default::default() };
         assert_eq!(
             words(next_up),
-            ["S2 E5 \u{b7}", "New episode"],
+            ["Severance", "S2 E5 \u{b7}", "New episode"],
             "nothing to count down: the same tag a started episode wears, then the catalogue's New episode, no bar"
         );
         let unnumbered = TileFacts { show_title: "Severance", unwatched: true, ..Default::default() };
-        assert!(words(unnumbered).is_empty(), "an unstarted card with no address has nothing to say");
+        assert_eq!(words(unnumbered), ["Severance"], "an unstarted card with no address has only its name");
     }
 
     /// **A deck card's title is drawn ONCE, and in the art**: Plex's cover and our composite carry

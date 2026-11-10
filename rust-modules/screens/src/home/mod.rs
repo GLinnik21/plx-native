@@ -468,7 +468,9 @@ impl Backdrop {
                     Rect::FULL,
                     art_in_ground.then(|| hero_art(self.tex, env.sp, incoming_a)),
                     None,
-                    scrim.filter(|_| slide.is_none()),
+                    // the shade rides the ground only when the ground carries the art too: layers
+                    // painted over it (a slide's two, the held art under a replacement) would cover it
+                    scrim.filter(|_| art_in_ground),
                 )
             };
 
@@ -2234,7 +2236,9 @@ impl HomeScreen {
         let scroll = shelf.scroll();
         let left = card_x(style, 0, scroll).max(0.0);
         let right = (card_x(style, n.checked_sub(1)?, scroll) + style.w).min(SCR_W);
-        let y = self.grid.base_y(0) + CARD_DY + style.h + theme::STILL_FOOTER_DROP;
+        // the line's own top, read where the footer is drawn from: the tiles' REST rect, no pop
+        let tiles = Rect::new(left, self.grid.base_y(0) + CARD_DY, right - left, style.h);
+        let y = plx_ui::still_footer::Place::Below.line_top(tiles);
         (right > left).then(|| Rect::new(left, y, right - left, plx_ui::still_footer::FOOTER_LINE_H))
     }
 
@@ -3993,13 +3997,7 @@ fn hero_copy_rect(hero: &PmsMovie, measure: &dyn Measure) -> Rect {
         .painted(hero_title_band(&stack), measure);
     let Some(block) = stack.block else { return title };
     let block_w = if label.is_empty() { theme::hero::HOME_SYNOPSIS_W } else { HERO_COL_W };
-    union_rect(title, Rect::new(MARGIN_X, block.y, block_w, block.h))
-}
-
-/// The smallest rect holding both.
-fn union_rect(a: Rect, b: Rect) -> Rect {
-    let (x, y) = (a.x.min(b.x), a.y.min(b.y));
-    Rect::new(x, y, (a.x + a.w).max(b.x + b.w) - x, (a.y + a.h).max(b.y + b.h) - y)
+    title.union(Rect::new(MARGIN_X, block.y, block_w, block.h))
 }
 
 #[cfg(test)]

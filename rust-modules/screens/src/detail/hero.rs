@@ -548,10 +548,7 @@ pub fn draw_people(p: Painter, d: &Detail, button_y: f32, measure: &dyn Measure)
 pub fn people_rect(d: &Detail, button_y: f32, measure: &dyn Measure) -> Option<Rect> {
     let mut union: Option<Rect> = None;
     people_blocks(d, button_y, measure, |_, at| {
-        union = Some(union.map_or(at, |u| {
-            let (x, y) = (u.x.min(at.x), u.y.min(at.y));
-            Rect::new(x, y, (u.x + u.w).max(at.x + at.w) - x, (u.y + u.h).max(at.y + at.h) - y)
-        }));
+        union = Some(union.map_or(at, |u| u.union(at)));
     });
     union
 }

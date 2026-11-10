@@ -762,8 +762,12 @@ pub fn still_overlay(
     // it in the picture; with neither (the Type rung) it is drawn here in type, at the slot a logo
     // would stand in, and never by a live logo. Either way the footer below carries no title of its
     // own: only a card that did not opt in (a bare still or poster) keeps the show's name above it.
+    // A Continue card that did not opt in (a frame between a publication and its projection) has
+    // neither a deck's art nor a footer line on the art to hold its name, so the name is set in type
+    // at the same slot, on the scrim that card's art keeps ([`crate::card_art::art_is_clean`]).
     let label = if m.deck.is_some() { "" } else { show };
-    if crate::card_art::needs_type_title(m, &crate::card_art::TexProbe) {
+    let continue_without_deck = matches!(footer, StillFooter::Continue { .. }) && m.deck.is_none();
+    if continue_without_deck || crate::card_art::needs_type_title(m, &crate::card_art::TexProbe) {
         let inset = STILL_LINE_INSET;
         let band_h = crate::hero_logo::band_h(crate::hero_logo::LogoRung::Card);
         let slot = Rect::new(card.x + inset, card.y + card.h - theme::logo::CARD_BOTTOM_INSET - band_h, card.w - 2.0 * inset, band_h);
@@ -1095,10 +1099,11 @@ pub fn card_named_led(p: Painter, frame: Rect, art: Art, fan_name: Option<&str>,
             });
             if t != 0 && shown < 1.0 { crate::placeholder::skeleton_under(p, r, rad); }
             // **A deck card's art is clean.** Its footer line stands BELOW the tile
-            // ([`crate::still_footer::Place::Below`], owner's board CW-13 v2), so there is no text on
-            // the art for a bottom scrim to keep legible: the picture, four rounded corners, nothing
-            // over it. (Its title, in the cover or in type, is the art's own business.)
-            let clean = m.is_some_and(|m| m.deck.is_some());
+            // ([`crate::still_footer::Place::Below`], owner's board CW-13 v2), so there is no footer
+            // text on the art for a bottom scrim to keep legible: the picture, four rounded corners,
+            // nothing over it. The exception is a title set in live type on the art (the Type rung,
+            // [`crate::card_art::art_is_clean`]): that keeps the scrim it stood on before.
+            let clean = m.is_some_and(|m| crate::card_art::art_is_clean(&m, &crate::card_art::TexProbe));
             let fused = !clean
                 && !tile_glass_armed()
                 && pa.tex_carded_still(t, art_uv(&art, tw, th, r), r, rad, f, band, theme::scrim(STILL_SCRIM_A));

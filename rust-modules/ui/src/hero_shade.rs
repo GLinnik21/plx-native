@@ -81,9 +81,7 @@ impl HeroShade {
             self.len += 1;
         } else {
             let (last, last_peak) = &mut self.blocks[MAX_BLOCKS - 1];
-            let (x0, y0) = (last.x.min(rect.x), last.y.min(rect.y));
-            let (x1, y1) = ((last.x + last.w).max(rect.x + rect.w), (last.y + last.h).max(rect.y + rect.h));
-            *last = Rect::new(x0, y0, x1 - x0, y1 - y0);
+            *last = last.union(rect);
             *last_peak = last_peak.max(peak);
         }
         self

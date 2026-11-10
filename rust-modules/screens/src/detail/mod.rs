@@ -3308,14 +3308,6 @@ fn preview_already_played(played_for: Option<&str>, current_cache_rk: &str) -> b
     played_for == Some(current_cache_rk)
 }
 
-/// The preview-shrunk logo's own extra scroll fade, multiplied onto `chrome` in `draw_hero`.
-/// `t` is `preview_logo.pos` (0 = full hero position, 1 = pinned in the top-left corner while a
-/// trailer plays) and `hero_extent` is the scroll distance the caller already uses to fully reveal
-/// the below-hero flow (`content_top(measure) - TOP_MARGIN`, the same quantity `draw_backdrop`'s
-/// own `sf` divides by). Pure and eased (a linear ramp, not a cut) so the mark fades smoothly as
-/// `scroll_pos` rises and reappears the same way on the way back up, and it changes nothing at
-/// `t=0`: a normal (non-preview) hero already has its own `hero_alpha` fade from the caller and
-/// this must not double it.
 /// Where the hero's logo stands this frame ([`DetailScreen::logo_spot`]): its band in page
 /// coordinates, the rung it is sized at, and the alpha it is drawn with.
 struct LogoSpot {
@@ -3324,6 +3316,14 @@ struct LogoSpot {
     alpha: f32,
 }
 
+/// The preview-shrunk logo's own extra scroll fade, multiplied onto `chrome` in `draw_hero`.
+/// `t` is `preview_logo.pos` (0 = full hero position, 1 = pinned in the top-left corner while a
+/// trailer plays) and `hero_extent` is the scroll distance the caller already uses to fully reveal
+/// the below-hero flow (`content_top(measure) - TOP_MARGIN`, the same quantity `draw_backdrop`'s
+/// own `sf` divides by). Pure and eased (a linear ramp, not a cut) so the mark fades smoothly as
+/// `scroll_pos` rises and reappears the same way on the way back up, and it changes nothing at
+/// `t=0`: a normal (non-preview) hero already has its own `hero_alpha` fade from the caller and
+/// this must not double it.
 fn preview_logo_scroll_alpha(scroll_pos: f32, hero_extent: f32, t: f32) -> f32 {
     let past_hero = (scroll_pos / hero_extent.max(1.0)).clamp(0.0, 1.0);
     1.0 - t * past_hero
