@@ -26,6 +26,7 @@ use plx_data::browse::LibraryType;
 #[test]
 fn switching_libraries_restores_an_open_page_until_back_closes_it() {
     let mut w = World::movies_library("remember-open-library-page", false);
+    w.d.nav.tabs.stack.transition = Box::new(plx_ui::containers::transition::PageDip::new());
     let key = w.bridge.directory.view().sections()[0].key;
     let recommended = AppArg::LibraryRecommended { section: u32::try_from(key).unwrap() };
     w.open_from_header(9, recommended.clone());
@@ -76,18 +77,21 @@ fn collections_restores_from_saved_preferences_for_the_same_profile() {
 }
 
 #[test]
-fn a_new_tab_press_cancels_a_pending_child_restore() {
+fn a_new_tab_press_supersedes_a_child_restore_at_the_dip_floor() {
     use plx_data::browse::SecKind;
     use plx_plex::plex::session::LibraryPage;
     use plx_screens::registry::HomeTab;
+    use plx_ui::containers::transition::{PageDip, DIP_OUT_MS};
 
     let mut w = World::movies_library("cancel-library-page-restore", false);
+    w.d.nav.tabs.stack.transition = Box::new(PageDip::new());
     let directory = w.bridge.directory.view();
     let key = directory.sections()[directory.preferred(SecKind::Show).unwrap()].key;
     w.bridge.remember_library_page("route-own", key, LibraryPage::Recommended);
 
     super::nav_tab(&mut w.d, &mut w.bridge, HomeTab::Shows, None, None);
-    w.frames(2);
+    // The first frame parks the request. The other ticks leave one tick before the floor.
+    w.frames((DIP_OUT_MS / 16.0).ceil() as u32);
     assert!(matches!(w.d.nav.tabs.stack.pending_dest(), Some(AppArg::LibraryRecommended { .. })));
     super::nav_tab(&mut w.d, &mut w.bridge, HomeTab::Movies, None, None);
     w.frames(90);

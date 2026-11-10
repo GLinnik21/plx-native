@@ -4110,11 +4110,11 @@ pub(crate) fn nav_tab(
                 return;
             }
             rig.enter_library(kind);
-            if d.top_arg() == Some(&AppArg::Library) {
-                // An in-place grid switch has no page op of its own. If a previous pill press
-                // was about to mount a different branch, withdraw it before the in-place switch.
+            if let Some(grid) = d.nav.top_page().filter(|entry| entry.arg == AppArg::Library) {
+                // An in-place grid switch has no page op of its own. Supersede an earlier
+                // branch request with this grid, even on the frame the dip reaches its floor.
                 if d.nav.tabs.stack.is_pending() || d.has_pending_navigation() {
-                    d.request(MachineId::Nav, NavOp::Cancel);
+                    d.request(MachineId::Nav, NavOp::PopTo(grid.id));
                 }
             } else {
                 rig.aim_library(kind);
