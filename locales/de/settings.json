@@ -10,6 +10,8 @@
   "settings.system.section": "System",
   "settings.auto_sign_in.title": "Automatisch anmelden",
   "settings.auto_sign_in.detail": "Profilauswahl beim Start der App überspringen.",
+  "settings.hud_end_time.title": "Geschätzte Endzeit",
+  "settings.hud_end_time.detail": "Zeigt die voraussichtliche lokale Endzeit von Filmen und Folgen an.",
   "settings.trailers.title": "Trailer automatisch abspielen",
   "settings.trailers.detail": "Trailer mit Ton abspielen, wenn ein Titel kurz im Fokus ist.",
   "settings.resolution.title": "Auflösung der Oberfläche",

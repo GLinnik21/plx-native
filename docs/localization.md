@@ -74,7 +74,10 @@ the wording; do not abbreviate it past readability.
 
 Review the affected screens with the desktop simulator. `PLXNATIVE_LOCALE=es`, `fr`, `it`, `pt`, `de`, `hu`, `ru`, `pl`, `nl`, `be` or `en`
 selects a language for a simulator launch; `PLXNATIVE_FORMAT_LOCALE=de-DE` exercises separate
-regional formatting. `PLXNATIVE_LOCALE=qps-ploc` expands and accents text to reveal cramped
+regional formatting. Set `PLXNATIVE_CLOCK` to `12`, `24` or `locale` to exercise the player HUD clock.
+Time-of-day formatting uses ICU hour-minute patterns and day periods for the format locale. The
+formatter requires only time data and reuses the existing decimal data. It adds no calendar or
+time-zone tables. `PLXNATIVE_LOCALE=qps-ploc` expands and accents text to reveal cramped
 layouts; English-only diagnostics text is not expanded. These environment overrides do not operate in the shipping TV build.
 
 Open a pull request describing which language and screens changed, and how you checked the
@@ -137,8 +140,10 @@ guide's URL and QR code for opening on another device.
 At boot, the native Settings Service supplies `localeInfo.locales.UI`, `locales.FMT` and `clock`.
 UI resolution is saved override, TV UI language, process locale, then English. Unsupported UI
 languages use English. Missing formatting settings use the resolved UI language's regional
-default. Numeric Gregorian dates and numbers use the formatting locale; playback clocks remain
-durations. Locale data and catalogs are bundled, so translating the UI requires no network.
+default. Numeric Gregorian dates and numbers use the formatting locale. The elapsed and remaining
+playback clocks show durations. The player HUD can also show the estimated local finish time using
+the TV’s clock preference and format locale. Locale data and catalogs are bundled, so translating
+the UI requires no network.
 
 Plex requests carry the resolved UI language in `X-Plex-Language`. Servers may still return their
 own stored language. This preference does not change media audio/subtitle selection or library

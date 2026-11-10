@@ -5,7 +5,7 @@
     {
       "code": "HUD-E0402",
       "file": "manifest.json",
-      "hint": "this app supports 1.0 for this document",
+      "hint": "this app supports 1.1 for this document",
       "message": "Made for a newer PlxNative",
       "nearest": [],
       "path": "/hud/format",

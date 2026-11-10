@@ -399,7 +399,7 @@ mod tests {
     fn independent_format_gates_and_document_locations_are_explicit() {
         for (from, to, pointer) in [
             ("\"package_format\": \"1.0\"", "\"package_format\": \"1.1\"", "/package_format"),
-            ("\"format\": \"1.0\"", "\"format\": \"1.1\"", "/hud/format"),
+            ("\"format\": \"1.0\"", "\"format\": \"1.2\"", "/hud/format"),
         ] {
             let files = changed(minimal(), "manifest.json", from, to);
             let bytes = archive::pack(&files).unwrap();

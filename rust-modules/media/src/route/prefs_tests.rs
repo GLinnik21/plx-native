@@ -750,3 +750,38 @@ fn a_confirmed_opt_in_is_stored_as_the_picking_profiles_own_and_no_ones_else() {
     restore_profile_rows(&session::peek(), &seat("u2"), Overrides::default());
     assert_eq!(uri_engine(), UriEngine::Off, "u2 is not opted in by u1's pick");
 }
+
+
+/// The estimated-end-time cell follows the seated profile, falls back to the legacy key,
+/// and defaults ON when neither source has a value.
+#[test]
+fn restore_end_time_preference_is_profile_scoped_and_defaults_on() {
+    let _g = plx_base::testlock::serial();
+    let _session = session::TempSession::new("restore-end-time-preference");
+    struct RestoreEndTime(bool);
+    impl Drop for RestoreEndTime {
+        fn drop(&mut self) {
+            unseed_profile_prefs_for_test();
+            restore_hud_end_time(self.0);
+        }
+    }
+    let _restore = RestoreEndTime(hud_end_time());
+
+    let rec = record(
+        Preferences { hud_end_time: Some(false), ..Default::default() },
+        vec![
+            picked("u1", &stamp(), serde_json::json!({ "hud_end_time": true })),
+            picked("u2", &stamp(), serde_json::json!({ "hud_end_time": false })),
+        ],
+    );
+    restore(&rec, &seat("u1"), Overrides::default());
+    assert!(hud_end_time(), "u1's own ON overrides the legacy OFF");
+    restore(&rec, &seat("u2"), Overrides::default());
+    assert!(!hud_end_time(), "u2's own OFF is independent");
+    restore(&rec, &seat("u3"), Overrides::default());
+    assert!(!hud_end_time(), "a profile without a pick reads the legacy OFF");
+
+    let fresh = record(Preferences::default(), vec![]);
+    restore(&fresh, &seat("u1"), Overrides::default());
+    assert!(hud_end_time(), "a fresh profile defaults to ON");
+}

@@ -11,8 +11,7 @@
 //! * a cell with NO content key is `E0106` at the cell (the `schema` module doc says `E0103`);
 //! * every malformed `format` (a number, `null`, `"1"`, `"v1.0"`, `"1.0.0"`, a missing key) is `E0401`
 //!   at `/format`, never `E0104`: the version gate answers alone, before any type is judged;
-//! * `E0107` (a key from a later minor) has no row: format 1.0 is the first and only minor, so no key
-//!   can be newer than a package that parses. `parse::tests` builds a hand-made node to reach it.
+//! * `E0107` is covered by the versioned playbar fixture in `compile_tests`.
 
 use plx_ui::rec::strict_json::{decode_ordered, Ordered};
 
@@ -246,7 +245,7 @@ pub(in crate::hud_format) mod valid {
 
     #[test]
     fn the_reference_example_parses_with_no_finding() {
-        let parsed = parse_checked(REFERENCE.as_bytes());
+        let parsed = super::super::fixtures::parse_for("reference", REFERENCE.as_bytes());
         assert!(
             parsed.findings.is_empty(),
             "the worked example of the spec is a valid package:\n{}",
@@ -922,7 +921,7 @@ pub(in crate::hud_format) fn corpus() -> Vec<Row> {
     add(row("command_in_the_wrong_case", r(r##""command": "open_tracks""##, r##""command": "Open_Tracks""##), &codes::E0301, &format!("{CENTER}/0/command")).near("open_tracks").only());
 
     // ----- HUD-E0401, 0402, 0403: the version gate answers alone, at /format -----
-    add(format_row("format_1_1_is_a_newer_minor", r##""1.1""##, &codes::E0402).message(REASON_NEWER));
+    add(format_row("format_1_2_is_a_newer_minor", r##""1.2""##, &codes::E0402).message(REASON_NEWER));
     add(format_row("format_1_9_is_a_newer_minor", r##""1.9""##, &codes::E0402).message(REASON_NEWER));
     add(format_row("format_1_10_is_a_newer_minor", r##""1.10""##, &codes::E0402).message(REASON_NEWER));
     add(format_row("format_2_0_is_a_newer_major", r##""2.0""##, &codes::E0403).message(REASON_NEWER));
@@ -944,7 +943,7 @@ pub(in crate::hud_format) fn corpus() -> Vec<Row> {
     add(row("format_missing", metadata(r##""format": "1.0","##, ""), &codes::E0401, "/hud/format").only());
     add(row(
         "a_newer_package_is_judged_by_its_version_alone",
-        edit(&metadata(r##""format": "1.0""##, r##""format": "1.1""##), r##""name": "Reference","##, r##""name": 6,"##),
+        edit(&metadata(r##""format": "1.0""##, r##""format": "1.2""##), r##""name": "Reference","##, r##""name": 6,"##),
         &codes::E0402,
         "/hud/format",
     )
@@ -1079,7 +1078,7 @@ mod invalid {
             let row = rows.into_iter().find(|r| r.label == label).expect(label);
             parse_checked(&row.bytes).findings
         };
-        let newer_minor = by_label("format_1_1_is_a_newer_minor");
+        let newer_minor = by_label("format_1_2_is_a_newer_minor");
         assert_eq!(newer_minor.len(), 1, "the version gate answers alone");
         assert_eq!(newer_minor[0].message, "Made for a newer PlxNative");
         assert_eq!(newer_minor[0].message, REASON_NEWER);
@@ -1685,8 +1684,7 @@ mod coverage {
         // The command codes are covered by `commands`, which asserts them one by one.
         let command_codes = ["HUD-E0302", "HUD-E0303", "HUD-E0304", "HUD-E0305"];
         for code in codes::ALL {
-            // E0107 (a key newer than the declared format) cannot be written in a package that parses:
-            // 1.0 is the first minor. `parse::tests` reaches it with a hand-built node.
+            // The versioned playbar fixture exercises E0107 against a 1.0 package.
             // The E08xx/E09xx/W09xx codes are `check`'s, not the parser's: `reach_tests` has their rows.
             // The E06xx/W06xx and E10xx-E15xx codes are the lint's (they need a compiled package, a
             // language and a state): `lint_tests` holds their rows, one invalid case per code.
@@ -3376,7 +3374,6 @@ mod drift {
 
     #[test]
     fn nothing_in_the_table_is_newer_than_the_current_format() {
-        // `E0107` (a key of a later minor) is unreachable at 1.0, the first and only minor.
         let current = schema::CURRENT;
         for node in schema::all_nodes() {
             for f in node.fields {

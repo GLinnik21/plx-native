@@ -406,7 +406,8 @@ pub(crate) struct Bridge {
     /// The player-HUD package store, its runner and the compile of the selection ([`super::adapters::huds`]). Off until boot starts it.
     huds: super::adapters::huds::HudDriver,
     /// The open Player HUD page's channel and what it was last sent ([`Bridge::huds_publish`]).
-    huds_pages: Vec<(std::sync::mpsc::Sender<plx_screens::hud_settings::HudList>, u64)>,
+    huds_pages: Vec<(std::sync::mpsc::Sender<plx_screens::hud_settings::HudList>, u64, Option<bool>)>,
+    huds_profile_seated: bool,
     /// What the last install or removal said, for the page, until it is opened again.
     huds_notice: Option<plx_data::hudpacks::Notice>,
     trace_save: Option<(MachineId, u64, plx_base::storage_worker::TypedTicket<plx_platform::playback_trace::Status>)>,
@@ -686,6 +687,7 @@ impl Bridge {
             seat_watch: SeatWatch::new(),
             huds: super::adapters::huds::HudDriver::off(),
             huds_pages: Vec::new(),
+            huds_profile_seated: false,
             huds_notice: None,
             trace_save: None,
             consent_adapter,
@@ -984,8 +986,9 @@ impl Bridge {
     }
 
     fn huds_refresh_for(&mut self, seat: &plx_plex::plex::session::Seat) {
+        self.huds_profile_seated = seat.user().is_some();
         let stored = plx_plex::plex::session::stored_effective_hud(&plx_plex::plex::session::peek(), seat);
-        let selected = self.huds.selected_for(seat.user().is_some(), stored);
+        let selected = self.huds.selected_for(self.huds_profile_seated, stored);
         self.huds.refresh(selected);
     }
 
@@ -1046,8 +1049,8 @@ impl Bridge {
 
     fn huds_watch(&mut self, page: std::sync::mpsc::Sender<plx_screens::hud_settings::HudList>) {
         // Re-probe older subscribers when a page opens so dead receivers do not accumulate at an idle revision.
-        for (_, sent) in &mut self.huds_pages { *sent = u64::MAX; }
-        self.huds_pages.push((page, u64::MAX));
+        for (_, sent, _) in &mut self.huds_pages { *sent = u64::MAX; }
+        self.huds_pages.push((page, u64::MAX, None));
     }
 
     /// Persist the picks the store made and log what the driver reports: the two things the driver
@@ -1083,11 +1086,13 @@ impl Bridge {
         if self.huds_pages.is_empty() { return }
         let (revision, notice) = (self.huds.revision(), self.huds_notice.as_ref().map_or(0, |_| 1));
         let stamp = revision * 2 + notice;
-        if self.huds_pages.iter().all(|(_, sent)| *sent == stamp) {
+        let end_time = self.huds_profile_seated.then(plx_media::route::hud_end_time);
+        if self.huds_pages.iter().all(|(_, sent, end)| *sent == stamp && *end == end_time) {
             return;
         }
         let tag = plx_platform::i18n::current().language().tag();
         let list = plx_screens::hud_settings::HudList {
+            end_time,
             catalog: self.huds.store().catalog().clone(),
             catalog_date: self.huds.store().catalog().checked_at.and_then(|s| i64::try_from(s).ok())
                 .and_then(plx_platform::i18n::local_calendar_date)
@@ -1107,9 +1112,10 @@ impl Bridge {
             package_busy: self.huds.store().busy(),
         };
         let mut delivered = false;
-        self.huds_pages.retain_mut(|(page, sent)| {
-            if *sent == stamp { return true }
+        self.huds_pages.retain_mut(|(page, sent, end)| {
+            if *sent == stamp && *end == end_time { return true }
             *sent = stamp;
+            *end = end_time;
             let sent = page.send(list.clone()).is_ok();
             delivered |= sent;
             sent

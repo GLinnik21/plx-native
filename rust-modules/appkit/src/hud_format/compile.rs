@@ -1942,7 +1942,9 @@ impl<'e, 'p> Env<'e, 'p> {
                     clock_size,
                     knob: if self.name(o, "knob") == Some("always") { KnobMode::Always } else { KnobMode::Tick },
                     clocks: clock_mode,
-                    clock_rects: clocks::rects(track, clock_size, clock_mode, self.measure),
+                    clock_rects: clocks::rects(
+                        track, clock_size, clock_mode, self.num(o, "end_time_width"), self.measure,
+                    ),
                     mark: if self.name(o, "mark") == Some("busy_only") { MarkMode::BusyOnly } else { MarkMode::AfterElapsed },
                 });
             }

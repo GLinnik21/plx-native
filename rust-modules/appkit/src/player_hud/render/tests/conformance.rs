@@ -191,7 +191,7 @@ fn actions_measure_the_same_parameterised_label_they_paint() {
 fn episode_frame(compiled: &Compiled, open: u8) -> Census {
     let mut store = plx_data::stores::metadata::MetadataStore::default();
     store.run(plx_data::stores::metadata::MetadataCmd::SetNowPlaying(Some(plx_data::metadata::NowPlaying {
-        is_episode: true, is_real_episode: true, title: "A long show title that must wrap onto more than one line".into(),
+        is_episode: true, is_real_episode: true, is_movie: false, title: "A long show title that must wrap onto more than one line".into(),
         ep_title: "An episode with a long name".into(), season: 1, index: 2, summary: String::new(), year: 2001,
         dur_ms: 600_000, rating: String::new(), thumb: String::new(), detail_rk: "1".into(),
     })));
@@ -316,7 +316,7 @@ fn chapter_frame_content(compiled: &Compiled, focused: bool, name: &str, episode
     ]);
     if episode {
         store.run(plx_data::stores::metadata::MetadataCmd::SetNowPlaying(Some(plx_data::metadata::NowPlaying {
-            is_episode: true, is_real_episode: true, title: "Show".into(), ep_title: "Episode".into(), season: 1, index: 2,
+            is_episode: true, is_real_episode: true, is_movie: false, title: "Show".into(), ep_title: "Episode".into(), season: 1, index: 2,
             summary: String::new(), year: 2001, dur_ms: 600_000, rating: String::new(), thumb: String::new(), detail_rk: "1".into(),
         })));
     }
