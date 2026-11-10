@@ -1323,8 +1323,8 @@ static VEIL_TEX: AtomicU32 = AtomicU32::new(0);
 /// renderer has no radial gradient, and the two alternatives both fail on this shape: a `grad4` quad
 /// is bilinear and, worse, square — it would spill past the tile's 14px corner ARC onto the shelf at
 /// full strength, exactly where the mark is strongest; and stepping it as N rounded-rect bands (the
-/// `art_scrim` fallback) is what `hero_scrim`'s doc already rejected for a field this wide, at a visible
-/// alpha staircase with `GL_DITHER` off. `Painter::tex` takes a corner radius, so ONE draw of this
+/// `art_scrim` fallback) is what the retired hero wedge's doc rejected for a field this wide, at a
+/// visible alpha staircase with `GL_DITHER` off. `Painter::tex` takes a corner radius, so ONE draw of this
 /// gets the tile's own silhouette for free — the veil's other three corners live in fully
 /// transparent territory, so rounding them changes nothing.
 fn veil_tex() -> std::os::raw::c_uint {
@@ -2672,168 +2672,19 @@ pub fn art_scrim(p: Painter, card: Rect, rad: f32, h: f32, a: f32) {
     p.clip_clear();
 }
 
-// ---- The hero corner scrim: the wedge that makes hero copy legible over ARTWORK ---------------
+// ---- The hero's atmospheric ramp ----------------------------------------------------------------
 //
-// A **sibling** of `art_scrim`, deliberately not a direction flag on it: the rounded card's
-// bottom band and the full-bleed hero have different geometry and axes. What they share is
-// the rule: a label sits directly on
-// artwork only where something has bought it the contrast to.
-
-/// How far the hero wedge reaches before it is gone entirely: it peaks at x=0 and is exactly 0
-/// here. Four fifths of the panel, because it has to still be carrying weight under the RIGHT END
-/// of the longest lines, not just at the margin — detail's synopsis column runs to x=990
-/// (`MARGIN_X` + its `HERO_TEXT_W`) and its facts line to ~1270. A tighter falloff strands exactly
-/// the ends of the lines a long title or blurb produces. The last fifth of the frame is left
-/// completely alone: that is the side of the picture the composition is usually about.
-const HERO_SCRIM_W: f32 = crate::consts::SCR_W; // covers the shared 943 px title column
-
-/// Where the wedge starts feathering in. Clears the tab track's own band ([`TOP_BAR_Y`] 62 +
-/// [`TAB_PILL_H`] 60 + [`TAB_TRACK_PAD`] 8 = 130) by 32px: the top chrome owns its legibility with
-/// its own dark capsule (`draw_tab_row`) and must not get a second treatment stacked under it.
-const HERO_SCRIM_TOP: f32 = 0.15 * crate::consts::SCR_H; // 162
-/// Full strength begins above the highest two-line fallback in Home's three-line synopsis case.
-/// A clearLogo can paint higher as art; the feather stays clear of the top navigation.
-const HERO_SCRIM_KNEE: f32 = 0.32 * crate::consts::SCR_H;
-
-/// The mirrored RIGHT wedge — for a hero with a right-aligned column, which today means detail's
-/// "Starring" block at x 1270..1830, the one piece of hero copy the left wedge by definition cannot
-/// reach. Shorter than the left one, feathered across both axes; its corner weight preserves
-/// contrast at the top of a wrapped credits block under the shared atmospheric ramp. It is also the component's banding
-/// risk (`GL_DITHER` is deliberately off) — ~1 8-bit code per 4–5px near its origin. If it bands,
-/// make these SMALLER (steeper = fewer codes per pixel); never re-enable dithering.
-const HERO_SCRIM_R_W: f32 = 700.0;
-const HERO_SCRIM_R_TOP: f32 = 0.28 * crate::consts::SCR_H; // four-line credits above actions
-const HERO_SCRIM_R_A: f32 = theme::hero::SCRIM_RIGHT_A;
+// What stands behind a hero's copy is the content-following shade ([`crate::hero_shade`]); the ramp
+// below is the frame-wide mood under it that Detail still paints.
 
 /// Where the frame-wide ATMOSPHERIC ramp starts: nothing above this line, running to the foot of the
 /// panel. Detail paints it under its hero shade (`detail::draw_backdrop`); Home paints none (board
-/// CW-13 v2: Home's art stands unramped and the shade carries the legibility). It sits here with the
-/// wedge's own stops because it was one treatment's first stop.
+/// CW-13 v2: Home's art stands unramped and the shade carries the legibility).
 ///
 /// The three-stop curve is `landing_hero::base_scrim_ramp`: zero at this origin, .55 at 62% of the
 /// remaining height, .86 at the foot. Fused ground and layered drawing use those same stops;
 /// `detail_layout::base_scrim_a` delegates to the same curve.
 pub const HERO_BASE_SCRIM_Y0: f32 = 0.34 * crate::consts::SCR_H; // 367.2
-
-/// The hero wedge's alpha at `x`, at or below [`HERO_SCRIM_KNEE`] — which is where every hero text
-/// anchor sits, by construction (see that const). Pure, because the legibility contract is graded
-/// on it: this is the arithmetic the anchor table in this module's tests reads, so the promise and
-/// the paint cannot come from two different curves.
-///
-/// `strength` is the screen's own hero fade (home's `env.hero_a`, detail's
-/// `hero_alpha(scroll, HERO_FADE)`), multiplied by [`crate::landing_hero::PREVIEW_FIELD`]
-/// while a preview picture is bound. Everything scales by it, so the wedge leaves with the hero
-/// rather than lingering over the shelves. The clamp is that video-bound ceiling, not 1, so the
-/// raised row stays on this curve.
-pub fn hero_scrim_a(x: f32, strength: f32) -> f32 {
-    let u = (x.max(0.0) / HERO_SCRIM_W).min(1.0);
-    theme::SCRIM_TEXT_A
-        * (1.0 - u)
-        * strength.clamp(0.0, crate::landing_hero::PREVIEW_FIELD)
-}
-
-/// The mirrored right wedge's alpha at `(x, y)` — [`hero_scrim_a`]'s sibling, and the only part of
-/// the field that is two-dimensional, since it feathers in from its left edge AND from its top and
-/// peaks only in the bottom-right corner. Pure for the same reason.
-pub fn hero_scrim_right_a(x: f32, y: f32, strength: f32) -> f32 {
-    let u = ((x - (crate::consts::SCR_W - HERO_SCRIM_R_W)).max(0.0) / HERO_SCRIM_R_W).min(1.0);
-    let v =
-        ((y - HERO_SCRIM_R_TOP).max(0.0) / (crate::consts::SCR_H - HERO_SCRIM_R_TOP)).min(1.0);
-    HERO_SCRIM_R_A * strength.clamp(0.0, crate::landing_hero::PREVIEW_FIELD) * u * v
-}
-
-/// The wedge's quads as `(rect, [tl, tr, br, bl])`, built pure so the seam between quad 0 and
-/// quad 1 — the one structural bug this component can have — is host-gradeable. `n` is how many
-/// entries are live: 2, or 3 when `right`.
-///
-/// The whole field is **one ink at four alphas** ([`theme::scrim`]), which is [`Painter::grad4`]'s
-/// stated precondition: straight (non-premultiplied) rgba only interpolates exactly across a quad
-/// when the corners share an rgb.
-///
-/// | # | rect | field it produces |
-/// |---|---|---|
-/// | 0 | `(0, TOP, W, KNEE−TOP)` | feather-in: 0 along the whole top edge, the full wedge along the bottom |
-/// | 1 | `(0, KNEE, W, SCR_H−KNEE)` | constant in y → a pure horizontal ramp to the frame's foot |
-/// | 2 | `(SCR_W−R_W, R_TOP, R_W, SCR_H−R_TOP)` | feathers in from the top AND the left, peaking bottom-right |
-///
-/// **Quad 0 and quad 1 abut exactly**, and must keep doing so: quad 0's bottom pair (`bl→br` =
-/// edge→none) is identical to quad 1's top pair (`tl→tr` = edge→none) at every x, and the two share
-/// one float y. The reflex here is to reach for [`plx_gfx::gfx::snap`] — don't. [`art_scrim`]'s fallback snaps
-/// because an integer-truncated *scissor* meets a float *fill*; these are fill-to-fill quads
-/// sharing an edge, where the rasterizer's own fill rule already guarantees neither a gap (one row
-/// of unscrimmed BRIGHT artwork) nor a double-cover (one row of doubled scrim). Snapping would be
-/// cargo cult, and it would move the seam off the shared float.
-///
-/// **The corners are the closed forms EVALUATED AT THE CORNERS**, not a second hand-written copy of
-/// them: a quad's corner alpha is exactly what [`hero_scrim_a`] / [`hero_scrim_right_a`] say at that
-/// `(x, y)`, so at the corners the field the legibility contract is graded on and the field that is
-/// painted cannot drift — the tests below no longer assert that agreement, only the part
-/// construction cannot pin (that the closed forms are affine / bilinear in BETWEEN the corners,
-/// which is the shape `grad4` can actually interpolate). It also gives the two closed forms the
-/// production caller they otherwise lacked. Both clamp `strength` themselves, so it is passed raw.
-pub fn hero_scrim_quads(strength: f32, right: bool) -> ([(Rect, [[f32; 4]; 4]); 3], usize) {
-    let (sw, sh) = (crate::consts::SCR_W, crate::consts::SCR_H);
-    // the wedge peaks at its left margin and is gone by `HERO_SCRIM_W`; the right one peaks in the
-    // bottom-right corner of the panel, which is the corner it is anchored to
-    let none = theme::scrim(hero_scrim_a(HERO_SCRIM_W, strength));
-    let edge = theme::scrim(hero_scrim_a(0.0, strength));
-    let redge = theme::scrim(hero_scrim_right_a(sw, sh, strength));
-    let mut q = [(Rect::new(0.0, 0.0, 0.0, 0.0), [none; 4]); 3];
-    q[0] = (
-        Rect::new(
-            0.0,
-            HERO_SCRIM_TOP,
-            HERO_SCRIM_W,
-            HERO_SCRIM_KNEE - HERO_SCRIM_TOP,
-        ),
-        [none, none, none, edge],
-    );
-    q[1] = (
-        Rect::new(0.0, HERO_SCRIM_KNEE, HERO_SCRIM_W, sh - HERO_SCRIM_KNEE),
-        [edge, none, none, edge],
-    );
-    if right {
-        q[2] = (
-            Rect::new(
-                sw - HERO_SCRIM_R_W,
-                HERO_SCRIM_R_TOP,
-                HERO_SCRIM_R_W,
-                sh - HERO_SCRIM_R_TOP,
-            ),
-            [none, none, redge, none],
-        );
-    }
-    (q, if right { 3 } else { 2 })
-}
-
-/// Draw the hero corner scrim: the darkening for copy that sits directly on a full-bleed backdrop,
-/// along the one axis a bottom-up ramp has nothing to say about.
-///
-/// **RETIRED from the heroes.** Neither Home nor Detail draws this wedge now: both stand on the
-/// content-following [`crate::hero_shade::HeroShade`], and only `screens::catalog` still calls it.
-/// The rest of this note is what the wedge was designed for.
-///
-/// Both heroes already painted a frame-wide atmospheric ramp, and both bottom-anchor their text
-/// column well ABOVE the band where that ramp reaches strength — the HERO-72 title's cap top gets
-/// ~0.11 of it. The ramp cannot simply be raised, because at any given y it is uniform across all
-/// 1920px: enough alpha to rescue the title would put 60% black over the whole picture at the
-/// title's y. So the corner the text is IN gets its own field instead, and the ramp goes on doing
-/// the job it is good at (mood, and the depth under the shelf line).
-///
-/// `strength` is the screen's own hero fade — see [`hero_scrim_a`]. `right` adds the mirrored wedge
-/// for a hero with a RIGHT-aligned column (detail's "Starring"); home has none and passes `false`.
-///
-/// Call it INSIDE the backdrop, before any hero content is drawn: it exists to darken artwork, and
-/// a wedge over the text would be a dimmer, not a scrim.
-pub fn hero_scrim(p: Painter, strength: f32, right: bool) {
-    if strength <= 0.0 {
-        return;
-    }
-    let (q, n) = hero_scrim_quads(strength, right);
-    for (r, k) in q.iter().take(n) {
-        p.grad4(*r, *k);
-    }
-}
 
 /// The profile chip's diameter: ONE control height with the tab pills and the circle-button
 /// family, so the focused chip's capsule — the avatar plus [`TAB_TRACK_PAD`] all round — is
@@ -7152,9 +7003,9 @@ impl Default for StripRender {
 /// | the flat capsule this replaced (`TAB_TRACK_A_TOP` .72) | L\* 27.5 | **9.74:1** |
 /// | the band's face, solved for a dark track | L\* 75.4 | **1.86:1** |
 ///
-/// At L\* 80 it is 2.54:1. Nothing in the app darkens the top band before this — `home`'s
-/// atmospheric ramp starts at `HERO_BASE_SCRIM_Y0` (367) and the hero wedge at `HERO_SCRIM_TOP`
-/// (162) — so those are raw backdrop pixels, and `gfx::sample_ground`'s own note records a census
+/// At L\* 80 it is 2.54:1. Nothing in the app darkens the top band before this — Detail's
+/// atmospheric ramp starts at `HERO_BASE_SCRIM_Y0` (367) and the hero shade stands only behind the
+/// copy — so those are raw backdrop pixels, and `gfx::sample_ground`'s own note records a census
 /// finding a MEDIAN 26.8 L\* span across five taps of the track alone, a third of heroes over 40.
 /// The band is half again as wide as the track.
 ///

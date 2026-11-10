@@ -553,8 +553,6 @@ class HeroGeometry(unittest.TestCase):
     def test_a_right_weighted_subject_clear_of_every_zone_passes(self):
         v = self.verdict(2048, 872, [1500, 100, 1900, 500], anchor="right")
         self.assertEqual((v["verdict"], v["reasons"]), ("pass", []), v)
-        # the scrim is advisory: the share of the box under it is reported, never gated
-        self.assertGreater(v["scrim_share"], 0)
 
     # ---- eligibility and the gate ------------------------------------------------------------
 
@@ -664,13 +662,12 @@ class HeroGeometry(unittest.TestCase):
         self.assertEqual(by["detail text column"], [96, 326, 1039, 1080])
         self.assertEqual(by["detail facts row"], [1039, 714, 1264, 842])
         self.assertEqual(by["detail starring column"], [1264, 702, 1824, 1080])
-        self.assertEqual(by["hero scrim"], [0, 162, 1920, 1080])
         used = {n for z in zones for n in z["uses"]}
         self.assertEqual(used, set(tool.HERO_PINS) - {n for n, p in tool.HERO_PINS.items() if p[1] == "text"})
 
     def test_a_drifted_python_copy_fails_naming_the_constant_and_its_file(self):
         for name, wrong in (("MARGIN_X", 90.0), ("COL_W", 600.0), ("PEEK_Y", 828.0), ("HERO_TEXT_W", 990.0),
-                            ("HERO_LOGO_TOP_HOME", 300.0), ("HERO_SCRIM_W", 1500.0)):
+                            ("HERO_LOGO_TOP_HOME", 300.0), ("DETAIL_TITLE_BOTTOM", 500.0)):
             with self.subTest(name=name):
                 pins = {k: list(v) for k, v in tool.HERO_PINS.items()}
                 pins[name][-1] = wrong

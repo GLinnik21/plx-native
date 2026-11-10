@@ -98,9 +98,8 @@ pub(crate) use glsl;
 /// tile arrived with (bisected 2026-09-04; `docs/backdrop-blur-profiling.md`). The test
 /// `every_dithered_program_carries_the_one_shared_dither_and_no_hash_of_its_own` pins both lists.
 /// [`glsl_dithered`]'s twin: the SAME fragment source behind `shaders/dither_stub.glsl`, whose
-/// `plx_dither` is the identity — so one file links as two programs, and the plain one (the hero
-/// scrim's, `draw_grad4`) has no
-/// uniform, no sampler and no fetch. See [`ambient_program`] for why OFF is a program, not a zero.
+/// `plx_dither` is the identity — so one file links as two programs, and the plain one (the corner
+/// fade's, `draw_grad4`) has no uniform, no sampler and no fetch. See [`ambient_program`] for why OFF is a program, not a zero.
 macro_rules! glsl_undithered {
     ($file:literal) => {
         // SAFETY: as `glsl!` — GLSL sources contain no interior NUL.
@@ -681,8 +680,8 @@ static mut SCL_SCRIM: ScrimLoc = ScrimLoc::NONE;
 /// last given, so a frame's dozen cells upload it once. A fresh program's uniforms are zero, which
 /// is [`scrim::GroundShade::NONE`], so that is what an unwritten slot holds; `init_*` resets them.
 static mut SCRIM_SENT: [scrim::GroundShade; 3] = [scrim::GroundShade::NONE; 3];
-/// The ambient field's PLAIN program (`FS_AMBIENT_PLAIN`) — the hero scrim's (`draw_grad4`), never
-/// the wash's — and its uniforms; 0 when the link failed, in which case `APROG` serves the scrim
+/// The ambient field's PLAIN program (`FS_AMBIENT_PLAIN`) — the corner fade's (`draw_grad4`), never
+/// the wash's — and its uniforms; 0 when the link failed, in which case `APROG` serves the fade
 /// with `u_dither` at 0.
 static mut APROG_PLAIN: c_uint = 0;
 static mut PL_RECT: c_int = 0;
@@ -1333,7 +1332,7 @@ pub fn init_gl() {
         // 33 is ~2× in luminance down there. Found through the search screen's navigation-bar scrim
         // (reported as "on screenshot capture I see a pleasing fade, but on TV it is like a shadow"),
         // but it was never that screen's bug: EVERY partial-alpha draw in this app punched the same
-        // hole — the Library's scrim, both hero scrims, `art_scrim`, every popover scrim, every page
+        // hole — the Library's scrim, the hero scrims, `art_scrim`, every popover scrim, every page
         // and content fade, every glyph drawn at less than full alpha. Fades have always come out a
         // shade darker than authored on the panel and nothing but a photograph could show it.
         //
@@ -1974,7 +1973,7 @@ unsafe fn draw_field_mesh_rows(rows: std::ops::Range<usize>) {
 
 /// Which of the two ambient programs draws a field, with its uniform locations: the dithered one
 /// (`APROG`) for the wash's gradient, which always dithers, and the plain twin (`APROG_PLAIN`, the
-/// same source behind the no-op stub) for the hero scrim (`draw_grad4`) — each the other's fallback
+/// same source behind the no-op stub) for the corner fade (`draw_grad4`) — each the other's fallback
 /// when one failed to link, in which case the caller sets `u_dither` itself.
 ///
 /// The prelude has no off switch of its own — it is straight-line, because a uniform branch there
@@ -1992,7 +1991,7 @@ unsafe fn ambient_program(amp: f32) -> (c_uint, c_int, c_int, c_int, c_int, c_in
     }
 }
 
-/// The 4-corner bilinear gradient with REAL per-corner ALPHA (rgba each) — the hero corner scrim's
+/// The 4-corner bilinear gradient with REAL per-corner ALPHA (rgba each) — the corner fade's
 /// primitive, and the reason `fs_ambient.frag` mixes vec4 instead of vec3. [`draw_ambient`] is this
 /// with every corner forced opaque; the two share one program because they are one field.
 ///

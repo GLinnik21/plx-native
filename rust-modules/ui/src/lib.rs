@@ -1796,8 +1796,8 @@ impl Painter {
     /// sit OVER artwork. Corner order is the same: tl, tr, br, bl.
     ///
     /// It is the only two-dimensional gradient the renderer has ([`rect`](Self::rect)'s is vertical
-    /// only), which is why a corner-weighted scrim over a hero backdrop goes through here rather
-    /// than through N abutting strips — see `widgets::hero_scrim`. Straight (non-premultiplied) rgba
+    /// only), which is why a corner-weighted fade over a picture (the filmography page's tab fade)
+    /// goes through here rather than through N abutting strips. Straight (non-premultiplied) rgba
     /// interpolates exactly only when the corners share an rgb, so give it ONE ink at four alphas,
     /// not four hues.
     pub fn grad4(self, r: Rect, k: [[f32; 4]; 4]) {

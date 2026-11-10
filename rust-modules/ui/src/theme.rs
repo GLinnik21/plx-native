@@ -233,9 +233,6 @@ pub mod hero {
     pub const PLAY_MIN_W: f32 = 224.0;
     /// Atmospheric midpoint, 62% of the distance from the 34% origin to the foot.
     pub const SCRIM_MID_Y: f32 = (0.34 + (1.0 - 0.34) * 0.62) * crate::consts::SCR_H;
-    /// People-column corner weight: four wrapped credit lines retain the 2.5:1 pure-white
-    /// contrast floor under the lighter atmosphere; its feather starts higher for the raised credits.
-    pub const SCRIM_RIGHT_A: f32 = 0.78;
     /// Opacity at the atmospheric midpoint. The shade ([`super::shade`]) supplies local contrast.
     pub const SCRIM_MID_A: f32 = 0.55;
     /// Opacity at the foot: retain the artwork's colour under the action row.
@@ -755,16 +752,13 @@ pub const SCRIM_BLACK_INK: [f32; 3] = [BLACK[0], BLACK[1], BLACK[2]];
 ///
 /// MEASURED, not chosen. The panel is plain 888 with no sRGB framebuffer anywhere in the tree, so a
 /// token value IS an sRGB code and GL's blend is a straight lerp in that space — which makes the
-/// whole derivation arithmetic. It is the peak of the left wedge ([`crate::widgets::hero_scrim`], asserted
-/// by that component's anchor table; only the catalog still draws it). The heroes hold the same floors
-/// with the shade's [`shade::COPY_A`] behind the copy, graded by `widgets_hero_shade_tests` (Home) and
+/// whole derivation arithmetic. It was the peak of the hero's left wedge (deleted: every hero, the catalog
+/// page included, stands on the content-following shade now). The heroes hold the same floors with the
+/// shade's [`shade::COPY_A`] behind the copy, graded by `widgets_hero_shade_tests` (Home) and
 /// `widgets_hero_scrim_tests` (Detail), so brightening a text token and re-deriving these stay one edit.
 /// The binding case is a `TEXT_SECONDARY` BODY line where the hero's bottom-up ramp supplies only
-/// ~0.29: it needs 0.655 total, so the wedge must carry ~0.51 there and rather more at the title.
-///
-/// The wider, two-line fallback can end at x=1039 above the atmospheric ramp. Its corner
-/// treatment peaks at .84 across the full frame width to preserve the bright-art and pure-white
-/// contrast floors. The treatment's geometry and these floors are pinned together by the tests.
+/// ~0.29: it needs 0.655 total, so whatever stands behind the line must carry ~0.51 there and rather
+/// more at the title.
 pub const SCRIM_TEXT_A: f32 = 0.84;
 
 /// **White overlay at alpha `a`** — the ramp every overlay on this palette rides.

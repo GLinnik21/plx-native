@@ -37,8 +37,8 @@
 //     programs it measured +4M shader words a frame with every draw answering 0 (2026-09-04), and
 //     on a scrolling Library the branch alone was +5.8M arithmetic words a frame, 49 fps against 59
 //     with the same fetch unguarded (2026-09-19, the HWCNT vinstr profiler). So the helpers below are
-//     straight-line, and the one broad surface that must NOT dither — the hero scrim over
-//     artwork — is a plain twin program (`gfx::ambient_program`, `dither_stub.glsl`). A field under
+//     straight-line, and the one broad surface that must NOT dither — a corner-alpha fade over
+//     artwork (`gfx::draw_grad4`) — is a plain twin program (`gfx::ambient_program`, `dither_stub.glsl`). A field under
 //     `gfx::dither_for_field`'s threshold pays one idle-pipe fetch times 0. Only the three
 //     slow-field programs carry this prelude at all.
 //  2. **A TEXTURE FETCH, never a hash.** `fract(sin(dot(p,k))*43758.5)` is a range reduction plus a

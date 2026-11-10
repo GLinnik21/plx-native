@@ -73,7 +73,7 @@ Hero text is protected by a SHADE that follows the content, and the arithmetic i
 a test can grade it. [rust-modules/ui/src/hero_shade.rs](rust-modules/ui/src/hero_shade.rs): `HeroShade`
 holds one rounded block per piece of content the screen draws on the art (Home: the copy column, the
 action row and the pager; Detail: the title or logo, the synopsis column, the facts, the credits and
-the action row), each feathered by `theme::shade::{FEATHER, RADIUS, PAD}` and held at its role's
+the action row; the catalog page: the title, the copy and the pill), each feathered by `theme::shade::{FEATHER, RADIUS, PAD}` and held at its role's
 darkness (`COPY_A`, `CONTROLS_A`). `HeroShade::at(x, y,
 strength)` is the closed form the legibility tests read, so the promise and the paint cannot come from
 two different curves; `gfx/scrim.rs`'s `GroundShade` evaluates the same numbers in the one-pass ground
@@ -91,8 +91,10 @@ logo that rises into the trailer corner carries its shade up with it.
 - Detail keeps the vertical ramp, [rust-modules/ui/src/landing_hero.rs](rust-modules/ui/src/landing_hero.rs):
   zero above `HERO_BASE_SCRIM_Y0` (0.34 of the screen, 367), `foot * MID_WEIGHT` at `KNEE_Y` (0.65
   of the screen, 702), and `foot = SCRIM_FOOT_A * hero_a` at the bottom, with the shade over it.
-- The horizontal wedge and feathered corner (`widgets.rs`: `hero_scrim_a`, `hero_scrim_right_a`) are
-  RETIRED from both heroes; only `screens::catalog` still draws them.
+- The horizontal wedge and feathered corner that stood behind the heroes (`widgets::hero_scrim` and its
+  closed forms) are deleted; the catalog page (`screens::catalog`), the last to draw them, builds a
+  `HeroShade` from the rects it draws (the title, the copy under it, the pill) and lays it over its art
+  as a scrim layer.
 
 The shade scales by the screen's own hero fade, so it leaves with the hero instead of lingering over
 the shelves.
