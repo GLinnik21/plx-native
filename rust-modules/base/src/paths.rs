@@ -772,6 +772,28 @@ pub fn telemetry_candidates() -> Vec<PathBuf> {
     v
 }
 
+/// Candidate locations for external integrations configuration (Radarr, Sonarr, etc.), best first.
+///
+/// 1. Steerable (hostsim / tests): in the instance root / runtime directory.
+/// 2. Developer Mode jail: `/media/developer/{id}-integrations.json` (writable in Dev Mode, survives reinstall).
+/// 3. Homebrew Channel production jail: `/media/internal/.{id}-integrations.json` (the persistent rw location).
+/// 4. Device runtime directory fallback: `/tmp/{id}/integrations.json` (or `/tmp/integrations.json` for stable).
+pub fn integrations_candidates() -> Vec<PathBuf> {
+    let mut v = Vec::new();
+    if ENV_STEERABLE {
+        v.push(in_runtime_dir("integrations.json"));
+    }
+    let id = app_id();
+    v.extend([
+        PathBuf::from(format!("/media/developer/{id}-integrations.json")),
+        PathBuf::from(format!("/media/internal/.{id}-integrations.json")),
+    ]);
+    if !ENV_STEERABLE {
+        v.push(in_runtime_dir("integrations.json"));
+    }
+    v
+}
+
 /// Candidate locations of the retired **last place** bookmark (`coldstart`).
 ///
 /// Builds before 2026-09-01 wrote into these persistent locations. The current build only removes

@@ -37,6 +37,9 @@ pub(super) fn ordinal(kind: Kind) -> u32 {
 pub(super) fn group(kind: Kind) -> GroupId {
     GroupId(0x5345_4200 + ordinal(kind))
 }
+pub(super) fn arr_group(kind: Kind) -> GroupId {
+    GroupId(0x5345_4210 + ordinal(kind))
+}
 static EPISODE: RowStyle = RowStyle { w: 420.0, h: 236.0, ..RowStyle::HOME };
 static PERSON: RowStyle = RowStyle { w: 250.0, h: 250.0, circular: true, ..RowStyle::HOME };
 static POSTER: RowStyle = RowStyle { w: CARD_W, h: CARD_H, ..RowStyle::HOME };

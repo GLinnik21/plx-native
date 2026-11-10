@@ -139,6 +139,47 @@ pub enum PreferenceCmd {
     /// The Interface resolution picked in its picker: install-wide, applied at the next launch. The
     /// app writes it through the session; `reply` learns whether the write was durable.
     UiResolution { mode: plx_plex::plex::session::UiResolution, reply: std::sync::mpsc::Sender<bool> },
+    /// Validate connection to an external *arr service and persist if valid.
+    ValidateArr {
+        service: plx_data::integrations::ArrKind,
+        url: String,
+        token: String,
+        reply: std::sync::mpsc::Sender<Result<String, String>>,
+    },
+    /// Save draft or configuration for an external *arr service.
+    SaveArrConfig {
+        service: plx_data::integrations::ArrKind,
+        url: String,
+        token: String,
+    },
+    /// Query Radarr and Sonarr for external media lookup.
+    LookupArr {
+        query: String,
+        reply: std::sync::mpsc::Sender<plx_data::integrations::ArrLookupResponse>,
+    },
+    /// Add or search for an item in Radarr or Sonarr.
+    AddArrItem {
+        request: plx_data::integrations::ArrAddRequest,
+        reply: std::sync::mpsc::Sender<plx_data::integrations::ArrAddOutcome>,
+    },
+    /// Fetch all media items in a Radarr or Sonarr library.
+    FetchArrLibrary {
+        service: plx_data::integrations::ArrKind,
+        reply: std::sync::mpsc::Sender<Result<Vec<plx_data::integrations::ArrMediaItem>, String>>,
+    },
+    /// Toggle the monitored status of an item in Radarr or Sonarr.
+    ToggleArrMonitored {
+        service: plx_data::integrations::ArrKind,
+        id: u32,
+        monitored: bool,
+        reply: std::sync::mpsc::Sender<Result<bool, String>>,
+    },
+    /// Trigger an automated search for an item in Radarr or Sonarr.
+    TriggerArrSearch {
+        service: plx_data::integrations::ArrKind,
+        id: u32,
+        reply: std::sync::mpsc::Sender<Result<String, String>>,
+    },
 }
 
 /// Whether an item has a context menu to open (`item_menu::has_actions`): the one predicate the
@@ -329,6 +370,8 @@ pub enum HomeTab {
     /// The Watchlist mark, before Search (docs/watchlist-plan.md §2.4 W45).
     Watchlist,
     Search,
+    Radarr,
+    Sonarr,
 }
 
 /// Addressed bootstrap/diagnostic intentions. They use the same owned step and focus engine as
@@ -1145,6 +1188,8 @@ pub enum ContentReq {
     Push(ContentArg),
     Present(ContentArg),
     Back,
+    Tab(HomeTab),
+    Account,
     Play { play: PlayIntent, resume_ns: i64 },
     /// Start a hero preview. Does not push the player route.
     PreviewStart {
@@ -1984,6 +2029,8 @@ pub enum AppArg {
     /// The first-run consent question, rooted at this stage byte (0 for every real opening;
     /// `screens::consent`'s `STAGE_PRODUCT` for `/tmp/plxnative-consent=product`).
     FirstRunConsent(u8),
+    /// The external Arr service media library (Radarr or Sonarr).
+    Arr(plx_data::integrations::ArrKind),
 }
 
 impl AppArg {
@@ -2046,6 +2093,7 @@ impl LogicalState for AppArg {
             Self::Content(arg) => { c.u32(1); arg.write(c); }
             Self::Settings(page) => { c.u32(2); page.write(c); }
             Self::FirstRunConsent(stage) => { c.u32(3).u8(*stage); }
+            Self::Arr(kind) => { c.u32(0).u32(15).u32(*kind as u32); }
         }
     }
     fn probe(&self, out: &mut String) { out.push_str("app_arg"); }
@@ -2059,7 +2107,7 @@ impl plx_ui::screen::ScreenArg for AppArg {
     /// them fade the bar with the page.
     fn chrome(&self) -> Chrome {
         match self {
-            AppArg::Home | AppArg::Library | AppArg::Search | AppArg::Watchlist => Chrome::TabBar,
+            AppArg::Home | AppArg::Library | AppArg::Search | AppArg::Watchlist | AppArg::Arr(_) => Chrome::TabBar,
             // The two sub-pages of a library keep the bar, as the Library they are pushed over.
             AppArg::LibraryCollections { .. } | AppArg::LibraryRecommended { .. } => Chrome::TabBar,
             AppArg::Login
@@ -2134,12 +2182,19 @@ impl plx_ui::screen::ScreenArg for AppArg {
             AppArg::Content(ContentArg::Catalog { .. }) => 27,
             // 30, forward of the Recommended page's 29.
             AppArg::VersionsPanel(_) => 30,
+            AppArg::Arr(kind) => match kind {
+                plx_data::integrations::ArrKind::Radarr => 31,
+                plx_data::integrations::ArrKind::Sonarr => 32,
+            },
         })
     }
     fn title(&self) -> Option<&str> {
         None
     }
     fn same_instance(&self, other: &Self) -> bool {
+        if let (Self::Arr(a), Self::Arr(b)) = (self, other) {
+            return a == b;
+        }
         if let (Self::Content(a), Self::Content(b)) = (self, other) {
             return a.same_item(b);
         }
@@ -2365,6 +2420,7 @@ where
             // The list is the store's: the page mounts on "loading" and the application feeds it
             // the rows, the options and the matched facts (`WatchlistIn`) on its first frames.
             AppArg::Watchlist => Box::new(crate::watchlist::page::WatchlistScreen::loading(entry)),
+            AppArg::Arr(kind) => Box::new(crate::arr::ArrScreen::new(entry, *kind)),
             // Phase 9: the player is an OWNED screen — the instance that holds the HUD, the scrub
             // gesture, the held-key timer, the control row's springs and the Up Next countdown,
             // and that answers `RenderStrategy::VideoPlane`. Its transport is pinned from the
@@ -2498,6 +2554,7 @@ pub fn every_surface_arg() -> Vec<AppArg> {
             | AppArg::LibraryRecommended { .. }
             | AppArg::Search
             | AppArg::Watchlist
+            | AppArg::Arr(_)
             | AppArg::Player
             | AppArg::Content(_) => {
                 panic!("a page argument is not a surface: its word is `route=`")

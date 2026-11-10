@@ -1089,13 +1089,15 @@ impl LibraryScreen {
             fx.push(Fx::App(AppFx::Library(req)));
             return Handled::Yes;
         }
-        use plx_ui::widgets::{TAB_KEY_CHIP, TAB_KEY_HOME, TAB_KEY_MOVIES, TAB_KEY_SEARCH, TAB_KEY_SHOWS, TAB_KEY_WATCHLIST};
+        use plx_ui::widgets::{TAB_KEY_CHIP, TAB_KEY_HOME, TAB_KEY_MOVIES, TAB_KEY_SEARCH, TAB_KEY_SHOWS, TAB_KEY_WATCHLIST, TAB_KEY_RADARR, TAB_KEY_SONARR};
         let req = match elem {
             TAB_KEY_HOME => Some(LibraryReq::Tab(HomeTab::Home)),
             TAB_KEY_MOVIES => Some(LibraryReq::Tab(HomeTab::Movies)),
             TAB_KEY_SHOWS => Some(LibraryReq::Tab(HomeTab::Shows)),
             TAB_KEY_SEARCH => Some(LibraryReq::Tab(HomeTab::Search)),
             TAB_KEY_WATCHLIST => Some(LibraryReq::Tab(HomeTab::Watchlist)),
+            TAB_KEY_RADARR => Some(LibraryReq::Tab(HomeTab::Radarr)),
+            TAB_KEY_SONARR => Some(LibraryReq::Tab(HomeTab::Sonarr)),
             TAB_KEY_CHIP => Some(LibraryReq::Account),
             _ => None,
         };
@@ -1305,7 +1307,11 @@ impl LibraryScreen {
                 let first_row = self.grid_position(focus).and_then(|(_, col)|
                     self.pair.detail.elem_for(cx, &mut self.keys, col, self.layout.cols()));
                 match first_row {
-                    Some(elem) => self.reseat(FocusTarget::Elem(self.key(elem)), fx),
+                    Some(elem) => {
+                        // the first-row card rises from rest as on UP, never lifted in one frame
+                        self.pair.detail.arrive();
+                        self.reseat(FocusTarget::Elem(self.key(elem)), fx);
+                    }
                     None => self.reseat_first(fx),
                 }
             }

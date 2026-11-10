@@ -1610,6 +1610,7 @@ pub(crate) fn delete_all_local_data(meta: &mut plx_data::stores::metadata::Metad
     failures.extend(sweep_local_files(
         plx_base::paths::obsolete_last_place_candidates()
             .into_iter()
+            .chain(plx_base::paths::integrations_candidates())
             .chain(plx_base::paths::telemetry_candidates())
             .chain(plx_base::paths::telemetry_spool_candidates())
             .chain(plx_base::paths::telemetry_crashmark_candidates())

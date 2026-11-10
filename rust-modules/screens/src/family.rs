@@ -71,6 +71,12 @@ pub enum SettingsPage {
     HudDetail(plx_data::hudpacks::Sha),
     HudAbout(plx_data::hudpacks::Sha),
     HudPreview(plx_data::hudpacks::Sha),
+    /// External service integrations index (Radarr, Sonarr).
+    Integrations,
+    /// Radarr service settings.
+    Radarr,
+    /// Sonarr service settings.
+    Sonarr,
 }
 
 /// Which preference a [`SettingsPage::Picker`] edits. The parent page (`Playback` for the local ones,
@@ -141,7 +147,10 @@ impl SettingsPage {
             | SettingsPage::PlayerHud
             | SettingsPage::HudGallery
             | SettingsPage::HudDetail(_)
-            | SettingsPage::HudAbout(_) => true,
+            | SettingsPage::HudAbout(_)
+            | SettingsPage::Integrations
+            | SettingsPage::Radarr
+            | SettingsPage::Sonarr => true,
             SettingsPage::HudPreview(_) | SettingsPage::ConsentStage(_) => false,
         }
     }
@@ -158,6 +167,8 @@ impl SettingsPage {
             SettingsPage::Picker(kind) => vec![SettingsPage::Root, kind.parent(), self],
             SettingsPage::PlayerHud => vec![SettingsPage::Root, SettingsPage::Playback, self],
             SettingsPage::UnderPostersDetails(_) => vec![SettingsPage::Root, SettingsPage::UnderPosters, self],
+            SettingsPage::Radarr | SettingsPage::Sonarr => vec![SettingsPage::Root, SettingsPage::Integrations, self],
+            SettingsPage::Integrations => vec![SettingsPage::Root, self],
             page => vec![page],
         }
     }
@@ -202,6 +213,9 @@ impl ScreenArg for SettingsPage {
             SettingsPage::HudAbout(..) => 119,
             SettingsPage::HudPreview(..) => 120,
             SettingsPage::Diagnostics => 121,
+            SettingsPage::Integrations => 122,
+            SettingsPage::Radarr => 123,
+            SettingsPage::Sonarr => 124,
         })
     }
     fn title(&self) -> Option<&str> {
@@ -247,6 +261,9 @@ impl LogicalState for SettingsPage {
             | SettingsPage::PlayerHud
             | SettingsPage::HudGallery
             | SettingsPage::Diagnostics
+            | SettingsPage::Integrations
+            | SettingsPage::Radarr
+            | SettingsPage::Sonarr
             | SettingsPage::About => 0,
             SettingsPage::Document(i) | SettingsPage::Preview(i) | SettingsPage::ConsentStage(i) => *i,
             SettingsPage::Picker(kind) => *kind as u8,
@@ -278,6 +295,9 @@ impl LogicalState for SettingsPage {
             SettingsPage::HudAbout(..) => "hud-about",
             SettingsPage::HudPreview(..) => "hud-preview",
             SettingsPage::Diagnostics => "diagnostics",
+            SettingsPage::Integrations => "integrations",
+            SettingsPage::Radarr => "radarr",
+            SettingsPage::Sonarr => "sonarr",
         });
         if let SettingsPage::Document(i) | SettingsPage::Preview(i) | SettingsPage::ConsentStage(i) = self {
             out.push_str(&format!("[{i}]"));
@@ -459,6 +479,9 @@ mod tests {
             SettingsPage::HudDetail(plx_data::hudpacks::Sha::of(b"test")),
             SettingsPage::HudAbout(plx_data::hudpacks::Sha::of(b"test")),
             SettingsPage::HudPreview(plx_data::hudpacks::Sha::of(b"test")),
+            SettingsPage::Integrations,
+            SettingsPage::Radarr,
+            SettingsPage::Sonarr,
         ];
         let mut ids: Vec<u32> = pages.iter().map(|p| plx_ui::screen::ScreenArg::id(p).0).collect();
         ids.sort_unstable();

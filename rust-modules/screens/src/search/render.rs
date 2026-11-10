@@ -28,6 +28,8 @@ pub(super) struct Resources {
     titles: [CString; 5],
     count_keys: [Option<(Kind, usize)>; 5],
     counts: [CString; 5],
+    arr_count_keys: [Option<(Kind, usize)>; 5],
+    arr_counts: [CString; 5],
     owner: CString,
 }
 
@@ -37,6 +39,8 @@ impl Resources {
         query: &str,
         caret: usize,
         owner: &str,
+        shelves: &[plx_data::search::Shelf],
+        arr_shelves: &[plx_data::search::Shelf],
         cx: &Cx<'_, H>,
     ) {
         let q = query.split('\0').next().unwrap_or("");
@@ -99,7 +103,7 @@ impl Resources {
                 .collect();
             self.recents = Some(recents.clone());
         }
-        let keys = count_keys(H::search(cx).shelves());
+        let keys = count_keys(shelves);
         for (i, kind) in plx_data::search::KINDS.iter().enumerate() {
             if self.titles[i].is_empty() {
                 self.titles[i] = cstring(kind.title());
@@ -108,6 +112,16 @@ impl Resources {
             if self.count_keys[i] != key {
                 self.count_keys[i] = key;
                 self.counts[i] = key.map_or_else(CString::default, |(kind, n)| {
+                    cstring(&kind.count_label(n))
+                });
+            }
+        }
+        let arr_keys = count_keys(arr_shelves);
+        for (i, _kind) in plx_data::search::KINDS.iter().enumerate() {
+            let key = arr_keys[i];
+            if self.arr_count_keys[i] != key {
+                self.arr_count_keys[i] = key;
+                self.arr_counts[i] = key.map_or_else(CString::default, |(kind, n)| {
                     cstring(&kind.count_label(n))
                 });
             }
@@ -131,7 +145,7 @@ fn count_keys(shelves: &[plx_data::search::Shelf]) -> [Option<(Kind, usize)>; 5]
     keys
 }
 
-pub(super) fn draw<H: SearchLike>(screen: &SearchScreen, f: &mut DrawFrame<'_, '_, H>) {
+pub(super) fn draw<H: SearchLike>(screen: &mut SearchScreen, f: &mut DrawFrame<'_, '_, H>) {
     plx_gfx::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
     let p = f.painter.alpha(f.page_alpha);
     screen.ground.draw(p, Rect::FULL);
@@ -155,19 +169,29 @@ pub(super) fn draw<H: SearchLike>(screen: &SearchScreen, f: &mut DrawFrame<'_, '
         }
         let slot = layout::ordinal(row.kind) as usize;
         let title = &screen.render.titles[slot];
-        let source = if screen.owner_row == Some(i) && screen.owner_alpha.pos > OWNER_FLOOR {
-            screen.render.owner.as_c_str()
+        let (source, count, source_alpha) = if row.is_arr {
+            let src = match row.kind {
+                Kind::Movie => c"Radarr",
+                Kind::Show => c"Sonarr",
+                _ => c"",
+            };
+            (src, &screen.render.arr_counts[slot], 1.0)
         } else {
-            c""
+            let src = if screen.owner_row == Some(i) && screen.owner_alpha.pos > OWNER_FLOOR {
+                screen.render.owner.as_c_str()
+            } else {
+                c""
+            };
+            (src, &screen.render.counts[slot], screen.owner_alpha.pos)
         };
         plx_ui::cards::draw_heading_c(
             p,
             title,
-            &screen.render.counts[slot],
+            count,
             source,
             MARGIN_X,
             top - shelf.heading_lift(),
-            screen.owner_alpha.pos,
+            source_alpha,
             f.cx.measure,
         );
         if let Some(src) = screen.row_cards(H::search(f.cx), i) {
@@ -177,6 +201,19 @@ pub(super) fn draw<H: SearchLike>(screen: &SearchScreen, f: &mut DrawFrame<'_, '
     // A standing note, never a target: the page paints through here, not `StackView::paint`, so it
     // ends the draw itself, over everything the page painted.
     screen.stack.draw_hold_hint(f.painter.alpha(f.page_alpha), f.measure);
+    if screen.arr_alert.visible() {
+        screen.arr_alert.draw_scrim();
+        let is_done = screen.arr_feedback_message.as_ref().map_or(false, |(_, done)| *done);
+        let cancel_c = if is_done { c"Done" } else { c"Cancel" };
+        let action_c = if is_done {
+            c"Close"
+        } else if let Some(ref item) = screen.arr_alert_selected_item {
+            if item.in_library { c"Search Now" } else { c"Add & Search" }
+        } else {
+            c"Confirm"
+        };
+        screen.arr_alert.draw(cancel_c, action_c, f.measure);
+    }
 }
 
 fn field<H: SearchLike>(screen: &SearchScreen, f: &mut DrawFrame<'_, '_, H>, p: Painter) {
@@ -337,16 +374,22 @@ fn empty<H: SearchLike>(screen: &SearchScreen, f: &DrawFrame<'_, '_, H>, p: Pain
     }
     let header = header_of(empty);
     let statement = if empty == EmptyState::NoResults {
-        let shell =
-            f.cx.measure
-                .width_str(&plx_platform::i18n::msg::browse_search_no_results(""), theme::size::TITLE, true);
-        no_results_line(&elide(
-            screen.draft.query().trim(),
-            1200.0 - shell,
-            theme::size::TITLE,
-            true,
-            f.cx.measure,
-        ))
+        if screen.arr_in_flight {
+            format!("Searching Radarr and Sonarr for '{}'...", screen.draft.query().trim())
+        } else if screen.arr_query.is_some() {
+            format!("No results for '{}' on Plex, Radarr, or Sonarr.", screen.draft.query().trim())
+        } else {
+            let shell =
+                f.cx.measure
+                    .width_str(&plx_platform::i18n::msg::browse_search_no_results(""), theme::size::TITLE, true);
+            no_results_line(&elide(
+                screen.draft.query().trim(),
+                1200.0 - shell,
+                theme::size::TITLE,
+                true,
+                f.cx.measure,
+            ))
+        }
     } else {
         plx_platform::i18n::msg::browse_search_not_yet().into()
     };
@@ -386,7 +429,21 @@ pub(super) fn empty_pair(area: Rect, header_h: f32, statement_h: f32) -> (f32, f
 pub(super) fn tile_art(kind: Kind, item: &Item) -> Art<'_> {
     match (kind, item) {
         (Kind::Episode, Item::Media(media)) => Art::Still(Some(tile_facts::of(media))),
-        (_, Item::Media(media)) => Art::Poster(Some(tile_facts::of(media))),
+        (_, Item::Media(media)) => {
+            if media.sid == plx_plex::plex::ServerId::from_raw(0xFFE1) || media.sid == plx_plex::plex::ServerId::from_raw(0xFFE2) {
+                if !media.thumb.is_empty() {
+                    Art::Thumb {
+                        sid: media.sid.raw(),
+                        key: &media.thumb,
+                        res: (250, 375),
+                    }
+                } else {
+                    Art::Poster(None)
+                }
+            } else {
+                Art::Poster(Some(tile_facts::of(media)))
+            }
+        }
         (_, Item::Collection(hit)) => Art::Poster(Some(tile_facts::of(&hit.item))),
         (Kind::Person, Item::Tag(tag)) => Art::Person {
             sid: tag.sid.raw(),

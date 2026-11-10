@@ -540,8 +540,19 @@ pub(crate) fn content_requests(app: &mut App, fr: &mut Frame) {
             }
             ContentReq::Back => {
                 halt_preview(app);
-                content_back(&mut app.pages, source, entry, ret);
+                if matches!(app.route(), AppArg::Arr(_)) {
+                    bridge::nav_tab(&mut app.pages, &mut app.bridge, HomeTab::Home, None, Some(ret));
+                } else {
+                    content_back(&mut app.pages, source, entry, ret);
+                }
             }
+            ContentReq::Tab(tab) => {
+                match tab {
+                    HomeTab::Home => bridge::nav_home_pill(&mut app.pages, &mut app.bridge, Some(ret)),
+                    other => bridge::nav_tab(&mut app.pages, &mut app.bridge, other, None, Some(ret)),
+                }
+            }
+            ContentReq::Account => chip_activate(&mut app.pages),
             ContentReq::Play { play, resume_ns } => {
                 let mounted = bridge::player(&app.pages).is_some();
                 if !clear_engine_for_play(&mut app.player.session, &mut app.adapters.player, mounted) {
@@ -1104,7 +1115,14 @@ fn home_tab_available(
         HomeTab::Shows => Some(plx_data::stores::browse::SecKind::Show),
         _ => None,
     };
-    kind.is_none_or(|kind| directory.tab_of_kind(kind).is_some())
+    if let Some(kind) = kind {
+        return directory.tab_of_kind(kind).is_some();
+    }
+    match tab {
+        HomeTab::Radarr => plx_data::integrations::IntegrationsConfig::load().radarr.is_configured(),
+        HomeTab::Sonarr => plx_data::integrations::IntegrationsConfig::load().sonarr.is_configured(),
+        _ => true,
+    }
 }
 
 /// **The Library pages' publication gate**: may the store land the hubs it staged, this frame?

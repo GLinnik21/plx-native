@@ -17,7 +17,7 @@ pub use memory::Memory;
 
 use std::borrow::Cow;
 use plx_data::search::{Item, Kind};
-use crate::registry::{AppFx, HomeTab, PageMemory, SearchLike, SearchReq};
+use crate::registry::{AppFx, HomeTab, PageMemory, PreferenceCmd, SearchLike, SearchReq};
 use plx_data::stores::{StoreCmd, StoreId};
 use plx_data::stores::search::SearchCmd;
 use plx_ui::cards::{CardEvent, PageEdge, SectionFrame, SectionSpec, Shelf, Stack, StackEvent, StackMemory, StackPage};
@@ -63,12 +63,12 @@ struct KeyEntry { identity: Identity, elem: u32, group: GroupId, slot: usize }
 /// One result row. Rows are keyed by their `kind` (the page holds at most one per kind), so a row
 /// that appears, disappears or moves in the list keeps its own shelf in the [`Stack`] — its scroll,
 /// its pop, its caption band — and never lends it to a neighbour.
-struct Row { kind: Kind, group: GroupId, elems: Vec<u32> }
+struct Row { kind: Kind, group: GroupId, elems: Vec<u32>, is_arr: bool }
 
 /// The sections of the page, top to bottom. A result row's key carries the page's `rows_gen`: a
 /// row the page wiped and rebuilt is a new section with a new shelf, as a wiped row always was.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Sec { Head, Recents, Clear, Row(Kind, u32) }
+pub enum Sec { Head, Recents, Clear, Row(Kind, u32), ArrRow(Kind, u32) }
 
 pub struct SearchScreen {
     entry: EntryId,
@@ -109,6 +109,18 @@ pub struct SearchScreen {
     /// `PageCancel` can name its window: every ask the shelf emits is forwarded, a repeat
     /// included. The shelf paces the repeats and the store takes an identical ask idempotently.
     page_sent: [Option<(usize, bool, usize)>; 5],
+    pub(super) arr_query: Option<String>,
+    pub(super) arr_in_flight: bool,
+    arr_rx: Option<std::sync::mpsc::Receiver<plx_data::integrations::ArrLookupResponse>>,
+    pub(super) arr_shelves: Vec<plx_data::search::Shelf>,
+    arr_sources: Vec<plx_data::search::scope::ScopeSource>,
+    arr_lookups: Vec<plx_data::integrations::ArrMediaLookup>,
+    arr_details: Vec<plx_data::integrations::ArrServiceDetails>,
+    pub(super) arr_alert: plx_ui::decision_alert::DecisionAlert,
+    pub(super) arr_alert_selected_item: Option<plx_data::integrations::ArrMediaLookup>,
+    arr_selected_profile_index: usize,
+    arr_add_rx: Option<std::sync::mpsc::Receiver<plx_data::integrations::ArrAddOutcome>>,
+    pub(super) arr_feedback_message: Option<(String, bool)>,
 }
 
 impl SearchScreen {
@@ -119,7 +131,11 @@ impl SearchScreen {
             recent_clear_pending: false, publication: None, content_dirty: true,
             fade: plx_ui::xfade::Xfade::new(), ground: plx_ui::widgets::PageGround::new(),
             owner_row: None, owner: String::new(), owner_alpha: Spring::at(0.0), restored: None, render: Default::default(),
-            notices: 0, page_sent: [None; 5] }
+            notices: 0, page_sent: [None; 5],
+            arr_query: None, arr_in_flight: false, arr_rx: None, arr_shelves: Vec::new(),
+            arr_sources: Vec::new(), arr_lookups: Vec::new(), arr_details: Vec::new(),
+            arr_alert: plx_ui::decision_alert::DecisionAlert::new(), arr_alert_selected_item: None,
+            arr_selected_profile_index: 0, arr_add_rx: None, arr_feedback_message: None }
     }
     fn key(&self, elem: u32) -> FocusKey<u32> { FocusKey { entry: self.entry, elem } }
     fn real_query(&self) -> bool { plx_data::search::terms(self.draft.query()).is_some() }
@@ -179,6 +195,46 @@ impl SearchScreen {
         }
     }
 
+    fn rebuild_rows(&mut self, plex_shelves: &[plx_data::search::Shelf]) {
+        self.rows.clear();
+        for shelf in plex_shelves {
+            let group = layout::group(shelf.kind);
+            let mut elems = Vec::with_capacity(shelf.items.len());
+            for (slot, item) in shelf.items.iter().enumerate() {
+                let identity = match item {
+                    Item::Media(media) if !media.rk.is_empty() => Identity::Media(shelf.kind, media.sid, media.rk.clone()),
+                    Item::Collection(hit) if !hit.item.rk.is_empty() => Identity::Media(shelf.kind, hit.item.sid, hit.item.rk.clone()),
+                    // a tag-shaped collection keys on its tag id, as it did while it was a tag
+                    Item::Collection(hit) if hit.tag > 0 => Identity::Tag(shelf.kind, hit.item.sid, hit.tag.to_string()),
+                    Item::Tag(tag) if !tag.tag_key.is_empty() || (!tag.id.is_empty() && tag.id != "0") =>
+                        Identity::Tag(shelf.kind, tag.sid, if tag.tag_key.is_empty() { tag.id.clone() } else { tag.tag_key.clone() }),
+                    _ => Identity::Slot(shelf.kind, self.query_gen, slot),
+                };
+                elems.push(self.intern(identity, group, slot));
+            }
+            self.rows.push(Row { kind: shelf.kind, group, elems, is_arr: false });
+        }
+
+        let arr_data: Vec<_> = self.arr_shelves.iter().map(|shelf| {
+            let ids: Vec<_> = shelf.items.iter().enumerate().map(|(slot, item)| {
+                match item {
+                    Item::Media(media) => Identity::Media(shelf.kind, media.sid, media.rk.clone()),
+                    _ => Identity::Slot(shelf.kind, self.query_gen, slot),
+                }
+            }).collect();
+            (shelf.kind, ids)
+        }).collect();
+
+        for (kind, ids) in arr_data {
+            let group = layout::arr_group(kind);
+            let mut elems = Vec::with_capacity(ids.len());
+            for (slot, identity) in ids.into_iter().enumerate() {
+                elems.push(self.intern(identity, group, slot));
+            }
+            self.rows.push(Row { kind, group, elems, is_arr: true });
+        }
+    }
+
     /// Bring the page's model up to the store's. Answers whether the result shelves were replaced
     /// by a publication (the caller then brings the focused row into view).
     fn sync<H: SearchLike>(&mut self, cx: &Cx<'_, H>, notified: bool, fx: &mut Effects<'_, H>) -> bool {
@@ -229,46 +285,53 @@ impl SearchScreen {
         }
         if self.draft.pending() || !self.real_query() {
             self.wipe_rows();
+            self.arr_shelves.clear();
+            self.arr_lookups.clear();
+            self.arr_query = None;
+            self.arr_in_flight = false;
             return false;
         }
         if query_changed {
             self.wipe_rows();
+            self.arr_shelves.clear();
+            self.arr_lookups.clear();
+            self.arr_query = None;
+            self.arr_in_flight = false;
             self.fade.reload();
         }
-        self.rows.clear();
-        for shelf in view.shelves() {
-            let group = layout::group(shelf.kind);
-            let mut elems = Vec::with_capacity(shelf.items.len());
-            for (slot, item) in shelf.items.iter().enumerate() {
-                let identity = match item {
-                    Item::Media(media) if !media.rk.is_empty() => Identity::Media(shelf.kind, media.sid, media.rk.clone()),
-                    Item::Collection(hit) if !hit.item.rk.is_empty() => Identity::Media(shelf.kind, hit.item.sid, hit.item.rk.clone()),
-                    // a tag-shaped collection keys on its tag id, as it did while it was a tag
-                    Item::Collection(hit) if hit.tag > 0 => Identity::Tag(shelf.kind, hit.item.sid, hit.tag.to_string()),
-                    Item::Tag(tag) if !tag.tag_key.is_empty() || (!tag.id.is_empty() && tag.id != "0") =>
-                        Identity::Tag(shelf.kind, tag.sid, if tag.tag_key.is_empty() { tag.id.clone() } else { tag.tag_key.clone() }),
-                    _ => Identity::Slot(shelf.kind, view.query_gen(), slot),
-                };
-                elems.push(self.intern(identity, group, slot));
+        let q = self.draft.query().trim().to_string();
+        if self.arr_query.as_deref() != Some(&q) && !self.arr_in_flight {
+            let cfg = plx_data::integrations::IntegrationsConfig::load();
+            if cfg.radarr.is_configured() || cfg.sonarr.is_configured() {
+                self.arr_query = Some(q.clone());
+                self.arr_in_flight = true;
+                let (tx, rx) = std::sync::mpsc::channel();
+                self.arr_rx = Some(rx);
+                fx.push(Fx::App(AppFx::Preferences(PreferenceCmd::LookupArr { query: q, reply: tx })));
             }
-            self.rows.push(Row { kind: shelf.kind, group, elems });
         }
+        self.rebuild_rows(view.shelves());
         if let Some(memory) = restored {
-            let shelves = self.rows.iter().filter_map(|row| memory.rows.iter()
-                .find(|(kind, _)| *kind == row.kind).map(|(_, x)| (Sec::Row(row.kind, self.rows_gen), *x))).collect();
+            let shelves = self.rows.iter().enumerate().filter_map(|(i, row)| {
+                if row.is_arr { None } else {
+                    memory.rows.iter().find(|(kind, _)| *kind == row.kind).map(|(_, x)| (self.section(i), *x))
+                }
+            }).collect();
             self.stack.restore(&StackMemory { scroll: memory.scroll, shelves });
         }
         shelves_changed
     }
 
     fn activate<H: SearchLike>(&mut self, elem: u32, held: bool, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
-        use plx_ui::widgets::{TAB_KEY_CHIP, TAB_KEY_HOME, TAB_KEY_MOVIES, TAB_KEY_SEARCH, TAB_KEY_SHOWS, TAB_KEY_WATCHLIST};
+        use plx_ui::widgets::{TAB_KEY_CHIP, TAB_KEY_HOME, TAB_KEY_MOVIES, TAB_KEY_SEARCH, TAB_KEY_SHOWS, TAB_KEY_WATCHLIST, TAB_KEY_RADARR, TAB_KEY_SONARR};
         if elem >= plx_ui::dispatch::STRIP_BASE {
             let request = match elem {
                 TAB_KEY_HOME => SearchReq::Tab(HomeTab::Home),
                 TAB_KEY_MOVIES => SearchReq::Tab(HomeTab::Movies),
                 TAB_KEY_SHOWS => SearchReq::Tab(HomeTab::Shows),
                 TAB_KEY_WATCHLIST => SearchReq::Tab(HomeTab::Watchlist),
+                TAB_KEY_RADARR => SearchReq::Tab(HomeTab::Radarr),
+                TAB_KEY_SONARR => SearchReq::Tab(HomeTab::Sonarr),
                 // The Search mark is the page the user is already on: nothing to request.
                 TAB_KEY_SEARCH => return Handled::Yes,
                 TAB_KEY_CHIP => SearchReq::Account,
@@ -304,10 +367,28 @@ impl SearchScreen {
             }
             return Handled::Yes;
         }
-        for (row_index, row) in self.rows.iter().enumerate() {
+        for row in &self.rows {
             let Some(col) = row.elems.iter().position(|key| *key == elem) else { continue };
+            if row.is_arr {
+                let Some(shelf) = self.arr_shelves.iter().find(|s| s.kind == row.kind) else { return Handled::No };
+                let Some(item) = shelf.items.get(col) else { return Handled::No };
+                if let Item::Media(media) = item {
+                    if let Some(lookup) = self.arr_lookups.iter().find(|l| {
+                        let expected_rk = match l.service {
+                            plx_data::integrations::ArrKind::Radarr => format!("radarr:{}", l.external_id),
+                            plx_data::integrations::ArrKind::Sonarr => format!("sonarr:{}", l.external_id),
+                        };
+                        expected_rk == media.rk
+                    }).cloned() {
+                        self.open_arr_alert(lookup);
+                        fx.invalidate(Provenance::Input);
+                        return Handled::Yes;
+                    }
+                }
+                return Handled::Yes;
+            }
             let view = H::search(cx);
-            let Some(shelf) = view.shelves().get(row_index) else { return Handled::No };
+            let Some(shelf) = view.shelves().iter().find(|s| s.kind == row.kind) else { return Handled::No };
             let Some(item) = shelf.items.get(col) else { return Handled::No };
             match item {
                 Item::Media(media) if !media.rk.is_empty() => {
@@ -341,6 +422,7 @@ impl SearchScreen {
 impl<H: SearchLike> Machine<H> for SearchScreen {
     type Ev = ScreenEvent<H>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
+        self.check_arr_results(cx, fx);
         let store_changed = matches!(ev, ScreenEvent::StoreChanged(store, _) if *store == StoreId::Search.ord());
         if store_changed { self.notices += 1; }
         let acknowledged = matches!(ev, ScreenEvent::Mount) || store_changed;
@@ -358,8 +440,36 @@ impl<H: SearchLike> Machine<H> for SearchScreen {
                 self.reseat(FocusTarget::Elem(self.key(FIELD)), fx);
             }
             ScreenEvent::WillLeave(_) | ScreenEvent::Unmount | ScreenEvent::Cover | ScreenEvent::Suspend => self.keyboard(false, false, fx),
-            ScreenEvent::Activate(elem) => return self.activate(*elem, false, cx, fx),
+            ScreenEvent::Activate(elem) => {
+                if self.arr_alert.is_open() {
+                    if self.arr_alert.choice() == plx_ui::decision_alert::Choice::Cancel
+                        || self.arr_feedback_message.as_ref().map_or(false, |(_, done)| *done)
+                    {
+                        self.arr_alert.close();
+                        self.arr_feedback_message = None;
+                        self.arr_alert_selected_item = None;
+                    } else {
+                        self.execute_arr_alert_action(fx);
+                    }
+                    fx.invalidate(Provenance::Input);
+                    return Handled::Yes;
+                }
+                return self.activate(*elem, false, cx, fx);
+            }
             ScreenEvent::PressCommit(_) => {
+                if self.arr_alert.is_open() {
+                    if self.arr_alert.choice() == plx_ui::decision_alert::Choice::Cancel
+                        || self.arr_feedback_message.as_ref().map_or(false, |(_, done)| *done)
+                    {
+                        self.arr_alert.close();
+                        self.arr_feedback_message = None;
+                        self.arr_alert_selected_item = None;
+                    } else {
+                        self.execute_arr_alert_action(fx);
+                    }
+                    fx.invalidate(Provenance::Input);
+                    return Handled::Yes;
+                }
                 if let Some(CardEvent::Activate(elem)) = card { return self.activate(elem, false, cx, fx); }
                 if let Some(key) = cx.focus.current { return self.activate(key.elem, false, cx, fx); }
             }
@@ -392,6 +502,46 @@ impl<H: SearchLike> Machine<H> for SearchScreen {
                     }
                 }
                 InputKind::Key { key, sym, edge, .. } if *edge != Edge::Up => {
+                    if self.arr_alert.is_open() {
+                        if *key == Key::Back {
+                            self.arr_alert.close();
+                            self.arr_feedback_message = None;
+                            self.arr_alert_selected_item = None;
+                            fx.invalidate(Provenance::Input);
+                            return Handled::Yes;
+                        }
+                        if *key == Key::Left || *key == Key::Right {
+                            let curr = self.arr_alert.choice();
+                            let next = if curr == plx_ui::decision_alert::Choice::Cancel {
+                                plx_ui::decision_alert::Choice::Destructive
+                            } else {
+                                plx_ui::decision_alert::Choice::Cancel
+                            };
+                            self.arr_alert.set_choice(next);
+                            fx.invalidate(Provenance::Input);
+                            return Handled::Yes;
+                        }
+                        if *key == Key::Up || *key == Key::Down {
+                            self.cycle_quality_profile(*key == Key::Up);
+                            self.update_arr_alert_body();
+                            fx.invalidate(Provenance::Input);
+                            return Handled::Yes;
+                        }
+                        if *key == Key::Ok {
+                            if self.arr_alert.choice() == plx_ui::decision_alert::Choice::Cancel
+                                || self.arr_feedback_message.as_ref().map_or(false, |(_, done)| *done)
+                            {
+                                self.arr_alert.close();
+                                self.arr_feedback_message = None;
+                                self.arr_alert_selected_item = None;
+                            } else {
+                                self.execute_arr_alert_action(fx);
+                            }
+                            fx.invalidate(Provenance::Input);
+                            return Handled::Yes;
+                        }
+                        return Handled::Yes;
+                    }
                     if self.editing {
                         let edit = match (*key, *sym) {
                             (Key::Left, _) => Some(TextEdit::Left), (Key::Right, _) => Some(TextEdit::Right),
@@ -450,7 +600,8 @@ impl SearchScreen {
     fn page_rows<H: SearchLike>(&mut self, got: &Option<StackEvent<Sec, u32>>, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         let view = H::search(cx);
         for row in 0..self.rows.len() {
-            let Some(shelf) = view.shelves().get(row) else { continue };
+            if self.rows[row].is_arr { continue; }
+            let Some(shelf) = view.shelves().iter().find(|s| s.kind == self.rows[row].kind) else { continue };
             let k = self.section(row);
             let wanted = matches!(got, Some(StackEvent::Card(key, CardEvent::Want(_))) if *key == k);
             let (offset, held) = (shelf.window.start, shelf.items.len());
@@ -487,17 +638,21 @@ impl SearchScreen {
 
     pub fn selected_item<'a, H: SearchLike>(&self, focus: Option<FocusKey<u32>>, cx: &Cx<'a, H>) -> Option<&'a Item> {
         let key = focus.filter(|key| key.entry == self.entry)?;
+        let (row_idx, col) = self.rows.iter().enumerate().find_map(|(row, model)|
+            model.elems.iter().position(|elem| *elem == key.elem).map(|col| (row, col)))?;
+        let row = self.rows.get(row_idx)?;
+        if row.is_arr {
+            return None;
+        }
         let view = H::search(cx);
         if self.draft.pending() || self.query_gen != view.query_gen() || self.draft.profile() != view.recents().generation() { return None; }
-        let (row, col) = self.rows.iter().enumerate().find_map(|(row, model)|
-            model.elems.iter().position(|elem| *elem == key.elem).map(|col| (row, col)))?;
-        view.shelves().get(row)?.items.get(col)
+        view.shelves().iter().find(|s| s.kind == row.kind)?.items.get(col)
     }
 
     pub fn redraw_focused<H: SearchLike>(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<FocusKey<u32>>) {
-        if self.selected_item(focus, f.cx).is_none() { return; }
         let Some(key) = focus else { return };
         let Some(row) = self.rows.iter().position(|model| model.elems.contains(&key.elem)) else { return };
+        if !self.rows[row].is_arr && self.selected_item(focus, f.cx).is_none() { return; }
         let painter = f.painter.alpha(f.page_alpha * self.fade.alpha());
         // The lifted opener is painted after the strip, unlike the ordinary page flow.
         let floor = plx_ui::widgets::TOP_BAR_BOTTOM;
@@ -568,7 +723,14 @@ impl SearchScreen {
         if !self.recents.is_empty() { Some(RECENTS_GROUP) } else { self.rows.first().map(|row| row.group) }
     }
     /// The stack's key of result row `row`.
-    fn section(&self, row: usize) -> Sec { Sec::Row(self.rows[row].kind, self.rows_gen) }
+    fn section(&self, row: usize) -> Sec {
+        let r = &self.rows[row];
+        if r.is_arr {
+            Sec::ArrRow(r.kind, self.rows_gen)
+        } else {
+            Sec::Row(r.kind, self.rows_gen)
+        }
+    }
     /// Result row `row`'s shelf, over `cx`'s page: where its tiles sit now and what they hold.
     fn row_frame<H: SearchLike>(&self, cx: &Cx<'_, H>, row: usize) -> Option<(SectionFrame, &Shelf)> {
         let k = self.section(row);
@@ -577,28 +739,52 @@ impl SearchScreen {
     /// Result row `row`'s cards over `view`; `None` when the view has no such shelf.
     fn row_cards<'a>(&'a self, view: plx_data::search::view::SearchView<'a>, row: usize) -> Option<RowCards<'a>> {
         let model = self.rows.get(row)?;
-        let shelf = view.shelves().get(row)?;
-        Some(RowCards { kind: model.kind, elems: &model.elems, items: &shelf.items,
-            sources: view.scope().sources(), window: shelf.window, epoch: shelf.epoch })
+        if model.is_arr {
+            let shelf = self.arr_shelves.iter().find(|s| s.kind == model.kind)?;
+            Some(RowCards { kind: model.kind, elems: &model.elems, items: &shelf.items,
+                sources: self.arr_sources.as_slice(), window: shelf.window, epoch: shelf.epoch })
+        } else {
+            let shelf = view.shelves().iter().find(|s| s.kind == model.kind)?;
+            Some(RowCards { kind: model.kind, elems: &model.elems, items: &shelf.items,
+                sources: view.scope().sources(), window: shelf.window, epoch: shelf.epoch })
+        }
     }
     fn tick<H: SearchLike>(&mut self, tick: plx_machine::machine::Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+        self.check_arr_results(cx, fx);
+        if self.arr_alert.visible() {
+            self.arr_alert.update(tick.dt());
+        }
         fx.push(Fx::App(AppFx::StoreWork(plx_data::stores::StoreWork::BrowseDiscovery)));
         fx.push(Fx::App(AppFx::StoreWork(plx_data::stores::StoreWork::Search { dt_us: tick.dt_us })));
         if self.step_blink(tick.dt_us) { fx.invalidate(Provenance::Input); }
         self.fade.tick(tick.dt(), !self.draft.pending() && H::search(cx).state() != plx_data::search::State::Searching);
-        let colours = cx.focus.current.and_then(|key| self.rows.iter().enumerate().find_map(|(row, model)|
-            model.elems.iter().position(|elem| *elem == key.elem).and_then(|col|
-                H::search(cx).shelves().get(row)?.items.get(col)).and_then(|item| match item {
+        let colours = cx.focus.current.and_then(|key| self.rows.iter().enumerate().find_map(|(_row, model)|
+            model.elems.iter().position(|elem| *elem == key.elem).and_then(|col| {
+                if model.is_arr {
+                    self.arr_shelves.iter().find(|s| s.kind == model.kind)?.items.get(col)
+                } else {
+                    H::search(cx).shelves().iter().find(|s| s.kind == model.kind)?.items.get(col)
+                }
+            })).and_then(|item| match item {
                     Item::Media(media) if media.has_blur => Some(media.blur),
                     Item::Collection(hit) if hit.item.has_blur => Some(hit.item.blur), _ => None,
-                })));
+                }));
         self.ground.key(colours, plx_ui::widgets::PageGround::CARD_W, tick.dt());
         let target = cx.focus.current.and_then(|key| self.rows.iter().enumerate().find_map(|(row, model)|
             model.elems.iter().position(|elem| *elem == key.elem).map(|col| (row, col))));
         let view = H::search(cx);
-        let handle = target.and_then(|(row, col)| view.shelves().get(row)?.items.get(col))
-            .and_then(|item| view.scope().sources().iter().find(|source| source.sid == item.sid()))
-            .map_or("", |source| source.handle.as_str());
+        let handle = target.and_then(|(row, col)| {
+            let model = self.rows.get(row)?;
+            if model.is_arr {
+                self.arr_shelves.iter().find(|s| s.kind == model.kind)?.items.get(col)
+                    .and_then(|item| self.arr_sources.iter().find(|source| source.sid == item.sid()))
+                    .map(|source| source.handle.as_str())
+            } else {
+                view.shelves().iter().find(|s| s.kind == model.kind)?.items.get(col)
+                    .and_then(|item| view.scope().sources().iter().find(|source| source.sid == item.sid()))
+                    .map(|source| source.handle.as_str())
+            }
+        }).unwrap_or("");
         let target_row = target.map(|(row, _)| row);
         let settled = self.owner_row == target_row && self.owner == handle;
         // The three springs this instance owns are stepped through the shared reporting
@@ -629,6 +815,310 @@ impl SearchScreen {
         self.blink_us = ((self.blink_us as u64 + dt_us as u64) % (2 * BLINK_US) as u64) as u32;
         was != (self.blink_us < BLINK_US)
     }
+
+    fn check_arr_results<H: SearchLike>(&mut self, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+        if let Some(ref rx) = self.arr_rx {
+            if let Ok(response) = rx.try_recv() {
+                self.arr_rx = None;
+                self.arr_in_flight = false;
+                if self.arr_query.as_deref() != Some(&response.query) {
+                    return;
+                }
+                self.arr_details = response.details;
+
+                if !response.radarr_results.is_empty() || !response.sonarr_results.is_empty() {
+                    self.arr_shelves.clear();
+
+                    if !response.radarr_results.is_empty() {
+                        let items: Vec<Item> = response.radarr_results.iter().map(|m| {
+                            Item::Media(plx_data::pms::PmsMovie {
+                                sid: plx_plex::plex::ServerId::from_raw(0xFFE1),
+                                title: m.title.clone(),
+                                year: m.year as std::os::raw::c_int,
+                                summary: m.overview.clone(),
+                                thumb: m.poster_url.clone(),
+                                rk: format!("radarr:{}", m.external_id),
+                                kind: 0,
+                                ..Default::default()
+                            })
+                        }).collect();
+                        self.arr_shelves.push(plx_data::search::Shelf {
+                            kind: Kind::Movie,
+                            items,
+                            window: plx_data::search::Window { start: 0, before: false, after: false },
+                            epoch: 0,
+                        });
+                    }
+
+                    if !response.sonarr_results.is_empty() {
+                        let items: Vec<Item> = response.sonarr_results.iter().map(|s| {
+                            Item::Media(plx_data::pms::PmsMovie {
+                                sid: plx_plex::plex::ServerId::from_raw(0xFFE2),
+                                title: s.title.clone(),
+                                year: s.year as std::os::raw::c_int,
+                                summary: s.overview.clone(),
+                                thumb: s.poster_url.clone(),
+                                rk: format!("sonarr:{}", s.external_id),
+                                kind: 1,
+                                ..Default::default()
+                            })
+                        }).collect();
+                        self.arr_shelves.push(plx_data::search::Shelf {
+                            kind: Kind::Show,
+                            items,
+                            window: plx_data::search::Window { start: 0, before: false, after: false },
+                            epoch: 0,
+                        });
+                    }
+
+                    self.arr_sources = vec![
+                        plx_data::search::scope::ScopeSource {
+                            sid: plx_plex::plex::ServerId::from_raw(0xFFE1),
+                            name: "Radarr".to_string(),
+                            libraries: Vec::new(),
+                            handle: "Radarr".to_string(),
+                            owned: false,
+                            home: false,
+                            owner_id: 0,
+                            household: false,
+                            live: true,
+                        },
+                        plx_data::search::scope::ScopeSource {
+                            sid: plx_plex::plex::ServerId::from_raw(0xFFE2),
+                            name: "Sonarr".to_string(),
+                            libraries: Vec::new(),
+                            handle: "Sonarr".to_string(),
+                            owned: false,
+                            home: false,
+                            owner_id: 0,
+                            household: false,
+                            live: true,
+                        },
+                    ];
+
+                    self.arr_lookups = response.radarr_results;
+                    self.arr_lookups.extend(response.sonarr_results);
+
+                    let view = H::search(cx);
+                    self.rebuild_rows(view.shelves());
+
+                    self.content_dirty = true;
+                    self.fade.reload();
+                    fx.invalidate(Provenance::Input);
+                } else {
+                    self.arr_shelves.clear();
+                    self.arr_lookups.clear();
+                    let view = H::search(cx);
+                    self.rebuild_rows(view.shelves());
+                    self.content_dirty = true;
+                    fx.invalidate(Provenance::Input);
+                }
+            }
+        }
+
+        if let Some(ref rx) = self.arr_add_rx {
+            if let Ok(outcome) = rx.try_recv() {
+                self.arr_add_rx = None;
+                if outcome.success {
+                    if let Some(ref mut item) = self.arr_alert_selected_item {
+                        item.in_library = true;
+                        item.monitored = true;
+                    }
+                    self.arr_feedback_message = Some((outcome.message, true));
+                } else {
+                    self.arr_feedback_message = Some((outcome.message, false));
+                }
+                self.update_arr_alert_body();
+                fx.invalidate(Provenance::Input);
+            }
+        }
+    }
+
+    fn open_arr_alert(&mut self, lookup: plx_data::integrations::ArrMediaLookup) {
+        self.arr_alert_selected_item = Some(lookup.clone());
+        self.arr_feedback_message = None;
+
+        let cfg = plx_data::integrations::IntegrationsConfig::load();
+        if self.arr_details.is_empty() {
+            self.arr_details = vec![
+                plx_data::integrations::ArrServiceDetails {
+                    service: plx_data::integrations::ArrKind::Radarr,
+                    quality_profiles: cfg.radarr.quality_profiles.clone(),
+                    root_folders: cfg.radarr.root_folders.clone(),
+                    tags: cfg.radarr.tags.clone(),
+                },
+                plx_data::integrations::ArrServiceDetails {
+                    service: plx_data::integrations::ArrKind::Sonarr,
+                    quality_profiles: cfg.sonarr.quality_profiles.clone(),
+                    root_folders: cfg.sonarr.root_folders.clone(),
+                    tags: cfg.sonarr.tags.clone(),
+                },
+            ];
+        }
+
+        let saved_profile_id = match lookup.service {
+            plx_data::integrations::ArrKind::Radarr => cfg.radarr.default_quality_profile_id,
+            plx_data::integrations::ArrKind::Sonarr => cfg.sonarr.default_quality_profile_id,
+        };
+
+        let mut selected_idx = 0;
+        if let Some(target_id) = saved_profile_id {
+            if let Some(details) = self.arr_details.iter().find(|d| d.service == lookup.service) {
+                if let Some(idx) = details.quality_profiles.iter().position(|p| p.id == target_id) {
+                    selected_idx = idx;
+                }
+            }
+        }
+        self.arr_selected_profile_index = selected_idx;
+
+        let question_c = match lookup.service {
+            plx_data::integrations::ArrKind::Radarr => {
+                if lookup.in_library { c"Radarr: In Library" } else { c"Add Movie to Radarr?" }
+            }
+            plx_data::integrations::ArrKind::Sonarr => {
+                if lookup.in_library { c"Sonarr: In Library" } else { c"Add Show to Sonarr?" }
+            }
+        };
+
+        self.arr_alert.open(question_c);
+        self.arr_alert.set_tone(plx_ui::decision_alert::Tone::Neutral);
+        self.arr_alert.set_choice(plx_ui::decision_alert::Choice::Destructive);
+        self.update_arr_alert_body();
+    }
+
+    fn update_arr_alert_body(&mut self) {
+        let Some(ref item) = self.arr_alert_selected_item else { return; };
+        let question_c = match item.service {
+            plx_data::integrations::ArrKind::Radarr => {
+                if item.in_library { c"Radarr: In Library" } else { c"Add Movie to Radarr?" }
+            }
+            plx_data::integrations::ArrKind::Sonarr => {
+                if item.in_library { c"Sonarr: In Library" } else { c"Add Show to Sonarr?" }
+            }
+        };
+
+        let mut paragraphs = Vec::new();
+        paragraphs.push(std::borrow::Cow::Owned(format!("Title: {} ({})", item.title, item.year)));
+
+        let profile_name = self.selected_quality_profile_name();
+        paragraphs.push(std::borrow::Cow::Owned(format!("Quality: {} (Press Up/Down to cycle)", profile_name)));
+
+        let folder = self.selected_root_folder_path();
+        if !folder.is_empty() {
+            paragraphs.push(std::borrow::Cow::Owned(format!("Folder: {}", folder)));
+        }
+
+        let status_line = if item.has_file {
+            "Status: Downloaded and ready on disk."
+        } else if item.in_library {
+            "Status: Monitored in library (Missing file)."
+        } else {
+            "Status: Not in library."
+        };
+        paragraphs.push(std::borrow::Cow::Borrowed(status_line));
+
+        if let Some((ref msg, success)) = self.arr_feedback_message {
+            let prefix = if success { "Done: " } else { "Notice: " };
+            paragraphs.push(std::borrow::Cow::Owned(format!("{}{}", prefix, msg)));
+        }
+
+        let answers = if self.arr_feedback_message.as_ref().map_or(false, |(_, done)| *done) {
+            plx_ui::decision_alert::Answers::One
+        } else {
+            plx_ui::decision_alert::Answers::Two
+        };
+
+        self.arr_alert.reconcile_card(question_c, paragraphs, answers);
+    }
+
+    fn cycle_quality_profile(&mut self, up: bool) {
+        let Some(ref item) = self.arr_alert_selected_item else { return; };
+        let profiles: Vec<_> = self.arr_details.iter()
+            .find(|d| d.service == item.service)
+            .map(|d| &d.quality_profiles)
+            .cloned()
+            .unwrap_or_default();
+        if profiles.is_empty() { return; }
+        if up {
+            self.arr_selected_profile_index = (self.arr_selected_profile_index + 1) % profiles.len();
+        } else {
+            self.arr_selected_profile_index = if self.arr_selected_profile_index == 0 {
+                profiles.len().saturating_sub(1)
+            } else {
+                self.arr_selected_profile_index - 1
+            };
+        }
+        if let Some(p) = profiles.get(self.arr_selected_profile_index) {
+            let mut cfg = plx_data::integrations::IntegrationsConfig::load();
+            match item.service {
+                plx_data::integrations::ArrKind::Radarr => cfg.radarr.default_quality_profile_id = Some(p.id),
+                plx_data::integrations::ArrKind::Sonarr => cfg.sonarr.default_quality_profile_id = Some(p.id),
+            }
+            let _ = cfg.save();
+        }
+    }
+
+    fn selected_quality_profile_name(&self) -> String {
+        let Some(ref item) = self.arr_alert_selected_item else { return "Default".to_string(); };
+        if let Some(details) = self.arr_details.iter().find(|d| d.service == item.service) {
+            if let Some(p) = details.quality_profiles.get(self.arr_selected_profile_index) {
+                return p.name.clone();
+            }
+        }
+        "Default".to_string()
+    }
+
+    fn selected_quality_profile_id(&self) -> u32 {
+        let Some(ref item) = self.arr_alert_selected_item else { return 0; };
+        if let Some(details) = self.arr_details.iter().find(|d| d.service == item.service) {
+            if let Some(p) = details.quality_profiles.get(self.arr_selected_profile_index) {
+                return p.id;
+            }
+        }
+        0
+    }
+
+    fn selected_root_folder_path(&self) -> String {
+        let Some(ref item) = self.arr_alert_selected_item else { return String::new(); };
+        if let Some(details) = self.arr_details.iter().find(|d| d.service == item.service) {
+            if let Some(f) = details.root_folders.first() {
+                return f.path.clone();
+            }
+        }
+        item.root_folder_path.clone()
+    }
+
+    fn execute_arr_alert_action<H: SearchLike>(&mut self, fx: &mut Effects<'_, H>) {
+        let Some(ref item) = self.arr_alert_selected_item else { return; };
+        let quality_profile_id = self.selected_quality_profile_id();
+        let root_folder_path = self.selected_root_folder_path();
+        if quality_profile_id > 0 {
+            let mut cfg = plx_data::integrations::IntegrationsConfig::load();
+            match item.service {
+                plx_data::integrations::ArrKind::Radarr => cfg.radarr.default_quality_profile_id = Some(quality_profile_id),
+                plx_data::integrations::ArrKind::Sonarr => cfg.sonarr.default_quality_profile_id = Some(quality_profile_id),
+            }
+            let _ = cfg.save();
+        }
+
+        let add_req = plx_data::integrations::ArrAddRequest {
+            service: item.service,
+            title: item.title.clone(),
+            year: item.year,
+            external_id: item.external_id,
+            quality_profile_id,
+            root_folder_path,
+            tags: Vec::new(),
+            search_on_add: true,
+            existing_id: item.existing_id,
+        };
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.arr_add_rx = Some(rx);
+        fx.push(Fx::App(AppFx::Preferences(PreferenceCmd::AddArrItem { request: add_req, reply: tx })));
+        self.arr_feedback_message = Some((format!("Contacting {}...", item.service.name()), false));
+        self.update_arr_alert_body();
+    }
 }
 
 fn group(id: GroupId, kind: GroupKind, len: usize, extent: Rect, elem: ElemKind, seat: Seat) -> GroupSpec {
@@ -652,9 +1142,14 @@ impl<H: SearchLike> StackPage<H> for SearchScreen {
         let view = H::search(cx);
         let mix = |h: u64, v: u64| (h ^ v).wrapping_mul(0x0100_0000_01b3);
         let mut h = mix(mix(0xcbf2_9ce4_8422_2325, self.rows_gen as u64), self.recents.len() as u64);
-        for (i, row) in self.rows.iter().enumerate() {
-            let shown = view.shelves().get(i).map_or(0, |shelf| shelf.items.len()).min(row.elems.len());
-            h = mix(mix(h, layout::ordinal(row.kind) as u64), shown as u64);
+        for row in &self.rows {
+            let shown = if row.is_arr {
+                self.arr_shelves.iter().find(|s| s.kind == row.kind).map_or(0, |s| s.items.len()).min(row.elems.len())
+            } else {
+                view.shelves().iter().find(|s| s.kind == row.kind).map_or(0, |shelf| shelf.items.len()).min(row.elems.len())
+            };
+            let ord = layout::ordinal(row.kind) as u64 + if row.is_arr { 10 } else { 0 };
+            h = mix(mix(h, ord), shown as u64);
         }
         h
     }
@@ -666,11 +1161,12 @@ impl<H: SearchLike> StackPage<H> for SearchScreen {
                 height: plx_ui::table::HDR_H + shown * plx_ui::table::ROW_H, focusable: true }, RECENTS_GROUP));
             out.push(SectionSpec::new(Sec::Clear, plx_ui::cards::Kind::Custom { height: 0.0, focusable: true }, CLEAR_GROUP));
         }
-        for row in &self.rows {
+        for (i, row) in self.rows.iter().enumerate() {
             let elem = if matches!(row.kind, Kind::Movie | Kind::Show | Kind::Episode) { ElemKind::Card } else { ElemKind::Bare };
             // Search owns the vertical model: explicit links between rows and a seat projected from
             // where the move came from, not the shelf's remembered card.
-            out.push(SectionSpec::new(Sec::Row(row.kind, self.rows_gen),
+            let sec = self.section(i);
+            out.push(SectionSpec::new(sec,
                 plx_ui::cards::Kind::Shelf { style: layout::style(row.kind), heading: layout::HEAD_TO_ROW }, row.group)
                 .seated(Seat::Projected)
                 .edges([EdgeRule::Geometric, EdgeRule::Geometric, EdgeRule::Stop, EdgeRule::Stop])
@@ -681,12 +1177,20 @@ impl<H: SearchLike> StackPage<H> for SearchScreen {
     /// The poster rows follow the Under posters setting; the Episode still row and the Person
     /// headshot row are not posters and keep the legacy band.
     fn caption_policy(&self, k: Sec) -> Option<plx_ui::caption_policy::CaptionPolicy> {
-        matches!(k, Sec::Row(kind, _) if layout::is_poster(kind)).then(crate::registry::captions::policy)
+        matches!(k, Sec::Row(kind, _) | Sec::ArrRow(kind, _) if layout::is_poster(kind)).then(crate::registry::captions::policy)
     }
     fn cards<'a>(&'a self, cx: &'a Cx<'_, H>, k: Sec) -> Option<RowCards<'a>> {
-        let Sec::Row(kind, _) = k else { return None };
-        let row = self.rows.iter().position(|row| row.kind == kind)?;
-        self.row_cards(H::search(cx), row)
+        match k {
+            Sec::Row(kind, _) => {
+                let row = self.rows.iter().position(|r| !r.is_arr && r.kind == kind)?;
+                self.row_cards(H::search(cx), row)
+            }
+            Sec::ArrRow(kind, _) => {
+                let row = self.rows.iter().position(|r| r.is_arr && r.kind == kind)?;
+                self.row_cards(H::search(cx), row)
+            }
+            _ => None,
+        }
     }
     /// Only a library item opens an item menu on a hold; a collection hit opens its page.
     fn card_has_menu(&self, cx: &Cx<'_, H>, _k: Sec, elem: &u32) -> bool {
@@ -697,7 +1201,7 @@ impl<H: SearchLike> StackPage<H> for SearchScreen {
         match k { Sec::Head => Some(FIELD), Sec::Clear if !self.recents.is_empty() => Some(CLEAR), _ => None }
     }
     fn plain_len(&self, k: Sec) -> usize {
-        match k { Sec::Recents => self.recents.len(), Sec::Head => 1, Sec::Clear => (!self.recents.is_empty()) as usize, Sec::Row(..) => 0 }
+        match k { Sec::Recents => self.recents.len(), Sec::Head => 1, Sec::Clear => (!self.recents.is_empty()) as usize, Sec::Row(..) | Sec::ArrRow(..) => 0 }
     }
     fn plain_elem(&self, k: Sec, n: usize) -> Option<u32> {
         match k { Sec::Recents => self.recents.get(n).copied(), _ => if n == 0 { StackPage::<H>::elem_of(self, k) } else { None } }
@@ -733,15 +1237,21 @@ impl<H: SearchLike> StackPage<H> for SearchScreen {
     /// Entered from the field, a group takes the card focus last left on in it, else its first.
     fn seat_override(&self, cx: &Cx<'_, H>, k: Sec, _from: Placed) -> Option<u32> {
         if !cx.focus.current.is_some_and(|key| key.elem == FIELD) { return None; }
-        let group = match k { Sec::Recents => RECENTS_GROUP, Sec::Clear => CLEAR_GROUP, Sec::Head => FIELD_GROUP, Sec::Row(kind, _) => layout::group(kind) };
-        let valid = |elem: &u32| match k {
-            Sec::Row(kind, _) => self.rows.iter().any(|row| row.kind == kind && row.elems.contains(elem)),
-            _ => (0..StackPage::<H>::plain_len(self, k)).any(|n| StackPage::<H>::plain_elem(self, k, n) == Some(*elem)),
+        let (group, kind, is_arr) = match k {
+            Sec::Recents => return cx.focus.remembered(RECENTS_GROUP).filter(|elem| self.recents.contains(elem)).or(StackPage::<H>::plain_elem(self, k, 0)),
+            Sec::Clear => return cx.focus.remembered(CLEAR_GROUP).or(StackPage::<H>::plain_elem(self, k, 0)),
+            Sec::Head => return cx.focus.remembered(FIELD_GROUP).or(StackPage::<H>::plain_elem(self, k, 0)),
+            Sec::Row(kind, _) => {
+                let r = self.rows.iter().find(|r| !r.is_arr && r.kind == kind)?;
+                (r.group, kind, false)
+            }
+            Sec::ArrRow(kind, _) => {
+                let r = self.rows.iter().find(|r| r.is_arr && r.kind == kind)?;
+                (r.group, kind, true)
+            }
         };
-        let first = match k {
-            Sec::Row(kind, _) => self.rows.iter().find(|row| row.kind == kind).and_then(|row| row.elems.first().copied()),
-            _ => StackPage::<H>::plain_elem(self, k, 0),
-        };
+        let valid = |elem: &u32| self.rows.iter().any(|row| row.is_arr == is_arr && row.kind == kind && row.elems.contains(elem));
+        let first = self.rows.iter().find(|row| row.is_arr == is_arr && row.kind == kind).and_then(|row| row.elems.first().copied());
         Some(cx.focus.remembered(group).filter(valid).or(first).unwrap_or(FIELD))
     }
     /// Recents and the Clear control are part of the head's block: the page rests at its top.
@@ -786,7 +1296,9 @@ impl<H: SearchLike> Screen<H> for SearchScreen {
     fn state(&self) -> &dyn LogicalState { self }
     fn crumb(&self, _: &Cx<'_, H>) -> Option<Cow<'_, str>> { None }
     fn prepare(&mut self, _: &mut Budget, cx: &Cx<'_, H>) {
-        self.render.prepare(self.draft.query(), self.draft.caret(), &self.owner, cx);
+        let shelves = H::search(cx).shelves();
+        let arr_shelves = self.arr_shelves.as_slice();
+        self.render.prepare(self.draft.query(), self.draft.caret(), &self.owner, shelves, arr_shelves, cx);
     }
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) { render::draw(self, f); }
     fn render(&self) -> RenderStrategy { RenderStrategy::Page }
@@ -830,10 +1342,10 @@ impl LogicalState for SearchScreen {
         c.seq(self.recents.len());
         for elem in &self.recents { c.u32(*elem); }
         c.seq(self.rows.len());
-        for row in &self.rows {
+        for (i, row) in self.rows.iter().enumerate() {
             c.u32(layout::ordinal(row.kind)).u32(row.group.0).seq(row.elems.len());
             for elem in &row.elems { c.u32(*elem); }
-            if let Some(shelf) = self.stack.shelf(Sec::Row(row.kind, self.rows_gen)) { shelf.write(c); }
+            if let Some(shelf) = self.stack.shelf(self.section(i)) { shelf.write(c); }
         }
     }
     fn probe(&self, out: &mut String) {

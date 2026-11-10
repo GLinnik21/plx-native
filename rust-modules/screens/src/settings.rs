@@ -506,6 +506,9 @@ fn mount_page(
         SettingsPage::Picker(kind) => Box::new(super::preferences::PickerPage::new(entry, kind)),
         SettingsPage::PlayerHud => Box::new(super::hud_settings::HudPage::new(entry)),
         SettingsPage::Diagnostics => Box::new(diagnostics::DiagnosticsPage::new(entry)),
+        SettingsPage::Integrations => Box::new(integrations::IntegrationsPage::new(entry)),
+        SettingsPage::Radarr => Box::new(integrations::ArrServicePage::new(entry, plx_data::integrations::ArrKind::Radarr)),
+        SettingsPage::Sonarr => Box::new(integrations::ArrServicePage::new(entry, plx_data::integrations::ArrKind::Sonarr)),
         page @ (SettingsPage::HudGallery | SettingsPage::HudDetail(..) | SettingsPage::HudAbout(..) | SettingsPage::HudPreview(..)) =>
             Box::new(super::hud_settings::HudPage::at(entry, page)),
     }
@@ -1073,6 +1076,7 @@ enum RootId {
     /// The single Diagnostics row (Settings v2): its value reads Off or On and it opens the page
     /// that holds the trace rows.
     Diagnostics,
+    Integrations,
     Legal,
     About,
 }
@@ -1095,6 +1099,7 @@ impl FormId for RootId {
             RootId::Resolution => 10,
             RootId::UnderPosters => 11,
             RootId::Diagnostics => 12,
+            RootId::Integrations => 13,
             // the base; `root_form` adds the position (`item_keyed`)
             RootId::Plaintext(_) => PLAINTEXT_KEY_BASE,
         })
@@ -1258,6 +1263,7 @@ fn sentence_for(id: Option<&RootId>) -> Cow<'static, str> {
         Some(RootId::AutoSignIn) => Cow::Borrowed(msg::settings_auto_sign_in_detail()),
         Some(RootId::TrailerAutoplay) => Cow::Borrowed(msg::settings_trailers_detail()),
         Some(RootId::Resolution) => Cow::Borrowed(msg::settings_resolution_detail()),
+        Some(RootId::Integrations) => Cow::Borrowed("Connect external services like Radarr and Sonarr to discover and request media."),
         Some(RootId::Privacy) => Cow::Borrowed(msg::settings_privacy_detail()),
         Some(RootId::Diagnostics) => Cow::Borrowed(msg::settings_diagnostics_detail()),
         Some(RootId::Legal) => Cow::Borrowed(msg::settings_legal_detail()),
@@ -1345,6 +1351,13 @@ fn root_form(inputs: &RootInputs) -> Form<RootId, Action, SettingsPage> {
                 .value(super::preferences::resolution_label(inputs.resolution))
                 .chevron(true),
         );
+    let integrations = FormSection::new("Integrations")
+        .item(
+            RootId::Integrations,
+            RowKind::Nav(SettingsPage::Integrations),
+            Action::Door,
+            Row::new("Integrations").chevron(true),
+        );
     let has_plaintext = signed_in && !inputs.plaintext.is_empty();
     let mut plaintext = FormSection::new(plx_platform::i18n::msg::settings_plaintext_section()).visible(has_plaintext);
     if has_plaintext {
@@ -1395,6 +1408,7 @@ fn root_form(inputs: &RootInputs) -> Form<RootId, Action, SettingsPage> {
         .section(libraries)
         .section(playback)
         .section(system)
+        .section(integrations)
         .section(plaintext)
         .section(support)
 }
@@ -1813,6 +1827,8 @@ impl Screen<InnerHost> for RootPage {
 mod under_posters;
 #[path = "settings_diagnostics.rs"]
 mod diagnostics;
+#[path = "settings_integrations.rs"]
+mod integrations;
 #[cfg(test)]
 #[path = "settings_v2_tests.rs"]
 mod v2_tests;

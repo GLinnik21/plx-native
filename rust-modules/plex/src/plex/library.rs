@@ -52,6 +52,11 @@ impl Client {
         self.get_json("/library/sections")
     }
 
+    /// GET /library/sections/{section_key}/refresh — trigger PMS to scan the section for new files.
+    pub fn refresh_section(&self, section_key: i64) -> bool {
+        self.get_ok(&format!("/library/sections/{section_key}/refresh"))
+    }
+
     /// GET / — what this server calls itself (`friendlyName`), or `None` when it did not answer
     /// or answered with no name. The Sources list heads each server's group with it, which is the
     /// only place in the app a MACHINE is named.

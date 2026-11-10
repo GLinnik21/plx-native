@@ -43,3 +43,4 @@ pub mod settings;
 pub mod preferences;
 pub mod hud_settings; // the Player HUD page: installed packages, the drop folder, the chosen HUD
 pub mod watchlist;
+pub mod arr;

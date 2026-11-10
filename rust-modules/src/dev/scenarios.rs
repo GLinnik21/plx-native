@@ -1354,6 +1354,9 @@ pub(crate) fn settings_boot_page(target: &str) -> Option<plx_screens::family::Se
         // root → Under posters → the details picker of one kind (`SettingsPage::boot_trail`)
         "under-posters-movie" => SettingsPage::UnderPostersDetails(PosterKind::Movie),
         "under-posters-show" => SettingsPage::UnderPostersDetails(PosterKind::Show),
+        "integrations" => SettingsPage::Integrations,
+        "radarr" => SettingsPage::Radarr,
+        "sonarr" => SettingsPage::Sonarr,
         _ => return None,
     })
 }

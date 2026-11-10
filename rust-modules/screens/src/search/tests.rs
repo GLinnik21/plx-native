@@ -1673,3 +1673,177 @@ fn the_edge_glide_moves_the_results_by_poster_rows_and_a_wheel_notch_by_a_table_
     assert!((screen.stack.target() - glided - plx_ui::table::ROW_H).abs() < 0.01,
         "a wheel notch moves one table row: {} -> {}", glided, screen.stack.target());
 }
+
+#[test]
+fn arr_lookup_triggers_when_empty_and_populates_results() {
+    let _serial = plx_base::testlock::serial();
+    let mut cfg = plx_data::integrations::IntegrationsConfig::default();
+    cfg.radarr.url = "http://127.0.0.1:7878".to_string();
+    cfg.radarr.token = "testtoken".to_string();
+    let _ = cfg.save();
+
+    let mut fixture = Fixture::new();
+    let mut screen = fixture.screen();
+    assert!(!screen.arr_in_flight);
+
+    fixture.query("synthetic_missing_item").shelves(vec![]);
+
+    // Delivering StoreChanged tells the screen that the Search store updated
+    let field_key = screen.key(FIELD);
+    let (_, fx, _) = deliver(&mut screen, &fixture, Some(field_key), ScreenEvent::StoreChanged(plx_data::stores::StoreId::Search.ord(), 0));
+    let lookup_cmd = fx.iter().find_map(|s| match &s.fx {
+        Fx::App(AppFx::Preferences(crate::registry::PreferenceCmd::LookupArr { query, reply })) => Some((query.clone(), reply.clone())),
+        _ => None,
+    });
+    assert!(lookup_cmd.is_some(), "should emit LookupArr effect");
+    let (query, reply) = lookup_cmd.unwrap();
+    assert_eq!(query, "synthetic_missing_item");
+
+    // Send synthetic ArrLookupResponse
+    let response = plx_data::integrations::ArrLookupResponse {
+        query: query.clone(),
+        radarr_results: vec![
+            plx_data::integrations::ArrMediaLookup {
+                service: plx_data::integrations::ArrKind::Radarr,
+                title: "Synthetic Missing Movie".to_string(),
+                year: 2024,
+                overview: "A movie not on Plex.".to_string(),
+                poster_url: "http://example.com/poster.jpg".to_string(),
+                in_library: false,
+                monitored: false,
+                has_file: false,
+                external_id: 12345,
+                ..Default::default()
+            }
+        ],
+        sonarr_results: Vec::new(),
+        details: Vec::new(),
+        error: None,
+    };
+    reply.send(response).unwrap();
+
+    // Delivering next tick processes the response in check_arr_results
+    deliver(&mut screen, &fixture, Some(field_key), ScreenEvent::Tick(tick(51)));
+
+    assert_eq!(screen.arr_shelves.len(), 1);
+    assert_eq!(screen.rows.len(), 1);
+    assert_eq!(screen.rows[0].elems.len(), 1);
+
+    // Focus and activate the card
+    let card_elem = screen.rows[0].elems[0];
+    let card_key = screen.key(card_elem);
+    let (handled, _, _) = deliver(&mut screen, &fixture, Some(card_key), ScreenEvent::Activate(card_elem));
+    assert_eq!(handled, Handled::Yes);
+    assert!(screen.arr_alert.visible(), "Decision alert should be opened");
+
+    // Action button ("Add & Search") is active by default; pressing OK executes it
+    let (_, fx, _) = deliver(&mut screen, &fixture, Some(card_key), key_event(Key::Ok, 0));
+    let add_cmd = fx.iter().find_map(|s| match &s.fx {
+        Fx::App(AppFx::Preferences(crate::registry::PreferenceCmd::AddArrItem { request, reply })) => Some((request.clone(), reply.clone())),
+        _ => None,
+    });
+    assert!(add_cmd.is_some(), "should emit AddArrItem effect");
+    let (req, reply) = add_cmd.unwrap();
+    assert_eq!(req.title, "Synthetic Missing Movie");
+    assert!(req.search_on_add);
+
+    // Send successful outcome
+    reply.send(plx_data::integrations::ArrAddOutcome {
+        success: true,
+        message: "Added Synthetic Missing Movie to Radarr".to_string(),
+    }).unwrap();
+
+    // Next tick checks arr results and updates body
+    deliver(&mut screen, &fixture, Some(card_key), ScreenEvent::Tick(tick(52)));
+    assert!(screen.arr_feedback_message.is_some());
+    assert_eq!(screen.arr_feedback_message.as_ref().unwrap().0, "Added Synthetic Missing Movie to Radarr");
+    assert_eq!(screen.arr_feedback_message.as_ref().unwrap().1, true);
+    assert_eq!(screen.arr_alert.answers(), plx_ui::decision_alert::Answers::One);
+
+    // Pressing OK on success closes the dialog
+    deliver(&mut screen, &fixture, Some(card_key), key_event(Key::Ok, 0));
+    assert!(!screen.arr_alert.is_open());
+
+    // Clean up config
+    let _ = std::fs::remove_file(plx_data::integrations::IntegrationsConfig::file_path());
+}
+
+#[test]
+fn arr_lookup_triggers_in_parallel_with_plex_results_and_shows_side_by_side() {
+    let _serial = plx_base::testlock::serial();
+    let mut cfg = plx_data::integrations::IntegrationsConfig::default();
+    cfg.radarr.url = "http://127.0.0.1:7878".to_string();
+    cfg.radarr.token = "testtoken".to_string();
+    let _ = cfg.save();
+
+    let mut fixture = Fixture::new();
+    let mut screen = fixture.screen();
+    assert!(!screen.arr_in_flight);
+
+    // Plex server returns 2 movies for "matrix"
+    fixture.query("matrix").shelves(vec![shelf(Kind::Movie, "m0", 2)]);
+
+    let field_key = screen.key(FIELD);
+    let (_, fx, _) = deliver(&mut screen, &fixture, Some(field_key), ScreenEvent::StoreChanged(plx_data::stores::StoreId::Search.ord(), 0));
+
+    // LookupArr effect is emitted in parallel even when Plex has results
+    let lookup_cmd = fx.iter().find_map(|s| match &s.fx {
+        Fx::App(AppFx::Preferences(crate::registry::PreferenceCmd::LookupArr { query, reply })) => Some((query.clone(), reply.clone())),
+        _ => None,
+    });
+    assert!(lookup_cmd.is_some(), "should emit LookupArr effect in parallel with Plex results");
+    let (query, reply) = lookup_cmd.unwrap();
+    assert_eq!(query, "matrix");
+
+    // Initially, only Plex row exists
+    assert_eq!(screen.rows.len(), 1);
+    assert_eq!(screen.rows[0].kind, Kind::Movie);
+    assert_eq!(screen.rows[0].is_arr, false);
+
+    // Radarr returns a result
+    let response = plx_data::integrations::ArrLookupResponse {
+        query: query.clone(),
+        radarr_results: vec![
+            plx_data::integrations::ArrMediaLookup {
+                service: plx_data::integrations::ArrKind::Radarr,
+                title: "The Matrix Resurrections".to_string(),
+                year: 2021,
+                overview: "Return to the Matrix.".to_string(),
+                poster_url: "http://example.com/matrix4.jpg".to_string(),
+                in_library: false,
+                monitored: false,
+                has_file: false,
+                external_id: 99999,
+                ..Default::default()
+            }
+        ],
+        sonarr_results: Vec::new(),
+        details: Vec::new(),
+        error: None,
+    };
+    reply.send(response).unwrap();
+
+    // Delivering next tick processes the response
+    deliver(&mut screen, &fixture, Some(field_key), ScreenEvent::Tick(tick(60)));
+
+    // Both rows now exist side by side!
+    assert_eq!(screen.rows.len(), 2);
+    assert_eq!(screen.rows[0].kind, Kind::Movie);
+    assert_eq!(screen.rows[0].is_arr, false);
+    assert_eq!(screen.rows[0].elems.len(), 2);
+
+    assert_eq!(screen.rows[1].kind, Kind::Movie);
+    assert_eq!(screen.rows[1].is_arr, true);
+    assert_eq!(screen.rows[1].elems.len(), 1);
+
+    // Activating the Radarr card opens the alert for "The Matrix Resurrections"
+    let radarr_card_elem = screen.rows[1].elems[0];
+    let radarr_card_key = screen.key(radarr_card_elem);
+    let (handled, _, _) = deliver(&mut screen, &fixture, Some(radarr_card_key), ScreenEvent::Activate(radarr_card_elem));
+    assert_eq!(handled, Handled::Yes);
+    assert!(screen.arr_alert.visible());
+    assert_eq!(screen.arr_alert_selected_item.as_ref().unwrap().title, "The Matrix Resurrections");
+
+    // Clean up config
+    let _ = std::fs::remove_file(plx_data::integrations::IntegrationsConfig::file_path());
+}

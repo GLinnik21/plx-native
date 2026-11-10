@@ -824,6 +824,8 @@ impl Bridge {
         match tab {
             HomeTab::Movies => self.directory.view().preferred(plx_data::browse::SecKind::Movie).is_some(),
             HomeTab::Shows => self.directory.view().preferred(plx_data::browse::SecKind::Show).is_some(),
+            HomeTab::Radarr => plx_data::integrations::IntegrationsConfig::load().radarr.is_configured(),
+            HomeTab::Sonarr => plx_data::integrations::IntegrationsConfig::load().sonarr.is_configured(),
             _ => true,
         }
     }
@@ -1203,6 +1205,8 @@ impl Bridge {
             d.nav.tabs.strip_fallback = Some(match route {
                 AppArg::Search => plx_ui::widgets::TAB_KEY_SEARCH,
                 AppArg::Watchlist => plx_ui::widgets::TAB_KEY_WATCHLIST,
+                AppArg::Arr(plx_data::integrations::ArrKind::Radarr) => plx_ui::widgets::TAB_KEY_RADARR,
+                AppArg::Arr(plx_data::integrations::ArrKind::Sonarr) => plx_ui::widgets::TAB_KEY_SONARR,
                 _ => plx_screens::home::STRIP_HOME_ELEM,
             });
             if let Some(io) = &self.home_io {
@@ -3930,6 +3934,8 @@ fn pill_of_arg(arg: &AppArg, directory: plx_data::stores::browse::DirectoryView<
         AppArg::Home => pill_of(directory, Pill::Home),
         AppArg::Search => pill_of(directory, Pill::Search),
         AppArg::Watchlist => pill_of(directory, Pill::Watchlist),
+        AppArg::Arr(plx_data::integrations::ArrKind::Radarr) => pill_of(directory, Pill::Radarr),
+        AppArg::Arr(plx_data::integrations::ArrKind::Sonarr) => pill_of(directory, Pill::Sonarr),
         // The grid and the two pages its header pushes (Collections, Recommended) are all the
         // library's: they select its type's pill, the pill they were opened from.
         arg if arg.is_library_family() => {
@@ -3970,6 +3976,8 @@ pub(crate) fn nav_tab(
                     Pill::Home => HomeTab::Home,
                     Pill::Search => HomeTab::Search,
                     Pill::Watchlist => HomeTab::Watchlist,
+                    Pill::Radarr => HomeTab::Radarr,
+                    Pill::Sonarr => HomeTab::Sonarr,
                     Pill::Section(plx_data::browse::SecKind::Movie) => HomeTab::Movies,
                     Pill::Section(plx_data::browse::SecKind::Show) => HomeTab::Shows,
                 };
@@ -3985,6 +3993,8 @@ pub(crate) fn nav_tab(
         }
         HomeTab::Search => AppArg::Search,
         HomeTab::Watchlist => AppArg::Watchlist,
+        HomeTab::Radarr => AppArg::Arr(plx_data::integrations::ArrKind::Radarr),
+        HomeTab::Sonarr => AppArg::Arr(plx_data::integrations::ArrKind::Sonarr),
     };
     nav_peer(d, arg, ret);
 }
@@ -4393,6 +4403,10 @@ pub(crate) fn search_owns_input(d: &Dispatcher<AppHost>) -> bool {
     !d.surface_up()
         && d.top_screen().and_then(|screen| screen.as_any())
             .is_some_and(|screen| screen.is::<plx_screens::search::SearchScreen>())
+}
+
+pub(crate) fn text_input_active(d: &Dispatcher<AppHost>) -> bool {
+    search_owns_input(d) || (d.surface_up() && crate::textinput::is_active())
 }
 
 /// **Does the page under the pointer glide at the screen's edges?** No surface is up and the top

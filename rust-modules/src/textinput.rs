@@ -171,6 +171,10 @@ thread_local! {
 /// reading it would make [`start`] a no-op on one of the two platforms.
 static mut STARTED: bool = false;
 
+pub(crate) fn is_active() -> bool {
+    unsafe { *std::ptr::addr_of!(STARTED) }
+}
+
 /// The SDL window, for the focus flag alone. See [`bind`].
 static mut WIN: *mut c_void = std::ptr::null_mut();
 

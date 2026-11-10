@@ -30,7 +30,7 @@ fn home_command(command: &plx_screens::registry::HomeCmd) -> Value {
         HomeCmd::Hero => json!("hero"),
         HomeCmd::FocusStrip(tab) => json!({"focus_strip":match tab {
             HomeTab::Home => "home", HomeTab::Movies => "movies", HomeTab::Shows => "shows", HomeTab::Search => "search",
-            HomeTab::Watchlist => "watchlist" }}),
+            HomeTab::Watchlist => "watchlist", HomeTab::Radarr => "radarr", HomeTab::Sonarr => "sonarr" }}),
         HomeCmd::Flip(delta) => json!({"flip":delta}),
         HomeCmd::SelectHero(index) => json!({"select_hero":index}),
         HomeCmd::PinHero(index) => json!({"pin_hero":index}),
@@ -182,6 +182,16 @@ fn content_request(request: &plx_screens::registry::ContentReq) -> Result<Value,
         ContentReq::PreviewTransport(play) => json!({"preview_transport":play}),
         ContentReq::PreviewSeek(position) => json!({"preview_seek":position}),
         ContentReq::ItemMenu => json!("itemmenu"),
+        ContentReq::Tab(tab) => json!({"tab":match tab {
+            plx_screens::registry::HomeTab::Home => "home",
+            plx_screens::registry::HomeTab::Movies => "movies",
+            plx_screens::registry::HomeTab::Shows => "shows",
+            plx_screens::registry::HomeTab::Search => "search",
+            plx_screens::registry::HomeTab::Watchlist => "watchlist",
+            plx_screens::registry::HomeTab::Radarr => "radarr",
+            plx_screens::registry::HomeTab::Sonarr => "sonarr",
+        }}),
+        ContentReq::Account => json!("account"),
         ContentReq::Panel(panel) => json!({"panel":match panel {
             ContentPanel::AltSources { anchor } => json!({"alt_sources":anchor}),
             ContentPanel::Versions { anchor } => json!({"versions":anchor}),
@@ -406,6 +416,8 @@ mod tests {
             (ContentReq::Panel(ContentPanel::About), json!({"panel":"about"})),
             (ContentReq::Panel(ContentPanel::Bio), json!({"panel":"bio"})),
             (ContentReq::Panel(ContentPanel::CollectionAbout), json!({"panel":"collection_about"})),
+            (ContentReq::Tab(plx_screens::registry::HomeTab::Radarr), json!({"tab":"radarr"})),
+            (ContentReq::Account, json!("account")),
         ];
         let mut encoded = Vec::new();
         for (request, expected) in cases {

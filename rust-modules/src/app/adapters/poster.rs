@@ -631,9 +631,13 @@ fn built_key(srv: ServerId, path: &str, w: c_int, h: c_int, png: bool) -> Option
     if path.is_empty() {
         return None;
     }
-    if srv == ServerId::UNSET {
+    if srv == ServerId::UNSET || srv.raw() == 0xFFE1 || srv.raw() == 0xFFE2 {
         let key = KEY_MEMO.with(|memo| memo.borrow_mut().get_or_build(srv.raw(), path, w, h, png, 0,
-            || content_png(path).map_or_else(String::new, |_| path.to_owned())));
+            || if content_png(path).is_some() || path.starts_with("http://") || path.starts_with("https://") {
+                path.to_owned()
+            } else {
+                String::new()
+            }));
         return is_fetchable(&key).then_some(key);
     }
     let c = plx_plex::plex::client_for(srv)?;
@@ -1991,6 +1995,55 @@ fn load_content_png<T>(url: &str, sha: plx_data::hudpacks::Sha, cache_gen: u64,
     out
 }
 
+fn load_http_image<T>(
+    url: &str,
+    cache_gen: u64,
+    mut decode: impl FnMut(&[u8]) -> Option<T>,
+) -> Loaded<T> {
+    let mut out = Loaded { art: None, from_disk: false, stale: None, transient: false };
+    let sha = plx_data::hudpacks::Sha::of(url.as_bytes());
+    let disk = plx_platform::imgcache::classify_content(&sha.hex());
+    if let Some(key) = &disk {
+        if let Some(hit) = plx_platform::imgcache::read_at(cache_gen, key) {
+            if let Some(art) = decode(&hit.bytes) {
+                out.art = Some(art);
+                out.from_disk = true;
+                return out;
+            }
+            plx_platform::imgcache::remove_at(cache_gen, key);
+        }
+    }
+    if cache_gen != plx_platform::imgcache::generation() {
+        return out;
+    }
+    FETCHES.fetch_add(1, Ordering::Relaxed);
+    let reply = plx_net::net::request_result_evidence(
+        url,
+        &[],
+        "GET",
+        None,
+        plx_net::net::API,
+        true,
+        Some(plx_platform::imgcache::MAX_FILE),
+        None,
+        false,
+    );
+    match reply {
+        Ok(reply) if reply.status == 200 && !reply.body.is_empty() => {
+            out.art = decode(&reply.body);
+            if out.art.is_some() {
+                if let Some(key) = &disk {
+                    plx_platform::imgcache::write_at(cache_gen, key, &reply.body);
+                }
+            }
+        }
+        Ok(reply) if matches!(reply.status, 408 | 429 | 500..=599) => out.transient = true,
+        Err(_) => out.transient = true,
+        _ => (),
+    }
+    out
+}
+
 fn poster_worker() {
     loop {
         let (idx, key_s, srv, gen, cache_gen, token_gen) = {
@@ -2017,6 +2070,14 @@ fn poster_worker() {
         // for both identity and transport; a later registry repoint must not mix the two.
         if let Some(sha) = (srv == ServerId::UNSET).then(|| content_png(&key_s)).flatten() {
             let loaded = load_content_png(&key_s, sha, cache_gen, |b| {
+                let (mut dw, mut dh) = (0, 0);
+                let p = img::img_decode_rgba(b.as_ptr(), b.len() as c_int, &mut dw, &mut dh);
+                (!p.is_null()).then_some((p, dw, dh))
+            });
+            if let Some((p, dw, dh)) = loaded.art { (px, w, h) = (p, dw, dh); }
+            transient = loaded.transient;
+        } else if key_s.starts_with("http://") || key_s.starts_with("https://") {
+            let loaded = load_http_image(&key_s, cache_gen, |b| {
                 let (mut dw, mut dh) = (0, 0);
                 let p = img::img_decode_rgba(b.as_ptr(), b.len() as c_int, &mut dw, &mut dh);
                 (!p.is_null()).then_some((p, dw, dh))

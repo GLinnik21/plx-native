@@ -33,6 +33,7 @@ fn the_root_is_four_groups_of_rows_without_sub_lines() {
         RootId::Favourites, RootId::UnderPosters,
         RootId::Playback, RootId::AudioSubtitles,
         RootId::Language, RootId::AutoSignIn, RootId::TrailerAutoplay,
+        RootId::Integrations,
         RootId::Privacy, RootId::Diagnostics, RootId::Legal, RootId::About,
     ]);
     let mut form = FormTable::<RootId, Action, SettingsPage>::new(super::super::registry::BAND);
@@ -51,6 +52,7 @@ fn the_root_is_four_groups_of_rows_without_sub_lines() {
 fn the_signed_out_root_drops_every_signed_in_row() {
     assert_eq!(ids(&inputs(false)), vec![
         RootId::Playback, RootId::Language,
+        RootId::Integrations,
         RootId::Privacy, RootId::Diagnostics, RootId::Legal, RootId::About,
     ]);
     assert!(!ids(&inputs(true)).contains(&RootId::AutoSignIn), "one profile skips the picker already");
@@ -60,7 +62,7 @@ fn the_signed_out_root_drops_every_signed_in_row() {
 /// metrics, in the Settings layout's own table frame), and how far it may drift before this test
 /// says the row heights or the section break moved. It is a pin of our geometry, not a number
 /// read off the board.
-const ALL_ROWS_SCROLL: f32 = 244.0;
+const ALL_ROWS_SCROLL: f32 = 370.0;
 const ALL_ROWS_SCROLL_TOLERANCE: f32 = 6.0;
 
 /// Sv2s-R2: every conditional row at once is the board's longest root, and it scrolls.

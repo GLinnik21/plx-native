@@ -870,7 +870,7 @@ fn a_rebuild_keeps_the_row_by_id_and_a_vanished_row_falls_to_its_neighbour() {
 
     for (from, lands) in [
         (RootId::AudioSubtitles, RootId::Language),
-        (RootId::TrailerAutoplay, RootId::Privacy),
+        (RootId::TrailerAutoplay, RootId::Integrations),
         (RootId::Favourites, RootId::Playback),
         (RootId::About, RootId::About),
     ] {

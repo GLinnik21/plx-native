@@ -12,11 +12,13 @@ pub(crate) enum Pill {
     Home,
     Section(SecKind),
     Watchlist,
+    Radarr,
+    Sonarr,
     Search,
 }
 
 /// The strip's destination keys in strip order: Home, one key per type pill, the Watchlist
-/// bookmark, Search. The one
+/// bookmark, Radarr/Sonarr (if configured), Search. The one
 /// place that order is written; `refresh` publishes it and the pill maps below read it, so no
 /// map assumes which index Search holds.
 fn strip_keys(directory: DirectoryView<'_>) -> Vec<u32> {
@@ -25,6 +27,13 @@ fn strip_keys(directory: DirectoryView<'_>) -> Vec<u32> {
         SecKind::Movie => widgets::TAB_KEY_MOVIES,
         SecKind::Show => widgets::TAB_KEY_SHOWS,
     }));
+    let config = plx_data::integrations::IntegrationsConfig::load();
+    if config.radarr.is_configured() {
+        keys.push(widgets::TAB_KEY_RADARR);
+    }
+    if config.sonarr.is_configured() {
+        keys.push(widgets::TAB_KEY_SONARR);
+    }
     keys.push(widgets::TAB_KEY_WATCHLIST);
     keys.push(widgets::TAB_KEY_SEARCH);
     keys
@@ -40,6 +49,8 @@ fn pill_in(i: usize, keys: &[u32]) -> Pill {
         Some(widgets::TAB_KEY_MOVIES) => Pill::Section(SecKind::Movie),
         Some(widgets::TAB_KEY_SHOWS) => Pill::Section(SecKind::Show),
         Some(widgets::TAB_KEY_WATCHLIST) => Pill::Watchlist,
+        Some(widgets::TAB_KEY_RADARR) => Pill::Radarr,
+        Some(widgets::TAB_KEY_SONARR) => Pill::Sonarr,
         Some(widgets::TAB_KEY_SEARCH) => Pill::Search,
         _ => Pill::Home,
     }
@@ -55,6 +66,8 @@ fn pill_index(pill: Pill, keys: &[u32]) -> Option<usize> {
         Pill::Section(SecKind::Movie) => widgets::TAB_KEY_MOVIES,
         Pill::Section(SecKind::Show) => widgets::TAB_KEY_SHOWS,
         Pill::Watchlist => widgets::TAB_KEY_WATCHLIST,
+        Pill::Radarr => widgets::TAB_KEY_RADARR,
+        Pill::Sonarr => widgets::TAB_KEY_SONARR,
         Pill::Search => widgets::TAB_KEY_SEARCH,
     };
     keys.iter().position(|&k| k == key)
@@ -63,6 +76,7 @@ fn pill_index(pill: Pill, keys: &[u32]) -> Option<usize> {
 #[derive(Default)]
 pub(crate) struct ChromeSnapshot {
     tabs_generation: Option<u32>,
+    integrations_generation: Option<u64>,
     profile_generation: Option<u32>,
     session_watch: plx_plex::plex::session::VisibleSessionWatch,
     faces: Vec<TabFace>,
@@ -110,7 +124,8 @@ impl ChromeSnapshot {
     pub(crate) fn refresh_with_profile(&mut self, measure: &dyn Measure, directory: DirectoryView<'_>,
         captured: Option<(&plx_plex::plex::session::CurrentProfile, &plx_plex::plex::session::Session)>) {
         let generation = directory.tabs_gen();
-        let strip_changed = self.tabs_generation != Some(generation);
+        let int_gen = plx_data::integrations::generation();
+        let strip_changed = self.tabs_generation != Some(generation) || self.integrations_generation != Some(int_gen);
         if strip_changed {
             self.keys = strip_keys(directory);
             self.faces = self.keys.iter().map(|&key| match key {
@@ -118,10 +133,13 @@ impl ChromeSnapshot {
                 widgets::TAB_KEY_MOVIES => TabFace::Label(plx_platform::i18n::msg::browse_kind_movies().into()),
                 widgets::TAB_KEY_SHOWS => TabFace::Label(plx_platform::i18n::msg::browse_kind_tv_shows().into()),
                 widgets::TAB_KEY_WATCHLIST => TabFace::Icon(Icon::Bookmark),
+                widgets::TAB_KEY_RADARR => TabFace::Label("Radarr".into()),
+                widgets::TAB_KEY_SONARR => TabFace::Label("Sonarr".into()),
                 _ => TabFace::Icon(Icon::Search),
             }).collect();
             self.widths = widgets::tab_widths(&self.faces, measure);
             self.tabs_generation = Some(generation);
+            self.integrations_generation = Some(int_gen);
         }
         let generation = captured.map_or_else(plx_plex::plex::session::current_gen, |(profile, _)| profile.generation);
         let session_changed = captured.is_none() && self.session_watch.changed();
@@ -152,7 +170,9 @@ impl ChromeSnapshot {
     }
 
     pub(crate) fn labels(&self) -> TabLabels<'_> {
-        TabLabels { generation: self.tabs_generation.unwrap_or(0), faces: &self.faces }
+        let combined_gen = (self.tabs_generation.unwrap_or(0) as u64)
+            ^ (self.integrations_generation.unwrap_or(0).wrapping_mul(0x9E3779B97F4A7C15));
+        TabLabels { generation: combined_gen as u32, faces: &self.faces }
     }
 
     /// The strip key published at `selected` (an index into [`Self::keys`], as `members` takes it):
@@ -369,6 +389,32 @@ mod tests {
         assert_eq!(pill_of(view, Pill::Search), Some(4));
         assert_eq!(pill_at(view, 3), Pill::Watchlist);
         assert_eq!(pill_at(view, 4), Pill::Search);
+    }
+
+    #[test]
+    fn chrome_refreshes_when_integrations_change() {
+        let mut snapshot = ChromeSnapshot::default();
+        let directory = directory(&[SecKind::Movie]);
+        let view = directory.view();
+        let measure = plx_ui::fixture::FixtureMeasure;
+
+        snapshot.refresh(&measure, view);
+        assert_eq!(snapshot.keys, vec![widgets::TAB_KEY_HOME, widgets::TAB_KEY_MOVIES, widgets::TAB_KEY_WATCHLIST, widgets::TAB_KEY_SEARCH]);
+
+        // Configure Radarr
+        let mut cfg = plx_data::integrations::IntegrationsConfig::default();
+        cfg.radarr.url = "http://127.0.0.1:7878".into();
+        cfg.radarr.token = "key123".into();
+        cfg.save().unwrap();
+
+        // Refresh should automatically detect the generation bump and add Radarr!
+        snapshot.refresh(&measure, view);
+        assert!(snapshot.keys.contains(&widgets::TAB_KEY_RADARR));
+
+        // Cleanup
+        let cfg = plx_data::integrations::IntegrationsConfig::default();
+        cfg.save().unwrap();
+        let _ = std::fs::remove_file(plx_data::integrations::IntegrationsConfig::file_path());
     }
 
     #[test]
