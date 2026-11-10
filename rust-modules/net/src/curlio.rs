@@ -117,12 +117,13 @@
 //! easy handle to the same multi; on HTTP/1.1 libcurl closes the old connection and the new request
 //! dials, but an HTTP/2 connection is kept and reused, and the new request's bytes queue behind
 //! everything the server had already put in its kernel send buffer for the cancelled stream
-//! (2.6-3.6 MB measured, time-to-new-data about that over the link rate). So once a detached
-//! unfinished HTTP/2 transfer has left a connection busy, every later request this source makes to
-//! that origin sets `CURLOPT_FRESH_CONNECT` ([`left_backlog`], [`dial_fresh`], [`CurlSource::busy`]),
-//! for the rest of the multi's life: libcurl hands a request the oldest matching idle connection,
-//! so a busy one stays choosable until it is gone. HTTP/3 cancels per stream and is left alone, as
-//! is a transfer that finished. The busy connection itself is left to libcurl's cache rather than
+//! (2.7-3.4 MB not yet sent at the seek in a reproduction; time to new data about that over the
+//! link rate). So once a detached unfinished (or failed) HTTP/2 transfer has left a connection busy, every request this source
+//! makes to that origin for the next [`BUSY_FOR`] sets `CURLOPT_FRESH_CONNECT` ([`left_backlog`],
+//! [`ConnLedger`]): libcurl hands a request the oldest matching idle connection, so a busy one
+//! stays choosable until libcurl itself refuses it as idle too long (`CURLOPT_MAXAGE_CONN`, 118 s
+//! by default in 7.82 and 8.23 alike). HTTP/3 cancels per stream and is left alone, as is a
+//! transfer that finished. The busy connection itself is left to libcurl's cache rather than
 //! closed: `CURLOPT_FORBID_REUSE` would have to be set on a transfer in progress, which
 //! `curl_easy_setopt`'s contract calls undefined, and the measured fix did not need it.
 //!
@@ -245,16 +246,6 @@ const CURLOPT_PROTOCOLS: c_int = 181;
 const CURLOPT_RESOLVE: c_int = 10203;
 const CURLPROTO_HTTP: c_long = 1 << 0;
 const CURLPROTO_HTTPS: c_long = 1 << 1;
-/// `CURLOPT_FRESH_CONNECT` (LONG + 74): this handle dials a connection of its own instead of taking
-/// one from the multi's cache. In `curl.h` since libcurl 7.7 and unchanged through 8.x.
-/// `net::keypin::apply` already sets it, with `CURLOPT_FORBID_REUSE`, on every key-mode handle, the
-/// control plane's and this media plane's alike, so a key-mode transfer neither takes a busy
-/// connection nor leaves one behind and the setting here is a no-op for it. Set by
-/// [`CurlSource::start_attempt`] only when [`dial_fresh`] says a cached connection to the request's
-/// origin is still busy with a cancelled HTTP/2 stream; a libcurl
-/// that refuses it reuses the connection, which is today's behaviour, so the refusal is logged, never
-/// fatal.
-const CURLOPT_FRESH_CONNECT: c_int = 74;
 /// `CURLINFO_HTTP_VERSION` (`CURLINFO_LONG` 0x200000 + 46): the HTTP version the handle's last
 /// response came over, as a `CURL_HTTP_VERSION_*` value (0 = none yet). libcurl 7.50.0+, below the
 /// 7.53.1 floor, on the already-bound `curl_easy_getinfo_long`. A libcurl that refuses it reads as
@@ -266,50 +257,169 @@ const CURL_HTTP_VERSION_2_0: c_long = 3;
 
 /// **Whether a detached transfer left its connection carrying bytes nobody will read.**
 ///
-/// An unfinished HTTP/2 transfer does: removing it resets its stream, but libcurl keeps the
-/// connection (a multiplexed connection survives a premature `multi_done`; 7.82 and 8.x alike), and
-/// whatever the server had already queued for that stream in its kernel send buffer still has to
-/// cross the link before anything the next request asks for on the same connection. Measured on a
-/// television (a 7.82 firmware libcurl, which negotiates h2 by default): 2.6-3.6 MB queued, and a
-/// seek on the reused connection 3.14x slower than HTTP/1.1 at 8 Mbit/s, 2.22x at 20 Mbit/s.
+/// An HTTP/2 transfer that did not finish cleanly does: removing it unfinished resets its stream,
+/// and so does a transfer error, but libcurl keeps the multiplexed connection. In 7.82 `multi_done`
+/// closes a connection removed early only when its handler lacks `PROTOPT_STREAM` (h2 has it), and
+/// the error paths call `streamclose`, which for such a handler closes the stream and not the
+/// connection. Whatever the server had already queued for that stream in its kernel send buffer
+/// still has to cross the link before anything the next request asks for on the same connection.
+/// Measured on a television (webOS 5.6.2, firmware libcurl 7.61.0 asked for HTTP/2, through
+/// Traefik): a seek on the reused connection 3.14x slower than HTTP/1.1 at 8 Mbit/s, 2.22x at 20
+/// Mbit/s; 2.7-3.4 MB not yet sent at the seek in a reproduction.
 ///
 /// HTTP/1.1 does not: libcurl closes a connection whose transfer was removed unfinished, so the next
 /// request dials anyway. HTTP/3 does not either: QUIC cancels per stream, with no shared byte stream
-/// to wait behind. A finished transfer left nothing queued, whatever its version, and a handle set
-/// `CURLOPT_FORBID_REUSE` (`reuse_forbidden`, key mode) took its connection down with it.
-fn left_backlog(version: c_long, finished: bool, reuse_forbidden: bool) -> bool {
-    !finished && !reuse_forbidden && version == CURL_HTTP_VERSION_2_0
+/// to wait behind. A transfer that finished cleanly left nothing queued, whatever its version, and a
+/// handle set `CURLOPT_FORBID_REUSE` (`reuse_forbidden`, key mode) took its connection down with it.
+/// `finished_cleanly` is `done && !failed`: a failed transfer is `done` too.
+fn left_backlog(version: c_long, finished_cleanly: bool, reuse_forbidden: bool) -> bool {
+    !finished_cleanly && !reuse_forbidden && version == CURL_HTTP_VERSION_2_0
 }
 
-/// Whether a request to `hop` dials its own connection: only when a connection a cancelled HTTP/2
-/// transfer left behind ([`left_backlog`]) is to the same origin, which libcurl could otherwise hand
-/// this request. `hop` is [`conn_origin`]'s reading; `None` (no URL libcurl would dial) never dials
-/// fresh. Measured with the fix (paired medians against HTTP/1.1, 8 rounds): 1.00x at 8 Mbit/s and
-/// 1.38x at 20 Mbit/s, where the reused connection was 3.14x and 2.22x.
-fn dial_fresh(busy: &[Origin], hop: Option<&Origin>) -> bool {
-    hop.is_some_and(|h| busy.iter().any(|b| same_origin(b, h)))
+/// [`CurlSource::stop`]'s judgement of the handle it detaches, as a pure function of what it reads.
+/// Only a handle that entered the multi (`attached`) can have left anything on a connection, and not
+/// one that failed before it had one ([`never_connected`]: a refusal, a failed TLS handshake, the
+/// strict attempt that retries in key mode), which asked the server for nothing. Its version is its
+/// own response's (`own_version`), or, before its response line, the last version its ORIGIN
+/// answered on (`origin_version`), never another hop's. `done` is also set by a failed transfer, so
+/// finishing cleanly is `done && !failed`; `rc` is the `CURLcode` a failed transfer ended with.
+fn detach_leaves_backlog(
+    attached: bool,
+    own_version: c_long,
+    origin_version: c_long,
+    done: bool,
+    failed: bool,
+    rc: c_int,
+    key_mode: bool,
+) -> bool {
+    let version = if own_version != 0 { own_version } else { origin_version };
+    attached && !(failed && never_connected(rc)) && left_backlog(version, done && !failed, key_mode)
 }
 
-/// The origin libcurl dials for `url` — [`target_of`]'s reading, the redirect code's: a URL with no
-/// port is the scheme's (443, 80), not `origin::split`'s tolerant `:32400`.
-fn conn_origin(url: &str) -> Option<Origin> {
-    target_of(url).map(|t| t.origin)
+/// Whether a transfer that failed with `rc` failed before it had a working connection, so it can
+/// have left nothing queued on one: `CURLE_COULDNT_RESOLVE_PROXY` 5, `_HOST` 6, `_CONNECT` 7,
+/// `CURLE_SSL_CONNECT_ERROR` 35, `CURLE_PEER_FAILED_VERIFICATION` 60 (51 before 7.62), and
+/// `CURLE_SSL_PINNEDPUBKEYNOTMATCH` 90. A timeout (28) is not among them: a connect timeout and a
+/// mid-body low-speed timeout share the code, and a mid-body one may have left a backlog. Read from
+/// the `CURLcode` rather than `CURLINFO_REQUEST_SIZE`, which reads 0 for a whole finished transfer
+/// on at least libcurl 8.7.1, and would leave the rule silently inert there.
+fn never_connected(rc: c_int) -> bool {
+    matches!(rc, 5 | 6 | 7 | 35 | 51 | 60 | 90)
 }
 
-/// How many busy origins [`CurlSource::busy`] remembers. A chain dials at most six hosts and a source
-/// rarely more than two (the server and a CDN); past the bound the oldest is forgotten, which costs
-/// that origin's next request the reuse of a busy connection and nothing else.
-const MAX_BUSY_ORIGINS: usize = 8;
+/// **How long a busy origin keeps dialling fresh.** Every request to it in this window sets
+/// `CURLOPT_FRESH_CONNECT`, because libcurl hands a request the oldest matching idle connection, so
+/// the busy one would be chosen by the next request that did not. The window ends when libcurl
+/// stops offering that connection on its own: one idle longer than `CURLOPT_MAXAGE_CONN` (default
+/// 118 s: `set->maxage_conn = 118` in 7.82, `conn_max_idle_ms = 118 * 1000` in 8.23) is closed at the
+/// next lookup instead of being reused, and the busy connection is idle from the moment its stream
+/// was cancelled, because nothing takes it again. Two seconds of margin over 118 cover 7.82's
+/// whole-second rounding. Nothing here sets `CURLOPT_MAXAGE_CONN`. libcurl below 7.65 has no such
+/// limit: below 7.62 that does not matter (HTTP/1.1 unless asked, and nothing here asks), but 7.62 to
+/// 7.64 negotiate HTTP/2 by default, so there a busy connection can be handed out again after the
+/// window. The firmware inventory records library sonames, not curl versions, so whether a supported
+/// firmware ships one of those three is not known.
+///
+/// A count of dials is not used: when the cache is full libcurl evicts the oldest idle connection,
+/// which would be the busy one, but the cache's size differs by version (4 per attached handle in
+/// 7.82, 2 in 8.23, and in 8.23 only connections idle for at least a second), so no count holds
+/// for both. Over HLS one cancel costs a handshake per segment for these two minutes, then reuse
+/// resumes.
+const BUSY_FOR: std::time::Duration = std::time::Duration::from_secs(120);
 
-/// Remember `origin` as busy: once, and within [`MAX_BUSY_ORIGINS`].
-fn note_busy(busy: &mut Vec<Origin>, origin: Origin) {
-    if busy.iter().any(|b| same_origin(b, &origin)) {
-        return;
+/// How many origins [`ConnLedger`] remembers. A chain dials at most six hosts and a source rarely
+/// more than two (the server and a CDN); past the bound the least recently used origin is
+/// forgotten, which costs it at most one reuse of a busy connection, or its version fallback.
+const MAX_LEDGER_ORIGINS: usize = 8;
+
+/// What this source knows about one origin's connections in its multi.
+#[derive(Debug)]
+struct OriginConn {
+    origin: Origin,
+    /// `CURLINFO_HTTP_VERSION` of the last response from this origin, 0 before the first: what
+    /// [`CurlSource::stop`] assumes for a handle to it detached before its own response line.
+    version: c_long,
+    /// When a transfer last left a connection to this origin busy ([`left_backlog`]), `None` before
+    /// that. A mark older than [`BUSY_FOR`] stays here until [`ConnLedger::dial_fresh`] clears it,
+    /// so ask `dial_fresh`, not this field, whether the origin is busy now.
+    busy_since: Option<std::time::Instant>,
+    /// Whether the fresh dial for the current busy mark has been logged: once per mark, not once per
+    /// request (an HLS stream would otherwise log every segment for two minutes).
+    logged: bool,
+}
+
+/// **Per origin, the last HTTP version and whether a busy connection is cached.** Kept per origin,
+/// not per source, because a chain crosses origins: a Plex server on HTTP/1.1 that redirects to a
+/// CDN on HTTP/2 must not have the CDN's version assumed for a handle to the server, nor the
+/// server's for one to the CDN. Least recently used first; a re-noted origin moves to the back, so
+/// the origin every chain replay starts from is the last one forgotten.
+#[derive(Debug, Default)]
+struct ConnLedger {
+    entries: Vec<OriginConn>,
+}
+
+impl ConnLedger {
+    /// The entry for `origin`, created if absent, moved to the most recently used end.
+    fn touch(&mut self, origin: &Origin) -> &mut OriginConn {
+        let e = match self.entries.iter().position(|e| same_origin(&e.origin, origin)) {
+            Some(i) => self.entries.remove(i),
+            None => {
+                if self.entries.len() >= MAX_LEDGER_ORIGINS {
+                    self.entries.remove(0);
+                }
+                OriginConn { origin: origin.clone(), version: 0, busy_since: None, logged: false }
+            }
+        };
+        self.entries.push(e);
+        self.entries.last_mut().expect("just pushed")
     }
-    if busy.len() >= MAX_BUSY_ORIGINS {
-        busy.remove(0);
+
+    fn find(&mut self, origin: &Origin) -> Option<&mut OriginConn> {
+        self.entries.iter_mut().find(|e| same_origin(&e.origin, origin))
     }
-    busy.push(origin);
+
+    /// A response from `origin` came over `version` (0, unknown, is not recorded).
+    fn saw_version(&mut self, origin: &Origin, version: c_long) {
+        if version != 0 {
+            self.touch(origin).version = version;
+        }
+    }
+
+    /// The last version a response from `origin` came over, 0 when none is known.
+    fn version(&mut self, origin: &Origin) -> c_long {
+        self.find(origin).map_or(0, |e| e.version)
+    }
+
+    /// A connection to `origin` was left busy at `now`: the window starts (again) from here.
+    fn note_busy(&mut self, origin: &Origin, now: std::time::Instant) {
+        let e = self.touch(origin);
+        e.busy_since = Some(now);
+        e.logged = false;
+    }
+
+    /// Whether a request to `origin` at `now` dials its own connection: `None` when no busy mark
+    /// is within [`BUSY_FOR`], else `Some(first)`, `first` being whether this is the first fresh
+    /// dial of the mark (the one that is logged). An expired mark is cleared.
+    fn dial_fresh(&mut self, origin: &Origin, now: std::time::Instant) -> Option<bool> {
+        let e = self.find(origin)?;
+        let since = e.busy_since?;
+        if now.saturating_duration_since(since) >= BUSY_FOR {
+            e.busy_since = None;
+            return None;
+        }
+        let first = !e.logged;
+        e.logged = true;
+        Some(first)
+    }
+
+    /// A new multi has an empty connection cache: nothing is busy any more. The versions stay; they
+    /// describe the servers, not the cache.
+    fn forget_busy(&mut self) {
+        for e in &mut self.entries {
+            e.busy_since = None;
+            e.logged = false;
+        }
+    }
 }
 
 /// `CURLINFO_HTTP_VERSION` of `easy`, 0 when libcurl does not say.
@@ -766,6 +876,9 @@ pub struct CurlSource<A: UrlAuthorizer> {
     /// a chain, whatever a `Location` spelled for a later one. Held for the life of the attempt, as
     /// `range` is.
     hop_url: CString,
+    /// The origin libcurl dials for [`hop_url`](Self::hop_url) ([`Hop::origin`]), parsed once when
+    /// the hop was built.
+    hop_origin: Option<Origin>,
     range: Option<CString>,
     /// The key pin (`net::keypin`) the CURRENT attempt's easy handle was given, held for the life
     /// of that attempt like `range`: `keypin::apply`'s contract is that the string outlives the
@@ -822,18 +935,14 @@ pub struct CurlSource<A: UrlAuthorizer> {
     /// deliberately not poison: it is the correct response to a seek at or past EOF, and a later
     /// seek to a valid byte may recover.
     poisoned: bool,
-    /// The HTTP version the last response this source received came over (`CURLINFO_HTTP_VERSION`),
-    /// 0 before the first: what [`stop`](Self::stop) assumes for a transfer detached before its own
-    /// response line said.
-    http_version: c_long,
-    /// The origins to which a detached, unfinished HTTP/2 transfer left a connection in this multi's
-    /// cache ([`left_backlog`]), written by [`stop`](Self::stop) and read for every easy handle
-    /// ([`dial_fresh`]). **Kept for the multi's life**, not consumed by the request that dialled
-    /// past it: libcurl hands a request the OLDEST matching idle connection (7.82 appends to the
-    /// bundle and takes the first match; 8.23 the same), so the busy one would come back to the
-    /// next request that did not dial fresh — an HLS segment after the one that followed a cancel, or
-    /// the seek back after a Cues read to the end. Emptied when the multi is rebuilt.
-    busy: Vec<Origin>,
+    /// Per origin, the last HTTP version and any connection a cancelled HTTP/2 stream left busy in
+    /// this multi's cache ([`ConnLedger`]): written by [`stop`](Self::stop) and by each response,
+    /// read for every easy handle. A busy mark lasts [`BUSY_FOR`] and is cleared when the multi is
+    /// rebuilt.
+    conns: ConnLedger,
+    /// Whether [`easy`](Self::easy) entered the multi (`curl_multi_add_handle` succeeded). A handle
+    /// refused before that never sent anything, so [`stop`](Self::stop) judges no connection by it.
+    attached: bool,
     authorizer: std::marker::PhantomData<A>,
 }
 
@@ -992,6 +1101,7 @@ impl<A: UrlAuthorizer> CurlSource<A> {
             multi,
             easy: std::ptr::null_mut(),
             hop_url: url_c.clone(),
+            hop_origin: None,
             url: url_c,
             range: None,
             key_pin: None,
@@ -1012,8 +1122,8 @@ impl<A: UrlAuthorizer> CurlSource<A> {
             heal_pending: false,
             readable: false,
             poisoned: false,
-            http_version: 0,
-            busy: Vec::new(),
+            conns: ConnLedger::default(),
+            attached: false,
             authorizer: std::marker::PhantomData,
         });
         src.start_range_until(at, range_end, deadline, checkpoint)?;
@@ -1076,7 +1186,7 @@ impl<A: UrlAuthorizer> CurlSource<A> {
     /// CDN URL expires, and the server that redirected to it can issue the next.
     ///
     /// **A request to an origin whose cached connection a cancelled HTTP/2 stream still occupies
-    /// dials its own** ([`left_backlog`], [`dial_fresh`], [`CurlSource::busy`]), at every attempt and
+    /// dials its own** ([`left_backlog`], [`ConnLedger`], [`BUSY_FOR`]), at every attempt and
     /// hop of the chain: [`start_attempt`](Self::start_attempt) asks for each easy handle.
     fn start_range_until(
         &mut self,
@@ -1219,10 +1329,11 @@ impl<A: UrlAuthorizer> CurlSource<A> {
             }
             self.multi_failed = false;
             // A new multi has an empty connection cache: no connection is busy any more.
-            self.busy.clear();
+            self.conns.forget_busy();
         }
         self.started = std::time::Instant::now();
         self.hop_url = hop.url.clone();
+        self.hop_origin = hop.origin.clone();
         if self.abort.is_set() {
             return Err(OpenErr::Aborted);
         }
@@ -1397,17 +1508,27 @@ impl<A: UrlAuthorizer> CurlSource<A> {
             crate::net::curl_easy_setopt_long(easy, CURLOPT_TCP_NODELAY, 1);
             crate::net::curl_easy_setopt_long(easy, CURLOPT_BUFFERSIZE, 65536);
             // A connection libcurl could hand this request is still delivering a cancelled HTTP/2
-            // stream's queued bytes (`left_backlog`, `busy`): dial past it. Not `require_setopt!`:
+            // stream's queued bytes (`left_backlog`, `ConnLedger`): dial past it, logged once per busy
+            // mark. Not `require_setopt!`:
             // a libcurl that refuses reuses the connection, which is slower and nothing worse. A
             // key-mode handle already dials fresh (`keypin::apply`), so this changes nothing there.
-            if dial_fresh(&self.busy, conn_origin(self.hop_url.to_str().unwrap_or_default()).as_ref()) {
-                let rc = crate::net::curl_easy_setopt_long(easy, CURLOPT_FRESH_CONNECT, 1);
-                let range = self.range.as_ref().and_then(|r| r.to_str().ok()).unwrap_or("none");
-                plx_base::eventlog::log(&if rc == 0 {
-                    format!("curlio: fresh connection for range={range} (a cached HTTP/2 connection to this origin carries a cancelled stream)")
-                } else {
-                    format!("curlio: libcurl refused CURLOPT_FRESH_CONNECT (rc={rc}); a busy HTTP/2 connection may be reused")
-                });
+            let fresh = match &self.hop_origin {
+                Some(o) => self.conns.dial_fresh(o, std::time::Instant::now()),
+                None => None,
+            };
+            if let Some(first) = fresh {
+                let rc = crate::net::curl_easy_setopt_long(easy, crate::net::CURLOPT_FRESH_CONNECT, 1);
+                if rc != 0 {
+                    plx_base::eventlog::log(&format!(
+                        "curlio: libcurl refused CURLOPT_FRESH_CONNECT (rc={rc}); a busy HTTP/2 connection may be reused"
+                    ));
+                } else if first {
+                    let range = self.range.as_ref().and_then(|r| r.to_str().ok()).unwrap_or("none");
+                    plx_base::eventlog::log(&format!(
+                        "curlio: fresh connection for range={range} (a cached HTTP/2 connection to this origin carries a cancelled stream; later requests to it dial fresh for {}s, unlogged)",
+                        BUSY_FOR.as_secs()
+                    ));
+                }
             }
             // NB no CURLOPT_TIMEOUT: a whole movie has no deadline. The low-speed pair above is
             // what bounds a stall, and unlike a total timeout it cannot kill a healthy transfer.
@@ -1424,6 +1545,7 @@ impl<A: UrlAuthorizer> CurlSource<A> {
                 self.done = true;
                 return Err(OpenErr::Multi(rc));
             }
+            self.attached = true;
             setup_timeout_ms.and_then(|ms| {
                 setup_timer_started.checked_add(std::time::Duration::from_millis(ms))
             })
@@ -1467,9 +1589,8 @@ impl<A: UrlAuthorizer> CurlSource<A> {
             }
         }
         if self.xfer.headers_done {
-            let v = http_version(self.easy);
-            if v != 0 {
-                self.http_version = v;
+            if let Some(o) = &self.hop_origin {
+                self.conns.saw_version(o, http_version(self.easy));
             }
         }
         // Key mode's verdict on this handshake, BEFORE `validate` grades the response: a strict
@@ -1647,8 +1768,10 @@ impl<A: UrlAuthorizer> CurlSource<A> {
     /// before the hop is left. A `3xx` body is a line of HTML or nothing, and a transfer that has
     /// finished is one whose connection libcurl keeps for the next request; one removed mid-body is
     /// closed on HTTP/1.1, while on HTTP/2 it stays cached with the cancelled stream's queued bytes,
-    /// which `stop()` records as a backlog so the next request to that origin dials past it. Best effort by design: a body that does not finish inside the bounds, an abort, or a
-    /// multi failure costs the connection and nothing else — the `Location` is already in hand and
+    /// which `stop()` records as a backlog so requests to that origin dial past it for [`BUSY_FOR`].
+    /// Best effort by design: a body that does not finish inside the bounds, an abort, or a multi
+    /// failure costs the connection (and, on HTTP/2, a fresh dial per request to that origin for
+    /// [`BUSY_FOR`]) and nothing else — the `Location` is already in hand and
     /// the next attempt resets the transfer and rebuilds a failed multi.
     fn finish_redirect_body(&mut self, deadline: Option<std::time::Instant>) {
         let mut until = std::time::Instant::now() + REDIRECT_BODY_WAIT;
@@ -1736,20 +1859,22 @@ impl<A: UrlAuthorizer> CurlSource<A> {
     /// bounded leak is safer than freeing an easy that libcurl may still reference.
     fn stop(&mut self) {
         if !self.easy.is_null() {
-            // What this transfer leaves on its connection, read while the handle can still answer.
-            // A transfer detached before its response line has no version of its own yet; it rode
-            // the connection the source's last response came over, or a new one to the same host.
-            let version = match http_version(self.easy) {
-                0 => self.http_version,
-                v => v,
-            };
-            // A key-mode handle was set `CURLOPT_FORBID_REUSE` (`keypin::apply`): its connection
-            // closes with it, whatever it left queued.
-            if left_backlog(version, self.done, self.key_pin.is_some()) {
-                if let Some(o) = conn_origin(self.hop_url.to_str().unwrap_or_default()) {
-                    note_busy(&mut self.busy, o);
+            // What this transfer leaves on its connection, read while the handle can still answer,
+            // and only for a handle that entered the multi: one refused before that sent nothing.
+            // A transfer detached before its own response line has no version yet; it rode a
+            // connection to its origin, so that origin's last version stands in (per origin: a
+            // chain's hops may be on different versions). A failed transfer is `done` too, and an
+            // HTTP/2 error resets only its stream. A key-mode handle was set `CURLOPT_FORBID_REUSE`
+            // (`keypin::apply`): its connection closes with it, whatever it left queued.
+            if let Some(o) = self.hop_origin.clone() {
+                let own = if self.attached { http_version(self.easy) } else { 0 };
+                let origin_version = self.conns.version(&o);
+                let key_mode = self.key_pin.is_some();
+                if detach_leaves_backlog(self.attached, own, origin_version, self.done, self.failed, self.rc, key_mode) {
+                    self.conns.note_busy(&o, std::time::Instant::now());
                 }
             }
+            self.attached = false;
             unsafe {
                 let rc = curl_multi_remove_handle(self.multi, self.easy);
                 if rc != CURLM_OK {
@@ -2233,15 +2358,22 @@ struct Hop {
     /// The URL's `host:port` in `net::keypin`'s tables, or `None` when it can never use them (not
     /// https, or an authority that is not a plain `host[:port]`: see `keypin::key_of_url`).
     key: Option<String>,
+    /// The origin libcurl dials for `url` ([`target_of`]'s reading: no port is the scheme's, never
+    /// `origin::split`'s `:32400`), what [`ConnLedger`] is keyed by; `None` for a URL with no plain
+    /// `host[:port]`, which then never dials fresh. A redirect's comes from the [`Target`] it was
+    /// built from; the first hop's is parsed once per chain.
+    origin: Option<Origin>,
 }
 
 impl Hop {
     /// The chain's first request: the URL the source was opened on, and the resolve entry open and
     /// reopen already looked up (and, for the offline reproduction, already refused a name for).
     fn first(url: &CString, resolve_entry: Option<CString>) -> Hop {
+        let text = url.to_str().unwrap_or_default();
         Hop {
             n: 0,
-            key: crate::net::keypin::key_of_url(url.to_str().unwrap_or_default()),
+            key: crate::net::keypin::key_of_url(text),
+            origin: target_of(text).map(|t| t.origin),
             url: url.clone(),
             resolve_entry,
         }
@@ -2259,6 +2391,7 @@ impl Hop {
         Ok(Hop {
             n,
             key: crate::net::keypin::key_of_url(&url),
+            origin: Some(target.origin.clone()),
             url: CString::new(url).map_err(|_| OpenErr::Local)?,
             resolve_entry,
         })
@@ -3102,13 +3235,23 @@ mod tests {
         });
     }
 
-    /// The HTTP/2 seek rule's decision (`left_backlog`): only an UNFINISHED transfer over HTTP/2
-    /// leaves a cached connection busy with a cancelled stream. HTTP/1.1 (and 1.0) close it on
-    /// removal, HTTP/3 cancels per stream, a finished transfer queued nothing, a key-mode handle
-    /// (`CURLOPT_FORBID_REUSE`) closes its connection, and an unknown version (0, or a libcurl that
-    /// refuses the info id) never dials fresh.
+    /// The origin libcurl dials for `url`, as `Hop` reads it.
+    fn origin_of(url: &str) -> Origin {
+        target_of(url).map(|t| t.origin).expect("an absolute http(s) URL")
+    }
+
+    /// Whether `src`'s ledger holds a live busy mark for `url`'s origin.
+    fn is_busy(src: &mut CurlSource, url: &str) -> bool {
+        src.conns.find(&origin_of(url)).is_some_and(|e| e.busy_since.is_some())
+    }
+
+    /// The HTTP/2 seek rule's decision (`left_backlog`): only an HTTP/2 transfer that did not finish
+    /// cleanly leaves a cached connection busy with a cancelled stream. HTTP/1.1 (and 1.0) close it
+    /// on removal, HTTP/3 cancels per stream, a cleanly finished transfer queued nothing, a key-mode
+    /// handle (`CURLOPT_FORBID_REUSE`) closes its connection, and an unknown version (0, or a
+    /// libcurl that refuses the info id) never dials fresh.
     #[test]
-    fn only_an_unfinished_http2_transfer_leaves_its_connection_busy() {
+    fn only_an_http2_transfer_that_did_not_finish_cleanly_leaves_its_connection_busy() {
         assert!(left_backlog(CURL_HTTP_VERSION_2_0, false, false));
         assert!(!left_backlog(CURL_HTTP_VERSION_2_0, true, false));
         assert!(!left_backlog(CURL_HTTP_VERSION_2_0, false, true));
@@ -3119,73 +3262,157 @@ mod tests {
         }
     }
 
-    /// `dial_fresh` over `conn_origin`: the busy connection is the one libcurl could hand a request
-    /// to the SAME origin as libcurl dials it, so a URL with no port is the scheme's (443), never
-    /// `origin::split`'s `:32400`; a redirect hop to another host does not dial fresh.
+    /// `stop()`'s judgement (`detach_leaves_backlog`), one rule per line:
+    /// a FAILED h2 transfer is `done` but not finished (an h2 error resets only its stream); a
+    /// handle that never entered the multi sent nothing; a handle with no response line of its own
+    /// takes its ORIGIN's version, which the caller looks up per origin.
+    #[test]
+    fn stop_judges_a_failed_transfer_unfinished_and_a_failed_connect_not_at_all() {
+        let h2 = CURL_HTTP_VERSION_2_0;
+        // (attached, own, origin's, done, failed, rc, key mode)
+        assert!(detach_leaves_backlog(true, h2, 0, false, false, 0, false), "cancelled mid-body");
+        assert!(detach_leaves_backlog(true, h2, 0, true, true, 92, false), "failed mid-body: h2 stream error");
+        assert!(detach_leaves_backlog(true, h2, 0, true, true, 28, false), "failed mid-body: low-speed timeout");
+        assert!(!detach_leaves_backlog(true, h2, 0, true, false, 0, false), "finished cleanly");
+        assert!(!detach_leaves_backlog(false, 0, h2, false, false, 0, false), "never entered the multi");
+        assert!(detach_leaves_backlog(true, 0, h2, false, false, 0, false), "before its response line: its origin's h2");
+        for rc in [6, 7, 35, 60] {
+            assert!(!detach_leaves_backlog(true, 0, h2, true, true, rc, false), "rc {rc}: failed before a connection");
+        }
+        assert!(!detach_leaves_backlog(true, 0, 2, false, false, 0, false), "before its response line: its origin's HTTP/1.1");
+        assert!(!detach_leaves_backlog(true, 0, 0, false, false, 0, false), "an origin never heard from");
+        assert!(!detach_leaves_backlog(true, 2, h2, false, false, 0, false), "its own version wins");
+        assert!(!detach_leaves_backlog(true, h2, h2, true, true, 92, true), "key mode closes its connection");
+    }
+
+    /// **Versions are kept per origin**: a chain from a server on HTTP/1.1 to a
+    /// CDN on HTTP/2 must not lend either one's version to a handle to the other.
+    #[test]
+    fn the_ledger_keeps_the_last_version_per_origin() {
+        let (plex, cdn) = (origin_of("https://plex.example:32400/a"), origin_of("https://cdn.example/b"));
+        let mut l = ConnLedger::default();
+        l.saw_version(&plex, 2);
+        l.saw_version(&cdn, CURL_HTTP_VERSION_2_0);
+        assert_eq!(l.version(&plex), 2);
+        assert_eq!(l.version(&cdn), CURL_HTTP_VERSION_2_0);
+        assert_eq!(l.version(&origin_of("https://cdn.example:443/c")), CURL_HTTP_VERSION_2_0, "no port is 443");
+        assert_eq!(l.version(&origin_of("https://other.example/")), 0);
+        l.saw_version(&plex, 0);
+        assert_eq!(l.version(&plex), 2, "an unknown reading keeps what was known");
+    }
+
+    /// The busy connection is the one libcurl could hand a request to the SAME origin as libcurl
+    /// dials it, so a URL with no port is the scheme's (443), never `origin::split`'s `:32400`; a
+    /// redirect hop to another host does not dial fresh.
     #[test]
     fn a_fresh_connection_is_dialled_only_to_the_busy_origin_as_libcurl_reads_it() {
-        let busy = vec![conn_origin("https://cdn.example/a").expect("origin")];
-        let fresh = |url: &str| dial_fresh(&busy, conn_origin(url).as_ref());
-        assert!(fresh("https://cdn.example:443/b"), "no port is 443");
-        assert!(fresh("https://CDN.example/c"), "hosts compare without case");
+        let now = std::time::Instant::now();
+        let mut l = ConnLedger::default();
+        l.note_busy(&origin_of("https://cdn.example/a"), now);
+        assert!(l.dial_fresh(&origin_of("https://cdn.example:443/b"), now).is_some(), "no port is 443");
+        assert!(l.dial_fresh(&origin_of("https://CDN.example/c"), now).is_some(), "hosts compare without case");
         for other in ["https://cdn.example:32400/b", "https://b.example/x", "http://cdn.example:443/x"] {
-            assert!(!fresh(other), "{other}");
+            assert!(l.dial_fresh(&origin_of(other), now).is_none(), "{other}");
         }
-        assert!(!dial_fresh(&busy, None), "a URL libcurl would not dial never dials fresh");
-        assert!(!dial_fresh(&[], conn_origin("https://cdn.example/a").as_ref()));
-        let plex = vec![conn_origin("https://h.example:32400/a").expect("origin")];
-        assert!(!dial_fresh(&plex, conn_origin("https://h.example/b").as_ref()), "443 is not 32400");
+        let mut plex = ConnLedger::default();
+        plex.note_busy(&origin_of("https://h.example:32400/a"), now);
+        assert!(plex.dial_fresh(&origin_of("https://h.example/b"), now).is_none(), "443 is not 32400");
+        assert!(target_of("not a url").is_none(), "a URL libcurl would not dial has no origin, so never dials fresh");
     }
 
-    /// `note_busy` remembers an origin once and forgets the oldest past `MAX_BUSY_ORIGINS`.
+    /// **A busy mark lasts `BUSY_FOR`, is logged once, and a new one restarts it**.
+    /// Past the window libcurl refuses the busy connection itself as idle too long.
     #[test]
-    fn busy_origins_are_kept_once_and_bounded() {
-        let mut busy = Vec::new();
-        let o = |n: usize| conn_origin(&format!("https://h{n}.example/x")).expect("origin");
-        note_busy(&mut busy, o(0));
-        note_busy(&mut busy, conn_origin("https://H0.example:443/y").expect("origin"));
-        assert_eq!(busy.len(), 1);
-        for n in 1..=MAX_BUSY_ORIGINS {
-            note_busy(&mut busy, o(n));
-        }
-        assert_eq!(busy.len(), MAX_BUSY_ORIGINS);
-        assert!(!dial_fresh(&busy, Some(&o(0))), "the oldest was forgotten");
-        assert!(dial_fresh(&busy, Some(&o(MAX_BUSY_ORIGINS))));
+    fn a_busy_mark_lasts_busy_for_and_logs_its_first_dial_only() {
+        let cdn = origin_of("https://cdn.example/a");
+        let t0 = std::time::Instant::now();
+        let s = std::time::Duration::from_secs;
+        let mut l = ConnLedger::default();
+        l.saw_version(&cdn, CURL_HTTP_VERSION_2_0);
+        l.note_busy(&cdn, t0);
+        assert_eq!(l.dial_fresh(&cdn, t0), Some(true), "the first fresh dial is logged");
+        assert_eq!(l.dial_fresh(&cdn, t0 + s(1)), Some(false), "later ones are not");
+        assert_eq!(l.dial_fresh(&cdn, t0 + BUSY_FOR - s(1)), Some(false), "still inside the window");
+        assert_eq!(l.dial_fresh(&cdn, t0 + BUSY_FOR), None, "the window is over");
+        assert_eq!(l.dial_fresh(&cdn, t0), None, "…and the mark is gone, not merely skipped");
+        let t1 = t0 + s(200);
+        l.note_busy(&cdn, t1);
+        assert_eq!(l.dial_fresh(&cdn, t1 + s(1)), Some(true), "a new cancel starts a new, logged window");
+        assert!(BUSY_FOR > s(118), "longer than libcurl's default CURLOPT_MAXAGE_CONN");
+        l.forget_busy();
+        assert_eq!(l.dial_fresh(&cdn, t1 + s(1)), None, "a rebuilt multi has nothing busy");
+        assert_eq!(l.version(&cdn), CURL_HTTP_VERSION_2_0, "…but the server's version stays known");
     }
 
-    /// **The seek path issues `CURLOPT_FRESH_CONNECT` for a busy origin, and keeps issuing it.**
-    /// The loopback server speaks HTTP/1.1, so the busy HTTP/2 connection is stood in for by
-    /// recording its origin; each transfer is read to its end so libcurl keeps its connection
-    /// cached, which is what a reusing seek would take. Every later seek must dial: libcurl hands
-    /// a request the oldest matching idle connection, which would be the busy one.
+    /// **The ledger forgets the least recently used origin, not the first noted**: with
+    /// a presigned redirect to a new CDN edge every seek, the Plex server every chain replay starts
+    /// from is re-noted each time and must outlive the edges.
     #[test]
-    fn every_request_to_a_busy_http2_origin_dials_a_fresh_connection() {
+    fn the_ledger_forgets_the_least_recently_used_origin() {
+        let now = std::time::Instant::now();
+        let plex = origin_of("https://plex.example:32400/a");
+        let edge = |n: usize| origin_of(&format!("https://edge{n}.cdn.example/x"));
+        let mut l = ConnLedger::default();
+        l.note_busy(&plex, now);
+        // Each seek: a new edge, then the chain replay re-notes the server. Checked after the edge,
+        // before the re-note, so an eviction of the server cannot be hidden by noting it afresh.
+        for n in 0..MAX_LEDGER_ORIGINS * 2 {
+            l.note_busy(&edge(n), now);
+            assert!(l.entries.len() <= MAX_LEDGER_ORIGINS);
+            assert!(l.dial_fresh(&plex, now).is_some(), "seek {n}: the server was forgotten before the edges");
+            l.note_busy(&plex, now);
+        }
+        assert!(l.dial_fresh(&edge(MAX_LEDGER_ORIGINS * 2 - 1), now).is_some(), "the newest edge is kept");
+        assert!(l.dial_fresh(&edge(0), now).is_none(), "the oldest edge was forgotten");
+        l.note_busy(&plex, now);
+        l.note_busy(&plex, now);
+        assert_eq!(l.entries.iter().filter(|e| same_origin(&e.origin, &plex)).count(), 1, "once");
+    }
+
+    /// **The seek path issues `CURLOPT_FRESH_CONNECT` for a busy origin, keeps issuing it within the
+    /// window, and stops after it.** The loopback server speaks HTTP/1.1, so the busy HTTP/2
+    /// connection is stood in for by a busy mark; each transfer is read to its end so libcurl keeps
+    /// its connection cached, which is what a reusing seek would take.
+    #[test]
+    fn requests_to_a_busy_http2_origin_dial_fresh_for_the_window_and_reuse_after_it() {
         let Some(_gate) = curl_gate() else { return };
-        with_server(RangeMode::Honour, |port, accepts, requests| {
-            let url = format!("http://127.0.0.1:{port}/f.mkv");
-            let mut src = CurlSource::open(&url, 0).expect("open");
-            assert_eq!(read_all(&mut src), BODY);
-            assert_eq!(accepts.load(Ordering::Acquire), 1);
-            src.busy.push(conn_origin(&url).expect("origin"));
-            assert!(src.seek(4), "the seek");
-            assert_eq!(read_all(&mut src), b"EFGH");
-            assert_eq!(requests.load(Ordering::Acquire), 2);
-            assert_eq!(
-                accepts.load(Ordering::Acquire),
-                2,
-                "the seek must not take the cached connection a cancelled HTTP/2 stream still occupies"
-            );
-            assert!(src.seek(2), "a later seek, after a finished transfer");
-            assert_eq!(read_all(&mut src), b"CDEFGH");
-            assert_eq!(accepts.load(Ordering::Acquire), 3, "…dials again: the busy connection is still the oldest");
+        plx_base::eventlog::with_private_log(|| {
+            with_server(RangeMode::Honour, |port, accepts, requests| {
+                let url = format!("http://127.0.0.1:{port}/f.mkv");
+                let mut src = CurlSource::open(&url, 0).expect("open");
+                assert_eq!(read_all(&mut src), BODY);
+                assert_eq!(accepts.load(Ordering::Acquire), 1);
+                src.conns.note_busy(&origin_of(&url), std::time::Instant::now());
+                assert!(src.seek(4), "the seek");
+                assert_eq!(read_all(&mut src), b"EFGH");
+                assert_eq!(requests.load(Ordering::Acquire), 2);
+                assert_eq!(
+                    accepts.load(Ordering::Acquire),
+                    2,
+                    "the seek must not take the cached connection a cancelled HTTP/2 stream still occupies"
+                );
+                assert!(src.seek(2), "a later seek, after a finished transfer");
+                assert_eq!(read_all(&mut src), b"CDEFGH");
+                assert_eq!(accepts.load(Ordering::Acquire), 3, "…dials again: the busy connection is still the oldest");
+                let fresh_lines = log_lines().iter().filter(|l| l.contains("curlio: fresh connection")).count();
+                assert_eq!(fresh_lines, 1, "one line per busy mark, not one per request");
+                // The window has passed: libcurl would now refuse the busy connection itself. Expired
+                // through the ledger with a constructed instant, not by subtracting from now (a
+                // freshly booted host's monotonic clock may be younger than the window).
+                let later = std::time::Instant::now() + BUSY_FOR;
+                assert_eq!(src.conns.dial_fresh(&origin_of(&url), later), None, "expired");
+                assert!(src.seek(1), "a seek after the window");
+                assert_eq!(read_all(&mut src), b"BCDEFGH");
+                assert_eq!(accepts.load(Ordering::Acquire), 3, "past the window the cached connection is reused");
+            });
         });
     }
 
-    /// **`stop()` records the busy origin, and the record outlives a failed chain.** The source's
-    /// last response is marked HTTP/2; a reopen whose response never comes is stopped by its
-    /// checkpoint before its own response line, so `stop` falls back to that version, finds the
-    /// transfer unfinished, and records the origin. The reopen after it must dial fresh (the log
-    /// says so) and, stopped too, leave the origin recorded.
+    /// **`stop()` records the busy origin through real libcurl, by that origin's version, and the
+    /// record outlives a failed chain.** The origin's last response is marked HTTP/2; a reopen whose
+    /// response never comes is stopped by its checkpoint before its own response line, so `stop`
+    /// takes the origin's version, finds the transfer unfinished, and records the origin. The reopen
+    /// after it must dial fresh (the log says so) and, stopped too, leave the origin recorded.
     #[test]
     fn a_detached_unfinished_http2_request_marks_its_origin_busy_across_a_failed_chain() {
         let Some(_gate) = curl_gate() else { return };
@@ -3194,11 +3421,11 @@ mod tests {
                 let url = format!("http://127.0.0.1:{port}/f.mkv");
                 let mut src = CurlSource::open(&url, 0).expect("open");
                 assert_eq!(read_all(&mut src), BODY);
-                assert_eq!(src.http_version, 2, "CURLINFO_HTTP_VERSION read: CURL_HTTP_VERSION_1_1");
-                src.http_version = CURL_HTTP_VERSION_2_0;
+                assert_eq!(src.conns.version(&origin_of(&url)), 2, "CURLINFO_HTTP_VERSION read: CURL_HTTP_VERSION_1_1");
+                src.conns.saw_version(&origin_of(&url), CURL_HTTP_VERSION_2_0);
                 let stop = || checkpoint::TestCheckpoint::stopping_after(1, std::time::Duration::from_millis(20));
                 assert_eq!(src.reopen_until(&url, None, &mut stop()), Err(OpenErr::Stopped));
-                assert_eq!(src.busy, vec![conn_origin(&url).expect("origin")], "stop() recorded it");
+                assert!(is_busy(&mut src, &url), "stop() recorded it");
                 assert!(
                     !log_lines().iter().any(|l| l.contains("curlio: fresh connection")),
                     "the first reopen replaced a finished transfer and reused its connection"
@@ -3208,7 +3435,64 @@ mod tests {
                     log_lines().iter().any(|l| l.contains("curlio: fresh connection")),
                     "the second reopen dialled past the busy connection"
                 );
-                assert_eq!(src.busy, vec![conn_origin(&url).expect("origin")], "…and the failed chain kept it");
+                assert!(is_busy(&mut src, &url), "…and the failed chain kept it");
+            });
+        });
+    }
+
+    /// **Another origin's HTTP/2 is not this origin's** (through `stop()`): the CDN a
+    /// chain once reached answered on h2, this server on HTTP/1.1, and a request to this server
+    /// stopped before its response line leaves nothing busy.
+    #[test]
+    fn a_request_stopped_before_its_response_line_takes_only_its_own_origins_version() {
+        let Some(_gate) = curl_gate() else { return };
+        with_server(RangeMode::WithholdFrom(2), |port, _, _| {
+            let url = format!("http://127.0.0.1:{port}/f.mkv");
+            let mut src = CurlSource::open(&url, 0).expect("open");
+            assert_eq!(read_all(&mut src), BODY);
+            src.conns.saw_version(&origin_of("https://cdn.example/x"), CURL_HTTP_VERSION_2_0);
+            let mut stop = checkpoint::TestCheckpoint::stopping_after(1, std::time::Duration::from_millis(20));
+            assert_eq!(src.reopen_until(&url, None, &mut stop), Err(OpenErr::Stopped));
+            assert!(!is_busy(&mut src, &url), "the CDN's h2 was lent to the server");
+        });
+    }
+
+    /// **A handle refused before it entered the multi is not judged**: a bounded range
+    /// that ends before it starts is refused after the easy handle exists and before it is
+    /// attached; with the origin's last response on h2, `stop()` must still record nothing.
+    #[test]
+    fn a_handle_that_never_entered_the_multi_leaves_no_busy_connection() {
+        let Some(_gate) = curl_gate() else { return };
+        with_server(RangeMode::Honour, |port, accepts, _| {
+            let url = format!("http://127.0.0.1:{port}/f.mkv");
+            let mut src = CurlSource::open(&url, 0).expect("open");
+            assert_eq!(read_all(&mut src), BODY);
+            src.conns.saw_version(&origin_of(&url), CURL_HTTP_VERSION_2_0);
+            assert_eq!(src.start_range_until(6, Some(2), None, &mut NoCheckpoint), Err(OpenErr::Local));
+            src.stop();
+            assert!(!is_busy(&mut src, &url), "a request that was never sent left a busy connection");
+            assert!(src.seek(4));
+            assert_eq!(read_all(&mut src), b"EFGH");
+            assert_eq!(accepts.load(Ordering::Acquire), 1, "so the next seek reuses the cached connection");
+        });
+    }
+
+    /// **A request that never had a connection is not judged**: a reopen to a port nothing listens
+    /// on fails in connect (rc 7) having sent nothing, so even with that origin's last response
+    /// recorded as HTTP/2 it leaves nothing busy.
+    #[test]
+    fn a_request_that_never_connected_leaves_no_busy_connection() {
+        let Some(_gate) = curl_gate() else { return };
+        plx_base::eventlog::with_private_log(|| {
+            with_server(RangeMode::Honour, |port, _, _| {
+                let url = format!("http://127.0.0.1:{port}/f.mkv");
+                let mut src = CurlSource::open(&url, 0).expect("open");
+                assert_eq!(read_all(&mut src), BODY);
+                let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+                let dead = format!("http://127.0.0.1:{closed}/f.mkv");
+                src.conns.saw_version(&origin_of(&dead), CURL_HTTP_VERSION_2_0);
+                assert_eq!(src.reopen_until(&dead, None, &mut NoCheckpoint), Err(OpenErr::Transport(7)));
+                assert!(!is_busy(&mut src, &dead), "a refused connect left a busy connection");
             });
         });
     }
@@ -3221,10 +3505,10 @@ mod tests {
         with_server(RangeMode::Stall, |port, accepts, _| {
             let url = format!("http://127.0.0.1:{port}/f.mkv");
             let mut src = CurlSource::open(&url, 0).expect("open");
-            assert_eq!(src.http_version, 2, "CURL_HTTP_VERSION_1_1");
+            assert_eq!(src.conns.version(&origin_of(&url)), 2, "CURL_HTTP_VERSION_1_1");
             assert!(!src.done, "the stalled transfer is unfinished");
             assert!(src.seek(0), "the seek");
-            assert!(src.busy.is_empty());
+            assert!(!is_busy(&mut src, &url));
             assert_eq!(accepts.load(Ordering::Acquire), 2, "libcurl closed the unfinished HTTP/1.1 connection");
         });
     }
