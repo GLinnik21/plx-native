@@ -85,7 +85,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-10T12:43:00Z",
+ "generated": "2026-11-10T12:53:54Z",
  "metrics": [
   {
    "change30_pct": 43.9,
@@ -109,10 +109,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 105.6,
+   "change30_pct": 105.1,
    "change7_pct": 26.9,
-   "d30": 206.5,
-   "delta30": 218.0,
+   "d30": 207,
+   "delta30": 217.5,
    "delta7": 90.0,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
@@ -151,10 +151,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 32.3,
+   "change30_pct": 32.0,
    "change7_pct": 20.2,
-   "d30": 168.5,
-   "delta30": 54.5,
+   "d30": 169,
+   "delta30": 54,
    "delta7": 37.5,
    "group": "ci",
    "id": "ci|host lint + type-checks",
@@ -172,18 +172,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 50.0,
-   "change7_pct": 17.8,
+   "change30_pct": 50.3,
+   "change7_pct": 18.1,
    "d30": 326,
-   "delta30": 163,
-   "delta7": 74,
+   "delta30": 164,
+   "delta7": 75,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
    "n_now": 157,
    "n_prev": 211,
-   "now": 489,
+   "now": 490,
    "prev7": 415,
    "shown": true,
    "state": "flat",
@@ -193,10 +193,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 45.1,
+   "change30_pct": 44.9,
    "change7_pct": 13.1,
-   "d30": 319,
-   "delta30": 144,
+   "d30": 319.5,
+   "delta30": 143.5,
    "delta7": 53.5,
    "group": "ci",
    "id": "push_wait",
@@ -319,10 +319,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 68.8,
+   "change30_pct": 69.1,
    "change7_pct": 9.4,
-   "d30": 262.5,
-   "delta30": 180.5,
+   "d30": 262,
+   "delta30": 181.0,
    "delta7": 38.0,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
@@ -384,8 +384,8 @@
   {
    "change30_pct": 122.3,
    "change7_pct": -6.2,
-   "d30": 139,
-   "delta30": 170,
+   "d30": 139.0,
+   "delta30": 170.0,
    "delta7": -20.5,
    "group": "ci",
    "id": "ci|host harness tests",
@@ -403,10 +403,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 99.2,
+   "change30_pct": 98.5,
    "change7_pct": -9.2,
-   "d30": 131.5,
-   "delta30": 130.5,
+   "d30": 132,
+   "delta30": 130,
    "delta7": -26.5,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
@@ -552,7 +552,7 @@
   {
    "change30_pct": 0.0,
    "change7_pct": 33.3,
-   "d30": 4.0,
+   "d30": 4,
    "delta30": 0.0,
    "delta7": 1.0,
    "group": "ci",
@@ -573,8 +573,8 @@
   {
    "change30_pct": -99.0,
    "change7_pct": 0.0,
-   "d30": 300.0,
-   "delta30": -297.0,
+   "d30": 300,
+   "delta30": -297,
    "delta7": 0.0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
