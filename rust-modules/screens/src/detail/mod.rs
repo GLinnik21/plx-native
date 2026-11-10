@@ -4277,7 +4277,11 @@ impl DetailScreen {
             TrailerKey::Toggle => self.content(fx, ContentReq::PreviewTransport(None)),
             TrailerKey::Play => self.content(fx, ContentReq::PreviewTransport(Some(true))),
             TrailerKey::Pause => self.content(fx, ContentReq::PreviewTransport(Some(false))),
-            TrailerKey::Reveal => {}
+            TrailerKey::ToggleHud => {
+                self.trailer_ctl.toggle_controls(preview_paused);
+                fx.invalidate(Provenance::Input);
+                return;
+            }
             TrailerKey::Scrub(_) => unreachable!("handled above, on every edge"),
         }
         // Any key the mode kept puts the controls back on screen for a fresh linger — the player

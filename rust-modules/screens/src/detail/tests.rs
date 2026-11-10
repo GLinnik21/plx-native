@@ -2136,11 +2136,11 @@ fn back_and_down_both_collapse_full_trailer_mode_and_are_a_no_op_otherwise() {
 }
 
 /// **The input arm's own claim: full-trailer mode answers a key it owns on EVERY edge, before any
-/// other arm, but a `Reveal`-mapped key only ACTS on the DOWN edge.** UP is the probe:
-/// `trailer::trailer_key` maps it to `Reveal`, which has no effect this test can mistake for
+/// other arm, but a `ToggleHud`-mapped key only ACTS on the DOWN edge.** UP is the probe:
+/// `trailer::trailer_key` maps it to `ToggleHud`, which has no effect this test can mistake for
 /// ordinary UP navigation, so a `revealed()` flip after the DOWN edge (and none after the UP edge)
 /// can only have come from this arm running — and running before whatever ordinary UP handling
-/// exists further down. (LEFT/RIGHT now map to `Scrub`, which — unlike `Reveal` — DOES act on
+/// exists further down. (LEFT/RIGHT now map to `Scrub`, which — unlike `ToggleHud` — DOES act on
 /// every edge; that contract is graded separately, by the scrub-specific tests below.)
 #[test]
 fn full_trailer_mode_swallows_every_edge_of_an_owned_key_but_acts_only_on_the_down_edge() {
@@ -2168,7 +2168,7 @@ fn full_trailer_mode_swallows_every_edge_of_an_owned_key_but_acts_only_on_the_do
     assert_eq!(handled, Handled::Yes, "the down edge must be swallowed too");
     assert!(
         screen.trailer_ctl.revealed(),
-        "the down edge must act (Reveal) — proof this ran before ordinary UP handling"
+        "the down edge must act (ToggleHud) — proof this ran before ordinary UP handling"
     );
 
     plx_media::player::preview::reset_for_test();
@@ -2326,17 +2326,55 @@ fn a_held_left_right_scrub_commits_a_preview_seek_on_key_up() {
     clear();
 }
 
-/// A direction key the mode keeps only REVEALS: it asks for no transport at all, which is the
-/// whole of the "no seek on a preview session" rule at this layer.
+/// Revealing the controls requests no playback operation.
 #[test]
 fn a_revealing_key_asks_for_no_transport() {
     let sid = ServerId::UNSET;
     let _guard = install(detail(sid, "show"));
     let mut screen = bare(&_guard, sid, "show");
     screen.preview_promoted = true;
-    let effects = trailer_act(&mut screen, trailer::TrailerKey::Reveal);
+    let effects = trailer_act(&mut screen, trailer::TrailerKey::ToggleHud);
     assert!(transport_reqs(&effects).is_empty());
     assert!(screen.trailer_ctl.revealed());
+    clear();
+}
+
+#[test]
+fn up_toggles_the_full_trailer_hud_without_changing_playback() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    let mut screen = bare(&_guard, sid, "show");
+    screen.preview_promoted = true;
+    let mut now = 0;
+    for paused in [false, true] {
+        screen.trailer_ctl.reveal();
+        for _ in 0..60 {
+            now += 16;
+            screen.trailer_ctl.update(now, 0.016, true, paused, false);
+        }
+        assert!(screen.trailer_ctl.alpha > 0.9);
+        let effects = trailer_act_edge_with_pause(
+            &mut screen, trailer::TrailerKey::ToggleHud, Edge::Down, now, paused,
+        );
+        assert!(transport_reqs(&effects).is_empty());
+        assert!(!screen.trailer_ctl.revealed(), "Up hides a visible HUD, also while paused");
+        let mut motion = false;
+        for _ in 0..100 {
+            now += 16;
+            motion = screen.trailer_ctl.update(now, 0.016, true, paused, false);
+        }
+        assert!(screen.trailer_ctl.alpha < 0.01, "the hidden HUD stays hidden while paused");
+        assert!(!motion, "hidden controls do not keep requesting frames");
+        trailer_act_edge_with_pause(
+            &mut screen, trailer::TrailerKey::ToggleHud, Edge::Up, now, paused,
+        );
+        assert!(!screen.trailer_ctl.revealed(), "release does not reveal it again");
+        trailer_act_edge_with_pause(
+            &mut screen, trailer::TrailerKey::ToggleHud, Edge::Down, now, paused,
+        );
+        assert!(screen.trailer_ctl.revealed(), "the next Up reveals it");
+        assert!(screen.preview_promoted);
+    }
     clear();
 }
 
