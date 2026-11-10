@@ -54,12 +54,14 @@ float shade_block(int i, vec2 px) {
   float t = clamp((length(d) - u_sc[i + 1].x) * u_sc[i + 1].y, 0.0, 1.0);
   return u_sc[i + 1].z * (1.0 - t * t * (3.0 - 2.0 * t));
 }
-// An edge field packs horizontal and vertical easing, three shelf stops and a soft join.
+// An edge field packs horizontal and vertical easing, three shelf stops, a soft join and an optional exit.
 float edge_alpha(vec2 px) {
   vec4 edge = u_sc[0];
   vec4 shelf = u_sc[1];
   vec4 ink = u_sc[2];
   float side = ink.z * (1.0 - smoothstep(edge.x, edge.y, px.x)) * smoothstep(edge.z, edge.w, px.y);
+  vec2 side_exit = u_sc[3].xy;
+  if (side_exit.y > side_exit.x) side *= 1.0 - smoothstep(side_exit.x, side_exit.y, px.y);
   float foot = px.y < shelf.y
     ? mix(shelf.w, ink.x, clamp((px.y - shelf.x) / (shelf.y - shelf.x), 0.0, 1.0))
     : mix(ink.x, ink.y, clamp((px.y - shelf.y) / (shelf.z - shelf.y), 0.0, 1.0));

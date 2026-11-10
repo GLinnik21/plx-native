@@ -214,9 +214,8 @@ pub struct DetailScreen {
     /// up) and eases to 0.0 once full-trailer mode owns the screen, where the page has no ink left
     /// up there to protect and the transport brings its own scrim at the bottom.
     preview_field: f32,
-    /// The bottom-anchored base scrim's own alpha multiplier — 1.0 normal (leaves
-    /// `detail_layout::base_scrim_a`'s own scroll-driven value untouched), eased to 0.0 in
-    /// full-trailer mode for the same reason as the shade above.
+    /// The bottom-anchored scrim's alpha multiplier — 1.0 in Detail, including while its
+    /// ramp moves down for a background preview, and 0.0 in full-trailer mode.
     /// Independent from [`preview_field`](Self::preview_field), which scales the left side of
     /// the same shade field.
     preview_base_scrim: f32,
@@ -4089,7 +4088,7 @@ impl DetailScreen {
         // the whole page off the screen.
         let synopsis_target = if full_trailer { 0.0 } else { 1.0 };
         // The hero shade's strength: `view.field` normally (1.0 idle, `PREVIEW_FIELD` once a
-        // picture is up, protecting the logo+synopsis), and NOTHING in full-trailer mode — the
+        // picture is up, protecting the compact logo), and NOTHING in full-trailer mode — the
         // page keeps no ink up there to protect, and the trailer's own transport brings the only
         // scrim the state needs (`player_hud::classic::draw_scrim`, at the bottom, under the playbar).
         let field_target = if full_trailer { 0.0 } else { view.field };

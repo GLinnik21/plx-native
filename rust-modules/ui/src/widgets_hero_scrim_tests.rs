@@ -4,6 +4,27 @@ use super::*;
 #[allow(unused_imports)]
 use super::test_support::*;
 
+#[test]
+fn the_trailer_shade_clears_the_space_left_by_the_title() {
+    use crate::landing_hero::{detail_shade, PREVIEW_FIELD};
+
+    let still = detail_shade(1.0, 1.0, 1.0, 0.0);
+    assert!(still.alpha(400.0, 480.0) > 0.5);
+    let mut previous = detail_shade(1.0, PREVIEW_FIELD, 1.0, 0.0).alpha(400.0, 480.0);
+    for progress in [0.25, 0.5, 0.75, 1.0] {
+        let alpha = detail_shade(1.0, PREVIEW_FIELD, 1.0, progress).alpha(400.0, 480.0);
+        assert!(alpha <= previous, "the vacated title area should lighten as the logo moves");
+        previous = alpha;
+    }
+    let preview = detail_shade(1.0, PREVIEW_FIELD, 1.0, 1.0);
+    for y in [260.0, 360.0, 480.0, 520.0] {
+        assert_eq!(preview.alpha(400.0, y), 0.0, "the gap under the compact logo at y={y}");
+    }
+    assert!(preview.alpha(300.0, 85.0) > 0.5, "the compact logo still has contrast");
+    assert_eq!(preview.alpha(960.0, 85.0), 0.0, "the shade is confined to the logo's corner");
+    assert!(preview.alpha(1200.0, 700.0) > 0.6, "the lower text keeps its shade");
+}
+
 /// Weakest contrast over a text box, sampled through the same shade the page uses.
 fn detail_worst(
     shade: &WashScrim,
@@ -67,21 +88,18 @@ fn the_hero_text_reads_over_bright_artwork() {
             assert!(after >= before, "{label} over art {art}: the shade made it WORSE ({before:.2} → {after:.2})");
         }
     }
-    // Video-bound rows. The title stays (at rest, prose receded) and the logo shrinks to the corner:
-    // the same shade at the raised strength must not weaken either.
+    // Video-bound rows. The compact logo and the synopsis still need contrast, including when
+    // no ratings row pushes the synopsis down.
     let ceiling = crate::landing_hero::PREVIEW_FIELD;
-    let title = (MARGIN_X, det_col_r);
-    let spans = (detail_title_cap_top(), crate::detail_layout::TITLE_BOTTOM);
-    let (still, ..) = detail_worst(&shade, theme::TEXT_PRIMARY, 0.85, title, spans);
     let preview = crate::landing_hero::detail_shade(1.0, ceiling, 1.0, 1.0);
-    let (bound, ..) = detail_worst(&preview, theme::TEXT_PRIMARY, 0.85, title, spans);
-    assert!(bound >= 3.0, "detail title (video-bound) over bright art: {bound:.2}:1, under 3:1");
-    assert!(bound >= still, "the raised field must not weaken the title ({still:.2} → {bound:.2})");
+    let synopsis = crate::detail_layout::hero_chain(34.0, false, &crate::fixture::FixtureMeasure).syn_y;
     let corner_run = (crate::detail_layout::PREVIEW_LOGO_X, crate::detail_layout::PREVIEW_LOGO_X + crate::detail_layout::PREVIEW_LOGO_MAX_W);
     let corner_span = (crate::detail_layout::PREVIEW_LOGO_Y, crate::detail_layout::PREVIEW_LOGO_Y + crate::hero_logo::band_h(crate::hero_logo::LogoRung::Compact));
     for (art, floor) in [(0.85f32, 3.0f32), (1.0, 2.5)] {
         let (c, x, y, total) = detail_worst(&preview, theme::TEXT_PRIMARY, art, corner_run, corner_span);
         eprintln!("detail logo in the trailer corner art {art:.2}: {c:5.2}:1 (floor {floor}) at ({x:.0},{y:.0}) total alpha {total:.3}");
         assert!(c >= floor, "the risen logo over art {art}: {c:.2}:1, under its {floor}:1 floor");
+        let (c, ..) = detail_worst(&preview, theme::TEXT_READING, art, (MARGIN_X, det_col_r), (synopsis, synopsis + 34.0));
+        assert!(c >= floor, "the preview synopsis over art {art}: {c:.2}:1, under its {floor}:1 floor");
     }
 }

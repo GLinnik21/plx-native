@@ -268,6 +268,11 @@ pub mod shade {
     pub const DETAIL_SIDE_Y: [f32; 2] = [120.0, 400.0];
     /// Shift the fade upward as the preview logo travels into the corner.
     pub const DETAIL_PREVIEW_RISE: f32 = 260.0;
+    /// Right and bottom falloff of the side shade when the compact logo is in the corner.
+    pub const DETAIL_PREVIEW_SIDE_END_X: f32 = 820.0;
+    pub const DETAIL_PREVIEW_SIDE_EXIT_Y: [f32; 2] = [140.0, 250.0];
+    /// Top and knee of the preview's bottom ramp, below the gap and behind the first lines of copy.
+    pub const DETAIL_PREVIEW_FOOT_Y: [f32; 2] = [520.0, 630.0];
     /// Detail's edge shade strength before the preview boost.
     pub const DETAIL_SIDE_A: f32 = 0.65;
     /// Inactive pagination dots still need contrast against the art.
