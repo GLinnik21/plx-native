@@ -38,6 +38,10 @@
 
 use std::ffi::CStr;
 
+#[cfg(test)]
+#[path = "metadata_alt_sources_bridge_tests.rs"]
+mod metadata_alt_sources_bridge_tests;
+
 use plx_screens::family::SettingsPage;
 use plx_screens::player::HudPolicy;
 use plx_screens::registry::{AppArg, AppFx, AppMounter, AppMsg, ConsentCmd, ContentArg, ContentReq, HomeCmd, HomeLike, HomeReq, HomeTab, ItemMenuKind, LibraryReq, LoopReq, PageMemory};
@@ -415,6 +419,8 @@ pub(crate) struct Bridge {
     /// Starts the jobs the stores emit (`adapters::stores`). Chosen when the Bridge is built: `Live`
     /// in production, the `Held` runner in a host test.
     store_runner: super::adapters::stores::StoreRunner,
+    /// Host IO chosen at boot: production trigger reader, or an explicit neutral/scripted reader.
+    metadata_alt_host: fn(plx_data::metadata::AltStandInReq, Option<&str>) -> plx_data::metadata::AltStandInAnswer,
     /// How many store jobs a pump had to start because their sender left them on a store's outbox
     /// ([`Bridge::start_late_store_jobs`]). Zero while every sender drains its own jobs; the test
     /// rigs assert it stays zero, so a bypass is a red test and not a silent rescue.
@@ -591,11 +597,13 @@ impl Bridge {
     #[cfg(test)]
     pub(crate) fn for_test(now_us: fn() -> u64) -> Self {
         static FIXTURE: plx_ui::fixture::FixtureMeasure = plx_ui::fixture::FixtureMeasure;
-        Self::with_measure(&FIXTURE, now_us,
+        let mut bridge = Self::with_measure(&FIXTURE, now_us,
             plx_session::auth::SessionInit::captured(plx_plex::plex::session::Session::default()),
             super::adapters::session::SessionAdapter::fixture(), Default::default(),
             super::adapters::consent::ConsentAdapter::fixture(),
-            super::adapters::stores::StoreRunner::held())
+            super::adapters::stores::StoreRunner::held());
+        bridge.metadata_alt_host = |request, _| request.answer(None);
+        bridge
     }
 
     fn with_measure(measure: &'static dyn Measure, now_us: fn() -> u64,
@@ -663,8 +671,10 @@ impl Bridge {
         consent: plx_telemetry::telemetry::consent::Consent,
         consent_adapter: super::adapters::consent::ConsentAdapter,
         reads: StorePublications) -> Self {
-        Self::with_publications_and_stores(measure, now_us, init, session_adapter, consent,
-            consent_adapter, super::adapters::stores::StoreRunner::held(), reads, Default::default())
+        let mut bridge = Self::with_publications_and_stores(measure, now_us, init, session_adapter, consent,
+            consent_adapter, super::adapters::stores::StoreRunner::held(), reads, Default::default());
+        bridge.metadata_alt_host = |request, _| request.answer(None);
+        bridge
     }
 
     fn with_publications_and_stores(measure: &'static dyn Measure, now_us: fn() -> u64,
@@ -692,6 +702,7 @@ impl Bridge {
             trace_save: None,
             consent_adapter,
             store_runner,
+            metadata_alt_host: crate::dev::scenarios::metadata_alt_stand_in,
             late_store_jobs: 0,
             client_keys: Default::default(),
             stores,
@@ -1718,7 +1729,10 @@ impl Bridge {
     #[cfg(test)]
     pub(crate) fn metadata_pump(&mut self) -> bool {
         self.start_late_store_jobs();
-        self.stores.metadata_pump()
+        super::adapters::stores::refill_client_keys(&mut self.client_keys);
+        let changed = self.stores.metadata_pump(&self.client_keys, plx_data::stores::tape::active(), None);
+        self.start_store_jobs_of(StoreId::Metadata);
+        changed
     }
 
     /// The outcome's `endpoints` are the refreshes the edit's Hubs step settled (a launch the
@@ -2023,7 +2037,11 @@ impl Bridge {
         // found would leave a request nothing runs, and the pump below would wait on it; it is
         // started now, so the request settles, and counted and logged so the bypass is not silent.
         self.start_late_store_jobs();
-        self.stores.metadata.pump_detail_with_gate(&self.stores.landgate)
+        super::adapters::stores::refill_client_keys(&mut self.client_keys);
+        let changed = self.stores.metadata.pump_detail_with_gate(&self.client_keys,
+            plx_data::stores::tape::active(), &self.stores.landgate);
+        self.start_store_jobs_of(StoreId::Metadata);
+        changed
     }
 
     /// The `MetadataStore`'s own async season landing — `app/run.rs`'s route-unconditional pump.
@@ -2039,8 +2057,22 @@ impl Bridge {
     /// The `MetadataStore`'s cross-source alt-sources resolve, scoped by this owner's retained
     /// Browse directory — `app/run.rs`'s route-unconditional pump.
     pub(crate) fn metadata_pump_alt_sources(&mut self) -> bool {
+        self.metadata_pump_alt_sources_with(self.metadata_alt_host)
+    }
+
+    // Host-only scripted IO seam. Data logic never invokes an IO callback: it emits a request,
+    // returns its exclusive pass, and the Bridge executes the host between begin and finish.
+    fn metadata_pump_alt_sources_with(&mut self,
+        host: impl FnOnce(plx_data::metadata::AltStandInReq, Option<&str>) -> plx_data::metadata::AltStandInAnswer) -> bool {
+        // Capture keys/roster BEFORE host registration. The pass exclusively borrows Metadata
+        // and shares the keys until finish, preventing intervening step/reset/refill/publication.
+        super::adapters::stores::refill_client_keys(&mut self.client_keys);
         let directory = self.directory.view();
-        self.stores.metadata.pump_alt_sources_with_directory(directory, &self.stores.landgate)
+        let library = directory.current().and_then(|section| directory.sections().get(section))
+            .map(|section| section.row.title.as_str());
+        let mut pass = self.stores.metadata.begin_alt_sources(&self.client_keys, plx_data::stores::tape::active());
+        let answer = pass.take_request().map(|request| host(request, library));
+        pass.finish(answer, &self.stores.landgate)
     }
 
     /// Refresh only the retained directory at synchronous application boundaries that must make

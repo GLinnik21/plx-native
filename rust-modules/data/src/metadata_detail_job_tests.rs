@@ -28,19 +28,19 @@ fn a_superseded_detail_request_keeps_its_reservation_until_answered() {
     assert_eq!(inflight(&store), 2, "the superseded request still owes an answer, so it still holds its slot");
 
     // No fetch has returned, so a pump has nothing to drain and frees nothing.
-    assert!(!store.pump_detail(), "nothing has landed");
+    assert!(!store.pump_detail(&plx_plex::plex::ClientKeys::default(), false), "nothing has landed");
     assert_eq!(inflight(&store), 2, "a pump with no answer in hand does not free the superseded slot");
 
     // The stale answer arrives: its slot comes back, nothing is installed, the page still waits.
     land_detail(store.adapter_ref(), sid, "old", 1, None);
-    assert!(!store.pump_detail(), "a superseded answer installs nothing");
+    assert!(!store.pump_detail(&plx_plex::plex::ClientKeys::default(), false), "a superseded answer installs nothing");
     assert_eq!(inflight(&store), 1);
     assert!(store.view().detail_loading(), "the current request is still out");
 
     // The current answer arrives: the page settles, with exactly one notice.
     let before = store.gen();
     land_detail(store.adapter_ref(), sid, "new", 2, Some(Detail::default()));
-    assert!(store.pump_detail(), "the current answer settles the page");
+    assert!(store.pump_detail(&plx_plex::plex::ClientKeys::default(), false), "the current answer settles the page");
     assert_eq!(store.gen(), before + 1, "one answer, one notice");
     assert_eq!(inflight(&store), 0);
     assert!(!store.view().detail_loading());
@@ -148,6 +148,6 @@ fn a_job_emitted_before_a_reset_answers_into_the_retired_adapter() {
     assert_ne!(port, store.detail_port(), "the job holds the retired adapter's port");
 
     port.done(job.addr, ((sid, "42".into()), Some(Detail::default())));
-    assert!(!store.pump_detail(), "the replacement's landing never sees the answer");
+    assert!(!store.pump_detail(&plx_plex::plex::ClientKeys::default(), false), "the replacement's landing never sees the answer");
     assert!(!store.view().detail_loading());
 }

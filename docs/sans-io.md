@@ -727,6 +727,54 @@ worker start and the `client_for` read inside that worker are gone too. The hous
       rig in the app, screens or hostsim suites waits on a Related landing through a real worker
       (`detail_related_landing_tests` lands the window with `land_related_for_test`), so there is
       no `LiveKind` for it.
+- **Metadata M4: alt sources and dev inputs.** Detail installation emits a Direct, untaped
+  `StoreJob::MetaAltSources(Job<MetaAltSourcesReq>, MetaAltSourcesPort)`. The request captures the
+  item's `(sid,rk)`, GUID, roster generation, ordered whole roster **including origin**, and whole
+  `ClientKeys` snapshot. `finish_alt_sources_job` constructs `KeyedClients` from that snapshot and
+  the runner's lookup; a missing/moved key skips only that server immediately before its GET.
+  Servers registered later never join the read; credential changes after a request is on the wire
+  remain outside this fence. Resolve panic answers one empty list, posted outside `catch_unwind`.
+  Done does not settle before the gated by-value take; refusal settles immediately and monotonically
+  without a mailbox, record or retry, so dump-mode owed cannot starve on a refused launch.
+  - **Publication locking.** Request generation increment/slot clear, roster invalidation, and port
+    publication all acquire `alt_slot` first, then inspect/change `alt_gen`. A stale writer cannot
+    overwrite a newer slot. Consumer generation filtering, landing rank, `(sid,rk)` addressing and
+    captured-roster fencing are retained. Facts changes restamp credit; they do not cancel work.
+  - **One call, three phases.** Bridge refills keys BEFORE begin; `pump_alt_sources_with_library`
+    retains the roster/facts reads and bookkeeping/prune, then consumes an eligible noncontrolled
+    rk-only stand-in chance and returns a private, non-Clone lifetime-bound pass plus owned request.
+    The pass exclusively borrows Metadata and shares the supplied keys through finish: clear,
+    reset, away-and-back, competing steps/publication, reuse, and refill cannot interleave in safe
+    callers. A private per-pass identity binds the owned host answer to its pass. The host handles
+    only a due request using the retained Browse library; finish installs a stand-in first, then
+    gated real data compared with the **PRE-registration roster**, folding one notice. Registration
+    is observed by invalidation on the NEXT pass, never between begin and finish.
+  - **Dev host, not logic IO.** Shared-trigger source latch, per-item stand-in reads and registry
+    registration live in `src/dev/scenarios/metadata.rs`. Source is captured at live Detail launch
+    and held execution, rather than first draw: this is an approved **timing change**, not a pure
+    move. `Detail::source()` uses retained `Option<String>` then real owner facts: `None` is unarmed,
+    `Some(empty)` forces no credit. The field is serde-default AND serialization-skipped, preserving
+    frozen terminal bytes and neutral decoded replay. Controlled capture suppresses before cache/IO;
+    `Bridge::controlled_home` constructs fresh Metadata (only Hubs are restored), so live Details
+    cannot leak retained overrides across that host boundary. Controlled installation is neutral too.
+    Stand-in reads remain once per due noncontrolled rk, even without library/list; source latch is
+    separately once per process. Token is read only on fallback registration. The host preserves
+    current-server identity and uses `register_origin` with origin/pin/connection facts.
+  - **Drains and held policy.** Bridge detail landing and aggregate Metadata pumps refill immediately
+    before pumping and drain Metadata immediately AFTER it, within the same call. Store/raw support
+    pumps take explicit keys/control inputs; Machine Pump without them refuses before taking data.
+    ApplyView-only fan-out lists do not change. Default held/park_page_reads keep alt live off-thread;
+    held_all parks it, and a new Detail does not retire parked alt. Reset rotates adapter identity.
+  - **Ledger and verification scope.** Removed one Metadata worker, eight globals and three forks;
+    five exact globals remain (request roster enumeration/gen, pump roster/facts gen, Detail tape
+    active). Every area header and entry was recounted: actual totals 7/111/68/11 become
+    **6/103/65/11**; the brief's earlier 121/113 globals sums were arithmetic errors, and the old
+    forks pin 71 was a loose ceiling. M4 does not claim all Metadata pure (owner facts and worker
+    timing remain). On prior tree `cfa3cba398266e37b2de759bd6896faa05932fda`, the unchanged Linux
+    replay driver passed 6/6 fixture-mode replays (3,412 graded frames, zero differences). Earlier
+    Windows full `make check`, app and hostsim runs failed, including LF-sensitive source pins; they
+    were not rerun as full gates in the Linux clone. Publication-head local gates and CI remain pending;
+    this replay does not establish ARM, TV or video behavior.
 - **The view-state write lane.** The household's watch-state writes (`data/src/viewstate.rs`: mark
   watched, mark unwatched, remove from Continue Watching, and the fan-out of a watched write, or of
   an end of stream, to the title's other copies) are the eleventh store on the lane. `kick` starts no

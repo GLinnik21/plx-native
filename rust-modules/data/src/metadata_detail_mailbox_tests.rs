@@ -328,7 +328,7 @@ fn an_alt_sources_landing_for_another_servers_copy_with_the_same_key_is_refused(
     let gen = test_adapter().alt_gen.fetch_add(1, Ordering::SeqCst) + 1;
     // …and while it is out the user lands on the SHARE's film 4
     land(gen, SRV_A, "4");
-    pump_alt_sources(test_state(), test_adapter());
+    pump_alt_sources(test_state(), test_adapter(), &plx_plex::plex::ClientKeys::default(), false, None);
     assert!(
         !alt_available(test_state(), SRV_B, "4"),
         "our copies are not news about the share's film"
@@ -342,7 +342,7 @@ fn an_alt_sources_landing_for_another_servers_copy_with_the_same_key_is_refused(
     let stale = test_adapter().alt_gen.fetch_add(1, Ordering::SeqCst) + 1;
     test_adapter().alt_gen.fetch_add(1, Ordering::SeqCst);
     land(stale, SRV_A, "4");
-    pump_alt_sources(test_state(), test_adapter());
+    pump_alt_sources(test_state(), test_adapter(), &plx_plex::plex::ClientKeys::default(), false, None);
     assert!(
         !alt_available(test_state(), SRV_A, "4"),
         "a landing from a superseded resolve is dropped"
@@ -386,7 +386,7 @@ fn an_alt_source_from_a_revoked_slot_is_pruned_and_its_inflight_result_is_discar
     plx_plex::plex::revoke_for_profile_switch();
     plx_plex::plex::register_for_test("alt-c", "127.0.0.1", 3, "c", "cid");
 
-    pump_alt_sources(test_state(), test_adapter());
+    pump_alt_sources(test_state(), test_adapter(), &plx_plex::plex::ClientKeys::default(), false, None);
     assert!(
         !alt_available(test_state(), a, "4"),
         "the removed source neither stays cached nor re-lands"
@@ -409,7 +409,7 @@ fn a_detail_landing_only_installs_while_it_is_still_the_one_being_awaited() {
     land_detail(test_adapter(), plx_plex::plex::ServerId::UNSET, "previous-test-request", previous, None);
     // idle: nothing requested, nothing loading, nothing to pump
     assert!(!detail_loading(test_adapter()), "the isolated fixture is not loading anything");
-    assert!(!pump_detail(test_state(), test_adapter()), "an empty mailbox pumps nothing");
+    assert!(!pump_detail(test_state(), test_adapter(), &plx_plex::plex::ClientKeys::default(), false), "an empty mailbox pumps nothing");
 
     // a request is in flight until its landing is pumped
     let gen = begin_detail_for_test(test_adapter(), plx_plex::plex::ServerId::UNSET, "movie-1");
@@ -418,7 +418,7 @@ fn a_detail_landing_only_installs_while_it_is_still_the_one_being_awaited() {
         "a bumped generation with DONE behind it reads as in flight"
     );
     landing(gen, "movie-1");
-    assert!(pump_detail(test_state(), test_adapter()), "the awaited landing installs");
+    assert!(pump_detail(test_state(), test_adapter(), &plx_plex::plex::ClientKeys::default(), false), "the awaited landing installs");
     assert_eq!(cur_rk().as_deref(), Some("movie-1"));
     assert!(!detail_loading(test_adapter()), "pumping the landing settles the spinner");
 
@@ -427,7 +427,7 @@ fn a_detail_landing_only_installs_while_it_is_still_the_one_being_awaited() {
     let new = begin_detail_for_test(test_adapter(), plx_plex::plex::ServerId::UNSET, "fresh-show");
     landing(old, "stale-show");
     assert!(
-        !pump_detail(test_state(), test_adapter()),
+        !pump_detail(test_state(), test_adapter(), &plx_plex::plex::ClientKeys::default(), false),
         "a landing from a superseded generation is discarded"
     );
     assert_eq!(
@@ -442,13 +442,13 @@ fn a_detail_landing_only_installs_while_it_is_still_the_one_being_awaited() {
     // mailbox before its guard existed: losing the newest result stalled the spinner on.)
     landing(new, "fresh-show");
     landing(old, "stale-show");
-    assert!(pump_detail(test_state(), test_adapter()), "the late older landing is refused by its generation");
+    assert!(pump_detail(test_state(), test_adapter(), &plx_plex::plex::ClientKeys::default(), false), "the late older landing is refused by its generation");
     assert_eq!(cur_rk().as_deref(), Some("fresh-show"));
 
     // a FAILED fetch (None) settles the spinner but keeps the previously loaded item
     let g = begin_detail_for_test(test_adapter(), plx_plex::plex::ServerId::UNSET, "fresh-show");
     land_detail(test_adapter(), plx_plex::plex::ServerId::UNSET, "fresh-show", g, None);
-    assert!(!pump_detail(test_state(), test_adapter()), "a failed fetch reports no fresh item");
+    assert!(!pump_detail(test_state(), test_adapter(), &plx_plex::plex::ClientKeys::default(), false), "a failed fetch reports no fresh item");
     assert_eq!(
         cur_rk().as_deref(),
         Some("fresh-show"),
@@ -462,7 +462,7 @@ fn a_detail_landing_only_installs_while_it_is_still_the_one_being_awaited() {
     clear(test_state(), test_adapter());
     assert!(!detail_loading(test_adapter()), "clear(test_state(), test_adapter()) settles the in-flight fetch");
     landing(inflight, "arrived-after-close");
-    assert!(!pump_detail(test_state(), test_adapter()), "a landing after close is dropped");
+    assert!(!pump_detail(test_state(), test_adapter(), &plx_plex::plex::ClientKeys::default(), false), "a landing after close is dropped");
     assert_eq!(cur_rk(), None, "the page stays closed");
 }
 
@@ -490,7 +490,7 @@ fn a_detail_landing_for_another_servers_item_of_the_same_key_is_skipped() {
             ..Default::default()
         }),
     );
-    assert!(!pump_detail(test_state(), test_adapter()), "the other server's copy is not the awaited item");
+    assert!(!pump_detail(test_state(), test_adapter(), &plx_plex::plex::ClientKeys::default(), false), "the other server's copy is not the awaited item");
     assert_eq!(cur_rk(), None);
     assert!(detail_loading(test_adapter()), "…and the page is still waiting for its own");
     assert_eq!(test_adapter().detail_landing.dropped_for(addr.to), before + 1, "counted");
@@ -506,7 +506,7 @@ fn a_detail_landing_for_another_servers_item_of_the_same_key_is_skipped() {
             ..Default::default()
         }),
     );
-    assert!(pump_detail(test_state(), test_adapter()));
+    assert!(pump_detail(test_state(), test_adapter(), &plx_plex::plex::ClientKeys::default(), false));
     assert_eq!(current(test_state()).map(|d| d.title.clone()).as_deref(), Some("ours"));
     assert!(!detail_loading(test_adapter()));
     clear(test_state(), test_adapter());
@@ -533,7 +533,7 @@ fn closing_one_servers_page_leaves_the_other_servers_pending_request_alone() {
     // B's copy is the loaded item, as it is while B's surface is on screen.
     let gen_b = begin_detail_for_test(test_adapter(), b, "42");
     land_detail(test_adapter(), b, "42", gen_b, Some(item(b, "on B")));
-    assert!(pump_detail(test_state(), test_adapter()));
+    assert!(pump_detail(test_state(), test_adapter(), &plx_plex::plex::ClientKeys::default(), false));
 
     // A is uncovered and asks for its own; B's body is only now torn down.
     let gen_a = begin_detail_for_test(test_adapter(), a, "42");
@@ -544,7 +544,7 @@ fn closing_one_servers_page_leaves_the_other_servers_pending_request_alone() {
     assert_eq!(detail_generation(test_adapter()), gen_a, "closing B did not supersede A's request");
 
     land_detail(test_adapter(), a, "42", gen_a, Some(item(a, "on A")));
-    assert!(pump_detail(test_state(), test_adapter()), "A's landing installs");
+    assert!(pump_detail(test_state(), test_adapter(), &plx_plex::plex::ClientKeys::default(), false), "A's landing installs");
     assert_eq!(current(test_state()).map(|d| (d.sid, d.title.clone())), Some((a, "on A".to_string())));
     assert_eq!(detail_request_status(test_adapter(), a, "42"), Some(false));
 
@@ -553,7 +553,7 @@ fn closing_one_servers_page_leaves_the_other_servers_pending_request_alone() {
     clear_item(test_state(), test_adapter(), a, "42");
     assert!(!detail_loading(test_adapter()), "the page's own in-flight fetch is superseded");
     land_detail(test_adapter(), a, "42", gen, Some(item(a, "late")));
-    assert!(!pump_detail(test_state(), test_adapter()), "a landing after its own page closed is dropped");
+    assert!(!pump_detail(test_state(), test_adapter(), &plx_plex::plex::ClientKeys::default(), false), "a landing after its own page closed is dropped");
     assert_eq!(current(test_state()).map(|d| d.sid), None);
 }
 
@@ -576,7 +576,7 @@ fn closing_a_page_before_its_fetch_lands_drops_that_landing_and_keeps_the_page_u
     // A's copy is the loaded item; B's fresh open then asks for its own.
     let gen_a = begin_detail_for_test(test_adapter(), a, "42");
     land_detail(test_adapter(), a, "42", gen_a, Some(item(a, "on A")));
-    assert!(pump_detail(test_state(), test_adapter()));
+    assert!(pump_detail(test_state(), test_adapter(), &plx_plex::plex::ClientKeys::default(), false));
     let gen_b = begin_detail_for_test(test_adapter(), b, "42");
     assert_eq!(detail_request_status(test_adapter(), b, "42"), Some(true));
 
@@ -589,7 +589,7 @@ fn closing_a_page_before_its_fetch_lands_drops_that_landing_and_keeps_the_page_u
 
     // B's fetch lands late: it is dropped, A's item stays.
     land_detail(test_adapter(), b, "42", gen_b, Some(item(b, "on B")));
-    assert!(!pump_detail(test_state(), test_adapter()), "B's late landing is dropped");
+    assert!(!pump_detail(test_state(), test_adapter(), &plx_plex::plex::ClientKeys::default(), false), "B's late landing is dropped");
     assert_eq!(current(test_state()).map(|d| (d.sid, d.title.clone())), Some((a, "on A".to_string())));
     clear(test_state(), test_adapter());
 }
@@ -612,19 +612,19 @@ fn withdrawing_a_dismissed_page_retires_only_its_own_request_and_keeps_the_loade
     // A is loaded; B's request is in flight when B is dismissed.
     let gen_a = begin_detail_for_test(test_adapter(), a, "42");
     land_detail(test_adapter(), a, "42", gen_a, Some(item(a, "on A")));
-    assert!(pump_detail(test_state(), test_adapter()));
+    assert!(pump_detail(test_state(), test_adapter(), &plx_plex::plex::ClientKeys::default(), false));
     let gen_b = begin_detail_for_test(test_adapter(), b, "42");
     assert!(withdraw(test_adapter(), b, "42"), "B's own request is retired");
     assert_eq!(detail_request_status(test_adapter(), b, "42"), None, "nothing awaits B any more");
     assert!(!detail_loading(test_adapter()));
     land_detail(test_adapter(), b, "42", gen_b, Some(item(b, "on B")));
-    assert!(!pump_detail(test_state(), test_adapter()), "B's landing inside its fade is dropped");
+    assert!(!pump_detail(test_state(), test_adapter(), &plx_plex::plex::ClientKeys::default(), false), "B's landing inside its fade is dropped");
     assert_eq!(current(test_state()).map(|d| (d.sid, d.title.clone())), Some((a, "on A".to_string())));
 
     // B had landed before it was dismissed: its item stays for the fade, and B no longer awaits.
     let gen_b = begin_detail_for_test(test_adapter(), b, "42");
     land_detail(test_adapter(), b, "42", gen_b, Some(item(b, "on B")));
-    assert!(pump_detail(test_state(), test_adapter()));
+    assert!(pump_detail(test_state(), test_adapter(), &plx_plex::plex::ClientKeys::default(), false));
     assert!(withdraw(test_adapter(), b, "42"));
     assert_eq!(current(test_state()).map(|d| d.sid), Some(b), "the closing body keeps drawing B");
     assert_eq!(detail_request_status(test_adapter(), b, "42"), None);
@@ -649,7 +649,7 @@ fn a_refused_detail_spawn_settles_the_spinner_through_the_landing() {
     let addr = detail_addr(test_adapter().detail_gen.load(Ordering::SeqCst));
     assert!(detail_loading(test_adapter()));
     assert_eq!(test_adapter().detail_landing.inflight(addr.to), 1, "OS refusal reserves its queued terminal");
-    assert!(!pump_detail(test_state(), test_adapter()), "no item arrived");
+    assert!(!pump_detail(test_state(), test_adapter(), &plx_plex::plex::ClientKeys::default(), false), "no item arrived");
     assert!(!detail_loading(test_adapter()), "but the refusal settled the wait");
     assert_eq!(test_adapter().detail_landing.inflight(addr.to), 0);
     clear(test_state(), test_adapter());
@@ -673,7 +673,7 @@ fn rapid_detail_supersedes_bound_spawns_and_settle_capacity_refusal() {
     assert!(test_adapter().detail_landing.is_empty(), "no queued capacity refusal");
     for gen in workers {
         landing(gen, "old");
-        assert!(!pump_detail(test_state(), test_adapter()));
+        assert!(!pump_detail(test_state(), test_adapter(), &plx_plex::plex::ClientKeys::default(), false));
         assert!(current(test_state()).is_none(), "old completion must not install");
         assert!(!detail_loading(test_adapter()));
     }
@@ -682,7 +682,7 @@ fn rapid_detail_supersedes_bound_spawns_and_settle_capacity_refusal() {
     request_detail_with_spawn(test_adapter(), sid, "fresh", |gen| { next = Some(gen); true });
     assert!(detail_loading(test_adapter()));
     landing(next.unwrap(), "fresh");
-    assert!(pump_detail(test_state(), test_adapter()));
+    assert!(pump_detail(test_state(), test_adapter(), &plx_plex::plex::ClientKeys::default(), false));
     assert_eq!(cur_rk().as_deref(), Some("fresh"));
     assert!(!detail_loading(test_adapter()));
     clear(test_state(), test_adapter());
@@ -699,7 +699,7 @@ fn a_panicking_detail_fetch_acknowledges_and_settles_its_request() {
         true
     });
     assert!(detail_loading(test_adapter()), "terminal waits for pump");
-    assert!(!pump_detail(test_state(), test_adapter()));
+    assert!(!pump_detail(test_state(), test_adapter(), &plx_plex::plex::ClientKeys::default(), false));
     assert!(!detail_loading(test_adapter()));
     assert_eq!(test_adapter().detail_landing.inflight(detail_addr(0).to), 0);
     clear(test_state(), test_adapter());
@@ -718,7 +718,7 @@ fn a_detail_job_without_a_client_answers_the_failure_and_asks_nothing() {
         true
     });
     assert!(detail_loading(test_adapter()), "terminal waits for pump");
-    assert!(!pump_detail(test_state(), test_adapter()), "nothing landed");
+    assert!(!pump_detail(test_state(), test_adapter(), &plx_plex::plex::ClientKeys::default(), false), "nothing landed");
     assert!(!detail_loading(test_adapter()), "and the spinner settled");
     assert_eq!(test_adapter().detail_landing.inflight(detail_addr(0).to), 0);
     clear(test_state(), test_adapter());
@@ -747,7 +747,7 @@ fn controlled_cancelled_detail_ack_is_recorded_and_recovers_capacity() {
         let gen = begin_detail_for_test(test_adapter(), plx_plex::plex::ServerId::UNSET, &format!("old-{n}"));
         clear(test_state(), test_adapter());
         land_detail(test_adapter(), plx_plex::plex::ServerId::UNSET, &format!("old-{n}"), gen, None);
-        assert!(!pump_detail(test_state(), test_adapter()));
+        assert!(!pump_detail(test_state(), test_adapter(), &plx_plex::plex::ClientKeys::default(), true));
         let results = crate::stores::tape::take_results();
         assert_eq!(results.len(), 1,
             "the cancelled completion remains a recorded capacity-retiring observation");
@@ -762,7 +762,7 @@ fn controlled_cancelled_detail_ack_is_recorded_and_recovers_capacity() {
     crate::stores::tape::begin(Default::default(), Default::default());
     let wrong = begin_detail_for_test(test_adapter(), plx_plex::plex::ServerId::from_raw(0), "same-key");
     land_detail(test_adapter(), plx_plex::plex::ServerId::from_raw(1), "same-key", wrong, None);
-    assert!(!pump_detail(test_state(), test_adapter()), "a wrong-server answer stays filtered");
+    assert!(!pump_detail(test_state(), test_adapter(), &plx_plex::plex::ClientKeys::default(), true), "a wrong-server answer stays filtered");
     let wrong_result = crate::stores::tape::take_results().pop().unwrap();
     assert_eq!(test_adapter().detail_landing.inflight(detail_addr(wrong).to), 0);
     assert_eq!(plx_machine::landgate::take_frame_lands(),
@@ -774,7 +774,7 @@ fn controlled_cancelled_detail_ack_is_recorded_and_recovers_capacity() {
     land_detail(test_adapter(), plx_plex::plex::ServerId::UNSET, "fresh-after-cancel", fresh,
         Some(Detail { sid:plx_plex::plex::ServerId::UNSET, rk:"fresh-after-cancel".into(),
             ..Default::default() }));
-    assert!(pump_detail(test_state(), test_adapter()), "more than the four-slot cap can run after cancelled ACKs retire");
+    assert!(pump_detail(test_state(), test_adapter(), &plx_plex::plex::ClientKeys::default(), true), "more than the four-slot cap can run after cancelled ACKs retire");
     let fresh_result = crate::stores::tape::take_results().pop().unwrap();
     assert_eq!(plx_machine::landgate::take_frame_lands(),
         vec![(crate::stores::StoreId::Metadata.ord(), 1)]);
@@ -800,7 +800,7 @@ fn controlled_cancelled_detail_ack_is_recorded_and_recovers_capacity() {
         crate::stores::tape::begin(Default::default(), [result.clone()].into());
         let gen = begin_detail_for_test(test_adapter(), plx_plex::plex::ServerId::UNSET, &format!("old-{n}"));
         clear(test_state(), test_adapter());
-        assert!(!pump_detail(test_state(), test_adapter()));
+        assert!(!pump_detail(test_state(), test_adapter(), &plx_plex::plex::ClientKeys::default(), true));
         assert_eq!(crate::stores::tape::take_results(), vec![result],
             "replay grades the ACK it actually applied");
         assert_eq!(crate::stores::tape::finish().1, None);
@@ -809,13 +809,13 @@ fn controlled_cancelled_detail_ack_is_recorded_and_recovers_capacity() {
     }
     crate::stores::tape::begin(Default::default(), [wrong_result.clone()].into());
     let wrong = begin_detail_for_test(test_adapter(), plx_plex::plex::ServerId::from_raw(0), "same-key");
-    assert!(!pump_detail(test_state(), test_adapter()), "replay preserves the wrong-server filter");
+    assert!(!pump_detail(test_state(), test_adapter(), &plx_plex::plex::ClientKeys::default(), true), "replay preserves the wrong-server filter");
     assert_eq!(crate::stores::tape::take_results(), vec![wrong_result]);
     assert_eq!(test_adapter().detail_landing.inflight(detail_addr(wrong).to), 0);
     assert_eq!(crate::stores::tape::finish().1, None);
     crate::stores::tape::begin(Default::default(), [fresh_result].into());
     let fresh = begin_detail_for_test(test_adapter(), plx_plex::plex::ServerId::UNSET, "fresh-after-cancel");
-    assert!(pump_detail(test_state(), test_adapter()), "replay also admits beyond the recovered four-slot cap");
+    assert!(pump_detail(test_state(), test_adapter(), &plx_plex::plex::ClientKeys::default(), true), "replay also admits beyond the recovered four-slot cap");
     assert_eq!(test_adapter().detail_landing.inflight(detail_addr(fresh).to), 0);
     assert_eq!(crate::stores::tape::finish().1, None);
     clear(test_state(), test_adapter());

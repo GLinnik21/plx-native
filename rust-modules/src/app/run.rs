@@ -8148,7 +8148,7 @@ mod lifecycle_regression_tests {
         super::super::bridge::open_detail(&mut rig.app.pages, &mut rig.app.bridge, rig.sid, "100", None, None);
         settle(&mut rig.app, &mut t);
         rig.app.bridge.run_held_store_jobs_for_test();
-        rig.app.bridge.metadata_mut().pump_detail();
+        rig.app.bridge.metadata_pump_detail();
         settle(&mut rig.app, &mut t);
         let watched = |rig: &mut Rig| rig.app.bridge.metadata_view().current()
             .filter(|d| d.rk == "100")
@@ -8180,7 +8180,7 @@ mod lifecycle_regression_tests {
         poll_until("the episode strip still shows the read the page opened with", || {
             step(&mut rig.app, &mut t, vec![]);
             rig.app.bridge.run_held_store_jobs_for_test();
-            rig.app.bridge.metadata_mut().pump_detail();
+            rig.app.bridge.metadata_pump_detail();
             watched(&mut rig) == Some(("1".into(), true))
         });
         settle(&mut rig.app, &mut t);
@@ -8232,7 +8232,7 @@ mod lifecycle_regression_tests {
     /// Run the held detail fetches (tests do not race a worker) and install what they brought.
     fn land_detail_reads(rig: &mut Rig, t: &mut u32) {
         rig.app.bridge.run_held_store_jobs_for_test();
-        rig.app.bridge.metadata_mut().pump_detail();
+        rig.app.bridge.metadata_pump_detail();
         settle(&mut rig.app, t);
     }
 

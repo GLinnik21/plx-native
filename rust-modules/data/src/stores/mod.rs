@@ -322,8 +322,8 @@ impl Stores {
         }
     }
 
-    pub fn metadata_pump(&mut self) -> bool {
-        self.metadata.pump(&self.landgate)
+    pub fn metadata_pump(&mut self, keys: &plx_plex::plex::ClientKeys, controlled: bool, stand_in: Option<Vec<crate::metadata::AltCopy>>) -> bool {
+        self.metadata.pump(keys, controlled, stand_in, &self.landgate)
     }
 
     pub fn metadata_view(&self) -> crate::metadata::MetadataView<'_> {
@@ -789,6 +789,8 @@ pub enum StoreJob {
     /// runner resolves the loaded item's server to its client at the launch; a server with none
     /// answers the failure without a GET. Not on the tape.
     MetaRelated(plx_machine::job::Job<crate::metadata::MetaRelatedReq>, crate::metadata::MetaRelatedPort),
+    /// Ordered multi-server GUID read fenced by the whole captured key snapshot. Never taped.
+    MetaAltSources(plx_machine::job::Job<crate::metadata::MetaAltSourcesReq>, crate::metadata::MetaAltSourcesPort),
 }
 
 /// How the runner admits a job before it starts it: the policy a job kind belongs to, stated on
@@ -843,13 +845,13 @@ impl StoreJob {
             // `bootstrap/effects.rs` has no arm for (it rejects them as "unsupported controlled
             // metadata command"), so no controlled run or replay emits one and the launch is the
             // whole decision (as for the season switch and the episode pages beside it).
-            Self::MetaRelated(..) => Admission::Direct,
+            Self::MetaRelated(..) | Self::MetaAltSources(..) => Admission::Direct,
         }
     }
 
     pub fn store(&self) -> StoreId {
         match self {
-            Self::Detail(..) | Self::MetaSeason(..) | Self::MetaEpisodes(..) | Self::MetaRelated(..) => StoreId::Metadata,
+            Self::Detail(..) | Self::MetaSeason(..) | Self::MetaEpisodes(..) | Self::MetaRelated(..) | Self::MetaAltSources(..) => StoreId::Metadata,
             Self::Collection(..) => StoreId::Collection,
             Self::Person(..) => StoreId::Person,
             Self::Catalog(..) => StoreId::Catalog,
