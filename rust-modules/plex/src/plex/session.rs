@@ -53,6 +53,21 @@
 use super::origin::Origin;
 use super::probe::Location;
 mod playback_options;
+/// Application-wide policy for Plex discovery and network transports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IpMode { Ipv6Preferred, Ipv6Only, Ipv4Only }
+
+impl IpMode {
+    pub const LADDER: [Self; 3] = [Self::Ipv6Preferred, Self::Ipv6Only, Self::Ipv4Only];
+    pub fn transport_family(self) -> plx_net::net::IpFamily {
+        match self {
+            Self::Ipv6Preferred => plx_net::net::IpFamily::Any,
+            Self::Ipv6Only => plx_net::net::IpFamily::V6,
+            Self::Ipv4Only => plx_net::net::IpFamily::V4,
+        }
+    }
+}
+
 pub use playback_options::{MarkerSkipMode, DolbyVisionMode, InstantDpadSeeking, UriEngine};
 
 pub use prefs::{IntroSkipPref, CreditsSkipPref, DolbyVisionModePref, InstantDpadSeekingPref, UriEnginePref, HoldHintTaughtPref, effective, effective_hud, own_prefs, persist_profile_hud, persist_profile_pref, put_own, stored_effective, stored_effective_hud, tenure, HudSelectionPref, AudioEnhancementsPref,
@@ -2589,6 +2604,28 @@ impl Session {
 
     pub fn auto_sign_in(&self) -> bool {
         self.prefs.auto_sign_in
+    }
+
+    /// Existing saved booleans migrate to a single three-state choice.
+    pub fn prefer_ipv6(&self) -> bool { self.prefs.prefer_ipv6.unwrap_or(true) }
+    pub fn ipv6_only(&self) -> bool { self.prefs.ipv6_only.unwrap_or(false) }
+
+    pub fn ip_mode(&self) -> IpMode {
+        if self.ipv6_only() { IpMode::Ipv6Only }
+        else if self.prefer_ipv6() { IpMode::Ipv6Preferred }
+        else { IpMode::Ipv4Only }
+    }
+
+    pub fn with_ip_mode(&self, mode: IpMode) -> Self {
+        let mut next = self.clone();
+        next.prefs.prefer_ipv6 = Some(mode != IpMode::Ipv4Only);
+        next.prefs.ipv6_only = Some(mode == IpMode::Ipv6Only);
+        next
+    }
+
+    pub fn with_ipv6_policy(&self, prefer: bool, only: bool) -> Self {
+        self.with_ip_mode(if only { IpMode::Ipv6Only }
+            else if prefer { IpMode::Ipv6Preferred } else { IpMode::Ipv4Only })
     }
 
     /// The Interface resolution the NEXT launch draws at; see [`UiResolution`].

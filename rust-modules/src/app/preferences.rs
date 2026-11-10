@@ -70,6 +70,17 @@ pub(super) fn execute(command: PreferenceCmd) {
                 plx_machine::idle::invalidate();
             });
         }
+        PreferenceCmd::IpProtocol { mode, reply } => {
+            let _ = plx_base::storage_worker::submit_retained(move || {
+                let persisted = plx_plex::plex::session::update(|current|
+                    (current.ip_mode() != mode).then(|| current.with_ip_mode(mode)));
+                if persisted {
+                    plx_net::net::set_ip_family(mode.transport_family());
+                }
+                let _ = reply.send(persisted);
+                plx_machine::idle::invalidate();
+            });
+        }
         PreferenceCmd::Language { language, reply } => {
             let _ = plx_base::storage_worker::submit_retained(move || {
                 let _ = reply.send(plx_plex::plex::session::set_language(language));

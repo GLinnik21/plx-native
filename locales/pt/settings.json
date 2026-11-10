@@ -403,5 +403,11 @@
   "settings.audio.group_subtitles": "Legendas",
   "settings.audio.group_look": "Aspeto",
   "settings.playback.overridden_value": "Substituída",
-  "settings.audio.page_copy": "As preferências de idioma de áudio e legendas sincronizam com a sua conta Plex. As definições de reprodução pertencem a cada perfil."
+  "settings.audio.page_copy": "As preferências de idioma de áudio e legendas sincronizam com a sua conta Plex. As definições de reprodução pertencem a cada perfil.",
+  "settings.network.section": "Rede",
+  "settings.ip_protocol.title": "Protocolo IP",
+  "settings.ip_protocol.detail": "Escolha a família de endereços para Plex e vídeo. Reinicie o PlxNative após alterar.",
+  "settings.ip_protocol.v6_preferred": "IPv6 preferido (IPv4 de reserva)",
+  "settings.ip_protocol.v6_only": "Apenas IPv6",
+  "settings.ip_protocol.v4_only": "Apenas IPv4"
 }

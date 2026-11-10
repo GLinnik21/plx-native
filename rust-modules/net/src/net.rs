@@ -36,7 +36,7 @@ use std::ffi::CString;
 use std::mem::MaybeUninit;
 use std::os::raw::{c_char, c_int, c_long, c_uint, c_void};
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 /// `Origin`, `Scheme`, `ResolvePin`, `url_host`: the address types the transport reads, which the
@@ -47,6 +47,26 @@ pub mod origin;
 pub mod headers;
 
 pub mod connect_only;
+
+/// Application-wide socket-family preference shared by worker and media threads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum IpFamily { Any = 0, V4 = 1, V6 = 2 }
+
+static IP_FAMILY: AtomicU8 = AtomicU8::new(IpFamily::Any as u8);
+
+pub fn set_ip_family(family: IpFamily) { IP_FAMILY.store(family as u8, Ordering::Release); }
+pub fn ip_family() -> IpFamily {
+    match IP_FAMILY.load(Ordering::Acquire) {
+        1 => IpFamily::V4,
+        2 => IpFamily::V6,
+        _ => IpFamily::Any,
+    }
+}
+
+/// CURLOPT_IPRESOLVE (libcurl 7.10.8+): 0 dual-stack, 1 IPv4, 2 IPv6.
+pub(crate) const CURLOPT_IPRESOLVE: c_int = 113;
+pub(crate) fn curl_ipresolve() -> c_long { ip_family() as c_long }
 
 type CURL = c_void;
 pub type curl_slist = c_void;
@@ -2259,6 +2279,10 @@ fn request_tls_sink(
             }
             let easy = Easy(h);
             curl_easy_setopt_ptr(easy.0, CURLOPT_URL, url_c.as_ptr() as *const c_void);
+            require_setopt!(
+                curl_easy_setopt_long(easy.0, CURLOPT_IPRESOLVE, curl_ipresolve()),
+                "CURLOPT_IPRESOLVE"
+            );
             // In stream mode `sink` stays empty: the body goes through `stream`'s callbacks instead.
             let mut sink = BodySink::new(max_body);
             sink.redirect = follow_redirects.then(|| RedirectFloor::new(url.as_bytes()));

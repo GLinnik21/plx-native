@@ -400,5 +400,11 @@
   "settings.audio.group_subtitles": "Untertitel",
   "settings.audio.group_look": "Darstellung",
   "settings.playback.overridden_value": "Überschrieben",
-  "settings.audio.page_copy": "Sprachpräferenzen für Audio und Untertitel werden mit deinem Plex-Konto synchronisiert. Wiedergabeeinstellungen gehören zu jedem Profil."
+  "settings.audio.page_copy": "Sprachpräferenzen für Audio und Untertitel werden mit deinem Plex-Konto synchronisiert. Wiedergabeeinstellungen gehören zu jedem Profil.",
+  "settings.network.section": "Netzwerk",
+  "settings.ip_protocol.title": "IP-Protokoll",
+  "settings.ip_protocol.detail": "Legt die IP-Adressfamilie für Plex und Videostreams fest. Starte PlxNative nach einer Änderung neu.",
+  "settings.ip_protocol.v6_preferred": "IPv6 bevorzugt (IPv4 als Ersatz)",
+  "settings.ip_protocol.v6_only": "Nur IPv6",
+  "settings.ip_protocol.v4_only": "Nur IPv4"
 }

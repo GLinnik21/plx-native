@@ -185,6 +185,14 @@ pub struct Preferences {
     /// credentials.
     #[serde(default, deserialize_with = "super::de_soft_bool")]
     pub auto_sign_in: bool,
+    /// Prefer IPv6 Plex connections on this installation. Missing means enabled, preserving
+    /// old session JSON and allowing an IPv4 fallback if no v6 endpoint responds.
+    #[serde(default, deserialize_with = "de_soft_opt", skip_serializing_if = "Option::is_none")]
+    pub prefer_ipv6: Option<bool>,
+    /// Opt-in strict mode: do not consider Plex connections advertised as IPv4.
+    /// Off by default; it is a candidate-family gate, not a TV-wide network toggle.
+    #[serde(default, deserialize_with = "de_soft_opt", skip_serializing_if = "Option::is_none")]
+    pub ipv6_only: Option<bool>,
     /// **Interface resolution** — the window the NEXT launch asks for ([`UiResolution`]).
     /// Install-wide, not per profile: `app::boot::construct` reads it before `SDL_CreateWindow`,
     /// before anyone is seated. Absence (every session written before the field) is Automatic, the
@@ -604,6 +612,10 @@ impl Setting for HudEndTimePref {
 
 setting!(AutoSignInPref: bool = auto_sign_in, "auto_sign_in", Install,
     account false, live false, settings None, parse BoolOff);
+setting!(PreferIpv6Pref: Option<bool> = prefer_ipv6, "prefer_ipv6", Install,
+    account false, live false, settings None, parse OptionalSoft);
+setting!(Ipv6OnlyPref: Option<bool> = ipv6_only, "ipv6_only", Install,
+    account false, live false, settings None, parse OptionalSoft);
 setting!(UiResolutionPref: UiResolution = ui_resolution, "ui_resolution", Install,
     account false, live false, settings None, parse Soft);
 setting!(HoldHintTaughtPref: HoldHintTaught = hold_hint_taught, "hold_hint_taught", Install,
@@ -698,6 +710,8 @@ pub const DESCRIPTORS: &[Descriptor] = &[
     Descriptor::of::<HudSelectionPref>(),
     // A5: the remaining keys.
     Descriptor::of::<AutoSignInPref>(),
+    Descriptor::of::<PreferIpv6Pref>(),
+    Descriptor::of::<Ipv6OnlyPref>(),
     Descriptor::of::<TrailerAutoplayPref>(),
     Descriptor::of::<HudEndTimePref>(),
     Descriptor::of::<LastHeroBlurPref>(),

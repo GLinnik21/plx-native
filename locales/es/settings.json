@@ -403,5 +403,11 @@
   "settings.audio.group_subtitles": "Subtítulos",
   "settings.audio.group_look": "Aspecto",
   "settings.playback.overridden_value": "Anulada",
-  "settings.audio.page_copy": "Las preferencias de idioma del audio y los subtítulos se sincronizan con tu cuenta de Plex. Los ajustes de reproducción pertenecen a cada perfil."
+  "settings.audio.page_copy": "Las preferencias de idioma del audio y los subtítulos se sincronizan con tu cuenta de Plex. Los ajustes de reproducción pertenecen a cada perfil.",
+  "settings.network.section": "Red",
+  "settings.ip_protocol.title": "Protocolo IP",
+  "settings.ip_protocol.detail": "Elige la familia de direcciones para Plex y la reproducción. Reinicia PlxNative después de cambiarla.",
+  "settings.ip_protocol.v6_preferred": "IPv6 preferido (IPv4 alternativo)",
+  "settings.ip_protocol.v6_only": "Solo IPv6",
+  "settings.ip_protocol.v4_only": "Solo IPv4"
 }

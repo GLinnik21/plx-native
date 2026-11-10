@@ -93,6 +93,8 @@ pub fn open(
         }
         require(curl_easy_setopt_long(easy.0, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1), "CURLOPT_HTTP_VERSION")?;
         require(curl_easy_setopt_long(easy.0, CURLOPT_CONNECT_ONLY, 1), "CURLOPT_CONNECT_ONLY")?;
+        // WebSocket/control-plane raw handles must obey the same family as ordinary requests.
+        require(curl_easy_setopt_long(easy.0, super::CURLOPT_IPRESOLVE, super::curl_ipresolve()), "CURLOPT_IPRESOLVE")?;
         curl_easy_setopt_ptr(easy.0, CURLOPT_URL, url.as_ptr() as *const c_void);
         curl_easy_setopt_long(easy.0, CURLOPT_NOSIGNAL, 1);
         curl_easy_setopt_long(easy.0, CURLOPT_CONNECTTIMEOUT, connect_timeout_s);

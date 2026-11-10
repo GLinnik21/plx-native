@@ -19,7 +19,7 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::sync::mpsc::{self, Receiver};
 use plx_appkit::skip_policy::MarkerPrefsView;
-use plx_plex::plex::session::{MarkerSkipMode, DolbyVisionMode, InstantDpadSeeking, UiResolution, UriEngine};
+use plx_plex::plex::session::{MarkerSkipMode, DolbyVisionMode, InstantDpadSeeking, UiResolution, UriEngine, IpMode};
 use plx_plex::plex::account::{AudioPreferences, PreferenceError, PreferenceRequest, PreferenceSnapshot, PreferenceUpdate};
 use plx_media::route::{Choice, DeckPress, DirectPlayMode, NextEpisodeMode, Quality, SkipInterval, SubtitlePosition, SubtitleSize, HdrOverlayBrightness};
 use plx_ui::form::{Form, FormId, FormSection, FormTable, RowKey, RowKind};
@@ -56,6 +56,7 @@ impl PickerKind {
         Self::IntroSkip => plx_platform::i18n::msg::settings_playback_intro_skip(),
         Self::CreditsSkip => plx_platform::i18n::msg::settings_playback_credits_skip(),
         Self::UiResolution => plx_platform::i18n::msg::settings_resolution_title(),
+        Self::IpProtocol => plx_platform::i18n::msg::settings_ip_protocol_title(),
         Self::AudioLanguage => plx_platform::i18n::msg::settings_audio_language(), Self::SubtitleMode => plx_platform::i18n::msg::settings_audio_subtitles(),
         Self::SubtitleLanguage => plx_platform::i18n::msg::settings_audio_subtitle_language(), Self::ForcedSubtitles => plx_platform::i18n::msg::settings_audio_forced_subtitles(),
     }}
@@ -76,6 +77,7 @@ impl PickerKind {
         Self::IntroSkip => plx_platform::i18n::msg::settings_playback_intro_skip_copy(),
         Self::CreditsSkip => plx_platform::i18n::msg::settings_playback_credits_skip_copy(),
         Self::UiResolution => plx_platform::i18n::msg::settings_resolution_detail(),
+        Self::IpProtocol => plx_platform::i18n::msg::settings_ip_protocol_detail(),
         Self::AudioLanguage | Self::SubtitleMode | Self::SubtitleLanguage | Self::ForcedSubtitles => plx_platform::i18n::msg::settings_audio_account_note(),
     }}
     /// The field-list page this field belongs to; `None` for a field the Settings root lists itself.
@@ -83,7 +85,7 @@ impl PickerKind {
         match self {
             Self::Quality | Self::DirectPlay | Self::HdrOverlay | Self::NextEpisode | Self::DeckPress | Self::SkipInterval | Self::InstantDpadSeeking | Self::UriEngine | Self::DolbyVision | Self::IntroSkip | Self::CreditsSkip => Some(Kind::Playback),
             Self::AudioLanguage | Self::SubtitleMode | Self::SubtitleLanguage | Self::ForcedSubtitles | Self::SubtitleSize | Self::SubtitlePosition => Some(Kind::AudioSubtitles),
-            Self::UiResolution => None,
+            Self::UiResolution | Self::IpProtocol => None,
         }
     }
     /// Whether this field is a Plex ACCOUNT preference (saved to the account, loaded with it); every
@@ -107,7 +109,7 @@ impl Kind {
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Value { IntroSkip(MarkerSkipMode, u64), CreditsSkip(MarkerSkipMode, u64), InstantDpadSeeking(InstantDpadSeeking), UriEngine(UriEngine), DolbyVision(DolbyVisionMode), Quality(Quality), DirectPlay(DirectPlayMode), SubtitleSize(SubtitleSize), SubtitlePosition(SubtitlePosition), HdrOverlay(HdrOverlayBrightness), NextEpisode(NextEpisodeMode), DeckPress(DeckPress), SkipInterval(SkipInterval), UiResolution(UiResolution), Language(String), Mode(i64), Forced(i64) }
+enum Value { IntroSkip(MarkerSkipMode, u64), CreditsSkip(MarkerSkipMode, u64), InstantDpadSeeking(InstantDpadSeeking), UriEngine(UriEngine), DolbyVision(DolbyVisionMode), Quality(Quality), DirectPlay(DirectPlayMode), SubtitleSize(SubtitleSize), SubtitlePosition(SubtitlePosition), HdrOverlay(HdrOverlayBrightness), NextEpisode(NextEpisodeMode), DeckPress(DeckPress), SkipInterval(SkipInterval), UiResolution(UiResolution), IpMode(IpMode), Language(String), Mode(i64), Forced(i64) }
 
 /// The hashed half of a transaction: what the page shows while a load or save is in flight.
 struct Io { busy: bool, status: String }
@@ -283,6 +285,7 @@ impl Txn {
             Value::SkipInterval(interval) => PreferenceCmd::Choose(Choice::SkipInterval(interval), reply),
             // Install-wide, not a seated profile's live setting, so it has no `Choice`.
             Value::UiResolution(mode) => PreferenceCmd::UiResolution { mode, reply },
+            Value::IpMode(mode) => PreferenceCmd::IpProtocol { mode, reply },
             _ => return,
         };
         self.pending = Some(Pending::Local(rx)); io.busy = true; self.saving = true;
@@ -363,6 +366,7 @@ impl FormId for RowId {
             Self::Field(PickerKind::HdrOverlay) => 8,
             // Listed on the Settings root, never on a field list; the number only keeps the match total.
             Self::Field(PickerKind::UiResolution) => 9,
+            Self::Field(PickerKind::IpProtocol) => 18,
             Self::Field(PickerKind::InstantDpadSeeking) => 10,
             Self::Field(PickerKind::DolbyVision) => 11,
             Self::Field(PickerKind::UriEngine) => 17,
@@ -579,7 +583,13 @@ fn resolve_value(field: PickerKind, quality: Quality, direct_play: DirectPlayMod
         PickerKind::InstantDpadSeeking => Value::InstantDpadSeeking(plx_media::route::instant_dpad_seeking()),
         PickerKind::UriEngine => Value::UriEngine(plx_media::route::uri_engine()),
         PickerKind::DolbyVision => Value::DolbyVision(plx_media::route::dolby_vision_mode()),
-        PickerKind::UiResolution => Value::UiResolution(plx_plex::plex::session::peek().ui_resolution()),
+        PickerKind::UiResolution | PickerKind::IpProtocol => {
+            let session = plx_plex::plex::session::peek();
+            match field {
+                PickerKind::UiResolution => Value::UiResolution(session.ui_resolution()),
+                _ => Value::IpMode(session.ip_mode()),
+            }
+        },
         // A deprecated code (`pb`) resolves to its replacement so the picker checks that entry.
         PickerKind::AudioLanguage => Value::Language(prefs.and_then(|p| p.stated_language.as_deref()).map(plx_plex::plex::languages::canonical).unwrap_or_default().to_string()),
         PickerKind::SubtitleLanguage => Value::Language(prefs.and_then(|p| p.subtitle_language.as_deref()).map(plx_plex::plex::languages::canonical).unwrap_or_default().to_string()),
@@ -615,6 +625,8 @@ fn field_options(field: PickerKind, quality: Quality, direct_play: DirectPlayMod
             .map(|i| (skip_interval_label(i), Value::SkipInterval(i))).collect(),
         PickerKind::UiResolution => UiResolution::LADDER.into_iter()
             .map(|m| (resolution_label(m), Value::UiResolution(m))).collect(),
+        PickerKind::IpProtocol => IpMode::LADDER.into_iter()
+            .map(|mode| (ip_mode_label(mode).to_string(), Value::IpMode(mode))).collect(),
         PickerKind::SubtitleMode => [(plx_platform::i18n::msg::settings_audio_manual(), 0), (plx_platform::i18n::msg::settings_audio_foreign(), 1), (plx_platform::i18n::msg::settings_audio_always(), 2)]
             .into_iter().map(|(label, mode)| (label.into(), Value::Mode(mode))).collect(),
         PickerKind::ForcedSubtitles => [plx_platform::i18n::msg::settings_audio_prefer_regular(), plx_platform::i18n::msg::settings_audio_prefer_forced(), plx_platform::i18n::msg::settings_audio_only_forced(), plx_platform::i18n::msg::settings_audio_only_regular()]
@@ -752,6 +764,13 @@ pub(crate) fn resolution_label(mode: UiResolution) -> String {
     match mode.size() {
         None => plx_platform::i18n::msg::settings_resolution_auto().to_string(),
         Some((w, h)) => format!("{w}x{h}"),
+    }
+}
+pub(crate) fn ip_mode_label(mode: IpMode) -> &'static str {
+    match mode {
+        IpMode::Ipv6Preferred => plx_platform::i18n::msg::settings_ip_protocol_v6_preferred(),
+        IpMode::Ipv6Only => plx_platform::i18n::msg::settings_ip_protocol_v6_only(),
+        IpMode::Ipv4Only => plx_platform::i18n::msg::settings_ip_protocol_v4_only(),
     }
 }
 fn skip_interval_label(interval: SkipInterval) -> String {

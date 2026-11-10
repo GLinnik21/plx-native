@@ -9,7 +9,7 @@
 //! T-live and T-settings sit in media (`route/prefs_tests.rs`), where the lists they hold to these
 //! descriptors are declared.
 use super::prefs::{Descriptor, Fallback, ListRow, Parse, ProfileMemory, Row, Scope, Setting, SettingsWrite, DESCRIPTORS};
-use super::prefs::{DolbyVisionModePref, InstantDpadSeekingPref, UriEnginePref, AudioEnhancementsPref, AutoSignInPref, DeckPressPref, UnderPostersPref, DirectPlayModePref, LastHeroBlurPref,
+use super::prefs::{DolbyVisionModePref, InstantDpadSeekingPref, UriEnginePref, AudioEnhancementsPref, AutoSignInPref, PreferIpv6Pref, Ipv6OnlyPref, DeckPressPref, UnderPostersPref, DirectPlayModePref, LastHeroBlurPref,
     LastLibraryRow, LibraryViewsRow, NextEpisodeModePref, PlaintextConsentRow, QualityPref, ServerKeyPinsRow,
     HdrOverlayBrightnessPref, SkipIntervalPref, SubtitleOffsetsPref, SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref,
     HoldHintTaughtPref, HudEndTimePref, TrailerAutoplayPref, UiResolutionPref};
@@ -120,6 +120,8 @@ fn every_marker_names_its_own_field() {
     check_row::<AudioEnhancementsPref>(crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false });
     // A5: the remaining `Copy` rows.
     check_row::<AutoSignInPref>(true);
+    check_row::<PreferIpv6Pref>(Some(false));
+    check_row::<Ipv6OnlyPref>(Some(true));
     check_row::<TrailerAutoplayPref>(true);
     check_row::<HudEndTimePref>(false);
     check_row::<LastHeroBlurPref>(Some([[0.5, 0.25, 0.125]; 4]));
@@ -131,7 +133,7 @@ fn every_marker_names_its_own_field() {
     // `the_subtitle_offsets_row_names_its_own_field`) and the per-profile record list
     // (`ProfilePrefsPref`, `profile_prefs_tests::nothing_picked_serializes_to_no_key`): a row needs
     // its line in one of the four places.
-    assert_eq!(DESCRIPTORS.len(), 22 + 5 + 2 + 1 + 1, "plus `HudSelectionPref`, a `String` row checked by `profile_prefs_tests`");
+    assert_eq!(DESCRIPTORS.len(), 24 + 5 + 2 + 1 + 1, "plus `HudSelectionPref`, a `String` row checked by `profile_prefs_tests`");
 }
 
 /// The list rows do what `check_row` proves for the `Copy` ones: the marker names its own field
@@ -351,6 +353,8 @@ fn garbage_fixtures() -> Vec<(&'static str, Vec<Value>)> {
         ("hud_selection", vec![Value::Null, json!(17), json!(true), json!([1, "x"]), json!({"unexpected": 1})]),
         // A5. A switch's garbage excludes the booleans, which are VALID values for it.
         ("auto_sign_in", not_a_bool()),
+        ("prefer_ipv6", not_a_bool()),
+        ("ipv6_only", not_a_bool()),
         ("ui_resolution", generic()),
         ("hold_hint_taught", generic()),
         ("trailer_autoplay", not_a_bool()),
@@ -679,4 +683,17 @@ fn sort_value_is_on_by_default_stored_as_its_off_state_and_soft_parsed() {
     }
     let read = under_posters_session(json!({"title":true,"sort_value_off":true}));
     assert!(!read.under_posters().sort_value && read.under_posters().title);
+}
+
+#[test]
+fn ip_protocol_defaults_to_ipv6_preferred_and_migrates_legacy_booleans() {
+    use super::IpMode;
+    let default = super::Session::default();
+    assert_eq!(default.ip_mode(), IpMode::Ipv6Preferred);
+    for mode in IpMode::LADDER {
+        let saved = default.with_ip_mode(mode);
+        assert_eq!(saved.ip_mode(), mode);
+        assert_eq!(saved.prefs.prefer_ipv6, Some(mode != IpMode::Ipv4Only));
+        assert_eq!(saved.prefs.ipv6_only, Some(mode == IpMode::Ipv6Only));
+    }
 }

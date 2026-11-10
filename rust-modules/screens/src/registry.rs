@@ -139,6 +139,8 @@ pub enum PreferenceCmd {
     /// The Interface resolution picked in its picker: install-wide, applied at the next launch. The
     /// app writes it through the session; `reply` learns whether the write was durable.
     UiResolution { mode: plx_plex::plex::session::UiResolution, reply: std::sync::mpsc::Sender<bool> },
+    /// Install-wide address family: the app's executor persists and applies it.
+    IpProtocol { mode: plx_plex::plex::session::IpMode, reply: std::sync::mpsc::Sender<bool> },
 }
 
 /// Whether an item has a context menu to open (`item_menu::has_actions`): the one predicate the

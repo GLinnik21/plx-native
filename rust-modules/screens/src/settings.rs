@@ -1066,6 +1066,7 @@ enum RootId {
     AutoSignIn,
     TrailerAutoplay,
     Resolution,
+    IpProtocol,
     /// One server's switch. Its key is [`PLAINTEXT_KEY_BASE`] plus its position in the section
     /// ([`root_form`] assigns it); its identity is the machine, so a rebuild keeps the row.
     Plaintext(ServerMachineId),
@@ -1095,6 +1096,7 @@ impl FormId for RootId {
             RootId::Resolution => 10,
             RootId::UnderPosters => 11,
             RootId::Diagnostics => 12,
+            RootId::IpProtocol => 13,
             // the base; `root_form` adds the position (`item_keyed`)
             RootId::Plaintext(_) => PLAINTEXT_KEY_BASE,
         })
@@ -1148,6 +1150,8 @@ struct RootState {
     sel: RowKey,
     auto_sign_in: bool,
     trailer_autoplay: bool,
+    prefer_ipv6: bool,
+    ipv6_only: bool,
     language: plx_platform::i18n::Preference,
     /// What shows under a poster, as the Under posters row summarises it. Written to the canon only
     /// when it is not the default, so every default root's digest is unchanged.
@@ -1165,6 +1169,7 @@ impl LogicalState for RootState {
             w.u32(u32::from(self.under_posters.pack()));
         }
         if self.trace != plx_platform::playback_trace::Status::Off { w.u8(0xd1).u8(self.trace as u8); }
+        if !self.prefer_ipv6 || self.ipv6_only { w.u8(0xd2).bool(self.prefer_ipv6).bool(self.ipv6_only); }
         if !self.plaintext.is_empty() {
             w.u32(self.plaintext.len() as u32);
             for &on in &self.plaintext {
@@ -1178,6 +1183,7 @@ impl LogicalState for RootState {
             self.sel.0, self.auto_sign_in, self.trailer_autoplay, self.language.tag()
         ));
         out.push_str(&format!(" trace={:?}", self.trace));
+        if !self.prefer_ipv6 || self.ipv6_only { out.push_str(&format!(" ipv6_preferred={} ipv6_only={}", self.prefer_ipv6, self.ipv6_only)); }
         if !self.plaintext.is_empty() {
             out.push_str(&format!(" plaintext={:?}", self.plaintext));
         }
@@ -1211,6 +1217,8 @@ struct RootInputs {
     library_count: i64,
     auto_sign_in: bool,
     trailer_autoplay: bool,
+    prefer_ipv6: bool,
+    ipv6_only: bool,
     resolution: UiResolution,
     /// Whether this set is offered the Interface resolution row at all: webOS 1-3 only
     /// (`plx_platform::tv::device::ui_resolution_offered`). A plain flag, like the others, so the
@@ -1258,6 +1266,7 @@ fn sentence_for(id: Option<&RootId>) -> Cow<'static, str> {
         Some(RootId::AutoSignIn) => Cow::Borrowed(msg::settings_auto_sign_in_detail()),
         Some(RootId::TrailerAutoplay) => Cow::Borrowed(msg::settings_trailers_detail()),
         Some(RootId::Resolution) => Cow::Borrowed(msg::settings_resolution_detail()),
+        Some(RootId::IpProtocol) => Cow::Borrowed(msg::settings_ip_protocol_detail()),
         Some(RootId::Privacy) => Cow::Borrowed(msg::settings_privacy_detail()),
         Some(RootId::Diagnostics) => Cow::Borrowed(msg::settings_diagnostics_detail()),
         Some(RootId::Legal) => Cow::Borrowed(msg::settings_legal_detail()),
@@ -1345,6 +1354,16 @@ fn root_form(inputs: &RootInputs) -> Form<RootId, Action, SettingsPage> {
                 .value(super::preferences::resolution_label(inputs.resolution))
                 .chevron(true),
         );
+    let network = FormSection::new(plx_platform::i18n::msg::settings_network_section())
+        .item(RootId::IpProtocol, RowKind::Nav(SettingsPage::Picker(PickerKind::IpProtocol)), Action::Door,
+            Row::new(plx_platform::i18n::msg::settings_ip_protocol_title())
+                .value(super::preferences::ip_mode_label(if inputs.ipv6_only {
+                    plx_plex::plex::session::IpMode::Ipv6Only
+                } else if inputs.prefer_ipv6 {
+                    plx_plex::plex::session::IpMode::Ipv6Preferred
+                } else {
+                    plx_plex::plex::session::IpMode::Ipv4Only
+                })).chevron(true));
     let has_plaintext = signed_in && !inputs.plaintext.is_empty();
     let mut plaintext = FormSection::new(plx_platform::i18n::msg::settings_plaintext_section()).visible(has_plaintext);
     if has_plaintext {
@@ -1395,6 +1414,7 @@ fn root_form(inputs: &RootInputs) -> Form<RootId, Action, SettingsPage> {
         .section(libraries)
         .section(playback)
         .section(system)
+        .section(network)
         .section(plaintext)
         .section(support)
 }
@@ -1418,6 +1438,7 @@ impl RootPage {
                 sel: RowKey(0),
                 auto_sign_in: false,
                 trailer_autoplay: true,
+                prefer_ipv6: true, ipv6_only: false,
                 language: plx_platform::i18n::Preference::System,
                 under_posters: plx_plex::plex::session::UnderPosters::DEFAULT,
                 plaintext: Vec::new(),
@@ -1446,18 +1467,21 @@ impl RootPage {
             plx_plex::plex::session::stored_effective::<plx_plex::plex::session::TrailerAutoplayPref>(
                 sess, &plx_plex::plex::session::current_seat())
         }, |(value, _)| *value);
+        let (prefer_ipv6, ipv6_only) = (sess.prefer_ipv6(), sess.ipv6_only());
         let resolution = sess.ui_resolution();
         let resolution_offered = plx_platform::tv::device::ui_resolution_offered();
         let multi_user = sess.home_users.len() > 1;
         self.state.auto_sign_in = auto_sign_in;
         self.state.trailer_autoplay = trailer_autoplay;
+        self.state.prefer_ipv6 = prefer_ipv6;
+        self.state.ipv6_only = ipv6_only;
         self.state.language = plx_platform::i18n::saved_preference();
         self.state.under_posters = plx_media::route::under_posters();
         let plaintext = if signed_in { self.plaintext_inputs() } else { Vec::new() };
         let form = root_form(&RootInputs {
             trace: self.state.trace,
             signed_in, multi_user, library_count: directory.pinned_count() as i64,
-            auto_sign_in, trailer_autoplay, resolution, resolution_offered, language: self.state.language,
+            auto_sign_in, trailer_autoplay, prefer_ipv6, ipv6_only, resolution, resolution_offered, language: self.state.language,
             under_posters: self.state.under_posters, plaintext,
         });
         let keep = self.form.selected_id().cloned();

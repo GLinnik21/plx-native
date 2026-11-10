@@ -1603,6 +1603,8 @@ pub(crate) unsafe fn construct(
         Some(initial) => initial.session.persisted.clone(),
         None => plx_plex::plex::session::load(),
     };
+    // Apply saved socket family before account requests or playback.
+    plx_net::net::set_ip_family(session.ip_mode().transport_family());
     // The television is placed at 0,0 at exactly canvas size (unless a webOS 1-3 owner picked a smaller
     // Interface resolution, `requested_drawable`) and takes the panel. A desktop
     // window is centred (`SDL_WINDOWPOS_CENTERED`) at whatever fits — see `plan_desktop_window`.

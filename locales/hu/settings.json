@@ -400,5 +400,11 @@
   "settings.audio.group_subtitles": "Feliratok",
   "settings.audio.group_look": "Megjelenés",
   "settings.playback.overridden_value": "Felülírva",
-  "settings.audio.page_copy": "Az hang- és feliratnyelvi beállítások szinkronizálódnak a Plex-fiókoddal. A lejátszási beállítások profilonként érvényesek."
+  "settings.audio.page_copy": "Az hang- és feliratnyelvi beállítások szinkronizálódnak a Plex-fiókoddal. A lejátszási beállítások profilonként érvényesek.",
+  "settings.network.section": "Hálózat",
+  "settings.ip_protocol.title": "IP-protokoll",
+  "settings.ip_protocol.detail": "Válasszon IP-címcsaládot a Plexhez és a videókhoz. A módosítás után indítsa újra a PlxNative alkalmazást.",
+  "settings.ip_protocol.v6_preferred": "IPv6 előnyben (IPv4 tartalék)",
+  "settings.ip_protocol.v6_only": "Csak IPv6",
+  "settings.ip_protocol.v4_only": "Csak IPv4"
 }
