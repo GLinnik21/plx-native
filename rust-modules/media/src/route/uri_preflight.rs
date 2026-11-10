@@ -158,6 +158,8 @@ pub struct OriginalRequest {
     /// it to a [`NativeTrackIndex`] only for a source it knows lists its audio in the Part's order;
     /// `selection.audio_sid` stays the stream's identity, this is only where it sits.
     pub audio_ordinal: Option<i64>,
+    /// The exported-window service can enumerate multiple tracks in a different order from PMS.
+    pub has_multiple_audio_tracks: bool,
     pub subtitle_source: Option<SourceSubtitle>,
     /// Off is an actual viewer choice, distinct from no subtitle streams being present.
     /// The current URI driver has no native disable operation.
@@ -534,7 +536,12 @@ impl ResolvePort {
         let dovi = request.dolby_vision;
         let subtitle = request.subtitle_source.clone();
         let subtitle_choice = request.subtitle_choice;
+        // A Plex ordinal cannot identify a track on an exported window when the service reorders
+        // multiple tracks. Even ordinal zero could point at a different track.
+        let ambiguous_audio = request.has_multiple_audio_tracks
+            && matches!(evidence.binding, Binding::Exported { .. });
         match self.qualifier.qualify(off, request) {
+            Verdict::Known(_) if ambiguous_audio => Verdict::Refused,
             Verdict::Known(known) if known.selection == selected
                 && known.requirements.source == SourceKind::ProgressiveUri
                 && known.requirements.video == Fidelity::Exact
@@ -954,7 +961,7 @@ mod tests {
             source_url: "https://example.invalid/part.mkv".to_owned(), duration_ms: Some(60_000),
             video_codec: "h264".to_owned(), dolby_vision: plx_data::metadata::Dovi::NONE,
             dolby_vision_mode: plx_plex::plex::session::DolbyVisionMode::Auto, uri_opt_in,
-            standard: PLAYS, audio_codec: "aac".to_owned(), audio_ordinal: Some(1),
+            standard: PLAYS, audio_codec: "aac".to_owned(), audio_ordinal: Some(1), has_multiple_audio_tracks: false,
             subtitle_source: None, subtitle_choice: TrackChoice::Unspecified,
             source_kbps: Some(4000), raster: Some((1280, 720)),
             requested_rate_permille: plx_playback_contract::RATE_NORMAL, resume_ns: 0,
@@ -992,6 +999,26 @@ mod tests {
         assert!(!evidence.certified.progressive_uri && !evidence.certified.pause
             && !evidence.certified.seek && !evidence.certified.audio_track);
         assert!(!port.could_qualify_pms(), "a converted PMS output has no opt-in");
+    }
+
+    #[test]
+    fn exported_uri_leaves_multi_audio_originals_on_standard() {
+        let off = OffFrame::for_test();
+        let port = ResolvePort::new(ProductEvidence::unqualified_on(
+            plx_platform::tv::sink::VP_EXPORTED, Binding::Exported { canvas: (1920, 1080) }),
+            Arc::new(ProductQualifier));
+        let request = |ordinal, multiple| {
+            let mut request = opt_in_request(true);
+            request.audio_ordinal = Some(ordinal);
+            request.has_multiple_audio_tracks = multiple;
+            request
+        };
+        assert!(matches!(port.qualify(&off, request(0, false)), Verdict::Known(_)));
+        for ordinal in [0, 1] {
+            assert!(matches!(port.qualify(&off, request(ordinal, true)), Verdict::Refused));
+        }
+        let acb = production_port(Binding::Acb);
+        assert!(matches!(acb.qualify(&off, request(1, true)), Verdict::Known(_)));
     }
 
     #[test]
@@ -1111,7 +1138,7 @@ mod tests {
             source_url: "https://example.invalid/part.mkv".to_owned(), duration_ms: Some(60_000),
             video_codec: "hevc".to_owned(), dolby_vision: dovi,
             dolby_vision_mode: plx_plex::plex::session::DolbyVisionMode::Auto, uri_opt_in: false,
-            standard: PLAYS, audio_codec: "ac3".to_owned(), audio_ordinal: Some(0),
+            standard: PLAYS, audio_codec: "ac3".to_owned(), audio_ordinal: Some(0), has_multiple_audio_tracks: false,
             subtitle_source: None,
             subtitle_choice: TrackChoice::Unspecified,
             source_kbps: Some(4000), raster: Some((1920, 1080)),

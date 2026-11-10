@@ -948,7 +948,8 @@ impl UriProbe {
                 }
             }
             Ev::Paused => {
-                self.facts.paused_ev = true;
+                let samples = &self.facts.pause_samples;
+                self.facts.paused_ev |= samples.started_ms.is_some() && samples.ended_ms.is_none();
                 if self.facts.pause == CallResult::Unconfirmed {
                     self.facts.pause = CallResult::Ok;
                 }
@@ -1085,7 +1086,7 @@ impl UriProbe {
         // Every valid report is fresh evidence, including an unchanged position.
         self.facts.pause_samples.observe(now_ms, value);
         self.facts.clock.observe(now_ms);
-        if self.facts.resume_sent && self.facts.resume_first.is_none() {
+        if self.facts.resume_sent && self.facts.seek_target.is_none() && self.facts.resume_first.is_none() {
             self.facts.resume_first = Some(value);
         }
         let moved = self.last_time.is_some_and(|last| last != value);
@@ -1193,14 +1194,20 @@ impl UriProbe {
             (Some(a), Some(b)) => (b - a).to_string(),
             _ => "-".to_owned(),
         };
-        // Pause labels grade reported positions only. Cached dispatch positions and an ACK or
-        // paused notification alone never supply fresh end-of-dwell sampling evidence.
-        let paused = if self.facts.pause == CallResult::Refused {
-            "refused"
-        } else if self.facts.pause_samples.started_ms.is_some() {
-            self.facts.pause_samples.grade()
+        // Some firmware stops sending positions while paused. A pause event during the dwell
+        // and a resume near the original position corroborate the freeze when no samples arrive.
+        let samples = &self.facts.pause_samples;
+        let event_freeze = self.facts.paused_ev && samples.reports == 0
+            && self.facts.pause_pos.zip(self.facts.resume_first)
+                .is_some_and(|(before, after)| before.abs_diff(after) <= 1000);
+        let (paused, pause_basis) = if self.facts.pause == CallResult::Refused {
+            ("refused", "reported_positions")
+        } else if event_freeze {
+            ("froze", "paused_event_and_resume")
+        } else if samples.started_ms.is_some() {
+            (samples.grade(), "reported_positions")
         } else {
-            call(self.facts.pause)
+            (call(self.facts.pause), "reported_positions")
         };
         let seek_landed = if self.facts.seek == CallResult::Refused {
             "refused"
@@ -1213,7 +1220,7 @@ impl UriProbe {
         };
         format!(
             "{summary} pause={paused} pause_delta={} resume={} seek={seek_landed} seek_delta={} text={} audio={} subs={} eos={} \
-             pause_basis=reported_positions pause_samples={} pause_span_ms={} pause_end_fresh={} paused_event={} seekdone={} resume_from={} text_ev={}",
+             pause_basis={pause_basis} pause_samples={} pause_span_ms={} pause_end_fresh={} paused_event={} seekdone={} resume_from={} text_ev={}",
             self.facts.pause_samples.delta(),
             call(self.facts.resume),
             delta(self.facts.seek_target, self.facts.seek_seen),
@@ -2156,9 +2163,8 @@ mod tests {
         let summary = summary_of(&fx);
         assert!(summary.contains("variant=drive"), "{summary}");
         assert!(summary.contains("end=script"), "{summary}");
-        // The paused event is independent evidence; this script supplied no clock reports
-        // during the dwell, so the reported-position grade remains unconfirmed.
-        assert!(summary.contains("pause=unconfirmed pause_delta=- resume=sent"), "{summary}");
+        assert!(summary.contains("pause=froze pause_delta=- resume=sent"), "{summary}");
+        assert!(summary.contains("pause_basis=paused_event_and_resume"), "{summary}");
         assert!(summary.contains("seek=hit seek_delta=50"), "{summary}");
         assert!(summary.contains("text=sent audio=sent subs=ok eos=no"), "{summary}");
         assert_eq!(unloads(&fx), 1);
@@ -2463,6 +2469,18 @@ mod tests {
         let fx=rig.feed(UriEvent::Back);
         assert!(summary_of(&fx).contains("pause=unconfirmed"),"cached position graded as freeze: {}",summary_of(&fx));
     }
+    #[test]
+    fn uri_drive_pause_event_and_resume_position_confirm_freeze_without_samples() {
+        for (resumed, expected) in [(2641, "froze"), (4939, "unconfirmed"), (333, "unconfirmed")] {
+            let mut rig = drive_pause_rig_at(2439);
+            rig.msg("subscribe", r#"{"mediaId":"_m1","paused":true}"#);
+            rig.tick(DRIVE_STEP_MS);
+            drive_report_after(&mut rig, 200, resumed);
+            let summary = summary_after_back(&mut rig);
+            assert!(summary.contains(&format!("pause={expected} ")), "{summary}");
+        }
+    }
+
     #[test]
     fn uri_drive_review_early_reports_then_silence_do_not_confirm_pause() {
         let mut rig=drive_pause_rig();
