@@ -2995,16 +2995,31 @@ impl DetailScreen {
         let spot = self.logo_spot(measure, meta);
         let (_, rk, _) = self.art_identity(d);
         let logo = HeroLogo::new(self.sid.raw(), &rk, self.hero_title(d).unwrap_or(""), spot.rung).painted(spot.band, measure);
-        let prose = Rect::new(plx_ui::consts::MARGIN_X, chain.meta_y, plx_ui::detail_layout::HERO_TEXT_W, chain.facts_y - chain.meta_y);
-        let facts = Rect::new(plx_ui::consts::MARGIN_X, chain.facts_y, plx_appkit::hero_layout::FACTS_R - plx_ui::consts::MARGIN_X, theme::hero::FACTS_H);
+        // The copy columns as the page lays them out, and the ink drawn in each: the shade is as wide
+        // as the widest line (identity, ratings, synopsis; the facts line) rather than the box the
+        // line was laid into.
+        let x = plx_ui::consts::MARGIN_X;
+        let prose = Rect::new(x, chain.meta_y, plx_ui::detail_layout::HERO_TEXT_W, chain.facts_y - chain.meta_y);
+        let facts = Rect::new(x, chain.facts_y, plx_appkit::hero_layout::FACTS_R - x, theme::hero::FACTS_H);
+        let (lead, synopsis) = hero_blurb(d, self.selected());
+        let mut prose_ink = Vec::with_capacity(3);
+        if let Some(d) = d {
+            prose_ink.push((x, x + self.identity_row(None, d, chain.meta_y, measure)));
+            prose_ink.push((x, x + self.ratings_row(None, d, chain.ratings_y, measure)));
+        }
+        if !synopsis.is_empty() {
+            let frame = Rect::new(x, chain.syn_y, plx_ui::detail_layout::HERO_TEXT_W, 0.0);
+            prose_ink.push(plx_ui::hero_synopsis(&synopsis, &lead).with_measure(measure).ink_span(frame));
+        }
+        let facts_ink = d.map(|d| (x, x + hero::facts_w(d, measure)));
         let set = self.hero_set(meta);
         let widths = hero::hero_widths(measure, set, set.restart, self.disc_unfurl.map(|s| s.pos), self.named_episode(meta));
         let row = hero::hero_row_rect(set, chain.btn_y, widths);
         let chrome = self.preview_chrome;
         let mut shade = HeroShade::new()
             .add(at(logo), Role::Copy, spot.alpha)
-            .add(at(prose), Role::Copy, self.preview_synopsis.max(chrome * self.preview_prose))
-            .add(at(facts), Role::Copy, chrome)
+            .add_ink(at(prose), prose_ink, Role::Copy, self.preview_synopsis.max(chrome * self.preview_prose))
+            .add_ink(at(facts), facts_ink, Role::Copy, chrome)
             .add(at(row), Role::Controls, chrome);
         if let Some(people) = d.and_then(|d| hero::people_rect(d, chain.btn_y, measure)) {
             shade = shade.add(at(people), Role::Copy, chrome);
@@ -3013,6 +3028,12 @@ impl DetailScreen {
     }
 
     fn draw_identity_line(&self, p: Painter, d: &Detail, y: f32, measure: &dyn plx_machine::machine::Measure) {
+        self.identity_row(Some(p), d, y, measure);
+    }
+
+    /// The identity line's one layout, painted with `paint` or only measured without it; the width
+    /// it draws from the margin ([`plx_ui::widgets::hero_identity`], [`plx_ui::widgets::hero_identity_w`]).
+    fn identity_row(&self, paint: Option<Painter>, d: &Detail, y: f32, measure: &dyn plx_machine::machine::Measure) -> f32 {
         let ordinal = (d.kind == "episode" && d.season > 0 && d.index > 0)
             .then(|| plx_ui::fmt::episode_ordinal(d.season, d.index))
             .unwrap_or_default();
@@ -3038,9 +3059,11 @@ impl DetailScreen {
             (d.subs.iter().any(|s| s.sdh), plx_platform::i18n::msg::widgets_badge_sdh()),
             (d.audio.iter().any(|s| s.ad), plx_platform::i18n::msg::widgets_badge_ad()),
         ].into_iter().filter_map(|(present, label)| present.then_some(label)).collect();
-        plx_ui::widgets::hero_identity(p, Rect::new(plx_ui::consts::MARGIN_X, y,
-            plx_ui::detail_layout::HERO_TEXT_W, plx_ui::widgets::BADGE_H),
-            &parts, resolution.as_deref(), &chips, measure);
+        let r = Rect::new(plx_ui::consts::MARGIN_X, y, plx_ui::detail_layout::HERO_TEXT_W, plx_ui::widgets::BADGE_H);
+        match paint {
+            Some(p) => plx_ui::widgets::hero_identity(p, r, &parts, resolution.as_deref(), &chips, measure),
+            None => plx_ui::widgets::hero_identity_w(r, &parts, resolution.as_deref(), &chips, measure),
+        }
     }
 
     fn draw_ratings(
@@ -3050,6 +3073,18 @@ impl DetailScreen {
         y: f32,
         measure: &dyn plx_machine::machine::Measure,
     ) {
+        self.ratings_row(Some(p), d, y, measure);
+    }
+
+    /// The ratings row's one layout, painted with `paint` or only measured without it; the width it
+    /// draws from the margin (`0` for a row with no group on it).
+    fn ratings_row(
+        &self,
+        paint: Option<Painter>,
+        d: &Detail,
+        y: f32,
+        measure: &dyn plx_machine::machine::Measure,
+    ) -> f32 {
         let cy = y + plx_ui::widgets::RATING_MARK_D * 0.5;
         // The groups are measured lazily, one at a time, and the row stops at the first that does
         // not fit: a later, smaller group never jumps the queue, and no group past the break is
@@ -3077,9 +3112,13 @@ impl DetailScreen {
             if flow.next_x() + width > plx_ui::consts::SCR_W - plx_ui::consts::MARGIN_X {
                 break;
             }
-            flow.place(|x| Item::new(plx_ui::widgets::rating_group(p, x, cy, provider, &cells, measure)));
+            flow.place(|x| Item::new(match paint {
+                Some(p) => plx_ui::widgets::rating_group(p, x, cy, provider, &cells, measure),
+                None => width,
+            }));
             i = end;
         }
+        flow.end() - plx_ui::consts::MARGIN_X
     }
 
     fn draw_buttons<H: ContentLike + crate::registry::MetadataLike>(&self, p: Painter, cx: &Cx<'_, H>, y: f32, nav_page_alpha: f32) {

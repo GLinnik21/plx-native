@@ -404,11 +404,12 @@ impl CatalogScreen {
         }
     }
 
-    /// **The hero shade of THIS frame** ([`plx_ui::hero_shade`]), built from the rects
+    /// **The hero shade of THIS frame** ([`plx_ui::hero_shade`]), built from what
     /// [`draw_record`](Self::draw_record) paints: a block behind the title (what the logo painted, the
     /// typed title here), one behind the copy under it (the Coming line, or the meta line, down to the
-    /// summary's last line) and one behind the pill. `None` for a page with no record, which draws no
-    /// copy on the art. The caller takes it at [`SHADE_STRENGTH`].
+    /// summary's last line, as wide as the widest of those lines is: [`Self::copy_ink`]) and one behind
+    /// the pill. `None` for a page with no record, which draws no copy on the art. The caller takes it
+    /// at [`SHADE_STRENGTH`].
     fn hero_shade(&self, measure: &dyn Measure) -> Option<HeroShade> {
         let Load::Loaded { title, .. } = &self.vm.load else { return None };
         let stack = self.stack(measure)?;
@@ -416,12 +417,41 @@ impl CatalogScreen {
         // An empty summary is a zero-high row standing where the last row ends, so the copy's foot is
         // the summary's own foot whichever rows are present.
         let top = stack.coming.unwrap_or(stack.meta);
-        let copy = Rect::new(plx_ui::consts::MARGIN_X, top, detail_layout::HERO_TEXT_W, stack.summary + stack.summary_h - top);
-        let shade = HeroShade::new().add(title, Role::Copy, 1.0).add(copy, Role::Copy, 1.0);
+        let column = Rect::new(plx_ui::consts::MARGIN_X, top, detail_layout::HERO_TEXT_W, stack.summary + stack.summary_h - top);
+        let shade = HeroShade::new()
+            .add(title, Role::Copy, 1.0)
+            .add_ink(column, self.copy_ink(&stack, measure), Role::Copy, 1.0);
         Some(match self.pill_rect(measure) {
             Some(pill) => shade.add(pill, Role::Controls, 1.0),
             None => shade,
         })
+    }
+
+    /// **The `(left, right)` extent of each line [`draw_record`](Self::draw_record) draws under the
+    /// title**: the Coming line, the meta line, the status row (icon, gap, label) and the summary's
+    /// wrapped lines, each as the text measures, not the hero column they were laid into. The shade's
+    /// copy block is as wide as the widest of them.
+    fn copy_ink(&self, stack: &Stack, measure: &dyn Measure) -> Vec<(f32, f32)> {
+        let Load::Loaded { year, kind, genres, release_date, status, summary, .. } = &self.vm.load else {
+            return Vec::new();
+        };
+        let x = plx_ui::consts::MARGIN_X;
+        let release = release_date.as_deref();
+        let mut ink = Vec::with_capacity(4);
+        if let (Some(_), Some(line)) = (stack.coming, coming_line(*status, release)) {
+            ink.push((x, x + measure.width_str(&line, theme::size::HEADLINE, true)));
+        }
+        let parts = meta_parts(*kind, genres, *year);
+        let meta = plx_ui::widgets::DottedRun::new(theme::size::BODY, theme::TEXT_SECONDARY, theme::space::SM);
+        ink.push((x, x + meta.width(measure, &parts)));
+        if let (Some(_), Some(_), Some(text)) = (stack.status, status_icon(*status, release), status_text(*status, release)) {
+            ink.push((x, x + STATUS_ICON_D + theme::space::SM + measure.width_str(text, theme::size::LABEL, false)));
+        }
+        if !summary.is_empty() {
+            let frame = Rect::new(x, stack.summary, detail_layout::HERO_TEXT_W, 0.0);
+            ink.push(plx_ui::hero_synopsis(summary, "").with_measure(measure).ink_span(frame));
+        }
+        ink
     }
 
     /// The shade over the art, as a layer of its own: this page has no ground pass to carry it in.

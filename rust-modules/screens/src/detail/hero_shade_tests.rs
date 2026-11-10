@@ -19,10 +19,12 @@ fn title_rect(screen: &DetailScreen, m: &dyn plx_machine::machine::Measure) -> R
     HeroLogo::new(screen.sid.raw(), &screen.rk, "A Test Title", LogoRung::Hero).painted(band, m)
 }
 
-/// **The shade stands behind exactly the rects the Detail hero draws**: the title (logo or typed), the
+/// **The shade stands behind exactly what the Detail hero draws**: the title (logo or typed), the
 /// identity / ratings / synopsis column from `meta_y` down to the facts, the facts line, and the
 /// action row, each at its role's darkness. The positions are the page's own layout (`hero_chain`,
-/// `hero_row_rect`), so a layout change carries the shade with it.
+/// `hero_row_rect`), so a layout change carries the shade with it; the widths are the widest line
+/// each column DRAWS (the same rows painted through a recording painter), never the box they were
+/// laid into.
 #[test]
 fn the_detail_hero_shade_stands_behind_its_own_content() {
     let sid = ServerId::UNSET;
@@ -31,14 +33,26 @@ fn the_detail_hero_shade_stands_behind_its_own_content() {
     let meta = test_store().view();
     let m = &plx_ui::fixture::FixtureMeasure;
     let d = screen.detail(meta);
+    let item = d.expect("the item is installed");
     let chain = screen.hero_chain(m, meta);
     let set = screen.hero_set(meta);
     let widths = hero::hero_widths(m, set, set.restart, screen.disc_unfurl.map(|s| s.pos), screen.named_episode(meta));
     let x = plx_ui::consts::MARGIN_X;
+    // what the page paints in each column: the width its rows come to, through the painting path
+    let painter = plx_ui::Painter::recording;
+    let (lead, synopsis) = hero_blurb(d, screen.selected());
+    let synopsis_w = plx_ui::hero_synopsis(&synopsis, &lead).with_measure(m)
+        .ink_span(Rect::new(x, chain.syn_y, plx_ui::detail_layout::HERO_TEXT_W, 0.0));
+    let prose_w = screen.identity_row(Some(painter()), item, chain.meta_y, m)
+        .max(screen.ratings_row(Some(painter()), item, chain.ratings_y, m))
+        .max(synopsis_w.1 - x);
+    let facts_w = hero::draw_facts(painter(), item, chain.facts_y, m);
+    assert!(prose_w > 0.0 && prose_w < plx_ui::detail_layout::HERO_TEXT_W, "the premise: the column draws less than its box ({prose_w})");
+    assert!(facts_w > 0.0 && facts_w < plx_appkit::hero_layout::FACTS_R - x, "the premise: the facts line is shorter than its box ({facts_w})");
     let want = [
         (title_rect(&screen, m), Role::Copy.peak()),
-        (Rect::new(x, chain.meta_y, plx_ui::detail_layout::HERO_TEXT_W, chain.facts_y - chain.meta_y), Role::Copy.peak()),
-        (Rect::new(x, chain.facts_y, plx_appkit::hero_layout::FACTS_R - x, theme::hero::FACTS_H), Role::Copy.peak()),
+        (Rect::new(x, chain.meta_y, prose_w, chain.facts_y - chain.meta_y), Role::Copy.peak()),
+        (Rect::new(x, chain.facts_y, facts_w, theme::hero::FACTS_H), Role::Copy.peak()),
         (hero::hero_row_rect(set, chain.btn_y, widths), Role::Controls.peak()),
     ];
     let shade = screen.hero_shade(d, m, meta);
@@ -68,6 +82,7 @@ fn the_credits_column_has_its_own_block() {
     let chain = screen.hero_chain(m, meta);
     let people = hero::people_rect(d, chain.btn_y, m).expect("a cast line is a credits column");
     assert_eq!(people.x + people.w, plx_ui::consts::SCR_W - plx_ui::consts::MARGIN_X, "its right edge is the margin");
+    assert!(people.w < plx_ui::detail_layout::PEOPLE_W, "…and it is as wide as its widest line, not the column ({})", people.w);
     assert!(people.h > 0.0 && people.y + people.h <= chain.btn_y, "it stands above the action row: {people:?}");
     let shade = screen.hero_shade(Some(d), m, meta);
     assert_eq!(*shade.blocks().last().expect("a block"), (people, Role::Copy.peak()));

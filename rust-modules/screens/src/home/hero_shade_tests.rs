@@ -9,6 +9,15 @@ use plx_ui::widgets::CONTROL_GAP;
 
 const HEX_A: [u8; 12] = [0xa1; 12];
 
+/// Words for a seeded hero's copy. The shade stands behind what a hero DRAWS, and a hero with no title
+/// and no premise draws nothing: give each a title, and the movies a two-sentence summary (its first
+/// sentence is the premise Home sets under the title).
+fn worded(m: &mut PmsMovie, title: &str) {
+    m.title = title.into();
+    m.show_title = title.into();
+    m.summary = "A premise that is a sentence long. And a second sentence Home leaves to Details.".into();
+}
+
 /// Three heroes (rk 1 and 2 movies, rk 3 an episode) over the seed's Continue Watching row. With
 /// `disc`, the first movie has a portable id, so its action row carries the Watchlist disc (one
 /// control wider than the same row without it).
@@ -22,15 +31,20 @@ fn seeded_resuming(disc: bool, resuming: bool) -> plx_data::pms::HubsSnapshot {
     let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
     plx_data::pms::seed_for_test(&mut state, &adapter, 3, plx_data::pms::HubState::Ready);
     plx_data::pms::edit_test_item(&mut state, "1", &|m| {
+        worded(m, "First Hero");
         m.kind = 0;
         m.guid = disc.then_some(HEX_A);
         if resuming {
             (m.resume_ms, m.dur_ns) = (3_600_000, 7_200_000 * 1_000_000);
         }
     });
-    plx_data::pms::edit_test_item(&mut state, "2", &|m| m.kind = 0);
-    // an episode names itself with its one bold line, so its ladder has a block a bare movie's lacks
+    plx_data::pms::edit_test_item(&mut state, "2", &|m| {
+        worded(m, "Second Hero");
+        m.kind = 0;
+    });
+    // an episode names itself with its one bold line; a movie is introduced by its premise
     plx_data::pms::edit_test_item(&mut state, "3", &|m| {
+        worded(m, "Third Hero");
         m.kind = 3;
         m.season_index = 1;
         m.ep_index = 2;
@@ -166,6 +180,38 @@ fn the_home_hero_shade_stands_behind_the_content_it_draws() {
     let episode = view.hero(2).unwrap().item;
     assert_eq!(episode.kind, 3);
     assert_ne!(hero_copy_rect(episode, m), hero_copy_rect(hero, m), "the premise: the two ladders differ");
+}
+
+/// **Home's copy rect is as wide as the widest thing the hero draws, not the box it is laid into**:
+/// an episode's one bold line and its title are each their own width (the column is 943 px, the
+/// label's room), and a premise ends at its widest wrapped line (inside its 700 px box).
+#[test]
+fn the_home_copy_rect_is_as_wide_as_what_the_hero_draws() {
+    let _guard = plx_base::testlock::serial();
+    let m = &plx_ui::fixture::FixtureMeasure;
+    let snapshot = seeded(false);
+    let view = snapshot.view();
+    fn painted<'a>(hero: &'a PmsMovie, m: &dyn Measure) -> (Rect, Option<HeroLine<'a>>) {
+        let (stack, line) = hero_ladder(hero);
+        let title = HeroLogo::new(hero.sid.raw(), hero_logo_rk(hero), hero_title(hero), LogoRung::Hero)
+            .painted(hero_title_band(&stack), m);
+        (title, line)
+    }
+    let episode = view.hero(2).unwrap().item;
+    let (title, line) = painted(episode, m);
+    let Some(HeroLine::Label(label)) = line else { panic!("the premise: an episode names itself") };
+    let label_w = m.width_str(&label, theme::size::LABEL, true);
+    assert!(title.w < HERO_COL_W * 0.8 && label_w < HERO_COL_W * 0.8, "the premise: both are well inside the column ({} / {label_w})", title.w);
+    let rect = hero_copy_rect(episode, m);
+    assert_eq!(rect.x, MARGIN_X);
+    assert!((rect.w - title.w.max(label_w)).abs() < 1e-3, "the widest of the title and the label: {} vs {}", rect.w, title.w.max(label_w));
+    let movie = view.hero(0).unwrap().item;
+    let (title, line) = painted(movie, m);
+    let Some(HeroLine::Premise(premise)) = line else { panic!("the premise: a movie is introduced") };
+    let (_, premise_right) = home_synopsis(premise).ink_span(Rect::new(MARGIN_X, 0.0, theme::hero::HOME_SYNOPSIS_W, 0.0));
+    let rect = hero_copy_rect(movie, m);
+    assert!((rect.x + rect.w - premise_right.max(title.x + title.w)).abs() < 1e-3, "{rect:?}: the title or the premise's last letter");
+    assert!(rect.w <= theme::hero::HOME_SYNOPSIS_W.max(title.w) + 1e-3, "…and never the label's column");
 }
 
 /// **The shade moves with a hero that slides**: during a flip the outgoing and incoming heroes each

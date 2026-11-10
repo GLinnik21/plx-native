@@ -4059,17 +4059,25 @@ fn hero_title_band(stack: &plx_ui::landing_hero::HomeStack) -> Rect {
 /// ([`HomeScreen::hero_shade`]): the title as the logo paints it (its art, or its typed run), the
 /// block under it, and the gap between, as one column. Read off the same ladder [`hero_content`]
 /// draws on, so it moves with the copy (a synopsis that wraps to one line instead of two brings
-/// the whole column down a line).
+/// the whole column down a line). Each piece is as wide as it is DRAWN, not as wide as the box it was
+/// laid into: the label is its fitted run, the premise its widest wrapped line
+/// ([`plx_ui::text_view::TextView::ink_span`]), the typed title its widest line.
 fn hero_copy_rect(hero: &PmsMovie, measure: &dyn Measure) -> Rect {
     let (stack, line) = hero_ladder(hero);
     let title = HeroLogo::new(hero.sid.raw(), hero_logo_rk(hero), hero_title(hero), LogoRung::Hero)
         .painted(hero_title_band(&stack), measure);
     let Some(block) = stack.block else { return title };
-    let block_w = match line {
-        Some(HeroLine::Label(_)) => HERO_COL_W,
-        _ => theme::hero::HOME_SYNOPSIS_W,
+    let (left, right) = match line {
+        Some(HeroLine::Label(label)) => {
+            let (_, w) = measure.fit_line_measured(&label, HERO_COL_W, theme::size::LABEL, true);
+            (MARGIN_X, MARGIN_X + w)
+        }
+        Some(HeroLine::Premise(premise)) => {
+            home_synopsis(premise).ink_span(Rect::new(MARGIN_X, block.y, theme::hero::HOME_SYNOPSIS_W, 0.0))
+        }
+        None => return title,
     };
-    title.union(Rect::new(MARGIN_X, block.y, block_w, block.h))
+    title.union(Rect::new(left, block.y, right - left, block.h))
 }
 
 #[cfg(test)]
