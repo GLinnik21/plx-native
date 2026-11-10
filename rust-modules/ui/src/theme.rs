@@ -268,7 +268,7 @@ pub mod hero {
 /// GPU (`gfx::scrim::GroundShade`).
 pub mod shade {
     /// Where Home's edge shade leaves full strength and reaches clear artwork.
-    pub const HOME_SIDE_X: [f32; 2] = [280.0, 960.0];
+    pub const HOME_SIDE_X: [f32; 2] = [320.0, 960.0];
     /// Where the edge shade begins and reaches full strength down the screen.
     pub const HOME_SIDE_Y: [f32; 2] = [110.0, 405.0];
     /// Strength at the left under the logo, metadata and actions.
