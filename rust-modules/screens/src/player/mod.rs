@@ -540,6 +540,7 @@ impl PlayerScreen {
         // where the frame is already 0 draw calls, and a report there is the gate turned off.
         if hud_up {
             mix(pos.unwrap_or(0) as u64);
+            mix(self.model.end_time.map_or(0, |[hour, minute]| 1 + (hour * 60 + minute) as u64));
             mix(plx_media::player::seek_display_ns(ps).unwrap_or(-1) as u64);
             mix(plx_media::player::TX.scrub_ns.load(Relaxed) as u64);
             // the scrub's fades, card and knob clock: a frame is owed for as long as one runs

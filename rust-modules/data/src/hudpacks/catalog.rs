@@ -71,6 +71,9 @@ pub struct Package {
     pub unfit: Vec<FitChange>,
 }
 
+/// Latest HUD document version understood by the runtime and registry filter.
+pub const HUD_FORMAT: (u8, u8) = (1, 1);
+
 impl Package {
     pub fn sha(&self) -> Sha {
         // Only the checked parser constructs the machine's packages.
@@ -94,7 +97,7 @@ impl Package {
             return false;
         };
         self.package_format == "1.0"
-            && self.hud_format == "1.0"
+            && (0..=HUD_FORMAT.1).any(|minor| self.hud_format == format!("{}.{minor}", HUD_FORMAT.0))
             && self.bytes <= pack_limit
             && self
                 .app

@@ -303,7 +303,10 @@ pub(super) fn surfaces(cx: &LangCtx<'_>, view: &View<'_>) -> Surfaces {
                 });
                 // The two clocks are app text the playbar draws itself (`clocks`): decor like any text, so a
                 // control under the bar cannot be drawn over them.
-                for (name, rect) in [("playbar elapsed clock", clock_rects.elapsed), ("playbar remaining clock", clock_rects.remaining)] {
+                let remaining = clock_rects.end_time.map_or(clock_rects.remaining, |lane| {
+                    if lane.rect.w > clock_rects.remaining.w { lane.rect } else { clock_rects.remaining }
+                });
+                for (name, rect) in [("playbar elapsed clock", clock_rects.elapsed), ("playbar remaining clock", remaining)] {
                     s.content.push(Content { kind: Kind::Text, name: name.to_owned(), pointer: origin.to_owned(), rect, card: None });
                 }
             }

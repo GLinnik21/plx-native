@@ -2142,6 +2142,8 @@ pub struct NowPlaying {
     /// not. Gates the player HUD's `S# · E#` kicker line: filtering on `is_episode` there rendered
     /// `S0 · E0` under a show trailer, since a show trailer has no episode address to print.
     pub is_real_episode: bool,
+    /// True only for the movie leaf itself; false for trailers/extras even when their parent is a movie.
+    pub is_movie: bool,
     pub title: String, // big title: show title (episode) or movie title
     pub ep_title: String, // episode name (episode only)
     pub season: i64,
@@ -2163,6 +2165,7 @@ fn sync_now_playing(state: &mut MetadataState) {
         "episode" => Some(NowPlaying {
             is_episode: true,
             is_real_episode: true,
+            is_movie: false,
             title: d.show_title.clone(),
             ep_title: d.title.clone(),
             season: d.season,
@@ -2177,6 +2180,7 @@ fn sync_now_playing(state: &mut MetadataState) {
         "movie" => Some(NowPlaying {
             is_episode: false,
             is_real_episode: false,
+            is_movie: true,
             title: d.title.clone(),
             ep_title: String::new(),
             season: 0,
@@ -2216,6 +2220,7 @@ pub fn trailer_now_playing(
         // An extra is never a real episode leaf, whatever kind its parent is — `season`/`index`
         // below are placeholder zeros, not an address, so the HUD kicker must not read them.
         is_real_episode: false,
+        is_movie: false,
         title: d.title.clone(),
         ep_title: extra.hud_title(&d.title).to_string(),
         season: 0,

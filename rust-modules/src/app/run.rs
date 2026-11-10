@@ -652,23 +652,53 @@ fn hud_model(
     ps: &plx_media::route::PlaybackSession,
     meta: plx_data::metadata::MetadataView<'_>,
     viewer_paused: bool,
+    live_clock: bool,
 ) -> plx_appkit::player_hud::model::HudModel {
-    let playpos_ns = plx_media::player::playpos_ns(ps).unwrap_or(0);
+    let position_ns = plx_media::player::playpos_ns(ps);
+    let playpos_ns = position_ns.unwrap_or(0);
+    let duration_ns = plx_media::player::duration_ns(ps);
+    let loading = plx_media::player::loading(ps);
+    let seeking = plx_media::player::state(ps) == plx_media::player::PlaybackState::Seeking
+        || plx_media::player::seek_pending(ps).is_some();
+    let scrub_ns = plx_media::player::TX.scrub_ns.load(Relaxed);
+    let advancing = plx_media::player::state(ps) == plx_media::player::PlaybackState::Playing;
+    let (is_episode, is_movie) = meta.now_playing().map_or((false, false), |n| (n.is_real_episode, n.is_movie));
+    let projected_end_time = if plx_appkit::player_hud::model::end_time_is_eligible(
+        plx_appkit::player_hud::model::EndTimeEligibility {
+            enabled: live_clock && plx_media::route::hud_end_time(),
+            is_movie_or_episode: is_episode || is_movie,
+            is_preview: plx_media::route::is_preview(ps),
+            advancing,
+            viewer_paused,
+            seeking,
+            loading,
+            scrubbing: scrub_ns >= 0,
+        },
+    ) {
+        let rate = plx_media::player::effective_playback_rate(ps);
+        clock::unix_ms()
+            .and_then(|now| plx_appkit::player_hud::model::projected_end_unix_seconds(
+                now, position_ns?, duration_ns?, rate,
+            ))
+            .and_then(clock::local_end_time)
+    } else {
+        None
+    };
     plx_appkit::player_hud::model::HudModel {
         paused: viewer_paused,
         marker_prefs: Default::default(),
         playback_id: plx_media::route::playback_trace_generation(),
-        advancing: plx_media::player::state(ps) == plx_media::player::PlaybackState::Playing,
-        seeking: plx_media::player::state(ps) == plx_media::player::PlaybackState::Seeking
-            || plx_media::player::seek_pending(ps).is_some(),
+        advancing,
+        seeking,
         covered: false,
         skip_progress: None,
-        is_episode: meta.now_playing().is_some_and(|n| n.is_real_episode),
-        scrub_ns: plx_media::player::TX.scrub_ns.load(Relaxed),
+        is_episode,
+        end_time: projected_end_time,
+        scrub_ns,
         playpos_ns,
         seek_display_ns: plx_media::player::seek_display_ns(ps).unwrap_or(-1),
-        duration_ns: plx_media::player::duration_ns(ps).unwrap_or(0),
-        loading: plx_media::player::loading(ps),
+        duration_ns: duration_ns.unwrap_or(0),
+        loading,
         sub_size: plx_media::route::subtitle_size(),
         sub_position: plx_media::route::subtitle_position(),
         sub_tone: plx_media::player::subtitle_tone(),
@@ -703,7 +733,8 @@ fn begin_product_frame(app: &mut App) -> Frame {
 /// Current transport/marker facts before the dispatcher's input/Tick, refreshed again for draw.
 fn publish_player_model(app: &mut App) {
     let mut model = hud_model(&app.player.session, app.bridge.metadata_view(),
-        app.adapters.player.backend_viewer_paused().unwrap_or(false));
+        app.adapters.player.backend_viewer_paused().unwrap_or(false),
+        matches!(app.rec, super::recorder::Recplay::Off) && !app.bridge.is_controlled_replay());
     model.marker_prefs = app.bridge.marker_preferences();
     model.covered = app.pages.surface_up();
     if let Some(screen) = super::bridge::player_mut(&mut app.pages) { screen.set_model(model); }
@@ -4673,7 +4704,7 @@ mod lifecycle_regression_tests {
         }
         // A projected attempt alone does not install a common backend runner.
         // Supply the viewer goal explicitly, opposite to the idle physical mailbox.
-        let mut model = hud_model(&app.player.session, app.bridge.metadata_view(), true);
+        let mut model = hud_model(&app.player.session, app.bridge.metadata_view(), true, false);
         model.marker_prefs = app.bridge.marker_preferences();
         model.covered = app.pages.surface_up();
         // restore before grading: a failed assertion must not leak a scrub target into the next test
@@ -5201,6 +5232,7 @@ mod lifecycle_regression_tests {
         assert!(app.bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::SetNowPlaying(Some(plx_data::metadata::NowPlaying {
             is_episode: false,
             is_real_episode: false,
+            is_movie: false,
             title: String::new(),
             ep_title: String::new(),
             season: 0,

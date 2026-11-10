@@ -123,7 +123,7 @@ mod tests {
     fn the_embedded_classic_runs_and_says_who_it_is() {
         let Admission::Runs(facts) = admit(CLASSIC_PACKAGE, "0.2.1") else { panic!("classic runs") };
         assert_eq!(facts.id, "builtin:classic");
-        assert_eq!(facts.hud_format, "1.0");
+        assert_eq!(facts.hud_format, "1.1");
     }
 
     #[test]

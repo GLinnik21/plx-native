@@ -223,6 +223,7 @@ const FM: plx_ui::fixture::FixtureMeasure = plx_ui::fixture::FixtureMeasure;
 /// the presenting side's (`app::run::prepare_window`), ahead of the clear.
 #[test]
 fn the_transport_clocks_are_rasterised_before_the_draw_and_one_second_ahead() {
+    let _locale = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
     let _g = plx_base::testlock::serial();
     plx_gfx::text::reset_prewarm_for_test();
     let sz = theme::size::CAPTION;
@@ -268,6 +269,27 @@ fn the_transport_clocks_are_rasterised_before_the_draw_and_one_second_ahead() {
     plx_ui::panel_motion::PanelMotion::drain_queued_text_for_test();
     assert!(plx_gfx::text::prewarm_resident_for_test(b"-0:00", sz, 0));
     assert!(plx_gfx::text::prewarm_resident_for_test(b"2:05", sz, 1));
+
+    // The countdown keeps its next second warm. The separator and time are independent runs.
+    plx_gfx::text::reset_prewarm_for_test();
+    let with_end = HudModel {
+        playpos_ns: pos,
+        duration_ns: dur,
+        end_time: Some([22, 35]),
+        ..HudModel::default()
+    };
+    warm.queue(&with_end);
+    while plx_gfx::text::prewarm_pending() {
+        plx_ui::panel_motion::PanelMotion::drain_queued_text_for_test();
+    }
+    let time = plx_platform::i18n::current().time_of_day([22, 35]).unwrap();
+    for text in [b"-0:36".as_slice(), b"-0:35".as_slice(), "\u{b7}".as_bytes(), time.as_bytes()] {
+        assert!(
+            plx_gfx::text::prewarm_resident_for_test(text, sz, 0),
+            "{} was not prewarmed",
+            String::from_utf8_lossy(text),
+        );
+    }
     plx_gfx::text::reset_prewarm_for_test();
 }
 
@@ -1474,7 +1496,7 @@ mod playbar_options {
     use crate::hud_format::compile::{ClockMode, KnobMode, MarkMode};
 
     fn bar(knob: Knob, mark: TransportMark) -> Playbar {
-        Playbar { pos_ns: 600_000_000_000, dur_ns: 1_200_000_000_000, knob, mark, now: 0, clock_grow: 0.0 }
+        Playbar { pos_ns: 600_000_000_000, dur_ns: 1_200_000_000_000, knob, mark, now: 0, end_time: None, clock_grow: 0.0 }
     }
     fn census(b: Playbar, look: PlaybarLook) -> Vec<(u64, Rect)> {
         plx_ui::draw_census::capture(|| draw_playbar_look(Painter::recording(), b, look, &FM))
@@ -1492,6 +1514,55 @@ mod playbar_options {
             let classic = plx_ui::draw_census::capture(|| draw_playbar(Painter::recording(), b, &FM));
             assert_eq!(classic, census(b, look), "{knob:?}");
         }
+    }
+
+    fn with_end_time_width(look: PlaybarLook, width: f32) -> PlaybarLook {
+        let clock_rects = crate::hud_format::clocks::rects(look.track, look.clock_size, look.clocks, Some(width), &FM);
+        PlaybarLook { end_time_lane: clock_rects.end_time, ..look }
+    }
+
+    #[test]
+    fn the_remaining_clock_can_include_a_local_end_time() {
+        let _locale = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+        let mut b = bar(Knob::Tick, TransportMark::None);
+        let plain = runs(b, PlaybarLook::default());
+        assert!(plain.iter().any(|r| r.text == "-10:00"));
+        b.end_time = Some([22, 35]);
+        let look = with_end_time_width(PlaybarLook::default(), 320.0);
+        let with_end = runs(b, look);
+        let time = plx_platform::i18n::current().time_of_day([22, 35]).unwrap();
+        let combined = with_end.iter().filter(|r| r.align == 0).collect::<Vec<_>>();
+        assert_eq!(combined.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(), ["-10:00", "\u{b7}", time.as_str()]);
+        assert_eq!(combined[1].ink, theme::TEXT_SEPARATOR);
+        assert!(combined[0].at.x >= look.end_time_lane.unwrap().rect.x);
+    }
+
+    #[test]
+    fn the_remaining_duration_survives_when_the_end_time_cannot_fit() {
+        let mut b = bar(Knob::Tick, TransportMark::None);
+        b.end_time = Some([22, 35]);
+        let default = PlaybarLook::default();
+        for look in [
+            default,
+            with_end_time_width(PlaybarLook { track: Rect::new(default.track.x, default.track.y, 360.0, default.track.h), ..default }, 320.0),
+            with_end_time_width(default, 80.0),
+        ] {
+            let drawn = runs(b, look);
+            assert!(drawn.iter().any(|r| r.text == "-10:00"), "{drawn:?}");
+            assert!(!drawn.iter().any(|r| r.text == "\u{b7}"), "{drawn:?}");
+        }
+    }
+
+    #[test]
+    fn remaining_end_time_hides_with_the_remaining_clock_when_the_labels_would_overlap() {
+        let mut b = bar(Knob::Tick, TransportMark::None);
+        b.pos_ns = b.dur_ns - 1_000_000_000;
+        b.end_time = Some([22, 35]);
+        let drawn = runs(b, with_end_time_width(PlaybarLook::default(), 320.0));
+        assert!(
+            !drawn.iter().any(|r| r.text == "\u{b7}"),
+            "the end-time suffix must not survive when the remaining label is suppressed: {drawn:?}",
+        );
     }
 
     #[test]

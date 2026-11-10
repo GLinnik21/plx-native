@@ -18,7 +18,7 @@ const INSPECT: &str = "--hud-inspect";
 const EXIT_CLEAN: i32 = 0;
 const EXIT_FINDINGS: i32 = 1;
 const EXIT_USAGE: i32 = 2;
-const USAGE: &str = "usage: plxnative-sim --hud-lint <file|directory> [--format text|json] [--lang all|<tag>] [--text-skew <profile>] | --hud-pack <directory> --out <file> [--format text|json] | --hud-schema manifest|hud --version 1.0 | --hud-export builtin:classic --out <file> | --hud-info | --hud-text-metrics [--lang all|<tag>] | --hud-inspect <file|directory> [--lang all|<tag>]";
+const USAGE: &str = "usage: plxnative-sim --hud-lint <file|directory> [--format text|json] [--lang all|<tag>] [--text-skew <profile>] | --hud-pack <directory> --out <file> [--format text|json] | --hud-schema manifest|hud --version <major.minor> | --hud-export builtin:classic --out <file> | --hud-info | --hud-text-metrics [--lang all|<tag>] | --hud-inspect <file|directory> [--lang all|<tag>]";
 
 pub fn wants(args: &[String]) -> bool {
     args.iter().any(|arg| matches!(arg.as_str(), LINT | SCHEMA | EXPORT | PACK | INFO | METRICS | INSPECT))
@@ -31,7 +31,7 @@ enum Command {
     Lint { file: String, format: Format, langs: Vec<LintLang>, skew: Option<String> },
     Pack { directory: String, output: String, format: Format },
     Inspect { file: String, langs: Vec<LintLang> },
-    Schema { manifest: bool },
+    Schema { manifest: bool, version: schema::Since },
     Export { id: String, output: String },
     Info,
     Metrics { langs: Vec<LintLang> },
@@ -102,12 +102,15 @@ fn parse(args: &[String]) -> Result<Command, String> {
         INFO => Ok(Command::Info),
         EXPORT => Ok(Command::Export { id: operand, output: output.ok_or("--hud-export requires --out")? }),
         SCHEMA => {
-            if version.as_deref() != Some("1.0") { return Err("--hud-schema requires --version 1.0".into()); }
-            match operand.as_str() {
-                "manifest" => Ok(Command::Schema { manifest: true }),
-                "hud" => Ok(Command::Schema { manifest: false }),
-                _ => Err("--hud-schema needs manifest or hud".into()),
-            }
+            let (manifest, mut versions): (_, Box<dyn Iterator<Item = schema::Since>>) = match operand.as_str() {
+                "manifest" => (true, Box::new(std::iter::once(bundle::CURRENT))),
+                "hud" => (false, Box::new(schema::versions())),
+                _ => return Err("--hud-schema needs manifest or hud".into()),
+            };
+            let version = version.ok_or("--hud-schema requires --version <major.minor>")?;
+            let version = versions.find(|(major, minor)| version == format!("{major}.{minor}"))
+                .ok_or_else(|| format!("unsupported {operand} schema version {version}"))?;
+            Ok(Command::Schema { manifest, version })
         }
         _ => unreachable!("mode was checked"),
     }
@@ -156,8 +159,8 @@ pub(crate) fn run(
     let command = match parse(args) { Ok(command) => command, Err(reason) => return usage(err, &reason, true) };
     match command {
         Command::Info => { emit(out, &crate::hud_tools::info()); EXIT_CLEAN }
-        Command::Schema { manifest } => {
-            emit(out, &if manifest { schema_emit::emit_manifest(bundle::CURRENT) } else { schema_emit::emit(schema::CURRENT) });
+        Command::Schema { manifest, version } => {
+            emit(out, &if manifest { schema_emit::emit_manifest(version) } else { schema_emit::emit(version) });
             EXIT_CLEAN
         }
         Command::Export { id, output } => {
@@ -274,15 +277,23 @@ mod tests {
         list.iter().map(|a| (*a).to_owned()).collect()
     }
 
+    fn fixture_archive(text: &str) -> Vec<u8> {
+        if text == BUILTIN_CLASSIC {
+            super::BUILTIN_CLASSIC.to_vec()
+        } else {
+            plx_appkit::hud_format::fixtures::with_hud_resources("reference", text)
+        }
+    }
+
     /// The whole lint with the tests' one measure, `ShippedMeasure`, for both passes.
     fn lint_report(text: &str, langs: &[LintLang], opts: &LintOptions) -> Linted {
-        let bytes = plx_appkit::hud_format::fixtures::with_hud_resources("reference", text);
+        let bytes = fixture_archive(text);
         let decoded = bundle::read(&bytes, None);
         lint_decoded(&decoded, &ShippedMeasure, &ShippedMeasure, langs, opts)
     }
 
     fn expected_json(file: &str, hud: &str, findings: &[Finding], costs: &[StateCostLine]) -> String {
-        let bytes = plx_appkit::hud_format::fixtures::with_hud_resources("reference", hud);
+        let bytes = fixture_archive(hud);
         let digest = bundle::read(&bytes, None).sha256;
         format!("{:#}\n", report::with_digest(report::to_json_with_costs(file, findings, costs), digest))
     }
@@ -340,7 +351,7 @@ mod tests {
         price: &dyn Fn() -> Result<Box<dyn Measure>, String>,
     ) -> (i32, String, String) {
         let (mut out, mut err) = (String::new(), String::new());
-        let source = |path: &str| read(path).map(|text| Source::Archive(plx_appkit::hud_format::fixtures::with_hud_resources("reference", &text)));
+        let source = |path: &str| read(path).map(|text| Source::Archive(fixture_archive(&text)));
         let io = Io { read: &source, text: read, write: &|_, _| Ok(()) };
         let code = run(&args(list), &io, measure, price, &|| panic!("font identities requested outside metrics"), &mut out, &mut err);
         (code, out, err)
@@ -714,8 +725,8 @@ mod tests {
 
     #[test]
     fn each_document_schema_uses_the_native_emitter_without_loading_files_or_fonts() {
-        for (kind, expected) in [("manifest", schema_emit::emit_manifest(bundle::CURRENT)), ("hud", schema_emit::emit(schema::CURRENT))] {
-            let (code, out, err) = go(&["--hud-schema", kind, "--version", "1.0"], &|_| panic!("schema read input"), &never);
+        for (kind, version, expected) in [("manifest", "1.0", schema_emit::emit_manifest(bundle::CURRENT)), ("hud", "1.0", schema_emit::emit((1, 0))), ("hud", "1.1", schema_emit::emit((1, 1)))] {
+            let (code, out, err) = go(&["--hud-schema", kind, "--version", version], &|_| panic!("schema read input"), &never);
             assert_eq!((code, err.as_str()), (0, ""));
             assert_eq!(out, format!("{expected:#}\n"));
         }
@@ -798,7 +809,7 @@ mod tests {
             let file = format!("{name}.plxhud");
             let read = move |_: &str| -> Result<String, String> { Ok(text.to_owned()) };
             let (mut out, mut err) = (String::new(), String::new());
-            let source = |path: &str| read(path).map(|text| Source::Archive(plx_appkit::hud_format::fixtures::with_hud_resources("reference", &text)));
+            let source = |path: &str| read(path).map(|text| Source::Archive(fixture_archive(&text)));
             let io = Io { read: &source, text: &read, write: &|_, _| Ok(()) };
             let code = run(&args(&["--hud-lint", &file, "--lang", "all"]), &io, &ttf_measure, &price_measure, &crate::hud_tools::font_hashes, &mut out, &mut err);
             assert_eq!((code, err.as_str()), (0, ""), "{name}: {out}");

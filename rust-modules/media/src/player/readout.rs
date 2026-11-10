@@ -66,6 +66,8 @@ pub struct PlayerReadout {
     /// The playhead the HUD freezes at while a seek resolves: the newest request's display target,
     /// until the player gives up on it or the session resets.
     seek_display_ns: Option<i64>,
+    /// Target retained while a seek's replacement Load has yet to report its own position.
+    reload_seek_ns: Option<i64>,
     /// The viewer's transport is Paused: the last `CommitPaused` since the playback began. A reload
     /// keeps it (the new Engine arms its hold from it); a real stop clears it. The feed keeps its
     /// own copy to gate feeding, written by the matching commands only.
@@ -190,6 +192,8 @@ pub enum ReadoutEvent {
     /// feed's own request to redo a refused native `Seek` is not this event: it arrives in the
     /// ingested raw facts ([`ReadoutEvent::FactsIngested`]).
     SeekRequeued { target_ns: i64 },
+    /// A seek moved to a fresh native Load after the previous session reset.
+    ReloadSeek { target_ns: i64 },
     /// One session's facts are gone (its engine was torn down): back to Idle, nothing ended, no
     /// raw facts. The viewer's speed, the speed latch and the release queue outlive a session.
     SessionReset,
@@ -276,6 +280,7 @@ impl PlayerReadout {
         pending_seek_ns: None,
         seek_requests: 0,
         seek_display_ns: None,
+        reload_seek_ns: None,
         paused: false,
         seek_preroll: false,
         resume_pend: false,
@@ -335,6 +340,12 @@ impl PlayerReadout {
     }
     /// The target of the seek that waits for the pump, if one does (never negative).
     pub fn pending_seek(&self) -> Option<i64> { self.pending_seek_ns }
+    /// Until the active seek lands, only its requested target can be saved on stop.
+    pub fn unconfirmed_seek_target(&self) -> Option<i64> {
+        self.pending_seek_ns
+            .or_else(|| self.seek_display_ns.filter(|_| self.seeking()))
+            .or(self.reload_seek_ns)
+    }
     /// How many requests the pending target folded beyond the first: what the pump logs as
     /// `coalesced=` when it applies it. Read it before [`ReadoutEvent::SeekTaken`].
     pub fn seek_coalesced(&self) -> u32 { self.seek_requests.saturating_sub(1) }
@@ -385,6 +396,7 @@ impl PlayerReadout {
                 self.seek_requests = 0;
             }
             ReadoutEvent::SeekRequeued { target_ns } => self.wait_for_pump(target_ns),
+            ReadoutEvent::ReloadSeek { target_ns } => self.reload_seek_ns = Some(target_ns),
             ReadoutEvent::SessionReset => {
                 self.state = PlaybackState::Idle;
                 self.ended = false;
@@ -395,6 +407,7 @@ impl PlayerReadout {
                 self.pending_seek_ns = None;
                 self.seek_requests = 0;
                 self.seek_display_ns = None;
+                self.reload_seek_ns = None;
                 // The feed's own reset zeroed its counts at the same teardown.
                 self.taken_decoder_revocations = 0;
                 self.taken_native_audio_refusals = 0;
@@ -435,6 +448,11 @@ impl PlayerReadout {
                 let asked = raw.seek_requeue;
                 if asked.epoch != 0 && asked.epoch != self.raw.seek_requeue.epoch {
                     self.wait_for_pump(asked.target_ns);
+                }
+                if raw.frames > 0 {
+                    // The callback gate counts only the replacement Load here. A seeded
+                    // target without a report from the new Load leaves frames at zero.
+                    self.reload_seek_ns = None;
                 }
                 self.raw = raw;
             }

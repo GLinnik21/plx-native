@@ -37,6 +37,21 @@ pub struct ClockRects {
     pub elapsed: Rect,
     /// the remaining clock: its widest string, ending at the track's end
     pub remaining: Rect,
+    /// Optional right-aligned lane for the entire remaining-clock and end-time run.
+    pub end_time: Option<EndTimeLane>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EndTimeLane {
+    pub rect: Rect,
+    /// The widest duration digit at the compiled clock size and weight.
+    pub(crate) widest_digit: char,
+}
+
+/// Shared spacing, ink and weight for the combined clock in the renderer and text lint.
+pub(crate) fn end_time_run(size: i32) -> plx_ui::widgets::DottedRun<'static> {
+    use plx_ui::theme;
+    plx_ui::widgets::DottedRun::new(size, theme::TEXT_SECONDARY, theme::space::XS)
 }
 
 /// The weight each clock is drawn in (`draw_playbar_look`: `draw_clock` is bold, the remaining label is not).
@@ -70,7 +85,9 @@ pub(crate) fn widest_digit(measure: &dyn Measure, size: i32, bold: bool, digits:
 
 /// The clocks of a playbar whose track is `track`, with its clocks at rung `size` placed per `mode`, measured
 /// with `measure`.
-pub(crate) fn rects(track: Rect, size: i32, mode: ClockMode, measure: &dyn Measure) -> ClockRects {
+pub(crate) fn rects(
+    track: Rect, size: i32, mode: ClockMode, end_time_width: Option<f32>, measure: &dyn Measure,
+) -> ClockRects {
     let y = track.y + CLOCK_TOP;
     let h = measure.line_h(size);
     let width = |bold, remaining| measure.width_str(&widest_clock(measure, size, bold, remaining), size, bold);
@@ -80,5 +97,10 @@ pub(crate) fn rects(track: Rect, size: i32, mode: ClockMode, measure: &dyn Measu
         ClockMode::FollowHead => Rect::new(track.x, y, track.w, h),
     };
     let remaining_w = remaining_w.min(track.w);
-    ClockRects { elapsed, remaining: Rect::new(track.x + track.w - remaining_w, y, remaining_w, h) }
+    let at_end = |w| Rect::new(track.x + track.w - w, y, w, h);
+    let end_time = end_time_width.map(|w| EndTimeLane {
+        rect: at_end(w.min(track.w)),
+        widest_digit: char::from(b'0' + widest_digit(measure, size, REMAINING_BOLD, 0..=9) as u8),
+    });
+    ClockRects { elapsed, remaining: at_end(remaining_w), end_time }
 }

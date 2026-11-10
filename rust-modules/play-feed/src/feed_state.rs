@@ -87,6 +87,18 @@ impl Drop for AuBox {
     }
 }
 
+/// A Segment seek remains unresolved after Play until the sink and clock both follow its AUs.
+pub struct SegmentLanding {
+    pub(crate) epoch: u32,
+    pub(crate) play: Option<SegmentPlay>,
+}
+
+pub(crate) struct SegmentPlay {
+    pub position_tick: u32,
+    pub displayed: u32,
+    pub waiting_since: Option<u32>,
+}
+
 /// MAIN-THREAD-CONFINED. No worker thread ever names an Engine field.
 pub struct Engine {
     /// Physical callback mailbox for this feed executor; common owns its lifetime and reset.
@@ -115,6 +127,7 @@ pub struct Engine {
     pub rebase_drops: i32,
     pub seek_armed_at: u32, // SDL-ticks when the current in-place seek was armed (stuck watchdog)
     pub seek_retries: i32,  // cheap reopen-retries attempted before escalating to a full reload
+    pub segment_landing: Option<SegmentLanding>,
     pub flushed: bool,      // Kodi m_flushed: set on an in-place seek flush; the first
     // post-flush keyframe triggers setTimeToDecode + sendSegmentEvent (the fresh GStreamer
     // segment a bare flush() omits), then clears this.

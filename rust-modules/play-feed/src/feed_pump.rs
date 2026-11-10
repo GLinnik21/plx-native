@@ -111,11 +111,36 @@ pub fn ctor_gate(feed: &mut FeedResources, mt: &MainThread) -> CtorGate {
     CtorGate::Awaiting { timeout }
 }
 
-/// Native seek reopen watchdog. A closed feed gate cannot make progress, so its clock is reset
-/// without consuming the route owner's pending target.
+/// The reopen budget measures the demux/keyframe phase. Once Play accepts a Segment seek,
+/// give the sink its own budget to display on the installed timeline.
 pub fn stuck_seek_due(feed: &mut FeedResources, now: u32, feed_allowed: bool,
     route_flight: bool, budget_ms: u32) -> bool {
     let Some(eng) = feed.engine() else { return false; };
+    if let Some(landing) = eng.segment_landing.as_mut() {
+        if let Some(play) = landing.play.as_mut() {
+            if landing.epoch != FEED_SHARED.seek_epoch.load(Relaxed) {
+                eng.segment_landing = None;
+                return false;
+            }
+            let clock_advanced = FEED_SHARED.dg_pos_ticks.load(Acquire) != play.position_tick;
+            let position = FEED_SHARED.pres_fed.load(Relaxed);
+            let displayed = FEED_SHARED.sink_displayed_sequence.load(Acquire) != play.displayed;
+            // Compare the reported pipeline position to the accepted video, in fed time.
+            // The requested position can be several seconds beyond the landing keyframe.
+            let video_runway = eng.seek_base_pts..=eng.max_fed_video_pts;
+            if clock_advanced && video_runway.contains(&position) && displayed {
+                FEED_SHARED.seek_landed_epoch.store(landing.epoch, Release);
+                eng.segment_landing = None;
+                return false;
+            }
+            if !feed_allowed || route_flight || eng.dv_start.landing_held() {
+                play.waiting_since = None;
+                return false;
+            }
+            const SEGMENT_PRESENTATION_MS: u32 = 4_000;
+            return now.wrapping_sub(*play.waiting_since.get_or_insert(now)) >= SEGMENT_PRESENTATION_MS;
+        }
+    }
     if eng.flushed && eng.rebase_pending && !feed_allowed {
         eng.seek_armed_at = now;
     }
@@ -125,11 +150,18 @@ pub fn stuck_seek_due(feed: &mut FeedResources, now: u32, feed_allowed: bool,
         && !eng.dv_start.landing_held() // the Dolby Vision guard holds this landing and reloads it itself
 }
 
-/// Re-arm only the native demux target after common has committed any newer route seek.
+/// Retry an unanchored reopen. When the segment was already primed, a new Load owns recovery.
 pub fn retry_stuck_seek(feed: &mut FeedResources, now: u32, target_ns: i64,
     can_retry: bool) -> StuckSeekAction {
     let eng = feed.engine().expect("stuck seek belongs to live feed");
+    if eng.segment_landing.as_ref().is_some_and(|seek| seek.play.is_some()) {
+        eng.segment_landing = None;
+        return StuckSeekAction::Reload;
+    }
     if eng.seek_retries < 2 && can_retry {
+        if let Some(landing) = eng.segment_landing.as_mut() {
+            landing.epoch = FEED_SHARED.seek_epoch.load(Relaxed);
+        }
         eng.seek_retries += 1;
         FEED_SHARED.seek_to_ns.store(target_ns, Release);
         FEED_SHARED.seek_target_ns.store(target_ns, Relaxed);
@@ -269,6 +301,7 @@ pub fn paused_seek_step(
     let Some(eng) = feed.engine() else { return step };
     let landed = !eng.flushed
         && !eng.rebase_pending
+        && eng.segment_landing.is_none()
         && FEED_TX.seek_to_ns.load(Relaxed) < 0
         && !route_flight
         && FEED_SHARED.frames.load(Relaxed) >= 1
@@ -572,6 +605,10 @@ pub fn apply_inplace_seek_pre(feed: &mut FeedResources, mt: &MainThread,
     t: i64, mode: SeekMode, coalesced: u32) {
     let hooks = feed.hooks();
     let eng = feed.engine().expect("in-place seek belongs to live feed");
+        eng.segment_landing = (mode == SeekMode::Segment).then(|| crate::feed_state::SegmentLanding {
+            epoch: FEED_SHARED.seek_epoch.load(Relaxed),
+            play: None,
+        });
         // `NativeSeek` does not flush here: LG's public `Seek` flushes the pipeline itself when
         // `feed_stream` calls it on the landed keyframe, and a `flush()` is itself a seek to 0, so
         // flushing after (or instead of re-anchoring) leaves the stale segment at 0 (#568).
