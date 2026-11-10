@@ -111,8 +111,14 @@ pub(crate) fn watchlist_input() -> plx_data::watchlist::WatchlistInput {
 
 The Bridge calls the store's `run_with_input(cmd, &WatchlistInput)` (`WatchlistStore` in
 `data/src/stores/watchlist.rs`), and the step compares with `WatchlistAuth::is_current(&CurrentProfile)`
-(`data/src/watchlist.rs`), a pure function. The Browse pins did the same (#1106:
-`Bridge::browse_session`, then `BrowseStore::run_with_session`). Which client a server holds is an
+(`data/src/watchlist.rs`), a pure function. Browse now takes `BrowseRosterInput` through
+`BrowseStore::run_with_input`, pumps and directory capture: the host refills the same `ClientKeys`
+with all registered slots, current, described/machine/probe facts and generation hints before the pass.
+`Bridge::browse_session` observes the pin receipt before capturing session, settled, visible-generation
+and profile-key facts independently. An empty session does not imply settled. No new Browse job or
+admission kind is introduced; directory-only capture emits no jobs. Legacy fixture migration and
+integrated verification are tracked in `.empryo/reviews/verdict-s4-integration.md`.
+Which client a server holds is an
 input too: the Collection step asks `keys.key(sid)` of the `ClientKeys` it is handed (`maybe_spawn`
 in `data/src/collection.rs`), never `client_for`.
 

@@ -68,14 +68,14 @@ impl Fixture {
     fn rebuild(&mut self) {
         self.stores.browse_run_for_test(BrowseCmd::Reset);
         self.stores.browse.borrow_mut().seed_registered_table_for_test(self.sids);
-        self.stores.capture_browse(&mut self.directory);
+        self.stores.capture_seeded_browse_for_test(&mut self.directory, self.sids[0]);
         self.stores.browse_run_for_test(BrowseCmd::SetCur(0));
         self.stores.browse.borrow_mut().seed_items_for_test(12);
         self.capture();
         assert_eq!(self.directory.view().current(), Some(0));
     }
     fn capture(&mut self) {
-        let publication = self.stores.capture_browse(&mut self.directory);
+        let publication = self.stores.capture_seeded_browse_for_test(&mut self.directory, self.sids[0]);
         self.listing = publication.listing;
         self.hubs = publication.section_hubs;
     }

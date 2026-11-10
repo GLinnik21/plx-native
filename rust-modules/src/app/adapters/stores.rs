@@ -96,9 +96,15 @@ fn os_zone() -> Zone {
 /// ones that answer, which makes `keys.key(sid)` equal `client_for(sid).map(ClientKey::of)` for
 /// every `sid`, a retired or unregistered one included.
 pub(crate) fn refill_client_keys(keys: &mut ClientKeys) {
-    keys.refill(plx_plex::plex::server_ids().filter_map(|sid| {
-        plx_plex::plex::client_for(sid).map(|client| (sid, ClientKey::of(client)))
-    }));
+    keys.refill_roster(
+        plx_plex::plex::current_server(),
+        plx_plex::plex::server_roster_gen(),
+        plx_plex::plex::server_facts_gen(),
+        plx_plex::plex::server_ids(),
+        plx_plex::plex::client_for,
+        plx_plex::plex::server_facts,
+        plx_plex::plex::server_probe_result,
+    );
 }
 
 /// The client a job's step decided on, if the registry still holds it: `client_for(sid)` accepted
@@ -2703,6 +2709,20 @@ mod tests {
     use plx_plex::plex::ClientKey;
 
     /// The command that asks the current section for its hubs.
+    fn run_browse_command(browse: &mut BrowseStore, cmd: BrowseCmd) {
+        browse.observe_pin_write();
+        let mut keys = plx_plex::plex::ClientKeys::default();
+        refill_client_keys(&mut keys);
+        let session = plx_plex::plex::session::peek();
+        let profile_key = plx_plex::plex::session::current_profile_key();
+        browse.run_with_input(cmd, &plx_data::browse::BrowseRosterInput {
+            keys: &keys, session: &session,
+            visible_generation: plx_plex::plex::session::visible_generation(),
+            settled: plx_plex::plex::session::peek_settled().is_some(),
+            profile_key: &profile_key,
+        });
+    }
+
     fn browse_hubs_cmd(browse: &mut BrowseStore) -> BrowseCmd {
         let id = browse.hubs_snapshot().view().id().expect("a section is current");
         let target = SectionAddress { epoch: id.epoch, sid: id.sid, section: id.section };
@@ -2721,7 +2741,7 @@ mod tests {
         browse.seed_registered_table_for_test([sid, other]);
         browse.run(BrowseCmd::SetCur(0), &registry_keys());
         let cmd = browse_hubs_cmd(&mut browse);
-        browse.run(cmd, &registry_keys());
+        run_browse_command(&mut browse, cmd);
         let mut jobs = browse.take_jobs();
         assert_eq!(jobs.len(), 1, "one section, one read");
         let job = jobs.remove(0);
@@ -2748,7 +2768,7 @@ mod tests {
     fn the_next_step_asks_again(browse: &mut BrowseStore) -> StoreJob {
         assert!(!browse.hubs_read_out_for_test(), "the refusal gave the claim back in the call that refused");
         let cmd = browse_hubs_cmd(browse);
-        browse.run(cmd, &registry_keys());
+        run_browse_command(browse, cmd);
         let mut jobs = browse.take_jobs();
         assert_eq!(jobs.len(), 1, "the settled section asked again");
         jobs.remove(0)
@@ -2768,7 +2788,15 @@ mod tests {
 
         assert!(browse.hubs_answer_waiting_for_test(), "the worker answered");
         assert!(browse.hubs_read_out_for_test(), "the claim holds until the pump takes the answer");
-        let _outcome = browse.pump_with_gate(plx_machine::landgate::fixture_gate(), &registry_keys(), &plx_plex::plex::session::peek());
+        browse.observe_pin_write();
+        let mut keys = plx_plex::plex::ClientKeys::default();
+        refill_client_keys(&mut keys);
+        let _outcome = browse.pump_with_gate(plx_machine::landgate::fixture_gate(), &plx_data::browse::BrowseRosterInput {
+            keys: &keys, session: &plx_plex::plex::session::peek(),
+            visible_generation: plx_plex::plex::session::visible_generation(),
+            settled: plx_plex::plex::session::peek_settled().is_some(),
+            profile_key: &plx_plex::plex::session::current_profile_key(),
+        });
         assert!(!browse.hubs_answer_waiting_for_test(), "the pump took the one answer");
         assert!(!browse.hubs_read_out_for_test(), "…which lowered the claim");
         // The same pump asks for the grid's first page (the Library section it landed shelves for),
@@ -2827,7 +2855,15 @@ mod tests {
 
         assert_eq!(runner.run_held_of(plx_data::stores::StoreId::Browse), 1);
         assert!(browse.hubs_answer_waiting_for_test());
-        let _outcome = browse.pump_with_gate(plx_machine::landgate::fixture_gate(), &registry_keys(), &plx_plex::plex::session::peek());
+        browse.observe_pin_write();
+        let mut keys = plx_plex::plex::ClientKeys::default();
+        refill_client_keys(&mut keys);
+        let _outcome = browse.pump_with_gate(plx_machine::landgate::fixture_gate(), &plx_data::browse::BrowseRosterInput {
+            keys: &keys, session: &plx_plex::plex::session::peek(),
+            visible_generation: plx_plex::plex::session::visible_generation(),
+            settled: plx_plex::plex::session::peek_settled().is_some(),
+            profile_key: &plx_plex::plex::session::current_profile_key(),
+        });
         assert!(!browse.hubs_read_out_for_test());
         assert_eq!(runner.run_held(), 0, "nothing left parked");
     }
@@ -2926,7 +2962,15 @@ mod tests {
 
     /// The store's step that asks for the grid's page (the pump).
     fn page_step(browse: &mut BrowseStore) {
-        let _ = browse.pump_with_gate(plx_machine::landgate::fixture_gate(), &registry_keys(), &plx_plex::plex::session::peek());
+        browse.observe_pin_write();
+        let mut keys = plx_plex::plex::ClientKeys::default();
+        refill_client_keys(&mut keys);
+        let _ = browse.pump_with_gate(plx_machine::landgate::fixture_gate(), &plx_data::browse::BrowseRosterInput {
+            keys: &keys, session: &plx_plex::plex::session::peek(),
+            visible_generation: plx_plex::plex::session::visible_generation(),
+            settled: plx_plex::plex::session::peek_settled().is_some(),
+            profile_key: &plx_plex::plex::session::current_profile_key(),
+        });
     }
 
     /// The command that asks the current section for its genre list.
@@ -2939,7 +2983,7 @@ mod tests {
     /// The store's step that asks for the genre list (the filter menu's tick).
     fn directory_step(browse: &mut BrowseStore) {
         let cmd = browse_directory_cmd(browse);
-        browse.run(cmd, &registry_keys());
+        run_browse_command(browse, cmd);
     }
 
     /// The page job the store's first pump left, keyed to the client the registry held when it did,
@@ -3265,7 +3309,15 @@ mod tests {
 
     /// The store's discovery pass, with the registry's keys as of now.
     fn discovery_step(browse: &mut BrowseStore) {
-        let _ = browse.discover_pump_with_gate(plx_machine::landgate::fixture_gate(), &registry_keys(), &plx_plex::plex::session::peek());
+        browse.observe_pin_write();
+        let mut keys = plx_plex::plex::ClientKeys::default();
+        refill_client_keys(&mut keys);
+        let _ = browse.discover_pump_with_gate(plx_machine::landgate::fixture_gate(), &plx_data::browse::BrowseRosterInput {
+            keys: &keys, session: &plx_plex::plex::session::peek(),
+            visible_generation: plx_plex::plex::session::visible_generation(),
+            settled: plx_plex::plex::session::peek_settled().is_some(),
+            profile_key: &plx_plex::plex::session::current_profile_key(),
+        });
     }
 
     /// The `"sources"` worker is not counted by `drain_workers_for_test` (it dials whatever a roster

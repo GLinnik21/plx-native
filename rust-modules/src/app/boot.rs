@@ -2358,7 +2358,8 @@ pub(crate) unsafe fn construct(
     let ask_first_run = || !controlled && (crate::dev::scenarios::firstrun_armed()
         || (!automated_boot()
             && plx_data::stores::browse::onboard::asks(
-                bridge.browse_directory(), &plx_plex::plex::session::peek())));
+                bridge.browse_directory(), &plx_plex::plex::session::peek(),
+                &plx_plex::plex::session::current_profile_key())));
     // The sign-in's telemetry question is PRESENTED on the container tree, and the tree lives on
     // the `App` this function is still assembling — so this boot arm records that it owes the
     // question and `maybe_ask_consent` is called once the struct exists, a few dozen lines down.

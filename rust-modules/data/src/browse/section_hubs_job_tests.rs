@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::browse::test_support::*;
+use crate::browse::BrowseRosterInput;
 use plx_machine::job::Port;
 use plx_machine::machine::MachineId;
 
@@ -187,13 +188,29 @@ fn a_read_out_with_no_claim_wakes_the_pump_that_settles_it() {
     let _g = plx_base::testlock::serial();
     plx_plex::plex::reset_servers_for_test();
     let (mut state, adapter) = (crate::browse::BrowseState::default(), crate::browse::BrowseAdapter::default());
-    assert!(!state.pump_needs_work(&adapter), "premise: an empty store has nothing to do");
+    state.observe_pin_write();
+    let mut keys = ClientKeys::default();
+    keys.refill_roster(
+        plx_plex::plex::current_server(), plx_plex::plex::server_roster_gen(),
+        plx_plex::plex::server_facts_gen(), plx_plex::plex::server_ids(),
+        plx_plex::plex::client_for, plx_plex::plex::server_facts,
+        plx_plex::plex::server_probe_result,
+    );
+    let session = plx_plex::plex::session::peek();
+    let profile_key = plx_plex::plex::session::current_profile_key();
+    let input = BrowseRosterInput {
+        keys: &keys, session: &session,
+        visible_generation: plx_plex::plex::session::visible_generation(),
+        settled: plx_plex::plex::session::peek_settled().is_some(), profile_key: &profile_key,
+    };
+    state.sync_roster_owned(&input);
+    assert!(!state.pump_needs_work(&adapter, &input), "premise: an empty store has nothing to do");
     state.hubs_flight = Some(HubsFlight { gen: 1, epoch: state.table_epoch(), sec: 0, flight: Flight::List });
     adapter.hubs.fetch.claim(1);
-    assert!(!state.pump_needs_work(&adapter), "the read is out and holds its claim: nothing to settle yet");
+    assert!(!state.pump_needs_work(&adapter, &input), "the read is out and holds its claim: nothing to settle yet");
     adapter.hubs.fetch.refuse_for(1);
-    assert!(state.pump_needs_work(&adapter), "refused: the claim is down and the record is left to settle");
+    assert!(state.pump_needs_work(&adapter, &input), "refused: the claim is down and the record is left to settle");
     adapter.hubs.fetch.take_refused(1);
     state.hubs_flight = None;
-    assert!(!state.pump_needs_work(&adapter), "settled: the pump sleeps again");
+    assert!(!state.pump_needs_work(&adapter, &input), "settled: the pump sleeps again");
 }

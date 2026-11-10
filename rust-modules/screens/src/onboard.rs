@@ -894,7 +894,7 @@ mod tests {
         }
 
         fn capture(&mut self) -> DirectoryView<'_> {
-            self.stores.capture_browse(&mut self.directory);
+            self.stores.capture_seeded_browse_for_test(&mut self.directory, plx_plex::plex::current_server());
             self.directory.view()
         }
 

@@ -112,7 +112,7 @@ fn a_favourite_edit_supersedes_a_resident_query_and_re_arms_it() {
     register(&mut owner, 1);
     let stores = crate::stores::Stores::default();
     let mut directory = crate::stores::browse::DirectorySnapshot::default();
-    stores.capture_browse(&mut directory);
+    stores.capture_seeded_browse_for_test(&mut directory, plx_plex::plex::current_server());
     owner.set_query_from_directory("wallace", directory.view());
     hold_off(&mut owner);
     owner.pump_with_directory(SETTLE_S + 0.1, directory.view()); // settles and takes the snapshot's generation
@@ -121,7 +121,7 @@ fn a_favourite_edit_supersedes_a_resident_query_and_re_arms_it() {
 
     // …a library lands, which is what `apply_pins` and discovery both look like from here
     stores.browse.borrow_mut().seed_two_source_table_for_test();
-    stores.capture_browse(&mut directory);
+    stores.capture_seeded_browse_for_test(&mut directory, plx_plex::plex::current_server());
     hold_off(&mut owner);
     owner.pump_with_directory(0.016, directory.view());
     assert_ne!(
@@ -214,13 +214,13 @@ fn a_favourite_edit_with_no_query_resident_only_refreshes_the_snapshot() {
     register(&mut owner, 1);
     let stores = crate::stores::Stores::default();
     let mut directory = crate::stores::browse::DirectorySnapshot::default();
-    stores.capture_browse(&mut directory);
+    stores.capture_seeded_browse_for_test(&mut directory, plx_plex::plex::current_server());
     hold_off(&mut owner);
     owner.pump_with_directory(0.016, directory.view());
     let gen0 = owner.state.gen;
 
     stores.browse.borrow_mut().seed_two_source_table_for_test();
-    stores.capture_browse(&mut directory);
+    stores.capture_seeded_browse_for_test(&mut directory, plx_plex::plex::current_server());
     hold_off(&mut owner);
     owner.pump_with_directory(0.016, directory.view());
     assert_eq!(
