@@ -660,3 +660,13 @@ byte-identical, `anchor: true` kept), then replayed SAME in Targets and Resolve 
 CI window (960x540). `focusfp_check.py` flow 1 now expects the first shelf, Continue Watching, to hold the page
 (`snapt=0 row=0`) and the second shelf to dive (`snapt=1 row=1`). The closed alphabet gains `[0-9]+m left` and
 `S[0-9]+ E[0-9]+ · [0-9]+m left` (`_sources.cw_stills_footer`).
+
+Live TV adds a `TV` pill to the shared strip (`app/chrome.rs`, `browse.chrome.live_tv`) and its own
+screen to the census (`SCREEN_SHAPES_PIN` `0x7e36_4373_746a_c3dc` -> `0xc658_c1c0_2b37_cd31`), which moved the
+state shape from 5612583773909772043 to 7394538603489762440. All three anchors were recorded again against the
+synthetic server with `tests/focusfp.sh --rec --only 1,6,12` on the 120 Hz display (350 ms keys, 1 s boot settle,
+1.5 s final settle; flow 6 was still refused at its full idle sleeps, so they were halved as before), passed
+`plxnative-rec check`, and were installed with `tools/plxnative-rec rerecord`, anchors retained. The closed
+alphabet gains `TV` (`_sources.live_tv_tab`), the pill's label, which every recording that draws the strip
+measures. `tests/replay_fixtures.py --window 960x540` replays all three with `verdict=SAME` in Targets and Resolve
+and every difference counter at zero on three consecutive runs.
