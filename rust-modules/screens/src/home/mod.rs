@@ -1955,12 +1955,12 @@ impl HomeScreen {
     }
 
     fn emit_item_menu<H: HomeLike>(&self, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
-        if self.snap.pos < 0.5 {
-            return Handled::No;
-        }
         let Some((row, col)) = self.focused_grid(cx.focus.current) else {
             return Handled::No;
         };
+        if self.snap.pos < 0.5 && !self.holds_page(row) {
+            return Handled::No;
+        }
         let Some(item) = self.item_at(H::hubs(cx), row, col) else {
             return Handled::No;
         };
@@ -3858,8 +3858,8 @@ impl<D: Fn(usize) -> bool> ShelfColumn<D> {
     /// the move down from the stills to it scrolls as little as it can: nothing while the shelf's
     /// focused two-line label block (the worst the Under posters setting draws) still ends above
     /// the bottom overscan edge, and otherwise just enough to bring it there
-    /// ([`Self::block_overrun`]). The footer under a still ([`theme::STILL_FOOTER_DROP`]) makes that
-    /// row 40 px taller than it was, which carried the shelf below it that much lower.
+    /// ([`Self::block_overrun`]). The footer under a still ([`theme::STILL_FOOTER_DROP`]) adds height to the
+    /// row, which carries the shelf below it lower.
     fn rest(&self, row: usize) -> f32 {
         let rule = ui_cards::grid_rest_scroll_at(row, self.top(row, None, 0.0), self.max_scroll());
         if row == 1 && (self.is_deck)(0) {

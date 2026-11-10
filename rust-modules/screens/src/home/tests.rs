@@ -1232,17 +1232,14 @@ fn the_focused_shelfs_heading_rests_at_one_y_whatever_the_band() {
     }
 }
 
-/// **The stills row's heading stands where the owner's boards put it** (CW-12/13): the shared row
-/// style's rise ([`theme::STILL_HEADING_RISE`]) above the poster shelf's line, the distance to the
-/// cards under it the poster shelf's plus that rise, and, even so, a gap to the nav pill's bottom
-/// edge at every rest of every column height (the heading is whole under the chrome's rule, which
-/// `no_shelf_heading_settles_inside_the_shared_top_band` also sweeps).
+/// The stills heading rests above the poster shelf's line and lifts when a nearby card takes
+/// focus. Both positions clear the navigation chrome.
 #[test]
 fn the_stills_heading_stands_its_rise_above_the_poster_line_and_clear_of_the_nav_pill() {
     for rows in 1..=SWEEP_ROWS {
         let col = column(rows, true);
         let rest = col.rest(0);
-        let top = heading_top(&col, 0, 0, rest);
+        let top = heading_place(&col, 0, 0, rest);
         assert_eq!(top, GRID_TOP_Y - TITLE_DY - theme::STILL_HEADING_RISE - rest, "rows {rows}: the stills heading's rest");
         assert_eq!(plx_ui::scroll_chrome::clearance_under_shown_chrome(heading_place(&col, 0, 0, rest)), 1.0,
             "rows {rows}: the stills heading rests whole under the chrome, not faded");
@@ -1252,8 +1249,9 @@ fn the_stills_heading_stands_its_rise_above_the_poster_line_and_clear_of_the_nav
         let card_top = GRID_TOP_Y + col.top(0, Some(0), band_open_of(true)) - rest + CARD_DY;
         assert_eq!(GRID_TOP_Y + col.top(0, Some(0), band_open_of(true)) - rest, GRID_TOP_Y - rest, "the deck sits at the grid's top");
         assert_eq!(card_top - top, CARD_DY + TITLE_DY + theme::STILL_HEADING_RISE, "rows {rows}: heading to card tops");
-        // A focus on a card of the deck lifts the heading no higher than its rise (the two never stack).
-        assert_eq!(heading_top(&col, 0, 0, rest), heading_place(&col, 0, 0, rest));
+        let focused_top = heading_top(&col, 0, 0, rest);
+        assert!(focused_top < top);
+        assert_eq!(plx_ui::scroll_chrome::clearance_under_shown_chrome(focused_top), 1.0);
     }
 }
 
@@ -1280,21 +1278,17 @@ fn every_settled_row_keeps_its_focused_label_block_above_the_overscan_bottom() {
     }
 }
 
-/// **The worst case of the stills-on-top page**: the poster shelf under the Continue Watching deck.
-/// The stills' footer stands under the art now ([`theme::STILL_FOOTER_DROP`]: the row is 40 px
-/// taller than the in-art footer's was), so the shelf's row stands at 194 + 376 = 570 at scroll 0
-/// and its two-line focused label block would end at 1063, 37 px PAST the bottom overscan edge
-/// (1026). The page therefore scrolls those 37 px when focus comes down to it (the stills
-/// stay above it, only just higher), and the block ends on the edge, whatever the shelf count.
+/// The second shelf scrolls only far enough to keep the worst-case focused caption inside
+/// bottom overscan. The Continue Watching heading remains visible above it.
 #[test]
 fn the_poster_shelf_under_the_stills_ends_its_two_line_block_inside_the_bottom_overscan_edge() {
     let two_lines = ui_cards::TileLabel::height(true);
     for rows in 2..=SWEEP_ROWS {
         let col = column(rows, true);
         let at_zero = GRID_TOP_Y + col.top(1, Some(1), band_open_of(false));
-        assert_eq!(at_zero, 570.0, "rows {rows}: the stills row (194) and its pitch put the shelf at 570 at scroll 0");
-        assert_eq!(at_zero + CARD_DY + CARD_H + two_lines, 1063.0, "rows {rows}: the block would end past the edge");
-        assert_eq!(col.rest(1), 37.0, "rows {rows}: the shelf under the stills scrolls just what its block overruns");
+        let overrun = at_zero + CARD_DY + CARD_H + two_lines - (SCR_H - MARGIN_Y);
+        assert!(overrun > 0.0);
+        assert_eq!(col.rest(1), overrun, "rows {rows}: the shelf scrolls just what its block overruns");
         let row_y = at_zero - col.rest(1);
         let end = row_y + CARD_DY + CARD_H + two_lines;
         assert_eq!(end, SCR_H - MARGIN_Y, "rows {rows}: the focused block ends on the bottom overscan edge");
@@ -2009,6 +2003,39 @@ fn continue_watching_commit_follows_the_setting_while_an_ordinary_shelf_opens_de
     };
     let detail = commit(&mut s, 3);
     assert!(has_home(&detail, |r| matches!(r, HomeReq::Detail { rk, .. } if rk == "1")));
+}
+
+#[test]
+fn continue_watching_regression_hold_on_the_hero_page() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_continue_window_for_test(&mut state, &adapter, 12, false);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let view = snapshot.view();
+    let mut s = screen(view);
+    assert!(s.holds_page(0));
+    assert_eq!(s.snap.pos, 0.0);
+    let card = first_card(&s);
+    let rk = s.item_at(view, 0, 0).unwrap().rk.clone();
+    let (_, out, _) = step(
+        &mut s,
+        view,
+        Some(card),
+        &ScreenEvent::PressHold(plx_machine::machine::PressId(1)),
+    );
+    assert!(has_home(&out, |r| matches!(r, HomeReq::ItemMenu { rk: key, .. } if *key == rk)));
+    assert!(!has_home(&out, |r| matches!(r, HomeReq::Play { .. } | HomeReq::Detail { .. })));
+}
+
+#[test]
+fn continue_watching_regression_heading_moves_and_stays_clear_on_second_row() {
+    let col = column(3, true);
+    assert!(heading_top(&col, 0, 0, col.rest(0)) < heading_place(&col, 0, 0, col.rest(0)),
+        "the heading should rise when a nearby card takes focus");
+    let top = heading_top(&col, 0, 1, col.rest(1));
+    assert_eq!(plx_ui::scroll_chrome::clearance_under_shown_chrome(top), 1.0,
+        "Continue Watching heading at {top} should remain readable on the second row");
 }
 
 #[test]
@@ -6181,7 +6208,7 @@ fn the_page_rests_at_the_hero_or_the_grid_and_moves_only_when_a_move_leaves_the_
     assert!(s.snap.pos > 0.99);
     // the stills stay the top row, the next shelf under them: it rests at the LEAST scroll that keeps
     // its focused two-line label block inside the bottom overscan edge (the stills' footers make the
-    // row 40 px taller, so the block would otherwise cross it), not at the poster shelves' own line
+    // row taller, so the block would otherwise cross it), not at the poster shelves' own line
     let rest = s.column().block_overrun(1);
     assert!(rest > 0.0 && rest < 60.0, "the premise: a small, real overrun ({rest})");
     assert_eq!(s.grid.scroll_target, rest, "the stills stay the top row, the next shelf under them");

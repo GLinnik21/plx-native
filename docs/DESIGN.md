@@ -165,12 +165,10 @@ the episode strip's `EPISODE` look, its caption band and `StillFooter::Shelf`.
   anything is cut, and the tag fades only when even 64 px does not fit; the time unit is never cut. With no
   bar the tag is kept while the whole text fits the line, cue included; `New episode` is never cut or dropped
   (a test fits the worst tag, S12 E24, in every shipped language: all keep the tag, at rest and with the cue open).
-- **The row's heading** stands `theme::STILL_HEADING_RISE` higher over its cards than a poster shelf's
-  (`RowStyle::heading_rise`, the shared row style, so Home and Recommended both get it): the boards put it
-  well above the poster line. It rests on the page header's line, the highest a heading stands whole under
-  the nav chrome (`scroll_chrome::clearance_under_shown_chrome`); the card tops and pitch are the deck's
-  own (`STILL_GAP`, `RowStyle::under_tile`), and the shelf under the stills rests where `ShelfColumn::block_overrun`
-  keeps its two-line block inside the overscan edge. The focus lift does not stack on it (`card_row::heading_lift_of` takes the larger).
+- **The row's heading** has a small baseline rise and uses the same focus lift as the other shelves.
+  `card_row::heading_lift_of` takes the larger of the two. The gap below the footer keeps the
+  Continue Watching heading clear of the nav when the next shelf is focused, while
+  `ShelfColumn::block_overrun` keeps that shelf's caption inside overscan.
 - **The focus cue** is a white play glyph (OK plays, `DeckPress::Play`) or an info glyph (OK opens the
   page) at the left of the focused card's line, in a `FOOTER_CUE_SLOT` (28 px) that is collapsed at rest
   and opened by the card's own pop progress (`cards::Tile::pop`, never a timer of its own): the text

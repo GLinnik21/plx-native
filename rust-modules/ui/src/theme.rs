@@ -1375,21 +1375,13 @@ pub const STILL_GAP: f32 = 40.0;
 /// a 236 tile): the line is OFF the art, which carries no scrim and keeps four rounded corners.
 pub const STILL_FOOTER_DROP: f32 = 8.0;
 
-/// The next shelf's heading stands this far under the Continue Watching footer line's foot (the
-/// board's 1084 for a footer foot at 1036).
-pub const STILL_FOOTER_AIR: f32 = 48.0;
+/// Gap from the Continue Watching footer to the next shelf's heading. The two shelves can
+/// share the viewport with the first heading clear of the nav and the second caption in overscan.
+pub const STILL_FOOTER_AIR: f32 = space::LG * 0.5;
 
-/// How much higher the Continue Watching row's heading stands over its tiles than a poster shelf's
-/// does, in px ([`crate::card_row::RowStyle::heading_rise`]): the owner's boards (CW-12/13) put the
-/// stills heading well above the poster line (centre ~60 px over the card tops, the poster shelf's
-/// ~42). It rests ON the page header's line ([`crate::page_header::TOP`]), the highest a
-/// page-riding row stands WHOLE under the shown chrome (`scroll_chrome::CLEARANCE_RAMP` above that
-/// line a heading is partly faded, and Home draws every heading through that rule), so the rise is
-/// derived from it, not a literal: 12 px with today's constants, the heading's top 18 px under the
-/// nav pill's bottom edge. The tiles' tops, the row's pitch and every rest place stay where they
-/// were; only the heading rises. Taller than this the heading would rest faded, or the chrome's
-/// rule would have to judge the heading's ink instead of its top.
-pub const STILL_HEADING_RISE: f32 = crate::consts::GRID_TOP_Y - crate::consts::TITLE_DY - crate::page_header::TOP;
+/// Baseline rise for the stills heading. Leave room for the shared live focus lift to raise it
+/// farther when a nearby card grows.
+pub const STILL_HEADING_RISE: f32 = space::XS * 0.25;
 
 /// How far the focused episode still rises, in px, at full focus — with [`EP_CARD_FOCUS_SCALE`] it
 /// separates the focused card from the row instead of merely enlarging it in place.
