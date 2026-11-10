@@ -42,6 +42,29 @@ fn the_baked_keys_are_used_as_they_stand_carry_no_token_and_fit_a_slot() {
     assert!(is_baked_key(&cover_key()) && is_baked_key(&card_key()));
 }
 
+#[test]
+fn a_new_logo_stamp_changes_both_the_transcode_and_composite_cache_keys() {
+    let (_g, sid, _) = one_server();
+    let client = plx_plex::plex::client_for(sid).unwrap();
+    let identity = |logo| {
+        let request = logo_key(sid, logo).unwrap();
+        let transcode = plx_platform::imgcache::classify(&disk_namespace(client), &request).unwrap();
+        let composite = card_path(logo, ART).unwrap();
+        assert_eq!(built_key(sid, &composite, 420, 236, false).as_deref(), Some(composite.as_str()));
+        let (logo, art) = card_parts(&composite).unwrap();
+        let io = WorkerCardIo::new(client, logo, art, 0, client.token_gen());
+        (request, transcode, io.disk.unwrap())
+    };
+    let old = identity("/library/metadata/605/clearLogo/1778546279");
+    let new = identity("/library/metadata/605/clearLogo/1778546280");
+    assert!(new.0.contains("%2FclearLogo%2F1778546280&"));
+    assert!(new.0.contains("&format=png&"));
+    assert_ne!(old.0, new.0);
+    assert_ne!(old.1, new.1);
+    assert_ne!(old.2, new.2);
+    assert!(logo_key(sid, "").is_none(), "a removed logo must not reuse a legacy hit");
+}
+
 /// A card key longer than a slot is refused rather than truncated, like any other (a truncated key
 /// never equals its probe again).
 #[test]
@@ -253,7 +276,7 @@ fn a_cover_or_card_bake_is_not_persisted_across_a_retoken_or_a_profile_switch() 
     let card = |c: &'static plx_plex::plex::Client| WorkerCardIo {
         client: c,
         srv: sid,
-        rk: "605",
+        logo: "605",
         art: ART,
         cache_gen: plx_platform::imgcache::generation(),
         token_gen: c.token_gen(),

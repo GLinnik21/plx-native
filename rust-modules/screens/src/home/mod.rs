@@ -1893,7 +1893,7 @@ impl HomeScreen {
             return;
         }
         for hero in neighbours() {
-            if plx_ui::tex::logo_warm(hero.item.sid.raw(), hero_logo_rk(hero.item))
+            if plx_ui::tex::logo_warm(hero.item.sid.raw(), hero_logo_source(hero.item))
                 == Warm::Claimed
             {
                 return;
@@ -3859,12 +3859,14 @@ fn hero_art(tex: (u32, f32, f32), snap: f32, alpha: f32) -> plx_ui::widgets::Was
 fn show_of(item: &PmsMovie) -> Option<&str> {
     (item.kind == 3 && !item.show_rk.is_empty()).then_some(item.show_rk.as_str())
 }
-fn hero_logo_rk(item: &PmsMovie) -> &str {
-    if item.kind == 3 && !item.show_rk.is_empty() {
-        &item.show_rk
-    } else {
-        &item.rk
-    }
+fn hero_logo_source(item: &PmsMovie) -> &str {
+    item.logo.as_deref().unwrap_or_else(|| {
+        if item.kind == 3 && !item.show_rk.is_empty() {
+            &item.show_rk
+        } else {
+            &item.rk
+        }
+    })
 }
 fn prefetch_order(cur: i32, n: i32, out: &mut [i32; 2 * HERO_PREFETCH]) -> usize {
     if n <= 1 {
@@ -3962,7 +3964,7 @@ fn hero_content(hero: &PmsMovie, p: Painter, dx: f32, measure: &dyn Measure) {
         return;
     }
     let (stack, line) = hero_ladder(hero);
-    HeroLogo::new(hero.sid.raw(), hero_logo_rk(hero), hero_title(hero), LogoRung::Hero)
+    HeroLogo::new(hero.sid.raw(), hero_logo_source(hero), hero_title(hero), LogoRung::Hero)
         .draw(p, hero_title_band(&stack), measure);
     let Some(block) = stack.block else { return };
     match line {

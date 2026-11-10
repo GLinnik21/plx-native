@@ -184,11 +184,9 @@ pub fn draw_title(p: Painter, rung: LogoRung, title: &str, band: Rect, align: HA
 /// both halves here is what makes the swap consistent across the three sites — and is why the two
 /// fallbacks that used to paint an unbounded run now elide like home's always did.
 pub struct HeroLogo<'a> {
-    rk: &'a str,
-    /// The raw id of the server `rk` is a key on. A clearLogo is fetched through the image
-    /// transcoder of the server that holds the item, and `rk` names an item on that machine alone —
-    /// resolving it against whichever server is current drew no logo at all for a borrowed hero,
-    /// which is how this was reported ("detail page does not show logo image").
+    logo: &'a str,
+    /// The raw id of the server that holds the logo. The same source path can name different
+    /// images on different servers.
     sid: u16,
     title: &'a str,
     rung: LogoRung,
@@ -196,12 +194,11 @@ pub struct HeroLogo<'a> {
 }
 
 impl<'a> HeroLogo<'a> {
-    /// `rk` is the ratingKey whose clearLogo to draw — for an episode hero that is the SHOW's
-    /// (episodes have no clearLogo asset; keying to the episode 404s straight into a text fallback
-    /// of the wrong title). `title` is the run drawn when there is no logo.
-    pub fn new(sid: u16, rk: &'a str, title: &'a str, rung: LogoRung) -> Self {
+    /// `logo` is a stamped clearLogo path or a legacy rating key on `sid`. An empty source
+    /// draws `title` directly. An episode hero can name its show's logo.
+    pub fn new(sid: u16, logo: &'a str, title: &'a str, rung: LogoRung) -> Self {
         Self {
-            rk,
+            logo,
             sid,
             title,
             rung,
@@ -222,7 +219,7 @@ impl<'a> HeroLogo<'a> {
     /// rather than guessing from the band, and it moves with the logo.
     pub fn painted(&self, band: Rect, measure: &dyn Measure) -> Rect {
         let align = self.align.resolve(self.title);
-        if let Some((_, sw, sh)) = crate::tex::logo_src(self.sid, self.rk) {
+        if let Some((_, sw, sh)) = crate::tex::logo_src(self.sid, self.logo) {
             let (w, h) = fit(self.rung, sw, sh, band.w);
             return place(band, w, h, align);
         }
@@ -243,17 +240,14 @@ impl<'a> HeroLogo<'a> {
         let align = self.align.resolve(self.title);
         let fallback = title_text(self.rung, self.title).h(align).with_measure(measure);
         let fallback_h = title_paint_h(&fallback, self.rung, band.w, measure);
-        // The hero draws the item the shelf under it has focused, and that shelf is the server
-        // being browsed — so its clearLogo is asked of the current server. An item that came from
-        // somewhere else (a merged Continue Watching row) names its own, once items carry one.
-        if let Some((tex, sw, sh)) = crate::tex::logo_src(self.sid, self.rk) {
+        if let Some((tex, sw, sh)) = crate::tex::logo_src(self.sid, self.logo) {
             let (w, h) = fit(self.rung, sw, sh, band.w);
             // NOT pixel-snapped: a logo is SCALED content, and the crispness contract snaps
             // 1:1-texel content only (see the note above `theme.rs`'s size ladder).
             p.tex(tex, place(band, w, h, align), 0.0, theme::TEXT_PRIMARY);
             return;
         }
-        // An item with a ratingKey whose logo has not resolved draws its title as text, and that is
+        // An item with a logo source that has not resolved draws its title as text, and that is
         // a WAIT only while the logo can still arrive: counted (and sentinel-inked) then. A logo the
         // store has settled as a miss (the 404 of an item with no clearLogo) will never come, so
         // the text is the answer: not counted, but reported as an absence so a driver whose
@@ -264,13 +258,13 @@ impl<'a> HeroLogo<'a> {
         // a real library most items have no clearLogo, so this branch runs every frame. Its answer
         // only picks between the two accounting calls below (and, in the sentinel build, the ink):
         // when nothing can see them, neither call records and both draw TEXT_PRIMARY, so skip it.
-        let (p, ink) = if self.rk.is_empty() || !crate::placeholder::accounting_visible() {
+        let (p, ink) = if self.logo.is_empty() || !crate::placeholder::accounting_visible() {
             (p, theme::TEXT_PRIMARY)
-        } else if crate::tex::logo_failed(self.sid, self.rk) {
-            crate::placeholder::note_absent(p, crate::placeholder::Reason::HeroLogoAbsent, self.rk);
+        } else if crate::tex::logo_failed(self.sid, self.logo) {
+            crate::placeholder::note_absent(p, crate::placeholder::Reason::HeroLogoAbsent, self.logo);
             (p, theme::TEXT_PRIMARY)
         } else {
-            crate::placeholder::ink(p, crate::placeholder::Reason::HeroLogoText, self.rk, theme::TEXT_PRIMARY)
+            crate::placeholder::ink(p, crate::placeholder::Reason::HeroLogoText, self.logo, theme::TEXT_PRIMARY)
         };
         title_text_inked(self.rung, self.title, ink).h(align).with_measure(measure)
             .draw(p, Rect::new(band.x, band.y + band.h - fallback_h, band.w, fallback_h));

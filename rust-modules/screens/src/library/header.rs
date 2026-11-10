@@ -15,10 +15,21 @@
 //! controls inside the cluster stand by what they draw, one gap apart. The row's MOTION (`header_capsules`, `header_pop`) lives on the screen, not in the
 //! row: a library switch replaces the whole row, and the pill must travel across it.
 use super::*;
+use plx_machine::machine::Measure;
 use plx_ui::hstack::{self, Align, HStack};
 use plx_ui::page_header::{self, HeaderFocus, HeaderItem, HeaderRow, PageHeader, PageHeaderSpec, Slot};
 use plx_ui::theme;
-use std::ffi::CString;
+
+/// A shared library's owner credit is atomic. An oversized credit gives its room back to the
+/// title, which uses the ordinary single-line fit.
+pub(super) fn fit_name(title: &str, owner: &str, room: f32, measure: &dyn Measure) -> String {
+    let size = theme::size::BODY;
+    let full = super::toolbar::joined_name(title, owner);
+    if measure.width_str(&full, size, false) <= room {
+        return full;
+    }
+    measure.fit_line(title, room, size, false).to_string_lossy().into_owned()
+}
 
 /// The width the names `picks` (then, with `more_w`, the options after them) stand in, one
 /// [`page_header::GAP`] apart: the ui's own [`HStack::width`]. `PageHeader::layout` places the names
@@ -67,8 +78,8 @@ fn divider() -> HeaderItem {
 }
 
 impl LibraryScreen {
-    /// Every focusable element of the header row in focus order: the library names, options, then
-    /// the controls (on the Collections page, the crumb's root, then Sort).
+    /// Every focusable element of the header row in focus order: favorite shortcuts, options, the
+    /// current visit when present, then the controls (on Collections, the crumb's root, then Sort).
     pub(super) fn header_elems(&self) -> Vec<u32> {
         self.header.row().map_or_else(Vec::new, |row| row.stops.iter().map(|(elem, _)| *elem).collect())
     }
@@ -284,6 +295,7 @@ impl LibraryScreen {
             // The same library's row changing fades what comes and goes; a row for ANOTHER library
             // is the new page's own, and shows nothing of the one left (see `HeaderSwap::begin_switch`).
             if of == self.header_of { self.header_swap.begin(old, &row); } else { self.header_swap.begin_switch(old, &row); }
+            row.reflow_selection(old, &mut self.header_capsules);
         }
         self.header_of = of;
         self.header.install(key, row);
@@ -320,16 +332,17 @@ impl LibraryScreen {
                 section.kind == directory.sections()[current].kind && !section.row.pinned);
             let slots = if visit_slot { 3.0 } else { 2.0 };
             let name_budget = ((budget - more_w - slots * page_header::GAP) / slots).max(0.0);
-            let label = |name: &str, room| plx_machine::machine::elide_by(name, room, false, |text| {
-                CString::new(text).map_or(0.0, |c| measure.width(&c, theme::size::BODY, false))
-            });
-            let labels: Vec<String> = all.iter().map(|(_, section)| label(&self.library_label(*section, cx), name_budget)).collect();
+            let label = |section, room| {
+                let (title, owner) = self.library_name(section, cx);
+                fit_name(title, owner, room, measure)
+            };
+            let labels: Vec<String> = all.iter().map(|(_, section)| label(*section, name_budget)).collect();
             let widths: Vec<f32> = labels.iter().map(|label|
                 page_header::cluster_width(&[item(label.as_str())], measure)).collect();
             let reserve = if visit_slot { name_budget + page_header::GAP } else { 0.0 };
             let picks = pack_names(&widths, 0, budget - reserve, more_w, layout::MAX_LIBRARY_PILLS);
             let current_room = (budget - names_w(&widths, &picks, Some(more_w)) - page_header::GAP).max(0.0);
-            let current_label = label(&self.library_label(current, cx), current_room);
+            let current_label = label(current, current_room);
             self.folded = all.iter().enumerate().filter(|(i, (_, section))|
                 !picks.contains(i) && *section != current)
                 .filter_map(|(_, (_, section))| u32::try_from(*section).ok()).collect();
@@ -337,6 +350,10 @@ impl LibraryScreen {
                 left.push(HeaderItem { selected_plate: all[pick].1 == current, ..item(labels[pick].as_str()) });
                 self.libraries.push(all[pick]);
             }
+            // The menu belongs to the fixed shortcuts. Keep its opener in that same slot while
+            // the active visit comes and goes beside it.
+            left.push(more);
+            self.libraries.push((MORE, usize::MAX));
             if !self.libraries.iter().any(|(_, index)| *index == current) {
                 if let Some(sid) = directory.sections()[current].sid {
                     let elem = self.keys.register(LibraryIdentity::Library(LibrarySectionIdentity {
@@ -346,8 +363,6 @@ impl LibraryScreen {
                     self.libraries.push((elem, current));
                 }
             }
-            left.push(more);
-            self.libraries.push((MORE, usize::MAX));
         }
         let page = PageHeader::new(PageHeaderSpec { left, right, ..Default::default() }, &widest, measure);
         let layout = page.layout(SCR_W, measure);

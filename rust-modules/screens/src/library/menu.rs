@@ -14,6 +14,8 @@ use plx_ui::screen::{
 };
 use plx_ui::form::{Binding, Form, FormSection, FormTable, RowKey, RowKind};
 use plx_appkit::source_list::{self, SrcTarget, Tail};
+use plx_ui::page_stack::{self, PageStack};
+use plx_ui::panel_motion::PanelMotion;
 use plx_ui::popover::Popover;
 use plx_ui::table::{Row, TableView};
 use std::convert::Infallible;
@@ -26,7 +28,7 @@ use std::borrow::Cow;
 const PANEL_RADIUS: f32 = 20.0;
 
 pub const SHAPE: [&str; 2] = [
-    "LibraryMenu{arg:LibraryMenuArg,kind:u32,desired_unwatched:Option<bool>,identities:[str],dependencies:[u8],rows:[{key:u32,table_index:i32}],table:TableViewMotion}",
+    "LibraryMenu{arg:LibraryMenuArg,kind:u32,desired_unwatched:Option<bool>,selected_library:Option<SectionAddress>,pages:[{kind:u32,return_key:u32,scroll:f32}],identities:[str],dependencies:[u8],rows:[{key:u32,table_index:i32}],table:TableViewMotion}",
     TableView::MOTION_SHAPE,
 ];
 
@@ -170,9 +172,11 @@ fn source_draft(
         library_form(epoch, groups, sections, &source_rows, Tail::None, &mut stamp);
     stamp.bool(refreshing);
     // placeholder-exempt: inline refresh status beside an action; the library list stays available.
+    let loading = plx_platform::i18n::msg::browse_library_loading();
     let actions = choice(MenuSection::new(""), "recheck".into(), Action::Recheck,
         Row::new(plx_platform::i18n::msg::widgets_source_new_shares())
-            .value(if refreshing { plx_platform::i18n::msg::browse_library_loading() } else { "" }));
+            .value(if refreshing { loading } else { "" }).value_slot(loading))
+        .disabled(refreshing);
     let actions = choice(actions, "favourites".into(), Action::Favourites,
         Row::new(plx_platform::i18n::msg::settings_libraries_title()).chevron(true));
     let form = form.section(actions);
@@ -459,6 +463,9 @@ pub struct LibraryMenu {
     identities: Vec<String>,
     stamp: Vec<u8>,
     desired_unwatched: Option<bool>,
+    selected_library: Option<SectionAddress>,
+    pages: PageStack<LibraryMenuKind, RowKey>,
+    motion: PanelMotion,
     /// The open/close motion: the panel MORPHS out of the control it opened from and back into it
     /// (`Popover::morphing` + `open_from`, the path the Watchlist's Sort & Filter takes: one opener
     /// rule for every header menu, design review S11). It owns the glass's arrival; the control
@@ -477,6 +484,9 @@ impl LibraryMenu {
             identities: Vec::new(),
             stamp: Vec::new(),
             desired_unwatched: None,
+            selected_library: None,
+            pages: PageStack::new(),
+            motion: PanelMotion::new().spring_all_edges(),
             popover: Popover::new().morphing(),
             #[cfg(test)] draft_rebuilds: 0,
         }
@@ -494,6 +504,9 @@ impl LibraryMenu {
     /// ceiling, because its rows are library NAMES a user chose: as wide as the widest, up to the
     /// safe width, never cut with room to spare.
     fn frame(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
+        self.motion.natural(self.form.table.layout_rev(), || self.measure_frame(measure))
+    }
+    fn measure_frame(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
         let [_, y, _, h] = self.arg.anchor.map(f32::from_bits);
         let height = self.form.table.measured_height().clamp(120.0, 740.0);
         let pill = self.pill();
@@ -535,6 +548,10 @@ impl LibraryMenu {
     }
 
     fn apply_draft(&mut self, draft: MenuDraft) {
+        self.install_draft(draft, None);
+    }
+
+    fn install_draft(&mut self, draft: MenuDraft, restore: Option<(RowKey, f32)>) {
         if self.stamp == draft.stamp {
             return;
         }
@@ -549,11 +566,16 @@ impl LibraryMenu {
             .form
             .selected_id()
             .filter(|id| form.contains(id))
-            .cloned()
-            .or(draft.selected);
+            .cloned();
         self.stamp = draft.stamp;
         self.form.table.compact = true;
-        self.form.set(form, keep.as_ref());
+        if let Some((key, scroll)) = restore {
+            self.form.restore(form, self.identities.get(key.0 as usize), scroll);
+        } else if let Some(keep) = keep {
+            self.form.set_sliding(form, Some(&keep));
+        } else {
+            self.form.open(form, draft.selected.as_ref());
+        }
     }
 
     fn draft(
@@ -632,6 +654,10 @@ impl LibraryMenu {
         };
         match action {
             Action::Genre => {
+                let _ = self.frame(cx.measure);
+                self.pages.push(self.kind, RowKey(elem), self.form.table.scroll_pos());
+                let leaving = page_stack::leave_page(&mut self.form);
+                self.motion.begin_slide(leaving, 1.0);
                 self.kind = LibraryMenuKind::Genre;
                 self.stamp.clear();
                 self.refresh(cx);
@@ -654,10 +680,9 @@ impl LibraryMenu {
                 }
             }
             Action::Select(target) => {
-                fx.push(Fx::Deliver(
-                    MachineId::Instance(self.arg.host),
-                    Delivery::Screen(ScreenEvent::App(AppMsg::LibrarySelect(target))),
-                ));
+                // Let the menu finish closing against the old row. The page can then install
+                // the new header and seat its destination together, with input ownership back.
+                self.selected_library = Some(target);
                 fx.push(Fx::Nav(NavOp::Dismiss(self.entry)));
             }
             Action::Recheck => fx.push(Fx::App(AppFx::Store(
@@ -699,6 +724,17 @@ impl<H: LibraryLike> Machine<H> for LibraryMenu {
             // However the surface was dismissed (BACK, a pick, the host's own press), the panel
             // runs the morph back into its control.
             ScreenEvent::Closing => self.popover.dismiss(),
+            ScreenEvent::Unmount => {
+                if let Some(target) = self.selected_library.take() {
+                    fx.push(Fx::Deliver(
+                        MachineId::Instance(self.arg.host),
+                        Delivery::Screen(ScreenEvent::App(AppMsg::LibraryMenuSelect {
+                            origin: self.arg.target,
+                            target,
+                        })),
+                    ));
+                }
+            }
             ScreenEvent::StoreChanged(..) | ScreenEvent::Enter(_) => {
                 self.refresh(cx)
             }
@@ -714,18 +750,14 @@ impl<H: LibraryLike> Machine<H> for LibraryMenu {
                         }),
                     )));
                 }
-                self.form.table.sel = cx
-                    .focus
-                    .current
-                    .and_then(|focus| self.form.index_of_key(RowKey(focus.elem)))
-                    .map_or(-1, |i| i as i32);
-                self.form.table.update(tick.dt(), self.frame(cx.measure).h);
+                let frame = self.frame(cx.measure);
+                self.motion.step(tick.dt(), frame);
+                self.form.table.update(tick.dt(), frame.h);
             }
             ScreenEvent::FocusMoved { to, .. } => {
-                self.form.table.sel = self
-                    .form
-                    .index_of_key(RowKey(to.elem))
-                    .map_or(-1, |i| i as i32);
+                if let Some(index) = self.form.index_of_key(RowKey(to.elem)) {
+                    self.form.table.sel = index as i32;
+                }
             }
             ScreenEvent::Activate(elem) => self.activate(*elem, cx, fx),
             ScreenEvent::PressCommit(_) => {
@@ -740,12 +772,14 @@ impl<H: LibraryLike> Machine<H> for LibraryMenu {
                     ..
                 } = input.kind
                 {
-                    if self.kind == LibraryMenuKind::Genre {
-                        // Back from the genre list returns to the menu it was opened from.
-                        self.kind = if self.arg.kind == LibraryMenuKind::SortFilter { LibraryMenuKind::SortFilter }
-                            else { LibraryMenuKind::Filter };
+                    if let Some(saved) = self.pages.pop() {
+                        let _ = self.frame(cx.measure);
+                        let leaving = page_stack::leave_page(&mut self.form);
+                        self.motion.begin_slide(leaving, -1.0);
+                        self.kind = saved.page;
                         self.stamp.clear();
-                        self.refresh(cx);
+                        let draft = self.draft(H::listing(cx), H::directory(cx));
+                        self.install_draft(draft, Some((saved.return_id, saved.scroll)));
                     } else {
                         fx.push(Fx::Nav(NavOp::Dismiss(self.entry)));
                     }
@@ -788,15 +822,15 @@ impl<H: LibraryLike> Focusable<H> for LibraryMenu {
                 })
             })
     }
-    fn place(&self, elem: &u32, cx: &Cx<'_, H>, _: At) -> Option<Placed> {
+    fn place(&self, elem: &u32, cx: &Cx<'_, H>, at: At) -> Option<Placed> {
         let index = self.form.index_of_key(RowKey(*elem))?;
-        let rect = self.form.table.row_frame(self.frame(cx.measure), index as i32)?;
-        Some(Placed {
-            rect,
-            rest_rect: rect,
-            clip: self.frame(cx.measure),
-            index: Some(index as u32),
-        })
+        let frame = self.frame(cx.measure);
+        let row = self.form.table.row_frame(frame, index as i32)?;
+        let (clip, dx) = match at {
+            At::Drawn => (self.motion.shown(frame), self.motion.live_dx()),
+            At::SpringTarget => (frame, 0.0),
+        };
+        Some(page_stack::panel_stop(row, clip, dx, Some(index as u32)))
     }
     fn reconcile(&self, want: FocusKey<u32>, cx: &Cx<'_, H>) -> FocusKey<u32> {
         if self.group_of(&want.elem, cx).is_some() {
@@ -804,7 +838,7 @@ impl<H: LibraryLike> Focusable<H> for LibraryMenu {
         } else {
             FocusKey {
                 entry: self.entry,
-                elem: self.form.opening_key().map_or(0, |key| key.0),
+                elem: self.form.selected_key().map_or(0, |key| key.0),
             }
         }
     }
@@ -816,6 +850,10 @@ impl<H: LibraryLike> Focusable<H> for LibraryMenu {
     }
 }
 impl<H: LibraryLike> Screen<H> for LibraryMenu {
+    fn pointer_held(&self) -> bool {
+        self.motion.transitioning()
+    }
+
     /// The header control the panel grew out of, for every kind of menu ("+N" included): the page
     /// leaves it out of its pass (`DrawFrame::lifted`) and the opener lift draws it focused above
     /// the scrim (`LibraryScreen::draw_header_opener`), so the control the panel is about stays
@@ -852,8 +890,11 @@ impl<H: LibraryLike> Screen<H> for LibraryMenu {
         let frame = self.frame(measure);
         let m = self.popover.content_painter_on(f.painter, 0.0);
         plx_ui::profile::phase("lb.menu", || {
-            self.popover.panel(m, frame, PANEL_RADIUS, field, plx_ui::widgets::Ground::Menu);
-            self.popover.morph_rows(m, frame, PANEL_RADIUS, |m| self.form.table.draw(m, frame, measure));
+            let shown = self.motion.shown(frame);
+            self.popover.panel(m, shown, PANEL_RADIUS, field, plx_ui::widgets::Ground::Menu);
+            self.popover.morph_rows(m, shown, PANEL_RADIUS, |m| {
+                self.motion.draw_rows(m, frame, &self.form.table, measure)
+            });
         });
         for index in 0..self.form.table.n_rows() as usize {
             let Some(key) = self.form.key_at(index) else { continue };
@@ -884,6 +925,13 @@ impl LogicalState for LibraryMenu {
         self.arg.write(c);
         c.u32(self.kind as u32);
         c.option(self.desired_unwatched.as_ref(), |c, desired| { c.bool(*desired); });
+        c.option(self.selected_library.as_ref(), |c, target| {
+            c.u32(target.epoch).u32(u32::from(target.sid.raw())).u64(target.section as u64);
+        });
+        c.seq(self.pages.len());
+        for saved in self.pages.iter() {
+            c.u32(saved.page as u32).u32(saved.return_id.0).f32(saved.scroll);
+        }
         c.seq(self.identities.len());
         for identity in &self.identities {
             c.str(identity);
@@ -1300,6 +1348,97 @@ mod tests {
         groups[0].handle = "B:C|A|B".into();
         let fourth = lay(source_draft(11, 0, &groups, &sections, &(0..9).collect::<Vec<u32>>(), false));
         assert_ne!(third.stamp, fourth.stamp);
+    }
+
+    #[test]
+    fn checking_for_shared_libraries_keeps_the_panel_width() {
+        let (groups, sections) = source_sections();
+        let mut menu = LibraryMenu::new(EntryId(7), menu_arg(LibraryMenuKind::Sources, [0; 4]));
+        menu.apply_draft(source_draft(11, 0, &groups, &sections, &[], false));
+        let width = menu.frame(&FixtureMeasure).w;
+        menu.apply_draft(source_draft(11, 0, &groups, &sections, &[], true));
+        assert_eq!(menu.frame(&FixtureMeasure).w, width);
+    }
+
+    #[test]
+    fn toggling_unwatched_preserves_the_scrolled_filter_row() {
+        let _guard = plx_base::testlock::serial();
+        let sorts: Vec<_> = (0..20).map(|i| SortEntry { key: format!("sort{i}"), desc_key: String::new(), title: format!("Sort {i}"), default_desc: false }).collect();
+        let mut menu = LibraryMenu::new(EntryId(7), menu_arg(LibraryMenuKind::SortFilter, [0; 4]));
+        let draft = |unwatched| sort_filter_draft(SecKind::Show, LibraryType::Primary, &sorts, 0, false,
+            None, unwatched, DirectoryView::empty_for_test());
+        menu.apply_draft(draft(false));
+        let index = menu.form.index_of(&"unwatched".to_owned()).unwrap();
+        menu.form.table.sel = index as i32;
+        for _ in 0..90 {
+            menu.form.table.update(0.016, 740.0);
+        }
+        let scroll = menu.form.table.scroll_pos();
+        assert!(scroll > 0.0);
+        let highlight = menu.form.table.highlight_motion();
+        menu.apply_draft(draft(true));
+        assert_eq!(menu.form.table.scroll_pos(), scroll);
+        assert_eq!(menu.form.table.highlight_motion(), highlight);
+        assert_eq!(menu.form.table.sel, index as i32);
+    }
+
+    #[test]
+    fn genre_push_and_pop_slide_and_restore_the_parent_view() {
+        let _guard = plx_base::testlock::serial();
+        with_cx(|cx| {
+            let labels: Vec<_> = (0..20).map(|i| format!("sort{i}")).collect();
+            let sorts: Vec<_> = labels.iter().map(|s| (s.as_str(), s.as_str())).collect();
+            let listing = plx_data::browse::view::ListingSnapshot::fixture(
+                ServerId::from_raw(1), Vec::new(), Vec::new(),
+            ).with_sorts(&sorts, 0);
+            let cx = Cx {
+                views: Views { listing: listing.view(), ..cx.views },
+                focus: cx.focus.clone(),
+                ..*cx
+            };
+            let mut present = plx_machine::present::Present::new();
+            let mut out = Vec::new();
+            let mut fx = Effects::new(&mut out, MachineId::Instance(plx_machine::machine::InstanceId(10)), &mut present);
+            let mut menu = LibraryMenu::new(EntryId(7), menu_arg(LibraryMenuKind::SortFilter, [0; 4]));
+            menu.refresh(&cx);
+            let index = menu.form.index_of(&"genre".to_owned()).unwrap();
+            let key = menu.form.key_at(index).unwrap();
+            menu.form.table.sel = index as i32;
+            for _ in 0..90 { menu.form.table.update(0.016, 740.0); }
+            let scroll = menu.form.table.scroll_pos();
+            assert!(scroll > 0.0);
+            let parent_frame = menu.frame(cx.measure);
+            menu.motion.step(0.016, parent_frame);
+
+            menu.activate(key.0, &cx, &mut fx);
+            assert_eq!(menu.kind, LibraryMenuKind::Genre);
+            assert!(menu.motion.sliding());
+            let frame = menu.frame(cx.measure);
+            menu.motion.step(0.016, frame);
+            let shown = menu.motion.shown(frame);
+            assert!(frame.h < shown.h && shown.h < parent_frame.h, "the glass resizes with the pages");
+            for _ in 0..90 { menu.motion.step(0.016, frame); }
+            assert!(!menu.motion.sliding());
+
+            let back = ScreenEvent::Input(plx_machine::machine::InputEvent {
+                at: Tick::default(), source: plx_machine::machine::Source::Script,
+                kind: InputKind::Key { key: Key::Back, sym: 0, wcode: 0, edge: Edge::Down, at_edge: false },
+            });
+            assert_eq!(menu.step(&back, &cx, &mut fx), Handled::Yes);
+            assert!(menu.motion.sliding());
+            assert_eq!(menu.kind, LibraryMenuKind::SortFilter);
+            assert_eq!(menu.form.selected_key(), Some(key));
+            assert_eq!(menu.form.table.scroll_pos(), scroll);
+            let frame = menu.frame(cx.measure);
+            menu.motion.step(0.016, frame);
+            let live = menu.place(&key.0, &cx, At::Drawn).unwrap();
+            let settled = menu.place(&key.0, &cx, At::SpringTarget).unwrap();
+            assert_ne!(live.rect.x, settled.rect.x);
+            assert_eq!(live.rest_rect, settled.rect);
+            assert_eq!(live.clip, menu.motion.shown(frame));
+            for _ in 0..90 { menu.motion.step(0.016, frame); }
+            assert!(!menu.motion.sliding());
+        });
     }
 
     #[test]

@@ -973,7 +973,7 @@ class BuildGcTests(unittest.TestCase):
                          "sysroot/", "rust-poc/", ".abi-cache/", ".webos-ndk/", ".tv-mac", ".tv-host",
                          ".tv-dpad-pass", ".tv-remote-url", "pkg/diagnostics/", "pkg/auth.json", "pkg/lab.json",
                          "pkg/telemetry.local.json", "tests/fixtures/softfloat/arm.tbl", "**/plxnative-recordings/",
-                         "fuzz/artifacts/"}
+                         "fuzz/artifacts/", "/.empryo/"}
         derived, kept = {}, {rel: rel for rel in guard.PRIVATE_FILES}      # listed form -> file to create
         for line in (ROOT / ".gitignore").read_text().splitlines():
             pat = line.strip()

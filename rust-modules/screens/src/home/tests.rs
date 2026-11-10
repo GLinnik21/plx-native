@@ -1036,7 +1036,7 @@ fn the_hero_logo_key_is_the_shows_for_an_episode() {
         ..Default::default()
     };
     assert_eq!(
-        hero_logo_rk(&ep),
+        hero_logo_source(&ep),
         "7",
         "an episode's hero wears the show's logotype"
     );
@@ -1046,7 +1046,7 @@ fn the_hero_logo_key_is_the_shows_for_an_episode() {
         ..Default::default()
     };
     assert_eq!(
-        hero_logo_rk(&orphan),
+        hero_logo_source(&orphan),
         "42",
         "…falling back to its own when the server sent no parent"
     );
@@ -1057,7 +1057,7 @@ fn the_hero_logo_key_is_the_shows_for_an_episode() {
         ..Default::default()
     };
     assert_eq!(
-        hero_logo_rk(&movie),
+        hero_logo_source(&movie),
         "42",
         "a movie is never keyed to a stray parent"
     );

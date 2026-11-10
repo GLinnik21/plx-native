@@ -230,6 +230,27 @@ fn newest_section_replaces_old_grid_work_and_commits_only_the_last_section() {
 }
 
 #[test]
+fn closing_sources_menu_does_not_replace_a_newer_library_choice() {
+    let _guard = plx_base::testlock::serial();
+    let mut fixture = Fixture::new();
+    let mut page = fixture.screen();
+    fixture.step(
+        &mut page,
+        ScreenEvent::App(AppMsg::LibrarySelect(fixture.address(1))),
+    );
+    fixture.step(
+        &mut page,
+        ScreenEvent::App(AppMsg::LibraryMenuSelect {
+            origin: fixture.address(0),
+            target: fixture.address(2),
+        }),
+    );
+    assert_eq!(page.view_section(&fixture.cx()), Some(1));
+    assert_eq!(fixture.flush(&mut page), vec![true]);
+    assert_eq!(fixture.directory.view().current(), Some(1));
+}
+
+#[test]
 fn reselecting_the_incoming_section_preserves_its_own_grid_transaction() {
     let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new();
