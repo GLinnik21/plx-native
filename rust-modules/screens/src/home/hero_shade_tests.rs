@@ -74,12 +74,12 @@ fn the_home_shade_is_anchored_to_the_edges_and_joins_without_a_dark_band() {
     assert_eq!(shade.alpha(96.0, 0.0), 0.0);
     assert_eq!(shade.alpha(96.0, 600.0), theme::shade::HOME_SIDE_A);
     assert!(shade.alpha(600.0, 600.0) > 0.0);
-    assert_eq!(shade.alpha(1100.0, 600.0), 0.0);
+    assert_eq!(shade.alpha(SCR_W, 600.0), 0.0);
     for y in 1..=1080 {
         let y = y as f32;
         assert!(shade.alpha(96.0, y) >= shade.alpha(96.0, y - 1.0) - 1e-6);
-        assert!((shade.alpha(1100.0, y) - shelf.alpha(y)).abs() < 1e-6);
+        assert!((shade.alpha(SCR_W, y) - shelf.alpha(y)).abs() < 1e-6);
     }
-    assert_eq!(shade.alpha(96.0, 1050.0), shade.alpha(1100.0, 1050.0));
+    assert_eq!(shade.alpha(96.0, 1050.0), shade.alpha(SCR_W, 1050.0));
     assert_eq!(home_shade(shelf_fade(SHELF_TOP, 0.0), 0.0).alpha(96.0, 600.0), 0.0);
 }
