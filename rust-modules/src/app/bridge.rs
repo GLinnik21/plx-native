@@ -4094,7 +4094,9 @@ pub(crate) fn nav_tab(
                     d.nav.top_page().is_some_and(|entry| entry.id == visit.entry)
                         && visit.machine == machine && visit.key == key);
                 rig.enter_library(kind);
-                rig.aim_library(kind);
+                // A grid already on top saves its outgoing cursor in Enter before it selects
+                // the destination. Other pages have no grid to deliver Enter to.
+                if d.top_arg() != Some(&AppArg::Library) { rig.aim_library(kind); }
                 let op = if already_open {
                     // Reselecting the current library still goes to its grid.
                     NavOp::Pop
@@ -4108,7 +4110,15 @@ pub(crate) fn nav_tab(
                 return;
             }
             rig.enter_library(kind);
-            if d.top_arg() != Some(&AppArg::Library) { rig.aim_library(kind); }
+            if d.top_arg() == Some(&AppArg::Library) {
+                // An in-place grid switch has no page op of its own. If a previous pill press
+                // was about to mount a different branch, withdraw it before the in-place switch.
+                if d.nav.tabs.stack.is_pending() || d.has_pending_navigation() {
+                    d.request(MachineId::Nav, NavOp::Cancel);
+                }
+            } else {
+                rig.aim_library(kind);
+            }
             AppArg::Library
         }
         HomeTab::Search => AppArg::Search,

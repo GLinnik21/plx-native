@@ -75,6 +75,27 @@ fn collections_restores_from_saved_preferences_for_the_same_profile() {
     assert!(w.d.nav.tabs.stack.under_top().is_some_and(|entry| entry.arg == AppArg::Library));
 }
 
+#[test]
+fn a_new_tab_press_cancels_a_pending_child_restore() {
+    use plx_data::browse::SecKind;
+    use plx_plex::plex::session::LibraryPage;
+    use plx_screens::registry::HomeTab;
+
+    let mut w = World::movies_library("cancel-library-page-restore", false);
+    let directory = w.bridge.directory.view();
+    let key = directory.sections()[directory.preferred(SecKind::Show).unwrap()].key;
+    w.bridge.remember_library_page("route-own", key, LibraryPage::Recommended);
+
+    super::nav_tab(&mut w.d, &mut w.bridge, HomeTab::Shows, None, None);
+    w.frames(2);
+    assert!(matches!(w.d.nav.tabs.stack.pending_dest(), Some(AppArg::LibraryRecommended { .. })));
+    super::nav_tab(&mut w.d, &mut w.bridge, HomeTab::Movies, None, None);
+    w.frames(90);
+    assert!(w.on(&AppArg::Library), "the last pill press keeps the grid");
+    let directory = w.bridge.directory.view();
+    assert_eq!(directory.current().map(|index| directory.sections()[index].kind), Some(SecKind::Movie));
+}
+
 /// What the store's one query is listing now: its type, and the section key it belongs to.
 fn listed(w: &World) -> (LibraryType, Option<i64>) {
     let snapshot = w.bridge.stores.browse.borrow_mut().listing_snapshot();
