@@ -220,12 +220,13 @@ impl Rig {
     }
 }
 
-/// The Movies library, reached by its strip pill from Home, settled.
+/// A fresh Movies grid over Home. Each table cell starts on the requested page regardless of
+/// what the previous cell left open in the shared scratch session.
 fn movies_library() -> Rig {
     let mut r = Rig::new();
     super::show_page(&mut r.d, AppArg::Home);
     r.frames(40);
-    super::nav_tab(&mut r.d, &mut r.bridge, HomeTab::Movies, None, None);
+    super::nav_select_tab(&mut r.d, AppArg::Library);
     r.frames(90);
     assert!(r.on(&AppArg::Library), "premise: the library is on top");
     r
