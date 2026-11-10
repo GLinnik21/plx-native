@@ -2981,7 +2981,9 @@ impl DetailScreen {
     /// ([`plx_ui::hero_shade`]) — the logo rising into the trailer corner above all. Each block
     /// fades with the content it stands behind: the logo with its own alpha, the identity, ratings
     /// and synopsis column with whichever of them is still up, and the facts line, the credits and
-    /// the action row with the chrome. Page coordinates become screen ones (the hero scrolls).
+    /// the action row with the chrome. Each copy block is as wide as the widest line drawn in it (the
+    /// rows' own layouts, measured but not painted), not the box the line is laid into. Page
+    /// coordinates become screen ones (the hero scrolls).
     /// The caller scales it by the hero's own fade and the preview field.
     fn hero_shade(
         &self,
