@@ -85,22 +85,43 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-10T12:53:54Z",
+ "generated": "2026-11-10T13:03:22Z",
  "metrics": [
   {
-   "change30_pct": 43.9,
-   "change7_pct": 28.7,
+   "change30_pct": 47.7,
+   "change7_pct": 32.1,
    "d30": 21.2,
-   "delta30": 9.3,
-   "delta7": 6.8,
+   "delta30": 10.1,
+   "delta7": 7.6,
    "group": "local",
    "id": "bench.app",
    "kind": "local",
    "label": "Rebuild after editing the app crate",
-   "n_now": 6,
+   "n_now": 7,
    "n_prev": 6,
-   "now": 30.5,
+   "now": 31.3,
    "prev7": 23.7,
+   "shown": true,
+   "state": "worse",
+   "state30": "worse",
+   "threshold_abs": 5.0,
+   "threshold_pct": 25.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": 68.3,
+   "change7_pct": 29.7,
+   "d30": 37.8,
+   "delta30": 25.8,
+   "delta7": 14.6,
+   "group": "local",
+   "id": "bench.screens",
+   "kind": "local",
+   "label": "Rebuild after editing plx_screens",
+   "n_now": 7,
+   "n_prev": 6,
+   "now": 63.5,
+   "prev7": 49.0,
    "shown": true,
    "state": "worse",
    "state30": "worse",
@@ -127,27 +148,6 @@
    "state30": "worse",
    "threshold_abs": 20.0,
    "threshold_pct": 20.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": 100.4,
-   "change7_pct": 25.2,
-   "d30": 47.0,
-   "delta30": 47.2,
-   "delta7": 18.9,
-   "group": "local",
-   "id": "bench.ui",
-   "kind": "local",
-   "label": "Rebuild after editing plx_ui",
-   "n_now": 6,
-   "n_prev": 6,
-   "now": 94.1,
-   "prev7": 75.2,
-   "shown": true,
-   "state": "worse",
-   "state30": "worse",
-   "threshold_abs": 5.0,
-   "threshold_pct": 25.0,
    "unit": "s"
   },
   {
@@ -214,19 +214,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 60.7,
-   "change7_pct": 23.9,
-   "d30": 37.8,
-   "delta30": 22.9,
-   "delta7": 11.7,
+   "change30_pct": 98.7,
+   "change7_pct": 24.1,
+   "d30": 47.0,
+   "delta30": 46.3,
+   "delta7": 18.1,
    "group": "local",
-   "id": "bench.screens",
+   "id": "bench.ui",
    "kind": "local",
-   "label": "Rebuild after editing plx_screens",
-   "n_now": 6,
+   "label": "Rebuild after editing plx_ui",
+   "n_now": 7,
    "n_prev": 6,
-   "now": 60.7,
-   "prev7": 49.0,
+   "now": 93.3,
+   "prev7": 75.2,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -235,18 +235,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 104.2,
-   "change7_pct": 23.5,
+   "change30_pct": 104.4,
+   "change7_pct": 23.6,
    "d30": 103.0,
-   "delta30": 107.3,
-   "delta7": 40.0,
+   "delta30": 107.5,
+   "delta7": 40.2,
    "group": "local",
    "id": "bench.leaf",
    "kind": "local",
    "label": "Rebuild after editing plx_base",
-   "n_now": 6,
+   "n_now": 7,
    "n_prev": 6,
-   "now": 210.3,
+   "now": 210.5,
    "prev7": 170.3,
    "shown": true,
    "state": "flat",
@@ -592,16 +592,16 @@
    "unit": "s"
   },
   {
-   "change30_pct": 36.4,
-   "change7_pct": 45.0,
+   "change30_pct": 39.0,
+   "change7_pct": 47.7,
    "d30": 0.6,
    "delta30": 0.2,
-   "delta7": 0.2,
+   "delta7": 0.3,
    "group": "local",
    "id": "bench.noop",
    "kind": "local",
    "label": "No-op build",
-   "n_now": 6,
+   "n_now": 7,
    "n_prev": 6,
    "now": 0.8,
    "prev7": 0.6,
@@ -615,7 +615,7 @@
  ],
  "regressions": [
   {
-   "change_pct": 28.7,
+   "change_pct": 32.1,
    "commits": [
     {
      "pr": 1307,
@@ -673,7 +673,68 @@
    "label": "Rebuild after editing the app crate",
    "since": "2026-11-09",
    "threshold_pct": 25.0,
-   "to": 30.5
+   "to": 31.3
+  },
+  {
+   "change_pct": 29.7,
+   "commits": [
+    {
+     "pr": 1307,
+     "sha": "1c4d4f51f",
+     "title": "URI exported window: selected per firmware major from an evidence table, empty today"
+    },
+    {
+     "pr": 1283,
+     "sha": "75765b3d0",
+     "title": "Net: the WebSocket transport over libcurl CONNECT_ONLY"
+    },
+    {
+     "pr": 1293,
+     "sha": "612fc8cf0",
+     "title": "Grid: the card focus leaves lets go from its lift on the move, not on the next tick"
+    },
+    {
+     "pr": 1294,
+     "sha": "583722c8c",
+     "title": "Grid: BACK to the top raises the first-row card from rest, as UP does"
+    },
+    {
+     "pr": 1298,
+     "sha": "69615d782",
+     "title": "Dependencies: sentry-native -> 0.17.6"
+    },
+    {
+     "pr": 1296,
+     "sha": "04489893e",
+     "title": "Bound Recommended shelf navigation keys across refreshes"
+    },
+    {
+     "pr": 1300,
+     "sha": "d06ed4f5c",
+     "title": "build-bench: reject failed test runners with passing summaries"
+    },
+    {
+     "pr": 1303,
+     "sha": "93697adcf",
+     "title": "Player: a seek that reloads keeps its target on the clock until the first frame"
+    },
+    {
+     "pr": 1299,
+     "sha": "5011614a4",
+     "title": "Dependencies: harfbuzz -> 15.1.0"
+    },
+    {
+     "pr": 1295,
+     "sha": "835114dec",
+     "title": "Add an estimated local finish time to the player HUD"
+    }
+   ],
+   "from": 49.0,
+   "id": "bench.screens",
+   "label": "Rebuild after editing plx_screens",
+   "since": "2026-11-09",
+   "threshold_pct": 25.0,
+   "to": 63.5
   },
   {
    "change_pct": 26.9,
@@ -735,67 +796,6 @@
    "since": "2026-11-10",
    "threshold_pct": 20.0,
    "to": 424.5
-  },
-  {
-   "change_pct": 25.2,
-   "commits": [
-    {
-     "pr": 1307,
-     "sha": "1c4d4f51f",
-     "title": "URI exported window: selected per firmware major from an evidence table, empty today"
-    },
-    {
-     "pr": 1283,
-     "sha": "75765b3d0",
-     "title": "Net: the WebSocket transport over libcurl CONNECT_ONLY"
-    },
-    {
-     "pr": 1293,
-     "sha": "612fc8cf0",
-     "title": "Grid: the card focus leaves lets go from its lift on the move, not on the next tick"
-    },
-    {
-     "pr": 1294,
-     "sha": "583722c8c",
-     "title": "Grid: BACK to the top raises the first-row card from rest, as UP does"
-    },
-    {
-     "pr": 1298,
-     "sha": "69615d782",
-     "title": "Dependencies: sentry-native -> 0.17.6"
-    },
-    {
-     "pr": 1296,
-     "sha": "04489893e",
-     "title": "Bound Recommended shelf navigation keys across refreshes"
-    },
-    {
-     "pr": 1300,
-     "sha": "d06ed4f5c",
-     "title": "build-bench: reject failed test runners with passing summaries"
-    },
-    {
-     "pr": 1303,
-     "sha": "93697adcf",
-     "title": "Player: a seek that reloads keeps its target on the clock until the first frame"
-    },
-    {
-     "pr": 1299,
-     "sha": "5011614a4",
-     "title": "Dependencies: harfbuzz -> 15.1.0"
-    },
-    {
-     "pr": 1295,
-     "sha": "835114dec",
-     "title": "Add an estimated local finish time to the player HUD"
-    }
-   ],
-   "from": 75.2,
-   "id": "bench.ui",
-   "label": "Rebuild after editing plx_ui",
-   "since": "2026-11-09",
-   "threshold_pct": 25.0,
-   "to": 94.1
   },
   {
    "change_pct": 20.2,
@@ -897,7 +897,7 @@
    "group": "local",
    "id": "bench.leaf",
    "label": "Rebuild after editing plx_base",
-   "now": 210.3
+   "now": 210.5
   },
   {
    "group": "local",
@@ -909,19 +909,19 @@
    "group": "local",
    "id": "bench.ui",
    "label": "Rebuild after editing plx_ui",
-   "now": 94.1
+   "now": 93.3
   },
   {
    "group": "local",
    "id": "bench.screens",
    "label": "Rebuild after editing plx_screens",
-   "now": 60.7
+   "now": 63.5
   },
   {
    "group": "local",
    "id": "bench.app",
    "label": "Rebuild after editing the app crate",
-   "now": 30.5
+   "now": 31.3
   }
  ],
  "thresholds": {
