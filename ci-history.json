@@ -1,4 +1,4 @@
-{"updated":"2026-11-10T22:12:09Z",
+{"updated":"2026-11-10T23:25:39Z",
 "ci":[
 {"id":31584219333,"at":"2026-08-12T09:43:35Z","sha":"84ff93289","title":"design: Plex Pass Awareness, second revision \u2014 and the post-play Up Next card","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":82},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":31614984913,"at":"2026-08-12T15:56:06Z","sha":"123cfd89f","title":"ui: Up Next goes back to a tile, with a second button","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":66},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -4981,7 +4981,8 @@
 {"id":42901787750,"at":"2026-11-10T21:06:38Z","sha":"7e8206858","title":"refactor(browse): capture roster facts before store steps","pr":1319,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":262,"macOS tests against bundled FFmpeg and ASS":191,"Windows launcher syntax":19,"Linux simulator build + launch":262}},
 {"id":42906365264,"at":"2026-11-10T21:34:30Z","sha":"1734f3829","title":"fix(ci): classify retained client roster storage","pr":1319,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":17,"macOS simulator build + launch":158,"macOS tests against bundled FFmpeg and ASS":128,"Linux simulator build + launch":334}},
 {"id":42910178172,"at":"2026-11-10T21:58:41Z","sha":"9d1e082e3","title":"refactor(browse): capture roster facts before store steps","pr":1319,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":205,"macOS tests against bundled FFmpeg and ASS":247,"Linux simulator build + launch":295,"Windows launcher syntax":20}},
-{"id":42911121576,"at":"2026-11-10T22:04:41Z","sha":"6b9f953e7","title":"api: the FIFO command surface \u2014 api:* verbs and state/shot reads","pr":1308,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":18,"Linux simulator build + launch":311,"macOS simulator build + launch":146,"macOS tests against bundled FFmpeg and ASS":212}}
+{"id":42911121576,"at":"2026-11-10T22:04:41Z","sha":"6b9f953e7","title":"api: the FIFO command surface \u2014 api:* verbs and state/shot reads","pr":1308,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":18,"Linux simulator build + launch":311,"macOS simulator build + launch":146,"macOS tests against bundled FFmpeg and ASS":212}},
+{"id":42922551749,"at":"2026-11-10T23:20:33Z","sha":"58483acb7","title":"Keep the newest library choice when the Sources menu closes","pr":1321,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":111,"macOS tests against bundled FFmpeg and ASS":242,"Windows launcher syntax":20,"Linux simulator build + launch":295}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
