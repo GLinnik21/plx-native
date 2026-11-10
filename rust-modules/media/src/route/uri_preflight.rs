@@ -160,6 +160,8 @@ pub struct OriginalRequest {
     pub audio_ordinal: Option<i64>,
     /// The exported-window service can enumerate multiple tracks in a different order from PMS.
     pub has_multiple_audio_tracks: bool,
+    /// Filled by ResolvePort from the composed backend before calling the qualifier.
+    pub binding: Binding,
     pub subtitle_source: Option<SourceSubtitle>,
     /// Off is an actual viewer choice, distinct from no subtitle streams being present.
     /// The current URI driver has no native disable operation.
@@ -514,7 +516,7 @@ impl ResolvePort {
             applied_audio: audio, resource_session: session, expires_at: cert.expires_at })
     }
 
-    pub fn qualify(&self, off: &OffFrame, request: OriginalRequest) -> Verdict {
+    pub fn qualify(&self, off: &OffFrame, mut request: OriginalRequest) -> Verdict {
         // Evidence is certified for everyone only as far as the product has proven it; a viewer
         // who opted in has also certified the URL carrier for their own playback.
         let evidence = if request.uri_opt_in { self.evidence.opted_in() } else { self.evidence };
@@ -536,12 +538,8 @@ impl ResolvePort {
         let dovi = request.dolby_vision;
         let subtitle = request.subtitle_source.clone();
         let subtitle_choice = request.subtitle_choice;
-        // A Plex ordinal cannot identify a track on an exported window when the service reorders
-        // multiple tracks. Even ordinal zero could point at a different track.
-        let ambiguous_audio = request.has_multiple_audio_tracks
-            && matches!(evidence.binding, Binding::Exported { .. });
+        request.binding = evidence.binding;
         match self.qualifier.qualify(off, request) {
-            Verdict::Known(_) if ambiguous_audio => Verdict::Refused,
             Verdict::Known(known) if known.selection == selected
                 && known.requirements.source == SourceKind::ProgressiveUri
                 && known.requirements.video == Fidelity::Exact
@@ -611,6 +609,11 @@ pub struct ProductQualifier;
 impl OriginalQualifier for ProductQualifier {
     fn qualify(&self, _off: &OffFrame, request: OriginalRequest) -> Verdict {
         if !request.uri_opt_in || !request.standard.plays() { return Verdict::Unknown; }
+        // The product carrier assumes Plex order. Explicitly certified providers may supply
+        // their own track map, so this restriction belongs to this qualifier.
+        if request.has_multiple_audio_tracks && matches!(request.binding, Binding::Exported { .. }) {
+            return Verdict::Refused;
+        }
         let url = request.source_url.clone();
         Verdict::Known(KnownSource::url_carrier(&request, url, SOURCE_VERDICT_TTL))
     }
@@ -961,7 +964,7 @@ mod tests {
             source_url: "https://example.invalid/part.mkv".to_owned(), duration_ms: Some(60_000),
             video_codec: "h264".to_owned(), dolby_vision: plx_data::metadata::Dovi::NONE,
             dolby_vision_mode: plx_plex::plex::session::DolbyVisionMode::Auto, uri_opt_in,
-            standard: PLAYS, audio_codec: "aac".to_owned(), audio_ordinal: Some(1), has_multiple_audio_tracks: false,
+            standard: PLAYS, audio_codec: "aac".to_owned(), audio_ordinal: Some(1), has_multiple_audio_tracks: false, binding: Binding::Unbound,
             subtitle_source: None, subtitle_choice: TrackChoice::Unspecified,
             source_kbps: Some(4000), raster: Some((1280, 720)),
             requested_rate_permille: plx_playback_contract::RATE_NORMAL, resume_ns: 0,
@@ -1138,7 +1141,7 @@ mod tests {
             source_url: "https://example.invalid/part.mkv".to_owned(), duration_ms: Some(60_000),
             video_codec: "hevc".to_owned(), dolby_vision: dovi,
             dolby_vision_mode: plx_plex::plex::session::DolbyVisionMode::Auto, uri_opt_in: false,
-            standard: PLAYS, audio_codec: "ac3".to_owned(), audio_ordinal: Some(0), has_multiple_audio_tracks: false,
+            standard: PLAYS, audio_codec: "ac3".to_owned(), audio_ordinal: Some(0), has_multiple_audio_tracks: false, binding: Binding::Unbound,
             subtitle_source: None,
             subtitle_choice: TrackChoice::Unspecified,
             source_kbps: Some(4000), raster: Some((1920, 1080)),

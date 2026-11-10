@@ -521,7 +521,7 @@ mod tests {
             dolby_vision_mode: plx_plex::plex::session::DolbyVisionMode::Auto, uri_opt_in: false,
             standard: StandardDirectPlay { video: true, dolby_vision: true, audio: true,
                 container: true },
-            audio_codec: "aac".to_owned(), audio_ordinal, has_multiple_audio_tracks: false,
+            audio_codec: "aac".to_owned(), audio_ordinal, has_multiple_audio_tracks: false, binding: Binding::Unbound,
             subtitle_source: None,
             subtitle_choice: TrackChoice::Unspecified,
             source_kbps: Some(4000), raster: Some((1280, 720)),
