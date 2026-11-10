@@ -1795,17 +1795,23 @@ pub fn keyline_chip(p: Painter, x: f32, cy: f32, text: &str, col: [f32; 4], meas
 /// outlined resolution/accessibility chips, and overlong metadata elides within its column.
 /// Returns the width drawn, from `r.x` to the last chip's edge.
 pub fn hero_identity(p: Painter, r: Rect, parts: &[&str], resolution: Option<&str>, chips: &[&str], measure: &dyn plx_machine::machine::Measure) -> f32 {
-    identity_row(Some(p), r, parts, resolution, chips, measure)
+    identity_row(Some(p), r, parts, resolution, chips, theme::TEXT_SECONDARY, measure)
 }
 
 /// The width [`hero_identity`] draws in `r`, asking the same measurements and drawing nothing: the
 /// extent the hero shade stands behind ([`crate::hero_shade::HeroShade::add_ink`]).
 pub fn hero_identity_w(r: Rect, parts: &[&str], resolution: Option<&str>, chips: &[&str], measure: &dyn plx_machine::machine::Measure) -> f32 {
-    identity_row(None, r, parts, resolution, chips, measure)
+    identity_row(None, r, parts, resolution, chips, theme::TEXT_SECONDARY, measure)
+}
+
+/// Home's metadata band uses brighter reading ink over the hero art and reserves room for the rating.
+pub fn hero_metadata(p: Painter, r: Rect, parts: &[&str], rating: &str, measure: &dyn plx_machine::machine::Measure) {
+    let rating = (!rating.is_empty() && keyline_chip_w(rating, measure) <= r.w * 0.5).then_some(rating);
+    identity_row(Some(p), r, parts, rating, &[], theme::TEXT_READING, measure);
 }
 
 /// The one layout of the identity band, painted with `paint` or only measured without it.
-fn identity_row(paint: Option<Painter>, r: Rect, parts: &[&str], resolution: Option<&str>, chips: &[&str], measure: &dyn plx_machine::machine::Measure) -> f32 {
+fn identity_row(paint: Option<Painter>, r: Rect, parts: &[&str], resolution: Option<&str>, chips: &[&str], ink: [f32; 4], measure: &dyn plx_machine::machine::Measure) -> f32 {
     use crate::hstack::{Flow, Item};
     let labels: Vec<&str> = resolution.into_iter().chain(chips.iter().copied()).collect();
     let widths: Vec<Item> = labels.iter().map(|s| Item::new(keyline_chip_w(s, measure))).collect();
@@ -1813,14 +1819,14 @@ fn identity_row(paint: Option<Painter>, r: Rect, parts: &[&str], resolution: Opt
     let budget = (r.w - chip_w - if labels.is_empty() { 0.0 } else { theme::space::SM }).max(0.0);
     let cy = r.y + r.h * 0.5;
     let y = plx_gfx::text::text_vcenter_y(theme::hero::IDENTITY_SIZE, 0, cy);
-    let run = DottedRun::new(theme::hero::IDENTITY_SIZE, theme::TEXT_SECONDARY, theme::space::SM).measured(measure);
+    let run = DottedRun::new(theme::hero::IDENTITY_SIZE, ink, theme::space::SM).measured(measure);
     let natural = run.width(measure, parts);
     let text_w = if natural > budget {
         let joined = parts.iter().filter(|s| !s.is_empty()).copied().collect::<Vec<_>>().join(" \u{b7} ");
         let elided = plx_gfx::text::elide_by(&joined, budget, false,
             |text| measure.width_str(text, theme::hero::IDENTITY_SIZE, false));
         if let (Some(p), Ok(text)) = (paint, CString::new(elided.as_str())) {
-            p.text(text.as_ptr(), r.x, y, theme::hero::IDENTITY_SIZE, theme::TEXT_SECONDARY, 0, 0);
+            p.text(text.as_ptr(), r.x, y, theme::hero::IDENTITY_SIZE, ink, 0, 0);
         }
         measure.width_str(&elided, theme::hero::IDENTITY_SIZE, false)
     } else if let Some(p) = paint {
@@ -1832,7 +1838,7 @@ fn identity_row(paint: Option<Painter>, r: Rect, parts: &[&str], resolution: Opt
     flow.push(if text_w > 0.0 { Item::new(text_w).after(theme::space::SM) } else { Item::absent() });
     for label in labels {
         flow.place(|x| Item::new(match paint {
-            Some(p) => keyline_chip(p, x, cy, label, theme::TEXT_SECONDARY, measure),
+            Some(p) => keyline_chip(p, x, cy, label, ink, measure),
             None => keyline_chip_w(label, measure),
         }));
     }

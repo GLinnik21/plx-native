@@ -486,7 +486,7 @@ fn a_reread_of_the_same_item_keeps_the_window_the_row_had_slid_to() {
     let sid = detail().sid;
     let land = |rk: &str, fresh: Detail| {
         let gen = begin_detail_for_test(test_adapter(), sid, rk);
-        land_detail_for_test(test_state(), test_adapter(), sid, rk, gen, Some(fresh))
+        land_detail_for_test(&plx_plex::plex::ClientKeys::default(), false, test_state(), test_adapter(), sid, rk, gen, Some(fresh))
     };
     let fresh = |rk: &str| {
         let rows = related_rows(&mc, sid, "page");
@@ -521,7 +521,7 @@ fn a_read_of_another_item_drops_the_window() {
     let rows = related_rows(&mc, sid, "other");
     let next = Detail { sid, rk: "other".into(), related: rows.related, related_tail: rows.tail, ..Default::default() };
     let gen = begin_detail_for_test(test_adapter(), sid, "other");
-    assert!(land_detail_for_test(test_state(), test_adapter(), sid, "other", gen, Some(next)));
+    assert!(land_detail_for_test(&plx_plex::plex::ClientKeys::default(), false, test_state(), test_adapter(), sid, "other", gen, Some(next)));
     assert_eq!((detail().related_tail.offset, detail().related.len()), (0, detail().related_tail.head));
 }
 

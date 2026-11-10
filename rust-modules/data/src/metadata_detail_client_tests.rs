@@ -242,7 +242,7 @@ fn a_movie_chain_keeps_the_client_it_was_handed_when_the_slot_is_repointed() {
     let _serial = plx_base::testlock::serial();
     let rig = Rig::new();
     rig.repoint();
-    let d = fetch_full(rig.client, rig.sid, "movie-1", None).expect("the first server answers the page");
+    let d = fetch_full(rig.client, rig.sid, "movie-1", None, None).expect("the first server answers the page");
     assert_eq!(d.title, "Movie One");
     assert_eq!(d.trailer_rk, "trailer-1", "the follow-up GET that fills the trailer's Part went the same way");
     assert_eq!(
@@ -263,7 +263,7 @@ fn a_chain_whose_extras_were_refused_asks_the_primary_trailer_through_the_same_c
     let _serial = plx_base::testlock::serial();
     let rig = Rig::new();
     rig.repoint();
-    let d = fetch_full(rig.client, rig.sid, "movie-2", None).expect("the first server answers the page");
+    let d = fetch_full(rig.client, rig.sid, "movie-2", None, None).expect("the first server answers the page");
     assert_eq!(d.trailer_rk, "trailer-2", "the refused /extras fell back to primaryExtraKey");
     assert_eq!(
         rig.a.paths(),
@@ -282,7 +282,7 @@ fn a_show_chain_keeps_the_client_it_was_handed_including_its_opening_season() {
     let _serial = plx_base::testlock::serial();
     let rig = Rig::new();
     rig.repoint();
-    let d = fetch_full(rig.client, rig.sid, "show-1", None).expect("the first server answers the page");
+    let d = fetch_full(rig.client, rig.sid, "show-1", None, None).expect("the first server answers the page");
     assert_eq!((d.seasons.len(), d.is_show), (1, true));
     assert_eq!(
         rig.a.paths(),
@@ -305,7 +305,7 @@ fn an_emptied_registry_neither_redirects_nor_skips_the_chain() {
     let rig = Rig::new();
     plx_plex::plex::reset_servers_for_test();
     assert!(plx_plex::plex::client_for(rig.sid).is_none(), "setup: the registry holds nothing for the slot");
-    let d = fetch_full(rig.client, rig.sid, "movie-1", None).expect("the chain finishes with the client it holds");
+    let d = fetch_full(rig.client, rig.sid, "movie-1", None, None).expect("the chain finishes with the client it holds");
     assert_eq!(d.title, "Movie One");
     assert_eq!(d.trailer_rk, "trailer-1", "the last GET of the chain is made as well");
     assert_eq!(rig.a.paths().len(), 4, "all four GETs were made");
@@ -331,7 +331,7 @@ fn related_is_asked_beside_the_item() {
     let _serial = plx_base::testlock::serial();
     let (pms, overlapped) = serve_gated("/library/metadata/movie-1", "/library/metadata/movie-1/related");
     let rig = Rig::over(pms);
-    let d = fetch_full(rig.client, rig.sid, "movie-1", None).expect("the page answers");
+    let d = fetch_full(rig.client, rig.sid, "movie-1", None, None).expect("the page answers");
     assert_eq!(d.title, "Movie One");
     assert!(overlapped.load(AtomicOrdering::SeqCst), "the item was answered before /related was asked: one after the other");
 }
@@ -344,7 +344,7 @@ fn extras_are_asked_while_related_is_still_open() {
     let _serial = plx_base::testlock::serial();
     let (pms, overlapped) = serve_gated("/library/metadata/movie-1/related", "/library/metadata/movie-1/extras");
     let rig = Rig::over(pms);
-    let d = fetch_full(rig.client, rig.sid, "movie-1", None).expect("the page answers");
+    let d = fetch_full(rig.client, rig.sid, "movie-1", None, None).expect("the page answers");
     assert_eq!(d.trailer_rk, "trailer-1");
     assert!(overlapped.load(AtomicOrdering::SeqCst), "/related was answered before /extras was asked: one after the other");
 }
@@ -356,7 +356,7 @@ fn a_refused_item_logs_no_related_line() {
     let _serial = plx_base::testlock::serial();
     let rig = Rig::new();
     let (page, log) = plx_base::eventlog::with_private_log(|| {
-        let page = fetch_full(rig.client, rig.sid, "gone-1", None);
+        let page = fetch_full(rig.client, rig.sid, "gone-1", None, None);
         (page.is_none(), std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default())
     });
     assert!(page, "no item, no page");
@@ -371,7 +371,7 @@ fn a_refused_related_is_named_when_the_item_loaded() {
     let _serial = plx_base::testlock::serial();
     let rig = Rig::new();
     let (title, log) = plx_base::eventlog::with_private_log(|| {
-        let d = fetch_full(rig.client, rig.sid, "movie-3", None).expect("the item answers");
+        let d = fetch_full(rig.client, rig.sid, "movie-3", None, None).expect("the item answers");
         (d.title, std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default())
     });
     assert_eq!(title, "Movie Three");

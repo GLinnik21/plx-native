@@ -27,7 +27,14 @@ fn controlled_hubs(io: &mut HomeIo, runner: &mut StoreRunner, hubs: &mut plx_dat
 fn controlled_discovery(io: &mut HomeIo, runner: &mut StoreRunner, stores: &mut plx_data::stores::Stores) {
     let mut keys = plx_plex::plex::ClientKeys::default();
     crate::app::adapters::stores::refill_client_keys(&mut keys);
-    stores.browse_controlled_discover(&keys);
+    stores.browse.borrow().observe_pin_write();
+    let session = plx_plex::plex::session::peek();
+    let visible_generation = plx_plex::plex::session::visible_generation();
+    let settled = plx_plex::plex::session::peek_settled().is_some();
+    let profile_key = plx_plex::plex::session::current_profile_key();
+    stores.browse_controlled_discover(&plx_data::browse::BrowseRosterInput {
+        keys: &keys, session: &session, visible_generation, settled, profile_key: &profile_key,
+    });
     for job in stores.take_jobs_of(plx_data::stores::StoreId::Browse) {
         runner.start_admitted(job, Some(io));
     }
@@ -253,7 +260,7 @@ fn controlled_home_arms_the_detail_tracker_when_content_initial_is_present() {
     {
         let store = bridge.metadata_mut();
         let (state, adapter) = store.split_for_test();
-        plx_data::metadata::land_detail_for_test(state, adapter, sid, "show", gen,
+        plx_data::metadata::land_detail_for_test(&plx_plex::plex::ClientKeys::default(), true, state, adapter, sid, "show", gen,
             Some(plx_data::metadata::Detail { sid, rk: "show".into(), ..Default::default() }));
     }
     let results = plx_data::stores::tape::take_results();
@@ -491,7 +498,19 @@ fn controlled_discovery_replays_refusal_retry_and_success_with_exact_identity() 
     for replay in [false, true] {
         // seed_sources is a reset fixture; restore the same pre-execution epoch on each
         // independent run, never to cancel or bypass a guard during either history.
-        stores.browse.borrow_mut().prepare_discovery_replay_for_test(sid, initial_epoch);
+        let mut keys = plx_plex::plex::ClientKeys::default();
+        crate::app::adapters::stores::refill_client_keys(&mut keys);
+        stores.browse.borrow().observe_pin_write();
+        let session = plx_plex::plex::session::peek();
+        let visible_generation = plx_plex::plex::session::visible_generation();
+        let settled = plx_plex::plex::session::peek_settled().is_some();
+        let profile_key = plx_plex::plex::session::current_profile_key();
+        let input = plx_data::browse::BrowseRosterInput {
+            keys: &keys, session: &session, visible_generation, settled, profile_key: &profile_key,
+        };
+        stores.browse.borrow_mut().prepare_discovery_replay_for_test(
+            sid, initial_epoch, &input,
+        );
         let publisher = plx_plex::plex::session::ProfilePublisher::scoped(&mt);
         let mut io = HomeIo {
             replay,

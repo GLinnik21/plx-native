@@ -15,32 +15,41 @@ fn addressed_discovery_retry_rejects_retired_tables_and_other_sources() {
     browse.state.source_mut(1).unwrap().retry_cd = 13;
     let sid = browse.state.sources()[1].sid;
     let epoch = browse.state.table_epoch();
-    assert!(browse.state.retry_source(epoch, sid));
+    let current = browse.state.sources()[0].sid;
+    assert!(browse.state.retry_source(epoch, sid, current));
     assert_eq!(browse.state.sources()[0].retry_cd, 9);
     assert_eq!(browse.state.sources()[1].retry_cd, 0);
     browse.state.source_mut(1).unwrap().retry_cd = 17;
-    assert!(!browse.state.retry_source(epoch.wrapping_add(1), sid));
-    assert!(!browse.state.retry_source(epoch, ServerId::from_raw(99)));
+    assert!(!browse.state.retry_source(epoch.wrapping_add(1), sid, current));
+    assert!(!browse.state.retry_source(epoch, ServerId::from_raw(99), current));
     assert_eq!(browse.state.sources()[1].retry_cd, 17);
 }
 #[test]
 fn a_settled_query_change_with_unknown_total_is_still_page_work() {
     let _g = plx_base::testlock::serial();
     let (_cleanup, browse, _, _) = registered_resident_page_source();
+    let mut browse = browse;
+    browse.sync_roster();
+    let session = plx_plex::plex::session::peek();
+    let profile_key = plx_plex::plex::session::current_profile_key();
+    let input = BrowseRosterInput {
+        keys: &browse.keys, session: &session,
+        visible_generation: plx_plex::plex::session::visible_generation(),
+        settled: plx_plex::plex::session::peek_settled().is_some(), profile_key: &profile_key,
+    };
     let mut state = browse.state;
     let adapter = BrowseAdapter::default();
-    let _ = state.sync_roster_owned();
     for source in &mut state.sources {
         source.sections_done = true;
         source.counts_done = true;
     }
     adapter.src_fetching.claim(0);
-    assert!(!state.pump_needs_work(&adapter), "the resident query starts settled");
+    assert!(!state.pump_needs_work(&adapter, &input), "the resident query starts settled");
 
     state.set_unwatched(true);
 
     assert_eq!(state.states[state.cur()].total, -1);
-    assert!(state.pump_needs_work(&adapter),
+    assert!(state.pump_needs_work(&adapter, &input),
         "unknown total means page zero is owed even before a wanted window is published");
 }
 #[test]
@@ -75,13 +84,13 @@ fn filling_a_source_name_refreshes_the_retained_directory() {
     plx_plex::plex::describe_server(sid, "", "", plx_plex::plex::GrantEvidence::ours());
     browse.sync_roster();
     let mut directory = view::DirectorySnapshot::default();
-    directory.capture_from(&mut browse.state);
+    directory.capture_from(&mut browse.state, &browse.keys);
     let old = directory.clone();
     let generation = browse.state.source_list_gen();
     plx_plex::plex::describe_server_name(sid, "Learned");
     browse.sync_roster();
     assert_ne!(browse.state.source_list_gen(), generation);
-    directory.capture_from(&mut browse.state);
+    directory.capture_from(&mut browse.state, &browse.keys);
     assert_eq!(directory.view().sources()[0].1.name, "Learned");
     assert_eq!(old.view().sources()[0].1.name, "");
     let generation = browse.state.source_list_gen();
@@ -119,6 +128,11 @@ fn a_source_follows_a_corrected_credit_but_not_a_renamed_machine() {
         Some(("admin", false))
     );
 
+    let mut directory = view::DirectorySnapshot::default();
+    directory.capture_from(&mut browse.state, &browse.keys);
+    let credited = directory.clone();
+    let credit_generation = browse.state.source_list_gen();
+
     // the roster refresh lands, re-graded: nobody is credited for the household's own server
     plx_plex::plex::describe_server(sid, "Mac mini", "", plx_plex::plex::GrantEvidence::outside());
     browse.sync_roster();
@@ -128,10 +142,30 @@ fn a_source_follows_a_corrected_credit_but_not_a_renamed_machine() {
         "the panel follows the registry off a credit, not only onto one"
     );
 
-    // …and a rename still does not travel
+    assert_ne!(browse.state.source_list_gen(), credit_generation);
+    directory.capture_from(&mut browse.state, &browse.keys);
+    assert!(!directory.same_publication(&credited));
+    assert_eq!(credited.view().sources()[0].1.handle, "admin");
+    assert_eq!(directory.view().sources()[0].1.handle, "");
+    let retained = directory.clone();
+    let generation = browse.state.source_list_gen();
+
+    // A name-only registry correction does not change the established source or publication.
     plx_plex::plex::describe_server(sid, "nas-loft", "", plx_plex::plex::GrantEvidence::outside());
     browse.sync_roster();
     assert_eq!(browse.state.sources().first().map(|s| s.name.as_str()), Some("Mac mini"));
+    assert_eq!(browse.state.sources().first().map(|s| s.handle.as_str()), Some(""));
+    assert_eq!(browse.state.source_list_gen(), generation);
+    directory.capture_from(&mut browse.state, &browse.keys);
+    assert!(directory.same_publication(&retained));
+    assert_eq!(directory.view().sources()[0].1.name, "Mac mini");
+    assert_eq!(retained.view().sources()[0].1.name, "Mac mini");
+    let unchanged = directory.clone();
+    let generation = browse.state.source_list_gen();
+    browse.sync_roster();
+    directory.capture_from(&mut browse.state, &browse.keys);
+    assert_eq!(browse.state.source_list_gen(), generation);
+    assert!(directory.same_publication(&unchanged));
 
     plx_plex::plex::reset_servers_for_test();
 }
@@ -262,12 +296,11 @@ fn page_failure_and_recovery_republish_directory_reachability() {
     // scheduler has work. Only the injected page results below can change the source.
     browse.sync_roster();
     let source = browse.state.source_mut(0).unwrap();
-    source.client_addr = client as *const _ as usize;
-    source.token_gen = client.token_gen();
+    source.client_key = Some(plx_plex::plex::ClientKey::of(client));
     source.sections_done = true;
     source.counts_done = true;
     let mut directory = view::DirectorySnapshot::default();
-    directory.capture_from(&mut browse.state);
+    directory.capture_from(&mut browse.state, &browse.keys);
     let original = directory.clone();
     for (total, expected, fetch) in [
         (-1, SourceState::Unreachable, SecFetch::Failed),
@@ -304,7 +337,7 @@ fn page_failure_and_recovery_republish_directory_reachability() {
         // A later roster sync cannot be relied on to supply a missing notification: its
         // registry and local states already match after the page's atomic commit.
         browse.sync_roster();
-        directory.capture_from(&mut browse.state);
+        directory.capture_from(&mut browse.state, &browse.keys);
         assert_eq!(directory.view().sources()[0].1.state, expected);
         assert_eq!(directory.view().source_fetch(), fetch);
         assert_eq!(original.view().sources()[0].1.state, SourceState::Reachable);

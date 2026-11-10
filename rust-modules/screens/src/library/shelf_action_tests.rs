@@ -42,7 +42,7 @@ fn shelf_activate_and_hold_keep_the_deck_promise_and_engine_item_identity() {
     let stores = plx_data::stores::Stores::default();
     stores.browse.borrow_mut().seed_two_source_table_for_test();
     let mut directory = plx_data::stores::browse::DirectorySnapshot::default();
-    stores.capture_browse(&mut directory);
+    stores.capture_seeded_browse_for_test(&mut directory, plx_plex::plex::current_server());
     stores.browse_run_for_test(BrowseCmd::SetCur(0));
     {
         let mut browse = stores.browse.borrow_mut();
@@ -54,7 +54,7 @@ fn shelf_activate_and_hold_keep_the_deck_promise_and_engine_item_identity() {
         );
         browse.seed_landscape_for_test(0, "Synthetic show");
     }
-    let publication = stores.capture_browse(&mut directory);
+    let publication = stores.capture_seeded_browse_for_test(&mut directory, plx_plex::plex::current_server());
     let listing = publication.listing;
     let hubs = publication.section_hubs;
     let listing_id = listing.view().id().unwrap();
@@ -175,7 +175,7 @@ fn a_collection_shelf_heading_is_a_linked_focus_stop_that_opens_the_collection()
     let stores = plx_data::stores::Stores::default();
     stores.browse.borrow_mut().seed_two_source_table_for_test();
     let mut directory = plx_data::stores::browse::DirectorySnapshot::default();
-    stores.capture_browse(&mut directory);
+    stores.capture_seeded_browse_for_test(&mut directory, plx_plex::plex::current_server());
     stores.browse_run_for_test(BrowseCmd::SetCur(0));
     {
         let mut browse = stores.browse.borrow_mut();
@@ -185,7 +185,7 @@ fn a_collection_shelf_heading_is_a_linked_focus_stop_that_opens_the_collection()
             ("custom.collection.1.50001.50001", "/library/collections/50001/children", "Toy Story Collection"),
         ], 5);
     }
-    let publication = stores.capture_browse(&mut directory);
+    let publication = stores.capture_seeded_browse_for_test(&mut directory, plx_plex::plex::current_server());
     let listing = publication.listing;
     let hubs = publication.section_hubs;
     let entry = EntryId(83);

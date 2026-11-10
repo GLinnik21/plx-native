@@ -43,7 +43,7 @@ fn dump_mode_a_detail_request_out_lands_on_the_pump_that_runs_whatever_the_worke
         land_detail(&worker, SRV_A, "42", gen, detail("42"));
     });
     let gate = dump_gate(std::time::Duration::from_secs(20));
-    assert!(pump_detail_with_gate(test_state(), &adapter, &gate),
+    assert!(pump_detail_with_gate(test_state(), &adapter, &plx_plex::plex::ClientKeys::default(), false, &gate),
         "the answer the pump owed must be taken by the pump that asked");
     assert_eq!(current(test_state()).map(|d| d.rk.clone()).as_deref(), Some("42"));
     assert!(!detail_loading(&adapter), "the landing settled the request");
@@ -68,7 +68,7 @@ fn dump_mode_a_superseded_detail_requests_stale_record_does_not_end_the_wait() {
         land_detail(&worker, SRV_A, "42", gen, detail("42"));
     });
     let gate = dump_gate(std::time::Duration::from_secs(20));
-    assert!(pump_detail_with_gate(test_state(), &adapter, &gate),
+    assert!(pump_detail_with_gate(test_state(), &adapter, &plx_plex::plex::ClientKeys::default(), false, &gate),
         "the current request was out when the pump ran, so its answer lands on this pump");
     assert_eq!(current(test_state()).map(|d| d.rk.clone()).as_deref(), Some("42"));
     assert!(!detail_loading(&adapter));
@@ -80,11 +80,11 @@ fn dump_mode_a_superseded_detail_requests_stale_record_does_not_end_the_wait() {
 fn dump_mode_a_detail_pump_with_no_request_out_does_not_wait() {
     let _serial = plx_base::testlock::serial();
     let gate = dump_gate(std::time::Duration::from_millis(100));
-    assert!(!pump_detail_with_gate(test_state(), test_adapter(), &gate));
+    assert!(!pump_detail_with_gate(test_state(), test_adapter(), &plx_plex::plex::ClientKeys::default(), false, &gate));
     let adapter = Arc::clone(test_adapter());
     begin_detail_for_test(&adapter, SRV_A, "42");
     supersede_detail(&adapter); // the page closed: DONE catches up, nothing awaits an answer
-    assert!(!pump_detail_with_gate(test_state(), &adapter, &gate));
+    assert!(!pump_detail_with_gate(test_state(), &adapter, &plx_plex::plex::ClientKeys::default(), false, &gate));
 }
 
 /// A season request out when the pump runs lands on THAT pump, however late its worker posts.
@@ -150,7 +150,7 @@ fn dump_mode_an_alt_request_out_lands_on_the_pump_that_runs_whatever_the_worker(
         });
     });
     let gate = dump_gate(std::time::Duration::from_secs(20));
-    assert!(pump_alt_sources_with_gate(test_state(), &adapter, &gate),
+    assert!(pump_alt_sources_with_gate(test_state(), &adapter, &plx_plex::plex::ClientKeys::default(), false, None, &gate),
         "the answer the pump owed must be taken by the pump that asked");
     assert!(alt_available(test_state(), SRV_A, "4"));
     assert_eq!(adapter.alt_done.load(Ordering::SeqCst), gen, "the take settled the request");
@@ -181,7 +181,7 @@ fn dump_mode_a_superseded_alt_requests_stale_answer_does_not_end_the_wait() {
         });
     });
     let gate = dump_gate(std::time::Duration::from_secs(20));
-    assert!(pump_alt_sources_with_gate(test_state(), &adapter, &gate),
+    assert!(pump_alt_sources_with_gate(test_state(), &adapter, &plx_plex::plex::ClientKeys::default(), false, None, &gate),
         "the current request was out when the pump ran, so its answer lands on this pump");
     assert!(alt_available(test_state(), SRV_A, "4"));
     join.join().unwrap();
@@ -201,7 +201,7 @@ fn dump_mode_a_roster_change_settles_the_alt_claim_so_the_site_never_waits_forev
     plx_plex::plex::register_for_test("alt-roster", "127.0.0.1", 1, "a", "cid"); // …and the roster moves
     // any wait on the abandoned request would fail closed (panic) within 100 ms
     let gate = dump_gate(std::time::Duration::from_millis(100));
-    pump_alt_sources_with_gate(test_state(), &adapter, &gate);
+    pump_alt_sources_with_gate(test_state(), &adapter, &plx_plex::plex::ClientKeys::default(), false, None, &gate);
     assert_eq!(adapter.alt_gen.load(Ordering::SeqCst), adapter.alt_done.load(Ordering::SeqCst),
         "the roster re-stamp settled the claim");
     plx_plex::plex::reset_servers_for_test();
@@ -213,10 +213,10 @@ fn dump_mode_an_alt_request_that_is_never_spawned_owes_nothing() {
     let _serial = plx_base::testlock::serial();
     plx_plex::plex::reset_servers_for_test();
     let adapter = Arc::clone(test_adapter());
-    request_alt_sources(test_state(), &adapter, SRV_A, "4", ""); // no guid
+    request_alt_sources(test_state(), &adapter, SRV_A, "4", "", &plx_plex::plex::ClientKeys::default()); // no guid
     assert_eq!(adapter.alt_gen.load(Ordering::SeqCst), adapter.alt_done.load(Ordering::SeqCst));
-    request_alt_sources(test_state(), &adapter, SRV_A, "4", "plex://movie/abc"); // no second server
+    request_alt_sources(test_state(), &adapter, SRV_A, "4", "plex://movie/abc", &plx_plex::plex::ClientKeys::default()); // no second server
     assert_eq!(adapter.alt_gen.load(Ordering::SeqCst), adapter.alt_done.load(Ordering::SeqCst));
     let gate = dump_gate(std::time::Duration::from_millis(100));
-    assert!(!pump_alt_sources_with_gate(test_state(), &adapter, &gate));
+    assert!(!pump_alt_sources_with_gate(test_state(), &adapter, &plx_plex::plex::ClientKeys::default(), false, None, &gate));
 }

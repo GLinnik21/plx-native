@@ -656,7 +656,7 @@ fn metadata_reset_rotates_the_adapter_and_fences_a_late_old_worker() {
     // a witness state proves the completion is real and deliverable, not silently dropped for some
     // unrelated reason.
     let mut witness = plx_data::metadata::MetadataState::default();
-    assert!(plx_data::metadata::land_detail_for_test(&mut witness, &old_adapter, sid, "late-rk", gen,
+    assert!(plx_data::metadata::land_detail_for_test(&plx_plex::plex::ClientKeys::default(), false, &mut witness, &old_adapter, sid, "late-rk", gen,
         Some(plx_data::metadata::Detail { sid, rk: "late-rk".into(), title: "Late Title".into(), ..Default::default() })),
         "the pre-reset worker really completes onto the adapter it captured");
 

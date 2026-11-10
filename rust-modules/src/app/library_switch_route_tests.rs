@@ -9,7 +9,16 @@ use super::test_support::tick;
 /// later.
 fn store_current(r: &World) -> Option<usize> {
     let mut snapshot = plx_data::stores::browse::DirectorySnapshot::default();
-    r.bridge.stores.browse.borrow_mut().capture_directory(&mut snapshot);
+    r.bridge.stores.browse.borrow().observe_pin_write();
+    let mut keys = plx_plex::plex::ClientKeys::default();
+    crate::app::adapters::stores::refill_client_keys(&mut keys);
+    let input = plx_data::browse::BrowseRosterInput {
+        keys: &keys, session: &plx_plex::plex::session::peek(),
+        visible_generation: plx_plex::plex::session::visible_generation(),
+        settled: plx_plex::plex::session::peek_settled().is_some(),
+        profile_key: &plx_plex::plex::session::current_profile_key(),
+    };
+    r.bridge.stores.browse.borrow_mut().capture_directory(&mut snapshot, &input);
     snapshot.view().current()
 }
 

@@ -104,6 +104,7 @@ pub(super) fn merge(
         listing: snap.listing.wire().to_string(),
         listing_sort,
         listing_desc,
+        page: stored.page,
         extensions: stored.extensions.clone(),
     }
 }

@@ -9043,6 +9043,15 @@ impl PersonOwnerGateFixture {
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("ok — person-owner", r.stdout)
 
+    def test_metadata_pure_builder_allowed_but_mutator_rejected_in_dev(self):
+        pure = "fn gate_fixture() { let _ = plx_data::metadata::alt_stand_in(); }\n"
+        r = self._plant("dev/_check_deps_metadata_builder.rs", pure)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r = self._plant("dev/_check_deps_metadata_builder.rs", pure +
+                        "fn gate_mutator() { plx_data::metadata::alt_install(); }\n")
+        self._assert_flagged(r, "mutators", [("dev/_check_deps_metadata_builder.rs", "alt_install(")])
+        self.assertNotIn("alt_stand_in(", r.stdout + r.stderr)
+
     def test_threads_gate_catches_a_bare_thread_spawn_after_use_std_thread(self):
         """The gate used to match only the fully-qualified `std::thread::spawn(` spelling, so a
         file that does `use std::thread;` and then calls the bare `thread::spawn(` — exactly the
@@ -10257,7 +10266,8 @@ impl PersonOwnerGateFixture {
         # (`fetch_episodes`, `fetch_episode_page` `client_for`).
         # Metadata M3 (the Related tail window read leaves as `StoreJob::MetaRelated`): -1 here (`ask_related`'s
         # `spawn_small`), -1 on globals (its `client_for`).
-        "workers": 7,  # production worker starts inside machines (`ci/allow/workers/`)
+        # Metadata M4: alt sources leave as MetaAltSources (-1 worker, -8 globals, -3 forks).
+        "workers": 6,  # production worker starts inside machines (`ci/allow/workers/`)
         # Sans-IO lifecycle PR B moved the pin by nothing: -3 (the three `lifecycle.rs` `player::TX` lines left with the
         # transport contract, `player/transport.rs`, the IO layer) and +3 (a relocation lowers no pin by itself, so the same
         # diff widened the spellings to the transport readers `transport::paused`, `transport::viewer_paused` and
@@ -10272,10 +10282,12 @@ impl PersonOwnerGateFixture {
         # `server_roster_gen`, `server_facts_gen`, `server_probe_result`, `session::peek_settled`,
         # `session::current_gen`, `tape::active`), +57 (57 -> 114); the forks rule gained the machine crates
         # screens/, ui/, appkit/ and machine/ (it read only data/, plex/, media/, session/), +17 (58 -> 75).
-        "globals": 111,  # production process-global reads inside machines (`ci/allow/globals/`)
+        # S4 Browse explicit roster inputs remove its 14 registry reads (103 -> 89).
+        "globals": 89,  # production process-global reads inside machines (`ci/allow/globals/`)
         # Dolby Vision setting (#1156): -1 on forks (`build_stream` takes the DV probe from `ResolveEnv`, captured
         # at the request, so its test/production read of `devcaps::dv::capability` is gone).
-        "forks": 71,  # production test/production forks in every machine crate: data/, plex/, media/, session/, screens/, ui/, appkit/, machine/ (`ci/allow/forks/`)
+        # Actual pre-M4 entries were 68 (the previous pin 71 was a loose ceiling).
+        "forks": 65,  # production test/production forks in every machine crate: data/, plex/, media/, session/, screens/, ui/, appkit/, machine/ (`ci/allow/forks/`)
         "fxlanes": 11,  # Bridge::app_effect arms that do not push Fx::Deliver (`ci/allow/fxlanes/`)
     }
 

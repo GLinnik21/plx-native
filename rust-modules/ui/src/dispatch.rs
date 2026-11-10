@@ -668,6 +668,7 @@ where
     pub fn top_or_mounting_arg(&self) -> Option<&H::Arg> {
         self.top_arg().or_else(|| self.parked.iter().rev().find_map(|(s, _)| match &s.fx {
             Fx::Nav(NavOp::Root(a) | NavOp::Push(a) | NavOp::Replace(a) | NavOp::SelectTab(a)) => Some(a),
+            Fx::Nav(NavOp::SelectTabWithChild { child, .. }) => Some(child),
             _ => None,
         }))
     }

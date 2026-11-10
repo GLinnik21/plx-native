@@ -38,10 +38,19 @@
 
 use std::ffi::CStr;
 
+#[cfg(test)]
+#[path = "metadata_alt_sources_bridge_tests.rs"]
+mod metadata_alt_sources_bridge_tests;
+
+#[cfg(test)]
+#[path = "browse_roster_bridge_tests.rs"]
+mod browse_roster_bridge_tests;
+
 use plx_screens::family::SettingsPage;
 use plx_screens::player::HudPolicy;
 use plx_screens::registry::{AppArg, AppFx, AppMounter, AppMsg, ConsentCmd, ContentArg, ContentReq, HomeCmd, HomeLike, HomeReq, HomeTab, ItemMenuKind, LibraryReq, LoopReq, PageMemory};
 use plx_data::stores::{StoreCmd, StoreId};
+use plx_plex::plex::session::{LibraryPage, LibraryViews};
 use plx_ui::containers::modal::{HostRender, HostUpdate, Phase, Style};
 use plx_ui::dispatch::{CxParts, Dispatcher, FrameReport, Rig, Split};
 #[cfg(test)]
@@ -59,12 +68,47 @@ use plx_ui::screen::{
     At, Enter, FocusSource, FocusTarget, ReturnState, Screen, ScreenEvent,
 };
 
+struct LibraryPageVisit {
+    entry: EntryId,
+    parent: EntryId,
+    scope: u32,
+    machine: &'static str,
+    key: i64,
+}
+
 
 // ---------------------------------------------------------------------------------------------
 // the bundle
 // ---------------------------------------------------------------------------------------------
 
 pub(crate) struct AppHost;
+
+/// Host facts captured after observing the pending pin receipt. Never retained across calls.
+struct BrowseContext {
+    session: std::sync::Arc<plx_plex::plex::session::Session>,
+    visible_generation: u64,
+    settled: bool,
+    profile_key: String,
+}
+
+impl BrowseContext {
+    fn capture(stores: &plx_data::stores::Stores) -> Self {
+        stores.browse.borrow().observe_pin_write();
+        Self {
+            session: plx_plex::plex::session::peek(),
+            visible_generation: plx_plex::plex::session::visible_generation(),
+            settled: plx_plex::plex::session::peek_settled().is_some(),
+            profile_key: plx_plex::plex::session::current_profile_key(),
+        }
+    }
+
+    fn input<'a>(&'a self, keys: &'a plx_plex::plex::ClientKeys) -> plx_data::browse::BrowseRosterInput<'a> {
+        plx_data::browse::BrowseRosterInput {
+            keys, session: &self.session, visible_generation: self.visible_generation,
+            settled: self.settled, profile_key: &self.profile_key,
+        }
+    }
+}
 
 // (`AppArg::from_node` and `AppArg::node` stood here — the two conversions between a screen
 // argument and a `ui::trail::Node`, which this module's own doc called "about the LEGACY trail
@@ -415,6 +459,8 @@ pub(crate) struct Bridge {
     /// Starts the jobs the stores emit (`adapters::stores`). Chosen when the Bridge is built: `Live`
     /// in production, the `Held` runner in a host test.
     store_runner: super::adapters::stores::StoreRunner,
+    /// Host IO chosen at boot: production trigger reader, or an explicit neutral/scripted reader.
+    metadata_alt_host: fn(plx_data::metadata::AltStandInReq, Option<&str>) -> plx_data::metadata::AltStandInAnswer,
     /// How many store jobs a pump had to start because their sender left them on a store's outbox
     /// ([`Bridge::start_late_store_jobs`]). Zero while every sender drains its own jobs; the test
     /// rigs assert it stays zero, so a bypass is a red test and not a silent rescue.
@@ -464,6 +510,8 @@ pub(crate) struct Bridge {
     strip: plx_ui::widgets::StripRender,
     home_commands: std::collections::VecDeque<HomeCmd>,
     library_commands: std::collections::VecDeque<plx_screens::registry::LibraryCmd>,
+    library_pages: Option<(u32, LibraryViews)>,
+    library_page_visit: Option<LibraryPageVisit>,
     consent: ConsentMachine,
     /// Requests the owned screens made of the loop this frame (§14), drained by [`frame`]'s caller.
     reqs: Vec<LoopReq>,
@@ -591,11 +639,16 @@ impl Bridge {
     #[cfg(test)]
     pub(crate) fn for_test(now_us: fn() -> u64) -> Self {
         static FIXTURE: plx_ui::fixture::FixtureMeasure = plx_ui::fixture::FixtureMeasure;
-        Self::with_measure(&FIXTURE, now_us,
+        let mut bridge = Self::with_measure(&FIXTURE, now_us,
             plx_session::auth::SessionInit::captured(plx_plex::plex::session::Session::default()),
             super::adapters::session::SessionAdapter::fixture(), Default::default(),
             super::adapters::consent::ConsentAdapter::fixture(),
-            super::adapters::stores::StoreRunner::held())
+            super::adapters::stores::StoreRunner::held());
+        bridge.metadata_alt_host = |request, _| request.answer(None);
+        // Keep the test SessionMachine unseated; Search's initial household input, like
+        // subsequent captures, is the actual session's independently observed roster.
+        bridge.search = bridge.stores.search_snapshot(bridge.directory.view(), &Self::household_ids());
+        bridge
     }
 
     fn with_measure(measure: &'static dyn Measure, now_us: fn() -> u64,
@@ -605,8 +658,11 @@ impl Bridge {
         store_runner: super::adapters::stores::StoreRunner) -> Self {
         let stores = plx_data::stores::Stores::default();
         let mut directory = plx_data::stores::browse::DirectorySnapshot::default();
-        let browse = stores.capture_browse(&mut directory);
-        let search = stores.search_snapshot(browse.directory.view(), &Self::household_ids());
+        let browse = stores.capture_browse(&mut directory, &plx_data::browse::BrowseRosterInput {
+            keys: &Default::default(), session: &init.persisted,
+            visible_generation: 0, settled: false, profile_key: "",
+        });
+        let search = stores.search_snapshot(browse.directory.view(), &init.persisted.household_ids());
         Self::with_publications_and_stores(measure, now_us, init, session_adapter, consent,
             consent_adapter, store_runner,
             StorePublications {
@@ -663,8 +719,10 @@ impl Bridge {
         consent: plx_telemetry::telemetry::consent::Consent,
         consent_adapter: super::adapters::consent::ConsentAdapter,
         reads: StorePublications) -> Self {
-        Self::with_publications_and_stores(measure, now_us, init, session_adapter, consent,
-            consent_adapter, super::adapters::stores::StoreRunner::held(), reads, Default::default())
+        let mut bridge = Self::with_publications_and_stores(measure, now_us, init, session_adapter, consent,
+            consent_adapter, super::adapters::stores::StoreRunner::held(), reads, Default::default());
+        bridge.metadata_alt_host = |request, _| request.answer(None);
+        bridge
     }
 
     fn with_publications_and_stores(measure: &'static dyn Measure, now_us: fn() -> u64,
@@ -692,6 +750,7 @@ impl Bridge {
             trace_save: None,
             consent_adapter,
             store_runner,
+            metadata_alt_host: crate::dev::scenarios::metadata_alt_stand_in,
             late_store_jobs: 0,
             client_keys: Default::default(),
             stores,
@@ -712,6 +771,8 @@ impl Bridge {
             strip: plx_ui::widgets::StripRender::new(),
             home_commands: std::collections::VecDeque::new(),
             library_commands: std::collections::VecDeque::new(),
+            library_pages: None,
+            library_page_visit: None,
             consent: ConsentMachine::from_initial(consent),
             reqs: Vec::new(),
             content_reqs: Vec::new(),
@@ -935,6 +996,81 @@ impl Bridge {
     fn deliver_library_commands(&mut self, d: &mut Dispatcher<AppHost>) {
         if d.nav.top_page().is_none_or(|page| page.arg != AppArg::Library || page.inst.is_none()) { return; }
         while let Some(command) = self.library_commands.pop_front() { Self::library_command(d, command); }
+    }
+
+    fn library_identity(section: &plx_data::stores::browse::SectionView) -> Option<(&'static str, i64)> {
+        let machine = plx_plex::plex::client_for(section.sid?)?.machine_id();
+        (!machine.is_empty()).then_some((machine, section.key))
+    }
+
+    /// Cache this profile's page choices so an immediate round trip sees a change while the
+    /// preference worker is still saving it. The worker merges the page into the latest record.
+    fn library_pages(&mut self) -> &mut LibraryViews {
+        use plx_plex::plex::session;
+        let scope = Self::profile_scope();
+        if self.library_pages.as_ref().is_none_or(|(cached, _)| *cached != scope) {
+            let session = session::peek();
+            let views = session.views_for(&session::current_profile_key()).cloned().unwrap_or_default();
+            self.library_pages = Some((scope, views));
+        }
+        &mut self.library_pages.as_mut().expect("initialized for this profile").1
+    }
+
+    fn remember_library_page(&mut self, machine: &'static str, key: i64, page: LibraryPage) {
+        use plx_plex::plex::session::{self, LibraryView};
+        let views = self.library_pages();
+        let mut view = views.get(machine, key).cloned()
+            .unwrap_or_else(|| LibraryView { machine_id: machine.into(), key, ..Default::default() });
+        if view.page == page { return; }
+        view.page = page;
+        views.set(view);
+        let user = session::current_profile_key();
+        session::queue_update(move |current| {
+            let mut view = current.views_for(&user).and_then(|views| views.get(machine, key)).cloned()
+                .unwrap_or_else(|| LibraryView { machine_id: machine.into(), key, ..Default::default() });
+            if view.page == page { return None; }
+            view.page = page;
+            let mut next = current.clone();
+            next.set_view_for(&user, view);
+            Some(next)
+        });
+    }
+
+    fn remembered_library_child(&mut self, kind: plx_data::browse::SecKind) -> Option<(AppArg, &'static str, i64)> {
+        let directory = self.directory.view();
+        let (machine, key) = Self::library_identity(directory.sections().get(directory.preferred(kind)?)?)?;
+        let section = u32::try_from(key).ok()?;
+        let child = match self.library_pages().get(machine, key)?.page {
+            LibraryPage::Grid => return None,
+            LibraryPage::Collections => AppArg::LibraryCollections { section },
+            LibraryPage::Recommended => AppArg::LibraryRecommended { section },
+        };
+        Some((child, machine, key))
+    }
+
+    /// A child is bound to the server and PMS key that were showing when it opened. Directory
+    /// rows can move while the page is up, and a key can belong to more than one server.
+    fn library_page_committed(&mut self, d: &Dispatcher<AppHost>, previous: Option<EntryId>, top: Option<EntryId>) {
+        if previous == top { return; }
+        let scope = Self::profile_scope();
+        if let Some(visit) = self.library_page_visit.as_ref().filter(|visit| visit.scope == scope) {
+            let entry = visit.entry;
+            if previous == Some(entry) && top == Some(visit.parent) {
+                let (machine, key) = (visit.machine, visit.key);
+                self.remember_library_page(machine, key, LibraryPage::Grid);
+            }
+            if d.nav.tabs.stack.entries.iter().any(|live| live.id == entry) {
+                return; // still covered by a title, or returned to from one
+            }
+        }
+        self.library_page_visit = None;
+        let (Some(entry), Some((parent, key, page))) = (top, library_child(d)) else { return };
+        let directory = self.directory.view();
+        let Some(section) = directory.current().and_then(|index| directory.sections().get(index)) else { return };
+        if section.key != i64::from(key) { return; }
+        let Some((machine, key)) = Self::library_identity(section) else { return };
+        self.library_page_visit = Some(LibraryPageVisit { entry, parent, scope, machine, key });
+        self.remember_library_page(machine, key, page);
     }
 
     pub(crate) fn home_opener(&self, d: &Dispatcher<AppHost>, entry: EntryId,
@@ -1242,7 +1378,9 @@ impl Bridge {
         let hubs_before = (self.section_hubs.view().id(), self.section_hubs.view().revision());
         // One owner borrow, in the load-bearing order: directory capture resolves profile pins
         // and may repoint the current section, so listing and shelves are captured only after it.
-        let owned = self.stores.capture_browse(&mut self.directory);
+        super::adapters::stores::refill_client_keys(&mut self.client_keys);
+        let context = self.browse_session();
+        let owned = self.stores.capture_browse(&mut self.directory, &context.input(&self.client_keys));
         if self.home_io.is_none() { self.section_hubs = owned.section_hubs; }
         let listing = if self.home_io.is_some() { self.listing.clone() } else { owned.listing };
         let listing_changed = !self.listing.view().same_items(listing.view())
@@ -1465,7 +1603,7 @@ impl Bridge {
     pub(crate) fn browse_run(&mut self, cmd: plx_data::stores::browse::BrowseCmd) -> bool {
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
         let session = self.browse_session();
-        let changed = self.stores.browse_run(cmd, &self.client_keys, &session);
+        let changed = self.stores.browse_run(cmd, &session.input(&self.client_keys));
         self.start_store_jobs_of(StoreId::Browse);
         changed
     }
@@ -1487,7 +1625,7 @@ impl Bridge {
     pub(crate) fn browse_discover_pump(&mut self) -> plx_data::stores::StoreOutcome {
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
         let session = self.browse_session();
-        let outcome = self.stores.browse_discover_pump(&self.client_keys, &session);
+        let outcome = self.stores.browse_discover_pump(&session.input(&self.client_keys));
         self.start_store_jobs_of(StoreId::Browse);
         outcome
     }
@@ -1718,7 +1856,10 @@ impl Bridge {
     #[cfg(test)]
     pub(crate) fn metadata_pump(&mut self) -> bool {
         self.start_late_store_jobs();
-        self.stores.metadata_pump()
+        super::adapters::stores::refill_client_keys(&mut self.client_keys);
+        let changed = self.stores.metadata_pump(&self.client_keys, plx_data::stores::tape::active(), None);
+        self.start_store_jobs_of(StoreId::Metadata);
+        changed
     }
 
     /// The outcome's `endpoints` are the refreshes the edit's Hubs step settled (a launch the
@@ -1792,8 +1933,9 @@ impl Bridge {
         }
         let owed = self.stores.browse.borrow().requery_owed();
         let requeried = owed.then(|| {
+            super::adapters::stores::refill_client_keys(&mut self.client_keys);
             let session = self.browse_session();
-            self.stores.browse.borrow_mut().pump_with_gate(&self.stores.landgate, &self.client_keys, &session).endpoints
+            self.stores.browse.borrow_mut().pump_with_gate(&self.stores.landgate, &session.input(&self.client_keys)).endpoints
         });
         if let Some(endpoints) = requeried {
             outcome.endpoints.merge(endpoints);
@@ -1917,9 +2059,8 @@ impl Bridge {
     /// The session Browse's step is handed. The store observes its pending pin write's receipt FIRST
     /// and the registry is read AFTER, so a saved write is never paired with a session from before it.
     /// The two lines must not swap, and the `Arc` is never kept across Bridge calls.
-    fn browse_session(&self) -> std::sync::Arc<plx_plex::plex::session::Session> {
-        self.stores.browse.borrow().observe_pin_write();
-        plx_plex::plex::session::peek()
+    fn browse_session(&self) -> BrowseContext {
+        BrowseContext::capture(&self.stores)
     }
 
     /// The profile the Session owner has seated, as the scope counter it allocated and published
@@ -2023,7 +2164,11 @@ impl Bridge {
         // found would leave a request nothing runs, and the pump below would wait on it; it is
         // started now, so the request settles, and counted and logged so the bypass is not silent.
         self.start_late_store_jobs();
-        self.stores.metadata.pump_detail_with_gate(&self.stores.landgate)
+        super::adapters::stores::refill_client_keys(&mut self.client_keys);
+        let changed = self.stores.metadata.pump_detail_with_gate(&self.client_keys,
+            plx_data::stores::tape::active(), &self.stores.landgate);
+        self.start_store_jobs_of(StoreId::Metadata);
+        changed
     }
 
     /// The `MetadataStore`'s own async season landing — `app/run.rs`'s route-unconditional pump.
@@ -2039,14 +2184,30 @@ impl Bridge {
     /// The `MetadataStore`'s cross-source alt-sources resolve, scoped by this owner's retained
     /// Browse directory — `app/run.rs`'s route-unconditional pump.
     pub(crate) fn metadata_pump_alt_sources(&mut self) -> bool {
+        self.metadata_pump_alt_sources_with(self.metadata_alt_host)
+    }
+
+    // Host-only scripted IO seam. Data logic never invokes an IO callback: it emits a request,
+    // returns its exclusive pass, and the Bridge executes the host between begin and finish.
+    fn metadata_pump_alt_sources_with(&mut self,
+        host: impl FnOnce(plx_data::metadata::AltStandInReq, Option<&str>) -> plx_data::metadata::AltStandInAnswer) -> bool {
+        // Capture keys/roster BEFORE host registration. The pass exclusively borrows Metadata
+        // and shares the keys until finish, preventing intervening step/reset/refill/publication.
+        super::adapters::stores::refill_client_keys(&mut self.client_keys);
         let directory = self.directory.view();
-        self.stores.metadata.pump_alt_sources_with_directory(directory, &self.stores.landgate)
+        let library = directory.current().and_then(|section| directory.sections().get(section))
+            .map(|section| section.row.title.as_str());
+        let mut pass = self.stores.metadata.begin_alt_sources(&self.client_keys, plx_data::stores::tape::active());
+        let answer = pass.take_request().map(|request| host(request, library));
+        pass.finish(answer, &self.stores.landgate)
     }
 
     /// Refresh only the retained directory at synchronous application boundaries that must make
     /// a routing decision before the next dispatcher frame.
     pub(crate) fn refresh_browse_directory(&mut self) {
-        self.stores.browse.borrow_mut().capture_directory(&mut self.directory);
+        super::adapters::stores::refill_client_keys(&mut self.client_keys);
+        let context = self.browse_session();
+        self.stores.browse.borrow_mut().capture_directory(&mut self.directory, &context.input(&self.client_keys));
     }
 
     #[cfg(test)]
@@ -2335,7 +2496,9 @@ impl Bridge {
                     // the retained directory visible to Onboard's Tick in this same dispatcher
                     // turn instead of leaving the newly discovered rows one frame behind.
                     if outcome.changed {
-                        self.stores.browse.borrow_mut().capture_directory(&mut self.directory);
+                        super::adapters::stores::refill_client_keys(&mut self.client_keys);
+                        let context = BrowseContext::capture(&self.stores);
+                        self.stores.browse.borrow_mut().capture_directory(&mut self.directory, &context.input(&self.client_keys));
                     }
                     return Self::carry(&mut self.endpoint_carry, endpoints);
                 }
@@ -2348,7 +2511,8 @@ impl Bridge {
                 }
                 AppMsg::StoreWork(plx_data::stores::StoreWork::BrowseDiscovery) => {
                     super::adapters::stores::refill_client_keys(&mut self.client_keys);
-                    self.stores.browse_controlled_discover(&self.client_keys);
+                    let context = BrowseContext::capture(&self.stores);
+                    self.stores.browse_controlled_discover(&context.input(&self.client_keys));
                     Self::admit_home_jobs(&mut self.stores, &mut self.store_runner, io, StoreId::Browse);
                     return Handled::Yes;
                 }
@@ -2417,7 +2581,7 @@ impl Bridge {
             AppMsg::StoreWork(plx_data::stores::StoreWork::Browse) => {
                 super::adapters::stores::refill_client_keys(&mut self.client_keys);
                 let session = self.browse_session();
-                let due = self.stores.browse.borrow_mut().pump_with_gate(&self.stores.landgate, &self.client_keys, &session).endpoints;
+                let due = self.stores.browse.borrow_mut().pump_with_gate(&self.stores.landgate, &session.input(&self.client_keys)).endpoints;
                 self.start_store_jobs_of(StoreId::Browse);
                 Self::carry(&mut self.endpoint_carry, due)
             }
@@ -3015,7 +3179,11 @@ fn frame_ingest(
     }).collect();
     rig.session_adapter.validate_supplied(&session_records)
         .expect("Session ingest requires an exactly addressed, admitted transfer batch");
+    // Record committed navigation. Back can cancel a pending push, and a tab switch can
+    // supersede a pending pop. Neither should change the remembered page before the floor.
+    let previous = d.nav.top_page().map(|entry| entry.id);
     let report = plx_base::diag::spans::span("dframe", || d.frame_with(rig, tick, inputs, results, tap, false));
+    rig.library_page_committed(d, previous, d.nav.top_page().map(|entry| entry.id));
     d.prune(&report.unmounted);
     plx_base::diag::spans::span("dsync", || rig.sync_host(d, tick.dt()));
     // On the simulator, a frame the video plane alone presented is not reported as damage: the
@@ -3802,7 +3970,7 @@ pub(crate) fn follow_auth_landing(pages: &mut Dispatcher<AppHost>, bridge: &mut 
         // single-user account this is the earliest authorized moment there is.
         super::input::maybe_ask_consent(pages);
         bridge.refresh_browse_directory();
-        if plx_data::stores::browse::onboard::asks(bridge.browse_directory(), &plx_plex::plex::session::peek()) {
+        if plx_data::stores::browse::onboard::asks(bridge.browse_directory(), &plx_plex::plex::session::peek(), &plx_plex::plex::session::current_profile_key()) {
             plx_base::eventlog::log("login: server installed — asking which sources feed Home");
             // no `enter()`: rooting the stack at the page is what mounts the owned screen
             // (`boot.rs`), and a ROOT is right because the sweep above has just emptied the tree.
@@ -3946,6 +4114,18 @@ fn pill_of_arg(arg: &AppArg, directory: plx_data::stores::browse::DirectoryView<
     }
 }
 
+/// A Library child with its actual Back destination. A tab switch retires that parent too,
+/// while Back uncovers the same entry. Only the latter clears the open-page preference.
+fn library_child(d: &Dispatcher<AppHost>) -> Option<(EntryId, u32, LibraryPage)> {
+    let (section, page) = match d.top_arg()? {
+        AppArg::LibraryCollections { section } => (*section, LibraryPage::Collections),
+        AppArg::LibraryRecommended { section } => (*section, LibraryPage::Recommended),
+        _ => return None,
+    };
+    let parent = d.nav.tabs.stack.under_top().filter(|entry| entry.arg == AppArg::Library)?;
+    Some((parent.id, section, page))
+}
+
 /// **A press on the shared top strip** — the door for the Search / Movies / Shows destinations and
 /// for BACK-to-Home (`focus_pill`), so the seed or command each one carries cannot be forgotten at
 /// one of the pages that wear the bar. A press on the HOME pill goes through
@@ -3956,10 +4136,10 @@ fn pill_of_arg(arg: &AppArg, directory: plx_data::stores::browse::DirectoryView<
 /// spent when the page comes up — which is where the fade floor used to run it, at alpha 0.
 ///
 /// **`nav_peer`, not `nav_root`**, and the difference is the Library: the three pills are peers
-/// that stand on Home, but a Movies→Shows press is not a navigation at all, it is a TELEPORT
+/// that stand on Home, but a Movies→Shows press between grids is a TELEPORT
 /// inside one page (`LibraryCmd::Enter`, the store swap and `restore_view`'s scroll jump). Rooting
 /// there would retire the entry and remount the screen, throwing away the viewport memory the
-/// teleport exists to restore.
+/// teleport exists to restore. A remembered child uses a tab transition with its grid underneath.
 pub(crate) fn nav_tab(
     d: &mut Dispatcher<AppHost>, rig: &mut Bridge, tab: HomeTab,
     focus_pill: Option<crate::app::chrome::Pill>,
@@ -3985,8 +4165,36 @@ pub(crate) fn nav_tab(
         }
         HomeTab::Movies | HomeTab::Shows => {
             let kind = if tab == HomeTab::Movies { plx_data::browse::SecKind::Movie } else { plx_data::browse::SecKind::Show };
+            if let Some((child, machine, key)) = rig.remembered_library_child(kind) {
+                let already_open = rig.library_page_visit.as_ref().is_some_and(|visit|
+                    d.nav.top_page().is_some_and(|entry| entry.id == visit.entry)
+                        && visit.machine == machine && visit.key == key);
+                rig.enter_library(kind);
+                // A grid already on top saves its outgoing cursor in Enter before it selects
+                // the destination. Other pages have no grid to deliver Enter to.
+                if d.top_arg() != Some(&AppArg::Library) { rig.aim_library(kind); }
+                let op = if already_open {
+                    // Reselecting the current library still goes to its grid.
+                    NavOp::Pop
+                } else {
+                    NavOp::SelectTabWithChild { tab: AppArg::Library, child }
+                };
+                match ret {
+                    Some(ret) => d.request_with_return(MachineId::Nav, op, ret),
+                    None => d.request(MachineId::Nav, op),
+                }
+                return;
+            }
             rig.enter_library(kind);
-            if d.top_arg() != Some(&AppArg::Library) { rig.aim_library(kind); }
+            if let Some(grid) = d.nav.top_page().filter(|entry| entry.arg == AppArg::Library) {
+                // An in-place grid switch has no page op of its own. Supersede an earlier
+                // branch request with this grid, even on the frame the dip reaches its floor.
+                if d.nav.tabs.stack.is_pending() || d.has_pending_navigation() {
+                    d.request(MachineId::Nav, NavOp::PopTo(grid.id));
+                }
+            } else {
+                rig.aim_library(kind);
+            }
             AppArg::Library
         }
         HomeTab::Search => AppArg::Search,

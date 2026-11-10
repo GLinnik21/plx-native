@@ -419,7 +419,7 @@ mod tests {
         use crate::stores::tape;
         controlled(false);
         request("refused", false, false);
-        assert!(!pump_detail(test_state(), test_adapter()));
+        assert!(!pump_detail(test_state(), test_adapter(), &plx_plex::plex::ClientKeys::default(), true));
         assert!(!detail_loading(test_adapter()));
         let results = tape::take_results();
         let (admissions, failure) = tape::finish();
@@ -429,7 +429,7 @@ mod tests {
         controlled(true);
         tape::begin(admissions.clone().into(), results.clone().into());
         let req = request("refused", false, true);
-        let changed = pump_detail(test_state(), test_adapter());
+        let changed = pump_detail(test_state(), test_adapter(), &plx_plex::plex::ClientKeys::default(), true);
         let loading = detail_loading(test_adapter());
         let observed = tape::take_results();
         let outcome = tape::finish();
@@ -457,7 +457,7 @@ mod tests {
             // The old worker finishes after the synchronous refusal but before the observation.
             land_detail(test_adapter(), plx_plex::plex::ServerId::from_raw(0), "old", old, None);
             if cancelled { super::super::clear(test_state(), test_adapter()); }
-            pump_detail(test_state(), test_adapter());
+            pump_detail(test_state(), test_adapter(), &plx_plex::plex::ClientKeys::default(), true);
             let results = tape::take_results();
             let (admissions, failure) = tape::finish();
             assert_eq!(failure, None);
@@ -469,7 +469,7 @@ mod tests {
             request("old", true, true);
             request("refused", false, true);
             if cancelled { super::super::clear(test_state(), test_adapter()); }
-            pump_detail(test_state(), test_adapter());
+            pump_detail(test_state(), test_adapter(), &plx_plex::plex::ClientKeys::default(), true);
             let outcome = tape::finish();
             assert_eq!(outcome, (admissions, None));
             assert_eq!(tape::take_results(), results);
@@ -487,7 +487,7 @@ mod tests {
         controlled(false);
         let first = request("first", true, false);
         land_detail(test_adapter(), plx_plex::plex::ServerId::from_raw(0), "first", first, None);
-        pump_detail(test_state(), test_adapter());
+        pump_detail(test_state(), test_adapter(), &plx_plex::plex::ClientKeys::default(), true);
         let second = request("second", true, false);
         land_detail(test_adapter(), plx_plex::plex::ServerId::from_raw(0), "second", second, None);
         super::super::clear(test_state(), test_adapter());
@@ -520,7 +520,7 @@ mod tests {
         for &req in workers.iter().take(3).chain(std::iter::once(&fifth)) {
             land_detail(test_adapter(), plx_plex::plex::ServerId::from_raw(0), "unused", req, None);
         }
-        pump_detail(test_state(), test_adapter());
+        pump_detail(test_state(), test_adapter(), &plx_plex::plex::ClientKeys::default(), true);
         controlled(true);
         let before = test_adapter().detail_landing.dropped_count();
         tape::begin(admissions.clone().into(), Default::default());

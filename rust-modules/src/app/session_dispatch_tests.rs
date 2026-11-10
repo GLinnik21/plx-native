@@ -94,7 +94,14 @@ fn production_bridges_do_not_share_browse_state_or_landings() {
     // The pump the frame's `StoreWork::Browse` runs: the keys the step decides from, the step, and
     // the page read it left, started by the runner (which resolves the key and starts the worker).
     crate::app::adapters::stores::refill_client_keys(&mut first.client_keys);
-    let _ = first.stores.browse.borrow_mut().pump_with_gate(&first.stores.landgate, &first.client_keys, &plx_plex::plex::session::peek());
+    first.stores.browse.borrow().observe_pin_write();
+    let input = plx_data::browse::BrowseRosterInput {
+        keys: &first.client_keys, session: &plx_plex::plex::session::peek(),
+        visible_generation: plx_plex::plex::session::visible_generation(),
+        settled: plx_plex::plex::session::peek_settled().is_some(),
+        profile_key: &plx_plex::plex::session::current_profile_key(),
+    };
+    let _ = first.stores.browse.borrow_mut().pump_with_gate(&first.stores.landgate, &input);
     first.start_store_jobs_of(StoreId::Browse);
     accepted_rx.recv_timeout(std::time::Duration::from_secs(2))
         .expect("production page request reached loopback");

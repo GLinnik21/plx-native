@@ -371,9 +371,9 @@ fn a_reconcile_owes_the_re_read_but_moves_neither_focus_nor_scroll() {
         let generation = plx_data::metadata::begin_detail_for_test(test_store().adapter_ref(), sid, "show");
         {
             let (state, adapter) = test_store().split_for_test();
-            plx_data::metadata::land_detail_for_test(state, adapter, sid, "show", generation, Some(detail(sid, "show")));
+            plx_data::metadata::land_detail_for_test(&plx_plex::plex::ClientKeys::default(), false, state, adapter, sid, "show", generation, Some(detail(sid, "show")));
         }
-        test_store().pump_detail();
+        test_store().pump_detail(&plx_plex::plex::ClientKeys::default(), false);
         let _ = step(&mut screen, &ScreenEvent::Tick(plx_machine::machine::Tick { ms: 16, dt_us: 16_667 }), Some(focus));
         assert_eq!(episode_key(&screen, 1, episodes::Row::Still), Some(focus), "the episode keeps its key ({phase:?})");
         assert_eq!(held(&screen), focus, "the landing leaves the focus where it was ({phase:?})");
@@ -403,9 +403,9 @@ fn a_reconcile_landing_holds_the_focus_on_an_episode_past_the_first_page() {
     let generation = plx_data::metadata::begin_detail_for_test(test_store().adapter_ref(), sid, "show");
     {
         let (state, adapter) = test_store().split_for_test();
-        plx_data::metadata::land_detail_for_test(state, adapter, sid, "show", generation, Some(long_season(total, &[0])));
+        plx_data::metadata::land_detail_for_test(&plx_plex::plex::ClientKeys::default(), false, state, adapter, sid, "show", generation, Some(long_season(total, &[0])));
     }
-    test_store().pump_detail();
+    test_store().pump_detail(&plx_plex::plex::ClientKeys::default(), false);
     screen.sync_keys(test_store().view());
     assert_eq!(episode_key(&screen, 70, episodes::Row::Still), Some(focus), "episode 70 keeps the key it had");
     assert_eq!(held(&screen), focus, "the landing left the focus on episode 70, not on the hero");
@@ -425,7 +425,7 @@ fn detail_enter_preserves_the_refresh_truth_table_without_focus_restoration() {
                     let generation = plx_data::metadata::begin_detail_for_test(test_store().adapter_ref(), sid, "show");
                     if !loading {
                         let (__s, __a) = test_store().split_for_test();
-                        plx_data::metadata::land_detail_for_test(__s, __a, sid, "show", generation, None);
+                        plx_data::metadata::land_detail_for_test(&plx_plex::plex::ClientKeys::default(), false, __s, __a, sid, "show", generation, None);
                     }
                     loading.then_some(generation)
                 });
@@ -459,13 +459,13 @@ fn detail_enter_preserves_the_refresh_truth_table_without_focus_restoration() {
                 // otherwise this matrix exhausts the production reservation budget itself.
                 if let Some(generation) = pending {
                     let (__s, __a) = test_store().split_for_test();
-                    plx_data::metadata::land_detail_for_test(__s, __a, sid, "show", generation, None);
+                    plx_data::metadata::land_detail_for_test(&plx_plex::plex::ClientKeys::default(), false, __s, __a, sid, "show", generation, None);
                 }
                 if requests > 0 {
                     let (__s, __a) = test_store().split_for_test();
-                    plx_data::metadata::land_detail_for_test(__s, __a, sid, "show", generation + requests, None);
+                    plx_data::metadata::land_detail_for_test(&plx_plex::plex::ClientKeys::default(), false, __s, __a, sid, "show", generation + requests, None);
                 }
-                test_store().pump_detail();
+                test_store().pump_detail(&plx_plex::plex::ClientKeys::default(), false);
             }
         }
     }
@@ -497,7 +497,7 @@ fn enter_restored_promotion_survives_a_stale_terminal_before_admission_t2() {
     let generation = plx_data::metadata::begin_detail_for_test(test_store().adapter_ref(), ServerId::UNSET, "show");
     {
         let (__s, __a) = test_store().split_for_test();
-        plx_data::metadata::land_detail_for_test(__s, __a, ServerId::UNSET, "show", generation, None);
+        plx_data::metadata::land_detail_for_test(&plx_plex::plex::ClientKeys::default(), false, __s, __a, ServerId::UNSET, "show", generation, None);
     }
     assert_eq!(test_store().view().detail_request_status(ServerId::UNSET, "show"), Some(false));
 
@@ -580,7 +580,7 @@ fn cancelled_focus_restoration_still_terminates_reconciliation_on_success_or_fai
         assert!(screen.restore_intent.is_none());
         assert_eq!(screen.refresh, DetailRefreshPhase::Requested);
         let (__s, __a) = test_store().split_for_test();
-        assert_eq!(plx_data::metadata::land_detail_for_test(__s, __a, sid, "show", generation,
+        assert_eq!(plx_data::metadata::land_detail_for_test(&plx_plex::plex::ClientKeys::default(), false, __s, __a, sid, "show", generation,
             success.then(|| detail(sid, "show"))), success);
         step(&mut screen, &ScreenEvent::StoreChanged(StoreId::Metadata.ord(), generation), None);
         assert_eq!(screen.refresh, DetailRefreshPhase::None);
@@ -1105,7 +1105,7 @@ fn a_return_whose_re_read_fails_puts_the_page_back_at_the_top() {
     let generation = plx_data::metadata::begin_detail_for_test(test_store().adapter_ref(), sid, "show");
     {
         let (state, adapter) = test_store().split_for_test();
-        assert!(!plx_data::metadata::land_detail_for_test(state, adapter, sid, "show", generation, None));
+        assert!(!plx_data::metadata::land_detail_for_test(&plx_plex::plex::ClientKeys::default(), false, state, adapter, sid, "show", generation, None));
     }
     assert!(screen.detail(test_store().view()).is_none());
     pump_restore(&mut screen);

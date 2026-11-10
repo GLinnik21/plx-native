@@ -168,10 +168,9 @@ impl Stores {
     pub fn browse_run(
         &self,
         cmd: browse::BrowseCmd,
-        keys: &plx_plex::plex::ClientKeys,
-        session: &plx_plex::plex::session::Session,
+        input: &browse::BrowseRosterInput<'_>,
     ) -> bool {
-        self.browse.borrow_mut().run_with_session(cmd, keys, session)
+        self.browse.borrow_mut().run_with_input(cmd, input)
     }
 
     /// [`Stores::browse_run`] on a registry that holds no client (no section-hubs or directory read leaves): the
@@ -179,9 +178,10 @@ impl Stores {
     /// the pin write was observed.
     #[cfg(any(test, feature = "test-support"))]
     pub fn browse_run_for_test(&self, cmd: browse::BrowseCmd) -> bool {
-        self.browse.borrow().observe_pin_write();
-        let session = plx_plex::plex::session::peek();
-        self.browse_run(cmd, &plx_plex::plex::ClientKeys::default(), &session)
+        self.browse_run(cmd, &browse::BrowseRosterInput {
+            keys: &Default::default(), session: &Default::default(),
+            visible_generation: 0, settled: false, profile_key: "",
+        })
     }
 
     /// Is any shelf of the addressed section committed? (The Library pages' publication gate asks.)
@@ -193,19 +193,16 @@ impl Stores {
     /// step asks for is left on Browse's outbox for the caller to start (`Bridge::browse_discover_pump`).
     pub fn browse_discover_pump(
         &self,
-        keys: &plx_plex::plex::ClientKeys,
-        session: &plx_plex::plex::session::Session,
+        input: &browse::BrowseRosterInput<'_>,
     ) -> StoreOutcome {
-        self.browse.borrow_mut().discover_pump_with_gate(&self.landgate, keys, session)
+        self.browse.borrow_mut().discover_pump_with_gate(&self.landgate, input)
     }
 
     /// [`Stores::browse_discover_pump`] on a registry that holds no client (no discovery read
     /// leaves): the pass of a test about something else.
     #[cfg(any(test, feature = "test-support"))]
     pub fn browse_discover_pump_for_test(&self) -> StoreOutcome {
-        self.browse.borrow().observe_pin_write();
-        let session = plx_plex::plex::session::peek();
-        self.browse_discover_pump(&plx_plex::plex::ClientKeys::default(), &session)
+        self.browse.borrow_mut().discover_pump()
     }
 
     pub fn person_run(&mut self, cmd: person::PersonCmd) -> bool {
@@ -322,8 +319,8 @@ impl Stores {
         }
     }
 
-    pub fn metadata_pump(&mut self) -> bool {
-        self.metadata.pump(&self.landgate)
+    pub fn metadata_pump(&mut self, keys: &plx_plex::plex::ClientKeys, controlled: bool, stand_in: Option<Vec<crate::metadata::AltCopy>>) -> bool {
+        self.metadata.pump(keys, controlled, stand_in, &self.landgate)
     }
 
     pub fn metadata_view(&self) -> crate::metadata::MetadataView<'_> {
@@ -361,8 +358,8 @@ impl Stores {
 
     /// Controlled discovery against this aggregate's Browse owner: the read it asks for is left on
     /// Browse's outbox, for the controlled Home arm to admit through the run's ledger.
-    pub fn browse_controlled_discover(&self, keys: &plx_plex::plex::ClientKeys) {
-        self.browse.borrow_mut().controlled_discover(keys);
+    pub fn browse_controlled_discover(&self, input: &browse::BrowseRosterInput<'_>) {
+        self.browse.borrow_mut().controlled_discover(input);
     }
 
     /// The outboxes [`Stores::viewstate_run`] and [`Stores::viewstate_pump`] can fill, in drain
@@ -591,10 +588,24 @@ impl Stores {
 
     /// Capture all three retained Browse publications from one owner borrow. Directory capture
     /// runs first because resolving profile pins may repoint the current section.
-    pub fn capture_browse(&self, directory: &mut browse::DirectorySnapshot)
+    pub fn capture_browse(&self, directory: &mut browse::DirectorySnapshot, input: &browse::BrowseRosterInput<'_>)
         -> browse::BrowsePublications {
         let mut browse = self.browse.borrow_mut();
-        browse.capture_directory(directory);
+        browse.capture_directory(directory, input);
+        browse::BrowsePublications {
+            listing: browse.listing_snapshot(),
+            directory: directory.clone(),
+            section_hubs: browse.hubs_snapshot(),
+        }
+    }
+
+    /// Publish a synthetic table already prepared by the seed/command test helpers.
+    /// Unlike live capture this is projection only: no registry adoption or session inference.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn capture_seeded_browse_for_test(&self, directory: &mut browse::DirectorySnapshot,
+        current: plx_plex::plex::ServerId) -> browse::BrowsePublications {
+        let mut browse = self.browse.borrow_mut();
+        browse.capture_seeded_directory_for_test(directory, current);
         browse::BrowsePublications {
             listing: browse.listing_snapshot(),
             directory: directory.clone(),
@@ -789,6 +800,8 @@ pub enum StoreJob {
     /// runner resolves the loaded item's server to its client at the launch; a server with none
     /// answers the failure without a GET. Not on the tape.
     MetaRelated(plx_machine::job::Job<crate::metadata::MetaRelatedReq>, crate::metadata::MetaRelatedPort),
+    /// Ordered multi-server GUID read fenced by the whole captured key snapshot. Never taped.
+    MetaAltSources(plx_machine::job::Job<crate::metadata::MetaAltSourcesReq>, crate::metadata::MetaAltSourcesPort),
 }
 
 /// How the runner admits a job before it starts it: the policy a job kind belongs to, stated on
@@ -843,13 +856,13 @@ impl StoreJob {
             // `bootstrap/effects.rs` has no arm for (it rejects them as "unsupported controlled
             // metadata command"), so no controlled run or replay emits one and the launch is the
             // whole decision (as for the season switch and the episode pages beside it).
-            Self::MetaRelated(..) => Admission::Direct,
+            Self::MetaRelated(..) | Self::MetaAltSources(..) => Admission::Direct,
         }
     }
 
     pub fn store(&self) -> StoreId {
         match self {
-            Self::Detail(..) | Self::MetaSeason(..) | Self::MetaEpisodes(..) | Self::MetaRelated(..) => StoreId::Metadata,
+            Self::Detail(..) | Self::MetaSeason(..) | Self::MetaEpisodes(..) | Self::MetaRelated(..) | Self::MetaAltSources(..) => StoreId::Metadata,
             Self::Collection(..) => StoreId::Collection,
             Self::Person(..) => StoreId::Person,
             Self::Catalog(..) => StoreId::Catalog,

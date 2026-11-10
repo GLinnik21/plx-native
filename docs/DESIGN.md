@@ -79,9 +79,9 @@ their positions change.
   shelf ramp with a soft maximum to keep the crossing from darkening like two overlays.
   The shelf ramp follows the first tile's live top and reaches `SHELF_FOOT_A` at the
   Continue Watching caption line. The whole field fades with the hero.
-- Home's metadata line shows the server's primary genre for an unplayed movie, time remaining
-  for a movie in progress, and the episode label for an episode. Genre uses the reading ink
-  at the same single-line anchor. The full synopsis stays in Detail.
+- Home's unplayed movies and shows show their type, year, runtime or season count, up to two genres,
+  and an outlined content rating when available. Movies in progress show time remaining, and
+  episodes keep their episode label. The full synopsis stays in Detail.
 - Detail uses the same continuous renderer. Its wider left fade supports the synopsis and the
   full-width lower ramp supports the credits. The left fade shifts up with the preview logo and
   both strengths ease out for the full-screen trailer.

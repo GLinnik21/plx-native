@@ -155,7 +155,7 @@ is what keeps stems and bars at their intended weight on a 1080p panel.
 
 ![Home, hero](screenshots/ux-home-hero.jpg)
 
-Home opens on a **hero** — one item, full-bleed backdrop, with its logo or title, an action row and a line for episode identity, time remaining, a movie genre or a short premise. The hero rotates through a set of
+Home opens on a **hero** — one item, full-bleed backdrop, with its logo or title, an action row and a line for episode identity, time remaining, movie or show metadata, or a short premise. The hero rotates through a set of
 promoted items. The dots beside Info show the position.
 
 **Controls on the hero row**, left to right:
@@ -281,6 +281,10 @@ Reached from any library pill in the top strip. A poster grid, four-way navigabl
 - one **sort** control at the right of the header row, reading its current choice (the sort icon, the criterion and a down chevron; its Sort & Filter menu also holds the filters), beside the **Collections** and **Recommended** places;
 - an **A–Z rail** down the right edge, which jumps the grid to a letter, or on a value sort (Score, Duration, Unplayed, Plays, Date added, Date viewed, Release date, and Last episode added when sorted newest first) to a band: a date sort's bands are `Today`, the months of this year, then each earlier year, and Release date's are the year then the decades;
 - watched check marks on the cards.
+
+When you leave a library with Collections or Recommended open, its top-strip pill reopens that
+page next time. The app saves the open page per profile and library. Back from the top of the
+page or OK on its breadcrumb closes it and returns to the grid.
 
 **CH ▲ / CH ▼ page the grid**, which is the fast way through a large library.
 

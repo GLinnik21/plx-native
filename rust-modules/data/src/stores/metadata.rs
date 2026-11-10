@@ -365,27 +365,33 @@ impl MetadataStore {
         self.adapter.clone()
     }
 
-    /// Route-unconditional landing/spawn pass across detail, season and alt-sources — the same
-    /// three pumps `Machine::step`'s `StoreEv::Pump` arm already drives.
-    pub fn pump(&mut self, gate: &plx_machine::landgate::Gate) -> bool {
-        let detail = self.pump_detail_with_gate(gate);
+    /// Refuse a compatibility Pump with no explicit keys/dev input before taking any landing.
+    fn pump_without_input(&mut self) -> bool {
+        plx_base::eventlog::log("metadata: Pump without keys/dev input — dropped");
+        debug_assert!(false, "metadata Pump requires explicit keys/dev input");
+        false
+    }
+
+    /// Explicit-input aggregate landing pass. Its caller owns the same-call outbox drain.
+    pub fn pump(&mut self, keys: &plx_plex::plex::ClientKeys, controlled: bool, stand_in: Option<Vec<crate::metadata::AltCopy>>, gate: &plx_machine::landgate::Gate) -> bool {
+        let detail = self.pump_detail_with_gate(keys, controlled, gate);
         let season = self.pump_season_with_gate(gate);
         let related = self.pump_related();
-        let alt = crate::metadata::pump_alt_sources_with_gate(&mut self.state, &self.adapter, gate);
+        let alt = crate::metadata::pump_alt_sources_with_gate(&mut self.state, &self.adapter, keys, controlled, stand_in, gate);
         if alt { self.bump(); }
         detail || season || related || alt
     }
 
     /// The async detail landing alone — `app/run.rs`'s own call site, pumped before season.
-    pub fn pump_detail_with_gate(&mut self, gate: &plx_machine::landgate::Gate) -> bool {
-        let changed = crate::metadata::pump_detail_with_gate(&mut self.state, &self.adapter, gate);
+    pub fn pump_detail_with_gate(&mut self, keys: &plx_plex::plex::ClientKeys, controlled: bool, gate: &plx_machine::landgate::Gate) -> bool {
+        let changed = crate::metadata::pump_detail_with_gate(&mut self.state, &self.adapter, keys, controlled, gate);
         if changed { self.bump(); }
         changed
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn pump_detail(&mut self) -> bool {
-        self.pump_detail_with_gate(plx_machine::landgate::fixture_gate())
+    pub fn pump_detail(&mut self, keys: &plx_plex::plex::ClientKeys, controlled: bool) -> bool {
+        self.pump_detail_with_gate(keys, controlled, plx_machine::landgate::fixture_gate())
     }
 
     /// The async season landing alone — `app/run.rs`'s own call site, pumped after detail.
@@ -411,15 +417,12 @@ impl MetadataStore {
     }
 
     /// The cross-source alt-sources resolve, scoped by the Bridge's retained Browse directory.
-    pub fn pump_alt_sources_with_directory(
-        &mut self,
-        directory: crate::stores::browse::DirectoryView<'_>,
-        gate: &plx_machine::landgate::Gate,
-    ) -> bool {
-        let changed = crate::metadata::pump_alt_sources_with_directory_and_gate(
-            &mut self.state, &self.adapter, directory, gate);
-        if changed { self.bump(); }
-        changed
+    pub fn begin_alt_sources<'a>(&'a mut self, keys: &'a plx_plex::plex::ClientKeys,
+        controlled: bool) -> MetadataAltPass<'a> {
+        MetadataAltPass {
+            pass: crate::metadata::begin_alt_sources(&mut self.state, &self.adapter, keys, controlled),
+            notice_gen: &self.notice_gen, notice_dirty: &self.notice_dirty,
+        }
     }
 
     /// Borrowed read handle, shaped like `crate::person::PersonStore::view`.
@@ -433,6 +436,25 @@ impl MetadataStore {
 /// store owns draining it, in the same call. The application's Bridge runs a command through
 /// `Stores::metadata_run` and drains right after it (`docs/sans-io.md`, "The store job lane"),
 /// which is the rule a new caller of this `step` has to meet by itself.
+/// Store-owned pass folds the entire begin -> host -> finish into ONE notice.
+#[must_use]
+pub struct MetadataAltPass<'a> {
+    pass: crate::metadata::AltSourcesPass<'a>,
+    notice_gen: &'a AtomicU32,
+    notice_dirty: &'a AtomicBool,
+}
+impl MetadataAltPass<'_> {
+    pub fn take_request(&mut self) -> Option<crate::metadata::AltStandInReq> { self.pass.take_request() }
+    pub fn finish(self, answer: Option<crate::metadata::AltStandInAnswer>, gate: &plx_machine::landgate::Gate) -> bool {
+        let changed = self.pass.finish(answer, gate);
+        if changed {
+            self.notice_dirty.store(true, Ordering::Relaxed);
+            self.notice_gen.fetch_add(1, Ordering::Relaxed);
+        }
+        changed
+    }
+}
+
 impl<H: Host> Machine<H> for MetadataStore {
     type Ev = StoreEv<MetadataCmd>;
     fn step(&mut self, ev: &Self::Ev, _cx: &Cx<'_, H>, _fx: &mut Effects<'_, H>) -> Handled {
@@ -441,7 +463,9 @@ impl<H: Host> Machine<H> for MetadataStore {
                 self.run(c.clone());
             }
             StoreEv::Pump { .. } => {
-                self.pump(&plx_machine::landgate::Gate::default());
+                // No keys/dev input exists on this compatibility event. Refuse BEFORE taking
+                // any landing; explicit pump callers supply both and own their same-call drain.
+                self.pump_without_input();
             }
         }
         Handled::Yes
@@ -452,6 +476,25 @@ impl<H: Host> Machine<H> for MetadataStore {
 #[cfg(test)]
 mod two_owner_tests {
     use super::*;
+
+    #[test]
+    fn a_no_input_machine_pump_refuses_before_consuming_a_ready_detail() {
+        use plx_machine::job::Port;
+        let _serial = plx_base::testlock::serial();
+        let mut store = MetadataStore::default();
+        let sid = plx_plex::plex::ServerId::UNSET;
+        let gen = crate::metadata::begin_detail_for_test(store.adapter_ref(), sid, "item");
+        store.detail_port().done(plx_machine::machine::Addr {
+            to: plx_machine::machine::MachineId::Store(super::super::StoreId::Metadata.ord()),
+            req: plx_machine::machine::RequestId(gen),
+        }, ((sid, "item".into()), Some(crate::metadata::Detail { sid, rk: "item".into(), ..Default::default() })));
+        let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| store.pump_without_input()));
+        if cfg!(debug_assertions) { assert!(refused.is_err()); } else { assert_eq!(refused.unwrap(), false); }
+        assert!(store.view().current().is_none());
+        assert!(store.view().detail_loading(), "the unprovided-input path took no landing");
+        assert!(store.pump_detail(&plx_plex::plex::ClientKeys::default(), false));
+        assert_eq!(store.view().current().unwrap().rk, "item");
+    }
 
     /// **The two-owner regression (contract Required 3).** A worker captures the `Arc` of its
     /// owner's `MetadataAdapter` before it spawns (mirrors `HubsStore`'s own two-owner test,
@@ -493,11 +536,11 @@ mod two_owner_tests {
 
         {
             let (a_state, a_adapter) = a.split_for_test();
-            crate::metadata::land_detail_for_test(a_state, a_adapter, sid, a_rk, a_gen, Some(a_detail.clone()));
+            crate::metadata::land_detail_for_test(&plx_plex::plex::ClientKeys::default(), false, a_state, a_adapter, sid, a_rk, a_gen, Some(a_detail.clone()));
         }
         {
             let (b_state, b_adapter) = b.split_for_test();
-            crate::metadata::land_detail_for_test(b_state, b_adapter, sid, b_rk, b_gen, Some(b_detail.clone()));
+            crate::metadata::land_detail_for_test(&plx_plex::plex::ClientKeys::default(), false, b_state, b_adapter, sid, b_rk, b_gen, Some(b_detail.clone()));
         }
 
         // POSITIVE: each owner's landing settled its own mailbox and installed its own item, and

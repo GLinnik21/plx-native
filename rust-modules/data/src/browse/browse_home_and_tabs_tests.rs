@@ -1472,7 +1472,12 @@ fn a_home_roster_arriving_late_re_resolves_the_pin_table() {
         source.counts_done = true;
     }
     assert!(
-        !browse.state.discovery_needs_pump(&browse.adapter),
+        !browse.state.discovery_needs_pump(&browse.adapter, &BrowseRosterInput {
+            keys: &browse.keys, session: &plx_plex::plex::session::peek(),
+            visible_generation: plx_plex::plex::session::visible_generation(),
+            settled: plx_plex::plex::session::peek_settled().is_some(),
+            profile_key: &plx_plex::plex::session::current_profile_key(),
+        }),
         "nothing is owed before the roster lands, or this proves nothing"
     );
 
@@ -1490,7 +1495,12 @@ fn a_home_roster_arriving_late_re_resolves_the_pin_table() {
     );
 
     assert!(
-        browse.state.discovery_needs_pump(&browse.adapter),
+        browse.state.discovery_needs_pump(&browse.adapter, &BrowseRosterInput {
+            keys: &browse.keys, session: &plx_plex::plex::session::peek(),
+            visible_generation: plx_plex::plex::session::visible_generation(),
+            settled: plx_plex::plex::session::peek_settled().is_some(),
+            profile_key: &plx_plex::plex::session::current_profile_key(),
+        }),
         "the roster arrival is itself a reason to sync — the trigger this lane added"
     );
     browse.sync_roster();
@@ -1520,7 +1530,12 @@ fn a_home_roster_arriving_late_re_resolves_the_pin_table() {
 
     // Idempotent: a second sync against the same roster is not a change.
     assert!(
-        !browse.state.discovery_needs_pump(&browse.adapter),
+        !browse.state.discovery_needs_pump(&browse.adapter, &BrowseRosterInput {
+            keys: &browse.keys, session: &plx_plex::plex::session::peek(),
+            visible_generation: plx_plex::plex::session::visible_generation(),
+            settled: plx_plex::plex::session::peek_settled().is_some(),
+            profile_key: &plx_plex::plex::session::current_profile_key(),
+        }),
         "the correction settles rather than re-firing every frame"
     );
 }
