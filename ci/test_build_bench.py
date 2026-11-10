@@ -33,6 +33,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import check_steps
 
@@ -384,6 +385,24 @@ class RedTests(unittest.TestCase):
             self.assertEqual(by_id["leaf"]["status"], "ok")
             self.assertEqual(len(by_id["leaf"]["samples"]), 2)   # the second round still ran
             sb.assert_sources_untouched(self)
+
+    def test_a_runner_failure_with_passing_tests_is_not_timed(self):
+        result = subprocess.CompletedProcess(
+            [], 101,
+            "test result: ok. 1 passed; 0 failed; 0 ignored\n"
+            "cargo-test-parallel: this binary left 1 entry in its TMPDIR\n"
+            "cargo-test-parallel: FAILED plx_base (exit 1)\n",
+            "",
+        )
+        with patch.object(bb, "Cargo") as cargo, patch.object(bb, "sample_machine", return_value={}):
+            cargo.return_value.run_unit_suite.return_value = (0.1, result)
+            bench = bb.Bench(ROOT, {}, ["tests"], runs=1, cold=False, cores=1)
+            bench.execute()
+
+        self.assertEqual(bench.results["tests"]["status"], "failed")
+        self.assertEqual(bench.results["tests"]["samples"], [])
+        self.assertIn("test runner exited 101", bench.failure)
+        self.assertIn("1 entry in its TMPDIR", bench.failure)
 
     def test_a_green_suite_is_not_red(self):
         with Sandbox() as sb:

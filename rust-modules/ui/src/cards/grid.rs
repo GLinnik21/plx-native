@@ -199,7 +199,9 @@ pub struct Grid {
     /// part of the canon.
     returning: bool,
     /// The owner announced that the focus it just seated is an arrival ([`arrive`](Grid::arrive)),
-    /// not a restore: the next `FocusMoved` onto this grid grows from rest. Cleared by the tick.
+    /// not a restore: the next `FocusMoved` onto this grid's entry grows from rest, however many
+    /// frames later it comes (the app delivers a reseat's move on the frame after the key, behind
+    /// that frame's tick). A return (`Enter::Restored`) and sleep clear it.
     arriving: bool,
 }
 
@@ -251,7 +253,7 @@ impl Grid {
     /// cards have landed or the page's head has moved): the `FocusMoved` it raises grows from rest
     /// on the standard lift spring, its caption band opening with it, as a deliberate move's does
     /// and as the dormant grid's waking does, instead of being adopted whole like a restore (a
-    /// seat the reader left). One `FocusMoved` takes it; the tick after it clears what it left.
+    /// seat the reader left). The next `FocusMoved` onto this entry takes it.
     pub fn arrive(&mut self) {
         self.arriving = true;
     }
@@ -323,7 +325,7 @@ impl Grid {
                 let left = from.filter(|k| k.entry == self.entry).and_then(|k| src.index_of(&k.elem));
                 // A deliberate move is the only focus change the eye should see travel; a restore
                 // or a reconcile is adopted whole by the next tick.
-                let arrival = arrived.is_some() && std::mem::take(&mut self.arriving);
+                let arrival = to.entry == self.entry && std::mem::take(&mut self.arriving) && arrived.is_some();
                 let deliberate = arrival || matches!(by, By::Dir | By::Pointer);
                 // the reader has moved on from what the page returned with: a deliberate move, or
                 // focus gone from the grid's cards (a header control, a BACK that walks to one)
@@ -334,6 +336,12 @@ impl Grid {
                     self.seen = if arrival { Seen::Deliberate(a) } else { Seen::of(by, a) };
                 }
                 self.focus_band(arrived.map(|i| i / self.spec.cols), deliberate);
+                // Focus left the grid's cards: the card it left lets go now, from where its pop is,
+                // as a deliberate move's does on `arm`. Left to the tick, the frame that handles the
+                // key (drawn before its tick) read the card at rest, and it jumped back to its lift.
+                if arrived.is_none() && left.is_some() {
+                    self.pop.let_go();
+                }
                 if let Some(cell) = arrived.filter(|_| deliberate) {
                     // the element is the one the key named, whatever index it has: the card focus
                     // left lets go as its own, and a let-go of the card named is taken up by
@@ -349,6 +357,7 @@ impl Grid {
             ScreenEvent::Enter(Enter::Restored) => {
                 // what the covered page slept through is stale: its seat comes back as it was left
                 self.returning = true;
+                self.arriving = false;
                 self.slept = false;
                 None
             }
@@ -378,8 +387,8 @@ impl Grid {
             self.returning = false;
         }
         let awake = !self.asleep();
-        self.arriving = false;
         if self.asleep() {
+            self.arriving = false;
             // nothing is lifted under the fade, and whatever was lets go like an unfocused grid's
             self.slept = true;
             self.seen = Seen::Nothing;
