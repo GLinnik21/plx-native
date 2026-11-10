@@ -1,6 +1,6 @@
 //! Home's hero shade and the billboard's pager: that the shade stands behind the rects the page
-//! really draws (and moves with them), and that the pager is ONE group at a fixed place on the action
-//! row's centre line that no button label can move.
+//! really draws (and moves with them), and that the pager stands in the action row after the Info
+//! disc, at the spacing of the owner's board (CW-13), whatever the buttons before it are.
 
 use super::*;
 use plx_ui::hero_shade::Role;
@@ -46,53 +46,36 @@ fn row_rect(c: &HeroRects) -> Rect {
     Rect::new(c.play.x, HERO_ROW_Y, c.info.x + c.info.w - c.play.x, HERO_CTRL_D)
 }
 
-/// What the page's shade is built from beyond the heroes: the pager, then the footer band of the
-/// Continue Watching row.
-fn tail(s: &HomeScreen, view: HubsView<'_>) -> [(Rect, f32); 2] {
+/// What the page's shade is built from beyond the heroes: the pager of the selected hero `hero`, then
+/// the footer band of the Continue Watching row.
+fn tail(s: &HomeScreen, view: HubsView<'_>, m: &dyn Measure, hero: &PmsMovie) -> [(Rect, f32); 2] {
     let footer = s.continue_footer_band(view).expect("the seed's first row is the deck");
-    [(pager_block(view.hero_count()), Role::Controls.peak()), (footer, Role::Footer.peak())]
+    [(pager_block(view.hero_count(), info_right(m, hero)), Role::Controls.peak()), (footer, Role::Footer.peak())]
 }
 
-/// The pager's block in the shade: the dots' left ink to the right margin, one control tall.
-fn pager_block(n: usize) -> Rect {
-    let pager = hero_pager(PageDots::new(n).width());
-    Rect::new(pager.dots_x, HERO_ROW_Y, SCR_W - MARGIN_X - pager.dots_x, HERO_CTRL_D)
+/// Where a hero's Info disc ends, as the page lays its row out.
+fn info_right(m: &dyn Measure, hero: &PmsMovie) -> f32 {
+    let resumes = plx_data::metadata::resume_ns(hero.resume_ms, hero.dur_ns / 1_000_000) > 0;
+    let info = hero_rects(m, hero, plx_appkit::hero_layout::play_label(resumes)).info;
+    info.x + info.w
 }
 
-/// **The pager is one group: the chevron's ink ends at the right margin, the dots stand one control
-/// gap before it between their ink, and the group is centred on the action row's centre line.** The
-/// group grows to the LEFT as dots are added, so the chevron never moves.
+/// The pager's block in the shade, ink to ink: the dots' left to the chevron's right, one control tall.
+fn pager_block(n: usize, info_right: f32) -> Rect {
+    let pager = hero_pager(info_right, PageDots::new(n).width());
+    Rect::new(pager.dots_x, HERO_ROW_Y, chevron_ink(pager.chevron).1 - pager.dots_x, HERO_CTRL_D)
+}
+
+/// **The pager stands in the action row, after the Info disc, at the board's spacing.** The board
+/// (CW-13) makes the row a flex with `gap = CONTROL_GAP`; the dots group has an extra 20 px of
+/// margin-left after the Info disc, and the chevron is a 60 px box at margin-left -24, so it sits
+/// tight after the dots. Pinned here to the row for rows of different widths (two labels, with and
+/// without the disc) and for every dot count: the dots' left is the Info disc's right + `CONTROL_GAP` +
+/// 20; the chevron box built the board's way puts its glyph's ink where the page puts it; the group is
+/// centred on the row's centre line; and the pager moves with the row (a wider row, a pager further
+/// right), because it is IN it.
 #[test]
-fn the_pager_is_one_group_ending_at_the_right_margin_on_the_rows_centre_line() {
-    assert_eq!(SCR_W - MARGIN_X, 1824.0, "the design's right margin");
-    assert_eq!(HERO_PAGER_CY, 698.0, "the action row's centre line");
-    assert_eq!(HERO_PAGER_CY, HERO_ROW_Y + HERO_CTRL_D * 0.5);
-    let mut last_dots_x = f32::INFINITY;
-    let mut chevron_at = None;
-    for n in 2..=9usize {
-        let dots_w = PageDots::new(n).width();
-        let pager = hero_pager(dots_w);
-        let (ink_l, ink_r) = chevron_ink(pager.chevron);
-        assert!((ink_r - (SCR_W - MARGIN_X)).abs() < 1e-3, "n={n}: the chevron's ink ends at {ink_r}, not the margin");
-        assert!(
-            (ink_l - (pager.dots_x + dots_w) - CONTROL_GAP).abs() < 1e-3,
-            "n={n}: the dots' ink ends at {}, the chevron's begins at {ink_l}: not one gap",
-            pager.dots_x + dots_w
-        );
-        assert!((pager.chevron.y + pager.chevron.h * 0.5 - HERO_PAGER_CY).abs() < 1e-3, "n={n}: the chevron is on the centre line");
-        assert!(pager.dots_x < last_dots_x, "n={n}: more dots grow the group to the left");
-        last_dots_x = pager.dots_x;
-        assert_eq!(*chevron_at.get_or_insert(pager.chevron), pager.chevron, "n={n}: the chevron never moves");
-    }
-}
-
-/// **The pager's place does not depend on the buttons** (their labels, their widths, their language):
-/// whatever Play says, the row it ends is a different width and the pager is the same rect. Proved
-/// two ways: the rects of rows of different widths (two labels; with and without the disc) do differ
-/// while the pager does not, and clears them; and two SCREENS whose heroes' rows are different widths
-/// hand the shade the same pager block.
-#[test]
-fn the_pager_stands_in_the_same_place_whatever_the_buttons_are() {
+fn the_pager_stands_in_the_row_after_info_at_the_boards_spacing() {
     let _guard = plx_base::testlock::serial();
     let m = &plx_ui::fixture::FixtureMeasure;
     let snapshot = seeded(true);
@@ -100,17 +83,41 @@ fn the_pager_stands_in_the_same_place_whatever_the_buttons_are() {
     let item = view.hero(0).unwrap().item;
     let long = std::ffi::CString::new("Reprendre la lecture depuis le debut de l'episode precedent").unwrap();
     let labels = [std::ffi::CString::new("Play").unwrap(), long];
-    let rows: Vec<Rect> = labels.iter().map(|l| row_rect(&hero_rects(m, item, l))).collect();
-    assert!(rows[0].w < rows[1].w, "the premise: two rows of two widths ({:?})", rows.iter().map(|r| r.w).collect::<Vec<_>>());
-    let dots_w = PageDots::new(view.hero_count()).width();
-    let pager = hero_pager(dots_w);
-    for (i, row) in rows.iter().enumerate() {
-        let again = hero_pager(dots_w);
-        assert_eq!((again.dots_x, again.chevron), (pager.dots_x, pager.chevron), "label {i}: the pager does not read the row");
-        assert!(row.x + row.w + CONTROL_GAP <= pager.dots_x, "label {i}: the row ({}) ends clear of the pager ({})", row.x + row.w, pager.dots_x);
+    let infos: Vec<Rect> = labels.iter().map(|l| hero_rects(m, item, l).info).collect();
+    assert!(infos[0].x < infos[1].x, "the premise: two rows of two widths ({:?})", infos.iter().map(|r| r.x).collect::<Vec<_>>());
+    assert_eq!(HERO_PAGER_CY, 698.0, "the action row's centre line");
+    assert_eq!(HERO_PAGER_CY, HERO_ROW_Y + HERO_CTRL_D * 0.5);
+    let mut last_chevron_x = [f32::NEG_INFINITY; 2];
+    for n in 2..=9usize {
+        let dots_w = PageDots::new(n).width();
+        for (i, info) in infos.iter().enumerate() {
+            let info_right = info.x + info.w;
+            let pager = hero_pager(info_right, dots_w);
+            // the dots: the row's gap, then the group's own 20 px of margin-left
+            assert_eq!(pager.dots_x, info_right + CONTROL_GAP + 20.0, "n={n} label {i}: the dots' left");
+            // the chevron: the board's 60 px box at margin-left -24, one gap after the dots' right
+            let box_left = pager.dots_x + dots_w + CONTROL_GAP - 24.0;
+            let glyph_left = box_left + (HERO_CTRL_D - HERO_PAGER_D) * 0.5;
+            let board_ink_left = glyph_left + plx_ui::icons::ink_x(Icon::Chevron).0 * HERO_PAGER_D;
+            let (ink_l, _) = chevron_ink(pager.chevron);
+            assert!((ink_l - board_ink_left).abs() < 0.1, "n={n} label {i}: the chevron's ink begins at {ink_l}, the board's at {board_ink_left}");
+            assert!((ink_l - (pager.dots_x + dots_w) - CONTROL_GAP).abs() < 1e-3, "n={n} label {i}: one gap between the dots' ink and the chevron's");
+            assert!((pager.chevron.y + pager.chevron.h * 0.5 - HERO_PAGER_CY).abs() < 1e-3, "n={n} label {i}: the chevron is on the centre line");
+            assert!(pager.chevron.x > last_chevron_x[i], "n={n} label {i}: more dots grow the group to the right");
+            last_chevron_x[i] = pager.chevron.x;
+        }
+        let (near, far) = (hero_pager(infos[0].x + infos[0].w, dots_w), hero_pager(infos[1].x + infos[1].w, dots_w));
+        assert!(near.dots_x < far.dots_x, "n={n}: a wider row carries the pager further right");
     }
+}
 
-    // the same through the screen: a hero with the disc has a wider row than one without it
+/// **The shade's pager block is the pager the page draws**, for each hero's own row: the same screen
+/// with a Watchlist disc (a wider row) hands the shade a block further right, by exactly the disc and
+/// its gap, and the block is the pager's ink from the dots to the chevron.
+#[test]
+fn the_shades_pager_block_follows_the_row_it_stands_in() {
+    let _guard = plx_base::testlock::serial();
+    let m = &plx_ui::fixture::FixtureMeasure;
     let with = seeded(true);
     let without = seeded(false);
     let (mut a, mut b) = (screen(with.view()), screen(without.view()));
@@ -120,8 +127,11 @@ fn the_pager_stands_in_the_same_place_whatever_the_buttons_are() {
     let (ba, bb) = (sa.blocks(), sb.blocks());
     assert_eq!((ba.len(), bb.len()), (4, 4), "copy, action row, pager, footer");
     assert!(ba[1].0.w > bb[1].0.w, "the premise: the disc makes the row wider ({} vs {})", ba[1].0.w, bb[1].0.w);
-    assert_eq!(ba[2], bb[2], "the pager block is the same for either row");
-    assert_eq!(ba[2].0, pager_block(with.view().hero_count()));
+    let (ha, hb) = (a.selected_hero(with.view()).unwrap().item, b.selected_hero(without.view()).unwrap().item);
+    assert_eq!(ba[2], (pager_block(with.view().hero_count(), info_right(m, ha)), Role::Controls.peak()));
+    assert_eq!(bb[2], (pager_block(without.view().hero_count(), info_right(m, hb)), Role::Controls.peak()));
+    assert!((ba[2].0.x - bb[2].0.x - (HERO_CTRL_D + CONTROL_GAP)).abs() < 1e-3, "the disc and its gap carry the pager along");
+    assert!((ba[2].0.w - bb[2].0.w).abs() < 1e-3, "the group itself is the same size");
 }
 
 /// **Home's shade stands behind exactly the rects the page draws**: the copy column
@@ -138,7 +148,7 @@ fn the_home_hero_shade_stands_behind_the_content_it_draws() {
     assert!(s.slide_offsets().is_none(), "the premise: a hero at rest");
     let hero = s.selected_hero(view).expect("a hero").item;
     let controls = hero_rects(m, hero, plx_appkit::hero_layout::play_label(false));
-    let [pager, footer] = tail(&s, view);
+    let [pager, footer] = tail(&s, view, m, hero);
     let want = [
         (hero_copy_rect(hero, m), Role::Copy.peak()),
         (row_rect(&controls), Role::Controls.peak()),
@@ -154,7 +164,8 @@ fn the_home_hero_shade_stands_behind_the_content_it_draws() {
 }
 
 /// **The shade moves with a hero that slides**: during a flip the outgoing and incoming heroes each
-/// bring their copy and action row at their own slide offset, and the pager (fixed) does not slide.
+/// bring their copy and action row at their own slide offset, and the pager (the selected hero's, after
+/// its Info) does not slide.
 #[test]
 fn the_home_hero_shade_follows_a_slide() {
     let _guard = plx_base::testlock::serial();
@@ -163,7 +174,6 @@ fn the_home_hero_shade_follows_a_slide() {
     let view = snapshot.view();
     let mut s = screen(view);
     tick(&mut s, view, 1);
-    let rest = s.hero_shade(view, m);
     let old = s.selected_hero(view).expect("a hero").item;
     assert!(s.flip(view, 1));
     tick(&mut s, view, 1);
@@ -176,7 +186,7 @@ fn the_home_hero_shade_follows_a_slide() {
         let resumes = plx_data::metadata::resume_ns(h.resume_ms, h.dur_ns / 1_000_000) > 0;
         row_rect(&hero_rects(m, h, plx_appkit::hero_layout::play_label(resumes)))
     };
-    let [pager, footer] = tail(&s, view);
+    let [pager, footer] = tail(&s, view, m, new);
     let want = [
         (at(hero_copy_rect(old, m), out_x), Role::Copy.peak()),
         (at(row(old), out_x), Role::Controls.peak()),
@@ -187,7 +197,7 @@ fn the_home_hero_shade_follows_a_slide() {
     ];
     let got = s.hero_shade(view, m);
     assert_eq!(got.blocks(), want, "each hero's blocks ride its own page");
-    assert_eq!(got.blocks()[4], rest.blocks()[2], "the pager does not slide");
+    assert_eq!(got.blocks()[4], pager, "the pager does not slide, whatever the heroes' offsets");
     assert_eq!(got.blocks().len(), plx_gfx::gfx::scrim::MAX_BLOCKS, "the busiest frame fills the uniform array exactly");
 }
 

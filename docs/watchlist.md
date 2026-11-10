@@ -172,7 +172,7 @@ outline when off the list, filled when on; the fill rises from the bottom with a
 flip, not on the first answer). It exists only for an item whose guid is `plex://movie|show/<hex>`
 (`HeroSet::watchlist`).
 The **Home hero** carries the same disc, second after Play/Resume and before Info (Play, disc, Info, laid out by
-`hero_layout::flat_row` with one `CONTROL_GAP`, 20 px, between controls (the pager stands apart, at the right margin);
+`hero_layout::flat_row` with one `CONTROL_GAP`, 20 px, between controls (the billboard's pager follows Info in the same row, 40 px after it: the gap and the dots group's own 20 px margin);
 the 12 px `HERO_ICON_GAP` is inside the Play pill). It is present when the hero row stands for a title
 (`PmsMovie::watchlist_subject`: a movie or show itself, a season or episode its SHOW, "Add Show"
 semantics) with a known id. The application feeds it the membership of the title the hero shows

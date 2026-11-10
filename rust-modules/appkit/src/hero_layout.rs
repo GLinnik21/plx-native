@@ -145,7 +145,7 @@ pub fn row_rect(widths: &[f32], i: usize, y: f32) -> Rect {
 /// the Play capsule's pop in its width, which opens a wider first gap; Home's board spaces Play, the
 /// Watchlist disc and Info alike, and the pill's own pop closes on that gap instead. A control is its
 /// box (a pill, a disc), so the one gap is the gap the eye reads between every pair, whatever follows
-/// what. (The billboard's pager is not in this run: it stands at a fixed place at the right margin,
+/// what. (The billboard's pager is not in this run: it follows the last control with its own spacing,
 /// `screens::home::hero_pager`.)
 pub fn flat_row(items: &[Item]) -> HStack<'_> {
     HStack::new(items, CGAP, Align::Leading(plx_ui::consts::MARGIN_X))

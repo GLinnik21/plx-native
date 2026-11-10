@@ -131,7 +131,7 @@ const HERO_CTRL_D: f32 = StatusOverlay::CTRL_H;
 const SOURCE_PAD: f32 = theme::space::XS;
 const HERO_PAGER_D: f32 = HERO_CTRL_D * plx_ui::widgets::DISC_ICON_RATIO;
 /// The pager's centre line: the action row's own (y 698), so the dots and the chevron read as one
-/// line with the controls at the other end of it.
+/// line with the controls they stand after.
 const HERO_PAGER_CY: f32 = HERO_ROW_Y + HERO_CTRL_D * 0.5;
 
 /// Each row's `motion` bytes are its `Shelf`'s (`Shelf::write`), the L0 row's motion write unchanged
@@ -2188,10 +2188,9 @@ impl HomeScreen {
     /// the art, from the live layout, so a block that moves takes its shade with it
     /// ([`plx_ui::hero_shade`]). Per hero on screen (two while a flip slides) the copy column
     /// ([`hero_copy_rect`]) and the action row (Play, the disc, Info: [`hero_rects`]) at that hero's
-    /// slide offset; the pager at its fixed place ([`hero_pager`]); and under the Continue Watching
-    /// row the band its footer lines stand
-    /// in, which stands on the backdrop now that the footer has left the art. The caller scales it by
-    /// the hero's fade.
+    /// slide offset; the pager after the selected hero's Info ([`HomeScreen::pager`]); and under the
+    /// Continue Watching row the band its footer lines stand in, which stands on the backdrop now that
+    /// the footer has left the art. The caller scales it by the hero's fade.
     fn hero_shade(&self, view: HubsView<'_>, measure: &dyn Measure) -> plx_ui::hero_shade::HeroShade {
         use plx_ui::hero_shade::Role;
         let mut shade = plx_ui::hero_shade::HeroShade::new();
@@ -2212,11 +2211,8 @@ impl HomeScreen {
             (None, Some(hero)) => shade = hero_blocks(shade, hero.item, 0.0),
             _ => {}
         }
-        if view.hero_count() > 1 {
-            let dots = PageDots::new(view.hero_count()).active(self.carousel_index(view));
-            let pager = hero_pager(dots.width());
-            let right = SCR_W - MARGIN_X;
-            shade = shade.add(Rect::new(pager.dots_x, HERO_ROW_Y, right - pager.dots_x, HERO_CTRL_D), Role::Controls, 1.0);
+        if let Some((_, pager)) = self.selected_hero(view).and_then(|hero| self.pager(view, hero.item, measure)) {
+            shade = shade.add(pager.band(), Role::Controls, 1.0);
         }
         if let Some(footer) = self.continue_footer_band(view) {
             shade = shade.add(footer, Role::Footer, 1.0);
@@ -2268,12 +2264,24 @@ impl HomeScreen {
             hero_content(hero.item, p, 0.0, measure);
             self.draw_hero_actions(hero.item, env, p, 0.0, true, page_alpha, focus, measure, press_scale);
         }
-        if view.hero_count() > 1 {
-            let dots = PageDots::new(view.hero_count()).active(self.carousel_index(view));
-            let pager = hero_pager(dots.width());
+        if let Some((dots, pager)) = self.pager(view, hero.item, measure) {
             dots.centered_y(pager.dots_x, HERO_PAGER_CY).draw(env, p);
             plx_ui::icons::draw(p, Icon::Chevron, pager.chevron, theme::TEXT_SECONDARY);
         }
+    }
+
+    /// The billboard's pager for `hero`, the selected one: its page dots (the active one set) and
+    /// where the group stands ([`hero_pager`]), after that hero's Info disc. `None` for a single hero,
+    /// which has nothing to page. It is not a focus stop and records no hit rect.
+    fn pager(&self, view: HubsView<'_>, hero: &PmsMovie, measure: &dyn Measure) -> Option<(PageDots, PagerRects)> {
+        if view.hero_count() <= 1 {
+            return None;
+        }
+        let resumes = plx_data::metadata::resume_ns(hero.resume_ms, hero.dur_ns / 1_000_000) > 0;
+        let info = hero_rects(measure, hero, plx_appkit::hero_layout::play_label(resumes)).info;
+        let dots = PageDots::new(view.hero_count()).active(self.carousel_index(view));
+        let pager = hero_pager(info.x + info.w, dots.width());
+        Some((dots, pager))
     }
 
     fn draw_hero_actions(
@@ -3690,25 +3698,35 @@ struct HeroRects {
     info: Rect,
 }
 
-/// **The billboard's pager: the page dots and the next chevron, ONE group at a fixed place.** The
-/// chevron's INK ends at the right margin (`SCR_W - MARGIN_X`, 1824), the dots stand one
-/// [`plx_ui::widgets::CONTROL_GAP`] before it (between their ink: the dots are exactly as wide as the
-/// dots they draw, and the chevron is placed by its glyph's ink, [`Item::glyph`]), and the group is
-/// centred on the action row's centre line ([`HERO_PAGER_CY`]). Nothing in it reads the buttons, so
-/// the group stands in the same place whatever the Play label's width is, in any language.
+/// **The billboard's pager: the page dots and the next chevron, in the action row after Info** (owner's
+/// board CW-13). The row is a flex at [`plx_ui::widgets::CONTROL_GAP`] (20); the dots group stands
+/// [`theme::space::LG`] (40: that gap and the group's own 20 px of margin-left) after the Info disc,
+/// and the chevron stands tight after the dots, one `CONTROL_GAP` between their ink (the board's
+/// 60 px chevron box at margin-left -24 is that, [`Item::glyph`] places the glyph by its ink), the
+/// whole group centred on the row's centre line ([`HERO_PAGER_CY`]). It follows the hero's Info disc,
+/// so it stands where that hero's buttons end.
 struct PagerRects {
     /// The page dots' left edge.
     dots_x: f32,
-    /// The chevron's box (drawn there so its ink ends at the margin).
+    /// The chevron's box (drawn there so its ink is one gap after the dots').
     chevron: Rect,
 }
 
-fn hero_pager(dots_w: f32) -> PagerRects {
+impl PagerRects {
+    /// The group's own rect, ink to ink, one control tall: what the hero shade stands behind.
+    fn band(&self) -> Rect {
+        let ink_right = self.chevron.x + plx_ui::icons::ink_x(Icon::Chevron).1 * self.chevron.w;
+        Rect::new(self.dots_x, HERO_ROW_Y, ink_right - self.dots_x, HERO_CTRL_D)
+    }
+}
+
+/// The pager after an Info disc whose right edge is `info_right`, for dots `dots_w` wide.
+fn hero_pager(info_right: f32, dots_w: f32) -> PagerRects {
     let items = [Item::new(dots_w), Item::glyph(Icon::Chevron, HERO_PAGER_D)];
     let row = plx_ui::hstack::HStack::new(
         &items,
         plx_ui::widgets::CONTROL_GAP,
-        plx_ui::hstack::Align::Trailing(SCR_W - MARGIN_X),
+        plx_ui::hstack::Align::Leading(info_right + theme::space::LG),
     );
     let mut spans = row.placed();
     let dots = spans.next().expect("the dots are present");

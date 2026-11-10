@@ -243,8 +243,8 @@ pub mod hero {
 
     // ---- Home's hero (owner's board CW-13, v2). Detail's ladder and scrim are NOT these. ----
 
-    /// Top of Home's action row: Play, the Watchlist disc, Info (the pager stands at the right margin
-    /// on the row's centre line). Everything above it on Home is one ladder that grows up from this
+    /// Top of Home's action row: Play, the Watchlist disc, Info (the pager follows Info on the row's
+    /// centre line). Everything above it on Home is one ladder that grows up from this
     /// line (`landing_hero::home_rows`).
     pub const HOME_ACTIONS_Y: f32 = 668.0;
     /// The block above the action row (a one-line episode label, or the synopsis) ends this far

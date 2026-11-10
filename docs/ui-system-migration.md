@@ -636,7 +636,7 @@ table: a count in prose is a measurement nothing re-takes.
 
 *Superseded for Home by the CW-13 v2 ladder (2026-11).* Home has its own ladder,
 `landing_hero::home_rows` (no identity, ratings or facts line; the action row at y=668, the Continue
-Watching tiles at y=768), its pager stands at the right margin rather than beside Info, and neither
+Watching tiles at y=768), its pager follows Info in the action row at the board's spacing, and neither
 hero draws the wedge any more: Home paints no atmospheric ramp, Detail keeps the atmospheric stops, and
 both stand on the content-following `hero_shade`. The paragraphs below still describe Detail.
 
