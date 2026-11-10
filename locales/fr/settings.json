@@ -14,6 +14,8 @@
   "settings.trailers.detail": "Lance la bande-annonce avec le son après quelques instants.",
   "settings.resolution.title": "Résolution de l’interface",
   "settings.resolution.detail": "Plus basse, plus fluide. Après redémarrage.",
+  "settings.http3.title": "HTTP/3 (expérimental)",
+  "settings.http3.detail": "Utilise HTTP/3 avec les serveurs qui le proposent. Expérimental : peut être plus lent sur un réseau qui perd des paquets. Après redémarrage.",
   "settings.resolution.auto": "Automatique",
   "settings.about.title": "À propos de PlxNative",
   "settings.about.detail": "Version, copyright et informations sur le projet.",

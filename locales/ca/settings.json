@@ -14,6 +14,8 @@
   "settings.trailers.detail": "Reprodueix el tràiler amb so al cap d'un moment.",
   "settings.resolution.title": "Resolució de la interfície",
   "settings.resolution.detail": "Més baixa, més fluida. S'aplica en reiniciar.",
+  "settings.http3.title": "HTTP/3 (experimental)",
+  "settings.http3.detail": "Fa servir HTTP/3 amb els servidors que l'ofereixen. Experimental: pot anar més lent en xarxes amb pèrdua de paquets. S'aplica en reiniciar.",
   "settings.resolution.auto": "Automàtica",
   "settings.about.title": "Quant a PlxNative",
   "settings.about.detail": "Versió, drets d'autor i informació del projecte.",

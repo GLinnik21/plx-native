@@ -202,6 +202,22 @@ pub struct Preferences {
     /// never the credentials.
     #[serde(default, deserialize_with = "de_soft_hold_hint_taught", skip_serializing_if = "is_default_hold_hint_taught")]
     pub hold_hint_taught: HoldHintTaught,
+    /// **HTTP/3 (experimental)**: whether the NEXT launch lets the bundled curl (bound in every
+    /// `CURLSTACK=1` build) learn and use HTTP/3 through Alt-Svc (`plx_net::net::alt_svc`). It does
+    /// not choose the libcurl. Install-wide, not per profile: `app::boot::construct` hands it to
+    /// `net::set_http3` before `net::global_init`, before anyone is seated, and the process installs
+    /// it once, so a change applies at the next launch. Offered by Settings only in a build that
+    /// carries the stack (`plx_net::net::BUNDLED_STACK_BUILT`); in any other build it is stored and
+    /// unused. Absence is **off**, no Alt-Svc; skipped while off so every session written before the field
+    /// serializes exactly as it did. **An Install row that a sign-out does not carry over**
+    /// ([`Scope::Install`] has the general rule): a signed-out read keeps only what
+    /// `install_preferences::Retained` holds (the language and the resolution), so the NEXT launch
+    /// after a sign-out sets no Alt-Svc (a running process keeps the switch it started with until it
+    /// restarts). On the DB8 backend `ClearTenure` leaves the key in the
+    /// stored preferences, but nothing reads it there and the next write of the preferences (a
+    /// sign-in) omits it. Soft-parsed: garbage reads off and costs only the switch.
+    #[serde(default, deserialize_with = "super::de_soft_bool", skip_serializing_if = "std::ops::Not::not")]
+    pub http3_experimental: bool,
     /// **Hero trailer autoplay** — the install-wide FALLBACK every profile reads until it picks its
     /// own (per profile in `profile_prefs`; this top-level key is frozen, which a build with
     /// per-profile settings never writes, except that session creation sets it on, as it always
@@ -377,14 +393,19 @@ pub struct Preferences {
 }
 
 /// How long a setting's value lives, and who owns the write. `auto_sign_in`, `ui_resolution`,
-/// `hold_hint_taught` and `last_hero_blur` are `Install`; the two lists sign-out clears are `Account`; the ten player
+/// `hold_hint_taught`, `http3_experimental` and `last_hero_blur` are `Install`; the two lists sign-out clears are `Account`; the ten player
 /// scalars, the hero trailer autoplay switch, the chosen HUD's package id ([`HudSelectionPref`], a `String` row) (each
 /// with its install-wide key as the [`Fallback`]) and the library lists are `Profile`;
 /// `track_memory` is `PerShow` and `subtitle_offsets` is `PerItem`. Sign-out clears every row that
 /// is account-bound, whatever its scope.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scope {
-    /// The television: shared by every profile, kept across sign-out, never account-bound.
+    /// The television: shared by every profile and never account-bound, so a sign-out never clears
+    /// it as an account key (DB8's `ClearTenure` keeps it in the stored preferences). That is not
+    /// the same as the launch after a sign-out READING it: a signed-out read is built from
+    /// `install_preferences::Retained`, which holds only the language and `ui_resolution`, so every
+    /// other Install row (`auto_sign_in`, `hold_hint_taught`, `http3_experimental`, ...) reads its
+    /// default until the next sign-in writes the preferences again.
     Install,
     /// The signed-in account: cleared with the credentials on sign-out.
     Account,
@@ -583,6 +604,10 @@ setting!(UiResolutionPref: UiResolution = ui_resolution, "ui_resolution", Instal
     account false, live false, settings None, parse Soft);
 setting!(HoldHintTaughtPref: HoldHintTaught = hold_hint_taught, "hold_hint_taught", Install,
     account false, live false, settings None, parse Soft);
+// Written by the Settings root's switch through `PreferenceCmd::Http3` (`session::set_http3_experimental`),
+// installed once at boot by `net::set_http3`.
+setting!(Http3Pref: bool = http3_experimental, "http3_experimental", Install,
+    account false, live false, settings None, parse BoolOff);
 setting!(LastHeroBlurPref: Option<[[f32; 3]; 4]> = last_hero_blur, "last_hero_blur", Install,
     account false, live false, settings None, parse OptionalSoft);
 
@@ -677,6 +702,7 @@ pub const DESCRIPTORS: &[Descriptor] = &[
     Descriptor::of::<LastHeroBlurPref>(),
     Descriptor::of::<UiResolutionPref>(),
     Descriptor::of::<HoldHintTaughtPref>(),
+    Descriptor::of::<Http3Pref>(),
     Descriptor::of::<PlaintextConsentRow>(),
     Descriptor::of::<ServerKeyPinsRow>(),
     Descriptor::of::<NativeAudioRefusedRow>(),

@@ -22,6 +22,9 @@ default = []
 # of the `tls-selftest` dev trigger).
 devtriggers = ["plx_base/devtriggers"]
 lab-diagnostics = ["plx_base/lab-diagnostics"]
+# The opt-in bundled curl stack's loader (`net::curlstack`), forwarded from the application crate's
+# `http3-curlstack` (see its doc there).
+http3-curlstack = ["plx_base/http3-curlstack"]
 # The `cfg(test)` seams other crates' tests use (`net::keypin`'s and `net::resolve`'s test hooks,
 # the loopback PMS fixtures, the canned-response helpers) plus the test-only CA-bundle override of
 # `net::request_result`. The fixtures mint certificates and run a TLS server, so this feature is

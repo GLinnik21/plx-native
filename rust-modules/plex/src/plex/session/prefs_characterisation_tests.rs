@@ -683,8 +683,9 @@ fn the_file_backend_keeps_only_the_language_and_resolution_at_sign_out() {
     redirect_for_test(None);
     redirect_candidates_for_test(Some(vec![root.dir.join("legacy-auth.json")]));
 
-    save(&all_non_default().with_ui_resolution(UiResolution::Hd720));
+    save(&all_non_default().with_ui_resolution(UiResolution::Hd720).with_http3_experimental(true));
     assert_eq!(peek().prefs.subtitle_size, SubtitleSize::Large, "setup: the non-default preferences are stored");
+    assert!(peek().http3_experimental(), "setup: HTTP/3 (experimental) is stored on");
     assert_eq!(peek().language, Preference::Be);
     assert_eq!(peek().ui_resolution(), UiResolution::Hd720);
     assert!(matches!(clear(), ClearOutcome::Durable { .. }));
@@ -697,6 +698,7 @@ fn the_file_backend_keeps_only_the_language_and_resolution_at_sign_out() {
 
     assert_eq!(fresh.language, Preference::Be, "language is kept");
     assert_eq!(fresh.ui_resolution(), UiResolution::Hd720, "and so is the Interface resolution");
+    assert!(!fresh.http3_experimental(), "HTTP/3 (experimental) is not kept: the next launch sets no Alt-Svc");
     // A session minted after sign-out is a FRESH one, not `Session::default()`: it writes the
     // explicit fresh quality (`auto`) and has trailer autoplay on. Neither is a kept preference.
     let mut expected = legacy(&Session::default());

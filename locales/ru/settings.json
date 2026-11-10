@@ -14,6 +14,8 @@
   "settings.trailers.detail": "Пауза на карточке запускает трейлер со звуком.",
   "settings.resolution.title": "Разрешение интерфейса",
   "settings.resolution.detail": "Ниже — плавнее. Нужен перезапуск.",
+  "settings.http3.title": "HTTP/3 (экспериментально)",
+  "settings.http3.detail": "Использовать HTTP/3 с серверами, которые его поддерживают. Экспериментально: в сетях с потерей пакетов может работать медленнее. Нужен перезапуск.",
   "settings.resolution.auto": "Автоматически",
   "settings.about.title": "О PlxNative",
   "settings.about.detail": "Версия, авторские права и сведения о проекте.",

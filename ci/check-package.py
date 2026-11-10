@@ -63,7 +63,8 @@ def build_configuration(stamp: str) -> "str | None":
 
     THE FEATURE FLAGS ARE ONE FIELD OF SEVERAL, and reading the stamp as a whole string is what
     silently switched every gate that depends on this off. `RUST_CFG` is `features:$(RUST_FEATFLAGS)`,
-    then `+symbols` when SYMBOLS=1, then `+nightly:<date>` when FLAVOR=nightly, then always
+    then `+symbols` when SYMBOLS=1, then `+curlstack` when CURLSTACK=1 (`curlstack_stamp`), then
+    `+nightly:<date>` when FLAVOR=nightly, then always
     `+tel:<hash>` — and `+profile:tvdev` right after the flags when the local ARM profile is in
     use (the Makefile's ARM_PROFILE; absent for `release`, so every shipped stamp is unchanged).
     The first version of this matched the whole string against two literals and went blind when
@@ -98,11 +99,20 @@ def build_configuration(stamp: str) -> "str | None":
     nor a `pkg/`.
     """
     fields = re.fullmatch(
-        r"features:(?P<flags>.*?)(?:\+profile:[a-z]+)?(?:\+symbols)?(?:\+nightly:[0-9]{8})?(?:\+rc:[0-9]+)?(?:\+tel:[0-9a-f]+)?",
+        r"features:(?P<flags>.*?)(?:\+profile:[a-z]+)?(?:\+symbols)?(?:\+curlstack)?(?:\+nightly:[0-9]{8})?(?:\+rc:[0-9]+)?(?:\+tel:[0-9a-f]+)?",
         stamp.strip())
     if not fields:
         return None
     return _stamp_flag_table().get(tuple(fields.group("flags").split()))
+
+
+def curlstack_stamp(stamp: str) -> bool:
+    """Did the Makefile build with CURLSTACK=1 (the opt-in bundled curl stack)? Read from
+    `pkg/.build-config`'s `+curlstack` field, which sits outside the feature flags on purpose: the
+    flag set is what `build_configuration` grades as dev or release, and a CURLSTACK=1 package is
+    still one of those two and must get every gate they get.
+    """
+    return re.search(r"\+curlstack(?=\+|$)", stamp.strip()) is not None
 
 
 def parse_release_line(content: str) -> "tuple[int, int] | None":
@@ -383,6 +393,10 @@ def _selftest() -> int:
         f"features:{rel_both}+profile:tvdev+tel:98c4b7d37a4c": "release",
         f"features:{rel_both}+symbols+nightly:20260919+tel:98c4b7d37a4c": "release",   # the nightly cut
         f"features:{rel_both}+symbols+rc:2+tel:98c4b7d37a4c": "release",      # a release candidate
+        # CURLSTACK=1 (the opt-in bundled curl): still a dev or release build, graded as one
+        f"features:{dev_both}+profile:tvdev+curlstack+tel:98c4b7d37a4c": "dev",
+        f"features:{dev_both}+curlstack+tel:98c4b7d37a4c": "dev",
+        f"features:{rel_both}+symbols+curlstack+tel:98c4b7d37a4c": "release",
         "features:--no-default-features --features play-feed+tel:98c4b7d37a4c": "release",
         "features:--no-default-features --features play-uri+symbols+tel:98c4b7d37a4c": "release",
         # no backend is refused by the Makefile at parse time (`PLAYBACK_BACKENDS=none` and a goal that builds), so it is no shipped configuration
@@ -427,6 +441,23 @@ def _selftest() -> int:
             bad += 1
             print(f"  FAIL — {stamp!r} decoded {got!r}, want {want!r}")
     print(f"check-package: build_configuration {len(cases) - bad}/{len(cases)} stamps correct")
+
+    curl_cases = {
+        "features:+tel:98c4b7d37a4c": False,
+        "features:+profile:tvdev+tel:98c4b7d37a4c": False,
+        "features:+curlstack+tel:98c4b7d37a4c": True,
+        "features:+profile:tvdev+curlstack+tel:98c4b7d37a4c": True,
+        "features:--no-default-features+symbols+curlstack": True,
+        "features:+curlstackish+tel:98c4b7d37a4c": False,
+        "": False,
+    }
+    curl_bad = 0
+    for stamp, want in curl_cases.items():
+        got = curlstack_stamp(stamp)
+        if got != want:
+            curl_bad += 1
+            print(f"  FAIL — curlstack_stamp({stamp!r}) = {got!r}, want {want!r}")
+    print(f"check-package: curlstack_stamp {len(curl_cases) - curl_bad}/{len(curl_cases)} stamps correct")
 
     # `expected_dev_version` against every shape the two derivations (this file's and
     # `rust-modules/src/release_line.rs`'s) must agree on: trunk, a real maintenance line, a
@@ -690,7 +721,7 @@ const DIAG: [&str; 6] = [
             print(f"  FAIL — rc_stamp_number({stamp!r}) = {got!r}, want {want!r}")
     print(f"check-package: rc_stamp_number {len(rc_cases) - rc_bad}/{len(rc_cases)} cases correct")
 
-    bad += (maintainer_bad + dev_bad + nightly_date_bad + cli_bad + nightly_blob_bad + rc_bad
+    bad += (maintainer_bad + curl_bad + dev_bad + nightly_date_bad + cli_bad + nightly_blob_bad + rc_bad
             + catalog_bad + sinks_bad + int(catalog_vacuous) + boundary_bad + pkgver_bad + rep_bad)
     return 1 if bad else 0
 
@@ -1313,6 +1344,7 @@ if IS_STABLE and audit.exists():
 _stamp = ROOT / "pkg/.build-config"
 STAMP_TEXT = _stamp.read_text() if _stamp.exists() else ""
 BUILD = build_configuration(STAMP_TEXT)
+CURLSTACK = curlstack_stamp(STAMP_TEXT)
 
 # THIRD-PARTY-NOTICES must name exactly the libraries that ship. RELEASE=1 drops swscale, and the
 # notices claimed it for two releases — an LGPL document describing a file that is not in the box.
@@ -1329,8 +1361,32 @@ BUILD = build_configuration(STAMP_TEXT)
 DEV_ONLY_SONAMES = {"libswscale-plx.so.10"}   # the dev capture stream's scaler; RELEASE=1 drops it
 shipped = {p.name for p in (ROOT / "pkg").glob("*.so.*")
            if p.is_file() and p.read_bytes()[:4] == b"\x7fELF"}
+# The opt-in bundled curl stack (CURLSTACK=1) is documented in its own section of the notices,
+# and ships only from a build that had the flag. Its libraries are therefore named-but-not-shipped
+# in a default package, which is the one exception to the rule above; the section's heading carries
+# the marker, and the libraries named under it are the optional set, so no list is restated here.
+# A CURLSTACK=1 package must ship ALL of them (a partial stack is a silent fallback to the system
+# libcurl on the television) and a default one NONE (a stack the binary has no loader for).
+CURLSTACK_SECTION = re.compile(r"^### [0-9.]+ .*\(CURLSTACK=1 builds only\)$(.*?)(?=^#{2,3} |^---$)", re.M | re.S)
 if shipped:
-    named = set(re.findall(r"`(lib[a-z]+-plx\.so\.\d+)`", (ROOT / "THIRD-PARTY-NOTICES.md").read_text()))
+    # `[a-z0-9_]+`, not `[a-z]+`: the curl stack's upstream basenames carry digits (nghttp2,
+    # nghttp3, ngtcp2) and an underscore (`libngtcp2_crypto_ossl`, ngtcp2's QUIC crypto glue).
+    soname_re = r"`(lib[a-z0-9_]+-plx\.so\.\d+)`"
+    notices = (ROOT / "THIRD-PARTY-NOTICES.md").read_text()
+    named = set(re.findall(soname_re, notices))
+    sections = CURLSTACK_SECTION.findall(notices)
+    check(len(sections) == 1, "THIRD-PARTY-NOTICES has exactly one `(CURLSTACK=1 builds only)` section"
+                              f" (found {len(sections)})")
+    optional = set(re.findall(soname_re, sections[0])) if len(sections) == 1 else set()
+    check(bool(optional), f"the CURLSTACK=1 section names its libraries ({len(optional)})")
+    stack = shipped & optional
+    check(stack == (optional if CURLSTACK else set()),
+          ("a CURLSTACK=1 package ships the whole curl stack" if CURLSTACK
+           else "a package built without CURLSTACK=1 ships no curl-stack library")
+          + (f" (missing={sorted(optional - stack)})" if CURLSTACK and stack != optional
+             else f" (found={sorted(stack)})" if stack and not CURLSTACK else ""))
+    if not CURLSTACK:
+        named -= optional
     distributed = shipped - DEV_ONLY_SONAMES
     check(distributed == named,
           "THIRD-PARTY-NOTICES names exactly the distributed libraries"
@@ -1774,6 +1830,22 @@ NEEDED_LICENCES = {
 for name, why in NEEDED_LICENCES.items():
     p = ROOT / "licenses" / name
     check(p.exists() and p.stat().st_size > 200, f"licenses/{name} — {why}")
+# The text only the opt-in curl stack needs (THIRD-PARTY-NOTICES, the CURLSTACK=1 section; it
+# also leans on Apache-2.0 for OpenSSL and MIT for nghttp2/nghttp3/ngtcp2, both always shipped). Kept outside the
+# `licenses/*.txt` glob the Makefile ships, so a default package carries exactly the set above, and
+# copied in beside them under CURLSTACK=1 — graded on the STAGED payload both ways.
+CURLSTACK_LICENCES = {
+    "curl.txt": "curl — its own permissive licence, not MIT verbatim",
+}
+for name, why in CURLSTACK_LICENCES.items():
+    p = ROOT / "licenses" / "curlstack" / name
+    check(p.exists() and p.stat().st_size > 200, f"licenses/curlstack/{name} — {why}")
+    staged = PAYLOAD / "licenses" / name
+    if CURLSTACK:
+        check(staged.is_file() and staged.read_bytes() == p.read_bytes(),
+              f"a CURLSTACK=1 package carries licenses/{name}")
+    else:
+        check(not staged.exists(), f"a package built without CURLSTACK=1 carries no licenses/{name}")
 
 print("== localized appinfo (staged) ==")
 # The tracked half first, against the TRACKED title — `stage_resources` reapplies the flavour

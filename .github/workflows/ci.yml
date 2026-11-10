@@ -695,6 +695,152 @@ jobs:
           path: |
             pkg/*.ipk
 
+  # The same cross-build and the same artifact gates, with `CURLSTACK=1`: the opt-in bundled HTTP/3
+  # curl stack (ci/build-curlstack.sh's seven libraries beside the binary, cargo feature
+  # `http3-curlstack`). Its own job rather than a matrix entry of the one above, so that job keeps
+  # its 10-minute budget and its required status: a cold stack build alone is minutes, and nothing
+  # merges on whether an opt-in build is green (`cross-build-required` does not wait for this job).
+  # It differs from `cross-build` only in the flag, the cache of the stack's build output, the
+  # build tools the stack needs, its own Rust target dir and its artifact name.
+  cross-build-curlstack:
+    name: armv7 cross-build and artifact assertions (CURLSTACK=1)
+    needs: changes
+    if: needs.changes.outputs.gated == 'true'
+    runs-on: ubuntu-24.04-arm
+    # Not yet measured on a runner. A warm run is the job above plus a ~5 MB cache restore (the zstd
+    # tarball of the script's tree, measured locally); a cold stack build (five builds, OpenSSL the
+    # longest; 168 s on an 8-core Apple M1) on top of a cold Rust build is the worst case, with margin.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the pinned Rust and the armv7 target
+        uses: ./.github/actions/rust-toolchain
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          # The Makefile's RUST_TDIR for this configuration (`-curlstack`), not `target/`.
+          workspaces: rust-modules -> target-curlstack
+          key: armv7-curlstack
+
+      - name: Cache the pinned downloads
+        uses: ./.github/actions/deps-cache
+
+      - id: ndk
+        uses: ./.github/actions/webos-ndk
+
+      - name: Install the bundled stack's build tools
+        # patchelf renames the non-OpenSSL SONAMEs to their `-plx` names, cmake builds
+        # nghttp3/ngtcp2, pkg-config resolves curl's `.pc` chain. OpenSSL's Configure needs only the
+        # runner's own perl.
+        timeout-minutes: 10
+        uses: ./.github/actions/apt-install
+        with:
+          packages: patchelf cmake pkg-config
+
+      - name: Cache the bundled FFmpeg
+        # Exactly the job above's entry (same path, same key): the stack does not change FFmpeg.
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/plxnative/ffmpeg
+          key: ffmpeg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ci/build-ffmpeg.sh', 'ci/deps.py', 'ci/dependencies.json', 'ci/arm-cc.py', 'ci/check-link-evidence.py', 'ci/stage-link-evidence.py', '.github/actions/webos-ndk/action.yml') }}
+
+      - id: curlstack-pins
+        name: Identify the bundled stack's pins
+        # The five `curlstack` entries of ci/dependencies.json only, so an FFmpeg or libass bump in
+        # the same file does not throw the stack's cache away.
+        run: |
+          set -euo pipefail
+          pins=$(python3 -c 'import json; print(json.dumps([d for d in json.load(open("ci/dependencies.json")) if d.get("group") == "curlstack"], sort_keys=True))' | sha256sum | cut -c1-16)
+          echo "id=$pins" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the bundled curlstack build
+        # The SCRIPT's own keyed output cache (ci/build-curlstack.sh's header), for the reason the
+        # FFmpeg step above gives: a restored `vendor/*-prefix` would be older than the checkout's
+        # script and make would rebuild anyway, while the script re-derives its key on every run and
+        # re-installs from a matching tree, so a stale restore can only miss, never hand back wrong
+        # libraries. The key moves with what the script keys on: itself, the pins, the two scripts
+        # it hashes, and the NDK pin.
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/plxnative/curlstack
+          key: curlstack-${{ runner.os }}-${{ runner.arch }}-${{ steps.curlstack-pins.outputs.id }}-${{ hashFiles('ci/build-curlstack.sh', 'ci/arm-cc.py', 'ci/check-link-evidence.py', '.github/actions/webos-ndk/action.yml') }}
+
+      - name: Build
+        run: make CURLSTACK=1 WEBOS_SDK='${{ steps.ndk.outputs.sdk-dir }}' -j"$(nproc)"
+
+      - name: Package
+        # The developer id, as in the job above, for the same reason.
+        run: make ipk CURLSTACK=1 FLAVOR=debug WEBOS_SDK='${{ steps.ndk.outputs.sdk-dir }}'
+
+      - name: Binary size budget
+        run: |
+          set -euo pipefail
+          staged=$(ls ipkroot/data/usr/palm/applications/*/plxnative)
+          [ "$(printf '%s\n' "$staged" | wc -l)" -eq 1 ]
+          python3 ci/check-build-budgets.py --binary "$staged"
+
+      - name: ELF assertions
+        run: ./ci/check-elf.sh
+        env:
+          WEBOS_SDK: ${{ steps.ndk.outputs.sdk-dir }}
+
+      - name: Bundled curl-stack ELF assertions
+        # The seven stack libraries run in the app's process: the same ARMv7 / no-CP15-barrier
+        # grading as the binary, and no `exit` import, which RTLD_DEEPBIND would bind past the
+        # app's exit interposer (the script's header).
+        run: ./ci/check-curlstack-elf.sh
+        env:
+          WEBOS_SDK: ${{ steps.ndk.outputs.sdk-dir }}
+
+      - name: Packaging assertions
+        # Reads `+curlstack` from pkg/.build-config: the whole stack and curl's licence text must be
+        # in the package, and THIRD-PARTY-NOTICES' CURLSTACK=1 section must name exactly the stack.
+        env:
+          REQUIRE_PACKAGE: "1"
+        run: python3 ci/check-package.py
+
+      - name: Font hinting audit
+        run: |
+          pip install --quiet --break-system-packages freetype-py || pip install --quiet freetype-py
+          ./tools/font-hint-audit.py
+
+      - name: webosbrew compatibility check
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          debs=$(python3 ci/deps.py fetch webosbrew-toolbox --asset fw-symbols --asset ipk-verify)
+          sudo apt-get install -y $debs
+          webosbrew-ipk-verify --details --format markdown \
+            --fw-releases '>=4.0' pkg/*.ipk | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: firmware load matrix
+        # As above; the loop over pkg/lib*-plx.so.* now also grades the seven curl-stack libraries'
+        # own DT_NEEDED and symbols against every firmware, with each other as --shipped.
+        run: |
+          set -euo pipefail
+          {
+            echo '### Firmware load matrix (CURLSTACK=1)'
+            echo '_Does the process start and do all symbols resolve? Says nothing about playback._'
+            echo '```'
+            ./tools/fwcompat.py --db /usr/share/webosbrew/compat-checker/data \
+              --min-release 4.4.2 pkg/plxnative
+            ./tools/fwcompat.py --db /usr/share/webosbrew/compat-checker/data \
+              --min-release 4.4.2 pkg/plxnative-storage
+            for lib in pkg/lib*-plx.so.*; do
+              case "$lib" in *.link.*) continue ;; esac   # the link-evidence sidecars
+              ./tools/fwcompat.py --db /usr/share/webosbrew/compat-checker/data \
+                --min-release 4.4.2 --shipped pkg "$lib"
+            done
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: plxnative-curlstack-${{ github.sha }}
+          path: |
+            pkg/*.ipk
+
   # The required status check `cross-build (armv7) + artifact assertions`, as its own always-running
   # job: the heavy job above is skipped on a PR that touches no gated file, and a required check that
   # is SKIPPED is not something to lean on (whether merging treats it as passing is a setting and a

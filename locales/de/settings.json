@@ -14,6 +14,8 @@
   "settings.trailers.detail": "Trailer mit Ton abspielen, wenn ein Titel kurz im Fokus ist.",
   "settings.resolution.title": "Auflösung der Oberfläche",
   "settings.resolution.detail": "Niedriger läuft flüssiger. Gilt nach dem Neustart.",
+  "settings.http3.title": "HTTP/3 (experimentell)",
+  "settings.http3.detail": "Nutzt HTTP/3 mit Servern, die es anbieten. Experimentell: In Netzwerken mit Paketverlust kann es langsamer sein. Gilt nach dem Neustart.",
   "settings.resolution.auto": "Automatisch",
   "settings.about.title": "Über PlxNative",
   "settings.about.detail": "Version, Urheberrecht und Projektinformationen.",

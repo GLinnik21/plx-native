@@ -119,7 +119,9 @@
 //! everything the server had already put in its kernel send buffer for the cancelled stream
 //! (2.7-3.4 MB not yet sent at the seek in a reproduction; time to new data about that over the
 //! link rate). So once a detached unfinished (or failed) HTTP/2 transfer has left a connection busy, every request this source
-//! makes to that origin for the next [`BUSY_FOR`] sets `CURLOPT_FRESH_CONNECT` ([`left_backlog`],
+//! makes to that origin sets `CURLOPT_FRESH_CONNECT` until [`BUSY_FOR`] runs out or the origin
+//! first answers over HTTP/3 (Alt-Svc has moved it to QUIC, whose connections never match the busy
+//! one; an HTTP/1.1 answer does not end the mark) ([`left_backlog`],
 //! [`ConnLedger`]): libcurl hands a request the oldest matching idle connection, so a busy one
 //! stays choosable until libcurl itself refuses it as idle too long (`CURLOPT_MAXAGE_CONN`, 118 s
 //! by default in 7.82 and 8.23 alike). HTTP/3 cancels per stream and is left alone, as is a
@@ -168,14 +170,22 @@ pub type CURLM = c_void;
 
 // ---- the SECOND libcurl table: curl_multi_*, and nothing else --------------------------------
 //
-// Same candidate list as `net.rs`, in the same order, so a set carrying both SONAMEs binds both
-// tables against the same library. The macOS name is last for the same reason it is there: the
+// On the system-curl path: the same candidate list as `net.rs`, in the same order, so a set
+// carrying both SONAMEs binds both tables against the same library. The macOS name is last for the same reason it is there: the
 // host simulator and `PlxNative.app` run this code, and the host suite below drives real libcurl
 // over plain loopback HTTP.
+//
+// An `http3-curlstack` build may bind the bundled `libcurl-plx.so.4` instead, but WHICH library
+// binds is never decided here: `ensure_loaded` reads `crate::net::bundled_curl()`, the handle
+// `net::global_init` chose, and binds THIS table from that same handle (`load_from`). Two tables
+// probing "is the bundle here" independently could disagree, and an easy handle `net.rs` created
+// against one libcurl, handed to this table's `curl_multi_add_handle` from another, is an ABI
+// violation, not a compatibility question.
 plx_base::dynlib! {
     /// The seven multi-interface symbols, frozen to webOS's oldest libcurl (7.53.1). See this
     /// module's doc before adding an eighth — `curl_multi_poll`/`curl_multi_wakeup` are absent on
-    /// the dev television and present on the Mac.
+    /// the dev television and present on the Mac (and in the opt-in bundled curl 8.23, which does
+    /// not change the rule: the table must work when the system library is the one that binds).
     curlmulti: ["libcurl.so.4", "libcurl.so.5", "libcurl.4.dylib"] {
     fn curl_multi_init() -> *mut CURLM;
     fn curl_multi_add_handle(multi: *mut CURLM, easy: *mut CURL) -> c_int;
@@ -234,6 +244,13 @@ const CURLOPT_HEADERFUNCTION: c_int = 20079;
 const CURLOPT_SSL_VERIFYHOST: c_int = 81;
 const CURLOPT_BUFFERSIZE: c_int = 98;
 const CURLOPT_NOSIGNAL: c_int = 99;
+/// `CURLOPT_ALTSVC_CTRL` / `CURLOPT_ALTSVC` — see `net.rs`'s own doc on the same pair. The cache
+/// file is [`crate::net::altsvc_cache_path`], the SAME one the control plane uses, so an h3
+/// upgrade either plane learns benefits both — a stream open is exactly the kind of request that
+/// profits from QUIC's per-stream flow control on a long byte-range GET.
+const CURLOPT_ALTSVC_CTRL: c_int = 286;
+const CURLOPT_ALTSVC: c_int = 10287;
+const CURLALTSVC_H3: c_long = 1 << 5;
 const CURLOPT_TCP_NODELAY: c_int = 121;
 /// Millisecond total-request deadline. Present since curl 7.16.2, well below the 7.53.1 webOS
 /// floor. Ordinary movie transfers deliberately do not set it; the short Auto preflight does.
@@ -254,6 +271,9 @@ const CURLINFO_HTTP_VERSION: c_int = 0x20_0000 + 46;
 /// `CURL_HTTP_VERSION_2_0` in `curl.h`'s enum (`NONE` 0, `1_0` 1, `1_1` 2, `2_0` 3, …, `3` = 30):
 /// what `CURLINFO_HTTP_VERSION` answers for a response that came over HTTP/2.
 const CURL_HTTP_VERSION_2_0: c_long = 3;
+/// `CURL_HTTP_VERSION_3` (30): what `CURLINFO_HTTP_VERSION` answers for a response over HTTP/3
+/// (the opt-in bundled stack's Alt-Svc upgrade; the firmware libcurl never negotiates it).
+const CURL_HTTP_VERSION_3: c_long = 30;
 
 /// **Whether a detached transfer left its connection carrying bytes nobody will read.**
 ///
@@ -309,7 +329,8 @@ fn never_connected(rc: c_int) -> bool {
 
 /// **How long a busy origin keeps dialling fresh.** Every request to it in this window sets
 /// `CURLOPT_FRESH_CONNECT`, because libcurl hands a request the oldest matching idle connection, so
-/// the busy one would be chosen by the next request that did not. The window ends when libcurl
+/// the busy one would be chosen by the next request that did not. The window ends early when the
+/// origin answers over HTTP/3 ([`ConnLedger::saw_version`]), and otherwise when libcurl
 /// stops offering that connection on its own: one idle longer than `CURLOPT_MAXAGE_CONN` (default
 /// 118 s: `set->maxage_conn = 118` in 7.82, `conn_max_idle_ms = 118 * 1000` in 8.23) is closed at the
 /// next lookup instead of being reused, and the busy connection is idle from the moment its stream
@@ -378,10 +399,18 @@ impl ConnLedger {
         self.entries.iter_mut().find(|e| same_origin(&e.origin, origin))
     }
 
-    /// A response from `origin` came over `version` (0, unknown, is not recorded).
+    /// A response from `origin` came over `version` (0, unknown, is not recorded). An HTTP/3 answer
+    /// also ends a busy mark: Alt-Svc now routes that origin to QUIC, whose connections never match
+    /// the busy HTTP/2 one, and HTTP/3 cancels per stream, so dialling fresh would only cost a QUIC
+    /// handshake per request for the rest of the window. Any other answer leaves the mark: an
+    /// HTTP/1.1 response can come from a fresh connection while the busy h2 one is still cached.
     fn saw_version(&mut self, origin: &Origin, version: c_long) {
         if version != 0 {
-            self.touch(origin).version = version;
+            let e = self.touch(origin);
+            e.version = version;
+            if version == CURL_HTTP_VERSION_3 {
+                e.busy_since = None;
+            }
         }
     }
 
@@ -648,7 +677,15 @@ static LOAD_ONCE: Once = Once::new();
 /// normally happens so the `dlopen` and its log line land on the main thread at start-up.
 fn ensure_loaded() {
     LOAD_ONCE.call_once(|| {
-        match curlmulti::load(None) {
+        // Mirror `net.rs`'s choice, never re-decide it — see the table's doc above.
+        // `net::bundled_curl` is only meaningful after `net::global_init`, which the app's boot
+        // runs before any media-plane use (the Feed's `ff::boot` calls this module's `boot`
+        // after it; any other first use is later still).
+        let verdict = match crate::net::bundled_curl() {
+            Some(handle) => curlmulti::load_from(handle, crate::net::BUNDLED_CURL_SONAME),
+            None => curlmulti::load(None),
+        };
+        match verdict {
             plx_base::dynlib::Loaded::Ok(soname) => {
                 plx_base::eventlog::log(&format!("curlio: bound {soname} curl_multi_* (7 symbols)"));
                 MULTI_OK.store(true, Ordering::Release);
@@ -1422,6 +1459,20 @@ impl<A: UrlAuthorizer> CurlSource<A> {
                 crate::net::curl_easy_setopt_long(easy, CURLOPT_SSL_VERIFYHOST, 2),
                 "CURLOPT_SSL_VERIFYHOST"
             );
+            if matches!(mode, keypin::Mode::Strict) && crate::net::alt_svc() {
+                require_setopt!(
+                    crate::net::curl_easy_setopt_long(easy, CURLOPT_ALTSVC_CTRL, CURLALTSVC_H3),
+                    "CURLOPT_ALTSVC_CTRL"
+                );
+                require_setopt!(
+                    crate::net::curl_easy_setopt_ptr(
+                        easy,
+                        CURLOPT_ALTSVC,
+                        crate::net::altsvc_cache_path().as_ptr() as *const c_void,
+                    ),
+                    "CURLOPT_ALTSVC"
+                );
+            }
             // The host suite's CA override, the twin of `net::request_result_evidence`'s: a test
             // that serves a certificate through a loopback TLS double must be able to make libcurl
             // trust the test CA. Compiled out of every non-test build.
@@ -3339,6 +3390,13 @@ mod tests {
         l.note_busy(&cdn, t1);
         assert_eq!(l.dial_fresh(&cdn, t1 + s(1)), Some(true), "a new cancel starts a new, logged window");
         assert!(BUSY_FOR > s(118), "longer than libcurl's default CURLOPT_MAXAGE_CONN");
+        l.note_busy(&cdn, t1);
+        l.saw_version(&cdn, 2);
+        assert!(l.dial_fresh(&cdn, t1 + s(1)).is_some(), "an HTTP/1.1 answer may come from a fresh connection: the mark stays");
+        l.saw_version(&cdn, CURL_HTTP_VERSION_3);
+        assert_eq!(l.dial_fresh(&cdn, t1 + s(1)), None, "an HTTP/3 answer (Alt-Svc to QUIC) ends the mark");
+        l.saw_version(&cdn, CURL_HTTP_VERSION_2_0);
+        l.note_busy(&cdn, t1);
         l.forget_busy();
         assert_eq!(l.dial_fresh(&cdn, t1 + s(1)), None, "a rebuilt multi has nothing busy");
         assert_eq!(l.version(&cdn), CURL_HTTP_VERSION_2_0, "…but the server's version stays known");

@@ -69,6 +69,12 @@ pub(super) fn execute(command: PreferenceCmd) {
                 plx_machine::idle::invalidate();
             });
         }
+        PreferenceCmd::Http3 { on, reply } => {
+            let _ = plx_base::storage_worker::submit_retained(move || {
+                let _ = reply.send(plx_plex::plex::session::set_http3_experimental(on));
+                plx_machine::idle::invalidate();
+            });
+        }
         PreferenceCmd::Language { language, reply } => {
             let _ = plx_base::storage_worker::submit_retained(move || {
                 let _ = reply.send(plx_plex::plex::session::set_language(language));

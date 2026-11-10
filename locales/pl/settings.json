@@ -14,6 +14,8 @@
   "settings.trailers.detail": "Po chwili na stronie tytułu włącz zwiastun z dźwiękiem.",
   "settings.resolution.title": "Rozdzielczość interfejsu",
   "settings.resolution.detail": "Niższa działa płynniej. Wymaga restartu.",
+  "settings.http3.title": "HTTP/3 (eksperymentalne)",
+  "settings.http3.detail": "Używaj HTTP/3 z serwerami, które je obsługują. Funkcja eksperymentalna: w sieciach z utratą pakietów może działać wolniej. Wymaga restartu.",
   "settings.resolution.auto": "Automatyczna",
   "settings.about.title": "O PlxNative",
   "settings.about.detail": "Wersja, prawa autorskie i informacje o projekcie.",

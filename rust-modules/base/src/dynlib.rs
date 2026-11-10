@@ -78,10 +78,11 @@ impl Handle {
         Self::open_in(None, candidates)
     }
 
-    /// The `dlopen` itself, once, so `open_in`'s two branches cannot drift.
-    fn dlopen_str(path: &str) -> *mut c_void {
+    /// The `dlopen` itself, once, so `open_in`'s two branches (and [`Handle::open_in_deepbind`]'s)
+    /// cannot drift.
+    fn dlopen_str(path: &str, mode: libc::c_int) -> *mut c_void {
         match CString::new(path) {
-            Ok(c) => unsafe { dlopen(c.as_ptr(), RTLD_NOW_GLOBAL) },
+            Ok(c) => unsafe { dlopen(c.as_ptr(), mode) },
             Err(_) => null_mut(),
         }
     }
@@ -97,21 +98,53 @@ impl Handle {
     /// `paths::app_dir()` and a `.to_str()` on the way in has a `None` branch — one that would
     /// silently turn "our bundled FFmpeg" into "whatever the loader finds".
     pub fn open_in<'a>(dir: Option<&Path>, candidates: &[&'a str]) -> Option<(Handle, &'a str)> {
+        Self::open_in_mode(dir, candidates, RTLD_NOW_GLOBAL)
+    }
+
+    fn open_in_mode<'a>(dir: Option<&Path>, candidates: &[&'a str], mode: libc::c_int) -> Option<(Handle, &'a str)> {
         for name in candidates {
             let h = match dir {
                 Some(d) => match d.join(name).to_str() {
-                    Some(p) => Self::dlopen_str(p),
+                    Some(p) => Self::dlopen_str(p, mode),
                     // A non-UTF-8 install path. Refuse rather than fall back to a bare SONAME,
                     // which on webOS 11 could open the television's FFmpeg instead of ours.
                     None => continue,
                 },
-                None => Self::dlopen_str(name),
+                None => Self::dlopen_str(name, mode),
             };
             if !h.is_null() {
                 return Some((Handle(h), name));
             }
         }
         None
+    }
+
+    /// As [`open_in`], but `RTLD_NOW | RTLD_DEEPBIND | RTLD_LOCAL`. DEEPBIND: the opened library
+    /// resolves ITS OWN undefined references against itself and its own dependency chain FIRST,
+    /// and only then against the process's global scope. LOCAL, the opposite direction: its exports
+    /// are never added to the global scope. glibc's `RTLD_GLOBAL` would add the library's whole
+    /// search list there, and the television carries its own OpenSSL under the same symbol names
+    /// (`libcrypto.so.1.0.0` through `libcrypto.so.3` by firmware, `tools/fwcompat.py --inventory
+    /// libcrypto`), so a firmware library `dlopen`'d later could bind to this stack's
+    /// `libcrypto-plx.so.3` instead of its own. Callers reach the
+    /// symbols through the returned handle (`Handle::sym`), which `RTLD_LOCAL` does not affect, and
+    /// a later open whose `NEEDED` names one of these SONAMEs still reuses the mapped copy.
+    ///
+    /// Only for the opt-in bundled curl stack (`make CURLSTACK=1`, cargo feature
+    /// `http3-curlstack`; `plx_net::net`'s `load_bundled`), and only on glibc, the one libc this
+    /// flag exists in. The reason it is needed at all: the television's `libplayerAPIs.so.1`,
+    /// linked by every build with the Feed backend (`PLAYBACK_BACKENDS=both|feed`), has a real
+    /// `NEEDED` entry on the TV's libcurl
+    /// (`libcurl.so.5` through 4.10.0, `libcurl.so.4` from 5.3.1), so that library and its
+    /// `nghttp2` are in the GLOBAL scope before `main` runs. A same-named bundled copy opened the ordinary way binds its OWN internal calls
+    /// between its own exported functions through the PLT, and the system copy, first in the
+    /// scope, wins them: the bundled `curl_easy_perform` then jumped into the system library's
+    /// ABI-incompatible internals and crashed at a fixed offset inside `libcurl.so.4.5.0` on the
+    /// first HTTPS request, every launch. `RTLD_LOCAL` alone cannot fix that, because it governs
+    /// whether OUR symbols are visible to others, not whether we see theirs.
+    #[cfg(all(feature = "http3-curlstack", target_os = "linux", target_env = "gnu"))]
+    pub fn open_in_deepbind<'a>(dir: Option<&Path>, candidates: &[&'a str]) -> Option<(Handle, &'a str)> {
+        Self::open_in_mode(dir, candidates, RTLD_NOW | libc::RTLD_DEEPBIND | libc::RTLD_LOCAL)
     }
 
     /// As [`open`], but only a library that is **already mapped** into the process
@@ -194,6 +227,20 @@ pub fn load_into(
     let Some((h, soname)) = Handle::open_in(dir, candidates) else {
         return Loaded::NoLibrary;
     };
+    load_from(h, soname, required)
+}
+
+/// [`load_into`]'s second half: resolve `required` out of a library the caller already opened.
+///
+/// For a library that must be opened some other way than `load()`'s `RTLD_NOW | RTLD_GLOBAL` by
+/// candidate SONAME (the opt-in bundled curl, opened `RTLD_DEEPBIND` by absolute path), or a table
+/// that must bind the very library another table already did. Same all-or-nothing contract: the
+/// cells are published only once every symbol resolved.
+pub fn load_from(
+    h: Handle,
+    soname: &'static str,
+    required: &[(&'static str, &AtomicPtr<c_void>)],
+) -> Loaded {
     let mut missing = 0usize;
     let mut resolved = Vec::with_capacity(required.len());
     for (name, _) in required {
@@ -338,6 +385,20 @@ macro_rules! dynlib {
                 $crate::dynlib::load_into(
                     dir,
                     CANDIDATES,
+                    &[$(($crate::dynlib_sym!($fname $(, $sym)?), &$fname)),*],
+                )
+            }
+
+            /// As `load`, but out of a library the caller already opened — see
+            /// `dynlib::load_from`. `soname` is what the result and the log report.
+            #[allow(dead_code)]
+            $vis fn load_from(
+                handle: $crate::dynlib::Handle,
+                soname: &'static str,
+            ) -> $crate::dynlib::Loaded {
+                $crate::dynlib::load_from(
+                    handle,
+                    soname,
                     &[$(($crate::dynlib_sym!($fname $(, $sym)?), &$fname)),*],
                 )
             }

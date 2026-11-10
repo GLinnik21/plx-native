@@ -10,6 +10,11 @@ use std::os::raw::{c_int, c_long, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
+// An `http3-curlstack` build may bind the bundled `libcurl-plx.so.4` instead, and WHICH library
+// binds is never decided here: `bound` reads `super::bundled_curl()`, the handle `global_init`
+// chose, and binds this table from that same handle, as `curlio`'s multi table does. The easy
+// handle these functions take comes from `super::curl_easy_init`; handing it to another libcurl's
+// `curl_easy_send` would be an ABI violation, not a compatibility question.
 plx_base::dynlib! {
     raw: ["libcurl.so.4", "libcurl.so.5", "libcurl.4.dylib"] {
     fn curl_easy_send(handle: *mut CURL, buffer: *const c_void, length: usize, sent: *mut usize) -> c_int;
@@ -146,7 +151,11 @@ impl Socket {
 fn bound() -> bool {
     static BOUND: OnceLock<bool> = OnceLock::new();
     *BOUND.get_or_init(|| {
-        let ok = raw::load(None).ok();
+        let ok = match super::bundled_curl() {
+            Some(handle) => raw::load_from(handle, super::BUNDLED_CURL_SONAME),
+            None => raw::load(None),
+        }
+        .ok();
         if !ok {
             plx_base::eventlog::log("net: this libcurl lacks curl_easy_send/curl_easy_recv; no WebSocket");
         }

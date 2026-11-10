@@ -64,11 +64,12 @@ def featflags(root: Path = ROOT, *, release: bool, backends: "str | None" = None
     environment and an inherited `MAKEFLAGS`: a caller running inside `make ipk` (the Makefile runs
     `ci/check-package.py` itself) would otherwise ask about the build that is being graded instead of
     the configuration it means, a LAB build would derive a feature set that already carries
-    `lab-diagnostics`, and an inherited `RC=<n>` with `RELEASE=` empty trips the Makefile's own
-    parse-time refusal. `MAKEFLAGS` (and its jobserver) is dropped for the same reason.
+    `lab-diagnostics`, a `CURLSTACK=1` build one that carries `--features http3-curlstack` (which
+    its stamp's feature field leaves out: `+curlstack` is a field of its own), and an inherited
+    `RC=<n>` with `RELEASE=` empty trips the Makefile's own parse-time refusal. `MAKEFLAGS` (and its jobserver) is dropped for the same reason.
 
     Raises ValueError when make cannot answer, so a caller reports it instead of guessing a feature set."""
-    query = ["RELEASE=1" if release else "RELEASE=", "LAB=", "RC="]
+    query = ["RELEASE=1" if release else "RELEASE=", "LAB=", "RC=", "CURLSTACK="]
     if backends is not None:
         query.append(f"PLAYBACK_BACKENDS={backends}")
     cmd = ["make", "-s", "--no-print-directory", "-C", str(root), *query, "print-playback-config"]

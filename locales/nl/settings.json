@@ -14,6 +14,8 @@
   "settings.trailers.detail": "Speel na een moment op een titel de trailer met geluid af.",
   "settings.resolution.title": "Resolutie interface",
   "settings.resolution.detail": "Lager is vloeiender. Herstart om toe te passen.",
+  "settings.http3.title": "HTTP/3 (experimenteel)",
+  "settings.http3.detail": "Gebruikt HTTP/3 met servers die het aanbieden. Experimenteel: kan trager zijn op een netwerk met pakketverlies. Herstart om toe te passen.",
   "settings.resolution.auto": "Automatisch",
   "settings.about.title": "Over PlxNative",
   "settings.about.detail": "Versie, copyright en projectinformatie.",

@@ -696,6 +696,7 @@ fn inputs_for(signed_in: bool) -> RootInputs {
     RootInputs {
         trace: plx_platform::playback_trace::Status::Off,
         signed_in, multi_user: true, library_count: 3, auto_sign_in: false, trailer_autoplay: true, resolution: UiResolution::Auto, resolution_offered: true,
+        http3: false, http3_offered: true,
         language: plx_platform::i18n::Preference::System,
         under_posters: plx_plex::plex::session::UnderPosters::DEFAULT, plaintext: Vec::new(),
     }
@@ -759,6 +760,121 @@ fn the_interface_resolution_row_is_offered_on_webos_1_to_3_only() {
     let _sess = multi_user_session("root-resolution-gate");
     let page = RootPage::new(EntryId(0), cx(None).views.directory);
     assert_eq!(page.form.index_of(&RootId::Resolution), None);
+}
+
+/// **The HTTP/3 (experimental) switch exists only in a build that ships the bundled curl stack**,
+/// and only signed in (the signed-out root is the sign-in path's short list). Hidden, the root is
+/// exactly the root without the row; shown, it is a switch in the System section, right after the
+/// rows before it, that reads the stored value.
+#[test]
+fn the_http3_switch_is_offered_only_in_a_build_that_ships_the_stack() {
+    let keys = |inputs: RootInputs| -> (Vec<u32>, Option<usize>, FormTable<RootId, Action, SettingsPage>) {
+        let mut real = FormTable::<RootId, Action, SettingsPage>::new(super::super::registry::BAND);
+        real.set(root_form(&inputs), None);
+        let all = (0..real.table.n_rows() as usize).filter_map(|i| real.key_at(i)).map(|k| k.0).collect();
+        let at = real.index_of(&RootId::Http3);
+        (all, at, real)
+    };
+    for signed_in in [false, true] {
+        let (hidden, at_hidden, _) = keys(RootInputs { http3_offered: false, ..inputs_for(signed_in) });
+        let (shown, at_shown, real) = keys(RootInputs { http3_offered: true, ..inputs_for(signed_in) });
+        assert_eq!(at_hidden, None, "a build without the stack has no row (signed_in={signed_in})");
+        if signed_in {
+            let at = at_shown.expect("offered and signed in: the row is there");
+            let mut without = shown.clone();
+            assert_eq!(without.remove(at), RootId::Http3.key().0);
+            assert_eq!(without, hidden, "the rest of the root is unchanged");
+            assert_eq!(real.binding_at(at).expect("bound").kind.clone(), RowKind::Toggle, "a switch, not a page");
+            assert_eq!(real.id_at(at - 1), Some(&RootId::Resolution), "it closes the System section");
+        } else {
+            assert_eq!(at_shown, None, "the signed-out root never shows it");
+            assert_eq!(shown, hidden);
+        }
+    }
+    // the row reads the stored value
+    let toggle_of = |http3: bool| {
+        let mut real = FormTable::<RootId, Action, SettingsPage>::new(super::super::registry::BAND);
+        real.set(root_form(&RootInputs { http3, ..inputs_for(true) }), None);
+        let i = real.index_of(&RootId::Http3).expect("the row exists");
+        real.table.sections.iter().flat_map(|s| s.rows.iter()).nth(i).expect("the row exists").toggle
+    };
+    assert_ne!(toggle_of(true), toggle_of(false), "on and off read differently");
+    // the real page is fed from the build: a host build without the stack's loader has no such row
+    let _g = plx_base::testlock::serial();
+    let _sess = multi_user_session("root-http3-gate");
+    let page = RootPage::new(EntryId(0), cx(None).views.directory);
+    assert_eq!(page.form.index_of(&RootId::Http3).is_some(), plx_net::net::BUNDLED_STACK_BUILT);
+}
+
+/// **A stored HTTP/3 on is not part of a page that does not offer the switch**: a session written
+/// by a stack build and read by a build without one leaves the row, the switch state and the
+/// canonical digest exactly as an off would; offered, the same session shows it on.
+#[test]
+fn a_stored_http3_on_reaches_the_root_only_where_the_switch_is_offered() {
+    let _g = plx_base::testlock::serial();
+    let _sess = multi_user_session("root-http3-unoffered");
+    let stored = plx_plex::plex::session::peek();
+    plx_plex::plex::session::save(&stored.with_http3_experimental(true));
+    let digest = |page: &RootPage| {
+        let mut w = Canon::new();
+        page.state.write(&mut w);
+        let mut probe = String::new();
+        page.state.probe(&mut probe);
+        (w.finish(), probe)
+    };
+    let mut page = RootPage::new(EntryId(0), cx(None).views.directory);
+    page.offers_http3 = false;
+    page.rebuild(cx(None).views.directory);
+    assert!(!page.state.http3, "not offered: the stored on does not reach the switch state");
+    assert_eq!(page.form.index_of(&RootId::Http3), None);
+    let (unoffered, probe) = digest(&page);
+    assert!(!probe.contains("http3"), "{probe}");
+    plx_plex::plex::session::save(&stored);
+    page.rebuild(cx(None).views.directory);
+    assert_eq!(digest(&page).0, unoffered, "the digest is the one a stored off gives");
+
+    plx_plex::plex::session::save(&stored.with_http3_experimental(true));
+    page.offers_http3 = true;
+    page.rebuild(cx(None).views.directory);
+    assert!(page.state.http3, "offered: the row reads the stored on");
+    assert!(digest(&page).1.contains("http3=true"));
+    assert_ne!(digest(&page).0, unoffered);
+    plx_plex::plex::session::save(&stored);
+}
+
+/// **Flipping the HTTP/3 switch asks the app to write it** (`PreferenceCmd::Http3`), shows the
+/// pick at once, and the row returns to the stored value once the write answers; nothing here
+/// touches curl, which binds once per launch.
+#[test]
+fn flipping_the_http3_switch_writes_it_through_the_app_and_shows_the_pick() {
+    let _g = plx_base::testlock::serial();
+    let _sess = multi_user_session("root-http3-flip");
+    let mut page = RootPage::new(EntryId(0), cx(None).views.directory);
+    assert!(!page.state.http3, "off by default");
+    // drive the offered shape whatever this test build carries (the macOS host never has the loader)
+    page.offers_http3 = true;
+    page.rebuild(cx(None).views.directory);
+    assert!(page.form.index_of(&RootId::Http3).is_some(), "premise: the row is offered");
+    let mut present = Present::new();
+    let mut out = Vec::new();
+    let mut fx = Effects::new(&mut out, MachineId::Session, &mut present);
+    page.activate(RootId::Http3.key().0, cx(None).views.directory, &mut fx);
+    drop(fx);
+    let writes: Vec<_> = out.drain(..).filter_map(|st| match st.fx {
+        Fx::App(super::super::registry::AppFx::Preferences(super::super::registry::PreferenceCmd::Http3 { on, reply })) => Some((on, reply)),
+        _ => None,
+    }).collect();
+    assert_eq!(writes.len(), 1, "one write per press");
+    assert!(writes[0].0, "off flips to on");
+    assert!(page.state.http3, "the row shows the pick while the write is out");
+    // the write is refused: the row goes back to what is stored
+    for (_, reply) in writes {
+        let _ = reply.send(false);
+    }
+    let mut fx = Effects::new(&mut out, MachineId::Session, &mut present);
+    page.step(&ScreenEvent::Tick(Tick::default()), &cx(None), &mut fx);
+    assert!(page.pending_http3.is_none(), "the answer is taken");
+    assert!(!page.state.http3, "a refused write is not claimed");
 }
 
 /// **Reordering the root moves no identity.** A form that declares the same rows in a different

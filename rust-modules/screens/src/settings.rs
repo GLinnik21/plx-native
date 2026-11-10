@@ -1066,6 +1066,9 @@ enum RootId {
     AutoSignIn,
     TrailerAutoplay,
     Resolution,
+    /// HTTP/3 (experimental): whether the next launch's bundled curl may use HTTP/3 (Alt-Svc). Only
+    /// in a build that ships the bundled curl stack ([`RootInputs::http3_offered`]).
+    Http3,
     /// One server's switch. Its key is [`PLAINTEXT_KEY_BASE`] plus its position in the section
     /// ([`root_form`] assigns it); its identity is the machine, so a rebuild keeps the row.
     Plaintext(ServerMachineId),
@@ -1095,6 +1098,7 @@ impl FormId for RootId {
             RootId::Resolution => 10,
             RootId::UnderPosters => 11,
             RootId::Diagnostics => 12,
+            RootId::Http3 => 13,
             // the base; `root_form` adds the position (`item_keyed`)
             RootId::Plaintext(_) => PLAINTEXT_KEY_BASE,
         })
@@ -1109,6 +1113,7 @@ enum Action {
     Door,
     AutoSignIn,
     TrailerAutoplay,
+    Http3,
     /// A server's "connect without encryption" switch.
     Plaintext(ServerMachineId),
 }
@@ -1125,6 +1130,14 @@ pub struct RootPage {
     /// and the receipt of its `route::choose` (Confirm) write. A `false` (or dropped) receipt means
     /// the pick was not saved, and the row goes back to the stored value.
     pending_trailer: Option<(bool, std::sync::mpsc::Receiver<bool>)>,
+    /// The HTTP/3 switch picked here and not yet answered, as `pending_trailer`: the receipt of its
+    /// `PreferenceCmd::Http3` write, which applies at the next launch.
+    pending_http3: Option<(bool, std::sync::mpsc::Receiver<bool>)>,
+    /// Whether this build offers the HTTP/3 row: `plx_net::net::BUNDLED_STACK_BUILT`, a
+    /// compile-time fact, held as a field so a test can drive either shape whatever the build it runs
+    /// in (the macOS host never carries the loader; a Linux glibc host with `http3-curlstack` does).
+    /// Gates both the row and the switch's canonical state.
+    offers_http3: bool,
     /// The servers the signed-in account answered plx_platform::i18n::msg::settings_plaintext_question() for, then the
     /// ones discovery offers it for and nobody has answered, by row — the `(machine_id, allowed)`
     /// each switch shows.
@@ -1148,6 +1161,11 @@ struct RootState {
     sel: RowKey,
     auto_sign_in: bool,
     trailer_autoplay: bool,
+    /// The HTTP/3 (experimental) switch as the row shows it, and false whenever the row is not
+    /// offered (a stored on in a build without the stack included). Written to the canon only when
+    /// on, so every root's digest is unchanged while it is off and in every build that does not
+    /// offer it.
+    http3: bool,
     language: plx_platform::i18n::Preference,
     /// What shows under a poster, as the Under posters row summarises it. Written to the canon only
     /// when it is not the default, so every default root's digest is unchanged.
@@ -1165,6 +1183,7 @@ impl LogicalState for RootState {
             w.u32(u32::from(self.under_posters.pack()));
         }
         if self.trace != plx_platform::playback_trace::Status::Off { w.u8(0xd1).u8(self.trace as u8); }
+        if self.http3 { w.u8(0x33); }
         if !self.plaintext.is_empty() {
             w.u32(self.plaintext.len() as u32);
             for &on in &self.plaintext {
@@ -1178,6 +1197,7 @@ impl LogicalState for RootState {
             self.sel.0, self.auto_sign_in, self.trailer_autoplay, self.language.tag()
         ));
         out.push_str(&format!(" trace={:?}", self.trace));
+        if self.http3 { out.push_str(" http3=true"); }
         if !self.plaintext.is_empty() {
             out.push_str(&format!(" plaintext={:?}", self.plaintext));
         }
@@ -1216,6 +1236,12 @@ struct RootInputs {
     /// (`plx_platform::tv::device::ui_resolution_offered`). A plain flag, like the others, so the
     /// builder stays pure and a test can state either answer.
     resolution_offered: bool,
+    /// The stored HTTP/3 (experimental) switch, or the pick waiting for its write.
+    http3: bool,
+    /// Whether this build offers the HTTP/3 row at all: it carries the bundled curl stack's loader
+    /// (`plx_net::net::BUNDLED_STACK_BUILT`, a compile-time fact; `make CURLSTACK=1` packages are
+    /// refused without the libraries). A plain flag so the builder stays pure.
+    http3_offered: bool,
     language: plx_platform::i18n::Preference,
     /// What shows under a poster (the stored setting, read at the build), which the Under posters
     /// row summarises the way Language shows its name.
@@ -1258,6 +1284,7 @@ fn sentence_for(id: Option<&RootId>) -> Cow<'static, str> {
         Some(RootId::AutoSignIn) => Cow::Borrowed(msg::settings_auto_sign_in_detail()),
         Some(RootId::TrailerAutoplay) => Cow::Borrowed(msg::settings_trailers_detail()),
         Some(RootId::Resolution) => Cow::Borrowed(msg::settings_resolution_detail()),
+        Some(RootId::Http3) => Cow::Borrowed(msg::settings_http3_detail()),
         Some(RootId::Privacy) => Cow::Borrowed(msg::settings_privacy_detail()),
         Some(RootId::Diagnostics) => Cow::Borrowed(msg::settings_diagnostics_detail()),
         Some(RootId::Legal) => Cow::Borrowed(msg::settings_legal_detail()),
@@ -1344,6 +1371,15 @@ fn root_form(inputs: &RootInputs) -> Form<RootId, Action, SettingsPage> {
             Row::new(plx_platform::i18n::msg::settings_resolution_title())
                 .value(super::preferences::resolution_label(inputs.resolution))
                 .chevron(true),
+        )
+        // Signed in AND in a build that ships the bundled curl stack (`http3_offered`); like the
+        // resolution it applies at the next launch, and like it the signed-out root never shows it.
+        .item_if(
+            signed_in && inputs.http3_offered,
+            RootId::Http3,
+            RowKind::Toggle,
+            Action::Http3,
+            Row::new(plx_platform::i18n::msg::settings_http3_title()).toggle(inputs.http3),
         );
     let has_plaintext = signed_in && !inputs.plaintext.is_empty();
     let mut plaintext = FormSection::new(plx_platform::i18n::msg::settings_plaintext_section()).visible(has_plaintext);
@@ -1406,7 +1442,8 @@ impl RootPage {
             form: FormTable::new(super::registry::BAND),
             session_watch: Default::default(),
             session_snapshot: Default::default(),
-            pending_auto: None, pending_trailer: None,
+            pending_auto: None, pending_trailer: None, pending_http3: None,
+            offers_http3: plx_net::net::BUNDLED_STACK_BUILT,
             under_ask: Default::default(),
             plaintext_rows: Vec::new(),
             pending_plaintext: None,
@@ -1418,6 +1455,7 @@ impl RootPage {
                 sel: RowKey(0),
                 auto_sign_in: false,
                 trailer_autoplay: true,
+                http3: false,
                 language: plx_platform::i18n::Preference::System,
                 under_posters: plx_plex::plex::session::UnderPosters::DEFAULT,
                 plaintext: Vec::new(),
@@ -1448,16 +1486,22 @@ impl RootPage {
         }, |(value, _)| *value);
         let resolution = sess.ui_resolution();
         let resolution_offered = plx_platform::tv::device::ui_resolution_offered();
+        let http3_offered = self.offers_http3;
+        // Not offered, the switch is not part of this page at all: a stored on (a session from a
+        // stack build) must not reach the row, the action or the canon.
+        let http3 = http3_offered
+            && self.pending_http3.as_ref().map_or_else(|| sess.http3_experimental(), |(value, _)| *value);
         let multi_user = sess.home_users.len() > 1;
         self.state.auto_sign_in = auto_sign_in;
         self.state.trailer_autoplay = trailer_autoplay;
+        self.state.http3 = http3;
         self.state.language = plx_platform::i18n::saved_preference();
         self.state.under_posters = plx_media::route::under_posters();
         let plaintext = if signed_in { self.plaintext_inputs() } else { Vec::new() };
         let form = root_form(&RootInputs {
             trace: self.state.trace,
             signed_in, multi_user, library_count: directory.pinned_count() as i64,
-            auto_sign_in, trailer_autoplay, resolution, resolution_offered, language: self.state.language,
+            auto_sign_in, trailer_autoplay, resolution, resolution_offered, http3, http3_offered, language: self.state.language,
             under_posters: self.state.under_posters, plaintext,
         });
         let keep = self.form.selected_id().cloned();
@@ -1568,6 +1612,15 @@ impl RootPage {
                 self.pending_trailer = Some((on, receipt));
                 self.rebuild(directory);
             }
+            Action::Http3 => {
+                // Install-wide, next launch: the app writes it through the session (Confirm, like
+                // the resolution picker); the row shows the pick until the write answers.
+                let on = !self.state.http3;
+                let (reply, receipt) = std::sync::mpsc::channel();
+                fx.push(Fx::App(AppFx::Preferences(super::registry::PreferenceCmd::Http3 { on, reply })));
+                self.pending_http3 = Some((on, receipt));
+                self.rebuild(directory);
+            }
             Action::Plaintext(ServerMachineId(machine)) => {
                 use plx_plex::plex::session::PlaintextChoice;
                 let Some(on) = self.plaintext_rows.iter().find(|(m, _)| *m == machine).map(|(_, on)| *on) else {
@@ -1663,14 +1716,18 @@ impl Machine<InnerHost> for RootPage {
                         landed = true;
                     }
                 }
-                if self.pending_trailer.as_ref().is_some_and(|(_, receipt)| !matches!(receipt.try_recv(),
-                    Err(std::sync::mpsc::TryRecvError::Empty))) {
-                    // Answered (saved, refused or dropped): the row reads the stored value again,
-                    // which holds the pick only if the write was durable. Same wait for a settled
-                    // session as above.
+                // The trailer and HTTP/3 switches' receipts. Answered (saved, refused or dropped):
+                // the row reads the stored value again, which holds the pick only if the write was
+                // durable. Same wait for a settled session as above; a consumed receipt polls as
+                // Disconnected afterwards, so it is still seen as answered on the next Tick.
+                let answered = |pending: &Option<(bool, std::sync::mpsc::Receiver<bool>)>| pending.as_ref()
+                    .is_some_and(|(_, receipt)| !matches!(receipt.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
+                let (trailer_answered, http3_answered) = (answered(&self.pending_trailer), answered(&self.pending_http3));
+                if trailer_answered || http3_answered {
                     if let Some(snapshot) = plx_plex::plex::session::peek_settled() {
                         self.session_snapshot = snapshot;
-                        self.pending_trailer = None;
+                        if trailer_answered { self.pending_trailer = None; }
+                        if http3_answered { self.pending_http3 = None; }
                         landed = true;
                     }
                 }

@@ -12,7 +12,7 @@ fn inputs(signed_in: bool) -> RootInputs {
     RootInputs {
         trace: Status::Off,
         signed_in, multi_user: false, library_count: 3, auto_sign_in: false, trailer_autoplay: true,
-        resolution: UiResolution::Auto, resolution_offered: false,
+        resolution: UiResolution::Auto, resolution_offered: false, http3: false, http3_offered: false,
         language: plx_platform::i18n::Preference::System,
         under_posters: plx_plex::plex::session::UnderPosters::DEFAULT, plaintext: Vec::new(),
     }
@@ -59,15 +59,16 @@ fn the_signed_out_root_drops_every_signed_in_row() {
 /// How far the longest root scrolls to seat About, MEASURED on the table the root draws (board row
 /// metrics, in the Settings layout's own table frame), and how far it may drift before this test
 /// says the row heights or the section break moved. It is a pin of our geometry, not a number
-/// read off the board.
-const ALL_ROWS_SCROLL: f32 = 244.0;
+/// read off the board. 304 since the HTTP/3 (experimental) switch joined the conditional rows (one
+/// row's pitch more than the 244 it was; that row exists only in a `CURLSTACK=1` build).
+const ALL_ROWS_SCROLL: f32 = 304.0;
 const ALL_ROWS_SCROLL_TOLERANCE: f32 = 6.0;
 
 /// Sv2s-R2: every conditional row at once is the board's longest root, and it scrolls.
 #[test]
 fn the_root_with_every_conditional_row_scrolls_with_focus() {
     let all = RootInputs {
-        multi_user: true, resolution_offered: true,
+        multi_user: true, resolution_offered: true, http3_offered: true,
         plaintext: vec![PlaintextRowInput { machine: ServerMachineId("m".into()), name: "Server".into(), named: true, on: false, connected: false }],
         ..inputs(true)
     };
@@ -95,6 +96,7 @@ fn the_sentence_follows_the_focused_row_and_falls_back_to_the_pages() {
     assert_eq!(sentence_for(Some(&RootId::Language)), msg::settings_language_detail());
     assert_eq!(sentence_for(Some(&RootId::TrailerAutoplay)), msg::settings_trailers_detail());
     assert_eq!(sentence_for(Some(&RootId::Diagnostics)), msg::settings_diagnostics_detail());
+    assert_eq!(sentence_for(Some(&RootId::Http3)), msg::settings_http3_detail());
     assert_eq!(sentence_for(None), msg::settings_root_copy(), "no focused row, the page sentence");
     assert_eq!(sentence_for(Some(&RootId::Plaintext(ServerMachineId("m".into())))), msg::settings_root_copy(),
         "a server's switch states its own status in the table and has no sentence of its own");
@@ -140,7 +142,7 @@ fn every_followed_sentence_fits_five_lines_in_every_language() {
         // `Header::paint` hangs the sentence its CSS box's cap drop (~7px) below the frame's top
         let drop = layout.copy_cap_drop(theme::size::LABEL, &ShippedMeasure);
         let mut all: Vec<RootId> = vec![RootId::Favourites, RootId::UnderPosters, RootId::Playback, RootId::AudioSubtitles,
-            RootId::Language, RootId::AutoSignIn, RootId::TrailerAutoplay, RootId::Resolution, RootId::Privacy,
+            RootId::Language, RootId::AutoSignIn, RootId::TrailerAutoplay, RootId::Resolution, RootId::Http3, RootId::Privacy,
             RootId::Diagnostics, RootId::Legal, RootId::About];
         all.push(RootId::Plaintext(ServerMachineId("m".into())));
         for id in all {

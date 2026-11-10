@@ -59,6 +59,14 @@
     "value": "Lower is smoother. Applies after restarting.",
     "description": "Settings detail line under settings.resolution.title; the choice takes effect at the next launch"
   },
+  "settings.http3.title": {
+    "value": "HTTP/3 (experimental)",
+    "description": "Settings switch: lets the app use the newer HTTP/3 network protocol with servers that offer it. Keep 'HTTP/3' untranslated (protocol name); translate only the parenthesised word"
+  },
+  "settings.http3.detail": {
+    "value": "Uses HTTP/3 with servers that offer it. Experimental: may be slower on networks with packet loss. Applies after restarting.",
+    "description": "Sentence beside the Settings table while settings.http3.title has focus: what the switch does, that it is experimental and may be slower on networks that lose packets, and that the change takes effect at the next launch. Must fit five lines of the Settings narrative column"
+  },
   "settings.resolution.auto": {
     "value": "Automatic",
     "description": "Value of settings.resolution.title: the native 1920x1080 size, the same on every TV"

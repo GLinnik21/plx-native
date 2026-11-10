@@ -536,6 +536,64 @@ host, a request to that host starts there instead of repeating the handshake the
 redirect is a request of its own, verified against the television's own store, and is offered this
 file only if its target is itself a `*.plex.direct` name that fails the same way.
 
+### 2.8 Bundled HTTP/3-capable curl (CURLSTACK=1 builds only)
+
+**A default PlxNative package does not contain anything in this section**, and no published
+release does. It applies only to a package built with `make CURLSTACK=1`, which ships its own build
+of curl beside the binary and prefers it to the television's libcurl (7.53.1 on the oldest
+firmware; HTTP/1.1 and HTTP/2 only, no QUIC); it uses HTTP/3 only while Settings > System >
+HTTP/3 (experimental) is on. `net.rs` falls back to the television's copy,
+unchanged, the moment any file below is missing or fails to load. `ci/check-package.py` grades a
+package against this section: a CURLSTACK=1 package must carry every file in the table, and any
+other package none of them.
+
+The TLS backend is **OpenSSL 3.5**, built for 32-bit ARM with its assembly (`linux-armv4`), whose
+ARMv8 Crypto Extension paths are selected at run time on CPUs that have them. Every library is
+loaded `RTLD_DEEPBIND | RTLD_LOCAL`, so none of it joins the process's global symbol scope, where
+the television's own OpenSSL lives.
+
+| Shipped file | Upstream | Version | Licence |
+|---|---|---|---|
+| `libcurl-plx.so.4` | curl | **8.23.0** | **curl** (`licenses/curl.txt`) |
+| `libcrypto-plx.so.3`, `libssl-plx.so.3` | OpenSSL | **3.5.9** | **Apache-2.0** (`licenses/Apache-2.0.txt`); Copyright (c) 1998-2026 The OpenSSL Project Authors, Copyright (c) 1995-1998 Eric A. Young, Tim J. Hudson (OpenSSL ships no `NOTICE` file) |
+| `libnghttp2-plx.so.14` | nghttp2 | **1.71.0** | **MIT** (`licenses/MIT.txt`); Copyright (c) 2012, 2014, 2015, 2016 Tatsuhiro Tsujikawa and nghttp2 contributors |
+| `libnghttp3-plx.so.9` | nghttp3 | **1.19.0** | **MIT** (`licenses/MIT.txt`); Copyright (c) 2019 nghttp3 contributors |
+| `libngtcp2-plx.so.16`, `libngtcp2_crypto_ossl-plx.so.0` | ngtcp2 | **1.26.0** | **MIT** (`licenses/MIT.txt`); Copyright (c) 2016 ngtcp2 contributors |
+
+**Source.** Each upstream tarball these are built from, with its sha256, is pinned in
+`ci/dependencies.json` (the `curlstack` group: `openssl`, `nghttp2`, `nghttp3`, `ngtcp2`, `curl`),
+and `python3 ci/deps.py fetch <id>` retrieves and verifies each one. The sources are
+**unmodified**: no patches are applied to any of the five. OpenSSL's is the `openssl-3.5.9`
+release tag's own tarball; the one thing the build adds is a configuration target written beside
+the build tree, outside the source (`linux-armv4-plx`: `linux-armv4` plus `shlib_variant => "-plx"`),
+which names the output files and changes no source file. The complete build recipe —
+cross-compile flags, the `-plx` SONAME of each output (OpenSSL's own `shlib_variant`; a patchelf
+rename for the others), and curl's enabled-feature list — is `ci/build-curlstack.sh` in the
+PlxNative repository. Apache-2.0 and MIT carry no source obligation, and both are compatible with
+PlxNative's GPL-3.0-or-later; the pins are there so the build can be reproduced.
+
+**Configuration.** curl's enabled protocols, as its own `curl-config --protocols` reports for the
+built library, are `FILE FTP FTPS HTTP HTTPS IPFS IPNS WS WSS`, and its features `alt-svc
+AsynchDNS HSTS HTTP2 HTTP3 HTTPS-proxy IPv6 Largefile libz SSL threadsafe UnixSockets`. It is
+configured with `--with-openssl --with-ngtcp2 --with-nghttp2
+--with-nghttp3 --disable-ldap --disable-ldaps --disable-rtsp --disable-telnet --disable-dict
+--disable-gopher --disable-smtp --disable-pop3 --disable-imap --disable-tftp --disable-mqtt
+--disable-manual --disable-docs --without-libssh2 --without-libidn2 --without-libpsl
+--without-brotli --without-zstd --without-gssapi --without-libgsasl --without-ca-bundle
+--with-ca-path=/etc/ssl/certs`; `libz` is the television's own `libz.so.1`, not a shipped copy. This
+app uses it only for its own HTTP and HTTPS requests. OpenSSL is configured `linux-armv4-plx shared
+no-module no-legacy no-engine no-autoload-config no-deprecated no-comp no-idea no-camellia no-seed
+no-md2 no-mdc2 no-rc5 no-whirlpool no-srp no-ssl3 no-weak-ssl-ciphers no-apps no-docs no-tests
+no-fuzz-afl no-fuzz-libfuzzer` (`linux-armv4-plx` is `linux-armv4` with the `-plx` file names),
+with its configuration and module directories set to a path that exists on no television, so it
+reads neither the television's `openssl.cnf` nor any provider module (`ci/build-curlstack.sh` is
+the source of truth for every flag above).
+
+*Why it exists:* the television's libcurl is fixed by its firmware (7.53.1 on the oldest sets,
+7.82.0 on webOS 10), and none is built with HTTP/3. As with FFmpeg (§1.1), a system library can
+be worked around, never grown a protocol: HTTP/3 needs a curl built with QUIC over a TLS library
+that supports it, which no firmware ships.
+
 ---
 
 ## 3. Dynamically linked, not redistributed
@@ -601,8 +659,9 @@ runtime notices listed below:
 | File | Required by |
 |---|---|
 | `licenses/LGPL-2.1.txt` | FFmpeg, FriBidi, GLib, GNU C Library (§1) — GNU Lesser General Public License, version 2.1 |
-| `licenses/MIT.txt` | Feather Icons, Heroicons, the MIT-elected Rust packages, Sentry Native and libunwind (§2.2, §2.4, §2.6). One copy of the MIT text; the copyright holders it refers to are the ones named in this file |
-| `licenses/Apache-2.0.txt` | Google Material Design Icons; calendrical_calculations; moxcms; pxfm; compiler_builtins (§2.2, §2.4) |
+| `licenses/MIT.txt` | Feather Icons, Heroicons, the MIT-elected Rust packages, Sentry Native and libunwind (§2.2, §2.4, §2.6); in a CURLSTACK=1 package also nghttp2, nghttp3 and ngtcp2 (§2.8). One copy of the MIT text; the copyright holders it refers to are the ones named in this file |
+| `licenses/Apache-2.0.txt` | Google Material Design Icons; calendrical_calculations; moxcms; pxfm; compiler_builtins (§2.2, §2.4); in a CURLSTACK=1 package also OpenSSL (§2.8) |
+| `licenses/curl.txt` | CURLSTACK=1 packages only: curl (§2.8) — its own permissive licence, textually close to MIT but not identical, kept separate |
 | `licenses/LLVM-exception.txt` | compiler_builtins (§2.4) |
 | `licenses/Unicode-3.0.txt` | Unicode Character Database tables in Rust `core` (§2.4) — UNICODE LICENSE V3, "Copyright © 1991-2024 Unicode, Inc." |
 | `licenses/ICU4X.txt` | ICU4X runtime code and compiled locale data, including its Unicode and IBM notices (§2.4) |

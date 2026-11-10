@@ -58,7 +58,7 @@ pub use playback_options::{MarkerSkipMode, DolbyVisionMode, InstantDpadSeeking, 
 pub use prefs::{IntroSkipPref, CreditsSkipPref, DolbyVisionModePref, InstantDpadSeekingPref, UriEnginePref, HoldHintTaughtPref, effective, effective_hud, own_prefs, persist_profile_hud, persist_profile_pref, put_own, stored_effective, stored_effective_hud, tenure, HudSelectionPref, AudioEnhancementsPref,
     DeckPressPref, DirectPlayModePref, HdrOverlayBrightnessPref, NextEpisodeModePref, Preferences, ProfilePrefs, ProfilePrefsPref,
     ProfilePrefsRecord, ProfileSetting, ProfileWrite, QualityPref, Row, Setting, SkipIntervalPref,
-    SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref, TrailerAutoplayPref, UiResolutionPref, UnderPostersPref};
+    SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref, TrailerAutoplayPref, UiResolutionPref, UnderPostersPref, Http3Pref};
 use prefs::ProfileMemory;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -2579,6 +2579,19 @@ impl Session {
         self.prefs.ui_resolution
     }
 
+    /// Whether the NEXT launch lets the bundled curl use HTTP/3 (Alt-Svc); see
+    /// [`Preferences::http3_experimental`].
+    pub fn http3_experimental(&self) -> bool {
+        self.prefs.http3_experimental
+    }
+
+    /// This session with the HTTP/3 (experimental) switch set, every other field intact.
+    pub fn with_http3_experimental(&self, on: bool) -> Self {
+        let mut next = self.clone();
+        next.prefs.http3_experimental = on;
+        next
+    }
+
     /// Which hold hints this install has been taught; see [`HoldHintTaught`].
     pub fn hold_hint_taught(&self) -> HoldHintTaught {
         self.prefs.hold_hint_taught
@@ -4442,6 +4455,17 @@ pub fn set_ui_resolution(mode: UiResolution) -> bool {
     already || write.is_some_and(|write| matches!(write.classify(), async_persistence::CompletionOutcome::Durable(_)))
 }
 
+/// Blocking persistence seam for the Settings HTTP/3 (experimental) switch, dispatched on the
+/// storage worker like [`set_ui_resolution`]. It applies at the NEXT launch
+/// (`net::set_http3` installs it once per process), so a pick is only claimed once it is durable.
+pub fn set_http3_experimental(on: bool) -> bool {
+    let mut already = false;
+    let write = update_with_outcome(|current| {
+        already = current.http3_experimental() == on;
+        (!already).then(|| current.with_http3_experimental(on))
+    });
+    already || write.is_some_and(|write| matches!(write.classify(), async_persistence::CompletionOutcome::Durable(_)))
+}
 
 /// [`update`], but reporting what the durable write actually did.
 ///
@@ -6053,6 +6077,61 @@ mod ui_resolution_tests {
         assert!(!std::fs::read_to_string(&path).unwrap().contains("ui_resolution"), "Automatic is not written");
         redirect_candidates_for_test(None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// `Session::http3_experimental`: absent or garbage is off, off is not serialized (so committed
+/// replay fixtures and every session written before the field serialize unchanged), and on
+/// round-trips through both formats.
+#[cfg(test)]
+mod http3_experimental_tests {
+    use super::*;
+
+    #[test]
+    fn absent_or_garbage_is_off() {
+        for value in [
+            serde_json::json!({}),
+            serde_json::json!({"http3_experimental": null}),
+            serde_json::json!({"http3_experimental": "true"}),
+            serde_json::json!({"http3_experimental": 1}),
+            serde_json::json!({"http3_experimental": {"on": true}}),
+        ] {
+            let session: Session = serde_json::from_value(value.clone())
+                .unwrap_or_else(|e| panic!("{value}: a bad preference must not fail the session: {e}"));
+            assert!(!session.http3_experimental(), "{value}");
+        }
+        assert!(!Session::default().http3_experimental(), "a fresh install sets no Alt-Svc");
+    }
+
+    #[test]
+    fn off_is_not_serialized() {
+        let session = Session::default();
+        assert!(!serde_json::to_string(&session).unwrap().contains("http3"));
+        let prefs = serde_json::to_string(&split_public(&session).unwrap().preferences).unwrap();
+        assert!(!prefs.contains("http3"), "{prefs}");
+    }
+
+    #[test]
+    fn on_round_trips_through_both_formats() {
+        let session = Session::default().with_http3_experimental(true);
+        let json = serde_json::to_string(&session).unwrap();
+        assert!(json.contains("\"http3_experimental\":true"), "{json}");
+        let round: Session = serde_json::from_str(&json).unwrap();
+        assert!(round.http3_experimental());
+        let (public, protected) = split_canonical(&session).unwrap();
+        assert!(join_canonical(&public, &protected).unwrap().http3_experimental());
+        assert!(public_session(&public).http3_experimental());
+        assert!(!round.with_http3_experimental(false).http3_experimental());
+    }
+
+    /// A signed-out read keeps only the language and the resolution: the switch is not retained,
+    /// so the launch after a sign-out sets no Alt-Svc.
+    #[test]
+    fn a_signed_out_read_is_off() {
+        let kept = Retained { language: plx_platform::i18n::Preference::Be, ui_resolution: UiResolution::Sd540 };
+        for read in [ReadState::Cleared { kept }, ReadState::Locked { kept }] {
+            assert!(!session_from_read(&read).http3_experimental());
+        }
     }
 }
 

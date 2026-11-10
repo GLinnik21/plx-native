@@ -19,6 +19,7 @@ it that way" — which is exactly the kind of drift a future edit could reintrod
 from __future__ import annotations
 
 import pathlib
+import shlex
 import subprocess
 import unittest
 
@@ -34,6 +35,33 @@ def make_print(target: str, flavor: str = "debug") -> list[str]:
 
 
 class DeployManifest(unittest.TestCase):
+    def test_the_curlstack_prune_is_one_whole_shell_command(self):
+        """`make CURLSTACK=1 deploy` retires curl-stack libraries this build no longer carries with one
+        ssh command. Written inside `$(if $(CURLSTACK),...)`, it broke: make counts parentheses in a
+        function's arguments, so the first `case` pattern's `)` ended the `$(if` and the shell got half
+        a command (`/bin/sh: -c: ... unexpected EOF`), failing every `CURLSTACK=1` deploy. Ask the
+        Makefile for the command it runs and have `sh -n` parse it, and the remote script inside it."""
+        def prune(*extra: str) -> str:
+            # `$(SSH)` needs a television to name; 192.0.2.1 is a documentation address, never dialled
+            # (the target only prints).
+            return subprocess.run(["make", "-s", "print-curlstack-prune", "FLAVOR=debug", "TV=192.0.2.1",
+                                   *extra],
+                                  cwd=ROOT, check=True, capture_output=True, text=True).stdout.strip()
+
+        self.assertEqual(prune(), "", "a default deploy leaves an earlier stack alone")
+        command = prune("CURLSTACK=1")
+        local = subprocess.run(["sh", "-n", "-c", command], capture_output=True, text=True)
+        self.assertEqual(local.returncode, 0, f"the local command does not parse: {local.stderr}\n{command}")
+        remote = shlex.split(command)[-1]
+        self.assertTrue(remote.endswith("esac; done"), remote)
+        parsed = subprocess.run(["sh", "-n", "-c", remote], capture_output=True, text=True)
+        self.assertEqual(parsed.returncode, 0, f"the remote script does not parse: {parsed.stderr}\n{remote}")
+        staged = subprocess.run(["make", "-s", "print-curlstack-staged", "FLAVOR=debug", "CURLSTACK=1"],
+                                cwd=ROOT, check=True, capture_output=True, text=True).stdout.split()
+        self.assertTrue(staged, "CURLSTACK=1 stages a stack")
+        for path in staged:
+            self.assertIn(f" {pathlib.Path(path).name} ", remote, "every staged library is kept")
+
     def test_deploy_files_is_app_files_minus_the_three_carve_outs(self):
         for flavor in ("debug", "stable"):
             with self.subTest(flavor=flavor):

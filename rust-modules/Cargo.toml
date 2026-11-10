@@ -136,6 +136,18 @@ lab-diagnostics = ["plx_base/lab-diagnostics", "plx_net/lab-diagnostics", "plx_p
 # `plx_ui` is the one crate with a `cfg` on it.
 placeholder-sentinel = ["plx_ui/placeholder-sentinel"]
 
+# **The opt-in bundled HTTP/3 curl stack.** OFF by default and in NO default set; `make CURLSTACK=1`
+# is the one way to turn it on, because the feature alone is not enough: the Makefile builds the
+# libraries (`ci/build-curlstack.sh`) and packages them beside the binary under the same flag. A
+# build with the feature and without the libraries is the clean fallback, not a broken one: the
+# loader finds no `libcurl-plx.so.4` beside the binary, logs it, and binds the television's own
+# libcurl exactly as a build without the feature does. What it compiles in: `plx_net::net`'s
+# bundled loader (`net::curlstack`, glibc only, `RTLD_DEEPBIND`) and `dynlib::open_in_deepbind`.
+# What it does NOT gate: the Alt-Svc options, which sit behind `net::alt_svc()` (the bundle bound
+# AND Settings > System > HTTP/3 (experimental) on; constant false without the feature), so their
+# tests run in every build.
+http3-curlstack = ["plx_base/http3-curlstack", "plx_net/http3-curlstack"]
+
 # **There is no `telemetry` cargo feature, and this comment is here so nobody adds one back.**
 #
 # There WAS one, declared here, gating nothing: `mod telemetry;` in `lib.rs` was unconditional (it

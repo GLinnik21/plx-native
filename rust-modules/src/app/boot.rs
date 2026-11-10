@@ -690,6 +690,28 @@ mod seam_order_tests {
         assert!(user_agent < init, "set_user_agent must come before net::global_init");
     }
 
+    /// `construct` hands the transport the STORED HTTP/3 switch before curl is bound: the session it
+    /// read for the window is read first, and `net::set_http3` gets that session's switch before
+    /// `net::global_init`, so the first request already knows whether to set Alt-Svc. Off is the
+    /// default.
+    #[test]
+    fn the_http3_switch_is_installed_from_the_stored_session_before_libcurl_is_bound() {
+        let source = include_str!("boot.rs");
+        let body = source
+            .split_once(concat!("pub(crate) unsafe fn ", "construct("))
+            .expect("construct")
+            .1;
+        let read = body
+            .find(concat!("plx_plex::plex::session::", "load()"))
+            .expect("construct reads the stored session");
+        let switch = body
+            .find(concat!("plx_net::net::set_http3(", "session.http3_experimental())"))
+            .expect("construct installs the stored HTTP/3 switch");
+        let bind = body.find(concat!("plx_net::net::", "global_init()")).expect("construct's libcurl init");
+        assert!(read < switch && switch < bind, "session read, then the switch, then the bind");
+        assert!(!plx_plex::plex::session::Session::default().http3_experimental(), "off by default");
+    }
+
     /// SDL reads `SDL_WEBOS_CURSOR_SLEEP_TIME` in `SDL_Init`, so the hint set after it does nothing.
     #[test]
     fn the_cursor_sleep_hint_is_set_before_sdl_init() {
@@ -1739,6 +1761,12 @@ pub(crate) unsafe fn construct(
     // One-time libcurl bind + init (main thread) before any threaded HTTPS call. A false here
     // means this device has no libcurl we can bind, so plex.tv sign-in will not work — the app
     // still runs, and `net::global_init` has already said so in the event log.
+    //
+    // Before it, the stored Settings > System > HTTP/3 (experimental) switch, read from the session
+    // loaded above for the window. It decides only whether the bundled curl (bound in every
+    // CURLSTACK=1 build) sets Alt-Svc, and so may upgrade to HTTP/3; off is the default. Installed
+    // once per process, so a change in Settings applies at the next launch.
+    plx_net::net::set_http3(session.http3_experimental());
     let _ = plx_net::net::global_init();
     // Drain whatever the LAST session left behind, on a worker — and **after `global_init`,
     // which is the whole reason this line is here and not beside `telemetry::boot()` 170 lines

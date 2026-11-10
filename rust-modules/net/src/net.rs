@@ -1,6 +1,9 @@
 //! `net` — a small blocking HTTPS client over **whatever libcurl the machine already has**, bound
 //! at runtime by the candidate list below (nothing is linked, and `stub/` — which this line named
-//! for months after it was deleted — is gone). The plain-HTTP socket in [`crate::stream`] can
+//! for months after it was deleted — is gone). A `make CURLSTACK=1` build first tries the bundled
+//! `libcurl-plx.so.4` beside the binary (`net::curlstack`, cargo feature `http3-curlstack`) and falls
+//! back to that candidate list; the choice is made once, in [`global_init`], and `curlio`'s multi
+//! table and [`connect_only`]'s table bind the same library ([`bundled_curl`]). The plain-HTTP socket in [`crate::stream`] can
 //! resolve names now, but it still cannot do TLS; this fills that gap. Every call is
 //! **blocking**, so callers must run it off the SDL main loop (the account and PMS workers).
 //!
@@ -87,6 +90,9 @@ pub struct CurlVersionInfo {
 // It is LAST deliberately — a television never reaches it, so this costs the device nothing but
 // one extra failed `dlopen` in the already-fatal no-curl case, and the candidate list stays
 // ordered by "what the fleet actually answers to" first.
+//
+// The opt-in bundled curl (`BUNDLED_CURL_SONAME`) is deliberately NOT a candidate here: it is
+// opened by absolute path with `RTLD_DEEPBIND` and bound with `curl::load_from` (`load_bundled`).
 plx_base::dynlib! {
     pub curl: ["libcurl.so.4", "libcurl.so.5", "libcurl.4.dylib"] {
     fn curl_global_init(flags: c_long) -> c_int;
@@ -130,6 +136,38 @@ const CURLOPT_FOLLOWLOCATION: c_int = 52;
 const CURLOPT_MAXREDIRS: c_int = 68;
 const CURLOPT_SSL_VERIFYPEER: c_int = 64;
 const CURLOPT_SSL_VERIFYHOST: c_int = 81;
+/// `CURLOPT_ALTSVC_CTRL` (VALUES + 286) and `CURLOPT_ALTSVC` (OBJECTPOINT + 287) — opportunistic
+/// HTTP/3: a strict request is still plain HTTP/2 over TLS the FIRST time it reaches a host (QUIC
+/// does not negotiate over the same TCP/TLS handshake HTTP/1.1 and 2 share, so there is no ALPN
+/// moment to upgrade from), but a reverse proxy that advertises HTTP/3 (e.g. Traefik) sends an
+/// `Alt-Svc: h3=":443"` header in its response, and libcurl
+/// — told to care about one, via `CURLALTSVC_H3` on `_CTRL`, and given a file to remember
+/// it in — uses QUIC on every later request to that host for as long as the entry stays fresh.
+/// Only `CURLALTSVC_H3` is set: H1/H2 upgrades offer nothing new, since ALPN already picks the
+/// best of those on every handshake. Both options present since libcurl 7.64.1; the bundled curl
+/// is 8.23.0, the only curl it is set on, and only with the HTTP/3 switch on ([`alt_svc`]). Set only in [`TlsCfg::Ca`]'s arm: roots and key
+/// mode are deliberately narrower trust decisions already paying for an extra round trip, and are
+/// not where a transport upgrade should be learned or spent.
+const CURLOPT_ALTSVC_CTRL: c_int = 286;
+const CURLOPT_ALTSVC: c_int = 10287;
+const CURLALTSVC_H3: c_long = 1 << 5;
+/// Where libcurl remembers which hosts offered HTTP/3, across easy handles and across this
+/// process's requests (though not across TV restarts — `in_runtime_dir` is `/tmp`, wiped on
+/// reboot; a cold cache just costs one ordinary HTTP/2 request before the next upgrade). Must be
+/// writable: libcurl reads it at `CURLOPT_ALTSVC` and writes it back on cleanup. `app_dir` (where
+/// `le-roots.pem` lives) is root-owned and read-only on the television, so it cannot hold this.
+pub fn altsvc_cache_path() -> &'static CString {
+    static PATH: OnceLock<CString> = OnceLock::new();
+    PATH.get_or_init(|| {
+        let p = plx_base::paths::in_runtime_dir(ALTSVC_CACHE_FILE);
+        // A path with a NUL in it cannot be handed to libcurl; the empty string is curl's "no cache
+        // file", which costs the upgrade, not the request.
+        CString::new(p.to_string_lossy().into_owned()).unwrap_or_default()
+    })
+}
+/// The Alt-Svc cache's file name in the runtime directory. Not a dev trigger: only the bundled curl
+/// with the HTTP/3 switch on ([`alt_svc`]) reads or writes it, and no test does.
+const ALTSVC_CACHE_FILE: &str = "plxnative-altsvc.cache";
 const CURLOPT_NOSIGNAL: c_int = 99;
 /// `CURLOPT_FRESH_CONNECT` (LONG + 74) and `CURLOPT_FORBID_REUSE` (LONG + 75): never take a cached
 /// connection for this handle, and never leave this handle's connection in the cache. Read off
@@ -240,8 +278,116 @@ static CURL_VERSION_NUM: AtomicU32 = AtomicU32::new(0);
 pub fn curl_version_num() -> u32 {
     CURL_VERSION_NUM.load(Ordering::Acquire)
 }
+
 /// Only used on the abnormal old-OpenSSL/no-callback fallback. Normal devices never take it.
 static CURL_FALLBACK_SERIAL: Mutex<()> = Mutex::new(());
+
+/// The SONAME of the opt-in bundled curl (`make CURLSTACK=1`, cargo feature `http3-curlstack`):
+/// curl 8.23 over OpenSSL 3.5 with nghttp2/nghttp3/ngtcp2, built `-plx`-suffixed beside the binary by
+/// `ci/build-curlstack.sh`. It is NOT in the `curl` table's candidate list above: it is opened only
+/// by absolute path, `RTLD_DEEPBIND`, by `curlstack::open` (see that module's doc), and the table is
+/// then filled from that handle with `curl::load_from`.
+pub const BUNDLED_CURL_SONAME: &str = "libcurl-plx.so.4";
+
+/// The bundled curl's handle, set once by [`global_init_once`] when it bound that library rather
+/// than a system candidate.
+#[cfg(feature = "http3-curlstack")]
+static BUNDLED_CURL: OnceLock<plx_base::dynlib::Handle> = OnceLock::new();
+
+/// The bundled curl, if [`global_init`] bound it; `None` when it bound the system libcurl, before
+/// [`global_init`], and always in a build without the `http3-curlstack` feature.
+///
+/// `curlio.rs`'s multi table (`curlmulti::load_from`) and [`connect_only`]'s table (`raw::load_from`)
+/// bind THIS handle when it is `Some`, and the system candidates otherwise: the choice is made
+/// exactly once, here, and only read there. An easy
+/// handle from one libcurl handed to another's `curl_multi_add_handle` is an ABI violation, so two
+/// tables deciding independently (a transient filesystem error on one probe and not the other) is
+/// the one outcome that must be impossible.
+pub fn bundled_curl() -> Option<plx_base::dynlib::Handle> {
+    #[cfg(feature = "http3-curlstack")]
+    {
+        BUNDLED_CURL.get().copied()
+    }
+    #[cfg(not(feature = "http3-curlstack"))]
+    {
+        None
+    }
+}
+
+/// Is the bound libcurl the bundled `libcurl-plx.so.4` rather than the television's own? Always
+/// false without the `http3-curlstack` feature, which makes every `if bundled()` branch below dead code the
+/// compiler drops. Only meaningful after [`global_init`].
+pub fn bundled() -> bool {
+    bundled_curl().is_some()
+}
+
+/// Bind the bundled curl into the `curl` table, or `None` to fall back to the system candidates.
+/// `None` also when the bundle is absent or any one of its libraries fails to open or resolve:
+/// `load_from` is all-or-nothing and never publishes a partial table, so the fallback's
+/// `curl::load(None)` starts from empty cells.
+#[cfg(all(feature = "http3-curlstack", target_os = "linux", target_env = "gnu"))]
+fn load_bundled() -> Option<plx_base::dynlib::Loaded> {
+    let handle = curlstack::open(plx_base::paths::app_dir())?;
+    match curl::load_from(handle, BUNDLED_CURL_SONAME) {
+        ok @ plx_base::dynlib::Loaded::Ok(_) => {
+            let _ = BUNDLED_CURL.set(handle);
+            Some(ok)
+        }
+        _ => {
+            plx_base::eventlog::log(&format!(
+                "net: {BUNDLED_CURL_SONAME} opened but is missing curl_easy_* symbols — falling back to the \
+                 system libcurl"
+            ));
+            None
+        }
+    }
+}
+
+/// No bundled loader: the feature is off, or the target has no `RTLD_DEEPBIND` (the host
+/// simulator on macOS), so the system candidates are the only ones.
+#[cfg(not(all(feature = "http3-curlstack", target_os = "linux", target_env = "gnu")))]
+fn load_bundled() -> Option<plx_base::dynlib::Loaded> {
+    None
+}
+
+#[cfg(all(feature = "http3-curlstack", target_os = "linux", target_env = "gnu"))]
+mod curlstack;
+
+/// Does this build carry the bundled stack's loader: the `http3-curlstack` feature on a glibc
+/// target (`make CURLSTACK=1`, whose package `ci/check-package.py` refuses unless it ships all
+/// seven libraries)? Such a build binds the bundled curl whenever it is there; this is what
+/// Settings offers its HTTP/3 switch on. A `const`, not a probe, so the screen reads no registry and
+/// no file.
+pub const BUNDLED_STACK_BUILT: bool = cfg!(all(feature = "http3-curlstack", target_os = "linux", target_env = "gnu"));
+
+/// The stored Settings > System > HTTP/3 (experimental) switch as this process started with it:
+/// installed once by boot ([`set_http3`], before [`global_init`]) and read by both planes' Alt-Svc
+/// decision ([`alt_svc`]). The first call wins, so a change in Settings applies at the next launch.
+/// It never decides which libcurl binds: that is the build's ([`BUNDLED_STACK_BUILT`]).
+static HTTP3: OnceLock<bool> = OnceLock::new();
+
+/// Install the process's HTTP/3 switch; the first call wins. Boot calls it before [`global_init`].
+pub fn set_http3(on: bool) {
+    let _ = HTTP3.set(on);
+}
+
+/// The installed HTTP/3 switch; off when nothing installed it (a host test, a dev scenario).
+pub fn http3_switch() -> bool {
+    HTTP3.get().copied().unwrap_or(false)
+}
+
+/// The Alt-Svc rule, pure: only a bound bundled curl (8.23, the one that speaks QUIC) and only with
+/// the switch on. Off, no request sets `CURLOPT_ALTSVC`/`CURLOPT_ALTSVC_CTRL`, so curl never learns
+/// an `h3` alternative and the bundled curl negotiates its default over ALPN (HTTP/2).
+fn alt_svc_wanted(bundled: bool, http3: bool) -> bool {
+    bundled && http3
+}
+
+/// Does a strict request set Alt-Svc? The ONE answer both planes read: the control plane's
+/// `TlsCfg::Ca` arm here and the media plane's strict open in `curlio.rs`.
+pub fn alt_svc() -> bool {
+    alt_svc_wanted(bundled(), http3_switch())
+}
 
 // OpenSSL before 1.1 delegates its process-global locks to the application. These symbols remain
 // optional instead of joining curl's all-or-nothing table: modern and non-OpenSSL backends do not
@@ -316,6 +462,39 @@ fn needs_legacy_thread_id(version: &str) -> bool {
         .any(|part| part.starts_with("OpenSSL/0."))
 }
 
+/// Which mapped libcurl's OpenSSL takes the legacy lock callbacks, by SONAME: the bound one when
+/// its own version string names OpenSSL 0.x/1.0.x, else, when the bundle is bound, the
+/// television's own libcurl still resident in the process (`resident`, its SONAME and version
+/// string) when THAT names one. `None`: no OpenSSL in the process needs them.
+fn legacy_lock_target<'a>(bound: (&'a str, &str), resident: Option<(&'a str, &str)>) -> Option<&'a str> {
+    if needs_legacy_crypto_locks(bound.1) {
+        return Some(bound.0);
+    }
+    resident.and_then(|(soname, version)| needs_legacy_crypto_locks(version).then_some(soname))
+}
+
+/// The television's own libcurl when the BUNDLE is bound and the system one is mapped anyway:
+/// `libplayerAPIs.so.1`, which every Feed build links (`PLAYBACK_BACKENDS=both|feed`), has a
+/// `NEEDED` on it, so it and the firmware's OpenSSL are in the process before `main`; a URI-only
+/// build usually finds none mapped, and then there is nothing to lock. Its handle comes from `RTLD_NOLOAD` (nothing new is
+/// loaded) with its SONAME and `curl_version()` string, which is all [`legacy_lock_target`] needs.
+/// `None` when the system curl is the bound one (the bound path already covers it) or not mapped.
+fn resident_system_curl() -> Option<(plx_base::dynlib::Handle, &'static str, String)> {
+    if !bundled() {
+        return None;
+    }
+    let (handle, soname) = plx_base::dynlib::Handle::open_loaded(curl::CANDIDATES)?;
+    let version = handle.sym("curl_version").filter(|p| !p.is_null())?;
+    // SAFETY: `curl_version` is `char *curl_version(void)` in every libcurl.
+    let version: unsafe extern "C" fn() -> *const c_char = unsafe { std::mem::transmute(version) };
+    let v = unsafe { version() };
+    if v.is_null() {
+        return None;
+    }
+    let v = unsafe { std::ffi::CStr::from_ptr(v) }.to_string_lossy().into_owned();
+    Some((handle, soname, v))
+}
+
 fn threaded_tls_policy(version: &str, locks: LegacyCrypto) -> bool {
     if needs_legacy_thread_id(version) {
         // 0.9.x defaults to getpid() on Unix, which is not a thread identity. We do not take
@@ -330,8 +509,10 @@ fn threaded_tls_policy(version: &str, locks: LegacyCrypto) -> bool {
 
 /// Install OpenSSL 1.0's process locks, or preserve a callback somebody loaded before us.
 ///
-/// Reopening the selected libcurl SONAME returns its existing loader object, and symbol lookup on
-/// that handle follows its dependency closure to the libcrypto it actually uses. This deliberately
+/// `scope` is a handle to the libcurl whose OpenSSL needs them ([`legacy_lock_target`]): the bound
+/// one reopened by SONAME, or, with the bundle bound, the television's own one already resident
+/// (`RTLD_NOLOAD`). Either returns the existing loader object, and symbol lookup on that handle
+/// follows its dependency closure to the libcrypto it actually uses. This deliberately
 /// costs one permanent reference instead of guessing a moving `libcrypto.so.*` SONAME or asking a
 /// process-global scope that might contain two crypto majors. OpenSSL 1.1+ removes these entry
 /// points; absence is therefore only fatal when curl's version string names a legacy backend.
@@ -339,9 +520,9 @@ fn threaded_tls_policy(version: &str, locks: LegacyCrypto) -> bool {
 /// No ID callback is installed: on the target's glibc, OpenSSL 1.0's documented default uses the
 /// address of thread-local `errno`, which is already a unique thread identity. Overwriting an ID
 /// callback owned by another component would be strictly less safe.
-fn setup_legacy_crypto_locks(soname: &'static str) -> LegacyCrypto {
+fn setup_legacy_crypto_locks(scope: Option<plx_base::dynlib::Handle>) -> LegacyCrypto {
     *LEGACY_CRYPTO_RESULT.get_or_init(|| {
-        let Some((scope, _)) = plx_base::dynlib::Handle::open(&[soname]) else {
+        let Some(scope) = scope else {
             return LegacyCrypto::Missing;
         };
         let (Some(num), Some(get), Some(set)) = (
@@ -525,13 +706,22 @@ pub fn user_agent_header_line() -> String {
 /// returns a pointer into a buffer libcurl REWRITES on every call, and the body reads it through
 /// `CStr::from_ptr`; two host-test rigs each calling this concurrently read a half-written string
 /// (`c_str.rs` UB panic). Production calls it once at boot, so nothing there changes.
+///
+/// Which libcurl binds is the build's alone: the bundled one first in a [`BUNDLED_STACK_BUILT`]
+/// build, then the system candidates. The HTTP/3 switch ([`set_http3`]) only decides [`alt_svc`].
 pub fn global_init() -> bool {
     static INIT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *INIT.get_or_init(global_init_once)
 }
 
 fn global_init_once() -> bool {
-    match curl::load(None) {
+    // The bundled curl first (only in an `http3-curlstack` build, see `load_bundled`), by absolute
+    // path beside the binary, then the system candidates.
+    let verdict = match load_bundled() {
+        Some(bundled) => bundled,
+        None => curl::load(None),
+    };
+    match verdict {
         plx_base::dynlib::Loaded::Ok(soname) => {
             unsafe { curl_global_init(CURL_GLOBAL_ALL) };
             // The version string carries the TLS backend and its version, which is the fact worth
@@ -545,10 +735,22 @@ fn global_init_once() -> bool {
                     .into_owned()
             };
             let legacy = needs_legacy_crypto_locks(&v);
-            let locks = if legacy {
-                setup_legacy_crypto_locks(soname)
-            } else {
-                LegacyCrypto::NotNeeded
+            // With the bundle bound, the television's own libcurl is still mapped, and with it the
+            // firmware's OpenSSL, which a default build gives its 1.0.x lock callbacks: so does this.
+            let resident = resident_system_curl();
+            let target = legacy_lock_target((soname, &v), resident.as_ref().map(|r| (r.1, r.2.as_str())));
+            let locks = match (target, &resident) {
+                (None, _) => LegacyCrypto::NotNeeded,
+                (Some(t), Some((handle, resident_soname, _))) if t == *resident_soname => {
+                    setup_legacy_crypto_locks(Some(*handle))
+                }
+                (Some(_), _) => setup_legacy_crypto_locks(
+                    plx_base::dynlib::Handle::open(&[soname]).map(|(handle, _)| handle),
+                ),
+            };
+            let on_resident = match (target, &resident) {
+                (Some(t), Some((_, r, _))) if t == *r => format!(" (on the resident {r})"),
+                _ => String::new(),
             };
             let threaded = threaded_tls_policy(&v, locks);
             CURL_THREADED_TLS_OK.store(threaded, Ordering::Release);
@@ -569,8 +771,15 @@ fn global_init_once() -> bool {
             };
             plx_base::eventlog::log(&format!(
                 "net: bound libcurl -> {soname} ({v}; AsynchDNS={async_dns}); \
-                 threaded-tls={threaded} legacy-locks={locks:?}"
+                 threaded-tls={threaded} legacy-locks={locks:?}{on_resident}"
             ));
+            if bundled() {
+                plx_base::eventlog::log(if alt_svc() {
+                    "net: HTTP/3 (experimental) is on — Alt-Svc is set on strict requests"
+                } else {
+                    "net: HTTP/3 (experimental) is off — Alt-Svc is not set"
+                });
+            }
             if legacy && !threaded {
                 plx_base::eventlog::log(
                     "net: legacy OpenSSL concurrency unavailable — serialized HTTPS control \
@@ -2353,7 +2562,22 @@ fn request_tls_sink(
                 // "CA-verified and unpinned" being the DEFAULT is the fact a plan written against this
                 // module got wrong — it called for a new request mode to obtain what `request` had
                 // been doing since it was written.
-                TlsCfg::Ca => {}
+                TlsCfg::Ca => {
+                    if alt_svc() {
+                        require_setopt!(
+                            curl_easy_setopt_long(easy.0, CURLOPT_ALTSVC_CTRL, CURLALTSVC_H3),
+                            "CURLOPT_ALTSVC_CTRL"
+                        );
+                        require_setopt!(
+                            curl_easy_setopt_ptr(
+                                easy.0,
+                                CURLOPT_ALTSVC,
+                                altsvc_cache_path().as_ptr() as *const c_void,
+                            ),
+                            "CURLOPT_ALTSVC"
+                        );
+                    }
+                }
                 // A bundle we ship. The return code is checked for the same reason the pin's is, but
                 // the failure it guards is milder and worth stating so nobody "simplifies" the pinned
                 // check to match: a REJECTED `CURLOPT_CAINFO` leaves the device's own store in force,
@@ -4992,6 +5216,278 @@ mod tls_verify_why_tests {
 }
 
 #[cfg(test)]
+mod http3_switch_tests {
+    use super::*;
+
+    /// **The switch gates Alt-Svc and nothing else.** On a bundled bind, off sets no Alt-Svc (the
+    /// bundled curl then negotiates HTTP/2 over ALPN and never learns an `h3` alternative) and on
+    /// sets it; on the system libcurl it is never set, whatever the switch says.
+    #[test]
+    fn alt_svc_needs_the_bundle_and_the_switch() {
+        assert!(!alt_svc_wanted(true, false), "HTTP/3 off: a bundled bind sets no Alt-Svc");
+        assert!(alt_svc_wanted(true, true), "HTTP/3 on: a bundled bind sets Alt-Svc");
+        assert!(!alt_svc_wanted(false, true), "the system libcurl never gets Alt-Svc");
+        assert!(!alt_svc_wanted(false, false));
+    }
+
+    /// A Rust source with its comments and string/char literals blanked (newlines kept), so a
+    /// token scan sees code only. Raw strings are not handled: none of the scanned code uses one
+    /// around an Alt-Svc mention, and a literal is never a site anyway.
+    fn code_only(src: &str) -> String {
+        let b = src.as_bytes();
+        let mut out = String::with_capacity(src.len());
+        let mut i = 0;
+        while i < b.len() {
+            if b[i] == b'/' && b.get(i + 1) == Some(&b'/') {
+                while i < b.len() && b[i] != b'\n' { i += 1; }
+            } else if b[i] == b'/' && b.get(i + 1) == Some(&b'*') {
+                i += 2;
+                while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
+                    if b[i] == b'\n' { out.push('\n'); }
+                    i += 1;
+                }
+                i += 2;
+            } else if b[i] == b'"' {
+                i += 1;
+                while i < b.len() && b[i] != b'"' {
+                    if b[i] == b'\\' { i += 1; }
+                    if i < b.len() && b[i] == b'\n' { out.push('\n'); }
+                    i += 1;
+                }
+                i += 1;
+                out.push_str("\"\"");
+            } else if b[i] == b'\'' && b.get(i + 2) == Some(&b'\'') {
+                out.push_str("' '");
+                i += 3;
+            } else if b[i] == b'\'' && b.get(i + 1) == Some(&b'\\') {
+                i += 2;
+                while i < b.len() && b[i] != b'\'' { i += 1; }
+                i += 1;
+                out.push_str("' '");
+            } else {
+                out.push(b[i] as char);
+                i += 1;
+            }
+        }
+        out
+    }
+
+    /// `code` (already [`code_only`]) with every `#[cfg(test)]` item cut out: from the attribute
+    /// through the item's `;` or its matching `}`. Test-support items (`cfg(any(test, ...))`) are
+    /// kept, which is stricter.
+    fn without_test_items(code: &str) -> String {
+        const ATTR: &str = "#[cfg(test)]";
+        let mut out = String::with_capacity(code.len());
+        let mut rest = code;
+        while let Some(at) = rest.find(ATTR) {
+            out.push_str(&rest[..at]);
+            let item = &rest[at + ATTR.len()..];
+            let bytes = item.as_bytes();
+            // An item ends at its `;`, its matching `}`, or (a field, an arm) a `,` outside any
+            // bracket; a `}` with nothing open is the enclosing block's and ends the item before it.
+            let (mut depth, mut parens, mut end) = (0usize, 0usize, item.len());
+            for (i, &c) in bytes.iter().enumerate() {
+                match c {
+                    b'(' | b'[' => parens += 1,
+                    b')' | b']' => parens = parens.saturating_sub(1),
+                    b';' | b',' if depth == 0 && parens == 0 => { end = i + 1; break; }
+                    b'{' => depth += 1,
+                    b'}' if depth == 0 => { end = i; break; }
+                    b'}' => {
+                        depth -= 1;
+                        if depth == 0 { end = i + 1; break; }
+                    }
+                    _ => {}
+                }
+            }
+            out.extend(item[..end].chars().filter(|&c| c == '\n'));
+            rest = &item[end..];
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// The Alt-Svc option tokens (`CURLOPT_ALTSVC`, `CURLOPT_ALTSVC_CTRL`) a file's production code
+    /// USES, newline-insensitive: every `#[cfg(test)]` item is cut, comments and literals are
+    /// blanked, and a `const` definition of the token is not a
+    /// use. Each use is checked against its guard: the innermost `if` whose block holds it must
+    /// have a condition that is `alt_svc()` itself or ends in `&& <path>alt_svc()`. Anything
+    /// else (no guard, `!alt_svc()`, `bundled()`) is a violation. Returns (uses, violations).
+    fn alt_svc_uses(src: &str) -> (usize, Vec<String>) {
+        let code = without_test_items(&code_only(src));
+        let bytes = code.as_bytes();
+        let is_ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+        // (byte offset where an `if` block opened, the normalised condition)
+        let mut stack: Vec<Option<String>> = Vec::new();
+        let mut pending_if: Option<usize> = None;
+        let (mut uses, mut violations) = (0, Vec::new());
+        let mut i = 0;
+        while i < bytes.len() {
+            let c = bytes[i];
+            if is_ident(c) && (i == 0 || !is_ident(bytes[i - 1])) {
+                let start = i;
+                while i < bytes.len() && is_ident(bytes[i]) { i += 1; }
+                let word = &code[start..i];
+                if word == "if" {
+                    pending_if = Some(i);
+                } else if word == "CURLOPT_ALTSVC" || word == "CURLOPT_ALTSVC_CTRL" {
+                    let before = code[..start].trim_end();
+                    if !before.ends_with("const") {
+                        uses += 1;
+                        let line = code[..start].matches('\n').count() + 1;
+                        let guard = stack.iter().rev().find_map(|g| g.clone());
+                        let ok = guard.as_deref().is_some_and(|g| {
+                            let path = g.rsplit("&&").next().unwrap_or(g);
+                            let bare = path.trim_start_matches("crate::net::");
+                            (bare == "alt_svc()") && (g == path || g.ends_with(&format!("&&{path}")))
+                        });
+                        if !ok {
+                            violations.push(format!("line {line}: {word} guarded by {guard:?}"));
+                        }
+                    }
+                }
+                continue;
+            }
+            match c {
+                b'{' => {
+                    let cond = pending_if.take().map(|at| code[at..i].split_whitespace().collect::<String>());
+                    stack.push(cond);
+                }
+                b'}' => { stack.pop(); }
+                b';' => { pending_if = None; }
+                _ => {}
+            }
+            i += 1;
+        }
+        (uses, violations)
+    }
+
+    /// The scanner itself, by mutation: the two real shapes pass, wrapped or not; an unguarded
+    /// `CURLOPT_ALTSVC` (which alone enables h3: curl's `Curl_altsvc_init` defaults to H1|H2|H3),
+    /// an inverted guard, a `bundled()` guard and a guard that only encloses an unrelated `if`
+    /// each fail.
+    #[test]
+    fn the_alt_svc_scanner_catches_unguarded_and_inverted_sites() {
+        let real_net = "if alt_svc() {\n setopt(e, CURLOPT_ALTSVC_CTRL, H3);\n setopt(\n e,\n CURLOPT_ALTSVC,\n p);\n}";
+        let real_curlio = "if matches!(mode, keypin::Mode::Strict) && crate::net::alt_svc() {\n setopt(e,\n CURLOPT_ALTSVC_CTRL, H3);\n}";
+        assert_eq!(alt_svc_uses(real_net), (2, vec![]));
+        assert_eq!(alt_svc_uses(real_curlio), (1, vec![]));
+        for (name, bad) in [
+            ("unguarded", "fn f() {\n setopt(e,\n CURLOPT_ALTSVC, p);\n}"),
+            ("inverted", "if !alt_svc() {\n setopt(e, CURLOPT_ALTSVC, p);\n}"),
+            ("inverted after &&", "if strict && !crate::net::alt_svc() {\n setopt(e, CURLOPT_ALTSVC_CTRL, H3);\n}"),
+            ("bundled only", "if bundled() {\n setopt(e, CURLOPT_ALTSVC, p);\n}"),
+            ("or", "if strict || alt_svc() {\n setopt(e, CURLOPT_ALTSVC, p);\n}"),
+            ("guard closed before the site", "if alt_svc() { x(); }\nsetopt(e, CURLOPT_ALTSVC, p);"),
+        ] {
+            let (uses, violations) = alt_svc_uses(bad);
+            assert_eq!(uses, 1, "{name}");
+            assert_eq!(violations.len(), 1, "{name}: {violations:?}");
+        }
+        // a test item is not production code; the code after it is
+        assert_eq!(alt_svc_uses("#[cfg(test)]\nmod t {\n fn f() { setopt(e, CURLOPT_ALTSVC, p); }\n}\nfn g() { setopt(e, CURLOPT_ALTSVC, p); }"), (1, vec!["line 5: CURLOPT_ALTSVC guarded by None".to_string()]));
+        // comments, strings and the constants are not uses
+        assert_eq!(alt_svc_uses("// CURLOPT_ALTSVC\nconst CURLOPT_ALTSVC: c_int = 1;\nlet s = \"CURLOPT_ALTSVC\";"), (0, vec![]));
+    }
+
+    /// **Every Alt-Svc option use in the tree is one of the two known sites, guarded by
+    /// `alt_svc()`.** The whole `rust-modules` tree is scanned (build output skipped), not just this
+    /// crate, so a third site anywhere, or one that drops or inverts the guard, fails here; and
+    /// the bind is the build's, bundle first, with no mention of the switch.
+    #[test]
+    fn every_alt_svc_use_is_a_known_site_behind_alt_svc_and_the_bind_ignores_the_switch() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).expect("read_dir").flatten() {
+                let path = entry.path();
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if path.is_dir() {
+                    if !name.starts_with("target") && !name.starts_with('.') { walk(&path, out); }
+                } else if name.ends_with(".rs") && !name.ends_with("_tests.rs") {
+                    out.push(path);
+                }
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("rust-modules");
+        let mut files = Vec::new();
+        walk(root, &mut files);
+        let mut found = Vec::new();
+        for file in &files {
+            let src = std::fs::read_to_string(file).expect("read");
+            let (uses, violations) = alt_svc_uses(&src);
+            assert!(violations.is_empty(), "{}: {violations:?}", file.display());
+            if uses > 0 {
+                found.push((file.strip_prefix(root).unwrap().to_string_lossy().into_owned(), uses));
+            }
+        }
+        found.sort();
+        assert_eq!(found, vec![("net/src/curlio.rs".to_string(), 2), ("net/src/net.rs".to_string(), 2)],
+            "exactly the control-plane and media-plane sites, CTRL and the cache file each");
+
+        let net = include_str!("net.rs");
+        let body = net.split_once(concat!("fn global_init_", "once() -> bool {")).expect("global_init_once").1;
+        let body = &body[..body.find("\n}\n").expect("its end")];
+        let bind = &body[..body.find(concat!("plx_base::dynlib::Loaded::", "Ok(soname) =>")).expect("the bind")];
+        assert!(bind.contains(concat!("match load_", "bundled() {")), "bundle first");
+        assert!(!bind.contains(concat!("http3", "_switch")) && !bind.contains(concat!("HTTP", "3.")), "the switch does not choose the library");
+    }
+
+    /// **Every other libcurl table binds from the library `global_init` chose.** An easy handle
+    /// `net.rs` created against the bundled curl, handed to a table bound from the system candidates,
+    /// is an ABI violation; nothing at run time can catch it, and the host tests never bind the
+    /// bundle. So every non-test file outside `net.rs` with a libcurl candidate list must read
+    /// `bundled_curl()` and bind with `load_from(`, and the set of such files is pinned, so a new
+    /// table has to come here and be checked.
+    #[test]
+    fn every_other_libcurl_table_binds_from_the_library_global_init_chose() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).expect("read_dir").flatten() {
+                let path = entry.path();
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if path.is_dir() {
+                    if !name.starts_with("target") && !name.starts_with('.') { walk(&path, out); }
+                } else if name.ends_with(".rs") && !name.ends_with("_tests.rs") {
+                    out.push(path);
+                }
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("rust-modules");
+        let mut files = Vec::new();
+        walk(root, &mut files);
+        let mut tables = Vec::new();
+        for file in &files {
+            let rel = file.strip_prefix(root).unwrap().to_string_lossy().into_owned();
+            let src = std::fs::read_to_string(file).expect("read");
+            if rel == "net/src/net.rs" || !src.contains(concat!("[\"libcurl", ".so.4\"")) {
+                continue;
+            }
+            assert!(
+                src.contains(concat!("bundled_", "curl()")) && src.contains(concat!("::load_", "from(")),
+                "{rel}: a libcurl table that does not bind from net::bundled_curl()"
+            );
+            tables.push(rel);
+        }
+        tables.sort();
+        assert_eq!(tables, ["net/src/curlio.rs", "net/src/net/connect_only.rs"]);
+    }
+
+    /// The first install wins: a later [`set_http3`] changes nothing. **Process-wide effect:** if
+    /// nothing had installed the switch yet, this installs the default (off), so the rest of the
+    /// test process reads off, exactly as an uninstalled switch would.
+    #[test]
+    fn a_later_install_changes_nothing() {
+        set_http3(false);
+        let now = http3_switch();
+        set_http3(!now);
+        assert_eq!(http3_switch(), now, "a later install changes nothing");
+    }
+
+    #[test]
+    fn the_build_flag_is_the_loaders_own_cfg() {
+        assert_eq!(BUNDLED_STACK_BUILT, cfg!(all(feature = "http3-curlstack", target_os = "linux", target_env = "gnu")));
+    }
+}
+
+#[cfg(test)]
 mod legacy_tests {
     use super::*;
 
@@ -5004,6 +5500,23 @@ mod legacy_tests {
         assert!(!needs_legacy_crypto_locks("libcurl/8.7 OpenSSL/1.1.1w"));
         assert!(!needs_legacy_crypto_locks("libcurl/8.7 OpenSSL/3.2.1"));
         assert!(!needs_legacy_crypto_locks("libcurl/8.7 SecureTransport"));
+    }
+
+    /// A `CURLSTACK=1` build binds the bundle (OpenSSL 3.5), but the television's own libcurl stays
+    /// mapped for `libplayerAPIs.so.1`, and on webOS 5 and older its OpenSSL is 1.0.x: the locks a
+    /// default build installs there must be installed with the bundle bound too.
+    #[test]
+    fn legacy_locks_go_on_the_televisions_openssl_even_with_the_bundle_bound() {
+        let bundle = ("libcurl-plx.so.4", "libcurl/8.23.0 OpenSSL/3.5.9 zlib/1.2.11 nghttp2/1.71.0");
+        let webos5 = ("libcurl.so.4", "libcurl/7.53.1 OpenSSL/1.0.2p zlib/1.2.11 c-ares/1.12.0");
+        let webos10 = ("libcurl.so.4", "libcurl/7.82.0 OpenSSL/3.0.13 zlib/1.2.11 c-ares/1.19.0");
+        // The default build: the television's libcurl is the bound one.
+        assert_eq!(legacy_lock_target(webos5, None), Some("libcurl.so.4"));
+        assert_eq!(legacy_lock_target(webos10, None), None);
+        // The bundle bound beside a resident firmware libcurl.
+        assert_eq!(legacy_lock_target(bundle, Some(webos5)), Some("libcurl.so.4"));
+        assert_eq!(legacy_lock_target(bundle, Some(webos10)), None);
+        assert_eq!(legacy_lock_target(bundle, None), None);
     }
 
     #[test]

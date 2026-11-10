@@ -342,6 +342,13 @@ class PackageGateDecodesTheStampTheMakefileWrites(ScratchTree):
             with self.subTest(label):
                 self.assertEqual(self.decode(*args), "release")
 
+    def test_a_curlstack_build_decodes_as_the_configuration_under_it(self):
+        """`CURLSTACK=1` keeps its cargo feature out of the stamp's feature field (`+curlstack` is a
+        field of its own), so the opt-in bundled curl is still graded as a dev or release build."""
+        for release, want in (("RELEASE=", "dev"), ("RELEASE=1", "release")):
+            with self.subTest(release):
+                self.assertEqual(self.decode("CURLSTACK=1", release), want)
+
     def test_no_backend_is_refused_in_both_configurations(self):
         """The Makefile refuses every building goal with `PLAYBACK_BACKENDS=none`
         (`test_no_backend_cannot_produce_a_television_binary`); only `clean` and the side-effect-free goals
@@ -376,7 +383,7 @@ class PackageGateDecodesTheStampTheMakefileWrites(ScratchTree):
         clean = rust_toolchain.featflags(ROOT, release=False, backends="feed")
         self.assertEqual(clean, ["--no-default-features", "--features", "play-feed,devtools,devtriggers,threadcheck"])
         inherited = {"RELEASE": "1", "LAB": "1", "RC": "2", "FLAVOR": "stable", "PLAYBACK_BACKENDS": "uri",
-                     "MAKEFLAGS": " -- RELEASE=1 LAB=1", "MAKELEVEL": "1"}
+                     "CURLSTACK": "1", "MAKEFLAGS": " -- RELEASE=1 LAB=1 CURLSTACK=1", "MAKELEVEL": "1"}
         saved = {k: os.environ.get(k) for k in inherited}
         os.environ.update(inherited)
         try:

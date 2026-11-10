@@ -157,6 +157,49 @@ fn db8_signout_keeps_install_keys_but_not_pins_recents_or_account_bound_keys() {
     assert_eq!(after.preferences, expected);
 }
 
+/// **HTTP/3 (experimental) on the DB8 path: `ClearTenure` leaves the key stored, but it is not
+/// read and the next sign-in's write drops it.** `ClearTenure` keeps every Install key, so the
+/// stored preferences still say `http3_experimental: true` after a sign-out. The signed-out read
+/// (`Cleared`) is built from `Retained`, which does not carry it, so the launch after a sign-out
+/// sets no Alt-Svc; and a sign-in writes from that session, whose preferences omit the
+/// (off, unserialized) key, which `preserve_unknown_preferences` does not copy back because this
+/// build models it. (A `PublicOnly` `UpdatePreferences` from the Cleared state is refused, so the
+/// sign-in's `ReplaceAuth` is that next write.)
+#[test]
+fn db8_signout_leaves_http3_stored_but_reads_it_off_and_the_next_write_drops_it() {
+    let mut backend = helper();
+    let mut transport = |request: Request| Ok(backend.dispatch(request));
+    let session = rich().with_http3_experimental(true);
+    assert!(matches!(
+        persistence::commit_session_with(&session, false, SaveAuthority::FreshReauthentication, 4, &mut transport),
+        persistence::CanonicalCommit::Durable { .. }));
+    assert_eq!(stored_public(&mut transport).preferences.get("http3_experimental"), Some(&serde_json::json!(true)),
+        "control: the switch is stored on");
+
+    assert!(matches!(persistence::commit_clear_with(&mut transport), persistence::CanonicalCommit::Durable { .. }));
+    assert_eq!(stored_public(&mut transport).preferences.get("http3_experimental"), Some(&serde_json::json!(true)),
+        "ClearTenure keeps it, like every Install key");
+    let persistence::CanonicalRead::Cleared { kept, .. } = persistence::load_helper_with(&mut transport) else {
+        panic!("a signed-out read is Cleared")
+    };
+    let signed_out = session_from_read(&ReadState::Cleared { kept });
+    assert!(!signed_out.http3_experimental(), "the launch after a sign-out reads it off");
+
+    // No preferences-only write lands in between: a `PublicOnly` commit from the Cleared state is
+    // not durable (the helper accepts only the language's removal there), so the next write of the
+    // preferences is the sign-in's.
+    assert!(!matches!(
+        persistence::commit_session_with(&signed_out, false, SaveAuthority::PublicOnly, 4, &mut transport),
+        persistence::CanonicalCommit::Durable { .. }));
+    // The next sign-in writes from the signed-out session.
+    let next = Session { client_id: "tier1-client-2".into(), account_token: "tier1-account-2".into(), ..signed_out };
+    assert!(matches!(
+        persistence::commit_session_with(&next, false, SaveAuthority::FreshReauthentication, 4, &mut transport),
+        persistence::CanonicalCommit::Durable { .. }));
+    assert_eq!(stored_public(&mut transport).preferences.get("http3_experimental"), None,
+        "the sign-in's write drops the stale key");
+}
+
 /// **P-d2, the DB8 path: after a sign-out and a sign-in every profile reads the frozen legacy values.**
 /// `profile_prefs` is account-bound, so `ClearTenure` drops every profile's own picks with the
 /// credentials; the top-level keys they fell back to are install keys and survive. The profile that
