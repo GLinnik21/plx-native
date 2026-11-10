@@ -67,6 +67,7 @@ pub use content_arg::ContentArg;
 pub mod hubs;
 pub mod metadata;
 pub mod notify;
+pub mod notify_job;
 pub mod notify_map;
 pub mod person;
 pub mod collection;
@@ -281,6 +282,7 @@ impl Stores {
     #[must_use]
     pub fn take_jobs_of(&mut self, id: StoreId) -> Vec<StoreJob> {
         match id {
+            StoreId::Notify => self.notify.take_jobs(),
             StoreId::Metadata => self.metadata.take_jobs(),
             StoreId::Collection => self.collection.take_jobs(),
             StoreId::Person => self.person.take_jobs(),
@@ -304,6 +306,7 @@ impl Stores {
 
     fn has_jobs_of(&self, id: StoreId) -> bool {
         match id {
+            StoreId::Notify => self.notify.has_jobs(),
             StoreId::Metadata => self.metadata.has_jobs(),
             StoreId::Collection => self.collection.has_jobs(),
             StoreId::Person => self.person.has_jobs(),
@@ -444,9 +447,22 @@ impl Stores {
 
     /// The notification feed's per-frame pass. It stands down while the landing gate is armed (a
     /// recording, a replay or a dump owns the run), and never reads the registry's tokens.
-    pub fn notify_pump(&mut self) -> notify::NotifyOut {
-        self.notify.pump(self.landgate.is_armed())
+    pub fn notify_begin(&mut self, input: &notify::NotifyInput<'_>) -> notify::NotifyPass {
+        assert_eq!(input.armed, self.landgate.is_armed());
+        self.notify.begin(input)
     }
+    pub fn notify_prepare_next(&mut self, pass: &mut notify::NotifyPass, input: &notify::NotifyInput<'_>) -> Option<notify::NotifyTurn> {
+        assert_eq!(input.armed, self.landgate.is_armed());
+        self.notify.prepare_next(pass, input)
+    }
+    pub fn notify_settle_admission(&mut self, pass: &mut notify::NotifyPass, turn: &mut notify::NotifyTurn) {
+        self.notify.settle_admission(pass, turn)
+    }
+    pub fn notify_finish_turn(&mut self, pass: &mut notify::NotifyPass, turn: notify::NotifyTurn, input: &notify::NotifyInput<'_>) {
+        assert_eq!(input.armed, self.landgate.is_armed());
+        self.notify.finish_turn(pass, turn, input)
+    }
+    pub fn notify_end(&mut self, pass: notify::NotifyPass) -> notify::NotifyOut { self.notify.end(pass) }
 
     /// Hold (`true`) or release the view-state reconcile network work; see [`Stores::network_held`].
     /// Patches are not held: what the stores already show keeps changing while the player is up.
@@ -627,7 +643,7 @@ impl Stores {
             StoreId::Watchlist => self.watchlist.gen(),
             StoreId::Catalog => self.catalog.gen(),
             // A landing gate slot only: the stop mailbox is not a store and has no generation.
-            StoreId::ViewStop => 0,
+            StoreId::ViewStop | StoreId::Notify => 0,
         }
     }
 
@@ -693,6 +709,8 @@ pub enum StoreId {
     Watchlist,
     /// Appended for the same reason: the catalog page's discover record (`crate::catalog`).
     Catalog,
+    /// Never recorded; appended without moving existing ordinals.
+    Notify,
 }
 
 /// Route-scoped background work, distinct from a user command. Polling an idle store must not
@@ -724,6 +742,7 @@ impl StoreWork {
 /// lane a store is pumped on, a job carries the request itself and the port its answer goes to.
 #[derive(Debug, PartialEq)]
 pub enum StoreJob {
+    NotifyStream(plx_machine::job::Job<notify_job::NotifyStreamReq>, notify_job::NotifyStreamPort),
     /// One detail fetch (`MetadataCmd::RequestDetail`), addressed by its request generation.
     Detail(plx_machine::job::Job<crate::metadata::DetailReq>, crate::metadata::DetailPort),
     /// One collection page request (resolve, header or children), emitted by the Collection pump
@@ -844,7 +863,8 @@ impl StoreJob {
             // `frame_ingest`, the Browse pump's own discovery step) starts it through
             // `StoreRunner::start` as `Direct`, byte for byte as its unrecorded spawn was.
             Self::BrowseDiscovery(..) => Admission::Home,
-            Self::Catalog(..)
+            Self::NotifyStream(..)
+            | Self::Catalog(..)
             | Self::SubtitleSearch(..)
             | Self::ViewReconcile(..)
             | Self::Search(..)
@@ -865,6 +885,7 @@ impl StoreJob {
             Self::Detail(..) | Self::MetaSeason(..) | Self::MetaEpisodes(..) | Self::MetaRelated(..) | Self::MetaAltSources(..) => StoreId::Metadata,
             Self::Collection(..) => StoreId::Collection,
             Self::Person(..) => StoreId::Person,
+            Self::NotifyStream(..) => StoreId::Notify,
             Self::Catalog(..) => StoreId::Catalog,
             Self::SubtitleSearch(..) => StoreId::SubtitleSearch,
             Self::ViewReconcile(..) => StoreId::ViewReconcile,
@@ -877,7 +898,7 @@ impl StoreJob {
 }
 
 impl StoreId {
-    pub const ALL: [StoreId; 12] = [
+    pub const ALL: [StoreId; 13] = [
         StoreId::Browse,
         StoreId::Hubs,
         StoreId::Metadata,
@@ -890,6 +911,7 @@ impl StoreId {
         StoreId::ViewStop,
         StoreId::Watchlist,
         StoreId::Catalog,
+        StoreId::Notify,
     ];
 
     /// The library's ordinal for this store (spec §5.1: the library never names `StoreId`).
@@ -915,6 +937,7 @@ impl StoreId {
             StoreId::ViewStop => "viewstop",
             StoreId::Watchlist => "watchlist",
             StoreId::Catalog => "catalog",
+            StoreId::Notify => "notify",
         }
     }
 }
@@ -1406,7 +1429,14 @@ mod tests {
         for id in StoreId::ALL {
             assert_eq!(StoreId::from_ord(id.ord()), Some(id));
         }
-        assert_eq!(StoreId::from_ord(StoreOrd(12)), None);
+        assert_eq!(StoreId::Notify.ord(), StoreOrd(12));
+        assert_eq!(StoreId::Notify.name(), "notify");
+        assert_eq!(StoreId::from_ord(StoreOrd(13)), None);
+        let original = ["browse", "hubs", "metadata", "search", "person", "viewstate",
+            "collection", "subsearch", "viewreconcile", "viewstop", "watchlist", "catalog"];
+        for (ord, name) in original.into_iter().enumerate() {
+            assert_eq!(StoreId::from_ord(StoreOrd(ord as u32)).unwrap().name(), name);
+        }
     }
 
     /// A fan-out call that can fill an outbox names it in a `*_FILLS` list the Bridge drains. A
