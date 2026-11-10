@@ -1,4 +1,4 @@
-{"updated":"2026-11-10T14:08:08Z",
+{"updated":"2026-11-10T14:14:54Z",
 "ci":[
 {"id":31584219333,"at":"2026-08-12T09:43:35Z","sha":"84ff93289","title":"design: Plex Pass Awareness, second revision \u2014 and the post-play Up Next card","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":82},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":31614984913,"at":"2026-08-12T15:56:06Z","sha":"123cfd89f","title":"ui: Up Next goes back to a tile, with a second button","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":66},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -4946,7 +4946,8 @@
 {"id":42798664096,"at":"2026-11-10T10:23:00Z","sha":"8869189f6","title":"Keep the Detail genre cap registered after the identity row rename","pr":1310,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":293,"Windows launcher syntax":19,"macOS simulator build + launch":204,"Linux simulator build + launch":276}},
 {"id":42817191459,"at":"2026-11-10T12:36:25Z","sha":"3773bbda8","title":"replay: re-record the three anchors for Live TV's shape move","pr":993,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":17,"Linux simulator build + launch":356,"macOS tests against bundled FFmpeg and ASS":249,"macOS simulator build + launch":283}},
 {"id":42825482831,"at":"2026-11-10T13:32:43Z","sha":"b24437bd8","title":"Grid: pin BACK from the first row closing its caption band over frames","pr":1312,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":182,"Windows launcher syntax":19,"macOS tests against bundled FFmpeg and ASS":236,"Linux simulator build + launch":627}},
-{"id":42829001108,"at":"2026-11-10T13:55:30Z","sha":"d83704dfa","title":"Preserve the seek target when Back cancels a queued reload","pr":1313,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":224,"macOS simulator build + launch":112,"Windows launcher syntax":19,"Linux simulator build + launch":743}}
+{"id":42829001108,"at":"2026-11-10T13:55:30Z","sha":"d83704dfa","title":"Preserve the seek target when Back cancels a queued reload","pr":1313,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":224,"macOS simulator build + launch":112,"Windows launcher syntax":19,"Linux simulator build + launch":743}},
+{"id":42831087030,"at":"2026-11-10T14:08:26Z","sha":"9be7a43f6","title":"Recover Segment seeks that never reach the video sink","pr":1313,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":224,"Linux simulator build + launch":374,"macOS simulator build + launch":252,"Windows launcher syntax":23}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},

@@ -85,7 +85,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-10T14:08:24Z",
+ "generated": "2026-11-10T14:15:15Z",
  "metrics": [
   {
    "change30_pct": 47.7,
@@ -193,18 +193,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 44.7,
-   "change7_pct": 13.1,
+   "change30_pct": 43.9,
+   "change7_pct": 12.5,
    "d30": 320,
-   "delta30": 143,
-   "delta7": 53.5,
+   "delta30": 140.5,
+   "delta7": 51.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 57,
+   "n_now": 58,
    "n_prev": 86,
-   "now": 463,
+   "now": 460.5,
    "prev7": 409.5,
    "shown": true,
    "state": "flat",
@@ -361,18 +361,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 39.8,
-   "change7_pct": 12.6,
+   "change30_pct": 40.0,
+   "change7_pct": 12.8,
    "d30": 230,
-   "delta30": 91.5,
-   "delta7": 36.0,
+   "delta30": 92,
+   "delta7": 36.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 54,
+   "n_now": 55,
    "n_prev": 78,
-   "now": 321.5,
+   "now": 322,
    "prev7": 285.5,
    "shown": true,
    "state": "flat",
@@ -424,18 +424,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 53.4,
-   "change7_pct": 9.9,
+   "change30_pct": 53.8,
+   "change7_pct": 10.1,
    "d30": 145,
-   "delta30": 77.5,
-   "delta7": 20.0,
+   "delta30": 78,
+   "delta7": 20.5,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 54,
+   "n_now": 55,
    "n_prev": 78,
-   "now": 222.5,
+   "now": 223,
    "prev7": 202.5,
    "shown": true,
    "state": "flat",
@@ -445,18 +445,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -32.1,
-   "change7_pct": 1.2,
+   "change30_pct": -31.7,
+   "change7_pct": 1.9,
    "d30": 322,
-   "delta30": -103.5,
-   "delta7": 2.5,
+   "delta30": -102,
+   "delta7": 4.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 54,
+   "n_now": 55,
    "n_prev": 78,
-   "now": 218.5,
+   "now": 220,
    "prev7": 216.0,
    "shown": true,
    "state": "flat",
@@ -511,15 +511,15 @@
    "change30_pct": 11.8,
    "change7_pct": 5.6,
    "d30": 17,
-   "delta30": 2.0,
+   "delta30": 2,
    "delta7": 1.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 54,
+   "n_now": 55,
    "n_prev": 78,
-   "now": 19.0,
+   "now": 19,
    "prev7": 18.0,
    "shown": false,
    "state": "flat",
@@ -618,11 +618,6 @@
    "change_pct": 32.1,
    "commits": [
     {
-     "pr": 1307,
-     "sha": "1c4d4f51f",
-     "title": "URI exported window: selected per firmware major from an evidence table, empty today"
-    },
-    {
      "pr": 1283,
      "sha": "75765b3d0",
      "title": "Net: the WebSocket transport over libcurl CONNECT_ONLY"
@@ -666,6 +661,11 @@
      "pr": 1295,
      "sha": "835114dec",
      "title": "Add an estimated local finish time to the player HUD"
+    },
+    {
+     "pr": 1313,
+     "sha": "9be7a43f6",
+     "title": "Recover Segment seeks that never reach the video sink"
     }
    ],
    "from": 23.7,
@@ -679,11 +679,6 @@
    "change_pct": 29.7,
    "commits": [
     {
-     "pr": 1307,
-     "sha": "1c4d4f51f",
-     "title": "URI exported window: selected per firmware major from an evidence table, empty today"
-    },
-    {
      "pr": 1283,
      "sha": "75765b3d0",
      "title": "Net: the WebSocket transport over libcurl CONNECT_ONLY"
@@ -727,6 +722,11 @@
      "pr": 1295,
      "sha": "835114dec",
      "title": "Add an estimated local finish time to the player HUD"
+    },
+    {
+     "pr": 1313,
+     "sha": "9be7a43f6",
+     "title": "Recover Segment seeks that never reach the video sink"
     }
    ],
    "from": 49.0,
@@ -740,11 +740,6 @@
    "change_pct": 26.9,
    "commits": [
     {
-     "pr": 1307,
-     "sha": "1c4d4f51f",
-     "title": "URI exported window: selected per firmware major from an evidence table, empty today"
-    },
-    {
      "pr": 1283,
      "sha": "75765b3d0",
      "title": "Net: the WebSocket transport over libcurl CONNECT_ONLY"
@@ -788,6 +783,11 @@
      "pr": 1295,
      "sha": "835114dec",
      "title": "Add an estimated local finish time to the player HUD"
+    },
+    {
+     "pr": 1313,
+     "sha": "9be7a43f6",
+     "title": "Recover Segment seeks that never reach the video sink"
     }
    ],
    "from": 334.5,
@@ -801,11 +801,6 @@
    "change_pct": 20.2,
    "commits": [
     {
-     "pr": 1307,
-     "sha": "1c4d4f51f",
-     "title": "URI exported window: selected per firmware major from an evidence table, empty today"
-    },
-    {
      "pr": 1283,
      "sha": "75765b3d0",
      "title": "Net: the WebSocket transport over libcurl CONNECT_ONLY"
@@ -849,6 +844,11 @@
      "pr": 1295,
      "sha": "835114dec",
      "title": "Add an estimated local finish time to the player HUD"
+    },
+    {
+     "pr": 1313,
+     "sha": "9be7a43f6",
+     "title": "Recover Segment seeks that never reach the video sink"
     }
    ],
    "from": 185.5,
@@ -889,7 +889,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 321.5
+   "now": 322
   }
  ],
  "slowest_local": [
