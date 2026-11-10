@@ -85,7 +85,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-10T23:49:50Z",
+ "generated": "2026-11-10T23:51:17Z",
  "metrics": [
   {
    "change30_pct": 47.7,
@@ -130,10 +130,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 102.9,
+   "change30_pct": 102.4,
    "change7_pct": 25.9,
-   "d30": 208.5,
-   "delta30": 214.5,
+   "d30": 209,
+   "delta30": 214.0,
    "delta7": 87.0,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
@@ -172,18 +172,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 42.8,
-   "change7_pct": 11.2,
-   "d30": 320,
-   "delta30": 137,
-   "delta7": 46.0,
+   "change30_pct": 42.3,
+   "change7_pct": 10.9,
+   "d30": 320.5,
+   "delta30": 135.5,
+   "delta7": 45.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 61,
+   "n_now": 62,
    "n_prev": 86,
-   "now": 457,
+   "now": 456.0,
    "prev7": 411.0,
    "shown": true,
    "state": "flat",
@@ -256,10 +256,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 43.8,
+   "change30_pct": 43.7,
    "change7_pct": 8.5,
-   "d30": 1910,
-   "delta30": 837,
+   "d30": 1911.5,
+   "delta30": 835.5,
    "delta7": 215.5,
    "group": "ci",
    "id": "minutes",
@@ -300,7 +300,7 @@
   {
    "change30_pct": 66.7,
    "change7_pct": 7.6,
-   "d30": 264.0,
+   "d30": 264,
    "delta30": 176.0,
    "delta7": 31.0,
    "group": "ci",
@@ -340,18 +340,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 39.8,
-   "change7_pct": 11.2,
-   "d30": 230,
-   "delta30": 91.5,
-   "delta7": 32.5,
+   "change30_pct": 40.0,
+   "change7_pct": 11.4,
+   "d30": 230.0,
+   "delta30": 92.0,
+   "delta7": 33.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 78,
-   "now": 321.5,
+   "now": 322,
    "prev7": 289.0,
    "shown": true,
    "state": "flat",
@@ -363,8 +363,8 @@
   {
    "change30_pct": 115.8,
    "change7_pct": -9.4,
-   "d30": 139.0,
-   "delta30": 161.0,
+   "d30": 139,
+   "delta30": 161,
    "delta7": -31,
    "group": "ci",
    "id": "ci|host harness tests",
@@ -384,8 +384,8 @@
   {
    "change30_pct": 84.1,
    "change7_pct": -17.1,
-   "d30": 132.0,
-   "delta30": 111.0,
+   "d30": 132,
+   "delta30": 111,
    "delta7": -50,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
@@ -403,18 +403,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 55.2,
-   "change7_pct": 9.8,
-   "d30": 144,
-   "delta30": 79.5,
-   "delta7": 20.0,
+   "change30_pct": 56.1,
+   "change7_pct": 10.1,
+   "d30": 143.5,
+   "delta30": 80.5,
+   "delta7": 20.5,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 78,
-   "now": 223.5,
+   "now": 224,
    "prev7": 203.5,
    "shown": true,
    "state": "flat",
@@ -426,8 +426,8 @@
   {
    "change30_pct": 32.0,
    "change7_pct": 18.6,
-   "d30": 169.0,
-   "delta30": 54.0,
+   "d30": 169,
+   "delta30": 54,
    "delta7": 35,
    "group": "ci",
    "id": "ci|host lint + type-checks",
@@ -445,18 +445,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -34.1,
-   "change7_pct": -2.5,
-   "d30": 320,
-   "delta30": -109.0,
-   "delta7": -5.5,
+   "change30_pct": -34.4,
+   "change7_pct": -3.0,
+   "d30": 320.0,
+   "delta30": -110.0,
+   "delta7": -6.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 78,
-   "now": 211.0,
+   "now": 210,
    "prev7": 216.5,
    "shown": true,
    "state": "flat",
@@ -510,16 +510,16 @@
   {
    "change30_pct": 11.8,
    "change7_pct": 0.0,
-   "d30": 17,
+   "d30": 17.0,
    "delta30": 2.0,
    "delta7": 0.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 78,
-   "now": 19.0,
+   "now": 19,
    "prev7": 19.0,
    "shown": false,
    "state": "flat",
@@ -552,7 +552,7 @@
   {
    "change30_pct": -12.5,
    "change7_pct": 16.7,
-   "d30": 4.0,
+   "d30": 4,
    "delta30": -0.5,
    "delta7": 0.5,
    "group": "ci",
@@ -573,8 +573,8 @@
   {
    "change30_pct": -99.0,
    "change7_pct": 0.0,
-   "d30": 300.5,
-   "delta30": -297.5,
+   "d30": 301,
+   "delta30": -298,
    "delta7": 0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
@@ -618,11 +618,6 @@
    "change_pct": 32.1,
    "commits": [
     {
-     "pr": 1313,
-     "sha": "9be7a43f6",
-     "title": "Recover Segment seeks that never reach the video sink"
-    },
-    {
      "pr": 1310,
      "sha": "660893fbd",
      "title": "Polish the Home hero, Continue Watching, and Detail shading"
@@ -666,6 +661,11 @@
      "pr": 1321,
      "sha": "d6b75cd94",
      "title": "Polish LG Detail, Library, and Settings screens"
+    },
+    {
+     "pr": 1322,
+     "sha": "283f536d1",
+     "title": "refactor(data): run notification streams as addressed jobs"
     }
    ],
    "from": 23.7,
@@ -679,11 +679,6 @@
    "change_pct": 29.7,
    "commits": [
     {
-     "pr": 1313,
-     "sha": "9be7a43f6",
-     "title": "Recover Segment seeks that never reach the video sink"
-    },
-    {
      "pr": 1310,
      "sha": "660893fbd",
      "title": "Polish the Home hero, Continue Watching, and Detail shading"
@@ -727,6 +722,11 @@
      "pr": 1321,
      "sha": "d6b75cd94",
      "title": "Polish LG Detail, Library, and Settings screens"
+    },
+    {
+     "pr": 1322,
+     "sha": "283f536d1",
+     "title": "refactor(data): run notification streams as addressed jobs"
     }
    ],
    "from": 49.0,
@@ -740,11 +740,6 @@
    "change_pct": 25.9,
    "commits": [
     {
-     "pr": 1313,
-     "sha": "9be7a43f6",
-     "title": "Recover Segment seeks that never reach the video sink"
-    },
-    {
      "pr": 1310,
      "sha": "660893fbd",
      "title": "Polish the Home hero, Continue Watching, and Detail shading"
@@ -788,6 +783,11 @@
      "pr": 1321,
      "sha": "d6b75cd94",
      "title": "Polish LG Detail, Library, and Settings screens"
+    },
+    {
+     "pr": 1322,
+     "sha": "283f536d1",
+     "title": "refactor(data): run notification streams as addressed jobs"
     }
    ],
    "from": 336,
@@ -828,7 +828,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 321.5
+   "now": 322
   }
  ],
  "slowest_local": [
