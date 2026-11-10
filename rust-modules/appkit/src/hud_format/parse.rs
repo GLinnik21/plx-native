@@ -217,12 +217,12 @@ pub struct Ctx {
 }
 
 impl Ctx {
-    /// An empty context: no palette, no assets, current format, outside a strip card.
+    /// An empty 1.0 context: no palette, no assets, format 1.0, outside a strip card.
     pub fn v1() -> Ctx {
         Ctx {
             palette: Vec::new(),
             assets: Vec::new(),
-            format: schema::CURRENT,
+            format: schema::V1_0,
             in_strip_card: false,
         }
     }

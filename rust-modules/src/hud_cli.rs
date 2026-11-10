@@ -277,15 +277,23 @@ mod tests {
         list.iter().map(|a| (*a).to_owned()).collect()
     }
 
+    fn fixture_archive(text: &str) -> Vec<u8> {
+        if text == BUILTIN_CLASSIC {
+            super::BUILTIN_CLASSIC.to_vec()
+        } else {
+            plx_appkit::hud_format::fixtures::with_hud_resources("reference", text)
+        }
+    }
+
     /// The whole lint with the tests' one measure, `ShippedMeasure`, for both passes.
     fn lint_report(text: &str, langs: &[LintLang], opts: &LintOptions) -> Linted {
-        let bytes = plx_appkit::hud_format::fixtures::with_hud_resources("reference", text);
+        let bytes = fixture_archive(text);
         let decoded = bundle::read(&bytes, None);
         lint_decoded(&decoded, &ShippedMeasure, &ShippedMeasure, langs, opts)
     }
 
     fn expected_json(file: &str, hud: &str, findings: &[Finding], costs: &[StateCostLine]) -> String {
-        let bytes = plx_appkit::hud_format::fixtures::with_hud_resources("reference", hud);
+        let bytes = fixture_archive(hud);
         let digest = bundle::read(&bytes, None).sha256;
         format!("{:#}\n", report::with_digest(report::to_json_with_costs(file, findings, costs), digest))
     }
@@ -343,7 +351,7 @@ mod tests {
         price: &dyn Fn() -> Result<Box<dyn Measure>, String>,
     ) -> (i32, String, String) {
         let (mut out, mut err) = (String::new(), String::new());
-        let source = |path: &str| read(path).map(|text| Source::Archive(plx_appkit::hud_format::fixtures::with_hud_resources("reference", &text)));
+        let source = |path: &str| read(path).map(|text| Source::Archive(fixture_archive(&text)));
         let io = Io { read: &source, text: read, write: &|_, _| Ok(()) };
         let code = run(&args(list), &io, measure, price, &|| panic!("font identities requested outside metrics"), &mut out, &mut err);
         (code, out, err)
@@ -801,7 +809,7 @@ mod tests {
             let file = format!("{name}.plxhud");
             let read = move |_: &str| -> Result<String, String> { Ok(text.to_owned()) };
             let (mut out, mut err) = (String::new(), String::new());
-            let source = |path: &str| read(path).map(|text| Source::Archive(plx_appkit::hud_format::fixtures::with_hud_resources("reference", &text)));
+            let source = |path: &str| read(path).map(|text| Source::Archive(fixture_archive(&text)));
             let io = Io { read: &source, text: &read, write: &|_, _| Ok(()) };
             let code = run(&args(&["--hud-lint", &file, "--lang", "all"]), &io, &ttf_measure, &price_measure, &crate::hud_tools::font_hashes, &mut out, &mut err);
             assert_eq!((code, err.as_str()), (0, ""), "{name}: {out}");

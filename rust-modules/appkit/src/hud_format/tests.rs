@@ -245,7 +245,7 @@ pub(in crate::hud_format) mod valid {
 
     #[test]
     fn the_reference_example_parses_with_no_finding() {
-        let parsed = parse_checked(REFERENCE.as_bytes());
+        let parsed = super::super::fixtures::parse_for("reference", REFERENCE.as_bytes());
         assert!(
             parsed.findings.is_empty(),
             "the worked example of the spec is a valid package:\n{}",
