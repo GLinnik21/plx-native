@@ -1789,7 +1789,9 @@ impl Painter {
     /// **The ground scrim ALONE, blended over what is already drawn** — `ink`'s rgb at the stacked
     /// alpha of `scrim` over `r`, evaluated per vertex like the ground's own
     /// ([`ambient_inked`](Self::ambient_inked) carries the same field in its one pass; this is for
-    /// the frames that pass cannot take it, a hero slide's two art layers). Check
+    /// the frames that pass cannot take it: a hero slide's two art layers, a resting hero whose art
+    /// covers the wash). The renderer draws nothing for an `r` the field cannot reach
+    /// (`gfx::draw_scrim_layer`); the cell is declared first, either way. Check
     /// `gfx::scrim_layer_ok` first ([`widgets::scrim_layer`] does).
     pub fn scrim_layer(self, r: Rect, ink: [f32; 4], scrim: plx_gfx::gfx::scrim::GroundShade) {
         let g = GroundInk { ink, ramp: [0.0; 2], scrim };

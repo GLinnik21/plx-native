@@ -13,12 +13,20 @@ const HEX_A: [u8; 12] = [0xa1; 12];
 /// `disc`, the first movie has a portable id, so its action row carries the Watchlist disc (one
 /// control wider than the same row without it).
 fn seeded(disc: bool) -> plx_data::pms::HubsSnapshot {
+    seeded_resuming(disc, false)
+}
+
+/// [`seeded`], with the first movie half watched when `resuming`: its hero's Play reads "Resume".
+fn seeded_resuming(disc: bool, resuming: bool) -> plx_data::pms::HubsSnapshot {
     let mut state = plx_data::pms::PmsState::default();
     let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
     plx_data::pms::seed_for_test(&mut state, &adapter, 3, plx_data::pms::HubState::Ready);
     plx_data::pms::edit_test_item(&mut state, "1", &|m| {
         m.kind = 0;
         m.guid = disc.then_some(HEX_A);
+        if resuming {
+            (m.resume_ms, m.dur_ns) = (3_600_000, 7_200_000 * 1_000_000);
+        }
     });
     plx_data::pms::edit_test_item(&mut state, "2", &|m| m.kind = 0);
     // an episode names itself with its one bold line, so its ladder has a block a bare movie's lacks
@@ -242,4 +250,60 @@ fn the_shelf_fade_starts_at_the_first_shelfs_live_tile_top() {
     assert_eq!(s.shelf_fade(1.0).stops[0].0, tiles_top, "the fade is where the shelf is");
     s.grid.shelves.clear();
     assert_eq!(s.shelf_fade(1.0).stops[0].0, plx_ui::landing_hero::SHELF_TOP, "no shelf: the rest place");
+}
+
+/// **The shade layer draws the cells under the copy, not the panel.** A resting hero's shade is the
+/// layer over its opaque art (`Backdrop::draw`: no ground pass is drawn once the art covers the wash),
+/// 16 cells of 1536 vertices each running the six-block distance; the renderer drops a cell the
+/// shade cannot reach and, of one it reaches, the mesh rows above and below the part it does
+/// (`gfx::draw_scrim_layer`). This counts what a RESUMING hero's real blocks (copy column, action row
+/// with the Watchlist disc, pager) leave drawn at full strength, and holds that everything left out is
+/// exactly zero, so the skipped draws were the ones that painted nothing.
+#[test]
+fn a_resuming_heros_shade_reaches_only_the_cells_under_its_content() {
+    use plx_ui::widgets::{cut_cells, SCRIM_CELL_H, SCRIM_CELL_W};
+    const ROWS: usize = 16; // `gfx::FIELD_N`: the mesh is ROWS rows of ROWS squares of 6 vertices
+    let _guard = plx_base::testlock::serial();
+    let m = &plx_ui::fixture::FixtureMeasure;
+    let snapshot = seeded_resuming(true, true);
+    let view = snapshot.view();
+    let mut s = screen(view);
+    tick(&mut s, view, 1);
+    assert!(s.slide_offsets().is_none(), "the premise: a hero at rest");
+    let hero = s.selected_hero(view).expect("a hero").item;
+    assert!(hero_resumes(hero), "the premise: a Resume hero");
+    let shade = s.hero_shade(view, m).scrim(1.0);
+    let cells: Vec<Rect> = cut_cells(Rect::FULL, SCRIM_CELL_W, SCRIM_CELL_H).collect();
+    let rect = |c: &Rect| [c.x, c.y, c.w, c.h];
+    let reached: Vec<&Rect> = cells.iter().filter(|c| shade.field.reaches(rect(c))).collect();
+    let drawn_rows: usize = cells.iter().filter_map(|c| shade.field.reached_rows(rect(c), ROWS)).map(|r| r.len()).sum();
+    let verts = |rows: usize| rows * ROWS * 6;
+    eprintln!(
+        "resume hero shade: {} of {} cells reached ({} of {} vertices), {} of {} mesh rows drawn ({} vertices): {:?}",
+        reached.len(),
+        cells.len(),
+        verts(reached.len() * ROWS),
+        verts(cells.len() * ROWS),
+        drawn_rows,
+        cells.len() * ROWS,
+        verts(drawn_rows),
+        reached.iter().map(|c| (c.x as i32, c.y as i32)).collect::<Vec<_>>()
+    );
+    assert!(reached.len() < cells.len(), "the shade does not cover the panel");
+    assert!(reached.len() * 2 <= cells.len() + 2, "…a little over half of it at most: {} of {}", reached.len(), cells.len());
+    assert!(drawn_rows < reached.len() * ROWS, "…and the cells it reaches are drawn only in part: {drawn_rows} rows");
+    for c in cells.iter().filter(|c| !shade.field.reaches(rect(c))) {
+        for iy in 0..=18 {
+            for ix in 0..=32 {
+                let (x, y) = (c.x + c.w * ix as f32 / 32.0, c.y + c.h * iy as f32 / 18.0);
+                assert_eq!(shade.alpha(x, y), 0.0, "({x},{y}) in the skipped cell {c:?}");
+            }
+        }
+    }
+    // …and every cell holding a block's own rect is reached
+    for (rect, _) in s.hero_shade(view, m).blocks() {
+        let (cx, cy) = (rect.x + rect.w * 0.5, rect.y + rect.h * 0.5);
+        let home = cells.iter().find(|c| cx >= c.x && cx < c.x + c.w && cy >= c.y && cy < c.y + c.h).expect("on the panel");
+        assert!(shade.field.reaches([home.x, home.y, home.w, home.h]), "{rect:?}'s cell {home:?}");
+    }
 }

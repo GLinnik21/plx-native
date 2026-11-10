@@ -153,7 +153,8 @@ const VS_AMBIENT_DITHERED: &CStr =
     glsl!("shaders/vs_ambient.vert", "#define PLX_DITHER_NC\n#define PLX_WASH_INK\n#define PLX_SCRIM\n");
 /// The ground scrim drawn ALONE as a blended layer ([`draw_scrim_layer`]): `vs_ambient.vert`'s scrim
 /// field as the colour the plain, undithered fragment blends. For the frames the ground cannot carry
-/// the scrim in its own pass (a hero slide's two art layers).
+/// the scrim in its own pass (a hero slide's two art layers; a resting hero whose opaque art hides the
+/// wash, so there is no ground pass).
 const VS_SCRIM_LAYER: &CStr =
     glsl!("shaders/vs_ambient.vert", "#define PLX_SCRIM\n#define PLX_SCRIM_LAYER\n");
 const VS_IMG_DITHERED: &CStr = glsl_vs_dithered!("shaders/vs_img.vert");
@@ -1181,7 +1182,7 @@ pub fn init_gl() {
         }
         SCRIM_SENT = [scrim::GroundShade::NONE; 3];
         SCRIM_PROG = link_program(VS_SCRIM_LAYER.as_ptr(), FS_AMBIENT_PLAIN.as_ptr()).unwrap_or_else(|| {
-            log("scrim layer prog link failed — a hero slide draws no scrim over its art");
+            log("scrim layer prog link failed — a layered hero draws no scrim over its art");
             0
         });
         if SCRIM_PROG != 0 {
@@ -1911,11 +1912,31 @@ pub fn scrim_layer_ok() -> bool {
 /// **The ground scrim alone, blended over whatever is under it**: `ink` (rgb) at the stacked alpha
 /// of `scrim` ([`scrim::GroundShade::at`]) over `(x, y, w, h)`, evaluated per vertex of the field
 /// mesh like the ground's own. It is the same field the ground carries in its one pass
-/// ([`draw_ambient_inked`], [`draw_art_wash`]), for the frames that pass cannot take it — a hero
-/// slide, which has two art layers and needs the scrim OVER both. Not dithered (a translucent scrim
-/// over a photograph has nothing to band, as [`draw_grad4`]'s). Check [`scrim_layer_ok`] first.
+/// ([`draw_ambient_inked`], [`draw_art_wash`]), for the frames that pass cannot take it: a hero
+/// slide, which has two art layers and needs the scrim OVER both, and a resting hero whose opaque
+/// photograph covers the wash, so that no ground pass is drawn for the scrim to ride in
+/// (Home's `wash_hidden`). Not dithered (a translucent scrim over a photograph has nothing to
+/// band, as [`draw_grad4`]'s). Check [`scrim_layer_ok`] first.
+///
+/// **It draws only where the shade is.** The field mesh is 1536 vertices a call, each running the
+/// six-block rounded-rect distance, and a hero's shade is a few soft blocks: most of the panel's
+/// cells hold nothing but zeros. A rect the shade cannot reach ([`scrim::GroundShade::reaches`]:
+/// exact where it says no, so every vertex would have been alpha 0) is dropped before any GL state
+/// is touched, and of one it reaches only the mesh rows from the first strip the shade reaches to
+/// the last are drawn ([`scrim::GroundShade::reached_rows`]; the rows left out are all zeros too).
+/// That changes no pixel; [`scrim::GroundShade::NONE`] draws nothing at all. On the set
+/// (Home `hero-pong` and `grid-pong`, release, HWCNT, 2026-11-10) the layer drawn over the whole
+/// panel was the whole rise of the vertex/tiler slot (JS1) over `main`: masking the `grad` class took
+/// it from 2.4-2.9M to 0.2-0.3M a frame. The caller still declares every cell (`Painter::scrim_layer`
+/// records before it gets here), so the recorded stream does not depend on this skip.
 pub fn draw_scrim_layer(x: f32, y: f32, w: f32, h: f32, ink: [f32; 3], scrim: &scrim::GroundShade) {
-    if culled(x, y, w, h) || gate(Class::Grad, x, y, w, h) {
+    if culled(x, y, w, h) {
+        return;
+    }
+    let Some(rows) = scrim.reached_rows([x, y, w, h], FIELD_N) else {
+        return;
+    };
+    if gate(Class::Grad, x, y, w, h) {
         return;
     }
     unsafe {
@@ -1926,14 +1947,23 @@ pub fn draw_scrim_layer(x: f32, y: f32, w: f32, h: f32, ink: [f32; 3], scrim: &s
         glUniform4f(SCL_RECT, x, y, w, h);
         glUniform3f(SCL_INK, ink[0], ink[1], ink[2]);
         send_scrim(2, SCL_SC, scrim);
-        draw_field_mesh();
+        draw_field_mesh_rows(rows);
     }
 }
 
 /// Issue the field mesh (see [`field_mesh`]) — every four-corner draw goes through this.
 #[inline]
 unsafe fn draw_field_mesh() {
-    glDrawArrays(GL_TRIANGLES, 4, FIELD_VERTS as c_int);
+    draw_field_mesh_rows(0..FIELD_N);
+}
+
+/// Issue rows `rows` of the field mesh (`0..FIELD_N`, top to bottom). [`field_mesh`] stores it row
+/// by row, `FIELD_N` squares of 6 vertices to a row, after the unit quad's 4 vertices, so a run of
+/// rows is one contiguous `glDrawArrays` and draws exactly the vertices the whole mesh holds there.
+#[inline]
+unsafe fn draw_field_mesh_rows(rows: std::ops::Range<usize>) {
+    const ROW_VERTS: usize = FIELD_N * 6;
+    glDrawArrays(GL_TRIANGLES, (4 + rows.start * ROW_VERTS) as c_int, (rows.len() * ROW_VERTS) as c_int);
 }
 
 /// Which of the two ambient programs draws a field, with its uniform locations: the dithered one
@@ -8667,6 +8697,23 @@ mod tests {
         }
         assert!((area - 1.0).abs() < 1e-4, "the mesh tiles the unit square exactly once: {area}");
         assert!(worst * 255.0 <= 0.5, "worst deviation {:.3} codes", worst * 255.0);
+    }
+
+    /// **The mesh is stored row by row**, `FIELD_N` squares of 6 vertices to a row, top to bottom —
+    /// which is what lets [`draw_field_mesh_rows`] (and the scrim layer, which draws only the rows its
+    /// shade reaches) address a run of rows as one contiguous `glDrawArrays` range.
+    #[test]
+    fn the_field_mesh_is_stored_row_by_row() {
+        let v = field_mesh();
+        let row_verts = FIELD_N * 6;
+        assert_eq!(v.len(), FIELD_N * row_verts * 2);
+        for (j, row) in v.chunks(row_verts * 2).enumerate() {
+            let (top, bottom) = (j as f32 / FIELD_N as f32, (j + 1) as f32 / FIELD_N as f32);
+            for p in row.chunks(2) {
+                assert!(p[1] >= top && p[1] <= bottom, "row {j}: a vertex at y {}", p[1]);
+            }
+            assert!(row.chunks(2).any(|p| p[1] == top) && row.chunks(2).any(|p| p[1] == bottom), "row {j} spans its strip");
+        }
     }
 
     /// **The shared output dither, graded across every program that carries it.**

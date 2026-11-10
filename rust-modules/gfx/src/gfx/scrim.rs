@@ -30,6 +30,13 @@
 //! is folded into the ink with `mix(inka, 1.0, s)`, which for `s == 0` is `inka * 1.0 + 0.0` — the
 //! ramp's own alpha to the bit. So a screen with no shade is drawn by the very same programs as
 //! before and gets the very same pixels.
+//!
+//! **Zero is also local.** A block is exactly 0 from `feather` px beyond its rounded rect on, so the
+//! shade has a SUPPORT, and [`GroundShade::reaches`] asks whether a rect meets it. The layer that
+//! paints the shade alone ([`super::draw_scrim_layer`]) pays one vertex-shaded mesh a cell whatever
+//! the cell holds; it asks first, and a cell the shade cannot reach is not drawn (it could only
+//! have blended zeros), nor are the rows of a cell's mesh above or below the part the shade reaches
+//! ([`GroundShade::reached_rows`]).
 
 /// Blocks the shader's uniform array holds. A limit of the program (two `vec4`s a block), sized for
 /// the busiest hero: Detail's logo, text column, facts line, action row and credits column.
@@ -37,6 +44,12 @@ pub const MAX_BLOCKS: usize = 6;
 /// `vec4`s the blocks take in `u_sc`: `(cx, cy, hx - r, hy - r)` then `(r, 1/feather, peak, 0)`, in
 /// device pixels.
 pub const VEC4S: usize = 2 * MAX_BLOCKS;
+
+/// Pixels [`ShadeBlock::reaches`] errs on the reaching side of a block's support. The shader reads
+/// `feather` as the reciprocal it was handed (one rounding) and computes the distance in `f32` at
+/// coordinates of a few thousand, so its alpha can be a hair above 0 a hair past the closed form's
+/// edge; a pixel is generously more than either, and costs a row of mesh squares at most.
+const REACH_SLACK: f32 = 1.0;
 
 /// One soft rounded block of shade.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -80,6 +93,30 @@ impl ShadeBlock {
     /// The block's peak alpha (0 for an unused one).
     pub fn peak(&self) -> f32 {
         self.shape[2]
+    }
+
+    /// **Can this block's alpha be above 0 anywhere in `rect = (x, y, w, h)`?** `false` is EXACT:
+    /// every point of the rect is `feather` px or more from the rounded rect, where [`at`](Self::at)
+    /// is exactly `0.0` (and so is the shader's vertex alpha, and the interpolation of zeros). `true`
+    /// is conservative by [`REACH_SLACK`] px.
+    ///
+    /// The block is `peak` inside the rounded rect and nothing from `feather` beyond it, so the
+    /// block's support is that rounded rect grown by `feather`, which this tests against `rect`
+    /// exactly (the nearest point of the rect to the core rectangle the corner arcs are centred on,
+    /// then [`distance`](Self::distance)'s own expression there) rather than against a bounding box
+    /// of it, so a rect that only meets the box's square corner, outside the arc, is not reached.
+    pub fn reaches(&self, rect: [f32; 4]) -> bool {
+        if self.shape[2] <= 0.0 {
+            return false;
+        }
+        let [x, y, w, h] = rect;
+        // Per axis, the least `max(|p - c| - half, 0)` over `p` in `[lo, hi]`: how far the centre is
+        // outside the interval, less the core's half extent, held at 0.
+        let gap = |lo: f32, hi: f32, c: f32, half: f32| ((lo - c).max(c - hi).max(0.0) - half).max(0.0);
+        let (dx, dy) = (gap(x, x + w, self.frame[0], self.frame[2]), gap(y, y + h, self.frame[1], self.frame[3]));
+        let nearest = (dx * dx + dy * dy).sqrt() - self.shape[0];
+        // A NaN block is reached, as the shader would paint it.
+        nearest.is_nan() || nearest < self.feather() + REACH_SLACK
     }
 
     /// The block's rounded rect as `(x, y, w, h)` and its corner radius.
@@ -137,6 +174,30 @@ impl GroundShade {
     /// The stacked alpha at `(x, y)`: `1 - prod(1 - a_i)`, as the vertex shader computes it.
     pub fn at(&self, x: f32, y: f32) -> f32 {
         1.0 - self.blocks.iter().fold(1.0, |keep, b| keep * (1.0 - b.at(x, y)))
+    }
+
+    /// **Can the stacked alpha be above 0 anywhere in `rect = (x, y, w, h)`?** `false` is exact: the
+    /// field is `0.0` at every point of the rect ([`ShadeBlock::reaches`], any block). This is the
+    /// SUPPORT of the shade asked cell by cell: a draw that would only paint zeros (a mesh cell of the
+    /// scrim layer far from any copy) is skipped, which changes no pixel. [`GroundShade::NONE`]
+    /// reaches nowhere.
+    pub fn reaches(&self, rect: [f32; 4]) -> bool {
+        self.blocks.iter().any(|b| b.reaches(rect))
+    }
+
+    /// **The rows of a mesh over `rect` the shade can reach**: `rect` cut into `rows` equal horizontal
+    /// strips, from the first strip [`reaches`](Self::reaches) to the last (`None`: none does, and the
+    /// rect is not reached). A mesh stored row by row ([`super::field_mesh`]) can then be drawn from
+    /// its first reached row through its last, one call, and the rows left out are the ones whose every
+    /// vertex is alpha 0: the picture is the whole mesh's to the bit. Rows between the two are kept
+    /// even when unreached (a single call, not one per run).
+    pub fn reached_rows(&self, rect: [f32; 4], rows: usize) -> Option<std::ops::Range<usize>> {
+        let [x, y, w, h] = rect;
+        // both edges from the rect and the row index, as the shader's `a_pos.y * u_rect.w` places them
+        let edge = |j: usize| y + h * j as f32 / rows as f32;
+        let mut reached = (0..rows).filter(|&j| self.reaches([x, edge(j), w, edge(j + 1) - edge(j)]));
+        let first = reached.next()?;
+        Some(first..reached.last().unwrap_or(first) + 1)
     }
 
     /// Every block's peak times `k` (a hero fade, a painter's alpha): each block, then stacked — not
@@ -373,6 +434,165 @@ mod tests {
         }
         assert!(worst <= bound + 1e-5, "{worst} vs the mesh error {bound}");
         assert!(worst > 0.0, "the premise: the mesh is not exact between vertices");
+    }
+
+    /// The shades the support tests walk: a hero's two blocks, one rounded card, a square-cornered
+    /// block with a short feather (the support's corners are tight there), a stadium, and two blocks
+    /// far apart (the support is two islands, not their hull).
+    fn shades() -> Vec<GroundShade> {
+        vec![
+            sample(),
+            GroundShade::from_blocks(&[card()]),
+            GroundShade::from_blocks(&[ShadeBlock::new([700.0, 400.0, 200.0, 100.0], 0.0, 30.0, 0.8)]),
+            GroundShade::from_blocks(&[ShadeBlock::new([900.0, 500.0, 600.0, 40.0], 500.0, 140.0, 0.45)]),
+            GroundShade::from_blocks(&[
+                ShadeBlock::new([20.0, 20.0, 200.0, 80.0], 32.0, 140.0, 0.6),
+                ShadeBlock::new([1500.0, 800.0, 300.0, 120.0], 32.0, 140.0, 0.45),
+            ]),
+        ]
+    }
+
+    /// The panel as 1x1, 4x4 (the scrim layer's cells), 8x8 and 16x16 grids, and 400 deterministic
+    /// rects of every size and place, a few off the panel.
+    fn probe_rects() -> Vec<[f32; 4]> {
+        let mut rects = Vec::new();
+        for n in [1usize, 4, 8, 16] {
+            let (cw, ch) = (1920.0 / n as f32, 1080.0 / n as f32);
+            for j in 0..n {
+                for i in 0..n {
+                    rects.push([i as f32 * cw, j as f32 * ch, cw, ch]);
+                }
+            }
+        }
+        let mut seed = 0x2545_f491_u32;
+        let mut next = move |lo: f32, hi: f32| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            lo + (hi - lo) * (seed >> 8) as f32 / (1u32 << 24) as f32
+        };
+        for _ in 0..400 {
+            rects.push([next(-200.0, 2100.0), next(-200.0, 1200.0), next(1.0, 700.0), next(1.0, 400.0)]);
+        }
+        rects
+    }
+
+    /// **The support is exact on the side that matters: wherever `reaches` says no, the field is
+    /// `0.0`, bit for bit, at every point of the rect** (a 21 x 21 grid of it, the edges and corners
+    /// included), for the block and for the stack. And it is not vacuous: each shade has rects it
+    /// reaches and rects it does not.
+    #[test]
+    fn a_rect_the_shade_does_not_reach_has_exactly_zero_field_everywhere() {
+        let rects = probe_rects();
+        for (k, s) in shades().into_iter().enumerate() {
+            let (mut reached, mut skipped) = (0, 0);
+            for &[x, y, w, h] in &rects {
+                if s.reaches([x, y, w, h]) {
+                    reached += 1;
+                    continue;
+                }
+                skipped += 1;
+                for iy in 0..=20 {
+                    for ix in 0..=20 {
+                        let (px, py) = (x + w * ix as f32 / 20.0, y + h * iy as f32 / 20.0);
+                        assert_eq!(s.at(px, py), 0.0, "shade {k}: ({px},{py}) in the unreached rect {:?}", [x, y, w, h]);
+                        for b in s.blocks() {
+                            assert_eq!(b.at(px, py), 0.0, "shade {k}: a block at ({px},{py})");
+                        }
+                    }
+                }
+            }
+            assert!(reached > 10 && skipped > 10, "shade {k}: {reached} reached, {skipped} skipped");
+        }
+    }
+
+    /// **…and the other side is tight to a pixel or two of the feather**, so the skip is worth
+    /// something: a rect whose nearest point is `0.5` px inside the feather is reached (and the field
+    /// there is above 0), one `2` px past it is not, on each of the four sides.
+    #[test]
+    fn reaching_stops_within_two_pixels_of_the_feathers_end() {
+        let b = card(); // (200, 300, 400, 100), feather 120: the rect spans x 200..600, y 300..400
+        let (f, probe) = (120.0, 10.0);
+        let at = |gap: f32| {
+            [
+                [600.0 + gap, 340.0, probe, probe],          // right
+                [200.0 - gap - probe, 340.0, probe, probe],  // left
+                [380.0, 400.0 + gap, probe, probe],          // below
+                [380.0, 300.0 - gap - probe, probe, probe],  // above
+            ]
+        };
+        for r in at(f - 0.5) {
+            assert!(b.reaches(r), "{r:?}: half a pixel inside the feather");
+            let nearest = [(r[0], r[1]), (r[0] + r[2], r[1]), (r[0], r[1] + r[3]), (r[0] + r[2], r[1] + r[3])];
+            assert!(nearest.iter().any(|&(x, y)| b.at(x, y) > 0.0), "{r:?}: and the field is above 0 at its edge");
+        }
+        for r in at(f + 2.0) {
+            assert!(!b.reaches(r), "{r:?}: two pixels past the feather");
+        }
+        // The rounded corner: a rect in the bounding box's square corner, (80,180), is past the arc
+        // (centred (224,324), r 24): nearest corner (90,190) is 165 px from the rounded rect, not 120.
+        let corner = [80.0, 180.0, 10.0, 10.0];
+        assert!(!b.reaches(corner), "the box's corner is outside the arc's feather");
+        assert!(b.reaches([150.0, 250.0, 10.0, 10.0]), "…and a rect nearer the arc (66 px from it) is reached");
+    }
+
+    /// No shade, a block of zero peak and a stack scaled to nothing reach nowhere; a rect containing
+    /// a block's rect is reached; and moving the shade with `placed` moves its support with it.
+    #[test]
+    fn nothing_reaches_nowhere_and_the_support_moves_with_the_draw() {
+        let whole = [0.0, 0.0, 1920.0, 1080.0];
+        assert!(!GroundShade::NONE.reaches(whole));
+        assert!(!ShadeBlock::NONE.reaches(whole));
+        assert!(!sample().scaled(0.0).reaches(whole), "a hero faded to nothing");
+        assert!(sample().reaches(whole));
+        assert!(card().reaches([0.0, 0.0, 2000.0, 2000.0]) && card().reaches([300.0, 320.0, 1.0, 1.0]));
+        let (ox, oy, k) = (30.0, -40.0, 1.5);
+        let placed = sample().placed(ox, oy, k);
+        for r in probe_rects() {
+            let moved = [r[0] * k + ox, r[1] * k + oy, r[2] * k, r[3] * k];
+            // away from the 1 px slack's edge the two agree: skip the rects that straddle it
+            let (near, far) = (sample().reaches(r), placed.reaches(moved));
+            if near != far {
+                let grown = [r[0] - 2.0, r[1] - 2.0, r[2] + 4.0, r[3] + 4.0];
+                let shrunk = [r[0] + 2.0, r[1] + 2.0, (r[2] - 4.0).max(0.0), (r[3] - 4.0).max(0.0)];
+                assert!(!sample().reaches(shrunk) && sample().reaches(grown), "{r:?}: placed {far}, in place {near}");
+            }
+        }
+    }
+
+    /// **The rows left out of a cell's mesh were all zero**: for every probe rect, the rows outside
+    /// [`GroundShade::reached_rows`] carry exactly 0 across their whole strip (the vertices on both of
+    /// a row's lines are in it), the range's first and last rows are reached, and the range is empty
+    /// exactly where the rect is not reached. The cuts are real: a shade that reaches a cell's middle
+    /// leaves rows out.
+    #[test]
+    fn the_rows_left_out_of_a_mesh_are_exactly_zero() {
+        const N: usize = super::super::FIELD_N;
+        let mut trimmed = 0;
+        for (k, s) in shades().into_iter().enumerate() {
+            for rect in probe_rects() {
+                let [x, y, w, h] = rect;
+                let rows = s.reached_rows(rect, N);
+                assert_eq!(rows.is_some(), s.reaches(rect), "shade {k}: {rect:?}");
+                let Some(rows) = rows else { continue };
+                assert!(rows.start < rows.end && rows.end <= N);
+                let strip = |j: usize| [x, y + h * j as f32 / N as f32, w, h / N as f32];
+                assert!(s.reaches(strip(rows.start)) && s.reaches(strip(rows.end - 1)), "shade {k}: {rect:?} {rows:?}");
+                trimmed += (rows.len() < N) as usize;
+                for j in (0..N).filter(|j| !rows.contains(j)) {
+                    let [sx, sy, sw, sh] = strip(j);
+                    for iy in 0..=4 {
+                        for ix in 0..=20 {
+                            let (px, py) = (sx + sw * ix as f32 / 20.0, sy + sh * iy as f32 / 4.0);
+                            assert_eq!(s.at(px, py), 0.0, "shade {k}: ({px},{py}) in left-out row {j} of {rect:?} ({rows:?})");
+                        }
+                    }
+                }
+            }
+        }
+        assert!(trimmed > 20, "the premise: many cells are only partly reached ({trimmed})");
+        let card_shade = GroundShade::from_blocks(&[card()]);
+        // card: y 300..400 + feather 120 = 180..520: of a 270-tall cell at y 270, rows from 270 to 520
+        assert_eq!(card_shade.reached_rows([0.0, 270.0, 1920.0, 270.0], N), Some(0..15), "…and a cell ends where the feather does");
+        assert_eq!(GroundShade::NONE.reached_rows([0.0, 0.0, 1920.0, 1080.0], N), None);
     }
 
     #[test]

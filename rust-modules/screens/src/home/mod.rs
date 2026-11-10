@@ -451,7 +451,12 @@ impl Backdrop {
         // and the hero shade over both (`hero_shade`: a soft block behind each piece of copy the hero
         // draws, from this frame's live layout), as ONE pass per pixel (`AmbientWash::draw_ground`).
         // A hero FLIP slides two art layers, which one pass cannot carry, so there the art, the
-        // fade and the scrim stay layers of their own.
+        // fade and the scrim stay layers of their own. So they do for a hero AT REST once its art has
+        // covered the wash (`wash_hidden`): no ground pass is drawn then, the art is its own quad,
+        // and the shade is the layer over it — the steady state of the page, not only a slide. (The
+        // ground carrying them there would draw the hidden wash under every pixel of an opaque
+        // photograph, and its cells would run the same per-vertex field: no vertex saved.) The layer
+        // draws only the cells the shade reaches (`gfx::draw_scrim_layer`).
         // Art held beneath a replaced hero (`held`) is the un-sliding outgoing layer: the new art
         // dissolves in over it, so the two cannot ride the ground's single art layer.
         let held = slide.is_none() && self.outgoing_tex.0 != 0;
@@ -498,8 +503,9 @@ impl Backdrop {
             }
         }
         // The fade and the scrim go over the art, so a ground that did not carry them (a hero
-        // slide's two art layers, a driver without the program) lays them over all of this as layers
-        // of their own: the same curve, and the same field in the same cells.
+        // slide's two art layers, a resting hero's opaque art that hides the wash, a driver without
+        // the program) lays them over all of this as layers of their own: the same curve, and the
+        // same field in the same cells.
         if !ink_in_ground {
             if let Some(ramp) = ramp {
                 ramp.layer(p);

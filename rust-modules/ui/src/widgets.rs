@@ -4366,8 +4366,16 @@ pub fn cut_cells(r: Rect, cell_w: f32, cell_h: f32) -> impl Iterator<Item = Rect
 }
 
 /// **A scrim drawn as a layer of its own**, over whatever is already drawn: the frames a ground
-/// cannot carry it in its pass (a hero slide, with two art layers it must go OVER). The same field,
+/// cannot carry it in its pass — a hero slide (two art layers it must go OVER), and a resting hero
+/// whose opaque photograph covers the wash, so that no ground pass is drawn at all. The same field,
 /// in the same cells ([`SCRIM_CELL_W`]), as [`AmbientWash::draw_ground`] would have carried.
+///
+/// **Every cell is declared, and only the cells the shade reaches are drawn.** A hero's shade is a few
+/// soft blocks and most of the panel's 16 cells hold nothing but zeros; the renderer drops a cell the
+/// field cannot reach (`gfx::draw_scrim_layer`, [`GroundShade::reaches`](plx_gfx::gfx::scrim::GroundShade::reaches):
+/// exact where it says no), so the layer costs the vertices of the cells under the copy, not of the
+/// panel, and a frame with no shade costs none. The skip sits below the declaration on purpose: the
+/// recorded stream (the draw census, the replay anchors) is the same 16 cells whatever the shade is.
 pub fn scrim_layer(p: Painter, s: WashScrim) {
     for cell in cut_cells(Rect::FULL, SCRIM_CELL_W, SCRIM_CELL_H) {
         p.scrim_layer(cell, s.ink, s.field);
