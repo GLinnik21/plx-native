@@ -1921,7 +1921,8 @@ pub fn scrim_layer_ok() -> bool {
 /// slide, which has two art layers and needs the scrim OVER both, and a resting hero whose opaque
 /// photograph covers the wash, so that no ground pass is drawn for the scrim to ride in
 /// (Home's `wash_hidden`). Not dithered (a translucent scrim over a photograph has nothing to
-/// band, as [`draw_grad4`]'s). Check [`scrim_layer_ok`] first.
+/// band, as [`draw_grad4`]'s). It draws nothing when the program did not link
+/// ([`scrim_layer_ok`] says so; no caller needs to ask first).
 ///
 /// **It draws only where the shade is.** The field mesh is 1536 vertices a call, each running one
 /// rounded-rect distance per live block (`u_scn`, [`scrim::GroundShade::live`]), and a hero's shade

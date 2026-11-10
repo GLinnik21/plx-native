@@ -662,8 +662,9 @@ CI window (960x540). `focusfp_check.py` flow 1 now expects the first shelf, Cont
 `S[0-9]+ E[0-9]+ · [0-9]+m left` (`_sources.cw_stills_footer`).
 
 The Home hero (owner's board CW-13 v2: Home's own text ladder over the action row, the Continue Watching
-tiles at a 40 px gap with their footer below the art, the flat action row with the pager at the right margin,
-and the content-following hero shade) changed recorded behaviour without moving the shape (`state_fp`
+tiles at a 40 px gap with their footer below the art, the flat action row with the pager following Info in it
+(the anchors were recorded while it still stood at the right margin; the board's correction then moved it into
+the row), and the content-following hero shade) changed recorded behaviour without moving the shape (`state_fp`
 5612583773909772043): all three committed anchors were observed diverging on Home's first drawn frames
 (`replay: diverge f=3` on `1-boot-home-chip-grid`, f=4 on `12-filmography-detail-return`, f=5 on
 `6-settings-family`), then refusing (`replay: REFUSED — replay measurement table miss`), in both modes

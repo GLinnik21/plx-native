@@ -12,9 +12,10 @@ use super::{consts::SCR_H, theme, Rect};
 pub const COL_W: f32 = theme::hero::TEXT_W;
 pub const KNEE_Y: f32 = theme::hero::SCRIM_MID_Y;
 pub const MID_WEIGHT: f32 = theme::hero::SCRIM_MID_A / theme::hero::SCRIM_FOOT_A;
-/// How much a bound preview multiplies the hero's darkening: Detail's atmospheric ramp
-/// ([`base_scrim_ramp`]) and the shade ([`crate::hero_shade::HeroShade::scrim`], which clamps its
-/// strength to this). 1.35 is the video-bound row the legibility table grades.
+/// How much a bound preview raises the hero shade ([`crate::hero_shade::HeroShade::scrim`] saturates
+/// its strength at this). Detail's atmospheric ramp ([`base_scrim_ramp`]) does not take it: that
+/// follows the hero fade and the screen's own `preview_base_scrim`. 1.35 is the video-bound row the
+/// legibility table grades.
 ///
 /// The player publishes the same number as `player::preview::PREVIEW_FIELD` (its `View::field` once
 /// a picture is up). `player` may not name `ui` and `ui` may not name `player`, so each owns a copy

@@ -1758,9 +1758,11 @@ impl Painter {
     /// alpha of `scrim` over `r`, evaluated per vertex like the ground's own
     /// ([`ambient_inked`](Self::ambient_inked) carries the same field in its one pass; this is for
     /// the frames that pass cannot take it: a hero slide's two art layers, a resting hero whose art
-    /// covers the wash). The renderer draws nothing for an `r` the field cannot reach
-    /// (`gfx::draw_scrim_layer`); the cell is declared first, either way. Check
-    /// `gfx::scrim_layer_ok` first ([`widgets::scrim_layer`] does).
+    /// covers the wash). The renderer draws nothing for an `r` the field cannot reach, nor when the
+    /// layer's program did not link (`gfx::draw_scrim_layer`, `gfx::scrim_layer_ok`: it checks
+    /// itself); the cell is declared first, either way, so the recorded stream is the same on every
+    /// GPU and every shade. That is why [`widgets::scrim_layer`] has no check of its own: one above
+    /// the declaration would make the stream depend on the GPU.
     pub fn scrim_layer(self, r: Rect, ink: [f32; 4], scrim: plx_gfx::gfx::scrim::GroundShade) {
         let g = GroundInk { ink, ramp: [0.0; 2], scrim };
         if self.declare(r, 26, |data| g.record(data)) { return; }
@@ -2277,8 +2279,10 @@ pub fn hero_alpha(progress: f32, fade_end: f32) -> f32 {
 
 /// The hero synopsis' line pitch. See [`hero_synopsis`].
 pub const HERO_SYN_LEAD: f32 = 36.0;
-/// Lines of blurb before it elides — the mock's own band, and both heroes'. Past it the flow would
-/// walk the action row down the screen (detail) or the pinned row into the peeking shelf (home).
+/// Lines of blurb before it elides on Detail and the catalog page — the mock's own band. Past it the
+/// flow would walk the action row down the screen. Home's premise is not this cap: it is
+/// [`theme::hero::HOME_SYNOPSIS_LINES`] (2), because Home's ladder grows UP from its fixed action row
+/// and a third line would climb into the title's band.
 pub const HERO_SYN_MAXLINES: usize = 3;
 
 /// The height an `n`-line hero synopsis BLOCK occupies — `TextView::measure_h`'s answer, written

@@ -210,15 +210,16 @@ pub struct DetailScreen {
     preview_prose: f32,
     preview_synopsis: f32,
     preview_chrome: f32,
-    /// The hero scrim/wedge strength — chases `view.field` (1.0 idle, `PREVIEW_FIELD` once a
-    /// picture is up) and eases to 0.0 once full-trailer mode owns the screen, where the page has
-    /// no ink left up there to protect and the transport brings its own scrim at the bottom.
+    /// The hero shade's strength — chases `view.field` (1.0 idle, `PREVIEW_FIELD` once a picture is
+    /// up) and eases to 0.0 once full-trailer mode owns the screen, where the page has no ink left
+    /// up there to protect and the transport brings its own scrim at the bottom.
     preview_field: f32,
     /// The bottom-anchored base scrim's own alpha multiplier — 1.0 normal (leaves
     /// `detail_layout::base_scrim_a`'s own scroll-driven value untouched), eased to 0.0 in
-    /// full-trailer mode for the same reason as the wedge above.
-    /// A separate scalar from [`preview_field`](Self::preview_field): that one drives the corner
-    /// wedge, this one the bottom gradient — distinct layers per `draw_backdrop`.
+    /// full-trailer mode for the same reason as the shade above.
+    /// A separate scalar from [`preview_field`](Self::preview_field): that one scales the
+    /// content-following shade (`hero_shade`), this one the bottom ramp — distinct layers per
+    /// `draw_backdrop`. Detail draws no corner wedge.
     preview_base_scrim: f32,
     /// 0 = full hero position/size, 1 = fully collapsed to the top-left compact spot while a
     /// trailer plays in the background. A geometric transform, so it is a critically-damped
@@ -2832,7 +2833,8 @@ impl DetailScreen {
         // The hero's shade over the copy it draws, at the hero's own fade and the preview field
         // (`hero_shade`): carried by the ground's pass where the ground can, else laid over it.
         let shade = (visible > 0.01).then(|| self.hero_shade(d, measure, meta).scrim(visible * self.preview_field));
-        // Both heroes use the proposal's three-stop atmosphere, including the preview fade.
+        // Detail keeps the proposal's three-stop atmosphere under its shade, including the preview
+        // fade; Home paints none (its art stands unramped and the shade carries the legibility).
         let ramp = (visible > 0.01).then(|| {
             let [y0, knee, mid, foot] = plx_ui::landing_hero::base_scrim_ramp(visible);
             plx_ui::widgets::WashRamp {
@@ -4134,7 +4136,7 @@ impl DetailScreen {
         // Synopsis stays through background autoplay and only fades once full-trailer mode takes
         // the whole page off the screen.
         let synopsis_target = if full_trailer { 0.0 } else { 1.0 };
-        // The scrim/wedge strength: `view.field` normally (1.0 idle, `PREVIEW_FIELD` once a
+        // The hero shade's strength: `view.field` normally (1.0 idle, `PREVIEW_FIELD` once a
         // picture is up, protecting the logo+synopsis), and NOTHING in full-trailer mode — the
         // page keeps no ink up there to protect, and the trailer's own transport brings the only
         // scrim the state needs (`player_hud::classic::draw_scrim`, at the bottom, under the playbar).
