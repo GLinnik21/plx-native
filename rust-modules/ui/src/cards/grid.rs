@@ -335,14 +335,13 @@ impl Grid {
                 if let Some(a) = arrived {
                     self.seen = if arrival { Seen::Deliberate(a) } else { Seen::of(by, a) };
                 }
-                // Focus leaving the grid's cards closes the caption band on its spring whatever moved
-                // it (a BACK to the header is a restore): only the band's snap is for a seat the
-                // reader did not choose.
-                self.focus_band(arrived.map(|i| i / self.spec.cols), deliberate || (arrived.is_none() && left.is_some()));
+                let left_cards = arrived.is_none() && left.is_some();
+                // leaving the cards closes the band on its spring, even by a restore (BACK to the header)
+                self.focus_band(arrived.map(|i| i / self.spec.cols), deliberate || left_cards);
                 // Focus left the grid's cards: the card it left lets go now, from where its pop is,
                 // as a deliberate move's does on `arm`. Left to the tick, the frame that handles the
                 // key (drawn before its tick) read the card at rest, and it jumped back to its lift.
-                if arrived.is_none() && left.is_some() {
+                if left_cards {
                     self.pop.let_go();
                 }
                 if let Some(cell) = arrived.filter(|_| deliberate) {

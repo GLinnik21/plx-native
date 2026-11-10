@@ -682,3 +682,23 @@ fn back_to_the_top_raises_the_new_card_over_frames() {
     assert!(series[0] < full - 1.0e-3, "the new card is not lifted whole on the first frame: {series:?}");
     assert!(series.windows(2).all(|w| w[1] >= w[0] - 1.0e-3), "and only ever grows: {series:?}");
 }
+
+/// BACK from the first row to the header closes the row's caption band over frames, as UP does,
+/// though the move it makes is a restore.
+#[test]
+fn back_from_the_first_row_closes_its_band_over_frames() {
+    let _guard = plx_base::testlock::serial();
+    let fixture = Fixture::new();
+    let mut page = fixture.screen();
+    page.initial = false;
+    let mut engine = FocusEngine::new();
+    let first = page.key(page.pair.detail.elem_at(0).unwrap());
+    engine.set(OWNER, first, Some(page.pair.groups_config().detail), By::Restore);
+    deliver(&mut page, &mut engine, &fixture, ScreenEvent::FocusMoved { from: None, to: first, by: By::Restore });
+    settle(&mut page, &mut engine, &fixture, 0);
+    assert_eq!(page.layout.row_expansion(0), 1.0, "the focused first row is open");
+    press_back(&mut page, &mut engine, &fixture, None);
+    assert!(engine.current(OWNER).is_some_and(|key| page.pair.detail.index_of(key.elem).is_none()), "focus left the grid");
+    frame(&mut page, &mut engine, &fixture, 3000);
+    assert!(strictly_between(page.layout.row_expansion(0), 0.0, 1.0), "BACK closes the band over frames");
+}
