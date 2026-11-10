@@ -5551,3 +5551,7 @@ mod tests {
             "the published fact and BACK's own decision are one answer");
     }
 }
+
+#[cfg(test)]
+#[path = "owner/attempt_characterization_tests.rs"]
+mod attempt_characterization;
