@@ -209,6 +209,7 @@ print-subs-font-files: ; @echo '$(SUBS_FONT_FILES)'
 print-sentry-handler: ; @echo '$(SENTRY_HANDLER)'
 print-ffmpeg-staged:  ; @echo '$(FFMPEG_STAGED)'
 print-curlstack-staged: ; @echo '$(CURLSTACK_STAGED)'
+print-curlstack-prune: ; $(info $(if $(CURLSTACK),$(CURLSTACK_PRUNE)))@:
 print-sentry-project: ; @echo '$(SENTRY_PROJECT)'
 print-rust-toolchain: ; @echo '$(RUST_TOOLCHAIN)'
 print-playback-config:
@@ -973,6 +974,13 @@ CURLSTACK_ALL_SONAMES = libcrypto-plx.so.3 libssl-plx.so.3 libnghttp2-plx.so.14 
                      libngtcp2-plx.so.16 libngtcp2_crypto_ossl-plx.so.0 libcurl-plx.so.4
 CURLSTACK_SONAMES = $(if $(CURLSTACK),$(CURLSTACK_ALL_SONAMES),)
 CURLSTACK_STAGED = $(addprefix pkg/,$(CURLSTACK_SONAMES))
+# The command `deploy` runs under CURLSTACK=1 to retire curl-stack libraries this build no longer
+# carries. A variable, NOT text inside the recipe's `$(if $(CURLSTACK),...)`: make counts parentheses
+# in a function's arguments, so the `case` patterns' unbalanced `)` ended that `$(if` early and the
+# shell got half a command, and every `make CURLSTACK=1 deploy` failed (`unexpected EOF`). A
+# variable's value is not parsed for parentheses. `ci/test_deploy_manifest.py` asks
+# `print-curlstack-prune` for it and has `sh -n` parse it and its remote script.
+CURLSTACK_PRUNE = $(SSH) 'cd $(APPDIR) && for f in libcrypto-plx.so.* libssl-plx.so.* libnghttp2-plx.so.* libnghttp3-plx.so.* libngtcp2-plx.so.* libngtcp2_crypto_*-plx.so.* libcurl-plx.so.*; do case " $(CURLSTACK_SONAMES) " in *" $$f "*) ;; *) rm -f "$$f";; esac; done'
 # The licence text only the stack needs (curl's own licence; OpenSSL's Apache-2.0 is already in
 # `licenses/`, and nghttp2/nghttp3/ngtcp2 are MIT). In
 # `licenses/curlstack/`, outside `LICENSE_FILES`' `licenses/*.txt` glob, so a default package
@@ -1438,7 +1446,7 @@ deploy: pkg/plxnative pkg/plxnative-storage $(FFMPEG_STAGED) $(CURLSTACK_STAGED)
 	# deploy leaves a stack an earlier CURLSTACK=1 deploy put there alone: its binary has no loader
 	# for it (the `http3-curlstack` feature is off), so the files are inert, and a default deploy
 	# keeps the ssh round trips it always had.
-	$(if $(CURLSTACK),$(SSH) 'cd $(APPDIR) && for f in libcrypto-plx.so.* libssl-plx.so.* libnghttp2-plx.so.* libnghttp3-plx.so.* libngtcp2-plx.so.* libngtcp2_crypto_*-plx.so.* libcurl-plx.so.*; do case " $(CURLSTACK_SONAMES) " in *" $$f "*) ;; *) rm -f "$$f";; esac; done')
+	$(if $(CURLSTACK),$(CURLSTACK_PRUNE))
 
 	$(SCP) pkg/plxnative tv:$(APPDIR)/plxnative.new
 	@# The lab session file, under LAB=1 only. Shipped by deploy as well as by the .ipk so the
