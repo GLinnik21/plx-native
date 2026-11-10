@@ -3,7 +3,7 @@
 //! for months after it was deleted — is gone). A `make CURLSTACK=1` build first tries the bundled
 //! `libcurl-plx.so.4` beside the binary (`net::curlstack`, cargo feature `http3-curlstack`) and falls
 //! back to that candidate list; the choice is made once, in [`global_init`], and `curlio`'s multi
-//! table binds the same library ([`bundled_curl`]). The plain-HTTP socket in [`crate::stream`] can
+//! table and [`connect_only`]'s table bind the same library ([`bundled_curl`]). The plain-HTTP socket in [`crate::stream`] can
 //! resolve names now, but it still cannot do TLS; this fills that gap. Every call is
 //! **blocking**, so callers must run it off the SDL main loop (the account and PMS workers).
 //!
@@ -297,8 +297,9 @@ static BUNDLED_CURL: OnceLock<plx_base::dynlib::Handle> = OnceLock::new();
 /// The bundled curl, if [`global_init`] bound it; `None` when it bound the system libcurl, before
 /// [`global_init`], and always in a build without the `http3-curlstack` feature.
 ///
-/// `curlio.rs`'s multi table binds THIS handle (`curlmulti::load_from`) when it is `Some`, and the
-/// system candidates otherwise: the choice is made exactly once, here, and only read there. An easy
+/// `curlio.rs`'s multi table (`curlmulti::load_from`) and [`connect_only`]'s table (`raw::load_from`)
+/// bind THIS handle when it is `Some`, and the system candidates otherwise: the choice is made
+/// exactly once, here, and only read there. An easy
 /// handle from one libcurl handed to another's `curl_multi_add_handle` is an ABI violation, so two
 /// tables deciding independently (a transient filesystem error on one probe and not the other) is
 /// the one outcome that must be impossible.
@@ -5428,6 +5429,45 @@ mod http3_switch_tests {
         let bind = &body[..body.find(concat!("plx_base::dynlib::Loaded::", "Ok(soname) =>")).expect("the bind")];
         assert!(bind.contains(concat!("match load_", "bundled() {")), "bundle first");
         assert!(!bind.contains(concat!("http3", "_switch")) && !bind.contains(concat!("HTTP", "3.")), "the switch does not choose the library");
+    }
+
+    /// **Every other libcurl table binds from the library `global_init` chose.** An easy handle
+    /// `net.rs` created against the bundled curl, handed to a table bound from the system candidates,
+    /// is an ABI violation; nothing at run time can catch it, and the host tests never bind the
+    /// bundle. So every non-test file outside `net.rs` with a libcurl candidate list must read
+    /// `bundled_curl()` and bind with `load_from(`, and the set of such files is pinned, so a new
+    /// table has to come here and be checked.
+    #[test]
+    fn every_other_libcurl_table_binds_from_the_library_global_init_chose() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).expect("read_dir").flatten() {
+                let path = entry.path();
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if path.is_dir() {
+                    if !name.starts_with("target") && !name.starts_with('.') { walk(&path, out); }
+                } else if name.ends_with(".rs") && !name.ends_with("_tests.rs") {
+                    out.push(path);
+                }
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("rust-modules");
+        let mut files = Vec::new();
+        walk(root, &mut files);
+        let mut tables = Vec::new();
+        for file in &files {
+            let rel = file.strip_prefix(root).unwrap().to_string_lossy().into_owned();
+            let src = std::fs::read_to_string(file).expect("read");
+            if rel == "net/src/net.rs" || !src.contains(concat!("[\"libcurl", ".so.4\"")) {
+                continue;
+            }
+            assert!(
+                src.contains(concat!("bundled_", "curl()")) && src.contains(concat!("::load_", "from(")),
+                "{rel}: a libcurl table that does not bind from net::bundled_curl()"
+            );
+            tables.push(rel);
+        }
+        tables.sort();
+        assert_eq!(tables, ["net/src/curlio.rs", "net/src/net/connect_only.rs"]);
     }
 
     /// The first install wins: a later [`set_http3`] changes nothing. **Process-wide effect:** if

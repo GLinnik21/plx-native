@@ -1060,7 +1060,7 @@ so that none of the stack joins the global scope, where users of the firmware's 
 directories point at a path no television has, so it never reads the firmware's `openssl.cnf`, and
 curl's trust anchors are its compiled-in CA path, the television's hashed `/etc/ssl/certs`.
 `net::global_init` makes the one bundled-or-system choice and `net::range_io` binds its
-multi table from the same handle (`net::bundled_curl`, `dynlib!`'s `load_from`); a missing bundle falls
+multi table, and `net::connect_only` its socket table, from the same handle (`net::bundled_curl`, `dynlib!`'s `load_from`); a missing bundle falls
 back to the system libcurl. Every CURLSTACK=1 build binds the bundle whenever it is there. **HTTP/3
 itself is opt-in at run time:** Settings > System > HTTP/3 (experimental), the install-wide
 `http3_experimental` preference, default off and shown only in a build that carries the loader

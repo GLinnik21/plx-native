@@ -269,6 +269,9 @@ const CURLINFO_HTTP_VERSION: c_int = 0x20_0000 + 46;
 /// `CURL_HTTP_VERSION_2_0` in `curl.h`'s enum (`NONE` 0, `1_0` 1, `1_1` 2, `2_0` 3, …, `3` = 30):
 /// what `CURLINFO_HTTP_VERSION` answers for a response that came over HTTP/2.
 const CURL_HTTP_VERSION_2_0: c_long = 3;
+/// `CURL_HTTP_VERSION_3` (30): what `CURLINFO_HTTP_VERSION` answers for a response over HTTP/3
+/// (the opt-in bundled stack's Alt-Svc upgrade; the firmware libcurl never negotiates it).
+const CURL_HTTP_VERSION_3: c_long = 30;
 
 /// **Whether a detached transfer left its connection carrying bytes nobody will read.**
 ///
@@ -393,10 +396,18 @@ impl ConnLedger {
         self.entries.iter_mut().find(|e| same_origin(&e.origin, origin))
     }
 
-    /// A response from `origin` came over `version` (0, unknown, is not recorded).
+    /// A response from `origin` came over `version` (0, unknown, is not recorded). An HTTP/3 answer
+    /// also ends a busy mark: Alt-Svc now routes that origin to QUIC, whose connections never match
+    /// the busy HTTP/2 one, and HTTP/3 cancels per stream, so dialling fresh would only cost a QUIC
+    /// handshake per request for the rest of the window. Any other answer leaves the mark: an
+    /// HTTP/1.1 response can come from a fresh connection while the busy h2 one is still cached.
     fn saw_version(&mut self, origin: &Origin, version: c_long) {
         if version != 0 {
-            self.touch(origin).version = version;
+            let e = self.touch(origin);
+            e.version = version;
+            if version == CURL_HTTP_VERSION_3 {
+                e.busy_since = None;
+            }
         }
     }
 
@@ -3376,6 +3387,13 @@ mod tests {
         l.note_busy(&cdn, t1);
         assert_eq!(l.dial_fresh(&cdn, t1 + s(1)), Some(true), "a new cancel starts a new, logged window");
         assert!(BUSY_FOR > s(118), "longer than libcurl's default CURLOPT_MAXAGE_CONN");
+        l.note_busy(&cdn, t1);
+        l.saw_version(&cdn, 2);
+        assert!(l.dial_fresh(&cdn, t1 + s(1)).is_some(), "an HTTP/1.1 answer may come from a fresh connection: the mark stays");
+        l.saw_version(&cdn, CURL_HTTP_VERSION_3);
+        assert_eq!(l.dial_fresh(&cdn, t1 + s(1)), None, "an HTTP/3 answer (Alt-Svc to QUIC) ends the mark");
+        l.saw_version(&cdn, CURL_HTTP_VERSION_2_0);
+        l.note_busy(&cdn, t1);
         l.forget_busy();
         assert_eq!(l.dial_fresh(&cdn, t1 + s(1)), None, "a rebuilt multi has nothing busy");
         assert_eq!(l.version(&cdn), CURL_HTTP_VERSION_2_0, "…but the server's version stays known");

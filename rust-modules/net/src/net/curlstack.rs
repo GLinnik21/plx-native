@@ -74,8 +74,8 @@ pub(super) fn open(dir: &Path) -> Option<Handle> {
     // No explicit TLS-library init here: `curl_global_init` (called by `net::global_init_once`
     // on the main thread, before any worker exists) runs `OPENSSL_init_ssl` itself, and OpenSSL
     // 1.1+ initialises lazily and thread-safely in any case.
-    // `RTLD_LOCAL` like its six dependencies (`open_in_deepbind`'s doc): the curl and multi tables
-    // `dlsym` through this handle, so nothing needs the stack in the global scope.
+    // `RTLD_LOCAL` like its six dependencies (`open_in_deepbind`'s doc): the curl, multi and
+    // `connect_only` tables `dlsym` through this handle, so nothing needs the stack in the global scope.
     match Handle::open_in_deepbind(Some(dir), &[BUNDLED_CURL_SONAME]) {
         Some((handle, _)) => Some(handle),
         None => {
