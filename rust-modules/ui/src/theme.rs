@@ -247,12 +247,14 @@ pub mod hero {
     /// centre line). Everything above it on Home is one ladder that grows up from this
     /// line (`landing_hero::home_rows`).
     pub const HOME_ACTIONS_Y: f32 = 668.0;
-    /// The block above the action row (a one-line episode label, or the synopsis) ends this far
-    /// above [`HOME_ACTIONS_Y`]: 638, the board's own number (it is not a rung of `space`).
+    /// The block above the action row (the hero's one line: an episode label, a resumed movie's
+    /// time left, or an introduced hero's premise) ends this far above [`HOME_ACTIONS_Y`]: 638, the
+    /// board's own number (it is not a rung of `space`).
     pub const HOME_ACTIONS_GAP: f32 = 30.0;
     /// The title's foot stands this far above the block under it.
     pub const HOME_TITLE_GAP: f32 = super::space::SM;
-    /// Home's synopsis wraps to this column, narrower than the shared [`TEXT_W`] reading column.
+    /// Home's premise (the first sentence of a summary, `landing_hero::first_sentence`) wraps to this
+    /// column, narrower than the shared [`TEXT_W`] reading column.
     pub const HOME_SYNOPSIS_W: f32 = 700.0;
     /// ...and to at most this many lines (a third would climb into the title's band).
     pub const HOME_SYNOPSIS_LINES: usize = 2;

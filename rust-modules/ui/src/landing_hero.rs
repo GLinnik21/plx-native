@@ -98,9 +98,10 @@ pub fn home_rows(title_h: f32, block_h: Option<f32>) -> HomeStack {
     HomeStack { title: span(0).unwrap(), block: span(1), actions: span(2).unwrap() }
 }
 
-/// Home's synopsis: the shared reading copy ([`crate::hero_synopsis`]'s `LABEL` 26 on a 36 px
-/// leading in `TEXT_READING`) cut to [`theme::hero::HOME_SYNOPSIS_LINES`] lines. Draw it at
-/// [`theme::hero::HOME_SYNOPSIS_W`] wide.
+/// Home's reading copy: the shared reading text ([`crate::hero_synopsis`]'s `LABEL` 26 on a 36 px
+/// leading in `TEXT_READING`) cut to [`theme::hero::HOME_SYNOPSIS_LINES`] lines. What Home sets in it
+/// is a hero's premise ([`first_sentence`] of its summary), not the whole synopsis, which stays on
+/// Details. Draw it at [`theme::hero::HOME_SYNOPSIS_W`] wide.
 pub fn home_synopsis(summary: &str) -> crate::text_view::TextView<'_> {
     crate::hero_synopsis(summary, "").max_lines(theme::hero::HOME_SYNOPSIS_LINES)
 }
