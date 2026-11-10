@@ -85,7 +85,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-10T14:15:15Z",
+ "generated": "2026-11-10T14:17:02Z",
  "metrics": [
   {
    "change30_pct": 47.7,
@@ -130,40 +130,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 104.1,
-   "change7_pct": 26.9,
+   "change30_pct": 103.8,
+   "change7_pct": 26.8,
    "d30": 208.0,
-   "delta30": 216.5,
-   "delta7": 90.0,
+   "delta30": 216.0,
+   "delta7": 89.5,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
-   "n_now": 56,
-   "n_prev": 86,
-   "now": 424.5,
-   "prev7": 334.5,
-   "shown": true,
-   "state": "worse",
-   "state30": "worse",
-   "threshold_abs": 20.0,
-   "threshold_pct": 20.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": 32.0,
-   "change7_pct": 20.2,
-   "d30": 169.0,
-   "delta30": 54.0,
-   "delta7": 37.5,
-   "group": "ci",
-   "id": "ci|host lint + type-checks",
-   "kind": "job",
-   "label": "CI: host lint + type-checks",
    "n_now": 57,
    "n_prev": 86,
-   "now": 223,
-   "prev7": 185.5,
+   "now": 424,
+   "prev7": 334.5,
    "shown": true,
    "state": "worse",
    "state30": "worse",
@@ -277,18 +256,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 45.6,
-   "change7_pct": 9.9,
+   "change30_pct": 45.4,
+   "change7_pct": 9.8,
    "d30": 1906,
-   "delta30": 869.5,
-   "delta7": 251.0,
+   "delta30": 865,
+   "delta7": 246.5,
    "group": "ci",
    "id": "minutes",
    "kind": "cost",
    "label": "Runner time per push",
-   "n_now": 50,
+   "n_now": 51,
    "n_prev": 74,
-   "now": 2775.5,
+   "now": 2771,
    "prev7": 2524.5,
    "shown": true,
    "state": "flat",
@@ -319,18 +298,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 68.8,
-   "change7_pct": 9.4,
+   "change30_pct": 69.5,
+   "change7_pct": 9.9,
    "d30": 262.5,
-   "delta30": 180.5,
-   "delta7": 38.0,
+   "delta30": 182.5,
+   "delta7": 40.0,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
-   "n_now": 56,
+   "n_now": 57,
    "n_prev": 86,
-   "now": 443.0,
+   "now": 445,
    "prev7": 405.0,
    "shown": true,
    "state": "flat",
@@ -341,17 +320,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 11.0,
+   "change7_pct": 11.2,
    "d30": null,
    "delta30": null,
-   "delta7": 37.0,
+   "delta7": 37.5,
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "kind": "job",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "n_now": 57,
+   "n_now": 58,
    "n_prev": 86,
-   "now": 373,
+   "now": 373.5,
    "prev7": 336.0,
    "shown": true,
    "state": "flat",
@@ -382,18 +361,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 122.3,
-   "change7_pct": -6.2,
+   "change30_pct": 119.1,
+   "change7_pct": -7.6,
    "d30": 139.0,
-   "delta30": 170.0,
-   "delta7": -20.5,
+   "delta30": 165.5,
+   "delta7": -25.0,
    "group": "ci",
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
-   "n_now": 57,
+   "n_now": 58,
    "n_prev": 86,
-   "now": 309,
+   "now": 304.5,
    "prev7": 329.5,
    "shown": true,
    "state": "flat",
@@ -412,9 +391,9 @@
    "id": "ci|host python/shell/C gates",
    "kind": "job",
    "label": "CI: host python/shell/C gates",
-   "n_now": 57,
+   "n_now": 58,
    "n_prev": 86,
-   "now": 262,
+   "now": 262.0,
    "prev7": 288.5,
    "shown": true,
    "state": "flat",
@@ -441,6 +420,27 @@
    "state": "flat",
    "state30": "worse",
    "threshold_abs": 30.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": 30.5,
+   "change7_pct": 18.9,
+   "d30": 169.0,
+   "delta30": 51.5,
+   "delta7": 35.0,
+   "group": "ci",
+   "id": "ci|host lint + type-checks",
+   "kind": "job",
+   "label": "CI: host lint + type-checks",
+   "n_now": 58,
+   "n_prev": 86,
+   "now": 220.5,
+   "prev7": 185.5,
+   "shown": true,
+   "state": "flat",
+   "state30": "worse",
+   "threshold_abs": 20.0,
    "threshold_pct": 20.0,
    "unit": "s"
   },
@@ -538,9 +538,9 @@
    "id": "ci|which gates apply",
    "kind": "job",
    "label": "CI: which gates apply",
-   "n_now": 57,
+   "n_now": 58,
    "n_prev": 86,
-   "now": 5,
+   "now": 5.0,
    "prev7": 5.0,
    "shown": false,
    "state": "flat",
@@ -559,9 +559,9 @@
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 56,
+   "n_now": 57,
    "n_prev": 86,
-   "now": 4.0,
+   "now": 4,
    "prev7": 3.0,
    "shown": false,
    "state": "flat",
@@ -580,9 +580,9 @@
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 57,
+   "n_now": 58,
    "n_prev": 86,
-   "now": 3,
+   "now": 3.0,
    "prev7": 3.0,
    "shown": false,
    "state": "flat",
@@ -737,7 +737,7 @@
    "to": 63.5
   },
   {
-   "change_pct": 26.9,
+   "change_pct": 26.8,
    "commits": [
     {
      "pr": 1283,
@@ -795,68 +795,7 @@
    "label": "CI: host unit tests (hostsim)",
    "since": "2026-11-10",
    "threshold_pct": 20.0,
-   "to": 424.5
-  },
-  {
-   "change_pct": 20.2,
-   "commits": [
-    {
-     "pr": 1283,
-     "sha": "75765b3d0",
-     "title": "Net: the WebSocket transport over libcurl CONNECT_ONLY"
-    },
-    {
-     "pr": 1293,
-     "sha": "612fc8cf0",
-     "title": "Grid: the card focus leaves lets go from its lift on the move, not on the next tick"
-    },
-    {
-     "pr": 1294,
-     "sha": "583722c8c",
-     "title": "Grid: BACK to the top raises the first-row card from rest, as UP does"
-    },
-    {
-     "pr": 1298,
-     "sha": "69615d782",
-     "title": "Dependencies: sentry-native -> 0.17.6"
-    },
-    {
-     "pr": 1296,
-     "sha": "04489893e",
-     "title": "Bound Recommended shelf navigation keys across refreshes"
-    },
-    {
-     "pr": 1300,
-     "sha": "d06ed4f5c",
-     "title": "build-bench: reject failed test runners with passing summaries"
-    },
-    {
-     "pr": 1303,
-     "sha": "93697adcf",
-     "title": "Player: a seek that reloads keeps its target on the clock until the first frame"
-    },
-    {
-     "pr": 1299,
-     "sha": "5011614a4",
-     "title": "Dependencies: harfbuzz -> 15.1.0"
-    },
-    {
-     "pr": 1295,
-     "sha": "835114dec",
-     "title": "Add an estimated local finish time to the player HUD"
-    },
-    {
-     "pr": 1313,
-     "sha": "9be7a43f6",
-     "title": "Recover Segment seeks that never reach the video sink"
-    }
-   ],
-   "from": 185.5,
-   "id": "ci|host lint + type-checks",
-   "label": "CI: host lint + type-checks",
-   "since": "2026-11-09",
-   "threshold_pct": 20.0,
-   "to": 223
+   "to": 424
   }
  ],
  "schema": 2,
@@ -871,19 +810,19 @@
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
-   "now": 443.0
+   "now": 445
   },
   {
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
-   "now": 424.5
+   "now": 424
   },
   {
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "now": 373
+   "now": 373.5
   },
   {
    "group": "ci",
