@@ -86,7 +86,11 @@ pub fn replace(name: &str, member: &str, bytes: &[u8]) -> Vec<u8> {
 /// Parse a HUD document against the reference fixture's resource namespace. Metadata/resource
 /// admission has its own bundle tests; these callers exercise the shared HUD walker and compiler.
 pub fn parse(bytes: &[u8]) -> Parsed {
-    parse_for("reference", bytes)
+    let source = files("reference");
+    let (major, minor) = super::schema::CURRENT;
+    let manifest = std::str::from_utf8(&source[0].bytes).unwrap()
+        .replacen(r#""format": "1.0""#, &format!(r#""format": "{major}.{minor}""#), 1);
+    parse_documents(&source, manifest.as_bytes(), bytes)
 }
 
 pub fn parse_for(name: &str, bytes: &[u8]) -> Parsed {

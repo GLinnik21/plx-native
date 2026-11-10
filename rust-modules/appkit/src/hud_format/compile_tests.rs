@@ -1145,6 +1145,8 @@ fn the_playbars_clocks_stand_where_the_playbar_draws_them_as_wide_as_the_widest_
 fn an_installed_playbar_can_reserve_a_lane_for_the_end_time() {
     let text = REFERENCE.replacen(r#""clock_size": "CAPTION""#,
         r#""clock_size": "CAPTION", "end_time_width": 320"#, 1);
+    let old = super::fixtures::parse_for("reference", text.as_bytes());
+    assert!(old.findings.iter().any(|f| f.code == "HUD-E0107" && f.pointer.ends_with("/end_time_width")));
     let compiled = build(&text, &FM);
     let (track, clocks, _, _) = bar_of(compact(&compiled, Slot::Discs));
     let lane = clocks.end_time.expect("declared lane");
