@@ -105,7 +105,8 @@ fn fresh_host_fill_rechecks_data_gate_without_key_or_generation_change() {
     assert_eq!(bridge.client_keys.key(a), key);
     assert_eq!((bridge.client_keys.roster_gen(), bridge.client_keys.facts_gen()), generations);
     assert!(!bridge.client_keys.stream_allowed(a));
-    bridge.notify_pump_captured(&[], Default::default());
+    let (_, endpoints) = bridge.notify_pump_captured(&[], Default::default());
+    assert!(endpoints.is_empty());
     assert!(bridge.take_held_store_jobs_for_test().is_empty());
     clean(&bridge);
 }
@@ -122,10 +123,13 @@ fn cursor_posts_and_terminal_map_in_connection_order_without_second_drain_or_lat
     capture(&mut bridge, &[a, b], true);
     let pages = [(a, "a-first"), (a, "a-late"), (b, "b-first"), (b, "b-after-end")]
         .map(|(sid, rk)| ContentArg::Detail { sid, rk: rk.into() });
-    assert!(!bridge.notify_pump_captured(&pages, Default::default()).0);
+    let (resynced, endpoints) = bridge.notify_pump_captured(&pages, Default::default());
+    assert!(!resynced);
+    assert!(endpoints.is_empty());
     assert_eq!(bridge.stores.reconcile.pending_for_test(), [(a, "a-first".into()), (b, "b-first".into())]);
     clean(&bridge);
-    bridge.notify_pump_captured(&pages, Default::default());
+    let (_, endpoints) = bridge.notify_pump_captured(&pages, Default::default());
+    assert!(endpoints.is_empty());
     assert_eq!(bridge.stores.reconcile.pending_for_test(),
         [(a, "a-first".into()), (b, "b-first".into()), (a, "a-late".into())]);
     SCRIPT.with(|s| assert_eq!(s.borrow().launches, [a, b]));
@@ -139,7 +143,8 @@ fn default_test_boot_refuses_streams_and_refills_before_begin_without_live_accou
     let _serial = plx_base::testlock::serial(); let _reset = Reset;
     let (a, _) = servers(); let mut bridge = Bridge::for_test(|| 0);
     assert!(matches!(bridge.store_runner, StoreRunner::Held { notify: NotifyTransport::Refuse, .. }));
-    bridge.notify_pump(&[], Default::default());
+    let (_, endpoints) = bridge.notify_pump(&[], Default::default());
+    assert!(endpoints.is_empty());
     assert!(bridge.client_keys.key(a).is_some(), "host capture preceded begin");
     assert!(bridge.take_held_store_jobs_for_test().is_empty(), "default refusal never parks an indefinite stream");
     assert_eq!(bridge.run_held_store_jobs_for_test(), 0);
@@ -151,17 +156,21 @@ fn parked_acceptance_release_cancel_and_fresh_permission_loss_are_deliberate() {
     let _serial = plx_base::testlock::serial(); let _reset = Reset;
     let (a, _) = servers(); let mut bridge = Bridge::for_test(|| 0); boot(&mut bridge, true);
     capture(&mut bridge, &[a], true);
-    bridge.notify_pump_captured(&[], Default::default());
+    let (_, endpoints) = bridge.notify_pump_captured(&[], Default::default());
+    assert!(endpoints.is_empty());
     SCRIPT.with(|s| assert!(s.borrow().launches.is_empty()));
     assert_eq!(bridge.run_held_store_jobs_of_for_test(StoreId::Notify), 1);
     SCRIPT.with(|s| assert_eq!(s.borrow().launches, [a]));
-    bridge.notify_pump_captured(&[], Default::default());
+    let (_, endpoints) = bridge.notify_pump_captured(&[], Default::default());
+    assert!(endpoints.is_empty());
     bridge.notify_suspend(); bridge.notify_resume();
-    bridge.notify_pump_captured(&[], Default::default()); // second accepted-held incarnation
+    let (_, endpoints) = bridge.notify_pump_captured(&[], Default::default()); // second accepted-held incarnation
+    assert!(endpoints.is_empty());
     let generations = (bridge.client_keys.roster_gen(), bridge.client_keys.facts_gen());
     capture(&mut bridge, &[a], false); // policy expiry, unchanged key and generations
     assert_eq!(generations, (bridge.client_keys.roster_gen(), bridge.client_keys.facts_gen()));
-    bridge.notify_pump_captured(&[], Default::default()); // cancels held mail before release
+    let (_, endpoints) = bridge.notify_pump_captured(&[], Default::default()); // cancels held mail before release
+    assert!(endpoints.is_empty());
     assert_eq!(bridge.run_held_store_jobs_of_for_test(StoreId::Notify), 1);
     SCRIPT.with(|s| assert_eq!(s.borrow().launches, [a], "cancelled release never calls transport"));
     clean(&bridge);
@@ -173,10 +182,12 @@ fn armed_record_and_replay_have_no_notify_home_or_tape_bytes_and_no_held_claim()
     let (a, _) = servers();
     for replay in [false, true] {
         let mut bridge = Bridge::for_test(|| 0); boot(&mut bridge, true); capture(&mut bridge, &[a], true);
-        bridge.notify_pump_captured(&[], Default::default()); // explicitly accepted and parked
+        let (_, endpoints) = bridge.notify_pump_captured(&[], Default::default()); // explicitly accepted and parked
+        assert!(endpoints.is_empty());
         bridge.stores.landgate.arm_recording();
         tape::init(None, replay); tape::begin(Default::default(), Default::default());
-        bridge.notify_pump_captured(&[], Default::default());
+        let (_, endpoints) = bridge.notify_pump_captured(&[], Default::default());
+        assert!(endpoints.is_empty());
         assert_eq!(bridge.run_held_store_jobs_of_for_test(StoreId::Notify), 1);
         assert_eq!(tape::finish(), (Vec::new(), None));
         SCRIPT.with(|s| assert!(s.borrow().launches.is_empty()));

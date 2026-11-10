@@ -151,6 +151,12 @@ fn the_notify_pump_starts_the_read_a_library_change_asked_for() {
     let _guard = plx_base::testlock::serial();
     let mut rig = armed_rig();
     plx_plex::plex::describe_server(rig.own, "Server A", "", GrantEvidence::ours());
+    // Browse's armed shelves do not establish a Home source for quiet invalidation.
+    assert!(rig.bridge.stores.hubs.source_ids().is_empty());
+    rig.bridge.stores.hubs.seed_for_directory_test(
+        rig.own, 1, plx_data::pms::HubState::Ready, rig.bridge.directory.view());
+    assert_eq!(rig.bridge.stores.hubs.source_ids(), vec![rig.own]);
+    assert_eq!(rig.bridge.stores.hubs.snapshot().view().state, plx_data::pms::HubState::Ready);
     if let crate::app::adapters::stores::StoreRunner::Held { live, .. } = &mut rig.bridge.store_runner {
         // Keep Notify's finite script immediate, park BOTH map fan-out kinds.
         *live = &[crate::app::adapters::stores::LiveKind::NotifyStream];
@@ -167,7 +173,8 @@ fn the_notify_pump_starts_the_read_a_library_change_asked_for() {
     // Scripted eligible input is explicit, not an ambient credential-policy override.
     rig.bridge.client_keys.refill_roster_with_stream_policy(rig.own, 1, 1, [rig.own],
         plx_plex::plex::client_for, plx_plex::plex::server_facts, |_| None, |_| true);
-    let _ = rig.bridge.notify_pump_captured(&[], Shown::ALL);
+    let (_, endpoints) = rig.bridge.notify_pump_captured(&[], Shown::ALL);
+    assert!(endpoints.is_empty());
 
     assert!(rig.bridge.stores.browse.borrow().hubs_read_out_for_test());
     rig.assert_started(&["BrowseHubs", "Hubs"]);
