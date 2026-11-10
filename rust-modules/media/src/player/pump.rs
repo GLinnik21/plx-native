@@ -3033,6 +3033,35 @@ mod flight_tests {
         crate::player::stop_bufferfeed(&mut rig.ps, &mut rig.pa);
     }
 
+    #[test]
+    fn stopping_while_a_seek_reload_waits_for_unload_reports_the_target() {
+        let mut rig = Rig::direct(0);
+        rig.frame();
+        suspend_bufferfeed(&mut rig.ps, &mut rig.pa);
+        // Deliver the release owner's handoff for a previous object that still owns the slot.
+        // Start, cancellation, and the Plex request below use the product paths.
+        rig.pa.release_step(&mut rig.ps, &super::super::release::ReleaseEvent::UnloadHandedOff {
+            epoch: 1, at: std::time::Instant::now(),
+        }, &mut Vec::new());
+        crate::player::request_seek(&mut rig.ps, &mut rig.pa, SEEK_TARGET_NS);
+        assert_eq!(
+            super::super::engine::reload_at(&mut rig.ps, &mut rig.pa, SEEK_TARGET_NS),
+            super::super::engine::ReloadOutcome::Started,
+        );
+        assert!(rig.ps.readout().start_queued(), "the seek's replacement waits for Unload");
+        assert!(!rig.pa.is_live(), "there is no engine to take a stop sample from");
+
+        crate::player::stop_bufferfeed(&mut rig.ps, &mut rig.pa);
+        crate::route::drain_scrobble();
+        assert!(!rig.ps.readout().start_queued(), "Back cancels the replacement");
+        let stopped: Vec<_> = rig.flight.requests().into_iter()
+            .filter(|line| line.contains("/:/timeline?") && line.contains("state=stopped"))
+            .collect();
+        let target = format!("time={}&", SEEK_TARGET_NS / 1_000_000);
+        assert_eq!(stopped.len(), 1, "one final Plex report: {stopped:?}");
+        assert!(stopped[0].contains(&target), "the pending seek is the stop position: {stopped:?}");
+    }
+
     /// Taps that arrive during a seek's flight coalesce to the LAST one: the first landing is
     /// outdated and discarded (its replacement stopped), and exactly one more flight runs, at the
     /// newest target.
