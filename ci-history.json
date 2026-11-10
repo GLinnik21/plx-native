@@ -1,4 +1,4 @@
-{"updated":"2026-11-10T20:09:10Z",
+{"updated":"2026-11-10T21:11:15Z",
 "ci":[
 {"id":31584219333,"at":"2026-08-12T09:43:35Z","sha":"84ff93289","title":"design: Plex Pass Awareness, second revision \u2014 and the post-play Up Next card","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":82},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":31614984913,"at":"2026-08-12T15:56:06Z","sha":"123cfd89f","title":"ui: Up Next goes back to a tile, with a second button","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":66},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -4972,7 +4972,8 @@
 {"id":42885991629,"at":"2026-11-10T19:30:44Z","sha":"58b460645","title":"Isolate saved preferences across focus route fixtures","pr":1317,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":223,"macOS simulator build + launch":172,"Linux simulator build + launch":350,"Windows launcher syntax":20}},
 {"id":42886797768,"at":"2026-11-10T19:35:28Z","sha":"35c0e31d5","title":"Show movie and TV metadata on unplayed Home heroes","pr":1316,"conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":296,"macOS simulator build + launch":100,"Windows launcher syntax":16,"macOS tests against bundled FFmpeg and ASS":206}},
 {"id":42888345098,"at":"2026-11-10T19:44:53Z","sha":"095f74ca9","title":"Remember open Library pages","pr":1317,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":185,"Linux simulator build + launch":243,"macOS tests against bundled FFmpeg and ASS":213,"Windows launcher syntax":22}},
-{"id":42891176810,"at":"2026-11-10T20:01:52Z","sha":"5b4e8db77","title":"refactor(metadata): move alternative-source IO into store jobs","pr":1315,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":224,"Linux simulator build + launch":363,"macOS simulator build + launch":271,"Windows launcher syntax":22}}
+{"id":42891176810,"at":"2026-11-10T20:01:52Z","sha":"5b4e8db77","title":"refactor(metadata): move alternative-source IO into store jobs","pr":1315,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":224,"Linux simulator build + launch":363,"macOS simulator build + launch":271,"Windows launcher syntax":22}},
+{"id":42901787750,"at":"2026-11-10T21:06:38Z","sha":"7e8206858","title":"refactor(browse): capture roster facts before store steps","pr":1319,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":262,"macOS tests against bundled FFmpeg and ASS":191,"Windows launcher syntax":19,"Linux simulator build + launch":262}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
