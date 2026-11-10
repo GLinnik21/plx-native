@@ -1178,6 +1178,7 @@ mod prime_livelock_tests {
             rebase_drops: 0,
             seek_armed_at: 0,
             seek_retries: 0,
+            segment_landing: None,
                 flushed: false,
             presentation_rearm_pending: false,
             max_fed_video_pts: 0,

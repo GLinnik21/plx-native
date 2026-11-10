@@ -784,7 +784,11 @@ pub fn reload_at(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter
         "reload_at: fresh Load at {}s",
         target_ns / 1_000_000_000
     ));
+    let reload_is_seek = ps.readout().unconfirmed_seek_target().is_some();
     teardown(ps, pa, true, plx_playback_contract::StopReason::Replace); // reload mode: preserve the session (no url-clear / stop-scrobble)
+    if reload_is_seek {
+        ps.step_readout(super::readout::ReadoutEvent::ReloadSeek { target_ns });
+    }
     super::arm_open(pa, target_ns);
     reload_start_outcome(ps, pa, ticket)
 }
@@ -1474,7 +1478,8 @@ pub(super) fn final_report(ps: &mut crate::route::PlaybackSession, for_reload: b
     // The duration is the session's last sample of the live attempt (the pump's, taken at the
     // frame's start and end), which is the container's duration for the whole of a playback.
     let dur = super::duration_ns(ps).unwrap_or(0);
-    let pos_ns = final_position_ns(ps, Some(ps.readout().raw().playpos_ns));
+    let readout = ps.readout();
+    let pos_ns = final_position_ns(ps, readout.unconfirmed_seek_target().or(Some(readout.raw().playpos_ns)));
     if !for_reload {
         crate::player::report::ended(ps, pos_ns, dur);
     }

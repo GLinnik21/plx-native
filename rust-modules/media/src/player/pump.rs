@@ -1139,10 +1139,9 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
     // maps its worker token to the current attempt and settles the route, after installation.
     pa.drain_load_outcomes(ps);
     if let Some(attempt) = pa.active_feed_attempt() {
-        let snapshot = super::timeline::TimelineSnapshot::from_content_ns(
-            ps.readout().raw().playpos_ns,
+        let snapshot = super::timeline::TimelineSnapshot::from_feed(
+            ps.readout(),
             super::duration_ns(ps).unwrap_or(0),
-            ps.readout().paused(),
         );
         pa.publish_timeline(attempt, snapshot);
     }
@@ -5023,6 +5022,59 @@ mod native_seek_pump_tests {
     }
 
     #[test]
+    fn a_primed_segment_seek_with_only_stale_clock_samples_reloads_once() {
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Rig::new(None);
+        plx_play_feed::seek::set_seek_mode(SeekMode::Segment);
+        FEED_SHARED.playpos_ns.store(2_220_000_000_000, Relaxed);
+        let target = 2_118_000_000_000;
+        let keyframe = 2_112_110_000_000;
+        rig.arm(target);
+        rig.land_keyframe_aus(keyframe, 80);
+        let epoch = rig.eng().native_epoch;
+        for _ in 0..20 {
+            rig.frame();
+            if !rig.eng().prime_play {
+                break;
+            }
+        }
+        assert!(!rig.eng().prime_play, "the in-place seek reached Play");
+        assert!(ffi_host::segment_calls_for_test() > 0, "the new segment was sent");
+        // A displayed-count callback and the clock on the retired timeline raced the seek.
+        plx_play_feed::sf_event::sf_on_event(epoch, 47, 9, std::ptr::null());
+        plx_play_feed::sf_event::sf_on_event(epoch, 0, 9_000_000_000, std::ptr::null());
+        rig.frame();
+        assert_eq!(rig.ps.readout().raw().playpos_ns, 9_000_000_000, "the stale position reached the pump");
+        assert!(rig.ps.readout().seeking(), "the segment is still awaiting presentation");
+        assert!(super::super::timeline::TimelineSnapshot::from_feed(
+            rig.ps.readout(), 7_200_000_000_000,
+        ).is_none(), "Plex must not save the stale clock");
+        assert!(reloads().is_empty(), "presentation gets time to land");
+        rig.now += 10_000;
+        for _ in 0..5 {
+            rig.frame();
+        }
+        assert_eq!(reloads(), vec![target], "reopen succeeded, but the seek needs one fresh Load");
+    }
+
+    #[test]
+    fn an_old_segment_deadline_does_not_reload_a_newer_seek() {
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Rig::new(None);
+        plx_play_feed::seek::set_seek_mode(SeekMode::Segment);
+        rig.arm(TARGET_NS);
+        rig.land_keyframe_aus(TARGET_NS, 80);
+        for _ in 0..20 {
+            rig.frame();
+        }
+        assert!(!rig.eng().prime_play, "the first seek reached Play");
+        rig.now += 10_000;
+        rig.arm(NEXT_NS);
+        assert_eq!(FEED_SHARED.seek_to_ns.load(Relaxed), NEXT_NS);
+        assert!(reloads().is_empty(), "the newer seek got its own demux and presentation budgets");
+    }
+
+    #[test]
     fn a_native_seek_lands_on_the_keyframe_without_a_flush_or_a_reload() {
         let _serial = plx_base::testlock::serial();
         let mut rig = Rig::new(None);
@@ -5163,18 +5215,26 @@ mod native_seek_pump_tests {
         assert!(FEED_TX.seek_preroll_active(), "the pump opened the paused-seek preroll itself");
         assert!(rig.ps.readout().feed_allowed() && FEED_TX.feed_allowed(),
             "the gate the pump's watchdog reads is open for the preroll's keyframe, in both copies");
-        rig.land_keyframe(TARGET_NS);
-        for _ in 0..5 {
+        rig.land_keyframe_aus(TARGET_NS, 80);
+        for _ in 0..20 {
             rig.frame();
         }
         assert!(!rig.eng().flushed && !rig.eng().rebase_pending, "the keyframe reached feed_stream's rebase");
+        assert!(!rig.eng().prime_play, "the preroll clock started");
         match mode {
             SeekMode::NativeSeek => {
                 assert_eq!(ffi_host::seek_log_for_test(), vec![TARGET_NS / 1_000_000], "one Seek, at the keyframe");
             }
             _ => assert!(ffi_host::segment_calls_for_test() > 0, "the segment was anchored on the keyframe"),
         }
-        rig.now += 5_000; // well past SEEK_STUCK_MS
+        // The sink and callback clock must both follow a Segment seek before the paused
+        // preroll closes. NativeSeek continues to use its own landing semantics.
+        if mode == SeekMode::Segment {
+            let epoch = rig.eng().native_epoch;
+            plx_play_feed::sf_event::sf_on_event(epoch, 47, 1, std::ptr::null());
+            plx_play_feed::sf_event::sf_on_event(epoch, 0, TARGET_NS, std::ptr::null());
+        }
+        rig.now += 5_000; // well past the reopen budget
         for _ in 0..3 {
             rig.frame();
         }

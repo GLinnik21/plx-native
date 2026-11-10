@@ -311,7 +311,12 @@ impl FeedControl for FeedBackend {
             FeedCommand::Seek { epoch, target_ns, display_ns } => {
                 feed_pump::seek_requested(epoch, target_ns, display_ns);
             }
-            FeedCommand::AbandonSeek => feed_pump::seek_abandoned(),
+            FeedCommand::AbandonSeek => {
+                if let Some(engine) = self.resources.engine() {
+                    engine.segment_landing = None;
+                }
+                feed_pump::seek_abandoned();
+            }
             // The take addresses the newest request it belongs to; the feed clears its copy of the
             // pending target whatever that is (a reload zeroes the feed's own epoch, and a copy
             // left armed would hold the AU gate shut).
