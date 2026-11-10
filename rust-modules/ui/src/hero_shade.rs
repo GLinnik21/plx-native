@@ -23,7 +23,7 @@
 
 use crate::widgets::WashScrim;
 use crate::{theme, Rect};
-use plx_gfx::gfx::scrim::{Block, GroundShade, MAX_BLOCKS};
+use plx_gfx::gfx::scrim::{GroundShade, ShadeBlock, MAX_BLOCKS};
 
 /// What a block stands behind, which sets how dark it holds ([`theme::shade`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,14 +96,14 @@ impl HeroShade {
 
     /// The field the ground carries, at full strength, in authored pixels.
     pub fn field(&self) -> GroundShade {
-        let blocks: Vec<Block> = self.blocks().iter().map(|&(r, peak)| Self::block(r, peak)).collect();
+        let blocks: Vec<ShadeBlock> = self.blocks().iter().map(|&(r, peak)| Self::block(r, peak)).collect();
         GroundShade::from_blocks(&blocks)
     }
 
     /// The block behind one content rect: its box is the rect grown by [`theme::shade::PAD`].
-    fn block(r: Rect, peak: f32) -> Block {
+    fn block(r: Rect, peak: f32) -> ShadeBlock {
         let pad = theme::shade::PAD;
-        Block::new(
+        ShadeBlock::new(
             [r.x - pad, r.y - pad, r.w + 2.0 * pad, r.h + 2.0 * pad],
             theme::shade::RADIUS,
             theme::shade::FEATHER,

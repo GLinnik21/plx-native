@@ -14,7 +14,7 @@
 //! **A block is the rounded-rect signed distance** `sd = |max(|p - c| - (h - r), 0)| - r` (centre
 //! `c`, half extents `h`, corner radius `r`) and the alpha `peak * (1 - smoothstep(0, feather,
 //! sd))`: `peak` anywhere inside the rounded rect, falling smoothly (zero slope at both ends) to
-//! exactly 0 at `feather` px outside it. [`Block::at`] and [`GroundShade::at`] are the SAME
+//! exactly 0 at `feather` px outside it. [`ShadeBlock::at`] and [`GroundShade::at`] are the SAME
 //! arithmetic on the CPU: the legibility contract is graded on them, and the tests walk the real
 //! field mesh against them (`mesh_error`), which is what bounds what the vertex-evaluated field can
 //! differ from the closed form by.
@@ -40,7 +40,7 @@ pub const VEC4S: usize = 2 * MAX_BLOCKS;
 
 /// One soft rounded block of shade.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Block {
+pub struct ShadeBlock {
     /// `(cx, cy, hx - r, hy - r)`: the rounded rect's centre and the half extents of the rectangle
     /// its corner arcs are centred on.
     frame: [f32; 4],
@@ -48,17 +48,17 @@ pub struct Block {
     shape: [f32; 4],
 }
 
-impl Block {
+impl ShadeBlock {
     /// No shade anywhere: all zeros, which the shader evaluates to exactly `0.0` (module doc).
-    pub const NONE: Block = Block { frame: [0.0; 4], shape: [0.0; 4] };
+    pub const NONE: ShadeBlock = ShadeBlock { frame: [0.0; 4], shape: [0.0; 4] };
 
     /// The block over `rect = (x, y, w, h)`: alpha `peak` inside it (corners rounded to `radius`,
     /// which is held to half its shorter side), falling to 0 over `feather` px beyond its edge.
-    pub fn new(rect: [f32; 4], radius: f32, feather: f32, peak: f32) -> Block {
+    pub fn new(rect: [f32; 4], radius: f32, feather: f32, peak: f32) -> ShadeBlock {
         let [x, y, w, h] = rect;
         let (hx, hy) = (w.max(0.0) * 0.5, h.max(0.0) * 0.5);
         let r = radius.clamp(0.0, hx.min(hy));
-        Block {
+        ShadeBlock {
             frame: [x + hx, y + hy, hx - r, hy - r],
             shape: [r, 1.0 / feather.max(f32::MIN_POSITIVE), peak, 0.0],
         }
@@ -95,13 +95,13 @@ impl Block {
     }
 
     /// The peak times `k`.
-    fn scaled(mut self, k: f32) -> Block {
+    fn scaled(mut self, k: f32) -> ShadeBlock {
         self.shape[2] *= k;
         self
     }
 
     /// The block moved to a device frame where `x_dev = x * s + o`.
-    fn placed(mut self, ox: f32, oy: f32, s: f32) -> Block {
+    fn placed(mut self, ox: f32, oy: f32, s: f32) -> ShadeBlock {
         self.frame = [self.frame[0] * s + ox, self.frame[1] * s + oy, self.frame[2] * s, self.frame[3] * s];
         self.shape[0] *= s;
         self.shape[1] /= s;
@@ -113,16 +113,16 @@ impl Block {
 /// rects a screen is drawing this frame; a screen with no shade passes [`GroundShade::NONE`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GroundShade {
-    blocks: [Block; MAX_BLOCKS],
+    blocks: [ShadeBlock; MAX_BLOCKS],
 }
 
 impl GroundShade {
     /// No shade: all zeros, which the shader evaluates to exactly `0.0` (module doc).
-    pub const NONE: GroundShade = GroundShade { blocks: [Block::NONE; MAX_BLOCKS] };
+    pub const NONE: GroundShade = GroundShade { blocks: [ShadeBlock::NONE; MAX_BLOCKS] };
 
     /// The shade of `blocks` (at most [`MAX_BLOCKS`]; a longer list is a bug in the caller, not a
     /// case to clip).
-    pub fn from_blocks(blocks: &[Block]) -> GroundShade {
+    pub fn from_blocks(blocks: &[ShadeBlock]) -> GroundShade {
         assert!(blocks.len() <= MAX_BLOCKS, "a ground shade carries at most {MAX_BLOCKS} blocks");
         let mut s = GroundShade::NONE;
         s.blocks[..blocks.len()].copy_from_slice(blocks);
@@ -130,7 +130,7 @@ impl GroundShade {
     }
 
     /// The live blocks (peak above 0).
-    pub fn blocks(&self) -> impl Iterator<Item = &Block> {
+    pub fn blocks(&self) -> impl Iterator<Item = &ShadeBlock> {
         self.blocks.iter().filter(|b| b.peak() > 0.0)
     }
 
@@ -229,8 +229,8 @@ impl GroundShade {
 mod tests {
     use super::*;
 
-    fn card() -> Block {
-        Block::new([200.0, 300.0, 400.0, 100.0], 24.0, 120.0, 0.6)
+    fn card() -> ShadeBlock {
+        ShadeBlock::new([200.0, 300.0, 400.0, 100.0], 24.0, 120.0, 0.6)
     }
 
     #[test]
@@ -296,8 +296,8 @@ mod tests {
 
     fn sample() -> GroundShade {
         GroundShade::from_blocks(&[
-            Block::new([96.0, 500.0, 943.0, 120.0], 28.0, 140.0, 0.6),
-            Block::new([96.0, 668.0, 420.0, 60.0], 30.0, 140.0, 0.5),
+            ShadeBlock::new([96.0, 500.0, 943.0, 120.0], 28.0, 140.0, 0.6),
+            ShadeBlock::new([96.0, 668.0, 420.0, 60.0], 30.0, 140.0, 0.5),
         ])
     }
 
@@ -345,7 +345,7 @@ mod tests {
     /// A radius past half the shorter side is held there (a stadium), never an inverted corner.
     #[test]
     fn the_radius_is_held_to_half_the_shorter_side() {
-        let b = Block::new([0.0, 0.0, 200.0, 40.0], 500.0, 50.0, 0.5);
+        let b = ShadeBlock::new([0.0, 0.0, 200.0, 40.0], 500.0, 50.0, 0.5);
         assert_eq!(b.rect().1, 20.0);
         assert_eq!(b.at(100.0, 20.0), 0.5);
     }
