@@ -1895,7 +1895,7 @@ fn an_episode_page_leads_with_the_episodes_own_still() {
         ..Default::default()
     });
     let screen = bare(&_guard, sid, "episode");
-    assert_eq!(screen.art_identity(screen.detail(test_store().view())).2, "episode-still");
+    assert_eq!(screen.art_identity(screen.detail(test_store().view())).1, "episode-still");
     clear();
 }
 
@@ -1912,7 +1912,7 @@ fn a_shows_hero_still_outranks_every_other_art() {
     });
     let _guard = install(d);
     let screen = bare(&_guard, sid, "show");
-    assert_eq!(screen.art_identity(screen.detail(test_store().view())).2, "next-still");
+    assert_eq!(screen.art_identity(screen.detail(test_store().view())).1, "next-still");
     clear();
 }
 

@@ -1597,6 +1597,10 @@ pub struct Detail {
     /// Edition identity, presented in the hero's metadata rather than appended to its title.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub edition: String,
+    /// The stamped clearLogo, or empty when the image list contains no usable logo.
+    /// Absent from older responses and recordings, which use the legacy lookup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logo: Option<String>,
     pub year: i64,
     pub rating: String, // contentRating
     pub summary: String,
@@ -2288,6 +2292,7 @@ fn fetch_detail(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::Se
         index: it.index,
         title: it.title.clone(),
         edition: it.edition_title.clone(),
+        logo: it.clear_logo().map(str::to_owned),
         year: it.year,
         rating: it.content_rating.clone(),
         summary: it.summary.clone(),

@@ -2774,27 +2774,27 @@ impl DetailScreen {
         self.return_waiting(plx_data::stores::metadata::MetadataStore::default().view())
     }
 
-    fn art_identity(&self, d: Option<&Detail>) -> (ServerId, String, String) {
+    fn art_identity<'a>(&'a self, d: Option<&'a Detail>) -> (ServerId, &'a str) {
         if let Some(d) = d {
             let path = if d.is_show {
                 hero::hero_episode(d)
-                    .map(|ep| ep.thumb.clone())
+                    .map(|ep| ep.thumb.as_str())
                     .filter(|path| !path.is_empty())
-                    .unwrap_or_else(|| d.art.clone())
+                    .unwrap_or(&d.art)
             } else if d.kind == "episode" {
                 if d.thumb.is_empty() {
-                    d.art.clone()
+                    &d.art
                 } else {
-                    d.thumb.clone()
+                    &d.thumb
                 }
             } else {
-                d.art.clone()
+                &d.art
             };
-            return (d.sid, d.rk.clone(), path);
+            return (d.sid, path);
         }
         self.selected()
-            .map(|m| (m.sid, m.rk.clone(), m.art.clone()))
-            .unwrap_or((self.sid, self.rk.clone(), String::new()))
+            .map(|m| (m.sid, m.art.as_str()))
+            .unwrap_or((self.sid, ""))
     }
 
     fn draw_backdrop(
@@ -2808,16 +2808,16 @@ impl DetailScreen {
         let sf = (self.scroll.pos / (self.content_top(measure, meta) - plx_ui::detail_layout::TOP_MARGIN))
             .clamp(0.0, 1.0);
         let art_alpha = (1.0 - sf) * self.preview_art;
-        let (sid, _, path) = self.art_identity(d);
+        let (sid, path) = self.art_identity(d);
         let (texture, width, height) = if art_alpha > 0.01 {
-            plx_ui::widgets::resolve_tex_wh_on(sid.raw(), &path, 1920, 1080, 0)
+            plx_ui::widgets::resolve_tex_wh_on(sid.raw(), path, 1920, 1080, 0)
         } else {
             (0, 0.0, 0.0)
         };
         // The backdrop is DRAWN only when its alpha is visible (`art_alpha`), and a path with no
         // texture behind it is art that has not arrived: the bare wash is the placeholder.
         if backdrop_pending(art_alpha, texture, &path) {
-            plx_ui::placeholder::note(p, plx_ui::placeholder::Reason::DetailBackdrop, &path);
+            plx_ui::placeholder::note(p, plx_ui::placeholder::Reason::DetailBackdrop, path);
         }
         let ground_flat = self
             .ground
@@ -2853,7 +2853,13 @@ impl DetailScreen {
         let measure = cx.measure;
         use plx_ui::detail_layout::HERO_TEXT_W;
 
-        let (_, rk, _) = self.art_identity(d);
+        let (sid, logo) = if let Some(d) = d {
+            (d.sid, d.logo.as_deref().unwrap_or(&d.rk))
+        } else {
+            self.selected()
+                .map(|m| (m.sid, m.logo.as_deref().unwrap_or(&m.rk)))
+                .unwrap_or((self.sid, self.rk.as_str()))
+        };
         let title = self.hero_title(d).unwrap_or_else(|| {
             // No item has landed: the hero's title IS the "Loading" message (counted at the draw).
             plx_ui::placeholder::note(p, plx_ui::placeholder::Reason::DetailTitle, &self.rk);
@@ -2868,7 +2874,7 @@ impl DetailScreen {
 
         let spot = self.logo_spot(measure, meta);
         let compact_band = plx_ui::hero_logo::band_h(LogoRung::Compact);
-        HeroLogo::new(self.sid.raw(), &rk, title, spot.rung).draw(p.alpha(spot.alpha), spot.band, cx.measure);
+        HeroLogo::new(sid.raw(), logo, title, spot.rung).draw(p.alpha(spot.alpha), spot.band, cx.measure);
 
         let (lead, synopsis) = hero_blurb(d, self.selected());
         let synopsis_view = plx_ui::hero_synopsis(&synopsis, &lead).with_measure(measure);
@@ -3146,7 +3152,7 @@ impl DetailScreen {
             return;
         }
         let band = plx_ui::hero_logo::band_h(LogoRung::Compact);
-        HeroLogo::new(d.sid.raw(), &d.rk, &d.title, LogoRung::Compact)
+        HeroLogo::new(d.sid.raw(), d.logo.as_deref().unwrap_or(&d.rk), &d.title, LogoRung::Compact)
             .align(HAlign::Center)
             .draw(
                 p.alpha(alpha),

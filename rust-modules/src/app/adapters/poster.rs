@@ -659,7 +659,7 @@ fn built_key(srv: ServerId, path: &str, w: c_int, h: c_int, png: bool) -> Option
                 return fan;
             }
             // The two app-baked deck kinds are already synthetic keys (`/plx/cover/{hex}`,
-            // `/plx/card/{logo_rk}{art}`): they name a recipe, not a server path, carry no token by
+            // `/plx/card/…`): they name a recipe, not a server path, carry no token by
             // construction, and are used as they stand (`plex::artwork` builds and parses them).
             if is_baked_key(path) {
                 return path.to_owned();
@@ -882,19 +882,17 @@ const LOGO_REQ_H: c_int = 240;
 /// The ONE clearLogo store key ([`LOGO_REQ_W`]×[`LOGO_REQ_H`] transparent PNG). Its own fn because
 /// the PREFETCH must warm the exact key the draw will later resolve — `(server, path, w, h, png)`
 /// IS the store key, so a warm at a different size (or against a different server) is a different
-/// slot and buys nothing. `None` for an item with no ratingKey.
-fn logo_key(srv: ServerId, rk: &str) -> Option<Rc<str>> {
-    if rk.is_empty() {
-        return None;
-    }
-    built_key(srv, &format!("/library/metadata/{rk}/clearLogo"), LOGO_REQ_W, LOGO_REQ_H, true)
+/// slot and buys nothing. The server's stamped path is also part of the persistent cache key.
+fn logo_key(srv: ServerId, logo: &str) -> Option<Rc<str>> {
+    let path = plx_plex::plex::artwork::logo_path(logo)?;
+    built_key(srv, &path, LOGO_REQ_W, LOGO_REQ_H, true)
 }
 
 /// The prefetch twin of [`logo_src`] — starts the same fetch, takes no texture and no LRU
 /// protection. A hero page whose logo misses draws its title as HERO TEXT and then pops to the
 /// logotype the moment it lands; warming kills that pop the same way it kills the backdrop's.
-fn logo_warm(srv: ServerId, rk: &str) -> Warm {
-    logo_key(srv, rk)
+fn logo_warm(srv: ServerId, logo: &str) -> Warm {
+    logo_key(srv, logo)
         .map(|k| lookup(srv, &k, Touch::Warm).1)
         .unwrap_or(Warm::Known)
 }
@@ -911,8 +909,8 @@ fn logo_warm(srv: ServerId, rk: &str) -> Warm {
 ///
 /// NB it claims a slot even for an item that HAS no logo — the 404 lands as `P_FAILED` and holds it
 /// — so every hero page costs two of the store's [`PT_CAP`] slots, backdrop plus logo.
-fn logo_probe(srv: ServerId, rk: &str) -> Option<PosterKey> {
-    lookup(srv, &logo_key(srv, rk)?, Touch::Draw).0
+fn logo_probe(srv: ServerId, logo: &str) -> Option<PosterKey> {
+    lookup(srv, &logo_key(srv, logo)?, Touch::Draw).0
 }
 
 /// Has this item's clearLogo SETTLED as a miss — the server answered with a non-transient
@@ -920,8 +918,8 @@ fn logo_probe(srv: ServerId, rk: &str) -> Option<PosterKey> {
 /// `P_FAILED`? A pure peek: no LRU touch, no frame stamp, no fetch. `false` while the fetch is
 /// unsent, in flight, parked for a retry, or the pixels are in; the demo-video accounting
 /// (`plx_ui::placeholder`) reads it to tell "will never arrive" from "has not arrived".
-fn logo_failed(srv: ServerId, rk: &str) -> bool {
-    logo_key(srv, rk).is_some_and(|key_s| settled_failed(srv, &key_s))
+fn logo_failed(srv: ServerId, logo: &str) -> bool {
+    logo_key(srv, logo).is_some_and(|key_s| settled_failed(srv, &key_s))
 }
 
 /// [`logo_failed`] for any built key: the slot holding `(srv, path, w, h, png)` is `P_FAILED`.
@@ -1458,14 +1456,14 @@ impl tex::Source for PosterSource {
         let srv = ServerId::from_raw(srv);
         built_key(srv, path, w, h, png).map_or(Warm::Known, |k| lookup(srv, &k, Touch::Ahead).1)
     }
-    fn logo(&self, srv: u16, rk: &str) -> Option<PosterKey> {
-        logo_probe(ServerId::from_raw(srv), rk)
+    fn logo(&self, srv: u16, logo: &str) -> Option<PosterKey> {
+        logo_probe(ServerId::from_raw(srv), logo)
     }
-    fn logo_warm(&self, srv: u16, rk: &str) -> Warm {
-        logo_warm(ServerId::from_raw(srv), rk)
+    fn logo_warm(&self, srv: u16, logo: &str) -> Warm {
+        logo_warm(ServerId::from_raw(srv), logo)
     }
-    fn logo_failed(&self, srv: u16, rk: &str) -> bool {
-        logo_failed(ServerId::from_raw(srv), rk)
+    fn logo_failed(&self, srv: u16, logo: &str) -> bool {
+        logo_failed(ServerId::from_raw(srv), logo)
     }
     fn failed(&self, srv: u16, path: &str, w: i32, h: i32, png: bool) -> bool {
         art_failed(ServerId::from_raw(srv), path, w, h, png)
@@ -2157,7 +2155,7 @@ fn poster_worker() {
                 // did not answer: parked for the store's backoff like any art.
                 let (bake, disk) = match (hex, card) {
                     (Some(hex), _) => workers::bake_cover(client, hex, cache_gen, token_gen),
-                    (None, Some((rk, art))) => workers::bake_card(client, rk, art, cache_gen, token_gen),
+                    (None, Some((logo, art))) => workers::bake_card(client, logo, art, cache_gen, token_gen),
                     (None, None) => unreachable!("checked above"),
                 };
                 match bake.got {

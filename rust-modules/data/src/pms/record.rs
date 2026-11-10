@@ -108,6 +108,7 @@ mod tests {
             sid: plx_plex::plex::ServerId::from_raw(3), sec: 8, title: "Episode".into(), year: 2026,
             rating: "TV-14".into(), dur_ns: i64::MAX, part: "/part".into(), thumb: "/poster".into(),
             still: "/still".into(), art: "/art".into(), summary: "Summary".into(), rk: "17".into(),
+            logo: Some("/library/metadata/10/clearLogo/1700000000".into()),
             vcodec: "hevc".into(), acodec: "aac".into(),
             blur: [[-0.0, f32::from_bits(0x7fc01234), f32::INFINITY]; 4], has_blur: true,
             kind: 3, resume_ms: 12345, show_rk: "10".into(), season_index: 2,
@@ -142,6 +143,7 @@ mod tests {
         let m = &decoded.build.as_ref().unwrap().shelves[0].items[0];
         assert_eq!(m.blur[0].map(f32::to_bits), [0x80000000, 0x7fc01234, 0x7f800000]);
         assert_eq!(m.dur_ns, i64::MAX);
+        assert_eq!(m.logo.as_deref(), Some("/library/metadata/10/clearLogo/1700000000"));
     }
 
     #[test]
@@ -149,6 +151,11 @@ mod tests {
         let l = landing();
         let row = &l.build.as_ref().unwrap().shelves[0].items[0];
         let value = serde_json::to_value(row).unwrap();
+        let mut legacy = value.clone();
+        legacy.as_object_mut().unwrap().remove("logo");
+        let legacy = serde_json::from_value::<PmsMovie>(legacy).unwrap();
+        assert!(legacy.logo.is_none());
+        assert!(serde_json::to_value(&legacy).unwrap().get("logo").is_none());
         let mut missing = value.clone();
         missing.as_object_mut().unwrap().remove("title");
         assert!(serde_json::from_value::<PmsMovie>(missing).is_err());
