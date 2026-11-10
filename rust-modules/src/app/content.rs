@@ -164,6 +164,14 @@ pub(super) fn request_play_intent(
         }
         plx_screens::registry::PlayIntent::Movie { item, version } =>
             plx_media::route::request_play_movie(session, meta, super::playback::start_caps(), item, &super::playback::movie_ctx(item), *version),
+        plx_screens::registry::PlayIntent::Live { sid, dvr, channel, title } => {
+            let ok = plx_media::route::request_live(session, meta, super::playback::start_caps(), *sid, dvr, channel, title);
+            if ok {
+                // The previous item's caption would otherwise label the channel for the whole tune.
+                meta.run(plx_data::stores::metadata::MetadataCmd::SetNowPlaying(None));
+            }
+            ok
+        }
     }
 }
 
@@ -490,6 +498,7 @@ pub(crate) fn content_requests(app: &mut App, fr: &mut Frame) {
     library_requests(app, fr.now);
     search_requests(app);
     watchlist_requests(app);
+    run_play_starts(app);
     // The player's overlays are surfaces on its own stack, so what they decide reaches the
     // loop the same way every other owned screen's decision does — as requests, drained here,
     // after the dispatcher and before the frame's own arms (`playback::player_requests`).
@@ -821,6 +830,47 @@ fn watchlist_requests(app: &mut App) {
         }
         watchlist_request(&mut app.pages, &mut app.bridge, entry, request, ret, &mut app.ok_armed);
     }
+}
+
+/// **The play runner** for the starts the playback owner admitted on the FIFO
+/// (`Bridge::livetv_deliver`). Each is performed through the door every page Play uses
+/// (`clear_engine_for_play`, then `request_play_intent` and `start_playback`, or `hold_feature`
+/// while a preview still releases the engine); the resolve worker then does the network IO (a Live
+/// TV tune and its decision, `route::request_live`) off the frame. The outcome goes back to the
+/// asking instance as ONE addressed event under the owner's correlation ([`play_reply`]).
+fn run_play_starts(app: &mut App) {
+    for start in app.bridge.take_play_starts() {
+        let to = start.to;
+        let accepted = run_play_start(app, start);
+        app.pages.emit(MachineId::Player, play_reply(to, accepted));
+    }
+}
+
+/// The answer to a start: `AppMsg::PlayReply` as `ScreenEvent::Async`, addressed to the instance
+/// that asked, under the correlation the playback owner gave it.
+pub(super) fn play_reply(to: plx_machine::machine::Addr, accepted: bool) -> Fx<bridge::AppHost> {
+    Fx::Deliver(to.to, Delivery::Screen(ScreenEvent::Async(to.req,
+        AppMsg::PlayReply { correlation: to.req.0, accepted })))
+}
+
+fn run_play_start(app: &mut App, start: bridge::PlayStart) -> bool {
+    // A start plays only over the page that asked, while it still holds input.
+    let MachineId::Instance(instance) = start.to.to else { return false };
+    let Some(entry) = app.pages.nav.entry_of_instance(instance) else { return false };
+    if app.pages.nav.input_owner() != Some(InputOwner::Entry(entry)) {
+        return false;
+    }
+    let mounted = bridge::player(&app.pages).is_some();
+    if !clear_engine_for_play(&mut app.player.session, &mut app.adapters.player, mounted) {
+        hold_feature(start.play, 0, Some(start.ret));
+        return true;
+    }
+    if !request_play_intent(&mut app.player.session, app.bridge.metadata_mut(), &start.play) {
+        return false;
+    }
+    start_playback(&mut app.player.session, &mut app.adapters.player, 0, super::playback::Origin::Here,
+        HUD_LINGER_MS, Some(start.ret), &mut app.pages, &mut app.bridge);
+    true
 }
 
 /// **One request the Watchlist page or its Sort & Filter surface made, performed**, after the loop's

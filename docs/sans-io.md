@@ -125,7 +125,11 @@ widening recorded the 17 forks that were already there (three in `screens/`: `le
   (`reqs`, `content_reqs`, ...) is a second lane with its own timing, so it is a ledger line, and a
   NEW variant with a side queue fails the gate. An or-pattern arm (`AppFx::A(r) | AppFx::B(r) =>
   ..`) is one site for each variant, and an arm that names no variant (`other => ..`, `_ => ..`) is
-  the site `AppFx::_`.
+  the site `AppFx::_`. `AppFx::LiveTv` is a page's arm on that lane: the page's tune, a typed
+  `PlayIntent::Live`, is delivered to the playback owner (`MachineId::Player`) and its strip and
+  BACK requests to `MachineId::Nav` (`Bridge::livetv_deliver`); the admitted play is performed by
+  the play runner (`content::run_play_starts`), whose outcome returns as one `AppMsg::PlayReply`
+  addressed to the asking page.
 - A key names the file and the fn's name, and a ledger is a multiset of keys, so a site can move
   between two same-named fns of one file (a `new` in each of two `impl` blocks) without the gate seeing it.
 

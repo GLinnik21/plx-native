@@ -466,6 +466,12 @@ pub(crate) struct Bridge {
     consent: ConsentMachine,
     /// Requests the owned screens made of the loop this frame (§14), drained by [`frame`]'s caller.
     reqs: Vec<LoopReq>,
+    /// The plays the playback owner admitted on the FIFO (`Bridge::livetv_deliver`), waiting for
+    /// the play runner (`content::run_play_starts`), which performs them in the same frame and
+    /// answers each one's address with one `AppMsg::PlayReply`.
+    play_starts: Vec<PlayStart>,
+    /// The last correlation the playback owner handed out (`PlayStart::to`).
+    play_seq: u32,
     content_reqs: Vec<(MachineId, ContentReq, ReturnState<u32, PageMemory>)>,
     home_reqs: Vec<(MachineId, HomeReq, ReturnState<u32, PageMemory>)>,
     library_reqs: Vec<(MachineId, LibraryReq, ReturnState<u32, PageMemory>)>,
@@ -494,6 +500,15 @@ pub(crate) struct Bridge {
     /// The surfaces whose host counters this bridge holds: (entry, cached, closing).
     held: Vec<(EntryId, bool, bool)>,
     now_us: fn() -> u64,
+}
+
+/// **A play the playback owner admitted**: the typed intent, the address its answer goes to (the
+/// asking instance, under the owner's correlation) and the return state the page froze when it
+/// asked, so BACK out of the player lands where OK was pressed.
+pub(crate) struct PlayStart {
+    pub(crate) to: plx_machine::machine::Addr,
+    pub(crate) play: plx_screens::registry::PlayIntent,
+    pub(crate) ret: ReturnState<u32, PageMemory>,
 }
 
 impl Bridge {
@@ -712,6 +727,8 @@ impl Bridge {
             library_commands: std::collections::VecDeque::new(),
             consent: ConsentMachine::from_initial(consent),
             reqs: Vec::new(),
+            play_starts: Vec::new(),
+            play_seq: 0,
             content_reqs: Vec::new(),
             home_reqs: Vec::new(),
             library_reqs: Vec::new(),
@@ -762,6 +779,11 @@ impl Bridge {
 
     pub(crate) fn take_reqs(&mut self) -> Vec<LoopReq> {
         std::mem::take(&mut self.reqs)
+    }
+
+    /// The plays the playback owner admitted since the last drain (`content::run_play_starts`).
+    pub(crate) fn take_play_starts(&mut self) -> Vec<PlayStart> {
+        std::mem::take(&mut self.play_starts)
     }
 
     pub(crate) fn auth_read(&self) -> plx_session::auth::SessionRead<'_> { self.session.read() }
@@ -1203,6 +1225,7 @@ impl Bridge {
             d.nav.tabs.strip_fallback = Some(match route {
                 AppArg::Search => plx_ui::widgets::TAB_KEY_SEARCH,
                 AppArg::Watchlist => plx_ui::widgets::TAB_KEY_WATCHLIST,
+                AppArg::LiveTv => plx_ui::widgets::TAB_KEY_LIVETV,
                 _ => plx_screens::home::STRIP_HOME_ELEM,
             });
             if let Some(io) = &self.home_io {
@@ -2252,6 +2275,9 @@ impl Bridge {
     }
 
     fn deliver_inner(&mut self, to: MachineId, msg: &AppMsg, parts: &CxParts<u32>, fx: &mut Effects<'_, AppHost>) -> Handled {
+        if let AppMsg::LiveTv { from, out, ret } = msg {
+            return self.livetv_deliver(to, *from, out, ret, fx);
+        }
         if let AppMsg::Consent(command) = msg {
             if to != MachineId::Consent { return Handled::No; }
             match command {
@@ -2639,6 +2665,12 @@ impl Bridge {
             AppFx::Player(req) => self.player_reqs.push(req),
             AppFx::ItemMenu(req) => self.item_menu_reqs.push(req),
             AppFx::Watchlist(req) => self.watchlist_reqs.push((from, req, self.effect_return.clone())),
+            // Live TV rides the ordered FIFO: the request is delivered to its owner in order with
+            // every other event (`Bridge::livetv_deliver`), a tune to the playback owner and a
+            // navigation to the container's. Nothing is parked on a side queue.
+            AppFx::LiveTv(req) => out.push(Fx::Deliver(livetv_owner(&req), Delivery::Machine(AppMsg::LiveTv {
+                from, out: req, ret: self.effect_return.clone(),
+            }))),
             // The catalog page's pill: the same write the item menu's rows make, so an Add pulses
             // the tab here too. The page flips nothing itself; the store's ledger flips the face.
             AppFx::Catalog(out) => self.catalog_effect(out),
@@ -2764,6 +2796,74 @@ impl Bridge {
                         AppMsg::BackReply { correlation: to.correlation, resumed }))));
             }
         }
+    }
+
+    /// **A Live TV request at its owner on the FIFO** (`AppFx::LiveTv`, delivered in order with
+    /// every other event; `livetv_owner` names the owner).
+    ///
+    /// A navigation is the container's. The Bridge seeds what the destination's mount consumes (the
+    /// strip's [`tab_destination`]) and the op leaves as `Fx::Nav`, committed at this frame's nav
+    /// commit like every other. The page asking is the Live TV page, a peer of the Library and never
+    /// the Library itself, so a Movies/Shows press always aims it. The profile chip's surface needs
+    /// the container's style handshake (`next_style`), which is the loop's, so it leaves as
+    /// `LoopReq::AccountMenu` (the Session owner's coordinator actions do the same).
+    ///
+    /// A tune is the playback owner's. A well-formed `PlayIntent::Live` from a screen instance is
+    /// admitted under a fresh correlation and staged for the play runner (`content::run_play_starts`),
+    /// which performs it through the door every page Play uses and answers the asking instance with
+    /// one `AppMsg::PlayReply`. Anything else is refused loudly and nothing is staged.
+    fn livetv_deliver(&mut self, to: MachineId, from: MachineId, out: &plx_screens::registry::LiveTvOut,
+        ret: &ReturnState<u32, PageMemory>, fx: &mut Effects<'_, AppHost>) -> Handled {
+        use plx_screens::registry::LiveTvOut;
+        use plx_screens::registry::PlayIntent;
+        if to != livetv_owner(out) {
+            return Handled::No;
+        }
+        match out {
+            LiveTvOut::Tune(play) => {
+                let well_formed = matches!(play, PlayIntent::Live { sid, dvr, channel, .. }
+                    if sid.is_set() && !dvr.is_empty() && !channel.is_empty());
+                if !well_formed || !matches!(from, MachineId::Instance(_)) {
+                    debug_assert!(false, "a Live TV tune reached the playback owner malformed or unaddressed");
+                    plx_base::eventlog::log("livetv: a malformed or unaddressed tune reached the playback owner — dropped");
+                    return Handled::No;
+                }
+                self.play_seq = self.play_seq.wrapping_add(1);
+                self.play_starts.push(PlayStart {
+                    to: plx_machine::machine::Addr { to: from, req: plx_machine::machine::RequestId(self.play_seq) },
+                    play: play.clone(),
+                    ret: ret.clone(),
+                });
+            }
+            LiveTvOut::Back => {
+                let arg = tab_destination(self, HomeTab::Home, None, false);
+                fx.push(Fx::Nav(NavOp::SelectTab(arg)));
+            }
+            // The page's own pill: already here.
+            LiveTvOut::Tab(HomeTab::LiveTv) => {}
+            LiveTvOut::Tab(tab) => {
+                if !self.search_tab_available(*tab) {
+                    return Handled::Yes;
+                }
+                // The Home pill seats the hero, as `nav_home_pill` does for every other page.
+                if *tab == HomeTab::Home {
+                    self.home_command(HomeCmd::Hero);
+                }
+                let arg = tab_destination(self, *tab, None, false);
+                fx.push(Fx::Nav(NavOp::SelectTab(arg)));
+            }
+            LiveTvOut::Account => self.reqs.push(LoopReq::AccountMenu),
+        }
+        Handled::Yes
+    }
+}
+
+/// Who owns a Live TV request on the FIFO: a tune is the playback owner's, everything else the
+/// container navigation's.
+pub(crate) fn livetv_owner(req: &plx_screens::registry::LiveTvOut) -> MachineId {
+    match req {
+        plx_screens::registry::LiveTvOut::Tune(_) => MachineId::Player,
+        _ => MachineId::Nav,
     }
 }
 
@@ -3930,6 +4030,7 @@ fn pill_of_arg(arg: &AppArg, directory: plx_data::stores::browse::DirectoryView<
         AppArg::Home => pill_of(directory, Pill::Home),
         AppArg::Search => pill_of(directory, Pill::Search),
         AppArg::Watchlist => pill_of(directory, Pill::Watchlist),
+        AppArg::LiveTv => pill_of(directory, Pill::LiveTv),
         // The grid and the two pages its header pushes (Collections, Recommended) are all the
         // library's: they select its type's pill, the pill they were opened from.
         arg if arg.is_library_family() => {
@@ -3937,6 +4038,45 @@ fn pill_of_arg(arg: &AppArg, directory: plx_data::stores::browse::DirectoryView<
             pill_of(directory, Pill::Section(kind))
         }
         _ => None,
+    }
+}
+
+/// **Where a strip pill press lands, with the seeds its destination's mount consumes** — the half of
+/// [`nav_tab`] that needs no container: the Home pill's `FocusStrip` command, the Library's
+/// `enter_library` / `aim_library`. `top_is_library`: the page on top is already the Library, whose
+/// tab switch is a teleport inside it and must not be re-aimed. Shared with the Live TV page's
+/// requests, which reach the Bridge on the FIFO (`Bridge::livetv_deliver`).
+pub(crate) fn tab_destination(
+    rig: &mut Bridge, tab: HomeTab, focus_pill: Option<crate::app::chrome::Pill>, top_is_library: bool,
+) -> AppArg {
+    use crate::app::chrome::Pill;
+    match tab {
+        HomeTab::Home => {
+            // Keep the pill the user was standing on under focus. An IDENTITY, not an index: a
+            // pill can appear or disappear while the dip runs, and `HomeCmd::FocusStrip` is
+            // delivered when Home MOUNTS, not now.
+            if let Some(pill) = focus_pill.filter(|pill| crate::app::chrome::pill_of(rig.directory.view(), *pill).is_some()) {
+                let want = match pill {
+                    Pill::Home => HomeTab::Home,
+                    Pill::Search => HomeTab::Search,
+                    Pill::Watchlist => HomeTab::Watchlist,
+                    Pill::LiveTv => HomeTab::LiveTv,
+                    Pill::Section(plx_data::browse::SecKind::Movie) => HomeTab::Movies,
+                    Pill::Section(plx_data::browse::SecKind::Show) => HomeTab::Shows,
+                };
+                rig.home_command(HomeCmd::FocusStrip(want));
+            }
+            AppArg::Home
+        }
+        HomeTab::Movies | HomeTab::Shows => {
+            let kind = if tab == HomeTab::Movies { plx_data::browse::SecKind::Movie } else { plx_data::browse::SecKind::Show };
+            rig.enter_library(kind);
+            if !top_is_library { rig.aim_library(kind); }
+            AppArg::Library
+        }
+        HomeTab::Search => AppArg::Search,
+        HomeTab::Watchlist => AppArg::Watchlist,
+        HomeTab::LiveTv => AppArg::LiveTv,
     }
 }
 
@@ -3959,33 +4099,8 @@ pub(crate) fn nav_tab(
     focus_pill: Option<crate::app::chrome::Pill>,
     ret: Option<ReturnState<u32, PageMemory>>,
 ) {
-    use crate::app::chrome::Pill;
-    let arg = match tab {
-        HomeTab::Home => {
-            // Keep the pill the user was standing on under focus. An IDENTITY, not an index: a
-            // pill can appear or disappear while the dip runs, and `HomeCmd::FocusStrip` is
-            // delivered when Home MOUNTS, not now.
-            if let Some(pill) = focus_pill.filter(|pill| crate::app::chrome::pill_of(rig.directory.view(), *pill).is_some()) {
-                let want = match pill {
-                    Pill::Home => HomeTab::Home,
-                    Pill::Search => HomeTab::Search,
-                    Pill::Watchlist => HomeTab::Watchlist,
-                    Pill::Section(plx_data::browse::SecKind::Movie) => HomeTab::Movies,
-                    Pill::Section(plx_data::browse::SecKind::Show) => HomeTab::Shows,
-                };
-                rig.home_command(HomeCmd::FocusStrip(want));
-            }
-            AppArg::Home
-        }
-        HomeTab::Movies | HomeTab::Shows => {
-            let kind = if tab == HomeTab::Movies { plx_data::browse::SecKind::Movie } else { plx_data::browse::SecKind::Show };
-            rig.enter_library(kind);
-            if d.top_arg() != Some(&AppArg::Library) { rig.aim_library(kind); }
-            AppArg::Library
-        }
-        HomeTab::Search => AppArg::Search,
-        HomeTab::Watchlist => AppArg::Watchlist,
-    };
+    let top_is_library = d.top_arg() == Some(&AppArg::Library);
+    let arg = tab_destination(rig, tab, focus_pill, top_is_library);
     nav_peer(d, arg, ret);
 }
 
@@ -4648,6 +4763,9 @@ mod recording_erasure_tests;
 #[cfg(test)]
 #[path = "consent_owner_tests.rs"]
 mod consent_owner_tests;
+#[cfg(test)]
+#[path = "livetv_routing_tests.rs"]
+mod livetv_routing_tests;
 #[cfg(test)]
 #[path = "session_worker_adapter_tests.rs"]
 mod session_worker_adapter_tests;

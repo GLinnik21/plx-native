@@ -722,6 +722,12 @@ pub fn request_seek(
     pa: &mut adapter::PlayerAdapter,
     ns: i64,
 ) {
+    // A live channel has no seekable timeline: the HLS reader follows the edge and reads no target,
+    // so an armed seek would hold the spinner up for the rest of the playback.
+    if crate::route::is_live(ps) {
+        log("seek: refused on a live channel");
+        return;
+    }
     report::note_seek_for(crate::route::playback_trace_generation());
     crate::route::note_user_seek_intent(ns);
     // One intent, one event, one command. The event un-ends a stream that had drained, numbers the

@@ -269,6 +269,7 @@ impl SearchScreen {
                 TAB_KEY_MOVIES => SearchReq::Tab(HomeTab::Movies),
                 TAB_KEY_SHOWS => SearchReq::Tab(HomeTab::Shows),
                 TAB_KEY_WATCHLIST => SearchReq::Tab(HomeTab::Watchlist),
+                plx_ui::widgets::TAB_KEY_LIVETV => SearchReq::Tab(HomeTab::LiveTv),
                 // The Search mark is the page the user is already on: nothing to request.
                 TAB_KEY_SEARCH => return Handled::Yes,
                 TAB_KEY_CHIP => SearchReq::Account,

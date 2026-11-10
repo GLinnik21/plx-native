@@ -13,7 +13,7 @@ fn marking_an_item_watched_flips_every_row_that_names_it_and_retires_its_resume_
     let _g = plx_base::testlock::serial();
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
-    let mut b = SourceBuild {
+    let mut b = SourceBuild { live: Vec::new(),
         lane: Default::default(),
         cw: vec![CwItem {
             last_viewed_at: 9,
@@ -52,7 +52,7 @@ fn an_edit_never_reaches_the_same_rating_key_on_another_server() {
     let _g = plx_base::testlock::serial();
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
-    let mut b = SourceBuild {
+    let mut b = SourceBuild { live: Vec::new(),
         lane: Default::default(),
         cw: Vec::new(),
         shelves: vec![shelf(1, "Theirs", "h", &["7"])],
@@ -74,7 +74,7 @@ fn a_deck_removal_leaves_the_deck_only_and_keeps_the_resume_point() {
     let _g = plx_base::testlock::serial();
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
-    let mut b = SourceBuild {
+    let mut b = SourceBuild { live: Vec::new(),
         lane: Default::default(),
         cw: vec![
             CwItem {
@@ -123,7 +123,7 @@ fn a_removed_deck_card_leaves_the_shelves_behind_it_correctly_addressed() {
     let _g = plx_base::testlock::serial();
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
-    let build = SourceBuild {
+    let build = SourceBuild { live: Vec::new(),
         lane: Default::default(),
         cw: vec![
             CwItem {
@@ -267,7 +267,7 @@ fn a_show_scoped_edit_reaches_its_episode_rows_and_a_deck_removal_stays_on_one_r
         m.season_index = season;
         Arc::new(m)
     };
-    let mut b = SourceBuild {
+    let mut b = SourceBuild { live: Vec::new(),
         lane: Default::default(),
         cw: vec![
             CwItem { last_viewed_at: 9, m: episode("e11", "S", 1), position: 0 },
@@ -311,7 +311,7 @@ fn a_source_read_in_flight_across_edits_lands_with_them_made_again() {
     s.stamp = s.ledger.stamp(); // the read goes out…
     let p7 = s.ledger.record(&ViewAt::leaf(sid(0), "7"), ViewEdit::Watched(true)); // …then two presses
     let p8 = s.ledger.record(&ViewAt::leaf(sid(0), "8"), ViewEdit::LeftDeck);
-    let mut brought = SourceBuild { lane: Default::default(),
+    let mut brought = SourceBuild { live: Vec::new(), lane: Default::default(),
         cw: vec![CwItem { last_viewed_at: 9, m: started(0, "7"), position: 0 },
             CwItem { last_viewed_at: 8, m: started(0, "8"), position: 1 }],
         shelves: vec![shelf(0, "Recently Added", "home.movies.recent", &["7", "8"])] };
@@ -327,7 +327,7 @@ fn a_source_read_in_flight_across_edits_lands_with_them_made_again() {
     s.ledger.landed(p7); // both writes reach the server…
     s.ledger.landed(p8);
     s.stamp = s.ledger.stamp(); // …and a read issued after that carries them already
-    let mut later = SourceBuild { lane: Default::default(), cw: Vec::new(),
+    let mut later = SourceBuild { live: Vec::new(), lane: Default::default(), cw: Vec::new(),
         shelves: vec![shelf(0, "Recently Added", "home.movies.recent", &["7"])] };
     replay_since_request(&s, &mut later);
     assert!(!later.shelves[0].items[0].watched, "its answer stands");
@@ -347,7 +347,7 @@ fn a_source_request_takes_its_ledger_stamp_at_the_request() {
     s.ledger.record(&ViewAt::leaf(sid(0), "7"), ViewEdit::Watched(true)); // before the request
     assert!(s.begin_request(ClientKey::of(client), 1, || 1).is_some());
     s.ledger.record(&ViewAt::leaf(sid(0), "8"), ViewEdit::Watched(true)); // while it is out
-    let mut brought = SourceBuild { lane: Default::default(), cw: Vec::new(),
+    let mut brought = SourceBuild { live: Vec::new(), lane: Default::default(), cw: Vec::new(),
         shelves: vec![shelf(0, "Recently Added", "home.movies.recent", &["7", "8"])] };
     replay_since_request(&s, &mut brought);
     assert!(!brought.shelves[0].items[0].watched, "the server already had the first press");
@@ -363,7 +363,7 @@ fn facts_that_change_no_row_are_not_a_hit_but_facts_that_differ_are() {
     let _g = plx_base::testlock::serial();
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
-    let mut b = SourceBuild {
+    let mut b = SourceBuild { live: Vec::new(),
         lane: Default::default(),
         cw: vec![CwItem { last_viewed_at: 9, m: started(0, "7"), position: 0 }],
         shelves: vec![shelf(0, "Recently Added", "home.movies.recent", &["7", "8"])],

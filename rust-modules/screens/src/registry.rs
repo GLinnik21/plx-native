@@ -70,6 +70,8 @@ pub enum AppFx {
     /// The Watchlist page's and its Sort & Filter menu's requests (plan §2.4 W45): everything the
     /// page asks of the app that has no existing effect spelling.
     Watchlist(crate::watchlist::page::WatchlistOut),
+    /// The Live TV page's requests (a channel's tune, the strip, BACK), delivered to their owners on the ordered FIFO: see AppMsg::LiveTv.
+    LiveTv(LiveTvOut),
     Catalog(crate::catalog::CatalogOut),
     /// Player-route requests — what an overlay panel on the player's own `ModalStack` asks of the
     /// loop, because the thing being asked for needs the `MainThread` token, the route or the
@@ -320,6 +322,19 @@ pub enum HomeReq {
     Tab(HomeTab),
 }
 
+/// What the page asks the app to do. The app owns routing (a screen names no sibling).
+#[derive(Clone, Debug, PartialEq)]
+pub enum LiveTvOut {
+    /// OK on a channel: the typed play the playback owner admits ([`PlayIntent::Live`](crate::registry::PlayIntent::Live)).
+    Tune(crate::registry::PlayIntent),
+    /// BACK from the top of the page.
+    Back,
+    /// A press on the shared strip's other tabs.
+    Tab(HomeTab),
+    /// A press on the profile chip.
+    Account,
+}
+
 /// Stable top-strip destinations; availability changes presentation, never identity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum HomeTab {
@@ -329,6 +344,8 @@ pub enum HomeTab {
     /// The Watchlist mark, before Search (docs/watchlist-plan.md §2.4 W45).
     Watchlist,
     Search,
+    /// The server's Live TV channels (`screens::livetv`), after the library type pills.
+    LiveTv,
 }
 
 /// Addressed bootstrap/diagnostic intentions. They use the same owned step and focus engine as
@@ -1282,6 +1299,7 @@ impl ContentPanel {
 /// happens when the request is REFUSED (a PMS/native route transition still owns the reducer):
 /// the page's navigation is skipped, which is what the page's own discarded `started` bool used
 /// to decide.
+#[derive(Clone, PartialEq)]
 pub enum PlayIntent {
     /// An item off this page's own metadata.
     Item {
@@ -1304,6 +1322,26 @@ pub enum PlayIntent {
         /// As [`PlayIntent::Item`]'s.
         version: Option<plx_plex::plex::MediaId>,
     },
+    /// A Live TV channel (`screens::livetv`, Home's Live TV row): tune `channel` on DVR `dvr` of
+    /// server `sid` and watch the session the tune opens. `title` is the channel's name, the
+    /// player's title until the tune names the airing. The resolve worker performs the tune and its
+    /// decision (`route::request_live`); a channel has no resume point, version or PlayQueue.
+    Live {
+        sid: plx_plex::plex::ServerId,
+        dvr: String,
+        channel: String,
+        title: String,
+    },
+}
+
+impl std::fmt::Debug for PlayIntent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Item { sid, rk, .. } => write!(f, "PlayIntent::Item({}, {rk})", sid.raw()),
+            Self::Movie { item, .. } => write!(f, "PlayIntent::Movie({}, {})", item.sid.raw(), item.rk),
+            Self::Live { sid, dvr, channel, .. } => write!(f, "PlayIntent::Live({}, {dvr}, {channel})", sid.raw()),
+        }
+    }
 }
 
 pub trait ContentLike: AppLike<Memory = PageMemory> {}
@@ -1440,6 +1478,19 @@ pub enum AppMsg {
     RestartReply { correlation: u32, accepted: bool },
     SelectionReply { correlation: u32, accepted: bool, flow_epoch: u64 },
     BackReply { correlation: u32, resumed: bool },
+    /// A Live TV request on its way to its owner through the ordered FIFO (`AppFx::LiveTv`, which
+    /// `Bridge::app_effect` delivers instead of parking): `from` is the asking instance and `ret`
+    /// the return state it froze when it asked. A `Tune` goes to `MachineId::Player`, the playback
+    /// owner; everything else to `MachineId::Nav`.
+    LiveTv {
+        from: MachineId,
+        out: LiveTvOut,
+        ret: ReturnState<u32, PageMemory>,
+    },
+    /// The play runner's answer to a [`PlayIntent`] the playback owner admitted, delivered as
+    /// `ScreenEvent::Async(RequestId(correlation), ..)` to the instance that asked: `accepted` is
+    /// false when the start was refused and nothing plays.
+    PlayReply { correlation: u32, accepted: bool },
     Store(StoreCmd),
     StoreWork(StoreWork),
     HubsResult(plx_data::stores::hubs::HubsResult),
@@ -1521,6 +1572,11 @@ pub enum LoopReq {
     /// software, and LG requires the privacy notice to be readable in the app rather than only on
     /// the store listing.
     OpenSettings(SettingsPage),
+    /// The Live TV page's profile chip: present the profile menu over the page. The request, not
+    /// the surface, because the menu's style handshake (`Navigation::next_style`) is the loop's; the
+    /// page's request reached its owner on the FIFO (`AppMsg::LiveTv`) and only this part is left
+    /// for the loop.
+    AccountMenu,
     /// Lab builds only, and it changes no route: the tester stays where they were and the toast
     /// says what happened.
     AccountSendDiagnostics,
@@ -1872,6 +1928,8 @@ pub mod page_id {
     pub const WATCHLIST: ScreenId = ScreenId(25);
     pub const LIBRARY_COLLECTIONS: ScreenId = ScreenId(28);
     pub const LIBRARY_RECOMMENDED: ScreenId = ScreenId(29);
+    /// 30, forward of Recommended's 29: the Live TV page.
+    pub const LIVETV: ScreenId = ScreenId(30);
 }
 
 /// **A screen argument: everything the container needs to mount one screen, and nothing else.**
@@ -1971,6 +2029,9 @@ pub enum AppArg {
     /// from the bookmark mark. It carries nothing — the list is the store's, the order is the
     /// store's sort and filter.
     Watchlist,
+    /// The Live TV page (`screens::livetv`): a PEER of Home on the strip. It carries nothing — the
+    /// channels are the Home catalog's.
+    LiveTv,
     /// Playback. Its panels are NOT here — they are entries on the player page's own
     /// `ModalStack` ([`Self::PlayerOverlay`]), and the container owns which one is up.
     Player,
@@ -1995,7 +2056,7 @@ impl AppArg {
     }
 }
 
-pub const ARG_SHAPE: &str = "AppArg{Login,Profiles,Onboard,Home,Library,LibraryCollections{section:u32},LibraryRecommended{section:u32},Search,Watchlist,Player,Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str},Collection{sid:u32,rk:str,sec:i64,tag:i64,name:str},Catalog{hex:str}},Settings:SettingsPage{Root,Playback,AudioSubtitles,Favourites,LibraryFavourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8),Language,Contribute},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]},\
+pub const ARG_SHAPE: &str = "AppArg{Login,Profiles,Onboard,Home,Library,LibraryCollections{section:u32},LibraryRecommended{section:u32},Search,Watchlist,LiveTv,Player,Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str},Collection{sid:u32,rk:str,sec:i64,tag:i64,name:str},Catalog{hex:str}},Settings:SettingsPage{Root,Playback,AudioSubtitles,Favourites,LibraryFavourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8),Language,Contribute},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]},\
      PlayerOverlay{Tracks(tab:i32),Info,Chapters,More(page:u8)},\
      AltSources{host:u32,sid:u32,rk:str,anchor:[u32;4]},\
      VersionsPanel{host:u32,sid:u32,rk:str,anchor:[u32;4]},\
@@ -2043,6 +2104,8 @@ impl LogicalState for AppArg {
             // 12 and 13, forward of Watchlist's 11 (both are in `ARG_SHAPE`).
             Self::LibraryCollections { section } => { c.u32(0).u32(12).u32(*section); }
             Self::LibraryRecommended { section } => { c.u32(0).u32(13).u32(*section); }
+            // 14, forward of Recommended's 13.
+            Self::LiveTv => { c.u32(0).u32(14); }
             Self::Content(arg) => { c.u32(1); arg.write(c); }
             Self::Settings(page) => { c.u32(2); page.write(c); }
             Self::FirstRunConsent(stage) => { c.u32(3).u8(*stage); }
@@ -2059,7 +2122,7 @@ impl plx_ui::screen::ScreenArg for AppArg {
     /// them fade the bar with the page.
     fn chrome(&self) -> Chrome {
         match self {
-            AppArg::Home | AppArg::Library | AppArg::Search | AppArg::Watchlist => Chrome::TabBar,
+            AppArg::Home | AppArg::Library | AppArg::Search | AppArg::Watchlist | AppArg::LiveTv => Chrome::TabBar,
             // The two sub-pages of a library keep the bar, as the Library they are pushed over.
             AppArg::LibraryCollections { .. } | AppArg::LibraryRecommended { .. } => Chrome::TabBar,
             AppArg::Login
@@ -2120,6 +2183,7 @@ impl plx_ui::screen::ScreenArg for AppArg {
             // 28 and 29, forward of the catalog page's 27.
             AppArg::LibraryCollections { .. } => page_id::LIBRARY_COLLECTIONS.0,
             AppArg::LibraryRecommended { .. } => page_id::LIBRARY_RECOMMENDED.0,
+            AppArg::LiveTv => page_id::LIVETV.0,
             AppArg::Search => page_id::SEARCH.0,
             AppArg::Player => 11,
             // The ROOT payload is a boot address, not an identity: one Settings surface and one
@@ -2365,6 +2429,8 @@ where
             // The list is the store's: the page mounts on "loading" and the application feeds it
             // the rows, the options and the matched facts (`WatchlistIn`) on its first frames.
             AppArg::Watchlist => Box::new(crate::watchlist::page::WatchlistScreen::loading(entry)),
+            // The channels are the Home catalog's: the page reads them through `HomeLike::hubs`.
+            AppArg::LiveTv => Box::new(crate::livetv::LiveTvScreen::new(entry)),
             // Phase 9: the player is an OWNED screen — the instance that holds the HUD, the scrub
             // gesture, the held-key timer, the control row's springs and the Up Next countdown,
             // and that answers `RenderStrategy::VideoPlane`. Its transport is pinned from the
@@ -2498,6 +2564,7 @@ pub fn every_surface_arg() -> Vec<AppArg> {
             | AppArg::LibraryRecommended { .. }
             | AppArg::Search
             | AppArg::Watchlist
+            | AppArg::LiveTv
             | AppArg::Player
             | AppArg::Content(_) => {
                 panic!("a page argument is not a surface: its word is `route=`")
@@ -2565,6 +2632,7 @@ pub const SCREEN_SHAPES: &[&str] = &[
     crate::watchlist::menu::SHAPE,
     crate::catalog::CatalogScreen::SHAPE,
     crate::versions_panel::SHAPE,
+    crate::livetv::LiveTvScreen::SHAPE,
 ];
 
 /// The pin over [`SCREEN_SHAPES`] — bump it in the same edit that adds an entry, and say why.
@@ -2763,7 +2831,9 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // Previous screen pin: 0x1802_f17e_e583_f977; re-record incompatible replay anchors.
 // The player's Back motion gate keeps its last position and fixed anchor in the canon.
 // Previous pin: 0xf852_85cc_f116_356b. Re-record incompatible replay anchors.
-const SCREEN_SHAPES_PIN: u64 = 0x7e36_4373_746a_c3dc;
+// Live TV: `ARG_SHAPE` gains `LiveTv`, `SCREEN_SHAPES` appends `LiveTvScreen::SHAPE` (its tune-in-flight bit included).
+// Previous pin: 0x7e36_4373_746a_c3dc. Re-record incompatible replay anchors (1/6/12, Mac only; not done in this change).
+const SCREEN_SHAPES_PIN: u64 = 0xc658_c1c0_2b37_cd31;
 
 #[cfg(test)]
 mod arg_tests {
@@ -2837,6 +2907,7 @@ mod arg_tests {
             AppArg::LibraryRecommended { section: 0 },
             AppArg::Search,
             AppArg::Watchlist,
+            AppArg::LiveTv,
         ] {
             assert!((r.chrome() == Chrome::TabBar), "a bar-wearing page carries the chip");
         }

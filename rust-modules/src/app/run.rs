@@ -1129,9 +1129,21 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         ) {
             plx_machine::idle::invalidate();
         }
+        // A Live TV channel is not parked: it cannot come back where it was (the server goes on
+        // recording, and a reload would replay from the tune), and the tuner it holds is the
+        // server's. Leave the player as BACK does, so the session's `stopped` frees the tuner.
+        if plx_media::route::is_live(&app.player.session) {
+            log("livetv: background ends the channel");
+            super::playback::exit_player(
+                &mut app.player,
+                &mut app.adapters.player,
+                &mut app.repause_at,
+                &mut app.refresh_hubs,
+                &mut app.pages,
+            );
         // Playback owns its resolve and Engine before the queued Player page mounts. Page
         // presence only governs the screen-local cleanup below, never resource suspension.
-        if !plx_media::route::preview_request(&app.player.session)
+        } else if !plx_media::route::preview_request(&app.player.session)
             && (plx_media::route::play_pending()
                 || app.adapters.player.playback_needs_teardown(&app.player.session)
                 || plx_media::route::has_url(&app.player.session))
@@ -2647,6 +2659,9 @@ fn loop_requests(app: &mut App) {
                 super::bridge::execute_session_command(&mut app.pages, plx_session::auth::SessionCmd::SignOut);
                 super::bridge::nav_root(&mut app.pages, AppArg::Login);
             }
+            // The Live TV page's profile chip (`Bridge::livetv_deliver`'s `Account`): the menu the
+            // Library's and Search's chips open, presented by the same door.
+            plx_screens::registry::LoopReq::AccountMenu => super::input::chip_activate(&mut app.pages),
             // The host route does NOT move: Settings is a surface presented over the same page,
             // and its Privacy, Legal and Favourite-libraries children are pages of that surface's
             // own inner stack. The account sheet's dismissal and this presentation are two parked
@@ -3439,6 +3454,7 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
                     crate::focusprobe::Screen::Catalog,
                 AppArg::Search => crate::focusprobe::Screen::Search,
                 AppArg::Watchlist => crate::focusprobe::Screen::Watchlist,
+                AppArg::LiveTv => crate::focusprobe::Screen::LiveTv,
                 // The same words the heartbeat's `overlay=` uses, and — since phase 9 — from the
                 // same place: the SURFACE that is up. There is no second table; see
                 // `heartbeat_word_tests::focusprobe_player_overlay_delegates_to_the_shared_overlay_word_function`.

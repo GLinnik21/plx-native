@@ -63,7 +63,7 @@ fn hub_page_cmd(hub: &HubRef<'_>,
 use super::plaintext_question::{self, AlertStep, Near, OfferWatch, PlaintextAlert};
 use super::registry::{
     key_cap, tile_facts, unlive_excess, Compaction, EvictOrder, KEY_PRUNE_BATCH, AppFx, AppMsg, ContentArg, ContentReq, HomeCmd, HomeGroupKey, HomeHubIdentity, HomeItemIdentity, HomeItemKey, HomeLike,
-    HomeMemory, HomeReq, HomeTab, LoopReq, PageMemory, RowDiff, RowSeats,
+    HomeMemory, HomeReq, HomeTab, LiveTvOut, LoopReq, PageMemory, PlayIntent, RowDiff, RowSeats,
 };
 
 const HERO_GROUP: GroupId = GroupId(0);
@@ -95,6 +95,7 @@ pub const STRIP_SHOWS_ELEM: u32 = plx_ui::dispatch::STRIP_BASE + 2;
 pub const STRIP_SEARCH_ELEM: u32 = plx_ui::dispatch::STRIP_BASE + 3;
 pub const STRIP_ACCOUNT_ELEM: u32 = plx_ui::dispatch::STRIP_BASE + 4;
 pub const STRIP_WATCHLIST_ELEM: u32 = plx_ui::dispatch::STRIP_BASE + 5;
+pub const STRIP_LIVETV_ELEM: u32 = plx_ui::widgets::TAB_KEY_LIVETV;
 
 const MAX_ITEMS: usize = plx_data::pms::MAX_SHELF_ITEMS;
 /// **How much of a resting shelf's posters must stand above the bottom margin for the pointer to take
@@ -1942,6 +1943,7 @@ impl HomeScreen {
             STRIP_SHOWS_ELEM => HomeReq::Tab(HomeTab::Shows),
             STRIP_SEARCH_ELEM => HomeReq::Tab(HomeTab::Search),
             STRIP_WATCHLIST_ELEM => HomeReq::Tab(HomeTab::Watchlist),
+            STRIP_LIVETV_ELEM => HomeReq::Tab(HomeTab::LiveTv),
             STRIP_ACCOUNT_ELEM => HomeReq::Account,
             _ => return None,
         })
@@ -1968,7 +1970,8 @@ impl HomeScreen {
         let Some(item) = self.item_at(H::hubs(cx), row, col) else {
             return Handled::No;
         };
-        if item.rk.is_empty() {
+        // A channel has no item menu: it is no library item (`KIND_LIVE_CHANNEL`).
+        if item.rk.is_empty() || plx_data::pms::live_channel_of(item).is_some() {
             return Handled::No;
         }
         fx.push(Fx::App(AppFx::Home(HomeReq::ItemMenu {
@@ -2003,6 +2006,7 @@ impl HomeScreen {
                     HomeTab::Shows => STRIP_SHOWS_ELEM,
                     HomeTab::Search => STRIP_SEARCH_ELEM,
                     HomeTab::Watchlist => STRIP_WATCHLIST_ELEM,
+                    HomeTab::LiveTv => STRIP_LIVETV_ELEM,
                 };
                 self.strip_chosen = true;
                 self.reseat(
@@ -2132,6 +2136,18 @@ impl HomeScreen {
                 let Some(item) = self.item_at(view, row, col) else {
                     return;
                 };
+                // A channel tunes: the typed play is the whole request, and no Home request goes with it.
+                if let Some((dvr, channel)) = plx_data::pms::live_channel_of(item) {
+                    fx.push(Fx::App(AppFx::LiveTv(LiveTvOut::Tune(
+                        PlayIntent::Live {
+                            sid: item.sid,
+                            dvr: dvr.to_owned(),
+                            channel: channel.to_owned(),
+                            title: item.title.clone(),
+                        },
+                    ))));
+                    return;
+                }
                 if self
                     .rows
                     .get(row)

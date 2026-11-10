@@ -143,6 +143,7 @@ mod tests {
                 assert_eq!(context, plx_data::metadata::EXTRA_CONTEXT);
             }
             PlayIntent::Movie { .. } => panic!("an extra is not the parent movie"),
+            PlayIntent::Live { .. } => panic!("an extra is not a live channel"),
         }
         assert!(play(&d, elem(1).unwrap()).is_none());
     }
