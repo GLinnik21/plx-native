@@ -95,12 +95,17 @@ impl<H: Host> NavStack<H> {
     /// **The kind of page BACK returns to from `entry`** — the screen id of the entry beneath it
     /// on this stack, which is the ONE answer to "where does BACK go" for a page whose opener
     /// varies ([`Host::views_over`] hands it to the screens). `None` when `entry` is the root (BACK
-    /// leaves the page stack). An entry staged behind a dip is not on the stack yet; it will be
-    /// pushed over the current top, so that is what lies beneath it.
+    /// leaves the page stack). A staged push sees the outgoing top. A staged tab child sees the
+    /// tab it will open over.
     pub fn beneath_id(&self, entry: EntryId) -> Option<ScreenId> {
         match self.entries.iter().position(|e| e.id == entry) {
             Some(index) => index.checked_sub(1).map(|below| self.entries[below].arg.id()),
-            None => self.top().map(|top| top.arg.id()),
+            None => {
+                if let Some(Pending { op: NavOp::SelectTabWithChild { tab, .. }, staged: Some(staged), .. }) = &self.pending {
+                    if staged.id == entry { return Some(tab.id()); }
+                }
+                self.top().map(|top| top.arg.id())
+            }
         }
     }
 
@@ -217,8 +222,8 @@ impl<H: Host> NavStack<H> {
             return match (&p.op, op) {
                 (NavOp::Root(a), NavOp::Root(b)) => a.same_instance(b),
                 (NavOp::SelectTab(a), NavOp::SelectTab(b)) => a.same_instance(b),
-                (NavOp::SelectTabWithChild { tab: a, child: c },
-                    NavOp::SelectTabWithChild { tab: b, child: d }) => a.same_instance(b) && c.same_instance(d),
+                // A tab and its child can have the same screen identities for different
+                // libraries. A new branch request must supersede the pending one.
                 (NavOp::Push(a), NavOp::Push(b)) => a.same_instance(b),
                 (NavOp::Replace(a), NavOp::Replace(b)) => a.same_instance(b),
                 (NavOp::PopTo(a), NavOp::PopTo(b)) => a == b,

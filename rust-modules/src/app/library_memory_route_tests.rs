@@ -26,7 +26,8 @@ use plx_data::browse::LibraryType;
 #[test]
 fn switching_libraries_restores_an_open_page_until_back_closes_it() {
     let mut w = World::movies_library("remember-open-library-page", false);
-    let recommended = AppArg::LibraryRecommended { section: 0 };
+    let key = w.bridge.directory.view().sections()[0].key;
+    let recommended = AppArg::LibraryRecommended { section: u32::try_from(key).unwrap() };
     w.open_from_header(9, recommended.clone());
 
     let switch = |w: &mut World, tab| {
@@ -36,7 +37,7 @@ fn switching_libraries_restores_an_open_page_until_back_closes_it() {
     switch(&mut w, plx_screens::registry::HomeTab::Shows);
     assert!(w.on(&AppArg::Library), "a different library has its own page");
     switch(&mut w, plx_screens::registry::HomeTab::Movies);
-    assert!(w.on(&recommended), "Movies reopens the page it was left on");
+    assert!(w.d.top_arg() == Some(&recommended), "Movies reopens the page for the same PMS section");
 
     w.press(Key::Back);
     assert!(w.on(&AppArg::Library), "Back returns to the Movies grid");
@@ -51,8 +52,10 @@ fn collections_restores_from_saved_preferences_for_the_same_profile() {
     use plx_screens::registry::HomeTab;
 
     let mut w = World::movies_library("persist-collections-page", false);
-    let collections = AppArg::LibraryCollections { section: 0 };
-    let key = w.bridge.directory.view().sections()[0].key;
+    let sections = w.bridge.directory.view().sections();
+    let key = sections[0].key;
+    assert_eq!(sections[FILM_CLUB].key, key, "both fixture servers use this PMS key");
+    let collections = AppArg::LibraryCollections { section: u32::try_from(key).unwrap() };
     w.open_from_header(8, collections.clone());
     super::nav_tab(&mut w.d, &mut w.bridge, HomeTab::Shows, None, None);
     w.frames(90);
@@ -62,12 +65,13 @@ fn collections_restores_from_saved_preferences_for_the_same_profile() {
     let user = session::current_profile_key();
     assert_eq!(saved.views_for(&user).and_then(|views| views.get("route-own", key)).map(|view| view.page),
         Some(LibraryPage::Collections));
+    assert!(saved.views_for(&user).and_then(|views| views.get("route-shared", key)).is_none());
     assert!(saved.views_for("another-profile").is_none());
 
     w.bridge.library_pages = None;
     super::nav_tab(&mut w.d, &mut w.bridge, HomeTab::Movies, None, None);
     w.frames(90);
-    assert!(w.on(&collections), "the durable preference restores the Collections route");
+    assert!(w.d.top_arg() == Some(&collections), "the durable preference restores the Collections route");
     assert!(w.d.nav.tabs.stack.under_top().is_some_and(|entry| entry.arg == AppArg::Library));
 }
 
