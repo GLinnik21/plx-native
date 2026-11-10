@@ -831,11 +831,11 @@ pub fn rebuffering(ps: &crate::route::PlaybackSession) -> Option<bool> {
     ps.attempt_view().facts().rebuffering
 }
 /// true only while the pipeline is actually presenting frames — not resolving, connecting,
-/// buffering or seeking. app.rs gates the heartbeat's `pos=` field on this: on a **direct-play**
-/// resume `begin_resume` only arms the seek (it does not seed `playpos_ns`, unlike the transcode
-/// branch), so the position reads 0 until the first decoded frame lands at the resume offset.
-/// Logging that pre-roll 0 would show the harness a 0→600 step and read as 600s of "climb"
-/// inside one second — a false PASS on `min_timeline_climb_s`.
+/// buffering or seeking. app.rs gates the heartbeat's `pos=` field on this: a resume seeds the
+/// playhead with its target before the first frame (`arm_open` for direct play, `Rebase` for a
+/// transcode), so only a presented frame vouches that playback reached it. Ungated, a resume or
+/// seek that never lands would read as playback that climbed — a false PASS on
+/// `min_timeline_climb_s`.
 pub fn is_playing(ps: &crate::route::PlaybackSession) -> bool {
     matches!(state(ps), PlaybackState::Playing)
 }

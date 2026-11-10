@@ -19,7 +19,7 @@
 //!
 //! | member (reads) | mapped as | decision |
 //! |---|---|---|
-//! | `playpos_ns` (10) | `position_ns = reported_frame.then_some(pos.max(0))` | **raw**: every resume seeds it before any frame, and the open-recovery resume offset (`pump.rs` `drive_open_recovery`) reads it before one; through `position_ns` a refused resume would reconvert at 0 |
+//! | `playpos_ns` (10) | `position_ns = (reported_frame \|\| pos > 0).then_some(pos.max(0))`: a reset zeroes it, so before the first frame a non-zero value is a seeded target (`arm_open`, `rebase`) or a seek's | **raw**: the open-recovery resume offset (`pump.rs` `drive_open_recovery`) reads the store before any frame, whether or not this session's open published a seed |
 //! | `frames` (6) | `reported_frame.then_some(frames)` | **raw**: `== 0` and `> 0` tests where "no callback yet" differs from "0 frames" whenever frames > 0 arrive without a frame callback (not proven impossible) |
 //! | `load_failed`, `load_timed_out`, `demux_failed`, `demux_io_failed` (10) | one collapsed `runtime_failure` (`play-feed/src/readout.rs`) | **raw**: [`FailureFlags`]; readers test single flags and `live_runtime_failure` re-derives the collapse in media. The player's own notes of one are [`FeedCommand::NoteFailure`]: the flag is written inside the feed and returns through the next sample |
 //! | `duration_ns` (5) | `(d > 0).then_some(d)` | **mapped**, `unwrap_or(0)`: every reader tests `> 0` (`timeline.rs` `from_content_ns`, `pump.rs` `stream_ended` and the `> 0` seek gate, `route_start.rs` `final_report`) or passes it to `report::ended`; the store is 0 or positive (`reset` stores 0), so `<= 0` never carries a meaning `None` loses |
