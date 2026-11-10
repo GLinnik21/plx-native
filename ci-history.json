@@ -1,4 +1,4 @@
-{"updated":"2026-11-10T19:39:17Z",
+{"updated":"2026-11-10T19:40:35Z",
 "ci":[
 {"id":31584219333,"at":"2026-08-12T09:43:35Z","sha":"84ff93289","title":"design: Plex Pass Awareness, second revision \u2014 and the post-play Up Next card","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":82},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":31614984913,"at":"2026-08-12T15:56:06Z","sha":"123cfd89f","title":"ui: Up Next goes back to a tile, with a second button","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":66},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -4966,7 +4966,8 @@
 {"id":42867545652,"at":"2026-11-10T17:41:37Z","sha":"0aaf63f2e","title":"Grid: BACK from the first row closes its caption band over frames, as UP does","pr":1312,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":196,"macOS tests against bundled FFmpeg and ASS":255,"Windows launcher syntax":17,"Linux simulator build + launch":265}},
 {"id":42877071766,"at":"2026-11-10T18:37:24Z","sha":"29a0761c0","title":"refactor(data): emit Metadata alternate-source jobs","pr":1315,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":19,"Linux simulator build + launch":289,"macOS simulator build + launch":131,"macOS tests against bundled FFmpeg and ASS":193}},
 {"id":42885148316,"at":"2026-11-10T19:25:39Z","sha":"7747020fa","title":"Skip blank and duplicate tags in Home hero genres","pr":1316,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":233,"Windows launcher syntax":18,"macOS simulator build + launch":233,"Linux simulator build + launch":357}},
-{"id":42885991629,"at":"2026-11-10T19:30:44Z","sha":"58b460645","title":"Isolate saved preferences across focus route fixtures","pr":1317,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":223,"macOS simulator build + launch":172,"Linux simulator build + launch":350,"Windows launcher syntax":20}}
+{"id":42885991629,"at":"2026-11-10T19:30:44Z","sha":"58b460645","title":"Isolate saved preferences across focus route fixtures","pr":1317,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":223,"macOS simulator build + launch":172,"Linux simulator build + launch":350,"Windows launcher syntax":20}},
+{"id":42886797768,"at":"2026-11-10T19:35:28Z","sha":"35c0e31d5","title":"Show movie and TV metadata on unplayed Home heroes","pr":1316,"conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":296,"macOS simulator build + launch":100,"Windows launcher syntax":16,"macOS tests against bundled FFmpeg and ASS":206}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
