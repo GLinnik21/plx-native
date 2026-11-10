@@ -550,8 +550,7 @@ fn the_lift_never_spends_the_labels_contrast() {
 /// away, and the unfurled capsule's whole content is a name in [`theme::TEXT_PRIMARY`]. Where
 /// the two grounds agree the shared face is exactly right, which is the arrangement's whole
 /// argument; where they do not, the chip carries a promise nobody made about it. Nothing
-/// darkens the top band before this — [`HERO_BASE_SCRIM_Y0`] is 367 and the hero shade stands
-/// only behind the copy — so both grounds are raw backdrop, and `gfx::sample_ground`'s census puts the MEDIAN
+/// darkens the top band before this on Detail at rest — the hero shade starts below the copy — so both grounds are raw backdrop, and `gfx::sample_ground`'s census puts the MEDIAN
 /// span at 26.8 L* across the track alone.
 ///
 /// Written as a test so the number cannot drift silently in EITHER direction: tightening the

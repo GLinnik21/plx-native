@@ -217,9 +217,8 @@ pub struct DetailScreen {
     /// The bottom-anchored base scrim's own alpha multiplier — 1.0 normal (leaves
     /// `detail_layout::base_scrim_a`'s own scroll-driven value untouched), eased to 0.0 in
     /// full-trailer mode for the same reason as the shade above.
-    /// A separate scalar from [`preview_field`](Self::preview_field): that one scales the
-    /// content-following shade (`hero_shade`), this one the bottom ramp — distinct layers per
-    /// `draw_backdrop`. Detail draws no corner wedge.
+    /// Independent from [`preview_field`](Self::preview_field), which scales the left side of
+    /// the same shade field.
     preview_base_scrim: f32,
     /// 0 = full hero position/size, 1 = fully collapsed to the top-left compact spot while a
     /// trailer plays in the background. A geometric transform, so it is a critically-damped
@@ -2830,35 +2829,16 @@ impl DetailScreen {
             tint: theme::with_a(theme::dim(theme::TINT_WHITE, 1.0 - sf * 0.55), art_alpha),
         };
         let visible = hero_alpha(self.scroll.pos, HERO_FADE);
-        // The hero's shade over the copy it draws, at the hero's own fade and the preview field
-        // (`hero_shade`): carried by the ground's pass where the ground can, else laid over it.
-        let shade = (visible > 0.01).then(|| self.hero_shade(d, measure, meta).scrim(visible * self.preview_field));
-        // Detail keeps the proposal's three-stop atmosphere under its shade, including the preview
-        // fade; Home paints none (its art stands unramped and the shade carries the legibility).
-        let ramp = (visible > 0.01).then(|| {
-            let [y0, knee, mid, foot] = plx_ui::landing_hero::base_scrim_ramp(visible);
-            plx_ui::widgets::WashRamp {
-                ink: theme::scrim(1.0),
-                stops: [(y0, 0.0), (knee, mid * self.preview_base_scrim),
-                    (plx_ui::consts::SCR_H, foot * self.preview_base_scrim)],
-            }
-        });
-        // The still dissolves over its ground while the page scrolls, so where the ground is drawn
-        // the ground, the still and the ramp are one pass (`AmbientWash::draw_ground`).
-        let ramp_in_ground = if keyed_ground_over_plane(preview.picture, texture, art_alpha, ground_flat) {
-            self.ground.draw_ground(p, Rect::FULL, Some(art), ramp, shade)
+        let shade = (visible > 0.01).then(|| self.hero_shade(visible));
+        let shade_in_ground = if keyed_ground_over_plane(preview.picture, texture, art_alpha, ground_flat) {
+            self.ground.draw_ground(p, Rect::FULL, Some(art), None, shade)
         } else {
             if texture != 0 {
                 p.tex_uv(art.tex, art.uv, art.rect, 0.0, art.tint);
             }
             false
         };
-        if let Some(ramp) = ramp.filter(|_| !ramp_in_ground) {
-            ramp.layer(p);
-        }
-
-        // A ground that did not carry the shade lays it over all of this as a layer of its own.
-        if let Some(shade) = shade.filter(|_| !ramp_in_ground) {
+        if let Some(shade) = shade.filter(|_| !shade_in_ground) {
             plx_ui::widgets::scrim_layer(p, shade);
         }
         if self.scroll.pos > 0.0 && preview.picture {
@@ -2901,7 +2881,7 @@ impl DetailScreen {
         // nothing there vanish and come back under a playing preview.
         let prose = p.alpha(self.preview_chrome * self.preview_prose);
         if let Some(d) = d {
-            self.draw_identity_line(prose, d, chain.meta_y, cx.measure);
+            self.identity_row(prose, d, chain.meta_y, cx.measure);
             self.draw_ratings(prose, d, chain.ratings_y, cx.measure);
         }
         if !synopsis.is_empty() {
@@ -2945,8 +2925,7 @@ impl DetailScreen {
     /// shrinks the logo into — `preview_logo.pos` is the spring's live 0..1 progress (see
     /// `preview_tick`). `LogoRung::lerp` keeps `HeroLogo::fit`'s constant-area solve continuous
     /// across the whole travel instead of snapping partway through it (`ui/hero_logo.rs`'s own
-    /// module doc: sizing is area-based, not a height clamp). The draw and the hero shade
-    /// ([`Self::hero_shade`]) both read this, so the shade rises with the logo.
+    /// module doc: sizing is area-based, not a height clamp). The shade follows the same spring.
     ///
     /// The pinned corner spot (`t` near 1) sits well inside the below-hero flow's own reach:
     /// `content_top(measure)` — the first section's top — is under a screen height away, so the
@@ -2976,66 +2955,11 @@ impl DetailScreen {
         }
     }
 
-    /// **The hero shade of THIS frame**: a soft block behind each piece of copy the hero draws on
-    /// the art, from the live layout, so a block that moves takes its shade with it
-    /// ([`plx_ui::hero_shade`]) — the logo rising into the trailer corner above all. Each block
-    /// fades with the content it stands behind: the logo with its own alpha, the identity, ratings
-    /// and synopsis column with whichever of them is still up, and the facts line, the credits and
-    /// the action row with the chrome. Each copy block is as wide as the widest line drawn in it (the
-    /// rows' own layouts, measured but not painted), not the box the line is laid into. Page
-    /// coordinates become screen ones (the hero scrolls).
-    /// The caller scales it by the hero's own fade and the preview field.
-    fn hero_shade(
-        &self,
-        d: Option<&Detail>,
-        measure: &dyn plx_machine::machine::Measure,
-        meta: plx_data::metadata::MetadataView<'_>,
-    ) -> plx_ui::hero_shade::HeroShade {
-        use plx_ui::hero_shade::{HeroShade, Role};
-        let chain = self.hero_chain(measure, meta);
-        let at = |r: Rect| Rect::new(r.x, r.y - self.scroll.pos, r.w, r.h);
-        let spot = self.logo_spot(measure, meta);
-        let (_, rk, _) = self.art_identity(d);
-        let logo = HeroLogo::new(self.sid.raw(), &rk, self.hero_title(d).unwrap_or(""), spot.rung).painted(spot.band, measure);
-        // The copy columns as the page lays them out, and the ink drawn in each: the shade is as wide
-        // as the widest line (identity, ratings, synopsis; the facts line) rather than the box the
-        // line was laid into.
-        let x = plx_ui::consts::MARGIN_X;
-        let prose = Rect::new(x, chain.meta_y, plx_ui::detail_layout::HERO_TEXT_W, chain.facts_y - chain.meta_y);
-        let facts = Rect::new(x, chain.facts_y, plx_appkit::hero_layout::FACTS_R - x, theme::hero::FACTS_H);
-        let (lead, synopsis) = hero_blurb(d, self.selected());
-        let mut prose_ink = Vec::with_capacity(3);
-        if let Some(d) = d {
-            prose_ink.push((x, x + self.identity_row(None, d, chain.meta_y, measure)));
-            prose_ink.push((x, x + self.ratings_row(None, d, chain.ratings_y, measure)));
-        }
-        if !synopsis.is_empty() {
-            let frame = Rect::new(x, chain.syn_y, plx_ui::detail_layout::HERO_TEXT_W, 0.0);
-            prose_ink.push(plx_ui::hero_synopsis(&synopsis, &lead).with_measure(measure).ink_span(frame));
-        }
-        let facts_ink = d.map(|d| (x, x + hero::facts_w(d, measure)));
-        let set = self.hero_set(meta);
-        let widths = hero::hero_widths(measure, set, set.restart, self.disc_unfurl.map(|s| s.pos), self.named_episode(meta));
-        let row = hero::hero_row_rect(set, chain.btn_y, widths);
-        let chrome = self.preview_chrome;
-        let mut shade = HeroShade::new()
-            .add(at(logo), Role::Copy, spot.alpha)
-            .add_ink(at(prose), prose_ink, Role::Copy, self.preview_synopsis.max(chrome * self.preview_prose))
-            .add_ink(at(facts), facts_ink, Role::Copy, chrome)
-            .add(at(row), Role::Controls, chrome);
-        if let Some(people) = d.and_then(|d| hero::people_rect(d, chain.btn_y, measure)) {
-            shade = shade.add(at(people), Role::Copy, chrome);
-        }
-        shade
+    fn hero_shade(&self, visible: f32) -> plx_ui::widgets::WashScrim {
+        plx_ui::landing_hero::detail_shade(visible, self.preview_field, self.preview_base_scrim, self.preview_logo.pos)
     }
 
-    fn draw_identity_line(&self, p: Painter, d: &Detail, y: f32, measure: &dyn plx_machine::machine::Measure) {
-        self.identity_row(Some(p), d, y, measure);
-    }
-
-    /// The identity line's one layout, painted with `paint` or only measured without it; the width
-    /// it draws from the margin ([`plx_ui::widgets::hero_identity`], [`plx_ui::widgets::hero_identity_w`]).
-    fn identity_row(&self, paint: Option<Painter>, d: &Detail, y: f32, measure: &dyn plx_machine::machine::Measure) -> f32 {
+    fn identity_row(&self, p: Painter, d: &Detail, y: f32, measure: &dyn plx_machine::machine::Measure) {
         let ordinal = (d.kind == "episode" && d.season > 0 && d.index > 0)
             .then(|| plx_ui::fmt::episode_ordinal(d.season, d.index))
             .unwrap_or_default();
@@ -3062,10 +2986,7 @@ impl DetailScreen {
             (d.audio.iter().any(|s| s.ad), plx_platform::i18n::msg::widgets_badge_ad()),
         ].into_iter().filter_map(|(present, label)| present.then_some(label)).collect();
         let r = Rect::new(plx_ui::consts::MARGIN_X, y, plx_ui::detail_layout::HERO_TEXT_W, plx_ui::widgets::BADGE_H);
-        match paint {
-            Some(p) => plx_ui::widgets::hero_identity(p, r, &parts, resolution.as_deref(), &chips, measure),
-            None => plx_ui::widgets::hero_identity_w(r, &parts, resolution.as_deref(), &chips, measure),
-        }
+        plx_ui::widgets::hero_identity(p, r, &parts, resolution.as_deref(), &chips, measure);
     }
 
     fn draw_ratings(
@@ -3075,18 +2996,6 @@ impl DetailScreen {
         y: f32,
         measure: &dyn plx_machine::machine::Measure,
     ) {
-        self.ratings_row(Some(p), d, y, measure);
-    }
-
-    /// The ratings row's one layout, painted with `paint` or only measured without it; the width it
-    /// draws from the margin (`0` for a row with no group on it).
-    fn ratings_row(
-        &self,
-        paint: Option<Painter>,
-        d: &Detail,
-        y: f32,
-        measure: &dyn plx_machine::machine::Measure,
-    ) -> f32 {
         let cy = y + plx_ui::widgets::RATING_MARK_D * 0.5;
         // The groups are measured lazily, one at a time, and the row stops at the first that does
         // not fit: a later, smaller group never jumps the queue, and no group past the break is
@@ -3114,13 +3023,9 @@ impl DetailScreen {
             if flow.next_x() + width > plx_ui::consts::SCR_W - plx_ui::consts::MARGIN_X {
                 break;
             }
-            flow.place(|x| Item::new(match paint {
-                Some(p) => plx_ui::widgets::rating_group(p, x, cy, provider, &cells, measure),
-                None => width,
-            }));
+            flow.place(|x| Item::new(plx_ui::widgets::rating_group(p, x, cy, provider, &cells, measure)));
             i = end;
         }
-        flow.end() - plx_ui::consts::MARGIN_X
     }
 
     fn draw_buttons<H: ContentLike + crate::registry::MetadataLike>(&self, p: Painter, cx: &Cx<'_, H>, y: f32, nav_page_alpha: f32) {

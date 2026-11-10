@@ -231,10 +231,10 @@ pub mod hero {
 
     /// Minimum Play/Resume capsule; translated labels may grow beyond it.
     pub const PLAY_MIN_W: f32 = 224.0;
-    /// Atmospheric midpoint, 62% of the distance from the 34% origin to the foot.
-    pub const SCRIM_MID_Y: f32 = (0.34 + (1.0 - 0.34) * 0.62) * crate::consts::SCR_H;
+    /// Detail's lower shade reaches the credits at this knee.
+    pub const SCRIM_MID_Y: f32 = 650.0;
     /// Opacity at the atmospheric midpoint. The shade ([`super::shade`]) supplies local contrast.
-    pub const SCRIM_MID_A: f32 = 0.55;
+    pub const SCRIM_MID_A: f32 = 0.66;
     /// Opacity at the foot: retain the artwork's colour under the action row.
     pub const SCRIM_FOOT_A: f32 = 0.86;
 
@@ -245,7 +245,7 @@ pub mod hero {
     /// line (`landing_hero::home_rows`).
     pub const HOME_ACTIONS_Y: f32 = 668.0;
     /// The Home pager recedes as the Continue Watching shelf gains focus.
-    pub const HOME_PAGER_SHELF_ALPHA: f32 = 0.60;
+    pub const HOME_PAGER_SHELF_ALPHA: f32 = 0.85;
     /// The block above the action row (the hero's one line: an episode label, a resumed movie's
     /// time left, or an introduced hero's premise) ends this far above [`HOME_ACTIONS_Y`]: 638, the
     /// board's own number (it is not a rung of `space`).
@@ -267,6 +267,17 @@ pub mod hero {
 /// evaluator is `hero_shade::HeroShade::at` and the one-pass ground carries the same numbers to the
 /// GPU (`gfx::scrim::GroundShade`).
 pub mod shade {
+    /// Detail needs legibility farther into the art for its wider title and synopsis.
+    pub const DETAIL_SIDE_X: [f32; 2] = [600.0, 1700.0];
+    /// Normal vertical entrance of the Detail shade.
+    pub const DETAIL_SIDE_Y: [f32; 2] = [120.0, 400.0];
+    /// Shift the fade upward as the preview logo travels into the corner.
+    pub const DETAIL_PREVIEW_RISE: f32 = 260.0;
+    /// Detail's edge shade strength before the preview boost.
+    pub const DETAIL_SIDE_A: f32 = 0.65;
+    /// Inactive pagination dots still need contrast against the art.
+    pub const PAGER_IDLE_A: f32 = 0.50;
+
     /// Where Home's edge shade leaves full strength and reaches clear artwork.
     pub const HOME_SIDE_X: [f32; 2] = [320.0, 960.0];
     /// Where the edge shade begins and reaches full strength down the screen.
@@ -274,7 +285,7 @@ pub mod shade {
     /// Strength at the left under the logo, metadata and actions.
     pub const HOME_SIDE_A: f32 = 0.59;
     /// Opacity difference over which the side and shelf shades softly join.
-    pub const HOME_SIDE_JOIN: f32 = 0.10;
+    pub const EDGE_JOIN: f32 = 0.10;
 
     /// How far a block's darkness falls away beyond the edge of the content's rounded box, in px:
     /// it holds its full alpha inside the box and reaches exactly nothing this far out (a smoothstep,

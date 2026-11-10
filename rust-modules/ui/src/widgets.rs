@@ -2725,10 +2725,8 @@ pub fn art_scrim(p: Painter, card: Rect, rad: f32, h: f32, a: f32) {
 /// panel. Detail paints it under its hero shade (`detail::draw_backdrop`); Home paints none (board
 /// CW-13 v2: Home's art stands unramped and the shade carries the legibility).
 ///
-/// The three-stop curve is `landing_hero::base_scrim_ramp`: zero at this origin, .55 at 62% of the
-/// remaining height, .86 at the foot. Fused ground and layered drawing use those same stops;
-/// `detail_layout::base_scrim_a` delegates to the same curve.
-pub const HERO_BASE_SCRIM_Y0: f32 = 0.34 * crate::consts::SCR_H; // 367.2
+/// The start of Detail's three-stop bottom shade (`landing_hero::base_scrim_ramp`).
+pub const HERO_BASE_SCRIM_Y0: f32 = 300.0;
 
 /// The profile chip's diameter: ONE control height with the tab pills and the circle-button
 /// family, so the focused chip's capsule — the avatar plus [`TAB_TRACK_PAD`] all round — is
@@ -3587,7 +3585,7 @@ impl View for PageDots {
                 // tokens, not a raw literal: full-strength white for the current page, dimmed for the rest
                 let col = crate::theme::with_a(
                     crate::theme::TEXT_PRIMARY,
-                    if d == self.active { 1.0 } else { 0.35 },
+                    if d == self.active { 1.0 } else { crate::theme::shade::PAGER_IDLE_A },
                 );
                 let w = if span.i == 1 { span.w } else { Self::DOT };
                 p.rect(
@@ -7053,9 +7051,7 @@ impl Default for StripRender {
 /// | the flat capsule this replaced (`TAB_TRACK_A_TOP` .72) | L\* 27.5 | **9.74:1** |
 /// | the band's face, solved for a dark track | L\* 75.4 | **1.86:1** |
 ///
-/// At L\* 80 it is 2.54:1. Nothing in the app darkens the top band before this — Detail's
-/// atmospheric ramp starts at `HERO_BASE_SCRIM_Y0` (367) and the hero shade stands only behind the
-/// copy — so those are raw backdrop pixels, and `gfx::sample_ground`'s own note records a census
+/// At L\* 80 it is 2.54:1. Nothing in the app darkens the top band before this — Detail's resting shade leaves the navigation band clear, so those are raw backdrop pixels, and `gfx::sample_ground`'s own note records a census
 /// finding a MEDIAN 26.8 L\* span across five taps of the track alone, a third of heroes over 40.
 /// The band is half again as wide as the track.
 ///

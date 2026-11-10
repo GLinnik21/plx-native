@@ -69,7 +69,7 @@ keep their control-specific alignment; centering the panel does not center its p
 This is the part most easily broken by accident, so it is the part worth knowing before you change a
 backdrop.
 
-Detail and Catalog protect hero text with a shade that follows the content.
+Catalog protects hero text with a shade that follows the content.
 [`HeroShade`](../rust-modules/ui/src/hero_shade.rs) builds a feathered block from each piece of
 drawn content, using its measured ink width. The blocks follow the title, copy and controls as
 their positions change.
@@ -82,9 +82,9 @@ their positions change.
 - Home's metadata line shows the server's primary genre for an unplayed movie, time remaining
   for a movie in progress, and the episode label for an episode. Genre uses the reading ink
   at the same single-line anchor. The full synopsis stays in Detail.
-- Detail keeps the vertical ramp, [rust-modules/ui/src/landing_hero.rs](rust-modules/ui/src/landing_hero.rs):
-  zero above `HERO_BASE_SCRIM_Y0` (0.34 of the screen, 367), `foot * MID_WEIGHT` at `KNEE_Y` (0.65
-  of the screen, 702), and `foot = SCRIM_FOOT_A * hero_a` at the bottom, with the shade over it.
+- Detail uses the same continuous renderer. Its wider left fade supports the synopsis and the
+  full-width lower ramp supports the credits. The left fade shifts up with the preview logo and
+  both strengths ease out for the full-screen trailer.
 - The horizontal wedge and feathered corner that stood behind the heroes (`widgets::hero_scrim` and its
   closed forms) are deleted; the catalog page (`screens::catalog`), the last to draw them, builds a
   `HeroShade` from the rects it draws (the title, the copy under it, the pill) and lays it over its art

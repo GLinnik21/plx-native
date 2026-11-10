@@ -5247,7 +5247,7 @@ fn the_identity_line_paints_sm_after_the_run_and_xs_between_chips() {
     let screen = bare_held(ServerId::UNSET, "rk");
     let d = identity_detail(false);
     let m = &plx_base::fontcov::advances::ShippedMeasure;
-    let runs = plx_ui::draw_census::capture_runs(|| screen.draw_identity_line(plx_ui::Painter::recording(), &d, 300.0, m));
+    let runs = plx_ui::draw_census::capture_runs(|| screen.identity_row(plx_ui::Painter::recording(), &d, 300.0, m));
     let kind = plx_platform::i18n::msg::browse_kind_movie();
     let kind_run = runs.iter().find(|r| r.text == kind).expect("the kind label is painted");
     // The recording painter has no loaded font. Geometry comes from the same injected measure
@@ -5270,7 +5270,7 @@ fn an_empty_identity_run_leaves_no_gap_before_the_first_chip() {
     let screen = bare_held(ServerId::UNSET, "rk");
     let d = identity_detail(true);
     let m = &plx_base::fontcov::advances::ShippedMeasure;
-    let runs = plx_ui::draw_census::capture_runs(|| screen.draw_identity_line(plx_ui::Painter::recording(), &d, 300.0, m));
+    let runs = plx_ui::draw_census::capture_runs(|| screen.identity_row(plx_ui::Painter::recording(), &d, 300.0, m));
     let res = keyline_left(painted_x(&runs, "1080p").expect("resolution chip"), "1080p", m);
     assert!((res.0 - plx_ui::consts::MARGIN_X).abs() < 0.5, "no run, no gap: chip at {}", res.0);
 }

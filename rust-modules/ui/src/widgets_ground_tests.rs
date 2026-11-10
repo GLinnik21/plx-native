@@ -72,7 +72,7 @@ fn mid_dive_the_art_keeps_the_top_and_the_wash_alone_has_the_foot() {
     assert_eq!(bands.map(q), [None, Some((0.0, 600.0, SCR_W, SCR_H - 600.0)), None, None]);
 }
 
-/// Home's ramp as the ground carries it is `base_scrim_a` — the curve the two layered `rect`s
+/// Detail's lower ramp as the ground carries it is `base_scrim_a` — the curve the two layered `rect`s
 /// drew and the legibility table is graded on — at both stops, either side of each, and beyond.
 #[test]
 fn the_grounds_ramp_is_the_hero_scrim_curve() {
@@ -94,7 +94,7 @@ fn the_grounds_ramp_is_the_hero_scrim_curve() {
 /// **The ramp is carried per VERTEX, so it must be one straight segment inside every strip.** The
 /// strips `cut_at` makes tile their rect, cut on whole rows at the stops, and within each the
 /// ramp at every pixel centre is the linear interpolation of its two edge values — which is what
-/// the vertex shader's `mix(u_inka.x, u_inka.y, a_pos.y)` interpolates to. Home's old ramp (a foot
+/// the vertex shader's `mix(u_inka.x, u_inka.y, a_pos.y)` interpolates to. Detail's lower ramp (a foot
 /// on the panel's), and the shelf fade, whose foot stands at the caption line with its alpha held
 /// below.
 #[test]

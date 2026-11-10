@@ -543,22 +543,7 @@ pub fn draw_people(p: Painter, d: &Detail, button_y: f32, measure: &dyn Measure)
     people_blocks(d, button_y, measure, |view, at| { view.draw(p, Rect::new(at.x, at.y, at.w, 0.0)); });
 }
 
-/// **The rect the credits column occupies** (page coordinates): the union of the blocks
-/// [`draw_people`] draws, at their true heights and as wide as their widest line is
-/// ([`TextView::ink_span`]; the column is right-aligned, so the rect keeps its right edge). `None`
-/// when there is no credit to draw.
-pub fn people_rect(d: &Detail, button_y: f32, measure: &dyn Measure) -> Option<Rect> {
-    let mut union: Option<Rect> = None;
-    people_blocks(d, button_y, measure, |view, at| {
-        let (left, right) = view.ink_span(at);
-        let block = Rect::new(left, at.y, right - left, at.h);
-        union = Some(union.map_or(block, |u| u.union(block)));
-    });
-    union
-}
-
-/// Walk the credits' blocks as they stand: `f(view, rect)` for each, bottom-anchored on the facts'
-/// cap band. The ONE layout of the column, which [`draw_people`] paints and [`people_rect`] reports.
+/// Walk the credits' blocks as they stand, bottom-anchored on the facts' cap band.
 fn people_blocks(d: &Detail, button_y: f32, measure: &dyn Measure, mut f: impl FnMut(&TextView<'_>, Rect)) {
     use plx_ui::detail_layout::PEOPLE_W;
     let x = plx_ui::consts::SCR_W - plx_ui::consts::MARGIN_X - PEOPLE_W;
@@ -859,28 +844,13 @@ fn facts_flow(
 
 /// Draw the facts line at `y`; the width it draws from the margin.
 pub fn draw_facts(p: Painter, d: &Detail, y: f32, measure: &dyn plx_machine::machine::Measure) -> f32 {
-    facts_row(Some(p), d, y, measure)
-}
-
-/// **The width the facts line draws** ([`draw_facts`]), from the margin to its last run: the
-/// measurements the draw asks, nothing painted. The extent the hero shade stands behind
-/// ([`plx_ui::hero_shade::HeroShade::add_ink`]). A line that has to elide its date fills its column.
-pub fn facts_w(d: &Detail, measure: &dyn plx_machine::machine::Measure) -> f32 {
-    facts_row(None, d, 0.0, measure)
-}
-
-/// The facts line's one layout, painted with `paint` or only measured without it; the width.
-fn facts_row(paint: Option<Painter>, d: &Detail, y: f32, measure: &dyn plx_machine::machine::Measure) -> f32 {
     let (date, extent) = hero_facts(d);
     let extent = extent.as_deref().unwrap_or("");
     let credit = plx_ui::fmt::shared_by(&d.source()).unwrap_or_default();
     let column = Rect::new(plx_ui::consts::MARGIN_X, y, FACTS_R - plx_ui::consts::MARGIN_X, theme::hero::FACTS_H);
     if play_mode_w(d, false, measure) == 0.0 {
         let resumes = hero_resume_ns(d) > 0;
-        return match paint {
-            Some(p) => plx_ui::widgets::hero_facts(p, column, &date, extent, resumes, &credit, measure),
-            None => plx_ui::widgets::hero_facts_w(column, &date, extent, resumes, &credit, measure),
-        };
+        return plx_ui::widgets::hero_facts(p, column, &date, extent, resumes, &credit, measure);
     }
     let width = |fit: FactsFit| {
         facts_flow(
@@ -895,10 +865,6 @@ fn facts_row(paint: Option<Painter>, d: &Detail, y: f32, measure: &dyn plx_machi
         column.w,
         width,
     );
-    let Some(p) = paint else {
-        // The elided date takes whatever the clause and the credit leave of the column.
-        return if fit.elide { column.w } else { width(fit) };
-    };
     let elided;
     let date = if fit.elide {
         let budget = (column.w - play_mode_w(d, true, measure)).max(0.0);
