@@ -10,10 +10,15 @@ fn session_app_initial_probe_only() {
     let initial = Initial::synthetic_home(17, 32517, None).unwrap();
     let value = serde_json::to_value(&initial).unwrap();
     let bytes = serde_json::to_vec(&initial).unwrap();
+    assert_eq!(bytes.as_slice(), include_bytes!("../fixtures/session-codec-v5/initial-v5.json"));
+    let frozen_hashes: serde_json::Value = serde_json::from_str(include_str!("../fixtures/session-codec-v5/initial-hashes.json")).unwrap();
+    assert_eq!(frozen_hashes["canon_finish"].as_u64(), Some(14618251649147468963u64));
+    assert_eq!(frozen_hashes["outer_hash"].as_u64(), Some(14618251649147468963u64));
     let mut canon = Canon::new();
     initial.write(&mut canon);
     let outer_hash = initial.hash();
-    assert_eq!(canon.finish(), outer_hash);
+    assert_eq!(canon.finish(), 14618251649147468963u64);
+    assert_eq!(outer_hash, 14618251649147468963u64);
     assert_eq!(initial.version, 1);
     assert_eq!(Initial::decode(value.clone(), outer_hash).unwrap().hash(), outer_hash);
     assert!(Initial::decode(value.clone(), outer_hash ^ 1).is_err());

@@ -232,8 +232,12 @@ fn session_app_prior_vector() -> Vec<&'static str> {
 #[cfg(test)]
 #[test]
 fn session_app_fingerprint_probe_only() {
+    let frozen: Value = serde_json::from_str(include_str!("fixtures/session-codec-v5/fingerprints.json")).unwrap();
     let prior = session_app_prior_vector();
+    assert_eq!(serde_json::to_value(&prior).unwrap(), frozen["prior_vector"]);
     let fp_prior = state_fp();
+    assert_eq!(fp_prior, 5612583773909772043u64);
+    assert_eq!(frozen["fp_prior"].as_u64(), Some(5612583773909772043u64));
     assert_eq!(plx_ui::rec::state_fp(&prior), fp_prior);
     let mut prospective = prior.clone();
     let indices: Vec<_> = prior.iter().enumerate().filter(|(_, shape)| **shape == super::bootstrap::SHAPE).map(|(i, _)| i).collect();
@@ -244,8 +248,11 @@ fn session_app_fingerprint_probe_only() {
     let new_outer = outer.replacen("ControlledHomeInitV6{", "ControlledHomeInitV7{", 1)
         .replacen("session:SessionInitV5", "session:SessionInitV6", 1);
     prospective[indices[0]] = &new_outer;
+    assert_eq!(serde_json::to_value(&prospective).unwrap(), frozen["prospective_vector"]);
+    assert_eq!(prior.iter().zip(&prospective).filter(|(a, b)| a != b).count(), 1);
     let prospective_fp_v6 = plx_ui::rec::state_fp(&prospective);
-    assert_ne!(fp_prior, prospective_fp_v6);
+    assert_eq!(prospective_fp_v6, 14623229906352324261u64);
+    assert_eq!(frozen["prospective_fp_v6"].as_u64(), Some(14623229906352324261u64));
     for manifest in [
         include_str!("../../../tests/fixtures/replay/1-boot-home-chip-grid/manifest.json"),
         include_str!("../../../tests/fixtures/replay/6-settings-family/manifest.json"),
