@@ -85,7 +85,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-10T01:12:15Z",
+ "generated": "2026-11-10T01:15:18Z",
  "metrics": [
   {
    "change30_pct": 100.4,
@@ -130,18 +130,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 40.6,
-   "change7_pct": 17.1,
+   "change30_pct": 41.0,
+   "change7_pct": 17.5,
    "d30": 345,
-   "delta30": 140,
-   "delta7": 71,
+   "delta30": 141.5,
+   "delta7": 72.5,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 153,
+   "n_now": 154,
    "n_prev": 207,
-   "now": 485,
+   "now": 486.5,
    "prev7": 414,
    "shown": true,
    "state": "flat",
@@ -151,18 +151,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 41.5,
-   "change7_pct": 13.6,
+   "change30_pct": 41.4,
+   "change7_pct": 13.5,
    "d30": 327.5,
-   "delta30": 136.0,
-   "delta7": 55.5,
+   "delta30": 135.5,
+   "delta7": 55,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 83,
-   "now": 463.5,
+   "now": 463,
    "prev7": 408,
    "shown": true,
    "state": "flat",
@@ -340,18 +340,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 39.1,
-   "change7_pct": 12.3,
+   "change30_pct": 39.3,
+   "change7_pct": 12.5,
    "d30": 230,
-   "delta30": 90,
-   "delta7": 35,
+   "delta30": 90.5,
+   "delta7": 35.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 55,
+   "n_now": 56,
    "n_prev": 75,
-   "now": 320,
+   "now": 320.5,
    "prev7": 285,
    "shown": true,
    "state": "flat",
@@ -403,18 +403,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 52.1,
-   "change7_pct": 9.9,
+   "change30_pct": 52.4,
+   "change7_pct": 10.1,
    "d30": 146,
-   "delta30": 76,
-   "delta7": 20,
+   "delta30": 76.5,
+   "delta7": 20.5,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 55,
+   "n_now": 56,
    "n_prev": 75,
-   "now": 222,
+   "now": 222.5,
    "prev7": 202,
    "shown": true,
    "state": "flat",
@@ -445,18 +445,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -36.4,
-   "change7_pct": 0.5,
+   "change30_pct": -37.1,
+   "change7_pct": -0.7,
    "d30": 341,
-   "delta30": -124,
-   "delta7": 1,
+   "delta30": -126.5,
+   "delta7": -1.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 55,
+   "n_now": 56,
    "n_prev": 75,
-   "now": 217,
+   "now": 214.5,
    "prev7": 216,
    "shown": true,
    "state": "flat",
@@ -511,15 +511,15 @@
    "change30_pct": 11.8,
    "change7_pct": 5.6,
    "d30": 17,
-   "delta30": 2,
-   "delta7": 1,
+   "delta30": 2.0,
+   "delta7": 1.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 55,
+   "n_now": 56,
    "n_prev": 75,
-   "now": 19,
+   "now": 19.0,
    "prev7": 18,
    "shown": false,
    "state": "flat",
@@ -618,11 +618,6 @@
    "change_pct": 25.8,
    "commits": [
     {
-     "pr": 1304,
-     "sha": "c7c15f45f",
-     "title": "URI probe: the summary answers the drive gate, and a webOS 5+ tester protocol"
-    },
-    {
      "pr": 1305,
      "sha": "c5ea5d35b",
      "title": "Exported window: a live-window instrument in the host seam, and the handoff and quarantine cases it pins"
@@ -666,6 +661,11 @@
      "pr": 1300,
      "sha": "d06ed4f5c",
      "title": "build-bench: reject failed test runners with passing summaries"
+    },
+    {
+     "pr": 1303,
+     "sha": "93697adcf",
+     "title": "Player: a seek that reloads keeps its target on the clock until the first frame"
     }
    ],
    "from": 74.8,
@@ -679,11 +679,6 @@
    "change_pct": 25.3,
    "commits": [
     {
-     "pr": 1304,
-     "sha": "c7c15f45f",
-     "title": "URI probe: the summary answers the drive gate, and a webOS 5+ tester protocol"
-    },
-    {
      "pr": 1305,
      "sha": "c5ea5d35b",
      "title": "Exported window: a live-window instrument in the host seam, and the handoff and quarantine cases it pins"
@@ -727,6 +722,11 @@
      "pr": 1300,
      "sha": "d06ed4f5c",
      "title": "build-bench: reject failed test runners with passing summaries"
+    },
+    {
+     "pr": 1303,
+     "sha": "93697adcf",
+     "title": "Player: a seek that reloads keeps its target on the clock until the first frame"
     }
    ],
    "from": 336,
@@ -767,7 +767,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 320
+   "now": 320.5
   }
  ],
  "slowest_local": [
