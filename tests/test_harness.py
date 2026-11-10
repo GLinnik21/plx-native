@@ -10282,7 +10282,8 @@ impl PersonOwnerGateFixture {
         # `server_roster_gen`, `server_facts_gen`, `server_probe_result`, `session::peek_settled`,
         # `session::current_gen`, `tape::active`), +57 (57 -> 114); the forks rule gained the machine crates
         # screens/, ui/, appkit/ and machine/ (it read only data/, plex/, media/, session/), +17 (58 -> 75).
-        "globals": 103,  # production process-global reads inside machines (`ci/allow/globals/`)
+        # S4 Browse explicit roster inputs remove its 14 registry reads (103 -> 89).
+        "globals": 89,  # production process-global reads inside machines (`ci/allow/globals/`)
         # Dolby Vision setting (#1156): -1 on forks (`build_stream` takes the DV probe from `ResolveEnv`, captured
         # at the request, so its test/production read of `devcaps::dv::capability` is gone).
         # Actual pre-M4 entries were 68 (the previous pin 71 was a loose ceiling).

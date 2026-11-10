@@ -129,8 +129,7 @@ pub struct BrowseSource {
     pub sid: ServerId,
     /// Exact client lifecycle behind `sid`; slot ids survive repoint and therefore are not enough
     /// to decide whether completed discovery still belongs here.
-    client_addr: usize,
-    token_gen: u32,
+    client_key: Option<plx_plex::plex::ClientKey>,
     /// The server's `machineIdentifier` — the ONLY key a Home selection can be PERSISTED under
     /// (`plex::pins`), because a roster position reshuffles and an address moves. `""` until the
     /// registry has learned it, which is a source whose pins live for this run only.
@@ -252,16 +251,38 @@ fn source_state(outcome: Option<plx_plex::plex::probe::Outcome>) -> SourceState 
     }
 }
 
-fn source_snapshot(sid: ServerId) -> Option<(SourceState, Option<plx_plex::plex::probe::Location>)> {
-    let client = plx_plex::plex::client_for(sid)?;
-    let token_gen = client.token_gen();
-    // Probe publication follows set_link, so read the acquire-backed result before the tier. The
-    // second lookup rejects a re-point or in-place retoken between those two reads.
-    let state = source_state(plx_plex::plex::server_probe_result(sid));
-    let tier = client.link();
-    plx_plex::plex::client_for(sid)
-        .filter(|now| std::ptr::eq(*now, client) && now.token_gen() == token_gen)
-        .map(|_| (state, tier))
+fn source_snapshot(keys: &ClientKeys, sid: ServerId) -> Option<(SourceState, Option<plx_plex::plex::probe::Location>)> {
+    keys.facts(sid)?.source.map(|(probe, tier)| (source_state(probe), tier))
+}
+
+/// One host capture, taken after observing pending pin receipts. Settled is an independent fact.
+/// Incomplete inputs cannot silently obtain the omitted facts from ambient registries:
+/// ```compile_fail
+/// use plx_data::browse::BrowseRosterInput;
+/// use plx_plex::plex::{ClientKeys, session::Session};
+/// let keys = ClientKeys::default();
+/// let session = Session::default();
+/// let input = BrowseRosterInput { keys: &keys, session: &session };
+/// ```
+#[derive(Clone, Copy)]
+pub struct BrowseRosterInput<'a> {
+    pub keys: &'a ClientKeys,
+    pub session: &'a plx_plex::plex::session::Session,
+    pub visible_generation: u64,
+    pub settled: bool,
+    pub profile_key: &'a str,
+}
+
+impl BrowseRosterInput<'_> {
+    fn household(&self, source: &BrowseSource) -> bool {
+        // Session::household_ids allocates. The equivalent membership test borrows the roster.
+        let known = self.session.home_users.iter().any(|user| user.id != 0);
+        let member = self.session.home_users.iter().any(|user| user.id == source.owner_id);
+        // Membership and emptiness are the only questions the owner rule asks of the roster.
+        // A stack witness keeps that single rule authoritative without collecting household_ids.
+        let witness = [if member { source.owner_id } else { 0 }];
+        household_verdict(source, if known { &witness } else { &[] })
+    }
 }
 
 /// [`BrowseSource::household`]'s one derivation: the carried grant evidence, graded against the
@@ -980,6 +1001,10 @@ pub struct BrowseState {
     /// The section-hubs read the step has out, until it lands or a later step settles its refusal.
     hubs_flight: Option<section_hubs::HubsFlight>,
     session_generation: u64,
+    current_sid: ServerId,
+    profile_key: String,
+    roster_profile_key: String,
+    session_settled: bool,
     sources: Vec<BrowseSource>,
     sections: Vec<BrowseSection>,
     states: Vec<SecState>,
@@ -1138,20 +1163,33 @@ impl Default for BrowseState {
             view_memory: Default::default(),
             recorded: None,
             pending_pins: None,
-            session_generation: plx_plex::plex::session::visible_generation(),
+            session_generation: 0,
+            current_sid: ServerId::UNSET,
+            profile_key: String::new(),
+            roster_profile_key: String::new(),
+            session_settled: false,
         }
     }
 }
 
 impl BrowseState {
-    pub fn discovery_needs_pump(&self, adapter: &BrowseAdapter) -> bool {
-        if self.session_generation != plx_plex::plex::session::visible_generation() { return true; }
+    /// Commands use the explicitly captured profile/current even if they do not walk the roster.
+    pub(crate) fn observe_roster_context(&mut self, input: &BrowseRosterInput<'_>) {
+        if self.profile_key != input.profile_key {
+            self.profile_key.clear();
+            self.profile_key.push_str(input.profile_key);
+        }
+
+    }
+
+    pub fn discovery_needs_pump(&self, adapter: &BrowseAdapter, input: &BrowseRosterInput<'_>) -> bool {
+        if self.session_generation != input.visible_generation || self.current_sid != input.keys.current()
+            || self.roster_profile_key != input.profile_key || self.session_settled != input.settled { return true; }
         if adapter.src_result.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
             return true;
         }
-        let live: Vec<ServerId> = plx_plex::plex::server_ids().collect();
-        if live.len() != self.sources.len()
-            || self.sources.iter().zip(&live).any(|(source, sid)| source.sid != *sid) {
+        if input.keys.slots().count() != self.sources.len()
+            || self.sources.iter().zip(input.keys.slots()).any(|(source, sid)| source.sid != sid) {
             return true;
         }
         // **The Plex Home roster is the one input to this gate that is not in the registry.**
@@ -1159,32 +1197,32 @@ impl BrowseState {
         // every other test below is blind to it — and it is the answer that decides whether a
         // managed profile's family server is the household's or a stranger's. Without this the
         // sync it guards was simply never reached on a roster arrival, and the source stayed
-        // misgraded until something else happened to move a fact. `peek()` is a lock and an `Arc`
-        // clone over a live cache (`plex/CLAUDE.md`), not a file read, which is what makes it
-        // affordable on a per-frame gate.
-        let household = plx_plex::plex::session::peek().household_ids();
+        // misgraded until something else happened to move a fact. Grade the supplied borrowed
+        // session directly; no household Vec or session-cache lookup is needed per frame.
+        let keys = input.keys;
         for source in &self.sources {
-            if source.household != household_verdict(source, &household) {
+            if source.household != input.household(source) {
                 return true;
             }
-            let now = plx_plex::plex::client_for(source.sid);
-            if source.client_addr != now.map_or(0, |client| client as *const _ as usize)
-                || source.token_gen != now.map_or(0, |client| client.token_gen()) {
+            if source.client_key != keys.key(source.sid) {
                 return true;
             }
-            if let Some((state, tier)) = source_snapshot(source.sid) {
+            if let Some((state, tier)) = source_snapshot(keys, source.sid) {
                 if source.state != state || source.tier != tier {
                     return true;
                 }
             }
-            if let Some(facts) = plx_plex::plex::server_facts(source.sid) {
+            if source.machine_id != machine_of(keys, source.sid) { return true; }
+            if let Some(facts) = keys.facts(source.sid).and_then(|facts| facts.described) {
                 if (source.name.is_empty() && !facts.name.is_empty())
                     || source.handle != facts.handle || source.owned != facts.owned
                     || source.home != facts.home || source.owner_id != facts.owner_id {
                     return true;
                 }
+            } else if !source.owned || source.home || source.owner_id != 0 || !source.handle.is_empty() {
+                return true;
             }
-            if source.machine_id.is_empty() || source.retry_cd > 0 {
+            if source.retry_cd > 0 {
                 return true;
             }
         }
@@ -1192,8 +1230,8 @@ impl BrowseState {
             && self.sources.iter().any(|source| !source.sections_done || !source.counts_done)
     }
 
-    pub fn pump_needs_work(&self, adapter: &BrowseAdapter) -> bool {
-        if self.discovery_needs_pump(adapter)
+    pub fn pump_needs_work(&self, adapter: &BrowseAdapter, input: &BrowseRosterInput<'_>) -> bool {
+        if self.discovery_needs_pump(adapter, input)
             || self.retry_cd > 0
             || self.cur_state().is_some_and(SecState::letters_waiting)
             || self.cur_state().is_some_and(SecState::bands_waiting)
@@ -1226,7 +1264,7 @@ impl BrowseState {
         (first..=last).any(|page| state.items.page_missing(page))
     }
 
-    fn sources(&self) -> &[BrowseSource] {
+    pub(crate) fn sources(&self) -> &[BrowseSource] {
         &self.sources
     }
     fn sections(&self) -> &[BrowseSection] {
@@ -1637,7 +1675,7 @@ impl BrowseState {
         };
         let key = section.key;
         let pinned = section.pinned;
-        let user = plx_plex::plex::session::current_profile_key();
+        let user = self.profile_key.clone();
         if self.visited_user != user { self.visited.clear(); self.visited_user = user.clone(); }
         self.visited.retain(|(candidate, _, _)| *candidate != kind);
         self.visited.push((kind, machine.clone(), key));
@@ -1717,7 +1755,7 @@ impl BrowseState {
         let local = saved_view::merge(self.view_memory.get(&machine, key), &machine, key,
             &snapshot, edit);
         self.view_memory.set(local);
-        let user = plx_plex::plex::session::current_profile_key();
+        let user = self.profile_key.clone();
         plx_plex::plex::session::queue_update(move |current| {
             let stored = current.views_for(&user).and_then(|views| views.get(&machine, key));
             let next_view = saved_view::merge(stored, &machine, key, &snapshot, edit);
@@ -1782,32 +1820,32 @@ impl BrowseState {
         }
         Some(Restore { kind: section.kind, library_type: state.library_type, sort, genre })
     }
-    fn cur_source_idx(&self) -> Option<usize> {
+    fn cur_source_idx(&self, current: ServerId) -> Option<usize> {
         self.sections
             .get(self.cur())
             .map(|section| section.src)
             .or_else(|| {
-                let sid = plx_plex::plex::current_server();
+                let sid = current;
                 self.sources.iter().position(|source| source.sid == sid)
             })
             .filter(|&index| index < self.sources.len())
     }
-    fn retry_cur_source(&mut self) {
+    fn retry_cur_source(&mut self, current: ServerId) {
         self.retry_cd = 0;
-        if let Some(index) = self.cur_source_idx() {
+        if let Some(index) = self.cur_source_idx(current) {
             if let Some(source) = self.sources.get_mut(index) {
                 source.retry_cd = 0;
             }
         }
     }
-    fn retry_source(&mut self, epoch: u32, sid: ServerId) -> bool {
+    fn retry_source(&mut self, epoch: u32, sid: ServerId, current: ServerId) -> bool {
         if self.table_epoch() != epoch {
             return false;
         }
         let Some(index) = self.sources.iter().position(|source| source.sid == sid) else {
             return false;
         };
-        if self.cur_source_idx() == Some(index) {
+        if self.cur_source_idx(current) == Some(index) {
             self.retry_cd = 0;
         }
         self.sources[index].retry_cd = 0;
@@ -2028,7 +2066,7 @@ impl BrowseState {
                     LibraryWork::Want { lo, hi, focus } => self.want(lo, hi, focus),
                     LibraryWork::Letters { today } => self.kick_rail(adapter, keys, jobs, today),
                     LibraryWork::Genres => self.kick_genres(adapter, keys, jobs),
-                    LibraryWork::Retry => self.retry_cur_source(),
+                    LibraryWork::Retry => self.retry_cur_source(keys.current()),
                     LibraryWork::Requery => {
                         self.requery_stale();
                     }
@@ -2072,9 +2110,10 @@ impl BrowseState {
         adapter: &BrowseAdapter,
         sid: ServerId,
         epoch: u32,
+        input: &BrowseRosterInput<'_>,
     ) {
         self.reset_owned(adapter);
-        self.sync_roster_owned();
+        self.sync_roster_owned(input);
         let source = self.sources.iter_mut().find(|source| source.sid == sid)
             .expect("registered replay source");
         // The replay fixture starts from the same already-known name on both passes. The live
@@ -2250,8 +2289,8 @@ impl BrowseState {
             SecFetch::Failed
         }
     }
-    fn cur_source_state(&self) -> SecFetch {
-        let Some(source) = self.cur_source_idx().and_then(|index| self.sources.get(index)) else {
+    fn cur_source_state(&self, current: ServerId) -> SecFetch {
+        let Some(source) = self.cur_source_idx(current).and_then(|index| self.sources.get(index)) else {
             return SecFetch::Loading;
         };
         if !source.reachable() {
@@ -2445,6 +2484,7 @@ impl BrowseState {
         -> Option<plx_plex::plex::session::HomePins> {
         self.observe_pin_write();
         let snapshot = plx_plex::plex::session::peek();
+        self.profile_key = plx_plex::plex::session::current_profile_key();
         self.record_pins_from(asked, touched, &snapshot)
     }
     /// Write this profile's answer down. `touched` is indexed like the section table and marks
@@ -2464,7 +2504,7 @@ impl BrowseState {
         -> Option<plx_plex::plex::session::HomePins> {
         let libraries = self.lib_refs();
         let on: Vec<bool> = self.sections.iter().map(|section| section.pinned).collect();
-        let user = plx_plex::plex::session::current_profile_key();
+        let user = self.profile_key.clone();
         if snapshot.client_id.is_empty() { return None; }
         let previous = self.recorded.as_ref().or_else(|| snapshot.pins_for(&user));
         let answers = plx_plex::plex::pins::answers(&libraries, &on, touched, previous);
@@ -2493,6 +2533,7 @@ impl BrowseState {
     fn apply_pins(&mut self, answers: &[(usize, bool)]) {
         self.observe_pin_write();
         let session = plx_plex::plex::session::peek();
+        self.profile_key = plx_plex::plex::session::current_profile_key();
         self.apply_pins_from(answers, &session);
     }
     /// The editor's one commit: apply the rows it ANSWERED, and record exactly those.
@@ -2693,18 +2734,24 @@ impl BrowseState {
     fn reset_owned(&mut self, adapter: &BrowseAdapter) {
         self.reset_with(|| adapter.clear());
     }
-    pub fn sync_roster_owned(&mut self) -> RosterSync {
-        let generation = plx_plex::plex::session::visible_generation();
-        let session_changed = self.session_generation != generation;
-        self.session_generation = generation;
-        let live: Vec<ServerId> = plx_plex::plex::server_ids().collect();
-        // The Plex Home roster, read ONCE for the whole sync: `peek()` is a write-through cache
-        // over the persisted session (`plex/CLAUDE.md`), so this is a lock and an `Arc` clone
-        // rather than a file read — but it is still per sync and not per source.
-        let session = plx_plex::plex::session::peek();
-        let household = session.household_ids();
-        let retire_adapter = self.sources.iter().any(|source| !live.contains(&source.sid));
-        let mut changed = retire_adapter;
+    pub fn sync_roster_owned(&mut self, input: &BrowseRosterInput<'_>) -> RosterSync {
+        let keys = input.keys;
+        let session_changed = self.session_generation != input.visible_generation
+            || self.roster_profile_key != input.profile_key || self.session_settled != input.settled;
+        if self.roster_profile_key != input.profile_key {
+            self.roster_profile_key.clear();
+            self.roster_profile_key.push_str(input.profile_key);
+        }
+        self.session_generation = input.visible_generation;
+        let current_changed = self.current_sid != keys.current();
+        self.current_sid = keys.current();
+        if self.profile_key != input.profile_key {
+            self.profile_key.clear();
+            self.profile_key.push_str(input.profile_key);
+        }
+        self.session_settled = input.settled;
+        let retire_adapter = self.sources.iter().any(|source| !keys.slots().any(|sid| sid == source.sid));
+        let mut changed = retire_adapter || current_changed;
         // Did any source change SIDE of the household line in this pass? That, and not a changed
         // `ServerFacts`, is what the pin defaults and the tab destination are derived from.
         let mut reclassified = false;
@@ -2712,55 +2759,60 @@ impl BrowseState {
             self.reset_with(|| {});
         }
         let known = self.sources.len();
-        for sid in live {
+        for sid in keys.slots() {
             match self.sources.iter().position(|source| source.sid == sid) {
                 Some(index) => {
-                    let now = plx_plex::plex::client_for(sid);
-                    let client_addr = now.map_or(0, |client| client as *const _ as usize);
-                    let token_gen = now.map_or(0, |client| client.token_gen());
+                    let client_key = keys.key(sid);
                     let mut changes = 0;
                     let source = &mut self.sources[index];
-                    if source.client_addr != client_addr || source.token_gen != token_gen {
-                        source.client_addr = client_addr;
-                        source.token_gen = token_gen;
+                    if source.client_key != client_key {
+                        source.client_key = client_key;
                         source.sections_done = false;
                         source.counts_done = false;
                         source.retry_cd = 0;
                         changes += 1;
                     }
-                    if let Some((state, tier)) = source_snapshot(sid) {
+                    if let Some((state, tier)) = source_snapshot(keys, sid) {
                         if source.state != state || source.tier != tier {
                             source.state = state;
                             source.tier = tier;
                             changes += 1;
                         }
                     }
-                    if let Some(facts) = plx_plex::plex::server_facts(sid) {
+                    if let Some(facts) = keys.facts(sid).and_then(|facts| facts.described) {
+                        // Preserve M4 policy: credit follows corrections; a machine name only fills once.
                         if source.name.is_empty() && !facts.name.is_empty() {
-                            source.name = facts.name.clone();
+                            source.name.clone_from(&facts.name);
                             changes += 1;
                         }
                         if source.handle != facts.handle || source.owned != facts.owned
                             || source.home != facts.home || source.owner_id != facts.owner_id {
-                            source.handle = facts.handle.clone();
+                            source.handle.clone_from(&facts.handle);
                             source.owned = facts.owned;
                             source.home = facts.home;
                             source.owner_id = facts.owner_id;
                             changes += 1;
                         }
+                    } else if !source.owned || source.home || source.owner_id != 0 || !source.handle.is_empty() {
+                        source.owned = true;
+                        source.home = false;
+                        source.owner_id = 0;
+                        source.handle.clear();
+                        changes += 1;
                     }
                     // Derived AFTER the evidence above lands, and unconditionally: the roster this
                     // is graded against arrives on its own schedule, so an unchanged `ServerFacts`
                     // does not mean an unchanged verdict.
-                    let household_now = household_verdict(source, &household);
+                    let household_now = input.household(source);
                     if source.household != household_now {
                         source.household = household_now;
                         reclassified = true;
                         changes += 1;
                     }
-                    let machine_id = machine_of(sid);
+                    let machine_id = machine_of(keys, sid);
                     if source.machine_id != machine_id {
-                        source.machine_id = machine_id;
+                        source.machine_id.clear();
+                        source.machine_id.push_str(machine_id);
                         changes += 1;
                     }
                     self.src_facts_gen = self.src_facts_gen.wrapping_add(changes);
@@ -2770,7 +2822,7 @@ impl BrowseState {
                     }
                 }
                 None => {
-                    let facts = plx_plex::plex::server_facts(sid);
+                    let facts = keys.facts(sid).and_then(|facts| facts.described);
                     let owned = facts.map(|facts| facts.owned).unwrap_or(true);
                     // An undescribed slot is the session's own server (`servers::describe_name`
                     // says why that is not a guess), so it carries no third-party evidence.
@@ -2779,19 +2831,15 @@ impl BrowseState {
                     let (name, handle) = facts.map(|facts| {
                         (facts.name.clone(), facts.handle.clone())
                     }).unwrap_or_default();
-                    let Some((state, tier)) = source_snapshot(sid) else { continue };
+                    let (state, tier) = source_snapshot(keys, sid).unwrap_or((SourceState::NotProbed, None));
                     self.sources.push(BrowseSource {
                         sid,
-                        client_addr: plx_plex::plex::client_for(sid)
-                            .map_or(0, |client| client as *const _ as usize),
-                        token_gen: plx_plex::plex::client_for(sid)
-                            .map_or(0, |client| client.token_gen()),
-                        machine_id: machine_of(sid),
+                        client_key: keys.key(sid),
+                        machine_id: machine_of(keys, sid).to_owned(),
                         owned, home, owner_id,
-                        household: plx_plex::plex::is_household(
-                            plx_plex::plex::GrantEvidence { owned, home, owner_id }.grant(),
-                            &household,
-                        ),
+                        household: owned
+                            || (home && !input.session.home_users.iter().any(|user| user.id != 0))
+                            || (owner_id != 0 && input.session.home_users.iter().any(|user| user.id == owner_id)),
                         name, handle, state, tier,
                         sections_done: false, counts_done: false, retry_cd: 0,
                     });
@@ -2818,8 +2866,8 @@ impl BrowseState {
             // without a cache of its own. It bumps only when a row actually MOVED — a
             // reclassification that moves none publishes nothing new to the section table, and
             // the source facts it did move have their own generation, bumped above.
-            if plx_plex::plex::session::peek_settled().is_some() {
-                self.reconcile_pins_from(&session, &plx_plex::plex::session::current_profile_key());
+            if input.settled {
+                self.reconcile_pins_from(input.session, input.profile_key);
             }
             changed = true;
         }
@@ -2844,13 +2892,13 @@ impl BrowseState {
         use crate::stores::browse::BrowseCmd;
         match cmd {
             BrowseCmd::Discovery(result) => {
-                record::apply_to(self, adapter, &result, session,
-                    &plx_plex::plex::session::current_profile_key()).changed
+                let profile = self.profile_key.clone();
+                record::apply_to(self, adapter, &result, session, &profile).changed
             }
             BrowseCmd::Addressed { target, work } => {
                 self.addressed_with_adapter(adapter, target, work, keys, jobs)
             }
-            BrowseCmd::RetrySource { epoch, sid } => self.retry_source(epoch, sid),
+            BrowseCmd::RetrySource { epoch, sid } => self.retry_source(epoch, sid, keys.current()),
             #[cfg(any(test, feature = "test-support"))]
             BrowseCmd::SetCur(index) => {
                 self.set_cur(index);
@@ -2921,7 +2969,7 @@ impl BrowseState {
         if adapter.src_fetching.busy() {
             return;
         }
-        let ready = |source: &BrowseSource| source.retry_cd == 0;
+        let ready = |source: &BrowseSource| source.retry_cd == 0 && keys.key(source.sid).is_some();
         let mut pick = self.sources.iter().enumerate().find_map(|(index, source)| {
             (ready(source) && !source.sections_done).then(|| {
                 (index, source.sid, SrcJob::Sections, source.name.is_empty())
@@ -2993,8 +3041,8 @@ impl BrowseState {
             adapter.src_result.lock().unwrap_or_else(|e| e.into_inner()).take()
         });
         let Some((epoch, source, landing)) = taken else { return Default::default() };
-        self.apply_discovery(epoch, source, landing, session,
-            &plx_plex::plex::session::current_profile_key(), adapter)
+        let profile = self.profile_key.clone();
+        self.apply_discovery(epoch, source, landing, session, &profile, adapter)
     }
     /// `#[track_caller]`: the paced dump keys a landing's claim by CALL SITE, and the genre and
     /// letters mailboxes both come through here, so the wrapper must hand its caller's site on
@@ -3548,8 +3596,23 @@ fn ensure_sections_with(
     state: &mut BrowseState,
     fetch: impl FnOnce(&plx_plex::plex::Client) -> Option<Vec<(i64, String, SecKind)>>,
 ) -> usize {
-    state.sync_roster_owned();
-    let cur_sid = plx_plex::plex::current_server();
+    state.observe_pin_write();
+    let mut keys = ClientKeys::default();
+    keys.refill_roster(
+        plx_plex::plex::current_server(), plx_plex::plex::server_roster_gen(),
+        plx_plex::plex::server_facts_gen(), plx_plex::plex::server_ids(),
+        plx_plex::plex::client_for, plx_plex::plex::server_facts,
+        plx_plex::plex::server_probe_result,
+    );
+    let session = plx_plex::plex::session::peek();
+    let profile_key = plx_plex::plex::session::current_profile_key();
+    let input = BrowseRosterInput {
+        keys: &keys, session: &session,
+        visible_generation: plx_plex::plex::session::visible_generation(),
+        settled: plx_plex::plex::session::peek_settled().is_some(), profile_key: &profile_key,
+    };
+    state.sync_roster_owned(&input);
+    let cur_sid = keys.current();
     let Some(si) = state.sources().iter().position(|s| s.sid == cur_sid) else {
         return state.sections().len();
     };
@@ -3810,10 +3873,8 @@ pub const TAB_KINDS: [SecKind; 2] = [SecKind::Movie, SecKind::Show];
 /// [`record_pins_from`], cleared by [`reset`]; never read from the file per frame.
 
 /// One source's `machineIdentifier` as the registry knows it, `""` while nobody has learned it.
-fn machine_of(sid: ServerId) -> String {
-    plx_plex::plex::client_for(sid)
-        .map(|c| c.machine_id().to_string())
-        .unwrap_or_default()
+fn machine_of(keys: &ClientKeys, sid: ServerId) -> &str {
+    keys.facts(sid).map_or("", |facts| facts.machine_id.as_str())
 }
 
 /// The section table as the pin rules see it, in table order.
@@ -3918,7 +3979,16 @@ pub fn queue_discovery_for_owner_test(
     ok: bool,
 ) {
     plx_base::testlock::assert_held("discovery observation fixture");
-    let _ = state.sync_roster_owned();
+    let mut keys = ClientKeys::default();
+    keys.refill_roster(plx_plex::plex::current_server(), plx_plex::plex::server_roster_gen(),
+        plx_plex::plex::server_facts_gen(), plx_plex::plex::server_ids(),
+        plx_plex::plex::client_for, plx_plex::plex::server_facts, plx_plex::plex::server_probe_result);
+    let session = plx_plex::plex::session::peek();
+    let _ = state.sync_roster_owned(&BrowseRosterInput {
+        keys: &keys, session: &session, visible_generation: plx_plex::plex::session::visible_generation(),
+        settled: plx_plex::plex::session::peek_settled().is_some(),
+        profile_key: &plx_plex::plex::session::current_profile_key(),
+    });
     let si = state.sources.iter().position(|source| source.sid == client.id()).unwrap();
     let what = SrcWhat::Sections(ok.then(Vec::new));
     *adapter.src_result.lock().unwrap_or_else(|e| e.into_inner()) = Some((
@@ -4040,8 +4110,7 @@ pub fn seed_sources_for_owner_test(
             } else {
                 ServerId::from_raw(index as u16)
             },
-            client_addr: 0,
-            token_gen: 0,
+            client_key: None,
             machine_id: format!("mach-{index}"),
             owned: index == 0,
             home: false,
@@ -4076,8 +4145,7 @@ pub fn seed_pins_for_owner_test(state: &mut BrowseState, pinned: &[bool]) {
     state.reset_with(|| {});
     state.sources = vec![BrowseSource {
         sid: plx_plex::plex::current_server(),
-        client_addr: 0,
-        token_gen: 0,
+        client_key: None,
         machine_id: "mach-test".into(),
         owned: true,
         home: false,
@@ -4137,8 +4205,7 @@ pub fn land_pin_for_owner_test(state: &mut BrowseState, pinned: bool) {
 pub fn a_source(name: &str, handle: &str, reachable: bool) -> BrowseSource {
     BrowseSource {
         sid: ServerId::UNSET,
-        client_addr: 0,
-        token_gen: 0,
+        client_key: None,
         // the machine id doubles as the fixture's identity, and OWNERSHIP follows the handle
         // here (a fixture, not the product rule — `sync_roster` takes `owned` from the roster,
         // because a share whose `sourceTitle` plex.tv did not send is still a share)
@@ -4201,8 +4268,7 @@ pub fn seed_registered_table_for_owner_test(
         let source = state.source_mut(index).unwrap();
         source.sid = sid;
         source.machine_id = client.machine_id().to_owned();
-        source.client_addr = client as *const _ as usize;
-        source.token_gen = client.token_gen();
+        source.client_key = Some(plx_plex::plex::ClientKey::of(client));
         plx_plex::plex::describe_server(sid, &source.name, &source.handle,
             plx_plex::plex::GrantEvidence {
                 owned: source.owned, home: source.home, owner_id: source.owner_id,
@@ -4507,3 +4573,6 @@ mod view_ledger_tests;
 #[cfg(test)]
 #[path = "browse_membership_tests.rs"]
 mod membership_tests;
+
+#[cfg(test)]
+mod roster_input_tests;
