@@ -1,14 +1,20 @@
 //! Finite runner ports drive the production cursor; no account, socket, or worker is needed.
 use super::*;
 use plx_data::stores::notify::{NotifyInput, NotifyOut, NotifyStore};
-use plx_plex::plex::{Origin, ServerFacts, ServerId};
+use plx_plex::plex::{self, ServerFacts, ServerId};
 use plx_plex::plex::notify::{Notification, NotifyEnd};
+
+struct ResetServers;
+impl Drop for ResetServers {
+    fn drop(&mut self) { plex::reset_servers_for_test(); }
+}
 
 struct Rig { store: NotifyStore, keys: ClientKeys, client: &'static Client, frame: u64 }
 impl Rig {
     fn new() -> Self {
-        let client: &'static Client = Box::leak(Box::new(Client::new(ServerId::from_raw(71), "notify-runner",
-            Origin::http("127.0.0.1", 9), "script-token", "script-client")));
+        plex::reset_servers_for_test();
+        let sid = plex::register_for_test("notify-runner", "127.0.0.1", 9, "script-token", "script-client");
+        let client = plex::client_for(sid).expect("registered notify runner client");
         let facts: &'static ServerFacts = Box::leak(Box::new(ServerFacts {
             name: "Script".into(), handle: String::new(), owned: true, home: false, owner_id: 0,
         }));
@@ -41,6 +47,8 @@ fn delay(frame: u64, sid: ServerId, attempts: u32) -> u64 {
 
 #[test]
 fn initial_spawn_false_is_exactly_once_at_origin_frame_with_exact_jitter() {
+    let _serial = plx_base::testlock::serial();
+    let _reset = ResetServers;
     let mut r = Rig::new();
     let c = r.client;
     let mut runner = StoreRunner::live();
@@ -65,6 +73,8 @@ fn initial_spawn_false_is_exactly_once_at_origin_frame_with_exact_jitter() {
 
 #[test]
 fn accepted_held_release_false_is_ordinary_current_frame_and_preserves_attempts() {
+    let _serial = plx_base::testlock::serial();
+    let _reset = ResetServers;
     let mut r = Rig::new(); let c = r.client;
     r.tick(|job| { let StoreJob::NotifyStream(job, port) = job else { panic!("Notify") }; port.refused(job.addr); });
     let first = delay(1, c.id(), 0);
@@ -92,6 +102,8 @@ fn accepted_held_release_false_is_ordinary_current_frame_and_preserves_attempts(
 
 #[test]
 fn cancellation_and_orphan_release_never_launch_or_poison_replacement() {
+    let _serial = plx_base::testlock::serial();
+    let _reset = ResetServers;
     let mut r = Rig::new(); let c = r.client;
     let mut held = StoreRunner::held_all();
     r.tick(|job| {
@@ -117,6 +129,8 @@ fn cancellation_and_orphan_release_never_launch_or_poison_replacement() {
 
 #[test]
 fn held_release_rechecks_full_key_even_when_generations_do_not_move() {
+    let _serial = plx_base::testlock::serial();
+    let _reset = ResetServers;
     thread_local! { static CANDIDATE: std::cell::Cell<Option<&'static Client>> = const { std::cell::Cell::new(None) }; }
     struct CandidateGuard(Option<&'static Client>);
     impl Drop for CandidateGuard {
