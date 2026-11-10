@@ -1,4 +1,4 @@
-{"updated":"2026-11-10T16:00:44Z",
+{"updated":"2026-11-10T16:02:08Z",
 "ci":[
 {"id":31584219333,"at":"2026-08-12T09:43:35Z","sha":"84ff93289","title":"design: Plex Pass Awareness, second revision \u2014 and the post-play Up Next card","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":82},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":31614984913,"at":"2026-08-12T15:56:06Z","sha":"123cfd89f","title":"ui: Up Next goes back to a tile, with a second button","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":66},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -4952,7 +4952,8 @@
 {"id":42825482831,"at":"2026-11-10T13:32:43Z","sha":"b24437bd8","title":"Grid: pin BACK from the first row closing its caption band over frames","pr":1312,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":182,"Windows launcher syntax":19,"macOS tests against bundled FFmpeg and ASS":236,"Linux simulator build + launch":627}},
 {"id":42829001108,"at":"2026-11-10T13:55:30Z","sha":"d83704dfa","title":"Preserve the seek target when Back cancels a queued reload","pr":1313,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":224,"macOS simulator build + launch":112,"Windows launcher syntax":19,"Linux simulator build + launch":743}},
 {"id":42831087030,"at":"2026-11-10T14:08:26Z","sha":"9be7a43f6","title":"Recover Segment seeks that never reach the video sink","pr":1313,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":224,"Linux simulator build + launch":374,"macOS simulator build + launch":252,"Windows launcher syntax":23}},
-{"id":42846614117,"at":"2026-11-10T15:39:24Z","sha":"fd79a26d4","title":"Refresh replay anchors for the final Home hero and shelf layout","pr":1310,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":374,"macOS tests against bundled FFmpeg and ASS":251,"macOS simulator build + launch":197,"Windows launcher syntax":23}}
+{"id":42846614117,"at":"2026-11-10T15:39:24Z","sha":"fd79a26d4","title":"Refresh replay anchors for the final Home hero and shelf layout","pr":1310,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":374,"macOS tests against bundled FFmpeg and ASS":251,"macOS simulator build + launch":197,"Windows launcher syntax":23}},
+{"id":42848767911,"at":"2026-11-10T15:51:39Z","sha":"ebff7d0df","title":"Preserve PCM decoding and playback position during codec recovery","pr":1309,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":187,"Windows launcher syntax":21,"macOS tests against bundled FFmpeg and ASS":315,"Linux simulator build + launch":334}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
