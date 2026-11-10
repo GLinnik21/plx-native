@@ -2398,6 +2398,7 @@ mod tests {
                 genres: Vec::new(),
                 content_rating: None,
                 duration_ms: None,
+                cover_art: None,
             })
         }
         fn today(&self) -> Option<String> {

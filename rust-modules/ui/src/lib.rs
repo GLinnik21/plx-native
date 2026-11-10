@@ -52,6 +52,7 @@ pub mod glassload; // dev-only backdrop-glass LOAD DIAL + the blurred-route-tran
 pub mod hold_hint; // the standing "Hold [OK] for options" capsule: dwell/life schedule, hold-progress cap, fade + rise
 pub mod hit; // RESTRUCTURE (spec §7.6): the double-buffered hit map and the pointer gates
 pub mod placeholder; // placeholder accounting: a per-frame count at every placeholder DRAW + the #FF00FE pixel sentinel (feature `placeholder-sentinel`)
+pub mod card_art; // the Continue Watching card's art: the pure composite (background + logo baked once), the cover/composite/type walk
 pub mod hero_logo; // the ONE clearLogo sizing rule + its fallback-to-title band (both heroes, the compact title)
 pub mod landing_hero; // shared landing hero geometry and scrim curve, also read by route/legibility checks
 pub mod icons;
@@ -94,6 +95,7 @@ pub mod route_screen;
 pub mod rec; // RESTRUCTURE (spec §5.3): the recorder — format, bounded writer, loader, TableMeasure
 pub mod replay; // RESTRUCTURE (spec §5.5): `--targets` replay of a recording over the dispatcher
 pub mod screen; // RESTRUCTURE spike (spec §6.1, §7.1): Screen, Focusable, Composed/Part, DrawFrame
+pub mod still_footer; // a landscape still's one-line footer: status text, a mark, the focus cue, and the pure fit rule between them
 pub mod table;
 pub mod table_screen; // Header / TableScreen / DocumentScreen — the route family's screens as components (phase 5a)
 pub mod tex; // RESTRUCTURE spike (spec §10): TexCache — the render-resource half of image caching
@@ -412,26 +414,6 @@ pub mod draw_census {
         TEXT.with(|l| *l.borrow_mut() = Some(Vec::new()));
         f();
         TEXT.with(|l| l.borrow_mut().take()).unwrap_or_default()
-    }
-
-    thread_local! {
-        static MARKS: RefCell<Option<Vec<Rect>>> = const { RefCell::new(None) };
-    }
-    /// A recording painter was asked for the amber play mark that leads a caption line
-    /// (`card_row::draw_play_mark`): it paints no pixel, so this is how a test reads WHETHER the
-    /// mark was drawn and where.
-    pub fn note_play_mark(r: Rect) {
-        MARKS.with(|l| {
-            if let Some(v) = l.borrow_mut().as_mut() {
-                v.push(r);
-            }
-        });
-    }
-    /// Every play mark a recording painter is handed while `f` runs, as screen rects.
-    pub fn capture_play_marks(f: impl FnOnce()) -> Vec<Rect> {
-        MARKS.with(|l| *l.borrow_mut() = Some(Vec::new()));
-        f();
-        MARKS.with(|l| l.borrow_mut().take()).unwrap_or_default()
     }
 
     thread_local! {

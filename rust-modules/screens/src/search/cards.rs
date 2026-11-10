@@ -54,13 +54,13 @@ impl<H: SearchLike> CardSource<H> for RowCards<'_> {
                 // result from a server that is not the household's own is credited after its details
                 let mut facts = tile_facts::caption_facts(row);
                 facts.source = Some(self.handle(item)).filter(|handle| !handle.is_empty()).map(str::to_owned);
-                crate::registry::captions::label(&crate::registry::captions::policy(), &facts, None, false)
+                crate::registry::captions::label(&crate::registry::captions::policy(), &facts, None)
             }
             // a still (an episode) is worded by the one landscape builder, like every other still; a
             // headshot is not a poster either and keeps its block, the server it came from last
             None => match item {
                 Item::Media(row) if self.kind == Kind::Episode =>
-                    crate::registry::captions::still_label(row, false, self.handle(item)),
+                    crate::registry::captions::still_label(row, self.handle(item)),
                 _ => TileLabel::titled(item.title(), self.handle(item)),
             },
         }
@@ -76,7 +76,7 @@ impl<H: SearchLike> CardSource<H> for RowCards<'_> {
     fn more_before(&self) -> bool { self.window.before }
     fn overlay(&self, p: Painter, i: usize, tile: &Tile, measure: &dyn Measure) {
         if let (Kind::Episode, Some(Item::Media(media))) = (self.kind, self.items.get(i)) {
-            plx_ui::widgets::still_overlay(p, &tile_facts::of(media), tile.rect, tile.radius, false, measure);
+            plx_ui::widgets::still_overlay(p, &tile_facts::of(media), tile.rect, tile.radius, plx_ui::widgets::StillFooter::Shelf, measure);
         }
     }
 }

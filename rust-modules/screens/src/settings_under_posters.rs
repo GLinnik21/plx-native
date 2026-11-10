@@ -429,7 +429,7 @@ fn kind_facts(kind: PosterKind, posters: &[&PmsMovie]) -> CaptionFacts {
 /// builder every poster surface uses ([`crate::registry::captions::label`]), so the picture cannot
 /// word a caption differently from the screens it previews.
 fn lines_of(v: UnderPosters, facts: &CaptionFacts) -> [Option<String>; 2] {
-    let label = crate::registry::captions::label(&caption_policy_of(v), facts, None, false);
+    let label = crate::registry::captions::label(&caption_policy_of(v), facts, None);
     let text = |line: &Option<std::ffi::CString>| line.as_ref().map(|line| line.to_string_lossy().into_owned());
     [text(&label.title), text(&label.caption)]
 }

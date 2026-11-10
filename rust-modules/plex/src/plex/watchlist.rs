@@ -83,6 +83,10 @@ pub struct CatalogItem {
     pub genres: Vec<String>,
     pub content_rating: Option<String>,
     pub duration_ms: Option<i64>,
+    /// The `coverArt` entry of `Image[]`: Plex's own 16:9 cover of the title (its name baked into the
+    /// picture), an ABSOLUTE https URL the PMS photo transcoder renders. `None` when the answer has
+    /// no usable one; the catalog page does not read it.
+    pub cover_art: Option<String>,
 }
 
 /// Why a watchlist call did not produce its answer. HTTP statuses map to the named variants.
@@ -281,6 +285,17 @@ fn float(v: &Value, key: &str) -> Option<f32> {
     }
 }
 
+/// The first usable `coverArt` of an entry's `Image[]`: an entry whose `type` is exactly `coverArt`
+/// and whose `url` is an absolute `http(s)` URL (Discover spells these absolute; a server-relative
+/// path would name no host the transcoder could fetch it from). Anything else (no `Image`, not an
+/// array, an unusable entry) is `None`: the cover is an extra, so drift costs it and nothing more.
+fn cover_art_of(entry: &Value) -> Option<String> {
+    entry.get("Image")?.as_array()?.iter()
+        .filter(|image| image.get("type").and_then(Value::as_str) == Some("coverArt"))
+        .filter_map(|image| text(image, "url"))
+        .find(|url| url.starts_with("https://") || url.starts_with("http://"))
+}
+
 /// One `Metadata` entry as a [`WatchItem`]. Shape drift costs the field; an entry whose id cannot
 /// be recovered (no usable `ratingKey`, no `plex://` guid to take it from) is skipped because
 /// nothing could act on it. `fallback_hex` is the id the caller asked for.
@@ -433,7 +448,13 @@ impl AccountClient {
         let item = item_from(entry, Some(hex)).ok_or(WatchlistError::Unreadable)?;
         let genres = entry.get("Genre").and_then(Value::as_array)
             .map(|g| g.iter().filter_map(|t| text(t, "tag")).collect()).unwrap_or_default();
-        Ok(CatalogItem { item, genres, content_rating: text(entry, "contentRating"), duration_ms: int(entry, "duration") })
+        Ok(CatalogItem {
+            item,
+            genres,
+            content_rating: text(entry, "contentRating"),
+            duration_ms: int(entry, "duration"),
+            cover_art: cover_art_of(entry),
+        })
     }
 
     /// `PUT /actions/addToWatchlist?ratingKey=<hex>`.
@@ -726,6 +747,58 @@ mod tests {
         assert_eq!(item.duration_ms, Some(5_400_000));
         let (out, _) = run(vec![ok(r#"{"MediaContainer":{"size":0}}"#)], |c, t| c.catalog_item(HEX, t));
         assert_eq!(out, Err(WatchlistError::Unreadable));
+    }
+
+    const COVER: &str = "https://metadata-static.plex.tv/a/plex/ab4a4e0e-798b-42dc-bc10-65219fdc54d7.jpg";
+
+    fn catalog_body(extra: &str) -> String {
+        format!(r#"{{"MediaContainer":{{"Metadata":[{{"ratingKey":"{HEX}","guid":"plex://movie/{HEX}","type":"movie",
+            "title":"A","contentRating":"PG","duration":5400000,"Genre":[{{"tag":"Drama"}}]{extra}}}]}}}}"#)
+    }
+
+    /// The cover is the `coverArt` entry of `Image[]` and nothing else: its neighbours (a poster,
+    /// a square, the title-less background) are different pictures.
+    #[test]
+    fn catalog_item_reads_the_cover_art_from_the_image_array() {
+        let image = format!(r#","Image":[
+            {{"type":"background","url":"https://metadata-static.plex.tv/b.jpg","alt":"A"}},
+            {{"type":"clearLogo","url":"https://metadata-static.plex.tv/l.png","alt":"A"}},
+            {{"type":"coverPoster","url":"https://metadata-static.plex.tv/p.jpg","alt":"A"}},
+            {{"type":"coverArt","url":"{COVER}","alt":"A"}},
+            {{"type":"coverSquare","url":"https://metadata-static.plex.tv/s.jpg","alt":"A"}}]"#);
+        let (out, _) = run(vec![ok(&catalog_body(&image))], |c, t| c.catalog_item(HEX, t));
+        assert_eq!(out.unwrap().cover_art.as_deref(), Some(COVER));
+    }
+
+    /// A drifted `Image` is "no cover", never a failure: the catalog page's own rules (it needs
+    /// the title and the id) are the only ones that fail a read.
+    #[test]
+    fn a_missing_or_drifted_image_array_is_no_cover_and_not_a_failure() {
+        let plain = run(vec![ok(&catalog_body(""))], |c, t| c.catalog_item(HEX, t)).0.unwrap();
+        assert_eq!(plain.cover_art, None, "no Image key");
+        let reference = CatalogItem { cover_art: None, ..plain.clone() };
+        for extra in [
+            r#","Image":[]"#,
+            r#","Image":null"#,
+            r#","Image":"coverArt""#,
+            r#","Image":{"type":"coverArt","url":"https://metadata-static.plex.tv/x.jpg"}"#,
+            r#","Image":[{"type":"coverPoster","url":"https://metadata-static.plex.tv/p.jpg"}]"#,
+            r#","Image":[{"type":"coverArt"}]"#,
+            r#","Image":[{"type":"coverArt","url":""}]"#,
+            r#","Image":[{"type":"coverArt","url":7}]"#,
+            r#","Image":[{"type":"coverArt","url":"/library/metadata/1/art/9"}]"#,
+            r#","Image":[{"type":"coverArt","url":"javascript:alert(1)"}]"#,
+            r#","Image":[7,null,"x"]"#,
+        ] {
+            let got = run(vec![ok(&catalog_body(extra))], |c, t| c.catalog_item(HEX, t)).0
+                .unwrap_or_else(|e| panic!("{extra}: {e:?}"));
+            assert_eq!(got.cover_art, None, "{extra}");
+            assert_eq!(got, reference, "{extra}: every other field is unchanged");
+        }
+        // An unusable first entry does not hide a good one after it.
+        let image = format!(r#","Image":[{{"type":"coverArt","url":""}},{{"type":"coverArt","url":"{COVER}"}}]"#);
+        let got = run(vec![ok(&catalog_body(&image))], |c, t| c.catalog_item(HEX, t)).0.unwrap();
+        assert_eq!(got.cover_art.as_deref(), Some(COVER));
     }
 
     #[test]

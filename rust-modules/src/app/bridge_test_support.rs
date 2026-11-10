@@ -712,18 +712,15 @@ impl World {
         let sources = glass.sources.clone();
         sources.borrow_mut().begin(self.d.backdrop_layers(1.0));
         let mut words = Vec::new();
-        let mut runs = Vec::new();
-        let marks = plx_ui::draw_census::capture_play_marks(|| {
-            runs = plx_ui::draw_census::capture_runs(|| {
-                let _declarations = backdrop::discover(sources.clone());
-                words = plx_ui::draw_census::capture_text(|| {
-                    self.d.draw_with_glass_below(&mut self.bridge, &mut glass, true, backdrop::Z::ALL);
-                });
+        let runs = plx_ui::draw_census::capture_runs(|| {
+            let _declarations = backdrop::discover(sources.clone());
+            words = plx_ui::draw_census::capture_text(|| {
+                self.d.draw_with_glass_below(&mut self.bridge, &mut glass, true, backdrop::Z::ALL);
             });
         });
         sources.borrow_mut().resolve();
         backdrop::commit(&sources);
-        Drawn { words, runs, marks }
+        Drawn { words, runs }
     }
 
     /// Present the hit map the bar registers for this frame (`Dispatcher::present_bar_stops`): what a pointer
@@ -894,9 +891,6 @@ pub(super) struct Drawn {
     pub(super) words: Vec<(String, plx_ui::Rect)>,
     /// The same runs with their style: `ink[3]` is the alpha the page drew each at (the cascade folded in).
     pub(super) runs: Vec<plx_ui::draw_census::Run>,
-    /// Every amber play mark the frame drew (a host paints no icon: the census notes each one), as
-    /// the rect it stands in.
-    pub(super) marks: Vec<plx_ui::Rect>,
 }
 
 impl Drawn {

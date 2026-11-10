@@ -334,6 +334,12 @@ impl Grid {
                     self.seen = if arrival { Seen::Deliberate(a) } else { Seen::of(by, a) };
                 }
                 self.focus_band(arrived.map(|i| i / self.spec.cols), deliberate);
+                // Focus left the grid's cards: the card it left lets go now, from where its pop is,
+                // as a deliberate move's does on `arm`. Left to the tick, the frame that handles the
+                // key (drawn before its tick) read the card at rest, and it jumped back to its lift.
+                if arrived.is_none() && left.is_some() {
+                    self.pop.let_go();
+                }
                 if let Some(cell) = arrived.filter(|_| deliberate) {
                     // the element is the one the key named, whatever index it has: the card focus
                     // left lets go as its own, and a let-go of the card named is taken up by
@@ -1122,7 +1128,8 @@ impl Grid {
         } else {
             card_row::draw_tile(p, src.art(i), rect, s, &self.spec.style, src.progress(i));
         }
-        src.overlay(p, i, &Tile { rect, scale: s, radius: self.spec.style.tile_radius(rect, s), focused }, f.measure);
+        let pop = super::pop_progress(s, i, self.entry, src, f.cx, self.spec.style.focus_scale);
+        src.overlay(p, i, &Tile { rect, scale: s, radius: self.spec.style.tile_radius(rect, s), focused, pop }, f.measure);
     }
 
     /// Test support: the captions [`draw`](Self::draw) puts on screen now, `(card index, alpha of its
@@ -1200,7 +1207,7 @@ impl Grid {
             }
             let pr = p.alpha(a);
             card_row::draw_tile(pr, src.art(i), rect, 1.0, &self.spec.style, src.progress(i));
-            src.overlay(pr, i, &Tile { rect, scale: 1.0, radius: self.spec.style.tile_radius(rect, 1.0), focused: false }, f.measure);
+            src.overlay(pr, i, &Tile { rect, scale: 1.0, radius: self.spec.style.tile_radius(rect, 1.0), focused: false, pop: 0.0 }, f.measure);
         }
     }
 
@@ -1321,7 +1328,7 @@ impl Grid {
             }
             let pr = p.alpha(a);
             card_row::draw_tile(pr, ghosts.art(j), rect, s, &self.spec.style, ghosts.progress(j));
-            let tile = Tile { rect, scale: s, radius: self.spec.style.tile_radius(rect, s), focused: g.focused };
+            let tile = Tile { rect, scale: s, radius: self.spec.style.tile_radius(rect, s), focused: g.focused, pop: crate::widgets::pop_factor(s, self.spec.style.focus_scale) };
             ghosts.overlay(pr, j, &tile, f.measure);
             // In value-line mode every ghost keeps its own value line while it fades.
             if self.spec.value_line {

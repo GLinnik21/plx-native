@@ -9,6 +9,7 @@ use std::ffi::CString;
 use plx_data::metadata::{Detail, Episode};
 use plx_machine::machine::GroupId;
 use plx_ui::hstack::{Align, HStack, Item};
+use plx_ui::still_footer::{self, Footer, Right};
 use plx_ui::text_lift::{TextLift, TOP_CENTRE};
 use plx_ui::text_view::TextView;
 use plx_ui::vstack::{Anchor, VStack};
@@ -269,7 +270,7 @@ fn state(ep: &Episode) -> State {
     if in_progress {
         return State {
             glyph: Glyph::None,
-            label: plx_ui::fmt::time_left(ep.dur_ms - ep.resume_ms),
+            label: plx_ui::fmt::footer_left(ep.dur_ms - ep.resume_ms),
             progress: Some((ep.resume_ms as f32 / ep.dur_ms as f32).clamp(0.0, 1.0)),
         };
     }
@@ -463,19 +464,26 @@ fn draw_cell(
         widgets::STILL_SCRIM_H_1,
         widgets::STILL_SCRIM_A,
     );
-    widgets::still_line(
+    // The strip's footer: no show name (the page is inside one season of one show), no episode tag,
+    // and no focus cue (every cell plays, and the focus pop is the cue). Watched = the length and a
+    // muted tick; in progress = "Nm left" and the amber bar; not started = the length alone.
+    still_footer::draw_footer(
         p,
         drawn,
-        watch_state(ep),
         "",
-        &st.label,
-        true,
-        st.progress.is_some(),
+        &Footer {
+            tag: "",
+            status: &st.label,
+            right: match (st.progress, st.glyph) {
+                (Some(frac), _) => Right::Bar(frac),
+                (None, Glyph::Watched) => Right::Tick,
+                (None, _) => Right::None,
+            },
+            cue: None,
+            focus: 0.0,
+        },
         measure,
     );
-    if let Some(frac) = st.progress {
-        widgets::progress_bar(p, drawn, CARD_RADIUS, 5.0, frac);
-    }
 
     // Every episode's label block draws in the same ink; focus is marked by the shared
     // `ui::text_lift` treatment. The plate shows while the still pops or the text is lifted; the
@@ -643,22 +651,37 @@ mod tests {
         }
     }
 
+    /// **The strip's footer is one 24 px line 12 px above the card's bottom, inside the one-line
+    /// scrim, at every pop phase**, and the old full-bleed bar is gone from it (the bar is the
+    /// footer's own 4 px mark on the right).
     #[test]
-    fn the_state_line_clears_the_full_bleed_bar_at_every_pop_phase() {
-        const BAR_H: f32 = 5.0;
-        assert!(plx_ui::widgets::STILL_LINE_BOT > BAR_H);
-        assert!(
-            plx_ui::widgets::STILL_SCRIM_H_1
-                > plx_ui::widgets::STILL_LINE_BOT + plx_ui::widgets::STILL_GLYPH_D
-        );
+    fn the_strip_footer_stands_inside_the_one_line_scrim_at_every_pop_phase() {
         let card = Rect::new(0.0, 0.0, W, H);
         for scale in [1.0, 1.045, theme::EP_CARD_FOCUS_SCALE, plx_ui::widgets::CARD_FOCUS_SCALE] {
             let drawn = card.scaled(scale);
-            let bar = Rect::new(drawn.x, drawn.y + drawn.h - BAR_H, drawn.w, BAR_H);
-            assert_eq!((bar.x, bar.w), (drawn.x, drawn.w), "the bar is full bleed");
-            assert!((bar.y + bar.h - (drawn.y + drawn.h)).abs() < 0.01);
-            assert!(plx_ui::widgets::STILL_SCRIM_H_1 < drawn.h);
+            let line_top = drawn.y + drawn.h - still_footer::FOOTER_RISE - still_footer::FOOTER_LINE_H;
+            assert!(line_top > drawn.y + drawn.h - plx_ui::widgets::STILL_SCRIM_H_1, "scale {scale}: the line is on the scrim");
         }
+    }
+
+    /// **What the strip's footer says in each state**: the length alone for a fresh episode and a
+    /// watched one, `Nm left` for one in progress, and no season/episode tag on any (the page is
+    /// inside one season). The mark on the right (the bar, the tick) is drawn by the footer and is
+    /// graded in `ui::still_footer`.
+    #[test]
+    fn the_strip_footer_says_the_length_or_the_time_left_and_never_a_tag() {
+        let _g = plx_base::testlock::serial();
+        let min = 60_000;
+        let fresh = Episode { dur_ms: 48 * min, index: 4, ..Default::default() };
+        let watched = Episode { dur_ms: 48 * min, index: 4, watched: true, ..Default::default() };
+        let partial = Episode { dur_ms: 48 * min, resume_ms: 10 * min, index: 4, ..Default::default() };
+        let footer_of = |ep: &Episode| -> Vec<String> {
+            card_words(ep).into_iter().filter(|w| w.contains("48m") || w.contains("left")).collect()
+        };
+        assert_eq!(footer_of(&fresh), ["48m"]);
+        assert_eq!(footer_of(&watched), ["48m"]);
+        assert_eq!(footer_of(&partial), ["38m left"]);
+        assert!(!card_words(&partial).iter().any(|w| w.contains('\u{b7}') && w.starts_with('S')), "no season/episode tag on the strip");
     }
 
     fn cell_census(scale: f32, lift: &TextLift) -> Vec<(u64, Rect)> {

@@ -4039,6 +4039,27 @@ fn grid_header_press_dips_no_unindexed_member() {
     a_header_press_dips_no_unindexed_member::<Grid>();
 }
 
+/// **A held OK does not close what the pop opened.** `Tile::pop` is the card's pop spring as a
+/// 0..1 progress ([`super::pop_progress`]); the press dip multiplies the painted scale (1.09 x
+/// 0.918 is about 1.0, which `pop_factor` alone reads as "no pop") and must be taken back out for
+/// the pressed card, or the still footer's cue slot shuts at the moment of the press.
+#[test]
+fn a_pressed_cards_pop_progress_ignores_the_press_dip() {
+    let focus_scale = 1.09;
+    let view = FixtureView::default();
+    let src = Cards::new(vec![100, 101], false);
+    let key = FocusKey { entry: ENTRY, elem: 100 };
+    let popped = focus_scale;
+    for dip in [0.9, 0.918, 1.0] {
+        let cx = cx9_pressed(&view, 0, dip, Some(key), Some(key));
+        let s = super::press_scale(popped, 0, Some(0), &cx);
+        let p = super::pop_progress(s, 0, ENTRY, &src, &cx, focus_scale);
+        assert!((p - 1.0).abs() < 1e-4, "pressed at dip {dip}: the pop stays fully open, got {p}");
+        let other = super::pop_progress(1.0, 1, ENTRY, &src, &cx, focus_scale);
+        assert_eq!(other, 0.0, "a card the press does not own is untouched");
+    }
+}
+
 /// The focus read-out of a shelf that holds a slid window names the card by its place in the
 /// whole listing (`cdg`), not by its slot in the window (`cdi`): the two were the same number
 /// on every shelf once, and a reach graded on it could never pass the window length.
@@ -5609,7 +5630,7 @@ fn a_shelf_holds_a_style_built_at_runtime() {
 #[test]
 fn default_shelf_composition_keeps_the_label_before_the_source_overlay() {
     let src = Cards::new(vec![1], false);
-    let tile = super::Tile { rect: Rect::new(100.0, 200.0, 200.0, 100.0), scale: 1.0, radius: 10.0, focused: true };
+    let tile = super::Tile { rect: Rect::new(100.0, 200.0, 200.0, 100.0), scale: 1.0, radius: 10.0, focused: true, pop: 0.0 };
     let label = TileLabel::default();
     let draws = crate::draw_census::capture(|| src.compose(Painter::recording(), 0, &tile, &FixtureMeasure,
         Some(&label), |_, given| {
@@ -5617,4 +5638,72 @@ fn default_shelf_composition_keeps_the_label_before_the_source_overlay() {
             crate::draw_census::note(7777, tile.rect);
         }));
     assert_eq!(draws.iter().map(|(kind, _)| *kind).collect::<Vec<_>>(), [7777, TILE_PAINTED]);
+}
+
+/// The Continue Watching stills row's heading stands higher over its cards than a poster shelf's:
+/// the owner's boards (CW-12/13) put the heading's centre ~60 px above the card tops against the
+/// poster shelf's ~42, so [`theme::STILL_HEADING_RISE`] is a fact of the shared row style, not of
+/// the screen that mounts it. The pitch, and with it every card top, is the strip's own.
+#[test]
+fn the_stills_heading_stands_a_fixed_rise_higher_over_its_cards_than_a_posters() {
+    use crate::consts::{CARD_DY, TITLE_DY};
+    // The heading draws at `row_y - TITLE_DY - lift`, the cards at `row_y + CARD_DY`.
+    let over_cards = |style: RowStyle| CARD_DY + TITLE_DY + Shelf::new(ENTRY, style).heading_lift();
+    assert_eq!(over_cards(RowStyle::HOME), CARD_DY + TITLE_DY, "a poster shelf's heading stands at rest where it always did");
+    assert_eq!(
+        over_cards(RowStyle::STILL) - over_cards(RowStyle::HOME),
+        crate::theme::STILL_HEADING_RISE,
+        "the stills row's heading stands one named rise higher, at rest, before any tile has focus"
+    );
+    assert_eq!(RowStyle::STILL.pitch_fixed(), RowStyle::EPISODE.pitch_fixed(), "the rise moves the heading, never the cards under it");
+}
+
+/// The rise and the focus lift do not stack: a focused tile's glow spills up to `heading_lift_max`,
+/// and a heading already standing higher than that has cleared it.
+#[test]
+fn the_stills_heading_never_stands_lower_than_its_rise_whatever_the_focus_lift() {
+    use crate::card_row::{heading_lift_max, heading_lift_of};
+    let sty = RowStyle::STILL;
+    assert!(heading_lift_max(&sty) < crate::theme::STILL_HEADING_RISE, "the glow lift is already inside the rise");
+    for live in [0.0, 1.0, heading_lift_max(&sty)] {
+        assert_eq!(heading_lift_of(&sty, live), crate::theme::STILL_HEADING_RISE, "live lift {live}");
+    }
+    assert_eq!(heading_lift_of(&RowStyle::HOME, 4.0), 4.0, "a poster shelf has no rise: its live lift stands");
+}
+
+/// **Focusing a tile never changes the spacing between tiles** (owner, 2026-11, the Continue Watching
+/// stills): with focus on card `i`, every OTHER card stands at its rest rect at every point of the pop,
+/// for the stills style as for a poster shelf; only the focused card grows, and at 1.09 a 420 px tile's
+/// ~19 px a side stays inside the 28 px gap, so it never overlaps a neighbour.
+#[test]
+fn focusing_a_tile_moves_no_other_tile_at_any_pop_progress() {
+    for style in [RowStyle::STILL, RowStyle::HOME, RowStyle::EPISODE] {
+        let mut r = Rig::<Shelf> {
+            sect: Shelf::new(ENTRY, style),
+            src: Cards::new((0..8u32).map(|i| 100 + i).collect(), false),
+            view: FixtureView::default(),
+            focus: None,
+            press: 1.0,
+            pressed: None,
+            ms: 0,
+        };
+        r.run(2);
+        let rest: Vec<Rect> = (100..108u32).map(|e| Section::place(&r.sect, &r.cx(), &r.src, e, At::Drawn).expect("a card").rect).collect();
+        r.land_focus(102, By::Dir);
+        let (mut mid, mut frames) = (false, 0);
+        while frames < 120 {
+            r.run(1);
+            frames += 1;
+            let pop = r.scale(102).expect("the focused card");
+            mid |= pop > 1.02 && pop < style.focus_scale - 0.02;
+            for (k, e) in (100..108u32).enumerate().filter(|(_, e)| *e != 102) {
+                let now = Section::place(&r.sect, &r.cx(), &r.src, e, At::Drawn).expect("a card").rect;
+                assert_eq!((now.x, now.y, now.w, now.h), (rest[k].x, rest[k].y, rest[k].w, rest[k].h),
+                    "style w={} frame {frames} (pop {pop}): card {e} moved while 102 held focus", style.w);
+            }
+        }
+        assert!(mid, "the premise: the pop was sampled part-way (style w={})", style.w);
+        let popped = Section::place(&r.sect, &r.cx(), &r.src, 102, At::Drawn).expect("the focused card").rect;
+        assert!(popped.w > rest[2].w * 1.05, "the focused card did grow (style w={})", style.w);
+    }
 }

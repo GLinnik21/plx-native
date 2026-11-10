@@ -162,8 +162,9 @@ the final release over it either: reinstall the final by hand once it is out.
 ## Privacy
 
 **Your library data never reaches me.** The app talks to your Plex server, to `plex.tv` to sign in,
-and to `discover.provider.plex.tv` for cast biographies and the Watchlist (reading it, and adding or
-removing a title when you ask, with the active profile's plex.tv token).
+and to `discover.provider.plex.tv` for cast biographies, for the Watchlist (reading it, and adding or
+removing a title when you ask, with the active profile's plex.tv token) and for the cover artwork of
+each title in Continue Watching (which tells Plex which titles are in that row for the profile in use).
 
 **Crash reports and usage analytics are off until you turn them on** — two separate first-run
 questions, each answerable with Don't Share, both reversible later under Account → Settings →

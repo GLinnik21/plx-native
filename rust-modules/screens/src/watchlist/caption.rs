@@ -75,5 +75,5 @@ pub fn label(row: &WatchRow, state: TileState, policy: &CaptionPolicy, copy: &Li
         season_count: copy.season_count,
         ..Default::default()
     };
-    crate::registry::captions::label_with_states(policy, &facts, state_sentence(state, row.release.as_deref()), false)
+    crate::registry::captions::label_with_states(policy, &facts, state_sentence(state, row.release.as_deref()))
 }

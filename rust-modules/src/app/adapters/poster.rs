@@ -45,9 +45,16 @@
 //! ~140 bytes (an ordinary relative thumb) to ~177 (an absolute headshot — see [`built_key`])
 //! into a fixed [`PT_KEYLEN`]-byte array (see [`Pslot::key`]), and a `u16` compare is also the
 //! cheaper half of the per-frame identity scan, so it goes first.
+mod baked;
+mod card;
+mod cover;
 mod fan;
+mod miss;
 mod refresh;
 mod trace;
+mod workers;
+#[cfg(test)]
+mod baked_tests;
 
 use plx_gfx::img;
 use plx_plex::plex::ServerId;
@@ -651,6 +658,12 @@ fn built_key(srv: ServerId, path: &str, w: c_int, h: c_int, png: bool) -> Option
             if let Some(fan) = fan::fan_key(path) {
                 return fan;
             }
+            // The two app-baked deck kinds are already synthetic keys (`/plx/cover/{hex}`,
+            // `/plx/card/{logo_rk}{art}`): they name a recipe, not a server path, carry no token by
+            // construction, and are used as they stand (`plex::artwork` builds and parses them).
+            if is_baked_key(path) {
+                return path.to_owned();
+            }
             transcode_request(c, path, w, h, png)
         })
     });
@@ -659,6 +672,18 @@ fn built_key(srv: ServerId, path: &str, w: c_int, h: c_int, png: bool) -> Option
         return None;
     }
     Some(s)
+}
+
+/// Is `path` a well-formed key of one of the two app-baked deck kinds (a cover or a composite)?
+fn is_baked_key(path: &str) -> bool {
+    plx_plex::plex::artwork::cover_parts(path).is_some() || plx_plex::plex::artwork::card_parts(path).is_some()
+}
+
+/// The per-frame twin of [`is_baked_key`]: a prefix test, for the paths that run for every card
+/// every frame ([`settled_failed`], [`lookup`]'s claim). A key reaching them was built by
+/// [`built_key`], so the prefix is enough.
+fn baked_prefix(key: &str) -> bool {
+    key.starts_with(plx_plex::plex::artwork::COVER_PREFIX) || key.starts_with(plx_plex::plex::artwork::CARD_PREFIX)
 }
 
 /// A public immutable PNG is named by its SHA-256 filename. Its key carries no account or server.
@@ -911,13 +936,18 @@ fn settled_failed(srv: ServerId, key_s: &str) -> bool {
     let g = store();
     let cache_gen = plx_platform::imgcache::generation();
     let grant_epoch = plx_plex::plex::client_for(srv).map_or(0, |c| c.grant_epoch());
-    (0..PT_CAP).any(|i| {
+    let slot_failed = (0..PT_CAP).any(|i| {
         let s = &g.slots[i];
         s.state == P_FAILED
             && s.cache_gen == cache_gen
             && s.grant_epoch == grant_epoch
             && same_art(s, srv, key_s.as_bytes())
-    })
+    });
+    drop(g);
+    // A deck card's cover or composite that settled as a miss stays one after its slot is recycled
+    // (a `P_FAILED` slot is a victim once no draw touched it for `WANT_STALE_FRAMES` frames, and a
+    // recycled key reads "never requested"): the session's miss set answers for it.
+    slot_failed || (baked_prefix(key_s) && miss::known(srv, key_s, miss::Currency::live(srv)))
 }
 
 /// The slot a miss claims, as a PURE function of what the store looks like: the first EMPTY, else
@@ -1247,6 +1277,15 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
             trace::lost_id(trace::current(), if s.cache_gen != cache_gen { "cache_gen" } else { "grant_epoch" });
         }
     }
+    // A deck cover or composite that settled as a miss this session is not asked for again (not by
+    // a draw, not by a warm) while the identity it failed under is in force: its slot was recycled,
+    // the miss set was not ([`miss`]). `Known`: a prefetch walks on to its next candidate.
+    if baked_prefix(key_s)
+        && miss::known(srv, key_s, miss::Currency { cache_gen, grant_epoch, token_gen })
+    {
+        trace::outcome("miss_known");
+        return (None, Warm::Known);
+    }
     // Admit speculation only into a quiet visible queue, and never enough of it to occupy every
     // worker. `Full` tells the caller this frame's one prefetch attempt is spent without claiming
     // a slot.
@@ -1505,10 +1544,21 @@ fn next_wanted(slots: &[Pslot; PT_CAP]) -> Option<usize> {
     // requests for rows that are gone behind the ones on screen, and a worker that served them in
     // slot order would spend its seconds on pictures nobody sees. Within the newest frame the
     // lowest LRU age is the card drawn first, i.e. reading order. Speculation comes last.
+    //
+    // At most ONE cover is in flight store-wide: a cover is a plex.tv read plus a fetch from Plex's
+    // image host (a WAN round-trip pair, up to the transport's whole budget when the link is down),
+    // so a second cover slot waits while one is LOADING and the other workers keep serving posters.
+    let cover_busy = slots.iter().any(|s| s.state == P_LOADING && is_cover_slot(s));
+    let claimable = |i: usize| slots[i].state == P_WANT && !(cover_busy && is_cover_slot(&slots[i]));
     (0..PT_CAP)
-        .filter(|&i| slots[i].state == P_WANT && slots[i].visible)
+        .filter(|&i| claimable(i) && slots[i].visible)
         .max_by_key(|&i| (slots[i].frame, std::cmp::Reverse(slots[i].use_)))
-        .or_else(|| (0..PT_CAP).find(|&i| slots[i].state == P_WANT))
+        .or_else(|| (0..PT_CAP).find(|&i| claimable(i)))
+}
+
+/// Is this slot a deck cover (`/plx/cover/…`)?
+fn is_cover_slot(s: &Pslot) -> bool {
+    key_bytes(s).starts_with(plx_plex::plex::artwork::COVER_PREFIX.as_bytes())
 }
 
 #[inline]
@@ -1763,6 +1813,21 @@ fn warn_fetch_failed(srv: ServerId, cause: ArtFail) {
     }
 }
 
+/// A deck card's cover or composite settled as a miss: its card draws the next rung. Logged ONCE per
+/// kind per process, with no title, id or URL: a deck of coverless titles would otherwise write a
+/// line each, and the cause that matters (no cover, no logo, no network) is in `discover:` /
+/// `posters: art fetch FAILED` lines of its own.
+fn log_baked_miss(cover: bool) {
+    static LOGGED: [std::sync::atomic::AtomicBool; 2] =
+        [std::sync::atomic::AtomicBool::new(false), std::sync::atomic::AtomicBool::new(false)];
+    if !LOGGED[cover as usize].swap(true, Ordering::Relaxed) {
+        plx_base::eventlog::log(&format!(
+            "posters: a deck card's {} settled as a miss - the card draws its next artwork (further ones like this are silent)",
+            if cover { "Plex cover" } else { "logo composite" }
+        ));
+    }
+}
+
 /// Cumulative network attempts, including stale refreshes. No URL or credential is logged.
 static FETCHES: AtomicU64 = AtomicU64::new(0);
 
@@ -1857,6 +1922,63 @@ fn load_art<T>(
         }
     }
     out
+}
+
+/// The pure half of [`refetch_art`]: what a server's answer yields. The decoded art (`None` for a
+/// failed fetch, an empty body or bytes the decoder rejects) and the bytes to write back under the
+/// source's transcode key: only bytes that DECODED, and only while the bake is still the identity
+/// in force, so a bad answer never replaces a good image and a stale bake never files under a
+/// namespace it no longer belongs to.
+fn refetched<T>(
+    outcome: plx_plex::plex::ArtFetch,
+    still_current: impl FnOnce() -> bool,
+    mut decode: impl FnMut(&[u8]) -> Option<T>,
+) -> (Option<T>, Option<Vec<u8>>) {
+    match outcome {
+        plx_plex::plex::ArtFetch::Bytes(b) if !b.is_empty() => match decode(&b) {
+            Some(art) => {
+                let write = still_current();
+                (Some(art), write.then_some(b))
+            }
+            None => (None, None),
+        },
+        _ => (None, None),
+    }
+}
+
+/// Fetch one built request from the SERVER, ignoring what the disk holds, and decode it: the
+/// refresh a composite's stale source needs NOW rather than on the refresh lane ([`load_art`]
+/// serves a stale entry as a hit and only reports it). `load_art`'s write, after a successful
+/// decode and under the transcode key, is made here too (see [`refetched`]), so the hero and the next
+/// bake see the fresh source. `still_current` is asked once, after the bytes decoded.
+fn refetch_art<T>(
+    client: &plx_plex::plex::Client,
+    srv: ServerId,
+    key_s: &str,
+    cache_gen: u64,
+    still_current: impl FnOnce() -> bool,
+    decode: impl FnMut(&[u8]) -> Option<T>,
+) -> Option<T> {
+    if cache_gen != plx_platform::imgcache::generation() {
+        return None;
+    }
+    FETCHES.fetch_add(1, Ordering::Relaxed);
+    let outcome = client.fetch_built_outcome(key_s);
+    if !matches!(outcome, plx_plex::plex::ArtFetch::Bytes(_)) {
+        warn_fetch_failed(srv, ArtFail::NoResponse);
+    }
+    let (art, write) = refetched(outcome, still_current, decode);
+    if let Some(bytes) = write {
+        let disk = if crate::dev::scenarios::imagecache_bypass_armed() {
+            None
+        } else {
+            plx_platform::imgcache::classify(&disk_namespace(client), key_s)
+        };
+        if let Some(k) = &disk {
+            plx_platform::imgcache::write_at(cache_gen, k, &bytes);
+        }
+    }
+    art
 }
 
 /// The worker's real [`fan::FanIo`]: the baked PNG under its own disk key, the collection's
@@ -1993,7 +2115,7 @@ fn load_content_png<T>(url: &str, sha: plx_data::hudpacks::Sha, cache_gen: u64,
 
 fn poster_worker() {
     loop {
-        let (idx, key_s, srv, gen, cache_gen, token_gen) = {
+        let (idx, key_s, srv, gen, cache_gen, token_gen, grant_epoch) = {
             let mut g = store();
             let idx = loop {
                 if g.quit { return; }
@@ -2006,13 +2128,14 @@ fn poster_worker() {
             };
             let s = &mut g.slots[idx];
             s.state = P_LOADING;
-            (idx, String::from_utf8_lossy(key_bytes(s)).into_owned(), s.srv, s.gen, s.cache_gen, s.token_gen)
+            (idx, String::from_utf8_lossy(key_bytes(s)).into_owned(), s.srv, s.gen, s.cache_gen, s.token_gen, s.grant_epoch)
         };
         trace::worker_start(idx, gen);
         let (mut w, mut h) = (0, 0);
         let mut px = std::ptr::null_mut();
         let mut stale = None;
         let mut transient = false;
+        let mut baked_final = false;
         // Revoked servers cannot use disk as a route around sign-out. Keep this client snapshot
         // for both identity and transport; a later registry repoint must not mix the two.
         if let Some(sha) = (srv == ServerId::UNSET).then(|| content_png(&key_s)).flatten() {
@@ -2026,7 +2149,37 @@ fn poster_worker() {
         } else if let Some(client) = plx_plex::plex::client_for(srv)
             .filter(|c| cache_gen == plx_platform::imgcache::generation() && c.token_gen() == token_gen)
         {
-            if let Some((rk, stamp)) = fan::parse_fan_key(&key_s) {
+            let hex = plx_plex::plex::artwork::cover_parts(&key_s);
+            let card = plx_plex::plex::artwork::card_parts(&key_s);
+            if hex.is_some() || card.is_some() {
+                // A deck card's cover or composite. Never `Transient` for a cover (every failure is a
+                // session-latched miss, see `cover`), and a composite's `Transient` is a server that
+                // did not answer: parked for the store's backoff like any art.
+                let (bake, disk) = match (hex, card) {
+                    (Some(hex), _) => workers::bake_cover(client, hex, cache_gen, token_gen),
+                    (None, Some((rk, art))) => workers::bake_card(client, rk, art, cache_gen, token_gen),
+                    (None, None) => unreachable!("checked above"),
+                };
+                match bake.got {
+                    fan::Got::Ok(out) => {
+                        px = img::img_malloc_copy(&out.px, || format!("{}x{} deck card art", out.w, out.h));
+                        (w, h) = (out.w as c_int, out.h as c_int);
+                        if bake.stale {
+                            stale = disk.map(|k| (client, k));
+                        }
+                    }
+                    fan::Got::Final => {
+                        miss::settle(srv, &key_s, miss::Currency { cache_gen, grant_epoch, token_gen }, bake.lasting);
+                        log_baked_miss(hex.is_some());
+                        baked_final = true;
+                        // A stale marker is revalidated like any stale entry.
+                        if bake.stale {
+                            stale = disk.map(|k| (client, k));
+                        }
+                    }
+                    fan::Got::Transient => transient = true,
+                }
+            } else if let Some((rk, stamp)) = fan::parse_fan_key(&key_s) {
                 match bake_fan(client, srv, rk, stamp, cache_gen, token_gen) {
                     fan::Got::Ok(out) => {
                         px = img::img_malloc_copy(&out.px, || format!("{}x{} collection {rk} fan", out.w, out.h));
@@ -2077,10 +2230,26 @@ fn poster_worker() {
             } else { false }
         };
         if !accepted && !px.is_null() { img::img_free(px); }
-        if accepted {
-            if let Some((client, key)) = stale {
-                refresh::enqueue(client, key_s, key, cache_gen, token_gen);
-            }
+        queue_refresh(accepted, baked_final, stale, key_s, cache_gen, token_gen);
+    }
+}
+
+/// Queue the stale source this load was served from for revalidation, once its answer is out: a
+/// decode the store took (`accepted`), or a baked kind's settled `Final` (`baked_final`: a "no
+/// cover" marker older than the disk tier's `REFRESH_AFTER` answers without dialling and decodes
+/// nothing, so no pixels are ever accepted for it, yet the title may have gained a cover since).
+/// A load that ended before any answer (a transient failure) is the store's retry, not a refresh.
+fn queue_refresh(
+    accepted: bool,
+    baked_final: bool,
+    stale: Option<(&'static plx_plex::plex::Client, plx_platform::imgcache::DiskKey)>,
+    key_s: String,
+    cache_gen: u64,
+    token_gen: u32,
+) {
+    if accepted || baked_final {
+        if let Some((client, key)) = stale {
+            refresh::enqueue(client, key_s, key, cache_gen, token_gen);
         }
     }
 }
@@ -2231,7 +2400,7 @@ mod tests {
     /// the load-bearing half: an owned `BrowseStore::pump` adopts every registered slot as a source
     /// and spawns a discovery worker for it, so a server left behind here would have another module's tests
     /// dialling a dead loopback port on a background thread.
-    struct Fresh(#[allow(dead_code)] plx_base::testlock::Serial);
+    pub(super) struct Fresh(#[allow(dead_code)] plx_base::testlock::Serial);
     impl Drop for Fresh {
         fn drop(&mut self) {
             plx_plex::plex::reset_servers_for_test();
@@ -2240,7 +2409,7 @@ mod tests {
     }
     /// `register_for_test`, not the public `register`: the latter resolves the device id through
     /// `session::load`, which mints and PERSISTS a uuid on a host that has no session file.
-    fn one_server() -> (Fresh, ServerId, &'static str) {
+    pub(super) fn one_server() -> (Fresh, ServerId, &'static str) {
         let g = plx_base::testlock::serial();
         plx_plex::plex::reset_servers_for_test();
         reset_key_memo();
@@ -2278,7 +2447,7 @@ mod tests {
 
     /// Build a key through the real [`built_key`] — the same call `lookup` makes for a draw —
     /// so these grade the string a draw actually receives, not a reimplementation of it.
-    fn key_for(srv: ServerId, src: &str, w: c_int, h: c_int, png: c_int) -> String {
+    pub(super) fn key_for(srv: ServerId, src: &str, w: c_int, h: c_int, png: c_int) -> String {
         built_key(srv, src, w, h, png != 0).map(|k| k.to_string()).unwrap_or_default()
     }
 

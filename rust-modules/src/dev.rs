@@ -61,6 +61,12 @@ pub(crate) mod uriprobe;
 #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
 pub(crate) mod uri_product;
 
+/// The exported-window override (`plxnative-uriexported`): the production URI backend bound to the
+/// exported window on a webOS 5+ set the evidence table has not admitted. The application's
+/// composition reads it once, at `install_uri_product`.
+#[cfg(all(feature = "devtriggers", feature = "play-uri"))]
+pub(crate) mod uri_exported;
+
 /// The demo video's frame dump (simulator only): see the module doc.
 #[cfg(all(feature = "hostsim", feature = "devtriggers"))]
 pub(crate) mod framedump;
@@ -75,7 +81,7 @@ pub(crate) mod framedump;
 // `test` as well as the feature: `any_trigger_present` is the only caller and it is cfg'd out of a
 // release build, but the test below asserts this list's contents and runs with default features.
 #[cfg(any(feature = "devtriggers", test))]
-const DIAG: [&str; 49] = [
+const DIAG: [&str; 50] = [
     "plxnative-diag.log",
     "plxnative-hud-text-metrics",
     "plxnative-hud-text-metrics.json",
@@ -204,6 +210,12 @@ const DIAG: [&str; 49] = [
     // a non-DIAG trigger would suppress the who's-watching picker. It is listed here so that
     // `ci/check-package.py` greps the shipped bytes for the name.
     "plxnative-uridev",
+    // The exported-window override (`dev::uri_exported`): presence arms it, read once at boot. It
+    // changes which display path one play's backend is composed with and nothing about the boot, so
+    // the tester signs in and picks a profile as always; a non-DIAG trigger would suppress the
+    // who's-watching picker, and a stale file would keep suppressing it. Listed so that
+    // `ci/check-package.py` greps the shipped bytes for the name.
+    "plxnative-uriexported",
 ];
 
 /// **Turn on the TELEVISION'S OWN GStreamer logging** — `/tmp/plxnative-gstlog`.
@@ -1348,6 +1360,16 @@ mod tests {
     #[test]
     fn uridev_trigger_is_diagnostic() {
         assert!(super::DIAG.contains(&"plxnative-uridev"));
+    }
+
+    // ---- plxnative-uriexported (the exported-window override) ----
+
+    /// The override changes the display path one play's backend is composed with, never which screen
+    /// the app boots to: a tester arms it before launch, then signs in and picks a profile as always.
+    /// Out of DIAG, the file would suppress the who's-watching picker on every boot it stays in `/tmp`.
+    #[test]
+    fn uriexported_trigger_is_diagnostic() {
+        assert!(super::DIAG.contains(&"plxnative-uriexported"));
     }
 
     // ---- plxnative-playurl (the pipeline test tier's one trigger) ----

@@ -46,6 +46,8 @@ pub mod origin;
 /// What a caller may add to a request's headers, for both transports (module doc).
 pub mod headers;
 
+pub mod connect_only;
+
 type CURL = c_void;
 pub type curl_slist = c_void;
 
@@ -134,6 +136,13 @@ const CURLOPT_NOSIGNAL: c_int = 99;
 /// `curl/curl.h`; both have existed since libcurl 7.7. Set only by [`keypin::apply`].
 const CURLOPT_FRESH_CONNECT: c_int = 74;
 const CURLOPT_FORBID_REUSE: c_int = 75;
+/// `CURLOPT_SSL_SESSIONID_CACHE` (LONG + 150): `0` stops libcurl from looking up a cached TLS
+/// session for this handle AND from storing the one it negotiates, so the handshake is a full one.
+/// Read off `curl/curl.h`; the option has existed since libcurl 7.16.0, long before the television's
+/// 7.53.1. Set only by [`keypin::apply`], on key-mode handles: since libcurl 8.12 the session cache
+/// belongs to the multi handle (`Curl_ssl_scache`), so every easy handle one multi runs shares it, and
+/// a handle that resumed a session gets no certificate chain from the TLS stack (see `apply`).
+const CURLOPT_SSL_SESSIONID_CACHE: c_int = 150;
 const CURLOPT_CONNECTTIMEOUT: c_int = 78;
 const CURLOPT_TIMEOUT: c_int = 13;
 const CURLOPT_TIMEOUT_MS: c_int = 155;
@@ -1277,11 +1286,12 @@ mod loopback_pms {
     }
 
     /// What [`spawn_observed`] saw: the connections it accepted (every TCP accept, including one
-    /// whose TLS handshake the client then abandoned) and every complete request it read, headers
-    /// and body, verbatim.
+    /// whose TLS handshake the client then abandoned), the handshakes among them that RESUMED a TLS
+    /// session, and every complete request it read, headers and body, verbatim.
     pub struct Observed {
         pub port: u16,
         pub accepted: Arc<std::sync::atomic::AtomicUsize>,
+        pub resumed: Arc<std::sync::atomic::AtomicUsize>,
         pub requests: Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
     }
 
@@ -1289,6 +1299,21 @@ mod loopback_pms {
         /// TCP connections accepted so far.
         pub fn accepted(&self) -> usize {
             self.accepted.load(std::sync::atomic::Ordering::Acquire)
+        }
+
+        /// Connections whose TLS handshake resumed a session instead of presenting the certificate,
+        /// counted once the connection's first request is in. The doubles keep rustls's default session
+        /// store, so a client that offers a cached session is resumed.
+        pub fn resumed(&self) -> usize {
+            self.resumed.load(std::sync::atomic::Ordering::Acquire)
+        }
+    }
+
+    /// Count `conn` in `resumed` when its handshake resumed a session. Called once per connection,
+    /// after the first request has been read, which is when rustls knows what kind of handshake it was.
+    fn note_resumption(conn: &rustls::ServerConnection, resumed: &std::sync::atomic::AtomicUsize) {
+        if conn.handshake_kind() == Some(rustls::HandshakeKind::Resumed) {
+            resumed.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         }
     }
 
@@ -1490,21 +1515,27 @@ mod loopback_pms {
         let port = listener.local_addr().unwrap().port();
         let tls_cfg = tls_config(&cert);
         let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let resumed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let (count, log) = (Arc::clone(&accepted), Arc::clone(&requests));
+        let (count, resumptions, log) = (Arc::clone(&accepted), Arc::clone(&resumed), Arc::clone(&requests));
         let answer = Arc::new(answer);
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut sock) = stream else { continue };
                 count.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-                let (tls_cfg, log, answer) = (Arc::clone(&tls_cfg), Arc::clone(&log), Arc::clone(&answer));
+                let (tls_cfg, resumptions, log, answer) =
+                    (Arc::clone(&tls_cfg), Arc::clone(&resumptions), Arc::clone(&log), Arc::clone(&answer));
                 std::thread::spawn(move || {
                     let Ok(mut conn) = rustls::ServerConnection::new(tls_cfg) else { return };
                     let mut tls = rustls::Stream::new(&mut conn, &mut sock);
+                    let mut first = true;
                     loop {
                         let request = read_whole_request(&mut tls);
                         if request.is_empty() {
                             return;
+                        }
+                        if std::mem::take(&mut first) {
+                            note_resumption(tls.conn, &resumptions);
                         }
                         let reply = answer(&request);
                         log.lock().unwrap_or_else(|e| e.into_inner()).push(request);
@@ -1515,7 +1546,7 @@ mod loopback_pms {
                 });
             }
         });
-        Observed { port, accepted, requests }
+        Observed { port, accepted, resumed, requests }
     }
 
     /// One step of a [`spawn_streaming`] script.
@@ -1543,14 +1574,16 @@ mod loopback_pms {
         let port = listener.local_addr().unwrap().port();
         let tls_cfg = tls_config(&cert);
         let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let resumed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let (count, log) = (Arc::clone(&accepted), Arc::clone(&requests));
+        let (count, resumptions, log) = (Arc::clone(&accepted), Arc::clone(&resumed), Arc::clone(&requests));
         let steps = Arc::new(steps);
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut sock) = stream else { continue };
                 count.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-                let (tls_cfg, log, steps) = (Arc::clone(&tls_cfg), Arc::clone(&log), Arc::clone(&steps));
+                let (tls_cfg, resumptions, log, steps) =
+                    (Arc::clone(&tls_cfg), Arc::clone(&resumptions), Arc::clone(&log), Arc::clone(&steps));
                 std::thread::spawn(move || {
                     let _ = sock.set_read_timeout(Some(std::time::Duration::from_secs(30)));
                     let Ok(mut conn) = rustls::ServerConnection::new(tls_cfg) else { return };
@@ -1559,6 +1592,7 @@ mod loopback_pms {
                     if request.is_empty() {
                         return;
                     }
+                    note_resumption(tls.conn, &resumptions);
                     log.lock().unwrap_or_else(|e| e.into_inner()).push(request);
                     if !matches!(steps.first(), Some(StreamStep::Status(_))) {
                         let head = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n";
@@ -1601,7 +1635,7 @@ mod loopback_pms {
                 });
             }
         });
-        Observed { port, accepted, requests }
+        Observed { port, accepted, resumed, requests }
     }
 
     /// A loopback double that only ever speaks plaintext HTTP — for the "HTTPS fails" E2E
@@ -2211,13 +2245,8 @@ fn request_tls_sink(
         unsafe {
             macro_rules! require_setopt {
                 ($call:expr, $name:literal) => {{
-                    let rc = $call;
-                    if rc != 0 {
-                        plx_base::eventlog::log(&format!(
-                            "net: libcurl refused security option {} (rc={rc}); request cancelled",
-                            $name
-                        ));
-                        return Err(RequestError::Transport.into());
+                    if let Err(error) = require_option($call, $name) {
+                        return Err(error.into());
                     }
                 }};
             }
@@ -2329,10 +2358,8 @@ fn request_tls_sink(
                 // Refusing here is a deliberate over-reaction — if we could not select the roots we
                 // meant to, the honest report is that the send did not happen.
                 TlsCfg::CaBundle(p) => {
-                    let rc = curl_easy_setopt_ptr(easy.0, CURLOPT_CAINFO, p.as_ptr() as *const c_void);
-                    if rc != 0 {
-                        plx_base::eventlog::log(&format!("net: this libcurl refuses CURLOPT_CAINFO (rc={rc}) — refusing to send against an unknown trust store"));
-                        return Err(RequestError::Transport.into());
+                    if let Err(error) = require_trust_store(curl_easy_setopt_ptr(easy.0, CURLOPT_CAINFO, p.as_ptr() as *const c_void)) {
+                        return Err(error.into());
                     }
                 }
                 TlsCfg::Pinned(p) => {
@@ -2914,8 +2941,26 @@ pub fn https_get_public_bounded(url: &str, max_body: usize) -> Result<Resp, Requ
     request_result_evidence(url, &[], "GET", None, API, true, Some(max_body), None, false)
 }
 
-/// The `nowan` gate shared by the three resolver doors ([`request_tls_result`],
-/// [`crate::range_io`] and [`crate::stream`]): `true` when `/tmp/plxnative-nowan` is armed and
+fn require_option(rc: c_int, option: &str) -> Result<(), RequestError> {
+    if rc == 0 {
+        return Ok(());
+    }
+    plx_base::eventlog::log(&format!("net: libcurl refused security option {option} (rc={rc}); request cancelled"));
+    Err(RequestError::Transport)
+}
+
+fn require_trust_store(rc: c_int) -> Result<(), RequestError> {
+    if rc == 0 {
+        return Ok(());
+    }
+    plx_base::eventlog::log(&format!(
+        "net: this libcurl refuses CURLOPT_CAINFO (rc={rc}) — refusing to send against an unknown trust store"
+    ));
+    Err(RequestError::Transport)
+}
+
+/// The `nowan` gate shared by the four resolver doors ([`request_tls_result`],
+/// [`crate::range_io`], [`crate::stream`] and [`connect_only`]): `true` when `/tmp/plxnative-nowan` is armed and
 /// `host` is a NAME rather than a literal, i.e. when a dead resolver would have refused it. The
 /// `slow` variant first spends `connect_s`, the budget a worker would have lost waiting on that
 /// resolver. `false` without the trigger, and at compile time without `devtriggers`.
@@ -3115,8 +3160,8 @@ pub mod keypin {
     use super::{
         c_int, c_long, curl_easy_setopt_long, curl_easy_setopt_ptr, peer_leaf_pin, tls_verify_why,
         wall_clock_year, CURL, CURLOPT_CAINFO, CURLOPT_CERTINFO, CURLOPT_FORBID_REUSE,
-        CURLOPT_FRESH_CONNECT, CURLOPT_PINNEDPUBLICKEY, CURLOPT_SSL_VERIFYHOST,
-        CURLOPT_SSL_VERIFYPEER,
+        CURLOPT_FRESH_CONNECT, CURLOPT_PINNEDPUBLICKEY, CURLOPT_SSL_SESSIONID_CACHE,
+        CURLOPT_SSL_VERIFYHOST, CURLOPT_SSL_VERIFYPEER,
     };
     use std::collections::HashMap;
     use std::ffi::{c_void, CStr};
@@ -3830,15 +3875,28 @@ pub mod keypin {
     /// asked for so [`confirm`] can check the key itself too, in case a backend accepts the pin
     /// option and never enforces it.
     ///
-    /// **Every key-mode handle does its own handshake.** `CURLOPT_FRESH_CONNECT` and
+    /// **Every key-mode handle does its own FULL handshake.** `CURLOPT_FRESH_CONNECT` and
     /// `CURLOPT_FORBID_REUSE` are set before `VERIFYPEER` goes to 0, so the handle never takes a
-    /// cached connection and leaves none behind. A reused connection performs no handshake: there
+    /// cached connection and leaves none behind, and `CURLOPT_SSL_SESSIONID_CACHE` is 0, so it
+    /// neither resumes a cached TLS session nor stores one. A reused connection performs no
+    /// handshake, and a resumed session performs one that carries no certificate: either way there
     /// would be no certificate for [`confirm`] to read (the open would be refused as a pin
-    /// mismatch), and the pin and the name would not have been checked for this request at all. It
-    /// also covers libcurl 7.53.1, where the pinned key is not part of the connection-reuse match,
-    /// so a key-mode handle could otherwise ride a connection set up under different rules. The cost
-    /// is one TLS handshake per key-mode request, accepted because key mode is a degraded state
-    /// (a wrong clock) that the first strict success ends.
+    /// mismatch, rc 90), and the pin and the name would not have been checked for this request at
+    /// all. libcurl says so itself for the second case (`Curl_ossl_check_peer_cert` skips `CERTINFO`
+    /// for a reused session: "Reused sessions do not have cert chains"). The session cache is the
+    /// one that moved: before libcurl 8.12 it belonged to each easy handle, so the fresh handle every
+    /// attempt gets never found a session; from 8.12 it belongs to the multi handle
+    /// (`Curl_ssl_scache`), and a [`crate::range_io::CurlSource`], which keeps one multi across its
+    /// attempts, resumed the session its previous key-mode attempt left there — Ubuntu 26.04's
+    /// libcurl 8.18 over OpenSSL 3.5 failed every key-mode seek that way. It also covers libcurl
+    /// 7.53.1, where the pinned key is not part of the connection-reuse match, so a key-mode handle
+    /// could otherwise ride a connection set up under different rules. The cost is one full TLS
+    /// handshake per key-mode request, accepted because key mode is a degraded state (a wrong
+    /// clock) that the first strict success ends. Strict and roots-mode handles keep their session
+    /// cache: a `CurlSource`'s read no certificate chain back, and the control plane's one that does
+    /// (to learn a key) is a fresh easy handle per request, which shares no cache. Key mode stores no
+    /// session at all, so none can be offered to a handle that verifies (libcurl 7.53.1 matches a
+    /// session on `verifypeer`, `verifyhost` and the CA settings, not on the pin; 8.12+ adds the pin).
     ///
     /// # Safety
     /// `easy` is a live curl easy handle; `pin` outlives the transfer (libcurl 7.17+ copies it,
@@ -3853,6 +3911,7 @@ pub mod keypin {
             (CURLOPT_CERTINFO, 1),
             (CURLOPT_FRESH_CONNECT, 1),
             (CURLOPT_FORBID_REUSE, 1),
+            (CURLOPT_SSL_SESSIONID_CACHE, 0),
             (CURLOPT_SSL_VERIFYHOST, 2),
             (CURLOPT_SSL_VERIFYPEER, 0),
         ] {
@@ -5175,5 +5234,138 @@ mod peer_pin_tests {
         assert!(!peer_pin_wanted("https://lab.local/x", &Tls::Pinned("sha256//x"), false), "verification off");
         assert!(!peer_pin_wanted("https://pms.plex.direct/identity", &ca, true), "a redirect can change the peer");
         assert!(!peer_pin_wanted("", &ca, false));
+    }
+}
+
+/// **A key-mode handle does its own FULL handshake, however many transfers it runs.**
+/// `keypin::apply` sets `CURLOPT_SSL_SESSIONID_CACHE` to 0 for the reason its doc gives: a handle
+/// that resumed a TLS session gets no certificate chain from libcurl, so [`keypin::confirm`] has
+/// nothing to read and refuses a server whose key is exactly the remembered one (rc 90). From libcurl
+/// 8.12 the session cache belongs to the multi handle, so what a handle resumes is what an earlier
+/// handle of the same multi left behind — Ubuntu 26.04's libcurl 8.18 over OpenSSL 3.5 broke every
+/// key-mode seek of a `range_io::CurlSource` that way.
+///
+/// These tests put that cache in front of every libcurl, whatever version it is, through a SHARE
+/// handle (`CURL_LOCK_DATA_SSL_SESSION`, libcurl 7.23+): each transfer is a fresh easy handle, as
+/// each attempt of a `CurlSource` is, and the handles share one session cache, as the multi's
+/// handles do from 8.12. The double counts the handshakes it was asked to resume.
+#[cfg(test)]
+mod key_mode_session_tests {
+    use super::*;
+    use std::ffi::{CStr, CString};
+    use std::sync::Arc;
+
+    /// `CURLOPT_SHARE` (OBJECTPOINT + 100), `CURLSHOPT_SHARE` and `CURL_LOCK_DATA_SSL_SESSION`, off
+    /// `curl/curl.h`. The share API is bound here, in the test, and nowhere in the product: nothing
+    /// of the application shares a handle.
+    const CURLOPT_SHARE: c_int = 10100;
+    const CURLSHOPT_SHARE: c_int = 1;
+    const CURL_LOCK_DATA_SSL_SESSION: c_long = 4;
+
+    /// One TLS session cache that every transfer made through it shares.
+    struct SharedSessions {
+        share: *mut c_void,
+        cleanup: unsafe extern "C" fn(*mut c_void) -> c_int,
+    }
+
+    impl SharedSessions {
+        fn new() -> SharedSessions {
+            type Init = unsafe extern "C" fn() -> *mut c_void;
+            type Setopt = unsafe extern "C" fn(*mut c_void, c_int, ...) -> c_int;
+            type Cleanup = unsafe extern "C" fn(*mut c_void) -> c_int;
+            let (lib, _) = plx_base::dynlib::Handle::open(curl::CANDIDATES).expect("libcurl is bound");
+            let sym = |name| lib.sym(name).unwrap_or_else(|| panic!("this libcurl has no {name}"));
+            unsafe {
+                let init: Init = std::mem::transmute(sym("curl_share_init"));
+                let setopt: Setopt = std::mem::transmute(sym("curl_share_setopt"));
+                let cleanup: Cleanup = std::mem::transmute(sym("curl_share_cleanup"));
+                let share = init();
+                assert!(!share.is_null());
+                assert_eq!(setopt(share, CURLSHOPT_SHARE, CURL_LOCK_DATA_SSL_SESSION), 0);
+                SharedSessions { share, cleanup }
+            }
+        }
+    }
+
+    impl Drop for SharedSessions {
+        fn drop(&mut self) {
+            unsafe { (self.cleanup)(self.share) };
+        }
+    }
+
+    extern "C" fn discard(_ptr: *mut c_char, size: usize, nmemb: usize, _user: *mut c_void) -> usize {
+        size * nmemb
+    }
+
+    /// One transfer of `url` on a fresh easy handle that uses `sessions`: libcurl's result, and, when
+    /// `pin` is given (key mode), whether [`keypin::confirm`] found the pinned key in what the peer
+    /// presented. Without a pin the handle verifies nothing, which is all the control needs.
+    fn transfer(sessions: &SharedSessions, url: &CStr, pin: Option<&str>) -> (c_int, bool) {
+        unsafe {
+            let easy = curl_easy_init();
+            assert!(!easy.is_null());
+            curl_easy_setopt_ptr(easy, CURLOPT_URL, url.as_ptr() as *const c_void);
+            curl_easy_setopt_ptr(easy, CURLOPT_WRITEFUNCTION, discard as *const c_void);
+            curl_easy_setopt_ptr(easy, CURLOPT_SHARE, sessions.share as *const c_void);
+            curl_easy_setopt_long(easy, CURLOPT_NOSIGNAL, 1);
+            match pin {
+                Some(pin) => {
+                    let pin = CString::new(pin).unwrap();
+                    keypin::apply(easy, &pin).expect("this libcurl takes the key-mode options");
+                }
+                None => {
+                    curl_easy_setopt_long(easy, CURLOPT_SSL_VERIFYPEER, 0);
+                    curl_easy_setopt_long(easy, CURLOPT_SSL_VERIFYHOST, 0);
+                }
+            }
+            let rc = curl_easy_perform(easy);
+            let confirmed = pin.is_none_or(|p| keypin::confirm(easy, p));
+            curl_easy_cleanup(easy);
+            (rc, confirmed)
+        }
+    }
+
+    fn loopback(port: u16) -> CString {
+        CString::new(format!("https://127.0.0.1:{port}/video.mkv")).unwrap()
+    }
+
+    /// The control: an ordinary handle, run twice over the shared cache, DOES resume, so the test
+    /// below is not vacuous. It is asked of an OpenSSL-backed libcurl, which is every libcurl the
+    /// television and the Linux CI runners have; the desktop simulator's SecureTransport does not
+    /// resume against the double here (measured, libcurl 8.7.1), and says so instead of failing.
+    #[test]
+    fn the_shared_cache_resumes_an_ordinary_handle() {
+        let _serial = plx_base::testlock::serial();
+        if !curl_ready() { return; }
+        let version = unsafe { CStr::from_ptr(curl_version()) }.to_string_lossy().into_owned();
+        if !version.contains("OpenSSL") {
+            eprintln!("{version} does not resume across a shared session cache here; skipping");
+            return;
+        }
+        let served = spawn_observed(Arc::new(mint_cert(&["127.0.0.1"])), b"control".to_vec());
+        let sessions = SharedSessions::new();
+        for round in 0..2 {
+            assert_eq!(transfer(&sessions, &loopback(served.port), None).0, 0, "round {round}");
+        }
+        assert_eq!(served.accepted(), 2);
+        assert_eq!(served.resumed(), 1, "the second handle resumed the session the first one left");
+    }
+
+    #[test]
+    fn a_key_mode_handle_never_resumes_a_session_and_confirms_the_key_every_time() {
+        let _serial = plx_base::testlock::serial();
+        if !curl_ready() { return; }
+        let cert = Arc::new(mint_cert(&["127.0.0.1"]));
+        let served = spawn_observed(Arc::clone(&cert), b"key mode".to_vec());
+        let pin = leaf_pin(&cert);
+        let sessions = SharedSessions::new();
+        const ROUNDS: usize = 3;
+        for round in 0..ROUNDS {
+            let (rc, confirmed) = transfer(&sessions, &loopback(served.port), Some(&pin));
+            assert_eq!(rc, 0, "round {round}: the transfer");
+            assert!(confirmed, "round {round}: a key-mode handshake presents the certificate chain");
+        }
+        assert_eq!(served.accepted(), ROUNDS, "every round is a connection of its own");
+        assert_eq!(served.resumed(), 0, "and none of them resumed a TLS session");
     }
 }

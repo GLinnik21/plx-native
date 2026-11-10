@@ -159,7 +159,7 @@ impl<H: Host<Elem = u32>> CardSource<H> for Cards<'_> {
         match self.which {
             // a poster: the one Under posters builder (a missing index is the nameless tile)
             Which::Related | Which::Collection => match self.movies().get(i) {
-                Some(m) => crate::registry::captions::label(&crate::registry::captions::policy(), &tile_facts::caption_facts(m), None, false),
+                Some(m) => crate::registry::captions::label(&crate::registry::captions::policy(), &tile_facts::caption_facts(m), None),
                 None => TileLabel::default(),
             },
             Which::Extras => extras::label(self.d, i),

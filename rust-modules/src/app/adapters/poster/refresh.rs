@@ -95,6 +95,11 @@ fn run() {
             }
         };
         if job.epoch != plx_platform::imgcache::generation() || !grant_is_current(&job) { continue; }
+        // A deck card's cover or composite is not a transcode: it is re-BAKED, which fetches its
+        // sources from the server again (a re-bake never reads the cached logo, so a replaced one
+        // reaches the card) and writes only what came back whole. Anything else is refreshed as the
+        // one transcode it is.
+        if super::workers::rebake(job.client, &job.path, job.epoch, job.token_gen) { continue; }
         // Failed refresh leaves both the cached file and already-published texture untouched.
         if let Some(bytes) = super::fetch_image(job.client, &job.path) {
             let (mut w, mut h) = (0, 0);
@@ -112,6 +117,19 @@ fn run() {
 fn grant_is_current(job: &Job) -> bool {
     plx_plex::plex::client_for(job.client.id()).is_some_and(|live|
         std::ptr::eq(live, job.client) && live.token_gen() == job.token_gen)
+}
+
+/// Arm the lane without its worker: `enqueue` queues, nothing runs. Callers hold
+/// `plx_base::testlock::serial()` (the queue is a process global).
+#[cfg(test)]
+pub(super) fn arm_for_test() {
+    *QUEUE.lock().unwrap_or_else(|e| e.into_inner()) = Some(Queue { running: true, ..Default::default() });
+}
+
+/// Take down what `enqueue` queued since `arm_for_test`, as the request paths, and disarm.
+#[cfg(test)]
+pub(super) fn take_queued_for_test() -> Vec<String> {
+    QUEUE.lock().unwrap_or_else(|e| e.into_inner()).take().map_or_else(Vec::new, |q| q.jobs.into_iter().map(|j| j.path).collect())
 }
 
 #[cfg(test)]
