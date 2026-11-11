@@ -37,6 +37,7 @@ LAYOUT. SSD side, under $PLX_BUILD_CACHE/cold-store/ (same volume as the trees, 
     parking/<id>/                 the tree, renamed out of its checkout while it is copied (outside rust-modules/
                                   on purpose: a sibling there would match `target*` and be inventoried)
     parking/<id>.json, <id>.pid   the record written BEFORE the rename, and the owner's pid
+    index/<id>.json.unparking.<pid>   the index record while process <pid> restores that tree: a CLAIM (see below)
 Cold side, under <root>/:
     trees/<id>/                   the copy; <id> is the escaped origin path
     trees/<id>.json               the same record, beside it (the SSD index can be rebuilt from these)
@@ -53,7 +54,15 @@ owner's residue is settled by `recover`: a complete cold copy of THIS park -> de
 origin absent -> rename back; else delete the SSD copy. THE UNPARK PROTOCOL only fills an ABSENT tree, only when
 the copy is cheaper than a rebuild (`apparent_bytes / min(rate_floor, park_rate) < rebuild_secs`) and the caller
 says the free space after it stays over its line; it copies beside the origin, verifies, renames into place and
-consumes the record. Python standard library only; `ditto` is the one copy primitive (macOS), replaced by tests.
+consumes the record. THE CLAIM: the deciding half (`claim`) ends with an atomic rename of the index record to
+`index/<id>.json.unparking.<pid>`, and only the copy half (`unpark(..., claimed=record)`) is long, so a caller
+that serialises its decisions behind a lock holds it for the decision and the rename, not for the copy. A claimed
+entry is invisible to `records()` / `indexed()` (a second unparker finds nothing to take and is told who has it),
+to `recover`'s adoption and to the park pass (`park` refuses an origin with a live claim); the free-space question
+of a later claim counts the bytes the live claims are still to copy (`inflight_bytes`). A failed or declined copy
+renames the record back (never over a newer one); a claimer that died leaves a claim whose pid is dead, which the
+next `claim` of that origin and `recover` put back as the index entry. Python standard library only; `ditto` is
+the one copy primitive (macOS), replaced by tests.
 """
 import argparse
 import errno
@@ -70,7 +79,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 GIB = 1 << 30
 MIB = 1 << 20
 SCHEMA = 1
-PARKED, UNPARKED, DRY_RUN = "parked", "unparked", "dry-run"
+PARKED, UNPARKED, DRY_RUN, CLAIMED = "parked", "unparked", "dry-run", "claimed"
 SKIPPED, REFUSED, DECLINED, FAILED = "skipped", "refused", "declined", "failed"
 
 DEFAULTS = {"max_days": 14.0, "min_free_gib": 200.0, "park_below_gib": 40.0, "park_idle_min": 120.0,
@@ -88,6 +97,10 @@ TEST_ENV = ("PLX_COLD_STORE_TEST_FREE_KIB", "PLX_COLD_STORE_TEST_NOW")
 # `<id>.dead.<pid>.<ns>` / `<id>.consumed.<pid>.<ns>`: unique, so a name an earlier set-aside left behind (or an
 # older version's `<id>.dead.<pid>` and plain `<id>.consumed`) can never make the next rename fail.
 DEBRIS_SUFFIX = re.compile(r"\.(dead\.\d+(\.\d+)?|consumed(\.\d+\.\d+)?)$")
+# An unparker's claim on an index record: `<id>.json` + CLAIM_INFIX + pid. disk-budget.py's fast path looks for the
+# same infix (COLD_CLAIM_INFIX there; ci/test_disk_preflight.py pins the two equal).
+CLAIM_INFIX = ".unparking."
+CLAIM_NAME = re.compile(r"(.+\.json)" + re.escape(CLAIM_INFIX) + r"(\d+)")
 
 
 # --- small helpers (the stubbable seams are device_of, free_bytes_of, which_ditto and copy_tree) -----------
@@ -407,18 +420,27 @@ class ColdStore:
         return not (len(parts) > 2 and parts[1] == "Volumes" and not os.path.ismount(os.sep.join(parts[:3])))
 
     # --- is the cold volume usable ---
+    def unusable(self) -> Optional[str]:
+        """The reason the cold store cannot be used AT ALL right now, from the checks that touch no volume (the
+        config, PATH and the mount table), or None. `available`'s first three steps: a caller that would wait
+        behind a lock for the store asks this first."""
+        if self.cfg is None:
+            return self.off_reason
+        if which_ditto() is None:
+            return "ditto is not on PATH (the cold store is macOS-only)"
+        if not self.root_reachable():
+            return "%s is not mounted" % os.sep.join(self.cfg.root.split(os.sep)[:3])
+        return None
+
     def available(self, build_dev: int, write_probe: bool = True) -> Optional[str]:
         """The reason the cold volume cannot be used for a tree on device `build_dev`, or None. Cheap checks first;
         the free-space and probe-write checks touch the cold volume, so only --auto and an unpark that already
         found an index record call this. `write_probe=False` (a dry run) reads only: it proves the volume is
         mounted and has room, but creates nothing on it, so it cannot prove the volume is writable."""
-        if self.cfg is None:
-            return self.off_reason
-        if which_ditto() is None:
-            return "ditto is not on PATH (the cold store is macOS-only)"
+        why = self.unusable()
+        if why:
+            return why
         root = self.cfg.root
-        if not self.root_reachable():
-            return "%s is not mounted" % os.sep.join(root.split(os.sep)[:3])
         anchor = nearest_existing(root)
         try:
             if device_of(anchor) == build_dev:
@@ -440,9 +462,78 @@ class ColdStore:
             return "cannot write to %s: %s" % (root, exc)
         return None
 
+    # --- claims: an unparker's hold on an index record ---
+    def claim_path(self, origin: str, pid: Optional[int] = None) -> str:
+        """`index/<id>.json.unparking.<pid>`: where the record of `origin` lives while process `pid` (default: this
+        one) restores it. `origin` is already normalised."""
+        return "%s%s%d" % (self.index_path(origin), CLAIM_INFIX, os.getpid() if pid is None else pid)
+
+    def claims(self, origin: Optional[str] = None) -> List[Tuple[int, str, str]]:
+        """(pid, claim path, index path it returns to) for every claim on the SSD, or only those on `origin`.
+        One listing of the index directory; creates nothing."""
+        base = os.path.join(self.ssd, "index")
+        only = os.path.basename(self.index_path(norm(origin))) if origin else None
+        try:
+            names = sorted(os.listdir(base))
+        except OSError:
+            return []
+        out = []
+        for name in names:
+            match = CLAIM_NAME.fullmatch(name)
+            if match and (only is None or match.group(1) == only):
+                out.append((int(match.group(2)), os.path.join(base, name), os.path.join(base, match.group(1))))
+        return out
+
+    def claimed_by(self, origin: str) -> int:
+        """The pid of a LIVE process that is restoring `origin`, else 0 (a dead claimer's claim is nobody's)."""
+        return next((pid for pid, _, _ in self.claims(origin) if pid_alive(pid)), 0)
+
+    def inflight_bytes(self, build_dev: int) -> int:
+        """What the live claims on the build volume (device `build_dev`) are still to copy in: each one's whole
+        apparent size. A copy under way has written part of that already, so this overstates and can only make a
+        caller decline, which is the safe side of "does it still fit"."""
+        total = 0
+        for pid, claim, _ in self.claims():
+            rec = read_json(claim) if pid_alive(pid) else None
+            if not rec or not rec.get("origin"):
+                continue
+            try:
+                if device_of(nearest_existing(rec["origin"])) != build_dev:
+                    continue
+            except OSError:
+                continue
+            total += int(rec.get("apparent_bytes", 0))
+        return total
+
+    @staticmethod
+    def _restore_claim(claim: str, index: str) -> bool:
+        """Give a claim's record back as the index entry and drop the claim, never over a newer entry of the same
+        origin (a later park wrote one: that record wins and the older one is simply dropped). False when the
+        claim could not be settled (already gone, or neither a link nor a rename worked)."""
+        try:
+            os.link(claim, index)
+        except FileExistsError:
+            pass
+        except FileNotFoundError:
+            return False                         # somebody else settled it first
+        except OSError:
+            try:
+                if not os.path.exists(index):
+                    os.rename(claim, index)      # a volume without hard links
+                    return True
+            except OSError:
+                return False
+        unlink(claim)
+        return True
+
+    def release(self, origin: str) -> None:
+        """Give THIS process's claim on `origin` back as the index entry (nothing to do when it holds none)."""
+        origin = norm(origin)
+        self._restore_claim(self.claim_path(origin), self.index_path(origin))
+
     # --- records ---
     def records(self) -> List[dict]:
-        """Every SSD index record, oldest first. Reads the SSD only."""
+        """Every SSD index record, oldest first. Reads the SSD only. A claimed record is not one: it is being restored."""
         out = []
         base = os.path.join(self.ssd, "index")
         try:
@@ -493,6 +584,9 @@ class ColdStore:
         if refusal:
             return Outcome(REFUSED, refusal)
         origin = norm(tree)
+        holder = self.claimed_by(origin)
+        if holder:                               # a restore is copying this origin's record back: its tree is not ours to move
+            return Outcome(REFUSED, "being restored by pid %d" % holder)
         if not os.path.isdir(origin) or os.path.islink(origin):
             return Outcome(REFUSED, "not a directory (or a symlink): %s" % origin)
         build_dev = device_of(origin)
@@ -648,6 +742,9 @@ class ColdStore:
         out: List[Tuple[str, str]] = []
         if self.cfg is None or refuse_test_env(self.env):
             return out
+        for pid, claim, index in self.claims():  # a dead restorer's claim: its record goes back, then the rest is judged
+            if not pid_alive(pid) and self._restore_claim(claim, index):
+                out.append(("restored-unpark-claim", (read_json(index) or {}).get("origin") or index))
         base = os.path.join(self.ssd, "parking")
         try:
             names = sorted(n for n in os.listdir(base) if not n.endswith((".json", ".pid")))
@@ -680,7 +777,7 @@ class ColdStore:
                 if name.endswith(".json"):
                     rec = read_json(self.trees_path(name))
                     if rec and rec.get("origin") and os.path.isdir(self.trees_path(name[:-5])) \
-                            and not os.path.exists(self.index_path(rec["origin"])):
+                            and not os.path.exists(self.index_path(rec["origin"])) and not self.claims(rec["origin"]):
                         write_json(self.index_path(rec["origin"]), rec)
                         out.append(("adopted", rec["origin"]))
             out.extend(("reaped", p) for p in self._reap(stop))
@@ -726,52 +823,105 @@ class ColdStore:
         return min(floor, measured) if measured > 0 else floor
 
     def unpark(self, origin: str, rebuild_secs: Optional[float] = None,
-               free_after_ok: Optional[Callable[[int], bool]] = None, *, dry_run: bool = False) -> Outcome:
-        """Fill an ABSENT tree from its parked copy when that beats a rebuild. `rebuild_secs` defaults to the
-        config's figure for the directory name; `free_after_ok(apparent_bytes)` is the caller's "free space after
-        the copy stays over my line" (None: not asked). SKIPPED/REFUSED/DECLINED touch nothing; FAILED has cleaned
-        up its own sibling; UNPARKED carries the copy time."""
+               free_after_ok: Optional[Callable[[int], bool]] = None, *, dry_run: bool = False,
+               claimed: Optional[dict] = None) -> Outcome:
+        """Fill an ABSENT tree from its parked copy when that beats a rebuild: `claim` (the decision, see there)
+        and then the copy. With `claimed` (the record this process's own `claim` returned) only the copy runs: the
+        caller took the claim under whatever lock it serialises its decisions with and copies without it. A copy
+        that fails, or finds the tree made meanwhile, gives the claim back; UNPARKED carries the copy time and
+        consumes the record. Without `claimed` the outcomes are `claim`'s (SKIPPED/REFUSED/DECLINED touch nothing)."""
+        if self.cfg is None:
+            return Outcome(SKIPPED, self.off_reason)
+        origin = norm(origin)
+        if claimed is None:
+            got = self.claim(origin, rebuild_secs, free_after_ok, dry_run=dry_run)
+            if got.status != CLAIMED:
+                return got
+            claimed = got.record
+        if not os.path.exists(self.claim_path(origin)):
+            return Outcome(SKIPPED, "this process holds no claim on %s" % origin)
+        try:
+            out = self._copy_back(origin, claimed)
+        except BaseException:
+            self.release(origin)
+            raise
+        if out.status != UNPARKED:
+            self.release(origin)
+        return out
+
+    def claim(self, origin: str, rebuild_secs: Optional[float] = None,
+              free_after_ok: Optional[Callable[[int], bool]] = None, *, dry_run: bool = False) -> Outcome:
+        """The deciding half of an unpark: is the tree absent, is the cold volume usable, is the copy cheaper than
+        a rebuild (`rebuild_secs` defaults to the config's figure for the directory name) and does the caller's
+        `free_after_ok(bytes)` say the free space after it stays over its line. `bytes` is this copy's apparent
+        size plus what the other live claims are still to copy. Only then is the index record CLAIMED (renamed to
+        `claim_path`, atomically) and CLAIMED returned with it; hand that record to `unpark(claimed=...)`.
+        SKIPPED/REFUSED/DECLINED touch nothing, and an entry another live process has claimed is a SKIPPED that
+        names it. A claim whose process is dead is put back as the entry first."""
         if self.cfg is None:
             return Outcome(SKIPPED, self.off_reason)
         refusal = refuse_test_env(self.env)
         if refusal:
             return Outcome(REFUSED, refusal)
         origin = norm(origin)
+        if not dry_run:
+            for pid, claim, index in self.claims(origin):
+                if not pid_alive(pid):
+                    self._restore_claim(claim, index)
         record = read_json(self.index_path(origin))
         if record is None:
-            return Outcome(SKIPPED, "nothing parked for %s" % origin)
+            return self._nothing_to_claim(origin)
         if os.path.lexists(origin):
             return Outcome(REFUSED, "%s exists: unpark only fills an absent tree" % origin)
         parent = os.path.dirname(origin)
         if not os.path.isdir(parent):
             return Outcome(REFUSED, "%s does not exist" % parent)
-        why = self.available(device_of(parent))
+        build_dev = device_of(parent)
+        why = self.available(build_dev)
         if why:
             return Outcome(REFUSED, why)
         ident = record.get("id") or escape(origin)
-        source = self.trees_path(ident)
-        if not os.path.isdir(source):
+        if not os.path.isdir(self.trees_path(ident)):
             unlink(self.index_path(origin))     # the cold copy was pruned: the record is a lie
             return Outcome(SKIPPED, "the cold copy is gone; dropped its record")
         apparent = int(record.get("apparent_bytes", 0))
         budget = rebuild_secs if rebuild_secs is not None else self.cfg.rebuild_secs(os.path.basename(origin))
-        rate = self.rate_for(record, self.cfg.rate_floor_mibs)
-        estimate = apparent / rate
+        estimate = apparent / self.rate_for(record, self.cfg.rate_floor_mibs)
         if estimate >= budget:
             return Outcome(DECLINED, "copying %s would take ~%.0f s, a rebuild ~%.0f s" % (human(apparent), estimate, budget),
                            record)
-        if free_after_ok is not None and not free_after_ok(apparent):
+        if free_after_ok is not None and not free_after_ok(apparent + self.inflight_bytes(build_dev)):
             return Outcome(DECLINED, "free space after copying %s would fall under the caller's line" % human(apparent),
                            record)
         if dry_run:
             return Outcome(DRY_RUN, "would unpark %s (~%.0f s)" % (human(apparent), estimate), record)
-        sibling = os.path.join(parent, ".%s.unpark.%d" % (os.path.basename(origin), os.getpid()))
+        try:
+            os.rename(self.index_path(origin), self.claim_path(origin))
+        except FileNotFoundError:
+            return self._nothing_to_claim(origin)        # another process took the entry between the read and here
+        except OSError as exc:
+            return Outcome(REFUSED, "cannot claim the parked copy of %s: %s" % (origin, exc))
+        return Outcome(CLAIMED, "", record)
+
+    def _nothing_to_claim(self, origin: str) -> Outcome:
+        holder = self.claimed_by(origin)
+        if holder:
+            return Outcome(SKIPPED, "being restored by pid %d" % holder)
+        return Outcome(SKIPPED, "nothing parked for %s" % origin)
+
+    def _copy_back(self, origin: str, record: dict) -> Outcome:
+        """The copy half: this process holds the claim on `origin`. UNPARKED has the tree in place and the claim
+        consumed; anything else leaves the claim for the caller to give back."""
+        ident = record.get("id") or escape(origin)
+        apparent = int(record.get("apparent_bytes", 0))
+        rate = self.rate_for(record, self.cfg.rate_floor_mibs)
+        sibling = os.path.join(os.path.dirname(origin), ".%s.unpark.%d" % (os.path.basename(origin), os.getpid()))
         self.log("cold-store: unpark %s from %s (est %.0f s at %.0f MiB/s): %s" % (
-            human(apparent), self.cfg.root, estimate, rate / MIB, origin))
+            human(apparent), self.cfg.root, apparent / rate, rate / MIB, origin))
         started = time.time()
         try:
             remove(sibling)
-            copy_tree(source, sibling)
+            copy_tree(self.trees_path(ident), sibling)
             got = tree_stats(sibling)
             if got != (int(record.get("files", -1)), apparent):
                 raise OSError("copy verification failed: %d files / %d bytes, expected %s / %d"
@@ -789,9 +939,10 @@ class ColdStore:
         return Outcome(UNPARKED, "", record, took)
 
     def _consume(self, ident: str, origin: str) -> None:
-        """The origin has the tree again: forget the record and set the cold copy aside for the next reap (a
-        rename, so the build that paid for the unpark does not also wait for a delete on a slow disk)."""
-        unlink(self.index_path(origin))
+        """The origin has the tree again: end this process's claim (the record is forgotten) and set the cold copy
+        aside for the next reap (a rename, so the build that paid for the unpark does not also wait for a delete
+        on a slow disk)."""
+        unlink(self.claim_path(origin))
         unlink(self.trees_path(ident + ".json"))
         try:
             os.rename(self.trees_path(ident), self._aside(ident, "consumed"))
@@ -939,6 +1090,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("parked:     %d trees, %s" % (len(recs), human(sum(r.get("apparent_bytes", 0) for r in recs))))
         for ident, size, alive in store.parking_residue():
             print("parking:    %s %s (owner %s)" % (human(size), ident, "alive" if alive else "dead: run `recover`"))
+        for pid, claim, index in store.claims():
+            print("restoring:  %s (pid %d %s)" % ((read_json(claim) or {}).get("origin") or os.path.basename(index), pid,
+                                                  "alive" if pid_alive(pid) else "dead: run `recover`"))
         return 0
     if args.cmd == "list":
         now = time.time()

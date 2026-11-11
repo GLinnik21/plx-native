@@ -34,6 +34,11 @@ and the wait ends the moment the build fits. The eviction itself is not short (`
 capped at 900 s), so a target below the comfort line can spend real time here before cargo starts. The inventory is cached for 10 minutes (`$PLX_BUILD_CACHE/disk-budget/`)
 and dropped after an eviction. Any failure of its own fails open; only free space below the reserve refuses.
 A recipe that re-enters make sets PLX_DISK_BUDGET_DONE=1 so the nested entries do not repeat it.
+One question comes before all of that, the marker and PLX_MIN_FREE_MB=0 included: when the tree being built is
+ABSENT and the cold store holds a parked copy of it (`cold_unpark_pending`: two stat calls, and one directory
+listing for a restore in flight when the entry is not there), the preflight
+unparks it first (`unpark_absent_tree`: build-gc's auto lock is held only to CLAIM the parked copy, the copy runs
+without it; one line, never failing the build). The whole preflight spends ONE `--wait-secs` deadline on build-gc's lock.
 
 THE PLANNER IS A PURE FUNCTION. `plan(inv, free, need, th, me, now, build_tree)` does no I/O: it is the one
 place where order and safety are decided, and `ci/test_disk_budget.py` feeds it synthetic inventories.
@@ -84,7 +89,7 @@ fixture, `cp -p`, a restore from an archive); a ctime cannot, so a backdated tre
 and is never "garbage that nobody wrote to for a day".
 
 Environment: PLX_GC_MIN_FREE_GIB (comfort, default 20), PLX_MIN_FREE_MB (reserve, default 3072),
-PLX_DISK_NEED_GIB (the build's estimate), PLX_DISK_BUDGET_DONE (preflight no-op), PLX_SEED_MAX_DAYS (7; the `--seed` mode), PLX_FLEET_DIR (default
+PLX_DISK_NEED_GIB (the build's estimate), PLX_DISK_BUDGET_DONE (preflight no-op, bar the unpark check), PLX_SEED_MAX_DAYS (7; the `--seed` mode), PLX_FLEET_DIR (default
 ~/plx-fleet), PLX_BUILD_CACHE (default ~/.cache/plxnative), PLX_GC_TMP_ROOTS (os.pathsep list of directories
 to look for `/tmp` trees in; default /tmp and $TMPDIR), and two TEST-ONLY overrides: PLX_GC_TEST_FREE_KIB
 (free space, the name build-gc.sh already uses) and PLX_GC_TEST_NOW (the clock, honoured only when
@@ -174,11 +179,69 @@ def upper_need(tree, option, env):
     return max(MIN_NEED_GIB, NEED_GIB.get(os.path.basename(tree.rstrip(os.sep)), DEFAULT_NEED_GIB))
 
 
+def argv_option(argv, name):
+    """The value of `--name VALUE` / `--name=VALUE` in `argv` (the last one wins, as argparse's does), else None."""
+    found = None
+    for index, arg in enumerate(argv):
+        key, eq, value = arg.partition("=")
+        if key == name:
+            found = value if eq else (argv[index + 1] if index + 1 < len(argv) else None)
+    return found
+
+
+def build_tree_of(tree, root):
+    """The tree a preflight is for: `--tree`, else the checkout's `rust-modules/target`."""
+    return tree or os.path.join(root or os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                "rust-modules", "target")
+
+
+def cold_index_name(path):
+    """The SSD index file name of a parked tree: cold-store.py's `escape`, written out here so the fast path need
+    not load that module (ci/test_disk_preflight.py pins the two equal). zlib only for a name over 230 bytes."""
+    name = path.replace("%", "%25").replace("/", "%2F")
+    if len(name) > 230:
+        import zlib
+        name = name[-200:] + "~" + format(zlib.crc32(path.encode()), "08x")
+    return name
+
+
+COLD_CLAIM_INFIX = ".unparking."      # cold-store.py's CLAIM_INFIX (ci/test_disk_preflight.py pins the two equal)
+
+
+def cold_unpark_pending(tree, env):
+    """Is `tree` ABSENT while the cold store holds a parked copy of it? Two stat calls and nothing imported: the
+    tree, then its index entry under `$PLX_BUILD_CACHE/cold-store/index/`. An entry that is not there is one more
+    question, a listing of that directory for a CLAIM on it (`<entry>.unparking.<pid>`: another build is restoring
+    the tree): that is a True answer too, so the build says who has it instead of rebuilding cold unannounced.
+    Only a True answer makes the preflight load cold-store.py (`unpark_absent_tree`). `PLX_COLD_STORE=off` is a
+    False answer without a stat; anything unreadable is a False answer too, since the cold store never fails a build."""
+    if env.get("PLX_COLD_STORE") == "off":
+        return False
+    try:
+        tree = os.path.abspath(tree)
+        if os.path.lexists(tree):
+            return False
+        key = os.path.join(os.path.realpath(os.path.dirname(tree)), os.path.basename(tree))
+        cache = os.path.realpath(env.get("PLX_BUILD_CACHE") or os.path.expanduser("~/.cache/plxnative"))
+        index = os.path.join(cache, "cold-store", "index")
+        entry = cold_index_name(key) + ".json"
+        if os.path.exists(os.path.join(index, entry)):
+            return True
+        claim = entry + COLD_CLAIM_INFIX
+        return any(name.startswith(claim) for name in os.listdir(index))
+    except (OSError, ValueError):
+        return False
+
+
 def fast_preflight(argv, env):
     """0 when the build may start without reading anything but one number, else None (take the full path).
     `argv` is the arguments after `preflight`. The rule is the planner's own `ok` test with the build's
     UPPER estimate (the table value, not net of what the tree already holds), so it never says "go" where
-    the planner would say "reclaim"."""
+    the planner would say "reclaim". One question comes before every exit, `PLX_DISK_BUDGET_DONE` and
+    `PLX_MIN_FREE_MB=0` included (a `make check` child runs with the marker and still builds its own tree):
+    is the tree absent with a parked copy? Then the full path unparks it first."""
+    if cold_unpark_pending(build_tree_of(argv_option(argv, "--tree"), argv_option(argv, "--root")), env):
+        return None
     if done_marker(env):
         return 0
     reserve = int_env(env, "PLX_MIN_FREE_MB", DEFAULT_RESERVE_MIB) * MIB
@@ -194,8 +257,7 @@ def fast_preflight(argv, env):
         if value is None:
             return None
         opts[key] = value
-    root = opts.get("--root") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    tree = opts.get("--tree") or os.path.join(root, "rust-modules", "target")
+    tree = build_tree_of(opts.get("--tree"), opts.get("--root"))
     need = upper_need(tree, opts.get("--need-gib"), env)
     comfort = int_env(env, "PLX_GC_MIN_FREE_GIB", DEFAULT_COMFORT_GIB) * GIB
     try:
@@ -1850,12 +1912,12 @@ def plan_and_evict(args, env, root: str, tree: str, th: Thresholds) -> int:
     return judge(tree, need, th, env, pl.reason, removed, note, pl.biggest_live)
 
 
-def wait_on_holder(args, env, root: str, tree: str, th: Thresholds, need_upper: int, lock: str) -> int:
-    """Another reclaim holds the lock: it is freeing space. Wait up to --wait-secs for it (or for the build to
-    fit), then judge on the free space read afterwards. Taking the lock over when the holder finishes is the
-    one case this plans for itself. While it waits it keeps a flag file beside the lock (`announce_waiting`),
-    which the cold store's park pass reads between trees."""
-    deadline = time.monotonic() + args.wait_secs
+def wait_on_holder(args, env, root: str, tree: str, th: Thresholds, need_upper: int, lock: str, deadline: float) -> int:
+    """Another reclaim holds the lock: it is freeing space. Wait for it (or for the build to fit) until `deadline`
+    (`cmd_preflight`'s: --wait-secs from its start, less what an unpark already waited), then judge on the free
+    space read afterwards. Taking the lock over when the holder finishes is the one case this plans for itself.
+    While it waits it keeps a flag file beside the lock (`announce_waiting`), which the cold store's park pass
+    reads between trees."""
     try:
         while True:
             if settle(need_upper, th.reserve, free_at(tree, env))[0] == "ok":
@@ -1875,21 +1937,96 @@ def wait_on_holder(args, env, root: str, tree: str, th: Thresholds, need_upper: 
         withdraw_waiting(lock)
 
 
-def with_lock(args, env, root: str, tree: str, th: Thresholds, lock: str) -> int:
-    """Hold build-gc's auto lock around the plan and the eviction; released on every way out."""
+def holding_lock(lock: str, work: Callable[[], object]):
+    """Run `work` holding build-gc's auto lock (taken already); released on every way out, a TERM or HUP included."""
     def on_signal(signum, frame):
         raise SystemExit(128 + signum)
     previous = {sig: signal.signal(sig, on_signal) for sig in (signal.SIGTERM, signal.SIGHUP)}
     try:
-        return plan_and_evict(args, env, root, tree, th)
+        return work()
     finally:
         shutil.rmtree(lock, ignore_errors=True)
         for sig, handler in previous.items():
             signal.signal(sig, handler)
 
 
+def with_lock(args, env, root: str, tree: str, th: Thresholds, lock: str) -> int:
+    """Hold build-gc's auto lock around the plan and the eviction; released on every way out."""
+    return holding_lock(lock, lambda: plan_and_evict(args, env, root, tree, th))
+
+
+def wait_for_lock(lock: str, env, deadline: float) -> str:
+    """Take build-gc's auto lock, polling until the monotonic `deadline` while it is held, with the waiting flag
+    `wait_on_holder` keeps (the cold store's park pass reads it between trees). One attempt is made even when the
+    deadline has passed. "got", "held" or "unavailable"."""
+    try:
+        while True:
+            got = take_lock(lock, env)
+            if got != "held" or time.monotonic() >= deadline:
+                return got
+            announce_waiting(lock)
+            time.sleep(min(LOCK_POLL_SECS, max(0.0, deadline - time.monotonic())))
+    finally:
+        withdraw_waiting(lock)
+
+
+def unpark_absent_tree(args, env, deadline: float) -> None:
+    """The cold store's one hook into a build: the tree this preflight is for is ABSENT and the SSD index holds a
+    parked copy of it (`cold_unpark_pending`), so bring that copy back before anything is decided. The cheap
+    no-gos come first and wait for nothing (no config, no `ditto`, the cold volume not mounted: one line). Then
+    build-gc's auto lock is waited for until `deadline` (the preflight's one budget) and held ONLY to claim the
+    copy (`ColdStore.claim`: its cost rule and the free-space rule below, which says the free space after the
+    copy, with what other live claims still copy, stays at or above the comfort line, then an atomic rename of the
+    index record); the copy runs without the lock, so another build's tree is not kept waiting behind it.
+    Only THIS entry's tree comes back (a lane's other `target*` dirs wait for an entry that names them), and a
+    direct `cargo` reaches no preflight at all. It prints one line and never fails a build: whatever goes wrong
+    here, a claim already taken is given back and the preflight goes on as it would have with no cold store."""
+    tree = build_tree_of(args.tree, args.root)
+    store = claimed = None
+    try:
+        if not cold_unpark_pending(tree, env):
+            return
+        cold = cold_tool()
+        if cold is None:
+            print("cold-store: cold-store.py cannot be loaded; %s stays parked" % tilde(tree), file=sys.stderr)
+            return
+        store = cold.ColdStore(env)                       # its own log line (stderr) reports a copy that happened
+        why = store.unusable()
+        if why:
+            print("cold-store: %s not restored: %s" % (tilde(tree), why), file=sys.stderr)
+            return
+        comfort = thresholds_from_env(env).comfort
+        lock = lock_dir(env)
+        got = wait_for_lock(lock, env, deadline)
+        if got != "got":
+            print("cold-store: %s not restored: build-gc's lock %s is %s" % (
+                tilde(tree), tilde(lock), "held by another reclaim" if got == "held" else "unavailable"), file=sys.stderr)
+            return
+        claimed = holding_lock(lock, lambda: store.claim(
+            tree, free_after_ok=lambda bytes_in: free_at(tree, env) - bytes_in >= comfort))
+        if claimed.status != cold.CLAIMED:
+            print("cold-store: %s not restored (%s): %s" % (tilde(tree), claimed.status, claimed.reason), file=sys.stderr)
+            claimed = None
+            return
+        outcome = store.unpark(tree, claimed=claimed.record)     # the long part: no lock
+        claimed = None                                    # restored, or given back by `unpark` itself
+        if outcome.status != cold.UNPARKED:
+            print("cold-store: %s not restored (%s): %s" % (tilde(tree), outcome.status, outcome.reason), file=sys.stderr)
+    except Exception as err:  # noqa: BLE001 - a cold store that breaks must not stop a build
+        if claimed is not None and store is not None:
+            try:
+                store.release(tree)
+            except Exception:  # noqa: BLE001 - the claim of a process that is gone is put back by the next claim
+                pass
+        print("cold-store: unpark skipped (%s: %s)" % (err.__class__.__name__, err), file=sys.stderr)
+
+
 def cmd_preflight(args, env) -> int:
-    """Exit 0: build. Exit 1: refused, nothing the ladder may evict makes the build fit. Exit 2: not run."""
+    """Exit 0: build. Exit 1: refused, nothing the ladder may evict makes the build fit. Exit 2: not run.
+    One `--wait-secs` deadline, taken here, bounds every wait on build-gc's lock below: the unpark's and the ordinary
+    decision's draw on the same budget."""
+    deadline = time.monotonic() + args.wait_secs
+    unpark_absent_tree(args, env, deadline)        # first: before the DONE marker's and the zero reserve's exits
     if done_marker(env):
         return 0
     th = thresholds_from_env(env)
@@ -1918,7 +2055,7 @@ def cmd_preflight(args, env) -> int:
             return with_lock(args, env, root, tree, th, lock)
         if got == "unavailable":
             return judge(tree, need_upper, th, env, "", note="the lock %s cannot be taken, so nothing is planned" % tilde(lock))
-        return wait_on_holder(args, env, root, tree, th, need_upper, lock)
+        return wait_on_holder(args, env, root, tree, th, need_upper, lock, deadline)
     except Exception as err:  # noqa: BLE001 - a planner that breaks must not stop a build that fits
         print("disk-preflight: the planner failed (%s: %s); falling back to the plain %s floor" % (
             err.__class__.__name__, err, gib(th.reserve)), file=sys.stderr)
@@ -2315,6 +2452,10 @@ def cold_store_lines(env) -> List[str]:
     for ident, size, alive in store.parking_residue():
         lines.append("              parking residue: %s  %s (owner %s)" % (
             size_text(size), ident, "alive" if alive else "dead: `tools/cold-store.py recover` settles it"))
+    for pid, claim, index in store.claims():
+        lines.append("              restoring: %s (pid %d, %s)" % (
+            (cold.read_json(claim) or {}).get("origin") or os.path.basename(index), pid,
+            "alive" if cold.pid_alive(pid) else "dead: `tools/cold-store.py recover` puts it back"))
     return lines
 
 
