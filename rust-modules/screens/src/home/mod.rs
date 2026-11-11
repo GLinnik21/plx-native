@@ -263,12 +263,22 @@ struct Backdrop {
     /// released. While it is fresh a key is being HELD along the page, and the wash keeps the
     /// colours it has instead of re-keying to every card the focus crosses ([`Self::held`]).
     repeat_ms: Option<u32>,
+    /// The shelf card the wash last saw focus on, and the tick (ms) it arrived there
+    /// ([`Self::dwelled`]). Derived from the draw's own reads; not canon.
+    dwell: (Option<(u16, String)>, u32),
 }
 
 /// How long after the last direction-key `Repeat` the wash still counts the key as held, for the
 /// case where the key-up never arrives (the dropped-key-up net `ui::dispatch` keeps for OK). The
 /// panel repeats about every 100 ms, so a live hold refreshes this several times over.
 const WASH_REPEAT_GRACE_MS: u32 = 300;
+
+/// How long focus must rest on a shelf card before the wash keys to that card's colours. A run of
+/// quick taps (a Down and an Up each, never a `Repeat`) crosses cards whose envelopes are unrelated
+/// (blue, purple, green) a few frames apart; keying the wash to each one swings it back and forth,
+/// which on the television reads as the background flickering (owner, v0.10.0 rc1). Well under the
+/// wash's own half-second dissolve ([`AmbientWash::K`]), so a single press still reads as immediate.
+const WASH_DWELL_MS: u32 = 200;
 
 impl Backdrop {
     fn new() -> Self {
@@ -284,6 +294,7 @@ impl Backdrop {
             held: None,
             pending_art: String::new(),
             repeat_ms: None,
+            dwell: (None, 0),
         }
     }
 
@@ -299,6 +310,20 @@ impl Backdrop {
             Edge::Up => self.repeat_ms = None,
             Edge::Down => {}
         }
+    }
+
+    /// **Has focus rested on `item` for [`WASH_DWELL_MS`]?** Called once a frame with the shelf card
+    /// focus is on (`None` off the shelves): a different card restarts the clock.
+    fn dwelled(&mut self, item: Option<&PmsMovie>, ms: u32) -> bool {
+        let same = match (&self.dwell.0, item) {
+            (Some((sid, rk)), Some(m)) => *sid == m.sid.raw() && *rk == m.rk,
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
+            self.dwell = (item.map(|m| (m.sid.raw(), m.rk.clone())), ms);
+        }
+        ms.wrapping_sub(self.dwell.1) >= WASH_DWELL_MS
     }
 
     /// Is a direction key being held right now? The chrome glass blurs the page under it and
@@ -415,7 +440,8 @@ impl Backdrop {
             self.held = None;
             self.outgoing_tex = (0, 0.0, 0.0);
         }
-        if let Some(item) = grid_item.filter(|m| m.has_blur).filter(|_| !self.held(ms)) {
+        let dwelled = self.dwelled(grid_item, ms);
+        if let Some(item) = grid_item.filter(|m| m.has_blur).filter(|_| dwelled && !self.held(ms)) {
             self.grid_target = AmbientWash::keyed(item.blur, PageGround::CARD_W);
         }
         // decorative colour dissolve under the page — must not hold the page-freeze snapshot
