@@ -85,7 +85,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-11T00:48:21Z",
+ "generated": "2026-11-11T00:52:50Z",
  "metrics": [
   {
    "change30_pct": 47.7,
@@ -172,18 +172,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 42.1,
-   "change7_pct": 10.5,
+   "change30_pct": 41.7,
+   "change7_pct": 10.3,
    "d30": 321,
-   "delta30": 135.0,
-   "delta7": 43.5,
+   "delta30": 134,
+   "delta7": 42.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 62,
+   "n_now": 63,
    "n_prev": 84,
-   "now": 456.0,
+   "now": 455,
    "prev7": 412.5,
    "shown": true,
    "state": "flat",
@@ -340,18 +340,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 40.9,
-   "change7_pct": 11.0,
+   "change30_pct": 40.7,
+   "change7_pct": 10.9,
    "d30": 228.5,
-   "delta30": 93.5,
-   "delta7": 32.0,
+   "delta30": 93.0,
+   "delta7": 31.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 59,
+   "n_now": 60,
    "n_prev": 76,
-   "now": 322,
+   "now": 321.5,
    "prev7": 290.0,
    "shown": true,
    "state": "flat",
@@ -403,27 +403,6 @@
    "unit": "s"
   },
   {
-   "change30_pct": 56.1,
-   "change7_pct": 10.3,
-   "d30": 143.5,
-   "delta30": 80.5,
-   "delta7": 21.0,
-   "group": "ci",
-   "id": "sim|macOS tests against bundled FFmpeg and ASS",
-   "kind": "job",
-   "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 59,
-   "n_prev": 76,
-   "now": 224,
-   "prev7": 203.0,
-   "shown": true,
-   "state": "flat",
-   "state30": "worse",
-   "threshold_abs": 30.0,
-   "threshold_pct": 20.0,
-   "unit": "s"
-  },
-  {
    "change30_pct": 33.0,
    "change7_pct": 18.9,
    "d30": 168,
@@ -445,18 +424,39 @@
    "unit": "s"
   },
   {
-   "change30_pct": -34.3,
-   "change7_pct": -3.2,
+   "change30_pct": 55.7,
+   "change7_pct": 10.1,
+   "d30": 143.5,
+   "delta30": 80.0,
+   "delta7": 20.5,
+   "group": "ci",
+   "id": "sim|macOS tests against bundled FFmpeg and ASS",
+   "kind": "job",
+   "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
+   "n_now": 60,
+   "n_prev": 76,
+   "now": 223.5,
+   "prev7": 203.0,
+   "shown": true,
+   "state": "flat",
+   "state30": "worse",
+   "threshold_abs": 30.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": -34.6,
+   "change7_pct": -3.7,
    "d30": 319.5,
-   "delta30": -109.5,
-   "delta7": -7.0,
+   "delta30": -110.5,
+   "delta7": -8.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 59,
+   "n_now": 60,
    "n_prev": 76,
-   "now": 210,
+   "now": 209.0,
    "prev7": 217.0,
    "shown": true,
    "state": "flat",
@@ -517,9 +517,9 @@
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 59,
+   "n_now": 60,
    "n_prev": 76,
-   "now": 19,
+   "now": 19.0,
    "prev7": 19.0,
    "shown": false,
    "state": "flat",
@@ -618,11 +618,6 @@
    "change_pct": 32.1,
    "commits": [
     {
-     "pr": 1310,
-     "sha": "660893fbd",
-     "title": "Polish the Home hero, Continue Watching, and Detail shading"
-    },
-    {
      "pr": 1314,
      "sha": "68527cb24",
      "title": "URI: guard reordered audio tracks and recognize silent pause clocks"
@@ -666,6 +661,11 @@
      "pr": 1322,
      "sha": "283f536d1",
      "title": "refactor(data): run notification streams as addressed jobs"
+    },
+    {
+     "pr": 1323,
+     "sha": "17aa83ea0",
+     "title": "Fix autoplay trailer timeline, seeking, and HUD controls"
     }
    ],
    "from": 23.7,
@@ -679,11 +679,6 @@
    "change_pct": 29.7,
    "commits": [
     {
-     "pr": 1310,
-     "sha": "660893fbd",
-     "title": "Polish the Home hero, Continue Watching, and Detail shading"
-    },
-    {
      "pr": 1314,
      "sha": "68527cb24",
      "title": "URI: guard reordered audio tracks and recognize silent pause clocks"
@@ -727,6 +722,11 @@
      "pr": 1322,
      "sha": "283f536d1",
      "title": "refactor(data): run notification streams as addressed jobs"
+    },
+    {
+     "pr": 1323,
+     "sha": "17aa83ea0",
+     "title": "Fix autoplay trailer timeline, seeking, and HUD controls"
     }
    ],
    "from": 49.0,
@@ -740,11 +740,6 @@
    "change_pct": 25.2,
    "commits": [
     {
-     "pr": 1310,
-     "sha": "660893fbd",
-     "title": "Polish the Home hero, Continue Watching, and Detail shading"
-    },
-    {
      "pr": 1314,
      "sha": "68527cb24",
      "title": "URI: guard reordered audio tracks and recognize silent pause clocks"
@@ -788,6 +783,11 @@
      "pr": 1322,
      "sha": "283f536d1",
      "title": "refactor(data): run notification streams as addressed jobs"
+    },
+    {
+     "pr": 1323,
+     "sha": "17aa83ea0",
+     "title": "Fix autoplay trailer timeline, seeking, and HUD controls"
     }
    ],
    "from": 337,
@@ -828,7 +828,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 322
+   "now": 321.5
   }
  ],
  "slowest_local": [
