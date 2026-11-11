@@ -24,7 +24,8 @@ displayed its URI fixture on the 4.5 dev set, as recorded below.
 |---|---|---|
 | webOS 4.10.0 / 4.4.2 | unpacked images + this project's 4.5 set | No `AVProxy` or `SDL_webOS*ExportedWindow`; the window option is ignored. Earlier probe loads decoded without a visible picture, and earlier ACB attempts returned `ERROR_06`. The controlled 2026-11-02 ACB pair later displayed moving SDR720p24 H.264/AAC URI video on the 4.5 dev set, both with and without `connectDass`; this does not establish other 4.x sets or formats. |
 | webOS 5.4.2 | LG 65UN80006LA (issue #1064) | `windowId` in `load` → picture, moving, with sound. `late` (`setWindowId` after `loadCompleted`) and `none` → `error code=104 "fail to create AVProxy"`. Both a `plex.direct` HTTPS direct play and an HLS transcode played. Where the picture sat and its aspect were not reported (the tester's report names picture and sound only), and the registration ladder ended on the named client (`shape=named`). |
-| webOS 9.2.4 / 10.3.1 (33.31.68) | unpacked images | same mechanism as 5.5 and later (below); not yet confirmed on a device. |
+| webOS 5.6.2 (build 5.6.2-21) | LG OLED CX (issue #1064, [the tester's run](https://github.com/GLinnik21/plx-native/issues/1064#issuecomment-6758688148)) | **Admitted: major 5 is in `EXPORTED_STRATA`.** (a) The 5.5.0 and 5.6.2 images read `option.windowId` at load (decompile, below). (b) A PRODUCT run on a debug build of `main` at 5011614a, Playback engine Experimental, quality Original, a 1080p HEVC 2.39:1 MKV with AAC 5.1. Boot: `uri: product binding=Unbound mode=2 handle=false ptype=10 initialized=false major=5 evidence=none`, then `uri: product binding=Exported { canvas: (1920, 1080) } mode=2 evidence=override`. Play: `ls2uri: register shape=named ok`, `uri: service playing`, `uri: exported window placed src=1920x804 rv=1`. The picture moved and was letterboxed correctly (804 of 1080 lines, not stretched), with the HUD composited over it (the TV's capture service, which includes the video plane). Pause logged `paused` then `playing`, two captures 2 s apart were identical, and the position resumed from the paused position. Seek: `uri: control Seek(ContentTime(105106)) landed on the service's seekDone`, first position 104280. A second play had sound throughout: silent while paused, back on resume, across two seeks. (c) The drive probe, three runs on the same build, all `end=script`. Run 1: `load=ok playing=yes ... currentTime_advanced=yes videoInfo=seen audioInfo=seen window=exported ... shape=named end=script audio_at_load=0 clock_period_ms=200 pause=unconfirmed pause_delta=- resume=sent seek=hit seek_delta=-4400 text=sent audio=ok subs=ok eos=no pause_basis=reported_positions pause_samples=0 ... paused_event=yes seekdone=yes resume_from=2641`, with `drive pause pos=2439`. **Re-grade:** the service sends no `currentTime` while paused (a bus capture confirms), so that build could not grade `pause=froze`; it printed `pause=unconfirmed`. The current grader (#1314) accepts a `paused` event in the dwell plus a resume within 1000 ms of the paused position, and its test `uri_drive_pause_event_and_resume_position_confirm_freeze_without_samples` replays this run's numbers (2439, then 2641) and grades `pause=froze pause_basis=paused_event_and_resume`. The run was not repeated on the new grader: the row's `pause=froze` is that re-grade of the run's own numbers, and the product run's identical captures and resumed position are the direct evidence. **Audio-track switch failed:** the service lists the tracks in a different order (AAC, Vorbis, AAC, Vorbis, against the container's AAC, AAC, Vorbis, Vorbis), so `selectTrack index=1` selected Vorbis, the service answered `errorCode 200 "Audio Codec Not Supported"` and the play fell back to Standard. Since #1314 an exported-window original with several audio tracks is routed to Standard before the handoff, so a URI play on this window has one audio track (the probe's `audio_at_load=0` and the product run's sound cover it). Switching audio on the URI path is not admitted, only avoided. |
+| webOS 9.2.4 / 10.3.1 (33.31.68) | unpacked images; LG C2 on webOS 25 (10.x, 33.31.68; issue #1064) | The images show the same mechanism as 5.5 and later (below). The C2 ran the drive probe on an older build (the earlier grader), not the product backend, so **no major 10 entry**: millisecond `currentTime` clock with about a 1 s period; a `paused` event with no positions while paused; resume from 2729 after a pause at 2410; seek target 24937 landed on `seekDone` at 24195; audio `trackSelected` index 1 ok; subtitles rendered by the firmware. |
 | webOS 26: set on 11.1.0-3701, mechanism read on the 11.2.0 image | LG G4 (issue #1064) | `windowId` in `load` → 4K picture, Dolby Vision and Atmos through the TV's pipeline, our overlays composited over it, correct size and place. The set runs 11.1.0-3701; 11.2.0 is the unpacked image the mechanism above was read from, not the set. |
 | webOS 3.x | unpacked images | no `libSDL2` at all; out of scope. |
 
@@ -174,7 +175,7 @@ On the exported window (webOS 5+) the production backend places the window as th
 it creates it at the start and places it with the 1920x1080 canvas as the source, then, when the
 service's `videoInfo` reports the coded size, again with that size as the source; the destination is
 always the whole canvas (`uri: exported window placed src=WxH rv=N`). Production selects that binding
-only for a firmware major in the evidence table described below, which is empty today. A debug build
+only for a firmware major in the evidence table described below, which admits major 5 today. A debug build
 composes it for one boot when the file `plxnative-uriexported` exists in the install's runtime root
 (content ignored). Unlike `plxnative-uriprobe`, which is read at each Play, this
 trigger is read once, at boot, so it can be armed only by writing the file BEFORE the app launches: on
@@ -188,24 +189,28 @@ whose mode is not the exported window. Whether the service sends `videoInfo` bef
 not determined, so the first frames may be placed from the canvas source rectangle.
 
 Production selects the exported window per firmware major, from the table `EXPORTED_STRATA`
-(`rust-modules/play-uri/src/backend.rs`), which is empty today: no release is admitted, so every
-webOS 5+ release plays Standard (its boot line reads `major=<n> evidence=none`; a major the table
-admits reads `evidence=table`; a 4.x set reads `none` too and keeps its ACB path). An entry is a
-webOS firmware major as the set reports it, and needs three things in this file's Results table, each
-with the tester log's decisive lines. A release is never admitted on the probe's evidence alone: a run
-of the product backend is required.
+(`rust-modules/play-uri/src/backend.rs`), which admits major 5 today (the webOS 5.6.2 Results row
+above): a 5.x set's boot line reads `major=5 evidence=table`. Every other webOS 5+ major still plays
+Standard (its boot line reads `major=<n> evidence=none`; a 4.x set reads `none` too and keeps its ACB
+path). An entry is a webOS firmware major as the set reports it, so major 5 covers every 5.x release:
+the product run was on 5.6.2, the earlier probe-only run on 5.4.2, and no other 5.x minor has a run.
+An entry needs three things in this file's Results table, each with the tester log's decisive
+lines. A release is never admitted on the probe's evidence alone: a run of the product backend is
+required.
 
 - (a) the major's own firmware image reads `option.windowId` at load (decompile);
 - (b) picture: a tester's PRODUCT-path run on a debug build (the boot log shows `evidence=override`)
   shows a moving picture with sound, placed and proportioned right, supported by the probe's summary
   tokens `load=ok`, `playing=yes`, `currentTime_advanced=yes` and `window=exported`;
-- (c) controls: the probe's `drive` tokens (`pause=froze`, `resume=sent` with `resume_from=` at or
-  after the paused position minus 1000 ms, `seek=hit`, and `audio=ok` or an `audio_at_load=`) AND the
-  product run's pause, seek and audio doing what the viewer asked.
+- (c) controls: the probe's `drive` tokens (`pause=froze` on either `pause_basis`, `resume=sent` with
+  `resume_from=` at or after the paused position minus 1000 ms, `seek=hit`, and `audio=ok` or an
+  `audio_at_load=`) AND the product run's pause, seek and audio doing what the viewer asked. A control
+  the run showed failing and that the route avoids (the 5.6.2 audio-track switch, routed to Standard by
+  #1314) is named in the row.
 
 One exception: a major with the image evidence but no tester run is admitted when both neighbouring
 majors are admitted on tester evidence, and its row then says "bracketed, no tester run". Nothing else
-is inferred from a neighbouring major. Each entry names its Results row, and a webOS 5+ release without
+is inferred from a neighbouring major. Each entry names its Results row, and a webOS 5+ major without
 an entry plays Standard, with no handoff.
 
 ## Reproducing it
