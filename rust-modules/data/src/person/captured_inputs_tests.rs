@@ -5,6 +5,7 @@ const SHARE: ServerId = ServerId::from_raw(72);
 
 fn input<'a>(keys: &'a ClientKeys, session: Option<&'a Arc<plx_plex::plex::session::Session>>) -> PersonInput<'a> {
     PersonInput { keys, session, visible_generation: 9, controlled: false,
+                profile_scope: 0, owner_epoch: 0, profile_generation: 0, tenure: 0, profile_key: "",
         profile_refused: false, credits_refused: false, dev_bio: None, dev_credits: None }
 }
 

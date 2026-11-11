@@ -87,7 +87,7 @@ struct LibraryPageVisit {
 
 pub(crate) struct AppHost;
 
-/// Host facts captured after observing the pending pin receipt. Never retained across calls.
+/// Retained host facts; each refresh is fenced against both session/profile publishers.
 struct BrowseContext {
     session: std::sync::Arc<plx_plex::plex::session::Session>,
     visible_generation: u64,
@@ -495,9 +495,11 @@ fn refresh(&mut self, guid: &str, controlled: bool, opening: bool) {
     }
 
     fn input<'a>(&'a self, keys: &'a plx_plex::plex::ClientKeys,
-        session: Option<&'a std::sync::Arc<plx_plex::plex::session::Session>>, visible_generation: u64) -> plx_data::person::PersonInput<'a> {
+        capture: &'a StoreSessionCapture, profile_scope: u32, owner_epoch: u64) -> plx_data::person::PersonInput<'a> {
         plx_data::person::PersonInput {
-            keys, session, visible_generation,
+            keys, session: capture.session.as_ref(), visible_generation: capture.visible_generation,
+            profile_scope, owner_epoch, profile_generation: capture.profile_generation,
+            tenure: capture.tenure, profile_key: &capture.profile_key,
             controlled: self.controlled, profile_refused: self.profile_refused,
             credits_refused: self.credits_refused, dev_bio: self.dev_bio.as_deref(),
             dev_credits: self.dev_credits.as_deref(),
@@ -520,6 +522,31 @@ struct StoreSessionCapture {
 }
 
 impl StoreSessionCapture {
+    /// Commit a cache/profile publication only if neither publisher moved during capture.
+    /// A rejected attempt keeps the previous coherent publication and the caller retries later.
+    fn refill_store_session(&mut self, mut revision: impl FnMut() -> (u64, u64)) -> bool {
+        use plx_plex::plex::session;
+        let before = revision();
+        if !self.controlled && self.revision == Some(before) { return true; }
+        let settled = session::peek_settled();
+        let observed = settled.clone().unwrap_or_else(session::peek);
+        let visible_generation = session::visible_generation();
+        let tenure = session::tenure();
+        let profile = session::current_snapshot();
+        if revision() != before { return false; }
+        if !std::sync::Arc::ptr_eq(&self.observed, &observed) {
+            self.household = observed.household_ids();
+        }
+        let key = profile.user.as_ref().map_or("", |user| user.uuid.as_str());
+        if self.profile_key != key { self.profile_key.clear(); self.profile_key.push_str(key); }
+        self.session = settled;
+        self.observed = observed;
+        self.visible_generation = visible_generation;
+        self.tenure = tenure;
+        self.profile_generation = profile.generation;
+        self.revision = Some(before);
+        true
+    }
     fn search_input<'a>(&'a self, keys: &'a plx_plex::plex::ClientKeys) -> plx_data::search::SearchInput<'a> {
         plx_data::search::SearchInput { keys, recents: plx_data::search::recents::Input {
             session: &self.observed, settled: self.session.is_some(),
@@ -1836,11 +1863,11 @@ impl Bridge {
 
 pub(crate) fn person_run(&mut self, cmd: plx_data::stores::person::PersonCmd) -> bool {
         if let plx_data::stores::person::PersonCmd::Open { guid, .. } = &cmd {
-            self.capture_store_session();
+            if !self.capture_store_session() { return false; }
             super::adapters::stores::refill_client_keys(&mut self.client_keys);
             self.person_capture.refresh(guid, self.store_session.controlled, true);
-            let input = self.person_capture.input(&self.client_keys,
-                self.store_session.session.as_ref(), self.store_session.visible_generation);
+            let owner = self.session.read().0;
+            let input = self.person_capture.input(&self.client_keys, &self.store_session, owner.scope.0, owner.flow_epoch);
             self.stores.person_run(cmd, &input)
         } else {
             let _step = plx_base::step::StepScope::enter();
@@ -1852,22 +1879,24 @@ pub(crate) fn person_run(&mut self, cmd: plx_data::stores::person::PersonCmd) ->
     /// in this call, so the tape's admissions are written where the page asked for them, before
     /// the next store's (`collection_pump`, then the detail reconciliation) record theirs.
 pub(crate) fn person_pump(&mut self) -> bool {
-        self.capture_store_session();
+        if !self.capture_store_session() { return false; }
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
         let person_guid = self.stores.person_view().current().map_or("", |p| p.guid.as_str());
         self.person_capture.refresh(person_guid, self.store_session.controlled, false);
         let capture = &self.store_session;
-        let person_input = self.person_capture.input(&self.client_keys, capture.session.as_ref(), capture.visible_generation);
+        let owner = self.session.read().0;
+        let person_input = self.person_capture.input(&self.client_keys, capture, owner.scope.0, owner.flow_epoch);
+        let before = self.stores.person.gen();
         let changed = self.stores.person_pump(&person_input);
         self.start_store_jobs_of(StoreId::Person);
-        changed
+        changed || self.stores.person.gen() != before
     }
     fn capture_search_publication(&mut self) -> plx_data::search::view::SearchSnapshot {
         self.capture_store_session();
         self.stores.search_snapshot(self.directory.view(), &self.store_session.household,
             &self.store_session.search_input(&self.client_keys))
     }
-    fn capture_store_session(&mut self) {
+    fn capture_store_session(&mut self) -> bool {
         use plx_plex::plex::session;
         let tape_active = plx_data::stores::tape::active();
         let controlled = !self.live_screen_inputs || tape_active;
@@ -1889,24 +1918,14 @@ pub(crate) fn person_pump(&mut self) -> bool {
             if capture.profile_key != key { capture.profile_key.clear(); capture.profile_key.push_str(key); }
             capture.revision = None;
         } else {
-            let revision = session::screen_input_revision();
-            if capture.controlled || capture.revision != Some(revision) {
-                capture.session = session::peek_settled();
-                capture.observed = capture.session.clone().unwrap_or_else(session::peek);
-                capture.visible_generation = session::visible_generation();
-                capture.tenure = session::tenure();
-                let profile = session::current_snapshot();
-                capture.profile_generation = profile.generation;
-                let key = profile.user.as_ref().map_or("", |user| user.uuid.as_str());
-                if capture.profile_key != key { capture.profile_key.clear(); capture.profile_key.push_str(key); }
-                capture.revision = Some(revision);
-            }
+            if !capture.refill_store_session(session::screen_input_revision) { return false; }
         }
-        if !std::sync::Arc::ptr_eq(&previous_session, &capture.observed) {
+        if controlled && !std::sync::Arc::ptr_eq(&previous_session, &capture.observed) {
             capture.household = capture.observed.household_ids();
         }
         capture.controlled = controlled;
         capture.tape_active = tape_active;
+        true
     }
 
     pub(crate) fn person_view(&self) -> plx_data::person::PersonView<'_> {
@@ -2041,7 +2060,12 @@ pub(crate) fn person_pump(&mut self) -> bool {
 fn start_jobs(&mut self, jobs: Vec<plx_data::stores::StoreJob>) -> usize {
         let started = jobs.len();
         let watchlist = jobs.iter().any(|j| j.store() == StoreId::Watchlist);
+        let person = jobs.iter().any(|j| j.store() == StoreId::Person);
         for job in jobs { self.store_runner.start(job); }
+        if person {
+            let _step = plx_base::step::StepScope::enter();
+            self.stores.person.land_launch_refusals();
+        }
         if watchlist {
             let profile = Self::seated_profile();
             let stream = self.stores.watchlist.land_stream_results(&self.stores.landgate, &profile);
@@ -5694,3 +5718,7 @@ mod screen_input_cache_revision_tests {
     }
 
 }
+
+#[cfg(test)]
+#[path = "person_boundary_tests.rs"]
+mod person_boundary_tests;

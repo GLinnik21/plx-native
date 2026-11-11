@@ -124,6 +124,13 @@ pub fn pump(&mut self, gate: &plx_machine::landgate::Gate, input: &crate::person
         changed
     }
 
+    /// Same-drain terminal pass after the runner attempted these requests. No admission is emitted.
+    pub fn land_launch_refusals(&mut self) -> bool {
+        let changed = self.state.land_launch_refusals(&self.adapter);
+        if changed { self.bump(); }
+        changed
+    }
+
     /// Take the jobs the pump has emitted since the last take, in the order they were emitted. The
     /// caller OWES each one to a runner: a job dropped here is a request whose claim is never
     /// released.

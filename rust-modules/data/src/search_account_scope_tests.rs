@@ -199,6 +199,7 @@ fn forty_one_servers_are_asked_by_search_and_by_a_person_page() {
     let adapter = crate::person::PersonAdapter::default();
     let keys = crate::pms::registry_keys_for_test();
     let input = crate::person::PersonInput { keys: &keys, session: None, visible_generation: 0,
+                profile_scope: 0, owner_epoch: 0, profile_generation: 0, tenure: 0, profile_key: "",
         controlled: false, profile_refused: false, credits_refused: false, dev_bio: None, dev_credits: None };
     person.open_for_test(&adapter, plx_plex::plex::ServerId::from_raw(0), "161", "5d77682a", "Idina Menzel", &input);
     assert!(person.asks_server_for_test(far), "the person page asks server 40 as well");

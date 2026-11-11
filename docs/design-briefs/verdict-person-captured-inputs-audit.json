@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "status": "Person implementation complete, mirrored and source-frozen. Rust/runtime/replay acceptance belongs to parent WSL target lease.",
+  "status": "Historical checkpoint, superseded by verdict-person-final-boundary-audit.json; previous unchanged PersonPort/refused claims do not describe the final authority boundary.",
   "as_of": "2026-11-11T19:23:03.315Z",
   "root": "C:/Users/gleb_/Developer/plx-native",
   "checkout_heads": {

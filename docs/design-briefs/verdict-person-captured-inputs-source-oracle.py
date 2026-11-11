@@ -40,11 +40,38 @@ class PersonCapturedInputs(unittest.TestCase):
         pins = [ast.literal_eval(n.value) for n in ast.walk(tree) if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'PINNED_LEDGER_TOTALS' for t in n.targets)]
         self.assertEqual(len(pins), 1)
         self.assertEqual(pins[0]['globals'], total)
+    def test_explicit_scope_precedes_controlled_shortcut(self):
+        text = (ROOT / 'rust-modules/data/src/person.rs').read_text(encoding='utf-8')
+        fields = text.split('pub struct PersonInput', 1)[1].split('pub struct PersonState', 1)[0]
+        for field in ('profile_scope', 'owner_epoch', 'profile_generation', 'profile_key', 'tenure'):
+            self.assertIn(field, fields)
+        body = text.split('fn observe_session(', 1)[1].split('fn current(', 1)[0]
+        self.assertLess(body.index('scope_changed'), body.index('input.controlled'))
     def test_requested_behavior_regressions_are_present(self):
         text = (ROOT / 'rust-modules/data/src/person/captured_inputs_tests.rs').read_text(encoding='utf-8')
-        self.assertEqual(text.count('#[test]'), 10)
+        self.assertEqual(text.count('#[test]'), 12)
         self.assertIn('Arc::ptr_eq(&s, &session)', text)
         self.assertIn('an orphan cannot release', text)
         self.assertIn('assert!(state.pump(&adapter, &facts))', text)
+        boundary = (ROOT / 'rust-modules/data/src/person/boundary_tests.rs').read_text(encoding='utf-8')
+        self.assertEqual(boundary.count('#[test]'), 5)
+        self.assertIn('explicit_scope_edges_retire_claims_and_evidence_before_any_landing_even_controlled', boundary)
+        self.assertIn('same_generation_retry_rejects_old_refusal_success_address_and_key', boundary)
+    def test_refusal_is_addressed_and_observed_in_runner_drain(self):
+        text = (ROOT / 'rust-modules/data/src/person.rs').read_text(encoding='utf-8')
+        body = text.split('fn refused(&self, addr: Addr)', 1)[1].split('impl PersonState', 1)[0]
+        self.assertIn('self.matches(addr, pending)', body)
+        self.assertIn('PersonLaunchRefused { addr, request:', body)
+        self.assertNotIn('release_for', body)
+        self.assertIn('addr == self.addr && addr == pending.addr && *self.request == *pending.request', text)
+        bridge = (ROOT / 'rust-modules/src/app/bridge.rs').read_text(encoding='utf-8')
+        drain = bridge.split('fn start_jobs(', 1)[1].split('fn start_late_store_jobs', 1)[0]
+        self.assertIn('self.stores.person.land_launch_refusals()', drain)
+    def test_session_capture_commits_only_after_closing_publication_fence(self):
+        text = (ROOT / 'rust-modules/src/app/bridge.rs').read_text(encoding='utf-8')
+        body = text.split('fn refill_store_session(', 1)[1].split('fn search_input', 1)[0]
+        self.assertLess(body.index('if revision() != before'), body.index('self.session = settled'))
+        self.assertNotIn('Arc::new', body)
+        self.assertNotIn('collect', body)
 if __name__ == '__main__':
     unittest.main()

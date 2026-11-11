@@ -1,0 +1,335 @@
+{
+  "schema": 1,
+  "status": "Person authority/terminal boundary implemented and runtime-tested; full plx_data retains 9 independently reproduced pre-existing Metadata/Search failures.",
+  "supersedes": "docs/design-briefs/verdict-person-captured-inputs-audit.json",
+  "fixture_commits": {
+    "root": "26010b69",
+    "integration": "c540fdee6cab5020f324a895f717e04800c10fd3"
+  },
+  "requirements": {
+    "coherent_capture": "Retained StoreSessionCapture::refill_store_session validates screen_input_revision before/after settled Arc, visible generation, profile and tenure reads; rejected attempts do not mutate the retained publication. Person callers defer the pass on rejection. No per-frame payload allocation or Session deep clone.",
+    "explicit_scope": "PersonInput carries SessionMachine scope/flow epoch plus captured profile generation/key/tenure. observe_session checks explicit edges before controlled recovery suppression and before any landing; supersede retires requests, terminals, stamps, outbox, backoffs and seed latches. Only mounted header is held; account/server evidence is cleared with unchanged roster.",
+    "addressed_terminal": "PersonPort checks full Addr and complete pending PersonReq (including slot/generation/args/identity/client keys) before either completion or launch refusal. A typed PersonLaunchRefused queues exactly one addressed terminal. Bridge::start_jobs consumes it before returning; owner releases its claim, arms 120-frame retry and marks attempted profile. No same-drain retry loop. Permanent Landing::Refused and tape mail/admission layouts are unchanged."
+  },
+  "regressions": {
+    "data": "rust-modules/data/src/person/boundary_tests.rs",
+    "data_cases": 5,
+    "host": "rust-modules/src/app/person_boundary_tests.rs",
+    "host_cases": 3,
+    "red": "Two runtime refusal tests failed before product edits. Missing scope input oracle also failed before product edits.",
+    "host_runtime": "3 passed, including real runner retired-client launch refusal in same drain and adversarial Ready A→B publication.",
+    "existing_captured_input_cases": 12,
+    "source_oracles": "10 passed in each of ROOT, SansIO and integration"
+  },
+  "rust": {
+    "tested_tree": "0047ccf5838568a227e7c9a680b16c5329e70dad",
+    "target": "/home/glinnik/.cache/plxnative-sim/m4-target-cfa3cba39826",
+    "full_data": {
+      "summary": "test result: FAILED. 1612 passed; 9 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.75s",
+      "failures": [
+        "metadata::detail_mailbox_tests::an_alt_sources_landing_for_another_servers_copy_with_the_same_key_is_refused",
+        "metadata::dump_tests::dump_mode_a_superseded_alt_requests_stale_answer_does_not_end_the_wait",
+        "metadata::dump_tests::dump_mode_an_alt_request_out_lands_on_the_pump_that_runs_whatever_the_worker",
+        "metadata::metadata_alt_sources_job_tests::a_stale_writer_blocked_on_the_slot_cannot_replace_a_newer_ready_result",
+        "metadata::metadata_alt_sources_job_tests::exact_job_addr_whole_snapshot_and_origin_inclusive_roster_start_nothing",
+        "metadata::metadata_alt_sources_job_tests::no_guid_or_one_roster_slot_settles_without_a_job",
+        "metadata::metadata_alt_sources_job_tests::ready_real_result_wins_registration_in_the_same_pass_and_next_pass_sees_new_roster",
+        "metadata::metadata_alt_sources_job_tests::reset_rotates_alt_identity_and_a_retired_completion_cannot_reach_the_same_item",
+        "search::view::tests::rebuilding_a_source_answer_replaces_only_the_new_publication"
+      ],
+      "baselineIdentical": true
+    },
+    "pre_fix_baseline": {
+      "summary": "test result: FAILED. 1607 passed; 11 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.71s",
+      "failures": [
+        "metadata::detail_mailbox_tests::an_alt_sources_landing_for_another_servers_copy_with_the_same_key_is_refused",
+        "metadata::dump_tests::dump_mode_a_superseded_alt_requests_stale_answer_does_not_end_the_wait",
+        "metadata::dump_tests::dump_mode_an_alt_request_out_lands_on_the_pump_that_runs_whatever_the_worker",
+        "metadata::metadata_alt_sources_job_tests::a_stale_writer_blocked_on_the_slot_cannot_replace_a_newer_ready_result",
+        "metadata::metadata_alt_sources_job_tests::exact_job_addr_whole_snapshot_and_origin_inclusive_roster_start_nothing",
+        "metadata::metadata_alt_sources_job_tests::no_guid_or_one_roster_slot_settles_without_a_job",
+        "metadata::metadata_alt_sources_job_tests::ready_real_result_wins_registration_in_the_same_pass_and_next_pass_sees_new_roster",
+        "metadata::metadata_alt_sources_job_tests::reset_rotates_alt_identity_and_a_retired_completion_cannot_reach_the_same_item",
+        "person::boundary_tests::launch_refusal_is_an_addressed_event_not_a_claim_release",
+        "person::boundary_tests::wrong_request_address_cannot_refuse_the_live_job",
+        "search::view::tests::rebuilding_a_source_answer_replaces_only_the_new_publication"
+      ]
+    },
+    "logs": [
+      ".worktrees/verdict-integration/.empryo/person-boundary-baseline-plx_data-all.log",
+      ".worktrees/verdict-integration/.empryo/person-boundary-green-data-plx_data-all-v1.log",
+      ".worktrees/verdict-integration/.empryo/person-boundary-green-data-app-person_boundary_tests-v2.log",
+      ".worktrees/verdict-integration/.empryo/person-boundary-green-data-plx_data-person-v1.log",
+      ".worktrees/verdict-integration/.empryo/person-boundary-green-data-plx_screens-person-v1.log",
+      ".worktrees/verdict-integration/.empryo/person-boundary-green-data-app-owned_search-v1.log",
+      ".worktrees/verdict-integration/.empryo/person-boundary-green-data-app-search_publication-v1.log"
+    ],
+    "focused": [
+      {
+        "name": "plx_data-person",
+        "summary": "test result: ok. 86 passed; 0 failed; 0 ignored; 0 measured; 1535 filtered out; finished in 1.18s"
+      },
+      {
+        "name": "plx_screens-person",
+        "summary": "test result: ok. 57 passed; 0 failed; 0 ignored; 0 measured; 2077 filtered out; finished in 0.07s"
+      },
+      {
+        "name": "app-owned_search",
+        "summary": "test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 1326 filtered out; finished in 0.42s"
+      },
+      {
+        "name": "app-search_publication",
+        "summary": "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 1345 filtered out; finished in 0.05s"
+      }
+    ],
+    "final_staged_tree_before_audit_update": "07ccbd2a0fdcb309bf7282e2a8de709cce770a49"
+  },
+  "mirrors": {
+    "normalized_lf_sha256": {
+      "rust-modules/data/src/person.rs": {
+        "hashes": {
+          "": "d90b3a349834c7156a7cf36d4d9dfffccf91bfa7c0239309f55d21224959ce82",
+          ".worktrees/sans_io-6a4bcd6a42/": "d90b3a349834c7156a7cf36d4d9dfffccf91bfa7c0239309f55d21224959ce82",
+          ".worktrees/verdict-integration/": "d90b3a349834c7156a7cf36d4d9dfffccf91bfa7c0239309f55d21224959ce82"
+        },
+        "equal": true
+      },
+      "rust-modules/data/src/person/captured_inputs_tests.rs": {
+        "hashes": {
+          "": "0b73408b06a61027e217a345f095f3efe70ae12c2481c68a72bf70129c1236b2",
+          ".worktrees/sans_io-6a4bcd6a42/": "0b73408b06a61027e217a345f095f3efe70ae12c2481c68a72bf70129c1236b2",
+          ".worktrees/verdict-integration/": "0b73408b06a61027e217a345f095f3efe70ae12c2481c68a72bf70129c1236b2"
+        },
+        "equal": true
+      },
+      "rust-modules/data/src/person/boundary_tests.rs": {
+        "hashes": {
+          "": "1901b1e1188dcc056f5dad1418f01db397d4c3d53b235f6f94b166ccf14bc84f",
+          ".worktrees/sans_io-6a4bcd6a42/": "1901b1e1188dcc056f5dad1418f01db397d4c3d53b235f6f94b166ccf14bc84f",
+          ".worktrees/verdict-integration/": "1901b1e1188dcc056f5dad1418f01db397d4c3d53b235f6f94b166ccf14bc84f"
+        },
+        "equal": true
+      },
+      "rust-modules/data/src/stores/person.rs": {
+        "hashes": {
+          "": "fe86b8de685496d37c159818deacc67f11cd420a34b57cab71f9b9de39ea7c5c",
+          ".worktrees/sans_io-6a4bcd6a42/": "fe86b8de685496d37c159818deacc67f11cd420a34b57cab71f9b9de39ea7c5c",
+          ".worktrees/verdict-integration/": "fe86b8de685496d37c159818deacc67f11cd420a34b57cab71f9b9de39ea7c5c"
+        },
+        "equal": true
+      },
+      "rust-modules/data/src/stores/held_keys_tests.rs": {
+        "hashes": {
+          "": "de14ab4026ed1b44fc5337c2ffea37d0ad465ff158a8befcf4afad4efa730245",
+          ".worktrees/sans_io-6a4bcd6a42/": "de14ab4026ed1b44fc5337c2ffea37d0ad465ff158a8befcf4afad4efa730245",
+          ".worktrees/verdict-integration/": "de14ab4026ed1b44fc5337c2ffea37d0ad465ff158a8befcf4afad4efa730245"
+        },
+        "equal": true
+      },
+      "rust-modules/data/src/search_account_scope_tests.rs": {
+        "hashes": {
+          "": "defba5bdb8d182797b37f4eefe78187413e27713c5752193a496d1c9096a8037",
+          ".worktrees/sans_io-6a4bcd6a42/": "defba5bdb8d182797b37f4eefe78187413e27713c5752193a496d1c9096a8037",
+          ".worktrees/verdict-integration/": "defba5bdb8d182797b37f4eefe78187413e27713c5752193a496d1c9096a8037"
+        },
+        "equal": true
+      },
+      "rust-modules/screens/src/person.rs": {
+        "hashes": {
+          "": "5cf39a4ccc4993af2bf136c534c91ec1000c2516ecd76c5b34616d338787b2a6",
+          ".worktrees/sans_io-6a4bcd6a42/": "5cf39a4ccc4993af2bf136c534c91ec1000c2516ecd76c5b34616d338787b2a6",
+          ".worktrees/verdict-integration/": "5cf39a4ccc4993af2bf136c534c91ec1000c2516ecd76c5b34616d338787b2a6"
+        },
+        "equal": true
+      },
+      "rust-modules/src/app/adapters/stores.rs": {
+        "hashes": {
+          "": "ed5e981260518e75c9adf1727ba666258c58d0e0c9e5abd1c1c4046320882f6c",
+          ".worktrees/sans_io-6a4bcd6a42/": "ed5e981260518e75c9adf1727ba666258c58d0e0c9e5abd1c1c4046320882f6c",
+          ".worktrees/verdict-integration/": "ed5e981260518e75c9adf1727ba666258c58d0e0c9e5abd1c1c4046320882f6c"
+        },
+        "equal": true
+      },
+      "rust-modules/src/app/person_boundary_tests.rs": {
+        "hashes": {
+          "": "38889f1cc0b6979ef1ad9c7fdd9f5568fcf89af24b37e710fc516b621ad216f5",
+          ".worktrees/sans_io-6a4bcd6a42/": "38889f1cc0b6979ef1ad9c7fdd9f5568fcf89af24b37e710fc516b621ad216f5",
+          ".worktrees/verdict-integration/": "38889f1cc0b6979ef1ad9c7fdd9f5568fcf89af24b37e710fc516b621ad216f5"
+        },
+        "equal": true
+      },
+      "rust-modules/src/app/search_owned_tests.rs": {
+        "hashes": {
+          "": "f4e17ab641cf9015328c0b5eaed9e20311126633a06e15e420b3fce7b63890f3",
+          ".worktrees/sans_io-6a4bcd6a42/": "f4e17ab641cf9015328c0b5eaed9e20311126633a06e15e420b3fce7b63890f3",
+          ".worktrees/verdict-integration/": "f4e17ab641cf9015328c0b5eaed9e20311126633a06e15e420b3fce7b63890f3"
+        },
+        "equal": true
+      },
+      "rust-modules/src/app/search_publication_tests.rs": {
+        "hashes": {
+          "": "5ad18e9bef2bcb918bfae4dfa03d8f0103daf115ae8c2b662590685fed9920da",
+          ".worktrees/sans_io-6a4bcd6a42/": "5ad18e9bef2bcb918bfae4dfa03d8f0103daf115ae8c2b662590685fed9920da",
+          ".worktrees/verdict-integration/": "5ad18e9bef2bcb918bfae4dfa03d8f0103daf115ae8c2b662590685fed9920da"
+        },
+        "equal": true
+      },
+      "rust-modules/screens/src/alt_sources_tests.rs": {
+        "hashes": {
+          "": "6cecb2e42eac9b96eadcdfe6f2069980021d5007da4ca61a7d77603435389847",
+          ".worktrees/sans_io-6a4bcd6a42/": "6cecb2e42eac9b96eadcdfe6f2069980021d5007da4ca61a7d77603435389847",
+          ".worktrees/verdict-integration/": "6cecb2e42eac9b96eadcdfe6f2069980021d5007da4ca61a7d77603435389847"
+        },
+        "equal": true
+      },
+      "rust-modules/screens/src/detail/tests.rs": {
+        "hashes": {
+          "": "ca03ecdb28990a3a3cfbe0e6010bfd4398f2ffe269355ed3f3944d7c48bd8c57",
+          ".worktrees/sans_io-6a4bcd6a42/": "ca03ecdb28990a3a3cfbe0e6010bfd4398f2ffe269355ed3f3944d7c48bd8c57",
+          ".worktrees/verdict-integration/": "f41686702519d13ac7d276a0bb47c48c3a923917fdebf7fa189a6d19eeaadba2"
+        },
+        "equal": false,
+        "fixture_hunks": {
+          "hashes": {
+            "": "fb85aa06d78f68fc30782a25ca2ca4d2c1b0b4d2c6e39d7a14f831a2edbd947c",
+            ".worktrees/sans_io-6a4bcd6a42/": "fb85aa06d78f68fc30782a25ca2ca4d2c1b0b4d2c6e39d7a14f831a2edbd947c",
+            ".worktrees/verdict-integration/": "fb85aa06d78f68fc30782a25ca2ca4d2c1b0b4d2c6e39d7a14f831a2edbd947c"
+          },
+          "equal": true
+        },
+        "preserved_unrelated_ui_difference": "Integration has pre-existing modern hero/trailer/identity tests; ROOT/SansIO UI expectations untouched."
+      },
+      "rust-modules/src/app/detail_panel_tests.rs": {
+        "hashes": {
+          "": "b830c5a5b6381dc6a3e9fb643cfbe389eb5f8f0d591230a6764ec1e59dfe625d",
+          ".worktrees/sans_io-6a4bcd6a42/": "b830c5a5b6381dc6a3e9fb643cfbe389eb5f8f0d591230a6764ec1e59dfe625d",
+          ".worktrees/verdict-integration/": "b830c5a5b6381dc6a3e9fb643cfbe389eb5f8f0d591230a6764ec1e59dfe625d"
+        },
+        "equal": true
+      },
+      "docs/design-briefs/verdict-person-captured-inputs-source-oracle.py": {
+        "hashes": {
+          "": "541cc3df32febff9957c6fa447c0acbc93fb583f61f95b76f20523b5428cb876",
+          ".worktrees/sans_io-6a4bcd6a42/": "541cc3df32febff9957c6fa447c0acbc93fb583f61f95b76f20523b5428cb876",
+          ".worktrees/verdict-integration/": "541cc3df32febff9957c6fa447c0acbc93fb583f61f95b76f20523b5428cb876"
+        },
+        "equal": true
+      },
+      "docs/design-briefs/verdict-person-captured-inputs-audit.json": {
+        "hashes": {
+          "": "5eef41dd5bb955b90e9f9108be2c1c36d52f2fb01bb9a20e783c92a27965244b",
+          ".worktrees/sans_io-6a4bcd6a42/": "5eef41dd5bb955b90e9f9108be2c1c36d52f2fb01bb9a20e783c92a27965244b",
+          ".worktrees/verdict-integration/": "5eef41dd5bb955b90e9f9108be2c1c36d52f2fb01bb9a20e783c92a27965244b"
+        },
+        "equal": true
+      }
+    },
+    "bridge_regions": {
+      "refill_store_session": {
+        "regions": {
+          "": {
+            "sha256": "f0a067a8da54cb770ef54d0c1602e3d13adf0889c9ec1a632b04839e20282ae9",
+            "line": 98
+          },
+          ".worktrees/sans_io-6a4bcd6a42/": {
+            "sha256": "f0a067a8da54cb770ef54d0c1602e3d13adf0889c9ec1a632b04839e20282ae9",
+            "line": 518
+          },
+          ".worktrees/verdict-integration/": {
+            "sha256": "f0a067a8da54cb770ef54d0c1602e3d13adf0889c9ec1a632b04839e20282ae9",
+            "line": 527
+          }
+        },
+        "equal": true
+      },
+      "capture_store_session": {
+        "regions": {
+          "": {
+            "sha256": "ecf79beb1a08edd983a57e20628bb1775d25bc9498db510a3e5c0e1e3d884ee6",
+            "line": 1440
+          },
+          ".worktrees/sans_io-6a4bcd6a42/": {
+            "sha256": "ecf79beb1a08edd983a57e20628bb1775d25bc9498db510a3e5c0e1e3d884ee6",
+            "line": 1805
+          },
+          ".worktrees/verdict-integration/": {
+            "sha256": "ecf79beb1a08edd983a57e20628bb1775d25bc9498db510a3e5c0e1e3d884ee6",
+            "line": 1899
+          }
+        },
+        "equal": true
+      },
+      "person_run": {
+        "regions": {
+          "": {
+            "sha256": "efd90ab90131cae0de8c5ef13c23cde024314b87ff8d462b78e2417a2600ff42",
+            "line": 1808
+          },
+          ".worktrees/sans_io-6a4bcd6a42/": {
+            "sha256": "efd90ab90131cae0de8c5ef13c23cde024314b87ff8d462b78e2417a2600ff42",
+            "line": 1770
+          },
+          ".worktrees/verdict-integration/": {
+            "sha256": "efd90ab90131cae0de8c5ef13c23cde024314b87ff8d462b78e2417a2600ff42",
+            "line": 1864
+          }
+        },
+        "equal": true
+      },
+      "person_pump": {
+        "regions": {
+          "": {
+            "sha256": "97babb5514cc34835ad5d4ad0a0d63bb7d16bdb983dcfed016fec0bbc885e889",
+            "line": 1825
+          },
+          ".worktrees/sans_io-6a4bcd6a42/": {
+            "sha256": "97babb5514cc34835ad5d4ad0a0d63bb7d16bdb983dcfed016fec0bbc885e889",
+            "line": 1787
+          },
+          ".worktrees/verdict-integration/": {
+            "sha256": "97babb5514cc34835ad5d4ad0a0d63bb7d16bdb983dcfed016fec0bbc885e889",
+            "line": 1881
+          }
+        },
+        "equal": true
+      },
+      "start_jobs": {
+        "regions": {
+          "": {
+            "sha256": "5ad1dee7fea716c5022f4e1081e844898a6c44ced076151c471dcdadd9f6595f",
+            "line": 1968
+          },
+          ".worktrees/sans_io-6a4bcd6a42/": {
+            "sha256": "5ad1dee7fea716c5022f4e1081e844898a6c44ced076151c471dcdadd9f6595f",
+            "line": 1966
+          },
+          ".worktrees/verdict-integration/": {
+            "sha256": "5ad1dee7fea716c5022f4e1081e844898a6c44ced076151c471dcdadd9f6595f",
+            "line": 2060
+          }
+        },
+        "equal": true
+      },
+      "PersonCapture.input": {
+        "regions": {
+          "": {
+            "sha256": "a4c914add2b3bddda7eb62ab687b113d766c990d888cd899b8d927f1850fe7cc",
+            "line": 536
+          },
+          ".worktrees/sans_io-6a4bcd6a42/": {
+            "sha256": "a4c914add2b3bddda7eb62ab687b113d766c990d888cd899b8d927f1850fe7cc",
+            "line": 488
+          },
+          ".worktrees/verdict-integration/": {
+            "sha256": "a4c914add2b3bddda7eb62ab687b113d766c990d888cd899b8d927f1850fe7cc",
+            "line": 497
+          }
+        },
+        "equal": true
+      }
+    },
+    "all_equal": true
+  },
+  "preserved": "No ledger/pin increase; no ambient production fallback/cfg(test) split; old assertions and golden tape shapes retained. ROOT/SansIO UI, unrelated integration modern UI, .gitignore, tmp and prior evidence untouched.",
+  "fixture_compatibility": "Three obsolete Search app fixture calls now derive household from captured AppViews, not a restored ambient Bridge helper; assertions unchanged."
+}

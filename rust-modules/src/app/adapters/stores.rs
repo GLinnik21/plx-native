@@ -627,8 +627,8 @@ impl StoreRunner {
         let request = job.req.admission();
         let admission = port.clone();
         if !plx_data::stores::tape::admit(request, || self.launch_person(job, port)) {
-            // Nothing was started, so nothing will ever answer on its own: the refusal hands the
-            // slot's claim back, and the next pump asks again.
+            // An unstarted request still owes one addressed terminal. The Bridge consumes it
+            // in this drain; the owner releases its claim and applies its retry policy.
             admission.refused(addr);
         }
     }
@@ -1779,6 +1779,7 @@ mod tests {
         let keys = registry_keys();
         let session = plx_plex::plex::session::peek_settled();
         let input = plx_data::person::PersonInput { keys: &keys, session: session.as_ref(),
+                profile_scope: 0, owner_epoch: 0, profile_generation: 0, tenure: 0, profile_key: "",
             visible_generation: plx_plex::plex::session::visible_generation(), controlled,
             profile_refused: plx_plex::plex::discover::person_profile_refused(PERSON_GUID),
             credits_refused: plx_plex::plex::discover::person_credits_refused(PERSON_GUID),
@@ -1826,6 +1827,7 @@ mod tests {
         tape::reset_for_test();
         let (person_keys, person_session) = (registry_keys(), plx_plex::plex::session::peek_settled());
         let person_input = plx_data::person::PersonInput {
+                profile_scope: 0, owner_epoch: 0, profile_generation: 0, tenure: 0, profile_key: "",
             keys: &person_keys, session: person_session.as_ref(), controlled: false,
             visible_generation: plx_plex::plex::session::visible_generation(),
             profile_refused: plx_plex::plex::discover::person_profile_refused(PERSON_GUID),
