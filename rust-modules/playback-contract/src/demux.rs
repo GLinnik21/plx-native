@@ -179,7 +179,6 @@ pub trait DemuxMedia {
 pub trait DemuxSubtitle {
     fn plan(&mut self, tracks: &[TrackInfo]) -> Vec<DecodeKind>;
     fn max_header_bytes(&self) -> usize;
-    fn admit_font(&mut self, bytes: usize) -> bool;
     fn begin_sources(&mut self, media_key: &str, manifest: Manifest) -> Option<u64>;
     fn record_tracks(&self);
     fn selected_track(&self) -> i32;

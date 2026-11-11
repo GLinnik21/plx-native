@@ -22,8 +22,11 @@ typedef struct {
 /* ABI 3: plx_ass_set_features, plx_ass_set_cache_limits, plx_ass_set_line_spacing,
  * plx_ass_replace_track and plx_ass_stats join the 2 surface. plx_ass_load now scans the fonts
  * (ass_set_fonts) only on a context's first load.
- * ABI 4: the UI text surface, plx_ass_text_* (src/ass_text.c). */
-#define PLX_ASS_ABI_VERSION 4
+ * ABI 4: the UI text surface, plx_ass_text_* (src/ass_text.c).
+ * ABI 5: plx_ass_add_font works after plx_ass_load too (the face is opened alone at the next
+ * frame) and has no byte limit but `int`; before, it refused once a track was loaded and past
+ * 64 MiB in all. */
+#define PLX_ASS_ABI_VERSION 5
 
 typedef struct {
     uint32_t library_fonts; /* fonts the library holds: added through plx_ass_add_font or extracted */
@@ -34,12 +37,17 @@ typedef struct {
 unsigned plx_ass_abi_version(void);
 PlxAss *plx_ass_create(const char *default_font);
 void plx_ass_destroy(PlxAss *ctx);
+/* Copy one font file into the library under `name`. -1 for a NULL or empty argument or a `len`
+ * past INT_MAX (libass takes an int), else 0. Valid before and after plx_ass_load: a font added
+ * after it is opened by libass alone, at the start of the next plx_ass_render that has events, and
+ * the faces already open are not scanned again (PlxAssStats.font_scans stays 1). A face that
+ * FreeType cannot open is skipped silently by libass; the copy is still held. */
 int plx_ass_add_font(PlxAss *ctx, const char *name, const uint8_t *data, size_t len);
 int plx_ass_load(PlxAss *ctx, const uint8_t *data, size_t len, int script);
 /* Replace the loaded track on the same library and renderer, keeping every font face the
- * renderer has opened. Fonts cannot change here: the new track's own [Fonts] section is NOT
- * extracted, so it must repeat the first track's (a synthesized header has none; a window of the
- * same script repeats the same section). Needs a first plx_ass_load. The next render returns a
+ * renderer has opened. The new track's own [Fonts] section is NOT extracted, so it must repeat the
+ * first track's (a synthesized header has none; a window of the same script repeats the same
+ * section); fonts the caller adds with plx_ass_add_font are unaffected. Needs a first plx_ass_load. The next render returns a
  * full frame, never 0 "unchanged". -1 leaves the context without a track; such a context takes only
  * another plx_ass_replace_track (plx_ass_load refuses once the fonts are scanned). */
 int plx_ass_replace_track(PlxAss *ctx, const uint8_t *data, size_t len, int script);

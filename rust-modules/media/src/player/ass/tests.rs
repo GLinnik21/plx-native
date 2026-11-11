@@ -552,7 +552,7 @@ fn a_track_is_never_refused_for_the_count_or_size_of_its_fonts() {
         data: Arc::from(vec![1u8; len]),
     };
     let mut fonts: Vec<Font> = (0..200).map(|i| font(i, 2048)).collect();
-    fonts.push(font(200, MAX_FONT_BYTES + 1));
+    fonts.push(font(200, 40 * 1024 * 1024));
     let mut s = source(vec![event(1, 0, 1000)]);
     let Content::Embedded { fonts: slot, .. } = &mut s.content else { panic!() };
     *slot = fonts.into();
@@ -666,10 +666,10 @@ fn faces_script(lines: &str) -> String {
 
 #[test]
 #[ignore = "requires the pinned native host libass artifact and packaged fonts"]
-fn native_the_facade_is_abi_four() {
+fn native_the_facade_is_abi_five() {
     assert!(native_ass::load(Some(asset_dir())).ok());
-    assert_eq!(unsafe { plx_ass_abi_version() }, 4);
-    assert_eq!(NATIVE_ABI, 4);
+    assert_eq!(unsafe { plx_ass_abi_version() }, 5);
+    assert_eq!(NATIVE_ABI, 5);
 }
 
 /// The bundled libass was built without libunibreak until the ABI 3 bump, so a CJK line with no
@@ -722,9 +722,9 @@ fn native_line_spacing_changes_the_line_pitch_by_exactly_its_value() {
 fn native_cache_limits_are_validated() {
     let native = native_with(&[], &script_text("Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,x\n"));
     unsafe {
-        assert_eq!(plx_ass_set_cache_limits(native.0, 400, 12), 0);
-        assert_eq!(plx_ass_set_cache_limits(native.0, 0, 12), -1);
-        assert_eq!(plx_ass_set_cache_limits(native.0, 400, 0), -1);
+        assert_eq!(plx_ass_set_cache_limits(native.ptr, 400, 12), 0);
+        assert_eq!(plx_ass_set_cache_limits(native.ptr, 0, 12), -1);
+        assert_eq!(plx_ass_set_cache_limits(native.ptr, 400, 0), -1);
         assert_eq!(plx_ass_set_cache_limits(std::ptr::null_mut(), 400, 12), -1);
     }
 }
@@ -904,6 +904,222 @@ fn native_fourteen_faces_of_one_family_all_render() {
     }
     // Back to the first: the faces stay for the renderer's lifetime.
     assert_eq!(ink(&native_frame(&mut native, 500).unwrap()).bands.len(), 1);
+}
+
+// ---- issue #1328: the fonts a track names reach libass, whatever the file attaches ----
+
+use super::synth_fonts::rename;
+
+const MIB: usize = 1024 * 1024;
+
+/// A one-glyph test face (`face-NN.ttf`: the glyph U+E000+NN, a square `(400 + 20 NN)` thousandths
+/// of an em) renamed to its own family `family`, so only a track that names it draws the square.
+fn named_face(face: usize, family: &str, pad_to: Option<usize>) -> Font {
+    let data = std::fs::read(format!("{FACE_DIR}/face-{face:02}.ttf")).expect("committed fixture face");
+    Font { name: format!("{family}.ttf"), data: rename(&data, family, "Regular", pad_to).into() }
+}
+
+/// Inter renamed to a family no track names, padded to `bytes`: what a release attaches for a
+/// sign nobody uses in this episode.
+fn filler(index: usize, bytes: usize) -> Font {
+    let inter = std::fs::read(asset_dir().join("appfont.ttf")).expect("a shipped face");
+    Font {
+        name: format!("filler-{index}.ttf"),
+        data: rename(&inter, &format!("Plx Filler {index}"), "Regular", Some(bytes)).into(),
+    }
+}
+
+/// A script whose one style, `Default`, names `family` at 100 px, top-left on a 320x180 canvas.
+fn named_script(family: &str, lines: &str) -> String {
+    HEADER.replace("Style: Default,Inter,24", &format!("Style: Default,{family},100")) + lines
+}
+
+fn glyph_line(second: i64, tag: &str, glyph: u32) -> String {
+    format!(
+        "Dialogue: 0,0:00:{second:02}.00,0:00:{:02}.00,Default,,0,0,0,,{{\\an7\\pos(10,10){tag}}}{}\n",
+        second + 1,
+        char::from_u32(glyph).unwrap()
+    )
+}
+
+/// The report's file in miniature: seven fillers whose 42 MiB is past the old 32 MiB cap come FIRST
+/// in the container, and the two 8 MiB faces the track names come after them. Before the fix libass
+/// never saw the named ones and their glyphs fell back; now libass is handed exactly the two the
+/// track names (one by its style, one by a `\fn`), the fillers cost it nothing, and the faces it
+/// was handed draw as they do with no filler attached at all.
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_the_faces_a_track_names_render_though_fillers_past_the_old_cap_come_first() {
+    let mut fonts: Vec<Font> = (0..7).map(|i| filler(i, 6 * MIB)).collect();
+    let attached: usize = fonts.iter().map(|f| f.data.len()).sum();
+    assert!(attached > 40 * MIB, "the fillers alone are past the old 32 MiB cap: {attached}");
+    let named = fonts.len();
+    // The named faces are big too (the report's are 6-13 MB), so the old cap, which still let a small
+    // late font in, would have dropped both.
+    fonts.push(named_face(3, "Plx Named A", Some(8 * MIB)));
+    fonts.push(named_face(5, "Plx Named B", Some(8 * MIB)));
+    let text = named_script(
+        "Plx Named A",
+        &(glyph_line(0, "", 0xE003) + &glyph_line(2, r"\fnPlx Named B", 0xE005)),
+    );
+
+    let mut native = native_with(&fonts, &text);
+    let stats = native.stats();
+    assert_eq!(stats.library_fonts, bundled_faces() + 2, "libass holds the two named faces and no filler");
+    assert_eq!(stats.font_scans, 1);
+    assert_eq!(native.given, 2);
+    let first = native_frame(&mut native, 500).expect("a new cue");
+    let second = native_frame(&mut native, 2500).expect("a new cue");
+
+    let side = |face: i32| (400 + 20 * face) * 100 / 1000;
+    for (rects, face) in [(&first, 3), (&second, 5)] {
+        let drawn = ink(rects);
+        assert_eq!(drawn.bands.len(), 1, "face {face} drew its glyph");
+        let (top, bottom) = drawn.bands[0];
+        assert!(
+            (bottom - top + 1 - side(face)).abs() <= 2 && (drawn.right - drawn.left - side(face)).abs() <= 2,
+            "the square of face {face} ({} px), got {}x{}",
+            side(face),
+            drawn.right - drawn.left,
+            bottom - top + 1
+        );
+    }
+
+    // The same pixels as a renderer that was handed only the two faces, and not as one with neither.
+    let mut alone = native_with(&fonts[named..], &text);
+    assert_eq!(native_frame(&mut alone, 500).unwrap(), first);
+    assert_eq!(native_frame(&mut alone, 2500).unwrap(), second);
+    let mut neither = native_with(&fonts[..named], &text);
+    assert_eq!(neither.stats().library_fonts, bundled_faces());
+    assert_ne!(native_frame(&mut neither, 500).unwrap(), first, "the fallback is not the named face");
+    assert_ne!(native_frame(&mut neither, 2500).unwrap(), second);
+}
+
+/// An authored track names a font in an event only: the face is added when the event is, after the
+/// renderer has loaded its track and drawn a frame, and it draws the same pixels as the same face
+/// loaded up front.
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_a_font_a_later_event_names_is_added_after_load_and_draws_as_if_loaded_up_front() {
+    let late = named_face(3, "Plx Late", None);
+    let bystander = filler(0, 2 * MIB);
+    let fonts: Arc<[Font]> = vec![bystander, late.clone()].into();
+    let header = HEADER.replace("Style: Default,Inter,24", "Style: Default,Inter,100");
+    let packet = |read_order: u32, tag: &str, glyph: char| {
+        format!("{read_order},0,Default,,0,0,0,,{{\\an7\\pos(10,10){tag}}}{glyph}").into_bytes()
+    };
+    let events = |count: usize| -> Arc<[Event]> {
+        let all = [
+            (0, 1000, packet(0, "", 'A')),
+            (2000, 1000, packet(1, r"\fnPlx Late", '\u{E003}')),
+        ];
+        all[..count]
+            .iter()
+            .map(|(start_ms, duration_ms, payload)| Event {
+                start_ms: *start_ms,
+                duration_ms: *duration_ms,
+                payload: payload.clone().into(),
+            })
+            .collect::<Vec<_>>()
+            .into()
+    };
+    let embedded = |count: usize| Source {
+        id: 1,
+        revision: count as u64,
+        origin: Origin::Authored,
+        content: Content::Embedded {
+            header: header.clone().into_bytes().into(),
+            events: events(count),
+            fonts: fonts.clone(),
+        },
+    };
+
+    let mut native = Native::open(&embedded(1)).expect("native fixture requires the built host library in pkg");
+    let opened = native.stats();
+    assert_eq!(opened.library_fonts, bundled_faces(), "the header names Inter: no attached face yet");
+    let before = native_frame(&mut native, 500).expect("the first cue draws");
+    assert_eq!(native.stats().font_scans, 1);
+
+    // The demuxer reads the next packet: its `\fn` adds the face, after the first frame was drawn.
+    native.append(&embedded(2), 1).unwrap();
+    let late_frame = native_frame(&mut native, 2500).expect("the second cue draws");
+    let stats = native.stats();
+    assert_eq!(stats.library_fonts, bundled_faces() + 1, "one face, the one named");
+    assert_eq!(stats.font_scans, 1, "libass did not scan the other faces again");
+    assert_eq!(ink(&late_frame).bands.len(), 1);
+    assert!(native_frame(&mut native, 500).is_some(), "and the first cue still draws");
+    assert_eq!(native.given, 1);
+
+    // The reference: the whole track at once, so the face is held before the first load.
+    let mut eager = Native::open(&embedded(2)).unwrap();
+    assert_eq!(eager.stats().library_fonts, bundled_faces() + 1, "an eager open scans the face with the others");
+    assert_eq!(native_frame(&mut eager, 500).unwrap(), before);
+    assert_eq!(native_frame(&mut eager, 2500).unwrap(), late_frame);
+
+    // Without the attachment the same event falls back and draws something else.
+    let mut missing_source = embedded(2);
+    let Content::Embedded { fonts: slot, .. } = &mut missing_source.content else { unreachable!() };
+    *slot = Arc::from(Vec::<Font>::new());
+    let mut missing = Native::open(&missing_source).unwrap();
+    assert_ne!(native_frame(&mut missing, 2500).unwrap(), late_frame);
+}
+
+/// No byte count stands between a named face and libass: a 70 MiB face (past the old 64 MiB limit
+/// the facade enforced) is accepted and drawn, and a second 40 MiB face after it is too (80 MiB in
+/// all).
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_a_face_past_the_old_facade_limit_is_accepted_and_draws() {
+    let big = named_face(3, "Plx Huge", Some(70 * MIB));
+    assert!(big.data.len() > 64 * MIB);
+    let text = named_script("Plx Huge", &glyph_line(0, "", 0xE003));
+    let mut native = native_with(std::slice::from_ref(&big), &text);
+    assert_eq!(native.stats().library_fonts, bundled_faces() + 1);
+    assert_eq!(native.given, 1);
+    let drawn = ink(&native_frame(&mut native, 500).expect("a new cue"));
+    assert_eq!(drawn.bands.len(), 1, "the 70 MiB face draws its glyph");
+    let more = named_face(5, "Plx Huge Too", Some(40 * MIB));
+    native.font(&more.name, &more.data).expect("past the old cumulative limit too");
+    assert_eq!(native.stats().library_fonts, bundled_faces() + 2);
+}
+
+/// A long sidecar script is fed to libass a window at a time, and the first window holds only its
+/// first lines: a face that a line far past it asks for must be held before the window slides there.
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_a_windowed_script_holds_the_face_a_line_outside_its_first_window_names() {
+    let t = |ms: i64| format!("{}:{:02}:{:02}.{:02}", ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60, ms % 1000 / 10);
+    let mut lines = String::new();
+    for i in 0..10_000i64 {
+        let tag = if i == 9_999 { r"\fnPlx Far" } else { "" };
+        let glyph = if i == 9_999 { '\u{E003}' } else { 'x' };
+        lines.push_str(&format!(
+            "Dialogue: 0,{},{},Default,,0,0,0,,{{\\an7\\pos(10,10){tag}}}{glyph}\n",
+            t(i * 1000),
+            t(i * 1000 + 900)
+        ));
+    }
+    let fonts: Arc<[Font]> = vec![named_face(3, "Plx Far", None)].into();
+    let source = Arc::new(Source {
+        id: next_source_id(),
+        revision: 1,
+        origin: Origin::Authored,
+        content: Content::Script {
+            bytes: HEADER.replace("Style: Default,Inter,24", "Style: Default,Inter,100").into_bytes().into_iter().chain(lines.into_bytes()).collect::<Vec<u8>>().into(),
+            fonts,
+        },
+    });
+    let mut engine = Engine::default();
+    let first = render(&mut engine, &source, 100);
+    assert!(!first.rects.is_empty());
+    let opened = engine.native.as_ref().unwrap().stats();
+    assert_eq!(opened.library_fonts, bundled_faces() + 1, "held from the first open, before any window names it");
+    let far = render(&mut engine, &source, 9_999_100);
+    assert_eq!(ink(&far.rects).bands.len(), 1);
+    let (top, bottom) = ink(&far.rects).bands[0];
+    assert!((bottom - top + 1 - 46).abs() <= 2, "the far line draws face 3's square, not Inter's x");
+    let slid = engine.native.as_ref().unwrap().stats();
+    assert_eq!((slid.font_scans, slid.library_fonts), (1, opened.library_fonts));
 }
 
 // ---- Source.origin, the restyle branch and the alignment classes (plan §2.4, §2.5, §4.6 case 3) ----

@@ -11,10 +11,11 @@ use std::sync::{Arc, MutexGuard};
 
 // What can be shown is never cut by a count. Every ASS track of the file keeps its header (a
 // copy of bytes FFmpeg already holds, so memory is bounded by the file's own stream headers) and
-// every attached font is admitted until the font byte budget (`ass::FontBudget`) is spent. What
-// is bounded is per-track EVENT memory and the per-push work: a forward window of
-// `MAX_EVENTS` events and `MAX_EVENT_BYTES` bytes, of which the selected track may use a whole
-// script's worth and the others share one pool of the same size.
+// every attached font is kept whole (the same, bounded by the file's own attachments). No byte
+// budget decides which font a track can use (issue #1328): the renderer hands libass the fonts the
+// track names (`ass::font_names`). What is bounded is per-track EVENT memory and the per-push work:
+// a forward window of `MAX_EVENTS` events and `MAX_EVENT_BYTES` bytes, of which the selected track
+// may use a whole script's worth and the others share one pool of the same size.
 pub const MAX_HEADER_BYTES: usize = 1024 * 1024;
 pub(crate) const MAX_PACKET_BYTES: usize = 256 * 1024;
 const MAX_EVENTS: usize = 8192;
@@ -25,6 +26,14 @@ const OTHER_TRACKS_EVENT_BYTES: usize = 8 * 1024 * 1024;
 /// behind; the demuxer reads it again on its way forward, so it is retired first.
 const STALE_AHEAD_MS: i64 = 5_000;
 const MAX_MEDIA_KEY_BYTES: usize = 64 * 1024;
+
+/// The font list of a reopen of the same file is the one already held: same count, and the same
+/// name and size at each place. A stronger test would read every byte of fonts that are, by the
+/// file's identity, the same bytes.
+fn same_font_list(held: &[Font], fresh: &[Font]) -> bool {
+    held.len() == fresh.len()
+        && held.iter().zip(fresh).all(|(a, b)| a.name == b.name && a.data.len() == b.data.len())
+}
 
 fn trim_terminators(mut bytes: &[u8]) -> &[u8] {
     while bytes.last() == Some(&0) {
@@ -300,14 +309,17 @@ impl Store {
         if !media_key.is_empty() && media_key.len() <= MAX_MEDIA_KEY_BYTES {
             self.media_key = Some(media_key.to_owned());
         }
-        // A font that does not fit the budget is skipped (a later, smaller one still fits);
-        // text that names it falls back to the app's default face, so nothing is hidden.
-        let mut budget = ass::FontBudget::default();
-        let fonts: Arc<[Font]> = fonts
-            .into_iter()
-            .filter(|f| budget.admit(f.data.len()))
-            .collect::<Vec<_>>()
-            .into();
+        // Every attached font is kept (issue #1328): which of them libass is handed is the
+        // renderer's choice, by the names the track uses (`ass::font_names`). A reopen of the same
+        // file keeps the font list the tracks already hold, so the renderer's same-fonts check is a
+        // pointer compare and not a read of every font's bytes.
+        let held = previous.values().find_map(|source| match &source.content {
+            Content::Embedded { fonts, .. } | Content::Script { fonts, .. } => Some(fonts.clone()),
+        });
+        let fonts: Arc<[Font]> = match held {
+            Some(held) if same_font_list(&held, &fonts) => held,
+            _ => fonts.into(),
+        };
         self.fonts = Some(fonts.clone());
         for (track, registered) in headers {
             let (origin, header, events) = match registered {
@@ -1097,30 +1109,40 @@ mod tests {
         assert!(held.iter().any(|f| f.name == "f199.ttf"), "a font late in the list is found");
     }
 
+    /// A demux reopen of the same file hands `begin` a fresh copy of every font. The tracks keep the
+    /// list they already hold, so the renderer's same-fonts check (`Arc` equality, a pointer
+    /// compare when it is the same `Arc`) neither reads every byte nor opens a new renderer; a
+    /// different file, or a list that differs in a name or a size, is taken as it comes.
     #[test]
-    fn fonts_past_the_byte_budget_are_skipped_not_fatal() {
+    fn a_reopen_of_the_same_file_keeps_the_font_list_it_already_held() {
+        fn held(s: &mut Store) -> Arc<[Font]> {
+            match &s.selected(0).unwrap().content {
+                Content::Embedded { fonts, .. } | Content::Script { fonts, .. } => fonts.clone(),
+            }
+        }
+        let font = |name: &str, len: usize| Font { name: name.into(), data: Arc::from(vec![1u8; len]) };
+        let headers = || vec![(0, TrackHeader::Authored(b"header".to_vec()))];
         let mut s = Store::new();
-        let big = |name: &str, mib: usize| Font {
-            name: name.into(),
-            data: Arc::from(vec![1u8; mib * 1024 * 1024]),
-        };
-        let fonts = vec![big("a.ttf", 20), big("b.ttf", 20), big("c.ttf", 4), big("d.ttf", 1)];
-        s.begin("fixture", vec![(0, TrackHeader::Authored(b"header".to_vec()))], fonts);
-        let held = s.fonts.clone().unwrap();
-        let names: Vec<_> = held.iter().map(|f| f.name.as_str()).collect();
-        assert_eq!(names, ["a.ttf", "c.ttf", "d.ttf"], "b does not fit; smaller later fonts still do");
-        let total: usize = held.iter().map(|f| f.data.len()).sum();
-        assert!(total <= ass::MAX_FONT_BYTES);
-        assert!(s.selected(0).is_some(), "the track itself is never refused");
+        s.begin("fixture", headers(), vec![font("a.ttf", 4096), font("b.ttf", 8192)]);
+        let first = held(&mut s);
+        s.retain_for_reload();
+        s.begin("fixture", headers(), vec![font("a.ttf", 4096), font("b.ttf", 8192)]);
+        assert!(Arc::ptr_eq(&first, &held(&mut s)), "same file, same fonts: the held list is kept");
+        s.begin("fixture", headers(), vec![font("a.ttf", 4096), font("b.ttf", 9000)]);
+        let changed = held(&mut s);
+        assert!(!Arc::ptr_eq(&first, &changed), "a font of another size is another list");
+        assert_eq!(changed[1].data.len(), 9000);
+        s.begin("other file", headers(), vec![font("b.ttf", 9000)]);
+        assert_eq!(held(&mut s).len(), 1, "another file starts from its own fonts");
     }
 
     /// Issue #1328: an anime MKV attaches 17 fonts (92 MB). The five the opening's karaoke styles
-    /// name sit late in the container, after the first twelve have spent the 32 MiB budget, so
-    /// libass never saw them and those lines fell back to the default face. A cap on content the
-    /// file legitimately carries is a bug, so every attachment must reach the renderer, in order.
+    /// name sit late in the container, after the first twelve had spent a 32 MiB cap (since
+    /// removed), so libass never saw them and those lines fell back to the default face. A cap on
+    /// content the file legitimately carries is a bug, so the store must hold every attachment, in
+    /// order; which of them libass is given is the renderer's choice (`ass::font_names`).
     /// Sizes and names are the report's (`tests/fixtures/make_ass_stress.py`, `fonts-over-budget`).
     #[test]
-    #[ignore = "issue #1328: fonts past the 32 MiB budget are dropped; un-ignore with the fix"]
     fn every_attached_font_reaches_the_renderer_issue_1328() {
         const ATTACHED: [(&str, usize); 17] = [
             ("AP-OTF-KizaKinryouStd-Bol.otf", 6_220_620),
@@ -1142,7 +1164,7 @@ mod tests {
             ("stylus.ttf", 32_972),
         ];
         let total: usize = ATTACHED.iter().map(|&(_, len)| len).sum();
-        assert!(total > ass::MAX_FONT_BYTES, "the report's file is over the budget: {total} bytes");
+        assert!(total > 32 * 1024 * 1024, "the report's file is over the old 32 MiB cap: {total} bytes");
         let mut s = Store::new();
         let fonts = ATTACHED
             .iter()

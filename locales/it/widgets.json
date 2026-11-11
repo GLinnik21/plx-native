@@ -194,7 +194,6 @@
   "widgets.ass.unavailable": "Sottotitoli con stile non supportati in questa installazione",
   "widgets.ass.fonts_unavailable": "Impossibile caricare i font dei sottotitoli",
   "widgets.ass.init_failed": "Impossibile inizializzare i sottotitoli stilizzati",
-  "widgets.ass.font_too_large": "Il font dei sottotitoli installato è troppo grande",
   "widgets.ass.unreadable": "Impossibile leggere questo file di sottotitoli stilizzati",
   "widgets.ass.font_name": "Il nome di questo font dei sottotitoli non è valido",
   "widgets.ass.track_fonts": "Impossibile caricare i font di questo sottotitolo",

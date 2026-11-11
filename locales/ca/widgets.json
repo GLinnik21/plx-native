@@ -194,7 +194,6 @@
   "widgets.ass.unavailable": "Els subtítols amb estil no estan disponibles en aquesta instal·lació",
   "widgets.ass.fonts_unavailable": "No s'han pogut carregar les fonts dels subtítols",
   "widgets.ass.init_failed": "No s'han pogut inicialitzar els subtítols amb estil",
-  "widgets.ass.font_too_large": "La font de subtítols instal·lada és massa gran",
   "widgets.ass.unreadable": "No s'ha pogut llegir aquest fitxer de subtítols amb estil",
   "widgets.ass.font_name": "El nom d'aquesta font de subtítols no és vàlid",
   "widgets.ass.track_fonts": "No s'han pogut carregar les fonts d'aquest subtítol",

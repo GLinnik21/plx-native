@@ -29,8 +29,10 @@ pub struct AssTrack {
     pub authored: bool,
 }
 
-/// Read ASS headers and font attachments from the container, with admission BEFORE any payload
-/// copy. The caller supplies the presentation layer's exact font budget policy.
+/// Read ASS headers and font attachments from the container. Every font attachment is collected,
+/// whole: which of them a renderer is handed is its choice, by the names the track uses (issue
+/// #1328), and no byte budget decides here what a file's own attachments may carry. A header is
+/// still refused past `max_header_bytes` BEFORE its payload is copied.
 ///
 /// # Safety
 /// `fmt` and `streams` must name a live FFmpeg format and its full stream table. Every track
@@ -40,7 +42,6 @@ pub unsafe fn collect_manifest(
     streams: *mut *mut AVStream,
     tracks: &[AssTrack],
     max_header_bytes: usize,
-    mut admit_font: impl FnMut(usize) -> bool,
 ) -> Manifest {
     let mut headers = Vec::with_capacity(tracks.len());
     for track in tracks {
@@ -73,7 +74,6 @@ pub unsafe fn collect_manifest(
         let name = if !entry.is_null() && !(*entry).value.is_null() {
             std::ffi::CStr::from_ptr((*entry).value).to_string_lossy().into_owned()
         } else { format!("attachment-{i}.ttf") };
-        if !admit_font(len) { continue; }
         font_bytes += len;
         fonts.push(EmbeddedFont { name, data: data.into() });
     }
@@ -368,11 +368,11 @@ impl Job {
         self.kinds = kinds;
     }
 
-    pub fn manifest(&self, max_header_bytes: usize, admit_font: impl FnMut(usize) -> bool) -> Manifest {
+    pub fn manifest(&self, max_header_bytes: usize) -> Manifest {
         let tracks: Vec<_> = self.tracks.iter().zip(&self.kinds).map(|(track, kind)| AssTrack {
             stream_index: track.stream_index, authored: matches!(kind, DecodeKind::Ass { .. }),
         }).collect();
-        unsafe { collect_manifest(self.fmt, (*self.fmt).streams, &tracks, max_header_bytes, admit_font) }
+        unsafe { collect_manifest(self.fmt, (*self.fmt).streams, &tracks, max_header_bytes) }
     }
 
     /// Seek the video clock to a nonnegative time. The caller distinguishes cancellation from

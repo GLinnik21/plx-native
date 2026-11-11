@@ -194,7 +194,6 @@
   "widgets.ass.unavailable": "Les sous-titres stylisés ne sont pas pris en charge dans cette installation",
   "widgets.ass.fonts_unavailable": "Impossible de charger les polices des sous-titres",
   "widgets.ass.init_failed": "Impossible d’initialiser les sous-titres stylisés",
-  "widgets.ass.font_too_large": "La police de sous-titres installée est trop volumineuse",
   "widgets.ass.unreadable": "Ce fichier de sous-titres stylisés n’a pas pu être lu",
   "widgets.ass.font_name": "Le nom de cette police de sous-titres est invalide",
   "widgets.ass.track_fonts": "Impossible de charger les polices de ce sous-titre",

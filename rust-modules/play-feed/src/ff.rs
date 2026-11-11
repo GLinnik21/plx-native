@@ -305,8 +305,7 @@ unsafe fn begin_ass_sources(
         authored: matches!(kind, plx_playback_contract::subtitle::DecodeKind::Ass { .. }),
     }).collect();
     let max_header_bytes = session.subtitle().max_header_bytes();
-    let manifest = collect_manifest(fmt, streams, &tracks, max_header_bytes,
-        |len| session.subtitle().admit_font(len));
+    let manifest = collect_manifest(fmt, streams, &tracks, max_header_bytes);
     session.subtitle().begin_sources(media_key, manifest)
 }
 

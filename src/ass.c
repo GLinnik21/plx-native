@@ -11,7 +11,6 @@
 #include <string.h>
 
 #define MAX_SCRIPT_BYTES (8u * 1024u * 1024u)
-#define MAX_FONT_BYTES (64u * 1024u * 1024u)
 #define MAX_EVENT_BYTES (256u * 1024u)
 #define MAX_EVENTS 20000
 #define MAX_PIXELS (3840u * 2160u)
@@ -33,7 +32,7 @@ struct PlxAss {
     ASS_Renderer *renderer;
     ASS_Track *track;
     uint8_t *rgba;
-    size_t bytes, font_bytes;
+    size_t bytes;
     PlxAssBitmap regions[PLX_ASS_MAX_REGIONS];
     struct ImageKey *images;
     size_t image_capacity, image_count, region_count;
@@ -89,13 +88,17 @@ failed:
     return NULL;
 }
 
+/* Hand libass one font file. libass copies the bytes (ass_add_font) and opens the face at the next
+ * ass_set_fonts or, once a track has events, at the start of the next frame
+ * (ass_render.c: ass_start_frame -> ass_update_embedded_fonts, which scans only the fonts added
+ * since), so this works before and after plx_ass_load and costs one face scan for this font, not a
+ * rescan of the others. The only limit is the `int` size ass_add_font takes: what a file attaches
+ * is never cut by a byte count (the Rust side chooses WHICH fonts to add, by name). */
 int plx_ass_add_font(PlxAss *ctx, const char *name, const uint8_t *data, size_t len)
 {
-    if (!ctx || ctx->track || ctx->fonts_set || !name || !*name || !data || !len ||
-        len > MAX_FONT_BYTES || ctx->font_bytes > MAX_FONT_BYTES - len)
+    if (!ctx || !name || !*name || !data || !len || len > INT_MAX)
         return -1;
     ass_add_font(ctx->library, name, (char *)data, (int)len);
-    ctx->font_bytes += len;
     return 0;
 }
 
@@ -142,9 +145,9 @@ int plx_ass_load(PlxAss *ctx, const uint8_t *data, size_t len, int script)
     if (read_track(ctx, data, len, script) < 0) return -1;
     /* Inter is the shipped Latin family. With provider NONE libass tries the
      * exact authored family, this family, then default_font (our CJK face).
-     * ass_set_fonts opens every font the library holds, so it runs once per ctx, here: the fonts
-     * are fixed from now on (plx_ass_add_font and a second load refuse), and a replaced track
-     * reuses the faces. */
+     * ass_set_fonts opens every font the library holds, so it runs once per ctx, here: a second
+     * load refuses, a replaced track reuses the faces, and a font added from now on (plx_ass_add_font)
+     * is opened alone at the next frame. */
     ass_set_fonts(ctx->renderer, ctx->default_font, "Inter", ASS_FONTPROVIDER_NONE, NULL, 1);
     ctx->fonts_set = 1;
     ++ctx->font_scans;

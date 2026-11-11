@@ -32,9 +32,7 @@ unsafe fn fixture_subs(fmt: *mut AVFormatContext, key: &str) -> (SubTracks, Side
         stream_index: info.stream_index,
         authored: matches!(kind, DecodeKind::Ass { .. }),
     }).collect();
-    let mut budget = crate::player::ass::FontBudget::default();
-    let manifest = collect_manifest(fmt, streams, &tracks, ass_source::MAX_HEADER_BYTES,
-        |len| budget.admit(len));
+    let manifest = collect_manifest(fmt, streams, &tracks, ass_source::MAX_HEADER_BYTES);
     let generation = crate::player::subtitle_cue::begin_sources(key, presentation.kinds(), manifest);
     (SubTracks::open(streams, infos, plan), presentation, generation)
 }

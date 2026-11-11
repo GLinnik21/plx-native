@@ -15,14 +15,14 @@ const MAX_EVENT_BYTES: usize = 256 * 1024;
 // No event-count bound here: `ass_source` holds an embedded track, and `ass_script` a long sidecar
 // script, to a window far under the native library's own guard (`plx_ass_chunk` refuses past
 // 20 000), so a second count would only be a way to hide a track that is otherwise showable.
-pub const MAX_FONT_BYTES: usize = 32 * 1024 * 1024;
-/// Bookkeeping charged per font on top of its bytes, so a file of countless tiny attachments is
-/// bounded by the same byte budget without a font-count constant.
-const FONT_OVERHEAD_BYTES: usize = 1024;
+// No font-byte bound either (issue #1328): the file's attachments are held once by the demuxer and
+// once by the store, and libass is handed only the fonts the track names (`font_names`), so what is
+// resident past the file's own bytes is what the track can draw.
 const MAX_PIXELS: usize = 3840 * 2160;
 const MAX_REGIONS: usize = 64;
 
 mod aligns;
+mod font_names;
 pub use aligns::AlignSet;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -37,26 +37,6 @@ pub struct Event {
 pub struct Font {
     pub name: String,
     pub data: Arc<[u8]>,
-}
-
-/// The memory bound on embedded fonts: fonts are admitted in container order until their bytes
-/// (plus a small per-font overhead) fill `MAX_FONT_BYTES`. A font that does not fit is skipped
-/// and a smaller later one may still fit; text naming a skipped font renders in the app's
-/// default face instead of the track being refused or its text dropped.
-#[derive(Default)]
-pub struct FontBudget {
-    used: usize,
-}
-
-impl FontBudget {
-    pub fn admit(&mut self, len: usize) -> bool {
-        let cost = len.saturating_add(FONT_OVERHEAD_BYTES);
-        if len == 0 || self.used.saturating_add(cost) > MAX_FONT_BYTES {
-            return false;
-        }
-        self.used += cost;
-        true
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -137,7 +117,6 @@ pub enum Fault {
     Unavailable,
     FontsUnavailable,
     InitFailed,
-    FontTooLarge,
     Unreadable,
     FontName,
     TrackFonts,
@@ -160,7 +139,6 @@ impl Fault {
             Fault::Unavailable => msg::widgets_ass_unavailable(),
             Fault::FontsUnavailable => msg::widgets_ass_fonts_unavailable(),
             Fault::InitFailed => msg::widgets_ass_init_failed(),
-            Fault::FontTooLarge => msg::widgets_ass_font_too_large(),
             Fault::Unreadable => msg::widgets_ass_unreadable(),
             Fault::FontName => msg::widgets_ass_font_name(),
             Fault::TrackFonts => msg::widgets_ass_track_fonts(),
@@ -562,7 +540,7 @@ impl Engine {
             if let Some(index) = super::ass_script::ScriptIndex::parse(bytes) {
                 if index.windowed() {
                     let window = index.window(now_ms);
-                    windowed = Some(Native::open_data(fonts, &window.text, 1)?);
+                    windowed = Some(Native::open_named(fonts, bytes, &window.text, 1)?);
                     self.script = Some(Scripted { index, window: Some((window.lo_ms, window.hi_ms)) });
                 } else {
                     self.script = Some(Scripted { index, window: None });
@@ -606,6 +584,8 @@ impl Engine {
         let Some(native) = self.native.as_mut() else {
             return self.open(source, now_ms);
         };
+        // The new header may name a face the held renderer was not handed; the ones it holds stay.
+        native.seed(source_fonts(source), track_text(source));
         match &source.content {
             Content::Embedded { header, .. } => {
                 native.replace_track(header, 0)?;
@@ -638,7 +618,7 @@ impl Engine {
     /// way, or the end of the window). The old track is released first, so two windows are never
     /// held at once.
     fn slide(&mut self, source: &Source, now_ms: i64) -> Result<(), Fault> {
-        let (Some(Scripted { index, window: Some(held) }), Content::Script { fonts, .. }) =
+        let (Some(Scripted { index, window: Some(held) }), Content::Script { bytes, fonts }) =
             (self.script.as_mut(), &source.content)
         else {
             return Ok(());
@@ -653,7 +633,7 @@ impl Engine {
         match self.native.as_mut() {
             Some(native) => native.replace_track(&window.text, 1),
             None => {
-                self.native = Some(Native::open_data(fonts, &window.text, 1)?);
+                self.native = Some(Native::open_named(fonts, bytes, &window.text, 1)?);
                 Ok(())
             }
         }
@@ -712,7 +692,7 @@ impl Engine {
                     let Content::Embedded { events, .. } = &request.source.content else {
                         unreachable!()
                     };
-                    unsafe { plx_ass_prune_before(native.0, prune_deadline(events)) };
+                    unsafe { plx_ass_prune_before(native.ptr, prune_deadline(events)) };
                     native.append(&request.source, from)
                 } else if self
                     .source
@@ -724,7 +704,7 @@ impl Engine {
                     // as expiry + append, and a seek or a track switch brings a different
                     // timeline. Reset events only, retaining parsed header, fonts and caches.
                     let native = self.native.as_mut().unwrap();
-                    unsafe { plx_ass_flush_events(native.0) };
+                    unsafe { plx_ass_flush_events(native.ptr) };
                     native.append(&request.source, 0)
                 } else if self.source.as_ref().is_some_and(|old| restyles(old, &request.source)) {
                     self.restyle(&request.source, request.now_ms)
@@ -860,9 +840,10 @@ pub struct NativeStats {
 }
 
 /// The facade ABI this file is written against (`PLX_ASS_ABI_VERSION` in `include/ass.h`); a
-/// library reporting any other number is not loaded. ABI 4 added only the UI text surface
-/// (`plx_ass_text_*`, bound by `plx_gfx::rtl`); every function this file calls is unchanged.
-const NATIVE_ABI: u32 = 4;
+/// library reporting any other number is not loaded. ABI 5 lets `plx_ass_add_font` run after
+/// `plx_ass_load` and lifts its byte limit (`Native::append` adds a font when an event first names
+/// it), so an older library, which would refuse every late font, is refused here instead.
+const NATIVE_ABI: u32 = 5;
 
 /// libass's glyph-count and bitmap-MiB cache bounds for every renderer.
 const CACHE_GLYPHS: i32 = 1000;
@@ -887,7 +868,15 @@ plx_base::dynlib! {
     }
 }
 
-struct Native(*mut c_void);
+/// One libass renderer. `selection` is which of the file's attached fonts it has been handed: the
+/// ones the track names (`font_names`), at open and as later events first name more. `given` and
+/// `given_bytes` count what libass actually took, for the log line.
+struct Native {
+    ptr: *mut c_void,
+    selection: font_names::Selection,
+    given: usize,
+    given_bytes: usize,
+}
 
 #[cfg(test)]
 thread_local! {
@@ -916,7 +905,7 @@ fn asset_dir() -> &'static std::path::Path {
 
 impl Drop for Native {
     fn drop(&mut self) {
-        unsafe { plx_ass_destroy(self.0) };
+        unsafe { plx_ass_destroy(self.ptr) };
     }
 }
 
@@ -933,8 +922,15 @@ impl Native {
     }
 
     /// A renderer holding `fonts` and the track `data` reads as: a script (`script` 1) or a codec
-    /// private header (0).
+    /// private header (0). The track's own text names the fonts to hand libass.
     fn open_data(fonts: &[Font], data: &[u8], script: i32) -> Result<Self, Fault> {
+        Self::open_named(fonts, data, data, script)
+    }
+
+    /// [`Native::open_data`] for a track `data` that is only a part of the text which names the
+    /// fonts: one window of a long sidecar script, whose whole text is `named`, so a face a line
+    /// outside the first window asks for is held before the window slides to it.
+    fn open_named(fonts: &[Font], named: &[u8], data: &[u8], script: i32) -> Result<Self, Fault> {
         #[cfg(test)]
         OPEN_DATA_CALLS.with(|c| c.set(c.get() + 1));
         static LOADED: OnceLock<bool> = OnceLock::new();
@@ -951,7 +947,12 @@ impl Native {
         if ptr.is_null() {
             return Err(Fault::InitFailed);
         }
-        let mut native = Self(ptr);
+        let mut native = Self {
+            ptr,
+            selection: font_names::Selection::new(fonts),
+            given: 0,
+            given_bytes: 0,
+        };
         native.configure()?;
         // Inter, Inter Bold, then the per-script Noto faces (`fonts.rs`: the order is load-bearing,
         // and the files are read here, per renderer, never kept). The CJK face is libass's DEFAULT
@@ -960,55 +961,83 @@ impl Native {
         // "Noto Sans CJK KR", while glyph fallback never goes through it.
         for path in fonts::bundled(asset_dir())? {
             let bytes = std::fs::read(&path).map_err(|_| Fault::FontsUnavailable)?;
-            if bytes.len() > MAX_FONT_BYTES {
-                return Err(Fault::FontTooLarge);
-            }
             let name = path.file_name().and_then(|n| n.to_str()).ok_or(Fault::FontsUnavailable)?;
             native.font(name, &bytes)?;
         }
-        // A font the renderer cannot take (unnamed, over the budget, rejected by the native
-        // side) is skipped: the text still shows, in the default face.
-        let mut budget = FontBudget::default();
-        for font in fonts.iter() {
-            if font.name.is_empty() || font.name.len() > 1024 || font.name.contains('\0')
-                || !budget.admit(font.data.len())
-            {
-                continue;
-            }
-            let _ = native.font(&font.name, &font.data);
-        }
-        if unsafe { plx_ass_load(native.0, data.as_ptr(), data.len(), script) } < 0 {
+        // The attached fonts the track names, in container order after the bundled ones. A font the
+        // renderer cannot take (unnamed, rejected by the native side) is skipped: the text still
+        // shows, in the default face.
+        let wanted = native.selection.seed(named);
+        native.admit(fonts, &wanted);
+        if unsafe { plx_ass_load(native.ptr, data.as_ptr(), data.len(), script) } < 0 {
             return Err(Fault::Unreadable);
         }
+        native.log_fonts(fonts.len());
         Ok(native)
+    }
+
+    /// Hand libass the attached fonts at `wanted` (indices of `fonts`, container order). Works
+    /// before and after the track is loaded: libass opens a face added later at its next frame.
+    fn admit(&mut self, fonts: &[Font], wanted: &[usize]) {
+        for font in wanted.iter().filter_map(|&i| fonts.get(i)) {
+            if font.name.is_empty() || font.name.len() > 1024 || font.name.contains('\0') {
+                continue;
+            }
+            if self.font(&font.name, &font.data).is_ok() {
+                self.given += 1;
+                self.given_bytes += font.data.len();
+            }
+        }
+    }
+
+    /// Hand libass what a header or script (`text`) names that it does not hold yet: a text track
+    /// restyled in place, whose new header may name another face.
+    fn seed(&mut self, fonts: &[Font], text: &[u8]) {
+        let wanted = self.selection.seed(text);
+        self.admit(fonts, &wanted);
+        if !wanted.is_empty() {
+            self.log_fonts(fonts.len());
+        }
+    }
+
+    /// How many of the file's `attached` fonts libass holds, numbers only: the event log is
+    /// sanitized and a font name is the file's own text. A file with no attachments logs nothing.
+    fn log_fonts(&self, attached: usize) {
+        if attached == 0 {
+            return;
+        }
+        plx_base::eventlog::log(&format!(
+            "ass: renderer fonts={}/{attached} font_bytes={}",
+            self.given, self.given_bytes
+        ));
     }
 
     /// The renderer settings every renderer starts with. Authored scripts break lines the way
     /// they always have (at spaces and `\N`), with no extra line spacing.
     fn configure(&mut self) -> Result<(), Fault> {
         let applied = unsafe {
-            plx_ass_set_cache_limits(self.0, CACHE_GLYPHS, CACHE_BITMAP_MIB) >= 0
-                && plx_ass_set_features(self.0, 0) >= 0
-                && plx_ass_set_line_spacing(self.0, 0.0) >= 0
+            plx_ass_set_cache_limits(self.ptr, CACHE_GLYPHS, CACHE_BITMAP_MIB) >= 0
+                && plx_ass_set_features(self.ptr, 0) >= 0
+                && plx_ass_set_line_spacing(self.ptr, 0.0) >= 0
         };
         applied.then_some(()).ok_or(Fault::InitFailed)
     }
 
     /// Break lines by the Unicode rules (libunibreak) in the loaded track and every later one.
     fn set_wrap_unicode(&mut self, on: bool) -> bool {
-        unsafe { plx_ass_set_features(self.0, i32::from(on)) >= 0 }
+        unsafe { plx_ass_set_features(self.ptr, i32::from(on)) >= 0 }
     }
 
     /// Extra pixels between lines at the render size; negative tightens.
     fn set_line_spacing(&mut self, spacing: f64) -> bool {
-        unsafe { plx_ass_set_line_spacing(self.0, spacing) >= 0 }
+        unsafe { plx_ass_set_line_spacing(self.ptr, spacing) >= 0 }
     }
 
     /// Swap the loaded track for `data` on the same library and renderer, keeping every opened
     /// face. Only for a track whose `[Fonts]` section is the first one's (a window of the same
     /// script, or a header without one): the new track's fonts are not extracted.
     fn replace_track(&mut self, data: &[u8], script: i32) -> Result<(), Fault> {
-        if unsafe { plx_ass_replace_track(self.0, data.as_ptr(), data.len(), script) } < 0 {
+        if unsafe { plx_ass_replace_track(self.ptr, data.as_ptr(), data.len(), script) } < 0 {
             return Err(Fault::Unreadable);
         }
         Ok(())
@@ -1017,24 +1046,33 @@ impl Native {
     #[cfg(test)]
     fn stats(&self) -> NativeStats {
         let mut stats = NativeStats::default();
-        assert!(unsafe { plx_ass_stats(self.0, &mut stats) } >= 0);
+        assert!(unsafe { plx_ass_stats(self.ptr, &mut stats) } >= 0);
         stats
     }
 
     fn font(&mut self, name: &str, bytes: &[u8]) -> Result<(), Fault> {
         let name = CString::new(name).map_err(|_| Fault::FontName)?;
-        if unsafe { plx_ass_add_font(self.0, name.as_ptr(), bytes.as_ptr(), bytes.len()) } < 0 {
+        if unsafe { plx_ass_add_font(self.ptr, name.as_ptr(), bytes.as_ptr(), bytes.len()) } < 0 {
             return Err(Fault::TrackFonts);
         }
         Ok(())
     }
 
+    /// Append `events[from..]`. An event that overrides the font (`\fn`) with a face the renderer
+    /// does not hold yet gets it first, so libass never meets the name before the face and caches
+    /// the fallback for it.
     fn append(&mut self, source: &Source, from: usize) -> Result<(), Fault> {
         if let Content::Embedded { events, .. } = &source.content {
+            let fonts = source_fonts(source);
             for event in &events[from..] {
+                let wanted = self.selection.wanted(&event.payload);
+                if !wanted.is_empty() {
+                    self.admit(fonts, &wanted);
+                    self.log_fonts(fonts.len());
+                }
                 if unsafe {
                     plx_ass_chunk(
-                        self.0,
+                        self.ptr,
                         event.payload.as_ptr(),
                         event.payload.len(),
                         event.start_ms,
@@ -1054,7 +1092,7 @@ impl Native {
         let started = std::time::Instant::now();
         let result = unsafe {
             plx_ass_render(
-                self.0,
+                self.ptr,
                 now_ms,
                 key.width,
                 key.height,
@@ -1137,6 +1175,8 @@ impl Native {
 
 mod fonts;
 
+#[cfg(test)]
+mod synth_fonts;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

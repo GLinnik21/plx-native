@@ -190,7 +190,6 @@
   "widgets.ass.unavailable": "Ebben a telepítésben a formázott feliratok nem támogatottak",
   "widgets.ass.fonts_unavailable": "A feliratbetűtípusok nem tölthetők be",
   "widgets.ass.init_failed": "A formázott feliratok nem inicializálhatók",
-  "widgets.ass.font_too_large": "A telepített feliratbetűtípus túl nagy",
   "widgets.ass.unreadable": "Ez a formázott feliratfájl nem olvasható",
   "widgets.ass.font_name": "Ennek a feliratbetűtípusnak a neve érvénytelen",
   "widgets.ass.track_fonts": "A felirat betűtípusai nem tölthetők be",

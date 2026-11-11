@@ -194,7 +194,6 @@
   "widgets.ass.unavailable": "O suporte para legendas com estilo não está disponível nesta instalação",
   "widgets.ass.fonts_unavailable": "Não foi possível carregar os tipos de letra das legendas",
   "widgets.ass.init_failed": "Não foi possível inicializar as legendas com estilo",
-  "widgets.ass.font_too_large": "O tipo de letra de legendas instalado é demasiado grande",
   "widgets.ass.unreadable": "Não foi possível ler este ficheiro de legendas com estilo",
   "widgets.ass.font_name": "O nome do tipo de letra destas legendas é inválido",
   "widgets.ass.track_fonts": "Não foi possível carregar os tipos de letra destas legendas",

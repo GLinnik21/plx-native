@@ -198,7 +198,6 @@
   "widgets.ass.unavailable": "Obsługa napisów z formatowaniem jest niedostępna w tej instalacji",
   "widgets.ass.fonts_unavailable": "Nie można wczytać czcionek napisów",
   "widgets.ass.init_failed": "Nie można zainicjować napisów z formatowaniem",
-  "widgets.ass.font_too_large": "Zainstalowana czcionka napisów jest za duża",
   "widgets.ass.unreadable": "Nie można odczytać pliku napisów z formatowaniem",
   "widgets.ass.font_name": "Nazwa czcionki napisów jest nieprawidłowa",
   "widgets.ass.track_fonts": "Nie można wczytać czcionek tych napisów",

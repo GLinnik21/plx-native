@@ -190,7 +190,6 @@
   "widgets.ass.unavailable": "Formatierte Untertitel werden in dieser Installation nicht unterstützt",
   "widgets.ass.fonts_unavailable": "Untertitelschriften konnten nicht geladen werden",
   "widgets.ass.init_failed": "Formatierte Untertitel konnten nicht initialisiert werden",
-  "widgets.ass.font_too_large": "Die installierte Untertitelschrift ist zu groß",
   "widgets.ass.unreadable": "Diese formatierte Untertiteldatei konnte nicht gelesen werden",
   "widgets.ass.font_name": "Dieser Name der Untertitelschrift ist ungültig",
   "widgets.ass.track_fonts": "Die Schriften dieses Untertitels konnten nicht geladen werden",

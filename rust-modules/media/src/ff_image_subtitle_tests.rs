@@ -62,9 +62,8 @@ impl AssFixture {
             stream_index: info.stream_index,
             authored: matches!(kind, DecodeKind::Ass { .. }),
         }).collect();
-        let mut budget = ass::FontBudget::default();
         let manifest = collect_manifest(self.fmt, (*self.fmt).streams, &tracks,
-            ass_source::MAX_HEADER_BYTES, |len| budget.admit(len));
+            ass_source::MAX_HEADER_BYTES);
         crate::player::subtitle_cue::begin_sources("fixture:ass-header", self.presentation.kinds(), manifest)
     }
 
