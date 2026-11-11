@@ -26,7 +26,8 @@
     "settings_v2": "locales/en/settings.json settings.title (\"Settings\", the root's 48 title) and settings.support.section (\"Support\", drawn uppercase at CAPTION as SUPPORT): the Settings v2 root's title and the header of its Support group (Privacy & data, Diagnostics, Legal notices, About PlxNative) enter the measurement table. The Privacy & data page and the Legal index draw their 48 title in the follow-focus left column, so the page names (settings.privacy.title, measured word by word as it wraps: Privacy, Privacy &; settings.legal.section, Legal) are measured too.",
     "cw_stills_footer": "ui/src/still_footer.rs draws the Continue Watching stills' started line: the status \"<n>m left\" (locales/en/core.json core.footer_left_minutes) and, with the card's episode tag, core.footer_tag leads it (\"S<n> E<n> ·\" then the status after one space), at the mock's synthetic durations and resume offsets (tests/mock_pms.py); each is measured word by word and so enters the measurement table.",
     "home_resume_pill": "Home formats a compact remaining duration through ui/src/fmt.rs duration_minutes_in (core.duration_minutes in controlled en-US). The episode metadata uses episode_address (core.season and core.episode joined by a middle dot). These three exact values are measured for the seed-1 mock.",
-    "hero_episode_label": "screens/src/home/mod.rs hero_ladder gives an EPISODE hero's block as one bold line, ui/src/fmt.rs episode_kicker: core.episode_ordinal (\"S<n>, E<n>\"), the KICKER_SEPARATOR (\" · \") and the episode's title, which tests/mock_pms.py names s[0-9a-f]{8}; it is measured as one run, so it enters the measurement table."
+    "hero_episode_label": "screens/src/home/mod.rs hero_ladder gives an EPISODE hero's block as one bold line, ui/src/fmt.rs episode_kicker: core.episode_ordinal (\"S<n>, E<n>\"), the KICKER_SEPARATOR (\" · \") and the episode's title, which tests/mock_pms.py names s[0-9a-f]{8}; it is measured as one run, so it enters the measurement table.",
+    "live_tv_tab": "app/chrome.rs labels the shared strip's Live TV pill with locales/en/browse.json browse.chrome.live_tv (TV), and the strip measures every pill's label, so each recording that draws the strip measures TV."
   },
   "patterns": [
     "[0-9]+ min left",
@@ -316,6 +317,7 @@
     "5d77680689a097bc6e38b0f0",
     "plex://movie/5d77680689a097bc6e38b0f0",
     "rottentomatoes://image.rating.ripe",
-    "rottentomatoes://image.rating.upright"
+    "rottentomatoes://image.rating.upright",
+    "TV"
   ]
 }

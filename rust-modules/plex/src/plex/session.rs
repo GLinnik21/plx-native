@@ -6234,7 +6234,10 @@ mod audio_enhancements_tests {
                 .unwrap_or_else(|e| panic!("{}: {e}", manifest_path.display()));
             let manifest: serde_json::Value = serde_json::from_slice(&bytes)
                 .unwrap_or_else(|e| panic!("{}: {e}", manifest_path.display()));
-            let Some(committed) = manifest.pointer("/init/data/session/committed_credentials")
+            // A V6 recording nests the boot session under `session.boot` (`Initial::to_v6_value`).
+            let Some(committed) = manifest
+                .pointer("/init/data/session/committed_credentials")
+                .or_else(|| manifest.pointer("/init/data/session/boot/committed_credentials"))
             else {
                 continue;
             };
