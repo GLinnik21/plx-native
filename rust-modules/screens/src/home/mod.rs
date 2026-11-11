@@ -22,7 +22,6 @@ use plx_ui::consts::*;
 use plx_ui::hstack::Item;
 use plx_ui::frame::Budget;
 use plx_ui::hero_logo::{self, HeroLogo, LogoRung};
-use plx_ui::label::{Label, VAlign};
 use plx_ui::hold_hint::{HintInput, HoldHint};
 use plx_ui::icons::Icon;
 use plx_ui::linked_heading::{self, LinkedHeading};
@@ -2233,8 +2232,8 @@ impl HomeScreen {
         if view.hero_count() <= 1 {
             return None;
         }
-        let resumes = hero_resumes(hero);
-        let info = hero_rects(measure, hero, plx_appkit::hero_layout::play_label(resumes)).info;
+        let (label, progress) = hero_action(hero);
+        let info = hero_rects(measure, hero, &label, progress.is_some()).info;
         let dots = PageDots::new(view.hero_count()).active(self.carousel_index(view));
         let pager = hero_pager(info.x + info.w, dots.width());
         Some((dots, pager))
@@ -2252,9 +2251,8 @@ impl HomeScreen {
         measure: &dyn Measure,
         press_scale: f32,
     ) {
-        let resumes = hero_resumes(hero);
-        let label = plx_appkit::hero_layout::play_label(resumes);
-        let HeroRects { play: pill, disc, info } = hero_rects(measure, hero, label);
+        let (label, progress) = hero_action(hero);
+        let HeroRects { play: pill, disc, info } = hero_rects(measure, hero, &label, progress.is_some());
         if !on_axis(MARGIN_X + dx, info.x + info.w - MARGIN_X, SCR_W, 0.0) { return; }
         let may_read = live && dx.abs() < 0.5 && page_alpha >= 0.999;
         let palette = plx_gfx::gfx::sample_control_ground(
@@ -2267,12 +2265,15 @@ impl HomeScreen {
         // The fill rides the lift spring (`CtlPop::focus`) so the plate cross-fades (and the ink flips) with the pop;
         // a frame drawn off the live row (a transition's snapshot) has no spring and reads the focus.
         let fill = |i| if live { self.hero_pop.focus(i) } else { f32::from(focus == Some(Located::Hero(i))) };
-        Button::new(label.as_ptr(), theme::size::BODY, pill)
+        let mut button = Button::new(label.as_ptr(), theme::size::BODY, pill)
             .icon(Icon::Play)
             .focus_mix(fill(0))
             .palette(palette)
-            .scale(pop(0))
-            .draw(env, p);
+            .scale(pop(0));
+        if let Some(progress) = progress {
+            button = button.inline_progress(progress);
+        }
+        button.draw(env, p);
         if let Some((rect, hex)) = disc.zip(disc_hex(hero)) {
             // At either rest the plain face; only a flip in flight layers the fill.
             let (icon, mid) = plx_appkit::watchlist_disc::paint(self.disc.progress(hex));
@@ -3067,9 +3068,8 @@ impl HomeScreen {
             return status_overlay(view, &self.plaintext, &self.clock)?.action_frame_measured(measure);
         }
         let hero = self.selected_hero(view)?.item;
-        let resumes = hero_resumes(hero);
-        let label = plx_appkit::hero_layout::play_label(resumes);
-        let rects = hero_rects(measure, hero, label);
+        let (label, progress) = hero_action(hero);
+        let rects = hero_rects(measure, hero, &label, progress.is_some());
         match index {
             0 => Some(rects.play),
             1 => Some(rects.info),
@@ -3685,13 +3685,17 @@ fn hero_pager(info_right: f32, dots_w: f32) -> PagerRects {
     }
 }
 
-fn hero_rects(measure: &dyn Measure, item: &PmsMovie, label: &std::ffi::CStr) -> HeroRects {
+fn hero_rects(measure: &dyn Measure, item: &PmsMovie, label: &std::ffi::CStr, inline_progress: bool) -> HeroRects {
     // One row: Play, the watchlist disc when the title has one (absent: no room, no gap), Info —
     // each exactly one gap after the one before it, measured between the visible marks
     // ([`plx_appkit::hero_layout::flat_row`]).
     let has_disc = disc_hex(item).is_some();
     let items = [
-        Item::new(plx_appkit::hero_layout::play_width(measure, label)),
+        Item::new(if inline_progress {
+            Button::progress_pill_width(measure, label, theme::size::BODY).max(theme::hero::PLAY_MIN_W)
+        } else {
+            plx_appkit::hero_layout::play_width(measure, label)
+        }),
         if has_disc { Item::new(HERO_CTRL_D) } else { Item::absent() },
         Item::new(HERO_CTRL_D),
     ];
@@ -3894,66 +3898,79 @@ fn prefetch_armed(snap: f32, sliding: bool) -> bool {
     neighbours_armed(snap) && !sliding
 }
 
-/// **What Home's hero says under its title** (owner's board CW-13 v2), by the hero's state
-/// ([`hero_line`]).
+/// The copy beneath the title. Playback progress lives in the action row.
 enum HeroLine<'a> {
-    /// ONE bold line, the column wide, elided when it does not fit (`LABEL`, primary ink): an
-    /// episode's label (`S2, E4 · The Night Crossing`), or the time left of a movie being resumed
-    /// (`8m left`, the string the Continue Watching row's footer reads).
-    Label(String),
-    /// The premise of a hero nothing has been watched of: the first sentence of its summary
-    /// ([`first_sentence`]) in reading ink on [`theme::hero::HOME_SYNOPSIS_W`], at most two lines.
     Premise(&'a str),
-    /// One compact identity band for an unplayed movie or show.
-    Metadata { kind: &'static str, year: String, length: String, genres: String, rating: &'a str },
+    Metadata { identity: String, date: String, length: String, genres: String, quality: Option<String>, rating: &'a str },
 }
 
-/// Does the Play button of `hero` say Resume (the one resume rule, [`plx_data::metadata::resume_ns`])?
 fn hero_resumes(hero: &PmsMovie) -> bool {
     plx_data::metadata::resume_ns(hero.resume_ms, hero.dur_ns / 1_000_000) > 0
 }
 
-/// **The line Home's hero reads by its state.** An EPISODE (resumed, or the next one on deck and not
-/// started) names itself: its label. A hero being RESUMED says how much is left, with the footer's
-/// own formatter ([`plx_ui::fmt::footer_left`], over the footer's own derivation of the time left,
-/// [`tile_facts::of`]). An unplayed movie or show gets an identity band. Other heroes
-/// fall back to the first sentence of the synopsis.
+fn hero_action(hero: &PmsMovie) -> (std::borrow::Cow<'static, std::ffi::CStr>, Option<f32>) {
+    use std::borrow::Cow;
+    let resumes = hero_resumes(hero);
+    if resumes {
+        if let Some(progress) = tile_facts::resume_of(hero) {
+            if let Ok(label) = std::ffi::CString::new(plx_ui::fmt::remaining_duration(progress.left_ms)) {
+                return (Cow::Owned(label), Some(progress.frac));
+            }
+        }
+    }
+    (Cow::Borrowed(plx_appkit::hero_layout::play_label(resumes)), None)
+}
+
 fn hero_line(hero: &PmsMovie) -> Option<HeroLine<'_>> {
-    let label = if hero.kind == 3 {
-        plx_ui::fmt::episode_kicker(i64::from(hero.season_index), i64::from(hero.ep_index), &hero.title)
-    } else {
-        String::new()
-    };
-    if !label.is_empty() {
-        return Some(HeroLine::Label(label));
-    }
-    let left = tile_facts::of(hero).resume.filter(|_| hero_resumes(hero)).map(|r| r.left_ms).filter(|&ms| ms > 0);
-    if let Some(left) = left {
-        return Some(HeroLine::Label(plx_ui::fmt::footer_left(left)));
-    }
-    let is_show = hero.kind == plx_data::pms::KIND_SHOW;
-    if (is_show || hero.kind == plx_data::pms::KIND_MOVIE)
-        && !hero.watched && !hero_resumes(hero) && hero.viewed_leaf_count.unwrap_or(0) == 0
+    use plx_data::pms::{KIND_EPISODE, KIND_MOVIE, KIND_SHOW};
+    use plx_platform::i18n::msg;
+    use plx_ui::fmt;
+    let is_episode = hero.kind == KIND_EPISODE;
+    let is_show = hero.kind == KIND_SHOW;
+    if (hero.kind == KIND_MOVIE && (!hero.watched || hero_resumes(hero))) || is_episode
+        || (is_show && !hero.watched && !hero_resumes(hero) && hero.viewed_leaf_count.unwrap_or(0) == 0)
     {
-        use plx_platform::i18n::msg;
-        let kind = if is_show { msg::browse_kind_tv_show() } else { msg::browse_kind_movie() };
-        let year = (hero.year > 0).then(|| hero.year.to_string()).unwrap_or_default();
-        let length = if is_show {
-            (hero.child_count > 0).then(|| msg::browse_detail_seasons(hero.child_count)).unwrap_or_default()
-        } else {
-            let ms = hero.dur_ns / 1_000_000;
-            (ms >= 60_000).then(|| plx_ui::fmt::duration(ms)).unwrap_or_default()
+        let identity = match hero.kind {
+            KIND_EPISODE => {
+                let address = fmt::episode_address(i64::from(hero.season_index), i64::from(hero.ep_index));
+                if address.is_empty() && hero.title.trim() != hero_title(hero).trim() {
+                    hero.title.trim().into()
+                } else {
+                    address
+                }
+            }
+            KIND_SHOW => msg::browse_kind_tv_show().into(),
+            _ => msg::browse_kind_movie().into(),
         };
-        let genres = [hero.genre.as_deref(), hero.secondary_genre.as_deref()].into_iter()
-            .flatten().map(str::trim).filter(|s| !s.is_empty()).collect::<Vec<_>>().join(", ");
-        return Some(HeroLine::Metadata { kind, year, length, genres, rating: hero.rating.trim() });
+        let year = i64::from(hero.year);
+        let date = fmt::hero_date(if is_episode { &hero.aired } else { "" }, year);
+        let ms = hero.dur_ns / 1_000_000;
+        let length = if ms >= 60_000 {
+            fmt::duration(ms)
+        } else if is_show && hero.child_count > 0 {
+            msg::browse_detail_seasons(hero.child_count)
+        } else {
+            String::new()
+        };
+        let genres = if is_episode {
+            String::new()
+        } else {
+            [hero.genre.as_deref(), hero.secondary_genre.as_deref()].into_iter()
+                .flatten().map(str::trim).filter(|s| !s.is_empty()).collect::<Vec<_>>().join(", ")
+        };
+        let quality = if is_show { None } else {
+            hero.video_resolution.as_deref().and_then(|resolution| fmt::resolution(resolution, 0, 0))
+        };
+        let rating = hero.rating.trim();
+        if !(identity.is_empty() && date.is_empty() && length.is_empty() && genres.is_empty() && quality.is_none() && rating.is_empty()) {
+            return Some(HeroLine::Metadata { identity, date, length, genres, quality, rating });
+        }
     }
     Some(first_sentence(&hero.summary)).filter(|s| !s.is_empty()).map(HeroLine::Premise)
 }
 
 /// **Home's hero text** (owner's board CW-13 v2): the title (clearLogo, or its typed fallback) and ONE
-/// metadata block beneath it, standing on the shared ladder above the action row. A label is bold
-/// in primary ink, an identity band is one line in reading ink, and a premise wraps to two lines.
+/// metadata block beneath it. The identity band is one line in reading ink. A premise can wrap.
 fn hero_content(hero: &PmsMovie, p: Painter, dx: f32, measure: &dyn Measure) {
     if !on_axis(
         MARGIN_X + dx,
@@ -3968,16 +3985,9 @@ fn hero_content(hero: &PmsMovie, p: Painter, dx: f32, measure: &dyn Measure) {
         .draw(p, hero_title_band(&stack), measure);
     let Some(block) = stack.block else { return };
     match line {
-        Some(HeroLine::Label(label)) => {
-            let run = measure.fit_line(&label, HERO_COL_W, theme::size::LABEL, true);
-            Label::new(run.as_ptr(), theme::size::LABEL, theme::TEXT_PRIMARY)
-                .bold()
-                .v(VAlign::CapTop)
-                .draw(p, Rect::new(MARGIN_X, block.y, HERO_COL_W, measure.cap_h(theme::size::LABEL)));
-        }
-        Some(HeroLine::Metadata { kind, year, length, genres, rating }) => {
+        Some(HeroLine::Metadata { identity, date, length, genres, quality, rating }) => {
             let r = Rect::new(MARGIN_X, block.y, HERO_COL_W, block.h);
-            plx_ui::widgets::hero_metadata(p, r, &[kind, &year, &length, &genres], rating, measure);
+            plx_ui::widgets::hero_metadata(p, r, &[&identity, &date, &length, &genres], quality.as_deref(), rating, measure);
         }
         Some(HeroLine::Premise(premise)) => {
             home_synopsis(premise).draw(p, Rect::new(MARGIN_X, block.y, theme::hero::HOME_SYNOPSIS_W, 0.0));
@@ -3998,7 +4008,7 @@ fn hero_title(hero: &PmsMovie) -> &str {
 fn hero_ladder(hero: &PmsMovie) -> (plx_ui::landing_hero::HomeStack, Option<HeroLine<'_>>) {
     let line = hero_line(hero);
     let block_h = match &line {
-        Some(HeroLine::Label(_) | HeroLine::Metadata { .. }) => Some(HOME_LABEL_H),
+        Some(HeroLine::Metadata { .. }) => Some(HOME_LABEL_H),
         Some(HeroLine::Premise(premise)) => Some(home_synopsis(premise).measure_h(theme::hero::HOME_SYNOPSIS_W)),
         None => None,
     };

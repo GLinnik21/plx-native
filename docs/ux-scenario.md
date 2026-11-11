@@ -155,14 +155,14 @@ is what keeps stems and bars at their intended weight on a 1080p panel.
 
 ![Home, hero](screenshots/ux-home-hero.jpg)
 
-Home opens on a **hero** — one item, full-bleed backdrop, with its logo or title, an action row and a line for episode identity, time remaining, movie or show metadata, or a short premise. The hero rotates through a set of
+Home opens on a **hero** — one item, full-bleed backdrop, with its logo or title, an action row and a line for episode, movie or show metadata, or a short premise. The hero rotates through a set of
 promoted items. The dots beside Info show the position.
 
 **Controls on the hero row**, left to right:
 
 | control | what OK does |
 |---|---|
-| **Play** / **Continue** | starts playback — *Continue* when the item has a resume point, *Play* when it does not |
+| **Play** / **Resume** | starts playback. The resume pill shows progress and the time remaining when the runtime is known |
 | **🔖** (bookmark) | adds the title to the Watchlist (an episode's or season's show), or removes it when it is already on it; outline off the list, filled on it. Present only when the hero row names a title with a known catalog id |
 | **ⓘ** (info) | opens that item's detail page |
 

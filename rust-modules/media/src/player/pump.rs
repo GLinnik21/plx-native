@@ -5822,6 +5822,42 @@ mod native_seek_pump_tests {
     }
 
     #[test]
+    fn a_common_startup_paused_reload_primes_without_a_viewer_play_command() {
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Rig::new(None);
+        rig.eng().startup_controlled = true;
+        rig.eng().startup_play_commanded = false;
+        rig.eng().startup_user_held = true;
+        FEED_SHARED.reset_hls_clock_for_test();
+        assert!(FEED_SHARED.arm_initial_clock_hold(false, false));
+        assert!(crate::player::pause(&mut rig.ps, &mut rig.pa));
+        rig.frame();
+        assert!(FEED_TX.seek_preroll_active(), "the paused reload owns a bounded first-picture preroll");
+        let plays = rig.land_and_present(60_000_000_000);
+        assert!(plays >= 1, "the internal preroll must present a frame without a viewer Play");
+        assert!(!rig.eng().startup_play_commanded, "preroll must not invent a viewer Play command");
+        assert_ended_paused();
+    }
+
+    #[test]
+    fn a_common_startup_without_a_paused_preroll_still_waits_for_the_play_command() {
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Rig::new(None);
+        rig.eng().startup_controlled = true;
+        rig.eng().startup_play_commanded = false;
+        FEED_SHARED.reset_hls_clock_for_test();
+        assert!(FEED_SHARED.arm_initial_clock_hold(false, false));
+        let plays = ffi_host::play_calls_for_test();
+        rig.land_keyframe_aus(60_000_000_000, 90);
+        for _ in 0..8 {
+            rig.frame();
+        }
+        assert!(!FEED_TX.seek_preroll_active());
+        assert_eq!(ffi_host::play_calls_for_test(), plays, "ordinary startup still waits for Play");
+        assert!(rig.eng().prime_play);
+    }
+
+    #[test]
     fn a_paused_scrub_whose_native_seek_is_refused_reloads_and_ends_paused() {
         let _serial = plx_base::testlock::serial();
         let mut rig = Rig::new(Some(0));

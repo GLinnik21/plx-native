@@ -1,5 +1,12 @@
 # Detail-hero trailer UX: faster autoplay, a shrinking logo, and a full-trailer mode
 
+**Current transport (2026-11-11):** LEFT/RIGHT scrub through the preview's admitted reload
+path; UP toggles the HUD while staying full screen, including while paused. The frame runner
+publishes the playback session for a preview on Detail as well as for Player, so the trailer's
+elapsed/remaining clocks, seek gesture and pause state receive the live session. This supersedes
+the reveal-only and no-seek statements in the historical record below. Controls still auto-hide
+after the shared linger while playing; a paused trailer keeps them until explicitly hidden.
+
 **SUPERSEDED IN PART (2026-09-17): full-trailer mode now draws trailer CONTROLS, and the action
 row is gone.** Everything below about dwell, the logo shrink, the synopsis and the collapse keys
 still stands. What no longer holds, wherever this document says it (§2.4, the state diagram and

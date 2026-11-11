@@ -676,3 +676,10 @@ mock's synthetic title, `ui/src/fmt.rs` `episode_kicker`), which the closed alph
 manifests equal the new recorder's header field for field, `anchor: true` kept); the replays are SAME in
 Targets and Resolve with every difference counter at zero on three consecutive runs, one of them at the CI
 window (960x540).
+
+The Home Resume pill measures a compact remaining duration, and the episode hero measures a season
+and episode address as part of its metadata row. Both replay modes refused all three old anchors
+with a measurement table miss. The anchors were re-recorded with
+`tests/focusfp.sh --rec --only 1,6,12`, keeping the same inputs and manifests. The closed alphabet
+adds the three exact strings from the seed-1 mock. Targets and Resolve both match all frames at
+960x540.
