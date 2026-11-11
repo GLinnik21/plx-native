@@ -347,16 +347,20 @@ class RoundTrip(Rig):
                          cold.UNPARKED)
         self.assertEqual(asked, [cold.tree_stats(path)[1]])
 
-    def test_the_rate_floor_beats_a_slow_measured_rate(self):
+    def test_the_cost_rule_uses_the_slower_of_the_measured_rate_and_the_floor(self):
         store = self.store()
         path = self.tree()
         self.assertEqual(self.park(store, path).status, cold.PARKED)
         rec = store.records()[0]
-        rec["park_rate"] = 1.0                                # 1 B/s measured: the floor (40 MiB/s) applies
+        rec["park_rate"] = 1.0                                # 1 B/s measured: slower than the 40 MiB/s floor
         cold.write_json(store.index_path(path), rec)
-        self.assertEqual(cold.ColdStore.rate_for(rec, 40), 40 * cold.MIB)
-        self.assertEqual(cold.ColdStore.rate_for(dict(rec, park_rate=1e9), 40), 1e9)
-        self.assertEqual(store.unpark(path, rebuild_secs=1.0).status, cold.UNPARKED)
+        self.assertEqual(cold.ColdStore.rate_for(rec, 40), 1.0)
+        self.assertEqual(cold.ColdStore.rate_for(dict(rec, park_rate=1e9), 40), 40 * cold.MIB)
+        self.assertEqual(cold.ColdStore.rate_for(dict(rec, park_rate=0.0), 40), 40 * cold.MIB)   # unmeasured: the floor
+        self.assertEqual(store.unpark(path, rebuild_secs=1.0).status, cold.DECLINED)
+        rec["park_rate"] = 1e9                                # fast measured: the floor still bounds the estimate
+        cold.write_json(store.index_path(path), rec)
+        self.assertEqual(store.unpark(path, rebuild_secs=1e9).status, cold.UNPARKED)
 
     def test_an_unpark_with_a_pruned_cold_copy_drops_its_record(self):
         store = self.store()

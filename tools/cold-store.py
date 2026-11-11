@@ -21,7 +21,7 @@ XDG_CONFIG_HOME/plxnative, else ~/.config/plxnative); `key=value` lines, `#` com
     park_below_gib=40                  W3: park ahead of the ladder when the build volume is under this
     park_idle_min=120                  W3: a tree must have been idle this long to be parked
     park_max_gib_per_run=20            W3: the most one --auto pass parks
-    rate_floor_mibs=40                 the unpark cost rule's rate floor (MiB/s)
+    rate_floor_mibs=40                 the fastest copy rate the unpark cost rule will assume (MiB/s)
     rebuild_secs_<dirname>=N           seconds a COLD rebuild of that tree directory takes (the cost rule
                                        compares the unpark copy time with it); DEFAULT_REBUILD_SECS below
 
@@ -47,7 +47,7 @@ THE PARK PROTOCOL. (1) the caller's liveness callback is asked again; (2) rename
 record the cold side, rename to trees/<id>/; (4) write the SSD index record; (5) delete the parking copy. A dead
 owner's residue is settled by `recover`: a complete cold copy of THIS park -> delete the SSD copy; else the
 origin absent -> rename back; else delete the SSD copy. THE UNPARK PROTOCOL only fills an ABSENT tree, only when
-the copy is cheaper than a rebuild (`apparent_bytes / max(rate_floor, park_rate) < rebuild_secs`) and the caller
+the copy is cheaper than a rebuild (`apparent_bytes / min(rate_floor, park_rate) < rebuild_secs`) and the caller
 says the free space after it stays over its line; it copies beside the origin, verifies, renames into place and
 consumes the record. Python standard library only; `ditto` is the one copy primitive (macOS), replaced by tests.
 """
@@ -632,8 +632,12 @@ class ColdStore:
     # --- unpark ---
     @staticmethod
     def rate_for(record: dict, floor_mibs: float) -> float:
-        """The copy rate (bytes/s) the cost rule divides by: the record's measured park rate, never under the floor."""
-        return max(floor_mibs * MIB, float(record.get("park_rate") or 0.0))
+        """The copy rate (bytes/s) the cost rule divides by: the SLOWER of the record's measured park rate and the
+        configured floor (a park that happened to run on an idle disk must not promise an unpark more than the floor);
+        a record with no measurement takes the floor."""
+        floor = floor_mibs * MIB
+        measured = float(record.get("park_rate") or 0.0)
+        return min(floor, measured) if measured > 0 else floor
 
     def unpark(self, origin: str, rebuild_secs: Optional[float] = None,
                free_after_ok: Optional[Callable[[int], bool]] = None, *, dry_run: bool = False) -> Outcome:
