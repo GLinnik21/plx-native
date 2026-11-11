@@ -215,6 +215,11 @@ Next episode's independent policy, and synthetic end-of-item tails never auto-sk
 
 The app checks the **viewer’s** `intro-markers` and `credits-markers` grants, and `pass` in the same
 viewer-credential list (the Plex Pass plex.tv reports for the viewer) grants both; a shared server
-owner's subscription is not evidence of viewer eligibility. An unavailable, expired or denied
+owner's subscription is not evidence of viewer eligibility. **One exception, by the owner's
+decision (2026-11-11):** a seated Plex Home profile that is not the administrator (a managed
+profile) has no Plex Pass of its own, so when its own list leaves either grant out, its Home
+administrator's feature list is read as well and what it grants is added; the administrator's
+`pass` therefore covers the household's profiles. Nothing else about the household's account is
+used. An unavailable, expired or denied
 grant hides the new settings and uses the existing manual controls. Saved choices remain intact.
 No Plex viewing-history write is needed to change these local settings.
