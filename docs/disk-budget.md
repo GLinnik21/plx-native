@@ -281,7 +281,11 @@ it.
 **`build-gc.sh --auto`** is the planner followed by `--evict`. Always `--orphans` first, unconditionally.
 Below `PLX_GC_MIN_FREE_GIB` free (default 20): `--worktrees` restricted to lanes idle for at least
 `PLX_GC_IDLE_MIN` minutes (default 60, judged over the worktree and its fleet build tree) and holding no
-ignored file that is not build output (see above: such a lane is kept and the log says which paths kept it), then, if still below, `reclaim --to $PLX_GC_MIN_FREE_GIB --no-build --idle-min
+ignored file that is not build output (see above: such a lane is kept and the log says which paths kept it), then, if still below, an
+FFmpeg-only age-out: `build-gc.sh --ffmpeg-cache` with `PLX_CACHE_MAX_DAYS` set to `PLX_GC_AUTO_CACHE_DAYS` (default 7),
+which removes the shared FFmpeg build trees (`<cache>/ffmpeg/<key>`) whose `.last-used` marker is older than that,
+each under its own key lock and behind the same refusal for a held FFmpeg cache lock as `--cache` (by hand
+`--cache` keeps 30 days and also prunes the cargo seed; this stage never does), then, if still below, `reclaim --to $PLX_GC_MIN_FREE_GIB --no-build --idle-min
 $PLX_GC_IDLE_MIN --emit` into a temporary file and `--evict` on it. It replaces five fixed stages
 (`--incremental`, `--worktrees`, `--lanes`, `--stale`, `--seed`) with the planner's order, which
 differs: the main checkout's incremental cache is the last resort (rung 6) instead of
@@ -406,13 +410,13 @@ cold store is configured and free space is under `park_below_gib` and at least t
 WHOLE-TREE actions (idle `/tmp` trees and idle lane and fleet trees, never the garbage of rung 0, never an
 incremental dir) and parks them oldest built first, up to `park_max_gib_per_run`, stopping early once free space
 is back over `park_below_gib` + 4 GiB. **Under the comfort line it does not park at all**: it prints one line
-saying so, and the worktrees stage and the planner pass run exactly as they do without a cold store. A park holds
+saying so, and the worktrees stage, the FFmpeg age-out and the planner pass run exactly as they do without a cold store. A park holds
 the auto lock for the whole copy to a slow disk (minutes), a build that waits for the lock gives up after 60 s and
 judges on free space with no eviction, and the ladder frees the same room in seconds by deleting. Free space is
 read again before each tree, so a pass that began over the line ends when builds have eaten the room. A lane whose
 HEAD is already on the base ref is not parked (the prune below would drop its copy in the same run). The existing
-early exit ("free space already above threshold") now sits below this stage, and still skips the worktrees and the
-planner pass as before. `build-gc.sh --park` is the same pass by hand, without the free-space gate and without the
+early exit ("free space already above threshold") now sits below this stage, and still skips the worktrees, the FFmpeg
+age-out and the planner pass as before. `build-gc.sh --park` is the same pass by hand, without the free-space gate and without the
 comfort line (the owner asked for it); `-n` names what would move and changes nothing on either volume.
 
 **What never parks.** Anything the planner never plans (`never()` above): the main checkout's trees, the cargo
