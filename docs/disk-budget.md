@@ -56,6 +56,12 @@ its estimate). It prints, in order:
    to see which of its rungs a reclaim would take, and the verdict, on a machine that has room:
    `PLX_GC_TEST_FREE_KIB=$((8*1024*1024)) python3 tools/disk-budget.py report`.
 
+On macOS the table before the budget also carries one line, `hourly agent`, saying whether the
+launchd agent `com.plxnative.build-gc` (the hourly `--auto`) is loaded (`launchctl list` exit status).
+If it is not, nothing reclaims disk between builds and nothing else says so: `make disk-watch` loads
+it. The line is absent elsewhere. A tree on another volume appears in the trees list with `-` for its
+sizes and age and the state `other volume (not sized)`: see below.
+
 `PRIVATE` is the number to trust. On APFS a clone shares its blocks, so `du` counts them in full in
 every tree that holds them and deleting one of a pair frees nothing. `PRIVATE` is the file's own
 blocks (`getattrlist` `ATTR_CMNEXT_PRIVATESIZE`; allocated blocks where that cannot be asked, so a
@@ -125,7 +131,21 @@ almost nothing, and the next lane's first build is cold.
   not derived from cargo) and the live entries of the shared FFmpeg cache (`<cache>/ffmpeg/<key>`).
   The one thing in that cache the planner takes, at rung 0, is a `.tombstone.` entry left by an
   interrupted delete, which nothing will ever read.
-- A tree on another volume.
+- A tree on another volume than the checkout's (a lane worktree on an external disk). Such a tree is
+  listed, with its device, and that is all: it is neither sized, aged, probed for locks or tracked
+  files, nor is its lane asked about git (`is_merged`, `is_clean`). Everything those would say is moot,
+  since the tree is never planned, and on a slow disk the walk alone stalled the build-entry preflight
+  for 20-35 minutes. The one device lookup is `device_of`, which `collect` calls first for every
+  candidate. `build-gc.sh --auto` likewise skips a lane whose worktree is on another volume than the
+  checkout (before its `git status`, squash check or idle-window `find`): removing it frees nothing on
+  the volume that is short, so `--auto` never removes a merged lane there. `--worktrees` typed by hand
+  still judges and removes it, since that is the human's call. A lane's fleet tree (its
+  `CARGO_TARGET_DIR`, kept outside the worktree) is on the build's own volume even when the lane's
+  checkout is not: it is sized like any local tree, but the checkout is not read either: the lane reads
+  neither merged nor clean, `--evict` counts it as active instead of walking the checkout with the
+  idle-window `find` (so the tree is spared), and `make disk` prints `-` for the checkout's sizes. The
+  `make check` lock is still probed, since it is a flock on a local file and a check running in that
+  checkout builds into this very tree.
 - **A cargo tree that is not PlxNative's.** `CACHEDIR.TAG` alone proves nothing (any cargo writes
   it); a tree is ours only if its `deps/`, `.fingerprint/`, `build/` or `incremental/` hold a
   `plx_*`, `libplx_*` or `plxnative*` entry. Other trees are reported as "not ours" and never planned.
