@@ -23,26 +23,18 @@ pub fn reason_for(blocked: Option<Blocked>) -> Option<(&'static CStr, Icon)> {
     Some((reason, Icon::ClockBadgeAlert))
 }
 
-/// What a screen holds of `net::keypin::blocked_for` — the fact about the ONE server its read-out
-/// speaks about — re-read only when `keypin::revision` moved or that server changed
-/// (`OfferWatch`'s shape: the revision is global, the answer is per machine).
+/// The captured reason held for the one server this read-out describes. The immutable
+/// publication may be replaced independently of its revision, so compare the reason itself.
 #[derive(Clone, Debug, Default)]
 pub struct ClockWatch {
-    seen: Option<(u64, Option<String>)>,
     held: Option<Blocked>,
 }
 
 impl ClockWatch {
-    /// Re-read the fact about `machine` (`None`: the read-out speaks about no known server, so no
-    /// server's fact applies); `true` when what the read-out shows changed.
-    pub fn refresh(&mut self, machine: Option<&str>) -> bool {
-        let rev = plx_net::net::keypin::revision();
-        if matches!(&self.seen, Some((r, m)) if *r == rev && m.as_deref() == machine) {
-            return false;
-        }
-        self.seen = Some((rev, machine.map(str::to_owned)));
-        // The empty id names no server: only a dev-planted fact answers it.
-        let next = plx_net::net::keypin::blocked_for(machine.unwrap_or_default());
+    /// Read the captured fact for `machine`; `None` selects the explicit empty-id fact.
+    /// Return `true` only when the held reason changed.
+    pub fn refresh(&mut self, facts: Option<&plx_plex::plex::ClockFacts>, machine: Option<&str>) -> bool {
+        let next = facts.and_then(|facts| facts.blocked_for(machine));
         std::mem::replace(&mut self.held, next) != next
     }
 
@@ -64,7 +56,7 @@ mod tests {
     use plx_base::fontcov::advances::ShippedMeasure;
     use plx_ui::fit::HEADROOM;
     use plx_platform::i18n::{language_on_this_thread_for_test, msg};
-    use plx_net::net::keypin;
+
     use plx_ui::widgets::StatusOverlay;
 
     #[test]
@@ -93,29 +85,40 @@ mod tests {
     /// pair changes nothing and reports nothing. Another server's fact never shows.
     #[test]
     fn the_watch_re_reads_when_the_revision_or_the_machine_moves_and_not_otherwise() {
-        let _serial = plx_base::testlock::serial();
-        let key = keypin::key_of("clock-watch.invalid", 32400);
-        let _scoped = keypin::Scoped::watch_machine("clock-watch-machine", &key);
-        let here = Some("clock-watch-machine");
+        use plx_plex::plex::{ClockFacts, ServerId};
+        let make = |reason| ClockFacts::scripted(7, ServerId::UNSET, None,
+            [(ServerId::UNSET, "machine".to_owned(), reason)]);
+        let no_key = make(Some(Blocked::NoKey));
+        let changed = make(Some(Blocked::KeyChanged));
         let mut watch = ClockWatch::default();
-        watch.refresh(here);
-        assert_eq!(watch.blocked(), None, "no fact stands for this machine");
-        let before = watch.blocked();
-        keypin::strict_failure(&key, 60, Some(10));
-        assert_eq!(watch.blocked(), before, "a held value does not change under the screen mid-frame");
-        assert!(watch.refresh(here), "the revision moved");
+        assert!(watch.refresh(Some(&no_key), Some("machine")));
         assert_eq!(watch.blocked(), Some(Blocked::NoKey));
-        assert!(!watch.refresh(here), "nothing moved since");
-
-        assert!(watch.refresh(Some("clock-watch-other")), "another server: the fact is not its own");
-        assert_eq!(watch.blocked(), None);
-        assert!(!watch.refresh(None), "no server at all: no fact, so nothing the read-out shows moved");
-        assert!(watch.refresh(here), "back to the server the fact is about");
-        assert_eq!(watch.blocked(), Some(Blocked::NoKey));
+        assert!(!watch.refresh(Some(&no_key), Some("machine")));
+        assert!(watch.refresh(Some(&changed), Some("machine")), "equal revisions may carry different facts");
+        assert_eq!(watch.blocked(), Some(Blocked::KeyChanged));
+        assert!(watch.refresh(Some(&changed), Some("other")));
+        assert!(!watch.refresh(Some(&changed), None));
+        assert!(watch.refresh(Some(&no_key), Some("machine")));
+        assert!(watch.refresh(None, Some("machine")));
     }
 
     /// **Both reasons fit the two-line slot in every shipped language**: nothing else fit-tests
     /// Home's or a Library source's reason line. A reason that truncates loses its remedy.
+    #[test]
+    fn clock_consumer_sites_do_not_read_ambient_sources() {
+        let cases = [
+            (include_str!("clock_readout.rs"), "pub fn refresh(", "pub fn blocked("),
+            (include_str!("home/mod.rs"), "fn tick<H: HomeLike>", "self.plaintext_alert.update(dt)"),
+            (include_str!("library/status.rs"), "pub(super) fn watch_readout", "pub(super) fn status_rect"),
+        ];
+        for (source, start, end) in cases {
+            let body = source.split_once(start).expect("consumer start").1.split_once(end).expect("consumer end").0;
+            for forbidden in [concat!("keypin::", "revision"), concat!("keypin::", "blocked_for"),
+                concat!("plex::", "client_for"), concat!("plex::", "current_server")] {
+                assert!(!body.contains(forbidden), "ambient read: {forbidden}");
+            }
+        }
+    }
     #[test]
     fn both_reasons_fit_the_two_line_slot_in_every_shipped_language() {
         let mut out = Vec::new();

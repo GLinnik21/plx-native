@@ -796,9 +796,9 @@ impl ProfilesScreen {
         self.users.iter().position(|u| !self.seated.is_empty() && *u.uuid == *self.seated)
     }
 
-    fn avatar_art(u: &auth::UserTile) -> Art<'_> {
+    fn avatar_art(u: &auth::UserTile, sid: plx_plex::plex::ServerId) -> Art<'_> {
         Art::Thumb {
-            sid: plx_plex::plex::current_server().raw(),
+            sid: sid.raw(),
             key: &u.thumb,
             res: (300, 300),
         }
@@ -1771,7 +1771,7 @@ impl<H: AuthLike> Screen<H> for ProfilesScreen {
                 focused_i = Some(i);
                 continue; // draw the focused tile last (ring over neighbours)
             }
-            let rect = self.row.draw(p, i, base, Self::avatar_art(u), false, f.measure);
+            let rect = self.row.draw(p, i, base, Self::avatar_art(u, H::screen_inputs(f.cx).current_server), false, f.measure);
             Self::draw_name(p, u, cx_, false, f.measure);
             f.stop(
                 p,
@@ -1799,7 +1799,7 @@ impl<H: AuthLike> Screen<H> for ProfilesScreen {
             );
             Self::draw_name(p, u, cx_, true, f.measure);
             // the click dip folds into the focused avatar's pop (1.0 when idle)
-            let rect = self.row.draw(p, i, base, Self::avatar_art(u), true, f.measure);
+            let rect = self.row.draw(p, i, base, Self::avatar_art(u, H::screen_inputs(f.cx).current_server), true, f.measure);
             f.stop(
                 p,
                 Stop {
@@ -1937,3 +1937,21 @@ mod pin_tests;
 #[cfg(test)]
 #[path = "profiles_pad_geometry_tests.rs"]
 mod pad_geometry_tests;
+
+#[cfg(test)]
+mod retained_input_tests {
+    use super::*;
+    #[test]
+    fn avatars_use_the_supplied_server_even_without_a_client() {
+        let user = auth::UserTile { thumb: "avatar".into(), ..Default::default() };
+        let server = plx_plex::plex::ServerId::from_raw(71);
+        match ProfilesScreen::avatar_art(&user, server) {
+            Art::Thumb { sid, key, res } => {
+                assert_eq!(sid, server.raw());
+                assert_eq!(key, "avatar");
+                assert_eq!(res, (300, 300));
+            }
+            _ => panic!("a profile avatar uses its retained server"),
+        }
+    }
+}

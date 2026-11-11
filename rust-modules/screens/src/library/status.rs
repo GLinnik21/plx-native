@@ -49,12 +49,12 @@ impl LibraryScreen {
     /// shows changed, so the caller damages the frame (the reason line moves the action row).
     pub(super) fn watch_readout<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) -> bool {
         use super::super::plaintext_question::{asks, Near};
+        let facts = H::clock_facts(cx);
         let machine = (self.readout == Readout::Failed)
-            .then(|| H::directory(cx).source().and_then(|(sid, _)| plx_plex::plex::client_for(*sid)))
-            .flatten()
-            .map(|client| client.machine_id());
-        let offer_moved = self.plaintext.refresh(machine, Near::Only);
-        let clock_moved = self.clock.refresh(machine);
+            .then(|| H::directory(cx).source().and_then(|(sid, _)| facts.and_then(|facts| facts.machine(*sid))))
+            .flatten();
+        let offer_moved = self.plaintext.refresh(&H::screen_inputs(cx).grants.offers, machine, Near::Only);
+        let clock_moved = self.clock.refresh(facts, machine);
         if self.plaintext_alert.is_open()
             && !(self.readout == Readout::Failed
                 && self.plaintext_alert.subject() == self.plaintext.verdict().map(|v| v.machine_id.as_str())

@@ -70,6 +70,7 @@ pub use plx_base::detail_parts::{DetailPart, DetailParts};
 /// The signed-in profile, in-memory for the UI (the Home profile chip reads this). Set by the boot
 /// gate (from the stored session) and on every profile switch, so it survives an offline boot.
 static CURRENT: Mutex<Option<std::sync::Arc<CurrentProfile>>> = Mutex::new(None);
+static CURRENT_PUBLICATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Immutable worker publication. Identity and its explicit owner-assigned generation are one
 /// record, so a reader that needs both can retain one snapshot across subsequent publications.
@@ -204,8 +205,9 @@ impl ProfilePublisher {
             return;
         }
         {
-            *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::sync::Arc::new(
-                CurrentProfile { user: user.clone(), generation, stamp }));
+            let mut current = CURRENT.lock().unwrap_or_else(|e| e.into_inner());
+            *current = Some(std::sync::Arc::new(CurrentProfile { user: user.clone(), generation, stamp }));
+            CURRENT_PUBLICATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         warm(user, generation);
     }
@@ -3494,6 +3496,36 @@ pub fn visible_generation() -> u64 {
     VISIBLE_GENERATION.load(std::sync::atomic::Ordering::Acquire)
 }
 
+/// Host-only publication fence for retained screen inputs, including signed-out defaults.
+/// The cache revision is read under CACHE: replace_cache assigns its content, advances the
+/// counter, and projects keys before releasing that same lock. CURRENT is read separately
+/// to avoid lock-order coupling; a before/after pair fences both publications without allocation.
+pub fn screen_input_revision() -> (u64, u64) {
+    let cache_revision = {
+        let _cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        CACHE_GENERATION.load(std::sync::atomic::Ordering::Relaxed)
+    };
+    let profile_revision = {
+        let _current = CURRENT.lock().unwrap_or_else(|e| e.into_inner());
+        CURRENT_PUBLICATION.load(std::sync::atomic::Ordering::Relaxed)
+    };
+    (cache_revision, profile_revision)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn install_cleared_for_test(ui_resolution: UiResolution) {
+    plx_base::testlock::assert_held("cleared screen input fixture");
+    let kept = Retained { language: plx_platform::i18n::Preference::System, ui_resolution };
+    set_cache_locked(Cached::Settled(std::sync::Arc::new(ReadState::Cleared { kept })));
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn install_locked_defaults_for_test(ui_resolution: UiResolution) {
+    plx_base::testlock::assert_held("locked screen input fixture");
+    let kept = Retained { language: plx_platform::i18n::Preference::System, ui_resolution };
+    set_cache_locked(Cached::Transient { state: std::sync::Arc::new(ReadState::Locked { kept }) });
+}
+
 /// Per-consumer cursor for cached session-derived views. Poll on Tick, including while storage
 /// is unavailable: the owner's `RefreshCache` effect runs the bounded retry, so the frame never blocks.
 #[derive(Default)]
@@ -6757,5 +6789,40 @@ mod server_key_pin_tests {
         plx_base::storage_worker::drain_for_test();
         let _ = peek();
         assert_eq!(plx_net::net::keypin::pin_for_test(&key), None, "the late probe did not repopulate it");
+    }
+}
+
+#[cfg(test)]
+mod screen_input_revision_tests {
+    use super::*;
+    #[test]
+    fn screen_input_revision_observes_cleared_defaults_without_a_visible_generation_change() {
+        let _serial = plx_base::testlock::serial();
+        let _session = test_support::TempSession::new("screen-revision-defaults");
+        install_cleared_for_test(UiResolution::Auto);
+        let before = screen_input_revision();
+        let visible = visible_generation();
+        install_cleared_for_test(UiResolution::Hd720);
+        assert_ne!(screen_input_revision().0, before.0);
+        assert_eq!(visible_generation(), visible);
+        assert_eq!(peek_settled().unwrap().ui_resolution(), UiResolution::Hd720);
+    }
+    #[test]
+    fn screen_input_revision_waits_for_the_cache_publication_lock() {
+        let _serial = plx_base::testlock::serial();
+        let _session = test_support::TempSession::new("screen-revision-lock");
+        let expected = screen_input_revision();
+        let cache = CACHE.lock().unwrap();
+        let (started, start) = std::sync::mpsc::channel();
+        let (answer, result) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            started.send(()).unwrap();
+            answer.send(screen_input_revision()).unwrap();
+        });
+        start.recv().unwrap();
+        assert!(matches!(result.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
+        drop(cache);
+        assert_eq!(result.recv_timeout(std::time::Duration::from_secs(2)).unwrap(), expected);
+        reader.join().unwrap();
     }
 }

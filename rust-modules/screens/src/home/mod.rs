@@ -1727,9 +1727,10 @@ impl HomeScreen {
             self.snap_target = 0.0;
             self.snap.jump(0.0);
         }
-        let current = plx_plex::plex::client_for(plx_plex::plex::current_server()).map(|c| c.machine_id());
+        let facts = H::clock_facts(cx);
+        let current = facts.and_then(|facts| facts.current_machine());
         // `|` not `||`: both watches must re-read.
-        if self.plaintext.refresh(current, Near::First) | self.clock.refresh(current) {
+        if self.plaintext.refresh(&H::screen_inputs(cx).grants.offers, current, Near::First) | self.clock.refresh(facts, current) {
             fx.invalidate(Provenance::Landing(fx.from()));
         }
         if self.plaintext_alert.is_open()
