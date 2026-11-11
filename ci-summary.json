@@ -85,7 +85,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-11T18:12:19Z",
+ "generated": "2026-11-11T18:18:21Z",
  "metrics": [
   {
    "change30_pct": 54.4,
@@ -132,8 +132,8 @@
   {
    "change30_pct": 101.9,
    "change7_pct": 27.3,
-   "d30": 210,
-   "delta30": 214,
+   "d30": 210.0,
+   "delta30": 214.0,
    "delta7": 91,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
@@ -193,18 +193,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 43.3,
-   "change7_pct": 10.1,
-   "d30": 320,
-   "delta30": 138.5,
-   "delta7": 42.0,
+   "change30_pct": 43.1,
+   "change7_pct": 10.0,
+   "d30": 320.0,
+   "delta30": 138.0,
+   "delta7": 41.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 64,
+   "n_now": 65,
    "n_prev": 74,
-   "now": 458.5,
+   "now": 458,
    "prev7": 416.5,
    "shown": true,
    "state": "flat",
@@ -258,8 +258,8 @@
   {
    "change30_pct": 44.0,
    "change7_pct": 6.3,
-   "d30": 1907,
-   "delta30": 838.5,
+   "d30": 1906.5,
+   "delta30": 839.0,
    "delta7": 163.5,
    "group": "ci",
    "id": "minutes",
@@ -298,10 +298,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 66.0,
+   "change30_pct": 65.7,
    "change7_pct": 7.0,
-   "d30": 268,
-   "delta30": 177,
+   "d30": 268.5,
+   "delta30": 176.5,
    "delta7": 29,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
@@ -340,18 +340,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 42.4,
-   "change7_pct": 8.3,
-   "d30": 225.5,
-   "delta30": 95.5,
-   "delta7": 24.5,
+   "change30_pct": 42.9,
+   "change7_pct": 8.4,
+   "d30": 225,
+   "delta30": 96.5,
+   "delta7": 25.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 61,
+   "n_now": 62,
    "n_prev": 66,
-   "now": 321,
+   "now": 321.5,
    "prev7": 296.5,
    "shown": true,
    "state": "flat",
@@ -363,8 +363,8 @@
   {
    "change30_pct": 112.1,
    "change7_pct": -15.4,
-   "d30": 141,
-   "delta30": 158,
+   "d30": 141.0,
+   "delta30": 158.0,
    "delta7": -54.5,
    "group": "ci",
    "id": "ci|host harness tests",
@@ -384,8 +384,8 @@
   {
    "change30_pct": 86.2,
    "change7_pct": -18.0,
-   "d30": 130,
-   "delta30": 112,
+   "d30": 130.0,
+   "delta30": 112.0,
    "delta7": -53.0,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
@@ -403,10 +403,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 33.3,
+   "change30_pct": 32.9,
    "change7_pct": 17.8,
-   "d30": 171,
-   "delta30": 57,
+   "d30": 171.5,
+   "delta30": 56.5,
    "delta7": 34.5,
    "group": "ci",
    "id": "ci|host lint + type-checks",
@@ -424,18 +424,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 56.5,
-   "change7_pct": 9.3,
-   "d30": 142.5,
-   "delta30": 80.5,
-   "delta7": 19.0,
+   "change30_pct": 57.4,
+   "change7_pct": 9.6,
+   "d30": 142,
+   "delta30": 81.5,
+   "delta7": 19.5,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 61,
+   "n_now": 62,
    "n_prev": 66,
-   "now": 223,
+   "now": 223.5,
    "prev7": 204.0,
    "shown": true,
    "state": "flat",
@@ -445,18 +445,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -33.7,
-   "change7_pct": -3.5,
-   "d30": 313.5,
-   "delta30": -105.5,
-   "delta7": -7.5,
+   "change30_pct": -34.0,
+   "change7_pct": -4.2,
+   "d30": 313,
+   "delta30": -106.5,
+   "delta7": -9.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 61,
+   "n_now": 62,
    "n_prev": 66,
-   "now": 208,
+   "now": 206.5,
    "prev7": 215.5,
    "shown": true,
    "state": "flat",
@@ -510,16 +510,16 @@
   {
    "change30_pct": 11.8,
    "change7_pct": 0.0,
-   "d30": 17.0,
+   "d30": 17,
    "delta30": 2.0,
    "delta7": 0.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 61,
+   "n_now": 62,
    "n_prev": 66,
-   "now": 19,
+   "now": 19.0,
    "prev7": 19.0,
    "shown": false,
    "state": "flat",
@@ -552,8 +552,8 @@
   {
    "change30_pct": -99.0,
    "change7_pct": 0.0,
-   "d30": 302,
-   "delta30": -299,
+   "d30": 302.0,
+   "delta30": -299.0,
    "delta7": 0.0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
@@ -573,8 +573,8 @@
   {
    "change30_pct": -25.0,
    "change7_pct": 0.0,
-   "d30": 4,
-   "delta30": -1,
+   "d30": 4.0,
+   "delta30": -1.0,
    "delta7": 0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
@@ -618,11 +618,6 @@
    "change_pct": 47.6,
    "commits": [
     {
-     "pr": 1317,
-     "sha": "095f74ca9",
-     "title": "Remember open Library pages"
-    },
-    {
      "pr": 1315,
      "sha": "5b4e8db77",
      "title": "refactor(metadata): move alternative-source IO into store jobs"
@@ -666,6 +661,11 @@
      "pr": 1332,
      "sha": "e8442d5ee",
      "title": "URI: say in the event log why the Experimental engine did not take a play"
+    },
+    {
+     "pr": 1333,
+     "sha": "301811ec7",
+     "title": "Version choice: measure a version picked by hand from its own fetch"
     }
    ],
    "from": 22.4,
@@ -679,11 +679,6 @@
    "change_pct": 30.9,
    "commits": [
     {
-     "pr": 1317,
-     "sha": "095f74ca9",
-     "title": "Remember open Library pages"
-    },
-    {
      "pr": 1315,
      "sha": "5b4e8db77",
      "title": "refactor(metadata): move alternative-source IO into store jobs"
@@ -727,6 +722,11 @@
      "pr": 1332,
      "sha": "e8442d5ee",
      "title": "URI: say in the event log why the Experimental engine did not take a play"
+    },
+    {
+     "pr": 1333,
+     "sha": "301811ec7",
+     "title": "Version choice: measure a version picked by hand from its own fetch"
     }
    ],
    "from": 48.6,
@@ -740,11 +740,6 @@
    "change_pct": 27.3,
    "commits": [
     {
-     "pr": 1317,
-     "sha": "095f74ca9",
-     "title": "Remember open Library pages"
-    },
-    {
      "pr": 1315,
      "sha": "5b4e8db77",
      "title": "refactor(metadata): move alternative-source IO into store jobs"
@@ -788,6 +783,11 @@
      "pr": 1332,
      "sha": "e8442d5ee",
      "title": "URI: say in the event log why the Experimental engine did not take a play"
+    },
+    {
+     "pr": 1333,
+     "sha": "301811ec7",
+     "title": "Version choice: measure a version picked by hand from its own fetch"
     }
    ],
    "from": 333,
@@ -801,11 +801,6 @@
    "change_pct": 25.8,
    "commits": [
     {
-     "pr": 1317,
-     "sha": "095f74ca9",
-     "title": "Remember open Library pages"
-    },
-    {
      "pr": 1315,
      "sha": "5b4e8db77",
      "title": "refactor(metadata): move alternative-source IO into store jobs"
@@ -849,6 +844,11 @@
      "pr": 1332,
      "sha": "e8442d5ee",
      "title": "URI: say in the event log why the Experimental engine did not take a play"
+    },
+    {
+     "pr": 1333,
+     "sha": "301811ec7",
+     "title": "Version choice: measure a version picked by hand from its own fetch"
     }
    ],
    "from": 153.4,
@@ -889,7 +889,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 321
+   "now": 321.5
   }
  ],
  "slowest_local": [
