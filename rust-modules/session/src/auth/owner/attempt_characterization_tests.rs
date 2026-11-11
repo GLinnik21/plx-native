@@ -102,6 +102,49 @@ fn durable() -> CompletionOutcome {
 }
 
 #[test]
+fn arbitrary_legacy_phases_and_erasing_roundtrip_without_normalizing_residue() {
+    for phase in [Phase::Idle, Phase::Creating, Phase::Waiting, Phase::Discovering, Phase::Profiles,
+        Phase::Switching, Phase::Ready, Phase::Error, Phase::Deleted] {
+        for erasing in [false, true] {
+            let mut init = captured();
+            init.phase = phase;
+            init.pending_erase = erasing.then_some((73, true));
+            init.picker = Picker::ChangeProfile;
+            init.pin_code = "synthetic-code".into();
+            init.qr_png = vec![1, 2, 3];
+            init.qr_gen = 9;
+            init.code_replaced = true;
+            init.link_trouble = true;
+            init.users = vec![UserTile { uuid: "synthetic-retained".into(), ..Default::default() }];
+            init.error = "synthetic-error".into();
+            init.pin_denied = true;
+            init.signin_active = true;
+            init.authorized_in_flow = true;
+            init.persistence_warning_answered = true;
+            init.apply_pending = true;
+            init.signin_account = Some("Synthetic Hidden Name".into());
+            let mut owner = SessionMachine::from_init(init.clone());
+            assert_eq!(owner.read().0.phase, phase);
+            let restored = owner.snapshot_init();
+            assert_eq!(serde_json::to_value(&restored).unwrap(), serde_json::to_value(&init).unwrap());
+            assert_eq!(restored.signin_account, init.signin_account);
+            let wire = serde_json::to_value(&restored).unwrap();
+            assert!(wire.get("signin_account").is_none());
+            let decoded: SessionInit = serde_json::from_value(wire).unwrap();
+            assert!(decoded.signin_account.is_none());
+            assert_eq!(decoded.hash(), init.hash());
+            assert_eq!(owner.subhash(), init.hash());
+            assert!(command(&mut owner, Command::DismissPinError).is_empty());
+            init.pin_denied = false;
+            let after = owner.snapshot_init();
+            assert_eq!(serde_json::to_value(&after).unwrap(), serde_json::to_value(&init).unwrap());
+            assert_eq!(after.signin_account, init.signin_account);
+            assert_eq!(owner.subhash(), init.hash());
+        }
+    }
+}
+
+#[test]
 fn qr_waiting_replacement_discovery_and_duplicate_receipts() {
     let mut owner = SessionMachine::from_init(captured());
     let epoch = waiting(&mut owner);

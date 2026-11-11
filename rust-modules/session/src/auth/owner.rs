@@ -2831,29 +2831,9 @@ impl SessionMachine {
         true
     }
 
-    fn replace_publication(&mut self) {
-        // Compare borrowed fields first: constructing a throwaway snapshot here would copy
-        // QR/roster payloads even if equality then retained all of the old handles.
-        if self.publication.matches_state(&self.state) { return; }
-        let next = SessionSnapshot::from_state_counted(&self.state, Some(&self.publication), &mut |field| {
-            #[cfg(test)]
-            { self.publication_payload_allocations[field] += 1; }
-            #[cfg(not(test))]
-            { let _ = field; }
-        });
-        self.publication = Arc::new(next);
-    }
-}
-
-impl<H: SessionHost> plx_machine::machine::Machine<H> for SessionMachine {
-    type Ev = SessionEvent;
-
-    fn step(&mut self, ev: &SessionEvent, cx: &plx_machine::machine::Cx<'_, H>,
-        fx: &mut plx_machine::machine::Effects<'_, H>) -> plx_machine::machine::Handled {
-        use plx_machine::machine::{Fx, Handled};
-        let before = self.publication();
-        let mut emit = |effect| fx.push(Fx::App(H::session_effect(effect)));
-        let handled = match ev {
+    /// Apply one addressed event, preserving the owner's effect order.
+    fn transition(&mut self, ev: &SessionEvent, tick_ms: u32, mut emit: impl FnMut(SessionFx)) -> bool {
+        match ev {
             SessionEvent::Command(Command::ActivateDevBootstrap) => self.activate_dev(&mut emit),
             SessionEvent::Command(Command::ResumeStored) => self.resume_stored(&mut emit),
             SessionEvent::Command(Command::StartLogin) => self.restart_login(true, &mut emit),
@@ -2916,11 +2896,35 @@ impl<H: SessionHost> plx_machine::machine::Machine<H> for SessionMachine {
                 true
             }
             SessionEvent::CacheObserved(need) => {
-                self.observe_cache(*need, cx.tick.ms, &mut emit);
+                self.observe_cache(*need, tick_ms, &mut emit);
                 true
             }
-            SessionEvent::CacheRefreshed { req, outcome } => self.cache_refreshed(*req, *outcome, cx.tick.ms),
-        };
+            SessionEvent::CacheRefreshed { req, outcome } => self.cache_refreshed(*req, *outcome, tick_ms),
+        }
+    }
+    fn replace_publication(&mut self) {
+        // Compare borrowed fields first: constructing a throwaway snapshot here would copy
+        // QR/roster payloads even if equality then retained all of the old handles.
+        if self.publication.matches_state(&self.state) { return; }
+        let next = SessionSnapshot::from_state_counted(&self.state, Some(&self.publication), &mut |field| {
+            #[cfg(test)]
+            { self.publication_payload_allocations[field] += 1; }
+            #[cfg(not(test))]
+            { let _ = field; }
+        });
+        self.publication = Arc::new(next);
+    }
+}
+
+impl<H: SessionHost> plx_machine::machine::Machine<H> for SessionMachine {
+    type Ev = SessionEvent;
+
+    fn step(&mut self, ev: &SessionEvent, cx: &plx_machine::machine::Cx<'_, H>,
+        fx: &mut plx_machine::machine::Effects<'_, H>) -> plx_machine::machine::Handled {
+        use plx_machine::machine::{Fx, Handled};
+        let before = self.publication();
+        let mut emit = |effect| fx.push(Fx::App(H::session_effect(effect)));
+        let handled = self.transition(ev, cx.tick.ms, &mut emit);
         if !Arc::ptr_eq(&before, &self.publication) {
             fx.invalidate(plx_machine::present::Provenance::Landing(MachineId::Session));
         }
