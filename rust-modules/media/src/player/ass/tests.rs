@@ -664,13 +664,16 @@ fn faces_script(lines: &str) -> String {
     HEADER.replace("Style: Default,Inter,24", "Style: Default,PlxFaces,100") + lines
 }
 
-/// `PlxAssStats` in `include/ass.h` is six `uint32_t` and a `uint64_t`: 32 bytes with the 64-bit
-/// field at offset 24, on a 32-bit ARM target as on a 64-bit host, so the mirror needs no padding.
+/// `PlxAssStats` in `include/ass.h` is eight `uint32_t` and a `uint64_t`: 40 bytes with the 64-bit
+/// field at offset 32, on a 32-bit ARM target as on a 64-bit host, so the mirror needs no padding.
 #[test]
 fn native_stats_mirror_the_c_struct_layout() {
-    assert_eq!(std::mem::size_of::<NativeStats>(), 32);
+    assert_eq!(std::mem::size_of::<NativeStats>(), 40);
     assert_eq!(std::mem::align_of::<NativeStats>(), 8);
-    assert_eq!(std::mem::offset_of!(NativeStats, last_image_pixels), 24);
+    assert_eq!(std::mem::offset_of!(NativeStats, last_libass_us), 12);
+    assert_eq!(std::mem::offset_of!(NativeStats, last_libass_cpu_us), 20);
+    assert_eq!(std::mem::offset_of!(NativeStats, last_images), 28);
+    assert_eq!(std::mem::offset_of!(NativeStats, last_image_pixels), 32);
 }
 
 #[test]
@@ -769,7 +772,11 @@ fn native_replace_track_keeps_the_fonts_and_the_next_frame_is_never_unchanged() 
     );
     assert!(native_frame(&mut native, 100).is_none(), "the same instant is unchanged");
     let unchanged = native.stats();
-    assert_eq!(unchanged.last_composite_us, 0, "an unchanged call composites nothing");
+    assert_eq!(
+        (unchanged.last_composite_us, unchanged.last_composite_cpu_us),
+        (0, 0),
+        "an unchanged call composites nothing"
+    );
     assert_eq!(
         (unchanged.last_images, unchanged.last_image_pixels),
         (drawn.last_images, drawn.last_image_pixels),

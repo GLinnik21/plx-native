@@ -203,24 +203,26 @@ it never resolves a real Plex account. Configure and build the developer app aga
 Libass cost on the TV is read from the event log, not guessed. While a styled source renders,
 `player::ass_perf` writes an `assperf: window_ms=.. calls=.. changed=.. p95_us=.. max_us=.. job_p95_us=..
 job_max_us=.. pub_bytes=.. up_bytes=.. jobs=N+A ahead_hit=.. nwait_p95_us=.. nwait_max_us=.. lib_p95_us=..
-comp_p95_us=.. images_p95=.. img_kpx_p95=..` line when a job
+comp_p95_us=.. lib_cpu_p95_us=.. comp_cpu_p95_us=.. images_p95=.. img_kpx_p95=..` line when a job
 arrives at least a second after the previous line (`window_ms` is the span its counts cover,
 including any idle stretch before it; read the counts as rates over it) (FFI render time, whole-job time including source load, append, flush-and-reload and window
 slide, `changed` and `pub_bytes` count frames published or held ahead whose pixels differ from the one on screen, bytes uploaded; `jobs` counts the worker's Normal and Ahead jobs
 separately, `ahead_hit` the ahead frames the UI thread promoted, `nwait` how long a Normal job
 waited behind an Ahead job already rendering; the partial window is written when the source is
-deselected). The last four fields split `p95_us` between the two things `plx_ass_render` does, timed by
+deselected). The last six fields split `p95_us` between the two things `plx_ass_render` does, timed by
 the facade itself with `clock_gettime` (`src/ass.c`, read back through `PlxAssStats.last_*`): `lib_p95_us`
 is libass's own `ass_render_frame`, `comp_p95_us` is everything after it (bounds, regions and our scalar
-per-pixel composite into straight RGBA, 0 for a call that found the frame unchanged), over the same calls
-as `p95_us`; `images_p95` and `img_kpx_p95` are the `ASS_Image`s libass produced for a composed frame and
+per-pixel composite into straight RGBA, 0 for a call that found the frame unchanged), both wall time over
+the same calls as `p95_us`; `lib_cpu_p95_us` and `comp_cpu_p95_us` are those two phases on the worker
+thread's CPU clock (`CLOCK_THREAD_CPUTIME_ID`), so a phase whose wall figure is far above its CPU one was
+waiting for the CPU (descheduled, or blocked), not computing; `images_p95` and `img_kpx_p95` are the `ASS_Image`s libass produced for a composed frame and
 the sum of their width x height in thousands of pixels, over the composed frames only. Attribute a slow
 render with these before optimising either half. The worker also writes
 one `assperf: worker tid=<n>` line when it starts, which `tools/tv-sched-trace.sh --tid <n>`
 follows. The UI-thread texture upload is the `assup` span on `FRAMEDROP spans=` (spans print only on
 `FRAMEDROP` lines, with `/tmp/plxnative-framedrop` armed); each changed region uploads with a full
 `glTexImage2D` (a bucketed `glTexSubImage2D` variant that reused the texture was measured on the TV and gave no gain, #735). Nothing is
-logged while no styled source is selected, and a render costs one clock pair in Rust and three clock reads in the facade. The worker renders
+logged while no styled source is selected, and a render costs one clock pair in Rust and six clock reads in the facade (three per clock). The worker renders
 only when the screen needs a frame (a new key, a playhead outside the published frame's validity
 window, an animated cue) and renders the next boundary ahead of its time, so a steady cue costs no
 job at all between boundaries (no line is written then), not one per UI frame. `python3

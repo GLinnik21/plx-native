@@ -831,8 +831,8 @@ pub struct NativeFrame {
 }
 
 /// `PlxAssStats` in `include/ass.h`. The `last_*` fields are the facade's own account of the last
-/// `plx_ass_render` call; six `u32`s come first, so the `u64` sits on its 8-byte boundary here as
-/// in C.
+/// `plx_ass_render` call (wall and thread-CPU microseconds per phase, the image counts); eight
+/// `u32`s come first, so the `u64` sits on its 8-byte boundary here as in C.
 #[repr(C)]
 #[derive(Default)]
 pub struct NativeStats {
@@ -841,6 +841,8 @@ pub struct NativeStats {
     tracks: u32,
     last_libass_us: u32,
     last_composite_us: u32,
+    last_libass_cpu_us: u32,
+    last_composite_cpu_us: u32,
     last_images: u32,
     last_image_pixels: u64,
 }
@@ -1118,6 +1120,8 @@ impl Native {
             super::ass_perf::record_native(super::ass_perf::NativeCost {
                 lib_us: stats.last_libass_us,
                 comp_us: stats.last_composite_us,
+                lib_cpu_us: stats.last_libass_cpu_us,
+                comp_cpu_us: stats.last_composite_cpu_us,
                 images: stats.last_images,
                 image_pixels: stats.last_image_pixels,
                 composed: result == 1,

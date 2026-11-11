@@ -44,7 +44,8 @@ struct PlxAss {
     int wrap_unicode;
     uint32_t font_scans, tracks;
     /* The last plx_ass_render call's cost split, reported by plx_ass_stats. */
-    uint32_t last_libass_us, last_composite_us, last_images;
+    uint32_t last_libass_us, last_composite_us, last_libass_cpu_us, last_composite_cpu_us;
+    uint32_t last_images;
     uint64_t last_image_pixels;
     char *default_font;
     unsigned reciprocal[256];
@@ -59,14 +60,34 @@ static void quiet_message(int level, const char *format, va_list args, void *dat
 
 unsigned plx_ass_abi_version(void) { return PLX_ASS_ABI_VERSION; }
 
-/* Microseconds since *since, which becomes now: one clock read ends a phase and starts the next. */
-static uint32_t lap_us(struct timespec *since)
+/* A stopwatch on one clock: CLOCK_MONOTONIC for wall time, CLOCK_THREAD_CPUTIME_ID for the CPU time
+ * the calling thread has run. A clock that cannot be read stops the watch: every lap after the
+ * failure counts 0, never a span measured from a start that was not taken. */
+struct Lap {
+    clockid_t clock;
+    struct timespec at;
+    int running;
+};
+
+static void lap_start(struct Lap *lap, clockid_t clock)
+{
+    lap->clock = clock;
+    lap->running = clock_gettime(clock, &lap->at) == 0;
+}
+
+/* Microseconds since the last lap (or the start), which becomes now: one clock read ends a phase
+ * and starts the next. */
+static uint32_t lap_us(struct Lap *lap)
 {
     struct timespec now;
-    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return 0;
-    int64_t ns = ((int64_t)now.tv_sec - (int64_t)since->tv_sec) * 1000000000 +
-                 ((int64_t)now.tv_nsec - (int64_t)since->tv_nsec);
-    *since = now;
+    if (!lap->running) return 0;
+    if (clock_gettime(lap->clock, &now) != 0) {
+        lap->running = 0;
+        return 0;
+    }
+    int64_t ns = ((int64_t)now.tv_sec - (int64_t)lap->at.tv_sec) * 1000000000 +
+                 ((int64_t)now.tv_nsec - (int64_t)lap->at.tv_nsec);
+    lap->at = now;
     if (ns <= 0) return 0;
     return ns / 1000 >= UINT32_MAX ? UINT32_MAX : (uint32_t)(ns / 1000);
 }
@@ -229,6 +250,8 @@ int plx_ass_stats(const PlxAss *ctx, PlxAssStats *out)
     out->tracks = ctx->tracks;
     out->last_libass_us = ctx->last_libass_us;
     out->last_composite_us = ctx->last_composite_us;
+    out->last_libass_cpu_us = ctx->last_libass_cpu_us;
+    out->last_composite_cpu_us = ctx->last_composite_cpu_us;
     out->last_images = ctx->last_images;
     out->last_image_pixels = ctx->last_image_pixels;
     return 0;
@@ -429,23 +452,27 @@ int plx_ass_render(PlxAss *ctx, int64_t now_ms, int width, int height,
     /* Any failed call breaks the consecutive-frame identity proof above. */
     ctx->cache_valid = 0;
     int changed = 0;
-    struct timespec lap = {0, 0};
-    (void)lap_us(&lap);
+    struct Lap wall, cpu;
+    lap_start(&wall, CLOCK_MONOTONIC);
+    lap_start(&cpu, CLOCK_THREAD_CPUTIME_ID);
     ASS_Image *images = ass_render_frame(ctx->renderer, ctx->track, now_ms, &changed);
-    ctx->last_libass_us = lap_us(&lap);
-    ctx->last_composite_us = 0;
+    ctx->last_libass_us = lap_us(&wall);
+    ctx->last_libass_cpu_us = lap_us(&cpu);
+    ctx->last_composite_us = ctx->last_composite_cpu_us = 0;
     if (!changed && reusable && !ctx->first) {
         ctx->cache_valid = 1;
         return 0;
     }
     ctx->first = 0;
     int result = compose_frame(ctx, images, width, height, reusable, frame);
-    ctx->last_composite_us = lap_us(&lap);
+    ctx->last_composite_us = lap_us(&wall);
+    ctx->last_composite_cpu_us = lap_us(&cpu);
     return result;
 }
 
 /* Everything plx_ass_render does with libass's image list: bounds, retained regions, the arena,
- * the per-pixel composite and the straight-alpha pass. Its wall time is last_composite_us. */
+ * the per-pixel composite and the straight-alpha pass. Its wall time is last_composite_us, its
+ * thread CPU time last_composite_cpu_us. */
 static int compose_frame(PlxAss *ctx, ASS_Image *images, int width, int height, int reusable,
                          PlxAssFrame *frame)
 {

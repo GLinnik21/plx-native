@@ -3,7 +3,7 @@
 //!
 //! ```text
 //! assperf: worker tid=1234
-//! assperf: window_ms=1000 calls=3 changed=2 p95_us=1800 max_us=4100 job_p95_us=2100 job_max_us=9000 pub_bytes=123456 up_bytes=123456 jobs=2+1 ahead_hit=1 nwait_p95_us=0 nwait_max_us=0 lib_p95_us=900 comp_p95_us=800 images_p95=410 img_kpx_p95=620
+//! assperf: window_ms=1000 calls=3 changed=2 p95_us=1800 max_us=4100 job_p95_us=2100 job_max_us=9000 pub_bytes=123456 up_bytes=123456 jobs=2+1 ahead_hit=1 nwait_p95_us=0 nwait_max_us=0 lib_p95_us=900 comp_p95_us=800 lib_cpu_p95_us=870 comp_cpu_p95_us=790 images_p95=410 img_kpx_p95=620
 //! ```
 //!
 //! `window_ms` is the span the counts cover: from the previous line (or the session's first job)
@@ -19,13 +19,17 @@
 //! `glTexImage2D` in the same window ([`note_upload`]). `jobs=N+A` counts the worker's Normal and
 //! Ahead jobs separately, `ahead_hit` how many times the UI thread promoted an ahead frame
 //! ([`note_ahead_hit`]) and `nwait_*` how long a Normal job waited behind an Ahead job that was
-//! already rendering ([`note_nwait`]; native rendering cannot be cancelled). The last four fields
+//! already rendering ([`note_nwait`]; native rendering cannot be cancelled). The last six fields
 //! split `p95_us`: the facade times its two phases itself (`clock_gettime` in `src/ass.c`,
 //! `PlxAssStats::last_*`) and the worker reads them after every render. `lib_p95_us` is libass's
 //! own `ass_render_frame`, `comp_p95_us` is everything the facade does with the image list after it
 //! (bounds, regions, the scalar composite into straight RGBA; 0 for a call that found the frame
-//! unchanged), both nearest-rank over the same fixed ring as `p95_us` (every call that returned a
-//! result, so a window of unchanged calls pulls them down), `images_p95` the `ASS_Image`s libass
+//! unchanged), both wall time (`CLOCK_MONOTONIC`) and nearest-rank over the same fixed ring as
+//! `p95_us` (every call that returned a result, so a window of unchanged calls pulls them down).
+//! `lib_cpu_p95_us` and `comp_cpu_p95_us` are the same two phases on the worker thread's CPU clock
+//! (`CLOCK_THREAD_CPUTIME_ID`): a phase whose wall figure is far above its CPU one was waiting (the
+//! thread descheduled behind the UI thread or another process, or blocked), not computing, which
+//! is how a slow frame is told from a starved one. `images_p95` the `ASS_Image`s libass
 //! produced and `img_kpx_p95` the sum of their width x height in thousands of pixels
 //! (`last_image_pixels / 1000`), both over the composed frames only. They are 0 for a worker whose
 //! library reports no stats. The upload's own time is the `assup`
@@ -34,8 +38,8 @@
 //! second after it opened (an idle stretch emits no line, hence `window_ms`), and [`flush`] emits the partial window when the source is deselected.
 //! `tools/tv-sched-trace.sh --tid <tid>` follows the worker.
 //!
-//! Always compiled; the cost is one clock pair per render in Rust, three clock reads in the facade
-//! and a fixed 256-slot ring per figure.
+//! Always compiled; the cost is one clock pair per render in Rust, six clock reads in the facade
+//! (three on each of the two clocks) and a fixed 256-slot ring per figure.
 
 use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -97,6 +101,10 @@ pub(super) struct NativeCost {
     pub lib_us: u32,
     /// Everything after it until the frame was returned: 0 when the call found it unchanged.
     pub comp_us: u32,
+    /// The worker thread's CPU time inside the same two phases (`CLOCK_THREAD_CPUTIME_ID`), the
+    /// wall figures above minus the time the thread was not running.
+    pub lib_cpu_us: u32,
+    pub comp_cpu_us: u32,
     /// `ASS_Image`s in the frame; only meaningful when `composed`.
     pub images: u32,
     /// The sum of their width x height; only meaningful when `composed`.
@@ -134,6 +142,8 @@ pub(super) struct Aggregator {
     nwait: Ring,
     lib: Ring,
     comp: Ring,
+    lib_cpu: Ring,
+    comp_cpu: Ring,
     images: Ring,
     image_kpx: Ring,
     normal_jobs: u32,
@@ -158,6 +168,8 @@ impl Aggregator {
             nwait: Ring::new(),
             lib: Ring::new(),
             comp: Ring::new(),
+            lib_cpu: Ring::new(),
+            comp_cpu: Ring::new(),
             images: Ring::new(),
             image_kpx: Ring::new(),
             normal_jobs: 0,
@@ -184,6 +196,8 @@ impl Aggregator {
         if let Some(cost) = cycle.native {
             self.lib.push(cost.lib_us);
             self.comp.push(cost.comp_us);
+            self.lib_cpu.push(cost.lib_cpu_us);
+            self.comp_cpu.push(cost.comp_cpu_us);
             if cost.composed {
                 self.images.push(cost.images);
                 self.image_kpx
@@ -225,7 +239,7 @@ impl Aggregator {
             .counting_since
             .map_or(0, |since| now.saturating_duration_since(since).as_millis());
         let line = format!(
-            "assperf: window_ms={} calls={} changed={} p95_us={} max_us={} job_p95_us={} job_max_us={} pub_bytes={} up_bytes={} jobs={}+{} ahead_hit={} nwait_p95_us={} nwait_max_us={} lib_p95_us={} comp_p95_us={} images_p95={} img_kpx_p95={}",
+            "assperf: window_ms={} calls={} changed={} p95_us={} max_us={} job_p95_us={} job_max_us={} pub_bytes={} up_bytes={} jobs={}+{} ahead_hit={} nwait_p95_us={} nwait_max_us={} lib_p95_us={} comp_p95_us={} lib_cpu_p95_us={} comp_cpu_p95_us={} images_p95={} img_kpx_p95={}",
             window_ms,
             self.calls,
             self.changed,
@@ -242,6 +256,8 @@ impl Aggregator {
             self.nwait_max_us,
             self.lib.p95(),
             self.comp.p95(),
+            self.lib_cpu.p95(),
+            self.comp_cpu.p95(),
             self.images.p95(),
             self.image_kpx.p95()
         );
@@ -366,6 +382,8 @@ mod tests {
             native: Some(NativeCost {
                 lib_us: render_us / 2,
                 comp_us: render_us / 2,
+                lib_cpu_us: render_us / 4,
+                comp_cpu_us: render_us / 4,
                 images: render_us / 10,
                 image_pixels: u64::from(render_us) * 1000,
                 composed: changed,
@@ -396,7 +414,7 @@ mod tests {
             } else {
                 assert_eq!(
                     line.as_deref(),
-                    Some("assperf: window_ms=1000 calls=200 changed=20 p95_us=950 max_us=1000 job_p95_us=1900 job_max_us=2000 pub_bytes=20000 up_bytes=777 jobs=200+0 ahead_hit=3 nwait_p95_us=0 nwait_max_us=0 lib_p95_us=475 comp_p95_us=475 images_p95=91 img_kpx_p95=910")
+                    Some("assperf: window_ms=1000 calls=200 changed=20 p95_us=950 max_us=1000 job_p95_us=1900 job_max_us=2000 pub_bytes=20000 up_bytes=777 jobs=200+0 ahead_hit=3 nwait_p95_us=0 nwait_max_us=0 lib_p95_us=475 comp_p95_us=475 lib_cpu_p95_us=237 comp_cpu_p95_us=237 images_p95=91 img_kpx_p95=910")
                 );
             }
         }
@@ -455,7 +473,7 @@ mod tests {
         let line = a.take_partial(t0, up(0)).unwrap();
         assert_eq!(
             line,
-            "assperf: window_ms=0 calls=0 changed=1 p95_us=0 max_us=0 job_p95_us=50000 job_max_us=50000 pub_bytes=8 up_bytes=0 jobs=0+1 ahead_hit=0 nwait_p95_us=900 nwait_max_us=900 lib_p95_us=0 comp_p95_us=0 images_p95=0 img_kpx_p95=0"
+            "assperf: window_ms=0 calls=0 changed=1 p95_us=0 max_us=0 job_p95_us=50000 job_max_us=50000 pub_bytes=8 up_bytes=0 jobs=0+1 ahead_hit=0 nwait_p95_us=900 nwait_max_us=900 lib_p95_us=0 comp_p95_us=0 lib_cpu_p95_us=0 comp_cpu_p95_us=0 images_p95=0 img_kpx_p95=0"
         );
     }
 
@@ -463,9 +481,19 @@ mod tests {
     fn the_native_split_prints_its_own_percentiles() {
         let t0 = Instant::now();
         let mut a = Aggregator::new();
+        // The thread's CPU time is half the wall time in both phases: an even split, so the CPU
+        // percentiles are the wall ones halved and any mix-up of the four rings shows.
         let call = |lib_us, comp_us, images, image_pixels, composed| Cycle {
             render_us: Some(lib_us + comp_us),
-            native: Some(NativeCost { lib_us, comp_us, images, image_pixels, composed }),
+            native: Some(NativeCost {
+                lib_us,
+                comp_us,
+                lib_cpu_us: lib_us / 2,
+                comp_cpu_us: comp_us / 2,
+                images,
+                image_pixels,
+                composed,
+            }),
             job_us: lib_us + comp_us,
             changed: composed,
             pub_bytes: 0,
@@ -483,7 +511,9 @@ mod tests {
         // Nearest rank: ceil(21 * 0.95) = 20th of the 21 libass samples (40 sorts first), the 20th
         // of the 21 composite samples (the 0 sorts first); 19th of the 20 composed frames.
         assert!(
-            line.ends_with(" lib_p95_us=1900 comp_p95_us=9500 images_p95=190 img_kpx_p95=28500"),
+            line.ends_with(
+                " lib_p95_us=1900 comp_p95_us=9500 lib_cpu_p95_us=950 comp_cpu_p95_us=4750 images_p95=190 img_kpx_p95=28500"
+            ),
             "{line}"
         );
     }
@@ -556,6 +586,8 @@ mod tests {
         record_native(NativeCost {
             lib_us: 400,
             comp_us: 800,
+            lib_cpu_us: 390,
+            comp_cpu_us: 700,
             images: 12,
             image_pixels: 345_678,
             composed: true,
@@ -571,6 +603,11 @@ mod tests {
             assert_eq!(
                 (a.lib.p95(), a.comp.p95(), a.images.p95(), a.image_kpx.p95()),
                 (400, 800, 12, 345)
+            );
+            assert_eq!(
+                (a.lib_cpu.p95(), a.comp_cpu.p95()),
+                (390, 700),
+                "the CPU rings are fed from their own fields"
             );
         });
         // The slots were consumed: a second finish does not double count.
