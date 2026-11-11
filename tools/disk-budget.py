@@ -2143,6 +2143,15 @@ class HeldLock:
         return self.held
 
 
+@dataclass(frozen=True)
+class ParkCrash:
+    """What a park that RAISED reports in place of cold-store.py's Outcome: a FAILED, which ends the pass."""
+    reason: str
+    status: str = _FAILED
+    secs: float = 0.0
+    ok: bool = False
+
+
 @dataclass
 class ParkSummary:
     outcomes: List[Tuple[Candidate, object]]
@@ -2166,18 +2175,25 @@ def run_park_pass(store, cands: Sequence[Candidate], *, probes: Probes, checkout
                   now: Callable[[], float], idle_secs: int, max_bytes: int, stop_free: Optional[int],
                   free_fn: Callable[[], int], head_of: Callable[[str], str], lock: Optional[HeldLock] = None,
                   waiting: Optional[Callable[[], bool]] = None, say: Callable[[str], None] = print,
-                  dry_run: bool = False) -> ParkSummary:
+                  dry_run: bool = False, floor_free: Optional[int] = None) -> ParkSummary:
     """Park `cands` in order until `max_bytes` have gone, free space is back over `stop_free` (None: not asked,
-    a by-hand run) or something says stop. Between trees it releases and re-takes `lock`; it stops after the
-    tree it is on when `waiting()` says a preflight wants the lock, handing the lock back (`lock_lost`).
-    One refused tree (not idle any more, a probe that says live) is skipped and the pass goes on; a failed
-    copy ends it, since the volume itself is then the trouble."""
+    a by-hand run), free space is under `floor_free` (the comfort line; None: not asked, a by-hand run) or
+    something says stop. Free space is read before each tree, so a pass that began over the comfort line ends
+    when builds have eaten the room: from there the ladder deletes (seconds), and a copy to the cold disk (minutes,
+    with the lock held) would only make a build wait for it. Between trees it releases and re-takes `lock`; it
+    stops after the tree it is on when `waiting()` says a preflight wants the lock, handing the lock back
+    (`lock_lost`). One refused tree (not idle any more, a probe that says live) is skipped and the pass goes on;
+    a failed copy, or any exception out of a park, ends it with the reason said: the volume itself is then the
+    trouble, and a traceback must not stand in for the pass's account of what it did."""
     summary = ParkSummary([])
     waiting = waiting or (lambda: False)
     if not cands:
         say("park: no tree is idle enough to park")
         return summary
-    why = store.available(device_of(cands[0].path), write_probe=not dry_run)
+    try:
+        why = store.available(device_of(cands[0].path), write_probe=not dry_run)
+    except Exception as exc:  # noqa: BLE001 - see the docstring: said, not raised
+        why = "the cold volume check raised %s: %s" % (type(exc).__name__, exc)
     if why:
         summary.stopped = "the cold volume cannot be used: %s" % why
         say("park: %s" % summary.stopped)
@@ -2185,9 +2201,13 @@ def run_park_pass(store, cands: Sequence[Candidate], *, probes: Probes, checkout
     touched = set()
     for index, cand in enumerate(cands):
         stop = ""
+        free = free_fn() if stop_free is not None or floor_free is not None else 0
         if summary.parked_bytes >= max_bytes:
             stop = "reached park_max_gib_per_run (%s)" % gib(max_bytes)
-        elif stop_free is not None and free_fn() >= stop_free:
+        elif floor_free is not None and free < floor_free:
+            stop = "free space (%s) is under the comfort line (%s): the ladder deletes from here" % (
+                gib(free), gib(floor_free))
+        elif stop_free is not None and free >= stop_free:
             stop = "free space is back over %s" % gib(stop_free)
         elif not dry_run and waiting():
             stop = "a preflight is waiting for the lock"
@@ -2201,9 +2221,12 @@ def run_park_pass(store, cands: Sequence[Candidate], *, probes: Probes, checkout
         lane_dirs = {d for d in (cand.checkout, os.path.dirname(cand.path) if cand.kind == "fleet" else "") if d}
         # Taking a lane's first tree changes its directory: the next tree of that lane must not read it as busy.
         lane_secs = 0 if lane_dirs & touched else idle_secs
-        out = store.park(cand.path, kind=cand.kind, checkout=cand.checkout, head=head_of(cand.checkout),
-                         live=None if dry_run else park_probe(cand, probes, checkouts, idle_secs, lane_secs, now),
-                         private_bytes=cand.private_bytes, dry_run=dry_run)
+        try:
+            out = store.park(cand.path, kind=cand.kind, checkout=cand.checkout, head=head_of(cand.checkout),
+                             live=None if dry_run else park_probe(cand, probes, checkouts, idle_secs, lane_secs, now),
+                             private_bytes=cand.private_bytes, dry_run=dry_run)
+        except Exception as exc:  # noqa: BLE001 - see the docstring: a FAILED that ends the pass, not a traceback
+            out = ParkCrash("the park raised %s: %s" % (type(exc).__name__, exc))
         summary.outcomes.append((cand, out))
         label = "rung %d %s tree, from %s" % (cand.rung, cand.kind, cand.owner or "-")
         if out.ok:
@@ -2268,9 +2291,9 @@ def cold_config_refusal(env) -> str:
 
 
 def cmd_park(args, env) -> int:
-    """The park-ahead pass. Exit 0: it ran (or has nothing to say by hand), `PARK_NOT_APPLICABLE` (`--auto`):
-    no cold store or free space over park_below_gib, silent, `PARK_LOCK_RELEASED`: it ended without the lock,
-    2: refused. With `--lock-held` the caller (build-gc.sh) holds the auto lock now and `--holder-pid` is the
+    """The park-ahead pass. Exit 0: it ran (or has nothing to say by hand; `--auto` under the comfort line says
+    why it did nothing: the ladder deletes there), `PARK_NOT_APPLICABLE` (`--auto`): no cold store or free space
+    over park_below_gib, silent, `PARK_LOCK_RELEASED`: it ended without the lock, 2: refused. With `--lock-held` the caller (build-gc.sh) holds the auto lock now and `--holder-pid` is the
     process it names; otherwise the lock is taken here, per tree, and released at the end. `-n` takes none."""
     cold = cold_tool()
     store = cold.ColdStore(env, log=print) if cold else None
@@ -2288,6 +2311,13 @@ def cmd_park(args, env) -> int:
     free, _ = free_bytes(root, env)
     if args.auto and free >= cfg.park_below_gib * GIB:
         return PARK_NOT_APPLICABLE
+    comfort = thresholds_from_env(env).comfort
+    if args.auto and free < comfort:
+        # Not silent like "room enough": a configured store that does nothing under pressure should say why.
+        print("park: skipped: %s free is under the %s comfort line, so the ladder deletes first: a park holds the "
+              "auto lock for a whole copy to the cold disk while a build waits for room (parking resumes once free "
+              "space is back over the line)" % (gib(free), gib(comfort)))
+        return 0
     idle_secs = int((args.idle_min if args.idle_min is not None else cfg.park_idle_min) * 60)
     lock, own = None, False
     if not args.dry_run:
@@ -2314,10 +2344,29 @@ def cmd_park(args, env) -> int:
 
 
 def park_run(args, env, root: str, cold, store, free: int, idle_secs: int, lock: Optional[HeldLock]) -> int:
+    """The pass and the sweeps around it, all under the auto lock. Each looks at the waiting flag before every
+    piece of work (`recover`'s settles and reaps, each tree, `prune`'s deletions) and ends there, handing the
+    lock back: a preflight waits 60 s for the lock and then judges on free space alone, with no eviction, so
+    the lock must not be held through a sweep of the slow disk. A `--auto` pass also keeps to the comfort line
+    (`run_park_pass`'s `floor_free`)."""
     cfg = store.cfg
+    waiting = (lambda: False) if args.dry_run else (lambda: preflight_waiting(lock_dir(env)))
+    stop = None if args.dry_run else waiting
+
+    def hand_over() -> int:
+        print("park: stopped: a preflight is waiting for the lock")
+        if lock is not None:
+            lock.release()
+        return PARK_LOCK_RELEASED
+
     if not args.dry_run:
-        for what, detail in store.recover():
-            print("park: recovered %s: %s" % (what, detail))
+        try:
+            for what, detail in store.recover(stop=stop):
+                print("park: recovered %s: %s" % (what, detail))
+        except Exception as exc:  # noqa: BLE001 - the pass goes on; the next one recovers what this one could not
+            print("park: recover failed: %s" % exc)
+        if waiting():
+            return hand_over()
     now = clock(env)
     probes = Probes(env)
     th = replace(thresholds_from_env(env), idle_secs=idle_secs)
@@ -2330,17 +2379,22 @@ def park_run(args, env, root: str, cold, store, free: int, idle_secs: int, lock:
     summary = run_park_pass(
         store, cands, probes=probes, checkouts=[p for p, _ in inv.checkouts], now=lambda: clock(env),
         idle_secs=idle_secs, max_bytes=int(cfg.park_max_gib_per_run * GIB), stop_free=stop_free,
-        free_fn=lambda: free_bytes(root, env)[0], head_of=cold.head_of, lock=lock,
-        waiting=lambda: preflight_waiting(lock_dir(env)), say=print, dry_run=args.dry_run)
+        free_fn=lambda: free_bytes(root, env)[0], head_of=cold.head_of, lock=lock, waiting=waiting, say=print,
+        dry_run=args.dry_run, floor_free=thresholds_from_env(env).comfort if args.auto else None)
     if summary.outcomes:
         print("park: %d tree(s) %s, %s" % (sum(1 for _, o in summary.outcomes if o.ok),
                                            "would be parked" if args.dry_run else "parked",
                                            size_text(summary.parked_bytes)))
     if not summary.lock_lost:
-        facts = prune_facts(cold, store, root, env)
-        for origin, why, size in store.prune(facts=facts, dry_run=args.dry_run):
-            print("  %s %8s  %s  (%s)" % ("would drop" if args.dry_run else "dropped   ", size_text(size),
-                                          tilde(origin), why))
+        try:
+            facts = prune_facts(cold, store, root, env)
+            for origin, why, size in store.prune(facts=facts, dry_run=args.dry_run, stop=stop):
+                print("  %s %8s  %s  (%s)" % ("would drop" if args.dry_run else "dropped   ", size_text(size),
+                                              tilde(origin), why))
+        except Exception as exc:  # noqa: BLE001 - said, not raised: the park above already happened
+            print("park: prune failed: %s" % exc)
+        if lock is not None and lock.held and waiting():
+            return hand_over()
     return PARK_LOCK_RELEASED if lock is not None and not lock.held else 0
 
 
@@ -2419,8 +2473,8 @@ def main(argv: Sequence[str]) -> int:
 
     pk = with_root(sub.add_parser("park", help="move idle trees to the cold store, if one is configured"))
     pk.add_argument("--auto", action="store_true",
-                    help="as build-gc.sh --auto runs it: only below park_below_gib free, silent (exit 3) when "
-                         "there is no cold store or room enough")
+                    help="as build-gc.sh --auto runs it: only from the comfort line (PLX_GC_MIN_FREE_GIB) up to "
+                         "park_below_gib free, silent (exit 3) when there is no cold store or room enough")
     pk.add_argument("-n", "--dry-run", action="store_true", help="name what would move; change nothing, take no lock")
     pk.add_argument("--idle-min", type=float, help="how long a tree must have been idle (default: park_idle_min)")
     pk.add_argument("--lock-held", action="store_true",
