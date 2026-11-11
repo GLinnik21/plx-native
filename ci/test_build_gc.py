@@ -875,6 +875,17 @@ class BuildGcTests(unittest.TestCase):
     LOGGING_FIND = ("#!/bin/sh\n"
                     'printf "%s\\n" "$*" >> "$PLX_TEST_FIND_LOG"\n'
                     'exec /usr/bin/find "$@"\n')
+    LOGGING_DU = ("#!/bin/sh\n"
+                  'printf "%s\\n" "$*" >> "$PLX_TEST_DU_LOG"\n'
+                  'exec /usr/bin/du "$@"\n')
+
+    def walked(self, log, tree):
+        """The logged commands that name `tree` or something under it, by the path as given or resolved."""
+        names = {str(tree), os.path.realpath(tree)}
+        if not log.exists():
+            return []
+        return [line for line in log.read_text().splitlines()
+                if any(n in line.split() or any(w.startswith(n + os.sep) for w in line.split()) for n in names)]
 
     def stub_command(self, fixture, name, body):
         path = fixture[0].parent / "bin" / name
@@ -906,6 +917,25 @@ class BuildGcTests(unittest.TestCase):
         result = self.run_gc(by_hand, "--worktrees")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertFalse(other.exists(), "--worktrees by hand must still remove a finished lane on another volume")
+
+    def test_the_disk_report_does_not_size_a_checkout_on_another_volume(self):
+        # `make disk` printed a row per worktree and ran `du` over each one's checkout and build trees,
+        # including a lane on the slow USB disk. Its row now says so instead; a lane on the build's own
+        # volume is sized as before (the control).
+        fixture = self.fixture(0, 0)
+        das, local = self._add_worktrees(fixture, 2)
+        du_log = fixture[0].parent / "du.log"
+        self.stub_command(fixture, "stat", self.FOREIGN_STAT)
+        self.stub_command(fixture, "du", self.LOGGING_DU)
+        fixture[1].update(PLX_TEST_FOREIGN=str(das), PLX_TEST_DU_LOG=str(du_log))
+        result = self.run_gc(fixture)
+        text = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, text)
+        rows = {line.split()[0]: line for line in text.splitlines() if line.startswith(("lane0", "lane1"))}
+        self.assertIn("other volume", rows["lane0"], text)
+        self.assertNotIn("other volume", rows["lane1"], text)
+        self.assertEqual(self.walked(du_log, das), [], "the report sized a checkout on another volume")
+        self.assertTrue(self.walked(du_log, local), "the control: a local lane is still sized")
 
     def test_the_disk_report_says_whether_the_hourly_agent_is_loaded(self):
         for system, launchctl, expect in (
@@ -1241,6 +1271,34 @@ class BuildGcTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, out)
         self.assertTrue((lane0 / "rust-modules/target/sentinel").exists(), "evicted under a live build: " + out)
         self.assertFalse((lane1 / "rust-modules/target").exists(), out)
+
+    def test_evict_does_not_walk_a_lane_checkout_on_another_volume_to_judge_it_idle(self):
+        # A fleet tree sits on the build's volume while its lane's checkout may be on the slow disk. `--evict`
+        # asks whether the lane is idle with a recursive `find -mmin` over the checkout, which on that disk is
+        # minutes per lane; a checkout it will not walk counts as active, so the tree is spared (the planner
+        # re-plans on the next entry). The control: an equally idle lane on the build's own volume goes.
+        fixture, (lane0, lane1) = self.evict_fixture()
+        fleet = Path(fixture[1]["PLX_FLEET_DIR"])
+        tree0 = self.make_tree(fleet / "lane0/target", incremental=True)
+        tree1 = self.make_tree(fleet / "lane1/target", incremental=True)
+        for path in (lane0, lane1, fleet):
+            self.age(path, 2 * 3600)
+        find_log = fixture[0].parent / "find.log"
+        self.stub_command(fixture, "stat", self.FOREIGN_STAT)
+        self.stub_command(fixture, "find", self.LOGGING_FIND)
+        plan = self.write_plan(fixture, [
+            ("evict", 4, "tree", 96, "lane0", 30, "normal", tree0),
+            ("evict", 4, "tree", 96, "lane1", 30, "normal", tree1),
+        ])
+        result = self.run_evict(fixture, plan, extra_env={
+            "PLX_TEST_FOREIGN": str(lane0), "PLX_TEST_FIND_LOG": str(find_log)})
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, out)
+        self.assertEqual(self.walked(find_log, lane0), [], "the idle-window walk read a checkout on another volume")
+        self.assertTrue(self.walked(find_log, fleet / "lane1"), "the control: a local lane is still judged by a walk")
+        self.assertIn("another volume", out)
+        self.assertTrue((tree0 / "sentinel").exists(), "evicted a fleet tree whose lane could not be judged: " + out)
+        self.assertFalse(tree1.exists(), "left an idle local lane's fleet tree: " + out)
 
     def test_evict_honours_the_idle_window_the_plan_names(self):
         fixture, (lane0, lane1) = self.evict_fixture()

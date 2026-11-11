@@ -139,7 +139,13 @@ almost nothing, and the next lane's first build is cold.
   candidate. `build-gc.sh --auto` likewise skips a lane whose worktree is on another volume than the
   checkout (before its `git status`, squash check or idle-window `find`): removing it frees nothing on
   the volume that is short, so `--auto` never removes a merged lane there. `--worktrees` typed by hand
-  still judges and removes it, since that is the human's call.
+  still judges and removes it, since that is the human's call. A lane's fleet tree (its
+  `CARGO_TARGET_DIR`, kept outside the worktree) is on the build's own volume even when the lane's
+  checkout is not: it is sized like any local tree, but the checkout is not read either: the lane reads
+  neither merged nor clean, `--evict` counts it as active instead of walking the checkout with the
+  idle-window `find` (so the tree is spared), and `make disk` prints `-` for the checkout's sizes. The
+  `make check` lock is still probed, since it is a flock on a local file and a check running in that
+  checkout builds into this very tree.
 - **A cargo tree that is not PlxNative's.** `CACHEDIR.TAG` alone proves nothing (any cargo writes
   it); a tree is ours only if its `deps/`, `.fingerprint/`, `build/` or `incremental/` hold a
   `plx_*`, `libplx_*` or `plxnative*` entry. Other trees are reported as "not ours" and never planned.

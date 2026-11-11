@@ -1051,8 +1051,13 @@ def collect(root: str, env, probes: Probes, now: float, size_foreign: bool = Fal
     A tree on another volume than the checkout's (a lane worktree on a slow external disk) is listed with its
     device and nothing else: it is neither sized, aged, probed for locks or git-tracked files, nor is its
     lane asked about git, because `never()` throws it out whatever those would say, and a walk over a
-    spinning USB disk stalled the build-entry preflight for 20-35 minutes. `size_foreign` is unrelated: it
-    sizes a /tmp tree that carries no PlxNative marker (the report's "not ours" row), on the build's volume."""
+    spinning USB disk stalled the build-entry preflight for 20-35 minutes. The same goes for a LANE whose
+    checkout is on another volume while its tree (a fleet tree, kept outside the worktree) is on the build's:
+    the tree is sized like any local one, but `is_merged` / `is_clean` are not asked of the checkout, so the
+    lane reads neither merged nor clean. Its `make check` lock is still probed: that is a flock on a file in
+    the local lock directory, named by a hash of the checkout's path, and a check running in that checkout is
+    building into this very tree. `size_foreign` is unrelated: it sizes a /tmp tree that carries no
+    PlxNative marker (the report's "not ours" row), on the build's volume."""
     root = real(root)
     wts, main = worktrees(root)
     if not any(w.path == root for w in wts):
@@ -1140,8 +1145,15 @@ def collect(root: str, env, probes: Probes, now: float, size_foreign: bool = Fal
         if kind in ("lane", "fleet") and checkout and checkout != main and checkout != root:
             if checkout not in lane_facts:
                 wt = next(w for w in wts if w.path == checkout)
-                is_m = is_merged(checkout, wt.sha, ref)
-                lane_facts[checkout] = (is_m, is_m and is_clean(checkout), wt.locked)
+                cdev = device_of(checkout)
+                if cdev and cdev != volume_dev:
+                    # A fleet tree on the build's volume whose lane's checkout is on the slow disk: the squash
+                    # check and `git status` would walk that whole worktree. Neither merged nor clean is known,
+                    # so neither is claimed (the conservative reading: no rung that needs them takes the tree).
+                    lane_facts[checkout] = (False, False, wt.locked)
+                else:
+                    is_m = is_merged(checkout, wt.sha, ref)
+                    lane_facts[checkout] = (is_m, is_m and is_clean(checkout), wt.locked)
             merged, clean, locked = lane_facts[checkout]
         elif kind in ("lane", "fleet") and checkout:
             locked = next((w.locked for w in wts if w.path == checkout), False)

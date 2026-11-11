@@ -878,11 +878,16 @@ class OtherVolume(Repo):
 
     OTHER = 4242
 
-    def foreign(self, *prefixes):
+    def foreign(self, *prefixes, check=()):
         """Stub the device lookup so everything under `prefixes` is another volume, and make every reader
-        of such a tree raise: a sizing walk, an mtime walk, a git probe, a lock probe."""
+        of such a tree raise: a sizing walk, an mtime walk, a git probe, a cargo-lock probe. The `make check`
+        lock probe is the one reader that is allowed: it flocks a file in the local lock directory named by a
+        hash of the checkout's path and reads nothing on the checkout's own disk, so a probe of a foreign
+        checkout is recorded in `foreign_lock_probes` rather than refused. `check` are the checkouts whose
+        lock reads as held."""
         real_device_of = db.device_of
         self.other = prefixes
+        self.foreign_lock_probes = []
 
         def is_other(path):
             return any(db.under(path, p) for p in prefixes)
@@ -910,10 +915,10 @@ class OtherVolume(Repo):
 
             def check_locked(probes, checkout):
                 if is_other(checkout):
-                    raise AssertionError("a lock probe reached a checkout on another volume: %s" % checkout)
+                    self.foreign_lock_probes.append(checkout)
                 return super().check_locked(checkout)
 
-        return Probes()
+        return Probes(check=check)
 
     def test_a_lane_on_another_volume_is_listed_but_never_sized_probed_or_planned(self):
         das = self.lane("das-lane")
@@ -944,6 +949,29 @@ class OtherVolume(Repo):
         _, kept = db.ladder(i, TH, self.main, NOW_REAL, build)
         for path in (das_target, das_fleet):
             self.assertEqual(kept[path], "never: on another volume than the build", path)
+        self.assertEqual(self.foreign_lock_probes, [], "a lock probe reached a tree on another volume")
+
+    def test_a_lane_checkout_on_another_volume_is_never_read_though_its_fleet_tree_is_local(self):
+        """A fleet tree is its lane's CARGO_TARGET_DIR kept OUTSIDE the worktree, on the build's own volume,
+        while the lane's checkout may sit on the slow disk: the tree is listed and sized like any local one,
+        but the lane's git facts (a `git status` over the whole worktree, the squash check) are never asked,
+        so such a lane reads neither merged nor clean. The `make check` lock is still asked: it reads a
+        local lock file, and a check running in that checkout is building into this very tree."""
+        das = self.lane("das-lane")
+        fleet_target = os.path.join(self.fleet, "das-lane", "target")
+        main_target = os.path.join(self.main, "rust-modules", "target")
+        cargo_tree(fleet_target, incr=1, hours=40)
+        cargo_tree(main_target, hours=40)
+        probes = self.foreign(das, check=(das,))
+
+        t = self.by_path(self.collect(probes))[fleet_target]
+
+        self.assertEqual((t.kind, t.owner, t.checkout), ("fleet", "das-lane", das))
+        self.assertNotEqual(t.dev, self.OTHER, "the tree itself is on the build's volume")
+        self.assertGreater(t.private_bytes, 0, "a tree on the build's own volume is still sized")
+        self.assertEqual((t.merged, t.clean), (False, False))
+        self.assertTrue(t.live.check_lock, "a `make check` running in the checkout must still protect the tree")
+        self.assertEqual(self.foreign_lock_probes, [das])
 
     def test_the_report_says_such_a_tree_is_on_another_volume_and_not_sized(self):
         das = self.lane("das-lane")

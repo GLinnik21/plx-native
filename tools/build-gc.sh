@@ -1319,6 +1319,7 @@ EV_TREE=
 EV_CHECKOUT=
 EV_LANE=
 EV_WHY=
+EV_LANE_WHY=
 EV_SPARE=
 EV_TMP_TREES=
 EV_TMP_LOADED=
@@ -1454,9 +1455,17 @@ ev_allowed() {
 }
 
 # Has this lane's worktree (and, for a fleet tree, its lane dir under $PLX_FLEET_DIR) changed within
-# $1 minutes? Skips a directory this run has itself already taken something from.
+# $1 minutes? Skips a directory this run has itself already taken something from. A checkout on another
+# volume than the build (a lane on a slow external disk; its fleet tree is on the build's own) is NOT
+# walked: the `find` below is minutes per lane there, so it counts as active and its tree is spared
+# (EV_LANE_WHY says which). Spared is the safe side: it is only ever one more tree this run leaves.
 ev_lane_active() {
   _m=$1
+  EV_LANE_WHY="its lane changed within $_m min"
+  if [ -n "$EV_CHECKOUT" ] && on_other_volume "$EV_CHECKOUT"; then
+    EV_LANE_WHY="its lane's checkout is on another volume, which is not walked to tell whether the lane is idle"
+    return 0
+  fi
   if [ -n "$EV_CHECKOUT" ]; then
     case "$EV_TOUCHED" in *"|$EV_CHECKOUT|"*) ;; *) idle_lane "$EV_CHECKOUT" "$_m" || return 0 ;; esac
   fi
@@ -1511,7 +1520,7 @@ ev_line() {
   fi
   if [ "$_idle" -gt 0 ] && { [ "$EV_CLASS" = lane ] || [ "$EV_CLASS" = fleet ]; } && [ "$EV_CHECKOUT" != "$EV_MAIN" ]; then
     if ev_lane_active "$_idle"; then
-      ev_skip "$_path" "its lane changed within $_idle min"
+      ev_skip "$_path" "$EV_LANE_WHY"
       return 0
     fi
   fi
@@ -1685,6 +1694,13 @@ case "$MODE" in
 report)
   printf '%-46s %8s %8s %8s  %s\n' CHECKOUT TOTAL TARGETS INCR BRANCH
   worktrees | while IFS= read -r w; do
+    if on_other_volume "$w"; then
+      # `du` over a worktree on a slow external disk is minutes per lane, for a size that is not on the
+      # volume the build writes to. `git rev-parse` reads only the lane's HEAD.
+      printf '%-46s %8s %8s %8s  %s  (other volume, not sized)\n' "$(basename "$w")" - - - \
+             "$(git -C "$w" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+      continue
+    fi
     printf '%-46s %8s %8s %8s  %s\n' "$(basename "$w")" \
            "$(fmt_kb "$(checkout_kb "$w")")" \
            "$(fmt_kb "$(lane_trees "$w" | sum_kb)")" \
