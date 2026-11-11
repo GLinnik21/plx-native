@@ -1441,6 +1441,21 @@ pub enum DetailRefreshPhase {
     Requested,
 }
 
+/// Explicit offline screen-host capture; the production machine has no registry fallback.
+#[cfg(test)]
+pub(crate) fn run_person_fixture(store: &mut plx_data::stores::person::PersonStore,
+    cmd: plx_data::stores::person::PersonCmd) -> bool {
+    let mut keys = plx_plex::plex::ClientKeys::default();
+    keys.refill_roster(plx_plex::plex::current_server(), plx_plex::plex::server_roster_gen(),
+        plx_plex::plex::server_facts_gen(), plx_plex::plex::server_ids(),
+        plx_plex::plex::client_for, plx_plex::plex::server_facts, plx_plex::plex::server_probe_result);
+    let bio = plx_base::devtrig::read("personbio");
+    let input = plx_data::person::PersonInput { keys: &keys, session: None, visible_generation: 0,
+                profile_scope: 0, owner_epoch: 0, profile_generation: 0, tenure: 0, profile_key: "",
+        controlled: false, profile_refused: false, credits_refused: false, dev_bio: bio.as_deref(), dev_credits: None };
+    store.run_with_input(cmd, &input)
+}
+
 /// The application's messages (spec §3.1).
 pub enum AppMsg {
     AutoSkipResolved { id: plx_appkit::skip_policy::OfferId, outcome: plx_appkit::skip_policy::OfferOutcome },
@@ -1453,6 +1468,8 @@ pub enum AppMsg {
     SelectionReply { correlation: u32, accepted: bool, flow_epoch: u64 },
     BackReply { correlation: u32, resumed: bool },
     Store(StoreCmd),
+    /// Person commands retain their originating body through deferred delivery and teardown.
+    PersonCommand { from: MachineId, command: plx_data::stores::person::PersonCmd },
     StoreWork(StoreWork),
     HubsResult(plx_data::stores::hubs::HubsResult),
     Home(HomeCmd),

@@ -461,6 +461,18 @@ impl SeatWatch {
 }
 
 /// What the bridge lends the dispatcher, and what it collects for the loop.
+/// An accepted Open stays owned here until one coherent input publication can deliver it.
+struct PendingPersonOpen {
+    command: plx_data::stores::person::PersonCmd,
+    sender: Option<MachineId>,
+    scope: u32,
+    owner_epoch: u64,
+    profile: std::sync::Arc<plx_plex::plex::session::CurrentProfile>,
+    controlled: bool,
+    tenure: u64,
+    session: Option<std::sync::Arc<plx_plex::plex::session::Session>>,
+}
+/// Retained Person-only host facts. No registry or dev provider is callable by the data step.
 #[derive(Default)]
 struct PersonCapture {
     guid: String,
@@ -600,6 +612,10 @@ pub(crate) struct Bridge {
     client_keys: plx_plex::plex::ClientKeys,
     store_session: StoreSessionCapture,
     person_capture: PersonCapture,
+    pending_person_open: Option<PendingPersonOpen>,
+    person_owner: Option<MachineId>,
+    /// Host-chosen capture boundary; rejection must leave Open owed to this owner.
+    person_session_capture: fn(&mut Bridge) -> bool,
     watchlist_capture: plx_data::stores::watchlist_job::SnapshotCache,
     clock_facts: std::sync::Arc<plx_plex::plex::ClockFacts>,
     clock_scratch: plx_plex::plex::ClockFacts,
@@ -898,6 +914,9 @@ impl Bridge {
             client_keys: Default::default(),
             store_session: Default::default(),
             person_capture: Default::default(),
+            pending_person_open: None,
+            person_owner: None,
+            person_session_capture: Self::capture_store_session_live,
             watchlist_capture: Default::default(),
             clock_facts: Default::default(),
             clock_scratch: Default::default(),
@@ -1861,42 +1880,92 @@ impl Bridge {
         outcome
     }
 
-pub(crate) fn person_run(&mut self, cmd: plx_data::stores::person::PersonCmd) -> bool {
-        if let plx_data::stores::person::PersonCmd::Open { guid, .. } = &cmd {
-            if !self.capture_store_session() { return false; }
-            super::adapters::stores::refill_client_keys(&mut self.client_keys);
-            self.person_capture.refresh(guid, self.store_session.controlled, true);
-            let owner = self.session.read().0;
-            let input = self.person_capture.input(&self.client_keys, &self.store_session, owner.scope.0, owner.flow_epoch);
-            self.stores.person_run(cmd, &input)
-        } else {
-            let _step = plx_base::step::StepScope::enter();
-            self.stores.person.run(cmd)
+    pub(crate) fn person_run(&mut self, cmd: plx_data::stores::person::PersonCmd) -> bool {
+        self.person_run_from(None, cmd)
+    }
+    fn retain_person_open(&mut self, sender: Option<MachineId>, command: plx_data::stores::person::PersonCmd) {
+        use plx_plex::plex::session;
+        let controlled = !self.live_screen_inputs || plx_data::stores::tape::active();
+        let owner = self.session.read().0;
+        self.pending_person_open = Some(PendingPersonOpen {
+            command, sender, scope: owner.scope.0, owner_epoch: owner.flow_epoch, controlled,
+            profile: if controlled { self.screen_inputs.profile.clone() } else { session::current_snapshot() },
+            tenure: if controlled { 0 } else { session::tenure() },
+            session: controlled.then(|| self.screen_inputs.session.clone()),
+        });
+    }
+
+    fn deliver_person_open(&mut self) -> bool {
+        let Some(pending) = self.pending_person_open.take() else { return false };
+        let owner = self.session.read().0;
+        let capture = &self.store_session;
+        let profile_key = pending.profile.user.as_ref().map_or("", |user| user.uuid.as_str());
+        if pending.scope != owner.scope.0 || pending.owner_epoch != owner.flow_epoch
+            || pending.controlled != capture.controlled
+            || pending.profile.generation != capture.profile_generation || profile_key != capture.profile_key
+            || (!pending.controlled && pending.tenure != capture.tenure)
+            || pending.session.as_ref().is_some_and(|session|
+                session.client_id != capture.observed.client_id || session.account_token != capture.observed.account_token) {
+            return false;
+        }
+        let plx_data::stores::person::PersonCmd::Open { guid, .. } = &pending.command else { return false };
+        self.person_capture.refresh(guid, capture.controlled, true);
+        let input = self.person_capture.input(&self.client_keys, capture, owner.scope.0, owner.flow_epoch);
+        self.person_owner = pending.sender;
+        self.stores.person_run(pending.command, &input)
+    }
+
+    fn person_run_from(&mut self, sender: Option<MachineId>, cmd: plx_data::stores::person::PersonCmd) -> bool {
+        use plx_data::stores::person::PersonCmd;
+        match cmd {
+            command @ PersonCmd::Open { .. } => {
+                // Acknowledgment transfers delivery responsibility to this retained, latest-wins slot.
+                self.retain_person_open(sender, command);
+                if !self.capture_store_session() { return false; }
+                super::adapters::stores::refill_client_keys(&mut self.client_keys);
+                self.deliver_person_open()
+            }
+            command => {
+                if matches!(&command, PersonCmd::Close | PersonCmd::Reset) {
+                    let reset = matches!(&command, PersonCmd::Reset);
+                    if reset || sender.is_none() || self.pending_person_open.as_ref().is_some_and(|pending| pending.sender == sender) {
+                        self.pending_person_open = None;
+                    }
+                    // A retired body may tear down after its replacement has claimed this slot.
+                    if !reset && sender.is_some() && self.person_owner.is_some() && sender != self.person_owner {
+                        return false;
+                    }
+                    self.person_owner = None;
+                }
+                let _step = plx_base::step::StepScope::enter();
+                self.stores.person.run(command)
+            }
         }
     }
 
     /// One frame's Person pump: refill the keys, step, and start the requests the step emitted, all
     /// in this call, so the tape's admissions are written where the page asked for them, before
     /// the next store's (`collection_pump`, then the detail reconciliation) record theirs.
-pub(crate) fn person_pump(&mut self) -> bool {
+    pub(crate) fn person_pump(&mut self) -> bool {
         if !self.capture_store_session() { return false; }
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
+        let before = self.stores.person.gen();
+        let opened = self.deliver_person_open();
         let person_guid = self.stores.person_view().current().map_or("", |p| p.guid.as_str());
         self.person_capture.refresh(person_guid, self.store_session.controlled, false);
         let capture = &self.store_session;
         let owner = self.session.read().0;
         let person_input = self.person_capture.input(&self.client_keys, capture, owner.scope.0, owner.flow_epoch);
-        let before = self.stores.person.gen();
         let changed = self.stores.person_pump(&person_input);
         self.start_store_jobs_of(StoreId::Person);
-        changed || self.stores.person.gen() != before
+        opened || changed || self.stores.person.gen() != before
     }
     fn capture_search_publication(&mut self) -> plx_data::search::view::SearchSnapshot {
         self.capture_store_session();
         self.stores.search_snapshot(self.directory.view(), &self.store_session.household,
             &self.store_session.search_input(&self.client_keys))
     }
-    fn capture_store_session(&mut self) -> bool {
+    fn capture_store_session_live(&mut self) -> bool {
         use plx_plex::plex::session;
         let tape_active = plx_data::stores::tape::active();
         let controlled = !self.live_screen_inputs || tape_active;
@@ -1926,6 +1995,10 @@ pub(crate) fn person_pump(&mut self) -> bool {
         capture.controlled = controlled;
         capture.tape_active = tape_active;
         true
+    }
+
+    fn capture_store_session(&mut self) -> bool {
+        (self.person_session_capture)(self)
     }
 
     pub(crate) fn person_view(&self) -> plx_data::person::PersonView<'_> {
@@ -2746,6 +2819,11 @@ impl Bridge {
     }
 
     fn deliver_inner(&mut self, to: MachineId, msg: &AppMsg, parts: &CxParts<u32>, fx: &mut Effects<'_, AppHost>) -> Handled {
+        if let AppMsg::PersonCommand { from, command } = msg {
+            if to != MachineId::Store(StoreId::Person.ord()) { return Handled::No; }
+            self.person_run_from(Some(*from), command.clone());
+            return Handled::Yes;
+        }
         if let AppMsg::Consent(command) = msg {
             if to != MachineId::Consent { return Handled::No; }
             match command {
@@ -3123,6 +3201,8 @@ impl Bridge {
                 out.push(Fx::Deliver(from, Delivery::Screen(ScreenEvent::App(AppMsg::PlaybackTrace(status)))));
             }
             AppFx::Huds(command) => out.push(Fx::Deliver(MachineId::Huds, Delivery::Machine(AppMsg::Huds(command)))),
+            AppFx::Store(StoreId::Person, StoreCmd::Person(command)) => out.push(Fx::Deliver(
+                MachineId::Store(StoreId::Person.ord()), Delivery::Machine(AppMsg::PersonCommand { from, command }))),
             AppFx::Store(id, cmd) => out.push(Fx::Deliver(MachineId::Store(id.ord()), Delivery::Machine(AppMsg::Store(cmd)))),
             AppFx::StoreWork(work) => out.push(Fx::Deliver(
                 MachineId::Store(work.store().ord()), Delivery::Machine(AppMsg::StoreWork(work)))),

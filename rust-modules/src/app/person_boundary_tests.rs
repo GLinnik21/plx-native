@@ -78,3 +78,229 @@ fn person_capture_carries_session_machine_scope_epoch_and_retained_profile_tenur
     assert_eq!(input.keys as *const ClientKeys, &keys as *const ClientKeys);
     assert_eq!(ServerId::UNSET, keys.current());
 }
+
+#[test]
+fn mounted_person_recovers_from_rejected_capture_without_enter_or_uncover() {
+    let _serial = plx_base::testlock::serial();
+    let _session = session::TempSession::new("person-mounted-capture-retry");
+    let mut bridge = Bridge::for_test(|| 0);
+    bridge.person_session_capture = |_| false;
+    let mut dispatcher = Dispatcher::<AppHost>::new();
+    show_page(&mut dispatcher, super::test_support::person_arg("pending-actor"));
+    frame(&mut dispatcher, &mut bridge, super::test_support::tick(0), vec![]);
+    let entry = dispatcher.nav.top_page().unwrap().id;
+    assert!(bridge.person_view().current().is_none(), "incoherent input cannot Open");
+    assert!(!bridge.stores.person.has_jobs(), "no claim before coherent input");
+    bridge.person_session_capture = Bridge::capture_store_session_live;
+    assert!(bridge.person_pump(), "the owner must deliver its deferred Open on recovery");
+    assert!(bridge.pending_person_open.is_none(), "successful delivery consumes the obligation");
+    let notice = bridge.stores.person.gen();
+    assert_eq!(bridge.person_view().current().unwrap().key, "pending-actor");
+    for n in 1..4 {
+        frame(&mut dispatcher, &mut bridge, super::test_support::tick(n), vec![]);
+        bridge.person_pump();
+        assert_eq!(dispatcher.nav.top_page().unwrap().id, entry, "the page stayed mounted");
+        assert_eq!(bridge.stores.person.gen(), notice, "recovery delivers Open exactly once");
+    }
+    bridge.assert_no_store_jobs_left_for_test();
+}
+
+fn deferred_open(key: &str) -> plx_data::stores::person::PersonCmd {
+    plx_data::stores::person::PersonCmd::Open {
+        sid: ServerId::UNSET, key: key.into(), guid: String::new(),
+        name: key.into(), thumb: String::new(),
+    }
+}
+
+#[test]
+fn close_or_reset_before_capture_recovery_cancels_the_owed_open() {
+    let _serial = plx_base::testlock::serial();
+    let _session = session::TempSession::new("person-deferred-close");
+    for cancel in [plx_data::stores::person::PersonCmd::Close, plx_data::stores::person::PersonCmd::Reset] {
+        let mut bridge = Bridge::for_test(|| 0);
+        bridge.person_session_capture = |_| false;
+        assert!(!bridge.person_run(deferred_open("cancelled")));
+        assert!(bridge.pending_person_open.is_some(), "the bridge accepted responsibility for delivery");
+        bridge.person_run(cancel);
+        assert!(bridge.pending_person_open.is_none());
+        let notice = bridge.stores.person.gen();
+        bridge.person_session_capture = Bridge::capture_store_session_live;
+        bridge.person_pump();
+        assert!(bridge.person_view().current().is_none());
+        assert_eq!(bridge.stores.person.gen(), notice, "a cancelled Open cannot reappear");
+        bridge.assert_no_store_jobs_left_for_test();
+    }
+}
+
+#[test]
+fn replacement_deferred_open_is_latest_wins_and_delivered_once() {
+    let _serial = plx_base::testlock::serial();
+    let _session = session::TempSession::new("person-deferred-replacement");
+    let mut bridge = Bridge::for_test(|| 0);
+    bridge.person_session_capture = |_| false;
+    bridge.person_run(deferred_open("old"));
+    bridge.person_run(deferred_open("latest"));
+    assert!(bridge.pending_person_open.is_some());
+    assert!(bridge.person_view().current().is_none());
+    assert_eq!(bridge.stores.person.gen(), 0, "no speculative Open or claim");
+    bridge.person_session_capture = Bridge::capture_store_session_live;
+    assert!(bridge.person_pump());
+    assert_eq!(bridge.person_view().current().unwrap().key, "latest");
+    assert!(bridge.pending_person_open.is_none(), "successful delivery consumes the obligation");
+    let notice = bridge.stores.person.gen();
+    for _ in 0..3 { bridge.person_pump(); }
+    assert_eq!(bridge.stores.person.gen(), notice);
+    bridge.assert_no_store_jobs_left_for_test();
+}
+
+#[test]
+fn profile_edge_before_capture_recovery_cannot_reopen_the_old_person() {
+    let _serial = plx_base::testlock::serial();
+    let _session = session::TempSession::new("person-deferred-profile-edge");
+    let mut bridge = Bridge::for_test(|| 0);
+    bridge.live_screen_inputs = false;
+    bridge.person_session_capture = |_| false;
+    bridge.person_run(deferred_open("old-profile"));
+    assert!(bridge.pending_person_open.is_some());
+    bridge.screen_inputs.profile = std::sync::Arc::new(session::CurrentProfile {
+        generation: bridge.screen_inputs.profile.generation.wrapping_add(1), user: None, stamp: String::new(),
+    });
+    bridge.person_session_capture = Bridge::capture_store_session_live;
+    bridge.person_pump();
+    assert!(bridge.person_view().current().is_none());
+    assert_eq!(bridge.stores.person.gen(), 0);
+    bridge.assert_no_store_jobs_left_for_test();
+}
+
+#[test]
+fn leaving_an_empty_mounted_person_cancels_its_deferred_open() {
+    let _serial = plx_base::testlock::serial();
+    let _session = session::TempSession::new("person-deferred-navigation");
+    let mut bridge = Bridge::for_test(|| 0);
+    bridge.person_session_capture = |_| false;
+    let mut dispatcher = Dispatcher::<AppHost>::new();
+    show_page(&mut dispatcher, super::test_support::person_arg("left-actor"));
+    frame(&mut dispatcher, &mut bridge, super::test_support::tick(0), vec![]);
+    let entry = dispatcher.nav.top_page().unwrap().id;
+    assert!(bridge.pending_person_open.is_some());
+    nav_root(&mut dispatcher, super::test_support::detail_arg("replacement-page"));
+    for n in 1..40 { frame(&mut dispatcher, &mut bridge, super::test_support::tick(n), vec![]); }
+    assert_ne!(dispatcher.nav.top_page().unwrap().id, entry);
+    assert!(bridge.pending_person_open.is_none(), "teardown cancels even before recovery");
+    assert!(bridge.person_view().current().is_none());
+    bridge.person_session_capture = Bridge::capture_store_session_live;
+    bridge.person_pump();
+    assert!(bridge.person_view().current().is_none(), "navigation cannot resurrect the retired page");
+    bridge.assert_no_store_jobs_left_for_test();
+}
+
+#[test]
+fn session_owner_edge_before_capture_recovery_cannot_reopen_the_old_person() {
+    let _serial = plx_base::testlock::serial();
+    let _session = session::TempSession::new("person-deferred-owner-edge");
+    let mut bridge = Bridge::for_test(|| 0);
+    bridge.person_session_capture = |_| false;
+    bridge.person_run(deferred_open("retired-owner"));
+    assert!(bridge.pending_person_open.is_some());
+    let before = { let owner = bridge.session.read().0; (owner.scope.0, owner.flow_epoch) };
+    let mut dispatcher = Dispatcher::<AppHost>::new();
+    execute_session_command(&mut dispatcher, plx_session::auth::SessionCmd::SignOut);
+    frame(&mut dispatcher, &mut bridge, super::test_support::tick(0), vec![]);
+    let after = { let owner = bridge.session.read().0; (owner.scope.0, owner.flow_epoch) };
+    assert_ne!(before, after, "exercise the real session owner cancellation edge");
+    bridge.person_session_capture = Bridge::capture_store_session_live;
+    bridge.person_pump();
+    assert!(bridge.person_view().current().is_none());
+    bridge.assert_no_store_jobs_left_for_test();
+}
+
+#[test]
+fn controlled_account_edge_before_recovery_cannot_reopen_the_old_person() {
+    let _serial = plx_base::testlock::serial();
+    let _session = session::TempSession::new("person-deferred-controlled-account");
+    let mut bridge = Bridge::for_test(|| 0);
+    bridge.live_screen_inputs = false;
+    bridge.screen_inputs.session = std::sync::Arc::new(session::Session {
+        client_id: "account-a".into(), account_token: "token-a".into(), ..Default::default()
+    });
+    bridge.person_session_capture = |_| false;
+    bridge.person_run(deferred_open("old-account"));
+    assert!(bridge.pending_person_open.is_some());
+    bridge.screen_inputs.session = std::sync::Arc::new(session::Session {
+        client_id: "account-b".into(), account_token: "token-b".into(), ..Default::default()
+    });
+    bridge.person_session_capture = Bridge::capture_store_session_live;
+    bridge.person_pump();
+    assert!(bridge.pending_person_open.is_none());
+    assert!(bridge.person_view().current().is_none());
+    assert_eq!(bridge.stores.person.gen(), 0);
+    bridge.assert_no_store_jobs_left_for_test();
+}
+
+#[test]
+fn live_tenure_revocation_before_recovery_cannot_reopen_the_old_person() {
+    let _serial = plx_base::testlock::serial();
+    let _session = session::TempSession::new("person-deferred-live-tenure");
+    let mut bridge = Bridge::for_test(|| 0);
+    bridge.live_screen_inputs = true;
+    bridge.person_session_capture = |_| false;
+    bridge.person_run(deferred_open("revoked-account"));
+    assert!(bridge.pending_person_open.is_some());
+    let tenure = session::tenure();
+    session::revoke_cached_session();
+    assert_ne!(session::tenure(), tenure);
+    bridge.person_session_capture = Bridge::capture_store_session_live;
+    bridge.person_pump();
+    assert!(bridge.pending_person_open.is_none());
+    assert!(bridge.person_view().current().is_none());
+    assert_eq!(bridge.stores.person.gen(), 0);
+    bridge.assert_no_store_jobs_left_for_test();
+}
+
+#[test]
+fn retired_sender_cannot_cancel_or_close_its_replacement() {
+    let _serial = plx_base::testlock::serial();
+    let _session = session::TempSession::new("person-deferred-sender-replacement");
+    let mut bridge = Bridge::for_test(|| 0);
+    let old = Some(MachineId::Instance(InstanceId(901)));
+    let latest = Some(MachineId::Instance(InstanceId(902)));
+    bridge.person_session_capture = |_| false;
+    bridge.person_run_from(old, deferred_open("old"));
+    bridge.person_run_from(latest, deferred_open("latest"));
+    bridge.person_run_from(old, plx_data::stores::person::PersonCmd::Close);
+    assert!(bridge.pending_person_open.is_some());
+    bridge.person_session_capture = Bridge::capture_store_session_live;
+    assert!(bridge.person_pump());
+    assert_eq!(bridge.person_view().current().unwrap().key, "latest");
+    let notice = bridge.stores.person.gen();
+    assert!(!bridge.person_run_from(old, plx_data::stores::person::PersonCmd::Close));
+    assert_eq!(bridge.stores.person.gen(), notice, "retired Close cannot mutate its replacement");
+    for _ in 0..3 { bridge.person_pump(); }
+    assert_eq!(bridge.stores.person.gen(), notice, "only one successful Open");
+    bridge.person_run_from(latest, plx_data::stores::person::PersonCmd::Close);
+    assert!(bridge.person_view().current().is_none());
+    bridge.assert_no_store_jobs_left_for_test();
+}
+
+#[test]
+fn mounted_person_replacement_survives_old_empty_page_teardown() {
+    let _serial = plx_base::testlock::serial();
+    let _session = session::TempSession::new("person-mounted-deferred-replacement");
+    let mut bridge = Bridge::for_test(|| 0);
+    bridge.person_session_capture = |_| false;
+    let mut dispatcher = Dispatcher::<AppHost>::new();
+    show_page(&mut dispatcher, super::test_support::person_arg("old-mounted"));
+    frame(&mut dispatcher, &mut bridge, super::test_support::tick(0), vec![]);
+    let old = dispatcher.nav.top_page().unwrap().id;
+    nav_root(&mut dispatcher, super::test_support::person_arg("latest-mounted"));
+    for n in 1..40 { frame(&mut dispatcher, &mut bridge, super::test_support::tick(n), vec![]); }
+    assert_ne!(dispatcher.nav.top_page().unwrap().id, old);
+    assert!(bridge.pending_person_open.is_some());
+    bridge.person_session_capture = Bridge::capture_store_session_live;
+    assert!(bridge.person_pump());
+    assert_eq!(bridge.person_view().current().unwrap().key, "latest-mounted");
+    let notice = bridge.stores.person.gen();
+    for n in 40..44 { frame(&mut dispatcher, &mut bridge, super::test_support::tick(n), vec![]); bridge.person_pump(); }
+    assert_eq!(bridge.stores.person.gen(), notice);
+    bridge.assert_no_store_jobs_left_for_test();
+}

@@ -444,21 +444,6 @@ struct Page {
 }
 
 /// The person / actor page (restructure spec §13, phase 7).
-/// Explicit offline screen-host capture; the production machine has no registry fallback.
-#[cfg(test)]
-pub(crate) fn run_person_fixture(store: &mut plx_data::stores::person::PersonStore,
-    cmd: plx_data::stores::person::PersonCmd) -> bool {
-    let mut keys = plx_plex::plex::ClientKeys::default();
-    keys.refill_roster(plx_plex::plex::current_server(), plx_plex::plex::server_roster_gen(),
-        plx_plex::plex::server_facts_gen(), plx_plex::plex::server_ids(),
-        plx_plex::plex::client_for, plx_plex::plex::server_facts, plx_plex::plex::server_probe_result);
-    let bio = plx_base::devtrig::read("personbio");
-    let input = plx_data::person::PersonInput { keys: &keys, session: None, visible_generation: 0,
-                profile_scope: 0, owner_epoch: 0, profile_generation: 0, tenure: 0, profile_key: "",
-        controlled: false, profile_refused: false, credits_refused: false, dev_bio: bio.as_deref(), dev_credits: None };
-    store.run_with_input(cmd, &input)
-}
-
 pub struct PersonScreen {
     page: Page,
     /// The page's layout, one scroll, groups, reconcile and the shelves (`ui::cards::Stack`).
@@ -1356,9 +1341,10 @@ impl<H: ContentLike + PersonLike> Machine<H> for PersonScreen {
                 Handled::Yes
             }
             ScreenEvent::WillLeave(Leave::ForGood) | ScreenEvent::Unmount => {
-                // `&& !self.teardown_closed`: see the field. One teardown, one `Close`, even
+                // Cancel this body's Open even while the store is empty. The bridge keeps its
+                // sender address, so a retired page cannot close a replacement. One `Close`, even
                 // though §3.4 delivers this arm twice and the queued command has not run yet.
-                if self.page.person(cx).is_some() && !self.teardown_closed {
+                if !self.teardown_closed {
                     self.teardown_closed = true;
                     fx.push(plx_machine::machine::Fx::App(AppFx::Store(
                         plx_data::stores::StoreId::Person,
@@ -1516,7 +1502,7 @@ mod tests {
     /// can force `credited` back to `false` on a live `Person` from outside `plx_data::person`).
     fn seed(movies: usize, shows: usize) -> (plx_data::stores::person::PersonStore, PersonScreen) {
         let mut store = plx_data::stores::person::PersonStore::default();
-        crate::person::run_person_fixture(&mut store, PersonCmd::Open {
+        crate::registry::run_person_fixture(&mut store, PersonCmd::Open {
             sid: ServerId::UNSET,
             key: "161".into(),
             guid: "5d77682aeb5d26001f1de4b0".into(),
@@ -1677,7 +1663,7 @@ mod tests {
     fn the_header_skeleton_spinner_reports_motion_while_facts_are_pending() {
         let _serial = plx_base::testlock::serial();
         let mut store = plx_data::stores::person::PersonStore::default();
-        crate::person::run_person_fixture(&mut store, PersonCmd::Open {
+        crate::registry::run_person_fixture(&mut store, PersonCmd::Open {
             sid: ServerId::UNSET, key: "161".into(),
             guid: "5d77682aeb5d26001f1de4b0".into(), name: "Idina Menzel".into(),
             thumb: String::new(),
@@ -1738,7 +1724,7 @@ mod tests {
                     && name == "Person Name" && thumb == "thumb"));
 
         let mut store = plx_data::stores::person::PersonStore::default();
-        crate::person::run_person_fixture(&mut store, PersonCmd::Open { sid: ServerId::from_raw(2), key: "161".into(),
+        crate::registry::run_person_fixture(&mut store, PersonCmd::Open { sid: ServerId::from_raw(2), key: "161".into(),
             guid: "person-guid".into(), name: "Person Name".into(), thumb: "thumb".into() });
         out.clear();
         {
@@ -1767,7 +1753,7 @@ mod tests {
             "Person Name".into(), "thumb".into());
         let measure = FixtureMeasure;
         let mut store = plx_data::stores::person::PersonStore::default();
-        crate::person::run_person_fixture(&mut store, PersonCmd::Open { sid: ServerId::from_raw(2), key: "161".into(),
+        crate::registry::run_person_fixture(&mut store, PersonCmd::Open { sid: ServerId::from_raw(2), key: "161".into(),
             guid: "person-guid".into(), name: "Person Name".into(), thumb: "thumb".into() });
         let mut present = plx_machine::present::Present::new();
         let mut out = Vec::new();
@@ -1798,7 +1784,7 @@ mod tests {
             "Person Name".into(), "thumb".into());
         let measure = FixtureMeasure;
         let mut store = plx_data::stores::person::PersonStore::default();
-        crate::person::run_person_fixture(&mut store, PersonCmd::Open { sid: ServerId::from_raw(2), key: "161".into(),
+        crate::registry::run_person_fixture(&mut store, PersonCmd::Open { sid: ServerId::from_raw(2), key: "161".into(),
             guid: "person-guid".into(), name: "Person Name".into(), thumb: "thumb".into() });
         let mut present = plx_machine::present::Present::new();
         let mut out = Vec::new();
@@ -1813,6 +1799,31 @@ mod tests {
             plx_machine::machine::Fx::App(AppFx::Store(plx_data::stores::StoreId::Person,
                 plx_data::stores::StoreCmd::Person(PersonCmd::Close))))).count();
         assert_eq!(closes, 1, "a bare Unmount must close the Person store exactly once");
+    }
+
+    #[test]
+    fn empty_person_teardown_cancels_an_undelivered_open_exactly_once() {
+        for bare_unmount in [false, true] {
+            let mut screen = PersonScreen::new(EntryId(0), ServerId::UNSET, "pending".into(),
+                String::new(), "Pending".into(), String::new());
+            let measure = FixtureMeasure;
+            let context = cx(&measure, plx_data::person::PersonView::default());
+            let mut present = plx_machine::present::Present::new();
+            let mut out = Vec::new();
+            {
+                let mut fx = Effects::new(&mut out, plx_machine::machine::MachineId::Instance(
+                    plx_machine::machine::InstanceId(0)), &mut present);
+                if !bare_unmount {
+                    Machine::<PersonHost>::step(&mut screen, &ScreenEvent::WillLeave(Leave::ForGood), &context, &mut fx);
+                }
+                Machine::<PersonHost>::step(&mut screen, &ScreenEvent::Unmount, &context, &mut fx);
+                Machine::<PersonHost>::step(&mut screen, &ScreenEvent::Unmount, &context, &mut fx);
+            }
+            let closes = out.iter().filter(|s| matches!(&s.fx,
+                plx_machine::machine::Fx::App(AppFx::Store(plx_data::stores::StoreId::Person,
+                    plx_data::stores::StoreCmd::Person(PersonCmd::Close))))).count();
+            assert_eq!(closes, 1, "an empty store may still owe this page an Open");
+        }
     }
 
     /// **The mount-on-entry-pill rule's PENDING half** (module doc, point 2 of `ui/person.rs`'s
@@ -2392,7 +2403,7 @@ mod tests {
         let share =
             plx_plex::plex::register_for_test("person-pending-share", "127.0.0.1", 2, "b", "cid");
         let mut store = plx_data::stores::person::PersonStore::default();
-        crate::person::run_person_fixture(&mut store, PersonCmd::Open { sid: origin, key: "161".into(),
+        crate::registry::run_person_fixture(&mut store, PersonCmd::Open { sid: origin, key: "161".into(),
             guid: "5d77682aeb5d26001f1de4b0".into(), name: "Idina Menzel".into(),
             thumb: String::new() });
         let mut original = PersonScreen::new(
@@ -2441,7 +2452,7 @@ mod tests {
             &cx_at(measure, store.view(), old_focus),
             &mut fx,
         );
-        crate::person::run_person_fixture(&mut store, PersonCmd::Open { sid: origin, key: "161".into(),
+        crate::registry::run_person_fixture(&mut store, PersonCmd::Open { sid: origin, key: "161".into(),
             guid: "5d77682aeb5d26001f1de4b0".into(), name: "Idina Menzel".into(),
             thumb: String::new() });
         store.install_source_for_test(
@@ -2587,7 +2598,7 @@ mod tests {
         let share =
             plx_plex::plex::register_for_test("person-return-share", "127.0.0.1", 2, "b", "cid");
         let mut store = plx_data::stores::person::PersonStore::default();
-        crate::person::run_person_fixture(&mut store, PersonCmd::Open { sid: origin, key: "161".into(),
+        crate::registry::run_person_fixture(&mut store, PersonCmd::Open { sid: origin, key: "161".into(),
             guid: "5d77682aeb5d26001f1de4b0".into(), name: "Idina Menzel".into(),
             thumb: String::new() });
         let mut first = PersonScreen::new(
@@ -2624,7 +2635,7 @@ mod tests {
             "Other Person".to_string(),
             String::new(),
         );
-        crate::person::run_person_fixture(&mut store, PersonCmd::Open { sid: origin, key: "other".into(), guid: "other-guid".into(),
+        crate::registry::run_person_fixture(&mut store, PersonCmd::Open { sid: origin, key: "other".into(), guid: "other-guid".into(),
             name: "Other Person".into(), thumb: String::new() });
         assert!(first.page.person(&cx(&FixtureMeasure, store.view())).is_none(), "Person B displaced Person A");
 
@@ -2663,7 +2674,7 @@ mod tests {
             &cx_at(&measure, store.view(), old_focus),
             &mut fx,
         );
-        crate::person::run_person_fixture(&mut store, PersonCmd::Open { sid: origin, key: "161".into(),
+        crate::registry::run_person_fixture(&mut store, PersonCmd::Open { sid: origin, key: "161".into(),
             guid: "5d77682aeb5d26001f1de4b0".into(), name: "Idina Menzel".into(),
             thumb: String::new() });
         assert!(first.page.person(&cx(&FixtureMeasure, store.view())).is_some(), "return reclaims Person A's store");
@@ -2736,7 +2747,7 @@ mod tests {
         plx_plex::plex::reset_servers_for_test();
         let sid = plx_plex::plex::register_for_test("person-cold-return", "127.0.0.1", 1, "a", "cid");
         let mut store = plx_data::stores::person::PersonStore::default();
-        crate::person::run_person_fixture(&mut store, PersonCmd::Open { sid, key: "161".into(),
+        crate::registry::run_person_fixture(&mut store, PersonCmd::Open { sid, key: "161".into(),
             guid: "5d77682aeb5d26001f1de4b0".into(), name: "Idina Menzel".into(),
             thumb: String::new() });
         let mut original = PersonScreen::new(
@@ -2791,7 +2802,7 @@ mod tests {
             &cx_at(&measure, store.view(), old_focus),
             &mut fx,
         );
-        crate::person::run_person_fixture(&mut store, PersonCmd::Open { sid, key: "161".into(),
+        crate::registry::run_person_fixture(&mut store, PersonCmd::Open { sid, key: "161".into(),
             guid: "5d77682aeb5d26001f1de4b0".into(), name: "Idina Menzel".into(),
             thumb: String::new() });
         assert!(remounted.page.person(&cx(&FixtureMeasure, store.view())).unwrap().shelf(0).is_empty());
@@ -2839,7 +2850,7 @@ mod tests {
             "Other Person".to_string(),
             String::new(),
         );
-        crate::person::run_person_fixture(&mut store, PersonCmd::Open { sid: ServerId::UNSET, key: "other".into(),
+        crate::registry::run_person_fixture(&mut store, PersonCmd::Open { sid: ServerId::UNSET, key: "other".into(),
             guid: "other-guid".into(), name: "Other Person".into(), thumb: String::new() });
         assert!(first.page.person(&cx(&FixtureMeasure, store.view())).is_none());
 
@@ -2857,7 +2868,7 @@ mod tests {
             &cx(&measure, store.view()),
             &mut fx,
         );
-        crate::person::run_person_fixture(&mut store, PersonCmd::Open { sid: ServerId::UNSET, key: "161".into(),
+        crate::registry::run_person_fixture(&mut store, PersonCmd::Open { sid: ServerId::UNSET, key: "161".into(),
             guid: "5d77682aeb5d26001f1de4b0".into(), name: "Idina Menzel".into(),
             thumb: String::new() });
         assert!(first.page.person(&cx(&FixtureMeasure, store.view())).is_some());
