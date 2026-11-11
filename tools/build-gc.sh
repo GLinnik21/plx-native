@@ -1814,6 +1814,10 @@ prune_lock() {
 stale_cache_trees() {
   c=${PLX_BUILD_CACHE-$HOME/.cache/plxnative}
   [ -n "$c" ] && [ -d "$c/ffmpeg" ] || return 0
+  # A threshold that is not a number selects nothing, as `find -mtime +abc` (an error, silenced below) did;
+  # `$((abc * 1440))` would read it as 0 and select every key.
+  case "$CACHE_MAX_DAYS" in ''|*[!0-9]*) return 0 ;; esac
+  max_mins=$((CACHE_MAX_DAYS * 1440))
   for d in "$c"/ffmpeg/*; do
     case "$d" in
       *'*'*)   continue ;;
@@ -1837,7 +1841,9 @@ stale_cache_trees() {
     # the mtime it was created with and be collected on day thirty. An entry with no marker at all
     # predates that mechanism, and falls back to the directory.
     stamp="$d/.last-used"; [ -f "$stamp" ] || stamp="$d"
-    if [ -n "$(find "$stamp" -maxdepth 0 -mtime +"$CACHE_MAX_DAYS" 2>/dev/null)" ]; then echo "$d"; fi
+    # MINUTES, NOT `-mtime`: `-mtime +7` counts whole days and truncates the age, so it matches only from
+    # 8 days on, while every message and doc here says "unused for 7 days". `-mmin` is exact (BSD and GNU).
+    if [ -n "$(find "$stamp" -maxdepth 0 -mmin +"$max_mins" 2>/dev/null)" ]; then echo "$d"; fi
   done
 }
 

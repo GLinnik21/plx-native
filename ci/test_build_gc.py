@@ -781,15 +781,17 @@ class BuildGcTests(unittest.TestCase):
         # PLX_CACHE_MAX_DAYS is 30 here: a key of 10 days is --cache's to keep and --auto's to take.
         fresh, recent = self.ffmpeg_key(fixture, "armv7-6.1-fresh", 1), self.ffmpeg_key(fixture, "armv7-6.1-recent", 6)
         week_old, ancient = self.ffmpeg_key(fixture, "armv7-6.1-week-old", 10), self.ffmpeg_key(fixture, "armv7-6.1-ancient", 90)
+        # "unused for 7 days" is exact, not "at least 8 whole days" (`find -mtime +7`): half a day either side.
+        inside, just_over = self.ffmpeg_key(fixture, "armv7-6.1-inside", 6.5), self.ffmpeg_key(fixture, "armv7-6.1-just-over", 7.5)
         tarball = Path(env["PLX_BUILD_CACHE"]) / "ffmpeg" / "ffmpeg-6.1.tar.xz"
         tarball.write_text("source tarball\n")
         self.age(tarball, 90 * 86400)
         result = self.run_auto(fixture, extra_env=self.UNDER_PRESSURE)
         diagnostic = result.stdout + result.stderr
         self.assertEqual(result.returncode, 0, diagnostic)
-        for kept in (fresh, recent):
+        for kept in (fresh, recent, inside):
             self.assertTrue((kept / "payload").exists(), "a key used within the week was aged out: " + diagnostic)
-        for gone in (week_old, ancient, sentinels[2]):
+        for gone in (week_old, ancient, just_over, sentinels[2]):
             self.assertFalse(gone.exists(), "a key unused for over 7 days survived: " + diagnostic)
             self.assertFalse(Path(str(gone) + ".lock").exists(), "its lock was left behind: " + diagnostic)
         self.assertTrue(tarball.exists(), "the source tarball is not a key and was removed: " + diagnostic)
@@ -868,13 +870,25 @@ class BuildGcTests(unittest.TestCase):
         fixture = self.with_planner(self.fixture(0, 0))
         seed = self.cargo_seed(fixture, "target", 40)
         week_old, ancient = self.ffmpeg_key(fixture, "armv7-6.1-week-old", 10), self.ffmpeg_key(fixture, "armv7-6.1-ancient", 40)
+        inside, just_over = self.ffmpeg_key(fixture, "armv7-6.1-inside", 29.5), self.ffmpeg_key(fixture, "armv7-6.1-just-over", 30.5)
         result = self.run_gc(fixture, "--ffmpeg-cache")
         diagnostic = result.stdout + result.stderr
         self.assertEqual(result.returncode, 0, diagnostic)
         self.assertTrue((week_old / "payload").exists(), "kept for 30 days by --cache, so kept here: " + diagnostic)
+        self.assertTrue((inside / "payload").exists(), "a key inside the 30 days was pruned: " + diagnostic)
+        self.assertFalse(just_over.exists(), "a key half a day past the 30 days survived: " + diagnostic)
         self.assertFalse(ancient.exists(), diagnostic)
         self.assertFalse(fixture[2][2].exists(), "the default fixture's 40-day key: " + diagnostic)
         self.assertTrue((seed / "payload").exists(), "--ffmpeg-cache pruned the cargo seed: " + diagnostic)
+
+    def test_a_non_numeric_cache_threshold_selects_no_ffmpeg_key(self):
+        # `-mmin +$((abc * 1440))` would be `+0`, every key; the unparseable threshold has always meant none.
+        fixture = self.fixture(0, 0)
+        fixture[1]["PLX_CACHE_MAX_DAYS"] = "soon"
+        ancient = self.ffmpeg_key(fixture, "armv7-6.1-ancient", 90)
+        result = self.run_gc(fixture, "--ffmpeg-cache")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue((ancient / "payload").exists() and fixture[2][2].exists(), result.stdout + result.stderr)
 
     def auto_lanes(self, lanes=2, age=2 * 3600):
         """Idle lanes with build output (and the planner next to the script), plus an old main checkout."""
