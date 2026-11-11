@@ -176,6 +176,18 @@ fn a_fixed_quality_measures_the_1080p_version_it_resolved() {
     assert!(!requests.iter().any(|l| l.contains("/transcode/universal/start")), "{requests:?}");
 }
 
+#[test]
+#[cfg(feature = "devtriggers")]
+fn a_version_picked_by_hand_is_measured_from_its_own_fetch() {
+    let (plan, _) = resolve_with("rk-4k", FOUR_K_DEFAULT, MDE_DIRECTPLAY, |env| {
+        env.caps = std::sync::Arc::new(full_hd_set());
+        env.quality = Quality::P1080;
+        env.version = Some(plx_plex::plex::MediaId(3086));
+    });
+    assert_eq!(plan.src_measure, (2372, 1920, 800));
+    assert!(plan.url.contains("/library/parts/3134/"), "{}", plan.url);
+}
+
 fn retry_holding(part_id: i64, audio_sid: i64, sub_sid: i64) -> RetryContext {
     RetryContext {
         direct_play_mode: DirectPlayMode::Auto,
