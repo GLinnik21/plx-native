@@ -85,7 +85,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-11T20:13:44Z",
+ "generated": "2026-11-11T21:02:09Z",
  "metrics": [
   {
    "change30_pct": 54.4,
@@ -618,11 +618,6 @@
    "change_pct": 47.6,
    "commits": [
     {
-     "pr": 1322,
-     "sha": "283f536d1",
-     "title": "refactor(data): run notification streams as addressed jobs"
-    },
-    {
      "pr": 1323,
      "sha": "17aa83ea0",
      "title": "Fix autoplay trailer timeline, seeking, and HUD controls"
@@ -666,6 +661,11 @@
      "pr": 1341,
      "sha": "19f66c64f",
      "title": "disk preflight: restore a parked build tree from the cold store"
+    },
+    {
+     "pr": 1335,
+     "sha": "911e52997",
+     "title": "Fix nine issues found on 0.10.0 RC 1: Home hero, Settings, Player HUD, Library restore"
     }
    ],
    "from": 22.4,
@@ -679,11 +679,6 @@
    "change_pct": 30.9,
    "commits": [
     {
-     "pr": 1322,
-     "sha": "283f536d1",
-     "title": "refactor(data): run notification streams as addressed jobs"
-    },
-    {
      "pr": 1323,
      "sha": "17aa83ea0",
      "title": "Fix autoplay trailer timeline, seeking, and HUD controls"
@@ -727,6 +722,11 @@
      "pr": 1341,
      "sha": "19f66c64f",
      "title": "disk preflight: restore a parked build tree from the cold store"
+    },
+    {
+     "pr": 1335,
+     "sha": "911e52997",
+     "title": "Fix nine issues found on 0.10.0 RC 1: Home hero, Settings, Player HUD, Library restore"
     }
    ],
    "from": 48.6,
@@ -740,11 +740,6 @@
    "change_pct": 27.0,
    "commits": [
     {
-     "pr": 1322,
-     "sha": "283f536d1",
-     "title": "refactor(data): run notification streams as addressed jobs"
-    },
-    {
      "pr": 1323,
      "sha": "17aa83ea0",
      "title": "Fix autoplay trailer timeline, seeking, and HUD controls"
@@ -788,6 +783,11 @@
      "pr": 1341,
      "sha": "19f66c64f",
      "title": "disk preflight: restore a parked build tree from the cold store"
+    },
+    {
+     "pr": 1335,
+     "sha": "911e52997",
+     "title": "Fix nine issues found on 0.10.0 RC 1: Home hero, Settings, Player HUD, Library restore"
     }
    ],
    "from": 333,
@@ -801,11 +801,6 @@
    "change_pct": 25.8,
    "commits": [
     {
-     "pr": 1322,
-     "sha": "283f536d1",
-     "title": "refactor(data): run notification streams as addressed jobs"
-    },
-    {
      "pr": 1323,
      "sha": "17aa83ea0",
      "title": "Fix autoplay trailer timeline, seeking, and HUD controls"
@@ -849,6 +844,11 @@
      "pr": 1341,
      "sha": "19f66c64f",
      "title": "disk preflight: restore a parked build tree from the cold store"
+    },
+    {
+     "pr": 1335,
+     "sha": "911e52997",
+     "title": "Fix nine issues found on 0.10.0 RC 1: Home hero, Settings, Player HUD, Library restore"
     }
    ],
    "from": 153.4,
@@ -862,11 +862,6 @@
    "change_pct": 23.5,
    "commits": [
     {
-     "pr": 1322,
-     "sha": "283f536d1",
-     "title": "refactor(data): run notification streams as addressed jobs"
-    },
-    {
      "pr": 1323,
      "sha": "17aa83ea0",
      "title": "Fix autoplay trailer timeline, seeking, and HUD controls"
@@ -910,6 +905,11 @@
      "pr": 1341,
      "sha": "19f66c64f",
      "title": "disk preflight: restore a parked build tree from the cold store"
+    },
+    {
+     "pr": 1335,
+     "sha": "911e52997",
+     "title": "Fix nine issues found on 0.10.0 RC 1: Home hero, Settings, Player HUD, Library restore"
     }
    ],
    "from": 193.5,
