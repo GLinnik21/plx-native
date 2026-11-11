@@ -24,7 +24,7 @@ def git_has_merge_tree():
     out = subprocess.run(["git", "--version"], capture_output=True, text=True).stdout
     m = re.search(r"(\d+)\.(\d+)", out)
     return bool(m) and (int(m.group(1)), int(m.group(2))) >= (2, 38)
-MODES = ("--incremental", "--orphans", "--lanes", "--stale", "--cache", "--worktrees", "--all")
+MODES = ("--incremental", "--orphans", "--lanes", "--stale", "--cache", "--ffmpeg-cache", "--worktrees", "--all")
 
 # HANG GUARD, NOT A SPEED BOUND. Every run of the script below ends at the child's own exit; this is
 # only how long a test waits for a child that never exits before it gives up and fails. The honest cost
@@ -739,7 +739,7 @@ class BuildGcTests(unittest.TestCase):
         # A huge free-space stub against a tiny threshold: every below-threshold stage must be
         # skipped, and only the always-on --orphans stage may fire. sentinels[0] is the repo's own
         # (== main checkout's) incremental cache, sentinels[1] is the orphaned external lane tree,
-        # sentinels[2] is a stale FFmpeg cache entry --auto must never touch (no --cache stage).
+        # sentinels[2] is a stale FFmpeg cache entry: --auto ages those out only under pressure.
         fixture = self.fixture(0, 0)
         result = self.run_auto(fixture, extra_env={
             "PLX_GC_TEST_FREE_KIB": "999999999", "PLX_GC_MIN_FREE_GIB": "1"})
@@ -749,7 +749,132 @@ class BuildGcTests(unittest.TestCase):
         _, _, sentinels, _ = fixture
         self.assertTrue(sentinels[0].exists(), "touched the main checkout above threshold: " + diagnostic)
         self.assertFalse(sentinels[1].exists(), "orphans must run even above threshold: " + diagnostic)
-        self.assertTrue(sentinels[2].exists(), "--auto must never run --cache: " + diagnostic)
+        self.assertTrue(sentinels[2].exists(), "--auto aged out an FFmpeg key above the threshold: " + diagnostic)
+
+    # `--auto` ages out FFmpeg cache keys, and only those, once the disk is below the comfort line: a key
+    # whose `.last-used` is older than $PLX_GC_AUTO_CACHE_DAYS (default 7) goes, under the same per-key
+    # lock and the same preflight `--cache` takes. `--cache` itself (30 days, and the cargo seed) is
+    # unchanged. The default fixture's `synthetic-key` is a 40-day-old key with a dead lock.
+    def ffmpeg_key(self, fixture, name, days):
+        key = Path(fixture[1]["PLX_BUILD_CACHE"]) / "ffmpeg" / name
+        key.mkdir(parents=True)
+        (key / "payload").write_text("synthetic ffmpeg tree\n")
+        stamp = key / ".last-used"
+        stamp.touch()
+        old = time.time() - days * 86400
+        os.utime(stamp, (old, old))
+        return key
+
+    def cargo_seed(self, fixture, name, days):
+        seed = Path(fixture[1]["PLX_BUILD_CACHE"]) / "cargo-seed" / name
+        seed.mkdir(parents=True)
+        (seed / "payload").write_text("third-party output\n")
+        stamp = seed / ".last-used"
+        stamp.touch()
+        old = time.time() - days * 86400
+        os.utime(stamp, (old, old))
+        return seed
+
+    def test_auto_under_pressure_ages_out_ffmpeg_keys_unused_for_a_week_and_only_those(self):
+        fixture = self.with_planner(self.fixture(0, 0))
+        repo, env, sentinels, _ = fixture
+        # PLX_CACHE_MAX_DAYS is 30 here: a key of 10 days is --cache's to keep and --auto's to take.
+        fresh, recent = self.ffmpeg_key(fixture, "armv7-6.1-fresh", 1), self.ffmpeg_key(fixture, "armv7-6.1-recent", 6)
+        week_old, ancient = self.ffmpeg_key(fixture, "armv7-6.1-week-old", 10), self.ffmpeg_key(fixture, "armv7-6.1-ancient", 90)
+        tarball = Path(env["PLX_BUILD_CACHE"]) / "ffmpeg" / "ffmpeg-6.1.tar.xz"
+        tarball.write_text("source tarball\n")
+        self.age(tarball, 90 * 86400)
+        result = self.run_auto(fixture, extra_env=self.UNDER_PRESSURE)
+        diagnostic = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, diagnostic)
+        for kept in (fresh, recent):
+            self.assertTrue((kept / "payload").exists(), "a key used within the week was aged out: " + diagnostic)
+        for gone in (week_old, ancient, sentinels[2]):
+            self.assertFalse(gone.exists(), "a key unused for over 7 days survived: " + diagnostic)
+            self.assertFalse(Path(str(gone) + ".lock").exists(), "its lock was left behind: " + diagnostic)
+        self.assertTrue(tarball.exists(), "the source tarball is not a key and was removed: " + diagnostic)
+        log = Path(env["PLX_GC_LOG"]).read_text()
+        self.assertIn("ffmpeg cache (unused > 7d): reclaimed=", log)
+        self.assertLess(log.index("worktrees (idle >= 30m):"), log.index("ffmpeg cache (unused > 7d):"), log)
+        self.assertLess(log.index("ffmpeg cache (unused > 7d):"), log.index("evict (planner order):"), log)
+
+    def test_auto_ffmpeg_age_out_reads_its_days_from_plx_gc_auto_cache_days(self):
+        fixture = self.with_planner(self.fixture(0, 0))
+        env = fixture[1]
+        week_old, ancient = self.ffmpeg_key(fixture, "armv7-6.1-week-old", 10), self.ffmpeg_key(fixture, "armv7-6.1-ancient", 40)
+        result = self.run_auto(fixture, extra_env={**self.UNDER_PRESSURE, "PLX_GC_AUTO_CACHE_DAYS": "20"})
+        diagnostic = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, diagnostic)
+        self.assertTrue((week_old / "payload").exists(), "a 10-day-old key went at a 20-day setting: " + diagnostic)
+        self.assertFalse(ancient.exists(), "a 40-day-old key survived a 20-day setting: " + diagnostic)
+        self.assertIn("ffmpeg cache (unused > 20d):", Path(env["PLX_GC_LOG"]).read_text())
+        # and a value that is not a number is the default, not "everything"
+        fixture = self.with_planner(self.fixture(0, 0))
+        recent = self.ffmpeg_key(fixture, "armv7-6.1-recent", 6)
+        result = self.run_auto(fixture, extra_env={**self.UNDER_PRESSURE, "PLX_GC_AUTO_CACHE_DAYS": "soon"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue((recent / "payload").exists(), result.stdout + result.stderr)
+        self.assertIn("ffmpeg cache (unused > 7d):", Path(fixture[1]["PLX_GC_LOG"]).read_text())
+
+    def test_auto_ffmpeg_age_out_keeps_a_key_whose_build_holds_the_lock(self):
+        # The same protection `--cache` has: a live FFmpeg build's lock makes the whole stage decline
+        # (the preflight every non-`--evict` mode runs), so its key survives however old its marker is.
+        fixture = self.with_planner(self.fixture(os.getpid(), 0))
+        repo, env, sentinels, lock = fixture
+        self.assertTrue(lock.exists())
+        result = self.run_auto(fixture, extra_env=self.UNDER_PRESSURE)
+        diagnostic = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, diagnostic)
+        self.assertIn("held FFmpeg cache lock", diagnostic)
+        self.assertTrue(sentinels[2].exists(), "a key whose build holds its lock was aged out: " + diagnostic)
+        self.assertTrue(lock.exists(), "a live build's lock was removed: " + diagnostic)
+
+    def test_auto_ffmpeg_age_out_never_touches_the_cargo_seed(self):
+        # `tools/cargo-seed.py` is copied in, so a stage that did run the seed's prune would find it.
+        fixture = self.with_planner(self.fixture(0, 0))
+        stale_seed, young_seed = self.cargo_seed(fixture, "target", 40), self.cargo_seed(fixture, "target-release", 10)
+        old_key = self.ffmpeg_key(fixture, "armv7-6.1-old", 10)
+        result = self.run_auto(fixture, extra_env=self.UNDER_PRESSURE)
+        diagnostic = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, diagnostic)
+        self.assertFalse(old_key.exists(), "the control: the stage did not run: " + diagnostic)
+        for seed in (stale_seed, young_seed):
+            self.assertTrue((seed / "payload").exists(), "--auto touched the cargo seed " + seed.name + ": " + diagnostic)
+
+    def test_auto_above_the_comfort_line_ages_out_no_ffmpeg_key(self):
+        fixture = self.with_planner(self.fixture(0, 0))
+        repo, env, sentinels, _ = fixture
+        keys = [self.ffmpeg_key(fixture, "armv7-6.1-week-old", 10), self.ffmpeg_key(fixture, "armv7-6.1-ancient", 90)]
+        result = self.run_auto(fixture, extra_env={"PLX_GC_TEST_FREE_KIB": "999999999", "PLX_GC_MIN_FREE_GIB": "1"})
+        diagnostic = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, diagnostic)
+        self.assertIn("already above threshold", diagnostic)
+        for key in keys:
+            self.assertTrue((key / "payload").exists(), "aged out above the threshold: " + diagnostic)
+        self.assertTrue(sentinels[2].exists(), "aged out above the threshold: " + diagnostic)
+        self.assertNotIn("ffmpeg cache", Path(env["PLX_GC_LOG"]).read_text())
+
+    def test_auto_dry_run_previews_the_ffmpeg_age_out_and_deletes_nothing(self):
+        fixture = self.with_planner(self.fixture(0, 0))
+        old_key = self.ffmpeg_key(fixture, "armv7-6.1-old", 10)
+        result = self.run_auto(fixture, "-n", extra_env=self.UNDER_PRESSURE)
+        diagnostic = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, diagnostic)
+        self.assertRegex(diagnostic, r"would remove +\S+ +\S+/ffmpeg/armv7-6\.1-old\n")
+        self.assertTrue((old_key / "payload").exists(), "-n deleted a key: " + diagnostic)
+
+    def test_ffmpeg_cache_mode_is_the_ffmpeg_half_of_cache(self):
+        # By hand `--ffmpeg-cache` is `--cache` without the cargo seed, at the same $PLX_CACHE_MAX_DAYS (30 here).
+        fixture = self.with_planner(self.fixture(0, 0))
+        seed = self.cargo_seed(fixture, "target", 40)
+        week_old, ancient = self.ffmpeg_key(fixture, "armv7-6.1-week-old", 10), self.ffmpeg_key(fixture, "armv7-6.1-ancient", 40)
+        result = self.run_gc(fixture, "--ffmpeg-cache")
+        diagnostic = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, diagnostic)
+        self.assertTrue((week_old / "payload").exists(), "kept for 30 days by --cache, so kept here: " + diagnostic)
+        self.assertFalse(ancient.exists(), diagnostic)
+        self.assertFalse(fixture[2][2].exists(), "the default fixture's 40-day key: " + diagnostic)
+        self.assertTrue((seed / "payload").exists(), "--ffmpeg-cache pruned the cargo seed: " + diagnostic)
 
     def auto_lanes(self, lanes=2, age=2 * 3600):
         """Idle lanes with build output (and the planner next to the script), plus an old main checkout."""
@@ -774,7 +899,7 @@ class BuildGcTests(unittest.TestCase):
             self.assertFalse((wt / "rust-modules/target").exists(), "idle lane target survived: " + diagnostic)
         self.assertFalse(sentinels[1].exists(), "the orphan survived: " + diagnostic)
         self.assertTrue(sentinels[0].exists(), "rung 6 ran without being needed: " + diagnostic)
-        self.assertTrue(sentinels[2].exists(), "--auto must never touch the FFmpeg cache: " + diagnostic)
+        self.assertFalse(sentinels[2].exists(), "a key unused for 40 days survived the FFmpeg age-out: " + diagnostic)
         log = Path(env["PLX_GC_LOG"]).read_text()
         order = [m for m in ("orphans:", "worktrees (idle >= 30m):", "evict: rung 2 incremental",
                              "evict: rung 4 tree", "evict: --stale sweep at rung 5", "evict (planner order):")

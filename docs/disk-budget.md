@@ -258,7 +258,11 @@ it.
 **`build-gc.sh --auto`** is the planner followed by `--evict`. Always `--orphans` first, unconditionally.
 Below `PLX_GC_MIN_FREE_GIB` free (default 20): `--worktrees` restricted to lanes idle for at least
 `PLX_GC_IDLE_MIN` minutes (default 60, judged over the worktree and its fleet build tree) and holding no
-ignored file that is not build output (see above: such a lane is kept and the log says which paths kept it), then, if still below, `reclaim --to $PLX_GC_MIN_FREE_GIB --no-build --idle-min
+ignored file that is not build output (see above: such a lane is kept and the log says which paths kept it), then, if still below, an
+FFmpeg-only age-out: `build-gc.sh --ffmpeg-cache` with `PLX_CACHE_MAX_DAYS` set to `PLX_GC_AUTO_CACHE_DAYS` (default 7),
+which removes the shared FFmpeg build trees (`<cache>/ffmpeg/<key>`) whose `.last-used` marker is older than that,
+each under its own key lock and behind the same refusal for a held FFmpeg cache lock as `--cache` (by hand
+`--cache` keeps 30 days and also prunes the cargo seed; this stage never does), then, if still below, `reclaim --to $PLX_GC_MIN_FREE_GIB --no-build --idle-min
 $PLX_GC_IDLE_MIN --emit` into a temporary file and `--evict` on it. It replaces five fixed stages
 (`--incremental`, `--worktrees`, `--lanes`, `--stale`, `--seed`) with the planner's order, which
 differs: the main checkout's incremental cache is the last resort (rung 6) instead of
