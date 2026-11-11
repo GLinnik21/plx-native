@@ -86,7 +86,8 @@ fn a_multi_user_root_toggles_automatically_sign_in_in_place() {
         },
         Some(row),
     );
-    step(&mut s, ScreenEvent::Activate(row.elem), Some(row));
+    let out = step(&mut s, ScreenEvent::Activate(row.elem), Some(row));
+    execute_storage_effects(&out);
     plx_base::storage_worker::drain_for_test();
     assert_eq!(
         name(&s),
@@ -98,7 +99,8 @@ fn a_multi_user_root_toggles_automatically_sign_in_in_place() {
         plx_plex::plex::session::peek().auto_sign_in(),
         "the queued switch is durable after the worker completes"
     );
-    step(&mut s, ScreenEvent::Activate(row.elem), Some(row));
+    let out = step(&mut s, ScreenEvent::Activate(row.elem), Some(row));
+    execute_storage_effects(&out);
     plx_base::storage_worker::drain_for_test();
     assert!(!plx_plex::plex::session::peek().auto_sign_in());
     assert_eq!(s.inner.depth(), 1);
@@ -559,7 +561,8 @@ fn session_refresh_keeps_optimistic_setting_through_transient_completion() {
     let _sess = multi_user_session("root-pending-refresh");
     let saved = plx_plex::plex::session::peek();
     let mut root = RootPage::new(EntryId(0), cx(None).views.directory, &crate::registry::capture_fixture());
-    let ticket = plx_base::storage_worker::submit_retained(|| false);
+    let (reply, ticket) = std::sync::mpsc::channel();
+    reply.send(false).unwrap();
     plx_base::storage_worker::drain_for_test();
     root.pending_auto = Some((true, ticket));
     root.rebuild(cx(None).views.directory);
@@ -613,7 +616,12 @@ fn the_unencrypted_connection_switch_shows_the_grant_and_revokes_it_at_once() {
     let mut out = Vec::new();
     let mut present = Present::new();
     let mut fx = Effects::new(&mut out, MachineId::Session, &mut present);
-    root.activate(root.form.key_at(row).unwrap().0, cx(None).views.directory, &mut fx);
+    let captured = cx(None);
+    {
+        let _step = plx_base::step::StepScope::enter();
+        root.activate(root.form.key_at(row).unwrap().0, captured.views.directory, &mut fx);
+    }
+    execute_storage_effects(&out);
     assert_eq!(plx_plex::plex::grant::granted_origin("lan-machine"), None, "revoked before the write lands");
     assert!(!plx_plex::plex::grant::allowed_under(plx_plex::plex::CredentialPolicy::HttpsOnly, &lan));
     assert_eq!(root.state.plaintext, vec![false], "the switch shows the answer optimistically");
@@ -975,7 +983,8 @@ fn a_success_receipt_waits_for_the_next_captured_authority() {
     let mut cx = cx(None);
     cx.views.inputs = &inputs;
     let mut page = RootPage::new(EntryId(0), cx.views.directory, cx.views.inputs);
-    let ticket = plx_base::storage_worker::submit_retained(|| true);
+    let (reply, ticket) = std::sync::mpsc::channel();
+    reply.send(true).unwrap();
     plx_base::storage_worker::drain_for_test();
     page.pending_auto = Some((true, ticket));
     page.rebuild(cx.views.directory);

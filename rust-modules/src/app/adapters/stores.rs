@@ -76,6 +76,7 @@ use plx_data::pms::{launch_hubs_job, HubRequest, HubsPort};
 use plx_data::stores::{Admission, StoreJob};
 use plx_data::stores::notify_job::{finish_notify_stream_job, NotifyStreamReq, NotifyStreamPort, NotifyTerminal};
 use plx_data::search::recents::{finish_save_recents_job, SaveRecentsPort, SaveRecentsReq};
+use plx_data::browse::preferences_job::{finish_browse_preferences_job, BrowsePreferencesReq, BrowsePreferencesPort};
 use plx_data::search::{finish_search_job, SearchPort, SearchReq};
 use plx_data::subsearch::{finish_subsearch_job, SubSearchPort, SubSearchReq};
 use plx_data::viewstate::{finish_view_write_job, ViewWritePort, ViewWriteReq};
@@ -394,6 +395,7 @@ impl StoreRunner {
             StoreJob::BrowsePage(job, port) => self.start_browse_page(job, port),
             StoreJob::BrowseDiscovery(job, port) => self.start_browse_discovery(job, port),
             StoreJob::Search(job, port) => self.start_search(job, port),
+            StoreJob::BrowsePreferences(job, port) => self.start_browse_preferences(job, port),
             StoreJob::SaveRecents(job, port) => self.start_save_recents(job, port),
             StoreJob::ViewWrite(job, port) => self.start_view_write(job, port),
             StoreJob::MetaSeason(job, port) => self.start_meta_season(job, port),
@@ -450,6 +452,7 @@ impl StoreRunner {
                 | StoreJob::BrowseDirectory(..)
                 | StoreJob::BrowsePage(..)
                 | StoreJob::Search(..)
+                | StoreJob::BrowsePreferences(..)
                 | StoreJob::SaveRecents(..)
                 | StoreJob::ViewWrite(..)
                 | StoreJob::MetaSeason(..)
@@ -552,7 +555,8 @@ impl StoreRunner {
                     | StoreJob::BrowsePage(..)
                     | StoreJob::BrowseDiscovery(..)
                     | StoreJob::Search(..)
-                    | StoreJob::SaveRecents(..)
+                    | StoreJob::BrowsePreferences(..)
+                | StoreJob::SaveRecents(..)
                     | StoreJob::ViewWrite(..)
                     | StoreJob::MetaSeason(..)
                     | StoreJob::MetaEpisodes(..)
@@ -803,6 +807,29 @@ fn start_watchlist_stream(&mut self, job: StoreJob) {
         if !self.launch_save_recents(job, port) {
             refusal.refused(addr);
         }
+    }
+
+    fn start_browse_preferences(&mut self, job: Job<BrowsePreferencesReq>, port: BrowsePreferencesPort) {
+        let addr = job.addr;
+        let refusal = port.clone();
+        if !job.req.matches_account(&plx_plex::plex::session::peek())
+            || !job.req.matches_tenure(plx_plex::plex::session::tenure()) {
+            refusal.refused(addr);
+            return;
+        }
+        let launched = match self {
+            Self::Live => {
+                plx_base::storage_worker::submit_retained(move || {
+                    finish_browse_preferences_job(&port, addr, job.req);
+                }).is_ok()
+            }
+            #[cfg(test)]
+            Self::Held { parked, .. } => {
+                parked.push(StoreJob::BrowsePreferences(job, port));
+                true
+            }
+        };
+        if !launched { refusal.refused(addr); }
     }
 
     fn launch_save_recents(&mut self, job: Job<SaveRecentsReq>, port: SaveRecentsPort) -> bool {
@@ -1385,6 +1412,7 @@ fn start_watchlist_stream(&mut self, job: StoreJob) {
                         None => port.refused(job.addr),
                     }
                 }
+                StoreJob::BrowsePreferences(job, port) => finish_browse_preferences_job(&port, job.addr, job.req),
                 StoreJob::SaveRecents(job, port) => finish_save_recents_job(&port, job.addr, job.req),
                 StoreJob::ViewWrite(job, port) => {
                     // The registry may have moved on since the job was parked: a write whose
@@ -3119,7 +3147,7 @@ mod tests {
         refill_client_keys(&mut keys);
         let session = plx_plex::plex::session::peek();
         let profile_key = plx_plex::plex::session::current_profile_key();
-        browse.run_with_input(cmd, &plx_data::browse::BrowseRosterInput {
+        browse.run_with_input(cmd, &plx_data::browse::BrowseRosterInput { tenure: 0,
             keys: &keys, session: &session,
             visible_generation: plx_plex::plex::session::visible_generation(),
             settled: plx_plex::plex::session::peek_settled().is_some(),
@@ -3195,7 +3223,7 @@ mod tests {
         browse.observe_pin_write();
         let mut keys = plx_plex::plex::ClientKeys::default();
         refill_client_keys(&mut keys);
-        let _outcome = browse.pump_with_gate(plx_machine::landgate::fixture_gate(), &plx_data::browse::BrowseRosterInput {
+        let _outcome = browse.pump_with_gate(plx_machine::landgate::fixture_gate(), &plx_data::browse::BrowseRosterInput { tenure: 0,
             keys: &keys, session: &plx_plex::plex::session::peek(),
             visible_generation: plx_plex::plex::session::visible_generation(),
             settled: plx_plex::plex::session::peek_settled().is_some(),
@@ -3262,7 +3290,7 @@ mod tests {
         browse.observe_pin_write();
         let mut keys = plx_plex::plex::ClientKeys::default();
         refill_client_keys(&mut keys);
-        let _outcome = browse.pump_with_gate(plx_machine::landgate::fixture_gate(), &plx_data::browse::BrowseRosterInput {
+        let _outcome = browse.pump_with_gate(plx_machine::landgate::fixture_gate(), &plx_data::browse::BrowseRosterInput { tenure: 0,
             keys: &keys, session: &plx_plex::plex::session::peek(),
             visible_generation: plx_plex::plex::session::visible_generation(),
             settled: plx_plex::plex::session::peek_settled().is_some(),
@@ -3369,7 +3397,7 @@ mod tests {
         browse.observe_pin_write();
         let mut keys = plx_plex::plex::ClientKeys::default();
         refill_client_keys(&mut keys);
-        let _ = browse.pump_with_gate(plx_machine::landgate::fixture_gate(), &plx_data::browse::BrowseRosterInput {
+        let _ = browse.pump_with_gate(plx_machine::landgate::fixture_gate(), &plx_data::browse::BrowseRosterInput { tenure: 0,
             keys: &keys, session: &plx_plex::plex::session::peek(),
             visible_generation: plx_plex::plex::session::visible_generation(),
             settled: plx_plex::plex::session::peek_settled().is_some(),
@@ -3716,7 +3744,7 @@ mod tests {
         browse.observe_pin_write();
         let mut keys = plx_plex::plex::ClientKeys::default();
         refill_client_keys(&mut keys);
-        let _ = browse.discover_pump_with_gate(plx_machine::landgate::fixture_gate(), &plx_data::browse::BrowseRosterInput {
+        let _ = browse.discover_pump_with_gate(plx_machine::landgate::fixture_gate(), &plx_data::browse::BrowseRosterInput { tenure: 0,
             keys: &keys, session: &plx_plex::plex::session::peek(),
             visible_generation: plx_plex::plex::session::visible_generation(),
             settled: plx_plex::plex::session::peek_settled().is_some(),

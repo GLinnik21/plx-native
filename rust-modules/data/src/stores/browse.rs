@@ -154,12 +154,13 @@ impl BrowseStore {
     /// controlled Home arm admits the discovery through the run's ledger).
     #[must_use]
     pub fn take_jobs(&mut self) -> Vec<super::StoreJob> {
+        self.jobs.extend(self.state.take_preference_jobs());
         std::mem::take(&mut self.jobs)
     }
 
     /// Does the outbox hold a job nobody has taken yet?
     pub fn has_jobs(&self) -> bool {
-        !self.jobs.is_empty()
+        !self.jobs.is_empty() || self.state.has_preference_jobs()
     }
 
     /// Run one command for a caller that holds no session: the Stores fan-outs, which send only
@@ -174,7 +175,7 @@ impl BrowseStore {
             return false;
         }
         let session = plx_plex::plex::session::Session::default();
-        self.run_with_input(cmd, &BrowseRosterInput {
+        self.run_with_input(cmd, &BrowseRosterInput { tenure: 0,
             keys, session: &session, visible_generation: 0, settled: false, profile_key: "",
         })
     }
@@ -221,7 +222,7 @@ impl BrowseStore {
     pub fn run_for_test(&mut self, cmd: BrowseCmd) -> bool {
         self.observe_pin_write();
         let session = plx_plex::plex::session::peek();
-        self.run_with_input(cmd, &BrowseRosterInput {
+        self.run_with_input(cmd, &BrowseRosterInput { tenure: plx_plex::plex::session::tenure(),
             keys: &ClientKeys::default(), session: &session,
             visible_generation: plx_plex::plex::session::visible_generation(),
             settled: plx_plex::plex::session::peek_settled().is_some(),
@@ -266,7 +267,7 @@ impl BrowseStore {
         keys.refill_roster(plx_plex::plex::current_server(), plx_plex::plex::server_roster_gen(),
             plx_plex::plex::server_facts_gen(), plx_plex::plex::server_ids(),
             plx_plex::plex::client_for, plx_plex::plex::server_facts, plx_plex::plex::server_probe_result);
-        self.pump_with_gate(plx_machine::landgate::fixture_gate(), &BrowseRosterInput {
+        self.pump_with_gate(plx_machine::landgate::fixture_gate(), &BrowseRosterInput { tenure: plx_plex::plex::session::tenure(),
             keys: &keys, session: &session,
             visible_generation: plx_plex::plex::session::visible_generation(),
             settled: plx_plex::plex::session::peek_settled().is_some(),
@@ -303,7 +304,7 @@ impl BrowseStore {
         keys.refill_roster(plx_plex::plex::current_server(), plx_plex::plex::server_roster_gen(),
             plx_plex::plex::server_facts_gen(), plx_plex::plex::server_ids(),
             plx_plex::plex::client_for, plx_plex::plex::server_facts, plx_plex::plex::server_probe_result);
-        self.discover_pump_with_gate(plx_machine::landgate::fixture_gate(), &BrowseRosterInput {
+        self.discover_pump_with_gate(plx_machine::landgate::fixture_gate(), &BrowseRosterInput { tenure: plx_plex::plex::session::tenure(),
             keys: &keys, session: &session,
             visible_generation: plx_plex::plex::session::visible_generation(),
             settled: plx_plex::plex::session::peek_settled().is_some(),
@@ -921,7 +922,7 @@ mod contract_tests {
         );
         let session = plx_plex::plex::session::peek();
         let profile_key = plx_plex::plex::session::current_profile_key();
-        let input = BrowseRosterInput {
+        let input = BrowseRosterInput { tenure: 0,
             keys: &keys, session: &session,
             visible_generation: plx_plex::plex::session::visible_generation(),
             settled: plx_plex::plex::session::peek_settled().is_some(), profile_key: &profile_key,
@@ -1173,7 +1174,7 @@ mod contract_tests {
             plx_plex::plex::client_for, plx_plex::plex::server_facts,
             plx_plex::plex::server_probe_result,
         );
-        let input = BrowseRosterInput {
+        let input = BrowseRosterInput { tenure: 0,
             keys: &keys, session: &plx_plex::plex::session::peek(),
             visible_generation: plx_plex::plex::session::visible_generation(),
             settled: plx_plex::plex::session::peek_settled().is_some(),

@@ -920,6 +920,7 @@ fn a_failed_source_over_an_offered_server_asks_the_shared_question() {
 
     offer("lan-machine");
     tick(&mut page);
+    let cx = fixture.cx(Some(page.key(RETRY)));
     let (caption, reason) = page.status_text(&cx);
     assert!(reason.as_ref().and_then(|r| r.to_str().ok()).is_some_and(|r| r.contains("Select Connect")), "{reason:?}");
     assert_eq!(page.status_overlay(&cx, &caption, reason.as_deref()).action, Some(connect()));

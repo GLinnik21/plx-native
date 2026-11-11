@@ -41,7 +41,8 @@ fn step(owner: &mut SessionMachine, event: SessionEvent) -> Vec<SessionFx> {
         .into_iter()
         .map(|effect| match effect.fx {
             Fx::App(effect) => effect,
-            _ => panic!("Session emitted a non-domain effect"),
+            Fx::Nav(_) | Fx::Mount(_) | Fx::Unmount(_) | Fx::Deliver(..) | Fx::Timer { .. }
+            | Fx::CancelTimer(_) | Fx::Press(_) | Fx::Remember { .. } | Fx::Log(_) => panic!("Session emitted a non-domain effect"),
         })
         .collect()
 }
@@ -132,7 +133,12 @@ fn incident_effects(effects: &[SessionFx]) -> Vec<(IncidentLane, IncidentReport)
         .iter()
         .filter_map(|fx| match fx {
             SessionFx::Incident { lane, report, .. } => Some((*lane, *report)),
-            _ => None,
+            SessionFx::Commit { .. } | SessionFx::Pump | SessionFx::Acknowledge(_)
+            | SessionFx::Retire { .. } | SessionFx::Ready { .. } | SessionFx::Capture { .. }
+            | SessionFx::Work { .. } | SessionFx::Cancel { .. } | SessionFx::PublishProfile(_)
+            | SessionFx::Erase { .. } | SessionFx::Coordinator(_) | SessionFx::RestartReply { .. }
+            | SessionFx::SelectionReply { .. } | SessionFx::BackReply { .. }
+            | SessionFx::PlaintextAnswer { .. } | SessionFx::RefreshCache { .. } => None,
         })
         .collect()
 }
@@ -517,7 +523,12 @@ fn a_sign_in_whose_commit_is_refused_offers_its_own_failure() {
     }, true);
     let (req, arrival) = effects.iter().find_map(|fx| match fx {
         SessionFx::Commit { req, arrival, .. } => Some((*req, *arrival)),
-        _ => None,
+        SessionFx::Pump | SessionFx::Acknowledge(_) | SessionFx::Retire { .. } | SessionFx::Ready { .. }
+        | SessionFx::Capture { .. } | SessionFx::Work { .. } | SessionFx::Cancel { .. }
+        | SessionFx::PublishProfile(_) | SessionFx::Erase { .. } | SessionFx::Coordinator(_)
+        | SessionFx::RestartReply { .. } | SessionFx::Incident { .. } | SessionFx::SelectionReply { .. }
+        | SessionFx::BackReply { .. } | SessionFx::PlaintextAnswer { .. }
+        | SessionFx::RefreshCache { .. } => None,
     }).expect("the sign-in is committed");
     step(&mut owner, SessionEvent::Commit(CommitReply {
         req,
@@ -635,7 +646,9 @@ fn a_settled_discovery_offer_keeps_one_answer_but_details_reads_the_latest_run()
                     });
                 }
             }
-            _ => unreachable!(),
+            IncidentState::Pending | IncidentState::Offered { .. } | IncidentState::OnRequest { .. }
+            | IncidentState::AutoSending | IncidentState::Sending | IncidentState::Saved { .. }
+            | IncidentState::Failed | IncidentState::Dropped => unreachable!(),
         }
         assert_eq!(&offer(&owner).unwrap().state, &final_state);
         command(&mut owner, Command::Retry);

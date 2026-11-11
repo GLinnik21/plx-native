@@ -32,7 +32,7 @@ fn a_settled_query_change_with_unknown_total_is_still_page_work() {
     browse.sync_roster();
     let session = plx_plex::plex::session::peek();
     let profile_key = plx_plex::plex::session::current_profile_key();
-    let input = BrowseRosterInput {
+    let input = BrowseRosterInput { tenure: 0,
         keys: &browse.keys, session: &session,
         visible_generation: plx_plex::plex::session::visible_generation(),
         settled: plx_plex::plex::session::peek_settled().is_some(), profile_key: &profile_key,

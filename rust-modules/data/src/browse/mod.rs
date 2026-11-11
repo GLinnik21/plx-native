@@ -269,6 +269,8 @@ pub struct BrowseRosterInput<'a> {
     pub keys: &'a ClientKeys,
     pub session: &'a plx_plex::plex::session::Session,
     pub visible_generation: u64,
+    /// Revocation lease captured beside the session, before the machine window.
+    pub tenure: u64,
     pub settled: bool,
     pub profile_key: &'a str,
 }
@@ -589,6 +591,7 @@ mod letters;
 pub mod listing_jobs;
 pub mod record;
 mod saved_view;
+pub mod preferences_job;
 pub mod section_hubs;
 pub mod view;
 
@@ -1043,35 +1046,16 @@ pub struct BrowseState {
     /// another's view.
     view_memory: plx_plex::plex::session::LibraryViews,
     recorded: Option<plx_plex::plex::session::HomePins>,
+    preference_writes: preferences_job::Preferences,
     pending_pins: Option<(String, std::sync::Arc<std::sync::Mutex<PinWrite>>)>,
 }
 
 /// Shared by a cloned Browse snapshot, so consuming a receipt never makes another clone
 /// mistake a successful write for a disconnected worker. Failed writes keep the local choice.
 ///
-/// The poll and its use are split. [`observe`](Self::observe) polls the receipt once and latches
-/// it; `Bridge::browse_session` is the only production caller, and it calls it BEFORE it reads the
-/// session it hands the step. [`saved`](Self::saved) only reads the latch, so a step never pairs a
-/// receipt it polled itself with a session read before it (the receipt is sent after the worker
-/// installed the written session, so a read taken after seeing it contains the write).
-struct PinWrite {
-    ticket: plx_base::storage_worker::TypedTicket<bool>,
-    saved: Option<bool>,
-}
-impl PinWrite {
-    fn observe(&mut self) {
-        if self.saved.is_none() {
-            self.saved = match self.ticket.try_recv() {
-                Ok(saved) => Some(saved),
-                Err(std::sync::mpsc::TryRecvError::Empty) => None,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(false),
-            };
-        }
-    }
-    fn saved(&self) -> bool {
-        self.saved == Some(true)
-    }
-}
+/// Observation and use are split: the host observes the addressed completion BEFORE capturing
+/// the session for the next step. Logic reads only that latch, never a worker's newer completion.
+type PinWrite = preferences_job::Receipt;
 
 /// Worker-facing half of one Browse store. Every read's port holds this adapter, so a result
 /// can only land in the store that emitted the job even when another Bridge is alive.
@@ -1163,6 +1147,7 @@ impl Default for BrowseState {
             view_memory: Default::default(),
             recorded: None,
             pending_pins: None,
+            preference_writes: Default::default(),
             session_generation: 0,
             current_sid: ServerId::UNSET,
             profile_key: String::new(),
@@ -1175,6 +1160,7 @@ impl Default for BrowseState {
 impl BrowseState {
     /// Commands use the explicitly captured profile/current even if they do not walk the roster.
     pub(crate) fn observe_roster_context(&mut self, input: &BrowseRosterInput<'_>) {
+        self.preference_writes.prepare(input.session, input.tenure);
         if self.profile_key != input.profile_key {
             self.profile_key.clear();
             self.profile_key.push_str(input.profile_key);
@@ -1685,27 +1671,8 @@ impl BrowseState {
         if !machine.is_empty() {
             self.remembered.push((kind, machine.clone(), key));
         }
-        let wire = kind.wire();
-        plx_plex::plex::session::queue_update(move |current| {
-            let mut next = current.clone();
-            let slot = match next
-                .prefs
-                .last_library
-                .iter_mut()
-                .find(|library| library.user == user)
-            {
-                Some(library) => library,
-                None => {
-                    next.prefs.last_library.push(plx_plex::plex::session::LastLibrary {
-                        user: user.clone(),
-                        libs: Vec::new(),
-                        extensions: Default::default(),
-                    });
-                    next.prefs.last_library.last_mut()?
-                }
-            };
-            slot.set(wire, &machine, key);
-            Some(next)
+        let _ = self.preference_writes.emit(&user, preferences_job::Edit::Library {
+            kind: kind.wire().to_owned(), machine, key,
         });
     }
     /// Remember section `i`'s view across restarts (GitHub #278 the sort, #441 the rest) — the
@@ -1756,20 +1723,7 @@ impl BrowseState {
             &snapshot, edit);
         self.view_memory.set(local);
         let user = self.profile_key.clone();
-        plx_plex::plex::session::queue_update(move |current| {
-            let stored = current.views_for(&user).and_then(|views| views.get(&machine, key));
-            let next_view = saved_view::merge(stored, &machine, key, &snapshot, edit);
-            let unchanged = match stored {
-                Some(stored) => *stored == next_view,
-                None => next_view.is_default(),
-            };
-            if unchanged {
-                return None;
-            }
-            let mut next = current.clone();
-            next.set_view_for(&user, next_view);
-            Some(next)
-        });
+        let _ = self.preference_writes.emit(&user, preferences_job::Edit::View { machine, key, snapshot, field: edit });
     }
     /// Apply section `i`'s remembered listing type and Unwatched switch, once, as the section is
     /// created. Neither needs the server to vouch for it — the type is checked against what the
@@ -2302,6 +2256,8 @@ impl BrowseState {
         }
     }
     fn load_remembered(&mut self, session: &plx_plex::plex::session::Session, user: &str) {
+        let overlaid = self.preference_writes.overlay(session, user);
+        let session = &overlaid;
         if self.visited_user != user {
             self.visited.clear();
             self.visited_user = user.to_owned();
@@ -2361,10 +2317,16 @@ impl BrowseState {
     /// before it reads the session it hands the step (`Bridge::browse_session`), so a write seen as
     /// saved is never paired with a session read from before it.
     pub fn observe_pin_write(&self) {
+        self.preference_writes.observe();
         if let Some((_, write)) = &self.pending_pins {
             write.lock().unwrap_or_else(|e| e.into_inner()).observe();
         }
     }
+
+    pub(crate) fn take_preference_jobs(&mut self) -> Vec<crate::stores::StoreJob> {
+        self.preference_writes.take_jobs()
+    }
+    pub(crate) fn has_preference_jobs(&self) -> bool { self.preference_writes.has_jobs() }
     /// A directory refresh must not replace the pending (or failed) local choice with the
     /// older persisted snapshot. A receipt observed before the caller read `session` takes the
     /// record from `session`, which contains the write; a receipt not yet observed answers with the
@@ -2484,8 +2446,11 @@ impl BrowseState {
         -> Option<plx_plex::plex::session::HomePins> {
         self.observe_pin_write();
         let snapshot = plx_plex::plex::session::peek();
+        self.preference_writes.prepare(&plx_plex::plex::session::peek(), plx_plex::plex::session::tenure());
         self.profile_key = plx_plex::plex::session::current_profile_key();
-        self.record_pins_from(asked, touched, &snapshot)
+        let result = self.record_pins_from(asked, touched, &snapshot);
+        test_support::run_preference_jobs(self.take_preference_jobs());
+        result
     }
     /// Write this profile's answer down. `touched` is indexed like the section table and marks
     /// the rows the VIEWER answered — as the editor reported them, never as a comparison against
@@ -2514,18 +2479,11 @@ impl BrowseState {
             (lib.machine_id.to_owned(), lib.key, lib.household, lib.household_type)).collect();
         let touched = touched.to_vec();
         let pending_user = user.clone();
-        let ticket = plx_plex::plex::session::queue_update_ticket(move |session| {
-            let libraries: Vec<_> = owned.iter().map(|(machine_id, key, household, household_type)|
-                plx_plex::plex::pins::LibRef { machine_id, key: *key, household: *household, household_type: *household_type }).collect();
-            let previous = session.pins_for(&user);
-            let answers = plx_plex::plex::pins::answers(&libraries, &on, &touched, previous);
-            let fresh = plx_plex::plex::pins::record(&user, asked, &libraries, &answers);
-            let merged = plx_plex::plex::pins::carry_forward(fresh, previous, &libraries);
-            let mut next = session.clone();
-            next.set_pins_for(&user, merged);
-            Some(next)
-        }).ok()?;
-        self.pending_pins = Some((pending_user, std::sync::Arc::new(std::sync::Mutex::new(PinWrite { ticket, saved: None }))));
+        self.preference_writes.prepare_account(snapshot);
+        let receipt = self.preference_writes.emit(&user, preferences_job::Edit::Pins {
+            libraries: owned, on, touched, asked,
+        })?;
+        self.pending_pins = Some((pending_user, receipt));
         self.recorded = Some(record.clone());
         Some(record)
     }
@@ -2533,8 +2491,10 @@ impl BrowseState {
     fn apply_pins(&mut self, answers: &[(usize, bool)]) {
         self.observe_pin_write();
         let session = plx_plex::plex::session::peek();
+        self.preference_writes.prepare(&plx_plex::plex::session::peek(), plx_plex::plex::session::tenure());
         self.profile_key = plx_plex::plex::session::current_profile_key();
         self.apply_pins_from(answers, &session);
+        test_support::run_preference_jobs(self.take_preference_jobs());
     }
     /// The editor's one commit: apply the rows it ANSWERED, and record exactly those.
     ///
@@ -2735,6 +2695,7 @@ impl BrowseState {
         self.reset_with(|| adapter.clear());
     }
     pub fn sync_roster_owned(&mut self, input: &BrowseRosterInput<'_>) -> RosterSync {
+        self.preference_writes.prepare(input.session, input.tenure);
         let keys = input.keys;
         let session_changed = self.session_generation != input.visible_generation
             || self.roster_profile_key != input.profile_key || self.session_settled != input.settled;
@@ -2889,6 +2850,7 @@ impl BrowseState {
         session: &plx_plex::plex::session::Session,
         jobs: &mut Vec<crate::stores::StoreJob>,
     ) -> bool {
+        self.preference_writes.prepare_account(session);
         use crate::stores::browse::BrowseCmd;
         match cmd {
             BrowseCmd::Discovery(result) => {
@@ -3606,7 +3568,7 @@ fn ensure_sections_with(
     );
     let session = plx_plex::plex::session::peek();
     let profile_key = plx_plex::plex::session::current_profile_key();
-    let input = BrowseRosterInput {
+    let input = BrowseRosterInput { tenure: 0,
         keys: &keys, session: &session,
         visible_generation: plx_plex::plex::session::visible_generation(),
         settled: plx_plex::plex::session::peek_settled().is_some(), profile_key: &profile_key,
@@ -3984,7 +3946,7 @@ pub fn queue_discovery_for_owner_test(
         plx_plex::plex::server_facts_gen(), plx_plex::plex::server_ids(),
         plx_plex::plex::client_for, plx_plex::plex::server_facts, plx_plex::plex::server_probe_result);
     let session = plx_plex::plex::session::peek();
-    let _ = state.sync_roster_owned(&BrowseRosterInput {
+    let _ = state.sync_roster_owned(&BrowseRosterInput { tenure: 0,
         keys: &keys, session: &session, visible_generation: plx_plex::plex::session::visible_generation(),
         settled: plx_plex::plex::session::peek_settled().is_some(),
         profile_key: &plx_plex::plex::session::current_profile_key(),

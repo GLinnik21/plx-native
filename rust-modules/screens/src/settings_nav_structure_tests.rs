@@ -165,13 +165,14 @@ fn every_audio_and_subtitles_field_pushes_its_picker() {
     let previous = plx_plex::plex::session::current_snapshot();
     struct Restore(std::sync::Arc<plx_plex::plex::session::CurrentProfile>);
     impl Drop for Restore {
-        fn drop(&mut self) { plx_plex::plex::session::publish_profile_for_test(self.0.user.clone(), self.0.generation); }
+        fn drop(&mut self) { plx_plex::plex::session::publish_seat_for_test(self.0.user.clone(), self.0.generation, self.0.stamp.clone()); }
     }
     let _restore = Restore(previous);
-    let user = plx_plex::plex::session::UserRef { id: 7, uuid: "nav-structure-audio".into(), ..Default::default() };
+    let user = plx_plex::plex::session::UserRef { id: 7, uuid: "nav-structure-audio".into(), plex_tv_token: Some("synthetic-token".into()), ..Default::default() };
     // seated: the Look rows (this app's own per-profile picks) are read-only for nobody
     plx_plex::plex::session::publish_seat_for_test(Some(user.clone()), 81, "nav-structure-stamp".into());
-    let (request, snapshot) = PreferenceRequest::fixture_for_test(user, 81, AudioPreferences::default());
+    let (_, snapshot) = PreferenceRequest::fixture_for_test(user, 81, AudioPreferences::default());
+    let request = PreferenceRequest::capture().expect("the host captures the stamped fixture seat");
     let items = super::super::preferences::nav_items_for_test(super::super::preferences::Kind::AudioSubtitles, Some(&AudioPreferences::default()));
     assert_eq!(items.len(), 6, "the four account fields and the two Look rows (subtitle size and position): {items:?}");
     assert_every_nav_item_pushes_exactly_its_dest("audio & subtitles", &items, &|| {
@@ -396,16 +397,17 @@ fn every_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row() {
         let previous = ses::current_snapshot();
         struct Restore(std::sync::Arc<ses::CurrentProfile>);
         impl Drop for Restore {
-            fn drop(&mut self) { ses::publish_profile_for_test(self.0.user.clone(), self.0.generation); }
+            fn drop(&mut self) { ses::publish_seat_for_test(self.0.user.clone(), self.0.generation, self.0.stamp.clone()); }
         }
         let _restore = Restore(previous);
-        let user = ses::UserRef { id: 7, uuid: "nav-structure-checked-lines".into(), ..Default::default() };
+        let user = ses::UserRef { id: 7, uuid: "nav-structure-checked-lines".into(), plex_tv_token: Some("synthetic-token".into()), ..Default::default() };
         ses::publish_seat_for_test(Some(user.clone()), 81, "nav-structure-stamp".into());
         let language_line = |code: &str| 1 + plx_plex::plex::languages::picker().position(|l| l.code == code)
             .unwrap_or_else(|| panic!("{code} is in the language picker")) as u32;
         let prefs = AudioPreferences { stated_language: Some("fr".into()), subtitle_language: Some("de".into()),
             subtitle_mode: 2, subtitle_forced: 3, ..Default::default() };
-        let (request, snapshot) = PreferenceRequest::fixture_for_test(user, 81, prefs.clone());
+        let (_, snapshot) = PreferenceRequest::fixture_for_test(user, 81, prefs.clone());
+        let request = PreferenceRequest::capture().expect("the host captures the stamped fixture seat");
         let items = super::super::preferences::nav_items_for_test(super::super::preferences::Kind::AudioSubtitles, Some(&prefs));
         assert_eq!(items.len(), 6, "every Audio & Subtitles picker is in the table: {items:?}");
         for &(row, dest) in &items {

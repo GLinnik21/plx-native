@@ -1417,7 +1417,9 @@ mod tests {
         // Move the code into the imported DTO so the pointer assertion still tests retention.
         init.pin_code = match runtime.attempt {
             Attempt::Erasing(data) => data.history.qr.code,
-            _ => panic!("fixture retains its erase"),
+            Attempt::Idle(_) | Attempt::Creating(_) | Attempt::Waiting(_) | Attempt::Discovering(_)
+            | Attempt::Profiles(_) | Attempt::Switching(_) | Attempt::Ready(_) | Attempt::Error(_)
+            | Attempt::Deleted(_) => panic!("fixture retains its erase"),
         };
         runtime = Partition::from_init(init);
         assert_eq!(runtime.phase(), Phase::Error);
@@ -1635,12 +1637,23 @@ mod tests {
                     };
                     let mut owner = SessionMachine::from_init(init);
                     let mut effects = Vec::new();
-                    owner.transition(TransitionInput::Attempt(event), 0, &mut |fx| effects.push(fx));
+                    let mut coordinator = Vec::new();
+                    owner.transition(TransitionInput::Attempt(event), 0, &mut |fx| {
+                        if let SessionFx::Coordinator(action) = fx { coordinator.push(action); }
+                        else { effects.push(fx); }
+                    });
+                    if matches!(case, 10 | 11) {
+                        assert!(matches!(coordinator.as_slice(), [CoordinatorAction::SignInCompleted]));
+                    } else { assert!(coordinator.is_empty()); }
                     let actual = owner.snapshot_init();
                     assert_eq!(serde_json::to_value(&actual).unwrap(), serde_json::to_value(&expected).unwrap(), "phase={phase:?} case={case}");
                     assert_eq!(actual.signin_account, expected.signin_account);
                     assert_eq!(owner.state.qr().code.as_ptr(), code);
-                    if case == 7 {
+                    if erase.is_some() {
+                        assert!(matches!(&owner.state, Attempt::Erasing(_)));
+                    }
+                    if case == 7 && erase.is_none() {
+                        assert!(matches!(&owner.state, Attempt::Switching(data) if data.selection.owns(29)));
                         assert!(matches!(effects.as_slice(), [SessionFx::Capture { req: 29, epoch: 1, request: SessionReadRequest::ProfilePolicy }]));
                     } else { assert!(effects.is_empty()); }
                 }

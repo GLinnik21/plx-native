@@ -3355,7 +3355,12 @@ mod tests {
         fn refreshes(effects: &[SessionFx]) -> Vec<(u32, u64)> {
             effects.iter().filter_map(|fx| match fx {
                 SessionFx::RefreshCache { req, generation } => Some((*req, *generation)),
-                _ => None,
+                SessionFx::Commit { .. } | SessionFx::Pump | SessionFx::Acknowledge(_)
+                | SessionFx::Retire { .. } | SessionFx::Ready { .. } | SessionFx::Capture { .. }
+                | SessionFx::Work { .. } | SessionFx::Cancel { .. } | SessionFx::PublishProfile(_)
+                | SessionFx::Erase { .. } | SessionFx::Coordinator(_) | SessionFx::RestartReply { .. }
+                | SessionFx::Incident { .. } | SessionFx::SelectionReply { .. }
+                | SessionFx::BackReply { .. } | SessionFx::PlaintextAnswer { .. } => None,
             }).collect()
         }
         fn owner() -> SessionMachine { SessionMachine::from_init(captured_session()) }
@@ -3997,7 +4002,13 @@ mod tests {
             let effects = step(&mut owner, SessionEvent::Command(Command::ReportIncident { id }));
             let rebuilt = effects.iter().find_map(|effect| match effect {
                 SessionFx::Incident { lane: IncidentLane::OneOff, report: IncidentReport::Retained(context), .. } => Some(*context),
-                _ => None,
+                SessionFx::Commit { .. } | SessionFx::Pump | SessionFx::Acknowledge(_)
+                | SessionFx::Retire { .. } | SessionFx::Ready { .. } | SessionFx::Capture { .. }
+                | SessionFx::Work { .. } | SessionFx::Cancel { .. } | SessionFx::PublishProfile(_)
+                | SessionFx::Erase { .. } | SessionFx::Coordinator(_) | SessionFx::RestartReply { .. }
+                | SessionFx::Incident { .. } | SessionFx::SelectionReply { .. }
+                | SessionFx::BackReply { .. } | SessionFx::PlaintextAnswer { .. }
+                | SessionFx::RefreshCache { .. } => None,
             }).expect("classified warning must reconstruct its report");
             assert_eq!(rebuilt, expected, "class {class:?}");
         }
@@ -4019,7 +4030,12 @@ mod tests {
         let effects = step(&mut owner, SessionEvent::Result(signed_in));
         let plan = effects.iter().find_map(|fx| match fx {
             SessionFx::Commit { plan, .. } => Some(plan),
-            _ => None,
+            SessionFx::Pump | SessionFx::Acknowledge(_) | SessionFx::Retire { .. }
+            | SessionFx::Ready { .. } | SessionFx::Capture { .. } | SessionFx::Work { .. }
+            | SessionFx::Cancel { .. } | SessionFx::PublishProfile(_) | SessionFx::Erase { .. }
+            | SessionFx::Coordinator(_) | SessionFx::RestartReply { .. } | SessionFx::Incident { .. }
+            | SessionFx::SelectionReply { .. } | SessionFx::BackReply { .. }
+            | SessionFx::PlaintextAnswer { .. } | SessionFx::RefreshCache { .. } => None,
         }).expect("SignedIn must begin its discovery commit");
         let credentials = plan.credentials.as_ref().expect("fresh sign-in commits credentials");
         assert!(!credentials.account_token.is_empty());
@@ -4066,7 +4082,13 @@ mod tests {
             let effects = step(&mut owner, SessionEvent::Command(Command::ReportIncident { id: offer.id }));
             let rebuilt = effects.iter().find_map(|effect| match effect {
                 SessionFx::Incident { lane: IncidentLane::OneOff, report: IncidentReport::Retained(context), .. } => Some(*context),
-                _ => None,
+                SessionFx::Commit { .. } | SessionFx::Pump | SessionFx::Acknowledge(_)
+                | SessionFx::Retire { .. } | SessionFx::Ready { .. } | SessionFx::Capture { .. }
+                | SessionFx::Work { .. } | SessionFx::Cancel { .. } | SessionFx::PublishProfile(_)
+                | SessionFx::Erase { .. } | SessionFx::Coordinator(_) | SessionFx::RestartReply { .. }
+                | SessionFx::Incident { .. } | SessionFx::SelectionReply { .. }
+                | SessionFx::BackReply { .. } | SessionFx::PlaintextAnswer { .. }
+                | SessionFx::RefreshCache { .. } => None,
             }).expect("one-off save report must use the visible warning evidence");
             assert_eq!(rebuilt.persistence, retained.persistence);
             assert_eq!(rebuilt.helper, retained.helper);
@@ -4154,7 +4176,13 @@ mod tests {
         let final_req = effects.iter().find_map(|fx| match fx {
             SessionFx::Commit { req, plan, .. }
                 if plan.purpose == PersistencePurpose::Final => Some(*req),
-            _ => None,
+            SessionFx::Commit { .. } | SessionFx::Pump | SessionFx::Acknowledge(_)
+            | SessionFx::Retire { .. } | SessionFx::Ready { .. } | SessionFx::Capture { .. }
+            | SessionFx::Work { .. } | SessionFx::Cancel { .. } | SessionFx::PublishProfile(_)
+            | SessionFx::Erase { .. } | SessionFx::Coordinator(_) | SessionFx::RestartReply { .. }
+            | SessionFx::Incident { .. } | SessionFx::SelectionReply { .. }
+            | SessionFx::BackReply { .. } | SessionFx::PlaintextAnswer { .. }
+            | SessionFx::RefreshCache { .. } => None,
         }).expect("accepted Continue must reach the final commit");
         // The authorization already answered its one Continue, so the Final commit's own reply
         // must publish immediately rather than hold a handoff behind a completion that may never
@@ -4227,7 +4255,13 @@ mod tests {
         let final_req = effects.iter().find_map(|fx| match fx {
             SessionFx::Commit { req, plan, .. }
                 if plan.purpose == PersistencePurpose::Final => Some(*req),
-            _ => None,
+            SessionFx::Commit { .. } | SessionFx::Pump | SessionFx::Acknowledge(_)
+            | SessionFx::Retire { .. } | SessionFx::Ready { .. } | SessionFx::Capture { .. }
+            | SessionFx::Work { .. } | SessionFx::Cancel { .. } | SessionFx::PublishProfile(_)
+            | SessionFx::Erase { .. } | SessionFx::Coordinator(_) | SessionFx::RestartReply { .. }
+            | SessionFx::Incident { .. } | SessionFx::SelectionReply { .. }
+            | SessionFx::BackReply { .. } | SessionFx::PlaintextAnswer { .. }
+            | SessionFx::RefreshCache { .. } => None,
         }).expect("accepted Continue must reach the final commit");
         // No `SessionEvent::Persistence` follows this reply at all — the completion is LOST.
         let effects = step(&mut owner, SessionEvent::Commit(CommitReply {
@@ -4251,13 +4285,13 @@ mod tests {
     fn a_discovery_failure_cannot_spend_or_authorize_the_final_fresh_save() {
         use plx_plex::plex::session::async_persistence::{CompletionOutcome, Failure, Operation,
             PersistOutcome, PersistenceCompletion};
-        let mut owner = SessionMachine::from_init(discovering_after_authorization());
+        let mut owner = SessionMachine::from_init(reopened_after_authorization());
         let req = owner.common.next_req;
         let epoch = owner.common.epoch;
 
         let signed_in = qr_event(&owner, req, 1, super::super::LoginProgress::SignedIn {
-            epoch, server: Default::default(), sources: Vec::new(),
-            users: vec![UserTile { title: "Only user".into(), ..Default::default() }],
+            epoch, server: local_server(), sources: Vec::new(),
+            users: vec![UserTile { uuid: "u-1".into(), title: "Only user".into(), ..Default::default() }],
         }, true);
         step(&mut owner, SessionEvent::Result(signed_in));
         let discovery_reply = CommitReply { req, epoch, arrival: 1,
@@ -4295,6 +4329,8 @@ mod tests {
         assert!(!owner.state.projected_authorization(), "this final commit consumes it now");
 
         let final_req = owner.common.next_req;
+        assert!(owner.state.owns_work(final_req, &owner.common.pending[&final_req]));
+        assert!(owner.commit_is_current(final_req, epoch, 0));
         let admitted = CommitReply { req: final_req, epoch, arrival: 0,
             admission: CommitAdmission::Admitted { revision: 2, purpose: PersistencePurpose::Final } };
         // This authorization already answered its one Continue (the discovery warning above), so
@@ -4313,14 +4349,16 @@ mod tests {
 
         // A LATER, ordinary Ready-op commit (a ready profile re-applying itself) must never carry
         // fresh authority again — the flag was spent once and stays spent.
-        let mut init = owner.snapshot_init();
-        init.phase = Phase::Ready; init.apply_pending = true;
-        owner = SessionMachine::from_init(init);
+        step(&mut owner, SessionEvent::Command(Command::StartSwitch(Picker::ChangeProfile)));
+        step(&mut owner, SessionEvent::Command(Command::SelectProfile { index: 0, pin: None }));
+        assert!(owner.needs_ready_commit());
+        assert!(!owner.state.fresh_authority());
         let effects = step(&mut owner, SessionEvent::Command(Command::TakeReady));
         let Some(SessionFx::Commit { plan: routine_plan, .. }) =
             effects.iter().find(|fx| matches!(fx, SessionFx::Commit { .. })) else {
             panic!("the second Ready-op commit must still be reachable");
         };
+        assert!(owner.commit_is_current(owner.common.next_req, owner.common.epoch, 0));
         assert_eq!(routine_plan.authority, plx_plex::plex::session::SaveAuthority::Routine,
             "the authority was spent once; a later Ready-op commit is Routine");
     }
@@ -4559,7 +4597,12 @@ mod tests {
         let effects = step(&mut owner, SessionEvent::Command(Command::StartSwitch(Picker::Boot)));
         let Some((switch_req, switch_epoch)) = effects.iter().find_map(|fx| match fx {
             SessionFx::Commit { req, epoch, .. } => Some((*req, *epoch)),
-            _ => None,
+            SessionFx::Pump | SessionFx::Acknowledge(_) | SessionFx::Retire { .. }
+            | SessionFx::Ready { .. } | SessionFx::Capture { .. } | SessionFx::Work { .. }
+            | SessionFx::Cancel { .. } | SessionFx::PublishProfile(_) | SessionFx::Erase { .. }
+            | SessionFx::Coordinator(_) | SessionFx::RestartReply { .. } | SessionFx::Incident { .. }
+            | SessionFx::SelectionReply { .. } | SessionFx::BackReply { .. }
+            | SessionFx::PlaintextAnswer { .. } | SessionFx::RefreshCache { .. } => None,
         }) else {
             panic!("rig: StartSwitch(Boot) must begin its own (registry-only) commit");
         };
@@ -4882,7 +4925,13 @@ mod tests {
         }, true);
         let effects = step(&mut owner, SessionEvent::Result(signed_in));
         let saved = effects.iter().find_map(|fx| match fx {
-            SessionFx::Commit { plan, .. } => plan.credentials.clone(), _ => None,
+            SessionFx::Commit { plan, .. } => plan.credentials.clone(),
+            SessionFx::Pump | SessionFx::Acknowledge(_) | SessionFx::Retire { .. }
+            | SessionFx::Ready { .. } | SessionFx::Capture { .. } | SessionFx::Work { .. }
+            | SessionFx::Cancel { .. } | SessionFx::PublishProfile(_) | SessionFx::Erase { .. }
+            | SessionFx::Coordinator(_) | SessionFx::RestartReply { .. } | SessionFx::Incident { .. }
+            | SessionFx::SelectionReply { .. } | SessionFx::BackReply { .. }
+            | SessionFx::PlaintextAnswer { .. } | SessionFx::RefreshCache { .. } => None,
         }).expect("the sign-in saves its credentials");
         assert_ne!(saved.user.uuid, "previous-owner", "the discovery save must not keep the previous profile");
         assert_ne!(saved.user.title, "Previous Name");
@@ -4903,7 +4952,13 @@ mod tests {
             outcome: CompletionOutcome::Durable(Operation::Write {
                 outcome: PersistOutcome::PersistedPlaintext, verified: true, protection: None }) }));
         let published = effects.iter().find_map(|fx| match fx {
-            SessionFx::PublishProfile(p) => Some(p.profile.clone()), _ => None,
+            SessionFx::PublishProfile(p) => Some(p.profile.clone()),
+            SessionFx::Commit { .. } | SessionFx::Pump | SessionFx::Acknowledge(_)
+            | SessionFx::Retire { .. } | SessionFx::Ready { .. } | SessionFx::Capture { .. }
+            | SessionFx::Work { .. } | SessionFx::Cancel { .. } | SessionFx::Erase { .. }
+            | SessionFx::Coordinator(_) | SessionFx::RestartReply { .. } | SessionFx::Incident { .. }
+            | SessionFx::SelectionReply { .. } | SessionFx::BackReply { .. }
+            | SessionFx::PlaintextAnswer { .. } | SessionFx::RefreshCache { .. } => None,
         }).expect("the sign-in publishes who is watching");
         let account = owner.common.persisted.account(published.as_ref());
         assert_eq!(account.name.as_deref(), Some("Demo"), "the chip names the account that signed in");
@@ -4943,7 +4998,14 @@ mod tests {
             }, true);
             let effects = step(&mut owner, SessionEvent::Result(signed_in));
             effects.iter().find_map(|fx| match fx {
-                SessionFx::Commit { plan, .. } => plan.credentials.clone(), _ => None,
+                SessionFx::Commit { plan, .. } => plan.credentials.clone(),
+                SessionFx::Pump | SessionFx::Acknowledge(_) | SessionFx::Retire { .. }
+                | SessionFx::Ready { .. } | SessionFx::Capture { .. } | SessionFx::Work { .. }
+                | SessionFx::Cancel { .. } | SessionFx::PublishProfile(_) | SessionFx::Erase { .. }
+                | SessionFx::Coordinator(_) | SessionFx::RestartReply { .. }
+                | SessionFx::Incident { .. } | SessionFx::SelectionReply { .. }
+                | SessionFx::BackReply { .. } | SessionFx::PlaintextAnswer { .. }
+                | SessionFx::RefreshCache { .. } => None,
             }).expect("the sign-in saves its credentials")
         };
         let tile = |id: i64| UserTile { id, uuid: format!("owner-{id}"), title: "Synthetic".into(),
@@ -5088,15 +5150,42 @@ mod tests {
         assert!(!probe.contains("synthetic"));
     }
 
+    fn admit_profile_selection(owner: &mut SessionMachine) -> u32 {
+        let effects = step(owner, SessionEvent::Command(Command::SelectProfile { index: 0, pin: None }));
+        let req = owner.common.next_req;
+        let epoch = owner.common.epoch;
+        assert!(matches!(effects.last(), Some(SessionFx::Capture {
+            req: captured, epoch: captured_epoch, request: SessionReadRequest::ProfilePolicy,
+        }) if *captured == req && *captured_epoch == epoch));
+        assert!(owner.state.owns_work(req, &owner.common.pending[&req]));
+        assert!(owner.read_is_current(req, epoch, SessionReadRequest::ProfilePolicy));
+        let effects = step(owner, SessionEvent::Read(SessionReadReply {
+            addr: Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(req) },
+            epoch, value: SessionReadValue::ProfilePolicy { recently_unreachable: false },
+        }));
+        assert!(matches!(effects.as_slice(), [SessionFx::Work {
+            req: launched, input: SessionWork::ProfileSwitch { .. }, ..
+        }] if *launched == req));
+        let key = owner.common.pending[&req].key;
+        assert!(owner.work_is_current(req, key, AdmissionId(req)));
+        step(owner, SessionEvent::Admission(AdmissionReply {
+            addr: Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(req) },
+            key, correlation: AdmissionId(req), accepted: true,
+        }));
+        assert!(owner.common.pending[&req].admission == AdmissionState::Accepted(AdmissionId(req)));
+        assert!(owner.state.owns_work(req, &owner.common.pending[&req]));
+        req
+    }
+
     #[test]
     fn queued_running_terminal_is_revalidated_after_ready_ack_seats_new_profile() {
         let mut init = captured_session();
-        init.phase = Phase::Switching;
+        init.phase = Phase::Profiles;
+        init.users = vec![UserTile { uuid: "new-profile".into(), ..Default::default() }];
         init.persisted.account_token = "synthetic-account".into();
         init.persisted.user.uuid = "old-profile".into();
         let mut owner = SessionMachine::from_init(init);
-        let req = owner.allocate(SessionOp::ProfileSwitch, None).unwrap();
-        owner.common.pending.get_mut(&req).unwrap().admission = AdmissionState::Accepted(AdmissionId(req));
+        let req = admit_profile_selection(&mut owner);
         let epoch = owner.common.epoch;
         let expected = super::super::SessionIdentity::of(&owner.common.persisted);
         let make = |arrival, terminal, outcome| SessionEnvelope {
@@ -5125,6 +5214,7 @@ mod tests {
         assert_eq!(owner.state.phase(), Phase::Ready);
         assert_eq!(owner.common.persisted.user.uuid, "new-profile");
         assert!(owner.common.pending[&req].phase == StreamPhase::ProfileSeated);
+        assert!(owner.state.owns_work(req, &owner.common.pending[&req]));
         assert!(!owner.accepts(&terminal), "same body is invalid at the changed FIFO head");
         let seated = owner.publication();
         let effects = step(&mut owner, SessionEvent::Pump);
@@ -5138,7 +5228,13 @@ mod tests {
         assert!(effects.iter().all(|fx| matches!(fx, SessionFx::Retire { .. } | SessionFx::Acknowledge(_))),
             "rejected terminal must not emit another commit/profile publication/Ready");
         let receipts: Vec<_> = acked.iter().chain(&effects).filter_map(|fx| match fx {
-            SessionFx::Acknowledge(receipts) => Some(receipts.as_slice()), _ => None,
+            SessionFx::Acknowledge(receipts) => Some(receipts.as_slice()),
+            SessionFx::Commit { .. } | SessionFx::Pump | SessionFx::Retire { .. }
+            | SessionFx::Ready { .. } | SessionFx::Capture { .. } | SessionFx::Work { .. }
+            | SessionFx::Cancel { .. } | SessionFx::PublishProfile(_) | SessionFx::Erase { .. }
+            | SessionFx::Coordinator(_) | SessionFx::RestartReply { .. } | SessionFx::Incident { .. }
+            | SessionFx::SelectionReply { .. } | SessionFx::BackReply { .. }
+            | SessionFx::PlaintextAnswer { .. } | SessionFx::RefreshCache { .. } => None,
         }).flatten().copied().collect();
         assert!(receipts == [Receipt::of(&ready), Receipt::of(&terminal)]);
     }
@@ -5148,17 +5244,65 @@ mod tests {
         for (op, seated) in [(SessionOp::Login, false), (SessionOp::ProfileSwitch, false),
             (SessionOp::ProfileSwitch, true)] {
             let mut init = captured_session();
-            init.phase = if op == SessionOp::Login { Phase::Waiting }
-                else if seated { Phase::Ready } else { Phase::Switching };
+            init.persisted.account_token = "synthetic-account".into();
+            init.persisted.user.uuid = "old-profile".into();
+            if op == SessionOp::ProfileSwitch {
+                init.phase = Phase::Profiles;
+                init.users = vec![UserTile { uuid: "new-profile".into(), ..Default::default() }];
+            }
             let mut owner = SessionMachine::from_init(init);
-            let req = owner.allocate(op, None).unwrap();
-            let pending = owner.common.pending.get_mut(&req).unwrap();
-            pending.admission = AdmissionState::Accepted(AdmissionId(req));
-            if seated { pending.phase = StreamPhase::ProfileSeated; }
+            let req = if op == SessionOp::Login {
+                step(&mut owner, SessionEvent::Command(Command::StartLogin));
+                let req = owner.common.next_req;
+                let key = owner.common.pending[&req].key;
+                assert!(owner.work_is_current(req, key, AdmissionId(req)));
+                step(&mut owner, SessionEvent::Admission(AdmissionReply {
+                    addr: Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(req) },
+                    key, correlation: AdmissionId(req), accepted: true,
+                }));
+                let code = qr_event(&owner, req, 1, super::super::LoginProgress::CodeReady {
+                    epoch: owner.common.epoch, code: "ABCD".into(), qr_png: vec![1],
+                }, false);
+                assert!(owner.accepts(&code));
+                step(&mut owner, SessionEvent::Result(code));
+                assert_eq!(owner.state.phase(), Phase::Waiting);
+                req
+            } else { admit_profile_selection(&mut owner) };
+            if seated {
+                let epoch = owner.common.epoch;
+                let ready = SessionEnvelope {
+                    addr: Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(req) },
+                    key: owner.common.pending[&req].key, admission: AdmissionId(req),
+                    arrival: 1, terminal: false, lifecycle: None,
+                    outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::ProfileSwitch(
+                        super::super::ProfileSwitchProgress {
+                            epoch, expected: super::super::SessionIdentity::of(&owner.common.persisted),
+                            outcome: super::super::ProfileSwitchOutcomeProgress::Ready {
+                                delta: super::super::ProfileDelta {
+                                    user: UserRef { uuid: "new-profile".into(), token: "new-token".into(), ..Default::default() },
+                                    server: local_server(), sources: Vec::new(), cache: None,
+                                }, probes: Vec::new(),
+                            },
+                        }))),
+                };
+                assert!(owner.accepts(&ready));
+                let effects = step(&mut owner, SessionEvent::Result(ready));
+                assert!(effects.iter().any(|fx| matches!(fx, SessionFx::Commit { .. })));
+                assert!(owner.commit_is_current(req, epoch, 1));
+                step(&mut owner, SessionEvent::Commit(CommitReply {
+                    req, epoch, arrival: 1, admission: CommitAdmission::RegistryOnly,
+                }));
+                assert_eq!(owner.state.phase(), Phase::Ready);
+                assert!(owner.common.pending[&req].phase == StreamPhase::ProfileSeated);
+            }
+            assert!(owner.state.owns_work(req, &owner.common.pending[&req]));
+            assert!(owner.common.pending[&req].admission == AdmissionState::Accepted(AdmissionId(req)));
             // Wrong inner epoch; the outer header still identifies this admitted terminal.
-            let record = qr_event(&owner, req, 1, super::super::LoginProgress::Failed {
+            let record = qr_event(&owner, req, 2, super::super::LoginProgress::Failed {
                 epoch: owner.common.epoch + 1, message: "rejected payload text".into(), incident: crate::auth::synthetic_incident(), plaintext: None, account: None
             }, true);
+            assert!(owner.accepts_header(&record));
+            assert!(!owner.accepts(&record));
             step(&mut owner, SessionEvent::Result(record));
             assert!(owner.common.pending.is_empty());
             assert!(owner.common.pending_commit.is_none());
@@ -5191,10 +5335,19 @@ mod tests {
     fn envelope_validation_keeps_full_epoch_and_exact_destination() {
         use plx_machine::machine::RequestId;
         let mut init = captured_session();
-        init.epoch = 0x1_0000_0001;
+        init.epoch = 0x1_0000_0000;
         let mut owner = SessionMachine::from_init(init);
-        let req = owner.allocate(SessionOp::Login, None).unwrap();
-        owner.common.pending.get_mut(&req).unwrap().admission = AdmissionState::Accepted(AdmissionId(req));
+        step(&mut owner, SessionEvent::Command(Command::StartLogin));
+        let req = owner.common.next_req;
+        let key = owner.common.pending[&req].key;
+        assert_eq!(owner.common.epoch, 0x1_0000_0001);
+        assert!(owner.work_is_current(req, key, AdmissionId(req)));
+        step(&mut owner, SessionEvent::Admission(AdmissionReply {
+            addr: Addr { to: MachineId::Session, req: RequestId(req) },
+            key, correlation: AdmissionId(req), accepted: true,
+        }));
+        assert!(owner.state.owns_work(req, &owner.common.pending[&req]));
+        assert!(owner.common.pending[&req].admission == AdmissionState::Accepted(AdmissionId(req)));
         let mut envelope = SessionEnvelope {
             addr: Addr { to: MachineId::Session, req: RequestId(req) },
             key: SessionWorkKey { epoch: 1, op: SessionOp::Login },
@@ -5245,7 +5398,12 @@ mod tests {
         let effects = step(&mut owner, SessionEvent::Result(envelope));
         let plan = effects.iter().find_map(|fx| match fx {
             SessionFx::Commit { plan, .. } => Some(plan),
-            _ => None,
+            SessionFx::Pump | SessionFx::Acknowledge(_) | SessionFx::Retire { .. }
+            | SessionFx::Ready { .. } | SessionFx::Capture { .. } | SessionFx::Work { .. }
+            | SessionFx::Cancel { .. } | SessionFx::PublishProfile(_) | SessionFx::Erase { .. }
+            | SessionFx::Coordinator(_) | SessionFx::RestartReply { .. } | SessionFx::Incident { .. }
+            | SessionFx::SelectionReply { .. } | SessionFx::BackReply { .. }
+            | SessionFx::PlaintextAnswer { .. } | SessionFx::RefreshCache { .. } => None,
         }).expect("a None-fresh endpoint reply must still commit its probe");
         assert_eq!(plan.registry.len(), 1, "nothing to INSTALL — the probe is the whole plan");
         assert!(
@@ -5321,7 +5479,12 @@ mod tests {
         let effects = step(&mut owner, SessionEvent::Result(envelope));
         let plan = effects.iter().find_map(|fx| match fx {
             SessionFx::Commit { plan, .. } => Some(plan),
-            _ => None,
+            SessionFx::Pump | SessionFx::Acknowledge(_) | SessionFx::Retire { .. }
+            | SessionFx::Ready { .. } | SessionFx::Capture { .. } | SessionFx::Work { .. }
+            | SessionFx::Cancel { .. } | SessionFx::PublishProfile(_) | SessionFx::Erase { .. }
+            | SessionFx::Coordinator(_) | SessionFx::RestartReply { .. } | SessionFx::Incident { .. }
+            | SessionFx::SelectionReply { .. } | SessionFx::BackReply { .. }
+            | SessionFx::PlaintextAnswer { .. } | SessionFx::RefreshCache { .. } => None,
         }).expect("an endpoint reply that repairs the profile record must still commit");
         assert!(
             plan.credentials.is_some(),
@@ -5358,7 +5521,12 @@ mod tests {
         let effects = step(&mut owner, SessionEvent::Result(envelope));
         let plan = effects.iter().find_map(|fx| match fx {
             SessionFx::Commit { plan, .. } => Some(plan),
-            _ => None,
+            SessionFx::Pump | SessionFx::Acknowledge(_) | SessionFx::Retire { .. }
+            | SessionFx::Ready { .. } | SessionFx::Capture { .. } | SessionFx::Work { .. }
+            | SessionFx::Cancel { .. } | SessionFx::PublishProfile(_) | SessionFx::Erase { .. }
+            | SessionFx::Coordinator(_) | SessionFx::RestartReply { .. } | SessionFx::Incident { .. }
+            | SessionFx::SelectionReply { .. } | SessionFx::BackReply { .. }
+            | SessionFx::PlaintextAnswer { .. } | SessionFx::RefreshCache { .. } => None,
         }).expect("NoReachable with a non-empty settled list must still commit");
         assert_eq!(plan.registry.len(), settled.len(), "one RegistryPlan::Probe per settled probe, no roster Install");
         assert!(plan.registry.iter().all(|p| matches!(p, RegistryPlan::Probe(_))),
@@ -5400,7 +5568,13 @@ mod tests {
         };
         let activate_effects = step(owner, SessionEvent::Result(activate));
         let activate_plan = activate_effects.iter().find_map(|effect| match effect {
-            SessionFx::Commit { plan, .. } => Some(plan.clone()), _ => None,
+            SessionFx::Commit { plan, .. } => Some(plan.clone()),
+            SessionFx::Pump | SessionFx::Acknowledge(_) | SessionFx::Retire { .. }
+            | SessionFx::Ready { .. } | SessionFx::Capture { .. } | SessionFx::Work { .. }
+            | SessionFx::Cancel { .. } | SessionFx::PublishProfile(_) | SessionFx::Erase { .. }
+            | SessionFx::Coordinator(_) | SessionFx::RestartReply { .. } | SessionFx::Incident { .. }
+            | SessionFx::SelectionReply { .. } | SessionFx::BackReply { .. }
+            | SessionFx::PlaintextAnswer { .. } | SessionFx::RefreshCache { .. } => None,
         }).expect("the progress observation reaches the commit boundary");
         step(owner, SessionEvent::Commit(CommitReply {
             req, epoch, arrival: 1, admission: CommitAdmission::RegistryOnly,
@@ -5429,7 +5603,13 @@ mod tests {
         };
         let reconcile_effects = step(owner, SessionEvent::Result(reconcile));
         let reconcile_plan = reconcile_effects.iter().find_map(|effect| match effect {
-            SessionFx::Commit { plan, .. } => Some(plan.clone()), _ => None,
+            SessionFx::Commit { plan, .. } => Some(plan.clone()),
+            SessionFx::Pump | SessionFx::Acknowledge(_) | SessionFx::Retire { .. }
+            | SessionFx::Ready { .. } | SessionFx::Capture { .. } | SessionFx::Work { .. }
+            | SessionFx::Cancel { .. } | SessionFx::PublishProfile(_) | SessionFx::Erase { .. }
+            | SessionFx::Coordinator(_) | SessionFx::RestartReply { .. } | SessionFx::Incident { .. }
+            | SessionFx::SelectionReply { .. } | SessionFx::BackReply { .. }
+            | SessionFx::PlaintextAnswer { .. } | SessionFx::RefreshCache { .. } => None,
         }).expect("the terminal observation reaches the commit boundary");
         step(owner, SessionEvent::Commit(CommitReply {
             req, epoch, arrival: 2, admission: CommitAdmission::RegistryOnly,
@@ -5508,11 +5688,10 @@ mod tests {
             extensions: Default::default(),
         });
         let mut init = SessionInit::captured(persisted);
-        init.phase = Phase::Switching;
+        init.phase = Phase::Profiles;
         init.users = vec![UserTile { uuid: "u-kid".into(), title: "Kid".into(), ..Default::default() }];
         let mut owner = SessionMachine::from_init(init);
-        let req = owner.allocate(SessionOp::ProfileSwitch, None).unwrap();
-        owner.common.pending.get_mut(&req).unwrap().admission = AdmissionState::Accepted(AdmissionId(req));
+        let req = admit_profile_selection(&mut owner);
         let epoch = owner.common.epoch;
         let expected = super::super::SessionIdentity::of(&owner.common.persisted);
         let mut tokenless_secondary = secondary.clone();
@@ -5543,7 +5722,12 @@ mod tests {
             SessionFx::Commit { req, epoch, arrival, .. } => Some(CommitReply {
                 req: *req, epoch: *epoch, arrival: *arrival, admission: CommitAdmission::RegistryOnly,
             }),
-            _ => None,
+            SessionFx::Pump | SessionFx::Acknowledge(_) | SessionFx::Retire { .. }
+            | SessionFx::Ready { .. } | SessionFx::Capture { .. } | SessionFx::Work { .. }
+            | SessionFx::Cancel { .. } | SessionFx::PublishProfile(_) | SessionFx::Erase { .. }
+            | SessionFx::Coordinator(_) | SessionFx::RestartReply { .. } | SessionFx::Incident { .. }
+            | SessionFx::SelectionReply { .. } | SessionFx::BackReply { .. }
+            | SessionFx::PlaintextAnswer { .. } | SessionFx::RefreshCache { .. } => None,
         }).expect("the profile switch must commit");
         step(&mut owner, SessionEvent::Commit(reply));
 
@@ -5569,15 +5753,30 @@ mod tests {
             SessionFx::Commit { req, epoch, arrival, .. } => Some(CommitReply {
                 req: *req, epoch: *epoch, arrival: *arrival, admission: CommitAdmission::RegistryOnly,
             }),
-            _ => None,
+            SessionFx::Pump | SessionFx::Acknowledge(_) | SessionFx::Retire { .. }
+            | SessionFx::Ready { .. } | SessionFx::Capture { .. } | SessionFx::Work { .. }
+            | SessionFx::Cancel { .. } | SessionFx::PublishProfile(_) | SessionFx::Erase { .. }
+            | SessionFx::Coordinator(_) | SessionFx::RestartReply { .. } | SessionFx::Incident { .. }
+            | SessionFx::SelectionReply { .. } | SessionFx::BackReply { .. }
+            | SessionFx::PlaintextAnswer { .. } | SessionFx::RefreshCache { .. } => None,
         }).expect("the unavailable-secondary roster must commit");
         step(&mut owner, SessionEvent::Commit(reply));
 
-        step(&mut owner, SessionEvent::Command(Command::SelectProfile { index: 0, pin: None }));
+        step(&mut owner, SessionEvent::Command(Command::StartSwitch(Picker::ChangeProfile)));
+        let effects = step(&mut owner, SessionEvent::Command(Command::SelectProfile { index: 0, pin: None }));
+        assert!(!effects.iter().any(|fx| matches!(fx, SessionFx::Capture { .. } | SessionFx::Work { .. })));
+        assert!(owner.needs_ready_commit());
         let effects = step(&mut owner, SessionEvent::Command(Command::TakeReady));
         let final_plan = effects.iter().find_map(|effect| match effect {
-            SessionFx::Commit { plan, .. } => Some(plan), _ => None,
+            SessionFx::Commit { plan, .. } => Some(plan),
+            SessionFx::Pump | SessionFx::Acknowledge(_) | SessionFx::Retire { .. }
+            | SessionFx::Ready { .. } | SessionFx::Capture { .. } | SessionFx::Work { .. }
+            | SessionFx::Cancel { .. } | SessionFx::PublishProfile(_) | SessionFx::Erase { .. }
+            | SessionFx::Coordinator(_) | SessionFx::RestartReply { .. } | SessionFx::Incident { .. }
+            | SessionFx::SelectionReply { .. } | SessionFx::BackReply { .. }
+            | SessionFx::PlaintextAnswer { .. } | SessionFx::RefreshCache { .. } => None,
         }).expect("the same-user shortcut must pass through take_ready");
+        assert!(owner.commit_is_current(owner.common.next_req, owner.common.epoch, 0));
         let patch = final_plan.credentials.as_ref().expect("take_ready saves the live session");
         assert_eq!(patch.sources.iter().find(|source| source.machine_id == "b").unwrap().token,
             "kid-b-token", "B remains live even though its identity probe was unavailable");
@@ -5668,13 +5867,21 @@ mod tests {
         };
         let effects = step(&mut owner, SessionEvent::Result(envelope));
         let plan = effects.iter().find_map(|effect| match effect {
-            SessionFx::Commit { plan, .. } => Some(plan), _ => None,
+            SessionFx::Commit { plan, .. } => Some(plan),
+            SessionFx::Pump | SessionFx::Acknowledge(_) | SessionFx::Retire { .. }
+            | SessionFx::Ready { .. } | SessionFx::Capture { .. } | SessionFx::Work { .. }
+            | SessionFx::Cancel { .. } | SessionFx::PublishProfile(_) | SessionFx::Erase { .. }
+            | SessionFx::Coordinator(_) | SessionFx::RestartReply { .. } | SessionFx::Incident { .. }
+            | SessionFx::SelectionReply { .. } | SessionFx::BackReply { .. }
+            | SessionFx::PlaintextAnswer { .. } | SessionFx::RefreshCache { .. } => None,
         }).expect("the admitted endpoint changes the roster");
         let patch = plan.credentials.as_ref().unwrap();
         assert_eq!(patch.server.machine_id, admitted.machine_id);
         let install = plan.registry.iter().find_map(|plan| match plan {
             RegistryPlan::Install { sources, primary, commit } => Some((sources, primary, commit)),
-            _ => None,
+            RegistryPlan::DevInstall { .. } | RegistryPlan::Primary { .. }
+            | RegistryPlan::Activate { .. } | RegistryPlan::Endpoint { .. } | RegistryPlan::Probe(_)
+            | RegistryPlan::Revoke => None,
         }).expect("refresh installs an admitted roster");
         assert_eq!(install.1.and_then(|index| install.0.get(index))
             .map(|source| source.machine_id.as_str()), Some("preferred-machine"));
@@ -5730,11 +5937,19 @@ mod tests {
         };
         let effects = step(&mut owner, SessionEvent::Result(envelope));
         let plan = effects.iter().find_map(|effect| match effect {
-            SessionFx::Commit { plan, .. } => Some(plan), _ => None,
+            SessionFx::Commit { plan, .. } => Some(plan),
+            SessionFx::Pump | SessionFx::Acknowledge(_) | SessionFx::Retire { .. }
+            | SessionFx::Ready { .. } | SessionFx::Capture { .. } | SessionFx::Work { .. }
+            | SessionFx::Cancel { .. } | SessionFx::PublishProfile(_) | SessionFx::Erase { .. }
+            | SessionFx::Coordinator(_) | SessionFx::RestartReply { .. } | SessionFx::Incident { .. }
+            | SessionFx::SelectionReply { .. } | SessionFx::BackReply { .. }
+            | SessionFx::PlaintextAnswer { .. } | SessionFx::RefreshCache { .. } => None,
         }).expect("the primary address change commits the refreshed roster");
         let install = plan.registry.iter().find_map(|plan| match plan {
             RegistryPlan::Install { sources, primary, commit } => Some((sources, primary, commit)),
-            _ => None,
+            RegistryPlan::DevInstall { .. } | RegistryPlan::Primary { .. }
+            | RegistryPlan::Activate { .. } | RegistryPlan::Endpoint { .. } | RegistryPlan::Probe(_)
+            | RegistryPlan::Revoke => None,
         }).expect("the address change replaces the live registry");
         assert!(install.0.iter().any(|source| source.machine_id == "secondary"
             && source.token == "fresh-secondary-token"),
@@ -5762,7 +5977,13 @@ mod tests {
             let effects = step(&mut owner, SessionEvent::Command(Command::StartSwitch(Picker::ChangeProfile)));
             let (req, key) = effects.iter().find_map(|fx| match fx {
                 SessionFx::Work { req, key, input: SessionWork::HomeRoster { .. }, .. } => Some((*req, *key)),
-                _ => None,
+                SessionFx::Commit { .. } | SessionFx::Pump | SessionFx::Acknowledge(_)
+                | SessionFx::Retire { .. } | SessionFx::Ready { .. } | SessionFx::Capture { .. }
+                | SessionFx::Work { .. } | SessionFx::Cancel { .. } | SessionFx::PublishProfile(_)
+                | SessionFx::Erase { .. } | SessionFx::Coordinator(_) | SessionFx::RestartReply { .. }
+                | SessionFx::Incident { .. } | SessionFx::SelectionReply { .. }
+                | SessionFx::BackReply { .. } | SessionFx::PlaintextAnswer { .. }
+                | SessionFx::RefreshCache { .. } => None,
             }).expect("Change profile fetches the Home roster");
             settle_picker_commit(&mut owner, &effects);
             let envelope = roster_envelope(&mut owner, req, key, users);
@@ -5788,7 +6009,13 @@ mod tests {
         let effects = step(&mut owner, SessionEvent::Command(Command::StartSwitch(Picker::ChangeProfile)));
         let (req, key) = effects.iter().find_map(|fx| match fx {
             SessionFx::Work { req, key, input: SessionWork::HomeRoster { .. }, .. } => Some((*req, *key)),
-            _ => None,
+            SessionFx::Commit { .. } | SessionFx::Pump | SessionFx::Acknowledge(_)
+            | SessionFx::Retire { .. } | SessionFx::Ready { .. } | SessionFx::Capture { .. }
+            | SessionFx::Work { .. } | SessionFx::Cancel { .. } | SessionFx::PublishProfile(_)
+            | SessionFx::Erase { .. } | SessionFx::Coordinator(_) | SessionFx::RestartReply { .. }
+            | SessionFx::Incident { .. } | SessionFx::SelectionReply { .. }
+            | SessionFx::BackReply { .. } | SessionFx::PlaintextAnswer { .. }
+            | SessionFx::RefreshCache { .. } => None,
         }).expect("Change profile fetches the Home roster");
         assert_eq!(owner.state.phase(), Phase::Profiles);
         settle_picker_commit(&mut owner, &effects);
@@ -5802,7 +6029,12 @@ mod tests {
     fn settle_picker_commit(owner: &mut SessionMachine, effects: &[SessionFx]) {
         let (req, epoch) = effects.iter().find_map(|fx| match fx {
             SessionFx::Commit { req, epoch, .. } => Some((*req, *epoch)),
-            _ => None,
+            SessionFx::Pump | SessionFx::Acknowledge(_) | SessionFx::Retire { .. }
+            | SessionFx::Ready { .. } | SessionFx::Capture { .. } | SessionFx::Work { .. }
+            | SessionFx::Cancel { .. } | SessionFx::PublishProfile(_) | SessionFx::Erase { .. }
+            | SessionFx::Coordinator(_) | SessionFx::RestartReply { .. } | SessionFx::Incident { .. }
+            | SessionFx::SelectionReply { .. } | SessionFx::BackReply { .. }
+            | SessionFx::PlaintextAnswer { .. } | SessionFx::RefreshCache { .. } => None,
         }).expect("rig: the picker commits its registry plan");
         step(owner, SessionEvent::Commit(CommitReply { req, epoch, arrival: 0,
             admission: CommitAdmission::RegistryOnly }));
@@ -5856,7 +6088,13 @@ mod tests {
         let effects = step(&mut owner, SessionEvent::Command(Command::StartSwitch(Picker::ChangeProfile)));
         let (req, key) = effects.iter().find_map(|fx| match fx {
             SessionFx::Work { req, key, input: SessionWork::HomeRoster { .. }, .. } => Some((*req, *key)),
-            _ => None,
+            SessionFx::Commit { .. } | SessionFx::Pump | SessionFx::Acknowledge(_)
+            | SessionFx::Retire { .. } | SessionFx::Ready { .. } | SessionFx::Capture { .. }
+            | SessionFx::Work { .. } | SessionFx::Cancel { .. } | SessionFx::PublishProfile(_)
+            | SessionFx::Erase { .. } | SessionFx::Coordinator(_) | SessionFx::RestartReply { .. }
+            | SessionFx::Incident { .. } | SessionFx::SelectionReply { .. }
+            | SessionFx::BackReply { .. } | SessionFx::PlaintextAnswer { .. }
+            | SessionFx::RefreshCache { .. } => None,
         }).unwrap();
         settle_picker_commit(&mut owner, &effects);
         let envelope = roster_envelope(&mut owner, req, key, Some(Vec::new()));
@@ -5885,7 +6123,12 @@ mod tests {
         let effects = step(&mut owner, SessionEvent::Command(Command::ActivateDevBootstrap));
         let (req, epoch) = effects.iter().find_map(|fx| match fx {
             SessionFx::Commit { req, epoch, .. } => Some((*req, *epoch)),
-            _ => None,
+            SessionFx::Pump | SessionFx::Acknowledge(_) | SessionFx::Retire { .. }
+            | SessionFx::Ready { .. } | SessionFx::Capture { .. } | SessionFx::Work { .. }
+            | SessionFx::Cancel { .. } | SessionFx::PublishProfile(_) | SessionFx::Erase { .. }
+            | SessionFx::Coordinator(_) | SessionFx::RestartReply { .. } | SessionFx::Incident { .. }
+            | SessionFx::SelectionReply { .. } | SessionFx::BackReply { .. }
+            | SessionFx::PlaintextAnswer { .. } | SessionFx::RefreshCache { .. } => None,
         }).expect("rig: the dev boundary commits");
         step(&mut owner, SessionEvent::Commit(CommitReply { req, epoch, arrival: 0,
             admission: CommitAdmission::RegistryOnly }));
@@ -5999,7 +6242,13 @@ mod tests {
         let effects = step(&mut owner, SessionEvent::Command(Command::StartSwitch(Picker::ChangeProfile)));
         let (req, key) = effects.iter().find_map(|fx| match fx {
             SessionFx::Work { req, key, input: SessionWork::HomeRoster { .. }, .. } => Some((*req, *key)),
-            _ => None,
+            SessionFx::Commit { .. } | SessionFx::Pump | SessionFx::Acknowledge(_)
+            | SessionFx::Retire { .. } | SessionFx::Ready { .. } | SessionFx::Capture { .. }
+            | SessionFx::Work { .. } | SessionFx::Cancel { .. } | SessionFx::PublishProfile(_)
+            | SessionFx::Erase { .. } | SessionFx::Coordinator(_) | SessionFx::RestartReply { .. }
+            | SessionFx::Incident { .. } | SessionFx::SelectionReply { .. }
+            | SessionFx::BackReply { .. } | SessionFx::PlaintextAnswer { .. }
+            | SessionFx::RefreshCache { .. } => None,
         }).unwrap();
         settle_picker_commit(&mut owner, &effects);
         let envelope = roster_envelope(&mut owner, req, key, Some(Vec::new()));
@@ -6019,7 +6268,13 @@ mod tests {
         let effects = step(&mut owner, SessionEvent::Command(Command::StartSwitch(Picker::ChangeProfile)));
         let (req, key) = effects.iter().find_map(|fx| match fx {
             SessionFx::Work { req, key, input: SessionWork::HomeRoster { .. }, .. } => Some((*req, *key)),
-            _ => None,
+            SessionFx::Commit { .. } | SessionFx::Pump | SessionFx::Acknowledge(_)
+            | SessionFx::Retire { .. } | SessionFx::Ready { .. } | SessionFx::Capture { .. }
+            | SessionFx::Work { .. } | SessionFx::Cancel { .. } | SessionFx::PublishProfile(_)
+            | SessionFx::Erase { .. } | SessionFx::Coordinator(_) | SessionFx::RestartReply { .. }
+            | SessionFx::Incident { .. } | SessionFx::SelectionReply { .. }
+            | SessionFx::BackReply { .. } | SessionFx::PlaintextAnswer { .. }
+            | SessionFx::RefreshCache { .. } => None,
         }).expect("rig: an account token is enough to ask for a roster");
         if effects.iter().any(|fx| matches!(fx, SessionFx::Commit { .. })) {
             settle_picker_commit(&mut owner, &effects);

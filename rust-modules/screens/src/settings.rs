@@ -1121,7 +1121,7 @@ pub struct RootPage {
     session_watch: Option<(u64, bool, u32)>,
     inputs: crate::registry::ScreenInputs,
     session_snapshot: std::sync::Arc<plx_plex::plex::session::Session>,
-    pending_auto: Option<(bool, plx_base::storage_worker::TypedTicket<bool>)>,
+    pending_auto: Option<(bool, std::sync::mpsc::Receiver<bool>)>,
     /// The hero trailer switch picked here and not yet answered: the value the row shows meanwhile,
     /// and the receipt of its `route::choose` (Confirm) write. A `false` (or dropped) receipt means
     /// the pick was not saved, and the row goes back to the stored value.
@@ -1560,11 +1560,10 @@ impl RootPage {
             Action::Door => {}
             Action::AutoSignIn => {
                 let on = !self.state.auto_sign_in;
-                if let Ok(ticket) = plx_plex::plex::session::queue_update_ticket(move |current|
-                    (current.auto_sign_in() != on).then(|| current.with_auto_sign_in(on))) {
-                    self.auto_receipt = None;
-                    self.pending_auto = Some((on, ticket));
-                }
+                let (reply, receipt) = std::sync::mpsc::channel();
+                fx.push(Fx::App(AppFx::Preferences(super::registry::PreferenceCmd::AutoSignIn { on, reply })));
+                self.auto_receipt = None;
+                self.pending_auto = Some((on, receipt));
                 self.rebuild(directory);
             }
             Action::TrailerAutoplay => {
@@ -1588,17 +1587,16 @@ impl RootPage {
                 if !on {
                     // ON asks first — the same question the sign-in and the failure read-outs
                     // put, seated on *Not now*; only its *Connect* allows (`alert_answer`).
-                    let sid = plx_plex::plex::id_of_machine(&machine);
+                    let sid = self.inputs.servers.iter().find(|(id, _)| id == &machine).map(|(_, sid)| *sid);
                     self.alert.open(&machine, sid, MachineId::Instance(InstanceId(0)), fx);
                     return;
                 }
-                // OFF is immediate: `grant::record` withdraws the grant NOW, before the
-                // preferences write lands, and records the revocation for this account.
-                plx_base::eventlog::log("settings: unencrypted connections turned off for one server");
-                let account = plx_plex::plex::grant::account_key(&self.session_snapshot.account_token);
-                if plx_plex::plex::grant::record(&account, &machine, PlaintextChoice::Revoked).is_ok() {
-                    self.pending_plaintext = Some((machine, false));
-                }
+                // The same-drain Session runner withdraws the grant before its storage write.
+                fx.push(Fx::App(AppFx::Session(plx_session::auth::SessionCmd::AnswerPlaintext {
+                    machine_id: machine.clone(), choice: PlaintextChoice::Revoked,
+                    sid: self.inputs.servers.iter().find(|(id, _)| id == &machine).map(|(_, sid)| *sid),
+                })));
+                self.pending_plaintext = Some((machine, false));
                 self.rebuild(directory);
             }
         }

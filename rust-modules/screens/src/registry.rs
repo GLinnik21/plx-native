@@ -124,6 +124,7 @@ pub struct AccountPreferenceReply {
 }
 
 pub enum PreferenceCmd {
+    AutoSignIn { on: bool, reply: std::sync::mpsc::Sender<bool> },
     /// Demand viewer features; the app coalesces this profile-scoped read.
     EnsureMarkerAccess,
     ChooseMarker { kind: plx_data::metadata::MarkerKind, mode: plx_plex::plex::session::MarkerSkipMode,

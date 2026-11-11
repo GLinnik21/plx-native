@@ -181,7 +181,7 @@ impl Stores {
     /// the pin write was observed.
     #[cfg(any(test, feature = "test-support"))]
     pub fn browse_run_for_test(&self, cmd: browse::BrowseCmd) -> bool {
-        self.browse_run(cmd, &browse::BrowseRosterInput {
+        self.browse_run(cmd, &browse::BrowseRosterInput { tenure: 0,
             keys: &Default::default(), session: &Default::default(),
             visible_generation: 0, settled: false, profile_key: "",
         })
@@ -765,6 +765,9 @@ impl StoreWork {
 /// lane a store is pumped on, a job carries the request itself and the port its answer goes to.
 #[derive(Debug, PartialEq)]
 pub enum StoreJob {
+    /// A profile-addressed preference edit, merged on the serial storage runner. Not taped.
+    BrowsePreferences(plx_machine::job::Job<crate::browse::preferences_job::BrowsePreferencesReq>,
+        crate::browse::preferences_job::BrowsePreferencesPort),
     WatchlistList(plx_machine::job::Job<watchlist_job::ListReq>, watchlist_job::WatchlistStreamPort),
     WatchlistRematch(plx_machine::job::Job<watchlist_job::RematchReq>, watchlist_job::WatchlistStreamPort),
     WatchlistDelta(plx_machine::job::Job<watchlist_job::DeltaReq>, watchlist_job::WatchlistStreamPort),
@@ -898,6 +901,7 @@ impl StoreJob {
             | Self::ViewReconcile(..)
             | Self::Search(..)
             | Self::SaveRecents(..)
+            | Self::BrowsePreferences(..)
             | Self::ViewWrite(..)
             | Self::MetaSeason(..)
             | Self::MetaEpisodes(..) => Admission::Direct,
@@ -921,7 +925,7 @@ impl StoreJob {
             Self::SubtitleSearch(..) => StoreId::SubtitleSearch,
             Self::ViewReconcile(..) => StoreId::ViewReconcile,
             Self::Hubs(..) => StoreId::Hubs,
-            Self::BrowseHubs(..) | Self::BrowseDirectory(..) | Self::BrowsePage(..) | Self::BrowseDiscovery(..) => StoreId::Browse,
+            Self::BrowsePreferences(..) | Self::BrowseHubs(..) | Self::BrowseDirectory(..) | Self::BrowsePage(..) | Self::BrowseDiscovery(..) => StoreId::Browse,
             Self::Search(..) | Self::SaveRecents(..) => StoreId::Search,
             Self::ViewWrite(..) => StoreId::ViewState,
         }

@@ -23,7 +23,11 @@ fn safe_effect_diagnostics(effects: &[SessionFx]) -> Vec<String> {
             SessionFx::BackReply { to, resumed } =>
                 format!("{kind:?} instance={} correlation={} resumed={resumed}",
                     to.instance, to.correlation),
-            _ => format!("{kind:?}"),
+            SessionFx::Pump | SessionFx::Acknowledge(_) | SessionFx::Ready { .. }
+            | SessionFx::Capture { .. } | SessionFx::PublishProfile(_) | SessionFx::Coordinator(_)
+            | SessionFx::RestartReply { .. } | SessionFx::Incident { .. }
+            | SessionFx::SelectionReply { .. } | SessionFx::PlaintextAnswer { .. }
+            | SessionFx::RefreshCache { .. } => format!("{kind:?}"),
         }
     }).collect()
 }
@@ -294,7 +298,13 @@ fn picker() -> SessionMachine {
         SessionFx::Commit { .. }, SessionFx::Work { input: SessionWork::ServerRoster { .. }, .. },
         SessionFx::Work { input: SessionWork::HomeRoster { .. }, .. }]));
     let reply = fx.iter().find_map(|f| match f { SessionFx::Commit { req, epoch, arrival, .. } =>
-        Some(CommitReply { req: *req, epoch: *epoch, arrival: *arrival, admission: CommitAdmission::RegistryOnly }), _ => None }).unwrap();
+        Some(CommitReply { req: *req, epoch: *epoch, arrival: *arrival, admission: CommitAdmission::RegistryOnly }),
+        SessionFx::Pump | SessionFx::Acknowledge(_) | SessionFx::Retire { .. } | SessionFx::Ready { .. }
+        | SessionFx::Capture { .. } | SessionFx::Work { .. } | SessionFx::Cancel { .. }
+        | SessionFx::PublishProfile(_) | SessionFx::Erase { .. } | SessionFx::Coordinator(_)
+        | SessionFx::RestartReply { .. } | SessionFx::Incident { .. } | SessionFx::SelectionReply { .. }
+        | SessionFx::BackReply { .. } | SessionFx::PlaintextAnswer { .. }
+        | SessionFx::RefreshCache { .. } => None }).unwrap();
     let settled = step(&mut owner, SessionEvent::Commit(reply));
     assert!(matches!(settled.as_slice(), [SessionFx::Retire { .. }]));
     owner

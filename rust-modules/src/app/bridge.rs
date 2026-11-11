@@ -91,23 +91,26 @@ pub(crate) struct AppHost;
 struct BrowseContext {
     session: std::sync::Arc<plx_plex::plex::session::Session>,
     visible_generation: u64,
+    tenure: u64,
     settled: bool,
     profile_key: String,
 }
 
 impl BrowseContext {
     fn capture(stores: &plx_data::stores::Stores) -> Self {
+        let tenure = plx_plex::plex::session::tenure();
         stores.browse.borrow().observe_pin_write();
         Self {
             session: plx_plex::plex::session::peek(),
             visible_generation: plx_plex::plex::session::visible_generation(),
+            tenure,
             settled: plx_plex::plex::session::peek_settled().is_some(),
             profile_key: plx_plex::plex::session::current_profile_key(),
         }
     }
 
     fn input<'a>(&'a self, keys: &'a plx_plex::plex::ClientKeys) -> plx_data::browse::BrowseRosterInput<'a> {
-        plx_data::browse::BrowseRosterInput {
+        plx_data::browse::BrowseRosterInput { tenure: self.tenure,
             keys, session: &self.session, visible_generation: self.visible_generation,
             settled: self.settled, profile_key: &self.profile_key,
         }
@@ -699,7 +702,7 @@ impl Bridge {
         store_runner: super::adapters::stores::StoreRunner) -> Self {
         let stores = plx_data::stores::Stores::default();
         let mut directory = plx_data::stores::browse::DirectorySnapshot::default();
-        let browse = stores.capture_browse(&mut directory, &plx_data::browse::BrowseRosterInput {
+        let browse = stores.capture_browse(&mut directory, &plx_data::browse::BrowseRosterInput { tenure: plx_plex::plex::session::tenure(),
             keys: &Default::default(), session: &init.persisted,
             visible_generation: 0, settled: false, profile_key: "",
         });
@@ -1445,6 +1448,13 @@ impl Bridge {
         }
         let key = (grant::revision(), before.0);
         next.current_server = self.client_keys.current();
+        let same_servers = self.client_keys.iter().filter_map(|(sid, _)| self.client_keys.facts(sid)
+            .map(|facts| (facts.machine_id.as_str(), sid)))
+            .eq(next.servers.iter().map(|(machine, sid)| (machine.as_str(), *sid)));
+        if !same_servers {
+            next.servers = std::sync::Arc::new(self.client_keys.iter().filter_map(|(sid, _)| self.client_keys.facts(sid)
+                .map(|facts| (facts.machine_id.clone(), sid))).collect());
+        }
         next.resolution_offered = plx_platform::tv::device::ui_resolution_offered();
         if self.screen_grant_key != Some(key) {
             let session = &grant_session;

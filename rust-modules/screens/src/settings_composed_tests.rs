@@ -146,7 +146,14 @@ impl Rig<InnerHost> for SurfaceRig {
         _parts: &CxParts<u32>,
         _out: &mut Effects<'_, InnerHost>,
     ) {
-        if let AppFx::Preferences(command) = effect { self.preference_commands.push(command); }
+        match effect {
+            AppFx::Preferences(command) => self.preference_commands.push(command),
+            AppFx::Session(plx_session::auth::SessionCmd::AnswerPlaintext { machine_id, choice, .. }) => {
+                let account = plx_plex::plex::grant::account_key(&plx_plex::plex::session::peek().account_token);
+                plx_plex::plex::grant::record(&account, &machine_id, choice).expect("fixture grant answer");
+            }
+            _ => {}
+        }
     }
     fn log(&mut self, _line: &str) {}
     fn prepare(&mut self, _b: &mut Budget, _present: &mut Present) {}

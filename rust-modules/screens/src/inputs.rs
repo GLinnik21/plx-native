@@ -19,6 +19,8 @@ pub struct ScreenInputs {
     pub revision: u64,
     pub profile: Arc<CurrentProfile>,
     pub current_server: ServerId,
+    /// Stable machine-to-slot identities captured from the host's S4 client keys.
+    pub servers: Arc<Vec<(String, ServerId)>>,
     pub grants: Arc<GrantInputs>,
     /// A host-local semantic revision, independent of server-roster changes.
     pub grant_generation: u64,
@@ -28,7 +30,7 @@ impl Default for ScreenInputs {
     fn default() -> Self {
         Self { session: Arc::new(Session::default()), settled: false, visible_generation: 0, revision: 0,
             profile: Arc::new(CurrentProfile { user: None, generation: 0, stamp: String::new() }),
-            current_server: ServerId::UNSET, grants: Arc::new(GrantInputs::default()),
+            current_server: ServerId::UNSET, servers: Default::default(), grants: Arc::new(GrantInputs::default()),
             grant_generation: 0, resolution_offered: false }
     }
 }
@@ -39,6 +41,7 @@ impl ScreenInputs {
             && self.settled == other.settled
             && self.session.ui_resolution() == other.session.ui_resolution()
             && self.current_server == other.current_server
+            && self.servers == other.servers
             && self.resolution_offered == other.resolution_offered
             && self.grant_generation == other.grant_generation
             && self.profile.generation == other.profile.generation
@@ -64,6 +67,12 @@ pub(crate) fn empty_fixture() -> &'static ScreenInputs {
 #[cfg(test)]
 pub(crate) fn capture_fixture() -> ScreenInputs {
     use plx_plex::plex::{grant, session};
+    let mut keys = plx_plex::plex::ClientKeys::default();
+    keys.refill_roster(plx_plex::plex::current_server(), plx_plex::plex::server_roster_gen(),
+        plx_plex::plex::server_facts_gen(), plx_plex::plex::server_ids(),
+        plx_plex::plex::client_for, plx_plex::plex::server_facts, plx_plex::plex::server_probe_result);
+    let servers = keys.iter().filter_map(|(sid, _)| keys.facts(sid)
+        .map(|facts| (facts.machine_id.clone(), sid))).collect();
     let settled = session::peek_settled();
     let stored = settled.clone().unwrap_or_else(session::peek);
     ScreenInputs { grants: Arc::new(GrantInputs { offers: grant::offers(),
@@ -72,7 +81,7 @@ pub(crate) fn capture_fixture() -> ScreenInputs {
         visible_generation: session::visible_generation(),
         revision: { let (cache, profile) = session::screen_input_revision(); cache.wrapping_add(profile) },
         profile: session::current_snapshot(),
-        current_server: plx_plex::plex::current_server(), grant_generation: grant::revision(),
+        current_server: plx_plex::plex::current_server(), servers: Arc::new(servers), grant_generation: grant::revision(),
         resolution_offered: plx_platform::tv::device::ui_resolution_offered() }
 }
 

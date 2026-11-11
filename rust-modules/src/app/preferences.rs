@@ -64,6 +64,19 @@ pub(super) fn execute(command: PreferenceCmd) {
         }
         // Every live setting saves through the one write door, in `choose_setting`.
         PreferenceCmd::Choose(choice, reply) => choose_setting(choice, reply),
+        PreferenceCmd::AutoSignIn { on, reply } => {
+            let refusal = reply.clone();
+            let expected = plx_plex::plex::session::peek();
+            let tenure = plx_plex::plex::session::tenure();
+            if plx_base::storage_worker::submit_retained(move || {
+                let saved = plx_plex::plex::session::update_guarded_with_outcome(|current| {
+                    if current.client_id != expected.client_id || current.account_token != expected.account_token { return None; }
+                    (current.auto_sign_in() != on).then(|| current.with_auto_sign_in(on))
+                }, || plx_plex::plex::session::tenure() == tenure).is_some_and(|write| write.outcome.persisted());
+                let _ = reply.send(saved);
+                plx_machine::idle::invalidate();
+            }).is_err() { let _ = refusal.send(false); }
+        }
         PreferenceCmd::UiResolution { mode, reply } => {
             let _ = plx_base::storage_worker::submit_retained(move || {
                 let _ = reply.send(plx_plex::plex::session::set_ui_resolution(mode));
