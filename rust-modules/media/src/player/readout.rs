@@ -25,6 +25,8 @@
 //! carries a speed change (read it, then step `RateReloadTaken`). `start_queued` is the release
 //! machine's answer, stepped by `PlayerAdapter::release_step` after every step of the machine.
 
+#![deny(clippy::wildcard_enum_match_arm)]
+
 use plx_playback_contract::adaptive::{AbrReadout, CarriedSeed, FailureEdit, SeedReadout};
 use plx_playback_contract::feed::{FeedRaw, PresentationTick, Stage};
 use plx_playback_contract::subtitle::Spec;

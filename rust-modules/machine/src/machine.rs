@@ -392,6 +392,28 @@ pub struct Stamped<H: Host> {
     pub fx: Fx<H>,
 }
 
+/// Assert the COMPLETE ordered stamped buffer without Eq/Debug on application effects.
+/// Items are (emitter, effect pattern), optionally with a pattern guard.
+#[cfg(any(test, feature = "test-support"))]
+#[macro_export]
+macro_rules! assert_fx {
+    ($actual:expr, [$(($from:expr, $pattern:pat $(if $guard:expr)?)),* $(,)?]) => {{
+        let actual = &$actual;
+        let mut effects = actual.iter();
+        let total = actual.len();
+        $(
+            let index = total - effects.len();
+            let observed = effects.next().unwrap_or_else(|| panic!("missing effect at index {}", index));
+            assert_eq!(observed.from, $from, "wrong emitter at effect index {}", index);
+            assert!(matches!(&observed.fx, $pattern $(if $guard)?),
+                "wrong effect at index {}: expected {}", index, stringify!($pattern));
+
+        )*
+        let consumed = total - effects.len();
+        assert!(effects.next().is_none(), "extra effect at index {}", consumed);
+    }};
+}
+
 /// A single machine emitting more than this in one `step` is a debug assertion (§3.3 step 6).
 pub const MAX_EMIT_PER_STEP: u32 = 32;
 
@@ -1057,6 +1079,35 @@ mod canon_tests {
         type Views<'a> = ();
         type Init = NoInit;
         type Memory = ();
+    }
+
+    #[test]
+    fn assert_fx_checks_stamp_order_absence_and_extras_without_effect_traits() {
+        let mut buf: Vec<Stamped<NoHost>> = Vec::new();
+        let mut present = Present::new();
+        {
+            let _step = plx_base::step::StepScope::enter();
+            let mut fx = Effects::new(&mut buf, MachineId::Nav, &mut present);
+            fx.push(Fx::Timer { id: TimerId(7), after_ms: 40 });
+            fx.push(Fx::App(()));
+        }
+        crate::assert_fx!(&buf, [(MachineId::Nav, Fx::Timer { id, after_ms: 40 } if *id == TimerId(7)),
+            (MachineId::Nav, Fx::App(()))]);
+        let empty: Vec<Stamped<NoHost>> = Vec::new();
+        crate::assert_fx!(&empty, []);
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+        assert!(catch_unwind(AssertUnwindSafe(|| crate::assert_fx!(&empty,
+            [(MachineId::Nav, Fx::App(()))]))).is_err());
+        assert!(catch_unwind(AssertUnwindSafe(|| crate::assert_fx!(&buf, []))).is_err());
+        assert!(catch_unwind(AssertUnwindSafe(|| crate::assert_fx!(&buf,
+            [(MachineId::Nav, Fx::App(())), (MachineId::Nav, Fx::Timer { .. })]))).is_err());
+        assert!(catch_unwind(AssertUnwindSafe(|| crate::assert_fx!(&buf,
+            [(MachineId::Nav, Fx::Timer { .. })]))).is_err());
+        buf[0].from = MachineId::Instance(InstanceId(17));
+        assert!(catch_unwind(AssertUnwindSafe(|| crate::assert_fx!(&buf,
+            [(MachineId::Nav, Fx::Timer { .. }), (MachineId::Nav, Fx::App(()))]))).is_err());
+        crate::assert_fx!(&buf, [(MachineId::Instance(InstanceId(17)), Fx::Timer { .. }),
+            (MachineId::Nav, Fx::App(()))]);
     }
 
     #[test]

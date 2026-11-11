@@ -334,6 +334,7 @@ python3 ci/check-rust-inputs.py
 # way to change it is a new event. It also REPORTS, and never fails on, each machine's `bool` and `Option<..>` field counts: a
 # report-only flag ratchet. Pure lexing, no cargo; the self-tests run on synthetic trees in a private temp dir.
 python3 ci/test_check_machine_shape.py
+python3 ci/test_check_machine_writer.py
 python3 ci/check-machine-shape.py
 # tools/pr-land.py (gate / wait / merge / restack) against a fake `gh` on PATH and an injected sleeper: a failed, pending, missing, draft, behind
 # or head-moved PR never reaches `gh pr merge` (#387), the polling and backoff, the head-oid race, the verify against a temporary
@@ -390,3 +391,6 @@ python3 tests/test_hud_bundle.py
 python3 tests/test_hud_release.py
 python3 ci/test_sim_backend.py
 python3 tests/test_hud_dev.py
+python3 ci/test_check_ports.py
+python3 ci/test_step_scope.py
+python3 ci/test_machine_readonly.py

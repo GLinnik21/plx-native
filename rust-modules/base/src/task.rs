@@ -171,6 +171,7 @@ fn thread_name(what: &str) -> String {
 }
 
 fn try_spawn(what: &str, stack: Option<usize>, f: impl FnOnce() + Send + 'static) -> io::Result<JoinHandle<()>> {
+    crate::step::assert_io_allowed("task::try_spawn");
     let mut b = Builder::new().name(thread_name(what));
     if let Some(n) = stack {
         b = b.stack_size(n);
@@ -404,6 +405,7 @@ where
     T: Send + 'scope,
     F: FnOnce() -> T + Send + 'scope,
 {
+    crate::step::assert_io_allowed("task::beside_with");
     use std::sync::{Arc, Mutex};
     debug_assert!(!blocking::in_frame(), "beside was asked for on the frame thread");
     // The lock is never held while `f` runs, so a panic in `f` cannot poison it.
