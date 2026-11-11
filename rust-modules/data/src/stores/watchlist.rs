@@ -115,9 +115,6 @@ pub struct WatchlistAdapter {
     /// Card rows asked to be resolved by `(server, rk)` (`WatchlistStore::want_hex`), spawned by the
     /// next pump. Behind a lock because a menu asks from `&self`.
     wanted: Mutex<Vec<(ServerId, String)>>,
-    /// Resolved ids, landed by the resolve workers. The outer `None` is "the server did not
-    /// answer": that attempt is forgotten, not memoized, so the next menu asks again.
-    resolved: Mutex<Vec<(ServerId, String, Option<Option<[u8; 12]>>)>>,
 }
 
 impl WatchlistAdapter {
@@ -179,7 +176,7 @@ struct WatchlistState {
     /// answered "no portable id" (or no answer), not asked again this epoch.
     resolved: HashMap<(ServerId, String), Option<[u8; 12]>>,
     /// Asked and not yet answered.
-    resolving: HashSet<(ServerId, String)>,
+    resolving: HashMap<(ServerId, String), (Tag, super::watchlist_job::ResolvePort)>,
     index: Vec<usize>,
     window: Range<usize>,
     list_wanted: bool,
@@ -228,7 +225,7 @@ impl WatchlistState {
             filter,
             members: HashSet::new(),
             resolved: HashMap::new(),
-            resolving: HashSet::new(),
+            resolving: HashMap::new(),
             index: Vec::new(),
             window: 0..0,
             list_wanted: false,
@@ -246,6 +243,9 @@ impl WatchlistState {
 
 pub struct WatchlistStore {
     state: WatchlistState,
+    resolve_profile: Option<u32>,
+    resolve_mailbox: Arc<super::watchlist_job::ResolveMailbox>,
+    jobs: Vec<super::StoreJob>,
     adapter: Arc<WatchlistAdapter>,
     io: Arc<dyn WatchlistIo>,
     spawn: Spawn,
@@ -273,6 +273,9 @@ impl WatchlistStore {
     pub fn with_io(io: Arc<dyn WatchlistIo>) -> Self {
         Self {
             state: WatchlistState::new(0, default_sort(), FilterSpec::default()),
+            resolve_profile: None,
+            resolve_mailbox: Arc::new(Default::default()),
+            jobs: Vec::new(),
             adapter: Arc::new(WatchlistAdapter::default()),
             io,
             spawn: spawn_worker,
@@ -479,6 +482,10 @@ impl WatchlistStore {
     /// A new epoch with nothing in it. The old workers land into a retired mailbox; their writes
     /// that were still queued are dropped with the old ledger (never sent to another profile).
     fn reset(&mut self) {
+        for (_, port) in self.state.resolving.values() { port.cancel_queued(); }
+        self.jobs.clear();
+        self.resolve_mailbox = Arc::new(Default::default());
+        self.resolve_profile = None;
         let epoch = self.state.epoch.wrapping_add(1);
         let req = self.state.req;
         let (sort, filter) = (self.state.sort, self.state.filter);
@@ -593,9 +600,9 @@ impl WatchlistStore {
                 self.settle_released(&mut rows);
                 self.merge(answers, roster_gen);
                 if start == 0 {
-                    self.state.truncated = false;
                     if self.state.rows.is_empty() {
                         // First load: the page shows as soon as it lands.
+                        self.state.truncated = false;
                         self.state.rows = rows;
                         self.state.rows_stamp = self.state.read_stamp;
                         self.state.status = Status::Ready;
@@ -626,10 +633,10 @@ impl WatchlistStore {
                 let had_rows = self.state.incoming.take().is_some();
                 if start == 0 && self.state.rows.is_empty() {
                     self.state.status = Status::Failed(why);
-                } else {
-                    // A reread's later page failing keeps the old complete rows: only a list
-                    // that is itself being built from pages is cut short.
-                    self.state.truncated = start > 0 && !had_rows;
+                } else if start > 0 && !had_rows {
+                    // Only a first load changes the rows on a later-page failure. A failed
+                    // reread retains the completeness of the rows already on screen.
+                    self.state.truncated = true;
                 }
                 true
             }
@@ -652,6 +659,7 @@ impl WatchlistStore {
                 self.state.read_etag = None;
                 if let Some(mut rows) = self.state.incoming.take() {
                     self.settle_released(&mut rows);
+                    self.state.truncated = false;
                     self.state.rows = rows;
                     self.state.rows_stamp = self.state.read_stamp;
                     self.state.status = Status::Ready;
@@ -694,11 +702,17 @@ impl WatchlistStore {
     /// `profile` is the one the Bridge read for this frame (`Bridge::seated_profile`): a pass never
     /// captures an identity (a reset leaves none, and the next `Open` captures), so it needs no more.
     pub fn pump_with_gate(&mut self, gate: &plx_machine::landgate::Gate, profile: &CurrentProfile) -> bool {
+        self.pump_with_gate_and_keys(gate, profile, &plx_plex::plex::ClientKeys::default())
+    }
+
+    pub fn pump_with_gate_and_keys(&mut self, gate: &plx_machine::landgate::Gate, profile: &CurrentProfile, keys: &plx_plex::plex::ClientKeys) -> bool {
         let mut changed = false;
-        if self.state.auth.as_ref().is_some_and(|a| !a.is_current(profile)) {
+        if self.resolve_profile.is_some_and(|gen| gen != profile.generation)
+            || self.state.auth.as_ref().is_some_and(|a| !a.is_current(profile)) {
             self.reset();
             changed = true;
         }
+        self.resolve_profile = Some(profile.generation);
         self.state.list_retry = self.state.list_retry.saturating_sub(1);
         self.state.write_retry = self.state.write_retry.saturating_sub(1);
         let adapter = Arc::clone(&self.adapter);
@@ -732,7 +746,7 @@ impl WatchlistStore {
             self.rederive();
             changed = true;
         }
-        changed |= self.pump_resolves(gate);
+        changed |= self.pump_resolves(gate, profile.generation, keys);
         self.maybe_spawn();
         if changed {
             self.bump();
@@ -952,7 +966,7 @@ impl WatchlistStore {
     /// The answer is [`WatchlistView::resolved_hex`]; a menu opened after it lands offers the row.
     pub fn want_hex(&self, sid: ServerId, rk: &str) {
         let key = (sid, rk.to_owned());
-        if self.state.resolved.contains_key(&key) || self.state.resolving.contains(&key) {
+        if self.state.resolved.contains_key(&key) || self.state.resolving.contains_key(&key) {
             return;
         }
         let mut wanted = self.adapter.wanted.lock().unwrap_or_else(|e| e.into_inner());
@@ -963,40 +977,46 @@ impl WatchlistStore {
 
     /// Spawn a worker per asked-for record and land the answers. Needs no account: the read is
     /// the user's own server's.
-    fn pump_resolves(&mut self, gate: &plx_machine::landgate::Gate) -> bool {
+    fn pump_resolves(&mut self, gate: &plx_machine::landgate::Gate, profile_gen: u32,
+        keys: &plx_plex::plex::ClientKeys) -> bool {
+        use plx_machine::machine::{Addr, MachineId, RequestId};
+        use super::watchlist_job::{ResolveEnd, ResolvePort, ResolveReq};
+        let claims = &self.state.resolving;
+        let answers = super::take_landings_owed(gate, super::StoreId::Watchlist, |got: &[super::watchlist_job::ResolveLanding]| {
+            got.iter().filter(|landing| claims.get(&(landing.sid, landing.rk.clone()))
+                .is_some_and(|(tag, _)| *tag == landing.tag && landing.addr.req.0 == tag.req)).count() < claims.len()
+        }, || self.resolve_mailbox.take());
         let mut changed = false;
-        // Every claim in `resolving` owes one answer (a refused spawn removes its claim at once),
-        // which the frame dump's landing gate waits for.
-        let (adapter, claimed) = (&self.adapter, self.state.resolving.len());
-        let answers = super::take_landings_owed(gate, super::StoreId::Watchlist, |got| got.len() < claimed, || {
-            adapter.resolved.lock().unwrap_or_else(|e| e.into_inner()).drain(..).collect()
-        });
-        for (sid, rk, hex) in answers {
-            self.state.resolving.remove(&(sid, rk.clone()));
-            if let Some(hex) = hex {
-                self.state.resolved.insert((sid, rk), hex);
+        for landing in answers {
+            let key = (landing.sid, landing.rk);
+            if !self.state.resolving.get(&key).is_some_and(|(tag, _)| *tag == landing.tag
+                && landing.addr.req.0 == tag.req && tag.epoch == self.state.epoch
+                && tag.profile_gen == profile_gen) { continue; }
+            self.state.resolving.remove(&key);
+            if let ResolveEnd::Answer(Some(hex)) = landing.end {
+                self.state.resolved.insert(key, hex);
                 changed = true;
             }
         }
         let wanted: Vec<_> = self.adapter.wanted.lock().unwrap_or_else(|e| e.into_inner()).drain(..).collect();
         for (sid, rk) in wanted {
-            if self.state.resolved.contains_key(&(sid, rk.clone())) || !self.state.resolving.insert((sid, rk.clone())) {
-                continue;
-            }
-            let (adapter, io) = (Arc::clone(&self.adapter), Arc::clone(&self.io));
-            let key = rk.clone();
-            let spawned = (self.spawn)("wlist-resolve", Box::new(move || {
-                let hex = io.guid_of(sid, &key).map(|g| plx_plex::plex::resolve_catalog_hex(None, || Some(g)));
-                adapter.resolved.lock().unwrap_or_else(|e| e.into_inner()).push((sid, key, hex));
-                plx_machine::idle::invalidate();
-            }));
-            if !spawned {
-                // Nothing will run: forget it so the next menu asks again.
-                self.state.resolving.remove(&(sid, rk));
-            }
+            let key = (sid, rk.clone());
+            if self.state.resolved.contains_key(&key) || self.state.resolving.contains_key(&key) { continue; }
+            self.state.req = self.state.req.checked_add(1).expect("watchlist request ids exhausted");
+            let tag = Tag { profile_gen, epoch: self.state.epoch, req: self.state.req };
+            let addr = Addr { to: MachineId::Store(super::StoreId::Watchlist.ord()), req: RequestId(tag.req) };
+            let req = ResolveReq { tag, keys: keys.clone(), sid, rk };
+            let port = ResolvePort::new(addr, &req, Arc::clone(&self.resolve_mailbox));
+            self.state.resolving.insert(key, (tag, port.clone()));
+            self.jobs.push(super::StoreJob::WatchlistResolve(plx_machine::job::Job { addr, req }, port));
         }
         changed
     }
+
+    #[must_use]
+    pub fn take_jobs(&mut self) -> Vec<super::StoreJob> { std::mem::take(&mut self.jobs) }
+
+    pub fn has_jobs(&self) -> bool { !self.jobs.is_empty() }
 
     /// [`Self::pump_with_gate`] for a test about something else: the fixture gate, and the seat
     /// [`WatchlistInput::for_test`] hands out at generation 1 (the one a store's tests open under).
@@ -1814,26 +1834,77 @@ pub(super) mod tests {
 
     #[test]
     fn a_silent_server_is_not_memoized_as_no_portable_id() {
+        use plx_machine::job::Port;
+        use super::super::watchlist_job::ResolveEnd;
         let mock = three();
         let sid = ServerId::from_raw(0);
         let mut s = store(&mock);
-        // First read: no answer at all.
+        let answer = |s: &mut WatchlistStore, end| {
+            s.pump();
+            let mut jobs = s.take_jobs();
+            assert_eq!(jobs.len(), 1);
+            let super::super::StoreJob::WatchlistResolve(job, port) = jobs.pop().unwrap() else { panic!("resolve job") };
+            assert!(port.start());
+            port.done(job.addr, end);
+            s.pump();
+        };
         s.want_hex(sid, "7");
-        s.pump();
-        s.pump();
-        assert_eq!(s.view().resolved_hex(sid, "7"), None, "no answer is not an answer");
-        // The next menu asks again and now gets a portable guid.
-        mock.guid_answers.lock().unwrap().push(Some("plex://movie/abababababababababababab".into()));
+        answer(&mut s, ResolveEnd::Answer(None));
+        assert_eq!(s.view().resolved_hex(sid, "7"), None);
         s.want_hex(sid, "7");
-        s.pump();
-        s.pump();
+        answer(&mut s, ResolveEnd::Answer(Some(Some([0xab; 12]))));
         assert_eq!(s.view().resolved_hex(sid, "7"), Some(Some([0xab; 12])));
-        // A server that answers with a non-portable guid IS memoized.
-        mock.guid_answers.lock().unwrap().push(Some("local://1".into()));
         s.want_hex(sid, "8");
-        s.pump();
-        s.pump();
+        answer(&mut s, ResolveEnd::Answer(Some(None)));
         assert_eq!(s.view().resolved_hex(sid, "8"), Some(None));
+    }
+
+    #[test]
+    fn resolve_accountless_reset_and_stale_request_cannot_settle_the_new_claim() {
+        use plx_machine::job::Port;
+        use super::super::{StoreJob, watchlist_job::ResolveEnd};
+        let mut s = store(&three());
+        let sid = ServerId::from_raw(0);
+        s.want_hex(sid, "7");
+        s.pump();
+        let StoreJob::WatchlistResolve(old, old_port) = s.take_jobs().pop().unwrap() else { panic!("resolve job") };
+        assert_eq!(old.req.tag.profile_gen, 1);
+        s.run(WatchlistCmd::Reset);
+        assert!(!old_port.start(), "a queued retired claim cannot start");
+        s.want_hex(sid, "7");
+        s.pump();
+        let StoreJob::WatchlistResolve(new, new_port) = s.take_jobs().pop().unwrap() else { panic!("resolve job") };
+        assert_ne!(old.addr.req, new.addr.req);
+        old_port.done(old.addr, ResolveEnd::Answer(Some(Some([1; 12]))));
+        s.pump();
+        assert_eq!(s.view().resolved_hex(sid, "7"), None);
+        assert!(new_port.start());
+        new_port.done(new.addr, ResolveEnd::Answer(Some(Some([2; 12]))));
+        s.pump();
+        assert_eq!(s.view().resolved_hex(sid, "7"), Some(Some([2; 12])));
+    }
+
+    #[test]
+    fn resolve_refusal_panic_and_profile_change_release_their_own_claim() {
+        use plx_machine::job::Port;
+        use super::super::{StoreJob, watchlist_job::ResolveEnd};
+        let mut s = store(&three());
+        let sid = ServerId::from_raw(0);
+        for end in [ResolveEnd::NotStarted, ResolveEnd::Panicked] {
+            s.want_hex(sid, "7");
+            s.pump();
+            let StoreJob::WatchlistResolve(job, port) = s.take_jobs().pop().unwrap() else { panic!("resolve job") };
+            port.done(job.addr, end);
+            s.pump();
+            assert_eq!(s.view().resolved_hex(sid, "7"), None);
+        }
+        s.want_hex(sid, "7");
+        s.pump();
+        let StoreJob::WatchlistResolve(_, port) = s.take_jobs().pop().unwrap() else { panic!("resolve job") };
+        let profile = WatchlistInput::profile_for_test(2);
+        s.pump_with_gate(plx_machine::landgate::fixture_gate(), &profile);
+        assert!(!port.start(), "profile change cancels a parked accountless job");
+        assert_eq!(s.view().resolved_hex(sid, "7"), None);
     }
 
     #[test]
@@ -2228,6 +2299,29 @@ pub(super) mod tests {
         load(&mut s);
         assert_eq!(s.view().len(), 100);
         assert!(s.view().truncated());
+    }
+
+    #[test]
+    fn failed_rereads_preserve_the_truncated_status_of_held_rows() {
+        for failed_from in [0, 100] {
+            let mock = Mock::new((1..=150).map(|n| item(n, &format!("T{n:03}"))).collect());
+            mock.fail_pages_from.store(100, Ordering::SeqCst);
+            let mut s = store(&mock);
+            load(&mut s);
+            assert_eq!(s.view().len(), 100);
+            assert!(s.view().truncated());
+
+            mock.fail_pages_from.store(failed_from, Ordering::SeqCst);
+            reread(&mut s);
+            assert_eq!(s.view().len(), 100, "old partial rows must stay on failure at {failed_from}");
+            assert!(s.view().truncated(), "held rows remain partial after failure at {failed_from}");
+            assert_eq!(s.state.list_etag, None);
+
+            mock.fail_pages_from.store(u32::MAX, Ordering::SeqCst);
+            reread(&mut s);
+            assert_eq!(s.view().len(), 150);
+            assert!(!s.view().truncated());
+        }
     }
 
     #[test]

@@ -313,6 +313,7 @@ impl StoreRunner {
     /// port: the fetch's own, or a refusal when nothing was started.
     pub(crate) fn start(&mut self, job: StoreJob) {
         match job {
+            StoreJob::WatchlistResolve(job, port) => self.start_watchlist_resolve(job, port),
             StoreJob::Detail(job, port) => self.start_detail(job, port),
             StoreJob::Collection(job, port) => self.start_collection(job, port),
             StoreJob::Person(job, port) => self.start_person(job, port),
@@ -369,7 +370,8 @@ impl StoreRunner {
                 }
             }
             // Not a Home kind: `Admission::Home` routed here only the kinds the arm above names.
-            other @ (StoreJob::Detail(..)
+            other @ (StoreJob::WatchlistResolve(..)
+                | StoreJob::Detail(..)
                 | StoreJob::Collection(..)
                 | StoreJob::Person(..)
                 | StoreJob::Catalog(..)
@@ -467,7 +469,8 @@ impl StoreRunner {
                     old_port.done(old.addr, ((old.req.sid, old.req.rk), None));
                 }
                 kept @ (
-                    StoreJob::Collection(..)
+                    StoreJob::WatchlistResolve(..)
+                    | StoreJob::Collection(..)
                     | StoreJob::Person(..)
                     | StoreJob::Hubs(..)
                     | StoreJob::Catalog(..)
@@ -585,6 +588,22 @@ impl StoreRunner {
         let refusal = port.clone();
         if !self.launch_catalog(job, port) {
             refusal.refused(addr);
+        }
+    }
+
+    fn start_watchlist_resolve(&mut self, job: Job<plx_data::stores::watchlist_job::ResolveReq>,
+        port: plx_data::stores::watchlist_job::ResolvePort) {
+        match self {
+            Self::Live => {
+                if !port.start() { return; }
+                let addr = job.addr;
+                let refusal = port.clone();
+                if !plx_base::task::spawn_small("wlist-resolve", move || {
+                    plx_data::stores::watchlist_job::finish_resolve_job(&port, addr, job.req, plx_plex::plex::client_for);
+                }) { refusal.refused(addr); }
+            }
+            #[cfg(test)]
+            Self::Held { parked, .. } => parked.push(StoreJob::WatchlistResolve(job, port)),
         }
     }
 
@@ -1126,6 +1145,11 @@ impl StoreRunner {
         let n = run.len();
         for job in run {
             match job {
+                StoreJob::WatchlistResolve(job, port) => {
+                    if port.start() {
+                        plx_data::stores::watchlist_job::finish_resolve_job(&port, job.addr, job.req, plx_plex::plex::client_for);
+                    }
+                }
                 StoreJob::Detail(job, port) => {
                     // The client is resolved when the job runs (a live one is resolved by
                     // `start_detail`, at the admission); a server with none answers the failure.
@@ -2611,6 +2635,48 @@ mod tests {
         assert!(store.pump(&plx_data::watchlist::WatchlistInput::profile_for_test(1)));
         assert_eq!(runner.run_held(), 0, "nothing left parked");
         assert_eq!(io.reads.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn watchlist_resolve_live_answers_and_releases_an_unanswered_claim() {
+        let _serial = plx_base::testlock::serial();
+        let mut store = plx_data::stores::watchlist::WatchlistStore::default();
+        let sid = ServerId::from_raw(0);
+        store.want_hex(sid, "7");
+        store.pump();
+        let job = store.take_jobs().pop().unwrap();
+        StoreRunner::live().start(job);
+        plx_base::task::drain_workers_for_test();
+        store.pump();
+        assert_eq!(store.view().resolved_hex(sid, "7"), None);
+        store.want_hex(sid, "7");
+        store.pump();
+        assert_eq!(store.take_jobs().len(), 1, "unanswered is retryable");
+    }
+
+    #[test]
+    fn watchlist_resolve_held_cancel_cannot_run_or_settle_a_replacement() {
+        let _serial = plx_base::testlock::serial();
+        let mut store = plx_data::stores::watchlist::WatchlistStore::default();
+        let sid = ServerId::from_raw(0);
+        let mut runner = StoreRunner::held_all();
+        store.want_hex(sid, "7");
+        store.pump();
+        runner.start(store.take_jobs().pop().unwrap());
+        store.run(plx_data::stores::watchlist::WatchlistCmd::Reset);
+        store.want_hex(sid, "7");
+        store.pump();
+        let replacement = store.take_jobs().pop().unwrap();
+        assert_eq!(runner.run_held(), 1);
+        store.pump();
+        assert_eq!(store.view().resolved_hex(sid, "7"), None);
+        assert!(!store.has_jobs(), "the replacement is still claimed");
+        runner.start(replacement);
+        assert_eq!(runner.run_held(), 1);
+        store.pump();
+        store.want_hex(sid, "7");
+        store.pump();
+        assert_eq!(store.take_jobs().len(), 1, "the replacement answered once");
     }
 
     /// A newer DETAIL request retires only the detail fetches parked before it: a catalog read is
