@@ -95,8 +95,9 @@ def production_tokens(source):
                 j = ends[j + 1] + 1; continue
             if tokens[j] == '{' and j in ends:
                 j = ends[j] + 1; break
-            if tokens[j] == ';':
+            if tokens[j] in (';', ','):
                 j += 1; break
+            if tokens[j] == '}': break
             if tokens[j] in ('(', '[') and j in ends:
                 j = ends[j] + 1; continue
             j += 1
@@ -111,6 +112,7 @@ def item_bodies(tokens):
     impls, functions = [], []
     for i, token in enumerate(tokens):
         if token not in ('impl', 'fn'): continue
+        if token == 'impl' and i and tokens[i - 1] not in ('}', ';', ']', '{', 'unsafe', 'default'): continue
         j = i + 1
         if token == 'fn':
             if j >= len(tokens): continue
@@ -226,7 +228,7 @@ def copy_enum_types(tokens):
     return safe
 
 
-def writer_problems(source, name, field, transition, constructor, label, require_methods=True):
+def writer_problems(source, name, field, transition, constructor, label, require_methods=True, reader=None):
     tokens = production_tokens(source)
     impls, functions, ends = item_bodies(tokens)
     owned = [(a, b) for a, b, h in impls if inherent_target(h, name)]
@@ -320,12 +322,81 @@ def writer_problems(source, name, field, transition, constructor, label, require
         if (name in sig or self_type) and '&' in sig and 'mut' in sig:
             problems.append(f'{label}::{method}: mutable machine reference may replace state')
 
+    def self_is_machine(index):
+        containing = [(a, b, h) for a, b, h in impls if a < index < b]
+        if not containing: return False
+        _, _, header = min(containing, key=lambda item: item[1] - item[0])
+        return inherent_target(header, name) or ('for' in header and header[-1:] == [name])
+
+    def unrelated_projection(index):
+        if reader is None: return False
+        receiver = tokens[index - 2] if index >= 2 else ''
+        if receiver == 'self': return not self_is_machine(index)
+        proof, state_path, state_type = reader
+        source_path = proof.root / label
+        enclosing = [(a, b, sig) for a, b, _, sig in functions if a < index < b]
+        if not enclosing: return False
+        a, b, signature = min(enclosing, key=lambda item: item[1] - item[0])
+        for j in range(len(signature) - 1):
+            if signature[j:j + 2] == [receiver, ':']:
+                stop = j + 2
+                while stop < len(signature) and signature[stop] not in (',', ')'): stop += 1
+                return proof.field(source_path, signature[j + 2:stop], field) is not None and name not in signature[j + 2:stop]
+        # A local borrowed from a different, structurally resolved machine field belongs to that field's owner.
+        for j in range(a + 1, index):
+            if tokens[j] != 'let': continue
+            equal = j + 1
+            while equal < index and tokens[equal] not in ('=', ';', '{'): equal += 1
+            if tokens[equal:equal + 1] != ['='] or receiver not in tokens[j:equal]: continue
+            pos = equal + 1
+            if tokens[pos:pos + 2] != ['self', '.'] or tokens[pos + 2:pos + 3] == [field]: continue
+            resolved = (state_path, [name])
+            pos += 1
+            while tokens[pos:pos + 1] == ['.'] and tokens[pos + 2:pos + 3] != ['(']:
+                resolved = proof.field(resolved[0], resolved[1], tokens[pos + 1]) if resolved else None
+                pos += 2
+            if resolved and name not in resolved[1] and proof.field(resolved[0], resolved[1], field) is not None: return True
+        return False
+
+    def shared_read(index):
+        if reader is None: return False
+        proof, state_path, state_type = reader
+        if not proof.inert(state_path, state_type): return False
+        tail = tokens[index + 1:]
+        for j, token in enumerate(tail):
+            if token in (';', '{', '}'): break
+            if token == '=' and (j == 0 or tail[j - 1] not in ('=', '!', '<', '>')) and tail[j + 1:j + 2] not in (['='], ['>']):
+                return False
+        if tokens[index + 1:index + 2] == ['.'] and tokens[index + 3:index + 4] == ['(']:
+            return proof.shared_method(state_path, state_type, tokens[index + 2])
+        if tokens[index - 3:index] != ['&', 'self', '.']: return False
+        # A shared view may expose other owners, but its guarded field must still be &State.
+        if tokens[index - 4:index - 3] == [':'] and tokens[index - 5].isidentifier():
+            braces = [(a, b) for a, b in ends.items() if tokens[a] == '{' and a < index < b]
+            if not braces: return False
+            begin, _ = min(braces, key=lambda pair: pair[1] - pair[0])
+            start = begin - 1
+            while start > 1 and tokens[start - 2:start] == [':', ':']: start -= 3
+            view_type = tokens[start:begin]
+            return proof.shared_field(state_path, state_type, proof.root / label, view_type, tokens[index - 5])
+        return True
+
+    def owned_take(index, owner):
+        if reader is None or owner != transition: return False
+        # The borrow is consumed by the standard intrinsic, never exposed to a callback.
+        for method in ('replace', 'take'):
+            expected = ['std', ':', ':', 'mem', ':', ':', method, '(', '&', 'mut', 'self', '.']
+            if tokens[max(0, index - len(expected)):index] == expected:
+                if any(tokens[j:j + 2] in (['mod', 'std'], ['as', 'std']) for j in range(len(tokens) - 1)): return False
+                return True
+        return False
+
     for i, token in enumerate(tokens):
         owner = context(i)
         if token == 'self' and owner is not None:
             if tokens[i + 1:i + 2] != ['.'] and not any(start == i for start, _ in safe_matches.values()):
                 problems.append(f'{location(i)}: machine reference may escape the authorized writer')
-        if token == field and i and tokens[i - 1] == '.':
+        if token == field and i and tokens[i - 1] == '.' and not unrelated_projection(i):
             start = i - 1
             while start > 0 and tokens[start - 1] not in (';', '{', '}'):
                 start -= 1
@@ -341,11 +412,14 @@ def writer_problems(source, name, field, transition, constructor, label, require
             forwarded = '=' in prefix or '(' in prefix
             matched_read = any(start + 2 == i and comma == i + 1 for start, comma in safe_matches.values())
             copied_argument = copy_argument(i, prefix)
-            if (reference_result or (not matched_read and (borrowed or 'addr_of_mut' in prefix or
+            proven_read = shared_read(i)
+            intrinsic = owned_take(i, owner)
+            mutable_result = any(result[j:j + 2] == ['&', 'mut'] for j in range(len(result) - 1))
+            if ((reference_result and not proven_read or mutable_result) or (not matched_read and not intrinsic and not proven_read and (borrowed or 'addr_of_mut' in prefix or
                     (owner != transition and ((forwarded and not copied_argument) or '!' in prefix or mutation_in_tail(tokens[i + 1:])))))):
                 problems.append(f'{location(i)}: state projection may mutate or escape the authorized writer')
         # Destructuring may bind by reference; constructing a machine is restricted to its constructor.
-        if token in (name, 'Self') and i + 1 in ends and tokens[i + 1] == '{':
+        if token in (name, 'Self') and (token == name or reader is None or self_is_machine(i)) and i + 1 in ends and tokens[i + 1] == '{':
             if i and tokens[i - 1] in ('struct', 'enum', 'impl'): continue
             if any(a == i + 1 for a, _, _, _ in functions) or any(a == i + 1 for a, _, _ in impls): continue
             stop = ends[i + 1]
@@ -354,7 +428,7 @@ def writer_problems(source, name, field, transition, constructor, label, require
                 problems.append(f'{location(i)}: state construction/destructuring outside {constructor} or {transition}')
         if token == '!' and i + 1 in ends and owner != transition:
             args = tokens[i + 2:ends[i + 1]]
-            if ('self' in args or field in args) and i not in safe_matches and i not in safe_asserts:
+            if (((reader is None or self_is_machine(i)) and 'self' in args) or field in args) and i not in safe_matches and i not in safe_asserts and not (reader is not None and (i < 3 or tokens[i - 3:i - 1] != [':', ':']) and tokens[i - 1] in ('matches', 'assert', 'debug_assert', 'vec', 'format', 'format_args', 'write', 'writeln', 'panic') and reader[0].builtin(reader[0].root / label, tokens[i - 1])):
                 problems.append(f'{location(i)}: macro may hide a state mutation outside {transition}')
         if token == '*' and tokens[i + 1:i + 3] == ['self', '='] and owner != transition:
             problems.append(f'{location(i)}: replacement of self outside {transition}')
@@ -425,7 +499,9 @@ def check(modules=MODULES, ini=INI):
             problems.extend(wildcard_problems(path.read_text(encoding='utf-8'), f'module {file}'))
             report.append(f'enum policy {file}: clippy::wildcard_enum_match_arm deny')
             continue
-        unknown = set(entry) - {'event', 'effect', 'step'} - strict_keys
+        if 'state_reads' in entry and not strict_keys & set(entry):
+            problems.append(f'{section}: state_reads requires a complete strict writer contract')
+        unknown = set(entry) - {'event', 'effect', 'step', 'state_reads'} - strict_keys
         if unknown:
             problems.append(f'machines.ini [{section}]: unknown keys: {", ".join(sorted(unknown))}')
         source = path.read_text(encoding='utf-8')
@@ -453,14 +529,30 @@ def check(modules=MODULES, ini=INI):
             if field not in {f for _, f, _ in fields}:
                 problems.append(f'machines.ini [{section}]: no state field {field} (stale strict contract)')
                 continue
+            reader = None
+            if entry.get('state_reads') is not None:
+                if entry['state_reads'] != 'immutable':
+                    problems.append(f'{section}: state_reads must be immutable')
+                    continue
+                from machine_readonly import Proof
+                from types import SimpleNamespace
+                proof = Proof(root, SimpleNamespace(production_tokens=production_tokens, ends_of=ends_of,
+                    shape=shape, struct_fields=struct_fields, item_bodies=item_bodies, inherent_target=inherent_target))
+                state_type = next(typ for _, field_name, typ in fields if field_name == field)
+                if not proof.inert(path, state_type):
+                    problems.append(f'{section}: shared state payload is unresolved or has mutable authority')
+                else:
+                    reader = (proof, path, state_type)
             try:
                 for child in production_sources(path, root):
                     child_source = source if child == path else child.read_text(encoding='utf-8')
                     problems.extend(writer_problems(child_source, name, field, transition, constructor,
                                                     child.relative_to(root).as_posix(),
-                                                    require_methods=child == path))
+                                                    require_methods=child == path, reader=reader))
             except (OSError, ValueError) as error:
                 problems.append(f'machines.ini [{section}]: cannot analyze production sources: {error}')
+            if reader is not None:
+                report.append(f'immutable state read audit {section}: ' + ', '.join(sorted(reader[0].audit)))
     return problems, report
 
 

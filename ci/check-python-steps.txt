@@ -391,3 +391,6 @@ python3 tests/test_hud_bundle.py
 python3 tests/test_hud_release.py
 python3 ci/test_sim_backend.py
 python3 tests/test_hud_dev.py
+python3 ci/test_check_ports.py
+python3 ci/test_step_scope.py
+python3 ci/test_machine_readonly.py

@@ -2234,7 +2234,10 @@ where
                 let Split { views, measure, .. } = rig.split();
                 let cx = addressed.cx::<H>(views, measure);
                 let mut fx = Effects::new(out, to, present);
-                let handled = plx_base::diag::spans::span("dstep", || inst.screen.step(&ev, &cx, &mut fx));
+                let handled = plx_base::diag::spans::span("dstep", || {
+                    let _step = plx_base::step::StepScope::enter();
+                    inst.screen.step(&ev, &cx, &mut fx)
+                });
                 drop(fx);
                 drop(cx);
                 present.set_scope(plx_machine::present::Scope::Page);
@@ -2966,6 +2969,10 @@ mod product_resolution_contract_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "step_scope_tests.rs"]
+mod step_scope_tests;
 
 #[cfg(test)]
 mod cold_open_tests {

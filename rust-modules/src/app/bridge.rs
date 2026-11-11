@@ -1675,7 +1675,7 @@ impl Bridge {
     /// captures no identity.
     pub(crate) fn catalog_pump(&mut self) -> bool {
         let profile = Self::seated_profile();
-        let mut changed = self.stores.catalog.pump(&profile);
+        let mut changed = { let _step = plx_base::step::StepScope::enter(); self.stores.catalog.pump(&profile) };
         if let Some(hex) = self.stores.catalog.take_reopen() {
             self.catalog_open(hex);
             changed = true;
@@ -1687,7 +1687,8 @@ impl Bridge {
     /// The catalog page mounted (or read again) for `hex`: the store's `open` handed
     /// `watchlist_input()`, then its read started in this call.
     pub(crate) fn catalog_open(&mut self, hex: [u8; 12]) {
-        self.stores.catalog.open(hex, &Self::watchlist_input());
+        let input = Self::watchlist_input();
+        { let _step = plx_base::step::StepScope::enter(); self.stores.catalog.open(hex, &input); }
         self.start_store_jobs_of(StoreId::Catalog);
     }
 
@@ -1907,7 +1908,10 @@ impl Bridge {
     /// The Watchlist store's landing pass, once a frame and route-unconditional: a write burst
     /// lands, a profile switch resets it, and the page reads its notice through `take_notices`.
     pub(crate) fn watchlist_pump(&mut self) {
-        if self.stores.watchlist.pump_with_gate(&self.stores.landgate, &Self::seated_profile()) {
+        let profile = Self::seated_profile();
+        let changed = { let _step = plx_base::step::StepScope::enter();
+            self.stores.watchlist.pump_with_gate(&self.stores.landgate, &profile) };
+        if changed {
             plx_machine::idle::invalidate();
         }
     }
@@ -2149,7 +2153,7 @@ impl Bridge {
     pub(crate) fn hubs_run(&mut self, cmd: plx_data::stores::hubs::HubsCmd) -> plx_data::stores::StoreOutcome {
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
         let directory = self.directory.view();
-        let out = self.stores.hubs.run_with_directory(cmd, directory, &self.client_keys);
+        let out = { let _step = plx_base::step::StepScope::enter(); self.stores.hubs.run_with_directory(cmd, directory, &self.client_keys) };
         self.start_store_jobs_of(StoreId::Hubs);
         out
     }
@@ -2504,7 +2508,7 @@ impl Bridge {
                 AppMsg::Store(StoreCmd::Hubs(cmd)) => {
                     super::adapters::stores::refill_client_keys(&mut self.client_keys);
                     let directory = self.directory.view();
-                    let due = self.stores.hubs.run_with_directory(cmd.clone(), directory, &self.client_keys).endpoints;
+                    let due = { let _step = plx_base::step::StepScope::enter(); self.stores.hubs.run_with_directory(cmd.clone(), directory, &self.client_keys) }.endpoints;
                     Self::admit_home_jobs(&mut self.stores, &mut self.store_runner, io, StoreId::Hubs);
                     return Self::carry(&mut self.endpoint_carry, due);
                 }
@@ -2526,7 +2530,7 @@ impl Bridge {
                 AppMsg::StoreWork(plx_data::stores::StoreWork::Hubs) => {
                     super::adapters::stores::refill_client_keys(&mut self.client_keys);
                     let directory = self.directory.view();
-                    let due = self.stores.hubs.tick_with_directory(parts.tick.dt(), directory, &self.client_keys).endpoints;
+                    let due = { let _step = plx_base::step::StepScope::enter(); self.stores.hubs.tick_with_directory(parts.tick.dt(), directory, &self.client_keys) }.endpoints;
                     Self::admit_home_jobs(&mut self.stores, &mut self.store_runner, io, StoreId::Hubs);
                     return Self::carry(&mut self.endpoint_carry, due);
                 }
@@ -2576,7 +2580,7 @@ impl Bridge {
             AppMsg::Store(StoreCmd::Hubs(c)) => {
                 super::adapters::stores::refill_client_keys(&mut self.client_keys);
                 let directory = self.directory.view();
-                let due = self.stores.hubs.run_with_directory(c.clone(), directory, &self.client_keys).endpoints;
+                let due = { let _step = plx_base::step::StepScope::enter(); self.stores.hubs.run_with_directory(c.clone(), directory, &self.client_keys) }.endpoints;
                 self.start_store_jobs_of(StoreId::Hubs);
                 Self::carry(&mut self.endpoint_carry, due)
             }
@@ -2584,14 +2588,14 @@ impl Bridge {
             AppMsg::HubsResult(result) => {
                 super::adapters::stores::refill_client_keys(&mut self.client_keys);
                 let directory = self.directory.view();
-                let due = self.stores.hubs.land_with_directory(result, directory, &self.client_keys).endpoints;
+                let due = { let _step = plx_base::step::StepScope::enter(); self.stores.hubs.land_with_directory(result, directory, &self.client_keys) }.endpoints;
                 self.start_store_jobs_of(StoreId::Hubs);
                 Self::carry(&mut self.endpoint_carry, due)
             }
             AppMsg::StoreWork(plx_data::stores::StoreWork::Hubs) => {
                 super::adapters::stores::refill_client_keys(&mut self.client_keys);
                 let directory = self.directory.view();
-                let due = self.stores.hubs.tick_with_directory(parts.tick.dt(), directory, &self.client_keys).endpoints;
+                let due = { let _step = plx_base::step::StepScope::enter(); self.stores.hubs.tick_with_directory(parts.tick.dt(), directory, &self.client_keys) }.endpoints;
                 self.start_store_jobs_of(StoreId::Hubs);
                 Self::carry(&mut self.endpoint_carry, due)
             }

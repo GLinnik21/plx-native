@@ -171,6 +171,7 @@ impl Stores {
         cmd: browse::BrowseCmd,
         input: &browse::BrowseRosterInput<'_>,
     ) -> bool {
+        let _step = plx_base::step::StepScope::enter();
         self.browse.borrow_mut().run_with_input(cmd, input)
     }
 
@@ -196,6 +197,7 @@ impl Stores {
         &self,
         input: &browse::BrowseRosterInput<'_>,
     ) -> StoreOutcome {
+        let _step = plx_base::step::StepScope::enter();
         self.browse.borrow_mut().discover_pump_with_gate(&self.landgate, input)
     }
 
@@ -207,12 +209,14 @@ impl Stores {
     }
 
     pub fn person_run(&mut self, cmd: person::PersonCmd) -> bool {
+        let _step = plx_base::step::StepScope::enter();
         self.person.run(cmd)
     }
 
     /// Run one Collection command; `keys` is the registry's answer as of this call. A command
     /// emits no job.
     pub fn collection_run(&mut self, cmd: collection::CollectionCmd, keys: &plx_plex::plex::ClientKeys) -> bool {
+        let _step = plx_base::step::StepScope::enter();
         self.collection.run(cmd, keys)
     }
 
@@ -221,6 +225,7 @@ impl Stores {
     /// the job to a runner has stranded the page's fetch. The one production caller is
     /// `Bridge::collection_pump`, which drains in the same call.
     pub fn collection_pump(&mut self, keys: &plx_plex::plex::ClientKeys) -> bool {
+        let _step = plx_base::step::StepScope::enter();
         self.collection.pump(&self.landgate, keys)
     }
 
@@ -229,6 +234,7 @@ impl Stores {
     }
 
     pub fn subtitle_search_run(&mut self, cmd: subsearch::SubSearchCmd) -> bool {
+        let _step = plx_base::step::StepScope::enter();
         self.subtitle_search.run(cmd)
     }
 
@@ -237,6 +243,7 @@ impl Stores {
     /// handing the job to a runner has stranded the search. The one production caller is
     /// `Bridge::subsearch_pump`, which drains in the same call.
     pub fn subtitle_search_pump(&mut self, keys: &plx_plex::plex::ClientKeys) -> bool {
+        let _step = plx_base::step::StepScope::enter();
         self.subtitle_search.pump(&self.landgate, keys)
     }
 
@@ -249,6 +256,7 @@ impl Stores {
     /// jobs to a runner has stranded the page's fetches. The one production caller is
     /// `Bridge::person_pump`, which drains in the same call.
     pub fn person_pump(&mut self, keys: &plx_plex::plex::ClientKeys) -> bool {
+        let _step = plx_base::step::StepScope::enter();
         self.person.pump(&self.landgate, keys)
     }
 
@@ -262,6 +270,7 @@ impl Stores {
     /// `Bridge::metadata_run`, which drains in the same call; the application's test rigs fail a
     /// frame that ends with a job still here (`Bridge::assert_no_store_jobs_left_for_test`).
     pub fn metadata_run(&mut self, cmd: metadata::MetadataCmd) -> bool {
+        let _step = plx_base::step::StepScope::enter();
         self.metadata.run(cmd)
     }
 
@@ -323,6 +332,7 @@ impl Stores {
     }
 
     pub fn metadata_pump(&mut self, keys: &plx_plex::plex::ClientKeys, controlled: bool, stand_in: Option<Vec<crate::metadata::AltCopy>>) -> bool {
+        let _step = plx_base::step::StepScope::enter();
         self.metadata.pump(keys, controlled, stand_in, &self.landgate)
     }
 
@@ -335,6 +345,7 @@ impl Stores {
         cmd: search::SearchCmd,
         directory: browse::DirectoryView<'_>,
     ) -> bool {
+        let _step = plx_base::step::StepScope::enter();
         self.search.run_with_directory(cmd, directory)
     }
 
@@ -348,6 +359,7 @@ impl Stores {
         directory: browse::DirectoryView<'_>,
         keys: &plx_plex::plex::ClientKeys,
     ) -> bool {
+        let _step = plx_base::step::StepScope::enter();
         self.search.pump_with_directory_and_gate(dt, directory, &self.landgate, keys)
     }
 
@@ -385,6 +397,7 @@ impl Stores {
         clients: &plx_plex::plex::ClientKeys,
         profile: u32,
     ) -> StoreOutcome {
+        let _step = plx_base::step::StepScope::enter();
         if matches!(cmd, viewstate::ViewStateCmd::Reset) {
             self.reconcile.reset();
             self.notify.reset();
@@ -419,6 +432,7 @@ impl Stores {
         clients: &plx_plex::plex::ClientKeys,
         profile: u32,
     ) -> EndpointRefreshSet {
+        let _step = plx_base::step::StepScope::enter();
         let browse = std::rc::Rc::clone(&self.browse);
         let hubs = &mut self.hubs;
         let person = &mut self.person;
@@ -448,21 +462,26 @@ impl Stores {
     /// The notification feed's per-frame pass. It stands down while the landing gate is armed (a
     /// recording, a replay or a dump owns the run), and never reads the registry's tokens.
     pub fn notify_begin(&mut self, input: &notify::NotifyInput<'_>) -> notify::NotifyPass {
+        let _step = plx_base::step::StepScope::enter();
         assert_eq!(input.armed, self.landgate.is_armed());
         self.notify.begin(input)
     }
     pub fn notify_prepare_next(&mut self, pass: &mut notify::NotifyPass, input: &notify::NotifyInput<'_>) -> Option<notify::NotifyTurn> {
+        let _step = plx_base::step::StepScope::enter();
         assert_eq!(input.armed, self.landgate.is_armed());
         self.notify.prepare_next(pass, input)
     }
     pub fn notify_settle_admission(&mut self, pass: &mut notify::NotifyPass, turn: &mut notify::NotifyTurn) {
+        let _step = plx_base::step::StepScope::enter();
         self.notify.settle_admission(pass, turn)
     }
     pub fn notify_finish_turn(&mut self, pass: &mut notify::NotifyPass, turn: notify::NotifyTurn, input: &notify::NotifyInput<'_>) {
+        let _step = plx_base::step::StepScope::enter();
         assert_eq!(input.armed, self.landgate.is_armed());
         self.notify.finish_turn(pass, turn, input)
     }
-    pub fn notify_end(&mut self, pass: notify::NotifyPass) -> notify::NotifyOut { self.notify.end(pass) }
+    pub fn notify_end(&mut self, pass: notify::NotifyPass) -> notify::NotifyOut {
+        let _step = plx_base::step::StepScope::enter(); self.notify.end(pass) }
 
     /// Hold (`true`) or release the view-state reconcile network work; see [`Stores::network_held`].
     /// Patches are not held: what the stores already show keeps changing while the player is up.
@@ -567,6 +586,7 @@ impl Stores {
     /// the end-of-stream fan-outs it queues are made under ([`Stores::viewstate_run`]).
     pub fn reconcile_pump(&mut self, directory: browse::DirectoryView<'_>, clients: &plx_plex::plex::ClientKeys,
         profile: u32) -> StoreOutcome {
+        let _step = plx_base::step::StepScope::enter();
         let owed = self.viewstate.borrow_mut().take_reread();
         self.reconcile.enqueue(owed);
         let idle = !self.viewstate.borrow().is_busy() && !self.network_held;

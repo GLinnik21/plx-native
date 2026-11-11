@@ -118,6 +118,28 @@ class Ratchet(unittest.TestCase):
 
     # -- the ledger counts -----------------------------------------------------------------------
 
+    def test_ports_registry_bootstrap_is_new_but_future_added_paths_fail(self):
+        text = '[rust-modules/data/src/ports.rs]\nkind = worker\nreason = IO\n'
+        code, out = self.head({'ci/ports.ini': text})
+        self.assertEqual(code, 0, out)
+        self.assertIn('ci/ports.ini (1)', out)
+        base = self.repo.git('rev-parse', 'HEAD')
+        self.repo.commit({'ci/ports.ini': text + '[rust-modules/session/src/ports.rs]\nkind = worker\nreason = IO\n'})
+        code, out = self.repo.run(PLX_LEDGER_BASE=base)
+        self.assertEqual(code, 1, out)
+        self.assertIn('ci/ports.ini [rust-modules/session/src/ports.rs]', out)
+
+    def test_equal_count_port_path_replacement_fails_and_removal_passes(self):
+        text = '[rust-modules/data/src/ports.rs]\nkind = worker\nreason = IO\n'
+        self.repo.commit({'ci/ports.ini': text})
+        base = self.repo.git('rev-parse', 'HEAD')
+        self.repo.commit({'ci/ports.ini': text.replace('/data/', '/session/')})
+        code, out = self.repo.run(PLX_LEDGER_BASE=base)
+        self.assertEqual(code, 1, out)
+        self.repo.commit({'ci/ports.ini': ''})
+        code, out = self.repo.run(PLX_LEDGER_BASE=base)
+        self.assertEqual(code, 0, out)
+
     def test_an_unchanged_tree_passes_and_names_nothing_as_new(self):
         code, out = self.head({})
         self.assertEqual(code, 0, out)

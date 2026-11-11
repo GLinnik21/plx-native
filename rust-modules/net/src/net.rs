@@ -5099,6 +5099,20 @@ mod tls_mode_tests {
 
 #[cfg(test)]
 mod blocking_guard_tests {
+    #[test]
+    fn a_logic_step_cannot_dial_even_under_allow_blocking() {
+        let allowed = plx_base::task::allow_blocking(const { &plx_base::task::BlockingLabel::new("fixture") });
+        let step = plx_base::step::StepScope::enter();
+        let refused = std::panic::catch_unwind(|| {
+            super::request_evidence("https://plex.tv.invalid/ping", &[], "GET", None, super::API, false, None, None)
+        });
+        assert!(refused.is_err());
+        drop(step);
+        // A malformed URL returns before curl or DNS, proving the guard unwound and did not leak.
+        assert!(super::request_result("bad\0url", &[], "GET", None, super::API, false, None, None).is_err());
+        drop(allowed);
+    }
+
     use super::*;
 
     /// plex.tv calls (`AccountClient`) never pass `http::request_with`, so its `assert_may_block`

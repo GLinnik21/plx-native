@@ -3831,10 +3831,10 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
     let scope_moved = browse_scope_moved(state, scope);
     if dirty || scope_moved { settle_deck(&mut srcs, refreshed); }
     let build = (dirty || scope_moved).then(|| {
-        let t0 = std::time::Instant::now();
+        let t0 = crate::instruments::start();
         let (mut build, _) = merge_held(&mut srcs, scope, state.hold);
         if paged && !refreshed && !scope_moved { preserve_heroes(state, &mut build); }
-        let took = t0.elapsed();
+        let took = crate::instruments::elapsed(t0);
         (build, took)
     });
     state.srcs = srcs;

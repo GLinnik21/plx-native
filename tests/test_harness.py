@@ -9477,6 +9477,21 @@ impl PersonOwnerGateFixture {
                 self.assertNotIn(f"{base}{stem}.rs", out,
                                  "a `caps` parameter or an unimported `caps(` is not the capability answer\n" + out)
 
+    def test_globals_ledger_sees_screen_input_revision_without_allowance(self):
+        r = self._plant_many({
+            "stores/_check_deps_screen_revision_direct.rs": "fn read() { plx_plex::plex::session::screen_input_revision(); }\n",
+            "stores/_check_deps_screen_revision_bare.rs": "use plx_plex::plex::session::screen_input_revision;\nfn read() { screen_input_revision(); }\n",
+            "stores/_check_deps_screen_revision_glob.rs": "use plx_plex::plex::session::*;\nfn read() { let reader = screen_input_revision; }\n",
+            "stores/_check_deps_screen_revision_alias.rs": "use plx_plex::plex::session::screen_input_revision as hidden;\nfn read() { hidden(); }\n",
+        }, "data")
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        base = "rust-modules/data/src/stores/_check_deps_screen_revision_"
+        self.assertIn(base + "direct.rs::read::session::screen_input_revision", out)
+        self.assertIn(base + "bare.rs::read::screen_input_revision", out)
+        self.assertIn(base + "glob.rs::read::screen_input_revision", out)
+        self.assertIn(base + "alias.rs:1", out)
+
     def test_globals_ledger_sees_the_registry_readers_the_old_closed_list_missed(self):
         """RED: the server registry's roster readers (`server_ids`, `server_roster_gen`, `server_facts_gen`,
         `server_probe_result`), the session cache's two readers (`session::peek_settled`, `session::current_gen`)

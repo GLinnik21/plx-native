@@ -3729,7 +3729,7 @@ pub fn fetch_full(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::
     // `ms=` is the whole chain's wall clock. It is the exact cost `request_detail` moves off the
     // SDL loop, so it is the number to read when judging whether a call site can afford to block
     // — note the framedrop breakdown CANNOT show it (fd_pc0 starts after event handling).
-    let t0 = std::time::Instant::now();
+    let t0 = crate::instruments::start();
     // The ONE line that says a detail page was asked for and got nothing — the summary at the end
     // of this function prints on success only, and nothing downstream can speak for the failure.
     // Its worst shape is the page opened through `detail::open_rk`, which clears before requesting:
@@ -3837,7 +3837,7 @@ pub fn fetch_full(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::
     plx_base::eventlog::log(&format!(
         "detail: sid={} rk={} show={} genres={} cast={} crew={} seasons={} eps={} related={} collection={} audio={} subs={} trailer={} extras={} ms={}",
         d.sid.raw(), d.rk, d.is_show, d.genres.len(), d.cast.len(), d.crew.len(), d.seasons.len(), d.episodes.len(),
-        d.related.len(), d.collection.as_ref().map_or(0, |c| c.members.len()), d.audio.len(), d.subs.len(), u8::from(d.trailer().is_some()), extras_src, t0.elapsed().as_millis()
+        d.related.len(), d.collection.as_ref().map_or(0, |c| c.members.len()), d.audio.len(), d.subs.len(), u8::from(d.trailer().is_some()), extras_src, crate::instruments::elapsed(t0).as_millis()
     ));
     Some(d)
 }
