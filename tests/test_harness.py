@@ -9072,7 +9072,7 @@ impl PersonOwnerGateFixture {
             files[f"_check_deps_visible_test_{i}.rs"] = (
                 f"#[cfg(test)]\n{visibility} mod fixture {{\n"
                 "    fn work() { std::thread::spawn(|| {}); }\n}\n")
-        r = self._plant_many(files)
+        r = self._plant_many(files, "data")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         r = self._plant("_check_deps_visible_production.rs",
                         "pub(super) mod fixture { fn work() { std::thread::spawn(|| {}); } }\n")
