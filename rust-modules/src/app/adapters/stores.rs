@@ -12,7 +12,7 @@
 //! kind that is not on the tape (the catalog read, a plex.tv call that names no client; subtitle
 //! search; the Search screen's fetches and its recents writes; view reconcile; the Library's
 //! section-hubs, directory and page reads; the view-state writes; the Metadata season switch,
-//! episode-page window and Related window) is started with no admission record, as its inline
+//! episode-page window, Related window and alt-sources read) is started with no admission record, as its inline
 //! spawn was. The detail pump keeps a counted backstop for a sender that did neither
 //! (`Bridge::start_late_store_jobs`).
 //!
@@ -38,7 +38,9 @@
 //! real answer on a worker; discovery is live so the rigs that run every parked job on the test thread
 //! (the hostsim helpers of `app/run.rs`) never run its blocking reads there),
 //! [`StoreRunner::park_page_reads`] parks the page read as well, and [`StoreRunner::held_all`] parks
-//! every kind. Every held runner parks episode-page and Related window jobs.
+//! every kind. Every held runner parks episode-page and Related window jobs. Alt-sources stay live
+//! under held and park_page_reads (multi-server reads must not block the test thread), and park
+//! only under held_all.
 //!
 //! **The registry is read here, not in a step.** A step that decides from "which client does this
 //! server slot hold" is handed the answer as an input (`plx_plex::plex::ClientKeys`), which the
@@ -64,7 +66,7 @@ use plx_data::browse::listing_jobs::{
 use plx_data::browse::section_hubs::{finish_browse_hubs_job, BrowseHubsPort, BrowseHubsReq};
 use plx_data::collection::{finish_collection_job, CollectionPort, CollectionReq};
 use plx_data::metadata::{
-    fetch_full, finish_detail_fetch, finish_episodes_job, finish_related_job, finish_season_job, DetailPort,
+    fetch_full, finish_alt_sources_job, finish_detail_fetch, finish_episodes_job, finish_related_job, finish_season_job, MetaAltSourcesPort, MetaAltSourcesReq, DetailPort,
     DetailReq, MetaEpisodesPort, MetaEpisodesReq, MetaRelatedPort, MetaRelatedReq, MetaSeasonPort, MetaSeasonReq,
 };
 use plx_data::person::{finish_person_job, PersonPort, PersonReq};
@@ -72,6 +74,7 @@ use plx_data::stores::catalog::{finish_catalog_job, CatalogPort, CatalogReq};
 use plx_data::stores::viewreconcile::{finish_reconcile_job, ReconcilePort, ReconcileReq};
 use plx_data::pms::{launch_hubs_job, HubRequest, HubsPort};
 use plx_data::stores::{Admission, StoreJob};
+use plx_data::stores::notify_job::{finish_notify_stream_job, NotifyStreamReq, NotifyStreamPort, NotifyTerminal};
 use plx_data::search::recents::{finish_save_recents_job, SaveRecentsPort, SaveRecentsReq};
 use plx_data::search::{finish_search_job, SearchPort, SearchReq};
 use plx_data::subsearch::{finish_subsearch_job, SubSearchPort, SubSearchReq};
@@ -94,9 +97,16 @@ fn os_zone() -> Zone {
 /// ones that answer, which makes `keys.key(sid)` equal `client_for(sid).map(ClientKey::of)` for
 /// every `sid`, a retired or unregistered one included.
 pub(crate) fn refill_client_keys(keys: &mut ClientKeys) {
-    keys.refill(plx_plex::plex::server_ids().filter_map(|sid| {
-        plx_plex::plex::client_for(sid).map(|client| (sid, ClientKey::of(client)))
-    }));
+    keys.refill_roster_with_stream_policy(
+        plx_plex::plex::current_server(),
+        plx_plex::plex::server_roster_gen(),
+        plx_plex::plex::server_facts_gen(),
+        plx_plex::plex::server_ids(),
+        plx_plex::plex::client_for,
+        plx_plex::plex::server_facts,
+        plx_plex::plex::server_probe_result,
+        |c| c.has_token() && !c.data_io_disabled() && c.credential_transport_open(),
+    );
 }
 
 /// The client a job's step decided on, if the registry still holds it: `client_for(sid)` accepted
@@ -188,7 +198,53 @@ pub(crate) enum StoreRunner {
     /// (`run_held` resolves its client when it runs the job). A kind in `live` starts as `Live`
     /// starts it.
     #[cfg(test)]
-    Held { parked: Vec<StoreJob>, live: &'static [LiveKind] },
+    Held { parked: Vec<StoreJob>, live: &'static [LiveKind], notify: NotifyTransport },
+}
+
+/// Boot-selected transport, not a second Notify state machine. Scripts must be finite;
+/// false promises no script/work ran. Real streams always execute off-frame.
+#[derive(Clone, Copy)]
+#[allow(dead_code)] // Refusing/scripted boot ports belong to host tests, never store logic.
+pub(crate) enum NotifyTransport {
+    Real,
+    Refuse,
+    Script {
+        eligible: fn(&NotifyStreamReq) -> Option<&'static Client>,
+        run: fn(&NotifyStreamPort, plx_machine::machine::Addr, &'static Client, NotifyStreamReq) -> bool,
+    },
+}
+
+fn notify_client(req: &NotifyStreamReq) -> Option<&'static Client> {
+    resolve(req.sid, req.key).filter(|c| c.has_token() && !c.data_io_disabled() && c.credential_transport_open())
+}
+
+impl NotifyTransport {
+    fn resolve(self, req: &NotifyStreamReq) -> Option<&'static Client> {
+        let client = match self {
+            Self::Script { eligible, .. } => eligible(req),
+            Self::Real | Self::Refuse => notify_client(req),
+        }?;
+        (client.id() == req.sid && ClientKey::of(client) == req.key).then_some(client)
+    }
+
+    fn launch(self, job: Job<NotifyStreamReq>, port: NotifyStreamPort, client: &'static Client) -> bool {
+        let Job { addr, req } = job;
+        match self {
+            Self::Refuse => false,
+            Self::Script { run, .. } => run(&port, addr, client, req),
+            Self::Real => plx_base::task::spawn_off_frame("notify", move |off| {
+                // Re-resolve at execution as well as admission: a held/scheduled request
+                // cannot open a replacement credential or a retired registry slot.
+                if port.is_cancelled() {
+                    port.done(addr, NotifyTerminal::End(plx_plex::plex::notify::NotifyEnd::Cancelled));
+                } else if let Some(current) = notify_client(&req) {
+                    finish_notify_stream_job(&port, addr, current, req, off);
+                } else {
+                    port.done(addr, NotifyTerminal::NotStarted);
+                }
+            }),
+        }
+    }
 }
 
 /// TEST ONLY: a kind of job a [`StoreRunner::Held`] starts on a worker instead of parking. It names
@@ -212,6 +268,9 @@ pub(crate) enum LiveKind {
     /// server that accepts and never answers, where today's worker blocks harmlessly off-thread.
     /// No rig waits for a discovery landing from a real worker: every one fabricates it.
     BrowseDiscovery,
+    /// Multi-server metadata reads stay off the ordinary held drain's test thread.
+    MetaAltSources,
+    NotifyStream,
 }
 
 impl StoreRunner {
@@ -228,7 +287,7 @@ impl StoreRunner {
     /// worker (the Related rigs land the window with `land_related_for_test`), so those are parked.
     #[cfg(test)]
     pub(crate) fn held() -> Self {
-        Self::Held { parked: Vec::new(), live: &[LiveKind::Hubs, LiveKind::MetaSeason, LiveKind::BrowsePage, LiveKind::BrowseDiscovery] }
+        Self::Held { parked: Vec::new(), live: &[LiveKind::Hubs, LiveKind::MetaSeason, LiveKind::BrowsePage, LiveKind::BrowseDiscovery, LiveKind::MetaAltSources, LiveKind::NotifyStream], notify: NotifyTransport::Refuse }
     }
 
     /// TEST ONLY: park the Library listing's page reads of a held runner too (the Home Hubs read
@@ -237,7 +296,7 @@ impl StoreRunner {
     #[cfg(test)]
     pub(crate) fn park_page_reads(&mut self) {
         if let Self::Held { live, .. } = self {
-            *live = &[LiveKind::Hubs, LiveKind::MetaSeason, LiveKind::BrowseDiscovery];
+            *live = &[LiveKind::Hubs, LiveKind::MetaSeason, LiveKind::BrowseDiscovery, LiveKind::MetaAltSources, LiveKind::NotifyStream];
         }
     }
 
@@ -246,7 +305,7 @@ impl StoreRunner {
     /// chooses to settle them.
     #[cfg(test)]
     pub(crate) fn held_all() -> Self {
-        Self::Held { parked: Vec::new(), live: &[] }
+        Self::Held { parked: Vec::new(), live: &[], notify: NotifyTransport::Refuse }
     }
 
     /// Start `job`, admitting it through the tape when its kind is taped (Detail, Collection,
@@ -271,6 +330,8 @@ impl StoreRunner {
             StoreJob::MetaSeason(job, port) => self.start_meta_season(job, port),
             StoreJob::MetaEpisodes(job, port) => self.start_meta_episodes(job, port),
             StoreJob::MetaRelated(job, port) => self.start_meta_related(job, port),
+            StoreJob::MetaAltSources(job, port) => self.start_alt_sources(job, port),
+            StoreJob::NotifyStream(job, port) => self.start_notify_stream(job, port),
         }
     }
 
@@ -322,7 +383,9 @@ impl StoreRunner {
                 | StoreJob::ViewWrite(..)
                 | StoreJob::MetaSeason(..)
                 | StoreJob::MetaEpisodes(..)
-                | StoreJob::MetaRelated(..)) => self.start(other),
+                | StoreJob::MetaRelated(..)
+                | StoreJob::MetaAltSources(..)
+                | StoreJob::NotifyStream(..)) => self.start(other),
         }
     }
 
@@ -351,7 +414,7 @@ impl StoreRunner {
             (_, HubsLaunch::Refused) => return launch_hubs_job(job, port, client, |_work| false),
             (_, HubsLaunch::Late { extra, items }) => return plx_data::pms::launch_late_hubs_job_for_test(
                 job, port, client, |work| plx_base::task::spawn_small("hubs", work), extra, items),
-            (Self::Held { parked, live }, HubsLaunch::Real) if !live.contains(&LiveKind::Hubs) => {
+            (Self::Held { parked, live, .. }, HubsLaunch::Real) if !live.contains(&LiveKind::Hubs) => {
                 port.claim();
                 parked.push(StoreJob::Hubs(job, port));
                 return true;
@@ -420,6 +483,8 @@ impl StoreRunner {
                     | StoreJob::MetaSeason(..)
                     | StoreJob::MetaEpisodes(..)
                     | StoreJob::MetaRelated(..)
+                    | StoreJob::MetaAltSources(..)
+                    | StoreJob::NotifyStream(..)
                 ) => held.push(kept),
             }
         }
@@ -431,10 +496,11 @@ impl StoreRunner {
     fn launch_detail(&mut self, job: Job<DetailReq>, port: DetailPort, client: Option<&'static Client>) -> bool {
         match self {
             Self::Live => {
+                let source_override = crate::dev::scenarios::metadata_source(plx_data::stores::tape::active());
                 let Job { addr, req: DetailReq { sid, rk, prefer } } = job;
                 plx_base::task::spawn_small("detail", move || {
                     finish_detail_fetch(&port, addr, (sid, rk.clone()), client, |client| {
-                        fetch_full(client, sid, &rk, prefer)
+                        fetch_full(client, sid, &rk, prefer, source_override)
                     });
                 })
             }
@@ -651,7 +717,7 @@ impl StoreRunner {
         match self {
             Self::Live => Self::spawn_meta_season(job, port),
             #[cfg(test)]
-            Self::Held { parked, live } => {
+            Self::Held { parked, live, .. } => {
                 if live.contains(&LiveKind::MetaSeason) {
                     return Self::spawn_meta_season(job, port);
                 }
@@ -720,6 +786,31 @@ impl StoreRunner {
                 true
             }
         }
+    }
+
+    fn start_alt_sources(&mut self, job: Job<MetaAltSourcesReq>, port: MetaAltSourcesPort) {
+        self.start_alt_sources_with(job, port, |work| plx_base::task::spawn_small("altsrc", work));
+    }
+
+    // A false launcher return promises it did not execute work; only this caller refuses.
+    fn start_alt_sources_with(&mut self, job: Job<MetaAltSourcesReq>, port: MetaAltSourcesPort,
+        launch: impl FnOnce(Box<dyn FnOnce() + Send>) -> bool) {
+        let addr = job.addr;
+        let refusal = port.clone();
+        if !self.launch_alt_sources(job, port, launch) { refusal.refused(addr); }
+    }
+
+    fn launch_alt_sources(&mut self, job: Job<MetaAltSourcesReq>, port: MetaAltSourcesPort,
+        launch: impl FnOnce(Box<dyn FnOnce() + Send>) -> bool) -> bool {
+        #[cfg(test)]
+        if let Self::Held { parked, live, .. } = self {
+            if !live.contains(&LiveKind::MetaAltSources) {
+                parked.push(StoreJob::MetaAltSources(job, port));
+                return true;
+            }
+        }
+        let Job { addr, req } = job;
+        launch(Box::new(move || finish_alt_sources_job(&port, addr, plx_plex::plex::client_for, req)))
     }
 
     /// A read-back batch is not on the tape either: the launch is the whole decision. A launch that
@@ -887,7 +978,7 @@ impl StoreRunner {
             return false; // the OS refusing the thread
         }
         #[cfg(test)]
-        if let Self::Held { parked, live } = self {
+        if let Self::Held { parked, live, .. } = self {
             if !live.contains(&LiveKind::BrowsePage) {
                 parked.push(StoreJob::BrowsePage(job, port));
                 return true;
@@ -926,7 +1017,7 @@ impl StoreRunner {
             return false; // the OS refusing the thread
         }
         #[cfg(test)]
-        if let Self::Held { parked, live } = self {
+        if let Self::Held { parked, live, .. } = self {
             if !live.contains(&LiveKind::BrowseDiscovery) {
                 parked.push(StoreJob::BrowseDiscovery(job, port));
                 return true;
@@ -947,6 +1038,61 @@ impl StoreRunner {
     /// `finish_browse_hubs_job`, `finish_view_write_job`, `finish_browse_directory_job`,
     /// `finish_browse_page_job`, `finish_browse_discovery_job`) and return how many ran.
     /// Their landings are queued for the next pump. Under `Live` there is nothing parked.
+    fn notify_transport(&self) -> NotifyTransport {
+        match self {
+            Self::Live => NotifyTransport::Real,
+            #[cfg(test)]
+            Self::Held { notify, .. } => *notify,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_notify_transport(&mut self, transport: NotifyTransport) {
+        if let Self::Held { notify, .. } = self { *notify = transport; }
+    }
+
+    fn start_notify_stream(&mut self, job: Job<NotifyStreamReq>, port: NotifyStreamPort) {
+        let transport = self.notify_transport();
+        self.start_notify_stream_with(job, port, |req| transport.resolve(req),
+            |job, port, client| transport.launch(job, port, client));
+    }
+
+    // Explicit resolver/launcher ports also let tests model an eligible capture without accounts.
+    fn start_notify_stream_with(&mut self, job: Job<NotifyStreamReq>, port: NotifyStreamPort,
+        eligible: impl FnOnce(&NotifyStreamReq) -> Option<&'static Client>,
+        launch: impl FnOnce(Job<NotifyStreamReq>, NotifyStreamPort, &'static Client) -> bool) {
+        let addr = job.addr;
+        if port.is_cancelled() { port.refused(addr); return; }
+        let Some(client) = eligible(&job.req) else { port.refused(addr); return; };
+        #[cfg(test)]
+        if let Self::Held { parked, live, .. } = self {
+            if !live.contains(&LiveKind::NotifyStream) {
+                port.admit(addr, true);
+                parked.push(StoreJob::NotifyStream(job, port));
+                return;
+            }
+        }
+        let receipt = port.clone();
+        let accepted = launch(job, port, client);
+        receipt.admit(addr, accepted);
+    }
+
+    #[cfg(test)]
+    fn release_notify_stream_with(job: Job<NotifyStreamReq>, port: NotifyStreamPort,
+        eligible: impl FnOnce(&NotifyStreamReq) -> Option<&'static Client>,
+        launch: impl FnOnce(Job<NotifyStreamReq>, NotifyStreamPort, &'static Client) -> bool) {
+        let addr = job.addr;
+        if port.is_cancelled() {
+            port.done(addr, NotifyTerminal::End(plx_plex::plex::notify::NotifyEnd::Cancelled));
+            return;
+        }
+        let Some(client) = eligible(&job.req) else {
+            port.done(addr, NotifyTerminal::NotStarted); return;
+        };
+        let terminal = port.clone();
+        if !launch(job, port, client) { terminal.done(addr, NotifyTerminal::NotStarted); }
+    }
+
     #[cfg(test)]
     pub(crate) fn run_held(&mut self) -> usize {
         self.run_held_where(|_| true)
@@ -973,6 +1119,7 @@ impl StoreRunner {
 
     #[cfg(test)]
     fn run_held_where(&mut self, wanted: impl Fn(&StoreJob) -> bool) -> usize {
+        let transport = self.notify_transport();
         let Self::Held { parked, .. } = self else { return 0 };
         let (run, keep): (Vec<_>, Vec<_>) = std::mem::take(parked).into_iter().partition(|job| wanted(job));
         *parked = keep;
@@ -982,9 +1129,10 @@ impl StoreRunner {
                 StoreJob::Detail(job, port) => {
                     // The client is resolved when the job runs (a live one is resolved by
                     // `start_detail`, at the admission); a server with none answers the failure.
+                    let source_override = crate::dev::scenarios::metadata_source_scripted(plx_data::stores::tape::active());
                     let DetailReq { sid, rk, prefer } = job.req;
                     finish_detail_fetch(&port, job.addr, (sid, rk.clone()), plx_plex::plex::client_for(sid), |client| {
-                        fetch_full(client, sid, &rk, prefer)
+                        fetch_full(client, sid, &rk, prefer, source_override)
                     });
                 }
                 StoreJob::Collection(job, port) => {
@@ -1100,11 +1248,22 @@ impl StoreRunner {
                 StoreJob::MetaRelated(job, port) => {
                     finish_related_job(&port, job.addr, plx_plex::plex::client_for(job.req.sid), job.req);
                 }
+                StoreJob::MetaAltSources(job, port) => {
+                    finish_alt_sources_job(&port, job.addr, plx_plex::plex::client_for, job.req);
+                }
+                StoreJob::NotifyStream(job, port) => {
+                    Self::release_notify_stream_with(job, port, |req| transport.resolve(req),
+                        |job, port, client| transport.launch(job, port, client));
+                }
             }
         }
         n
     }
 }
+
+#[cfg(test)]
+#[path = "notify_runner_tests.rs"]
+mod notify_runner_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1156,7 +1315,7 @@ mod tests {
     /// live landing, so the tape is retired first, after its verdict has been taken.
     fn pump_the_live_landing(store: &mut MetadataStore) {
         tape::reset_for_test();
-        store.pump_detail();
+        store.pump_detail(&ClientKeys::default(), false);
     }
 
     /// Replay with `"admitted":false`: the tape says the recorded run's launch was refused, so
@@ -1170,7 +1329,7 @@ mod tests {
         let (mut store, job, admission) = replaying(false);
         let sid = ServerId::UNSET;
 
-        StoreRunner::live().start(job);
+        crate::dev::scenarios::with_metadata_source(None, || StoreRunner::live().start(job));
         // Had a worker been started it would have answered by the time this returns.
         plx_base::task::drain_workers_for_test();
 
@@ -1196,7 +1355,7 @@ mod tests {
         let (mut store, job, admission) = replaying(true);
         let sid = ServerId::UNSET;
 
-        StoreRunner::live().start(job);
+        crate::dev::scenarios::with_metadata_source(None, || StoreRunner::live().start(job));
         // Had a worker been started it would have answered by the time this returns.
         plx_base::task::drain_workers_for_test();
 
@@ -1224,13 +1383,13 @@ mod tests {
         runner.start(old);
         runner.start(new);
         assert_eq!(plx_data::metadata::detail_inflight_for_test(store.adapter_ref()), 2);
-        store.pump_detail();
+        store.pump_detail(&ClientKeys::default(), false);
         assert_eq!(plx_data::metadata::detail_inflight_for_test(store.adapter_ref()), 1,
             "the superseded job's answer handed its slot back");
         assert!(store.view().detail_loading(), "the newest request is still out");
 
         assert_eq!(runner.run_held(), 1, "only the newest job was still parked");
-        store.pump_detail();
+        store.pump_detail(&ClientKeys::default(), false);
         assert!(!store.view().detail_loading());
         assert_eq!(plx_data::metadata::detail_inflight_for_test(store.adapter_ref()), 0);
     }
@@ -2666,6 +2825,20 @@ mod tests {
     use plx_plex::plex::ClientKey;
 
     /// The command that asks the current section for its hubs.
+    fn run_browse_command(browse: &mut BrowseStore, cmd: BrowseCmd) {
+        browse.observe_pin_write();
+        let mut keys = plx_plex::plex::ClientKeys::default();
+        refill_client_keys(&mut keys);
+        let session = plx_plex::plex::session::peek();
+        let profile_key = plx_plex::plex::session::current_profile_key();
+        browse.run_with_input(cmd, &plx_data::browse::BrowseRosterInput {
+            keys: &keys, session: &session,
+            visible_generation: plx_plex::plex::session::visible_generation(),
+            settled: plx_plex::plex::session::peek_settled().is_some(),
+            profile_key: &profile_key,
+        });
+    }
+
     fn browse_hubs_cmd(browse: &mut BrowseStore) -> BrowseCmd {
         let id = browse.hubs_snapshot().view().id().expect("a section is current");
         let target = SectionAddress { epoch: id.epoch, sid: id.sid, section: id.section };
@@ -2684,7 +2857,7 @@ mod tests {
         browse.seed_registered_table_for_test([sid, other]);
         browse.run(BrowseCmd::SetCur(0), &registry_keys());
         let cmd = browse_hubs_cmd(&mut browse);
-        browse.run(cmd, &registry_keys());
+        run_browse_command(&mut browse, cmd);
         let mut jobs = browse.take_jobs();
         assert_eq!(jobs.len(), 1, "one section, one read");
         let job = jobs.remove(0);
@@ -2711,7 +2884,7 @@ mod tests {
     fn the_next_step_asks_again(browse: &mut BrowseStore) -> StoreJob {
         assert!(!browse.hubs_read_out_for_test(), "the refusal gave the claim back in the call that refused");
         let cmd = browse_hubs_cmd(browse);
-        browse.run(cmd, &registry_keys());
+        run_browse_command(browse, cmd);
         let mut jobs = browse.take_jobs();
         assert_eq!(jobs.len(), 1, "the settled section asked again");
         jobs.remove(0)
@@ -2731,7 +2904,15 @@ mod tests {
 
         assert!(browse.hubs_answer_waiting_for_test(), "the worker answered");
         assert!(browse.hubs_read_out_for_test(), "the claim holds until the pump takes the answer");
-        let _outcome = browse.pump_with_gate(plx_machine::landgate::fixture_gate(), &registry_keys(), &plx_plex::plex::session::peek());
+        browse.observe_pin_write();
+        let mut keys = plx_plex::plex::ClientKeys::default();
+        refill_client_keys(&mut keys);
+        let _outcome = browse.pump_with_gate(plx_machine::landgate::fixture_gate(), &plx_data::browse::BrowseRosterInput {
+            keys: &keys, session: &plx_plex::plex::session::peek(),
+            visible_generation: plx_plex::plex::session::visible_generation(),
+            settled: plx_plex::plex::session::peek_settled().is_some(),
+            profile_key: &plx_plex::plex::session::current_profile_key(),
+        });
         assert!(!browse.hubs_answer_waiting_for_test(), "the pump took the one answer");
         assert!(!browse.hubs_read_out_for_test(), "…which lowered the claim");
         // The same pump asks for the grid's first page (the Library section it landed shelves for),
@@ -2790,7 +2971,15 @@ mod tests {
 
         assert_eq!(runner.run_held_of(plx_data::stores::StoreId::Browse), 1);
         assert!(browse.hubs_answer_waiting_for_test());
-        let _outcome = browse.pump_with_gate(plx_machine::landgate::fixture_gate(), &registry_keys(), &plx_plex::plex::session::peek());
+        browse.observe_pin_write();
+        let mut keys = plx_plex::plex::ClientKeys::default();
+        refill_client_keys(&mut keys);
+        let _outcome = browse.pump_with_gate(plx_machine::landgate::fixture_gate(), &plx_data::browse::BrowseRosterInput {
+            keys: &keys, session: &plx_plex::plex::session::peek(),
+            visible_generation: plx_plex::plex::session::visible_generation(),
+            settled: plx_plex::plex::session::peek_settled().is_some(),
+            profile_key: &plx_plex::plex::session::current_profile_key(),
+        });
         assert!(!browse.hubs_read_out_for_test());
         assert_eq!(runner.run_held(), 0, "nothing left parked");
     }
@@ -2889,7 +3078,15 @@ mod tests {
 
     /// The store's step that asks for the grid's page (the pump).
     fn page_step(browse: &mut BrowseStore) {
-        let _ = browse.pump_with_gate(plx_machine::landgate::fixture_gate(), &registry_keys(), &plx_plex::plex::session::peek());
+        browse.observe_pin_write();
+        let mut keys = plx_plex::plex::ClientKeys::default();
+        refill_client_keys(&mut keys);
+        let _ = browse.pump_with_gate(plx_machine::landgate::fixture_gate(), &plx_data::browse::BrowseRosterInput {
+            keys: &keys, session: &plx_plex::plex::session::peek(),
+            visible_generation: plx_plex::plex::session::visible_generation(),
+            settled: plx_plex::plex::session::peek_settled().is_some(),
+            profile_key: &plx_plex::plex::session::current_profile_key(),
+        });
     }
 
     /// The command that asks the current section for its genre list.
@@ -2902,7 +3099,7 @@ mod tests {
     /// The store's step that asks for the genre list (the filter menu's tick).
     fn directory_step(browse: &mut BrowseStore) {
         let cmd = browse_directory_cmd(browse);
-        browse.run(cmd, &registry_keys());
+        run_browse_command(browse, cmd);
     }
 
     /// The page job the store's first pump left, keyed to the client the registry held when it did,
@@ -3228,7 +3425,15 @@ mod tests {
 
     /// The store's discovery pass, with the registry's keys as of now.
     fn discovery_step(browse: &mut BrowseStore) {
-        let _ = browse.discover_pump_with_gate(plx_machine::landgate::fixture_gate(), &registry_keys(), &plx_plex::plex::session::peek());
+        browse.observe_pin_write();
+        let mut keys = plx_plex::plex::ClientKeys::default();
+        refill_client_keys(&mut keys);
+        let _ = browse.discover_pump_with_gate(plx_machine::landgate::fixture_gate(), &plx_data::browse::BrowseRosterInput {
+            keys: &keys, session: &plx_plex::plex::session::peek(),
+            visible_generation: plx_plex::plex::session::visible_generation(),
+            settled: plx_plex::plex::session::peek_settled().is_some(),
+            profile_key: &plx_plex::plex::session::current_profile_key(),
+        });
     }
 
     /// The `"sources"` worker is not counted by `drain_workers_for_test` (it dials whatever a roster
@@ -3831,7 +4036,7 @@ mod tests {
 
         assert_eq!(tape::finish(), (vec![], None), "the kind is untaped: the runner records no admission");
         tape::reset_for_test();
-        store.pump(plx_machine::landgate::fixture_gate());
+        store.pump(&registry_keys(), false, None, plx_machine::landgate::fixture_gate());
         assert_eq!(second_page(&store), ["ep-first", "ep-second"], "the read reached the server and its page is seated");
     }
 
@@ -3848,7 +4053,7 @@ mod tests {
 
         assert_eq!(tape::finish(), (vec![], None));
         tape::reset_for_test();
-        store.pump(plx_machine::landgate::fixture_gate());
+        store.pump(&registry_keys(), false, None, plx_machine::landgate::fixture_gate());
         assert!(!pages_held(&mut store), "a worker started and answered");
     }
 
@@ -3864,7 +4069,7 @@ mod tests {
         StoreRunner::live().start(job);
         plx_base::task::drain_workers_for_test();
 
-        store.pump(plx_machine::landgate::fixture_gate());
+        store.pump(&registry_keys(), false, None, plx_machine::landgate::fixture_gate());
         assert!(!pages_held(&mut store), "answered: the page came back");
     }
 
@@ -3883,7 +4088,7 @@ mod tests {
         assert!(pages_held(&mut store), "parked, still out");
         assert_eq!(runner.run_held(), 1);
 
-        store.pump(plx_machine::landgate::fixture_gate());
+        store.pump(&registry_keys(), false, None, plx_machine::landgate::fixture_gate());
         assert_eq!(second_page(&store), ["ep-first", "ep-second"], "the run read from the server and its page is seated");
         assert_eq!(runner.run_held(), 0);
     }
@@ -3906,7 +4111,7 @@ mod tests {
 
         season_pump(&mut seasons);
         assert_eq!(season_state(&seasons), (0, false), "the season job ran and answered");
-        pages.pump(plx_machine::landgate::fixture_gate());
+        pages.pump(&registry_keys(), false, None, plx_machine::landgate::fixture_gate());
         assert!(!pages_held(&mut pages), "and the page job did");
     }
 
@@ -3943,6 +4148,110 @@ mod tests {
         assert_eq!(bridge.run_held_store_jobs_for_test(), 1, "the held runner parked the page window");
         assert!(bridge.metadata_run(MetadataCmd::LoadSeason(1)));
         bridge.assert_no_store_jobs_left_for_test();
+    }
+
+    fn alt_request() -> (MetadataStore, StoreJob) {
+        use plx_data::metadata::{begin_detail_for_test, Detail};
+        use plx_machine::machine::{Addr, MachineId, RequestId};
+        plx_plex::plex::reset_servers_for_test();
+        let sid = plx_plex::plex::register_for_test("alt-a", "127.0.0.1", 9, "a", "cid");
+        plx_plex::plex::register_for_test("alt-b", "127.0.0.1", 9, "b", "cid");
+        let mut store = MetadataStore::default();
+        let gen = begin_detail_for_test(&store.adapter_for_test(), sid, "item");
+        store.detail_port().done(Addr { to: MachineId::Store(plx_data::stores::StoreId::Metadata.ord()), req: RequestId(gen) },
+            ((sid, "item".into()), Some(Detail { sid, rk: "item".into(), guid: "plex://movie/m4".into(), ..Default::default() })));
+        store.pump_detail(&registry_keys(), false);
+        let mut jobs = store.take_jobs();
+        assert_eq!(jobs.len(), 1);
+        let job = jobs.remove(0);
+        assert!(matches!(job, StoreJob::MetaAltSources(..)));
+        (store, job)
+    }
+
+    #[test]
+    fn alt_launch_refusal_is_once_immediate_and_has_no_mailbox() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (store, job) = alt_request();
+        let adapter = store.adapter_for_test();
+        let StoreJob::MetaAltSources(job, port) = job else { unreachable!() };
+        let calls = std::cell::Cell::new(0);
+        StoreRunner::live().start_alt_sources_with(job, port, |_work| { calls.set(calls.get()+1); false });
+        assert_eq!(calls.get(), 1);
+        assert!(!plx_data::metadata::alt_sources_owed_for_test(&adapter));
+        assert!(!plx_data::metadata::alt_sources_ready_for_test(&adapter));
+        assert!(!store.has_jobs());
+    }
+
+    #[test]
+    fn alt_is_live_for_default_and_page_held_but_held_all_retains_and_runs_once() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        for page_held in [false, true] {
+            let (store, job) = alt_request();
+            let adapter = store.adapter_for_test();
+            let mut runner = StoreRunner::held();
+            if page_held { runner.park_page_reads(); }
+            // No network dependency: every captured key is now gone, so body skips each server.
+            plx_plex::plex::reset_servers_for_test();
+            runner.start(job);
+            for _ in 0..5000 {
+                if plx_data::metadata::alt_sources_ready_for_test(&adapter) { break; }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            assert!(plx_data::metadata::alt_sources_ready_for_test(&adapter));
+            assert_eq!(runner.run_held(), 0);
+        }
+        let (store, job) = alt_request();
+        let adapter = store.adapter_for_test();
+        let mut runner = StoreRunner::held_all();
+        let mut io = home_io(true, Vec::new());
+        assert_eq!(job.admission(), Admission::Direct);
+        runner.start_admitted(job, Some(&mut io));
+        assert!(io.requests.is_empty() && io.admissions.is_empty() && io.failure.is_none());
+        assert!(plx_data::metadata::alt_sources_owed_for_test(&adapter));
+        assert!(!plx_data::metadata::alt_sources_ready_for_test(&adapter));
+        let mut newer = MetadataStore::default();
+        crate::dev::scenarios::with_metadata_source(None, || {
+            runner.start(request(&mut newer, ServerId::UNSET, "new"));
+            plx_plex::plex::reset_servers_for_test();
+            assert_eq!(runner.run_held(), 2, "new Detail retains old alt");
+        });
+        assert!(plx_data::metadata::alt_sources_ready_for_test(&adapter));
+        assert_eq!(runner.run_held(), 0);
+    }
+
+    #[test]
+    fn detail_source_is_captured_at_live_launch_and_held_execution_not_park() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        assert!(plx_net::net::global_init() && plx_net::net::available() && plx_net::net::threaded_tls_ready());
+        let pms = Pms::serve(|path| if path.split('?').next() == Some("/library/metadata/movie") {
+            ("200 OK", r#"{"MediaContainer":{"size":1,"Metadata":[{"ratingKey":"movie","type":"movie","title":"Movie"}]}}"#.into())
+        } else { ("200 OK", r#"{"MediaContainer":{"size":0}}"#.into()) });
+        plx_plex::plex::reset_servers_for_test();
+        let sid = plx_plex::plex::register_for_test("source", "127.0.0.1", pms.port, "t", "cid");
+        for (held, source) in [(false, Some("launch")), (true, Some("execution")), (true, None), (true, Some(""))] {
+            let mut store = MetadataStore::default();
+            let job = request(&mut store, sid, "movie");
+            let mut runner = if held { StoreRunner::held_all() } else { StoreRunner::live() };
+            crate::dev::scenarios::with_metadata_source(Some("launch".into()), || runner.start(job));
+            if held {
+                if let Some(source) = source {
+                    crate::dev::scenarios::with_metadata_source(Some(source.into()), || assert_eq!(runner.run_held(), 1));
+                } else {
+                    assert_eq!(runner.run_held(), 1, "unscoped Held is neutral at execution");
+                }
+            } else { plx_base::task::drain_workers_for_test(); }
+            assert!(store.pump_detail(&registry_keys(), false));
+            let view = store.view();
+            let detail = view.current().expect("fetched detail");
+            assert_eq!(detail.source_override.as_deref(), source);
+            if let Some(source) = source { assert_eq!(detail.source(), source); }
+        }
+        crate::dev::scenarios::with_metadata_source(Some("armed".into()), || {
+            assert_eq!(crate::dev::scenarios::metadata_source(true), None);
+        });
     }
 
     // ---- a Related window read -----------------------------------------------------------------

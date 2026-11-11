@@ -64,18 +64,16 @@ END = "<!-- END GENERATED -->"
 #     plxnative-remote       release 0   dev 2      the world-writable FIFO
 #     plxnative-capture      release 0   dev 1      the TCP capture listener
 #     plxnative-drawmask     release 0   dev 1
-#     plxnative-heroground   release 0   dev 2
 #
 # `plxnative-overdraw` is NOT in this list and must not be added: it counted **1 in the release
-# binary**, because `shaders/fs_hero.frag` names it in a COMMENT and the shader source is
-# `include_str!`'d, so the literal ships in every configuration. That is the whole hazard of
-# string-table evidence in one example — the string is there and the code is not.
+# binary** (v0.5.0), because a shader source (`fs_hero.frag`, since deleted) named it in a COMMENT and
+# the shader source is `include_str!`'d, so the literal ships in every configuration. That is the
+# whole hazard of string-table evidence in one example — the string is there and the code is not.
 DEV_WITNESSES = (
     b"plxnative-noidle",
     b"plxnative-remote",
     b"plxnative-capture",
     b"plxnative-drawmask",
-    b"plxnative-heroground",
 )
 
 # A build machine's directory layout inside a shipped file. Same shape, and the same two

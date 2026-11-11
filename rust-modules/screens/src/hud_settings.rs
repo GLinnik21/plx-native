@@ -4,7 +4,8 @@
 //!
 //! **The page owns no store and no IO.** Everything it shows is a [`HudList`] the Bridge sends down the
 //! channel its `HudCmd::Open` carried (the page's own data, like the receipts the Playback pickers
-//! poll), and everything it asks leaves as one `AppFx::Huds`. OK on a package picks it
+//! poll). The finish-time switch uses the shared profile preference write; package operations leave
+//! as `AppFx::Huds`. OK on a package picks it
 //! (`HudCmd::Select`), OK on a drop file asks, through the shared two-answer prompt
 //! ([`DecisionPrompt`]), whether to install an unreviewed file, and the *Remove* row of an installed package
 //! deletes it. The list is read again each time the page opens.
@@ -62,6 +63,8 @@ use super::registry::{word, AppFx, HudCmd, ALERT, BAND};
 /// What the Bridge publishes to the page: the store's listing at one moment.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HudList {
+    /// The seated profile's preference, or no switch when no profile is seated.
+    pub end_time: Option<bool>,
     pub catalog: plx_data::hudpacks::catalog::Snapshot,
     pub catalog_date: String,
     pub app_version: String,
@@ -87,6 +90,7 @@ pub struct HudList {
 /// A row's id: what it IS, so the cursor keeps its place across a re-listing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum HudId {
+    EndTime,
     Pack(String),
     Remove(String),
     Drop(Sha),
@@ -105,6 +109,7 @@ enum HudId {
 
 #[derive(Clone, Debug)]
 enum HudAction {
+    EndTime,
     Select(String),
     Remove(String),
     Install(Sha),
@@ -121,6 +126,7 @@ enum HudAction {
 const REMOVE_KEY: u32 = 0x1000;
 const DROP_KEY: u32 = 0x2000;
 const ADDRESS_KEY: u32 = 0x3000;
+const END_TIME_KEY: u32 = 0x5000;
 
 /// What the open prompt asks about.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -132,6 +138,8 @@ enum Asking {
 }
 
 struct State {
+    end_time: Option<bool>,
+    saving_end_time: bool,
     selected: u32,
     rows: u32,
     notice: u8,
@@ -154,6 +162,9 @@ impl LogicalState for State {
     fn write(&self, c: &mut Canon) {
         c.u32(self.selected).u32(self.rows).u8(self.notice).bool(self.confirming).bool(self.affirmative).u32(self.alert_scroll)
             .bool(self.editing).bool(self.fetching).u8(self.kind).u32(self.scene).bool(self.visible).bool(self.suspended).bool(self.pending_select_focus).bool(self.registry_request).bool(self.provisional);
+        if let Some(on) = self.end_time {
+            c.bool(on).bool(self.saving_end_time);
+        }
     }
     fn probe(&self, out: &mut String) {
         out.push_str(&format!(
@@ -179,6 +190,7 @@ pub struct HudPage {
     /// The list's channel: the sender went to the Bridge with `HudCmd::Open`.
     rx: Receiver<HudList>,
     tx: Option<mpsc::Sender<HudList>>,
+    end_time_receipt: Option<Receiver<bool>>,
     /// What the open prompt asks about.
     asking: Option<Asking>,
     /// The offer the prompt was last opened for, so a listing that still carries it after the answer does not reopen it.
@@ -330,7 +342,7 @@ type Says = Vec<(HudId, String)>;
 /// The page's rows from the list alone: the packages (the built-in first), a removal row for each installed
 /// one, and the drop files under their own header when there are any. Beside them, the sentence each row that has
 /// one of its own says while it has focus.
-fn hud_form(list: &HudList, draft: Option<&TextBuffer>) -> (Form<HudId, HudAction, SettingsPage>, Says) {
+fn hud_form(list: &HudList, draft: Option<&TextBuffer>, saving_end_time: bool) -> (Form<HudId, HudAction, SettingsPage>, Says) {
     use plx_platform::i18n::msg;
     let mut says = Says::new();
     let mut packs = FormSection::new("");
@@ -390,7 +402,13 @@ fn hud_form(list: &HudList, draft: Option<&TextBuffer>) -> (Form<HudId, HudActio
     }
     let gallery = FormSection::new("").item_keyed(HudId::Browse, RowKey(0x4000), RowKind::Nav(SettingsPage::HudGallery), HudAction::Inert,
         Row::new(msg::settings_hud_browse()));
-    (Form::new().section(packs).section(gallery).section(removals).section(address).section(folder), says)
+    let mut display = FormSection::new("").visible(list.end_time.is_some());
+    if let Some(on) = list.end_time {
+        display = display.item_keyed(HudId::EndTime, RowKey(END_TIME_KEY), RowKind::Toggle, HudAction::EndTime,
+            Row::new(msg::settings_hud_end_time_title()).toggle(on)).disabled(saving_end_time);
+        says.push((HudId::EndTime, msg::settings_hud_end_time_detail().to_owned()));
+    }
+    (Form::new().section(packs).section(display).section(gallery).section(removals).section(address).section(folder), says)
 }
 
 /// What a refusal, a failed fetch or an install no storage took puts under the title, while one is in force: the typed
@@ -431,13 +449,14 @@ impl HudPage {
             title: String::new(),
             parent: String::new(),
             form: { let mut form = FormTable::new(BAND); form.table.set_empty_text(Some("")); form },
-            state: State { selected: 0, rows: 0, notice: 0, confirming: false, affirmative: false, alert_scroll: 0, editing: false, fetching: false, kind: 0, scene: 0, visible: false, suspended: false, pending_select_focus: false, registry_request: false, provisional: true },
+            state: State { end_time: None, saving_end_time: false, selected: 0, rows: 0, notice: 0, confirming: false, affirmative: false, alert_scroll: 0, editing: false, fetching: false, kind: 0, scene: 0, visible: false, suspended: false, pending_select_focus: false, registry_request: false, provisional: true },
             list: HudList::default(),
             copy: String::new(),
             says: Says::new(),
             follow: FollowCopy::new(""),
             rx,
             tx: Some(tx),
+            end_time_receipt: None,
             asking: None,
             offered: None,
             draft: TextBuffer::new(String::new(), 0),
@@ -488,7 +507,7 @@ impl HudPage {
         let mut stateful = false;
         let (title, parent, mut copy) = match self.page {
             SettingsPage::PlayerHud => {
-                let (form, says) = hud_form(&self.list, self.state.editing.then_some(&self.draft));
+                let (form, says) = hud_form(&self.list, self.state.editing.then_some(&self.draft), self.state.saving_end_time);
                 return Built { form, says, title: msg::settings_hud_title().into(), parent: parent_title().into(), copy: copy_of(&self.list, self.address_error) };
             }
             SettingsPage::HudGallery => {
@@ -710,6 +729,7 @@ impl HudPage {
         self.form.table.list_focused = true;
         self.form.set(form, keep.as_ref());
         self.state.fetching = self.list.fetching;
+        self.state.end_time = if self.page == SettingsPage::PlayerHud { self.list.end_time } else { None };
         self.state.rows = self.form.table.n_rows() as u32;
         self.state.notice = match &self.list.notice {
             None => 0,
@@ -872,6 +892,16 @@ impl HudPage {
     fn activate(&mut self, key: u32, fx: &mut Effects<'_, InnerHost>) {
         self.state.provisional = false;
         match form_activate(&self.form, key, fx) {
+            Some(HudAction::EndTime) => {
+                if let Some(on) = self.list.end_time.filter(|_| self.end_time_receipt.is_none()) {
+                    let (reply, receipt) = mpsc::channel();
+                    fx.push(Fx::App(AppFx::Preferences(super::registry::PreferenceCmd::Choose(
+                        plx_media::route::Choice::HudEndTime(!on), reply))));
+                    self.end_time_receipt = Some(receipt);
+                    self.state.saving_end_time = true;
+                    self.rebuild(Some(HudId::EndTime));
+                }
+            }
             Some(HudAction::FetchRegistry(sha)) => {
                 self.state.registry_request = true;
                 fx.push(Fx::App(AppFx::Huds(HudCmd::FetchRegistry(sha))));
@@ -956,6 +986,12 @@ impl Machine<InnerHost> for HudPage {
             ScreenEvent::Tick(t) => {
                 self.open(fx);
                 self.prompt.update(t.dt());
+                if self.end_time_receipt.as_ref().is_some_and(|reply| !matches!(reply.try_recv(), Err(mpsc::TryRecvError::Empty))) {
+                    self.end_time_receipt = None;
+                    self.state.saving_end_time = false;
+                    self.rebuild(self.form.selected_id().cloned());
+                    fx.invalidate(plx_machine::present::Provenance::Landing(MachineId::Session));
+                }
                 let had_rows = self.form.table.n_rows() > 0;
                 let mut latest = None;
                 while let Ok(list) = self.rx.try_recv() {
@@ -1170,7 +1206,7 @@ impl Screen<InnerHost> for HudPage {
 #[cfg(test)]
 fn rows_for_test(list: &HudList) -> Vec<(u32, HudId)> {
     let mut form: FormTable<HudId, HudAction, SettingsPage> = FormTable::new(BAND);
-    form.set(hud_form(list, None).0, None);
+    form.set(hud_form(list, None, false).0, None);
     (0..form.table.n_rows() as usize).filter_map(|i| Some((form.key_at(i)?.0, form.binding_at(i)?.id.clone()))).collect()
 }
 

@@ -1,5 +1,5 @@
-//! **The resize and page-slide motion of an in-player table popover** (`docs/player-submenus.md`,
-//! "Animation"): the Tracks panel's drill-in pages and tab switches, and the `…` popover's row set.
+//! **Resize and page-slide motion for table popovers**: the player's Tracks and `…` panels
+//! (`docs/player-submenus.md`, "Animation") and the Library header's menus.
 //!
 //! The panel is a bottom/right-anchored card whose natural size is its table's measured size. When
 //! that size changes (a page push or pop, a tab switch, a live row added) the card does not jump:
@@ -7,6 +7,7 @@
 //! and right edges stay on the anchor the panel family shares with the control row. Everything
 //! here is built from the app's one spring integrator, so the present gate ([`plx_machine::idle`]) knows
 //! exactly when the panel is moving and an at-rest panel asks for no frame at all.
+//! Header menus can open below the control and hang from either side, so their four edges spring.
 //!
 //! A page transition additionally moves the OUTGOING and INCOMING pages sideways, both inside the
 //! animated card's clip, on a STAGGERED fade: the outgoing page leaves quickly and the incoming one
@@ -108,9 +109,10 @@ struct Slide {
 pub struct PanelMotion {
     left: Spring,
     top: Spring,
-    /// The anchored edges: the last natural rect's right and bottom.
-    right: f32,
-    bottom: f32,
+    right: Spring,
+    bottom: Spring,
+    /// Header popovers may hang from either side. Their whole rect follows a new layout.
+    spring_all_edges: bool,
     /// `false` until the first [`Self::step`], so a panel opens AT its layout and only later moves.
     placed: bool,
     /// The layout cache: the table's [`TableView::layout_rev`] and the natural rect measured for it.
@@ -127,14 +129,21 @@ impl PanelMotion {
         Self {
             left: Spring::at(0.0),
             top: Spring::at(0.0),
-            right: 0.0,
-            bottom: 0.0,
+            right: Spring::at(0.0),
+            bottom: Spring::at(0.0),
+            spring_all_edges: false,
             placed: false,
             cache: Cell::new(None),
             last_natural: Cell::new(Rect::new(0.0, 0.0, 0.0, 0.0)),
             slide: None,
             warmed: Cell::new(None),
         }
+    }
+
+    /// Spring all four edges for popovers that can hang below or to either side of an opener.
+    pub const fn spring_all_edges(mut self) -> Self {
+        self.spring_all_edges = true;
+        self
     }
 
     /// **Record a freshly built page's strings in the UPDATE phase; they are rasterised before its
@@ -232,24 +241,26 @@ impl PanelMotion {
         rect
     }
 
-    /// Advance one frame toward `natural`. Springs on the TOP and LEFT edges only; the right and
-    /// bottom edges are the anchor and move with the layout at once.
+    /// Advance one frame toward `natural`. Player panels track the bottom and right anchors
+    /// directly. Header popovers spring those edges too.
     pub fn step(&mut self, dt: f32, natural: Rect) {
-        self.right = natural.x + natural.w;
-        self.bottom = natural.y + natural.h;
+        let right = natural.x + natural.w;
+        let bottom = natural.y + natural.h;
         if !self.placed {
             self.placed = true;
             self.left = Spring::at(natural.x);
             self.top = Spring::at(natural.y);
+            self.right = Spring::at(right);
+            self.bottom = Spring::at(bottom);
         } else {
-            self.left.step(natural.x, RECT_K, dt);
-            self.top.step(natural.y, RECT_K, dt);
-            // land exactly: the analytic spring only approaches its target, and a panel that rests
-            // a hair off its anchor would never be bit-identical to its own layout
-            for (spring, target) in [(&mut self.left, natural.x), (&mut self.top, natural.y)] {
-                if plx_machine::idle::settled(spring.pos, target, spring.vel) {
-                    *spring = Spring::at(target);
-                }
+            Self::step_edge(&mut self.left, natural.x, dt);
+            Self::step_edge(&mut self.top, natural.y, dt);
+            if self.spring_all_edges {
+                Self::step_edge(&mut self.right, right, dt);
+                Self::step_edge(&mut self.bottom, bottom, dt);
+            } else {
+                self.right.jump(right);
+                self.bottom.jump(bottom);
             }
         }
         let shift = SHIFT_FRAC * self.last_natural.get().w;
@@ -275,22 +286,30 @@ impl PanelMotion {
         }
     }
 
-    /// The card as drawn right now: top and left from the springs, bottom and right on the anchor.
-    /// Before the first [`Self::step`] it is the layout itself.
+    fn step_edge(spring: &mut Spring, target: f32, dt: f32) {
+        spring.step(target, RECT_K, dt);
+        if plx_machine::idle::settled(spring.pos, target, spring.vel) {
+            spring.jump(target);
+        }
+    }
+
+    /// The card as drawn right now. Before the first [`Self::step`] it is the layout itself.
     pub fn shown(&self, natural: Rect) -> Rect {
         if !self.placed {
             return natural;
         }
-        Rect::new(self.left.pos, self.top.pos, (self.right - self.left.pos).max(0.0), (self.bottom - self.top.pos).max(0.0))
+        Rect::new(self.left.pos, self.top.pos, (self.right.pos - self.left.pos).max(0.0), (self.bottom.pos - self.top.pos).max(0.0))
     }
 
     /// Is the panel mid-motion — the card still moving to its layout, or a page slide running?
     /// What `Screen::pointer_held` answers.
     pub fn transitioning(&self) -> bool {
         let natural = self.last_natural.get();
-        self.slide.is_some()
-            || (self.placed
-                && ((self.left.pos - natural.x).abs() > EDGE_REST_PX || (self.top.pos - natural.y).abs() > EDGE_REST_PX))
+        self.slide.is_some() || (self.placed
+            && ((self.left.pos - natural.x).abs() > EDGE_REST_PX
+                || (self.top.pos - natural.y).abs() > EDGE_REST_PX
+                || (self.spring_all_edges && ((self.right.pos - (natural.x + natural.w)).abs() > EDGE_REST_PX
+                    || (self.bottom.pos - (natural.y + natural.h)).abs() > EDGE_REST_PX))))
     }
 
     /// Is a page slide running (as distinct from only the card resizing)?
@@ -374,6 +393,12 @@ impl PanelMotion {
     pub fn draw(&self, p: Painter, natural: Rect, radius: f32, live: &TableView, measure: &dyn Measure) {
         let shown = self.shown(natural);
         p.rect(shown, radius, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
+        self.draw_rows(p, natural, live, measure);
+    }
+
+    /// Paint only the pages of a panel whose ground is supplied by a popover.
+    pub fn draw_rows(&self, p: Painter, natural: Rect, live: &TableView, measure: &dyn Measure) {
+        let shown = self.shown(natural);
         match &self.slide {
             None => {
                 let _clip = ClipScope::open_in(p, shown);

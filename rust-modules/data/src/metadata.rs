@@ -10,6 +10,9 @@ pub mod sub_layout;
 pub mod track_label;
 pub mod track_names;
 use std::panic::catch_unwind;
+#[cfg(test)]
+#[path = "metadata_alt_sources_job_tests.rs"]
+mod metadata_alt_sources_job_tests;
 pub use episode_list::{EpisodeList, PAGE as EPISODE_PAGE};
 
 /// **Stage B of the store-ownership migration** (`docs/stores-as-machines.md`, D4): a borrowed
@@ -1569,6 +1572,9 @@ pub struct Detail {
     #[serde(with = "record::server_id")]
     pub sid: plx_plex::plex::ServerId,
     pub rk: String,
+    /// Host-captured dev input; never recorded and neutral on decode. Some(empty) forces no credit.
+    #[serde(skip, default)]
+    pub source_override: Option<String>,
     /// Which SERVER this item was fetched from, as the OWNER'S HANDLE ("friend") — empty whenever
     /// it came from the signed-in user's own server, which is every item today.
     ///
@@ -1597,6 +1603,10 @@ pub struct Detail {
     /// Edition identity, presented in the hero's metadata rather than appended to its title.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub edition: String,
+    /// The stamped clearLogo, or empty when the image list contains no usable logo.
+    /// Absent from older responses and recordings, which use the legacy lookup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logo: Option<String>,
     pub year: i64,
     pub rating: String, // contentRating
     pub summary: String,
@@ -1784,16 +1794,17 @@ impl Detail {
     ///
     /// dev: **`/tmp/plxnative-shared` WINS WHEN ARMED** — the precedence every trigger in this app
     /// has (`crate::dev`'s module doc: `plxnative-token` beats the signed-in session), and the
-    /// phrase to grep for, because the same stand-in is read by the owned Home's hero run and
-    /// the two must agree. (The owned `screens::search::render`'s owner annotation reads the real
-    /// registry unconditionally and does not consult this trigger — a gap the cutover left open,
-    /// not a third agreement point.) A trigger exists to FORCE
+    /// phrase to grep for. (Home's hero draws no credit since board CW-13 v2, so the Detail page's
+    /// facts row is the one presentation of the phrase; the owned `screens::search::render`'s owner
+    /// annotation reads the real registry unconditionally and does not consult this trigger — a gap
+    /// the cutover left open.) A trigger exists to FORCE
     /// a state, so an armed one outranks the real answer, and an armed EMPTY file forces the
     /// absence of a handle rather than doing nothing. It stamps one handle onto every item this
-    /// session loads, which is what a fully-borrowed library looks like. Read ONCE (see
-    /// [`dev_source`]) — the trigger surface is boot state, and this is reached from a draw.
+    /// session loads, which is what a fully-borrowed library looks like. M4 captures that optional
+    /// value at live launch/held execution in the host, not at draw time. Controlled host entry
+    /// creates a fresh owner and controlled installation neutralizes the retained override.
     pub fn source(&self) -> String {
-        dev_source().map(str::to_owned).unwrap_or_else(|| {
+        self.source_override.clone().unwrap_or_else(|| {
             plx_plex::plex::server_facts(self.sid)
                 .map(|f| f.handle.clone())
                 .unwrap_or_default()
@@ -2142,6 +2153,8 @@ pub struct NowPlaying {
     /// not. Gates the player HUD's `S# · E#` kicker line: filtering on `is_episode` there rendered
     /// `S0 · E0` under a show trailer, since a show trailer has no episode address to print.
     pub is_real_episode: bool,
+    /// True only for the movie leaf itself; false for trailers/extras even when their parent is a movie.
+    pub is_movie: bool,
     pub title: String, // big title: show title (episode) or movie title
     pub ep_title: String, // episode name (episode only)
     pub season: i64,
@@ -2163,6 +2176,7 @@ fn sync_now_playing(state: &mut MetadataState) {
         "episode" => Some(NowPlaying {
             is_episode: true,
             is_real_episode: true,
+            is_movie: false,
             title: d.show_title.clone(),
             ep_title: d.title.clone(),
             season: d.season,
@@ -2177,6 +2191,7 @@ fn sync_now_playing(state: &mut MetadataState) {
         "movie" => Some(NowPlaying {
             is_episode: false,
             is_real_episode: false,
+            is_movie: true,
             title: d.title.clone(),
             ep_title: String::new(),
             season: 0,
@@ -2216,6 +2231,7 @@ pub fn trailer_now_playing(
         // An extra is never a real episode leaf, whatever kind its parent is — `season`/`index`
         // below are placeholder zeros, not an address, so the HUD kicker must not read them.
         is_real_episode: false,
+        is_movie: false,
         title: d.title.clone(),
         ep_title: extra.hud_title(&d.title).to_string(),
         season: 0,
@@ -2242,27 +2258,8 @@ pub fn trailer_now_playing(
 // worker's (`fetch_episodes`, `fetch_episode_page`) are handed the one the runner resolved when it
 // started that job. Either way the row is stamped with its slot — an item fetched from slot 1
 // must be recorded as slot 1's whatever `client()` answers with by the time the fetch returns.
-/// The stand-in handle, read ONCE. The trigger surface is boot state, and [`Detail::source`] is
-/// reached from a draw — a `stat` per frame inside one is exactly what `crate::dev`'s doc forbids.
-/// Compiled out with the `devtriggers` feature, like every other trigger, so a release build folds
-/// this to `None` and the whole call to the registry read below it.
-#[cfg(not(any(test, feature = "test-support")))]
-fn dev_source() -> Option<&'static str> {
-    if crate::stores::tape::active() { return None; }
-    // Function-local, not process-wide mutable state: one dev-trigger stat per process, kept off
-    // the per-frame draw path the doc above forbids. Without `devtriggers`, `plx_base::devtrig::read`
-    // is a `None`-returning stub, so a release build pays one cheap `get_or_init` for a value
-    // that is always `None` — not worth a cfg to avoid.
-    static SEEN: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-    SEEN.get_or_init(|| plx_base::devtrig::read("shared")).as_deref()
-}
-/// The host suite must not depend on what this dev Mac happens to have under `/tmp`: an armed
-/// `plxnative-shared` would outrank the registry and make every credit assertion here read the
-/// trigger's handle instead. [`alt_dev_stand_in`] states the same rule the same way.
-#[cfg(any(test, feature = "test-support"))]
-fn dev_source() -> Option<&'static str> {
-    None
-}
+// Dev trigger reads/source latch live in the application's scenarios host; fetches accept values.
+
 
 fn fetch_detail(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::ServerId, rk: &str) -> Option<(Detail, String)> {
     let it = client.metadata(rk)?;
@@ -2271,6 +2268,7 @@ fn fetch_detail(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::Se
     let blur = it.ultra_blur_colors.and_then(|u| u.corners());
     let mut d = Detail {
         sid,
+        source_override: None,
         rk: rk.to_string(),
         // the portable identity — what "Also available" resolves across the other sources
         guid: it.guid.clone(),
@@ -2283,6 +2281,7 @@ fn fetch_detail(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::Se
         index: it.index,
         title: it.title.clone(),
         edition: it.edition_title.clone(),
+        logo: it.clear_logo().map(str::to_owned),
         year: it.year,
         rating: it.content_rating.clone(),
         summary: it.summary.clone(),
@@ -3726,7 +3725,7 @@ fn selected_season_number(state: &MetadataState, sid: plx_plex::plex::ServerId, 
 /// see that deletion's note below). Keep it
 /// that way: installing the result is the caller's job, and on the async path that must happen on
 /// the main thread (see the `DETAIL_LANDING`/`land_detail` note).
-pub fn fetch_full(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::ServerId, rk: &str, prefer: Option<i64>) -> Option<Detail> {
+pub fn fetch_full(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::ServerId, rk: &str, prefer: Option<i64>, source_override: Option<String>) -> Option<Detail> {
     // `ms=` is the whole chain's wall clock. It is the exact cost `request_detail` moves off the
     // SDL loop, so it is the number to read when judging whether a call site can afford to block
     // — note the framedrop breakdown CANNOT show it (fd_pc0 starts after event handling).
@@ -3758,6 +3757,7 @@ pub fn fetch_full(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::
             // instead of logging it), which would read as a fact about an item that never loaded.
             return None;
         };
+        d.source_override = source_override;
         // Movie/show: the extras GET. Episode/season pages never show the Trailer control, so
         // they must not pay extras I/O.
         let extras = extras_wanted(&d.kind)
@@ -3920,10 +3920,21 @@ pub fn detail_inflight_for_test(adapter: &MetadataAdapter) -> u32 {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub fn land_detail_for_test(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>, sid: plx_plex::plex::ServerId, rk: &str, gen: u32, detail: Option<Detail>) -> bool {
+pub fn land_detail_for_test(keys: &plx_plex::plex::ClientKeys, controlled: bool,
+    state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>, sid: plx_plex::plex::ServerId, rk: &str, gen: u32, detail: Option<Detail>) -> bool {
     plx_base::testlock::assert_held("the detail store (land_detail_for_test)");
     land_detail(adapter, sid, rk, gen, detail);
-    pump_detail(state, adapter)
+    pump_detail(state, adapter, keys, controlled)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn alt_sources_owed_for_test(adapter: &MetadataAdapter) -> bool {
+    use std::sync::atomic::Ordering;
+    adapter.alt_gen.load(Ordering::SeqCst) != adapter.alt_done.load(Ordering::SeqCst)
+}
+#[cfg(any(test, feature = "test-support"))]
+pub fn alt_sources_ready_for_test(adapter: &MetadataAdapter) -> bool {
+    adapter.alt_slot.lock().unwrap_or_else(|e| e.into_inner()).is_some()
 }
 
 fn detail_addr(gen: u32) -> plx_machine::machine::Addr {
@@ -4201,6 +4212,7 @@ pub fn run(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>,
 /// superseded by a newer request, by a blocking load, or by `clear()` when the page closed — is
 /// dropped.
 pub fn pump_detail_with_gate(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>,
+    keys: &plx_plex::plex::ClientKeys, controlled: bool,
     gate: &plx_machine::landgate::Gate) -> bool {
     use plx_machine::landing::Lane;
     use std::sync::atomic::Ordering;
@@ -4243,15 +4255,15 @@ pub fn pump_detail_with_gate(state: &mut MetadataState, adapter: &std::sync::Arc
             // nothing arrived and nothing will: the spinner is settled, the page keeps its item
             Lane::Dropped(_) | Lane::Refused(_) => None,
         };
-        fresh |= install_landed_detail(state, adapter, d);
+        fresh |= install_landed_detail(state, adapter, d, keys, controlled);
     }
     fresh
 }
 
 #[cfg(any(test, feature = "test-support"))]
 pub fn pump_detail(state: &mut MetadataState,
-    adapter: &std::sync::Arc<MetadataAdapter>) -> bool {
-    pump_detail_with_gate(state, adapter, plx_machine::landgate::fixture_gate())
+    adapter: &std::sync::Arc<MetadataAdapter>, keys: &plx_plex::plex::ClientKeys, controlled: bool) -> bool {
+    pump_detail_with_gate(state, adapter, keys, controlled, plx_machine::landgate::fixture_gate())
 }
 
 /// Install a landed fetch: a `None` (the fetch failed or panicked) keeps the previously loaded
@@ -4261,8 +4273,10 @@ pub fn pump_detail(state: &mut MetadataState,
 /// reached `fetch_full`'s line. `task`'s panic logger names the thread and the source location,
 /// so the failure is in the log — it just is not in these words, and a `None` here with no
 /// `detail:` line above it is that case.
-fn install_landed_detail(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>, d: Option<Detail>) -> bool {
-    let Some(d) = d else { return false };
+fn install_landed_detail(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>, d: Option<Detail>,
+    keys: &plx_plex::plex::ClientKeys, controlled: bool) -> bool {
+    let Some(mut d) = d else { return false };
+    if controlled { d.source_override = None; }
     // The LANDING is what defines which show's episodes are current, so the season supersede has
     // to happen here as well as at request time: a tab hop issued while this load was in flight
     // spawned a fetch against the OLD item, and its landing would patch these fresh episodes.
@@ -4270,7 +4284,7 @@ fn install_landed_detail(state: &mut MetadataState, adapter: &std::sync::Arc<Met
     // Ask the other sources about this item BEFORE the move: the resolve needs the item's own
     // server and its portable guid, and this is the one place both are known on the main thread.
     // A page with no guid, or a one-server install, spawns nothing.
-    request_alt_sources(state, adapter, d.sid, &d.rk, &d.guid);
+    request_alt_sources(state, adapter, d.sid, &d.rk, &d.guid, keys);
     // a page read now is read after any playback that has landed: its streams are the server's
     if state.played_since_load.as_ref().is_some_and(|(s, r)| plx_plex::plex::same_item((*s, r), (d.sid, &d.rk))) {
         state.played_since_load = None;
@@ -4447,7 +4461,7 @@ struct AltStore {
     sid: plx_plex::plex::ServerId,
     rk: String,
     copies: Vec<AltCopy>,
-    /// Does the headless stand-in own `copies`? Set where [`alt_dev_stand_in`] writes them, cleared
+    /// Does the headless stand-in own `copies`? Set by the explicit host answer, cleared
     /// by a real landing. Always `false` in a release build, where the stand-in is compiled out.
     stand_in: bool,
     /// Which item the stand-in has already had its one chance at, so it is built ONCE per item
@@ -4543,7 +4557,7 @@ fn alt_restamp_owners(state: &mut MetadataState) -> bool {
 /// Stamping it on the worker as well would be a third opinion; the worker's value is simply
 /// overwritten here.
 ///
-/// **Skipped entirely while the headless stand-in owns the list** — see [`alt_dev_stand_in`], whose
+/// **Skipped entirely while the headless stand-in owns the list** — the explicit host stand-in's
 /// whole purpose is to FABRICATE a borrowed copy on a slot the registry describes as ours. The
 /// trigger outranks the real answer everywhere else in this app for the same reason.
 ///
@@ -4573,11 +4587,10 @@ fn alt_regrade(list: &mut [AltCopy], stand_in_owns: bool) -> bool {
 
 /// Drop copies whose grant left the live registry while the page holding them stayed mounted.
 /// Called only when the registry generation moves, so the ordinary per-frame path pays nothing.
-fn alt_prune_inactive(state: &mut MetadataState) -> bool {
+fn alt_prune_inactive(state: &mut MetadataState, keys: &plx_plex::plex::ClientKeys) -> bool {
     let held = &mut state.alt;
     let before = held.copies.len();
-    held.copies
-        .retain(|c| plx_plex::plex::client_for(c.sid).is_some());
+    held.copies.retain(|c| keys.key(c.sid).is_some());
     held.copies.len() != before
 }
 
@@ -4602,82 +4615,133 @@ fn alt_clear(state: &mut MetadataState) {
 /// function skipped `sid` on its first outing and the button stayed absent on a device with two
 /// copies of the same guid.)
 ///
-/// Sources are captured here, on the main thread, as a plain list of ids — the worker resolves each
-/// through `client_for` and never asks what is current.
+/// Sources are captured on the main thread as an ordered list including origin. The worker
+/// resolves each through the supplied snapshot-fenced KeyedClients, never an ambient client lookup.
 ///
 /// `sid` is the ITEM's own server, captured with `rk` at the call site because the two are one
 /// identity: it rides through [`AltResult`] to [`alt_install`], which files the landing under it rather than
 /// under the rk alone. Without it a resolve parked on a dead share's `connect(2)` timeout lands on
 /// whatever page holds the same ratingKey when it finally answers, which across two servers is the
 /// ordinary case rather than an exotic one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MetaAltSourcesReq {
+    pub sid: plx_plex::plex::ServerId,
+    pub rk: String,
+    pub guid: String,
+    pub roster_gen: u32,
+    pub others: Vec<plx_plex::plex::ServerId>,
+    pub keys: plx_plex::plex::ClientKeys,
+}
+
+#[derive(Clone)]
+pub struct MetaAltSourcesPort {
+    adapter: std::sync::Arc<MetadataAdapter>,
+    addr: plx_machine::machine::Addr,
+    sid: plx_plex::plex::ServerId,
+    rk: String,
+    roster_gen: u32,
+}
+impl std::fmt::Debug for MetaAltSourcesPort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("MetaAltSourcesPort").field(&std::sync::Arc::as_ptr(&self.adapter)).finish()
+    }
+}
+impl PartialEq for MetaAltSourcesPort {
+    fn eq(&self, other: &Self) -> bool { std::sync::Arc::ptr_eq(&self.adapter, &other.adapter) }
+}
+impl Eq for MetaAltSourcesPort {}
+impl plx_machine::job::Port<Vec<AltCopy>> for MetaAltSourcesPort {
+    fn done(&self, addr: plx_machine::machine::Addr, list: Vec<AltCopy>) {
+        use std::sync::atomic::Ordering;
+        // Lock order: alt_slot first, then generation load/increment/clear. Every generation
+        // writer uses this same lock, so an old publisher cannot overwrite a newer slot.
+        let mut slot = self.adapter.alt_slot.lock().unwrap_or_else(|e| e.into_inner());
+        if addr != self.addr || addr != alt_addr(self.adapter.alt_gen.load(Ordering::SeqCst)) { return; }
+        *slot = Some(AltResult { gen: addr.req.0, roster_gen: self.roster_gen,
+            sid: self.sid, rk: self.rk.clone(), list });
+        // Posting is not settlement: the gated by-value take still owes this generation.
+    }
+    fn refused(&self, addr: plx_machine::machine::Addr) {
+        if addr != self.addr { return; }
+        self.adapter.alt_done.fetch_max(addr.req.0, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+fn alt_addr(gen: u32) -> plx_machine::machine::Addr { detail_addr(gen) }
+
 fn request_alt_sources(
-    _state: &mut MetadataState,
+    state: &mut MetadataState,
     adapter: &std::sync::Arc<MetadataAdapter>,
     sid: plx_plex::plex::ServerId,
     rk: &str,
     guid: &str,
+    keys: &plx_plex::plex::ClientKeys,
 ) {
     use std::sync::atomic::Ordering;
+    let mut slot = adapter.alt_slot.lock().unwrap_or_else(|e| e.into_inner());
     let gen = adapter.alt_gen.fetch_add(1, Ordering::SeqCst) + 1;
     let roster_gen = plx_plex::plex::server_roster_gen();
     adapter.alt_roster_gen.store(roster_gen, Ordering::SeqCst);
-    *adapter.alt_slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    // A request that never goes out owes no answer: `alt_done` catches up on every early return
-    // (and on a refused spawn below), and only a spawned worker leaves it behind `alt_gen`.
+    *slot = None;
     if guid.is_empty() {
-        adapter.alt_done.store(gen, Ordering::SeqCst);
-        return; // nothing portable to match on; the panel stays absent
+        adapter.alt_done.fetch_max(gen, Ordering::SeqCst);
+        return;
     }
     let others: Vec<plx_plex::plex::ServerId> = plx_plex::plex::server_ids().collect();
     if others.len() < 2 {
-        adapter.alt_done.store(gen, Ordering::SeqCst);
-        return; // a one-server install pays nothing: no worker, no query, no control
+        adapter.alt_done.fetch_max(gen, Ordering::SeqCst);
+        return;
     }
-    let (rk, guid) = (rk.to_string(), guid.to_string());
-    let n = others.len();
-    let adapter = std::sync::Arc::clone(adapter);
-    let refused = std::sync::Arc::clone(&adapter);
-    let spawned = plx_base::task::spawn_small("altsrc", move || {
-        let list = catch_unwind(|| resolve_alt_sources(&others, &guid)).unwrap_or_default();
-        // The one line that makes this chain debuggable from a device log. A guid is a public
-        // metadata id — not an address, a token or a machine. It was filed as "safe to log" on
-        // exactly that reasoning, and the reasoning is incomplete: a Plex GUID names the WORK,
-        // globally and stably, which is LG's "Content Viewing Information" and the one category
-        // this app's Data Safety declaration answers "Not collected" to. It stays here because it
-        // is the only string that says WHICH lookup this was, and `eventlog::scrub::scrub_viewing`
-        // rewrites it to `plex://<guid>` before the line reaches the disk.
-        plx_base::eventlog::log(&format!(
-            "altsrc: asked {n} source(s) for {guid} -> {} copy(ies)",
-            list.len()
-        ));
-        *adapter.alt_slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(AltResult {
-            gen,
-            roster_gen,
-            sid,
-            rk,
-            list,
-        });
-    });
-    if !spawned {
-        refused.alt_done.store(gen, Ordering::SeqCst);
-    }
+    state.jobs.push(crate::stores::StoreJob::MetaAltSources(
+        plx_machine::job::Job { addr: alt_addr(gen), req: MetaAltSourcesReq {
+            sid, rk: rk.to_owned(), guid: guid.to_owned(), roster_gen, others, keys: keys.clone(),
+        } },
+        MetaAltSourcesPort { adapter: adapter.clone(), addr: alt_addr(gen), sid, rk: rk.to_owned(), roster_gen },
+    ));
 }
 
-/// WORKER. One `find_by_guid` per source, projected into rows. Pure of app state apart from the
-/// registry (an atomic read whose clients are never freed), so it is gradeable against a fixture.
+pub fn finish_alt_sources_job(port: &MetaAltSourcesPort, addr: plx_machine::machine::Addr,
+    lookup: fn(plx_plex::plex::ServerId) -> Option<&'static plx_plex::plex::Client>,
+    req: MetaAltSourcesReq) {
+    finish_alt_sources_with(port, addr, req, |req| {
+        resolve_alt_sources(&req.others, &req.guid, plx_plex::plex::KeyedClients::new(&req.keys, lookup))
+    });
+}
+
+fn finish_alt_sources_with(port: &MetaAltSourcesPort, addr: plx_machine::machine::Addr,
+    req: MetaAltSourcesReq, resolve: impl FnOnce(&MetaAltSourcesReq) -> Vec<AltCopy> + std::panic::UnwindSafe) {
+    use plx_machine::job::Port;
+    let list = catch_unwind(|| resolve(&req)).unwrap_or_default();
+    // GUIDs are viewing information; eventlog's scrub_viewing retains the scrubbed diagnostic.
+    plx_base::eventlog::log(&format!("altsrc: asked {} source(s) for {} -> {} copy(ies)",
+        req.others.len(), req.guid, list.len()));
+    port.done(addr, list);
+}
+
+/// WORKER. One `find_by_guid` per source, through explicit snapshot-fenced clients. Owner facts
+/// projection remains a registry read; the injected network seam makes the resolution gradeable.
 fn resolve_alt_sources(
     others: &[plx_plex::plex::ServerId],
     guid: &str,
+    clients: plx_plex::plex::KeyedClients<'_>,
+) -> Vec<AltCopy> {
+    resolve_alt_sources_with(others, guid, clients, |_, c, guid| c.find_by_guid(guid))
+}
+
+fn resolve_alt_sources_with(
+    others: &[plx_plex::plex::ServerId], guid: &str,
+    clients: plx_plex::plex::KeyedClients<'_>,
+    mut read: impl FnMut(plx_plex::plex::ServerId, &'static plx_plex::plex::Client, &str) -> Option<plx_plex::plex::MediaContainer>,
 ) -> Vec<AltCopy> {
     let mut out = Vec::new();
     for &id in others {
-        let Some(c) = plx_plex::plex::client_for(id) else {
+        let Some(c) = clients.client(id) else {
             continue;
         };
         // `None` here is "did not answer" and `Some(empty)` is "does not have it" — both contribute
         // no row, but only the second is a fact about the library. They are not collapsed at the
         // client (see `find_by_guid`) so a later revision can say "not reachable" in the panel.
-        let Some(mc) = c.find_by_guid(guid) else {
+        let Some(mc) = read(id, c, guid) else {
             continue;
         };
         let handle = plx_plex::plex::server_facts(id)
@@ -4736,215 +4800,149 @@ fn alt_copies_from(
 /// repaints from its own arm. `alt_sources::install` used to call `idle::invalidate()` from inside
 /// the data layer instead, which is the shape phase 4 replaced.
 pub fn pump_alt_sources_with_gate(state: &mut MetadataState, adapter: &MetadataAdapter,
+    keys: &plx_plex::plex::ClientKeys, controlled: bool, stand_in: Option<Vec<AltCopy>>,
     gate: &plx_machine::landgate::Gate) -> bool {
-    pump_alt_sources_with_library(state, adapter, None, gate)
+    let mut pass = begin_alt_sources(state, adapter, keys, controlled);
+    let answer = pass.take_request().map(|request| request.answer(stand_in));
+    pass.finish(answer, gate)
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub fn pump_alt_sources(state: &mut MetadataState, adapter: &MetadataAdapter) -> bool {
-    pump_alt_sources_with_gate(state, adapter, plx_machine::landgate::fixture_gate())
+pub fn pump_alt_sources(state: &mut MetadataState, adapter: &MetadataAdapter,
+    keys: &plx_plex::plex::ClientKeys, controlled: bool, stand_in: Option<Vec<AltCopy>>) -> bool {
+    pump_alt_sources_with_gate(state, adapter, keys, controlled, stand_in, plx_machine::landgate::fixture_gate())
 }
 
-pub fn pump_alt_sources_with_directory_and_gate(
-    state: &mut MetadataState,
-    adapter: &MetadataAdapter,
-    directory: crate::stores::browse::DirectoryView<'_>,
-    gate: &plx_machine::landgate::Gate,
-) -> bool {
-    let library = directory.current()
-        .and_then(|section| directory.sections().get(section))
-        .map(|section| section.row.title.as_str())
-        .unwrap_or("");
-    pump_alt_sources_with_library(state, adapter, Some(library), gate)
+/// Compatibility callers supply neutral/scripted answers through the same ordered phases.
+pub fn begin_alt_sources<'a>(state: &'a mut MetadataState, adapter: &'a MetadataAdapter,
+    keys: &'a plx_plex::plex::ClientKeys, controlled: bool) -> AltSourcesPass<'a> {
+    pump_alt_sources_with_library(state, adapter, keys, controlled)
 }
 
-fn pump_alt_sources_with_library(
-    state: &mut MetadataState,
-    adapter: &MetadataAdapter,
-    library: Option<&str>,
-    gate: &plx_machine::landgate::Gate,
-) -> bool {
+/// Only a due noncontrolled chance produces this owned minimal host request.
+pub struct AltStandInReq {
+    pub rk: String,
+    pub res: String,
+    pub dur_ms: i64,
+    identity: std::sync::Arc<()>,
+}
+pub struct AltStandInAnswer {
+    identity: std::sync::Arc<()>,
+    list: Option<Vec<AltCopy>>,
+}
+impl AltStandInReq {
+    pub fn answer(self, list: Option<Vec<AltCopy>>) -> AltStandInAnswer {
+        AltStandInAnswer { identity: self.identity, list }
+    }
+}
+
+/// A single-use same-call capability. The exclusive state borrow prohibits clear/reset,
+/// away-and-back, another step, or publication until finish. The shared keys borrow forbids
+/// refill during host registration. There is no owned stale token or separate transaction runtime.
+///
+/// Clear/reset and away-and-back cannot interleave with a live pass:
+/// ```compile_fail
+/// use plx_data::stores::metadata::{MetadataStore, MetadataCmd};
+/// let mut store = MetadataStore::default();
+/// let keys = plx_plex::plex::ClientKeys::default();
+/// let pass = store.begin_alt_sources(&keys, false);
+/// store.run(MetadataCmd::Reset);
+/// pass.finish(None, &plx_machine::landgate::Gate::default());
+/// ```
+/// Consuming finish forbids reuse:
+/// ```compile_fail
+/// let mut store = plx_data::stores::metadata::MetadataStore::default();
+/// let keys = plx_plex::plex::ClientKeys::default();
+/// let pass = store.begin_alt_sources(&keys, false);
+/// let gate = plx_machine::landgate::Gate::default();
+/// pass.finish(None, &gate);
+/// pass.finish(None, &gate);
+/// ```
+#[must_use]
+pub struct AltSourcesPass<'a> {
+    state: &'a mut MetadataState,
+    adapter: &'a MetadataAdapter,
+    _keys: &'a plx_plex::plex::ClientKeys,
+    roster_gen: u32,
+    gen: u32,
+    changed: bool,
+    identity: Option<std::sync::Arc<()>>,
+    request: Option<AltStandInReq>,
+}
+impl AltSourcesPass<'_> {
+    pub fn take_request(&mut self) -> Option<AltStandInReq> { self.request.take() }
+    pub fn finish(self, answer: Option<AltStandInAnswer>, gate: &plx_machine::landgate::Gate) -> bool {
+        use std::sync::atomic::Ordering;
+        let Self { state, adapter, roster_gen, gen, mut changed, identity, .. } = self;
+        if gen != adapter.alt_gen.load(Ordering::SeqCst) { return false; }
+        if let Some(answer) = answer {
+            if !identity.as_ref().is_some_and(|id| std::sync::Arc::ptr_eq(id, &answer.identity)) { return false; }
+            if let (Some(list), Some(d)) = (answer.list, state.current.as_ref()) {
+                state.alt.sid = d.sid;
+                state.alt.rk = d.rk.clone();
+                state.alt.copies = list;
+                state.alt.stand_in = true;
+                changed = true;
+            }
+        }
+        // Real wins AFTER the stand-in, using the PRE-registration roster captured by begin.
+        let taken = crate::stores::take_landing_owed(gate, crate::stores::StoreId::Metadata,
+            || adapter.alt_gen.load(Ordering::SeqCst) != adapter.alt_done.load(Ordering::SeqCst), || {
+            let mut slot = adapter.alt_slot.lock().unwrap_or_else(|e| e.into_inner());
+            match slot.take() {
+                Some(r) if r.gen != adapter.alt_gen.load(Ordering::SeqCst) => None,
+                other => other,
+            }
+        });
+        let Some(r) = taken else { return changed };
+        adapter.alt_done.fetch_max(r.gen, Ordering::SeqCst);
+        if r.gen != adapter.alt_gen.load(Ordering::SeqCst) || r.roster_gen != roster_gen { return changed; }
+        changed | alt_install(state, r.sid, &r.rk, r.list)
+    }
+}
+
+fn pump_alt_sources_with_library<'a>(
+    state: &'a mut MetadataState,
+    adapter: &'a MetadataAdapter,
+    keys: &'a plx_plex::plex::ClientKeys,
+    controlled: bool,
+) -> AltSourcesPass<'a> {
     use std::sync::atomic::Ordering;
     let mut changed = false;
     let roster_gen = plx_plex::plex::server_roster_gen();
     if adapter.alt_roster_gen.swap(roster_gen, Ordering::SeqCst) != roster_gen {
-        // the in-flight answer is now stale and nothing replaces it, so the request is SETTLED
-        // here (`alt_done` caught up), or a dump-mode take would wait for it forever
+        // Same lock protocol as request generation/clear and port publication.
+        let mut slot = adapter.alt_slot.lock().unwrap_or_else(|e| e.into_inner());
         let gen = adapter.alt_gen.fetch_add(1, Ordering::SeqCst) + 1;
-        adapter.alt_done.store(gen, Ordering::SeqCst);
-        *adapter.alt_slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        changed |= alt_prune_inactive(state);
+        adapter.alt_done.fetch_max(gen, Ordering::SeqCst);
+        *slot = None;
+        changed |= alt_prune_inactive(state, keys);
     }
-    // A source being RE-DESCRIBED is not the server set changing, and answering it the same way
-    // would be wrong twice: the copies are still the right copies (a re-graded "Shared by …" credit
-    // says nothing about which servers hold the item), and invalidating a resolve in flight would
-    // leave the control absent until the page was remounted, since nothing here re-asks. So the
-    // two epochs are read separately and this one only re-stamps what the rows SAY.
     let facts_gen = plx_plex::plex::server_facts_gen();
     if adapter.alt_facts_gen.swap(facts_gen, Ordering::SeqCst) != facts_gen {
         changed |= alt_restamp_owners(state);
     }
-    changed |= alt_pump_stand_in(state, library);
-    // the landing GATE (§3.3 step 3): a replay takes this on its recorded frame. The roster and
-    // facts re-stamps above are NOT gated — they follow other stores' landings, which are gated
-    // where those land.
-    // DUMP MODE: owed while the current generation is unsettled. A superseded request's late
-    // answer is dropped INSIDE the take, so it neither ends the wait nor settles the new request.
-    let taken = crate::stores::take_landing_owed(gate, crate::stores::StoreId::Metadata,
-        || adapter.alt_gen.load(Ordering::SeqCst) != adapter.alt_done.load(Ordering::SeqCst), || {
-        let mut slot = adapter.alt_slot.lock().unwrap_or_else(|e| e.into_inner());
-        match slot.take() {
-            Some(r) if r.gen != adapter.alt_gen.load(Ordering::SeqCst) => None,
-            other => other,
-        }
-    });
-    let Some(r) = taken else { return changed };
-    adapter.alt_done.store(r.gen, Ordering::SeqCst);
-    if r.gen != adapter.alt_gen.load(Ordering::SeqCst) || r.roster_gen != roster_gen {
-        return changed; // superseded: the page moved on while this was in flight
-    }
-    // The store is ADDRESSED, so this landing is filed under the PAIR it was asked for and a reader
-    // on another page sees nothing — the generation test alone cannot see a page that was opened,
-    // left and re-opened between spawn and landing, and the rk alone cannot see the two servers'
-    // keys colliding, which they do by default.
-    changed | alt_install(state, r.sid, &r.rk, r.list)
+    // Allocate pass identity only for a due request; ordinary/not-due frames allocate nothing.
+    // Controlled suppression precedes chance consumption and ALL host IO/cache access.
+    let request = if controlled { None } else {
+        state.current.as_ref().filter(|d| d.rk != state.alt.stand_in_rk).map(|d| {
+            state.alt.stand_in_rk = d.rk.clone();
+            AltStandInReq { rk: d.rk.clone(), res: d.video_resolution.clone(), dur_ms: d.dur_ms,
+                identity: std::sync::Arc::new(()) }
+        })
+    };
+    let identity = request.as_ref().map(|request| request.identity.clone());
+    AltSourcesPass { state, adapter, _keys: keys, roster_gen,
+        gen: adapter.alt_gen.load(Ordering::SeqCst), changed, identity, request }
 }
 
-// ---- the headless stand-in ---------------------------------------------------------------------
-//
-// Reached through `devtrig::read`, so the whole of it is absent from a `RELEASE=1` build at compile
-// time along with the rest of the `/tmp` surface. The trigger literal is
-// `/tmp/plxnative-shared`, spelled here for the catalog grep in `docs/agent-reference.md`.
+// ---- the pure half of the headless stand-in ---------------------------------------------------
 
-/// Build the headless stand-in once the item has LANDED — called every frame by
-/// [`pump_alt_sources`], and doing nothing at all in the ordinary case (two string compares, no
-/// allocation).
-///
-/// It cannot be built when the fetch is dispatched: a mount deliberately clears [`current`] for the
-/// whole 2-5 round-trip window, so at that moment there is no runtime, no resolution class and no
-/// title to build a copy of the item FROM.
-fn alt_pump_stand_in(state: &mut MetadataState, library: Option<&str>) -> bool {
-    if crate::stores::tape::active() { return false; }
-    let Some(d) = state.current.as_ref() else { return false };
-    if d.rk == state.alt.stand_in_rk {
-        return false; // this item has already had its chance — one string compare
-    }
-    // Marked whatever the outcome, so the ordinary build — where the trigger is not armed at all —
-    // opens the `/tmp` file ONCE per item rather than on every frame of it.
-    state.alt.stand_in_rk = d.rk.clone();
-    let d = state.current.as_ref().unwrap();
-    let Some(list) = alt_dev_stand_in(d, library) else { return false };
-    let d = state.current.as_ref().unwrap();
-    let held = &mut state.alt;
-    held.sid = d.sid;
-    held.rk = d.rk.clone();
-    held.copies = list;
-    held.stand_in = true;
-    true
-}
-
-/// A DRAW-ONLY copy list for `/tmp/plxnative-shared=<handle>`, so the *Also available* panel and
-/// the control that opens it can be judged on a television before the multi-server data layer
-/// exists.
-///
-/// **It reuses the trigger the hero's own "Shared by …" run is judged through** rather than adding
-/// a second one for the same deliverable: that trigger already means "pretend this item came from
-/// `<handle>`", and a second copy of the film on `<handle>`'s source is the other half of the same
-/// pretence.
-///
-/// What it stands in for, exactly:
-///
-/// * **your copy** is the real one — the page's own ratingKey, on the current server, with the
-///   loaded item's own runtime and resolution class, in the library the browse store says you are
-///   in. Nothing about it is invented, which is what makes the TICK meaningful.
-/// * **their copy** is that same film on a SECOND REGISTRY SLOT ([`alt_stand_in_slot`]). It is a
-///   real slot with a real client, so OK on it performs the real source switch and opens a real
-///   page — the one behaviour of the panel that cannot be judged from a still.
-/// * its resolution is **one class better than yours**, and that is the stand-in's ONE invention.
-///   It exists because the ordering rule is otherwise unobservable: the design's own example is a
-///   1080p copy you are standing on sorting above a friend's 4K one, which is the case that
-///   separates "the copy that plays" from "the best copy". With two equal badges the panel cannot
-///   show that it got the rule right.
-///
-/// `None` (and no stand-in) when the trigger is not armed.
-///
-/// NB this is **not** one of the two "WINS WHEN ARMED" precedence sites ([`fetch_detail`],
-/// `screens::home`'s `dev_source`), which pick between the trigger and a real answer. There is no
-/// real answer here to outrank: an unarmed trigger means no panel content at all, and an
-/// armed-but-EMPTY file means the same, because a copy list has to be attributed to somebody.
-#[cfg(not(any(test, feature = "test-support")))]
-fn alt_dev_stand_in(d: &Detail, library: Option<&str>) -> Option<Vec<AltCopy>> {
-    let handle = plx_base::devtrig::read("shared").filter(|h| !h.is_empty())?;
-    // The application supplies the retained owner publication on every production pump. A
-    // compatibility caller with no directory cannot honestly name the library, so it cannot arm
-    // this visual stand-in.
-    let library = library?;
-    let here = plx_plex::plex::current_server();
-    let theirs = alt_stand_in_slot()?;
-    let v = alt_stand_in(
-        &handle,
-        library,
-        &d.rk,
-        &d.video_resolution,
-        d.dur_ms,
-        here,
-        theirs,
-    );
-    plx_base::eventlog::log(&format!(
-        "altsources: stand-in for rk={} on slot {} (dev)",
-        d.rk,
-        theirs.raw()
-    ));
-    Some(v)
-}
-#[cfg(any(test, feature = "test-support"))]
-fn alt_dev_stand_in(_d: &Detail, _library: Option<&str>) -> Option<Vec<AltCopy>> {
-    None // the host suite must not depend on what this dev Mac happens to have under /tmp
-}
-
-/// The registry slot the stand-in's borrowed copy lives on — a REAL one, because the point of the
-/// stand-in is to exercise the switch.
-///
-/// A genuinely different server if one is registered. Otherwise the current server registered a
-/// SECOND time under a synthetic machine id: from everything this feature does — counting sources,
-/// resolving a client, switching, refetching — that is a second source, and because it is the same
-/// machine the ratingKey it carries is honestly the same film. What it cannot stand in for is a
-/// server going offline, or a library and a resolution that differ for real.
-///
-/// The token comes from the harness's own `/tmp/plxnative-token`, which is the only place a session
-/// token is available to a dev path; with no token there is nothing to build a working client from,
-/// so there is no stand-in at all rather than one that 401s.
-#[cfg(not(any(test, feature = "test-support")))]
-fn alt_stand_in_slot() -> Option<plx_plex::plex::ServerId> {
-    let here = plx_plex::plex::current_server();
-    // `server_ids`, never `0..server_count()`: slot numbers are permanent and a sign-out retires
-    // the ones below the registry's floor, so the live roster is a window and not a prefix.
-    let other =
-        plx_plex::plex::server_ids().find(|&id| id != here && plx_plex::plex::client_for(id).is_some());
-    if let Some(id) = other {
-        return Some(id); // a real second server is already registered — use it
-    }
-    let c = plx_plex::plex::client_opt()?;
-    let token = plx_base::devtrig::read("token").filter(|t| !t.is_empty())?;
-    // …and a registry with no room left answers `UNSET`, which is no stand-in at all rather than
-    // one that resolves to whatever happens to be current.
-    Some(plx_plex::plex::register(
-        &format!("standin-{}", c.machine_id()),
-        c.host(),
-        c.port(),
-        &token,
-    ))
-    .filter(|id| id.is_set())
-}
-
-/// [`alt_dev_stand_in`]'s pure half — the two copies it describes, so the shape of what a device
-/// capture is looking at is itself host-graded.
-///
-/// **D3 note**: the census flagged this as "MUTATOR-adjacent" by name alone; it is not — it
-/// touches no crate-global state at all, just builds and returns a `Vec<AltCopy>` from its
-/// arguments. `screens/alt_sources_tests.rs` calls it directly to grade that shape, which is
-/// exactly what the doc above says it exists for; kept `pub` rather than routed through a
-/// `Cmd`, since it is a pure reader/builder, not a mutator the gate has any reason to restrict.
+/// Build two visual copies from explicit host inputs, without IO or registry reads. The host
+/// owns shared/token reads and second-slot selection/registration in `src/dev/scenarios/metadata.rs`.
+/// The current-server copy retains runtime/resolution/library; the borrowed copy has one invented
+/// improvement, its resolution class. Both target real navigable slots. A gated real landing
+/// replaces this list; an armed trigger does not suppress real credit regrading.
 pub fn alt_stand_in(
     handle: &str,
     library: &str,
@@ -4974,7 +4972,7 @@ pub fn alt_stand_in(
 }
 
 /// The resolution class one rung above `res`, in `screens::alt_sources`' `scan_lines` vocabulary —
-/// the stand-in's single invention (see [`alt_dev_stand_in`]). Anything already at the top, or
+/// the stand-in's single invention (see [`alt_stand_in`]). Anything already at the top, or
 /// unrecognised, is returned unchanged rather than promoted into a class that does not exist.
 fn alt_one_class_better(res: &str) -> String {
     match res.trim().to_ascii_lowercase().as_str() {

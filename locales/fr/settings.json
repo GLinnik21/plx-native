@@ -10,6 +10,8 @@
   "settings.system.section": "Système",
   "settings.auto_sign_in.title": "Connexion automatique",
   "settings.auto_sign_in.detail": "Ignorer la liste des profils au démarrage de l’application.",
+  "settings.hud_end_time.title": "Heure de fin estimée",
+  "settings.hud_end_time.detail": "Affiche l’heure locale prévue de fin des films et des épisodes.",
   "settings.trailers.title": "Lire les bandes-annonces automatiquement",
   "settings.trailers.detail": "Lance la bande-annonce avec le son après quelques instants.",
   "settings.resolution.title": "Résolution de l’interface",

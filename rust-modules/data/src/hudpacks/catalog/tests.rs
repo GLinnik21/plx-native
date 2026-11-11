@@ -86,9 +86,10 @@ fn compatibility_hides_future_formats_and_uses_latest_language_transition() {
     package.package_format = "2.0".into();
     assert!(!package.compatible("0.10.2", "fr", 1000));
     package.package_format = "1.0".into();
-    package.hud_format = "1.1".into();
+    package.hud_format = "1.2".into();
     assert!(!package.compatible("0.10.2", "fr", 1000));
-    package.hud_format = "1.0".into();
+    package.hud_format = "1.1".into();
+    assert!(package.compatible("0.10.2", "en", 1000));
     package.app.max = Some("0.10.1".into());
     assert!(!package.compatible("0.10.2", "fr", 1000));
 }

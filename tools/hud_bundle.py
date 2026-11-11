@@ -103,9 +103,13 @@ def prepare_authoring(stage, inputs, binary, env, info):
         if Path(entry).is_absolute() or ".." in Path(entry).parts:
             raise ValueError("invalid app corpus document path")
         relative_source = category + "/" + name
-        documents = [{"kind": "manifest", "version": "1.0", "file": "manifest.json",
+        hud_version = metadata.get("hud", {}).get("format", "1.0")
+        # The native manifest gate grades unsupported versions in invalid fixtures.
+        if category == "invalid" and hud_version not in info["schemas"]["hud"]:
+            hud_version = "1.0"
+        documents = [{"kind": "manifest", "version": metadata.get("package_format", "1.0"), "file": "manifest.json",
                       "path": relative_source + "/manifest.json"},
-                     {"kind": "hud", "version": "1.0", "file": entry,
+                     {"kind": "hud", "version": hud_version, "file": entry,
                       "path": relative_source + "/" + entry}]
         cases.append({"input": relative_source, "documents": documents, "invalid": category == "invalid"})
     valid = [case for case in cases if not case["invalid"]]

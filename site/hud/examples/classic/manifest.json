@@ -6,7 +6,7 @@
   "author": "PlxNative",
   "license": "GPL-3.0-or-later",
   "hud": {
-    "format": "1.0",
+    "format": "1.1",
     "entry": "hud.json"
   }
 }

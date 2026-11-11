@@ -634,6 +634,12 @@ table: a count in prose is a measurement nothing re-takes.
 
 ### Hero proposal alignment (2026-11-02)
 
+*Superseded for Home by the CW-13 v2 ladder (2026-11).* Home has its own ladder,
+`landing_hero::home_rows` (no identity, ratings or facts line; the action row at y=668, the Continue
+Watching tiles at y=768), its pager follows Info in the action row at the board's spacing, and neither
+hero draws the wedge. Both now use a continuous left and bottom shade. The paragraphs below record
+the earlier layout proposal.
+
 The supplied five-page PDF defines a shared 943 px reading column for Home and Detail. Both use
 `landing_hero::hero_rows`: title → SM → identity → optional XS + ratings → LG → synopsis → MD →
 facts → MD → actions. Home pins actions at y=716; Detail pins the title foot at y=566. Identity

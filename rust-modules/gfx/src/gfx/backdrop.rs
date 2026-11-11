@@ -28,6 +28,7 @@
 // `ui/mod.rs` blankets its whole tree with this attribute, which is what kept the walk's accessors
 // that only one configuration or one test calls from being dead code while this lived there.
 #![allow(dead_code)]
+use crate::gfx::scrim::GroundShade;
 use crate::gfx::Rect;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
@@ -206,9 +207,16 @@ pub struct Ground {
     pub corners: [[f32; 3]; 4],
     /// `[x, y, w, h]`, authored px.
     pub rect: [f32; 4],
-    /// The ink ramp's colour and its alpha at the rect's top and bottom edge.
+    /// The ink ramp's colour and its alpha at the rect's top and bottom edge. With a `scrim` the
+    /// alphas are the whole ink's at those edges down the rect's centre column (the ramp and the
+    /// shade there: a shade is a function of x as well, which a ramp is not), which is what the
+    /// delta's weight is read from.
     pub ink: [f32; 3],
     pub ink_a: [f32; 2],
+    /// The ground scrim laid over the field with the same ink ([`GroundShade::NONE`] for none), in
+    /// the device frame the rect is in. It is part of WHICH ground this is: a scrim that moved is a
+    /// different source, never a delta.
+    pub scrim: GroundShade,
 }
 
 /// The command word the wash is recorded under in a glass's signature while that glass takes it as
@@ -221,13 +229,19 @@ impl Ground {
     fn key(&self) -> Vec<u64> {
         let mut v = vec![GROUND_COMMAND];
         v.extend(self.rect.iter().chain(&self.ink).chain(&self.ink_a).map(|f| u64::from(f.to_bits())));
+        v.extend(self.scrim.uniforms().iter().flatten().map(|f| u64::from(f.to_bits())));
         v
     }
     /// The delta a glass whose source holds `baked` owes this frame, or `None` when it owes nothing
     /// (the same corners) or the two are not the same field (a different rect or ink: the compare
     /// has already refused that, so this is only a guard).
     pub fn delta(&self, baked: &Ground) -> Option<GroundDelta> {
-        if self.corners == baked.corners || self.rect != baked.rect || self.ink != baked.ink || self.ink_a != baked.ink_a {
+        if self.corners == baked.corners
+            || self.rect != baked.rect
+            || self.ink != baked.ink
+            || self.ink_a != baked.ink_a
+            || self.scrim != baked.scrim
+        {
             return None;
         }
         Some(GroundDelta {
@@ -567,7 +581,6 @@ fn kind_name(tag: u64) -> String {
         12 => "tex_uv".into(),
         13 => "tex_stroked".into(),
         14 => "tex_carded".into(),
-        15 => "hero_ground".into(),
         16 => "ambient".into(),
         17 => "grad4".into(),
         18 => "field".into(),
@@ -577,6 +590,7 @@ fn kind_name(tag: u64) -> String {
         // Two painters declare tag 22 (`ambient_art`, `tex_carded_still`); the words cannot tell them apart.
         22 => "ambient_art|tex_carded_still".into(),
         23 => "ambient_inked".into(),
+        26 => "scrim_layer".into(),
         100 => "text".into(),
         101 => "text_fade".into(),
         102 => "text_fade_v".into(),

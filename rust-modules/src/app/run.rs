@@ -322,7 +322,7 @@ fn poll_player_release(app: &mut App) {
 /// minute, otherwise. A screen then receives the date through `AppViews::today` and reads no clock.
 fn publish_frame(bridge: &mut super::bridge::Bridge, session: &plx_media::route::PlaybackSession,
     was_player: bool, viewer_paused: Option<bool>) {
-    bridge.publish_playback(session, was_player, viewer_paused);
+    bridge.publish_playback(session, was_player || plx_media::route::is_preview(session), viewer_paused);
     bridge.publish_today(clock::today());
 }
 
@@ -652,23 +652,53 @@ fn hud_model(
     ps: &plx_media::route::PlaybackSession,
     meta: plx_data::metadata::MetadataView<'_>,
     viewer_paused: bool,
+    live_clock: bool,
 ) -> plx_appkit::player_hud::model::HudModel {
-    let playpos_ns = plx_media::player::playpos_ns(ps).unwrap_or(0);
+    let position_ns = plx_media::player::playpos_ns(ps);
+    let playpos_ns = position_ns.unwrap_or(0);
+    let duration_ns = plx_media::player::duration_ns(ps);
+    let loading = plx_media::player::loading(ps);
+    let seeking = plx_media::player::state(ps) == plx_media::player::PlaybackState::Seeking
+        || plx_media::player::seek_pending(ps).is_some();
+    let scrub_ns = plx_media::player::TX.scrub_ns.load(Relaxed);
+    let advancing = plx_media::player::state(ps) == plx_media::player::PlaybackState::Playing;
+    let (is_episode, is_movie) = meta.now_playing().map_or((false, false), |n| (n.is_real_episode, n.is_movie));
+    let projected_end_time = if plx_appkit::player_hud::model::end_time_is_eligible(
+        plx_appkit::player_hud::model::EndTimeEligibility {
+            enabled: live_clock && plx_media::route::hud_end_time(),
+            is_movie_or_episode: is_episode || is_movie,
+            is_preview: plx_media::route::is_preview(ps),
+            advancing,
+            viewer_paused,
+            seeking,
+            loading,
+            scrubbing: scrub_ns >= 0,
+        },
+    ) {
+        let rate = plx_media::player::effective_playback_rate(ps);
+        clock::unix_ms()
+            .and_then(|now| plx_appkit::player_hud::model::projected_end_unix_seconds(
+                now, position_ns?, duration_ns?, rate,
+            ))
+            .and_then(clock::local_end_time)
+    } else {
+        None
+    };
     plx_appkit::player_hud::model::HudModel {
         paused: viewer_paused,
         marker_prefs: Default::default(),
         playback_id: plx_media::route::playback_trace_generation(),
-        advancing: plx_media::player::state(ps) == plx_media::player::PlaybackState::Playing,
-        seeking: plx_media::player::state(ps) == plx_media::player::PlaybackState::Seeking
-            || plx_media::player::seek_pending(ps).is_some(),
+        advancing,
+        seeking,
         covered: false,
         skip_progress: None,
-        is_episode: meta.now_playing().is_some_and(|n| n.is_real_episode),
-        scrub_ns: plx_media::player::TX.scrub_ns.load(Relaxed),
+        is_episode,
+        end_time: projected_end_time,
+        scrub_ns,
         playpos_ns,
         seek_display_ns: plx_media::player::seek_display_ns(ps).unwrap_or(-1),
-        duration_ns: plx_media::player::duration_ns(ps).unwrap_or(0),
-        loading: plx_media::player::loading(ps),
+        duration_ns: duration_ns.unwrap_or(0),
+        loading,
         sub_size: plx_media::route::subtitle_size(),
         sub_position: plx_media::route::subtitle_position(),
         sub_tone: plx_media::player::subtitle_tone(),
@@ -703,7 +733,8 @@ fn begin_product_frame(app: &mut App) -> Frame {
 /// Current transport/marker facts before the dispatcher's input/Tick, refreshed again for draw.
 fn publish_player_model(app: &mut App) {
     let mut model = hud_model(&app.player.session, app.bridge.metadata_view(),
-        app.adapters.player.backend_viewer_paused().unwrap_or(false));
+        app.adapters.player.backend_viewer_paused().unwrap_or(false),
+        matches!(app.rec, super::recorder::Recplay::Off) && !app.bridge.is_controlled_replay());
     model.marker_prefs = app.bridge.marker_preferences();
     model.covered = app.pages.surface_up();
     if let Some(screen) = super::bridge::player_mut(&mut app.pages) { screen.set_model(model); }
@@ -4689,7 +4720,7 @@ mod lifecycle_regression_tests {
         }
         // A projected attempt alone does not install a common backend runner.
         // Supply the viewer goal explicitly, opposite to the idle physical mailbox.
-        let mut model = hud_model(&app.player.session, app.bridge.metadata_view(), true);
+        let mut model = hud_model(&app.player.session, app.bridge.metadata_view(), true, false);
         model.marker_prefs = app.bridge.marker_preferences();
         model.covered = app.pages.surface_up();
         // restore before grading: a failed assertion must not leak a scrub target into the next test
@@ -5217,6 +5248,7 @@ mod lifecycle_regression_tests {
         assert!(app.bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::SetNowPlaying(Some(plx_data::metadata::NowPlaying {
             is_episode: false,
             is_real_episode: false,
+            is_movie: false,
             title: String::new(),
             ep_title: String::new(),
             season: 0,
@@ -8132,7 +8164,7 @@ mod lifecycle_regression_tests {
         super::super::bridge::open_detail(&mut rig.app.pages, &mut rig.app.bridge, rig.sid, "100", None, None);
         settle(&mut rig.app, &mut t);
         rig.app.bridge.run_held_store_jobs_for_test();
-        rig.app.bridge.metadata_mut().pump_detail();
+        rig.app.bridge.metadata_pump_detail();
         settle(&mut rig.app, &mut t);
         let watched = |rig: &mut Rig| rig.app.bridge.metadata_view().current()
             .filter(|d| d.rk == "100")
@@ -8164,7 +8196,7 @@ mod lifecycle_regression_tests {
         poll_until("the episode strip still shows the read the page opened with", || {
             step(&mut rig.app, &mut t, vec![]);
             rig.app.bridge.run_held_store_jobs_for_test();
-            rig.app.bridge.metadata_mut().pump_detail();
+            rig.app.bridge.metadata_pump_detail();
             watched(&mut rig) == Some(("1".into(), true))
         });
         settle(&mut rig.app, &mut t);
@@ -8216,7 +8248,7 @@ mod lifecycle_regression_tests {
     /// Run the held detail fetches (tests do not race a worker) and install what they brought.
     fn land_detail_reads(rig: &mut Rig, t: &mut u32) {
         rig.app.bridge.run_held_store_jobs_for_test();
-        rig.app.bridge.metadata_mut().pump_detail();
+        rig.app.bridge.metadata_pump_detail();
         settle(&mut rig.app, t);
     }
 
@@ -9990,6 +10022,30 @@ mod frame_publication_tests {
     //! `pump_wiring_tests`.
     use super::{clock, publish_frame};
     use crate::app::bridge::Bridge;
+
+    #[test]
+    fn autoplay_trailer_publishes_its_clock_and_pause_off_the_player_route() {
+        use plx_media::{player, route};
+        let _serial = plx_base::testlock::serial();
+        let mut bridge = Bridge::for_test(|| 0);
+        let mut session = route::PlaybackSession::IDLE;
+        route::mark_preview_for_test(&mut session);
+        let attempt = route::RouteStartAttempt::fixture();
+        session.begin_attempt_view(attempt, player::attempt_view::Backend::Feed);
+        let mut facts = plx_playback_contract::feed::FeedFacts::default();
+        facts.attempt.position_ns = Some(7_000_000_000);
+        facts.attempt.duration_ns = Some(127_000_000_000);
+        assert!(session.ingest_feed_facts(attempt, facts));
+        publish_frame(&mut bridge, &session, false, Some(true));
+        assert_eq!(player::playpos_ns(bridge.views().session), Some(7_000_000_000));
+        assert_eq!(player::duration_ns(bridge.views().session), Some(127_000_000_000));
+        assert!(bridge.views().transport_paused);
+
+        publish_frame(&mut bridge, &route::PlaybackSession::IDLE, false, None);
+        assert_eq!(player::playpos_ns(bridge.views().session), None);
+        assert_eq!(player::duration_ns(bridge.views().session), None);
+        assert!(!bridge.views().transport_paused);
+    }
 
     #[test]
     fn an_iteration_publishes_the_replay_pinned_date_and_a_new_one_replaces_it() {

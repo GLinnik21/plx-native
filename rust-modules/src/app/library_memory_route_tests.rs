@@ -23,6 +23,83 @@ use super::*;
 use super::test_support::{World, FILM_CLUB};
 use plx_data::browse::LibraryType;
 
+#[test]
+fn switching_libraries_restores_an_open_page_until_back_closes_it() {
+    let mut w = World::movies_library("remember-open-library-page", false);
+    w.d.nav.tabs.stack.transition = Box::new(plx_ui::containers::transition::PageDip::new());
+    let key = w.bridge.directory.view().sections()[0].key;
+    let recommended = AppArg::LibraryRecommended { section: u32::try_from(key).unwrap() };
+    w.open_from_header(9, recommended.clone());
+
+    let switch = |w: &mut World, tab| {
+        super::nav_tab(&mut w.d, &mut w.bridge, tab, None, None);
+        w.frames(90);
+    };
+    switch(&mut w, plx_screens::registry::HomeTab::Shows);
+    assert!(w.on(&AppArg::Library), "a different library has its own page");
+    switch(&mut w, plx_screens::registry::HomeTab::Movies);
+    assert!(w.d.top_arg() == Some(&recommended), "Movies reopens the page for the same PMS section");
+
+    w.press(Key::Back);
+    assert!(w.on(&AppArg::Library), "Back returns to the Movies grid");
+    switch(&mut w, plx_screens::registry::HomeTab::Shows);
+    switch(&mut w, plx_screens::registry::HomeTab::Movies);
+    assert!(w.on(&AppArg::Library), "a closed page stays closed");
+}
+
+#[test]
+fn collections_restores_from_saved_preferences_for_the_same_profile() {
+    use plx_plex::plex::session::{self, LibraryPage};
+    use plx_screens::registry::HomeTab;
+
+    let mut w = World::movies_library("persist-collections-page", false);
+    let sections = w.bridge.directory.view().sections();
+    let key = sections[0].key;
+    assert_eq!(sections[FILM_CLUB].key, key, "both fixture servers use this PMS key");
+    let collections = AppArg::LibraryCollections { section: u32::try_from(key).unwrap() };
+    w.open_from_header(8, collections.clone());
+    super::nav_tab(&mut w.d, &mut w.bridge, HomeTab::Shows, None, None);
+    w.frames(90);
+    plx_base::storage_worker::drain_for_test();
+
+    let saved = session::load();
+    let user = session::current_profile_key();
+    assert_eq!(saved.views_for(&user).and_then(|views| views.get("route-own", key)).map(|view| view.page),
+        Some(LibraryPage::Collections));
+    assert!(saved.views_for(&user).and_then(|views| views.get("route-shared", key)).is_none());
+    assert!(saved.views_for("another-profile").is_none());
+
+    w.bridge.library_pages = None;
+    super::nav_tab(&mut w.d, &mut w.bridge, HomeTab::Movies, None, None);
+    w.frames(90);
+    assert!(w.d.top_arg() == Some(&collections), "the durable preference restores the Collections route");
+    assert!(w.d.nav.tabs.stack.under_top().is_some_and(|entry| entry.arg == AppArg::Library));
+}
+
+#[test]
+fn a_new_tab_press_supersedes_a_child_restore_at_the_dip_floor() {
+    use plx_data::browse::SecKind;
+    use plx_plex::plex::session::LibraryPage;
+    use plx_screens::registry::HomeTab;
+    use plx_ui::containers::transition::{PageDip, DIP_OUT_MS};
+
+    let mut w = World::movies_library("cancel-library-page-restore", false);
+    w.d.nav.tabs.stack.transition = Box::new(PageDip::new());
+    let directory = w.bridge.directory.view();
+    let key = directory.sections()[directory.preferred(SecKind::Show).unwrap()].key;
+    w.bridge.remember_library_page("route-own", key, LibraryPage::Recommended);
+
+    super::nav_tab(&mut w.d, &mut w.bridge, HomeTab::Shows, None, None);
+    // The first frame parks the request. The other ticks leave one tick before the floor.
+    w.frames((DIP_OUT_MS / 16.0).ceil() as u32);
+    assert!(matches!(w.d.nav.tabs.stack.pending_dest(), Some(AppArg::LibraryRecommended { .. })));
+    super::nav_tab(&mut w.d, &mut w.bridge, HomeTab::Movies, None, None);
+    w.frames(90);
+    assert!(w.on(&AppArg::Library), "the last pill press keeps the grid");
+    let directory = w.bridge.directory.view();
+    assert_eq!(directory.current().map(|index| directory.sections()[index].kind), Some(SecKind::Movie));
+}
+
 /// What the store's one query is listing now: its type, and the section key it belongs to.
 fn listed(w: &World) -> (LibraryType, Option<i64>) {
     let snapshot = w.bridge.stores.browse.borrow_mut().listing_snapshot();

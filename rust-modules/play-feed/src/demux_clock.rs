@@ -15,7 +15,7 @@ use crate::shared::{
     HlsAutomaticTransition, HlsClockFenceError, UserPauseCursor, FEED_SHARED, FEED_TX,
 };
 use plx_playback_contract::adaptive::{
-    AutomaticTransition, BufferFact, FenceHandle, FenceSettlement, LeaseHandle, PhysicalFailure,
+    AutomaticTransition, BufferFact, FenceHandle, FenceSettlement, LeaseHandle, CandidateFenceError,
 };
 use plx_playback_contract::demux::{
     AddressedSampler, DemuxAdaptive, DemuxCallbackEffect, DemuxClock, DemuxEffect, DemuxFault,
@@ -125,6 +125,10 @@ impl DemuxObserver for FeedDemuxObserver {
     fn declared_video_code(&self) -> Option<u8> {
         FEED_SHARED.with_active_demux_epoch(self.native_epoch, ||
             FEED_SHARED.dg_load_v.load(Ordering::Relaxed))
+    }
+    fn declared_audio_code(&self) -> Option<u8> {
+        FEED_SHARED.with_active_demux_epoch(self.native_epoch, ||
+            FEED_SHARED.dg_load_a.load(Ordering::Relaxed))
     }
     fn paused(&self) -> Option<bool> {
         FEED_SHARED.with_active_demux_epoch(self.native_epoch, || FEED_TX.paused.load(Ordering::Acquire))
@@ -337,22 +341,16 @@ impl DemuxAdaptive for FeedDemuxClock {
     }
 
     fn arm_candidate(&mut self, automatic_token: u64)
-        -> Result<FenceHandle, PhysicalFailure> {
+        -> Result<FenceHandle, CandidateFenceError> {
         let generation = match FEED_SHARED.with_active_demux_epoch(self.observer.native_epoch, ||
             FEED_SHARED.begin_hls_candidate_transition(Some(automatic_token))) {
-            None => return Err(PhysicalFailure::Aborted),
+            None => return Err(CandidateFenceError::Aborted),
             Some(result) => match result {
             Ok(generation) => generation,
-            Err(HlsClockFenceError::Stopping) => return Err(PhysicalFailure::Aborted),
-            Err(HlsClockFenceError::Overlap) => return Err(PhysicalFailure::Failed(
-                "overlapping HLS candidate publication",
-            )),
-            Err(HlsClockFenceError::Exhausted) => return Err(PhysicalFailure::Failed(
-                "HLS candidate generation exhausted",
-            )),
-            Err(HlsClockFenceError::Superseded) => return Err(PhysicalFailure::Failed(
-                "HLS candidate automatic lease was superseded",
-            )),
+            Err(HlsClockFenceError::Stopping) => return Err(CandidateFenceError::Aborted),
+            Err(HlsClockFenceError::Overlap) => return Err(CandidateFenceError::Overlap),
+            Err(HlsClockFenceError::Exhausted) => return Err(CandidateFenceError::Exhausted),
+            Err(HlsClockFenceError::Superseded) => return Err(CandidateFenceError::Superseded),
             },
         };
         Ok(FenceHandle::new(CandidateFence {
@@ -403,6 +401,14 @@ impl DemuxMedia for FeedDemuxMedia {
             DemuxEffect::IoFailed => FEED_SHARED.demux_io_failed.store(true, Ordering::Release),
             DemuxEffect::Failed => FEED_SHARED.demux_failed.store(true, Ordering::Release),
             DemuxEffect::NoVideo => FEED_SHARED.demux_no_video.store(true, Ordering::Release),
+            DemuxEffect::ProbeActual { video, audio } => {
+                if let Some(v) = video {
+                    if v != 0 { FEED_SHARED.probe_actual_v.store(v, Ordering::Release); }
+                }
+                if let Some(a) = audio {
+                    if a != 0 { FEED_SHARED.probe_actual_a.store(a, Ordering::Release); }
+                }
+            }
             DemuxEffect::HttpStatus(status) => FEED_SHARED.dg_http_status.store(status, Ordering::Relaxed),
             DemuxEffect::TrackNames { audio, subs } => {
                 previous_names = Some((self.hooks.replace_track_names)(TrackNames { audio, subs }));
@@ -472,6 +478,38 @@ mod tests {
     }
 
     #[test]
+    fn user_pause_superseding_candidate_is_not_a_source_failure() {
+        let _serial = plx_base::testlock::serial();
+        let _reset = ResetSession;
+        FEED_SHARED.reset_session();
+        let epoch = FEED_SHARED.begin_native_session().expect("native epoch");
+        let mut session = capture(AttemptId::new(8, 1), epoch);
+        let generation = FEED_SHARED.hls_candidate_generation.load(Ordering::Acquire);
+        let lease = session.adaptive().arm_trial(
+            1_000, FEED_SHARED.hls_user_sequence(),
+        ).expect("production upshift trial");
+        assert_eq!(FEED_SHARED.hls_trial_reserve_ms.load(Ordering::Acquire), 1_000);
+        let crate::shared::HlsUserPause::Issue(pause) =
+            FEED_SHARED.prepare_hls_user_pause().expect("pause available") else {
+                panic!("running playback must issue pause");
+            };
+        FEED_SHARED.complete_hls_user_pause(pause, true);
+        let result = session.adaptive().arm_candidate(lease.token());
+        assert!(result.is_err(), "superseded candidate must not publish");
+        assert!(
+            matches!(result, Err(CandidateFenceError::Superseded)),
+            "viewer pause cancelled private candidate media, not the active source",
+        );
+        drop(lease);
+        assert_eq!(FEED_SHARED.hls_trial_reserve_ms.load(Ordering::Acquire), -1,
+            "cancelled trial must release its reserve");
+        assert_eq!(FEED_SHARED.hls_candidate_generation.load(Ordering::Acquire), generation,
+            "private candidate must not begin publication");
+        assert!(FEED_SHARED.clock_user_held_for_test(),
+            "candidate cleanup must preserve the viewer's pause");
+    }
+
+    #[test]
     fn retired_demux_cannot_consume_successors_seek() {
         let _serial = plx_base::testlock::serial();
         let _reset = ResetSession;
@@ -510,7 +548,7 @@ mod tests {
         assert!(first.adaptive().arm_trial(1_000, sequence).is_none());
         let current = next.adaptive().begin(AutomaticTransition::QualityDown, sequence)
             .expect("successor still owns clock");
-        assert!(matches!(first.adaptive().arm_candidate(current.token()), Err(PhysicalFailure::Aborted)));
+        assert!(matches!(first.adaptive().arm_candidate(current.token()), Err(CandidateFenceError::Aborted)));
         drop(current);
     }
 

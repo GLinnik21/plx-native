@@ -478,14 +478,14 @@ mod heartbeat_word_tests {
         let stores = plx_data::stores::Stores::default();
         stores.browse.borrow_mut().seed_two_source_table_for_test();
         let mut directory = plx_data::stores::browse::DirectorySnapshot::default();
-        stores.capture_browse(&mut directory);
+        stores.capture_seeded_browse_for_test(&mut directory, plx_plex::plex::current_server());
         assert_eq!(
             directory.view().section_count(),
             4,
             "the fixture the browse-backed tests across the suite seed"
         );
         let _ = overlay_alphabet();
-        stores.capture_browse(&mut directory);
+        stores.capture_seeded_browse_for_test(&mut directory, plx_plex::plex::current_server());
         assert_eq!(
             directory.view().section_count(),
             4,

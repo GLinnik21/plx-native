@@ -62,7 +62,8 @@ URI offer is made before the server is asked, so a file that clears these checks
 still convert can go to the TV's pipeline. A video your Plex server converts (remux, transcode or HLS), any file
 that carries a subtitle stream (whether or not a subtitle is switched on) or a burned or client-drawn
 subtitle, a trailer preview, a non-1x speed, a relay link and Auto quality away from the LAN also still
-play in Standard. An Experimental failure takes at most one handoff per play: the video restarts in Standard
+play in Standard. On webOS 5+, originals with multiple audio tracks also stay in Standard
+because the TV service can order tracks differently from Plex. An Experimental failure takes at most one handoff per play: the video restarts in Standard
 (`route::backend_policy`). On webOS 4.x the Experimental engine binds the screen through ACB and waits for each
 release's completion callback before the next title; when that never arrives the plane stays
 quarantined until the app restarts, the next title's Experimental bind is refused and that title takes the

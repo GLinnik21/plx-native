@@ -3564,3 +3564,126 @@ fn experimental_offers_an_mp4_original_that_standard_streams() {
     assert!(plan.uri_original.is_some() && plan.uri_source_ready,
         "a streamable container is the one the opt-in carries");
 }
+
+
+/// Exercise the production queue/publication runner and the exact outcome consumed by
+/// the demux session. Refusing a private candidate must leave the active route usable.
+#[test]
+fn cancelled_abr_candidate_preserves_active_route_but_queue_failures_stay_terminal() {
+    use crate::adaptive::{Coordinator, QueueTrace, TrialRunner};
+    use plx_playback_contract::adaptive::{
+        AdaptiveProgress, CandidateFenceError, CandidateFencePort, CandidateMediaPort,
+        CommitReadout, FeedAction, FeedFailure, FeedObservation, FeedPort, PublicationGate,
+        TrialId, TrialObservation, TrialPhase, TrialProtocol,
+    };
+    use plx_playback_contract::{AttemptId, SourceKey};
+
+    struct Port {
+        refusal: Option<CandidateFenceError>,
+        queued: usize,
+    }
+    impl FeedPort for Port {
+        type Locator = String;
+        fn bind_source(&mut self, _: SourceKey, _: String) { panic!("already staged"); }
+        fn step(&mut self, action: FeedAction) -> FeedObservation {
+            let FeedAction::QueueStaged { trial } = action else { panic!("unexpected action"); };
+            self.queued += 1;
+            FeedObservation::Failed { trial, failure: FeedFailure::Protocol }
+        }
+    }
+    impl CandidateFencePort for Port {
+        type Fence = ();
+        fn arm(&mut self, _: u64) -> Result<(), CandidateFenceError> {
+            self.refusal.map_or(Ok(()), Err)
+        }
+        fn settle(&mut self, _: ()) { panic!("no published candidate"); }
+    }
+    impl CandidateMediaPort for Port {
+        fn candidate_declared_bps(&self) -> Option<u64> { Some(2_000_000) }
+        fn stage_queued_timeline(&mut self) -> bool { panic!("must not replace timeline"); }
+        fn promote_candidate(&mut self, _: &CommitReadout) -> bool { panic!("must not promote"); }
+        fn publication_gate(&mut self) -> &mut dyn PublicationGate { panic!("must not publish"); }
+    }
+
+    let mut ps = PlaybackSession::IDLE;
+    let _serial = fresh_registry(&mut ps);
+    let rung = crate::abr::Rung::P480;
+    install_active_hls("active", "http://fixture.invalid/active.m3u8", rung);
+    let ticket = worker_ticket();
+    let control = HlsAbrControl {
+        trace_generation: 0, sid: ServerId::UNSET, rating_key: "1".into(), media_index: 0,
+        logical_session: "active".into(), audio_stream_id: 0, subtitle_stream_id: 0,
+        seconds_per_segment: 2, caps: plx_platform::devcaps::caps(), initial_rung: rung,
+        initial_observed: None, fixture_base: "http://fixture.invalid".into(),
+        original_probe_part: String::new(), original_source_kbps: 0,
+        catalog: crate::abr::HlsActuatorCatalog::measured(), prior: None,
+        history: crate::abr::TransitionHistory::default(),
+        original_features: crate::abr::SourceFeatures::default(), original_refused: false,
+    };
+    let mut coordinator = Coordinator::start((control, ticket.clone()).into(), None);
+    let candidate = PrimedHls {
+        url: "http://fixture.invalid/candidate.m3u8".into(), encoder_session: "candidate".into(),
+    };
+    // Let real active-stream observations create the pending upgrade; cancellation
+    // must clear it or later rounds will remain stuck behind the abandoned proposal.
+    let mut proposal = None;
+    for tick in 1..=20 {
+        let buffer = plx_playback_contract::adaptive::BufferFact {
+            playback_ms: tick * 2_000, video_tail_ms: tick * 2_000 + 60_000,
+            audio_tail_ms: None, audio_expected: false,
+        };
+        let acquisition = plx_playback_contract::adaptive::Acquisition {
+            bytes: 180_000, active_us: 100_000, total_us: 100_000,
+            duration: std::time::Duration::from_secs(2), width: 854, height: 480,
+            declared_bps: 720_000,
+        };
+        let active = coordinator.begin_active_quantum(
+            acquisition, || buffer, false, true, tick as u64 * 2_000,
+        ).unwrap();
+        let (_, round, _) = active.refresh(buffer).observe(
+            &mut coordinator, Some(2_000), tick as u64 * 2_000, false,
+        );
+        if let crate::abr::Decision::Prime(value) = round.decision {
+            proposal = Some(value);
+            break;
+        }
+    }
+    let proposal = proposal.expect("healthy active stream proposes an upgrade");
+    assert_eq!(coordinator.telemetry().pending, Some(proposal));
+    let sample = crate::abr::SegmentSample::new(200_000, 100_000, 100_000, 2_000,
+        crate::abr::BufferSnapshot {
+            playback: crate::abr::MediaTimeMs(1_000),
+            video_tail: crate::abr::MediaTimeMs(10_000),
+            audio_tail: None, audio_expected: false,
+        }).unwrap();
+    for (refusal, expected, trace) in [
+        (Some(CandidateFenceError::Superseded), AdaptiveProgress::Continue, "candidate_superseded"),
+        (Some(CandidateFenceError::Aborted), AdaptiveProgress::Aborted, "aborted"),
+        (Some(CandidateFenceError::Overlap), AdaptiveProgress::Failed("overlapping HLS candidate publication"), "publication_overlap"),
+        (Some(CandidateFenceError::Exhausted), AdaptiveProgress::Failed("HLS candidate generation exhausted"), "publication_generation_exhausted"),
+        (None, AdaptiveProgress::Failed("adaptive feed queue protocol violation"), "commit_feed_failed"),
+    ] {
+        let trial = TrialId::new(AttemptId::new(1, 1), 1);
+        let mut protocol = TrialProtocol::new(trial);
+        protocol.observe(trial, TrialObservation::Prepared).unwrap();
+        protocol.observe(trial, TrialObservation::FirstAcquired).unwrap();
+        let mut port = Port { refusal, queued: 0 };
+        let mut traces = Vec::new();
+        let mut runner = TrialRunner::new(&mut port, &mut protocol);
+        let outcome = runner.queue_publish(&mut coordinator, 1, &candidate, proposal, sample,
+            crate::abr::ObservedHlsVariant::new(2_000_000, 1280, 720).unwrap(), || 1_000,
+            |event| if let QueueTrace::Finish(reason) = event { traces.push(reason); });
+        assert_eq!(outcome.into_publication(), Err(expected));
+        drop(runner);
+        assert_eq!(traces, [trace]);
+        assert_eq!(port.queued, usize::from(refusal.is_none()));
+        assert!(is_worker_ticket_current(&ticket));
+        assert_eq!(coordinator.current(), rung);
+        assert_eq!(active_hls().unwrap().1.url, "http://fixture.invalid/active.m3u8");
+        if refusal == Some(CandidateFenceError::Superseded) {
+            assert_eq!(protocol.phase(), TrialPhase::Ended);
+            assert_eq!(coordinator.telemetry().pending, None,
+                "cancelled upgrade must not wedge future adaptive rounds");
+        }
+    }
+}

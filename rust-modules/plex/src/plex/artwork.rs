@@ -7,10 +7,9 @@
 //! * `/plx/cover/{hex}`: Plex's own 16:9 cover (`coverArt`, the title baked into the picture) of the
 //!   catalog title `hex`, a 24-digit lowercase hexadecimal Discover id. Which Discover read answers it
 //!   and how its URL is rendered is the worker's business, not the key's.
-//! * `/plx/card/{logo_rk}{art}`: our own composite of the server's background `art` (a server-relative
-//!   path such as `/library/metadata/605/art/1778546279`, kept whole so a new background is a new
-//!   key) and the clearLogo of the item `logo_rk` (a decimal rating key; an episode's logo is its
-//!   show's, so it is not the rating key of the row).
+//! * `/plx/card/{stamped_logo}|{art}`: our own composite of two server-relative artwork paths.
+//!   Changing either path gives the composite a new key. Rows without an image list use the
+//!   legacy shape `/plx/card/{logo_rk}{art}`, where `logo_rk` is the title's rating key.
 //!
 //! **No key carries a credential**: both are built from ids and a path with no query, so a key can be
 //! logged, hashed and persisted as it stands. The builders refuse anything a parser would not read
@@ -18,6 +17,8 @@
 //! prefix, an upper-case id, a query on the art path, a trailing segment) is never a key. The poster
 //! source bounds a key's total length itself (`KEY_MAX`), because the bound is a property of its
 //! slots, not of these shapes.
+
+use std::borrow::Cow;
 
 /// The prefix of a cover key. Not a server path: the worker recognises it before any request exists.
 pub const COVER_PREFIX: &str = "/plx/cover/";
@@ -32,6 +33,24 @@ fn is_catalog_hex(s: &str) -> bool {
 /// A PMS rating key as the composite key spells it: decimal digits.
 fn is_rating_key(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// The title's rating key in a PMS-issued, stamped clearLogo path.
+pub(super) fn stamped_logo_rk(path: &str) -> Option<&str> {
+    let (rk, stamp) = path.strip_prefix("/library/metadata/")?.split_once("/clearLogo/")?;
+    (is_rating_key(rk) && is_rating_key(stamp)).then_some(rk)
+}
+
+/// The source path for a hero or card logo. A bare rating key is the fallback for old PMS rows
+/// and recordings without an image list. An empty source means there is no logo.
+pub fn logo_path(source: &str) -> Option<Cow<'_, str>> {
+    if stamped_logo_rk(source).is_some() {
+        Some(Cow::Borrowed(source))
+    } else if is_rating_key(source) {
+        Some(Cow::Owned(format!("/library/metadata/{source}/clearLogo")))
+    } else {
+        None
+    }
 }
 
 /// A server-relative art path the composite key can carry whole: absolute (one leading `/`, never a
@@ -55,15 +74,25 @@ pub fn cover_parts(path: &str) -> Option<&str> {
     path.strip_prefix(COVER_PREFIX).filter(|hex| is_catalog_hex(hex))
 }
 
-/// The key of the composite of `art` and the logo of item `logo_rk`; `None` unless `logo_rk` is a
-/// rating key and `art` an art path ([`is_art_path`]).
-pub fn card_path(logo_rk: &str, art: &str) -> Option<String> {
-    (is_rating_key(logo_rk) && is_art_path(art)).then(|| format!("{CARD_PREFIX}{logo_rk}{art}"))
+/// The key of the composite of `art` and the logo source accepted by [`logo_path`].
+pub fn card_path(logo: &str, art: &str) -> Option<String> {
+    if !is_art_path(art) {
+        return None;
+    }
+    if stamped_logo_rk(logo).is_some() {
+        Some(format!("{CARD_PREFIX}{logo}|{art}"))
+    } else {
+        is_rating_key(logo).then(|| format!("{CARD_PREFIX}{logo}{art}"))
+    }
 }
 
-/// `(logo ratingKey, art path)` back out of a [`card_path`] key.
+/// `(logo source, art path)` back out of a [`card_path`] key.
 pub fn card_parts(path: &str) -> Option<(&str, &str)> {
     let rest = path.strip_prefix(CARD_PREFIX)?;
+    if rest.starts_with('/') {
+        let (logo, art) = rest.split_once('|')?;
+        return (stamped_logo_rk(logo).is_some() && is_art_path(art)).then_some((logo, art));
+    }
     let at = rest.find('/')?;
     let (rk, art) = rest.split_at(at);
     (is_rating_key(rk) && is_art_path(art)).then_some((rk, art))

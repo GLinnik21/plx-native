@@ -111,11 +111,36 @@ pub fn ctor_gate(feed: &mut FeedResources, mt: &MainThread) -> CtorGate {
     CtorGate::Awaiting { timeout }
 }
 
-/// Native seek reopen watchdog. A closed feed gate cannot make progress, so its clock is reset
-/// without consuming the route owner's pending target.
+/// The reopen budget measures the demux/keyframe phase. Once Play accepts a Segment seek,
+/// give the sink its own budget to display on the installed timeline.
 pub fn stuck_seek_due(feed: &mut FeedResources, now: u32, feed_allowed: bool,
     route_flight: bool, budget_ms: u32) -> bool {
     let Some(eng) = feed.engine() else { return false; };
+    if let Some(landing) = eng.segment_landing.as_mut() {
+        if let Some(play) = landing.play.as_mut() {
+            if landing.epoch != FEED_SHARED.seek_epoch.load(Relaxed) {
+                eng.segment_landing = None;
+                return false;
+            }
+            let clock_advanced = FEED_SHARED.dg_pos_ticks.load(Acquire) != play.position_tick;
+            let position = FEED_SHARED.pres_fed.load(Relaxed);
+            let displayed = FEED_SHARED.sink_displayed_sequence.load(Acquire) != play.displayed;
+            // Compare the reported pipeline position to the accepted video, in fed time.
+            // The requested position can be several seconds beyond the landing keyframe.
+            let video_runway = eng.seek_base_pts..=eng.max_fed_video_pts;
+            if clock_advanced && video_runway.contains(&position) && displayed {
+                FEED_SHARED.seek_landed_epoch.store(landing.epoch, Release);
+                eng.segment_landing = None;
+                return false;
+            }
+            if !feed_allowed || route_flight || eng.dv_start.landing_held() {
+                play.waiting_since = None;
+                return false;
+            }
+            const SEGMENT_PRESENTATION_MS: u32 = 4_000;
+            return now.wrapping_sub(*play.waiting_since.get_or_insert(now)) >= SEGMENT_PRESENTATION_MS;
+        }
+    }
     if eng.flushed && eng.rebase_pending && !feed_allowed {
         eng.seek_armed_at = now;
     }
@@ -125,11 +150,18 @@ pub fn stuck_seek_due(feed: &mut FeedResources, now: u32, feed_allowed: bool,
         && !eng.dv_start.landing_held() // the Dolby Vision guard holds this landing and reloads it itself
 }
 
-/// Re-arm only the native demux target after common has committed any newer route seek.
+/// Retry an unanchored reopen. When the segment was already primed, a new Load owns recovery.
 pub fn retry_stuck_seek(feed: &mut FeedResources, now: u32, target_ns: i64,
     can_retry: bool) -> StuckSeekAction {
     let eng = feed.engine().expect("stuck seek belongs to live feed");
+    if eng.segment_landing.as_ref().is_some_and(|seek| seek.play.is_some()) {
+        eng.segment_landing = None;
+        return StuckSeekAction::Reload;
+    }
     if eng.seek_retries < 2 && can_retry {
+        if let Some(landing) = eng.segment_landing.as_mut() {
+            landing.epoch = FEED_SHARED.seek_epoch.load(Relaxed);
+        }
         eng.seek_retries += 1;
         FEED_SHARED.seek_to_ns.store(target_ns, Release);
         FEED_SHARED.seek_target_ns.store(target_ns, Relaxed);
@@ -269,6 +301,7 @@ pub fn paused_seek_step(
     let Some(eng) = feed.engine() else { return step };
     let landed = !eng.flushed
         && !eng.rebase_pending
+        && eng.segment_landing.is_none()
         && FEED_TX.seek_to_ns.load(Relaxed) < 0
         && !route_flight
         && FEED_SHARED.frames.load(Relaxed) >= 1
@@ -315,8 +348,32 @@ pub fn user_resume(feed: &mut FeedResources, mt: &MainThread) -> UserResumeOutco
     };
     match FEED_SHARED.prepare_hls_user_resume(queued_stream) {
         Some(HlsUserResume::Deferred) => {
+            // The retranscode's fresh Load arms the initial prime (a non-User clock hold,
+            // prime_play latched) but nothing else will fire it: the landing issues this
+            // Resume, never the runner's Operation::Play, so startup_play_commanded stays
+            // false and try_prime's startup gate would block the post-Load retry forever
+            // (observed live: BufferFull at the native cap, pos_ms=0).
+            // prepare_hls_user_resume just cleared user_held and set resume_acb_pending; this
+            // Resume IS the session's startup play command — mark it as commanded, then fire
+            // the initial prime. If the physical Play lands before the Load worker has called
+            // Starfish's Load it is Refused and the prime stays armed (Held{Initial});
+            // try_prime is now un-gated and issues the Play once loadCompleted has passed
+            // and both lanes are primed. Only the Fresh-kind holds (Initial, Seek) accept
+            // play_initial_now; Rebuffer/ResumePrime falls through to Fenced.
+            let hooks = feed.hooks();
+            let fired = feed.engine().is_some_and(|eng| {
+                eng.startup_play_commanded = true;
+                matches!(
+                    crate::native_executor::play_initial_now(mt, eng, &hooks.feed),
+                    Some(true)
+                )
+            });
             close_preroll_and_commit();
-            UserResumeOutcome::Fenced
+            if fired {
+                UserResumeOutcome::Played { resume_acb: true }
+            } else {
+                UserResumeOutcome::Fenced
+            }
         }
         Some(HlsUserResume::Prime) => {
             let Some(engine) = feed.engine() else { return UserResumeOutcome::PrimeLost };
@@ -572,6 +629,10 @@ pub fn apply_inplace_seek_pre(feed: &mut FeedResources, mt: &MainThread,
     t: i64, mode: SeekMode, coalesced: u32) {
     let hooks = feed.hooks();
     let eng = feed.engine().expect("in-place seek belongs to live feed");
+        eng.segment_landing = (mode == SeekMode::Segment).then(|| crate::feed_state::SegmentLanding {
+            epoch: FEED_SHARED.seek_epoch.load(Relaxed),
+            play: None,
+        });
         // `NativeSeek` does not flush here: LG's public `Seek` flushes the pipeline itself when
         // `feed_stream` calls it on the landed keyframe, and a `flush()` is itself a seek to 0, so
         // flushing after (or instead of re-anchoring) leaves the stale segment at 0 (#568).
@@ -1246,6 +1307,8 @@ struct FailureSample {
     flags: FailureFlags,
     cb_err_num: i32,
     http_status: i32,
+    probe_actual_video: u8,
+    probe_actual_audio: u8,
     native_audio_refusals: u32,
 }
 
@@ -1260,6 +1323,8 @@ fn failure_sample() -> FailureSample {
         flags,
         cb_err_num: FEED_SHARED.dg_cb_err_num.load(Relaxed),
         http_status: FEED_SHARED.dg_http_status.load(Relaxed),
+        probe_actual_video: FEED_SHARED.probe_actual_v.load(Relaxed),
+        probe_actual_audio: FEED_SHARED.probe_actual_a.load(Relaxed),
         native_audio_refusals: FEED_SHARED.native_audio_refusals.load(Acquire),
     }
 }
@@ -1293,6 +1358,8 @@ fn native_feed_raw(failure: FailureSample) -> FeedRaw {
         },
         cb_err_num: failure.cb_err_num,
         http_status: failure.http_status,
+        probe_actual_video: failure.probe_actual_video,
+        probe_actual_audio: failure.probe_actual_audio,
         diag: native_feed_diag(),
         vpres_gap_sum_ms: FEED_SHARED.dg_vpres_gap_sum.load(Relaxed),
         vpres_gap_count: FEED_SHARED.dg_vpres_gap_ct.load(Relaxed),

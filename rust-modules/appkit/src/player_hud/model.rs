@@ -37,6 +37,8 @@ pub struct HudModel {
     pub skip_progress: Option<f32>,
     /// The playing metadata is a genuine episode, independent of queue neighbours.
     pub is_episode: bool,
+    /// The projected local wall-clock finish time, supplied by the app for this frame.
+    pub end_time: Option<[i32; 2]>,
     /// `plx_media::player::TX.scrub_ns.load(Relaxed)`: the live scrub preview's target, -1 when no
     /// scrub is in progress.
     pub scrub_ns: i64,
@@ -93,6 +95,7 @@ impl Default for HudModel {
             paused: false,
             marker_prefs: Default::default(), playback_id: 0, advancing: false, seeking: false, covered: false, skip_progress: None,
             is_episode: false,
+            end_time: None,
             scrub_ns: -1,
             playpos_ns: 0,
             seek_display_ns: -1,
@@ -110,5 +113,132 @@ impl Default for HudModel {
             bitmap_key: None,
             bitmap_by_key: no_bitmap,
         }
+    }
+}
+
+
+/// The playback facts that must all be known before the HUD can show a projected finish.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EndTimeEligibility {
+    /// The seated profile has enabled the end-time display.
+    pub enabled: bool,
+    /// The playing metadata is a genuine movie or episode.
+    pub is_movie_or_episode: bool,
+    /// The player is showing a preview/trailer transport.
+    pub is_preview: bool,
+    /// The playback state reports that media time is advancing.
+    pub advancing: bool,
+    /// The viewer's pause goal is active.
+    pub viewer_paused: bool,
+    /// A seek is pending or resolving.
+    pub seeking: bool,
+    /// The player is loading or rebuilding the current item.
+    pub loading: bool,
+    /// The viewer is dragging the scrubber.
+    pub scrubbing: bool,
+}
+
+/// Whether the projected finish is meaningful for the current playback frame.
+/// Scrubbing, seeking, loading and pauses deliberately suppress the estimate rather than
+/// presenting a prediction based on a position or transport state that is not advancing.
+pub fn end_time_is_eligible(state: EndTimeEligibility) -> bool {
+    state.enabled
+        && state.is_movie_or_episode
+        && !state.is_preview
+        && state.advancing
+        && !state.viewer_paused
+        && !state.seeking
+        && !state.loading
+        && !state.scrubbing
+}
+
+/// Project an item's end timestamp from the current wall clock, content position and the
+/// playback pipeline's APPLIED rate (per mille). Invalid or unrepresentable inputs stay unknown.
+///
+/// Keep the wall clock and remaining media time at subsecond precision until they have been added.
+/// Apply timezone rules at the projected instant, including any DST transition before the end.
+pub fn projected_end_unix_seconds(
+    now_utc_ms: i64,
+    position_ns: i64,
+    duration_ns: i64,
+    rate_permille: Option<i32>,
+) -> Option<i64> {
+    let rate_permille = rate_permille?;
+    if now_utc_ms <= 0 || position_ns < 0 || duration_ns <= position_ns || rate_permille <= 0 {
+        return None;
+    }
+    let remaining_ns = i128::from(duration_ns) - i128::from(position_ns);
+    let wall_ns = remaining_ns * 1_000 / i128::from(rate_permille);
+    let end_ns = i128::from(now_utc_ms) * 1_000_000 + wall_ns;
+    let end_ms = i64::try_from(end_ns / 1_000_000).ok()?;
+    Some(end_ms / 1_000)
+}
+
+#[cfg(test)]
+mod end_time_tests {
+    use super::{end_time_is_eligible, projected_end_unix_seconds};
+
+    #[test]
+    fn end_time_visibility_requires_a_reliable_movie_or_episode_playback() {
+        use super::EndTimeEligibility as E;
+        let playing = E { enabled: true, is_movie_or_episode: true, advancing: true, ..E::default() };
+        assert!(end_time_is_eligible(playing));
+        assert!(!end_time_is_eligible(E { enabled: false, ..playing }), "preference off");
+        assert!(!end_time_is_eligible(E { is_movie_or_episode: false, ..playing }), "other content");
+        assert!(!end_time_is_eligible(E { is_preview: true, ..playing }), "preview/trailer");
+        assert!(!end_time_is_eligible(E { advancing: false, ..playing }), "not advancing");
+        assert!(!end_time_is_eligible(E { viewer_paused: true, ..playing }), "viewer pause");
+        assert!(!end_time_is_eligible(E { seeking: true, ..playing }), "seek");
+        assert!(!end_time_is_eligible(E { loading: true, ..playing }), "loading");
+        assert!(!end_time_is_eligible(E { scrubbing: true, ..playing }), "scrub");
+    }
+
+    #[test]
+    fn projected_finish_uses_remaining_content_time_and_applied_speed() {
+        let now = 1_794_219_544_000;
+        let thirty_five_minutes = 35 * 60 * 1_000_000_000i64;
+        assert_eq!(projected_end_unix_seconds(now, 0, thirty_five_minutes, Some(1000)), Some(now / 1_000 + 2100));
+        assert_eq!(projected_end_unix_seconds(now, 0, thirty_five_minutes, Some(2000)), Some(now / 1_000 + 1050));
+        assert_eq!(projected_end_unix_seconds(now, 0, thirty_five_minutes, Some(500)), Some(now / 1_000 + 4200));
+        assert_eq!(projected_end_unix_seconds(now, 0, thirty_five_minutes, Some(1250)), Some(now / 1_000 + 1680));
+        assert_eq!(
+            projected_end_unix_seconds(
+                now,
+                10 * 60 * 1_000_000_000,
+                45 * 60 * 1_000_000_000,
+                Some(1500),
+            ),
+            Some(now / 1_000 + 1400)
+        );
+        assert_eq!(
+            projected_end_unix_seconds(86_390_000, 0, 20_000_000_000, Some(1000)),
+            Some(86_410),
+            "the projection crosses midnight as a Unix timestamp, not local clock arithmetic"
+        );
+    }
+
+    #[test]
+    fn projected_finish_rejects_unknown_invalid_and_overflowing_inputs() {
+        let now = 1_794_219_544_000;
+        assert_eq!(projected_end_unix_seconds(now, -1, 100, Some(1000)), None);
+        assert_eq!(projected_end_unix_seconds(now, 0, 0, Some(1000)), None);
+        assert_eq!(projected_end_unix_seconds(now, 10, 10, Some(1000)), None);
+        assert_eq!(projected_end_unix_seconds(now, 0, 100, Some(0)), None);
+        assert_eq!(
+            projected_end_unix_seconds(now, 0, 100, None),
+            None,
+            "unknown applied rate is not assumed to be 1x"
+        );
+        assert_eq!(projected_end_unix_seconds(0, 0, 100, Some(1000)), None);
+        assert_eq!(projected_end_unix_seconds(i64::MAX, 0, i64::MAX, Some(1)), None);
+    }
+
+    #[test]
+    fn finish_time_is_stable_near_a_minute_boundary() {
+        let duration = 78_300_000_000;
+        for elapsed_ms in [0, 500, 1000, 1500] {
+            assert_eq!(projected_end_unix_seconds(1_000_200 + elapsed_ms, elapsed_ms * 1_000_000, duration, Some(1000)), Some(1078));
+        }
+        assert_eq!(projected_end_unix_seconds(1_079_999, 0, 1_000_000, Some(1000)), Some(1080));
     }
 }

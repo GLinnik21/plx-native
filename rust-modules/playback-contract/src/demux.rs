@@ -2,7 +2,7 @@
 //! handles, access units and queue ordering. Its session port owns playback
 //! clocks, accepted pause events, native transition leases and published state.
 
-use crate::adaptive::{AutomaticTransition, FenceHandle, LeaseHandle, PhysicalFailure};
+use crate::adaptive::{AutomaticTransition, FenceHandle, LeaseHandle, CandidateFenceError};
 use crate::AttemptId;
 use crate::subtitle::{Anchor, CaptionRetention, DecodeKind, Manifest, RawCue, TrackInfo};
 use std::sync::Arc;
@@ -44,6 +44,8 @@ pub trait DemuxObserver: Send + Sync {
     fn audio_expected(&self) -> Option<bool>;
     fn duration_ns(&self) -> Option<i64>;
     fn declared_video_code(&self) -> Option<u8>;
+    /// The `dg_load_a` code the Load declared for this open (0 = `needAudio:false`).
+    fn declared_audio_code(&self) -> Option<u8>;
     fn paused(&self) -> Option<bool>;
     fn pause_clock(&self) -> Option<PauseClock>;
     fn hls_buffer_ms(&self) -> Option<Option<i64>>;
@@ -110,7 +112,7 @@ pub trait DemuxAdaptive {
     fn arm_trial(&mut self, runway_ms: i64, user_sequence: u64)
         -> Option<LeaseHandle>;
     fn arm_candidate(&mut self, automatic_token: u64)
-        -> Result<FenceHandle, PhysicalFailure>;
+        -> Result<FenceHandle, CandidateFenceError>;
     fn transition_permitted(&self, kind: AutomaticTransition) -> bool;
 }
 
@@ -141,6 +143,11 @@ pub enum DemuxEffect {
     IoFailed,
     Failed,
     NoVideo,
+    /// The codec the file ACTUALLY carries, in the `dg_load_v` / `dg_load_a` code spaces, published
+    /// only when the demuxer refuses a Load whose bytes disagree with its declared codec. The
+    /// pump's one-shot probe retry consumes it to reload with the corrected declaration; a healthy
+    /// open publishes nothing.
+    ProbeActual { video: Option<u8>, audio: Option<u8> },
     HttpStatus(i32),
     TrackNames { audio: Vec<String>, subs: Vec<String> },
     SideAnchor(Option<Anchor>),

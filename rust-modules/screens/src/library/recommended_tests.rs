@@ -52,14 +52,14 @@ impl Fixture {
         let mut fixture = Self::new();
         let stores = plx_data::stores::Stores::default();
         stores.browse.borrow_mut().seed_two_source_table_for_test();
-        stores.capture_browse(&mut fixture.directory);
+        stores.capture_seeded_browse_for_test(&mut fixture.directory, plx_plex::plex::current_server());
         stores.browse_run_for_test(BrowseCmd::SetCur(0));
         {
             let mut browse = stores.browse.borrow_mut();
             browse.seed_items_for_test(120);
             browse.seed_shelves_for_test(0, titles, count);
         }
-        let publication = stores.capture_browse(&mut fixture.directory);
+        let publication = stores.capture_seeded_browse_for_test(&mut fixture.directory, plx_plex::plex::current_server());
         fixture.listing = publication.listing;
         fixture.hubs = publication.section_hubs;
         fixture.stores = Some(stores);
@@ -71,7 +71,7 @@ impl Fixture {
         let mut fixture = Self::new();
         let stores = plx_data::stores::Stores::default();
         stores.browse.borrow_mut().seed_two_source_table_for_test();
-        stores.capture_browse(&mut fixture.directory);
+        stores.capture_seeded_browse_for_test(&mut fixture.directory, plx_plex::plex::current_server());
         stores.browse_run_for_test(BrowseCmd::SetCur(0));
         {
             let mut browse = stores.browse.borrow_mut();
@@ -86,7 +86,7 @@ impl Fixture {
     }
     /// Capture what the store publishes now, as the dispatcher does between frames.
     pub(super) fn republish(&mut self) {
-        let publication = self.stores.as_ref().expect("a fixture with stores").capture_browse(&mut self.directory);
+        let publication = self.stores.as_ref().expect("a fixture with stores").capture_seeded_browse_for_test(&mut self.directory, plx_plex::plex::current_server());
         self.listing = publication.listing;
         self.hubs = publication.section_hubs;
     }
@@ -227,8 +227,9 @@ fn shelf_pitch_keeps_the_shared_air() {
             let want = ui_cards::ROW_PITCH_FIXED + ui_cards::under_band_for(band, expanded);
             assert!((shelf_pitch(&RowStyle::HOME, band, expanded) - want).abs() < 1e-3, "band {band} expanded {expanded}");
             for style in [&RowStyle::EPISODE, &RowStyle::STILL] {
+                // …under a shorter tile, and under the footer line a still carries below its art
                 let shorter = RowStyle::HOME.h - style.h;
-                assert!((shelf_pitch(style, band, expanded) - (want - shorter)).abs() < 1e-3, "landscape, band {band} expanded {expanded}");
+                assert!((shelf_pitch(style, band, expanded) - (want - shorter + style.under_tile)).abs() < 1e-3, "landscape, band {band} expanded {expanded}");
             }
         }
     }

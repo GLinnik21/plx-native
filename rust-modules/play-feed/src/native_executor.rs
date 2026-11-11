@@ -482,6 +482,7 @@ pub fn launch_native_open(
         rebase_pending: shared.seek_to_ns.load(Ordering::Relaxed) >= 0,
         rebase_drops: 0,
         seek_armed_at: 0,
+        segment_landing: None,
         seek_retries: 0,
         flushed: false,
         presentation_rearm_pending: false,
@@ -1193,7 +1194,10 @@ pub fn try_prime(mt: &MainThread, eng: &mut Engine, transport: &Transport, hooks
     if !eng.prime_play {
         return;
     }
-    if eng.startup_controlled && !eng.startup_play_commanded {
+    // A paused reload owns a bounded first-picture preroll, not a viewer Play. The pump
+    // re-pauses it after presentation; waiting for the viewer's command here strands that
+    // preroll over a blank plane. Every other initial prime still waits for common startup.
+    if eng.startup_controlled && !eng.startup_play_commanded && !transport.seek_preroll_active() {
         return;
     }
     let Some(prime_kind) = shared.hls_prime_kind() else {
@@ -1306,6 +1310,14 @@ pub fn try_prime(mt: &MainThread, eng: &mut Engine, transport: &Transport, hooks
             // always the pipeline default: the volume is never read back).
             transport.note_preroll_muted(plx_platform::tv::sink::PIPELINE_DEFAULT_VOLUME);
         }
+        // Snapshot before the call so a callback delivered synchronously by Play counts, but
+        // one queued during Flush/Segment does not establish the new clock by itself.
+        let landing = eng.segment_landing.as_mut().filter(|seek| seek.play.is_none());
+        let baseline = landing.is_some().then(|| crate::feed_state::SegmentPlay {
+            position_tick: shared.dg_pos_ticks.load(Ordering::Acquire),
+            displayed: shared.sink_displayed_sequence.load(Ordering::Acquire),
+            waiting_since: None,
+        });
         let played = unsafe { (hooks.sink)().play(mt) };
         match shared.complete_hls_prime_play(play_token, played != 0) {
             HlsPlayCompletion::Accepted { resume_acb } => {
@@ -1314,7 +1326,11 @@ pub fn try_prime(mt: &MainThread, eng: &mut Engine, transport: &Transport, hooks
                 }
                 eng.prime_play = false;
                 shared.seeking.store(false, Ordering::Relaxed); // playback resumed at the new position → HUD spinner off
-                shared.seek_landed_epoch.store(shared.seek_epoch.load(Ordering::Relaxed), Ordering::Release);
+                if let Some(seek) = landing {
+                    seek.play = baseline;
+                } else if eng.segment_landing.is_none() {
+                    shared.seek_landed_epoch.store(shared.seek_epoch.load(Ordering::Relaxed), Ordering::Release);
+                }
                 if prime_kind == HlsPrimeKind::Rebuffer {
                     plx_base::eventlog::log(&format!(
                         "primed: v={}ms a={}ms recovery_n={} debt={}ms runway={}ms -> Play",

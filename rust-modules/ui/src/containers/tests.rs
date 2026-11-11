@@ -166,6 +166,36 @@ fn a_bar_opener_is_lifted_once_per_frame_by_the_opener_pass_on_the_live_presenta
         "the surface is handed the live drawn rect of the opener");
 }
 
+#[test]
+fn a_bar_opener_does_not_draw_over_an_opaque_surface_that_is_arriving() {
+    use super::modal::{EntryMotion, PopoverMotion};
+    let _guard = plx_base::testlock::serial();
+    let (mut d, mut rig, _) = booted();
+    let account = open_modal(&mut d, &mut rig, Style::Sheet, 16);
+    modal_mut(&mut d, account).bar_opener = Some(7);
+    d.nav.modals.surface_mut(account).unwrap().motion = PopoverMotion::at(1.0);
+    d.request(MachineId::Nav, NavOp::Dismiss(account));
+    let settings = open_modal(&mut d, &mut rig, Style::Opaque { snapshot: true }, 32);
+    assert_eq!(d.nav.modals.surface_mut(account).unwrap().phase, Phase::Closing);
+
+    // The old surface still owns the lift while the new surface is held at zero opacity.
+    rig.bar_lifts.clear();
+    d.draw(&mut rig, true);
+    assert_eq!(rig.bar_lifts.len(), 1);
+    let mut dip = PopoverMotion::at(0.0);
+    dip.choose(EntryMotion::Dip);
+    dip.to(1.0);
+    let mut present = plx_machine::present::Present::new();
+    let mut handle = plx_machine::machine::PresentHandle::of(&mut present);
+    dip.tick_gated(tick(48), &mut handle, false);
+    assert!(dip.floor() > 0.0 && dip.appear == 0.0, "the dip starts by covering the old surface");
+    d.nav.modals.surface_mut(settings).unwrap().motion = dip;
+
+    d.draw(&mut rig, true);
+    assert_eq!(d.host_policy().1, HostRender::Cached, "the host is still cached during the dip");
+    assert_eq!(rig.bar_lifts.len(), 1, "the dip covers the chip with the rest of the account surface");
+}
+
 /// An `Opaque` surface is the mechanism's one documented boundary: it REPLACES its host once the
 /// ground is drawn, so there is no page pass to draw into and no snapshot for a dim to belong to
 /// — its dim is composed with its own ground, in its own `draw`.

@@ -144,6 +144,24 @@ fn back_and_a_strip_tab_navigate_through_the_container_on_the_fifo() {
     assert!(out.is_empty());
 }
 
+/// A Movies press from the Live TV page reopens the Library page the user left open (a remembered
+/// Recommended) on top of its grid in one commit, as the strip's own `nav_tab` does, so Back still
+/// reveals the grid.
+#[test]
+fn a_library_pill_reopens_a_remembered_library_page_over_its_grid() {
+    use plx_plex::plex::session::LibraryPage;
+    let mut w = super::test_support::World::movies_library("livetv-remembered-library-page", false);
+    let key = w.bridge.directory.view().sections()[0].key;
+    w.bridge.remember_library_page("route-own", key, LibraryPage::Recommended);
+    let press = AppMsg::LiveTv { from: PAGE, out: LiveTvOut::Tab(HomeTab::Movies), ret: Default::default() };
+
+    let (handled, out) = deliver(&mut w.bridge, MachineId::Nav, press);
+    assert_eq!(handled, Handled::Yes);
+    let want = AppArg::LibraryRecommended { section: u32::try_from(key).unwrap() };
+    assert!(matches!(out.as_slice(),
+        [Stamped { fx: Fx::Nav(NavOp::SelectTabWithChild { tab: AppArg::Library, child }), .. }] if *child == want));
+}
+
 /// The profile chip is the loop's: its surface needs the container's style handshake, so the Bridge
 /// queues the request for the loop and pushes no effect.
 #[test]

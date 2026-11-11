@@ -520,7 +520,7 @@ pub(crate) fn request_loaded_episode(ps: &mut plx_media::route::PlaybackSession,
 fn request_episode(ps: &mut plx_media::route::PlaybackSession, meta: &mut plx_data::stores::metadata::MetadataStore, d: &plx_data::metadata::Detail, ep: &plx_data::metadata::Episode,
     version: Option<plx_plex::plex::MediaId>) -> bool {
     meta.run(plx_data::stores::metadata::MetadataCmd::SetNowPlaying(Some(plx_data::metadata::NowPlaying {
-        is_episode: true, is_real_episode: true, title: d.title.clone(), ep_title: ep.title.clone(),
+        is_episode: true, is_real_episode: true, is_movie: false, title: d.title.clone(), ep_title: ep.title.clone(),
         season: ep.season, index: ep.index, summary: ep.summary.clone(),
         year: ep.aired.get(..4).and_then(|s| s.parse().ok()).unwrap_or(0),
         dur_ms: ep.dur_ms, rating: ep.rating.clone(), thumb: ep.thumb.clone(), detail_rk: d.rk.clone(),

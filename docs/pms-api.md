@@ -1162,8 +1162,9 @@ backgroundSquare  /library/metadata/<rk>/squareArt/<ts>
 snapshot          /library/metadata/<episode rk>/thumb/<ts>      (episodes only)
 ```
 
-So a clearLogo in a hub row IS stamped (a replaced logo is a new path), unlike the bare
-`/library/metadata/{rk}/clearLogo` the app requests today. **An episode's `Image[]` names its SHOW's
+The app uses the stamped clearLogo path for both hero logos and baked cards, so a replacement
+uses a new cache key as soon as updated metadata lands. When the server omits the image list,
+the app can still look up a logo via `/library/metadata/{rk}/clearLogo`. **An episode's `Image[]` names its SHOW's
 rating key** for `coverPoster`, `background`, `clearLogo` and `backgroundSquare` (the row's own
 `ratingKey` 732, the show's 605, in the probe), and only `snapshot` is the episode's own: the
 episode's `thumb` still. A movie row has no `snapshot`. Every row of the probe (4 movies and 1

@@ -56,7 +56,7 @@ pub enum Class {
     /// over-reports this class on those frames; `drawmask=ambient` refuses the clear along with
     /// the quad, so a mask A/B prices it correctly.
     Ambient = 0,
-    /// `draw_grad4`/`draw_art_scrim` — translucent hero gradients and artwork bottom scrims.
+    /// `draw_grad4`/`draw_art_scrim` — translucent corner gradients and artwork bottom scrims.
     Grad = 1,
     /// `draw_rect`/`draw_rrect` and their sheened twins — every SDF fill, focus glow included.
     Rect = 2,

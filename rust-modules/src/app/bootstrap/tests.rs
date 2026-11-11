@@ -4,6 +4,76 @@ use super::*;
 use plx_data::stores::tape;
 use crate::app::adapters::stores::StoreRunner;
 
+#[test]
+fn session_codec_profiles_require_canonical_exact_matching_envelopes() {
+    let initial = Initial::synthetic_home(17, 32517, None).unwrap();
+    let legacy = serde_json::to_value(&initial).unwrap();
+    let current = initial.to_v6_value().unwrap();
+    let prior = super::super::recorder::FP_PRIOR;
+    let v6 = super::super::recorder::FP_V6;
+    assert_eq!(current["session"], serde_json::json!({"codec":6,"boot":legacy["session"]}));
+    assert_eq!(Initial::decode_profile(legacy.clone(), initial.hash(), prior).unwrap().hash(), initial.hash());
+    assert_eq!(Initial::decode_profile(current.clone(), initial.hash(), v6).unwrap().hash(), initial.hash());
+    assert!(Initial::decode_profile(current.clone(), initial.hash(), prior).is_err());
+    assert!(Initial::decode_profile(legacy.clone(), initial.hash(), v6).is_err());
+    for historic in [5612583773909772043u64, 14623229906352324261u64] {
+        assert!(Initial::decode_profile(legacy.clone(), initial.hash(), historic).is_err());
+        assert!(Initial::decode_profile(current.clone(), initial.hash(), historic).is_err());
+    }
+    assert!(Initial::decode_profile(current.clone(), initial.hash(), v6 ^ 1).is_err());
+    assert!(Initial::decode_profile(current.clone(), initial.hash() ^ 1, v6).is_err());
+    let mut bad = current.clone(); bad["version"] = serde_json::json!(2);
+    assert!(Initial::decode_profile(bad, initial.hash(), v6).is_err());
+    let mut bad = current.clone(); bad["session"].as_object_mut().unwrap().remove("boot");
+    assert!(Initial::decode_profile(bad, initial.hash(), v6).is_err());
+    let mut bad = current.clone(); bad["session"]["codec"] = serde_json::json!(5);
+    assert!(Initial::decode_profile(bad, initial.hash(), v6).is_err());
+    let mut bad = current.clone(); bad["session"]["extra"] = serde_json::json!(true);
+    assert!(Initial::decode_profile(bad, initial.hash(), v6).is_err());
+    let mut bad = current.clone(); bad["session"]["boot"]["signin_account"] = serde_json::json!("private");
+    assert!(Initial::decode_profile(bad, initial.hash(), v6).is_err());
+    let mut bad = current.clone(); bad["session"]["boot"].as_object_mut().unwrap().remove("next_req");
+    assert!(Initial::decode_profile(bad, initial.hash(), v6).is_err());
+    let mut bad = current; bad["session"]["boot"]["next_req"] = serde_json::json!(1);
+    assert!(Initial::decode_profile(bad, initial.hash(), v6).is_err());
+}
+
+// Probe only until the coordinator captures and installs literal bytes and hashes.
+#[test]
+fn session_app_initial_probe_only() {
+    let initial = Initial::synthetic_home(17, 32517, None).unwrap();
+    let value = serde_json::to_value(&initial).unwrap();
+    let bytes = serde_json::to_vec(&initial).unwrap();
+    assert_eq!(bytes.as_slice(), include_bytes!("../fixtures/session-codec-v5/initial-v5.json"));
+    let frozen_hashes: serde_json::Value = serde_json::from_str(include_str!("../fixtures/session-codec-v5/initial-hashes.json")).unwrap();
+    assert_eq!(frozen_hashes["canon_finish"].as_u64(), Some(14618251649147468963u64));
+    assert_eq!(frozen_hashes["outer_hash"].as_u64(), Some(14618251649147468963u64));
+    let mut canon = Canon::new();
+    initial.write(&mut canon);
+    let outer_hash = initial.hash();
+    assert_eq!(canon.finish(), 14618251649147468963u64);
+    assert_eq!(outer_hash, 14618251649147468963u64);
+    assert_eq!(initial.version, 1);
+    assert_eq!(Initial::decode(value.clone(), outer_hash).unwrap().hash(), outer_hash);
+    assert!(Initial::decode(value.clone(), outer_hash ^ 1).is_err());
+    let mut unknown = value.clone();
+    unknown["unexpected"] = serde_json::json!(true);
+    assert!(Initial::from_value(unknown).is_err());
+    let mut nested_unknown = value.clone();
+    nested_unknown["session"]["signin_account"] = serde_json::json!("injected");
+    assert!(Initial::from_value(nested_unknown).is_err());
+    let mut missing = value;
+    missing.as_object_mut().unwrap().remove("settings");
+    assert!(Initial::from_value(missing).is_err());
+    if let Some(dir) = std::env::var_os("PLX_SESSION_APP_V5_GOLDEN_OUT") {
+        let dir = std::path::Path::new(&dir);
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("session-app-initial-v5.json"), bytes).unwrap();
+        std::fs::write(dir.join("session-app-initial-hashes.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({"canon_finish": canon.finish(), "outer_hash": outer_hash})).unwrap()).unwrap();
+    }
+}
+
 /// One controlled Hubs step as the Bridge's controlled arm runs it: the store's step against an
 /// empty Browse directory and the registry's keys (`cmd: None` is the tick), then every job it
 /// emitted started through the run's admission ledger.
@@ -27,7 +97,14 @@ fn controlled_hubs(io: &mut HomeIo, runner: &mut StoreRunner, hubs: &mut plx_dat
 fn controlled_discovery(io: &mut HomeIo, runner: &mut StoreRunner, stores: &mut plx_data::stores::Stores) {
     let mut keys = plx_plex::plex::ClientKeys::default();
     crate::app::adapters::stores::refill_client_keys(&mut keys);
-    stores.browse_controlled_discover(&keys);
+    stores.browse.borrow().observe_pin_write();
+    let session = plx_plex::plex::session::peek();
+    let visible_generation = plx_plex::plex::session::visible_generation();
+    let settled = plx_plex::plex::session::peek_settled().is_some();
+    let profile_key = plx_plex::plex::session::current_profile_key();
+    stores.browse_controlled_discover(&plx_data::browse::BrowseRosterInput {
+        keys: &keys, session: &session, visible_generation, settled, profile_key: &profile_key,
+    });
     for job in stores.take_jobs_of(plx_data::stores::StoreId::Browse) {
         runner.start_admitted(job, Some(io));
     }
@@ -253,7 +330,7 @@ fn controlled_home_arms_the_detail_tracker_when_content_initial_is_present() {
     {
         let store = bridge.metadata_mut();
         let (state, adapter) = store.split_for_test();
-        plx_data::metadata::land_detail_for_test(state, adapter, sid, "show", gen,
+        plx_data::metadata::land_detail_for_test(&plx_plex::plex::ClientKeys::default(), true, state, adapter, sid, "show", gen,
             Some(plx_data::metadata::Detail { sid, rk: "show".into(), ..Default::default() }));
     }
     let results = plx_data::stores::tape::take_results();
@@ -491,7 +568,19 @@ fn controlled_discovery_replays_refusal_retry_and_success_with_exact_identity() 
     for replay in [false, true] {
         // seed_sources is a reset fixture; restore the same pre-execution epoch on each
         // independent run, never to cancel or bypass a guard during either history.
-        stores.browse.borrow_mut().prepare_discovery_replay_for_test(sid, initial_epoch);
+        let mut keys = plx_plex::plex::ClientKeys::default();
+        crate::app::adapters::stores::refill_client_keys(&mut keys);
+        stores.browse.borrow().observe_pin_write();
+        let session = plx_plex::plex::session::peek();
+        let visible_generation = plx_plex::plex::session::visible_generation();
+        let settled = plx_plex::plex::session::peek_settled().is_some();
+        let profile_key = plx_plex::plex::session::current_profile_key();
+        let input = plx_data::browse::BrowseRosterInput {
+            keys: &keys, session: &session, visible_generation, settled, profile_key: &profile_key,
+        };
+        stores.browse.borrow_mut().prepare_discovery_replay_for_test(
+            sid, initial_epoch, &input,
+        );
         let publisher = plx_plex::plex::session::ProfilePublisher::scoped(&mt);
         let mut io = HomeIo {
             replay,

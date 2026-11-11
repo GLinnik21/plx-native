@@ -2,13 +2,9 @@
 
 ## Player / trailer preview
 
-### Grade `hero_scrim_a`'s legibility contract against synopsis text over live trailer video
+### Grade the hero shade's legibility contract against synopsis text over live trailer video
 
-**What:** Add a row to `widgets::hero_scrim_a`'s anchor table for "synopsis-weight (`LABEL` 26px)
-text over a bound video plane at `field=1.35`" and grade it against a real device capture, real
-trailer content. *(The `landing_hero::PROMOTED_FIELD` half of this item is GONE as of 2026-09-17:
-full-trailer mode draws no page chrome at all, so the wedge eases to 0.0 and the constant was
-deleted.)*
+**What:** Verify the synopsis contrast over the lower gradient using a TV capture of real trailer content. The host grader in `widgets_hero_scrim_tests.rs` samples `landing_hero::detail_shade` with the logo in the corner and the middle of the picture clear.
 
 **Why:** `docs/trailer-ux-plan.md` §2.3 keeps the detail hero's synopsis visible during background
 trailer autoplay for the first time — previously no prose was ever drawn over playing video, only

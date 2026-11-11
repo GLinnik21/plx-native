@@ -19,6 +19,9 @@ fn content(arg: &plx_screens::registry::ContentArg) -> Value {
 fn argument(arg: &plx_screens::registry::AppArg) -> Result<Value, &'static str> {
     match arg {
         plx_screens::registry::AppArg::Home => Ok(json!("home")),
+        plx_screens::registry::AppArg::Library => Ok(json!("library")),
+        plx_screens::registry::AppArg::LibraryCollections { section } => Ok(json!({"library_collections":section})),
+        plx_screens::registry::AppArg::LibraryRecommended { section } => Ok(json!({"library_recommended":section})),
         plx_screens::registry::AppArg::Content(arg) => Ok(content(arg)),
         _ => Err("unsupported controlled navigation argument"),
     }
@@ -299,6 +302,8 @@ pub(crate) fn encode(effect: &Fx<super::super::bridge::AppHost>) -> Result<Value
                 NavOp::Present(a) => json!({"present":argument(a)?}),
                 NavOp::Replace(a) => json!({"replace":argument(a)?}),
                 NavOp::SelectTab(a) => json!({"select_tab":argument(a)?}),
+                NavOp::SelectTabWithChild { tab, child } =>
+                    json!({"select_tab_with_child":[argument(tab)?, argument(child)?]}),
                 NavOp::Pop => json!({"pop":true}),
                 NavOp::PopTo(id) => json!({"pop_to":id.0}),
                 NavOp::PopToArg(a) => json!({"pop_to_arg":argument(a)?}),

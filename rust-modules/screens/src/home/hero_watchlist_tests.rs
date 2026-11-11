@@ -35,7 +35,8 @@ fn tick(s: &mut HomeScreen, view: HubsView<'_>, frames: u32) {
     }
 }
 
-/// Play, the disc, Info: the disc is second, a circle one gap after Play, and Info one gap after it.
+/// Play, the disc, Info: the disc is second, a circle one gap after Play, and Info one gap after it:
+/// every control one [`plx_ui::widgets::CONTROL_GAP`] apart.
 #[test]
 fn the_disc_is_second_in_the_row_when_the_hero_has_a_title() {
     let _guard = plx_base::testlock::serial();
@@ -47,9 +48,10 @@ fn the_disc_is_second_in_the_row_when_the_hero_has_a_title() {
     let disc = disc_rect(&s, view).expect("a movie hero with a guid draws the disc");
     let info = s.hero_button_rect(view, 1, m).unwrap();
     assert_eq!((disc.w, disc.h), (HERO_CTRL_D, HERO_CTRL_D));
-    let painted = play.scaled(plx_ui::widgets::CTRL_FOCUS_SCALE);
-    assert!((disc.x - (painted.x + painted.w) - HERO_CTRL_GAP).abs() < 0.001);
-    assert_eq!(info.x, disc.x + disc.w + HERO_CTRL_GAP);
+    // Home's action row is flat (CW-13 v2): Play, the disc and Info are each exactly one gap after
+    // the control before, with no focus air in Play's slot (Detail's row keeps it).
+    assert_eq!(disc.x, play.x + play.w + plx_ui::widgets::CONTROL_GAP);
+    assert_eq!(info.x, disc.x + disc.w + plx_ui::widgets::CONTROL_GAP);
     assert_eq!(s.hero_len(view), 3);
     assert_eq!(s.hero_slots(view), ([0, 2, 1], 3));
     let mut groups = Vec::new();

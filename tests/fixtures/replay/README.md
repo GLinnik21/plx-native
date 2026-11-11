@@ -661,12 +661,25 @@ CI window (960x540). `focusfp_check.py` flow 1 now expects the first shelf, Cont
 (`snapt=0 row=0`) and the second shelf to dive (`snapt=1 row=1`). The closed alphabet gains `[0-9]+m left` and
 `S[0-9]+ E[0-9]+ · [0-9]+m left` (`_sources.cw_stills_footer`).
 
-Live TV adds a `TV` pill to the shared strip (`app/chrome.rs`, `browse.chrome.live_tv`) and its own
-screen to the census (`SCREEN_SHAPES_PIN` `0x7e36_4373_746a_c3dc` -> `0xc658_c1c0_2b37_cd31`), which moved the
-state shape from 5612583773909772043 to 7394538603489762440. All three anchors were recorded again against the
-synthetic server with `tests/focusfp.sh --rec --only 1,6,12` on the 120 Hz display (350 ms keys, 1 s boot settle,
-1.5 s final settle; flow 6 was still refused at its full idle sleeps, so they were halved as before), passed
-`plxnative-rec check`, and were installed with `tools/plxnative-rec rerecord`, anchors retained. The closed
-alphabet gains `TV` (`_sources.live_tv_tab`), the pill's label, which every recording that draws the strip
-measures. `tests/replay_fixtures.py --window 960x540` replays all three with `verdict=SAME` in Targets and Resolve
-and every difference counter at zero on three consecutive runs.
+The Home hero (owner's board CW-13 v2: Home's own text ladder over the action row, the Continue Watching
+tiles at a 40 px gap with their footer below the art, the flat action row with the pager following Info in it
+(the anchors were recorded while it still stood at the right margin; the board's correction then moved it into
+the row), and the content-following hero shade) changed recorded behaviour without moving the shape (`state_fp`
+5612583773909772043): all three committed anchors were observed diverging on Home's first drawn frames
+(`replay: diverge f=3` on `1-boot-home-chip-grid`, f=4 on `12-filmography-detail-return`, f=5 on
+`6-settings-family`), then refusing (`replay: REFUSED — replay measurement table miss`), in both modes
+(`make check-replay`, six failures). The anchors were recorded afresh on the unchanged shape
+(`tests/focusfp.sh --rec --only 1,6,12`, 350 ms keys, 1 s boot settle, 1.5 s final settle), and
+`plxnative-rec check` refused all three for one string, an episode hero's one bold label ("S<n>, E<n> ·" and the
+mock's synthetic title, `ui/src/fmt.rs` `episode_kicker`), which the closed alphabet gains as
+`S[0-9]+, E[0-9]+ · s[0-9a-f]{8}` (`_sources.hero_episode_label`). Only each `rec-0000.jsonl` was replaced (the
+manifests equal the new recorder's header field for field, `anchor: true` kept); the replays are SAME in
+Targets and Resolve with every difference counter at zero on three consecutive runs, one of them at the CI
+window (960x540).
+
+The Home Resume pill measures a compact remaining duration, and the episode hero measures a season
+and episode address as part of its metadata row. Both replay modes refused all three old anchors
+with a measurement table miss. The anchors were re-recorded with
+`tests/focusfp.sh --rec --only 1,6,12`, keeping the same inputs and manifests. The closed alphabet
+adds the three exact strings from the seed-1 mock. Targets and Resolve both match all frames at
+960x540.

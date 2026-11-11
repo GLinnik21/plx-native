@@ -2079,10 +2079,6 @@ pub(crate) unsafe fn construct(
         crate::dev::scenarios::arm_drawmask();
         crate::dev::scenarios::arm_cardsplit();
     }
-    // dev: /tmp/plxnative-heroground — draw the hero's photograph and BOTH of its scrim fields
-    // in one pass instead of the art plus four blended gradient quads over it. Absent, the
-    // shipped four-quad path draws, which is what makes this an A/B on one binary.
-    if !controlled { crate::dev::scenarios::arm_heroground(); }
     // dev: /tmp/plxnative-nobudget — the frame budget's A/B CONTROL leg (spec §8.1). Read here
     // with the other boot triggers; applied to the one `Budget` below, once the tree exists.
     let nobudget = !controlled && crate::dev::scenarios::nobudget_armed();
@@ -2362,7 +2358,8 @@ pub(crate) unsafe fn construct(
     let ask_first_run = || !controlled && (crate::dev::scenarios::firstrun_armed()
         || (!automated_boot()
             && plx_data::stores::browse::onboard::asks(
-                bridge.browse_directory(), &plx_plex::plex::session::peek())));
+                bridge.browse_directory(), &plx_plex::plex::session::peek(),
+                &plx_plex::plex::session::current_profile_key())));
     // The sign-in's telemetry question is PRESENTED on the container tree, and the tree lives on
     // the `App` this function is still assembling — so this boot arm records that it owes the
     // question and `maybe_ask_consent` is called once the struct exists, a few dozen lines down.

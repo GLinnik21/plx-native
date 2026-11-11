@@ -344,6 +344,7 @@ mod held_feature_tests {
         plx_data::metadata::NowPlaying {
             is_episode: true,
             is_real_episode: true,
+            is_movie: false,
             title: "Show".into(),
             ep_title: "Pilot".into(),
             season: 1,
@@ -1308,7 +1309,7 @@ mod library_publication_tests {
         detail: Option<plx_data::metadata::Detail>,
     ) -> bool {
         let (state, adapter) = rig.metadata_mut().split_for_test();
-        plx_data::metadata::land_detail_for_test(state, adapter, sid, rk, gen, detail)
+        plx_data::metadata::land_detail_for_test(&plx_plex::plex::ClientKeys::default(), false, state, adapter, sid, rk, gen, detail)
     }
 
     /// Complete every detail fetch the rig admitted and install the landings. Deterministic: a
@@ -1318,7 +1319,7 @@ mod library_publication_tests {
     /// CI runner did not honour.
     fn drain_detail_workers(rig: &mut bridge::Bridge) {
         rig.run_held_store_jobs_for_test();
-        rig.metadata_mut().pump_detail();
+        rig.metadata_mut().pump_detail(&plx_plex::plex::ClientKeys::default(), false);
     }
 
     struct SettleDetailBeforeRestoredEnter {
@@ -1347,6 +1348,7 @@ mod library_publication_tests {
             let store = unsafe { &mut *self.store };
             let (state, adapter) = store.split_for_test();
             let fresh = plx_data::metadata::land_detail_for_test(
+                &plx_plex::plex::ClientKeys::default(), false,
                 state,
                 adapter,
                 self.sid,

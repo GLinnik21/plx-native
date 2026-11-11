@@ -362,7 +362,7 @@ Other subsystems the plan touches
 - D9. **Menu placement is derived from the opener's compiled rect by ONE shared placer in
   `ui/src/popover.rs`, extended in place for every caller.** No player-local placer. A package cannot hint
   the side: in 1.0 the only anchor is `bottom` (D13), so a hint carries no information the room test does
-  not already have, and a derived placement keeps every menu legal by construction. 1.1's top anchor can
+  not already have, and a derived placement keeps every menu legal by construction. a future top anchor can
   add a hint if the room test then needs one. Section "Menus and other HUD popovers".
 - D10. **App-owned text never elides; server text may.** A text cell bound to an app label or an
   app-formatted value hugs its measured width (it takes no `w` and no `max_lines`), lint measures it in
@@ -393,7 +393,7 @@ Other subsystems the plan touches
   `RESUME_FILL`, because a hue the token set lacks must not borrow a role that has another job.
 - D13. **Placement is bottom-anchored in 1.0.** `layout.anchor` accepts only `"bottom"`. A top HUD needs a
   second caption keep-out that pushes top-positioned cues DOWN, a media-layer change to every F28 reader;
-  format 1.1 can add it. Top DECOR with bottom controls is legal.
+  a later HUD format can add it. Top DECOR with bottom controls is legal.
 - D14. **Storage is per install and never shared between flavours**, for the session file's reason (F39):
   a debug build's unreviewed sideload must never reach stable.
 - D15. **The HUD choice is a `Profile` setting** with an install-wide fallback key (F32). A missing or
@@ -461,7 +461,7 @@ logical resource ids. Icon and face roles validate their resources as the existi
 Identity and resource inventory have one owner in the manifest. Strict parsing rejects unknown and
 duplicate keys in both documents, using the shared duplicate-preserving JSON reader. The schema URLs
 are `https://plxnative.com/hud/schema/manifest/1.0.json` and
-`https://plxnative.com/hud/schema/hud/1.0.json`. Each optional `$schema` must agree with its document.
+`https://plxnative.com/hud/schema/hud/1.0.json` or `https://plxnative.com/hud/schema/hud/1.1.json`. Each optional `$schema` must agree with its document.
 
 The initial archive profile is STORE-only. Entries and central records are in ascending ASCII path order.
 ZIP flags, compression, disk numbers, comments, extras and internal attributes are zero. Version-needed
@@ -539,7 +539,7 @@ also legal on a `vstack` cell and on a control item), and exactly one of:
   row that keeps no chip take no room and no gap, as the Info card's own stack does, and the group never leaves
   its worst-case rect. A `vstack` that holds the title pair, a control or a nested cell stays static;
 - `playbar` {`w`, `fill`, `track`, `thickness`, `knob` (`tick` classic, `always`), `clocks` (`follow_head`
-  classic, `ends`), `clock_size`, `mark` (`after_elapsed`, `busy_only`: the paused glyph may go when a
+  classic, `ends`), `clock_size`, optional `end_time_width`, `mark` (`after_elapsed`, `busy_only`: the paused glyph may go when a
   `toggle_play` control is placed; the busy spinner never goes), `grab` {`above`, `below`} (px past the track's top and
   bottom edges, default 72 and 80: classic's grab band `(SB_X, SCR_H - 270, sb_w, 160)` around the track at
   `SB_Y = SCR_H - 198`, 8 tall, `player_hud.rs:474-475`, `:1405-1407`; registered as the lowest stop, #162)}: exactly one,
@@ -548,7 +548,12 @@ also legal on a `vstack` cell and on a control item), and exactly one of:
   `CLOCK_LINE` (1.25, a ratio so a measurer cannot move a band), or `thickness` if that is taller, so no band under
   the bar lands on the clocks. The compile also emits the two clocks as rects on the line (the widest string the app
   can print, `H:MM:SS`, in the weight each is drawn in; under `follow_head` the elapsed clock travels the track, so
-  its rect is the track's width), which I4 reads as decor and I10 judges as app text. The knob and mark overhang the
+  its rect is the track's width), which I4 reads as decor and I10 judges as app text.
+  In HUD format 1.1, set `end_time_width` to reserve a right-aligned lane in px (1–1920, capped at the track width) for the remaining
+  clock, a separator dot and the localized finish time. Classic declares 320 px. The same field enables the
+  feature in installed packages. I4 includes the lane in its decor census and I10 checks the combined run in
+  both hour cycles. The renderer uses the plain remaining clock if the estimate is absent, the field is omitted
+  or the run would crowd the elapsed clock. The knob and mark overhang the
   track;
 - `segment` {`id`, `gap`, `items`}: one `HStack` of controls (below);
 - `strip` {`bind`: `chapters`, `w`, `card_w`, `card_h`, `gap`, `radius`, `focus`: `"ring"`, `label_align` (`centre`,
@@ -782,10 +787,9 @@ seconds on the primary button instead of the legacy ten-second clock.
 3. `version` is the plugin's semver and orders updates of one id.
 4. Optional `app.min` and `app.max` constrain the app release.
 
-Both format axes start at 1.0. The initial SDK/report/catalog protocols are integer 1 and examples
-start at 1.0.0. This pre-release baseline replaces the draft inline package contract. Development
-installations may reset their HUD state and reinstall the new artifacts. The runtime supports the
-bundle contract alone.
+Package format remains at 1.0. The runtime supports HUD formats 1.0 and 1.1. HUD 1.1 adds
+`playbar.end_time_width` and Classic declares 1.1. The published HUD 1.0 schema stays frozen.
+The SDK/report/catalog protocols remain at integer 1, and plugin semver is independent.
 
 `--hud-info` and the SDK manifest advertise exact `supported_formats` pairs, distinct manifest/HUD
 schema ids and per-profile `limits`. Registry selection verifies these against the actual pinned binary
@@ -1219,7 +1223,7 @@ spinner (`mark: busy_only`), a disabled Previous (app-owned), the failure read-o
 the track menu (from the bubble) and the More menu (from the gear, opening to the Start side when the
 expanded block leaves no vertical room). Not reproduced: the mock's sub-ladder type sizes (deliberate); its
 "56 min" and "00:00" spellings (the app's one format, F27); an animated equalizer (static in 1.0, motion is
-app-owned); a top placement (1.1, D13).
+app-owned); a top placement (a later minor, D13).
 
 ### Classic, element by element
 
@@ -1256,7 +1260,7 @@ whole file):
       ] } }
     ] },
     { "id": "bar", "when": "!sections", "chrome": "steady", "gap_before": 26, "cells": [
-      { "align": "start", "playbar": { "w": "fill", "fill": "TEXT_PRIMARY", "track": "RAIL_TRACK", "thickness": 8, "clock_size": "CAPTION" } }
+      { "align": "start", "playbar": { "w": "fill", "fill": "TEXT_PRIMARY", "track": "RAIL_TRACK", "thickness": 8, "clock_size": "CAPTION", "end_time_width": 320 } }
     ] },
     { "id": "tabs", "gap_before": 7, "cells": [
       { "align": "start", "segment": { "id": "tabs", "gap": "SM", "items": [
@@ -1287,7 +1291,7 @@ at 768 and the title at 802.
 | Row | five 64 discs at `CTRL_Y` 792, ending at `CTRL_RIGHT` = `SAFE`'s right (`:476-491`) | end-aligned segment, `x_inset: 0` |
 | Scrim | fixed `SCRIM_H` 470 in every state, before `if transport` (`:941`, `:1678-1686`, `:2074`) | `scrim {cover: fixed, height: 470}` |
 | Chrome fade | title, row and tabs on `pc = p.alpha(chrome_a)`; bar, clocks and preview on `p` (`:2075-2081`, `:2146-2160`) | bands `top` and `tabs` default `fades`; `bar` `steady` |
-| Playbar | `SB_Y` 882, 8 tall (`:474-475`); primary fill, tick knob, clocks follow the head, state glyph (F37) | `playbar` with the four keys the table requires (`fill` `TEXT_PRIMARY`, `track` `RAIL_TRACK`, `thickness` 8, `clock_size` `CAPTION`, `draw_playbar`) and the rest at its defaults, which are classic's |
+| Playbar | `SB_Y` 882, 8 tall (`:474-475`); primary fill, tick knob, clocks follow the head, state glyph (F37) | `playbar` with the four keys the table requires (`fill` `TEXT_PRIMARY`, `track` `RAIL_TRACK`, `thickness` 8, `clock_size` `CAPTION`, `draw_playbar`) and `end_time_width: 320`, with the rest at their defaults |
 | Grab band | `scrub_hit_rect` = `(SB_X, SCR_H - 270, sb_w, 160)` (`:1405-1407`) | `playbar.grab` defaults 72 / 80 |
 | Tabs | Info, then Chapters only with chapters (`tab_labels`, `:1430-1435`); `SM` apart from `SB_X` (`:1457-1459`); selected while open (`hud_tab_state`, `:1587-1590`); drawn in every state, outside `if transport` (`:2160`); `BTN_S` tall at `tab_y()` 949 (`:1440-1442`, `:2174-2176`) | band `tabs` with no `when`, `gap_before: 7` (`tab_y()` 949 less the bar cell's foot, 882 + 60: the cell holds the clocks' line); `toggle_section` pills of `size: 64`, Chapters `when: chapters.present`; the selected-face rule |
 | Up Next | the app-drawn column (`up_next.rs:194-200`, `:226-266`, `:290-330`), the primary floored at `ctrl_row_w` (`player_hud.rs:717-719`) | `up_next {replaces: [row], band: top, align: end, still, caption, countdown: fill_sweep}`; inside app-owned |
@@ -1981,7 +1985,7 @@ the curl path and got `fw-compat-reviewer`; PR14 took a pure-Rust crate and need
 - Replacing any app-owned surface (I1). Commands that write the Plex record, change a setting, start a network
   request of their own, exit the app or delete. Direct quality and speed buttons (reached through `open_more`).
 - Press-and-hold commands (FF/REW-style held controls) and a hold behaviour per control: hold stays app-owned.
-- Top-anchored interactive layouts (1.1). A designable Skip pill (a later minor).
+- Top-anchored interactive layouts (a later minor). A designable Skip pill (a later minor).
 - A relay or backend that stores uploads, a LAN listener on the TV, USB until verified. Ratings, comments or payments
   in the registry; telemetry of the HUD id.
 

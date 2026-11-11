@@ -34,7 +34,7 @@ use plx_machine::machine::{
 };
 use plx_machine::present::Provenance;
 use plx_ui::cards::{self as ui_cards, CardSource, RowStyle, SectionFrame, Tile};
-use plx_ui::consts::{CARD_DY, K_SCROLL, MARGIN_X, MARGIN_Y, SCR_H, SCR_W, TITLE_DY, UNDER_LABEL_AIR};
+use plx_ui::consts::{CARD_DY, K_SCROLL, MARGIN_X, MARGIN_Y, SCR_H, SCR_W, TITLE_DY};
 use plx_ui::frame::Budget;
 use plx_ui::screen::{
     At, DrawFrame, ElemKind, Enter, FocusTarget, Focusable,
@@ -321,9 +321,10 @@ impl ShelfRun {
 
 /// The height of a row of `style`'s cards whose caption band, `band_h` tall when it is open, is
 /// `expanded` (0..1) open. The still deck's band is 0 (`captions::NOTHING_UNDER_STILLS`), so its
-/// pitch is Home's: [`RowStyle::pitch_fixed`] and the collapsed gap.
+/// pitch is Home's: [`RowStyle::pitch_fixed`] (which carries the footer line under a still,
+/// [`RowStyle::under_tile`]) and the collapsed gap.
 pub(super) fn shelf_pitch(style: &RowStyle, band_h: f32, expanded: f32) -> f32 {
-    TITLE_DY + CARD_DY + style.h + ui_cards::under_band_for(band_h, expanded) + UNDER_LABEL_AIR
+    style.pitch_fixed() + ui_cards::under_band_for(band_h, expanded)
 }
 
 /// The style a hub's row is drawn in: poster cards ([`RowStyle::HOME`]), the Continue Watching still

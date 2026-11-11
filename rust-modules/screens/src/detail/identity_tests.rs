@@ -244,14 +244,14 @@ fn retained_detail_back_keeps_the_engine_key_until_its_own_landing() {
     frame(&mut d, &mut rig, 48);
     assert_eq!(d.nav.top_page().unwrap().inst.as_ref().unwrap().id, instance);
     assert_eq!(d.focus(), Some(key), "unresolved return must not fall back to Hero");
-    assert!(!{ let (__s, __a) = test_store().split_for_test(); plx_data::metadata::land_detail_for_test(__s, __a, ServerId::UNSET, "wrong", request, Some(item("wrong", false))) });
+    assert!(!{ let (__s, __a) = test_store().split_for_test(); plx_data::metadata::land_detail_for_test(&plx_plex::plex::ClientKeys::default(), false, __s, __a, ServerId::UNSET, "wrong", request, Some(item("wrong", false))) });
     d.store_changed(StoreId::Metadata.ord(), 64);
     frame(&mut d, &mut rig, 64);
     assert_eq!(d.focus(), Some(key), "another item's notice cannot complete restoration");
     assert_eq!(test_store().view().detail_request_status(ServerId::UNSET, "a"), Some(true));
     // The wrong-key completion was discarded; retry under a fresh admitted address.
     let request = plx_data::metadata::begin_detail_for_test(test_store().adapter_ref(), ServerId::UNSET, "a");
-    assert!({ let (__s, __a) = test_store().split_for_test(); plx_data::metadata::land_detail_for_test(__s, __a, ServerId::UNSET, "a", request, Some(item("a", true))) });
+    assert!({ let (__s, __a) = test_store().split_for_test(); plx_data::metadata::land_detail_for_test(&plx_plex::plex::ClientKeys::default(), false, __s, __a, ServerId::UNSET, "a", request, Some(item("a", true))) });
     d.store_changed(StoreId::Metadata.ord(), 80);
     frame(&mut d, &mut rig, 80);
     assert_eq!(d.focus(), Some(key));
@@ -311,7 +311,7 @@ fn retained_detail_back_hydrates_saved_season_before_episode_focus() {
     let mut landed = item("a", true);
     landed.cur_season = 0; // reversed seasons: season 2 is now at index zero
     landed.episodes = landed.episodes.iter_loaded().map(|(_, ep)| plx_data::metadata::Episode { season: 2, ..ep.clone() }).collect();
-    assert!({ let (__s, __a) = test_store().split_for_test(); plx_data::metadata::land_detail_for_test(__s, __a, ServerId::UNSET, "a", request, Some(landed)) });
+    assert!({ let (__s, __a) = test_store().split_for_test(); plx_data::metadata::land_detail_for_test(&plx_plex::plex::ClientKeys::default(), false, __s, __a, ServerId::UNSET, "a", request, Some(landed)) });
     d.store_changed(StoreId::Metadata.ord(), 80);
     frame(&mut d, &mut rig, 80);
     assert_eq!(d.focus(), Some(key));
@@ -357,7 +357,7 @@ fn a_failed_addressed_return_retires_the_intent_and_falls_back() {
     assert_eq!(d.focus(), Some(key));
     assert_eq!(test_store().view().detail_request_status(ServerId::UNSET, "a"), Some(true));
     assert_eq!(test_store().view().detail_request_status(ServerId::UNSET, "b"), None);
-    assert!(!{ let (__s, __a) = test_store().split_for_test(); plx_data::metadata::land_detail_for_test(__s, __a, ServerId::UNSET, "a", request, None) });
+    assert!(!{ let (__s, __a) = test_store().split_for_test(); plx_data::metadata::land_detail_for_test(&plx_plex::plex::ClientKeys::default(), false, __s, __a, ServerId::UNSET, "a", request, None) });
     assert_eq!(test_store().view().detail_request_status(ServerId::UNSET, "a"), Some(false));
     d.store_changed(StoreId::Metadata.ord(), 64);
     frame(&mut d, &mut rig, 64);
@@ -584,7 +584,7 @@ fn a_reread_of_the_page_leaves_focus_on_the_same_related_card() {
     fresh.related_tail.end = 24;
     let generation = plx_data::metadata::begin_detail_for_test(test_store().adapter_ref(), ServerId::UNSET, "a");
     let (state, adapter) = test_store().split_for_test();
-    assert!(plx_data::metadata::land_detail_for_test(state, adapter, ServerId::UNSET, "a", generation, Some(fresh)));
+    assert!(plx_data::metadata::land_detail_for_test(&plx_plex::plex::ClientKeys::default(), false, state, adapter, ServerId::UNSET, "a", generation, Some(fresh)));
     d.store_changed(StoreId::Metadata.ord(), 32);
     frame(&mut d, &mut rig, 32);
     assert_eq!(d.focus(), Some(key), "the focused card keeps its key through the re-read");
@@ -641,7 +641,7 @@ fn back_from_deep_over(
     (fresh.related_tail.positions, fresh.related_tail.offset, fresh.related_tail.end) = (Vec::new(), 0, 0);
     {
         let (state, adapter) = test_store().split_for_test();
-        assert!(plx_data::metadata::land_detail_for_test(state, adapter, ServerId::UNSET, "a", generation, Some(fresh)));
+        assert!(plx_data::metadata::land_detail_for_test(&plx_plex::plex::ClientKeys::default(), false, state, adapter, ServerId::UNSET, "a", generation, Some(fresh)));
     }
     d.store_changed(StoreId::Metadata.ord(), 64);
     // Pump until settled. Focus is on a card the user left, or on no card, on every frame: it is

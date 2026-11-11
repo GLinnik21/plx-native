@@ -14,6 +14,7 @@
 //! preview, the one that needs the frame's playhead and picks, takes the per-frame
 //! [`HudModel`](super::model::HudModel) snapshot), so this file names no player global. The logic it draws
 //! ([`super::state`]) and the animation state it reads ([`super::motion`]) are separate modules.
+use crate::hud_format::clocks::{end_time_run, EndTimeLane};
 use crate::hud_format::compile::{ClockMode, KnobMode, MarkMode};
 use super::geometry::{RowAnchor, GROUP_SCRUB, GROUP_TABS, HUD_TABS};
 use super::model::HudModel;
@@ -313,10 +314,7 @@ fn draw_clock(
     hi: f32,
     measure: &dyn plx_machine::machine::Measure,
 ) -> (f32, f32) {
-    let template: String = text
-        .chars()
-        .map(|c| if c.is_ascii_digit() { '0' } else { c })
-        .collect();
+    let template = clock_template(text, '0');
     let w = measure.width_str(&template, sz, true);
     let half = w * 0.5;
     let cx = cx.clamp(lo + half, (hi - half).max(lo + half));
@@ -324,6 +322,10 @@ fn draw_clock(
         p.text(cs.as_ptr(), cx, y, sz, col, 1, 1);
     }
     (cx - half, cx + half)
+}
+
+fn clock_template(text: &str, digit: char) -> String {
+    text.chars().map(|c| if c.is_ascii_digit() { digit } else { c }).collect()
 }
 
 /// An open Info/Chapters panel owns input; its retained HUD tab indicates mode only.
@@ -496,6 +498,8 @@ pub struct Playbar {
     pub knob: Knob,
     /// the state read-out beside the elapsed clock, from [`transport_mark`]
     pub mark: TransportMark,
+    /// The local wall-clock end estimate (hour, minute); never set for trailer transports.
+    pub end_time: Option<[i32; 2]>,
     /// drives the inline spinner's rotation
     pub now: u32,
     /// how far the knob clock has grown, 0 (resting, [`theme::size::CAPTION`]) to 1
@@ -539,6 +543,7 @@ impl Playbar {
             dur_ns: model.duration_ns,
             knob,
             mark: transport_mark(paused, busy, scrub >= 0, dispos, livepos, since_play_ms),
+            end_time: model.end_time,
             now,
             clock_grow: 0.0,
         }
@@ -561,6 +566,8 @@ pub struct PlaybarLook {
     pub clocks: ClockMode,
     /// `after_elapsed`: the state glyph beside the elapsed clock. `busy_only`: the spinner alone.
     pub mark: MarkMode,
+    /// The package's declared lane for the combined clock, when enabled.
+    pub end_time_lane: Option<EndTimeLane>,
 }
 
 impl Default for PlaybarLook {
@@ -573,6 +580,7 @@ impl Default for PlaybarLook {
             knob: KnobMode::Tick,
             clocks: ClockMode::FollowHead,
             mark: MarkMode::AfterElapsed,
+            end_time_lane: None,
         }
     }
 }
@@ -658,25 +666,26 @@ pub fn draw_playbar_look(p: Painter, bar: Playbar, look: PlaybarLook, measure: &
         el_l = el_l.min(l);
         el_r = el_r.max(r);
     }
-    let rem = fmt_time(dur - dispos, true);
-    // MEASURE the label, never estimate it. `chars * CAPTION * 0.52` was an Arial-calibrated
-    // constant guarding a real behaviour — the remaining clock hides before the moving elapsed
-    // clock can reach it — and it only ever worked because it over-estimated: under Arial it
-    // returned ~99.8px against a true ~85px. Under the shipped Inter that margin had already
-    // halved, and freezing tabular figures (which the clock's own template idiom requires, see
-    // `draw_clock`) widens numerals further, leaving about a pixel of slack. At that point the
-    // guard stops guarding and the two clocks can overlap near the end of a long item.
-    // Same '0'-template `draw_clock` uses, so the two agree by construction: with tabular figures
-    // the template's width IS the real string's width at every tick.
-    let rem_tmpl: String = rem
-        .chars()
-        .map(|c| if c.is_ascii_digit() { '0' } else { c })
-        .collect();
-    let rem_w = measure.width_str(&rem_tmpl, look.clock_size, true);
+    let remaining = fmt_time(dur - dispos, true);
+    let width = |s: &str| measure.width_str(s, look.clock_size, false);
+    let available = (sx + sw - el_r - 20.0).min(sw);
+    let run = end_time_run(look.clock_size).measured(measure);
+    let end = look.end_time_lane.zip(bar.end_time).and_then(|(lane, time)| {
+        let time = plx_platform::i18n::current().time_of_day(time)?;
+        let parts = [remaining.as_str(), time.as_str()];
+        let actual = run.width(measure, &parts);
+        // Keep the fit decision stable while duration digits tick, including proportional faces.
+        let template = clock_template(&remaining, lane.widest_digit);
+        let reserved = run.width(measure, &[template.as_str(), time.as_str()]).max(actual);
+        (reserved <= lane.rect.w && reserved < available).then_some((time, actual))
+    });
+    let rem_w = end.as_ref().map_or_else(|| width(&remaining), |(_, w)| *w);
     let rem_l = sx + sw - rem_w;
-    let rem_shown = el_r + 20.0 < rem_l;
+    let rem_shown = rem_w < available;
     if rem_shown {
-        if let Ok(cs) = CString::new(rem.as_str()) {
+        if let Some((time, _)) = end {
+            run.draw(p, &[remaining.as_str(), time.as_str()], rem_l, ty);
+        } else if let Ok(cs) = CString::new(remaining) {
             p.text(cs.as_ptr(), sx + sw, ty, look.clock_size, dim, 2, 0);
         }
     }

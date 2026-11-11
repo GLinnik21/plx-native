@@ -171,7 +171,7 @@ fn settle_holds(
         });
     }
     stores.browse.borrow_mut().land_held_rows_for_test(0);
-    let publication = stores.capture_browse(&mut fixture.directory);
+    let publication = stores.capture_seeded_browse_for_test(&mut fixture.directory, plx_plex::plex::current_server());
     fixture.listing = publication.listing;
     fixture.hubs = publication.section_hubs;
     fixture.stores = Some(stores);
@@ -245,7 +245,7 @@ fn a_row_the_store_gave_its_cards_up_is_laid_out_as_placeholders_and_keeps_its_l
         target: plx_data::stores::browse::SectionAddress { epoch: id.epoch, sid: id.sid, section: id.section },
         work: LibraryWork::HubHold { lo: 20, hi: 25 },
     });
-    let publication = stores.capture_browse(&mut fixture.directory);
+    let publication = stores.capture_seeded_browse_for_test(&mut fixture.directory, plx_plex::plex::current_server());
     fixture.listing = publication.listing;
     fixture.hubs = publication.section_hubs;
     fixture.stores = Some(stores);
@@ -293,7 +293,7 @@ fn holding_down_onto_a_row_whose_cards_have_not_landed_keeps_row_and_column_when
         work: LibraryWork::HubHold { lo: target - 3, hi: target + 3 },
     });
     stores.browse.borrow_mut().land_held_rows_for_test(0);
-    let publication = stores.capture_browse(&mut fixture.directory);
+    let publication = stores.capture_seeded_browse_for_test(&mut fixture.directory, plx_plex::plex::current_server());
     fixture.listing = publication.listing;
     fixture.hubs = publication.section_hubs;
     fixture.stores = Some(stores);

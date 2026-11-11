@@ -18,6 +18,7 @@ use crate::overdraw::{
 /// The live-backdrop walk: layer/damage algebra, the discovery pass and the retained glass sources.
 pub mod backdrop;
 mod geom;
+pub mod scrim;
 /// Draw-phase instrumentation (`phase`, the GPU timer / HWCNT / CPU profilers) and the LOAD DIAL's
 /// published state.
 pub mod profile;
@@ -97,9 +98,8 @@ pub(crate) use glsl;
 /// tile arrived with (bisected 2026-09-04; `docs/backdrop-blur-profiling.md`). The test
 /// `every_dithered_program_carries_the_one_shared_dither_and_no_hash_of_its_own` pins both lists.
 /// [`glsl_dithered`]'s twin: the SAME fragment source behind `shaders/dither_stub.glsl`, whose
-/// `plx_dither` is the identity — so one file links as two programs, and the plain one (the hero
-/// scrim's, `draw_grad4`) has no
-/// uniform, no sampler and no fetch. See [`ambient_program`] for why OFF is a program, not a zero.
+/// `plx_dither` is the identity — so one file links as two programs, and the plain one (the corner
+/// fade's, `draw_grad4`) has no uniform, no sampler and no fetch. See [`ambient_program`] for why OFF is a program, not a zero.
 macro_rules! glsl_undithered {
     ($file:literal) => {
         // SAFETY: as `glsl!` — GLSL sources contain no interior NUL.
@@ -149,7 +149,13 @@ const VS_IMG: &CStr = glsl!("shaders/vs_img.vert");
 /// The wash's vertex shader: the dithered twin, and the only one carrying the INK RAMP
 /// ([`draw_ambient_inked`]) — the plain twin behind `draw_grad4` has real corner alpha and no ramp.
 const VS_AMBIENT_DITHERED: &CStr =
-    glsl!("shaders/vs_ambient.vert", "#define PLX_DITHER_NC\n#define PLX_WASH_INK\n");
+    glsl!("shaders/vs_ambient.vert", "#define PLX_DITHER_NC\n#define PLX_WASH_INK\n#define PLX_SCRIM\n");
+/// The ground scrim drawn ALONE as a blended layer ([`draw_scrim_layer`]): `vs_ambient.vert`'s scrim
+/// field as the colour the plain, undithered fragment blends. For the frames the ground cannot carry
+/// the scrim in its own pass (a hero slide's two art layers; a resting hero whose opaque art hides the
+/// wash, so there is no ground pass).
+const VS_SCRIM_LAYER: &CStr =
+    glsl!("shaders/vs_ambient.vert", "#define PLX_SCRIM\n#define PLX_SCRIM_LAYER\n");
 const VS_IMG_DITHERED: &CStr = glsl_vs_dithered!("shaders/vs_img.vert");
 const VS_SRC_DITHERED: &CStr = glsl_vs_dithered!("shaders/vs_src.vert");
 const FS_IMG: &CStr = glsl!("shaders/fs_img.frag");
@@ -170,14 +176,13 @@ const FS_STILL: &CStr = glsl!("shaders/fs_img.frag", "#define PLX_STILL_GROUND\n
 /// [`IPROG`] with the plain look if it fails to link, same as [`STILL_IMAGE`]'s own fallback.
 const VS_FOCUS: &CStr = glsl!("shaders/vs_img.vert", "#define PLX_FOCUS\n");
 const FS_FOCUS: &CStr = glsl!("shaders/fs_img.frag", "#define PLX_FOCUS\n");
-const FS_HERO: &CStr = glsl!("shaders/fs_hero.frag");
 /// The wash with its photograph dissolved into it (`draw_art_wash`): dithered, because the wash it
 /// carries always dithers, over `vs_ambient.vert`'s field mesh so its colour is the wash's own
 /// per-vertex field.
 const FS_ART_WASH: &CStr = glsl_dithered!("shaders/fs_art_wash.frag");
 const VS_ART_WASH: &CStr = glsl!(
     "shaders/vs_ambient.vert",
-    "#define PLX_DITHER_NC\n#define PLX_WASH_INK\n#define PLX_ART_WASH\n"
+    "#define PLX_DITHER_NC\n#define PLX_WASH_INK\n#define PLX_SCRIM\n#define PLX_ART_WASH\n"
 );
 const FS_BLUR: &CStr = glsl!("shaders/fs_blur.frag");
 const FS_GLASS: &CStr = glsl_dithered!("shaders/fs_glass.frag");
@@ -664,8 +669,19 @@ static mut AL_DITHER: c_int = 0;
 /// The dithered wash program's ink-ramp uniforms (`u_ink`, `u_inka`) — see [`draw_ambient_inked`].
 static mut AL_INK: c_int = -1;
 static mut AL_INKA: c_int = -1;
-/// The ambient field's PLAIN program (`FS_AMBIENT_PLAIN`) — the hero scrim's (`draw_grad4`), never
-/// the wash's — and its uniforms; 0 when the link failed, in which case `APROG` serves the scrim
+/// ...and its scrim field (`u_sc`, `u_scn`: [`scrim::GroundShade`]).
+static mut AL_SCRIM: ScrimLoc = ScrimLoc::NONE;
+/// The scrim LAYER program ([`draw_scrim_layer`]) and its uniforms; 0 when the link failed.
+static mut SCRIM_PROG: c_uint = 0;
+static mut SCL_RECT: c_int = -1;
+static mut SCL_INK: c_int = -1;
+static mut SCL_SCRIM: ScrimLoc = ScrimLoc::NONE;
+/// What each of the three programs that carry a scrim field (`APROG`, the art wash, the layer) was
+/// last given, so a frame's dozen cells upload it once. A fresh program's uniforms are zero, which
+/// is [`scrim::GroundShade::NONE`], so that is what an unwritten slot holds; `init_*` resets them.
+static mut SCRIM_SENT: [scrim::GroundShade; 3] = [scrim::GroundShade::NONE; 3];
+/// The ambient field's PLAIN program (`FS_AMBIENT_PLAIN`) — the corner fade's (`draw_grad4`), never
+/// the wash's — and its uniforms; 0 when the link failed, in which case `APROG` serves the fade
 /// with `u_dither` at 0.
 static mut APROG_PLAIN: c_uint = 0;
 static mut PL_RECT: c_int = 0;
@@ -828,24 +844,6 @@ struct PlainUniforms {
 /// draws go here is [`plain_texture_program`]. [`IPROG`] remains the fallback — the same picture,
 /// drawn by the larger program — if this fails to link.
 static mut PLAIN_IMAGE: Option<(c_uint, PlainUniforms)> = None;
-// ---- hero-ground program: the backdrop art with both scrim fields folded into it (fs_hero.frag).
-// Its own program because it is the SAME quad the art already draws, only carrying two more
-// closed-form fields — nothing else in the app wants them, and the card composite must not pay for
-// them. Off unless `ui::widgets::hero_ground` is armed; `HPROG == 0` falls the caller back to the
-// four-quad path, which is the shipped picture.
-static mut HPROG: c_uint = 0;
-/// Has [`init_hero`] already run? The link is LAZY — see that function for why.
-static mut HERO_TRIED: bool = false;
-static mut HL_RECT: c_int = 0;
-static mut HL_SCREEN: c_int = 0;
-static mut HL_TINT: c_int = 0;
-static mut HL_UVRECT: c_int = 0;
-static mut HL_TEX: c_int = 0;
-static mut HL_ORG: c_int = 0;
-static mut HL_INK: c_int = 0;
-static mut HL_RAMP: c_int = 0;
-static mut HL_RAMPA: c_int = 0;
-static mut HL_WEDGE: c_int = 0;
 
 /// The wash-with-art program — see [`draw_art_wash`]. Linked at [`init_image`] beside the image
 /// programs, not lazily: it serves shipped frames (Home's dive, Detail's scroll), and a link on
@@ -863,7 +861,30 @@ struct ArtWashProgram {
     tint: c_int,
     ink: c_int,
     inka: c_int,
+    scrim: ScrimLoc,
     dither: c_int,
+}
+
+/// Where a program built from `vs_ambient.vert` with `PLX_SCRIM` keeps the ground shade: its blocks
+/// (`u_sc`, [`scrim::VEC4S`] vectors) and how many of them are live (`u_scn`), which is what lets
+/// the vertex shader stop at the last live block instead of running all six
+/// ([`scrim::GroundShade::live`]). `-1` where the program has neither.
+#[derive(Clone, Copy)]
+struct ScrimLoc {
+    sc: c_int,
+    scn: c_int,
+}
+
+impl ScrimLoc {
+    const NONE: ScrimLoc = ScrimLoc { sc: -1, scn: -1 };
+
+    /// The locations in `prog`, which need not be the program in use.
+    unsafe fn of(prog: c_uint) -> ScrimLoc {
+        ScrimLoc {
+            sc: glGetUniformLocation(prog, c"u_sc".as_ptr()),
+            scn: glGetUniformLocation(prog, c"u_scn".as_ptr()),
+        }
+    }
 }
 
 /// The `#version` + compatibility preamble prepended to every shader, chosen by the DRIVER's GLSL
@@ -1158,6 +1179,19 @@ pub fn init_gl() {
             AL_DITHER = dither_uniforms(APROG);
             AL_INK = glGetUniformLocation(APROG, c"u_ink".as_ptr());
             AL_INKA = glGetUniformLocation(APROG, c"u_inka".as_ptr());
+            AL_SCRIM = ScrimLoc::of(APROG);
+        }
+        SCRIM_SENT = [scrim::GroundShade::NONE; 3];
+        SCRIM_PROG = link_program(VS_SCRIM_LAYER.as_ptr(), FS_AMBIENT_PLAIN.as_ptr()).unwrap_or_else(|| {
+            log("scrim layer prog link failed — a layered hero draws no scrim over its art");
+            0
+        });
+        if SCRIM_PROG != 0 {
+            SCL_RECT = glGetUniformLocation(SCRIM_PROG, c"u_rect".as_ptr());
+            SCL_INK = glGetUniformLocation(SCRIM_PROG, c"u_ink".as_ptr());
+            SCL_SCRIM = ScrimLoc::of(SCRIM_PROG);
+            use_prog(SCRIM_PROG);
+            glUniform2f(glGetUniformLocation(SCRIM_PROG, c"u_screen".as_ptr()), SCR_W, SCR_H);
         }
         bind_dither_tile();
 
@@ -1298,7 +1332,7 @@ pub fn init_gl() {
         // 33 is ~2× in luminance down there. Found through the search screen's navigation-bar scrim
         // (reported as "on screenshot capture I see a pleasing fade, but on TV it is like a shadow"),
         // but it was never that screen's bug: EVERY partial-alpha draw in this app punched the same
-        // hole — the Library's scrim, both hero scrims, `art_scrim`, every popover scrim, every page
+        // hole — the Library's scrim, the hero scrims, `art_scrim`, every popover scrim, every page
         // and content fade, every glyph drawn at less than full alpha. Fades have always come out a
         // shade darker than authored on the panel and nothing but a photograph could show it.
         //
@@ -1666,7 +1700,7 @@ pub fn draw_ambient(
     br: *const f32,
     bl: *const f32,
 ) {
-    draw_ambient_impl(x, y, w, h, dim, tl, tr, br, bl, None);
+    draw_ambient_impl(x, y, w, h, dim, tl, tr, br, bl, None, &scrim::GroundShade::NONE);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1681,6 +1715,7 @@ fn draw_ambient_impl(
     br: *const f32,
     bl: *const f32,
     ink: Option<([f32; 3], [f32; 2])>,
+    scrim: &scrim::GroundShade,
 ) {
     if culled(x, y, w, h) || gate(Class::Ambient, x, y, w, h) {
         return;
@@ -1722,6 +1757,7 @@ fn draw_ambient_impl(
             let (ink, inka) = ink.unwrap_or(([0.0; 3], [0.0; 2]));
             glUniform3f(AL_INK, ink[0], ink[1], ink[2]);
             glUniform2f(AL_INKA, inka[0], inka[1]);
+            send_scrim(0, AL_SCRIM, scrim);
         }
         draw_field_mesh();
     }
@@ -1821,6 +1857,24 @@ pub fn wash_ink_ok() -> bool {
     unsafe { APROG != 0 }
 }
 
+/// Give the program in use its scrim field if it does not hold it already (`slot`: 0 the wash, 1 the
+/// art wash, 2 the layer): one `glUniform4fv` of [`scrim::VEC4S`] vectors and the live-block count
+/// (`u_scn`), and none at all for the next cell of the same frame — nor, for a screen with no scrim,
+/// on any frame after the first. The cache compares the whole shade, which fixes the count with it,
+/// so the two uniforms are never out of step; a fresh program holds a count of 0, which is
+/// [`scrim::GroundShade::NONE`]'s.
+#[inline]
+unsafe fn send_scrim(slot: usize, loc: ScrimLoc, want: &scrim::GroundShade) {
+    let sent = &mut *std::ptr::addr_of_mut!(SCRIM_SENT[slot]);
+    if loc.sc < 0 || *sent == *want {
+        return;
+    }
+    let u = want.uniforms();
+    glUniform4fv(loc.sc, scrim::VEC4S as c_int, u.as_ptr().cast());
+    glUniform1f(loc.scn, want.shader_count());
+    *sent = *want;
+}
+
 /// [`draw_ambient`] with a vertical INK RAMP laid over the field in the same pass: `ink` (rgb) at an
 /// alpha running linearly from `inka[0]` at the rect's top edge to `inka[1]` at its bottom — the
 /// screen's atmospheric scrim, cut by the caller at its knees so each rect is one straight segment.
@@ -1833,6 +1887,10 @@ pub fn wash_ink_ok() -> bool {
 /// passes were most of what still carried the frame over budget once the art had joined the wash
 /// (`draw_art_wash`). Callers must check [`wash_ink_ok`] first — without the dithered program
 /// there is no ramp to carry, and this draws the wash alone.
+///
+/// `scrim` is the ground scrim ([`scrim::GroundShade`]) laid over the field in the same pass, with
+/// the same ink and the ramp folded in: [`scrim::GroundShade::NONE`] for none, which the shader
+/// evaluates to exactly zero.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_ambient_inked(
     x: f32,
@@ -1843,20 +1901,80 @@ pub fn draw_ambient_inked(
     corners: [*const f32; 4],
     ink: [f32; 3],
     inka: [f32; 2],
+    scrim: &scrim::GroundShade,
 ) {
     let [tl, tr, br, bl] = corners;
-    draw_ambient_impl(x, y, w, h, dim, tl, tr, br, bl, Some((ink, inka)));
+    draw_ambient_impl(x, y, w, h, dim, tl, tr, br, bl, Some((ink, inka)), scrim);
+}
+
+/// Can the scrim be drawn as a layer of its own ([`draw_scrim_layer`])?
+#[inline]
+pub fn scrim_layer_ok() -> bool {
+    // SAFETY: written once at init on the render thread, read on the render thread.
+    unsafe { SCRIM_PROG != 0 }
+}
+
+/// **The ground scrim alone, blended over whatever is under it**: `ink` (rgb) at the stacked alpha
+/// of `scrim` ([`scrim::GroundShade::at`]) over `(x, y, w, h)`, evaluated per vertex of the field
+/// mesh like the ground's own. It is the same field the ground carries in its one pass
+/// ([`draw_ambient_inked`], [`draw_art_wash`]), for the frames that pass cannot take it: a hero
+/// slide, which has two art layers and needs the scrim OVER both, and a resting hero whose opaque
+/// photograph covers the wash, so that no ground pass is drawn for the scrim to ride in
+/// (Home's `wash_hidden`). Not dithered (a translucent scrim over a photograph has nothing to
+/// band, as [`draw_grad4`]'s). It draws nothing when the program did not link
+/// ([`scrim_layer_ok`] says so; no caller needs to ask first).
+///
+/// **It draws only where the shade is.** The field mesh is 1536 vertices a call, each running one
+/// rounded-rect distance per live block (`u_scn`, [`scrim::GroundShade::live`]), and a hero's shade
+/// is a few soft blocks: most of the panel's cells hold nothing but zeros. A rect the shade cannot reach ([`scrim::GroundShade::reaches`]:
+/// exact where it says no, so every vertex would have been alpha 0) is dropped before any GL state
+/// is touched, and of one it reaches only the mesh rows from the first strip the shade reaches to
+/// the last are drawn ([`scrim::GroundShade::reached_rows`]; the rows left out are all zeros too).
+/// That changes no pixel; [`scrim::GroundShade::NONE`] draws nothing at all. On the set
+/// (Home `hero-pong` and `grid-pong`, release, HWCNT, 2026-11-10) the layer drawn over the whole
+/// panel was the whole rise of the vertex/tiler slot (JS1) over `main`: masking the `grad` class took
+/// it from 2.4-2.9M to 0.2-0.3M a frame. The caller still declares every cell (`Painter::scrim_layer`
+/// records before it gets here), so the recorded stream does not depend on this skip.
+pub fn draw_scrim_layer(x: f32, y: f32, w: f32, h: f32, ink: [f32; 3], scrim: &scrim::GroundShade) {
+    if culled(x, y, w, h) {
+        return;
+    }
+    let Some(rows) = scrim.reached_rows([x, y, w, h], FIELD_N) else {
+        return;
+    };
+    if gate(Class::Grad, x, y, w, h) {
+        return;
+    }
+    unsafe {
+        if SCRIM_PROG == 0 {
+            return;
+        }
+        use_prog(SCRIM_PROG);
+        glUniform4f(SCL_RECT, x, y, w, h);
+        glUniform3f(SCL_INK, ink[0], ink[1], ink[2]);
+        send_scrim(2, SCL_SCRIM, scrim);
+        draw_field_mesh_rows(rows);
+    }
 }
 
 /// Issue the field mesh (see [`field_mesh`]) — every four-corner draw goes through this.
 #[inline]
 unsafe fn draw_field_mesh() {
-    glDrawArrays(GL_TRIANGLES, 4, FIELD_VERTS as c_int);
+    draw_field_mesh_rows(0..FIELD_N);
+}
+
+/// Issue rows `rows` of the field mesh (`0..FIELD_N`, top to bottom). [`field_mesh`] stores it row
+/// by row, `FIELD_N` squares of 6 vertices to a row, after the unit quad's 4 vertices, so a run of
+/// rows is one contiguous `glDrawArrays` and draws exactly the vertices the whole mesh holds there.
+#[inline]
+unsafe fn draw_field_mesh_rows(rows: std::ops::Range<usize>) {
+    const ROW_VERTS: usize = FIELD_N * 6;
+    glDrawArrays(GL_TRIANGLES, (4 + rows.start * ROW_VERTS) as c_int, (rows.len() * ROW_VERTS) as c_int);
 }
 
 /// Which of the two ambient programs draws a field, with its uniform locations: the dithered one
 /// (`APROG`) for the wash's gradient, which always dithers, and the plain twin (`APROG_PLAIN`, the
-/// same source behind the no-op stub) for the hero scrim (`draw_grad4`) — each the other's fallback
+/// same source behind the no-op stub) for the corner fade (`draw_grad4`) — each the other's fallback
 /// when one failed to link, in which case the caller sets `u_dither` itself.
 ///
 /// The prelude has no off switch of its own — it is straight-line, because a uniform branch there
@@ -1874,7 +1992,7 @@ unsafe fn ambient_program(amp: f32) -> (c_uint, c_int, c_int, c_int, c_int, c_in
     }
 }
 
-/// The 4-corner bilinear gradient with REAL per-corner ALPHA (rgba each) — the hero corner scrim's
+/// The 4-corner bilinear gradient with REAL per-corner ALPHA (rgba each) — the corner fade's
 /// primitive, and the reason `fs_ambient.frag` mixes vec4 instead of vec3. [`draw_ambient`] is this
 /// with every corner forced opaque; the two share one program because they are one field.
 ///
@@ -2324,6 +2442,7 @@ pub fn init_image() {
                 tint: loc(c"u_tint"),
                 ink: loc(c"u_ink"),
                 inka: loc(c"u_inka"),
+                scrim: ScrimLoc::of(prog),
                 dither,
             }
         });
@@ -2332,116 +2451,6 @@ pub fn init_image() {
         }
 
         use_prog(PROG);
-    }
-}
-
-/// Link the hero-ground program. A failure is not fatal and is not a hole in the picture: the
-/// caller keeps the four-quad path, which is what every build has always drawn.
-///
-/// **LAZY, called from [`draw_hero_ground`]'s first draw rather than from [`init_image`].** This
-/// program serves ONE experiment behind one dev trigger, and `devtriggers` is compiled out of a
-/// release build — so linking it at boot would compile and link a shader that build can never
-/// reach, on every launch, for a path that does not exist in it. Deferring it also means an
-/// ordinary dev boot that never arms the trigger pays nothing either.
-fn init_hero() {
-    unsafe {
-        HERO_TRIED = true;
-        HPROG = match link_program(VS_IMG.as_ptr(), FS_HERO.as_ptr()) {
-            Some(p) => p,
-            None => {
-                log("hero-ground prog link failed — the four-quad hero path stays");
-                return;
-            }
-        };
-        HL_RECT = glGetUniformLocation(HPROG, c"u_trect".as_ptr());
-        HL_SCREEN = glGetUniformLocation(HPROG, c"u_tscreen".as_ptr());
-        HL_TINT = glGetUniformLocation(HPROG, c"u_tint".as_ptr());
-        HL_UVRECT = glGetUniformLocation(HPROG, c"u_uvrect".as_ptr());
-        HL_TEX = glGetUniformLocation(HPROG, c"u_tex".as_ptr());
-        HL_ORG = glGetUniformLocation(HPROG, c"u_org".as_ptr());
-        HL_INK = glGetUniformLocation(HPROG, c"u_ink".as_ptr());
-        HL_RAMP = glGetUniformLocation(HPROG, c"u_ramp".as_ptr());
-        HL_RAMPA = glGetUniformLocation(HPROG, c"u_rampa".as_ptr());
-        HL_WEDGE = glGetUniformLocation(HPROG, c"u_wedge".as_ptr());
-        use_prog(HPROG);
-        glUniform2f(HL_SCREEN, SCR_W, SCR_H);
-        glUniform1i(HL_TEX, 0);
-    }
-}
-
-/// Is the hero-ground program usable? `false` means its link failed and the caller must draw the
-/// art and the scrims the way it always has.
-#[inline]
-pub fn hero_ground_ok() -> bool {
-    // Not `HPROG != 0`: the link has not been attempted until the first draw, so before that the
-    // honest answer is "nothing has refused it yet". A refusal latches through `HERO_TRIED`.
-    unsafe { HPROG != 0 || !HERO_TRIED }
-}
-
-/// Draw the hero ground: the art quad `(x,y,w,h)` with the atmospheric ramp and the corner wedge
-/// evaluated per fragment. `ramp` is `(y0, knee, alpha_at_knee, alpha_at_foot)` and `wedge` is
-/// `(peak, width, feather_top, feather_knee)`, both in authored pixels with the alphas already
-/// carrying the painter's cascade. See `fs_hero.frag` for the composite this replaces.
-#[allow(clippy::too_many_arguments)]
-pub fn draw_hero_ground(
-    tex: c_uint,
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
-    tint: *const f32,
-    ink: *const f32,
-    ramp: [f32; 4],
-    wedge: [f32; 4],
-) {
-    if tex == 0 || culled(x, y, w, h) {
-        return;
-    }
-    // THE LINK IS ATTEMPTED BEFORE THE LEDGER IS TOLD ANYTHING. The caller has already skipped
-    // both `backdrop_art` and the scrim block on the strength of `hero_ground_ok`, which answers
-    // optimistically until the first attempt — so a program that turns out not to link must be
-    // discovered here, not after this quad has been booked as drawn. Booking first left the
-    // ledger carrying an `image` quad that was never submitted, on the one frame where the
-    // picture also lost its hero entirely.
-    unsafe {
-        if !HERO_TRIED {
-            init_hero();
-        }
-        if HPROG == 0 {
-            return;
-        }
-    }
-    if gate(Class::Image, x, y, w, h) {
-        return;
-    }
-    // Reciprocals on the CPU: Midgard has no uniform pre-shader, so a divide written in the
-    // fragment shader is paid on every one of two million fragments (the same fold `draw_tex_impl`
-    // makes for the card composite's `shinv`).
-    let inv = |d: f32| if d.abs() > 0.001 { 1.0 / d } else { 0.0 };
-    unsafe {
-        use_prog(HPROG);
-        glUniform4fv(HL_TINT, 1, tint);
-        glUniform4fv(HL_INK, 1, ink);
-        glUniform4f(HL_UVRECT, 0.0, 0.0, 1.0, 1.0);
-        glUniform2f(HL_ORG, x + w * 0.5, y + h * 0.5);
-        glUniform4f(
-            HL_RAMP,
-            ramp[0],
-            inv(ramp[1] - ramp[0]),
-            ramp[1],
-            inv(SCR_H - ramp[1]),
-        );
-        glUniform2f(HL_RAMPA, ramp[2], ramp[3] - ramp[2]);
-        glUniform4f(
-            HL_WEDGE,
-            wedge[0],
-            inv(wedge[1]),
-            wedge[2],
-            inv(wedge[3] - wedge[2]),
-        );
-        glBindTexture(GL_TEXTURE_2D, tex);
-        glUniform4f(HL_RECT, x, y, w, h);
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
 }
 
@@ -2475,7 +2484,8 @@ pub fn art_wash_ok() -> bool {
 /// values at its own corners — the field is bilinear, so that is exact), already through the
 /// painter's cascade exactly as [`draw_ambient`] takes them; `tint` is the art's, likewise; and
 /// `ink`/`inka` the screen's ramp over both, exactly as [`draw_ambient_inked`] takes it (zero
-/// alphas for none).
+/// alphas for none), and `scrim` the ground scrim over both with the same ink
+/// ([`scrim::GroundShade::NONE`] for none).
 #[allow(clippy::too_many_arguments)]
 pub fn draw_art_wash(
     (x, y, w, h): (f32, f32, f32, f32),
@@ -2486,6 +2496,7 @@ pub fn draw_art_wash(
     tint: *const f32,
     ink: [f32; 3],
     inka: [f32; 2],
+    scrim: &scrim::GroundShade,
 ) {
     // SAFETY: render thread; see `art_wash_ok`.
     let Some(g) = (unsafe { std::ptr::addr_of!(ART_WASH).read() }) else { return };
@@ -2505,6 +2516,7 @@ pub fn draw_art_wash(
         glUniform4fv(g.tint, 1, tint);
         glUniform3f(g.ink, ink[0], ink[1], ink[2]);
         glUniform2f(g.inka, inka[0], inka[1]);
+        send_scrim(1, g.scrim, scrim);
         glBindTexture(GL_TEXTURE_2D, tex);
         draw_field_mesh();
     }
@@ -8583,6 +8595,23 @@ mod tests {
         assert!(worst * 255.0 <= 0.5, "worst deviation {:.3} codes", worst * 255.0);
     }
 
+    /// **The mesh is stored row by row**, `FIELD_N` squares of 6 vertices to a row, top to bottom —
+    /// which is what lets [`draw_field_mesh_rows`] (and the scrim layer, which draws only the rows its
+    /// shade reaches) address a run of rows as one contiguous `glDrawArrays` range.
+    #[test]
+    fn the_field_mesh_is_stored_row_by_row() {
+        let v = field_mesh();
+        let row_verts = FIELD_N * 6;
+        assert_eq!(v.len(), FIELD_N * row_verts * 2);
+        for (j, row) in v.chunks(row_verts * 2).enumerate() {
+            let (top, bottom) = (j as f32 / FIELD_N as f32, (j + 1) as f32 / FIELD_N as f32);
+            for p in row.chunks(2) {
+                assert!(p[1] >= top && p[1] <= bottom, "row {j}: a vertex at y {}", p[1]);
+            }
+            assert!(row.chunks(2).any(|p| p[1] == top) && row.chunks(2).any(|p| p[1] == bottom), "row {j} spans its strip");
+        }
+    }
+
     /// **The shared output dither, graded across every program that carries it.**
     ///
     /// Written as one case over a LIST rather than five cases, because the failure this guards is
@@ -8722,6 +8751,26 @@ mod tests {
         assert!(fs.contains("mix(g, u_ink, v_inka)"), "the ink goes over the art, not under it");
         assert!(fs.contains("c.a * u_tint.a"), "the art's own alpha times the dissolve");
         assert!(fs.contains(", 1.0);"), "one opaque fragment: nothing below it is read");
+    }
+
+    /// **Every program that carries the ground shade stops at its live blocks.** The three vertex
+    /// programs built with `PLX_SCRIM` (the wash, the art wash, the layer) declare the block array at
+    /// the size the Rust side uploads ([`scrim::VEC4S`]), take the live count as `u_scn`, and loop over
+    /// at most [`scrim::MAX_BLOCKS`] blocks, leaving at the count. The programs without it carry none
+    /// of it (the plain twin behind `draw_grad4`).
+    #[test]
+    fn the_scrim_programs_stop_at_the_live_block_count() {
+        let blocks = scrim::MAX_BLOCKS;
+        for (name, src) in [("wash", VS_AMBIENT_DITHERED), ("art wash", VS_ART_WASH), ("layer", VS_SCRIM_LAYER)] {
+            let code = shader_code(src);
+            assert!(code.contains("#define PLX_SCRIM\n"), "{name}: built with the scrim");
+            assert!(code.contains(&format!("uniform vec4 u_sc[{}];", scrim::VEC4S)), "{name}: the array is the one uploaded");
+            assert!(code.contains("uniform float u_scn;"), "{name}: the live count");
+            assert!(code.contains(&format!("for (int i = 0; i < {blocks}; i++)")), "{name}: a constant bound, as GLSL ES 1.00 wants");
+            assert!(code.contains("if (float(i) >= u_scn) break;"), "{name}: leaves at the count");
+            assert!(code.contains("shade_block(2 * i, px)"), "{name}: two vectors a block");
+        }
+        assert!(!shader_code(VS_AMBIENT).contains("#define PLX_SCRIM"), "plain twin: no scrim");
     }
 
     /// **The card composite's box test is an exact subset of its SDF early-out.** `fs_img.frag`

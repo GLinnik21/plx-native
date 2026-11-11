@@ -668,6 +668,7 @@ where
     pub fn top_or_mounting_arg(&self) -> Option<&H::Arg> {
         self.top_arg().or_else(|| self.parked.iter().rev().find_map(|(s, _)| match &s.fx {
             Fx::Nav(NavOp::Root(a) | NavOp::Push(a) | NavOp::Replace(a) | NavOp::SelectTab(a)) => Some(a),
+            Fx::Nav(NavOp::SelectTabWithChild { child, .. }) => Some(child),
             _ => None,
         }))
     }
@@ -733,8 +734,14 @@ where
     /// shared bar ([`Screen::bar_opener`], hosted by the page on top), `false` for a page element
     /// ([`Screen::opener`]). One decision and one stand-down rule for both.
     fn lift_target(&self) -> Option<(EntryId, Option<FocusKey<H::Elem>>, bool)> {
-        use super::containers::modal::Phase;
-        let (surface, (entry, opener, bar)) = self.nav.modals.surfaces.iter().find_map(|s| {
+        use super::containers::modal::{Phase, Style};
+        let surfaces = &self.nav.modals.surfaces;
+        // Once an opaque surface paints its ground or its entrance dip, the lower openers
+        // belong underneath that paint too. The host cache policy changes only after the ramp.
+        let first = surfaces.iter().rposition(|s| matches!(s.style, Style::Opaque { .. })
+            && s.entry.inst.is_some() && s.phase != Phase::Hidden && !s.motion.held()
+            && (s.motion.appear > 0.0 || s.motion.floor() > 0.0)).unwrap_or(0);
+        let (surface, (entry, opener, bar)) = surfaces[first..].iter().find_map(|s| {
             let screen = &s.entry.inst.as_ref()?.screen;
             let found = screen.opener().map(|(entry, key)| (entry, key, false)).or_else(|| {
                 let host = self.nav.top_page()?.id;
