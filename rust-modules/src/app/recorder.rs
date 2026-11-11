@@ -207,8 +207,14 @@ const RESOLUTION_SHAPE: &str = "ProductResolutionV1{fo:Option<(entry:u32,elem:u3
 /// well as the term around it: the init shape names that type rather than spelling its fields, so
 /// a census that only said `ControlledHomeInitV3` would be claiming the change was in the
 /// envelope when it is in the session.
+pub(crate) const FP_PRIOR: u64 = 5612583773909772043;
+pub(crate) const FP_V6: u64 = 14623229906352324261;
+
 pub(crate) fn state_fp() -> u64 {
     let mut shapes: Vec<&str> = APP_SHAPES.to_vec();
+    let shape = shapes.iter_mut().find(|shape| **shape == super::bootstrap::SHAPE)
+        .expect("controlled initial shape");
+    *shape = super::bootstrap::SHAPE_V7;
     shapes.push(super::bootstrap::CONTENT_SHAPE);
     shapes.push(RESOLUTION_SHAPE);
     shapes.push("CaptureReadinessV2{before_dispatch:pending:bool,text:bool}");
@@ -235,7 +241,7 @@ fn session_app_fingerprint_probe_only() {
     let frozen: Value = serde_json::from_str(include_str!("fixtures/session-codec-v5/fingerprints.json")).unwrap();
     let prior = session_app_prior_vector();
     assert_eq!(serde_json::to_value(&prior).unwrap(), frozen["prior_vector"]);
-    let fp_prior = state_fp();
+    let fp_prior = plx_ui::rec::state_fp(&prior);
     assert_eq!(fp_prior, 5612583773909772043u64);
     assert_eq!(frozen["fp_prior"].as_u64(), Some(5612583773909772043u64));
     assert_eq!(plx_ui::rec::state_fp(&prior), fp_prior);
@@ -252,6 +258,7 @@ fn session_app_fingerprint_probe_only() {
     assert_eq!(prior.iter().zip(&prospective).filter(|(a, b)| a != b).count(), 1);
     let prospective_fp_v6 = plx_ui::rec::state_fp(&prospective);
     assert_eq!(prospective_fp_v6, 14623229906352324261u64);
+    assert_eq!(state_fp(), prospective_fp_v6);
     assert_eq!(frozen["prospective_fp_v6"].as_u64(), Some(14623229906352324261u64));
     for manifest in [
         include_str!("../../../tests/fixtures/replay/1-boot-home-chip-grid/manifest.json"),
@@ -893,7 +900,7 @@ impl Recplay {
         -> Result<Self, &'static str> {
         initial.validate()?;
         let mut header = Header::new(state_fp(), initial);
-        header.init_data = serde_json::to_value(initial).map_err(|_| "cannot encode initial state")?;
+        header.init_data = initial.to_v6_value()?;
         header.clock_start_ms = initial.clock_start;
         header.build = env!("PLX_VERSION").into();
         header.features = features();
@@ -2735,7 +2742,7 @@ mod fixture_preflight_tests {
             let dir = root.join(name);
             let manifest = std::fs::read_to_string(dir.join("manifest.json")).unwrap();
             let segment = std::fs::read(dir.join("rec-0000.jsonl")).unwrap();
-            let mut recording = Recording::parse(&manifest, &[segment.as_slice()], state_fp()).unwrap();
+            let mut recording = Recording::parse(&manifest, &[segment.as_slice()], FP_PRIOR).unwrap();
             let initial = super::super::bootstrap::Initial::decode(recording.header.init_data.clone(), recording.header.init_hash)
                 .expect("recorded initial state must retain its canonical hash");
             // Host unit tests omit the simulator feature; this check covers the wire preflight.

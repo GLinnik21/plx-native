@@ -4,6 +4,32 @@ use super::*;
 use plx_data::stores::tape;
 use crate::app::adapters::stores::StoreRunner;
 
+#[test]
+fn session_codec_profiles_require_canonical_exact_matching_envelopes() {
+    let initial = Initial::synthetic_home(17, 32517, None).unwrap();
+    let legacy = serde_json::to_value(&initial).unwrap();
+    let current = initial.to_v6_value().unwrap();
+    let prior = super::super::recorder::FP_PRIOR;
+    let v6 = super::super::recorder::FP_V6;
+    assert_eq!(current["session"], serde_json::json!({"codec":6,"boot":legacy["session"]}));
+    assert_eq!(Initial::decode_profile(legacy.clone(), initial.hash(), prior).unwrap().hash(), initial.hash());
+    assert_eq!(Initial::decode_profile(current.clone(), initial.hash(), v6).unwrap().hash(), initial.hash());
+    assert!(Initial::decode_profile(current.clone(), initial.hash(), prior).is_err());
+    assert!(Initial::decode_profile(legacy, initial.hash(), v6).is_err());
+    assert!(Initial::decode_profile(current.clone(), initial.hash(), v6 ^ 1).is_err());
+    assert!(Initial::decode_profile(current.clone(), initial.hash() ^ 1, v6).is_err());
+    let mut bad = current.clone(); bad["session"]["codec"] = serde_json::json!(5);
+    assert!(Initial::decode_profile(bad, initial.hash(), v6).is_err());
+    let mut bad = current.clone(); bad["session"]["extra"] = serde_json::json!(true);
+    assert!(Initial::decode_profile(bad, initial.hash(), v6).is_err());
+    let mut bad = current.clone(); bad["session"]["boot"]["signin_account"] = serde_json::json!("private");
+    assert!(Initial::decode_profile(bad, initial.hash(), v6).is_err());
+    let mut bad = current.clone(); bad["session"]["boot"].as_object_mut().unwrap().remove("next_req");
+    assert!(Initial::decode_profile(bad, initial.hash(), v6).is_err());
+    let mut bad = current; bad["session"]["boot"]["next_req"] = serde_json::json!(1);
+    assert!(Initial::decode_profile(bad, initial.hash(), v6).is_err());
+}
+
 // Probe only until the coordinator captures and installs literal bytes and hashes.
 #[test]
 fn session_app_initial_probe_only() {
