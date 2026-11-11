@@ -227,33 +227,33 @@ pub fn min_controls_top_y() -> f32 {
 }
 
 /// The ink the client's own drawn caption text takes this frame (the fault message, the sidecar
-/// failure notice): the viewer's colour when the tone is one ([`SubtitleTone::text_rgb8`]), else
-/// the grey rung of [`theme::SUBTITLE_INKS`].
-///
-/// [`SubtitleTone::text_rgb8`]: plx_plex::plex::session::SubtitleTone::text_rgb8
+/// failure notice): the viewer's tone resolved on [`theme::SUBTITLE_INKS`], a colour or a gray. A
+/// rung the table does not have is white, never a neighbour.
 pub fn subtitle_ink(model: &HudModel) -> [f32; 4] {
-    match model.sub_tone.text_rgb8() {
-        Some([r, g, b]) => plx_gfx::gfx::tokens::rgb8(r, g, b),
-        None => subtitle_tint_for(model.sub_tone),
-    }
+    subtitle_ink_for(model.sub_tone)
+}
+
+fn subtitle_ink_for(tone: plx_plex::plex::session::SubtitleTone) -> [f32; 4] {
+    theme::SUBTITLE_INKS
+        .get(tone.index() as usize)
+        .copied()
+        .unwrap_or(theme::SUBTITLE_INKS[0])
 }
 
 /// The tint a client-rendered BITMAP is drawn with this frame — a libass frame (a synthesized text
 /// track or an authored ASS/SSA script) or a picture subtitle. It multiplies the pixels, so it
-/// can dim but never recolour: the viewer's tone resolved on [`theme::SUBTITLE_INKS`], which is the
-/// identity (white) for a colour rung. A colour reaches a synthesized text track through its header
-/// instead (`text_style::primary_colour`), so authored ASS colours, a cue's own inline colours and a
-/// picture's pixels are never tinted by it. A rung the table does not have is white, never a
-/// neighbour.
+/// can dim but never recolour: a gray is its [`theme::SUBTITLE_INKS`] rung, a COLOUR rung
+/// ([`SubtitleTone::text_rgb8`]) is the identity (white). A colour reaches a synthesized text track
+/// through its header's primary colour instead (`text_style::primary_colour`), so authored ASS
+/// colours, a cue's own inline colours and a picture's pixels are never tinted by it.
+///
+/// [`SubtitleTone::text_rgb8`]: plx_plex::plex::session::SubtitleTone::text_rgb8
 pub fn subtitle_tint(model: &HudModel) -> [f32; 4] {
     subtitle_tint_for(model.sub_tone)
 }
 
 fn subtitle_tint_for(tone: plx_plex::plex::session::SubtitleTone) -> [f32; 4] {
-    theme::SUBTITLE_INKS
-        .get(tone.index() as usize)
-        .copied()
-        .unwrap_or(theme::SUBTITLE_INKS[0])
+    if tone.text_rgb8().is_some() { theme::SUBTITLE_INKS[0] } else { subtitle_ink_for(tone) }
 }
 
 /// Map a decoded image-subtitle rect from the stream's `cw`×`ch` authoring canvas onto the video

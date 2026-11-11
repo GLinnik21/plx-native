@@ -39,8 +39,9 @@ pub enum TrackHeader {
     /// An ASS/SSA track: the codec-private header, as the file wrote it.
     Authored(Vec<u8>),
     /// A text track (SubRip, WebVTT, mov_text, ...): there is no header in the file. The store
-    /// synthesizes one from the viewer's size and position picks and remembers the dialect its
-    /// cues are written in.
+    /// synthesizes one from the viewer's size, position and colour picks (a colour change restyles
+    /// the track, a change among white and the grays does not: a gray is a draw-time tint) and
+    /// remembers the dialect its cues are written in.
     Text(TextDialect),
 }
 

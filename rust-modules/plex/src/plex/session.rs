@@ -975,10 +975,11 @@ impl PlaybackQuality {
 /// makes a caption comfortable there is less light. The one exception is a legibility colour,
 /// [`SubtitleTone::Yellow`] (a viewer asks for it for readability, discussion #1193). The greys
 /// are inks `ui::theme` tints a drawn caption with (`SUBTITLE_INKS`); a COLOUR rung has a text
-/// colour, [`SubtitleTone::text_rgb8`], which is the one palette table: client-drawn text takes it
-/// as its ink and a synthesized text-subtitle header as its primary colour, so a cue's own inline
-/// colours and an authored ASS script are left alone. Adding a colour is one variant, one `LADDER`
-/// rung and one arm of `text_rgb8` (and the ink table's identity rung in `ui::theme`).
+/// colour, [`SubtitleTone::text_rgb8`]: a synthesized text-subtitle header takes it as its primary
+/// colour (media cannot name `ui::theme`), so a cue's own inline colours and an authored ASS script
+/// are left alone, while the client's own drawn text takes the same colour from the matching
+/// `ui::theme::SUBTITLE_INKS` entry, which a test ties to it. Adding a colour is one variant, one
+/// `LADDER` rung, one arm of `text_rgb8` and that theme entry.
 #[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SubtitleTone {
     #[default]
@@ -1038,8 +1039,8 @@ impl SubtitleTone {
     }
 
     /// The colour this rung paints text in, as 8-bit sRGB, or `None` for white and the greys (which
-    /// only dim: `ui::theme::SUBTITLE_INKS` tints with them). The one palette table of the colour
-    /// rungs; see the type's own doc for who reads it.
+    /// only dim: `ui::theme::SUBTITLE_INKS` tints with them). The colour code media's header reads;
+    /// see the type's own doc for the theme entry it is tied to.
     pub const fn text_rgb8(self) -> Option<[u8; 3]> {
         match self {
             SubtitleTone::Yellow => Some([0xff, 0xe6, 0x1a]),

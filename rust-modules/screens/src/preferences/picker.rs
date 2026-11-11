@@ -98,11 +98,14 @@ impl PickerPage {
     /// write it again on every OK.
     fn durable(&self, value: &Value) -> bool {
         use plx_plex::plex::session::{current_seat, peek, stored_effective, SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref, HdrOverlayBrightnessPref};
+        // One read of the session mirror and the seat, shared by every arm (and only taken for a value
+        // that has a stored form).
+        let stored = |pick: &dyn Fn(&plx_plex::plex::session::Session, &plx_plex::plex::session::Seat) -> bool| pick(&peek(), &current_seat());
         match value {
-            Value::SubtitleSize(v) => stored_effective::<SubtitleSizePref>(&peek(), &current_seat()) == *v,
-            Value::SubtitlePosition(v) => stored_effective::<SubtitlePositionPref>(&peek(), &current_seat()) == *v,
-            Value::SubtitleTone(v) => stored_effective::<SubtitleTonePref>(&peek(), &current_seat()) == *v,
-            Value::HdrOverlay(v) => stored_effective::<HdrOverlayBrightnessPref>(&peek(), &current_seat()) == *v,
+            Value::SubtitleSize(v) => stored(&|s, seat| stored_effective::<SubtitleSizePref>(s, seat) == *v),
+            Value::SubtitlePosition(v) => stored(&|s, seat| stored_effective::<SubtitlePositionPref>(s, seat) == *v),
+            Value::SubtitleTone(v) => stored(&|s, seat| stored_effective::<SubtitleTonePref>(s, seat) == *v),
+            Value::HdrOverlay(v) => stored(&|s, seat| stored_effective::<HdrOverlayBrightnessPref>(s, seat) == *v),
             _ => true,
         }
     }

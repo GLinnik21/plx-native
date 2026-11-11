@@ -569,6 +569,22 @@ fn the_subtitle_tints_are_a_strictly_darkening_opaque_grey_ladder_from_white() {
     assert!(prev > 0.25, "the darkest tone has sunk into its own outline");
 }
 
+/// **The theme's caption colours are the plex palette**: `SubtitleTone::text_rgb8` (what media's
+/// synthesized header paints) and the ink `theme::SUBTITLE_INKS` draws the client's own caption text
+/// with are one colour, for every colour rung. A retuned code in either place fails here.
+#[test]
+fn the_theme_caption_inks_are_tied_to_the_plex_palette() {
+    use plx_plex::plex::session::SubtitleTone;
+    let mut colours = 0;
+    for tone in SubtitleTone::LADDER {
+        if let Some([r, g, b]) = tone.text_rgb8() {
+            assert_eq!(subtitle_ink_for(tone), plx_gfx::gfx::tokens::rgb8(r, g, b), "{tone:?}");
+            colours += 1;
+        }
+    }
+    assert_eq!(colours, 1, "a new colour rung gets its theme ink and this tie");
+}
+
 /// **The colour pick reaches the caption draw call.** The client's own drawn caption (the fault
 /// message, the sidecar failure notice) takes the palette colour for its glyph ink, white by
 /// default and the grey rung for a grey, and every line keeps the dark outline runs under it that
