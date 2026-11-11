@@ -374,7 +374,7 @@ that fails over from the URI engine to Standard writes the `already tried` line 
 | `an audio enhancement is on` | Boost Dialog or Normalize Loudness is on, so the server re-encodes the audio | turn it off |
 | `a subtitle is burned in` | a subtitle is burned into the picture; any file with a subtitle stream stays in Standard today | a file without subtitle streams |
 | `the selected subtitle is an external file` | the selected subtitle is a sidecar file the app draws; any file with a subtitle stream stays in Standard today | a file without subtitle streams |
-| `the file has subtitle streams and none is selected; subtitle streams keep a play in Standard today` | the TV's pipeline cannot switch the file's default subtitle off, and selecting one does not help (the next reason) | a file without subtitle streams |
+| `the file has subtitle streams and none is selected; subtitle streams keep a play in Standard today` | the TV's pipeline cannot switch the file's default subtitle off, and selecting one does not help (it ends as `subtitle streams keep a play in Standard today; try a file without subtitle streams`) | a file without subtitle streams |
 | `the file has Dolby Vision and the Dolby Vision setting is Off` | Dolby Vision is Off in the profile | set Dolby Vision to Auto |
 | `a trailer preview` | previews are not carried | none |
 | `no duration or URL for the file` | the Part reports no duration | none |
