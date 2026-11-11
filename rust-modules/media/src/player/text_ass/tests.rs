@@ -172,6 +172,25 @@ fn subrip_markup() {
     ]);
 }
 
+/// **An explicit white `<font>` is the track's default ink, not an override.** Downloaded SubRip
+/// files very often wrap every cue in `<font color="#ffffff">`; written as `{\c&HFFFFFF&}` it
+/// beats the synthesized style's primary colour, so a viewer's Yellow pick drew those files white
+/// (Settings > Subtitle color did nothing on an SRT track). White is dropped; every other colour,
+/// and a white inside another colour, stays an override.
+#[test]
+fn subrip_explicit_white_is_the_default_ink() {
+    assert_rows(TextDialect::Srt, &[
+        ("<font color=\"#ffffff\">x</font>", "x"),
+        ("<font color=\"#FFFFFF\">x", "x"),
+        ("<font color=white>x", "x"),
+        ("<font color='#fff'>x", "x"),
+        ("<FONT COLOR=\"FFFFFF\" size=3>x</FONT> y", "x y"),
+        ("<i><font color=\"#ffffff\">x</font></i>", "{\\i1}x"),
+        ("<font color=\"#fffffe\">x", "{\\c&HFEFFFF&}x"),
+        ("<font color=red>a <font color=white>b</font> c", "{\\c&H0000FF&}a {\\c&HFFFFFF&}b{\\c} c"),
+    ]);
+}
+
 #[test]
 fn subrip_braces_and_html_together() {
     assert_rows(TextDialect::Srt, &[

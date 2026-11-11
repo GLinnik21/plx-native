@@ -8,7 +8,8 @@ and never sent to the account. **Subtitle color** is White (the default, the loo
 build), Yellow (a bright yellow for readability) or one of five grays that only dim the caption
 for HDR; it is the same pick as the Color section of the player's Subtitles menu. A color
 (yellow) is the default color of text subtitles (SubRip, WebVTT and the other text codecs), so a
-cue's own inline colors still win; styled ASS/SSA scripts and picture subtitles (PGS, VobSub) keep
+cue's own inline colors still win (except an explicit white `<font color="#ffffff">`, which many SubRip files
+wrap every cue in: that is the file's default ink spelled out, so the pick still applies); styled ASS/SSA scripts and picture subtitles (PGS, VobSub) keep
 their authored colors, and only a gray dims them. The dark outline stays under every color. These settings are saved on this television, **per profile**: each
 Plex Home profile keeps its own picks, and a profile that has not chosen yet starts from the value
 the television held before profiles had their own. The page follows a profile switch (Settings itself closes on one). Each row states its own

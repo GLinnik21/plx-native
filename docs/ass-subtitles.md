@@ -13,7 +13,8 @@ Embedded TEXT tracks (SubRip, WebVTT, mov_text, SAMI and the other text codecs) 
 libass worker. They have no header in the file, so `player::ass_source` synthesizes one
 (`player::text_ass::header`) from the viewer's size, position and colour picks and keeps each cue as it arrived;
 `player::text_ass::convert` turns the cue's text into an ASS event body in the track's dialect (italic,
-bold, underline, colour and `{\an}` placement honoured, everything else shown as plain text). Such a
+bold, underline, colour and `{\an}` placement honoured, everything else shown as plain text; a SubRip
+`<font color>` that is plain white is the file's default ink spelled out, so it is dropped and the viewer's colour pick applies). Such a
 source has `Origin::Text`: it renders into the full 1920x1080 logical screen, not the video viewport,
 and the screen lifts its bottom-anchored cues clear of the transport. A change of the size, position or colour
 pick (a gray tone is a draw-time tint, so only a colour counts) re-synthesizes the header of the selected track lazily (the revision bumps once; the renderer swaps
