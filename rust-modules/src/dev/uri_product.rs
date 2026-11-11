@@ -43,7 +43,7 @@
 //! harness's `no_error` grade keys on.
 
 use plx_media::route::uri_preflight::{KnownSource, OriginalQualifier, OriginalRequest,
-    ProductEvidence, Verdict};
+    ProductEvidence, UriDecline, Verdict};
 use plx_plex::plex::Origin;
 use plx_play_uri::backend::Binding;
 use plx_playback_contract::Capabilities;
@@ -258,7 +258,7 @@ struct DevQualifier {
 impl OriginalQualifier for DevQualifier {
     fn qualify(&self, _off: &plx_base::task::OffFrame, request: OriginalRequest) -> Verdict {
         if request.selection.part_id != self.trigger.part || request.server_origin != self.trigger.pms {
-            return Verdict::Unknown;
+            return Verdict::Unknown(UriDecline::NotCertified);
         }
         Verdict::Known(KnownSource::url_carrier(&request, self.trigger.url.clone(), VERDICT_TTL))
     }
@@ -609,7 +609,7 @@ mod tests {
         let off = plx_base::task::OffFrame::for_test();
         for part in [991002, 1, 0, -991001] {
             assert!(matches!(qualifier.qualify(&off, request(part, &mock_origin(), 42)),
-                Verdict::Unknown), "part {part}");
+                Verdict::Unknown(UriDecline::NotCertified)), "part {part}");
         }
     }
 
@@ -621,7 +621,7 @@ mod tests {
             Origin::http("192.0.2.5", 32400), Origin::http("127.0.0.1", 32499),
             Origin::new(plx_plex::plex::Scheme::Https, "192.0.2.5", 32499)] {
             assert!(matches!(qualifier.qualify(&off, request(991001, &other, 42)),
-                Verdict::Unknown), "origin {}", other.base());
+                Verdict::Unknown(UriDecline::NotCertified)), "origin {}", other.base());
         }
     }
 
@@ -661,9 +661,10 @@ mod tests {
         let armed = ResolvePort::new(evidence, qualifier);
         assert!(matches!(armed.qualify(&off, request(991001, &mock_origin(), 42)),
             Verdict::Known(_)));
-        assert!(matches!(armed.qualify(&off, request(991001, &Origin::http("192.0.2.6", 32499), 42)), Verdict::Unknown));
+        assert!(matches!(armed.qualify(&off, request(991001, &Origin::http("192.0.2.6", 32499), 42)),
+            Verdict::Unknown(UriDecline::NotCertified)));
         let unarmed = ResolvePort::new(today(Binding::Acb), Arc::new(ProductQualifier));
         assert!(matches!(unarmed.qualify(&off, request(991001, &mock_origin(), 42)),
-            Verdict::Unknown));
+            Verdict::Unknown(UriDecline::NotCertified)));
     }
 }

@@ -347,6 +347,45 @@ Everything else on the line is the raw material for the rest: `t_load=` and `t_p
 from `armed` to `loadCompleted` and to `playing`, `videoInfo=` and `audioInfo=` say whether the service reported
 the stream at all, and `pause_*` give the position samples behind the `pause=` grade.
 
+### Why a play stayed in Standard
+
+The `uriprobe:` lines come from the probe. Separately, a viewer whose **Settings > Video & playback > Playback
+engine** is Experimental gets one line in the same event log for each play the URI engine did not take (the play
+went to Standard):
+
+```
+uri: original declined (<reason>)
+```
+
+It is written once per resolve, after the plan is chosen, and only for Experimental: Standard says nothing. It
+names no title, host, URL or token. The reason is the first check that said no, in the order of this table, and
+the last column is what the tester can change; a play that the URI engine did take has no such line.
+
+| `<reason>` | meaning | what to change |
+|---|---|---|
+| `playback speed is not 1x` | the play runs at another speed | play at 1x |
+| `the quality ceiling or Direct Play setting rules out the original; set quality to Original` | a fixed quality rung the file exceeds (or has no measured rate for), or Direct Play is Disabled | Quality Original, Direct Play Auto |
+| `the link is a Plex relay` | the server is reached through a Plex relay, which never carries an original | none: use a direct or LAN link |
+| `quality Auto on a link that is not local; set quality to Original` | Auto streams adaptively unless the link is known to be local, and the app reads this one as remote (or has not measured it) | Quality Original |
+| `an audio enhancement is on` | Boost Dialog or Normalize Loudness is on, so the server re-encodes the audio | turn it off |
+| `a subtitle is burned in` | a subtitle is burned into the picture | turn the subtitle off or pick a text one |
+| `the selected subtitle is an external file` | the selected subtitle is a sidecar file the app draws | pick an embedded subtitle |
+| `the file has subtitle streams and none is selected` | the TV's pipeline cannot switch the file's default subtitle off | select a subtitle, or try a file without subtitle streams |
+| `the file has Dolby Vision and the Dolby Vision setting is Off` | Dolby Vision is Off in the profile | set Dolby Vision to Auto |
+| `a trailer preview` | previews are not carried | none |
+| `no duration or URL for the file` | the Part reports no duration | none |
+| `Playback engine is not Experimental` | the profile is on Standard | none (a Standard viewer gets no line) |
+| `Standard would not direct-play the video`, `... the Dolby Vision`, `... the audio`, `... the container` | the file is one Standard itself would convert (a codec or size the set cannot show, a Dolby Vision layering the set refuses, an audio track the set's own decoder cannot play, a container Standard has the server remux), and the TV's pipeline would play it wrongly or silently | none: the file plays in Standard |
+| `several audio tracks on the exported window` | the exported window's service can order tracks differently from Plex | a single-audio file |
+| `the certified source did not match this play` | the qualifier's certificate was for another selection, track map or Dolby Vision record, or had expired | report it with the line |
+| `no exported-window evidence for this firmware` | the display path has no evidence on this firmware (no exported window with a canvas, no ACB plane) | none: report `fw=` and `build=` from the `armed` line |
+| `the URI original was already tried or is not offered for this play` | this play already tried a URI original, or the route refused or excluded it | none |
+| `the picked audio or subtitle track is not in this file` | the viewer's track pick names a stream the Part does not list | pick a listed track |
+| `no URI engine in this build` | the build has no URI engine composed | none |
+| `the qualifier did not certify the file` | a developer qualifier declined it | none |
+
+The reasons are local diagnostics: they route nothing, and nothing about them is sent to telemetry.
+
 ## Open questions
 
 - Whether webOS 5+ can be driven as a player rather than only loaded: pause/resume semantics, seek
