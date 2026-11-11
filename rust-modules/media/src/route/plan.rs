@@ -1613,7 +1613,7 @@ pub struct Plan {
     /// plan's own guards through the port and the qualifier. `None` when the original was qualified
     /// (then [`uri_original`](Self::uri_original) is set) or no qualification was tried before the
     /// plan ended for another reason. Local diagnostics only: the event log says it once per resolve
-    /// for a viewer who opted in ([`uri_decline_line`]); nothing routes on it.
+    /// for a viewer who opted in (`uri_decline_line`); nothing routes on it.
     pub uri_decline: Option<super::uri_preflight::UriDecline>,
     /// A source was qualified without constructing a Feed URL or PMS encoder.
     pub uri_source_ready: bool,
