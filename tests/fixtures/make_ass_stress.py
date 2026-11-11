@@ -40,11 +40,12 @@ ONE default ASS track (spa): ~26 s of ordinary dialogue, then a 90 s karaoke ope
 events (up to ~57 active at once: `\\k`/`\\kf` syllables, `\\t` scale and blur, `\\move`, `\\clip`,
 `\\fad`, `\\bord`, `\\blur`, `\\be`, glow and echo layers, per-syllable pops, rings, shines and star
 bursts, `\\p1` drawings, a 14/s sparkle field; invented lyrics: kanji/kana, romaji, Spanish). It
-attaches 17 fonts, 83.4 MB, sized and ordered like the report's: the first seven (32 MB) spend the
-32 MiB `ass::MAX_FONT_BYTES` budget on faces no style names, the five the opening's styles name
-(Antique, Brush Mincho, Dot, Pop, Heavy Gothic: each a different face from the app's Inter and
-Noto Sans CJK KR fallback) come next and are all dropped today, and small ones after them (the
-dialogue face among them) still fit. Fonts, chosen over a hand-drawn set because the glyph SHAPES
+attaches 17 fonts, 83.4 MB, sized and ordered like the report's: the first seven (32 MB) fill what was
+the 32 MiB `ass::MAX_FONT_BYTES` cap (removed by #1328) with faces no style names, the five the
+opening's styles name (Antique, Brush Mincho, Dot, Pop, Heavy Gothic: each a different face from the
+app's Inter and Noto Sans CJK KR fallback) come next and were all dropped by it, and small ones after
+them (the dialogue face among them) still fit. The layout stays as the report's shape: libass is now
+handed only the faces a style or `\\fn` names (`ass/font_names.rs`). Fonts, chosen over a hand-drawn set because the glyph SHAPES
 must differ from the fallback: the five display faces are real OFL fonts from google/fonts
 (Zen Antique, Yuji Syuku, DotGothic16, Mochiy Pop One, Dela Gothic One), pinned by commit and
 sha256 like the Noto zips; the fillers and the dialogue face are pkg/ fonts. Every attachment is
@@ -53,7 +54,7 @@ and a private `PLXP` table of seeded random bytes pads it to the report's exact 
 tables are legal sfnt and FreeType skips them, `fc-scan` and libass read them), so the file is
 reproducible from pinned inputs with no pip install. `verify` asserts the attachment count and
 bytes (> 32 MiB), distinct families, that every family a style names ends past the budget in
-container order and that exactly the opening's five are dropped by a mirror of `FontBudget`, that
+container order and that exactly the opening's five would have been dropped by a mirror of the removed `FontBudget`, that
 each face has the glyphs its styles draw, one packet per event, >= 40 events at once, and a video
 mean of at least 15 Mbit/s. A libass host render of the opening differs frame for frame between
 the embedded faces and the fallback, so a dropped font is visible.
@@ -432,8 +433,8 @@ def verify(mkv, events, attached):
 OP_DURATION = 120
 OP_START = 28.0          # the dialogue runs 0..26 s; the karaoke opening 28..118 s
 OP_LINE = 5.0            # eighteen lyric lines of five seconds
-BUDGET = 32 * 1024 * 1024    # MAX_FONT_BYTES, rust-modules/media/src/player/ass.rs
-FONT_OVERHEAD = 1024         # FONT_OVERHEAD_BYTES, the same file
+BUDGET = 32 * 1024 * 1024    # the removed `MAX_FONT_BYTES` (#1328): the layout's history, not a live constant
+FONT_OVERHEAD = 1024         # the removed `FONT_OVERHEAD_BYTES`, likewise
 VIDEO_FLOOR_MBPS = 15.0      # the report's opening peaked near 30 Mbit/s
 # The opening's libass cost knobs (host: ~3.4 ms per 1080p frame at these values, p95 3.9 ms; the
 # television's per-job figure for this file is not measured): background sparkles per second and
@@ -863,7 +864,7 @@ def mux_fonts(out, av, name, ass_text, attachments):
 
 
 def admitted(sizes):
-    """The set of indexes `ass::FontBudget::admit` keeps: container order, each font charged its
+    """The set of indexes the removed `ass::FontBudget::admit` kept: container order, each font charged its
     bytes plus FONT_OVERHEAD, one that does not fit skipped while a later smaller one may fit."""
     used, kept = 0, set()
     for i, size in enumerate(sizes):
@@ -946,7 +947,7 @@ def build_fonts_over_budget(out):
     mkv = mux_fonts(out, av, "fonts-over-budget", ass_text, attachments)
     m = verify_fonts_over_budget(mkv, events, ass_text, attachments)
     print(f"{mkv.name}: {m['duration']:.1f} s, {m['events']} events (up to {m['peak_events']} at once), "
-          f"{m['attachments']} fonts = {m['font_bytes']} bytes (budget {BUDGET})")
+          f"{m['attachments']} fonts = {m['font_bytes']} bytes (old cap {BUDGET})")
     print(f"  video {m['video_mbps']:.1f} Mbit/s mean, {m['video_peak_mbps']:.1f} peak second, "
           f"largest frame {m['max_frame_bytes']} bytes")
     print("  the budget drops: " + ", ".join(m["dropped"]))

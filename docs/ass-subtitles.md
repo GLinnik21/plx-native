@@ -34,14 +34,16 @@ libass structures through the same headers used to compile that library. No firm
 new Starfish API is required. Pins, checksums, license notices and corresponding source archives
 are part of the normal package/source-bundle workflow.
 
-The facade's ABI is 4 (`plx_ass_abi_version()`; `include/ass.h`). Two callers check it and refuse any
+The facade's ABI is 5 (`plx_ass_abi_version()`; `include/ass.h`). Two callers check it and refuse any
 other number: `player/ass.rs` for the subtitles, and `plx_gfx::rtl` for the UI's Arabic and Hebrew
-text through the `plx_ass_text_*` calls ABI 4 added (`src/ass_text.c`). Besides the load/render calls
+text through the `plx_ass_text_*` calls ABI 4 added (`src/ass_text.c`). ABI 5 let `plx_ass_add_font`
+run after `plx_ass_load` and lifted its 64 MiB limit (issue #1328, "Attached fonts" below). Besides the load/render calls
 it sets track features (`plx_ass_set_features`, Unicode line breaking), the libass cache bounds
 (`plx_ass_set_cache_limits`) and extra line spacing (`plx_ass_set_line_spacing`), reports counters
 (`plx_ass_stats`), and replaces the loaded track in place (`plx_ass_replace_track`). The renderer
 scans its fonts (`ass_set_fonts`) only on its first load; a replaced track keeps every opened face
-and does not extract its own `[Fonts]` section again. The engine uses the replace for two
+and does not extract its own `[Fonts]` section again, and a font added after the load is opened
+alone at the next frame (libass's `ass_update_embedded_fonts`), so `font_scans` stays 1. The engine uses the replace for two
 cases: sliding the window of a long sidecar script, and a restyle (a Text-origin source whose
 synthesized header or script changed with the viewer's text size or position, same fonts): the
 track is replaced, the held events are appended again and the line spacing of the new header's size
@@ -64,6 +66,29 @@ Inter, or uncovered with its reason), which a test checks against the shipped cm
 are uncovered because Noto Sans ships them in Regular only: Yi (`ii`), Avestan (`ae`) and
 traditional Mongolian (`mn`, whose Cyrillic form is Inter's). U+2060 is not carried by any face:
 libass skips the default-ignorables (U+200B-200F, U+2060-206F) before it looks a glyph up.
+
+Attached fonts. A file may attach far more font bytes than a renderer needs (the report in #1328: 17
+fonts, 83 MB, of which the opening's five karaoke faces sat last in the container), and no byte cap
+decides what a track can draw: the demuxer collects every font attachment (`collect_manifest`), the
+source store keeps the file's list whole (a same-file reopen keeps the `Arc` it holds, so the
+renderer's same-fonts check is a pointer compare), and the renderer hands libass the faces the track
+NAMES. With no font provider libass selects a face by the requested family, then "Inter", then the
+CJK file, so an attached face that no requested name matches is never drawn and its bytes would be
+dead weight. `player/ass/font_names.rs` (pure) reads each attachment's sfnt `name` table (family 1,
+full 4, PostScript 6, the CFF font name, TrueType Collections included) and selects a face when a
+requested name equals one of them under ASCII case folding, the rule being a superset of libass's own
+matching so it cannot hide text. The requested names are the Fontname of every `Style:` line of the
+header (a sidecar script: its whole text, windowed or not), the always-requested "Inter" and "Arial",
+and every `\fn` override, which `Native::append` reads in each event packet before `plx_ass_chunk` and
+adds the face for then. A face shares its family with others: all of them are added together, in
+container order, so libass's weight scoring and add-order tie break are what loading every font would
+give. A font that cannot be read is added (unknown means needed); a byte-identical second copy is not.
+A restyle of a text track reads the new header the same way. The event log says how many the renderer
+holds, numbers only: `ass: embedded ... fonts=17 font_bytes=...` when the file's inventory is read,
+and `ass: renderer fonts=5/17 font_bytes=...` for each renderer (again when a later event adds a face).
+What is resident is the file's attachments as FFmpeg holds them, the store's copy of them, and
+libass's copy of the faces the track names; a track that names every face holds all of them, the
+same order as what the demuxer already holds.
 
 The demuxer copies ASS headers, complete timed packets and font attachments out of FFmpeg.
 The source store removes trailing zero terminators from headers and packets. A zero byte
@@ -195,7 +220,8 @@ Arabic, rapid, karaoke, long, 4K60; host `ffmpeg`/`ffprobe` only) to serve with 
 --extra-media`, and the text-codec ones: `srt-*` (the scripts, rapid and long as SubRip in MKV,
 plus `srt-markup` and `srt-overlap`), `mov_text-mixed.mp4` and `webvtt-mixed.mkv`. `--fonts-over-budget` builds
 only `fonts-over-budget.mkv` (~410 MB, issue #1328): a dense 90 s karaoke opening with 17 attached fonts
-(83 MB) whose opening faces all come after the 32 MiB font budget, on 22 Mbit/s video. A text cue logs
+(83 MB) whose opening faces all come after the first 32 MiB of font bytes (the cap the renderer
+used to apply, removed by that issue), on 22 Mbit/s video. A text cue logs
 `sub cue [a..bms] len=N` (the length, never the words) for the selected track.
 
 Device checks must hold the TV lease and keep both the panel and sound off. Release the lease
