@@ -578,3 +578,86 @@ fn aligns_are_read_for_the_published_frames_serial_only_and_follow_a_promotion()
     assert_eq!(sim.mb.aligns_of(next_serial), Some(AlignSet { bottom: false, middle: false, top: true }));
     assert_eq!(sim.mb.aligns_of(serial), None);
 }
+
+#[test]
+fn a_render_slower_than_the_packet_rate_still_publishes_issue_1328() {
+    // A karaoke line whose picture changes every 100 ms, so every tick asks for a render.
+    let cues: Vec<Cue> = (0..40)
+        .map(|i| Cue { start: i * 100, end: (i + 1) * 100, tag: (i + 1) as u8, animated: true })
+        .collect();
+    let mut sim = Sim::new(cues);
+    let (mut now, mut revision) = (0, 1);
+    sim.tick(now);
+    let mut published = 0;
+    for _ in 0..20 {
+        let job = sim.mb.take().unwrap_or_else(|| {
+            now += 16;
+            sim.request(now);
+            sim.mb.take().expect("an animated frame asks for a job on every tick")
+        });
+        // On the television one render takes ~150 ms (9 ticks) while a demuxed packet lands every
+        // ~33 ms (2 ticks): the revision moves several times before the render completes.
+        for tick in 0..9 {
+            now += 16;
+            if tick % 2 == 0 {
+                revision += 1;
+                sim.key = key_of(1, revision);
+            }
+            sim.request(now);
+        }
+        let before = sim.published().pub_id;
+        sim.complete(job);
+        published += u32::from(sim.published().pub_id != before);
+    }
+    assert!(published >= 18, "a completed render reaches the screen ({published} of 20)");
+    let shown = sim.mb.view(&sim.key).map(|f| i64::from(f.rects[0].rgba[0]));
+    assert!(shown.is_some_and(|tag| tag + 3 >= now / 100), "the picture moved with the clock ({shown:?} at {now} ms)");
+}
+
+#[test]
+fn a_render_lagging_only_by_revision_publishes_and_leaves_the_newer_job_alone() {
+    let mut sim = Sim::new(vec![cue(0, 100_000, 1), cue(2000, 3000, 9)]);
+    sim.request(100);
+    let flying = sim.mb.take().unwrap();
+    let old = flying.key;
+    sim.key = key_of(1, 2); // a packet was appended while the job rendered
+    assert!(sim.mb.request(sim.key, 116, &sim.source).wake, "the new revision queues its own job");
+    let outcome = sim.render(&flying);
+    let done = sim.mb.finish(&flying, Some(outcome));
+    assert!(done.wake && done.changed, "the screen is woken for the frame");
+    assert_eq!(sim.published().key, old, "published under the key it was rendered for");
+    assert_eq!(sim.mb.view(&sim.key).unwrap().rects[0].rgba[0], 1, "and shown at once");
+    assert!(sim.mb.next_frame().is_none(), "no Ahead job is armed from a lagging frame");
+    assert!(matches!(sim.mb.pending_job(), Some((Kind::Normal, 116))), "the newer job still runs");
+    // The lagging key falls through to R2.5: nothing extra is queued while the newer job is out.
+    assert_eq!(sim.mb.request(sim.key, 132, &sim.source), mailbox::Requested::default());
+    sim.drain();
+    assert_eq!(sim.published().key, sim.key, "the newest revision lands as usual");
+    let boundary = sim.published().validity.until_ms;
+    assert_eq!(sim.mb.next_frame().map(|n| n.validity.from_ms), Some(boundary), "the newest frame arms the next boundary");
+}
+
+#[test]
+fn a_render_for_a_replaced_timeline_is_still_discarded() {
+    let base = key_of(1, 1);
+    let newer = [
+        ("epoch", Key { epoch: 2, revision: 2, ..base }),
+        ("source", Key { source_id: 2, revision: 2, ..base }),
+        ("width", Key { width: 640, revision: 2, ..base }),
+        ("height", Key { height: 360, revision: 2, ..base }),
+        ("storage width", Key { storage_width: 640, revision: 2, ..base }),
+        ("storage height", Key { storage_height: 360, revision: 2, ..base }),
+    ];
+    for (what, key) in newer {
+        let mut sim = Sim::new(vec![cue(0, 100_000, 1)]);
+        sim.request(100);
+        let flying = sim.mb.take().unwrap();
+        sim.key = key;
+        sim.request(116);
+        let outcome = sim.render(&flying);
+        let done = sim.mb.finish(&flying, Some(outcome));
+        assert_eq!(done, mailbox::Finished::default(), "a changed {what} discards the result");
+        assert!(sim.mb.published.is_none(), "nothing was published for a changed {what}");
+        assert!(matches!(sim.mb.pending_job(), Some((Kind::Normal, 116))), "the newer job still runs ({what})");
+    }
+}

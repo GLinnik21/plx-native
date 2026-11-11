@@ -4,6 +4,11 @@
 //! tick inside the window costs no job. The worker also renders the next boundary ahead of its
 //! time (an `Ahead` job), and the next tick at or after that boundary promotes the held frame.
 //!
+//! A Normal result is published unless the timeline it was rendered for (epoch, source, size) was
+//! replaced meanwhile or the job was withdrawn, not only when it answers the latest request: a
+//! revision that moved only appended events, which start ahead of the playhead, so the frame is
+//! still right for its time. A render that takes several packet intervals would otherwise never land.
+//!
 //! Pure bookkeeping: no thread, no native call, no clock but the one stamp behind [`Job::queued`].
 //! `Runtime` owns the lock and the wake; the worker loop owns the rendering.
 use super::{AlignSet, Frame, Key, Source};
@@ -39,6 +44,9 @@ pub(super) struct Published {
     /// Identity of this publication, for `Ahead { after }`.
     pub pub_id: u64,
     pub epoch: u64,
+    /// The key it was rendered for. It may trail the latest request's by revision alone (the newer
+    /// job is still out), and then no rule that asks `key == requested` takes the frame as covering
+    /// the request: `request` answers R2.5 until the newer revision's own frame lands.
     pub key: Key,
     pub frame: Arc<Frame>,
     pub validity: Validity,
@@ -62,7 +70,8 @@ pub(super) struct Mailbox {
     in_flight: Option<InFlight>,
     /// Seq of an in-flight NORMAL job a covered request made moot; its result is discarded.
     withdrawn: u64,
-    /// The latest NORMAL job: key, now, seq. Ahead jobs never write it.
+    /// The latest NORMAL job: key, now, seq. Ahead jobs never write it. A job's result is
+    /// published when its key shares this key's timeline, whatever its seq (`finish`).
     requested: Option<(Key, i64, u64)>,
     /// Seq of the latest NORMAL job the worker completed (published or discarded) or that was
     /// withdrawn while pending.
@@ -301,14 +310,26 @@ impl Mailbox {
 
     /// WORKER, under the lock: R3 and R5. `outcome` is `None` when the job did not render or
     /// its epoch ended; the job is finished either way, so no counter can stick.
+    ///
+    /// A Normal result is published unless the job was withdrawn or its timeline (epoch, source,
+    /// size) is no longer the latest request's. A job whose key differs from the latest request's
+    /// by revision alone still publishes, under its own key: appended events start ahead of the
+    /// playhead, so the frame stays right for its time, and on a slow set one render outlives
+    /// several appends (issue #1328). Such a frame arms no Ahead job and leaves the newer pending
+    /// job alone; that job publishes the newest revision when it lands.
     pub fn finish(&mut self, job: &Job, outcome: Option<Rendered>) -> Finished {
         self.in_flight = None;
         match job.kind {
             Kind::Normal => {
                 self.answered = self.answered.max(job.seq);
                 let Some(Rendered { frame, validity, aligns }) = outcome else { return Finished::default() };
-                let latest = self.requested.is_some_and(|(key, _, seq)| key == job.key && seq == job.seq);
-                if job.seq == self.withdrawn || !latest {
+                // A result stands unless the playhead was covered without it (`withdrawn`) or the
+                // timeline it was rendered for was replaced. A revision that moved meanwhile only
+                // appended events, which start ahead of the playhead, so the frame is still right
+                // for its time; on a slow set a render outlives several appends, and holding the
+                // frame back until one lands in a quiet gap shows nothing for a whole opening.
+                let timeline = self.requested.is_some_and(|(key, _, _)| key.same_timeline(&job.key));
+                if job.seq == self.withdrawn || !timeline {
                     return Finished::default();
                 }
                 let (changed, pub_bytes) = self.differs(&frame, job.key.epoch);
@@ -322,7 +343,11 @@ impl Mailbox {
                     aligns,
                 });
                 self.next = None;
-                self.arm_ahead(&job.source);
+                // Only the newest request's frame has a boundary worth rendering ahead; the
+                // newer job still pending will arm it when it lands.
+                if self.requested_key() == Some(job.key) {
+                    self.arm_ahead(&job.source);
+                }
                 Finished { wake: changed, changed, pub_bytes }
             }
             Kind::Ahead { after } => {

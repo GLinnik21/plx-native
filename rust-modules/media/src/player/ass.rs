@@ -202,6 +202,14 @@ struct Key {
     storage_height: i32,
 }
 
+impl Key {
+    /// Both keys belong to one timeline: the same epoch, source and size, whatever the revision.
+    /// A revision alone moves when events are appended, which starts them ahead of the playhead.
+    fn same_timeline(&self, other: &Key) -> bool {
+        Key { revision: other.revision, ..*self } == *other
+    }
+}
+
 pub struct Runtime {
     source_id: AtomicU64,
     epoch: AtomicU64,
