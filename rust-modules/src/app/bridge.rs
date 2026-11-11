@@ -5116,6 +5116,9 @@ mod library_reread_route_tests;
 #[path = "library_memory_route_tests.rs"]
 mod library_memory_route_tests;
 #[cfg(test)]
+#[path = "library_restore_arrival_tests.rs"]
+mod library_restore_arrival_tests;
+#[cfg(test)]
 #[path = "under_posters_route_tests.rs"]
 mod under_posters_route_tests;
 #[cfg(test)]
