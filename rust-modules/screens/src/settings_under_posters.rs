@@ -20,14 +20,11 @@
 //! none shows the page's. The picture under that sentence is the shared picture slot
 //! ([`RootPicture`], also drawn on the Settings root and on both pickers): a movie poster on the left
 //! and a TV show poster on the right, each under its KIND ("MOVIE", "TV SHOW") and over the lines the
-//! stored setting gives it. Each tile's art is the first poster of its kind from the widest cache the
+//! stored setting selects. Each tile's art is the first poster of its kind from the widest cache the
 //! Browse store holds ([`preview_posters`]; a kind it has none of is asked for as its library's shelves, [`PosterAsk`]); a kind with none anywhere is a finished art-less face
-//! (`plx_ui::widgets::absent_card`), never a skeleton. The lines are worded by the SAME policy the
-//! Library, Collections, the Watchlist, Home and Recommended read ([`crate::registry::captions`],
-//! [`plx_ui::caption_policy`]); a face with no artwork carries no word, and a tile whose kind the
-//! library has no poster of is worded from a sample of its kind. A line the setting turns on is never
-//! drawn empty, for any kind of tile (a film or show with not even a year says what it is: "Movie",
-//! "Show"). **The column of the kind that is not being chosen is dimmed** to the design's `dim`
+//! (`plx_ui::widgets::absent_card`), never a skeleton. The preview words each selected part with
+//! the shared caption formatters and supplies the picker's example when the poster lacks the fact.
+//! Details can wrap within their preview column. **The column of the kind that is not being chosen is dimmed** to the design's `dim`
 //! ([`DIM`](plx_ui::follow_copy::DIM), 0.45; `Sv2s-P2-Details`): on the Under posters page the kind
 //! whose details row is not focused (both are at full strength on Title, Sort value and Reset and on
 //! the Settings root), in a picker the other kind. The caption, tile, title line and details line
@@ -232,8 +229,8 @@ fn under_posters_form(v: UnderPosters) -> Form<UpId, UpAction, SettingsPage> {
         UpId::Reset,
         RowKind::Button,
         UpAction::Reset,
-        Row::new(msg::under_posters_reset()).dim(v == UnderPosters::DEFAULT),
-    );
+        Row::new(msg::under_posters_reset()),
+    ).disabled(v == UnderPosters::DEFAULT);
     Form::new().section(rows).section(reset)
 }
 
@@ -417,21 +414,20 @@ fn poster_of<'a>(kind: PosterKind, posters: &[&'a PmsMovie]) -> Option<&'a PmsMo
     posters.iter().copied().find(|p| kind.is_kind_of(p))
 }
 
-/// **The ONE source of every sample on the Under posters pages**: the facts of the tile a picker
-/// words, so a row never promises "2019 · 2h 14m" over a picture that says "2022 · 6m". A fact the
-/// poster lacks is the exception ([`part_example`]): the row then shows the kind's sample, and
-/// ticking that part adds nothing to that poster's line.
+/// The facts shared by the picture and its picker.
 fn kind_facts(kind: PosterKind, posters: &[&PmsMovie]) -> CaptionFacts {
     picture_facts(kind, poster_of(kind, posters))
 }
 
-/// The lines under a tile: `[title, details]` as `v` words them from `facts`, through the one
-/// builder every poster surface uses ([`crate::registry::captions::label`]), so the picture cannot
-/// word a caption differently from the screens it previews.
-fn lines_of(v: UnderPosters, facts: &CaptionFacts) -> [Option<String>; 2] {
-    let label = crate::registry::captions::label(&caption_policy_of(v), facts, None);
-    let text = |line: &Option<std::ffi::CString>| line.as_ref().map(|line| line.to_string_lossy().into_owned());
-    [text(&label.title), text(&label.caption)]
+/// The preview's `[title, details]` demonstrates every selected part with the same examples as
+/// the picker, even for a partially watched item whose library caption shows its progress.
+fn lines_of(v: UnderPosters, kind: PosterKind, facts: &CaptionFacts) -> [Option<String>; 2] {
+    let title = facts.title.as_ref().filter(|s| v.title && !s.is_empty()).cloned();
+    let details = plx_ui::caption_policy::join(kind.parts(v).iter()
+        .map(|part| part_example(kind, part, facts))
+        .filter(|example| !example.is_empty())
+        .collect());
+    [title, details]
 }
 
 /// The lines under the picture's tile of `kind`: the caption the setting gives it, or (the Sort
@@ -441,7 +437,7 @@ fn picture_lines(v: UnderPosters, kind: PosterKind, poster: Option<&PmsMovie>, s
         let year = poster.map_or(SAMPLE_YEAR, |p| p.year);
         return [None, Some(crate::registry::sort_info::year_value(year).text)];
     }
-    lines_of(v, &picture_facts(kind, poster))
+    lines_of(v, kind, &picture_facts(kind, poster))
 }
 
 /// **The Under posters picture** (boards `Sv2-2`, `Sv2s-P1`, `Sv2s-P2`): a movie poster on the left and
@@ -475,13 +471,13 @@ const PICTURE_LINE_H: f32 = 24.0;
 const PICTURE_LINE_STEP: f32 = 32.0;
 /// The room a line or a caption is centred in: the board's 380 px, centred on the tile.
 const PICTURE_LINE_W: f32 = 380.0;
-/// **A line is ONE line and ends in an ellipsis when it is wider than its tile** (`DetailsByKind`:
-/// "one line, never wrapped"), through the same `elide_by` the poster captions use.
-const PICTURE_LINE_FIT_W: f32 = PICTURE_TILE_W;
+/// The preview has room for two details lines below the optional title.
+const PICTURE_DETAIL_LINES: usize = 2;
 
 impl plx_ui::follow_copy::PictureSlot for RootPicture<'_> {
     fn draw(&self, p: Painter, slot: Rect, measure: &dyn plx_machine::machine::Measure) {
         use plx_ui::label::{HAlign, Label, VAlign};
+        use plx_ui::text_view::TextView;
         let size = theme::size::CAPTION;
         // The art of a tile is the shared one, with no watch state (the fan's own rule). A kind with
         // no poster path anywhere is `None`: drawn as the art-less face, never as `Art::Poster(None)`,
@@ -512,20 +508,18 @@ impl plx_ui::follow_copy::PictureSlot for RootPicture<'_> {
             let lines = picture_lines(self.value, *kind, poster_of(*kind, self.posters), self.sorted);
             // Present lines stack from the first: a title (bold) over its details.
             for (n, (line, is_title)) in lines.into_iter().zip([true, false]).filter_map(|(l, t)| l.map(|l| (l, t))).enumerate() {
-                // One line, an ellipsis when it is wider than its tile (`Measure::fit_line`, the poster
-                // captions' own fit). A FOCUSED real poster's caption scrolls instead of eliding
-                // (`card_row.rs`, the focused-title marquee); the picture is a still, so it elides.
-                let line = measure.fit_line(&line, PICTURE_LINE_FIT_W, size, is_title);
-                let ink = if is_title { theme::TEXT_PRIMARY } else { theme::CAPTION_DETAIL_INK };
-                let mut label = Label::new(line.as_ptr(), size, ink).h(HAlign::Center).v(VAlign::CapTop);
+                let frame = Rect::new(x - centred,
+                    tile.y + PICTURE_TILE_H + PICTURE_LINE_GAP + PICTURE_LINE_STEP * n as f32 + line_cap_top,
+                    PICTURE_LINE_W, PICTURE_LINE_H);
                 if is_title {
-                    label = label.bold();
+                    let line = measure.fit_line(&line, PICTURE_LINE_W, size, true);
+                    Label::new(line.as_ptr(), size, theme::TEXT_PRIMARY)
+                        .h(HAlign::Center).v(VAlign::CapTop).bold().draw(p, frame);
+                } else {
+                    TextView::new(&line, size, theme::CAPTION_DETAIL_INK)
+                        .with_measure(measure).h(HAlign::Center).leading(PICTURE_LINE_STEP)
+                        .max_lines(PICTURE_DETAIL_LINES).draw(p, frame);
                 }
-                label.draw(
-                    p,
-                    Rect::new(x - centred, tile.y + PICTURE_TILE_H + PICTURE_LINE_GAP + PICTURE_LINE_STEP * n as f32 + line_cap_top,
-                        PICTURE_LINE_W, PICTURE_LINE_H),
-                );
             }
         }
     }
@@ -669,7 +663,7 @@ impl FormId for PartId {
 /// What a part shows under a poster, as the picture words it from `facts` ([`kind_facts`]): the
 /// row's sample on the right and the example in its sentence. A part the poster lacks (a movie with
 /// no genre, say) shows the kind's sample ([`kind_sample`]) instead, so a row always shows an
-/// example; ticking such a part adds nothing to THAT poster's line, which stays as it was.
+/// example beside the switch and under the preview poster when enabled.
 fn part_example(kind: PosterKind, part: DetailPart, facts: &CaptionFacts) -> String {
     let cx = plx_platform::i18n::current();
     part_value(part, facts, cx).or_else(|| part_value(part, &kind_sample(kind), cx)).unwrap_or_default()

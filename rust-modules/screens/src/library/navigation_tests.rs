@@ -382,14 +382,15 @@ fn choosing_a_non_favorite_seats_its_temporary_pill_without_changing_shortcuts()
     fixture.step(&mut page, &mut engine, ScreenEvent::App(AppMsg::LibrarySelect(SectionAddress {
         epoch: fixture.epoch, sid: plx_plex::plex::ServerId::UNSET, section: 3,
     })));
+    let selected = page.libraries.iter().find(|(_, index)| *index == 2).unwrap().0;
+    assert_eq!(engine.current(OWNER), Some(page.key(selected)), "focus changes with the header, before the listing lands");
     fixture.step(&mut page, &mut engine, ScreenEvent::Tick(Tick { ms: 80, dt_us: 80_000 }));
     fixture.publish(2, 12);
     fixture.step(&mut page, &mut engine, ScreenEvent::StoreChanged(StoreId::Browse.ord(), 1));
     fixture.step(&mut page, &mut engine, ScreenEvent::Tick(Tick { ms: 96, dt_us: 16_000 }));
     assert_eq!(page.libraries[..2], before[..2]);
-    let selected = page.libraries.iter().find(|(_, index)| *index == 2).unwrap().0;
     assert_eq!(engine.current(OWNER), Some(page.key(selected)));
-    assert!(page.header.row().unwrap().page.spec().left[2].selected_plate);
+    assert_eq!(page.header.row().unwrap().selected_stop(), Some(selected));
     fixture.publish(2, 24);
     fixture.step(&mut page, &mut engine, ScreenEvent::StoreChanged(StoreId::Browse.ord(), 2));
     fixture.step(&mut page, &mut engine, ScreenEvent::Tick(Tick { ms: 112, dt_us: 16_000 }));

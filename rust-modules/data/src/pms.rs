@@ -103,6 +103,10 @@ pub struct PmsMovie {
     /// still, empty on everything else. A landscape tile draws this; a portrait card draws `thumb`.
     pub still: String,
     pub art: String,
+    /// PMS's stamped clearLogo path. `None` preserves the legacy lookup for rows without
+    /// `Image[]`, and an empty string means the list contains no usable logo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logo: Option<String>,
     pub summary: String,
     pub rk: String,
     pub vcodec: String,
@@ -683,6 +687,7 @@ pub fn parse_item(it: &plx_plex::plex::Metadata, sid: ServerId) -> PmsMovie {
         String::new()
     };
     m.art = clean(&it.art);
+    m.logo = it.clear_logo().map(str::to_owned);
     m.summary = clean(&it.summary);
     m.rk = clean(&it.rating_key);
     // the default version: codecs + Part[0].key (movies/episodes; a show container has none)

@@ -715,6 +715,17 @@ impl HeaderRow {
         self.stops.iter().find(|(_, index)| *index == selected).map(|(elem, _)| *elem)
     }
 
+    /// A selected stop inserted or removed by a rebuild changes the row's geometry. Let its
+    /// selection arrive on the new layout without a streak across the slot that came or went.
+    /// When both stops survive, keep the ordinary selection travel and the live focus spring.
+    pub fn reflow_selection(&self, old: &Self, capsules: &mut TabStrip) {
+        if let (Some(before), Some(after)) = (old.selected_stop(), self.selected_stop()) {
+            if self.plate(before).is_none() || old.plate(after).is_none() {
+                capsules.restart_selection();
+            }
+        }
+    }
+
     /// The row as one focus group for `entry`, at the page's scroll (`(drawn, target)`) and
     /// inside `clip`.
     pub fn focus(&self, entry: EntryId, group: GroupId, scroll: (f32, f32), clip: Rect) -> HeaderFocus<'_> {

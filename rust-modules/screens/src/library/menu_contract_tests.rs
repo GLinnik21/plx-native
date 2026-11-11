@@ -163,15 +163,21 @@ fn menu_side_actions_keep_source_sort_and_filter_row_identity() {
             cx,
             &mut Effects::new(&mut output, MachineId::Instance(plx_machine::machine::InstanceId(7)), &mut present),
         );
+        assert_eq!(output.len(), 1, "the host retains the old library while the menu closes");
+        assert!(matches!(&output[0].fx, Fx::Nav(NavOp::Dismiss(EntryId(7)))));
+        output.clear();
+        sources.step(
+            &ScreenEvent::Unmount,
+            cx,
+            &mut Effects::new(&mut output, MachineId::Instance(plx_machine::machine::InstanceId(7)), &mut present),
+        );
+        assert_eq!(output.len(), 1);
         assert!(output.iter().any(|effect| matches!(
             &effect.fx,
-            Fx::Deliver(_, Delivery::Screen(ScreenEvent::App(AppMsg::LibrarySelect(
-                SectionAddress { sid, section: 7, .. }
-            )))) if sid == &ServerId::from_raw(2)
-        )));
-        assert!(output.iter().any(|effect| matches!(
-            &effect.fx,
-            Fx::Nav(NavOp::Dismiss(EntryId(7)))
+            Fx::Deliver(_, Delivery::Screen(ScreenEvent::App(AppMsg::LibraryMenuSelect {
+                origin,
+                target: SectionAddress { sid, section: 7, .. },
+            }))) if *origin == sources.arg.target && sid == &ServerId::from_raw(2)
         )));
     });
 }
