@@ -56,7 +56,7 @@
 //!   screen only renders the state; it never samples telemetry.
 //! * Sign-out and *Delete all local data* erase the offer and the seen keys with everything else.
 
-use super::{Command, SessionFx, SessionMachine};
+use super::{Command, SessionFx, SessionMachine, TransitionInput, AttemptEvent};
 use plx_telemetry::telemetry::consent::Permission;
 use plx_telemetry::telemetry::incident::{IncidentContext, IncidentKind, LinkClass};
 use plx_machine::machine::Canon;
@@ -286,7 +286,7 @@ impl SessionMachine {
     /// held — a key this launch has already resolved included, which is then resolved quietly.
     pub fn raise_incident(&mut self, flow: IncidentFlow, context: IncidentContext) {
         let key = IncidentKey { flow, kind: context.kind, link: context.link };
-        if let Some(held) = self.state.common.incident.as_mut().filter(|held| held.key == key) {
+        if let Some(held) = self.common.incident.as_mut().filter(|held| held.key == key) {
             // The same failure again. Unresolved (a second stalled report in one wait): keep the
             // offer, take the fresher report evidence. Resolved: keep the answer and report
             // evidence it already has. Details always reads the current failure facts.
@@ -296,9 +296,9 @@ impl SessionMachine {
             }
             return;
         }
-        self.state.common.next_incident = self.state.common.next_incident.wrapping_add(1).max(1);
-        self.state.common.incident = Some(IncidentOffer {
-            id: self.state.common.next_incident,
+        self.common.next_incident = self.common.next_incident.wrapping_add(1).max(1);
+        self.common.incident = Some(IncidentOffer {
+            id: self.common.next_incident,
             key,
             context: Some(context),
             readout_context: Some(context),
@@ -314,13 +314,15 @@ impl SessionMachine {
         revision: u32,
         emit: &mut impl FnMut(SessionFx),
     ) -> bool {
-        let seen = &self.state.common.incidents_seen;
-        let Some(held) = self.state.common.incident.as_mut().filter(|held| held.id == id) else { return false };
+        let seen = &self.common.incidents_seen;
+        let Some(held) = self.common.incident.as_mut().filter(|held| held.id == id) else { return false };
         match held.state {
             IncidentState::Pending => {}
             IncidentState::Offered { revision: at } | IncidentState::OnRequest { revision: at }
                 if at != revision => {}
-            _ => return false,
+            IncidentState::Offered { .. } | IncidentState::OnRequest { .. } | IncidentState::AutoSending
+                | IncidentState::Sending | IncidentState::Queued { .. } | IncidentState::Saved { .. }
+                | IncidentState::Delivered { .. } | IncidentState::Failed | IncidentState::NotNow | IncidentState::Dropped => return false,
         }
         let key = held.key;
         // Offered behind Details only: a kind the alert never covers, a key this launch has
@@ -352,13 +354,13 @@ impl SessionMachine {
 
     /// The person's Send report — from the alert, or from Details afterwards.
     pub fn report_incident(&mut self, id: u32, emit: &mut impl FnMut(SessionFx)) -> bool {
-        let Some(held) = self.state.common.incident.as_mut().filter(|held| held.id == id && held.sendable()) else {
+        let Some(held) = self.common.incident.as_mut().filter(|held| held.id == id && held.sendable()) else {
             return false;
         };
         let report = match held.context {
             Some(context) => IncidentReport::Retained(context),
             None => {
-                self.state.common.persistence_warning
+                self.common.persistence_warning
                     .filter(|_| held.key.kind == IncidentKind::SaveFailed)
                     .and_then(|warning| warning.incident_context())
                     .map(IncidentReport::Retained)
@@ -374,7 +376,7 @@ impl SessionMachine {
 
     /// The person's Not now. Only an offer on screen can be answered.
     pub fn decline_incident(&mut self, id: u32) -> bool {
-        let Some(held) = self.state.common.incident.as_mut().filter(|held| held.id == id) else { return false };
+        let Some(held) = self.common.incident.as_mut().filter(|held| held.id == id) else { return false };
         if !matches!(held.state, IncidentState::Offered { .. }) {
             return false;
         }
@@ -386,10 +388,12 @@ impl SessionMachine {
     /// became of a queued report is fenced by its receipt as well — a different receipt is a report
     /// this offer no longer shows.
     pub fn incident_reported(&mut self, id: u32, delivery: &IncidentDelivery) -> bool {
-        let Some(held) = self.state.common.incident.as_mut().filter(|held| held.id == id) else { return false };
+        let Some(held) = self.common.incident.as_mut().filter(|held| held.id == id) else { return false };
         let shown = match &held.state {
             IncidentState::Queued { receipt } | IncidentState::Saved { receipt } => Some(receipt.as_str()),
-            _ => None,
+            IncidentState::Pending | IncidentState::Offered { .. } | IncidentState::OnRequest { .. }
+                | IncidentState::AutoSending | IncidentState::Sending | IncidentState::Delivered { .. }
+                | IncidentState::Failed | IncidentState::NotNow | IncidentState::Dropped => None,
         };
         held.state = match (&held.state, delivery) {
             (IncidentState::AutoSending, IncidentDelivery::Standing { receipt: Some(receipt) })
@@ -414,19 +418,19 @@ impl SessionMachine {
 
     /// Sign-out and Delete all local data: every incident, and what this launch has seen.
     pub fn forget_incidents(&mut self) {
-        self.state.common.incident = None;
-        self.state.common.incidents_seen.clear();
-        self.state.qr_mut().trouble = false;
+        self.common.incident = None;
+        self.common.incidents_seen.clear();
+        self.transition(TransitionInput::Attempt(AttemptEvent::LinkTrouble { present: false }), 0, &mut |_| {});
     }
 
     fn remember_seen(&mut self, key: IncidentKey) {
-        if self.state.common.incidents_seen.contains(&key) {
+        if self.common.incidents_seen.contains(&key) {
             return;
         }
-        if self.state.common.incidents_seen.len() >= SEEN_CAP {
-            self.state.common.incidents_seen.remove(0);
+        if self.common.incidents_seen.len() >= SEEN_CAP {
+            self.common.incidents_seen.remove(0);
         }
-        self.state.common.incidents_seen.push(key);
+        self.common.incidents_seen.push(key);
     }
 
     pub fn step_incident_command(
@@ -440,7 +444,12 @@ impl SessionMachine {
             }
             Command::ReportIncident { id } => self.report_incident(*id, emit),
             Command::DeclineIncident { id } => self.decline_incident(*id),
-            _ => false,
+            Command::ActivateDevBootstrap | Command::ResumeStored | Command::StartLogin | Command::Retry
+                | Command::RestartWait { .. } | Command::StartSwitch(_) | Command::SelectProfile { .. }
+                | Command::SelectProfileWithReply { .. } | Command::DismissPinError | Command::BackAtRoot { .. }
+                | Command::SignOut | Command::EraseLocal | Command::NoteDeleteLeftovers(_) | Command::RefreshRoster
+                | Command::RequestEndpoint { .. } | Command::TakeReady | Command::AcknowledgePersistenceWarning { .. }
+                | Command::AnswerPlaintext { .. } => false,
         }
     }
 }

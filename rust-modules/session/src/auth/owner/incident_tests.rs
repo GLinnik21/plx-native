@@ -53,7 +53,7 @@ fn command(owner: &mut SessionMachine, command: Command) -> Vec<SessionFx> {
 /// A sign-in request's observation, as the adapter would deliver it.
 fn observe(owner: &mut SessionMachine, progress: LoginProgress, terminal: bool) -> Vec<SessionFx> {
     let req = signin_request(owner);
-    let pending = &owner.state.pending[&req];
+    let pending = &owner.common.pending[&req];
     let arrival = pending.last_arrival.map_or(1, |a| a + 1);
     let envelope = SessionEnvelope {
         addr: Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(req) },
@@ -110,7 +110,7 @@ fn signing_in() -> SessionMachine {
 
 /// The flow's worker failed with `context`.
 fn fail(owner: &mut SessionMachine, context: IncidentContext) -> Vec<SessionFx> {
-    let epoch = owner.state.epoch;
+    let epoch = owner.common.epoch;
     observe(
         owner,
         LoginProgress::Failed { epoch, message: "synthetic failure".into(), incident: context, plaintext: None, account: None },
@@ -245,7 +245,7 @@ fn granted_sends_the_standing_report_and_offers_nothing() {
 #[test]
 fn a_stalled_wait_is_never_sent_standing() {
     let mut owner = signing_in();
-    let epoch = owner.state.epoch;
+    let epoch = owner.common.epoch;
     observe(&mut owner, LoginProgress::LinkTrouble { epoch, trouble: Some(stalled()) }, false);
     assert!(owner.read().0.link_trouble, "the wait says the link is down");
     let held = offer(&owner).expect("a stalled wait raises an incident");
@@ -263,7 +263,7 @@ fn a_stalled_wait_is_never_sent_standing() {
 #[test]
 fn discovery_trouble_is_non_terminal_and_never_an_incident() {
     let mut owner = signing_in();
-    let epoch = owner.state.epoch;
+    let epoch = owner.common.epoch;
     observe(&mut owner, LoginProgress::Authorized { epoch, token: "token".into() }, false);
     assert_eq!(owner.read().0.phase, Phase::Discovering);
     let progress = retry(crate::auth::DiscoveryRetryRun::Resources, 2, 2_000);
@@ -277,38 +277,38 @@ fn discovery_trouble_is_non_terminal_and_never_an_incident() {
 #[test]
 fn discovery_trouble_is_accepted_for_rediscover_and_stale_epochs_are_fenced() {
     let mut owner = signing_in();
-    let first_epoch = owner.state.epoch;
+    let first_epoch = owner.common.epoch;
     observe(&mut owner, LoginProgress::Authorized {
         epoch: first_epoch, token: "token".into(),
     }, false);
     fail(&mut owner, IncidentContext::new(
         IncidentKind::Discovery(plx_telemetry::telemetry::incident::DiscoveryClass::Silent), None));
     command(&mut owner, Command::Retry);
-    let epoch = owner.state.epoch;
+    let epoch = owner.common.epoch;
     assert_eq!(owner.state.phase(), Phase::Discovering);
 
     let progress = retry(crate::auth::DiscoveryRetryRun::Resources, 1, 50);
     observe(&mut owner, LoginProgress::DiscoveryTrouble { epoch, progress }, false);
-    assert_eq!(owner.state.discovery_retry, Some(progress),
+    assert_eq!(owner.state.discovery_retry(), Some(progress),
         "Rediscover accepts the same non-terminal progress as Login");
 
     let stale = retry(crate::auth::DiscoveryRetryRun::HomeUsers, 2, 9_000);
     observe(&mut owner, LoginProgress::DiscoveryTrouble {
         epoch: first_epoch, progress: stale,
     }, false);
-    assert_eq!(owner.state.discovery_retry, Some(progress),
+    assert_eq!(owner.state.discovery_retry(), Some(progress),
         "a stale worker cannot publish trouble into the new retry epoch");
 
     observe(&mut owner, LoginProgress::DiscoveryRetrySettled {
         epoch: first_epoch, run: crate::auth::DiscoveryRetryRun::Resources,
     }, false);
-    assert_eq!(owner.state.discovery_retry, Some(progress),
+    assert_eq!(owner.state.discovery_retry(), Some(progress),
         "a stale-epoch reset cannot clear the current run");
 
     observe(&mut owner, LoginProgress::DiscoveryRetrySettled {
         epoch, run: crate::auth::DiscoveryRetryRun::Resources,
     }, false);
-    assert_eq!(owner.state.discovery_retry, None,
+    assert_eq!(owner.state.discovery_retry(), None,
         "the matching current run clears before slow probing continues");
 }
 
@@ -318,7 +318,7 @@ fn discovery_trouble_is_accepted_for_rediscover_and_stale_epochs_are_fenced() {
 fn a_stalled_wait_is_offered_through_details_only_never_by_the_alert() {
     for permission in [Permission::NotDetermined, Permission::Granted] {
         let mut owner = signing_in();
-        let epoch = owner.state.epoch;
+        let epoch = owner.common.epoch;
         observe(&mut owner, LoginProgress::LinkTrouble { epoch, trouble: Some(stalled()) }, false);
         let effects = resolve(&mut owner, permission, 1);
         assert!(incident_effects(&effects).is_empty(), "{permission:?}: a stall is never sent without a press");
@@ -341,7 +341,7 @@ fn a_stalled_wait_is_offered_through_details_only_never_by_the_alert() {
 #[test]
 fn a_later_no_forgets_a_stall_offered_behind_details() {
     let mut owner = signing_in();
-    let epoch = owner.state.epoch;
+    let epoch = owner.common.epoch;
     observe(&mut owner, LoginProgress::LinkTrouble { epoch, trouble: Some(stalled()) }, false);
     resolve(&mut owner, Permission::NotDetermined, 1);
     assert!(resolve(&mut owner, Permission::NotDetermined, 1).is_empty(), "same revision: nothing to redo");
@@ -390,7 +390,7 @@ fn a_newer_incident_supersedes_the_held_one_and_fences_its_reply() {
     let old = offer(&owner).unwrap();
     command(&mut owner, Command::ReportIncident { id: old.id });
     command(&mut owner, Command::Retry);
-    let epoch = owner.state.epoch;
+    let epoch = owner.common.epoch;
     observe(&mut owner, LoginProgress::LinkTrouble { epoch, trouble: Some(stalled()) }, false);
     let new = offer(&owner).unwrap();
     assert_ne!(new.id, old.id);
@@ -409,13 +409,13 @@ fn sign_out_forgets_the_incident_and_what_this_launch_has_seen() {
     resolve(&mut owner, Permission::NotDetermined, 1);
     command(&mut owner, Command::SignOut);
     assert_eq!(offer(&owner), None);
-    assert!(owner.state.incidents_seen.is_empty());
+    assert!(owner.common.incidents_seen.is_empty());
 }
 
 #[test]
 fn a_failure_keeps_an_offer_the_wait_raised() {
     let mut owner = signing_in();
-    let epoch = owner.state.epoch;
+    let epoch = owner.common.epoch;
     observe(&mut owner, LoginProgress::LinkTrouble { epoch, trouble: Some(stalled()) }, false);
     resolve(&mut owner, Permission::NotDetermined, 1);
     assert!(matches!(offer(&owner).unwrap().state, IncidentState::OnRequest { .. }));
@@ -444,7 +444,7 @@ fn signin_request(owner: &SessionMachine) -> u32 {
 /// A terminal non-data arrival for the sign-in request: the worker was refused or went away.
 fn arrive(owner: &mut SessionMachine, outcome: SessionArrival) -> Vec<SessionFx> {
     let req = signin_request(owner);
-    let pending = &owner.state.pending[&req];
+    let pending = &owner.common.pending[&req];
     let envelope = SessionEnvelope {
         addr: Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(req) },
         key: pending.key,
@@ -493,7 +493,7 @@ fn a_refused_worker_and_a_refused_admission_offer_their_own_failure() {
 
     let (mut owner, _) = after_a_declined_pin_create();
     let req = signin_request(&owner);
-    let key = owner.state.pending[&req].key;
+    let key = owner.common.pending[&req].key;
     step(&mut owner, SessionEvent::Admission(AdmissionReply {
         addr: Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(req) },
         key,
@@ -507,7 +507,7 @@ fn a_refused_worker_and_a_refused_admission_offer_their_own_failure() {
 #[test]
 fn a_sign_in_whose_commit_is_refused_offers_its_own_failure() {
     let (mut owner, _) = after_a_declined_pin_create();
-    let epoch = owner.state.epoch;
+    let epoch = owner.common.epoch;
     observe(&mut owner, LoginProgress::Authorized { epoch, token: "synthetic-token".into() }, false);
     let effects = observe(&mut owner, LoginProgress::SignedIn {
         epoch,
@@ -565,7 +565,7 @@ fn a_seen_failure_after_another_is_offered_again_behind_details_only() {
 fn an_uncovered_ending_retires_the_held_offer() {
     let (mut owner, _) = after_a_declined_pin_create();
     owner.fail_login("synthetic uncovered ending", None, &mut |_| {});
-    assert_eq!(owner.state.incident, None);
+    assert_eq!(owner.common.incident, None);
 }
 
 /// **Try again after an authorized discovery failed asks nothing new.** The retry is a
@@ -574,7 +574,7 @@ fn an_uncovered_ending_retires_the_held_offer() {
 #[test]
 fn a_discovery_retry_that_fails_the_same_way_is_not_asked_about_again() {
     let mut owner = signing_in();
-    let epoch = owner.state.epoch;
+    let epoch = owner.common.epoch;
     observe(&mut owner, LoginProgress::Authorized { epoch, token: "synthetic-token".into() }, false);
     let silent = IncidentContext {
         occurred_at_ms: 3,
@@ -586,7 +586,7 @@ fn a_discovery_retry_that_fails_the_same_way_is_not_asked_about_again() {
     command(&mut owner, Command::DeclineIncident { id: first.id });
     command(&mut owner, Command::Retry);
     let req = signin_request(&owner);
-    assert!(owner.state.pending[&req].key.op == SessionOp::Rediscover, "the retry re-runs discovery only");
+    assert!(owner.common.pending[&req].key.op == SessionOp::Rediscover, "the retry re-runs discovery only");
     fail(&mut owner, silent);
     let after = offer(&owner).unwrap();
     assert_eq!((after.id, after.state), (first.id, IncidentState::NotNow), "the Not now stands");
@@ -604,7 +604,7 @@ fn a_settled_discovery_offer_keeps_one_answer_but_details_reads_the_latest_run()
         IncidentState::Delivered { receipt: "receipt-1".into() },
     ] {
         let mut owner = signing_in();
-        let epoch = owner.state.epoch;
+        let epoch = owner.common.epoch;
         observe(&mut owner, LoginProgress::Authorized {
             epoch, token: "synthetic-token".into(),
         }, false);
@@ -652,7 +652,7 @@ fn a_settled_discovery_offer_keeps_one_answer_but_details_reads_the_latest_run()
         let after = offer(&owner).unwrap();
         assert_eq!((after.id, &after.state), (first.id, &final_state),
             "the same dedup key keeps one report offer and its settled state");
-        assert_eq!(owner.state.next_incident, 1, "no second report offer was allocated");
+        assert_eq!(owner.common.next_incident, 1, "no second report offer was allocated");
         assert_eq!(after.context.and_then(|context| context.discovery_attempts), Some(2),
             "the deduplicated report keeps its original evidence");
         assert_eq!(after.readout_context().and_then(|context| context.discovery_attempts), Some(3),
@@ -668,7 +668,7 @@ fn a_settled_discovery_offer_keeps_one_answer_but_details_reads_the_latest_run()
 #[test]
 fn try_again_after_the_token_was_refused_starts_a_new_sign_in() {
     let mut owner = signing_in();
-    let epoch = owner.state.epoch;
+    let epoch = owner.common.epoch;
     observe(&mut owner, LoginProgress::Authorized { epoch, token: "synthetic-token".into() }, false);
     let refused = IncidentContext {
         occurred_at_ms: 4,
@@ -680,12 +680,12 @@ fn try_again_after_the_token_was_refused_starts_a_new_sign_in() {
     command(&mut owner, Command::DeclineIncident { id: first.id });
     let effects = command(&mut owner, Command::Retry);
     let req = signin_request(&owner);
-    assert!(owner.state.pending[&req].key.op == SessionOp::Login, "the retry reused the refused token");
+    assert!(owner.common.pending[&req].key.op == SessionOp::Login, "the retry reused the refused token");
     assert!(effects.iter().any(|fx| matches!(fx, SessionFx::Work { input: SessionWork::Login { .. }, .. })),
         "the retry asks for a new code");
     assert_eq!(owner.read().0.phase, Phase::Creating);
 
-    let epoch = owner.state.epoch;
+    let epoch = owner.common.epoch;
     observe(&mut owner, LoginProgress::Authorized { epoch, token: "synthetic-token-2".into() }, false);
     fail(&mut owner, refused);
     let after = offer(&owner).unwrap();
@@ -822,7 +822,7 @@ fn no_servers_incident() -> IncidentContext {
 }
 
 fn fail_naming(owner: &mut SessionMachine, message: &str, account: Option<&str>) -> Vec<SessionFx> {
-    let epoch = owner.state.epoch;
+    let epoch = owner.common.epoch;
     observe(owner, LoginProgress::Failed {
         epoch, message: message.into(), incident: no_servers_incident(), plaintext: None,
         account: account.map(str::to_owned),
