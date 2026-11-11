@@ -2,6 +2,8 @@
 
 **Status:** design for independent critique and the next judge; no runtime change authorized by this document. Checkout: `sansio/watchlist-jobs-w2`, based exactly on Notify head `cf987a6391bd370eb4e054f204cbac41ad727e59`. Notify PR #1322 subsequently squash-landed as `283f536d11bde907c49661dd0e9e1231ce668014`; that is not this checkout's base. Do not silently substitute it or restack a dirty design. Any later restack after an appropriate clean checkpoint must use `tools/pr-land.py restack` and record the actual base.
 
+**Implementation restack:** the design checkpoint was restacked onto landed Notify squash `283f536d11bde907c49661dd0e9e1231ce668014` using `tools/pr-land.py restack`; the resulting clean head was `37fb5624706f4a3b40bbbd2d89fd49c92d4ab347`. The status above records the earlier design stage, not a restriction on the authorized implementation. The six fixture blobs in the pre-code audit match the original `cf987a6391bd` base; the restacked head instead contains the six blobs already present in the landed squash. W2 introduces no fixture changes relative to that landed base.
+
 ## Boundary and invariants
 
 W1 already captures the seated `CurrentProfile` and `WatchlistAuth` in `WatchlistInput`; keep that contract, including no account on Open and the profile id, uuid and generation check. The store owns the rows, `IntentLedger`, match table, view state, claims, retry counters, outbox and epoch. The app owns roster/profile/date capture, job admission, registry lookup and worker scheduling. The existing `StoreRunner`, `Job`, `Addr`, `Port`, `StoreId::Watchlist` and `landgate` are the runtime; do not add a second executor, tape, global injection slot, or production/test `cfg` fork.

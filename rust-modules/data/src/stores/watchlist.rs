@@ -78,6 +78,34 @@ pub struct TileFacts {
     pub dur_ms: i64,
 }
 
+
+/// A single host-captured roster and date, shared by every decision in one pass.
+pub struct WatchlistFacts<'a> {
+    pub keys: &'a plx_plex::plex::ClientKeys,
+    pub today: Option<&'a str>,
+}
+
+impl crate::watchlist::model::Reach for WatchlistFacts<'_> {
+    fn reachable(&self, server: ServerId) -> bool {
+        matches!(self.keys.facts(server).and_then(|f| f.source),
+            Some((Some(plx_plex::plex::probe::Outcome::Reachable), _)))
+    }
+
+    fn roster(&self) -> Vec<ServerId> {
+        self.keys.slots().collect()
+    }
+
+    fn copy_rank(&self, server: ServerId) -> u8 {
+        if server != ServerId::UNSET && self.keys.current() == server {
+            0
+        } else if self.keys.facts(server).and_then(|f| f.described).is_some_and(|f| f.owned) {
+            1
+        } else {
+            2
+        }
+    }
+}
+
 /// A worker's mailbox. Landings queue in post order; the pump drains them all.
 #[derive(Default)]
 pub struct WatchlistAdapter {
@@ -122,6 +150,9 @@ fn spawn_worker(what: &str, f: Box<dyn FnOnce() + Send + 'static>) -> bool {
 struct WatchlistState {
     epoch: u32,
     req: u32,
+    list_claim: Option<u32>,
+    write_claim: Option<u32>,
+    gate_has_mail: bool,
     auth: Option<WatchlistAuth>,
     status: Status,
     rows: Vec<WatchRow>,
@@ -176,6 +207,9 @@ impl WatchlistState {
         Self {
             epoch,
             req: 0,
+            list_claim: None,
+            write_claim: None,
+            gate_has_mail: false,
             auth: None,
             status: Status::Idle,
             rows: Vec::new(),
@@ -446,9 +480,11 @@ impl WatchlistStore {
     /// that were still queued are dropped with the old ledger (never sent to another profile).
     fn reset(&mut self) {
         let epoch = self.state.epoch.wrapping_add(1);
+        let req = self.state.req;
         let (sort, filter) = (self.state.sort, self.state.filter);
         self.adapter = Arc::new(WatchlistAdapter::default());
         self.state = WatchlistState::new(epoch, sort, filter);
+        self.state.req = req;
     }
 
     /// Recompute what is derived from rows, ledger and view: membership, then the sorted,
@@ -529,6 +565,18 @@ impl WatchlistStore {
         let Some(auth) = &self.state.auth else { return false };
         if landed.tag.profile_gen != auth.generation || landed.tag.epoch != self.state.epoch {
             return false;
+        }
+        let claim = match &landed.what {
+            What::Written { .. } => self.state.write_claim,
+            _ => self.state.list_claim,
+        };
+        if claim != Some(landed.tag.req) {
+            return false;
+        }
+        match &landed.what {
+            What::ListDone | What::Rematch { .. } | What::Delta { .. } => self.state.list_claim = None,
+            What::Written { .. } => self.state.write_claim = None,
+            _ => {}
         }
         match landed.what {
             What::Page { start, total, mut rows, answers, roster_gen, etag } => {
@@ -657,15 +705,29 @@ impl WatchlistStore {
         // In the frame dump's landing gate this waits until no list or write worker is out, so a
         // landing is a function of the frame that spawned the work. The flags are read BEFORE the
         // drain: a worker posts, then clears its flag, so a flag read clear means its mail is in.
-        let was_idle = std::cell::Cell::new(true);
-        let landings = super::take_landings_owed(gate, super::StoreId::Watchlist, |_| !was_idle.get(), || {
-            was_idle.set(!adapter.list_busy.load(Ordering::SeqCst) && !adapter.write_busy.load(Ordering::SeqCst));
-            adapter.take_all()
+        let list_idle = std::cell::Cell::new(!adapter.list_busy.load(Ordering::SeqCst));
+        let write_idle = std::cell::Cell::new(!adapter.write_busy.load(Ordering::SeqCst));
+        let observed = std::cell::Cell::new(false);
+        let took_mail = std::cell::Cell::new(false);
+        let landings = super::take_landings_owed(gate, super::StoreId::Watchlist, |_| !list_idle.get() || !write_idle.get(), || {
+            list_idle.set(!adapter.list_busy.load(Ordering::SeqCst));
+            write_idle.set(!adapter.write_busy.load(Ordering::SeqCst));
+            observed.set(true);
+            let mail = adapter.take_all();
+            took_mail.set(took_mail.get() || !mail.is_empty());
+            mail
         });
+        if !landings.is_empty() {
+            self.state.gate_has_mail = false;
+        } else if took_mail.get() {
+            self.state.gate_has_mail = true;
+        }
         for landed in landings {
             plx_machine::idle::invalidate();
             changed |= self.apply(landed);
         }
+        if observed.get() && !self.state.gate_has_mail && list_idle.get() { self.state.list_claim = None; }
+        if observed.get() && !self.state.gate_has_mail && write_idle.get() { self.state.write_claim = None; }
         if self.state.auth.is_some() && self.io.facts_gen() != self.state.facts_seen {
             self.rederive();
             changed = true;
@@ -681,12 +743,12 @@ impl WatchlistStore {
     fn maybe_spawn(&mut self) {
         let Some(auth) = self.state.auth.clone() else { return };
         // The write worker: one write at a time, in press order.
-        if !self.adapter.write_busy.load(Ordering::SeqCst) && self.state.write_retry == 0 {
+        if self.state.write_claim.is_none() && !self.adapter.write_busy.load(Ordering::SeqCst) && self.state.write_retry == 0 {
             if let Some(write) = self.state.ledger.next_write() {
                 self.spawn_write(&auth, write);
             }
         }
-        if self.adapter.list_busy.load(Ordering::SeqCst) || self.state.list_retry > 0 {
+        if self.state.list_claim.is_some() || self.adapter.list_busy.load(Ordering::SeqCst) || self.state.list_retry > 0 {
             return;
         }
         if self.state.list_wanted {
@@ -699,7 +761,8 @@ impl WatchlistStore {
     }
 
     fn spawn_write(&mut self, auth: &WatchlistAuth, write: PendingWrite) {
-        self.state.req += 1;
+        self.state.req = self.state.req.checked_add(1).expect("watchlist request ids exhausted");
+        self.state.write_claim = Some(self.state.req);
         // Whatever this write does, the service's list is no longer the one the validator names
         // (even a failed request may have reached it): the next read must be whole.
         self.state.writes_seen = self.state.writes_seen.wrapping_add(1);
@@ -718,6 +781,7 @@ impl WatchlistStore {
             }
         }));
         if !spawned {
+            self.state.write_claim = None;
             // Nothing will run: hand the write back and try again in a while.
             self.adapter.write_busy.store(false, Ordering::SeqCst);
             self.state.ledger.requeue(write);
@@ -739,7 +803,8 @@ impl WatchlistStore {
     }
 
     fn spawn_list(&mut self, auth: &WatchlistAuth) {
-        self.state.req += 1;
+        self.state.req = self.state.req.checked_add(1).expect("watchlist request ids exhausted");
+        self.state.list_claim = Some(self.state.req);
         let tag = self.current_tag(auth);
         self.state.read_stamp = self.state.ledger.stamp();
         let known = self.matched_guids();
@@ -765,13 +830,15 @@ impl WatchlistStore {
         if spawned {
             self.state.list_wanted = false;
         } else {
+            self.state.list_claim = None;
             self.adapter.list_busy.store(false, Ordering::SeqCst);
             self.state.list_retry = RETRY_FRAMES;
         }
     }
 
     fn spawn_rematch(&mut self, auth: &WatchlistAuth) {
-        self.state.req += 1;
+        self.state.req = self.state.req.checked_add(1).expect("watchlist request ids exhausted");
+        self.state.list_claim = Some(self.state.req);
         let tag = self.current_tag(auth);
         let keys: Vec<(String, Kind)> = self.state.rows.iter().map(|r| (r.guid.clone(), r.kind)).collect();
         let (adapter, io) = (Arc::clone(&self.adapter), Arc::clone(&self.io));
@@ -788,6 +855,7 @@ impl WatchlistStore {
             }
         }));
         if !spawned {
+            self.state.list_claim = None;
             self.adapter.list_busy.store(false, Ordering::SeqCst);
             self.state.list_retry = RETRY_FRAMES;
         }
@@ -803,7 +871,7 @@ impl WatchlistStore {
     /// library change that has just arrived, so a change must be kept for it; a read not yet
     /// started will ask after the change and needs no note of it.
     pub fn read_in_flight(&self) -> bool {
-        self.adapter.list_busy.load(Ordering::SeqCst)
+        self.state.list_claim.is_some() || self.adapter.list_busy.load(Ordering::SeqCst)
     }
 
     /// The rows `sid` holds, by that server's ratingKey: what a library item deleted there is
@@ -850,12 +918,14 @@ impl WatchlistStore {
         }
         let Some(auth) = self.state.auth.clone() else { return false };
         if self.state.list_wanted
+            || self.state.list_claim.is_some()
             || self.adapter.list_busy.load(Ordering::SeqCst)
             || self.state.list_retry > 0
         {
             return false;
         }
-        self.state.req += 1;
+        self.state.req = self.state.req.checked_add(1).expect("watchlist request ids exhausted");
+        self.state.list_claim = Some(self.state.req);
         let tag = self.current_tag(&auth);
         let (adapter, io) = (Arc::clone(&self.adapter), Arc::clone(&self.io));
         adapter.list_busy.store(true, Ordering::SeqCst);
@@ -870,6 +940,7 @@ impl WatchlistStore {
             }
         }));
         if !spawned {
+            self.state.list_claim = None;
             self.adapter.list_busy.store(false, Ordering::SeqCst);
             self.state.list_retry = RETRY_FRAMES;
         }
@@ -1412,17 +1483,123 @@ pub(super) mod tests {
         let mut s = store(&mock);
         load(&mut s);
         assert_eq!(titles(&s), ["Alpha", "Bravo", "Charlie"]);
-        // Ready and nothing owed: no real list can land after this and supersede the ghost, so
-        // an applied stale landing would show.
+        // Keep a genuine list claim pending; its own request id does not authorize a different profile.
+        s.run(WatchlistCmd::Reread);
+        s.maybe_spawn();
         let auth = s.state.auth.clone().unwrap();
-        let stale = Tag { profile_gen: auth.generation + 1, epoch: s.state.epoch, req: 99 };
-        s.adapter_for_test().post_for_test(Landed { tag: stale, what: ghost_page() });
+        let stale = Tag { profile_gen: auth.generation + 1, epoch: s.state.epoch, req: s.state.list_claim.unwrap() };
+        assert!(!s.apply(Landed { tag: stale, what: ghost_page() }), "profile is checked against the live claim");
         s.pump();
         assert_eq!(titles(&s), ["Alpha", "Bravo", "Charlie"], "a stale generation never lands");
-        let fresh = Tag { profile_gen: auth.generation, epoch: s.state.epoch, req: 99 };
-        s.adapter_for_test().post_for_test(Landed { tag: fresh, what: ghost_page() });
+        // A matching profile alone is insufficient: the request must also own a live claim.
+    }
+
+    #[test]
+    fn an_unclaimed_request_in_the_current_epoch_cannot_land() {
+        let mock = three();
+        let mut s = store(&mock);
+        load(&mut s);
+        let auth = s.state.auth.clone().unwrap();
+        let unclaimed = Tag { profile_gen: auth.generation, epoch: s.state.epoch, req: 99 };
+        s.adapter_for_test().post_for_test(Landed { tag: unclaimed, what: ghost_page() });
         s.pump();
-        assert!(titles(&s).contains(&"Ghost".to_string()), "the same landing with the live tag does");
+        assert_eq!(titles(&s), ["Alpha", "Bravo", "Charlie"], "an unclaimed request must not mutate rows");
+    }
+
+
+    #[test]
+    fn captured_key_only_roster_never_invents_reachability_or_preference() {
+        let sid = ServerId::from_raw(7);
+        let key = plx_plex::plex::ClientKey { instance: 1, token: 2, grant: 3 };
+        let keys = plx_plex::plex::ClientKeys::from_keys([(sid, key)]);
+        let facts = WatchlistFacts { keys: &keys, today: None };
+        assert_eq!(facts.roster(), [sid]);
+        assert!(!facts.reachable(sid));
+        assert_eq!(facts.copy_rank(sid), 2);
+        assert_eq!(facts.copy_rank(ServerId::UNSET), 2);
+    }
+
+
+    #[test]
+    fn captured_roster_keeps_order_reachability_and_copy_preference() {
+        use plx_plex::plex::{self, ClientKeys, ServerFacts};
+        use plx_plex::plex::probe::Outcome;
+        struct ResetRegistry;
+        impl Drop for ResetRegistry {
+            fn drop(&mut self) { plex::reset_servers_for_test(); }
+        }
+        let _lock = plx_base::testlock::serial();
+        plex::reset_servers_for_test();
+        let _reset = ResetRegistry;
+        let current = plex::register_for_test("watchlist-current", "127.0.0.1", 9, "test-token", "test-client");
+        let owned = plex::register_for_test("watchlist-owned", "127.0.0.1", 9, "test-token", "test-client");
+        let shared = ServerId::from_raw(22);
+        let a = plex::client_for(current).expect("registered current client");
+        let b = plex::client_for(owned).expect("registered owned client");
+        let description: &'static ServerFacts = Box::leak(Box::new(ServerFacts {
+            name: String::new(), handle: String::new(), owned: true, home: false, owner_id: 0,
+        }));
+        let mut keys = ClientKeys::default();
+        keys.refill_roster(current, 4, 5, [shared, owned, current],
+            |sid| if sid == current { Some(a) } else if sid == owned { Some(b) } else { None },
+            |sid| (sid == owned).then_some(description),
+            |sid| (sid == current).then_some(Outcome::Reachable));
+        let facts = WatchlistFacts { keys: &keys, today: Some("2026-10-15") };
+        assert_eq!(facts.roster(), [shared, owned, current]);
+        assert!(facts.reachable(current));
+        assert!(!facts.reachable(owned));
+        assert!(!facts.reachable(shared));
+        assert_eq!((facts.copy_rank(current), facts.copy_rank(owned), facts.copy_rank(shared)), (0, 1, 2));
+        assert_eq!((keys.roster_gen(), keys.facts_gen()), (4, 5));
+    }
+
+
+    #[test]
+    fn a_retired_request_cannot_land_into_a_new_list_claim() {
+        let mock = three();
+        let mut s = store(&mock);
+        load(&mut s);
+        s.run(WatchlistCmd::Reread);
+        s.maybe_spawn();
+        let old = Tag { profile_gen: s.state.auth.as_ref().unwrap().generation, epoch: s.state.epoch, req: s.state.list_claim.unwrap() };
+        s.pump();
+        s.run(WatchlistCmd::Reread);
+        s.maybe_spawn();
+        assert_ne!(s.state.list_claim, Some(old.req));
+        assert!(!s.apply(Landed { tag: old, what: ghost_page() }), "the retired claim cannot mutate its successor");
+        s.pump();
+        assert_eq!(titles(&s), ["Alpha", "Bravo", "Charlie"]);
+    }
+
+
+    #[test]
+    fn paced_gate_cannot_release_a_claim_before_it_drains() {
+        thread_local! { static HELD: std::cell::RefCell<Vec<Box<dyn FnOnce() + Send>>> = Default::default(); }
+        fn hold(_: &str, f: Box<dyn FnOnce() + Send + 'static>) -> bool {
+            HELD.with(|h| h.borrow_mut().push(f));
+            true
+        }
+        let mock = three();
+        let mut s = store(&mock);
+        load(&mut s);
+        s.spawn = hold;
+        s.run(WatchlistCmd::Reread);
+        s.maybe_spawn();
+        let claim = s.state.list_claim;
+        let gate = plx_machine::landgate::Gate::default();
+        gate.arm_dump_paced(1);
+        gate.dump_frame(0);
+        let profile = crate::watchlist::WatchlistInput::profile_for_test(1);
+        s.pump_with_gate(&gate, &profile);
+        assert_eq!(s.state.list_claim, claim, "a held gate has not consumed the answer");
+        let jobs: Vec<_> = HELD.with(|h| h.borrow_mut().drain(..).collect());
+        assert_eq!(jobs.len(), 1);
+        for job in jobs { job(); }
+        s.spawn = inline;
+        gate.dump_frame(1);
+        s.pump_with_gate(&gate, &profile);
+        assert!(s.state.list_claim.is_none());
+        assert_eq!(titles(&s), ["Alpha", "Bravo", "Charlie"]);
     }
 
     #[test]
@@ -1509,15 +1686,13 @@ pub(super) mod tests {
         pump_handed(&mut s, &crate::watchlist::WatchlistInput::profile_for_test(2));
         load_as(&mut s, 2);
         assert_eq!(titles(&s), ["Alpha", "Bravo", "Charlie"]);
-        let epoch = s.state.epoch;
-        let old = Tag { profile_gen: 1, epoch, req: 99 };
-        s.adapter_for_test().post_for_test(Landed { tag: old, what: ghost_page() });
+        mock.items.lock().unwrap().push(item(9, "Ghost"));
+        s.run(WatchlistCmd::Reread);
+        s.maybe_spawn();
+        let old = Tag { profile_gen: 1, epoch: s.state.epoch, req: s.state.list_claim.unwrap() };
+        assert!(!s.apply(Landed { tag: old, what: ghost_page() }), "the old generation cannot use the new claim");
         pump_handed(&mut s, &crate::watchlist::WatchlistInput::profile_for_test(2));
-        assert_eq!(titles(&s), ["Alpha", "Bravo", "Charlie"], "the old generation never lands");
-        let live = Tag { profile_gen: 2, epoch, req: 99 };
-        s.adapter_for_test().post_for_test(Landed { tag: live, what: ghost_page() });
-        pump_handed(&mut s, &crate::watchlist::WatchlistInput::profile_for_test(2));
-        assert!(titles(&s).contains(&"Ghost".to_string()), "the new generation's does");
+        assert!(titles(&s).contains(&"Ghost".to_string()), "the new generation’s actual claimed read lands");
     }
 
     /// The same seat is not a switch: a pass handed the profile the store opened under changes nothing,
@@ -1946,11 +2121,11 @@ pub(super) mod tests {
         let mock = three();
         let mut s = store(&mock);
         load(&mut s);
-        // A later read that finds no answer keeps the list.
-        let landed = |what| Landed { tag: Tag { profile_gen: 1, epoch: s.state.epoch, req: 0 }, what };
-        let a = s.adapter_for_test();
-        a.post_for_test(landed(What::PageFailed { start: 0, why: Failure::Offline }));
-        s.pump();
+        // A real claimed reread fails before page zero and retains the complete list.
+        let _ = mock.etag_on.swap(false, Ordering::SeqCst);
+        mock.fail_pages_from.store(u32::MIN, Ordering::SeqCst);
+        s.run(WatchlistCmd::Reread);
+        for _ in 0..2 { s.pump(); }
         assert_eq!(s.view().status(), Status::Ready);
         assert_eq!(s.view().len(), 3);
     }
@@ -2210,6 +2385,7 @@ pub(super) mod tests {
         for _ in 0..4 {
             s.pump();
         }
+        assert_eq!(titles(&s), ["Bravo"], "the older list claim lands despite the newer write request");
         assert_eq!(s.state.list_etag, None, "page 0 was read around the write; its validator may describe the old list");
     }
 
