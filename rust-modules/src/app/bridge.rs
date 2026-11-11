@@ -501,6 +501,7 @@ pub(crate) struct Bridge {
     /// that decides from it (`adapters::stores::refill_client_keys`), in the same call. ONE value
     /// kept for the life of the Bridge, so a pump that runs every frame allocates nothing for it.
     client_keys: plx_plex::plex::ClientKeys,
+    watchlist_capture: plx_data::stores::watchlist_job::SnapshotCache,
     clock_facts: std::sync::Arc<plx_plex::plex::ClockFacts>,
     clock_scratch: plx_plex::plex::ClockFacts,
     screen_inputs: plx_screens::inputs::ScreenInputs,
@@ -793,6 +794,7 @@ impl Bridge {
             metadata_alt_host: crate::dev::scenarios::metadata_alt_stand_in,
             late_store_jobs: 0,
             client_keys: Default::default(),
+            watchlist_capture: Default::default(),
             clock_facts: Default::default(),
             clock_scratch: Default::default(),
             screen_inputs: Default::default(), screen_grant_key: None, screen_cache_revision: None, screen_grant_session: Default::default(), live_screen_inputs,
@@ -2030,7 +2032,7 @@ fn start_jobs(&mut self, jobs: Vec<plx_data::stores::StoreJob>) -> usize {
     pub(crate) fn watchlist_pump(&mut self) {
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
         let profile = Self::seated_profile();
-        let input = self.store_runner.watchlist_snapshot(&self.client_keys);
+        let input = self.store_runner.watchlist_snapshot(&self.client_keys, &mut self.watchlist_capture);
         let changed = { let _step = plx_base::step::StepScope::enter();
             self.stores.watchlist.pump_with_snapshot(&self.stores.landgate, &profile, input) };
         if changed {
@@ -2108,7 +2110,7 @@ fn start_jobs(&mut self, jobs: Vec<plx_data::stores::StoreJob>) -> usize {
             self.stores.notify_finish_turn(&mut pass, turn, &input);
         }
         let out = self.stores.notify_end(pass);
-        self.stores.watchlist.observe_snapshot(self.store_runner.watchlist_snapshot(&self.client_keys));
+        self.stores.watchlist.observe_snapshot(self.store_runner.watchlist_snapshot(&self.client_keys, &mut self.watchlist_capture));
         let mut spent = self.stores.notify_map(&out, pages, shown, self.directory.view(), &self.client_keys);
         self.start_store_jobs_in(plx_data::stores::Stores::NOTIFY_FILLS);
         self.start_store_jobs_of(StoreId::Notify);

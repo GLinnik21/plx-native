@@ -757,7 +757,8 @@ pub fn pump_with_gate_and_keys(&mut self, gate: &plx_machine::landgate::Gate, pr
         for landed in self.adapter.take_all() { changed |= self.apply(landed); }
         if self.state.auth.is_some() && facts_changed { self.rederive(); changed = true; }
         changed |= self.pump_writes(gate, profile.generation);
-        changed |= self.pump_resolves(gate, profile.generation, &self.snapshot.keys.clone());
+        let snapshot = self.snapshot.clone();
+        changed |= self.pump_resolves(gate, profile.generation, &snapshot.keys);
         self.maybe_spawn();
         if changed { self.bump(); }
         changed
@@ -848,11 +849,17 @@ pub fn pump_with_gate_and_keys(&mut self, gate: &plx_machine::landgate::Gate, pr
     }
 
 fn maybe_spawn(&mut self) {
-        let Some(auth) = self.state.auth.clone() else { return };
-        if self.state.write_claim.is_none() && self.state.write_retry == 0 {
-            if let Some(write) = self.state.ledger.next_write() { self.spawn_write(&auth, write); }
-        }
-        if self.state.list_claim.is_some() || self.state.list_retry > 0 { return; }
+        if self.state.auth.is_none() { return; }
+        let write = if self.state.write_claim.is_none() && self.state.write_retry == 0 {
+            self.state.ledger.next_write()
+        } else { None };
+        let stream_owed = self.state.list_claim.is_none() && self.state.list_retry == 0
+            && (self.state.list_wanted || self.pending_delta.is_some()
+                || (!self.state.rows.is_empty() && (self.rematch_wanted || self.snapshot.roster_gen != self.state.table.roster_gen)));
+        if write.is_none() && !stream_owed { return; }
+        let auth = self.state.auth.clone().expect("a pending Watchlist job has captured auth");
+        if let Some(write) = write { self.spawn_write(&auth, write); }
+        if !stream_owed { return; }
         if self.state.list_wanted { self.spawn_list(&auth); }
         else if let Some((sid, asks)) = self.pending_delta.clone() { self.emit_delta(&auth, sid, asks); }
         else if !self.state.rows.is_empty() && (self.rematch_wanted || self.snapshot.roster_gen != self.state.table.roster_gen) { self.spawn_rematch(&auth); }

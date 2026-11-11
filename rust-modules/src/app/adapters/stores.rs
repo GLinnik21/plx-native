@@ -116,9 +116,9 @@ fn launch_watchlist_resolve_with(
 }
 
 
-pub(crate) fn watchlist_today() -> Option<String> {
+fn watchlist_day() -> Option<i64> {
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
-    Some(plx_data::watchlist::ymd_of_unix_days((secs / 86_400) as i64))
+    Some((secs / 86_400) as i64)
 }
 fn watchlist_auth_current(auth: &plx_data::watchlist::WatchlistAuth) -> bool {
     let profile = plx_plex::plex::session::current_snapshot();
@@ -664,13 +664,13 @@ impl StoreRunner {
 
 
 
-    pub(crate) fn watchlist_snapshot(&self, keys: &ClientKeys) -> plx_data::stores::watchlist_job::Snapshot {
+    pub(crate) fn watchlist_snapshot(&self, keys: &ClientKeys, cache: &mut plx_data::stores::watchlist_job::SnapshotCache) -> plx_data::stores::watchlist_job::Snapshot {
         match self {
-            Self::Live => plx_data::stores::watchlist_job::Snapshot::new(keys, watchlist_today()),
+            Self::Live => cache.capture(keys, watchlist_day()),
             #[cfg(test)]
             Self::Held { watchlist_write: Some(io), .. } => plx_data::stores::watchlist_job::Snapshot::scripted(&**io),
             #[cfg(test)]
-            Self::Held { .. } => plx_data::stores::watchlist_job::Snapshot::new(keys, watchlist_today()),
+            Self::Held { .. } => cache.capture(keys, watchlist_day()),
         }
     }
     #[cfg(test)]

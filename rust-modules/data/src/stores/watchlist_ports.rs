@@ -68,6 +68,7 @@ impl WatchlistIo for CapturedIo<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stores::watchlist_job::SnapshotData;
     #[test]
     fn stream_jobs_account_page_released_and_write_recheck_lease() {
         let io = LiveWatchlistIo { input: Snapshot::default(), lookup: |_| panic!("no server lookup"), lease: |_| false };
@@ -89,7 +90,7 @@ mod tests {
         let after = ClientKey::of(client);
         assert_eq!(before.instance, after.instance);
         assert_ne!(before.token, after.token);
-        let io = LiveWatchlistIo { input: Snapshot { keys, ..Snapshot::default() }, lookup: plx_plex::plex::client_for, lease: |_| true };
+        let io = LiveWatchlistIo { input: Snapshot::from(SnapshotData { keys, ..SnapshotData::default() }), lookup: plx_plex::plex::client_for, lease: |_| true };
         assert!(matches!(io.find(sid, GuidKind::Movie, &["plex://movie/test".into()]), Err(GuidLookupError::Unanswered)));
         plx_plex::plex::reset_servers_for_test();
     }
@@ -106,8 +107,8 @@ mod tests {
             let sid = ServerId::from_raw(0);
             let tag = Tag { profile_gen: 1, epoch: 2, req: 3 };
             let addr = Addr { to: MachineId::Store(crate::stores::StoreId::Watchlist.ord()), req: RequestId(tag.req) };
-            let input = Snapshot { keys: ClientKeys::from_keys([(sid, ClientKey { instance: 1, token: 2, grant: 3 })]),
-                reach: vec![(sid, true, 0)], ..Snapshot::default() };
+            let input = Snapshot::from(SnapshotData { keys: ClientKeys::from_keys([(sid, ClientKey { instance: 1, token: 2, grant: 3 })]),
+                reach: vec![(sid, true, 0)], ..SnapshotData::default() });
             let io = LiveWatchlistIo { input: input.clone(), lookup: |_| panic!("scripted lookup panic"), lease: |_| panic!("scripted account lease panic") };
             let mail = Arc::new(stream::StreamMailbox::<What>::default());
             let port = WatchlistStreamPort::new(addr, tag, mail.clone());
