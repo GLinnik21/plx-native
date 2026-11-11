@@ -1776,9 +1776,16 @@ mod tests {
         assert_eq!(sid.raw(), 0, "slot arithmetic below assumes the first server");
         if controlled { tape::init(None, false); }
         let mut store = PersonStore::default();
-        assert!(store.run(PersonCmd::Open {
-            sid, key: "19".into(), guid: PERSON_GUID.into(), name: "Actor".into(), thumb: String::new() }));
-        store.pump(plx_machine::landgate::fixture_gate(), &registry_keys());
+        let keys = registry_keys();
+        let session = plx_plex::plex::session::peek_settled();
+        let input = plx_data::person::PersonInput { keys: &keys, session: session.as_ref(),
+            visible_generation: plx_plex::plex::session::visible_generation(), controlled,
+            profile_refused: plx_plex::plex::discover::person_profile_refused(PERSON_GUID),
+            credits_refused: plx_plex::plex::discover::person_credits_refused(PERSON_GUID),
+            dev_bio: None, dev_credits: None };
+        assert!(store.run_with_input(PersonCmd::Open {
+            sid, key: "19".into(), guid: PERSON_GUID.into(), name: "Actor".into(), thumb: String::new() }, &input));
+        store.pump(plx_machine::landgate::fixture_gate(), &input);
         let (mut local, mut global) = (Vec::new(), Vec::new());
         for job in store.take_jobs() {
             let StoreJob::Person(ref j, _) = job else { panic!("not a person job") };
@@ -1817,7 +1824,14 @@ mod tests {
             "the request the runner admitted is the recorded shape, admitted");
         assert!(store.adapter_for_test().has_mail_for_test(MEDIA), "the worker answered");
         tape::reset_for_test();
-        store.pump(plx_machine::landgate::fixture_gate(), &registry_keys());
+        let (person_keys, person_session) = (registry_keys(), plx_plex::plex::session::peek_settled());
+        let person_input = plx_data::person::PersonInput {
+            keys: &person_keys, session: person_session.as_ref(), controlled: false,
+            visible_generation: plx_plex::plex::session::visible_generation(),
+            profile_refused: plx_plex::plex::discover::person_profile_refused(PERSON_GUID),
+            credits_refused: plx_plex::plex::discover::person_credits_refused(PERSON_GUID), dev_bio: None, dev_credits: None,
+        };
+        store.pump(plx_machine::landgate::fixture_gate(), &person_input);
         assert!(!store.adapter_for_test().busy_for_test(MEDIA), "taking the one answer released the claim");
     }
 

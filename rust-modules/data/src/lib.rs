@@ -30,3 +30,6 @@ pub mod viewledger; // the publish order of view-state edits, so a read in fligh
 
 #[cfg(test)]
 mod watchlist_guid_tests;
+
+#[cfg(test)]
+mod captured_store_fixture;

@@ -11,7 +11,8 @@ is gated by `ci/machines.ini` (see "Machine shape" below).
 
 The integration tree retains full ancestry from base `f8f6dbb7`, Session `33f18e52`,
 Watchlist W2 `abd26d21`, enforcement `dd1664f7`, and Screens `10bd53db`. Actual
-ledger entries are **4 workers / 54 globals / 62 forks / 11 fxlanes**; the pins
+ledger entries are **4 workers / 19 globals / 62 forks / 11 fxlanes** after Person and
+remaining data captured-input retirement; the pins
 match those entries. Watchlist workers/globals and Screens globals are zero.
 No remaining allowance was removed merely to reach a target count.
 
@@ -282,8 +283,7 @@ re-point. It never mixes clients within one page: the opening season's episodes
 The Collection page's request is the second: its worker start and its three `client_for` reads are
 gone from `data/src/collection.rs`. The Person page's requests are the third: its two worker starts
 and its one `client_for` read are gone from `data/src/person.rs`, but unlike the two before it the
-Person step is not pure (the bullet headed "What the Person step still reads" lists what it still
-reads). Person has up to six requests out at once, so a pump emits several jobs, one per fetch slot,
+Person step now takes complete captured inputs (the bullet headed "Person's complete captured inputs"). Person has up to six requests out at once, so a pump emits several jobs, one per fetch slot,
 in ascending slot order. The catalog page's read is the fourth: its one worker start is gone from
 `data/src/stores/catalog.rs`. Unlike the other three it names no server and no client (it is a
 plex.tv read as the captured identity), so it takes no `ClientKeys` and no tape admission, and the
@@ -407,9 +407,8 @@ worker start and the `client_for` read inside that worker are gone too. The hous
   not drain: a `RequestDetail` stepped through it leaves its job on the outbox and nothing starts
   it. The same holds for the `pub` `Stores::metadata_run`. The owner drains in the same call, as
   `Bridge::metadata_run` does; no type enforces it, the counter below catches the lapse.
-  `CollectionStore`'s, `PersonStore`'s and `BrowseStore`'s `Machine::step` are unreached for these
-  reads and pass empty keys (a Browse step with no keys decides no section-hubs, directory or page read): a future
-  sender must pass the host's keys and drain. The same holds for the public
+  Person's inputless `Machine::step` refuses Open/pump explicitly, while Close, Reset and view edits
+  remain usable. Other store senders must likewise supply captured inputs and drain their jobs. The same holds for the public
   `CatalogStore::open` and `CatalogStore::pump`: `catalog_feed` and `catalog_reread` call
   `Bridge::catalog_open` and `Bridge::catalog_pump`, which drain in the same call. And for
   `HubsStore::run_with_directory`, `land_with_directory` and `tick_with_directory`: the
@@ -448,17 +447,18 @@ worker start and the `client_for` read inside that worker are gone too. The hous
   Person jobs are out at once and `Addr.req` is only a per-job sequence there (`RequestId` stays
   unique per addressee): `done` and `refused` use the port's slot and generation, never the
   address, so a refusal gives back only its own generation's claim.
-- **What the Person step still reads.** Person starts no worker and reads no `client_for`, but its
-  step is NOT pure. It still reads `tape::active()` (which decides whether a job exists and carries
-  the controlled identity), `session::peek_settled()` (the settled plex.tv account the two global
-  reads are made as; a `globals` site of its own, in `ci/allow/globals/data-person.txt`), the session watch, the
-  refused-discover check (`discover::person_profile_refused` / `person_credits_refused`, which
-  lands the refusal in the step with no job, because routing it through the runner would release
-  and respawn it every ~2 s), `plx_base::devtrig::read("personcredits")` (dev-trigger builds only:
-  `seed_dev_credits` reads it on every pump while a person is open and no tape is armed),
-  `server_ids()` (the source roster) and `server_roster_gen()`. Its
-  two fetch bodies, `fetch_profile` and `fetch_credits`, stay in `data/person.rs`, so their `forks`
-  ledger lines stay. A source whose server holds no key backs off in the step and emits no job.
+- **Person's complete captured inputs.** The host captures before Open and every pump, borrowing
+  its ONE retained `ClientKeys` including every registered slot, not only slots holding a key.
+  `PersonInput` supplies settled session, visible generation, controlled mode, provider refusal
+  decisions and dev biography/credits seeds. The origin is appended once even when unregistered.
+  No step reads the roster/session/tape/dev provider; all 11 Person global ledger sites are gone.
+  Stable pumps compare borrowed instance/grant signatures and session strings without cloning
+  request data; token-only refresh preserves shelves. Local missing-client backoff, full-key job
+  admission, rotated adapters, generation-addressed claims and ascending gated landing order stay.
+  A captured fixed provider refusal settles in the emission turn without a job or retry; controlled
+  jobs still carry Controlled and answer the failure value through their unchanged typed ports.
+  Inputless Open/pump refuse explicitly; Close, Reset and view edits remain usable independently.
+  Worker-body fork allowances are unchanged. Python source acceptance is not Rust/replay acceptance.
 - **What the Catalog lane does, and does not, change.** Catalog is a plex.tv read: the job carries
   the captured `WatchlistAuth` and the title, and the read goes through the store's `CatalogIo`
   seam, which rides on the job's `CatalogPort` (so the request is a comparable value). The body is
@@ -602,9 +602,10 @@ worker start and the `client_for` read inside that worker are gone too. The hous
     nothing, asks for a drain once more (as the queue-full retry that edit already had). The runner
     cannot be made to refuse a launch on a host (`spawn_small` has no failure knob), so its refused
     branch is pinned at the port (`a_refused_save_is_asked_again_at_the_next_edit_once`).
-  What the Search step still reads: `server_ids()` (the roster), `server_roster_gen()`,
-  `session::current_gen()` for a scoped query, and the recents cache's session reads, which stay in
-  `recents.rs` with the statics `STORE` and `PENDING`. A test drives it with `Owner::run_jobs`
+  Search now receives `SearchInput` before commands, pumps and publications: the same complete
+  `ClientKeys` as the other stores plus captured session/profile/tenure and recents facts. The
+  scope compares borrowed exact facts on stable frames; recents keeps `STORE` and `PENDING`
+  without reading the session registry. A test drives it with `Owner::run_jobs`
   (`search_test_support.rs`), a fixture that plays the runner against a served fake, in place of the
   inline fake-IO fork the old spawn carried.
 - **The section hubs lane.** A library's shelves (`data/src/browse/section_hubs.rs`) are the ninth

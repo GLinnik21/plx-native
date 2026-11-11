@@ -370,7 +370,7 @@ fn an_alt_source_from_a_revoked_slot_is_pruned_and_its_inflight_result_is_discar
         },
     ];
     alt_clear(test_state());
-    alt_install(test_state(), a, "4", copies.clone());
+    alt_install(test_state(), a, "4", copies.clone(), &crate::pms::registry_keys_for_test());
     assert!(alt_available(test_state(), a, "4"));
 
     let old_roster = plx_plex::plex::server_roster_gen();

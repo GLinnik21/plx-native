@@ -172,7 +172,7 @@ fn apply(
                 Some(stores.person.run(command))
             }
             Fx::App(AppFx::Store(_, StoreCmd::Search(command))) => {
-                Some(stores.search_run(command, directory))
+                Some(stores.search_run_for_test(command, directory))
             }
             Fx::App(AppFx::Store(_, StoreCmd::ViewState(command))) => {
                 Some(stores.viewstate_run(command, directory, &plx_data::pms::registry_keys_for_test(), 0).changed)

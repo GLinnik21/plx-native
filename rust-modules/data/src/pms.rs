@@ -356,6 +356,8 @@ pub struct PmsState {
     seen: u64,
     /// …and what the roster SAID at the time. See the retired `SEEN_FACTS` static's doc.
     seen_facts: u32,
+    seen_clients: ClientKeys,
+    scope_pins: Vec<(ServerId, i64, bool)>,
     /// Bumped by every authoritative fetch. See the retired `HUB_GEN` static's doc.
     hub_gen: u32,
     /// The retained Browse directory's semantic pin fingerprint as of the last merge. See the
@@ -414,6 +416,8 @@ impl Default for PmsState {
             srcs: Vec::new(),
             seen: u64::MAX,
             seen_facts: u32::MAX,
+            seen_clients: ClientKeys::default(),
+            scope_pins: Vec::new(),
             hub_gen: 0,
             last_sections_gen: 0,
             catalog_gen: 0,
@@ -2941,7 +2945,7 @@ fn feeds_home(sid: ServerId, pinned: &[ServerId], known: &[ServerId]) -> bool {
 /// policy remains in force for them.
 struct BrowseScope<'a> {
     sections_gen: u32,
-    pins: Vec<(ServerId, i64, bool)>,
+    pins: &'a [(ServerId, i64, bool)],
     /// Borrowed from the host's one buffer ([`BrowseScope::retained`]), so an idle per-frame step
     /// allocates nothing for it; a standalone fixture owns the keys it read.
     clients: std::borrow::Cow<'a, ClientKeys>,
@@ -2952,13 +2956,13 @@ impl<'a> BrowseScope<'a> {
     /// code only: a production step is handed them ([`BrowseScope::retained`]).
     #[cfg(any(test, feature = "test-support"))]
     fn standalone() -> Self {
-        Self { sections_gen: 0, pins: Vec::new(), clients: std::borrow::Cow::Owned(registry_keys_for_test()) }
+        Self { sections_gen: 0, pins: &[], clients: std::borrow::Cow::Owned(registry_keys_for_test()) }
     }
 
-    fn retained(directory: crate::stores::browse::DirectoryView<'_>, clients: &'a ClientKeys) -> Self {
+    fn retained(directory: crate::stores::browse::DirectoryView<'a>, clients: &'a ClientKeys) -> Self {
         Self {
             sections_gen: directory.sections_gen(),
-            pins: directory.favorite_sections().to_vec(),
+            pins: directory.favorite_sections(),
             clients: std::borrow::Cow::Borrowed(clients),
         }
     }
@@ -2967,25 +2971,7 @@ impl<'a> BrowseScope<'a> {
     /// may both report generation zero while naming different libraries. The replayed cache fields
     /// are fixed-width atomics; fold the actual `(server, section, pin)` input into that existing
     /// shape instead of adding a global owner selector.
-    fn cache_key(&self) -> u32 {
-        if self.pins.is_empty() {
-            return 0;
-        }
-        let mut hash = 0x811c_9dc5u32;
-        let mut fold = |bytes: &[u8]| {
-            for byte in bytes {
-                hash = (hash ^ u32::from(*byte)).wrapping_mul(0x0100_0193);
-            }
-        };
-        fold(&self.sections_gen.to_le_bytes());
-        fold(&(self.pins.len() as u64).to_le_bytes());
-        for (sid, section, pinned) in &self.pins {
-            fold(&sid.raw().to_le_bytes());
-            fold(&section.to_le_bytes());
-            fold(&[*pinned as u8]);
-        }
-        hash
-    }
+    fn cache_key(&self) -> u32 { self.sections_gen }
 }
 
 /// The registry's answer for every active server slot as of now, for a test that drives a step: the
@@ -2993,8 +2979,11 @@ impl<'a> BrowseScope<'a> {
 /// call and hands it in. Test code only, so it is no read of the registry by a machine.
 #[cfg(any(test, feature = "test-support"))]
 pub fn registry_keys_for_test() -> ClientKeys {
-    ClientKeys::of(plx_plex::plex::server_ids()
-        .filter_map(|sid| plx_plex::plex::client_for(sid).map(|client| (sid, client))))
+    let mut keys = ClientKeys::default();
+    keys.refill_roster(plx_plex::plex::current_server(), plx_plex::plex::server_roster_gen(),
+        plx_plex::plex::server_facts_gen(), plx_plex::plex::server_ids(),
+        plx_plex::plex::client_for, plx_plex::plex::server_facts, plx_plex::plex::server_probe_result);
+    keys
 }
 
 /// May this row appear on Home? **Per LIBRARY, which is the grain the switch offers.**
@@ -3048,11 +3037,11 @@ fn roster_with_scope(scope: &BrowseScope) -> Vec<(ServerId, String)> {
     let (pinned, known) = home_server_sets(&scope.pins);
     let mut own: Vec<(ServerId, String)> = Vec::new();
     let mut shared: Vec<(ServerId, String)> = Vec::new();
-    for sid in plx_plex::plex::server_ids() {
+    for sid in scope.clients.slots() {
         if scope.clients.key(sid).is_none() || !feeds_home(sid, &pinned, &known) {
             continue;
         }
-        let handle = plx_plex::plex::server_facts(sid)
+        let handle = scope.clients.facts(sid).and_then(|facts| facts.described)
             .map(|f| f.handle.clone())
             .unwrap_or_default();
         if handle.is_empty() {
@@ -3081,12 +3070,13 @@ fn roster_key() -> u64 {
 }
 
 fn roster_key_with_scope(scope: &BrowseScope) -> u64 {
-    ((plx_plex::plex::server_roster_gen() as u64) << 32) | u64::from(scope.cache_key())
+    ((scope.clients.roster_gen() as u64) << 32) | u64::from(scope.cache_key())
 }
 
 #[cfg(any(test, feature = "test-support"))]
 fn remember_roster(state: &mut PmsState, scope: &BrowseScope) {
     state.seen = roster_key_with_scope(scope);
+    if state.seen_clients != *scope.clients { state.seen_clients.clone_from(&scope.clients); }
 }
 
 #[allow(dead_code)] // Retained for symmetry with `remember_roster`; no production caller today.
@@ -3096,13 +3086,16 @@ fn forget_roster(state: &mut PmsState) {
 
 fn browse_scope_moved(state: &mut PmsState, scope: &BrowseScope) -> bool {
     let key = scope.cache_key();
-    let moved = state.last_sections_gen != key;
+    let moved = state.last_sections_gen != key || state.scope_pins.as_slice() != scope.pins;
+    if moved { state.scope_pins.clear(); state.scope_pins.extend_from_slice(scope.pins); }
     state.last_sections_gen = key;
     moved
 }
 
 fn adopt_browse_scope(state: &mut PmsState, scope: &BrowseScope) {
     state.last_sections_gen = scope.cache_key();
+    state.scope_pins.clear();
+    state.scope_pins.extend_from_slice(scope.pins);
 }
 
 /// The other half of the fingerprint, kept as its OWN counter rather than folded into the 64 bits
@@ -3113,8 +3106,8 @@ fn adopt_browse_scope(state: &mut PmsState, scope: &BrowseScope) {
 /// servers there are. `Src::handle` is a copy of the "Shared by …" credit and `merge` stamps that
 /// copy onto every shelf and hero row, so a credit re-graded by a roster refresh is exactly a
 /// change this table must rebuild for — and the roster epoch alone cannot see one.
-fn facts_key() -> u32 {
-    plx_plex::plex::server_facts_gen()
+fn facts_key(scope: &BrowseScope) -> u32 {
+    scope.clients.facts_gen()
 }
 
 /// Bring the source table in line with the roster: a surviving source keeps everything it has
@@ -3127,7 +3120,7 @@ fn sync_roster(state: &mut PmsState) {
 }
 
 fn sync_roster_with_scope(state: &mut PmsState, scope: &BrowseScope) {
-    let (k, fk) = (roster_key_with_scope(scope), facts_key());
+    let (k, fk) = (roster_key_with_scope(scope), facts_key(scope));
     let scope_moved = browse_scope_moved(state, scope);
     // Both, and both swapped every time: a frame on which only one moved must still record the
     // other, or the next change to it reads as "unchanged" against a value from two epochs ago.
@@ -3135,9 +3128,10 @@ fn sync_roster_with_scope(state: &mut PmsState, scope: &BrowseScope) {
     let was_fk = state.seen_facts;
     state.seen = k;
     state.seen_facts = fk;
-    if was_k == k && was_fk == fk && !scope_moved {
+    if was_k == k && was_fk == fk && !scope_moved && state.seen_clients == *scope.clients {
         return;
     }
+    if state.seen_clients != *scope.clients { state.seen_clients.clone_from(&scope.clients); }
     let want = roster_with_scope(scope);
     let mut srcs = std::mem::take(&mut state.srcs);
     let mut out: Vec<Src> = Vec::with_capacity(want.len());
@@ -3961,7 +3955,7 @@ pub fn seed_two_library_home_for_test(
     let build = merge_with_scope(&sources, &scope);
     state.srcs = sources;
     remember_roster(state, &scope);
-    state.seen_facts = facts_key();
+    state.seen_facts = facts_key(&scope);
     adopt_browse_scope(state, &scope);
     commit(state, build);
 }
@@ -3969,7 +3963,7 @@ pub fn seed_two_library_home_for_test(
 #[cfg(any(test, feature = "test-support"))]
 fn seed_with_scope_for_test(state: &mut PmsState, adapter: &Arc<PmsAdapter>, sid: ServerId, items: usize, hub_state: HubState, scope: &BrowseScope) {
     reset_with_scope(state, adapter, scope);
-    let handle = plx_plex::plex::server_facts(sid)
+    let handle = scope.clients.facts(sid).and_then(|facts| facts.described)
         .map(|facts| facts.handle.clone())
         .unwrap_or_default();
     let mut s = Src::new(sid, handle, &scope.clients);
@@ -3992,7 +3986,7 @@ fn seed_with_scope_for_test(state: &mut PmsState, adapter: &Arc<PmsAdapter>, sid
     // preserves the source whose sid and retained directory were supplied together. BOTH halves
     // of the fingerprint matter, or the facts epoch alone reads as a change and rebuilds anyway.
     remember_roster(state, scope);
-    state.seen_facts = facts_key();
+    state.seen_facts = facts_key(&scope);
     commit(state, build);
 }
 
@@ -4282,8 +4276,9 @@ pub fn seed_continue_window_for_test(state: &mut PmsState, adapter: &Arc<PmsAdap
     settle_deck(&mut srcs, false);
     let build = merge(&srcs);
     state.srcs = srcs;
-    remember_roster(state, &BrowseScope::standalone());
-    state.seen_facts = facts_key();
+    let scope = BrowseScope::standalone();
+    remember_roster(state, &scope);
+    state.seen_facts = facts_key(&scope);
     commit(state, build);
 }
 
@@ -4720,3 +4715,7 @@ mod sort_info_tests {
         assert_eq!(movie.viewed_leaf_count, Some(0));
     }
 }
+
+#[cfg(test)]
+#[path = "pms/captured_inputs_tests.rs"]
+mod captured_inputs_tests;

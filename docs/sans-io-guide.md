@@ -28,11 +28,22 @@ remain pending. These contracts are not runtime or replay acceptance; see
 `.empryo/reviews/verdict-notify-integration.md` for the handoff limits.
 
 The combined Session/W2/enforcement/Screens source checkpoint now has actual
-ledger totals **4 workers / 54 globals / 62 forks / 11 fxlanes**, with exact pins.
+ledger totals **4 workers / 19 globals / 62 forks / 11 fxlanes** after Person and the
+remaining data captures, with exact pins.
 Session uses the strict `state`/`transition`/`from_init` binding and structurally
 proved immutable reads. Watchlist and Screens inputs are captured outside their
 machine windows. Source/Python checks are not Rust/runtime/Clippy acceptance;
 see the combined checkpoint in `docs/sans-io.md` for merge details and filters.
+
+## Person complete capture (source checkpoint; runtime acceptance pending)
+
+Person now takes `PersonInput` before Open and every pump: the host's ONE retained complete
+`ClientKeys` roster, settled session and visible generation, controlled/provider decisions, and
+dev biography/credits seeds. Never infer registered slots from key presence; append the origin
+once even if unregistered. Stable pumps borrow inputs; only emitted jobs copy request strings.
+Inputless Open/pump refuse, while Close, Reset and view edits remain independent. All 11 Person
+global sites are retired: the Person-only checkpoint is **4 workers / 43 globals / 62 forks /
+11 fxlanes**, down from 4/54/62/11. Source/Python checks do not claim Rust/replay acceptance.
 
 ## Which code is a machine
 
@@ -61,12 +72,10 @@ actuator (`ForegroundActuator` in `media/src/player/foreground.rs`) and a seam t
 (`LiveCatalogIo`, called inside `finish_catalog_job`'s `catch_unwind` in `data/src/stores/catalog.rs`).
 CI still reads a body that sits in a scanned file, so give it what it needs as arguments too.
 
-Two leftovers look like that list and are not models. `LiveIo` (`data/src/watchlist.rs`) is a seam the
-Watchlist STEP calls (`reachable`, `roster`, `copy_rank`, `today`, `facts_gen`, `roster_gen`), and its
-methods hold the `ci/allow/globals/data-watchlist.txt` lines (its `client_for` and `current_server`
-reads, and the roster readers `server_ids`, `server_probe_result`, `server_roster_gen` and
-`server_facts_gen`) and the `today()` clock read `docs/sans-io.md` lists (W-2). `build_stream`'s registry reads and its fork are ledger lines too
-(`ci/allow/globals/media.txt`, `ci/allow/forks/media.txt`). Do not copy either.
+The old Watchlist `LiveIo` step readers were retired by W2; `WatchlistSnapshot` is the captured
+input, not a model for hiding registry access behind a trait. `build_stream`'s registry reads and
+its fork remain IO-boundary ledger lines (`ci/allow/globals/media.txt`, `ci/allow/forks/media.txt`),
+outside this data-step migration. Do not copy them into a machine.
 
 ## What counts as IO in a step
 

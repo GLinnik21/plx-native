@@ -461,6 +461,73 @@ impl SeatWatch {
 }
 
 /// What the bridge lends the dispatcher, and what it collects for the loop.
+#[derive(Default)]
+struct PersonCapture {
+    guid: String,
+    controlled: bool,
+    profile_refused: bool,
+    credits_refused: bool,
+    dev_bio: Option<String>,
+    dev_credits: Option<String>,
+}
+
+impl PersonCapture {
+fn refresh(&mut self, guid: &str, controlled: bool, opening: bool) {
+        // Provider refusal is a boot-fixed fact. Keep it with the person/control identity rather
+        // than formatting two provider URLs on every stable pump.
+        if opening || self.controlled != controlled || self.guid != guid {
+            self.guid.clear();
+            self.guid.push_str(guid);
+            self.profile_refused = !controlled && !guid.is_empty() && plx_plex::plex::discover::person_profile_refused(guid);
+            self.credits_refused = !controlled && !guid.is_empty() && plx_plex::plex::discover::person_credits_refused(guid);
+        }
+        self.controlled = controlled;
+        if controlled {
+            self.dev_bio = None;
+            let rows = plx_data::stores::tape::credits();
+            if self.dev_credits.as_deref().and_then(|s| s.parse::<u32>().ok()) != rows {
+                self.dev_credits = rows.map(|n| n.to_string());
+            }
+        } else {
+            if opening { self.dev_bio = plx_base::devtrig::read("personbio"); }
+            self.dev_credits = plx_base::devtrig::read("personcredits");
+        }
+    }
+
+    fn input<'a>(&'a self, keys: &'a plx_plex::plex::ClientKeys,
+        session: Option<&'a std::sync::Arc<plx_plex::plex::session::Session>>, visible_generation: u64) -> plx_data::person::PersonInput<'a> {
+        plx_data::person::PersonInput {
+            keys, session, visible_generation,
+            controlled: self.controlled, profile_refused: self.profile_refused,
+            credits_refused: self.credits_refused, dev_bio: self.dev_bio.as_deref(),
+            dev_credits: self.dev_credits.as_deref(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct StoreSessionCapture {
+    revision: Option<(u64, u64)>,
+    session: Option<std::sync::Arc<plx_plex::plex::session::Session>>,
+    observed: std::sync::Arc<plx_plex::plex::session::Session>,
+    visible_generation: u64,
+    profile_generation: u32,
+    tenure: u64,
+    profile_key: String,
+    household: Vec<i64>,
+    controlled: bool,
+    tape_active: bool,
+}
+
+impl StoreSessionCapture {
+    fn search_input<'a>(&'a self, keys: &'a plx_plex::plex::ClientKeys) -> plx_data::search::SearchInput<'a> {
+        plx_data::search::SearchInput { keys, recents: plx_data::search::recents::Input {
+            session: &self.observed, settled: self.session.is_some(),
+            profile_generation: self.profile_generation, session_generation: self.visible_generation, tenure: self.tenure,
+            profile_key: &self.profile_key } }
+    }
+}
+
 pub(crate) struct Bridge {
     marker_access: super::preferences::MarkerAccessRunner,
     marker_prefs: plx_appkit::skip_policy::MarkerPrefsView,
@@ -504,6 +571,8 @@ pub(crate) struct Bridge {
     /// that decides from it (`adapters::stores::refill_client_keys`), in the same call. ONE value
     /// kept for the life of the Bridge, so a pump that runs every frame allocates nothing for it.
     client_keys: plx_plex::plex::ClientKeys,
+    store_session: StoreSessionCapture,
+    person_capture: PersonCapture,
     watchlist_capture: plx_data::stores::watchlist_job::SnapshotCache,
     clock_facts: std::sync::Arc<plx_plex::plex::ClockFacts>,
     clock_scratch: plx_plex::plex::ClockFacts,
@@ -691,7 +760,7 @@ impl Bridge {
         bridge.metadata_alt_host = |request, _| request.answer(None);
         // Keep the test SessionMachine unseated; Search's initial household input, like
         // subsequent captures, is the actual session's independently observed roster.
-        bridge.search = bridge.stores.search_snapshot(bridge.directory.view(), &Self::household_ids());
+        bridge.search = bridge.capture_search_publication();
         bridge
     }
 
@@ -706,14 +775,17 @@ impl Bridge {
             keys: &Default::default(), session: &init.persisted,
             visible_generation: 0, settled: false, profile_key: "",
         });
-        let search = stores.search_snapshot(browse.directory.view(), &init.persisted.household_ids());
-        Self::with_publications_and_stores(measure, now_us, init, session_adapter, consent,
+
+        let mut bridge = Self::with_publications_and_stores(measure, now_us, init, session_adapter, consent,
             consent_adapter, store_runner,
             StorePublications {
             hubs: stores.hubs.snapshot(), listing: browse.listing,
             directory: browse.directory, section_hubs: browse.section_hubs,
-            search,
-        }, stores, true)
+            search: Default::default(),
+        }, stores, true);
+        super::adapters::stores::refill_client_keys(&mut bridge.client_keys);
+        bridge.search = bridge.capture_search_publication();
+        bridge
     }
 
     #[cfg(test)]
@@ -797,6 +869,8 @@ impl Bridge {
             metadata_alt_host: crate::dev::scenarios::metadata_alt_stand_in,
             late_store_jobs: 0,
             client_keys: Default::default(),
+            store_session: Default::default(),
+            person_capture: Default::default(),
             watchlist_capture: Default::default(),
             clock_facts: Default::default(),
             clock_scratch: Default::default(),
@@ -1518,7 +1592,7 @@ impl Bridge {
         let browse_changed = library_clock_changed || listing_changed || !self.directory.same_publication(&directory_before)
             || hubs_before != (self.section_hubs.view().id(), self.section_hubs.view().revision());
         let search = if self.home_io.is_some() { self.search.clone() } else {
-            self.stores.search_snapshot(self.directory.view(), &Self::household_ids())
+            self.capture_search_publication()
         };
         let search_changed = !self.search.same_publication(&search);
         if search_changed {
@@ -1760,18 +1834,79 @@ impl Bridge {
         outcome
     }
 
-    pub(crate) fn person_run(&mut self, cmd: plx_data::stores::person::PersonCmd) -> bool {
-        self.stores.person_run(cmd)
+pub(crate) fn person_run(&mut self, cmd: plx_data::stores::person::PersonCmd) -> bool {
+        if let plx_data::stores::person::PersonCmd::Open { guid, .. } = &cmd {
+            self.capture_store_session();
+            super::adapters::stores::refill_client_keys(&mut self.client_keys);
+            self.person_capture.refresh(guid, self.store_session.controlled, true);
+            let input = self.person_capture.input(&self.client_keys,
+                self.store_session.session.as_ref(), self.store_session.visible_generation);
+            self.stores.person_run(cmd, &input)
+        } else {
+            let _step = plx_base::step::StepScope::enter();
+            self.stores.person.run(cmd)
+        }
     }
 
     /// One frame's Person pump: refill the keys, step, and start the requests the step emitted, all
     /// in this call, so the tape's admissions are written where the page asked for them, before
     /// the next store's (`collection_pump`, then the detail reconciliation) record theirs.
-    pub(crate) fn person_pump(&mut self) -> bool {
+pub(crate) fn person_pump(&mut self) -> bool {
+        self.capture_store_session();
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
-        let changed = self.stores.person_pump(&self.client_keys);
+        let person_guid = self.stores.person_view().current().map_or("", |p| p.guid.as_str());
+        self.person_capture.refresh(person_guid, self.store_session.controlled, false);
+        let capture = &self.store_session;
+        let person_input = self.person_capture.input(&self.client_keys, capture.session.as_ref(), capture.visible_generation);
+        let changed = self.stores.person_pump(&person_input);
         self.start_store_jobs_of(StoreId::Person);
         changed
+    }
+    fn capture_search_publication(&mut self) -> plx_data::search::view::SearchSnapshot {
+        self.capture_store_session();
+        self.stores.search_snapshot(self.directory.view(), &self.store_session.household,
+            &self.store_session.search_input(&self.client_keys))
+    }
+    fn capture_store_session(&mut self) {
+        use plx_plex::plex::session;
+        let tape_active = plx_data::stores::tape::active();
+        let controlled = !self.live_screen_inputs || tape_active;
+        let capture = &mut self.store_session;
+        let previous_session = capture.observed.clone();
+        if controlled {
+            let profile = &self.screen_inputs.profile;
+            let key = profile.user.as_ref().map_or("", |user| user.uuid.as_str());
+            if !capture.controlled || capture.profile_generation != profile.generation || capture.profile_key != key
+                || (self.screen_inputs.settled && (capture.observed.client_id != self.screen_inputs.session.client_id
+                    || capture.observed.account_token != self.screen_inputs.session.account_token)) {
+                capture.tenure = capture.tenure.wrapping_add(1);
+            }
+            capture.session = self.screen_inputs.settled_session().cloned();
+            capture.observed = self.screen_inputs.session.clone();
+            capture.visible_generation = self.screen_inputs.visible_generation;
+            capture.profile_generation = self.screen_inputs.profile.generation;
+            let key = self.screen_inputs.profile.user.as_ref().map_or("", |user| user.uuid.as_str());
+            if capture.profile_key != key { capture.profile_key.clear(); capture.profile_key.push_str(key); }
+            capture.revision = None;
+        } else {
+            let revision = session::screen_input_revision();
+            if capture.controlled || capture.revision != Some(revision) {
+                capture.session = session::peek_settled();
+                capture.observed = capture.session.clone().unwrap_or_else(session::peek);
+                capture.visible_generation = session::visible_generation();
+                capture.tenure = session::tenure();
+                let profile = session::current_snapshot();
+                capture.profile_generation = profile.generation;
+                let key = profile.user.as_ref().map_or("", |user| user.uuid.as_str());
+                if capture.profile_key != key { capture.profile_key.clear(); capture.profile_key.push_str(key); }
+                capture.revision = Some(revision);
+            }
+        }
+        if !std::sync::Arc::ptr_eq(&previous_session, &capture.observed) {
+            capture.household = capture.observed.household_ids();
+        }
+        capture.controlled = controlled;
+        capture.tape_active = tape_active;
     }
 
     pub(crate) fn person_view(&self) -> plx_data::person::PersonView<'_> {
@@ -1868,7 +2003,9 @@ impl Bridge {
     /// neither is not lost: the next pump's backstop starts the job a frame late, counts it in
     /// `late_store_jobs` and logs it, and the test rigs fail on that count.
     pub(crate) fn metadata_run(&mut self, cmd: plx_data::stores::metadata::MetadataCmd) -> bool {
-        let changed = self.stores.metadata_run(cmd);
+        self.capture_store_session();
+        super::adapters::stores::refill_client_keys(&mut self.client_keys);
+        let changed = self.stores.metadata_run(cmd, &self.client_keys);
         self.start_store_jobs_of(StoreId::Metadata);
         changed
     }
@@ -1992,9 +2129,10 @@ fn start_jobs(&mut self, jobs: Vec<plx_data::stores::StoreJob>) -> usize {
     /// backstop as [`Bridge::metadata_pump_detail`].
     #[cfg(test)]
     pub(crate) fn metadata_pump(&mut self) -> bool {
+        self.capture_store_session();
         self.start_late_store_jobs();
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
-        let changed = self.stores.metadata_pump(&self.client_keys, plx_data::stores::tape::active(), None);
+        let changed = self.stores.metadata_pump(&self.client_keys, self.store_session.tape_active, None);
         self.start_store_jobs_of(StoreId::Metadata);
         changed
     }
@@ -2003,8 +2141,9 @@ fn start_jobs(&mut self, jobs: Vec<plx_data::stores::StoreJob>) -> usize {
     /// runner refused since the last Hubs step is settled by whatever steps Hubs next): the caller
     /// carries them.
     pub(crate) fn viewstate_run(&mut self, cmd: plx_data::stores::viewstate::ViewStateCmd) -> plx_data::stores::StoreOutcome {
+        self.capture_store_session();
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
-        let outcome = self.stores.viewstate_run(cmd, self.directory.view(), &self.client_keys, Self::profile_scope());
+        let outcome = self.stores.viewstate_run(cmd, self.directory.view(), &self.client_keys, self.store_session.profile_generation);
         self.start_store_jobs_in(plx_data::stores::Stores::VIEWSTATE_FILLS);
         outcome
     }
@@ -2052,8 +2191,9 @@ fn start_jobs(&mut self, jobs: Vec<plx_data::stores::StoreJob>) -> usize {
     }
 
     pub(crate) fn viewstate_pump(&mut self) -> plx_data::stores::EndpointRefreshSet {
+        self.capture_store_session();
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
-        let endpoints = self.stores.viewstate_pump(self.directory.view(), &self.client_keys, Self::profile_scope());
+        let endpoints = self.stores.viewstate_pump(self.directory.view(), &self.client_keys, self.store_session.profile_generation);
         self.start_store_jobs_in(plx_data::stores::Stores::VIEWSTATE_FILLS);
         endpoints
     }
@@ -2065,8 +2205,9 @@ fn start_jobs(&mut self, jobs: Vec<plx_data::stores::StoreJob>) -> usize {
     /// so both outboxes are drained here (`Stores::RECONCILE_FILLS`); the shared `Stores` call's
     /// other fan-outs emit no jobs of their own.
     pub(crate) fn reconcile_pump(&mut self) -> plx_data::stores::EndpointRefreshSet {
+        self.capture_store_session();
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
-        let mut outcome = self.stores.reconcile_pump(self.directory.view(), &self.client_keys, Self::profile_scope());
+        let mut outcome = self.stores.reconcile_pump(self.directory.view(), &self.client_keys, self.store_session.profile_generation);
         self.start_store_jobs_in(plx_data::stores::Stores::RECONCILE_FILLS);
         if outcome.changed {
             plx_machine::idle::invalidate();
@@ -2243,7 +2384,10 @@ fn start_jobs(&mut self, jobs: Vec<plx_data::stores::StoreJob>) -> usize {
     /// (`RememberRecent` / `ClearRecents`) emits its `StoreJob::SaveRecents` here, and this drain is
     /// what starts it.
     pub(crate) fn search_run(&mut self, cmd: plx_data::stores::search::SearchCmd) -> bool {
-        let changed = self.stores.search_run(cmd, self.directory.view());
+        self.capture_store_session();
+        super::adapters::stores::refill_client_keys(&mut self.client_keys);
+        let input = self.store_session.search_input(&self.client_keys);
+        let changed = self.stores.search_run(cmd, self.directory.view(), &input);
         self.start_store_jobs_of(StoreId::Search);
         changed
     }
@@ -2253,7 +2397,9 @@ fn start_jobs(&mut self, jobs: Vec<plx_data::stores::StoreJob>) -> usize {
     /// per source that is due; the runner launches each through the client the keys named.
     pub(crate) fn search_pump(&mut self, dt: f32) -> bool {
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
-        let changed = self.stores.search_pump(dt, self.directory.view(), &self.client_keys);
+        self.capture_store_session();
+        let input = self.store_session.search_input(&self.client_keys);
+        let changed = self.stores.search_pump(dt, self.directory.view(), &input);
         self.start_store_jobs_of(StoreId::Search);
         changed
     }
@@ -2325,13 +2471,14 @@ fn start_jobs(&mut self, jobs: Vec<plx_data::stores::StoreJob>) -> usize {
 
     /// The `MetadataStore`'s own async detail landing — `app/run.rs`'s route-unconditional pump.
     pub(crate) fn metadata_pump_detail(&mut self) -> bool {
+        self.capture_store_session();
         // The backstop: every sender drains its own jobs, so nothing is found here. A job that is
         // found would leave a request nothing runs, and the pump below would wait on it; it is
         // started now, so the request settles, and counted and logged so the bypass is not silent.
         self.start_late_store_jobs();
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
         let changed = self.stores.metadata.pump_detail_with_gate(&self.client_keys,
-            plx_data::stores::tape::active(), &self.stores.landgate);
+            self.store_session.tape_active, &self.stores.landgate);
         self.start_store_jobs_of(StoreId::Metadata);
         changed
     }
@@ -2356,13 +2503,14 @@ fn start_jobs(&mut self, jobs: Vec<plx_data::stores::StoreJob>) -> usize {
     // returns its exclusive pass, and the Bridge executes the host between begin and finish.
     fn metadata_pump_alt_sources_with(&mut self,
         host: impl FnOnce(plx_data::metadata::AltStandInReq, Option<&str>) -> plx_data::metadata::AltStandInAnswer) -> bool {
+        self.capture_store_session();
         // Capture keys/roster BEFORE host registration. The pass exclusively borrows Metadata
         // and shares the keys until finish, preventing intervening step/reset/refill/publication.
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
         let directory = self.directory.view();
         let library = directory.current().and_then(|section| directory.sections().get(section))
             .map(|section| section.row.title.as_str());
-        let mut pass = self.stores.metadata.begin_alt_sources(&self.client_keys, plx_data::stores::tape::active());
+        let mut pass = self.stores.metadata.begin_alt_sources(&self.client_keys, self.store_session.tape_active);
         let answer = pass.take_request().map(|request| host(request, library));
         pass.finish(answer, &self.stores.landgate)
     }

@@ -84,6 +84,21 @@ impl Default for ClientKeys {
 }
 
 impl ClientKeys {
+    /// A complete value observation supplied by a scripted host. Registered slots without
+    /// eligible keys remain distinct from absent slots, just as in a live refill.
+    pub fn captured(current: ServerId, roster_gen: u32, facts_gen: u32,
+        rows: impl IntoIterator<Item = (ServerId, Option<ClientKey>, ClientFacts)>) -> Self {
+        let mut keys = Self::default();
+        keys.2 = current;
+        keys.3 = roster_gen;
+        keys.4 = facts_gen;
+        for (sid, key, facts) in rows {
+            if let Some(key) = key { keys.0.push((sid, key)); }
+            keys.1.push((sid, facts));
+        }
+        keys
+    }
+
     /// The keys of these clients.
     pub fn of<'a>(clients: impl IntoIterator<Item = (ServerId, &'a Client)>) -> Self {
         Self::from_keys(clients.into_iter().map(|(sid, client)| (sid, ClientKey::of(client))))
@@ -308,6 +323,9 @@ impl<'a> KeyedClients<'a> {
     pub fn new(keys: &'a ClientKeys, lookup: fn(ServerId) -> Option<&'static Client>) -> Self {
         Self { keys, lookup }
     }
+
+    /// Described evidence from the captured roster, never the live registry.
+    pub fn facts(&self, sid: ServerId) -> Option<&ClientFacts> { self.keys.facts(sid) }
 
     /// The client `sid` holds, only while its key matches the snapshot. `None` when the snapshot
     /// holds no key for `sid` (the step never saw that slot), when the registry holds no client

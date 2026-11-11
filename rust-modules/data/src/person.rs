@@ -274,7 +274,7 @@ pub struct Person {
     /// re-registered at the same origin and a live token is refreshed in place; every fetched shelf
     /// is still true then, so [`sync_roster`] keeps the page instead of drawing its skeleton again.
     /// `None` until a pump has read the registry's answer.
-    roster_sig: Option<Vec<(ServerId, u32, u32)>>,
+    roster_sig: Option<Vec<(ServerId, Option<(u32, u32)>)>>,
 }
 
 impl Person {
@@ -331,6 +331,20 @@ impl<'a> PersonView<'a> {
 
 /// Main-thread logical state for one Person owner. Generation, retry ladders and the dev-seed
 /// latch move with the model instead of selecting process state.
+/// All authority used by one Person pass, captured by the host before Open or pump.
+/// The complete registered-slot roster is borrowed from the host's ONE retained ClientKeys.
+#[derive(Clone, Copy)]
+pub struct PersonInput<'a> {
+    pub keys: &'a ClientKeys,
+    pub session: Option<&'a Arc<plx_plex::plex::session::Session>>,
+    pub visible_generation: u64,
+    pub controlled: bool,
+    pub profile_refused: bool,
+    pub credits_refused: bool,
+    pub dev_bio: Option<&'a str>,
+    pub dev_credits: Option<&'a str>,
+}
+
 pub struct PersonState {
     /// The publish order of view-state edits, shared by `stores::Stores`.
     pub(crate) ledger: crate::viewledger::ViewLedger,
@@ -343,7 +357,7 @@ pub struct PersonState {
     revision: u64,
     retry_cd: Backoffs,
     dev_held: usize,
-    session_watch: plx_plex::plex::session::VisibleSessionWatch,
+    session_cursor: Option<(u64, bool)>,
     session_identity: (String, String),
     /// Which servers may have a request out this pump ([`crate::stores::fanout`]).
     fanout: crate::stores::fanout::Fanout,
@@ -367,7 +381,7 @@ impl Default for PersonState {
             revision: 0,
             retry_cd: Backoffs::default(),
             dev_held: usize::MAX,
-            session_watch: Default::default(),
+            session_cursor: None,
             session_identity: Default::default(),
             fanout: Default::default(),
             jobs: Vec::new(),
@@ -379,6 +393,26 @@ impl Default for PersonState {
 impl PersonState {
     pub fn view(&self) -> PersonView<'_> {
         PersonView { current: self.current.as_ref(), revision: self.revision }
+    }
+    /// Unsettled does not invent signed-out identity; controlled passes ignore session recovery.
+    fn observe_session(&mut self, adapter: &PersonAdapter, input: &PersonInput<'_>) -> bool {
+        if input.controlled { return false; }
+        let cursor = (input.visible_generation, input.session.is_some());
+        if self.session_cursor == Some(cursor) { return false; }
+        self.session_cursor = Some(cursor);
+        let Some(session) = input.session else { return false };
+        if self.session_identity.0 == session.client_id && self.session_identity.1 == session.account_token {
+            return false;
+        }
+        self.session_identity.0.clone_from(&session.client_id);
+        self.session_identity.1.clone_from(&session.account_token);
+        self.supersede(adapter);
+        if let Some(person) = &mut self.current {
+            person.profiled = false;
+            person.credited = false;
+            return true;
+        }
+        false
     }
 
     fn current(&self) -> Option<&Person> {
@@ -740,9 +774,9 @@ impl PersonState {
 /// credential they hold change ([`sync_roster`]; a generation that moved over none of these keeps
 /// the sources). The roster is tiny; rebuilding only at that explicit boundary prevents an open
 /// page retaining a revoked share or missing a new one.
-fn sources(origin: ServerId, key: &str, name: &str) -> Vec<Src> {
+fn sources(origin: ServerId, key: &str, name: &str, keys: &ClientKeys) -> Vec<Src> {
     let mut out: Vec<Src> = Vec::new();
-    for sid in plx_plex::plex::server_ids().chain(std::iter::once(origin)) {
+    for sid in keys.slots().chain(std::iter::once(origin)) {
         if fx(sid, K_RESOLVE).is_none() || out.iter().any(|s| s.sid == sid) {
             continue;
         }
@@ -971,6 +1005,7 @@ fn open(
     guid: &str,
     name: &str,
     thumb: &str,
+    input: &PersonInput<'_>,
 ) {
     if state
         .current
@@ -979,17 +1014,16 @@ fn open(
     {
         return;
     }
-    // Controlled content uses captured authority and supplied provider replies. The ambient
-    // session cache recovers asynchronously and is not an input in that transcript.
-    if !crate::stores::tape::active() {
-        let _ = state.session_watch.changed();
-        if let Some(session) = plx_plex::plex::session::peek_settled() {
-            state.session_identity = (session.client_id.clone(), session.account_token.clone());
+    if !input.controlled {
+        state.session_cursor = Some((input.visible_generation, input.session.is_some()));
+        if let Some(session) = input.session {
+            state.session_identity.0.clone_from(&session.client_id);
+            state.session_identity.1.clone_from(&session.account_token);
         }
     }
     state.supersede(adapter);
     state.revision += 1;
-    let srcs = sources(sid, key, name);
+    let srcs = sources(sid, key, name, input.keys);
     state.current = Some(Person {
         sid,
         key: key.to_string(),
@@ -1008,15 +1042,15 @@ fn open(
         profile_tried: false,
         credits: Vec::new(),
         credited: false,
-        roster_gen: plx_plex::plex::server_roster_gen(),
-        roster_sig: None,
+        roster_gen: input.keys.roster_gen(),
+        roster_sig: Some(roster_sig(input.keys)),
     });
     // A page with NO source at all has already answered — see `resettle`'s fold. Deriving it
     // here rather than hardcoding `landed: false` is what keeps that rule in one place.
     if let Some(p) = state.current.as_mut() {
         resettle(p);
-        if !crate::stores::tape::active() {
-            seed_dev_profile(p);
+        if !input.controlled {
+            seed_dev_profile(p, input.dev_bio);
         }
     }
 }
@@ -1049,14 +1083,14 @@ fn open(
 /// they are as fictional as the rest of the trigger and never reach a release build (`devtrig::read` is
 /// `None` at compile time without `devtriggers`).
 #[allow(unused_variables)]
-fn seed_dev_profile(p: &mut Person) {
-    let Some(text) = plx_base::devtrig::read("personbio") else {
+fn seed_dev_profile(p: &mut Person, text: Option<&str>) {
+    let Some(text) = text else {
         return;
     };
     p.bio = if text.is_empty() {
         DEV_BIO.trim().replace("\\n", "\n").to_string()
     } else {
-        text
+        text.to_string()
     };
     if p.roles.is_empty() {
         p.roles = vec![
@@ -1129,32 +1163,26 @@ fn reset(state: &mut PersonState, adapter: &PersonAdapter) {
 /// module boundary. Relocating it here is what lets those three go private — `set_watched_local`
 /// was already `pub` for the same reason and joins them.
 impl PersonState {
-    pub fn run(
-        &mut self,
-        adapter: &Arc<PersonAdapter>,
-        cmd: crate::stores::person::PersonCmd,
-    ) -> bool {
+pub fn run(&mut self, adapter: &Arc<PersonAdapter>, cmd: crate::stores::person::PersonCmd) -> bool {
         use crate::stores::person::PersonCmd;
         match cmd {
-            PersonCmd::Open {
-                sid,
-                key,
-                guid,
-                name,
-                thumb,
-            } => {
-                open(self, adapter, sid, &key, &guid, &name, &thumb);
-                true
+            PersonCmd::Open { .. } => {
+                plx_base::eventlog::log("person: Open requires captured inputs — refused");
+                debug_assert!(false, "Person Open requires captured inputs");
+                false
             }
-            PersonCmd::Close => {
-                close(self, adapter);
-                true
-            }
-            PersonCmd::Reset => {
-                reset(self, adapter);
-                true
-            }
+            PersonCmd::Close => { close(self, adapter); true }
+            PersonCmd::Reset => { reset(self, adapter); true }
             PersonCmd::ApplyView { at, edit } => apply_view(self, &at, edit),
+        }
+    }
+    pub fn run_with_input(&mut self, adapter: &Arc<PersonAdapter>, cmd: crate::stores::person::PersonCmd,
+        input: &PersonInput<'_>) -> bool {
+        if let crate::stores::person::PersonCmd::Open { sid, key, guid, name, thumb } = cmd {
+            open(self, adapter, sid, &key, &guid, &name, &thumb, input);
+            true
+        } else {
+            self.run(adapter, cmd)
         }
     }
 }
@@ -1200,23 +1228,9 @@ impl PersonState {
     /// pump (`tape::person_completion` is keyed by slot and generation), and the admissions stay in
     /// emission order.
     pub fn pump_with_gate(&mut self, adapter: &Arc<PersonAdapter>, gate: &plx_machine::landgate::Gate,
-        keys: &ClientKeys) -> bool {
-        let mut session_changed = false;
-        if !crate::stores::tape::active() && self.session_watch.changed() {
-            if let Some(session) = plx_plex::plex::session::peek_settled() {
-                let identity = (session.client_id.clone(), session.account_token.clone());
-                if self.session_identity != identity {
-                    self.session_identity = identity;
-                    self.supersede(adapter);
-                    if let Some(person) = &mut self.current {
-                        person.profiled = false;
-                        person.credited = false;
-                        session_changed = true;
-                    }
-                }
-            }
-        }
-        let mut changed = sync_roster(self, adapter, keys) || session_changed;
+        input: &PersonInput<'_>) -> bool {
+        let session_changed = self.observe_session(adapter, input);
+        let mut changed = sync_roster(self, adapter, input) || session_changed;
         self.retry_cd.tick();
         // Ascending, which is the order replay supplies recorded landings in. The work follows the
         // open page's sources plus whatever is outstanding, never the highest server id.
@@ -1251,21 +1265,21 @@ impl PersonState {
                 // A superseded landing is news about neither person. In particular, its failure
                 // must not arm a retry delay for the replacement identity.
             }
-            maybe_spawn(self, adapter, i, &mut turn, keys);
+            changed |= maybe_spawn(self, adapter, i, &mut turn, input);
         }
         // The credits seed runs HERE rather than at `open`, unlike the biography's, and the difference
         // is what it needs: it joins itself against the shelves so the availability column and the
         // trailing chevron are actually visible, and the shelves do not exist until a landing.
         if self.current.is_some() {
-            changed |= seed_dev_credits(self);
+            changed |= seed_dev_credits(self, input.dev_credits);
         }
         self.revision += u64::from(changed);
         changed
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn pump(&mut self, adapter: &Arc<PersonAdapter>, keys: &ClientKeys) -> bool {
-        self.pump_with_gate(adapter, plx_machine::landgate::fixture_gate(), keys)
+    pub fn pump(&mut self, adapter: &Arc<PersonAdapter>, input: &PersonInput<'_>) -> bool {
+        self.pump_with_gate(adapter, plx_machine::landgate::fixture_gate(), input)
     }
 }
 
@@ -1289,10 +1303,7 @@ impl PersonState {
 /// and enough ABOVE it that the department strip overflows its column, which is the only way a
 /// headless capture reaches the strip's scroll and the left edge fade over its cut.
 #[allow(unused_variables)]
-fn seed_dev_credits(state: &mut PersonState) -> bool {
-    let arg = if crate::stores::tape::active() {
-        crate::stores::tape::credits().map(|v| v.to_string())
-    } else { plx_base::devtrig::read("personcredits") };
+fn seed_dev_credits(state: &mut PersonState, arg: Option<&str>) -> bool {
     let Some(arg) = arg else {
         return false;
     };
@@ -1392,39 +1403,26 @@ fn seed_dev_credits(state: &mut PersonState) -> bool {
 /// a token rotation keeps it) and whose credential it holds (`ClientKey::grant`: a live token
 /// refreshed in place keeps it, a revocation moves it): what a page's sources and shelves
 /// depend on.
-fn roster_sig(keys: &ClientKeys) -> Vec<(ServerId, u32, u32)> {
-    keys.iter().map(|(sid, key)| (sid, key.instance, key.grant)).collect()
+fn roster_sig(keys: &ClientKeys) -> Vec<(ServerId, Option<(u32, u32)>)> {
+    keys.slots().map(|sid| (sid, keys.key(sid).map(|key| (key.instance, key.grant)))).collect()
 }
 
 /// Rebuild an open page's per-source projection at an exact registry identity boundary. Header
 /// profile facts survive; server-derived shelves and every old worker/mailbox do not.
-fn sync_roster(state: &mut PersonState, adapter: &PersonAdapter, keys: &ClientKeys) -> bool {
-    let gen = plx_plex::plex::server_roster_gen();
-    let Some((old, sid, key, name)) =
-        state.current().map(|p| (p.roster_gen, p.sid, p.key.clone(), p.name.clone()))
-    else {
-        return false;
-    };
-    if old == gen {
-        if let Some(p) = state.current.as_mut().filter(|p| p.roster_sig.is_none()) {
-            p.roster_sig = Some(roster_sig(keys));
-        }
+fn sync_roster(state: &mut PersonState, adapter: &PersonAdapter, input: &PersonInput<'_>) -> bool {
+    let gen = input.keys.roster_gen();
+    let Some(p) = state.current() else { return false };
+    // Compare borrowed registered slots, not just keys. Retokens preserve instance/grant.
+    let unchanged = p.roster_sig.as_ref().is_some_and(|old| old.iter().copied().eq(
+        input.keys.slots().map(|sid| (sid, input.keys.key(sid).map(|key| (key.instance, key.grant))))));
+    if unchanged {
+        if let Some(p) = state.current.as_mut() { p.roster_gen = gen; }
         return false;
     }
-    // The generation also moves for a server re-registered at the same origin, which refreshes a
-    // live token in place: the same client, the same identity. Nothing fetched is stale then, and
-    // rebuilding would blank a loaded page. A revocation moves the grant, so a token for another
-    // identity does not get this far.
-    let sig = roster_sig(keys);
-    if let Some(p) = state.current.as_mut().filter(|p| p.roster_sig.as_ref() == Some(&sig)) {
-        p.roster_gen = gen;
-        return false;
-    }
+    let srcs = sources(p.sid, &p.key, &p.name, input.keys);
+    let sig = roster_sig(input.keys);
     state.supersede(adapter);
-    let srcs = sources(sid, &key, &name);
-    let Some(p) = state.current.as_mut() else {
-        return false;
-    };
+    let Some(p) = state.current.as_mut() else { return false };
     p.srcs = srcs;
     p.shelves = Default::default();
     p.landed = false;
@@ -1683,6 +1681,19 @@ pub fn pretty_department(raw: &str) -> String {
 ///
 /// Called every frame for the page's whole life, once per mailbox, so it allocates only when it
 /// will actually spawn.
+fn wants(i: usize, p: &Person) -> bool {
+    if i == F_PROFILE { return !p.profiled && !p.guid.is_empty(); }
+    if i == F_CREDITS { return !p.credited && !p.guid.is_empty(); }
+    let Some((sid, kind)) = un_fx(i) else { return false };
+    let Some(s) = p.srcs.iter().find(|s| s.sid == sid) else { return false };
+    match kind {
+        K_RESOLVE => !s.resolved,
+        K_MEDIA => s.resolved && !s.landed && s.local.is_some(),
+        K_ROLES => s.landed && !s.roled && s.shelves.iter().flat_map(|sh| &sh.items).any(|m| !m.rk.is_empty()),
+        _ => false,
+    }
+}
+
 fn address(i: usize, p: &Person) -> Option<Vec<String>> {
     if i == F_PROFILE {
         return (!p.profiled && !p.guid.is_empty()).then(|| vec![p.guid.clone()]);
@@ -1709,7 +1720,7 @@ fn address(i: usize, p: &Person) -> Option<Vec<String>> {
 fn fanout_standing(state: &PersonState, adapter: &PersonAdapter, i: usize) -> crate::stores::fanout::Standing {
     use crate::stores::fanout::Standing;
     if adapter.mailbox(i).busy() { Standing::Running }
-    else if state.retry_cd[i] == 0 && state.current().is_some_and(|p| address(i, p).is_some()) { Standing::Wanting }
+    else if state.retry_cd[i] == 0 && state.current().is_some_and(|p| wants(i, p)) { Standing::Wanting }
     else { Standing::Idle }
 }
 
@@ -1719,74 +1730,48 @@ fn fanout_standing(state: &PersonState, adapter: &PersonAdapter, i: usize) -> cr
 /// network error simply retries after the backoff instead of latching the page on a spinner
 /// forever.
 ///
-/// Every decision is made HERE, on the pump's thread, and the request leaves as a job
-/// ([`PersonState::emit`]); the runner starts it. What stays in the step and why: the tape and the
-/// settled session decide whether a job exists and which identity it carries (both are
-/// thread-local to the pump), and a refused plex.tv read lands synchronously with no worker
-/// (a refusal is fixed at boot; routing it through the runner would turn it into a release and
-/// respawn every ~2 s).
+/// The step decides only from its captured PersonInput and emits a typed job; the runner
+/// starts it. The host already chose controlled/provider behavior and supplied the settled
+/// identity. A fixed provider refusal settles synchronously, without a worker or retry.
 fn maybe_spawn(state: &mut PersonState, adapter: &Arc<PersonAdapter>, i: usize,
-    turn: &mut crate::stores::fanout::FanoutTurn, keys: &ClientKeys) {
-    if adapter.mailbox(i).busy() || state.retry_cd[i] > 0 {
-        return;
-    }
-    let Some(p) = state.current() else { return };
-    let Some(arg) = address(i, p) else { return };
+    turn: &mut crate::stores::fanout::FanoutTurn, input: &PersonInput<'_>) -> bool {
+    if adapter.mailbox(i).busy() || state.retry_cd[i] > 0 { return false; }
+    let Some(p) = state.current() else { return false };
+    if !wants(i, p) { return false; }
     let generation = state.generation;
-    // the person's global id rides along: the resolve joins its search answer on it, and the roles
-    // worker matches a credit row by either id space
-    let guid = p.guid.clone();
     if i == F_PROFILE || i == F_CREDITS {
-        let controlled = crate::stores::tape::active();
-        let session = if controlled { None } else { plx_plex::plex::session::peek_settled() };
-        if !controlled && session.as_ref().is_none_or(|s| s.client_id.is_empty()) { return; }
+        if !input.controlled && input.session.is_none_or(|s| s.client_id.is_empty()) { return false; }
         let profile = i == F_PROFILE;
-        adapter.mailbox(i).claim(generation);
-        // **A refused read is the end of the question, so it is answered HERE, on the pump's thread,
-        // and no worker exists to be respawned.** The refusal is fixed at boot (a dev-token boot with
-        // no Discover stand-in armed, `plex::account::permit_read`); landing it as the failure it
-        // used to be re-armed the backoff and spawned again every ~2 s for as long as the page was
-        // open. It goes through the mailbox like any answer: the pump takes it on a later frame.
-        if !controlled && (if profile {
-            plx_plex::plex::discover::person_profile_refused(&arg[0])
-        } else {
-            plx_plex::plex::discover::person_credits_refused(&arg[0])
-        }) {
-            adapter.land(i, generation, Landing::Refused);
-            return;
+        if !input.controlled && (if profile { input.profile_refused } else { input.credits_refused }) {
+            // A fixed provider refusal is terminal in this drain, with no job, claim or retry.
+            plx_machine::idle::invalidate();
+            return apply_landing(state, i, Landing::Refused);
         }
-        let identity = session.map_or(Identity::Controlled, Identity::Settled);
+        let identity = if input.controlled { Identity::Controlled } else {
+            Identity::Settled(Arc::clone(input.session.expect("settled Person request")))
+        };
+        let arg = address(i, p).expect("wanted Person request");
+        let guid = p.guid.clone();
         let work = if profile { PersonWork::Profile(identity) } else { PersonWork::Credits(identity) };
+        adapter.mailbox(i).claim(generation);
         state.emit(adapter, PersonReq { slot: i, generation, arg, guid, work });
-        return;
+        return false;
     }
-    let Some((sid, kind)) = un_fx(i) else { return };
-    let Some(kind) = LocalKind::of(kind) else { return };
-    // The client THIS server holds, as the registry answered when the host filled `keys`. The job
-    // names it, and the runner starts the request only if the registry still holds that very
-    // client at the launch. A source whose slot holds no client has nothing to contribute right
-    // now: back off rather than re-asking every frame; `pump` retries by itself.
-    let Some(key) = keys.key(sid) else {
+    let Some((sid, kind)) = un_fx(i) else { return false };
+    let Some(kind) = LocalKind::of(kind) else { return false };
+    let Some(key) = input.keys.key(sid) else {
         state.retry_cd[i] = RETRY_FRAMES;
-        return;
+        return false;
     };
-    // …and the SOURCE's own local id, for the roles worker's credit filter. The origin's `key` is
-    // meaningless on any other machine, so filtering with it blanked every borrowed caption while
-    // still paying for the batch.
-    let local = p
-        .srcs
-        .iter()
-        .find(|s| s.sid == sid)
-        .and_then(|s| s.local.clone())
-        .unwrap_or_default();
-    // One request per server is a fan-out: at most a few are out at once and the rest stay wanted
-    // until a later pump (the two plex.tv fetches above are not per server and are not counted).
-    if !turn.admit(i) {
-        return;
-    }
+    if !turn.admit(i) { return false; }
+    // Only admitted jobs own copies; stable/waiting pumps borrow the retained capture.
+    let arg = address(i, p).expect("wanted Person request");
+    let guid = p.guid.clone();
+    let local = p.srcs.iter().find(|s| s.sid == sid).and_then(|s| s.local.clone()).unwrap_or_default();
     adapter.mailbox(i).claim(generation);
     state.stamps.insert(i, state.ledger.stamp());
     state.emit(adapter, PersonReq { slot: i, generation, arg, guid, work: PersonWork::Local { sid, kind, local, key } });
+    false
 }
 
 impl PersonState {
@@ -2458,8 +2443,8 @@ pub fn install_source_for_test(&mut self, sid: ServerId, movies: Vec<PmsMovie>, 
 }
 
 /// Open a person page through the store's own `open`, for suites outside this module.
-pub fn open_for_test(&mut self, adapter: &PersonAdapter, sid: ServerId, key: &str, guid: &str, name: &str) {
-    open(self, adapter, sid, key, guid, name, "");
+pub fn open_for_test(&mut self, adapter: &PersonAdapter, sid: ServerId, key: &str, guid: &str, name: &str, input: &PersonInput<'_>) {
+    open(self, adapter, sid, key, guid, name, "", input);
 }
 
 /// Would the open page ask server `sid` for something right now? True once it is a source with a
@@ -2519,6 +2504,10 @@ pub struct OwnershipFixture {
 
 // ---------------------------------------------------------------------------------------
 #[cfg(test)]
+#[path = "person/captured_inputs_tests.rs"]
+mod captured_inputs_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use plx_plex::plex::{Hub, MediaContainer, Metadata};
@@ -2542,9 +2531,40 @@ mod tests {
 
     /// The registry's answer as of now, as the host fills it (`adapters::stores::refill_client_keys`).
     /// Test code only: the data layer's step reads no registry.
-    fn registry_keys() -> ClientKeys {
-        ClientKeys::of(plx_plex::plex::server_ids()
-            .filter_map(|sid| plx_plex::plex::client_for(sid).map(|c| (sid, c))))
+fn registry_keys() -> ClientKeys {
+        let mut keys = ClientKeys::default();
+        keys.refill_roster(plx_plex::plex::current_server(), plx_plex::plex::server_roster_gen(),
+            plx_plex::plex::server_facts_gen(), plx_plex::plex::server_ids(),
+            plx_plex::plex::client_for, plx_plex::plex::server_facts, plx_plex::plex::server_probe_result);
+        keys
+    }
+    /// This fixture is the host: the machine never recaptures its process values.
+    struct Captured {
+        session: Option<Arc<plx_plex::plex::session::Session>>,
+        visible_generation: u64,
+        controlled: bool,
+        profile_refused: bool,
+        credits_refused: bool,
+        bio: Option<String>,
+        credits: Option<String>,
+    }
+    impl Captured {
+        fn new(guid: &str) -> Self {
+            let controlled = crate::stores::tape::active();
+            Self {
+                session: if controlled { None } else { plx_plex::plex::session::peek_settled() },
+                visible_generation: plx_plex::plex::session::visible_generation(), controlled,
+                profile_refused: !controlled && plx_plex::plex::discover::person_profile_refused(guid),
+                credits_refused: !controlled && plx_plex::plex::discover::person_credits_refused(guid),
+                bio: if controlled { None } else { plx_base::devtrig::read("personbio") },
+                credits: if controlled { crate::stores::tape::credits().map(|n| n.to_string()) } else { plx_base::devtrig::read("personcredits") },
+            }
+        }
+        fn input<'a>(&'a self, keys: &'a ClientKeys) -> PersonInput<'a> {
+            PersonInput { keys, session: self.session.as_ref(), visible_generation: self.visible_generation,
+                controlled: self.controlled, profile_refused: self.profile_refused, credits_refused: self.credits_refused,
+                dev_bio: self.bio.as_deref(), dev_credits: self.credits.as_deref() }
+        }
     }
 
     /// A Roles landing recorded before chunking has no `incomplete` key. The tape check re-encodes
@@ -2583,7 +2603,9 @@ mod tests {
         fn current(&self) -> Option<&Person> { self.state.current() }
         fn gen(&self) -> u32 { self.state.generation }
         fn open(&mut self, sid: ServerId, key: &str, guid: &str, name: &str, thumb: &str) {
-            open(&mut self.state, &self.adapter, sid, key, guid, name, thumb);
+            let keys = registry_keys();
+            let captured = Captured::new(guid);
+            open(&mut self.state, &self.adapter, sid, key, guid, name, thumb, &captured.input(&keys));
         }
         fn close(&mut self) { close(&mut self.state, &self.adapter); }
         fn reset(&mut self) {
@@ -2600,7 +2622,13 @@ mod tests {
         /// for [`Owner::jobs`] / [`Owner::run_jobs`]: the step starts nothing.
         fn step(&mut self) -> bool { self.step_with(&registry_keys()) }
         /// One pump over `keys` instead of the registry's answer.
-        fn step_with(&mut self, keys: &ClientKeys) -> bool { self.state.pump(&self.adapter, keys) }
+fn step_with(&mut self, keys: &ClientKeys) -> bool {
+            self.step_with_gate(plx_machine::landgate::fixture_gate(), keys)
+        }
+        fn step_with_gate(&mut self, gate: &plx_machine::landgate::Gate, keys: &ClientKeys) -> bool {
+            let captured = Captured::new(self.current().map_or("", |p| p.guid.as_str()));
+            self.state.pump_with_gate(&self.adapter, gate, &captured.input(keys))
+        }
         /// The requests on the outbox, taken, in the order they were emitted.
         fn jobs(&mut self) -> Vec<crate::stores::StoreJob> { std::mem::take(&mut self.state.jobs) }
         /// Run the whole outbox on THIS thread through the production completion path
@@ -2624,7 +2652,11 @@ mod tests {
             self.run_jobs();
             changed
         }
-        fn sync_roster(&mut self) -> bool { sync_roster(&mut self.state, &self.adapter, &registry_keys()) }
+fn sync_roster(&mut self) -> bool {
+            let keys = registry_keys();
+            let captured = Captured::new(self.current().map_or("", |p| p.guid.as_str()));
+            sync_roster(&mut self.state, &self.adapter, &captured.input(&keys))
+        }
         fn loading(&self) -> bool { self.state.view().loading() }
         /// Park every spawn: a backoff on each index the original layout had and on all three
         /// kinds of every registered server.
@@ -3585,7 +3617,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(25));
             worker.land(at(S0, K_MEDIA), gen, media(vec![PmsMovie::default()], Vec::new()));
         });
-        assert!(owner.state.pump_with_gate(&owner.adapter, &gate, &ClientKeys::default()),
+        assert!(owner.step_with_gate(&gate, &ClientKeys::default()),
             "the answer the pump owed must be taken by the pump that asked");
         assert_eq!(owner.current().unwrap().shelf(0).len(), 1);
         assert!(!owner.adapter.mailbox(at(S0, K_MEDIA)).busy(), "the TAKE released the claim");
@@ -3616,7 +3648,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(25));
             worker.land(at(S0, K_MEDIA), current, media(vec![PmsMovie::default()], Vec::new()));
         });
-        assert!(owner.state.pump_with_gate(&owner.adapter, &gate, &ClientKeys::default()),
+        assert!(owner.step_with_gate(&gate, &ClientKeys::default()),
             "B was out when the pump ran, so B's answer must land on this pump");
         assert_eq!(owner.current().unwrap().shelf(0).len(), 1);
         assert!(!owner.adapter.mailbox(at(S0, K_MEDIA)).busy(), "B's own answer released B's claim");

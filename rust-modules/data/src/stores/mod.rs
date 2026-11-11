@@ -209,9 +209,9 @@ impl Stores {
         self.browse.borrow_mut().discover_pump()
     }
 
-    pub fn person_run(&mut self, cmd: person::PersonCmd) -> bool {
+pub fn person_run(&mut self, cmd: person::PersonCmd, input: &crate::person::PersonInput<'_>) -> bool {
         let _step = plx_base::step::StepScope::enter();
-        self.person.run(cmd)
+        self.person.run_with_input(cmd, input)
     }
 
     /// Run one Collection command; `keys` is the registry's answer as of this call. A command
@@ -256,9 +256,9 @@ impl Stores {
     /// requests it emitted: a caller that returns without [`Stores::take_jobs_of`] and handing the
     /// jobs to a runner has stranded the page's fetches. The one production caller is
     /// `Bridge::person_pump`, which drains in the same call.
-    pub fn person_pump(&mut self, keys: &plx_plex::plex::ClientKeys) -> bool {
+pub fn person_pump(&mut self, input: &crate::person::PersonInput<'_>) -> bool {
         let _step = plx_base::step::StepScope::enter();
-        self.person.pump(&self.landgate, keys)
+        self.person.pump(&self.landgate, input)
     }
 
     pub fn person_view(&self) -> crate::person::PersonView<'_> {
@@ -270,9 +270,9 @@ impl Stores {
     /// handing each job to a runner has stranded the request. The one production caller is
     /// `Bridge::metadata_run`, which drains in the same call; the application's test rigs fail a
     /// frame that ends with a job still here (`Bridge::assert_no_store_jobs_left_for_test`).
-    pub fn metadata_run(&mut self, cmd: metadata::MetadataCmd) -> bool {
+    pub fn metadata_run(&mut self, cmd: metadata::MetadataCmd, keys: &plx_plex::plex::ClientKeys) -> bool {
         let _step = plx_base::step::StepScope::enter();
-        self.metadata.run(cmd)
+        self.metadata.run_with_keys(cmd, keys)
     }
 
     /// Take every job any store has emitted since the last take, store by store in a fixed order.
@@ -347,9 +347,10 @@ impl Stores {
         &mut self,
         cmd: search::SearchCmd,
         directory: browse::DirectoryView<'_>,
+        input: &crate::search::SearchInput<'_>,
     ) -> bool {
         let _step = plx_base::step::StepScope::enter();
-        self.search.run_with_directory(cmd, directory)
+        self.search.run_with_directory_and_input(cmd, directory, input)
     }
 
     /// Pump the Search store; `keys` is the registry's answer as of this call. It does NOT start the
@@ -360,22 +361,41 @@ impl Stores {
         &mut self,
         dt: f32,
         directory: browse::DirectoryView<'_>,
-        keys: &plx_plex::plex::ClientKeys,
+        input: &crate::search::SearchInput<'_>,
     ) -> bool {
         let _step = plx_base::step::StepScope::enter();
-        self.search.pump_with_directory_and_gate(dt, directory, &self.landgate, keys)
+        self.search.pump_with_directory_and_input_and_gate(dt, directory, &self.landgate, input)
     }
 
     pub fn search_snapshot(
         &self,
         directory: browse::DirectoryView<'_>,
         household: &[i64],
+        input: &crate::search::SearchInput<'_>,
     ) -> search::SearchSnapshot {
-        self.search.snapshot_with_directory(directory, household)
+        self.search.snapshot_with_directory_and_input(directory, household, input)
     }
 
     /// Controlled discovery against this aggregate's Browse owner: the read it asks for is left on
     /// Browse's outbox, for the controlled Home arm to admit through the run's ledger.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn search_run_for_test(&mut self, cmd: search::SearchCmd, directory: browse::DirectoryView<'_>) -> bool {
+        self.search_run(cmd, directory, &crate::search::fixture_input().input())
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn search_pump_for_test(&mut self, dt: f32, directory: browse::DirectoryView<'_>, keys: &plx_plex::plex::ClientKeys) -> bool {
+        let captured = crate::search::fixture_input();
+        let input = crate::search::SearchInput { keys, ..captured.input() };
+        self.search_pump(dt, directory, &input)
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn search_snapshot_for_test(&self, directory: browse::DirectoryView<'_>, household: &[i64]) -> search::SearchSnapshot {
+        self.search_snapshot(directory, household, &crate::search::fixture_input().input())
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn metadata_run_for_test(&mut self, cmd: metadata::MetadataCmd) -> bool {
+        self.metadata_run(cmd, &crate::pms::registry_keys_for_test())
+    }
     pub fn browse_controlled_discover(&self, input: &browse::BrowseRosterInput<'_>) {
         self.browse.borrow_mut().controlled_discover(input);
     }
@@ -421,7 +441,7 @@ impl Stores {
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory, clients),
             &mut |cmd| person.run(cmd),
             &mut |cmd| view_edit_collection(collection, cmd),
-            &mut |cmd| search.run_with_directory(cmd, directory),
+            &mut |cmd| search.run_local(cmd),
             &mut |cmd| metadata.run(cmd),
         )
     }
@@ -451,7 +471,7 @@ impl Stores {
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory, clients),
             &mut |cmd| person.run(cmd),
             &mut |cmd| view_edit_collection(collection, cmd),
-            &mut |cmd| search.run_with_directory(cmd, directory),
+            &mut |cmd| search.run_local(cmd),
             &mut |cmd| metadata.run(cmd),
         )
     }
@@ -568,7 +588,7 @@ impl Stores {
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory, clients),
             &mut |cmd| person.run(cmd),
             &mut |cmd| view_edit_collection(collection, cmd),
-            &mut |cmd| search.run_with_directory(cmd, directory),
+            &mut |cmd| search.run_local(cmd),
             &mut |cmd| metadata.run(cmd),
         )
     }
@@ -607,7 +627,7 @@ impl Stores {
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory, clients),
             &mut |cmd| person.run(cmd),
             &mut |cmd| view_edit_collection(collection, cmd),
-            &mut |cmd| search.run_with_directory(cmd, directory),
+            &mut |cmd| search.run_local(cmd),
             &mut |cmd| metadata.run(cmd),
         )));
         // A first watch whose read-back found the stream's end: the other servers' copies are
