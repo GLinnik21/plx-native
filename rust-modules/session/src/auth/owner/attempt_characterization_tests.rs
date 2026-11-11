@@ -68,11 +68,11 @@ fn command(owner: &mut SessionMachine, command: Command) -> Vec<SessionFx> {
 fn envelope(owner: &SessionMachine, req: u32, arrival: u64, terminal: bool,
     data: Observation) -> SessionEnvelope {
     SessionEnvelope { addr: Addr { to: MachineId::Session, req: RequestId(req) },
-        key: owner.state.pending[&req].key, admission: AdmissionId(req), arrival, terminal,
+        key: owner.state.common.pending[&req].key, admission: AdmissionId(req), arrival, terminal,
         lifecycle: None, outcome: SessionArrival::Data(Arc::new(data)) }
 }
 fn login(owner: &mut SessionMachine, arrival: u64, progress: LoginProgress, terminal: bool) -> SessionEnvelope {
-    let e = envelope(owner, owner.state.next_req, arrival, terminal, Observation::Login(progress));
+    let e = envelope(owner, owner.state.common.next_req, arrival, terminal, Observation::Login(progress));
     let effects = step(owner, SessionEvent::Result(e.clone()));
     assert!(matches!(effects.as_slice(), [SessionFx::Acknowledge(r)] if r == &vec![Receipt::of(&e)]));
     e
@@ -85,7 +85,7 @@ fn start(owner: &mut SessionMachine) -> u64 {
             admission: AdmissionId(1), input: SessionWork::Login { client_id } }]
         if requests.is_empty() && client_id == "synthetic-client"));
     assert_eq!(owner.read().0.phase, Phase::Creating);
-    owner.state.epoch
+    owner.state.common.epoch
 }
 fn waiting(owner: &mut SessionMachine) -> u64 {
     let epoch = start(owner);
@@ -162,8 +162,8 @@ fn qr_waiting_replacement_discovery_and_duplicate_receipts() {
     assert_eq!(owner.read().0.qr_generation, 2);
     login(&mut owner, 4, LoginProgress::Authorized { epoch, token: "synthetic-new-account".into() }, false);
     assert_eq!(owner.read().0.phase, Phase::Discovering);
-    assert!(owner.state.authorized_in_flow);
-    assert_eq!(owner.state.pending[&1].expected.account_token, "synthetic-new-account");
+    assert!(owner.state.common.authorized_in_flow);
+    assert_eq!(owner.state.common.pending[&1].expected.account_token, "synthetic-new-account");
     assert_eq!(&*retained.code, "TEST");
     assert_eq!(&*retained.png, &[1, 2, 3]);
     // Authorization does NOT clear the old QR payload in today's flat state.
@@ -217,11 +217,11 @@ fn back_cancels_login_but_only_resumes_committed_credentials() {
         SessionFx::Coordinator(CoordinatorAction::SignInCancelled),
         SessionFx::BackReply { to: ReplyTo { instance: 4, correlation: 9 }, resumed: true }]
         if requests == &vec![1]), "BACK effects: {:?}", safe_effect_diagnostics(&fx));
-    assert_eq!(owner.state.persisted.account_token, "synthetic-account");
-    assert_eq!(owner.state.persisted.user.uuid, "synthetic-saved-profile");
-    assert_eq!(owner.state.persisted.server.token, "synthetic-pms");
+    assert_eq!(owner.state.common.persisted.account_token, "synthetic-account");
+    assert_eq!(owner.state.common.persisted.user.uuid, "synthetic-saved-profile");
+    assert_eq!(owner.state.common.persisted.server.token, "synthetic-pms");
     assert_eq!(owner.read().0.phase, Phase::Ready);
-    assert!(owner.state.apply_pending);
+    assert!(owner.state.apply_pending());
     assert!(owner.read().0.code.is_empty());
     assert!(owner.read().0.png.is_empty());
     assert_eq!(owner.read().0.qr_generation, 0);
@@ -256,13 +256,13 @@ fn erase_is_ordered_and_stale_completions_do_not_finish_it() {
     assert!(owner.read().0.code.is_empty());
     assert!(owner.read().0.png.is_empty());
     assert_eq!(owner.read().0.qr_generation, 0);
-    assert!(owner.state.users.is_empty());
-    assert!(owner.state.error.is_empty());
-    assert!(!owner.state.apply_pending);
-    assert!(owner.state.persisted.account_token.is_empty());
+    assert!(owner.state.picker_data().users.is_empty());
+    assert!(owner.state.picker_data().error.is_empty());
+    assert!(!owner.state.apply_pending());
+    assert!(owner.state.common.persisted.account_token.is_empty());
     assert!(command(&mut owner, Command::StartLogin).is_empty());
     assert!(step(&mut owner, SessionEvent::Erased { epoch: 2, leftovers: 99 }).is_empty());
-    assert!(owner.state.pending_erase.is_some());
+    assert!(owner.state.pending_erase().is_some());
     let fx = step(&mut owner, SessionEvent::Erased { epoch: 3, leftovers: 2 });
     assert!(matches!(fx.as_slice(), [SessionFx::Coordinator(CoordinatorAction::LocalDataErased)]));
     assert_eq!(owner.read().0.phase, Phase::Deleted);
@@ -309,15 +309,15 @@ fn profiles_selection_capture_pin_failure_and_root_back() {
         SessionFx::Capture { request: SessionReadRequest::ProfilePolicy, .. },
         SessionFx::SelectionReply { to: ReplyTo { instance: 5, correlation: 6 }, accepted: true, .. }]));
     assert_eq!(owner.read().0.phase, Phase::Switching);
-    let req = owner.state.next_req;
-    let epoch = owner.state.epoch;
+    let req = owner.state.common.next_req;
+    let epoch = owner.state.common.epoch;
     let fx = step(&mut owner, SessionEvent::Read(SessionReadReply {
         addr: Addr { to: MachineId::Session, req: RequestId(req) }, epoch,
         value: SessionReadValue::ProfilePolicy { recently_unreachable: false } }));
     assert!(matches!(fx.as_slice(), [SessionFx::Work { req: r, input: SessionWork::ProfileSwitch { pin: Some(p), .. }, .. }]
         if *r == req && p == "0000"));
     let e = envelope(&owner, req, 1, true, Observation::ProfileSwitch(super::super::ProfileSwitchProgress {
-        epoch, expected: super::super::SessionIdentity::of(&owner.state.persisted),
+        epoch, expected: super::super::SessionIdentity::of(&owner.state.common.persisted),
         outcome: super::super::ProfileSwitchOutcomeProgress::Failed { error: "synthetic-pin-denied".into(), pin_denied: true } }));
     let fx = step(&mut owner, SessionEvent::Result(e.clone()));
     assert!(matches!(fx.as_slice(), [SessionFx::Retire { req: r }, SessionFx::Acknowledge(rs)]
@@ -358,38 +358,38 @@ fn stored_ready_admission_is_not_durability_and_background_is_not_saved_login() 
     let fx = step(&mut owner, SessionEvent::Commit(reply));
     assert!(matches!(fx.as_slice(), [SessionFx::PublishProfile(_), SessionFx::Ready { .. }, SessionFx::Retire { .. }]));
     assert_eq!(owner.read().0.phase, Phase::Ready);
-    assert!(!owner.state.commit_phase.admitted);
-    assert!(!owner.state.commit_phase.durable);
+    assert!(!owner.state.common.commit_phase.admitted);
+    assert!(!owner.state.common.commit_phase.durable);
     // Actual supported refresh command, with an ordinary synthetic HomeRoster result.
     let mut owner = picker();
-    let req = owner.state.pending.iter().find(|(_, p)| p.key.op == SessionOp::HomeRoster).unwrap().0.to_owned();
-    let epoch = owner.state.epoch;
+    let req = owner.state.common.pending.iter().find(|(_, p)| p.key.op == SessionOp::HomeRoster).unwrap().0.to_owned();
+    let epoch = owner.state.common.epoch;
     let e = envelope(&owner, req, 1, true, Observation::HomeRoster(super::super::HomeRosterProgress {
-        epoch, expected: super::super::SessionIdentity::of(&owner.state.persisted),
+        epoch, expected: super::super::SessionIdentity::of(&owner.state.common.persisted),
         users: Some(vec![UserTile { uuid: "synthetic-other".into(), ..Default::default() }]) }));
     let fx = step(&mut owner, SessionEvent::Result(e.clone()));
     let reply = commit_reply(&fx, CommitAdmission::Admitted { revision: 7, purpose: PersistencePurpose::Background });
     let fx = step(&mut owner, SessionEvent::Commit(reply));
     assert!(matches!(fx.as_slice(), [SessionFx::Retire { .. }, SessionFx::Acknowledge(rs)] if rs == &vec![Receipt::of(&e)]));
-    assert!(owner.state.commit_phase.admitted && !owner.state.commit_phase.durable);
+    assert!(owner.state.common.commit_phase.admitted && !owner.state.common.commit_phase.durable);
     let completion = PersistenceCompletion { req, epoch, arrival: 1, revision: 7,
         purpose: PersistencePurpose::Background, outcome: durable() };
     assert!(step(&mut owner, SessionEvent::Persistence(PersistenceCompletion { revision: 8, ..completion })).is_empty());
-    assert!(!owner.state.commit_phase.durable);
+    assert!(!owner.state.common.commit_phase.durable);
     assert!(step(&mut owner, SessionEvent::Persistence(completion)).is_empty());
-    assert!(owner.state.commit_phase.durable);
-    assert!(!owner.state.commit_phase.proves_saved_login);
+    assert!(owner.state.common.commit_phase.durable);
+    assert!(!owner.state.common.commit_phase.proves_saved_login);
 }
 
 #[test]
 fn superseded_durable_disk_evidence_never_seats_the_superseded_identity() {
     let mut owner = SessionMachine::from_init(captured());
-    let before = owner.state.disk_identity.clone();
+    let before = owner.state.common.disk_identity.clone();
     let after = Identity { account_token: "synthetic-superseded".into(), ..before.clone() };
     let retained = owner.publication();
     assert!(step(&mut owner, SessionEvent::DiskWrite { before: before.clone(), after: after.clone(), outcome: durable() }).is_empty());
-    assert!(owner.state.disk_identity == after);
-    assert_eq!(owner.state.persisted.account_token, "");
+    assert!(owner.state.common.disk_identity == after);
+    assert_eq!(owner.state.common.persisted.account_token, "");
     assert!(Arc::ptr_eq(&retained, &owner.publication()));
     assert!(step(&mut owner, SessionEvent::DiskWrite { before, after, outcome: durable() }).is_empty());
 }
@@ -459,8 +459,8 @@ fn v5_boot_roundtrip_and_frozen_canonical_field_order() {
 fn profile_seating_revokes_once_and_late_roster_is_same_identity_refresh() {
     let mut owner = picker();
     command(&mut owner, Command::SelectProfile { index: 0, pin: None });
-    let req = owner.state.next_req;
-    let epoch = owner.state.epoch;
+    let req = owner.state.common.next_req;
+    let epoch = owner.state.common.epoch;
     step(&mut owner, SessionEvent::Read(SessionReadReply {
         addr: Addr { to: MachineId::Session, req: RequestId(req) }, epoch,
         value: SessionReadValue::ProfilePolicy { recently_unreachable: false } }));
@@ -468,7 +468,7 @@ fn profile_seating_revokes_once_and_late_roster_is_same_identity_refresh() {
         machine_id: "synthetic-server".into(), address: "127.0.0.1".into(), port: 32400,
         token: "synthetic-profile-token".into(), owned: true, ..Default::default() };
     let e = envelope(&owner, req, 1, false, Observation::ProfileSwitch(super::super::ProfileSwitchProgress {
-        epoch, expected: super::super::SessionIdentity::of(&owner.state.persisted),
+        epoch, expected: super::super::SessionIdentity::of(&owner.state.common.persisted),
         outcome: super::super::ProfileSwitchOutcomeProgress::Ready {
             delta: super::super::ProfileDelta { server: super::super::server_ref(&primary),
                 sources: vec![primary.clone()], user: UserRef { uuid: "synthetic-other".into(),
@@ -480,8 +480,8 @@ fn profile_seating_revokes_once_and_late_roster_is_same_identity_refresh() {
     let fx = step(&mut owner, SessionEvent::Commit(reply));
     assert!(matches!(fx.as_slice(), [SessionFx::Acknowledge(rs)] if rs == &vec![Receipt::of(&e)]));
     assert_eq!(owner.read().0.phase, Phase::Ready);
-    assert!(owner.state.pending[&req].phase == StreamPhase::ProfileSeated);
-    let expected = super::super::SessionIdentity::of(&owner.state.persisted);
+    assert!(owner.state.common.pending[&req].phase == StreamPhase::ProfileSeated);
+    let expected = super::super::SessionIdentity::of(&owner.state.common.persisted);
     let plan = scenarios::late_profile_roster(&mut owner, req, epoch, &primary, expected);
     assert!(matches!(plan.registry.as_slice(), [RegistryPlan::Install {
         commit: RosterCommit::Refresh { same_identity: true }, .. }]));
@@ -508,20 +508,20 @@ fn failure_readout_survives_resuming_back_erase_and_deleted() {
     let fx = step(&mut owner, SessionEvent::Result(failed.clone()));
     assert!(matches!(fx.as_slice(), [SessionFx::Coordinator(CoordinatorAction::SignInFailed {
         phase: Phase::Discovering }), SessionFx::Acknowledge(rs)] if rs == &vec![Receipt::of(&failed)]), "{:?}", safe_effect_diagnostics(&fx));
-    let readout = serde_json::to_vec(&owner.state.plaintext).unwrap();
+    let readout = serde_json::to_vec(&owner.state.common.plaintext).unwrap();
     let fx = command(&mut owner, Command::BackAtRoot { reply: ReplyTo { instance: 1, correlation: 2 } });
     // Terminal Failed already retired login; signin_active was consumed by SignInFailed.
     assert!(matches!(fx.as_slice(), [SessionFx::Cancel { requests, epoch: 3 },
         SessionFx::BackReply { resumed: true, .. }] if requests.is_empty()), "{:?}", safe_effect_diagnostics(&fx));
     assert_eq!(owner.read().0.phase, Phase::Ready);
-    assert_eq!(owner.state.persisted.account_token, "synthetic-account");
+    assert_eq!(owner.state.common.persisted.account_token, "synthetic-account");
     for phase in [Phase::Ready, Phase::Ready, Phase::Deleted] {
         assert_eq!(owner.read().0.phase, phase);
-        assert_eq!(serde_json::to_vec(&owner.state.plaintext).unwrap(), readout);
-        assert_eq!(owner.state.signin_account.as_deref(), Some("Synthetic Person"));
+        assert_eq!(serde_json::to_vec(&owner.state.common.plaintext).unwrap(), readout);
+        assert_eq!(owner.state.common.signin_account.as_deref(), Some("Synthetic Person"));
         // readout_account:845-847 hides the retained private name outside the no-server Error.
         assert!(owner.read().0.account.is_none());
-        if owner.state.pending_erase.is_some() {
+        if owner.state.pending_erase().is_some() {
             let fx = step(&mut owner, SessionEvent::Erased { epoch: 4, leftovers: 1 });
             assert!(matches!(fx.as_slice(), [SessionFx::Coordinator(CoordinatorAction::LocalDataErased)]), "{:?}", safe_effect_diagnostics(&fx));
         } else if phase == Phase::Ready {
@@ -530,7 +530,7 @@ fn failure_readout_survives_resuming_back_erase_and_deleted() {
                 SessionFx::Cancel { requests, epoch: 4 }, SessionFx::PublishProfile(_),
                 SessionFx::Erase { epoch: 4, all_local: true, .. }] if requests.is_empty()), "{:?}", safe_effect_diagnostics(&fx));
             assert!(owner.read().0.code.is_empty());
-            assert!(!owner.state.apply_pending);
+            assert!(!owner.state.apply_pending());
         }
     }
 }
@@ -546,16 +546,16 @@ fn discovery_retry_is_live_restorable_but_epoch_advance_clears_it() {
     let init = owner.snapshot_init();
     let mut restored = SessionMachine::from_init(init.clone());
     assert_eq!(restored.subhash(), init.hash());
-    assert_eq!(restored.state.discovery_retry.unwrap().elapsed_ms, 1234);
+    assert_eq!(restored.state.common.discovery_retry.unwrap().elapsed_ms, 1234);
     let fx = command(&mut restored, Command::EraseLocal);
     assert!(matches!(fx.as_slice(), [SessionFx::Coordinator(CoordinatorAction::CloseTelemetry),
         SessionFx::Cancel { epoch: 3, .. }, SessionFx::PublishProfile(_), SessionFx::Erase { epoch: 3, .. }]), "{:?}", safe_effect_diagnostics(&fx));
     // Important source correction: advance_epoch:1789 explicitly clears this anchor.
-    assert!(restored.state.discovery_retry.is_none());
+    assert!(restored.state.common.discovery_retry.is_none());
     assert_eq!(restored.read().0.phase, Phase::Discovering);
     step(&mut restored, SessionEvent::Erased { epoch: 3, leftovers: 0 });
     assert_eq!(restored.read().0.phase, Phase::Deleted);
-    assert!(restored.state.discovery_retry.is_none());
+    assert!(restored.state.common.discovery_retry.is_none());
     assert!(serde_json::to_vec(&init).unwrap().as_slice() == include_bytes!("fixtures/legacy-v5/live.json"),
         "legacy V5 bytes differ for live");
     assert_eq!(init.hash(), 18001482832323156010);
@@ -578,31 +578,31 @@ fn fresh_final_warning_holds_publication_until_addressed_continue() {
     let reply = commit_reply(&fx, CommitAdmission::Admitted { revision: 1, purpose: PersistencePurpose::Discovery });
     let fx = step(&mut owner, SessionEvent::Commit(reply));
     assert!(!fx.iter().any(|f| matches!(f, SessionFx::PublishProfile(_) | SessionFx::Ready { .. })), "{:?}", safe_effect_diagnostics(&fx));
-    assert!(owner.state.authorized_in_flow);
+    assert!(owner.state.common.authorized_in_flow);
     assert!(step(&mut owner, SessionEvent::Persistence(PersistenceCompletion { req: reply.req,
         epoch, arrival: 3, revision: 1, purpose: PersistencePurpose::Discovery, outcome: durable() })).is_empty());
     let fx = command(&mut owner, Command::TakeReady);
     assert!(matches!(fx.as_slice(), [SessionFx::Commit { plan, .. }]
         if plan.authority == plx_plex::plex::session::SaveAuthority::FreshReauthentication), "{:?}", safe_effect_diagnostics(&fx));
-    assert!(!owner.state.authorized_in_flow);
+    assert!(!owner.state.common.authorized_in_flow);
     let reply = commit_reply(&fx, CommitAdmission::Admitted { revision: 2, purpose: PersistencePurpose::Final });
     let fx = step(&mut owner, SessionEvent::Commit(reply));
     assert!(matches!(fx.as_slice(), [SessionFx::Retire { req }] if *req == reply.req), "{:?}", safe_effect_diagnostics(&fx));
-    assert!(owner.state.held_handoff.is_some());
+    assert!(owner.state.common.held_handoff.is_some());
     let completion = PersistenceCompletion { req: reply.req, epoch, arrival: 0, revision: 2,
         purpose: PersistencePurpose::Final,
         outcome: CompletionOutcome::Failed(Failure::Persistence(PersistOutcome::WriteFailed)) };
     assert!(step(&mut owner, SessionEvent::Persistence(PersistenceCompletion { revision: 3, ..completion })).is_empty());
-    assert!(owner.state.persistence_warning.is_none());
+    assert!(owner.state.common.persistence_warning.is_none());
     assert!(step(&mut owner, SessionEvent::Persistence(completion)).is_empty());
-    let key = owner.state.persistence_warning.unwrap().key;
+    let key = owner.state.common.persistence_warning.unwrap().key;
     let fx = command(&mut owner, Command::BackAtRoot { reply: ReplyTo { instance: 2, correlation: 3 } });
     assert!(matches!(fx.as_slice(), [SessionFx::BackReply { resumed: false, .. }]), "{:?}", safe_effect_diagnostics(&fx));
     assert!(command(&mut owner, Command::TakeReady).is_empty());
     let fx = command(&mut owner, Command::AcknowledgePersistenceWarning { key });
     assert!(matches!(fx.as_slice(), [SessionFx::PublishProfile(_), SessionFx::Ready { .. }]), "{:?}", safe_effect_diagnostics(&fx));
-    assert!(owner.state.held_handoff.is_none());
-    assert!(!owner.state.commit_phase.proves_saved_login);
+    assert!(owner.state.common.held_handoff.is_none());
+    assert!(!owner.state.common.commit_phase.proves_saved_login);
     assert!(command(&mut owner, Command::AcknowledgePersistenceWarning { key }).is_empty());
 }
 
@@ -620,16 +620,16 @@ fn busy_commit_retains_fifo_and_supersession_returns_each_credit_once() {
     for record in [&second, &third, &second] {
         assert!(step(&mut owner, SessionEvent::Result(record.clone())).is_empty());
     }
-    assert!(owner.state.inbox.iter().map(Receipt::of).collect::<Vec<_>>() ==
+    assert!(owner.state.common.inbox.iter().map(Receipt::of).collect::<Vec<_>>() ==
         vec![Receipt::of(&second), Receipt::of(&third)]);
-    assert!(!owner.state.pump_pending);
-    assert_eq!(owner.state.pending[&1].last_arrival, Some(3));
+    assert!(!owner.state.common.pump_pending);
+    assert_eq!(owner.state.common.pending[&1].last_arrival, Some(3));
     let fx = command(&mut owner, Command::StartLogin);
     // discard_owned_envelopes drains FIFO first, then returns the commit's owned receipt.
     assert!(matches!(fx.as_slice(), [SessionFx::Cancel { epoch: 2, .. }, SessionFx::Acknowledge(rs),
         SessionFx::Cancel { epoch: 3, .. }, SessionFx::Coordinator(CoordinatorAction::SignInStarted),
         SessionFx::Work { .. }] if rs == &vec![Receipt::of(&second), Receipt::of(&third), Receipt::of(&e)]), "{:?}", safe_effect_diagnostics(&fx));
-    assert!(owner.state.inbox.is_empty());
+    assert!(owner.state.common.inbox.is_empty());
     assert!(owner.commit_permit(old.req, old.epoch, old.arrival).is_none());
     assert!(step(&mut owner, SessionEvent::Commit(old)).is_empty());
 }
@@ -664,20 +664,20 @@ fn nested_v5_prior_writer_golden_probe() {
 fn restored_accepted_discovery_keeps_stream_authority_and_matching_retry_fence() {
     let mut original = SessionMachine::from_init(captured());
     let epoch = waiting(&mut original);
-    let req = original.state.next_req;
-    let key = original.state.pending[&req].key;
+    let req = original.state.common.next_req;
+    let key = original.state.common.pending[&req].key;
     let admission = AdmissionReply { addr: Addr { to: MachineId::Session, req: RequestId(req) },
         key, correlation: AdmissionId(req), accepted: true };
     assert!(step(&mut original, SessionEvent::Admission(admission)).is_empty());
-    assert!(original.state.pending[&req].admission == AdmissionState::Accepted(AdmissionId(req)));
+    assert!(original.state.common.pending[&req].admission == AdmissionState::Accepted(AdmissionId(req)));
     login(&mut original, 2, LoginProgress::Authorized { epoch, token: "synthetic-account".into() }, false);
     login(&mut original, 3, LoginProgress::DiscoveryTrouble { epoch,
         progress: super::super::DiscoveryRetryProgress {
             run: super::super::DiscoveryRetryRun::Resources, misses: 2, elapsed_ms: 1234 } }, false);
     let mut restored = SessionMachine::from_init(original.snapshot_init());
     assert_eq!(original.subhash(), restored.subhash());
-    assert_eq!(restored.state.pending[&req].last_arrival, Some(3));
-    assert!(restored.state.pending[&req].admission == AdmissionState::Accepted(AdmissionId(req)));
+    assert_eq!(restored.state.common.pending[&req].last_arrival, Some(3));
+    assert!(restored.state.common.pending[&req].admission == AdmissionState::Accepted(AdmissionId(req)));
     for (arrival, run) in [(4, super::super::DiscoveryRetryRun::HomeUsers),
         (5, super::super::DiscoveryRetryRun::Resources)] {
         let record = envelope(&original, req, arrival, false,

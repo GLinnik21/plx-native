@@ -155,7 +155,7 @@ pub fn late_profile_roster(owner: &mut SessionMachine, req: u32, epoch: u64,
 pub fn late_roster_of_the_seated_profile() -> (plx_plex::plex::ServerId, CommitPlan) {
     let (mut owner, req, epoch, primary) = picker_switch_seated();
     let sid = plx_plex::plex::id_of_machine("a").expect("the switch installed the seated server");
-    let seated = super::super::SessionIdentity::of(&owner.state.persisted);
+    let seated = super::super::SessionIdentity::of(&owner.state.common.persisted);
     let plan = late_profile_roster(&mut owner, req, epoch, &primary, seated);
     (sid, plan)
 }
@@ -223,8 +223,8 @@ pub fn member_account_on_admin_seat() -> (SessionMachine, plx_plex::plex::Server
             ..Default::default() },
     ];
     let owner = roster_refresh_fixture("u-admin", users);
-    assert!(owner.state.persisted.active_profile_is_admin());
-    let stored = owner.state.persisted.sources.clone();
+    assert!(owner.state.common.persisted.active_profile_is_admin());
+    let stored = owner.state.common.persisted.sources.clone();
     assert!(stored[0].owned, "the admin's roster calls the admin's server owned");
     assert!(super::super::execute_session_registry(&RegistryPlan::Install {
         sources: stored.clone(), primary: None, commit: RosterCommit::Merge,
@@ -280,9 +280,9 @@ pub fn refresh_under_another_accounts_token() -> (plx_plex::plex::ServerId, Comm
 pub fn activation_under_another_accounts_token() -> (plx_plex::plex::ServerId, CommitPlan) {
     let (mut owner, sid, members_view) = member_account_on_admin_seat();
     let req = owner.allocate(SessionOp::ServerRoster, None).unwrap();
-    owner.state.pending.get_mut(&req).unwrap().admission = AdmissionState::Accepted(AdmissionId(req));
-    let epoch = owner.state.epoch;
-    let expected = super::super::SessionIdentity::of(&owner.state.persisted);
+    owner.state.common.pending.get_mut(&req).unwrap().admission = AdmissionState::Accepted(AdmissionId(req));
+    let epoch = owner.state.common.epoch;
+    let expected = super::super::SessionIdentity::of(&owner.state.common.persisted);
     let activate = SessionEnvelope {
         addr: Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(req) },
         key: SessionWorkKey { epoch, op: SessionOp::ServerRoster },

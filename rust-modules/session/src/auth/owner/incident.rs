@@ -286,7 +286,7 @@ impl SessionMachine {
     /// held — a key this launch has already resolved included, which is then resolved quietly.
     pub fn raise_incident(&mut self, flow: IncidentFlow, context: IncidentContext) {
         let key = IncidentKey { flow, kind: context.kind, link: context.link };
-        if let Some(held) = self.state.incident.as_mut().filter(|held| held.key == key) {
+        if let Some(held) = self.state.common.incident.as_mut().filter(|held| held.key == key) {
             // The same failure again. Unresolved (a second stalled report in one wait): keep the
             // offer, take the fresher report evidence. Resolved: keep the answer and report
             // evidence it already has. Details always reads the current failure facts.
@@ -296,9 +296,9 @@ impl SessionMachine {
             }
             return;
         }
-        self.state.next_incident = self.state.next_incident.wrapping_add(1).max(1);
-        self.state.incident = Some(IncidentOffer {
-            id: self.state.next_incident,
+        self.state.common.next_incident = self.state.common.next_incident.wrapping_add(1).max(1);
+        self.state.common.incident = Some(IncidentOffer {
+            id: self.state.common.next_incident,
             key,
             context: Some(context),
             readout_context: Some(context),
@@ -314,8 +314,8 @@ impl SessionMachine {
         revision: u32,
         emit: &mut impl FnMut(SessionFx),
     ) -> bool {
-        let seen = &self.state.incidents_seen;
-        let Some(held) = self.state.incident.as_mut().filter(|held| held.id == id) else { return false };
+        let seen = &self.state.common.incidents_seen;
+        let Some(held) = self.state.common.incident.as_mut().filter(|held| held.id == id) else { return false };
         match held.state {
             IncidentState::Pending => {}
             IncidentState::Offered { revision: at } | IncidentState::OnRequest { revision: at }
@@ -352,13 +352,13 @@ impl SessionMachine {
 
     /// The person's Send report — from the alert, or from Details afterwards.
     pub fn report_incident(&mut self, id: u32, emit: &mut impl FnMut(SessionFx)) -> bool {
-        let Some(held) = self.state.incident.as_mut().filter(|held| held.id == id && held.sendable()) else {
+        let Some(held) = self.state.common.incident.as_mut().filter(|held| held.id == id && held.sendable()) else {
             return false;
         };
         let report = match held.context {
             Some(context) => IncidentReport::Retained(context),
             None => {
-                self.state.persistence_warning
+                self.state.common.persistence_warning
                     .filter(|_| held.key.kind == IncidentKind::SaveFailed)
                     .and_then(|warning| warning.incident_context())
                     .map(IncidentReport::Retained)
@@ -374,7 +374,7 @@ impl SessionMachine {
 
     /// The person's Not now. Only an offer on screen can be answered.
     pub fn decline_incident(&mut self, id: u32) -> bool {
-        let Some(held) = self.state.incident.as_mut().filter(|held| held.id == id) else { return false };
+        let Some(held) = self.state.common.incident.as_mut().filter(|held| held.id == id) else { return false };
         if !matches!(held.state, IncidentState::Offered { .. }) {
             return false;
         }
@@ -386,7 +386,7 @@ impl SessionMachine {
     /// became of a queued report is fenced by its receipt as well — a different receipt is a report
     /// this offer no longer shows.
     pub fn incident_reported(&mut self, id: u32, delivery: &IncidentDelivery) -> bool {
-        let Some(held) = self.state.incident.as_mut().filter(|held| held.id == id) else { return false };
+        let Some(held) = self.state.common.incident.as_mut().filter(|held| held.id == id) else { return false };
         let shown = match &held.state {
             IncidentState::Queued { receipt } | IncidentState::Saved { receipt } => Some(receipt.as_str()),
             _ => None,
@@ -414,19 +414,19 @@ impl SessionMachine {
 
     /// Sign-out and Delete all local data: every incident, and what this launch has seen.
     pub fn forget_incidents(&mut self) {
-        self.state.incident = None;
-        self.state.incidents_seen.clear();
-        self.state.link_trouble = false;
+        self.state.common.incident = None;
+        self.state.common.incidents_seen.clear();
+        self.state.qr_mut().trouble = false;
     }
 
     fn remember_seen(&mut self, key: IncidentKey) {
-        if self.state.incidents_seen.contains(&key) {
+        if self.state.common.incidents_seen.contains(&key) {
             return;
         }
-        if self.state.incidents_seen.len() >= SEEN_CAP {
-            self.state.incidents_seen.remove(0);
+        if self.state.common.incidents_seen.len() >= SEEN_CAP {
+            self.state.common.incidents_seen.remove(0);
         }
-        self.state.incidents_seen.push(key);
+        self.state.common.incidents_seen.push(key);
     }
 
     pub fn step_incident_command(

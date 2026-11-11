@@ -285,7 +285,7 @@ fn discovery_trouble_is_accepted_for_rediscover_and_stale_epochs_are_fenced() {
         IncidentKind::Discovery(plx_telemetry::telemetry::incident::DiscoveryClass::Silent), None));
     command(&mut owner, Command::Retry);
     let epoch = owner.state.epoch;
-    assert_eq!(owner.state.phase, Phase::Discovering);
+    assert_eq!(owner.state.phase(), Phase::Discovering);
 
     let progress = retry(crate::auth::DiscoveryRetryRun::Resources, 1, 50);
     observe(&mut owner, LoginProgress::DiscoveryTrouble { epoch, progress }, false);
@@ -862,7 +862,7 @@ fn the_account_name_is_absent_from_every_report_effect_and_digest() {
     let context = offer.readout_context().copied().expect("the read-out's context");
     let mut seen = vec![
         format!("{:?}", incident_effects(&effects)),
-        serde_json::to_string(&owner.state).unwrap(),
+        serde_json::to_string(&owner.snapshot_init()).unwrap(),
         serde_json::to_string(&context).unwrap(),
         format!("{context:?}"),
     ];
