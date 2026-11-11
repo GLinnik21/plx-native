@@ -10,7 +10,11 @@ typedef struct PlxAss PlxAss;
 typedef struct {
     int x, y, width, height;
     size_t bytes;
-    const uint8_t *rgba; /* straight RGBA; valid until the next render or destroy */
+    /* PREMULTIPLIED RGBA (each colour channel at most its alpha; a pixel of coverage 50% of
+     * colour (255, 128, 64) is 128, 64, 32, 128), composed in libass image-list order; valid until
+     * the next render or destroy. The caller draws it with a premultiplied blend (ONE,
+     * ONE_MINUS_SRC_ALPHA); drawn with a straight one it would be dark at every soft edge. */
+    const uint8_t *rgba;
 } PlxAssBitmap;
 
 #define PLX_ASS_MAX_REGIONS 64
@@ -26,13 +30,18 @@ typedef struct {
  * ABI 5: plx_ass_add_font works after plx_ass_load too (the face is opened alone at the next
  * frame) and has no byte limit but `int`; before, it refused once a track was loaded and past
  * 64 MiB in all. PlxAssStats also carries the last plx_ass_render call's timing (wall and thread
- * CPU) and image counts (last_*), the split a styled-subtitle frame's cost is attributed with. */
+ * CPU) and image counts (last_*), the split a styled-subtitle frame's cost is attributed with.
+ * plx_ass_render publishes PREMULTIPLIED RGBA, where it published straight RGBA before: the straight
+ * conversion was a pass over every pixel of every changed region (mostly transparent ones) and the
+ * application's blend takes premultiplied colour as it is. The version stays 5 because ABI 5 has not
+ * shipped (main is on 4) and the one consumer, plx_media's `player::ass`, builds with this library
+ * from the same tree. */
 #define PLX_ASS_ABI_VERSION 5
 
 /* The last_* fields describe the most recent plx_ass_render call, in microseconds saturating at
  * UINT32_MAX. last_libass_us is the wall time (CLOCK_MONOTONIC) of ass_render_frame alone;
  * last_composite_us is the wall time of everything after it until the frame is returned (bounds,
- * region placement, the per-pixel composite and the straight-alpha pass), 0 for a call that found
+ * region placement and the per-pixel composite), 0 for a call that found
  * the frame unchanged (it returns 0). last_libass_cpu_us and last_composite_cpu_us are the same
  * two phases measured on CLOCK_THREAD_CPUTIME_ID: the CPU time the calling thread spent in them,
  * so wall minus CPU is the time it was descheduled or blocked (the host's other work, a page

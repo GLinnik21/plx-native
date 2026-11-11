@@ -48,7 +48,6 @@ struct PlxAss {
     uint32_t last_images;
     uint64_t last_image_pixels;
     char *default_font;
-    unsigned reciprocal[256];
 };
 
 /* Subtitle text and font metadata are untrusted and can be private. Do not
@@ -109,7 +108,6 @@ PlxAss *plx_ass_create(const char *default_font)
     if (!default_font || !*default_font) return NULL;
     PlxAss *ctx = calloc(1, sizeof(*ctx));
     if (!ctx) return NULL;
-    for (unsigned a = 1; a < 256; ++a) ctx->reciprocal[a] = 65536u / a;
     ctx->default_font = strdup(default_font);
     ctx->library = ass_library_init();
     if (!ctx->default_font || !ctx->library) goto failed;
@@ -424,9 +422,9 @@ static void place_regions(PlxAss *ctx, const struct Bounds *bounds, size_t count
     ctx->region_count = count;
 }
 
-/* Test hook: ci/test_ass_regions.py defines this before including the file to count how often a loop
- * below steps onto a pixel that has nothing to draw (kind: `blend` in blend_row, `straight` in
- * straighten_pixels) instead of skipping it with its neighbours. It is a no-op otherwise. */
+/* Test hook: ci/test_ass_regions.py defines this before including the file to count how often the
+ * loop below steps onto a pixel that has nothing to draw (kind: `blend` in blend_row) instead of
+ * skipping it with its neighbours. It is a no-op otherwise. */
 #ifndef PLX_ASS_VISIT_ZERO
 #define PLX_ASS_VISIT_ZERO(kind) ((void)0)
 #endif
@@ -469,42 +467,6 @@ static void blend_row(uint8_t *dst, const uint8_t *mask, int n, const uint8_t *c
         if (word) blend_four(dst + 4 * x, mask + x, coverage, color);
     }
     for (; x < n; ++x) blend_pixel(dst + 4 * x, mask[x], coverage, color);
-}
-
-/* One premultiplied pixel to straight RGBA, given its alpha. */
-static inline void straighten_pixel(uint8_t *rgba, unsigned a, const unsigned *reciprocal)
-{
-    /* Transparent pixels are already zero; opaque pixels are already
-     * straight RGBA. Avoid three variable divisions for every opaque pixel
-     * (software division on the ARMv7 target), including static vector signs. */
-    if (!a) {
-        PLX_ASS_VISIT_ZERO(straight);
-        return;
-    }
-    if (a == 255) return;
-    for (int c = 0; c < 3; ++c) {
-        rgba[c] = ass_straight_channel(rgba[c], a, reciprocal[a]);
-    }
-}
-
-/* Premultiplied RGBA to straight RGBA, in place, `pixels` of them. A sign's region is mostly
- * transparent, so four pixels at a time are read as words and a group whose alphas are all 0 (or
- * all 255: solid fills, which need no division either) is passed over whole; any other group is
- * converted pixel by pixel as before. Alpha is the top byte of ass_load_rgba's word. */
-static void straighten_pixels(uint8_t *rgba, size_t pixels, const unsigned *reciprocal)
-{
-    size_t i = 0;
-    for (; i + 4 <= pixels; i += 4, rgba += 16) {
-        uint32_t w0 = ass_load_rgba(rgba), w1 = ass_load_rgba(rgba + 4),
-                 w2 = ass_load_rgba(rgba + 8), w3 = ass_load_rgba(rgba + 12);
-        if (!((w0 | w1 | w2 | w3) >> 24)) continue;
-        if (((w0 & w1 & w2 & w3) >> 24) == 255) continue;
-        straighten_pixel(rgba, w0 >> 24, reciprocal);
-        straighten_pixel(rgba + 4, w1 >> 24, reciprocal);
-        straighten_pixel(rgba + 8, w2 >> 24, reciprocal);
-        straighten_pixel(rgba + 12, w3 >> 24, reciprocal);
-    }
-    for (; i < pixels; ++i, rgba += 4) straighten_pixel(rgba, rgba[3], reciprocal);
 }
 
 static int compose_frame(PlxAss *ctx, ASS_Image *images, int width, int height, int reusable,
@@ -553,9 +515,9 @@ int plx_ass_render(PlxAss *ctx, int64_t now_ms, int width, int height,
     return result;
 }
 
-/* Everything plx_ass_render does with libass's image list: bounds, retained regions, the arena,
- * the per-pixel composite and the straight-alpha pass. Its wall time is last_composite_us, its
- * thread CPU time last_composite_cpu_us. */
+/* Everything plx_ass_render does with libass's image list: bounds, retained regions, the arena and
+ * the per-pixel composite. Its wall time is last_composite_us, its thread CPU time
+ * last_composite_cpu_us. */
 static int compose_frame(PlxAss *ctx, ASS_Image *images, int width, int height, int reusable,
                          PlxAssFrame *frame)
 {
@@ -602,9 +564,11 @@ static int compose_frame(PlxAss *ctx, ASS_Image *images, int width, int height, 
         ctx->bytes = bytes;
     }
     place_regions(ctx, bounds, region_count, retained);
-    /* ASS_Image is an ordered list (shadow, outline, glyph, next event). Compose
-     * every layer in that order in premultiplied space before converting to the
-     * straight RGBA expected by SDL's ordinary blend mode. */
+    /* ASS_Image is an ordered list (shadow, outline, glyph, next event). Compose every layer in that
+     * order in premultiplied space and publish the result as it is: PREMULTIPLIED RGBA, drawn by the
+     * application with a premultiplied blend (gfx's `draw_tex_premultiplied`). A conversion to straight
+     * RGBA here would be a pass over every pixel of every changed region, most of them transparent,
+     * to undo what the blend already holds. */
     size_t image_index = 0;
     for (ASS_Image *p = images; p; p = p->next, ++image_index) {
         size_t region = ctx->images[image_index].region;
@@ -624,11 +588,6 @@ static int compose_frame(PlxAss *ctx, ASS_Image *images, int width, int height, 
                 ((size_t)(y - bitmap->y) * bitmap->width + l - bitmap->x) * 4;
             blend_row(dst, mask + (l - p->dst_x), r - l, coverage, color);
         }
-    }
-    for (size_t region = 0; region < region_count; ++region) {
-        if (retained[region]) continue;
-        PlxAssBitmap *bitmap = &ctx->regions[region];
-        straighten_pixels((uint8_t *)bitmap->rgba, bitmap->bytes / 4, ctx->reciprocal);
     }
     ctx->cache_valid = 1;
     frame->count = region_count;

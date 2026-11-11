@@ -254,6 +254,17 @@ fn pixel(frame: &Frame, x: i32, y: i32) -> [u8; 4] {
     r.rgba[start..start + 4].try_into().unwrap()
 }
 
+/// The colour a published PREMULTIPLIED pixel stands for, as straight RGBA: for a test that asks what
+/// colour a pixel is and not which bytes the facade published (those are asserted as they are).
+fn straight(px: [u8; 4]) -> [u8; 4] {
+    let a = u32::from(px[3]);
+    if a == 0 || a == 255 {
+        return px;
+    }
+    let un = |c: u8| ((u32::from(c) * 255 + a / 2) / a).min(255) as u8;
+    [un(px[0]), un(px[1]), un(px[2]), px[3]]
+}
+
 /// An actual pixel contract against the same pinned library shipped to the TV.
 /// Run after `make libass-host` with `--include-ignored`.
 #[test]
@@ -267,7 +278,9 @@ fn native_pixels_preserve_position_layers_alpha_motion_karaoke_and_readorder() {
     let first = render(&mut engine, &source, 100);
     assert_eq!(pixel(&first, 25, 25), [255, 0, 0, 255]);
     assert_eq!(pixel(&first, 45, 35), [128, 0, 127, 255]);
-    assert_eq!(pixel(&first, 75, 35), [0, 0, 255, 127]);
+    // Published premultiplied: blue at 127/255 coverage is 127 of 255, not the straight 255.
+    assert_eq!(pixel(&first, 75, 35), [0, 0, 127, 127]);
+    assert_eq!(straight(pixel(&first, 75, 35)), [0, 0, 255, 127]);
     let coded = engine.render(&job(&source, 100, 320, 180, 720, 480)).frame;
     assert_eq!(coded.error, None);
     assert_eq!(pixel(&coded, 25, 25), [255, 0, 0, 255]);
@@ -345,6 +358,7 @@ fn native_pixels_preserve_position_layers_alpha_motion_karaoke_and_readorder() {
         f.rects
             .iter()
             .flat_map(|r| r.rgba.chunks_exact(4))
+            .map(|p| straight([p[0], p[1], p[2], p[3]]))
             .filter(|p| p[1] > 200 && p[0] < 20 && p[3] > 100)
             .count()
     };

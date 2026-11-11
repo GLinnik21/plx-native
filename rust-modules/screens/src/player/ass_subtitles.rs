@@ -161,7 +161,9 @@ impl AssSubtitles {
         let ink = plx_appkit::player_hud::subtitle_ink(model);
         for (i, (texture, rect)) in self.textures.iter().zip(&frame.rects).enumerate() {
             let dy = self.dys[i];
-            Painter::root().tex(
+            // The facade composes the regions premultiplied (`ass::Rect::rgba`), so they take the
+            // premultiplied draw: the same ink rung, no straight-alpha conversion on the CPU.
+            Painter::root().tex_premultiplied(
                 texture.id,
                 Rect::new(
                     (self.viewport.x + rect.x) as f32,
@@ -169,7 +171,6 @@ impl AssSubtitles {
                     rect.width as f32,
                     rect.height as f32,
                 ),
-                0.0,
                 ink,
             );
         }

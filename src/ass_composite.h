@@ -44,16 +44,4 @@ static inline uint32_t ass_blend_pixel(uint32_t dst, uint32_t source, unsigned a
     return ass_div255_pair(rb) | (ass_div255_pair(ga) << 8);
 }
 
-/* The numerator is below 65536. Multiplication by floor(65536/alpha)
- * underestimates its quotient by at most one; the remainder supplies the exact
- * correction. This replaces ARMv7's software divide without changing a pixel. */
-static inline uint8_t ass_straight_channel(unsigned premultiplied, unsigned alpha,
-                                          unsigned reciprocal)
-{
-    const unsigned n = premultiplied * 255u + alpha / 2;
-    unsigned q = (n * reciprocal) >> 16;
-    q += n - q * alpha >= alpha;
-    return (uint8_t)(q > 255 ? 255 : q);
-}
-
 #endif

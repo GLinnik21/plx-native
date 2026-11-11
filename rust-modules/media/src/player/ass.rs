@@ -100,7 +100,9 @@ pub struct Rect {
     pub y: i32,
     pub width: i32,
     pub height: i32,
-    /// Straight (not premultiplied) RGBA, composited in libass image-list order.
+    /// PREMULTIPLIED RGBA (no colour channel above its alpha), composited in libass image-list order
+    /// and published by the facade as composed: it is drawn with a premultiplied blend
+    /// (`Painter::tex_premultiplied`), never the straight-alpha one the image subtitles use.
     pub rgba: Arc<[u8]>,
 }
 

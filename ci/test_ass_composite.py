@@ -31,14 +31,9 @@ int main(void) {
                     }
                 }
             }
-            if (a) {
-                unsigned expected = (s*255 + a/2)/a;
-                if (expected > 255) expected = 255;
-                if (ass_straight_channel(s, a, 65536/a) != expected) return 2;
-            }
         }
     }
-    puts("PASS: 16777216 blend combinations and 65280 alpha conversions match scalar RGBA");
+    puts("PASS: 16777216 blend combinations match scalar RGBA");
     return 0;
 }
 '''

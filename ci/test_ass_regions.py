@@ -102,7 +102,7 @@ static void reference_compose(const ASS_Image *list, int width, int height, uint
     }
 }
 
-static unsigned blends, zero_blend, zero_straight;
+static unsigned blends, zero_blend;
 static uint32_t counted_blend(uint32_t dst, uint32_t color, unsigned a) {
     ++blends;
     return ass_blend_pixel(dst, color, a);
@@ -124,7 +124,6 @@ static PlxAss *context(void) {
     ctx->track = &track;
     ctx->renderer = &renderer;
     ctx->first = 1;
-    for (unsigned a = 1; a < 256; ++a) ctx->reciprocal[a] = 65536u / a;
     return ctx;
 }
 enum { WIDTH = 96, HEIGHT = 48, CANVAS = WIDTH * HEIGHT * 4 };
@@ -222,16 +221,15 @@ static void random_frames(int frames) {
         for (int i = 0; i < count; ++i) free(masks[i]);
     }
 }
-/* Pixels each loop stepped onto singly although it had nothing to draw, for one image. */
-static void zero_visits(ASS_Image *image, unsigned *blend, unsigned *straight) {
+/* Pixels the blend loop stepped onto singly although it had nothing to draw, for one image. */
+static unsigned zero_visits(ASS_Image *image) {
     input = image;
     PlxAss *ctx = context();
     uint8_t canvas[CANVAS];
-    zero_blend = zero_straight = 0;
+    zero_blend = 0;
     render(ctx, WIDTH, canvas);
-    *blend = zero_blend;
-    *straight = zero_straight;
     plx_ass_destroy(ctx);
+    return zero_blend;
 }
 
 /* One pixel of the published canvas. */
@@ -274,23 +272,17 @@ int main(void) {
         plx_ass_destroy(ctx);
     }
     /* Zero runs are skipped whole. A sign's coverage is mostly zero (44% of the iterations of the old
-     * blend loop on the #1328 fixture) and so is its region (70% of its pixels have alpha 0). Eight
-     * rows of 24 zeros, 8 coverage-200 bytes, 32 zeros: no zero byte shares a group of four with
-     * coverage, so no zero byte may be visited singly in the blend loop; the straight pass may step
-     * onto the zeros around the sign's ends (the four-pixel groups the run edges fall into, the row
-     * tail) but not onto the runs between. */
+     * blend loop on the #1328 fixture). Eight rows of 24 zeros, 8 coverage-200 bytes, 32 zeros: no
+     * zero byte shares a group of four with coverage, so no zero byte may be visited singly. */
     {
         uint8_t mask[64 * 8];
         for (int y = 0; y < 8; ++y)
             for (int x = 0; x < 64; ++x) mask[y * 64 + x] = x >= 24 && x < 32 ? 200 : 0;
         ASS_Image sign = {64, 8, 64, mask, 0x11223300, 8, 6, NULL};
-        unsigned blend, straight;
-        zero_visits(&sign, &blend, &straight);
-        unsigned zero_pixels = 66 * 10 - 8 * 8; /* the region is the sign and a transparent border */
-        if (blend != 0 || straight > zero_pixels / 4) {
+        unsigned blend = zero_visits(&sign);
+        if (blend != 0) {
             fprintf(stderr, "zero runs were stepped through pixel by pixel: %u zero-coverage pixels in the "
-                    "blend loop (want 0, the old loop: %u), %u zero-alpha pixels in the straight pass "
-                    "(want at most %u of %u)\n", blend, 56u * 8, straight, zero_pixels / 4, zero_pixels);
+                    "blend loop (want 0, the old loop: %u)\n", blend, 56u * 8);
             return 1;
         }
     }
@@ -302,13 +294,10 @@ int main(void) {
         for (int y = 0; y < 6; ++y)
             for (int x = 0; x < 70; ++x) mask[y * 80 + x] = x >= 37 && x < 46 ? 255 : 0;
         ASS_Image sign = {70, 6, 80, mask, 0x44556600, 3, 20, NULL};
-        unsigned blend, straight;
-        zero_visits(&sign, &blend, &straight);
-        unsigned blend_bound = 6 * 9, straight_bound = 6 * 6 + 8 * 3; /* sign rows; region rows */
-        if (blend > blend_bound || straight > straight_bound) {
+        unsigned blend = zero_visits(&sign), blend_bound = 6 * 9; /* sign rows */
+        if (blend > blend_bound) {
             fprintf(stderr, "a misaligned sign was stepped through pixel by pixel: %u zero-coverage pixels in "
-                    "the blend loop (at most %u), %u zero-alpha pixels in the straight pass (at most %u)\n",
-                    blend, blend_bound, straight, straight_bound);
+                    "the blend loop (at most %u)\n", blend, blend_bound);
             return 1;
         }
     }
@@ -359,7 +348,7 @@ int main(void) {
     sign.bitmap = masks[0]; masks[0][0] ^= 15;
     check(ctx, WIDTH);
     plx_ass_destroy(ctx);
-    puts("PASS: unchanged regions skip blending; zero runs are skipped; 253 frames match fresh composition; 4000 random frames match the scalar loops");
+    puts("PASS: published pixels are premultiplied; unchanged regions skip blending; zero runs are skipped; 253 frames match fresh composition; 4000 random frames match the scalar loop");
     return 0;
 }
 '''

@@ -65,20 +65,21 @@ fn text_frame(style: &TextStyle, cues: &[Cue]) -> Vec<Rect> {
     native.render(text_key(), 1000, &[]).expect("a valid track").expect("a first frame")
 }
 
-/// The pixels of a frame as `(x, y, [r, g, b, a])`.
+/// The pixels of a frame as `(x, y, [r, g, b, a])`, straight RGBA: the facade publishes premultiplied
+/// pixels, and what these goldens measure is where the colours are ([`straight`]).
 fn pixels(rects: &[Rect]) -> impl Iterator<Item = (i32, i32, [u8; 4])> + '_ {
     rects.iter().flat_map(|r| {
         (0..r.height).flat_map(move |y| {
             (0..r.width).map(move |x| {
                 let at = ((y * r.width + x) * 4) as usize;
-                (r.x + x, r.y + y, [r.rgba[at], r.rgba[at + 1], r.rgba[at + 2], r.rgba[at + 3]])
+                (r.x + x, r.y + y, straight([r.rgba[at], r.rgba[at + 1], r.rgba[at + 2], r.rgba[at + 3]]))
             })
         })
     })
 }
 
-/// The white fill (not the black outline, and not the soft edge of either): straight RGBA with
-/// most of its colour and opacity.
+/// The white fill (not the black outline, and not the soft edge of either): straight RGBA ([`pixels`])
+/// with most of its colour and opacity.
 fn is_fill(px: [u8; 4]) -> bool {
     px[0] >= 128 && px[3] >= 128
 }

@@ -2543,9 +2543,11 @@ pub fn snap(v: f32) -> f32 {
     v.round()
 }
 
-/// Upload a straight-alpha RGBA8 bitmap (`w`×`h`, tightly packed) into a GL texture. Reuses
-/// `prev` if non-zero (re-specs it), else allocates a new id. Returns the texture id. Used for
-/// image-subtitle (PGS/VobSub) overlays and the text glyph-cache textures. Main-thread only.
+/// Upload an RGBA8 bitmap (`w`×`h`, tightly packed) into a GL texture. Reuses `prev` if non-zero
+/// (re-specs it), else allocates a new id. Returns the texture id. The bytes are neither converted
+/// nor interpreted: image-subtitle (PGS/VobSub) overlays and the text glyph-cache textures are
+/// straight alpha and drawn with [`draw_tex`]; the libass regions are premultiplied and drawn with
+/// [`draw_tex_premultiplied`]. Main-thread only.
 pub fn upload_rgba(prev: c_uint, w: c_int, h: c_int, pixels: *const u8) -> c_uint {
     unsafe {
         let mut tex = prev;
@@ -3360,6 +3362,34 @@ pub fn draw_tex_uv(
     );
 }
 
+/// The tint [`draw_tex_premultiplied`] gives the shader for a STRAIGHT-alpha `tint` `[r, g, b, a]`:
+/// `[r * a, g * a, b * a, a]`. The texel is `(rgb * A, A)`, so texel x tint is `(rgb * A * r * a, A * a)`:
+/// the colour a straight draw of the straight texel `(rgb, A)` blends in `r * a * A`, and the alpha it
+/// blends with, `A * a`. A fade (`a` below 1) and an ink (`r`, `g`, `b` below 1) therefore dim a
+/// premultiplied picture exactly as they dim a straight one; scaling the colour alone would leave the
+/// picture as opaque as before.
+pub fn premultiplied_tint(tint: [f32; 4]) -> [f32; 4] {
+    [tint[0] * tint[3], tint[1] * tint[3], tint[2] * tint[3], tint[3]]
+}
+
+/// **Draw a texture that holds PREMULTIPLIED RGBA** (`(rgb * a, a)` per texel, no channel above its
+/// alpha) as one square-cornered quad: `(x, y, w, h)` in logical px, `tint` the STRAIGHT ink and fade
+/// `[r, g, b, a]` every other primitive takes ([`premultiplied_tint`] turns it into the shader's).
+/// It blends `(ONE, ONE_MINUS_SRC_ALPHA)` and restores the ordinary blend, so the framebuffer comes out
+/// as a straight-alpha draw of the same picture would have left it (the unit test
+/// `a_premultiplied_draw_leaves_the_framebuffer_a_straight_draw_would` pins that to one code value)
+/// without the texture ever being converted to straight alpha, and bilinear filtering of it
+/// averages colour weighted by coverage, so a soft edge is not darkened by its transparent neighbours.
+///
+/// This is the draw for a producer that composes in premultiplied space (the libass facade's regions,
+/// `src/ass.c`); an image or glyph texture uploaded straight (PGS and VobSub bitmaps, the glyph cache)
+/// stays on [`draw_tex`]. A premultiplied texture drawn there is too dark at every soft edge.
+pub fn draw_tex_premultiplied(tex: c_uint, x: f32, y: f32, w: f32, h: f32, tint: [f32; 4]) {
+    let tint = premultiplied_tint(tint);
+    let _blend = PremultipliedBlend::enter();
+    draw_tex_uv(tex, UV_FULL, x, y, w, h, 0.0, tint.as_ptr());
+}
+
 /// Two equally sized images through the ordinary card compositor. One coverage/opacity
 /// calculation follows the image mix. A failed optional shader leaves the caller's static image.
 #[allow(clippy::too_many_arguments)]
@@ -3728,7 +3758,7 @@ impl FrameCache {
 
     /// Put the region on the frame as ONE textured quad with its top-left at `at`, `tint` being the
     /// PREMULTIPLIED group tint `[g, g, g, a]` (`g` = the colour gain times the alpha): the texture
-    /// holds `(rgb * a, a)`, so the blend is `(ONE, ONE_MINUS_SRC_ALPHA)` ([`StillBlend`]) and the
+    /// holds `(rgb * a, a)`, so the blend is `(ONE, ONE_MINUS_SRC_ALPHA)` ([`PremultipliedBlend`]) and the
     /// tint scales colour AND alpha. Unlike [`draw_alpha`](Self::draw_alpha) this is page CONTENT, not
     /// the page itself: it does not lift [`page_frozen`], so a frozen host refuses it as it refuses
     /// every other primitive.
@@ -3737,7 +3767,7 @@ impl FrameCache {
             return false;
         }
         let (w, h) = (self.region[2] as f32, self.region[3] as f32);
-        let _blend = StillBlend::enter();
+        let _blend = PremultipliedBlend::enter();
         draw_tex_core(
             Class::Image, self.tex, at[0], at[1], w, h, frame_cache_uv(), 0.0, tint.as_ptr(), 0.0,
             NO_RIM.as_ptr(), w * 0.5, h * 0.5, 0.0, NO_RIM.as_ptr(), 0.0, 0.0, None,
@@ -4161,17 +4191,19 @@ fn still_fusion_eligible(tex: c_uint, tint: [f32; 4], available: bool) -> bool {
     tex != 0 && tint == [1.0; 4] && available
 }
 
-/// The still program emits premultiplied RGB, and so does a region cache's quad
-/// ([`FrameCache::draw_region`]): its texture holds `(rgb * a, a)`. Restore the ordinary blend even
-/// during unwinding; no caller and no following text/overlay draw inherits this primitive's private state.
-struct StillBlend;
-impl StillBlend {
+/// The blend of a draw whose fragment colour is already PREMULTIPLIED: `(ONE, ONE_MINUS_SRC_ALPHA)`.
+/// The still program emits premultiplied RGB, a region cache's quad ([`FrameCache::draw_region`])
+/// samples a texture that holds `(rgb * a, a)`, and so does any texture [`draw_tex_premultiplied`] is
+/// handed. Restore the ordinary blend even during unwinding; no caller and no following text/overlay
+/// draw inherits this primitive's private state.
+struct PremultipliedBlend;
+impl PremultipliedBlend {
     fn enter() -> Self {
         unsafe { glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA); }
         Self
     }
 }
-impl Drop for StillBlend {
+impl Drop for PremultipliedBlend {
     fn drop(&mut self) {
         unsafe { glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA); }
     }
@@ -4204,7 +4236,7 @@ pub fn draw_tex_carded_still(
         glUniform4fv(loc_col, 1, scrim.as_ptr());
     }
     note_card(x, y, w, h, pad, dy);
-    let _blend = StillBlend::enter();
+    let _blend = PremultipliedBlend::enter();
     draw_tex_impl(tex, crop, x, y, w, h, radius, tint.as_ptr(), rimw, rimcol.as_ptr(), pad,
         shblur, shcol.as_ptr(), f, dy, Some((program, uniforms)));
     true
@@ -10367,6 +10399,52 @@ mod tests {
             blur_is_bottom_up(),
             "the v span runs backwards iff stored bottom-up"
         );
+    }
+
+    /// **The premultiplied draw is the straight draw's picture, to one code value.** A CPU model of the
+    /// two GL blends (`SRC_ALPHA, ONE_MINUS_SRC_ALPHA` of a straight texel, `ONE, ONE_MINUS_SRC_ALPHA` of
+    /// a premultiplied one through [`premultiplied_tint`]) over every premultiplied pixel the libass
+    /// facade can publish (a channel `p` at alpha `a`, `p <= a`), against the straight texel the facade
+    /// USED to publish (its conversion, frozen here: `(p * 255 + a / 2) / a`). The two disagree by the
+    /// rounding of that conversion alone: under half a code value before the framebuffer's own rounding,
+    /// and so at most one code value after it. The premultiplied side is the exact one.
+    #[test]
+    fn a_premultiplied_draw_leaves_the_framebuffer_a_straight_draw_would() {
+        fn old_straight(p: u32, a: u32) -> f32 {
+            if a == 0 { 0.0 } else { ((p * 255 + a / 2) / a).min(255) as f32 / 255.0 }
+        }
+        let code = |v: f32| (v * 255.0 + 0.5).floor();
+        let tints = [[1.0; 4], [0.85, 0.85, 0.85, 1.0], [0.55, 0.55, 0.55, 1.0], [1.0, 1.0, 1.0, 0.5], [0.7, 0.4, 0.2, 0.3]];
+        let (mut worst, mut worst_code) = (0.0_f32, 0.0_f32);
+        for a in 0..=255u32 {
+            for p in 0..=a {
+                for tint in tints {
+                    let pre = premultiplied_tint(tint);
+                    for dst in [0.0, 40.0 / 255.0, 0.5, 1.0] {
+                        // straight: colour * tint, blended by texel alpha * tint alpha
+                        let alpha = a as f32 / 255.0 * tint[3];
+                        let old = old_straight(p, a) * tint[0] * alpha + dst * (1.0 - alpha);
+                        // premultiplied: texel * premultiplied tint, added; same alpha
+                        let new = p as f32 / 255.0 * pre[0] + dst * (1.0 - a as f32 / 255.0 * pre[3]);
+                        worst = worst.max((old - new).abs() * 255.0);
+                        worst_code = worst_code.max((code(old) - code(new)).abs());
+                    }
+                }
+            }
+        }
+        assert!(worst <= 0.5 + 1e-3, "the two draws differ by {worst} codes before rounding");
+        assert!(worst_code <= 1.0, "and by {worst_code} codes after it");
+    }
+
+    /// The tint of a premultiplied draw: colour scaled by the fade as well, alpha as it is (a fade that
+    /// scaled only the colour would leave the picture opaque over what it fades into).
+    #[test]
+    fn a_premultiplied_tint_scales_the_colour_by_its_alpha() {
+        assert_eq!(premultiplied_tint([1.0; 4]), [1.0; 4], "white and opaque is the texel as it is");
+        assert_eq!(premultiplied_tint([0.85, 0.85, 0.85, 1.0]), [0.85, 0.85, 0.85, 1.0], "an ink rung scales colour only");
+        assert_eq!(premultiplied_tint([1.0, 1.0, 1.0, 0.5]), [0.5, 0.5, 0.5, 0.5], "a fade scales both");
+        assert_eq!(premultiplied_tint([0.8, 0.5, 0.25, 0.5]), [0.4, 0.25, 0.125, 0.5]);
+        assert_eq!(premultiplied_tint([1.0, 0.5, 0.2, 0.0]), [0.0, 0.0, 0.0, 0.0], "a fully faded draw adds nothing");
     }
 
     /// **`glClearColor` has one caller: [`set_clear_color`].** A flat ground is a clear in a colour of
