@@ -39,6 +39,7 @@ fn chapter_panel_retains_selection_without_borrowing_hud_focus() {
 }
 
 use super::*;
+use std::cmp::Ordering;
 use plx_ui::widgets::{StatusKind, StatusOverlay};
 use super::classic::*;
 use super::geometry::*;
@@ -1046,12 +1047,12 @@ const S: i64 = 1_000_000_000;
 #[test]
 fn playing_steadily_shows_nothing() {
     assert_eq!(
-        transport_mark(false, Busy::None, false, 42 * S, 42 * S, None),
+        transport_mark(false, Busy::None, false, 42 * S, 42 * S, None, None),
         TransportMark::None
     );
     // …and the resume mark has expired rather than never existed
     assert_eq!(
-        transport_mark(false, Busy::None, false, 42 * S, 42 * S, Some(PLAY_MARK_MS)),
+        transport_mark(false, Busy::None, false, 42 * S, 42 * S, None, Some(PLAY_MARK_MS)),
         TransportMark::None
     );
 }
@@ -1062,11 +1063,11 @@ fn playing_steadily_shows_nothing() {
 #[test]
 fn paused_shows_pause_and_outranks_a_live_resume_clock() {
     assert_eq!(
-        transport_mark(true, Busy::None, false, 42 * S, 42 * S, None),
+        transport_mark(true, Busy::None, false, 42 * S, 42 * S, None, None),
         TransportMark::Pause
     );
     assert_eq!(
-        transport_mark(true, Busy::None, false, 42 * S, 42 * S, Some(200)),
+        transport_mark(true, Busy::None, false, 42 * S, 42 * S, None, Some(200)),
         TransportMark::Pause
     );
 }
@@ -1078,21 +1079,21 @@ fn paused_shows_pause_and_outranks_a_live_resume_clock() {
 fn travel_direction_is_read_off_the_positions() {
     // LEFT/RIGHT scrub preview, while playing: not busy at all
     assert_eq!(
-        transport_mark(false, Busy::None, true, 52 * S, 42 * S, None),
+        transport_mark(false, Busy::None, true, 52 * S, 42 * S, None, None),
         TransportMark::FastForward
     );
     assert_eq!(
-        transport_mark(false, Busy::None, true, 32 * S, 42 * S, None),
+        transport_mark(false, Busy::None, true, 32 * S, 42 * S, None, None),
         TransportMark::Rewind
     );
     // a chapter/marker hop or a rapid-seek burst: scrub cleared, the seek in flight, the frozen
     // playhead sitting at the target while the published position is still where we left
     assert_eq!(
-        transport_mark(false, Busy::Transport, false, 600 * S, 42 * S, None),
+        transport_mark(false, Busy::Transport, false, 600 * S, 42 * S, Some(Ordering::Greater), None),
         TransportMark::FastForward
     );
     assert_eq!(
-        transport_mark(false, Busy::Transport, false, 5 * S, 42 * S, None),
+        transport_mark(false, Busy::Transport, false, 5 * S, 42 * S, Some(Ordering::Less), None),
         TransportMark::Rewind
     );
 }
@@ -1102,11 +1103,11 @@ fn travel_direction_is_read_off_the_positions() {
 #[test]
 fn a_paused_scrub_still_reads_as_travel() {
     assert_eq!(
-        transport_mark(true, Busy::None, true, 32 * S, 42 * S, None),
+        transport_mark(true, Busy::None, true, 32 * S, 42 * S, None, None),
         TransportMark::Rewind
     );
     assert_eq!(
-        transport_mark(true, Busy::Transport, false, 90 * S, 42 * S, None),
+        transport_mark(true, Busy::Transport, false, 90 * S, 42 * S, Some(Ordering::Greater), None),
         TransportMark::FastForward
     );
 }
@@ -1119,12 +1120,12 @@ fn a_paused_scrub_still_reads_as_travel() {
 fn the_spinner_keeps_only_the_busy_frames_with_no_direction() {
     // a mid-play re-buffer: busy, but the playhead is not going anywhere
     assert_eq!(
-        transport_mark(false, Busy::Transport, false, 42 * S, 42 * S, None),
+        transport_mark(false, Busy::Transport, false, 42 * S, 42 * S, None, None),
         TransportMark::Working
     );
     // the prime→first-frame tail of a landed seek, once the published position has caught up
     assert_eq!(
-        transport_mark(false, Busy::Transport, true, 42 * S, 42 * S, None),
+        transport_mark(false, Busy::Transport, true, 42 * S, 42 * S, None, None),
         TransportMark::Working
     );
     // and the centred read-out's own states never reach this slot
@@ -1135,6 +1136,7 @@ fn the_spinner_keeps_only_the_busy_frames_with_no_direction() {
             false,
             0,
             0,
+            None,
             None
         ),
         TransportMark::None
@@ -1147,20 +1149,20 @@ fn the_spinner_keeps_only_the_busy_frames_with_no_direction() {
 #[test]
 fn the_play_mark_expires_and_a_never_resumed_session_has_none() {
     assert_eq!(
-        transport_mark(false, Busy::None, false, 0, 0, Some(0)),
+        transport_mark(false, Busy::None, false, 0, 0, None, Some(0)),
         TransportMark::Play
     );
     assert_eq!(
-        transport_mark(false, Busy::None, false, 0, 0, Some(PLAY_MARK_MS - 1)),
+        transport_mark(false, Busy::None, false, 0, 0, None, Some(PLAY_MARK_MS - 1)),
         TransportMark::Play
     );
     assert_eq!(
-        transport_mark(false, Busy::None, false, 0, 0, Some(PLAY_MARK_MS)),
+        transport_mark(false, Busy::None, false, 0, 0, None, Some(PLAY_MARK_MS)),
         TransportMark::None,
         "the couple of seconds is a boundary, not a suggestion"
     );
     assert_eq!(
-        transport_mark(false, Busy::None, false, 0, 0, None),
+        transport_mark(false, Busy::None, false, 0, 0, None, None),
         TransportMark::None
     );
 }
@@ -1171,9 +1173,70 @@ fn the_play_mark_expires_and_a_never_resumed_session_has_none() {
 #[test]
 fn travel_outranks_the_resume_mark() {
     assert_eq!(
-        transport_mark(false, Busy::Transport, false, 90 * S, 42 * S, Some(0)),
+        transport_mark(false, Busy::Transport, false, 90 * S, 42 * S, Some(Ordering::Greater), Some(0)),
         TransportMark::FastForward
     );
+}
+
+/// **A committed BACKWARD seek never reads as fast-forward** (v0.10.0-rc1 owner report: "when I click
+/// after back seeking in HUD, the >> icon shows up instead of play"). Once the seek is in flight the
+/// published playhead is not where the viewer left: a reload publishes no position at all until its
+/// first frame (`HudModel::playpos_ns` maps that to 0) and a keyframe landing sits before the target.
+/// The read-out compared the frozen target with that playhead every frame, so a seek to 43:28 read
+/// `>>` whenever the playhead was below 43:28.
+#[test]
+fn a_backward_seek_in_flight_keeps_reading_rewind() {
+    let min = 60 * S;
+    let mut row = HudMotion::new();
+    // one frame of the screen's sequence: the model goes in (`PlayerScreen::set_model`), the draw reads the mark
+    let mut frame = |model: &HudModel, busy: Busy, since_play: Option<u32>| {
+        row.note_seek_travel(model);
+        Playbar::live(model, busy, GROUP_SCRUB, row.seek_travel.direction(), since_play, 0).mark
+    };
+    let mut model = HudModel::default();
+    model.duration_ns = 60 * min;
+    // playing at 45:00
+    model.playpos_ns = 45 * min;
+    assert_eq!(frame(&model, Busy::None, None), TransportMark::None);
+    // OK on a target at 43:28: the request's frame still sees the playhead the viewer left
+    model.seek_display_ns = 43 * min + 28 * S;
+    model.seeking = true;
+    assert_eq!(frame(&model, Busy::None, Some(0)), TransportMark::Play);
+    // the reload has published no playhead yet: the model reads 0
+    model.seeking = false;
+    model.loading = true;
+    model.playpos_ns = 0;
+    assert_eq!(frame(&model, Busy::Transport, Some(16)), TransportMark::Rewind, "the playhead is not known");
+    // a keyframe landing before the target
+    model.playpos_ns = 43 * min + 20 * S;
+    assert_eq!(frame(&model, Busy::Transport, Some(32)), TransportMark::Rewind, "the playhead is below the target");
+    // landed: the transport reads playing, the resume mark is the answer and not a direction
+    model.loading = false;
+    assert_eq!(frame(&model, Busy::None, Some(48)), TransportMark::Play);
+    // a quick second tap back, while the first is still in flight, and then one forward
+    model.seeking = true;
+    model.playpos_ns = 43 * min + 29 * S;
+    model.seek_display_ns = 43 * min + 18 * S;
+    assert_eq!(frame(&model, Busy::Transport, None), TransportMark::Rewind);
+    model.seek_display_ns = 43 * min + 28 * S;
+    model.playpos_ns = 0;
+    assert_eq!(frame(&model, Busy::Transport, None), TransportMark::FastForward, "back, then forward: forward");
+    // a later seek, though the old target still stands in the model, is measured from the playhead
+    // again: back to 50:00 from 60:00 is backward whatever 43:28 was
+    model.seeking = false;
+    model.loading = false;
+    model.playpos_ns = 60 * min;
+    assert_eq!(frame(&model, Busy::None, None), TransportMark::None);
+    model.seek_display_ns = 50 * min;
+    model.seeking = true;
+    assert_eq!(frame(&model, Busy::Transport, None), TransportMark::Rewind, "the request frame is already busy");
+    model.seeking = false;
+    model.loading = true;
+    model.playpos_ns = 0;
+    assert_eq!(frame(&model, Busy::Transport, None), TransportMark::Rewind);
+    // no seek of ours: a re-buffer reads as work, whichever way the stale target lies
+    model.seek_display_ns = -1;
+    assert_eq!(frame(&model, Busy::Transport, None), TransportMark::Working);
 }
 
 /// **A cue is never cut at a line count**: every wrapped line of every segment survives the

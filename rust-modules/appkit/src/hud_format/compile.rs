@@ -883,6 +883,9 @@ pub struct Compiled {
     findings: Vec<CompileFinding>,
     /// `(id, svg source)`: the package's declared assets, which a [`FaceRef::Asset`] and a [`DrawOp::Icon`] name
     assets: Vec<(String, std::sync::Arc<str>)>,
+    /// does a playbar of the package declare the finish-time lane (`playbar.end_time_width`, HUD format 1.1)?
+    /// Read once, here, by [`Compiled::declares_end_time`]
+    end_time: bool,
 }
 
 /// Which dimensions of a compile the package names.
@@ -909,6 +912,7 @@ impl Default for Compiled {
             folds: Vec::new(),
             findings: Vec::new(),
             assets: Vec::new(),
+            end_time: false,
         }
     }
 }
@@ -925,7 +929,21 @@ pub struct CompileFinding {
     pub message: String,
 }
 
+/// Does any state's playbar reserve the finish-time lane (`playbar.end_time_width`)?
+fn states_declare_end_time(states: &[CompiledState]) -> bool {
+    states.iter().flat_map(|s| &s.ops).any(|op| matches!(op, DrawOp::Playbar { clock_rects, .. } if clock_rects.end_time.is_some()))
+}
+
 impl Compiled {
+    /// **Does the package declare the finish-time lane?** `playbar.end_time_width` is the capability: the
+    /// field arrived in HUD format 1.1, so a 1.0 package cannot name it (`E0107`), and a 1.1 package that omits
+    /// it asks for the plain remaining clock. The renderer draws the finish time only into a declared lane, so
+    /// this is also what the *Estimated end time* setting and the app's projection ask before they offer or
+    /// compute anything the HUD would not draw.
+    pub fn declares_end_time(&self) -> bool {
+        self.end_time
+    }
+
     /// Every state, in `reach`'s order (valuation by valuation, breadth first from the root).
     pub fn states(&self) -> &[CompiledState] {
         &self.states
@@ -1039,6 +1057,7 @@ pub fn compile(package: &Package, measure: &dyn Measure, ctx: CompileCtx) -> Com
             message: format!("the replaced row places {wide} controls, but the geometry report holds {MAX_ROW_ITEMS}, so the tail has no stop"),
         });
     }
+    let end_time = states_declare_end_time(&states);
     let mut compiled = Compiled {
         states,
         named: Named { chapters: layout.named_chapters, episode: layout.named_pair, real_episode: layout.named_episode, paused: frame.paused },
@@ -1048,6 +1067,7 @@ pub fn compile(package: &Package, measure: &dyn Measure, ctx: CompileCtx) -> Com
         folds: layout.folds(),
         findings,
         assets: package.assets.clone(),
+        end_time,
     };
     let band = compiled
         .compact_band_extents()
