@@ -389,7 +389,8 @@ struct QualifiedNativeMaster;
 impl crate::route::uri_preflight::OriginalQualifier for QualifiedNativeMaster {
     fn qualify(&self, _: &plx_base::task::OffFrame,
         _: crate::route::uri_preflight::OriginalRequest) -> crate::route::uri_preflight::Verdict {
-        crate::route::uri_preflight::Verdict::Unknown
+        crate::route::uri_preflight::Verdict::Unknown(
+            crate::route::uri_preflight::UriDecline::NotCertified)
     }
 
     fn qualify_pms(&self, _: &plx_base::task::OffFrame,
@@ -445,7 +446,8 @@ struct QualifiedPms(std::sync::Arc<std::sync::Mutex<Vec<(String, String, String)
 impl crate::route::uri_preflight::OriginalQualifier for QualifiedPms {
     fn qualify(&self, _: &plx_base::task::OffFrame,
         _: crate::route::uri_preflight::OriginalRequest) -> crate::route::uri_preflight::Verdict {
-        crate::route::uri_preflight::Verdict::Unknown
+        crate::route::uri_preflight::Verdict::Unknown(
+            crate::route::uri_preflight::UriDecline::NotCertified)
     }
 
     fn qualify_pms(&self, _: &plx_base::task::OffFrame,
@@ -543,7 +545,8 @@ impl crate::route::uri_preflight::OriginalQualifier for RecordingOriginal {
     fn qualify(&self, _: &plx_base::task::OffFrame,
         request: crate::route::uri_preflight::OriginalRequest) -> crate::route::uri_preflight::Verdict {
         self.0.lock().unwrap().push((request.selection.audio_sid, request.audio_ordinal));
-        crate::route::uri_preflight::Verdict::Unknown
+        crate::route::uri_preflight::Verdict::Unknown(
+            crate::route::uri_preflight::UriDecline::NotCertified)
     }
 }
 

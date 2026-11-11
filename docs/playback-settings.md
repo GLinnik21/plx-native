@@ -67,7 +67,9 @@ because the TV service can order tracks differently from Plex. An Experimental f
 (`route::backend_policy`). On webOS 4.x the Experimental engine binds the screen through ACB and waits for each
 release's completion callback before the next title; when that never arrives the plane stays
 quarantined until the app restarts, the next title's Experimental bind is refused and that title takes the
-handoff to Standard. Nothing about this setting is sent to telemetry or diagnostics.
+handoff to Standard. When a play stays on Standard with Experimental on, the event log names the reason
+in one line, `uri: original declined (<reason>)` (`docs/uri-mode.md`, "Why a play stayed in Standard"); that line
+is local and nothing about this setting is sent to telemetry or diagnostics.
 
 ## Plex account preferences
 
