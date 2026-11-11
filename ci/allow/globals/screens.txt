@@ -1,4 +1,4 @@
-# count: 20
+# count: 18
 # Process-global reads inside machines (docs/sans-io.md), area `screens`: one line per production read of a registry in a machine —
 # (the spellings are ci/check-deps.sh's `globals` rule) — keyed `<path>::<enclosing fn>::<spelling>`.
 # A machine reads no registry: the value arrives in an event or an argument. Spec: ci/check-deps.sh `globals`.
@@ -14,8 +14,6 @@ rust-modules/screens/src/preferences.rs::now::current_snapshot
 rust-modules/screens/src/preferences.rs::now::session::peek
 rust-modules/screens/src/preferences.rs::resolve_value::session::peek
 rust-modules/screens/src/preferences.rs::step::session::current_gen
-rust-modules/screens/src/preferences/picker.rs::durable::peek
-rust-modules/screens/src/preferences/picker.rs::durable::peek
 rust-modules/screens/src/preferences/picker.rs::durable::peek
 rust-modules/screens/src/profiles.rs::avatar_art::current_server
 rust-modules/screens/src/settings.rs::plaintext_inputs::grant::offers

@@ -7,8 +7,8 @@
 //!   the cue's numpad alignment. It ports the semantics of the `sub_text` the bespoke caption draw
 //!   used (kept in `tests.rs` as the oracle) and then escapes the result for libass, which reads `\N`, `\n`, `\h`, `\{` and `\}` as
 //!   escapes, so a literal backslash must never be allowed to form one by accident.
-//! - [`header`]: the synthesized `[Script Info]`/`[V4+ Styles]` for the viewer's size and position
-//!   ([`TextStyle`](super::text_style::TextStyle)), one style per numpad alignment so the position
+//! - [`header`]: the synthesized `[Script Info]`/`[V4+ Styles]` for the viewer's size, position and
+//!   colour picks ([`TextStyle`](super::text_style::TextStyle); a gray is a draw-time tint, not part of it), one style per numpad alignment so the position
 //!   of a cue is a property of its Style field.
 //! - [`script_from_srt`] / [`script_from_vtt`]: a whole sidecar file to ASS event lines, with the
 //!   newest-wins clip applied ([`clip_newest_wins`]) and times written as `H:MM:SS.cc`.
@@ -580,9 +580,10 @@ pub fn header(style: &TextStyle) -> String {
     );
     for (align, margin_v) in style_margins(style) {
         h.push_str(&format!(
-            "Style: {name},{STYLE_FONT},{fs},&H00FFFFFF,&H00FFFFFF,&H26000000,&HFF000000,\
+            "Style: {name},{STYLE_FONT},{fs},{primary},{primary},&H26000000,&HFF000000,\
              0,0,0,0,100,100,0,0,1,2,0,{align},{margin},{margin},{margin_v},-1\n",
             name = style_name(align),
+            primary = text_style::primary_colour(style.tone),
         ));
     }
     h.push_str("\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n");

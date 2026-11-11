@@ -97,11 +97,15 @@ impl PickerPage {
     /// falls back to; reading the legacy key alone would call a profile's own pick "not saved" and
     /// write it again on every OK.
     fn durable(&self, value: &Value) -> bool {
-        use plx_plex::plex::session::{current_seat, peek, stored_effective, SubtitlePositionPref, SubtitleSizePref, HdrOverlayBrightnessPref};
+        use plx_plex::plex::session::{current_seat, peek, stored_effective, SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref, HdrOverlayBrightnessPref};
+        // One read of the session mirror and the seat, shared by every arm (and only taken for a value
+        // that has a stored form).
+        let stored = |pick: &dyn Fn(&plx_plex::plex::session::Session, &plx_plex::plex::session::Seat) -> bool| pick(&peek(), &current_seat());
         match value {
-            Value::SubtitleSize(v) => stored_effective::<SubtitleSizePref>(&peek(), &current_seat()) == *v,
-            Value::SubtitlePosition(v) => stored_effective::<SubtitlePositionPref>(&peek(), &current_seat()) == *v,
-            Value::HdrOverlay(v) => stored_effective::<HdrOverlayBrightnessPref>(&peek(), &current_seat()) == *v,
+            Value::SubtitleSize(v) => stored(&|s, seat| stored_effective::<SubtitleSizePref>(s, seat) == *v),
+            Value::SubtitlePosition(v) => stored(&|s, seat| stored_effective::<SubtitlePositionPref>(s, seat) == *v),
+            Value::SubtitleTone(v) => stored(&|s, seat| stored_effective::<SubtitleTonePref>(s, seat) == *v),
+            Value::HdrOverlay(v) => stored(&|s, seat| stored_effective::<HdrOverlayBrightnessPref>(s, seat) == *v),
             _ => true,
         }
     }
@@ -187,7 +191,7 @@ impl PickerPage {
     }
     fn commit(&mut self, value: Value, fx: &mut Effects<'_, InnerHost>) {
         match value {
-            Value::IntroSkip(_, _) | Value::CreditsSkip(_, _) | Value::InstantDpadSeeking(_) | Value::UriEngine(_) | Value::DolbyVision(_) | Value::Quality(_) | Value::DirectPlay(_) | Value::NextEpisode(_) | Value::DeckPress(_) | Value::SkipInterval(_) | Value::UiResolution(_) | Value::SubtitleSize(_) | Value::SubtitlePosition(_) | Value::HdrOverlay(_) => self.txn.save_local(&mut self.state.io, value, fx),
+            Value::IntroSkip(_, _) | Value::CreditsSkip(_, _) | Value::InstantDpadSeeking(_) | Value::UriEngine(_) | Value::DolbyVision(_) | Value::Quality(_) | Value::DirectPlay(_) | Value::NextEpisode(_) | Value::DeckPress(_) | Value::SkipInterval(_) | Value::UiResolution(_) | Value::SubtitleSize(_) | Value::SubtitlePosition(_) | Value::SubtitleTone(_) | Value::HdrOverlay(_) => self.txn.save_local(&mut self.state.io, value, fx),
             value => {
                 let mut update = PreferenceUpdate::default();
                 match (self.state.field, value) {

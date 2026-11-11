@@ -541,26 +541,84 @@ fn assert_rect(r: Rect, x: f32, y: f32, w: f32, h: f32) {
     );
 }
 
-/// **Every tone has an ink, the first is the white every earlier build drew, and each rung
-/// under it is strictly darker** — the ladder's whole promise is "down is dimmer", and the
-/// table is indexed by position, so a rung added to `SubtitleTone::LADDER` without an ink
-/// here would silently draw white. Opaque and achromatic throughout: a tone gives up light,
-/// never coverage (the outline depends on it) and never hue (it tints image subtitles).
+/// **Every tone has a tint, the first is the white every earlier build drew, and each GREY
+/// under it is strictly darker** — the greys' whole promise is "down is dimmer", and the table
+/// is indexed by position, so a rung added to `SubtitleTone::LADDER` without a tint here would
+/// silently draw white. Opaque and achromatic throughout: a tint gives up light, never coverage
+/// (the outline depends on it) and never hue, because it multiplies the pixels of a picture
+/// subtitle or an authored ASS script. A COLOUR rung (yellow) is therefore the identity tint:
+/// its colour is `text_rgb8`, applied where the text is made.
 #[test]
-fn the_subtitle_tones_are_a_strictly_darkening_opaque_grey_ladder_from_white() {
+fn the_subtitle_tints_are_a_strictly_darkening_opaque_grey_ladder_from_white() {
     use plx_plex::plex::session::SubtitleTone;
     assert_eq!(theme::SUBTITLE_INKS.len(), SubtitleTone::LADDER.len());
-    assert_eq!(subtitle_ink_for(SubtitleTone::White), [1.0, 1.0, 1.0, 1.0]);
+    assert_eq!(subtitle_tint_for(SubtitleTone::White), [1.0, 1.0, 1.0, 1.0]);
     let mut prev = f32::MAX;
     for tone in SubtitleTone::LADDER {
-        let ink = subtitle_ink_for(tone);
-        assert!(ink[0] == ink[1] && ink[1] == ink[2], "{tone:?} has a hue");
-        assert_eq!(ink[3], 1.0, "{tone:?} is not opaque");
-        assert!(ink[0] < prev, "{tone:?} is not darker than the rung above it");
-        prev = ink[0];
+        let tint = subtitle_tint_for(tone);
+        assert!(tint[0] == tint[1] && tint[1] == tint[2], "{tone:?} has a hue");
+        assert_eq!(tint[3], 1.0, "{tone:?} is not opaque");
+        if tone.text_rgb8().is_some() {
+            assert_eq!(tint, [1.0, 1.0, 1.0, 1.0], "{tone:?} is a colour: it must not tint authored pixels");
+            continue;
+        }
+        assert!(tint[0] < prev || prev == f32::MAX, "{tone:?} is not darker than the grey above it");
+        prev = tint[0];
     }
     // the darkest rung still has to be READ over the 0.85 black outline it is drawn on
     assert!(prev > 0.25, "the darkest tone has sunk into its own outline");
+}
+
+/// **The theme's caption colours are the plex palette**: `SubtitleTone::text_rgb8` (what media's
+/// synthesized header paints) and the ink `theme::SUBTITLE_INKS` draws the client's own caption text
+/// with are one colour, for every colour rung. A retuned code in either place fails here.
+#[test]
+fn the_theme_caption_inks_are_tied_to_the_plex_palette() {
+    use plx_plex::plex::session::SubtitleTone;
+    let mut colours = 0;
+    for tone in SubtitleTone::LADDER {
+        if let Some([r, g, b]) = tone.text_rgb8() {
+            assert_eq!(subtitle_ink_for(tone), plx_gfx::gfx::tokens::rgb8(r, g, b), "{tone:?}");
+            colours += 1;
+        }
+    }
+    assert_eq!(colours, 1, "a new colour rung gets its theme ink and this tie");
+}
+
+/// **The colour pick reaches the caption draw call.** The client's own drawn caption (the fault
+/// message, the sidecar failure notice) takes the palette colour for its glyph ink, white by
+/// default and the grey rung for a grey, and every line keeps the dark outline runs under it that
+/// keep it readable on a bright or HDR scene. The bitmap tint stays the identity for a colour, so
+/// an authored ASS script or a picture subtitle is never recoloured by the pick.
+#[test]
+fn the_drawn_caption_takes_the_viewers_colour_and_keeps_its_outline() {
+    use plx_plex::plex::session::SubtitleTone;
+    let ink_runs = |tone: SubtitleTone| {
+        let mut model = HudModel::default();
+        model.sub_tone = tone;
+        plx_ui::draw_census::capture_runs(|| {
+            plx_ui::record_walk(|| draw_subtitle_message("Hello", false, HudBand::CLASSIC, &model, &FM))
+        })
+    };
+    let rgb = |c: [u8; 3]| [c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0, 1.0];
+    let yellow = SubtitleTone::Yellow.text_rgb8().expect("yellow is a colour rung");
+    for (tone, want) in [
+        (SubtitleTone::White, [1.0, 1.0, 1.0, 1.0]),
+        (SubtitleTone::Yellow, rgb(yellow)),
+        (SubtitleTone::Grey, theme::SUBTITLE_INKS[SubtitleTone::Grey.index() as usize]),
+    ] {
+        let runs = ink_runs(tone);
+        assert_eq!(runs.len(), 5, "{tone:?}: four outline runs and the glyph run");
+        assert_eq!(runs.last().unwrap().ink, want, "{tone:?}: the glyph ink");
+        for outline in &runs[..4] {
+            assert_eq!(outline.ink, theme::scrim_black(0.85), "{tone:?}: the outline stays");
+        }
+    }
+    let mut model = HudModel::default();
+    model.sub_tone = SubtitleTone::Yellow;
+    assert_eq!(subtitle_tint(&model), [1.0, 1.0, 1.0, 1.0], "a colour never tints a bitmap");
+    model.sub_tone = SubtitleTone::DarkGrey;
+    assert_eq!(subtitle_tint(&model), theme::SUBTITLE_INKS[SubtitleTone::DarkGrey.index() as usize], "a grey still dims it");
 }
 
 /// A 1080p-authored PGS rect must land EXACTLY where it always did — the scale is identity,

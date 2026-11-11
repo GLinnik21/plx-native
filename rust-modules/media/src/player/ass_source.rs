@@ -39,8 +39,9 @@ pub enum TrackHeader {
     /// An ASS/SSA track: the codec-private header, as the file wrote it.
     Authored(Vec<u8>),
     /// A text track (SubRip, WebVTT, mov_text, ...): there is no header in the file. The store
-    /// synthesizes one from the viewer's size and position picks and remembers the dialect its
-    /// cues are written in.
+    /// synthesizes one from the viewer's size, position and colour picks (a colour change restyles
+    /// the track, a change among white and the grays does not: a gray is a draw-time tint) and
+    /// remembers the dialect its cues are written in.
     Text(TextDialect),
 }
 
@@ -1620,8 +1621,8 @@ mod tests {
     #[test]
     fn a_restyle_bumps_the_revision_once_and_keeps_the_events_and_the_identity() {
         use plx_plex::plex::session::{SubtitlePosition, SubtitleSize};
-        let small = TextStyle { size: SubtitleSize::Small, position: SubtitlePosition::Low };
-        let large = TextStyle { size: SubtitleSize::Large, position: SubtitlePosition::Low };
+        let small = TextStyle { size: SubtitleSize::Small, position: SubtitlePosition::Low, ..TextStyle::default() };
+        let large = TextStyle { size: SubtitleSize::Large, position: SubtitlePosition::Low, ..TextStyle::default() };
         let mut s = Store::default();
         let g = s.begin_styled("f", vec![(0, TrackHeader::Text(TextDialect::Srt))], vec![], small);
         s.push_text(g, 0, 1000, 2000, "cue", 0);
@@ -1650,8 +1651,8 @@ mod tests {
     #[test]
     fn a_reopen_after_a_pick_change_builds_the_header_for_the_new_picks_without_a_second_bump() {
         use plx_plex::plex::session::{SubtitlePosition, SubtitleSize};
-        let small = TextStyle { size: SubtitleSize::Small, position: SubtitlePosition::Low };
-        let large = TextStyle { size: SubtitleSize::Large, position: SubtitlePosition::High };
+        let small = TextStyle { size: SubtitleSize::Small, position: SubtitlePosition::Low, ..TextStyle::default() };
+        let large = TextStyle { size: SubtitleSize::Large, position: SubtitlePosition::High, ..TextStyle::default() };
         let mut s = Store::default();
         let g = s.begin_styled("f", vec![(0, TrackHeader::Text(TextDialect::Srt))], vec![], small);
         s.push_text(g, 0, 1000, 2000, "cue", 0);
@@ -1667,8 +1668,8 @@ mod tests {
     #[test]
     fn a_text_track_is_restyled_only_when_it_is_asked_for() {
         use plx_plex::plex::session::{SubtitlePosition, SubtitleSize};
-        let small = TextStyle { size: SubtitleSize::Small, position: SubtitlePosition::Low };
-        let large = TextStyle { size: SubtitleSize::Large, position: SubtitlePosition::Low };
+        let small = TextStyle { size: SubtitleSize::Small, position: SubtitlePosition::Low, ..TextStyle::default() };
+        let large = TextStyle { size: SubtitleSize::Large, position: SubtitlePosition::Low, ..TextStyle::default() };
         let mut s = Store::default();
         s.begin_styled(
             "f",

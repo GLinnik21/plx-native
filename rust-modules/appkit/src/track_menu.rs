@@ -78,7 +78,10 @@
 //! **What Style can reach depends on the active renderer** ([`SubRenderer`]): only the client's
 //! plain-text caption follows Size and Position, so under an image (PGS/VobSub) or native ASS/SSA
 //! subtitle those two rows are dim, focusable and inert, with a separate note each. Color stays
-//! live under every renderer: the subtitle ink tints bitmaps and ASS alike. Size and Position are
+//! pickable under every renderer, but only a gray tints a picture or styled subtitle (the bitmap
+//! tint, `player_hud::subtitle_tint`); Yellow is the colour of a synthesized text header and of the
+//! client's own drawn text only, so under those two renderers it is inert, which the same notes say
+//! ("gray only dims"). Size and Position are
 //! persisted by `route::select_subtitle_size` / `select_subtitle_position` and Color by
 //! `player::set_subtitle_tone`: all three are one call into the one write door (`route::choose`,
 //! `How::Optimistic`: live value first, the durable write second, never republished).
@@ -231,7 +234,7 @@ impl StyleField {
         match self {
             Self::Size => subtitle_size_label(SubtitleSize::from_index(i as u8)),
             Self::Position => subtitle_position_label(SubtitlePosition::from_index(i as u8)),
-            Self::Color => tone_label(SubtitleTone::from_index(i as u8)),
+            Self::Color => subtitle_tone_label(SubtitleTone::from_index(i as u8)),
         }
     }
 }
@@ -396,7 +399,7 @@ impl SubRenderer {
         }
     }
 
-    /// The note under the Style rows, when Size and Position cannot reach this renderer.
+    /// The note under the Style rows, when Size, Position and a colour cannot reach this renderer.
     fn note(self) -> Option<&'static str> {
         match self {
             Self::Text => None,
@@ -1684,7 +1687,9 @@ impl TrackMenuState {
 
     /// The Style page: one drill-in per field, each reading out its current value. Under an image
     /// or styled subtitle Size and Position are disabled (dim, focusable, inert) and one note names
-    /// why; Color is live under every renderer — the subtitle ink tints bitmaps and ASS alike.
+    /// why. Color stays pickable under every renderer, but only a gray reaches a picture or styled
+    /// subtitle (it tints the bitmap, `player_hud::subtitle_tint`); Yellow is the colour of a
+    /// synthesized text header only, so there it is inert, and the same note says so.
     fn style_form(&self) -> TrackForm {
         let field_row = |field: StyleField| {
             Row::new(field.label()).value(field.rung_label(self.current_rung(field)))
@@ -2378,9 +2383,10 @@ fn visible_subs(ps: &plx_media::route::PlaybackSession, meta: metadata::Metadata
 }
 
 /// Resolve the typed tone at the UI boundary; persisted values and technical logs stay stable.
-fn tone_label(tone: SubtitleTone) -> &'static str {
+pub fn subtitle_tone_label(tone: SubtitleTone) -> &'static str {
     match tone {
         SubtitleTone::White => plx_platform::i18n::msg::widgets_tracks_tone_white(),
+        SubtitleTone::Yellow => plx_platform::i18n::msg::widgets_tracks_tone_yellow(),
         SubtitleTone::Silver => plx_platform::i18n::msg::widgets_tracks_tone_silver(),
         SubtitleTone::LightGrey => plx_platform::i18n::msg::widgets_tracks_tone_light_grey(),
         SubtitleTone::Grey => plx_platform::i18n::msg::widgets_tracks_tone_grey(),

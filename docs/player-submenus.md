@@ -53,9 +53,12 @@ because the overlay's state shape changed on purpose.
   So is an embedded track on a local-link remux of a Part of at most 30 Mbit/s: the side reader
   (`plx_play_feed::side_reader`) reads the track from the film's own Part beside the stream, and a pick, a switch
   or Off changes nothing about the stream itself.
-- Per active renderer: image -> Size and Position disabled ("Image subtitles keep their own
-  size and position."); native ASS/SSA -> the same ("Styled subtitles keep ..."); Color stays live in
-  both, since the subtitle ink tints bitmaps and ASS.
+- Per active renderer: image -> Size and Position disabled ("Image subtitles keep their
+  look; gray only dims."); native ASS/SSA -> the same ("Styled subtitles keep
+  ..."). Color stays pickable in both, but only a gray reaches them (a tint of the bitmap,
+  `player_hud::subtitle_tint`); Yellow is the colour of a synthesized text header and of the client's
+  own drawn text only, so there it is inert (the viewer sees it checked while the caption keeps its
+  own colours), which is what the note says.
 - A DISABLED row (`FormSection::disabled`, `Row::disabled`) is focusable so the viewer can read why,
   is drawn soft with a ghost pill under focus, and is inert at the form layer (`FormTable::activate`
   answers `None` for OK, RIGHT and a click alike), not by a guard in each caller. A merely `dim`
@@ -67,7 +70,7 @@ One optimistic operation, no deferred publication: `route::select_subtitle_size/
 main thread is `route::choose::<S>(v, How::Optimistic(..))`, the one write door: it stores the live
 cell, invalidates, and queues the durable write behind it, which never touches the cell again
 (`player::set_subtitle_tone` is the same call). Settings'
-Size/Position arms use the same call, so no completion can overwrite a newer live pick; durable
+Size/Position/Color arms use the same call, so no completion can overwrite a newer live pick; durable
 writes are FIFO on the worker, last submitted wins. A failed write is logged, never alerted over
 video, and claims nothing about the next boot. The live value survives BACK and dismissal (global
 state, not panel state).

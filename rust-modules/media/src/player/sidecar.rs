@@ -873,6 +873,7 @@ mod tests {
         TextStyle {
             size: if current.size == SubtitleSize::Large { SubtitleSize::Small } else { SubtitleSize::Large },
             position: if current.position == SubtitlePosition::High { SubtitlePosition::Low } else { SubtitlePosition::High },
+            ..current
         }
     }
 
