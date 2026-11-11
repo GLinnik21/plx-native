@@ -140,6 +140,14 @@ player screen’s `ass_subtitles` cache reuses their GL uploads. Changed regions
 remaining textures; gaps, Off and unmount release them. The cache reports all retained texture
 bytes to the shared render accounting.
 
+The pixels of a region are PREMULTIPLIED RGBA, published as composed (#1328): the facade blends
+every layer in premultiplied space and does no straight-alpha conversion pass, which was about 45% of
+the composite's time on the host and walked mostly transparent pixels. The screen draws them through
+`Painter::tex_premultiplied` (`gfx::draw_tex_premultiplied`: `ONE, ONE_MINUS_SRC_ALPHA`, the tint's
+colour scaled by its alpha after the painter's cascade), so the ink rung and a fade dim them as they
+dim a straight texture. Image subtitles (PGS, VobSub) and glyph textures are uploaded straight and
+stay on `Painter::tex`.
+
 The subtitle clock interpolates between the pipeline's sparse position callbacks, with at most
 250 ms of extrapolation. Pause, seek and discontinuities re-anchor it. Output dimensions and the
 original coded video dimensions are passed separately to libass. The output canvas fits the
