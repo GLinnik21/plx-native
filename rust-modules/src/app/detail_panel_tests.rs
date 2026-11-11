@@ -40,7 +40,7 @@ fn a_detail_panel_parks_across_a_push_and_returns_with_the_same_instance() {
     // stacks the person page over it — which is the shape the loop really produces.
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
-    rig.stores.metadata.run(plx_data::stores::metadata::MetadataCmd::AltInstall {
+    rig.metadata_run(plx_data::stores::metadata::MetadataCmd::AltInstall {
         sid: here,
         rk: "m1".into(),
         copies: vec![
