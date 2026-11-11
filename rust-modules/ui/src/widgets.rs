@@ -9068,7 +9068,10 @@ impl View for Button<'_> {
                     p.rrect(rail, rad, rad, theme::with_a(ink, 0.22));
                     let w = rail.w * self.inline_progress.unwrap_or_default();
                     if w > 0.0 {
-                        let fill = if self.accent_focus() { ink } else { theme::RESUME_FILL };
+                        // Switch with the face's contrast-selected ink. A tiny spring tail can
+                        // still set `focused` while the pill already reads as idle.
+                        let idle_ink = self.style.face(false, self.ground, self.palette).ink;
+                        let fill = if self.enabled && ink == idle_ink { theme::RESUME_FILL } else { ink };
                         let rad = rad.min(w * 0.5);
                         p.rrect(Rect::new(rail.x, rail.y, w, rail.h), rad, rad, fill);
                     }
