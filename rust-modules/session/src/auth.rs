@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 mod ports;
-use ports::{home_roster_worker_with_io, mint_pin, finish_sign_in, cancellable_wait_while, race_batch, discover_and_store_with_resources, server_roster_worker_with_output, probe_endpoint_work, LivePin};
+use ports::{home_roster_worker_with_io, mint_pin, finish_sign_in, race_batch, discover_and_store_with_resources, server_roster_worker_with_output, probe_endpoint_work, LivePin};
 pub use ports::profile_switch_worker_with_io;
 
 pub mod owner;

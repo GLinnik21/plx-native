@@ -482,7 +482,7 @@ impl Attempt {
             Self::Erasing(mut d) => {
                 d.history.qr.code.clear(); d.history.qr.png.clear(); d.history.qr.generation = 0; d.history.qr.replaced = false; d.history.qr.trouble = false;
                 d.history.picker.picker = Picker::Boot; d.history.picker.users.clear(); d.history.picker.error.clear(); d.history.picker.pin_denied = false; d.residue.0 = false;
-                d.signin.authorization = HistoricalAuthorization::Stored; d.
+                d.signin.authorization = HistoricalAuthorization::Stored;
                 d.signin.plaintext = None; d.signin.account = None;
                 d.prior_phase = Phase::Creating;
                 Self::Erasing(d)
@@ -509,7 +509,7 @@ impl Attempt {
             Self::Erasing(mut d) => {
                 d.history.qr.code.clear(); d.history.qr.png.clear(); d.history.qr.generation = 0; d.history.qr.replaced = false;
                 d.history.picker.users.clear(); d.history.picker.error.clear(); d.history.picker.pin_denied = false; d.residue.0 = true;
-                d.signin.authorization = HistoricalAuthorization::Stored; d.
+                d.signin.authorization = HistoricalAuthorization::Stored;
                 d.prior_phase = Phase::Ready;
                 Self::Erasing(d)
             }
