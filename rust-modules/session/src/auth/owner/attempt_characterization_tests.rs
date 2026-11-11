@@ -659,3 +659,52 @@ fn nested_v5_prior_writer_golden_probe() {
     assert_eq!(SessionMachine::from_init(private).snapshot_init().signin_account.as_deref(),
         Some("Synthetic Hidden Name"));
 }
+
+#[test]
+fn restored_accepted_discovery_keeps_stream_authority_and_matching_retry_fence() {
+    let mut original = SessionMachine::from_init(captured());
+    let epoch = waiting(&mut original);
+    let req = original.state.next_req;
+    let key = original.state.pending[&req].key;
+    let admission = AdmissionReply { addr: Addr { to: MachineId::Session, req: RequestId(req) },
+        key, correlation: AdmissionId(req), accepted: true };
+    assert!(step(&mut original, SessionEvent::Admission(admission)).is_empty());
+    assert!(original.state.pending[&req].admission == AdmissionState::Accepted(AdmissionId(req)));
+    login(&mut original, 2, LoginProgress::Authorized { epoch, token: "synthetic-account".into() }, false);
+    login(&mut original, 3, LoginProgress::DiscoveryTrouble { epoch,
+        progress: super::super::DiscoveryRetryProgress {
+            run: super::super::DiscoveryRetryRun::Resources, misses: 2, elapsed_ms: 1234 } }, false);
+    let mut restored = SessionMachine::from_init(original.snapshot_init());
+    assert_eq!(original.subhash(), restored.subhash());
+    assert_eq!(restored.state.pending[&req].last_arrival, Some(3));
+    assert!(restored.state.pending[&req].admission == AdmissionState::Accepted(AdmissionId(req)));
+    for (arrival, run) in [(4, super::super::DiscoveryRetryRun::HomeUsers),
+        (5, super::super::DiscoveryRetryRun::Resources)] {
+        let record = envelope(&original, req, arrival, false,
+            Observation::Login(LoginProgress::DiscoveryRetrySettled { epoch, run }));
+        let original_fx = step(&mut original, SessionEvent::Result(record.clone()));
+        let restored_fx = step(&mut restored, SessionEvent::Result(record));
+        assert_eq!(serde_json::to_value(original_fx).unwrap(), serde_json::to_value(restored_fx).unwrap());
+        assert_eq!(serde_json::to_value(original.snapshot_init()).unwrap(),
+            serde_json::to_value(restored.snapshot_init()).unwrap());
+        assert_eq!(original.subhash(), restored.subhash());
+        assert_eq!(restored.read().0.discovery_retry.is_some(), arrival == 4);
+    }
+}
+
+#[test]
+fn restored_empty_waiting_and_ready_do_not_invent_work_or_handoff() {
+    for phase in [Phase::Waiting, Phase::Ready] {
+        let mut init = captured();
+        init.phase = phase;
+        init.signin_account = Some("Synthetic Hidden Name".into());
+        let mut owner = SessionMachine::from_init(init.clone());
+        let previous = owner.publication();
+        assert!(command(&mut owner, Command::TakeReady).is_empty());
+        assert!(Arc::ptr_eq(&previous, &owner.publication()));
+        let after = owner.snapshot_init();
+        assert_eq!(serde_json::to_value(&after).unwrap(), serde_json::to_value(&init).unwrap());
+        assert_eq!(after.signin_account, init.signin_account);
+        assert_eq!(owner.subhash(), init.hash());
+    }
+}

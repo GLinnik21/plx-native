@@ -991,7 +991,94 @@ pub fn write_persisted(w: &mut Canon, s: &PersistedSession) {
     });
 }
 
-impl LogicalState for SessionInit {
+/// Borrowed V5 logical fields. Omitted wire-only and private values are intentionally absent.
+struct LegacyV5Projection<'a> {
+    disk_identity: &'a Identity,
+    authority: &'a BootstrapAuthority,
+    phase: Phase,
+    picker: Picker,
+    persisted: &'a PersistedSession,
+    committed_credentials: &'a CredentialPatch,
+    pin_code: &'a String,
+    qr_png: &'a Vec<u8>,
+    users: &'a Vec<UserTile>,
+    error: &'a String,
+    pin_denied: bool,
+    authorized_in_flow: bool,
+    signin_active: bool,
+    apply_pending: bool,
+    code_replaced: bool,
+    qr_gen: u64,
+    next_qr: u64,
+    epoch: u64,
+    next_req: u32,
+    delete_leftovers: usize,
+    profile_scope: ProfileScope,
+    active_profile: &'a Option<UserRef>,
+    pending: &'a BTreeMap<u32, Pending>,
+    persistence_purpose: Option<PersistencePurpose>,
+    commit_phase: &'a CommitPhase,
+    persistence_warning: &'a Option<PersistenceWarning>,
+    held_handoff: &'a Option<HeldHandoff>,
+    persistence_warning_answered: bool,
+    pending_commit: &'a Option<PendingCommit>,
+    pending_erase: Option<(u64, bool)>,
+    pump_pending: bool,
+    inbox: &'a VecDeque<SessionEnvelope>,
+    incident: &'a Option<IncidentOffer>,
+    incidents_seen: &'a Vec<IncidentKey>,
+    next_incident: u32,
+    link_trouble: bool,
+    switch_refused_for: &'a Option<Identity>,
+    plaintext: &'a Option<super::PlaintextVerdict>,
+    discovery_retry: Option<super::DiscoveryRetryProgress>,
+}
+
+impl<'a> LegacyV5Projection<'a> {
+    fn from_init(init: &'a SessionInit) -> Self {
+        Self {
+            disk_identity: &init.disk_identity,
+            authority: &init.authority,
+            phase: init.phase,
+            picker: init.picker,
+            persisted: &init.persisted,
+            committed_credentials: &init.committed_credentials,
+            pin_code: &init.pin_code,
+            qr_png: &init.qr_png,
+            users: &init.users,
+            error: &init.error,
+            pin_denied: init.pin_denied,
+            authorized_in_flow: init.authorized_in_flow,
+            signin_active: init.signin_active,
+            apply_pending: init.apply_pending,
+            code_replaced: init.code_replaced,
+            qr_gen: init.qr_gen,
+            next_qr: init.next_qr,
+            epoch: init.epoch,
+            next_req: init.next_req,
+            delete_leftovers: init.delete_leftovers,
+            profile_scope: init.profile_scope,
+            active_profile: &init.active_profile,
+            pending: &init.pending,
+            persistence_purpose: init.persistence_purpose,
+            commit_phase: &init.commit_phase,
+            persistence_warning: &init.persistence_warning,
+            held_handoff: &init.held_handoff,
+            persistence_warning_answered: init.persistence_warning_answered,
+            pending_commit: &init.pending_commit,
+            pending_erase: init.pending_erase,
+            pump_pending: init.pump_pending,
+            inbox: &init.inbox,
+            incident: &init.incident,
+            incidents_seen: &init.incidents_seen,
+            next_incident: init.next_incident,
+            link_trouble: init.link_trouble,
+            switch_refused_for: &init.switch_refused_for,
+            plaintext: &init.plaintext,
+            discovery_retry: init.discovery_retry,
+        }
+    }
+
     fn write(&self, w: &mut Canon) {
         w.str(&self.disk_identity.client_id).str(&self.disk_identity.account_token)
             .str(&self.disk_identity.profile_uuid);
@@ -1008,9 +1095,9 @@ impl LogicalState for SessionInit {
         write_persisted(w, &self.persisted);
         write_persisted(w, &self.committed_credentials.merge_into(&PersistedSession::default()));
         w.str(&self.pin_code).seq(self.qr_png.len());
-        for byte in &self.qr_png { w.u8(*byte); }
+        for byte in self.qr_png { w.u8(*byte); }
         w.seq(self.users.len());
-        for user in &self.users {
+        for user in self.users {
             w.u64(user.id as u64).str(&user.uuid).str(&user.title).str(&user.thumb)
                 .bool(user.protected).bool(user.admin);
         }
@@ -1020,7 +1107,7 @@ impl LogicalState for SessionInit {
             .u64(self.delete_leftovers as u64).u32(self.profile_scope.0);
         w.option(self.active_profile.as_ref(), write_user);
         w.seq(self.pending.len());
-        for (&req, pending) in &self.pending {
+        for (&req, pending) in self.pending {
             w.u32(req).u64(pending.key.epoch);
             write_op(w, pending.key.op);
             w.str(&pending.expected.client_id).str(&pending.expected.account_token)
@@ -1092,10 +1179,10 @@ impl LogicalState for SessionInit {
         });
         w.option(self.pending_erase, |w, (epoch, sign_in)| { w.u64(epoch).bool(sign_in); });
         w.bool(self.pump_pending).seq(self.inbox.len());
-        for envelope in &self.inbox { envelope.write(w); }
+        for envelope in self.inbox { envelope.write(w); }
         w.option(self.incident.as_ref(), incident::write_offer);
         w.seq(self.incidents_seen.len());
-        for key in &self.incidents_seen { incident::write_key(w, key); }
+        for key in self.incidents_seen { incident::write_key(w, key); }
         w.u32(self.next_incident).bool(self.link_trouble);
         w.option(self.switch_refused_for.as_ref(), |w, id| {
             w.str(&id.client_id).str(&id.account_token).str(&id.profile_uuid);
@@ -1111,6 +1198,10 @@ impl LogicalState for SessionInit {
             }).u32(retry.misses).u32(retry.elapsed_ms);
         }
     }
+}
+
+impl LogicalState for SessionInit {
+    fn write(&self, w: &mut Canon) { LegacyV5Projection::from_init(self).write(w); }
     fn probe(&self, out: &mut String) {
         use std::fmt::Write;
         let _ = write!(out, "session phase={:?} requests={} scope={}",
