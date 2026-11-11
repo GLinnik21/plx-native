@@ -87,6 +87,20 @@ use crate::app::bootstrap::HomeIo;
 /// The viewer's time zone for a bands read, as the platform layer reads it from the OS: this runner is
 /// where the zone may be read (the data job takes it as two plain functions, `Zone`, and no machine
 /// reads it), and a calendar family's edges are converted with it.
+pub(crate) fn launch_watchlist_write(
+    job: Job<plx_data::stores::watchlist_job::WriteReq>,
+    port: plx_data::stores::watchlist_job::WritePort,
+    io: std::sync::Arc<dyn plx_data::watchlist::WatchlistIo>,
+) {
+    let addr = job.addr;
+    let refusal = port.clone();
+    if !plx_base::task::spawn_small("wlist-write", move || {
+        if port.start() {
+            plx_data::stores::watchlist_job::finish_write_job(&port, addr, job.req, &*io);
+        }
+    }) { refusal.refused(addr); }
+}
+
 fn os_zone() -> Zone {
     Zone { local_midnight: plx_platform::i18n::local_midnight, local_date: plx_platform::i18n::local_calendar_date }
 }
@@ -198,7 +212,8 @@ pub(crate) enum StoreRunner {
     /// (`run_held` resolves its client when it runs the job). A kind in `live` starts as `Live`
     /// starts it.
     #[cfg(test)]
-    Held { parked: Vec<StoreJob>, live: &'static [LiveKind], notify: NotifyTransport },
+    Held { parked: Vec<StoreJob>, live: &'static [LiveKind], notify: NotifyTransport,
+        watchlist_write: Option<std::sync::Arc<dyn plx_data::watchlist::WatchlistIo>> },
 }
 
 /// Boot-selected transport, not a second Notify state machine. Scripts must be finite;
@@ -287,7 +302,7 @@ impl StoreRunner {
     /// worker (the Related rigs land the window with `land_related_for_test`), so those are parked.
     #[cfg(test)]
     pub(crate) fn held() -> Self {
-        Self::Held { parked: Vec::new(), live: &[LiveKind::Hubs, LiveKind::MetaSeason, LiveKind::BrowsePage, LiveKind::BrowseDiscovery, LiveKind::MetaAltSources, LiveKind::NotifyStream], notify: NotifyTransport::Refuse }
+        Self::Held { parked: Vec::new(), live: &[LiveKind::Hubs, LiveKind::MetaSeason, LiveKind::BrowsePage, LiveKind::BrowseDiscovery, LiveKind::MetaAltSources, LiveKind::NotifyStream], notify: NotifyTransport::Refuse, watchlist_write: None }
     }
 
     /// TEST ONLY: park the Library listing's page reads of a held runner too (the Home Hubs read
@@ -305,7 +320,7 @@ impl StoreRunner {
     /// chooses to settle them.
     #[cfg(test)]
     pub(crate) fn held_all() -> Self {
-        Self::Held { parked: Vec::new(), live: &[], notify: NotifyTransport::Refuse }
+        Self::Held { parked: Vec::new(), live: &[], notify: NotifyTransport::Refuse, watchlist_write: None }
     }
 
     /// Start `job`, admitting it through the tape when its kind is taped (Detail, Collection,
@@ -314,6 +329,7 @@ impl StoreRunner {
     pub(crate) fn start(&mut self, job: StoreJob) {
         match job {
             StoreJob::WatchlistResolve(job, port) => self.start_watchlist_resolve(job, port),
+            StoreJob::WatchlistWrite(job, port) => self.start_watchlist_write(job, port),
             StoreJob::Detail(job, port) => self.start_detail(job, port),
             StoreJob::Collection(job, port) => self.start_collection(job, port),
             StoreJob::Person(job, port) => self.start_person(job, port),
@@ -370,7 +386,7 @@ impl StoreRunner {
                 }
             }
             // Not a Home kind: `Admission::Home` routed here only the kinds the arm above names.
-            other @ (StoreJob::WatchlistResolve(..)
+            other @ (StoreJob::WatchlistWrite(..) | StoreJob::WatchlistResolve(..)
                 | StoreJob::Detail(..)
                 | StoreJob::Collection(..)
                 | StoreJob::Person(..)
@@ -469,7 +485,8 @@ impl StoreRunner {
                     old_port.done(old.addr, ((old.req.sid, old.req.rk), None));
                 }
                 kept @ (
-                    StoreJob::WatchlistResolve(..)
+                    StoreJob::WatchlistWrite(..)
+                    | StoreJob::WatchlistResolve(..)
                     | StoreJob::Collection(..)
                     | StoreJob::Person(..)
                     | StoreJob::Hubs(..)
@@ -604,6 +621,17 @@ impl StoreRunner {
             }
             #[cfg(test)]
             Self::Held { parked, .. } => parked.push(StoreJob::WatchlistResolve(job, port)),
+        }
+    }
+
+    fn start_watchlist_write(&mut self, job: Job<plx_data::stores::watchlist_job::WriteReq>,
+        port: plx_data::stores::watchlist_job::WritePort) {
+        match self {
+            Self::Live => {
+                launch_watchlist_write(job, port, std::sync::Arc::new(plx_data::watchlist::LiveIo));
+            }
+            #[cfg(test)]
+            Self::Held { parked, .. } => parked.push(StoreJob::WatchlistWrite(job, port)),
         }
     }
 
@@ -1070,6 +1098,11 @@ impl StoreRunner {
         if let Self::Held { notify, .. } = self { *notify = transport; }
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_watchlist_write_io(&mut self, io: std::sync::Arc<dyn plx_data::watchlist::WatchlistIo>) {
+        if let Self::Held { watchlist_write, .. } = self { *watchlist_write = Some(io); }
+    }
+
     fn start_notify_stream(&mut self, job: Job<NotifyStreamReq>, port: NotifyStreamPort) {
         let transport = self.notify_transport();
         self.start_notify_stream_with(job, port, |req| transport.resolve(req),
@@ -1136,9 +1169,26 @@ impl StoreRunner {
         self.run_held_where(|job| job.store() == id)
     }
 
+
+    #[cfg(test)]
+    pub(crate) fn run_held_watchlist_writes(&mut self) -> usize {
+        self.run_held_where(|job| matches!(job, StoreJob::WatchlistWrite(..)))
+    }
+
+
+    #[cfg(test)]
+    pub(crate) fn take_held_watchlist_resolves(&mut self) -> Vec<StoreJob> {
+        let Self::Held { parked, .. } = self else { return Vec::new() };
+        let (take, keep) = std::mem::take(parked).into_iter()
+            .partition(|job| matches!(job, StoreJob::WatchlistResolve(..)));
+        *parked = keep;
+        take
+    }
+
     #[cfg(test)]
     fn run_held_where(&mut self, wanted: impl Fn(&StoreJob) -> bool) -> usize {
         let transport = self.notify_transport();
+        let watchlist_write = match &*self { Self::Held { watchlist_write, .. } => watchlist_write.clone(), Self::Live => None };
         let Self::Held { parked, .. } = self else { return 0 };
         let (run, keep): (Vec<_>, Vec<_>) = std::mem::take(parked).into_iter().partition(|job| wanted(job));
         *parked = keep;
@@ -1150,6 +1200,11 @@ impl StoreRunner {
                         plx_data::stores::watchlist_job::finish_resolve_job(&port, job.addr, job.req, plx_plex::plex::client_for);
                     }
                 }
+                StoreJob::WatchlistWrite(job, port) => {
+                    if let Some(io) = &watchlist_write {
+                        if port.start() { plx_data::stores::watchlist_job::finish_write_job(&port, job.addr, job.req, &**io); }
+                    } else { port.refused(job.addr); }
+                },
                 StoreJob::Detail(job, port) => {
                     // The client is resolved when the job runs (a live one is resolved by
                     // `start_detail`, at the admission); a server with none answers the failure.
@@ -2637,6 +2692,8 @@ mod tests {
         assert_eq!(io.reads.load(Ordering::SeqCst), 1);
     }
 
+
+// Watchlist write runner coverage lives with the bridge press fixture.
     #[test]
     fn watchlist_resolve_live_answers_and_releases_an_unanswered_claim() {
         let _serial = plx_base::testlock::serial();

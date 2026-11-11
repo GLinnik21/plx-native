@@ -80,6 +80,101 @@ pub fn finish_resolve_job(port: &ResolvePort, addr: Addr, req: ResolveReq,
     port.done(addr, end);
 }
 
+/// An owned write claim. Credentials are captured when the store makes the decision.
+pub struct WriteReq {
+    pub tag: Tag,
+    pub auth: crate::watchlist::WatchlistAuth,
+    pub write: crate::watchlist::ledger::PendingWrite,
+}
+impl std::fmt::Debug for WriteReq {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WriteReq").field("tag", &self.tag).finish_non_exhaustive()
+    }
+}
+impl PartialEq for WriteReq {
+    fn eq(&self, other: &Self) -> bool {
+        self.tag == other.tag && self.write == other.write
+            && self.auth.generation == other.auth.generation
+            && self.auth.client_id == other.auth.client_id && self.auth.credential == other.auth.credential
+            && self.auth.user.id == other.auth.user.id && self.auth.user.uuid == other.auth.user.uuid
+    }
+}
+
+pub enum WriteEnd {
+    Written { write: crate::watchlist::ledger::PendingWrite, outcome: crate::watchlist::ledger::WriteOutcome },
+    NotStarted { write: crate::watchlist::ledger::PendingWrite },
+}
+pub struct WriteLanding { pub addr: Addr, pub tag: Tag, pub end: WriteEnd }
+#[derive(Default)]
+pub struct WriteMailbox(Mutex<Vec<WriteLanding>>);
+impl WriteMailbox {
+    pub fn has_mail(&self) -> bool {
+        !self.0.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
+    }
+    pub fn take(&self) -> Vec<WriteLanding> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).drain(..).collect()
+    }
+}
+
+/// State 0 is queued, 1 started, 2 terminal. Start and every terminal compete on
+/// this one atomic, so a refusal cannot release a write that has reached a worker.
+#[derive(Clone)]
+pub struct WritePort {
+    addr: Addr, tag: Tag, write: crate::watchlist::ledger::PendingWrite,
+    mailbox: Arc<WriteMailbox>, state: Arc<AtomicU8>,
+}
+impl std::fmt::Debug for WritePort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WritePort").field("addr", &self.addr).finish()
+    }
+}
+impl PartialEq for WritePort {
+    fn eq(&self, other: &Self) -> bool { Arc::ptr_eq(&self.state, &other.state) }
+}
+impl WritePort {
+    pub fn new(addr: Addr, req: &WriteReq, mailbox: Arc<WriteMailbox>) -> Self {
+        Self { addr, tag: req.tag, write: req.write, mailbox, state: Arc::new(AtomicU8::new(0)) }
+    }
+    pub fn start(&self) -> bool {
+        self.state.compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst).is_ok()
+    }
+    pub fn cancel_queued(&self) { self.refused(self.addr); }
+}
+impl Port<WriteEnd> for WritePort {
+    fn done(&self, addr: Addr, end: WriteEnd) {
+        if addr != self.addr { return; }
+        let previous = match &end {
+            WriteEnd::NotStarted { write } if *write == self.write =>
+                self.state.compare_exchange(0, 2, Ordering::SeqCst, Ordering::SeqCst),
+            WriteEnd::Written { write, .. } if *write == self.write => {
+                match self.state.compare_exchange(1, 2, Ordering::SeqCst, Ordering::SeqCst) {
+                    Ok(state) => Ok(state),
+                    Err(0) => self.state.compare_exchange(0, 2, Ordering::SeqCst, Ordering::SeqCst),
+                    Err(state) => Err(state),
+                }
+            }
+            _ => return,
+        };
+        if previous.is_err() { return; }
+        self.mailbox.0.lock().unwrap_or_else(|e| e.into_inner()).push(WriteLanding { addr, tag: self.tag, end });
+        plx_machine::idle::invalidate();
+    }
+    fn refused(&self, addr: Addr) { self.done(addr, WriteEnd::NotStarted { write: self.write }); }
+}
+
+/// Runs only after `start` wins. A panic may have reached the wire and is a failed write.
+pub fn finish_write_job(port: &WritePort, addr: Addr, req: WriteReq, io: &dyn crate::watchlist::WatchlistIo) {
+    use crate::watchlist::ledger::WriteOutcome;
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if io.write(&req.auth, &crate::watchlist::encode_hex(&req.write.hex), req.write.intent).is_ok() {
+            WriteOutcome::Landed
+        } else {
+            WriteOutcome::Failed
+        }
+    })).unwrap_or(WriteOutcome::Failed);
+    port.done(addr, WriteEnd::Written { write: req.write, outcome });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -93,6 +188,44 @@ mod tests {
         let mailbox = Arc::new(ResolveMailbox::default());
         let port = ResolvePort::new(addr, &req, Arc::clone(&mailbox));
         (req, port, addr, mailbox)
+    }
+
+    fn write_fixture() -> (WriteReq, WritePort, Addr, Arc<WriteMailbox>) {
+        use crate::watchlist::ledger::{Intent, PendingWrite};
+        let tag = Tag { profile_gen: 1, epoch: 2, req: 3 };
+        let addr = Addr { to: MachineId::Store(StoreId::Watchlist.ord()), req: RequestId(tag.req) };
+        let req = WriteReq { tag, auth: crate::watchlist::WatchlistInput::for_test(1).auth().unwrap().clone(),
+            write: PendingWrite { hex: [7; 12], intent: Intent::Add, seq: 42 } };
+        let mailbox = Arc::new(WriteMailbox::default());
+        let port = WritePort::new(addr, &req, Arc::clone(&mailbox));
+        (req, port, addr, mailbox)
+    }
+
+    #[test]
+    fn write_wrong_address_does_not_retire_and_started_beats_cancel() {
+        let (req, port, addr, mailbox) = write_fixture();
+        let wrong = Addr { to: addr.to, req: RequestId(addr.req.0 + 1) };
+        port.refused(wrong);
+        assert!(port.start());
+        port.cancel_queued();
+        assert!(mailbox.take().is_empty());
+        port.done(addr, WriteEnd::Written { write: req.write, outcome: crate::watchlist::ledger::WriteOutcome::Failed });
+        port.refused(addr);
+        let answers = mailbox.take();
+        assert_eq!(answers.len(), 1);
+        assert!(matches!(answers[0].end, WriteEnd::Written { outcome: crate::watchlist::ledger::WriteOutcome::Failed, .. }));
+    }
+
+    #[test]
+    fn write_cancel_or_terminal_before_start_prevents_worker() {
+        let (req, port, _addr, mailbox) = write_fixture();
+        port.cancel_queued();
+        assert!(!port.start());
+        assert!(matches!(mailbox.take().pop().unwrap().end, WriteEnd::NotStarted { write } if write == req.write));
+        let (req, port, addr, mailbox) = write_fixture();
+        port.done(addr, WriteEnd::Written { write: req.write, outcome: crate::watchlist::ledger::WriteOutcome::Failed });
+        assert!(!port.start());
+        assert_eq!(mailbox.take().len(), 1);
     }
 
     #[test]

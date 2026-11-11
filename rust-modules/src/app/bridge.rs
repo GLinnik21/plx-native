@@ -1908,10 +1908,14 @@ impl Bridge {
     /// lands, a profile switch resets it, and the page reads its notice through `take_notices`.
     pub(crate) fn watchlist_pump(&mut self) {
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
-        if self.stores.watchlist.pump_with_gate_and_keys(&self.stores.landgate, &Self::seated_profile(), &self.client_keys) {
+        let profile = Self::seated_profile();
+        if self.stores.watchlist.pump_with_gate_and_keys(&self.stores.landgate, &profile, &self.client_keys) {
             plx_machine::idle::invalidate();
         }
         self.start_store_jobs_of(StoreId::Watchlist);
+        if self.stores.watchlist.land_write_results(&self.stores.landgate, &profile) {
+            plx_machine::idle::invalidate();
+        }
     }
 
     pub(crate) fn viewstate_pump(&mut self) -> plx_data::stores::EndpointRefreshSet {

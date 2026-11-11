@@ -746,6 +746,7 @@ impl StoreWork {
 #[derive(Debug, PartialEq)]
 pub enum StoreJob {
     WatchlistResolve(plx_machine::job::Job<watchlist_job::ResolveReq>, watchlist_job::ResolvePort),
+    WatchlistWrite(plx_machine::job::Job<watchlist_job::WriteReq>, watchlist_job::WritePort),
     NotifyStream(plx_machine::job::Job<notify_job::NotifyStreamReq>, notify_job::NotifyStreamPort),
     /// One detail fetch (`MetadataCmd::RequestDetail`), addressed by its request generation.
     Detail(plx_machine::job::Job<crate::metadata::DetailReq>, crate::metadata::DetailPort),
@@ -867,7 +868,7 @@ impl StoreJob {
             // `frame_ingest`, the Browse pump's own discovery step) starts it through
             // `StoreRunner::start` as `Direct`, byte for byte as its unrecorded spawn was.
             Self::BrowseDiscovery(..) => Admission::Home,
-            Self::WatchlistResolve(..) | Self::NotifyStream(..)
+            Self::WatchlistResolve(..) | Self::WatchlistWrite(..) | Self::NotifyStream(..)
             | Self::Catalog(..)
             | Self::SubtitleSearch(..)
             | Self::ViewReconcile(..)
@@ -890,7 +891,7 @@ impl StoreJob {
             Self::Collection(..) => StoreId::Collection,
             Self::Person(..) => StoreId::Person,
             Self::NotifyStream(..) => StoreId::Notify,
-            Self::WatchlistResolve(..) => StoreId::Watchlist,
+            Self::WatchlistResolve(..) | Self::WatchlistWrite(..) => StoreId::Watchlist,
             Self::Catalog(..) => StoreId::Catalog,
             Self::SubtitleSearch(..) => StoreId::SubtitleSearch,
             Self::ViewReconcile(..) => StoreId::ViewReconcile,
