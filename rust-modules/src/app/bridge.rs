@@ -1907,7 +1907,13 @@ impl Bridge {
     /// The Watchlist store's landing pass, once a frame and route-unconditional: a write burst
     /// lands, a profile switch resets it, and the page reads its notice through `take_notices`.
     pub(crate) fn watchlist_pump(&mut self) {
-        if self.stores.watchlist.pump_with_gate(&self.stores.landgate, &Self::seated_profile()) {
+        super::adapters::stores::refill_client_keys(&mut self.client_keys);
+        let profile = Self::seated_profile();
+        if self.stores.watchlist.pump_with_gate_and_keys(&self.stores.landgate, &profile, &self.client_keys) {
+            plx_machine::idle::invalidate();
+        }
+        self.start_store_jobs_of(StoreId::Watchlist);
+        if self.stores.watchlist.land_write_results(&self.stores.landgate, &profile) {
             plx_machine::idle::invalidate();
         }
     }
@@ -5206,4 +5212,22 @@ fn transport_keys_keep_their_identity_through_dispatcher_input() {
     }
     let input = key_input(consts::SDLK_LEFT, consts::WCODE_REWIND, 1, Tick::default(), Source::Sdl);
     assert!(matches!(input.kind, InputKind::Key { key: Key::Left, .. }), "plain D-pad precedence is unchanged");
+}
+
+#[cfg(test)]
+#[test]
+fn watchlist_resolve_bridge_drains_in_the_emitting_call() {
+    let _serial = plx_base::testlock::serial();
+    let mut bridge = Bridge::for_test(|| 0);
+    let sid = plx_plex::plex::ServerId::UNSET;
+    bridge.stores.watchlist.want_hex(sid, "7");
+    bridge.watchlist_pump();
+    assert!(!bridge.stores.watchlist.has_jobs(), "the emitting call drained the outbox");
+    assert_eq!(bridge.run_held_store_jobs_of_for_test(StoreId::Watchlist), 1);
+    bridge.watchlist_pump();
+    assert_eq!(bridge.stores.watchlist.view().resolved_hex(sid, "7"), None);
+    bridge.stores.watchlist.want_hex(sid, "7");
+    bridge.watchlist_pump();
+    assert!(!bridge.stores.watchlist.has_jobs());
+    assert_eq!(bridge.run_held_store_jobs_of_for_test(StoreId::Watchlist), 1);
 }

@@ -123,14 +123,7 @@ pub trait WatchlistIo: Reach + Send + Sync {
     fn facts_gen(&self) -> u32;
     /// Today as `YYYY-MM-DD` (UTC), the fallback "coming soon" test when the released list failed.
     fn today(&self) -> Option<String>;
-    /// WORKER THREAD. The `guid` of the item `rk` on `server`'s own record
-    /// (`client.metadata(rk).guid`): what a card row that carried no catalog id is resolved by
-    /// (`plex::resolve_catalog_hex`). `None` when the server did not answer (the caller then forgets the
-    /// attempt and asks again at the next menu; a guid that is not portable answers `Some`). The default answers
-    /// nothing, so a script that never resolves needs no line for it.
-    fn guid_of(&self, _server: ServerId, _rk: &str) -> Option<String> {
-        None
-    }
+
 }
 
 /// The production seam: libcurl through `plex::watchlist`, matching through the registered
@@ -188,9 +181,7 @@ impl WatchlistIo for LiveIo {
     fn facts_gen(&self) -> u32 {
         plx_plex::plex::server_facts_gen()
     }
-    fn guid_of(&self, server: ServerId, rk: &str) -> Option<String> {
-        plx_plex::plex::client_for(server)?.metadata(rk).map(|m| m.guid)
-    }
+
     fn today(&self) -> Option<String> {
         let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
         Some(ymd_of_unix_days((secs / 86_400) as i64))

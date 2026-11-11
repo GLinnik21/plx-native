@@ -81,6 +81,7 @@ pub mod tape;
 pub mod viewreconcile;
 pub mod viewstate;
 pub mod watchlist;
+pub mod watchlist_job;
 
 /// Production store aggregate. All seven stores are physical owners here — Browse, Person and
 /// ViewState landed first; Search, Hubs and Metadata completed the port.
@@ -283,6 +284,7 @@ impl Stores {
     pub fn take_jobs_of(&mut self, id: StoreId) -> Vec<StoreJob> {
         match id {
             StoreId::Notify => self.notify.take_jobs(),
+            StoreId::Watchlist => self.watchlist.take_jobs(),
             StoreId::Metadata => self.metadata.take_jobs(),
             StoreId::Collection => self.collection.take_jobs(),
             StoreId::Person => self.person.take_jobs(),
@@ -307,6 +309,7 @@ impl Stores {
     fn has_jobs_of(&self, id: StoreId) -> bool {
         match id {
             StoreId::Notify => self.notify.has_jobs(),
+            StoreId::Watchlist => self.watchlist.has_jobs(),
             StoreId::Metadata => self.metadata.has_jobs(),
             StoreId::Collection => self.collection.has_jobs(),
             StoreId::Person => self.person.has_jobs(),
@@ -742,6 +745,8 @@ impl StoreWork {
 /// lane a store is pumped on, a job carries the request itself and the port its answer goes to.
 #[derive(Debug, PartialEq)]
 pub enum StoreJob {
+    WatchlistResolve(plx_machine::job::Job<watchlist_job::ResolveReq>, watchlist_job::ResolvePort),
+    WatchlistWrite(plx_machine::job::Job<watchlist_job::WriteReq>, watchlist_job::WritePort),
     NotifyStream(plx_machine::job::Job<notify_job::NotifyStreamReq>, notify_job::NotifyStreamPort),
     /// One detail fetch (`MetadataCmd::RequestDetail`), addressed by its request generation.
     Detail(plx_machine::job::Job<crate::metadata::DetailReq>, crate::metadata::DetailPort),
@@ -863,7 +868,7 @@ impl StoreJob {
             // `frame_ingest`, the Browse pump's own discovery step) starts it through
             // `StoreRunner::start` as `Direct`, byte for byte as its unrecorded spawn was.
             Self::BrowseDiscovery(..) => Admission::Home,
-            Self::NotifyStream(..)
+            Self::WatchlistResolve(..) | Self::WatchlistWrite(..) | Self::NotifyStream(..)
             | Self::Catalog(..)
             | Self::SubtitleSearch(..)
             | Self::ViewReconcile(..)
@@ -886,6 +891,7 @@ impl StoreJob {
             Self::Collection(..) => StoreId::Collection,
             Self::Person(..) => StoreId::Person,
             Self::NotifyStream(..) => StoreId::Notify,
+            Self::WatchlistResolve(..) | Self::WatchlistWrite(..) => StoreId::Watchlist,
             Self::Catalog(..) => StoreId::Catalog,
             Self::SubtitleSearch(..) => StoreId::SubtitleSearch,
             Self::ViewReconcile(..) => StoreId::ViewReconcile,
