@@ -1957,31 +1957,29 @@ fn only_an_address_that_answered_is_ever_chosen_and_stored() {
     match probe_server(&plan, &|o| d.dial(o)) {
         Reach::At(c, o) => {
             assert_eq!(
-                c.address, "192.168.0.10",
-                "IPv4 leads the plaintext fallbacks"
+                c.address, "2001:db8::1",
+                "IPv6 leads the plaintext fallbacks by default"
             );
             assert_eq!(
                 o.base(),
-                "http://192.168.0.10:32400",
+                "http://[2001:db8::1]:32400",
                 "…and the origin recorded is what was dialled"
             );
         }
-        _ => panic!("the LAN IPv4 answers: {:?}", d.seen()),
+        _ => panic!("the LAN IPv6 candidate answers: {:?}", d.seen()),
     }
     assert_eq!(
         d.seen(),
         vec![
-            "https://192-168-0-10.h.plex.direct:32400",
             "https://2001-db8--1.h.plex.direct:32400",
-            "192.168.0.10:32400",
+            "https://192-168-0-10.h.plex.direct:32400",
+            "[2001:db8::1]:32400",
         ],
-        "TLS is tried first and costs two probes here; the twin is the fallback that answers"
+        "TLS is tried first and costs two probes here; the IPv6 twin is the fallback that answers"
     );
-    // …and the v6 addresses are never reached, because a candidate that answers ends the walk
+    // The first usable IPv6 endpoint is selected; no later candidate is dialled.
     assert!(
-        !d.seen()
-            .iter()
-            .any(|s| s.contains("fd00") || s.contains("2001:db8")),
+        !d.seen().iter().any(|s| s.contains("fd00") || s.contains("192.168.0.10")),
         "{:?}",
         d.seen()
     );
@@ -2072,8 +2070,9 @@ fn a_sign_in_to_a_two_server_account_settles_on_one_address_each_ours_first() {
     assert_eq!(
         d.seen(),
         vec![
-            "https://192-168-0-10.h.plex.direct:32400",
             "https://2001-db8--1.h.plex.direct:32400",
+            "https://192-168-0-10.h.plex.direct:32400",
+            "[2001:db8::1]:32400",
             "192.168.0.10:32400",
             "https://172-20-4-7.h.plex.direct:32400",
             "https://media.example.internal:31234",

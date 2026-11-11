@@ -499,11 +499,11 @@ fn a_real_push_seats_the_new_page_fresh_and_a_pop_restores_the_row_that_opened_i
     // Mounting the surface already seats row 0 (its own `Enter::Fresh`); four real DOWNs
     // move focus — and the engine's remembered cursor for `(id, GroupId(0))` — to row 4,
     // Legal notices (Settings v2: Diagnostics is the root's own row, between Privacy & data and it).
-    for i in 1..=4u32 {
+    for i in 1..=5u32 {
         frame(&mut d, &mut rig, 16 * i, vec![key(Key::Down, tick(16 * i))]);
     }
     let legal_row = d.focus().expect("a row is focused after a real DOWN");
-    assert_eq!(legal_row.elem, root_key(RootId::Legal), "the fourth DOWN is Legal notices in the signed-out fixture");
+    assert_eq!(legal_row.elem, root_key(RootId::Legal), "the fifth DOWN is Legal notices in the signed-out fixture");
 
     frame(&mut d, &mut rig, 96, vec![key(Key::Ok, tick(96))]);
     assert!(
@@ -791,9 +791,9 @@ fn a_sign_out_that_drops_the_focused_row_lands_the_engine_on_the_next_survivor()
     assert_eq!(d.focus().map(|k| k.elem), Some(root_key(RootId::TrailerAutoplay)), "premise: signed in, on Trailer autoplay");
     sign_out();
     settle_frames(&mut d, &mut rig, ms);
-    assert_eq!(d.focus().map(|k| k.elem), Some(root_key(RootId::Privacy)),
+    assert_eq!(d.focus().map(|k| k.elem), Some(root_key(RootId::IpProtocol)),
         "the engine follows the page's identity landing (next survivor), not row 0");
-    assert_eq!(sel_of(&d, id), root_key(RootId::Privacy), "the page and the engine agree");
+    assert_eq!(sel_of(&d, id), root_key(RootId::IpProtocol), "the page and the engine agree");
 }
 
 #[test]
