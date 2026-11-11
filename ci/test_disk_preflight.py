@@ -523,11 +523,14 @@ ColdStore.unpark = _unpark
             self.assert_cold_tree_left_alone(on)
         self.assertEqual(off.returncode, 1, "the 2 GiB case should be the refusal it always was: " + off.stderr)
 
-    def test_a_failed_copy_prints_one_line_and_the_build_goes_on(self):
+    def test_a_failed_copy_prints_its_estimate_and_one_outcome_line_and_the_build_goes_on(self):
         self.cold_fixture()
         out = self.run_preflight(free_gib=40, PLX_TEST_COLD_COPY_FAIL="1")
         self.assertEqual(out.returncode, 0, out.stderr)
-        self.assertEqual(sum("cold-store:" in l for l in out.stderr.splitlines()), 1, out.stderr)
+        lines = [l for l in out.stderr.splitlines() if "cold-store:" in l]
+        self.assertEqual(len(lines), 2, out.stderr)
+        self.assertEqual(sum("(est " in l for l in lines), 1, out.stderr)
+        self.assertEqual(sum("not restored" in l for l in lines), 1, out.stderr)
         self.assertRegex(out.stderr, r"unpark failed")
         self.assert_cold_tree_left_alone(out)
 
