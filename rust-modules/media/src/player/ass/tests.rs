@@ -762,13 +762,16 @@ fn native_replace_track_keeps_the_fonts_and_the_next_frame_is_never_unchanged() 
     );
     let first = native_frame(&mut native, 100).expect("first frame");
     assert_eq!(ink(&first).bands.len(), 1);
-    // The facade timed that render (`assperf:` splits libass from the composite by these) and
-    // counted the images libass produced for it.
+    // The facade timed that render (`assperf:` splits libass from the composite by these), on the
+    // wall clock and on the thread's CPU clock, and counted the images libass produced for it.
     let drawn = native.stats();
     assert!(
-        drawn.last_libass_us > 0 && drawn.last_images > 0 && drawn.last_image_pixels > 0,
+        drawn.last_libass_us > 0
+            && drawn.last_libass_cpu_us > 0
+            && drawn.last_images > 0
+            && drawn.last_image_pixels > 0,
         "{:?}",
-        (drawn.last_libass_us, drawn.last_images, drawn.last_image_pixels)
+        (drawn.last_libass_us, drawn.last_libass_cpu_us, drawn.last_images, drawn.last_image_pixels)
     );
     assert!(native_frame(&mut native, 100).is_none(), "the same instant is unchanged");
     let unchanged = native.stats();
