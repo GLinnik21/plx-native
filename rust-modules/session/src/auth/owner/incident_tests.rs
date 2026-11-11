@@ -433,7 +433,7 @@ fn a_failure_keeps_an_offer_the_wait_raised() {
 /// The sign-in request in flight — a QR sign-in, or the discovery-only retry of an authorized one.
 fn signin_request(owner: &SessionMachine) -> u32 {
     *owner
-        .state
+        .common
         .pending
         .iter()
         .find(|(_, p)| matches!(p.key.op, SessionOp::Login | SessionOp::Rediscover))

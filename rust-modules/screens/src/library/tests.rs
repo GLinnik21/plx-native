@@ -1137,15 +1137,6 @@ impl Fixture {
         fixture
     }
 }
-/// One Tick through the screen: whether it damaged the frame.
-fn tick_damaged(page: &mut LibraryScreen, fixture: &Fixture) -> bool {
-    let mut out = Vec::new();
-    let mut present = plx_machine::present::Present::new();
-    present.take(0);
-    page.step(&ScreenEvent::Tick(Tick::default()), &fixture.cx(None),
-        &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
-    present.changed()
-}
 
 fn tick_with_clock<'a>(page: &mut LibraryScreen, fixture: &'a Fixture, facts: &'a plx_plex::plex::ClockFacts) -> bool {
     let mut out = Vec::new();

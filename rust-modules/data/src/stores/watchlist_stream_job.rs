@@ -102,12 +102,13 @@ pub fn finish_delta_job(port: &WatchlistStreamPort, addr: Addr, req: DeltaReq, i
 #[cfg(test)]
 mod snapshot_cache_tests {
     use super::*;
-    use plx_plex::plex::{Client, ClientKey, Origin, probe::Outcome};
+    use plx_plex::plex::{Client, ClientKey, probe::Outcome};
     use std::sync::Arc;
 
     fn client() -> &'static Client {
-        Box::leak(Box::new(Client::new(ServerId::from_raw(907), "watchlist-capture",
-            Origin::http("127.0.0.1", 9), "old-token", "watchlist-test")))
+        let sid = plx_plex::plex::register_for_test(
+            "watchlist-capture", "127.0.0.1", 9, "old-token", "watchlist-test");
+        plx_plex::plex::client_for(sid).unwrap()
     }
     fn keys(client: &'static Client, reachable: bool, allowed: bool) -> ClientKeys {
         let mut keys = ClientKeys::default();
@@ -118,6 +119,8 @@ mod snapshot_cache_tests {
 
     #[test]
     fn watchlist_snapshot_cache_retains_populated_capture_and_buffers_on_stable_passes() {
+        let _serial = plx_base::testlock::serial();
+        plx_plex::plex::reset_servers_for_test();
         let client = client();
         let keys = keys(client, true, true);
         let mut cache = SnapshotCache::default();
@@ -133,10 +136,13 @@ mod snapshot_cache_tests {
             assert_eq!(current.today.as_ref().unwrap().as_ptr(), date);
             assert_eq!(current.keys.iter().count(), 1);
         }
+        plx_plex::plex::reset_servers_for_test();
     }
 
     #[test]
     fn watchlist_snapshot_cache_tracks_full_keys_facts_eligibility_and_day_without_mutating_old_jobs() {
+        let _serial = plx_base::testlock::serial();
+        plx_plex::plex::reset_servers_for_test();
         let client = client();
         let initial = keys(client, true, true);
         let old_key = ClientKey::of(client);
@@ -165,5 +171,6 @@ mod snapshot_cache_tests {
         assert!(old.keys.stream_allowed(client.id()));
         assert!(old.reachable(client.id()));
         assert_eq!(old.today.as_deref(), Some(crate::watchlist::ymd_of_unix_days(20_000).as_str()));
+        plx_plex::plex::reset_servers_for_test();
     }
 }
