@@ -85,7 +85,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-11T18:26:14Z",
+ "generated": "2026-11-11T18:34:56Z",
  "metrics": [
   {
    "change30_pct": 54.4,
@@ -130,18 +130,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 101.4,
-   "change7_pct": 27.0,
+   "change30_pct": 101.9,
+   "change7_pct": 27.3,
    "d30": 210.0,
-   "delta30": 213.0,
-   "delta7": 90.0,
+   "delta30": 214.0,
+   "delta7": 91,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
-   "n_now": 64,
+   "n_now": 65,
    "n_prev": 73,
-   "now": 423.0,
+   "now": 424,
    "prev7": 333,
    "shown": true,
    "state": "worse",
@@ -193,18 +193,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 43.4,
-   "change7_pct": 10.2,
+   "change30_pct": 44.1,
+   "change7_pct": 10.7,
    "d30": 320.0,
-   "delta30": 139.0,
-   "delta7": 42.5,
+   "delta30": 141.0,
+   "delta7": 44.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 65,
+   "n_now": 66,
    "n_prev": 74,
-   "now": 459,
+   "now": 461.0,
    "prev7": 416.5,
    "shown": true,
    "state": "flat",
@@ -298,18 +298,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 66.9,
-   "change7_pct": 7.7,
+   "change30_pct": 68.0,
+   "change7_pct": 8.4,
    "d30": 268.5,
-   "delta30": 179.5,
-   "delta7": 32.0,
+   "delta30": 182.5,
+   "delta7": 35,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
-   "n_now": 64,
+   "n_now": 65,
    "n_prev": 73,
-   "now": 448.0,
+   "now": 451,
    "prev7": 416,
    "shown": true,
    "state": "flat",
@@ -328,9 +328,9 @@
    "id": "ci|armv7 cross-build and artifact assertions",
    "kind": "job",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "n_now": 64,
+   "n_now": 65,
    "n_prev": 74,
-   "now": 375.0,
+   "now": 375,
    "prev7": 341.5,
    "shown": true,
    "state": "flat",
@@ -361,18 +361,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 111.7,
-   "change7_pct": -15.6,
+   "change30_pct": 111.3,
+   "change7_pct": -15.7,
    "d30": 141.0,
-   "delta30": 157.5,
-   "delta7": -55.0,
+   "delta30": 157.0,
+   "delta7": -55.5,
    "group": "ci",
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
-   "n_now": 64,
+   "n_now": 65,
    "n_prev": 74,
-   "now": 298.5,
+   "now": 298,
    "prev7": 353.5,
    "shown": true,
    "state": "flat",
@@ -382,18 +382,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 85.4,
-   "change7_pct": -18.3,
+   "change30_pct": 84.6,
+   "change7_pct": -18.6,
    "d30": 130.0,
-   "delta30": 111.0,
-   "delta7": -54.0,
+   "delta30": 110.0,
+   "delta7": -55.0,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
    "kind": "job",
    "label": "CI: host python/shell/C gates",
-   "n_now": 64,
+   "n_now": 65,
    "n_prev": 74,
-   "now": 241.0,
+   "now": 240,
    "prev7": 295.0,
    "shown": true,
    "state": "flat",
@@ -403,18 +403,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 33.2,
-   "change7_pct": 18.1,
+   "change30_pct": 33.5,
+   "change7_pct": 18.3,
    "d30": 171.5,
-   "delta30": 57.0,
-   "delta7": 35.0,
+   "delta30": 57.5,
+   "delta7": 35.5,
    "group": "ci",
    "id": "ci|host lint + type-checks",
    "kind": "job",
    "label": "CI: host lint + type-checks",
-   "n_now": 64,
+   "n_now": 65,
    "n_prev": 74,
-   "now": 228.5,
+   "now": 229,
    "prev7": 193.5,
    "shown": true,
    "state": "flat",
@@ -538,9 +538,9 @@
    "id": "ci|which gates apply",
    "kind": "job",
    "label": "CI: which gates apply",
-   "n_now": 64,
+   "n_now": 65,
    "n_prev": 74,
-   "now": 5.0,
+   "now": 5,
    "prev7": 5.0,
    "shown": false,
    "state": "flat",
@@ -559,9 +559,9 @@
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 64,
+   "n_now": 65,
    "n_prev": 74,
-   "now": 3.0,
+   "now": 3,
    "prev7": 3.0,
    "shown": false,
    "state": "flat",
@@ -575,14 +575,14 @@
    "change7_pct": 0.0,
    "d30": 4.0,
    "delta30": -1.0,
-   "delta7": 0.0,
+   "delta7": 0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 64,
+   "n_now": 65,
    "n_prev": 73,
-   "now": 3.0,
+   "now": 3,
    "prev7": 3,
    "shown": false,
    "state": "flat",
@@ -618,11 +618,6 @@
    "change_pct": 47.6,
    "commits": [
     {
-     "pr": 1315,
-     "sha": "5b4e8db77",
-     "title": "refactor(metadata): move alternative-source IO into store jobs"
-    },
-    {
      "pr": null,
      "sha": "87c08f315",
      "title": "chore(git): ignore local Empryo workspace artifacts"
@@ -666,6 +661,11 @@
      "pr": 1333,
      "sha": "301811ec7",
      "title": "Version choice: measure a version picked by hand from its own fetch"
+    },
+    {
+     "pr": 1338,
+     "sha": "c3aa053b2",
+     "title": "disk tooling: never size, walk or probe trees on another volume"
     }
    ],
    "from": 22.4,
@@ -679,11 +679,6 @@
    "change_pct": 30.9,
    "commits": [
     {
-     "pr": 1315,
-     "sha": "5b4e8db77",
-     "title": "refactor(metadata): move alternative-source IO into store jobs"
-    },
-    {
      "pr": null,
      "sha": "87c08f315",
      "title": "chore(git): ignore local Empryo workspace artifacts"
@@ -727,6 +722,11 @@
      "pr": 1333,
      "sha": "301811ec7",
      "title": "Version choice: measure a version picked by hand from its own fetch"
+    },
+    {
+     "pr": 1338,
+     "sha": "c3aa053b2",
+     "title": "disk tooling: never size, walk or probe trees on another volume"
     }
    ],
    "from": 48.6,
@@ -737,13 +737,8 @@
    "to": 63.5
   },
   {
-   "change_pct": 27.0,
+   "change_pct": 27.3,
    "commits": [
-    {
-     "pr": 1315,
-     "sha": "5b4e8db77",
-     "title": "refactor(metadata): move alternative-source IO into store jobs"
-    },
     {
      "pr": null,
      "sha": "87c08f315",
@@ -788,6 +783,11 @@
      "pr": 1333,
      "sha": "301811ec7",
      "title": "Version choice: measure a version picked by hand from its own fetch"
+    },
+    {
+     "pr": 1338,
+     "sha": "c3aa053b2",
+     "title": "disk tooling: never size, walk or probe trees on another volume"
     }
    ],
    "from": 333,
@@ -795,16 +795,11 @@
    "label": "CI: host unit tests (hostsim)",
    "since": "2026-11-11",
    "threshold_pct": 20.0,
-   "to": 423.0
+   "to": 424
   },
   {
    "change_pct": 25.8,
    "commits": [
-    {
-     "pr": 1315,
-     "sha": "5b4e8db77",
-     "title": "refactor(metadata): move alternative-source IO into store jobs"
-    },
     {
      "pr": null,
      "sha": "87c08f315",
@@ -849,6 +844,11 @@
      "pr": 1333,
      "sha": "301811ec7",
      "title": "Version choice: measure a version picked by hand from its own fetch"
+    },
+    {
+     "pr": 1338,
+     "sha": "c3aa053b2",
+     "title": "disk tooling: never size, walk or probe trees on another volume"
     }
    ],
    "from": 153.4,
@@ -871,19 +871,19 @@
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
-   "now": 448.0
+   "now": 451
   },
   {
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
-   "now": 423.0
+   "now": 424
   },
   {
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "now": 375.0
+   "now": 375
   },
   {
    "group": "ci",
