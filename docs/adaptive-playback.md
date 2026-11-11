@@ -694,8 +694,11 @@ Neither a failed nor an insufficient experiment is polled alongside every HLS se
 experiment the gate records the greater of the source result and HLS's recent estimate. It rearms
 only after live HLS's conservative bound rises strictly above that record. Thus wall-clock time and
 an unchanged demand-capped stream cannot cause another request; a confidence-separated link-regime
-change can. The probe itself is a finite `Range: bytes=0-(N-1)` request and is accepted only with a
-matching `206 Content-Range`, so completing the measurement also completes the HTTP response.
+change can. The probe itself is a finite `Range: bytes=0-(N-1)` request and is accepted with a
+matching `206 Content-Range`, so completing the measurement also completes the HTTP response, or
+with a `200` from byte zero: PMS's transcoder (`start.mkv`, a remux Original) ignores Range, the
+probe starts at zero and only counts bytes, and the demuxer's open or seek still refuses a `200` to
+its Range.
 
 A completed terminal comparison follows the HLS actuator that supplied its counterfactual. An
 upward HLS commit retains the exact source lower bound but invalidates the comparison; the first
