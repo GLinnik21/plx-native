@@ -51,8 +51,17 @@ fn unplayed_movies_and_shows_get_the_identity_band() {
     }
     let show = PmsMovie { kind: plx_data::pms::KIND_SHOW, child_count: 2, ..movie() };
     assert!(matches!(hero_line(&show), Some(HeroLine::Metadata { .. })));
-    assert_eq!(premise(&PmsMovie { viewed_leaf_count: Some(1), ..show }), FIRST);
-    assert_eq!(premise(&PmsMovie { watched: true, ..movie() }), FIRST);
+    // Owner, v0.10.0 rc1 ("why this movie has description instead of Movie • Year • Length?"): a
+    // movie or show reads its identity band whether or not it has been played; the premise is for
+    // the kinds that have no identity band (a season, a collection).
+    for played in [
+        PmsMovie { viewed_leaf_count: Some(1), ..show.clone() },
+        PmsMovie { watched: true, ..show },
+        PmsMovie { watched: true, ..movie() },
+    ] {
+        assert!(matches!(hero_line(&played), Some(HeroLine::Metadata { .. })), "{:?}", played.kind);
+    }
+    assert_eq!(premise(&PmsMovie { kind: plx_data::pms::KIND_COLLECTION, ..movie() }), FIRST);
     let bare = PmsMovie::default();
     assert!(matches!(hero_line(&bare), Some(HeroLine::Metadata { date, length, genres, rating, .. })
         if date.is_empty() && length.is_empty() && genres.is_empty() && rating.is_empty()));
@@ -68,11 +77,10 @@ fn the_ladder_keeps_its_anchor_for_every_line() {
                   remembers, a woman crosses the frozen wastes, hunting the dragon she raised, \
                   carrying everything she still owns, and nothing she wants to keep"
             .into(),
-        kind: 1,
-        watched: true,
+        kind: plx_data::pms::KIND_COLLECTION,
         ..movie()
     };
-    let one = PmsMovie { kind: 1, watched: true, ..movie() };
+    let one = PmsMovie { kind: plx_data::pms::KIND_COLLECTION, ..movie() };
     let resumed = PmsMovie { resume_ms: 7 * MIN, ..movie() };
     let long_label = episode();
     assert_eq!(home_synopsis(FIRST).measure_h(theme::hero::HOME_SYNOPSIS_W), HOME_LABEL_H, "the premise: the first sentence is one line");
@@ -94,7 +102,7 @@ fn the_ladder_keeps_its_anchor_for_every_line() {
     assert_eq!(s_one.title.y - s_two.title.y, HOME_LABEL_H, "a one-line block brings the title down a line");
     assert_eq!((s_resumed.title.y, s_resumed.block), (s_label.title.y, s_label.block), "a label is a label");
     // no line: the title stands alone over the actions
-    let mute = PmsMovie { summary: String::new(), kind: plx_data::pms::KIND_SHOW, watched: true, ..movie() };
+    let mute = PmsMovie { summary: String::new(), kind: plx_data::pms::KIND_COLLECTION, ..movie() };
     assert!(stack(&mute).block.is_none());
 }
 

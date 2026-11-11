@@ -24,7 +24,7 @@ def git_has_merge_tree():
     out = subprocess.run(["git", "--version"], capture_output=True, text=True).stdout
     m = re.search(r"(\d+)\.(\d+)", out)
     return bool(m) and (int(m.group(1)), int(m.group(2))) >= (2, 38)
-MODES = ("--incremental", "--orphans", "--lanes", "--stale", "--cache", "--worktrees", "--all")
+MODES = ("--incremental", "--orphans", "--lanes", "--stale", "--cache", "--ffmpeg-cache", "--worktrees", "--all")
 
 # HANG GUARD, NOT A SPEED BOUND. Every run of the script below ends at the child's own exit; this is
 # only how long a test waits for a child that never exits before it gives up and fails. The honest cost
@@ -108,7 +108,11 @@ class BuildGcTests(unittest.TestCase):
                    # `--auto` (the SessionEnd hook, launchd) could be holding on the very machine
                    # running this suite.
                    PLX_GC_LOG=str(root / "gc.log"), PLX_GC_LOCK_DIR=str(root / "gc.lock"),
-                   PLX_GC_TMP_ROOTS=str(tmproot), TMPDIR=str(scratch))
+                   PLX_GC_TMP_ROOTS=str(tmproot), TMPDIR=str(scratch),
+                   # The cold store is opt-in and read from a per-user file: a fixture never reads the owner's.
+                   # The file named here does not exist until a test that wants a cold store writes it.
+                   PLX_COLD_STORE_CONFIG=str(root / "cold-store.conf"),
+                   PLX_TV_CONFIG_DIR=str(root / "no-tv-config"))
         for key in ("PLX_GC_TEST_NOW", "PLX_GC_TEST_FREE_KIB", "PLX_GC_IDLE_MIN", "PLX_GC_MIN_FREE_GIB"):
             env.pop(key, None)
         subprocess.run(["git", "init", "-q", str(repo)], env=env, check=True)
@@ -739,7 +743,7 @@ class BuildGcTests(unittest.TestCase):
         # A huge free-space stub against a tiny threshold: every below-threshold stage must be
         # skipped, and only the always-on --orphans stage may fire. sentinels[0] is the repo's own
         # (== main checkout's) incremental cache, sentinels[1] is the orphaned external lane tree,
-        # sentinels[2] is a stale FFmpeg cache entry --auto must never touch (no --cache stage).
+        # sentinels[2] is a stale FFmpeg cache entry: --auto ages those out only under pressure.
         fixture = self.fixture(0, 0)
         result = self.run_auto(fixture, extra_env={
             "PLX_GC_TEST_FREE_KIB": "999999999", "PLX_GC_MIN_FREE_GIB": "1"})
@@ -749,7 +753,146 @@ class BuildGcTests(unittest.TestCase):
         _, _, sentinels, _ = fixture
         self.assertTrue(sentinels[0].exists(), "touched the main checkout above threshold: " + diagnostic)
         self.assertFalse(sentinels[1].exists(), "orphans must run even above threshold: " + diagnostic)
-        self.assertTrue(sentinels[2].exists(), "--auto must never run --cache: " + diagnostic)
+        self.assertTrue(sentinels[2].exists(), "--auto aged out an FFmpeg key above the threshold: " + diagnostic)
+
+    # `--auto` ages out FFmpeg cache keys, and only those, once the disk is below the comfort line: a key
+    # whose `.last-used` is older than $PLX_GC_AUTO_CACHE_DAYS (default 7) goes, under the same per-key
+    # lock and the same preflight `--cache` takes. `--cache` itself (30 days, and the cargo seed) is
+    # unchanged. The default fixture's `synthetic-key` is a 40-day-old key with a dead lock.
+    def ffmpeg_key(self, fixture, name, days):
+        key = Path(fixture[1]["PLX_BUILD_CACHE"]) / "ffmpeg" / name
+        key.mkdir(parents=True)
+        (key / "payload").write_text("synthetic ffmpeg tree\n")
+        stamp = key / ".last-used"
+        stamp.touch()
+        old = time.time() - days * 86400
+        os.utime(stamp, (old, old))
+        return key
+
+    def cargo_seed(self, fixture, name, days):
+        seed = Path(fixture[1]["PLX_BUILD_CACHE"]) / "cargo-seed" / name
+        seed.mkdir(parents=True)
+        (seed / "payload").write_text("third-party output\n")
+        stamp = seed / ".last-used"
+        stamp.touch()
+        old = time.time() - days * 86400
+        os.utime(stamp, (old, old))
+        return seed
+
+    def test_auto_under_pressure_ages_out_ffmpeg_keys_unused_for_a_week_and_only_those(self):
+        fixture = self.with_planner(self.fixture(0, 0))
+        repo, env, sentinels, _ = fixture
+        # PLX_CACHE_MAX_DAYS is 30 here: a key of 10 days is --cache's to keep and --auto's to take.
+        fresh, recent = self.ffmpeg_key(fixture, "armv7-6.1-fresh", 1), self.ffmpeg_key(fixture, "armv7-6.1-recent", 6)
+        week_old, ancient = self.ffmpeg_key(fixture, "armv7-6.1-week-old", 10), self.ffmpeg_key(fixture, "armv7-6.1-ancient", 90)
+        # "unused for 7 days" is exact, not "at least 8 whole days" (`find -mtime +7`): half a day either side.
+        inside, just_over = self.ffmpeg_key(fixture, "armv7-6.1-inside", 6.5), self.ffmpeg_key(fixture, "armv7-6.1-just-over", 7.5)
+        tarball = Path(env["PLX_BUILD_CACHE"]) / "ffmpeg" / "ffmpeg-6.1.tar.xz"
+        tarball.write_text("source tarball\n")
+        self.age(tarball, 90 * 86400)
+        result = self.run_auto(fixture, extra_env=self.UNDER_PRESSURE)
+        diagnostic = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, diagnostic)
+        for kept in (fresh, recent, inside):
+            self.assertTrue((kept / "payload").exists(), "a key used within the week was aged out: " + diagnostic)
+        for gone in (week_old, ancient, just_over, sentinels[2]):
+            self.assertFalse(gone.exists(), "a key unused for over 7 days survived: " + diagnostic)
+            self.assertFalse(Path(str(gone) + ".lock").exists(), "its lock was left behind: " + diagnostic)
+        self.assertTrue(tarball.exists(), "the source tarball is not a key and was removed: " + diagnostic)
+        log = Path(env["PLX_GC_LOG"]).read_text()
+        self.assertIn("ffmpeg cache (unused > 7d): reclaimed=", log)
+        self.assertLess(log.index("worktrees (idle >= 30m):"), log.index("ffmpeg cache (unused > 7d):"), log)
+        self.assertLess(log.index("ffmpeg cache (unused > 7d):"), log.index("evict (planner order):"), log)
+
+    def test_auto_ffmpeg_age_out_reads_its_days_from_plx_gc_auto_cache_days(self):
+        fixture = self.with_planner(self.fixture(0, 0))
+        env = fixture[1]
+        week_old, ancient = self.ffmpeg_key(fixture, "armv7-6.1-week-old", 10), self.ffmpeg_key(fixture, "armv7-6.1-ancient", 40)
+        result = self.run_auto(fixture, extra_env={**self.UNDER_PRESSURE, "PLX_GC_AUTO_CACHE_DAYS": "20"})
+        diagnostic = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, diagnostic)
+        self.assertTrue((week_old / "payload").exists(), "a 10-day-old key went at a 20-day setting: " + diagnostic)
+        self.assertFalse(ancient.exists(), "a 40-day-old key survived a 20-day setting: " + diagnostic)
+        self.assertIn("ffmpeg cache (unused > 20d):", Path(env["PLX_GC_LOG"]).read_text())
+        # and a value that is not a number is the default, not "everything"
+        fixture = self.with_planner(self.fixture(0, 0))
+        recent = self.ffmpeg_key(fixture, "armv7-6.1-recent", 6)
+        result = self.run_auto(fixture, extra_env={**self.UNDER_PRESSURE, "PLX_GC_AUTO_CACHE_DAYS": "soon"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue((recent / "payload").exists(), result.stdout + result.stderr)
+        self.assertIn("ffmpeg cache (unused > 7d):", Path(fixture[1]["PLX_GC_LOG"]).read_text())
+
+    def test_auto_ffmpeg_age_out_keeps_a_key_whose_build_holds_the_lock(self):
+        # The same protection `--cache` has: a live FFmpeg build's lock makes the whole stage decline
+        # (the preflight every non-`--evict` mode runs), so its key survives however old its marker is.
+        fixture = self.with_planner(self.fixture(os.getpid(), 0))
+        repo, env, sentinels, lock = fixture
+        self.assertTrue(lock.exists())
+        result = self.run_auto(fixture, extra_env=self.UNDER_PRESSURE)
+        diagnostic = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, diagnostic)
+        self.assertIn("held FFmpeg cache lock", diagnostic)
+        self.assertTrue(sentinels[2].exists(), "a key whose build holds its lock was aged out: " + diagnostic)
+        self.assertTrue(lock.exists(), "a live build's lock was removed: " + diagnostic)
+
+    def test_auto_ffmpeg_age_out_never_touches_the_cargo_seed(self):
+        # `tools/cargo-seed.py` is copied in, so a stage that did run the seed's prune would find it.
+        fixture = self.with_planner(self.fixture(0, 0))
+        stale_seed, young_seed = self.cargo_seed(fixture, "target", 40), self.cargo_seed(fixture, "target-release", 10)
+        old_key = self.ffmpeg_key(fixture, "armv7-6.1-old", 10)
+        result = self.run_auto(fixture, extra_env=self.UNDER_PRESSURE)
+        diagnostic = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, diagnostic)
+        self.assertFalse(old_key.exists(), "the control: the stage did not run: " + diagnostic)
+        for seed in (stale_seed, young_seed):
+            self.assertTrue((seed / "payload").exists(), "--auto touched the cargo seed " + seed.name + ": " + diagnostic)
+
+    def test_auto_above_the_comfort_line_ages_out_no_ffmpeg_key(self):
+        fixture = self.with_planner(self.fixture(0, 0))
+        repo, env, sentinels, _ = fixture
+        keys = [self.ffmpeg_key(fixture, "armv7-6.1-week-old", 10), self.ffmpeg_key(fixture, "armv7-6.1-ancient", 90)]
+        result = self.run_auto(fixture, extra_env={"PLX_GC_TEST_FREE_KIB": "999999999", "PLX_GC_MIN_FREE_GIB": "1"})
+        diagnostic = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, diagnostic)
+        self.assertIn("already above threshold", diagnostic)
+        for key in keys:
+            self.assertTrue((key / "payload").exists(), "aged out above the threshold: " + diagnostic)
+        self.assertTrue(sentinels[2].exists(), "aged out above the threshold: " + diagnostic)
+        self.assertNotIn("ffmpeg cache", Path(env["PLX_GC_LOG"]).read_text())
+
+    def test_auto_dry_run_previews_the_ffmpeg_age_out_and_deletes_nothing(self):
+        fixture = self.with_planner(self.fixture(0, 0))
+        old_key = self.ffmpeg_key(fixture, "armv7-6.1-old", 10)
+        result = self.run_auto(fixture, "-n", extra_env=self.UNDER_PRESSURE)
+        diagnostic = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, diagnostic)
+        self.assertRegex(diagnostic, r"would remove +\S+ +\S+/ffmpeg/armv7-6\.1-old\n")
+        self.assertTrue((old_key / "payload").exists(), "-n deleted a key: " + diagnostic)
+
+    def test_ffmpeg_cache_mode_is_the_ffmpeg_half_of_cache(self):
+        # By hand `--ffmpeg-cache` is `--cache` without the cargo seed, at the same $PLX_CACHE_MAX_DAYS (30 here).
+        fixture = self.with_planner(self.fixture(0, 0))
+        seed = self.cargo_seed(fixture, "target", 40)
+        week_old, ancient = self.ffmpeg_key(fixture, "armv7-6.1-week-old", 10), self.ffmpeg_key(fixture, "armv7-6.1-ancient", 40)
+        inside, just_over = self.ffmpeg_key(fixture, "armv7-6.1-inside", 29.5), self.ffmpeg_key(fixture, "armv7-6.1-just-over", 30.5)
+        result = self.run_gc(fixture, "--ffmpeg-cache")
+        diagnostic = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, diagnostic)
+        self.assertTrue((week_old / "payload").exists(), "kept for 30 days by --cache, so kept here: " + diagnostic)
+        self.assertTrue((inside / "payload").exists(), "a key inside the 30 days was pruned: " + diagnostic)
+        self.assertFalse(just_over.exists(), "a key half a day past the 30 days survived: " + diagnostic)
+        self.assertFalse(ancient.exists(), diagnostic)
+        self.assertFalse(fixture[2][2].exists(), "the default fixture's 40-day key: " + diagnostic)
+        self.assertTrue((seed / "payload").exists(), "--ffmpeg-cache pruned the cargo seed: " + diagnostic)
+
+    def test_a_non_numeric_cache_threshold_selects_no_ffmpeg_key(self):
+        # `-mmin +$((abc * 1440))` would be `+0`, every key; the unparseable threshold has always meant none.
+        fixture = self.fixture(0, 0)
+        fixture[1]["PLX_CACHE_MAX_DAYS"] = "soon"
+        ancient = self.ffmpeg_key(fixture, "armv7-6.1-ancient", 90)
+        result = self.run_gc(fixture, "--ffmpeg-cache")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue((ancient / "payload").exists() and fixture[2][2].exists(), result.stdout + result.stderr)
 
     def auto_lanes(self, lanes=2, age=2 * 3600):
         """Idle lanes with build output (and the planner next to the script), plus an old main checkout."""
@@ -774,7 +917,7 @@ class BuildGcTests(unittest.TestCase):
             self.assertFalse((wt / "rust-modules/target").exists(), "idle lane target survived: " + diagnostic)
         self.assertFalse(sentinels[1].exists(), "the orphan survived: " + diagnostic)
         self.assertTrue(sentinels[0].exists(), "rung 6 ran without being needed: " + diagnostic)
-        self.assertTrue(sentinels[2].exists(), "--auto must never touch the FFmpeg cache: " + diagnostic)
+        self.assertFalse(sentinels[2].exists(), "a key unused for 40 days survived the FFmpeg age-out: " + diagnostic)
         log = Path(env["PLX_GC_LOG"]).read_text()
         order = [m for m in ("orphans:", "worktrees (idle >= 30m):", "evict: rung 2 incremental",
                              "evict: rung 4 tree", "evict: --stale sweep at rung 5", "evict (planner order):")
@@ -796,6 +939,311 @@ class BuildGcTests(unittest.TestCase):
         self.assertTrue((repo / "rust-modules/target").is_dir(), "took the main checkout's whole target: " + diagnostic)
         log = Path(env["PLX_GC_LOG"]).read_text()
         self.assertLess(log.index("evict: rung 4 tree"), log.index("evict: rung 6 incremental"), log)
+
+    def normalized(self, fixture, result):
+        """What an `--auto` run printed and logged, with the fixture's own paths, the log's timestamps and the
+        sizes (a filesystem's block size) taken out: the rest is the script's own words."""
+        repo, env, _, _ = fixture
+        root = str(repo.parent)
+        log = Path(env["PLX_GC_LOG"])
+        lines = result.stdout.splitlines() + ["-- stderr --"] + result.stderr.splitlines() + ["-- log --"]
+        lines += [re.sub(r"^\S+ ", "", line) for line in (log.read_text().splitlines() if log.exists() else [])]
+        out = []
+        for line in lines:
+            line = line.replace(root, "<R>")
+            line = re.sub(r"^free now: .*", "free now: <DF>", line)               # the real `df`, never the stub
+            line = re.sub(r"\b(removed|would remove) +~?[\d.]+[BKMG]\b", r"\1 <SIZE>", line)
+            line = re.sub(r"~[\d.]+[BKMG]\b", "~<SIZE>", line)
+            out.append(line)
+        return "\n".join(out)
+
+    # Captured from `--auto` before the cold store existed (the two runs below, in one fixture): the words, the
+    # order, the log. Only the fixture's paths, the sizes and the real `df` lines are normalized (`normalized`).
+    # The FFmpeg age-out stage (#1336, between the worktrees stage and the planner's) is part of that run, so it is in
+    # the below-threshold golden and named in the above-threshold line: still nothing of the cold store's.
+    GOLDEN_ABOVE_THRESHOLD = """\
+== auto: planner-ordered reclaim (threshold 1 GiB free, lane idle guard 60m) ==
+== external lane target dirs whose worktree is gone ==
+  removed <SIZE>  <R>/fleet/absent-lane/target
+
+free now: <DF>
+auto: free space already above threshold — worktrees, the FFmpeg age-out and the planner pass skipped
+auto: 953.7G free now
+-- stderr --
+-- log --
+start free=953.7G threshold=1GiB idle=60m dry=0
+orphans: reclaimed=1 free 953.7G->953.7G
+end free=953.7G"""
+    GOLDEN_BELOW_THRESHOLD = """\
+== auto: planner-ordered reclaim (threshold 12 GiB free, lane idle guard 30m) ==
+== external lane target dirs whose worktree is gone ==
+
+free now: <DF>
+== finished linked worktrees (clean, unlocked, already on origin/main (the local main without an origin); main and the running checkout are never touched) ==
+  main      <R>/repo  (main)
+  dirty     <R>/lane0  (lane0)
+  dirty     <R>/lane1  (lane1)
+
+free now: <DF>
+== shared build trees untouched for over 7 days ==
+  removed <SIZE>  <R>/cache/ffmpeg/synthetic-key
+
+free now: <DF>
+== evict: the planner's order, each path re-checked against the live machine first ==
+  removed <SIZE>  <R>/lane0/rust-modules/target/debug/incremental  (rung 2 incremental, from lane0)
+  removed <SIZE>  <R>/lane1/rust-modules/target/debug/incremental  (rung 2 incremental, from lane1)
+  removed <SIZE>  <R>/lane0/rust-modules/target  (rung 4 tree, from lane0)
+  removed <SIZE>  <R>/lane1/rust-modules/target  (rung 4 tree, from lane1)
+== evict: the --stale sweep, at its rung-5 slot ==
+== stale per-hash cargo artifacts in lanes and external fleet trees (kept: newest hash per crate/kind, plus anything under 24h old) ==
+== stale per-hash cargo artifacts in the MAIN checkout (age only, never the newest hash per crate) ==
+
+free now: <DF>
+evict: 4 removed (~<SIZE> by estimate), 0 skipped, 0 refused
+settle: ok: 10.0 GiB free covers the build's 0.0 GiB plus the 3.0 GiB reserve
+
+free now: <DF>
+auto: 10.0G free now
+-- stderr --
+-- log --
+start free=10.0G threshold=12GiB idle=30m dry=0
+orphans: reclaimed=0 free 10.0G->10.0G
+worktrees (idle >= 30m): reclaimed=0 free 10.0G->10.0G
+ffmpeg cache (unused > 7d): reclaimed=1 free 10.0G->10.0G
+evict: rung 2 incremental freed ~<SIZE> from lane0: <R>/lane0/rust-modules/target/debug/incremental
+evict: rung 2 incremental freed ~<SIZE> from lane1: <R>/lane1/rust-modules/target/debug/incremental
+evict: rung 4 tree freed ~<SIZE> from lane0: <R>/lane0/rust-modules/target
+evict: rung 4 tree freed ~<SIZE> from lane1: <R>/lane1/rust-modules/target
+evict: --stale sweep at rung 5 (0 hash group(s))
+evict (planner order): reclaimed=4 free 10.0G->10.0G
+end free=10.0G"""
+
+    def test_an_unconfigured_auto_run_prints_and_logs_exactly_what_it_did_before_the_cold_store(self):
+        # The cold store is opt-in. Without its config file `--auto` must be the run it was: the same lines in the
+        # same order, no new stage, no new log line, and nothing created under the cache.
+        fixture, roots = self.auto_lanes()
+        repo, env, _, _ = fixture
+        above = self.run_auto(fixture, extra_env={"PLX_GC_TEST_FREE_KIB": "999999999", "PLX_GC_MIN_FREE_GIB": "1"})
+        self.assertEqual(above.returncode, 0, above.stderr)
+        self.assertEqual(self.normalized(fixture, above), self.GOLDEN_ABOVE_THRESHOLD)
+        Path(env["PLX_GC_LOG"]).unlink()
+        below = self.run_auto(fixture, extra_env={
+            "PLX_GC_TEST_FREE_KIB": str(10 << 20), "PLX_GC_MIN_FREE_GIB": "12", "PLX_GC_IDLE_MIN": "30"})
+        self.assertEqual(below.returncode, 0, below.stderr)
+        self.assertEqual(self.normalized(fixture, below), self.GOLDEN_BELOW_THRESHOLD)
+        self.assertFalse((Path(env["PLX_BUILD_CACHE"]) / "cold-store").exists())
+
+    # --- the cold store: `--auto`'s park-ahead stage and `--park` ------------------------------------------------
+    # Two volumes are faked: the copy of cold-store.py that runs next to the script under test gets three
+    # functions appended (another device for anything under das/, a `ditto` that exists, a plain tree copy), so
+    # the real stage, the real planner, the real probes and the real store run against disposable directories.
+    COLD_STUB = '''
+
+# ---- appended by ci/test_build_gc.py: two volumes, and no ditto needed ----
+_real_device_of = device_of
+
+
+def device_of(path):
+    return 2 if norm(path).startswith(%r) else _real_device_of(path)
+
+
+def which_ditto():
+    return "/usr/bin/ditto"
+
+
+def flush_cold_volume(path):
+    pass                                      # the real one is a `sync` and a full-drive flush: seconds, in a test
+
+
+def copy_tree(src, dst):
+    shutil.copytree(src, dst, symlinks=True)
+'''
+
+    def cold_fixture(self, lanes=2, age=2 * 3600, config="park_idle_min=30\n"):
+        """Idle lanes (each with a commit of its own, so none reads as merged) plus a cold store: config, a
+        das/ volume and the stubbed cold-store.py. Returns (fixture, lane roots, the cold root)."""
+        fixture, roots = self.evict_fixture(lanes=lanes)
+        repo, env, _, _ = fixture
+        for wt in roots:
+            (wt / ("%s.txt" % wt.name)).write_text("work\n")
+            subprocess.run(["git", "-C", str(wt), "add", "%s.txt" % wt.name], env=env, check=True)
+            subprocess.run(["git", "-C", str(wt), "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m",
+                            "work"], env=env, check=True)
+        for wt in roots:
+            self.age(wt, age)
+        self.age(repo / "rust-modules/target", age)
+        das = repo.parent / "das"
+        cold_root = das / "cold"
+        cold_root.mkdir(parents=True)
+        stub = self.COLD_STUB % str(das.resolve())
+        (repo / "tools/cold-store.py").write_text((ROOT / "tools/cold-store.py").read_text() + stub)
+        Path(env["PLX_COLD_STORE_CONFIG"]).write_text(
+            "root=%s\nmin_free_gib=0\npark_below_gib=40\n%s" % (cold_root, config))
+        return fixture, roots, cold_root
+
+    PARK_ENV = {"PLX_GC_TEST_FREE_KIB": str(30 << 20), "PLX_GC_MIN_FREE_GIB": "20", "PLX_GC_IDLE_MIN": "30"}
+
+    def stable_snapshot(self, fixture):
+        """The fixture's files and bytes, less what a read-only run legitimately refreshes: git's own files
+        (`status` rewrites an index) and the auto log."""
+        snap = self.snapshot_tree(fixture[0].parent)
+        return {k: v for k, v in snap.items() if ".git/" not in k + "/" and k != "gc.log" and not k.endswith("/.git")}
+
+    def parked_ids(self, fixture):
+        index = Path(fixture[1]["PLX_BUILD_CACHE"]) / "cold-store/index"
+        return sorted(p.name for p in index.glob("*.json")) if index.is_dir() else []
+
+    def test_auto_parks_idle_trees_when_free_space_is_below_park_below_gib_though_above_the_comfort_line(self):
+        fixture, roots, cold_root = self.cold_fixture()
+        repo, env, sentinels, _ = fixture
+        result = self.run_auto(fixture, extra_env=self.PARK_ENV)
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, out)
+        for wt in roots:
+            self.assertFalse((wt / "rust-modules/target").exists(), "an idle lane's tree was not parked: " + out)
+        self.assertEqual(len(self.parked_ids(fixture)), 2, out)
+        for wt in roots:
+            copy = cold_root / "trees" / str(wt / "rust-modules/target").replace("%", "%25").replace("/", "%2F")
+            self.assertTrue((copy / "sentinel").is_file(), "the cold copy is missing %s: %s" % (copy, out))
+        self.assertTrue(sentinels[0].exists(), "the main checkout's tree must never be parked: " + out)
+        self.assertIn("already above threshold", out, "the early exit still skips worktrees, the FFmpeg age-out and the planner")
+        log = Path(env["PLX_GC_LOG"]).read_text()
+        self.assertRegex(log, r"park: parked=2 free ")
+        self.assertLess(log.index("orphans:"), log.index("park:"), log)
+        self.assertNotIn("worktrees (idle", log)
+        self.assertFalse(Path(env["PLX_GC_LOCK_DIR"]).exists(), "the lock must be released at the end")
+
+    def test_auto_below_the_comfort_line_parks_nothing_and_leaves_the_ladder_to_delete_as_before(self):
+        # A park holds the auto lock for a whole copy to a slow disk, while a preflight that waits for it gives up
+        # after 60 s and judges on free space with no eviction: under the comfort line the stage says so and
+        # parks nothing, and the worktrees stage and the planner pass run as they do without a cold store.
+        fixture, roots, cold_root = self.cold_fixture()
+        env = dict(self.PARK_ENV, PLX_GC_TEST_FREE_KIB=str(10 << 20), PLX_GC_MIN_FREE_GIB="12")
+        result = self.run_auto(fixture, extra_env=env)
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, out)
+        log = Path(fixture[1]["PLX_GC_LOG"]).read_text()
+        order = [m for m in ("orphans:", "park:", "worktrees (idle >= 30m):", "evict (planner order):") if m in log]
+        self.assertEqual(order, ["orphans:", "park:", "worktrees (idle >= 30m):", "evict (planner order):"], log)
+        self.assertIn("park: parked=0 ", log)
+        self.assertRegex(out, r"park: skipped: .* free is under the .* comfort line")
+        self.assertEqual(self.parked_ids(fixture), [], out)
+        self.assertFalse((cold_root / "trees").exists(), "the cold volume was written to under pressure: " + out)
+        self.assertFalse(Path(fixture[1]["PLX_GC_LOCK_DIR"]).exists(), "the lock must be released at the end")
+
+    def test_auto_leaves_a_live_a_young_and_a_main_tree_where_they_are(self):
+        import fcntl
+        fixture, roots, _ = self.cold_fixture(lanes=4)
+        repo, env, sentinels, _ = fixture
+        live, young, idle_a, idle_b = roots
+        busy = live / "rust-modules/target/debug/.cargo-lock"
+        busy.write_text("")
+        (young / "rust-modules/target/just-built").write_text("now\n")           # written seconds ago
+        (repo / "rust-modules/target-sim").mkdir()
+        self.age(repo / "rust-modules/target-sim", 5 * 3600)
+        seed = Path(env["PLX_BUILD_CACHE"]) / "cargo-seed/target"
+        seed.mkdir(parents=True)
+        (seed / "payload").write_text("third-party output\n")
+        fd = os.open(busy, os.O_RDWR)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)             # a cargo is building in the live lane
+            result = self.run_auto(fixture, extra_env=self.PARK_ENV)
+        finally:
+            os.close(fd)
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, out)
+        self.assertTrue((live / "rust-modules/target").is_dir(), "parked a tree under a held cargo lock: " + out)
+        self.assertTrue((young / "rust-modules/target").is_dir(), "parked a tree built seconds ago: " + out)
+        for wt in (idle_a, idle_b):
+            self.assertFalse((wt / "rust-modules/target").exists(), "an idle lane's tree stayed: " + out)
+        self.assertTrue(sentinels[0].exists() and (repo / "rust-modules/target-sim").is_dir(),
+                        "the main checkout's trees must never be parked: " + out)
+        self.assertTrue((seed / "payload").exists(), "the cargo seed must never be parked: " + out)
+        self.assertEqual(len(self.parked_ids(fixture)), 2, out)
+
+    def test_auto_does_not_park_a_lane_edited_in_the_idle_window_even_when_its_tree_is_old(self):
+        fixture, roots, _ = self.cold_fixture(lanes=2)
+        (roots[0] / "src").mkdir()
+        (roots[0] / "src/new.rs").write_text("fn main() {}\n")                   # an agent mid-edit, no build yet
+        result = self.run_auto(fixture, extra_env=self.PARK_ENV)
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, out)
+        self.assertTrue((roots[0] / "rust-modules/target").is_dir(), out)
+        self.assertFalse((roots[1] / "rust-modules/target").exists(), out)
+        self.assertRegex(out, r"kept .*lane0")
+
+    def test_auto_with_room_above_park_below_gib_runs_no_park_stage_at_all(self):
+        fixture, roots, _ = self.cold_fixture()
+        result = self.run_auto(fixture, extra_env=dict(self.PARK_ENV, PLX_GC_TEST_FREE_KIB=str(60 << 20)))
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, out)
+        self.assertNotIn("park", out.replace("park_", ""))
+        self.assertNotIn("park:", Path(fixture[1]["PLX_GC_LOG"]).read_text())
+        self.assertTrue(all((wt / "rust-modules/target").is_dir() for wt in roots))
+        self.assertEqual(self.parked_ids(fixture), [])
+
+    def test_auto_does_not_start_a_tree_while_a_preflight_waits_for_the_lock_and_ends_without_it(self):
+        fixture, roots, _ = self.cold_fixture()
+        repo, env, _, _ = fixture
+        flag = Path(env["PLX_GC_LOCK_DIR"] + ".waiting.%d" % os.getpid())          # this test process is "the preflight"
+        flag.write_text("%d\n" % os.getpid())
+        result = self.run_auto(fixture, extra_env=self.PARK_ENV)
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, out)
+        self.assertTrue(all((wt / "rust-modules/target").is_dir() for wt in roots), out)
+        self.assertFalse(Path(env["PLX_GC_LOCK_DIR"]).exists(), "the lock must be free for the waiter: " + out)
+        log = Path(env["PLX_GC_LOG"]).read_text()
+        self.assertIn("preflight is waiting", log)
+        self.assertNotIn("worktrees (idle", log, "an auto run that handed the lock over goes no further")
+
+    def test_auto_dry_run_previews_the_parks_and_changes_nothing(self):
+        fixture, roots, cold_root = self.cold_fixture()
+        repo, env, _, _ = fixture
+        before = self.stable_snapshot(fixture)
+        result = self.run_auto(fixture, "-n", extra_env=self.PARK_ENV)
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, out)
+        self.assertRegex(out, r"would park +\S+ +\S+lane0/rust-modules/target")
+        self.assertEqual(before, self.stable_snapshot(fixture), "-n changed something")
+        self.assertFalse(Path(env["PLX_GC_LOCK_DIR"]).exists())
+
+    def test_park_by_hand_parks_idle_trees_whatever_the_free_space_and_dry_run_changes_nothing(self):
+        fixture, roots, _ = self.cold_fixture()
+        repo, env, _, _ = fixture
+        plenty = dict(env, PLX_GC_TEST_FREE_KIB=str(500 << 20), PLX_GC_IDLE_MIN="30")
+        before = self.stable_snapshot(fixture)
+        dry = run_guarded(["sh", "tools/build-gc.sh", "--park", "-n"], repo, plenty)
+        self.assertEqual(dry.returncode, 0, dry.stdout + dry.stderr)
+        self.assertRegex(dry.stdout, r"would park")
+        self.assertEqual(before, self.stable_snapshot(fixture), "--park -n changed something")
+        self.assertEqual(self.parked_ids(fixture), [])
+        real = run_guarded(["sh", "tools/build-gc.sh", "--park"], repo, plenty)
+        self.assertEqual(real.returncode, 0, real.stdout + real.stderr)
+        self.assertEqual(len(self.parked_ids(fixture)), 2, real.stdout + real.stderr)
+        self.assertFalse(Path(env["PLX_GC_LOCK_DIR"]).exists())
+
+    def test_park_by_hand_without_a_cold_store_says_so_and_does_nothing(self):
+        fixture, roots = self.evict_fixture()
+        repo, env, _, _ = fixture
+        result = run_guarded(["sh", "tools/build-gc.sh", "--park"], repo, dict(env, PLX_GC_TEST_FREE_KIB=str(1 << 20)))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("not configured", result.stdout)
+        self.assertTrue(all((wt / "rust-modules/target").is_dir() for wt in roots))
+        self.assertFalse((Path(env["PLX_BUILD_CACHE"]) / "cold-store").exists())
+
+    def test_the_park_stage_prunes_a_parked_copy_of_a_lane_that_is_gone(self):
+        fixture, roots, cold_root = self.cold_fixture(lanes=1)
+        repo, env, _, _ = fixture
+        first = self.run_auto(fixture, extra_env=self.PARK_ENV)
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        self.assertEqual(len(self.parked_ids(fixture)), 1)
+        shutil.rmtree(roots[0])
+        subprocess.run(["git", "-C", str(repo), "worktree", "prune"], env=env, check=True)
+        second = self.run_auto(fixture, extra_env=self.PARK_ENV)
+        out = second.stdout + second.stderr
+        self.assertEqual(second.returncode, 0, out)
+        self.assertEqual(self.parked_ids(fixture), [], out)
+        self.assertRegex(out, r"dropped .*lane is gone")
 
     def test_auto_idle_guard_spares_a_recently_touched_lane(self):
         # The DEFAULT idle window (60 minutes): a lane `evict_fixture` just built in has output written seconds
@@ -863,6 +1311,100 @@ class BuildGcTests(unittest.TestCase):
         result = self.run_gc(by_hand, "--worktrees")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertFalse(fresh.exists(), "--worktrees by hand kept a landed lane for being recent")
+
+    # A lane on another volume than the build (a worktree on a slow external disk): removing it frees nothing
+    # on the volume the build writes to, and `--auto` reading it (an idle-window `find`, `git status`, the
+    # squash check) walked a spinning USB disk. `stat` is the one seam: this one puts a path on another device.
+    FOREIGN_STAT = ("#!/bin/sh\n"
+                    'case "$1 $2" in "-c %d"|"-f %d")\n'
+                    '  case "$3" in "$PLX_TEST_FOREIGN"|"$PLX_TEST_FOREIGN"/*) echo 4242; exit 0 ;; esac ;;\n'
+                    "esac\n"
+                    'exec /usr/bin/stat "$@"\n')
+    LOGGING_FIND = ("#!/bin/sh\n"
+                    'printf "%s\\n" "$*" >> "$PLX_TEST_FIND_LOG"\n'
+                    'exec /usr/bin/find "$@"\n')
+    LOGGING_DU = ("#!/bin/sh\n"
+                  'printf "%s\\n" "$*" >> "$PLX_TEST_DU_LOG"\n'
+                  'exec /usr/bin/du "$@"\n')
+
+    def walked(self, log, tree):
+        """The logged commands that name `tree` or something under it, by the path as given or resolved."""
+        names = {str(tree), os.path.realpath(tree)}
+        if not log.exists():
+            return []
+        return [line for line in log.read_text().splitlines()
+                if any(n in line.split() or any(w.startswith(n + os.sep) for w in line.split()) for n in names)]
+
+    def stub_command(self, fixture, name, body):
+        path = fixture[0].parent / "bin" / name
+        path.write_text(body)
+        path.chmod(0o755)
+
+    @unittest.skipUnless(git_has_merge_tree(), "needs git >= 2.38 for merge-tree --write-tree")
+    def test_auto_worktrees_stage_skips_a_lane_on_another_volume_before_reading_it(self):
+        fixture = self.with_planner(self.fixture(0, 0))
+        landed = self._squash_landed_lane(fixture, "das-lane")
+        self.age(landed, 2 * 3600)                  # idle, landed and clean: `--auto` would remove it
+        find_log = fixture[0].parent / "find.log"
+        self.stub_command(fixture, "stat", self.FOREIGN_STAT)
+        self.stub_command(fixture, "find", self.LOGGING_FIND)
+        quiet = {"PLX_GC_TEST_FREE_KIB": str(10 << 20), "PLX_GC_MIN_FREE_GIB": "12", "PLX_GC_IDLE_MIN": "30",
+                 "PLX_TEST_FOREIGN": str(landed), "PLX_TEST_FIND_LOG": str(find_log)}
+        result = self.run_auto(fixture, extra_env=quiet)
+        diagnostic = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, diagnostic)
+        self.assertTrue(landed.exists(), "removed a lane on another volume, which frees nothing here: " + diagnostic)
+        self.assertIn("another volume", diagnostic)
+        walked = find_log.read_text() if find_log.exists() else ""
+        self.assertNotIn(str(landed), walked, "the idle-window walk read a lane on another volume")
+        # `--worktrees` by hand is the human's call, and removes it
+        by_hand = self.fixture(0, 0)
+        other = self._squash_landed_lane(by_hand, "das-lane")
+        self.stub_command(by_hand, "stat", self.FOREIGN_STAT)
+        by_hand[1].update(PLX_TEST_FOREIGN=str(other))
+        result = self.run_gc(by_hand, "--worktrees")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(other.exists(), "--worktrees by hand must still remove a finished lane on another volume")
+
+    def test_the_disk_report_does_not_size_a_checkout_on_another_volume(self):
+        # `make disk` printed a row per worktree and ran `du` over each one's checkout and build trees,
+        # including a lane on the slow USB disk. Its row now says so instead; a lane on the build's own
+        # volume is sized as before (the control).
+        fixture = self.fixture(0, 0)
+        das, local = self._add_worktrees(fixture, 2)
+        du_log = fixture[0].parent / "du.log"
+        self.stub_command(fixture, "stat", self.FOREIGN_STAT)
+        self.stub_command(fixture, "du", self.LOGGING_DU)
+        fixture[1].update(PLX_TEST_FOREIGN=str(das), PLX_TEST_DU_LOG=str(du_log))
+        result = self.run_gc(fixture)
+        text = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, text)
+        rows = {line.split()[0]: line for line in text.splitlines() if line.startswith(("lane0", "lane1"))}
+        self.assertIn("other volume", rows["lane0"], text)
+        self.assertNotIn("other volume", rows["lane1"], text)
+        self.assertEqual(self.walked(du_log, das), [], "the report sized a checkout on another volume")
+        self.assertTrue(self.walked(du_log, local), "the control: a local lane is still sized")
+
+    def test_the_disk_report_says_whether_the_hourly_agent_is_loaded(self):
+        for system, launchctl, expect in (
+                ("Darwin", "exit 0", "com.plxnative.build-gc is loaded"),
+                ("Darwin", "exit 113", "com.plxnative.build-gc is NOT loaded"),
+                ("Linux", "exit 113", None)):
+            with self.subTest(system=system, launchctl=launchctl):
+                fixture = self.fixture(0, 0)
+                self.stub_command(fixture, "uname", "#!/bin/sh\n"
+                                  'case "$1" in -s) echo %s ;; *) echo %s ;; esac\n' % (system, system))
+                self.stub_command(fixture, "launchctl", '#!/bin/sh\n[ "$1 $2" = "list com.plxnative.build-gc" ] || exit 64\n'
+                                  + launchctl + "\n")
+                result = self.run_gc(fixture)
+                text = result.stdout + result.stderr
+                self.assertEqual(result.returncode, 0, text)
+                if expect is None:
+                    self.assertNotIn("com.plxnative.build-gc", text, "the agent line is macOS only")
+                    continue
+                self.assertIn(expect, text)
+                if "NOT" in expect:
+                    self.assertIn("make disk-watch", text)
 
     # --- `--worktrees` and the files git IGNORES ------------------------------------------------------------
     # `git worktree remove` deletes IGNORED files with the checkout, and "working tree clean" cannot see them: a
@@ -1051,7 +1593,7 @@ class BuildGcTests(unittest.TestCase):
     def with_planner(self, fixture):
         """The planner and the tools it loads, next to the copy of build-gc.sh under test."""
         repo = fixture[0]
-        for name in ("disk-budget.py", "cargo-seed.py", "check-lock.py"):
+        for name in ("disk-budget.py", "cargo-seed.py", "check-lock.py", "cold-store.py"):
             shutil.copy(ROOT / "tools" / name, repo / "tools" / name)
         return fixture
 
@@ -1177,6 +1719,34 @@ class BuildGcTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, out)
         self.assertTrue((lane0 / "rust-modules/target/sentinel").exists(), "evicted under a live build: " + out)
         self.assertFalse((lane1 / "rust-modules/target").exists(), out)
+
+    def test_evict_does_not_walk_a_lane_checkout_on_another_volume_to_judge_it_idle(self):
+        # A fleet tree sits on the build's volume while its lane's checkout may be on the slow disk. `--evict`
+        # asks whether the lane is idle with a recursive `find -mmin` over the checkout, which on that disk is
+        # minutes per lane; a checkout it will not walk counts as active, so the tree is spared (the planner
+        # re-plans on the next entry). The control: an equally idle lane on the build's own volume goes.
+        fixture, (lane0, lane1) = self.evict_fixture()
+        fleet = Path(fixture[1]["PLX_FLEET_DIR"])
+        tree0 = self.make_tree(fleet / "lane0/target", incremental=True)
+        tree1 = self.make_tree(fleet / "lane1/target", incremental=True)
+        for path in (lane0, lane1, fleet):
+            self.age(path, 2 * 3600)
+        find_log = fixture[0].parent / "find.log"
+        self.stub_command(fixture, "stat", self.FOREIGN_STAT)
+        self.stub_command(fixture, "find", self.LOGGING_FIND)
+        plan = self.write_plan(fixture, [
+            ("evict", 4, "tree", 96, "lane0", 30, "normal", tree0),
+            ("evict", 4, "tree", 96, "lane1", 30, "normal", tree1),
+        ])
+        result = self.run_evict(fixture, plan, extra_env={
+            "PLX_TEST_FOREIGN": str(lane0), "PLX_TEST_FIND_LOG": str(find_log)})
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, out)
+        self.assertEqual(self.walked(find_log, lane0), [], "the idle-window walk read a checkout on another volume")
+        self.assertTrue(self.walked(find_log, fleet / "lane1"), "the control: a local lane is still judged by a walk")
+        self.assertIn("another volume", out)
+        self.assertTrue((tree0 / "sentinel").exists(), "evicted a fleet tree whose lane could not be judged: " + out)
+        self.assertFalse(tree1.exists(), "left an idle local lane's fleet tree: " + out)
 
     def test_evict_honours_the_idle_window_the_plan_names(self):
         fixture, (lane0, lane1) = self.evict_fixture()

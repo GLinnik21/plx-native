@@ -551,7 +551,10 @@ also legal on a `vstack` cell and on a control item), and exactly one of:
   its rect is the track's width), which I4 reads as decor and I10 judges as app text.
   In HUD format 1.1, set `end_time_width` to reserve a right-aligned lane in px (1–1920, capped at the track width) for the remaining
   clock, a separator dot and the localized finish time. Classic declares 320 px. The same field enables the
-  feature in installed packages. I4 includes the lane in its decor census and I10 checks the combined run in
+  feature in installed packages: it is the package's declaration of support (`Compiled::declares_end_time`), so the
+  *Estimated end time* switch on the Player HUD settings page is listed only while the HUD in use declares it
+  (a HUD format 1.0 package cannot, `E0107`, and a 1.1 package may omit it), and the app projects no estimate for a
+  HUD that does not. I4 includes the lane in its decor census and I10 checks the combined run in
   both hour cycles. The renderer uses the plain remaining clock if the estimate is absent, the field is omitted
   or the run would crowd the elapsed clock. The knob and mark overhang the
   track;

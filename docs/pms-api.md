@@ -1827,6 +1827,28 @@ Do not infer either grant from PMS `myPlexSubscription`, generic account subscri
 or membership in some server owner's Home; `pass` in the viewer-credential `/api/v2/features`
 list above is the one subscription signal accepted.
 
+**A managed Home profile also takes its Home administrator's grants (owner decision, 2026-11-11).**
+A managed profile's own `/api/v2/features` list was expected to lack `pass` (the one managed
+profile measured, a Guest, had no Plex Pass: `docs/watchlist-plan.md`, INPUT 2), which hid both
+settings on a managed profile of a Pass household. **The real managed account's feature list and
+its `/api/v2/user` answer were never observed**; the rule below is the owner's policy, not a
+measurement, and the `marker-grants:` event-log line (`seat=member`, grants or the error's name)
+is how a report will say what plex.tv actually answered.
+`PreferenceRequest::load_marker_access_in_home` reads the seated member as above; when either
+grant is missing (or the member's own read failed other than as stale), and
+`PreferenceRequest::home_admin_marker_request` accepts the seat, it reads the **administrator's**
+`/api/v2/user` and `/api/v2/features` with the stored account token (`Session::account_token`) and
+ORs the administrator's grants in. The seat is accepted only when the stored session's seated
+profile is a roster-listed NON-administrator, the roster names exactly one administrator with an
+identity, and the captured request's account stamp matches the stored account token; the
+administrator's `/api/v2/user` must match that roster identity (a stranger's answer is refused
+and the member's own answer stands). The administrator's grants only add to the member's own,
+never replace them, and a failed read leaves the member's answer as it was. The account token is
+used for these two GETs only: never for a write or a preference save, and
+`session::plex_tv_credential`'s rule for everything else (a managed profile never borrows the
+owner's or the PMS token) is untouched. The request keeps the seat's key, so a landing is fenced to
+the profile it was made for.
+
 `PreferenceRequest::load_marker_access` first verifies `/api/v2/user` with the captured viewer
 credential, requiring at least one known ID/UUID to match and neither to conflict, then reads
 `/api/v2/features` with the same credential. Profile replacement before or after either read
@@ -1838,4 +1860,5 @@ An implicit owner (no Home profile selected) keeps its original blank profile ke
 uses the unique admin roster identity only when the captured credential is the same account token,
 the account stamp matches, and the stored session confirms that implicit owner. The `/api/v2/user`
 response must match that roster identity before the features read. Missing or ambiguous owner proof
-leaves marker access unavailable; selected profiles never borrow an owner identity.
+leaves marker access unavailable; selected profiles never borrow an owner identity for their OWN
+read (the Home administrator's feature list is a separate, additional read, above).

@@ -69,7 +69,9 @@ PRODUCT run is the 5.6.2 row of `docs/uri-mode.md`); a later major (6 and up) pl
 (`route::backend_policy`). On webOS 4.x the Experimental engine binds the screen through ACB and waits for each
 release's completion callback before the next title; when that never arrives the plane stays
 quarantined until the app restarts, the next title's Experimental bind is refused and that title takes the
-handoff to Standard. Nothing about this setting is sent to telemetry or diagnostics.
+handoff to Standard. When a play stays on Standard with Experimental on, the event log names the reason
+in one line, `uri: original declined (<reason>)` (`docs/uri-mode.md`, "Why a play stayed in Standard"); that line
+is local and nothing about this setting is sent to telemetry or diagnostics.
 
 ## Plex account preferences
 
@@ -215,6 +217,11 @@ Next episode's independent policy, and synthetic end-of-item tails never auto-sk
 
 The app checks the **viewer’s** `intro-markers` and `credits-markers` grants, and `pass` in the same
 viewer-credential list (the Plex Pass plex.tv reports for the viewer) grants both; a shared server
-owner's subscription is not evidence of viewer eligibility. An unavailable, expired or denied
+owner's subscription is not evidence of viewer eligibility. **One exception, by the owner's
+decision (2026-11-11):** a seated Plex Home profile that is not the administrator (a managed
+profile) has no Plex Pass of its own, so when its own list leaves either grant out, its Home
+administrator's feature list is read as well and what it grants is added; the administrator's
+`pass` therefore covers the household's profiles. Nothing else about the household's account is
+used. An unavailable, expired or denied
 grant hides the new settings and uses the existing manual controls. Saved choices remain intact.
 No Plex viewing-history write is needed to change these local settings.
