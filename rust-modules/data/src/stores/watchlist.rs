@@ -252,7 +252,7 @@ pub struct WatchlistStore {
     stream: Option<(StreamKind, WatchlistStreamPort)>,
     stream_keys: plx_plex::plex::ClientKeys,
     retired_streams: Vec<(WatchlistStreamPort, Arc<StreamMailbox<What>>)>,
-    pending_delta: Option<(ServerId, Vec<(String, Kind)>)>,
+    pending_delta: Option<(ServerId, Arc<Vec<(String, Kind)>>)>,
     rematch_wanted: bool,
     snapshot: Snapshot,
     jobs: Vec<super::StoreJob>,
@@ -986,7 +986,7 @@ fn spawn_rematch(&mut self, auth: &WatchlistAuth) {
         self.stream = Some((kind, port.clone()));
         (addr, port)
     }
-    fn emit_delta(&mut self, auth: &WatchlistAuth, sid: ServerId, rows: Vec<(String, Kind)>) {
+    fn emit_delta(&mut self, auth: &WatchlistAuth, sid: ServerId, rows: Arc<Vec<(String, Kind)>>) {
         self.state.req = self.state.req.checked_add(1).expect("watchlist request ids exhausted");
         self.state.list_claim = Some(self.state.req);
         let tag = self.current_tag(auth);
@@ -1046,7 +1046,8 @@ pub fn rematch_on(&mut self, sid: ServerId, asks: Vec<(String, Kind)>) -> bool {
         if asks.is_empty() || !self.snapshot.reachable(sid) { return true; }
         if self.state.list_wanted || self.state.list_claim.is_some() || self.state.list_retry > 0 || self.pending_delta.is_some() { return false; }
         let Some(auth) = self.state.auth.clone() else { return false };
-        self.pending_delta = Some((sid, asks.clone()));
+        let asks = Arc::new(asks);
+        self.pending_delta = Some((sid, Arc::clone(&asks)));
         self.emit_delta(&auth, sid, asks);
         true
     }
@@ -2910,6 +2911,58 @@ pub(in crate::stores) fn reading_for_test(sid: ServerId, titles: u8) -> Watchlis
         for _ in 0..119 { s.pump_with_snapshot(gate, &profile, Snapshot::scripted(&*mock)); assert!(!s.has_jobs()); }
         s.pump_with_snapshot(gate, &profile, Snapshot::scripted(&*mock));
         assert!(matches!(s.take_jobs().pop(), Some(StoreJob::WatchlistDelta(..))));
+    }
+
+    #[test]
+    fn stream_jobs_delta_rows_keep_original_allocation_through_refused_retries() {
+        use super::super::StoreJob;
+        let mock = three();
+        let mut s = store(&mock);
+        load(&mut s);
+        let profile = WatchlistInput::profile_for_test(1);
+        let gate = plx_machine::landgate::fixture_gate();
+        let rows = vec![(guid(2), Kind::Movie), (guid(1), Kind::Movie)];
+        let original_rows = rows.as_ptr();
+        let original_guids: Vec<_> = rows.iter().map(|(guid, _)| guid.as_ptr()).collect();
+        let expected = rows.clone();
+        assert!(s.rematch_on(sid0(), rows));
+        let StoreJob::WatchlistDelta(mut job, mut port) = s.take_jobs().pop().unwrap() else { panic!("delta") };
+        assert_eq!(job.req.rows.as_ptr(), original_rows);
+        assert_eq!(job.req.rows.as_ref(), &expected);
+        let (sid, retained) = s.pending_delta.as_ref().unwrap();
+        assert_eq!(*sid, sid0());
+        assert!(Arc::ptr_eq(retained, &job.req.rows));
+        let retained = Arc::clone(retained);
+        let mut equal = job.req.clone();
+        equal.rows = Arc::new(expected.clone());
+        assert_eq!(job.req, equal, "request equality compares row content, not allocation identity");
+        assert!(!Arc::ptr_eq(&job.req.rows, &equal.rows));
+        for _ in 0..2 {
+            let tag = job.req.tag;
+            let input = job.req.input.clone();
+            port.refused(job.addr);
+            drop(job);
+            s.land_stream_results(gate, &profile);
+            assert!(!port.is_owed());
+            assert!(Arc::ptr_eq(&s.pending_delta.as_ref().unwrap().1, &retained));
+            for _ in 0..119 {
+                s.pump_with_snapshot(gate, &profile, Snapshot::scripted(&*mock));
+                assert!(!s.has_jobs());
+            }
+            s.pump_with_snapshot(gate, &profile, Snapshot::scripted(&*mock));
+            let StoreJob::WatchlistDelta(retry, retry_port) = s.take_jobs().pop().unwrap() else { panic!("delta retry") };
+            assert_eq!(retry.req.sid, sid0());
+            assert_eq!(retry.req.tag.profile_gen, tag.profile_gen);
+            assert_eq!(retry.req.tag.epoch, tag.epoch);
+            assert!(retry.req.tag.req > tag.req);
+            assert_eq!(retry.req.input, input);
+            assert!(Arc::ptr_eq(&retry.req.rows, &retained));
+            assert_eq!(retry.req.rows.as_ptr(), original_rows);
+            assert_eq!(retry.req.rows.as_ref(), &expected);
+            assert_eq!(retry.req.rows.iter().map(|(guid, _)| guid.as_ptr()).collect::<Vec<_>>(), original_guids);
+            job = retry;
+            port = retry_port;
+        }
     }
     #[test]
     fn stream_jobs_captured_roster_is_used_even_when_transport_facts_move() {

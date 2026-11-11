@@ -116,7 +116,7 @@ mod tests {
             match kind {
                 0 => finish_list_job(&port, addr, ListReq { tag, input, auth: AuthValue(crate::watchlist::WatchlistInput::for_test(1).auth().unwrap().clone()), known: Default::default(), known_gen: 0, etag: None }, &io),
                 1 => finish_rematch_job(&port, addr, RematchReq { tag, input, rows }, &io),
-                _ => finish_delta_job(&port, addr, DeltaReq { tag, input, sid, rows }, &io),
+                _ => finish_delta_job(&port, addr, DeltaReq { tag, input, sid, rows: Arc::new(rows) }, &io),
             }
             port.refused(addr);
             let batch = mail.take();

@@ -75,7 +75,7 @@ impl PartialEq for AuthValue {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RematchReq { pub tag: Tag, pub input: Snapshot, pub rows: Vec<(String, Kind)> }
 #[derive(Clone, Debug, PartialEq)]
-pub struct DeltaReq { pub tag: Tag, pub input: Snapshot, pub sid: ServerId, pub rows: Vec<(String, Kind)> }
+pub struct DeltaReq { pub tag: Tag, pub input: Snapshot, pub sid: ServerId, pub rows: std::sync::Arc<Vec<(String, Kind)>> }
 pub type WatchlistStreamPort = stream::StreamPort<What>;
 fn finish_stream(port: &WatchlistStreamPort, addr: Addr, input: &Snapshot,
     transport: &dyn WatchlistIo, body: impl FnOnce(&dyn WatchlistIo, &mut dyn FnMut(Landed))) {

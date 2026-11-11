@@ -51,7 +51,7 @@ impl Edit {
     }
 }
 #[derive(Clone, PartialEq, Eq)]
-pub struct BrowsePreferencesReq { account: Account, user: String, edit: Edit, tenure: u64 }
+pub struct BrowsePreferencesReq { account: Account, user: String, edit: Arc<Edit>, tenure: u64 }
 impl std::fmt::Debug for BrowsePreferencesReq {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.debug_struct("BrowsePreferencesReq").field("user", &self.user).field("edit", &self.edit).finish_non_exhaustive() }
 }
@@ -84,7 +84,7 @@ impl Port<WriteOutcome> for BrowsePreferencesPort {
     fn refused(&self, addr: Addr) { self.done(addr, WriteOutcome::NotStarted); }
 }
 #[derive(Clone)]
-struct Pending { account: Account, tenure: u64, user: String, edit: Edit, receipt: Arc<Mutex<Receipt>> }
+struct Pending { account: Account, tenure: u64, user: String, edit: Arc<Edit>, receipt: Arc<Mutex<Receipt>> }
 #[derive(Clone, Default)]
 pub(super) struct Preferences {
     account: Account,
@@ -107,12 +107,13 @@ impl Preferences {
         self.next = self.next.wrapping_add(1);
         let addr = Addr { to: MachineId::Store(crate::stores::StoreId::Browse.ord()), req: RequestId(self.next) };
         let receipt = Arc::new(Mutex::new(Receipt::default()));
-        let req = BrowsePreferencesReq { account: self.account.clone(), user: user.to_owned(), edit: edit.clone(), tenure: self.tenure };
+        let edit = Arc::new(edit);
+        let req = BrowsePreferencesReq { account: self.account.clone(), user: user.to_owned(), edit: Arc::clone(&edit), tenure: self.tenure };
         self.jobs.push((Job { addr, req }, BrowsePreferencesPort { addr, receipt: receipt.clone() }));
         self.pending.retain(|p| !p.receipt.lock().unwrap_or_else(|e| e.into_inner()).saved()
             && p.tenure == self.tenure
             && (p.account != self.account || p.user != user || !edit.replaces(&p.edit)));
-        if !matches!(&edit, Edit::Pins { .. }) {
+        if !matches!(edit.as_ref(), Edit::Pins { .. }) {
             self.pending.push(Pending { account: self.account.clone(), tenure: self.tenure, user: user.to_owned(), edit, receipt: receipt.clone() });
         }
         Some(receipt)
@@ -174,6 +175,79 @@ mod tests {
         writes.observe();
         assert!(!receipt.lock().unwrap().saved());
         assert_eq!(key(&writes.overlay(&account(), "viewer"), "viewer"), 7);
+    }
+
+    #[test]
+    fn pins_request_keeps_supplied_vector_allocations_without_retaining_an_overlay() {
+        let captured = account();
+        let mut writes = Preferences::default();
+        writes.prepare(&captured, 42);
+        let libraries = vec![("machine-a".to_owned(), 7, true, false), ("machine-b".to_owned(), 9, false, true)];
+        let on = vec![true, false];
+        let touched = vec![false, true];
+        let library_rows = libraries.as_ptr();
+        let machine = libraries[0].0.as_ptr();
+        let on_rows = on.as_ptr();
+        let touched_rows = touched.as_ptr();
+        let expected = Edit::Pins { libraries: libraries.clone(), on: on.clone(), touched: touched.clone(), asked: true };
+        let _ = writes.emit("viewer", Edit::Pins { libraries, on, touched, asked: true });
+        let crate::stores::StoreJob::BrowsePreferences(job, _) = writes.take_jobs().remove(0) else { panic!("preference job") };
+        let Edit::Pins { libraries, on, touched, asked } = job.req.edit.as_ref() else { panic!("pins") };
+        assert_eq!(libraries.as_ptr(), library_rows);
+        assert_eq!(libraries[0].0.as_ptr(), machine);
+        assert_eq!(on.as_ptr(), on_rows);
+        assert_eq!(touched.as_ptr(), touched_rows);
+        assert!(*asked);
+        assert_eq!(job.req.edit.as_ref(), &expected);
+        assert!(writes.pending.is_empty(), "pins keep their existing separate receipt, not an overlay");
+        let cloned = job.req.clone();
+        assert!(Arc::ptr_eq(&job.req.edit, &cloned.edit));
+        let mut equal = cloned;
+        equal.edit = Arc::new(expected);
+        assert_eq!(job.req, equal, "request equality compares edits, not allocation identity");
+        assert!(!Arc::ptr_eq(&job.req.edit, &equal.edit));
+        assert!(job.req.matches_account(&captured));
+        assert!(job.req.matches_tenure(42));
+        assert!(!job.req.matches_tenure(43));
+        let debug = format!("{:?}", job.req);
+        assert!(!debug.contains(&captured.account_token));
+        assert!(!debug.contains(&captured.client_id));
+    }
+
+    #[test]
+    fn library_and_view_requests_share_original_edits_with_the_retained_overlay() {
+        use super::super::LibraryType;
+        let captured = account();
+        let mut writes = Preferences::default();
+        writes.prepare(&captured, 42);
+        let snapshot = ViewSnapshot { listing: LibraryType::Primary, sort_resolved: true, genre_resolved: true,
+            sort: Some(("titleSort".into(), false)), unwatched: false, genre: Some("genre".into()) };
+        for edit in [library(7), Edit::View { machine: "machine".into(), key: 7, snapshot, field: ViewField::Sort }] {
+            let original_machine = match &edit {
+                Edit::Library { machine, .. } | Edit::View { machine, .. } => machine.as_ptr(),
+                Edit::Pins { .. } => unreachable!(),
+            };
+            let expected = edit.clone();
+            let _ = writes.emit("viewer", edit);
+            let crate::stores::StoreJob::BrowsePreferences(job, _) = writes.take_jobs().remove(0) else { panic!("preference job") };
+            let pending = writes.pending.last().unwrap();
+            assert!(Arc::ptr_eq(&pending.edit, &job.req.edit));
+            assert_eq!(job.req.edit.as_ref(), &expected);
+            let machine = match job.req.edit.as_ref() {
+                Edit::Library { machine, .. } | Edit::View { machine, .. } => machine,
+                Edit::Pins { .. } => unreachable!(),
+            };
+            assert_eq!(machine.as_ptr(), original_machine);
+            assert!(job.req.matches_account(&captured));
+            assert!(job.req.matches_tenure(42));
+            let mut equal = job.req.clone();
+            equal.edit = Arc::new(expected);
+            assert_eq!(job.req, equal);
+            assert!(!Arc::ptr_eq(&job.req.edit, &equal.edit));
+        }
+        let overlaid = writes.overlay(&captured, "viewer");
+        assert_eq!(key(&overlaid, "viewer"), 7);
+        assert_eq!(overlaid.views_for("viewer").unwrap().get("machine", 7).unwrap().primary_sort(), Some(("titleSort", false)));
     }
 
     #[test]
