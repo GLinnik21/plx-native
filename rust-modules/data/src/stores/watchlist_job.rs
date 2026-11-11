@@ -1,10 +1,18 @@
 //! Addressed one-shot Watchlist resolve jobs.
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use plx_machine::job::Port;
 use plx_machine::machine::Addr;
 use plx_plex::plex::{Client, ClientKeys, KeyedClients, ServerId};
 use crate::watchlist::Tag;
+
+#[path = "watchlist_stream_port.rs"]
+pub mod stream;
+#[path = "watchlist_ports.rs"]
+pub mod ports;
+#[path = "watchlist_stream_job.rs"]
+mod streaming;
+pub use streaming::*;
 
 #[derive(Clone, PartialEq)]
 pub struct ResolveReq {
@@ -20,18 +28,27 @@ impl std::fmt::Debug for ResolveReq {
 }
 
 pub enum ResolveEnd { Answer(Option<Option<[u8; 12]>>), NotStarted, Panicked }
-pub struct ResolveLanding { pub addr: Addr, pub tag: Tag, pub sid: ServerId, pub rk: String, pub end: ResolveEnd }
+pub struct ResolveLanding { pub addr: Addr, pub tag: Tag, pub sid: ServerId, pub rk: String, pub key: Option<plx_plex::plex::ClientKey>, pub end: ResolveEnd }
 #[derive(Default)]
 pub struct ResolveMailbox(Mutex<Vec<ResolveLanding>>);
+
+impl ResolveMailbox {
+    pub fn take_not_started(&self) -> Vec<ResolveLanding> {
+        let mut mail = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let (refused, rest) = std::mem::take(&mut *mail).into_iter().partition(|l| matches!(l.end, ResolveEnd::NotStarted));
+        *mail = rest;
+        refused
+    }
+}
 impl ResolveMailbox {
     pub fn take(&self) -> Vec<ResolveLanding> {
         self.0.lock().unwrap_or_else(|e| e.into_inner()).drain(..).collect()
     }
 }
-struct Claim { state: AtomicU8, answered: AtomicBool }
+struct Claim { state: AtomicU8 }
 #[derive(Clone)]
 pub struct ResolvePort {
-    addr: Addr, tag: Tag, sid: ServerId, rk: String,
+    addr: Addr, tag: Tag, sid: ServerId, rk: String, key: Option<plx_plex::plex::ClientKey>,
     mailbox: Arc<ResolveMailbox>, claim: Arc<Claim>,
 }
 impl std::fmt::Debug for ResolvePort {
@@ -42,27 +59,32 @@ impl PartialEq for ResolvePort {
 }
 impl ResolvePort {
     pub fn new(addr: Addr, req: &ResolveReq, mailbox: Arc<ResolveMailbox>) -> Self {
-        Self { addr, tag: req.tag, sid: req.sid, rk: req.rk.clone(), mailbox,
-            claim: Arc::new(Claim { state: AtomicU8::new(0), answered: AtomicBool::new(false) }) }
+        Self { addr, tag: req.tag, sid: req.sid, rk: req.rk.clone(), key: req.keys.key(req.sid), mailbox,
+            claim: Arc::new(Claim { state: AtomicU8::new(0) }) }
     }
     /// Only the runner may start, and only while the owner has not cancelled the queued job.
     pub fn start(&self) -> bool {
         self.claim.state.compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst).is_ok()
     }
     pub fn cancel_queued(&self) {
-        if self.claim.state.compare_exchange(0, 2, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
-            self.refused(self.addr);
-        }
+        self.refused(self.addr);
     }
 }
 impl Port<ResolveEnd> for ResolvePort {
     fn done(&self, addr: Addr, end: ResolveEnd) {
         if addr != self.addr { return; }
-        // Retire a queued job before publishing its terminal; start competes on this same state.
-        let _ = self.claim.state.compare_exchange(0, 2, Ordering::SeqCst, Ordering::SeqCst);
-        if self.claim.answered.swap(true, Ordering::SeqCst) { return; }
+        // Refusal can win only before entry; an entered worker owns its answer.
+        let retired = match &end {
+            ResolveEnd::NotStarted => self.claim.state.compare_exchange(0, 2, Ordering::SeqCst, Ordering::SeqCst),
+            _ => match self.claim.state.compare_exchange(1, 2, Ordering::SeqCst, Ordering::SeqCst) {
+                Ok(state) => Ok(state),
+                Err(0) => self.claim.state.compare_exchange(0, 2, Ordering::SeqCst, Ordering::SeqCst),
+                Err(state) => Err(state),
+            },
+        };
+        if retired.is_err() { return; }
         self.mailbox.0.lock().unwrap_or_else(|e| e.into_inner()).push(ResolveLanding {
-            addr, tag: self.tag, sid: self.sid, rk: self.rk.clone(), end,
+            addr, tag: self.tag, sid: self.sid, rk: self.rk.clone(), key: self.key, end,
         });
         plx_machine::idle::invalidate();
     }
@@ -107,6 +129,15 @@ pub enum WriteEnd {
 pub struct WriteLanding { pub addr: Addr, pub tag: Tag, pub end: WriteEnd }
 #[derive(Default)]
 pub struct WriteMailbox(Mutex<Vec<WriteLanding>>);
+
+impl WriteMailbox {
+    pub fn take_not_started(&self) -> Vec<WriteLanding> {
+        let mut mail = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let (refused, rest) = std::mem::take(&mut *mail).into_iter().partition(|l| matches!(l.end, WriteEnd::NotStarted { .. }));
+        *mail = rest;
+        refused
+    }
+}
 impl WriteMailbox {
     pub fn has_mail(&self) -> bool {
         !self.0.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
@@ -240,6 +271,19 @@ mod tests {
         let mut answers = mailbox.take();
         assert_eq!(answers.len(), 1);
         assert!(matches!(answers.pop().unwrap().end, ResolveEnd::Answer(Some(None))));
+    }
+
+    #[test]
+    fn resolve_refusal_after_worker_entry_cannot_preempt_answer() {
+        let (_, port, addr, mailbox) = fixture();
+        assert!(port.start());
+        port.refused(addr);
+        port.cancel_queued();
+        assert!(mailbox.take().is_empty());
+        port.done(addr, ResolveEnd::Answer(Some(None)));
+        let answers = mailbox.take();
+        assert_eq!(answers.len(), 1);
+        assert!(matches!(answers[0].end, ResolveEnd::Answer(Some(None))));
     }
 
     #[test]

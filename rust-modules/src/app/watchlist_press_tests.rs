@@ -162,21 +162,17 @@ fn inline(_: &str, f: Box<dyn FnOnce() + Send + 'static>) -> bool {
 
 /// A spawn that refuses every job: the store's worker never starts, so its first read stays ON ITS
 /// WAY (the store retries on its frame counter and is refused again; it never blocks).
-fn refuse(_: &str, _: Box<dyn FnOnce() + Send + 'static>) -> bool {
-    false
-}
+
 
 /// Hold the Watchlist's reads: until [`release_reads`] the list is `Loading`, the answer a real
 /// plex.tv has not given yet (a scripted one answers inside the call).
 pub(super) fn hold_reads(rig: &mut Bridge) {
-    let store = std::mem::take(rig.watchlist_for_test());
-    *rig.watchlist_for_test() = store.with_spawn_for_test(refuse);
+    rig.store_runner.hold_watchlist_streams(true);
 }
 
 /// Let the held read run: the store reads the list again and the next frames land the rows.
 pub(super) fn release_reads(rig: &mut Bridge) {
-    let store = std::mem::take(rig.watchlist_for_test());
-    *rig.watchlist_for_test() = store.with_spawn_for_test(inline);
+    rig.store_runner.hold_watchlist_streams(false);
     rig.watchlist_for_test().run_with_input(plx_data::stores::watchlist::WatchlistCmd::Open, &Bridge::watchlist_input());
 }
 

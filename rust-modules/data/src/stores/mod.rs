@@ -446,7 +446,7 @@ impl Stores {
     /// (`StoreId` order): a server-side change re-reads its sections' shelves with
     /// `HubsInvalidateServer` and reads the affected source back with `RefetchSourceQuiet`. The
     /// Bridge drains exactly these after the map (`Bridge::start_store_jobs_in`).
-    pub const NOTIFY_FILLS: &'static [StoreId] = &[StoreId::Browse, StoreId::Hubs];
+    pub const NOTIFY_FILLS: &'static [StoreId] = &[StoreId::Browse, StoreId::Hubs, StoreId::Watchlist];
 
     /// The notification feed's per-frame pass. It stands down while the landing gate is armed (a
     /// recording, a replay or a dump owns the run), and never reads the registry's tokens.
@@ -745,6 +745,9 @@ impl StoreWork {
 /// lane a store is pumped on, a job carries the request itself and the port its answer goes to.
 #[derive(Debug, PartialEq)]
 pub enum StoreJob {
+    WatchlistList(plx_machine::job::Job<watchlist_job::ListReq>, watchlist_job::WatchlistStreamPort),
+    WatchlistRematch(plx_machine::job::Job<watchlist_job::RematchReq>, watchlist_job::WatchlistStreamPort),
+    WatchlistDelta(plx_machine::job::Job<watchlist_job::DeltaReq>, watchlist_job::WatchlistStreamPort),
     WatchlistResolve(plx_machine::job::Job<watchlist_job::ResolveReq>, watchlist_job::ResolvePort),
     WatchlistWrite(plx_machine::job::Job<watchlist_job::WriteReq>, watchlist_job::WritePort),
     NotifyStream(plx_machine::job::Job<notify_job::NotifyStreamReq>, notify_job::NotifyStreamPort),
@@ -868,7 +871,8 @@ impl StoreJob {
             // `frame_ingest`, the Browse pump's own discovery step) starts it through
             // `StoreRunner::start` as `Direct`, byte for byte as its unrecorded spawn was.
             Self::BrowseDiscovery(..) => Admission::Home,
-            Self::WatchlistResolve(..) | Self::WatchlistWrite(..) | Self::NotifyStream(..)
+            Self::WatchlistList(..) | Self::WatchlistRematch(..) | Self::WatchlistDelta(..)
+            | Self::WatchlistResolve(..) | Self::WatchlistWrite(..) | Self::NotifyStream(..)
             | Self::Catalog(..)
             | Self::SubtitleSearch(..)
             | Self::ViewReconcile(..)
@@ -891,7 +895,8 @@ impl StoreJob {
             Self::Collection(..) => StoreId::Collection,
             Self::Person(..) => StoreId::Person,
             Self::NotifyStream(..) => StoreId::Notify,
-            Self::WatchlistResolve(..) | Self::WatchlistWrite(..) => StoreId::Watchlist,
+            Self::WatchlistList(..) | Self::WatchlistRematch(..) | Self::WatchlistDelta(..)
+            | Self::WatchlistResolve(..) | Self::WatchlistWrite(..) => StoreId::Watchlist,
             Self::Catalog(..) => StoreId::Catalog,
             Self::SubtitleSearch(..) => StoreId::SubtitleSearch,
             Self::ViewReconcile(..) => StoreId::ViewReconcile,
@@ -1452,7 +1457,7 @@ mod tests {
     #[test]
     fn the_fan_out_fill_lists_name_the_stores_the_calls_can_fill() {
         assert_eq!(Stores::VIEWSTATE_FILLS, [StoreId::Browse, StoreId::Hubs, StoreId::ViewState]);
-        assert_eq!(Stores::NOTIFY_FILLS, [StoreId::Browse, StoreId::Hubs]);
+        assert_eq!(Stores::NOTIFY_FILLS, [StoreId::Browse, StoreId::Hubs, StoreId::Watchlist]);
         assert_eq!(Stores::RECONCILE_FILLS, [StoreId::ViewState, StoreId::ViewReconcile]);
         for list in [Stores::VIEWSTATE_FILLS, Stores::NOTIFY_FILLS, Stores::RECONCILE_FILLS] {
             for (i, id) in list.iter().enumerate() {
