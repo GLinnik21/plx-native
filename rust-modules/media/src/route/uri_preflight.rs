@@ -142,7 +142,8 @@ impl StandardDirectPlay {
 /// reason names the FIRST check that failed, in the order the code tests them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UriDecline {
-    /// The resolve has no URI port (a build or boot composition without the URI engine).
+    /// The resolve has no URI port (a build without the URI engine, or a boot whose URI driver
+    /// install was refused).
     NoPort,
     /// The play's backend policy no longer offers a URI original: this play already tried one, or it
     /// was refused or excluded.
@@ -189,8 +190,12 @@ pub enum UriDecline {
     /// differently from Plex.
     ManyAudioTracksExported,
     /// The qualifier's certificate did not match this play (another selection, source, Dolby Vision
-    /// record, subtitle or track map) or had expired.
+    /// record or track map) or had expired.
     CertificateMismatch,
+    /// A subtitle is selected and the certificate does not carry it: the qualifier certified no render
+    /// of that subtitle (the product carrier certifies none, so today a selected embedded subtitle
+    /// always ends here).
+    SubtitleNotCarried,
     /// The display path has no evidence on this firmware (the exported window with a real canvas, or
     /// the ACB plane, with the controls a URL carrier needs callable).
     NoDisplayEvidence,
@@ -201,19 +206,19 @@ impl UriDecline {
     /// line wraps it in one.
     pub fn log_name(self) -> &'static str {
         match self {
-            Self::NoPort => "no URI engine in this build",
+            Self::NoPort => "no URI engine in this build or boot",
             Self::NotOffered => "the URI original was already tried or is not offered for this play",
             Self::TrackPickUnresolved => "the picked audio or subtitle track is not in this file",
             Self::Rate => "playback speed is not 1x",
             Self::QualityOrDirectPlay =>
-                "the quality ceiling or Direct Play setting rules out the original; set quality to Original",
+                "the quality ceiling or Direct Play setting rules out the original; set quality to Original and Direct Play to Auto",
             Self::Relay => "the link is a Plex relay",
             Self::AutoOnNonLocalLink =>
                 "quality Auto on a link that is not local; set quality to Original",
             Self::AudioEnhancement => "an audio enhancement is on",
             Self::SubtitleBurn => "a subtitle is burned in",
             Self::ClientSubtitle => "the selected subtitle is an external file",
-            Self::SubtitleOff => "the file has subtitle streams and none is selected",
+            Self::SubtitleOff => "the file has subtitle streams and none is selected; subtitle streams keep a play in Standard today",
             Self::DolbyVisionOff => "the file has Dolby Vision and the Dolby Vision setting is Off",
             Self::Preview => "a trailer preview",
             Self::NoDurationOrUrl => "no duration or URL for the file",
@@ -225,6 +230,8 @@ impl UriDecline {
             Self::StandardContainer => "Standard would not direct-play the container",
             Self::ManyAudioTracksExported => "several audio tracks on the exported window",
             Self::CertificateMismatch => "the certified source did not match this play",
+            Self::SubtitleNotCarried =>
+                "subtitle streams keep a play in Standard today; try a file without subtitle streams",
             Self::NoDisplayEvidence => "no exported-window evidence for this firmware",
         }
     }
@@ -644,10 +651,11 @@ impl ResolvePort {
         request.binding = evidence.binding;
         match self.qualifier.qualify(off, request) {
             Verdict::Known(known) => {
-                // The certificate is judged against this play first, then the display path it would
-                // use: two reasons, so a tester knows which one to report.
-                if !known.certifies(selected, dovi, subtitle.as_ref(), subtitle_choice) {
-                    Verdict::Unknown(UriDecline::CertificateMismatch)
+                // The certificate is judged against this play first (its selection, then the subtitle it
+                // must carry), then the display path it would use: separate reasons, so a tester knows
+                // what to change and what to report.
+                if let Some(gap) = known.certificate_gap(selected, dovi, subtitle.as_ref(), subtitle_choice) {
+                    Verdict::Unknown(gap)
                 } else if !evidence.permits(known.requirements, preview) {
                     Verdict::Unknown(UriDecline::NoDisplayEvidence)
                 } else {
@@ -678,25 +686,39 @@ impl ResolvePort {
 }
 
 impl KnownSource {
-    /// Whether this certificate is the one the play asked for: the same selection, an exact
-    /// progressive source that can supply what it requires, the Dolby Vision record and the embedded
-    /// subtitle the play carries, the tracks it selected, and not yet expired.
-    fn certifies(&self, selected: SourceSelection, dovi: plx_data::metadata::Dovi,
-        subtitle: Option<&SourceSubtitle>, subtitle_choice: TrackChoice) -> bool {
-        self.selection == selected
+    /// Where this certificate is not the one the play asked for, or `None` when it is. First the rest of
+    /// the certificate ([`UriDecline::CertificateMismatch`]): the same selection, an exact progressive
+    /// source that can supply the audio track it requires, the Dolby Vision record, the audio track the
+    /// play selected, and not yet expired. Then the subtitle the play selected, if any
+    /// ([`UriDecline::SubtitleNotCarried`]): the source must map its native track and the certificate
+    /// must carry the embedded subtitle's render. Both groups together are the one boolean this check
+    /// has always been; the split only names which group failed.
+    fn certificate_gap(&self, selected: SourceSelection, dovi: plx_data::metadata::Dovi,
+        subtitle: Option<&SourceSubtitle>, subtitle_choice: TrackChoice) -> Option<UriDecline> {
+        let subtitle_selected = selected.subtitle_sid > 0;
+        // A selected subtitle's native track is the subtitle group's to answer for, so the rest
+        // is asked of the source without it.
+        let rest = Requirements { subtitle_track: if subtitle_selected { TrackChoice::Unspecified }
+            else { self.requirements.subtitle_track }, ..self.requirements };
+        if !(self.selection == selected
             && self.requirements.source == SourceKind::ProgressiveUri
             && self.requirements.video == Fidelity::Exact
             && self.requirements.audio == Fidelity::Exact
-            && self.source.can_supply(self.requirements)
+            && self.source.can_supply(rest)
             && (!dovi.present || self.certified_dolby_vision == Some(dovi))
             && self.requirements.subtitle_track == subtitle_choice
-            && (selected.subtitle_sid <= 0 || (subtitle.is_some_and(|sub| sub.embedded)
-                && self.certified_subtitle_source.as_ref() == subtitle))
             && (selected.audio_sid <= 0 || self.requirements.audio_track
                 == TrackChoice::Selected(selected.audio_sid as u64))
-            && (selected.subtitle_sid <= 0 || self.requirements.subtitle_track
-                == TrackChoice::Selected(selected.subtitle_sid as u64))
-            && self.expires_at > Instant::now()
+            && self.expires_at > Instant::now()) {
+            Some(UriDecline::CertificateMismatch)
+        } else if subtitle_selected && !(self.source.can_supply(self.requirements)
+            && self.requirements.subtitle_track == TrackChoice::Selected(selected.subtitle_sid as u64)
+            && subtitle.is_some_and(|sub| sub.embedded)
+            && self.certified_subtitle_source.as_ref() == subtitle) {
+            Some(UriDecline::SubtitleNotCarried)
+        } else {
+            None
+        }
     }
 }
 
@@ -1254,7 +1276,7 @@ mod tests {
         subtitle.selection.subtitle_sid = 77;
         subtitle.subtitle_choice = TrackChoice::Selected(77);
         subtitle.subtitle_source = Some(SourceSubtitle { codec: "srt".to_owned(), embedded: true });
-        assert!(matches!(port.qualify(&off, subtitle), Verdict::Unknown(UriDecline::CertificateMismatch)),
+        assert!(matches!(port.qualify(&off, subtitle), Verdict::Unknown(UriDecline::SubtitleNotCarried)),
             "a selected embedded subtitle's render is not certified by an opt-in");
         let mut unmapped = opt_in_request(true);
         unmapped.audio_ordinal = None;
@@ -1315,12 +1337,12 @@ mod tests {
         let no_render_proof = ResolvePort::new(evidence, Arc::new(Certified { dovi: None,
             subtitle: None, expired: false, mapped: true }));
         assert!(matches!(no_render_proof.qualify(&off, subtitle_request()),
-            Verdict::Unknown(UriDecline::CertificateMismatch)));
+            Verdict::Unknown(UriDecline::SubtitleNotCarried)));
         let wrong_codec = ResolvePort::new(evidence, Arc::new(Certified { dovi: None,
             subtitle: Some(SourceSubtitle { codec: "vobsub".to_owned(), embedded: true }),
             expired: false, mapped: true }));
         assert!(matches!(wrong_codec.qualify(&off, subtitle_request()),
-            Verdict::Unknown(UriDecline::CertificateMismatch)));
+            Verdict::Unknown(UriDecline::SubtitleNotCarried)));
         let render_proof = ResolvePort::new(evidence, Arc::new(Certified { dovi: None,
             subtitle: Some(source_subtitle.clone()), expired: false, mapped: true }));
         assert!(matches!(render_proof.qualify(&off, subtitle_request()), Verdict::Known(_)));
@@ -1351,7 +1373,7 @@ mod tests {
         let p8 = plx_data::metadata::Dovi { present: true, profile: 8, bl_compat: 1,
             ..plx_data::metadata::Dovi::NONE };
         type Tweak = fn(&mut OriginalRequest);
-        let cases: [(&str, &str, Option<UriDecline>, Tweak); 16] = [
+        let cases: [(&str, &str, Option<UriDecline>, Tweak); 17] = [
             ("the control", "known", None, |_| {}),
             ("speed", "refused", Some(UriDecline::Rate),
                 |r| r.requested_rate_permille = plx_playback_contract::RATE_NORMAL + 250),
@@ -1379,6 +1401,12 @@ mod tests {
             ("not opted in", "unknown", Some(UriDecline::NotOptedIn), |r| r.uri_opt_in = false),
             ("standard would convert the video", "unknown", Some(UriDecline::StandardVideo),
                 |r| r.standard.video = false),
+            // The product carrier certifies no subtitle render, so a selected embedded one ends here.
+            ("a selected embedded subtitle", "unknown", Some(UriDecline::SubtitleNotCarried), |r| {
+                r.selection.subtitle_sid = 77;
+                r.subtitle_choice = TrackChoice::Selected(77);
+                r.subtitle_source = Some(SourceSubtitle { codec: "srt".to_owned(), embedded: true });
+            }),
             // The first check that fails names the reason, in the order the code tests them.
             ("quality and auto together", "refused", Some(UriDecline::QualityOrDirectPlay), |r| {
                 r.quality_allows_original = false;
@@ -1423,6 +1451,21 @@ mod tests {
         // Both wrong: the certificate is judged first.
         assert_eq!(answer(&certify(Binding::Unbound, true, true).qualify(&off, opt_in_request(true))),
             ("unknown", Some(UriDecline::CertificateMismatch)));
+        // A selected embedded subtitle the certificate does not carry has its own reason: after the
+        // rest of the certificate, before the display path.
+        let subtitled = || {
+            let mut request = opt_in_request(true);
+            request.selection.subtitle_sid = 77;
+            request.subtitle_choice = TrackChoice::Selected(77);
+            request.subtitle_source = Some(SourceSubtitle { codec: "srt".to_owned(), embedded: true });
+            request
+        };
+        assert_eq!(answer(&certify(exported, false, true).qualify(&off, subtitled())),
+            ("unknown", Some(UriDecline::SubtitleNotCarried)));
+        assert_eq!(answer(&certify(exported, true, true).qualify(&off, subtitled())),
+            ("unknown", Some(UriDecline::CertificateMismatch)), "an expired certificate first");
+        assert_eq!(answer(&certify(Binding::Unbound, false, true).qualify(&off, subtitled())),
+            ("unknown", Some(UriDecline::SubtitleNotCarried)), "the subtitle before the display path");
     }
 
     /// A qualifier's own Unknown or Refused reaches the caller with its reason, untouched.
@@ -1499,7 +1542,7 @@ mod tests {
             AutoOnNonLocalLink, AudioEnhancement, SubtitleBurn, ClientSubtitle, SubtitleOff,
             DolbyVisionOff, Preview, NoDurationOrUrl, NotCertified, NotOptedIn, StandardVideo,
             StandardDolbyVision, StandardAudio, StandardContainer, ManyAudioTracksExported,
-            CertificateMismatch, NoDisplayEvidence];
+            CertificateMismatch, SubtitleNotCarried, NoDisplayEvidence];
         let mut seen = std::collections::HashSet::new();
         for why in all {
             let name = why.log_name();
@@ -1509,6 +1552,8 @@ mod tests {
         // A tester-facing phrase says what to change where there is something to change.
         assert!(AutoOnNonLocalLink.log_name().contains("set quality to Original"));
         assert!(SubtitleOff.log_name().contains("subtitle streams and none is selected"));
+        assert!(SubtitleNotCarried.log_name().contains("try a file without subtitle streams"));
+        assert!(QualityOrDirectPlay.log_name().contains("Direct Play to Auto"));
         assert!(ManyAudioTracksExported.log_name().contains("several audio tracks"));
     }
 }

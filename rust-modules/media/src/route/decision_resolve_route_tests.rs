@@ -3487,7 +3487,7 @@ fn the_guards_that_skip_uri_qualification_leave_a_reason_and_a_qualified_play_no
         "ac3", |env, _| env.uri_preflight_port = None);
     assert_eq!(plan.uri_decline, Some(UriDecline::NoPort));
     assert_eq!(uri_decline_line(UriEngine::On, &plan).as_deref(),
-        Some("uri: original declined (no URI engine in this build)"));
+        Some("uri: original declined (no URI engine in this build or boot)"));
     let (plan, _) = uri_engine_resolve("uri-decline-not-offered", UriEngine::On, 2, MDE_DIRECTPLAY, ac3(),
         "ac3", |env, _| env.uri_offers = UriOfferEligibility { original: false, ..UriOfferEligibility::ALL });
     assert_eq!(plan.uri_decline, Some(UriDecline::NotOffered));
