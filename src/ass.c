@@ -426,47 +426,85 @@ static void place_regions(PlxAss *ctx, const struct Bounds *bounds, size_t count
 
 /* Test hook: ci/test_ass_regions.py defines this before including the file to count how often a loop
  * below steps onto a pixel that has nothing to draw (kind: `blend` in blend_row, `straight` in
- * straighten_pixels). It is a no-op otherwise. */
+ * straighten_pixels) instead of skipping it with its neighbours. It is a no-op otherwise. */
 #ifndef PLX_ASS_VISIT_ZERO
 #define PLX_ASS_VISIT_ZERO(kind) ((void)0)
 #endif
 
+/* A pixel of one ASS_Image onto the premultiplied destination: `mask` is libass's coverage of it,
+ * coverage[] the image's opacity table (coverage[0] is 0, and so can a nonzero entry be). */
+static inline void blend_pixel(uint8_t *dst, unsigned mask, const uint8_t *coverage, uint32_t color)
+{
+    unsigned a = coverage[mask];
+    if (!a) {
+        PLX_ASS_VISIT_ZERO(blend);
+        return;
+    }
+    if (a == 255) {
+        ass_store_rgba(dst, color);
+        return;
+    }
+    ass_store_rgba(dst, ass_blend_pixel(ass_load_rgba(dst), color, a));
+}
+
+static inline void blend_four(uint8_t *dst, const uint8_t *mask, const uint8_t *coverage,
+                              uint32_t color)
+{
+    for (int i = 0; i < 4; ++i) blend_pixel(dst + 4 * i, mask[i], coverage, color);
+}
+
 /* One row of one ASS_Image onto the premultiplied destination: `n` pixels, mask[i] the libass
- * coverage of pixel i, coverage[] its opacity table. */
+ * coverage of pixel i. Most of a sign's mask is zero, which draws nothing whatever the opacity, so
+ * the row is read four bytes at a time and a word of zeros is passed over whole. The words come
+ * from the row's own start and never reach past its end (the stride's padding is not coverage); a
+ * word with any coverage is drawn pixel by pixel exactly as before, including the nonzero mask
+ * bytes a faint opacity maps to coverage 0. (Eight bytes at a time measured no faster.) */
 static void blend_row(uint8_t *dst, const uint8_t *mask, int n, const uint8_t *coverage,
                       uint32_t color)
 {
-    for (int x = 0; x < n; ++x, dst += 4) {
-        unsigned a = coverage[mask[x]];
-        if (!a) {
-            PLX_ASS_VISIT_ZERO(blend);
-            continue;
-        }
-        if (a == 255) {
-            ass_store_rgba(dst, color);
-            continue;
-        }
-        ass_store_rgba(dst, ass_blend_pixel(ass_load_rgba(dst), color, a));
+    int x = 0;
+    for (; x + 4 <= n; x += 4) {
+        uint32_t word;
+        memcpy(&word, mask + x, sizeof word);
+        if (word) blend_four(dst + 4 * x, mask + x, coverage, color);
+    }
+    for (; x < n; ++x) blend_pixel(dst + 4 * x, mask[x], coverage, color);
+}
+
+/* One premultiplied pixel to straight RGBA, given its alpha. */
+static inline void straighten_pixel(uint8_t *rgba, unsigned a, const unsigned *reciprocal)
+{
+    /* Transparent pixels are already zero; opaque pixels are already
+     * straight RGBA. Avoid three variable divisions for every opaque pixel
+     * (software division on the ARMv7 target), including static vector signs. */
+    if (!a) {
+        PLX_ASS_VISIT_ZERO(straight);
+        return;
+    }
+    if (a == 255) return;
+    for (int c = 0; c < 3; ++c) {
+        rgba[c] = ass_straight_channel(rgba[c], a, reciprocal[a]);
     }
 }
 
-/* Premultiplied RGBA to straight RGBA, in place, `pixels` of them. */
+/* Premultiplied RGBA to straight RGBA, in place, `pixels` of them. A sign's region is mostly
+ * transparent, so four pixels at a time are read as words and a group whose alphas are all 0 (or
+ * all 255: solid fills, which need no division either) is passed over whole; any other group is
+ * converted pixel by pixel as before. Alpha is the top byte of ass_load_rgba's word. */
 static void straighten_pixels(uint8_t *rgba, size_t pixels, const unsigned *reciprocal)
 {
-    for (size_t i = 0; i < pixels * 4; i += 4) {
-        unsigned a = rgba[i + 3];
-        /* Transparent pixels are already zero; opaque pixels are already
-         * straight RGBA. Avoid three variable divisions for every opaque pixel
-         * (software division on the ARMv7 target), including static vector signs. */
-        if (!a) {
-            PLX_ASS_VISIT_ZERO(straight);
-            continue;
-        }
-        if (a == 255) continue;
-        for (int c = 0; c < 3; ++c) {
-            rgba[i + c] = ass_straight_channel(rgba[i + c], a, reciprocal[a]);
-        }
+    size_t i = 0;
+    for (; i + 4 <= pixels; i += 4, rgba += 16) {
+        uint32_t w0 = ass_load_rgba(rgba), w1 = ass_load_rgba(rgba + 4),
+                 w2 = ass_load_rgba(rgba + 8), w3 = ass_load_rgba(rgba + 12);
+        if (!((w0 | w1 | w2 | w3) >> 24)) continue;
+        if (((w0 & w1 & w2 & w3) >> 24) == 255) continue;
+        straighten_pixel(rgba, w0 >> 24, reciprocal);
+        straighten_pixel(rgba + 4, w1 >> 24, reciprocal);
+        straighten_pixel(rgba + 8, w2 >> 24, reciprocal);
+        straighten_pixel(rgba + 12, w3 >> 24, reciprocal);
     }
+    for (; i < pixels; ++i, rgba += 4) straighten_pixel(rgba, rgba[3], reciprocal);
 }
 
 static int compose_frame(PlxAss *ctx, ASS_Image *images, int width, int height, int reusable,

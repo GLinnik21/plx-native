@@ -228,7 +228,7 @@ static void zero_visits(ASS_Image *image, unsigned *blend, unsigned *straight) {
 int main(void) {
     /* Zero runs are skipped whole. A sign's coverage is mostly zero (44% of the iterations of the old
      * blend loop on the #1328 fixture) and so is its region (70% of its pixels have alpha 0). Eight
-     * rows of 24 zeros, 8 coverage-200 bytes, 32 zeros: no zero byte shares a group of eight with
+     * rows of 24 zeros, 8 coverage-200 bytes, 32 zeros: no zero byte shares a group of four with
      * coverage, so no zero byte may be visited singly in the blend loop; the straight pass may step
      * onto the zeros around the sign's ends (the four-pixel groups the run edges fall into, the row
      * tail) but not onto the runs between. */
