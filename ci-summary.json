@@ -85,7 +85,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-11T02:18:12Z",
+ "generated": "2026-11-11T02:21:34Z",
  "metrics": [
   {
    "change30_pct": 47.7,
@@ -130,19 +130,40 @@
    "unit": "s"
   },
   {
-   "change30_pct": 101.9,
-   "change7_pct": 25.2,
-   "d30": 209,
-   "delta30": 213,
-   "delta7": 85,
+   "change30_pct": 101.4,
+   "change7_pct": 24.9,
+   "d30": 209.0,
+   "delta30": 212.0,
+   "delta7": 84.0,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
-   "n_now": 63,
+   "n_now": 64,
    "n_prev": 85,
-   "now": 422,
+   "now": 421.0,
    "prev7": 337,
+   "shown": true,
+   "state": "worse",
+   "state30": "worse",
+   "threshold_abs": 20.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": 34.1,
+   "change7_pct": 20.2,
+   "d30": 168.5,
+   "delta30": 57.5,
+   "delta7": 38,
+   "group": "ci",
+   "id": "ci|host lint + type-checks",
+   "kind": "job",
+   "label": "CI: host lint + type-checks",
+   "n_now": 65,
+   "n_prev": 85,
+   "now": 226,
+   "prev7": 188,
    "shown": true,
    "state": "worse",
    "state30": "worse",
@@ -172,18 +193,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 42.0,
-   "change7_pct": 10.3,
-   "d30": 320.5,
-   "delta30": 134.5,
-   "delta7": 42.5,
+   "change30_pct": 42.4,
+   "change7_pct": 10.8,
+   "d30": 321,
+   "delta30": 136,
+   "delta7": 44.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
    "n_now": 65,
    "n_prev": 84,
-   "now": 455,
+   "now": 457,
    "prev7": 412.5,
    "shown": true,
    "state": "flat",
@@ -256,18 +277,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 43.4,
+   "change30_pct": 43.3,
    "change7_pct": 8.2,
-   "d30": 1913,
-   "delta30": 830.0,
-   "delta7": 208.5,
+   "d30": 1913.0,
+   "delta30": 829.0,
+   "delta7": 207.5,
    "group": "ci",
    "id": "minutes",
    "kind": "cost",
    "label": "Runner time per push",
-   "n_now": 56,
+   "n_now": 57,
    "n_prev": 72,
-   "now": 2743.0,
+   "now": 2742,
    "prev7": 2534.5,
    "shown": true,
    "state": "flat",
@@ -298,18 +319,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 64.2,
-   "change7_pct": 6.1,
-   "d30": 265,
-   "delta30": 170,
-   "delta7": 25,
+   "change30_pct": 66.0,
+   "change7_pct": 7.3,
+   "d30": 265.0,
+   "delta30": 175.0,
+   "delta7": 30.0,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
-   "n_now": 63,
+   "n_now": 64,
    "n_prev": 85,
-   "now": 435,
+   "now": 440.0,
    "prev7": 410,
    "shown": true,
    "state": "flat",
@@ -320,17 +341,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 10.5,
+   "change7_pct": 10.6,
    "d30": null,
    "delta30": null,
-   "delta7": 35.5,
+   "delta7": 36,
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "kind": "job",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "n_now": 64,
+   "n_now": 65,
    "n_prev": 85,
-   "now": 374.5,
+   "now": 375,
    "prev7": 339,
    "shown": true,
    "state": "flat",
@@ -340,10 +361,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 41.0,
+   "change30_pct": 41.6,
    "change7_pct": 10.9,
-   "d30": 228.0,
-   "delta30": 93.5,
+   "d30": 227,
+   "delta30": 94.5,
    "delta7": 31.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
@@ -361,18 +382,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 113.9,
-   "change7_pct": -9.8,
-   "d30": 140,
-   "delta30": 159.5,
-   "delta7": -32.5,
+   "change30_pct": 114.3,
+   "change7_pct": -9.6,
+   "d30": 140.0,
+   "delta30": 160.0,
+   "delta7": -32,
    "group": "ci",
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
-   "n_now": 64,
+   "n_now": 65,
    "n_prev": 85,
-   "now": 299.5,
+   "now": 300,
    "prev7": 332,
    "shown": true,
    "state": "flat",
@@ -382,18 +403,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 83.7,
-   "change7_pct": -17.2,
-   "d30": 132,
-   "delta30": 110.5,
-   "delta7": -50.5,
+   "change30_pct": 83.3,
+   "change7_pct": -17.4,
+   "d30": 132.0,
+   "delta30": 110.0,
+   "delta7": -51,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
    "kind": "job",
    "label": "CI: host python/shell/C gates",
-   "n_now": 64,
+   "n_now": 65,
    "n_prev": 85,
-   "now": 242.5,
+   "now": 242,
    "prev7": 293,
    "shown": true,
    "state": "flat",
@@ -403,31 +424,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 33.9,
-   "change7_pct": 19.7,
-   "d30": 168,
-   "delta30": 57.0,
-   "delta7": 37.0,
-   "group": "ci",
-   "id": "ci|host lint + type-checks",
-   "kind": "job",
-   "label": "CI: host lint + type-checks",
-   "n_now": 64,
-   "n_prev": 85,
-   "now": 225.0,
-   "prev7": 188,
-   "shown": true,
-   "state": "flat",
-   "state30": "worse",
-   "threshold_abs": 20.0,
-   "threshold_pct": 20.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": 56.1,
+   "change30_pct": 56.6,
    "change7_pct": 10.3,
-   "d30": 143.5,
-   "delta30": 80.5,
+   "d30": 143,
+   "delta30": 81.0,
    "delta7": 21.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
@@ -445,10 +445,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -34.6,
+   "change30_pct": -34.4,
    "change7_pct": -4.1,
-   "d30": 318.0,
-   "delta30": -110.0,
+   "d30": 317,
+   "delta30": -109.0,
    "delta7": -9.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
@@ -510,7 +510,7 @@
   {
    "change30_pct": 11.8,
    "change7_pct": 0.0,
-   "d30": 17.0,
+   "d30": 17,
    "delta30": 2.0,
    "delta7": 0.0,
    "group": "ci",
@@ -533,14 +533,14 @@
    "change7_pct": 0.0,
    "d30": null,
    "delta30": null,
-   "delta7": 0.0,
+   "delta7": 0,
    "group": "ci",
    "id": "ci|which gates apply",
    "kind": "job",
    "label": "CI: which gates apply",
-   "n_now": 64,
+   "n_now": 65,
    "n_prev": 85,
-   "now": 5.0,
+   "now": 5,
    "prev7": 5,
    "shown": false,
    "state": "flat",
@@ -552,16 +552,16 @@
   {
    "change30_pct": -99.0,
    "change7_pct": 0.0,
-   "d30": 301,
+   "d30": 301.0,
    "delta30": -298.0,
-   "delta7": 0.0,
+   "delta7": 0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 64,
+   "n_now": 65,
    "n_prev": 85,
-   "now": 3.0,
+   "now": 3,
    "prev7": 3,
    "shown": false,
    "state": "flat",
@@ -571,18 +571,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -25.0,
+   "change30_pct": -14.3,
    "change7_pct": 0.0,
-   "d30": 4,
-   "delta30": -1,
-   "delta7": 0,
+   "d30": 3.5,
+   "delta30": -0.5,
+   "delta7": 0.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 63,
+   "n_now": 64,
    "n_prev": 85,
-   "now": 3,
+   "now": 3.0,
    "prev7": 3,
    "shown": false,
    "state": "flat",
@@ -737,7 +737,7 @@
    "to": 63.5
   },
   {
-   "change_pct": 25.2,
+   "change_pct": 24.9,
    "commits": [
     {
      "pr": 1316,
@@ -795,7 +795,68 @@
    "label": "CI: host unit tests (hostsim)",
    "since": "2026-11-11",
    "threshold_pct": 20.0,
-   "to": 422
+   "to": 421.0
+  },
+  {
+   "change_pct": 20.2,
+   "commits": [
+    {
+     "pr": 1316,
+     "sha": "35c0e31d5",
+     "title": "Show movie and TV metadata on unplayed Home heroes"
+    },
+    {
+     "pr": 1317,
+     "sha": "095f74ca9",
+     "title": "Remember open Library pages"
+    },
+    {
+     "pr": 1315,
+     "sha": "5b4e8db77",
+     "title": "refactor(metadata): move alternative-source IO into store jobs"
+    },
+    {
+     "pr": null,
+     "sha": "87c08f315",
+     "title": "chore(git): ignore local Empryo workspace artifacts"
+    },
+    {
+     "pr": 1319,
+     "sha": "9d1e082e3",
+     "title": "refactor(browse): capture roster facts before store steps"
+    },
+    {
+     "pr": 1321,
+     "sha": "d6b75cd94",
+     "title": "Polish LG Detail, Library, and Settings screens"
+    },
+    {
+     "pr": 1322,
+     "sha": "283f536d1",
+     "title": "refactor(data): run notification streams as addressed jobs"
+    },
+    {
+     "pr": 1323,
+     "sha": "17aa83ea0",
+     "title": "Fix autoplay trailer timeline, seeking, and HUD controls"
+    },
+    {
+     "pr": 1326,
+     "sha": "7f2dc2f2d",
+     "title": "fix(playback): preserve HLS when an ABR candidate is cancelled"
+    },
+    {
+     "pr": 1324,
+     "sha": "f8f6dbb75",
+     "title": "refactor(session): negotiate legacy and V6 replay codecs"
+    }
+   ],
+   "from": 188,
+   "id": "ci|host lint + type-checks",
+   "label": "CI: host lint + type-checks",
+   "since": "2026-11-10",
+   "threshold_pct": 20.0,
+   "to": 226
   }
  ],
  "schema": 2,
@@ -810,19 +871,19 @@
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
-   "now": 435
+   "now": 440.0
   },
   {
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
-   "now": 422
+   "now": 421.0
   },
   {
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "now": 374.5
+   "now": 375
   },
   {
    "group": "ci",
