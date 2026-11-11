@@ -1033,7 +1033,7 @@ while IFS= read -r f; do
     if ! allowed threads "$f"; then echo "    $f:$line"; threads_bad=$((threads_bad+1)); fi
   done < <(awk '
     skip>0 { n=gsub(/\{/,"{"); m=gsub(/\}/,"}"); depth+=n-m; if (depth<=0) skip=0; prev=$0; next }
-    prev ~ /^[[:space:]]*#\[cfg\((test|any\(test, feature = "test-support"\))\)\][[:space:]]*$/ && /^[[:space:]]*mod / { skip=1; depth=gsub(/\{/,"{")-gsub(/\}/,"}"); if (depth<=0) skip=0; prev=$0; next }
+    prev ~ /^[[:space:]]*#\[cfg\((test|any\(test, feature = "test-support"\))\)\][[:space:]]*$/ && /^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?mod[[:space:]]/ { skip=1; depth=gsub(/\{/,"{")-gsub(/\}/,"}"); if (depth<=0) skip=0; prev=$0; next }
     { print NR":"$0; prev=$0 }' "$f" | grep -E "$pat" | grep -vE '^[0-9]+:\s*//' || true)
 # ...over the files that spell `spawn(` at all — a superset of both matched spellings, and the `awk`
 # below only drops `#[cfg(test)] mod` blocks, so the count is unchanged.

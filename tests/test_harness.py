@@ -9066,6 +9066,33 @@ impl PersonOwnerGateFixture {
         self.assertIn("threads:", out)
         self.assertIn("_check_deps_selftest_threads.rs", out)
 
+    def test_threads_gate_ignores_visible_test_modules_without_exempting_production(self):
+        files = {}
+        for i, visibility in enumerate(("pub", "pub(crate)", "pub(super)")):
+            files[f"_check_deps_visible_test_{i}.rs"] = (
+                f"#[cfg(test)]\n{visibility} mod fixture {{\n"
+                "    fn work() { std::thread::spawn(|| {}); }\n}\n")
+        r = self._plant_many(files)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r = self._plant("_check_deps_visible_production.rs",
+                        "pub(super) mod fixture { fn work() { std::thread::spawn(|| {}); } }\n")
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("threads:", r.stdout + r.stderr)
+        self.assertIn("_check_deps_visible_production.rs", r.stdout + r.stderr)
+
+    def test_globals_ledger_ignores_field_labels_without_hiding_value_reads(self):
+        fields = ("struct Captured { current_server: u32, client_for: u32, screen_input_revision: u32 }\n"
+                  "fn captured() -> Captured { Captured { current_server: 1, client_for: 2, screen_input_revision: 3 } }\n")
+        r = self._plant("_check_deps_captured_fields.rs", fields, "screens")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r = self._plant("_check_deps_captured_fields.rs", fields +
+                        "fn actual() { let _ = Captured { current_server: current_server(), client_for: client_for, screen_input_revision: 0 }; }\n", "screens")
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        key = "rust-modules/screens/src/_check_deps_captured_fields.rs::actual::"
+        self.assertIn(key + "current_server", out)
+        self.assertIn(key + "client_for", out)
+
     def test_blocking_gate_catches_a_new_allow_blocking_site(self):
         """A frame-thread blocking exception is a ledger entry in ci/allow/blocking.txt. RED: a new
         production `allow_blocking(` that the list does not name must fail `blocking`, naming the

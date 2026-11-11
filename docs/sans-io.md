@@ -40,8 +40,11 @@ Watchlist jobs after it; the end-of-file resolve-drain test and Screens input
 publication/cache test modules are both retained. Stores merged without a
 textual conflict, preserving all twenty scope sites and captured arguments.
 The reader-negative regression and both ledger pin reductions coexist in the
-Python harness. All replay fixtures and V5/V6 JSON goldens are unchanged from
-the base.
+Python harness. Source-gate follow-up fixes two lexical false positives: visible
+`#[cfg(test)]` modules are still test-only, and captured field labels are not
+registry function values. Added regressions retain production-thread rejection,
+RHS getter calls and bare callback-reference rejection; no allowance was added.
+All replay fixtures and V5/V6 JSON goldens are unchanged from the base.
 
 Source verification uses the committed tree: `ci/check-machine-shape.py`,
 `ci/check-ports.py`, `ci/check-ledger-ratchet.py`, the seven CI Python suites

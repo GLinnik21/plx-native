@@ -220,9 +220,16 @@ function contname(code,    s) {
 function enclosing() { return (top > 0) ? stack[top] : ((pending != "") ? pending : ((ctop > 0) ? cstack[ctop] : "?")) }
 function pop_to(d) { while (top > 0 && sdepth[top] > d) top--; while (ctop > 0 && csdepth[ctop] > d) ctop-- }
 
-function emit_calls(code, hit,    rest, m) {
+function emit_calls(code, hit,    rest, m, label) {
   rest = code
   while (match(rest, SITE)) {
+    # A field declaration/label names data, not a function value. Keep scanning its RHS,
+    # and do not suppress a namespace separator (`::`) or a bare callback reference.
+    label = substr(rest, RSTART + RLENGTH - 1) ~ /^[[:space:]]*:([^:]|$)/
+    if (label) {
+      rest = substr(rest, RLENGTH > 1 ? RSTART + RLENGTH - 1 : RSTART + 1)
+      continue
+    }
     if (KEYSPELL != "") {
       m = substr(rest, RSTART, RLENGTH)
       gsub(/^[^A-Za-z0-9_]+/, "", m); gsub(/[^A-Za-z0-9_]+$/, "", m)
