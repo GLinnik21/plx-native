@@ -23,7 +23,7 @@ fn the_pager_stands_in_the_row_after_info_at_the_boards_spacing() {
     let item = &PmsMovie { guid: Some([0xa1; 12]), ..PmsMovie::default() };
     let long = std::ffi::CString::new("Reprendre la lecture depuis le debut de l'episode precedent").unwrap();
     let labels = [std::ffi::CString::new("Play").unwrap(), long];
-    let infos: Vec<Rect> = labels.iter().map(|l| hero_rects(m, item, l).info).collect();
+    let infos: Vec<Rect> = labels.iter().map(|l| hero_rects(m, item, l, false).info).collect();
     assert!(infos[0].x < infos[1].x, "the premise: two rows of two widths ({:?})", infos.iter().map(|r| r.x).collect::<Vec<_>>());
     assert_eq!(HERO_PAGER_CY, 698.0, "the action row's centre line");
     assert_eq!(HERO_PAGER_CY, HERO_ROW_Y + HERO_CTRL_D * 0.5);

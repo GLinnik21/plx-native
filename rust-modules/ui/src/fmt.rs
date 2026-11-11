@@ -131,7 +131,16 @@ fn seconds_scale_durations_keep_the_distinctions_that_matter() {
 /// Time-remaining for a Continue-Watching item — "8m left" / "1h 2m left" (rounded up to
 /// the next whole minute, floored at 1). `remaining_ms` is duration − viewOffset.
 pub fn time_left(remaining_ms: i64) -> String {
-    time_left_minutes_in(plx_platform::i18n::current(), (remaining_ms + 59_999) / 60_000)
+    time_left_minutes_in(plx_platform::i18n::current(), remaining_minutes(remaining_ms))
+}
+
+fn remaining_minutes(remaining_ms: i64) -> i64 {
+    (remaining_ms.saturating_add(59_999) / 60_000).max(1)
+}
+
+/// Time remaining inside a playback control: the compact duration without the word “left”.
+pub fn remaining_duration(remaining_ms: i64) -> String {
+    duration_minutes_in(plx_platform::i18n::current(), remaining_minutes(remaining_ms))
 }
 
 /// [`time_left`] from whole minutes, in a given context; at least a minute (the line promises
@@ -144,10 +153,9 @@ pub fn time_left_minutes_in(cx: &LocaleContext, mins: i64) -> String {
 /// **Time left as a still's one-line footer says it** — "38m left", "1h 12m left", the SHORTEST
 /// form each language has (`core.footer_left_*`, not [`time_left`]'s caption wording: a footer line
 /// shares 388 px with an episode tag and a progress bar). Rounded up to the next whole minute and
-/// never zero, as [`time_left`] is. Home's hero reads this too, for the movie it is resuming, so the
-/// hero and the card under it say the time left alike; the captions elsewhere read [`time_left`].
+/// never zero, as [`time_left`] is. The Home Resume pill uses [`remaining_duration`].
 pub fn footer_left(remaining_ms: i64) -> String {
-    footer_left_minutes_in(plx_platform::i18n::current(), (remaining_ms + 59_999) / 60_000)
+    footer_left_minutes_in(plx_platform::i18n::current(), remaining_minutes(remaining_ms))
 }
 
 /// [`footer_left`] from whole minutes, in a given context.

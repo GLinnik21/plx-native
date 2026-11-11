@@ -2373,19 +2373,15 @@ impl Bridge {
 }
 
 impl Bridge {
-    /// **Publish this frame's playback session** (spec §2.3) — see `AppViews::session`.
-    ///
-    /// Called once per iteration by the loop, BEFORE the dispatcher frame and the tree draw, so
-    /// every screen in one frame reads one consistent picture of the playback. The copy is skipped
-    /// entirely when nothing that reads it is mounted: off the player route the publication is
-    /// `PlaybackSession::IDLE` and stays there, which is what keeps a still Home grid free of the
-    /// dozen small allocations this otherwise costs at the loop rate.
     /// The video plane's EDGE, from `Player::set_video_plane_bound` and from nowhere else
     /// (spec §16 risk 10). Reaches both the dispatcher's present gate and this rig's own copy.
     pub(crate) fn publish_video_plane(&mut self, bound: bool) {
         self.video_plane = bound;
     }
 
+    /// Publish one playback picture before the dispatcher frame and draw. The loop sets `live`
+    /// for the Player page or a preview on Detail; otherwise the publication stays idle, avoiding
+    /// the copy's allocations while browsing without playback.
     pub(crate) fn publish_playback(&mut self, session: &plx_media::route::PlaybackSession,
         live: bool, viewer_paused: Option<bool>) {
         self.transport_paused = live && viewer_paused.unwrap_or(false);

@@ -207,14 +207,81 @@ const RESOLUTION_SHAPE: &str = "ProductResolutionV1{fo:Option<(entry:u32,elem:u3
 /// well as the term around it: the init shape names that type rather than spelling its fields, so
 /// a census that only said `ControlledHomeInitV3` would be claiming the change was in the
 /// envelope when it is in the session.
+pub(crate) const FP_PRIOR: u64 = 4239819007634745513;
+pub(crate) const FP_V6: u64 = 741022075462080307;
+
 pub(crate) fn state_fp() -> u64 {
     let mut shapes: Vec<&str> = APP_SHAPES.to_vec();
+    let shape = shapes.iter_mut().find(|shape| **shape == super::bootstrap::SHAPE)
+        .expect("controlled initial shape");
+    *shape = super::bootstrap::SHAPE_V7;
     shapes.push(super::bootstrap::CONTENT_SHAPE);
     shapes.push(RESOLUTION_SHAPE);
     shapes.push("CaptureReadinessV2{before_dispatch:pending:bool,text:bool}");
     shapes.push("MeasurementV1{query:Width(text:bytes,sz:i32,bold:bool)|Cap(sz:i32)|Line(sz:i32),answer:f32bits:u32}");
     shapes.extend_from_slice(plx_screens::registry::SCREEN_SHAPES);
     plx_ui::rec::state_fp(&shapes)
+}
+
+// Probe only: install complete vector and numeric literals after the production probe run.
+#[cfg(test)]
+fn session_app_prior_vector() -> Vec<&'static str> {
+    let mut shapes = APP_SHAPES.to_vec();
+    shapes.push(super::bootstrap::CONTENT_SHAPE);
+    shapes.push(RESOLUTION_SHAPE);
+    shapes.push("CaptureReadinessV2{before_dispatch:pending:bool,text:bool}");
+    shapes.push("MeasurementV1{query:Width(text:bytes,sz:i32,bold:bool)|Cap(sz:i32)|Line(sz:i32),answer:f32bits:u32}");
+    shapes.extend_from_slice(plx_screens::registry::SCREEN_SHAPES);
+    shapes
+}
+
+#[cfg(test)]
+#[test]
+fn historical_session_census_hashes_its_frozen_vectors() {
+    let frozen: Value = serde_json::from_str(include_str!("fixtures/session-codec-v5/fingerprints.json")).unwrap();
+    for (vector, fingerprint) in [("prior_vector", "fp_prior"), ("prospective_vector", "prospective_fp_v6")] {
+        let shapes: Vec<&str> = frozen[vector].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        let fp = plx_ui::rec::state_fp(&shapes);
+        assert_eq!(Some(fp), frozen[fingerprint].as_u64());
+        assert_ne!(fp, FP_PRIOR);
+        assert_ne!(fp, FP_V6);
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn session_app_fingerprint_probe_only() {
+    let frozen: Value = serde_json::from_str(include_str!("fixtures/session-codec-v5/current-base-fingerprints.json")).unwrap();
+    let prior = session_app_prior_vector();
+    assert_eq!(serde_json::to_value(&prior).unwrap(), frozen["prior_vector"]);
+    let fp_prior = plx_ui::rec::state_fp(&prior);
+    assert_eq!(fp_prior, FP_PRIOR);
+    assert_eq!(frozen["fp_prior"].as_u64(), Some(FP_PRIOR));
+    assert_eq!(plx_ui::rec::state_fp(&prior), fp_prior);
+    let mut prospective = prior.clone();
+    let indices: Vec<_> = prior.iter().enumerate().filter(|(_, shape)| **shape == super::bootstrap::SHAPE).map(|(i, _)| i).collect();
+    assert_eq!(indices.len(), 1);
+    let outer = super::bootstrap::SHAPE;
+    assert_eq!(outer.matches("ControlledHomeInitV6{").count(), 1);
+    assert_eq!(outer.matches("session:SessionInitV5").count(), 1);
+    let new_outer = outer.replacen("ControlledHomeInitV6{", "ControlledHomeInitV7{", 1)
+        .replacen("session:SessionInitV5", "session:SessionInitV6", 1);
+    prospective[indices[0]] = &new_outer;
+    assert_eq!(serde_json::to_value(&prospective).unwrap(), frozen["prospective_vector"]);
+    assert_eq!(prior.iter().zip(&prospective).filter(|(a, b)| a != b).count(), 1);
+    let prospective_fp_v6 = plx_ui::rec::state_fp(&prospective);
+    assert_eq!(prospective_fp_v6, FP_V6);
+    assert_eq!(state_fp(), prospective_fp_v6);
+    assert_eq!(frozen["prospective_fp_v6"].as_u64(), Some(FP_V6));
+    for manifest in [
+        include_str!("../../../tests/fixtures/replay/1-boot-home-chip-grid/manifest.json"),
+        include_str!("../../../tests/fixtures/replay/6-settings-family/manifest.json"),
+        include_str!("../../../tests/fixtures/replay/12-filmography-detail-return/manifest.json"),
+    ] {
+        let header: Value = serde_json::from_str(manifest).unwrap();
+        assert_eq!(header["schema"].as_u64(), Some(3));
+        assert_eq!(header["state_fp"].as_u64(), Some(fp_prior));
+    }
 }
 
 /// The hash of the frame's currently covered logical state (spec §5.4).
@@ -839,7 +906,7 @@ impl Recplay {
         -> Result<Self, &'static str> {
         initial.validate()?;
         let mut header = Header::new(state_fp(), initial);
-        header.init_data = serde_json::to_value(initial).map_err(|_| "cannot encode initial state")?;
+        header.init_data = initial.to_v6_value()?;
         header.clock_start_ms = initial.clock_start;
         header.build = env!("PLX_VERSION").into();
         header.features = features();
@@ -2681,7 +2748,7 @@ mod fixture_preflight_tests {
             let dir = root.join(name);
             let manifest = std::fs::read_to_string(dir.join("manifest.json")).unwrap();
             let segment = std::fs::read(dir.join("rec-0000.jsonl")).unwrap();
-            let mut recording = Recording::parse(&manifest, &[segment.as_slice()], state_fp()).unwrap();
+            let mut recording = Recording::parse(&manifest, &[segment.as_slice()], FP_PRIOR).unwrap();
             let initial = super::super::bootstrap::Initial::decode(recording.header.init_data.clone(), recording.header.init_hash)
                 .expect("recorded initial state must retain its canonical hash");
             // Host unit tests omit the simulator feature; this check covers the wire preflight.
