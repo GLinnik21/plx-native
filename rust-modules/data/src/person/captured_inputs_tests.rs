@@ -119,7 +119,42 @@ fn controlled_capture_ignores_session_edges_and_uses_supplied_dev_seed() {
     assert_eq!(state.generation, generation);
     assert!(state.current().unwrap().bio.is_empty());
     assert!(state.current().unwrap().credited);
+    assert_eq!(state.current().unwrap().credits[0].credits.len(), 3);
+    assert!(!state.jobs.is_empty());
     assert!(state.jobs.iter().all(|j| matches!(j, crate::stores::StoreJob::Person(Job { req: PersonReq { work: PersonWork::Profile(Identity::Controlled) | PersonWork::Credits(Identity::Controlled), .. }, .. }, _))));
+}
+
+#[test]
+fn changed_seed_rebuilds_credits_without_a_holdings_change() {
+    let keys = roster(&[], 0);
+    let mut facts = input(&keys, None);
+    facts.controlled = true;
+    facts.dev_credits = Some("3");
+    let mut state = PersonState::default();
+    let adapter = Arc::new(PersonAdapter::default());
+    open_page(&mut state, &adapter, &facts);
+    state.pump(&adapter, &facts);
+    assert_eq!(state.current().unwrap().credits[0].credits.len(), 3);
+    facts.dev_credits = Some("5");
+    assert!(state.pump(&adapter, &facts));
+    assert_eq!(state.current().unwrap().credits[0].credits.len(), 5);
+    let rows = state.current().unwrap().credits.as_ptr();
+    assert!(!state.pump(&adapter, &facts));
+    assert_eq!(state.current().unwrap().credits.as_ptr(), rows);
+}
+
+#[test]
+fn changed_identity_at_the_same_generation_retires_its_claim() {
+    let keys = roster(&[], 0);
+    let a = Arc::new(plx_plex::plex::session::Session { client_id: "a".into(), ..Default::default() });
+    let b = Arc::new(plx_plex::plex::session::Session { client_id: "b".into(), ..Default::default() });
+    let mut state = PersonState::default();
+    let adapter = Arc::new(PersonAdapter::default());
+    open_page(&mut state, &adapter, &input(&keys, Some(&a)));
+    state.pump(&adapter, &input(&keys, Some(&a)));
+    let old = state.generation;
+    state.pump(&adapter, &input(&keys, Some(&b)));
+    assert!(state.generation > old);
 }
 
 #[test]

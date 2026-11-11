@@ -357,7 +357,7 @@ pub struct PersonState {
     revision: u64,
     retry_cd: Backoffs,
     dev_held: usize,
-    session_cursor: Option<(u64, bool)>,
+    dev_seed: String,
     session_identity: (String, String),
     /// Which servers may have a request out this pump ([`crate::stores::fanout`]).
     fanout: crate::stores::fanout::Fanout,
@@ -381,7 +381,7 @@ impl Default for PersonState {
             revision: 0,
             retry_cd: Backoffs::default(),
             dev_held: usize::MAX,
-            session_cursor: None,
+            dev_seed: String::new(),
             session_identity: Default::default(),
             fanout: Default::default(),
             jobs: Vec::new(),
@@ -397,9 +397,6 @@ impl PersonState {
     /// Unsettled does not invent signed-out identity; controlled passes ignore session recovery.
     fn observe_session(&mut self, adapter: &PersonAdapter, input: &PersonInput<'_>) -> bool {
         if input.controlled { return false; }
-        let cursor = (input.visible_generation, input.session.is_some());
-        if self.session_cursor == Some(cursor) { return false; }
-        self.session_cursor = Some(cursor);
         let Some(session) = input.session else { return false };
         if self.session_identity.0 == session.client_id && self.session_identity.1 == session.account_token {
             return false;
@@ -1015,7 +1012,6 @@ fn open(
         return;
     }
     if !input.controlled {
-        state.session_cursor = Some((input.visible_generation, input.session.is_some()));
         if let Some(session) = input.session {
             state.session_identity.0.clone_from(&session.client_id);
             state.session_identity.1.clone_from(&session.account_token);
@@ -1331,10 +1327,12 @@ fn seed_dev_credits(state: &mut PersonState, arg: Option<&str>) -> bool {
     // it has nothing to work with until a source lands. A COUNT rather than a "have I seeded" flag,
     // because the real `/media` landing fills `Src::matches` itself and a flag keyed on that cannot
     // tell the source's own index apart from a seeded one.
-    if p.credited && state.dev_held == held.len() {
+    if p.credited && state.dev_held == held.len() && state.dev_seed == arg {
         return false;
     }
     state.dev_held = held.len();
+    state.dev_seed.clear();
+    state.dev_seed.push_str(arg);
     let n: usize = arg.trim().parse().unwrap_or(9);
     let row = |i: usize, dept: &str| {
         let (title, id, thumb) = match held.get(i) {

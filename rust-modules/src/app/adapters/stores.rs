@@ -2846,7 +2846,7 @@ mod tests {
         let job = match kind {
             0 => StoreJob::WatchlistList(Job { addr, req: ListReq { tag, input: Snapshot::default(), auth: AuthValue(plx_data::watchlist::WatchlistInput::for_test(1).auth().unwrap().clone()), known: Default::default(), known_gen: 0, etag: None } }, port.clone()),
             1 => StoreJob::WatchlistRematch(Job { addr, req: RematchReq { tag, input: Snapshot::default(), rows: Vec::new() } }, port.clone()),
-            _ => StoreJob::WatchlistDelta(Job { addr, req: DeltaReq { tag, input: Snapshot::default(), sid: ServerId::UNSET, rows: Vec::new() } }, port.clone()),
+            _ => StoreJob::WatchlistDelta(Job { addr, req: DeltaReq { tag, input: Snapshot::default(), sid: ServerId::UNSET, rows: Vec::new().into() } }, port.clone()),
         };
         (job, port, mailbox)
     }

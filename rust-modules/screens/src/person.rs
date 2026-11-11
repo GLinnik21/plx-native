@@ -451,8 +451,9 @@ pub(crate) fn run_person_fixture(store: &mut plx_data::stores::person::PersonSto
     keys.refill_roster(plx_plex::plex::current_server(), plx_plex::plex::server_roster_gen(),
         plx_plex::plex::server_facts_gen(), plx_plex::plex::server_ids(),
         plx_plex::plex::client_for, plx_plex::plex::server_facts, plx_plex::plex::server_probe_result);
+    let bio = plx_base::devtrig::read("personbio");
     let input = plx_data::person::PersonInput { keys: &keys, session: None, visible_generation: 0,
-        controlled: false, profile_refused: false, credits_refused: false, dev_bio: None, dev_credits: None };
+        controlled: false, profile_refused: false, credits_refused: false, dev_bio: bio.as_deref(), dev_credits: None };
     store.run_with_input(cmd, &input)
 }
 

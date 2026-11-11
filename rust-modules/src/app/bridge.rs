@@ -2337,12 +2337,6 @@ fn start_jobs(&mut self, jobs: Vec<plx_data::stores::StoreJob>) -> usize {
         self.stores.take_landed_views()
     }
 
-    /// The signed-in profile's household member ids, which Search's source scope grades each
-    /// server's household mark against. The Bridge reads the session here and hands the answer to
-    /// the store; the data layer reads no session global for it.
-    fn household_ids() -> Vec<i64> {
-        plx_plex::plex::session::peek().household_ids()
-    }
 
     /// The profile the Watchlist and catalog frame passes are handed: the seated one, as the Session
     /// owner published it. An `Arc` clone, so the two per-frame passes cost nothing to read it; a pass
