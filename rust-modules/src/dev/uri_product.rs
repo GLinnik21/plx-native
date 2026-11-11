@@ -665,6 +665,6 @@ mod tests {
             Verdict::Unknown(UriDecline::NotCertified)));
         let unarmed = ResolvePort::new(today(Binding::Acb), Arc::new(ProductQualifier));
         assert!(matches!(unarmed.qualify(&off, request(991001, &mock_origin(), 42)),
-            Verdict::Unknown(UriDecline::NotCertified)));
+            Verdict::Unknown(UriDecline::NotOptedIn)), "the production qualifier answers only an opt-in");
     }
 }
