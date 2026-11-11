@@ -1363,12 +1363,12 @@ impl HomeScreen {
     }
 
     fn carousel_index(&self, view: HubsView<'_>) -> usize {
-        self.carousel
-            .as_ref()
-            .and_then(|id| {
-                (0..view.hero_count())
-                    .find(|&i| view.hero(i).is_some_and(|h| Self::same_item(h.item, id)))
-            })
+        Self::index_of(view, self.carousel.as_ref())
+    }
+
+    /// Where the hero named `id` stands in the pool (0 for none).
+    fn index_of(view: HubsView<'_>, id: Option<&(plx_plex::plex::ServerId, String)>) -> usize {
+        id.and_then(|id| (0..view.hero_count()).find(|&i| view.hero(i).is_some_and(|h| Self::same_item(h.item, id))))
             .unwrap_or(0)
     }
 
@@ -2212,29 +2212,48 @@ impl HomeScreen {
             hero_content(hero.item, p, 0.0, measure);
             self.draw_hero_actions(hero.item, env, p, 0.0, true, page_alpha, focus, measure, press_scale);
         }
-        if let Some((dots, pager)) = self.pager(view, hero.item, measure) {
-            // Follow the shelf's focus motion so the pager recedes and returns with the card.
-            let p = if self.holds_page(0) {
-                let focus_mix = self.grid.shelves.first().map_or(0.0, |shelf| shelf.band_expand().clamp(0.0, 1.0));
-                p.alpha(1.0 - (1.0 - theme::hero::HOME_PAGER_SHELF_ALPHA) * focus_mix)
-            } else {
-                p
-            };
-            dots.centered_y(pager.dots_x, HERO_PAGER_CY).draw(env, p);
-            plx_ui::icons::draw(p, Icon::Chevron, pager.chevron, theme::TEXT_SECONDARY);
+        self.draw_pagers(view, hero.item, env, p, measure);
+    }
+
+    /// **The pagers: one per page, drawn on the page they belong to.** The dots and chevron are part
+    /// of the hero's action row (they stand after that hero's Info disc), so each page of a flip
+    /// carries its own at the page's own slide offset, with its own dot lit — the outgoing page's
+    /// pager leaves with it and the incoming page's arrives with it, instead of one pager staying
+    /// put over the slide and jumping to the next hero's row when it ends.
+    fn draw_pagers(&self, view: HubsView<'_>, hero: &PmsMovie, env: &Env, p: Painter, measure: &dyn Measure) {
+        // Follow the shelf's focus motion so the pager recedes and returns with the card.
+        let p = if self.holds_page(0) {
+            let focus_mix = self.grid.shelves.first().map_or(0.0, |shelf| shelf.band_expand().clamp(0.0, 1.0));
+            p.alpha(1.0 - (1.0 - theme::hero::HOME_PAGER_SHELF_ALPHA) * focus_mix)
+        } else {
+            p
+        };
+        let draw = |hero: &PmsMovie, index: usize, p: Painter| {
+            if let Some((dots, pager)) = self.pager(view, hero, index, measure) {
+                dots.centered_y(pager.dots_x, HERO_PAGER_CY).draw(env, p);
+                plx_ui::icons::draw(p, Icon::Chevron, pager.chevron, theme::TEXT_SECONDARY);
+            }
+        };
+        if let Some((out_x, in_x)) = self.slide_offsets() {
+            if let Some(old) = self.outgoing_hero(view) {
+                draw(old.item, Self::index_of(view, self.outgoing.as_ref()), p.translate(out_x, 0.0));
+            }
+            draw(hero, self.carousel_index(view), p.translate(in_x, 0.0));
+        } else {
+            draw(hero, self.carousel_index(view), p);
         }
     }
 
-    /// The billboard's pager for `hero`, the selected one: its page dots (the active one set) and
-    /// where the group stands ([`hero_pager`]), after that hero's Info disc. `None` for a single hero,
-    /// which has nothing to page. It is not a focus stop and records no hit rect.
-    fn pager(&self, view: HubsView<'_>, hero: &PmsMovie, measure: &dyn Measure) -> Option<(PageDots, PagerRects)> {
+    /// The billboard's pager for `hero`, the one at pool index `index`: its page dots (that one set)
+    /// and where the group stands ([`hero_pager`]), after that hero's Info disc. `None` for a single
+    /// hero, which has nothing to page. It is not a focus stop and records no hit rect.
+    fn pager(&self, view: HubsView<'_>, hero: &PmsMovie, index: usize, measure: &dyn Measure) -> Option<(PageDots, PagerRects)> {
         if view.hero_count() <= 1 {
             return None;
         }
         let (label, progress) = hero_action(hero);
         let info = hero_rects(measure, hero, &label, progress.is_some()).info;
-        let dots = PageDots::new(view.hero_count()).active(self.carousel_index(view));
+        let dots = PageDots::new(view.hero_count()).active(index);
         let pager = hero_pager(info.x + info.w, dots.width());
         Some((dots, pager))
     }
@@ -3927,9 +3946,10 @@ fn hero_line(hero: &PmsMovie) -> Option<HeroLine<'_>> {
     use plx_ui::fmt;
     let is_episode = hero.kind == KIND_EPISODE;
     let is_show = hero.kind == KIND_SHOW;
-    if (hero.kind == KIND_MOVIE && (!hero.watched || hero_resumes(hero))) || is_episode
-        || (is_show && !hero.watched && !hero_resumes(hero) && hero.viewed_leaf_count.unwrap_or(0) == 0)
-    {
+    // A movie, a show and an episode read their identity band whatever their watch state: the
+    // owner expects "Movie • Year • Length" on every one (v0.10.0 rc1 — a watched film showed its
+    // plot instead). Only the kinds with no such band (a season, a collection) read a premise.
+    if hero.kind == KIND_MOVIE || is_show || is_episode {
         let identity = match hero.kind {
             KIND_EPISODE => {
                 let address = fmt::episode_address(i64::from(hero.season_index), i64::from(hero.ep_index));
