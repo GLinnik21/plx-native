@@ -1774,10 +1774,16 @@ impl Bridge {
         ids.iter().map(|&id| self.start_store_jobs_of(id)).sum()
     }
 
-    fn start_jobs(&mut self, jobs: Vec<plx_data::stores::StoreJob>) -> usize {
+fn start_jobs(&mut self, jobs: Vec<plx_data::stores::StoreJob>) -> usize {
         let started = jobs.len();
-        for job in jobs {
-            self.store_runner.start(job);
+        let watchlist = jobs.iter().any(|j| j.store() == StoreId::Watchlist);
+        for job in jobs { self.store_runner.start(job); }
+        if watchlist {
+            let profile = Self::seated_profile();
+            let stream = self.stores.watchlist.land_stream_results(&self.stores.landgate, &profile);
+            let write = self.stores.watchlist.land_write_results(&self.stores.landgate, &profile);
+            self.stores.watchlist.land_resolve_refusals(&profile);
+            if stream || write { plx_machine::idle::invalidate(); }
         }
         started
     }
@@ -1906,16 +1912,12 @@ impl Bridge {
 
     /// The Watchlist store's landing pass, once a frame and route-unconditional: a write burst
     /// lands, a profile switch resets it, and the page reads its notice through `take_notices`.
-    pub(crate) fn watchlist_pump(&mut self) {
+pub(crate) fn watchlist_pump(&mut self) {
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
         let profile = Self::seated_profile();
-        if self.stores.watchlist.pump_with_gate_and_keys(&self.stores.landgate, &profile, &self.client_keys) {
-            plx_machine::idle::invalidate();
-        }
+        let input = self.store_runner.watchlist_snapshot(&self.client_keys);
+        if self.stores.watchlist.pump_with_snapshot(&self.stores.landgate, &profile, input) { plx_machine::idle::invalidate(); }
         self.start_store_jobs_of(StoreId::Watchlist);
-        if self.stores.watchlist.land_write_results(&self.stores.landgate, &profile) {
-            plx_machine::idle::invalidate();
-        }
     }
 
     pub(crate) fn viewstate_pump(&mut self) -> plx_data::stores::EndpointRefreshSet {
@@ -1987,6 +1989,7 @@ impl Bridge {
             self.stores.notify_finish_turn(&mut pass, turn, &input);
         }
         let out = self.stores.notify_end(pass);
+        self.stores.watchlist.observe_snapshot(self.store_runner.watchlist_snapshot(&self.client_keys));
         let mut spent = self.stores.notify_map(&out, pages, shown, self.directory.view(), &self.client_keys);
         self.start_store_jobs_in(plx_data::stores::Stores::NOTIFY_FILLS);
         self.start_store_jobs_of(StoreId::Notify);
