@@ -26,6 +26,14 @@ and same-generation key/fact/eligibility changes, day changes and old in-flight
 snapshot immutability. They have not been compiled or run. The scoped follow-up
 touches `stores/watchlist{,_ports,_stream_job}.rs`, app store adapter and Bridge.
 
+A terminal-edge follow-up records list read-start/progress in the addressed
+stream kind: held rows, awaiting a first page, or publishing a first load. A
+panic before page zero is not a later-page failure merely because old rows are
+held. Held complete/partial rows retain their own completeness, while a first
+load that published page zero remains truncated. Two additional Rust regression
+sources cover those cases before/after page zero; they are pending execution.
+The write-ledger stamps are not used as list-read identities.
+
 Session now binds the actual `SessionMachine.state` (`attempt::Attempt`) to
 `transition` and `from_init` with `state_reads = immutable`. The structural
 read-only proof, not a getter-name exception, validates shared reads. The

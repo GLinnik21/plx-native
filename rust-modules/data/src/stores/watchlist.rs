@@ -84,7 +84,12 @@ use super::watchlist_job::{Snapshot, WatchlistStreamPort, ListReq, RematchReq, D
 use super::watchlist_job::stream::{StreamMailbox, StreamLanding, StreamEvent, StreamEnd};
 use plx_machine::machine::{Addr, MachineId, RequestId};
 #[derive(Clone, Copy, PartialEq)]
-enum StreamKind { List, Rematch, Delta }
+enum ListRead { HoldingRows, AwaitingPage, Publishing }
+#[derive(Clone, Copy, PartialEq)]
+enum StreamKind { List(ListRead), Rematch, Delta }
+impl StreamKind {
+    fn is_list(self) -> bool { matches!(self, Self::List(_)) }
+}
 pub struct WatchlistFacts<'a> {
     pub keys: &'a plx_plex::plex::ClientKeys,
     pub today: Option<&'a str>,
@@ -778,6 +783,11 @@ pub fn pump_with_gate_and_keys(&mut self, gate: &plx_machine::landgate::Gate, pr
                 || !self.state.auth.as_ref().is_some_and(|a| a.generation == landed.tag.profile_gen) { continue; }
             match landed.event {
                 StreamEvent::Post(mut what) => {
+                    if matches!(&what, What::Page { .. }) {
+                        if let Some((StreamKind::List(progress), _)) = &mut self.stream {
+                            if *progress == ListRead::AwaitingPage { *progress = ListRead::Publishing; }
+                        }
+                    }
                     let keys = &self.stream_keys;
                     let now = &self.snapshot.keys;
                     let retain = |answers: &mut Vec<crate::watchlist::Answer>| answers.retain(|(_, sid, _)| keys.key(*sid) == now.key(*sid));
@@ -796,13 +806,13 @@ pub fn pump_with_gate_and_keys(&mut self, gate: &plx_machine::landgate::Gate, pr
                     match end {
                         StreamEnd::NotStarted => {
                             self.state.list_retry = RETRY_FRAMES;
-                            if kind == Some(StreamKind::List) { self.state.list_wanted = true; }
+                            if kind.is_some_and(StreamKind::is_list) { self.state.list_wanted = true; }
                         }
-                        StreamEnd::Done if kind == Some(StreamKind::List) => changed |= self.apply(Landed { tag: landed.tag, what: What::ListDone }),
+                        StreamEnd::Done if kind.is_some_and(StreamKind::is_list) => changed |= self.apply(Landed { tag: landed.tag, what: What::ListDone }),
                         StreamEnd::Panicked | StreamEnd::Cancelled => {
                             self.state.list_retry = RETRY_FRAMES;
-                            if kind == Some(StreamKind::List) {
-                                let start = u32::from(!self.state.rows.is_empty() || self.state.incoming.is_some());
+                            if let Some(StreamKind::List(progress)) = kind {
+                                let start = u32::from(progress == ListRead::Publishing);
                                 changed |= self.apply(Landed { tag: landed.tag, what: What::PageFailed { start, why: Failure::Other } });
                                 changed |= self.apply(Landed { tag: landed.tag, what: What::ListDone });
                             }
@@ -813,7 +823,7 @@ pub fn pump_with_gate_and_keys(&mut self, gate: &plx_machine::landgate::Gate, pr
                     if kind == Some(StreamKind::Delta) && end == StreamEnd::Done && !stale_keys { self.pending_delta = None; }
                     if stale_keys || end != StreamEnd::Done {
                         self.state.list_retry = RETRY_FRAMES;
-                        if kind == Some(StreamKind::Rematch) || (stale_keys && kind == Some(StreamKind::List)) { self.rematch_wanted = true; }
+                        if kind == Some(StreamKind::Rematch) || (stale_keys && kind.is_some_and(StreamKind::is_list)) { self.rematch_wanted = true; }
                     }
                     self.state.list_claim = None;
                     self.stream = None;
@@ -834,7 +844,7 @@ pub fn pump_with_gate_and_keys(&mut self, gate: &plx_machine::landgate::Gate, pr
                 || landed.tag.epoch != self.state.epoch
                 || !self.state.auth.as_ref().is_some_and(|a| a.generation == landed.tag.profile_gen) { continue; }
             match self.stream.as_ref().map(|(kind, _)| *kind) {
-                Some(StreamKind::List) => self.state.list_wanted = true,
+                Some(StreamKind::List(_)) => self.state.list_wanted = true,
                 Some(StreamKind::Rematch) => self.rematch_wanted = true,
                 _ => {}
             }
@@ -953,7 +963,8 @@ fn spawn_list(&mut self, auth: &WatchlistAuth) {
         self.state.read_writes = quiet.then_some(self.state.writes_seen);
         let req = ListReq { tag, input: self.snapshot.clone(), auth: AuthValue(auth.clone()),
             known: self.matched_guids(), known_gen: self.state.table.roster_gen, etag };
-        let (addr, port) = self.stream_port(tag, StreamKind::List);
+        let progress = if self.state.rows.is_empty() { ListRead::AwaitingPage } else { ListRead::HoldingRows };
+        let (addr, port) = self.stream_port(tag, StreamKind::List(progress));
         self.state.list_wanted = false;
         self.jobs.push(super::StoreJob::WatchlistList(plx_machine::job::Job { addr, req }, port));
     }
@@ -2952,6 +2963,62 @@ pub(in crate::stores) fn reading_for_test(sid: ServerId, titles: u8) -> Watchlis
         assert!(s.view().is_empty());
         assert!(s.retired_streams.is_empty());
     }
+    #[test]
+    fn stream_jobs_panicked_reread_preserves_held_completeness_before_and_after_page_zero() {
+        use super::super::StoreJob;
+        for truncated in [false, true] {
+            for page_seen in [false, true] {
+                let mock = Mock::new((1..=150).map(|n| item(n, &format!("T{n:03}"))).collect());
+                if truncated { mock.fail_pages_from.store(100, Ordering::SeqCst); }
+                let mut s = store(&mock);
+                load(&mut s);
+                let held = titles(&s);
+                assert_eq!(s.view().truncated(), truncated);
+                s.run(WatchlistCmd::Reread);
+                let profile = WatchlistInput::profile_for_test(1);
+                let gate = plx_machine::landgate::fixture_gate();
+                s.pump_with_snapshot(gate, &profile, Snapshot::scripted(&*mock));
+                let StoreJob::WatchlistList(job, port) = s.take_jobs().pop().unwrap() else { panic!("list") };
+                let producer = port.start().unwrap();
+                if page_seen {
+                    producer.post(job.addr, What::Page { start: 0, total: Some(200), rows: Vec::new(),
+                        answers: Vec::new(), roster_gen: 1, etag: Some("partial".into()) });
+                }
+                producer.finish(StreamEnd::Panicked);
+                assert!(s.land_stream_results(gate, &profile));
+                assert_eq!(titles(&s), held);
+                assert_eq!(s.view().truncated(), truncated, "held completeness survives panic, page_seen={page_seen}");
+                assert!(!s.read_in_flight());
+                assert!(!port.is_owed());
+                assert!(!s.land_stream_results(gate, &profile));
+            }
+        }
+    }
+
+    #[test]
+    fn stream_jobs_first_load_panic_after_page_zero_keeps_partial_rows_truncated() {
+        use super::super::StoreJob;
+        let mock = three();
+        let mut s = store(&mock);
+        s.run_for_test(WatchlistCmd::Open);
+        let profile = WatchlistInput::profile_for_test(1);
+        let gate = plx_machine::landgate::fixture_gate();
+        s.pump_with_snapshot(gate, &profile, Snapshot::scripted(&*mock));
+        let StoreJob::WatchlistList(job, port) = s.take_jobs().pop().unwrap() else { panic!("list") };
+        let producer = port.start().unwrap();
+        producer.post(job.addr, What::Page { start: 0, total: Some(3),
+            rows: vec![crate::watchlist::row_of(&item(1, "Alpha"), 0).unwrap()], answers: Vec::new(),
+            roster_gen: 1, etag: Some("partial".into()) });
+        producer.finish(StreamEnd::Panicked);
+        assert!(s.land_stream_results(gate, &profile));
+        assert_eq!(titles(&s), ["Alpha"]);
+        assert!(s.view().truncated());
+        assert_eq!(s.view().status(), Status::Ready);
+        assert!(!s.read_in_flight());
+        assert!(!port.is_owed());
+        assert!(!s.land_stream_results(gate, &profile));
+    }
+
     #[test]
     fn stream_jobs_panicked_reread_keeps_held_rows_and_has_one_terminal() {
         use super::super::StoreJob;
