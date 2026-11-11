@@ -98,16 +98,34 @@ def code(tokens, i):
 
 
 def item_end(tokens, ends, j):
-    """The index that closes the item beginning at token j: its `;`, or the `}` of its body."""
+    """The last token of a cfg-gated item or field, without consuming its enclosing scope."""
     n = len(tokens)
+    start = j
+    while code(tokens, start) == '#' and code(tokens, start + 1) == '[' and start + 1 in ends:
+        start = ends[start + 1] + 1
+    if code(tokens, start) == 'pub':
+        start += 1
+        if code(tokens, start) == '(':
+            start = ends.get(start, n - 1) + 1
+    field = bool(WORD.match(code(tokens, start) or '')) and code(tokens, start + 1) == ':' \
+        and code(tokens, start + 2) != ':'
+    angle = 0
     while j < n:
         if tokens[j][0] == 'code':
             text = tokens[j][1]
             if text == '#' and code(tokens, j + 1) == '[' and (j + 1) in ends:
                 j = ends[j + 1] + 1; continue
             if text == ';': return j
-            if text == '{': return ends.get(j, n - 1)
-            if text in ('(', '['): j = ends.get(j, n - 1) + 1; continue
+            if text == '=' and code(tokens, j + 1) == '>': field = True
+            if field:
+                # Commas inside generic field types are not field separators. A following named
+                # field still ends a comparison expression such as hidden: x < 2, live: value.
+                if text == '}': return j - 1
+                if text == ',' and (angle == 0 or code(tokens, j + 2) == ':'): return j
+                if text == '<': angle += 1
+                elif text == '>': angle = max(0, angle - 1)
+            if text == '{' and not field: return ends.get(j, n - 1)
+            if text in ('(', '[', '{'): j = ends.get(j, n - 1) + 1; continue
         j += 1
     return n - 1
 
