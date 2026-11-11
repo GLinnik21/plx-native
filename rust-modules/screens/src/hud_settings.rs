@@ -63,7 +63,8 @@ use super::registry::{word, AppFx, HudCmd, ALERT, BAND};
 /// What the Bridge publishes to the page: the store's listing at one moment.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HudList {
-    /// The seated profile's preference, or no switch when no profile is seated.
+    /// The seated profile's preference, or no switch when no profile is seated or the HUD in use declares no
+    /// finish-time lane (`Compiled::declares_end_time`): the switch would change nothing it draws.
     pub end_time: Option<bool>,
     pub catalog: plx_data::hudpacks::catalog::Snapshot,
     pub catalog_date: String,

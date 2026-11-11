@@ -39,6 +39,7 @@ fn chapter_panel_retains_selection_without_borrowing_hud_focus() {
 }
 
 use super::*;
+use std::cmp::Ordering;
 use plx_ui::widgets::{StatusKind, StatusOverlay};
 use super::classic::*;
 use super::geometry::*;
