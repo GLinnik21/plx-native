@@ -10,6 +10,7 @@
 //! modal style and restarts its countdown when the page becomes active again.
 
 use std::borrow::Cow;
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -236,6 +237,79 @@ impl Grid {
     fn scroll_x(&self, row: usize) -> f32 {
         self.shelves.get(row).map_or(0.0, Shelf::scroll)
     }
+}
+
+/// **The ground the hero's controls are keyed to, and how it moves.** The reading is the pixels
+/// under the action row ([`plx_gfx::gfx::sample_control_ground`], latched, a frame or two late); it
+/// used to key the Play pill the moment it landed, so after a flip the pill kept the PREVIOUS page's
+/// tint while the background had already turned, then popped to the new one (owner, v0.10.0 rc1:
+/// "when the page flips play button tint falls behind the actual page color"). The key now
+/// dissolves toward each reading at the wash's own rate ([`AmbientWash::K`]) -- the controls take the
+/// colour in step with the ground they stand on -- and a page sliding AWAY keeps the key it had
+/// ([`Self::leaving`]) rather than following the page that replaces it.
+#[derive(Default)]
+struct HeroTint {
+    /// The latest reading the draw was answered with. Written by the draw (a `Cell`: the draw reads
+    /// the screen by `&self`), read by [`Self::step`].
+    read: Cell<Option<[f32; 3]>>,
+    key: [Spring; 3],
+    primed: bool,
+    /// The key the outgoing page's controls keep while it slides away.
+    leaving: Option<[f32; 3]>,
+}
+
+impl HeroTint {
+    /// The eased key, `None` until the first reading.
+    fn key(&self) -> Option<[f32; 3]> {
+        self.primed.then(|| self.key.map(|s| s.pos))
+    }
+
+    /// Dissolve toward the latest reading (the first one is taken whole: there is nothing to dissolve from).
+    fn step(&mut self, dt: f32) {
+        let Some(target) = self.read.get() else { return };
+        if !self.primed {
+            for (spring, v) in self.key.iter_mut().zip(target) {
+                spring.jump(v);
+            }
+            self.primed = true;
+            return;
+        }
+        // decorative, like the wash's own dissolve: must not hold the page-freeze snapshot
+        plx_machine::idle::decorative(|| {
+            for (spring, v) in self.key.iter_mut().zip(target) {
+                spring.step(v, AmbientWash::K, dt);
+                if plx_machine::idle::settled(spring.pos, v, spring.vel) {
+                    spring.jump(v);
+                }
+            }
+        });
+    }
+
+    /// A page begins to slide away: it keeps the key it stands on.
+    fn leave(&mut self) {
+        self.leaving = self.key();
+    }
+
+    /// The page is gone (or none ever left).
+    fn arrived(&mut self) {
+        self.leaving = None;
+    }
+
+    /// The key the controls of a page are drawn with: the live page follows the eased key, the page
+    /// sliding away the one it left with.
+    fn for_page(&self, live: bool) -> Option<[f32; 3]> {
+        if live { self.key() } else { self.leaving.or_else(|| self.key()) }
+    }
+}
+
+/// **May the hero row take a fresh ground reading on this draw?** The page must be fully visible
+/// (`page_alpha`), and the row of the LIVE page (the incoming one, during a flip) must stand wholly
+/// on screen at its drawn place: it is read where it is DRAWN (the sampler is handed the row shifted
+/// by the slide's `dx`), so it need not be at rest. It used to wait for rest (`dx` ~ 0), which put
+/// the new page's reading after the whole slide and left the controls on the previous page's tint
+/// for all of it.
+fn may_read_hero_ground(live: bool, row: Rect, page_alpha: f32) -> bool {
+    live && page_alpha >= 0.999 && row.x >= 0.0 && row.x + row.w <= SCR_W
 }
 
 struct Backdrop {
@@ -655,6 +729,8 @@ pub struct HomeScreen {
     /// The standing "Hold OK for options" capsule and its dwell/life schedule — a timer advanced by
     /// `Tick`, not logical state (it is not in `SHAPE`, the way `status_ms` is not).
     hold_hint: HoldHint,
+    /// The ground the hero's controls are keyed to, eased ([`HeroTint`]): paint state, not canon.
+    tint: HeroTint,
     backdrop: Backdrop,
     grid: Grid,
 }
@@ -706,6 +782,7 @@ impl HomeScreen {
             hero_pop: CtlPop::new(),
             disc: HeroDisc::default(),
             hold_hint: HoldHint::new(),
+            tint: HeroTint::default(),
             backdrop: Backdrop::new(),
             grid: Grid::new(),
         }
@@ -1411,6 +1488,7 @@ impl HomeScreen {
         let Some(incoming) = view.hero(next).and_then(|h| Self::identity_of(h.item)) else {
             return false;
         };
+        self.tint.leave();
         self.outgoing = Some(current);
         self.carousel = Some(incoming);
         self.hero_dir = dir as f32;
@@ -1777,6 +1855,10 @@ impl HomeScreen {
                 self.outgoing = None;
             }
         }
+        if self.outgoing.is_none() {
+            self.tint.arrived();
+        }
+        self.tint.step(dt);
         if self.covered {
             // Compact surfaces keep ticking their host page, unlike Sheet/Alert/Opaque surfaces.
             // Cover/Uncover is the shared modal lifecycle across BOTH policies, so retain the
@@ -2299,13 +2381,15 @@ impl HomeScreen {
         let (label, progress) = hero_action(hero);
         let HeroRects { play: pill, disc, info } = hero_rects(measure, hero, &label, progress.is_some());
         if !on_axis(MARGIN_X + dx, info.x + info.w - MARGIN_X, SCR_W, 0.0) { return; }
-        let may_read = live && dx.abs() < 0.5 && page_alpha >= 0.999;
-        let palette = plx_gfx::gfx::sample_control_ground(
-            [pill.x + dx, pill.y, info.x + info.w - pill.x, pill.h],
-            may_read,
-        )
-        .map(ControlPalette::ambient)
-        .unwrap_or_default();
+        let row = Rect::new(pill.x + dx, pill.y, info.x + info.w - pill.x, pill.h);
+        let reading = plx_gfx::gfx::sample_control_ground(
+            [row.x, row.y, row.w, row.h],
+            may_read_hero_ground(live, row, page_alpha),
+        );
+        if live && reading.is_some() {
+            self.tint.read.set(reading);
+        }
+        let palette = self.tint.for_page(live).or(reading).map(ControlPalette::ambient).unwrap_or_default();
         let pop = |i| if live { self.hero_pop.scale_with(i, press_scale) } else { 1.0 };
         // The fill rides the lift spring (`CtlPop::focus`) so the plate cross-fades (and the ink flips) with the pop;
         // a frame drawn off the live row (a transition's snapshot) has no spring and reads the focus.
@@ -2639,7 +2723,7 @@ impl LogicalState for HomeScreen {
             // the commit opens the card) is an effect, and the page it moves is `snap_target`.
             reveal_press: _,
             visible_activation: _, cta_available: _, strip_chosen: _, snap: _, status_ms: _,
-            hero_pop: _, backdrop: _, grid: _,
+            hero_pop: _, tint: _, backdrop: _, grid: _,
             // The disc's membership is the Watchlist store's (the application feeds it); the flip
             // is paint, like Detail's.
             disc: _,

@@ -125,3 +125,47 @@ fn the_pager_slides_with_the_page_it_belongs_to() {
         }
     }
 }
+
+/// **The hero controls' tint follows the incoming page, in step with the ground.** (Owner, v0.10.0
+/// rc1: "when page flips play button tint falls behind the actual page color and has the tint of the
+/// previous page".) Three parts: the row is read on the page that is arriving, where it is drawn,
+/// rather than only once the slide has come to rest; the key dissolves toward a new reading instead
+/// of popping to it; and the page sliding away keeps its own key instead of following the new one.
+#[test]
+fn the_hero_row_is_read_on_the_arriving_page_not_after_the_slide() {
+    let row = |x: f32| Rect::new(x, 640.0, 470.0, 116.0);
+    assert!(may_read_hero_ground(true, row(96.0), 1.0), "a settled page");
+    assert!(may_read_hero_ground(true, row(96.0 + 0.5 * SCR_W), 1.0), "an arriving page, wholly on screen, is read where it is drawn");
+    assert!(!may_read_hero_ground(true, row(SCR_W - 200.0), 1.0), "…not while its row is still partly off screen");
+    assert!(!may_read_hero_ground(true, row(96.0 - 0.9 * SCR_W), 1.0));
+    assert!(!may_read_hero_ground(false, row(96.0 - 0.5 * SCR_W), 1.0), "a page leaving reads nothing");
+    assert!(!may_read_hero_ground(true, row(96.0), 0.5), "a route in flight reads nothing");
+}
+
+#[test]
+fn the_hero_key_dissolves_to_a_new_reading_and_a_leaving_page_keeps_its_own() {
+    let _guard = plx_base::testlock::serial();
+    let (old, new) = ([0.10, 0.20, 0.60], [0.50, 0.20, 0.10]);
+    let mut t = HeroTint::default();
+    assert!(t.key().is_none() && t.for_page(true).is_none(), "nothing read yet");
+    t.read.set(Some(old));
+    t.step(0.016);
+    assert_eq!(t.key(), Some(old), "the first reading is taken whole");
+    // a flip: the page that leaves keeps `old`; a new reading lands for the page that arrives
+    t.leave();
+    t.read.set(Some(new));
+    let mut last = old[0];
+    for frame in 0..6 {
+        t.step(0.016);
+        let key = t.key().unwrap();
+        assert!(key[0] > last && key[0] < new[0], "frame {frame}: the live key moves toward the new reading, never popping to it ({key:?})");
+        last = key[0];
+        assert_eq!(t.for_page(false), Some(old), "frame {frame}: the page sliding away keeps the key it left with");
+    }
+    for _ in 0..240 {
+        t.step(0.016);
+    }
+    assert_eq!(t.key(), Some(new), "it lands on the reading");
+    t.arrived();
+    assert_eq!(t.for_page(false), Some(new), "with no page leaving, every page reads the one key");
+}
