@@ -207,8 +207,8 @@ const RESOLUTION_SHAPE: &str = "ProductResolutionV1{fo:Option<(entry:u32,elem:u3
 /// well as the term around it: the init shape names that type rather than spelling its fields, so
 /// a census that only said `ControlledHomeInitV3` would be claiming the change was in the
 /// envelope when it is in the session.
-pub(crate) const FP_PRIOR: u64 = 5612583773909772043;
-pub(crate) const FP_V6: u64 = 14623229906352324261;
+pub(crate) const FP_PRIOR: u64 = 4239819007634745513;
+pub(crate) const FP_V6: u64 = 741022075462080307;
 
 pub(crate) fn state_fp() -> u64 {
     let mut shapes: Vec<&str> = APP_SHAPES.to_vec();
@@ -237,13 +237,26 @@ fn session_app_prior_vector() -> Vec<&'static str> {
 
 #[cfg(test)]
 #[test]
-fn session_app_fingerprint_probe_only() {
+fn historical_session_census_hashes_its_frozen_vectors() {
     let frozen: Value = serde_json::from_str(include_str!("fixtures/session-codec-v5/fingerprints.json")).unwrap();
+    for (vector, fingerprint) in [("prior_vector", "fp_prior"), ("prospective_vector", "prospective_fp_v6")] {
+        let shapes: Vec<&str> = frozen[vector].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        let fp = plx_ui::rec::state_fp(&shapes);
+        assert_eq!(Some(fp), frozen[fingerprint].as_u64());
+        assert_ne!(fp, FP_PRIOR);
+        assert_ne!(fp, FP_V6);
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn session_app_fingerprint_probe_only() {
+    let frozen: Value = serde_json::from_str(include_str!("fixtures/session-codec-v5/current-base-fingerprints.json")).unwrap();
     let prior = session_app_prior_vector();
     assert_eq!(serde_json::to_value(&prior).unwrap(), frozen["prior_vector"]);
     let fp_prior = plx_ui::rec::state_fp(&prior);
-    assert_eq!(fp_prior, 5612583773909772043u64);
-    assert_eq!(frozen["fp_prior"].as_u64(), Some(5612583773909772043u64));
+    assert_eq!(fp_prior, FP_PRIOR);
+    assert_eq!(frozen["fp_prior"].as_u64(), Some(FP_PRIOR));
     assert_eq!(plx_ui::rec::state_fp(&prior), fp_prior);
     let mut prospective = prior.clone();
     let indices: Vec<_> = prior.iter().enumerate().filter(|(_, shape)| **shape == super::bootstrap::SHAPE).map(|(i, _)| i).collect();
@@ -257,9 +270,9 @@ fn session_app_fingerprint_probe_only() {
     assert_eq!(serde_json::to_value(&prospective).unwrap(), frozen["prospective_vector"]);
     assert_eq!(prior.iter().zip(&prospective).filter(|(a, b)| a != b).count(), 1);
     let prospective_fp_v6 = plx_ui::rec::state_fp(&prospective);
-    assert_eq!(prospective_fp_v6, 14623229906352324261u64);
+    assert_eq!(prospective_fp_v6, FP_V6);
     assert_eq!(state_fp(), prospective_fp_v6);
-    assert_eq!(frozen["prospective_fp_v6"].as_u64(), Some(14623229906352324261u64));
+    assert_eq!(frozen["prospective_fp_v6"].as_u64(), Some(FP_V6));
     for manifest in [
         include_str!("../../../tests/fixtures/replay/1-boot-home-chip-grid/manifest.json"),
         include_str!("../../../tests/fixtures/replay/6-settings-family/manifest.json"),
@@ -268,13 +281,6 @@ fn session_app_fingerprint_probe_only() {
         let header: Value = serde_json::from_str(manifest).unwrap();
         assert_eq!(header["schema"].as_u64(), Some(3));
         assert_eq!(header["state_fp"].as_u64(), Some(fp_prior));
-    }
-    if let Some(dir) = std::env::var_os("PLX_SESSION_APP_V5_GOLDEN_OUT") {
-        let dir = std::path::Path::new(&dir);
-        std::fs::create_dir_all(dir).unwrap();
-        let data = json!({"prior_vector": prior, "prospective_vector": prospective,
-            "fp_prior": fp_prior, "prospective_fp_v6": prospective_fp_v6});
-        std::fs::write(dir.join("session-app-fingerprint-probe.json"), serde_json::to_vec_pretty(&data).unwrap()).unwrap();
     }
 }
 

@@ -15,9 +15,17 @@ fn session_codec_profiles_require_canonical_exact_matching_envelopes() {
     assert_eq!(Initial::decode_profile(legacy.clone(), initial.hash(), prior).unwrap().hash(), initial.hash());
     assert_eq!(Initial::decode_profile(current.clone(), initial.hash(), v6).unwrap().hash(), initial.hash());
     assert!(Initial::decode_profile(current.clone(), initial.hash(), prior).is_err());
-    assert!(Initial::decode_profile(legacy, initial.hash(), v6).is_err());
+    assert!(Initial::decode_profile(legacy.clone(), initial.hash(), v6).is_err());
+    for historic in [5612583773909772043u64, 14623229906352324261u64] {
+        assert!(Initial::decode_profile(legacy.clone(), initial.hash(), historic).is_err());
+        assert!(Initial::decode_profile(current.clone(), initial.hash(), historic).is_err());
+    }
     assert!(Initial::decode_profile(current.clone(), initial.hash(), v6 ^ 1).is_err());
     assert!(Initial::decode_profile(current.clone(), initial.hash() ^ 1, v6).is_err());
+    let mut bad = current.clone(); bad["version"] = serde_json::json!(2);
+    assert!(Initial::decode_profile(bad, initial.hash(), v6).is_err());
+    let mut bad = current.clone(); bad["session"].as_object_mut().unwrap().remove("boot");
+    assert!(Initial::decode_profile(bad, initial.hash(), v6).is_err());
     let mut bad = current.clone(); bad["session"]["codec"] = serde_json::json!(5);
     assert!(Initial::decode_profile(bad, initial.hash(), v6).is_err());
     let mut bad = current.clone(); bad["session"]["extra"] = serde_json::json!(true);
