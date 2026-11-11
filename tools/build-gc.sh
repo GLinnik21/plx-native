@@ -175,6 +175,7 @@ for a in "$@"; do
     --seed)        MODE=seed ;;
     --all)         MODE=all ;;
     --auto)        MODE=auto ;;
+    --park)        MODE=park ;;
     -n|--dry-run)  DRY=1 ;;
     -h|--help)
       sed -n '2,/^set -eu/p' "$0" | grep '^#' | sed 's/^# \{0,1\}//'
@@ -326,7 +327,20 @@ usage: tools/build-gc.sh [MODE] [-n]
                   ~/Library/Logs/plxnative-build-gc.log on macOS,
                   ${XDG_STATE_HOME:-~/.cache}/plxnative/build-gc.log elsewhere), truncated to its
                   last ~200 lines past ~1 MB. `--auto -n` previews every stage the current free
-                  space would trigger and deletes nothing; it takes no lock.
+                  space would trigger and deletes nothing; it takes no lock. With the OPT-IN
+                  cold store configured (tools/cold-store.py, docs/disk-budget.md "The cold store")
+                  there is one more stage, between --orphans and --worktrees: with free space
+                  under the store's park_below_gib (default 40) but at least the comfort line
+                  (PLX_GC_MIN_FREE_GIB) it MOVES idle lane and /tmp build trees to the cold
+                  volume (nothing is deleted) up to park_max_gib_per_run; under the comfort line
+                  it says so and parks nothing (the ladder deletes in seconds, a park holds the
+                  lock for a whole copy); without a config file --auto is exactly what it was.
+  --park          the cold store's pass by hand: move the idle build trees (idle for the store's
+                  park_idle_min, never the main checkout's, a live lane's or the seed) to the cold
+                  volume now, whatever the free space, up to park_max_gib_per_run, then prune the
+                  parked copies that no longer earn their space. Takes the auto lock (release and
+                  re-take between trees; stops after the current tree when a preflight is waiting
+                  for it). -n names what would move and changes nothing. No config file: says so.
   -n, --dry-run   print what would go, delete nothing.
 
 Nothing here touches a tracked file or the television. The only thing it removes from the shared
@@ -446,10 +460,15 @@ idle_lane() {
 # process most likely to leave a lock behind — one killed mid `--worktrees` `du` sweep, or a
 # laptop that slept through it — is exactly the one that can never release it itself.
 AUTO_LOCK_DIR=${PLX_GC_LOCK_DIR:-${TMPDIR:-/tmp}/plx-build-gc-auto.lock}
+# 1 while THIS process holds the lock. The cold store's park pass releases and re-takes it between trees (and
+# hands it to a waiting preflight), so by the time the EXIT trap runs the directory may be somebody else's:
+# `release_auto_lock` removes it only while this flag says it is ours.
+AUTO_LOCK_HELD=0
 acquire_auto_lock() {
   if mkdir "$AUTO_LOCK_DIR" 2>/dev/null; then
     echo $$ >"$AUTO_LOCK_DIR/pid" 2>/dev/null || true
     ps -o pgid= -p $$ 2>/dev/null | tr -d ' ' >"$AUTO_LOCK_DIR/pgid" || true
+    AUTO_LOCK_HELD=1
     return 0
   fi
   if ! owner_is_alive "$AUTO_LOCK_DIR" \
@@ -458,12 +477,19 @@ acquire_auto_lock() {
     if mkdir "$AUTO_LOCK_DIR" 2>/dev/null; then
       echo $$ >"$AUTO_LOCK_DIR/pid" 2>/dev/null || true
       ps -o pgid= -p $$ 2>/dev/null | tr -d ' ' >"$AUTO_LOCK_DIR/pgid" || true
+      AUTO_LOCK_HELD=1
       return 0
     fi
   fi
   return 1
 }
-release_auto_lock() { rm -rf "$AUTO_LOCK_DIR" 2>/dev/null || true; }
+release_auto_lock() {
+  if [ "$AUTO_LOCK_HELD" = 1 ]; then rm -rf "$AUTO_LOCK_DIR" 2>/dev/null || true; AUTO_LOCK_HELD=0; fi
+}
+# Does the lock directory still name this process? (The park pass re-takes it with this pid after each tree.)
+auto_lock_is_ours() {
+  [ -d "$AUTO_LOCK_DIR" ] && [ "$(cat "$AUTO_LOCK_DIR/pid" 2>/dev/null)" = "$$" ]
+}
 
 # Run one stage as a fresh invocation of this script, log the free-space delta and reclaimed-line
 # count, and echo its own report through — under `-n` a caller (human or the gate that runs
@@ -514,12 +540,81 @@ run_auto_planner() {
   rm -f "$_plan" "$_plan.err"
 }
 
+# The cold store's park-ahead stage (tools/cold-store.py, `docs/disk-budget.md` "The cold store"): between
+# `--orphans` and `--worktrees`, when a cold store is configured and free space is under its `park_below_gib`
+# (default 40) but still at least the comfort line (so idle trees move to the second volume BEFORE the ladder
+# must delete them, and never once it must: a park holds this lock for a whole copy to a slow disk while a
+# preflight that waits for it gives up after 60 s without evicting), `disk-budget.py park --auto` moves the
+# planner's idle whole-tree candidates, oldest first, up to `park_max_gib_per_run`; under the comfort line it
+# prints one line saying it skipped, and the stages below delete as they always did. It runs in python and takes
+# the lock from this shell for the duration: it releases and re-takes it between trees (naming this process each
+# time), and stops after the tree it is on (or the sweep it is in), giving the lock back, when a preflight is
+# waiting for it. Exit 3 is "nothing to say" (no cold store, or room enough): this
+# function then prints and logs NOTHING, which is what keeps an unconfigured `--auto` the run it always was.
+# Returns 1 when the lock is no longer ours and this run must end without touching it again.
+PARK_RAN=
+run_auto_park() {
+  PARK_RAN=
+  _planner="$ROOT/tools/disk-budget.py"
+  if [ ! -f "$_planner" ] || ! command -v python3 >/dev/null 2>&1; then return 0; fi
+  _before=$(free_kib); _before=${_before:-0}
+  _rc=0
+  if [ -n "$DRY" ]; then
+    _out=$(python3 -B "$_planner" park --auto --root "$ROOT" -n 2>&1 </dev/null) || _rc=$?
+  else
+    _out=$(python3 -B "$_planner" park --auto --lock-held --holder-pid $$ --root "$ROOT" 2>&1 </dev/null) || _rc=$?
+  fi
+  if [ "$_rc" -eq 3 ]; then return 0; fi
+  PARK_RAN=1
+  printf '%s\n' "$_out"
+  _after=$(free_kib); _after=${_after:-0}
+  _n=$(printf '%s\n' "$_out" | grep -cE '^  parked|^  would park' || true)
+  _why=$(printf '%s\n' "$_out" | sed -n 's/^park: stopped: //p' | head -n 1)
+  _note=
+  [ "$_rc" -eq 0 ] || [ "$_rc" -eq 4 ] || _note=" (the pass exited $_rc)"
+  gc_log "park: parked=$_n free $(fmt_kb "$_before")->$(fmt_kb "$_after")${_why:+ (stopped: $_why)}$_note"
+  if [ -z "$DRY" ] && ! auto_lock_is_ours; then
+    AUTO_LOCK_HELD=0
+    echo "auto: the park pass gave build-gc's lock back (a waiting preflight, or another reclaim took it): this run ends here"
+    return 1
+  fi
+  return 0
+}
+
+# `--park`, by hand: the same pass without the free-space gate (park what is idle now, up to the budget), with the
+# lock taken here. `-n` names what would move, changes nothing and takes no lock.
+run_park_mode() {
+  _planner="$ROOT/tools/disk-budget.py"
+  if [ ! -f "$_planner" ] || ! command -v python3 >/dev/null 2>&1; then
+    echo "build-gc: --park runs tools/disk-budget.py with python3; one is missing here — refusing." >&2
+    return 1
+  fi
+  if [ -z "$DRY" ]; then
+    if ! acquire_auto_lock; then
+      echo "build-gc: another reclaim holds $AUTO_LOCK_DIR — nothing parked; try again when it is done."
+      return 0
+    fi
+    trap release_auto_lock EXIT
+  fi
+  _rc=0
+  if [ -n "$DRY" ]; then
+    python3 -B "$_planner" park --root "$ROOT" -n </dev/null || _rc=$?
+  else
+    python3 -B "$_planner" park --lock-held --holder-pid $$ --root "$ROOT" </dev/null || _rc=$?
+    if ! auto_lock_is_ours; then AUTO_LOCK_HELD=0; fi
+  fi
+  if [ "$_rc" -eq 4 ]; then _rc=0; fi       # it gave the lock to a waiting preflight, which is its job
+  return "$_rc"
+}
+
 # The orchestrator. `--orphans` runs first and unconditionally: it is the cheapest, safest mode this
 # script has, reclaiming trees that literally nothing on the machine can refer to again, so there is
-# no reason to gate it on pressure at all. Below the threshold: `--worktrees` (a finished lane
-# outright, but only one idle for the guard window, as `--lanes` always demanded, and only one whose
-# ignored files are all build output: nobody reads what the removal takes), then the FFmpeg
-# cache's age-out (`--ffmpeg-cache` at $PLX_GC_AUTO_CACHE_DAYS, default 7: a key unused for a week is
+# no reason to gate it on pressure at all. Then the cold store's park pass (`run_auto_park`, only with a
+# cold store configured, and only between the comfort line and the store's own `park_below_gib`: it MOVES
+# idle trees, deletes nothing, and sits before the comfort-line test because that line is below its own).
+# Below the threshold: `--worktrees` (a finished lane outright, but only one idle for the guard window,
+# as `--lanes` always demanded, and only one whose ignored files are all build output: nobody reads
+# what the removal takes), then the FFmpeg cache's age-out (`--ffmpeg-cache` at $PLX_GC_AUTO_CACHE_DAYS, default 7: a key unused for a week is
 # dead weight and the cheapest thing left to take; the cargo seed stays out of it), then the
 # planner's order. Under `-n` nothing is ever freed, so every stage the CURRENT pressure would
 # trigger is shown, which is the honest reading of "preview the plan".
@@ -554,6 +649,16 @@ run_auto_mode() {
 
   run_auto_stage orphans --orphans
   _cur=$(free_kib); _cur=${_cur:-0}
+
+  # The park-ahead stage runs from the comfort line up to the cold store's own line (park_below_gib, default 40),
+  # which is above the comfort line the stages below use, so it sits BEFORE the "already above threshold" early
+  # exit (which still skips the worktrees, the FFmpeg age-out and the planner pass, as it always did); under the comfort line it
+  # says it skipped and parks nothing. A no-op, and silent, without a cold store.
+  if ! run_auto_park; then
+    gc_log "end free=$(fmt_kb "$(free_kib)") (the lock was handed over during the park pass)"
+    return 0
+  fi
+  if [ -n "$PARK_RAN" ] && [ -z "$DRY" ]; then _cur=$(free_kib); _cur=${_cur:-0}; fi
 
   if [ "$_cur" -lt "$_min_kib" ] 2>/dev/null; then
     PLX_GC_AUTO_IDLE_MIN=$_idle_min
@@ -1659,6 +1764,13 @@ if [ "$MODE" = auto ]; then
   exit $?
 fi
 
+# `--park` is the same pass without the free-space gate: it runs in python, takes the auto lock itself and has
+# nothing to say to the ordinary preflight below, so it leaves here too.
+if [ "$MODE" = park ]; then
+  run_park_mode
+  exit $?
+fi
+
 if [ "$MODE" != report ]; then
   if [ -z "$DRY" ] && [ -z "$(worktrees)" ]; then
     echo "build-gc: cannot enumerate this repository's worktrees — refusing to delete anything." >&2
@@ -1781,7 +1893,7 @@ report)
       || echo "  (tools/disk-budget.py report failed; the table above stands on its own)"
   fi
   echo
-  echo "reclaim with: tools/build-gc.sh --orphans | --incremental | --stale | --cache | --ffmpeg-cache | --seed | --lanes | --worktrees | --all | --evict PLAN   (add -n to preview)"
+  echo "reclaim with: tools/build-gc.sh --orphans | --incremental | --stale | --cache | --ffmpeg-cache | --seed | --lanes | --worktrees | --all | --evict PLAN | --park (cold store, opt-in)   (add -n to preview)"
   echo "the planner's own order: python3 tools/disk-budget.py reclaim --to GIB --emit > plan; tools/build-gc.sh --evict plan -n"
   ;;
 esac

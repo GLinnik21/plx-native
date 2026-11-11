@@ -390,3 +390,11 @@ python3 tests/test_hud_bundle.py
 python3 tests/test_hud_release.py
 python3 ci/test_sim_backend.py
 python3 tests/test_hud_dev.py
+# tools/cold-store.py, the opt-in cold store that parks idle build trees on a second volume: unconfigured it creates no file anywhere; each
+# reason `available()` can give (no config, no ditto, an unmounted /Volumes root, the same device as the build tree, under min_free_gib, a
+# failing probe write); park then unpark restores every path, size, nanosecond mtime, mode and hard-link group; unpark fills only an absent
+# tree (an existing one, or one a build made while it copied, wins) and only when the copy beats a rebuild; the three residue states of a
+# dead parker (complete cold copy, origin absent, origin present) plus a live owner and a nameless tree; the prune rules; a pretend
+# free-space/clock override refused unless every root is named. Temp dirs, a faked two-volume device check and a shutil stand-in for `ditto`
+# (one darwin-only test drives the real one); touches no real cache, config or volume.
+python3 ci/test_cold_store.py
