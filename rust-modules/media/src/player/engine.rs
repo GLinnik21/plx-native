@@ -1259,6 +1259,7 @@ mod prime_livelock_tests {
             max_fed_video_pts: 0,
             max_fed_audio_pts: 0,
             audio_start_fp: None,
+            audio_stale_dropped: 0,
             pcm_sink_lead_ns: 0,
             pcm_lead_pending: false,
             feed_pace: FeedPace::default(),
@@ -4790,6 +4791,131 @@ mod late_audio_start_tests {
         assert!(eng.max_fed_video_pts > 0, "PRECONDITION FAILED: the host sink fed no video");
         assert_eq!(eng.max_fed_audio_pts, 0, "stale audio must not reach the sink");
         assert_eq!(eng.audio_start_fp, None);
+        assert!(eng.audio_stale_dropped > 0, "the drops are counted, for the log line that reports them");
+    }
+}
+
+/// **Audio that the demuxer interleaved AHEAD of a backpressured video sink is fed, not dropped.**
+/// The device log of the failing remux (4K HEVC, E-AC-3 1024 kbps, a subtitle pick turned it into a
+/// PMS `start.mkv`): `feed a#400 fed=12.85s`, then `feed a#600 fed=94.7s` while the server's own
+/// stream has `#600` at 19.3 s. While Starfish answered BufferFull to video, the demuxer had read a
+/// full video queue (4 to 6.6 s of content) ahead of what the sink accepted, and the audio read with
+/// it sat that far ahead of `max_fed_video_pts`; the stale-ahead guard, written for pre-seek audio,
+/// dropped every AU past 5 s of it, silently. The host sink never answers BufferFull, so the state
+/// a full sink leaves is built directly: the video lane parked at [`FED_VIDEO_NS`], the AUs the
+/// demuxer read past it queued for audio.
+#[cfg(all(test, feature = "hostsim"))]
+mod audio_under_video_backpressure_tests {
+    use super::*;
+
+    const A_STEP_NS: i64 = 32_000_000; // E-AC-3: 1536 samples at 48 kHz
+    /// The video the sink accepted before it began to answer BufferFull.
+    const FED_VIDEO_NS: i64 = 20_000_000_000;
+    /// The first queued audio AU: the demuxer read past the sink's video, so it is further ahead
+    /// than [`AUDIO_STALE_AHEAD_NS`].
+    const FIRST_QUEUED_NS: i64 = FED_VIDEO_NS + 5_500_000_000;
+    const QUEUED: i64 = 15;
+
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            plx_play_feed::ffi_host::force_clocksink_for_test(false);
+            plx_play_feed::ffi_host::reset_seek_probe_for_test(None);
+            FEED_SHARED.pres_fed.store(0, Ordering::Relaxed);
+            FEED_SHARED.first_audio_pts.store(i64::MIN, Ordering::Relaxed);
+        }
+    }
+
+    fn arm() -> Restore {
+        plx_play_feed::ffi_host::force_clocksink_for_test(true);
+        plx_play_feed::ffi_host::reset_seek_probe_for_test(None);
+        FEED_SHARED.pres_fed.store(PRES_NONE, Ordering::Relaxed);
+        FEED_SHARED.seek_to_ns.store(-1, Ordering::Relaxed);
+        FEED_SHARED.first_audio_pts.store(i64::MIN, Ordering::Relaxed);
+        Restore
+    }
+
+    /// A playing engine whose audio has been flowing for a while (its timeline opened at 1 s and
+    /// audio was fed to the AU before the first queued one), whose video lane is parked at
+    /// [`FED_VIDEO_NS`], and whose audio queue holds [`QUEUED`] AUs the demuxer read past it.
+    fn parked_video_engine() -> Engine {
+        let queued: Vec<i64> = (0..QUEUED).map(|i| FIRST_QUEUED_NS + i * A_STEP_NS).collect();
+        parked_video_engine_with(&queued)
+    }
+
+    /// [`parked_video_engine`] with the audio AUs at `audio_pts` queued instead.
+    fn parked_video_engine_with(audio_pts: &[i64]) -> Engine {
+        let mut eng = super::prime_livelock_tests::engine_after_reload();
+        eng.prime_play = false;
+        eng.max_fed_video_pts = FED_VIDEO_NS;
+        eng.audio_start_fp = Some(1_000_000_000);
+        eng.max_fed_audio_pts = FIRST_QUEUED_NS - A_STEP_NS;
+        let au = [0u8; 64];
+        let qa = &mut **eng.aq_audio.as_mut().unwrap() as *mut plx_play_feed::aq::AuQueue;
+        for pts in audio_pts {
+            plx_play_feed::aq::aq_push(qa, au.as_ptr(), au.len() as c_int, *pts, 1, 2);
+        }
+        eng
+    }
+
+    fn tick(eng: &mut Engine) {
+        let mt = unsafe { plx_base::task::MainThread::assume() };
+        feed_both_lanes(&mt, eng);
+    }
+
+    #[test]
+    fn audio_read_past_a_parked_video_lane_reaches_the_sink_while_the_clock_primes() {
+        let _serial = plx_base::testlock::serial();
+        let _restore = arm();
+        let mut eng = parked_video_engine();
+        eng.prime_play = true; // a prime hold feeds audio ahead of the clock, as the late-start track's lead-in does
+        tick(&mut eng);
+
+        let fed = plx_play_feed::ffi_host::feed_log_for_test(2);
+        assert_eq!(fed.len(), QUEUED as usize, "every queued AU was fed, none dropped as stale: {fed:?}");
+        assert_eq!(eng.max_fed_audio_pts, FIRST_QUEUED_NS + (QUEUED - 1) * A_STEP_NS);
+        assert!(eng.pending_audio.is_none(), "nothing is left held either");
+        assert_eq!(eng.audio_stale_dropped, 0, "and the drop counter, which the device log reports, saw none");
+    }
+
+    /// The case the guard exists for still holds: after a seek, the AUs the demuxer pushed before it
+    /// took the seek head the audio queue, far ahead of the freshly-anchored video, and are dropped
+    /// (counted, for the log line). The first real AU opens the audio; what the demuxer reads past
+    /// the video from then on is fed.
+    #[test]
+    fn a_seeks_stale_audio_is_dropped_and_the_audio_after_it_is_not() {
+        let _serial = plx_base::testlock::serial();
+        let _restore = arm();
+        let stale = [FED_VIDEO_NS + 14_000_000_000, FED_VIDEO_NS + 14_032_000_000, FED_VIDEO_NS + 14_064_000_000];
+        let real = [FED_VIDEO_NS + 500_000_000, FED_VIDEO_NS + 532_000_000, FIRST_QUEUED_NS];
+        let queued: Vec<i64> = stale.iter().chain(real.iter()).copied().collect();
+        let mut eng = parked_video_engine_with(&queued);
+        eng.prime_play = true;
+        // The state `apply_inplace_seek_post` leaves: no audio since the seek.
+        eng.audio_start_fp = None;
+        eng.max_fed_audio_pts = 0;
+        tick(&mut eng);
+
+        assert_eq!(eng.audio_stale_dropped, 3, "the three pre-seek AUs were dropped and counted");
+        let fed = plx_play_feed::ffi_host::feed_log_for_test(2);
+        assert_eq!(fed.len(), real.len(), "all three real AUs were fed, the last one 5.5 s past the video: {fed:?}");
+        assert_eq!(eng.max_fed_audio_pts, FIRST_QUEUED_NS);
+    }
+
+    #[test]
+    fn audio_read_past_a_parked_video_lane_waits_for_the_clock_instead_of_being_dropped() {
+        let _serial = plx_base::testlock::serial();
+        let _restore = arm();
+        let mut eng = parked_video_engine();
+        // The decoder presents what the sink took: the clock sits just behind the fed video.
+        FEED_SHARED.pres_fed.store(FED_VIDEO_NS - 200_000_000, Ordering::Relaxed);
+        tick(&mut eng);
+
+        let held = eng.pending_audio.as_ref().map(|n| unsafe { plx_play_feed::aq::au_fields(n.0) }.2);
+        assert_eq!(held, Some(FIRST_QUEUED_NS), "the first AU is held by the feed-ahead throttle, not dropped");
+        let qa = &mut **eng.aq_audio.as_mut().unwrap() as *mut plx_play_feed::aq::AuQueue;
+        assert_eq!(plx_play_feed::aq::aq_bytes(qa), 64 * (QUEUED - 1) as std::os::raw::c_long, "the rest stay queued behind it");
+        assert!(plx_play_feed::ffi_host::feed_log_for_test(2).is_empty(), "and nothing ran ahead of the clock");
     }
 }
 
