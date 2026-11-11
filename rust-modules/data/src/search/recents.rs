@@ -55,20 +55,20 @@ fn with_store<R>(input: &Input<'_>, f: impl FnOnce(&mut Store) -> R) -> R {
     let generation = input.profile_generation;
     let session_generation = input.session_generation;
     let who = input.profile_key;
-    let account = Account::of(input.session);
     let session_id = std::ptr::from_ref(input.session) as usize;
     if !input.settled && guard.as_ref().is_some_and(|s| s.generation == generation && s.tenure == input.tenure
-        && s.who == who && (input.session.client_id.is_empty() || s.account == account)) {
+        && s.who == who && (input.session.client_id.is_empty() || s.account.matches(input.session))) {
         return f(guard.as_mut().unwrap());
     }
     if !guard.as_ref().is_some_and(|s| s.generation == generation && s.tenure == input.tenure
         && s.session_generation == session_generation && s.who == who
-        && s.account == account && s.session_id == session_id) {
+        && s.account.matches(input.session) && s.session_id == session_id) {
         let pending = PENDING.lock().unwrap_or_else(|e| e.into_inner())
-            .iter().find(|p| p.who == who && p.account == account).cloned();
+            .iter().find(|p| p.who == who && p.account.matches(input.session)).cloned();
         let terms = pending.map(|p| p.terms)
             .unwrap_or_else(|| sanitize(input.session.recents_for(who).to_vec()));
-        *guard = Some(Store { session_generation, generation, session_id, tenure: input.tenure, who: who.to_owned(), account, terms: Arc::new(terms) });
+        *guard = Some(Store { session_generation, generation, session_id, tenure: input.tenure, who: who.to_owned(),
+            account: Account::of(input.session), terms: Arc::new(terms) });
     }
     f(guard.as_mut().expect("profile cache is populated"))
 }
@@ -229,6 +229,10 @@ impl Account {
     fn of(s: &plx_plex::plex::session::Session) -> Self {
         Self { client_id: s.client_id.clone(), token: s.account_token.clone() }
     }
+
+    fn matches(&self, session: &plx_plex::plex::session::Session) -> bool {
+        self.client_id == session.client_id && self.token == session.account_token
+    }
 }
 #[derive(Clone)]
 struct Pending { account: Account, who: String, terms: Vec<String> }
@@ -358,6 +362,65 @@ mod tests {
         assert_eq!(snapshot_with_input(&transient).terms(), &["replacement history"], "an explicit unsettled same-profile observation retains the readable publication");
         let reset = Input { tenure: 100, ..transient };
         assert!(snapshot_with_input(&reset).terms().is_empty(), "an unreadable replacement tenure must not retain the previous account's history");
+    }
+
+
+    mod allocation_probe {
+        use super::*;
+        use plx_plex::plex::session::Session;
+        use std::alloc::{GlobalAlloc, Layout, System};
+        use std::cell::Cell;
+
+        struct CountAlloc;
+        thread_local! { static ALLOCATIONS: Cell<Option<usize>> = const { Cell::new(None) }; }
+        fn allocated() {
+            ALLOCATIONS.with(|n| { if let Some(count) = n.get() { n.set(Some(count + 1)); } });
+        }
+        unsafe impl GlobalAlloc for CountAlloc {
+            unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+                allocated();
+                unsafe { System.alloc(layout) }
+            }
+            unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+                allocated();
+                unsafe { System.alloc_zeroed(layout) }
+            }
+            unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, size: usize) -> *mut u8 {
+                allocated();
+                unsafe { System.realloc(ptr, layout, size) }
+            }
+            unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+                unsafe { System.dealloc(ptr, layout) }
+            }
+        }
+        #[global_allocator]
+        static ALLOCATOR: CountAlloc = CountAlloc;
+
+        #[test]
+        fn stable_captured_recents_100_snapshots_allocate_nothing() {
+            let _serial = plx_base::testlock::serial();
+            let _clear = ClearCaches;
+            let mut session = Session { client_id: "populated-client".into(), account_token: "populated-token".into(), ..Default::default() };
+            session.set_recents_for("alpha", vec!["retained history".into()]);
+            let input = Input { session: &session, settled: true, profile_generation: 7,
+                session_generation: 11, tenure: 99, profile_key: "alpha" };
+            let retained = snapshot_with_input(&input);
+            for settled in [true, false] {
+                let input = Input { settled, ..input };
+                ALLOCATIONS.with(|n| n.set(Some(0)));
+                for _ in 0..100 { std::hint::black_box(snapshot_with_input(&input)); }
+                let allocations = ALLOCATIONS.with(|n| n.replace(None).unwrap());
+                println!("100 stable snapshots, settled={settled}: {allocations} allocations");
+                assert_eq!(allocations, 0, "stable snapshots must borrow credential/cache keys");
+            }
+            assert_eq!(retained.terms(), &["retained history"]);
+            session.account_token = "replacement-token".into();
+            session.set_recents_for("alpha", vec!["replacement history".into()]);
+            let replacement = snapshot_with_input(&Input { session: &session, settled: true, profile_generation: 7,
+                session_generation: 11, tenure: 99, profile_key: "alpha" });
+            assert_eq!(replacement.terms(), &["replacement history"]);
+            assert_eq!(retained.terms(), &["retained history"]);
+        }
     }
 
     struct ClearCaches;

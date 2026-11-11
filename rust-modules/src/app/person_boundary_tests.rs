@@ -304,3 +304,65 @@ fn mounted_person_replacement_survives_old_empty_page_teardown() {
     assert_eq!(bridge.stores.person.gen(), notice);
     bridge.assert_no_store_jobs_left_for_test();
 }
+
+#[test]
+fn idle_person_100_host_passes_do_not_read_developer_seeds() {
+    let _serial = plx_base::testlock::serial();
+    let _session = session::TempSession::new("person-idle-seed-reads");
+    let mut bridge = Bridge::for_test(|| 0);
+    let mut reads = 0;
+    for _ in 0..100 {
+        bridge.person_pump_with_seed_read(&mut |_| { reads += 1; None });
+    }
+    println!("100 idle Person host passes: {reads} seed reads");
+    assert_eq!(reads, 0, "closed Person must not touch trigger paths or files");
+    assert!(bridge.person_view().current().is_none());
+    bridge.assert_no_store_jobs_left_for_test();
+}
+
+#[test]
+fn person_seed_reads_wait_for_admission_and_track_open_capture_changes() {
+    let _serial = plx_base::testlock::serial();
+    let _session = session::TempSession::new("person-open-seed-reads");
+    let mut bridge = Bridge::for_test(|| 0);
+    bridge.person_session_capture = |_| false;
+    bridge.person_run(deferred_open("seeded"));
+    let mut reads = Vec::new();
+    assert!(!bridge.person_pump_with_seed_read(&mut |name| { reads.push(name.to_owned()); Some("2".into()) }));
+    assert!(reads.is_empty(), "rejected capture cannot read speculative Open seeds");
+    bridge.person_session_capture = Bridge::capture_store_session_live;
+    assert!(bridge.person_pump_with_seed_read(&mut |name| { reads.push(name.to_owned()); Some("2".into()) }));
+    assert_eq!(reads.iter().filter(|s| s.as_str() == "personbio").count(), 1);
+    assert!(reads.iter().any(|s| s == "personcredits"));
+    assert_eq!(bridge.person_capture.dev_bio.as_deref(), Some("2"));
+    assert_eq!(bridge.person_capture.dev_credits.as_deref(), Some("2"));
+    let initial_total = plx_data::person::filmography_total(bridge.person_view().current().unwrap());
+    assert!(initial_total > 0, "the admitted Open seeds the actual Person filmography");
+    reads.clear();
+    bridge.person_pump_with_seed_read(&mut |name| { reads.push(name.to_owned()); Some("3".into()) });
+    assert_eq!(reads, ["personcredits"], "an open page refreshes credits, not its Open-only biography");
+    assert_eq!(bridge.person_capture.dev_credits.as_deref(), Some("3"));
+    assert_eq!(plx_data::person::filmography_total(bridge.person_view().current().unwrap()), initial_total + 1);
+    assert_eq!(bridge.person_capture.dev_bio.as_deref(), Some("2"));
+    bridge.person_run(plx_data::stores::person::PersonCmd::Close);
+    reads.clear();
+    bridge.person_pump_with_seed_read(&mut |name| { reads.push(name.to_owned()); None });
+    assert!(reads.is_empty(), "closing retires seed IO immediately");
+    bridge.assert_no_store_jobs_left_for_test();
+}
+
+#[test]
+fn controlled_person_capture_never_calls_the_live_seed_reader() {
+    let _serial = plx_base::testlock::serial();
+    let _session = session::TempSession::new("person-controlled-seed-reads");
+    let mut bridge = Bridge::for_test(|| 0);
+    for live in [false, true] {
+        bridge.live_screen_inputs = live;
+        bridge.person_pump_with_seed_read(&mut |_| panic!("closed Person must not read live trigger files"));
+        assert_eq!(bridge.person_capture.controlled, !live, "closed pumps still capture control identity");
+    }
+    let mut capture = PersonCapture::default();
+    capture.refresh("", true, true, &mut |_| panic!("controlled input must not read live trigger files"));
+    assert!(capture.controlled);
+    assert!(capture.dev_bio.is_none());
+}

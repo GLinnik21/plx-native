@@ -484,7 +484,7 @@ struct PersonCapture {
 }
 
 impl PersonCapture {
-fn refresh(&mut self, guid: &str, controlled: bool, opening: bool) {
+fn refresh(&mut self, guid: &str, controlled: bool, opening: bool, read: &mut impl FnMut(&str) -> Option<String>) {
         // Provider refusal is a boot-fixed fact. Keep it with the person/control identity rather
         // than formatting two provider URLs on every stable pump.
         if opening || self.controlled != controlled || self.guid != guid {
@@ -501,8 +501,8 @@ fn refresh(&mut self, guid: &str, controlled: bool, opening: bool) {
                 self.dev_credits = rows.map(|n| n.to_string());
             }
         } else {
-            if opening { self.dev_bio = plx_base::devtrig::read("personbio"); }
-            self.dev_credits = plx_base::devtrig::read("personcredits");
+            if opening { self.dev_bio = read("personbio"); }
+            self.dev_credits = read("personcredits");
         }
     }
 
@@ -1899,6 +1899,10 @@ impl Bridge {
     }
 
     fn deliver_person_open(&mut self) -> bool {
+        self.deliver_person_open_with_seed_read(&mut plx_base::devtrig::read)
+    }
+
+    fn deliver_person_open_with_seed_read(&mut self, read: &mut impl FnMut(&str) -> Option<String>) -> bool {
         let Some(pending) = self.pending_person_open.take() else { return false };
         let owner = self.session.read().0;
         let capture = &self.store_session;
@@ -1912,7 +1916,7 @@ impl Bridge {
             return false;
         }
         let plx_data::stores::person::PersonCmd::Open { guid, .. } = &pending.command else { return false };
-        self.person_capture.refresh(guid, capture.controlled, true);
+        self.person_capture.refresh(guid, capture.controlled, true, read);
         let input = self.person_capture.input(&self.client_keys, capture, owner.scope.0, owner.flow_epoch);
         self.person_owner = pending.sender;
         self.stores.person_run(pending.command, &input)
@@ -1950,12 +1954,19 @@ impl Bridge {
     /// in this call, so the tape's admissions are written where the page asked for them, before
     /// the next store's (`collection_pump`, then the detail reconciliation) record theirs.
     pub(crate) fn person_pump(&mut self) -> bool {
+        self.person_pump_with_seed_read(&mut plx_base::devtrig::read)
+    }
+
+    fn person_pump_with_seed_read(&mut self, read: &mut impl FnMut(&str) -> Option<String>) -> bool {
         if !self.capture_store_session() { return false; }
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
         let before = self.stores.person.gen();
-        let opened = self.deliver_person_open();
-        let person_guid = self.stores.person_view().current().map_or("", |p| p.guid.as_str());
-        self.person_capture.refresh(person_guid, self.store_session.controlled, false);
+        let opened = self.deliver_person_open_with_seed_read(read);
+        if let Some(person) = self.stores.person_view().current() {
+            self.person_capture.refresh(&person.guid, self.store_session.controlled, false, read);
+        } else {
+            self.person_capture.controlled = self.store_session.controlled;
+        }
         let capture = &self.store_session;
         let owner = self.session.read().0;
         let person_input = self.person_capture.input(&self.client_keys, capture, owner.scope.0, owner.flow_epoch);

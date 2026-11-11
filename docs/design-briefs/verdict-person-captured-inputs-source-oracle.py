@@ -19,17 +19,20 @@ class PersonCapturedInputs(unittest.TestCase):
         self.assertTrue('Person pump requires captured inputs' in text)
     def test_host_capture_precedes_open_and_pump(self):
         text = (ROOT / 'rust-modules/src/app/bridge.rs').read_text(encoding='utf-8')
-        for name in ('person_run_from', 'person_pump'):
+        for name in ('person_run_from', 'person_pump_with_seed_read'):
             body = text.split('fn ' + name + '(', 1)[1].split('\n    }', 1)[0]
             self.assertEqual(body.count('self.capture_store_session()'), 1)
             self.assertLess(body.index('self.capture_store_session()'), body.index('refill_client_keys'))
             self.assertNotIn('.clone()', body)
             self.assertNotIn('.collect', body)
-        delivery = text.split('fn deliver_person_open(', 1)[1].split('\n    }', 1)[0]
+        delivery = text.split('fn deliver_person_open_with_seed_read(', 1)[1].split('\n    }', 1)[0]
         self.assertIn('self.pending_person_open.take()', delivery)
         self.assertLess(delivery.index('pending.scope != owner.scope.0'), delivery.index('self.stores.person_run'))
-        self.assertIn('pending.tenure != capture.tenure', delivery)
-        self.assertIn('self.deliver_person_open()', body)
+        self.assertLess(delivery.index('pending.tenure != capture.tenure'), delivery.index('self.person_capture.refresh'))
+        self.assertIn('self.deliver_person_open_with_seed_read(read)', body)
+        self.assertLess(body.index('if let Some(person) = self.stores.person_view().current()'), body.index('self.person_capture.refresh'))
+        self.assertIn('self.person_pump_with_seed_read(&mut plx_base::devtrig::read)', text)
+        self.assertIn('self.deliver_person_open_with_seed_read(&mut plx_base::devtrig::read)', text)
         self.assertIn('AppMsg::PersonCommand { from, command }', text)
     def test_stable_roster_sync_does_not_copy_page_or_roster(self):
         text = (ROOT / 'rust-modules/data/src/person.rs').read_text(encoding='utf-8')

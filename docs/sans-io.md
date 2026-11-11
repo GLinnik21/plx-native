@@ -7,7 +7,7 @@ player machine: `player/lifecycle.rs` is the machine alone (private state, one w
 `player/foreground.rs` its drivers and `player/transport.rs` the transport-pause contract; its shape
 is gated by `ci/machines.ini` (see "Machine shape" below).
 
-## Combined verdict source checkpoint (not acceptance)
+## Combined verdict source checkpoint (historical; not acceptance)
 
 The integration tree retains full ancestry from base `f8f6dbb7`, Session `33f18e52`,
 Watchlist W2 `abd26d21`, enforcement `dd1664f7`, and Screens `10bd53db`. Actual
@@ -24,7 +24,8 @@ write/stream work is owed, preserving write-before-stream order. Two added
 Rust regression sources cover a populated stable capture
 (`watchlist_snapshot_cache_retains_populated_capture_and_buffers_on_stable_passes`)
 and same-generation key/fact/eligibility changes, day changes and old in-flight
-snapshot immutability. They have not been compiled or run. The scoped follow-up
+snapshot immutability. At this historical checkpoint they had not been compiled
+or run; the later exact-head milestone below supersedes that execution status. The scoped follow-up
 touches `stores/watchlist{,_ports,_stream_job}.rs`, app store adapter and Bridge.
 
 A terminal-edge follow-up records list read-start/progress in the addressed
@@ -32,7 +33,8 @@ stream kind: held rows, awaiting a first page, or publishing a first load. A
 panic before page zero is not a later-page failure merely because old rows are
 held. Held complete/partial rows retain their own completeness, while a first
 load that published page zero remains truncated. Two additional Rust regression
-sources cover those cases before/after page zero; they are pending execution.
+sources cover those cases before/after page zero; execution was pending at that
+historical checkpoint (see the later milestone below).
 The write-ledger stamps are not used as list-read identities.
 
 Session now binds the actual `SessionMachine.state` (`attempt::Attempt`) to
@@ -70,6 +72,24 @@ and codecs), `watchlist` (data and app, including `watchlist_snapshot_cache`), a
 plex and screens suites. Run Clippy with `clippy::wildcard_enum_match_arm`
 enforced for ForegroundLifecycle, PictureGate, PlayerReadout and SessionMachine;
 filtered tests do not replace the parent full gates or independent review.
+
+## Verified integration milestone (before steady-state cost fixes)
+
+On exact commit `4a4f0b258e05df9f0d94fbadab0e51100fafac7f`, tree
+`e156bab180042b3e372a28b34089c86c674fe0b4`, the coordinator's run 350
+compiled and ran the full Data suite (**1621 passed**), including all **145
+Watchlist** tests and the capture/terminal-edge regressions above. The focused
+Session (**333**), Screens (**2142**), app Session (**149**) and app screen-input
+(**10**) tests also passed, as did the no-default-features and lint gates.
+These are results for that exact pre-fix commit, not acceptance of a later head.
+
+The same full `make check` reported three Python failures: the unclassified
+test-only `captured_store_fixture` module, the build-bench `app_rebuilt`
+fixture assertion, and the TV-lock self-test timing. The fixture classification
+is corrected in this follow-up without adding layer edges or allowances. The
+other two are separate tooling/environment investigations. No full-check pass
+or new-head acceptance is claimed here; publication still requires its actual
+gates, independent review and benchmark evidence.
 
 ## Notify integration checkpoint (historical; not acceptance)
 
