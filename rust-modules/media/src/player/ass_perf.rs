@@ -3,7 +3,7 @@
 //!
 //! ```text
 //! assperf: worker tid=1234
-//! assperf: window_ms=1000 calls=3 changed=2 p95_us=1800 max_us=4100 job_p95_us=2100 job_max_us=9000 pub_bytes=123456 up_bytes=123456 jobs=2+1 ahead_hit=1 nwait_p95_us=0 nwait_max_us=0
+//! assperf: window_ms=1000 calls=3 changed=2 p95_us=1800 max_us=4100 job_p95_us=2100 job_max_us=9000 pub_bytes=123456 up_bytes=123456 jobs=2+1 ahead_hit=1 nwait_p95_us=0 nwait_max_us=0 lib_p95_us=900 comp_p95_us=800 images_p95=410 img_kpx_p95=620
 //! ```
 //!
 //! `window_ms` is the span the counts cover: from the previous line (or the session's first job)
@@ -19,13 +19,23 @@
 //! `glTexImage2D` in the same window ([`note_upload`]). `jobs=N+A` counts the worker's Normal and
 //! Ahead jobs separately, `ahead_hit` how many times the UI thread promoted an ahead frame
 //! ([`note_ahead_hit`]) and `nwait_*` how long a Normal job waited behind an Ahead job that was
-//! already rendering ([`note_nwait`]; native rendering cannot be cancelled). The upload's own time is the `assup`
+//! already rendering ([`note_nwait`]; native rendering cannot be cancelled). The last four fields
+//! split `p95_us`: the facade times its two phases itself (`clock_gettime` in `src/ass.c`,
+//! `PlxAssStats::last_*`) and the worker reads them after every render. `lib_p95_us` is libass's
+//! own `ass_render_frame`, `comp_p95_us` is everything the facade does with the image list after it
+//! (bounds, regions, the scalar composite into straight RGBA; 0 for a call that found the frame
+//! unchanged), both nearest-rank over the same fixed ring as `p95_us` (every call that returned a
+//! result, so a window of unchanged calls pulls them down), `images_p95` the `ASS_Image`s libass
+//! produced and `img_kpx_p95` the sum of their width x height in thousands of pixels
+//! (`last_image_pixels / 1000`), both over the composed frames only. They are 0 for a worker whose
+//! library reports no stats. The upload's own time is the `assup`
 //! span on `FRAMEDROP spans=` (spans print only on `FRAMEDROP` lines and only while the frame
 //! instrument is armed, `/tmp/plxnative-framedrop`). A window closes on the first job at least a
 //! second after it opened (an idle stretch emits no line, hence `window_ms`), and [`flush`] emits the partial window when the source is deselected.
 //! `tools/tv-sched-trace.sh --tid <tid>` follows the worker.
 //!
-//! Always compiled; the cost is one clock pair per render and a fixed 256-slot ring.
+//! Always compiled; the cost is one clock pair per render in Rust, three clock reads in the facade
+//! and a fixed 256-slot ring per figure.
 
 use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -80,11 +90,28 @@ impl Ring {
     }
 }
 
+/// What the facade reports of the `plx_ass_render` call just made (`PlxAssStats::last_*`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct NativeCost {
+    /// `ass_render_frame` alone.
+    pub lib_us: u32,
+    /// Everything after it until the frame was returned: 0 when the call found it unchanged.
+    pub comp_us: u32,
+    /// `ASS_Image`s in the frame; only meaningful when `composed`.
+    pub images: u32,
+    /// The sum of their width x height; only meaningful when `composed`.
+    pub image_pixels: u64,
+    /// The call returned a changed frame, so the two counts above are this frame's.
+    pub composed: bool,
+}
+
 /// One finished worker cycle.
 #[derive(Clone, Copy)]
 pub(super) struct Cycle {
     /// The `plx_ass_render` call, if the cycle made one.
     pub render_us: Option<u32>,
+    /// The facade's own account of that call, when it returned a result and could be asked.
+    pub native: Option<NativeCost>,
     /// The whole `Engine::render` job.
     pub job_us: u32,
     pub changed: bool,
@@ -105,6 +132,10 @@ pub(super) struct Aggregator {
     render: Ring,
     job: Ring,
     nwait: Ring,
+    lib: Ring,
+    comp: Ring,
+    images: Ring,
+    image_kpx: Ring,
     normal_jobs: u32,
     ahead_jobs: u32,
     nwait_max_us: u32,
@@ -125,6 +156,10 @@ impl Aggregator {
             render: Ring::new(),
             job: Ring::new(),
             nwait: Ring::new(),
+            lib: Ring::new(),
+            comp: Ring::new(),
+            images: Ring::new(),
+            image_kpx: Ring::new(),
             normal_jobs: 0,
             ahead_jobs: 0,
             nwait_max_us: 0,
@@ -145,6 +180,15 @@ impl Aggregator {
             self.render.push(us);
             self.calls += 1;
             self.max_us = self.max_us.max(us);
+        }
+        if let Some(cost) = cycle.native {
+            self.lib.push(cost.lib_us);
+            self.comp.push(cost.comp_us);
+            if cost.composed {
+                self.images.push(cost.images);
+                self.image_kpx
+                    .push((cost.image_pixels / 1000).min(u64::from(u32::MAX)) as u32);
+            }
         }
         self.job.push(cycle.job_us);
         if cycle.ahead {
@@ -181,7 +225,7 @@ impl Aggregator {
             .counting_since
             .map_or(0, |since| now.saturating_duration_since(since).as_millis());
         let line = format!(
-            "assperf: window_ms={} calls={} changed={} p95_us={} max_us={} job_p95_us={} job_max_us={} pub_bytes={} up_bytes={} jobs={}+{} ahead_hit={} nwait_p95_us={} nwait_max_us={}",
+            "assperf: window_ms={} calls={} changed={} p95_us={} max_us={} job_p95_us={} job_max_us={} pub_bytes={} up_bytes={} jobs={}+{} ahead_hit={} nwait_p95_us={} nwait_max_us={} lib_p95_us={} comp_p95_us={} images_p95={} img_kpx_p95={}",
             window_ms,
             self.calls,
             self.changed,
@@ -195,7 +239,11 @@ impl Aggregator {
             self.ahead_jobs,
             shared.ahead_hits,
             self.nwait.p95(),
-            self.nwait_max_us
+            self.nwait_max_us,
+            self.lib.p95(),
+            self.comp.p95(),
+            self.images.p95(),
+            self.image_kpx.p95()
         );
         *self = Self::new();
         self.counting_since = Some(now);
@@ -206,6 +254,7 @@ impl Aggregator {
 thread_local! {
     static AGG: RefCell<Aggregator> = const { RefCell::new(Aggregator::new()) };
     static LAST_RENDER_US: Cell<Option<u32>> = const { Cell::new(None) };
+    static LAST_NATIVE: Cell<Option<NativeCost>> = const { Cell::new(None) };
     static LAST_JOB_US: Cell<Option<u32>> = const { Cell::new(None) };
     static LAST_JOB_AHEAD: Cell<bool> = const { Cell::new(false) };
 }
@@ -217,12 +266,18 @@ fn micros(elapsed: Duration) -> u32 {
 /// WORKER: a request was taken; drop any sample a cancelled cycle left behind.
 pub(super) fn begin_call() {
     LAST_RENDER_US.set(None);
+    LAST_NATIVE.set(None);
     LAST_JOB_US.set(None);
 }
 
 /// WORKER: remember the duration of the `plx_ass_render` call just made.
 pub(super) fn record_render(elapsed: Duration) {
     LAST_RENDER_US.set(Some(micros(elapsed)));
+}
+
+/// WORKER: remember the facade's phase split of the `plx_ass_render` call just made.
+pub(super) fn record_native(cost: NativeCost) {
+    LAST_NATIVE.set(Some(cost));
 }
 
 /// WORKER: remember the duration of the whole `Engine::render` job just run.
@@ -263,6 +318,7 @@ pub(super) fn finish_call(changed: bool, pub_bytes: u64) {
     };
     let cycle = Cycle {
         render_us: LAST_RENDER_US.take(),
+        native: LAST_NATIVE.take(),
         job_us,
         changed,
         pub_bytes,
@@ -302,9 +358,18 @@ pub(super) fn log_worker_tid() {
 mod tests {
     use super::*;
 
+    /// A call whose time splits evenly between libass and the composite; a changed one is a
+    /// composed frame of `render_us / 10` images and `render_us` thousand pixels.
     fn cycle(render_us: u32, changed: bool, pub_bytes: u64) -> Cycle {
         Cycle {
             render_us: Some(render_us),
+            native: Some(NativeCost {
+                lib_us: render_us / 2,
+                comp_us: render_us / 2,
+                images: render_us / 10,
+                image_pixels: u64::from(render_us) * 1000,
+                composed: changed,
+            }),
             job_us: render_us * 2,
             changed,
             pub_bytes,
@@ -331,7 +396,7 @@ mod tests {
             } else {
                 assert_eq!(
                     line.as_deref(),
-                    Some("assperf: window_ms=1000 calls=200 changed=20 p95_us=950 max_us=1000 job_p95_us=1900 job_max_us=2000 pub_bytes=20000 up_bytes=777 jobs=200+0 ahead_hit=3 nwait_p95_us=0 nwait_max_us=0")
+                    Some("assperf: window_ms=1000 calls=200 changed=20 p95_us=950 max_us=1000 job_p95_us=1900 job_max_us=2000 pub_bytes=20000 up_bytes=777 jobs=200+0 ahead_hit=3 nwait_p95_us=0 nwait_max_us=0 lib_p95_us=475 comp_p95_us=475 images_p95=91 img_kpx_p95=910")
                 );
             }
         }
@@ -378,6 +443,7 @@ mod tests {
         let mut a = Aggregator::new();
         let load = Cycle {
             render_us: None,
+            native: None,
             job_us: 50_000,
             changed: true,
             pub_bytes: 8,
@@ -389,8 +455,48 @@ mod tests {
         let line = a.take_partial(t0, up(0)).unwrap();
         assert_eq!(
             line,
-            "assperf: window_ms=0 calls=0 changed=1 p95_us=0 max_us=0 job_p95_us=50000 job_max_us=50000 pub_bytes=8 up_bytes=0 jobs=0+1 ahead_hit=0 nwait_p95_us=900 nwait_max_us=900"
+            "assperf: window_ms=0 calls=0 changed=1 p95_us=0 max_us=0 job_p95_us=50000 job_max_us=50000 pub_bytes=8 up_bytes=0 jobs=0+1 ahead_hit=0 nwait_p95_us=900 nwait_max_us=900 lib_p95_us=0 comp_p95_us=0 images_p95=0 img_kpx_p95=0"
         );
+    }
+
+    #[test]
+    fn the_native_split_prints_its_own_percentiles() {
+        let t0 = Instant::now();
+        let mut a = Aggregator::new();
+        let call = |lib_us, comp_us, images, image_pixels, composed| Cycle {
+            render_us: Some(lib_us + comp_us),
+            native: Some(NativeCost { lib_us, comp_us, images, image_pixels, composed }),
+            job_us: lib_us + comp_us,
+            changed: composed,
+            pub_bytes: 0,
+            ahead: false,
+        };
+        // Twenty composed frames: libass 100..=2000 us, the composite 5x that, 10..=200 images of
+        // 1.5 Mpx..30 Mpx; then an unchanged call, which has no composite and whose stale image
+        // counts must not enter the image rings.
+        for i in 1..=20u32 {
+            let cost = call(i * 100, i * 500, i * 10, u64::from(i) * 1_500_000, true);
+            assert!(a.push(t0, cost, up(0)).is_none());
+        }
+        assert!(a.push(t0, call(40, 0, 9999, 999_999_999, false), up(0)).is_none());
+        let line = a.take_partial(t0, up(0)).unwrap();
+        // Nearest rank: ceil(21 * 0.95) = 20th of the 21 libass samples (40 sorts first), the 20th
+        // of the 21 composite samples (the 0 sorts first); 19th of the 20 composed frames.
+        assert!(
+            line.ends_with(" lib_p95_us=1900 comp_p95_us=9500 images_p95=190 img_kpx_p95=28500"),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn a_huge_pixel_count_saturates_the_kilopixel_figure() {
+        let t0 = Instant::now();
+        let mut a = Aggregator::new();
+        let mut cost = cycle(10, true, 0);
+        cost.native.as_mut().unwrap().image_pixels = u64::MAX;
+        assert!(a.push(t0, cost, up(0)).is_none());
+        let line = a.take_partial(t0, up(0)).unwrap();
+        assert!(line.ends_with(" img_kpx_p95=4294967295"), "{line}");
     }
 
     #[test]
@@ -447,6 +553,13 @@ mod tests {
     fn render_then_finish_counts_one_call() {
         begin_call();
         record_render(Duration::from_micros(1234));
+        record_native(NativeCost {
+            lib_us: 400,
+            comp_us: 800,
+            images: 12,
+            image_pixels: 345_678,
+            composed: true,
+        });
         record_job(Duration::from_micros(2000), false);
         finish_call(true, 64);
         AGG.with(|a| {
@@ -455,10 +568,14 @@ mod tests {
                 (a.calls, a.changed, a.max_us, a.job_max_us, a.pub_bytes),
                 (1, 1, 1234, 2000, 64)
             );
+            assert_eq!(
+                (a.lib.p95(), a.comp.p95(), a.images.p95(), a.image_kpx.p95()),
+                (400, 800, 12, 345)
+            );
         });
         // The slots were consumed: a second finish does not double count.
         finish_call(false, 0);
-        AGG.with(|a| assert_eq!(a.borrow().calls, 1));
+        AGG.with(|a| assert_eq!((a.borrow().calls, a.borrow().lib.pushed), (1, 1)));
     }
 
     #[test]
@@ -467,10 +584,14 @@ mod tests {
         // Cycle 1 timed a render, then the epoch changed: it never reached finish_call.
         begin_call();
         record_render(Duration::from_micros(9));
+        record_native(NativeCost { lib_us: 4, comp_us: 5, ..NativeCost::default() });
         record_job(Duration::from_micros(9), false);
         // Cycle 2 made no native call at all.
         begin_call();
         finish_call(false, 0);
-        AGG.with(|a| assert_eq!((a.borrow().calls, a.borrow().job.pushed), (0, 0)));
+        AGG.with(|a| {
+            let a = a.borrow();
+            assert_eq!((a.calls, a.job.pushed, a.lib.pushed, a.comp.pushed), (0, 0, 0, 0));
+        });
     }
 }

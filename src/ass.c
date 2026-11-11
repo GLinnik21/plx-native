@@ -9,6 +9,7 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define MAX_SCRIPT_BYTES (8u * 1024u * 1024u)
 #define MAX_EVENT_BYTES (256u * 1024u)
@@ -42,6 +43,9 @@ struct PlxAss {
     int fonts_set;      /* ass_set_fonts has run: it opens every font, so only once per ctx */
     int wrap_unicode;
     uint32_t font_scans, tracks;
+    /* The last plx_ass_render call's cost split, reported by plx_ass_stats. */
+    uint32_t last_libass_us, last_composite_us, last_images;
+    uint64_t last_image_pixels;
     char *default_font;
     unsigned reciprocal[256];
 };
@@ -54,6 +58,18 @@ static void quiet_message(int level, const char *format, va_list args, void *dat
 }
 
 unsigned plx_ass_abi_version(void) { return PLX_ASS_ABI_VERSION; }
+
+/* Microseconds since *since, which becomes now: one clock read ends a phase and starts the next. */
+static uint32_t lap_us(struct timespec *since)
+{
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return 0;
+    int64_t ns = ((int64_t)now.tv_sec - (int64_t)since->tv_sec) * 1000000000 +
+                 ((int64_t)now.tv_nsec - (int64_t)since->tv_nsec);
+    *since = now;
+    if (ns <= 0) return 0;
+    return ns / 1000 >= UINT32_MAX ? UINT32_MAX : (uint32_t)(ns / 1000);
+}
 
 void plx_ass_destroy(PlxAss *ctx)
 {
@@ -211,6 +227,10 @@ int plx_ass_stats(const PlxAss *ctx, PlxAssStats *out)
     out->library_fonts = (uint32_t)plxi_library_fonts(ctx->library);
     out->font_scans = ctx->font_scans;
     out->tracks = ctx->tracks;
+    out->last_libass_us = ctx->last_libass_us;
+    out->last_composite_us = ctx->last_composite_us;
+    out->last_images = ctx->last_images;
+    out->last_image_pixels = ctx->last_image_pixels;
     return 0;
 }
 
@@ -381,6 +401,9 @@ static void place_regions(PlxAss *ctx, const struct Bounds *bounds, size_t count
     ctx->region_count = count;
 }
 
+static int compose_frame(PlxAss *ctx, ASS_Image *images, int width, int height, int reusable,
+                         PlxAssFrame *frame);
+
 int plx_ass_render(PlxAss *ctx, int64_t now_ms, int width, int height,
                    int storage_width, int storage_height,
                    PlxAssFrame *frame)
@@ -406,20 +429,36 @@ int plx_ass_render(PlxAss *ctx, int64_t now_ms, int width, int height,
     /* Any failed call breaks the consecutive-frame identity proof above. */
     ctx->cache_valid = 0;
     int changed = 0;
+    struct timespec lap = {0, 0};
+    (void)lap_us(&lap);
     ASS_Image *images = ass_render_frame(ctx->renderer, ctx->track, now_ms, &changed);
+    ctx->last_libass_us = lap_us(&lap);
+    ctx->last_composite_us = 0;
     if (!changed && reusable && !ctx->first) {
         ctx->cache_valid = 1;
         return 0;
     }
     ctx->first = 0;
+    int result = compose_frame(ctx, images, width, height, reusable, frame);
+    ctx->last_composite_us = lap_us(&lap);
+    return result;
+}
+
+/* Everything plx_ass_render does with libass's image list: bounds, retained regions, the arena,
+ * the per-pixel composite and the straight-alpha pass. Its wall time is last_composite_us. */
+static int compose_frame(PlxAss *ctx, ASS_Image *images, int width, int height, int reusable,
+                         PlxAssFrame *frame)
+{
     struct Bounds bounds[PLX_ASS_MAX_REGIONS];
     size_t region_count = 0;
     int image_count = 0;
+    uint64_t image_pixels = 0;
     for (ASS_Image *p = images; p; p = p->next) {
         if (++image_count > MAX_IMAGES) return -1;
         int l, t, r, b;
         int valid = clipped_bounds(p, width, height, &l, &t, &r, &b);
         if (valid < 0) return -1;
+        if (p->w > 0 && p->h > 0) image_pixels += (uint64_t)p->w * (uint64_t)p->h;
         if (!valid) continue;
         /* Transparent border preserves linear filtering at each new texture edge. */
         add_bounds(bounds, &region_count, (struct Bounds){
@@ -427,6 +466,8 @@ int plx_ass_render(PlxAss *ctx, int64_t now_ms, int width, int height,
             r < width ? r + 1 : width, b < height ? b + 1 : height
         });
     }
+    ctx->last_images = (uint32_t)image_count;
+    ctx->last_image_pixels = image_pixels;
     memset(frame, 0, sizeof(*frame));
     if (!region_count) {
         ctx->region_count = ctx->image_count = 0;

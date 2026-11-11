@@ -39,7 +39,7 @@ other number: `player/ass.rs` for the subtitles, and `plx_gfx::rtl` for the UI's
 text through the `plx_ass_text_*` calls ABI 4 added (`src/ass_text.c`). ABI 5 let `plx_ass_add_font`
 run after `plx_ass_load` and lifted its 64 MiB limit (issue #1328, "Attached fonts" below). Besides the load/render calls
 it sets track features (`plx_ass_set_features`, Unicode line breaking), the libass cache bounds
-(`plx_ass_set_cache_limits`) and extra line spacing (`plx_ass_set_line_spacing`), reports counters
+(`plx_ass_set_cache_limits`) and extra line spacing (`plx_ass_set_line_spacing`), reports counters and the last render's phase timing
 (`plx_ass_stats`), and replaces the loaded track in place (`plx_ass_replace_track`). The renderer
 scans its fonts (`ass_set_fonts`) only on its first load; a replaced track keeps every opened face
 and does not extract its own `[Fonts]` section again, and a font added after the load is opened
@@ -202,18 +202,25 @@ it never resolves a real Plex account. Configure and build the developer app aga
 
 Libass cost on the TV is read from the event log, not guessed. While a styled source renders,
 `player::ass_perf` writes an `assperf: window_ms=.. calls=.. changed=.. p95_us=.. max_us=.. job_p95_us=..
-job_max_us=.. pub_bytes=.. up_bytes=.. jobs=N+A ahead_hit=.. nwait_p95_us=.. nwait_max_us=..` line when a job
+job_max_us=.. pub_bytes=.. up_bytes=.. jobs=N+A ahead_hit=.. nwait_p95_us=.. nwait_max_us=.. lib_p95_us=..
+comp_p95_us=.. images_p95=.. img_kpx_p95=..` line when a job
 arrives at least a second after the previous line (`window_ms` is the span its counts cover,
 including any idle stretch before it; read the counts as rates over it) (FFI render time, whole-job time including source load, append, flush-and-reload and window
 slide, `changed` and `pub_bytes` count frames published or held ahead whose pixels differ from the one on screen, bytes uploaded; `jobs` counts the worker's Normal and Ahead jobs
 separately, `ahead_hit` the ahead frames the UI thread promoted, `nwait` how long a Normal job
 waited behind an Ahead job already rendering; the partial window is written when the source is
-deselected) and
-one `assperf: worker tid=<n>` line when the worker starts, which `tools/tv-sched-trace.sh --tid <n>`
+deselected). The last four fields split `p95_us` between the two things `plx_ass_render` does, timed by
+the facade itself with `clock_gettime` (`src/ass.c`, read back through `PlxAssStats.last_*`): `lib_p95_us`
+is libass's own `ass_render_frame`, `comp_p95_us` is everything after it (bounds, regions and our scalar
+per-pixel composite into straight RGBA, 0 for a call that found the frame unchanged), over the same calls
+as `p95_us`; `images_p95` and `img_kpx_p95` are the `ASS_Image`s libass produced for a composed frame and
+the sum of their width x height in thousands of pixels, over the composed frames only. Attribute a slow
+render with these before optimising either half. The worker also writes
+one `assperf: worker tid=<n>` line when it starts, which `tools/tv-sched-trace.sh --tid <n>`
 follows. The UI-thread texture upload is the `assup` span on `FRAMEDROP spans=` (spans print only on
 `FRAMEDROP` lines, with `/tmp/plxnative-framedrop` armed); each changed region uploads with a full
 `glTexImage2D` (a bucketed `glTexSubImage2D` variant that reused the texture was measured on the TV and gave no gain, #735). Nothing is
-logged while no styled source is selected, and a render costs one clock pair. The worker renders
+logged while no styled source is selected, and a render costs one clock pair in Rust and three clock reads in the facade. The worker renders
 only when the screen needs a frame (a new key, a playhead outside the published frame's validity
 window, an animated cue) and renders the next boundary ahead of its time, so a steady cue costs no
 job at all between boundaries (no line is written then), not one per UI frame. `python3

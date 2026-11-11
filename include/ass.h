@@ -25,13 +25,26 @@ typedef struct {
  * ABI 4: the UI text surface, plx_ass_text_* (src/ass_text.c).
  * ABI 5: plx_ass_add_font works after plx_ass_load too (the face is opened alone at the next
  * frame) and has no byte limit but `int`; before, it refused once a track was loaded and past
- * 64 MiB in all. */
+ * 64 MiB in all. PlxAssStats also carries the last plx_ass_render call's timing and image
+ * counts (last_*), the split a styled-subtitle frame's cost is attributed with. */
 #define PLX_ASS_ABI_VERSION 5
 
+/* The last_* fields describe the most recent plx_ass_render call (CLOCK_MONOTONIC, microseconds,
+ * saturating at UINT32_MAX): last_libass_us is ass_render_frame alone; last_composite_us is
+ * everything after it until the frame is returned (bounds, region placement, the per-pixel
+ * composite and the straight-alpha pass), 0 for a call that found the frame unchanged (it returns
+ * 0). last_images and last_image_pixels (the sum of w*h) count the ASS_Images of the last frame
+ * that was composed, so an unchanged call leaves them as they were. All four are 0 before the
+ * first render. Six 32-bit fields come before the 64-bit one, so last_image_pixels sits on its
+ * natural 8-byte boundary (offset 24, size 32) on the ARM target and the host alike. */
 typedef struct {
     uint32_t library_fonts; /* fonts the library holds: added through plx_ass_add_font or extracted */
     uint32_t font_scans;    /* times the renderer opened every font (ass_set_fonts) */
     uint32_t tracks;        /* tracks loaded or replaced */
+    uint32_t last_libass_us;
+    uint32_t last_composite_us;
+    uint32_t last_images;
+    uint64_t last_image_pixels;
 } PlxAssStats;
 
 unsigned plx_ass_abi_version(void);

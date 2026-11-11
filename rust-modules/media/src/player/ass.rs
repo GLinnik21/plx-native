@@ -830,13 +830,19 @@ pub struct NativeFrame {
     regions: *const Bitmap,
 }
 
-/// `PlxAssStats` in `include/ass.h`.
+/// `PlxAssStats` in `include/ass.h`. The `last_*` fields are the facade's own account of the last
+/// `plx_ass_render` call; six `u32`s come first, so the `u64` sits on its 8-byte boundary here as
+/// in C.
 #[repr(C)]
 #[derive(Default)]
 pub struct NativeStats {
     library_fonts: u32,
     font_scans: u32,
     tracks: u32,
+    last_libass_us: u32,
+    last_composite_us: u32,
+    last_images: u32,
+    last_image_pixels: u64,
 }
 
 /// The facade ABI this file is written against (`PLX_ASS_ABI_VERSION` in `include/ass.h`); a
@@ -1043,11 +1049,14 @@ impl Native {
         Ok(())
     }
 
+    fn try_stats(&self) -> Option<NativeStats> {
+        let mut stats = NativeStats::default();
+        (unsafe { plx_ass_stats(self.ptr, &mut stats) } >= 0).then_some(stats)
+    }
+
     #[cfg(test)]
     fn stats(&self) -> NativeStats {
-        let mut stats = NativeStats::default();
-        assert!(unsafe { plx_ass_stats(self.ptr, &mut stats) } >= 0);
-        stats
+        self.try_stats().expect("plx_ass_stats refused a live context")
     }
 
     fn font(&mut self, name: &str, bytes: &[u8]) -> Result<(), Fault> {
@@ -1104,6 +1113,15 @@ impl Native {
         super::ass_perf::record_render(started.elapsed());
         if result < 0 {
             return Err(Fault::RenderFailed);
+        }
+        if let Some(stats) = self.try_stats() {
+            super::ass_perf::record_native(super::ass_perf::NativeCost {
+                lib_us: stats.last_libass_us,
+                comp_us: stats.last_composite_us,
+                images: stats.last_images,
+                image_pixels: stats.last_image_pixels,
+                composed: result == 1,
+            });
         }
         if result == 0 {
             return Ok(None);
