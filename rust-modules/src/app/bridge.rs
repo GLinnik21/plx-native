@@ -1276,6 +1276,8 @@ impl Bridge {
     /// [`AppMounter::player_compiled`]. Set at boot, again by `run::refresh_hud` when a controlled run or a dev package compiles on the first player frame, and by every hand-over of `huds_tick` (the profile's chosen package).
     pub(crate) fn seed_player_compiled(&mut self, compiled: std::sync::Arc<plx_appkit::hud_format::compile::Compiled>) {
         self.mounter.player_compiled = compiled;
+        // the Player HUD page lists the finish-time switch only over a HUD that declares its lane
+        self.huds_publish();
     }
 
     /// Begin the player-HUD store with the compiled classic as what draws until a package lands, and read
@@ -1392,7 +1394,8 @@ impl Bridge {
         if self.huds_pages.is_empty() { return }
         let (revision, notice) = (self.huds.revision(), self.huds_notice.as_ref().map_or(0, |_| 1));
         let stamp = revision * 2 + notice;
-        let end_time = self.huds_profile_seated.then(plx_media::route::hud_end_time);
+        // the switch is the profile's, and it means something only over a HUD that draws the lane
+        let end_time = (self.huds_profile_seated && self.mounter.player_compiled.declares_end_time()).then(plx_media::route::hud_end_time);
         if self.huds_pages.iter().all(|(_, sent, end)| *sent == stamp && *end == end_time) {
             return;
         }
@@ -5498,6 +5501,9 @@ mod library_reread_route_tests;
 #[cfg(test)]
 #[path = "library_memory_route_tests.rs"]
 mod library_memory_route_tests;
+#[cfg(test)]
+#[path = "library_restore_arrival_tests.rs"]
+mod library_restore_arrival_tests;
 #[cfg(test)]
 #[path = "under_posters_route_tests.rs"]
 mod under_posters_route_tests;

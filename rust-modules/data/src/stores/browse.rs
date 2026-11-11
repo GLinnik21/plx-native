@@ -21,7 +21,7 @@ pub use crate::browse::{
 pub use crate::browse::section_hubs::{HubsId, HubsSnapshot, HubsView, Publication};
 #[allow(unused_imports)] // Shared owner vocabulary; some members are feature/test specific.
 pub use crate::browse::view::{
-    DirectorySnapshot, DirectoryView, ListingId, ListingSnapshot, ListingView, SectionView,
+    DirectorySnapshot, DirectoryView, ListingId, ListingSnapshot, ListingView, SectionView, SAMPLE_POSTERS,
 };
 
 /// Owner-aware first-run gate shared by boot and login. The retained directory is the granted

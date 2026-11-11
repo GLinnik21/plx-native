@@ -3456,6 +3456,51 @@ fn experimental_offers_an_original_that_standard_direct_plays() {
         "the URI offer is made before any server decision: {wire:?}");
 }
 
+/// The event-log line a tester reads when Experimental did not take a play, and the plan that carries
+/// it: the reason is the FIRST check that said no, and only an opted-in viewer is told.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn an_opted_in_auto_play_on_a_remote_link_says_why_the_original_stayed_in_standard() {
+    use plx_plex::plex::session::UriEngine;
+    let (plan, _) = uri_engine_resolve("uri-decline-auto-remote", UriEngine::On, 4, MDE_DIRECTPLAY,
+        vec![cold_track(1, "ac3", "eng", true, "")], "ac3", |env, _| {
+            env.quality = Quality::Auto;
+            plx_plex::plex::client_for(env.sid).expect("registered")
+                .set_link(plx_plex::plex::probe::Location::Remote);
+        });
+    assert!(plan.uri_original.is_none() && !plan.uri_source_ready, "Auto on a remote link stays in Standard");
+    assert_eq!(plan.uri_decline, Some(crate::route::uri_preflight::UriDecline::AutoOnNonLocalLink));
+    assert_eq!(uri_decline_line(UriEngine::On, &plan).as_deref(),
+        Some("uri: original declined (quality Auto on a link that is not local; set quality to Original)"));
+    assert_eq!(uri_decline_line(UriEngine::Off, &plan), None, "Standard has nothing to explain");
+}
+
+/// The guards that skip qualification altogether leave a reason too, and a play the URI engine took
+/// says nothing.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn the_guards_that_skip_uri_qualification_leave_a_reason_and_a_qualified_play_none() {
+    use crate::route::uri_preflight::{UriDecline, UriOfferEligibility};
+    use plx_plex::plex::session::UriEngine;
+    let ac3 = || vec![cold_track(1, "ac3", "eng", true, "")];
+    let (plan, _) = uri_engine_resolve("uri-decline-no-port", UriEngine::On, 2, MDE_DIRECTPLAY, ac3(),
+        "ac3", |env, _| env.uri_preflight_port = None);
+    assert_eq!(plan.uri_decline, Some(UriDecline::NoPort));
+    assert_eq!(uri_decline_line(UriEngine::On, &plan).as_deref(),
+        Some("uri: original declined (no URI engine in this build or boot)"));
+    let (plan, _) = uri_engine_resolve("uri-decline-not-offered", UriEngine::On, 2, MDE_DIRECTPLAY, ac3(),
+        "ac3", |env, _| env.uri_offers = UriOfferEligibility { original: false, ..UriOfferEligibility::ALL });
+    assert_eq!(plan.uri_decline, Some(UriDecline::NotOffered));
+    let (plan, _) = uri_engine_resolve("uri-decline-unresolved-pick", UriEngine::On, 2, MDE_DIRECTPLAY, ac3(),
+        "ac3", |env, _| env.audio_sid = 9_999);
+    assert_eq!(plan.uri_decline, Some(UriDecline::TrackPickUnresolved));
+    let (plan, _) = uri_engine_resolve("uri-decline-qualified", UriEngine::On, 1, MDE_DIRECTPLAY, ac3(),
+        "ac3", |_, _| {});
+    assert!(plan.uri_original.is_some());
+    assert_eq!(plan.uri_decline, None);
+    assert_eq!(uri_decline_line(UriEngine::On, &plan), None, "a qualified play says nothing");
+}
+
 /// A video codec the caps do not direct-play (here HEVC on a set whose table lists no HEVC decoder).
 #[test]
 #[cfg(feature = "devtriggers")]

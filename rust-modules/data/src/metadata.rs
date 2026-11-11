@@ -2631,7 +2631,8 @@ pub struct PlayingItem {
     /// `/decision` (issue #22's over-claim class — docs/plex-pass-audit.md, closing section).
     pub width: i64,
     pub height: i64,
-    /// Whole-file bitrate in kbps (`Media[0].bitrate`). Auto uses this—not merely the video
+    /// Whole-file bitrate in kbps of the version that plays (`Media[0]`'s unless another version was
+    /// fetched). Auto uses this—not merely the video
     /// stream's rate—when deciding whether a remote connection has enough headroom to carry the
     /// original file, because the transport also has to carry audio and container overhead.
     pub bitrate: i64,

@@ -1658,8 +1658,14 @@ impl Machine<InnerHost> for RootPage {
             ScreenEvent::Tick(t) => {
                 // Only while this page is the one on top: every page of the stack ticks, and the
                 // Under posters page asks for the same posters itself once it is pushed.
-                if self.form.selected_id() == Some(&RootId::UnderPosters)
-                    && cx.focus.current.is_some_and(|key| key.entry == self.entry) {
+                // The Favorite libraries fan reads the same cache, so it asks too while it has no
+                // poster to draw (a page entered from Home has no library listing of its own).
+                let owed = match self.form.selected_id() {
+                    Some(RootId::UnderPosters) => true,
+                    Some(RootId::Favourites) => cx.views.directory.sample(1).next().is_none(),
+                    _ => false,
+                };
+                if owed && cx.focus.current.is_some_and(|key| key.entry == self.entry) {
                     self.under_ask.step(cx, fx);
                 }
                 let key = self.inputs.session_key();
@@ -1847,8 +1853,8 @@ mod diagnostics;
 #[path = "settings_v2_tests.rs"]
 mod v2_tests;
 
-/// How many of the library's posters the root's Favorite libraries fan draws.
-const PICTURE_POSTERS: usize = 4;
+/// How many of the library's posters the root's Favorite libraries fan draws: all the store hands out.
+const PICTURE_POSTERS: usize = plx_data::stores::browse::SAMPLE_POSTERS;
 pub use under_posters::caption_policy_of;
 
 #[cfg(test)]
