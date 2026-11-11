@@ -4,10 +4,12 @@
 The producer stub supplies immutable coverage buffers, as pinned libass does.
 Count real blend operations, then compare cached output with a fresh compositor
 across motion, content changes, clipping, region merges, gaps and arena shifts.
-Count the pixels the blend loop and the straight-alpha pass step onto one at a time
-although they have nothing to draw (the compositor skips runs of them whole), and
-compare the compositor's pixels with a frozen copy of the old scalar loops on random
-masks. No native dependency build is needed for this host regression gate.
+Count the pixels the blend loop steps onto one at a time although they have nothing to
+draw (the compositor skips runs of them whole), and compare the compositor's pixels with
+a frozen copy of the old scalar blend loop on random masks. The published pixels are
+PREMULTIPLIED RGBA (each colour channel at most its alpha), drawn with a premultiplied
+blend: the compositor does no straight-alpha conversion pass. No native dependency build
+is needed for this host regression gate.
 """
 from pathlib import Path
 import os
@@ -64,14 +66,14 @@ SOURCE = r'''
 #include <ass/ass.h>
 #include "ass_composite.h"
 
-/* FROZEN: the scalar compositor as it was before the zero-run skipping (src/ass.c at 8c8020ae0,
- * compose_frame's two loops), run over a whole canvas instead of per region. Every pixel is visited
- * one at a time; this is the definition of the pixels the optimised code must produce. Do not
- * "improve" it, and keep it above the ass_blend_pixel counter below so it is not counted. */
+/* FROZEN: the scalar compositor's blend loop as it was before the zero-run skipping (src/ass.c at
+ * 8c8020ae0, compose_frame's first loop), run over a whole canvas instead of per region. Every pixel
+ * is visited one at a time; this is the definition of the pixels the optimised code must produce.
+ * Its output is PREMULTIPLIED RGBA, which is what the compositor publishes: the straight-alpha pass
+ * that followed the loop (and that 8c8020ae0 still ran) is gone, so the frozen copy of it is too.
+ * Do not "improve" it, and keep it above the ass_blend_pixel counter below so it is not counted. */
 static void reference_compose(const ASS_Image *list, int width, int height, uint8_t *canvas)
 {
-    unsigned reciprocal[256] = {0};
-    for (unsigned a = 1; a < 256; ++a) reciprocal[a] = 65536u / a;
     for (const ASS_Image *p = list; p; p = p->next) {
         if (p->w <= 0 || p->h <= 0) continue;
         int l = p->dst_x < 0 ? 0 : p->dst_x, t = p->dst_y < 0 ? 0 : p->dst_y;
@@ -97,12 +99,6 @@ static void reference_compose(const ASS_Image *list, int width, int height, uint
                 ass_store_rgba(dst, ass_blend_pixel(ass_load_rgba(dst), color, a));
             }
         }
-    }
-    for (size_t i = 0; i < (size_t)width * height * 4; i += 4) {
-        unsigned a = canvas[i + 3];
-        if (!a || a == 255) continue;
-        for (int c = 0; c < 3; ++c)
-            canvas[i + c] = ass_straight_channel(canvas[i + c], a, reciprocal[a]);
     }
 }
 
@@ -144,10 +140,22 @@ static void render(PlxAss *ctx, int width, uint8_t *canvas) {
                    b->rgba + y * b->width * 4, b->width * 4);
     }
 }
+/* Published pixels are premultiplied: no colour channel can exceed its own alpha. (Straight RGBA of
+ * a half-covered sign has full-strength colour at alpha 128, which is the shape this refuses.) */
+static void assert_premultiplied(const uint8_t *canvas, const char *what) {
+    for (size_t i = 0; i < CANVAS; i += 4)
+        for (int c = 0; c < 3; ++c)
+            if (canvas[i + c] > canvas[i + 3]) {
+                fprintf(stderr, "%s: pixel %zu is not premultiplied: rgba %u %u %u %u (channel %d above alpha)\n",
+                        what, i / 4, canvas[i], canvas[i + 1], canvas[i + 2], canvas[i + 3], c);
+                exit(1);
+            }
+}
 static unsigned check(PlxAss *ctx, int width) {
     uint8_t actual[CANVAS], expected[CANVAS];
     blends = 0;
     render(ctx, width, actual);
+    assert_premultiplied(actual, "composed frame");
     unsigned cached = blends;
     PlxAss *fresh = context();
     blends = 0;
@@ -204,6 +212,7 @@ static void random_frames(int frames) {
         uint8_t actual[CANVAS], expected[CANVAS];
         memset(expected, 0, CANVAS);
         render(ctx, WIDTH, actual);
+        assert_premultiplied(actual, "random frame");
         reference_compose(input, WIDTH, HEIGHT, expected);
         if (memcmp(actual, expected, CANVAS) != 0) {
             fprintf(stderr, "random frame %d differs from the scalar reference\n", f);
@@ -225,7 +234,45 @@ static void zero_visits(ASS_Image *image, unsigned *blend, unsigned *straight) {
     plx_ass_destroy(ctx);
 }
 
+/* One pixel of the published canvas. */
+static void pixel_at(const uint8_t *canvas, int x, int y, uint8_t out[4]) {
+    memcpy(out, canvas + ((size_t)y * WIDTH + x) * 4, 4);
+}
+
 int main(void) {
+    /* The published bytes are PREMULTIPLIED RGBA, exactly. A sign of colour (255, 128, 64) at coverage
+     * 128 over nothing is (255*128+127)/255, (128*128+127)/255, (64*128+127)/255 = 128, 64, 32 at
+     * alpha 128 (the straight form of it is 255, 128, 64, 128). Coverage 255 is the colour itself at
+     * alpha 255, and the one-pixel border the region keeps around a sign stays 0, 0, 0, 0. */
+    {
+        uint8_t mask[4 * 3];
+        memset(mask, 128, sizeof mask);
+        for (int x = 0; x < 4; ++x) mask[2 * 4 + x] = 255;
+        ASS_Image sign = {4, 3, 4, mask, 0xff804000, 10, 20, NULL};
+        input = &sign;
+        PlxAss *ctx = context();
+        uint8_t canvas[CANVAS], px[4];
+        render(ctx, WIDTH, canvas);
+        static const uint8_t half[4] = {128, 64, 32, 128}, solid[4] = {255, 128, 64, 255}, none[4] = {0, 0, 0, 0};
+        pixel_at(canvas, 11, 20, px);
+        if (memcmp(px, half, 4) != 0) {
+            fprintf(stderr, "half-coverage pixel is rgba %u %u %u %u, want the premultiplied %u %u %u %u\n",
+                    px[0], px[1], px[2], px[3], half[0], half[1], half[2], half[3]);
+            return 1;
+        }
+        pixel_at(canvas, 12, 22, px);
+        if (memcmp(px, solid, 4) != 0) {
+            fprintf(stderr, "opaque pixel is rgba %u %u %u %u, want %u %u %u %u\n",
+                    px[0], px[1], px[2], px[3], solid[0], solid[1], solid[2], solid[3]);
+            return 1;
+        }
+        pixel_at(canvas, 9, 19, px);
+        if (memcmp(px, none, 4) != 0) {
+            fprintf(stderr, "border pixel is rgba %u %u %u %u, want 0 0 0 0\n", px[0], px[1], px[2], px[3]);
+            return 1;
+        }
+        plx_ass_destroy(ctx);
+    }
     /* Zero runs are skipped whole. A sign's coverage is mostly zero (44% of the iterations of the old
      * blend loop on the #1328 fixture) and so is its region (70% of its pixels have alpha 0). Eight
      * rows of 24 zeros, 8 coverage-200 bytes, 32 zeros: no zero byte shares a group of four with
