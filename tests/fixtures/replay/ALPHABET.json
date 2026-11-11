@@ -25,6 +25,7 @@
     "rating_images": "tests/mock_pms.py _movie: ratingImage and audienceRatingImage of every synthetic movie are the two Plex rating-image URIs rottentomatoes://image.rating.ripe and rottentomatoes://image.rating.upright, which the Library poster ratings (#1129) carry into the recorded Home hubs result.",
     "settings_v2": "locales/en/settings.json settings.title (\"Settings\", the root's 48 title) and settings.support.section (\"Support\", drawn uppercase at CAPTION as SUPPORT): the Settings v2 root's title and the header of its Support group (Privacy & data, Diagnostics, Legal notices, About PlxNative) enter the measurement table. The Privacy & data page and the Legal index draw their 48 title in the follow-focus left column, so the page names (settings.privacy.title, measured word by word as it wraps: Privacy, Privacy &; settings.legal.section, Legal) are measured too.",
     "cw_stills_footer": "ui/src/still_footer.rs draws the Continue Watching stills' started line: the status \"<n>m left\" (locales/en/core.json core.footer_left_minutes) and, with the card's episode tag, core.footer_tag leads it (\"S<n> E<n> ·\" then the status after one space), at the mock's synthetic durations and resume offsets (tests/mock_pms.py); each is measured word by word and so enters the measurement table.",
+    "home_resume_pill": "Home formats a compact remaining duration through ui/src/fmt.rs duration_minutes_in (core.duration_minutes in controlled en-US). The episode metadata uses episode_address (core.season and core.episode joined by a middle dot). These three exact values are measured for the seed-1 mock.",
     "hero_episode_label": "screens/src/home/mod.rs hero_ladder gives an EPISODE hero's block as one bold line, ui/src/fmt.rs episode_kicker: core.episode_ordinal (\"S<n>, E<n>\"), the KICKER_SEPARATOR (\" · \") and the episode's title, which tests/mock_pms.py names s[0-9a-f]{8}; it is measured as one run, so it enters the measurement table."
   },
   "patterns": [
@@ -70,6 +71,9 @@
     "press phase=(idle|down|up) live=[01] active=[01] long=[01]"
   ],
   "literals": [
+    "32m",
+    "47m",
+    "S2 · E2",
     "Movie", "TV Show",
     "Diagnostics", "Record playback diagnostics", "Local: up to 60s / 8 MiB. May slow playback.", "Save diagnostic log", "Local recording and app log for support.", "Delete diagnostic recordings", "Recording", "Recorded", "Saved", "Unavailable", "Failed", "Saving", "DIAGNOSTICS", "status", "off",
     "Hold",

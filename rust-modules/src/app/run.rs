@@ -322,7 +322,7 @@ fn poll_player_release(app: &mut App) {
 /// minute, otherwise. A screen then receives the date through `AppViews::today` and reads no clock.
 fn publish_frame(bridge: &mut super::bridge::Bridge, session: &plx_media::route::PlaybackSession,
     was_player: bool, viewer_paused: Option<bool>) {
-    bridge.publish_playback(session, was_player, viewer_paused);
+    bridge.publish_playback(session, was_player || plx_media::route::is_preview(session), viewer_paused);
     bridge.publish_today(clock::today());
 }
 
@@ -10006,6 +10006,30 @@ mod frame_publication_tests {
     //! `pump_wiring_tests`.
     use super::{clock, publish_frame};
     use crate::app::bridge::Bridge;
+
+    #[test]
+    fn autoplay_trailer_publishes_its_clock_and_pause_off_the_player_route() {
+        use plx_media::{player, route};
+        let _serial = plx_base::testlock::serial();
+        let mut bridge = Bridge::for_test(|| 0);
+        let mut session = route::PlaybackSession::IDLE;
+        route::mark_preview_for_test(&mut session);
+        let attempt = route::RouteStartAttempt::fixture();
+        session.begin_attempt_view(attempt, player::attempt_view::Backend::Feed);
+        let mut facts = plx_playback_contract::feed::FeedFacts::default();
+        facts.attempt.position_ns = Some(7_000_000_000);
+        facts.attempt.duration_ns = Some(127_000_000_000);
+        assert!(session.ingest_feed_facts(attempt, facts));
+        publish_frame(&mut bridge, &session, false, Some(true));
+        assert_eq!(player::playpos_ns(bridge.views().session), Some(7_000_000_000));
+        assert_eq!(player::duration_ns(bridge.views().session), Some(127_000_000_000));
+        assert!(bridge.views().transport_paused);
+
+        publish_frame(&mut bridge, &route::PlaybackSession::IDLE, false, None);
+        assert_eq!(player::playpos_ns(bridge.views().session), None);
+        assert_eq!(player::duration_ns(bridge.views().session), None);
+        assert!(!bridge.views().transport_paused);
+    }
 
     #[test]
     fn an_iteration_publishes_the_replay_pinned_date_and_a_new_one_replaces_it() {

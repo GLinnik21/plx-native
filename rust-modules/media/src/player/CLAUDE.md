@@ -348,6 +348,9 @@ something.
   is presented, so that state is `PlaybackState::Paused` (not busy, not `is_playing`, no
   `PlaybackStarted`). The preroll opens only while the prime is still owed (`Engine::prime_play`)
   and is owned at 0: `frames` is per-session, so the first presented frame is the landing.
+  This bounded preroll may prime before common startup receives a viewer Play command: the
+  viewer still wants Pause, so no such command is owed. It leaves `startup_play_commanded`
+  untouched; ordinary startup without a paused-seek preroll still waits for that command.
   **On the ACB route (webOS 4) the landing also needs the video plane BOUND**
   (`plx_play_feed::feed_pump::plane_shows_the_picture`): the plane connects only through `setMediaVideoData` +
   `acb_start` (`Stage::Streaming`), and a tick counted before that is a picture the panel never

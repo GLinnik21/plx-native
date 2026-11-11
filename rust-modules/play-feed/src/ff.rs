@@ -4966,9 +4966,9 @@ pub fn hls_acquisition(
 /// why "twenty seconds remaining" needs no special case anywhere below.
 impl CandidateFencePort for HlsRoundPort<'_> {
     type Fence = plx_playback_contract::adaptive::FenceHandle;
-    type Error = plx_playback_contract::adaptive::PhysicalFailure;
 
-    fn arm(&mut self, automatic_token: u64) -> Result<Self::Fence, Self::Error> {
+    fn arm(&mut self, automatic_token: u64)
+        -> Result<Self::Fence, plx_playback_contract::adaptive::CandidateFenceError> {
         self.session.adaptive().arm_candidate(automatic_token)
     }
 

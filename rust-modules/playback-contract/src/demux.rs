@@ -2,7 +2,7 @@
 //! handles, access units and queue ordering. Its session port owns playback
 //! clocks, accepted pause events, native transition leases and published state.
 
-use crate::adaptive::{AutomaticTransition, FenceHandle, LeaseHandle, PhysicalFailure};
+use crate::adaptive::{AutomaticTransition, FenceHandle, LeaseHandle, CandidateFenceError};
 use crate::AttemptId;
 use crate::subtitle::{Anchor, CaptionRetention, DecodeKind, Manifest, RawCue, TrackInfo};
 use std::sync::Arc;
@@ -112,7 +112,7 @@ pub trait DemuxAdaptive {
     fn arm_trial(&mut self, runway_ms: i64, user_sequence: u64)
         -> Option<LeaseHandle>;
     fn arm_candidate(&mut self, automatic_token: u64)
-        -> Result<FenceHandle, PhysicalFailure>;
+        -> Result<FenceHandle, CandidateFenceError>;
     fn transition_permitted(&self, kind: AutomaticTransition) -> bool;
 }
 
