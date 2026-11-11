@@ -1194,7 +1194,10 @@ pub fn try_prime(mt: &MainThread, eng: &mut Engine, transport: &Transport, hooks
     if !eng.prime_play {
         return;
     }
-    if eng.startup_controlled && !eng.startup_play_commanded {
+    // A paused reload owns a bounded first-picture preroll, not a viewer Play. The pump
+    // re-pauses it after presentation; waiting for the viewer's command here strands that
+    // preroll over a blank plane. Every other initial prime still waits for common startup.
+    if eng.startup_controlled && !eng.startup_play_commanded && !transport.seek_preroll_active() {
         return;
     }
     let Some(prime_kind) = shared.hls_prime_kind() else {
