@@ -131,6 +131,26 @@ fn is_first_run_consent(a: &AppArg) -> bool {
 
 /// Core-side shape of the Chrome refresh boundary. The retained directory is explicit so Chrome
 /// always reads this Bridge's captured Browse publication.
+/// A store notice is needed only when its selected read-out's held reason changes.
+fn clock_notice_changed(before: Option<plx_net::net::keypin::Blocked>,
+    facts: &plx_plex::plex::ClockFacts, machine: Option<&str>) -> bool {
+    before != facts.blocked_for(machine)
+}
+
+#[test]
+fn clock_fact_change_notice_tracks_only_the_selected_reason() {
+    use plx_net::net::keypin::Blocked;
+    use plx_plex::plex::{ClockFacts, ServerId};
+    let facts = |reason| ClockFacts::scripted(4, ServerId::UNSET, None,
+        [(ServerId::UNSET, "server".to_owned(), reason)]);
+    let a = facts(Some(Blocked::NoKey));
+    let b = facts(Some(Blocked::KeyChanged));
+    assert!(!clock_notice_changed(Some(Blocked::NoKey), &a, Some("server")));
+    assert!(clock_notice_changed(Some(Blocked::NoKey), &b, Some("server")));
+    assert!(clock_notice_changed(Some(Blocked::NoKey), &a, Some("other")));
+    assert!(!clock_notice_changed(None, &b, Some("other")));
+    assert!(!clock_notice_changed(None, &b, None));
+}
 fn refresh_chrome(
     chrome: &mut super::chrome::ChromeSnapshot,
     measure: &dyn Measure,
@@ -145,6 +165,8 @@ fn refresh_chrome(
 
 #[derive(Clone, Copy)]
 pub(crate) struct AppViews<'a> {
+    pub(crate) inputs: &'a plx_screens::inputs::ScreenInputs,
+    pub(crate) clock: &'a plx_plex::plex::ClockFacts,
     pub(crate) marker_prefs: plx_appkit::skip_policy::MarkerPrefsView,
     pub(crate) auth: plx_session::auth::SessionRead<'a>,
     pub(crate) hubs: plx_data::pms::HubsView<'a>,
@@ -190,7 +212,7 @@ impl Bridge {
     /// [`Self::views`] reading `session` as the playback publication — what a test rig with no
     /// player of its own passes.
     pub(crate) fn views_with<'a>(&'a self, session: &'a plx_media::route::PlaybackSession) -> AppViews<'a> {
-        AppViews { marker_prefs: self.marker_prefs, auth: self.session.read(), hubs: self.hubs.view(), listing: self.listing.view(),
+        AppViews { inputs: &self.screen_inputs, clock: &self.clock_facts, marker_prefs: self.marker_prefs, auth: self.session.read(), hubs: self.hubs.view(), listing: self.listing.view(),
             directory: self.directory.view(), section_hubs: self.section_hubs.view(),
             search: self.search.view(), metadata: self.stores.metadata_view(),
             person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session,
@@ -244,7 +266,12 @@ impl Host for AppHost {
     }
 }
 
+impl plx_screens::registry::ScreenInputsLike for AppHost {
+    fn screen_inputs<'a>(cx: &Cx<'a, Self>) -> &'a plx_screens::inputs::ScreenInputs { cx.views.inputs }
+}
+
 impl HomeLike for AppHost {
+    fn clock_facts<'a>(cx: &Cx<'a, Self>) -> Option<&'a plx_plex::plex::ClockFacts> { Some(cx.views.clock) }
     fn hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::pms::HubsView<'a> { cx.views.hubs }
 }
 
@@ -303,6 +330,7 @@ impl plx_screens::registry::SearchLike for AppHost {
 }
 
 impl plx_screens::registry::LibraryLike for AppHost {
+    fn clock_facts<'a>(cx: &Cx<'a, Self>) -> Option<&'a plx_plex::plex::ClockFacts> { Some(cx.views.clock) }
     fn marker_prefs(cx: &Cx<'_, Self>) -> plx_appkit::skip_policy::MarkerPrefsView { cx.views.marker_prefs }
     fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a> { cx.views.listing }
     fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a> { cx.views.directory }
@@ -473,6 +501,14 @@ pub(crate) struct Bridge {
     /// that decides from it (`adapters::stores::refill_client_keys`), in the same call. ONE value
     /// kept for the life of the Bridge, so a pump that runs every frame allocates nothing for it.
     client_keys: plx_plex::plex::ClientKeys,
+    clock_facts: std::sync::Arc<plx_plex::plex::ClockFacts>,
+    clock_scratch: plx_plex::plex::ClockFacts,
+    screen_inputs: plx_screens::inputs::ScreenInputs,
+    screen_grant_key: Option<(u64, u64)>,
+    screen_cache_revision: Option<(u64, u64)>,
+    /// Root's grant choices retain settled authority while readable public defaults may move.
+    screen_grant_session: std::sync::Arc<plx_plex::plex::session::Session>,
+    live_screen_inputs: bool,
     stores: plx_data::stores::Stores,
     mounter: AppMounter,
     /// This frame's publication of the playback session — see `AppViews::session`. Refreshed by
@@ -616,7 +652,7 @@ impl Bridge {
                 hubs, listing:plx_data::stores::browse::ListingSnapshot::empty(),
                 directory:Default::default(), section_hubs:plx_data::stores::browse::HubsSnapshot::empty(),
                 search:Default::default(),
-            }, stores);
+            }, stores, false);
         bridge.initial_subhash = initial.hash();
         bridge.measure = if replay {
             plx_ui::rec::Measurements::Pending(Default::default())
@@ -673,7 +709,7 @@ impl Bridge {
             hubs: stores.hubs.snapshot(), listing: browse.listing,
             directory: browse.directory, section_hubs: browse.section_hubs,
             search,
-        }, stores)
+        }, stores, true)
     }
 
     #[cfg(test)]
@@ -724,7 +760,7 @@ impl Bridge {
         consent_adapter: super::adapters::consent::ConsentAdapter,
         reads: StorePublications) -> Self {
         let mut bridge = Self::with_publications_and_stores(measure, now_us, init, session_adapter, consent,
-            consent_adapter, super::adapters::stores::StoreRunner::held(), reads, Default::default());
+            consent_adapter, super::adapters::stores::StoreRunner::held(), reads, Default::default(), true);
         bridge.metadata_alt_host = |request, _| request.answer(None);
         bridge
     }
@@ -734,8 +770,8 @@ impl Bridge {
         consent: plx_telemetry::telemetry::consent::Consent,
         consent_adapter: super::adapters::consent::ConsentAdapter,
         store_runner: super::adapters::stores::StoreRunner,
-        reads: StorePublications, stores: plx_data::stores::Stores) -> Self {
-        Self {
+        reads: StorePublications, stores: plx_data::stores::Stores, live_screen_inputs: bool) -> Self {
+        let mut bridge = Self {
             session_cache_generation: plx_plex::plex::session::visible_generation(),
             cache_refresh_begun: None,
             marker_access: Default::default(), marker_prefs: Default::default(), marker_now: 0,
@@ -757,6 +793,9 @@ impl Bridge {
             metadata_alt_host: crate::dev::scenarios::metadata_alt_stand_in,
             late_store_jobs: 0,
             client_keys: Default::default(),
+            clock_facts: Default::default(),
+            clock_scratch: Default::default(),
+            screen_inputs: Default::default(), screen_grant_key: None, screen_cache_revision: None, screen_grant_session: Default::default(), live_screen_inputs,
             stores,
             mounter: AppMounter::default(),
             playback: plx_media::route::PlaybackSession::IDLE,
@@ -797,7 +836,9 @@ impl Bridge {
             effect_return: ReturnState::default(),
             held: Vec::new(),
             now_us,
-        }
+        };
+        bridge.capture_screen_inputs();
+        bridge
     }
 
     /// Observe storage landings on the frame thread, alongside store/adapter publications, and
@@ -1376,13 +1417,83 @@ impl Bridge {
         d.nav.tabs.strip_selected = self.chrome.key_at(selected);
     }
 
+    /// Capture registry facts once per publication boundary. Stable frames only clone Arcs or
+    /// compare generation hints; consent hashing and vectors run only after a semantic source move.
+    fn capture_screen_inputs(&mut self) -> bool {
+        self.capture_screen_inputs_with(plx_plex::plex::session::screen_input_revision)
+    }
+
+    fn capture_screen_inputs_with(&mut self, mut revision: impl FnMut() -> (u64, u64)) -> bool {
+        if !self.live_screen_inputs { return false; }
+        use plx_plex::plex::{grant, session};
+        let before = revision();
+        let mut next = self.screen_inputs.clone();
+        let mut grant_session = self.screen_grant_session.clone();
+        if self.screen_cache_revision.map(|r| r.0) != Some(before.0) {
+            let settled = session::peek_settled();
+            next.settled = settled.is_some();
+            next.session = match settled {
+                Some(session) => { grant_session = session.clone(); session }
+                None => session::peek(),
+            };
+            next.visible_generation = session::visible_generation();
+        }
+        if self.screen_cache_revision.map(|r| r.1) != Some(before.1) {
+            next.profile = session::current_snapshot();
+        }
+        let key = (grant::revision(), before.0);
+        next.current_server = self.client_keys.current();
+        next.resolution_offered = plx_platform::tv::device::ui_resolution_offered();
+        if self.screen_grant_key != Some(key) {
+            let session = &grant_session;
+            let mut grants = plx_screens::inputs::GrantInputs { offers: grant::offers(),
+                choices: grant::choices(&session.prefs.plaintext_consent, &session.account_token),
+                connected: grant::granted_machines() };
+            grants.connected.sort_unstable();
+            if *next.grants != grants {
+                next.grants = std::sync::Arc::new(grants);
+                next.grant_generation = next.grant_generation.wrapping_add(1);
+            }
+        }
+        // These tokens fence completed publications, not requests. Keep the previous coherent
+        // view if a worker or profile publisher moved while facts were copied; retry next pump.
+        if revision() != before || grant::revision() != key.0 { return false; }
+        let changed = !self.screen_inputs.same_facts(&next);
+        if changed {
+            next.revision = self.screen_inputs.revision.wrapping_add(1);
+            self.screen_inputs = next;
+        }
+        self.screen_grant_session = grant_session;
+        self.screen_cache_revision = Some(before);
+        self.screen_grant_key = Some(key);
+        changed
+    }
+
     /// Return publication changes so the frame can coalesce them with store notices.
     fn capture_views(&mut self, _d: &mut Dispatcher<AppHost>) -> (bool, bool, bool) {
+        // Controlled Home has no captured keypin facts. Select that policy before any
+        // registry or keypin read; unrelated Browse capture below keeps its own boundary.
+        let controlled_clock = self.home_io.is_some();
+        let home_clock_before = self.clock_facts.blocked_for(self.clock_facts.current_machine());
+        let library_clock_before = self.clock_facts.blocked_for(self.directory.view().source()
+            .and_then(|(sid, _)| self.clock_facts.machine(*sid)));
         let directory_before = self.directory.clone();
         let hubs_before = (self.section_hubs.view().id(), self.section_hubs.view().revision());
         // One owner borrow, in the load-bearing order: directory capture resolves profile pins
         // and may repoint the current section, so listing and shelves are captured only after it.
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
+        if !controlled_clock {
+            let revision = plx_net::net::keypin::revision();
+            if self.clock_facts.needs_refill(revision, &self.client_keys) {
+                self.clock_scratch.refill(revision, &self.client_keys, plx_net::net::keypin::blocked_for);
+                // Never publish a table assembled across a keypin change. The next frame retries.
+                if plx_net::net::keypin::revision() == revision {
+                    std::mem::swap(std::sync::Arc::make_mut(&mut self.clock_facts), &mut self.clock_scratch);
+                }
+            }
+        }
+
+        let inputs_changed = self.capture_screen_inputs();
         let context = self.browse_session();
         let owned = self.stores.capture_browse(&mut self.directory, &context.input(&self.client_keys));
         if self.home_io.is_none() { self.section_hubs = owned.section_hubs; }
@@ -1390,7 +1501,9 @@ impl Bridge {
         let listing_changed = !self.listing.view().same_items(listing.view())
             || self.listing.view().fetch() != listing.view().fetch();
         self.listing = listing;
-        let browse_changed = listing_changed || !self.directory.same_publication(&directory_before)
+        let library_clock_changed = clock_notice_changed(library_clock_before, &self.clock_facts,
+            self.directory.view().source().and_then(|(sid, _)| self.clock_facts.machine(*sid)));
+        let browse_changed = library_clock_changed || listing_changed || !self.directory.same_publication(&directory_before)
             || hubs_before != (self.section_hubs.view().id(), self.section_hubs.view().revision());
         let search = if self.home_io.is_some() { self.search.clone() } else {
             self.stores.search_snapshot(self.directory.view(), &Self::household_ids())
@@ -1402,8 +1515,9 @@ impl Bridge {
         let before = (self.hubs.view().generation, self.hubs.view().state);
         self.hubs = self.stores.hubs.snapshot();
         let after = (self.hubs.view().generation, self.hubs.view().state);
-        let hubs_changed = before != after;
-        (browse_changed, hubs_changed, search_changed)
+        let home_clock_changed = clock_notice_changed(home_clock_before, &self.clock_facts, self.clock_facts.current_machine());
+        let hubs_changed = before != after || home_clock_changed;
+        (browse_changed || inputs_changed, hubs_changed || inputs_changed, search_changed)
     }
 
     pub(crate) fn update_home_chrome(&mut self, d: &mut Dispatcher<AppHost>,
@@ -2468,7 +2582,7 @@ impl Bridge {
             // The owner reads its retained publication, not a borrow through its own mutable
             // field. Every other view still comes from this same Bridge frame boundary.
             let publication = self.session.publication();
-            let cx = parts.cx::<AppHost>(AppViews { marker_prefs: self.marker_prefs, auth: publication.read(),
+            let cx = parts.cx::<AppHost>(AppViews { inputs: &self.screen_inputs, clock: &self.clock_facts, marker_prefs: self.marker_prefs, auth: publication.read(),
                 hubs: self.hubs.view(), listing: self.listing.view(), directory: self.directory.view(),
                 section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session: &self.playback,
                 transport_paused: self.transport_paused,
@@ -2669,7 +2783,7 @@ impl Rig<AppHost> for Bridge {
     fn split(&mut self) -> Split<'_, AppHost> {
         Split {
             mounter: &mut self.mounter,
-            views: AppViews { marker_prefs: self.marker_prefs, auth: self.session.read(),
+            views: AppViews { inputs: &self.screen_inputs, clock: &self.clock_facts, marker_prefs: self.marker_prefs, auth: self.session.read(),
                 hubs: self.hubs.view(),
                 listing: self.listing.view(),
                 directory: self.directory.view(),
@@ -5206,4 +5320,189 @@ fn transport_keys_keep_their_identity_through_dispatcher_input() {
     }
     let input = key_input(consts::SDLK_LEFT, consts::WCODE_REWIND, 1, Tick::default(), Source::Sdl);
     assert!(matches!(input.kind, InputKind::Key { key: Key::Left, .. }), "plain D-pad precedence is unchanged");
+}
+
+#[cfg(test)]
+mod screen_input_publication_tests {
+    use super::*;
+    #[test]
+    fn screen_inputs_notice_offer_expiry_with_a_stable_roster_and_retain_stable_arcs() {
+        use plx_plex::plex::{grant, session, probe::PlaintextEligibility};
+        let _serial = plx_base::testlock::serial();
+        let _session = session::TempSession::new("screen-input-notice");
+        grant::reset_for_test();
+        let mut bridge = Bridge::for_test(|| 0);
+        assert!(!bridge.capture_screen_inputs());
+        let stored = bridge.screen_inputs.session.clone();
+        let grants = bridge.screen_inputs.grants.clone();
+        let profile = bridge.screen_inputs.profile.clone();
+        assert!(!bridge.capture_screen_inputs());
+        assert!(std::sync::Arc::ptr_eq(&stored, &bridge.screen_inputs.session));
+        assert!(std::sync::Arc::ptr_eq(&grants, &bridge.screen_inputs.grants));
+        assert!(std::sync::Arc::ptr_eq(&profile, &bridge.screen_inputs.profile));
+        grant::offered(grant::scope(), grant::PlaintextVerdict { machine_id: "server".into(),
+            name: "Server".into(), shared_by: String::new(), eligibility: PlaintextEligibility::Eligible,
+            choice: session::PlaintextChoice::Undecided });
+        assert!(bridge.capture_screen_inputs());
+        assert_eq!(bridge.views().inputs.grants.offers.len(), 1);
+        assert!(!bridge.capture_screen_inputs());
+        let generation = bridge.screen_inputs.grant_generation;
+        grant::network_changed();
+        assert!(bridge.capture_screen_inputs());
+        assert!(bridge.views().inputs.grants.offers.is_empty());
+        assert_ne!(bridge.screen_inputs.grant_generation, generation);
+        assert!(!bridge.capture_screen_inputs());
+        grant::reset_for_test();
+    }
+    #[test]
+    fn screen_inputs_controlled_policy_never_captures_ambient_facts() {
+        let _serial = plx_base::testlock::serial();
+        let mut bridge = Bridge::for_test(|| 0);
+        bridge.live_screen_inputs = false;
+        bridge.screen_inputs = Default::default();
+        assert!(!bridge.capture_screen_inputs());
+        assert!(!bridge.views().inputs.settled);
+        assert!(bridge.views().inputs.profile.user.is_none());
+        assert!(bridge.views().inputs.grants.offers.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod screen_input_cache_revision_tests {
+    use super::*;
+    use plx_plex::plex::session::{self, UiResolution};
+    #[test]
+    fn readable_locked_defaults_move_without_replacing_settled_grant_choices() {
+        use plx_plex::plex::grant;
+        let _serial = plx_base::testlock::serial();
+        let _session = session::TempSession::new("screen-readable-locked-defaults");
+        grant::reset_for_test();
+        session::install_cleared_for_test(UiResolution::Auto);
+        let mut bridge = Bridge::for_test(|| 0);
+        let mut known = session::Session::default();
+        known.account_token = "known-account".into();
+        known.prefs.plaintext_consent.push(session::PlaintextConsent {
+            account: grant::account_key(&known.account_token), machine_id: "server".into(),
+            choice: session::PlaintextChoice::Allowed, extensions: Default::default() });
+        let known = std::sync::Arc::new(known);
+        bridge.screen_grant_session = known.clone();
+        session::install_locked_defaults_for_test(UiResolution::Hd720);
+        assert!(bridge.capture_screen_inputs());
+        assert!(!bridge.views().inputs.settled);
+        assert_eq!(bridge.views().inputs.session.ui_resolution(), UiResolution::Hd720);
+        assert!(bridge.views().inputs.session.account_token.is_empty());
+        assert_eq!(bridge.views().inputs.grants.choices, vec![("server".into(), session::PlaintextChoice::Allowed)]);
+        assert!(std::sync::Arc::ptr_eq(&known, &bridge.screen_grant_session));
+        let readable = bridge.screen_inputs.session.clone();
+        assert!(!bridge.capture_screen_inputs());
+        assert!(std::sync::Arc::ptr_eq(&readable, &bridge.screen_inputs.session));
+        grant::reset_for_test();
+    }
+    #[test]
+    fn a_locked_defaults_race_does_not_publish_partial_readable_or_settled_facts() {
+        let _serial = plx_base::testlock::serial();
+        let _session = session::TempSession::new("screen-readable-locked-race");
+        session::install_cleared_for_test(UiResolution::Auto);
+        let mut bridge = Bridge::for_test(|| 0);
+        let readable = bridge.screen_inputs.session.clone();
+        let settled = bridge.screen_grant_session.clone();
+        session::install_locked_defaults_for_test(UiResolution::Hd900);
+        let mut calls = 0;
+        assert!(!bridge.capture_screen_inputs_with(|| {
+            calls += 1;
+            if calls == 2 { session::install_locked_defaults_for_test(UiResolution::Hd720); }
+            session::screen_input_revision()
+        }));
+        assert!(std::sync::Arc::ptr_eq(&readable, &bridge.screen_inputs.session));
+        assert!(std::sync::Arc::ptr_eq(&settled, &bridge.screen_grant_session));
+        assert!(bridge.capture_screen_inputs());
+        assert!(!bridge.screen_inputs.settled);
+        assert_eq!(bridge.screen_inputs.session.ui_resolution(), UiResolution::Hd720);
+        assert!(std::sync::Arc::ptr_eq(&settled, &bridge.screen_grant_session));
+    }
+    #[test]
+    fn a_cache_change_during_capture_keeps_the_previous_coherent_publication() {
+        let _serial = plx_base::testlock::serial();
+        let _session = session::TempSession::new("screen-capture-race");
+        session::install_cleared_for_test(UiResolution::Auto);
+        let mut bridge = Bridge::for_test(|| 0);
+        let held = bridge.screen_inputs.session.clone();
+        let revision = bridge.screen_inputs.revision;
+        session::install_cleared_for_test(UiResolution::Hd900);
+        let mut calls = 0;
+        assert!(!bridge.capture_screen_inputs_with(|| {
+            calls += 1;
+            if calls == 2 { session::install_cleared_for_test(UiResolution::Hd720); }
+            session::screen_input_revision()
+        }));
+        assert_eq!(calls, 2);
+        assert!(std::sync::Arc::ptr_eq(&held, &bridge.screen_inputs.session));
+        assert_eq!(bridge.screen_inputs.revision, revision);
+        assert!(bridge.capture_screen_inputs());
+        assert_eq!(bridge.screen_inputs.session.ui_resolution(), UiResolution::Hd720);
+    }
+    #[test]
+    fn equal_cache_and_profile_publications_do_not_emit_a_semantic_notice() {
+        let _serial = plx_base::testlock::serial();
+        let _session = session::TempSession::new("screen-equal-publication");
+        session::install_cleared_for_test(UiResolution::Auto);
+        session::publish_profile_for_test(None, 0);
+        let mut bridge = Bridge::for_test(|| 0);
+        let held = bridge.screen_inputs.session.clone();
+        let profile = bridge.screen_inputs.profile.clone();
+        let before = bridge.screen_cache_revision;
+        session::install_cleared_for_test(UiResolution::Auto);
+        session::publish_profile_for_test(None, 0);
+        assert!(!bridge.capture_screen_inputs());
+        assert_ne!(bridge.screen_cache_revision, before);
+        assert!(std::sync::Arc::ptr_eq(&held, &bridge.screen_inputs.session));
+        assert!(std::sync::Arc::ptr_eq(&profile, &bridge.screen_inputs.profile));
+        assert!(!bridge.capture_screen_inputs());
+    }
+    #[test]
+    fn same_generation_profile_replacement_is_a_new_screen_input() {
+        let _serial = plx_base::testlock::serial();
+        let _session = session::TempSession::new("screen-profile-generation-zero");
+        session::publish_profile_for_test(Some(session::UserRef { uuid: "maya".into(),
+            title: "Maya".into(), ..Default::default() }), 0);
+        let mut bridge = Bridge::for_test(|| 0);
+        session::publish_profile_for_test(Some(session::UserRef { uuid: "noah".into(),
+            title: "Noah".into(), ..Default::default() }), 0);
+        assert!(bridge.capture_screen_inputs());
+        assert_eq!(bridge.views().inputs.profile.user.as_ref().unwrap().title, "Noah");
+        assert!(!bridge.capture_screen_inputs());
+    }
+    #[test]
+    fn stable_cleared_and_locked_screen_inputs_retain_the_same_session_arc() {
+        let _serial = plx_base::testlock::serial();
+        let _session = session::TempSession::new("screen-stable-cleared");
+        session::install_cleared_for_test(UiResolution::Auto);
+        let mut bridge = Bridge::for_test(|| 0);
+        let held = bridge.screen_inputs.session.clone();
+        for _ in 0..3 {
+            assert!(!bridge.capture_screen_inputs());
+            assert!(std::sync::Arc::ptr_eq(&held, &bridge.screen_inputs.session));
+        }
+        session::install_transient_for_test(true);
+        assert!(bridge.capture_screen_inputs());
+        assert!(!bridge.screen_inputs.settled);
+        let held = bridge.screen_inputs.session.clone();
+        for _ in 0..3 {
+            assert!(!bridge.capture_screen_inputs());
+            assert!(std::sync::Arc::ptr_eq(&held, &bridge.screen_inputs.session));
+        }
+    }
+    #[test]
+    fn cleared_defaults_publish_even_when_visible_session_generation_does_not_move() {
+        let _serial = plx_base::testlock::serial();
+        let _session = session::TempSession::new("screen-cleared-defaults");
+        session::install_cleared_for_test(UiResolution::Auto);
+        let mut bridge = Bridge::for_test(|| 0);
+        let visible = session::visible_generation();
+        session::install_cleared_for_test(UiResolution::Hd720);
+        assert_eq!(session::visible_generation(), visible);
+        assert!(bridge.capture_screen_inputs(), "the changed defaults owe a notice");
+        assert_eq!(bridge.views().inputs.session.ui_resolution(), UiResolution::Hd720);
+        assert!(!bridge.capture_screen_inputs());
+    }
 }

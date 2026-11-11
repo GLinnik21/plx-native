@@ -35,7 +35,7 @@ pub fn cx_with<'a>(
     directory: plx_data::stores::browse::DirectoryView<'a>,
 ) -> Cx<'a, InnerHost> {
     Cx {
-        views: directory.into(),
+        views: crate::registry::InnerViews::new(directory, crate::registry::publication_fixture()),
         tick: Tick::default(),
         measure: &MEASURE,
         press: PressRead::default(),
@@ -44,7 +44,7 @@ pub fn cx_with<'a>(
     }
 }
 
-pub fn cx(focus: Option<FocusKey<u32>>) -> Cx<'static, InnerHost> {
+pub fn cx<'a>(focus: Option<FocusKey<u32>>) -> Cx<'a, InnerHost> {
     cx_with(focus, plx_data::stores::browse::DirectoryView::empty_for_test())
 }
 

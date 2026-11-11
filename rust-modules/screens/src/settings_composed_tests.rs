@@ -118,7 +118,7 @@ impl Rig<InnerHost> for SurfaceRig {
         self.stores.capture_seeded_browse_for_test(&mut self.directory, plx_plex::plex::current_server());
         Split {
             mounter: &mut self.mounter,
-            views: self.directory.view().into(),
+            views: crate::registry::InnerViews::new(self.directory.view(), crate::registry::publication_fixture()),
             measure: &self.measure,
         }
     }

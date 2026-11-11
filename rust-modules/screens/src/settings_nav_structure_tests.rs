@@ -93,7 +93,7 @@ fn assert_every_nav_item_pushes_exactly_its_dest(label: &str, items: &[(u32, Set
 }
 
 fn root_items() -> Vec<(u32, SettingsPage)> {
-    let page = RootPage::new(EntryId(0), plx_data::stores::browse::DirectoryView::empty_for_test());
+    let page = RootPage::new(EntryId(0), plx_data::stores::browse::DirectoryView::empty_for_test(), &crate::registry::capture_fixture());
     nav_items(&page.form)
 }
 

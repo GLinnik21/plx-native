@@ -541,7 +541,7 @@ fn session_refresh_rebuilds_root_without_navigation() {
     let _sess = multi_user_session("root-session-refresh");
     let saved = plx_plex::plex::session::peek();
     plx_plex::plex::session::install_transient_for_test(true);
-    let mut root = RootPage::new(EntryId(0), cx(None).views.directory);
+    let mut root = RootPage::new(EntryId(0), cx(None).views.directory, &crate::registry::capture_fixture());
     assert!(!root.form.index_of(&RootId::AutoSignIn).is_some());
     plx_plex::plex::session::save(&saved.with_auto_sign_in(true));
     let mut out = Vec::new();
@@ -558,7 +558,7 @@ fn session_refresh_keeps_optimistic_setting_through_transient_completion() {
     let _g = plx_base::testlock::serial();
     let _sess = multi_user_session("root-pending-refresh");
     let saved = plx_plex::plex::session::peek();
-    let mut root = RootPage::new(EntryId(0), cx(None).views.directory);
+    let mut root = RootPage::new(EntryId(0), cx(None).views.directory, &crate::registry::capture_fixture());
     let ticket = plx_base::storage_worker::submit_retained(|| false);
     plx_base::storage_worker::drain_for_test();
     root.pending_auto = Some((true, ticket));
@@ -601,7 +601,7 @@ fn the_unencrypted_connection_switch_shows_the_grant_and_revokes_it_at_once() {
     plx_plex::plex::grant::mint(plx_plex::plex::grant::scope(), "lan-machine", &lan,
         &plx_plex::plex::grant::eligible_evidence_for_test()).unwrap();
 
-    let mut root = RootPage::new(EntryId(0), cx(None).views.directory);
+    let mut root = RootPage::new(EntryId(0), cx(None).views.directory, &crate::registry::capture_fixture());
     let row = root.form.index_of(&RootId::Plaintext(ServerMachineId("lan-machine".into())))
         .expect("an allowed server has its switch");
     let drawn = root.form.table.sections.iter().flat_map(|s| &s.rows).nth(row).unwrap();
@@ -631,7 +631,7 @@ fn the_unencrypted_connection_switch_shows_the_grant_and_revokes_it_at_once() {
 fn no_unencrypted_connection_section_without_an_answer() {
     let _g = plx_base::testlock::serial();
     let _sess = multi_user_session("root-plaintext-none");
-    let root = RootPage::new(EntryId(0), cx(None).views.directory);
+    let root = RootPage::new(EntryId(0), cx(None).views.directory, &crate::registry::capture_fixture());
     assert!(root.form.index_of_key(RowKey(PLAINTEXT_KEY_BASE)).is_none());
     assert!(root.state.plaintext.is_empty());
 }
@@ -652,7 +652,7 @@ fn turning_an_unencrypted_connection_on_asks_the_shared_question_first() {
         machine_id: "lan-machine".into(), name: "Basement".into(), shared_by: String::new(),
         eligibility: plx_plex::plex::probe::PlaintextEligibility::Eligible, choice: PlaintextChoice::Undecided,
     });
-    let mut root = RootPage::new(EntryId(0), cx(None).views.directory);
+    let mut root = RootPage::new(EntryId(0), cx(None).views.directory, &crate::registry::capture_fixture());
     let row = root.form.index_of(&RootId::Plaintext(ServerMachineId("lan-machine".into())))
         .expect("an offered, never-asked server has its switch");
     let drawn = root.form.table.sections.iter().flat_map(|s| &s.rows).nth(row).unwrap();
@@ -757,7 +757,7 @@ fn the_interface_resolution_row_is_offered_on_webos_1_to_3_only() {
     // a host test has no television: the real page is the webOS 4+ shape and has no such row
     let _g = plx_base::testlock::serial();
     let _sess = multi_user_session("root-resolution-gate");
-    let page = RootPage::new(EntryId(0), cx(None).views.directory);
+    let page = RootPage::new(EntryId(0), cx(None).views.directory, &crate::registry::capture_fixture());
     assert_eq!(page.form.index_of(&RootId::Resolution), None);
 }
 
@@ -862,7 +862,7 @@ fn back_from_each_root_door_reseats_focus_on_the_same_root_id() {
 fn a_rebuild_keeps_the_row_by_id_and_a_vanished_row_falls_to_its_neighbour() {
     let _g = plx_base::testlock::serial();
     let _sess = multi_user_session("root-rebuild-identity");
-    let mut page = RootPage::new(EntryId(0), cx(None).views.directory);
+    let mut page = RootPage::new(EntryId(0), cx(None).views.directory, &crate::registry::capture_fixture());
     select_root(&mut page, RootId::Language);
     page.rebuild(cx(None).views.directory);
     assert_eq!(page.form.selected_id(), Some(&RootId::Language), "a rebuild keeps the row it is on");
@@ -890,7 +890,7 @@ fn a_rebuild_keeps_the_row_by_id_and_a_vanished_row_falls_to_its_neighbour() {
 fn the_root_diagnostics_row_reads_the_status_the_runner_answers() {
     use plx_platform::playback_trace::Status;
     let _serial = plx_base::testlock::serial();
-    let mut root = RootPage::new(EntryId(0), cx(None).views.directory);
+    let mut root = RootPage::new(EntryId(0), cx(None).views.directory, &crate::registry::capture_fixture());
     let mut present = plx_machine::present::Present::new();
     let mut out = Vec::new();
     let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(0)), &mut present);
@@ -940,3 +940,57 @@ fn hud_return_to_player_hud(remove: bool) {
 fn use_hud_returns_to_player_hud_with_an_unrelated_surface_id() {hud_return_to_player_hud(false);}
 #[test]
 fn remove_hud_returns_to_player_hud_with_an_unrelated_surface_id() {hud_return_to_player_hud(true);}
+
+#[test]
+fn retained_offer_expiry_rebuilds_the_switches_without_a_roster_change() {
+    use plx_plex::plex::{grant::PlaintextVerdict, probe::PlaintextEligibility, session::PlaintextChoice};
+    let _serial = plx_base::testlock::serial();
+    let mut inputs = crate::registry::ScreenInputs::default();
+    std::sync::Arc::make_mut(&mut inputs.session).account_token = "retained-account".into();
+    inputs.settled = true;
+    std::sync::Arc::make_mut(&mut inputs.grants).offers.push(PlaintextVerdict {
+        machine_id: "server".into(), name: "Server".into(), shared_by: String::new(),
+        eligibility: PlaintextEligibility::Eligible, choice: PlaintextChoice::Undecided });
+    let mut cx = cx(None);
+    cx.views.inputs = &inputs;
+    let mut page = RootPage::new(EntryId(0), cx.views.directory, &cx.views.inputs);
+    assert_eq!(page.plaintext_rows, vec![("server".into(), false)]);
+    let mut expired = inputs.clone();
+    expired.grants = Default::default();
+    expired.grant_generation += 1;
+    cx.views.inputs = &expired;
+    let mut out = Vec::new();
+    let mut present = Present::new();
+    page.step(&ScreenEvent::Tick(Default::default()), &cx,
+        &mut Effects::new(&mut out, MachineId::Instance(InstanceId(0)), &mut present));
+    assert!(page.plaintext_rows.is_empty());
+}
+
+#[test]
+fn a_success_receipt_waits_for_the_next_captured_authority() {
+    let _serial = plx_base::testlock::serial();
+    let mut inputs = crate::registry::ScreenInputs::default();
+    inputs.session = std::sync::Arc::new(inputs.session.with_auto_sign_in(false));
+    inputs.settled = true;
+    let mut cx = cx(None);
+    cx.views.inputs = &inputs;
+    let mut page = RootPage::new(EntryId(0), cx.views.directory, cx.views.inputs);
+    let ticket = plx_base::storage_worker::submit_retained(|| true);
+    plx_base::storage_worker::drain_for_test();
+    page.pending_auto = Some((true, ticket));
+    page.rebuild(cx.views.directory);
+    let mut out = Vec::new();
+    let mut present = Present::new();
+    page.step(&ScreenEvent::Tick(Default::default()), &cx,
+        &mut Effects::new(&mut out, MachineId::Instance(InstanceId(0)), &mut present));
+    assert!(page.state.auto_sign_in, "an old captured snapshot cannot undo a successful write");
+    assert!(page.pending_auto.is_some());
+    let mut confirmed = inputs.clone();
+    confirmed.session = std::sync::Arc::new(confirmed.session.with_auto_sign_in(true));
+    confirmed.visible_generation += 1;
+    cx.views.inputs = &confirmed;
+    page.step(&ScreenEvent::Tick(Default::default()), &cx,
+        &mut Effects::new(&mut out, MachineId::Instance(InstanceId(0)), &mut present));
+    assert!(page.pending_auto.is_none());
+    assert!(page.state.auto_sign_in);
+}

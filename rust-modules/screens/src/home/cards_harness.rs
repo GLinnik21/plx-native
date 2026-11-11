@@ -18,7 +18,14 @@ impl Host for HomeHost {
     type Init = super::super::family::NoInit;
     type Memory = PageMemory;
 }
+impl crate::registry::ScreenInputsLike for HomeHost {
+    fn screen_inputs<'a>(_cx: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs {
+        crate::registry::empty_fixture()
+    }
+}
+
 impl HomeLike for HomeHost {
+    fn clock_facts<'a>(_cx: &Cx<'a, Self>) -> Option<&'a plx_plex::plex::ClockFacts> { None }
     fn hubs<'a>(cx: &Cx<'a, Self>) -> HubsView<'a> { cx.views }
 }
 
