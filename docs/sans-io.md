@@ -7,7 +7,59 @@ player machine: `player/lifecycle.rs` is the machine alone (private state, one w
 `player/foreground.rs` its drivers and `player/transport.rs` the transport-pause contract; its shape
 is gated by `ci/machines.ini` (see "Machine shape" below).
 
-## Notify integration checkpoint (not acceptance)
+## Combined verdict source checkpoint (not acceptance)
+
+The integration tree retains full ancestry from base `f8f6dbb7`, Session `33f18e52`,
+Watchlist W2 `abd26d21`, enforcement `dd1664f7`, and Screens `10bd53db`. Actual
+ledger entries are **4 workers / 54 globals / 62 forks / 11 fxlanes**; the pins
+match those entries. Watchlist workers/globals and Screens globals are zero.
+No remaining allowance was removed merely to reach a target count.
+
+Follow-up `0a98b17e` retains Watchlist captures as an immutable `Arc` handle
+shared by both host capture paths. The cache compares the full `ClientKeys`
+value and primitive UTC day before cloning keys, collecting reach or formatting
+a date. It also removes the per-pump key clone and defers auth copying until
+write/stream work is owed, preserving write-before-stream order. Two added
+Rust regression sources cover a populated stable capture
+(`watchlist_snapshot_cache_retains_populated_capture_and_buffers_on_stable_passes`)
+and same-generation key/fact/eligibility changes, day changes and old in-flight
+snapshot immutability. They have not been compiled or run. The scoped follow-up
+touches `stores/watchlist{,_ports,_stream_job}.rs`, app store adapter and Bridge.
+
+Session now binds the actual `SessionMachine.state` (`attempt::Attempt`) to
+`transition` and `from_init` with `state_reads = immutable`. The structural
+read-only proof, not a getter-name exception, validates shared reads. The
+registry contains ten machines, four with strict writer contracts. Exact wall
+ports include the 17-line Catalog fetch/calendar worker adapter and Watchlist
+calendar capture in the app store adapter; neither exemption contains a
+machine. `ports.ini` is a new gate relative to the base, not a grown old list.
+
+The only textual merge conflicts were in `app/bridge.rs`: Watchlist pump keeps
+W2 key/profile/snapshot capture before the machine-only `StepScope`, then drains
+Watchlist jobs after it; the end-of-file resolve-drain test and Screens input
+publication/cache test modules are both retained. Stores merged without a
+textual conflict, preserving all twenty scope sites and captured arguments.
+The reader-negative regression and both ledger pin reductions coexist in the
+Python harness. All replay fixtures and V5/V6 JSON goldens are unchanged from
+the base.
+
+Source verification uses the committed tree: `ci/check-machine-shape.py`,
+`ci/check-ports.py`, `ci/check-ledger-ratchet.py`, the seven CI Python suites
+for shape/writers/read-only proof/scopes/ports/ratchet/test-module discovery,
+and the harness ledger and reader regressions. These are source checks only.
+Rust compilation, runtime/replay tests, Clippy and independent review remain
+acceptance prerequisites; no Rust stage/build was performed for this checkpoint.
+
+After the shared Rust lease, exercise owning-crate filters `step` (base),
+`assert_fx` (machine), `step_scope_tests` (ui),
+`lifecycle_obligation_tests` (media), `auth::owner` (session, including Attempt
+and codecs), `watchlist` (data and app, including `watchlist_snapshot_cache`), and `screen_input`
+(app), plus the full
+plex and screens suites. Run Clippy with `clippy::wildcard_enum_match_arm`
+enforced for ForegroundLifecycle, PictureGate, PlayerReadout and SessionMachine;
+filtered tests do not replace the parent full gates or independent review.
+
+## Notify integration checkpoint (historical; not acceptance)
 
 Notify's typed Direct stream lane and app per-connection cursor are written; the
 frozen API and integration evidence are in `.empryo/reviews/verdict-notify-core.md`
@@ -20,7 +72,7 @@ Production opens off-frame; test boot refuses unless explicitly scripted.
 
 The three Notify allow-area files have been retired. The coordinator reports actual
 ledger totals of 5 workers / 81 globals / 62 forks / 11 fxlanes, down from the
-S4 pre-Notify checkpoint of 6/89/65/11; the pins now match. The source-only stale-key
+S4 pre-Notify checkpoint of 6/89/65/11; the pins matched that checkpoint. The source-only stale-key
 check passed in orun-27; runtime tests, capture comparisons and full gates remain
 pending. Per-connection source ordering is preserved; asynchronous worker wall-time
 is not pinned, and disabled-state repair is explicitly intentional.

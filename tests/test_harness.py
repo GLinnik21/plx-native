@@ -10283,7 +10283,8 @@ impl PersonOwnerGateFixture {
         # `spawn_small`), -1 on globals (its `client_for`).
         # Metadata M4: alt sources leave as MetaAltSources (-1 worker, -8 globals, -3 forks).
         # Notify retirement: -1 worker, -8 globals, -3 forks.
-        "workers": 5,  # production worker starts inside machines (`ci/allow/workers/`)
+        # W2 retires Watchlist resolve: -1 worker and -7 globals.
+        "workers": 4,  # production worker starts inside machines (`ci/allow/workers/`)
         # Sans-IO lifecycle PR B moved the pin by nothing: -3 (the three `lifecycle.rs` `player::TX` lines left with the
         # transport contract, `player/transport.rs`, the IO layer) and +3 (a relocation lowers no pin by itself, so the same
         # diff widened the spellings to the transport readers `transport::paused`, `transport::viewer_paused` and
@@ -10300,7 +10301,7 @@ impl PersonOwnerGateFixture {
         # screens/, ui/, appkit/ and machine/ (it read only data/, plex/, media/, session/), +17 (58 -> 75).
         # S4 Browse explicit roster inputs remove its 14 registry reads (103 -> 89).
         # Retained screen inputs remove the screen family's remaining registry reads.
-        "globals": 61,  # production process-global reads inside machines (`ci/allow/globals/`)
+        "globals": 54,  # production process-global reads inside machines (`ci/allow/globals/`)
         # Dolby Vision setting (#1156): -1 on forks (`build_stream` takes the DV probe from `ResolveEnv`, captured
         # at the request, so its test/production read of `devcaps::dv::capability` is gone).
         # Actual pre-M4 entries were 68 (the previous pin 71 was a loose ceiling).

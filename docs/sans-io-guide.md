@@ -21,11 +21,18 @@ release failure is an ordinary terminal at the observation frame, never a second
 admission. Production streams always run off-frame, including held real release;
 `Bridge::for_test` selects refusal, and finite scripts supply explicit eligibility.
 No stream callback runs inside data or while borrowing Stores across the runner.
-The coordinator reports post-retirement ledger totals of 5 workers / 81 globals /
+The Notify-only checkpoint had 5 workers / 81 globals /
 62 forks / 11 fxlanes, down from the S4 pre-Notify 6/89/65/11. The source-only
 stale-key test passed in orun-27; runtime tests, capture comparisons and full gates
 remain pending. These contracts are not runtime or replay acceptance; see
 `.empryo/reviews/verdict-notify-integration.md` for the handoff limits.
+
+The combined Session/W2/enforcement/Screens source checkpoint now has actual
+ledger totals **4 workers / 54 globals / 62 forks / 11 fxlanes**, with exact pins.
+Session uses the strict `state`/`transition`/`from_init` binding and structurally
+proved immutable reads. Watchlist and Screens inputs are captured outside their
+machine windows. Source/Python checks are not Rust/runtime/Clippy acceptance;
+see the combined checkpoint in `docs/sans-io.md` for merge details and filters.
 
 ## Which code is a machine
 
