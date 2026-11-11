@@ -442,7 +442,6 @@ impl Transport {
             scrubbing,
             if scrubbing { self.scrub_ns } else { live_ns },
             live_ns,
-            None,
             self.play_at.map(|at| self.now_ms.wrapping_sub(at)),
         )
     }

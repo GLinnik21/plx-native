@@ -628,7 +628,7 @@ fn walk<H: Host>(
                     }
                 }
                 DrawOp::Playbar { track, fill, track_ink, clock_size, knob, clocks, mark, clock_rects, .. } => {
-                    let mut live = Playbar::live(f.model, f.busy, f.focus, row.seek_travel.direction(), row.since_play_ms(f.now), f.now);
+                    let mut live = Playbar::live(f.model, f.busy, f.focus, row.since_play_ms(f.now), f.now);
                     live.clock_grow = row.preview.motion.clock_grow(f.now);
                     // a cancelled scrub's knob returns to the playhead rather than jumping to it
                     live.pos_ns = row.spring.apply(live.pos_ns, f.now);

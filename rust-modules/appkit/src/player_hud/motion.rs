@@ -150,9 +150,6 @@ pub struct HudMotion {
     /// without this a session that ended paused would hand the next one a spurious resume edge on
     /// its first frame and flash `Play` over a start nobody pressed play for.
     pub(super) pause_seen: Option<bool>,
-    /// The direction the seek in flight was requested with, which the state read-out wears until the seek
-    /// lands ([`super::state::SeekTravel`]). Stepped by [`HudMotion::note_seek_travel`] with the frame's model.
-    pub(super) seek_travel: super::state::SeekTravel,
     /// **The scrub preview's memo** — a RENDER memo: which BIF still the draw can
     /// show and which one is in flight. Stepped where that art is probed, in the draw ([`super::render::draw`]); see
     /// [`crate::scrub_preview`].
@@ -224,7 +221,6 @@ impl HudMotion {
             title_clock: plx_ui::marquee::Clock::new(),
             play_at: None,
             pause_seen: None,
-            seek_travel: super::state::SeekTravel::IDLE,
             preview: crate::scrub_preview::ScrubPreview::new(),
             spring: KnobSpring::new(),
             strip: None,
@@ -537,13 +533,6 @@ impl HudMotion {
 
     pub fn reset_title(&self) {
         self.title_clock.release();
-    }
-
-    /// Take the frame's model into the seek direction latch ([`super::state::SeekTravel::note`]). The screen
-    /// calls it from `set_model`, so the request's frame, which still sees the playhead the viewer left,
-    /// is the one that names the direction.
-    pub fn note_seek_travel(&mut self, model: &HudModel) {
-        self.seek_travel.note(model.seek_display_ns, model.playpos_ns, model.loading || model.seeking);
     }
 
     pub fn note_transport(&mut self, now: u32, started: Option<bool>, paused: bool) {
