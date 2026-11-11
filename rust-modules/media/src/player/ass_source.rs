@@ -1114,6 +1114,47 @@ mod tests {
         assert!(s.selected(0).is_some(), "the track itself is never refused");
     }
 
+    /// Issue #1328: an anime MKV attaches 17 fonts (92 MB). The five the opening's karaoke styles
+    /// name sit late in the container, after the first twelve have spent the 32 MiB budget, so
+    /// libass never saw them and those lines fell back to the default face. A cap on content the
+    /// file legitimately carries is a bug, so every attachment must reach the renderer, in order.
+    /// Sizes and names are the report's (`tests/fixtures/make_ass_stress.py`, `fonts-over-budget`).
+    #[test]
+    #[ignore = "issue #1328: fonts past the 32 MiB budget are dropped; un-ignore with the fix"]
+    fn every_attached_font_reaches_the_renderer_issue_1328() {
+        const ATTACHED: [(&str, usize); 17] = [
+            ("AP-OTF-KizaKinryouStd-Bol.otf", 6_220_620),
+            ("Comiccity.ttf", 32_904),
+            ("DFMaruGothicPro6N-W9.otf", 11_229_304),
+            ("FOT-Accordion.otf", 37_300),
+            ("FOT-DotGothic12 Std M.ttf", 43_840),
+            ("FOT-MatissePro-B.otf", 9_883_924),
+            ("FOT-PopFury Std B.otf", 4_808_652),
+            ("FOT-TelopMinPro-D.otf", 7_477_668),
+            ("FOT-TsukuAOldMinPr6N-M.otf", 13_188_132),
+            ("HOT-KarakusaStd-R.otf", 6_102_048),
+            ("KizaJJK-B.ttf", 9_705_124),
+            ("KizaKinryouStdJJK-B.ttf", 13_715_688),
+            ("LEHN084.TTF", 47_816),
+            ("MastroSans-SemiBold.ttf", 245_796),
+            ("MastroSans-SemiBoldItalic.ttf", 262_448),
+            ("Roboto-Regular.ttf", 146_004),
+            ("stylus.ttf", 32_972),
+        ];
+        let total: usize = ATTACHED.iter().map(|&(_, len)| len).sum();
+        assert!(total > ass::MAX_FONT_BYTES, "the report's file is over the budget: {total} bytes");
+        let mut s = Store::new();
+        let fonts = ATTACHED
+            .iter()
+            .map(|&(name, len)| Font { name: name.into(), data: Arc::from(vec![1u8; len]) })
+            .collect();
+        s.begin("fixture", vec![(0, TrackHeader::Authored(b"header".to_vec()))], fonts);
+        let held = s.fonts.clone().unwrap();
+        let names: Vec<_> = held.iter().map(|f| f.name.as_str()).collect();
+        let wanted: Vec<_> = ATTACHED.iter().map(|&(name, _)| name).collect();
+        assert_eq!(names, wanted, "every attached font is held, in container order");
+    }
+
     fn timed(n: i64) -> Event {
         Event {
             start_ms: n * 1000,

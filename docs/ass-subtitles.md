@@ -193,7 +193,9 @@ job at all between boundaries (no line is written then), not one per UI frame. `
 tests/fixtures/make_ass_stress.py <dir>` builds the stress MKVs (Latin, CJK, Thai, Devanagari,
 Arabic, rapid, karaoke, long, 4K60; host `ffmpeg`/`ffprobe` only) to serve with `mock_pms.py
 --extra-media`, and the text-codec ones: `srt-*` (the scripts, rapid and long as SubRip in MKV,
-plus `srt-markup` and `srt-overlap`), `mov_text-mixed.mp4` and `webvtt-mixed.mkv`. A text cue logs
+plus `srt-markup` and `srt-overlap`), `mov_text-mixed.mp4` and `webvtt-mixed.mkv`. `--fonts-over-budget` builds
+only `fonts-over-budget.mkv` (~410 MB, issue #1328): a dense 90 s karaoke opening with 17 attached fonts
+(83 MB) whose opening faces all come after the 32 MiB font budget, on 22 Mbit/s video. A text cue logs
 `sub cue [a..bms] len=N` (the length, never the words) for the selected track.
 
 Device checks must hold the TV lease and keep both the panel and sound off. Release the lease
