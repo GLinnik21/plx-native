@@ -459,7 +459,7 @@ pub trait AdaptivePhysicalPort:
     ActiveFeedPort<Error = PhysicalFailure>
     + AdaptiveRoundPort<Lease = LeaseHandle, TrialReserve = LeaseHandle>
     + CandidateMediaPort
-    + CandidateFencePort<Fence = FenceHandle, Error = PhysicalFailure>
+    + CandidateFencePort<Fence = FenceHandle>
 {
     fn begin_round(&mut self, round: RoundId);
     fn finish_active(&mut self) -> Option<VariantFact>;
@@ -514,14 +514,23 @@ pub trait OriginalSession: Send {
         -> OriginalProgress;
 }
 
+/// Refusal to arm a candidate before any of its media enters the active queue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CandidateFenceError {
+    /// The private candidate lost its lease before any of its AUs were queued.
+    Superseded,
+    Aborted,
+    Overlap,
+    Exhausted,
+}
+
 /// The feed worker's physical clock fence. It is armed before candidate AUs
 /// enter the queue and settled only after the queued route has been published
 /// and its cursor promoted. Dropping an unsettled fence leaves teardown to
 /// reset the generation.
 pub trait CandidateFencePort {
     type Fence;
-    type Error;
-    fn arm(&mut self, automatic_token: u64) -> Result<Self::Fence, Self::Error>;
+    fn arm(&mut self, automatic_token: u64) -> Result<Self::Fence, CandidateFenceError>;
     fn settle(&mut self, fence: Self::Fence);
 }
 
