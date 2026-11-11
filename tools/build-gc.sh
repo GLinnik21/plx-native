@@ -171,6 +171,7 @@ for a in "$@"; do
     --orphans)     MODE=orphans ;;
     --worktrees)   MODE=worktrees ;;
     --cache)       MODE=cache ;;
+    --ffmpeg-cache) MODE=ffmpeg-cache ;;
     --seed)        MODE=seed ;;
     --all)         MODE=all ;;
     --auto)        MODE=auto ;;
@@ -285,6 +286,9 @@ usage: tools/build-gc.sh [MODE] [-n]
                   cloned from, by the last time a lane restored from or refreshed it; a lane
                   built from it is unaffected (a clone owns its blocks), and the next lane to
                   finish a build makes a new one.
+  --ffmpeg-cache  the FFmpeg half of --cache and nothing else: the same shared build trees, the
+                  same per-key lock, the same $PLX_CACHE_MAX_DAYS, and the cargo seed left alone.
+                  It is the stage `--auto` runs under pressure, at $PLX_GC_AUTO_CACHE_DAYS.
   --seed          delete the cargo seed (`tools/cargo-seed.py`) that fresh lanes are cloned from
                   when no lane has restored from or refreshed it for $PLX_SEED_MAX_DAYS days
                   (default 7). By hand only: neither `--auto` nor the planner ever evicts the
@@ -304,7 +308,10 @@ usage: tools/build-gc.sh [MODE] [-n]
                   and a needless rebuild costs real money) and holding no ignored file that is
                   not build output (a lane with `src/config.local.h`, `pkg/auth.json` or its own
                   notes is kept and the log says which paths kept it: nobody is there to read
-                  what the removal takes); then, if still below, the PLANNER's
+                  what the removal takes); then, if still below, an FFmpeg-only age-out of the
+                  shared build trees under $PLX_BUILD_CACHE untouched for $PLX_GC_AUTO_CACHE_DAYS
+                  days (default 7; --ffmpeg-cache, so the cargo seed is not touched and a held
+                  key lock keeps its key); then, if still below, the PLANNER's
                   order: `tools/disk-budget.py reclaim --to $PLX_GC_MIN_FREE_GIB --emit` writes the
                   plan and `--evict` follows it (garbage, other lanes' incremental caches, younger
                   /tmp trees, whole idle lane trees, the `--stale` sweep, and the main checkout's
@@ -313,7 +320,7 @@ usage: tools/build-gc.sh [MODE] [-n]
                   deletes nothing. What the five fixed stages it replaces did differently: the
                   main checkout's incremental cache and a lane's vendor build trees are no longer
                   cleared by default, the cargo seed is never evicted, and PlxNative trees left
-                  under /tmp are now in scope. Never --cache, never a tracked file. Single-instance:
+                  under /tmp are now in scope. Never the cargo seed, never a tracked file. Single-instance:
                   a mkdir lock (stale-safe, $PLX_GC_LOCK_DIR) means a second --auto exits 0 quietly
                   rather than racing the first. Logs one line per stage to $PLX_GC_LOG (default
                   ~/Library/Logs/plxnative-build-gc.log on macOS,
@@ -324,7 +331,8 @@ usage: tools/build-gc.sh [MODE] [-n]
 
 Nothing here touches a tracked file or the television. The only thing it removes from the shared
 cache under $PLX_BUILD_CACHE is what `--cache` finds unused for $PLX_CACHE_MAX_DAYS days (FFmpeg
-trees and the cargo seed); `--auto` never runs `--cache` and never touches the seed.
+trees and the cargo seed), and what `--auto` finds unused for $PLX_GC_AUTO_CACHE_DAYS days while
+free space is below the comfort line (FFmpeg trees only: `--auto` never touches the seed).
 Everything it removes is rebuilt by `make`.
 USAGE
       exit 0 ;;
@@ -510,7 +518,9 @@ run_auto_planner() {
 # script has, reclaiming trees that literally nothing on the machine can refer to again, so there is
 # no reason to gate it on pressure at all. Below the threshold: `--worktrees` (a finished lane
 # outright, but only one idle for the guard window, as `--lanes` always demanded, and only one whose
-# ignored files are all build output: nobody reads what the removal takes), then the
+# ignored files are all build output: nobody reads what the removal takes), then the FFmpeg
+# cache's age-out (`--ffmpeg-cache` at $PLX_GC_AUTO_CACHE_DAYS, default 7: a key unused for a week is
+# dead weight and the cheapest thing left to take; the cargo seed stays out of it), then the
 # planner's order. Under `-n` nothing is ever freed, so every stage the CURRENT pressure would
 # trigger is shown, which is the honest reading of "preview the plan".
 #
@@ -532,8 +542,10 @@ run_auto_mode() {
 
   _min_gib=${PLX_GC_MIN_FREE_GIB:-20}
   _idle_min=${PLX_GC_IDLE_MIN:-60}
+  _cache_days=${PLX_GC_AUTO_CACHE_DAYS:-7}
   case "$_min_gib" in ''|*[!0-9]*) _min_gib=20 ;; esac
   case "$_idle_min" in ''|*[!0-9]*) _idle_min=60 ;; esac
+  case "$_cache_days" in ''|*[!0-9]*) _cache_days=7 ;; esac
   _min_kib=$((_min_gib * 1048576))
 
   _cur=$(free_kib); _cur=${_cur:-0}
@@ -550,7 +562,14 @@ run_auto_mode() {
     unset PLX_GC_AUTO_IDLE_MIN
     [ -n "$DRY" ] || { _cur=$(free_kib); _cur=${_cur:-0}; }
   else
-    echo "auto: free space already above threshold — worktrees and the planner pass skipped"
+    echo "auto: free space already above threshold — worktrees, the FFmpeg age-out and the planner pass skipped"
+  fi
+  if [ "$_cur" -lt "$_min_kib" ] 2>/dev/null; then
+    # FFmpeg keys only, by this stage's own days: a subshell, so the override is gone for the planner pass.
+    # The cargo seed is `--cache`'s and `--seed`'s, never this stage's (see `--ffmpeg-cache`).
+    ( PLX_CACHE_MAX_DAYS=$_cache_days; export PLX_CACHE_MAX_DAYS
+      run_auto_stage "ffmpeg cache (unused > ${_cache_days}d)" --ffmpeg-cache )
+    [ -n "$DRY" ] || { _cur=$(free_kib); _cur=${_cur:-0}; }
   fi
   if [ "$_cur" -lt "$_min_kib" ] 2>/dev/null; then
     run_auto_planner "$_min_gib" "$_idle_min"
@@ -1762,7 +1781,7 @@ report)
       || echo "  (tools/disk-budget.py report failed; the table above stands on its own)"
   fi
   echo
-  echo "reclaim with: tools/build-gc.sh --orphans | --incremental | --stale | --cache | --seed | --lanes | --worktrees | --all | --evict PLAN   (add -n to preview)"
+  echo "reclaim with: tools/build-gc.sh --orphans | --incremental | --stale | --cache | --ffmpeg-cache | --seed | --lanes | --worktrees | --all | --evict PLAN   (add -n to preview)"
   echo "the planner's own order: python3 tools/disk-budget.py reclaim --to GIB --emit > plan; tools/build-gc.sh --evict plan -n"
   ;;
 esac
@@ -1836,6 +1855,10 @@ prune_lock() {
 stale_cache_trees() {
   c=${PLX_BUILD_CACHE-$HOME/.cache/plxnative}
   [ -n "$c" ] && [ -d "$c/ffmpeg" ] || return 0
+  # A threshold that is not a number selects nothing, as `find -mtime +abc` (an error, silenced below) did;
+  # `$((abc * 1440))` would read it as 0 and select every key.
+  case "$CACHE_MAX_DAYS" in ''|*[!0-9]*) return 0 ;; esac
+  max_mins=$((CACHE_MAX_DAYS * 1440))
   for d in "$c"/ffmpeg/*; do
     case "$d" in
       *'*'*)   continue ;;
@@ -1859,12 +1882,17 @@ stale_cache_trees() {
     # the mtime it was created with and be collected on day thirty. An entry with no marker at all
     # predates that mechanism, and falls back to the directory.
     stamp="$d/.last-used"; [ -f "$stamp" ] || stamp="$d"
-    if [ -n "$(find "$stamp" -maxdepth 0 -mtime +"$CACHE_MAX_DAYS" 2>/dev/null)" ]; then echo "$d"; fi
+    # MINUTES, NOT `-mtime`: `-mtime +7` counts whole days and truncates the age, so it matches only from
+    # 8 days on, while every message and doc here says "unused for 7 days". `-mmin` is exact (BSD and GNU).
+    if [ -n "$(find "$stamp" -maxdepth 0 -mmin +"$max_mins" 2>/dev/null)" ]; then echo "$d"; fi
   done
 }
 
+# The FFmpeg trees, which `--auto` runs ALONE (`--ffmpeg-cache`, at $PLX_GC_AUTO_CACHE_DAYS): the
+# cargo seed below follows a different rule ("never evicted by --auto"), so the two halves are two
+# `case`s and `--cache` / `--all` run both.
 case "$MODE" in
-cache|all)
+cache|all|ffmpeg-cache)
   echo "== shared build trees untouched for over $CACHE_MAX_DAYS days =="
   # UNDER EACH ENTRY'S OWN LOCK. The preflight guard is a single check at startup, so a build that
   # starts a moment later takes `$WORK.lock` and begins reading a tree this loop is already
@@ -1898,6 +1926,10 @@ cache|all)
       echo "  in use, skipped  $d"
     fi
   done
+  ;;
+esac
+case "$MODE" in
+cache|all)
   # The cargo seed (`tools/cargo-seed.py`) lives beside the FFmpeg trees but follows its own
   # protocol: the script takes the seed's flock, so a restore or harvest in flight keeps its seed.
   # Absent in the synthetic repositories ci/test_build_gc.py builds, hence the existence test.
