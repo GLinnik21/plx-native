@@ -484,9 +484,11 @@ mod tests {
         FEED_SHARED.reset_session();
         let epoch = FEED_SHARED.begin_native_session().expect("native epoch");
         let mut session = capture(AttemptId::new(8, 1), epoch);
-        let lease = session.adaptive().begin(
-            AutomaticTransition::QualityUp, FEED_SHARED.hls_user_sequence(),
-        ).expect("upshift lease");
+        let generation = FEED_SHARED.hls_candidate_generation.load(Ordering::Acquire);
+        let lease = session.adaptive().arm_trial(
+            1_000, FEED_SHARED.hls_user_sequence(),
+        ).expect("production upshift trial");
+        assert_eq!(FEED_SHARED.hls_trial_reserve_ms.load(Ordering::Acquire), 1_000);
         let crate::shared::HlsUserPause::Issue(pause) =
             FEED_SHARED.prepare_hls_user_pause().expect("pause available") else {
                 panic!("running playback must issue pause");
@@ -498,6 +500,13 @@ mod tests {
             matches!(result, Err(CandidateFenceError::Superseded)),
             "viewer pause cancelled private candidate media, not the active source",
         );
+        drop(lease);
+        assert_eq!(FEED_SHARED.hls_trial_reserve_ms.load(Ordering::Acquire), -1,
+            "cancelled trial must release its reserve");
+        assert_eq!(FEED_SHARED.hls_candidate_generation.load(Ordering::Acquire), generation,
+            "private candidate must not begin publication");
+        assert!(FEED_SHARED.clock_user_held_for_test(),
+            "candidate cleanup must preserve the viewer's pause");
     }
 
     #[test]
