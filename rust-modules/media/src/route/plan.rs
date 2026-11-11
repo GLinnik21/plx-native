@@ -1882,8 +1882,8 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             plan.src_fps = plan.playing.as_ref().map_or(0.0, |p| p.video_fps);
             plan.playing_fresh = env.cached_item.is_none() && plan.playing.is_some();
             let src_kbps = match (env.version, played.as_ref()) {
-                (None, Some(_)) => plan.playing.as_ref().map_or(0, |p| p.bitrate),
-                _ => env.src_kbps,
+                (None, None) => env.src_kbps,
+                _ => plan.playing.as_ref().map_or(0, |p| p.bitrate),
             };
             let reselected = env.with_selection_for_part(plan.part_id);
             let env = reselected.as_ref().unwrap_or(env);
