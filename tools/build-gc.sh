@@ -322,10 +322,12 @@ usage: tools/build-gc.sh [MODE] [-n]
                   last ~200 lines past ~1 MB. `--auto -n` previews every stage the current free
                   space would trigger and deletes nothing; it takes no lock. With the OPT-IN
                   cold store configured (tools/cold-store.py, docs/disk-budget.md "The cold store")
-                  there is one more stage, between --orphans and --worktrees: below the store's
-                  park_below_gib free (default 40) it MOVES idle lane and /tmp build trees to the
-                  cold volume (nothing is deleted) up to park_max_gib_per_run; without a config
-                  file --auto is exactly what it was.
+                  there is one more stage, between --orphans and --worktrees: with free space
+                  under the store's park_below_gib (default 40) but at least the comfort line
+                  (PLX_GC_MIN_FREE_GIB) it MOVES idle lane and /tmp build trees to the cold
+                  volume (nothing is deleted) up to park_max_gib_per_run; under the comfort line
+                  it says so and parks nothing (the ladder deletes in seconds, a park holds the
+                  lock for a whole copy); without a config file --auto is exactly what it was.
   --park          the cold store's pass by hand: move the idle build trees (idle for the store's
                   park_idle_min, never the main checkout's, a live lane's or the seed) to the cold
                   volume now, whatever the free space, up to park_max_gib_per_run, then prune the
@@ -532,11 +534,14 @@ run_auto_planner() {
 
 # The cold store's park-ahead stage (tools/cold-store.py, `docs/disk-budget.md` "The cold store"): between
 # `--orphans` and `--worktrees`, when a cold store is configured and free space is under its `park_below_gib`
-# (default 40, above the comfort line, so idle trees move to the second volume BEFORE the ladder must delete
-# them), `disk-budget.py park --auto` moves the planner's idle whole-tree candidates, oldest first, up to
-# `park_max_gib_per_run`. It runs in python and takes the lock from this shell for the duration: it releases and
-# re-takes it between trees (naming this process each time), and stops after the tree it is on, giving the lock
-# back, when a preflight is waiting for it. Exit 3 is "nothing to say" (no cold store, or room enough): this
+# (default 40) but still at least the comfort line (so idle trees move to the second volume BEFORE the ladder
+# must delete them, and never once it must: a park holds this lock for a whole copy to a slow disk while a
+# preflight that waits for it gives up after 60 s without evicting), `disk-budget.py park --auto` moves the
+# planner's idle whole-tree candidates, oldest first, up to `park_max_gib_per_run`; under the comfort line it
+# prints one line saying it skipped, and the stages below delete as they always did. It runs in python and takes
+# the lock from this shell for the duration: it releases and re-takes it between trees (naming this process each
+# time), and stops after the tree it is on (or the sweep it is in), giving the lock back, when a preflight is
+# waiting for it. Exit 3 is "nothing to say" (no cold store, or room enough): this
 # function then prints and logs NOTHING, which is what keeps an unconfigured `--auto` the run it always was.
 # Returns 1 when the lock is no longer ours and this run must end without touching it again.
 PARK_RAN=
@@ -631,9 +636,10 @@ run_auto_mode() {
   run_auto_stage orphans --orphans
   _cur=$(free_kib); _cur=${_cur:-0}
 
-  # The park-ahead stage triggers at the cold store's own line (park_below_gib, default 40), which is above the
-  # comfort line the stages below use, so it sits BEFORE the "already above threshold" early exit (which still
-  # skips the worktrees and the planner pass, as it always did). A no-op, and silent, without a cold store.
+  # The park-ahead stage runs from the comfort line up to the cold store's own line (park_below_gib, default 40),
+  # which is above the comfort line the stages below use, so it sits BEFORE the "already above threshold" early
+  # exit (which still skips the worktrees and the planner pass, as it always did); under the comfort line it
+  # says it skipped and parks nothing. A no-op, and silent, without a cold store.
   if ! run_auto_park; then
     gc_log "end free=$(fmt_kb "$(free_kib)") (the lock was handed over during the park pass)"
     return 0

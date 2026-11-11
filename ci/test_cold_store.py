@@ -10,6 +10,7 @@ build already made, a crash leaving a tree both unparked and deleted, and a pret
 parking the real trees.
 """
 import contextlib
+import errno
 import importlib.util
 import io
 import os
@@ -19,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 import unittest
 from unittest import mock
 
@@ -30,6 +32,7 @@ cold = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cold)
 
 REAL_FREE_BYTES = cold.free_bytes_of                       # Rig replaces it; this test wants the real one
+REAL_FLUSH = getattr(cold, "flush_cold_volume", None)       # and this one: Rig stubs the flush (a sync costs real time)
 GIB = 1 << 30
 BASE_NS = 1_700_000_000_000_000_000
 
@@ -134,8 +137,10 @@ class Rig(unittest.TestCase):
                     "PLX_TV_CONFIG_DIR": os.path.join(self.tmp, "no-such-dir")}
         self.free = 1000 * GIB
         self.logs = []
+        self.flushes = []
         for target, fake in (("device_of", self.fake_dev), ("which_ditto", lambda: "/usr/bin/ditto"),
-                             ("copy_tree", copy_walk), ("free_bytes_of", lambda path, env: self.free)):
+                             ("copy_tree", copy_walk), ("free_bytes_of", lambda path, env: self.free),
+                             ("flush_cold_volume", self.flushes.append)):
             patcher = mock.patch.object(cold, target, fake)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -286,8 +291,11 @@ class RoundTrip(Rig):
         self.assertEqual(sorted(os.listdir(os.path.dirname(path))), ["target"])    # no .unpark sibling left
         self.assertTrue(re.fullmatch(r"cold-store: unpark [\d.]+ [KMG]?i?B in [\d.]+ s: %s" % re.escape(path),
                                      self.logs[-1]), self.logs)
-        self.assertEqual([n for n in os.listdir(os.path.join(self.root, "trees"))], [ident + ".consumed"])
-        self.assertEqual(store.recover(), [("reaped", os.path.join(self.root, "trees", ident + ".consumed"))])
+        left = os.listdir(os.path.join(self.root, "trees"))
+        self.assertEqual(len(left), 1, left)
+        self.assertRegex(left[0], r"^%s\.consumed\.\d+\.\d+$" % re.escape(ident))
+        self.assertEqual(store.recover(), [("reaped", os.path.join(self.root, "trees", left[0]))])
+        self.assertEqual(os.listdir(os.path.join(self.root, "trees")), [])
 
     def test_parking_again_replaces_the_older_cold_copy(self):
         store = self.store()
@@ -299,6 +307,81 @@ class RoundTrip(Rig):
         self.assertEqual(sorted(os.listdir(os.path.join(self.root, "trees"))), [cold.escape(path), cold.escape(path) + ".json"])
         self.assertEqual(store.unpark(path, rebuild_secs=1e9).status, cold.UNPARKED)
         self.assertEqual(snap(path), newer)
+
+    def test_unpark_says_what_it_is_about_to_copy_before_it_copies(self):
+        # An unpark runs inside a `make`: one line before a multi-minute copy, one after it.
+        store = self.store()
+        path = self.tree()
+        self.assertEqual(self.park(store, path).status, cold.PARKED)
+        seen = []
+
+        def spy(src, dst):
+            seen.append(list(self.logs))
+            copy_walk(src, dst)
+        with mock.patch.object(cold, "copy_tree", spy):
+            out = store.unpark(path, rebuild_secs=1e9)
+        self.assertEqual(out.status, cold.UNPARKED, out)
+        self.assertEqual(len(seen), 1)
+        before = r"cold-store: unpark [\d.]+ [KMG]?i?B from %s \(est [\d.]+ s at [\d.]+ MiB/s\): %s" % (
+            re.escape(self.root), re.escape(path))
+        self.assertEqual(len(seen[0]), 1, seen[0])
+        self.assertRegex(seen[0][0], before)
+        self.assertEqual(len(self.logs), 2, self.logs)
+        self.assertRegex(self.logs[1], r"cold-store: unpark [\d.]+ [KMG]?i?B in [\d.]+ s: %s" % re.escape(path))
+
+    def test_park_unpark_park_unpark_of_the_same_origin_leaks_nothing(self):
+        # The second unpark's `.consumed` set-aside met the first one's, which nobody had reaped: the rename failed
+        # quietly, the stale `trees/<id>` stayed (its record already gone) and the next park choked on it.
+        store = self.store()
+        path = self.tree()
+        ident = cold.escape(path)
+        trees = os.path.join(self.root, "trees")
+        for cycle in range(2):
+            before = snap(path)
+            self.assertEqual(self.park(store, path, now=1.0 + cycle).status, cold.PARKED, self.logs)
+            out = store.unpark(path, rebuild_secs=1e9)
+            self.assertEqual(out.status, cold.UNPARKED, out)
+            self.assertEqual(snap(path), before)
+        left = sorted(os.listdir(trees))
+        self.assertEqual(len(left), 2, left)
+        for name in left:
+            self.assertRegex(name, r"^%s\.consumed\.\d+\.\d+$" % re.escape(ident))
+        self.assertEqual({what for what, _ in store.recover()}, {"reaped"})
+        self.assertEqual(os.listdir(trees), [])
+
+    def test_a_legacy_consumed_name_and_a_path_that_merely_contains_the_word_are_told_apart(self):
+        store = self.store()
+        trees = os.path.join(self.root, "trees")
+        os.makedirs(os.path.join(trees, "old.consumed"))                      # what an earlier version left
+        keeper = self.tree(name="target", lane="x.consumed.1.2")              # a lane directory with the word in it
+        self.assertEqual(self.park(store, keeper).status, cold.PARKED)
+        got = store.recover()
+        self.assertEqual(got, [("reaped", os.path.join(trees, "old.consumed"))])
+        self.assertEqual(store.unpark(keeper, rebuild_secs=1e9).status, cold.UNPARKED)
+
+    def test_an_unrecorded_stale_copy_in_the_way_is_set_aside_by_the_next_park(self):
+        store = self.store()
+        path = self.tree()
+        ident = cold.escape(path)
+        stale = os.path.join(self.root, "trees", ident)
+        os.makedirs(os.path.join(stale, "stale-dir"))                         # no record: a failed set-aside left it
+        with open(os.path.join(stale, "stale-file"), "w") as fh:
+            fh.write("old\n")
+        before = snap(path)
+        self.assertEqual(self.park(store, path).status, cold.PARKED, self.logs)
+        self.assertEqual(store.unpark(path, rebuild_secs=1e9).status, cold.UNPARKED)
+        self.assertEqual(snap(path), before, "the stale copy was restored instead of the parked tree")
+        self.assertEqual({what for what, _ in store.recover()}, {"reaped"})
+        self.assertEqual(os.listdir(os.path.join(self.root, "trees")), [])
+
+    def test_a_dead_set_aside_name_that_is_taken_does_not_stop_a_park(self):
+        store = self.store()
+        path = self.tree()
+        self.assertEqual(self.park(store, path, now=1.0).status, cold.PARKED)
+        make_tree(path, salt=9)
+        ident = cold.escape(path)
+        os.makedirs(os.path.join(self.root, "trees", "%s.dead.%d" % (ident, os.getpid()), "x"))   # an old name, in use
+        self.assertEqual(self.park(store, path, now=2.0).status, cold.PARKED, self.logs)
 
     def test_unpark_refuses_an_existing_origin(self):
         store = self.store()
@@ -451,6 +534,184 @@ class ParkGuards(Rig):
         self.assertEqual((out.status, snap(path)), (cold.FAILED, before))
         self.assertIn("verification", out.reason)
         self.assertEqual(self.store().records(), [])
+
+
+class ParkDurability(Rig):
+    """The copy is only as safe as the cold disk's write cache is flushed: nothing on the SSD may go before it is,
+    and a step after the copy that fails must leave the tree where it was, not in parking/ with a traceback."""
+
+    def trees(self):
+        return sorted(os.listdir(os.path.join(self.root, "trees")))
+
+    def parking(self):
+        return os.listdir(os.path.join(self.cache, "cold-store", "parking"))
+
+    @staticmethod
+    def inject(name, when):
+        """Make `cold.<name>` (or `os.rename`) raise an OSError for the calls `when(*args)` picks; every other call
+        is the real one."""
+        owner = os if name == "rename" else cold
+        real = getattr(owner, name)
+
+        def wrapped(*args, **kw):
+            if when(*args):
+                raise OSError(errno.EIO, "injected %s failure" % name)
+            return real(*args, **kw)
+        return mock.patch.object(owner, name, wrapped)
+
+    def assertParkFailedAndTheTreeIsBack(self, store, path, before, out):
+        ident = cold.escape(path)
+        self.assertEqual(out.status, cold.FAILED, out)
+        self.assertEqual(snap(path), before)
+        self.assertEqual(self.parking(), [])
+        self.assertEqual(store.records(), [])
+        left = self.trees()
+        self.assertNotIn(ident, left)
+        self.assertNotIn(ident + ".json", left)
+        self.assertNotIn(ident + ".partial", left)
+        return left
+
+    def test_the_cold_volume_is_flushed_after_the_copy_and_before_the_ssd_copy_goes(self):
+        store = self.store()
+        path = self.tree()
+        ident = cold.escape(path)
+        parking = os.path.join(self.cache, "cold-store", "parking", ident)
+        seen = []
+
+        def flush(record):
+            seen.append({"record": record, "parking_copy": os.path.isdir(parking), "indexed": store.indexed(path),
+                         "cold_copy": os.path.isdir(os.path.join(self.root, "trees", ident)),
+                         "record_file": os.path.isfile(record)})
+        with mock.patch.object(cold, "flush_cold_volume", flush):
+            out = self.park(store, path)
+        self.assertEqual(out.status, cold.PARKED, out)
+        self.assertEqual(seen, [{"record": os.path.join(self.root, "trees", ident + ".json"), "parking_copy": True,
+                                 "indexed": False, "cold_copy": True, "record_file": True}])
+        self.assertTrue(store.indexed(path))
+        self.assertFalse(os.path.lexists(parking))
+
+    def test_a_flush_that_fails_puts_the_tree_back_and_leaves_no_cold_copy_for_recover_to_adopt(self):
+        store = self.store()
+        path = self.tree()
+        before = snap(path)
+
+        def boom(record):
+            raise OSError(errno.EIO, "the drive did not flush")
+        with mock.patch.object(cold, "flush_cold_volume", boom):
+            out = self.park(store, path)
+        left = self.assertParkFailedAndTheTreeIsBack(store, path, before, out)
+        self.assertIn("did not flush", out.reason)
+        self.assertTrue(left and all(".dead." in name for name in left), left)     # debris, not a copy
+        got = store.recover()
+        self.assertEqual({what for what, _ in got}, {"reaped"}, got)               # reaped, never adopted
+        self.assertEqual((self.trees(), store.records(), snap(path)), ([], [], before))
+
+    def test_a_failure_writing_the_cold_record_puts_the_tree_back(self):
+        store = self.store()
+        path = self.tree()
+        before = snap(path)
+        cold_json = os.path.join(self.root, "trees", cold.escape(path) + ".json")
+        with self.inject("write_json", lambda target, obj: target == cold_json):
+            out = self.park(store, path)
+        self.assertParkFailedAndTheTreeIsBack(store, path, before, out)
+        self.assertEqual(self.flushes, [], "nothing was complete to flush")
+
+    def test_a_failure_renaming_the_copy_into_place_puts_the_tree_back(self):
+        store = self.store()
+        path = self.tree()
+        before = snap(path)
+        final = os.path.join(self.root, "trees", cold.escape(path))
+        with self.inject("rename", lambda src, dst: dst == final):
+            out = self.park(store, path)
+        self.assertParkFailedAndTheTreeIsBack(store, path, before, out)
+        self.assertEqual(self.trees(), [])
+
+    def test_a_failure_moving_an_older_copy_aside_puts_the_tree_back(self):
+        store = self.store()
+        path = self.tree()
+        self.assertEqual(self.park(store, path, now=1.0).status, cold.PARKED)
+        make_tree(path, salt=9)
+        before = snap(path)
+        final = os.path.join(self.root, "trees", cold.escape(path))
+        with self.inject("rename", lambda src, dst: src == final):
+            out = self.park(store, path, now=2.0)
+        self.assertEqual((out.status, snap(path), self.parking()), (cold.FAILED, before, []), out)
+
+    def test_a_failure_writing_the_index_puts_the_tree_back_and_the_cold_copy_is_debris(self):
+        store = self.store()
+        path = self.tree()
+        before = snap(path)
+        with self.inject("write_json", lambda target, obj: target == store.index_path(path)):
+            out = self.park(store, path)
+        left = self.assertParkFailedAndTheTreeIsBack(store, path, before, out)
+        self.assertTrue(left and all(".dead." in name for name in left), left)
+        got = store.recover()
+        self.assertEqual({what for what, _ in got}, {"reaped"}, got)
+        self.assertEqual((self.trees(), store.records(), snap(path)), ([], [], before))
+
+    def test_a_failed_undo_leaves_the_residue_for_recover_rather_than_deleting_the_tree(self):
+        store = self.store()
+        path = self.tree()
+        before = snap(path)
+        parked = os.path.join(self.cache, "cold-store", "parking", cold.escape(path))
+        with self.inject("write_json", lambda target, obj: target == store.index_path(path)), \
+                self.inject("rename", lambda src, dst: src == parked):
+            out = self.park(store, path)
+        self.assertEqual(out.status, cold.FAILED, out)
+        self.assertTrue(os.path.isdir(parked))
+        with open(parked + ".pid", "w") as fh:
+            fh.write("%d\n" % dead_pid())                  # the parker exits after a FAILED; recover leaves a live one alone
+        self.assertEqual([what for what, _ in store.recover() if what != "reaped"], ["renamed-back"])
+        self.assertEqual(snap(path), before)
+
+
+class FlushColdVolume(Rig):
+    """The one function behind the flush: `sync`, then a full-drive flush through one file on the cold volume."""
+
+    def run_flush(self, fake_fcntl):
+        record = os.path.join(self.volume, "record.json")
+        with open(record, "w") as fh:
+            fh.write("{}\n")
+        calls = []
+        fake_fcntl.calls = calls
+        inode = os.stat(record).st_ino
+
+        def fsync(fd):
+            calls.append(("fsync", os.fstat(fd).st_ino == inode))
+        with mock.patch.object(cold, "fcntl", fake_fcntl), \
+                mock.patch.object(cold.os, "sync", lambda: calls.append("sync")), \
+                mock.patch.object(cold.os, "fsync", fsync):
+            REAL_FLUSH(record)
+        return calls, inode
+
+    @staticmethod
+    def fcntl_module(error=None, full=51):
+        ns = types.SimpleNamespace()
+        if full is not None:
+            ns.F_FULLFSYNC = full
+
+        def fcntl(fd, op):
+            if error:
+                raise error
+            ns.calls.append(("full", op, os.fstat(fd).st_ino))
+        ns.fcntl = fcntl
+        return ns
+
+    def test_it_syncs_then_flushes_the_whole_drive_through_the_record_file(self):
+        calls, inode = self.run_flush(self.fcntl_module())
+        self.assertEqual(calls, ["sync", ("full", 51, inode)])
+
+    def test_it_falls_back_to_fsync_where_there_is_no_full_fsync(self):
+        calls, _ = self.run_flush(self.fcntl_module(full=None))
+        self.assertEqual(calls, ["sync", ("fsync", True)])
+
+    def test_it_falls_back_to_fsync_on_a_volume_that_does_not_support_it(self):
+        calls, _ = self.run_flush(self.fcntl_module(error=OSError(errno.ENOTSUP, "not supported")))
+        self.assertEqual(calls, ["sync", ("fsync", True)])
+
+    def test_any_other_failure_is_raised(self):
+        with self.assertRaises(OSError):
+            self.run_flush(self.fcntl_module(error=OSError(errno.EIO, "input/output error")))
 
 
 class Recovery(Rig):
@@ -620,6 +881,79 @@ class Prune(Rig):
         self.assertEqual(sorted(os.listdir(trees)), [cold.escape(store.records()[0]["origin"]) + s for s in ("", ".json")])
         gone = self.store(dict(self.env, PLX_COLD_STORE="/Volumes/PlxColdStoreTestNoSuchVolume/x"))
         self.assertEqual(gone.prune(now=1e12), [])
+
+
+class StopsForAWaiter(Rig):
+    """`stop` is the park pass's "a preflight is waiting for the lock": recover, prune and the reap look at it
+    before each piece of work and end there, so the lock goes back after one item, not after a whole sweep of
+    the cold disk."""
+
+    @staticmethod
+    def after(n):
+        """A stop callback that is False for `n` looks, then True."""
+        calls = []
+        return lambda: calls.append(1) or len(calls) > n
+
+    def parking_entries(self):
+        return sorted(n for n in os.listdir(os.path.join(self.cache, "cold-store", "parking"))
+                      if not n.endswith((".json", ".pid")))
+
+    def residues(self):
+        for lane in ("l1", "l2", "l3"):
+            Recovery.residue(self, self.tree(lane=lane))
+
+    def parked_three(self, store, now):
+        for i, lane in enumerate(("a", "b", "c")):
+            Prune.parked(self, store, lane, now + i)
+
+    def test_recover_settles_nothing_once_a_waiter_waits(self):
+        self.residues()
+        store = self.store()
+        self.assertEqual(store.recover(stop=lambda: True), [])
+        self.assertEqual(len(self.parking_entries()), 3)
+
+    def test_recover_stops_between_residues(self):
+        self.residues()
+        store = self.store()
+        got = store.recover(stop=self.after(1))
+        self.assertEqual([what for what, _ in got], ["renamed-back"], got)
+        self.assertEqual(len(self.parking_entries()), 2)
+        self.assertEqual([what for what, _ in store.recover()], ["renamed-back"] * 2, "a later pass settles the rest")
+
+    def test_recover_does_not_reap_once_a_waiter_waits(self):
+        store = self.store()
+        trees = os.path.join(self.root, "trees")
+        os.makedirs(os.path.join(trees, "x.consumed"))
+        self.assertEqual(store.recover(stop=lambda: True), [])
+        self.assertTrue(os.path.isdir(os.path.join(trees, "x.consumed")))
+        self.assertEqual(store.recover(), [("reaped", os.path.join(trees, "x.consumed"))])
+
+    def test_prune_drops_nothing_once_a_waiter_waits(self):
+        store = self.store()
+        self.parked_three(store, 1.0)
+        os.makedirs(os.path.join(self.root, "trees", "x.consumed"))
+        self.assertEqual(store.prune(now=100 * 86400.0, stop=lambda: True), [])
+        self.assertEqual(len(store.records()), 3)
+        self.assertTrue(os.path.isdir(os.path.join(self.root, "trees", "x.consumed")), "no reap either")
+
+    def test_prune_stops_between_copies_and_skips_the_reap(self):
+        store = self.store()
+        self.parked_three(store, 1.0)
+        os.makedirs(os.path.join(self.root, "trees", "x.consumed"))
+        got = store.prune(now=100 * 86400.0, stop=self.after(1))
+        self.assertEqual(len(got), 1, got)
+        self.assertEqual(len(store.records()), 2)
+        self.assertTrue(os.path.isdir(os.path.join(self.root, "trees", "x.consumed")))
+        self.assertEqual(len(store.prune(now=100 * 86400.0)), 2)
+        self.assertFalse(os.path.isdir(os.path.join(self.root, "trees", "x.consumed")))
+
+    def test_the_min_free_rule_stops_for_a_waiter_too(self):
+        store = self.store()
+        self.parked_three(store, 1000.0)
+        with mock.patch.object(cold, "free_bytes_of", lambda path, env: 100 * GIB):       # always under min_free_gib
+            got = store.prune(now=2000.0, stop=self.after(1))
+        self.assertEqual(len(got), 1, got)
+        self.assertEqual(len(store.records()), 2)
 
 
 class TestEnvGuard(Rig):

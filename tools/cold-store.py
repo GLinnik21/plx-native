@@ -18,7 +18,8 @@ XDG_CONFIG_HOME/plxnative, else ~/.config/plxnative); `key=value` lines, `#` com
     max_days=14                        a parked copy older than this is pruned
     min_free_gib=200                   the cold volume must keep this much free; under it nothing is parked and
                                        prune drops the oldest copies until it is back over
-    park_below_gib=40                  W3: park ahead of the ladder when the build volume is under this
+    park_below_gib=40                  W3: park ahead of the ladder when the build volume is under this (and still
+                                       at least the comfort line: under it the ladder deletes, nothing parks)
     park_idle_min=120                  W3: a tree must have been idle this long to be parked
     park_max_gib_per_run=20            W3: the most one --auto pass parks
     rate_floor_mibs=40                 the fastest copy rate the unpark cost rule will assume (MiB/s)
@@ -39,12 +40,15 @@ LAYOUT. SSD side, under $PLX_BUILD_CACHE/cold-store/ (same volume as the trees, 
 Cold side, under <root>/:
     trees/<id>/                   the copy; <id> is the escaped origin path
     trees/<id>.json               the same record, beside it (the SSD index can be rebuilt from these)
-    trees/<id>.partial            a copy in progress; trees/<id>.dead.<pid> / <id>.consumed: awaiting a reap
+    trees/<id>.partial            a copy in progress; <id>.dead.<pid>.<ns> / <id>.consumed.<pid>.<ns>: awaiting a reap
 An unpark copies into `<parent>/.<name>.unpark.<pid>` (a hidden sibling: `target*` globs do not match it).
 
 THE PARK PROTOCOL. (1) the caller's liveness callback is asked again; (2) rename the tree into parking/<id>/
 (refused when that is another volume); (3) copy to trees/<id>.partial and verify file count + apparent bytes,
-record the cold side, rename to trees/<id>/; (4) write the SSD index record; (5) delete the parking copy. A dead
+record the cold side, rename to trees/<id>/, then FLUSH the cold volume once (`sync` and F_FULLFSYNC through the
+record file: a copy still in the drive's write cache is not one to delete the SSD side for); (4) write the SSD
+index record; (5) delete the parking copy. A failing step from the record write to the index rolls back: the tree
+is renamed back into its checkout, a renamed-in copy becomes `<id>.dead.*` debris, and the outcome is FAILED. A dead
 owner's residue is settled by `recover`: a complete cold copy of THIS park -> delete the SSD copy; else the
 origin absent -> rename back; else delete the SSD copy. THE UNPARK PROTOCOL only fills an ABSENT tree, only when
 the copy is cheaper than a rebuild (`apparent_bytes / min(rate_floor, park_rate) < rebuild_secs`) and the caller
@@ -52,8 +56,11 @@ says the free space after it stays over its line; it copies beside the origin, v
 consumes the record. Python standard library only; `ditto` is the one copy primitive (macOS), replaced by tests.
 """
 import argparse
+import errno
+import fcntl
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -76,6 +83,11 @@ DEFAULT_REBUILD_SECS = {"target": 300.0, "target-fast": 120.0, "target-hostsim":
                         "target-release": 600.0, "target-storage": 30.0}
 FALLBACK_REBUILD_SECS = 120.0       # a directory name not in the table (a /tmp tree's own name)
 TEST_ENV = ("PLX_COLD_STORE_TEST_FREE_KIB", "PLX_COLD_STORE_TEST_NOW")
+# The names the reap deletes, matched as a whole SUFFIX: an escaped origin path can carry ".dead." or ".consumed."
+# in a directory name of its own, and a loose substring match would reap a live copy. A set-aside is named
+# `<id>.dead.<pid>.<ns>` / `<id>.consumed.<pid>.<ns>`: unique, so a name an earlier set-aside left behind (or an
+# older version's `<id>.dead.<pid>` and plain `<id>.consumed`) can never make the next rename fail.
+DEBRIS_SUFFIX = re.compile(r"\.(dead\.\d+(\.\d+)?|consumed(\.\d+\.\d+)?)$")
 
 
 # --- small helpers (the stubbable seams are device_of, free_bytes_of, which_ditto and copy_tree) -----------
@@ -150,6 +162,32 @@ def copy_tree(src: str, dst: str) -> None:
                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
 
 
+def flush_cold_volume(path: str) -> None:
+    """Make what was just written to the cold volume durable, once, before anything on the SSD is deleted for it.
+    `ditto` returns with the copy in the page cache and the USB drive's own write cache, and a power cut or a
+    yanked cable then loses it with the SSD copy already gone. `sync` first pushes every dirty buffer to the
+    devices, then `F_FULLFSYNC` on `path` (a file just written on the cold volume) flushes that drive's whole cache,
+    which a plain `fsync` does not on macOS; one file stands for the volume, so the cost is one flush, not one per
+    copied file (measured on the owner's disk: fsync 5-9 s under load, so a per-file one would run for hours). A
+    volume that cannot do `F_FULLFSYNC` (or a platform without it) takes `fsync`, the strongest it has; any other
+    failure is raised: the caller must not delete the SSD copy on a flush that did not happen."""
+    os.sync()
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        full = getattr(fcntl, "F_FULLFSYNC", None)
+        if full is None:
+            os.fsync(fd)
+            return
+        try:
+            fcntl.fcntl(fd, full)
+        except OSError as exc:
+            if exc.errno not in (errno.ENOTSUP, errno.EINVAL, errno.ENOTTY):
+                raise
+            os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def pid_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -163,10 +201,14 @@ def pid_alive(pid: int) -> bool:
 def write_json(path: str, obj) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = "%s.tmp.%d" % (path, os.getpid())
-    with open(tmp, "w") as fh:
-        json.dump(obj, fh, sort_keys=True, indent=1)
-        fh.write("\n")
-    os.replace(tmp, path)
+    try:
+        with open(tmp, "w") as fh:
+            json.dump(obj, fh, sort_keys=True, indent=1)
+            fh.write("\n")
+        os.replace(tmp, path)
+    except BaseException:
+        unlink(tmp)                              # this pid is alive, so the reap would not take it for debris
+        raise
 
 
 def read_json(path: str) -> Optional[dict]:
@@ -509,19 +551,50 @@ class ColdStore:
         record["park_rate"] = apparent / secs
         record["copy_secs"] = round(secs, 3)
         final = self.trees_path(ident)
+        cold_json = self.trees_path(ident + ".json")
         dead = None
-        if os.path.lexists(final):               # an older copy of the same origin
-            dead = self.trees_path("%s.dead.%d" % (ident, os.getpid()))
-            os.rename(final, dead)
-            unlink(self.trees_path(ident + ".json"))
-        write_json(self.trees_path(ident + ".json"), record)
-        os.rename(partial, final)
-        write_json(self.index_path(origin), record)
+        wrote = published = False
+        try:
+            if os.path.lexists(final):           # an older copy of the same origin, recorded or not
+                dead = self._aside(ident, "dead")
+                os.rename(final, dead)
+                unlink(cold_json)
+            write_json(cold_json, record)
+            wrote = True
+            os.rename(partial, final)
+            published = True
+            flush_cold_volume(cold_json)         # the copy, its record and the rename are on the disk, not in its cache
+            write_json(self.index_path(origin), record)
+        except (OSError, subprocess.SubprocessError) as exc:
+            self._undo_publish(ident, origin, partial, wrote, published)
+            return Outcome(FAILED, "recording the cold copy failed: %s" % exc)
         remove(parked)
         self._drop_parking_files(ident)
         if dead:
             remove(dead)
         return Outcome(PARKED, "", record, secs)
+
+    def _undo_publish(self, ident: str, origin: str, partial: str, wrote: bool, published: bool) -> None:
+        """A step after the copy failed: put the tree back FIRST (a rename on the SSD, so the lane is not left
+        without it while the cold disk is slow), then settle the cold side without deleting anything big. Before
+        `partial` became the copy it is just a partial again; after, the copy is renamed to
+        `<id>.dead.<pid>.<ns>` (a name the reap deletes; left as `<id>/` with its record, `recover` would ADOPT
+        a copy of a tree that is back in its checkout). The record goes when this park wrote it. Every step is
+        best effort: a failure here leaves debris for the reap, never a traceback."""
+        self._rename_back(ident, origin)
+        if wrote:
+            unlink(self.trees_path(ident + ".json"))
+        if published:
+            try:
+                os.rename(self.trees_path(ident), self._aside(ident, "dead"))
+            except OSError:
+                pass
+        else:
+            remove(partial)
+
+    def _aside(self, ident: str, kind: str) -> str:
+        """A fresh name to set a copy aside under, for the reap to delete later (`kind`: "dead" or "consumed")."""
+        return self.trees_path("%s.%s.%d.%d" % (ident, kind, os.getpid(), time.time_ns()))
 
     def _drop_parking_files(self, ident: str) -> None:
         for suffix in (".json", ".pid"):
@@ -567,9 +640,11 @@ class ColdStore:
                 remove(self.trees_path(ident + ".partial"))
         return result
 
-    def recover(self) -> List[Tuple[str, str]]:
+    def recover(self, stop: Optional[Callable[[], bool]] = None) -> List[Tuple[str, str]]:
         """Settle every dead owner's residue, adopt cold records the SSD index lost, drop stale unpark siblings and
-        reap cold-side debris. Returns (what, detail) pairs. A live owner's parking copy is left alone."""
+        reap cold-side debris. Returns (what, detail) pairs. A live owner's parking copy is left alone. `stop()`
+        is asked before each piece of deleting or moving and ends the sweep when it says True (the park pass:
+        "a preflight is waiting for the lock"); what is left waits for the next pass."""
         out: List[Tuple[str, str]] = []
         if self.cfg is None or refuse_test_env(self.env):
             return out
@@ -580,6 +655,8 @@ class ColdStore:
             names = []
         for ident in names:
             if not self._owner_alive(ident):
+                if stop is not None and stop():
+                    return out
                 out.append((self._settle_residue(ident), ident))
         for rec in self.records():               # an interrupted unpark's hidden sibling
             parent, name = os.path.split(rec["origin"])
@@ -594,6 +671,8 @@ class ColdStore:
                     except ValueError:
                         alive = False
                     if not alive:
+                        if stop is not None and stop():
+                            return out
                         remove(os.path.join(parent, entry))
                         out.append(("removed-unpark-residue", os.path.join(parent, entry)))
         if self.root_reachable() and os.path.isdir(self.trees_path()):
@@ -604,12 +683,13 @@ class ColdStore:
                             and not os.path.exists(self.index_path(rec["origin"])):
                         write_json(self.index_path(rec["origin"]), rec)
                         out.append(("adopted", rec["origin"]))
-            out.extend(("reaped", p) for p in self._reap())
+            out.extend(("reaped", p) for p in self._reap(stop))
         return out
 
-    def _reap(self) -> List[str]:
+    def _reap(self, stop: Optional[Callable[[], bool]] = None) -> List[str]:
         """Delete cold-side debris: a copy in progress with no live owner, rotated or consumed copies, a record
-        whose copy is gone, a record temp file of a dead writer. An unrecorded directory is left alone."""
+        whose copy is gone, a record temp file of a dead writer. An unrecorded directory is left alone. `stop()`
+        is asked before each deletion (a whole tree on a slow disk) and ends the sweep when it says True."""
         gone = []
         base = self.trees_path()
         for name in sorted(os.listdir(base)):
@@ -617,7 +697,7 @@ class ColdStore:
             if name.endswith(".partial"):
                 stem = name[:-len(".partial")]
                 debris = not (os.path.lexists(self.parking_path(stem)) and self._owner_alive(stem))
-            elif ".dead." in name or name.endswith(".consumed"):
+            elif DEBRIS_SUFFIX.search(name):
                 debris = True
             elif ".json.tmp." in name:
                 try:
@@ -629,6 +709,8 @@ class ColdStore:
             else:
                 debris = False
             if debris:
+                if stop is not None and stop():
+                    break
                 remove(path)
                 gone.append(path)
         return gone
@@ -673,7 +755,8 @@ class ColdStore:
             return Outcome(SKIPPED, "the cold copy is gone; dropped its record")
         apparent = int(record.get("apparent_bytes", 0))
         budget = rebuild_secs if rebuild_secs is not None else self.cfg.rebuild_secs(os.path.basename(origin))
-        estimate = apparent / self.rate_for(record, self.cfg.rate_floor_mibs)
+        rate = self.rate_for(record, self.cfg.rate_floor_mibs)
+        estimate = apparent / rate
         if estimate >= budget:
             return Outcome(DECLINED, "copying %s would take ~%.0f s, a rebuild ~%.0f s" % (human(apparent), estimate, budget),
                            record)
@@ -683,6 +766,8 @@ class ColdStore:
         if dry_run:
             return Outcome(DRY_RUN, "would unpark %s (~%.0f s)" % (human(apparent), estimate), record)
         sibling = os.path.join(parent, ".%s.unpark.%d" % (os.path.basename(origin), os.getpid()))
+        self.log("cold-store: unpark %s from %s (est %.0f s at %.0f MiB/s): %s" % (
+            human(apparent), self.cfg.root, estimate, rate / MIB, origin))
         started = time.time()
         try:
             remove(sibling)
@@ -709,16 +794,18 @@ class ColdStore:
         unlink(self.index_path(origin))
         unlink(self.trees_path(ident + ".json"))
         try:
-            os.rename(self.trees_path(ident), self.trees_path(ident + ".consumed"))
+            os.rename(self.trees_path(ident), self._aside(ident, "consumed"))
         except OSError:
-            pass
+            pass                                 # the next park of this origin sets the stale copy aside itself
 
     # --- prune ---
     def prune(self, now: Optional[float] = None, facts: Optional[PruneFacts] = None, *,
-              dry_run: bool = False) -> List[Tuple[str, str, int]]:
+              dry_run: bool = False, stop: Optional[Callable[[], bool]] = None) -> List[Tuple[str, str, int]]:
         """Drop parked copies that no longer earn their space; returns (origin, why, apparent bytes). Rules: the
         origin exists and was built after the park; its lane is gone or merged (per `facts`); older than max_days;
-        then, while the cold volume is under min_free_gib, the oldest left. Reaps cold-side debris too."""
+        then, while the cold volume is under min_free_gib, the oldest left. Reaps cold-side debris too. `stop()` is
+        asked before each copy is deleted (and before each reap) and ends the sweep when it says True, returning
+        what was dropped so far: the rest waits for the next pass."""
         if self.cfg is None or refuse_test_env(self.env) or not self.root_reachable():
             return []
         now = clock(self.env) if now is None else now
@@ -742,6 +829,8 @@ class ColdStore:
             elif now - rec.get("parked_at", 0) > self.cfg.max_days * 86400:
                 why = "older than max_days=%g" % self.cfg.max_days
             if why:
+                if not dry_run and stop is not None and stop():
+                    return dropped
                 dropped.append((origin, why, int(rec.get("apparent_bytes", 0))))
                 if not dry_run:
                     self._forget(rec)
@@ -753,6 +842,8 @@ class ColdStore:
         for rec in keep:                         # oldest first
             if free >= floor:
                 break
+            if not dry_run and stop is not None and stop():
+                return dropped
             size = int(rec.get("apparent_bytes", 0))
             dropped.append((rec["origin"], "the cold volume is under min_free_gib=%g" % self.cfg.min_free_gib, size))
             if dry_run:
@@ -761,7 +852,7 @@ class ColdStore:
                 self._forget(rec)
                 free = free_bytes_of(anchor, self.env)
         if not dry_run and os.path.isdir(self.trees_path()):
-            self._reap()
+            self._reap(stop)
         return dropped
 
     def _forget(self, rec: dict) -> None:

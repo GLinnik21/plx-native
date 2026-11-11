@@ -905,6 +905,10 @@ def which_ditto():
     return "/usr/bin/ditto"
 
 
+def flush_cold_volume(path):
+    pass                                      # the real one is a `sync` and a full-drive flush: seconds, in a test
+
+
 def copy_tree(src, dst):
     shutil.copytree(src, dst, symlinks=True)
 '''
@@ -963,15 +967,23 @@ def copy_tree(src, dst):
         self.assertNotIn("worktrees (idle", log)
         self.assertFalse(Path(env["PLX_GC_LOCK_DIR"]).exists(), "the lock must be released at the end")
 
-    def test_auto_runs_the_park_stage_between_orphans_and_worktrees_when_below_the_comfort_line_too(self):
-        fixture, roots, _ = self.cold_fixture()
+    def test_auto_below_the_comfort_line_parks_nothing_and_leaves_the_ladder_to_delete_as_before(self):
+        # A park holds the auto lock for a whole copy to a slow disk, while a preflight that waits for it gives up
+        # after 60 s and judges on free space with no eviction: under the comfort line the stage says so and
+        # parks nothing, and the worktrees stage and the planner pass run as they do without a cold store.
+        fixture, roots, cold_root = self.cold_fixture()
         env = dict(self.PARK_ENV, PLX_GC_TEST_FREE_KIB=str(10 << 20), PLX_GC_MIN_FREE_GIB="12")
         result = self.run_auto(fixture, extra_env=env)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, out)
         log = Path(fixture[1]["PLX_GC_LOG"]).read_text()
         order = [m for m in ("orphans:", "park:", "worktrees (idle >= 30m):", "evict (planner order):") if m in log]
         self.assertEqual(order, ["orphans:", "park:", "worktrees (idle >= 30m):", "evict (planner order):"], log)
-        self.assertEqual(len(self.parked_ids(fixture)), 2, log)
+        self.assertIn("park: parked=0 ", log)
+        self.assertRegex(out, r"park: skipped: .* free is under the .* comfort line")
+        self.assertEqual(self.parked_ids(fixture), [], out)
+        self.assertFalse((cold_root / "trees").exists(), "the cold volume was written to under pressure: " + out)
+        self.assertFalse(Path(fixture[1]["PLX_GC_LOCK_DIR"]).exists(), "the lock must be released at the end")
 
     def test_auto_leaves_a_live_a_young_and_a_main_tree_where_they_are(self):
         import fcntl

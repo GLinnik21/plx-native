@@ -290,9 +290,9 @@ the first stage; a lane's vendor build trees are not touched (they are not deriv
 are now in scope; and the stop line is the threshold plus 4 GiB. A planner that fails or is missing
 deletes nothing and the log says so. The free-space gate, the single-instance lock and `-n` (which
 takes no lock) are unchanged. With the opt-in cold store configured there is one more stage, between
-`--orphans` and `--worktrees`, with its own gate (`park_below_gib`, default 40 GiB free) that moves idle trees
-to the cold volume instead of deleting them; it prints and logs nothing without a config file (see "The cold
-store").
+`--orphans` and `--worktrees`, with its own gate (free space from the comfort line up to `park_below_gib`,
+default 40 GiB) that moves idle trees to the cold volume instead of deleting them; it prints and logs nothing
+without a config file (see "The cold store").
 
 **Test seams.** `PLX_GC_TEST_FREE_KIB` (free space) and `PLX_GC_TEST_NOW` (the clock; honoured only
 when `PLX_GC_TMP_ROOTS` is set) let a test pretend the disk is full or that time has passed.
@@ -386,7 +386,7 @@ secret in it and never committed:
 | Key | Default | Meaning |
 |---|---|---|
 | `root` | (required) | An absolute directory on the cold volume, e.g. `/Volumes/DAS/plxnative-cold` |
-| `park_below_gib` | 40 | `--auto` parks when the build volume has less than this free: above the 20 GiB comfort line, so trees move before the ladder must delete them |
+| `park_below_gib` | 40 | `--auto` parks when the build volume has less than this free but still at least the comfort line (20 GiB): trees move before the ladder must delete them, and never once it must |
 | `park_idle_min` | 120 | A tree, and its lane, must have been idle this long |
 | `park_max_gib_per_run` | 20 | The most one pass parks (private bytes; the pass stops after the tree that reaches it) |
 | `max_days` | 14 | A parked copy older than this is pruned |
@@ -400,15 +400,20 @@ set `PLX_COLD_STORE=off`). Trees already parked stay on the cold volume until `c
 one back or `cold-store.py prune` ages them out; `cold-store.py status` and `list` say what is there.
 
 **What parks, and when.** `build-gc.sh --auto` runs one more stage between `--orphans` and `--worktrees`: when a
-cold store is configured and free space is under `park_below_gib`, it takes the planner's own candidate list
+cold store is configured and free space is under `park_below_gib` and at least the comfort line
+(`PLX_GC_MIN_FREE_GIB`, 20), it takes the planner's own candidate list
 (`ladder()` with `--no-build`, `disk-budget.py park-candidates --emit` prints it), keeps the rung 3 and rung 4
 WHOLE-TREE actions (idle `/tmp` trees and idle lane and fleet trees, never the garbage of rung 0, never an
 incremental dir) and parks them oldest built first, up to `park_max_gib_per_run`, stopping early once free space
-is back over `park_below_gib` + 4 GiB. A lane whose HEAD is already on the base ref is not parked (the prune
-below would drop its copy in the same run). The existing early exit ("free space already above threshold")
-now sits below this stage, and still skips the worktrees and the planner pass as before. `build-gc.sh --park`
-is the same pass by hand, without the free-space gate; `-n` names what would move and changes nothing on either
-volume.
+is back over `park_below_gib` + 4 GiB. **Under the comfort line it does not park at all**: it prints one line
+saying so, and the worktrees stage and the planner pass run exactly as they do without a cold store. A park holds
+the auto lock for the whole copy to a slow disk (minutes), a build that waits for the lock gives up after 60 s and
+judges on free space with no eviction, and the ladder frees the same room in seconds by deleting. Free space is
+read again before each tree, so a pass that began over the line ends when builds have eaten the room. A lane whose
+HEAD is already on the base ref is not parked (the prune below would drop its copy in the same run). The existing
+early exit ("free space already above threshold") now sits below this stage, and still skips the worktrees and the
+planner pass as before. `build-gc.sh --park` is the same pass by hand, without the free-space gate and without the
+comfort line (the owner asked for it); `-n` names what would move and changes nothing on either volume.
 
 **What never parks.** Anything the planner never plans (`never()` above): the main checkout's trees, the cargo
 seed, a tree with a tracked file, a tree git does not recognise as ours, a live tree. Anything on another
@@ -421,17 +426,27 @@ goes on; a failed copy ends it.
 
 **How one tree moves.** (1) Rename it out of the checkout to `$PLX_BUILD_CACHE/cold-store/parking/<id>/` (same
 volume, atomic; a build that starts in the lane now sees an absent tree, as after a deletion). (2) `ditto` it to
-`<root>/trees/<id>.partial`, verify the file count and apparent bytes, rename to `<root>/trees/<id>/`, write the
-record beside it and to the SSD index. (3) Delete the parking copy. A crash leaves `parking/<id>` and a pid
+`<root>/trees/<id>.partial` and verify the file count and apparent bytes; set an older copy of the same origin
+(recorded or not) aside; write the record beside it and rename the partial to `<root>/trees/<id>/`. (3) Flush the
+cold volume: `sync`, then `F_FULLFSYNC` through the record file (`fsync` where the volume has no `F_FULLFSYNC`),
+once for the whole tree and never per file (fsync took 5-9 s under load on the owner's disk): a copy that is only in
+the USB drive's write cache is not a copy to delete the SSD side for. (4) Write the SSD index record. (5) Delete the
+parking copy. An `OSError` from any step in (2) to (4), a rename, a record write or the flush, puts the tree back in
+its checkout and reports FAILED, which ends the pass: a copy not yet renamed into place is removed, one that was is
+renamed to `<id>.dead.<pid>.<ns>` and its record dropped, so `recover` reaps it instead of adopting a copy of a tree
+that is back where it was. A crash leaves `parking/<id>` and a pid
 file: the next pass runs `recover` first (a complete cold copy: delete the SSD copy; else the origin absent:
 rename back; else delete the SSD copy), and `make disk` lists any parking residue with its size.
 
 **The lock.** A pass holds build-gc's auto lock for minutes, so it does not hold it straight through. Between
 trees it releases the lock and re-takes it (naming the shell that owns the run), and a `disk-preflight` that
-has to wait on the lock writes a flag file beside it, `<lock>.waiting.<pid>`, refreshed on every poll: the pass
-looks before each tree and stops after the one it is on, giving the lock back, so a build waits behind one
-copy, not the whole pass. The `--auto` run that handed the lock over ends there (the preflight plans its own
-eviction); a flag whose process is gone, or that nobody refreshed for two minutes, is not a waiter.
+has to wait on the lock writes a flag file beside it, `<lock>.waiting.<pid>`, refreshed on every poll. The pass
+(`recover` first, each tree, then the prune and the reap) looks at the flag before every piece of work and stops
+there, giving the lock back. One tree's copy, or the deletion of one copy, cannot be interrupted, so a waiter can
+still be held for that long: that is why the `--auto` pass only runs over the comfort line (above), where no build
+needs the ladder, and why nothing here may count on a preflight waiting longer than its 60 s. The `--auto` run that
+handed the lock over ends there (the preflight plans its own eviction); a flag whose process is gone, or that
+nobody refreshed for two minutes, is not a waiter.
 
 **Prune.** After the pass (and `recover`) it drops parked copies whose origin exists again and was built since;
 whose lane is gone or already merged; older than `max_days`; and, while the cold volume is under
@@ -445,10 +460,13 @@ from the seed, exactly as after any eviction.
 **Where the files are.** SSD: `$PLX_BUILD_CACHE/cold-store/index/<escaped origin>.json` (one record per parked
 tree: origin, kind, owning checkout and its HEAD, parked-at, file count, apparent bytes, private bytes freed, the
 measured copy rate) and `parking/<id>/` (+ `.json`, `.pid`) while a tree is in flight. Cold volume:
-`<root>/trees/<id>/` and `<id>.json`, plus `.partial`, `.dead.<pid>` and `.consumed` debris that prune reaps.
+`<root>/trees/<id>/` and `<id>.json`, plus `.partial`, `.dead.<pid>.<ns>` and `.consumed.<pid>.<ns>` debris that
+prune reaps (matched as a whole name suffix, so a lane directory with the word in its name is never taken for it; the
+set-aside names are unique, so one an earlier set-aside left behind cannot make the next fail). An unpark prints one
+line before it copies (`cold-store: unpark <size> from <root> (est <s> s at <rate> MiB/s): <path>`) and one after.
 `make disk` shows on or off with the reason, the parked count and bytes, and any residue, reading the mount
 table and the SSD only: it never wakes the cold volume. `--auto` touches the cold volume only when it is
-configured AND free space is under `park_below_gib`.
+configured AND free space is under `park_below_gib` and at least the comfort line.
 
 **Test seams.** `ci/test_cold_store.py` replaces the one copy primitive and the device check; the park pass is
 tested in `ci/test_disk_budget.py` (candidates, probes, budget, lock, waiting flag) and end to end in

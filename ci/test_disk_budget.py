@@ -13,7 +13,10 @@ hard links, the PlxNative marker, `/tmp` discovery, `origin/main` merged detecti
 local `main` that is behind, and that detecting one writes nothing into the repository), and that
 `report` leaves the disk exactly as it found it.
 """
+import argparse
+import contextlib
 import importlib.util
+import io
 import os
 import shutil
 import subprocess
@@ -1481,7 +1484,8 @@ class ParkPass(Repo):
         das = os.path.join(self.tmp, "das")
         real_dev = cold.device_of
         for name, fake in (("device_of", lambda p: 2 if cold.norm(p).startswith(das) else real_dev(p)),
-                           ("which_ditto", lambda: "/usr/bin/ditto"), ("copy_tree", copy_stub)):
+                           ("which_ditto", lambda: "/usr/bin/ditto"), ("copy_tree", copy_stub),
+                           ("flush_cold_volume", lambda path: None)):
             patcher = mock.patch.object(cold, name, fake)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -1504,12 +1508,14 @@ class ParkPass(Repo):
         return db.park_candidates(self.collect(probes), PARK_TH, NOW_REAL)
 
     def run_pass(self, probes=None, max_bytes=1 << 40, lock=None, waiting=None, dry_run=False, free=1 * GIB,
-                 stop_free=50 * GIB, cands=None):
+                 stop_free=50 * GIB, cands=None, floor_free=None, store=None):
+        """`free` is a byte count, or a callable that answers each look at the free space (one per tree)."""
         i = self.collect(probes)
         cands = cands if cands is not None else db.park_candidates(i, PARK_TH, NOW_REAL)
-        return db.run_park_pass(self.store, cands, probes=probes or QuietProbes(),
+        return db.run_park_pass(store or self.store, cands, probes=probes or QuietProbes(),
                                 checkouts=[w for w, _ in i.checkouts], now=lambda: NOW_REAL, idle_secs=2 * HOUR,
-                                max_bytes=max_bytes, stop_free=stop_free, free_fn=lambda: free,
+                                max_bytes=max_bytes, stop_free=stop_free, floor_free=floor_free,
+                                free_fn=free if callable(free) else (lambda: free),
                                 head_of=lambda c: "head", lock=lock, waiting=waiting or (lambda: False),
                                 say=self.lines.append, dry_run=dry_run)
 
@@ -1563,6 +1569,45 @@ class ParkPass(Repo):
         done = self.run_pass(free=60 * GIB, stop_free=50 * GIB)
         self.assertEqual(done.outcomes, [])
         self.assertIn("free space", done.stopped)
+
+    def test_nothing_is_parked_while_free_space_is_under_the_comfort_line(self):
+        # Parking holds the lock for a whole copy of a slow disk; a build waiting for room must get the ladder's
+        # deletions, which take seconds, so below the comfort line the pass does not start a tree.
+        done = self.run_pass(free=10 * GIB, floor_free=20 * GIB)
+        self.assertEqual(done.outcomes, [])
+        self.assertIn("comfort line", done.stopped)
+        self.assertTrue(all(os.path.isdir(self.target(l)) for l in self.lanes))
+        self.assertEqual(self.store.records(), [])
+
+    def test_exactly_the_comfort_line_still_parks(self):
+        done = self.run_pass(free=20 * GIB, floor_free=20 * GIB)
+        self.assertEqual([o.status for _, o in done.outcomes], [cold.PARKED] * 3, self.lines)
+
+    def test_free_space_falling_under_the_comfort_line_between_trees_ends_the_pass(self):
+        levels = iter([30 * GIB, 19 * GIB])               # a look before each tree; builds ate the room meanwhile
+        done = self.run_pass(free=lambda: next(levels), floor_free=20 * GIB)
+        self.assertEqual(len(done.outcomes), 1, "the tree in hand finishes, the next one is not started")
+        self.assertIn("comfort line", done.stopped)
+        self.assertIn("park: stopped", " ".join(self.lines))
+        self.assertTrue(os.path.isdir(self.target(self.lanes[1])))
+
+    def test_a_by_hand_pass_has_no_comfort_line_to_keep(self):
+        done = self.run_pass(free=1 * GIB, floor_free=None, stop_free=None)
+        self.assertEqual([o.status for _, o in done.outcomes], [cold.PARKED] * 3, self.lines)
+
+    def test_an_exception_out_of_a_park_is_a_logged_failure_that_ends_the_pass(self):
+        with mock.patch.object(self.store, "park", side_effect=ValueError("surprise")):
+            done = self.run_pass()
+        self.assertEqual([o.status for _, o in done.outcomes], [db._FAILED])
+        self.assertIn("surprise", done.stopped)
+        self.assertTrue(any(l.startswith("park: stopped:") and "surprise" in l for l in self.lines), self.lines)
+        self.assertTrue(all(os.path.isdir(self.target(l)) for l in self.lanes))
+
+    def test_an_exception_out_of_the_volume_check_ends_the_pass_without_a_traceback(self):
+        with mock.patch.object(self.store, "available", side_effect=OSError("device not configured")):
+            done = self.run_pass()
+        self.assertEqual(done.outcomes, [])
+        self.assertIn("device not configured", done.stopped)
 
     def test_the_lock_is_released_and_re_taken_between_trees_not_after_the_last(self):
         lock = CountingLock()
@@ -1627,6 +1672,78 @@ class ParkPass(Repo):
         self.assertEqual(done.outcomes, [])
         self.assertIn("ditto", done.stopped)
         self.assertTrue(all(os.path.isdir(self.target(l)) for l in self.lanes))
+
+    # --- park_run: the sweeps around the pass look at the waiting flag too -------------------------------------
+    def lock_and_env(self):
+        env = dict(self.env, PLX_GC_LOCK_DIR=os.path.join(self.tmp, "gc.lock"))
+        path = db.lock_dir(env)
+        self.assertEqual(db.take_lock(path, env, os.getpid()), "got")
+        return env, db.HeldLock(path, env, os.getpid())
+
+    def call_park_run(self, env, lock, auto=True):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = db.park_run(argparse.Namespace(dry_run=False, auto=auto), env, self.main, cold, self.store, 1 * GIB,
+                             2 * HOUR, lock)
+        return rc, out.getvalue()
+
+    def test_a_preflight_already_waiting_stops_recover_before_it_deletes_anything_and_gets_the_lock(self):
+        env, lock = self.lock_and_env()
+        debris = os.path.join(self.cold_root, "trees", "x.consumed")
+        os.makedirs(debris)
+        db.announce_waiting(lock.path)
+        self.addCleanup(db.withdraw_waiting, lock.path)
+        rc, out = self.call_park_run(env, lock)
+        self.assertEqual(rc, db.PARK_LOCK_RELEASED, out)
+        self.assertFalse(lock.held or os.path.exists(lock.path), "the lock must be free for the waiter")
+        self.assertTrue(os.path.isdir(debris), "recover reaped cold-side debris with a preflight waiting")
+        self.assertEqual(self.store.records(), [])
+        self.assertTrue(all(os.path.isdir(self.target(l)) for l in self.lanes), "a tree was parked")
+        self.assertIn("waiting", out)
+
+    def test_a_preflight_that_starts_waiting_during_the_pass_gets_the_lock_before_the_prune(self):
+        self.run_pass()                                         # three parked trees, each record naming its lane
+        env, lock = self.lock_and_env()
+        asked = {}
+
+        def fake_pass(store, cands, **kw):
+            asked.update(kw)
+            db.announce_waiting(lock.path)
+            return db.ParkSummary([])
+        self.addCleanup(db.withdraw_waiting, lock.path)
+        with mock.patch.object(db, "run_park_pass", fake_pass), \
+                mock.patch.object(db, "prune_facts", lambda *a: cold.PruneFacts(gone={self.lanes[0]})):
+            rc, out = self.call_park_run(env, lock)
+        self.assertEqual(rc, db.PARK_LOCK_RELEASED, out)
+        self.assertFalse(lock.held or os.path.exists(lock.path), "the lock must be free for the waiter")
+        self.assertEqual(len(self.store.records()), 3, "the prune dropped a copy with a preflight waiting: " + out)
+        self.assertEqual(asked["floor_free"], db.DEFAULT_COMFORT_GIB * GIB, "--auto keeps the comfort line")
+
+    def test_without_a_waiter_the_prune_runs_and_the_lock_stays_with_the_caller(self):
+        self.run_pass()
+        env, lock = self.lock_and_env()
+        asked = {}
+
+        def fake_pass(store, cands, **kw):
+            asked.update(kw)
+            return db.ParkSummary([])
+        with mock.patch.object(db, "run_park_pass", fake_pass), \
+                mock.patch.object(db, "prune_facts", lambda *a: cold.PruneFacts(gone={self.lanes[0]})):
+            rc, out = self.call_park_run(env, lock, auto=False)
+        self.assertEqual(rc, 0, out)
+        self.assertTrue(lock.held)
+        self.assertEqual(len(self.store.records()), 2, out)
+        self.assertIsNone(asked["floor_free"], "a by-hand pass has no comfort line to keep")
+        lock.release()
+
+    def test_a_recover_that_raises_is_said_and_the_pass_goes_on(self):
+        env, lock = self.lock_and_env()
+        with mock.patch.object(self.store, "recover", side_effect=OSError("device not configured")), \
+                mock.patch.object(db, "run_park_pass", lambda *a, **k: db.ParkSummary([])):
+            rc, out = self.call_park_run(env, lock)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("recover failed: device not configured", out)
+        lock.release()
 
     def test_prune_facts_name_a_merged_lane_and_a_gone_checkout_from_the_records(self):
         self.run_pass()
@@ -1711,6 +1828,19 @@ class ParkCommand(Repo):
                             PLX_GC_TEST_FREE_KIB=str(100 * 1024 * 1024))
         self.assertEqual((out.returncode, out.stdout), (db.PARK_NOT_APPLICABLE, ""), out.stderr)
         self.assertFalse(os.path.exists(os.path.join(self.tmp, "das")), "looked at the cold volume with room to spare")
+
+    def test_park_auto_below_the_comfort_line_parks_nothing_and_says_why(self):
+        # The ladder deletes in seconds; a park holds the lock for a copy to a slow disk while a build waits for room.
+        cfg = os.path.join(self.tmp, "on.cfg")
+        with open(cfg, "w") as fh:
+            fh.write("root=%s\npark_below_gib=40\n" % os.path.join(self.tmp, "das", "cold"))
+        out = self.run_tool("park", "--auto", "--root", self.main, PLX_COLD_STORE_CONFIG=cfg,
+                            PLX_GC_TEST_FREE_KIB=str(10 * 1024 * 1024), PLX_GC_MIN_FREE_GIB="20")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("park: skipped", out.stdout)
+        self.assertIn("comfort line", out.stdout)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "das")), "looked at the cold volume under pressure")
+        self.assertFalse(os.path.exists(os.path.join(self.env["PLX_BUILD_CACHE"], "cold-store")))
 
     def test_a_pretend_emergency_over_the_default_cold_store_config_is_refused(self):
         config_home = os.path.join(self.tmp, "xdg")
