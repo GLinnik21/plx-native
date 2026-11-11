@@ -246,7 +246,7 @@ fn the_root_asks_for_posters_while_favorite_libraries_has_focus_and_the_fan_is_e
     let sid = plx_plex::plex::ServerId::from_raw(0);
     let section = |key, kind| SectionView { sid: Some(sid), key, kind, row: SrcRow { pinned: true, ..Default::default() } };
     let empty = DirectorySnapshot::fixture(7, 0, vec![section(1, SecKind::Movie), section(2, SecKind::Show)]);
-    let mut root = RootPage::new(EntryId(0), empty.view());
+    let mut root = RootPage::new(EntryId(0), empty.view(), &crate::registry::capture_fixture());
     assert_eq!(root.form.selected_id(), Some(&RootId::Favourites), "premise: the root opens on Favorite libraries");
     let focus = Some(FocusKey { entry: EntryId(0), elem: root.state.sel.0 });
     let tick = |root: &mut RootPage, snapshot: &DirectorySnapshot| {
