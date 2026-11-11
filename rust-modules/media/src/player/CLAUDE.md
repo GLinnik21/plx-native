@@ -712,7 +712,7 @@ something.
   unreachable in buffer-feed. Image (PGS/VobSub) subs are decoded and drawn by us; styled
   ASS/SSA and EMBEDDED TEXT tracks (SubRip, WebVTT, mov_text, SAMI, ...) use the bundled libass worker
   (`ass.rs`, `ass_source.rs`): ASS with its original headers, events and attached fonts, a text track
-  with a header `text_ass::header` synthesizes from the viewer's size/position picks and cues
+  with a header `text_ass::header` synthesizes from the viewer's size/position/colour picks and cues
   `text_ass::convert` turns into events (`ass_source::push_text`, `Origin::Text`; the cue's raw key is
   its dedup identity, so a seek re-read changes nothing, and the track's events are a newest-wins view
   of those raw cues), over the bundled Inter and per-script Noto faces (`ass/fonts.rs`, `docs/ass-subtitles.md`).

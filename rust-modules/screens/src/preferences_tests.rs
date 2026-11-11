@@ -110,7 +110,7 @@ fn every_field_row_pushes_its_picker_and_nothing_else() {
     let mut audio = loaded_audio_page(&account);
     for (page, fields) in [
         (&mut playback, vec![PickerKind::Quality, PickerKind::DirectPlay, PickerKind::HdrOverlay, PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval, PickerKind::InstantDpadSeeking, PickerKind::DolbyVision, PickerKind::UriEngine]),
-        (&mut audio, vec![PickerKind::AudioLanguage, PickerKind::SubtitleMode, PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles, PickerKind::SubtitleSize, PickerKind::SubtitlePosition]),
+        (&mut audio, vec![PickerKind::AudioLanguage, PickerKind::SubtitleMode, PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles, PickerKind::SubtitleSize, PickerKind::SubtitlePosition, PickerKind::SubtitleColor]),
     ] {
         for field in fields {
             let key = RowId::Field(field).key().0;
@@ -184,6 +184,26 @@ fn the_field_list_rereads_a_subtitle_look_picked_elsewhere() {
     plx_media::route::restore_subtitle_position(position);
 }
 
+/// **The Subtitle color row** sits in the Look group beside Size and Position, reads out the live
+/// pick (white by default) and notices a pick made in the player's Color section, which is the
+/// same preference.
+#[test]
+fn the_audio_page_has_a_subtitle_color_row_that_follows_the_live_pick() {
+    let _serial = plx_base::testlock::serial();
+    let _session = plx_plex::plex::session::TempSession::new("pref-parent-color");
+    let tone = plx_media::player::subtitle_tone();
+    plx_media::player::restore_subtitle_tone(plx_plex::plex::session::SubtitleTone::White);
+    let account = Account::new("pref-parent-color", 15, AudioPreferences::default());
+    let mut parent = loaded_audio_page(&account);
+    let row = parent.form.index_of(&RowId::Field(PickerKind::SubtitleColor)).expect("a Subtitle color row");
+    assert_eq!(row, parent.form.index_of(&RowId::Field(PickerKind::SubtitlePosition)).unwrap() + 1, "right under Position");
+    assert_eq!(parent.state.values[row], plx_platform::i18n::msg::widgets_tracks_tone_white());
+    plx_media::player::restore_subtitle_tone(plx_plex::plex::session::SubtitleTone::Yellow);
+    drive(&mut parent, tick(), 0);
+    assert_eq!(parent.state.values[row], plx_platform::i18n::msg::widgets_tracks_tone_yellow());
+    plx_media::player::restore_subtitle_tone(tone);
+}
+
 /// Every field belongs to exactly the page whose list shows it: the Audio & subtitles page lists
 /// its four account fields and the two Look rows (this app's own) and nothing else, the Video &
 /// playback page the rest of the local ones, so a picker's
@@ -201,7 +221,7 @@ fn every_field_reports_the_page_whose_list_shows_it() {
     }
     let audio = FieldListInputs { kind: Kind::AudioSubtitles, quality: Quality::Original, direct_play: DirectPlayMode::Auto,
         prefs: Some(&prefs), busy: false, show_retry: false, marker_prefs: Default::default(), read_only: false };
-    assert_eq!(fields_of(&audio), &[PickerKind::AudioLanguage, PickerKind::SubtitleMode, PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles, PickerKind::SubtitleSize, PickerKind::SubtitlePosition]);
+    assert_eq!(fields_of(&audio), &[PickerKind::AudioLanguage, PickerKind::SubtitleMode, PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles, PickerKind::SubtitleSize, PickerKind::SubtitlePosition, PickerKind::SubtitleColor]);
 }
 
 /// The Continue Watching row: shipped default is Open details, the picker lists the two options
@@ -318,7 +338,7 @@ fn playback_rows_are_read_only_while_no_profile_is_seated() {
         assert!(!disabled_rows(&audio)[row], "{field:?}: the account fields are not read-only");
     }
     // …but the Look rows are this app's own per-profile picks, read-only like the Playback rows.
-    for field in [PickerKind::SubtitleSize, PickerKind::SubtitlePosition] {
+    for field in [PickerKind::SubtitleSize, PickerKind::SubtitlePosition, PickerKind::SubtitleColor] {
         let key = RowId::Field(field).key().0;
         let row = audio.form.index_of(&RowId::Field(field)).expect("the Look row is still listed");
         assert!(disabled_rows(&audio)[row], "{field:?}: dimmed");
@@ -441,7 +461,7 @@ fn video_and_playback_lists_video_player_and_up_next() {
     assert_eq!(groups.iter().map(|(h, _)| h.as_str()).collect::<Vec<_>>(),
         [msg::settings_playback_group_video(), msg::settings_playback_group_player(), msg::settings_playback_group_up_next()]);
     assert_eq!(groups[2].1, vec![PickerKind::NextEpisode, PickerKind::DeckPress], "Up next");
-    assert!(!fields_of(&all).contains(&PickerKind::SubtitleSize) && !fields_of(&all).contains(&PickerKind::SubtitlePosition),
+    assert!(!fields_of(&all).contains(&PickerKind::SubtitleSize) && !fields_of(&all).contains(&PickerKind::SubtitlePosition) && !fields_of(&all).contains(&PickerKind::SubtitleColor),
         "subtitle size and position are on Audio & subtitles");
     assert_eq!(["Video", "Player", "Up next"], [msg::settings_playback_group_video(), msg::settings_playback_group_player(), msg::settings_playback_group_up_next()]);
 }
@@ -478,13 +498,13 @@ fn audio_and_subtitles_lists_audio_subtitles_and_look_once_the_page_has_settled(
     let by_header = |h: &str| groups.iter().find(|(x, _)| x == h).map(|(_, f)| f.clone()).unwrap();
     assert_eq!(by_header(msg::settings_audio_group_audio()), vec![PickerKind::AudioLanguage]);
     assert_eq!(by_header(msg::settings_audio_group_subtitles()), vec![PickerKind::SubtitleMode, PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles]);
-    assert_eq!(by_header(msg::settings_audio_group_look()), vec![PickerKind::SubtitleSize, PickerKind::SubtitlePosition]);
+    assert_eq!(by_header(msg::settings_audio_group_look()), vec![PickerKind::SubtitleSize, PickerKind::SubtitlePosition, PickerKind::SubtitleColor]);
     // loading: nothing listed, so the first landing seats the page's top row
     assert!(fields_of(&FieldListInputs { busy: true, show_retry: true, ..inputs_of(Kind::AudioSubtitles, None) }).is_empty());
     assert!(fields_of(&inputs_of(Kind::AudioSubtitles, None)).is_empty());
     // a failed load: Retry and the Look rows (they never needed the account)
     assert_eq!(fields_of(&FieldListInputs { show_retry: true, ..inputs_of(Kind::AudioSubtitles, None) }),
-        vec![PickerKind::SubtitleSize, PickerKind::SubtitlePosition]);
+        vec![PickerKind::SubtitleSize, PickerKind::SubtitlePosition, PickerKind::SubtitleColor]);
 }
 
 /// The Retry button stands after the account groups and ahead of Look, and only for the account page.
@@ -530,7 +550,7 @@ fn every_field_list_row_states_its_own_sentence() {
         PickerKind::HdrOverlay, PickerKind::IntroSkip, PickerKind::CreditsSkip, PickerKind::NextEpisode, PickerKind::DeckPress] {
         assert_eq!(sentence(Kind::Playback, Some(&RowId::Field(field)), false, false, &seated), field.copy(), "{field:?}");
     }
-    for field in [PickerKind::SubtitleSize, PickerKind::SubtitlePosition] {
+    for field in [PickerKind::SubtitleSize, PickerKind::SubtitlePosition, PickerKind::SubtitleColor] {
         assert_eq!(sentence(Kind::AudioSubtitles, Some(&RowId::Field(field)), false, false, &seated), field.copy(), "{field:?}: the Look rows state their own");
         assert_eq!(sentence(Kind::AudioSubtitles, Some(&RowId::Field(field)), false, false, &Whose::Nobody), msg::settings_playback_unseated(),
             "{field:?}: nobody seated says a profile has to be chosen");

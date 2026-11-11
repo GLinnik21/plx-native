@@ -2,9 +2,14 @@
 
 Settings has **Video & playback** and **Audio & subtitles** pages. **Video & playback** holds
 Video (quality, Direct Play, Dolby Vision, Playback engine), Player (skip interval, D-pad seeking, HDR overlay,
-intro and credits skip, Player HUD) and Up next (next episode, Continue Watching). Subtitle size and
-position live in the Look group of **Audio & subtitles**: this app's own settings, kept per profile
-and never sent to the account. These settings are saved on this television, **per profile**: each
+intro and credits skip, Player HUD) and Up next (next episode, Continue Watching). Subtitle size,
+position and color live in the Look group of **Audio & subtitles**: this app's own settings, kept per profile
+and never sent to the account. **Subtitle color** is White (the default, the look of every earlier
+build), Yellow (a bright yellow for readability) or one of five grays that only dim the caption
+for HDR; it is the same pick as the Color section of the player's Subtitles menu. A color
+(yellow) is the default color of text subtitles (SubRip, WebVTT and the other text codecs), so a
+cue's own inline colors still win; styled ASS/SSA scripts and picture subtitles (PGS, VobSub) keep
+their authored colors, and only a gray dims them. The dark outline stays under every color. These settings are saved on this television, **per profile**: each
 Plex Home profile keeps its own picks, and a profile that has not chosen yet starts from the value
 the television held before profiles had their own. The page follows a profile switch (Settings itself closes on one). Each row states its own
 explanation beside the table; the page's fallback sentence ("Playback settings for Maya.", naming

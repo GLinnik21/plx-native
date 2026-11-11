@@ -1208,7 +1208,7 @@ fn track(header: &str, events: &[(i64, i64, &str)]) -> Arc<Source> {
 }
 
 fn style(size: SubtitleSize, position: SubtitlePosition) -> TextStyle {
-    TextStyle { size, position }
+    TextStyle { size, position, ..TextStyle::default() }
 }
 
 /// Render a Text-origin source into the full logical screen, as the screen asks for it.

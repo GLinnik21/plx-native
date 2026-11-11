@@ -231,7 +231,7 @@ impl StyleField {
         match self {
             Self::Size => subtitle_size_label(SubtitleSize::from_index(i as u8)),
             Self::Position => subtitle_position_label(SubtitlePosition::from_index(i as u8)),
-            Self::Color => tone_label(SubtitleTone::from_index(i as u8)),
+            Self::Color => subtitle_tone_label(SubtitleTone::from_index(i as u8)),
         }
     }
 }
@@ -2378,9 +2378,10 @@ fn visible_subs(ps: &plx_media::route::PlaybackSession, meta: metadata::Metadata
 }
 
 /// Resolve the typed tone at the UI boundary; persisted values and technical logs stay stable.
-fn tone_label(tone: SubtitleTone) -> &'static str {
+pub fn subtitle_tone_label(tone: SubtitleTone) -> &'static str {
     match tone {
         SubtitleTone::White => plx_platform::i18n::msg::widgets_tracks_tone_white(),
+        SubtitleTone::Yellow => plx_platform::i18n::msg::widgets_tracks_tone_yellow(),
         SubtitleTone::Silver => plx_platform::i18n::msg::widgets_tracks_tone_silver(),
         SubtitleTone::LightGrey => plx_platform::i18n::msg::widgets_tracks_tone_light_grey(),
         SubtitleTone::Grey => plx_platform::i18n::msg::widgets_tracks_tone_grey(),

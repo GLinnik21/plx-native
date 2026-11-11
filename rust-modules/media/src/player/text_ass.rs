@@ -580,9 +580,10 @@ pub fn header(style: &TextStyle) -> String {
     );
     for (align, margin_v) in style_margins(style) {
         h.push_str(&format!(
-            "Style: {name},{STYLE_FONT},{fs},&H00FFFFFF,&H00FFFFFF,&H26000000,&HFF000000,\
+            "Style: {name},{STYLE_FONT},{fs},{primary},{primary},&H26000000,&HFF000000,\
              0,0,0,0,100,100,0,0,1,2,0,{align},{margin},{margin},{margin_v},-1\n",
             name = style_name(align),
+            primary = text_style::primary_colour(style.tone),
         ));
     }
     h.push_str("\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n");

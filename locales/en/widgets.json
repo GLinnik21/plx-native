@@ -756,6 +756,10 @@
     "value": "White",
     "description": "tracks tone_white"
   },
+  "widgets.tracks.tone_yellow": {
+    "value": "Yellow",
+    "description": "Subtitle color option (Settings picker and the Color section of the player's Subtitles menu): bright yellow text, chosen for readability. Sits beside White and the grays."
+  },
   "widgets.tracks.tone_silver": {
     "value": "Silver",
     "description": "tracks tone_silver"

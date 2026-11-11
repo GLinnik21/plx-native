@@ -4,16 +4,19 @@ Direct playback preserves the authored script: styles, positioned signs, overlap
 drawings, font attachments, movement and karaoke. A re-encode still burns the
 selected subtitle on the server; over a remux the app draws a sidecar, and an embedded track when
 the link is local and the Part is 1..=30000 kbps, and otherwise the server burns it. ASS/SSA retains its authored layout.
-The viewer's existing tone and timing controls still apply to every subtitle.
+The viewer's timing control applies to every subtitle, and so does a gray tone (Settings > Audio &
+subtitles > Subtitle color, or the Color section of the player's Subtitles menu), which only dims
+the drawn bitmaps. A COLOR tone (Yellow) is different: it is the default colour of a synthesized
+text track (below) and never touches an authored script, so styled ASS/SSA colours are kept.
 
 Embedded TEXT tracks (SubRip, WebVTT, mov_text, SAMI and the other text codecs) render through the same
 libass worker. They have no header in the file, so `player::ass_source` synthesizes one
-(`player::text_ass::header`) from the viewer's size and position picks and keeps each cue as it arrived;
+(`player::text_ass::header`) from the viewer's size, position and colour picks and keeps each cue as it arrived;
 `player::text_ass::convert` turns the cue's text into an ASS event body in the track's dialect (italic,
 bold, underline, colour and `{\an}` placement honoured, everything else shown as plain text). Such a
 source has `Origin::Text`: it renders into the full 1920x1080 logical screen, not the video viewport,
-and the screen lifts its bottom-anchored cues clear of the transport. A change of the size or position
-pick re-synthesizes the header of the selected track lazily (the revision bumps once; the renderer swaps
+and the screen lifts its bottom-anchored cues clear of the transport. A change of the size, position or colour
+pick (a gray tone is a draw-time tint, so only a colour counts) re-synthesizes the header of the selected track lazily (the revision bumps once; the renderer swaps
 the track in place). The track's events are a newest-wins view of the cues: a cue's end is clipped to
 the start of the next cue of the same alignment class, so an overlap never leaves the old text up beside
 the new one. External SRT/VTT files take the same road: `player::sidecar` charset-decodes the file,
@@ -143,7 +146,7 @@ drawn by a private caption renderer and now go through libass, with these delibe
 
 Unchanged by design: the text size and the 48 px line pitch, the bottom baseline at every position and
 size, the lift of bottom-anchored cues clear of the transport (200 px), the Timing capsule's position,
-newest-wins for overlapping cues of the same alignment, tone and the timing offset. Authored ASS is never
+newest-wins for overlapping cues of the same alignment, the outline, tone (white and the grays) and the timing offset. Authored ASS is never
 lifted with the transport showing. Not done: dictionary line breaking for Thai, Lao, Khmer and Myanmar
 (they break at spaces, as before), stacking of overlapping cues, and WebVTT cue settings other than
 `line:0` on a sidecar file.

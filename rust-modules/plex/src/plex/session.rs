@@ -970,15 +970,25 @@ impl PlaybackQuality {
 /// The persisted subtitle tones, lightest first. Like [`PlaybackQuality`] the spelling on disk is
 /// explicit: these strings are a file-format contract and must survive a variant rename.
 ///
-/// A ladder of GREYS rather than a colour wheel, because the job is brightness: over an HDR
+/// Mostly a ladder of GREYS rather than a colour wheel, because the job is brightness: over an HDR
 /// picture the panel maps graphics white far above where it sits in SDR, and the only thing that
-/// makes a caption comfortable there is less light. What each rung looks like is `ui::theme`'s
-/// (`subtitle_ink`); this type only names them.
+/// makes a caption comfortable there is less light. The one exception is a legibility colour,
+/// [`SubtitleTone::Yellow`] (a viewer asks for it for readability, discussion #1193). The greys
+/// are inks `ui::theme` tints a drawn caption with (`SUBTITLE_INKS`); a COLOUR rung has a text
+/// colour, [`SubtitleTone::text_rgb8`], which is the one palette table: client-drawn text takes it
+/// as its ink and a synthesized text-subtitle header as its primary colour, so a cue's own inline
+/// colours and an authored ASS script are left alone. Adding a colour is one variant, one `LADDER`
+/// rung and one arm of `text_rgb8` (and the ink table's identity rung in `ui::theme`).
 #[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SubtitleTone {
     #[default]
     #[serde(rename = "white")]
     White,
+    /// Added after the greys were persisted, so a build from before it reads `"yellow"` as a value
+    /// it cannot parse: the per-profile field falls back to the install's older value and the
+    /// install key to white (both are parsed softly), never a failed load.
+    #[serde(rename = "yellow")]
+    Yellow,
     #[serde(rename = "grey_85")]
     Silver,
     #[serde(rename = "grey_70")]
@@ -993,8 +1003,9 @@ pub enum SubtitleTone {
 
 impl SubtitleTone {
     /// Every rung, lightest first — the order the picker draws them in.
-    pub const LADDER: [SubtitleTone; 6] = [
+    pub const LADDER: [SubtitleTone; 7] = [
         SubtitleTone::White,
+        SubtitleTone::Yellow,
         SubtitleTone::Silver,
         SubtitleTone::LightGrey,
         SubtitleTone::Grey,
@@ -1007,6 +1018,7 @@ impl SubtitleTone {
     pub fn label(self) -> &'static str {
         match self {
             SubtitleTone::White => "White",
+            SubtitleTone::Yellow => "Yellow",
             SubtitleTone::Silver => "Silver",
             SubtitleTone::LightGrey => "Light gray",
             SubtitleTone::Grey => "Gray",
@@ -1023,6 +1035,21 @@ impl SubtitleTone {
 
     pub fn index(self) -> u8 {
         Self::LADDER.iter().position(|&t| t == self).unwrap_or(0) as u8
+    }
+
+    /// The colour this rung paints text in, as 8-bit sRGB, or `None` for white and the greys (which
+    /// only dim: `ui::theme::SUBTITLE_INKS` tints with them). The one palette table of the colour
+    /// rungs; see the type's own doc for who reads it.
+    pub const fn text_rgb8(self) -> Option<[u8; 3]> {
+        match self {
+            SubtitleTone::Yellow => Some([0xff, 0xe6, 0x1a]),
+            SubtitleTone::White
+            | SubtitleTone::Silver
+            | SubtitleTone::LightGrey
+            | SubtitleTone::Grey
+            | SubtitleTone::DarkGrey
+            | SubtitleTone::Charcoal => None,
+        }
     }
 }
 

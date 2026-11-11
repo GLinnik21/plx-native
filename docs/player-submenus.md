@@ -67,7 +67,7 @@ One optimistic operation, no deferred publication: `route::select_subtitle_size/
 main thread is `route::choose::<S>(v, How::Optimistic(..))`, the one write door: it stores the live
 cell, invalidates, and queues the durable write behind it, which never touches the cell again
 (`player::set_subtitle_tone` is the same call). Settings'
-Size/Position arms use the same call, so no completion can overwrite a newer live pick; durable
+Size/Position/Color arms use the same call, so no completion can overwrite a newer live pick; durable
 writes are FIFO on the worker, last submitted wins. A failed write is logged, never alerted over
 video, and claims nothing about the next boot. The live value survives BACK and dismissal (global
 state, not panel state).

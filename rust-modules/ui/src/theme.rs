@@ -169,12 +169,17 @@ pub const INK_DISABLED: [f32; 4] = with_a(WHITE, 0.22);
 /// two lengths together). The caption is media chrome over the video plane rather than app text,
 /// which is why it is `WHITE` and not [`TEXT_PRIMARY`] at the top; the greys under it exist
 /// because an HDR picture maps graphics white far brighter than an SDR one does, and the only
-/// cure for a searing caption is less light. Text subtitles are inked with the rung; image
-/// subtitles (PGS/VobSub) are TINTED by it, which scales their authored colours by the same
-/// amount. The dark outline is untouched — it is what keeps the darkest rung legible over a
+/// cure for a searing caption is less light. Client-drawn text is inked with the rung; every
+/// client-rendered bitmap (a libass frame, a PGS/VobSub picture) is TINTED by it, which scales
+/// its authored colours by the same amount. The dark outline is untouched — it is what keeps the darkest rung legible over a
 /// bright scene.
-pub const SUBTITLE_INKS: [[f32; 4]; 6] =
-    [WHITE, CAPTION_85, CAPTION_70, CAPTION_55, CAPTION_40, CAPTION_28];
+///
+/// A COLOUR rung (`SubtitleTone::Yellow`) is `WHITE` here, the identity tint: its colour is
+/// `SubtitleTone::text_rgb8`, applied where the text is made (a synthesized header's primary
+/// colour, the client's own drawn text), never as a tint that would also recolour an authored ASS
+/// script, a picture subtitle or a cue's own inline colours.
+pub const SUBTITLE_INKS: [[f32; 4]; 7] =
+    [WHITE, WHITE, CAPTION_85, CAPTION_70, CAPTION_55, CAPTION_40, CAPTION_28];
 
 // ── Type scale ───────────────────────────────────────────────────────────────
 // The ladder is DEFINED in `gfx::tokens` (module-layers step L5): `text` warms exactly these faces and

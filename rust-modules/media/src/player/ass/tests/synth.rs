@@ -7,7 +7,7 @@
 use super::*;
 use crate::player::text_ass::{self, TextDialect};
 use crate::player::text_style::{self, HudBand, TextStyle};
-use plx_plex::plex::session::{SubtitlePosition, SubtitleSize};
+use plx_plex::plex::session::{SubtitlePosition, SubtitleSize, SubtitleTone};
 
 fn text_key() -> Key {
     Key {
@@ -56,7 +56,7 @@ fn text_native(style: &TextStyle, cues: &[Cue]) -> Native {
 }
 
 fn style(size: SubtitleSize, position: SubtitlePosition) -> TextStyle {
-    TextStyle { size, position }
+    TextStyle { size, position, ..TextStyle::default() }
 }
 
 /// The frame of `cues` at 1 s.
@@ -456,4 +456,29 @@ fn native_hud_up_deep_marks_clear_the_transport_controls() {
             }
         }
     }
+}
+
+/// The opaque interior of every glyph (not the black outline, not an edge): straight RGBA at full
+/// coverage with a bright channel.
+fn solid_fill(rects: &[Rect]) -> Vec<[u8; 4]> {
+    pixels(rects).map(|(_, _, px)| px).filter(|px| px[3] == 255 && px[..3].iter().any(|&c| c >= 200)).collect()
+}
+
+/// **The colour pick reaches the real renderer's pixels.** A synthesized header with the Yellow
+/// pick draws a plain SubRip cue in the palette colour, a cue that carries its own inline colour
+/// keeps it (the style's primary colour is only the default), and the outline stays the dark
+/// stroke that keeps the glyph readable on a bright or HDR scene.
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_yellow_pick_colours_plain_cues_and_keeps_inline_colours_and_the_outline() {
+    let yellow = TextStyle { tone: SubtitleTone::Yellow, ..TextStyle::default() };
+    let plain = solid_fill(&text_frame(&yellow, &[cue("Hello")]));
+    assert!(plain.len() > 100, "a cue with fill");
+    assert!(plain.iter().all(|px| px[0] >= 250 && (0xe0..=0xec).contains(&px[1]) && px[2] <= 0x30), "yellow fill: {:?}", plain[0]);
+    let red = solid_fill(&text_frame(&yellow, &[raw(2, "{\\c&H0000FF&}Hello")]));
+    assert!(red.iter().all(|px| px[0] >= 250 && px[1] <= 0x10 && px[2] <= 0x10), "an inline colour wins: {:?}", red[0]);
+    let white = solid_fill(&text_frame(&TextStyle::default(), &[cue("Hello")]));
+    assert!(white.iter().all(|px| px[..3].iter().all(|&c| c >= 250)), "the default is white");
+    let rects = text_frame(&yellow, &[cue("Hello")]);
+    assert!(pixels(&rects).any(|(_, _, px)| px[3] >= 128 && px[..3].iter().all(|&c| c <= 40)), "the dark outline is still drawn");
 }

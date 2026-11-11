@@ -173,7 +173,7 @@ fn every_audio_and_subtitles_field_pushes_its_picker() {
     plx_plex::plex::session::publish_seat_for_test(Some(user.clone()), 81, "nav-structure-stamp".into());
     let (request, snapshot) = PreferenceRequest::fixture_for_test(user, 81, AudioPreferences::default());
     let items = super::super::preferences::nav_items_for_test(super::super::preferences::Kind::AudioSubtitles, Some(&AudioPreferences::default()));
-    assert_eq!(items.len(), 6, "the four account fields and the two Look rows (subtitle size and position): {items:?}");
+    assert_eq!(items.len(), 7, "the four account fields and the three Look rows (subtitle size, position and color): {items:?}");
     assert_every_nav_item_pushes_exactly_its_dest("audio & subtitles", &items, &|| {
         let (mut d, mut rig, id) = consent_opened(SettingsPage::AudioSubtitles);
         frame(&mut d, &mut rig, 32, vec![]);
@@ -292,6 +292,7 @@ struct PlaybackCells {
     direct_play: plx_media::route::DirectPlayMode,
     size: plx_media::route::SubtitleSize,
     position: plx_media::route::SubtitlePosition,
+    tone: plx_plex::plex::session::SubtitleTone,
     hdr: plx_media::route::HdrOverlayBrightness,
     next_episode: plx_media::route::NextEpisodeMode,
     instant_dpad_seeking: plx_plex::plex::session::InstantDpadSeeking,
@@ -304,7 +305,7 @@ impl PlaybackCells {
     fn capture() -> Self {
         use plx_media::route as r;
         PlaybackCells { quality: r::quality(), direct_play: r::direct_play_mode(), size: r::subtitle_size(),
-            position: r::subtitle_position(), hdr: r::hdr_overlay_brightness(), next_episode: r::next_episode_mode(), instant_dpad_seeking: r::instant_dpad_seeking(), uri_engine: r::uri_engine(),
+            position: r::subtitle_position(), tone: plx_media::player::subtitle_tone(), hdr: r::hdr_overlay_brightness(), next_episode: r::next_episode_mode(), instant_dpad_seeking: r::instant_dpad_seeking(), uri_engine: r::uri_engine(),
             dolby_vision: r::dolby_vision_mode(), deck_press: r::deck_press(), skip: r::skip_interval() }
     }
 }
@@ -313,6 +314,7 @@ impl Drop for PlaybackCells {
         use plx_media::route as r;
         r::restore_quality(self.quality); r::restore_direct_play_mode(self.direct_play);
         r::restore_subtitle_size(self.size); r::restore_subtitle_position(self.position);
+        plx_media::player::restore_subtitle_tone(self.tone);
         r::restore_hdr_overlay_brightness(self.hdr); r::restore_next_episode_mode(self.next_episode); r::restore_instant_dpad_seeking(self.instant_dpad_seeking); r::restore_uri_engine(self.uri_engine);
         r::restore_dolby_vision_mode(self.dolby_vision); r::restore_deck_press(self.deck_press); r::restore_skip_interval(self.skip);
     }
@@ -360,6 +362,7 @@ fn every_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row() {
     r::restore_direct_play_mode(r::DirectPlayMode::Disabled);
     r::restore_subtitle_size(*ses::SubtitleSize::LADDER.last().unwrap());
     r::restore_subtitle_position(*ses::SubtitlePosition::LADDER.last().unwrap());
+    plx_media::player::restore_subtitle_tone(*ses::SubtitleTone::LADDER.last().unwrap());
     r::restore_hdr_overlay_brightness(*ses::HdrOverlayBrightness::LADDER.last().unwrap());
     r::restore_next_episode_mode(*ses::NextEpisodeMode::LADDER.last().unwrap());
     r::restore_deck_press(*ses::DeckPress::LADDER.last().unwrap());
@@ -372,6 +375,7 @@ fn every_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row() {
         PickerKind::DirectPlay => 2,
         PickerKind::SubtitleSize => ladder_last(ses::SubtitleSize::LADDER.len()),
         PickerKind::SubtitlePosition => ladder_last(ses::SubtitlePosition::LADDER.len()),
+        PickerKind::SubtitleColor => ladder_last(ses::SubtitleTone::LADDER.len()),
         PickerKind::HdrOverlay => ladder_last(ses::HdrOverlayBrightness::LADDER.len()),
         PickerKind::NextEpisode => ladder_last(ses::NextEpisodeMode::LADDER.len()),
         PickerKind::DeckPress => ladder_last(ses::DeckPress::LADDER.len()),
@@ -407,7 +411,7 @@ fn every_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row() {
             subtitle_mode: 2, subtitle_forced: 3, ..Default::default() };
         let (request, snapshot) = PreferenceRequest::fixture_for_test(user, 81, prefs.clone());
         let items = super::super::preferences::nav_items_for_test(super::super::preferences::Kind::AudioSubtitles, Some(&prefs));
-        assert_eq!(items.len(), 6, "every Audio & Subtitles picker is in the table: {items:?}");
+        assert_eq!(items.len(), 7, "every Audio & Subtitles picker is in the table: {items:?}");
         for &(row, dest) in &items {
             let SettingsPage::Picker(kind) = dest else { panic!("an Audio row pushes a picker: {dest:?}") };
             let line = match kind {
@@ -417,6 +421,7 @@ fn every_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row() {
                 PickerKind::ForcedSubtitles => 3,
                 PickerKind::SubtitleSize => lines(PickerKind::SubtitleSize),
                 PickerKind::SubtitlePosition => lines(PickerKind::SubtitlePosition),
+                PickerKind::SubtitleColor => lines(PickerKind::SubtitleColor),
                 other => panic!("{other:?} is not an Audio & Subtitles picker"),
             };
             assert_a_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row(&format!("audio {kind:?}"), &|| {

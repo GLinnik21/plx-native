@@ -118,7 +118,7 @@ fn caption_geometry_for_block(
 
 fn draw_caption_block(lines: &[String], lay: &CaptionLayout, model: &HudModel) {
     let cx = SCR_W * 0.5;
-    let ink = subtitle_ink(model); // white unless the viewer picked a dimmer tone (track menu)
+    let ink = subtitle_ink(model); // white unless the viewer picked another tone (Settings, track menu)
     let outline = theme::scrim_black(0.85);
     let p = Painter::root();
     for (i, ln) in lines.iter().enumerate() {
@@ -226,14 +226,30 @@ pub fn min_controls_top_y() -> f32 {
     (SAFE.y + height + raise + CAPTION_INK_CLEARANCE).ceil()
 }
 
-/// The ink both subtitle draws use this frame: the viewer's tone ([`HudModel::sub_tone`])
-/// resolved on [`theme::SUBTITLE_INKS`]. A rung the table does not have is white, never a
-/// neighbour.
+/// The ink the client's own drawn caption text takes this frame (the fault message, the sidecar
+/// failure notice): the viewer's colour when the tone is one ([`SubtitleTone::text_rgb8`]), else
+/// the grey rung of [`theme::SUBTITLE_INKS`].
+///
+/// [`SubtitleTone::text_rgb8`]: plx_plex::plex::session::SubtitleTone::text_rgb8
 pub fn subtitle_ink(model: &HudModel) -> [f32; 4] {
-    subtitle_ink_for(model.sub_tone)
+    match model.sub_tone.text_rgb8() {
+        Some([r, g, b]) => plx_gfx::gfx::tokens::rgb8(r, g, b),
+        None => subtitle_tint_for(model.sub_tone),
+    }
 }
 
-fn subtitle_ink_for(tone: plx_plex::plex::session::SubtitleTone) -> [f32; 4] {
+/// The tint a client-rendered BITMAP is drawn with this frame — a libass frame (a synthesized text
+/// track or an authored ASS/SSA script) or a picture subtitle. It multiplies the pixels, so it
+/// can dim but never recolour: the viewer's tone resolved on [`theme::SUBTITLE_INKS`], which is the
+/// identity (white) for a colour rung. A colour reaches a synthesized text track through its header
+/// instead (`text_style::primary_colour`), so authored ASS colours, a cue's own inline colours and a
+/// picture's pixels are never tinted by it. A rung the table does not have is white, never a
+/// neighbour.
+pub fn subtitle_tint(model: &HudModel) -> [f32; 4] {
+    subtitle_tint_for(model.sub_tone)
+}
+
+fn subtitle_tint_for(tone: plx_plex::plex::session::SubtitleTone) -> [f32; 4] {
     theme::SUBTITLE_INKS
         .get(tone.index() as usize)
         .copied()
@@ -361,7 +377,7 @@ pub fn draw_subtitle_bitmap(cache: &mut SubtitleBitmaps, hud_up: bool, band: Hud
             let lift = hud_lift(set.iter().map(|(_, r)| *r), hud_up, band);
             // the tone TINTS a bitmap: the image shader multiplies by it, so a PGS cue keeps its
             // authored colours and outline and only gives up light (white is the identity)
-            let tint = subtitle_ink(model);
+            let tint = subtitle_tint(model);
             let p = Painter::root();
             for (tex, r) in set.iter() {
                 let dy = if overhangs(*r, band) { lift } else { 0.0 };
