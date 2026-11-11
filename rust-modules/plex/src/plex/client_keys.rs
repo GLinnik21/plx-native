@@ -46,8 +46,42 @@ impl ClientKey {
 ///
 /// A handful of entries at most, so it is a list searched in order. A host that fills one every
 /// frame keeps ONE and refills it in place ([`ClientKeys::refill`]), which keeps its capacity.
-#[derive(Clone, Default, PartialEq, Eq, Debug)]
-pub struct ClientKeys(Vec<(ServerId, ClientKey)>);
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ClientKeys(Vec<(ServerId, ClientKey)>, Vec<(ServerId, ClientFacts)>, ServerId, u32, u32);
+
+/// Immutable described evidence is separate from Browse's undescribed-owned fallback.
+#[derive(Clone)]
+pub struct ClientFacts {
+    pub machine_id: String,
+    pub described: Option<&'static super::ServerFacts>,
+    /// None rejects an incoherent observation; Some((None, tier)) means not probed.
+    pub source: Option<(Option<super::probe::Outcome>, Option<super::probe::Location>)>,
+    pub stream_allowed: bool,
+}
+
+impl PartialEq for ClientFacts {
+    fn eq(&self, other: &Self) -> bool {
+        self.machine_id == other.machine_id && self.source == other.source
+                    && self.stream_allowed == other.stream_allowed
+            && match (self.described, other.described) {
+                (None, None) => true,
+                (Some(a), Some(b)) => a.name == b.name && a.handle == b.handle
+                    && a.owned == b.owned && a.home == b.home && a.owner_id == b.owner_id,
+                _ => false,
+            }
+    }
+}
+impl Eq for ClientFacts {}
+impl std::fmt::Debug for ClientFacts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClientFacts").field("machine_id", &self.machine_id)
+            .field("described", &self.described.is_some()).field("source", &self.source)
+                        .field("stream_allowed", &self.stream_allowed).finish()
+    }
+}
+impl Default for ClientKeys {
+    fn default() -> Self { Self(Vec::new(), Vec::new(), ServerId::UNSET, 0, 0) }
+}
 
 impl ClientKeys {
     /// The keys of these clients.
@@ -57,13 +91,103 @@ impl ClientKeys {
 
     /// These keys, as given. A slot named twice answers with its first entry.
     pub fn from_keys(keys: impl IntoIterator<Item = (ServerId, ClientKey)>) -> Self {
-        Self(keys.into_iter().collect())
+        let mut result = Self::default();
+        result.refill(keys);
+        result
     }
 
     /// Replace the contents with `keys`, keeping the allocation.
     pub fn refill(&mut self, keys: impl IntoIterator<Item = (ServerId, ClientKey)>) {
         self.0.clear();
         self.0.extend(keys);
+        self.1.clear();
+        self.2 = ServerId::UNSET;
+        self.3 = 0;
+        self.4 = 0;
+    }
+
+    pub fn current(&self) -> ServerId { self.2 }
+    pub fn roster_gen(&self) -> u32 { self.3 }
+    pub fn facts_gen(&self) -> u32 { self.4 }
+    /// Compatibility key-only constructors have no metadata; never guess the current slot.
+    pub fn slots(&self) -> impl Iterator<Item = ServerId> + '_ {
+        self.1.iter().map(|(sid, _)| *sid)
+            .chain(self.0.iter().filter(|_| self.1.is_empty()).map(|(sid, _)| *sid))
+    }
+    pub fn facts(&self, sid: ServerId) -> Option<&ClientFacts> {
+        self.1.iter().find(|(slot, _)| *slot == sid).map(|(_, facts)| facts)
+    }
+
+    /// Host-only registry capture through explicit readers. Reuses both buffers and machine strings.
+    /// Eligibility is read on EVERY fill, irrespective of generations. The acquire-backed probe
+    /// reader runs before tier and the second eligible lookup checks instance/token/grant again.
+    /// A raced row keeps its registered slot and evidence but has no active key or source pair.
+    pub fn refill_roster(
+        &mut self, current: ServerId, roster_gen: u32, facts_gen: u32,
+        slots: impl IntoIterator<Item = ServerId>,
+        lookup: impl FnMut(ServerId) -> Option<&'static Client>,
+        describe: impl FnMut(ServerId) -> Option<&'static super::ServerFacts>,
+        probe: impl FnMut(ServerId) -> Option<super::probe::Outcome>,
+    ) {
+        self.refill_roster_with_stream_policy(current, roster_gen, facts_gen, slots, lookup, describe, probe, |_| false);
+    }
+
+    pub fn stream_allowed(&self, sid: ServerId) -> bool {
+        self.key(sid).is_some() && self.facts(sid).is_some_and(|f| f.stream_allowed)
+    }
+
+    pub fn refill_roster_with_stream_policy(
+        &mut self, current: ServerId, roster_gen: u32, facts_gen: u32,
+        slots: impl IntoIterator<Item = ServerId>,
+        mut lookup: impl FnMut(ServerId) -> Option<&'static Client>,
+        mut describe: impl FnMut(ServerId) -> Option<&'static super::ServerFacts>,
+        mut probe: impl FnMut(ServerId) -> Option<super::probe::Outcome>,
+        mut stream_allowed: impl FnMut(&Client) -> bool,
+    ) {
+        self.0.clear();
+        self.2 = current;
+        self.3 = roster_gen;
+        self.4 = facts_gen;
+        let mut count = 0;
+        for sid in slots {
+            if count == self.1.len() {
+                self.1.push((sid, ClientFacts { machine_id: String::new(), described: None, source: None, stream_allowed: false }));
+            }
+            let row = &mut self.1[count];
+            row.0 = sid;
+            let described = describe(sid);
+            let unchanged = match (row.1.described, described) {
+                (None, None) => true,
+                (Some(a), Some(b)) => a.name == b.name && a.handle == b.handle
+                    && a.owned == b.owned && a.home == b.home && a.owner_id == b.owner_id,
+                _ => false,
+            };
+            if !unchanged { row.1.described = described; }
+            row.1.source = None;
+            row.1.stream_allowed = false;
+            if let Some(client) = lookup(sid) {
+                let key = ClientKey::of(client);
+                let outcome = probe(sid);
+                let tier = client.link();
+                let allowed = stream_allowed(client);
+                if lookup(sid).is_some_and(|now| ClientKey::of(now) == key)
+                    && ClientKey::of(client) == key {
+                    self.0.push((sid, key));
+                    if row.1.machine_id != client.machine_id() {
+                        row.1.machine_id.clear();
+                        row.1.machine_id.push_str(client.machine_id());
+                    }
+                    row.1.source = Some((outcome, tier));
+                    row.1.stream_allowed = allowed;
+                } else {
+                    row.1.machine_id.clear();
+                }
+            } else {
+                row.1.machine_id.clear();
+            }
+            count += 1;
+        }
+        self.1.truncate(count);
     }
 
     /// The key of the client `sid` held, `None` when it held none.
@@ -222,3 +346,7 @@ mod tests {
         assert!(KeyedClients::new(&keys, registry).client(sid).is_none(), "the instance moved");
     }
 }
+
+#[cfg(test)]
+#[path = "client_keys_roster_tests.rs"]
+mod roster_tests;

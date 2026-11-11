@@ -48,7 +48,7 @@ fn menu_anchor_is_frozen_and_a_new_open_uses_the_new_anchor() {
     stores.browse_run_for_test(plx_data::stores::browse::BrowseCmd::SetCur(0));
     let measure = FixtureMeasure;
     let mut first = plx_data::stores::browse::DirectorySnapshot::default();
-    let publication = stores.capture_browse(&mut first);
+    let publication = stores.capture_seeded_browse_for_test(&mut first, plx_plex::plex::current_server());
     let listing = publication.listing;
     let hubs = publication.section_hubs;
     let old_anchor = [100.0f32.to_bits(), 400.0f32.to_bits(), 220.0f32.to_bits(), 60.0f32.to_bits()];
@@ -73,7 +73,7 @@ fn menu_anchor_is_frozen_and_a_new_open_uses_the_new_anchor() {
         browse.set_pinned_for_test(4, true);
     }
     let mut changed = plx_data::stores::browse::DirectorySnapshot::default();
-    stores.capture_browse(&mut changed);
+    stores.capture_seeded_browse_for_test(&mut changed, plx_plex::plex::current_server());
     let cx_changed = source_cx(&listing, &changed, &hubs, &measure, Tick { ms: 2, dt_us: 16_000 });
     old.step(
         &ScreenEvent::Tick(Tick { ms: 2, dt_us: 16_000 }),
@@ -163,15 +163,21 @@ fn menu_side_actions_keep_source_sort_and_filter_row_identity() {
             cx,
             &mut Effects::new(&mut output, MachineId::Instance(plx_machine::machine::InstanceId(7)), &mut present),
         );
+        assert_eq!(output.len(), 1, "the host retains the old library while the menu closes");
+        assert!(matches!(&output[0].fx, Fx::Nav(NavOp::Dismiss(EntryId(7)))));
+        output.clear();
+        sources.step(
+            &ScreenEvent::Unmount,
+            cx,
+            &mut Effects::new(&mut output, MachineId::Instance(plx_machine::machine::InstanceId(7)), &mut present),
+        );
+        assert_eq!(output.len(), 1);
         assert!(output.iter().any(|effect| matches!(
             &effect.fx,
-            Fx::Deliver(_, Delivery::Screen(ScreenEvent::App(AppMsg::LibrarySelect(
-                SectionAddress { sid, section: 7, .. }
-            )))) if sid == &ServerId::from_raw(2)
-        )));
-        assert!(output.iter().any(|effect| matches!(
-            &effect.fx,
-            Fx::Nav(NavOp::Dismiss(EntryId(7)))
+            Fx::Deliver(_, Delivery::Screen(ScreenEvent::App(AppMsg::LibraryMenuSelect {
+                origin,
+                target: SectionAddress { sid, section: 7, .. },
+            }))) if *origin == sources.arg.target && sid == &ServerId::from_raw(2)
         )));
     });
 }
@@ -227,7 +233,7 @@ fn open_sources_refreshes_metadata_once_then_settles() {
     stores.browse_run_for_test(plx_data::stores::browse::BrowseCmd::SetCur(0));
     let measure = FixtureMeasure;
     let mut first = plx_data::stores::browse::DirectorySnapshot::default();
-    let publication = stores.capture_browse(&mut first);
+    let publication = stores.capture_seeded_browse_for_test(&mut first, plx_plex::plex::current_server());
     let listing = publication.listing;
     let hubs = publication.section_hubs;
     let mut menu = LibraryMenu::new(EntryId(7), menu_arg(LibraryMenuKind::Sources, [0; 4]));
@@ -259,7 +265,7 @@ fn open_sources_refreshes_metadata_once_then_settles() {
         browse.set_pinned_for_test(4, true);
     }
     let mut changed = plx_data::stores::browse::DirectorySnapshot::default();
-    stores.capture_browse(&mut changed);
+    stores.capture_seeded_browse_for_test(&mut changed, plx_plex::plex::current_server());
     let cx_changed = source_cx(&listing, &changed, &hubs, &measure, Tick { ms: 2, dt_us: 16_000 });
     effects(&mut menu, &cx_changed);
     assert_ne!(menu.stamp, first_stamp, "source metadata refresh rebuilds the open menu");

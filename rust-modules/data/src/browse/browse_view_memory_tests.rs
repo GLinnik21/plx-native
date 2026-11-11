@@ -76,8 +76,7 @@ fn library_on(pms: &Pms, machine: &str, title: &str, kind: SecKind) -> TestBrows
     // As a finished discovery leaves it: the roster sync must see this client as the one the
     // table was built against, or it re-runs discovery and that request eats a scripted answer.
     let client = plx_plex::plex::client_for(pms.sid).unwrap();
-    source.client_addr = client as *const _ as usize;
-    source.token_gen = client.token_gen();
+    source.client_key = Some(plx_plex::plex::ClientKey::of(client));
     let mut browse = TestBrowse::default();
     browse.seed_sources(vec![source]);
     browse.append_sections(0, vec![(1, title.into(), kind)]);

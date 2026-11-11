@@ -192,7 +192,8 @@ pub struct HeroSet {
 /// whether it wears the outline or the filled face is membership ([`face`]), not presence. The Go to
 /// Show disc (only when `set.go_show`) follows the bookmark, before the state discs: it names the
 /// page the episode belongs to, which is navigation rather than an action on the item. The Play
-/// Version disc follows the watched toggle; More is last for an on-deck hero.
+/// Version disc follows the watched toggle, then More. Also available is the trailing pill when
+/// present, so it leaves the disc positions intact as its result lands.
 pub fn hero_ctls(set: HeroSet) -> ([HeroCtl; MAX_CTLS], usize) {
     let mut v = [HeroCtl::Play; MAX_CTLS];
     let mut n = 1;
@@ -212,10 +213,6 @@ pub fn hero_ctls(set: HeroSet) -> ([HeroCtl; MAX_CTLS], usize) {
         v[n] = HeroCtl::Trailer;
         n += 1;
     }
-    if set.alt {
-        v[n] = HeroCtl::Alt;
-        n += 1;
-    }
     v[n] = if set.mark == PosterMark::Watched {
         HeroCtl::MarkUnwatched
     } else {
@@ -227,6 +224,10 @@ pub fn hero_ctls(set: HeroSet) -> ([HeroCtl; MAX_CTLS], usize) {
         n += 1;
     }
     if set.more { v[n] = HeroCtl::More; n += 1; }
+    if set.alt {
+        v[n] = HeroCtl::Alt;
+        n += 1;
+    }
     (v, n)
 }
 
@@ -1608,7 +1609,8 @@ mod tests {
         assert_eq!(ctl_at(compact, 2), Some(HeroCtl::MarkWatched));
         assert_eq!(ctl_at(wide, 1), Some(HeroCtl::Watchlist));
         assert_eq!(ctl_at(wide, 2), Some(HeroCtl::Restart));
-        assert_eq!(ctl_at(wide, 3), Some(HeroCtl::Alt));
+        assert_eq!(ctl_at(wide, 3), Some(HeroCtl::MarkWatched));
+        assert_eq!(ctl_at(wide, 4), Some(HeroCtl::Alt));
     }
 
     #[test]
@@ -1860,14 +1862,14 @@ mod tests {
                 HeroCtl::Play,
                 HeroCtl::Watchlist,
                 HeroCtl::Restart,
-                HeroCtl::Alt,
-                HeroCtl::MarkWatched
+                HeroCtl::MarkWatched,
+                HeroCtl::Alt
             ]
         );
     }
 
     #[test]
-    fn trailer_true_inserts_between_restart_and_alt() {
+    fn trailer_true_inserts_between_restart_and_watch() {
         let set = set_full(true, true, PosterMark::None, true);
         let (controls, n) = hero_ctls(set);
         assert_eq!(
@@ -1877,8 +1879,8 @@ mod tests {
                 HeroCtl::Watchlist,
                 HeroCtl::Restart,
                 HeroCtl::Trailer,
-                HeroCtl::Alt,
-                HeroCtl::MarkWatched
+                HeroCtl::MarkWatched,
+                HeroCtl::Alt
             ]
         );
     }

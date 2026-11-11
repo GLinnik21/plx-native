@@ -5,7 +5,7 @@
 
 use super::*;
 use crate::browse::test_support::*;
-use crate::browse::SecFetch;
+use crate::browse::{BrowseRosterInput, SecFetch};
 use crate::stores::browse::{LibraryWork, SectionAddress};
 use crate::stores::StoreJob;
 use plx_plex::plex::{ClientKey, ClientKeys};
@@ -750,7 +750,16 @@ fn a_failed_letters_read_keeps_the_rail_owed_and_is_retried_after_the_backoff() 
         assert_eq!(*state.letters, vec![("A".to_owned(), 3), ("B".to_owned(), 4)], "panics={panics}: untouched");
         assert!(!state.letters_current() && state.letters_waiting(), "panics={panics}");
         assert!(shown_letters(&browse).is_empty(), "never shown over a grid it does not describe");
-        assert!(browse.state.pump_needs_work(&browse.adapter), "the countdown must not stall on an idle loop");
+        browse.observe_pin_write();
+        browse.refill();
+        let session = plx_plex::plex::session::peek();
+        let profile_key = plx_plex::plex::session::current_profile_key();
+        let input = BrowseRosterInput {
+            keys: &browse.keys, session: &session,
+            visible_generation: plx_plex::plex::session::visible_generation(),
+            settled: plx_plex::plex::session::peek_settled().is_some(), profile_key: &profile_key,
+        };
+        assert!(browse.state.pump_needs_work(&browse.adapter, &input), "the countdown must not stall on an idle loop");
 
         // Held back for the length of the back-off, one step at a time.
         for step in 1..LETTERS_RETRY_STEPS {

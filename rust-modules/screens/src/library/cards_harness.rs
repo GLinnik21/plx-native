@@ -78,14 +78,14 @@ impl Harness {
                 // over a (here unused) 120-item grid.
                 let stores = plx_data::stores::Stores::default();
                 stores.browse.borrow_mut().seed_two_source_table_for_test();
-                stores.capture_browse(&mut directory);
+                stores.capture_seeded_browse_for_test(&mut directory, plx_plex::plex::current_server());
                 stores.browse_run_for_test(BrowseCmd::SetCur(0));
                 {
                     let mut browse = stores.browse.borrow_mut();
                     browse.seed_items_for_test(120);
                     browse.seed_shelves_for_test(0, &["movie.recentlyadded.1", "movie.recentlyreleased.1", "movie.toprated.1"], n);
                 }
-                let publication = stores.capture_browse(&mut directory);
+                let publication = stores.capture_seeded_browse_for_test(&mut directory, plx_plex::plex::current_server());
                 (publication.listing, publication.section_hubs, Some(stores))
             }
         };
@@ -151,7 +151,7 @@ impl Harness {
             Set::Shelf => {
                 let stores = self._stores.as_ref().ok_or("the shelf set has no store")?;
                 stores.browse.borrow_mut().seed_first_shelf_items_for_test(0, &self.rks);
-                self.hubs = stores.capture_browse(&mut self.directory).section_hubs;
+                self.hubs = stores.capture_seeded_browse_for_test(&mut self.directory, plx_plex::plex::current_server()).section_hubs;
             }
         }
         self.step(ScreenEvent::StoreChanged(plx_data::stores::StoreId::Browse.ord(), 1));

@@ -396,7 +396,10 @@ fn library_publishes_the_actual_container_strip() {
     let _guard = plx_base::testlock::serial();
     let mut dispatcher = Dispatcher::<AppHost>::new();
     let mut bridge = Bridge::for_test(|| 0);
-    bridge.stores.browse.borrow_mut().seed_two_source_table_for_test();
+    plx_plex::plex::reset_servers_for_test();
+    let own = plx_plex::plex::register_for_test("strip-own", "127.0.0.1", 9, "t", "cid");
+    let shared = plx_plex::plex::register_for_test("strip-shared", "127.0.0.1", 10, "t", "cid");
+    bridge.stores.browse.borrow_mut().seed_registered_table_for_test([own, shared]);
     bridge.refresh_browse_directory();
     super::show_page(&mut dispatcher, AppArg::Library);
     bridge.capture_chrome(&mut dispatcher);
@@ -404,16 +407,20 @@ fn library_publishes_the_actual_container_strip() {
     assert_eq!(dispatcher.nav.tabs.strip.iter().map(|member| member.elem).collect::<Vec<_>>(),
         vec![base + 4, base, base + 1, base + 2, plx_ui::widgets::TAB_KEY_WATCHLIST, base + 3]);
     assert_eq!(dispatcher.nav.tabs.strip_fallback, Some(base));
+    plx_plex::plex::reset_servers_for_test();
 }
 
 #[test]
 fn all_splits_in_one_frame_keep_the_same_library_listing() {
     use plx_ui::dispatch::Rig;
     let _guard = plx_base::testlock::serial();
+    plx_plex::plex::reset_servers_for_test();
+    let own = plx_plex::plex::register_for_test("split-own", "127.0.0.1", 9, "t", "cid");
+    let shared = plx_plex::plex::register_for_test("split-shared", "127.0.0.1", 10, "t", "cid");
     let mut rig = super::Bridge::for_test(|| 0);
     {
         let mut browse = rig.stores.browse.borrow_mut();
-        browse.seed_two_source_table_for_test();
+        browse.seed_registered_table_for_test([own, shared]);
         browse.seed_items_for_test(3);
         browse.seed_shelves_for_test(0, &["shelves"], 3);
     }
@@ -440,6 +447,7 @@ fn all_splits_in_one_frame_keep_the_same_library_listing() {
     assert_eq!(rig.split().views.listing.total(), -1);
     assert!(rig.split().views.section_hubs.id().is_none());
     assert!(rig.split().views.directory.sections().is_empty());
+    plx_plex::plex::reset_servers_for_test();
 }
 
 #[test]

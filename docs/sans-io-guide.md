@@ -7,6 +7,26 @@ process-global registry and has no `cfg(test)` fork. Its work leaves as a typed 
 the app's runners execute, and the result returns as one addressed event. The reason is that a
 step then has no seam to fake: a test and a replay feed it the events the product feeds it.
 
+## Notify stream integration (written; acceptance pending)
+
+Notify uses one captured `NotifyInput { keys, armed }` and the actual store's
+`begin -> prepare_next -> settle_admission -> finish_turn -> end` cursor. Refill
+keys with `refill_roster_with_stream_policy` before begin. For each connection,
+exit data and drain only Notify jobs through the app runner before settlement;
+finish that connection before preparing the next. Map the completed output once,
+then drain the unchanged Browse/Hubs fill list and Notify in StoreId order.
+
+Initial refusal settles at the emission frame before ordinary mail. Accepted-held
+release failure is an ordinary terminal at the observation frame, never a second
+admission. Production streams always run off-frame, including held real release;
+`Bridge::for_test` selects refusal, and finite scripts supply explicit eligibility.
+No stream callback runs inside data or while borrowing Stores across the runner.
+The coordinator reports post-retirement ledger totals of 5 workers / 81 globals /
+62 forks / 11 fxlanes, down from the S4 pre-Notify 6/89/65/11. The source-only
+stale-key test passed in orun-27; runtime tests, capture comparisons and full gates
+remain pending. These contracts are not runtime or replay acceptance; see
+`.empryo/reviews/verdict-notify-integration.md` for the handoff limits.
+
 ## Which code is a machine
 
 `ci/check-deps.sh` (the `MACHINES` array) scans these for `workers` and `globals`:
@@ -111,8 +131,14 @@ pub(crate) fn watchlist_input() -> plx_data::watchlist::WatchlistInput {
 
 The Bridge calls the store's `run_with_input(cmd, &WatchlistInput)` (`WatchlistStore` in
 `data/src/stores/watchlist.rs`), and the step compares with `WatchlistAuth::is_current(&CurrentProfile)`
-(`data/src/watchlist.rs`), a pure function. The Browse pins did the same (#1106:
-`Bridge::browse_session`, then `BrowseStore::run_with_session`). Which client a server holds is an
+(`data/src/watchlist.rs`), a pure function. Browse now takes `BrowseRosterInput` through
+`BrowseStore::run_with_input`, pumps and directory capture: the host refills the same `ClientKeys`
+with all registered slots, current, described/machine/probe facts and generation hints before the pass.
+`Bridge::browse_session` observes the pin receipt before capturing session, settled, visible-generation
+and profile-key facts independently. An empty session does not imply settled. No new Browse job or
+admission kind is introduced; directory-only capture emits no jobs. Legacy fixture migration and
+integrated verification are tracked in `.empryo/reviews/verdict-s4-integration.md`.
+Which client a server holds is an
 input too: the Collection step asks `keys.key(sid)` of the `ClientKeys` it is handed (`maybe_spawn`
 in `data/src/collection.rs`), never `client_for`.
 

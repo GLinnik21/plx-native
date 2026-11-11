@@ -170,7 +170,15 @@ fn the_controlled_home_discovery_take_waits_for_a_request_it_owes_under_dump_mod
     let mut rig = discovery_rig();
     // The request is held, never started: the step raised the claim and no worker will ever
     // answer.
-    rig.stores.browse.borrow_mut().controlled_discover(&plx_data::pms::registry_keys_for_test());
+    rig.stores.browse.borrow().observe_pin_write();
+    crate::app::adapters::stores::refill_client_keys(&mut rig.client_keys);
+    let input = plx_data::browse::BrowseRosterInput {
+        keys: &rig.client_keys, session: &plx_plex::plex::session::peek(),
+        visible_generation: plx_plex::plex::session::visible_generation(),
+        settled: plx_plex::plex::session::peek_settled().is_some(),
+        profile_key: &plx_plex::plex::session::current_profile_key(),
+    };
+    rig.stores.browse.borrow_mut().controlled_discover(&input);
     assert!(rig.stores.browse.borrow().has_jobs() && rig.stores.browse.borrow().discovery_owed(),
         "the request is out");
     rig.stores.landgate.arm_dump(std::time::Duration::from_millis(20));

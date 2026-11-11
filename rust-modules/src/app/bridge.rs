@@ -42,6 +42,14 @@ use std::ffi::CStr;
 #[path = "metadata_alt_sources_bridge_tests.rs"]
 mod metadata_alt_sources_bridge_tests;
 
+#[cfg(test)]
+#[path = "browse_roster_bridge_tests.rs"]
+mod browse_roster_bridge_tests;
+
+#[cfg(test)]
+#[path = "notify_bridge_tests.rs"]
+mod notify_bridge_tests;
+
 use plx_screens::family::SettingsPage;
 use plx_screens::player::HudPolicy;
 use plx_screens::registry::{AppArg, AppFx, AppMounter, AppMsg, ConsentCmd, ContentArg, ContentReq, HomeCmd, HomeLike, HomeReq, HomeTab, ItemMenuKind, LibraryReq, LoopReq, PageMemory};
@@ -78,6 +86,33 @@ struct LibraryPageVisit {
 // ---------------------------------------------------------------------------------------------
 
 pub(crate) struct AppHost;
+
+/// Host facts captured after observing the pending pin receipt. Never retained across calls.
+struct BrowseContext {
+    session: std::sync::Arc<plx_plex::plex::session::Session>,
+    visible_generation: u64,
+    settled: bool,
+    profile_key: String,
+}
+
+impl BrowseContext {
+    fn capture(stores: &plx_data::stores::Stores) -> Self {
+        stores.browse.borrow().observe_pin_write();
+        Self {
+            session: plx_plex::plex::session::peek(),
+            visible_generation: plx_plex::plex::session::visible_generation(),
+            settled: plx_plex::plex::session::peek_settled().is_some(),
+            profile_key: plx_plex::plex::session::current_profile_key(),
+        }
+    }
+
+    fn input<'a>(&'a self, keys: &'a plx_plex::plex::ClientKeys) -> plx_data::browse::BrowseRosterInput<'a> {
+        plx_data::browse::BrowseRosterInput {
+            keys, session: &self.session, visible_generation: self.visible_generation,
+            settled: self.settled, profile_key: &self.profile_key,
+        }
+    }
+}
 
 // (`AppArg::from_node` and `AppArg::node` stood here — the two conversions between a screen
 // argument and a `ui::trail::Node`, which this module's own doc called "about the LEGACY trail
@@ -614,6 +649,9 @@ impl Bridge {
             super::adapters::consent::ConsentAdapter::fixture(),
             super::adapters::stores::StoreRunner::held());
         bridge.metadata_alt_host = |request, _| request.answer(None);
+        // Keep the test SessionMachine unseated; Search's initial household input, like
+        // subsequent captures, is the actual session's independently observed roster.
+        bridge.search = bridge.stores.search_snapshot(bridge.directory.view(), &Self::household_ids());
         bridge
     }
 
@@ -624,8 +662,11 @@ impl Bridge {
         store_runner: super::adapters::stores::StoreRunner) -> Self {
         let stores = plx_data::stores::Stores::default();
         let mut directory = plx_data::stores::browse::DirectorySnapshot::default();
-        let browse = stores.capture_browse(&mut directory);
-        let search = stores.search_snapshot(browse.directory.view(), &Self::household_ids());
+        let browse = stores.capture_browse(&mut directory, &plx_data::browse::BrowseRosterInput {
+            keys: &Default::default(), session: &init.persisted,
+            visible_generation: 0, settled: false, profile_key: "",
+        });
+        let search = stores.search_snapshot(browse.directory.view(), &init.persisted.household_ids());
         Self::with_publications_and_stores(measure, now_us, init, session_adapter, consent,
             consent_adapter, store_runner,
             StorePublications {
@@ -1341,7 +1382,9 @@ impl Bridge {
         let hubs_before = (self.section_hubs.view().id(), self.section_hubs.view().revision());
         // One owner borrow, in the load-bearing order: directory capture resolves profile pins
         // and may repoint the current section, so listing and shelves are captured only after it.
-        let owned = self.stores.capture_browse(&mut self.directory);
+        super::adapters::stores::refill_client_keys(&mut self.client_keys);
+        let context = self.browse_session();
+        let owned = self.stores.capture_browse(&mut self.directory, &context.input(&self.client_keys));
         if self.home_io.is_none() { self.section_hubs = owned.section_hubs; }
         let listing = if self.home_io.is_some() { self.listing.clone() } else { owned.listing };
         let listing_changed = !self.listing.view().same_items(listing.view())
@@ -1564,7 +1607,7 @@ impl Bridge {
     pub(crate) fn browse_run(&mut self, cmd: plx_data::stores::browse::BrowseCmd) -> bool {
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
         let session = self.browse_session();
-        let changed = self.stores.browse_run(cmd, &self.client_keys, &session);
+        let changed = self.stores.browse_run(cmd, &session.input(&self.client_keys));
         self.start_store_jobs_of(StoreId::Browse);
         changed
     }
@@ -1586,7 +1629,7 @@ impl Bridge {
     pub(crate) fn browse_discover_pump(&mut self) -> plx_data::stores::StoreOutcome {
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
         let session = self.browse_session();
-        let outcome = self.stores.browse_discover_pump(&self.client_keys, &session);
+        let outcome = self.stores.browse_discover_pump(&session.input(&self.client_keys));
         self.start_store_jobs_of(StoreId::Browse);
         outcome
     }
@@ -1894,8 +1937,9 @@ impl Bridge {
         }
         let owed = self.stores.browse.borrow().requery_owed();
         let requeried = owed.then(|| {
+            super::adapters::stores::refill_client_keys(&mut self.client_keys);
             let session = self.browse_session();
-            self.stores.browse.borrow_mut().pump_with_gate(&self.stores.landgate, &self.client_keys, &session).endpoints
+            self.stores.browse.borrow_mut().pump_with_gate(&self.stores.landgate, &session.input(&self.client_keys)).endpoints
         });
         if let Some(endpoints) = requeried {
             outcome.endpoints.merge(endpoints);
@@ -1915,10 +1959,31 @@ impl Bridge {
     /// and the endpoint refreshes the map's quiet refetches settled, for the caller to carry.
     pub(crate) fn notify_pump(&mut self, pages: &[ContentArg], shown: plx_data::stores::notify_map::Shown)
         -> (bool, plx_data::stores::EndpointRefreshSet) {
-        let out = self.stores.notify_pump();
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
+        self.notify_pump_captured(pages, shown)
+    }
+
+    /// One captured input, one frame, and a runner boundary for EACH connection. This
+    /// helper is also the explicit-value test port; it never reads ambient keys.
+    fn notify_pump_captured(&mut self, pages: &[ContentArg], shown: plx_data::stores::notify_map::Shown)
+        -> (bool, plx_data::stores::EndpointRefreshSet) {
+        let input = plx_data::stores::notify::NotifyInput {
+            keys: &self.client_keys, armed: self.stores.landgate.is_armed(),
+        };
+        let mut pass = self.stores.notify_begin(&input);
+        while let Some(mut turn) = self.stores.notify_prepare_next(&mut pass, &input) {
+            // No Stores borrow survives the IO boundary. Earlier connections have
+            // already drained before any later connection is prepared or launched.
+            for job in self.stores.take_jobs_of(StoreId::Notify) {
+                self.store_runner.start(job);
+            }
+            self.stores.notify_settle_admission(&mut pass, &mut turn);
+            self.stores.notify_finish_turn(&mut pass, turn, &input);
+        }
+        let out = self.stores.notify_end(pass);
         let mut spent = self.stores.notify_map(&out, pages, shown, self.directory.view(), &self.client_keys);
         self.start_store_jobs_in(plx_data::stores::Stores::NOTIFY_FILLS);
+        self.start_store_jobs_of(StoreId::Notify);
         if !spent.refetched.is_empty() || !spent.invalidated.is_empty() {
             plx_base::eventlog::log(&format!(
                 "notify: refetched {} source(s) invalidated {} server(s)", spent.refetched.len(), spent.invalidated.len()));
@@ -2019,9 +2084,8 @@ impl Bridge {
     /// The session Browse's step is handed. The store observes its pending pin write's receipt FIRST
     /// and the registry is read AFTER, so a saved write is never paired with a session from before it.
     /// The two lines must not swap, and the `Arc` is never kept across Bridge calls.
-    fn browse_session(&self) -> std::sync::Arc<plx_plex::plex::session::Session> {
-        self.stores.browse.borrow().observe_pin_write();
-        plx_plex::plex::session::peek()
+    fn browse_session(&self) -> BrowseContext {
+        BrowseContext::capture(&self.stores)
     }
 
     /// The profile the Session owner has seated, as the scope counter it allocated and published
@@ -2166,7 +2230,9 @@ impl Bridge {
     /// Refresh only the retained directory at synchronous application boundaries that must make
     /// a routing decision before the next dispatcher frame.
     pub(crate) fn refresh_browse_directory(&mut self) {
-        self.stores.browse.borrow_mut().capture_directory(&mut self.directory);
+        super::adapters::stores::refill_client_keys(&mut self.client_keys);
+        let context = self.browse_session();
+        self.stores.browse.borrow_mut().capture_directory(&mut self.directory, &context.input(&self.client_keys));
     }
 
     #[cfg(test)]
@@ -2455,7 +2521,9 @@ impl Bridge {
                     // the retained directory visible to Onboard's Tick in this same dispatcher
                     // turn instead of leaving the newly discovered rows one frame behind.
                     if outcome.changed {
-                        self.stores.browse.borrow_mut().capture_directory(&mut self.directory);
+                        super::adapters::stores::refill_client_keys(&mut self.client_keys);
+                        let context = BrowseContext::capture(&self.stores);
+                        self.stores.browse.borrow_mut().capture_directory(&mut self.directory, &context.input(&self.client_keys));
                     }
                     return Self::carry(&mut self.endpoint_carry, endpoints);
                 }
@@ -2468,7 +2536,8 @@ impl Bridge {
                 }
                 AppMsg::StoreWork(plx_data::stores::StoreWork::BrowseDiscovery) => {
                     super::adapters::stores::refill_client_keys(&mut self.client_keys);
-                    self.stores.browse_controlled_discover(&self.client_keys);
+                    let context = BrowseContext::capture(&self.stores);
+                    self.stores.browse_controlled_discover(&context.input(&self.client_keys));
                     Self::admit_home_jobs(&mut self.stores, &mut self.store_runner, io, StoreId::Browse);
                     return Handled::Yes;
                 }
@@ -2537,7 +2606,7 @@ impl Bridge {
             AppMsg::StoreWork(plx_data::stores::StoreWork::Browse) => {
                 super::adapters::stores::refill_client_keys(&mut self.client_keys);
                 let session = self.browse_session();
-                let due = self.stores.browse.borrow_mut().pump_with_gate(&self.stores.landgate, &self.client_keys, &session).endpoints;
+                let due = self.stores.browse.borrow_mut().pump_with_gate(&self.stores.landgate, &session.input(&self.client_keys)).endpoints;
                 self.start_store_jobs_of(StoreId::Browse);
                 Self::carry(&mut self.endpoint_carry, due)
             }
@@ -3926,7 +3995,7 @@ pub(crate) fn follow_auth_landing(pages: &mut Dispatcher<AppHost>, bridge: &mut 
         // single-user account this is the earliest authorized moment there is.
         super::input::maybe_ask_consent(pages);
         bridge.refresh_browse_directory();
-        if plx_data::stores::browse::onboard::asks(bridge.browse_directory(), &plx_plex::plex::session::peek()) {
+        if plx_data::stores::browse::onboard::asks(bridge.browse_directory(), &plx_plex::plex::session::peek(), &plx_plex::plex::session::current_profile_key()) {
             plx_base::eventlog::log("login: server installed — asking which sources feed Home");
             // no `enter()`: rooting the stack at the page is what mounts the owned screen
             // (`boot.rs`), and a ROOT is right because the sweep above has just emptied the tree.

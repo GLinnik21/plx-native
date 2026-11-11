@@ -7,6 +7,24 @@ player machine: `player/lifecycle.rs` is the machine alone (private state, one w
 `player/foreground.rs` its drivers and `player/transport.rs` the transport-pause contract; its shape
 is gated by `ci/machines.ini` (see "Machine shape" below).
 
+## Notify integration checkpoint (not acceptance)
+
+Notify's typed Direct stream lane and app per-connection cursor are written; the
+frozen API and integration evidence are in `.empryo/reviews/verdict-notify-core.md`
+and `.empryo/reviews/verdict-notify-integration.md`. StoreId Notify is appended at
+12; old ordinals, Home/tape records and NOTIFY_FILLS `[Browse, Hubs]` are unchanged.
+Bridge captures fresh stream eligibility before the one-frame cursor, settles each
+initial admission before that connection's ordinary drain, then maps once and
+drains fan-out jobs. Accepted-held release failures use ordinary terminal timing.
+Production opens off-frame; test boot refuses unless explicitly scripted.
+
+The three Notify allow-area files have been retired. The coordinator reports actual
+ledger totals of 5 workers / 81 globals / 62 forks / 11 fxlanes, down from the
+S4 pre-Notify checkpoint of 6/89/65/11; the pins now match. The source-only stale-key
+check passed in orun-27; runtime tests, capture comparisons and full gates remain
+pending. Per-connection source ordering is preserved; asynchronous worker wall-time
+is not pinned, and disabled-state repair is explicitly intentional.
+
 ## The rule
 
 Logic never performs IO. A machine (a screen, a `data/` store, the session owner, the player's
@@ -221,7 +239,7 @@ headed "The listing lanes"): their two worker starts and two registry reads are 
 `data/src/browse/mod.rs`. The Library's source discovery (the section list, the server's name and the
 item counts) is the twelfth (the bullet headed "The discovery lane"): its worker start and its one
 registry read are gone from `data/src/browse/mod.rs`, and its `data-browse` workers ledger file is
-deleted. The Home pins take the session from the Bridge (the bullet headed "The pins' session input"), and so do the Watchlist and catalog stores, for the seated profile and its plex.tv identity (the bullet headed "The Watchlist and catalog session input"), which deletes three `data-watchlist` globals lines; the rest of `browse/` (the roster and the gate reads) is still on its ledger. The Metadata store's
+deleted. The Home pins take the session from the Bridge (the bullet headed "The pins' session input"), and so do the Watchlist and catalog stores, for the seated profile and its plex.tv identity (the bullet headed "The Watchlist and catalog session input"), which deletes three `data-watchlist` globals lines. S4 replaces Browse's roster/gate/current reads with explicit `BrowseRosterInput` and the existing host-filled `ClientKeys`; the obsolete 14-entry Browse globals file was retired. The S4 checkpoint was **6 workers / 89 globals / 65 forks / 11 fxlanes** (recount before deletion: 6/103/65/11); post-Notify retirement the coordinator reports **5/81/62/11**. Runtime and integrated verification remain pending; legacy fixture/caller migration remains tracked in `.empryo/reviews/verdict-s4-integration.md`. Other stores' and Session's global sites remain unchanged. The Metadata store's
 season switch and episode-page window are the tenth (the bullet headed "The Metadata reads"): their
 two worker starts and the `client_for` reads of `fetch_episodes` and `fetch_episode_page` are gone
 from `data/src/metadata.rs`; the Related row's tail window read joins them in the same bullet, and its
@@ -771,10 +789,13 @@ worker start and the `client_for` read inside that worker are gone too. The hous
     **6/103/65/11**; the brief's earlier 121/113 globals sums were arithmetic errors, and the old
     forks pin 71 was a loose ceiling. M4 does not claim all Metadata pure (owner facts and worker
     timing remain). On prior tree `cfa3cba398266e37b2de759bd6896faa05932fda`, the unchanged Linux
-    replay driver passed 6/6 fixture-mode replays (3,412 graded frames, zero differences). Earlier
-    Windows full `make check`, app and hostsim runs failed, including LF-sensitive source pins; they
-    were not rerun as full gates in the Linux clone. Publication-head local gates and CI remain pending;
-    this replay does not establish ARM, TV or video behavior.
+    replay driver passed 6/6 fixture-mode replays (3,412 graded frames, zero differences); this is
+    historical evidence, not the publication head. M4 landed as PR #1315 (merge
+    `5b4e8db7745167e3211b9842147dfc34423755d3`) after 19/19 checks on exact head `29a`.
+    Exact publication replays were 6 SAME, 2,442 graded frames, with all differences zero. Local
+    full `make check` remained FAILED: two isolated runner-environment issues and a benchmark
+    timestamp defect were independently reproduced on BASE `0aaf`. This does not establish S4
+    testing or ARM, TV or video behavior.
 - **The view-state write lane.** The household's watch-state writes (`data/src/viewstate.rs`: mark
   watched, mark unwatched, remove from Continue Watching, and the fan-out of a watched write, or of
   an end of stream, to the title's other copies) are the eleventh store on the lane. `kick` starts no

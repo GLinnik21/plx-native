@@ -560,7 +560,7 @@ mod tests {
         let stores = crate::stores::Stores::default();
         stores.browse.borrow_mut().seed_registered_table_for_test([own, share]);
         let mut directory = crate::stores::browse::DirectorySnapshot::default();
-        stores.capture_browse(&mut directory);
+        stores.capture_seeded_browse_for_test(&mut directory, plx_plex::plex::current_server());
         (stores, directory, own, share)
     }
 
@@ -584,7 +584,7 @@ mod tests {
         plx_plex::plex::describe_server(share, "renamed-share", "new-friend", plx_plex::plex::GrantEvidence::outside());
         stores.browse.borrow_mut().append_section_for_test(
             1, 9, "Archive", crate::browse::SecKind::Movie);
-        stores.capture_browse(&mut directory);
+        stores.capture_seeded_browse_for_test(&mut directory, plx_plex::plex::current_server());
         let changed = cache.snapshot_with_directory(directory.view(), &household());
         assert!(!old.same_publication(&changed));
         assert_eq!(old.sources()[1].name, "nas-home");
@@ -599,7 +599,7 @@ mod tests {
         assert!(!Arc::ptr_eq(&old.sources, &changed.sources));
 
         stores.browse.borrow_mut().seed_sources_for_test(2, false);
-        stores.capture_browse(&mut directory);
+        stores.capture_seeded_browse_for_test(&mut directory, plx_plex::plex::current_server());
         let unreachable = cache.snapshot_with_directory(directory.view(), &household());
         assert!(old.sources()[0].live && old.sources()[1].live);
         assert!(!unreachable.sources()[0].live && !unreachable.sources()[1].live);
@@ -614,7 +614,7 @@ mod tests {
         let stores = crate::stores::Stores::default();
         stores.browse.borrow_mut().seed_sources_for_test(1, true);
         let mut directory = crate::stores::browse::DirectorySnapshot::default();
-        stores.capture_browse(&mut directory);
+        stores.capture_seeded_browse_for_test(&mut directory, plx_plex::plex::current_server());
         let cache = ScopeCache::default();
         let old = cache.snapshot_with_directory(directory.view(), &household());
 
@@ -647,7 +647,7 @@ mod tests {
         let _reset = Reset;
         let (stores, mut directory, _, share) = fixture();
         stores.browse.borrow_mut().seed_sources_for_test(2, true);
-        stores.capture_browse(&mut directory);
+        stores.capture_seeded_browse_for_test(&mut directory, plx_plex::plex::current_server());
         let cache = ScopeCache::default();
         let old = cache.snapshot_with_directory(directory.view(), &household());
         let before = read_key_with_directory(directory.view());
@@ -666,7 +666,7 @@ mod tests {
         assert_ne!(after.facts, before.facts, "…it moves the facts fingerprint, and that is enough");
 
         stores.browse.borrow_mut().seed_sources_for_test(2, false);
-        stores.capture_browse(&mut directory);
+        stores.capture_seeded_browse_for_test(&mut directory, plx_plex::plex::current_server());
         let quiet = cache.snapshot_with_directory(directory.view(), &household());
         assert!(!described.same_publication(&quiet), "a source going quiet is a new sentence");
         assert!(quiet.sources().iter().all(|source| !source.live));
@@ -689,7 +689,7 @@ mod tests {
         let other = plx_plex::plex::register_for_test("other", "127.0.0.1", 4, "other", "scope");
         assert_ne!(old_share, replacement);
         stores.browse_run_for_test(crate::stores::browse::BrowseCmd::Reset);
-        stores.capture_browse(&mut directory);
+        stores.capture_seeded_browse_for_test(&mut directory, plx_plex::plex::current_server());
         let next = cache.snapshot_with_directory(directory.view(), &household());
 
         assert_eq!(old.sources().len(), 2);
