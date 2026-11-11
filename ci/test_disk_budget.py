@@ -21,6 +21,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -866,6 +867,95 @@ class Inventory(Repo):
         self.assertEqual(db.live_for("/fleet/lane-a/target", None, "lane-a", snap, False, False, ["/c"]).builder_cwd, "cargo")
         self.assertEqual(db.live_for("/t/x", None, None, snap, False, False).open_files, ("rustc",))
         self.assertTrue(db.live_for("/t/y", None, None, snap, True, False).cargo_lock)
+
+
+class OtherVolume(Repo):
+    """A tree on another volume than the build (a lane worktree on a slow USB disk): the inventory lists it,
+    and nothing more. Sizing it, asking git about its lane or probing its locks reads a disk the build never
+    writes to, which stalled the preflight for 20-35 minutes on a spinning one, and `never()` throws the
+    tree out afterwards anyway. A second real device is impractical in CI, so the one device lookup
+    (`device_of`) is stubbed, and every reader the inventory must NOT reach for such a tree raises."""
+
+    OTHER = 4242
+
+    def foreign(self, *prefixes):
+        """Stub the device lookup so everything under `prefixes` is another volume, and make every reader
+        of such a tree raise: a sizing walk, an mtime walk, a git probe, a lock probe."""
+        real_device_of = db.device_of
+        self.other = prefixes
+
+        def is_other(path):
+            return any(db.under(path, p) for p in prefixes)
+
+        def device_of(path):
+            return self.OTHER if is_other(path) else real_device_of(path)
+
+        stubs = {"device_of": device_of}
+        for name in ("measure", "newest_mtime", "tracked_under", "is_merged", "is_clean"):
+            def guard(path, *args, _orig=getattr(db, name), _name=name, **kw):
+                if is_other(path):
+                    raise AssertionError("%s read a tree on another volume: %s" % (_name, path))
+                return _orig(path, *args, **kw)
+            stubs[name] = guard
+        for name, stub in stubs.items():
+            patcher = mock.patch.object(db, name, stub)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        class Probes(QuietProbes):
+            def cargo_locked(probes, path):
+                if is_other(path):
+                    raise AssertionError("a lock probe reached a tree on another volume: %s" % path)
+                return super().cargo_locked(path)
+
+            def check_locked(probes, checkout):
+                if is_other(checkout):
+                    raise AssertionError("a lock probe reached a checkout on another volume: %s" % checkout)
+                return super().check_locked(checkout)
+
+        return Probes()
+
+    def test_a_lane_on_another_volume_is_listed_but_never_sized_probed_or_planned(self):
+        das = self.lane("das-lane")
+        das_target = os.path.join(das, "rust-modules", "target")
+        das_fleet = os.path.join(self.fleet, "das-lane", "target")
+        local = self.lane("local-lane")
+        local_target = os.path.join(local, "rust-modules", "target")
+        main_target = os.path.join(self.main, "rust-modules", "target")
+        for path in (das_target, das_fleet, local_target, main_target):
+            cargo_tree(path, incr=1, hours=40)
+        probes = self.foreign(das, os.path.join(self.fleet, "das-lane"))
+
+        i = self.collect(probes)
+        by = self.by_path(i)
+
+        for path, kind in ((das_target, "lane"), (das_fleet, "fleet")):
+            t = by[path]
+            self.assertEqual((t.dev, t.kind, t.owner), (self.OTHER, kind, "das-lane"), path)
+            self.assertEqual((t.private_bytes, t.alloc_bytes, t.incr_bytes, t.merged, t.clean), (0, 0, 0, False, False), path)
+        self.assertEqual(by[das_target].checkout, das)
+        self.assertGreater(by[local_target].private_bytes, 0, "a tree on the build's own volume is still sized")
+
+        build = main_target
+        pl = db.plan(i, 1 * GIB, 30 * GIB, TH, self.main, NOW_REAL, build)
+        self.assertTrue(pl.actions, "the local trees are still planned")
+        touched = {a.tree for a in pl.actions} | {p for a in pl.actions for p in a.paths}
+        self.assertFalse([p for p in touched if p in (das_target, das_fleet)], "the planner took a tree on another volume")
+        _, kept = db.ladder(i, TH, self.main, NOW_REAL, build)
+        for path in (das_target, das_fleet):
+            self.assertEqual(kept[path], "never: on another volume than the build", path)
+
+    def test_the_report_says_such_a_tree_is_on_another_volume_and_not_sized(self):
+        das = self.lane("das-lane")
+        das_target = os.path.join(das, "rust-modules", "target")
+        cargo_tree(das_target, hours=40)
+        cargo_tree(os.path.join(self.main, "rust-modules", "target"), hours=40)
+        i = self.collect(self.foreign(das))
+        env = dict(self.env, PLX_GC_LOG=os.path.join(self.tmp, "gc.log"))
+        text = db.render(i, TH, 5 * GIB, 100 * GIB, self.main, os.path.join(self.main, "rust-modules", "target"),
+                         int(3.4 * GIB), NOW_REAL, env)
+        row = next(line for line in text.splitlines() if "target" in line and "das-lane" in line)
+        self.assertIn("other volume (not sized)", row)
 
 
 class Report(Repo):

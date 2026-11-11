@@ -864,6 +864,70 @@ class BuildGcTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertFalse(fresh.exists(), "--worktrees by hand kept a landed lane for being recent")
 
+    # A lane on another volume than the build (a worktree on a slow external disk): removing it frees nothing
+    # on the volume the build writes to, and `--auto` reading it (an idle-window `find`, `git status`, the
+    # squash check) walked a spinning USB disk. `stat` is the one seam: this one puts a path on another device.
+    FOREIGN_STAT = ("#!/bin/sh\n"
+                    'case "$1 $2" in "-c %d"|"-f %d")\n'
+                    '  case "$3" in "$PLX_TEST_FOREIGN"|"$PLX_TEST_FOREIGN"/*) echo 4242; exit 0 ;; esac ;;\n'
+                    "esac\n"
+                    'exec /usr/bin/stat "$@"\n')
+    LOGGING_FIND = ("#!/bin/sh\n"
+                    'printf "%s\\n" "$*" >> "$PLX_TEST_FIND_LOG"\n'
+                    'exec /usr/bin/find "$@"\n')
+
+    def stub_command(self, fixture, name, body):
+        path = fixture[0].parent / "bin" / name
+        path.write_text(body)
+        path.chmod(0o755)
+
+    @unittest.skipUnless(git_has_merge_tree(), "needs git >= 2.38 for merge-tree --write-tree")
+    def test_auto_worktrees_stage_skips_a_lane_on_another_volume_before_reading_it(self):
+        fixture = self.with_planner(self.fixture(0, 0))
+        landed = self._squash_landed_lane(fixture, "das-lane")
+        self.age(landed, 2 * 3600)                  # idle, landed and clean: `--auto` would remove it
+        find_log = fixture[0].parent / "find.log"
+        self.stub_command(fixture, "stat", self.FOREIGN_STAT)
+        self.stub_command(fixture, "find", self.LOGGING_FIND)
+        quiet = {"PLX_GC_TEST_FREE_KIB": str(10 << 20), "PLX_GC_MIN_FREE_GIB": "12", "PLX_GC_IDLE_MIN": "30",
+                 "PLX_TEST_FOREIGN": str(landed), "PLX_TEST_FIND_LOG": str(find_log)}
+        result = self.run_auto(fixture, extra_env=quiet)
+        diagnostic = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, diagnostic)
+        self.assertTrue(landed.exists(), "removed a lane on another volume, which frees nothing here: " + diagnostic)
+        self.assertIn("another volume", diagnostic)
+        walked = find_log.read_text() if find_log.exists() else ""
+        self.assertNotIn(str(landed), walked, "the idle-window walk read a lane on another volume")
+        # `--worktrees` by hand is the human's call, and removes it
+        by_hand = self.fixture(0, 0)
+        other = self._squash_landed_lane(by_hand, "das-lane")
+        self.stub_command(by_hand, "stat", self.FOREIGN_STAT)
+        by_hand[1].update(PLX_TEST_FOREIGN=str(other))
+        result = self.run_gc(by_hand, "--worktrees")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(other.exists(), "--worktrees by hand must still remove a finished lane on another volume")
+
+    def test_the_disk_report_says_whether_the_hourly_agent_is_loaded(self):
+        for system, launchctl, expect in (
+                ("Darwin", "exit 0", "com.plxnative.build-gc is loaded"),
+                ("Darwin", "exit 113", "com.plxnative.build-gc is NOT loaded"),
+                ("Linux", "exit 113", None)):
+            with self.subTest(system=system, launchctl=launchctl):
+                fixture = self.fixture(0, 0)
+                self.stub_command(fixture, "uname", "#!/bin/sh\n"
+                                  'case "$1" in -s) echo %s ;; *) echo %s ;; esac\n' % (system, system))
+                self.stub_command(fixture, "launchctl", '#!/bin/sh\n[ "$1 $2" = "list com.plxnative.build-gc" ] || exit 64\n'
+                                  + launchctl + "\n")
+                result = self.run_gc(fixture)
+                text = result.stdout + result.stderr
+                self.assertEqual(result.returncode, 0, text)
+                if expect is None:
+                    self.assertNotIn("com.plxnative.build-gc", text, "the agent line is macOS only")
+                    continue
+                self.assertIn(expect, text)
+                if "NOT" in expect:
+                    self.assertIn("make disk-watch", text)
+
     # --- `--worktrees` and the files git IGNORES ------------------------------------------------------------
     # `git worktree remove` deletes IGNORED files with the checkout, and "working tree clean" cannot see them: a
     # lane can hold `src/config.local.h` (the real Plex token), `pkg/auth.json`, `.tv-host`, or its own notes and

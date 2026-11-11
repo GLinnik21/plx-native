@@ -250,6 +250,9 @@ usage: tools/build-gc.sh [MODE] [-n]
                   build output (cargo target dirs, the FFmpeg/Sentry/libass trees, what `make`
                   stages in `pkg/`, `__pycache__`, `.DS_Store`) is removed as before. The list is
                   `derived_output` in this script, an allow-list: an unclassified path keeps a lane.
+                  Under `--auto` a lane whose worktree is on another volume than the build is
+                  skipped without being read (removing it frees nothing on the volume that is
+                  short, and reading it can be slow); by hand it is judged like any other.
   --stale         delete SUPERSEDED per-hash cargo artifacts from every `deps/` directory this
                   script can find — inside the lanes, inside the external $PLX_FLEET_DIR lane
                   target dirs, AND inside the MAIN checkout's own `rust-modules/target*` (the only mode
@@ -707,6 +710,19 @@ STALE_SECS=$((STALE_HOURS * 3600))
 HASH16_RE='[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'
 file_mtime() { stat -f%m "$1" 2>/dev/null || stat -c%Y "$1" 2>/dev/null; }
 file_size()  { stat -f%z "$1" 2>/dev/null || stat -c%s "$1" 2>/dev/null; }
+# The device a path lives on, or nothing when it cannot be read. GNU's `stat -c %d` comes FIRST, unlike the
+# two helpers above: on Linux `stat -f` is the FILESYSTEM format, where `%d` is a free-inode count, so trying
+# the BSD spelling first would answer wrongly there instead of failing over (macOS's `stat` rejects `-c`).
+path_dev() { stat -c %d "$1" 2>/dev/null || stat -f %d "$1" 2>/dev/null; }
+# Is `$1` on another volume than the build (`$ROOT`)? Removing a lane there frees nothing the build can use,
+# and reading it (an idle-window `find`, `git status`, the squash check) walks a disk the build never touches,
+# which on a spinning USB disk takes minutes per lane. A device that cannot be read on either side reads as
+# the same volume, i.e. the behaviour this check did not exist for.
+on_other_volume() {
+  _ov_a=$(path_dev "$1" || true)
+  _ov_b=$(path_dev "$ROOT" || true)
+  [ -n "$_ov_a" ] && [ -n "$_ov_b" ] && [ "$_ov_a" != "$_ov_b" ]
+}
 
 # Every `deps/` directory under one `target*` root — covers a plain `target/debug/deps` as well
 # as a cross-build's `target/<triple>/debug/deps`, and every other feature-set root this script
@@ -1709,6 +1725,15 @@ report)
            "$(fmt_kb "$(du -sk "$cache/cargo-seed" 2>/dev/null | awk '{print $1}')")" "$cache/cargo-seed"
   fi
   df -h "$ROOT" | tail -1 | awk '{print "volume              " $4 " free of " $2}'
+  # Is the hourly agent (`make disk-watch`, tools/install-disk-watch.sh) loaded? Not loaded, nothing reclaims
+  # space between builds, and nothing says so: one such Mac sat 19 GiB short for ~19 hours. macOS only.
+  if [ "$(uname -s 2>/dev/null)" = Darwin ] && command -v launchctl >/dev/null 2>&1; then
+    if launchctl list com.plxnative.build-gc >/dev/null 2>&1; then
+      echo "hourly agent        com.plxnative.build-gc is loaded (runs tools/build-gc.sh --auto hourly)"
+    else
+      echo "hourly agent        com.plxnative.build-gc is NOT loaded: nothing reclaims disk between builds; 'make disk-watch' loads it"
+    fi
+  fi
   # The disk budget's verdicts (tools/disk-budget.py, docs/disk-budget.md): the private bytes each
   # tree would really free (`du` above counts APFS clones in full), the PlxNative cargo trees under
   # /tmp that nothing above can see, and the order a reclaim WOULD take them in. Read-only. It is
@@ -1881,6 +1906,14 @@ worktrees)
   echo "== finished linked worktrees (clean, unlocked, already on origin/main (the local main without an origin); main and the running checkout are never touched) =="
   worktree_records | while IFS="$(printf '\t')" read -r w sha branch locked; do
     [ -n "$w" ] || continue
+    # Under `--auto` (the marker below) a lane on another volume than the build is not this pass's business:
+    # removing it frees nothing on the volume that is short, and every question asked of it below (status,
+    # the squash check, the idle-window walk) reads a disk that is typically the slow one. By hand
+    # (`--worktrees`) the human decides, and it is judged like any other lane.
+    if [ -n "${PLX_GC_AUTO_IDLE_MIN-}" ] && on_other_volume "$w"; then
+      printf '  on another volume, skipped  %s  (%s)\n' "$w" "$branch"
+      continue
+    fi
     reason=$(worktree_reason "$w" "$sha" "$locked")
     if [ -n "$reason" ]; then
       printf '  %-9s %s  (%s)\n' "$reason" "$w" "$branch"

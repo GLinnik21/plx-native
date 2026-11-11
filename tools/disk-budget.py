@@ -1046,7 +1046,13 @@ class Probes:
 
 
 def collect(root: str, env, probes: Probes, now: float, size_foreign: bool = False) -> Inventory:
-    """Walk the disk and build the inventory. Reads only: no cache, no lock file, no object is written."""
+    """Walk the disk and build the inventory. Reads only: no cache, no lock file, no object is written.
+
+    A tree on another volume than the checkout's (a lane worktree on a slow external disk) is listed with its
+    device and nothing else: it is neither sized, aged, probed for locks or git-tracked files, nor is its
+    lane asked about git, because `never()` throws it out whatever those would say, and a walk over a
+    spinning USB disk stalled the build-entry preflight for 20-35 minutes. `size_foreign` is unrelated: it
+    sizes a /tmp tree that carries no PlxNative marker (the report's "not ours" row), on the build's volume."""
     root = real(root)
     wts, main = worktrees(root)
     if not any(w.path == root for w in wts):
@@ -1055,7 +1061,7 @@ def collect(root: str, env, probes: Probes, now: float, size_foreign: bool = Fal
     names = {w.path: ("main" if w.path == main else os.path.basename(w.path)) for w in wts}
     cache = build_cache(env)
     fleet = fleet_dir(env)
-    volume_dev = os.stat(root).st_dev
+    volume_dev = device_of(root)
 
     def owning(path: str) -> Optional[str]:
         best = None
@@ -1102,17 +1108,26 @@ def collect(root: str, env, probes: Probes, now: float, size_foreign: bool = Fal
                 continue
             if leftover and now - st.st_mtime < LEFTOVER_SECS and not tombstone:
                 continue                      # an in-flight harvest or restore
+            dev = device_of(path)
+            if dev and dev != volume_dev:
+                trees.append(Tree(path=path, kind="leftover" if leftover else "seed", dev=dev, tombstone=tombstone))
+                continue
             private, alloc, _ = measure(path, ())
             stamp = os.path.join(path, ".last-used")
             built = os.lstat(stamp).st_mtime if os.path.exists(stamp) else st.st_mtime
             locked = probes.seed_locked(path) if is_seed else False
-            trees.append(Tree(path=path, kind="leftover" if leftover else "seed", dev=st.st_dev,
+            trees.append(Tree(path=path, kind="leftover" if leftover else "seed", dev=dev,
                               private_bytes=private, alloc_bytes=alloc, last_built=built,
                               tombstone=tombstone, live=live_for(path, None, None, snap, locked, False)))
             continue
+        dev = device_of(path)
+        if dev and dev != volume_dev:
+            trees.append(Tree(path=path, kind=kind, checkout=checkout, owner=owner, orphan=orphan,
+                              tombstone=".tombstone." in base, dev=dev))
+            continue
         plx = kind != "tmp" or has_plx_marker(path)
         if not plx and not size_foreign:
-            trees.append(Tree(path=path, kind="tmp", plx=False, dev=os.stat(path).st_dev,
+            trees.append(Tree(path=path, kind="tmp", plx=False, dev=dev,
                               last_built=newest_mtime(path)))
             continue
         # A /tmp tree's age is the later of mtime and ctime (docs/disk-budget.md): a test fixture whose
@@ -1132,7 +1147,7 @@ def collect(root: str, env, probes: Probes, now: float, size_foreign: bool = Fal
             locked = next((w.locked for w in wts if w.path == checkout), False)
         trees.append(Tree(
             path=path, kind=kind, checkout=checkout, owner=owner, orphan=orphan, plx=plx,
-            tombstone=".tombstone." in base, tracked=tracked_under(path), dev=os.stat(path).st_dev,
+            tombstone=".tombstone." in base, tracked=tracked_under(path), dev=dev,
             private_bytes=private if plx else 0, alloc_bytes=alloc, incr_paths=incr if plx else (),
             incr_bytes=incr_private if plx else 0, last_built=built,
             live=live_for(path, checkout, kind == "fleet" and owner or None, snap,
@@ -1212,7 +1227,10 @@ def render(inv: Inventory, th: Thresholds, free: int, total: int, me: str, build
     lines.append("  %-9s %-26s %-34s %8s %8s %6s  %s" % ("KIND", "OWNER", "TREE", "PRIVATE", "DU", "BUILT", "STATE"))
     order = {"main": 0, "lane": 1, "fleet": 2, "tmp": 3, "seed": 4, "leftover": 5}
     for t in sorted(inv.trees, key=lambda t: (order.get(t.kind, 9), t.owner, t.path)):
-        if not t.plx:
+        other = bool(inv.volume_dev and t.dev and t.dev != inv.volume_dev)
+        if other:
+            state = "other volume (not sized): never planned, never probed"
+        elif not t.plx:
             state = "not ours: no PlxNative marker, never touched"
         elif t.path in kept and not rungs_of.get(t.path):
             state = kept[t.path]
@@ -1226,8 +1244,9 @@ def render(inv: Inventory, th: Thresholds, free: int, total: int, me: str, build
         owner = (t.owner or "-")[:max(6, 26 - len(tag))] + tag
         shown = os.path.basename(t.path) if t.kind in ("lane", "main", "fleet") else tilde(t.path)
         lines.append("  %-9s %-26s %-34s %8s %8s %6s  %s" % (
-            t.kind, owner, tail_text(shown, 34), size_text(t.private_bytes) if t.plx else "-",
-            size_text(t.alloc_bytes) if t.alloc_bytes else "-", age_text(now - t.last_built), state))
+            t.kind, owner, tail_text(shown, 34), size_text(t.private_bytes) if t.plx and not other else "-",
+            size_text(t.alloc_bytes) if t.alloc_bytes else "-", "-" if other else age_text(now - t.last_built),
+            state))
     lines.append("")
 
     lines.append("reclaim ladder  (the order a reclaim WOULD take, LRU within a rung; * = chosen at the free "
