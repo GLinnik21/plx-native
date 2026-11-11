@@ -1,11 +1,5 @@
-{"updated":"2026-11-10T23:52:27Z",
+{"updated":"2026-11-11T00:09:42Z",
 "ci":[
-{"id":31584219333,"at":"2026-08-12T09:43:35Z","sha":"84ff93289","title":"design: Plex Pass Awareness, second revision \u2014 and the post-play Up Next card","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":82},"failed":["cross-build (armv7) + artifact assertions"]},
-{"id":31614984913,"at":"2026-08-12T15:56:06Z","sha":"123cfd89f","title":"ui: Up Next goes back to a tile, with a second button","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":66},"failed":["cross-build (armv7) + artifact assertions"]},
-{"id":31617228564,"at":"2026-08-12T16:22:20Z","sha":"c78ff511e","title":"release: 0.3.0","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":70},"failed":["cross-build (armv7) + artifact assertions"]},
-{"id":31617882450,"at":"2026-08-12T16:30:13Z","sha":"52bb62c3b","title":"docs: the LGPL flag check counted the script's own comment","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":86},"failed":["cross-build (armv7) + artifact assertions"]},
-{"id":31620768513,"at":"2026-08-12T17:06:38Z","sha":"31abc20b6","title":"ci: grade the package against the build that actually produced it","jobs":{"cross-build (armv7) + artifact assertions":115,"host checks (NOT a device gate)":71},"pr":null,"conclusion":"success","attempt":2,"wall":262},
-{"id":31643525562,"at":"2026-08-12T21:39:33Z","sha":"ada41d5dc","title":"ui: amber means watched, and a poster nobody has started wears nothing","jobs":{"cross-build (armv7) + artifact assertions":90,"host checks (NOT a device gate)":66},"pr":null,"conclusion":"success","attempt":1},
 {"id":31733367859,"at":"2026-08-13T18:56:59Z","sha":"23f28ce69","title":"design: the watched/unwatched system \u2014 a tick over a veil, and switches that say On","jobs":{"host checks (NOT a device gate)":71,"cross-build (armv7) + artifact assertions":83},"pr":null,"conclusion":"success","attempt":1},
 {"id":31744121354,"at":"2026-08-13T21:06:31Z","sha":"a7256bce7","title":"detail: a borrowed item says whose copy it is, on the line that already carries the facts","pr":23,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"host checks (NOT a device gate)":83,"cross-build (armv7) + artifact assertions":108}},
 {"id":31744420756,"at":"2026-08-13T21:10:23Z","sha":"b3ab244c6","title":"playback: which server an item came from is part of its identity","pr":24,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"host checks (NOT a device gate)":86,"cross-build (armv7) + artifact assertions":92}},
@@ -4991,7 +4985,8 @@
 {"id":42924480606,"at":"2026-11-10T23:34:26Z","sha":"d6b75cd94","title":"Polish LG Detail, Library, and Settings screens","pr":1321,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":244,"Linux simulator build + launch":345,"Windows launcher syntax":21,"macOS simulator build + launch":202}},
 {"id":42924498090,"at":"2026-11-10T23:34:33Z","sha":"cf987a639","title":"test(notify): verify endpoint intents and ready-source fan-out","pr":1322,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":30,"macOS tests against bundled FFmpeg and ASS":284,"Linux simulator build + launch":267,"macOS simulator build + launch":190}},
 {"id":42925459321,"at":"2026-11-10T23:41:42Z","sha":"d33833ca2","title":"Merge remote-tracking branch 'origin/main' into codex/trailer-transport-controls","pr":1323,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":118,"Windows launcher syntax":24,"macOS tests against bundled FFmpeg and ASS":212,"Linux simulator build + launch":331}},
-{"id":42925933663,"at":"2026-11-10T23:45:16Z","sha":"283f536d1","title":"refactor(data): run notification streams as addressed jobs","pr":1322,"conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":334,"Windows launcher syntax":18,"macOS simulator build + launch":208,"macOS tests against bundled FFmpeg and ASS":247}}
+{"id":42925933663,"at":"2026-11-10T23:45:16Z","sha":"283f536d1","title":"refactor(data): run notification streams as addressed jobs","pr":1322,"conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":334,"Windows launcher syntax":18,"macOS simulator build + launch":208,"macOS tests against bundled FFmpeg and ASS":247}},
+{"id":42920866462,"at":"2026-11-11T00:04:36Z","sha":"d4227efff","title":"Merge remote-tracking branch 'origin/main' into feature/ipv6-preferred","pr":1320,"event":"pull_request","conclusion":"failure","attempt":2,"jobs":{"Windows launcher syntax":18,"Linux simulator build + launch":292,"macOS tests against bundled FFmpeg and ASS":128},"wall":3642,"failed":["macOS simulator build + launch"]}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
@@ -5247,7 +5242,8 @@
 {"day":"2026-08-07","wf":"ci","event":"push","runs":1,"failed":0,"jobs":{"cross-build (armv7) + artifact assertions":95,"host checks (NOT a device gate)":81},"longest":95},
 {"day":"2026-08-09","wf":"ci","event":"push","runs":4,"failed":0,"jobs":{"cross-build (armv7) + artifact assertions":85,"host checks (NOT a device gate)":73},"longest":85},
 {"day":"2026-08-10","wf":"ci","event":"push","runs":2,"failed":1,"jobs":{"cross-build (armv7) + artifact assertions":88,"host checks (NOT a device gate)":72},"longest":82},
-{"day":"2026-08-11","wf":"ci","event":"push","runs":2,"failed":2,"jobs":{"host checks (NOT a device gate)":72},"longest":72}
+{"day":"2026-08-11","wf":"ci","event":"push","runs":2,"failed":2,"jobs":{"host checks (NOT a device gate)":72},"longest":72},
+{"day":"2026-08-12","wf":"ci","event":"push","runs":6,"failed":4,"jobs":{"cross-build (armv7) + artifact assertions":102,"host checks (NOT a device gate)":70},"longest":84}
 ],
 "flaky":[
 {"run":40071490036,"at":"2026-10-24T06:58:17Z","sha":"f596f952d","pr":977,"job":"host unit tests (default features)","test":"plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once","fail":[1],"pass":[2]},
