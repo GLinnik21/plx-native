@@ -583,13 +583,17 @@ One slot, beside the elapsed clock, showing exactly one of:
 |---|---|
 | playing steadily | **nothing** |
 | paused | pause mark |
-| playhead travelling backwards (scrub, chapter hop, seek burst) | rewind mark, drawn to the **left** of the clock |
-| playhead travelling forwards | fast-forward mark |
+| a live scrub travelling backwards (the target is still moving) | rewind mark, drawn to the **left** of the clock |
+| a live scrub travelling forwards | fast-forward mark |
 | just resumed | play mark, for **two seconds**, then it clears |
-| waiting on the pipeline with no travel to show | inline spinner |
+| waiting on the pipeline: a seek the viewer has committed (until it lands) or a re-buffer | inline spinner (the loading sign) |
 
-Precedence is travel → pipeline → paused → the resume mark, so a paused scrub still reads as a
-scrub. Rewind sits on the clock's left and everything else on its right, so the mark points the way
+Precedence is live scrub → pipeline → paused → the resume mark, so a paused scrub still reads as a
+scrub. A direction mark belongs to a *live* scrub only: the moment a seek is committed (OK on the
+scrubber, a chapter or marker hop, a FF/REW jump) the mark is the spinner whichever way it goes, and
+the first frame after it lands is the ordinary state mark (the play mark for two seconds, the pause
+mark while paused, nothing while playing), never a leftover direction. A package reaches the spinner
+the same way as before: the playbar's mark mode `busy_only` draws exactly this state. Rewind sits on the clock's left and everything else on its right, so the mark points the way
 the playhead is going.
 
 Three properties of this design are the substance of the decision, and are the part worth putting in
@@ -599,8 +603,7 @@ front of QA:
   nothing. This slot answers *did that press land* and *which way am I going* — questions a static
   button row cannot answer at all.
 - **The direction is derived from the playhead, not from the keycode.** One rule therefore covers a
-  LEFT/RIGHT scrub, a chapter or marker hop and a rapid seek burst — none of which agree about which
-  key, if any, was pressed. It reports **net** travel, so dragging back from +100 s to +50 s while
+  LEFT/RIGHT scrub and a held FF/REW scrub, which do not agree about which key was pressed. It reports **net** travel, so dragging back from +100 s to +50 s while
   still ahead of the playhead keeps reading fast-forward: it answers *which way will I jump when I
   confirm*.
 - **The play mark clears after two seconds** deliberately. A play glyph held for a whole film would

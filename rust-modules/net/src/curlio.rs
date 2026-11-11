@@ -880,6 +880,12 @@ pub struct CurlSource<A: UrlAuthorizer> {
     /// the hop was built.
     hop_origin: Option<Origin>,
     range: Option<CString>,
+    /// Whether [`range`](Self::range) is the throughput probe's finite `bytes=0-M` form
+    /// ([`open_bounded_with_reservation_until`](Self::open_bounded_with_reservation_until), which
+    /// only the throughput samplers call) rather than an ordinary open or seek's `bytes=N-`. Set
+    /// with `range` by each attempt and meaningful only while `range` is `Some`:
+    /// [`validate`](Self::validate) accepts a 200 from byte zero for the probe and for nothing else.
+    range_finite: bool,
     /// The key pin (`net::keypin`) the CURRENT attempt's easy handle was given, held for the life
     /// of that attempt like `range`: `keypin::apply`'s contract is that the string outlives the
     /// transfer. Replaced by the next attempt, and not cleared by `stop`, so it can never be freed
@@ -1054,7 +1060,10 @@ impl<A: UrlAuthorizer> CurlSource<A> {
 
     /// Open the finite prefix used by an Original throughput experiment. Unlike an ordinary
     /// offset-zero media open this sends `Range: bytes=0-(len-1)`, so completing the sample also
-    /// completes the HTTP response instead of abandoning the rest of a multi-gigabyte file.
+    /// completes the HTTP response instead of abandoning the rest of a multi-gigabyte file. A server
+    /// that ignores the Range (PMS's transcoder, for a remux Original) answers 200 from byte zero,
+    /// which [`validate`](Self::validate) accepts for this form alone: the sample reads its prefix
+    /// and drops the source, and that response is abandoned early.
     fn open_bounded_with_reservation_until(
         url: &str,
         len: usize,
@@ -1104,6 +1113,7 @@ impl<A: UrlAuthorizer> CurlSource<A> {
             hop_origin: None,
             url: url_c,
             range: None,
+            range_finite: false,
             key_pin: None,
             roots_path: None,
             resolve_entry,
@@ -1351,6 +1361,7 @@ impl<A: UrlAuthorizer> CurlSource<A> {
             None if at > 0 => CString::new(format!("{at}-")).ok(),
             None => None,
         };
+        self.range_finite = range_end.is_some();
         let setup_timeout_at = unsafe {
             let mut setup_timeout_ms = None;
             macro_rules! require_setopt {
@@ -1735,7 +1746,15 @@ impl<A: UrlAuthorizer> CurlSource<A> {
         // file while the demuxer believes it is at `at`. A real Range answer is 206 and MUST name
         // the requested first byte in Content-Range. Missing/malformed is `-1` and is just as
         // unverified as a different positive offset.
-        if self.range.is_some() {
+        //
+        // **The one exception is the throughput probe's finite `bytes=0-M` at offset zero.** It
+        // feeds no demuxer and only counts the bytes it reads, so a 200 — the whole resource from
+        // byte zero — is exactly the prefix it asked for. PMS's transcoder (`start.mkv`, a remux
+        // Original) answers every Range that way, and refusing it here threw the sample away and
+        // started playback on HLS (#1329). Everything else keeps the rule: any other 200 to a
+        // Range, a 206 whose Content-Range start is not `at` and a 206 with none (`-1`) are refused.
+        let probe_from_zero = self.range_finite && at == 0 && self.xfer.status == 200;
+        if self.range.is_some() && !probe_from_zero {
             if self.xfer.status != 206 || self.xfer.range_start != at {
                 plx_base::eventlog::log(&format!(
                     "curlio: asked for bytes={} and got status={} start={} — refusing rather than \
@@ -1752,7 +1771,9 @@ impl<A: UrlAuthorizer> CurlSource<A> {
         self.off = at;
         self.began_off = at;
         // Size, in the order of authority: `Content-Range`'s total names the whole resource;
-        // otherwise this response's `Content-Length` plus where it started does.
+        // otherwise this response's `Content-Length` plus where it started does. (A probe's 200 from
+        // byte zero has no Content-Range: its `Content-Length` is the whole resource, or absent when
+        // the body is chunked, which reads as unknown. The probe never reads the size.)
         self.size = if self.xfer.range_total >= 0 {
             self.xfer.range_total
         } else if self.xfer.body_len >= 0 {
@@ -3764,6 +3785,48 @@ mod tests {
         });
     }
 
+    /// #1329: a remote Original is PMS's transcoder `start.mkv`, which answers every Range with a
+    /// 200 from byte zero. The throughput probe starts at zero and only counts bytes, so that answer
+    /// IS the bytes it asked for; refusing it as `RangeIgnored` threw the sample away and started
+    /// playback on HLS. Only the probe's finite `bytes=0-M` form at offset zero gets this: the
+    /// refusal exists to keep the DEMUXER from reading the wrong offset, which no probe does.
+    #[test]
+    fn the_throughput_probe_accepts_a_200_from_byte_zero() {
+        let Some(_gate) = curl_gate() else { return };
+        with_server(RangeMode::Ignore, |port, _, requests| {
+            let url = format!("http://127.0.0.1:{port}/f.mkv");
+            let sample = sample_throughput_result::<TestAuthorization>(
+                &url,
+                BODY.len(),
+                std::time::Duration::from_millis(500),
+                std::time::Duration::from_millis(500),
+            )
+            .expect("a 200 from byte zero is the prefix the probe asked for");
+            assert_eq!(sample.bytes, BODY.len() as u64);
+            assert!(sample.target_reached);
+
+            // A target short of the body: the sample reads its prefix and drops the source.
+            let sample = sample_throughput_result::<TestAuthorization>(
+                &url,
+                4,
+                std::time::Duration::from_millis(500),
+                std::time::Duration::from_millis(500),
+            )
+            .expect("a short prefix of a 200 body");
+            assert_eq!(sample.bytes, 4);
+            assert!(sample.target_reached);
+            assert_eq!(requests.load(Ordering::Acquire), 2, "one request per sample");
+
+            // The exception is the probe's alone: the same server's answer to a demuxer's open or
+            // seek at a non-zero offset is still refused.
+            assert_eq!(
+                CurlSource::open(&url, 4).err(),
+                Some(OpenErr::RangeIgnored),
+                "an ordinary open at a non-zero offset must still refuse a 200"
+            );
+        });
+    }
+
     /// A 416 is the correct response to a range at or past EOF. It fails that seek, but it says
     /// nothing bad about the server's range support, so a later valid seek must still work.
     #[test]
@@ -3887,9 +3950,11 @@ mod tests {
     fn teardown_aborts_a_runtime_source_probe_without_waiting_out_its_budget() {
         let Some(_gate) = curl_gate() else { return };
         // The server never answers, so the probe is parked in its setup wait and only teardown's
-        // wake can end it. `Stall` sent headers at once: a 200 to the probe's Range, which the
-        // probe itself refuses as `RangeIgnored` — ending the sample (and retiring its handle)
-        // before teardown ran whenever this thread was late, which a loaded suite made it.
+        // wake can end it. `Stall` sends headers at once: a 200 to the probe's Range, which the
+        // probe accepts (#1329) and then parks in its BODY wait, not the setup wait this test is
+        // about. Before that rule the probe refused the 200 as `RangeIgnored` and the sample ended
+        // (retiring its handle) before teardown ran whenever this thread was late, which a loaded
+        // suite made it; `WithholdFrom(1)` never answers, so the setup wait is all there is.
         with_server(RangeMode::WithholdFrom(1), |port, _, _| {
             let url = format!("http://127.0.0.1:{port}/f.mkv");
             let started = std::time::Instant::now();

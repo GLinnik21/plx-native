@@ -321,8 +321,9 @@ python3 ci/test_disk_budget.py
 # `$(MAKE)` lines carrying PLX_DISK_BUDGET_DONE. Dynamic, on a fixture repository with PLX_GC_TEST_FREE_KIB and stubbed lsof/pgrep:
 # at comfort nothing starts and the planner is not imported; below the reserve with nothing to evict it refuses with the reason; below
 # comfort it evicts idle trees and never the tree being built; the marker and PLX_MIN_FREE_MB=0 are no-ops; the auto lock is
-# taken, a live holder is waited on for a bounded time and no plan is made while it runs (a finished or stale holder is taken over); the inventory cache; a pretend emergency is never planned over real
-# trees. `make -n` and `make -s print-*` only, no cargo.
+# taken, a live holder is waited on for a bounded time (one --wait-secs deadline for the whole preflight) and no plan is made while it runs (a finished or stale holder is taken over); the inventory cache; a pretend emergency is never planned over real
+# trees; the cold store's unpark of an absent parked tree: the cheap no-gos (config removed, volume unmounted) come before any lock wait, the
+# lock is held to claim the copy and not across it (two trees restore at once), a claimed or dead-claimed tree, and the free-space rule. `make -n` and `make -s print-*` only, no cargo.
 python3 ci/test_disk_preflight.py
 # RUST_INPUTS (the Makefile's hand-kept list of directories whose edits rebuild the app library) must search every crate
 # the app reaches through `path` dependencies: a crate left out is one whose edits `make` never sees, so `make ipk` packages
@@ -390,3 +391,13 @@ python3 tests/test_hud_bundle.py
 python3 tests/test_hud_release.py
 python3 ci/test_sim_backend.py
 python3 tests/test_hud_dev.py
+# tools/cold-store.py, the opt-in cold store that parks idle build trees on a second volume: unconfigured it creates no file anywhere; each
+# reason `available()` can give (no config, no ditto, an unmounted /Volumes root, the same device as the build tree, under min_free_gib, a
+# failing probe write); park then unpark restores every path, size, nanosecond mtime, mode and hard-link group; unpark fills only an absent
+# tree (an existing one, or one a build made while it copied, wins) and only when the copy beats a rebuild; the claim an unpark takes on its
+# index record (hidden from a second unparker, from recover's adoption and from the park pass; given back on a failed copy; put back when its
+# process is dead; counted in what a later claim's free-space question sees); the three residue states of a
+# dead parker (complete cold copy, origin absent, origin present) plus a live owner and a nameless tree; the prune rules; a pretend
+# free-space/clock override refused unless every root is named. Temp dirs, a faked two-volume device check and a shutil stand-in for `ditto`
+# (one darwin-only test drives the real one); touches no real cache, config or volume.
+python3 ci/test_cold_store.py

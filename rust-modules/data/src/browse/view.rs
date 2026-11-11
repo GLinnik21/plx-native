@@ -467,9 +467,10 @@ pub struct DirectorySnapshot {
     kind_fetch: [SecFetch; 2],
     stamp: Option<(u32, u32, usize, usize, ServerId)>,
     data: Arc<DirectoryData>,
-    /// The current library's listing as it stands (an O(1) handle on its immutable pages), for a
-    /// page that illustrates the library without being on it ([`DirectoryView::sample`]).
-    items: super::SecItems,
+    /// The first posters in the widest cache the Browse store holds (the current library's listing,
+    /// then its shelves, then every other library's), at most [`SAMPLE_POSTERS`], for a page that
+    /// illustrates the library without being on it ([`DirectoryView::sample`]).
+    sample: Vec<PosterAt>,
     /// The first poster of each kind (movie, show) anywhere the Browse store holds rows, for a page
     /// that illustrates a kind without being on a library of it ([`DirectoryView::kind_poster`]).
     kind_posters: [Option<PosterAt>; 2],
@@ -503,6 +504,9 @@ impl PosterAt {
     }
 }
 
+/// How many posters [`DirectoryView::sample`] can hand a page: what the Settings fan draws.
+pub const SAMPLE_POSTERS: usize = 4;
+
 /// The index of `kind` in [`DirectorySnapshot::kind_posters`], for a kind a poster tile names.
 fn kind_slot(kind: std::os::raw::c_int) -> Option<usize> {
     match kind {
@@ -516,8 +520,9 @@ fn kind_slot(kind: std::os::raw::c_int) -> Option<usize> {
 /// Browse store has: the current library first (its listing, then its shelves), then every other
 /// section's (a library the user left keeps its recent window and its shelves). A title with no
 /// poster path has no art to show, so it is not a candidate.
-fn scan_kind_posters(state: &super::BrowseState) -> [Option<PosterAt>; 2] {
+fn scan_kind_posters(state: &super::BrowseState) -> ([Option<PosterAt>; 2], Vec<PosterAt>) {
     let mut found: [Option<PosterAt>; 2] = [None, None];
+    let mut sample: Vec<PosterAt> = Vec::new();
     let cur = state.cur();
     let states = state.states();
     for section in std::iter::once(cur).chain((0..states.len()).filter(|i| *i != cur)) {
@@ -526,17 +531,28 @@ fn scan_kind_posters(state: &super::BrowseState) -> [Option<PosterAt>; 2] {
         if let Some(sec) = state.sections().get(section) {
             scan_listing(&st.items, if sec.kind == super::SecKind::Show { 1 } else { 0 }, &mut found);
         }
+        for i in 0..st.items.len {
+            if sample.len() >= SAMPLE_POSTERS {
+                break;
+            }
+            if st.items.get(i).is_some_and(|m| !m.thumb.is_empty()) {
+                sample.push(PosterAt::Listing(st.items.clone(), i));
+            }
+        }
         let shelves = &st.hubs.committed;
         for (s, shelf) in shelves.iter().enumerate() {
             for (i, m) in shelf.items.iter().enumerate() {
                 note_poster(&mut found, m, || PosterAt::Shelf(Arc::clone(shelves), s, i));
+                if sample.len() < SAMPLE_POSTERS && !m.thumb.is_empty() {
+                    sample.push(PosterAt::Shelf(Arc::clone(shelves), s, i));
+                }
             }
         }
-        if found.iter().all(Option::is_some) {
+        if found.iter().all(Option::is_some) && sample.len() >= SAMPLE_POSTERS {
             break;
         }
     }
-    found
+    (found, sample)
 }
 
 /// A listing's rows are candidates for `slot` (its library's own kind) until one is found; a kind
@@ -566,7 +582,7 @@ impl Default for DirectorySnapshot {
             kind_fetch: [SecFetch::Loading; 2],
             stamp: None,
             data: Arc::default(),
-            items: super::SecItems::default(),
+            sample: Vec::new(),
             kind_posters: [None, None],
             kind_shelves: [false; 2],
             source: None,
@@ -601,8 +617,7 @@ impl DirectorySnapshot {
             });
             self.stamp = Some(stamp);
         }
-        self.items = state.states().get(state.cur()).map(|section| section.items.clone()).unwrap_or_default();
-        self.kind_posters = scan_kind_posters(state);
+        (self.kind_posters, self.sample) = scan_kind_posters(state);
         self.source = state.cur_source_idx(keys.current());
         self.source_fetch = state.cur_source_state(keys.current());
         self.discovery = state.discovery_state();
@@ -634,7 +649,7 @@ impl DirectorySnapshot {
                 sections: Vec::new(),
                 favorites: Vec::new(),
             }),
-            items: super::SecItems::default(),
+            sample: Vec::new(),
             kind_posters: [None, None],
             kind_shelves: [false; 2],
             source: Some(0),
@@ -656,9 +671,12 @@ impl DirectorySnapshot {
     /// This directory with `items` as the current library's listing (what [`DirectoryView::sample`] reads).
     #[cfg(any(test, feature = "test-support"))]
     pub fn with_sample(mut self, items: Vec<crate::pms::PmsMovie>) -> Self {
-        self.items = super::SecItems::from_vec(items.into_iter().map(Some).collect());
-        for (i, m) in (0..self.items.len).filter_map(|i| self.items.get(i).map(|m| (i, m))) {
-            note_poster(&mut self.kind_posters, m, || PosterAt::Listing(self.items.clone(), i));
+        let items = super::SecItems::from_vec(items.into_iter().map(Some).collect());
+        for (i, m) in (0..items.len).filter_map(|i| items.get(i).map(|m| (i, m))) {
+            note_poster(&mut self.kind_posters, m, || PosterAt::Listing(items.clone(), i));
+            if self.sample.len() < SAMPLE_POSTERS && !m.thumb.is_empty() {
+                self.sample.push(PosterAt::Listing(items.clone(), i));
+            }
         }
         self
     }
@@ -671,6 +689,9 @@ impl DirectorySnapshot {
         for (s, shelf) in shelves.iter().enumerate() {
             for (i, m) in shelf.items.iter().enumerate() {
                 note_poster(&mut self.kind_posters, m, || PosterAt::Shelf(Arc::clone(&shelves), s, i));
+                if self.sample.len() < SAMPLE_POSTERS && !m.thumb.is_empty() {
+                    self.sample.push(PosterAt::Shelf(Arc::clone(&shelves), s, i));
+                }
             }
         }
         self
@@ -715,7 +736,7 @@ impl DirectorySnapshot {
                 sections,
                 favorites,
             }),
-            items: super::SecItems::default(),
+            sample: Vec::new(),
             kind_posters: [None, None],
             kind_shelves: [false; 2],
             source: None,
@@ -749,12 +770,15 @@ impl<'a> DirectoryView<'a> {
 
     #[allow(dead_code)] // Wave 0 publication contract; consumer lanes take these accessors.
     pub fn section_count(self) -> usize { self.sections().len() }
-    /// The first `n` rows of the current library's listing that are loaded: the cached items a page
-    /// outside the Library shows as that library's posters (Settings > Favorite libraries). Fewer than
-    /// `n` while the listing is short or its first page has not landed; none before a library is
-    /// chosen. Reads what the Library already holds and starts no fetch.
+    /// The first `n` (at most [`SAMPLE_POSTERS`]) posters the Browse store holds: the cached items a
+    /// page outside the Library shows as the libraries' posters (Settings > Favorite libraries). They
+    /// come from the SAME widest cache [`Self::kind_poster`] reads (the current library's listing,
+    /// then its shelves, then every other library's retained rows and shelves), never from the
+    /// current listing alone: a page entered from Home, which lists shelves and not a library, has
+    /// no listing of its own yet. Fewer than `n` while the cache holds fewer titles with a poster
+    /// path; none before anything has landed. Reads what the store holds and starts no fetch.
     pub fn sample(self, n: usize) -> impl Iterator<Item = &'a crate::pms::PmsMovie> {
-        (0..n).filter_map(move |i| self.0.items.get(i))
+        self.0.sample.iter().take(n).filter_map(PosterAt::get)
     }
     /// **The first poster of `kind`** (`pms::KIND_MOVIE` or `KIND_SHOW`, with a poster path of its
     /// own) in the widest cache the Browse store holds: the current library's listing and shelves,
