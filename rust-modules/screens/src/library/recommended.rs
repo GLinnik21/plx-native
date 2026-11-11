@@ -1026,7 +1026,11 @@ impl RecommendedScreen {
                 if self.initial && from.is_none() && to.entry == self.entry {
                     if let Some(target) = self.with_regions(|regions| regions.unseat()) { self.reseat(target, fx); }
                 }
-                if matches!(by, By::Dir | By::Pointer) { self.initial = false; }
+                // The engine's own first seat of a tab-minted page is reported as `By::Dir` but
+                // comes from another page's focus or none: not the reader's key (see `LibraryScreen`).
+                let engine_seat = by == &By::Dir && self.initial && to.entry == self.entry
+                    && from.is_none_or(|from| from.entry != self.entry);
+                if matches!(by, By::Dir | By::Pointer) && !engine_seat { self.initial = false; }
                 self.reveal_focus(*to, *by, cx);
             }
             ScreenEvent::Tick(tick) => {
