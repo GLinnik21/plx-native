@@ -309,21 +309,37 @@ that starts cargo. `make -s print-disk-entries` lists them. It is order-only bec
 prerequisite would make every file target in the list out of date on every run; it still runs on a
 `make` that has nothing to do, which is why the fast path matters. The decision, in order:
 
-1. `PLX_DISK_BUDGET_DONE` set (and not `0`): exit 0. A recipe that re-enters make for a hooked target
+1. **The cold store's unpark check, before any exit below.** Two stat calls and the
+   `PLX_COLD_STORE=off` test: the tree this entry builds (`--tree`), then, only when it is ABSENT, its index
+   entry under `$PLX_BUILD_CACHE/cold-store/index/`. A tree that exists, or an absent one with no entry, falls
+   through to step 2 unchanged and loads nothing. An absent tree WITH an entry takes the full command, which
+   loads `cold-store.py`, takes build-gc's auto lock (waiting up to `--wait-secs`, with the waiting flag
+   under "What it will not do"), asks `ColdStore.unpark` (its cost rule, and: free space after the copy
+   stays at or above the comfort line), releases the lock, prints one line (`cold-store: unpark ...` when it
+   copied, else why not) and goes on to step 2. It sits before the exits because `check`, `install` and `build-bench` run their children with
+   `PLX_DISK_BUDGET_DONE=1` and each child has its own tree. Whatever goes wrong inside it (the volume is
+   away, the module will not load, an exception) costs one line and the build goes on cold. Only the entry's
+   own `DISK_TREE` comes back: a lane's other `target*` dirs wait for an entry that names them, and a direct
+   `cargo` reaches no preflight and rebuilds cold (prune then drops the stale parked copy, since the origin
+   exists and is newer).
+2. `PLX_DISK_BUDGET_DONE` set (and not `0`): exit 0. A recipe that re-enters make for a hooked target
    (`check` into `check-unlocked`, `install` into `deploy`, `build-bench`'s children) sets it on that
    line, so the child does not measure again. `PLX_MIN_FREE_MB=0` is exit 0 too.
-2. **Fast path: one `statvfs`, exit 0** when free space is at least the comfort line and at least the
+3. **Fast path: one `statvfs`, exit 0** when free space is at least the comfort line and at least the
    target's UPPER estimate plus the reserve. This block sits before the module's heavy imports and
    needs only `os` and `sys`; a test pins that no subprocess, `tempfile`, `ctypes`, `argparse` or
    `dataclasses` is loaded on it. Measured 2026-10-19 over 20 runs of `python3 tools/disk-budget.py
    preflight`: median 21.3 ms against 14.2 ms for an empty interpreter (the earlier version, with
-   every import first, took about 45 ms).
-3. Below that, the full command. A tree on another volume than the checkout is judged on free space
+   every import first, took about 45 ms). Step 1's check (an `lstat` of the tree, and one `stat` of the
+   index entry when the tree is absent) added about 0.5 ms: measured 2026-11-11, 20 interleaved runs each,
+   median 23.2 ms without it and 23.7 ms with it (tree present or absent, no entry; 11.4 ms for an empty
+   interpreter on that day's machine).
+4. Below that, the full command. A tree on another volume than the checkout is judged on free space
    alone (nothing in the inventory is on its disk). Otherwise it takes `build-gc.sh`'s auto lock,
    plans `reclaim --to <comfort>` for the tree being built, sparing the CURRENT checkout (bar rung 6), runs
    `build-gc.sh --evict` on the plan, drops the inventory cache, re-reads free space and applies
    `settle`: exit 0 if the build plus the reserve now fits, exit 1 with the reason if not.
-4. A plan that is a `refuse` and not `uncertain` evicts nothing (an eviction that cannot save the build
+5. A plan that is a `refuse` and not `uncertain` evicts nothing (an eviction that cannot save the build
    is lost build time for nothing). One that is `uncertain` (the `--stale` sweep is in it) runs, because
    `settle` judges what it actually freed.
 
@@ -377,7 +393,8 @@ second, large volume (an external disk) the same tree can be PARKED there instea
 back, the lane simply has no tree, exactly as after a rung 4 deletion. `tools/cold-store.py` does the moving;
 `disk-budget.py park` decides what moves; `build-gc.sh --auto` and `--park` run it. It is **opt-in and off
 unless configured**: without the file below every entry point returns before it creates a file or directory
-anywhere, `--auto` prints and logs exactly what it did before, and the preflight is untouched.
+anywhere, `--auto` prints and logs exactly what it did before, and the preflight adds one stat of the tree it is
+about to build (an index entry is only ever written by a park, so an unconfigured install never has one).
 
 **Turning it on.** A per-user file `cold-store` in the directory `tools/tv-config.sh` resolves
 (`PLX_TV_CONFIG_DIR`, else `${XDG_CONFIG_HOME:-~/.config}/plxnative`), `key=value` lines, `#` comments, nothing
@@ -439,8 +456,13 @@ whose lane is gone or already merged; older than `max_days`; and, while the cold
 
 **The cost rule** (when a parked tree is worth bringing back; `cold-store.py unpark PATH`): only into an ABSENT
 tree, and only when `apparent_bytes / min(rate_floor, the park's measured rate)` is under the directory's
-`rebuild_secs`. Nothing calls it from the preflight yet: a build that finds its tree absent rebuilds, or restores
-from the seed, exactly as after any eviction.
+`rebuild_secs`, and the caller says free space after the copy stays at or above its line. The preflight calls it
+(step 1 of "The preflight"): a build entry whose own tree is absent and indexed gets that tree back under build-gc's
+auto lock before cargo starts, and only that tree, so a lane with `target`, `target-fast`, `target-hostsim` and
+`target-sim` parked gets each back when an entry naming it runs (the others wait, and expire after `max_days`). A
+declined or failed unpark leaves the parked copy where it is and the build rebuilds, or restores from the seed,
+exactly as after any eviction. A direct `cargo` reaches no preflight and rebuilds cold; prune then drops the stale
+parked copy, since the origin exists and is newer. `PLX_COLD_STORE=off` skips the check altogether.
 
 **Where the files are.** SSD: `$PLX_BUILD_CACHE/cold-store/index/<escaped origin>.json` (one record per parked
 tree: origin, kind, owning checkout and its HEAD, parked-at, file count, apparent bytes, private bytes freed, the
