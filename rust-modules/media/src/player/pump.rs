@@ -3814,10 +3814,10 @@ mod flight_tests {
         // The pipeline takes one AU per lane, then presents nothing. Keep later AUs beyond the
         // feed-ahead limit and one more queued behind each pending AU, as a demuxer sees when a
         // decoder swallows the feed. The first frame completes Load and accepts the first pair;
-        // the second establishes the watchdog's unchanged accepted-count baseline. The audio
-        // lane DROPS an AU more than `AUDIO_STALE_AHEAD_NS` (5 s) past the fed video instead of
-        // holding it, so its later AUs sit under that bound yet past its own feed-ahead budget
-        // (`MAX_FEED_AHEAD_NS` + `AUDIO_SLACK_NS`, 3.6 s).
+        // the second establishes the watchdog's unchanged accepted-count baseline. Until its
+        // first AU is accepted the audio lane DROPS an AU more than `AUDIO_STALE_AHEAD_NS` (5 s)
+        // past the fed video instead of holding it, so its later AUs sit under that bound yet
+        // past its own feed-ahead budget (`MAX_FEED_AHEAD_NS` + `AUDIO_SLACK_NS`, 3.6 s).
         {
             let mut guard = rig.pa.engine().expect("the rig's Engine");
             let eng = &mut *guard;
