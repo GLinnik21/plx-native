@@ -315,12 +315,23 @@ prerequisite would make every file target in the list out of date on every run; 
 
 1. **The cold store's unpark check, before any exit below.** Two stat calls and the
    `PLX_COLD_STORE=off` test: the tree this entry builds (`--tree`), then, only when it is ABSENT, its index
-   entry under `$PLX_BUILD_CACHE/cold-store/index/`. A tree that exists, or an absent one with no entry, falls
+   entry under `$PLX_BUILD_CACHE/cold-store/index/` (and, when there is none, one listing of that directory for
+   a claim on it, see below). A tree that exists, or an absent one with no entry and no claim, falls
    through to step 2 unchanged and loads nothing. An absent tree WITH an entry takes the full command, which
-   loads `cold-store.py`, takes build-gc's auto lock (waiting up to `--wait-secs`, with the waiting flag
-   under "What it will not do"), asks `ColdStore.unpark` (its cost rule, and: free space after the copy
-   stays at or above the comfort line), releases the lock, prints one line (`cold-store: unpark ...` when it
-   copied, else why not) and goes on to step 2. It sits before the exits because `check`, `install` and `build-bench` run their children with
+   loads `cold-store.py` and then, in this order: (a) the checks that wait for nothing (`ColdStore.unusable`: no
+   config, no `ditto`, the cold volume not mounted) end it with one line, before any lock is touched; (b) it
+   takes build-gc's auto lock, waiting until the preflight's ONE deadline (`--wait-secs` from its start; what
+   this wait spends is not available to step 4's, so a build never waits twice the budget; the waiting flag is
+   under "What it will not do"); (c) UNDER that lock it only CLAIMS the parked copy (`ColdStore.claim`: its cost
+   rule, and: free space after the copy, plus what other live claims are still to copy, stays at or above the
+   comfort line, then an atomic rename of the index record to `index/<id>.json.unparking.<pid>`) and
+   releases the lock; (d) WITHOUT the lock it copies (`ColdStore.unpark(claimed=...)`), so another build's
+   claim or reclaim does not wait behind a multi-minute copy. It prints one line (`cold-store: unpark ...` when it
+   copied, else why not) and goes on to step 2. A claimed entry is invisible to a second unparker, which says
+   `being restored by pid N` and rebuilds cold; to `recover`'s adoption; and to the park pass (`park` refuses an
+   origin with a live claim). A copy that fails, or finds the tree made meanwhile, gives the entry back; a claimer
+   that died leaves a claim with a dead pid, which the next claim of that tree and `recover` put back as the
+   entry. It sits before the exits because `check`, `install` and `build-bench` run their children with
    `PLX_DISK_BUDGET_DONE=1` and each child has its own tree. Whatever goes wrong inside it (the volume is
    away, the module will not load, an exception) costs one line and the build goes on cold. Only the entry's
    own `DISK_TREE` comes back: a lane's other `target*` dirs wait for an entry that names them, and a direct
@@ -337,7 +348,9 @@ prerequisite would make every file target in the list out of date on every run; 
    every import first, took about 45 ms). Step 1's check (an `lstat` of the tree, and one `stat` of the
    index entry when the tree is absent) added about 0.5 ms: measured 2026-11-11, 20 interleaved runs each,
    median 23.2 ms without it and 23.7 ms with it (tree present or absent, no entry; 11.4 ms for an empty
-   interpreter on that day's machine).
+   interpreter on that day's machine). The later listing of the index directory for a claim (only when the tree is
+   absent and has no entry) was timed alone, not re-run in that interleaved test: `timeit` over 5000 calls of
+   `cold_unpark_pending` on an absent tree and an index directory of five entries, 34 microseconds a call.
 4. Below that, the full command. A tree on another volume than the checkout is judged on free space
    alone (nothing in the inventory is on its disk). Otherwise it takes `build-gc.sh`'s auto lock,
    plans `reclaim --to <comfort>` for the tree being built, sparing the CURRENT checkout (bar rung 6), runs
@@ -354,7 +367,8 @@ prerequisite would make every file target in the list out of date on every run; 
   be refused. `--evict` spares its own checkout by construction; the test runs it against a fixture
   fleet and asserts that the lane's tree, its incremental dirs and `target-sim` are all still there.
 - *Wait on a lock for long.* If build-gc's auto lock (`${TMPDIR:-/tmp}/plx-build-gc-auto.lock`) is
-  held it polls up to `--wait-secs` (default 60) and returns 0 the moment free space shows the build
+  held it polls up to `--wait-secs` (default 60, one deadline for the whole preflight, the cold store's
+  unpark wait included) and returns 0 the moment free space shows the build
   fits (it makes no plan while another reclaim runs, which is the one making the room). Each poll
   tries the lock again: a holder that has finished, or a dead holder's lock older than
   `PLX_GC_LOCK_STALE_MIN` (120), as `--auto` reclaims it, is taken over and the plan runs. At the
@@ -476,8 +490,8 @@ whose lane is gone or already merged; older than `max_days`; and, while the cold
 **The cost rule** (when a parked tree is worth bringing back; `cold-store.py unpark PATH`): only into an ABSENT
 tree, and only when `apparent_bytes / min(rate_floor, the park's measured rate)` is under the directory's
 `rebuild_secs`, and the caller says free space after the copy stays at or above its line. The preflight calls it
-(step 1 of "The preflight"): a build entry whose own tree is absent and indexed gets that tree back under build-gc's
-auto lock before cargo starts, and only that tree, so a lane with `target`, `target-fast`, `target-hostsim` and
+(step 1 of "The preflight"): a build entry whose own tree is absent and indexed gets that tree back before cargo
+starts (the decision and the claim of the parked copy under build-gc's auto lock, the copy without it), and only that tree, so a lane with `target`, `target-fast`, `target-hostsim` and
 `target-sim` parked gets each back when an entry naming it runs (the others wait, and expire after `max_days`). A
 declined or failed unpark leaves the parked copy where it is and the build rebuilds, or restores from the seed,
 exactly as after any eviction. A direct `cargo` reaches no preflight and rebuilds cold; prune then drops the stale
@@ -485,7 +499,9 @@ parked copy, since the origin exists and is newer. `PLX_COLD_STORE=off` skips th
 
 **Where the files are.** SSD: `$PLX_BUILD_CACHE/cold-store/index/<escaped origin>.json` (one record per parked
 tree: origin, kind, owning checkout and its HEAD, parked-at, file count, apparent bytes, private bytes freed, the
-measured copy rate) and `parking/<id>/` (+ `.json`, `.pid`) while a tree is in flight. Cold volume:
+measured copy rate), `index/<escaped origin>.json.unparking.<pid>` (the same record while process `<pid>` restores
+that tree: `make disk` and `cold-store.py status` list it as `restoring`) and `parking/<id>/` (+ `.json`, `.pid`) while
+a tree is in flight. Cold volume:
 `<root>/trees/<id>/` and `<id>.json`, plus `.partial`, `.dead.<pid>.<ns>` and `.consumed.<pid>.<ns>` debris that
 prune reaps (matched as a whole name suffix, so a lane directory with the word in its name is never taken for it; the
 set-aside names are unique, so one an earlier set-aside left behind cannot make the next fail). An unpark prints one

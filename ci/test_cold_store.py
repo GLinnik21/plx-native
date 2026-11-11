@@ -460,6 +460,156 @@ class RoundTrip(Rig):
         self.assertFalse(os.path.exists(self.cache))
 
 
+class Claims(Rig):
+    """An unpark CLAIMS its parked copy under the caller's lock and copies WITHOUT it (docs/disk-budget.md, "The cold
+    store"): the claim is a rename of the SSD index record to `index/<id>.json.unparking.<pid>`, which hides the
+    entry from `records()` / `indexed()` (a second unparker sees nothing to take), keeps `recover` from adopting it
+    again and keeps the park pass off the origin, and whose pid says whether the claimer is still there."""
+
+    def parked(self, name="target", lane="lane", salt=0):
+        store = self.store()
+        path = self.tree(name, salt=salt, lane=lane)
+        self.assertEqual(self.park(store, path).status, cold.PARKED)
+        return store, path
+
+    def claim_files(self):
+        index = os.path.join(self.cache, "cold-store", "index")
+        return sorted(n for n in os.listdir(index) if ".unparking." in n)
+
+    def foreign_claim(self, store, path, pid):
+        """Another process's claim, as it leaves it: the entry renamed to its pid's name."""
+        os.rename(store.index_path(path), "%s.unparking.%d" % (store.index_path(path), pid))
+
+    def live_pid(self):
+        proc = subprocess.Popen(["sleep", "60"])
+        self.addCleanup(proc.wait)
+        self.addCleanup(proc.terminate)
+        return proc.pid
+
+    def test_a_claim_takes_the_entry_out_of_the_index_and_unpark_finishes_it(self):
+        store, path = self.parked()
+        out = store.claim(path, rebuild_secs=1e9)
+        self.assertEqual((out.status, (out.record or {}).get("origin")), (cold.CLAIMED, path), out)
+        self.assertEqual(self.claim_files(), [cold.escape(path) + ".json.unparking.%d" % os.getpid()])
+        self.assertFalse(store.indexed(path), "a claimed entry is still offered to a second unparker")
+        self.assertEqual(store.records(), [])
+        self.assertFalse(os.path.lexists(path), "a claim copies nothing")
+        again = store.claim(path, rebuild_secs=1e9)
+        self.assertEqual(again.status, cold.SKIPPED, again)
+        self.assertIn("being restored by pid %d" % os.getpid(), again.reason)
+        done = store.unpark(path, claimed=out.record)
+        self.assertEqual(done.status, cold.UNPARKED, done)
+        self.assertEqual(self.claim_files(), [])
+        self.assertEqual(store.records(), [])
+        self.assertTrue(os.path.isdir(path))
+        self.assertFalse(os.path.exists(os.path.join(self.root, "trees", cold.escape(path))), "the cold copy was kept")
+
+    def test_a_tree_another_live_process_has_claimed_is_named_and_copies_nothing(self):
+        store, path = self.parked()
+        pid = self.live_pid()
+        self.foreign_claim(store, path, pid)
+        with mock.patch.object(cold, "copy_tree", side_effect=AssertionError("copied a tree somebody else restores")):
+            for call in (lambda: store.claim(path, rebuild_secs=1e9), lambda: store.unpark(path, rebuild_secs=1e9)):
+                out = call()
+                self.assertEqual(out.status, cold.SKIPPED, out)
+                self.assertIn("being restored by pid %d" % pid, out.reason)
+        self.assertEqual(self.claim_files(), [cold.escape(path) + ".json.unparking.%d" % pid])
+        self.assertEqual(store.claimed_by(path), pid)
+
+    def test_a_dead_claimers_entry_is_put_back_by_recover_and_by_the_next_claim(self):
+        store, path = self.parked()
+        self.foreign_claim(store, path, dead_pid())
+        self.assertEqual(store.claimed_by(path), 0, "a dead process is not a claimer")
+        self.assertEqual(store.recover(), [("restored-unpark-claim", path)])
+        self.assertTrue(store.indexed(path))
+        self.assertEqual(self.claim_files(), [])
+        self.foreign_claim(store, path, dead_pid())
+        out = store.claim(path, rebuild_secs=1e9)             # the next build puts it right itself and takes it
+        self.assertEqual(out.status, cold.CLAIMED, out)
+        self.assertEqual(self.claim_files(), [cold.escape(path) + ".json.unparking.%d" % os.getpid()])
+        self.assertEqual(store.unpark(path, claimed=out.record).status, cold.UNPARKED)
+
+    def test_a_failed_copy_after_the_claim_puts_the_entry_back(self):
+        store, path = self.parked()
+        out = store.claim(path, rebuild_secs=1e9)
+        with mock.patch.object(cold, "copy_tree", side_effect=OSError("the cold volume went away")):
+            done = store.unpark(path, claimed=out.record)
+        self.assertEqual(done.status, cold.FAILED, done)
+        self.assertTrue(store.indexed(path), "the entry was lost with the failed copy")
+        self.assertEqual(self.claim_files(), [])
+        self.assertFalse(os.path.lexists(path))
+        self.assertEqual([n for n in os.listdir(os.path.dirname(path)) if "unpark" in n], [])
+        self.assertEqual(store.unpark(path, rebuild_secs=1e9).status, cold.UNPARKED)      # and it still restores later
+
+    def test_a_restored_claim_never_overwrites_a_newer_record(self):
+        store, path = self.parked()
+        out = store.claim(path, rebuild_secs=1e9)
+        newer = dict(out.record, parked_at=out.record["parked_at"] + 99)
+        cold.write_json(store.index_path(path), newer)       # a later park recorded the origin meanwhile
+        with mock.patch.object(cold, "copy_tree", side_effect=OSError("boom")):
+            self.assertEqual(store.unpark(path, claimed=out.record).status, cold.FAILED)
+        self.assertEqual(store.records(), [newer])
+        self.assertEqual(self.claim_files(), [])
+
+    def test_a_claim_that_is_gone_is_not_copied_for(self):
+        store, path = self.parked()
+        out = store.claim(path, rebuild_secs=1e9)
+        os.unlink(os.path.join(self.cache, "cold-store", "index", self.claim_files()[0]))
+        with mock.patch.object(cold, "copy_tree", side_effect=AssertionError("copied without a claim")):
+            self.assertEqual(store.unpark(path, claimed=out.record).status, cold.SKIPPED)
+
+    def test_a_declined_claim_touches_nothing(self):
+        store, path = self.parked()
+        for kw in ({"rebuild_secs": 1e-9}, {"rebuild_secs": 1e9, "free_after_ok": lambda size: False}):
+            out = store.claim(path, **kw)
+            self.assertEqual(out.status, cold.DECLINED, out)
+            self.assertEqual(self.claim_files(), [])
+            self.assertTrue(store.indexed(path))
+
+    def test_recover_does_not_adopt_a_record_that_is_being_restored(self):
+        store, path = self.parked()
+        self.assertEqual(store.claim(path, rebuild_secs=1e9).status, cold.CLAIMED)
+        self.assertEqual(store.recover(), [])
+        self.assertFalse(store.indexed(path))
+        self.assertEqual(len(self.claim_files()), 1)
+
+    def test_the_park_pass_leaves_an_origin_that_is_being_restored_alone(self):
+        store, path = self.parked()
+        self.assertEqual(store.claim(path, rebuild_secs=1e9).status, cold.CLAIMED)
+        make_tree(path, salt=4)                               # a build started its own tree meanwhile
+        mine = snap(path)
+        out = self.park(store, path)
+        self.assertEqual(out.status, cold.REFUSED, out)
+        self.assertIn("being restored by pid %d" % os.getpid(), out.reason)
+        self.assertEqual(snap(path), mine)
+        self.assertFalse(store.indexed(path))
+
+    def test_the_free_space_rule_counts_what_other_live_claims_still_copy(self):
+        # Without the caller's lock two restores no longer take turns, so the second one's "is there room left"
+        # must see the bytes the first one is about to write.
+        store = self.store()
+        a, b = self.tree("target", lane="a"), self.tree("target-fast", lane="b", salt=1)
+        for path in (a, b):
+            self.assertEqual(self.park(store, path).status, cold.PARKED)
+        size_a = store.claim(a, rebuild_secs=1e9).record["apparent_bytes"]
+        size_b = cold.tree_stats(os.path.join(self.root, "trees", cold.escape(b)))[1]
+        asked = []
+        out = store.claim(b, rebuild_secs=1e9, free_after_ok=lambda n: asked.append(n) or True)
+        self.assertEqual(out.status, cold.CLAIMED, out)
+        self.assertEqual(asked, [size_a + size_b])
+        self.assertEqual(store.inflight_bytes(1), size_a + size_b)
+
+    def test_a_dead_claimers_bytes_are_not_in_flight(self):
+        store = self.store()
+        a, b = self.tree("target", lane="a"), self.tree("target-fast", lane="b", salt=1)
+        for path in (a, b):
+            self.assertEqual(self.park(store, path).status, cold.PARKED)
+        self.foreign_claim(store, a, dead_pid())
+        asked = []
+        store.claim(b, rebuild_secs=1e9, free_after_ok=lambda n: asked.append(n) or True)
+        self.assertEqual(asked, [cold.tree_stats(os.path.join(self.root, "trees", cold.escape(b)))[1]])
+
+
 class ParkGuards(Rig):
     def test_a_live_tree_is_refused_and_untouched(self):
         path = self.tree()

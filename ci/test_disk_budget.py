@@ -1889,7 +1889,15 @@ class ParkCommand(Repo):
         self.assertRegex(on.stdout, r"cold store\s+on: root \S+/das/cold")
         self.assertIn("1 tree, 3.0 GiB parked", on.stdout)
         self.assertIn("parking residue", on.stdout)
+        self.assertNotIn("restoring", on.stdout)
         self.assertEqual(changed(before, snapshot_files(self.tmp)), [], "the report touched the cold store")
+        gone = subprocess.Popen(["true"])
+        gone.wait()
+        with open(os.path.join(index, "%%2Ftmp%%2Fb.json.unparking.%d" % gone.pid), "w") as fh:     # a restore that died
+            fh.write('{"origin": "/tmp/b", "apparent_bytes": 1, "parked_at": 1}')
+        claimed = self.run_tool("report", "--root", self.main, PLX_COLD_STORE_CONFIG=cfg)
+        self.assertIn("1 tree, 3.0 GiB parked", claimed.stdout, "a claimed record is no longer parked")
+        self.assertRegex(claimed.stdout, r"restoring: /tmp/b \(pid %d, dead: " % gone.pid)
         self.assertFalse(os.path.exists(os.path.join(self.tmp, "das")), "the report touched the cold volume")
 
 
