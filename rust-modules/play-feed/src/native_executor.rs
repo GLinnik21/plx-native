@@ -917,7 +917,10 @@ pub const MAX_REBASE_DROPS: i32 = 240;
 // audio queue, ahead of the first legitimate AU. Once audio has flowed, a later AU that is far past
 // the fed video is legitimate audio the demuxer read while the video sink answered BufferFull (a
 // full 10 MiB video queue is 4-6.6 s of a 4K remux, and the audio interleaved with it is as far
-// ahead), and the throttle, not this bound, paces it.
+// ahead). The throttle paces it; while a prime hold or an unknown presentation (PRES_NONE) lifts
+// the throttle, only the sink's BufferFull does, not this bound. (The stale check runs BEFORE the
+// throttle in the lane, so with the old unconditional bound a queued AU more than 5 s past the
+// accepted video was dropped before the throttle could hold it, throttle active or not.)
 pub const AUDIO_STALE_AHEAD_NS: i64 = 5_000_000_000;
 /// The stale-ahead drop is logged for the first AU dropped since an open or seek and then once per
 /// this many, so a long run of drops is visible in a device log without flooding it.
@@ -1736,7 +1739,10 @@ pub fn audio_lead_in(fp: i64, opens: bool, start: Option<i64>) -> bool {
 /// is not stale. It is audio the demuxer read while the video sink answered BufferFull: the
 /// demuxer is ahead of the sink by a whole video queue (4-6.6 s of a 4K remux), the interleaved
 /// audio with it. Dropping that took 75 s of audio out of a 204 s remux, silently. The
-/// feed-ahead throttle holds such audio until the clock is near it.
+/// feed-ahead throttle paces such audio; while a prime hold or an unknown presentation
+/// (`PRES_NONE`) lifts the throttle, only the sink's BufferFull does. The stale check runs before
+/// the throttle in the lane, so the old unconditional bound dropped an AU more than 5 s past the
+/// accepted video before the throttle could hold it, whether the throttle was active or not.
 ///
 /// An AU in the timeline's lead-in ([`audio_lead_in`]) is never stale, and with no video accepted
 /// yet (`fed_video` 0) there is nothing to measure against.
