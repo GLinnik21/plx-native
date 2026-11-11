@@ -50,11 +50,15 @@ impl LibraryScreen {
     pub(super) fn watch_readout<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) -> bool {
         use super::super::plaintext_question::{asks, Near};
         let facts = H::clock_facts(cx);
-        let machine = (self.readout == Readout::Failed)
-            .then(|| H::directory(cx).source().and_then(|(sid, _)| facts.and_then(|facts| facts.machine(*sid))))
-            .flatten();
-        let offer_moved = self.plaintext.refresh(&H::screen_inputs(cx).grants.offers, machine, Near::Only);
-        let clock_moved = self.clock.refresh(facts, machine);
+        let inputs = H::screen_inputs(cx);
+        let source = (self.readout == Readout::Failed)
+            .then(|| H::directory(cx).source().map(|(sid, _)| *sid)).flatten();
+        // Plaintext offers use the published server identity even without a clock publication.
+        let machine = source.and_then(|sid| inputs.servers.iter()
+            .find(|(_, slot)| *slot == sid).map(|(machine, _)| machine.as_str()));
+        let offer_moved = self.plaintext.refresh(&inputs.grants.offers, machine, Near::Only);
+        let clock_machine = source.and_then(|sid| facts.and_then(|facts| facts.machine(sid)));
+        let clock_moved = self.clock.refresh(facts, clock_machine);
         if self.plaintext_alert.is_open()
             && !(self.readout == Readout::Failed
                 && self.plaintext_alert.subject() == self.plaintext.verdict().map(|v| v.machine_id.as_str())
