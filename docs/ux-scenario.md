@@ -690,6 +690,14 @@ When the segment begins the HUD is raised and the focus ring is parked on the pi
 skips**. OK seeks past the segment and resumes; on a `final` credits marker it finishes the item
 instead. The pill leaves with the segment, and focus returns to the scrubber when it does.
 
+**With Settings → Skip intros / Skip credits on Automatic the pill becomes a pair, and both timed prompts
+follow ONE rule.** The **filled** button is the action that will happen by itself when the five-second
+countdown (the fill sweep) runs out; pressing it does that action **now**; the **unfilled** button one key to its
+left cancels the countdown. The intro prompt is **Watch Intro** + **Skip Intro** (filled); the credits prompt is
+**Watch Credits** + **Next Episode** (filled; and **Skip Credits** for a mid-item credits marker). The focus ring
+starts on the filled button, so one bare OK performs the action, and LEFT reaches the cancel button. Reaching for it
+stops the countdown, and the filled button stays available to press. BACK dismisses the segment's offer as above.
+
 **3. Over the credits with another episode queued: Up Next.** The row becomes the next episode's
 still, a caption (*"Up Next · S2, E4 · Laura"*), and **two buttons — Watch Credits** on the left and
 **Next Episode** on the right, with the focus ring parked on *Next Episode*. A **10 s countdown**

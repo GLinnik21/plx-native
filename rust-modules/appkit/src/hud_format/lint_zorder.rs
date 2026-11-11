@@ -324,7 +324,7 @@ pub(super) fn surfaces(cx: &LangCtx<'_>, view: &View<'_>) -> Surfaces {
                     s.content.push(Content { kind, name, pointer: origin.to_owned(), rect, card: None });
                 }
             }
-            DrawOp::SkipPill { rects } => {
+            DrawOp::SkipPill { rects, watch } => {
                 let name = match view.skip {
                     SkipKind::Intro => "skip pill (intro)",
                     SkipKind::Credits => "skip pill (credits)",
@@ -334,6 +334,12 @@ pub(super) fn surfaces(cx: &LangCtx<'_>, view: &View<'_>) -> Surfaces {
                 let pill = rects[view.skip as usize];
                 let pill = Target::flat(TargetKind::Skip, name, origin, pill, bands.standin_z());
                 s.targets.push(pill.replacing(&bands.replaced));
+                // an Automatic face is a pair: its unfilled Watch button is a target of its own
+                let beside = watch[view.skip as usize];
+                if beside.w > 0.0 {
+                    let beside = Target::flat(TargetKind::Skip, "watch button", origin, beside, bands.standin_z());
+                    s.targets.push(beside.replacing(&bands.replaced));
+                }
             }
             DrawOp::Strip { rect, card, template, .. } => {
                 let row = Rect::new(rect.x, card.y, rect.w, card.h);
@@ -907,8 +913,8 @@ mod tests {
         let lang = LintLang::for_tag("en").expect("English is shipped");
         let compiled = compile(&package, &ShippedMeasure, CompileCtx { labels: lang.labels.clone() });
         compiled.states().iter().filter(|s| s.key.slot == Slot::Skip).map(|state| {
-            let rects = state.standin.skip.unwrap();
-            rects.iter().enumerate().filter(|(i, rect)| !rects[..*i].contains(rect)).count()
+            let faces = crate::hud_format::compile::SkipKind::ALL.map(|kind| state.standin.face(kind));
+            faces.iter().enumerate().filter(|(i, face)| !faces[..*i].contains(face)).count()
         }).sum()
     }
 

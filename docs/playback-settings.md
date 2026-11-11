@@ -203,16 +203,18 @@ Requested in [discussion #826](https://github.com/GLinnik21/plx-native/discussio
 Playback settings offers **Skip intros** and **Skip credits** separately for a viewer whose
 Plex account feature list grants the corresponding capability. These are per-profile choices:
 **Manual** is the default, **Disabled** hides the skip button, and **Automatic** offers a
-**Watch Intro** or **Watch Credits** button with a five-second countdown fill. Where the existing
-player offers **Watch Credits + Next Episode**, both controls stay available and the five-second
-fill appears on Next Episode. Watch Credits cancels that countdown while leaving Next Episode
-available to press. BACK dismisses the offer; choosing a standalone Watch button dismisses its
-single-button offer too.
+pair of buttons with a five-second countdown fill, and both timed prompts follow one rule: the
+**filled** button is the action the countdown will perform, pressing it performs it now, and the
+unfilled **Watch** button to its left cancels the countdown. For an intro that is **Watch Intro** +
+**Skip Intro** (filled); for credits with a mid-item marker **Watch Credits** + **Skip Credits**; where the
+existing player offers the next episode, **Watch Credits** + **Next Episode** (filled). Initial focus is the filled
+button. Watch cancels the countdown, and for the pair leaves Next Episode available to press. BACK dismisses the
+offer; choosing the intro or mid-item credits Watch button dismisses that offer too.
 
 Only time with an actionable, presented Watch button and advancing playback counts. Pause,
 buffering freeze the remaining opportunity. The pair retains its existing cancellation behavior:
-moving away from Next Episode or opening a panel cancels its countdown. A panel covering a
-standalone Watch button freezes its countdown. Seeking or leaving the
+moving away from Next Episode or opening a panel cancels its countdown. Moving the ring to the Watch button of the
+intro or mid-item credits prompt cancels its countdown; a panel covering it freezes its countdown. Seeking or leaving the
 marker resets it. Intro and intermediate credits expiry seek to the marker end; final credits
 use the existing playback-finished path, respecting the Next episode preference. Automatic final
 credits use five presented seconds on the Up Next controls wherever that pair is available; other
