@@ -3912,12 +3912,9 @@ fn hero_action(hero: &PmsMovie) -> (std::borrow::Cow<'static, std::ffi::CStr>, O
     use std::borrow::Cow;
     let resumes = hero_resumes(hero);
     if resumes {
-        if let Some(progress) = hero.resume_frac() {
-            let left = hero.dur_ns / 1_000_000 - hero.resume_ms;
-            let minutes = left.saturating_add(59_999) / 60_000;
-            let duration = plx_ui::fmt::duration_minutes_in(plx_platform::i18n::current(), minutes);
-            if let Ok(label) = std::ffi::CString::new(duration) {
-                return (Cow::Owned(label), Some(progress));
+        if let Some(progress) = tile_facts::resume_of(hero) {
+            if let Ok(label) = std::ffi::CString::new(plx_ui::fmt::remaining_duration(progress.left_ms)) {
+                return (Cow::Owned(label), Some(progress.frac));
             }
         }
     }
@@ -3934,7 +3931,14 @@ fn hero_line(hero: &PmsMovie) -> Option<HeroLine<'_>> {
         || (is_show && !hero.watched && !hero_resumes(hero) && hero.viewed_leaf_count.unwrap_or(0) == 0)
     {
         let identity = match hero.kind {
-            KIND_EPISODE => fmt::episode_address(i64::from(hero.season_index), i64::from(hero.ep_index)),
+            KIND_EPISODE => {
+                let address = fmt::episode_address(i64::from(hero.season_index), i64::from(hero.ep_index));
+                if address.is_empty() && hero.title.trim() != hero_title(hero).trim() {
+                    hero.title.trim().into()
+                } else {
+                    address
+                }
+            }
             KIND_SHOW => msg::browse_kind_tv_show().into(),
             _ => msg::browse_kind_movie().into(),
         };
@@ -3957,7 +3961,10 @@ fn hero_line(hero: &PmsMovie) -> Option<HeroLine<'_>> {
         let quality = if is_show { None } else {
             hero.video_resolution.as_deref().and_then(|resolution| fmt::resolution(resolution, 0, 0))
         };
-        return Some(HeroLine::Metadata { identity, date, length, genres, quality, rating: hero.rating.trim() });
+        let rating = hero.rating.trim();
+        if !(identity.is_empty() && date.is_empty() && length.is_empty() && genres.is_empty() && quality.is_none() && rating.is_empty()) {
+            return Some(HeroLine::Metadata { identity, date, length, genres, quality, rating });
+        }
     }
     Some(first_sentence(&hero.summary)).filter(|s| !s.is_empty()).map(HeroLine::Premise)
 }

@@ -75,6 +75,14 @@ pub fn face_cuts_name(item: &PmsMovie) -> bool {
     name_is_cut(face, &item.title, plx_ui::Rect::new(0.0, 0.0, plx_ui::consts::CARD_W, plx_ui::consts::CARD_H))
 }
 
+/// Progress and time left shared by the hero action and the tiles.
+pub fn resume_of(m: &PmsMovie) -> Option<Resume> {
+    m.resume_frac().map(|frac| Resume {
+        frac,
+        left_ms: m.dur_ns / 1_000_000 - m.resume_ms,
+    })
+}
+
 /// What `ui` reads of `m`. The result borrows from the row for `'a`, and carries the row's address
 /// as [`TileFacts::owner`], which is how a card's placement history stays keyed to the ROW and not
 /// to the short-lived facts built from it.
@@ -92,10 +100,7 @@ pub fn of(m: &PmsMovie) -> TileFacts<'_> {
         season_index: m.season_index,
         ep_index: m.ep_index,
         child_count: m.child_count,
-        resume: m.resume_frac().map(|frac| Resume {
-            frac,
-            left_ms: m.dur_ns / 1_000_000 - m.resume_ms,
-        }),
+        resume: resume_of(m),
         watched: m.watched,
         unwatched: m.unwatched,
         // Only a collection's thumb can be a composite, and only a collection tile reads the

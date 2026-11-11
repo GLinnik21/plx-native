@@ -130,3 +130,11 @@ fn the_page_draws_episode_show_and_movie_metadata() {
     }
     assert!(!ep.contains("left"), "{ep:?}");
 }
+
+#[test]
+fn sparse_episode_uses_its_title_or_omits_the_empty_row() {
+    let mut ep = PmsMovie { kind: plx_data::pms::KIND_EPISODE, show_title: "Series".into(), title: "Pilot".into(), ..Default::default() };
+    assert!(matches!(hero_line(&ep), Some(HeroLine::Metadata { identity, .. }) if identity == "Pilot"));
+    ep.show_title.clear();
+    assert!(hero_line(&ep).is_none(), "the logo rung already carries the episode's title");
+}
