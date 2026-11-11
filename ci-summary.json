@@ -85,21 +85,21 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-11T12:12:33Z",
+ "generated": "2026-11-11T12:15:24Z",
  "metrics": [
   {
-   "change30_pct": 47.7,
-   "change7_pct": 43.5,
+   "change30_pct": 51.9,
+   "change7_pct": 47.6,
    "d30": 21.2,
-   "delta30": 10.1,
-   "delta7": 9.5,
+   "delta30": 11.0,
+   "delta7": 10.4,
    "group": "local",
    "id": "bench.app",
    "kind": "local",
    "label": "Rebuild after editing the app crate",
-   "n_now": 7,
+   "n_now": 8,
    "n_prev": 5,
-   "now": 31.3,
+   "now": 32.2,
    "prev7": 21.8,
    "shown": true,
    "state": "worse",
@@ -109,18 +109,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 68.3,
-   "change7_pct": 36.1,
+   "change30_pct": 67.8,
+   "change7_pct": 35.7,
    "d30": 37.8,
-   "delta30": 25.8,
-   "delta7": 16.8,
+   "delta30": 25.6,
+   "delta7": 16.7,
    "group": "local",
    "id": "bench.screens",
    "kind": "local",
    "label": "Rebuild after editing plx_screens",
-   "n_now": 7,
+   "n_now": 8,
    "n_prev": 5,
-   "now": 63.5,
+   "now": 63.4,
    "prev7": 46.7,
    "shown": true,
    "state": "worse",
@@ -148,6 +148,27 @@
    "state30": "worse",
    "threshold_abs": 20.0,
    "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": 99.7,
+   "change7_pct": 25.3,
+   "d30": 47.0,
+   "delta30": 46.8,
+   "delta7": 19.0,
+   "group": "local",
+   "id": "bench.ui",
+   "kind": "local",
+   "label": "Rebuild after editing plx_ui",
+   "n_now": 8,
+   "n_prev": 5,
+   "now": 93.8,
+   "prev7": 74.8,
+   "shown": true,
+   "state": "worse",
+   "state30": "worse",
+   "threshold_abs": 5.0,
+   "threshold_pct": 25.0,
    "unit": "s"
   },
   {
@@ -193,39 +214,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 98.7,
-   "change7_pct": 24.7,
-   "d30": 47.0,
-   "delta30": 46.3,
-   "delta7": 18.5,
-   "group": "local",
-   "id": "bench.ui",
-   "kind": "local",
-   "label": "Rebuild after editing plx_ui",
-   "n_now": 7,
-   "n_prev": 5,
-   "now": 93.3,
-   "prev7": 74.8,
-   "shown": true,
-   "state": "flat",
-   "state30": "worse",
-   "threshold_abs": 5.0,
-   "threshold_pct": 25.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": 104.4,
-   "change7_pct": 24.6,
+   "change30_pct": 104.2,
+   "change7_pct": 24.5,
    "d30": 103.0,
-   "delta30": 107.5,
-   "delta7": 41.6,
+   "delta30": 107.3,
+   "delta7": 41.3,
    "group": "local",
    "id": "bench.leaf",
    "kind": "local",
    "label": "Rebuild after editing plx_base",
-   "n_now": 7,
+   "n_now": 8,
    "n_prev": 5,
-   "now": 210.5,
+   "now": 210.3,
    "prev7": 168.9,
    "shown": true,
    "state": "flat",
@@ -592,16 +592,16 @@
    "unit": "s"
   },
   {
-   "change30_pct": 39.0,
-   "change7_pct": 46.4,
+   "change30_pct": 36.4,
+   "change7_pct": 43.7,
    "d30": 0.6,
    "delta30": 0.2,
-   "delta7": 0.3,
+   "delta7": 0.2,
    "group": "local",
    "id": "bench.noop",
    "kind": "local",
    "label": "No-op build",
-   "n_now": 7,
+   "n_now": 8,
    "n_prev": 5,
    "now": 0.8,
    "prev7": 0.6,
@@ -615,7 +615,7 @@
  ],
  "regressions": [
   {
-   "change_pct": 43.5,
+   "change_pct": 47.6,
    "commits": [
     {
      "pr": 1317,
@@ -673,10 +673,10 @@
    "label": "Rebuild after editing the app crate",
    "since": "2026-11-09",
    "threshold_pct": 25.0,
-   "to": 31.3
+   "to": 32.2
   },
   {
-   "change_pct": 36.1,
+   "change_pct": 35.7,
    "commits": [
     {
      "pr": 1317,
@@ -734,7 +734,7 @@
    "label": "Rebuild after editing plx_screens",
    "since": "2026-11-09",
    "threshold_pct": 25.0,
-   "to": 63.5
+   "to": 63.4
   },
   {
    "change_pct": 25.9,
@@ -796,6 +796,67 @@
    "since": "2026-11-11",
    "threshold_pct": 20.0,
    "to": 423.0
+  },
+  {
+   "change_pct": 25.3,
+   "commits": [
+    {
+     "pr": 1317,
+     "sha": "095f74ca9",
+     "title": "Remember open Library pages"
+    },
+    {
+     "pr": 1315,
+     "sha": "5b4e8db77",
+     "title": "refactor(metadata): move alternative-source IO into store jobs"
+    },
+    {
+     "pr": null,
+     "sha": "87c08f315",
+     "title": "chore(git): ignore local Empryo workspace artifacts"
+    },
+    {
+     "pr": 1319,
+     "sha": "9d1e082e3",
+     "title": "refactor(browse): capture roster facts before store steps"
+    },
+    {
+     "pr": 1321,
+     "sha": "d6b75cd94",
+     "title": "Polish LG Detail, Library, and Settings screens"
+    },
+    {
+     "pr": 1322,
+     "sha": "283f536d1",
+     "title": "refactor(data): run notification streams as addressed jobs"
+    },
+    {
+     "pr": 1323,
+     "sha": "17aa83ea0",
+     "title": "Fix autoplay trailer timeline, seeking, and HUD controls"
+    },
+    {
+     "pr": 1326,
+     "sha": "7f2dc2f2d",
+     "title": "fix(playback): preserve HLS when an ABR candidate is cancelled"
+    },
+    {
+     "pr": 1324,
+     "sha": "f8f6dbb75",
+     "title": "refactor(session): negotiate legacy and V6 replay codecs"
+    },
+    {
+     "pr": 1332,
+     "sha": "e8442d5ee",
+     "title": "URI: say in the event log why the Experimental engine did not take a play"
+    }
+   ],
+   "from": 74.8,
+   "id": "bench.ui",
+   "label": "Rebuild after editing plx_ui",
+   "since": "2026-11-11",
+   "threshold_pct": 25.0,
+   "to": 93.8
   }
  ],
  "schema": 2,
@@ -836,7 +897,7 @@
    "group": "local",
    "id": "bench.leaf",
    "label": "Rebuild after editing plx_base",
-   "now": 210.5
+   "now": 210.3
   },
   {
    "group": "local",
@@ -848,19 +909,19 @@
    "group": "local",
    "id": "bench.ui",
    "label": "Rebuild after editing plx_ui",
-   "now": 93.3
+   "now": 93.8
   },
   {
    "group": "local",
    "id": "bench.screens",
    "label": "Rebuild after editing plx_screens",
-   "now": 63.5
+   "now": 63.4
   },
   {
    "group": "local",
    "id": "bench.app",
    "label": "Rebuild after editing the app crate",
-   "now": 31.3
+   "now": 32.2
   }
  ],
  "thresholds": {
