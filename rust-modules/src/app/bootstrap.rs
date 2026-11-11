@@ -105,6 +105,7 @@ pub(crate) fn validate_admission(value: &serde_json::Value, client: u32) -> Resu
 /// to refuse those artifacts at the shape boundary and permit a genuine fresh recording.
 /// V6 / SessionInitV5 adds the captured language preference; controlled System resolves to en-US/24-hour.
 pub(crate) const SHAPE: &str = "ControlledHomeInitV6{locale:capturedSessionPreference_systemEnUS24,version:u32,session:SessionInitV5,consent:Consent,home:HubsInitialV1,clock_start:u32,entropy:Captured(Option<[u8;16]>)|Seeded(u32),primary_client:u32,automated:bool,settings:Option<root|privacy|legal>,triggers:[str]};HomeEffectsV1{from:MachineId,kind:Fx,payload:complete_supported_payload};OwnedInputV1{ms:u32,dt_us:u32,source:Source,body:InputKind};DiscoveryResultV1{epoch:u32,source:u32,sid:u16,client:u32,token_gen:u32,name:str,what:Sections|Counts}";
+pub(crate) const SHAPE_V7: &str = "ControlledHomeInitV7{locale:capturedSessionPreference_systemEnUS24,version:u32,session:SessionInitV6,consent:Consent,home:HubsInitialV1,clock_start:u32,entropy:Captured(Option<[u8;16]>)|Seeded(u32),primary_client:u32,automated:bool,settings:Option<root|privacy|legal>,triggers:[str]};HomeEffectsV1{from:MachineId,kind:Fx,payload:complete_supported_payload};OwnedInputV1{ms:u32,dt_us:u32,source:Source,body:InputKind};DiscoveryResultV1{epoch:u32,source:u32,sid:u16,client:u32,token_gen:u32,name:str,what:Sections|Counts}";
 #[cfg(test)]
 pub(crate) const PRE_SETTINGS_SHAPE: &str = "ControlledHomeInitV1{version:u32,session:SessionInit,consent:Consent,home:HubsInitialV1,clock_start:u32,entropy:Captured(Option<[u8;16]>)|Seeded(u32),primary_client:u32,automated:bool,triggers:[str]};HomeEffectsV1{from:MachineId,kind:Fx,payload:complete_supported_payload};OwnedInputV1{ms:u32,dt_us:u32,source:Source,body:InputKind};DiscoveryResultV1{epoch:u32,source:u32,sid:u16,client:u32,token_gen:u32,name:str,what:Sections|Counts}";
 
@@ -265,6 +266,32 @@ impl Initial {
         Ok(initial)
     }
 
+    /// V6 is a boot-only envelope around the canonical frozen V5 Session payload.
+    pub(crate) fn to_v6_value(&self) -> Result<serde_json::Value, &'static str> {
+        let mut value = serde_json::to_value(self).map_err(|_| "invalid initial encoding")?;
+        let session = value.get_mut("session").ok_or("invalid initial encoding")?;
+        *session = serde_json::json!({"codec": 6, "boot": std::mem::take(session)});
+        Ok(value)
+    }
+
+    pub(crate) fn decode_profile(mut value: serde_json::Value, expected_hash: u64, fingerprint: u64)
+        -> Result<Self, &'static str> {
+        use super::recorder::{FP_PRIOR, FP_V6};
+        match fingerprint {
+            FP_PRIOR => Self::decode(value, expected_hash),
+            FP_V6 => {
+                let session = value.get_mut("session").ok_or("invalid session codec")?;
+                let envelope = session.as_object_mut().ok_or("invalid session codec")?;
+                if envelope.len() != 2 || envelope.get("codec").and_then(|v| v.as_u64()) != Some(6) {
+                    return Err("invalid session codec");
+                }
+                *session = envelope.remove("boot").ok_or("invalid session codec")?;
+                Self::decode(value, expected_hash)
+            }
+            _ => Err("unsupported recording profile"),
+        }
+    }
+
     pub(crate) fn decode(value: serde_json::Value, expected_hash: u64) -> Result<Self, &'static str> {
         let initial = Self::from_value(value)?;
         if initial.hash() != expected_hash { return Err("initial hash mismatch"); }
@@ -313,9 +340,12 @@ impl Preflight {
             (Some(_), Some(_)) => Err("conflicting recorder modes"),
             (None, Some(path)) => {
                 let (mode, path) = super::recorder::ReplayMode::parse(&path)?;
-                let recording = Recording::load(std::path::Path::new(path), super::recorder::state_fp())
+                let path = std::path::Path::new(path);
+                let recording = Recording::load(path, super::recorder::state_fp())
+                    .or_else(|_| Recording::load(path, super::recorder::FP_PRIOR))
                     .map_err(|_| "invalid or incompatible recording")?;
-                let initial = Initial::decode(recording.header.init_data.clone(), recording.header.init_hash)?;
+                let initial = Initial::decode_profile(recording.header.init_data.clone(), recording.header.init_hash,
+                    recording.header.state_fp)?;
                 super::recorder::validate_controlled(&recording, &initial)?;
                 super::recorder::validate_resolution_recording(&recording)?;
                 Ok(Self::Replay { initial, recording, mode })
