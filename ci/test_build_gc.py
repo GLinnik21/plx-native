@@ -108,7 +108,11 @@ class BuildGcTests(unittest.TestCase):
                    # `--auto` (the SessionEnd hook, launchd) could be holding on the very machine
                    # running this suite.
                    PLX_GC_LOG=str(root / "gc.log"), PLX_GC_LOCK_DIR=str(root / "gc.lock"),
-                   PLX_GC_TMP_ROOTS=str(tmproot), TMPDIR=str(scratch))
+                   PLX_GC_TMP_ROOTS=str(tmproot), TMPDIR=str(scratch),
+                   # The cold store is opt-in and read from a per-user file: a fixture never reads the owner's.
+                   # The file named here does not exist until a test that wants a cold store writes it.
+                   PLX_COLD_STORE_CONFIG=str(root / "cold-store.conf"),
+                   PLX_TV_CONFIG_DIR=str(root / "no-tv-config"))
         for key in ("PLX_GC_TEST_NOW", "PLX_GC_TEST_FREE_KIB", "PLX_GC_IDLE_MIN", "PLX_GC_MIN_FREE_GIB"):
             env.pop(key, None)
         subprocess.run(["git", "init", "-q", str(repo)], env=env, check=True)
@@ -797,6 +801,292 @@ class BuildGcTests(unittest.TestCase):
         log = Path(env["PLX_GC_LOG"]).read_text()
         self.assertLess(log.index("evict: rung 4 tree"), log.index("evict: rung 6 incremental"), log)
 
+    def normalized(self, fixture, result):
+        """What an `--auto` run printed and logged, with the fixture's own paths, the log's timestamps and the
+        sizes (a filesystem's block size) taken out: the rest is the script's own words."""
+        repo, env, _, _ = fixture
+        root = str(repo.parent)
+        log = Path(env["PLX_GC_LOG"])
+        lines = result.stdout.splitlines() + ["-- stderr --"] + result.stderr.splitlines() + ["-- log --"]
+        lines += [re.sub(r"^\S+ ", "", line) for line in (log.read_text().splitlines() if log.exists() else [])]
+        out = []
+        for line in lines:
+            line = line.replace(root, "<R>")
+            line = re.sub(r"^free now: .*", "free now: <DF>", line)               # the real `df`, never the stub
+            line = re.sub(r"\b(removed|would remove) +~?[\d.]+[BKMG]\b", r"\1 <SIZE>", line)
+            line = re.sub(r"~[\d.]+[BKMG]\b", "~<SIZE>", line)
+            out.append(line)
+        return "\n".join(out)
+
+    # Captured from `--auto` before the cold store existed (the two runs below, in one fixture): the words, the
+    # order, the log. Only the fixture's paths, the sizes and the real `df` lines are normalized (`normalized`).
+    GOLDEN_ABOVE_THRESHOLD = """\
+== auto: planner-ordered reclaim (threshold 1 GiB free, lane idle guard 60m) ==
+== external lane target dirs whose worktree is gone ==
+  removed <SIZE>  <R>/fleet/absent-lane/target
+
+free now: <DF>
+auto: free space already above threshold — worktrees and the planner pass skipped
+auto: 953.7G free now
+-- stderr --
+-- log --
+start free=953.7G threshold=1GiB idle=60m dry=0
+orphans: reclaimed=1 free 953.7G->953.7G
+end free=953.7G"""
+    GOLDEN_BELOW_THRESHOLD = """\
+== auto: planner-ordered reclaim (threshold 12 GiB free, lane idle guard 30m) ==
+== external lane target dirs whose worktree is gone ==
+
+free now: <DF>
+== finished linked worktrees (clean, unlocked, already on origin/main (the local main without an origin); main and the running checkout are never touched) ==
+  main      <R>/repo  (main)
+  dirty     <R>/lane0  (lane0)
+  dirty     <R>/lane1  (lane1)
+
+free now: <DF>
+== evict: the planner's order, each path re-checked against the live machine first ==
+  removed <SIZE>  <R>/lane0/rust-modules/target/debug/incremental  (rung 2 incremental, from lane0)
+  removed <SIZE>  <R>/lane1/rust-modules/target/debug/incremental  (rung 2 incremental, from lane1)
+  removed <SIZE>  <R>/lane0/rust-modules/target  (rung 4 tree, from lane0)
+  removed <SIZE>  <R>/lane1/rust-modules/target  (rung 4 tree, from lane1)
+== evict: the --stale sweep, at its rung-5 slot ==
+== stale per-hash cargo artifacts in lanes and external fleet trees (kept: newest hash per crate/kind, plus anything under 24h old) ==
+== stale per-hash cargo artifacts in the MAIN checkout (age only, never the newest hash per crate) ==
+
+free now: <DF>
+evict: 4 removed (~<SIZE> by estimate), 0 skipped, 0 refused
+settle: ok: 10.0 GiB free covers the build's 0.0 GiB plus the 3.0 GiB reserve
+
+free now: <DF>
+auto: 10.0G free now
+-- stderr --
+-- log --
+start free=10.0G threshold=12GiB idle=30m dry=0
+orphans: reclaimed=0 free 10.0G->10.0G
+worktrees (idle >= 30m): reclaimed=0 free 10.0G->10.0G
+evict: rung 2 incremental freed ~<SIZE> from lane0: <R>/lane0/rust-modules/target/debug/incremental
+evict: rung 2 incremental freed ~<SIZE> from lane1: <R>/lane1/rust-modules/target/debug/incremental
+evict: rung 4 tree freed ~<SIZE> from lane0: <R>/lane0/rust-modules/target
+evict: rung 4 tree freed ~<SIZE> from lane1: <R>/lane1/rust-modules/target
+evict: --stale sweep at rung 5 (0 hash group(s))
+evict (planner order): reclaimed=4 free 10.0G->10.0G
+end free=10.0G"""
+
+    def test_an_unconfigured_auto_run_prints_and_logs_exactly_what_it_did_before_the_cold_store(self):
+        # The cold store is opt-in. Without its config file `--auto` must be the run it was: the same lines in the
+        # same order, no new stage, no new log line, and nothing created under the cache.
+        fixture, roots = self.auto_lanes()
+        repo, env, _, _ = fixture
+        above = self.run_auto(fixture, extra_env={"PLX_GC_TEST_FREE_KIB": "999999999", "PLX_GC_MIN_FREE_GIB": "1"})
+        self.assertEqual(above.returncode, 0, above.stderr)
+        self.assertEqual(self.normalized(fixture, above), self.GOLDEN_ABOVE_THRESHOLD)
+        Path(env["PLX_GC_LOG"]).unlink()
+        below = self.run_auto(fixture, extra_env={
+            "PLX_GC_TEST_FREE_KIB": str(10 << 20), "PLX_GC_MIN_FREE_GIB": "12", "PLX_GC_IDLE_MIN": "30"})
+        self.assertEqual(below.returncode, 0, below.stderr)
+        self.assertEqual(self.normalized(fixture, below), self.GOLDEN_BELOW_THRESHOLD)
+        self.assertFalse((Path(env["PLX_BUILD_CACHE"]) / "cold-store").exists())
+
+    # --- the cold store: `--auto`'s park-ahead stage and `--park` ------------------------------------------------
+    # Two volumes are faked: the copy of cold-store.py that runs next to the script under test gets three
+    # functions appended (another device for anything under das/, a `ditto` that exists, a plain tree copy), so
+    # the real stage, the real planner, the real probes and the real store run against disposable directories.
+    COLD_STUB = '''
+
+# ---- appended by ci/test_build_gc.py: two volumes, and no ditto needed ----
+_real_device_of = device_of
+
+
+def device_of(path):
+    return 2 if norm(path).startswith(%r) else _real_device_of(path)
+
+
+def which_ditto():
+    return "/usr/bin/ditto"
+
+
+def copy_tree(src, dst):
+    shutil.copytree(src, dst, symlinks=True)
+'''
+
+    def cold_fixture(self, lanes=2, age=2 * 3600, config="park_idle_min=30\n"):
+        """Idle lanes (each with a commit of its own, so none reads as merged) plus a cold store: config, a
+        das/ volume and the stubbed cold-store.py. Returns (fixture, lane roots, the cold root)."""
+        fixture, roots = self.evict_fixture(lanes=lanes)
+        repo, env, _, _ = fixture
+        for wt in roots:
+            (wt / ("%s.txt" % wt.name)).write_text("work\n")
+            subprocess.run(["git", "-C", str(wt), "add", "%s.txt" % wt.name], env=env, check=True)
+            subprocess.run(["git", "-C", str(wt), "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m",
+                            "work"], env=env, check=True)
+        for wt in roots:
+            self.age(wt, age)
+        self.age(repo / "rust-modules/target", age)
+        das = repo.parent / "das"
+        cold_root = das / "cold"
+        cold_root.mkdir(parents=True)
+        stub = self.COLD_STUB % str(das.resolve())
+        (repo / "tools/cold-store.py").write_text((ROOT / "tools/cold-store.py").read_text() + stub)
+        Path(env["PLX_COLD_STORE_CONFIG"]).write_text(
+            "root=%s\nmin_free_gib=0\npark_below_gib=40\n%s" % (cold_root, config))
+        return fixture, roots, cold_root
+
+    PARK_ENV = {"PLX_GC_TEST_FREE_KIB": str(30 << 20), "PLX_GC_MIN_FREE_GIB": "20", "PLX_GC_IDLE_MIN": "30"}
+
+    def stable_snapshot(self, fixture):
+        """The fixture's files and bytes, less what a read-only run legitimately refreshes: git's own files
+        (`status` rewrites an index) and the auto log."""
+        snap = self.snapshot_tree(fixture[0].parent)
+        return {k: v for k, v in snap.items() if ".git/" not in k + "/" and k != "gc.log" and not k.endswith("/.git")}
+
+    def parked_ids(self, fixture):
+        index = Path(fixture[1]["PLX_BUILD_CACHE"]) / "cold-store/index"
+        return sorted(p.name for p in index.glob("*.json")) if index.is_dir() else []
+
+    def test_auto_parks_idle_trees_when_free_space_is_below_park_below_gib_though_above_the_comfort_line(self):
+        fixture, roots, cold_root = self.cold_fixture()
+        repo, env, sentinels, _ = fixture
+        result = self.run_auto(fixture, extra_env=self.PARK_ENV)
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, out)
+        for wt in roots:
+            self.assertFalse((wt / "rust-modules/target").exists(), "an idle lane's tree was not parked: " + out)
+        self.assertEqual(len(self.parked_ids(fixture)), 2, out)
+        for wt in roots:
+            copy = cold_root / "trees" / str(wt / "rust-modules/target").replace("%", "%25").replace("/", "%2F")
+            self.assertTrue((copy / "sentinel").is_file(), "the cold copy is missing %s: %s" % (copy, out))
+        self.assertTrue(sentinels[0].exists(), "the main checkout's tree must never be parked: " + out)
+        self.assertIn("already above threshold", out, "the early exit still skips worktrees and the planner")
+        log = Path(env["PLX_GC_LOG"]).read_text()
+        self.assertRegex(log, r"park: parked=2 free ")
+        self.assertLess(log.index("orphans:"), log.index("park:"), log)
+        self.assertNotIn("worktrees (idle", log)
+        self.assertFalse(Path(env["PLX_GC_LOCK_DIR"]).exists(), "the lock must be released at the end")
+
+    def test_auto_runs_the_park_stage_between_orphans_and_worktrees_when_below_the_comfort_line_too(self):
+        fixture, roots, _ = self.cold_fixture()
+        env = dict(self.PARK_ENV, PLX_GC_TEST_FREE_KIB=str(10 << 20), PLX_GC_MIN_FREE_GIB="12")
+        result = self.run_auto(fixture, extra_env=env)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        log = Path(fixture[1]["PLX_GC_LOG"]).read_text()
+        order = [m for m in ("orphans:", "park:", "worktrees (idle >= 30m):", "evict (planner order):") if m in log]
+        self.assertEqual(order, ["orphans:", "park:", "worktrees (idle >= 30m):", "evict (planner order):"], log)
+        self.assertEqual(len(self.parked_ids(fixture)), 2, log)
+
+    def test_auto_leaves_a_live_a_young_and_a_main_tree_where_they_are(self):
+        import fcntl
+        fixture, roots, _ = self.cold_fixture(lanes=4)
+        repo, env, sentinels, _ = fixture
+        live, young, idle_a, idle_b = roots
+        busy = live / "rust-modules/target/debug/.cargo-lock"
+        busy.write_text("")
+        (young / "rust-modules/target/just-built").write_text("now\n")           # written seconds ago
+        (repo / "rust-modules/target-sim").mkdir()
+        self.age(repo / "rust-modules/target-sim", 5 * 3600)
+        seed = Path(env["PLX_BUILD_CACHE"]) / "cargo-seed/target"
+        seed.mkdir(parents=True)
+        (seed / "payload").write_text("third-party output\n")
+        fd = os.open(busy, os.O_RDWR)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)             # a cargo is building in the live lane
+            result = self.run_auto(fixture, extra_env=self.PARK_ENV)
+        finally:
+            os.close(fd)
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, out)
+        self.assertTrue((live / "rust-modules/target").is_dir(), "parked a tree under a held cargo lock: " + out)
+        self.assertTrue((young / "rust-modules/target").is_dir(), "parked a tree built seconds ago: " + out)
+        for wt in (idle_a, idle_b):
+            self.assertFalse((wt / "rust-modules/target").exists(), "an idle lane's tree stayed: " + out)
+        self.assertTrue(sentinels[0].exists() and (repo / "rust-modules/target-sim").is_dir(),
+                        "the main checkout's trees must never be parked: " + out)
+        self.assertTrue((seed / "payload").exists(), "the cargo seed must never be parked: " + out)
+        self.assertEqual(len(self.parked_ids(fixture)), 2, out)
+
+    def test_auto_does_not_park_a_lane_edited_in_the_idle_window_even_when_its_tree_is_old(self):
+        fixture, roots, _ = self.cold_fixture(lanes=2)
+        (roots[0] / "src").mkdir()
+        (roots[0] / "src/new.rs").write_text("fn main() {}\n")                   # an agent mid-edit, no build yet
+        result = self.run_auto(fixture, extra_env=self.PARK_ENV)
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, out)
+        self.assertTrue((roots[0] / "rust-modules/target").is_dir(), out)
+        self.assertFalse((roots[1] / "rust-modules/target").exists(), out)
+        self.assertRegex(out, r"kept .*lane0")
+
+    def test_auto_with_room_above_park_below_gib_runs_no_park_stage_at_all(self):
+        fixture, roots, _ = self.cold_fixture()
+        result = self.run_auto(fixture, extra_env=dict(self.PARK_ENV, PLX_GC_TEST_FREE_KIB=str(60 << 20)))
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, out)
+        self.assertNotIn("park", out.replace("park_", ""))
+        self.assertNotIn("park:", Path(fixture[1]["PLX_GC_LOG"]).read_text())
+        self.assertTrue(all((wt / "rust-modules/target").is_dir() for wt in roots))
+        self.assertEqual(self.parked_ids(fixture), [])
+
+    def test_auto_does_not_start_a_tree_while_a_preflight_waits_for_the_lock_and_ends_without_it(self):
+        fixture, roots, _ = self.cold_fixture()
+        repo, env, _, _ = fixture
+        flag = Path(env["PLX_GC_LOCK_DIR"] + ".waiting.%d" % os.getpid())          # this test process is "the preflight"
+        flag.write_text("%d\n" % os.getpid())
+        result = self.run_auto(fixture, extra_env=self.PARK_ENV)
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, out)
+        self.assertTrue(all((wt / "rust-modules/target").is_dir() for wt in roots), out)
+        self.assertFalse(Path(env["PLX_GC_LOCK_DIR"]).exists(), "the lock must be free for the waiter: " + out)
+        log = Path(env["PLX_GC_LOG"]).read_text()
+        self.assertIn("preflight is waiting", log)
+        self.assertNotIn("worktrees (idle", log, "an auto run that handed the lock over goes no further")
+
+    def test_auto_dry_run_previews_the_parks_and_changes_nothing(self):
+        fixture, roots, cold_root = self.cold_fixture()
+        repo, env, _, _ = fixture
+        before = self.stable_snapshot(fixture)
+        result = self.run_auto(fixture, "-n", extra_env=self.PARK_ENV)
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, out)
+        self.assertRegex(out, r"would park +\S+ +\S+lane0/rust-modules/target")
+        self.assertEqual(before, self.stable_snapshot(fixture), "-n changed something")
+        self.assertFalse(Path(env["PLX_GC_LOCK_DIR"]).exists())
+
+    def test_park_by_hand_parks_idle_trees_whatever_the_free_space_and_dry_run_changes_nothing(self):
+        fixture, roots, _ = self.cold_fixture()
+        repo, env, _, _ = fixture
+        plenty = dict(env, PLX_GC_TEST_FREE_KIB=str(500 << 20), PLX_GC_IDLE_MIN="30")
+        before = self.stable_snapshot(fixture)
+        dry = run_guarded(["sh", "tools/build-gc.sh", "--park", "-n"], repo, plenty)
+        self.assertEqual(dry.returncode, 0, dry.stdout + dry.stderr)
+        self.assertRegex(dry.stdout, r"would park")
+        self.assertEqual(before, self.stable_snapshot(fixture), "--park -n changed something")
+        self.assertEqual(self.parked_ids(fixture), [])
+        real = run_guarded(["sh", "tools/build-gc.sh", "--park"], repo, plenty)
+        self.assertEqual(real.returncode, 0, real.stdout + real.stderr)
+        self.assertEqual(len(self.parked_ids(fixture)), 2, real.stdout + real.stderr)
+        self.assertFalse(Path(env["PLX_GC_LOCK_DIR"]).exists())
+
+    def test_park_by_hand_without_a_cold_store_says_so_and_does_nothing(self):
+        fixture, roots = self.evict_fixture()
+        repo, env, _, _ = fixture
+        result = run_guarded(["sh", "tools/build-gc.sh", "--park"], repo, dict(env, PLX_GC_TEST_FREE_KIB=str(1 << 20)))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("not configured", result.stdout)
+        self.assertTrue(all((wt / "rust-modules/target").is_dir() for wt in roots))
+        self.assertFalse((Path(env["PLX_BUILD_CACHE"]) / "cold-store").exists())
+
+    def test_the_park_stage_prunes_a_parked_copy_of_a_lane_that_is_gone(self):
+        fixture, roots, cold_root = self.cold_fixture(lanes=1)
+        repo, env, _, _ = fixture
+        first = self.run_auto(fixture, extra_env=self.PARK_ENV)
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        self.assertEqual(len(self.parked_ids(fixture)), 1)
+        shutil.rmtree(roots[0])
+        subprocess.run(["git", "-C", str(repo), "worktree", "prune"], env=env, check=True)
+        second = self.run_auto(fixture, extra_env=self.PARK_ENV)
+        out = second.stdout + second.stderr
+        self.assertEqual(second.returncode, 0, out)
+        self.assertEqual(self.parked_ids(fixture), [], out)
+        self.assertRegex(out, r"dropped .*lane is gone")
+
     def test_auto_idle_guard_spares_a_recently_touched_lane(self):
         # The DEFAULT idle window (60 minutes): a lane `evict_fixture` just built in has output written seconds
         # ago, so the planner does not offer it and nothing evicts it, however far below threshold the disk is.
@@ -1145,7 +1435,7 @@ class BuildGcTests(unittest.TestCase):
     def with_planner(self, fixture):
         """The planner and the tools it loads, next to the copy of build-gc.sh under test."""
         repo = fixture[0]
-        for name in ("disk-budget.py", "cargo-seed.py", "check-lock.py"):
+        for name in ("disk-budget.py", "cargo-seed.py", "check-lock.py", "cold-store.py"):
             shutil.copy(ROOT / "tools" / name, repo / "tools" / name)
         return fixture
 

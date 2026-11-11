@@ -504,6 +504,33 @@ class Preflight(Repo):
         self.assertIn("reclaim", out.stderr)
         self.assertTrue(os.path.isdir(os.path.join(self.fleet, "gone", "target")))
 
+    def flags(self):
+        return sorted(n for n in os.listdir(os.path.dirname(self.lock)) if ".waiting." in n)
+
+    def test_a_preflight_that_waits_flags_itself_beside_the_lock_and_withdraws_the_flag(self):
+        # The cold store's park pass holds the lock for minutes and reads this flag between trees (docs/disk-budget.md,
+        # "The cold store"): without it a build would wait out its --wait-secs behind a copy.
+        self.hold_lock()
+        cargo_tree(os.path.join(self.fleet, "gone", "target"))
+        waiter = subprocess.Popen([sys.executable, os.path.join(self.main, "tools", "disk-budget.py"), "preflight",
+                                   "--tree", os.path.join(self.main, "rust-modules", "target"), "--wait-secs", "4"],
+                                  cwd=self.main, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                  env=self.environment(free_gib=2))
+        flag = "%s.waiting.%d" % (self.lock, waiter.pid)
+        deadline = time.monotonic() + 60
+        while not os.path.exists(flag) and waiter.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.1)
+        seen = os.path.exists(flag)
+        waiter.communicate(timeout=90)
+        self.assertTrue(seen, "a waiting preflight left no flag beside the lock")
+        self.assertEqual(self.flags(), [], "the flag outlived the wait")
+
+    def test_a_preflight_that_does_not_wait_leaves_no_flag(self):
+        self.hold_lock()
+        out = self.run_preflight(free_gib=10, args=("--wait-secs", "30"))        # fits: it never waits
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(self.flags(), [])
+
     def test_the_lock_dropped_during_the_wait_ends_it(self):
         proc = self.hold_lock()
         waiter = subprocess.Popen([sys.executable, os.path.join(self.main, "tools", "disk-budget.py"), "preflight",

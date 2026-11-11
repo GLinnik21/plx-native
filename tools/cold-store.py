@@ -365,10 +365,11 @@ class ColdStore:
         return not (len(parts) > 2 and parts[1] == "Volumes" and not os.path.ismount(os.sep.join(parts[:3])))
 
     # --- is the cold volume usable ---
-    def available(self, build_dev: int) -> Optional[str]:
+    def available(self, build_dev: int, write_probe: bool = True) -> Optional[str]:
         """The reason the cold volume cannot be used for a tree on device `build_dev`, or None. Cheap checks first;
         the free-space and probe-write checks touch the cold volume, so only --auto and an unpark that already
-        found an index record call this."""
+        found an index record call this. `write_probe=False` (a dry run) reads only: it proves the volume is
+        mounted and has room, but creates nothing on it, so it cannot prove the volume is writable."""
         if self.cfg is None:
             return self.off_reason
         if which_ditto() is None:
@@ -385,6 +386,8 @@ class ColdStore:
             return "cannot read the cold volume: %s" % exc
         if free < self.cfg.min_free_gib * GIB:
             return "the cold volume has %s free, under min_free_gib=%g" % (human(free), self.cfg.min_free_gib)
+        if not write_probe:
+            return None
         probe = os.path.join(root, ".probe.%d" % os.getpid())
         try:
             os.makedirs(root, exist_ok=True)
@@ -451,12 +454,13 @@ class ColdStore:
         if not os.path.isdir(origin) or os.path.islink(origin):
             return Outcome(REFUSED, "not a directory (or a symlink): %s" % origin)
         build_dev = device_of(origin)
-        why = self.available(build_dev)
+        why = self.available(build_dev, write_probe=not dry_run)
         if why:
             return Outcome(REFUSED, why)
         parking_dir = os.path.join(self.ssd, "parking")
-        os.makedirs(parking_dir, exist_ok=True)
-        if device_of(parking_dir) != build_dev:
+        if not dry_run:
+            os.makedirs(parking_dir, exist_ok=True)      # a dry run creates nothing, on either volume
+        if device_of(nearest_existing(parking_dir)) != build_dev:
             return Outcome(REFUSED, "the build cache (%s) is on another volume than the tree: a rename cannot park it"
                            % parking_dir)
         ident = escape(origin)
@@ -802,12 +806,14 @@ def head_of(checkout: str) -> str:
 
 def disk_budget_probe(store: ColdStore, kind: str, checkout: str) -> Callable[[str], Optional[str]]:
     """The liveness callback the CLI hands park(): disk-budget.py's own `probe` (the executor's checks), with the
-    configured idle time. W3 passes its own with the planner's facts."""
+    configured idle time for a /tmp tree and for the lane that owns a lane or fleet tree. `disk-budget.py park`
+    (build-gc's `--auto` and `--park`) calls `probe_tree` in process instead."""
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "disk-budget.py")
 
     def live(path: str) -> Optional[str]:
+        idle = str(int(store.cfg.park_idle_min * 60))
         cmd = [sys.executable, script, "probe", "--tree", path, "--class", kind,
-               "--min-age-secs", str(int(store.cfg.park_idle_min * 60))]
+               "--min-age-secs", idle, "--lane-idle-secs", idle]
         if checkout:
             cmd += ["--checkout", checkout]
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=300)

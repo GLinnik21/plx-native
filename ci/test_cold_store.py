@@ -396,6 +396,19 @@ class ParkGuards(Rig):
         self.assertEqual(snap(path), before)
         self.assertEqual(self.store().records(), [])
 
+    def test_a_dry_run_creates_no_file_or_directory_on_either_volume(self):
+        # `build-gc.sh --park -n` promises to change nothing: not the SSD's parking directory, not the cold root,
+        # not a probe file on the cold volume (which a real park writes to prove the volume is writable).
+        path = self.tree()
+        shutil.rmtree(self.volume)
+        os.makedirs(self.volume)                           # the cold volume is mounted but empty: no root yet
+        before = walk_all(self.tmp)
+        out = self.park(self.store(), path, dry_run=True)
+        self.assertEqual(out.status, cold.DRY_RUN, out)
+        self.assertEqual(walk_all(self.tmp), before)
+        self.assertFalse(os.path.exists(self.cache))
+        self.assertIsNone(self.store().available(1, write_probe=False))
+
     def test_refusals_leave_the_tree_alone(self):
         path = self.tree()
         before = snap(path)
