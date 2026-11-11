@@ -81,7 +81,11 @@ pub fn product_binding(display_mode: i32, plane: plx_platform::tv::plane::PlaneF
 ///   - (c) controls: the probe's `drive` tokens (`pause=froze` on either `pause_basis`, `resume=sent`
 ///     with `resume_from=` at or after the paused position minus 1000 ms, `seek=hit`, and `audio=ok`
 ///     or an `audio_at_load=`) AND the product run's pause, seek and audio doing what the viewer
-///     asked. A control the run showed failing and the route avoids is named in the row.
+///     asked. Two amendments, each named in the row that uses it. (1) A run made before the current
+///     grader may stand on the current grader's verdict on that run's recorded numbers, replayed in
+///     a unit test: the row names the test and says the run itself printed `pause=unconfirmed`.
+///     (2) A control the product run showed failing is acceptable only when the route now sends that
+///     case to Standard; the row names it, and the admission covers only the route as it now stands.
 ///
 /// One exception: a major with (a) but no tester run is admitted when BOTH neighbouring majors
 /// (`major - 1` and `major + 1`) are already admitted on tester evidence, and its own image shows
@@ -93,9 +97,13 @@ pub fn product_binding(display_mode: i32, plane: plx_platform::tv::plane::PlaneF
 pub const EXPORTED_STRATA: &[u32] = &[
     // webOS 5.6.2, LG OLED CX (build 5.6.2-21): `docs/uri-mode.md` Results row "webOS 5.6.2 (build
     // 5.6.2-21)", #1064. (a) the 5.5.0 and 5.6.2 images read `option.windowId`; (b) a product run on a
-    // debug build played a placed, correctly letterboxed picture with sound; (c) the drive probe's
-    // controls and the product run's pause and seek answered, and the audio-track switch, which did
-    // not, is routed to Standard by the route planner (#1314).
+    // debug build played a placed, correctly letterboxed picture with sound; (c) the drive probe
+    // printed pause=unconfirmed; replaying its numbers through the current grader gives froze
+    // (#1314's tests: `uri_drive_pause_event_and_resume_position_confirm_freeze_without_samples`
+    // asserts pause=froze for the 2439 -> 2641 replay, and
+    // `drive_binds_like_load_then_pauses_resumes_seeks_and_selects_tracks` pins
+    // pause_basis=paused_event_and_resume), seek hit, audio ok; the product run's pause and seek
+    // answered; its audio-track switch failed and is routed to Standard (#1314).
     5,
 ];
 
