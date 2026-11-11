@@ -273,7 +273,8 @@ pub struct PlaybackSession {
     /// that decision is made from the same numbers `build_stream` used rather than from a guess.
     cur_src: (i64, i64, i64),
     /// Whole Part transport bitrate, including audio. Auto's progressive watchdog compares the
-    /// live socket against this rather than `cur_src.0` (video only), because the wire has to carry
+    /// live socket against this rather than `cur_src.0` (the video stream's rate for a default version measured
+    /// from the detail, a fetched version's whole-file rate otherwise), because the wire has to carry
     /// both lanes. `0` means PMS did not provide one and disables the watchdog fail-safely.
     cur_transport_kbps: i64,
     /// **Can this television decode the SOURCE video stream as it stands** — `video_direct_plays`

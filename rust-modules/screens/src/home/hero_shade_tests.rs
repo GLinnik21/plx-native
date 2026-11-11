@@ -83,3 +83,89 @@ fn the_home_shade_is_anchored_to_the_edges_and_joins_without_a_dark_band() {
     assert_eq!(shade.alpha(96.0, 1050.0), shade.alpha(SCR_W, 1050.0));
     assert_eq!(home_shade(shelf_fade(SHELF_TOP, 0.0), 0.0).alpha(96.0, 600.0), 0.0);
 }
+
+/// **The pager is part of the page it belongs to and rides that page's slide.** (Owner, v0.10.0 rc1:
+/// "page indicator still above the page — I wanted it to be in the page and scroll with the page
+/// instead of jumping".) Both pages of a flip are drawn at their own slide offset, hero content and
+/// action row alike; the dots and chevron were drawn once, untranslated, so they stayed fixed while
+/// the page slid under them and then jumped to the next hero's row.
+#[test]
+fn the_pager_slides_with_the_page_it_belongs_to() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 3, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let view = snapshot.view();
+    let mut s = screen(view);
+    let chevrons = |s: &HomeScreen| -> Vec<Rect> {
+        let env = s.env(0.0);
+        let hero = s.selected_hero(view).unwrap();
+        plx_ui::draw_census::capture_icons(|| {
+            s.draw_pagers(view, hero.item, &env, Painter::recording(), &plx_ui::fixture::FixtureMeasure)
+        })
+        .into_iter()
+        .filter(|(icon, _)| *icon == Icon::Chevron)
+        .map(|(_, r)| r)
+        .collect()
+    };
+    let rest = chevrons(&s);
+    assert_eq!(rest.len(), 1, "a settled billboard draws one pager");
+    assert!(s.flip(view, 1));
+    for slide in [0.25, 0.5, 0.75] {
+        s.hero_slide.jump(slide);
+        let (out_x, in_x) = s.slide_offsets().unwrap();
+        let mut got: Vec<f32> = chevrons(&s).iter().map(|r| r.x - rest[0].x).collect();
+        got.sort_by(f32::total_cmp);
+        let mut want = [out_x, in_x];
+        want.sort_by(f32::total_cmp);
+        assert_eq!(got.len(), 2, "slide {slide}: each page draws its own pager");
+        for (got, want) in got.iter().zip(want) {
+            assert!((got - want).abs() < 0.5, "slide {slide}: a pager stands at its page's offset {want}, got {got}");
+        }
+    }
+}
+
+/// **The hero controls' tint follows the incoming page, in step with the ground.** (Owner, v0.10.0
+/// rc1: "when page flips play button tint falls behind the actual page color and has the tint of the
+/// previous page".) Three parts: the row is read on the page that is arriving, where it is drawn,
+/// rather than only once the slide has come to rest; the key dissolves toward a new reading instead
+/// of popping to it; and the page sliding away keeps its own key instead of following the new one.
+#[test]
+fn the_hero_row_is_read_on_the_arriving_page_not_after_the_slide() {
+    let row = |x: f32| Rect::new(x, 640.0, 470.0, 116.0);
+    assert!(may_read_hero_ground(true, row(96.0), 1.0), "a settled page");
+    assert!(may_read_hero_ground(true, row(96.0 + 0.5 * SCR_W), 1.0), "an arriving page, wholly on screen, is read where it is drawn");
+    assert!(!may_read_hero_ground(true, row(SCR_W - 200.0), 1.0), "…not while its row is still partly off screen");
+    assert!(!may_read_hero_ground(true, row(96.0 - 0.9 * SCR_W), 1.0));
+    assert!(!may_read_hero_ground(false, row(96.0 - 0.5 * SCR_W), 1.0), "a page leaving reads nothing");
+    assert!(!may_read_hero_ground(true, row(96.0), 0.5), "a route in flight reads nothing");
+}
+
+#[test]
+fn the_hero_key_dissolves_to_a_new_reading_and_a_leaving_page_keeps_its_own() {
+    let _guard = plx_base::testlock::serial();
+    let (old, new) = ([0.10, 0.20, 0.60], [0.50, 0.20, 0.10]);
+    let mut t = HeroTint::default();
+    assert!(t.key().is_none() && t.for_page(true).is_none(), "nothing read yet");
+    t.read.set(Some(old));
+    t.step(0.016);
+    assert_eq!(t.key(), Some(old), "the first reading is taken whole");
+    // a flip: the page that leaves keeps `old`; a new reading lands for the page that arrives
+    t.leave();
+    t.read.set(Some(new));
+    let mut last = old[0];
+    for frame in 0..6 {
+        t.step(0.016);
+        let key = t.key().unwrap();
+        assert!(key[0] > last && key[0] < new[0], "frame {frame}: the live key moves toward the new reading, never popping to it ({key:?})");
+        last = key[0];
+        assert_eq!(t.for_page(false), Some(old), "frame {frame}: the page sliding away keeps the key it left with");
+    }
+    for _ in 0..240 {
+        t.step(0.016);
+    }
+    assert_eq!(t.key(), Some(new), "it lands on the reading");
+    t.arrived();
+    assert_eq!(t.for_page(false), Some(new), "with no page leaving, every page reads the one key");
+}

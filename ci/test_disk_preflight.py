@@ -21,8 +21,14 @@ temp directory, `PLX_GC_TEST_FREE_KIB` standing in for the disk, and `lsof`/`pgr
 * below the reserve with nothing it may evict it refuses (exit 1, with the message that says why);
 * below comfort with idle trees about it evicts them, never the tree it is building or the current checkout's other
   trees (bar their incremental dirs at rung 6), and goes on;
-* `PLX_DISK_BUDGET_DONE=1` (a recursive make) and `PLX_MIN_FREE_MB=0` (the old escape hatch) are no-ops;
-* it takes build-gc's auto lock; on a LIVE holder it waits a bounded time and makes no plan while that runs
+* `PLX_DISK_BUDGET_DONE=1` (a recursive make) and `PLX_MIN_FREE_MB=0` (the old escape hatch) are no-ops, bar
+  one thing that comes first: a tree that is ABSENT with a parked copy in the cold store is unparked (never
+  failing the build, never loading `cold-store.py` for a tree that is there, for no entry or with
+  `PLX_COLD_STORE=off`): the cold store's own no-gos (no config, volume not mounted) end it before any lock is
+  waited for, build-gc's auto lock is held to CLAIM the parked copy and not across the copy, and a tree another
+  process is restoring is named, not copied again;
+* it takes build-gc's auto lock; on a LIVE holder it waits a bounded time (one `--wait-secs` for the whole
+  preflight, the unpark's wait included) and makes no plan while that runs
   (when the holder finishes or its lock goes stale it takes the lock over and plans; at the deadline it judges
   on free space alone);
 * it never plans a pretend emergency over the real trees.
@@ -30,6 +36,7 @@ temp directory, `PLX_GC_TEST_FREE_KIB` standing in for the disk, and `lsof`/`pgr
 Nothing here builds: `make -n` and `make -s print-*` only, and no cargo.
 """
 import contextlib
+import importlib.util
 import io
 import json
 import os
@@ -350,6 +357,404 @@ class Preflight(Repo):
         out = self.run_preflight(free_gib=0.001, PLX_MIN_FREE_MB="0")
         self.assertEqual((out.returncode, out.stderr), (0, ""))
 
+    # -- unpark: the cold store brings the tree back before anything else is decided -----------------------
+    # The copy of cold-store.py that runs next to the script under test gets a second "volume" (anything under
+    # das/), a plain tree copy and tripwires: a marker line when the module is loaded and when `unpark` runs
+    # (and whether build-gc's auto lock was held at that moment), a switch that makes the copy fail and one that
+    # makes `unpark` raise.
+    COLD_STUB = '''
+
+# ---- appended by ci/test_disk_preflight.py: another volume under das/, a tree copy, and tripwires ----
+_real_device_of = device_of
+
+
+def device_of(path):
+    return 2 if norm(path).startswith(%r) else _real_device_of(path)
+
+
+def which_ditto():
+    return "/usr/bin/ditto"
+
+
+def copy_tree(src, dst):
+    if os.environ.get("PLX_TEST_COLD_COPY_FAIL"):
+        raise OSError("the cold volume went away")
+    shutil.copytree(src, dst, symlinks=True)
+    suffix, _, secs = os.environ.get("PLX_TEST_COLD_COPY_SLOW", "").partition(":")     # "<id suffix>:<seconds>"
+    if suffix and src.endswith(suffix):
+        time.sleep(float(secs))             # the copy is on disk and the cold volume is still "busy"
+
+
+_marker = os.environ.get("PLX_TEST_COLD_MARKER")
+if _marker:
+    with open(_marker, "a") as _fh:
+        _fh.write("loaded\\n")
+
+_real_unpark = ColdStore.unpark
+_real_claim = ColdStore.claim
+
+
+def _note(what):
+    if _marker:
+        with open(_marker, "a") as _fh:
+            _fh.write("%%s lock=%%d\\n" %% (what, os.path.isdir(os.environ.get("PLX_GC_LOCK_DIR", ""))))
+
+
+def _claim(self, *args, **kwargs):
+    _note("claim")
+    return _real_claim(self, *args, **kwargs)
+
+
+def _unpark(self, *args, **kwargs):
+    _note("unpark")
+    if os.environ.get("PLX_TEST_COLD_RAISE"):
+        raise RuntimeError("boom")
+    return _real_unpark(self, *args, **kwargs)
+
+
+ColdStore.claim = _claim
+ColdStore.unpark = _unpark
+'''
+
+    def main_tree(self):
+        return os.path.join(self.main, "rust-modules", "target")
+
+    def cold_fixture(self, parked=True, config=""):
+        """A cold store the preflight can use: a config, a das/ "volume" and the stubbed cold-store.py in the
+        fixture checkout. With `parked` the main checkout's `rust-modules/target` has been parked (it is absent
+        and the SSD index holds its entry); without, the tree is absent and nothing is indexed."""
+        das = os.path.join(self.tmp, "das")
+        self.cold_root = os.path.join(das, "cold")
+        os.makedirs(self.cold_root)
+        self.cold_marker = os.path.join(self.tmp, "cold-loaded")
+        self.cold_module = os.path.join(self.main, "tools", "cold-store.py")
+        with open(os.path.join(ROOT, "tools", "cold-store.py")) as src, open(self.cold_module, "w") as dst:
+            dst.write(src.read() + self.COLD_STUB % das)
+        cfg = os.path.join(self.tmp, "cold-store.cfg")
+        with open(cfg, "w") as fh:
+            fh.write("root=%s\nmin_free_gib=0\n%s" % (self.cold_root, config))
+        self.env.update(PLX_COLD_STORE_CONFIG=cfg, PLX_TEST_COLD_MARKER=self.cold_marker)
+        self.cold_config = cfg
+        spec = importlib.util.spec_from_file_location("cold_stub", self.cold_module)
+        self.cold_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.cold_mod)
+        if parked:
+            self.park_fixture(self.main_tree())
+            self.assertEqual(len(self.parked_entries()), 1)
+
+    def park_fixture(self, tree):
+        """Build a cargo tree at `tree` and park it: it is absent afterwards and the SSD index holds its entry."""
+        cargo_tree(tree)
+        store = self.cold_mod.ColdStore({"PLX_BUILD_CACHE": self.cache, "PLX_COLD_STORE_CONFIG": self.cold_config,
+                                         "HOME": self.tmp}, log=lambda m: None)
+        out = store.park(tree, kind="lane", checkout=self.main, head="", live=None)
+        self.assertTrue(out.ok, out)
+        self.assertFalse(os.path.exists(tree), "the fixture's tree is still in place")
+
+    def claim_files(self):
+        index = os.path.join(self.cache, "cold-store", "index")
+        return sorted(n for n in os.listdir(index) if ".unparking." in n) if os.path.isdir(index) else []
+
+    def entry_path(self, tree):
+        return os.path.join(self.cache, "cold-store", "index", db.cold_index_name(tree) + ".json")
+
+    def foreign_claim(self, tree, pid):
+        """The state another process leaves while it restores `tree`: its index entry renamed to its pid's claim."""
+        os.rename(self.entry_path(tree), "%s.unparking.%d" % (self.entry_path(tree), pid))
+
+    def lines(self, out):
+        return [l for l in out.stderr.splitlines() if "cold-store:" in l]
+
+    def parked_entries(self):
+        index = os.path.join(self.cache, "cold-store", "index")
+        return sorted(os.listdir(index)) if os.path.isdir(index) else []
+
+    def cold_marker_text(self):
+        if not os.path.exists(self.cold_marker):
+            return ""
+        with open(self.cold_marker) as fh:
+            return fh.read()
+
+    def cold_loaded(self):
+        return "loaded" in self.cold_marker_text()
+
+    def assert_unparked(self, out):
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertRegex(out.stderr, r"cold-store: unpark [\d.]+ \w+ in [\d.]+ s: " + re.escape(self.main_tree()))
+        self.assertTrue(os.path.isfile(os.path.join(self.main_tree(), "CACHEDIR.TAG")), "the tree did not come back")
+        self.assertEqual(self.parked_entries(), [], "the index still lists a tree that is back")
+        text = self.cold_marker_text()
+        self.assertIn("claim lock=1", text, "the parked copy was claimed without build-gc's auto lock")
+        self.assertIn("unpark lock=0", text, "the copy ran with build-gc's auto lock held")
+        self.assertEqual(self.claim_files(), [], "a claim outlived the restore")
+        self.assertFalse(os.path.exists(self.lock), "the auto lock was not released")
+        self.assertEqual(self.flags(), [])
+
+    def assert_cold_tree_left_alone(self, out):
+        """The preflight went on as it would have with no cold store: the tree is still absent and still parked."""
+        self.assertFalse(os.path.exists(self.main_tree()), "a tree appeared")
+        self.assertEqual(len(self.parked_entries()), 1, "the parked copy was dropped")
+        self.assertFalse(os.path.exists(self.lock), "the auto lock was left behind")
+        self.assertEqual([n for n in os.listdir(os.path.dirname(self.main_tree())) if "unpark" in n], [],
+                         "a half-copied sibling was left beside the tree")
+
+    def test_an_absent_tree_with_a_parked_copy_is_claimed_under_the_auto_lock_and_copied_without_it(self):
+        self.cold_fixture()
+        self.assert_unparked(self.run_preflight(free_gib=40))
+
+    def test_it_unparks_even_with_the_recursive_marker_set(self):
+        # `make check`, `install` and `build-bench` run their children with PLX_DISK_BUDGET_DONE=1, and each child
+        # still has its own tree: the check sits before the marker's exit.
+        self.cold_fixture()
+        self.assert_unparked(self.run_preflight(free_gib=40, PLX_DISK_BUDGET_DONE="1"))
+
+    def test_it_unparks_even_with_a_zero_reserve(self):
+        self.cold_fixture()
+        self.assert_unparked(self.run_preflight(free_gib=40, PLX_MIN_FREE_MB="0"))
+
+    def test_it_unparks_on_the_full_path_too_and_goes_on_into_the_ordinary_decision(self):
+        # A build bigger than the free space takes the full path (the planner): the tree still comes back first,
+        # and the verdict is the one it would have been with no cold store.
+        self.cold_fixture()
+        args = ("--need-gib", "30")
+        off = self.run_preflight(free_gib=25, args=args, PLX_COLD_STORE="off")
+        self.assertFalse(os.path.exists(self.main_tree()))
+        on = self.run_preflight(free_gib=25, args=args)
+        self.assertEqual(on.returncode, off.returncode, on.stderr)
+        self.assertRegex(on.stderr, r"cold-store: unpark")
+        self.assertTrue(os.path.isfile(os.path.join(self.main_tree(), "CACHEDIR.TAG")))
+        self.assertEqual(self.parked_entries(), [])
+
+    def test_a_present_tree_never_loads_the_cold_store(self):
+        self.cold_fixture()
+        cargo_tree(self.main_tree())                    # a build recreated it: the parked copy is stale
+        for extra in ({}, {"PLX_DISK_BUDGET_DONE": "1"}, {"PLX_MIN_FREE_MB": "0"}):
+            out = self.run_preflight(free_gib=40, **extra)
+            self.assertEqual((out.returncode, out.stdout, out.stderr), (0, "", ""), extra)
+        self.assertFalse(self.cold_loaded(), "the cold store was loaded for a tree that is there")
+        self.assertEqual(len(self.parked_entries()), 1, "the stale record is prune's to drop, not the preflight's")
+
+    def test_an_absent_tree_with_no_index_entry_never_loads_the_cold_store(self):
+        self.cold_fixture(parked=False)
+        for extra in ({}, {"PLX_DISK_BUDGET_DONE": "1"}, {"PLX_MIN_FREE_MB": "0"}):
+            out = self.run_preflight(free_gib=40, **extra)
+            self.assertEqual((out.returncode, out.stdout, out.stderr), (0, "", ""), extra)
+        self.assertFalse(self.cold_loaded())
+
+    def test_the_off_switch_never_loads_the_cold_store(self):
+        self.cold_fixture()
+        for extra in ({}, {"PLX_DISK_BUDGET_DONE": "1"}):
+            out = self.run_preflight(free_gib=40, PLX_COLD_STORE="off", **extra)
+            self.assertEqual((out.returncode, out.stdout, out.stderr), (0, "", ""), extra)
+        self.assertFalse(self.cold_loaded())
+        self.assert_cold_tree_left_alone(out)
+
+    def test_a_declined_unpark_leaves_the_build_to_the_ordinary_decision(self):
+        self.cold_fixture(config="rebuild_secs_target=0\n")           # a rebuild is "free": nothing is worth copying
+        for free in (40, 2):
+            off = self.run_preflight(free_gib=free, PLX_COLD_STORE="off")
+            on = self.run_preflight(free_gib=free)
+            self.assertEqual(on.returncode, off.returncode, "the cold store changed the verdict at %s GiB: %s" % (free, on.stderr))
+            self.assertIn("cold-store:", on.stderr)
+            self.assertRegex(on.stderr, r"(?i)declined")
+            self.assertEqual(sum("cold-store:" in l for l in on.stderr.splitlines()), 1, on.stderr)
+            self.assert_cold_tree_left_alone(on)
+        self.assertEqual(off.returncode, 1, "the 2 GiB case should be the refusal it always was: " + off.stderr)
+
+    def test_a_failed_copy_prints_its_estimate_and_one_outcome_line_and_the_build_goes_on(self):
+        self.cold_fixture()
+        out = self.run_preflight(free_gib=40, PLX_TEST_COLD_COPY_FAIL="1")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        lines = [l for l in out.stderr.splitlines() if "cold-store:" in l]
+        self.assertEqual(len(lines), 2, out.stderr)
+        self.assertEqual(sum("(est " in l for l in lines), 1, out.stderr)
+        self.assertEqual(sum("not restored" in l for l in lines), 1, out.stderr)
+        self.assertRegex(out.stderr, r"unpark failed")
+        self.assert_cold_tree_left_alone(out)
+
+    def test_an_exception_in_the_cold_store_prints_one_line_and_the_build_goes_on(self):
+        self.cold_fixture()
+        for extra in ({}, {"PLX_DISK_BUDGET_DONE": "1"}):
+            out = self.run_preflight(free_gib=40, PLX_TEST_COLD_RAISE="1", **extra)
+            self.assertEqual(out.returncode, 0, out.stderr)
+            self.assertEqual(sum("cold-store:" in l for l in out.stderr.splitlines()), 1, out.stderr)
+            self.assertIn("RuntimeError", out.stderr)
+            self.assert_cold_tree_left_alone(out)
+
+    def test_a_cold_store_module_that_cannot_be_loaded_prints_one_line_and_the_build_goes_on(self):
+        self.cold_fixture()
+        with open(self.cold_module, "w") as fh:
+            fh.write("this is not python\n")
+        out = self.run_preflight(free_gib=40)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(sum("cold-store:" in l for l in out.stderr.splitlines()), 1, out.stderr)
+        self.assert_cold_tree_left_alone(out)
+
+    def test_a_held_auto_lock_is_waited_on_for_a_bounded_time_then_the_build_rebuilds_cold(self):
+        self.cold_fixture()
+        self.hold_lock()
+        started = time.monotonic()
+        out = self.run_preflight(free_gib=40, args=("--wait-secs", "2"))
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertGreaterEqual(time.monotonic() - started, 1.5, "did not wait for the holder")
+        self.assertEqual(sum("cold-store:" in l for l in out.stderr.splitlines()), 1, out.stderr)
+        self.assertFalse(os.path.exists(self.main_tree()))
+        self.assertEqual(len(self.parked_entries()), 1)
+        self.assertTrue(os.path.isdir(self.lock), "took over somebody else's lock")
+        self.assertEqual(self.flags(), [], "the waiting flag outlived the wait")
+        self.assertNotIn("claim", self.cold_marker_text(), "claimed without the lock")
+        self.assertNotIn("unpark", self.cold_marker_text(), "unparked without the lock")
+
+    def test_the_unpark_wait_and_the_ordinary_wait_spend_one_deadline(self):
+        # The lock is held throughout and the build does not fit: the unpark waits for it, then the ordinary decision
+        # would wait for it again. One --wait-secs is all a build spends on the lock, not one per stage.
+        self.cold_fixture()
+        self.hold_lock()
+        started = time.monotonic()
+        out = self.run_preflight(free_gib=2, args=("--wait-secs", "3"))
+        waited = time.monotonic() - started
+        self.assertEqual(out.returncode, 1, out.stderr)
+        self.assertIn("reclaim", out.stderr)
+        self.assertGreaterEqual(waited, 2.5, "did not wait for the holder")
+        self.assertLess(waited, 5.0, "the two lock waits each took the whole --wait-secs: %.1f s" % waited)
+        self.assertEqual(len(self.lines(out)), 1, out.stderr)
+        self.assertEqual(len(self.parked_entries()), 1)
+        self.assertEqual(self.flags(), [])
+
+    def assert_no_wait_no_lock_no_copy(self, out, waited, why):
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertLess(waited, 10, "waited for the lock although the cold store cannot be used")
+        lines = self.lines(out)
+        self.assertEqual(len(lines), 1, out.stderr)
+        self.assertIn(why, lines[0])
+        self.assertTrue(self.cold_loaded())
+        self.assertNotIn("claim", self.cold_marker_text(), "tried to claim a copy the cold store cannot reach")
+        self.assertFalse(os.path.exists(self.main_tree()))
+        self.assertEqual(len(self.parked_entries()), 1, "the parked copy was dropped")
+        self.assertTrue(os.path.isdir(self.lock), "took over somebody else's lock")
+        self.assertEqual(self.flags(), [], "announced itself as a waiter for a lock it never needed")
+
+    def test_a_cold_store_whose_config_was_removed_is_one_line_and_waits_for_nothing(self):
+        self.cold_fixture()
+        os.unlink(self.cold_config)
+        self.hold_lock()
+        started = time.monotonic()
+        out = self.run_preflight(free_gib=40, args=("--wait-secs", "30"))
+        self.assert_no_wait_no_lock_no_copy(out, time.monotonic() - started, "not configured")
+
+    def test_a_cold_volume_that_is_not_mounted_is_one_line_and_waits_for_nothing(self):
+        self.cold_fixture()
+        with open(self.cold_config, "w") as fh:                   # the parked copy's disk is not in the machine
+            fh.write("root=/Volumes/plx-test-%s/cold\nmin_free_gib=0\n" % os.path.basename(self.tmp))
+        self.hold_lock()
+        started = time.monotonic()
+        out = self.run_preflight(free_gib=40, args=("--wait-secs", "30"))
+        self.assert_no_wait_no_lock_no_copy(out, time.monotonic() - started, "not mounted")
+
+    def test_two_trees_restore_at_once_and_the_copy_does_not_hold_the_global_lock(self):
+        # `make check` runs two branches with different trees, each with PLX_DISK_BUDGET_DONE=1. The first one's copy
+        # is slow; the second must neither wait for it nor give up on it: only the CLAIM runs under the lock.
+        self.cold_fixture()
+        fast = os.path.join(self.main, "rust-modules", "target-fast")
+        self.park_fixture(fast)
+        first = subprocess.Popen(
+            [sys.executable, os.path.join(self.main, "tools", "disk-budget.py"), "preflight",
+             "--tree", self.main_tree(), "--wait-secs", "2"],
+            cwd=self.main, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env=self.environment(free_gib=40, PLX_DISK_BUDGET_DONE="1", PLX_TEST_COLD_COPY_SLOW="%2Ftarget:8"))
+        self.addCleanup(first.kill)
+        siblings = lambda: [n for n in os.listdir(os.path.dirname(self.main_tree())) if "unpark" in n]
+        seen = time.monotonic() + 60
+        while not siblings() and first.poll() is None and time.monotonic() < seen:      # the copy is under way
+            time.sleep(0.05)
+        self.assertEqual(len(siblings()), 1, "the first build never started its copy")
+        started = time.monotonic()
+        out = self.run_preflight(tree=fast, free_gib=40, args=("--wait-secs", "2"), PLX_DISK_BUDGET_DONE="1")
+        took = time.monotonic() - started
+        self.assertIsNone(first.poll(), "the first copy was over already: this proves nothing")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertRegex(out.stderr, r"cold-store: unpark [\d.]+ \w+ in [\d.]+ s: " + re.escape(fast))
+        self.assertTrue(os.path.isfile(os.path.join(fast, "CACHEDIR.TAG")), "the second tree waited out the first copy")
+        self.assertLess(took, 6, "the second restore took %.1f s behind the first one's 8 s copy" % took)
+        self.assertEqual(len(self.claim_files()), 1, "the first build's claim is not the one entry left")
+        stderr = first.communicate(timeout=90)[1]
+        self.assertEqual(first.returncode, 0, stderr)
+        self.assertTrue(os.path.isfile(os.path.join(self.main_tree(), "CACHEDIR.TAG")))
+        self.assertEqual(self.parked_entries(), [])
+        self.assertFalse(os.path.exists(self.lock), "the auto lock was left behind")
+        self.assertEqual(self.flags(), [])
+
+    def test_a_tree_another_build_is_restoring_is_named_in_one_line_and_not_copied_again(self):
+        self.cold_fixture()
+        sleeper = subprocess.Popen(["sleep", "120"])
+        self.addCleanup(sleeper.wait)
+        self.addCleanup(sleeper.terminate)
+        self.foreign_claim(self.main_tree(), sleeper.pid)
+        out = self.run_preflight(free_gib=40)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(len(self.lines(out)), 1, out.stderr)
+        self.assertIn("being restored by pid %d" % sleeper.pid, out.stderr)
+        self.assertNotIn("unpark lock", self.cold_marker_text(), "copied a tree somebody else restores")
+        self.assertFalse(os.path.exists(self.main_tree()))
+        self.assertEqual(len(self.claim_files()), 1, "took the other build's claim")
+        self.assertFalse(os.path.exists(self.lock), "the auto lock was left behind")
+
+    def test_a_claimer_that_died_leaves_an_entry_the_next_build_restores(self):
+        self.cold_fixture()
+        gone = subprocess.Popen(["true"])
+        gone.wait()
+        self.foreign_claim(self.main_tree(), gone.pid)
+        self.assert_unparked(self.run_preflight(free_gib=40))
+
+    def test_an_exception_after_the_claim_gives_the_claim_back(self):
+        self.cold_fixture()
+        out = self.run_preflight(free_gib=40, PLX_TEST_COLD_RAISE="1")
+        self.assertIn("RuntimeError", out.stderr)
+        self.assertEqual(self.claim_files(), [], "the claim outlived the exception")
+        self.assert_cold_tree_left_alone(out)
+        self.assertEqual(self.parked_entries(), [os.path.basename(self.entry_path(self.main_tree()))])
+
+    def test_a_copy_that_would_leave_less_than_comfort_free_is_declined_and_the_entry_stays(self):
+        # The cost rule passes (a rebuild is slow, the copy tiny); the caller's free-space rule is the one that says no.
+        self.cold_fixture()
+        apparent = self.cold_mod.tree_stats(os.path.join(self.cold_root, "trees", self.cold_mod.escape(self.main_tree())))[1]
+        self.assertGreater(apparent, 2048, "the fixture tree is too small for a KiB-granular free-space override")
+        comfort_kib = 20 * 1024 * 1024
+        just_short = comfort_kib + apparent // 1024 - 1                  # free - apparent < comfort by a few hundred bytes
+        out = self.run_preflight(free_gib=None, PLX_GC_MIN_FREE_GIB="20", PLX_GC_TEST_FREE_KIB=str(just_short))
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(len(self.lines(out)), 1, out.stderr)
+        self.assertRegex(out.stderr, r"(?i)not restored \(declined\): free space after copying")
+        self.assert_cold_tree_left_alone(out)
+        self.assertEqual(self.claim_files(), [])
+        just_enough = comfort_kib + apparent // 1024 + 1                 # the same tree, one KiB more room: it comes back
+        out = self.run_preflight(free_gib=None, PLX_GC_MIN_FREE_GIB="20", PLX_GC_TEST_FREE_KIB=str(just_enough))
+        self.assertRegex(out.stderr, r"cold-store: unpark [\d.]+ \w+ in [\d.]+ s: ")
+        self.assertTrue(os.path.isfile(os.path.join(self.main_tree(), "CACHEDIR.TAG")))
+        self.assertEqual(self.parked_entries(), [])
+
+    def test_the_claim_name_the_fast_path_looks_for_is_cold_stores_own(self):
+        spec = importlib.util.spec_from_file_location("cold_real_claim", os.path.join(ROOT, "tools", "cold-store.py"))
+        cold = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cold)
+        self.assertEqual(db.COLD_CLAIM_INFIX, cold.CLAIM_INFIX)
+        tree = os.path.join(self.tmp, "t", "target")
+        index = os.path.join(self.cache, "cold-store", "index")
+        os.makedirs(index)
+        env = {"PLX_BUILD_CACHE": self.cache}
+        self.assertFalse(db.cold_unpark_pending(tree, env))
+        write(os.path.join(index, db.cold_index_name(tree) + ".json.unparking.4242"), 4)
+        self.assertTrue(db.cold_unpark_pending(tree, env), "a tree being restored is not a tree to rebuild cold unannounced")
+        self.assertFalse(db.cold_unpark_pending(os.path.join(self.tmp, "t", "target-fast"), env))
+
+    def test_the_index_name_the_fast_path_computes_is_cold_stores_own(self):
+        spec = importlib.util.spec_from_file_location("cold_real", os.path.join(ROOT, "tools", "cold-store.py"))
+        cold = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cold)
+        for path in ("/a/b/rust-modules/target", "/with%percent/x%2Fy/target", "/Volumes/DAS/" + "deep/" * 60 + "target",
+                     "/" + "d" * 223 + "/t", "/" + "d" * 224 + "/t"):
+            self.assertEqual(db.cold_index_name(path), cold.escape(path), path)
+
     # -- refusing ------------------------------------------------------------------------------------------
     def test_below_the_reserve_with_nothing_to_evict_it_refuses_and_says_why(self):
         cargo_tree(os.path.join(self.main, "rust-modules", "target"), incr=1)      # the tree being built
@@ -503,6 +908,33 @@ class Preflight(Repo):
         self.assertGreaterEqual(time.monotonic() - started, 1.5, "did not wait for the holder")
         self.assertIn("reclaim", out.stderr)
         self.assertTrue(os.path.isdir(os.path.join(self.fleet, "gone", "target")))
+
+    def flags(self):
+        return sorted(n for n in os.listdir(os.path.dirname(self.lock)) if ".waiting." in n)
+
+    def test_a_preflight_that_waits_flags_itself_beside_the_lock_and_withdraws_the_flag(self):
+        # The cold store's park pass holds the lock for minutes and reads this flag between trees (docs/disk-budget.md,
+        # "The cold store"): without it a build would wait out its --wait-secs behind a copy.
+        self.hold_lock()
+        cargo_tree(os.path.join(self.fleet, "gone", "target"))
+        waiter = subprocess.Popen([sys.executable, os.path.join(self.main, "tools", "disk-budget.py"), "preflight",
+                                   "--tree", os.path.join(self.main, "rust-modules", "target"), "--wait-secs", "4"],
+                                  cwd=self.main, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                  env=self.environment(free_gib=2))
+        flag = "%s.waiting.%d" % (self.lock, waiter.pid)
+        deadline = time.monotonic() + 60
+        while not os.path.exists(flag) and waiter.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.1)
+        seen = os.path.exists(flag)
+        waiter.communicate(timeout=90)
+        self.assertTrue(seen, "a waiting preflight left no flag beside the lock")
+        self.assertEqual(self.flags(), [], "the flag outlived the wait")
+
+    def test_a_preflight_that_does_not_wait_leaves_no_flag(self):
+        self.hold_lock()
+        out = self.run_preflight(free_gib=10, args=("--wait-secs", "30"))        # fits: it never waits
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(self.flags(), [])
 
     def test_the_lock_dropped_during_the_wait_ends_it(self):
         proc = self.hold_lock()

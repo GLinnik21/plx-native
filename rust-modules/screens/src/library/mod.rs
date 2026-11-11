@@ -1433,7 +1433,12 @@ impl LibraryScreen {
                 if self.initial && !self.switched && from.is_none() && to.entry == self.entry {
                     if let Some(target) = self.with_regions(|regions| regions.unseat()) { self.reseat(target, fx); }
                 }
-                if matches!(by, By::Dir | By::Pointer) {
+                // That seat is reported as a directional move (`FocusTarget::FirstInGroupAnimated`, a
+                // tab's mint), but its origin is another page's focus or none: the reader's key moves
+                // focus WITHIN the page. Only the latter claims the arrival from the cells that land.
+                let engine_seat = by == &By::Dir && self.initial && !self.switched && to.entry == self.entry
+                    && from.is_none_or(|from| from.entry != self.entry);
+                if matches!(by, By::Dir | By::Pointer) && !engine_seat {
                     self.initial = false;
                     self.provisional = None;
                 }

@@ -112,6 +112,18 @@ pub(crate) struct MarkerAccessRunner {
     state: AccessState,
     pending: Option<(u64, Receiver<Result<MarkerAccess, PreferenceError>>)>,
 }
+/// **The event-log line for one marker-access read**: whose seat asked (`owner` is the Home
+/// administrator or a profile-less sign-in, `member` any other Home profile), then what plex.tv
+/// answered: the two grants, or the error's name. Never a response body, a token or an identity, so
+/// a report that a profile lacks the skip rows says which of "no Pass in the list", "identity
+/// refused", "no credential" or "unreachable" it was.
+fn outcome_line(member: bool, answer: &Result<MarkerAccess, PreferenceError>) -> String {
+    let seat = if member { "member" } else { "owner" };
+    match answer {
+        Ok(access) => format!("marker-grants: seat={seat} intro={} credits={}", access.intro, access.credits),
+        Err(error) => format!("marker-grants: seat={seat} unavailable ({error:?})"),
+    }
+}
 impl MarkerAccessRunner {
     pub fn poll(
         &mut self,
@@ -145,6 +157,7 @@ impl MarkerAccessRunner {
         };
         let Some(request) = PreferenceRequest::capture_marker_access().filter(|r| r.matches_profile(profile))
         else {
+            plx_base::eventlog::log("marker-grants: unavailable (no plex.tv credential is held for the seated profile)");
             self.state
                 .land(scope, Err(PreferenceError::Unavailable), now);
             return;
@@ -153,6 +166,8 @@ impl MarkerAccessRunner {
         self.pending = Some((scope, rx));
         plx_base::task::spawn_small("marker-grants", move || {
             let result = request.load_marker_access();
+            let member = !plx_plex::plex::session::peek().active_profile_is_admin();
+            plx_base::eventlog::log(&outcome_line(member, &result));
             let _ = tx.send(result);
             plx_machine::idle::invalidate();
         });
@@ -167,6 +182,17 @@ mod tests {
             stamp: "account".into(),
             id: 1,
             uuid: "viewer".into(),
+        }
+    }
+    /// The line names the seat and the grants or the error, and nothing else.
+    #[test]
+    fn the_outcome_line_names_the_seat_and_the_answer_only() {
+        let both = Ok(MarkerAccess { intro: true, credits: true });
+        assert_eq!(outcome_line(false, &both), "marker-grants: seat=owner intro=true credits=true");
+        assert_eq!(outcome_line(true, &Ok(MarkerAccess::default())), "marker-grants: seat=member intro=false credits=false");
+        for error in [PreferenceError::Refused, PreferenceError::Stale, PreferenceError::TimedOut,
+            PreferenceError::Unavailable, PreferenceError::InvalidResponse] {
+            assert_eq!(outcome_line(true, &Err(error)), format!("marker-grants: seat=member unavailable ({error:?})"));
         }
     }
     #[test]

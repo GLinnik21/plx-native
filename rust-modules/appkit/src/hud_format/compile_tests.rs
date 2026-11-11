@@ -1155,6 +1155,17 @@ fn an_installed_playbar_can_reserve_a_lane_for_the_end_time() {
     assert!(bar_of(compact(&original, Slot::Discs)).1.end_time.is_none());
 }
 
+/// **The finish-time capability is the declared lane**, which only HUD format 1.1 can name: the *Estimated
+/// end time* setting and the app's projection ask the compiled HUD, so a package that does not declare the lane
+/// is never offered a switch that does nothing.
+#[test]
+fn only_a_package_that_declares_the_end_time_lane_supports_the_end_time() {
+    let declared = REFERENCE.replacen(r#""clock_size": "CAPTION""#, r#""clock_size": "CAPTION", "end_time_width": 320"#, 1);
+    assert!(build(&declared, &FM).declares_end_time(), "the lane is declared");
+    assert!(!build(REFERENCE, &FM).declares_end_time(), "a playbar with no lane");
+    assert!(!Compiled::default().declares_end_time(), "no state at all");
+}
+
 /// **The bands are placed in `z` order, equal `z` in declared order.** `z_order` replaced a stable sort by key;
 /// every sequence of up to five bands over three `z` values (duplicates included) comes out the same.
 #[test]
