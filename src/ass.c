@@ -424,6 +424,51 @@ static void place_regions(PlxAss *ctx, const struct Bounds *bounds, size_t count
     ctx->region_count = count;
 }
 
+/* Test hook: ci/test_ass_regions.py defines this before including the file to count how often a loop
+ * below steps onto a pixel that has nothing to draw (kind: `blend` in blend_row, `straight` in
+ * straighten_pixels). It is a no-op otherwise. */
+#ifndef PLX_ASS_VISIT_ZERO
+#define PLX_ASS_VISIT_ZERO(kind) ((void)0)
+#endif
+
+/* One row of one ASS_Image onto the premultiplied destination: `n` pixels, mask[i] the libass
+ * coverage of pixel i, coverage[] its opacity table. */
+static void blend_row(uint8_t *dst, const uint8_t *mask, int n, const uint8_t *coverage,
+                      uint32_t color)
+{
+    for (int x = 0; x < n; ++x, dst += 4) {
+        unsigned a = coverage[mask[x]];
+        if (!a) {
+            PLX_ASS_VISIT_ZERO(blend);
+            continue;
+        }
+        if (a == 255) {
+            ass_store_rgba(dst, color);
+            continue;
+        }
+        ass_store_rgba(dst, ass_blend_pixel(ass_load_rgba(dst), color, a));
+    }
+}
+
+/* Premultiplied RGBA to straight RGBA, in place, `pixels` of them. */
+static void straighten_pixels(uint8_t *rgba, size_t pixels, const unsigned *reciprocal)
+{
+    for (size_t i = 0; i < pixels * 4; i += 4) {
+        unsigned a = rgba[i + 3];
+        /* Transparent pixels are already zero; opaque pixels are already
+         * straight RGBA. Avoid three variable divisions for every opaque pixel
+         * (software division on the ARMv7 target), including static vector signs. */
+        if (!a) {
+            PLX_ASS_VISIT_ZERO(straight);
+            continue;
+        }
+        if (a == 255) continue;
+        for (int c = 0; c < 3; ++c) {
+            rgba[i + c] = ass_straight_channel(rgba[i + c], a, reciprocal[a]);
+        }
+    }
+}
+
 static int compose_frame(PlxAss *ctx, ASS_Image *images, int width, int height, int reusable,
                          PlxAssFrame *frame);
 
@@ -539,31 +584,13 @@ static int compose_frame(PlxAss *ctx, ASS_Image *images, int width, int height, 
             const uint8_t *mask = p->bitmap + (size_t)(y - p->dst_y) * p->stride;
             uint8_t *dst = (uint8_t *)bitmap->rgba +
                 ((size_t)(y - bitmap->y) * bitmap->width + l - bitmap->x) * 4;
-            for (int x = l; x < r; ++x, dst += 4) {
-                unsigned a = coverage[mask[x - p->dst_x]];
-                if (!a) continue;
-                if (a == 255) {
-                    ass_store_rgba(dst, color);
-                    continue;
-                }
-                ass_store_rgba(dst, ass_blend_pixel(ass_load_rgba(dst), color, a));
-            }
+            blend_row(dst, mask + (l - p->dst_x), r - l, coverage, color);
         }
     }
     for (size_t region = 0; region < region_count; ++region) {
         if (retained[region]) continue;
         PlxAssBitmap *bitmap = &ctx->regions[region];
-        uint8_t *rgba = (uint8_t *)bitmap->rgba;
-        for (size_t i = 0; i < bitmap->bytes; i += 4) {
-            unsigned a = rgba[i + 3];
-            /* Transparent pixels are already zero; opaque pixels are already
-             * straight RGBA. Avoid three variable divisions for every opaque pixel
-             * (software division on the ARMv7 target), including static vector signs. */
-            if (!a || a == 255) continue;
-            for (int c = 0; c < 3; ++c) {
-                rgba[i + c] = ass_straight_channel(rgba[i + c], a, ctx->reciprocal[a]);
-            }
-        }
+        straighten_pixels((uint8_t *)bitmap->rgba, bitmap->bytes / 4, ctx->reciprocal);
     }
     ctx->cache_valid = 1;
     frame->count = region_count;
