@@ -629,8 +629,16 @@ impl HudPage {
     /// The focused catalog appearance. Its artwork is display-only; Preview is a separate row.
     fn preview_package(&self) -> Option<&plx_data::hudpacks::catalog::Package> {
         if let Some(package) = self.package() { return Some(package) }
-        let HudId::Catalog(sha) = self.form.selected_id()? else { return None };
-        self.list.catalog.index.as_ref()?.entries.iter().find(|p| p.sha() == *sha)
+        match self.form.selected_id()? {
+            HudId::Catalog(sha) => self.list.catalog.index.as_ref()?.entries.iter().find(|p| p.sha() == *sha),
+            // The root's own rows: an installed package the registry lists is previewed with the registry's art for
+            // those very bytes (the gallery's). The built-in, and a package the registry does not list, have none.
+            HudId::Pack(id) => {
+                let sha = self.list.entries.iter().find(|entry| entry.id == *id)?.sha?;
+                self.list.catalog.package(sha)
+            }
+            _ => None,
+        }
     }
 
     fn is_preview(&self) -> bool { matches!(self.page, SettingsPage::HudPreview(..)) }
