@@ -516,6 +516,7 @@ impl Playbar {
         model: &HudModel,
         busy: Busy,
         focus: GroupId,
+        seek_travel: Option<std::cmp::Ordering>,
         since_play_ms: Option<u32>,
         now: u32,
     ) -> Self {
@@ -542,7 +543,7 @@ impl Playbar {
             pos_ns: dispos,
             dur_ns: model.duration_ns,
             knob,
-            mark: transport_mark(paused, busy, scrub >= 0, dispos, livepos, since_play_ms),
+            mark: transport_mark(paused, busy, scrub >= 0, dispos, livepos, seek_travel, since_play_ms),
             end_time: model.end_time,
             now,
             clock_grow: 0.0,

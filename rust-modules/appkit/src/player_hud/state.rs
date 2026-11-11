@@ -427,6 +427,11 @@ pub enum TransportMark {
 ///   the direction, and it is deliberately derived from position rather than from the keycode that
 ///   caused it: one expression then covers a LEFT/RIGHT scrub, a chapter or marker hop and a
 ///   rapid-seek burst, none of which agree about which key (if any) was pressed.
+/// * `seek_travel` — the direction a seek in flight was REQUESTED with ([`SeekTravel::direction`]).
+///   Once the scrub has ended it is not re-derived from `travel_ns` against `pos_ns`: after the
+///   commit the published playhead is no longer where the viewer left (a reload publishes none and
+///   the model reads 0, a landing snaps to a keyframe before the target), so that comparison read
+///   `>>` for a seek BACKWARD.
 /// * `since_play_ms` — ms since the last paused→playing edge, `None` if this session has never been
 ///   resumed. See [`note_transport`], which is where that clock is sampled (NOT here, and not in
 ///   the draw).
@@ -451,23 +456,31 @@ pub fn transport_mark(
     scrubbing: bool,
     travel_ns: i64,
     pos_ns: i64,
+    seek_travel: Option<core::cmp::Ordering>,
     since_play_ms: Option<u32>,
 ) -> TransportMark {
     let seeking = busy == Busy::Transport;
-    if scrubbing || seeking {
-        match travel_ns.cmp(&pos_ns) {
-            core::cmp::Ordering::Greater => return TransportMark::FastForward,
-            core::cmp::Ordering::Less => return TransportMark::Rewind,
-            // no direction to show: the seek's target and the published position agree, which is
-            // the tail of a landed seek and the whole of a re-buffer. Fall through to the spinner.
-            //
-            // NB the comparison is against the PLAYHEAD, so it reports NET travel rather than the
-            // instantaneous drag: dragging back from +100s to +50s while still ahead of the
-            // playhead keeps reading FastForward. That is deliberate and is the more useful of the
-            // two — it answers "which way will I jump when I let go", and the alternative flickers
-            // the glyph every time a thumb wobbles on the stick.
-            core::cmp::Ordering::Equal => {}
-        }
+    // A live scrub reads its direction off the positions; a seek already in flight reads the
+    // direction it was REQUESTED with ([`SeekTravel`]).
+    let direction = if scrubbing {
+        Some(travel_ns.cmp(&pos_ns))
+    } else if seeking {
+        seek_travel
+    } else {
+        None
+    };
+    match direction {
+        Some(core::cmp::Ordering::Greater) => return TransportMark::FastForward,
+        Some(core::cmp::Ordering::Less) => return TransportMark::Rewind,
+        // no direction to show: the scrub sits on the playhead, or the busy frame is no seek of
+        // ours (a re-buffer; a seek to where the playhead was). Fall through to the spinner.
+        //
+        // NB a scrub's comparison is against the PLAYHEAD, so it reports NET travel rather than the
+        // instantaneous drag: dragging back from +100s to +50s while still ahead of the
+        // playhead keeps reading FastForward. That is deliberate and is the more useful of the
+        // two — it answers "which way will I jump when I let go", and the alternative flickers
+        // the glyph every time a thumb wobbles on the stick.
+        Some(core::cmp::Ordering::Equal) | None => {}
     }
     if seeking {
         return TransportMark::Working;
@@ -481,6 +494,62 @@ pub fn transport_mark(
     }
 }
 
+/// **The direction of the seek in flight, latched when it was requested.**
+///
+/// The state read-out says which way a seek travels while it resolves. Comparing the frozen target
+/// with the published playhead every frame is right for a live scrub (the playhead is where the
+/// viewer left) and wrong for a committed seek: once the pipeline has taken it, the playhead is
+/// reloading (nothing is published and the model reads 0), parked on a keyframe before the target,
+/// or already moved, and a backward seek read `>>`. This keeps what the request itself said: the
+/// target against the playhead of the frame that requested it, or against the previous target when
+/// a burst moves one that is still in flight.
+///
+/// Stepped once per frame from the model by the screen ([`Self::note`], idempotent for one
+/// sample); the draw reads [`Self::direction`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SeekTravel {
+    /// the frozen target the direction was taken for
+    latched: Option<i64>,
+    /// the target a burst's next request travels from: set only while a seek is in flight
+    chain: Option<i64>,
+    direction: Option<core::cmp::Ordering>,
+}
+
+impl SeekTravel {
+    pub const IDLE: Self = Self { latched: None, chain: None, direction: None };
+
+    /// One frame's sample: `display_ns` is `HudModel::seek_display_ns` (-1 for none), `pos_ns` the
+    /// published playhead, `resolving` whether a seek is in flight (`loading || seeking`).
+    ///
+    /// Until the pipeline reports the seek in flight the latch follows the request against the
+    /// playhead (the frame that asks still sees the old one, and the pipeline reports busy a frame
+    /// later). While one is in flight the direction only changes with the target, and then against
+    /// the target it replaced: a burst that turns round is read as turning round. The frozen target
+    /// outlives the landing, so a request made after one is measured from the playhead, not from it.
+    pub fn note(&mut self, display_ns: i64, pos_ns: i64, resolving: bool) {
+        if display_ns < 0 {
+            *self = Self::IDLE;
+            return;
+        }
+        if !resolving {
+            self.direction = Some(display_ns.cmp(&pos_ns));
+            self.latched = Some(display_ns);
+            self.chain = None;
+        } else {
+            if self.latched != Some(display_ns) {
+                self.direction = Some(display_ns.cmp(&self.chain.unwrap_or(pos_ns)));
+                self.latched = Some(display_ns);
+            }
+            self.chain = Some(display_ns);
+        }
+    }
+
+    /// The direction the seek in flight was requested with; `None` before any, `Equal` for a seek to
+    /// where the playhead was.
+    pub fn direction(&self) -> Option<core::cmp::Ordering> {
+        self.direction
+    }
+}
 
 // ---- the failure read-out -------------------------------------------------------------------
 //

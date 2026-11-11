@@ -248,6 +248,7 @@ impl PlayerScreen {
         if self.model.playback_id != model.playback_id {
             self.back_motion = BackMotion::default();
         }
+        self.row.note_seek_travel(&model);
         self.model = model;
     }
 
