@@ -68,7 +68,7 @@ pub fn step(
 pub fn execute_storage_effects(out: &[Stamped<InnerHost>]) {
     for effect in out {
         match &effect.fx {
-            Fx::App(AppFx::Preferences(super::registry::PreferenceCmd::AutoSignIn { on, reply })) => {
+            Fx::App(AppFx::Preferences(crate::registry::PreferenceCmd::AutoSignIn { on, reply })) => {
                 let (on, reply) = (*on, reply.clone());
                 plx_plex::plex::session::queue_update_settled(move |current|
                     (current.auto_sign_in() != on).then(|| current.with_auto_sign_in(on)),

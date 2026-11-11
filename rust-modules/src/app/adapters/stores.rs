@@ -819,7 +819,7 @@ fn start_watchlist_stream(&mut self, job: StoreJob) {
         }
         let launched = match self {
             Self::Live => {
-                plx_base::storage_worker::submit_retained(move || {
+                plx_base::storage_worker::submit(move || {
                     finish_browse_preferences_job(&port, addr, job.req);
                 }).is_ok()
             }

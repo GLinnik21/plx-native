@@ -16,7 +16,7 @@ pub(super) fn run_preference_jobs(jobs: Vec<crate::stores::StoreJob>) {
         let crate::stores::StoreJob::BrowsePreferences(job, port) = job else { panic!("not a preference write") };
         let refusal = port.clone();
         let addr = job.addr;
-        if plx_base::storage_worker::submit_retained(move ||
+        if plx_base::storage_worker::submit(move ||
             preferences_job::finish_browse_preferences_job(&port, addr, job.req)).is_err() {
             plx_machine::job::Port::refused(&refusal, addr);
         }

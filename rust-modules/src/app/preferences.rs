@@ -68,7 +68,7 @@ pub(super) fn execute(command: PreferenceCmd) {
             let refusal = reply.clone();
             let expected = plx_plex::plex::session::peek();
             let tenure = plx_plex::plex::session::tenure();
-            if plx_base::storage_worker::submit_retained(move || {
+            if plx_base::storage_worker::submit(move || {
                 let saved = plx_plex::plex::session::update_guarded_with_outcome(|current| {
                     if current.client_id != expected.client_id || current.account_token != expected.account_token { return None; }
                     (current.auto_sign_in() != on).then(|| current.with_auto_sign_in(on))
