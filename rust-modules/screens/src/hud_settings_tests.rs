@@ -892,6 +892,31 @@ fn gallery_forms_and_preview_controls_fit_every_shipped_language() {
     plx_ui::table::assert_no_fit_failures(&failures);
 }
 
+/// **The Player HUD root previews the HUD its focus is on**, as the gallery does: an installed package that
+/// the registry lists draws the registry's art for it in the left column (and cycles its frames), and the
+/// built-in, which the registry has no art for, draws none. It used to preview only on the gallery and a
+/// package's own pages, so the root's picture slot stayed empty on every row.
+#[test]
+fn the_player_hud_root_previews_the_focused_installed_hud_and_none_for_the_built_in() {
+    let mut page = gallery_page(SettingsPage::PlayerHud);
+    let listed = page.list.catalog.index.as_ref().unwrap().entries[0].clone();
+    page.list.entries.push(Entry { sha: Some(listed.sha()), ..pack("com.example.listed", "Listed", 1, false) });
+    page.list.entries.push(pack("com.example.unlisted", "Unlisted", 2, false));
+    page.rebuild(None);
+    let focus = |page: &mut HudPage, id: &HudId| {
+        let key = key_of(page, id);
+        drive(page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: EntryId(0), elem: key }, by: plx_machine::machine::By::Dir }, key);
+    };
+    focus(&mut page, &HudId::Pack("com.example.listed".into()));
+    let art = page.picture().and_then(|picture| picture.art).expect("the listed package's registry art is the root's picture");
+    assert!(matches!(art, plx_ui::widgets::Art::Thumb { .. }), "the public image source, as in the gallery");
+    assert!(!page.preview_frames().is_empty(), "the root cycles the same frames the gallery does");
+    for id in [HudId::Pack(BUILTIN_CLASSIC.into()), HudId::Pack("com.example.unlisted".into())] {
+        focus(&mut page, &id);
+        assert!(page.picture().is_none(), "{id:?}: the registry has no art for it");
+    }
+}
+
 #[test]
 fn gallery_preview_never_uses_a_plex_server_slot() {
     let page=gallery_page(SettingsPage::HudGallery);
