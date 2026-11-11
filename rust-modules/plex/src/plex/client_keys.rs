@@ -133,6 +133,13 @@ impl ClientKeys {
         self.1.iter().find(|(slot, _)| *slot == sid).map(|(_, facts)| facts)
     }
 
+    /// Replace only scripted key values, retaining the separately captured complete roster.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn replace_keys_for_test(&mut self, keys: impl IntoIterator<Item = (ServerId, ClientKey)>) {
+        self.0.clear();
+        self.0.extend(keys);
+    }
+
     /// Host-only registry capture through explicit readers. Reuses both buffers and machine strings.
     /// Eligibility is read on EVERY fill, irrespective of generations. The acquire-backed probe
     /// reader runs before tier and the second eligible lookup checks instance/token/grant again.
