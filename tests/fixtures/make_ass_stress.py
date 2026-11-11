@@ -428,7 +428,7 @@ def verify(mkv, events, attached):
     return float(info["format"]["duration"])
 
 
-# ---- fonts-over-budget (issue #1328): a dense opening, 17 attached fonts, 92 MB -----------------
+# ---- fonts-over-budget (issue #1328): a dense opening, 17 attached fonts, 83 MB -----------------
 
 OP_DURATION = 120
 OP_START = 28.0          # the dialogue runs 0..26 s; the karaoke opening 28..118 s
@@ -463,9 +463,9 @@ LOCAL_FONTS = {  # key -> path in the checkout
 }
 FAMILY = {"dialogue": "Plx Dialogue Sans", "gothic": "PlxOP Heavy Gothic", "pop": "PlxOP Pop",
           "antique": "PlxOP Antique", "brush": "PlxOP Brush Mincho", "dot": "PlxOP Dot"}
-# The attachments in container order, sized and ordered like the report's 17 (92 MB): the first
-# seven spend the 32 MiB budget on faces no style names, the five the opening's styles name come
-# next, and the small ones after them still fit (as they did in the report). The dialogue face is
+# The attachments in container order, sized and ordered like the report's 17 (83 MB): the first
+# seven spend a 32 MiB cap on faces no style names, the five the opening's styles name come
+# next, and the small ones after them still fit (twelve were held in all, as in the report). The dialogue face is
 # natural-sized (Inter Bold is larger than the report's Roboto slot). (file, family, base, style,
 # padded-to bytes or None).
 SLOTS = [

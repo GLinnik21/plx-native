@@ -68,7 +68,9 @@ traditional Mongolian (`mn`, whose Cyrillic form is Inter's). U+2060 is not carr
 libass skips the default-ignorables (U+200B-200F, U+2060-206F) before it looks a glyph up.
 
 Attached fonts. A file may attach far more font bytes than a renderer needs (the report in #1328: 17
-fonts, 83 MB, of which the opening's five karaoke faces sat last in the container), and no byte cap
+fonts, 83 MB; the opening's five karaoke faces sat after ~32 MB of faces no style names and before
+small faces that still fit, so the old 32 MiB cap dropped exactly the five the opening needed and
+kept twelve it did not), and no byte cap
 decides what a track can draw: the demuxer collects every font attachment (`collect_manifest`), the
 source store keeps the file's list whole (a same-file reopen keeps the `Arc` it holds, so the
 renderer's same-fonts check is a pointer compare), and the renderer hands libass the faces the track

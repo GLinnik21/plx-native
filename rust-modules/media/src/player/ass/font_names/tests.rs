@@ -87,7 +87,7 @@ fn a_mac_only_name_table_is_read_as_latin_1() {
 
 #[test]
 fn a_face_with_no_family_record_answers_to_its_typographic_family() {
-    // FreeType's family_name fallback reads ID 16 and 21; with an ID 1 present they stay unused.
+    // FreeType's family_name fallback reads ID 16 and 21.
     let bare: Vec<NameRecord> = vec![
         (3, 1, 4, synth::utf16("Only Full")),
         (3, 1, 16, synth::utf16("Typo Family")),
@@ -96,9 +96,31 @@ fn a_face_with_no_family_record_answers_to_its_typographic_family() {
     let face = &faces(&synth::cff_font(&bare, "Cff Name")).unwrap()[0];
     assert_eq!(names(face), ["cff name", "only full", "typo family", "wws family"]);
     assert_eq!(face.families, [b"typo family".to_vec(), b"wws family".to_vec()]);
+}
+
+#[test]
+fn the_typographic_family_is_a_name_even_beside_a_family_record() {
+    // libass counts only a Microsoft-platform ID 1, so a face whose ID 1 sits on another platform
+    // is named by FreeType's family_name, which prefers ID 16: ID 16 and 21 are always names.
     let with_family: Vec<NameRecord> = vec![(3, 1, 1, synth::utf16("Fam")), (3, 1, 16, synth::utf16("Typo"))];
     let face = &faces(&synth::cff_font(&with_family, "Cff")).unwrap()[0];
-    assert_eq!(names(face), ["cff", "fam"], "ID 16 is not a name once the face has a family");
+    assert_eq!(names(face), ["cff", "fam", "typo"]);
+    assert_eq!(face.families, [b"fam".to_vec(), b"typo".to_vec()]);
+}
+
+#[test]
+fn a_style_naming_the_typographic_family_selects_a_face_whose_only_id_1_is_a_mac_record() {
+    // The Mac-platform ID 1 "Foo" is invisible to libass, which then falls back to FreeType's
+    // family_name: the preferred family, ID 16 "Foo Pro". A style naming "Foo Pro" must select it.
+    let records: Vec<NameRecord> = vec![(1, 0, 1, b"Foo".to_vec()), (1, 0, 16, b"Foo Pro".to_vec())];
+    let fonts = [
+        Font { name: "foo.otf".into(), data: Arc::from(synth::cff_font(&records, "Zzz")) },
+        font("b.otf", "Unrelated", "Regular"),
+    ];
+    let mut selection = Selection::new(&fonts);
+    assert_eq!(selection.seed(&header_naming("Foo Pro")), [0]);
+    let mut by_mac_family = Selection::new(&fonts);
+    assert_eq!(by_mac_family.seed(&header_naming("Foo")), [0], "the Mac family stays a name too");
 }
 
 #[test]
@@ -202,6 +224,25 @@ fn fn_overrides_are_read_in_a_header_a_script_and_an_event() {
 fn a_fn_with_a_parenthesis_keeps_both_readings() {
     // libass ends the name at a `(`; a block that spells it into the name keeps it. Both are asked.
     assert_eq!(texts(requested(br"{\fnNoto Sans (Bold)}", false)), ["noto sans (bold)", "noto sans", "bold"]);
+}
+
+#[test]
+fn a_fn_inside_a_t_tag_ends_at_the_tags_closing_parenthesis() {
+    // libass hands the nested parse the end of the `\t` argument, so the name stops at its `)`.
+    let asked = texts(requested(br"{\t(0,500,\fnFoo)}text", false));
+    assert!(asked.contains(&"foo".to_string()), "{asked:?}");
+    let asked = texts(requested(br"0,0,Default,,0,0,0,,{\t(\fn Bar Sans )\b1}x", false));
+    assert!(asked.contains(&"bar sans".to_string()), "{asked:?}");
+    // A tail after the `)`, another tag inside, and a second `\t` in the same block.
+    let asked = texts(requested(br"{\t(0,500,1,\fnFoo\fs20)\t(0,9,\fnBaz)\bord2}", false));
+    assert!(asked.contains(&"foo".to_string()) && asked.contains(&"baz".to_string()), "{asked:?}");
+    // An unclosed `\t(` reads to the end of its block, as before.
+    let asked = texts(requested(br"{\t(0,500,\fnQux}", false));
+    assert!(asked.contains(&"qux".to_string()), "{asked:?}");
+    // Selection: the face the nested `\fn` names is added when its event arrives.
+    let fonts = [font("a.otf", "Foo", "Regular"), font("b.otf", "Other", "Regular")];
+    let mut selection = Selection::new(&fonts);
+    assert_eq!(selection.wanted(br"1,0,Default,,0,0,0,,{\t(0,500,\fnFoo)}x"), [0]);
 }
 
 #[test]

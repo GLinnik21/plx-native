@@ -157,8 +157,10 @@ int plx_ass_load(PlxAss *ctx, const uint8_t *data, size_t len, int script)
 int plx_ass_replace_track(PlxAss *ctx, const uint8_t *data, size_t len, int script)
 {
     if (!ctx || !ctx->fonts_set) return -1;
-    /* The first load already extracted and registered the fonts. ass_set_fonts never runs again,
-     * so a [Fonts] section read now would only add copies nothing uses. */
+    /* Extraction is off because a replacement track's [Fonts] section would be registered and
+     * scanned at the next frame (ass_start_frame -> ass_update_embedded_fonts), duplicating faces
+     * the caller already added with plx_ass_add_font. Which faces a renderer holds is the Rust
+     * side's decision (font_names). */
     ass_set_extract_fonts(ctx->library, 0);
     if (ctx->track) ass_free_track(ctx->track);
     ctx->track = NULL;

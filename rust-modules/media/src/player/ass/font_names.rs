@@ -13,9 +13,9 @@
 //! **The rule is a superset of libass's matching**, so it can never hide text: a face is wanted when
 //! a requested name equals (ASCII case folded, which is all `ass_strcasecmp` folds) its name table's
 //! family (ID 1), full name (ID 4) or PostScript name (ID 6), on any platform and not only the
-//! Microsoft one libass reads, or the CFF font name; or, when it has no family at all, its typographic
-//! family (ID 16, 21), which is where FreeType's `family_name` fallback looks. "Inter" and "Arial" are
-//! always requested (`family_default` and libass's default Fontname). Wanting a face wants every
+//! Microsoft one libass reads, the typographic and WWS family (ID 16, 21: libass counts only a
+//! Microsoft-platform ID 1, and a face with none gets FreeType's `family_name`, which prefers these
+//! two), or the CFF font name. "Inter" and "Arial" are always requested (`family_default` and libass's default Fontname). Wanting a face wants every
 //! attachment that shares a family with it, added together in container order, so libass's weight
 //! scoring and its add-order tie break between the members of a family are what they would be with
 //! every font loaded. A face this module cannot read is WANTED: unknown means needed, because FreeType
@@ -40,7 +40,7 @@ const NAME_WWS_FAMILY: u16 = 21;
 /// What one face answers to, normalized by [`fold`].
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(super) struct Face {
-    /// Family, full and PostScript names (and the typographic ones when there is no family).
+    /// Family (ID 1, 16, 21), full and PostScript names.
     pub names: Vec<Vec<u8>>,
     /// The family names alone: what the family closure joins faces by.
     pub families: Vec<Vec<u8>>,
@@ -135,10 +135,12 @@ fn face(bytes: &[u8], start: usize) -> Option<Face> {
             found.push((id, name));
         }
     }
-    let has_family = found.iter().any(|(id, _)| *id == NAME_FAMILY);
+    // libass counts only a Microsoft-platform ID 1 as a family and otherwise takes FreeType's
+    // `family_name`, which prefers ID 16 and 21; which of the two a face gets is decided by records
+    // this reader does not keep apart, so ID 16 and 21 are families always (a superset).
     let mut out = Face::default();
     for (id, name) in found {
-        let family = id == NAME_FAMILY || (!has_family && matches!(id, NAME_TYPOGRAPHIC_FAMILY | NAME_WWS_FAMILY));
+        let family = matches!(id, NAME_FAMILY | NAME_TYPOGRAPHIC_FAMILY | NAME_WWS_FAMILY);
         if family && !out.families.contains(&name) {
             out.families.push(name.clone());
         }
@@ -239,7 +241,10 @@ fn strip_key<'a>(line: &'a [u8], key: &[u8]) -> Option<&'a [u8]> {
 /// Every `\fn` argument in `text`. libass reads a tag after a backslash and any spaces, ends a bare
 /// argument at the next `\`, and ends the tag name at a `(`; the argument is also read to the `}`
 /// of its block, and both readings are kept (a `(` is part of the name in some files and the start
-/// of a parenthesized argument in others; the extra name costs a face at most).
+/// of a parenthesized argument in others; the extra name costs a face at most). An argument inside
+/// `\t(..)` ends at that tag's `)` (`ass_parse_tags` is handed the end of the `\t` argument), so
+/// `{\t(0,500,\fnFoo)}` asks for "Foo" and the name is also cut at the first `)` that precedes any
+/// `(`.
 fn overrides(text: &[u8], out: &mut Vec<Vec<u8>>) {
     let mut at = 0;
     while let Some(found) = text[at..].iter().position(|&b| b == b'\\') {
@@ -255,11 +260,16 @@ fn overrides(text: &[u8], out: &mut Vec<Vec<u8>>) {
         let end = start + text[start..].iter().position(|&b| matches!(b, b'\\' | b'}' | b'\n' | b'\r')).unwrap_or(text.len() - start);
         let argument = &text[start..end];
         out.extend(fold(argument));
-        if let Some(paren) = argument.iter().position(|&b| b == b'(') {
+        let open = argument.iter().position(|&b| b == b'(');
+        if let Some(paren) = open {
             out.extend(fold(&argument[..paren]));
             let inner = &argument[paren + 1..];
             let close = inner.iter().position(|&b| b == b')').unwrap_or(inner.len());
             out.extend(fold(&inner[..close]));
+        }
+        // Inside `\t(..)` the name ends at the tag's own `)`; a `)` after a `(` closes that `(`.
+        if let Some(close) = argument.iter().position(|&b| b == b')').filter(|&c| open.is_none_or(|o| c < o)) {
+            out.extend(fold(&argument[..close]));
         }
         at = end;
     }

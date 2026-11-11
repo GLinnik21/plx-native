@@ -1136,9 +1136,9 @@ mod tests {
         assert_eq!(held(&mut s).len(), 1, "another file starts from its own fonts");
     }
 
-    /// Issue #1328: an anime MKV attaches 17 fonts (92 MB). The five the opening's karaoke styles
-    /// name sit late in the container, after the first twelve had spent a 32 MiB cap (since
-    /// removed), so libass never saw them and those lines fell back to the default face. A cap on
+    /// Issue #1328: an anime MKV attaches 17 fonts (83 MB). The five the opening's karaoke styles
+    /// name sat after the first seven had spent a 32 MiB cap (since removed; twelve were held in
+    /// all), so libass never saw them and those lines fell back to the default face. A cap on
     /// content the file legitimately carries is a bug, so the store must hold every attachment, in
     /// order; which of them libass is given is the renderer's choice (`ass::font_names`).
     /// Sizes and names are the report's (`tests/fixtures/make_ass_stress.py`, `fonts-over-budget`).
