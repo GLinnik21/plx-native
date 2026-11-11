@@ -22,11 +22,13 @@ fn page(w: &World) -> &plx_screens::library::LibraryScreen {
 }
 
 /// Home, with the Collections page remembered for the Movies library, then the Movies pill.
-fn restore_from_home(name: &str) -> World {
+fn restore_from_home(name: &str) -> World { restore_page_from_home(name, LibraryPage::Collections) }
+
+fn restore_page_from_home(name: &str, remembered: LibraryPage) -> World {
     let mut w = World::movies_library(name, false);
     w.d.nav.tabs.stack.transition = Box::new(PageDip::new());
     let key = w.bridge.directory.view().sections()[0].key;
-    w.bridge.remember_library_page("route-own", key, LibraryPage::Collections);
+    w.bridge.remember_library_page("route-own", key, remembered);
     super::nav_tab(&mut w.d, &mut w.bridge, HomeTab::Home, None, None);
     w.frames(60);
     assert!(w.on(&AppArg::Home), "premise: Home is on top");
@@ -50,6 +52,19 @@ fn a_restored_collections_page_seats_its_first_tile() {
     assert!(matches!(w.d.top_arg(), Some(AppArg::LibraryCollections { .. })), "premise: the Collections page is on top");
     assert_eq!(page(&w).probe_content().4, 5, "premise: the collections landed");
     assert_eq!(w.grid_cell(), Some((0, 0)), "focus is on the first collection, not on {:?}", w.focus());
+}
+
+/// The Recommended page restored the same way seats its first shelf card.
+#[test]
+fn a_restored_recommended_page_seats_its_first_card() {
+    let mut w = restore_page_from_home("restore-recommended-seats", LibraryPage::Recommended);
+    let _held = ImageHeld;
+    let mut dip = DipImage::default();
+    for _ in 0..90 { w.step_dip(&mut dip, vec![]); }
+    assert!(matches!(w.d.top_arg(), Some(AppArg::LibraryRecommended { .. })), "premise: the Recommended page is on top");
+    let recommended = w.d.top_screen().and_then(|s| s.as_any()).and_then(|a| a.downcast_ref::<plx_screens::library::RecommendedScreen>())
+        .expect("the Recommended screen is on top");
+    assert_eq!(recommended.probe_viewport(w.focus()).0, "shelf", "focus is on a shelf card, not on {:?}", w.focus());
 }
 
 /// **Back to the grid never shows the loan.** The Collections page borrowed the section's listing, so
