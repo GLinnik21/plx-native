@@ -401,3 +401,5 @@ python3 tests/test_hud_dev.py
 # free-space/clock override refused unless every root is named. Temp dirs, a faked two-volume device check and a shutil stand-in for `ditto`
 # (one darwin-only test drives the real one); touches no real cache, config or volume.
 python3 ci/test_cold_store.py
+# The mock PMS's opt-in Live TV fixture (--livetv-fixture): DVRs, guide, tune/busy, live decisions and playlists; no sockets.
+python3 tests/test_mock_pms_livetv.py
