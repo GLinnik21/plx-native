@@ -22,6 +22,36 @@ fn source(events: Vec<Event>) -> Source {
     }
 }
 
+/// A boundary inside a moving stretch is not its end (`Published::ends_at`): the engine says so from the
+/// timing of the events alone, with no native call. Karaoke syllables overlap, so the frame at the end
+/// of one still has another moving after it; the last one's end leaves a still picture.
+#[test]
+fn a_frame_says_whether_the_picture_after_its_window_moves_too() {
+    let karaoke = |start_ms, duration_ms| Event {
+        start_ms,
+        duration_ms,
+        payload: b"0,0,Default,,0,0,0,,{\\k20}la".to_vec().into(),
+    };
+    let still = event(9, 0, 10_000);
+    let source = source(vec![karaoke(1000, 1000), karaoke(1500, 1000), karaoke(2000, 1000), still]);
+    let engine = Engine::default();
+    let at = |now_ms| {
+        let validity = engine.validity(&source, now_ms);
+        (validity, engine.moves_on(&source, &validity))
+    };
+    let (validity, moves_on) = at(1200);
+    assert!(validity.animated && validity.until_ms == 1500);
+    assert!(moves_on, "the second syllable is moving when the first one's window ends");
+    let (validity, moves_on) = at(2200);
+    assert!(validity.animated && validity.until_ms == 2500);
+    assert!(moves_on, "the third is still moving at 2500");
+    let (validity, moves_on) = at(2700);
+    assert!(validity.animated && validity.until_ms == 3000);
+    assert!(!moves_on, "the stretch ends there: what follows is the still event");
+    let (validity, moves_on) = at(5000);
+    assert!(!validity.animated && !moves_on, "a still picture does not move on");
+}
+
 #[test]
 fn window_retirement_keeps_native_fonts_and_retained_overlapping_events() {
     let long = event(0, 0, 20_000);

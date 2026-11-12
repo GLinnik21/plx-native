@@ -966,13 +966,16 @@ fn three_workers_reach_thirty_frames_a_second_from_an_eighty_millisecond_render(
 /// planned ahead and no frame was ever shown by the plan.
 #[test]
 fn a_moving_cue_with_an_event_boundary_every_few_milliseconds_is_still_pipelined() {
-    for (workers, cost_ms, frames) in [(1, 90, 50_u32), (3, 90, 130)] {
+    // (workers, render cost, ms between event boundaries, frames to show in 5 s)
+    for (workers, cost_ms, boundary_ms, frames) in
+        [(1, 90, 19, 50_u32), (3, 90, 19, 130), (1, 90, 7, 50), (3, 90, 7, 130), (1, 90, 40, 50), (1, 90, 250, 50)]
+    {
         let mut rig = Rig::new(workers, cost_ms);
-        rig.boundary_ms = 19;
+        rig.boundary_ms = boundary_ms;
         rig.run(2000);
         let (normals, from, pipes) = (rig.normals, rig.shown.len(), rig.pipes);
         rig.run(5000);
-        let name = format!("{workers} worker(s) at {cost_ms} ms");
+        let name = format!("{workers} worker(s) at {cost_ms} ms, a boundary every {boundary_ms} ms");
         assert!(rig.normals - normals <= 1, "{name}: {} Normal jobs in 5 s, the plan was given up", rig.normals - normals);
         assert!(rig.pipes - pipes >= frames, "{name}: {} planned renders in 5 s", rig.pipes - pipes);
         assert!(rig.distinct_shown(from) >= frames as usize, "{name}: {} different frames in 5 s", rig.distinct_shown(from));
@@ -983,6 +986,30 @@ fn a_moving_cue_with_an_event_boundary_every_few_milliseconds_is_still_pipelined
             "{name}: a frame is never early and at most a step and a tick old: {ages:?}"
         );
     }
+}
+
+/// Boundaries inside the moving stretch are the plan's to resolve at its own step, so the end of a dense
+/// stretch is shown within a step of it (a lone cue's end is exact: `when_the_moving_cue_ends...`),
+/// and the plan hands over to the still picture without giving up on the way.
+#[test]
+fn a_dense_stretch_hands_over_to_the_still_picture_within_a_step_of_its_end() {
+    let mut rig = Rig::new(1, 90);
+    rig.boundary_ms = 19;
+    rig.cue_end = 3501;
+    rig.run(3000);
+    assert!(rig.normals <= 1, "{} Normal jobs: the plan is not given up on the way", rig.normals);
+    let published = rig.mb.published.as_ref().expect("a frame");
+    assert!(!published.validity.animated, "the still picture after the cue is what is shown");
+    let handed_over = rig
+        .shown
+        .iter()
+        .find(|&&(now, shown)| now >= 3501 && shown.is_none())
+        .map(|&(now, _)| now)
+        .expect("the still picture was shown");
+    assert!(handed_over - 3501 <= 90 + 32, "the cue ended at 3501 and the picture changed at {handed_over}");
+    let pipes = rig.pipes;
+    rig.run(1000);
+    assert_eq!(rig.pipes, pipes, "nothing is planned for a picture that does not move");
 }
 
 #[test]

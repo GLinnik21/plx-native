@@ -830,7 +830,17 @@ impl Engine {
             self.validity(&job.source, job.now_ms)
         };
         let aligns = self.aligns(&job.source, job.now_ms);
-        Rendered { frame, validity, aligns, cost_us: None, moves_on: false }
+        let moves_on = self.moves_on(&job.source, &validity);
+        Rendered { frame, validity, aligns, cost_us: None, moves_on }
+    }
+
+    /// Whether the picture at the end of `validity`'s window moves as well: the boundary is inside a
+    /// moving stretch (a karaoke syllable ends while others go on) and not its end. The pipeline
+    /// resolves the former at its own step instead of ending the frame there (`mailbox`).
+    fn moves_on(&self, source: &Source, validity: &Validity) -> bool {
+        validity.animated
+            && validity.until_ms != i64::MAX
+            && self.validity(source, validity.until_ms).animated
     }
 
     /// The window at `now_ms` from every event's timing, clamped to the script window held.

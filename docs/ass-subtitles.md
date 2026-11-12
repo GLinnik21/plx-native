@@ -139,7 +139,10 @@ it hands out `Pipe` jobs for future playheads on a grid of one `step` (what a re
 workers, scaled by the playback speed, never under one video frame or 33 ms, never over 250 ms), the
 first a `lead` ahead of the playhead (a render, a quarter more, and a UI tick), holds each frame
 that lands, and a tick shows the held frame with the greatest playhead not after its own: never
-early, at most a step old. Nothing is planned past the horizon (the lead and a step per worker), so
+early, at most a step old. An event boundary inside a moving stretch (the stress fixture's opening has
+one every ~19 ms) does not end a frame or take the plan off its grid; the plan resolves it at its own
+step, and only the boundary that ends the stretch is rendered at its own playhead (a frame the worker
+reports as `moves_on` stands until a newer one lands or its age runs out). Nothing is planned past the horizon (the lead and a step per worker), so
 a worker with nothing to do parks. The pace (`running`, the applied speed, the video frame period)
 and the tick interval reach the mailbox as the values of `ass::request`'s `Pace`
 (`player::subtitle_pace`), never as a clock or a registry read inside it. A revision that only

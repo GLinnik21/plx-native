@@ -17,6 +17,9 @@
 //! `Pipe` jobs, holds the frames that land, and shows the one with the greatest playhead not after
 //! now: never early, and at most a step old. Frames are planned up to a horizon only (`lead` plus a
 //! step per worker), so a spare worker parks rather than rendering what the screen will not reach.
+//! An event boundary inside a moving stretch (a karaoke script has one every ~19 ms) does not end a
+//! frame or move the plan off its grid: the plan resolves it at its own step, and only the boundary
+//! that ends the stretch is rendered at its own playhead ([`Published::ends_at`]).
 //! Appended events leave the plan alone from the first event they add onward only ([`adopt_revision`]).
 //! Anything the plan cannot absorb (a jump of the clock, a seek, a size, a source, a stalled worker)
 //! throws it away and asks for one Normal job, exactly as a still cue does.
@@ -104,6 +107,28 @@ pub(super) struct Published {
     pub aligns: Option<AlignSet>,
     /// The playhead the frame was rendered for: what a moving frame is right for.
     pub target_ms: i64,
+    /// The picture past `validity.until_ms` moves as well ([`Rendered::moves_on`]).
+    pub moves_on: bool,
+}
+
+impl Published {
+    /// The playhead from which the frame no longer stands for the clock, besides its age.
+    ///
+    /// A moving frame's window ends at the next event boundary, but a boundary INSIDE a moving
+    /// stretch (an event starts or ends while others still move) is one the plan resolves at its
+    /// own step, as it resolves everything else about the picture: a karaoke opening has an event
+    /// boundary every ~19 ms, far inside one render, and a frame that died at each of them would
+    /// never be shown or covered the screen (issue #1328). So such a frame stands until a newer
+    /// one replaces it or its age runs out ([`Mailbox::max_age_ms`]). Only the end of the stretch,
+    /// where the picture stops moving, is a boundary the frame ends at, and the plan renders that
+    /// one at its own playhead.
+    fn ends_at(&self) -> i64 {
+        if self.validity.animated && self.moves_on {
+            i64::MAX
+        } else {
+            self.validity.until_ms
+        }
+    }
 }
 
 /// What the worker made of a job.
@@ -116,8 +141,7 @@ pub(super) struct Rendered {
     /// renderer, which re-reads every font and says nothing of what a frame costs).
     pub cost_us: Option<u32>,
     /// The picture at the end of the frame's window moves too: the boundary is inside a moving
-    /// stretch, not its end. SCAFFOLD: nothing reads it yet.
-    #[allow(dead_code)]
+    /// stretch, not its end ([`Published::ends_at`]).
     pub moves_on: bool,
 }
 
@@ -429,8 +453,9 @@ impl Mailbox {
     /// One step after the frontier, but never closer than a `lead` to the playhead: a render
     /// started now lands by then. A frame that landed knows where its picture ends, and a
     /// frontier whose next step would pass that boundary plans the boundary itself instead, so
-    /// the end of a cue is rendered at its own playhead. A still picture after a moving one needs
-    /// no more frames, and nothing is planned beyond the horizon.
+    /// the end of a moving stretch is rendered at its own playhead (a boundary inside the stretch
+    /// is not one: [`Published::ends_at`]). A still picture after a moving one needs no more
+    /// frames, and nothing is planned beyond the horizon.
     fn next_target(&self) -> Option<i64> {
         let Plan { pace, now_ms } = self.plan?;
         let (step, lead) = (self.step_ms(pace), self.lead_ms(pace));
@@ -445,8 +470,8 @@ impl Mailbox {
             Some(Frontier::Flying(at)) => (at + step).max(floor),
             Some(Frontier::Landed(frame)) if frame.validity.animated => {
                 let target = (frame.target_ms + step).max(floor);
-                if frame.validity.until_ms < target {
-                    frame.validity.until_ms.max(now_ms)
+                if frame.ends_at() < target {
+                    frame.ends_at().max(now_ms)
                 } else {
                     target
                 }
@@ -559,11 +584,11 @@ impl Mailbox {
     }
 
     /// Whether a held frame can be shown at `now_ms`: a moving one from its own playhead on, for
-    /// as long as a plan's lateness allows and before its picture's boundary; a still one inside
-    /// its window.
+    /// as long as a plan's lateness allows and before the boundary that ends its stretch
+    /// ([`Published::ends_at`]); a still one inside its window.
     fn showable(frame: &Published, now_ms: i64, max_age: i64) -> bool {
         if frame.validity.animated {
-            (frame.target_ms..frame.validity.until_ms).contains(&now_ms) && now_ms - frame.target_ms <= max_age
+            (frame.target_ms..frame.ends_at()).contains(&now_ms) && now_ms - frame.target_ms <= max_age
         } else {
             frame.validity.contains(now_ms)
         }
@@ -583,7 +608,7 @@ impl Mailbox {
         let (lead, step, max_age) = (self.lead_ms(pace), self.step_ms(pace), self.max_age_ms(pace));
         // what can no longer be shown: past its boundary or too late
         self.held.retain(|f| {
-            let past = f.validity.until_ms <= now_ms || (f.validity.animated && f.target_ms + max_age < now_ms);
+            let past = f.ends_at() <= now_ms || (f.validity.animated && f.target_ms + max_age < now_ms);
             !past
         });
         let on_screen = self.published.as_ref().map_or(i64::MIN, |p| p.target_ms);
@@ -616,7 +641,7 @@ impl Mailbox {
         let slack = pace.frame_ms;
         let covered = published.target_ms - now_ms <= slack
             && now_ms - published.target_ms <= max_age
-            && now_ms < published.validity.until_ms;
+            && now_ms < published.ends_at();
         if !covered {
             let (lo, hi) = (now_ms - max_age, now_ms + lead + (self.workers as i64 + 1) * step);
             let coming = self.held.iter().any(|f| (lo..=hi).contains(&f.target_ms))
@@ -670,6 +695,7 @@ impl Mailbox {
             validity: Validity::ALWAYS,
             aligns: None,
             target_ms: 0,
+            moves_on: false,
         });
         frame
     }
@@ -730,7 +756,7 @@ impl Mailbox {
         match job.kind {
             Kind::Normal => {
                 self.answered = self.answered.max(job.seq);
-                let Some(Rendered { frame, validity, aligns, .. }) = outcome else { return Finished::default() };
+                let Some(Rendered { frame, validity, aligns, moves_on, .. }) = outcome else { return Finished::default() };
                 // A result stands unless the playhead was covered without it (`withdrawn`) or the
                 // timeline it was rendered for was replaced. A revision that moved meanwhile only
                 // appended events, which start ahead of the playhead, so the frame is still right
@@ -750,6 +776,7 @@ impl Mailbox {
                     validity,
                     aligns,
                     target_ms: job.now_ms,
+                    moves_on,
                 });
                 self.next = None;
                 self.held.clear();
@@ -761,7 +788,7 @@ impl Mailbox {
                 Finished { wake: changed, changed, pub_bytes, stale: false }
             }
             Kind::Ahead { after } => {
-                let Some(Rendered { frame, validity, aligns, .. }) = outcome else { return Finished::default() };
+                let Some(Rendered { frame, validity, aligns, moves_on, .. }) = outcome else { return Finished::default() };
                 let current = self.published.as_ref().is_some_and(|p| p.pub_id == after && p.key == job.key)
                     && self.requested_key() == Some(job.key)
                     && self.next.is_none();
@@ -778,12 +805,13 @@ impl Mailbox {
                     validity,
                     aligns,
                     target_ms: job.now_ms,
+                    moves_on,
                 });
                 // Nothing to show yet: the promotion on the UI thread is what the screen sees.
                 Finished { wake: false, changed, pub_bytes, stale: false }
             }
             Kind::Pipe { run } => {
-                let Some(Rendered { frame, validity, aligns, .. }) = outcome else { return Finished::default() };
+                let Some(Rendered { frame, validity, aligns, moves_on, .. }) = outcome else { return Finished::default() };
                 let stale = Finished { stale: true, ..Finished::default() };
                 let on_screen = self.published.as_ref().filter(|p| p.validity.animated && p.key.same_timeline(&job.key));
                 let standing = run == self.run
@@ -809,6 +837,7 @@ impl Mailbox {
                         validity,
                         aligns,
                         target_ms: job.now_ms,
+                        moves_on,
                     },
                 );
                 // Nothing to show yet: the tick at its playhead is what the screen sees.
