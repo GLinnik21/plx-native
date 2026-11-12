@@ -1160,7 +1160,8 @@ which the linking section explains is load-bearing rather than tidy.
 
 **Subtitles (summary — `docs/ass-subtitles.md` is the deep-dive; `rust-modules/media/src/player/CLAUDE.md`
 has the producers).** The client draws subtitles itself; the TV's subtitle engine is unreachable in
-buffer-feed. Every TEXT subtitle renders through the one bundled libass worker (`player::ass`),
+buffer-feed. Every TEXT subtitle renders through the one bundled libass renderer (`player::ass`: a
+primary worker, plus up to two helpers while a moving cue is pipelined, each with its own libass instance),
 whether it is authored ASS/SSA, an embedded SubRip/WebVTT/mov_text/SAMI track or a sidecar `.srt`/`.vtt`:
 a text track gets a header `text_ass::header` synthesizes from the viewer's size and position picks, and
 its cues become ASS events (`text_ass::convert`, `ass_source::push_text`). Such a source has
