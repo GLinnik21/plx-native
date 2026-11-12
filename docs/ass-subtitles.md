@@ -168,7 +168,8 @@ FULL size (a frame drawn smaller is taken back to it, see "A heavy moving stretc
 One worker cannot make thirty frames a second from an 80 ms render, so the plan asks for the workers
 that can (`workers_wanted`: the cost, at the size the stretch is drawn at, over the 33 ms floor) and the runtime starts helpers up to what the
 device allows: the primary and a helper per other core, at most `MAX_ASS_RENDERERS` (3), and no more
-than a quarter of the memory available holds (`pool::decide`: each renderer is the fonts it copies, the
+helpers than a quarter of the memory available holds (the primary is already open when the verdict is
+asked, so it is not charged again; `pool::decide`: each renderer is the fonts it copies, the
 bundled faces (the attached ones are the store's, shared), plus a bitmap cache; `/proc/meminfo`'s `MemAvailable` is read
 once for a selection, the first time a pipeline drawing at full size would want a helper (`pool_wanted`), and the verdict is logged as
 `ass: pool renderers=N of M font_bytes=.. per_renderer=.. mem_available=.. budget=..`; a heavy file on

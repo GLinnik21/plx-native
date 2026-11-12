@@ -10,9 +10,12 @@
 //! and asks here once per selection; nothing here reads a file or a clock.
 //!
 //! The number is a bound on helpers only: the primary always runs, so no subtitle is ever hidden by
-//! it, a pipeline merely has fewer workers to share its frames over.
+//! it, a pipeline merely has fewer workers to share its frames over. And the budget is spent on
+//! helpers only: the verdict is asked once the primary is open, so what the primary holds is already
+//! gone from `MemAvailable`. Charging it again counted it twice (TV, #1328: 164 MiB available, a
+//! 41 MiB budget and 28 MiB a renderer answered one renderer where a helper fit).
 
-/// The renderers may take this fraction (`1 / MEMORY_SHARE_DIVISOR`) of the memory available,
+/// The helpers may take this fraction (`1 / MEMORY_SHARE_DIVISOR`) of the memory available,
 /// together: the rest is the video pipeline's, the UI's and the headroom a spike needs. A share,
 /// not a number of megabytes, so a television with little free gets fewer helpers and one with
 /// plenty gets them all; the event log line says what each verdict was made of.
@@ -25,7 +28,7 @@ pub(super) struct Verdict {
     pub renderers: usize,
     /// What one renderer holds that another would not share: the fonts it copies and its bitmap cache.
     pub per_renderer: u64,
-    /// What the renderers may take together; `None` when the memory available is not known.
+    /// What the helpers may take together; `None` when the memory available is not known.
     pub budget: Option<u64>,
 }
 
@@ -37,14 +40,15 @@ fn cache_bytes() -> u64 {
 }
 
 /// How many renderers may run: `font_bytes` is what one copies in fonts (what the primary reports),
-/// `mem_available` what the device has free (`None` when it could not be read: nothing to gate on,
-/// the cores bound it), `ceiling` the most the cores and the pool's own cap allow. The primary
-/// always runs, so the answer is never below 1.
+/// `mem_available` what the device has free with the primary already open (`None` when it could not
+/// be read: nothing to gate on, the cores bound it), `ceiling` the most the cores and the pool's own
+/// cap allow. The primary always runs and is not charged to the budget, so the answer is 1 plus the
+/// helpers the budget holds, never below 1.
 pub(super) fn decide(font_bytes: u64, mem_available: Option<u64>, ceiling: usize) -> Verdict {
     let per_renderer = font_bytes.saturating_add(cache_bytes());
     let ceiling = ceiling.max(1);
     let budget = mem_available.map(|available| available / MEMORY_SHARE_DIVISOR);
-    let fits = budget.map_or(ceiling as u64, |budget| budget / per_renderer);
+    let fits = budget.map_or(ceiling as u64, |budget| 1 + budget / per_renderer);
     let renderers = usize::try_from(fits).unwrap_or(usize::MAX).clamp(1, ceiling);
     Verdict { renderers, per_renderer, budget }
 }
@@ -81,17 +85,17 @@ mod tests {
     #[test]
     fn light_fonts_get_every_renderer_the_device_has_cores_for() {
         let verdict = decide(2 * MIB, Some(800 * MIB), 3);
-        assert_eq!(verdict.renderers, 3, "a quarter of 800 MiB holds seven renderers of 26 MiB");
+        assert_eq!(verdict.renderers, 3, "a quarter of 800 MiB holds seven helpers of 26 MiB");
         assert_eq!(decide(2 * MIB, Some(800 * MIB), 2).renderers, 2, "and never more than the cores allow");
     }
 
     #[test]
     fn heavy_fonts_leave_the_pipeline_one_renderer_where_memory_is_short() {
         // the fixture: the opening's five display faces and the bundled ones, ~40 MiB in each renderer
-        let verdict = decide(40 * MIB, Some(400 * MIB), 3);
-        assert_eq!(verdict.renderers, 1, "a quarter of 400 MiB is 100 MiB: one renderer of 64 MiB, not two");
+        let verdict = decide(40 * MIB, Some(200 * MIB), 3);
+        assert_eq!(verdict.renderers, 1, "a quarter of 200 MiB is 50 MiB: no helper of 64 MiB");
         assert_eq!(decide(40 * MIB, Some(800 * MIB), 3).renderers, 3, "the same fonts fit where there is memory");
-        assert_eq!(decide(40 * MIB, Some(560 * MIB), 3).renderers, 2, "140 MiB holds two of 64");
+        assert_eq!(decide(40 * MIB, Some(400 * MIB), 3).renderers, 2, "100 MiB holds one helper of 64");
     }
 
     #[test]
@@ -101,6 +105,13 @@ mod tests {
         let unknown = decide(40 * MIB, None, 3);
         assert_eq!((unknown.renderers, unknown.budget), (3, None), "no number, no gate: the cores bound it");
         assert_eq!(decide(2 * MIB, Some(800 * MIB), 0).renderers, 1, "a ceiling of nothing is still the primary");
+    }
+
+    #[test]
+    fn the_primary_already_open_is_not_charged_to_the_budget() {
+        // measured on the TV (#1328): 164 MiB available with the primary open, 28 MiB a renderer
+        let verdict = decide(3 * MIB, Some(157 * MIB), 3);
+        assert_eq!(verdict.renderers, 2, "a 39 MiB budget holds one helper of 27 MiB beside the primary");
     }
 
     #[test]
