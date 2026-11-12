@@ -1875,7 +1875,9 @@ values stay 0 (unknown). These output facts allow routing to check the actual st
 attempt's device capabilities and the feed HLS reader's H.264/AAC codec contract instead of
 assuming the measured channel represents every tuner. Direct play requires both; other codecs
 take the conversion route below, refusing video copy when the reader cannot accept the source
-video codec.
+video codec. A playlist whose codecs no decision named converts too. Only when that conversion is
+refused as well is the session's own playlist read as H.264/AAC, the shape of every measured
+session: PMS 1.43.3 refused both decisions on the owner's TV while that playlist played.
 
 `TranscodeSpec::source` now supports either a library rating key or the tuned
 `/livetv/sessions/{uuid}` key. Live re-encode requests reuse the **same** universal-transcoder

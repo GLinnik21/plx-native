@@ -706,5 +706,6 @@ profile moves from 10782554660826991774 to 8095100275431231557 and the V6 profil
 lineup while the landing gate is armed, so a controlled run records no Live TV read. All three anchors were recorded
 again with `tests/focusfp.sh --rec --only 1,6,12` at the same cadence as the previous Live TV recording (350 ms keys,
 1 s boot settle, 1.5 s final settle, flow 6's idle sleeps halved), passed `plxnative-rec check` and were installed
-with `tools/plxnative-rec rerecord`, anchors retained. The alphabet is unchanged. `tests/replay_fixtures.py --window
+with `tools/plxnative-rec rerecord`, anchors retained. The alphabet is unchanged; its `TV` entry is no longer drawn by any anchor, because
+the pill appears only while the store holds a channel. `tests/replay_fixtures.py --window
 960x540` replays all three with `verdict=SAME` in Targets and Resolve on three consecutive runs.
