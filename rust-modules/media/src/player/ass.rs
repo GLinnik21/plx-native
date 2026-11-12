@@ -243,6 +243,11 @@ const MAX_ASS_RENDERERS: usize = 3;
 /// for this long gives the renderer back (and goes out of the mailbox's pacing) and opens it afresh
 /// when it is needed again.
 const HELPER_IDLE: Duration = Duration::from_secs(10);
+/// The niceness a worker runs at (`plx_base::task::lower_priority`): the first below the frame
+/// thread and the playback threads, a helper below it, so a moving cue's extra renderers take the
+/// cores the frame loop does not need and a late frame costs a subtitle update, not a video frame.
+const PRIMARY_NICE: i32 = 5;
+const HELPER_NICE: i32 = 10;
 
 pub struct Runtime {
     source_id: AtomicU64,
@@ -460,7 +465,9 @@ fn worker(slot: usize) {
         .threads[slot]
         .set(std::thread::current())
         .expect("one styled subtitle worker per slot");
-    super::ass_perf::log_worker_tid(slot);
+    let nice = if slot == 0 { PRIMARY_NICE } else { HELPER_NICE };
+    let niced = plx_base::task::lower_priority(nice);
+    super::ass_perf::log_worker_tid(slot, niced.then_some(nice));
     let mut engine = Engine::default();
     let mut pacing = Pacing::default();
     let mut idle_since = std::time::Instant::now();

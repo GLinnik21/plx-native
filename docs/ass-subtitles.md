@@ -262,8 +262,10 @@ thread's CPU clock (`CLOCK_THREAD_CPUTIME_ID`), so a phase whose wall figure is 
 waiting for the CPU (descheduled, or blocked), not computing; `images_p95` and `img_kpx_p95` are the `ASS_Image`s libass produced for a composed frame and
 the sum of their width x height in thousands of pixels, over the composed frames only. Attribute a slow
 render with these before optimising either half. The worker also writes
-one `assperf: worker w=<n> tid=<n>` line when it starts, which `tools/tv-sched-trace.sh --tid <n>`
-follows. The UI-thread texture upload is the `assup` span on `FRAMEDROP spans=` (spans print only on
+one `assperf: worker w=<n> tid=<n> nice=<n>` line when it starts, which `tools/tv-sched-trace.sh --tid <n>`
+follows. Workers run below the frame thread: the first at niceness +5, a helper at +10
+(`plx_base::task::lower_priority`, a per-thread `setpriority`, so only the worker is touched; the
+line has no `nice=` where the platform has none or the kernel refused it). The UI-thread texture upload is the `assup` span on `FRAMEDROP spans=` (spans print only on
 `FRAMEDROP` lines, with `/tmp/plxnative-framedrop` armed); each changed region uploads with a full
 `glTexImage2D` (a bucketed `glTexSubImage2D` variant that reused the texture was measured on the TV and gave no gain, #735). Nothing is
 logged while no styled source is selected, and a render costs one clock pair in Rust and six clock reads in the facade (three per clock). The worker renders

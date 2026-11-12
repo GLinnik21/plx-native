@@ -2,7 +2,7 @@
 //! while a styled-subtitle source is rendering.
 //!
 //! ```text
-//! assperf: worker w=0 tid=1234
+//! assperf: worker w=0 tid=1234 nice=5
 //! assperf: w=0 window_ms=1000 calls=3 changed=2 p95_us=1800 max_us=4100 job_p95_us=2100 job_max_us=9000 pub_bytes=123456 up_bytes=123456 jobs=2+1 ahead_hit=1 shown=0 late=0 stale=0 nwait_p95_us=0 nwait_max_us=0 lib_p95_us=900 comp_p95_us=800 lib_cpu_p95_us=870 comp_cpu_p95_us=790 images_p95=410 img_kpx_p95=620
 //! ```
 //!
@@ -441,16 +441,15 @@ pub(super) fn flush() {
     }
 }
 
-/// WORKER: once, at thread start: which worker this thread is (`slot`, 0 for the primary) and its
-/// kernel thread id, which `tools/tv-sched-trace.sh --tid` follows.
-pub(super) fn log_worker_tid(slot: usize) {
+/// WORKER: once, at thread start: which worker this thread is (`slot`, 0 for the primary), its
+/// kernel thread id, which `tools/tv-sched-trace.sh --tid` follows, and the niceness it now runs at
+/// (absent when the platform has none or the kernel refused it).
+pub(super) fn log_worker_tid(slot: usize, nice: Option<i32>) {
     SLOT.set(slot);
     AGG.with(|a| a.borrow_mut().slot = slot);
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    let tid = unsafe { libc::syscall(libc::SYS_gettid) }.to_string();
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
-    let tid = String::from("na");
-    plx_base::eventlog::log(&format!("assperf: worker w={slot} tid={tid}"));
+    let tid = plx_base::task::thread_id().map_or_else(|| String::from("na"), |t| t.to_string());
+    let nice = nice.map_or_else(String::new, |n| format!(" nice={n}"));
+    plx_base::eventlog::log(&format!("assperf: worker w={slot} tid={tid}{nice}"));
 }
 
 #[cfg(test)]

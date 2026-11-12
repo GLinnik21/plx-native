@@ -47,7 +47,7 @@ consumed CPU.
 ## Styled-subtitle (libass) cost
 
 With an ASS/SSA track rendering, the event log carries `assperf:` lines, one per worker `w` (the primary and up to two helpers a moving cue starts; `window_ms` the span the counts cover, render and whole-job p95/max, bytes
-published and uploaded in that window, Normal+Ahead `jobs`, `ahead_hit`, `shown` (pipeline frames promoted: updates a second), `late`, `stale`, `nwait`, the libass/composite split `lib_p95_us` / `comp_p95_us` (wall) and `lib_cpu_p95_us` / `comp_cpu_p95_us` (the worker thread's CPU time in the same phases: wall far above CPU means it waited for the CPU, not that it computed) with the `images_p95` / `img_kpx_p95` it drew, and `worker tid=`) and `FRAMEDROP spans=` gains `assup` (the
+published and uploaded in that window, Normal+Ahead `jobs`, `ahead_hit`, `shown` (pipeline frames promoted: updates a second), `late`, `stale`, `nwait`, the libass/composite split `lib_p95_us` / `comp_p95_us` (wall) and `lib_cpu_p95_us` / `comp_cpu_p95_us` (the worker thread's CPU time in the same phases: wall far above CPU means it waited for the CPU, not that it computed) with the `images_p95` / `img_kpx_p95` it drew, and `worker w= tid= nice=`) and `FRAMEDROP spans=` gains `assup` (the
 UI-thread GL upload; needs `/tmp/plxnative-framedrop` armed). Read these before attributing a late frame to subtitles; follow the worker
 with `tools/tv-sched-trace.sh --tid <tid>`. See `docs/ass-subtitles.md`.
 
