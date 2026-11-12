@@ -45,7 +45,7 @@ pub(crate) fn mount(n: usize) -> Box<dyn CardHarness> { Box::new(Harness::new((0
 impl Harness {
     fn new(movies: Vec<String>) -> Self {
         let mut store = plx_data::stores::person::PersonStore::default();
-        store.run(PersonCmd::Open { sid: ServerId::UNSET, key: "161".into(),
+        crate::registry::run_person_fixture(&mut store, PersonCmd::Open { sid: ServerId::UNSET, key: "161".into(),
             guid: "5d77682aeb5d26001f1de4b0".into(), name: "Idina Menzel".into(), thumb: String::new() });
         let mut h = Self { store, screen: new_screen(), movies, focus: None, press: 1.0, ms: 0 };
         h.install();

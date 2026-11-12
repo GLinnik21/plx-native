@@ -13,7 +13,7 @@ fn fill(keys: &mut ClientKeys, current: ServerId, facts: Option<&'static plx_ple
         |_| None, |_| facts, |_| None);
 }
 fn input<'a>(keys: &'a ClientKeys, session: &'a plx_plex::plex::session::Session) -> BrowseRosterInput<'a> {
-    BrowseRosterInput { keys, session, visible_generation: 0, settled: false, profile_key: "profile" }
+    BrowseRosterInput { tenure: 0, keys, session, visible_generation: 0, settled: false, profile_key: "profile" }
 }
 
 #[test]

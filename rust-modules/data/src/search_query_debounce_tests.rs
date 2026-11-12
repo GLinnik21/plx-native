@@ -289,7 +289,7 @@ fn an_empty_roster_settles_instead_of_spinning_forever() {
         State::Searching,
         "the query starts out pending, as typed"
     );
-    assert_eq!(nsrc(), 0, "no server can ever answer it");
+    assert_eq!(fixture_nsrc(), 0, "no server can ever answer it");
     assert!(
         owner.pump(SETTLE_S * 2.0),
         "the verdict changed, so the screen must repaint"

@@ -392,6 +392,8 @@ pub struct Stamped<H: Host> {
     pub fx: Fx<H>,
 }
 
+// Job-value and stamped-effect assertions share crate::assert_fx! from job.rs.
+
 /// A single machine emitting more than this in one `step` is a debug assertion (§3.3 step 6).
 pub const MAX_EMIT_PER_STEP: u32 = 32;
 
@@ -1057,6 +1059,35 @@ mod canon_tests {
         type Views<'a> = ();
         type Init = NoInit;
         type Memory = ();
+    }
+
+    #[test]
+    fn assert_fx_checks_stamp_order_absence_and_extras_without_effect_traits() {
+        let mut buf: Vec<Stamped<NoHost>> = Vec::new();
+        let mut present = Present::new();
+        {
+            let _step = plx_base::step::StepScope::enter();
+            let mut fx = Effects::new(&mut buf, MachineId::Nav, &mut present);
+            fx.push(Fx::Timer { id: TimerId(7), after_ms: 40 });
+            fx.push(Fx::App(()));
+        }
+        crate::assert_fx!(&buf, stamped [(MachineId::Nav, Fx::Timer { id, after_ms: 40 } if *id == TimerId(7)),
+            (MachineId::Nav, Fx::App(()))]);
+        let empty: Vec<Stamped<NoHost>> = Vec::new();
+        crate::assert_fx!(&empty, stamped []);
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+        assert!(catch_unwind(AssertUnwindSafe(|| crate::assert_fx!(&empty, stamped
+            [(MachineId::Nav, Fx::App(()))]))).is_err());
+        assert!(catch_unwind(AssertUnwindSafe(|| crate::assert_fx!(&buf, stamped []))).is_err());
+        assert!(catch_unwind(AssertUnwindSafe(|| crate::assert_fx!(&buf, stamped
+            [(MachineId::Nav, Fx::App(())), (MachineId::Nav, Fx::Timer { .. })]))).is_err());
+        assert!(catch_unwind(AssertUnwindSafe(|| crate::assert_fx!(&buf, stamped
+            [(MachineId::Nav, Fx::Timer { .. })]))).is_err());
+        buf[0].from = MachineId::Instance(InstanceId(17));
+        assert!(catch_unwind(AssertUnwindSafe(|| crate::assert_fx!(&buf, stamped
+            [(MachineId::Nav, Fx::Timer { .. }), (MachineId::Nav, Fx::App(()))]))).is_err());
+        crate::assert_fx!(&buf, stamped [(MachineId::Instance(InstanceId(17)), Fx::Timer { .. }),
+            (MachineId::Nav, Fx::App(()))]);
     }
 
     #[test]

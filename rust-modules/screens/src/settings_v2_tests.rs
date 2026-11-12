@@ -107,7 +107,7 @@ fn the_sentence_follows_the_focused_row_and_falls_back_to_the_pages() {
 #[test]
 fn the_root_opens_on_its_first_rows_sentence_with_nothing_fading() {
     let _serial = plx_base::testlock::serial();
-    let root = RootPage::new(EntryId(0), cx(None).views.directory);
+    let root = RootPage::new(EntryId(0), cx(None).views.directory, &crate::registry::capture_fixture());
     let first = root.form.selected_id().cloned();
     assert!(first.is_some(), "the root seats a row on mount");
     assert_eq!(root.follow.text(), sentence_for(first.as_ref()).as_ref());
@@ -117,7 +117,7 @@ fn the_root_opens_on_its_first_rows_sentence_with_nothing_fading() {
 #[test]
 fn moving_focus_moves_the_followed_sentence() {
     let _serial = plx_base::testlock::serial();
-    let mut root = RootPage::new(EntryId(0), cx(None).views.directory);
+    let mut root = RootPage::new(EntryId(0), cx(None).views.directory, &crate::registry::capture_fixture());
     select_root(&mut root, RootId::Language);
     assert_eq!(root.follow.text(), msg::settings_language_detail());
     assert!(root.follow.arrival() < 1.0, "a new sentence fades in");
@@ -246,7 +246,7 @@ fn the_root_asks_for_posters_while_favorite_libraries_has_focus_and_the_fan_is_e
     let sid = plx_plex::plex::ServerId::from_raw(0);
     let section = |key, kind| SectionView { sid: Some(sid), key, kind, row: SrcRow { pinned: true, ..Default::default() } };
     let empty = DirectorySnapshot::fixture(7, 0, vec![section(1, SecKind::Movie), section(2, SecKind::Show)]);
-    let mut root = RootPage::new(EntryId(0), empty.view());
+    let mut root = RootPage::new(EntryId(0), empty.view(), &crate::registry::capture_fixture());
     assert_eq!(root.form.selected_id(), Some(&RootId::Favourites), "premise: the root opens on Favorite libraries");
     let focus = Some(FocusKey { entry: EntryId(0), elem: root.state.sel.0 });
     let tick = |root: &mut RootPage, snapshot: &DirectorySnapshot| {

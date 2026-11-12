@@ -21,7 +21,14 @@ impl Host for TestHost {
     type Init = FixtureArg;
     type Memory = PageMemory;
 }
+impl crate::registry::ScreenInputsLike for TestHost {
+    fn screen_inputs<'a>(_cx: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs {
+        crate::registry::empty_fixture()
+    }
+}
+
 impl LibraryLike for TestHost {
+    fn clock_facts<'a>(_cx: &Cx<'a, Self>) -> Option<&'a plx_plex::plex::ClockFacts> { None }
     fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a> {
         cx.views.listing
     }
@@ -165,7 +172,7 @@ fn apply(
                 Some(stores.person.run(command))
             }
             Fx::App(AppFx::Store(_, StoreCmd::Search(command))) => {
-                Some(stores.search_run(command, directory))
+                Some(stores.search_run_for_test(command, directory))
             }
             Fx::App(AppFx::Store(_, StoreCmd::ViewState(command))) => {
                 Some(stores.viewstate_run(command, directory, &plx_data::pms::registry_keys_for_test(), 0).changed)

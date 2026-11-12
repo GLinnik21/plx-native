@@ -125,10 +125,7 @@ impl WatchlistIo for Script {
     fn facts_gen(&self) -> u32 {
         self.facts.load(Ordering::SeqCst)
     }
-    fn guid_of(&self, server: ServerId, rk: &str) -> Option<String> {
-        self.record_reads.fetch_add(1, Ordering::SeqCst);
-        self.records.lock().unwrap().get(&(server, rk.to_owned())).cloned()
-    }
+
     fn today(&self) -> Option<String> {
         Some("2026-10-15".into())
     }
@@ -165,21 +162,17 @@ fn inline(_: &str, f: Box<dyn FnOnce() + Send + 'static>) -> bool {
 
 /// A spawn that refuses every job: the store's worker never starts, so its first read stays ON ITS
 /// WAY (the store retries on its frame counter and is refused again; it never blocks).
-fn refuse(_: &str, _: Box<dyn FnOnce() + Send + 'static>) -> bool {
-    false
-}
+
 
 /// Hold the Watchlist's reads: until [`release_reads`] the list is `Loading`, the answer a real
 /// plex.tv has not given yet (a scripted one answers inside the call).
 pub(super) fn hold_reads(rig: &mut Bridge) {
-    let store = std::mem::take(rig.watchlist_for_test());
-    *rig.watchlist_for_test() = store.with_spawn_for_test(refuse);
+    rig.store_runner.hold_watchlist_streams(true);
 }
 
 /// Let the held read run: the store reads the list again and the next frames land the rows.
 pub(super) fn release_reads(rig: &mut Bridge) {
-    let store = std::mem::take(rig.watchlist_for_test());
-    *rig.watchlist_for_test() = store.with_spawn_for_test(inline);
+    rig.store_runner.hold_watchlist_streams(false);
     rig.watchlist_for_test().run_with_input(plx_data::stores::watchlist::WatchlistCmd::Open, &Bridge::watchlist_input());
 }
 
@@ -188,6 +181,7 @@ pub(super) fn rig_over(script: &Arc<Script>) -> (Dispatcher<AppHost>, Bridge) {
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     *rig.watchlist_for_test() = WatchlistStore::with_io(script.clone()).with_spawn_for_test(inline);
+    rig.store_runner.set_watchlist_write_io(script.clone());
     rig.seat_watchlist_account_for_test(true);
     rig.stores.catalog = CatalogStore::with_io(Arc::new(Discover));
     super::nav_root(&mut d, AppArg::Home);
@@ -207,6 +201,7 @@ pub(super) fn feed_catalog(rig: &mut Bridge, d: &mut Dispatcher<AppHost>) {
 pub(super) fn settle(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, from: u32) {
     for i in 0..6 {
         rig.watchlist_pump();
+        rig.store_runner.run_held_watchlist_writes();
         rig.watchlist_feed(d);
         feed_catalog(rig, d);
         super::frame(d, rig, tick(from + i), vec![]);
@@ -482,6 +477,64 @@ fn the_catalog_status_follows_the_tile_state_and_moves_when_it_does() {
 /// A card row that carries no catalog id is resolved through its own server record
 /// (`client.metadata(rk or show_rk).guid`): the menu opened first omits the row and asks, the next
 /// one offers it, and its press ends in the write for the RESOLVED id.
+    #[test]
+    fn watchlist_write_live_and_held_finish_in_the_emitting_drain_and_cancel_queued() {
+        use plx_data::stores::watchlist::{WatchlistCmd, WatchlistStore};
+        use plx_data::stores::StoreJob;
+        use crate::app::adapters::stores::{StoreRunner, launch_watchlist_write};
+        use plx_data::watchlist::{WatchlistInput, ledger::Intent};
+        let _serial = plx_base::testlock::serial();
+        fn inline(_: &str, f: Box<dyn FnOnce() + Send + 'static>) -> bool { f(); true }
+        for live in [false, true] {
+            let io = Script::new(&[1]);
+            let mut store = WatchlistStore::with_io(io.clone()).with_spawn_for_test(inline);
+            let input = WatchlistInput::for_test(1);
+            store.run_with_input(WatchlistCmd::Open, &input);
+            store.pump();
+            store.pump();
+            store.run(WatchlistCmd::Press { hex: [1; 12], intent: Intent::Remove });
+            store.pump();
+            let job = store.take_jobs().pop().expect("write emitted");
+            let StoreJob::WatchlistWrite(ref request, _) = job else { panic!("write job") };
+            let captured = input.auth().unwrap();
+            assert_eq!(request.req.auth.generation, captured.generation);
+            assert_eq!(request.req.auth.client_id, captured.client_id);
+            assert_eq!(request.req.auth.credential, captured.credential);
+            assert_eq!(request.req.auth.user.id, captured.user.id);
+            assert_eq!(request.req.auth.user.uuid, captured.user.uuid);
+            assert_eq!(request.req.tag.profile_gen, captured.generation);
+            assert_eq!(request.req.tag.req, request.addr.req.0);
+            let mut held = StoreRunner::held_all();
+            held.set_watchlist_write_io(io.clone());
+            if live {
+                let StoreJob::WatchlistWrite(job, port) = job else { panic!("write job") };
+                assert_eq!(job.req.tag.profile_gen, 1);
+                assert_eq!(job.req.auth.generation, 1);
+                launch_watchlist_write(job, port, io.clone());
+                plx_base::task::drain_workers_for_test();
+            } else {
+                held.start(job);
+                assert!(io.writes().is_empty());
+                assert_eq!(held.run_held_watchlist_writes(), 1);
+            }
+            assert_eq!(io.writes(), vec![([1; 12], Intent::Remove)]);
+            assert!(store.land_write_results(plx_machine::landgate::fixture_gate(), &WatchlistInput::profile_for_test(1)));
+            assert!(!store.land_write_results(plx_machine::landgate::fixture_gate(), &WatchlistInput::profile_for_test(1)));
+        }
+        let io = Script::new(&[1]);
+        let mut store = WatchlistStore::with_io(io.clone()).with_spawn_for_test(inline);
+        store.run_with_input(WatchlistCmd::Open, &WatchlistInput::for_test(1));
+        store.pump(); store.pump();
+        store.run(WatchlistCmd::Press { hex: [1; 12], intent: Intent::Remove });
+        store.pump();
+        let mut held = StoreRunner::held_all();
+        held.set_watchlist_write_io(io.clone());
+        held.start(store.take_jobs().pop().unwrap());
+        store.run(WatchlistCmd::Reset);
+        assert_eq!(held.run_held_watchlist_writes(), 1);
+        assert!(io.writes().is_empty(), "cancelled queued write must not touch account IO");
+    }
+
 #[test]
 fn a_card_row_with_no_guid_resolves_through_its_record_and_the_press_writes_it() {
     let _serial = plx_base::testlock::serial();
@@ -499,6 +552,16 @@ fn a_card_row_with_no_guid_resolves_through_its_record_and_the_press_writes_it()
     let local = plx_data::pms::PmsMovie { sid, rk: "12".into(), kind: 0, ..Default::default() };
     for item in [&movie, &episode, &local] {
         assert!(rig.watchlist_card_face(item).is_none(), "nothing is known until the record is read");
+    }
+    rig.watchlist_pump();
+    use plx_machine::job::Port;
+    for job in rig.store_runner.take_held_watchlist_resolves() {
+        let plx_data::stores::StoreJob::WatchlistResolve(job, port) = job else { unreachable!() };
+        assert!(port.start());
+        script.record_reads.fetch_add(1, Ordering::SeqCst);
+        let guid = script.records.lock().unwrap().get(&(job.req.sid, job.req.rk.clone())).cloned();
+        let answer = guid.map(|g| plx_plex::plex::resolve_catalog_hex(None, || Some(g)));
+        port.done(job.addr, plx_data::stores::watchlist_job::ResolveEnd::Answer(answer));
     }
     settle(&mut d, &mut rig, 10);
     assert_eq!(script.record_reads.load(Ordering::SeqCst), 3, "one record read per title, the episode's SHOW record");

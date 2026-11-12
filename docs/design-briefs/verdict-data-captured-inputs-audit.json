@@ -1,0 +1,137 @@
+{
+  "schema": 1,
+  "status": "SOURCE COMPLETE / TEST READY: runtime and full gates pending parent serialization",
+  "authority": "C:/Users/gleb_/Developer/plx-native",
+  "targets": [
+    ".",
+    ".worktrees/sans_io-6a4bcd6a42",
+    ".worktrees/verdict-integration"
+  ],
+  "families": {
+    "Search": {
+      "retired_globals": 14,
+      "remaining_globals": 0
+    },
+    "Metadata": {
+      "retired_globals": 5,
+      "remaining_globals": 0
+    },
+    "PMS": {
+      "retired_globals": 3,
+      "remaining_globals": 0
+    },
+    "ViewState": {
+      "retired_globals": 2,
+      "remaining_globals": 0
+    }
+  },
+  "aggregate_counts": [
+    {
+      "tree": ".",
+      "counts": {
+        "workers": 4,
+        "globals": 19,
+        "forks": 62,
+        "fxlanes": 11
+      }
+    },
+    {
+      "tree": ".worktrees/sans_io-6a4bcd6a42/",
+      "counts": {
+        "workers": 4,
+        "globals": 19,
+        "forks": 62,
+        "fxlanes": 11
+      }
+    },
+    {
+      "tree": ".worktrees/verdict-integration/",
+      "counts": {
+        "workers": 4,
+        "globals": 19,
+        "forks": 62,
+        "fxlanes": 11
+      }
+    }
+  ],
+  "shared_sync": {
+    "symbols_per_mirror": 27,
+    "owned_symbol_copies": 54,
+    "root_owned_hunks_mirrored": true,
+    "person_owned_symbols_preserved": true,
+    "session_capture": "ONE retained StoreSessionCapture plus ONE existing ClientKeys; capture before command/pump/publication; separate captured tape-active and controlled policy; explicit account tenure"
+  },
+  "integration_preserved_differences": {
+    "rust-modules/data/src/pms.rs": "pre-existing clearLogo and secondary-genre fields/projection/tests",
+    "rust-modules/data/src/metadata.rs": "pre-existing clearLogo/NowPlaying UI additions and credit documentation",
+    "rust-modules/screens/src/library/deferred_tests.rs": "pre-existing closing_sources_menu_does_not_replace_a_newer_library_choice regression"
+  },
+  "verification": {
+    "pre_fix_source_oracle": "FAIL: ambient roster/generation/session facts determined behavior despite captured keys",
+    "four_family_python_oracle": "PASS in all 3 trees",
+    "person_python_oracle": "7/7 PASS in all 3 trees",
+    "tree_sitter_source_syntax": "28 owned ROOT Rust files plus 12 mirror main/shared files: no parse errors",
+    "rust_compilation": "NOT RUN: reserved for parent",
+    "runtime_replay_clippy_full_gates": "NOT RUN: reserved for parent",
+    "staging_commits": "NONE by this lane",
+    "new_rust_regression_cases": 8
+  },
+  "protected": {
+    "historical_audit": "docs/design-briefs/verdict-runtime-correction-sync-32e-audit.json untouched",
+    "source_bootstrap_replay_fixtures_v5_v6_goldens": "untouched; Detail.source_credit is serde(skip, default)",
+    "historical_ui_fp": "5612583773909772043",
+    "v6_ui_fp": "14623229906352324261",
+    "unix_ms": "no field introduced",
+    "other_user_changes": "preserved; no reset/stash/clean/staging/commit"
+  },
+  "logical_path_count": 39,
+  "logical_paths": [
+    "ci/allow/globals/data-metadata.txt",
+    "ci/allow/globals/data-pms.txt",
+    "ci/allow/globals/data-search.txt",
+    "ci/allow/globals/data-viewstate.txt",
+    "docs/design-briefs/verdict-data-captured-inputs-audit.json",
+    "docs/design-briefs/verdict-data-captured-inputs-source-oracle.py",
+    "docs/sans-io-guide.md",
+    "docs/sans-io.md",
+    "rust-modules/data/src/captured_store_fixture.rs",
+    "rust-modules/data/src/lib.rs",
+    "rust-modules/data/src/metadata.rs",
+    "rust-modules/data/src/metadata/captured_inputs_tests.rs",
+    "rust-modules/data/src/metadata_detail_mailbox_tests.rs",
+    "rust-modules/data/src/metadata_watch_state_tests.rs",
+    "rust-modules/data/src/pms.rs",
+    "rust-modules/data/src/pms/captured_inputs_tests.rs",
+    "rust-modules/data/src/search.rs",
+    "rust-modules/data/src/search/captured_inputs_tests.rs",
+    "rust-modules/data/src/search/recents.rs",
+    "rust-modules/data/src/search/scope.rs",
+    "rust-modules/data/src/search_account_scope_tests.rs",
+    "rust-modules/data/src/search_job_tests.rs",
+    "rust-modules/data/src/search_paging_tests.rs",
+    "rust-modules/data/src/search_query_debounce_tests.rs",
+    "rust-modules/data/src/search_test_support.rs",
+    "rust-modules/data/src/stores/metadata.rs",
+    "rust-modules/data/src/stores/mod.rs",
+    "rust-modules/data/src/stores/search.rs",
+    "rust-modules/data/src/stores/viewreconcile_parents_tests.rs",
+    "rust-modules/data/src/stores/viewreconcile_tests.rs",
+    "rust-modules/data/src/viewstate.rs",
+    "rust-modules/data/src/viewstate_captured_inputs_tests.rs",
+    "rust-modules/plex/src/plex/client_keys.rs",
+    "rust-modules/plex/src/plex/mod.rs",
+    "rust-modules/screens/src/library/deferred_tests.rs",
+    "rust-modules/src/app/bridge.rs",
+    "rust-modules/src/app/search_owned_tests.rs",
+    "rust-modules/src/app/search_publication_tests.rs",
+    "tests/test_harness.py"
+  ],
+  "source_oracle_commands": [
+    "python docs/design-briefs/verdict-data-captured-inputs-source-oracle.py",
+    "python docs/design-briefs/verdict-person-captured-inputs-source-oracle.py",
+    "python .worktrees/sans_io-6a4bcd6a42/docs/design-briefs/verdict-data-captured-inputs-source-oracle.py",
+    "python .worktrees/sans_io-6a4bcd6a42/docs/design-briefs/verdict-person-captured-inputs-source-oracle.py",
+    "python .worktrees/verdict-integration/docs/design-briefs/verdict-data-captured-inputs-source-oracle.py",
+    "python .worktrees/verdict-integration/docs/design-briefs/verdict-person-captured-inputs-source-oracle.py"
+  ]
+}

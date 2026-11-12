@@ -768,7 +768,7 @@ fn the_root_page_reads_the_stored_setting_into_its_row() {
     let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
     let stored = UnderPosters { title: true, details: parts(&[P::Genre]), show_details: DetailParts::NONE, sort_value: false };
     let _live = Live::set(stored);
-    let page = RootPage::new(EntryId(0), test_support::cx(None).views.directory);
+    let page = RootPage::new(EntryId(0), test_support::cx(None).views.directory, &crate::registry::capture_fixture());
     assert_eq!(page.state.under_posters, stored);
 }
 
@@ -1009,7 +1009,7 @@ fn the_settings_root_asks_for_the_missing_poster_only_on_its_under_posters_row_a
     // The Libraries section (and the Under posters row in it) is there only for a signed-in account.
     let _session = multi_user_session("under-posters-root-ask");
     let snapshot = movies_only_directory();
-    let mut root = RootPage::new(EntryId(0), snapshot.view());
+    let mut root = RootPage::new(EntryId(0), snapshot.view(), &crate::registry::capture_fixture());
     let on = |elem: u32| Some(FocusKey { entry: EntryId(0), elem });
     let tick = |root: &mut RootPage, focus| {
         let c = cx_with(focus, snapshot.view());

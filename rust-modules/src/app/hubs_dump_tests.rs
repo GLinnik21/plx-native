@@ -172,7 +172,7 @@ fn the_controlled_home_discovery_take_waits_for_a_request_it_owes_under_dump_mod
     // answer.
     rig.stores.browse.borrow().observe_pin_write();
     crate::app::adapters::stores::refill_client_keys(&mut rig.client_keys);
-    let input = plx_data::browse::BrowseRosterInput {
+    let input = plx_data::browse::BrowseRosterInput { tenure: 0,
         keys: &rig.client_keys, session: &plx_plex::plex::session::peek(),
         visible_generation: plx_plex::plex::session::visible_generation(),
         settled: plx_plex::plex::session::peek_settled().is_some(),

@@ -12,7 +12,7 @@ fn store_current(r: &World) -> Option<usize> {
     r.bridge.stores.browse.borrow().observe_pin_write();
     let mut keys = plx_plex::plex::ClientKeys::default();
     crate::app::adapters::stores::refill_client_keys(&mut keys);
-    let input = plx_data::browse::BrowseRosterInput {
+    let input = plx_data::browse::BrowseRosterInput { tenure: 0,
         keys: &keys, session: &plx_plex::plex::session::peek(),
         visible_generation: plx_plex::plex::session::visible_generation(),
         settled: plx_plex::plex::session::peek_settled().is_some(),

@@ -227,11 +227,11 @@ fn clear() {
     // The *Also available* store outlives a page, so a test that seeded it hands the next one an
     // empty one — the addressed store cannot MIS-answer, but it can answer for an item a later
     // test happens to reuse the pair of.
-    test_store().run(plx_data::stores::metadata::MetadataCmd::AltInstall {
+    test_store().run_with_keys(plx_data::stores::metadata::MetadataCmd::AltInstall {
         sid: plx_plex::plex::ServerId::UNSET,
         rk: String::new(),
         copies: Vec::new(),
-    });
+    }, &plx_data::pms::registry_keys_for_test());
 }
 
 fn step(
@@ -1570,7 +1570,7 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
                     // The *Also available* control's gate is the STORE, addressed by the page's own
                     // pair — seeded here the way a landed cross-source resolve seeds it, never by
                     // opening the panel.
-                    test_store().run(plx_data::stores::metadata::MetadataCmd::AltInstall {
+                    test_store().run_with_keys(plx_data::stores::metadata::MetadataCmd::AltInstall {
                         sid,
                         rk: "hero-hit".into(),
                         copies: if alt {
@@ -1581,7 +1581,7 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
                         } else {
                             Vec::new()
                         },
-                    });
+                    }, &plx_data::pms::registry_keys_for_test());
                     let mut screen = bare(&_guard, sid, "hero-hit");
                     let set = screen.hero_set(test_store().view());
                     assert_eq!(

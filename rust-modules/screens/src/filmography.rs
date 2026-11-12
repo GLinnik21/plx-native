@@ -1165,7 +1165,7 @@ mod tests {
     #[test]
     fn a_fresh_filmography_reads_only_the_person_view_it_is_given() {
         let mut first = plx_data::stores::person::PersonStore::default();
-        first.run(plx_data::stores::person::PersonCmd::Open {
+        crate::registry::run_person_fixture(&mut first, plx_data::stores::person::PersonCmd::Open {
             sid: ServerId::UNSET, key: "person".into(), guid: "guid".into(),
             name: "First owner".into(), thumb: String::new(),
         });

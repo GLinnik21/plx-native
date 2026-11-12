@@ -8,15 +8,21 @@ use super::test_support::*;
 #[test]
 fn profile_publication_has_one_writer_and_no_resource_scope_allocator() {
     let source = include_str!("session.rs");
-    let publication = source.split("/// Session file locations").next().unwrap();
+    let (publication, _) = source.split_once("/// Session file locations").expect("publication boundary");
     assert!(!publication.contains("pub fn set_current("));
     assert!(!publication.contains("wrapping_add("));
-    assert!(!publication.contains("fetch_add("));
-    assert_eq!(publication.matches("*CURRENT.lock()").count(), 1);
-    let writer = publication.split("impl ProfilePublisher {").nth(1).unwrap()
-        .split("/// Resource fixtures").next().unwrap();
-    assert!(writer.contains("*CURRENT.lock()"));
-    assert!(writer.contains("CurrentProfile { user, generation, stamp }"));
+    // This revision wakes screen observers; it never supplies CurrentProfile::generation.
+    let observer = "CURRENT_PUBLICATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);";
+    assert_eq!(publication.matches(observer).count(), 1);
+    assert!(!publication.replace(observer, "").contains("fetch_add("));
+    assert_eq!(publication.matches("CURRENT.lock()").count(), 2);
+    assert_eq!(publication.matches("let mut current = CURRENT.lock()").count(), 1);
+    assert_eq!(publication.matches("*current = Some(").count(), 1);
+    let (_, writer) = publication.split_once("impl ProfilePublisher {").expect("profile writer");
+    let (writer, _) = writer.split_once("/// Resource fixtures").expect("production writer boundary");
+    assert!(writer.contains("let mut current = CURRENT.lock()"));
+    assert!(writer.contains("*current = Some(std::sync::Arc::new(CurrentProfile { user: user.clone(), generation, stamp }))"));
+    assert!(writer.contains("*scoped = std::sync::Arc::new(CurrentProfile { user, generation, stamp })"));
 }
 
 #[test]

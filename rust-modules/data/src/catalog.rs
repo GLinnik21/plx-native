@@ -11,7 +11,7 @@
 
 use crate::watchlist::model::Kind;
 use crate::watchlist::WatchlistAuth;
-use plx_plex::plex::account::AccountClient;
+
 use plx_plex::plex::watchlist::{CatalogItem, WatchKind, WatchlistError};
 
 /// Is the title on the signed-in profile's Watchlist? Read from `WatchlistStore` (never fetched by
@@ -92,20 +92,9 @@ pub trait CatalogIo: Send + Sync {
     fn today(&self) -> Option<String>;
 }
 
-/// The production seam: libcurl through `plex::watchlist`, as the identity the job carries.
-pub struct LiveCatalogIo;
-
-impl CatalogIo for LiveCatalogIo {
-    fn fetch(&self, auth: &WatchlistAuth, hex: &str) -> Result<CatalogItem, WatchlistError> {
-        let client = AccountClient::new(&auth.client_id, Some(&auth.credential));
-        let mut transport = client.watchlist_transport();
-        let answer = client.catalog_item(hex, &mut transport);
-        answer
-    }
-    fn today(&self) -> Option<String> {
-        <crate::watchlist::LiveIo as crate::watchlist::WatchlistIo>::today(&crate::watchlist::LiveIo)
-    }
-}
+#[path = "catalog_ports.rs"]
+mod ports;
+pub use ports::LiveCatalogIo;
 
 /// The page's record from the service's item. The page opens for a title no reachable server
 /// holds, so a released title reads "not on any server" and one whose date is still ahead reads

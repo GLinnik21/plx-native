@@ -102,7 +102,7 @@ fn controlled_discovery(io: &mut HomeIo, runner: &mut StoreRunner, stores: &mut 
     let visible_generation = plx_plex::plex::session::visible_generation();
     let settled = plx_plex::plex::session::peek_settled().is_some();
     let profile_key = plx_plex::plex::session::current_profile_key();
-    stores.browse_controlled_discover(&plx_data::browse::BrowseRosterInput {
+    stores.browse_controlled_discover(&plx_data::browse::BrowseRosterInput { tenure: 0,
         keys: &keys, session: &session, visible_generation, settled, profile_key: &profile_key,
     });
     for job in stores.take_jobs_of(plx_data::stores::StoreId::Browse) {
@@ -575,7 +575,7 @@ fn controlled_discovery_replays_refusal_retry_and_success_with_exact_identity() 
         let visible_generation = plx_plex::plex::session::visible_generation();
         let settled = plx_plex::plex::session::peek_settled().is_some();
         let profile_key = plx_plex::plex::session::current_profile_key();
-        let input = plx_data::browse::BrowseRosterInput {
+        let input = plx_data::browse::BrowseRosterInput { tenure: 0,
             keys: &keys, session: &session, visible_generation, settled, profile_key: &profile_key,
         };
         stores.browse.borrow_mut().prepare_discovery_replay_for_test(

@@ -95,7 +95,7 @@ fn production_bridges_do_not_share_browse_state_or_landings() {
     // the page read it left, started by the runner (which resolves the key and starts the worker).
     crate::app::adapters::stores::refill_client_keys(&mut first.client_keys);
     first.stores.browse.borrow().observe_pin_write();
-    let input = plx_data::browse::BrowseRosterInput {
+    let input = plx_data::browse::BrowseRosterInput { tenure: 0,
         keys: &first.client_keys, session: &plx_plex::plex::session::peek(),
         visible_generation: plx_plex::plex::session::visible_generation(),
         settled: plx_plex::plex::session::peek_settled().is_some(),
@@ -279,12 +279,14 @@ fn session_cancel_preserves_carried_receipts_until_unique_discard() {
     let mut init = plx_session::auth::SessionInit::captured(plx_plex::plex::session::Session {
         client_id: "synthetic-client".into(), ..Default::default()
     });
+    init.phase = plx_session::auth::Phase::Discovering;
     let key = SessionWorkKey { epoch: 1, op: SessionOp::Login };
     init.next_req = 1;
     init.pending.insert(1, Pending { key, expected: Identity::of(&init.persisted),
         lifecycle: None, last_arrival: None, phase: StreamPhase::Running, capture: None,
         admission: AdmissionState::Awaiting(AdmissionId(1)) });
     let mut rig = Bridge::for_session_test(init);
+    assert!(rig.session.work_is_current(1, key, AdmissionId(1)), "rig: the discovering attempt owns this carried work");
     rig.session_adapter.launch(RequestId(1), key, true, |job| { job(); true }, |output| {
         assert!(output.progress(AuthProgress::Registry(RegistryProgress::Install {
             epoch: 1, expected: None, sources: Vec::new(), primary: None,
