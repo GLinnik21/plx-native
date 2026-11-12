@@ -273,7 +273,6 @@ fn session_app_fingerprint_probe_only() {
     assert_eq!(prospective_fp_v6, FP_V6);
     assert_eq!(state_fp(), prospective_fp_v6);
     assert_eq!(frozen["prospective_fp_v6"].as_u64(), Some(FP_V6));
-    // State compatibility belongs to the preflight below, while old anchors await re-recording.
     for manifest in [
         include_str!("../../../tests/fixtures/replay/1-boot-home-chip-grid/manifest.json"),
         include_str!("../../../tests/fixtures/replay/6-settings-family/manifest.json"),
@@ -281,6 +280,7 @@ fn session_app_fingerprint_probe_only() {
     ] {
         let header: Value = serde_json::from_str(manifest).unwrap();
         assert_eq!(header["schema"].as_u64(), Some(3));
+        assert_eq!(header["state_fp"].as_u64(), Some(prospective_fp_v6));
     }
 }
 

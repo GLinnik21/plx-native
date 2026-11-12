@@ -16,7 +16,8 @@ fn session_codec_profiles_require_canonical_exact_matching_envelopes() {
     assert_eq!(Initial::decode_profile(current.clone(), initial.hash(), v6).unwrap().hash(), initial.hash());
     assert!(Initial::decode_profile(current.clone(), initial.hash(), prior).is_err());
     assert!(Initial::decode_profile(legacy.clone(), initial.hash(), v6).is_err());
-    for historic in [5612583773909772043u64, 14623229906352324261u64, 4239819007634745513u64, 741022075462080307u64] {
+    for historic in [5612583773909772043u64, 14623229906352324261u64, 4239819007634745513u64, 741022075462080307u64,
+        10782554660826991774u64, 4886212433183674784u64] {
         assert!(Initial::decode_profile(legacy.clone(), initial.hash(), historic).is_err());
         assert!(Initial::decode_profile(current.clone(), initial.hash(), historic).is_err());
     }

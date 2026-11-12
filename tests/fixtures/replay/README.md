@@ -698,3 +698,13 @@ are now V6 recordings (`session` is `{"codec":6,"boot":...}`). The closed alphab
 (`_sources.live_tv_tab`), the pill's label, which every recording that draws the strip measures.
 `tests/replay_fixtures.py --window 960x540` replays all three with `verdict=SAME` in Targets and Resolve and
 every difference counter at zero on three consecutive runs.
+
+Live TV's own store and page move the census again: `LiveTvScreen` gains its status and the On Now airings, and its
+two sections are shelves (`SCREEN_SHAPES_PIN` `0x3b4c_95c5_a083_ffa1` -> `0x5173_1e89_1206_fc90`). The legacy
+profile moves from 10782554660826991774 to 8095100275431231557 and the V6 profile from 4886212433183674784 to
+18191931659807943619; the old values join the historic list the codec test refuses. The Live TV store asks no
+lineup while the landing gate is armed, so a controlled run records no Live TV read. All three anchors were recorded
+again with `tests/focusfp.sh --rec --only 1,6,12` at the same cadence as the previous Live TV recording (350 ms keys,
+1 s boot settle, 1.5 s final settle, flow 6's idle sleeps halved), passed `plxnative-rec check` and were installed
+with `tools/plxnative-rec rerecord`, anchors retained. The alphabet is unchanged. `tests/replay_fixtures.py --window
+960x540` replays all three with `verdict=SAME` in Targets and Resolve on three consecutive runs.
