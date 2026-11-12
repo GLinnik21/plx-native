@@ -262,7 +262,10 @@ impl Store {
         // An authored track takes the colour pick in its white-primary styles (`ass_ink`): the header the
         // renderer holds is rebuilt from the FILE's bytes when the pick moves, the track keeps its id and
         // its events, and the engine swaps it in place (`ass::restyles`). A pick that changes nothing in
-        // this header (a grey, a size, a file with no white style) bumps nothing.
+        // this header (a grey, a size, a file with no white style) bumps nothing. The scan and the copy are
+        // bounded by `MAX_HEADER_BYTES` (a header over it is never admitted), the same order of work as the
+        // header a text track synthesizes just above; a sidecar script, whose file is up to
+        // `SIDECAR_MAX_BYTES`, does this on a worker (`sidecar::start_recolour`).
         if let (Some(ink), Some(source)) = (self.authored.get_mut(&track), self.tracks.get_mut(&track)) {
             if ink.tone != style.tone {
                 ink.tone = style.tone;

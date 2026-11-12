@@ -9,7 +9,7 @@ subtitles > Subtitle color, or the Color section of the player's Subtitles menu)
 the drawn bitmaps. A COLOR tone (Yellow) is different: it is the default colour of a synthesized
 text track (below), and in an authored ASS/SSA script (embedded, or a sidecar file, including a
 converted SubRip that reaches the app as an ASS track) it replaces the PrimaryColour of every style
-whose primary is exactly pure white (`&H00FFFFFF`, in any spelling, alpha 0): white is the default
+whose primary is exactly pure white (`&H00FFFFFF`, in any spelling libass reads: `&h` or `0x` hex, or decimal; alpha 0): white is the default
 ink, so it follows the pick. `player::ass_ink` does the rewrite on the header that reaches libass
 (the file's own bytes stay the reopen identity), through `SubtitleTone::text_rgb8`, the one palette.
 A style whose primary is any other colour, an inline `\c` override (explicit white included), the
