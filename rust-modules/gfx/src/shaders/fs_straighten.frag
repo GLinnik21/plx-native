@@ -20,8 +20,13 @@
 // the graphics plane should read it as the nothing it is. A colour above its alpha (an additive rim)
 // saturates at the 8-bit write, which is all a straight picture can say for it.
 //
-// mediump on purpose: the framebuffer is 8 bits a channel, which fp16 holds exactly, and `1 / a` is at
-// most 255, inside fp16's range with a relative error under 5e-4 - a tenth of a code at the top.
+// PRECISION: the divide runs in highp (the fragment stage's highp is established on this device:
+// `fs_field_panel.frag` declares highp varyings and uniforms). An fp16 `1 / a` followed by an fp16
+// product can land half a code off at the top of the range, and the divide is this program's whole job.
+// What this file cannot choose is the precision of the value the fetch returns (`gl_LastFragColorARM`
+// and `gl_LastFragData` are mediump in their extensions: an 8-bit value rounded to fp16, within
+// ~0.13 code at 1.0) or of `gl_FragColor`; the f32 round-trip bound in `gfx/straighten.rs`'s tests is
+// the model's, and the pass's real error is a code-level quantity only a TV capture can state.
 #if defined(PLX_STRAIGHTEN_ARM)
 #extension GL_ARM_shader_framebuffer_fetch : require
 #define PLX_BEHIND gl_LastFragColorARM
@@ -36,10 +41,10 @@ uniform sampler2D u_tex;
 #endif
 void main(){
 #if defined(PLX_STRAIGHTEN_ARM) || defined(PLX_STRAIGHTEN_EXT)
-  vec4 c = PLX_BEHIND;
+  highp vec4 c = PLX_BEHIND;
 #else
-  vec4 c = texture2D(u_tex, v_uv);
+  highp vec4 c = texture2D(u_tex, v_uv);
 #endif
-  float k = c.a > 0.0 ? 1.0 / c.a : 0.0;
+  highp float k = c.a > 0.0 ? 1.0 / c.a : 0.0;
   gl_FragColor = vec4(c.rgb * k, c.a);
 }
