@@ -507,11 +507,13 @@ fn track_text(source: &Source) -> &[u8] {
 }
 
 /// A settings change (plan §2.5, §4.6 case 3): both sources are Text-origin tracks of one kind with
-/// equal fonts and a different synthesized header. Everything else a header change means is a new
-/// renderer.
+/// equal fonts and a different synthesized header, or one AUTHORED track (one `id`) whose header the
+/// viewer's colour pick rebuilt (`ass_ink`). Everything else a header change means is a new renderer:
+/// an authored header never changes under one timeline except by the pick.
 fn restyles(old: &Source, new: &Source) -> bool {
-    old.origin.is_text()
-        && new.origin.is_text()
+    let kind = old.origin.is_text() && new.origin.is_text()
+        || old.origin == Origin::Authored && new.origin == Origin::Authored && old.id == new.id;
+    kind
         && std::mem::discriminant(&old.content) == std::mem::discriminant(&new.content)
         && source_fonts(old) == source_fonts(new)
         && track_text(old) != track_text(new)

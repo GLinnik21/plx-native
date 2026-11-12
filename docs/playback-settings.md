@@ -2,9 +2,14 @@
 
 Settings has **Video & playback** and **Audio & subtitles** pages. **Video & playback** holds
 Video (quality, Direct Play, Dolby Vision, Playback engine), Player (skip interval, D-pad seeking, HDR overlay,
-intro and credits skip, Player HUD) and Up next (next episode, Continue Watching). Subtitle size and
-position live in the Look group of **Audio & subtitles**: this app's own settings, kept per profile
-and never sent to the account. These settings are saved on this television, **per profile**: each
+intro and credits skip, Player HUD) and Up next (next episode, Continue Watching). Subtitle size,
+position and color live in the Look group of **Audio & subtitles**: this app's own settings, kept per profile
+and never sent to the account. **Subtitle color** is White (the default, the look of every earlier
+build), Yellow (a bright yellow for readability) or one of five grays that only dim the caption
+for HDR; it is the same pick as the Color section of the player's Subtitles menu. A color
+(yellow) is the default color of text subtitles (SubRip, WebVTT and the other text codecs), so a
+cue's own inline colors still win (except an explicit white `<font color="#ffffff">`, which many SubRip files
+wrap every cue in: that is the file's default ink spelled out, so the pick still applies); styled ASS/SSA scripts keep their own colors, except that text in a style whose color is pure white (the default ink) follows the pick (signs drawn in white too), and picture subtitles (PGS, VobSub) never take a color, only a gray dims them. This row has no subtitle on screen to judge, so it offers every color; the player's Subtitles menu, which knows the active track, shows the colors that track cannot take dimmed with the reason (the stored pick stays). The dark outline stays under every color. These settings are saved on this television, **per profile**: each
 Plex Home profile keeps its own picks, and a profile that has not chosen yet starts from the value
 the television held before profiles had their own. The page follows a profile switch (Settings itself closes on one). Each row states its own
 explanation beside the table; the page's fallback sentence ("Playback settings for Maya.", naming
@@ -197,20 +202,23 @@ Requested in [discussion #826](https://github.com/GLinnik21/plx-native/discussio
 Playback settings offers **Skip intros** and **Skip credits** separately for a viewer whose
 Plex account feature list grants the corresponding capability. These are per-profile choices:
 **Manual** is the default, **Disabled** hides the skip button, and **Automatic** offers a
-**Watch Intro** or **Watch Credits** button with a five-second countdown fill. Where the existing
-player offers **Watch Credits + Next Episode**, both controls stay available and the five-second
-fill appears on Next Episode. Watch Credits cancels that countdown while leaving Next Episode
-available to press. BACK dismisses the offer; choosing a standalone Watch button dismisses its
-single-button offer too.
+pair of buttons with a five-second countdown fill, and both timed prompts follow one rule: the
+**filled** button is the action the countdown will perform, pressing it performs it now, and the
+unfilled **Watch** button to its left cancels the countdown. For an intro that is **Watch Intro** +
+**Skip Intro** (filled); for credits with a mid-item marker **Watch Credits** + **Skip Credits**; where the
+existing player offers the next episode, **Watch Credits** + **Next Episode** (filled). Initial focus is the filled
+button. Watch cancels the countdown, and for the pair leaves Next Episode available to press. BACK dismisses the
+offer; choosing the Watch button of any Automatic skip prompt dismisses that offer too.
 
 Only time with an actionable, presented Watch button and advancing playback counts. Pause,
 buffering freeze the remaining opportunity. The pair retains its existing cancellation behavior:
-moving away from Next Episode or opening a panel cancels its countdown. A panel covering a
-standalone Watch button freezes its countdown. Seeking or leaving the
+moving away from Next Episode or opening a panel cancels its countdown. Moving the ring to the Watch button of
+any Automatic skip prompt cancels its countdown; a panel covering it freezes its countdown. Seeking or leaving the
 marker resets it. Intro and intermediate credits expiry seek to the marker end; final credits
 use the existing playback-finished path, respecting the Next episode preference. Automatic final
-credits use five presented seconds on the Up Next controls wherever that pair is available; other
-final-credits offers keep their standalone Watch control. Disabled and Manual retain
+credits use five presented seconds on the Up Next controls wherever that pair is available; the
+other final-credits offers (no queued successor, or Next episode set to After credits or Off) are the
+same Watch + filled Skip pair as an intro: no Automatic skip prompt has a standalone Watch control. Disabled and Manual retain
 Next episode's independent policy, and synthetic end-of-item tails never auto-skip.
 
 The app checks the **viewer’s** `intro-markers` and `credits-markers` grants, and `pass` in the same
@@ -220,6 +228,8 @@ decision (2026-11-11):** a seated Plex Home profile that is not the administrato
 profile) has no Plex Pass of its own, so when its own list leaves either grant out, its Home
 administrator's feature list is read as well and what it grants is added; the administrator's
 `pass` therefore covers the household's profiles. Nothing else about the household's account is
-used. An unavailable, expired or denied
-grant hides the new settings and uses the existing manual controls. Saved choices remain intact.
+used. A seat with no answer yet, or whose
+latest landed answer lacks the grant, hides the new settings and uses the existing manual controls; a
+stale answer, or a re-read that fails, keeps the last settled grants, so a row never drops away while the
+viewer sits on it. Saved choices remain intact.
 No Plex viewing-history write is needed to change these local settings.

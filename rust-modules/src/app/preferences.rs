@@ -6,7 +6,7 @@ pub(crate) use marker_access::MarkerAccessRunner;
 use plx_media::route::{choose, Choice, How};
 use plx_plex::plex::account::{PreferenceError, PreferenceRequest};
 use plx_plex::plex::session::{IntroSkipPref, CreditsSkipPref, DolbyVisionModePref, InstantDpadSeekingPref, UriEnginePref, DeckPressPref, DirectPlayModePref, HdrOverlayBrightnessPref, NextEpisodeModePref, QualityPref,
-    SkipIntervalPref, SubtitlePositionPref, SubtitleSizePref, TrailerAutoplayPref, HudEndTimePref, UnderPostersPref};
+    SkipIntervalPref, SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref, TrailerAutoplayPref, HudEndTimePref, UnderPostersPref};
 use plx_screens::registry::{AccountPreferenceReply, PreferenceCmd};
 use std::sync::mpsc::Sender;
 
@@ -29,6 +29,7 @@ fn choose_setting(choice: Choice, reply: Sender<bool>) {
         Choice::HudEndTime(v) => choose::<HudEndTimePref>(v, How::settings::<HudEndTimePref>(reply)),
         Choice::SubtitleSize(v) => choose::<SubtitleSizePref>(v, How::settings::<SubtitleSizePref>(reply)),
         Choice::SubtitlePosition(v) => choose::<SubtitlePositionPref>(v, How::settings::<SubtitlePositionPref>(reply)),
+        Choice::SubtitleTone(v) => choose::<SubtitleTonePref>(v, How::settings::<SubtitleTonePref>(reply)),
         Choice::HdrOverlayBrightness(v) => choose::<HdrOverlayBrightnessPref>(v, How::settings::<HdrOverlayBrightnessPref>(reply)),
     }
 }

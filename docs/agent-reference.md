@@ -1162,10 +1162,10 @@ which the linking section explains is load-bearing rather than tidy.
 has the producers).** The client draws subtitles itself; the TV's subtitle engine is unreachable in
 buffer-feed. Every TEXT subtitle renders through the one bundled libass worker (`player::ass`),
 whether it is authored ASS/SSA, an embedded SubRip/WebVTT/mov_text/SAMI track or a sidecar `.srt`/`.vtt`:
-a text track gets a header `text_ass::header` synthesizes from the viewer's size and position picks, and
+a text track gets a header `text_ass::header` synthesizes from the viewer's size, position and colour picks, and
 its cues become ASS events (`text_ass::convert`, `ass_source::push_text`). Such a source has
 `Origin::Text`: it renders into the full logical screen, the screen lifts its bottom-anchored regions
-clear of the transport, and a change of the size or position pick restyles it. An authored ASS source is
+clear of the transport, and a change of the size, position or colour pick restyles it (a change among white and the grays does not: a gray is a draw-time tint). An authored ASS source is
 never moved. The old caption path is gone (`CaptionPlan`, `draw_subtitles`, the `SHARED.sub_cues`
 store, `active_subtitle*`): do not look for a second text renderer. Image subtitles
 (PGS/VobSub) keep their bitmap path. The one text the sidecar still draws itself is its failure notice

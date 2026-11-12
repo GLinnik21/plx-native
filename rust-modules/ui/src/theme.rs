@@ -65,6 +65,10 @@ const CAPTION_70: [f32; 4] = rgb8(0xb3, 0xb3, 0xb3);
 const CAPTION_55: [f32; 4] = rgb8(0x8c, 0x8c, 0x8c);
 const CAPTION_40: [f32; 4] = rgb8(0x66, 0x66, 0x66);
 const CAPTION_28: [f32; 4] = rgb8(0x47, 0x47, 0x47);
+// One chromatic stop, for the one subtitle colour a viewer can pick (`SubtitleTone::Yellow`); its
+// code is also `SubtitleTone::text_rgb8`, which media's synthesized header cannot read from here
+// (a test in `appkit::player_hud` pins the two together).
+const CAPTION_YELLOW: [f32; 4] = rgb8(0xff, 0xe6, 0x1a);
 
 // Sand — one warm off-white, and it has exactly one job: the ambient wash's resting cast.
 const SAND_100: [f32; 4] = rgb8(0xe9, 0xe6, 0xe0);
@@ -169,12 +173,18 @@ pub const INK_DISABLED: [f32; 4] = with_a(WHITE, 0.22);
 /// two lengths together). The caption is media chrome over the video plane rather than app text,
 /// which is why it is `WHITE` and not [`TEXT_PRIMARY`] at the top; the greys under it exist
 /// because an HDR picture maps graphics white far brighter than an SDR one does, and the only
-/// cure for a searing caption is less light. Text subtitles are inked with the rung; image
-/// subtitles (PGS/VobSub) are TINTED by it, which scales their authored colours by the same
-/// amount. The dark outline is untouched — it is what keeps the darkest rung legible over a
+/// cure for a searing caption is less light. Client-drawn text is inked with the rung; every
+/// client-rendered bitmap (a libass frame, a PGS/VobSub picture) is TINTED by it, which scales
+/// its authored colours by the same amount. The dark outline is untouched — it is what keeps the darkest rung legible over a
 /// bright scene.
-pub const SUBTITLE_INKS: [[f32; 4]; 6] =
-    [WHITE, CAPTION_85, CAPTION_70, CAPTION_55, CAPTION_40, CAPTION_28];
+///
+/// A COLOUR rung (`SubtitleTone::Yellow`) holds its colour here, the ink of the client's own drawn
+/// caption text; as a TINT it is the identity (`appkit::player_hud::subtitle_tint`), because a
+/// multiplied yellow would recolour an authored ASS script, a picture subtitle or a cue's own inline
+/// colours. Its colour reaches a synthesized text track through the header's primary colour
+/// (`SubtitleTone::text_rgb8`, tied to this entry by a test).
+pub const SUBTITLE_INKS: [[f32; 4]; 7] =
+    [WHITE, CAPTION_YELLOW, CAPTION_85, CAPTION_70, CAPTION_55, CAPTION_40, CAPTION_28];
 
 // ── Type scale ───────────────────────────────────────────────────────────────
 // The ladder is DEFINED in `gfx::tokens` (module-layers step L5): `text` warms exactly these faces and

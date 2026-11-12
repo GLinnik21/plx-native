@@ -52,6 +52,8 @@ pub enum LogoRung {
         w_max: f32,
         h_max: f32,
         fallback_sz: c_int,
+        /// [`LogoRung::descent_share`] at this point.
+        descent_share: f32,
     },
 }
 
@@ -81,7 +83,7 @@ impl LogoRung {
                 theme::logo::CARD_W_MAX,
                 theme::size::HEADLINE,
             ),
-            LogoRung::Custom { area, band_h, h_max, w_max, fallback_sz } => (area, band_h, h_max, w_max, fallback_sz),
+            LogoRung::Custom { area, band_h, h_max, w_max, fallback_sz, .. } => (area, band_h, h_max, w_max, fallback_sz),
         }
     }
 
@@ -102,8 +104,33 @@ impl LogoRung {
             w_max: lerp(a_wmax, b_wmax),
             h_max: lerp(a_max, b_max),
             fallback_sz: lerp(a_sz as f32, b_sz as f32).round() as c_int,
+            descent_share: lerp(a.descent_share(), b.descent_share()),
         }
     }
+
+    /// How much of the face's descent a TYPED title at this rung stands above the band's foot, 0..=1.
+    /// A logo's painted box ends on the foot; type's last BASELINE used to, so its descenders hung
+    /// below the foot into the gap to the metadata, and the same ladder read tight under a title in
+    /// type and loose under a logo. The full-bleed hero rung (Home's, Detail's and the catalog's
+    /// share it) stands type's DESCENDERS on the foot (1.0): one rule, one gap
+    /// (`theme::hero::HOME_TITLE_GAP`). The compact strip and the deck card are tuned boxes of their
+    /// own (a baked composite, a pinned one-line header) and keep the baseline there (0.0).
+    fn descent_share(self) -> f32 {
+        match self {
+            LogoRung::Hero => 1.0,
+            LogoRung::Compact | LogoRung::Card => 0.0,
+            LogoRung::Custom { descent_share, .. } => descent_share,
+        }
+    }
+}
+
+/// How far a title in type at `rung` stands above the band's foot, in px: the face's descent
+/// ([`plx_gfx::text::FONT_DESCENT_EM`], whole px as the line box rounds it) times the rung's
+/// [`LogoRung::descent_share`]. The one number [`HeroLogo::draw`], [`HeroLogo::painted`] and
+/// [`draw_title`] anchor their run with.
+fn type_lift(rung: LogoRung) -> f32 {
+    let (_, _, _, _, sz) = rung.bounds();
+    (plx_gfx::text::FONT_DESCENT_EM * sz as f32).round() * rung.descent_share()
 }
 
 /// The LAYOUT height of a logo's title band — constant, independent of the source
@@ -132,9 +159,10 @@ pub fn fit(rung: LogoRung, src_w: f32, src_h: f32, col_w: f32) -> (f32, f32) {
     (w * scale, h * scale)
 }
 
-/// Bottom-anchor a `w`×`h` logo in `band`: its BOTTOM EDGE lands on the band's bottom edge — the
-/// same line the text fallback puts its BASELINE on, because a logo's bottom edge and a baseline are
-/// the same optical line. Overflow is upward and is paint, never layout.
+/// Bottom-anchor a `w`×`h` logo in `band`: its BOTTOM EDGE lands on the band's bottom edge. The text
+/// fallback's painted box (descenders included) ends on the same line on the Hero rung, with its
+/// baseline `type_lift` above it; on Compact and Card the baseline itself is on the foot, because a
+/// logo's bottom edge and a baseline are the same optical line. Overflow is upward and is paint, never layout.
 pub fn place(band: Rect, w: f32, h: f32, align: HAlign) -> Rect {
     let x = match align {
         HAlign::Left | HAlign::Start => band.x,
@@ -163,21 +191,22 @@ fn title_text_inked(rung: LogoRung, title: &str, ink: [f32; 4]) -> TextView<'_> 
 
 /// The height the title run `tv` paints at in a column `band_w` wide: its measured height less the
 /// leading under its last line, plus the cap band, so the run's LAST BASELINE is what a bottom
-/// anchor lands on. Shared by [`HeroLogo::draw`]'s fallback and [`draw_title`].
+/// anchor lands on (before [`type_lift`] raises it on the Hero rung). Shared by [`HeroLogo::draw`]'s fallback and [`draw_title`].
 fn title_paint_h(tv: &TextView<'_>, rung: LogoRung, band_w: f32, measure: &dyn Measure) -> f32 {
     let (_, _, _, _, sz) = rung.bounds();
     tv.measure_h(band_w) - (sz as f32 * theme::hero::TITLE_LEAD / theme::size::DISPLAY as f32) + measure.cap_h(sz)
 }
 
 /// **Draw a title in type in the slot a logo of `rung` would stand in** (`band`: its column, with
-/// `band.y + band.h` the anchor line the run's last baseline lands on), at `align`. It is the
+/// `band.y + band.h` the anchor line: the run's painted box ends there on the Hero rung (its last baseline
+/// `type_lift` above), and its last baseline lands there on Compact and Card), at `align`. It is the
 /// fallback of [`HeroLogo::draw`] and NOTHING else: no logo texture is looked up, so it is what a
 /// Continue Watching card draws when neither Plex's cover nor our composite exists (`Card`'s Type
 /// rung, `card_art::needs_type_title`), where a live logo must never go up.
 pub fn draw_title(p: Painter, rung: LogoRung, title: &str, band: Rect, align: HAlign, measure: &dyn Measure) {
     let tv = title_text(rung, title).h(align.resolve(title)).with_measure(measure);
     let h = title_paint_h(&tv, rung, band.w, measure);
-    tv.draw(p, Rect::new(band.x, band.y + band.h - h, band.w, h));
+    tv.draw(p, Rect::new(band.x, band.y + band.h - type_lift(rung) - h, band.w, h));
 }
 
 /// The title band itself: the item's clearLogo if it has resolved, else its title as text. Owning
@@ -226,7 +255,9 @@ impl<'a> HeroLogo<'a> {
         let fallback = title_text(self.rung, self.title).h(align).with_measure(measure);
         let h = title_paint_h(&fallback, self.rung, band.w, measure);
         let (left, right) = fallback.ink_span(band);
-        Rect::new(left, band.y + band.h - h, right - left, h)
+        // the box includes the descenders, so it ends on the foot exactly as a logo's does
+        let lift = type_lift(self.rung);
+        Rect::new(left, band.y + band.h - lift - h, right - left, h + lift)
     }
 
     /// Draw into `band` — `band.w` is the column the logo is contained to, `band.y + band.h` the
@@ -267,7 +298,7 @@ impl<'a> HeroLogo<'a> {
             crate::placeholder::ink(p, crate::placeholder::Reason::HeroLogoText, self.logo, theme::TEXT_PRIMARY)
         };
         title_text_inked(self.rung, self.title, ink).h(align).with_measure(measure)
-            .draw(p, Rect::new(band.x, band.y + band.h - fallback_h, band.w, fallback_h));
+            .draw(p, Rect::new(band.x, band.y + band.h - type_lift(self.rung) - fallback_h, band.w, fallback_h));
     }
 }
 
@@ -543,7 +574,7 @@ mod tests {
                 let (_, _, _, _, sz) = rung.bounds();
                 let h = tv.measure_h(band.w) - tv.line_h() + measure.cap_h(sz);
                 let direct = crate::draw_census::capture_runs(|| {
-                    tv.draw(Painter::recording(), Rect::new(band.x, band.y + band.h - h, band.w, h));
+                    tv.draw(Painter::recording(), Rect::new(band.x, band.y + band.h - type_lift(rung) - h, band.w, h));
                 });
                 assert!(!drawn.is_empty(), "{rung:?}: nothing drawn");
                 assert_eq!(drawn, direct, "{rung:?} {title}");
@@ -681,6 +712,44 @@ mod tests {
             .painted(band, &m);
         assert!(long.x >= band.x && long.x + long.w <= band.x + band.w + 0.01, "a wrapped title stays in its column: {long:?}");
         assert!(long.h > left.h, "…and is taller than the one-line title");
+    }
+
+    /// **A hero title in type stands where a logo's box does**: its painted box, descenders
+    /// included, ends on the band's foot, so the gap to the metadata under it is the ladder's one
+    /// `HOME_TITLE_GAP` whether the title is art or type. A logo's box already ends on the foot
+    /// ([`place`]); type used to stand its BASELINE there, so its descenders (and, on a title with
+    /// none, the glyph feet) hung into the gap and read as sitting on the line below.
+    #[test]
+    fn a_hero_title_in_type_ends_its_painted_box_on_the_foot_like_a_logo() {
+        use plx_machine::machine::Measure;
+        install_store(true);
+        let m = crate::fixture::FixtureMeasure;
+        let band = Rect::new(96.0, 446.0, theme::hero::TEXT_W, band_h(Hero));
+        let foot = band.y + band.h;
+        let (_, _, _, _, sz) = Hero.bounds();
+        // the logo case: its box ends on the foot
+        let logo = place(band, 400.0, 90.0, HAlign::Left);
+        assert_eq!(logo.y + logo.h, foot);
+        for title in ["Backrooms", "Hollow Coast"] {
+            let painted = HeroLogo::new(0, "", title, Hero).painted(band, &m);
+            assert_eq!(painted.y + painted.h, foot, "{title}: the painted box ends on the foot");
+            let drawn = crate::draw_census::capture_runs(|| {
+                HeroLogo::new(0, "", title, Hero).draw(Painter::recording(), band, &m);
+            });
+            // the run's anchor, were its baseline (not its descenders) on the foot
+            let tv = title_text(Hero, title).h(HAlign::Left.resolve(title)).with_measure(&m);
+            let h = tv.measure_h(band.w) - tv.line_h() + m.cap_h(sz);
+            let on_baseline = crate::draw_census::capture_runs(|| {
+                tv.draw(Painter::recording(), Rect::new(band.x, foot - h, band.w, h));
+            });
+            let descent = (plx_gfx::text::FONT_DESCENT_EM * sz as f32).round();
+            assert!(descent > 0.0);
+            assert_eq!(
+                drawn.last().expect("one run").at.y + descent,
+                on_baseline.last().expect("one run").at.y,
+                "{title}: the run stands a descent above where its baseline would be on the foot"
+            );
+        }
     }
 
     /// The logo is on its way: the hero shows its title as text in the meantime, and that is a wait.

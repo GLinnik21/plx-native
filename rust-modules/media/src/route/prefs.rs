@@ -799,6 +799,7 @@ choices! {
     HudEndTime => HudEndTimePref,
     SubtitleSize => SubtitleSizePref,
     SubtitlePosition => SubtitlePositionPref,
+    SubtitleTone => SubtitleTonePref,
     HdrOverlayBrightness => HdrOverlayBrightnessPref,
 }
 

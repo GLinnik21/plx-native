@@ -98,12 +98,13 @@ impl PickerPage {
     /// falls back to; reading the legacy key alone would call a profile's own pick "not saved" and
     /// write it again on every OK.
     fn durable(&self, value: &Value) -> bool {
-        use plx_plex::plex::session::{stored_effective, SubtitlePositionPref, SubtitleSizePref, HdrOverlayBrightnessPref};
+        use plx_plex::plex::session::{stored_effective, SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref, HdrOverlayBrightnessPref};
         let seat = self.inputs.profile.seat();
         let session = &self.inputs.session;
         match value {
             Value::SubtitleSize(v) => stored_effective::<SubtitleSizePref>(session, &seat) == *v,
             Value::SubtitlePosition(v) => stored_effective::<SubtitlePositionPref>(session, &seat) == *v,
+            Value::SubtitleTone(v) => stored_effective::<SubtitleTonePref>(session, &seat) == *v,
             Value::HdrOverlay(v) => stored_effective::<HdrOverlayBrightnessPref>(session, &seat) == *v,
             _ => true,
         }
@@ -190,7 +191,7 @@ impl PickerPage {
     }
     fn commit(&mut self, value: Value, fx: &mut Effects<'_, InnerHost>) {
         match value {
-            Value::IntroSkip(_, _) | Value::CreditsSkip(_, _) | Value::InstantDpadSeeking(_) | Value::UriEngine(_) | Value::DolbyVision(_) | Value::Quality(_) | Value::DirectPlay(_) | Value::NextEpisode(_) | Value::DeckPress(_) | Value::SkipInterval(_) | Value::UiResolution(_) | Value::SubtitleSize(_) | Value::SubtitlePosition(_) | Value::HdrOverlay(_) => self.txn.save_local(&mut self.state.io, value, fx),
+            Value::IntroSkip(_, _) | Value::CreditsSkip(_, _) | Value::InstantDpadSeeking(_) | Value::UriEngine(_) | Value::DolbyVision(_) | Value::Quality(_) | Value::DirectPlay(_) | Value::NextEpisode(_) | Value::DeckPress(_) | Value::SkipInterval(_) | Value::UiResolution(_) | Value::SubtitleSize(_) | Value::SubtitlePosition(_) | Value::SubtitleTone(_) | Value::HdrOverlay(_) => self.txn.save_local(&mut self.state.io, value, fx),
             value => {
                 let mut update = PreferenceUpdate::default();
                 match (self.state.field, value) {

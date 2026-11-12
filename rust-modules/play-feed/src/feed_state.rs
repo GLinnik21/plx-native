@@ -140,6 +140,10 @@ pub struct Engine {
     /// first since the open or seek (`FEED_SHARED.first_audio_pts`) — once Starfish accepted it.
     /// `None` until then; reset with `max_fed_audio_pts`. See `audio_lead_in`.
     pub audio_start_fp: Option<i64>,
+    /// Audio AUs the stale-ahead guard dropped since this open or seek (`audio_stale_ahead`);
+    /// reset with `max_fed_audio_pts`. Counts what the `a#` feed counter cannot (it counts
+    /// accepted AUs), and paces the event-log line that reports the drops.
+    pub audio_stale_dropped: u32,
     /// Added to the sink pts of every audio AU of THIS Load (`audio_sink_pts`): the active sound
     /// output's lead on a `liblxa` or 2018 stack, the one lead of the `lgaudiosink` stack
     /// (`pcm_output_lead`), or the dev override, when the Load declared `"audio":"PCM"`, 0 for a

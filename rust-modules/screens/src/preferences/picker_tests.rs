@@ -195,7 +195,9 @@ fn the_subtitle_pickers_write_locally_and_pop_on_the_receipt() {
     let (size, position) = (plx_media::route::subtitle_size(), plx_media::route::subtitle_position());
     plx_media::route::restore_subtitle_size(plx_media::route::SubtitleSize::Medium);
     plx_media::route::restore_subtitle_position(plx_media::route::SubtitlePosition::Low);
-    for field in [PickerKind::SubtitleSize, PickerKind::SubtitlePosition] {
+    let tone = plx_media::player::subtitle_tone();
+    plx_media::player::restore_subtitle_tone(plx_plex::plex::session::SubtitleTone::White);
+    for field in [PickerKind::SubtitleSize, PickerKind::SubtitlePosition, PickerKind::SubtitleColor] {
         let mut page = PickerPage::new(EntryId(0), field, &crate::registry::capture_fixture());
         let checked = page.state.checked;
         let emitted = drive(&mut page, ScreenEvent::Activate(checked), checked);
@@ -208,7 +210,8 @@ fn the_subtitle_pickers_write_locally_and_pop_on_the_receipt() {
         assert!(!popped(&emitted), "{field:?}: a write waits for its receipt");
         let reply = emitted.into_iter().find_map(|e| match e.fx {
             Fx::App(AppFx::Preferences(PreferenceCmd::Choose(plx_media::route::Choice::SubtitleSize(_), reply)))
-            | Fx::App(AppFx::Preferences(PreferenceCmd::Choose(plx_media::route::Choice::SubtitlePosition(_), reply))) => Some(reply),
+            | Fx::App(AppFx::Preferences(PreferenceCmd::Choose(plx_media::route::Choice::SubtitlePosition(_), reply)))
+            | Fx::App(AppFx::Preferences(PreferenceCmd::Choose(plx_media::route::Choice::SubtitleTone(_), reply))) => Some(reply),
             _ => None,
         }).expect("a local subtitle command");
         reply.send(true).unwrap();
@@ -216,6 +219,31 @@ fn the_subtitle_pickers_write_locally_and_pop_on_the_receipt() {
     }
     plx_media::route::restore_subtitle_size(size);
     plx_media::route::restore_subtitle_position(position);
+    plx_media::player::restore_subtitle_tone(tone);
+}
+
+/// **The Subtitle color picker** lists every tone of the ladder (white, yellow, the grays) with the
+/// live pick checked, and choosing Yellow sends the typed `Choice::SubtitleTone`.
+#[test]
+fn the_color_picker_checks_the_live_tone_and_chooses_yellow() {
+    use plx_plex::plex::session::SubtitleTone;
+    let _serial = plx_base::testlock::serial();
+    let _session = plx_plex::plex::session::TempSession::new("picker-color-yellow");
+    let tone = plx_media::player::subtitle_tone();
+    plx_media::player::restore_subtitle_tone(SubtitleTone::White);
+    let mut page = PickerPage::new(EntryId(0), PickerKind::SubtitleColor, &crate::registry::capture_fixture());
+    assert_eq!(page.state.checked, SubtitleTone::White.index() as u32, "white is checked by default");
+    let yellow = SubtitleTone::Yellow.index() as u32;
+    let emitted = drive(&mut page, ScreenEvent::Activate(yellow), yellow);
+    let chosen = emitted.into_iter().find_map(|e| match e.fx {
+        Fx::App(AppFx::Preferences(PreferenceCmd::Choose(plx_media::route::Choice::SubtitleTone(t), _))) => Some(t),
+        _ => None,
+    });
+    assert_eq!(chosen, Some(SubtitleTone::Yellow));
+    plx_media::player::restore_subtitle_tone(SubtitleTone::Yellow);
+    drive(&mut page, tick(), yellow);
+    assert_eq!(page.state.checked, yellow, "the checkmark follows the published pick");
+    plx_media::player::restore_subtitle_tone(tone);
 }
 
 /// The optimistic path publishes the live value before the receipt: the open picker moves its
@@ -301,7 +329,7 @@ fn ok_on_checked_profile_size_pops() {
 fn the_local_subtitle_pickers_never_touch_the_plex_account() {
     let _serial = plx_base::testlock::serial();
     let _session = plx_plex::plex::session::TempSession::new("pref-local-subtitle-pickers");
-    for field in [PickerKind::SubtitleSize, PickerKind::SubtitlePosition] {
+    for field in [PickerKind::SubtitleSize, PickerKind::SubtitlePosition, PickerKind::SubtitleColor] {
         let mut page = PickerPage::new(EntryId(0), field, &crate::registry::capture_fixture());
         let mut emitted = drive(&mut page, ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::ContainerGroup(GroupId(0)) }), 0);
         emitted.extend(drive(&mut page, tick(), 0));

@@ -618,13 +618,17 @@ fn walk<H: Host>(
                         offer_drawn |= up_next::draw_over(f.ps, &layout, decor, look, row, timer, q, f.focus == GROUP_ROW, f.btn, f.measure);
                     }
                 }
-                DrawOp::SkipPill { rects } => {
+                DrawOp::SkipPill { rects, watch } => {
                     if let ControlSlot::Skip(pr) = f.slot {
-                        let shown = rects[crate::hud_format::compile::SkipKind::for_prompt(pr) as usize];
-                        skip_pill::draw_at(row, q, pr, shown, f.focus == GROUP_ROW, f.model.skip_progress);
-                        let (rect, _, clip) = q.to_screen(shown);
-                        let hit = rect.intersect(clip);
-                        offer_drawn |= q.opacity() >= 0.5 && hit.w > 0.0 && hit.h > 0.0;
+                        let face = crate::hud_format::compile::SkipKind::for_prompt(pr) as usize;
+                        let (shown, beside) = (rects[face], pr.automatic.then_some(watch[face]));
+                        skip_pill::draw_at(row, q, pr, shown, beside, f.focus == GROUP_ROW, f.btn, f.model.skip_progress);
+                        // a presented offer is every one of its buttons legibly inside the clip, as Up Next's
+                        offer_drawn |= q.opacity() >= 0.5 && std::iter::once(shown).chain(beside).all(|r| {
+                            let (rect, _, clip) = q.to_screen(r);
+                            let hit = rect.intersect(clip);
+                            hit.w > 0.0 && hit.h > 0.0
+                        });
                     }
                 }
                 DrawOp::Playbar { track, fill, track_ink, clock_size, knob, clocks, mark, clock_rects, .. } => {
