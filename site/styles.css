@@ -1585,17 +1585,24 @@ video::-webkit-media-controls-start-playback-button {
   .press-side {
     display: contents;
   }
-  .press-tabs {
+  /* .is-long carries the desktop's vertical scroll and fade; with two classes
+     it outranks a bare .press-tabs here, so it is named too, or the column's
+     fade clips every pill's top and bottom. */
+  .press-tabs,
+  .press-tabs.is-long {
     flex-direction: row;
     gap: 8px;
     max-height: none;
     overflow-x: auto;
+    overflow-y: hidden;
     margin: 0 calc(-1 * var(--gutter));
     padding: 0 var(--gutter);
     scroll-snap-type: x proximity;
-    /* The row runs past the screen's edge; a fade there says it scrolls. */
-    -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 56px), transparent);
-    mask-image: linear-gradient(90deg, #000 calc(100% - 56px), transparent);
+    /* The row runs past the screen's edges; a fade there says it scrolls. Each
+       fade stays inside the gutter, so a pill scrolled fully into view, the
+       first or the last, is never dimmed. */
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 var(--gutter), #000 calc(100% - var(--gutter)), transparent);
+    mask-image: linear-gradient(90deg, transparent, #000 var(--gutter), #000 calc(100% - var(--gutter)), transparent);
   }
   .press-tab {
     max-width: 72vw;

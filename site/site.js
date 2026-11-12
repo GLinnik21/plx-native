@@ -746,6 +746,8 @@
   // linked row per article. With JS it becomes a switcher: outlet names as tabs
   // on the left, the selected article on stage on the right. The tabs are built
   // from the list, so a new outlet is one new <li> and nothing here changes.
+  // The tabs keep the list's order, which ranks outlets by reach (the best
+  // known first), not by date: place a new <li> where its outlet ranks.
   function initPress() {
     const section = document.querySelector(".press-section");
     const list = section && section.querySelector(".press-list");
@@ -767,7 +769,6 @@
       };
     });
     if (items.length < 2) return;
-    items.sort((a, b) => b.iso.localeCompare(a.iso));
 
     const el = (tag, cls, attrs) => {
       const n = document.createElement(tag);
