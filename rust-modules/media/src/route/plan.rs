@@ -2,7 +2,11 @@
 //! the plain data types they need. Nothing here reads a `static mut`, touches [`super::decision`]'s
 //! `SESSION`/`PLAYER_CONTROL`/`PLAY_SLOT`/`ENCODER_CLEANUP`/`SCROBBLE_JOIN`/`TIMELINE_STOP_FENCE`/
 //! `QUALITY`, or calls `task::spawn*` — that is what makes [`build_stream`] safe to run on the
-//! resolve worker. Everything else in the former `route.rs` (session state, the synchronized
+//! resolve worker. (One bounded wait is the exception that is not named here: a handoff's queue
+//! re-read, [`build_stream`]'s `queue.refreshed` on its `beside` leg, waits up to 1.5 s through
+//! `queue_navigation` for the outgoing episode's `stopped` report, the shared stop fence, before
+//! it reads the rows; it never runs on the main thread.) Everything else in the former
+//! `route.rs` (session state, the synchronized
 //! `PlayerControl`, PMS/native I/O, the encoder/scrobble/timeline machinery) lives in
 //! [`super::decision`]. `ci/check-deps.sh`'s `wall` gate holds this file, and its child
 //! module `plan_memory.rs` (the track memory's pure helpers), to zero

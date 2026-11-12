@@ -47,6 +47,12 @@ impl QueueContinuation {
         Self { stop, ..self }
     }
 
+    /// The stop count the window re-read waits for.
+    #[cfg(test)]
+    pub(super) fn stop(&self) -> u64 {
+        self.stop
+    }
+
     /// The live queue is lent, not owned, so its rows are copied only once `target` is found.
     pub(super) fn capture(ps: &PlaybackSession, target: &QueueRow) -> Option<Self> {
         with_queue(ps, |rows| {

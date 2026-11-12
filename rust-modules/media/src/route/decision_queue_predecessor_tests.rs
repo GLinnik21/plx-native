@@ -258,6 +258,31 @@ fn season_rows(sid: plx_plex::plex::ServerId) -> Vec<plx_plex::plex::QueueRow> {
         .collect()
 }
 
+/// **A handoff's continuation is captured AFTER the outgoing stop is announced, and carries that
+/// count**: the handoff stops the episode it leaves before it asks for the next one, so the window
+/// re-read ([`the_window_reread_waits_for_the_outgoing_stop_within_its_bound`]) waits for it. A
+/// `capture` that recorded no stop (`0`, what a continuation built from rows alone holds) would
+/// read the rows while that report is still on its way, and Previous-then-Next would resume the
+/// episode just left from the position it had before the viewer left it.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn a_captured_continuation_waits_for_the_stop_announced_before_it() {
+    let mut ps = PlaybackSession::IDLE;
+    let _guard = fresh_registry(&mut ps);
+    let rows = season_rows(plx_plex::plex::ServerId::from_raw(1));
+    ps.queue = rows.clone();
+    ps.pq_id = "88".into();
+    let outgoing = TIMELINE_STOP_FENCE.announce();
+    let announced = TIMELINE_STOP_FENCE.announced();
+    let continuation = crate::route::QueueContinuation::capture(&ps, &rows[0]).expect("the row is in the queue");
+    outgoing.finish();
+    assert!(
+        continuation.stop() >= announced && announced > 0,
+        "captured after the announce, it waits for it: {} < {announced}",
+        continuation.stop()
+    );
+}
+
 /// **A handoff re-reads the queue window only after the episode it leaves has reported where it
 /// was**, and never waits longer than its bound. The rows carry each episode's `viewOffset`: read
 /// before the outgoing `stopped` report lands, the episode just left would resume from the position

@@ -1039,7 +1039,8 @@ in order with the keyed one selected (`playQueueSelectedItemID`/`Offset` on it).
 shape has not been observed on a live server** (no PMS was probed for this change), so the app
 trusts it only when the selected row IS the requested episode on this server; a server that
 ignores `key` (and answers the first episode, or the show itself), refuses it, or does not answer
-costs nothing: the app asks the episode-only request above, as it always did. When the offset says
+costs one extra round trip (and an unused show queue left on the server): the app then asks the
+episode-only request above, as it always did. When the offset says
 rows precede the selected one but the answer's window opens on it, the existing window read
 (`GET /playQueues/{id}?center=…`, `queue_window.rs`) is spent once to fetch them. To verify live
 (owner's TV or a mock-free read-only probe): play an episode from the middle of a season and read
