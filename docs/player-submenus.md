@@ -57,8 +57,9 @@ because the overlay's state shape changed on purpose.
   look; gray only dims."); native ASS/SSA -> the same ("Styled subtitles keep
   ..."). Color stays pickable in both, but only a gray reaches them (a tint of the bitmap,
   `player_hud::subtitle_tint`); Yellow is the colour of a synthesized text header and of the client's
-  own drawn text only, so there it is inert (the viewer sees it checked while the caption keeps its
-  own colours), which is what the note says.
+  own drawn text, and in an authored ASS/SSA script it replaces the pure-white primary of every style
+  that has one (`player::ass_ink`; the styled note says "white text follows the color"). It never
+  reaches a picture subtitle, which is what that renderer's note says.
 - A DISABLED row (`FormSection::disabled`, `Row::disabled`) is focusable so the viewer can read why,
   is drawn soft with a ghost pill under focus, and is inert at the form layer (`FormTable::activate`
   answers `None` for OK, RIGHT and a click alike), not by a guard in each caller. A merely `dim`

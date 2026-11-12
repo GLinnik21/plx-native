@@ -741,8 +741,8 @@
     "description": "Note under the Style rows when the subtitle on screen is a picture (PGS, VobSub): the Size and Position rows are dimmed because the picture carries its own geometry, and a color choice such as yellow does not reach it (only the gray choices dim it). No jargon."
   },
   "widgets.tracks.style_styled_note": {
-    "value": "Styled subtitles keep their look; gray only dims.",
-    "description": "Note under the Style rows when the subtitle on screen is a styled script (ASS/SSA) that positions, sizes and colors its own text: the Size and Position rows are dimmed, and a color choice such as yellow does not reach it (only the gray choices dim it). No jargon."
+    "value": "Styled subtitles keep their look; white follows the color.",
+    "description": "Note under the Style rows when the subtitle on screen is a styled script (ASS/SSA) that positions, sizes and colors its own text and draws some of it in plain white (its default ink): the Size and Position rows are dimmed, the plain-white text follows the chosen color and every other color in the script is kept. No jargon."
   },
   "widgets.tracks.timing": {
     "value": "Timing",

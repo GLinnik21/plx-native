@@ -78,10 +78,11 @@
 //! **What Style can reach depends on the active renderer** ([`SubRenderer`]): only the client's
 //! plain-text caption follows Size and Position, so under an image (PGS/VobSub) or native ASS/SSA
 //! subtitle those two rows are dim, focusable and inert, with a separate note each. Color stays
-//! pickable under every renderer, but only a gray tints a picture or styled subtitle (the bitmap
-//! tint, `player_hud::subtitle_tint`); Yellow is the colour of a synthesized text header and of the
-//! client's own drawn text only, so under those two renderers it is inert, which the same notes say
-//! ("gray only dims"). Size and Position are
+//! pickable under every renderer: a gray tints any of them (the bitmap tint,
+//! `player_hud::subtitle_tint`); Yellow is the colour of a synthesized text header and of the
+//! client's own drawn text, and in an authored ASS/SSA script it replaces the pure-white primary of
+//! every style that has one (`plx_media::player::ass_ink`), so only a picture subtitle never takes
+//! it, which that renderer's note says ("gray only dims"). Size and Position are
 //! persisted by `route::select_subtitle_size` / `select_subtitle_position` and Color by
 //! `player::set_subtitle_tone`: all three are one call into the one write door (`route::choose`,
 //! `How::Optimistic`: live value first, the durable write second, never republished).
@@ -381,6 +382,7 @@ fn table_natural(
 /// Position can reach it. Only the client's plain-text caption draw follows them
 /// (`appkit::player_hud::draw_subtitle_message`); an image subtitle keeps its own bitmap geometry and
 /// native ASS/SSA its authored layout. The subtitle INK tints all three, so Color is always live.
+/// (Whether the pick's COLOUR reaches a styled one is [`plx_media::player::ass_ink`]'s rule.)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SubRenderer {
     Text,

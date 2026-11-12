@@ -3,9 +3,13 @@
 //! receives immutable snapshots, never a pointer into FFmpeg's storage.
 //! Selection does not discard read-ahead. A seek replaces each source identity so a completed
 //! render from the old position cannot land in the new playback epoch.
+//! An authored track keeps the file's own bytes as its identity and is handed to the renderer with
+//! the viewer's colour pick applied to its pure-white-primary styles (`ass_ink`); a track with no
+//! such style is never restyled by the pick.
 use super::ass::{self, Content, Event, Font, Origin, Source};
 use super::text_ass::{self, Align, AlignClass, ClipCue, TextDialect};
 use super::text_style::TextStyle;
+use plx_plex::plex::session::SubtitleTone;
 use std::collections::BTreeMap;
 use std::sync::{Arc, MutexGuard};
 
@@ -43,6 +47,16 @@ pub enum TrackHeader {
     /// the track, a change among white and the grays does not: a gray is a draw-time tint) and
     /// remembers the dialect its cues are written in.
     Text(TextDialect),
+}
+
+/// An authored track as the FILE wrote it, beside the header the renderer is given for the viewer's
+/// colour pick ([`super::ass_ink`]): the file's bytes are the reopen identity and the source the pick
+/// is applied to afresh each time, never to an earlier result.
+#[derive(Clone)]
+struct AuthoredTrack {
+    file: Arc<[u8]>,
+    /// The pick the held header was built for.
+    tone: SubtitleTone,
 }
 
 /// A cue as the text track received it, converted: the ASS packet it became and the ReadOrder in it.
@@ -161,6 +175,8 @@ pub struct Store {
     tracks: BTreeMap<i32, Arc<Source>>,
     // The tracks of `tracks` that are Text origin, by track.
     text: BTreeMap<i32, TextTrack>,
+    // The tracks of `tracks` the file styled, by track.
+    authored: BTreeMap<i32, AuthoredTrack>,
     fonts: Option<Arc<[Font]>>,
     // Dedup index: the events held per track, so a reread after a seek is an O(1) lookup.
     seen: BTreeMap<i32, std::collections::HashSet<Event>>,
@@ -183,6 +199,7 @@ impl Store {
             awaiting_reopen: false,
             tracks: BTreeMap::new(),
             text: BTreeMap::new(),
+            authored: BTreeMap::new(),
             fonts: None,
             seen: BTreeMap::new(),
             selected_track: None,
@@ -196,6 +213,7 @@ impl Store {
         self.awaiting_reopen = false;
         self.tracks.clear();
         self.text.clear();
+        self.authored.clear();
         self.seen.clear();
         self.fonts = None;
     }
@@ -234,6 +252,27 @@ impl Store {
                             fonts: fonts.clone(),
                         },
                     });
+                }
+            }
+        }
+        // An authored track takes the colour pick in its white-primary styles (`ass_ink`): the header the
+        // renderer holds is rebuilt from the FILE's bytes when the pick moves, the track keeps its id and
+        // its events, and the engine swaps it in place (`ass::restyles`). A pick that changes nothing in
+        // this header (a grey, a size, a file with no white style) bumps nothing.
+        if let (Some(ink), Some(source)) = (self.authored.get_mut(&track), self.tracks.get_mut(&track)) {
+            if ink.tone != style.tone {
+                ink.tone = style.tone;
+                if let Content::Embedded { header, events, fonts } = &source.content {
+                    let wanted: Arc<[u8]> = super::ass_ink::recolour(&ink.file, style.tone).map_or_else(|| ink.file.clone(), Arc::from);
+                    if *header != wanted {
+                        self.revision = self.revision.wrapping_add(1);
+                        *source = Arc::new(Source {
+                            id: source.id,
+                            revision: source.revision.wrapping_add(1),
+                            origin: Origin::Authored,
+                            content: Content::Embedded { header: wanted, events: events.clone(), fonts: fonts.clone() },
+                        });
+                    }
                 }
             }
         }
@@ -280,8 +319,7 @@ impl Store {
                 self.tracks.get(track).is_some_and(|source| match registered {
                     TrackHeader::Authored(bytes) => {
                         source.origin == Origin::Authored
-                            && matches!(&source.content, Content::Embedded { header, .. }
-                                if header.as_ref() == bytes.as_slice())
+                            && self.authored.get(track).is_some_and(|ink| ink.file.as_ref() == bytes.as_slice())
                     }
                     TrackHeader::Text(dialect) => {
                         source.origin.is_text()
@@ -320,7 +358,11 @@ impl Store {
                         _ => None,
                     }).unwrap_or_else(|| Arc::from([]));
                     self.seen.insert(track, events.iter().cloned().collect());
-                    (Origin::Authored, header, events)
+                    // the renderer's header is the file's with the viewer's colour taken into its white styles
+                    let file: Arc<[u8]> = header.into();
+                    let held = super::ass_ink::recolour(&file, style.tone).map_or_else(|| file.clone(), Arc::from);
+                    self.authored.insert(track, AuthoredTrack { file, tone: style.tone });
+                    (Origin::Authored, held, events)
                 }
                 TrackHeader::Text(dialect) => {
                     // The header is built for the picks of now, so the generation is the current one
@@ -332,7 +374,7 @@ impl Store {
                     text.style_generation = style.generation();
                     let events = text.view();
                     self.text.insert(track, text);
-                    (Origin::Text(style), text_ass::header(&style).into_bytes(), events)
+                    (Origin::Text(style), text_ass::header(&style).into_bytes().into(), events)
                 }
             };
             self.tracks.insert(
@@ -342,7 +384,7 @@ impl Store {
                     revision: 0,
                     origin,
                     content: Content::Embedded {
-                        header: header.into(),
+                        header,
                         events,
                         fonts: fonts.clone(),
                     },
@@ -1614,6 +1656,70 @@ mod tests {
         let mut s = Store::default();
         let g = s.begin("f", vec![(0, TrackHeader::Authored(b"header".to_vec()))], vec![]);
         assert_eq!(s.push_text(g, 0, 1000, 2000, "cue", 0), None);
+    }
+
+    // ---- the colour pick on an authored track (`ass_ink`) ----
+
+    /// An authored header with a white-primary `Default` and a blue `Sign` style.
+    fn authored_header() -> Vec<u8> {
+        let style = |name: &str, primary: &str| format!(
+            "Style: {name},Arial,48,{primary},&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,2,1,2,10,10,10,1\n");
+        format!(
+            "[Script Info]\nScriptType: v4.00+\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n{}{}\n[Events]\n",
+            style("Default", "&H00FFFFFF"), style("Sign", "&H00FF0000")
+        ).into_bytes()
+    }
+
+    /// **An embedded ASS track takes the viewer's colour in its white styles** (an SRT converted to ASS is
+    /// one): the renderer's header is the file's with `ass_ink::recolour` applied, rebuilt in place when the
+    /// pick moves, while the store keeps the file's own bytes (the reopen identity) and the events.
+    #[test]
+    fn an_authored_track_takes_the_colour_pick_in_its_white_styles_and_keeps_the_files_own_bytes() {
+        use plx_plex::plex::session::{SubtitlePosition, SubtitleSize, SubtitleTone};
+        let file = authored_header();
+        let white = TextStyle::default();
+        let yellow = TextStyle { tone: SubtitleTone::Yellow, ..white };
+        let header_of = |source: &Arc<Source>| match &source.content {
+            Content::Embedded { header, .. } => header.to_vec(),
+            Content::Script { .. } => panic!(),
+        };
+        let mut s = Store::default();
+        let g = s.begin_styled("f", vec![(0, TrackHeader::Authored(file.clone()))], vec![], white);
+        s.push(g, 0, event("hello", 1000), 0);
+        let before = s.selected_styled(0, white).unwrap();
+        assert_eq!((before.origin, header_of(&before)), (Origin::Authored, file.clone()), "white is the file's own ink: nothing is rewritten");
+        let after = s.selected_styled(0, yellow).unwrap();
+        assert_eq!((after.id, after.origin), (before.id, Origin::Authored), "authored geometry, same identity");
+        assert_eq!(after.revision, before.revision.wrapping_add(1), "one bump for the new pick");
+        assert_eq!(header_of(&after), super::super::ass_ink::recolour(&file, SubtitleTone::Yellow).unwrap());
+        assert!(Arc::ptr_eq(&after, &s.selected_styled(0, yellow).unwrap()), "once only");
+        let Content::Embedded { events, .. } = &after.content else { panic!() };
+        assert_eq!(events.len(), 1, "the held events are untouched");
+        // a size or position pick is not this track's business, and a grey is a draw-time tint
+        let large = TextStyle { size: SubtitleSize::Large, position: SubtitlePosition::High, ..yellow };
+        assert!(Arc::ptr_eq(&after, &s.selected_styled(0, large).unwrap()));
+        // a cue arriving later is held under the recoloured header, and white puts the file's own back
+        s.push(g, 0, event("again", 3000), 0);
+        assert_eq!(header_of(&s.selected_styled(0, yellow).unwrap()), header_of(&after));
+        let back = s.selected_styled(0, white).unwrap();
+        assert_eq!(header_of(&back), file);
+        assert_ne!(back.revision, after.revision, "white is a change of pick too");
+        // the same file reopened under a pick still matches by the FILE's bytes and keeps its events
+        s.selected_styled(0, yellow);
+        s.begin_styled("f", vec![(0, TrackHeader::Authored(file.clone()))], vec![], yellow);
+        let Content::Embedded { events, .. } = &s.selected_styled(0, yellow).unwrap().content else { panic!() };
+        assert_eq!(events.len(), 2, "a reopen under a coloured pick is the same file");
+    }
+
+    #[test]
+    fn an_authored_track_with_no_white_style_is_never_restyled_by_the_pick() {
+        use plx_plex::plex::session::SubtitleTone;
+        let coloured = String::from_utf8(authored_header()).unwrap().replace("&H00FFFFFF", "&H0000FFFF").into_bytes();
+        let yellow = TextStyle { tone: SubtitleTone::Yellow, ..TextStyle::default() };
+        let mut s = Store::default();
+        s.begin_styled("f", vec![(0, TrackHeader::Authored(coloured))], vec![], TextStyle::default());
+        let before = s.selected_styled(0, TextStyle::default()).unwrap();
+        assert!(Arc::ptr_eq(&before, &s.selected_styled(0, yellow).unwrap()), "nothing for the pick to take");
     }
 
     // ---- lazy restyle by style generation (plan §2.5) ----

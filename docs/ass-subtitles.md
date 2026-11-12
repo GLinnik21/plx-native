@@ -7,7 +7,16 @@ the link is local and the Part is 1..=30000 kbps, and otherwise the server burns
 The viewer's timing control applies to every subtitle, and so does a gray tone (Settings > Audio &
 subtitles > Subtitle color, or the Color section of the player's Subtitles menu), which only dims
 the drawn bitmaps. A COLOR tone (Yellow) is different: it is the default colour of a synthesized
-text track (below) and never touches an authored script, so styled ASS/SSA colours are kept.
+text track (below), and in an authored ASS/SSA script (embedded, or a sidecar file, including a
+converted SubRip that reaches the app as an ASS track) it replaces the PrimaryColour of every style
+whose primary is exactly pure white (`&H00FFFFFF`, in any spelling, alpha 0): white is the default
+ink, so it follows the pick. `player::ass_ink` does the rewrite on the header that reaches libass
+(the file's own bytes stay the reopen identity), through `SubtitleTone::text_rgb8`, the one palette.
+A style whose primary is any other colour, an inline `\c` override (explicit white included), the
+outline and shadow colours and the karaoke SecondaryColour (recoloured only when it is itself pure
+white) are left alone, and the grays never rewrite a header (they stay a draw-time tint). A colour
+change restyles the live track once, in place (`ass::restyles`). Cost, known: signs and typesetting
+drawn in white take the colour too. Picture subtitles (PGS, VobSub) are never recoloured.
 
 Embedded TEXT tracks (SubRip, WebVTT, mov_text, SAMI and the other text codecs) render through the same
 libass worker. They have no header in the file, so `player::ass_source` synthesizes one

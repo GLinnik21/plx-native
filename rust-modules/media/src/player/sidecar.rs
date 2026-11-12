@@ -93,6 +93,16 @@ struct Content {
     font_generation: Option<u64>,
     /// Set for a converted SubRip/WebVTT file, whose header follows the viewer's picks.
     text: Option<TextHold>,
+    /// Set for an ASS/SSA file the author styled: the file's own bytes, kept beside the script the
+    /// renderer holds because that one has the viewer's colour taken into its white styles
+    /// (`ass_ink`) and a new pick is applied to the file, not to an earlier result.
+    ink: Option<AuthoredInk>,
+}
+
+/// The file an authored script was loaded from, and the pick its held script was built for.
+struct AuthoredInk {
+    file: Arc<[u8]>,
+    tone: plx_plex::plex::session::SubtitleTone,
 }
 
 /// What a converted file needs to be restyled: the script is the synthesized header followed by
@@ -367,6 +377,20 @@ fn ass_source_styled(burned: bool, style: TextStyle) -> Option<Arc<super::ass::S
         // one) and published under this lock when ready; until then the old look stays up.
         plx_base::diag::spans::span("restyle", || start_restyle(content, style));
     }
+    // An authored script takes the pick in its white styles. The whole script is rebuilt (a copy, once, when
+    // the pick moves to or from a colour; a grey or a size changes nothing in it).
+    if let Some(ink) = content.ink.as_mut().filter(|ink| ink.tone != style.tone) {
+        ink.tone = style.tone;
+        let wanted: Arc<[u8]> = super::ass_ink::recolour(&ink.file, style.tone).map_or_else(|| ink.file.clone(), Arc::from);
+        if let super::ass::Content::Script { bytes, fonts } = &content.source.content {
+            if *bytes != wanted {
+                content.source = Arc::new(super::ass::Source {
+                    id: content.source.id, revision: content.source.revision.wrapping_add(1),
+                    origin: content.source.origin, content: super::ass::Content::Script { bytes: wanted, fonts: fonts.clone() },
+                });
+            }
+        }
+    }
     if content.font_generation != Some(generation) {
         let super::ass::Content::Script { bytes, .. } = &content.source.content else { return None; };
         content.source = Arc::new(super::ass::Source {
@@ -454,13 +478,17 @@ fn decode(bytes: Vec<u8>, codec: &str) -> Result<Content, Failure> {
     if authored {
         // Validate only the presence of events. libass owns the script grammar, including
         // style/format declarations, overlapping dialogue and vector drawing events.
+        let file: Arc<[u8]> = bytes.into();
+        let tone = TextStyle::current().tone;
+        let held = super::ass_ink::recolour(&file, tone).map_or_else(|| file.clone(), Arc::from);
         return Ok(Content {
             source: Arc::new(super::ass::Source {
                 id: super::ass::next_source_id(), revision: 1, origin: super::ass::Origin::Authored,
-                content: super::ass::Content::Script { bytes: bytes.into(), fonts: Arc::from([]) },
+                content: super::ass::Content::Script { bytes: held, fonts: Arc::from([]) },
             }),
             font_generation: None,
             text: None,
+            ink: Some(AuthoredInk { file, tone }),
         });
     }
     // A server conversion or error must not silently turn an ASS selection into plain text.
@@ -493,6 +521,7 @@ fn decode(bytes: Vec<u8>, codec: &str) -> Result<Content, Failure> {
             content: super::ass::Content::Script { bytes: script, fonts: Arc::from([]) },
         }),
         font_generation: None,
+        ink: None,
         text: Some(TextHold { header_len: header.len(), style_generation: style.generation(), cues: converted.cues, restyling: false }),
     })
 }
@@ -848,6 +877,43 @@ mod tests {
         }
         assert!(decode(b"1\n00:00:01,000 --> 00:00:03,000\nSIGN\n".to_vec(), "ass").is_err(),
             "a converted response must not silently discard styling");
+    }
+
+    /// **An ASS sidecar takes the viewer's colour in its white styles** (a server-converted SubRip file is
+    /// one): the script the renderer is given is the file's with `ass_ink::recolour` applied, rebuilt in
+    /// place when the pick moves (same id, one revision bump, the file's own bytes kept to apply the next
+    /// pick to), and the file's own bytes again once the pick is not a colour.
+    #[test]
+    fn an_authored_script_takes_the_colour_pick_in_its_white_styles_and_keeps_the_files_bytes() {
+        use plx_plex::plex::session::SubtitleTone;
+        let _guard = plx_base::testlock::serial();
+        reset();
+        finish_download();
+        let style = |name: &str, primary: &str| format!(
+            "Style: {name},Arial,48,{primary},&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,2,1,2,10,10,10,1\n");
+        let file = format!(
+            "[Script Info]\nScriptType: v4.00+\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n{}{}[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,Hello\n",
+            style("Default", "&H00FFFFFF"), style("Sign", "&H00FF0000")).into_bytes();
+        let body = file.clone();
+        select_with_fetch(plx_plex::plex::ServerId::from_raw(0), 9, "/library/streams/9".into(), "ass".into(),
+            move |_, _, _| Some(body.clone()));
+        finish_download();
+        let white = TextStyle { tone: SubtitleTone::White, ..TextStyle::current() };
+        let yellow = TextStyle { tone: SubtitleTone::Yellow, ..white };
+        let before = ass_source_styled(false, white).unwrap();
+        assert_eq!(before.origin, Origin::Authored);
+        let ass::Content::Script { bytes, .. } = &before.content else { panic!() };
+        assert_eq!(bytes.as_ref(), file.as_slice(), "white is the file's own ink");
+        let after = ass_source_styled(false, yellow).unwrap();
+        assert_eq!((after.id, after.revision, after.origin), (before.id, before.revision.wrapping_add(1), Origin::Authored));
+        let ass::Content::Script { bytes, .. } = &after.content else { panic!() };
+        assert_eq!(bytes.as_ref(), super::super::ass_ink::recolour(&file, SubtitleTone::Yellow).unwrap().as_slice());
+        assert!(Arc::ptr_eq(&after, &ass_source_styled(false, yellow).unwrap()), "once only");
+        let grey = TextStyle { tone: SubtitleTone::Silver, ..white };
+        let back = ass_source_styled(false, grey).unwrap();
+        let ass::Content::Script { bytes, .. } = &back.content else { panic!() };
+        assert_eq!(bytes.as_ref(), file.as_slice(), "the pick moved off yellow: the file's own bytes return");
+        reset();
     }
 
     /// #708's legacy charsets reach the script as the same UTF-8 text the embedded path gets.

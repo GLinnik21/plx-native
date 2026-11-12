@@ -165,7 +165,7 @@
   "widgets.tracks.style_size": "Tamanho",
   "widgets.tracks.style_position": "Posição",
   "widgets.tracks.style_image_note": "Legendas de imagem: aspeto fixo; cinzento escurece.",
-  "widgets.tracks.style_styled_note": "Legendas com estilo: aspeto fixo; cinzento escurece.",
+  "widgets.tracks.style_styled_note": "Legendas com estilo: aspeto fixo; branco segue a cor.",
   "widgets.tracks.timing": "Sincronização",
   "widgets.tracks.external_badge": "EXTERNA",
   "widgets.tracks.tone_white": "Branco",

@@ -165,7 +165,7 @@
   "widgets.tracks.style_size": "Mida",
   "widgets.tracks.style_position": "Posició",
   "widgets.tracks.style_image_note": "Subtítols d'imatge: aspecte fix; el gris atenua.",
-  "widgets.tracks.style_styled_note": "Subtítols amb estil: aspecte fix; el gris atenua.",
+  "widgets.tracks.style_styled_note": "Subtítols amb estil: aspecte fix; el blanc pren el color.",
   "widgets.tracks.timing": "Sincronització",
   "widgets.tracks.external_badge": "EXTERNS",
   "widgets.tracks.tone_white": "Blanc",
