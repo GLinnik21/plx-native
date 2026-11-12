@@ -982,6 +982,31 @@ fn paging_a_recent_row_does_not_remove_other_home_rows() {
     assert_eq!(hubs[0].len, 24);
 }
 
+#[test]
+fn livetv_borrowed_shelf_composes_after_continue_watching_and_does_not_change_heroes() {
+    let owned = built(0, &[(10, "cw1")], vec![shelf(0, "Recent", "home.movies.recent", &["r1"])]);
+    let (items, hubs, heroes) = merge(&[src(0, "", HubState::Ready, Some(owned))]);
+    let snapshot = HubsSnapshot { data: Arc::new(HomeCatalog { items, hubs, heroes }), generation: 7, state: HubState::Ready };
+    let tiles = vec![row(0, "external")];
+    let base = snapshot.view();
+    let view = base.with_shelf("extra", "Independent", &tiles, 3);
+    assert_eq!(view.hub_count(), base.hub_count() + 1);
+    assert_eq!(view.hub(0).unwrap().identity, Some(HubIdentity::ContinueWatching));
+    assert_eq!(view.hub(1).unwrap().title, "Independent");
+    assert!(view.hub(1).unwrap().items == tiles.as_slice());
+    assert_eq!(view.hub(2).unwrap().title, "Recent");
+    assert_eq!(view.hero_count(), base.hero_count());
+    assert!(view.find(sid(0), "external").is_some());
+    assert!(base.find(sid(0), "external").is_none());
+    assert_eq!(view.generation, 10);
+    assert_ne!(view.generation, base.with_shelf("extra", "Independent", &tiles, 4).generation);
+    let empty = HubsSnapshot::empty_for_test();
+    let view = empty.view().with_shelf("extra", "Independent", &tiles, 3);
+    assert_eq!(view.hub(0).unwrap().title, "Independent");
+    assert_eq!(view.hero_count(), 0);
+    assert_eq!(empty.view().with_shelf("extra", "Independent", &[], 4).hub_count(), 0);
+    assert_ne!(empty.view().with_shelf("extra", "Independent", &[], 4).generation, empty.view().generation);
+}
 
 // ---- one tile per show across servers (#892) -------------------------------------------------------
 

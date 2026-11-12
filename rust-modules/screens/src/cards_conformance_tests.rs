@@ -11,6 +11,7 @@ const EXPECTED: &str = include_str!("../../../ci/allow/cards-conformance.txt");
 /// shelves), Home and Detail's four shelves (Related is `detail_shelves`) are in scope; the rest are in [`PENDING`].
 fn table() -> Vec<(&'static str, Mount)> {
     vec![
+        ("livetv", super::livetv::cards_harness::mount as Mount),
         ("collection", super::collection::cards_harness::mount as Mount),
         ("person", super::person::cards_harness::mount as Mount),
         ("search", super::search::cards_harness::mount as Mount),
@@ -27,7 +28,7 @@ fn table() -> Vec<(&'static str, Mount)> {
 
 /// In-scope screens whose harness is not built yet; the registry test keeps the two lists whole.
 const PENDING: &[&str] = &[];
-const IN_SCOPE: &[&str] = &["collection", "person", "search", "library_grid", "library_shelves", "home", "detail_shelves", "detail_collection", "detail_extras", "detail_cast", "watchlist"];
+const IN_SCOPE: &[&str] = &["livetv", "collection", "person", "search", "library_grid", "library_shelves", "home", "detail_shelves", "detail_collection", "detail_extras", "detail_cast", "watchlist"];
 
 #[test]
 fn every_in_scope_card_screen_is_in_the_table_or_pending() {

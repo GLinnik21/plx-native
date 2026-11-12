@@ -207,8 +207,8 @@ const RESOLUTION_SHAPE: &str = "ProductResolutionV1{fo:Option<(entry:u32,elem:u3
 /// well as the term around it: the init shape names that type rather than spelling its fields, so
 /// a census that only said `ControlledHomeInitV3` would be claiming the change was in the
 /// envelope when it is in the session.
-pub(crate) const FP_PRIOR: u64 = 4239819007634745513;
-pub(crate) const FP_V6: u64 = 741022075462080307;
+pub(crate) const FP_PRIOR: u64 = 8095100275431231557;
+pub(crate) const FP_V6: u64 = 18191931659807943619;
 
 pub(crate) fn state_fp() -> u64 {
     let mut shapes: Vec<&str> = APP_SHAPES.to_vec();
@@ -280,7 +280,7 @@ fn session_app_fingerprint_probe_only() {
     ] {
         let header: Value = serde_json::from_str(manifest).unwrap();
         assert_eq!(header["schema"].as_u64(), Some(3));
-        assert_eq!(header["state_fp"].as_u64(), Some(fp_prior));
+        assert_eq!(header["state_fp"].as_u64(), Some(prospective_fp_v6));
     }
 }
 
@@ -2748,8 +2748,9 @@ mod fixture_preflight_tests {
             let dir = root.join(name);
             let manifest = std::fs::read_to_string(dir.join("manifest.json")).unwrap();
             let segment = std::fs::read(dir.join("rec-0000.jsonl")).unwrap();
-            let mut recording = Recording::parse(&manifest, &[segment.as_slice()], FP_PRIOR).unwrap();
-            let initial = super::super::bootstrap::Initial::decode(recording.header.init_data.clone(), recording.header.init_hash)
+            let mut recording = Recording::parse(&manifest, &[segment.as_slice()], FP_V6).unwrap();
+            let initial = super::super::bootstrap::Initial::decode_profile(recording.header.init_data.clone(),
+                recording.header.init_hash, recording.header.state_fp)
                 .expect("recorded initial state must retain its canonical hash");
             // Host unit tests omit the simulator feature; this check covers the wire preflight.
             recording.header.features = features();

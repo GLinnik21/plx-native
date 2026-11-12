@@ -872,7 +872,8 @@ pub fn stop_for_replacement(ps: &mut crate::route::PlaybackSession, pa: &mut sup
     if retire_if_server_stopped(ps, pa) {
         return false;
     }
-    teardown(ps, pa, false, plx_playback_contract::StopReason::Stop);
+    crate::route::retaining_request_for_replacement(ps, |ps|
+        teardown(ps, pa, false, plx_playback_contract::StopReason::Stop));
     true
 }
 

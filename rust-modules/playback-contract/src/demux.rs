@@ -8,6 +8,29 @@ use crate::subtitle::{Anchor, CaptionRetention, DecodeKind, Manifest, RawCue, Tr
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// The feed HLS reader accepts H.264 video and optional AAC audio. `None` also checks video alone.
+pub fn hls_accepts_codecs(video: &str, audio: Option<&str>) -> bool {
+    video.eq_ignore_ascii_case("h264") && audio.is_none_or(|codec| codec.eq_ignore_ascii_case("aac"))
+}
+
+#[test]
+fn hls_reader_accepts_only_h264_and_optional_aac() {
+    for (video, audio, accepted) in [
+        ("h264", Some("aac"), true),
+        ("H264", Some("AAC"), true),
+        ("h264", None, true),
+        ("h264", Some("ac3"), false),
+        ("h264", Some("eac3"), false),
+        ("hevc", Some("aac"), false),
+        ("hevc", None, false),
+        ("mpeg2video", Some("aac"), false),
+        ("", Some("aac"), false),
+        ("h264", Some(""), false),
+    ] {
+        assert_eq!(hls_accepts_codecs(video, audio), accepted, "{video}/{audio:?}");
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PauseLane { Hls, Original }
 

@@ -260,5 +260,7 @@
   "widgets.region.latin_america": "Ameryka Łacińska",
   "widgets.failure.play_auto": "Ustaw Auto i odtwórz",
   "widgets.failure.change_quality": "Zmień jakość",
-  "widgets.watch.intro": "Oglądaj czołówkę"
+  "widgets.watch.intro": "Oglądaj czołówkę",
+  "widgets.verdict.tuners_busy": "Wszystkie tunery są zajęte",
+  "widgets.live.channel_context": "{number} · {programme}"
 }

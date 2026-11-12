@@ -256,5 +256,7 @@
   "widgets.region.latin_america": "Amérique latine",
   "widgets.failure.play_auto": "Passer en Auto et lire",
   "widgets.failure.change_quality": "Changer la qualité",
-  "widgets.watch.intro": "Regarder le générique"
+  "widgets.watch.intro": "Regarder le générique",
+  "widgets.verdict.tuners_busy": "Tous les tuners sont occupés",
+  "widgets.live.channel_context": "{number} · {programme}"
 }

@@ -192,7 +192,7 @@ impl EncodeContract {
 /// claims — `transcoder`'s tests pin that a ceiling is INERT on a remux, and `route`'s gates 2
 /// and 4 pin that a remux is only ever reached for a source under it.
 pub struct TranscodeSpec<'a> {
-    pub rating_key: &'a str,
+    pub source: TranscodeSource<'a>,
     /// The played version's position in `Media[]` (`mediaIndex`), resolved from its id
     /// (`Metadata::media_version`); 0 is the default version.
     pub media_index: usize,
@@ -223,6 +223,14 @@ pub struct TranscodeSpec<'a> {
     pub client_subtitles: bool,
     /// Restart at this exact content boundary, or omit `offset` for a fresh start.
     pub offset: TranscodeOffset,
+}
+
+/// The source the shared universal-transcoder query names. A live source is the validated
+/// `/livetv/sessions/{uuid}` key returned by the tune, never an airing's library rating key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TranscodeSource<'a> {
+    Library(&'a str),
+    Live(&'a str),
 }
 
 /// A bound a playback must come in under, in the units PMS's own params use: `maxVideoBitrate` is

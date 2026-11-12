@@ -26,9 +26,13 @@ impl TimelineSnapshot {
         })
     }
 
-    pub fn from_feed(readout: &super::readout::PlayerReadout, duration_ns: i64) -> Option<Self> {
+    pub fn from_feed(readout: &super::readout::PlayerReadout, duration_ns: i64, live: bool) -> Option<Self> {
         if readout.unconfirmed_seek_target().is_some() {
             return None;
+        }
+        if live {
+            return Some(Self { state: plx_plex::plex::TimelineState::Playing,
+                time_ms: readout.raw().playpos_ns / 1_000_000, duration_ms: 0 });
         }
         Self::from_content_ns(readout.raw().playpos_ns, duration_ns, readout.paused())
     }
@@ -119,6 +123,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_live_feed_reports_progress_without_inventing_a_duration() {
+        use super::super::readout::{PlayerReadout, ReadoutEvent};
+        use plx_playback_contract::feed::FeedRaw;
+        let mut readout = PlayerReadout::IDLE;
+        readout.step(ReadoutEvent::FactsIngested(FeedRaw {
+            playpos_ns: 12_000_000_000, frames: 1, ..FeedRaw::IDLE
+        }));
+        assert!(TimelineSnapshot::from_feed(&readout, 0, false).is_none());
+        for duration in [0, 120_000_000_000] {
+            let sample = TimelineSnapshot::from_feed(&readout, duration, true).unwrap();
+            assert_eq!((sample.time_ms, sample.duration_ms), (12_000, 0));
+            assert!(sample.state == plx_plex::plex::TimelineState::Playing);
+        }
+        assert!(!super::super::readout::stream_ended(12_000_000_000, 0, false));
+    }
+
+    #[test]
     fn a_seek_reports_no_progress_until_the_replacement_reports_its_position() {
         use super::super::readout::{PlayerReadout, ReadoutEvent};
         use plx_playback_contract::feed::FeedRaw;
@@ -131,20 +152,20 @@ mod tests {
         readout.step(ReadoutEvent::FactsIngested(FeedRaw {
             playpos_ns: 9_467_000_000, frames: 3, ..FeedRaw::IDLE
         }));
-        assert!(TimelineSnapshot::from_feed(&readout, DURATION).is_none());
+        assert!(TimelineSnapshot::from_feed(&readout, DURATION, false).is_none());
         assert_eq!(readout.unconfirmed_seek_target(), Some(TARGET));
 
         readout.step(ReadoutEvent::SessionReset);
         readout.step(ReadoutEvent::ReloadSeek { target_ns: TARGET });
         readout.step(ReadoutEvent::FactsIngested(FeedRaw { playpos_ns: TARGET, ..FeedRaw::IDLE }));
-        assert!(TimelineSnapshot::from_feed(&readout, DURATION).is_none(), "the seeded target is not a report");
+        assert!(TimelineSnapshot::from_feed(&readout, DURATION, false).is_none(), "the seeded target is not a report");
         assert_eq!(readout.unconfirmed_seek_target(), Some(TARGET), "stopping here still saves the seek target");
 
         readout.step(ReadoutEvent::FactsIngested(FeedRaw {
             playpos_ns: TARGET - 5_000_000_000, frames: 1, ..FeedRaw::IDLE
         }));
         assert_eq!(readout.unconfirmed_seek_target(), None);
-        assert_eq!(TimelineSnapshot::from_feed(&readout, DURATION).unwrap().time_ms, 2_113_000);
+        assert_eq!(TimelineSnapshot::from_feed(&readout, DURATION, false).unwrap().time_ms, 2_113_000);
     }
 
     #[test]

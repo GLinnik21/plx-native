@@ -87,7 +87,7 @@ pub(crate) struct Frame {
 }
 
 impl Frame {
-    fn begin(ps: &plx_media::route::PlaybackSession, meta: plx_data::metadata::MetadataView<'_>) -> Frame {
+    pub(crate) fn begin(ps: &plx_media::route::PlaybackSession, meta: plx_data::metadata::MetadataView<'_>) -> Frame {
         Frame {
             ctrl: plx_appkit::player_hud::slot(ps, meta),
             now: 0,
@@ -732,6 +732,7 @@ fn begin_product_frame(app: &mut App) -> Frame {
 
 /// Current transport/marker facts before the dispatcher's input/Tick, refreshed again for draw.
 fn publish_player_model(app: &mut App) {
+    super::playback::publish_live_banner(&mut app.player.session, app.bridge.livetv_view().channels);
     let mut model = hud_model(&app.player.session, app.bridge.metadata_view(),
         app.adapters.player.backend_viewer_paused().unwrap_or(false),
         matches!(app.rec, super::recorder::Recplay::Off) && !app.bridge.is_controlled_replay()
@@ -1191,9 +1192,21 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         ) {
             plx_machine::idle::invalidate();
         }
+        // A Live TV channel is not parked: the server goes on recording while the app is away, and
+        // the tuner it holds is the server's. Leave the player as BACK does, so the session's
+        // `stopped` frees the tuner.
+        if plx_media::route::is_live(&app.player.session) {
+            log("livetv: background ends the channel");
+            super::playback::exit_player(
+                &mut app.player,
+                &mut app.adapters.player,
+                &mut app.repause_at,
+                &mut app.refresh_hubs,
+                &mut app.pages,
+            );
         // Playback owns its resolve and Engine before the queued Player page mounts. Page
         // presence only governs the screen-local cleanup below, never resource suspension.
-        if !plx_media::route::preview_request(&app.player.session)
+        } else if !plx_media::route::preview_request(&app.player.session)
             && (plx_media::route::play_pending()
                 || app.adapters.player.playback_needs_teardown(&app.player.session)
                 || plx_media::route::has_url(&app.player.session))
@@ -3077,6 +3090,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         super::bridge::execute_endpoint_outcomes(&mut app.pages, upgrades);
         app.bridge.person_pump();
         app.bridge.collection_pump();
+        app.bridge.livetv_pump();
         // …and the Detail pages whose item, season or show it just spoke about: re-read from the
         // server's word, wherever on the stack they are (`content::reconcile_details`).
         let landed = app.bridge.take_landed_views();
@@ -3504,6 +3518,7 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
                     crate::focusprobe::Screen::Catalog,
                 AppArg::Search => crate::focusprobe::Screen::Search,
                 AppArg::Watchlist => crate::focusprobe::Screen::Watchlist,
+                AppArg::LiveTv => crate::focusprobe::Screen::LiveTv,
                 // The same words the heartbeat's `overlay=` uses, and — since phase 9 — from the
                 // same place: the SURFACE that is up. There is no second table; see
                 // `heartbeat_word_tests::focusprobe_player_overlay_delegates_to_the_shared_overlay_word_function`.
@@ -3939,7 +3954,7 @@ unsafe fn controlled_key_input(app: &mut App, event: plx_machine::machine::Input
 }
 
 #[cfg(all(test, feature = "hostsim", feature = "play-feed"))]
-mod lifecycle_regression_tests {
+pub(super) mod lifecycle_regression_tests {
     use super::*;
 
     #[test]
@@ -3994,7 +4009,7 @@ mod lifecycle_regression_tests {
     }
 
     // No boot, renderer or device: the real App/event/frame phases with Bridge's host rig.
-    fn app() -> App {
+    pub(crate) fn app() -> App {
         plx_play_feed::ff_test_support::reset_session_for_test(&mut plx_media::player::reset_common_for_test);
         let mut app = App {
             last_input: Default::default(),
@@ -6071,6 +6086,7 @@ mod lifecycle_regression_tests {
     }
 
     include!("run_uri_boot_tests.rs");
+    include!("run_livetv_tests.rs");
 
     // ---- track memory: what the viewer picked on one episode is what the next episode plays -----
 

@@ -165,6 +165,14 @@ pub(super) fn request_play_intent(
         }
         plx_screens::registry::PlayIntent::Movie { item, version } =>
             plx_media::route::request_play_movie(session, meta, super::playback::start_caps(), item, &super::playback::movie_ctx(item), *version),
+        plx_screens::registry::PlayIntent::Live { sid, dvr, channel, title } => {
+            let ok = plx_media::route::request_live(session, meta, super::playback::start_caps(), *sid, dvr, channel, title);
+            if ok {
+                // The previous item's caption would otherwise label the channel for the whole tune.
+                meta.run(plx_data::stores::metadata::MetadataCmd::SetNowPlaying(None));
+            }
+            ok
+        }
     }
 }
 
@@ -699,23 +707,26 @@ fn home_requests(app: &mut App, now: u32) {
     for (source, request, ret) in app.bridge.take_home_reqs() {
         let MachineId::Instance(instance) = source else { continue };
         let Some(entry) = app.pages.nav.entry_of_instance(instance) else { continue };
-        if app.pages.nav.input_owner() != Some(InputOwner::Entry(entry))
-            || !matches!(app.route(), AppArg::Home) { continue; }
+        if app.pages.nav.input_owner() != Some(InputOwner::Entry(entry)) { continue; }
+        let from_live = matches!(app.route(), AppArg::LiveTv);
+        if !matches!(app.route(), AppArg::Home)
+            && !(from_live && matches!(request, HomeReq::Tab(_) | HomeReq::Account)) { continue; }
         match request {
             HomeReq::FoldToHero => fold_to_hero(&mut app.pages, source, entry),
             HomeReq::Account => chip_activate(&mut app.pages),
             HomeReq::Tab(tab) => {
                 // A pointer may name the last presented map after favourites changed. The
                 // stable key must not resurrect a destination the current strip withdrew.
-                if !home_tab_available(app.bridge.browse_directory(), tab) { continue; }
+                if !home_tab_available(app.bridge.browse_directory(), app.bridge.livetv_available(), tab) { continue; }
                 match tab {
                     // The Home pill ON Home: nothing to navigate to, but a transition queued a
                     // moment ago is still withdrawable, and focus drops into the hero like every
                     // other pill's arrival.
                     HomeTab::Home => {
                         bridge::nav_cancel(&mut app.pages);
-                        bridge::nav_home_pill(&mut app.pages, &mut app.bridge, None);
+                        bridge::nav_home_pill(&mut app.pages, &mut app.bridge, from_live.then_some(ret));
                     }
+                    HomeTab::LiveTv if from_live => {}
                     other => bridge::nav_tab(&mut app.pages, &mut app.bridge, other, None, Some(ret)),
                 }
             }
@@ -1100,8 +1111,10 @@ pub(crate) fn watchlist_navigation(
 
 fn home_tab_available(
     directory: plx_data::stores::browse::DirectoryView<'_>,
+    live_tv: bool,
     tab: HomeTab,
 ) -> bool {
+    if tab == HomeTab::LiveTv { return live_tv; }
     let kind = match tab {
         HomeTab::Movies => Some(plx_data::stores::browse::SecKind::Movie),
         HomeTab::Shows => Some(plx_data::stores::browse::SecKind::Show),
@@ -1362,9 +1375,11 @@ mod library_publication_tests {
             },
         ]);
 
-        assert!(home_tab_available(directory.view(), HomeTab::Movies));
-        assert!(!home_tab_available(directory.view(), HomeTab::Shows));
-        assert!(home_tab_available(directory.view(), HomeTab::Home));
+        assert!(home_tab_available(directory.view(), false, HomeTab::Movies));
+        assert!(!home_tab_available(directory.view(), false, HomeTab::Shows));
+        assert!(home_tab_available(directory.view(), false, HomeTab::Home));
+        assert!(!home_tab_available(directory.view(), false, HomeTab::LiveTv));
+        assert!(home_tab_available(directory.view(), true, HomeTab::LiveTv));
     }
 
     #[test]

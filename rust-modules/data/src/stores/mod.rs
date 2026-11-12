@@ -71,6 +71,7 @@ pub mod notify_job;
 pub mod notify_map;
 pub mod person;
 pub mod collection;
+pub mod livetv;
 pub(crate) mod deck;
 pub(crate) mod deck_group;
 pub mod page_cache;
@@ -93,6 +94,7 @@ pub struct Stores {
     pub metadata: metadata::MetadataStore,
     pub person: person::PersonStore,
     pub collection: collection::CollectionStore,
+    pub livetv: livetv::LiveTvStore,
     pub search: search::SearchStore,
     /// The player's subtitle search & download (`crate::subsearch`). Appended last.
     pub subtitle_search: subsearch::SubSearchStore,
@@ -129,6 +131,7 @@ impl Default for Stores {
             metadata: metadata::MetadataStore::default(),
             person: person::PersonStore::default(),
             collection: collection::CollectionStore::default(),
+            livetv: livetv::LiveTvStore::default(),
             search: search::SearchStore::default(),
             subtitle_search: subsearch::SubSearchStore::default(),
             viewstate: std::cell::RefCell::new(viewstate::ViewStateStore::default()),
@@ -228,6 +231,16 @@ impl Stores {
         self.collection.view()
     }
 
+    pub fn livetv_run(&mut self, cmd: livetv::LiveTvCmd, keys: &plx_plex::plex::ClientKeys, now: i64) -> bool {
+        self.livetv.run(cmd, &self.landgate, keys, now)
+    }
+
+    pub fn livetv_pump(&mut self, keys: &plx_plex::plex::ClientKeys, now: i64) -> bool {
+        self.livetv.pump(&self.landgate, keys, now)
+    }
+
+    pub fn livetv_view(&self) -> crate::livetv::LiveTvView<'_> { self.livetv.view() }
+
     pub fn subtitle_search_run(&mut self, cmd: subsearch::SubSearchCmd) -> bool {
         self.subtitle_search.run(cmd)
     }
@@ -283,6 +296,7 @@ impl Stores {
     pub fn take_jobs_of(&mut self, id: StoreId) -> Vec<StoreJob> {
         match id {
             StoreId::Notify => self.notify.take_jobs(),
+            StoreId::LiveTv => self.livetv.take_jobs(),
             StoreId::Metadata => self.metadata.take_jobs(),
             StoreId::Collection => self.collection.take_jobs(),
             StoreId::Person => self.person.take_jobs(),
@@ -307,6 +321,7 @@ impl Stores {
     fn has_jobs_of(&self, id: StoreId) -> bool {
         match id {
             StoreId::Notify => self.notify.has_jobs(),
+            StoreId::LiveTv => self.livetv.has_jobs(),
             StoreId::Metadata => self.metadata.has_jobs(),
             StoreId::Collection => self.collection.has_jobs(),
             StoreId::Person => self.person.has_jobs(),
@@ -633,6 +648,7 @@ impl Stores {
         match id {
             StoreId::Browse => self.browse.borrow().gen(),
             StoreId::Collection => self.collection.gen(),
+            StoreId::LiveTv => self.livetv.gen(),
             StoreId::Hubs => self.hubs.gen(),
             StoreId::Metadata => self.metadata.gen(),
             StoreId::Person => self.person.gen(),
@@ -682,6 +698,9 @@ impl Stores {
         if let Some(generation) = self.catalog.take_notice() {
             notices.push((StoreId::Catalog, generation));
         }
+        if let Some(generation) = self.livetv.take_notice() {
+            notices.push((StoreId::LiveTv, generation));
+        }
         notices
     }
 }
@@ -711,6 +730,8 @@ pub enum StoreId {
     Catalog,
     /// Never recorded; appended without moving existing ordinals.
     Notify,
+    /// Independent DVR lineup and guide; appended without moving recorded ordinals.
+    LiveTv,
 }
 
 /// Route-scoped background work, distinct from a user command. Polling an idle store must not
@@ -742,6 +763,7 @@ impl StoreWork {
 /// lane a store is pumped on, a job carries the request itself and the port its answer goes to.
 #[derive(Debug, PartialEq)]
 pub enum StoreJob {
+    LiveTv(plx_machine::job::Job<crate::livetv::LiveTvReq>, crate::livetv::LiveTvPort),
     NotifyStream(plx_machine::job::Job<notify_job::NotifyStreamReq>, notify_job::NotifyStreamPort),
     /// One detail fetch (`MetadataCmd::RequestDetail`), addressed by its request generation.
     Detail(plx_machine::job::Job<crate::metadata::DetailReq>, crate::metadata::DetailPort),
@@ -863,7 +885,8 @@ impl StoreJob {
             // `frame_ingest`, the Browse pump's own discovery step) starts it through
             // `StoreRunner::start` as `Direct`, byte for byte as its unrecorded spawn was.
             Self::BrowseDiscovery(..) => Admission::Home,
-            Self::NotifyStream(..)
+            Self::LiveTv(..)
+            | Self::NotifyStream(..)
             | Self::Catalog(..)
             | Self::SubtitleSearch(..)
             | Self::ViewReconcile(..)
@@ -884,6 +907,7 @@ impl StoreJob {
         match self {
             Self::Detail(..) | Self::MetaSeason(..) | Self::MetaEpisodes(..) | Self::MetaRelated(..) | Self::MetaAltSources(..) => StoreId::Metadata,
             Self::Collection(..) => StoreId::Collection,
+            Self::LiveTv(..) => StoreId::LiveTv,
             Self::Person(..) => StoreId::Person,
             Self::NotifyStream(..) => StoreId::Notify,
             Self::Catalog(..) => StoreId::Catalog,
@@ -898,7 +922,7 @@ impl StoreJob {
 }
 
 impl StoreId {
-    pub const ALL: [StoreId; 13] = [
+    pub const ALL: [StoreId; 14] = [
         StoreId::Browse,
         StoreId::Hubs,
         StoreId::Metadata,
@@ -912,6 +936,7 @@ impl StoreId {
         StoreId::Watchlist,
         StoreId::Catalog,
         StoreId::Notify,
+        StoreId::LiveTv,
     ];
 
     /// The library's ordinal for this store (spec §5.1: the library never names `StoreId`).
@@ -938,6 +963,7 @@ impl StoreId {
             StoreId::Watchlist => "watchlist",
             StoreId::Catalog => "catalog",
             StoreId::Notify => "notify",
+            StoreId::LiveTv => "livetv",
         }
     }
 }
@@ -954,6 +980,7 @@ pub enum StoreCmd {
     Collection(collection::CollectionCmd),
     ViewState(viewstate::ViewStateCmd),
     SubtitleSearch(subsearch::SubSearchCmd),
+    LiveTv(livetv::LiveTvCmd),
 }
 
 impl StoreCmd {
@@ -967,6 +994,7 @@ impl StoreCmd {
             StoreCmd::Collection(_) => StoreId::Collection,
             StoreCmd::ViewState(_) => StoreId::ViewState,
             StoreCmd::SubtitleSearch(_) => StoreId::SubtitleSearch,
+            StoreCmd::LiveTv(_) => StoreId::LiveTv,
         }
     }
 }
@@ -1431,7 +1459,9 @@ mod tests {
         }
         assert_eq!(StoreId::Notify.ord(), StoreOrd(12));
         assert_eq!(StoreId::Notify.name(), "notify");
-        assert_eq!(StoreId::from_ord(StoreOrd(13)), None);
+        assert_eq!(StoreId::LiveTv.ord(), StoreOrd(13));
+        assert_eq!(StoreId::LiveTv.name(), "livetv");
+        assert_eq!(StoreId::from_ord(StoreOrd(14)), None);
         let original = ["browse", "hubs", "metadata", "search", "person", "viewstate",
             "collection", "subsearch", "viewreconcile", "viewstop", "watchlist", "catalog"];
         for (ord, name) in original.into_iter().enumerate() {

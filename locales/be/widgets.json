@@ -260,5 +260,7 @@
   "widgets.region.latin_america": "Лацінская Амерыка",
   "widgets.failure.play_auto": "Уключыць «Аўтаматычна» і прайграць",
   "widgets.failure.change_quality": "Змяніць якасць",
-  "widgets.watch.intro": "Глядзець уступ"
+  "widgets.watch.intro": "Глядзець уступ",
+  "widgets.verdict.tuners_busy": "Усе цюнэры занятыя",
+  "widgets.live.channel_context": "{number} · {programme}"
 }

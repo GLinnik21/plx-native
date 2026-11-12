@@ -63,6 +63,9 @@ struct PlaybackRequest {
     /// Background hero preview. No PlayQueue, no timeline, no scrobble, resume at 0, and the
     /// caller must not push the player route.
     preview: bool,
+    /// A Live TV channel to tune instead of `rk`/`part` ([`request_live`]). A retry of it tunes
+    /// again: the previous session ended with the playback that failed.
+    live: Option<LiveTune>,
     /// The version the viewer picked (Play Version), `None` for the default. Kept on the request,
     /// so a retry or quality change of this playback resolves the same version.
     version: Option<plx_plex::plex::MediaId>,
@@ -210,6 +213,9 @@ pub struct PlaybackSession {
     /// The server-side transcode session id, EMPTY on a direct play — that emptiness is the
     /// "is this a transcode?" test ([`is_transcoding`]) and the key the stop is sent with.
     tsession: String,
+    /// The Live TV session this playback watches, `None` for every library item. The timeline
+    /// reports under it and its `stopped` ([`scrobble_stop`]) is what frees the server's tuner.
+    cur_live: Option<plx_plex::plex::livetv::LiveSession>,
     /// The server's PRE-FLIGHT refusal for the last resolve, or None.
     ///
     /// `Some(sentence)` means `/decision` answered "neither direct play nor conversion is
@@ -650,7 +656,7 @@ mod uri_failure_recovery_tests {
         session.install_backends(plx_playback_contract::BackendSet::BOTH);
         session.request = Some(PlaybackRequest { sid: ServerId::UNSET, rk: "42".into(),
             part: "/library/parts/7".into(), vcodec: "h264".into(), acodec: "aac".into(),
-            title: "Film".into(), ctx: String::new(), preview: false, version: None,
+            title: "Film".into(), ctx: String::new(), preview: false, live: None, version: None,
             show_rk: String::new() });
         let mut policy = BackendPolicy::for_request(false);
         policy.qualify(BackendKind::Uri, OfferId::URI_ORIGINAL, Qualification::Qualified);
@@ -961,7 +967,7 @@ mod backend_offer_session_tests {
         session.request = Some(PlaybackRequest {
             sid: session.cur_sid, rk: "42".into(), part: "/library/parts/7".into(),
             vcodec: "h264".into(), acodec: "ac3".into(), title: "Film".into(),
-            ctx: String::new(), preview: false, version: None, show_rk: String::new(),
+            ctx: String::new(), preview: false, live: None, version: None, show_rk: String::new(),
         });
         assert_eq!(menu_enhancement_availability(&session),
             EnhancementAvailability::Offered(EnhancementRoute::Remux),
@@ -976,7 +982,7 @@ mod backend_offer_session_tests {
         session.request = Some(PlaybackRequest {
             sid: ServerId::UNSET, rk: "42".into(), part: "/library/parts/7".into(),
             vcodec: "h264".into(), acodec: "ac3".into(), title: "Film".into(),
-            ctx: String::new(), preview: false, version: None, show_rk: String::new(),
+            ctx: String::new(), preview: false, live: None, version: None, show_rk: String::new(),
         });
         let mut meta = plx_data::stores::metadata::MetadataStore::default();
         let change = ViewerReconfigure::Speed(1500);
@@ -1695,6 +1701,7 @@ impl PlaybackSession {
         requested_resume_ns: 0,
         url: String::new(),
         tsession: String::new(),
+        cur_live: None,
         play_verdict: None,
         pms_decline: None,
         resolve_failed: false,
@@ -1803,6 +1810,7 @@ impl PlaybackSession {
             requested_resume_ns,
             url,
             tsession,
+            cur_live,
             play_verdict,
             pms_decline,
             resolve_failed,
@@ -1893,6 +1901,7 @@ impl PlaybackSession {
             requested_resume_ns: *requested_resume_ns,
             url: url.clone(),
             tsession: tsession.clone(),
+            cur_live: cur_live.clone(),
             play_verdict: play_verdict.clone(),
             pms_decline: *pms_decline,
             resolve_failed: *resolve_failed,
@@ -2084,9 +2093,20 @@ pub fn clear_url(ps: &mut PlaybackSession) {
 pub(crate) fn retire_stopped_playback(ps: &mut PlaybackSession) {
     clear_url(ps);
     ps.sess.clear();
+    ps.request = None;
     if ps.engine_failure == Some(crate::player::RuntimeFailure::ServerStopped) {
         ps.engine_failure = None;
     }
+}
+
+/// A replacement ends the old server resources but still needs its descriptor to retry, or has
+/// already published the next item's request. A plain Stop/Back never retains that descriptor.
+pub(crate) fn retaining_request_for_replacement(
+    ps: &mut PlaybackSession, stop: impl FnOnce(&mut PlaybackSession),
+) {
+    let request = ps.request.clone();
+    stop(ps);
+    ps.request = request;
 }
 
 pub fn transcode_session(ps: &PlaybackSession) -> String {
@@ -2441,6 +2461,8 @@ fn commit_in_place_route_projection(ps: &PlaybackSession, quality_contract: bool
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TimelineProjection {
     sid: ServerId,
+    /// A Live TV playback reports under its session instead of `rating_key`.
+    live: Option<plx_plex::plex::livetv::LiveSession>,
     rating_key: String,
     logical_session: String,
     play_queue_id: String,
@@ -2480,6 +2502,7 @@ pub struct TimelineLease {
 #[derive(Clone)]
 struct TimelineSnapshot {
     sid: ServerId,
+    live: Option<plx_plex::plex::livetv::LiveSession>,
     rating_key: String,
     state: plx_plex::plex::TimelineState,
     time_ms: i64,
@@ -5539,6 +5562,7 @@ pub enum VideoLane {
 /// [`RecoveryDispatch::Refused`] / [`RecoveryVerdict::Refused`] leave the failure the pump held back
 /// (a forced direct play, which the viewer asked not to convert, is one).
 pub fn dispatch_refusal_conversion(ps: &mut PlaybackSession, offset_secs: i64, video: VideoLane) -> RecoveryDispatch {
+    if is_live(ps) { return RecoveryDispatch::Refused; }
     let expected = worker_ticket();
     if !rebuild_precheck(ps, &expected) {
         return RecoveryDispatch::Refused;
@@ -6903,6 +6927,10 @@ pub fn note_engine_failure(ps: &mut PlaybackSession, cause: crate::player::Runti
 pub fn play_verdict(ps: &PlaybackSession) -> Option<std::borrow::Cow<'_, str>> {
     ps.play_verdict.as_ref().map(PlayVerdict::text)
 }
+pub(crate) fn tuners_busy(ps: &PlaybackSession) -> bool {
+    matches!(ps.play_verdict, Some(PlayVerdict::TunersBusy))
+}
+
 /// The verdict NUMBERS of a refusal the SERVER made at `/decision` — `None` when nothing was
 /// refused, or when the refusal was the app's own (Direct Play off, Force Direct Play): those carry
 /// no server codes because the server was never asked to decide. Numbers only; the sentence is
@@ -8086,6 +8114,11 @@ struct ScrobbleWork {
     mark_watched: bool,
     /// The record the app learns this stop from; posted just before `timeline_stop` completes.
     stop_mail: Option<PendingStop>,
+    /// The Live TV session to end: its `stopped` frees the server's tuner.
+    live: Option<plx_plex::plex::livetv::LiveSession>,
+    /// Holds the resolve fence from the stop until that `stopped` has returned, so a channel
+    /// change's tune cannot reach a one-tuner server before the tuner it plays on is freed.
+    live_fence: Option<ResolveWorker>,
 }
 
 /// The stops whose `stopped` POST has been attempted or abandoned, waiting for the app to take
@@ -8238,6 +8271,16 @@ impl ScrobbleWork {
                 }
             }
         }
+        if let Some(live) = self.live.take() {
+            let ok = {
+                let _effect = TIMELINE_EFFECT.lock().unwrap_or_else(|e| e.into_inner());
+                self.client.is_some_and(|c| {
+                    c.live_timeline(&live, plx_plex::plex::TimelineState::Stopped, 0, &self.session)
+                })
+            };
+            plx_base::eventlog::log(&format!("livetv: stopped ok={}", ok as i32));
+        }
+        drop(self.live_fence.take());
         // BEFORE the fence completes, so a completed fence implies the record is in the mailbox.
         if let Some(mut mail) = self.stop_mail.take() {
             mail.post(posted);
@@ -8299,11 +8342,12 @@ pub fn scrobble_stop(
     // the whole of what a stop resets). A partial write rather than a whole-session reset because
     // the rest is still read after teardown returns — see `reset_session`'s doc for the reader that
     // would break.
+    let live = ps.cur_live.take();
     { let s = &mut *ps; {
         s.tsession.clear();
         s.cur_contract.remux = false;
     } };
-    if final_report.is_none() && tsession.is_empty() && report_th.is_none() {
+    if final_report.is_none() && tsession.is_empty() && report_th.is_none() && live.is_none() {
         // Nothing to post and nobody to wait for, so no worker. The record a reporter left must
         // still go with its playback, and a take is only ordered after the reporter's last POST
         // while the effect lane is free: a reporter cut loose by a reload may be mid-POST on it.
@@ -8355,6 +8399,8 @@ pub fn scrobble_stop(
         timeline_stop,
         mark_watched,
         stop_mail,
+        live_fence: live.as_ref().map(|_| ResolveWorker::enter()),
+        live,
     })));
     let worker = work.clone();
     let join_generation = SCROBBLE_JOIN.reserve();
@@ -9982,6 +10028,7 @@ impl ResolveEnv {
             // Set in exactly one place, `request_env`: nothing else may default it on.
             fresh_play: false,
             selection_before_retry: None,
+            live: None,
             #[cfg(any(test, feature = "test-support"))]
             account_subtitles: None,
         }
@@ -10074,8 +10121,7 @@ pub fn playback_preview_with_capability_for_test(
 static PLAY_GEN: AtomicU32 = AtomicU32::new(0);
 static PLAY_BUSY: AtomicBool = AtomicBool::new(false);
 
-/// Resolve workers (the detached `resolve` thread of [`request_play_inner`]) that have not
-/// finished yet, retirement of an abandoned plan included.
+/// Resolve workers and live-session retirement workers that have not finished yet.
 ///
 /// [`cancel_play`] only withdraws the landing: the worker still runs its `build_stream` to the end
 /// and then sends the `stop?closeResourceSession=1` for a plan nobody will play, to the server
@@ -10095,6 +10141,19 @@ impl ResolveWorker {
     fn enter() -> Self {
         RESOLVE_WORKERS.fetch_add(1, Ordering::SeqCst);
         ResolveWorker
+    }
+
+    /// Only the current live resolve waits: superseded waiters leave rather than blocking one
+    /// another. Retirement holds the same count until its stopped request has returned.
+    fn wait_for_previous(&self, gen: u32, limit: std::time::Duration) -> bool {
+        let end = std::time::Instant::now() + limit;
+        while RESOLVE_WORKERS.load(Ordering::SeqCst) > 1 {
+            if PLAY_GEN.load(Ordering::SeqCst) != gen || std::time::Instant::now() >= end {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        PLAY_GEN.load(Ordering::SeqCst) == gen
     }
 }
 
@@ -10136,6 +10195,8 @@ fn retire_plan_resources(resources: AbandonedPlanResources) {
     let Some(client) = plx_plex::plex::client_for(resources.sid) else {
         return;
     };
+    // Transfer live retirement into the resolve fence before the abandoning worker can exit.
+    let worker = resources.live.as_ref().map(|_| ResolveWorker::enter());
     // Thread creation failure is rarer than cancellation and must not turn into a permanent
     // server allocation, so a refused worker stops them inline. The normal path keeps this
     // network work off the main thread.
@@ -10143,6 +10204,12 @@ fn retire_plan_resources(resources: AbandonedPlanResources) {
         "abandon-stop",
         const { &plx_base::task::BlockingLabel::new("abandoned plan stop (worker thread refused)") },
         move || {
+            let _worker = worker;
+            // The recording first: it holds a tuner, which nothing else here would give back.
+            if let Some((live, session)) = &resources.live {
+                let ok = client.live_timeline(live, plx_plex::plex::TimelineState::Stopped, 0, session);
+                plx_base::eventlog::log(&format!("livetv: abandoned session stopped ok={}", ok as i32));
+            }
             for identity in resources.identities {
                 let _ = client.transcode_stop(&identity);
             }
@@ -10262,6 +10329,7 @@ pub fn request_play(
             title: title.to_owned(),
             ctx: ctx.to_owned(),
             preview: false,
+            live: None,
             version,
             show_rk: show_rk.to_owned(),
         },
@@ -10290,7 +10358,7 @@ pub fn request_play_queue_item(
     let queue = super::queue_navigation::QueueContinuation::capture(ps, row);
     request_play_with_queue(ps, meta, caps, PlaybackRequest {
         sid: row.sid, rk: row.rk.clone(), part: row.part.clone(), vcodec: row.vcodec.clone(),
-        acodec: row.acodec.clone(), title: title.clone(), ctx: ctx.into(), preview: false, version: None,
+        acodec: row.acodec.clone(), title: title.clone(), ctx: ctx.into(), preview: false, live: None, version: None,
         show_rk: row.show_rk.clone(),
     }, None, None, false, crate::player::report::AttemptOrigin::Fresh, queue, false, None)
 }
@@ -10321,6 +10389,7 @@ pub fn request_preview(
             title: title.to_owned(),
             ctx: plx_data::metadata::TRAILER_CONTEXT.to_owned(),
             preview: true,
+            live: None,
             version: None,
             show_rk: String::new(),
         },
@@ -10331,6 +10400,62 @@ pub fn request_preview(
         // it names the cause truthfully for whoever reads the request.
         crate::player::report::AttemptOrigin::Preview,
     )
+}
+
+/// Same resolve door as [`request_play`], for a Live TV channel of server `sid`: the worker tunes
+/// `channel` on DVR `dvr` (several seconds, under the player's Resolving state), then plays its
+/// session directly or through the universal transcoder. `title` is the channel's name. MAIN THREAD, NON-BLOCKING, like `request_play`.
+pub fn request_live(
+    ps: &mut PlaybackSession,
+    meta: &mut plx_data::stores::metadata::MetadataStore,
+    caps: std::sync::Arc<plx_platform::devcaps::Caps>,
+    sid: ServerId,
+    dvr: &str,
+    channel: &str,
+    title: &str,
+) -> bool {
+    request_play_inner(
+        ps,
+        meta,
+        caps,
+        PlaybackRequest {
+            sid,
+            rk: String::new(),
+            part: String::new(),
+            vcodec: String::new(),
+            acodec: String::new(),
+            title: title.to_owned(),
+            ctx: String::new(),
+            preview: false,
+            live: Some(LiveTune { dvr: dvr.to_owned(), channel: channel.to_owned() }),
+            version: None,
+            show_rk: String::new(),
+        },
+        None,
+        None,
+        true,
+        crate::player::report::AttemptOrigin::Fresh,
+    )
+}
+
+/// This playback watches a Live TV channel: there is no timeline to seek in and nothing to resume.
+pub fn is_live(ps: &PlaybackSession) -> bool {
+    ps.cur_live.is_some() || ps.request.as_ref().is_some_and(|r| r.live.is_some())
+}
+
+/// The requested channel and its server, including while its tune is still resolving.
+pub fn live_request(ps: &PlaybackSession) -> Option<(ServerId, &LiveTune)> {
+    let request = ps.request.as_ref()?;
+    Some((request.sid, request.live.as_ref()?))
+}
+
+/// Publish the lineup's current programme through the ordinary HUD pair and retry descriptor.
+pub fn set_live_context(ps: &mut PlaybackSession, context: &str) {
+    let Some(request) = ps.request.as_mut().filter(|r| r.live.is_some()) else { return };
+    if request.ctx == context { return; }
+    request.ctx = context.to_owned();
+    // SAFETY: the buffer length comes from the same fixed array as its pointer.
+    unsafe { set_c(ps.ctxline.as_mut_ptr(), ps.ctxline.len(), context); }
 }
 
 /// The resolve environment a play REQUEST hands its worker: the snapshot taken AFTER the request
@@ -10349,6 +10474,7 @@ fn request_env(
     env.omit_queue_continuous = plx_data::metadata::context_omits_queue_continuous(&request.ctx);
     env.queue_show_rk = request.show_rk.clone();
     env.set_preview(request.preview);
+    env.live = request.live.clone();
     env.fresh_play = retry.is_none() && !request.preview;
     env.version = request.version;
     if env.version.is_some() {
@@ -10512,7 +10638,7 @@ fn request_play_with_queue(
     let part = &request.part;
     let title = &request.title;
     let ctx = &request.ctx;
-    if part.is_empty() && rk.is_empty() {
+    if part.is_empty() && rk.is_empty() && request.live.is_none() {
         return false;
     }
     let Some(accepted_revision) = begin_playback_request() else {
@@ -10669,6 +10795,12 @@ fn request_play_with_queue(
     let worker = ResolveWorker::enter();
     let spawned = plx_base::task::spawn_off_frame("resolve", move |off| {
         let _worker = worker;
+        let live_ready = env.live.is_none()
+            || _worker.wait_for_previous(gen, std::time::Duration::from_secs(30));
+        if !live_ready {
+            if PLAY_GEN.load(Ordering::SeqCst) != gen { return; }
+            crate::player::log("livetv: previous resolve or retirement timed out; refusing to tune");
+        }
         if drain_previous {
             // The old attempt's `state=stopped` and transcode `/stop` were intentionally moved off
             // the SDL thread.  A user Retry must nevertheless preserve their ordering relative to
@@ -10678,7 +10810,12 @@ fn request_play_with_queue(
         // catch_unwind OUTSIDE the mailbox write, like `metadata::finish_season_job`: a panicking
         // resolve must still land (as !ok) or PLAY_BUSY latches and the screen wedges on a spinner
         // forever.
-        let plan = std::panic::catch_unwind(|| build_stream(off, &rk, &part, &vc, &ac, &env))
+        let plan = std::panic::catch_unwind(|| {
+            if !live_ready || (env.live.is_some() && PLAY_GEN.load(Ordering::SeqCst) != gen) {
+                return Plan { direct_play_mode: env.direct_play_mode, ..Default::default() };
+            }
+            build_stream(off, &rk, &part, &vc, &ac, &env)
+        })
             .unwrap_or_else(|_| Plan { direct_play_mode: env.direct_play_mode, ..Default::default() });
         let landing = PlayLanding {
             gen,
@@ -10829,7 +10966,11 @@ pub fn retry_declined_uri_source(ps: &mut PlaybackSession,
         || replace_active_encoder_for(&active, "").is_none() { return false; }
     let mut identities = vec![owned.to_owned()];
     if !ps.sess.is_empty() && ps.sess != owned { identities.push(ps.sess.clone()); }
-    retire_plan_resources(AbandonedPlanResources { sid: cur_sid(ps), identities });
+    retire_plan_resources(AbandonedPlanResources {
+        sid: cur_sid(ps),
+        identities,
+        live: ps.cur_live.clone().map(|live| (live, ps.sess.clone())),
+    });
     ps.tsession.clear();
     ps.qualify_backend_offer(plx_playback_contract::BackendKind::Uri,
         offer_id,
@@ -10946,6 +11087,8 @@ pub fn retry_current_play(
         crate::player::log("playback retry: no Plex request descriptor");
         return false;
     };
+    // A channel has no position to return to: a retry tunes again and starts at the live edge.
+    let resume_ns = if request.live.is_some() { 0 } else { resume_ns };
     crate::player::log(&format!(
         "playback retry: resolving item again at quality {:?}",
         quality(),
@@ -11396,6 +11539,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
             requested_resume_ns,
             url: plan.url,
             tsession: plan.tsession,
+            cur_live: plan.live,
             // Installed on EVERY landing, not only a refusing one: a plan that resolved is itself
             // the statement that the last refusal is over, and assigning unconditionally is what
             // makes that true without a second clear anyone can forget.
@@ -13825,6 +13969,7 @@ pub fn begin_timeline_reporting(ps: &PlaybackSession) -> Option<TimelineLease> {
     }
     let projection = TimelineProjection {
         sid: cur_sid(ps),
+        live: ps.cur_live.clone(),
         rating_key: cur_rk(ps),
         logical_session: sess(ps),
         play_queue_id: pq_id(ps),
@@ -13832,7 +13977,7 @@ pub fn begin_timeline_reporting(ps: &PlaybackSession) -> Option<TimelineLease> {
         audio_stream_id: cur_audio_sid(ps),
         subtitle_stream_id: cur_sub_sid(ps),
     };
-    if projection.rating_key.is_empty() || !projection.sid.is_set() {
+    if (projection.rating_key.is_empty() && projection.live.is_none()) || !projection.sid.is_set() {
         return None;
     }
     let required_stop = TIMELINE_STOP_FENCE.announced();
@@ -13873,6 +14018,7 @@ fn timeline_snapshot(
     };
     Some(TimelineSnapshot {
         sid: projection.sid,
+        live: projection.live.clone(),
         rating_key: projection.rating_key.clone(),
         state,
         time_ms,
@@ -13956,6 +14102,13 @@ pub fn report_timeline(
         Some(c) => c,
         None => return true,
     };
+    if let Some(live) = &report.live {
+        // Watched time, not a position: a live session has no duration and nothing to resume.
+        if !c.live_timeline(live, report.state, report.time_ms, &report.session) {
+            plx_base::eventlog::log(&format!("livetv: timeline post failed state={}", report.state.as_str()));
+        }
+        return true;
+    }
     if let Some(retired) = retired_report_session(report.reported_session.as_deref(), &report.session) {
         // One attempt, like every report here: a failure is logged below and the next tick does
         // not repeat it (the id is no longer the one on record), the row simply ages out.
@@ -14032,6 +14185,7 @@ pub(crate) fn resolve_refused_preview_for_test(ps: &mut PlaybackSession) {
         title: "Trailer".into(),
         ctx: plx_data::metadata::TRAILER_CONTEXT.into(),
         preview: true,
+        live: None,
         version: None,
         show_rk: String::new(),
     });
@@ -14131,3 +14285,4 @@ mod track_memory_tests;
 #[cfg(test)]
 #[path = "decision_write_back_tests.rs"]
 mod write_back_tests;
+

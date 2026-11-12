@@ -11,27 +11,28 @@ use plx_data::stores::browse::{DirectoryView, SecKind};
 pub(crate) enum Pill {
     Home,
     Section(SecKind),
+    LiveTv,
     Watchlist,
     Search,
 }
 
-/// The strip's destination keys in strip order: Home, one key per type pill, the Watchlist
-/// bookmark, Search. The one
-/// place that order is written; `refresh` publishes it and the pill maps below read it, so no
-/// map assumes which index Search holds.
-fn strip_keys(directory: DirectoryView<'_>) -> Vec<u32> {
+/// The strip's destination keys in strip order: Home, one key per type pill, Live TV when tunable
+/// channels are available, the Watchlist bookmark, Search. The one place that order is written;
+/// `refresh` publishes it and the pill maps below read it, so no map assumes Search's index.
+fn strip_keys(directory: DirectoryView<'_>, live_tv: bool) -> Vec<u32> {
     let mut keys = vec![widgets::TAB_KEY_HOME];
     keys.extend((0..directory.tab_count()).filter_map(|i| directory.tab_kind(i)).map(|kind| match kind {
         SecKind::Movie => widgets::TAB_KEY_MOVIES,
         SecKind::Show => widgets::TAB_KEY_SHOWS,
     }));
+    if live_tv { keys.push(widgets::TAB_KEY_LIVETV); }
     keys.push(widgets::TAB_KEY_WATCHLIST);
     keys.push(widgets::TAB_KEY_SEARCH);
     keys
 }
 
-pub(crate) fn pill_at(directory: DirectoryView<'_>, i: usize) -> Pill {
-    pill_in(i, &strip_keys(directory))
+pub(crate) fn pill_at(directory: DirectoryView<'_>, live_tv: bool, i: usize) -> Pill {
+    pill_in(i, &strip_keys(directory, live_tv))
 }
 
 /// The destination a strip index names, by the KEY published at that index.
@@ -39,14 +40,15 @@ fn pill_in(i: usize, keys: &[u32]) -> Pill {
     match keys.get(i).copied() {
         Some(widgets::TAB_KEY_MOVIES) => Pill::Section(SecKind::Movie),
         Some(widgets::TAB_KEY_SHOWS) => Pill::Section(SecKind::Show),
+        Some(widgets::TAB_KEY_LIVETV) => Pill::LiveTv,
         Some(widgets::TAB_KEY_WATCHLIST) => Pill::Watchlist,
         Some(widgets::TAB_KEY_SEARCH) => Pill::Search,
         _ => Pill::Home,
     }
 }
 
-pub(crate) fn pill_of(directory: DirectoryView<'_>, pill: Pill) -> Option<usize> {
-    pill_index(pill, &strip_keys(directory))
+pub(crate) fn pill_of(directory: DirectoryView<'_>, live_tv: bool, pill: Pill) -> Option<usize> {
+    pill_index(pill, &strip_keys(directory, live_tv))
 }
 
 fn pill_index(pill: Pill, keys: &[u32]) -> Option<usize> {
@@ -54,6 +56,7 @@ fn pill_index(pill: Pill, keys: &[u32]) -> Option<usize> {
         Pill::Home => widgets::TAB_KEY_HOME,
         Pill::Section(SecKind::Movie) => widgets::TAB_KEY_MOVIES,
         Pill::Section(SecKind::Show) => widgets::TAB_KEY_SHOWS,
+        Pill::LiveTv => widgets::TAB_KEY_LIVETV,
         Pill::Watchlist => widgets::TAB_KEY_WATCHLIST,
         Pill::Search => widgets::TAB_KEY_SEARCH,
     };
@@ -63,6 +66,8 @@ fn pill_index(pill: Pill, keys: &[u32]) -> Option<usize> {
 #[derive(Default)]
 pub(crate) struct ChromeSnapshot {
     tabs_generation: Option<u32>,
+    live_tv: bool,
+    labels_generation: u32,
     profile_generation: Option<u32>,
     session_watch: plx_plex::plex::session::VisibleSessionWatch,
     faces: Vec<TabFace>,
@@ -103,25 +108,28 @@ impl ChromeSnapshot {
         self.pulse = None;
     }
 
-    pub(crate) fn refresh(&mut self, measure: &dyn Measure, directory: DirectoryView<'_>) {
-        self.refresh_with_profile(measure, directory, None);
+    pub(crate) fn refresh(&mut self, measure: &dyn Measure, directory: DirectoryView<'_>, live_tv: bool) {
+        self.refresh_with_profile(measure, directory, live_tv, None);
     }
 
-    pub(crate) fn refresh_with_profile(&mut self, measure: &dyn Measure, directory: DirectoryView<'_>,
+    pub(crate) fn refresh_with_profile(&mut self, measure: &dyn Measure, directory: DirectoryView<'_>, live_tv: bool,
         captured: Option<(&plx_plex::plex::session::CurrentProfile, &plx_plex::plex::session::Session)>) {
         let generation = directory.tabs_gen();
-        let strip_changed = self.tabs_generation != Some(generation);
+        let strip_changed = self.tabs_generation != Some(generation) || self.live_tv != live_tv;
         if strip_changed {
-            self.keys = strip_keys(directory);
+            self.keys = strip_keys(directory, live_tv);
             self.faces = self.keys.iter().map(|&key| match key {
                 widgets::TAB_KEY_HOME => TabFace::Label(plx_platform::i18n::msg::browse_chrome_home().into()),
                 widgets::TAB_KEY_MOVIES => TabFace::Label(plx_platform::i18n::msg::browse_kind_movies().into()),
                 widgets::TAB_KEY_SHOWS => TabFace::Label(plx_platform::i18n::msg::browse_kind_tv_shows().into()),
+                widgets::TAB_KEY_LIVETV => TabFace::Label(plx_platform::i18n::msg::browse_chrome_live_tv().into()),
                 widgets::TAB_KEY_WATCHLIST => TabFace::Icon(Icon::Bookmark),
                 _ => TabFace::Icon(Icon::Search),
             }).collect();
             self.widths = widgets::tab_widths(&self.faces, measure);
             self.tabs_generation = Some(generation);
+            self.live_tv = live_tv;
+            self.labels_generation = self.labels_generation.wrapping_add(1);
         }
         let generation = captured.map_or_else(plx_plex::plex::session::current_gen, |(profile, _)| profile.generation);
         let session_changed = captured.is_none() && self.session_watch.changed();
@@ -152,7 +160,7 @@ impl ChromeSnapshot {
     }
 
     pub(crate) fn labels(&self) -> TabLabels<'_> {
-        TabLabels { generation: self.tabs_generation.unwrap_or(0), faces: &self.faces }
+        TabLabels { generation: self.labels_generation, faces: &self.faces }
     }
 
     /// The strip key published at `selected` (an index into [`Self::keys`], as `members` takes it):
@@ -192,6 +200,7 @@ impl ChromeSnapshot {
     #[cfg(test)]
     pub(crate) fn seed_for_test(&mut self, name: &str, initial: &str, labels: &[&str], measure: &dyn Measure) {
         self.tabs_generation = Some(1);
+        self.labels_generation = 1;
         // An empty label is the Search slot: the production strip ends in the Search icon face.
         self.faces = labels.iter()
             .map(|s| if s.is_empty() { TabFace::Icon(Icon::Search) } else { TabFace::Label((*s).to_owned()) })
@@ -229,7 +238,7 @@ mod tests {
         let mut snapshot = ChromeSnapshot::default();
         let directory = directory(&[]);
         plx_plex::plex::session::install_transient_for_test(true);
-        snapshot.refresh(&plx_ui::fixture::FixtureMeasure, directory.view());
+        snapshot.refresh(&plx_ui::fixture::FixtureMeasure, directory.view(), true);
         assert_eq!(snapshot.name.to_str().unwrap(), "Sign in");
         plx_plex::plex::session::save(&plx_plex::plex::session::Session {
             client_id: "synthetic-client".into(), account_token: "synthetic-token".into(),
@@ -237,7 +246,7 @@ mod tests {
                 title: "Synthetic owner".into(), admin: true, ..Default::default()
             }], ..Default::default()
         });
-        snapshot.refresh(&plx_ui::fixture::FixtureMeasure, directory.view());
+        snapshot.refresh(&plx_ui::fixture::FixtureMeasure, directory.view(), true);
         assert_eq!(snapshot.name.to_str().unwrap(), "Synthetic owner");
     }
 
@@ -262,10 +271,10 @@ mod tests {
         let mut snapshot = ChromeSnapshot::default();
         // the first refresh captures whatever profile is seated; the label is then a long one, as
         // a profile with a long name would have captured, and only the STRIP moves from here on
-        snapshot.refresh(&plx_ui::fixture::FixtureMeasure, directory.view());
+        snapshot.refresh(&plx_ui::fixture::FixtureMeasure, directory.view(), true);
         snapshot.label = "A profile name long enough to overflow any budget the bar could leave it".into();
         snapshot.tabs_generation = None;
-        snapshot.refresh(&plx_ui::fixture::FixtureMeasure, directory.view());
+        snapshot.refresh(&plx_ui::fixture::FixtureMeasure, directory.view(), true);
         let roomy = snapshot.name_w;
         let budget = widgets::chip_name_budget(widgets::tab_track_w(&snapshot.widths));
         assert!(budget > 0.0, "the ordinary strip leaves the chip a name");
@@ -274,7 +283,7 @@ mod tests {
 
         // the strip is rebuilt with wider pills; the profile generation does not move
         snapshot.tabs_generation = None;
-        snapshot.refresh(&Wide, directory.view());
+        snapshot.refresh(&Wide, directory.view(), true);
         assert!(widgets::tab_track_w(&snapshot.widths) > 1500.0, "the fixture strip must fill the bar");
         assert_eq!(widgets::chip_name_budget(widgets::tab_track_w(&snapshot.widths)), 0.0);
         assert!(snapshot.name.as_bytes().is_empty() && snapshot.name_w == 0.0,
@@ -284,7 +293,7 @@ mod tests {
 
         // …and back: the name returns to the full budget of the ordinary strip
         snapshot.tabs_generation = None;
-        snapshot.refresh(&plx_ui::fixture::FixtureMeasure, directory.view());
+        snapshot.refresh(&plx_ui::fixture::FixtureMeasure, directory.view(), true);
         assert_eq!(snapshot.name_w, roomy);
     }
 
@@ -309,14 +318,14 @@ mod tests {
         let mut snapshot = ChromeSnapshot {
             profile_generation: Some(plx_plex::plex::session::current_gen()), ..Default::default()
         };
-        snapshot.refresh(&plx_ui::fixture::FixtureMeasure, directory.view());
+        snapshot.refresh(&plx_ui::fixture::FixtureMeasure, directory.view(), true);
         assert_eq!(snapshot.keys, vec![widgets::TAB_KEY_HOME, widgets::TAB_KEY_MOVIES,
-            widgets::TAB_KEY_SHOWS, widgets::TAB_KEY_WATCHLIST, widgets::TAB_KEY_SEARCH]);
+            widgets::TAB_KEY_SHOWS, widgets::TAB_KEY_LIVETV, widgets::TAB_KEY_WATCHLIST, widgets::TAB_KEY_SEARCH]);
         let words: Vec<&str> = snapshot.faces.iter().filter_map(|face| match face {
             TabFace::Label(word) => Some(word.as_str()),
             TabFace::Icon(_) => None,
         }).collect();
-        assert_eq!(&words[..3], &["Home", "Movies", "TV Shows"]);
+        assert_eq!(&words[..4], &["Home", "Movies", "TV Shows", "Live TV"]);
         assert_eq!(snapshot.faces.last(), Some(&TabFace::Icon(Icon::Search)));
         assert_eq!(snapshot.faces[snapshot.faces.len() - 2], TabFace::Icon(Icon::Bookmark),
             "the Watchlist bookmark sits just before Search");
@@ -324,20 +333,21 @@ mod tests {
         snapshot.members(0, None, 0.0, &mut members);
         assert_eq!(members.iter().map(|member| member.elem).collect::<Vec<_>>(),
             vec![widgets::TAB_KEY_CHIP, widgets::TAB_KEY_HOME, widgets::TAB_KEY_MOVIES,
-                widgets::TAB_KEY_SHOWS, widgets::TAB_KEY_WATCHLIST, widgets::TAB_KEY_SEARCH]);
+                widgets::TAB_KEY_SHOWS, widgets::TAB_KEY_LIVETV, widgets::TAB_KEY_WATCHLIST, widgets::TAB_KEY_SEARCH]);
     }
 
     #[test]
     fn every_projected_pill_round_trips_by_stable_section_identity() {
         use plx_data::stores::browse::SecKind::{Movie, Show};
         let keys = [widgets::TAB_KEY_HOME, widgets::TAB_KEY_MOVIES, widgets::TAB_KEY_SHOWS,
-            widgets::TAB_KEY_WATCHLIST, widgets::TAB_KEY_SEARCH];
+            widgets::TAB_KEY_LIVETV, widgets::TAB_KEY_WATCHLIST, widgets::TAB_KEY_SEARCH];
         assert_eq!(pill_in(0, &keys), Pill::Home);
         assert_eq!(pill_in(1, &keys), Pill::Section(Movie));
         assert_eq!(pill_in(2, &keys), Pill::Section(Show));
-        assert_eq!(pill_in(3, &keys), Pill::Watchlist);
-        assert_eq!(pill_in(4, &keys), Pill::Search);
-        assert_eq!(pill_in(5, &keys), Pill::Home);
+        assert_eq!(pill_in(3, &keys), Pill::LiveTv);
+        assert_eq!(pill_in(4, &keys), Pill::Watchlist);
+        assert_eq!(pill_in(5, &keys), Pill::Search);
+        assert_eq!(pill_in(6, &keys), Pill::Home);
         for i in 0..keys.len() {
             assert_eq!(pill_index(pill_in(i, &keys), &keys), Some(i));
         }
@@ -363,12 +373,70 @@ mod tests {
     fn pill_maps_follow_the_published_strip_keys() {
         let directory = directory(&[SecKind::Movie, SecKind::Show]);
         let view = directory.view();
-        assert_eq!(strip_keys(view), vec![widgets::TAB_KEY_HOME, widgets::TAB_KEY_MOVIES,
+        assert_eq!(strip_keys(view, true), vec![widgets::TAB_KEY_HOME, widgets::TAB_KEY_MOVIES,
+            widgets::TAB_KEY_SHOWS, widgets::TAB_KEY_LIVETV, widgets::TAB_KEY_WATCHLIST, widgets::TAB_KEY_SEARCH]);
+        assert_eq!(pill_of(view, true, Pill::LiveTv), Some(3));
+        assert_eq!(pill_of(view, true, Pill::Watchlist), Some(4));
+        assert_eq!(pill_of(view, true, Pill::Search), Some(5));
+        assert_eq!(pill_at(view, true, 3), Pill::LiveTv);
+        assert_eq!(pill_at(view, true, 4), Pill::Watchlist);
+        assert_eq!(pill_at(view, true, 5), Pill::Search);
+    }
+
+    #[test]
+    fn unavailable_live_tv_leaves_watchlist_and_search_on_the_published_strip() {
+        let directory = directory(&[SecKind::Movie, SecKind::Show]);
+        let view = directory.view();
+        assert_eq!(strip_keys(view, false), vec![widgets::TAB_KEY_HOME, widgets::TAB_KEY_MOVIES,
             widgets::TAB_KEY_SHOWS, widgets::TAB_KEY_WATCHLIST, widgets::TAB_KEY_SEARCH]);
-        assert_eq!(pill_of(view, Pill::Watchlist), Some(3));
-        assert_eq!(pill_of(view, Pill::Search), Some(4));
-        assert_eq!(pill_at(view, 3), Pill::Watchlist);
-        assert_eq!(pill_at(view, 4), Pill::Search);
+        assert_eq!(pill_of(view, false, Pill::LiveTv), None);
+        assert_eq!(pill_of(view, false, Pill::Watchlist), Some(3));
+        assert_eq!(pill_of(view, false, Pill::Search), Some(4));
+        assert_eq!(pill_at(view, false, 3), Pill::Watchlist);
+        assert_eq!(pill_at(view, false, 4), Pill::Search);
+        for live_tv in [false, true] {
+            for i in 0..strip_keys(view, live_tv).len() {
+                assert_eq!(pill_of(view, live_tv, pill_at(view, live_tv, i)), Some(i));
+            }
+        }
+    }
+
+    #[test]
+    fn live_tv_availability_rebuilds_chrome_without_a_directory_change() {
+        let directory = directory(&[SecKind::Movie, SecKind::Show]);
+        let profile = plx_plex::plex::session::CurrentProfile {
+            user: None, generation: 23, stamp: String::new(),
+        };
+        let saved = plx_plex::plex::session::Session::default();
+        let captured = Some((&profile, &saved));
+        let measure = &plx_ui::fixture::FixtureMeasure;
+        let mut snapshot = ChromeSnapshot::default();
+        snapshot.refresh_with_profile(measure, directory.view(), false, captured);
+        let no_tv_keys = snapshot.keys.clone();
+        let no_tv_faces = snapshot.faces.clone();
+        let no_tv_widths = snapshot.widths.clone();
+        let initial_generation = snapshot.labels().generation;
+        assert!(!snapshot.keys.contains(&widgets::TAB_KEY_LIVETV));
+        assert_eq!(snapshot.tabs_generation, Some(directory.view().tabs_gen()));
+
+        snapshot.refresh_with_profile(measure, directory.view(), true, captured);
+        let tv_generation = snapshot.labels().generation;
+        assert_eq!(snapshot.keys, strip_keys(directory.view(), true));
+        assert_eq!(snapshot.faces[3], TabFace::Label(plx_platform::i18n::msg::browse_chrome_live_tv().into()));
+        assert_eq!(snapshot.faces.len(), no_tv_faces.len() + 1);
+        assert_eq!(snapshot.widths.len(), no_tv_widths.len() + 1);
+        assert_eq!(tv_generation, initial_generation.wrapping_add(1), "the renderer must refresh its cached labels");
+        assert_eq!(snapshot.tabs_generation, Some(directory.view().tabs_gen()));
+        assert_eq!(snapshot.profile_generation, Some(profile.generation));
+
+        snapshot.refresh_with_profile(measure, directory.view(), true, captured);
+        assert_eq!(snapshot.labels().generation, tv_generation, "unchanged inputs keep the renderer's cache");
+        snapshot.refresh_with_profile(measure, directory.view(), false, captured);
+        assert_eq!(snapshot.keys, no_tv_keys);
+        assert_eq!(snapshot.faces, no_tv_faces);
+        assert_eq!(snapshot.widths, no_tv_widths);
+        assert_eq!(snapshot.labels().generation, tv_generation.wrapping_add(1));
+        assert_eq!(snapshot.tabs_generation, Some(directory.view().tabs_gen()));
     }
 
     #[test]

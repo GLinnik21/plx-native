@@ -100,6 +100,21 @@ listings (`type=3|4`) are ordered by that Title key when it is asked for or no s
 "Count probes for seasons and episodes"). Episodes also get a critic and an audience rating (some
 missing) and an air date (some missing). Without it every answer is byte-identical.
 
+`--livetv-fixture` (default off) serves the Live TV surface `docs/pms-api.md` §10 describes, so an app can run
+with no tuner: one DVR (key 7) on a device of two tuners, five channels in an unsorted lineup, a guide that airs
+the half hour `now` falls in on every channel but one, a tune that answers with a live session at
+`/livetv/sessions/<uuid>` and holds a tuner until that session's timeline says `stopped`, the direct-play and the
+transcode decision of each channel's own codecs, and live playlists that grow and carry no `#EXT-X-ENDLIST`. The
+mock models the protocol, not video: a live segment answers 404 unless `--livetv-segment` (below) names a file.
+`--livetv-busy` is the same with no tuners, so every tune answers 503. With these off, every other answer is
+byte-identical.
+
+`--livetv-segment PATH` (default off; implies `--livetv-fixture`) serves that file, an MPEG-TS clip of H.264/AAC,
+as every live segment: `<n>.ts` under a live session or a live transcode answers 200 `video/mp2t` with its bytes, so
+a simulator can play a channel with no real tuner. Without it those segments answer 404 (the mock models the
+protocol, not video). Any short clip of that kind will do, e.g. one cut with
+`ffmpeg -i in.mkv -t 2 -c:v libx264 -bf 0 -g 50 -c:a aac -f mpegts seg.ts`.
+
     python3 tests/mock_pms.py --port 32499              # serve until Ctrl-C
     python3 tests/mock_pms.py --port 32499 --selftest   # prove the shapes without an app
     python3 tests/mock_pms.py --port 32499 --movies 321 --rail-fixture  # multi-page A–Z rail
@@ -323,6 +338,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+import uuid
 import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -2973,6 +2989,106 @@ class DiscoverFixture:
                 it["grandparentGuid"] = guid_of({"type": "show", "ratingKey": it["grandparentRatingKey"]})
 
 
+# ---------------------------------------------------------------- `--livetv-fixture` ----------
+
+class LiveTvFixture:
+    """Live TV on the mock PMS (`--livetv-fixture`; `docs/pms-api.md` §10, `rust-modules/plex/src/plex/livetv.rs`).
+
+    One DVR (key 7) on one device of two tuners, and five channels in an UNSORTED lineup (the app sorts
+    them by number). The guide airs every channel but one for the half hour `now` falls in. A tune mints
+    a live session at `/livetv/sessions/<uuid>` and holds one tuner until that session's timeline reports
+    `stopped`. `MockPms.livetv_handle` answers the routes; this class holds the data and the sessions.
+
+    The device's `status` is deliberately `dead`: §10 says discovery status is a historical result, not a
+    health check, and the app must still list these channels. A tune with no free tuner answers 503, which
+    the app reads as Busy; §10 classifies 409 and 503 as Busy by inference, not by a measured answer.
+
+    The mock models the protocol, not video. A live media playlist GROWS (a 2 s segment every 2 s, and no
+    `#EXT-X-ENDLIST`), and its segments answer 404 unless `segment` names a file: then every live segment answers
+    that file, and nothing here encodes one.
+    """
+
+    DVR_KEY = "7"
+    EPG_ID = "tv.plex.providers.epg.xmltv:7"
+    LINEUP = "lineup://tv.plex.providers.epg.xmltv/mock#Mock"
+    ORIGIN = "http://192.0.2.10:8409"  # the device and its art (TEST-NET-1: no real host)
+
+    # The lineup, UNSORTED. `airing` is what the guide airs at `now` (None: nothing airs); an episode
+    # names its show as `grandparentTitle`.
+    CHANNELS = (
+        {"id": "C102.243.mock.tv", "vcn": "102", "title": "102 Cartoons", "thumb": f"{ORIGIN}/logos/102.png",
+         "video": "h264", "audio": "aac", "airing": {"type": "movie", "title": "Cartoon Hour"}},
+        {"id": "C101.242.mock.tv", "vcn": "101", "title": "101 Family Channel", "thumb": f"{ORIGIN}/logos/101.png",
+         "video": "h264", "audio": "aac",
+         "airing": {"type": "episode", "title": "Family - S03E23", "grandparentTitle": "Family Show"}},
+        {"id": "C105.246.mock.tv", "vcn": "105", "title": "105 Sports AC-4", "thumb": f"{ORIGIN}/logos/105.png",
+         "video": "h264", "audio": "ac4", "airing": {"type": "movie", "title": "Match Day"}},
+        {"id": "C103.244.mock.tv", "vcn": "103", "title": "Anime Movies", "thumb": "",
+         "video": "h264", "audio": "aac", "airing": None},
+        {"id": "C104.245.mock.tv", "vcn": "104", "title": "104 News MPEG-2", "thumb": f"{ORIGIN}/logos/104.png",
+         "video": "mpeg2video", "audio": "ac3", "airing": {"type": "movie", "title": "Evening News"}},
+    )
+
+    def __init__(self):
+        self.tuners = 2  # `--livetv-busy` sets 0
+        self.sessions = {}  # uuid -> {"channel": channel id, "playback": the tune's session id, "at": monotonic}
+        self.transcodes = {}  # a transcode session id (the start's `session=`) -> the uuid it serves
+        self.segment = None  # `--livetv-segment`: a pathlib.Path, the MPEG-TS file every live segment answers
+        self.segment_bytes = None  # that file's bytes, read on the first segment it answers
+
+    def channel(self, cid):
+        return next((c for c in self.CHANNELS if c["id"] == cid), None)
+
+    def dvr(self):
+        """The `Dvr` row of `GET /livetv/dvrs`. `status` is `dead` on purpose (see the class doc)."""
+        return {"key": self.DVR_KEY, "uuid": "00000000-0000-0000-0000-000000000007", "epgIdentifier": self.EPG_ID,
+                "lineup": self.LINEUP,
+                "Device": [{"key": "6", "status": "dead", "state": "enabled", "uri": self.ORIGIN, "make": "Mock",
+                            "tuners": str(self.tuners),
+                            "ChannelMapping": [{"channelKey": c["id"], "deviceIdentifier": c["vcn"], "enabled": "1",
+                                                "lineupIdentifier": c["vcn"]} for c in self.CHANNELS]}]}
+
+    def lineup(self):
+        """The `Channel` rows of `GET /{epgIdentifier}/lineups/dvr/channels`, in the unsorted order."""
+        return [{"id": c["id"], "gridKey": c["id"], "vcn": c["vcn"], "thumb": c["thumb"],
+                 "title": c["title"], "callSign": c["title"]} for c in self.CHANNELS]
+
+    def grid(self, now):
+        """The `Metadata` rows of `GET /{epgIdentifier}/grid` at `now`: one airing per channel that has one,
+        on the half hour `now` falls in (`beginsAt` is that half hour, `endsAt` the next one)."""
+        begins = now - now % 1800
+        rows = []
+        for c in self.CHANNELS:
+            airing = c["airing"]
+            if airing is None:
+                continue
+            thumb = f"{self.ORIGIN}/art/{c['vcn']}.jpg"
+            row = {"ratingKey": f"mock-airing-{c['vcn']}-{begins}", "type": airing["type"],
+                   "title": airing["title"], "thumb": thumb, "onAir": True,
+                   "Media": [{"channelVcn": c["vcn"], "channelIdentifier": c["id"], "protocol": "livetv",
+                              "beginsAt": begins, "endsAt": begins + 1800, "onAir": True}]}
+            if "grandparentTitle" in airing:
+                row.update(grandparentTitle=airing["grandparentTitle"], grandparentThumb=thumb)
+            rows.append(row)
+        return rows
+
+
+def live_session_uuid(path):
+    """The uuid a `/livetv/sessions/<uuid>[/...]` path names, or "" when it names none."""
+    segs = [s for s in path.split("/") if s]
+    return segs[2] if len(segs) > 2 else ""
+
+
+def live_media_playlist(started_at):
+    """The live media playlist of a session started at `started_at` (`time.monotonic()`): a 2 s segment
+    every 2 s since then, six of them in the window, and no `#EXT-X-ENDLIST`, so it only grows."""
+    seq = int((time.monotonic() - started_at) / 2)
+    lines = ["#EXTM3U", "#EXT-X-VERSION:3", "#EXT-X-TARGETDURATION:2", f"#EXT-X-MEDIA-SEQUENCE:{seq}"]
+    for n in range(seq, seq + 6):
+        lines += ["#EXTINF:2.000000,", f"{n}.ts"]
+    return ("\n".join(lines) + "\n").encode()
+
+
 # ---------------------------------------------------------------- `--cw-art-fixture` ----------
 
 # One entry per art path a 420x236 Continue Watching card can take (module doc). `offset` is the resume
@@ -3268,6 +3384,9 @@ class MockPms:
         # `--decision-delay-ms N`: hold every transcode decision/start request this long before
         # answering, so a flight's PMS half is observably in flight. 0 answers at once.
         self.decision_delay_ms = 0
+        # `--livetv-fixture` / `--livetv-busy` / `--livetv-segment` (module doc): the `LiveTvFixture`, or None.
+        # Off, every Live TV route falls through to today's answer.
+        self.livetv = None
         # Every request `handle()` routed, in arrival order: {"method","path","query","session"}.
         # Query keys naming a token are stripped, never just redacted — never send a real value.
         self.request_log = []
@@ -3417,6 +3536,125 @@ class MockPms:
                                    {"key": "rating", "defaultDirection": "desc", "title": "Critic Rating"},
                                    {"key": "lastViewedAt", "defaultDirection": "desc", "title": "Date Viewed"},
                                    {"key": "random", "defaultDirection": "asc", "title": "Randomly"}]}]}
+
+    # --- Live TV (`--livetv-fixture`; `LiveTvFixture`) ------------------------------------------
+
+    def livetv_handle(self, method, p, q, headers, j):
+        """The Live TV routes as `(status, ctype, bytes)`, or None when `p` is not one of them, so the
+        request falls through to today's answer. Called only with the fixture on. The reads are GET (or
+        HEAD) and the tune is a POST; the decision and the start answer any method, as the transcode
+        branches do."""
+        lv = self.livetv
+        segs = [s for s in p.split("/") if s]
+        reads = method in ("GET", "HEAD")
+        if reads and p == "/livetv/dvrs":
+            return j(self.container(size=1, Dvr=[lv.dvr()]))
+        if reads and segs == [lv.EPG_ID, "lineups", "dvr", "channels"]:
+            rows = lv.lineup()
+            return j(self.container(size=len(rows), Channel=rows))
+        if reads and segs == [lv.EPG_ID, "grid"]:
+            # The client sends `beginsAt%3C=N`, which `parse_qs` decodes to the key `beginsAt<`; a literal
+            # `beginsAt<=N` parses to the same key. Without a number, the clock.
+            now = q.get("beginsAt<", "")
+            return j(self.container(Metadata=lv.grid(int(now) if now.isdigit() else int(time.time()))))
+        if (method == "POST" and len(segs) == 6 and segs[:2] == ["livetv", "dvrs"]
+                and segs[3] == "channels" and segs[5] == "tune"):
+            sid = q.get("X-Plex-Session-Identifier") or headers.get("X-Plex-Session-Identifier")
+            if not sid:
+                return j({"error": "A session identifier is required for this request"}, 400)
+            chan = lv.channel(segs[4])
+            if segs[2] != lv.DVR_KEY or chan is None:
+                return j({"Error": {"message": "Not Found"}}, 404)
+            with self.lock:
+                # The busy answer. `docs/pms-api.md` §10 infers 503 (and 409) as Busy: no measured tuner exhaustion.
+                if len(lv.sessions) >= lv.tuners:
+                    return j({"error": "All tuners are busy"}, 503)
+                live_uuid = str(uuid.uuid4())
+                lv.sessions[live_uuid] = {"channel": chan["id"], "playback": sid, "at": time.monotonic()}
+            grab = {"status": "inprogress", "Metadata": {"key": f"/livetv/sessions/{live_uuid}",
+                                                         "ratingKey": f"mock-airing-{chan['vcn']}",
+                                                         "type": "episode", "live": "1"}}
+            return j(self.container(size=1, MediaSubscription=[{"id": 1, "type": 4, "MediaGrabOperation": [grab]}]))
+        if p == "/video/:/transcode/universal/decision" and q.get("path", "").startswith("/livetv/sessions/"):
+            live_uuid = live_session_uuid(q["path"])
+            with self.lock:
+                live = lv.sessions.get(live_uuid)
+            if live is None:
+                return j({"Error": {"message": "Not Found"}}, 404)
+            chan = lv.channel(live["channel"])
+            session = q.get("session", live["playback"])
+            # The Part the session plays: the key `docs/pms-api.md` §10 measured, under the playback session.
+            key = f"/livetv/sessions/{live_uuid}/{session}/index.m3u8?offset=-1.000000"
+            if q.get("directPlay") != "0":
+                # The channel's OWN codecs (MPEG-2 and AC-3 on 104, AC-4 on 105): the app decides it cannot feed them.
+                video, audio = chan["video"], chan["audio"]
+                row = {"Media": [{"videoCodec": video, "audioCodec": audio, "width": 1280, "height": 720,
+                                  "audioChannels": 2,
+                                  "Part": [{"key": key, "decision": "directplay",
+                                            "Stream": [{"streamType": 1, "codec": video, "decision": "copy"},
+                                                       {"streamType": 2, "codec": audio, "channels": 2,
+                                                        "decision": "copy"}]}]}]}
+                return j(self.container(generalDecisionCode=1000, generalDecisionText="Direct play OK",
+                                        mdeDecisionCode=1000, Metadata=[row]))
+            if self.refuse_conversions:
+                # The same refusal the library branch of `/decision` returns (`--refuse-conversions`).
+                return j(self.container(
+                    generalDecisionCode=2000,
+                    generalDecisionText="Neither direct play nor conversion is available.",
+                    transcodeDecisionCode=4020,
+                    transcodeDecisionText="Server declined the conversion.",
+                    mdeDecisionCode=2000, Metadata=[]))
+            # The universal transcoder's h264/aac for a channel the app cannot decode: the Streams are what
+            # `route/plan.rs::decision_codecs` reads.
+            row = {"Media": [{"videoCodec": "h264", "audioCodec": "aac",
+                              "Part": [{"key": key, "decision": "transcode",
+                                        "Stream": [{"streamType": 1, "codec": "h264", "decision": "transcode"},
+                                                   {"streamType": 2, "codec": "aac", "channels": 2,
+                                                    "decision": "transcode"}]}]}]}
+            return j(self.container(generalDecisionCode=1000, generalDecisionText="Transcode OK",
+                                    mdeDecisionCode=1000, transcodeDecisionCode=1000, Metadata=[row]))
+        if p.startswith("/video/:/transcode/universal/start") and q.get("path", "").startswith("/livetv/sessions/"):
+            live_uuid = live_session_uuid(q["path"])
+            with self.lock:
+                live = lv.sessions.get(live_uuid)
+            if live is None:
+                return (404, "text/plain", b"mock_pms: no such live session")
+            session = q.get("session", live["playback"])
+            with self.lock:
+                lv.transcodes[session] = live_uuid  # the base playlist is asked for under this name
+            # The master names one variant: the session's base playlist, relative to this one.
+            master = ('#EXTM3U\n'
+                      '#EXT-X-STREAM-INF:BANDWIDTH=4000000,RESOLUTION=1280x720,CODECS="avc1.64001f,mp4a.40.2"\n'
+                      f"session/{session}/base/index.m3u8\n")
+            return (200, "application/vnd.apple.mpegurl", master.encode())
+        if (reads and len(segs) == 8 and segs[:5] == ["video", ":", "transcode", "universal", "session"]
+                and segs[6:] == ["base", "index.m3u8"]):
+            with self.lock:
+                live = lv.sessions.get(lv.transcodes.get(segs[5], ""))
+            if live is None:
+                return (404, "text/plain", b"mock_pms: no such live session")
+            return (200, "application/vnd.apple.mpegurl", live_media_playlist(live["at"]))
+        if reads and len(segs) == 5 and segs[:2] == ["livetv", "sessions"] and segs[4] == "index.m3u8":
+            with self.lock:
+                live = lv.sessions.get(segs[2])
+            if live is None:
+                return (404, "text/plain", b"mock_pms: no such live session")
+            return (200, "application/vnd.apple.mpegurl", live_media_playlist(live["at"]))
+        if reads and p.endswith(".ts") and (segs[:2] == ["livetv", "sessions"]
+                                            or segs[:5] == ["video", ":", "transcode", "universal", "session"]):
+            # `--livetv-segment` (module doc): a segment of a live session, or of a live transcode, is the file.
+            # Any other, under a session that is unknown or stopped, stays the 404.
+            with self.lock:
+                if segs[:2] == ["livetv", "sessions"]:
+                    live = lv.sessions.get(live_session_uuid(p))
+                else:
+                    live = lv.sessions.get(lv.transcodes.get(segs[5], ""))  # segs[5]: the transcode session id
+            if live is not None and lv.segment is not None:
+                if lv.segment_bytes is None:
+                    lv.segment_bytes = lv.segment.read_bytes()
+                return (200, "video/mp2t", lv.segment_bytes)
+            return (404, "text/plain", b"mock_pms: no live segments")
+        return None
 
     def handle(self, method, path, body=b"", headers=None):
         """Returns (status, content_type, bytes)."""
@@ -3586,9 +3824,18 @@ class MockPms:
                       or p.startswith("/library/parts/")
                       or (segs[:1] == ["playQueues"] and len(segs) == 2)
                       or (method == "PUT" and len(segs) == 4 and segs[:2] == ["library", "metadata"]
-                          and segs[3] == "subtitles"))
+                          and segs[3] == "subtitles")
+                      or (self.livetv is not None and method == "POST" and len(segs) == 6
+                          and segs[:2] == ["livetv", "dvrs"] and segs[3] == "channels" and segs[5] == "tune"))
         if write_path and not (method in ("GET", "HEAD") and p.startswith("/library/parts/")):
             self.note_write(method, path, body)
+
+        # `--livetv-fixture` (module doc): the Live TV routes, answered before the transcode and timeline
+        # branches below. Off, this is skipped and no request changes.
+        if self.livetv is not None:
+            answered = self.livetv_handle(method, p, q, headers, j)
+            if answered is not None:
+                return answered
 
         # plex.tv's QR sign-in, for `plxnative-plextv` (see the module doc). Pending — the state
         # the sign-in screen is captured in — unless `--authorize-after N` links it on the Nth poll.
@@ -3916,6 +4163,12 @@ class MockPms:
         if p in ("/:/timeline", "/:/progress", "/actions/removeFromContinueWatching",
                  "/status/sessions/close", "/video/:/transcode/universal/stop"):
             if p == "/:/timeline":
+                if self.livetv is not None and q.get("key", "").startswith("/livetv/sessions/"):
+                    # `--livetv-fixture`: a stopped live session frees its tuner; other states change nothing.
+                    if q.get("state") == "stopped":
+                        with self.lock:
+                            self.livetv.sessions.pop(live_session_uuid(q["key"]), None)
+                    return j(self.container())
                 rk = q.get("key", "").rsplit("/", 1)[-1]
                 t = q.get("time")
                 with self.lock:
@@ -4425,7 +4678,8 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
           resume_fixture=False, media_next_episode=False, next_episode_remux=False,
           media_forced_subtitle=False, smart_collections=False,
           caption_edge_cases=False, multi_version=False, band_fixture=False, extra_media_audio=None,
-          extra_media_subtitle=None, cw_art_fixture=None, cw_art_twin=()):
+          extra_media_subtitle=None, cw_art_fixture=None, cw_art_twin=(), livetv_fixture=False,
+          livetv_busy=False, livetv_segment=None):
     """Start a mock PMS in a daemon thread; returns (server, pms). Loopback only by default: the
     app on the simulator is on this machine, and a LAN-facing listener would be one more thing
     the outbound guard has to reason about. `catalog` serves the demo library instead of a seed.
@@ -4462,9 +4716,14 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
     episodes forced (module doc; needs `media`). `band_fixture` spreads dates, ratings and watch
     state for the value-sort rail's band probes and serves the per-type `Sort[]` lists (module doc;
     seeded library only). `cw_art_fixture` (`primary` or `twin`) adds the Continue Watching art fixture
-    (module doc); `cw_art_twin` lists the loopback ports of twin mocks this one's `/api/v2/resources` names too."""
+    (module doc); `cw_art_twin` lists the loopback ports of twin mocks this one's `/api/v2/resources` names too.
+    `livetv_fixture` serves the Live TV fixture (`LiveTvFixture`, module doc); `livetv_busy` is the same with no
+    tuners, so every tune answers 503. `livetv_segment` (a path) is the file every live segment answers (module
+    doc); it implies `livetv_fixture`."""
     if transcode_fixture is not None and not pathlib.Path(transcode_fixture).is_file():
         raise ValueError(f"--transcode-fixture file is missing: {transcode_fixture}")
+    if livetv_segment is not None and not pathlib.Path(livetv_segment).is_file():
+        raise ValueError(f"--livetv-segment file is missing: {livetv_segment}")
     if catalog is not None:
         lib = CatalogLibrary(catalog, cache=catalog_cache, hero=hero,
                              loudness_analysis=loudness_analysis)
@@ -4483,6 +4742,12 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
     if cw_art_fixture:
         add_cw_art_fixture(pms, cw_art_fixture)
     pms.cw_art_twin_ports = tuple(cw_art_twin)
+    if livetv_fixture or livetv_busy or livetv_segment is not None:
+        pms.livetv = LiveTvFixture()
+        if livetv_busy:
+            pms.livetv.tuners = 0  # every tune answers 503
+        if livetv_segment is not None:
+            pms.livetv.segment = pathlib.Path(livetv_segment)
     pms.link = link_conditioner.Conditioner(seed=seed)
     for spec in link:
         klass, profile = link_conditioner.parse_spec(spec)
@@ -5468,6 +5733,15 @@ def main():
                          "have no rating, no release date or no view, and the per-type Sort[] lists "
                          "a real PMS offers (seeded library only), for the value-sort rail's band "
                          "probes. Default off: every other answer is byte-identical")
+    ap.add_argument("--livetv-fixture", action="store_true",
+                    help="Live TV for the mock: one DVR (key 7, two tuners) with five channels, a guide, tune "
+                         "sessions and growing live playlists (LiveTvFixture; module doc). Default off: every "
+                         "other answer is byte-identical")
+    ap.add_argument("--livetv-busy", action="store_true",
+                    help="as --livetv-fixture with no tuners: every tune answers 503 (implies --livetv-fixture)")
+    ap.add_argument("--livetv-segment", type=pathlib.Path, metavar="PATH",
+                    help="every live segment (<n>.ts under a live session or a live transcode) is served as this "
+                         "MPEG-TS file (H.264/AAC); without it those segments answer 404 (implies --livetv-fixture)")
     ap.add_argument("--cw-art-fixture", nargs="?", const="primary", choices=("primary", "twin"),
                     help="five Continue Watching items, one per art path of a 420x236 card (a Discover "
                          "coverArt; a background plus clearLogo; the title in type; a guid-less item), the "
@@ -5524,6 +5798,8 @@ def main():
         ap.error("--home-users must be between 1 and 16")
     if a.authorize_after is not None and a.authorize_after < 1:
         ap.error("--authorize-after must be at least 1")
+    if a.livetv_segment is not None and not a.livetv_segment.is_file():
+        ap.error(f"--livetv-segment file is missing: {a.livetv_segment}")
     if a.selftest:
         selftest()
         return
@@ -5555,7 +5831,8 @@ def main():
                          smart_collections=a.smart_collections,
                          caption_edge_cases=a.caption_edge_cases, multi_version=a.multi_version,
                          band_fixture=a.band_fixture, cw_art_fixture=a.cw_art_fixture,
-                         cw_art_twin=a.cw_art_twin)
+                         cw_art_twin=a.cw_art_twin, livetv_fixture=a.livetv_fixture,
+                         livetv_busy=a.livetv_busy, livetv_segment=a.livetv_segment)
     except ValueError as e:
         ap.error(str(e))
     what = f"catalog={a.catalog}" if a.catalog else f"seed={a.seed}"

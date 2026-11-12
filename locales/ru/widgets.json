@@ -260,5 +260,7 @@
   "widgets.region.latin_america": "Латинская Америка",
   "widgets.failure.play_auto": "Включить «Авто» и смотреть",
   "widgets.failure.change_quality": "Изменить качество",
-  "widgets.watch.intro": "Смотреть заставку"
+  "widgets.watch.intro": "Смотреть заставку",
+  "widgets.verdict.tuners_busy": "Все тюнеры заняты",
+  "widgets.live.channel_context": "{number} · {programme}"
 }

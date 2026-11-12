@@ -16,7 +16,8 @@ fn session_codec_profiles_require_canonical_exact_matching_envelopes() {
     assert_eq!(Initial::decode_profile(current.clone(), initial.hash(), v6).unwrap().hash(), initial.hash());
     assert!(Initial::decode_profile(current.clone(), initial.hash(), prior).is_err());
     assert!(Initial::decode_profile(legacy.clone(), initial.hash(), v6).is_err());
-    for historic in [5612583773909772043u64, 14623229906352324261u64] {
+    for historic in [5612583773909772043u64, 14623229906352324261u64, 4239819007634745513u64, 741022075462080307u64,
+        10782554660826991774u64, 4886212433183674784u64] {
         assert!(Initial::decode_profile(legacy.clone(), initial.hash(), historic).is_err());
         assert!(Initial::decode_profile(current.clone(), initial.hash(), historic).is_err());
     }
@@ -200,8 +201,10 @@ fn committed_replay_initials_remain_canonical_and_hash_bound() {
         let manifest: serde_json::Value = serde_json::from_str(manifest).unwrap();
         let value = manifest["init"]["data"].clone();
         let expected_hash = manifest["init"]["hash"].as_u64().unwrap();
-        Initial::from_value(value.clone()).unwrap_or_else(|error| panic!("{name}: {error}"));
-        let decoded = Initial::decode(value, expected_hash)
+        // Check the initializer's canonical payload independently of the screen inventory;
+        // recorder's fixture preflight owns the recorded fingerprint's compatibility.
+        let profile = super::super::recorder::FP_V6;
+        let decoded = Initial::decode_profile(value, expected_hash, profile)
             .unwrap_or_else(|error| panic!("{name}: {error}"));
         assert_eq!(decoded.hash(), expected_hash, "{name}");
     }

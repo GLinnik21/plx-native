@@ -256,5 +256,7 @@
   "widgets.region.latin_america": "Amèrica Llatina",
   "widgets.failure.play_auto": "Canvia a Automàtic i reprodueix",
   "widgets.failure.change_quality": "Canvia la qualitat",
-  "widgets.watch.intro": "Mira la introducció"
+  "widgets.watch.intro": "Mira la introducció",
+  "widgets.verdict.tuners_busy": "Tots els sintonitzadors estan ocupats",
+  "widgets.live.channel_context": "{number} · {programme}"
 }

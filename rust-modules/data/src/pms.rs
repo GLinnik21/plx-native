@@ -796,7 +796,7 @@ impl HubsSnapshot {
     }
 
     pub fn view(&self) -> HubsView<'_> {
-        HubsView { data: &self.data, generation: self.generation, state: self.state }
+        HubsView { data: &self.data, generation: self.generation, state: self.state, extra: None }
     }
 }
 
@@ -807,7 +807,11 @@ pub struct HubsView<'a> {
     data: &'a Arc<HomeCatalog>,
     pub generation: u32,
     pub state: HubState,
+    extra: Option<ExtraShelf<'a>>,
 }
+
+#[derive(Clone, Copy)]
+struct ExtraShelf<'a> { at: usize, id: &'a str, title: &'a str, items: &'a [Arc<PmsMovie>], revision: u32 }
 
 #[derive(Clone, Copy)]
 pub struct HubRef<'a> {
@@ -855,9 +859,29 @@ pub struct HeroRef<'a> {
 }
 
 impl<'a> HubsView<'a> {
-    pub fn hub_count(self) -> usize { self.data.hubs.len() }
+    /// Borrow an independently owned shelf without changing the retained catalog or hero pool.
+    pub fn with_shelf(mut self, id: &'a str, title: &'a str, items: &'a [Arc<PmsMovie>], revision: u32) -> Self {
+        self.generation = self.generation.wrapping_add(revision);
+        self.extra = None;
+        if !items.is_empty() {
+            let at = self.data.hubs.iter().position(|h| h.hub_id == "home.continue").map_or(0, |i| i + 1);
+            self.extra = Some(ExtraShelf { at, id, title, items, revision });
+        }
+        self
+    }
+    pub fn hub_count(self) -> usize { self.data.hubs.len() + usize::from(self.extra.is_some()) }
     pub fn hero_count(self) -> usize { self.data.heroes.len() }
     pub fn hub(self, index: usize) -> Option<HubRef<'a>> {
+        let index = if let Some(extra) = self.extra {
+            if index == extra.at {
+                return Some(HubRef {
+                    identity: Some(HubIdentity::Identifier { sid: extra.items[0].sid, id: extra.id, key: "" }),
+                    title: extra.title, source: "", total: extra.items.len(), items: extra.items,
+                    offset: 0, more: false, epoch: extra.revision,
+                });
+            }
+            if index > extra.at { index - 1 } else { index }
+        } else { index };
         let row = self.data.hubs.get(index)?;
         let end = row.start.checked_add(row.len)?;
         Some(HubRef {
@@ -875,7 +899,7 @@ impl<'a> HubsView<'a> {
     /// Server-scoped catalog lookup by `(sid, rk)`, over the retained publication rather than a
     /// global — see [`index_of_rk`]'s doc for why the scan must not compare `rk` alone.
     pub fn find(self, sid: ServerId, rk: &str) -> Option<&'a PmsMovie> {
-        self.data.items.iter().find(|m| plx_plex::plex::same_item((m.sid, &m.rk), (sid, rk))).map(|m| &**m)
+        self.data.items.iter().chain(self.extra.into_iter().flat_map(|s| s.items)).find(|m| plx_plex::plex::same_item((m.sid, &m.rk), (sid, rk))).map(|m| &**m)
     }
 }
 

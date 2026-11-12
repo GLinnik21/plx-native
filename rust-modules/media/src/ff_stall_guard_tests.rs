@@ -359,6 +359,8 @@ fn the_lookahead_wiring_aborts_through_the_shared_reducer_when_the_guard_is_arme
         ended: false,
         target_duration_secs: 6,
         start_applied: true,
+        live: false,
+        live_start_skips_left: 0,
     };
     let n1 = plx_play_feed::hls::Segment {
         sequence: 11,
@@ -799,6 +801,7 @@ fn demux_against_when(
         range: crate::curlio::range_factory(),
         credential_gate: crate::curlio::CREDENTIAL_GATE,
         observer: super::test_support::demux_observer(),
+        carry: None,
     };
     let result = unsafe {
         hls_demux_segment(
@@ -1292,6 +1295,8 @@ fn a_zero_byte_abort_reaches_the_controller_as_an_abandoned_sample() {
         ended: false,
         target_duration_secs: 6,
         start_applied: true,
+        live: false,
+        live_start_skips_left: 0,
     };
     let segment = plx_play_feed::hls::Segment {
         sequence: 11,
@@ -1403,6 +1408,7 @@ fn at_the_floor_the_open_asks_for_the_hold_once_and_keeps_its_connection() {
         range: crate::curlio::range_factory(),
         credential_gate: crate::curlio::CREDENTIAL_GATE,
         observer: super::test_support::demux_observer(),
+        carry: None,
     };
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     let opened = hls_open_source(

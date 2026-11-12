@@ -1153,6 +1153,7 @@ pub enum FailureClass {
     /// The resolve produced no playable plan and no verdict: no Engine ever ran (a resolve with no
     /// client, or whose worker never spawned).
     ResolveFailed,
+    TunersBusy,
     /// A hero/trailer preview refused because its route was not a direct play.
     PreviewNotDirect,
     ServerStopped,
@@ -1164,7 +1165,7 @@ impl FailureClass {
     /// Every class, so a test can hold the declared `playback.failed` domain to the enum it is
     /// built from.
     #[cfg(any(test, feature = "test-support"))]
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
         Self::DecisionRefused,
         Self::PlaybackPolicy,
         Self::NoVideoTranscodeTarget,
@@ -1177,6 +1178,7 @@ impl FailureClass {
         Self::LoadTimeout,
         Self::ReleaseTimeout,
         Self::ResolveFailed,
+        Self::TunersBusy,
         Self::PreviewNotDirect,
         Self::ServerStopped,
         Self::Unspecified,
@@ -1198,6 +1200,7 @@ impl FailureClass {
             Self::LoadTimeout => "load_timeout",
             Self::ReleaseTimeout => "release_timeout",
             Self::ResolveFailed => "resolve_failed",
+            Self::TunersBusy => "tuners_busy",
             Self::PreviewNotDirect => "preview_not_direct",
             Self::ServerStopped => "server_stopped",
             Self::Unspecified => "unspecified",

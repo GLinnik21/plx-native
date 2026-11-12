@@ -252,5 +252,7 @@
   "widgets.region.latin_america": "Latin-Amerika",
   "widgets.failure.play_auto": "Automatikusra váltás és lejátszás",
   "widgets.failure.change_quality": "Minőség módosítása",
-  "widgets.watch.intro": "Bevezető megtekintése"
+  "widgets.watch.intro": "Bevezető megtekintése",
+  "widgets.verdict.tuners_busy": "Minden tuner foglalt",
+  "widgets.live.channel_context": "{number} · {programme}"
 }

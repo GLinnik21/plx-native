@@ -910,6 +910,15 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
                                 self.back_cursor(crate::registry::BackCursorChange::Release, fx);
                             }
                         }
+                        if let Some(direction) = consts::page_dir(*sym, *wcode) {
+                            if *edge == Edge::Down && !at_edge {
+                                self.end_jump_gesture();
+                                self.hud.extend(input.at.ms, input::HUD_LINGER_MS);
+                                // CH+ pages up the screen (-1) but means the next higher channel (+1).
+                                Self::ask(fx, PlayerReq::Channel(-direction));
+                            }
+                            return Handled::Yes;
+                        }
                         self.handle_key(
                             ps, classified, *edge, *at_edge, input.at.ms,
                             focused, self.focused_command(focused), fx, H::metadata(cx),
@@ -3601,6 +3610,26 @@ mod step_ladder_tests {
             let (handled, reqs) = press(&mut page, 0, wcode, Edge::Down);
             assert_eq!(handled, Handled::Yes);
             assert_eq!(reqs, vec![PlayerReq::Transport(want)], "wcode {wcode}");
+        }
+    }
+
+    #[test]
+    fn channel_keys_ask_for_the_next_higher_or_lower_channel_and_wake_the_hud() {
+        let _g = plx_base::testlock::serial();
+        for (sym, wcode, direction) in [
+            (consts::SDLK_PAGEUP, 0, 1), (consts::SDLK_PAGEDOWN, 0, -1),
+            (0, consts::WCODE_CH_UP_KEY, 1), (0, consts::WCODE_CH_DOWN_KEY, -1),
+        ] {
+            let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
+            page.hud.dismissed = true;
+            let (handled, reqs) = press(&mut page, sym, wcode, Edge::Down);
+            assert_eq!(handled, Handled::Yes);
+            assert_eq!(reqs, vec![PlayerReq::Channel(direction)]);
+            assert!(page.hud.until >= 1_000 + input::HUD_LINGER_MS);
+            assert!(!page.hud.dismissed);
+            for edge in [Edge::Repeat, Edge::Up] {
+                assert_eq!(press(&mut page, sym, wcode, edge), (Handled::Yes, Vec::new()));
+            }
         }
     }
 

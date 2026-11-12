@@ -27,6 +27,10 @@
     "value": "Home",
     "description": "browse chrome home"
   },
+  "browse.chrome.live_tv": {
+    "value": "Live TV",
+    "description": "Label of the top strip pill that opens the Live TV page with the server’s channels"
+  },
   "browse.chrome.search": {
     "value": "Search",
     "description": "browse chrome search"
@@ -782,6 +786,10 @@
   "browse.home.continue_watching": {
     "value": "Continue Watching",
     "description": "browse home continue_watching"
+  },
+  "browse.home.live_tv": {
+    "value": "Live TV",
+    "description": "Title of the Home row of the server's live TV channels (Plex DVR), one tile per channel"
   },
   "browse.diagnostics.title": {
     "value": "Diagnostics",
@@ -2146,6 +2154,30 @@
       "library": "str"
     },
     "description": "Empty collection listing in the selected library"
+  },
+  "browse.livetv.channels": {
+    "value": "Channels",
+    "description": "Live TV section heading for the complete channel lineup"
+  },
+  "browse.livetv.on_now": {
+    "value": "On Now",
+    "description": "Live TV section heading for programmes currently airing"
+  },
+  "browse.livetv.channel": {
+    "value": "Channel {number} · {name}",
+    "description": "Channel identity under a current programme; number and name come from the server",
+    "args": {
+      "number": "str",
+      "name": "str"
+    }
+  },
+  "browse.livetv.loading": {
+    "value": "Loading channels…",
+    "description": "Live TV read-out while the channel lineup is pending"
+  },
+  "browse.livetv.empty": {
+    "value": "No channels available",
+    "description": "Live TV read-out when no channels are available"
   },
   "browse.collection.loading": {
     "value": "Loading collection…",
