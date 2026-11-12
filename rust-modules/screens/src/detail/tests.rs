@@ -5303,6 +5303,25 @@ fn the_identity_line_paints_sm_after_the_run_and_xs_between_chips() {
     assert!((sdh.0 - cc.1 - theme::space::XS).abs() < 0.5, "XS between the chips");
 }
 
+/// **The dynamic range stands right after the resolution**: "Dolby Vision" for a file that carries
+/// it, "HDR" for any other HDR video, nothing for SDR.
+#[test]
+fn the_identity_line_names_the_dynamic_range_after_the_resolution() {
+    let _guard = plx_base::testlock::serial();
+    let screen = bare_held(ServerId::UNSET, "rk");
+    let m = &plx_base::fontcov::advances::ShippedMeasure;
+    let row = |d: &Detail| plx_ui::draw_census::capture_runs(|| screen.identity_row(plx_ui::Painter::recording(), d, 300.0, m));
+    let mut d = identity_detail(false);
+    assert!(painted_x(&row(&d), "HDR").is_none() && painted_x(&row(&d), "Dolby Vision").is_none(), "SDR names no range");
+    d.hdr = true;
+    let runs = row(&d);
+    let x = |label: &str| painted_x(&runs, label).unwrap_or_else(|| panic!("the {label} chip"));
+    assert!(x("1080p") < x("HDR") && x("HDR") < x(plx_platform::i18n::msg::widgets_badge_cc()), "between the resolution and the accessibility chips");
+    d.dovi.present = true;
+    let runs = row(&d);
+    assert!(painted_x(&runs, "Dolby Vision").is_some() && painted_x(&runs, "HDR").is_none(), "Dolby Vision replaces HDR");
+}
+
 /// **An empty dotted run owes no gap**: the first chip stands on the margin itself.
 #[test]
 fn an_empty_identity_run_leaves_no_gap_before_the_first_chip() {

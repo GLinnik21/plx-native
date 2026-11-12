@@ -385,6 +385,13 @@ pub fn episode_kicker(season: i64, index: i64, title: &str) -> String {
     join_present(&[&episode_ordinal(season, index), title], KICKER_SEPARATOR)
 }
 
+/// The dynamic-range badge that stands beside [`resolution`]'s: `"Dolby Vision"` for a video that
+/// carries it, `"HDR"` for any other HDR video (HDR10, HDR10+, HLG), None for SDR. The names are
+/// the formats' own in every language, as the poster caption's "HDR" is.
+pub fn dynamic_range(hdr: bool, dolby_vision: bool) -> Option<&'static str> {
+    if dolby_vision { Some("Dolby Vision") } else { hdr.then_some("HDR") }
+}
+
 /// The media badge for a video version — `"4K"` / `"1080p"` / `"SD"`, or None when the item has no
 /// video (a show container, a music item, an unparsed response).
 ///
